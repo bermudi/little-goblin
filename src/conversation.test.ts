@@ -221,6 +221,43 @@ describe("conversation store", () => {
 		store.close();
 	});
 
+	test("search and context skip a corrupt row that history placeholders", () => {
+		const path = tmpDb("goblin-test-");
+		const store = openStore(path);
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("alpha searchable"), msg("beta searchable")]);
+		// Corrupt the second row behind the FTS trigger's back: the index
+		// still carries its text, so search MATCHes the rowid and only the
+		// parse-skip keeps the corrupt row out of the hits.
+		const db = new Database(path);
+		db.run("DROP TRIGGER events_fts_au");
+		db.run("UPDATE events SET data = ? WHERE seq = 2", [JSON.stringify({ bogus: true })]);
+		db.close();
+		expect(store.history(c.id)).toHaveLength(2);
+		expect(store.searchHistory("searchable", 10).map((h) => h.seq)).toEqual([1]);
+		expect(store.eventContext(c.id, 1, 25).map((r) => r.seq)).toEqual([1]);
+		store.close();
+	});
+
+	test("the compacted model view is byte-stable across a reopen", () => {
+		const path = tmpDb("goblin-test-");
+		const store = openStore(path);
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("one"), msg("two")]);
+		store.setCompaction(c.id, {
+			boundarySeq: 1,
+			summary: "the folded era",
+			tokensBefore: 42,
+			model: "zai/glm-5.3",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		const before = store.modelEntries(c.id);
+		store.close();
+		const reopened = openStore(path);
+		expect(reopened.modelEntries(c.id)).toEqual(before);
+		reopened.close();
+	});
+
 	test("titleImplicit flag round-trips through setMeta", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "topic", chatId: 42, threadId: 7 }, "/w");

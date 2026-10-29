@@ -21,13 +21,14 @@ import {
 import {
 	type Compaction,
 	type CompactionWrite,
-	corruptPlaceholder,
 	flatLine,
 	parseEvent,
-	projectionKey,
-	summaryMessage,
-	toFtsQuery,
 } from "./conversation-events.ts";
+import {
+	type HistoryContextRow,
+	type HistoryHit,
+	makeConversationHistory,
+} from "./conversation-history.ts";
 import { prepareConversationQueries, type Row } from "./conversation-queries.ts";
 import { ensureConversationSchema } from "./conversation-schema.ts";
 import {
@@ -58,6 +59,7 @@ export type {
 } from "./conversation-address.ts";
 export { flatLine, projectionKey, summaryMessage, toFtsQuery } from "./conversation-events.ts";
 export type { Compaction, CompactionWrite } from "./conversation-events.ts";
+export type { HistoryContextRow, HistoryHit } from "./conversation-history.ts";
 export type { ConversationMetaPatch, ModelSettings } from "./conversation-settings.ts";
 
 export interface Conversation {
@@ -308,23 +310,6 @@ export interface ConversationStore {
 	close(): void;
 }
 
-export interface HistoryHit {
-	conversationId: string;
-	title: string | null;
-	seq: number;
-	role: string;
-	text: string;
-	createdAt: string;
-}
-
-export interface HistoryContextRow {
-	seq: number;
-	role: string;
-	// The parsed stored event — tool calls included.
-	message: UIMessage;
-	createdAt: string;
-}
-
 export interface AppConversationSummary {
 	id: string;
 	title: string | null;
@@ -429,23 +414,6 @@ export function openStore(dbPath: string): ConversationStore {
 		qRaiseSeqHighwater,
 	} = prepareConversationQueries(db);
 
-	// The message id is the only identity the client and the store share;
-	// resolve it by decoding rows (the JSON envelope is not a column the
-	// wire can address). Corrupt rows decode to null and simply never
-	// match.
-	function findEvent(
-		id: string,
-		messageId: string,
-	): { seq: number; role: string; anchorSeq: number | null } | null {
-		for (const row of qHistory.all(id)) {
-			const message = parseEvent(id, row.seq, row.role, row.data);
-			if (message !== null && message.id === messageId) {
-				return { seq: row.seq, role: row.role, anchorSeq: row.anchor_seq };
-			}
-		}
-		return null;
-	}
-
 	function previousDmRow(chatId: number): Row | null {
 		if (!privateChatIdSchema.safeParse(chatId).success) return null;
 		const roll = qDmRoll.get(chatId);
@@ -468,25 +436,34 @@ export function openStore(dbPath: string): ConversationStore {
 		qEpoch,
 	);
 
+	function getCompaction(id: string): Compaction | null {
+		const row = qCompaction.get(id);
+		return row
+			? {
+					boundarySeq: row.boundary_seq,
+					summary: row.summary,
+					summaryEligible: row.summary_eligible !== 0,
+					tokensBefore: row.tokens_before,
+					model: row.model,
+					createdAt: row.created_at,
+				}
+			: null;
+	}
+
+	const historyView = makeConversationHistory(
+		db,
+		{ qHistory, qProjections, qInsertProjection, qSearch, qContext },
+		getCompaction,
+	);
+
 	return {
 		db,
 		memoryQueue,
 		memoryContexts,
 		memoryDestinations,
+		...historyView,
 
-		getCompaction(id) {
-			const row = qCompaction.get(id);
-			return row
-				? {
-						boundarySeq: row.boundary_seq,
-						summary: row.summary,
-						summaryEligible: row.summary_eligible !== 0,
-						tokensBefore: row.tokens_before,
-						model: row.model,
-						createdAt: row.created_at,
-					}
-				: null;
-		},
+		getCompaction,
 
 		setCompaction(id, compaction) {
 			// Derived text feeds memory-bound builders only when every event
@@ -713,15 +690,10 @@ export function openStore(dbPath: string): ConversationStore {
 			})();
 		},
 
-		messageEvent(id, messageId) {
-			const found = findEvent(id, messageId);
-			return found === null ? null : { seq: found.seq, role: found.role };
-		},
-
 		editUserMessage(id, messageId, message) {
 			let unarchived = false;
 			const edit = db.transaction((): MessageEdit | null => {
-				const found = findEvent(id, messageId);
+				const found = historyView.messageEvent(id, messageId);
 				if (found === null || found.role !== "user") return null;
 				const conv = qGet.get(id);
 				if (!conv) throw new Error(`conversation ${id} not found`);
@@ -897,41 +869,6 @@ export function openStore(dbPath: string): ConversationStore {
 			};
 		},
 
-		searchHistory(query, limit, channelPrefix) {
-			const match = toFtsQuery(query);
-			if (match === null) return [];
-			const hits: HistoryHit[] = [];
-			for (const r of qSearch.all(match, channelPrefix ?? null, Math.max(1, Math.min(limit, 50)))) {
-				const message = parseEvent(r.cid, r.seq, r.role, r.data);
-				if (message === null) continue;
-				hits.push({
-					conversationId: r.cid,
-					title: r.title,
-					seq: r.seq,
-					role: r.role,
-					text: messageText(message),
-					createdAt: r.created_at,
-				});
-			}
-			return hits;
-		},
-
-		eventContext(id, seq, window) {
-			const w = Math.max(0, Math.min(window, 25));
-			const rows: HistoryContextRow[] = [];
-			for (const r of qContext.all(id, seq - w, seq + w)) {
-				const message = parseEvent(id, r.seq, r.role, r.data);
-				if (message === null) continue;
-				rows.push({
-					seq: r.seq,
-					role: r.role,
-					message,
-					createdAt: r.created_at,
-				});
-			}
-			return rows;
-		},
-
 		listAppConversations() {
 			// One operator, one pool — the list is small; a per-row latest
 			// event lookup is cheaper than the join bookkeeping.
@@ -1053,98 +990,6 @@ export function openStore(dbPath: string): ConversationStore {
 					conversation: id,
 				});
 			}
-		},
-
-		history(id) {
-			return this.historyEntries(id).map((e) => e.message);
-		},
-
-		historyEntries(id) {
-			return this.historyDetail(id).map((e) => ({ seq: e.seq, message: e.message }));
-		},
-
-		historyDetail(id) {
-			const rows = qHistory.all(id).map((r) => ({
-				seq: r.seq,
-				anchorSeq: r.anchor_seq,
-				message: parseEvent(id, r.seq, r.role, r.data) ?? corruptPlaceholder(r.seq, r.role),
-			}));
-			// Arrival order stays on disk; this sorts each anchored response
-			// right after its user event. Key = anchor ?? seq, tiebreak = seq
-			// — an anchor always precedes its own seq.
-			rows.sort((a, b) => {
-				const ka = a.anchorSeq ?? a.seq;
-				const kb = b.anchorSeq ?? b.seq;
-				return ka - kb || a.seq - b.seq;
-			});
-			return rows;
-		},
-
-		modelEntries(id) {
-			const compaction = this.getCompaction(id);
-			// Filter on the causal key: an anchored response to a compacted
-			// user event has a high seq but an early causal position — it
-			// belongs to the summarized span, not the tail.
-			const entries = this.historyDetail(id)
-				.filter((e) => compaction === null || (e.anchorSeq ?? e.seq) > compaction.boundarySeq)
-				.map((e) => ({ seq: e.seq, message: e.message }));
-			// Committed pruning projections overlay the model-facing view
-			// only — parseEvent returns fresh objects, so mutating them
-			// here can never touch the stored row or the readers that must
-			// serve originals (history, context, search).
-			const projections = qProjections.all(id);
-			if (projections.length > 0) {
-				const byPart = new Map(
-					projections.map((p) => [projectionKey(p.seq, p.tool_call_id), p.replacement] as const),
-				);
-				for (const entry of entries) {
-					for (const part of entry.message.parts) {
-						const p = part as {
-							type: string;
-							toolCallId?: unknown;
-							state?: unknown;
-							output?: unknown;
-						};
-						if (
-							!(p.type.startsWith("tool-") || p.type === "dynamic-tool") ||
-							p.state !== "output-available" ||
-							typeof p.toolCallId !== "string" ||
-							typeof p.output !== "string"
-						)
-							continue;
-						const replacement = byPart.get(projectionKey(entry.seq, p.toolCallId));
-						if (replacement !== undefined) p.output = replacement;
-					}
-				}
-			}
-			return compaction === null
-				? entries
-				: [{ seq: compaction.boundarySeq, message: summaryMessage(compaction, id) }, ...entries];
-		},
-
-		eventProjections(id) {
-			return qProjections
-				.all(id)
-				.map((p) => ({ seq: p.seq, toolCallId: p.tool_call_id, replacement: p.replacement }));
-		},
-
-		applyEventProjections(id, rows) {
-			const createdAt = new Date().toISOString();
-			return db.transaction(() => {
-				let inserted = 0;
-				for (const r of rows) {
-					inserted += qInsertProjection.run(
-						id,
-						r.seq,
-						r.toolCallId,
-						r.replacement,
-						r.routeKey,
-						r.settingsHash,
-						createdAt,
-					).changes;
-				}
-				return inserted;
-			})();
 		},
 
 		close() {

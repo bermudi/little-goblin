@@ -75,6 +75,19 @@ const answer = (text: string): LanguageModelV4GenerateResult => ({
 	},
 });
 
+// The budget-burn case: nearly all output went to reasoning — the
+// total differs from the reasoning split, so a re-ask sized from
+// `reasoning` reads the split, not the total.
+const spent = (reasoning: number): LanguageModelV4GenerateResult => ({
+	content: [{ type: "text", text: "   " }],
+	finishReason: { unified: "length", raw: undefined },
+	warnings: [],
+	usage: {
+		inputTokens: { total: 10, noCache: undefined, cacheRead: 5, cacheWrite: undefined },
+		outputTokens: { total: reasoning + 100, text: 100, reasoning },
+	},
+});
+
 /** Fake at the provider edge, resolved per call. */
 function deps(
 	vision: { model: string; maxTokens?: number },
@@ -270,7 +283,38 @@ describe("askVision — provider edge", () => {
 		expect(second.followUps).toBe(0);
 	});
 
-	test("empty answer re-asks once at a raised budget, then fails loud", async () => {
+	test("empty answer re-asks once — right-sized from the reported reasoning spend", async () => {
+		_resetVisionThreadsForTest();
+		const calls: GenerateCall[] = [];
+		await expect(
+			askVision(
+				query(),
+				deps({ model: "zai/glm-5.3-flash" }, calls, () => spent(2_000)),
+			),
+		).rejects.toThrow(/empty answer.*re-ask at 6000 maxTokens/s);
+		expect(calls).toHaveLength(2);
+		expect(calls[0]!.maxOutputTokens).toBe(4_048);
+		// Observed 2000 reasoning (a truncation lower bound) ×2 + the
+		// 2000 answer budget.
+		expect(calls[1]!.maxOutputTokens).toBe(6_000);
+	});
+
+	test("empty then answer — the measured re-ask recovers the call", async () => {
+		_resetVisionThreadsForTest();
+		const calls: GenerateCall[] = [];
+		let n = 0;
+		const result = await askVision(
+			query(),
+			deps({ model: "zai/glm-5.3-flash" }, calls, () =>
+				n++ === 0 ? spent(2_000) : answer("a chart"),
+			),
+		);
+		expect(result.answer).toBe("a chart");
+		expect(calls).toHaveLength(2);
+		expect(calls[1]!.maxOutputTokens).toBe(6_000);
+	});
+
+	test("an empty answer that spent little still re-asks at the same cap", async () => {
 		_resetVisionThreadsForTest();
 		const calls: GenerateCall[] = [];
 		await expect(
@@ -278,22 +322,28 @@ describe("askVision — provider edge", () => {
 				query(),
 				deps({ model: "zai/glm-5.3-flash" }, calls, () => answer("   ")),
 			),
-		).rejects.toThrow(/empty answer.*re-ask at 16192 maxTokens/s);
+		).rejects.toThrow(/empty answer.*re-ask at 4048 maxTokens/s);
 		expect(calls).toHaveLength(2);
-		expect(calls[0]!.maxOutputTokens).toBe(4_048);
-		expect(calls[1]!.maxOutputTokens).toBe(16_192);
+		// 3 non-visible tokens observed — not a reasoning burn, so the
+		// re-ask is a plain re-roll at the first cap.
+		expect(calls[1]!.maxOutputTokens).toBe(4_048);
 	});
 
-	test("empty then answer — the raised-budget re-ask recovers the call", async () => {
+	test("unreported usage can't be measured — the re-ask falls back to 4×", async () => {
 		_resetVisionThreadsForTest();
 		const calls: GenerateCall[] = [];
-		let n = 0;
-		const result = await askVision(
-			query(),
-			deps({ model: "zai/glm-5.3-flash" }, calls, () => answer(n++ === 0 ? "   " : "a chart")),
-		);
-		expect(result.answer).toBe("a chart");
-		expect(calls).toHaveLength(2);
+		const blind = (): LanguageModelV4GenerateResult => ({
+			content: [{ type: "text", text: "   " }],
+			finishReason: { unified: "stop", raw: undefined },
+			warnings: [],
+			usage: {
+				inputTokens: { total: 10, noCache: undefined, cacheRead: 5, cacheWrite: undefined },
+				outputTokens: { total: undefined, text: undefined, reasoning: undefined },
+			},
+		});
+		await expect(
+			askVision(query(), deps({ model: "zai/glm-5.3-flash" }, calls, blind)),
+		).rejects.toThrow(/empty answer.*re-ask at 16192 maxTokens/s);
 		expect(calls[1]!.maxOutputTokens).toBe(16_192);
 	});
 
@@ -303,7 +353,7 @@ describe("askVision — provider edge", () => {
 		await expect(
 			askVision(
 				query(),
-				deps({ model: "zai/glm-5.3-flash", maxTokens: 32_768 }, calls, () => answer("   ")),
+				deps({ model: "zai/glm-5.3-flash", maxTokens: 32_768 }, calls, () => spent(34_816)),
 			),
 		).rejects.toThrow(/empty answer.*re-ask at 65536 maxTokens/s);
 		expect(calls).toHaveLength(2);

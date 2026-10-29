@@ -113,10 +113,15 @@ export interface VisionAnswer {
 	followUps: number;
 }
 
-/** Usage slice for the cost log line. */
+/** Usage slice for the cost log line and the re-ask sizing. */
 export interface VisionUsage {
 	inputTokens?: number | undefined;
 	outputTokens?: number | undefined;
+	outputTokenDetails?:
+		| {
+				reasoningTokens?: number | undefined;
+		  }
+		| undefined;
 	inputTokenDetails?:
 		| {
 				cacheReadTokens?: number | null | undefined;
@@ -241,10 +246,19 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 	let retried = false;
 	// An empty answer means the whole budget went to non-visible tokens
 	// — a floored effort can still spin (observed: glm-5.3-flash burning
-	// all 2000 at "low"). One re-ask at a raised budget buys headroom;
-	// the wire ceiling bounds the spend.
-	const retryBudget = Math.min(OUTPUT_TOKEN_CEILING, firstBudget * 4);
+	// all 2000 at "low"). One re-ask, right-sized from the usage split:
+	// the measured reasoning spend is a truncation lower bound — double
+	// it and re-add the answer budget. Unreported usage can't be
+	// measured, so it falls back to 4× the first cap.
 	if (!answer) {
+		const reasoning =
+			result.usage?.outputTokenDetails?.reasoningTokens ?? result.usage?.outputTokens;
+		const retryBudget = Math.min(
+			OUTPUT_TOKEN_CEILING,
+			reasoning !== undefined
+				? Math.max(reasoning * 2 + cfg.maxTokens, firstBudget)
+				: firstBudget * 4,
+		);
 		retried = true;
 		log.warn("vision answer empty — re-asking with raised output budget", {
 			conversation: deps.conversation,
@@ -255,16 +269,17 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 			retryMaxTokens: retryBudget,
 			finish: result.finishReason,
 			outputTokens: result.usage?.outputTokens ?? null,
+			reasoningTokens: reasoning ?? null,
 		});
 		result = await ask(retryBudget);
 		answer = result.text.trim();
-	}
-	if (!answer) {
-		throw new Error(
-			`empty answer from ${label} even on a re-ask at ${retryBudget} maxTokens ` +
-				`— a thinking model spending the output budget on reasoning? ` +
-				`Raise vision.maxTokens or switch the vision model.`,
-		);
+		if (!answer) {
+			throw new Error(
+				`empty answer from ${label} even on a re-ask at ${retryBudget} maxTokens ` +
+					`— a thinking model spending the output budget on reasoning? ` +
+					`Raise vision.maxTokens or switch the vision model.`,
+			);
+		}
 	}
 
 	threads.record(key, { question: query.prompt, answer }, query.followUp ? "follow" : "fresh");

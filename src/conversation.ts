@@ -4,107 +4,61 @@ import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { clampThinkingFor } from "./agent/thinking.ts";
-import { type Config, splitModelRef, type ThinkingLevel, thinkingLevels } from "./config.ts";
+import { type Config, splitModelRef } from "./config.ts";
 import { log } from "./log.ts";
 import { MemoryDestinations } from "./memory/destinations.ts";
 import type { MemoryDocument } from "./memory/hindsight.ts";
 import { MemoryContexts, type MemoryEligibility, messageText } from "./memory/mod.ts";
 import { MemoryQueue } from "./memory/queue.ts";
-import { ensureNotesSchema } from "./notes.ts";
-import { ensureProjectsSchema } from "./projects.ts";
+import {
+	appAddress,
+	channelOf,
+	type ConversationAddress,
+	formatAddress,
+	privateChatIdSchema,
+	rollingDmOrdinal,
+} from "./conversation-address.ts";
+import {
+	type Compaction,
+	type CompactionWrite,
+	corruptPlaceholder,
+	flatLine,
+	parseEvent,
+	projectionKey,
+	summaryMessage,
+	toFtsQuery,
+} from "./conversation-events.ts";
+import { prepareConversationQueries, type Row } from "./conversation-queries.ts";
+import { ensureConversationSchema } from "./conversation-schema.ts";
+import {
+	type ConversationMetaPatch,
+	makeConversationSettings,
+	type ModelSettings,
+	modelSettingsSchema,
+} from "./conversation-settings.ts";
 import { retargetPruningMarker } from "./pruning-marker.ts";
-import { coordinationAnchors, ensureResponsibilitiesSchema } from "./responsibilities.ts";
+import { coordinationAnchors } from "./responsibilities.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
-import { ensureWakeSchema, sweepConversationWakes } from "./wake-store.ts";
-import { ensureWindowSchema } from "./window-capture.ts";
-import { compactionSummaryId, corruptRowId } from "./tags.ts";
+import { sweepConversationWakes } from "./wake-store.ts";
 
-// Routing discriminates on kind alone; the app member's zeros are fillers,
-// not real coordinates.
-export type ConversationAddress =
-	| { kind: "dm"; chatId: number }
-	| { kind: "topic"; chatId: number; threadId: number }
-	// chatId is the summoned chat (negative for groups), userId the summoner.
-	| { kind: "guest"; chatId: number; userId: number }
-	| { kind: "app"; appId: string; chatId: 0; threadId: 0 };
-
-export const APP_ID_PREFIX = "app/";
-
-// Client-minted, but the id rides an HTTP path segment — must stay url-safe
-// and slash-free.
-export const appIdSchema = z
-	.string()
-	.regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/, "app ids are [A-Za-z0-9_-], 1-64 chars");
-
-// n is a creation ordinal that only grows; resolve() must never mint one.
-export interface RollingDmAddress {
-	kind: "rolling";
-	chatId: number;
-	ordinal: number;
-}
-
-export type ParsedAddress = ConversationAddress | RollingDmAddress;
-
-// Malformed addresses fail here, not silently downstream.
-export function formatAddress(addr: ParsedAddress): string {
-	if (addr.kind === "dm") return `dm:${addr.chatId}`;
-	if (addr.kind === "rolling") return `dm:${addr.chatId}:${addr.ordinal}`;
-	if (addr.kind === "topic") return `topic:${addr.chatId}:${addr.threadId}`;
-	if (addr.kind === "guest") return `guest:${addr.chatId}:${addr.userId}`;
-	return `${APP_ID_PREFIX}${appIdSchema.parse(addr.appId)}`;
-}
-
-const dmIdRe = /^dm:(-?\d+)$/;
-const rollingDmIdRe = /^dm:(-?\d+):([1-9]\d*)$/;
-const topicIdRe = /^topic:(-?\d+):(-?\d+)$/;
-const guestIdRe = /^guest:(-?\d+):(-?\d+)$/;
-
-function coordsOf(match: RegExpExecArray | null): number[] | null {
-	if (match === null) return null;
-	const nums = match.slice(1).map(Number);
-	return nums.every(Number.isSafeInteger) ? nums : null;
-}
-
-// parseAddress ∘ formatAddress is the identity on every id; null on anything
-// else — callers route on the null, never guess. Rolling ordinals decode as
-// [1-9]\d*: rollDm mints them and never rewrites them, so a zero or
-// leading-zero ordinal is not an id.
-export function parseAddress(id: string): ParsedAddress | null {
-	if (id.startsWith(APP_ID_PREFIX)) {
-		const appId = appIdSchema.safeParse(id.slice(APP_ID_PREFIX.length));
-		return appId.success ? { kind: "app", appId: appId.data, chatId: 0, threadId: 0 } : null;
-	}
-	const rolling = coordsOf(rollingDmIdRe.exec(id));
-	if (rolling !== null) return { kind: "rolling", chatId: rolling[0]!, ordinal: rolling[1]! };
-	const dm = coordsOf(dmIdRe.exec(id));
-	if (dm !== null) return { kind: "dm", chatId: dm[0]! };
-	const topic = coordsOf(topicIdRe.exec(id));
-	if (topic !== null) return { kind: "topic", chatId: topic[0]!, threadId: topic[1]! };
-	const guest = coordsOf(guestIdRe.exec(id));
-	if (guest !== null) return { kind: "guest", chatId: guest[0]!, userId: guest[1]! };
-	return null;
-}
-
-export function appIdOf(conversationId: string): string | null {
-	const parsed = parseAddress(conversationId);
-	return parsed !== null && parsed.kind === "app" ? parsed.appId : null;
-}
-
-export function appAddress(appId: string): ConversationAddress {
-	return { kind: "app", appId: appIdSchema.parse(appId), chatId: 0, threadId: 0 };
-}
-
-// The id prefix is the whole discriminant. "guest" is its own channel, not
-// a telegram flavor — tool assembly and delivery branch on it.
-export function channelOf(conversationId: string): "telegram" | "app" | "guest" {
-	if (conversationId.startsWith(APP_ID_PREFIX)) return "app";
-	if (conversationId.startsWith("guest:")) return "guest";
-	return "telegram";
-}
-
-export function guestAddress(chatId: number, userId: number): ConversationAddress {
-	return { kind: "guest", chatId, userId };
-}
+export {
+	APP_ID_PREFIX,
+	appAddress,
+	appIdOf,
+	appIdSchema,
+	channelOf,
+	formatAddress,
+	guestAddress,
+	parseAddress,
+} from "./conversation-address.ts";
+export type {
+	ConversationAddress,
+	ParsedAddress,
+	RollingDmAddress,
+} from "./conversation-address.ts";
+export { flatLine, projectionKey, summaryMessage, toFtsQuery } from "./conversation-events.ts";
+export type { Compaction, CompactionWrite } from "./conversation-events.ts";
+export type { ConversationMetaPatch, ModelSettings } from "./conversation-settings.ts";
 
 export interface Conversation {
 	id: string;
@@ -135,15 +89,6 @@ export interface Conversation {
 	createdAt: string;
 }
 
-export interface ModelSettings {
-	model: string;
-	thinking: ThinkingLevel;
-}
-const modelSettingsSchema = z.object({
-	model: z.string().min(1),
-	thinking: z.enum(thinkingLevels),
-});
-
 // Called at admission (and manual compaction), never at submit time:
 // a queued turn sees the latest settings, a running turn keeps its copy.
 export function captureConversationSettings(
@@ -156,12 +101,6 @@ export function captureConversationSettings(
 			? store.initializeAppSettings(conv.id, cfg)
 			: { model: cfg.telegram.model ?? cfg.model, thinking: cfg.telegram.thinking ?? cfg.thinking };
 	return { ...conv, ...settings };
-}
-
-// (seq, toolCallId) encoded without concat ambiguity — (2, "34") and
-// (23, "4") must stay distinct; a plain concat would cross-replace.
-export function projectionKey(seq: number, toolCallId: string): string {
-	return JSON.stringify([seq, toolCallId]);
 }
 
 // A refused config edit must leave disk untouched — persisted app
@@ -193,33 +132,6 @@ export function prepareAppSettingsForConfig(
 		for (const row of rows) store.initializeAppSettings(row.id, previous);
 	})();
 }
-
-export interface ConversationMetaPatch {
-	title?: string;
-	titleImplicit?: boolean;
-	model?: string | null;
-	thinking?: string | null;
-	voice?: boolean;
-	memoryExcluded?: boolean;
-	persona?: "personal" | "guest";
-	archived?: boolean;
-	pinned?: boolean;
-}
-
-// Rows append forever; the latest per conversation is the active boundary.
-// summaryEligible is store-stamped, never caller input — derived text may
-// reach memory-bound builders only when every folded event was eligible.
-export interface Compaction {
-	boundarySeq: number;
-	summary: string;
-	summaryEligible: boolean;
-	tokensBefore: number;
-	model: string;
-	createdAt: string;
-}
-
-// What a caller writes — summaryEligible is store-computed, never input.
-export type CompactionWrite = Omit<Compaction, "summaryEligible">;
 
 // The observable shape of an edit's sweep: the cut is the edited event's
 // seq, seq is the new event's (never-reused) position, and the counts
@@ -431,109 +343,6 @@ export interface AppConversationSummary {
 	projectId: string | null;
 }
 
-interface Row {
-	id: string;
-	chat_id: number;
-	thread_id: number | null;
-	title: string | null;
-	title_implicit: number;
-	cwd: string; // kept: column exists in existing DBs; never read into Conversation
-	model: string | null;
-	thinking: string | null;
-	voice: number;
-	memory_excluded: number;
-	// "guest" = the sandbox persona: no private files in, nothing about
-	// the operator out. Frozen at creation.
-	persona: string;
-	epoch: number;
-	created_at: string;
-	previous_dm_id: string | null; // internal navigation link, never on the wire
-	archived_at: string | null;
-	pinned_at: string | null;
-	project_id: string | null;
-}
-
-const privateChatIdSchema = z.number().int().positive();
-
-// Only canonical rolling private DM identities can enter a back chain.
-// Checking coordinates too prevents a malformed disk link crossing pools.
-function rollingDmOrdinal(
-	row: Pick<Row, "id" | "chat_id" | "thread_id">,
-	chatId: number,
-): number | null {
-	const parsed = parseAddress(row.id);
-	return parsed !== null &&
-		parsed.kind === "rolling" &&
-		parsed.chatId === chatId &&
-		row.chat_id === chatId &&
-		row.thread_id === null
-		? parsed.ordinal
-		: null;
-}
-
-// Disk state is a boundary: validated on read, loosely (the runtime's
-// converters own per-part semantics). A row that isn't an envelope degrades
-// to a placeholder, never a throw — one malformed row must not kill every
-// future turn.
-const uiMessageSchema = z.looseObject({
-	id: z.string(),
-	role: z.enum(["system", "user", "assistant"]),
-	parts: z.array(z.looseObject({ type: z.string() })),
-});
-
-const roleSchema = z.enum(["system", "user", "assistant"]);
-
-// The placeholder keeps the row's position (seq/anchor preserved) — a
-// note where a message was, not a parse error.
-function corruptPlaceholder(seq: number, role: string): UIMessage {
-	const parsed = roleSchema.safeParse(role);
-	return {
-		id: corruptRowId(seq),
-		role: parsed.success ? parsed.data : "user",
-		parts: [
-			{
-				type: "text",
-				text: `[unreadable history row seq ${seq} — stored message failed validation. Any attachment it carried may still be readable with read_file or bash tools.]`,
-			},
-		],
-	};
-}
-
-// Rows are versioned envelopes {"v":1,"message":…} — the SDK owns part
-// shapes, so each row stamps the format that wrote it. Reads are
-// envelope-only; straggler bare rows wrap once at open.
-function envelopeOf(raw: unknown): unknown {
-	if (
-		typeof raw === "object" &&
-		raw !== null &&
-		"v" in raw &&
-		(raw as { v?: unknown }).v === 1 &&
-		"message" in raw
-	) {
-		return (raw as { message: unknown }).message;
-	}
-	return null;
-}
-
-// The compacted view's synthetic first message: user role but framed as
-// carried context, not a forged transcript. seq = the boundary, so causal
-// sorting keeps it first. The marker names the recovery path — this
-// conversation's id and the boundary seq, pageable with history_search.
-// Read-time minting must be deterministic per conversation — byte-stable
-// across turns for prefix-cache stability.
-export function summaryMessage(compaction: Compaction, conversationId: string): UIMessage {
-	return {
-		id: compactionSummaryId(compaction.boundarySeq),
-		role: "user",
-		parts: [
-			{
-				type: "text",
-				text: `[history compacted — conversation ${conversationId}: the summary below replaces everything before seq ${compaction.boundarySeq}; treat it as accurate carried context, not as a message anyone sent. The full record is kept: history_search action="context" with this conversation id and a seq below ${compaction.boundarySeq} pages it, tool calls and results included, when that tool is in your set]\n\n${compaction.summary}`,
-			},
-		],
-	};
-}
-
 function toConversation(r: Row): Conversation {
 	return {
 		id: r.id,
@@ -554,73 +363,6 @@ function toConversation(r: Row): Conversation {
 	};
 }
 
-// Concatenated text parts of one row, written against a row qualifier so
-// triggers and backfill share it. A corrupt row indexes empty — never fails
-// its INSERT.
-function ftsTextOf(qual: string): string {
-	return (
-		`(CASE WHEN json_valid(${qual}.data) THEN ` +
-		`(SELECT coalesce(group_concat(json_extract(value,'$.text'),' '), '') ` +
-		`FROM json_each(json_extract(${qual}.data,'$.message.parts')) ` +
-		`WHERE json_extract(value,'$.type')='text') ELSE '' END)`
-	);
-}
-
-// Each term a double-quoted phrase so no FTS5 query syntax reaches MATCH.
-// Null = no searchable terms.
-export function toFtsQuery(query: string): string | null {
-	const terms = query
-		.split(/\s+/)
-		.map((t) => t.replace(/"/g, "").trim())
-		.filter((t) => t !== "");
-	if (terms.length === 0) return null;
-	return terms.map((t) => `"${t}"`).join(" ");
-}
-
-// Single-line labels for list titles/previews — markdown furniture comes
-// off, or a reply that opens on a code block titles the row
-// "```typescript const slug = …".
-export function flatLine(text: string): string {
-	return text
-		.replace(/```+[ \t]*[^\s`\n]*/g, " ")
-		.replace(/`([^`]*)`/g, "$1")
-		.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-		.replace(/(\*\*|__|~~)(.+?)\1/g, "$2")
-		.replace(/(\*|_)([^\s*_][^*_]*?[^\s*]|[^\s*_])\1/g, "$2")
-		.replace(/^[ \t]*(?:#{1,6}|>|[-*+]|\d+\.)[ \t]+/gm, "")
-		.replace(/\s+/g, " ")
-		.trim();
-}
-
-// Null when unreadable — history degrades to a placeholder, search and
-// context skip. Warns either way: a silent skip would hide corruption.
-function parseEvent(
-	conversation: string,
-	seq: number,
-	role: string,
-	data: string,
-): UIMessage | null {
-	let raw: unknown;
-	try {
-		raw = JSON.parse(data);
-	} catch (err) {
-		log.warn("corrupt history row — degrading to placeholder", err, {
-			conversation,
-			seq,
-		});
-		return null;
-	}
-	const parsed = uiMessageSchema.safeParse(envelopeOf(raw));
-	if (!parsed.success) {
-		log.warn("corrupt history row — degrading to placeholder", parsed.error, {
-			conversation,
-			seq,
-		});
-		return null;
-	}
-	return parsed.data as UIMessage;
-}
-
 export function openStore(dbPath: string): ConversationStore {
 	const db = new Database(dbPath);
 	db.run("PRAGMA journal_mode = WAL");
@@ -636,611 +378,56 @@ export function openStore(dbPath: string): ConversationStore {
 	// within seconds, not wedge the event loop.
 	db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	db.run("PRAGMA foreign_keys = ON");
-	db.run(`
-		CREATE TABLE IF NOT EXISTS conversations (
-			id TEXT PRIMARY KEY,
-			chat_id INTEGER NOT NULL,
-			thread_id INTEGER,
-			title TEXT,
-			title_implicit INTEGER NOT NULL DEFAULT 0,
-			cwd TEXT NOT NULL,
-			model TEXT,
-			thinking TEXT,
-			voice INTEGER NOT NULL DEFAULT 0,
-			epoch INTEGER NOT NULL DEFAULT 0,
-			created_at TEXT NOT NULL
-		)`);
-	// Must precede the column migrations — project_id below REFERENCES
-	// this table.
-	ensureProjectsSchema(db);
-	ensureNotesSchema(db);
-	// Companion schemas whose rows reference conversations: ensured here
-	// so deleteConversation's anchor check and wake sweep always find
-	// their tables on this handle, and the FK chain is complete from the
-	// first open. context_windows carries no FK — the ensure keeps the
-	// sweep's delete unconditional on every handle.
-	ensureResponsibilitiesSchema(db);
-	ensureWakeSchema(db);
-	ensureWindowSchema(db);
-	const convCols = new Set(
-		db
-			.query<{ name: string }, []>("PRAGMA table_info(conversations)")
-			.all()
-			.map((c) => c.name),
-	);
-	if (!convCols.has("title_implicit")) {
-		db.run("ALTER TABLE conversations ADD COLUMN title_implicit INTEGER NOT NULL DEFAULT 0");
-	}
-	if (!convCols.has("voice")) {
-		db.run("ALTER TABLE conversations ADD COLUMN voice INTEGER NOT NULL DEFAULT 0");
-	}
-	if (!convCols.has("memory_excluded")) {
-		db.run("ALTER TABLE conversations ADD COLUMN memory_excluded INTEGER NOT NULL DEFAULT 0");
-	}
-	if (!convCols.has("persona")) {
-		db.run("ALTER TABLE conversations ADD COLUMN persona TEXT NOT NULL DEFAULT 'personal'");
-	}
-	if (!convCols.has("archived_at")) {
-		db.run("ALTER TABLE conversations ADD COLUMN archived_at TEXT");
-	}
-	if (!convCols.has("pinned_at")) {
-		db.run("ALTER TABLE conversations ADD COLUMN pinned_at TEXT");
-	}
-	// The highest seq this conversation has ever written. An edit deletes
-	// a tail and appends again; MAX(seq) alone would re-mint every seq the
-	// tail spent, silently re-binding stale rating and journal rows to new
-	// events. Appends therefore start above both this mark and MAX(seq).
-	if (!convCols.has("seq_highwater")) {
-		db.run("ALTER TABLE conversations ADD COLUMN seq_highwater INTEGER NOT NULL DEFAULT 0");
-	}
-	// Written once by bindProject — deliberately not on
-	// ConversationMetaPatch.
-	if (!convCols.has("project_id")) {
-		db.run("ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id)");
-	}
-	// The epoch high-water mark outlives its conversation row: a deleted
-	// id's final epoch is recorded on delete, and every later mint of the
-	// same id starts above it — a turn that captured a token under the old
-	// generation can never pass the fresh row's authority check.
-	db.run(`
-		CREATE TABLE IF NOT EXISTS conversation_epoch_hwm (
-			conversation_id TEXT PRIMARY KEY,
-			epoch INTEGER NOT NULL
-		)`);
-	db.run(`
-		CREATE TABLE IF NOT EXISTS events (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			conversation_id TEXT NOT NULL REFERENCES conversations(id),
-			seq INTEGER NOT NULL,
-			role TEXT NOT NULL,
-			data TEXT NOT NULL,
-			anchor_seq INTEGER,
-			created_at TEXT NOT NULL,
-			memory_eligible INTEGER NOT NULL DEFAULT 0,
-			UNIQUE(conversation_id, seq)
-		)`);
-	const eventCols = new Set(
-		db
-			.query<{ name: string }, []>("PRAGMA table_info(events)")
-			.all()
-			.map((c) => c.name),
-	);
-	if (!eventCols.has("anchor_seq")) {
-		db.run("ALTER TABLE events ADD COLUMN anchor_seq INTEGER");
-	}
-	// Per-event durable answer to "may this text ever reach the memory
-	// service?" DEFAULT 0 keeps every pre-stamp row ineligible — the
-	// append-time flag is unreconstructable, and enabling memory must not
-	// silently backfill.
-	if (!eventCols.has("memory_eligible")) {
-		db.run("ALTER TABLE events ADD COLUMN memory_eligible INTEGER NOT NULL DEFAULT 0");
-		const stamped = db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM events").get()?.n;
-		log.info("event memory eligibility stamped — prior rows historical", {
-			events: stamped ?? 0,
-		});
-	}
-	// Contentless FTS5, not external-content — events stores JSON
-	// envelopes, so there is no plain-text column to point at. Created
-	// before the envelope migration below so the update trigger re-indexes
-	// migrated rows.
-	const ftsFresh =
-		db
-			.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM sqlite_master WHERE name = 'events_fts'")
-			.get()?.n === 0;
-	db.run(
-		"CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(text, content='', content_rowid='id', tokenize='porter')",
-	);
-	db.run(`CREATE TRIGGER IF NOT EXISTS events_fts_ai AFTER INSERT ON events
-		WHEN NEW.role IN ('user','assistant')
-		BEGIN INSERT INTO events_fts(rowid, text) VALUES (new.id, ${ftsTextOf("new")}); END`);
-	db.run(`CREATE TRIGGER IF NOT EXISTS events_fts_ad AFTER DELETE ON events
-		WHEN OLD.role IN ('user','assistant')
-		BEGIN INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, ${ftsTextOf("old")}); END`);
-	db.run(`CREATE TRIGGER IF NOT EXISTS events_fts_au AFTER UPDATE ON events
-		WHEN NEW.role IN ('user','assistant')
-		BEGIN INSERT INTO events_fts(events_fts, rowid, text) VALUES('delete', old.id, ${ftsTextOf("old")});
-		INSERT INTO events_fts(rowid, text) VALUES (new.id, ${ftsTextOf("new")}); END`);
-	// Backfill once for upgrading DBs, from the trigger's projection.
-	if (ftsFresh) {
-		db.run(`INSERT INTO events_fts(rowid, text)
-			SELECT id, ${ftsTextOf("events")} FROM events WHERE role IN ('user','assistant')`);
-	}
-
+	ensureConversationSchema(db);
 	const memoryQueue = new MemoryQueue(db);
 	const memoryContexts = new MemoryContexts(db);
 	const memoryDestinations = new MemoryDestinations(db);
-	// Compaction pointers, append-only; the newest row per conversation
-	// is the active boundary. summary_eligible DEFAULT 0 fails legacy
-	// rows closed, the same way the event stamp does.
-	db.run(`
-		CREATE TABLE IF NOT EXISTS compactions (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			conversation_id TEXT NOT NULL REFERENCES conversations(id),
-			boundary_seq INTEGER NOT NULL,
-			summary TEXT NOT NULL,
-			summary_eligible INTEGER NOT NULL DEFAULT 0,
-			tokens_before INTEGER NOT NULL,
-			model TEXT NOT NULL,
-			created_at TEXT NOT NULL
-		)`);
-	const compactCols = new Set(
-		db
-			.query<{ name: string }, []>("PRAGMA table_info(compactions)")
-			.all()
-			.map((c) => c.name),
-	);
-	if (!compactCols.has("summary_eligible")) {
-		db.run("ALTER TABLE compactions ADD COLUMN summary_eligible INTEGER NOT NULL DEFAULT 0");
-	}
-	// Frozen system prompts: the bytes a conversation started with, served
-	// verbatim — file edits load at conversation boundaries, never
-	// mid-run, so a live prefix cache is never rewritten.
-	db.run(`
-		CREATE TABLE IF NOT EXISTS prompt_snapshots (
-			conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
-			text TEXT NOT NULL,
-			sources TEXT NOT NULL,
-			built_at TEXT NOT NULL
-		)`);
-	// Committed tool-result projections: one row says "in the
-	// model-facing view, this event's tool result reads as this marker
-	// instead". events is never touched — the overlay replays
-	// byte-identically across turns and restarts, so this is a
-	// sanctioned rewrite that does not move the request bytes again
-	// after commit. route/settings stamps record the policy the row was
-	// committed under; reads never consult them.
-	db.run(`
-		CREATE TABLE IF NOT EXISTS event_projections (
-			conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-			seq INTEGER NOT NULL,
-			tool_call_id TEXT NOT NULL,
-			replacement TEXT NOT NULL,
-			route_key TEXT NOT NULL,
-			settings_hash TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			PRIMARY KEY (conversation_id, seq, tool_call_id)
-		)`);
-	// The 👍/👎 tap record: reply metadata, never an event — nothing here
-	// feeds the model view, FTS, or memory. Append-only; a vote change is
-	// a new row, reads are latest-wins. No conversation FK: a deleted
-	// conversation's rows stay traceable by chat/message ids.
-	db.run(`
-		CREATE TABLE IF NOT EXISTS reply_ratings (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			channel TEXT NOT NULL DEFAULT 'telegram',
-			conversation_id TEXT NOT NULL,
-			anchor_seq INTEGER,
-			chat_id INTEGER NOT NULL,
-			message_id INTEGER NOT NULL,
-			event_seq INTEGER,
-			rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
-			created_at TEXT NOT NULL
-		)`);
-	const ratingCols = new Set(
-		db
-			.query<{ name: string }, []>("PRAGMA table_info(reply_ratings)")
-			.all()
-			.map((c) => c.name),
-	);
-	if (!ratingCols.has("channel")) {
-		db.run("ALTER TABLE reply_ratings ADD COLUMN channel TEXT NOT NULL DEFAULT 'telegram'");
-	}
-	if (!ratingCols.has("event_seq")) {
-		db.run("ALTER TABLE reply_ratings ADD COLUMN event_seq INTEGER");
-	}
-	db.run(
-		"CREATE INDEX IF NOT EXISTS reply_ratings_msg ON reply_ratings(channel, chat_id, message_id)",
-	);
-	db.run(
-		"CREATE INDEX IF NOT EXISTS reply_ratings_event ON reply_ratings(channel, conversation_id, event_seq)",
-	);
-	// Web Push subscriptions are endpoint-scoped operator devices. The
-	// endpoint and its keys are send credentials, so callers/log lines use
-	// endpoint_hash; only the sender boundary reads the raw row.
-	db.run(`
-		CREATE TABLE IF NOT EXISTS app_push_subscriptions (
-			endpoint_hash TEXT PRIMARY KEY,
-			endpoint TEXT NOT NULL,
-			p256dh TEXT NOT NULL,
-			auth TEXT NOT NULL,
-			expiration_time INTEGER,
-			user_agent TEXT,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL
-		)`);
-	// One row = one terminal app notification delivered to one endpoint.
-	// Claimed only after send success, so a transient push outage can be
-	// retried by the next merged sink callback while a delivered device is
-	// not rung twice.
-	db.run(`
-		CREATE TABLE IF NOT EXISTS app_push_deliveries (
-			notification_key TEXT NOT NULL,
-			endpoint_hash TEXT NOT NULL REFERENCES app_push_subscriptions(endpoint_hash) ON DELETE CASCADE,
-			sent_at TEXT NOT NULL,
-			PRIMARY KEY (notification_key, endpoint_hash)
-		)`);
-	// One current rolling DM per private chat; n only grows, so a
-	// reverted db still mints fresh ids.
-	db.run(`
-		CREATE TABLE IF NOT EXISTS dm_rolls (
-			chat_id INTEGER PRIMARY KEY,
-			current_id TEXT NOT NULL REFERENCES conversations(id),
-			n INTEGER NOT NULL
-		)`);
-	// Rolling-ordinal high-water, retained after its current conversation
-	// is deleted (e.g. persona demotion clearing personal history).
-	// deleteConversation drops the FK-enforced dm_rolls row but first
-	// copies its n here, so the next rollDm never reuses an abandoned id
-	// or collides with a surviving one.
-	db.run(`
-		CREATE TABLE IF NOT EXISTS dm_roll_highwater (
-			chat_id INTEGER PRIMARY KEY,
-			n INTEGER NOT NULL
-		)`);
-	// Manual DM navigation is additive. The presence of the link column
-	// is the one-time migration marker: never rebuild links on later boots,
-	// or a /back → /new branch would silently become chronological again.
-	const rollCols = new Set(
-		db
-			.query<{ name: string }, []>("PRAGMA table_info(dm_rolls)")
-			.all()
-			.map((c) => c.name),
-	);
-	db.transaction(() => {
-		if (!convCols.has("previous_dm_id")) {
-			db.run(
-				"ALTER TABLE conversations ADD COLUMN previous_dm_id TEXT REFERENCES conversations(id) ON DELETE SET NULL",
-			);
-			const sessionsByChat = new Map<number, { id: string; ordinal: number }[]>();
-			const rows = db
-				.query<Pick<Row, "id" | "chat_id" | "thread_id">, []>(
-					"SELECT id, chat_id, thread_id FROM conversations",
-				)
-				.all();
-			for (const row of rows) {
-				if (!privateChatIdSchema.safeParse(row.chat_id).success) continue;
-				const ordinal = rollingDmOrdinal(row, row.chat_id);
-				if (ordinal === null) continue;
-				const sessions = sessionsByChat.get(row.chat_id) ?? [];
-				sessions.push({ id: row.id, ordinal });
-				sessionsByChat.set(row.chat_id, sessions);
-			}
-			// The numeric suffix is the creation high-water mark. Wall-clock
-			// timestamps can run backwards; row insertion order is not identity.
-			for (const sessions of sessionsByChat.values()) {
-				sessions.sort((a, b) => a.ordinal - b.ordinal);
-				let previous: string | null = null;
-				for (const session of sessions) {
-					db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [
-						previous,
-						session.id,
-					]);
-					previous = session.id;
-				}
-			}
-		}
-		if (!rollCols.has("selected_at")) {
-			db.run("ALTER TABLE dm_rolls ADD COLUMN selected_at TEXT");
-		}
-	})();
-	// Legacy rows predate the envelope — wrap once, in place, before
-	// any read this boot (reads are strict). Only well-formed bare
-	// UIMessages match (top-level string `id`); corrupt rows degrade.
-	const bare =
-		db
-			.query<{ n: number }, []>(
-				`SELECT COUNT(*) AS n FROM events
-			 WHERE json_valid(data)
-			   AND json_type(data, '$.v') IS NULL
-			   AND json_type(data, '$.message') IS NULL
-			   AND json_type(data, '$.id') = 'text'`,
-			)
-			.get()?.n ?? 0;
-	if (bare > 0) {
-		db.run(
-			`UPDATE events SET data = json_object('v', 1, 'message', json(data))
-			 WHERE json_valid(data)
-			   AND json_type(data, '$.v') IS NULL
-			   AND json_type(data, '$.message') IS NULL
-			   AND json_type(data, '$.id') = 'text'`,
-		);
-		log.info("history payload envelopes migrated", { rows: bare });
-	}
-	const qCompaction = db.query<
-		{
-			boundary_seq: number;
-			summary: string;
-			summary_eligible: number;
-			tokens_before: number;
-			model: string;
-			created_at: string;
-		},
-		[string]
-	>(
-		"SELECT boundary_seq, summary, summary_eligible, tokens_before, model, created_at FROM compactions WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
-	);
-	const qInsertCompaction = db.query(
-		"INSERT INTO compactions (conversation_id, boundary_seq, summary, summary_eligible, tokens_before, model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-	);
-	const qGet = db.query<Row, [string]>("SELECT * FROM conversations WHERE id = ?");
-	const qInsertConv = db.query(
-		`INSERT INTO conversations (id, chat_id, thread_id, title, cwd, created_at, epoch)
-		 VALUES (?, ?, ?, NULL, ?, ?,
-			COALESCE((SELECT epoch + 1 FROM conversation_epoch_hwm WHERE conversation_id = ?1), 0))`,
-	);
-	const qDmRoll = db.query<{ current_id: string; n: number; selected_at: string | null }, [number]>(
-		"SELECT current_id, n, selected_at FROM dm_rolls WHERE chat_id = ?",
-	);
-	// rollDm's pointer-less recovery: every candidate id that could carry
-	// a rolling ordinal for this chat — extant private rows plus the
-	// delete tombstones (a deleted dm:<chat>:<n> must never re-mint: its
-	// epoch tokens may still be outstanding). A plain id list fed through
-	// rollingDmOrdinal is enough — malformed, legacy and foreign-chat ids
-	// all decode to null there.
-	const qDmOrdinalCandidates = db.query<{ id: string }, [number, string]>(
-		`SELECT id FROM conversations WHERE chat_id = ? AND thread_id IS NULL
-		 UNION
-		 SELECT conversation_id AS id FROM conversation_epoch_hwm
-		 WHERE conversation_id LIKE 'dm:' || ? || ':%'`,
-	);
-	const qDmRollHighwater = db.query<{ n: number }, [number]>(
-		"SELECT n FROM dm_roll_highwater WHERE chat_id = ?",
-	);
-	const qUpsertRoll = db.query(
-		`INSERT INTO dm_rolls (chat_id, current_id, n, selected_at) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(chat_id) DO UPDATE SET current_id = excluded.current_id,
-		 n = excluded.n, selected_at = excluded.selected_at`,
-	);
-	const qSelectPrevious = db.query(
-		"UPDATE dm_rolls SET current_id = ?, selected_at = ? WHERE chat_id = ?",
-	);
-	const qLastActivity = db.query<{ created_at: string }, [string]>(
-		"SELECT created_at FROM events WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1",
-	);
-	const qHistory = db.query<
-		{ seq: number; anchor_seq: number | null; role: string; data: string },
-		[string]
-	>("SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? ORDER BY seq");
-	const qLastEventSeq = db.query<{ seq: number | null }, [string]>(
-		"SELECT MAX(seq) AS seq FROM events WHERE conversation_id = ?",
-	);
-	const qLastUserSeq = db.query<{ seq: number }, [string]>(
-		"SELECT seq FROM events WHERE conversation_id = ? AND role = 'user' ORDER BY seq DESC LIMIT 1",
-	);
-	const qLastReplyAnchor = db.query<{ anchor_seq: number | null }, [string]>(
-		"SELECT anchor_seq FROM events WHERE conversation_id = ? AND role = 'assistant' ORDER BY seq DESC LIMIT 1",
-	);
-	const qNextSeq = db.query<{ n: number }, [string]>(
-		`SELECT MAX(
-			COALESCE((SELECT MAX(seq) FROM events WHERE conversation_id = ?1), 0),
-			COALESCE((SELECT seq_highwater FROM conversations WHERE id = ?1), 0)
-		) AS n`,
-	);
-	// Memory-bound filter inputs: eligible seqs + folded-span ineligible
-	// count.
-	const qEligibleSeqs = db.query<{ seq: number }, [string]>(
-		"SELECT seq FROM events WHERE conversation_id = ? AND memory_eligible = 1",
-	);
-	const qIneligibleFolded = db.query<{ n: number }, [string, number]>(
-		`SELECT COUNT(*) AS n FROM events
-		WHERE conversation_id = ?1
-		  AND memory_eligible = 0
-		  AND ((anchor_seq IS NOT NULL AND anchor_seq <= ?2)
-		    OR (anchor_seq IS NULL AND seq <= ?2))`,
-	);
-	const qInsertEvent = db.query(
-		"INSERT INTO events (conversation_id, seq, role, data, anchor_seq, created_at, memory_eligible) VALUES (?, ?, ?, ?, ?, ?, ?)",
-	);
-	// forkToApp's copy source — verbatim, created_at and the eligibility
-	// stamp included (unlike the history view).
-	const qAllEvents = db.query<
-		{
-			seq: number;
-			role: string;
-			data: string;
-			anchor_seq: number | null;
-			created_at: string;
-			memory_eligible: number;
-		},
-		[string]
-	>(
-		"SELECT seq, role, data, anchor_seq, created_at, memory_eligible FROM events WHERE conversation_id = ? ORDER BY seq",
-	);
-	// A branch's copy source: the causal prefix, cut exactly where the
-	// compaction cut reads — a late answer to an earlier question rides
-	// with its question, never past the branch point.
-	const qEventsThrough = db.query<
-		{
-			seq: number;
-			role: string;
-			data: string;
-			anchor_seq: number | null;
-			created_at: string;
-			memory_eligible: number;
-		},
-		[string, number]
-	>(
-		`SELECT seq, role, data, anchor_seq, created_at, memory_eligible FROM events
-		 WHERE conversation_id = ? AND COALESCE(anchor_seq, seq) <= ? ORDER BY seq`,
-	);
-	const qContextsFor = db.query<
-		{ anchor_seq: number; content: string; source_ids: string; created_at: string },
-		[string]
-	>(
-		"SELECT anchor_seq, content, source_ids, created_at FROM memory_contexts WHERE conversation_id = ? ORDER BY anchor_seq",
-	);
-	const qInsertContext = db.query(
-		"INSERT INTO memory_contexts (conversation_id, anchor_seq, content, source_ids, created_at) VALUES (?, ?, ?, ?, ?)",
-	);
-	// A branch keeps the recall slices that still describe its own prefix.
-	const qContextsThrough = db.query<
-		{ anchor_seq: number; content: string; source_ids: string; created_at: string },
-		[string, number]
-	>(
-		"SELECT anchor_seq, content, source_ids, created_at FROM memory_contexts WHERE conversation_id = ? AND anchor_seq <= ? ORDER BY anchor_seq",
-	);
-	// The overlay read and the fork's verbatim copy source.
-	const qProjections = db.query<
-		{ seq: number; tool_call_id: string; replacement: string },
-		[string]
-	>(
-		"SELECT seq, tool_call_id, replacement FROM event_projections WHERE conversation_id = ? ORDER BY seq",
-	);
-	const qAllProjections = db.query<
-		{
-			seq: number;
-			tool_call_id: string;
-			replacement: string;
-			route_key: string;
-			settings_hash: string;
-			created_at: string;
-		},
-		[string]
-	>(
-		"SELECT seq, tool_call_id, replacement, route_key, settings_hash, created_at FROM event_projections WHERE conversation_id = ? ORDER BY seq",
-	);
-	const qInsertProjection = db.query(
-		"INSERT OR IGNORE INTO event_projections (conversation_id, seq, tool_call_id, replacement, route_key, settings_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-	);
-	// A branch's projection copy rides the copied event set, not the raw
-	// seq: a late answer that rides with its question takes its overlay
-	// along — without it the branch's model view would serve the full
-	// output where the source serves the replacement.
-	const qProjectionsThrough = db.query<
-		{
-			seq: number;
-			tool_call_id: string;
-			replacement: string;
-			route_key: string;
-			settings_hash: string;
-			created_at: string;
-		},
-		[string, number]
-	>(
-		`SELECT seq, tool_call_id, replacement, route_key, settings_hash, created_at
-		 FROM event_projections WHERE conversation_id = ?1
-		 AND seq IN (SELECT seq FROM events WHERE conversation_id = ?1
-		  AND COALESCE(anchor_seq, seq) <= ?2) ORDER BY seq`,
-	);
-	const qEpoch = db.query<{ epoch: number }, [string]>(
-		"SELECT epoch FROM conversations WHERE id = ?",
-	);
-	// FTS rowids join to events for the hit and conversations for the
-	// title + live exclusion flag; FTS5's default rank is best-first.
-	const qSearch = db.query<
-		{
-			cid: string;
-			seq: number;
-			role: string;
-			data: string;
-			created_at: string;
-			title: string | null;
-		},
-		[string, string | null, number]
-	>(
-		`SELECT e.conversation_id AS cid, e.seq AS seq, e.role AS role,
-			e.data AS data, e.created_at AS created_at, c.title AS title
-		FROM events_fts
-		JOIN events e ON events_fts.rowid = e.id
-		JOIN conversations c ON c.id = e.conversation_id
-		WHERE events_fts MATCH ?1 AND c.memory_excluded = 0
-		  AND (?2 IS NULL OR e.conversation_id LIKE ?2)
-		ORDER BY rank LIMIT ?3`,
-	);
-	const qContext = db.query<
-		{ seq: number; role: string; data: string; created_at: string },
-		[string, number, number]
-	>(
-		`SELECT seq, role, data, created_at FROM events
-		WHERE conversation_id = ? AND seq BETWEEN ? AND ? ORDER BY seq`,
-	);
-	const qListApp = db.query<
-		{
-			id: string;
-			title: string | null;
-			created_at: string;
-			archived_at: string | null;
-			pinned_at: string | null;
-			project_id: string | null;
-		},
-		[]
-	>(
-		`SELECT id, title, created_at, archived_at, pinned_at, project_id FROM conversations
-		WHERE id LIKE 'app/%' ORDER BY created_at, rowid`,
-	);
-	const qProjectConvs = db.query<{ id: string }, [string]>(
-		"SELECT id FROM conversations WHERE project_id = ? ORDER BY created_at, rowid",
-	);
-	// Freshness and preview source; the rowid rides along as activity
-	// order — created_at ties within a millisecond can't order two writes.
-	const qLastAppEvent = db.query<
-		{ id: number; seq: number; role: string; data: string; created_at: string },
-		[string]
-	>(
-		`SELECT id, seq, role, data, created_at FROM events
-		WHERE conversation_id = ? ORDER BY seq DESC LIMIT 1`,
-	);
-	// deleteConversation's sweep — children before the row (the FK
-	// demands it); the events delete fires the FTS trigger per row.
-	const qDeleteEvents = db.query("DELETE FROM events WHERE conversation_id = ?");
-	const qDeleteCompactions = db.query("DELETE FROM compactions WHERE conversation_id = ?");
-	const qDeleteContexts = db.query("DELETE FROM memory_contexts WHERE conversation_id = ?");
-	const qDeleteWindows = db.query("DELETE FROM context_windows WHERE conversation_id = ?");
-	const qDeleteConv = db.query("DELETE FROM conversations WHERE id = ?");
-	// An edit's targeted deletes, all keyed by the same causal cut. Each
-	// dependent was derived from the events the cut drops, so keeping it
-	// would let the model (or the rail) read a transcript that no longer
-	// exists. Projections and ratings key on the causal event set itself:
-	// a late answer that rides with its question keeps its projection (the
-	// overlay follows the event it rewrites) and its rating — so the
-	// projection delete reads events and must run before the event delete.
-	const qRewindEvents = db.query(
-		`DELETE FROM events WHERE conversation_id = ?1
-		 AND COALESCE(anchor_seq, seq) >= ?2`,
-	);
-	const qRewindCompactions = db.query(
-		"DELETE FROM compactions WHERE conversation_id = ? AND boundary_seq >= ?",
-	);
-	const qRewindContexts = db.query(
-		"DELETE FROM memory_contexts WHERE conversation_id = ? AND anchor_seq >= ?",
-	);
-	const qRewindProjections = db.query(
-		`DELETE FROM event_projections WHERE conversation_id = ?1
-		 AND seq IN (SELECT seq FROM events WHERE conversation_id = ?1
-		  AND COALESCE(anchor_seq, seq) >= ?2)`,
-	);
-	// A rating row denormalizes its event's seq and anchor, so the causal
-	// key evaluated on the row is the rated event's fate; a legacy null
-	// event_seq falls back to the anchor, as before.
-	const qRewindRatings = db.query(
-		`DELETE FROM reply_ratings WHERE channel = 'app' AND conversation_id = ?1
-		 AND COALESCE(anchor_seq, event_seq) >= ?2`,
-	);
-	const qRaiseSeqHighwater = db.query(
-		`UPDATE conversations SET seq_highwater = MAX(seq_highwater,
-			COALESCE((SELECT MAX(seq) FROM events WHERE conversation_id = ?1), 0))
-		 WHERE id = ?1`,
-	);
+	const {
+		qCompaction,
+		qInsertCompaction,
+		qGet,
+		qInsertConv,
+		qDmRoll,
+		qDmOrdinalCandidates,
+		qDmRollHighwater,
+		qUpsertRoll,
+		qSelectPrevious,
+		qLastActivity,
+		qHistory,
+		qLastEventSeq,
+		qLastUserSeq,
+		qLastReplyAnchor,
+		qNextSeq,
+		qEligibleSeqs,
+		qIneligibleFolded,
+		qInsertEvent,
+		qAllEvents,
+		qEventsThrough,
+		qContextsFor,
+		qInsertContext,
+		qContextsThrough,
+		qProjections,
+		qAllProjections,
+		qInsertProjection,
+		qProjectionsThrough,
+		qEpoch,
+		qSearch,
+		qContext,
+		qListApp,
+		qProjectConvs,
+		qLastAppEvent,
+		qDeleteEvents,
+		qDeleteCompactions,
+		qDeleteContexts,
+		qDeleteWindows,
+		qDeleteConv,
+		qRewindEvents,
+		qRewindCompactions,
+		qRewindContexts,
+		qRewindProjections,
+		qRewindRatings,
+		qRaiseSeqHighwater,
+	} = prepareConversationQueries(db);
 
 	// The message id is the only identity the client and the store share;
 	// resolve it by decoding rows (the JSON envelope is not a column the
@@ -1275,110 +462,11 @@ export function openStore(dbPath: string): ConversationStore {
 		return previousOrdinal !== null && previousOrdinal < currentOrdinal ? previous : null;
 	}
 
-	function applyPatch(id: string, patch: ConversationMetaPatch): void {
-		// An archived row never carries a pin: unarchive+pin in one patch
-		// is coherent, but pinning a row that is or becomes archived (this
-		// patch or earlier) is a caller bug and dies here rather than
-		// writing a contradiction the unarchive would resurrect.
-		if (patch.pinned === true) {
-			const row = qGet.get(id);
-			if (row === null) throw new Error(`conversation ${id} not found`);
-			const stays =
-				patch.archived === false || (patch.archived === undefined && row.archived_at === null);
-			if (!stays) throw new Error(`cannot pin archived conversation ${id}`);
-		}
-		const sets: string[] = [];
-		const vals: (string | number | null)[] = [];
-		if (patch.title !== undefined) {
-			sets.push("title = ?");
-			vals.push(patch.title);
-		}
-		if (patch.titleImplicit !== undefined) {
-			sets.push("title_implicit = ?");
-			vals.push(patch.titleImplicit ? 1 : 0);
-		}
-		if (patch.model !== undefined) {
-			sets.push("model = ?");
-			vals.push(patch.model);
-		}
-		if (patch.thinking !== undefined) {
-			sets.push("thinking = ?");
-			vals.push(patch.thinking);
-		}
-		if (patch.voice !== undefined) {
-			sets.push("voice = ?");
-			vals.push(patch.voice ? 1 : 0);
-		}
-		if (patch.memoryExcluded !== undefined) {
-			sets.push("memory_excluded = ?");
-			vals.push(patch.memoryExcluded ? 1 : 0);
-		}
-		if (patch.persona !== undefined) {
-			sets.push("persona = ?");
-			vals.push(patch.persona);
-		}
-		if (patch.archived !== undefined) {
-			sets.push("archived_at = ?");
-			vals.push(patch.archived ? new Date().toISOString() : null);
-			// Shelving supersedes pinning — unarchive must not resurrect a
-			// stale pin.
-			if (patch.archived) sets.push("pinned_at = NULL");
-		}
-		if (patch.pinned !== undefined) {
-			sets.push("pinned_at = ?");
-			vals.push(patch.pinned ? new Date().toISOString() : null);
-		}
-		if (sets.length === 0) return;
-		vals.push(id);
-		db.run(`UPDATE conversations SET ${sets.join(", ")} WHERE id = ?`, vals);
-	}
-
-	// The stored selection, defaults filling the gaps — no clamp, no
-	// write. Writers that re-derive the level need the raw pair so a
-	// normalization pass can't erase information first.
-	function readSettings(id: string, defaults: ModelSettings): ModelSettings {
-		const row = qGet.get(id);
-		if (!row || channelOf(id) !== "app") throw new Error(`no app conversation ${id}`);
-		return modelSettingsSchema.parse({
-			model: row.model ?? defaults.model,
-			thinking: row.thinking ?? defaults.thinking,
-		});
-	}
-
-	function initializeSettings(
-		id: string,
-		defaults: ModelSettings & { providers?: Config["providers"] },
-	): ModelSettings {
-		const row = qGet.get(id);
-		if (!row || channelOf(id) !== "app") throw new Error(`no app conversation ${id}`);
-		const stored = readSettings(id, defaults);
-		// A stored level the model can't express is a lie — persist the
-		// rung the wire clamp would land on instead of showing it.
-		const settings: ModelSettings = {
-			model: stored.model,
-			thinking: clampThinkingFor(defaults.providers ?? {}, stored.model, stored.thinking),
-		};
-		if (row.model === null || row.thinking === null) {
-			applyPatch(id, settings);
-			log.info("app conversation settings initialized", { conversation: id, ...settings });
-		} else if (settings.thinking !== stored.thinking) {
-			applyPatch(id, settings);
-			log.info("app conversation thinking clamped to the model's ladder", {
-				conversation: id,
-				model: settings.model,
-				from: stored.thinking,
-				to: settings.thinking,
-			});
-		}
-		return settings;
-	}
-
-	function bump(id: string, previousEpoch = 0): number {
-		db.run("UPDATE conversations SET epoch = max(epoch, ?) + 1 WHERE id = ?", [previousEpoch, id]);
-		const row = qEpoch.get(id);
-		if (!row) throw new Error(`conversation ${id} not found`);
-		return row.epoch;
-	}
+	const { applyPatch, readSettings, initializeSettings, bump } = makeConversationSettings(
+		db,
+		qGet,
+		qEpoch,
+	);
 
 	return {
 		db,

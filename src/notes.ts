@@ -4,7 +4,8 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { type ConversationStore, flatLine, toFtsQuery } from "./conversation.ts";
+import type { ConversationStore } from "./conversation.ts";
+import { flatLine, toFtsQuery } from "./conversation-events.ts";
 import { log } from "./log.ts";
 import type { ProjectStore } from "./projects.ts";
 

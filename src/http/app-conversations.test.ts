@@ -227,7 +227,7 @@ describe("app conversations", () => {
 		}
 	});
 
-	test("memory PATCH fences the conversation and cancels queued retention", async () => {
+	test("memory PATCH flips the flag and cancels queued retention without fencing", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {
 			await call("/api/app/conversations", {
@@ -258,7 +258,8 @@ describe("app conversations", () => {
 			});
 			const excluded = store.get("app/chat-01")!;
 			expect(excluded.memoryExcluded).toBe(true);
-			expect(excluded.epoch).toBe(before + 1);
+			// A flag write, not a settings change — a running turn survives.
+			expect(excluded.epoch).toBe(before);
 			expect(store.memoryQueue.get(op)).toBeNull();
 
 			const on = await call("/api/app/conversations/chat-01/memory", {
@@ -273,6 +274,40 @@ describe("app conversations", () => {
 				cancelled: 0,
 			});
 			expect(store.get("app/chat-01")!.memoryExcluded).toBe(false);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("create accepts memoryExcluded — the toggle exists before the first message", async () => {
+		const { http, call, store, projects } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const off = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "pre-off", memoryExcluded: true }),
+			});
+			expect(off.status).toBe(201);
+			expect(store.get("app/pre-off")!.memoryExcluded).toBe(true);
+
+			const on = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "pre-on", memoryExcluded: false }),
+			});
+			expect(on.status).toBe(201);
+			expect(store.get("app/pre-on")!.memoryExcluded).toBe(false);
+
+			// A memory-off project wins over an explicit include — same rule
+			// as the PATCH refusal, decided at creation.
+			const project = projects.create({ name: "vault", memory: "off" });
+			const bound = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "pre-bound", projectId: project.id, memoryExcluded: false }),
+			});
+			expect(bound.status).toBe(201);
+			expect(store.get("app/pre-bound")!.memoryExcluded).toBe(true);
 		} finally {
 			http.stop();
 		}

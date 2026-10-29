@@ -290,16 +290,17 @@ export function openProjects(
 				log.info("project archived", { id, archived: patch.archived });
 			}
 			// shared → off is a privacy act: every project conversation
-			// gets the memoryExcluded patch (epoch bump included — a live
-			// turn is fenced), and queued retention is purged like /memory
-			// off. off → shared touches nothing existing: re-enabling a
+			// gets the memoryExcluded flag write (no epoch bump — a live
+			// turn finishes, retention refused at the land-time gate),
+			// and queued retention is purged like /memory off.
+			// off → shared touches nothing existing: re-enabling a
 			// conversation stays a per-conversation choice.
 			if (patch.memory === "off" && current.memory === "shared") {
 				let conversations = 0;
 				let cancelled = 0;
 				for (const convId of store.listProjectConversationIds(id)) {
 					if (store.get(convId)?.memoryExcluded !== false) continue;
-					store.applySettings(convId, { memoryExcluded: true });
+					store.setMeta(convId, { memoryExcluded: true });
 					conversations++;
 					cancelled += deps?.memoryQueue?.cancelConversation(convId) ?? 0;
 				}

@@ -430,14 +430,15 @@ describe("memory commands", () => {
 		store.close();
 	});
 
-	test("/memory off excludes and on re-includes, bumping the epoch", () => {
+	test("/memory off excludes and on re-includes without fencing the epoch", () => {
 		const { store, conv, sent, deps } = setupMemory();
 		expect(handleCommand(deps, conv, "/memory off")).toBe(true);
 		expect(store.get(conv.id)!.memoryExcluded).toBe(true);
-		expect(store.get(conv.id)!.epoch).toBe(1);
+		expect(store.get(conv.id)!.epoch).toBe(0);
 		expect(sent.at(-1)).toContain("off");
 		expect(handleCommand(deps, store.get(conv.id)!, "/memory on")).toBe(true);
 		expect(store.get(conv.id)!.memoryExcluded).toBe(false);
+		expect(store.get(conv.id)!.epoch).toBe(0);
 		store.close();
 	});
 

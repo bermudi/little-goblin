@@ -178,7 +178,7 @@ describe("project store", () => {
 		store.close();
 	});
 
-	test("memory off propagates: exclusion + epoch on project conversations only", () => {
+	test("memory off propagates: exclusion on project conversations only, no fence", () => {
 		const { store, projects } = fixture();
 		const cancelled: string[] = [];
 		const withQueue = openProjects(store, {
@@ -199,7 +199,7 @@ describe("project store", () => {
 		withQueue.patch(project.id, { memory: "off" });
 		const after = store.get(inProject.id)!;
 		expect(after.memoryExcluded).toBe(true);
-		expect(after.epoch).toBe(epochBefore + 1);
+		expect(after.epoch).toBe(epochBefore);
 		expect(cancelled).toEqual([inProject.id]);
 		// Unbound conversations must stay untouched.
 		const afterOutside = store.get(outside.id)!;
@@ -210,7 +210,7 @@ describe("project store", () => {
 		withQueue.patch(project.id, { memory: "shared" });
 		const restored = store.get(inProject.id)!;
 		expect(restored.memoryExcluded).toBe(true);
-		expect(restored.epoch).toBe(epochBefore + 1);
+		expect(restored.epoch).toBe(epochBefore);
 		store.close();
 	});
 

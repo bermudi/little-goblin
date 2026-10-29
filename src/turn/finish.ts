@@ -43,6 +43,10 @@ export interface LandDeps {
 	convId: string;
 	epoch: number;
 	conv: Conversation;
+	// The live exclusion flag, re-read at land — the admission snapshot
+	// in `conv` is stale when the operator toggles mid-turn. Exclusion
+	// gates retention here, never by fencing the running turn.
+	memoryExcluded(): boolean;
 	modelEntries(): { seq: number; message: UIMessage }[];
 	memoryEligibility(): MemoryEligibility;
 	append(
@@ -106,7 +110,14 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 		deps.sink.onTextDelta(`\n\n${note}`);
 	}
 	if (reply !== null) {
-		const memoryOpt = retentionOpt(deps.conv, deps.memory, finalAnchor, finalSource, reply);
+		const memoryOpt = retentionOpt(
+			deps.conv,
+			deps.memoryExcluded(),
+			deps.memory,
+			finalAnchor,
+			finalSource,
+			reply,
+		);
 		deps.append(
 			[reply],
 			memoryOpt ? { anchorSeq: finalAnchor, memory: memoryOpt } : { anchorSeq: finalAnchor },
@@ -148,12 +159,13 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 
 export function retentionOpt(
 	conv: Conversation,
+	memoryExcluded: boolean,
 	memory: MemoryTurnDeps | undefined,
 	anchorSeq: number | null,
 	source: RetentionSource,
 	responseMessage: UIMessage,
 ): { target: string; document: MemoryDocument } | null {
-	if (!memory || anchorSeq === null || conv.memoryExcluded) return null;
+	if (!memory || anchorSeq === null || memoryExcluded) return null;
 	if (source.program) {
 		log.debug("memory retention skipped — program housekeeping", {
 			conversation: conv.id,

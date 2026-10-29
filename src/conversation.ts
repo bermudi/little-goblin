@@ -825,7 +825,10 @@ export function openStore(dbPath: string): ConversationStore {
 						eligible,
 					);
 				}
-				if (opts?.memory) {
+				// The retention gate rides the same transaction as the stamp: an
+				// exclusion committed anywhere before this append drops the
+				// enqueue here even when the caller computed its option earlier.
+				if (opts?.memory && eligible === 1) {
 					if (
 						opts.memory.document.conversationId !== id ||
 						!messages.some(
@@ -846,6 +849,12 @@ export function openStore(dbPath: string): ConversationStore {
 					operation,
 					document: opts?.memory?.document.id,
 				});
+			if (opts?.memory && operation === undefined) {
+				log.info("memory retention dropped — conversation excluded at write", {
+					conversation: id,
+					document: opts.memory.document.id,
+				});
+			}
 			if (unarchived) {
 				log.info("conversation unarchived on activity", { conversation: id });
 			}

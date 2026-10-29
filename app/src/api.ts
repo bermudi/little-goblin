@@ -204,7 +204,7 @@ export function branchConversation(
 
 export function createConversation(
 	token: string | null,
-	opts?: { title?: string; projectId?: string },
+	opts?: { title?: string; projectId?: string; memoryExcluded?: boolean },
 ): Promise<AppConversationCreate> {
 	return request(token, "/api/app/conversations", {
 		method: "POST",

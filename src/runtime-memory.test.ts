@@ -251,6 +251,51 @@ describe("memory turn integration", () => {
 		store.close();
 	});
 
+	test("a mid-turn exclusion lands the turn but ships no memory", async () => {
+		const store = openStore(tmpDb("goblin-memturn-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: (request) =>
+				new URL(request.url).pathname.endsWith("/memories/recall")
+					? Response.json({ results: [] })
+					: Response.json({
+							success: true,
+							bank_id: "g",
+							items_count: 1,
+							async: true,
+							operation_id: "00000000-0000-4000-8000-000000000002",
+						}),
+		});
+		servers.push(server);
+		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({
+				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
+				system: "test",
+			}),
+			makeTools: () => ({}),
+			memory: {
+				client,
+				config: { ...memConfig, baseUrl: `http://127.0.0.1:${server.port}` },
+				contexts: store.memoryContexts,
+				noteRecall: () => {},
+			},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		// Mid-stream, not mid-admission: the flag write must not fence the
+		// turn — exclusion lives at the retention gate, not the epoch.
+		await sink.firstDelta;
+		store.setMeta(conv.id, { memoryExcluded: true });
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user", "assistant"]);
+		expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
+		store.close();
+	});
+
 	test("a late recall after forgetting cannot reinsert a redacted source", async () => {
 		const store = openStore(tmpDb("goblin-memturn-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

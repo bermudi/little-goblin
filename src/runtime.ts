@@ -1333,6 +1333,9 @@ export class Runtime {
 				convId,
 				epoch,
 				conv,
+				// Live flag, like the reviewer's — a mid-turn exclusion
+				// lands the reply but ships no memory.
+				memoryExcluded: () => store.get(convId)?.memoryExcluded ?? conv.memoryExcluded,
 				modelEntries: () => store.modelEntries(convId),
 				memoryEligibility: () => store.memoryEligibility(convId),
 				steerMark: outcome.steerMark,

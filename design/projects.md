@@ -60,7 +60,8 @@ existing parameters:
 **Memory** (operator ruling): `shared` by default — project conversations
 retain to and recall from the one Hindsight bank like every other
 conversation. `off` is a privacy act: switching a project to `off`
-propagates the existing `memoryExcluded` patch (epoch bump included) to all
+propagates the `memoryExcluded` flag write (no epoch bump — a live turn
+finishes, retention refused at the gate, same as `/memory off`) to all
 its conversations; switching back to `shared` applies to new conversations
 only — re-enabling an existing chat stays a per-conversation choice.
 Project-only banks are out — they would multiply the bank lifecycle, forget

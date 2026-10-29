@@ -9,6 +9,7 @@ import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
 import {
 	appendQuote,
 	ChatView,
+	Composer,
 	ContextGauge,
 	contextCount,
 	editedParts,
@@ -2162,5 +2163,89 @@ describe("composer model knob (happy-dom)", () => {
 		// And the next menu open lists the new favorite.
 		await click(knob());
 		expect(popItem("Other Model")).toBeTruthy();
+	});
+});
+
+// The new-chat and project composers can't GET a memory flag that
+// doesn't exist yet — the staged prop renders the same toggle and its
+// choice rides into createConversation.
+describe("composer staged memory toggle (happy-dom)", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), {
+			status,
+			headers: { "content-type": "application/json" },
+		});
+
+	const mount = async (stagedMemory: { excluded: boolean; locked: boolean }) => {
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url.endsWith("/memory"))
+				return Promise.resolve(jsonResponse({ error: "no such conversation" }, 404));
+			return Promise.resolve(
+				jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				}),
+			);
+		}) as typeof fetch;
+		let toggled: boolean | null = null;
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<Composer
+					token={null}
+					draftScope="new"
+					busy={false}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					stagedMemory={stagedMemory}
+					onStagedMemoryToggle={(v) => {
+						toggled = v;
+					}}
+					onSend={() => true}
+				/>,
+			),
+		);
+		await act(async () => {});
+		return () => toggled;
+	};
+
+	const click = async (el: Element | null | undefined) => {
+		expect(el).toBeTruthy();
+		await act(async () => {
+			el?.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		await act(async () => {});
+	};
+
+	const knob = () => dom.container.querySelector(".composer-bar .ctx-btn");
+
+	test("a conversation-less composer still shows the memory toggle", async () => {
+		await mount({ excluded: false, locked: false });
+		expect(knob()?.textContent).toBe("memory on");
+	});
+
+	test("clicking the staged toggle reports the flipped value", async () => {
+		const toggled = await mount({ excluded: false, locked: false });
+		await click(knob());
+		expect(toggled()).toBe(true);
+	});
+
+	test("a memory-off project locks the toggle excluded and disabled", async () => {
+		const toggled = await mount({ excluded: true, locked: true });
+		expect(knob()?.textContent).toBe("memory off");
+		expect(knob()?.getAttribute("title")).toBe("This project's memory is off");
+		expect((knob() as HTMLButtonElement | null)?.disabled).toBe(true);
+		await click(knob());
+		expect(toggled()).toBeNull();
 	});
 });

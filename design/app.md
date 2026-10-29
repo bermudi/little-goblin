@@ -279,6 +279,15 @@ bump, abort, or interrupted answer. Running turns keep their captured
 settings, queued successors use the latest, manual compaction resolves at
 its lane job; a model change legitimately makes the next turn's cache cold.
 
+**The memory toggle follows the same rule (ruling 2026-10-29).** A flag
+write, never `applySettings`: no epoch bump — a running turn finishes and
+its retention is refused at the live gates (design/memory.md → exclusion).
+The composer's toggle also shows before the conversation exists — the
+new-chat and project composers stage the choice locally and it rides into
+`POST /api/app/conversations` as `memoryExcluded`, so the flag is decided
+before the first message, not retroactively after it. A memory-off project
+locks the staged toggle excluded, the same read the created row enforces.
+
 **Model picker (ruling 2026-10-21).** The settings sheet lists the
 models.dev catalog for every configured provider — matched by exact
 provider name, the openrouter kind, else the catalog provider's API host —

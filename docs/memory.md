@@ -59,8 +59,8 @@ not auto-deleted.
   already-submitted operations remain tracked through their remote outcome,
   and no new retention is sent or
   shared memories are recalled here (automatic, `memory_search`, or `memory_reflect`).
-  `/memory on` re-includes. Both bump the epoch (fence in-flight turns)
-  and are logged cache boundaries.
+  `/memory on` re-includes. Neither interrupts a running turn — the flag
+  lands immediately and retention is refused at the gate, no epoch bump.
 - `/forget <query>` — resolve and list matching sources as a numbered
   list (dates and snippets). The listing is cached for that topic for
   10 minutes.

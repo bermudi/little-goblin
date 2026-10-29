@@ -339,9 +339,13 @@ ship what was written under it. Ordinary history, the model view, and
 chat search are untouched: exclusion governs what leaves for the memory
 service, not what the conversation holds. Edges: steered-in messages
 carry their own append-time stamps (a steer after a mid-turn `/memory
-off` is stamped excluded, and the epoch bump fences the running turn);
-fenced and failed turns commit no memory regardless of stamps; a
-compaction summary inherits its folded span's eligibility — eligible
+off` is stamped excluded); **the flag write is no longer an epoch bump
+(amendment 2026-10-29)** — a running turn finishes rather than fencing,
+and exclusion still cannot leak: retention re-reads the live flag at
+land and inside the append transaction, `memory_search`/`memory_reflect`/
+`history_search` read it per call, and the reviewer's gate already read
+it live; fenced and failed turns commit no memory regardless of stamps;
+a compaction summary inherits its folded span's eligibility — eligible
 only when every event below the boundary was eligible, recomputed per
 pointer so repeated compactions stay consistent; spin-off forks copy
 stamps verbatim. Events predating the stamp are ineligible; eligibility

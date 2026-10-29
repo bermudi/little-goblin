@@ -306,7 +306,9 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 				return true;
 			}
 			if (arg === "off") {
-				apply(deps, conv, { memoryExcluded: true });
+				// A flag write, not a settings change: no epoch bump — a
+				// running turn finishes, its retention refused at the gate.
+				deps.store.setMeta(conv.id, { memoryExcluded: true });
 				const cancelled = mem.queue.cancelConversation(conv.id);
 				log.info("memory excluded", { conversation: conv.id, cancelled });
 				reply(
@@ -317,7 +319,7 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 				return true;
 			}
 			if (arg === "on") {
-				apply(deps, conv, { memoryExcluded: false });
+				deps.store.setMeta(conv.id, { memoryExcluded: false });
 				log.info("memory exclusion cleared", { conversation: conv.id });
 				reply(deps, conv, "memory → on for this topic");
 				return true;

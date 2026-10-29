@@ -673,6 +673,12 @@ function AppShell() {
 	const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
 	// Skill invocations staged from the picker — same lift, same reason.
 	const [stagedSkills, setStagedSkills] = useState<StagedSkill[]>([]);
+	// The pre-creation memory choice — the conversation doesn't exist to
+	// PATCH until the first send creates it, so the exclusion stages
+	// here and rides into createConversation. Sticky like the staged
+	// chips: an operator who excludes a chat shouldn't be re-asked per
+	// start. Memory-off projects force it at their own composer.
+	const [stagedMemoryExcluded, setStagedMemoryExcluded] = useState(false);
 	// Bump on "New conversation" — the composer focuses itself, mounted
 	// or not (a remount sees the non-zero signal on first effect).
 	const [composerFocus, setComposerFocus] = useState(0);
@@ -1155,10 +1161,10 @@ function AppShell() {
 		setStarting(true);
 		setStartFailed(false);
 		try {
-			const created = await createConversation(
-				token,
-				projectId === null ? undefined : { projectId },
-			);
+			const created = await createConversation(token, {
+				...(projectId === null ? {} : { projectId }),
+				memoryExcluded: stagedMemoryExcluded,
+			});
 			// A navigation while the create was in flight bumped the
 			// sequence — this continuation closes over the old page, so
 			// its select would skip the dirty-settings guard entirely.
@@ -1759,6 +1765,12 @@ function AppShell() {
 										setStagedNotes={setStagedNotes}
 										stagedSkills={stagedSkills}
 										setStagedSkills={setStagedSkills}
+										stagedMemory={{
+											excluded:
+												currentProject.memory === "off" || stagedMemoryExcluded,
+											locked: currentProject.memory === "off",
+										}}
+										onStagedMemoryToggle={setStagedMemoryExcluded}
 										draftRestore={draftRestores[currentProject.id] ?? null}
 										onDraftRestored={() => consumeRestore(currentProject.id)}
 										onSend={(parts) =>
@@ -1804,6 +1816,8 @@ function AppShell() {
 								setStagedNotes={setStagedNotes}
 								stagedSkills={stagedSkills}
 								setStagedSkills={setStagedSkills}
+								stagedMemory={{ excluded: stagedMemoryExcluded, locked: false }}
+								onStagedMemoryToggle={setStagedMemoryExcluded}
 								focusSignal={composerFocus}
 								draftRestore={draftRestores.chat ?? null}
 								onDraftRestored={() => consumeRestore("chat")}

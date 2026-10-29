@@ -54,6 +54,7 @@ const createBody = z.object({
 	id: appIdSchema.optional(),
 	title: z.string().min(1).max(200).optional(),
 	projectId: z.string().min(1).optional(),
+	memoryExcluded: z.boolean().optional(),
 });
 
 const branchBody = z.object({ messageId: z.string().min(1).max(200) });
@@ -451,7 +452,12 @@ export async function handleConversationsRoute(
 					const row = store.resolve(appAddress(appId), paths.workspace(), deps.configRef.current);
 					if (existing === null && project !== null) {
 						store.bindProject(row.id, project.id);
-						if (project.memory === "off") store.setMeta(row.id, { memoryExcluded: true });
+					}
+					if (
+						existing === null &&
+						(project?.memory === "off" || parsed.data.memoryExcluded === true)
+					) {
+						store.setMeta(row.id, { memoryExcluded: true });
 					}
 					if (parsed.data.title !== undefined) {
 						store.setMeta(row.id, { title: parsed.data.title, titleImplicit: false });
@@ -534,7 +540,9 @@ export async function handleConversationsRoute(
 		}
 		let cancelled = 0;
 		if (parsed.data.memoryExcluded !== conv.memoryExcluded) {
-			store.applySettings(convId.id, { memoryExcluded: parsed.data.memoryExcluded });
+			// A flag write, not a settings change: no epoch bump — a running
+			// turn finishes, its retention refused at the land-time gate.
+			store.setMeta(convId.id, { memoryExcluded: parsed.data.memoryExcluded });
 			if (parsed.data.memoryExcluded) {
 				cancelled = store.memoryQueue.cancelConversation(convId.id);
 			}

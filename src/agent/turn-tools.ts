@@ -180,7 +180,9 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							budget: memory.config.reflectBudget,
 							timeoutMs: memory.config.reflectTimeoutMs,
 						},
-						isExcluded: () => conv.memoryExcluded,
+						// Live flag: a mid-turn exclusion stops the next
+						// memory call without fencing the running turn.
+						isExcluded: () => store.get(conv.id)?.memoryExcluded ?? conv.memoryExcluded,
 						noteRecall: memory.noteRecall,
 					}
 				: undefined,
@@ -203,7 +205,11 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							},
 						}
 					: undefined,
-			history: { store, conversationId: conv.id, isExcluded: () => conv.memoryExcluded },
+			history: {
+				store,
+				conversationId: conv.id,
+				isExcluded: () => store.get(conv.id)?.memoryExcluded ?? conv.memoryExcluded,
+			},
 			// Guests are excluded by the filter below, never by dep absence.
 			note: { notes, projects, conversation: conv.id, projectId: conv.projectId },
 			// Threads are process-global; a model change drops them on the next call.

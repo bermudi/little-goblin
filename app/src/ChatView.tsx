@@ -1372,6 +1372,8 @@ export function Composer({
 	setStagedNotes,
 	stagedSkills,
 	setStagedSkills,
+	stagedMemory,
+	onStagedMemoryToggle,
 	onSend,
 	onStop,
 	quote,
@@ -1394,6 +1396,12 @@ export function Composer({
 	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
 	stagedSkills: StagedSkill[];
 	setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
+	// The not-yet-created conversation's memory choice — the conversation-
+	// less composers (new chat, project page) can't GET a flag that
+	// doesn't exist yet. `locked` means the destination already forces
+	// exclusion (a memory-off project): the toggle reads off, disabled.
+	stagedMemory?: { excluded: boolean; locked: boolean };
+	onStagedMemoryToggle?: (excluded: boolean) => void;
 	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
 	// Present only where a live turn exists to interrupt (ChatView).
 	onStop?: () => void;
@@ -2147,7 +2155,7 @@ export function Composer({
 						</svg>
 					</button>
 				)}
-				{memory !== null && (
+				{memory !== null ? (
 					<button
 						type="button"
 						className="ctx-btn"
@@ -2170,6 +2178,29 @@ export function Composer({
 					>
 						memory {memory.memoryExcluded ? "off" : "on"}
 					</button>
+				) : (
+					stagedMemory !== undefined && (
+						<button
+							type="button"
+							className="ctx-btn"
+							aria-label={
+								stagedMemory.excluded
+									? "Enable memory for this conversation"
+									: "Exclude this conversation from memory"
+							}
+							title={
+								stagedMemory.locked
+									? "This project's memory is off"
+									: stagedMemory.excluded
+										? "Memory is excluded — click to include this conversation"
+										: "Memory is included — click to exclude this conversation"
+							}
+							disabled={busy || stagedMemory.locked}
+							onClick={() => onStagedMemoryToggle?.(!stagedMemory.excluded)}
+						>
+							memory {stagedMemory.excluded ? "off" : "on"}
+						</button>
+					)
 				)}
 				{cfg !== null && (
 					<>

@@ -2282,7 +2282,7 @@ describe("app projects surface", () => {
 		});
 		await settle();
 		const created = posts.find((p) => p.url === "/api/app/conversations");
-		expect(created?.body).toEqual({ projectId: "p-goblin" });
+		expect(created?.body).toEqual({ projectId: "p-goblin", memoryExcluded: false });
 	});
 
 	test("an archived project shows a note instead of the composer", async () => {

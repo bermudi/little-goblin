@@ -2258,7 +2258,9 @@ describe("cache stability", () => {
 		// A queued successor settles only after the in-lane compaction —
 		// its done is the barrier proving the fenced commit attempt ran.
 		const barrier = submit(r, "follow-up");
-		// The epoch-changing mutation /memory uses — no /stop, no abort.
+		// The epoch-changing mutation applySettings models — no /stop, no
+		// abort. (memoryExcluded itself moved to setMeta: a flag write
+		// that never fences.)
 		r.store.applySettings(r.conv.id, { memoryExcluded: true });
 		expect(r.store.get(r.conv.id)?.epoch).toBe(1);
 		gate.resolve("the folded era");

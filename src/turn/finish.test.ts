@@ -91,6 +91,7 @@ function land(over: Partial<LandDeps> = {}): LandHarness {
 		convId: "dm:1",
 		epoch: 2,
 		conv: conv(),
+		memoryExcluded: () => false,
 		modelEntries: () => [
 			{ seq: 1, message: msg("u1", "user", text("first")) },
 			{ seq: 2, message: msg("a1", "assistant", text("earlier answer")) },
@@ -341,29 +342,32 @@ describe("retentionOpt", () => {
 
 	test("oversized retention never drops the completed reply", () => {
 		const large = source({ userTexts: ["x".repeat(1_000_000)], userIds: ["u2"] });
-		expect(retentionOpt(conv(), memDeps(), 3, large, reply)).toBeNull();
+		expect(retentionOpt(conv(), false, memDeps(), 3, large, reply)).toBeNull();
 		expect(reply.parts).toEqual([text("done")]);
 	});
 
 	test("no memory deps, no anchor, or an excluded conversation → history alone", () => {
-		expect(retentionOpt(conv(), undefined, 3, src, reply)).toBeNull();
-		expect(retentionOpt(conv(), memDeps(), null, src, reply)).toBeNull();
-		const excluded = conv();
-		excluded.memoryExcluded = true;
-		expect(retentionOpt(excluded, memDeps(), 3, src, reply)).toBeNull();
+		expect(retentionOpt(conv(), false, undefined, 3, src, reply)).toBeNull();
+		expect(retentionOpt(conv(), false, memDeps(), null, src, reply)).toBeNull();
+		// The flag arrives live, not through the conv snapshot — a stale
+		// snapshot can't revive retention the live flag refuses.
+		expect(retentionOpt(conv(), true, memDeps(), 3, src, reply)).toBeNull();
 	});
 
 	test("program housekeeping is never retained", () => {
-		expect(retentionOpt(conv(), memDeps(), 3, source({ program: true }), reply)).toBeNull();
+		expect(retentionOpt(conv(), false, memDeps(), 3, source({ program: true }), reply)).toBeNull();
 	});
 
 	test("a blank assistant id fails open — no forged identity", () => {
-		expect(retentionOpt(conv(), memDeps(), 3, src, msg("  ", "assistant", text("x")))).toBeNull();
+		expect(
+			retentionOpt(conv(), false, memDeps(), 3, src, msg("  ", "assistant", text("x"))),
+		).toBeNull();
 	});
 
 	test("an exchange with no text retains nothing", () => {
 		const noText = retentionOpt(
 			conv(),
+			false,
 			memDeps(),
 			3,
 			source(),
@@ -373,12 +377,16 @@ describe("retentionOpt", () => {
 	});
 
 	test("a suppressed document is skipped; an unreadable suppression store skips too", () => {
-		expect(retentionOpt(conv(), memDeps({ suppressed: true }), 3, src, reply)).toBeNull();
-		expect(retentionOpt(conv(), memDeps({ unreadable: true }), 3, src, reply)).toBeNull();
+		expect(
+			retentionOpt(conv(), false, memDeps({ suppressed: true }), 3, src, reply),
+		).toBeNull();
+		expect(
+			retentionOpt(conv(), false, memDeps({ unreadable: true }), 3, src, reply),
+		).toBeNull();
 	});
 
 	test("a text exchange schedules its document under the memory target", () => {
-		const opt = retentionOpt(conv(), memDeps(), 3, src, reply);
+		const opt = retentionOpt(conv(), false, memDeps(), 3, src, reply);
 		expect(opt?.target).toBe("mem-target");
 		expect(opt?.document.id).toBe("exchange/dm:1/3/a2");
 		expect(opt?.document.content).toContain("Operator: run it");

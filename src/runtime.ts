@@ -821,6 +821,7 @@ export class Runtime {
 			signal,
 			memory: this.deps.memory,
 			assertAuthority: () => this.checkAuthority(conv.id, epoch),
+			isExcluded: () => this.deps.store.get(conv.id)?.memoryExcluded ?? conv.memoryExcluded,
 		});
 	}
 

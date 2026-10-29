@@ -320,6 +320,43 @@ describe("landAttempt", () => {
 			expect(h.landed.done).toEqual({ kind: "completed" });
 		});
 	});
+
+	test("a reply that derived from an excluded-era input retains nothing and stamps out", () => {
+		const h = land({
+			memory: memDeps(),
+			modelEntries: () => [
+				{ seq: 1, message: msg("u1", "user", text("first")) },
+				{ seq: 2, message: msg("a1", "assistant", text("earlier answer")) },
+				{ seq: 3, message: msg("u2", "user", text("run it")) },
+				{ seq: 4, message: msg("steer", "user", text("secret steer")) },
+			],
+			steerMark: 4,
+			// The steer landed while memory was off — stamped ineligible
+			// even though the flag is back on at land time.
+			memoryEligibility: () => ({ eligibleSeqs: new Set([1, 2, 3]), summaryEligible: false }),
+		});
+		expect(h.appended).toHaveLength(1);
+		// No memory document, and the reply carries the exclusion stamp
+		// forward — later memory work keeps it out too.
+		expect(h.appended[0]!.opts).toEqual({ anchorSeq: 4, exclude: true });
+	});
+
+	test("an exchange of only eligible inputs retains and stamps normally", () => {
+		const h = land({
+			memory: memDeps(),
+			modelEntries: () => [
+				{ seq: 1, message: msg("u1", "user", text("first")) },
+				{ seq: 2, message: msg("a1", "assistant", text("earlier answer")) },
+				{ seq: 3, message: msg("u2", "user", text("run it")) },
+			],
+			steerMark: 3,
+		});
+		expect(h.appended).toHaveLength(1);
+		expect(h.appended[0]!.opts).toEqual({
+			anchorSeq: 3,
+			memory: expect.objectContaining({ target: "mem-target" }),
+		});
+	});
 });
 
 // ---------- retentionOpt ----------

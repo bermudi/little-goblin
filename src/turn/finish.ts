@@ -3,6 +3,7 @@ import type { FinishReason, LanguageModelUsage, ToolSet, UIMessage } from "ai";
 import type { Conversation } from "../conversation.ts";
 import { log } from "../log.ts";
 import type { MemoryDocument } from "../memory/hindsight.ts";
+import { isCompactionSummaryId } from "../tags.ts";
 import {
 	buildRetentionDocument,
 	type MemoryEligibility,
@@ -51,7 +52,11 @@ export interface LandDeps {
 	memoryEligibility(): MemoryEligibility;
 	append(
 		messages: UIMessage[],
-		opts: { anchorSeq?: number | null; memory?: { target: string; document: MemoryDocument } },
+		opts: {
+			anchorSeq?: number | null;
+			memory?: { target: string; document: MemoryDocument };
+			exclude?: boolean;
+		},
 	): void;
 	memory: MemoryTurnDeps | undefined;
 	steerMark: number;
@@ -82,9 +87,8 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 			finalAnchor = e.seq;
 		}
 	}
-	const finalSource = retentionSourceFrom(
-		memoryBoundEntries(finalEntries, deps.memoryEligibility()),
-	);
+	const elig = deps.memoryEligibility();
+	const finalSource = retentionSourceFrom(memoryBoundEntries(finalEntries, elig));
 	let reply = deps.responseMessage;
 	const forcedKind = deps.forcedKind;
 	if (
@@ -110,18 +114,43 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 		deps.sink.onTextDelta(`\n\n${note}`);
 	}
 	if (reply !== null) {
-		const memoryOpt = retentionOpt(
-			deps.conv,
-			deps.memoryExcluded(),
-			deps.memory,
-			finalAnchor,
-			finalSource,
-			reply,
+		// Taint: an excluded-era input inside this exchange (the trigger
+		// itself or a steer, written while memory was off) can leak
+		// through the reply even when the flag is back on — the stamps
+		// only filter the *source*, not what the answer derived from.
+		// Refuse retention and stamp the reply ineligible so later
+		// memory work keeps it out too. Same segmentation as
+		// retentionSourceFrom: the exchange is what follows the last
+		// real assistant entry.
+		let lastAsstSeq = -1;
+		for (const e of finalEntries) {
+			if (e.message.role === "assistant" && !isCompactionSummaryId(e.message.id)) {
+				lastAsstSeq = e.seq;
+			}
+		}
+		const tainted = finalEntries.some(
+			(e) => e.seq > lastAsstSeq && e.message.role === "user" && !elig.eligibleSeqs.has(e.seq),
 		);
-		deps.append(
-			[reply],
-			memoryOpt ? { anchorSeq: finalAnchor, memory: memoryOpt } : { anchorSeq: finalAnchor },
-		);
+		const memoryOpt = tainted
+			? null
+			: retentionOpt(
+					deps.conv,
+					deps.memoryExcluded(),
+					deps.memory,
+					finalAnchor,
+					finalSource,
+					reply,
+				);
+		if (tainted) {
+			log.info("memory retention refused — exchange consumed an excluded event", {
+				conversation: convId,
+			});
+		}
+		deps.append([reply], {
+			anchorSeq: finalAnchor,
+			...(memoryOpt !== null ? { memory: memoryOpt } : {}),
+			...(tainted ? { exclude: true } : {}),
+		});
 	}
 	const window =
 		deps.contextWindow !== undefined && deps.lastStepInputTokens !== null

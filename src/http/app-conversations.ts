@@ -437,11 +437,28 @@ export async function handleConversationsRoute(
 				():
 					| { kind: "ok"; conv: NonNullable<ReturnType<typeof store.get>> }
 					| { kind: "conflict"; bound: string | null }
+					| { kind: "memoryConflict" }
 					| { kind: "noProject" }
 					| { kind: "archived" } => {
 					const existing = store.get(convId);
 					if (existing !== null && existing.projectId !== (parsed.data.projectId ?? null)) {
 						return { kind: "conflict", bound: existing.projectId };
+					}
+					// An explicit memory setting is a create-time assertion —
+					// silently dropping it on an existing row would let a
+					// caller believe a live conversation is excluded when it
+					// is not. Match the effective flag (project-off counts as
+					// excluded) or refuse.
+					if (existing !== null && parsed.data.memoryExcluded !== undefined) {
+						const projectMemory =
+							existing.projectId === null
+								? null
+								: (deps.projects.get(existing.projectId)?.memory ?? null);
+						const effectiveExcluded =
+							existing.memoryExcluded || projectMemory === "off";
+						if (effectiveExcluded !== parsed.data.memoryExcluded) {
+							return { kind: "memoryConflict" };
+						}
 					}
 					let project: Project | null = null;
 					if (existing === null && parsed.data.projectId !== undefined) {
@@ -469,6 +486,14 @@ export async function handleConversationsRoute(
 				return Response.json(
 					{
 						error: `conversation ${convId} is bound to ${outcome.bound ?? "no project"}; project binding is fixed at creation`,
+					},
+					{ status: 409, headers: NO_STORE },
+				);
+			}
+			if (outcome.kind === "memoryConflict") {
+				return Response.json(
+					{
+						error: `conversation ${convId} already exists — its memory flag is unchanged; PATCH its /memory instead`,
 					},
 					{ status: 409, headers: NO_STORE },
 				);

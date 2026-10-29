@@ -296,6 +296,121 @@ describe("memory turn integration", () => {
 		store.close();
 	});
 
+	test("a reply derived from an excluded-era input stays out after re-enable", async () => {
+		const store = openStore(tmpDb("goblin-memturn-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: (request) =>
+				new URL(request.url).pathname.endsWith("/memories/recall")
+					? Response.json({ results: [] })
+					: Response.json({
+							success: true,
+							bank_id: "g",
+							items_count: 1,
+							async: true,
+							operation_id: "00000000-0000-4000-8000-000000000002",
+						}),
+		});
+		servers.push(server);
+		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({
+				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
+				system: "test",
+			}),
+			makeTools: () => ({}),
+			memory: {
+				client,
+				config: { ...memConfig, baseUrl: `http://127.0.0.1:${server.port}` },
+				contexts: store.memoryContexts,
+				noteRecall: () => {},
+			},
+		});
+		// Excluded before the first message lands — the trigger stamps
+		// ineligible. Re-enabling mid-turn cannot cleanse the reply: it
+		// derived from an excluded input, so retention is refused and the
+		// reply carries the stamp forward.
+		store.setMeta(conv.id, { memoryExcluded: true });
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		await sink.firstDelta;
+		store.setMeta(conv.id, { memoryExcluded: false });
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user", "assistant"]);
+		expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
+		const elig = store.memoryEligibility(conv.id);
+		for (const e of store.historyEntries(conv.id)) {
+			expect(elig.eligibleSeqs.has(e.seq)).toBe(false);
+		}
+		store.close();
+	});
+
+	test("a mid-flight recall is dropped when exclusion lands before it returns", async () => {
+		const store = openStore(tmpDb("goblin-memturn-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		let recallStarted!: () => void;
+		let release!: () => void;
+		const started = new Promise<void>((resolve) => {
+			recallStarted = resolve;
+		});
+		const parked = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: async (request) => {
+				if (new URL(request.url).pathname.endsWith("/memories/recall")) {
+					recallStarted();
+					await parked;
+					return Response.json({
+						results: [
+							{
+								id: "fact-1",
+								text: "a stored fact",
+								type: "world",
+								document_id: "exchange/dm:1/1/a",
+							},
+						],
+					});
+				}
+				return Response.json({
+					success: true,
+					bank_id: "g",
+					items_count: 1,
+					async: true,
+					operation_id: "00000000-0000-4000-8000-000000000002",
+				});
+			},
+		});
+		servers.push(server);
+		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model: textModel(["ok"]).model, system: "test" }),
+			makeTools: () => ({}),
+			memory: {
+				client,
+				config: { ...memConfig, baseUrl: `http://127.0.0.1:${server.port}` },
+				contexts: store.memoryContexts,
+				noteRecall: () => {},
+			},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		await started;
+		// The flag write no longer fences — the returned recall must be
+		// dropped at the live gate, not stored and not shown.
+		store.setMeta(conv.id, { memoryExcluded: true });
+		release();
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(store.memoryContexts.load(conv.id)).toEqual([]);
+		store.close();
+	});
+
 	test("a late recall after forgetting cannot reinsert a redacted source", async () => {
 		const store = openStore(tmpDb("goblin-memturn-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

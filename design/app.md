@@ -285,8 +285,11 @@ its retention is refused at the live gates (design/memory.md → exclusion).
 The composer's toggle also shows before the conversation exists — the
 new-chat and project composers stage the choice locally and it rides into
 `POST /api/app/conversations` as `memoryExcluded`, so the flag is decided
-before the first message, not retroactively after it. A memory-off project
-locks the staged toggle excluded, the same read the created row enforces.
+before the first message, not retroactively after it. The field is a
+create-time assertion: on an existing id a conflicting value is a 409,
+never a silent drop — matching the effective flag (project-off counts as
+excluded) reopens plainly. A memory-off project locks the staged toggle
+excluded, the same read the created row enforces.
 
 **Model picker (ruling 2026-10-21).** The settings sheet lists the
 models.dev catalog for every configured provider — matched by exact

@@ -247,6 +247,11 @@ export interface ConversationStore {
 		opts?: {
 			anchorSeq?: number | null;
 			memory?: { target: string; document: MemoryDocument };
+			// Force the ineligible stamp even when the live flag is on:
+			// a reply that derived from an excluded-era input stays out
+			// of every memory-bound projection, same as excluded-era
+			// events themselves.
+			exclude?: boolean;
 		},
 	): number[];
 	// The causal view (anchored responses sort right after their user
@@ -804,7 +809,7 @@ export function openStore(dbPath: string): ConversationStore {
 				// flag: history is not rewritten and exclusion is not retroactive.
 				const conv = qGet.get(id);
 				if (!conv) throw new Error(`conversation ${id} not found`);
-				const eligible = conv.memory_excluded === 0 ? 1 : 0;
+				const eligible = conv.memory_excluded === 0 && opts?.exclude !== true ? 1 : 0;
 				// Activity resurrects an archived app conversation — an
 				// event (delegation notice, operator send) returns it to the
 				// rail rather than accumulating replies unseen.

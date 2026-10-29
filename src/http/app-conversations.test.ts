@@ -313,6 +313,57 @@ describe("app conversations", () => {
 		}
 	});
 
+	test("create on an existing id refuses a conflicting memory setting", async () => {
+		const { http, call, store, projects } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			expect(store.get("app/chat-01")!.memoryExcluded).toBe(false);
+
+			// Reopen with an assertion the row can't satisfy — the flag
+			// would be silently dropped without the conflict.
+			const excluded = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01", memoryExcluded: true }),
+			});
+			expect(excluded.status).toBe(409);
+			expect(store.get("app/chat-01")!.memoryExcluded).toBe(false);
+
+			// A matching assertion is the plain reopen — nothing to write.
+			const same = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01", memoryExcluded: false }),
+			});
+			expect(same.status).toBe(201);
+
+			// Project-off counts as excluded: an include assertion on a
+			// bound row conflicts even when its own flag was never set.
+			const project = projects.create({ name: "vault", memory: "off" });
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-02", projectId: project.id }),
+			});
+			const include = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					id: "chat-02",
+					projectId: project.id,
+					memoryExcluded: false,
+				}),
+			});
+			expect(include.status).toBe(409);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("project memory off stays a hard boundary", async () => {
 		const { http, call, store, projects } = setup({ token: APP_TOKEN_NAME });
 		try {

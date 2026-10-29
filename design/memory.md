@@ -343,8 +343,12 @@ off` is stamped excluded); **the flag write is no longer an epoch bump
 (amendment 2026-10-29)** — a running turn finishes rather than fencing,
 and exclusion still cannot leak: retention re-reads the live flag at
 land and inside the append transaction, `memory_search`/`memory_reflect`/
-`history_search` read it per call, and the reviewer's gate already read
-it live; fenced and failed turns commit no memory regardless of stamps;
+`history_search` read it per call, an in-flight recall is dropped at the
+live flag after it returns, and a reply that derived from an
+excluded-era input (a steer or trigger stamped while the flag was off)
+is refused retention and stamped ineligible itself — re-enabling cannot
+cleanse it. The reviewer's gate already read the flag live; fenced and
+failed turns commit no memory regardless of stamps;
 a compaction summary inherits its folded span's eligibility — eligible
 only when every event below the boundary was eligible, recomputed per
 pointer so repeated compactions stay consistent; spin-off forks copy

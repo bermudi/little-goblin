@@ -208,11 +208,15 @@ export async function recallMemory(options: {
 	history: UIMessage[];
 	signal: AbortSignal;
 	assertAuthority(): void;
+	// The live exclusion flag — the conv snapshot is stale after the
+	// in-flight recall returns, and exclusion no longer bumps the
+	// epoch for assertAuthority to catch.
+	isExcluded(): boolean;
 	memory: MemoryTurnDeps | undefined;
 }): Promise<{ prior: RecallContext[]; current: RecallContext | null }> {
-	const { conv, anchorSeq, history, signal, assertAuthority } = options;
+	const { conv, anchorSeq, history, signal, assertAuthority, isExcluded } = options;
 	const mem = options.memory;
-	if (!mem || anchorSeq === null || conv.memoryExcluded) return { prior: [], current: null };
+	if (!mem || anchorSeq === null || isExcluded()) return { prior: [], current: null };
 	let prior: RecallContext[];
 	try {
 		prior = mem.contexts.load(conv.id);
@@ -236,6 +240,14 @@ export async function recallMemory(options: {
 			minScores: mem.config.minScores,
 		});
 		assertAuthority();
+		// Exclusion may have landed while the request was in flight —
+		// nothing memory-derived reaches the model once it has.
+		if (isExcluded()) {
+			log.info("memory recall dropped — conversation excluded mid-request", {
+				conversation: conv.id,
+			});
+			return { prior: [], current: null };
+		}
 		const rendered = renderRecallEvidence(
 			facts,
 			facts.length > 0 ? "results" : "empty",
@@ -276,6 +288,7 @@ export async function recallMemory(options: {
 				status: err.status ?? null,
 				retryable: err.retryable,
 			});
+			if (isExcluded()) return { prior: [], current: null };
 			const block = formatRecallBlock(null, "unavailable");
 			const current: RecallContext = { anchorSeq, content: block, sourceIds: [] };
 			try {

@@ -91,7 +91,7 @@ export async function generateNoteRewrite(
 		}
 		if (result.finishReason === "length") {
 			throw new Error(
-				`rewrite truncated at ${maxOutputTokens} output tokens — shorten the selection or the instruction`,
+				`rewrite truncated at ${maxOutputTokens} output tokens — shorten the selection or the instruction, or the model spent the cap on reasoning`,
 			);
 		}
 		log.info("note rewrite", {

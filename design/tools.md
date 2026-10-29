@@ -191,8 +191,10 @@ thread so a new model never "remembers" a predecessor's answers.
   "low", the same image answering on a manual re-ask). The wire
   reports `reasoning_tokens` inside `output_tokens`, so the re-ask
   does the math the endpoint can't: double the measured spend (a
-  truncation lower bound) and re-add the answer budget, falling back
-  to 4× the first cap when usage is unreported — capped at 65_536,
+  truncation lower bound) and re-add the answer budget. Vendor
+  adapters coerce a missing split to 0, so "the spend" falls back to
+  the output total — all non-visible on an empty answer — and to 4×
+  the first cap when nothing is reported at all. Capped at 65_536,
   warn-logged with the measured split, and a second empty answer
   throws the budget diagnosis.
 - The call's system prompt refuses instructions embedded in the image,

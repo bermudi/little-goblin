@@ -204,7 +204,8 @@ about the same image. The model ref uses the same `providers` map as your
 daily driver. `maxTokens` (default 2000) budgets the answer — reasoning
 headroom for the model's effective thinking rung rides on top, and an
 empty answer (a thinking model spending the whole cap on reasoning)
-re-asks once at up to 4× before failing.
+re-asks once at a budget sized from the reported reasoning spend —
+4× when the wire reports nothing — capped at 65_536, before failing.
 
 `mode` decides when the tool is in the set: `"auto"` (default) registers
 it only while the chat model can't consume images itself — exactly the

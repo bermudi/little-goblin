@@ -97,8 +97,11 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   it). So a call that caps output sends **answer budget + headroom for
   the rung the wire actually carries** (`outputTokensFor` in
   `src/agent/thinking.ts`): a real disable adds nothing, a floored `off`
-  buys its weakest rung's room, an unknown route's default hedges at
-  low. The per-rung ladder (1k at `minimal` doubling to 32k at `max`) is
+  buys its weakest rung's room, and anything that still reasons without
+  a knob the wire took — an unknown route, a no-knob relay default, a
+  Responses-door glm "off" that lands on `low` because the shape has no
+  disable — hedges at `low`. The per-rung ladder (1k at `minimal`
+  doubling to 32k at `max`) is
   a calibrated guess, not provider truth; the sum is capped at 65_536,
   inside every endpoint's accepted output (models.dev lists glm-5.3 at
   131k). Applies to the bounded calls — vision and note rewrite — not

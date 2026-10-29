@@ -418,14 +418,23 @@ export function reasoningHeadroom(
 	baseUrl?: string,
 ): number {
 	const profile = reasoningProfileFor(kind, modelId, baseUrl);
-	if (profile.knob === "none" || profile.levels.length === 0) return 0;
+	if (profile.knob === "none" || profile.levels.length === 0) {
+		// The wire carries nothing for these, whatever was asked — a
+		// route that still reasons on its own default hedges low, a
+		// real disable or a non-reasoning model spends nothing.
+		return profile.off === "default" ? RUNG_HEADROOM.low : 0;
+	}
 	if (level === "off") {
 		// Profile rungs never include "off"; the guard narrows the type.
 		if (profile.off === "floor") {
-			const floor = profile.levels[0]!;
-			return RUNG_HEADROOM[floor === "off" ? "low" : floor];
+			const floor = profile.levels[0];
+			return RUNG_HEADROOM[floor === "off" || floor === undefined ? "low" : floor];
 		}
 		if (profile.off === "default") return RUNG_HEADROOM.low;
+		// A Responses wire has no GLM disable toggle — the options arm
+		// still sends effort "low" there, so the envelope buys its room.
+		const bare = modelId.split("/").pop() ?? modelId;
+		if (kind === "responses" && bare.startsWith("glm-")) return RUNG_HEADROOM.low;
 		return 0;
 	}
 	const rung = clampToLevels(profile.levels, level);

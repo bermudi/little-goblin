@@ -182,7 +182,10 @@ async function defaultResolve(
 /** Failures throw (the tool layer reports them); aborts ride the
  *  combined signal and surface as the SDK's AbortError. */
 export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promise<VisionAnswer> {
-	const cfg = deps.configRef.current.vision;
+	// Captured once — a config save mid-call must not splice a new model
+	// into a call already sized and billed to the old one.
+	const config = deps.configRef.current;
+	const cfg = config.vision;
 	if (!cfg) {
 		throw new Error("vision block absent — the tool should not be registered");
 	}
@@ -197,12 +200,12 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 	const history = query.followUp ? threads.getTurns(key) : [];
 
 	const model = observedModel(
-		await (deps.resolve ?? defaultResolve)(deps.configRef.current, deps.auth, cfg.model),
+		await (deps.resolve ?? defaultResolve)(config, deps.auth, cfg.model),
 		{
 			conversation: deps.conversation,
 			purpose: "vision",
 			observation: deps.observation,
-			route: cacheRouteFor(deps.configRef.current, cfg.model),
+			route: cacheRouteFor(config, cfg.model),
 		},
 	);
 	// The configured ref is the label — LanguageModel's type also admits
@@ -218,8 +221,8 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 	const started = Date.now();
 	// Thinking pinned off — a forced-thinking vision model burns a
 	// reasoning round-trip per question.
-	const providerOptions = thinkingOptions(deps.configRef.current, cfg.model, "off");
-	const maxRetries = modelCallMaxRetries(deps.configRef.current, cfg.model);
+	const providerOptions = thinkingOptions(config, cfg.model, "off");
+	const maxRetries = modelCallMaxRetries(config, cfg.model);
 	const ask = async (maxOutputTokens: number) => {
 		const { text, usage, finishReason } = await generateText({
 			model,
@@ -240,7 +243,7 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 	// Reasoning rides inside the output cap on every wire — the first
 	// call buys the answer budget plus headroom for the rung the model's
 	// "off" actually means (a floor rung on forced thinkers).
-	const firstBudget = outputTokensFor(deps.configRef.current, cfg.model, "off", cfg.maxTokens);
+	const firstBudget = outputTokensFor(config, cfg.model, "off", cfg.maxTokens);
 	let result = await ask(firstBudget);
 	let answer = result.text.trim();
 	let retried = false;
@@ -248,16 +251,14 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 	// — a floored effort can still spin (observed: glm-5.3-flash burning
 	// all 2000 at "low"). One re-ask, right-sized from the usage split:
 	// the measured reasoning spend is a truncation lower bound — double
-	// it and re-add the answer budget. Unreported usage can't be
-	// measured, so it falls back to 4× the first cap.
+	// it and re-add the answer budget. Vendor adapters coerce a missing
+	// split to 0, so "spend" falls to the output total (with empty text
+	// all of it was non-visible) — and, nothing reported at all, to 4×.
 	if (!answer) {
-		const reasoning =
-			result.usage?.outputTokenDetails?.reasoningTokens ?? result.usage?.outputTokens;
+		const spend = result.usage?.outputTokenDetails?.reasoningTokens || result.usage?.outputTokens;
 		const retryBudget = Math.min(
 			OUTPUT_TOKEN_CEILING,
-			reasoning !== undefined
-				? Math.max(reasoning * 2 + cfg.maxTokens, firstBudget)
-				: firstBudget * 4,
+			spend ? Math.max(spend * 2 + cfg.maxTokens, firstBudget) : firstBudget * 4,
 		);
 		retried = true;
 		log.warn("vision answer empty — re-asking with raised output budget", {
@@ -269,7 +270,8 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 			retryMaxTokens: retryBudget,
 			finish: result.finishReason,
 			outputTokens: result.usage?.outputTokens ?? null,
-			reasoningTokens: reasoning ?? null,
+			reasoningTokens: result.usage?.outputTokenDetails?.reasoningTokens ?? null,
+			spend: spend ?? null,
 		});
 		result = await ask(retryBudget);
 		answer = result.text.trim();

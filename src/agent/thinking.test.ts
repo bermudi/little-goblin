@@ -613,12 +613,26 @@ describe("outputTokensFor — the answer budget plus the rung's headroom", () =>
 		expect(outputTokensFor(cfg, "zai/glm-5.3", "max", 8_192)).toBe(40_960);
 	});
 
-	test("a real disable and a knob-free model spend nothing on reasoning", () => {
+	test("a real disable spends nothing; a knob-free default still hedges low", () => {
 		// glm-5.2 off the coding endpoint keeps its toggle — off is a
 		// true disable.
 		expect(outputTokensFor(cfg, "other/glm-5.2", "off", 2_000)).toBe(2_000);
-		// The relay accepts no reasoning knob for GLM at all.
-		expect(outputTokensFor(cfg, "onemin/glm-5.3", "high", 2_000)).toBe(2_000);
+		// The relay accepts no reasoning knob for GLM at all, so the wire
+		// carries nothing whatever was asked — but the model still
+		// reasons at the provider default, so the envelope hedges low.
+		expect(outputTokensFor(cfg, "onemin/glm-5.3", "off", 2_000)).toBe(4_048);
+		expect(outputTokensFor(cfg, "onemin/glm-5.3", "high", 2_000)).toBe(4_048);
+		// A non-reasoning id on the same relay ("always") spends nothing.
+		expect(outputTokensFor(cfg, "onemin/gpt-4o", "off", 2_000)).toBe(2_000);
+	});
+
+	test("a responses-door glm 'off' buys the rung the wire actually sends", () => {
+		// The Responses shape has no GLM disable — the options arm sends
+		// effort "low" even for a generation that could toggle elsewhere.
+		expect(thinkingOptions(cfg, "relay_responses/glm-5.2", "off")).toEqual({
+			relay_responses: { reasoningEffort: "low" },
+		});
+		expect(outputTokensFor(cfg, "relay_responses/glm-5.2", "off", 2_000)).toBe(4_048);
 	});
 
 	test("openrouter: a disable is free, a floor buys the weakest rung, unknown hedges low", () => {

@@ -88,6 +88,29 @@ const spent = (reasoning: number): LanguageModelV4GenerateResult => ({
 	},
 });
 
+// Vendor adapters coerce a missing split to 0 — the output total
+// (all non-visible on an empty answer) is then the measured spend.
+const splitZero = (total: number): LanguageModelV4GenerateResult => ({
+	content: [{ type: "text", text: "   " }],
+	finishReason: { unified: "length", raw: undefined },
+	warnings: [],
+	usage: {
+		inputTokens: { total: 10, noCache: undefined, cacheRead: 5, cacheWrite: undefined },
+		outputTokens: { total, text: 0, reasoning: 0 },
+	},
+});
+
+// Nothing to size from — a usage object with no output accounting.
+const blind = (): LanguageModelV4GenerateResult => ({
+	content: [{ type: "text", text: "   " }],
+	finishReason: { unified: "stop", raw: undefined },
+	warnings: [],
+	usage: {
+		inputTokens: { total: 10, noCache: undefined, cacheRead: 5, cacheWrite: undefined },
+		outputTokens: { total: undefined, text: undefined, reasoning: undefined },
+	},
+});
+
 /** Fake at the provider edge, resolved per call. */
 function deps(
 	vision: { model: string; maxTokens?: number },
@@ -329,20 +352,37 @@ describe("askVision — provider edge", () => {
 		expect(calls[1]!.maxOutputTokens).toBe(4_048);
 	});
 
+	test("a coerced-zero split still rescues — the output total is the spend", async () => {
+		_resetVisionThreadsForTest();
+		const calls: GenerateCall[] = [];
+		await expect(
+			askVision(
+				query(),
+				deps({ model: "zai/glm-5.3-flash" }, calls, () => splitZero(4_048)),
+			),
+		).rejects.toThrow(/empty answer.*re-ask at 10096 maxTokens/s);
+		// reasoning reads 0 on an endpoint that hides the split — the
+		// 4048 output total is the measured burn: ×2 + the 2000 answer.
+		expect(calls[1]!.maxOutputTokens).toBe(10_096);
+	});
+
 	test("unreported usage can't be measured — the re-ask falls back to 4×", async () => {
 		_resetVisionThreadsForTest();
 		const calls: GenerateCall[] = [];
-		const blind = (): LanguageModelV4GenerateResult => ({
-			content: [{ type: "text", text: "   " }],
-			finishReason: { unified: "stop", raw: undefined },
-			warnings: [],
-			usage: {
-				inputTokens: { total: 10, noCache: undefined, cacheRead: 5, cacheWrite: undefined },
-				outputTokens: { total: undefined, text: undefined, reasoning: undefined },
-			},
-		});
 		await expect(
 			askVision(query(), deps({ model: "zai/glm-5.3-flash" }, calls, blind)),
+		).rejects.toThrow(/empty answer.*re-ask at 16192 maxTokens/s);
+		expect(calls[1]!.maxOutputTokens).toBe(16_192);
+	});
+
+	test("an all-zero usage reports nothing either — the re-ask falls back to 4×", async () => {
+		_resetVisionThreadsForTest();
+		const calls: GenerateCall[] = [];
+		await expect(
+			askVision(
+				query(),
+				deps({ model: "zai/glm-5.3-flash" }, calls, () => splitZero(0)),
+			),
 		).rejects.toThrow(/empty answer.*re-ask at 16192 maxTokens/s);
 		expect(calls[1]!.maxOutputTokens).toBe(16_192);
 	});

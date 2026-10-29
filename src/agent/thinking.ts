@@ -383,6 +383,75 @@ export function thinkingOptions(
 	}
 }
 
+// ---------- output headroom ----------
+
+// Reasoning tokens count toward the provider's output cap on every
+// wire we drive — no endpoint offers a "don't count thinking" knob
+// (probed on z.ai's Responses door, 2026-10-29: output_tokens covers
+// reasoning_tokens; OpenRouter's reasoning.max_tokens bounds the same
+// envelope, it doesn't exempt it). A bounded call therefore sends the
+// answer budget plus headroom for the rung the wire actually carries —
+// the operator's "raise limits for higher reasoning settings".
+// Calibrated guesses, not provider truth: glm-5.3-flash spent 5
+// reasoning tokens at "low" and ~300 at its own default on a
+// transcription question.
+const RUNG_HEADROOM: Record<Exclude<ThinkingLevel, "off">, number> = {
+	minimal: 1_024,
+	low: 2_048,
+	medium: 4_096,
+	high: 8_192,
+	xhigh: 16_384,
+	max: 32_768,
+};
+
+// Every endpoint we drive accepts a 64k output cap (models.dev lists
+// glm-5.3 at 131k) — "max" headroom stays inside it.
+export const OUTPUT_TOKEN_CEILING = 65_536;
+
+/** Reasoning headroom for the rung the wire actually carries: a real
+ *  disable spends nothing, a floor needs its weakest rung's room, an
+ *  unknown route's own default hedges at low. */
+export function reasoningHeadroom(
+	kind: string,
+	modelId: string,
+	level: ThinkingLevel,
+	baseUrl?: string,
+): number {
+	const profile = reasoningProfileFor(kind, modelId, baseUrl);
+	if (profile.knob === "none" || profile.levels.length === 0) return 0;
+	if (level === "off") {
+		// Profile rungs never include "off"; the guard narrows the type.
+		if (profile.off === "floor") {
+			const floor = profile.levels[0]!;
+			return RUNG_HEADROOM[floor === "off" ? "low" : floor];
+		}
+		if (profile.off === "default") return RUNG_HEADROOM.low;
+		return 0;
+	}
+	const rung = clampToLevels(profile.levels, level);
+	return RUNG_HEADROOM[rung === "off" ? "low" : rung];
+}
+
+/** The output cap a bounded call sends: answer budget plus the
+ *  reasoning headroom its level needs — a level the model can't
+ *  express clamps the same way the options do. An unknown provider
+ *  keeps the budget verbatim (the "unknown owns its vocabulary" rule). */
+export function outputTokensFor(
+	config: Config,
+	modelRef: string,
+	level: ThinkingLevel,
+	answerTokens: number,
+): number {
+	const { provider, modelId } = splitModelRef(modelRef);
+	const p = config.providers[provider];
+	if (p === undefined) return answerTokens;
+	return Math.min(
+		answerTokens +
+			reasoningHeadroom(p.kind, modelId, level, "baseUrl" in p ? p.baseUrl : undefined),
+		OUTPUT_TOKEN_CEILING,
+	);
+}
+
 // Match z.ai's coding chat and Responses doors, but not the general paas path.
 function zaiCodingEndpoint(baseUrl?: string): boolean {
 	if (!baseUrl) return false;

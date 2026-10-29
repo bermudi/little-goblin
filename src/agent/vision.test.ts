@@ -206,7 +206,8 @@ describe("askVision — provider edge", () => {
 		expect(last.role).toBe("user");
 		expect(last.content.some((p) => p.type === "text" && p.text === "what is this?")).toBe(true);
 		expect(last.content.some((p) => p.type === "file" && p.mediaType === "image/png")).toBe(true);
-		expect(call.maxOutputTokens).toBe(2000);
+		// 2000 answer budget + the floored "low" rung's headroom (2048).
+		expect(call.maxOutputTokens).toBe(4_048);
 	});
 
 	test("followUp replays the thread as text roles before the final turn", async () => {
@@ -277,10 +278,10 @@ describe("askVision — provider edge", () => {
 				query(),
 				deps({ model: "zai/glm-5.3-flash" }, calls, () => answer("   ")),
 			),
-		).rejects.toThrow(/empty answer.*re-ask at 8000 maxTokens/s);
+		).rejects.toThrow(/empty answer.*re-ask at 16192 maxTokens/s);
 		expect(calls).toHaveLength(2);
-		expect(calls[0]!.maxOutputTokens).toBe(2000);
-		expect(calls[1]!.maxOutputTokens).toBe(8000);
+		expect(calls[0]!.maxOutputTokens).toBe(4_048);
+		expect(calls[1]!.maxOutputTokens).toBe(16_192);
 	});
 
 	test("empty then answer — the raised-budget re-ask recovers the call", async () => {
@@ -293,10 +294,10 @@ describe("askVision — provider edge", () => {
 		);
 		expect(result.answer).toBe("a chart");
 		expect(calls).toHaveLength(2);
-		expect(calls[1]!.maxOutputTokens).toBe(8000);
+		expect(calls[1]!.maxOutputTokens).toBe(16_192);
 	});
 
-	test("an empty answer at the budget cap does not re-ask", async () => {
+	test("an empty answer at maxTokens 32768 still re-asks — capped at the wire ceiling", async () => {
 		_resetVisionThreadsForTest();
 		const calls: GenerateCall[] = [];
 		await expect(
@@ -304,8 +305,10 @@ describe("askVision — provider edge", () => {
 				query(),
 				deps({ model: "zai/glm-5.3-flash", maxTokens: 32_768 }, calls, () => answer("   ")),
 			),
-		).rejects.toThrow(/empty answer.*maxTokens/s);
-		expect(calls).toHaveLength(1);
+		).rejects.toThrow(/empty answer.*re-ask at 65536 maxTokens/s);
+		expect(calls).toHaveLength(2);
+		expect(calls[0]!.maxOutputTokens).toBe(34_816);
+		expect(calls[1]!.maxOutputTokens).toBe(65_536);
 	});
 
 	test("provider errors propagate untouched", async () => {

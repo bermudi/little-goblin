@@ -89,6 +89,20 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   whole vocabulary and sends no reasoning knob at all for `off` — the
   route's default — because a disable we cannot back is a failed turn:
   fail loud, never fake knowledge.
+- **Output headroom (ruling 2026-10-29).** Reasoning tokens count toward
+  the provider's output cap on every wire goblin drives — no endpoint
+  offers a "don't count thinking" knob (probed on z.ai's Responses door:
+  `output_tokens` covers `reasoning_tokens`; OpenRouter's
+  `reasoning.max_tokens` bounds the same envelope, it doesn't exempt
+  it). So a call that caps output sends **answer budget + headroom for
+  the rung the wire actually carries** (`outputTokensFor` in
+  `src/agent/thinking.ts`): a real disable adds nothing, a floored `off`
+  buys its weakest rung's room, an unknown route's default hedges at
+  low. The per-rung ladder (1k at `minimal` doubling to 32k at `max`) is
+  a calibrated guess, not provider truth; the sum is capped at 65_536,
+  inside every endpoint's accepted output (models.dev lists glm-5.3 at
+  131k). Applies to the bounded calls — vision and note rewrite — not
+  turn steps, which carry no output cap.
 - **History.** Rows stamp the format that wrote them — the SDK owns the part
   shapes — so a future shape change is a deliberate converter at open, never
   silent placeholder degradation of old rows; a straggler that skips the

@@ -99,7 +99,9 @@ describe("generateNoteRewrite", () => {
 		// thinking=medium on a GLM route produces provider options; no tools.
 		expect(call.providerOptions).toBeTruthy();
 		expect(call.tools === undefined || (call.tools as unknown[]).length === 0).toBe(true);
-		expect(call.maxOutputTokens).toBe(8192);
+		// 8192 answer budget + headroom for the rung "medium" clamps to
+		// on glm-5.3's low|high|max ladder — "high", 8192.
+		expect(call.maxOutputTokens).toBe(16_384);
 	});
 
 	test("literal Markdown — including a fence — passes through untouched", async () => {

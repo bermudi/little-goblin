@@ -19,7 +19,7 @@ import { log } from "../log.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
 import { modelCallMaxRetries } from "./onemin.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
-import { thinkingOptions } from "./thinking.ts";
+import { OUTPUT_TOKEN_CEILING, outputTokensFor, thinkingOptions } from "./thinking.ts";
 import type { VisionToolDeps } from "./tools/vision.ts";
 
 // A wedged vision request would pin the turn's serial lane —
@@ -232,22 +232,26 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 		return { text, usage: usage as VisionUsage | undefined, finishReason };
 	};
 
-	let result = await ask(cfg.maxTokens);
+	// Reasoning rides inside the output cap on every wire — the first
+	// call buys the answer budget plus headroom for the rung the model's
+	// "off" actually means (a floor rung on forced thinkers).
+	const firstBudget = outputTokensFor(deps.configRef.current, cfg.model, "off", cfg.maxTokens);
+	let result = await ask(firstBudget);
 	let answer = result.text.trim();
 	let retried = false;
-	// An empty answer means the whole output budget went to non-visible
-	// tokens — a floored effort can still spin (observed: glm-5.3-flash
-	// burning all 2000 at "low"). One re-ask at a raised budget buys
-	// headroom; the ceiling is the vision.maxTokens schema cap, and at
-	// it a re-spend buys nothing.
-	const retryBudget = Math.min(32_768, cfg.maxTokens * 4);
-	if (!answer && retryBudget > cfg.maxTokens) {
+	// An empty answer means the whole budget went to non-visible tokens
+	// — a floored effort can still spin (observed: glm-5.3-flash burning
+	// all 2000 at "low"). One re-ask at a raised budget buys headroom;
+	// the wire ceiling bounds the spend.
+	const retryBudget = Math.min(OUTPUT_TOKEN_CEILING, firstBudget * 4);
+	if (!answer) {
 		retried = true;
 		log.warn("vision answer empty — re-asking with raised output budget", {
 			conversation: deps.conversation,
 			model: label,
 			image: query.path,
-			configuredMaxTokens: cfg.maxTokens,
+			answerTokens: cfg.maxTokens,
+			firstMaxTokens: firstBudget,
 			retryMaxTokens: retryBudget,
 			finish: result.finishReason,
 			outputTokens: result.usage?.outputTokens ?? null,
@@ -257,9 +261,8 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 	}
 	if (!answer) {
 		throw new Error(
-			`empty answer from ${label}` +
-				(retried ? ` even on a re-ask at ${retryBudget} maxTokens` : "") +
-				` — a thinking model spending the output budget on reasoning? ` +
+			`empty answer from ${label} even on a re-ask at ${retryBudget} maxTokens ` +
+				`— a thinking model spending the output budget on reasoning? ` +
 				`Raise vision.maxTokens or switch the vision model.`,
 		);
 	}

@@ -10,7 +10,7 @@ import type { CacheObservation } from "../cache-observation.ts";
 import type { ConfigRef } from "../config.ts";
 import { log } from "../log.ts";
 import { cacheRouteFor, observedModel, resolveModel } from "./providers.ts";
-import { thinkingOptions } from "./thinking.ts";
+import { outputTokensFor, thinkingOptions } from "./thinking.ts";
 
 export const NOTE_REWRITE_INSTRUCTIONS = [
 	"You rewrite a selected passage from the operator's Markdown note.",
@@ -60,6 +60,14 @@ export async function generateNoteRewrite(
 			route: cacheRouteFor(cfg, cfg.model),
 		});
 		const providerOptions = thinkingOptions(cfg, cfg.model, cfg.thinking);
+		// Reasoning rides inside the output cap — the constant buys the
+		// answer, headroom buys the rung cfg.thinking resolves to.
+		const maxOutputTokens = outputTokensFor(
+			cfg,
+			cfg.model,
+			cfg.thinking,
+			REWRITE_MAX_OUTPUT_TOKENS,
+		);
 		const result = await generateText({
 			model,
 			instructions: NOTE_REWRITE_INSTRUCTIONS,
@@ -73,7 +81,7 @@ export async function generateNoteRewrite(
 				AbortSignal.timeout(REWRITE_TIMEOUT_MS),
 			]),
 			maxRetries: 0,
-			maxOutputTokens: REWRITE_MAX_OUTPUT_TOKENS,
+			maxOutputTokens,
 		});
 		// Output is a boundary: empty or truncated text can't stand in
 		// for the selection — validate before recording "ok" so the
@@ -83,7 +91,7 @@ export async function generateNoteRewrite(
 		}
 		if (result.finishReason === "length") {
 			throw new Error(
-				`rewrite truncated at ${REWRITE_MAX_OUTPUT_TOKENS} output tokens — shorten the selection or the instruction`,
+				`rewrite truncated at ${maxOutputTokens} output tokens — shorten the selection or the instruction`,
 			);
 		}
 		log.info("note rewrite", {

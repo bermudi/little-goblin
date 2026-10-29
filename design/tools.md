@@ -179,13 +179,19 @@ thread so a new model never "remembers" a predecessor's answers.
 - **Thinking pinned off** for the Q&A calls — a forced-thinking vision
   model answers in prose anyway and burns a reasoning round-trip per
   question.
+- **`maxTokens` buys the answer; headroom buys the reasoning** (ruling
+  2026-10-29): reasoning tokens count toward the provider's output cap
+  on every wire goblin drives, so the first call sends
+  `outputTokensFor(cfg, model, "off", maxTokens)` — the answer budget
+  plus the floored rung's headroom (`design/model.md` → Thinking).
 - **An empty answer re-asks once at a raised budget** (ruling
   2026-10-29): empty text means the whole output budget went to
   non-visible tokens — a floored reasoning effort can still spin
   (observed: glm-5.3-flash spending all 2000 output tokens at effort
   "low", the same image answering on a manual re-ask). The re-ask
-  sends `min(32_768, 4×maxTokens)` — the schema cap is the ceiling —
-  warn-logged, and a second empty answer throws the budget diagnosis.
+  sends `min(65_536, 4× the first cap)` — the wire ceiling bounds the
+  spend — warn-logged, and a second empty answer throws the budget
+  diagnosis.
 - The call's system prompt refuses instructions embedded in the image,
   and **the answer rides fenced** — same rule as search results and
   delegate screens: a vision model's reading of arbitrary image content

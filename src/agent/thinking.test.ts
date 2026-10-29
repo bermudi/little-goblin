@@ -15,7 +15,12 @@
 import { describe, expect, test } from "bun:test";
 import type { Config } from "../config.ts";
 import { _primeOpenRouterCatalog, type OpenRouterRoute } from "./models-dev.ts";
-import { clampThinkingFor, thinkingLevelsFor, thinkingOptions } from "./thinking.ts";
+import {
+	clampThinkingFor,
+	outputTokensFor,
+	thinkingLevelsFor,
+	thinkingOptions,
+} from "./thinking.ts";
 
 const cfg: Config = {
 	providers: {
@@ -590,5 +595,44 @@ describe("responses kind — the /api/v1 door", () => {
 		expect(thinkingOptions(cfg, "relay_responses/gpt-6-astra", "off")).toEqual({
 			relay_responses: { reasoningEffort: "low" },
 		});
+	});
+});
+
+describe("outputTokensFor — the answer budget plus the rung's headroom", () => {
+	test("off on a forced-thinking model buys its weakest rung's room", () => {
+		// glm-5.3's "off" floors to low on both z.ai doors.
+		expect(outputTokensFor(cfg, "zai/glm-5.3", "off", 2_000)).toBe(4_048);
+		expect(outputTokensFor(cfg, "zai_responses/glm-5.3", "off", 2_000)).toBe(4_048);
+		expect(outputTokensFor(cfg, "codex/gpt-6-astra", "off", 2_000)).toBe(4_048);
+	});
+
+	test("a rung buys its own headroom; an unexpressible one clamps up", () => {
+		// glm-5.3's ladder is low|high|max — "medium" lands on "high".
+		expect(outputTokensFor(cfg, "zai/glm-5.3", "high", 8_192)).toBe(16_384);
+		expect(outputTokensFor(cfg, "zai/glm-5.3", "medium", 8_192)).toBe(16_384);
+		expect(outputTokensFor(cfg, "zai/glm-5.3", "max", 8_192)).toBe(40_960);
+	});
+
+	test("a real disable and a knob-free model spend nothing on reasoning", () => {
+		// glm-5.2 off the coding endpoint keeps its toggle — off is a
+		// true disable.
+		expect(outputTokensFor(cfg, "other/glm-5.2", "off", 2_000)).toBe(2_000);
+		// The relay accepts no reasoning knob for GLM at all.
+		expect(outputTokensFor(cfg, "onemin/glm-5.3", "high", 2_000)).toBe(2_000);
+	});
+
+	test("openrouter: a disable is free, a floor buys the weakest rung, unknown hedges low", () => {
+		primeCatalog();
+		expect(outputTokensFor(cfg, "openrouter/openai/gpt-5.4", "off", 2_000)).toBe(2_000);
+		expect(outputTokensFor(cfg, "openrouter/minimax/minimax-m3.1-flash:free", "off", 2_000)).toBe(
+			4_048,
+		);
+		expect(outputTokensFor(cfg, "openrouter/effort/model", "off", 2_000)).toBe(4_048);
+		expect(outputTokensFor(cfg, "openrouter/plain/model", "high", 2_000)).toBe(2_000);
+	});
+
+	test("an unconfigured provider keeps the budget verbatim; the ceiling holds", () => {
+		expect(outputTokensFor(cfg, "ghost/glm-5.3", "high", 2_000)).toBe(2_000);
+		expect(outputTokensFor(cfg, "zai/glm-5.3", "max", 40_000)).toBe(65_536);
 	});
 });

@@ -1367,6 +1367,9 @@ export class Runtime {
 				convId,
 				reviewer: this.reviewer,
 				memoryExcluded: () => store.get(convId)?.memoryExcluded ?? conv.memoryExcluded,
+				// The landed exchange's own taint — a flag flipped back
+				// since admission can't cleanse what the turn consumed.
+				exchangeExcluded: landed.exchangeExcluded,
 				nextTurnSeq: () => ++this.turnCounter,
 				priorTurn: () => this.lastTurns.get(convId),
 				rememberTurn: (prior) => this.lastTurns.set(convId, prior),

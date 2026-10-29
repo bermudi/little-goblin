@@ -347,7 +347,9 @@ land and inside the append transaction, `memory_search`/`memory_reflect`/
 live flag after it returns, and a reply that derived from an
 excluded-era input (a steer or trigger stamped while the flag was off)
 is refused retention and stamped ineligible itself — re-enabling cannot
-cleanse it. The reviewer's gate already read the flag live; fenced and
+cleanse it. The reviewer's gate reads both the live flag and the landed
+exchange's own exclusion decision — a turn that consumed an excluded-era
+input never gates even when the flag lifted before review ran; fenced and
 failed turns commit no memory regardless of stamps;
 a compaction summary inherits its folded span's eligibility — eligible
 only when every event below the boundary was eligible, recomputed per

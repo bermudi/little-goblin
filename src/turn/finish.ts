@@ -76,6 +76,10 @@ export interface LandedAttempt {
 	done: CompletedDone;
 	window: WindowSignal | null;
 	source: RetentionSource;
+	// This owned exchange consumed at least one append-time-ineligible
+	// user event — independent of the live flag, which may have flipped
+	// back by review time.
+	exchangeExcluded: boolean;
 }
 
 export function landAttempt(deps: LandDeps): LandedAttempt {
@@ -89,6 +93,26 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 	}
 	const elig = deps.memoryEligibility();
 	const finalSource = retentionSourceFrom(memoryBoundEntries(finalEntries, elig));
+	// Taint: an excluded-era input inside this exchange (the trigger
+	// itself or a steer, written while memory was off) can leak
+	// through the reply even when the flag is back on — the stamps
+	// only filter the *source*, not what the answer derived from.
+	// Refuse retention, stamp the reply ineligible, and keep the
+	// reviewer out so later memory work stays clean too. Same
+	// segmentation as retentionSourceFrom: the exchange is what
+	// follows the last real assistant entry — by causal position,
+	// never seq: an anchored reply reorders the seqs behind it, so a
+	// seq boundary would read this exchange's own steer as history.
+	let lastAsstIndex = -1;
+	for (let i = 0; i < finalEntries.length; i++) {
+		const e = finalEntries[i]!;
+		if (e.message.role === "assistant" && !isCompactionSummaryId(e.message.id)) {
+			lastAsstIndex = i;
+		}
+	}
+	const exchangeExcluded = finalEntries.some(
+		(e, i) => i > lastAsstIndex && e.message.role === "user" && !elig.eligibleSeqs.has(e.seq),
+	);
 	let reply = deps.responseMessage;
 	const forcedKind = deps.forcedKind;
 	if (
@@ -114,24 +138,7 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 		deps.sink.onTextDelta(`\n\n${note}`);
 	}
 	if (reply !== null) {
-		// Taint: an excluded-era input inside this exchange (the trigger
-		// itself or a steer, written while memory was off) can leak
-		// through the reply even when the flag is back on — the stamps
-		// only filter the *source*, not what the answer derived from.
-		// Refuse retention and stamp the reply ineligible so later
-		// memory work keeps it out too. Same segmentation as
-		// retentionSourceFrom: the exchange is what follows the last
-		// real assistant entry.
-		let lastAsstSeq = -1;
-		for (const e of finalEntries) {
-			if (e.message.role === "assistant" && !isCompactionSummaryId(e.message.id)) {
-				lastAsstSeq = e.seq;
-			}
-		}
-		const tainted = finalEntries.some(
-			(e) => e.seq > lastAsstSeq && e.message.role === "user" && !elig.eligibleSeqs.has(e.seq),
-		);
-		const memoryOpt = tainted
+		const memoryOpt = exchangeExcluded
 			? null
 			: retentionOpt(
 					deps.conv,
@@ -141,7 +148,7 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 					finalSource,
 					reply,
 				);
-		if (tainted) {
+		if (exchangeExcluded) {
 			log.info("memory retention refused — exchange consumed an excluded event", {
 				conversation: convId,
 			});
@@ -149,7 +156,7 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 		deps.append([reply], {
 			anchorSeq: finalAnchor,
 			...(memoryOpt !== null ? { memory: memoryOpt } : {}),
-			...(tainted ? { exclude: true } : {}),
+			...(exchangeExcluded ? { exclude: true } : {}),
 		});
 	}
 	const window =
@@ -183,6 +190,7 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 		done: forcedKind !== null ? { kind: "completed", forced: forcedKind } : { kind: "completed" },
 		window,
 		source: finalSource,
+		exchangeExcluded,
 	};
 }
 
@@ -256,6 +264,9 @@ export interface ReviewDeps {
 	convId: string;
 	reviewer: Reviewer | undefined;
 	memoryExcluded(): boolean;
+	// The landed exchange's own taint — off the record even when the
+	// live flag flipped back before this submission.
+	exchangeExcluded: boolean;
 	nextTurnSeq(): number;
 	priorTurn(): PriorTurnContext | undefined;
 	rememberTurn(prior: PriorTurnContext): void;
@@ -270,8 +281,11 @@ export interface ReviewDeps {
 export function submitTurnReview(deps: ReviewDeps): void {
 	const reviewer = deps.reviewer;
 	if (reviewer === undefined) return;
-	if (deps.memoryExcluded()) {
-		log.info("reviewer skipped — memory excluded", { conversation: deps.convId });
+	if (deps.exchangeExcluded || deps.memoryExcluded()) {
+		log.info("reviewer skipped — memory excluded", {
+			conversation: deps.convId,
+			exchangeExcluded: deps.exchangeExcluded,
+		});
 		deps.forgetTurn();
 		return;
 	}

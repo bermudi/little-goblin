@@ -252,7 +252,10 @@ job (tune it, don't duplicate it).
   memory-excluded conversation never gates — `/memory off` means retain
   nothing from here, and a durable skill IS retention. The skip is
   unconditional (no config flag) and logged; an excluded turn is also
-  never stored as the next turn's correction context.
+  never stored as the next turn's correction context. The gate reads the
+  landed exchange's own stamps too: a turn that consumed an
+  excluded-era trigger or steer stays off the record after `/memory on`,
+  and the skip clears the prior-turn chain with it.
 - **It proposes, then tells (ruling 2026-10-10).** Auto-created skills
   are proposed, not installed — the reviewer never writes the live
   catalog: a validated skill parks in `skills-proposed/<name>/` and

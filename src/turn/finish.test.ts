@@ -14,6 +14,7 @@ import { setLogFile } from "../log.ts";
 import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory/mod.ts";
 import type { CompletedTurn, PriorTurnContext, ReviewerDeps } from "../reviewer.ts";
 import { Reviewer } from "../reviewer.ts";
+import { compactionSummaryId } from "../tags.ts";
 import { scriptedModel, textResult } from "../testkit/fake-model.ts";
 import { waitUntil } from "../testkit.ts";
 import { type LandDeps, landAttempt, retentionOpt, submitTurnReview } from "./finish.ts";
@@ -339,6 +340,7 @@ describe("landAttempt", () => {
 		// No memory document, and the reply carries the exclusion stamp
 		// forward — later memory work keeps it out too.
 		expect(h.appended[0]!.opts).toEqual({ anchorSeq: 4, exclude: true });
+		expect(h.landed.exchangeExcluded).toBe(true);
 	});
 
 	test("an exchange of only eligible inputs retains and stamps normally", () => {
@@ -356,6 +358,131 @@ describe("landAttempt", () => {
 			anchorSeq: 3,
 			memory: expect.objectContaining({ target: "mem-target" }),
 		});
+		expect(h.landed.exchangeExcluded).toBe(false);
+	});
+
+	// Causal order, not seq, draws the exchange boundary: a steer (seq 2)
+	// sits causally after the prior exchange's late reply (seq 3, anchored
+	// to seq 1), so a seq comparison sees it as old history and lets the
+	// taint slip past.
+	test("an excluded steer behind a late-anchored reply still taints the exchange", () => {
+		const h = land({
+			memory: memDeps(),
+			modelEntries: () => [
+				{ seq: 1, message: msg("u1", "user", text("first")) },
+				{ seq: 3, message: msg("a1", "assistant", text("earlier answer")) },
+				{ seq: 2, message: msg("steer", "user", text("secret steer")) },
+				{ seq: 4, message: msg("u2", "user", text("run it")) },
+			],
+			steerMark: 4,
+			memoryEligibility: () => ({ eligibleSeqs: new Set([1, 3, 4]), summaryEligible: false }),
+		});
+		expect(h.appended).toHaveLength(1);
+		expect(h.appended[0]!.opts).toEqual({ anchorSeq: 4, exclude: true });
+		expect(h.landed.exchangeExcluded).toBe(true);
+	});
+
+	// The same causal shape, all eligible: the steered user event and the
+	// newest trigger are this exchange's inputs, in causal order.
+	test("the same causal shape all eligible retains and reports no taint", () => {
+		const h = land({
+			memory: memDeps(),
+			modelEntries: () => [
+				{ seq: 1, message: msg("u1", "user", text("first")) },
+				{ seq: 3, message: msg("a1", "assistant", text("earlier answer")) },
+				{ seq: 2, message: msg("steer", "user", text("steer it")) },
+				{ seq: 4, message: msg("u2", "user", text("run it")) },
+			],
+			steerMark: 4,
+			memoryEligibility: () => ({ eligibleSeqs: new Set([1, 2, 3, 4]), summaryEligible: false }),
+		});
+		expect(h.appended).toHaveLength(1);
+		expect(h.appended[0]!.opts).toEqual({
+			anchorSeq: 4,
+			memory: expect.objectContaining({ target: "mem-target" }),
+		});
+		expect(h.landed.exchangeExcluded).toBe(false);
+		expect(h.landed.source.userTexts).toEqual(["steer it", "run it"]);
+	});
+
+	// An exclusion in the prior exchange is history, not this turn's
+	// taint: the causal boundary sits at the last real assistant, so a
+	// steer excluded before it cannot reach the current exchange.
+	test("an excluded event in the prior exchange is history, not taint", () => {
+		const h = land({
+			memory: memDeps(),
+			modelEntries: () => [
+				{ seq: 1, message: msg("u1", "user", text("excluded era")) },
+				{ seq: 3, message: msg("a1", "assistant", text("earlier answer")) },
+				{ seq: 2, message: msg("steer", "user", text("steer it")) },
+				{ seq: 4, message: msg("u2", "user", text("run it")) },
+			],
+			steerMark: 4,
+			memoryEligibility: () => ({ eligibleSeqs: new Set([2, 3, 4]), summaryEligible: false }),
+		});
+		expect(h.appended).toHaveLength(1);
+		expect(h.appended[0]!.opts).toEqual({
+			anchorSeq: 4,
+			memory: expect.objectContaining({ target: "mem-target" }),
+		});
+		expect(h.landed.exchangeExcluded).toBe(false);
+	});
+
+	test("an excluded event past the steer mark was never consumed — no taint", () => {
+		const h = land({
+			memory: memDeps(),
+			modelEntries: () => [
+				{ seq: 1, message: msg("u1", "user", text("first")) },
+				{ seq: 2, message: msg("a1", "assistant", text("earlier answer")) },
+				{ seq: 3, message: msg("u2", "user", text("run it")) },
+				{ seq: 4, message: msg("u3", "user", text("arrived after the mark")) },
+			],
+			steerMark: 3,
+			memoryEligibility: () => ({ eligibleSeqs: new Set([1, 2, 3]), summaryEligible: false }),
+		});
+		expect(h.appended).toHaveLength(1);
+		expect(h.appended[0]!.opts).toEqual({
+			anchorSeq: 3,
+			memory: expect.objectContaining({ target: "mem-target" }),
+		});
+		expect(h.landed.exchangeExcluded).toBe(false);
+	});
+
+	// The synthetic summary is carried context, never a real assistant:
+	// it cannot draw a boundary that launders the excluded trigger
+	// behind it into "prior history".
+	test("a compaction summary is no boundary — the excluded trigger still taints", () => {
+		const h = land({
+			memory: memDeps(),
+			modelEntries: () => [
+				{ seq: 1, message: msg("u1", "user", text("excluded trigger")) },
+				{ seq: 2, message: msg(compactionSummaryId(2), "assistant", text("folded era")) },
+				{ seq: 3, message: msg("u2", "user", text("run it")) },
+			],
+			steerMark: 3,
+			memoryEligibility: () => ({ eligibleSeqs: new Set([2, 3]), summaryEligible: false }),
+		});
+		expect(h.appended).toHaveLength(1);
+		expect(h.appended[0]!.opts).toEqual({ anchorSeq: 3, exclude: true });
+		expect(h.landed.exchangeExcluded).toBe(true);
+	});
+
+	// No reply, still tainted: a tool-only landing appends nothing but
+	// the tool digest it hands the reviewer derived from the excluded
+	// input — the flag must surface outside the append path.
+	test("a replyless landing over an excluded input still reports the taint", () => {
+		const h = land({
+			responseMessage: null,
+			modelEntries: () => [
+				{ seq: 1, message: msg("u1", "user", text("first")) },
+				{ seq: 2, message: msg("a1", "assistant", text("earlier")) },
+				{ seq: 3, message: msg("u2", "user", text("private steer")) },
+			],
+			steerMark: 3,
+			memoryEligibility: () => ({ eligibleSeqs: new Set([1, 2]), summaryEligible: false }),
+		});
+		expect(h.appended).toHaveLength(0);
+		expect(h.landed.exchangeExcluded).toBe(true);
 	});
 });
 
@@ -414,12 +541,8 @@ describe("retentionOpt", () => {
 	});
 
 	test("a suppressed document is skipped; an unreadable suppression store skips too", () => {
-		expect(
-			retentionOpt(conv(), false, memDeps({ suppressed: true }), 3, src, reply),
-		).toBeNull();
-		expect(
-			retentionOpt(conv(), false, memDeps({ unreadable: true }), 3, src, reply),
-		).toBeNull();
+		expect(retentionOpt(conv(), false, memDeps({ suppressed: true }), 3, src, reply)).toBeNull();
+		expect(retentionOpt(conv(), false, memDeps({ unreadable: true }), 3, src, reply)).toBeNull();
 	});
 
 	test("a text exchange schedules its document under the memory target", () => {
@@ -465,6 +588,9 @@ interface ReviewHarness {
 	submitWithReviewer(reviewer: Reviewer | undefined): void;
 	state: {
 		excluded: boolean;
+		// The landed exchange's own taint — set from a real landAttempt
+		// result, independent of the live flag.
+		exchangeExcluded: boolean;
 		seq: number;
 		prior: PriorTurnContext | undefined;
 		forgotten: number;
@@ -475,6 +601,7 @@ interface ReviewHarness {
 function reviewHarness(over: { reviewer?: Reviewer } = {}): ReviewHarness {
 	const state: ReviewHarness["state"] = {
 		excluded: false,
+		exchangeExcluded: false,
 		seq: 0,
 		prior: undefined,
 		forgotten: 0,
@@ -485,6 +612,7 @@ function reviewHarness(over: { reviewer?: Reviewer } = {}): ReviewHarness {
 			convId: "dm:1",
 			reviewer,
 			memoryExcluded: () => state.excluded,
+			exchangeExcluded: state.exchangeExcluded,
 			nextTurnSeq: () => ++state.seq,
 			priorTurn: () => state.prior,
 			rememberTurn: (prior) => {
@@ -558,7 +686,46 @@ describe("submitTurnReview", () => {
 		expect(h.state.seq).toBe(0);
 		expect(h.state.forgotten).toBe(1);
 		const skipped = logLines(root).find((e) => e.msg === "reviewer skipped — memory excluded");
-		expect(skipped).toMatchObject({ conversation: "dm:1" });
+		expect(skipped).toMatchObject({ conversation: "dm:1", exchangeExcluded: false });
+	});
+
+	test("a tainted exchange never gates even with the flag back on — the chain still breaks", async () => {
+		const root = tmpdirPath();
+		setLogFile(join(root, "goblin.log"));
+		let gated = 0;
+		const h = reviewHarness({
+			reviewer: reviewerStub(async () => {
+				gated++;
+				return { answers: {}, inputTokens: null, cost: null };
+			}),
+		});
+		// A clean turn first: remembered, the correction chain's head.
+		h.submit();
+		await tick();
+		expect(gated).toBe(1);
+		expect(h.state.prior).toBeDefined();
+		// The real landing reports its taint; the live flag stayed off.
+		const { landed } = land({
+			memory: memDeps(),
+			modelEntries: () => [
+				{ seq: 1, message: msg("u1", "user", text("first")) },
+				{ seq: 2, message: msg("a1", "assistant", text("earlier")) },
+				{ seq: 3, message: msg("steer", "user", text("secret steer")) },
+			],
+			steerMark: 3,
+			memoryEligibility: () => ({ eligibleSeqs: new Set([1, 2]), summaryEligible: false }),
+		});
+		expect(landed.exchangeExcluded).toBe(true);
+		h.state.exchangeExcluded = landed.exchangeExcluded;
+		h.submit();
+		await tick();
+		expect(gated).toBe(1);
+		expect(h.state.seq).toBe(1);
+		expect(h.state.remembered).toHaveLength(1);
+		expect(h.state.forgotten).toBe(1);
+		expect(h.state.prior).toBeUndefined();
+		const skipped = logLines(root).find((e) => e.msg === "reviewer skipped — memory excluded");
+		expect(skipped).toMatchObject({ conversation: "dm:1", exchangeExcluded: true });
 	});
 
 	test("exclusion is read at completion — flipping it between turns skips the next review", async () => {
@@ -702,6 +869,7 @@ describe("submitTurnReview", () => {
 			convId: "dm:1",
 			reviewer,
 			memoryExcluded: () => false,
+			exchangeExcluded: false,
 			nextTurnSeq: () => 1,
 			priorTurn: () => undefined,
 			rememberTurn: () => {},
@@ -736,6 +904,7 @@ describe("submitTurnReview", () => {
 			convId: "dm:1",
 			reviewer,
 			memoryExcluded: () => false,
+			exchangeExcluded: false,
 			nextTurnSeq: () => 1,
 			priorTurn: () => undefined,
 			rememberTurn: () => {},

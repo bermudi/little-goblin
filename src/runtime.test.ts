@@ -2612,6 +2612,131 @@ describe("skill reviewer hook", () => {
 		expect(gated).toBe(false);
 		r.store.close();
 	});
+
+	// A counting gate on a real Reviewer over the runtime's own tool
+	// plumbing — the skip must come from the landed exchange's stamp,
+	// not the live flag, which is back off by review time.
+	function countingReviewer(r: Rig, gated: { n: number }) {
+		return new Reviewer({
+			gate: {
+				decide: async () => {
+					gated.n++;
+					return { answers: {}, inputTokens: null, cost: null };
+				},
+			},
+			thresholds: { correction: 0.8, procedure: 0.8 },
+			queueCap: 3,
+			evidence: { calls: 8, argChars: 300, outChars: 300 },
+			reviewModel: async () => {
+				throw new Error("must not resolve");
+			},
+			store: r.store,
+			skillsDir: "/none",
+			proposedDir: "/none",
+			workspaceDir: "/none",
+			notify: async () => {},
+		});
+	}
+
+	test("an excluded trigger's turn never gates — re-enabling mid-turn cannot cleanse it", async () => {
+		const gate = deferred<void>();
+		const s = gatedToolModel("answered");
+		let executions = 0;
+		const r = rig({
+			model: s.model,
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executions++;
+						await gate.promise;
+						return { ok: true };
+					},
+				}),
+			},
+		});
+		const gated = { n: 0 };
+		r.runtime.setReviewer(countingReviewer(r, gated));
+		try {
+			// The trigger lands under exclusion — stamped ineligible at
+			// append. The flag lifts while the tool is still held, so at
+			// land the live gate alone would let the review through.
+			r.store.setMeta(r.conv.id, { memoryExcluded: true });
+			const s1 = submit(r, "private trigger");
+			await s1.firstToolCall; // parked inside the tool, mid-turn
+			r.store.setMeta(r.conv.id, { memoryExcluded: false });
+			gate.resolve();
+			expect(await s1.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect(executions).toBe(1); // the digest carried a real call
+			const elig = r.store.memoryEligibility(r.conv.id);
+			for (const e of r.store.historyEntries(r.conv.id)) {
+				expect(elig.eligibleSeqs.has(e.seq)).toBe(false);
+			}
+			expect(gated.n).toBe(0);
+			// The next clean turn proves the reviewer still works.
+			const s2 = submit(r, "clean question");
+			expect(await s2.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect(gated.n).toBe(1);
+		} finally {
+			gate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a steer written under exclusion taints the consuming turn — no gate after re-enable", async () => {
+		const gate = deferred<void>();
+		const s = gatedToolModel("adjusted");
+		let executions = 0;
+		const r = rig({
+			model: s.model,
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executions++;
+						await gate.promise;
+						return { ok: true };
+					},
+				}),
+			},
+		});
+		const gated = { n: 0 };
+		r.runtime.setReviewer(countingReviewer(r, gated));
+		try {
+			const s1 = submit(r, "start this");
+			await s1.firstToolCall; // parked inside the tool — steer window open
+			// The steer is written while the flag is on, stamped
+			// ineligible, and folded into the held turn's second step.
+			r.store.setMeta(r.conv.id, { memoryExcluded: true });
+			const s2 = submit(r, "private steer");
+			r.store.setMeta(r.conv.id, { memoryExcluded: false });
+			gate.resolve();
+			expect(await s1.done).toEqual({ kind: "completed" });
+			expect(await s2.done).toEqual({ kind: "completed" });
+			await drain(r);
+			// The steer really rode step 2's provider prompt — the reply
+			// derived from it.
+			expect(s.prompts[1]).toContain("private steer");
+			const elig = r.store.memoryEligibility(r.conv.id);
+			const entries = r.store.historyEntries(r.conv.id);
+			expect(elig.eligibleSeqs.has(entries[0]!.seq)).toBe(true); // eligible trigger
+			expect(elig.eligibleSeqs.has(entries[1]!.seq)).toBe(false); // excluded steer
+			expect(elig.eligibleSeqs.has(entries[2]!.seq)).toBe(false); // tainted reply
+			expect(executions).toBe(1); // the digest carried a real call
+			expect(gated.n).toBe(0);
+			const s3 = submit(r, "clean question");
+			expect(await s3.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect(gated.n).toBe(1);
+		} finally {
+			gate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
 });
 
 // The gate blocks the tool's execute, so the step boundary (prepareStep

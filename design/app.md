@@ -475,12 +475,17 @@ survive. A project-bound source refuses to branch into an archived project
 not in scope: `editMessageId` names a durable event, which only the app
 channel addresses.
 
-## Mobile navigation (ruling 2026-10-24, operator ask)
+## Mobile navigation (ruling 2026-10-24, operator ask; desktop landed 2026-10-30)
 
 Operator ask: the sidebar prototypes (`design/prototypes/sidebar/`) picked
-direction C — a glyph gutter — for desktop and direction M for phones. This
-ruling lands the phone half only; the desktop rail is untouched and C's
-gutter remains chosen-but-unbuilt.
+direction C — a glyph gutter — for desktop and direction M for phones. The
+phone half shipped first; the desktop C rail landed in `f9f7f78e` — a 52px
+glyph spine (New · Search · Chats/Projects/Notes · ops pages · Settings
+docked low) beside a 216px panel that lists one surface at a time. Search
+is a pane mode (focused input, Esc returns to Chats), each panel head
+links its index page, Attention carries a violet dot while items wait,
+and a header toggle collapses the whole rail. The glyph that is lit is
+`pane` or `page` — panel surface and open page may light two at once.
 
 On phone widths (≤720px, the same breakpoint the drawer used) the
 slide-in drawer is retired on the app channel. Navigation is a fixed thumb

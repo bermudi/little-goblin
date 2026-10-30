@@ -1203,7 +1203,8 @@ describe("feed armed derivation", () => {
 			feedForProject({ db: r.store.db, resps: r.resps, programs: r.programs }, r.projectId)[0]!;
 		let item = feed();
 		expect(item.responsibility.armed).toBe(true);
-		expect(item.nextCheckinAt).toBe(program.nextRun);
+		expect(Date.parse(item.nextCheckinAt!)).toBeGreaterThanOrEqual(Date.parse(resp.followup.dueAt));
+		expect(item.nextCheckinReason).toBe(resp.followup.reason);
 		r.programs.update(program.id, { enabled: false });
 		item = feed();
 		expect(item.responsibility.armed).toBe(false);

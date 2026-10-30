@@ -26,7 +26,7 @@ import {
 	type SchedulerDeps,
 } from "./scheduler.ts";
 import { System1Error } from "./system1.ts";
-import { waitUntil } from "./testkit.ts";
+import { useHome, waitUntil } from "./testkit.ts";
 
 let dirs: string[] = [];
 function tmpdirPath(): string {
@@ -78,6 +78,7 @@ interface Harness {
 }
 
 function harness(): Harness {
+	useHome("goblin-scheduler-home-");
 	const dir = tmpdirPath();
 	const programs = openPrograms(join(dir, "goblin.sqlite"));
 	const store = openStore(join(dir, "conv.sqlite"));
@@ -219,7 +220,7 @@ describe("responsibility-destination programs", () => {
 		});
 		resps.setArmed(responsibility.responsibilityId, true, null);
 		const program = h.deps.programs.create({
-			name: `followup:${responsibility.responsibilityId}`,
+			name: `project-checkin:${responsibility.responsibilityId}`,
 			charter: "check in",
 			cron: "* * * * *",
 			responsibilityId: responsibility.responsibilityId,
@@ -287,7 +288,7 @@ describe("responsibility-destination programs", () => {
 		const events = () =>
 			h.store.db.query<{ c: number }, []>("SELECT COUNT(*) AS c FROM work_events").get()!.c;
 		const program = h.deps.programs.create({
-			name: `followup:${responsibility.responsibilityId}`,
+			name: `project-checkin:${responsibility.responsibilityId}`,
 			charter: "check in",
 			cron: "* * * * *",
 			responsibilityId: responsibility.responsibilityId,
@@ -353,7 +354,7 @@ describe("responsibility-destination programs", () => {
 		const events = () =>
 			h.store.db.query<{ c: number }, []>("SELECT COUNT(*) AS c FROM work_events").get()!.c;
 		const program = h.deps.programs.create({
-			name: `followup:${responsibility.responsibilityId}`,
+			name: `project-checkin:${responsibility.responsibilityId}`,
 			charter: "check in",
 			cron: "* * * * *",
 			responsibilityId: responsibility.responsibilityId,
@@ -412,7 +413,7 @@ describe("responsibility-destination programs", () => {
 		const events = () =>
 			h.store.db.query<{ c: number }, []>("SELECT COUNT(*) AS c FROM work_events").get()!.c;
 		const program = h.deps.programs.create({
-			name: `followup:${responsibility.responsibilityId}`,
+			name: `project-checkin:${responsibility.responsibilityId}`,
 			charter: "check in",
 			cron: "* * * * *",
 			responsibilityId: responsibility.responsibilityId,
@@ -1905,7 +1906,7 @@ describe("responsibility check-in payload", () => {
 			cursor: { secret: "not-shipped" },
 		});
 		const program = h.deps.programs.create({
-			name: `followup:${responsibility.responsibilityId}`,
+			name: `project-checkin:${responsibility.responsibilityId}`,
 			charter: "unique-charter-body",
 			cron: "* * * * *",
 			responsibilityId: responsibility.responsibilityId,

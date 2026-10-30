@@ -48,6 +48,7 @@ export interface ObserverDeps {
 	pump(): void;
 	/** One snapshot per (server, session) group — the adapter seam. */
 	list(server: string, session: string): Promise<OperatorAgent[]>;
+	now?: (() => Date) | undefined;
 }
 
 export interface ResponsibilityObserver {
@@ -134,7 +135,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		resps.updateCursor(att.attachmentId, cursor);
 		if (health !== null) resps.setHealth(att.attachmentId, health);
 		if (dev !== null) {
-			wakes.record({
+			const recorded = wakes.record({
 				sourceKey: dev.sourceKey,
 				conversationId,
 				kind: dev.kind,
@@ -143,6 +144,9 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 				origin: "observer",
 				responsibilityId: att.responsibilityId,
 			});
+			if (recorded.created) {
+				resps.deferSilenceFollowup(att.responsibilityId, deps.now?.() ?? new Date());
+			}
 		}
 	}
 

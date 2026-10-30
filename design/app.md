@@ -735,7 +735,13 @@ delivery edges:
   delete the follow-up behind the responsibility's back. Every armed
   reader — the app feed and the agent-facing `status` action alike —
   recomputes from the linked program row (armed = exists ∧ enabled ∧
-  active), sharing one `armedView`.
+  scheduled ∧ active), sharing one `armedView`. A responsibility's next
+  check-in is the scheduled evaluation at/after its persisted review
+  due time, not the Program's next ordinary tick. The feed exposes that
+  time and purpose; the responsibility carries the exact due threshold
+  and plan token. Disabled, missing, or non-active follow-ups show no
+  next check-in. Existing/operator-edited Program cadence remains
+  authoritative and can delay the evaluation past that due threshold.
   The app feed additionally keeps its polls honest (2026-10-20): a
   refresh failure alongside loaded rows renders a stale-state banner
   instead of standing mute, and each response carries the refresh's

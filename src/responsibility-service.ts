@@ -27,6 +27,7 @@ import {
 } from "./responsibilities.ts";
 import type { WakeStore } from "./wake-store.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
+import { isFollowupProgram } from "./responsibility-followup.ts";
 
 export interface ServiceDeps {
 	db: Database;
@@ -99,16 +100,17 @@ export interface ResponsibilityService {
 	): { operation: PromptOperation } | { refused: string; error?: string };
 }
 
-// The follow-up's charter: time is the cron's job; this is the purpose
-// the occurrence replays into the coordination lane each fire.
-const FOLLOWUP_CRON = "*/15 * * * *";
+// Cron checks the durable plan in code; elapsed ticks are not model wakes.
+const FOLLOWUP_CRON = "* * * * *";
 function followupCharter(resp: Responsibility): string {
 	return (
 		`Scheduled check-in on a handed-over responsibility.\n` +
 		`Outcome: ${resp.outcome}\n` +
 		`Review the attached agents' observed state and pending developments; ` +
 		`if the outcome is evidenced, report and complete; if blocked, surface ` +
-		`the blocker; otherwise verify the next action is progressing.`
+		`the blocker; otherwise verify the next action is progressing. ` +
+		`Use responsibility action=followup with followup:{dueAt, reason} to set the next useful review. ` +
+		`Re-read responsibility status before acting: this trigger may have waited in a queue.`
 	);
 }
 
@@ -282,7 +284,7 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 				return null;
 			}
 			const arm = (program: Program): Program => {
-				const armed = program.enabled && resp.status === "active";
+				const armed = program.enabled && program.cron !== null && resp.status === "active";
 				resps.setArmed(
 					responsibilityId,
 					armed,
@@ -290,7 +292,9 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 						? null
 						: !program.enabled
 							? "follow-up program disabled"
-							: `responsibility ${resp.status}`,
+							: program.cron === null
+								? "follow-up schedule missing"
+								: `responsibility ${resp.status}`,
 				);
 				return program;
 			};
@@ -324,9 +328,7 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 			// the responsibility binding: independent programs — a mail
 			// watch, a webhook — may legally share the destination and must
 			// never be adopted or silenced as crashed twins.
-			const orphans = programs
-				.forResponsibility(resp.responsibilityId)
-				.filter((p) => p.kind === "followup" || p.name === `followup:${resp.responsibilityId}`);
+			const orphans = programs.forResponsibility(resp.responsibilityId).filter(isFollowupProgram);
 			if (orphans.length > 0) {
 				const orphan = orphans[0]!;
 				for (const extra of orphans.slice(1)) {

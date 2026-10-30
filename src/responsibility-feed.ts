@@ -12,7 +12,7 @@ import type {
 	ResponsibilityStore,
 } from "./responsibilities.ts";
 import { armedView } from "./responsibilities.ts";
-import type { ProgramsStore } from "./programs.ts";
+import { latestFireAtOrBefore, nextFire, type ProgramsStore } from "./programs.ts";
 
 export interface FeedWake {
 	wakeId: number;
@@ -41,8 +41,9 @@ export interface FeedItem {
 	events: FeedEvent[];
 	/** Older durable events the window omitted — the rows remain. */
 	eventsTruncated: number;
-	/** The linked follow-up Program's next fire — null without one. */
+	/** Earliest scheduled evaluation at/after the planned review. */
 	nextCheckinAt: string | null;
+	nextCheckinReason: string | null;
 	/** Newest development timestamp — the pill's freshness. */
 	lastActivityAt: string | null;
 }
@@ -72,8 +73,7 @@ interface EventRow {
 
 // The wire carries each responsibility's newest developments, not all
 // of them: an anchored coordination conversation can never be deleted
-// (its history is unprunable by ruling) and each active follow-up mints
-// ~96 events/day, while the app refetches this read model every 15s —
+// (its history is unprunable by ruling), while the app refetches every 15s —
 // so the payload is bounded by this window, never by the work.
 export const FEED_EVENT_WINDOW = 50;
 
@@ -136,6 +136,21 @@ function item(deps: FeedDeps, responsibility: Responsibility): FeedItem {
 		responsibility.followupProgramId === null || deps.programs === undefined
 			? null
 			: deps.programs.get(Number(responsibility.followupProgramId));
+	let nextCheckinAt: string | null = null;
+	if (arm.armed && followup?.cron !== null && followup?.nextRun != null) {
+		const due = responsibility.followup.dueAt;
+		nextCheckinAt =
+			Date.parse(followup.nextRun) >= Date.parse(due)
+				? followup.nextRun
+				: nextFire(
+						followup.cron,
+						latestFireAtOrBefore(
+							followup.cron,
+							new Date(followup.nextRun),
+							new Date(Date.parse(due) - 1),
+						),
+					).toISOString();
+	}
 	return {
 		responsibility: {
 			...responsibility,
@@ -146,7 +161,8 @@ function item(deps: FeedDeps, responsibility: Responsibility): FeedItem {
 		operations: deps.resps.operationsFor(responsibility.responsibilityId),
 		events,
 		eventsTruncated: truncated,
-		nextCheckinAt: arm.armed ? (followup?.nextRun ?? null) : null,
+		nextCheckinAt,
+		nextCheckinReason: nextCheckinAt === null ? null : responsibility.followup.reason,
 		lastActivityAt: events.length === 0 ? null : events[events.length - 1]!.createdAt,
 	};
 }

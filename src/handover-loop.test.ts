@@ -118,8 +118,8 @@ describe("the handover loop, end to end", () => {
 		// event in one transaction, deduped polls — are covered by the
 		// responsibility-observer suite against the same stores.)
 
-		// 3. Scheduled check-in — the occurrence lands a development on
-		// the coordination lane, deduped by its occurrence key.
+		// 3. A due commitment, not an ordinary clock tick, lands a
+		// development on the coordination lane with a durable plan key.
 		const recorded: string[] = [];
 		const schedDeps = {
 			responsibilities: resps,
@@ -130,8 +130,12 @@ describe("the handover loop, end to end", () => {
 			programs,
 		} as unknown as SchedulerDeps;
 		const program = programs.get(Number(responsibility.followupProgramId))!;
+		resps.planFollowup(id, {
+			dueAt: program.nextRun!,
+			reason: "Verify the promised test result",
+		});
 		fireScheduled(schedDeps, program, new Date(program.nextRun!));
-		expect(recorded).toEqual([expect.stringContaining(`program:${program.id}:occ:`)]);
+		expect(recorded).toEqual([expect.stringContaining(`followup:${id}:`)]);
 
 		// 4. The feed reports everything — handover + check-in events
 		// with wake dispositions, attachment health, next check-in.

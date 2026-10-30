@@ -23,6 +23,12 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { log } from "./log.ts";
 import type { ProgramsStore } from "./programs.ts";
+import {
+	followupCommitmentSchema,
+	followupSchema,
+	silenceFollowup,
+	type ResponsibilityFollowup,
+} from "./responsibility-followup.ts";
 
 export type ResponsibilityStatus =
 	| "active"
@@ -63,6 +69,7 @@ export interface Responsibility {
 	coordinationConversationId: string;
 	handoverKey: string | null;
 	followupProgramId: string | null;
+	followup: ResponsibilityFollowup;
 	armed: boolean;
 	notArmedReason: string | null;
 	createdAt: string;
@@ -183,6 +190,12 @@ export interface ResponsibilityStore {
 	/** A correction — the durable operator event that bumps revision. */
 	revise(id: string, understanding: Understanding): Responsibility;
 	setFollowup(id: string, programId: string | null): void;
+	/** Replace the next review; its stable token is the enqueue identity. */
+	planFollowup(id: string, commitment: { dueAt: string; reason: string }): Responsibility;
+	/** Advance only the plan that was durably enqueued; a newer plan wins. */
+	consumeFollowup(id: string, token: string, at: Date): boolean;
+	/** Meaningful developments cover a silence check, never an explicit promise. */
+	deferSilenceFollowup(id: string, at: Date): void;
 	setArmed(id: string, armed: boolean, reason: string | null): void;
 
 	/** Bind a fresh attachment. Throws ReconciliationConflict when an
@@ -273,6 +286,7 @@ const respRowSchema = z.object({
 	coordination_conversation_id: z.string(),
 	handover_key: z.string().nullable(),
 	followup_program_id: z.string().nullable(),
+	followup_json: z.string(),
 	armed: z.number(),
 	not_armed_reason: z.string().nullable(),
 	created_at: z.string(),
@@ -334,6 +348,7 @@ function toResponsibility(r: RespRow): Responsibility {
 		coordinationConversationId: r.coordination_conversation_id,
 		handoverKey: r.handover_key,
 		followupProgramId: r.followup_program_id,
+		followup: followupSchema.parse(JSON.parse(r.followup_json)),
 		armed: r.armed === 1,
 		notArmedReason: r.not_armed_reason,
 		createdAt: r.created_at,
@@ -426,7 +441,8 @@ export function armedView(
 			: programs.get(Number(resp.followupProgramId));
 	const followup =
 		linked !== null && linked.responsibilityId === resp.responsibilityId ? linked : null;
-	const armed = followup !== null && followup.enabled && resp.status === "active";
+	const armed =
+		followup !== null && followup.enabled && followup.cron !== null && resp.status === "active";
 	return {
 		armed,
 		reason: armed
@@ -434,7 +450,9 @@ export function armedView(
 			: followup !== null
 				? !followup.enabled
 					? "follow-up program disabled"
-					: `responsibility ${resp.status}`
+					: followup.cron === null
+						? "follow-up schedule missing"
+						: `responsibility ${resp.status}`
 				: resp.followupProgramId !== null
 					? "follow-up program missing"
 					: (resp.notArmedReason ?? "follow-up program not linked"),
@@ -458,6 +476,7 @@ export function ensureResponsibilitiesSchema(db: Database): void {
 			coordination_conversation_id TEXT NOT NULL REFERENCES conversations(id),
 			handover_key TEXT UNIQUE,
 			followup_program_id TEXT,
+			followup_json TEXT,
 			armed INTEGER NOT NULL DEFAULT 0,
 			not_armed_reason TEXT,
 			created_at TEXT NOT NULL,
@@ -505,6 +524,24 @@ export function ensureResponsibilitiesSchema(db: Database): void {
 			outcome_json TEXT,
 			created_at TEXT NOT NULL
 		)`);
+	db.transaction(() => {
+		const columns = db.query<{ name: string }, []>("PRAGMA table_info(responsibilities)").all();
+		if (!columns.some((c) => c.name === "followup_json")) {
+			db.run("ALTER TABLE responsibilities ADD COLUMN followup_json TEXT");
+		}
+		const rows = db
+			.query<{ responsibility_id: string; created_at: string }, []>(
+				"SELECT responsibility_id, created_at FROM responsibilities WHERE followup_json IS NULL",
+			)
+			.all();
+		const fill = db.prepare(
+			"UPDATE responsibilities SET followup_json = ? WHERE responsibility_id = ?",
+		);
+		for (const row of rows) {
+			fill.run(JSON.stringify(silenceFollowup(new Date(row.created_at))), row.responsibility_id);
+		}
+		if (rows.length > 0) log.info("responsibility follow-up plans migrated", { rows: rows.length });
+	}).immediate();
 	// Same migrate-on-open pattern as wake_deliveries.claim_epoch:
 	// CREATE covers a fresh database, ALTER fills an existing one. The
 	// dispatch identity is snapshotted on the operation so the
@@ -599,8 +636,8 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		"SELECT * FROM responsibilities WHERE status IN ('active','waiting_for_operator','blocked','paused') ORDER BY created_at",
 	);
 	const qInsertResp = db.prepare(
-		`INSERT INTO responsibilities (responsibility_id, project_id, status, understanding_json, outcome, coordination_conversation_id, handover_key, created_at, updated_at)
-		 VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO responsibilities (responsibility_id, project_id, status, understanding_json, outcome, coordination_conversation_id, handover_key, created_at, updated_at, followup_json)
+		 VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
 	);
 	const qRespStatus = db.prepare(
 		"UPDATE responsibilities SET status = ?, updated_at = ?, closed_at = ? WHERE responsibility_id = ?",
@@ -610,6 +647,12 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 	);
 	const qFollowup = db.prepare(
 		"UPDATE responsibilities SET followup_program_id = ?, updated_at = ? WHERE responsibility_id = ?",
+	);
+	const qPlan = db.prepare(
+		"UPDATE responsibilities SET followup_json = ?, updated_at = ? WHERE responsibility_id = ?",
+	);
+	const qConsumePlan = db.prepare(
+		"UPDATE responsibilities SET followup_json = ?, updated_at = ? WHERE responsibility_id = ? AND followup_json = ? AND status = 'active'",
 	);
 	const qArmed = db.prepare(
 		"UPDATE responsibilities SET armed = ?, not_armed_reason = ?, updated_at = ? WHERE responsibility_id = ?",
@@ -724,6 +767,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				input.handoverKey,
 				ts,
 				ts,
+				JSON.stringify(silenceFollowup(new Date(ts))),
 			);
 			log.info("responsibility created", {
 				responsibility: id,
@@ -742,20 +786,70 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		open: () => qRespOpen.all().map((r) => toResponsibility(respRowSchema.parse(r))),
 
 		setStatus(id, status, opts) {
-			const closed = OPEN_STATUSES.has(status) ? null : now();
-			qRespStatus.run(status, now(), closed, id);
+			db.transaction(() => {
+				const current = requireResp(id);
+				const ts = now();
+				const closed = OPEN_STATUSES.has(status) ? null : ts;
+				qRespStatus.run(status, ts, closed, id);
+				if (current.status !== status) {
+					qPlan.run(JSON.stringify(silenceFollowup(new Date(ts))), ts, id);
+				}
+			}).immediate();
 			log.info("responsibility status", { responsibility: id, status, reason: opts?.reason });
 		},
 
 		revise(id, understanding) {
 			const parsed = understandingSchema.parse(understanding);
-			qRevise.run(JSON.stringify(parsed), parsed.outcome, now(), id);
+			db.transaction(() => {
+				const ts = now();
+				qRevise.run(JSON.stringify(parsed), parsed.outcome, ts, id);
+				qPlan.run(JSON.stringify(silenceFollowup(new Date(ts))), ts, id);
+			}).immediate();
 			log.info("responsibility revised", { responsibility: id });
 			return requireResp(id);
 		},
 
 		setFollowup(id, programId) {
 			qFollowup.run(programId, now(), id);
+		},
+		planFollowup(id, commitment) {
+			const parsed = followupCommitmentSchema.parse(commitment);
+			const current = requireResp(id);
+			const dueAt = new Date(parsed.dueAt).toISOString();
+			if (
+				current.followup.kind === "commitment" &&
+				current.followup.dueAt === dueAt &&
+				current.followup.reason === parsed.reason
+			)
+				return current;
+			const plan: ResponsibilityFollowup = {
+				...parsed,
+				dueAt,
+				token: randomUUID(),
+				kind: "commitment",
+			};
+			qPlan.run(JSON.stringify(plan), now(), id);
+			log.info("responsibility follow-up planned", { responsibility: id, ...plan });
+			return requireResp(id);
+		},
+		consumeFollowup(id, token, at) {
+			const row = qResp.get(id);
+			if (row === null) throw new Error(`responsibility ${id} not found`);
+			const current = toResponsibility(respRowSchema.parse(row));
+			if (current.followup.token !== token) return false;
+			// Compare the original disk representation, not reserialized
+			// JSON: key order and timestamp normalization are not identity.
+			const next = silenceFollowup(at);
+			const changed =
+				qConsumePlan.run(JSON.stringify(next), at.toISOString(), id, row.followup_json).changes > 0;
+			if (changed)
+				log.info("responsibility follow-up consumed", { responsibility: id, token, next });
+			return changed;
+		},
+		deferSilenceFollowup(id, at) {
+			const current = requireResp(id);
+			if (current.followup.kind === "silence")
+				store.consumeFollowup(id, current.followup.token, at);
 		},
 		setArmed(id, armed, reason) {
 			qArmed.run(armed ? 1 : 0, reason, now(), id);
@@ -892,6 +986,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					attachmentId,
 				);
 				out = requireAtt(attachmentId);
+				qPlan.run(JSON.stringify(silenceFollowup(new Date())), now(), out.responsibilityId);
 			}).immediate();
 			log.info("attachment reattached", {
 				attachment: attachmentId,

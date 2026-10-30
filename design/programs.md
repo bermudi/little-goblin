@@ -203,6 +203,42 @@ Rulings:
   programs sharing the destination are neither adopted nor silenced.
   Disabling the linked program can never leave an orphan still firing.
 
+  **Deliberate follow-up (2026-10-30):** a service-owned follow-up's cron
+  is a code-only evaluation clock, not an inference heartbeat. New
+  follow-ups evaluate every minute; existing/operator-edited cron
+  cadences are preserved. An active responsibility persists one next
+  review: token, due time, purpose, and commitment/silence kind. Only a
+  due review on the currently linked, enabled Program enqueues a
+  `scheduled-checkin`. Ordinary custom Programs retain their existing
+  occurrence semantics, including custom Programs sharing this destination.
+
+  `responsibility action=followup` with `followup:{dueAt,reason}` replaces
+  the next review inside handed-over authority. It requires active work
+  and a future, timezone-qualified timestamp. Until a task-specific
+  review is planned, a one-hour silence limit is the engineering safety
+  default, not a settled operator budget. New meaningful observations
+  cover that silence check and move it forward; unchanged polling
+  cannot, and an explicit commitment is never discarded by observation.
+  A due review enqueues before its plan advances to the next silence
+  backstop. The source key is `followup:<responsibility_id>:<token>`,
+  independent of cron occurrence: restart between record and advancement
+  reuses the same development even after several missed ticks. A
+  failed record advances neither plan nor cron cursor; a failed plan
+  write retries the same token. Compare-and-set consumption cannot
+  overwrite a newer review. Program run accounting measures evaluations;
+  the responsibility's wake/run history establishes actual model work.
+
+  Corrections, changed lifecycle status, and deliberate reattachment
+  invalidate the old review and establish a fresh silence backstop.
+  Paused, blocked, waiting, completed, and cancelled work gets no timed
+  inference; resumption never resurrects the old promise. This slice
+  does not implement agreed waiting reminders or blocker resumption
+  conditions. Stale disabled/deleted/rescheduled follow-up snapshots
+  cannot fire. Already enqueued developments remain historical facts:
+  turns must re-read current authority before acting, and existing
+  revision/generation/send fences still govern effects. No new generic
+  wake revocation or completion-verification protocol is implied.
+
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an
 agent that wakes itself to decide whether to check things; ruled out

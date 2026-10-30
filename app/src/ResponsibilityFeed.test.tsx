@@ -58,6 +58,12 @@ function feed(paused: boolean, detached: boolean): AppFeedItem {
 			coordinationConversationId: "c1",
 			handoverKey: "k1",
 			followupProgramId: null,
+			followup: {
+				token: "review-1",
+				kind: "silence",
+				dueAt: at,
+				reason: "Verify progress",
+			},
 			armed: false,
 			notArmedReason: null,
 			createdAt: at,
@@ -90,6 +96,7 @@ function feed(paused: boolean, detached: boolean): AppFeedItem {
 		events: [],
 		eventsTruncated: 0,
 		nextCheckinAt: null,
+		nextCheckinReason: null,
 		lastActivityAt: at,
 	};
 }
@@ -99,6 +106,20 @@ function button(label: string): HTMLButtonElement {
 	if (result === undefined) throw new Error(`missing button ${label}`);
 	return result;
 }
+
+test("the next review shows its purpose, not just the Program clock", async () => {
+	const item = feed(false, false);
+	item.nextCheckinAt = "2030-01-01T12:30:00Z";
+	item.nextCheckinReason = "Verify post-reboot driver evidence";
+	globalThis.fetch = Object.assign(() => Promise.resolve(Response.json({ items: [item] })), {
+		preconnect: realFetch.preconnect,
+	});
+	root = createRoot(container);
+	await act(async () => root?.render(<ResponsibilityFeed token={null} projectId={null} />));
+	expect(container.querySelector(".resp-detail .resp-next")?.textContent).toContain(
+		"Verify post-reboot driver evidence",
+	);
+});
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 

@@ -25,6 +25,7 @@ import {
 	understandingSchema,
 } from "../../responsibilities.ts";
 import { cursorFromAgent } from "../../responsibility-observer.ts";
+import { followupCommitmentSchema } from "../../responsibility-followup.ts";
 import type { ManagedSend, ResponsibilityService } from "../../responsibility-service.ts";
 import { fenceUntrusted } from "./web.ts";
 
@@ -48,6 +49,7 @@ const inputSchema = z
 			"cancel",
 			"send",
 			"reconcile",
+			"followup",
 		]),
 		responsibility: z.string().optional(),
 		understanding: understandingSchema.optional(),
@@ -57,12 +59,16 @@ const inputSchema = z
 		operation: z.string().min(1).optional(),
 		delivery: z.enum(["delivered", "not_delivered"]).optional(),
 		evidence: z.string().trim().min(1).optional(),
+		followup: followupCommitmentSchema.optional(),
 	})
 	.superRefine((value, ctx) => {
 		const need = (cond: boolean, path: string[], msg: string) => {
 			if (!cond) ctx.addIssue({ code: "custom", path, message: msg });
 		};
 		switch (value.action) {
+			case "followup":
+				need(value.followup !== undefined, ["followup"], "dueAt and reason required for followup");
+				break;
 			case "accept":
 				need(value.understanding !== undefined, ["understanding"], "required for accept");
 				need(
@@ -134,7 +140,7 @@ const fenceMetadata = (record: unknown) =>
 export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 	tool({
 		description:
-			"Coordinate this project's handed-over Herdr work — the durable record the operator watches. Actions: status {}; accept {understanding, attachments:[{pane|name}…]} — the first coordination grant, binds the explicitly selected agents by stable identity; revise {understanding}; attach {attachments:[{pane|name}]}; detach/reattach {attachment}; pause/resume/complete/cancel {}; send {attachment, brief} — a tracked managed prompt that refuses rather than dispatch stale or unidentifiable; reconcile {operation, delivery: delivered|not_delivered, evidence} — record inspected delivery evidence for an ambiguous send; never use reconciliation merely to make a retry possible. Discover agents with the herdr tool first; accept only after the operator hands work over. Lifecycle verbs never touch a Herdr workspace.",
+			"Coordinate this project's handed-over Herdr work — the durable record the operator watches. Actions: status {}; accept {understanding, attachments:[{pane|name}…]} — the first coordination grant, binds the explicitly selected agents by stable identity; revise {understanding}; followup {followup:{dueAt, reason}} — replace the next useful review with an ISO timestamp and a concrete purpose, not a status-polling heartbeat (otherwise a one-hour silence backstop applies); attach {attachments:[{pane|name}]}; detach/reattach {attachment}; pause/resume/complete/cancel {}; send {attachment, brief} — a tracked managed prompt that refuses rather than dispatch stale or unidentifiable; reconcile {operation, delivery: delivered|not_delivered, evidence} — record inspected delivery evidence for an ambiguous send; never use reconciliation merely to make a retry possible. Discover agents with the herdr tool first; accept only after the operator hands work over. Lifecycle verbs never touch a Herdr workspace.",
 		inputSchema,
 		execute: async (raw, options) => {
 			const input = inputSchema.parse(raw);
@@ -382,6 +388,26 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 						}
 						throw err;
 					}
+				}
+				case "followup": {
+					const { resp, error } = resolve();
+					if (resp === undefined) return { error };
+					if (resp.status !== "active")
+						return { error: `responsibility ${resp.status} — resume first` };
+					if (Date.parse(input.followup!.dueAt) <= Date.now()) {
+						return { error: "follow-up dueAt must be in the future" };
+					}
+					const updated = deps.resps.planFollowup(resp.responsibilityId, input.followup!);
+					deps.service.ensureFollowup(resp.responsibilityId);
+					done({
+						responsibility: resp.responsibilityId,
+						followup: updated.followup,
+						outcome: "ok",
+					});
+					return {
+						responsibility: fenceMetadata(updated),
+						followupStatus: deps.service.armedStatus(resp.responsibilityId),
+					};
 				}
 				case "pause":
 				case "resume":

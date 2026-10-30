@@ -6,6 +6,8 @@ do not treat this as a dependency graph requiring every feature before Goblin
 can be useful.
 
 Baseline inspected: `3181e943` on `main`, after the first handover milestone.
+Follow-up policy implementation starts from `241178ee`; progress is recorded
+under stage 1 rather than presenting the entire stage as complete.
 The source inspection did not establish the live deployment's version or
 whether an operator pilot has already happened. Ask for missing usage evidence,
 not for settled product preferences.
@@ -28,9 +30,10 @@ existing adapter boundaries.
 Known distinctions at this baseline:
 
 - Herdr observation is code-only every minute, but active responsibilities
-  default to a model-waking Program every 15 minutes, up to 96 scheduled
+  originally defaulted to a model-waking Program every 15 minutes, up to 96 scheduled
   occurrences per active responsibility per day. That is not yet economical
-  judgment about when follow-up is useful.
+  judgment about when follow-up is useful; the first stage-1 slice replaces
+  that unconditional wake policy.
 - The feed is responsibility-centered inspection inside Projects, not yet
   the outcome-led front door. Attention is a separate operational projection.
 - Completion expectations exist, but `complete` itself is a status change:
@@ -108,10 +111,48 @@ Acceptance:
 - The operator can inspect why the next wake is scheduled, why one was skipped,
   and what inference was spent, without inspecting raw logs.
 
-Start here: a narrow follow-up-policy slice on the existing linked Program,
-with deterministic-clock tests and visible reason/due time. Establish the
-observable contract before choosing fields or changing scheduling semantics.
-Do not bundle a full feed redesign or model router into that first change.
+First-slice boundary: follow-up policy on the existing linked Program,
+with deterministic-clock tests and visible reason/due time. No full feed
+redesign or model router bundled into it.
+
+### First Slice: Implemented, Not Yet Piloted
+
+The durable review plan now lives on the existing responsibility: purpose,
+due time, kind, and stable dedupe token. `responsibility action=followup`
+with `followup:{dueAt,reason}` sets a task-specific review. New follow-up
+Programs check the plan every minute in code; existing/operator-edited cron
+cadences are preserved. Ordinary ticks do not wake a model.
+
+Absent a task-specific plan, a one-hour silence bound is an engineering
+backstop, not a settled operator budget or a claim of task-specific judgment.
+Meaningful observations still wake immediately and postpone only that silence
+check; stable polling cannot postpone it, and explicit promises survive
+developments. Due reviews enqueue before plan/cursor advancement. A stable
+review token deduplicates retries across missed cron occurrences and restart;
+compare-and-set prevents stale accounting from replacing a newer plan.
+
+Corrections, changed status, and deliberate reattachment invalidate old
+reviews. Timed inference is suppressed outside active status. The feed shows
+the next effective check-in and purpose, derived from the plan plus the linked
+Program, and reports missing/disabled/unscheduled follow-ups honestly.
+Implementation contracts: `design/programs.md`, `design/app.md`.
+
+Verification: 546 tests passed across 23 focused files (2,321 assertions),
+covering responsibilities, observation, follow-up/recovery, wakes (including
+the existing killed-process tests), Programs, scheduler, Herdr fixtures, tool
+and HTTP boundaries, app feed, Attention, and module boundaries.
+`bun run typecheck`, formatting of changed source/test files, and
+`git diff --check` passed. Tests use real SQLite, explicit clock values,
+fake edges, and restart/reconcile seams; this is not a killed-process proof
+of the new plan write or a live project handover. The full suite was not
+rerun for this slice; its previously recorded experimental failure remains
+unresolved. No live prompts, deployment, service restart, or push.
+
+Still open in stage 1: tool-facing blocked/waiting reasons and resumption
+conditions, agreed waiting reminders, archive/queued-work authority consistency,
+completion assessment with evidence, and a useful real-world pilot. Already
+enqueued developments remain historical facts; this change does not introduce
+generic wake revocation or strengthen the accepted Herdr send race.
 
 ## 2. Bring Back Outcomes, Not Just Activity
 

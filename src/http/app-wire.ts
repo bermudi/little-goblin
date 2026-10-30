@@ -555,6 +555,12 @@ export interface AppResponsibility {
 	coordinationConversationId: string;
 	handoverKey: string | null;
 	followupProgramId: string | null;
+	followup: {
+		token: string;
+		kind: "commitment" | "silence";
+		dueAt: string;
+		reason: string;
+	};
 	armed: boolean;
 	notArmedReason: string | null;
 	createdAt: string;
@@ -629,6 +635,7 @@ export interface AppFeedItem {
 	/** Older durable events the feed window omitted — the rows remain. */
 	eventsTruncated: number;
 	nextCheckinAt: string | null;
+	nextCheckinReason: string | null;
 	lastActivityAt: string | null;
 }
 

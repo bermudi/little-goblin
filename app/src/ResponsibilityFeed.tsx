@@ -176,6 +176,12 @@ function FeedRow({
 					</p>
 				)}
 				{r.notArmedReason !== null && <p className="resp-warn">not armed — {r.notArmedReason}</p>}
+				<p className="resp-next">
+					<strong>Next Review:</strong>{" "}
+					{item.nextCheckinAt === null
+						? "not scheduled"
+						: `${fmt(item.nextCheckinAt)} - ${item.nextCheckinReason}`}
+				</p>
 				<div className="resp-understanding">
 					<p>
 						<strong>Outcome:</strong> {r.understanding.outcome}

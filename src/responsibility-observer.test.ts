@@ -50,7 +50,7 @@ const agent = (over: Partial<OperatorAgent> = {}): OperatorAgent => ({
 	...over,
 });
 
-function rig(list?: () => Promise<OperatorAgent[]>): Rig {
+function rig(list?: () => Promise<OperatorAgent[]>, now?: () => Date): Rig {
 	const home = useHome(`goblin-obs-${tmpDir().slice(-6)}-`);
 	mkdirSync(join(home, "state"), { recursive: true });
 	const store = openStore(join(home, "state", "goblin.sqlite"));
@@ -113,6 +113,7 @@ function rig(list?: () => Promise<OperatorAgent[]>): Rig {
 				db: store.db,
 				resps,
 				wakes,
+				now,
 				pump: () => {
 					r.pumps += 1;
 				},
@@ -161,11 +162,41 @@ describe("responsibility observer", () => {
 
 	test("stable work commits cursor only — no events, no model spend", async () => {
 		const r = rig();
+		const plan = r.resps.get(r.respId)!.followup;
 		r.agents = [agent({ state_change_seq: 7 })];
 		await r.observe();
 		expect(r.eventsFor()).toHaveLength(0);
 		const cursor = r.resps.getAttachment(r.attId)!.cursor as { seq: number };
 		expect(cursor.seq).toBe(7);
+		expect(r.resps.get(r.respId)!.followup).toEqual(plan);
+		r.store.close();
+	});
+
+	test("meaningful development moves the silence backstop once; duplicate polls cannot keep postponing it", async () => {
+		const at = new Date("2030-01-01T12:00:00Z");
+		const r = rig(undefined, () => at);
+		r.agents = [agent({ state_change_seq: 2, completion_seq: 1, agent_status: "idle" })];
+		await r.observe();
+		const plan = r.resps.get(r.respId)!.followup;
+		expect(plan).toMatchObject({ kind: "silence", dueAt: "2030-01-01T13:00:00.000Z" });
+		expect(r.eventsFor()).toHaveLength(1);
+		at.setTime(at.getTime() + 30 * 60_000);
+		await r.observe();
+		expect(r.resps.get(r.respId)!.followup).toEqual(plan);
+		expect(r.eventsFor()).toHaveLength(1);
+		r.store.close();
+	});
+
+	test("development wakes do not discard an explicit due promise", async () => {
+		const r = rig(undefined, () => new Date("2030-01-01T12:00:00Z"));
+		const plan = r.resps.planFollowup(r.respId, {
+			dueAt: "2030-01-01T12:30:00Z",
+			reason: "Check the required post-reboot evidence",
+		}).followup;
+		r.agents = [agent({ state_change_seq: 2, completion_seq: 1, agent_status: "idle" })];
+		await r.observe();
+		expect(r.eventsFor()).toHaveLength(1);
+		expect(r.resps.get(r.respId)!.followup).toEqual(plan);
 		r.store.close();
 	});
 

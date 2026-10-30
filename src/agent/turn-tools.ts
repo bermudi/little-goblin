@@ -8,7 +8,7 @@
 // resumed attempt would actually get.
 
 import { FencedError, type RuntimeDeps } from "../runtime.ts";
-import type { Config, ConfigRef } from "../config.ts";
+import { splitModelRef, type Config, type ConfigRef } from "../config.ts";
 import { channelOf, type Conversation, type ConversationStore } from "../conversation.ts";
 import type { AuthStore } from "../auth.ts";
 import type { NoteStore } from "../notes.ts";
@@ -189,6 +189,15 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			// fetch is local (always on), search behind its config block;
 			// the accepts ref rides for PDF rendering.
 			web: { configRef, auth, ...(accepts ? { accepts } : {}) },
+			// Codex conversations swap local search for the hosted
+			// web_search unless the provider parks it off.
+			hostedSearch: (() => {
+				if (conv.model === null) return undefined;
+				const { provider } = splitModelRef(conv.model);
+				const p = configRef.current.providers?.[provider];
+				if (p?.kind !== "codex" || p.webSearch === "off") return undefined;
+				return { externalWebAccess: p.webSearch === "live" };
+			})(),
 			transcribe: configRef.current.transcription !== undefined ? { transcribe } : undefined,
 			// Boot fixtures under a live gate.
 			delegate: delegateDeps(conv, workdir),

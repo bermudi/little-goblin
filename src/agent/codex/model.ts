@@ -14,6 +14,7 @@ import type {
 	LanguageModelV4Text,
 	LanguageModelV4Usage,
 	SharedV4FileData,
+	JSONValue,
 	SharedV4ProviderMetadata,
 	SharedV4Warning,
 } from "@ai-sdk/provider";
@@ -281,6 +282,45 @@ function convertPrompt(
 					} else if (part.type === "tool-call") {
 						const meta = usableMeta(part.providerOptions, "tool-call");
 						flush();
+						if (part.providerExecuted === true && part.toolName === "web_search") {
+							// The hosted call replays as its own item — never a
+							// function_call — and only with in-scope state.
+							if (meta === null) {
+								warnings.push({
+									type: "other",
+									message:
+										"codex: dropped a provider-executed web_search call without in-scope replay state",
+								});
+								continue;
+							}
+							let action: unknown = part.input;
+							if (typeof part.input === "string") {
+								try {
+									action = JSON.parse(part.input);
+								} catch {
+									action = null;
+								}
+							}
+							// The backend requires action.type (live 400:
+							// "Missing required parameter: 'input[n].action.type'")
+							// — an action without one drops instead of failing
+							// the whole request.
+							if (
+								typeof action !== "object" ||
+								action === null ||
+								typeof (action as Record<string, unknown>).type !== "string"
+							) {
+								warn("codex web_search call omitted — stored action has no type");
+								continue;
+							}
+							input.push({
+								type: "web_search_call",
+								...(meta.itemId !== undefined ? { id: meta.itemId } : {}),
+								status: "completed",
+								action,
+							});
+							continue;
+						}
 						input.push({
 							type: "function_call",
 							call_id: part.toolCallId,
@@ -390,6 +430,11 @@ interface StreamState {
 	// The request's replay scope — stamped into every item's codex
 	// metadata so the next call can prove compatibility before replay.
 	scope: string;
+	// Sources dedupe by url for the response — the same citation can
+	// arrive on both the annotation event and the done item's content.
+	seenSources: Set<string>;
+	// For log lines only — the derived id, never the raw conversation id.
+	sessionId: string | null;
 	// Receipts: header snapshot first, codex.rate_limits events override.
 	quota: CodexQuota | null;
 	requestId: string | null;
@@ -404,6 +449,31 @@ function receiptMeta(state: StreamState): SharedV4ProviderMetadata | undefined {
 	if (state.requestId !== null) codex.requestId = state.requestId;
 	if (state.servedModel !== null) codex.servedModel = state.servedModel;
 	return Object.keys(codex).length > 0 ? ({ codex } as SharedV4ProviderMetadata) : undefined;
+}
+
+// A url_citation annotation (added event or done-item content) or a
+// web_search_call source entry becomes a source part — deduped by url
+// for the whole response.
+function emitSource(
+	value: unknown,
+	state: StreamState,
+	push: (p: LanguageModelV4StreamPart) => void,
+): void {
+	if (typeof value !== "object" || value === null) return;
+	const v = value as Record<string, unknown>;
+	// Source entries inside action.sources carry {url, title?} directly;
+	// annotations carry {type:"url_citation", url, title?, start_index,
+	// end_index}. Either way only url+title survive.
+	const url = typeof v.url === "string" ? v.url : undefined;
+	if (url === undefined || state.seenSources.has(url)) return;
+	state.seenSources.add(url);
+	push({
+		type: "source",
+		sourceType: "url",
+		id: url,
+		url,
+		...(typeof v.title === "string" ? { title: v.title } : {}),
+	});
 }
 
 function mapEvent(
@@ -460,8 +530,51 @@ function mapEvent(
 				});
 			}
 			break;
+		case "response.output_text.annotation.added": {
+			emitSource(event.annotation, state, push);
+			break;
+		}
 		case "response.output_item.done":
-			if (item?.type === "function_call") {
+			if (item?.type === "web_search_call") {
+				// Provider-executed: never counts as a tool call for finish
+				// reasons, the journal, or the loop detector — the result
+				// rides on the same item.
+				const toolCallId = String(item.id ?? "web_search");
+				const action = item.action;
+				push({
+					type: "tool-call",
+					toolCallId,
+					toolName: "web_search",
+					input: JSON.stringify(action ?? {}),
+					providerExecuted: true,
+					providerMetadata: streamMeta(state.scope, wireId(item.id)),
+				});
+				push({
+					type: "tool-result",
+					toolCallId,
+					toolName: "web_search",
+					result: {
+						status: typeof item.status === "string" ? item.status : null,
+						action: (action ?? null) as JSONValue,
+					},
+					providerMetadata: streamMeta(state.scope, wireId(item.id)),
+				});
+				const actionObj =
+					typeof action === "object" && action !== null
+						? (action as Record<string, unknown>)
+						: {};
+				const sources = Array.isArray(actionObj.sources) ? actionObj.sources : [];
+				log.info("codex hosted search", {
+					sessionId: state.sessionId,
+					status: String(item.status ?? "unknown"),
+					actionType: String(actionObj.type ?? "unknown"),
+					query: String(actionObj.query ?? "").slice(0, 200),
+					sourceCount: sources.length,
+				});
+				for (const src of sources) {
+					emitSource(src, state, push);
+				}
+			} else if (item?.type === "function_call") {
 				state.sawToolCall = true;
 				push({
 					type: "tool-call",
@@ -471,6 +584,13 @@ function mapEvent(
 					providerMetadata: streamMeta(state.scope, wireId(item.id)),
 				});
 			} else if (item?.type === "message") {
+				for (const c of Array.isArray(item.content) ? item.content : []) {
+					if (typeof c !== "object" || c === null) continue;
+					const anns = (c as Record<string, unknown>).annotations;
+					for (const a of Array.isArray(anns) ? anns : []) {
+						emitSource(a, state, push);
+					}
+				}
 				const phase = item.phase ?? state.textOpen?.phase;
 				if (state.textOpen) {
 					push({
@@ -702,17 +822,31 @@ export class CodexLanguageModel implements LanguageModelV4 {
 		if (codexOpts.reasoningEffort) {
 			body.reasoning = { effort: codexOpts.reasoningEffort, summary: "auto" };
 		}
+		let hostedSearch = false;
 		if (options.tools?.length) {
-			const fns = options.tools.filter(
-				(t): t is LanguageModelV4FunctionTool => t.type === "function",
-			);
-			body.tools = fns.map((t) => ({
-				type: "function",
-				name: t.name,
-				description: t.description,
-				parameters: t.inputSchema,
-				strict: false,
-			}));
+			const tools: Record<string, unknown>[] = [];
+			for (const t of options.tools) {
+				if (t.type === "function") {
+					tools.push({
+						type: "function",
+						name: t.name,
+						description: t.description,
+						parameters: t.inputSchema,
+						strict: false,
+					});
+				} else if (t.type === "provider" && t.id === "codex.web_search") {
+					hostedSearch = true;
+					tools.push({
+						type: "web_search",
+						external_web_access: Boolean(t.args.externalWebAccess),
+					});
+				}
+				// Other provider tools warn via warningsFor — never sent.
+			}
+			if (tools.length > 0) body.tools = tools;
+		}
+		if (hostedSearch) {
+			body.include = [...(body.include as string[]), "web_search_call.action.sources"];
 		}
 		if (options.toolChoice) {
 			body.tool_choice =
@@ -760,6 +894,7 @@ export class CodexLanguageModel implements LanguageModelV4 {
 			if (options[k] !== undefined) warnings.push({ type: "unsupported", feature: k });
 		}
 		for (const t of options.tools ?? []) {
+			if (t.type === "provider" && t.id === "codex.web_search") continue;
 			if (t.type !== "function") {
 				warnings.push({
 					type: "unsupported",
@@ -835,6 +970,8 @@ export class CodexLanguageModel implements LanguageModelV4 {
 			reasoningDeltaSeen: false,
 			sawToolCall: false,
 			sawTerminal: false,
+			seenSources: new Set(),
+			sessionId: this.opts.sessionId ?? null,
 			scope,
 			quota: quotaFromHeaders(res.headers),
 			requestId: res.headers.get("x-request-id"),
@@ -1000,10 +1137,27 @@ export class CodexLanguageModel implements LanguageModelV4 {
 						toolCallId: value.toolCallId,
 						toolName: value.toolName,
 						input: value.input,
+						...(value.providerExecuted !== undefined
+							? { providerExecuted: value.providerExecuted }
+							: {}),
 						...(value.providerMetadata !== undefined
 							? { providerMetadata: value.providerMetadata }
 							: {}),
 					});
+					break;
+				case "tool-result":
+					content.push({
+						type: "tool-result",
+						toolCallId: value.toolCallId,
+						toolName: value.toolName,
+						result: value.result,
+						...(value.providerMetadata !== undefined
+							? { providerMetadata: value.providerMetadata }
+							: {}),
+					});
+					break;
+				case "source":
+					content.push(value);
 					break;
 				case "finish":
 					finishReason = value.finishReason;

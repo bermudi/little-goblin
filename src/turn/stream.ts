@@ -662,6 +662,10 @@ export async function driveStream<M extends WireMember>(
 	});
 
 	const callById = new Map<string, { tool: string; input: unknown }>();
+	// Provider-executed calls (hosted web_search) ride the same wire
+	// chunks but are not local actions — no journal rows, no retry
+	// grants, no loop-detector evidence.
+	const providerExecutedIds = new Set<string>();
 	const noteCompletedCall = (toolCallId: string, result: unknown, failed: boolean): void => {
 		const call = callById.get(toolCallId);
 		state.noteCompletedCall(call?.tool ?? toolCallId, call?.input, result, failed);
@@ -708,6 +712,10 @@ export async function driveStream<M extends WireMember>(
 					break;
 				case "tool-input-available":
 					head.onToolCall(chunk.toolName, chunk.input);
+					if (chunk.providerExecuted === true) {
+						providerExecutedIds.add(chunk.toolCallId);
+						break;
+					}
 					toolCalls.push(chunk.toolName);
 					callById.set(chunk.toolCallId, { tool: chunk.toolName, input: chunk.input });
 					deps.journal?.noteToolInput(deps.runId, chunk.toolCallId, chunk.toolName, chunk.input);
@@ -730,6 +738,7 @@ export async function driveStream<M extends WireMember>(
 					});
 					break;
 				case "tool-input-error":
+					if (providerExecutedIds.has(chunk.toolCallId)) break;
 					// tool-output-error carries only the id — record name+input here or the detector hashes each rejection under a random call id and never trips.
 					callById.set(chunk.toolCallId, { tool: chunk.toolName, input: chunk.input });
 					log.warn("tool call rejected", {
@@ -740,6 +749,7 @@ export async function driveStream<M extends WireMember>(
 					});
 					break;
 				case "tool-output-available": {
+					if (providerExecutedIds.has(chunk.toolCallId)) break;
 					if (evidence !== undefined) {
 						for (let i = digestRing.length - 1; i >= 0; i--) {
 							if (digestRing[i]!.id !== chunk.toolCallId) continue;
@@ -794,6 +804,7 @@ export async function driveStream<M extends WireMember>(
 					break;
 				}
 				case "tool-output-error":
+					if (providerExecutedIds.has(chunk.toolCallId)) break;
 					log.warn("tool execute failed", {
 						conversation: convId,
 						tool: callById.get(chunk.toolCallId)?.tool ?? chunk.toolCallId,

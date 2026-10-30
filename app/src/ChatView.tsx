@@ -502,8 +502,47 @@ export function MessageParts({
 					<span className="attachment-name">{p.filename ?? "attachment"}</span>
 				</span>,
 			);
+		else if (p.type === "source-url") {
+			// Hosted-search citations arrive as source-url parts — group
+			// the run into one compact row of links.
+			const row: { url: string; title?: string }[] = [];
+			let j = i;
+			while (j < parts.length && parts[j]!.type === "source-url") {
+				const q = parts[j] as {
+					type: "source-url";
+					url: string;
+					title?: string;
+				};
+				row.push({ url: q.url, ...(q.title !== undefined ? { title: q.title } : {}) });
+				j++;
+			}
+			out.push(
+				<div key={i} className="sources-row">
+					{row.map((src) => (
+						<a
+							key={src.url}
+							href={src.url}
+							target="_blank"
+							rel="noreferrer"
+							className="source-link"
+						>
+							{src.title ?? hostnameOf(src.url)}
+						</a>
+					))}
+				</div>,
+			);
+			i = j - 1;
+		}
 	}
 	return <>{out}</>;
+}
+
+function hostnameOf(url: string): string {
+	try {
+		return new URL(url).hostname;
+	} catch {
+		return url;
+	}
 }
 
 // ---------- quota narrowing ----------
@@ -1225,8 +1264,9 @@ export function ContextGauge({
 	// turn runs without a metered step — before the first report, or a
 	// step the provider didn't meter — the last settled read stands in.
 	const viewInput = (busy ? live?.input : null) ?? ctx?.input ?? null;
-	// Rate-limit receipts — present only on providers that issue them.
-	const quota = live?.quota ?? null;
+	// Rate-limit receipts — present only on providers that issue them;
+	// the last turn's receipt stands in when no live step has reported.
+	const quota = live?.quota ?? ctx?.quota ?? null;
 	const viewPct =
 		viewInput !== null && limit !== null ? Math.round((viewInput / limit) * 1000) / 10 : null;
 	const barPct = viewPct === null ? 0 : Math.min(100, Math.max(0, viewPct));

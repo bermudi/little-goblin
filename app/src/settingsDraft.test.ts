@@ -22,7 +22,7 @@ const baseConfig = (): Config => ({
 	providers: {
 		main: { kind: "openai-compatible", baseUrl: "https://api.example.test", auth: "MAIN_KEY" },
 		route: { kind: "openrouter", auth: "OR_KEY" },
-		dex: { kind: "codex" },
+		dex: { kind: "codex", webSearch: "live" },
 	},
 	model: "main/gpt-5",
 	titleModel: undefined,
@@ -272,8 +272,8 @@ describe("bodyFromDraft", () => {
 			baseUrl: "https://api.example.test",
 			auth: "KEY",
 		});
-		expect(body.providers["dex"]).toEqual({ kind: "codex", authFile: "/home/me/.codex/auth.json" });
-		expect(body.providers["dex2"]).toEqual({ kind: "codex" });
+		expect(body.providers["dex"]).toEqual({ kind: "codex", authFile: "/home/me/.codex/auth.json", webSearch: "live" });
+		expect(body.providers["dex2"]).toEqual({ kind: "codex", webSearch: "live" });
 	});
 
 	test("blank provider auth materializes — the provider's name, or the kind default", () => {
@@ -857,7 +857,7 @@ describe("opaque round-trip", () => {
 				},
 				zai: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai-record" },
 				or: { kind: "openrouter", auth: "or-record" },
-				dex: { kind: "codex", authFile: "~/.codex/auth.json" },
+				dex: { kind: "codex", authFile: "~/.codex/auth.json", webSearch: "live" },
 			},
 			model: "main/gpt-5",
 			operators: [111],
@@ -916,7 +916,7 @@ describe("opaque round-trip", () => {
 			},
 			zai: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai-record" },
 			or: { kind: "openrouter", auth: "or-record" },
-			dex: { kind: "codex", authFile: "~/.codex/auth.json" },
+			dex: { kind: "codex", authFile: "~/.codex/auth.json", webSearch: "live" },
 		});
 		// Chain auth records ride through untouched.
 		expect(body.search).toEqual([{ kind: "brave", auth: "brave-record" }, { kind: "jina" }]);

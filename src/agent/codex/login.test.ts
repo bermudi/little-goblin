@@ -38,7 +38,7 @@ const baseConfig = (over: Record<string, unknown> = {}) =>
 // the host can't leak "signed-in" into failure/cancel assertions.
 const pinnedConfig = (home: string) =>
 	baseConfig({
-		providers: { codex: { kind: "codex", authFile: join(home, "pinned.json") } },
+		providers: { codex: { kind: "codex", authFile: join(home, "pinned.json"), webSearch: "live" } },
 		model: "codex/m",
 	});
 
@@ -61,7 +61,7 @@ function rig(opts: {
 		opts.config ??
 		(() =>
 			baseConfig({
-				providers: { codex: { kind: "codex", authFile: paths.codexAuth() } },
+				providers: { codex: { kind: "codex", authFile: paths.codexAuth(), webSearch: "live" } },
 				model: "codex/m",
 			}));
 	const login = createChatGptLogin({
@@ -486,7 +486,7 @@ describe("chatgpt device login", () => {
 		ensureCodexProvider(configRef, () => writes++);
 		expect(configRef.current.providers).toEqual({
 			...base.providers,
-			"codex-3": { kind: "codex" },
+			"codex-3": { kind: "codex", webSearch: "live" },
 		});
 		expect(configRef.current.model).toBe(base.model);
 		expect(loadConfig()).toEqual(configRef.current);
@@ -503,7 +503,7 @@ describe("chatgpt device login", () => {
 		});
 		await login.start();
 		await flush();
-		expect(configRef.current.providers["codex"]).toEqual({ kind: "codex" });
+		expect(configRef.current.providers["codex"]).toEqual({ kind: "codex", webSearch: "live" });
 		expect(writes).toBe(1);
 		// And once configured, a later sign-in adds nothing.
 		ensureCodexProvider(configRef, () => writes++);

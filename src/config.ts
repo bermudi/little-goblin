@@ -329,6 +329,10 @@ export const providerSchema = z.discriminatedUnion("kind", [
 			// Codex CLI OAuth file (~/.codex/auth.json when unset) — read and
 			// refreshed in-process; it is not an auth.jsonl record.
 			authFile: z.string().min(1).optional(),
+			// Hosted web_search replaces the local search tool on codex
+			// conversations: live allows live fetches, cached is backend
+			// cache only, off keeps local search.
+			webSearch: z.enum(["off", "cached", "live"]).default("live"),
 		})
 		.strict(),
 ]);

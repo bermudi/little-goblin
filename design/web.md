@@ -11,12 +11,30 @@ can't look things up is a gap. The browser returns as a skill over a CLI,
 not a native tool. MCP stays out, with its return conditions on record
 (below).
 
-- **`search` is one tool with a provider behind it** — the model-provider
-  pattern (OpenClaw and hermes both ship one `web_search` over pluggable
-  vendors). Provider switch = config edit; the tool's name, schema, and
-  result shape never move — request bytes and the model's habits stay
-  stable, where an MCP-provided switch would move both in front of the
-  model.
+- **`search` is one local tool with a provider behind it** — the
+  model-provider pattern (OpenClaw and hermes both ship one `web_search`
+  over pluggable vendors). Provider switch = config edit; the tool's
+  name, schema, and result shape never move — request bytes and the
+  model's habits stay stable, where an MCP-provided switch would move
+  both in front of the model. The codex-kind exception lives below.
+- **Codex conversations use the backend's hosted `web_search` instead of
+  the local `search`** (operator ruling 2026-10-29): the adapter's own
+  provider tool — mode per codex provider config (`webSearch:
+  "off"|"cached"|"live"`, default `live`; `external_web_access` follows
+  the mode). Pages are read server-side, so result content bypasses
+  Goblin's `<web>` fencing — an accepted trade-off for a first-party
+  tool. Citations arrive as source parts (annotations and
+  `action.sources`, deduped by url); the call is provider-executed, so
+  it never reaches the journal, retry grants, or the loop detector, and
+  the checkpoint's copy is skipped silently at resume. Replay: the call
+  item rides as `web_search_call` at its position under the usual codex
+  scope rule — the paired result part is the item itself, not a
+  function_call_output. Live-verified (2026-10-30, gpt-6.1-sol,
+  store:false): the replayed item is accepted, but only with its full
+  wire `action` — a typeless action 400s the whole request (`Missing
+  required parameter: 'input[n].action.type'`), so the tool's input
+  schema is loose (the input *is* the action) and a stored action
+  without a `type` drops with a warning instead of replaying.
 - **Fallback chains are explicit config, never implicit.** List order is
   the walk order: first is primary, the rest are fallbacks. Transport,
   HTTP, and auth failures advance to the next entry; an EMPTY result set

@@ -610,7 +610,7 @@ function sendMemberLine(
 		});
 }
 
-export const SANDBOX_TOOLS: ReadonlySet<string> = new Set(["search"]);
+export const SANDBOX_TOOLS: ReadonlySet<string> = new Set(["search", "web_search"]);
 
 export const GUEST_CHANNEL_EXCLUDED: ReadonlySet<string> = new Set([
 	"subagent",

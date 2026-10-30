@@ -3,13 +3,13 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "../config.ts";
 import type { AuthStore } from "../auth.ts";
-import { openStore } from "../conversation.ts";
+import { openStore, type Conversation, type ConversationStore } from "../conversation.ts";
 import type { OperatorAgent, OperatorHerdr } from "../herdr.ts";
 import { setLogFile } from "../log.ts";
 import type { MailApproval } from "../mail-approval.ts";
 import type { NoteStore } from "../notes.ts";
-import { openPrograms } from "../programs.ts";
-import { openProjects } from "../projects.ts";
+import { openPrograms, type ProgramsStore } from "../programs.ts";
+import { openProjects, type ProjectStore } from "../projects.ts";
 import { openResponsibilities } from "../responsibilities.ts";
 import { makeResponsibilityService } from "../responsibility-service.ts";
 import { Runtime, userMessage } from "../runtime.ts";
@@ -20,6 +20,7 @@ import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/f
 import { deferred, HeadlessSink, tmpDir, useHome, waitUntil } from "../testkit.ts";
 import { makeWakeDispatcher, type WakeDispatcher } from "../wake-dispatcher.ts";
 import { makeTurnTools } from "./turn-tools.ts";
+import { SANDBOX_TOOLS } from "../tg/guest.ts";
 
 setLogFile(null);
 
@@ -782,4 +783,60 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 	await runtime.shutdown();
 	programs.close();
 	store.close();
+});
+
+describe("hosted web_search mount", () => {
+	const cfgFor = (webSearch: "off" | "cached" | "live") =>
+		({
+			providers: {
+				codex: { kind: "codex", webSearch },
+				zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/x", auth: "zai" },
+			},
+			search: [{ kind: "ddg" }],
+		}) as unknown as Config;
+
+	const rigTools = (config: Config, conv: Conversation) =>
+		makeTurnTools({
+			configRef: { current: config, ttsDown: false },
+			auth: {} as unknown as AuthStore,
+			store: {} as unknown as ConversationStore,
+			projects: {} as unknown as ProjectStore,
+			notes: {} as unknown as NoteStore,
+			programs: {} as unknown as ProgramsStore,
+			memory: null,
+			transcribe: async () => null,
+			delegateDeps: () => undefined,
+			operatorHerdr: {} as unknown as OperatorHerdr,
+			mail: () => ({}) as never,
+			programApproval: () => undefined,
+			visionDepsFor: () => undefined,
+			sandboxes: {} as unknown as Sandboxes,
+			subagents: () => null,
+			desktops: () => null,
+			subagentsBoot: () => undefined,
+			responsibility: () => null,
+			filterGuests: (_c, t) => t,
+		});
+
+	const conv = (model: string) =>
+		({ id: "dm:1", model, projectId: null, persona: "operator" }) as unknown as Conversation;
+
+	test("codex+live/cached mounts web_search, search absent; off and non-codex keep local search", () => {
+		for (const mode of ["live", "cached"] as const) {
+			const t = rigTools(cfgFor(mode), conv("codex/gpt-6.1-sol"))(conv("codex/gpt-6.1-sol"));
+			expect("web_search" in t).toBe(true);
+			expect("search" in t).toBe(false);
+		}
+		const off = rigTools(cfgFor("off"), conv("codex/gpt-6.1-sol"))(conv("codex/gpt-6.1-sol"));
+		expect("web_search" in off).toBe(false);
+		expect("search" in off).toBe(true);
+		const other = rigTools(cfgFor("live"), conv("zai/glm-5.3"))(conv("zai/glm-5.3"));
+		expect("web_search" in other).toBe(false);
+		expect("search" in other).toBe(true);
+	});
+
+	test("guests keep web_search exactly like local search", () => {
+		expect(SANDBOX_TOOLS.has("web_search")).toBe(true);
+		expect(SANDBOX_TOOLS.has("search")).toBe(true);
+	});
 });

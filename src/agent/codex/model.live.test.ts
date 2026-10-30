@@ -21,6 +21,7 @@ import { expect, test } from "bun:test";
 import { stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
+import { codexWebSearch } from "../tools/mod.ts";
 import { CodexLanguageModel } from "./model.ts";
 import { quotaFromMetadata } from "./receipts.ts";
 import { resolveCodexAuthFile } from "./auth.ts";
@@ -103,4 +104,100 @@ test(
 		});
 	},
 	120_000,
+);
+
+const TURN1_PROMPT =
+	"Use web search to find the official OpenAI documentation page about the Responses API web search tool, then answer with its URL only.";
+
+test(
+	"a hosted web_search turn replays its call item into the next request (live)",
+	async () => {
+		if (!LIVE) return;
+		const auth = resolveCodexAuthFile(undefined);
+		const bodies: Record<string, unknown>[] = [];
+		const model = new CodexLanguageModel("gpt-6.1-sol", auth.path, async (url, init) => {
+			bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+			const res = await fetch(url, init);
+			if (!res.ok) {
+				const detail = await res.clone().text();
+				log.info("codex live hosted-search http error", {
+					status: res.status,
+					detail: detail.slice(0, 200),
+				});
+			}
+			return res;
+		});
+		const turn1 = streamText({
+			model,
+			messages: [
+				{
+					role: "user",
+					content: TURN1_PROMPT,
+				},
+			],
+			tools: {
+				web_search: codexWebSearch({ externalWebAccess: true }),
+			},
+			providerOptions: { codex: { reasoningEffort: "low" } },
+			stopWhen: stepCountIs(2),
+			maxRetries: 0,
+		});
+		const text1 = await Promise.resolve(turn1.text).catch((err: unknown) => {
+			const b0 = bodies[0];
+			log.info("codex live hosted-search turn-1 failure", {
+				error: err instanceof Error ? err.message : String(err),
+				toolsSent: JSON.stringify(b0?.tools ?? null),
+				includeSent: JSON.stringify(b0?.include ?? null),
+			});
+			throw err;
+		});
+		expect(text1.length).toBeGreaterThan(0);
+		const steps1 = await turn1.steps;
+		const step1 = steps1[0]!;
+		const types1 = step1.content.map((c) => c.type);
+		// Provider-executed search call + at least one cited source.
+		expect(
+			step1.content.some(
+				(c) => c.type === "tool-call" && c.toolName === "web_search" && c.providerExecuted === true,
+			),
+			`step-1 content ${types1.join(",")}`,
+		).toBe(true);
+		expect(types1.filter((t) => t === "source").length).toBeGreaterThanOrEqual(1);
+		expect(step1.finishReason).toBe("stop");
+		const sourceUrls = step1.content
+			.filter((c) => c.type === "source")
+			.map((c) => (c as { url: string }).url);
+		const urlInText = sourceUrls.some((u) => text1.includes(u));
+
+		// Turn 2 replays turn 1's assistant output — the search item must
+		// ride at its position or the backend rejects the request.
+		const bodies2: Record<string, unknown>[] = [];
+		const model2 = new CodexLanguageModel("gpt-6.1-sol", auth.path, async (url, init) => {
+			bodies2.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+			return fetch(url, init);
+		});
+		const turn2 = streamText({
+			model: model2,
+			messages: [
+				{ role: "user", content: TURN1_PROMPT },
+				...(await turn1.response).messages,
+				{ role: "user", content: "Reply with the word ok." },
+			],
+			tools: {
+				web_search: codexWebSearch({ externalWebAccess: true }),
+			},
+			providerOptions: { codex: { reasoningEffort: "low" } },
+			maxRetries: 0,
+		});
+		const text2 = await turn2.text;
+		expect(text2.length).toBeGreaterThan(0);
+		const input2 = bodies2[0]!.input as Array<Record<string, unknown>>;
+		const hadReplayedCall = input2.some((i) => i.type === "web_search_call");
+		log.info("codex live hosted-search observation", {
+			replayedWebSearchCall: hadReplayedCall,
+			citedUrlInText: urlInText,
+			sourceCount: sourceUrls.length,
+		});
+	},
+	180_000,
 );

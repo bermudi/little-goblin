@@ -1295,7 +1295,7 @@ test("conversation PATCH rechecks the live registry and row after awaiting its r
 		return pending;
 	}
 	try {
-		configRef.current.providers.other = { kind: "codex" };
+		configRef.current.providers.other = { kind: "codex", webSearch: "live" };
 		expect(
 			(
 				await heldPatch({ model: "other/chat" }, () => {

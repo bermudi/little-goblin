@@ -1715,6 +1715,48 @@ describe("turn resume", () => {
 		}
 	});
 
+	test("a checkpointed provider-executed call seeds silently — no journal, no warn", async () => {
+		const lines: string[] = [];
+		setLogFile(join(tmpDir("goblin-tr-log-"), "log.jsonl"));
+		setLogWriter((_p, line) => lines.push(line));
+		try {
+			const { store, conv, journal, ops, runtime, sink, edge } = setup({});
+			const anchorSeq = appendUser(store, conv, "orig");
+			interruptedRun(store, journal, conv, "run-src", { anchorSeq });
+			journal.checkpoint("run-src", {
+				partial: [
+					{
+						role: "assistant",
+						content: [
+							{
+								type: "tool-call",
+								toolCallId: "ws_1",
+								toolName: "web_search",
+								input: "{}",
+								providerExecuted: true,
+							},
+							{ type: "text", text: "found it" },
+						],
+					},
+				],
+			});
+			expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+			expect(await sink()!.done).toEqual({ kind: "completed" });
+			await runtime.shutdown();
+			const flat = JSON.stringify(edge.streamCalls[0]!.prompt);
+			expect(flat).toContain("found it");
+			expect(flat).not.toContain("ws_1");
+			// The journal was never asked — no row, no "no journal row" warn.
+			expect(journal.get("run-src")!.calls).toEqual({planned:0,dispatched:0,completed:0,failed:0,resolved:0});
+			expect(lines.some((l) => l.includes("no journal row"))).toBe(false);
+			expect(lines.some((l) => l.includes("provider-executed call skipped"))).toBe(true);
+			store.close();
+		} finally {
+			setLogWriter(null);
+			setLogFile(null);
+		}
+	});
+
 	test("an under-budget checkpoint's cipher reaches the codex request body", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-codex-auth-"));
 		const authPath = join(dir, "auth.json");

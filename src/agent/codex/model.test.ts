@@ -12,6 +12,8 @@ import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage }
 import { z } from "zod";
 import { openStore } from "../../conversation.ts";
 import { tmpDb, tmpDir } from "../../testkit.ts";
+import { readFileSync } from "node:fs";
+import { codexWebSearch } from "../tools/mod.ts";
 import { CodexLanguageModel } from "./model.ts";
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -1094,5 +1096,309 @@ describe("CodexLanguageModel — receipts", () => {
 		await expect(model.doGenerate({ prompt })).rejects.toThrow(
 			/HTTP 429.*req-429.*99% used.*1730000000/,
 		);
+	});
+});
+
+// ---------- hosted web_search ----------
+
+describe("CodexLanguageModel — hosted web_search", () => {
+	const done = () => ({
+		type: "response.completed",
+		response: { status: "completed", usage: {} },
+	});
+	const sse = (frames: Record<string, unknown>[]) =>
+		new Response(
+			new TextEncoder().encode(frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("")),
+		);
+	const prompt = [{ role: "user" as const, content: [{ type: "text" as const, text: "x" }] }];
+	const wsTool = {
+		type: "provider" as const,
+		id: "codex.web_search" as `${string}.${string}`,
+		name: "web_search",
+		args: { externalWebAccess: true },
+	};
+
+	test("the provider tool maps to the wire tool, opts sources include, and warns on others", async () => {
+		const path = authDir({ access_token: jwt(FUTURE), account_id: "acct-1" });
+		const sent: Record<string, unknown>[] = [];
+		const model = new CodexLanguageModel("gpt-6-astra", path, async (_url, init) => {
+			sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+			return sse([done()]);
+		});
+		const r = await model.doGenerate({
+			prompt,
+			tools: [
+				wsTool,
+				{ type: "provider", id: "other.thing", name: "thing", args: {} },
+			],
+		});
+		expect(sent[0]!.tools).toEqual([{ type: "web_search", external_web_access: true }]);
+		expect(sent[0]!.include).toContain("web_search_call.action.sources");
+		expect(r.warnings.some((w) => w.type === "unsupported" && w.feature === "provider-defined tools")).toBe(true);
+		// codex.web_search itself never warns.
+		const wsWarn = r.warnings.filter(
+			(w) => w.type === "unsupported" && w.details?.includes("web_search"),
+		);
+		expect(wsWarn).toEqual([]);
+
+		const cached = { ...wsTool, args: { externalWebAccess: false } };
+		await model.doGenerate({ prompt, tools: [cached] });
+		expect((sent[1]!.tools as { external_web_access: boolean }[])[0]!.external_web_access).toBe(
+			false,
+		);
+		await model.doGenerate({ prompt });
+		expect("tools" in sent[2]!).toBe(false);
+		expect(sent[2]!.include).not.toContain("web_search_call.action.sources");
+	});
+
+	test("web_search_call done items emit provider-executed parts, finish stays stop, citations dedupe", async () => {
+		const path = authDir({ access_token: jwt(FUTURE), account_id: "acct-1" });
+		const model = new CodexLanguageModel("gpt-6-astra", path, async () =>
+			sse([
+				{
+					type: "response.output_item.done",
+					item: {
+						type: "web_search_call",
+						id: "ws_1",
+						status: "completed",
+						action: {
+							type: "search",
+							query: "Responses API web search",
+							sources: [{ url: "https://x.test/a" }],
+						},
+					},
+				},
+				{
+					type: "response.output_text.annotation.added",
+					annotation: {
+						type: "url_citation",
+						url: "https://x.test/a",
+						title: "Doc A",
+						start_index: 0,
+						end_index: 5,
+					},
+				},
+				{
+					type: "response.output_item.done",
+					item: {
+						type: "message",
+						id: "m_1",
+						phase: "final_answer",
+						content: [
+							{
+								type: "output_text",
+								text: "the answer",
+								annotations: [
+									{ type: "url_citation", url: "https://x.test/a", title: "Doc A" },
+									{ type: "url_citation", url: "https://x.test/b", title: "Doc B" },
+								],
+							},
+						],
+					},
+				},
+				done(),
+			]),
+		);
+		const r = await model.doGenerate({ prompt });
+		expect(r.finishReason.unified).toBe("stop");
+		const types = r.content.map((c) => c.type);
+		expect(types).toEqual(["tool-call", "tool-result", "source", "source", "text"]);
+		const call = r.content[0] as { providerExecuted?: boolean; toolName: string };
+		expect(call.providerExecuted).toBe(true);
+		expect(call.toolName).toBe("web_search");
+		const result = r.content[1] as unknown as { result: { status: string } };
+		expect(result.result.status).toBe("completed");
+		const urls = r.content
+			.filter((c) => c.type === "source")
+			.map((c) => (c as { url: string }).url);
+		expect(urls).toEqual(["https://x.test/a", "https://x.test/b"]);
+	});
+
+	test("an in-scope provider-executed call replays as web_search_call at its position", async () => {
+		const path = authDir({ access_token: jwt(FUTURE), account_id: "acct-1" });
+		const sent: Record<string, unknown>[] = [];
+		const model = new CodexLanguageModel("gpt-6-astra", path, async (_url, init) => {
+			sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+			return sse([done()]);
+		});
+		const emitter = new CodexLanguageModel("gpt-6-astra", path, async () =>
+			sse([
+				{
+					type: "response.output_item.done",
+					item: {
+						type: "web_search_call",
+						id: "ws_9",
+						status: "completed",
+						action: { type: "search", query: "q" },
+					},
+				},
+				done(),
+			]),
+		);
+		const emitted = await emitter.doGenerate({ prompt });
+		const meta = (
+			emitted.content[0] as unknown as { providerMetadata?: { codex: JSONObject } }
+		).providerMetadata!.codex;
+		await model.doGenerate({
+			prompt: [
+				{ role: "user", content: [{ type: "text", text: "q" }] },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "tool-call",
+							toolCallId: "ws_9",
+							toolName: "web_search",
+							input: JSON.stringify({ type: "search", query: "q" }),
+							providerExecuted: true,
+							providerOptions: { codex: meta },
+						},
+						{
+							type: "tool-result",
+							toolCallId: "ws_9",
+							toolName: "web_search",
+							output: { type: "text", value: "{}" },
+						},
+						{ type: "text", text: "found it" },
+					],
+				},
+			],
+		});
+		const input = sent[0]!.input as Array<Record<string, unknown>>;
+		expect(input[1]).toEqual({
+			type: "web_search_call",
+			id: "ws_9",
+			status: "completed",
+			action: { type: "search", query: "q" },
+		});
+		// The paired result part is inside the item — never a function_call_output.
+		expect(input.some((i) => i.type === "function_call_output")).toBe(false);
+		expect(input.some((i) => i.type === "function_call")).toBe(false);
+
+		// Foreign scope: dropped with a warning, never a function_call.
+		const otherPath = authDir({ access_token: jwt(FUTURE), account_id: "acct-2" });
+		const other = new CodexLanguageModel("gpt-6-astra", otherPath, async (_url, init) => {
+			sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+			return sse([done()]);
+		});
+		const r2 = await other.doGenerate({
+			prompt: [
+				{ role: "user", content: [{ type: "text", text: "q" }] },
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "tool-call",
+							toolCallId: "ws_9",
+							toolName: "web_search",
+							input: "{}",
+							providerExecuted: true,
+							providerOptions: { codex: meta },
+						},
+					],
+				},
+			],
+		});
+		const i2 = sent[1]!.input as Array<Record<string, unknown>>;
+		expect(i2.some((i) => i.type === "web_search_call" || i.type === "function_call")).toBe(
+			false,
+		);
+		expect(r2.warnings.filter((w) => w.type === "other").length).toBeGreaterThan(0);
+	});
+
+	test("the recorded live hosted-search exchange maps end to end (fixture)", async () => {
+		const path = authDir({ access_token: jwt(FUTURE), account_id: "acct-1" });
+		const frames = JSON.parse(
+			readFileSync(new URL("./fixtures-hosted-search.json", import.meta.url).pathname, "utf8"),
+		) as Record<string, unknown>[];
+		const model = new CodexLanguageModel("gpt-6.1-sol", path, async () =>
+			sse(frames),
+		);
+		const result = streamText({
+			model,
+			messages: [{ role: "user", content: "search" }],
+			tools: { web_search: codexWebSearch({ externalWebAccess: true }) },
+			stopWhen: stepCountIs(2),
+			maxRetries: 0,
+		});
+		const text = await result.text;
+		expect(text).toContain("developers.openai.com/learn/codex");
+		const steps = await result.steps;
+		expect(steps).toHaveLength(1);
+		const content = steps[0]!.content;
+		const call = content.find((c) => c.type === "tool-call");
+		expect(call).toMatchObject({ toolName: "web_search", providerExecuted: true });
+		expect(content.some((c) => c.type === "tool-result")).toBe(true);
+		const urls = content
+			.filter((c) => c.type === "source")
+			.map((c) => (c as { url: string }).url);
+		expect(urls).toContain("https://developers.openai.com/learn/codex");
+		expect(steps[0]!.finishReason).toBe("stop");
+
+		// The SDK-stored turn replays into the next request with the wire
+		// action intact — the backend 400s on a web_search_call whose
+		// action lacks its type (observed live).
+		let replayed: Record<string, unknown> = {};
+		const next = new CodexLanguageModel("gpt-6.1-sol", path, async (_url, init) => {
+			replayed = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return sse([done()]);
+		});
+		await streamText({
+			model: next,
+			messages: [
+				{ role: "user", content: "search" },
+				...(await result.response).messages,
+				{ role: "user", content: "ok" },
+			],
+			tools: { web_search: codexWebSearch({ externalWebAccess: true }) },
+			maxRetries: 0,
+		}).consumeStream();
+		const call2 = (replayed.input as Array<Record<string, unknown>>).find(
+			(i) => i.type === "web_search_call",
+		);
+		expect(call2).toMatchObject({
+			status: "completed",
+			action: { type: "search", query: "official OpenAI Codex documentation" },
+		});
+	});
+
+	test("a stored web_search action without a type drops instead of 400ing the request", async () => {
+		const path = authDir({ access_token: jwt(FUTURE), account_id: "acct-1" });
+		let sent: Record<string, unknown> = {};
+		const emitter = new CodexLanguageModel("gpt-6.1-sol", path, async () =>
+			sse([
+				{
+					type: "response.output_item.done",
+					item: { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", query: "q" } },
+				},
+				done(),
+			]),
+		);
+		const first = await emitter.doGenerate({ prompt });
+		const call = first.content.find((c) => c.type === "tool-call")!;
+		const model = new CodexLanguageModel("gpt-6.1-sol", path, async (_url, init) => {
+			sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
+			return sse([done()]);
+		});
+		const r = await model.doGenerate({
+			prompt: [
+				...prompt,
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "tool-call",
+							toolCallId: "ws_1",
+							toolName: "web_search",
+							input: "{}",
+							providerExecuted: true,
+							providerOptions: call.providerMetadata as Record<string, JSONObject>,
+						},
+					],
+				},
+			],
+		});
+		expect((sent.input as Array<Record<string, unknown>>).some((i) => i.type === "web_search_call")).toBe(false);
+		expect(r.warnings.some((w) => w.type === "other" && w.message.includes("no type"))).toBe(true);
 	});
 });

@@ -292,6 +292,8 @@ export interface AppContextView {
 	/** Last turn's window itemization, scaled to tokens. Null on turns
 	 *  without itemization metadata. */
 	segments: AppContextSegment[] | null;
+	/** Latest settled turn's quota receipt, when the provider issued one. */
+	quota?: AppQuota;
 }
 
 // ---------- the context window view (design/app.md → Context window view) ----------

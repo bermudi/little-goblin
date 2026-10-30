@@ -852,6 +852,38 @@ describe("ContextGauge", () => {
 		expect(popRow("weekly")).toContain("resets");
 	});
 
+	test("a settled turn's quota shows without a live context", async () => {
+		globalThis.fetch = mockFetch(() =>
+			Promise.resolve(
+				json(
+					view({
+						input: 100,
+						limit: 1000,
+						pct: 10,
+						turns: 1,
+						quota: {
+							limitName: "codex",
+							primary: { usedPercent: 77, windowMinutes: 300, resetsAt: null },
+							secondary: null,
+						},
+					}),
+				),
+			),
+		);
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ContextGauge token={null} conversationId="app/aaa" busy={false} />);
+		});
+		act(() => {
+			(container.querySelector(".ctx-btn") as HTMLButtonElement).click();
+		});
+		const popRow = (name: string) =>
+			[...container.querySelectorAll(".ctx-rows > div")]
+				.find((r) => r.querySelector("dt")?.textContent === name)
+				?.querySelector("dd")?.textContent;
+		expect(popRow("5h")).toBe("77% used");
+	});
+
 	test("no quota — the popover gains no window rows", async () => {
 		globalThis.fetch = mockFetch(() =>
 			Promise.resolve(json(view({ input: 100, limit: 1000, pct: 10, turns: 1 }))),

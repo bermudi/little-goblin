@@ -292,6 +292,16 @@ function seedPartial(run: TurnRun, calls: TurnToolCall[]): UIMessage | null {
 							...(providerMetadata === undefined ? {} : { providerMetadata }),
 						});
 					} else if (p.type === "tool-call" && typeof p.toolCallId === "string") {
+						if (p.providerExecuted === true) {
+							// Provider-executed calls (hosted web_search) are not
+							// journal actions — the checkpoint keeps them out of
+							// the seed entirely, never a "no journal row" warn.
+							log.info("checkpointed provider-executed call skipped in resume seed", {
+								run: run.runId,
+								toolCallId: p.toolCallId,
+							});
+							continue;
+						}
 						// Position comes from the checkpoint; name/args/outcome
 						// come from the journal. A call with no journal row can't
 						// be trusted or replayed — the checkpoint shape alone is

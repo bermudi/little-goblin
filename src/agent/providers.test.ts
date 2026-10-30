@@ -43,7 +43,7 @@ const cfg: Config = {
 			auth: "onemin",
 		},
 		openrouter: { kind: "openrouter", auth: "openrouter" },
-		codex: { kind: "codex" },
+		codex: { kind: "codex", webSearch: "live" },
 	},
 	model: "zai/glm-5.3-flash",
 	tts: false,
@@ -599,7 +599,7 @@ describe("resolveModel — codex session opts", () => {
 		const c: Config = {
 			...cfg,
 			providers: {
-				codex: { kind: "codex", authFile },
+				codex: { kind: "codex", authFile, webSearch: "live" },
 				zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4", auth: "zai" },
 			},
 		};

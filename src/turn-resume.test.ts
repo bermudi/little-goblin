@@ -2,6 +2,7 @@
 // reclassify leaves them; assertions ride the real fence/admission path.
 
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +15,7 @@ import { openStore, type Conversation, type ConversationStore } from "./conversa
 import { appMediaSink, composeTurnSinks } from "./app-media.ts";
 import { makeTools as realMakeTools } from "./agent/tools/mod.ts";
 import { withScript } from "./agent/tools/script.ts";
-import { setLogFile } from "./log.ts";
+import { setLogFile, setLogWriter } from "./log.ts";
 import { Runtime, type RuntimeDeps, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
 import { SKILL_PART } from "./skill-part.ts";
 import { makeDeliverySink } from "./tg/delivery.ts";
@@ -35,6 +36,7 @@ import {
 	useHome,
 	waitUntil,
 } from "./testkit.ts";
+import { CodexLanguageModel } from "./agent/codex/model.ts";
 import { openTurnJournal, RESOLVED_RETRY_NOTE, type TurnJournal } from "./turn-journal.ts";
 import { makeResumeOps, makeResumeSinks } from "./turn-resume.ts";
 
@@ -1509,6 +1511,276 @@ describe("turn resume", () => {
 		expect(await sink()!.done).toEqual({ kind: "completed" });
 		expect(journal.get("run-src")!.status).toBe("resumed");
 		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a checkpointed partial replays reasoning, calls, and grants in step order", async () => {
+		const { store, conv, journal, ops, runtime, sink, edge } = setup({});
+		const anchorSeq = appendUser(store, conv, "orig");
+		interruptedRun(store, journal, conv, "run-src", { anchorSeq });
+		// c1 completed before the checkpoint; c2 got an operator retry
+		// grant; c3's result landed after the last checkpoint — it must
+		// still ride exactly once, appended behind the checkpointed span.
+		journal.noteToolInput("run-src", "c1", "probe", { q: 1 });
+		journal.noteToolDispatch("run-src", "c1", "probe", { q: 1 });
+		journal.noteToolResult("run-src", "c1", { out: "one" });
+		journal.noteToolInput("run-src", "c2", "probe", { q: 2 });
+		journal.noteToolDispatch("run-src", "c2", "probe", { q: 2 });
+		expect(ops.decide(conv.id, "run-src", "c2", "authorize-retry").kind).toBe("ok");
+		journal.noteToolInput("run-src", "c3", "probe", { q: 3 });
+		journal.noteToolDispatch("run-src", "c3", "probe", { q: 3 });
+		journal.noteToolResult("run-src", "c3", { out: "three" });
+		// The dead attempt's step checkpoint — ModelMessages with the
+		// codex opaque state the model emitted.
+		journal.checkpoint("run-src", {
+			partial: [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "reasoning",
+							text: "checking",
+							providerOptions: {
+								codex: {
+									itemId: "rs_1",
+									replayScope: "s1",
+									reasoningEncryptedContent: "C1",
+								},
+							},
+						},
+						{
+							type: "text",
+							text: "partial answer",
+							providerOptions: {
+								codex: { itemId: "m_1", replayScope: "s1", phase: "commentary" },
+							},
+						},
+						{
+							type: "tool-call",
+							toolCallId: "c1",
+							toolName: "probe",
+							input: { q: 1 },
+							providerOptions: { codex: { itemId: "fc_1", replayScope: "s1" } },
+						},
+						{
+							type: "tool-call",
+							toolCallId: "c2",
+							toolName: "probe",
+							input: { q: 2 },
+						},
+					],
+				},
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "reasoning",
+							text: "",
+							providerOptions: {
+								codex: {
+									itemId: "rs_2",
+									replayScope: "s1",
+									reasoningEncryptedContent: "C2",
+								},
+							},
+						},
+						{ type: "text", text: "second step" },
+					],
+				},
+			],
+		});
+
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+
+		const prompt = edge.streamCalls[0]!.prompt;
+		const step1 = prompt.find(
+			(m) =>
+				m.role === "assistant" &&
+				Array.isArray(m.content) &&
+				m.content.some((p) => p.type === "tool-call" && p.toolCallId === "c1"),
+		)!;
+		expect(step1.role).toBe("assistant");
+		const step1Parts = step1.content as unknown as Array<Record<string, unknown>>;
+		expect(step1Parts.map((p) => p.type)).toEqual([
+			"reasoning",
+			"text",
+			"tool-call",
+			"tool-call",
+		]);
+		// Opaque state survives verbatim — the checkpoint's providerOptions
+		// become the converted part's providerOptions untouched.
+		expect((step1Parts[0]!.providerOptions as { codex: unknown }).codex).toEqual({
+			itemId: "rs_1",
+			replayScope: "s1",
+			reasoningEncryptedContent: "C1",
+		});
+		expect((step1Parts[1]!.providerOptions as { codex: unknown }).codex).toEqual({
+			itemId: "m_1",
+			replayScope: "s1",
+			phase: "commentary",
+		});
+		expect((step1Parts[2]!.providerOptions as { codex: unknown }).codex).toEqual({
+			itemId: "fc_1",
+			replayScope: "s1",
+		});
+
+		// The step boundary keeps step 1's tool results ahead of step 2's
+		// reasoning and text, and the uncheckpointed call lands once, last.
+		const flat = JSON.stringify(prompt);
+		const idx = (needle: string) => flat.indexOf(needle);
+		expect(idx("one")).toBeGreaterThan(-1);
+		expect(idx("one")).toBeLessThan(idx("second step"));
+		expect(idx("authorized re-running")).toBeGreaterThan(-1);
+		expect(idx("three")).toBeGreaterThan(idx("second step"));
+		const c1Occurrences = flat.split('"c1"').length - 1;
+		const c3Occurrences = flat.split('"c3"').length - 1;
+		expect(c1Occurrences).toBe(2); // once as the call, once as its result id
+		expect(c3Occurrences).toBe(2);
+		store.close();
+	});
+
+	test("a journal row with no tool name never seeds a part", async () => {
+		const { store, conv, journal, ops, runtime, sink, edge } = setup({});
+		const anchorSeq = appendUser(store, conv, "orig");
+		interruptedRun(store, journal, conv, "run-src", { anchorSeq });
+		journal.checkpoint("run-src", {
+			partial: [{ role: "assistant", content: [{ type: "text", text: "half" }] }],
+		});
+		// A result row with no input/dispatch — the name stays "" and no
+		// `tool-` part may form from it, checkpointed or not.
+		journal.noteToolResult("run-src", "c-empty", { out: "phantom" });
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+		const flat = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(flat).toContain("half");
+		expect(flat).not.toContain("c-empty");
+		expect(flat).not.toContain("phantom");
+		store.close();
+	});
+
+	test("an over-budget checkpoint strips cipher and still seeds the rest", async () => {
+		const lines: string[] = [];
+		setLogFile(join(tmpDir("goblin-tr-log-"), "log.jsonl"));
+		setLogWriter((_p, line) => lines.push(line));
+		try {
+			const { store, conv, journal, ops, runtime, sink, edge } = setup({});
+			const anchorSeq = appendUser(store, conv, "orig");
+			interruptedRun(store, journal, conv, "run-src", { anchorSeq });
+			journal.noteToolInput("run-src", "c1", "probe", { q: 1 });
+			journal.noteToolDispatch("run-src", "c1", "probe", { q: 1 });
+			journal.noteToolResult("run-src", "c1", { out: "one" });
+			// The cipher alone blows the budget — the serialized checkpoint
+			// must still be valid JSON with everything else intact.
+			journal.checkpoint("run-src", {
+				partial: [
+					{
+						role: "assistant",
+						content: [
+							{
+								type: "reasoning",
+								text: "",
+								providerOptions: {
+									codex: {
+										itemId: "rs_big",
+										replayScope: "s1",
+										reasoningEncryptedContent: "C".repeat(600_000),
+									},
+								},
+							},
+							{ type: "text", text: "kept text" },
+							{ type: "tool-call", toolCallId: "c1", toolName: "probe", input: { q: 1 } },
+						],
+					},
+				],
+			});
+			const stored = journal.get("run-src")!.partial;
+			expect(Array.isArray(stored)).toBe(true);
+			expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+			expect(await sink()!.done).toEqual({ kind: "completed" });
+			await runtime.shutdown();
+			const flat = JSON.stringify(edge.streamCalls[0]!.prompt);
+			expect(flat).toContain("kept text");
+			expect(flat).toContain('"c1"');
+			expect(flat).not.toContain("C".repeat(600_000));
+			expect(
+				lines.filter((l) => l.includes("reasoning cipher stripped")).length,
+			).toBeGreaterThan(0);
+			store.close();
+		} finally {
+			setLogWriter(null);
+			setLogFile(null);
+		}
+	});
+
+	test("an under-budget checkpoint's cipher reaches the codex request body", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-codex-auth-"));
+		const authPath = join(dir, "auth.json");
+		writeFileSync(
+			authPath,
+			JSON.stringify({ tokens: { access_token: "tok", account_id: "acct-1" } }),
+		);
+		const scope = createHash("sha256")
+			.update(JSON.stringify(["gpt-6-astra", "acct-1"]))
+			.digest("hex");
+		const sent: Record<string, unknown>[] = [];
+		const codex = new CodexLanguageModel("gpt-6-astra", authPath, async (_url, init) => {
+			sent.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+			const frames = [
+				"data: " +
+					JSON.stringify({
+						type: "response.completed",
+						response: { status: "completed", usage: {} },
+					}) +
+					"\n\n",
+			].join("");
+			return new Response(new TextEncoder().encode(frames));
+		});
+		const { store, conv, journal, ops, runtime, sink } = setup({ model: codex });
+		const anchorSeq = appendUser(store, conv, "orig");
+		interruptedRun(store, journal, conv, "run-src", { anchorSeq });
+		journal.noteToolInput("run-src", "c1", "probe", { q: 1 });
+		journal.noteToolDispatch("run-src", "c1", "probe", { q: 1 });
+		journal.noteToolResult("run-src", "c1", { out: "one" });
+		journal.checkpoint("run-src", {
+			partial: [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "reasoning",
+							text: "weighed",
+							providerOptions: {
+								codex: {
+									itemId: "rs_1",
+									replayScope: scope,
+									reasoningEncryptedContent: "C1",
+								},
+							},
+						},
+						{ type: "tool-call", toolCallId: "c1", toolName: "probe", input: { q: 1 } },
+					],
+				},
+			],
+		});
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+		expect(sent.length).toBeGreaterThan(0);
+		const input = sent[0]!.input as Array<Record<string, unknown>>;
+		const reasoning = input.find((i) => i.type === "reasoning");
+		expect(reasoning).toEqual({
+			type: "reasoning",
+			id: "rs_1",
+			encrypted_content: "C1",
+			summary: [{ type: "summary_text", text: "weighed" }],
+		});
+		expect(input.find((i) => i.type === "function_call")).toMatchObject({
+			call_id: "c1",
+			name: "probe",
+		});
 		store.close();
 	});
 

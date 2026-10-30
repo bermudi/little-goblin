@@ -3,11 +3,21 @@
 
 import type { UIMessage } from "ai";
 import { log } from "../log.ts";
+import { withoutReasoningCipher } from "./codex/replay-state.ts";
 
 // Rough chars-per-token for mixed chat text — enough to pick a cut; the
 // real number lands in the next turn's utilization log line.
 export function estimateTokens(text: string): number {
 	return Math.ceil(text.length / 4);
+}
+
+// Serialized-size estimate for budgeting — one exclusion: the codex
+// namespace's reasoningEncryptedContent is opaque provider state, not
+// visible content, so its bulk must not count toward the fold decision
+// (a cipher-heavy turn would otherwise compact in a storm of its own
+// state). Every other byte counts exactly as before.
+export function estimateMessageTokens(message: UIMessage): number {
+	return estimateTokens(JSON.stringify(withoutReasoningCipher(message)));
 }
 
 export interface CompactionEvent {
@@ -79,19 +89,19 @@ export function chooseBoundary(
 	// completeness, so an anchored response pulls its user message into
 	// the tail rather than being stranded.
 	let i = detail.length - 1;
-	let tailTokens = estimateTokens(JSON.stringify(detail[i]!.message));
+	let tailTokens = estimateMessageTokens(detail[i]!.message);
 	while (i > 0) {
 		const boundaryIndex = i - 1;
 		if (!exchangeComplete(detail, boundaryIndex)) {
 			i = boundaryIndex;
-			tailTokens += estimateTokens(JSON.stringify(detail[boundaryIndex]!.message));
+			tailTokens += estimateMessageTokens(detail[boundaryIndex]!.message);
 			continue;
 		}
 		if (tailTokens >= opts.tailTokenBudget) break;
 		if (opts.previousBoundary !== null && detail[boundaryIndex]!.seq <= opts.previousBoundary)
 			break;
 		i = boundaryIndex;
-		tailTokens += estimateTokens(JSON.stringify(detail[boundaryIndex]!.message));
+		tailTokens += estimateMessageTokens(detail[boundaryIndex]!.message);
 	}
 	const boundaryIndex = i - 1;
 	if (boundaryIndex < 0) return null;
@@ -107,7 +117,7 @@ export function chooseBoundary(
 			: detail.findIndex((e) => e.seq === opts.previousBoundary) + 1;
 	let spanTokens = 0;
 	for (let j = spanStart; j <= boundaryIndex; j++) {
-		spanTokens += estimateTokens(JSON.stringify(detail[j]!.message));
+		spanTokens += estimateMessageTokens(detail[j]!.message);
 	}
 	if (spanTokens < (opts.minSpanTokens ?? 500)) return null;
 	return boundary;
@@ -256,7 +266,7 @@ export async function runCompaction(
 	// call instead.
 	const spanStart = (previous ? detail.findIndex((e) => e.seq === previous.boundarySeq) : -1) + 1;
 	const span = detail.slice(spanStart, boundaryIndex + 1);
-	const tokensBefore = span.reduce((sum, e) => sum + estimateTokens(JSON.stringify(e.message)), 0);
+	const tokensBefore = span.reduce((sum, e) => sum + estimateMessageTokens(e.message), 0);
 	const reason = opts.reason ?? "threshold";
 	log.info("compaction summarizing", {
 		conversation: id,

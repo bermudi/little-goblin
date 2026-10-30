@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
+import { withoutReasoningCipher } from "./agent/codex/replay-state.ts";
 import { log } from "./log.ts";
 import { stableStringify } from "./loop-detect.ts";
 
@@ -230,6 +231,40 @@ const RESULT_BUDGET = 8000;
 const ARGS_BUDGET = 8000;
 const ARGS_TRUNCATED = "[truncated]";
 const ERROR_BUDGET = 1000;
+// The step checkpoint must stay valid JSON at any size — a char-truncated
+// row parses as a string at read time and seeds nothing, so over-budget
+// degrades by content instead: provider ciphertext first, then the
+// oldest messages.
+const PARTIAL_BUDGET = 512_000;
+
+function serializePartial(partial: unknown, runId: string): string {
+	const text = JSON.stringify(partial) ?? "null";
+	if (text.length <= PARTIAL_BUDGET) return text;
+	const value = withoutReasoningCipher(partial);
+	let stripped = JSON.stringify(value) ?? "null";
+	log.warn("turn checkpoint over budget — reasoning cipher stripped", {
+		run: runId,
+		beforeChars: text.length,
+		afterChars: stripped.length,
+	});
+	if (stripped.length <= PARTIAL_BUDGET) return stripped;
+	if (Array.isArray(value)) {
+		let dropped = 0;
+		const list = [...value];
+		while (stripped.length > PARTIAL_BUDGET && list.length > 0) {
+			list.shift();
+			dropped++;
+			stripped = JSON.stringify(list) ?? "[]";
+		}
+		if (dropped > 0) {
+			log.warn("turn checkpoint over budget — oldest messages dropped", {
+				run: runId,
+				dropped,
+			});
+		}
+	}
+	return stripped;
+}
 
 function boundedArgsText(canonical: string): string {
 	return canonical.length <= ARGS_BUDGET
@@ -712,7 +747,7 @@ export function openTurnJournal(db: Database): TurnJournal {
 			const vals: (string | number | null)[] = [];
 			if (patch.partial !== undefined) {
 				sets.push("partial = ?");
-				vals.push(boundedJson(patch.partial, RESULT_BUDGET));
+				vals.push(serializePartial(patch.partial, runId));
 			}
 			if (patch.loopState !== undefined) {
 				sets.push("loop_state = ?");

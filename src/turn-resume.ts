@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { ToolSet, UIMessage } from "ai";
+import type { JSONValue } from "@ai-sdk/provider";
+import type { ProviderMetadata, ToolSet, UIMessage } from "ai";
 import { z } from "zod";
 import { channelOf, type Conversation, type ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
@@ -164,80 +165,168 @@ const loopStateSchema = z.object({
 
 const SEED_DIGEST_CHARS = 300;
 
-function checkpointedText(partial: unknown): UIMessage["parts"] {
-	const parts: UIMessage["parts"] = [];
-	if (!Array.isArray(partial)) return parts;
-	for (const m of partial) {
-		if (typeof m !== "object" || m === null) continue;
-		const msg = m as { role?: unknown; content?: unknown };
-		if (msg.role !== "assistant") continue;
-		if (typeof msg.content === "string") {
-			if (msg.content !== "") parts.push({ type: "text", text: msg.content });
-			continue;
-		}
-		if (!Array.isArray(msg.content)) continue;
-		for (const p of msg.content) {
-			if (typeof p !== "object" || p === null) continue;
-			const part = p as { type?: unknown; text?: unknown };
-			if (part.type === "text" && typeof part.text === "string" && part.text !== "") {
-				parts.push({ type: "text", text: part.text });
-			}
-		}
-	}
-	return parts;
+// Journaled checkpoints are trusted server state, still validated at the
+// boundary: providerOptions must be the SDK's SharedV4 JSON shape
+// (record of record of JSON values) to ride back as UI providerMetadata —
+// anything else drops the metadata, never the part.
+const jsonValueSchema: z.ZodType<JSONValue> = z.lazy(() =>
+	z.union([
+		z.string(),
+		z.number(),
+		z.boolean(),
+		z.null(),
+		z.array(jsonValueSchema),
+		z.record(z.string(), jsonValueSchema.optional()),
+	]),
+);
+const providerOptionsSchema = z.record(z.string(), z.record(z.string(), jsonValueSchema));
+
+const checkpointMessageSchema = z.looseObject({
+	role: z.string(),
+	content: z.union([z.string(), z.array(z.looseObject({ type: z.string() }))]),
+});
+
+function checkpointMeta(providerOptions: unknown): ProviderMetadata | undefined {
+	const parsed = providerOptionsSchema.safeParse(providerOptions);
+	return parsed.success ? parsed.data : undefined;
 }
 
-function seedPartial(run: TurnRun, calls: TurnToolCall[]): UIMessage | null {
-	const parts: UIMessage["parts"] = checkpointedText(run.partial);
-	for (const c of calls) {
-		if (c.name === "") continue;
-		if (c.state === "completed" || c.state === "resolved-done") {
-			parts.push({
-				type: `tool-${c.name}`,
-				toolCallId: c.toolCallId,
-				state: "output-available",
-				input: c.args,
-				output: recordedOutput(c),
-			} as UIMessage["parts"][number]);
-		} else if (c.state === "failed") {
-			// A recorded failure is historical evidence too — the model sees
-			// what the interrupted attempt already learned.
-			parts.push({
-				type: `tool-${c.name}`,
-				toolCallId: c.toolCallId,
-				state: "output-error",
-				input: c.args,
-				errorText: c.error ?? "failed",
-			} as UIMessage["parts"][number]);
-		} else if (c.state === "resolved-retry" || c.state === "resolved-skip") {
-			let note: string;
-			if (c.state === "resolved-skip") {
-				note = RESOLVED_SKIP_NOTE;
+// A journaled tool call rendered the way the interrupted attempt's own
+// progress reads: outcome evidence and decision notes — the state rules
+// that gate replay live here, never in the checkpoint shape.
+function seedCallPart(
+	c: TurnToolCall,
+	callProviderMetadata?: ProviderMetadata,
+): UIMessage["parts"][number] | null {
+	if (c.name === "") return null;
+	const meta =
+		callProviderMetadata === undefined ? {} : { callProviderMetadata };
+	if (c.state === "completed" || c.state === "resolved-done") {
+		return {
+			type: `tool-${c.name}`,
+			toolCallId: c.toolCallId,
+			state: "output-available",
+			input: c.args,
+			output: recordedOutput(c),
+			...meta,
+		} as UIMessage["parts"][number];
+	}
+	if (c.state === "failed") {
+		// A recorded failure is historical evidence too — the model sees
+		// what the interrupted attempt already learned.
+		return {
+			type: `tool-${c.name}`,
+			toolCallId: c.toolCallId,
+			state: "output-error",
+			input: c.args,
+			errorText: c.error ?? "failed",
+			...meta,
+		} as UIMessage["parts"][number];
+	}
+	if (c.state === "resolved-retry" || c.state === "resolved-skip") {
+		let note: string;
+		if (c.state === "resolved-skip") {
+			note = RESOLVED_SKIP_NOTE;
+		} else {
+			// A spent grant is evidence of what was authorized and
+			// consumed — never fresh permission. Only an unconsumed
+			// grant authorizes exactly one more execution.
+			const grant = c.retryConsumed
+				? "operator authorized re-running this call and that grant is spent — it does not permit another execution"
+				: "operator authorized re-running this call";
+			if (c.result !== null) {
+				// The grant concerns one more EXECUTION — the recorded
+				// outcome stays visible as evidence, never as the answer.
+				note = `[turn-journal decision: ${grant} — its recorded result stays evidence: ${c.result}]`;
+			} else if (c.error !== null) {
+				note = `[turn-journal decision: ${grant} — its recorded failure stays evidence: ${c.error}]`;
 			} else {
-				// A spent grant is evidence of what was authorized and
-				// consumed — never fresh permission. Only an unconsumed
-				// grant authorizes exactly one more execution.
-				const grant = c.retryConsumed
-					? "operator authorized re-running this call and that grant is spent — it does not permit another execution"
-					: "operator authorized re-running this call";
-				if (c.result !== null) {
-					// The grant concerns one more EXECUTION — the recorded
-					// outcome stays visible as evidence, never as the answer.
-					note = `[turn-journal decision: ${grant} — its recorded result stays evidence: ${c.result}]`;
-				} else if (c.error !== null) {
-					note = `[turn-journal decision: ${grant} — its recorded failure stays evidence: ${c.error}]`;
-				} else {
-					note = c.retryConsumed ? `[turn-journal decision: ${grant}]` : RESOLVED_RETRY_NOTE;
+				note = c.retryConsumed ? `[turn-journal decision: ${grant}]` : RESOLVED_RETRY_NOTE;
+			}
+		}
+		return {
+			type: `tool-${c.name}`,
+			toolCallId: c.toolCallId,
+			state: "output-available",
+			input: c.args,
+			output: c.resolutionNote === null ? note : `${note} — ${c.resolutionNote}`,
+			...meta,
+		} as UIMessage["parts"][number];
+	}
+	return null;
+}
+
+// The checkpoint holds ModelMessages in step order — walk them as they
+// were: reasoning parts carry their provider state verbatim (an empty
+// summary still holds the opaque cipher), tool-call placeholders are
+// rebuilt from the authoritative journal row at their own position, and
+// step-start boundaries keep each step's tool results ahead of the next
+// step's reasoning and text on SDK conversion. Journal rows the
+// checkpoint never reached (a crash between completion and checkpoint)
+// append once at the end.
+function seedPartial(run: TurnRun, calls: TurnToolCall[]): UIMessage | null {
+	const byCallId = new Map(calls.map((c) => [c.toolCallId, c]));
+	const emitted = new Set<string>();
+	const parts: UIMessage["parts"] = [];
+	if (Array.isArray(run.partial)) {
+		for (const m of run.partial) {
+			const msg = checkpointMessageSchema.safeParse(m);
+			if (!msg.success || msg.data.role !== "assistant") continue;
+			const content = msg.data.content;
+			const block: UIMessage["parts"] = [];
+			if (typeof content === "string") {
+				if (content !== "") block.push({ type: "text", text: content });
+			} else {
+				for (const p of content) {
+					const providerMetadata = checkpointMeta(p.providerOptions);
+					if (p.type === "text" && typeof p.text === "string" && p.text !== "") {
+						block.push({
+							type: "text",
+							text: p.text,
+							...(providerMetadata === undefined ? {} : { providerMetadata }),
+						});
+					} else if (p.type === "reasoning" && typeof p.text === "string") {
+						block.push({
+							type: "reasoning",
+							text: p.text,
+							...(providerMetadata === undefined ? {} : { providerMetadata }),
+						});
+					} else if (p.type === "tool-call" && typeof p.toolCallId === "string") {
+						// Position comes from the checkpoint; name/args/outcome
+						// come from the journal. A call with no journal row can't
+						// be trusted or replayed — the checkpoint shape alone is
+						// not evidence.
+						emitted.add(p.toolCallId);
+						const call = byCallId.get(p.toolCallId);
+						if (call === undefined) {
+							log.warn("checkpointed tool call has no journal row — dropped from resume seed", {
+								run: run.runId,
+								toolCallId: p.toolCallId,
+							});
+							continue;
+						}
+						if (call.name === "") {
+							log.warn(
+								"checkpointed tool call's journal row has no tool name — dropped from resume seed",
+								{ run: run.runId, toolCallId: p.toolCallId },
+							);
+							continue;
+						}
+						const toolPart = seedCallPart(call, providerMetadata);
+						if (toolPart !== null) block.push(toolPart);
+					}
 				}
 			}
-			parts.push({
-				type: `tool-${c.name}`,
-				toolCallId: c.toolCallId,
-				state: "output-available",
-				input: c.args,
-				output: c.resolutionNote === null ? note : `${note} — ${c.resolutionNote}`,
-			} as UIMessage["parts"][number]);
+			if (block.length === 0) continue;
+			if (parts.length > 0) parts.push({ type: "step-start" });
+			parts.push(...block);
 		}
+	}
+	for (const c of calls) {
+		if (emitted.has(c.toolCallId)) continue;
+		if (c.name === "") continue;
+		const toolPart = seedCallPart(c);
+		if (toolPart !== null) parts.push(toolPart);
 	}
 	if (parts.length === 0) return null;
 	return { id: randomUUID(), role: "assistant", parts };

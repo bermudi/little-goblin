@@ -541,7 +541,12 @@ export async function driveStream<M extends WireMember>(
 			}
 			lastStepInputTokens = step.usage.inputTokens ?? null;
 			lastStepCacheRead = step.usage.inputTokenDetails?.cacheReadTokens ?? null;
-			partialMessages.push(...step.response.messages);
+			// Assistant steps only — tool-result messages re-derive from
+			// the journal at resume, and carrying them doubles checkpoint
+			// bulk for nothing.
+			for (const m of step.response.messages) {
+				if (m.role === "assistant") partialMessages.push(m);
+			}
 			deps.journal?.checkpoint(deps.runId, {
 				loopState: state.snapshot(),
 				filterRetryUsed,

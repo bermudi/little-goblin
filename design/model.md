@@ -112,6 +112,29 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   envelope degrades to a placeholder, never parses as speech. Arrival seq
   stays the truth; the model view anchors each reply so none reads as having
   seen later input.
+- **Codex reasoning persistence.** Codex sends `store:false`, so reasoning
+  continuation is our problem: the adapter stamps each response item's
+  replay state into `providerMetadata.codex` — `itemId` + `replayScope` on
+  every replayable item, `reasoningEncryptedContent` on reasoning,
+  `phase` on message items — and `convertPrompt` rebuilds the wire items
+  (`reasoning` at its own position, `id`/`phase` on messages and function
+  calls) only when the scope proves the same model+account
+  (`sha256([modelId, account_id ?? authFile])`). Anything else drops the
+  metadata with a warning: foreign or malformed namespaces, scope
+  mismatches, cipherless reasoning — a bare summary is never substituted
+  for encrypted state, and the opaque values never enter logs, summaries,
+  or instructions. The `doGenerate` path collects content in streaming
+  order (interleaved reasoning/text/calls, metadata from start and end
+  parts), and an empty-summary reasoning item still emits a part — the
+  cipher is the payload, the summary is optional evidence. Resume
+  ordering follows the same rule the checkpoint walked: step-ordered
+  text/reasoning with their providerOptions, journal-backed tool parts at
+  their own positions, `step-start` boundaries so each step's tool
+  results land before the next step's reasoning and text, and
+  uncheckpointed journal calls appended once at the tail. Because the
+  cipher counts as bytes in `JSON.stringify`, the compaction estimate
+  exempts exactly `providerMetadata.codex.reasoningEncryptedContent`
+  (call/result metadata included) — everything else counts as before.
 - **Compaction.** History is unbounded on disk, bounded in the window by
   pointer relocation, never deletion. A completed turn crossing most of its
   model's catalog window — or `/compact` — compacts: the conversation's own

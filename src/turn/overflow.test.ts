@@ -6,6 +6,7 @@ import {
 	failureFromStream,
 	type OverflowDeps,
 	overflowHoldable,
+	PreemptCompactError,
 	recoverFromOverflow,
 	type StreamFailure,
 	type TurnRecovery,
@@ -66,6 +67,27 @@ const failureOf = (partial: UIMessage | null): ContextOverflowError =>
 			},
 		],
 		loop,
+	);
+
+const preemptOf = (partial: UIMessage | null): PreemptCompactError =>
+	new PreemptCompactError(
+		partial,
+		true,
+		["probe"],
+		[
+			{
+				id: "c1",
+				entry: {
+					tool: "probe",
+					args: "{}",
+					result: "r",
+					ok: true,
+				},
+			},
+		],
+		loop,
+		"pressure",
+		4,
 	);
 
 interface Harness {
@@ -293,6 +315,60 @@ describe("recoverFromOverflow", () => {
 
 	test("a fence landing between compaction and packaging fences the turn", async () => {
 		const h = harness({
+			assertAuthority: () => {
+				throw new Error("fenced");
+			},
+		});
+		expect(await recoverFromOverflow(h.deps)).toEqual({ kind: "fenced" });
+	});
+
+	test("a failed pre-empt fold resumes the turn unfolded — it never overflowed", async () => {
+		// The arm fired before the window was full; a summarizer outage
+		// must not end the turn with a "window full" story. The recovery
+		// is the same package on the uncompacted view, budget spent so
+		// the arm cannot re-fire.
+		const failure = preemptOf(partialWith({ type: "text", text: "half an answer" }));
+		const h = harness({
+			failure,
+			compact: () => Promise.reject(new Error("summarizer down")),
+		});
+		const outcome = await recoverFromOverflow(h.deps);
+		expect(outcome.kind).toBe("resume");
+		if (outcome.kind !== "resume") return;
+		expect(outcome.recovery.conversation).toBe(h.deps.conversation);
+		expect(outcome.recovery.partial).toBe(failure.partial);
+		expect(outcome.recovery.toolCalls).toBe(failure.toolCalls);
+		expect(outcome.recovery.loop).toBe(failure.loop);
+		expect(outcome.recovery.overflowed).toBe(true);
+		expect(outcome.members).toBe(h.deps.members);
+	});
+
+	test("a pre-empt fold that finds nothing resumes unfolded", async () => {
+		// The foldability gate raced the fold's own read — the boundary
+		// vanished between them. Same resume, same spent budget.
+		const h = harness({
+			failure: preemptOf(null),
+			compact: async () => ({ kind: "noop", reason: "boundary vanished — history changed" }),
+		});
+		const outcome = await recoverFromOverflow(h.deps);
+		expect(outcome.kind).toBe("resume");
+		if (outcome.kind !== "resume") return;
+		expect(outcome.recovery.overflowed).toBe(true);
+	});
+
+	test("a fenced pre-empt fold still fences the turn", async () => {
+		const h = harness({
+			failure: preemptOf(null),
+			compact: () => Promise.reject(new Error("summarizer down")),
+			holdsAuthority: false,
+		});
+		expect(await recoverFromOverflow(h.deps)).toEqual({ kind: "fenced" });
+	});
+
+	test("a post-fold fence on the unfolded-resume path fences the turn", async () => {
+		const h = harness({
+			failure: preemptOf(null),
+			compact: () => Promise.reject(new Error("summarizer down")),
 			assertAuthority: () => {
 				throw new Error("fenced");
 			},

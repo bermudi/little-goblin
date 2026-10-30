@@ -220,6 +220,14 @@ Implementation rulings (2026-10-25):
   a `PreemptCompactError` at the runtime boundary, and flows through
   `recoverFromOverflow` unchanged — full tail, compact reason `preempt`, one
   resume with the partial continued and journaled calls guarded.
+- **A failed pre-empt fold resumes unfolded — it never ends the turn.** The
+  arm fired before the window was full, so a `compact()` throw or a raced
+  `noop` is not the overflow story ("context window full …") and not
+  terminal: the recovery resumes on the uncompacted view with the same
+  spent budget — the arm cannot re-fire, and a still-growing turn meets
+  the context landing or a real 400 as itself. Ruling added 2026-10-30:
+  previously a summarizer outage ended every turn that crossed an arm
+  threshold with a false window-full error.
 
 Invariants carried over unchanged, because they are not about timing: the
 authority fence checked before each chunk and before the pointer lands; a

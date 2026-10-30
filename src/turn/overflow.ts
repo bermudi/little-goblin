@@ -186,14 +186,15 @@ export interface OverflowDeps<M> {
 
 export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<OverflowOutcome<M>> {
 	const { convId, epoch, failure } = deps;
-	if (failure instanceof PreemptCompactError) {
+	const preempt = failure instanceof PreemptCompactError ? failure : null;
+	if (preempt !== null) {
 		// Not a failure — a scheduled fold. The step that would have
 		// dispatched never did, so no provider call was wasted.
 		log.info("compaction pre-empt — folding at the step boundary, resuming turn", {
 			conversation: convId,
 			epoch,
-			arm: failure.arm,
-			step: failure.stepNumber,
+			arm: preempt.arm,
+			step: preempt.stepNumber,
 			toolCalls: failure.toolCalls.length,
 			partialParts: failure.partial?.parts.length ?? 0,
 		});
@@ -205,7 +206,7 @@ export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<Ove
 			partialParts: failure.partial?.parts.length ?? 0,
 		});
 	}
-	let outcome: CompactionOutcome;
+	let outcome: CompactionOutcome | null = null;
 	try {
 		outcome = await deps.compact();
 	} catch (compactErr) {
@@ -213,24 +214,53 @@ export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<Ove
 			log.info("turn fenced", { conversation: convId, epoch, error: String(compactErr) });
 			return { kind: "fenced" };
 		}
-		log.warn("overflow compaction failed — turn ends", compactErr, { conversation: convId });
-		const msg = compactErr instanceof Error ? compactErr.message : String(compactErr);
-		return {
-			kind: "error",
-			message: `context window full and compacting failed: ${msg.slice(0, 120)}`,
-		};
-	}
-	if (outcome.kind === "noop") {
-		log.warn("context overflow — nothing left to compact", {
+		if (preempt === null) {
+			log.warn("overflow compaction failed — turn ends", compactErr, { conversation: convId });
+			const msg = compactErr instanceof Error ? compactErr.message : String(compactErr);
+			return {
+				kind: "error",
+				message: `context window full and compacting failed: ${msg.slice(0, 120)}`,
+			};
+		}
+		// The arm fired before the window was full — a failed fold must
+		// not end a turn that never overflowed. Resume on the unfolded
+		// view with the same spent budget: the arm cannot re-fire (no
+		// loop), and a still-growing turn meets the context landing or a
+		// real 400, which fail honestly as themselves.
+		log.warn("compaction pre-empt fold failed — resuming on the unfolded view", compactErr, {
 			conversation: convId,
 			epoch,
-			reason: outcome.reason,
+			arm: preempt.arm,
+			step: preempt.stepNumber,
 		});
-		return {
-			kind: "error",
-			message:
-				"context window full and there's nothing left to compact — the latest message or tool output may be too big for this model",
-		};
+	}
+	if (outcome?.kind === "noop") {
+		if (preempt === null) {
+			log.warn("context overflow — nothing left to compact", {
+				conversation: convId,
+				epoch,
+				reason: outcome.reason,
+			});
+			return {
+				kind: "error",
+				message:
+					"context window full and there's nothing left to compact — the latest message or tool output may be too big for this model",
+			};
+		}
+		// The foldability gate fired the arm but the fold's own read
+		// found nothing (history moved mid-compaction). Same resume:
+		// nothing was interrupted for a fold that could not happen, so
+		// the turn continues unfolded.
+		log.warn(
+			"compaction pre-empt fold found nothing to fold — resuming on the unfolded view",
+			{
+				conversation: convId,
+				epoch,
+				arm: preempt.arm,
+				step: preempt.stepNumber,
+				reason: outcome.reason,
+			},
+		);
 	}
 	try {
 		deps.assertAuthority();

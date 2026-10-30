@@ -1662,6 +1662,64 @@ describe("context overflow recovery", () => {
 		r.store.close();
 	});
 
+	test("a pre-empt whose fold fails resumes on the unfolded view — the turn never overflowed", async () => {
+		// Same pressure shape as the fold test above, but the summarizer
+		// is down. The arm fired before the window was full, so the turn
+		// resumes without the fold — budget spent (no re-fire loop), and
+		// the continuation reads the full uncompacted history.
+		const s = scripted(
+			[
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe", "{}"),
+					finishPart("tool-calls", 5_000),
+				],
+				textParts("the final answer"),
+			],
+			{ extra: textParts("ok") },
+		);
+		let executions = 0;
+		let summarizeCalls = 0;
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 8_000 },
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executions++;
+						return "y".repeat(30_000);
+					},
+				}),
+			},
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 8_000,
+					summarize: async () => {
+						summarizeCalls++;
+						throw new Error("summarizer down");
+					},
+				},
+			},
+		});
+		seedBigExchanges(r.store, r.conv.id, 6, 4_000);
+		const sink = submit(r, "run the probe");
+		expect(await sink.done).toEqual({ kind: "completed" });
+		expect(sink.text).toBe("the final answer");
+		expect(executions).toBe(1);
+		expect(summarizeCalls).toBe(1);
+		// Two model requests: the first attempt's step 0, then the
+		// unfolded resume's continuation — no summary, full history and
+		// the carried tool result present.
+		expect(s.prompts).toHaveLength(2);
+		expect(s.prompts[1]).toContain("yyyy");
+		expect(s.prompts[1]).toContain("zzzz");
+		expect(r.store.getCompaction(r.conv.id)).toBeNull();
+		expect(sink.chunkTypes).not.toContain("error");
+		r.store.close();
+	});
+
 	test("an overflow with nothing left to compact ends with a plain message", async () => {
 		const s = scripted([overflowError(), textParts("unreached")], { extra: textParts("ok") });
 		let summarizeCalls = 0;

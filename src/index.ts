@@ -339,6 +339,9 @@ async function boot() {
 	// The init task reads this after each await — a getMe landing during
 	// shutdown must not attach or start polling.
 	let telegramSealed = false;
+	// Interrupted-turn DMs are once per boot: the attach retry loop can
+	// re-run the post-attach steps, but operators get one copy.
+	let interruptedNoticesSent = false;
 	// Resolved by stopTelegram — the attach retry's backoff races it, so a
 	// shutdown never waits out a pending retry.
 	let fireTelegramSeal!: () => void;
@@ -957,12 +960,15 @@ async function boot() {
 						// Rows reclassified 'interrupted' at open get one DM per
 						// operator — terse facts, never a replay. Sent only after a
 						// successful attach; the skip/failure logs above stand alone.
-						sendInterruptedTurnNotices(
-							running.bot.api,
-							turnJournal.interruptedAtOpen,
-							configRef.current.operators,
-							(id) => store.get(id)?.title ?? undefined,
-						);
+						if (!interruptedNoticesSent) {
+							interruptedNoticesSent = true;
+							sendInterruptedTurnNotices(
+								running.bot.api,
+								turnJournal.interruptedAtOpen,
+								configRef.current.operators,
+								(id) => store.get(id)?.title ?? undefined,
+							);
+						}
 						if (telegramSealed || !runtime.accepting()) {
 							detachTelegram();
 							return;

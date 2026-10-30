@@ -193,7 +193,6 @@ a:focus-visible,
 .idx:focus-visible,
 .snav:focus-visible,
 .rail-op:focus-visible,
-.rail-section:focus-visible,
 .rail-archived:focus-visible {
 	outline: 2px solid color-mix(in oklab, var(--app-fg) 50%, transparent);
 	outline-offset: 1px;
@@ -284,17 +283,23 @@ p code,
 	overflow-y: auto;
 }
 .rail .new {
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
 	width: 100%;
 	text-align: left;
 	border-radius: 8px;
 	padding: 0.45rem 0.6rem;
 	font-weight: 500;
-	color: var(--app-fg-muted);
+	color: var(--app-fg-subtle);
 	transition: background-color 75ms;
 }
 .rail .new:hover {
 	background: var(--app-hover);
-	color: var(--app-fg);
+	color: var(--app-fg-muted);
+}
+.rail .new:disabled {
+	opacity: 0.5;
 }
 .rail-search {
 	font: inherit;
@@ -511,20 +516,191 @@ p code,
 	padding: 0 0.4rem;
 }
 .rail-archived {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
 	width: 100%;
 	text-align: left;
 	border-radius: 8px;
-	padding: 0.45rem 0.6rem;
-	font-size: 11px;
-	font-weight: 600;
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
+	margin-top: 0.3rem;
+	padding: 0.35rem 0.5rem;
+	font-size: 12px;
 	color: var(--app-fg-subtle);
 	transition: background-color 75ms;
 }
 .rail-archived:hover {
 	background: var(--app-hover);
 	color: var(--app-fg-muted);
+}
+.rail-archived .count {
+	font-family: var(--font-mono);
+	font-size: 10px;
+}
+.rail-archived .chev {
+	margin-left: auto;
+	transition: transform 120ms ease;
+}
+.rail-archived[aria-expanded="true"] .chev {
+	transform: rotate(180deg);
+}
+
+/* ---------- the C gutter (design/app.md → mobile-nav ruling) ----------
+   Desktop nav: a 52px glyph spine where every surface is one click
+   away, and a 216px panel that lists exactly one at a time. Phone
+   widths never see it (.app-rail's display:none in the 720px block);
+   the Telegram door's .rail keeps the column rules this overrides. */
+.app-rail {
+	width: auto;
+	flex-direction: row;
+	padding: 0;
+	gap: 0;
+	overflow: hidden;
+	border-right: none;
+}
+.gutter {
+	width: 52px;
+	flex: none;
+	border-right: 1px solid var(--app-divider);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	padding: 0.6rem 0 0.55rem;
+	gap: 2px;
+	overflow-y: auto;
+	scrollbar-width: none;
+}
+.gutter::-webkit-scrollbar {
+	display: none;
+}
+.g {
+	position: relative;
+	width: 34px;
+	height: 34px;
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 8px;
+	color: var(--app-fg-muted);
+	transition:
+		background-color 75ms,
+		color 75ms;
+}
+.g:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.g.on {
+	background: var(--app-active);
+	color: var(--app-fg);
+}
+.g .dot {
+	position: absolute;
+	top: 6px;
+	right: 6px;
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--app-accent);
+}
+.g-new {
+	color: var(--app-fg);
+}
+.g-split {
+	width: 18px;
+	height: 1px;
+	flex: none;
+	background: var(--app-divider);
+	margin: 0.4rem 0;
+}
+.g-gap {
+	height: 0.45rem;
+	flex: none;
+}
+.g-spacer {
+	flex: 1;
+}
+
+.panel {
+	width: 216px;
+	border-right: 1px solid var(--app-divider);
+	display: flex;
+	flex-direction: column;
+	padding: 0.5rem 0.5rem 0.45rem;
+	gap: 0.15rem;
+	overflow: hidden;
+}
+.panel-head {
+	flex: none;
+	display: flex;
+	align-items: baseline;
+	padding: 0.15rem 0.55rem 0.35rem;
+}
+.panel-label {
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--app-fg-subtle);
+}
+/* Projects and Notes open their index page from the head — the pane
+   lists, the index manages. */
+button.panel-index {
+	border-radius: 6px;
+	transition: color 75ms;
+}
+button.panel-index:hover {
+	color: var(--app-fg-muted);
+}
+.panel-count {
+	margin-left: auto;
+	font-family: var(--font-mono);
+	font-size: 10px;
+	color: var(--app-fg-subtle);
+	font-variant-numeric: tabular-nums;
+}
+.panes {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+}
+.panel > .error {
+	flex: none;
+}
+/* Note rows: one line — pin, title, relative time. */
+.line-row {
+	display: flex;
+	align-items: baseline;
+	gap: 0.5rem;
+	width: 100%;
+	text-align: left;
+	border-radius: 8px;
+	padding: 0.38rem 0.5rem;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+	transition:
+		background-color 75ms,
+		color 75ms;
+}
+.line-row:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.line-row.on {
+	background: var(--app-active);
+	color: var(--app-fg);
+}
+.line-row-title {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+/* The header's sidebar collapse — .nav-toggle is display:none off the
+   drawer door; this one is JSX-gated to desktop, so it always shows. */
+.rail-toggle {
+	display: inline-flex;
 }
 
 /* Mobile (M) surfaces — thumb bar, chats screen, back doors. JSX gates
@@ -3956,7 +4132,6 @@ select.ui-input option {
 	.rail .new,
 	.rail-op,
 	.rail-archived,
-	.rail-section,
 	.rail .proj,
 	.sheet-row {
 		min-height: 2.25rem;
@@ -3986,31 +4161,8 @@ select.ui-input option {
 
 /* ---------- projects (design/projects.md) ---------- */
 
-/* The conversations group sits directly below New + search, so the
-   action and its rows read as one — Projects and Notes wait below,
-   never wedged between. */
-.rail-convs {
-	display: flex;
-	flex-direction: column;
-	gap: 1px;
-}
-/* A non-interactive section label — the same type as .rail-section
-   below, but a div: no hover, no pointer, so it never reads as a
-   missed tap. */
-.rail-label {
-	width: 100%;
-	text-align: left;
-	border-radius: 8px;
-	padding: 0.45rem 0.6rem;
-	font-size: 11px;
-	font-weight: 600;
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
-	color: var(--app-fg-subtle);
-}
-
-/* The rail section below the chat list: an uppercase section head (the
-   /app/projects link), single-line project rows, then New project. */
+/* The projects pane: single-line project rows, then New project. The
+   index page itself opens from the panel head's label. */
 .rail-projects {
 	display: flex;
 	flex-direction: column;
@@ -4023,22 +4175,6 @@ select.ui-input option {
 	display: flex;
 	flex-direction: column;
 	gap: 1px;
-}
-.rail-section {
-	width: 100%;
-	text-align: left;
-	border-radius: 8px;
-	padding: 0.45rem 0.6rem;
-	font-size: 11px;
-	font-weight: 600;
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
-	color: var(--app-fg-subtle);
-	transition: background-color 75ms;
-}
-.rail-section:hover {
-	background: var(--app-hover);
-	color: var(--app-fg-muted);
 }
 .rail .proj {
 	width: 100%;

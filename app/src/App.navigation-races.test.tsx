@@ -182,6 +182,8 @@ describe("navigation races: late completions", () => {
 				}
 				return Promise.resolve(jsonResponse({ projects: projs }));
 			}
+			if (url === "/api/app/attention")
+				return Promise.resolve(jsonResponse({ items: [], unavailable: [] }));
 			if (url.startsWith("/api/app/notes/")) {
 				const id = decodeURIComponent(url.slice("/api/app/notes/".length).split("/")[0]!);
 				const n = notes.find((x) => x.id === id);
@@ -219,6 +221,7 @@ describe("navigation races: late completions", () => {
 				const scope = u.searchParams.get("project");
 				return Promise.resolve(
 					jsonResponse({
+						truncated: false,
 						notes: notes.filter(
 							(n) =>
 								n.archivedAt === null &&
@@ -374,12 +377,24 @@ describe("navigation races: late completions", () => {
 		await settle();
 	};
 	const openPage = async (label: string) =>
-		click([...container.querySelectorAll(".rail-ops button")].find((b) => b.textContent === label));
+		click(
+			[...container.querySelectorAll(".gutter button")].find(
+				(b) => b.getAttribute("aria-label") === label,
+			),
+		);
+
+	const openPane = async (label: "Chats" | "Projects" | "Notes") =>
+		click(
+			[...container.querySelectorAll(".gutter button")].find(
+				(b) => b.getAttribute("aria-label") === label,
+			),
+		);
 
 	const submitNewProject = async (name: string) => {
+		await openPane("Projects");
 		await click(
-			[...container.querySelectorAll(".rail-projects button")].find(
-				(b) => b.textContent === "New project",
+			[...container.querySelectorAll(".rail-projects button")].find((b) =>
+				b.textContent?.endsWith("New project"),
 			),
 		);
 		const sheet = container.querySelector(".msheet form")!;
@@ -537,6 +552,7 @@ describe("navigation races: late completions", () => {
 			);
 		});
 		await settle();
+		await openPane("Projects");
 		await click(
 			[...container.querySelectorAll(".rail-projects .proj")].find((b) => b.textContent === "Beta"),
 		);
@@ -566,6 +582,7 @@ describe("navigation races: late completions", () => {
 				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
 			);
 		});
+		await openPane("Projects");
 		await click(
 			[...container.querySelectorAll(".rail-projects .proj")].find((b) => b.textContent === "Beta"),
 		);
@@ -592,7 +609,7 @@ describe("navigation races: late completions", () => {
 				(b) => b.textContent === "Chat with this note",
 			),
 		);
-		await click(container.querySelector("button.new"));
+		await click(container.querySelector('nav button[aria-label="New conversation"]'));
 		gate.resolve();
 		await settle();
 		expect(deletedConversations).toEqual(["/api/app/conversations/minted"]);
@@ -644,11 +661,8 @@ describe("navigation races: late completions", () => {
 		// navigation fences the start's continuation, whose cleanup
 		// (delete the unselected row, refresh) still holds the start
 		// lane busy.
-		await click(
-			[...container.querySelectorAll(".rail-projects button")].find(
-				(b) => b.textContent === "Notes",
-			),
-		);
+		await openPane("Notes");
+		await click(container.querySelector(".panel-index"));
 		// The index debounces its fetch — wait for the row, not the chrome.
 		await waitFor(
 			() =>

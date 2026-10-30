@@ -131,6 +131,10 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 			if (url === "/api/app/projects") {
 				return Promise.resolve(jsonResponse({ projects: [] }));
 			}
+			if (url === "/api/app/notes")
+				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
+			if (url === "/api/app/attention")
+				return Promise.resolve(jsonResponse({ items: [], unavailable: [] }));
 			if (url === "/api/app/conversations") {
 				if (method === "POST") {
 					created = true;
@@ -310,6 +314,10 @@ describe("rail row actions and the pinned pool", () => {
 			if (url === "/api/app/projects") {
 				return Promise.resolve(jsonResponse({ projects: [] }));
 			}
+			if (url === "/api/app/notes")
+				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
+			if (url === "/api/app/attention")
+				return Promise.resolve(jsonResponse({ items: [], unavailable: [] }));
 			if (url === "/api/app/conversations" && method === "GET") {
 				return Promise.resolve(
 					jsonResponse({
@@ -454,7 +462,7 @@ describe("rail row actions and the pinned pool", () => {
 		expect(rowActions("fresh chat")).toEqual([]);
 		expect(rowActions("pinned chat")).toEqual(["Unpin", "Rename", "Archive"]);
 		const toggle = container.querySelector(".rail-archived");
-		expect(toggle?.textContent).toBe("Archived (1)");
+		expect(toggle?.textContent).toBe("Archived 1");
 
 		await click(toggle);
 		expect(rowActions("fresh chat")).toEqual(["Rename", "Unarchive", "Delete"]);
@@ -571,6 +579,10 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				);
 			if (url === "/api/app/conversations") return Promise.resolve(jsonResponse({ conversations }));
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
+			if (url === "/api/app/notes")
+				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
+			if (url === "/api/app/attention")
+				return Promise.resolve(jsonResponse({ items: [], unavailable: [] }));
 			if (url === "/api/app/conversations/fixture") {
 				if (init?.method === "DELETE") conversations = [];
 				if (init?.method === "PATCH")
@@ -782,7 +794,11 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	};
 
 	const openPage = async (label: string) =>
-		click([...container.querySelectorAll(".rail-ops button")].find((b) => b.textContent === label));
+		click(
+			[...container.querySelectorAll(".gutter button")].find(
+				(b) => b.getAttribute("aria-label") === label,
+			),
+		);
 	const traverse = async (direction: "back" | "forward") => {
 		await act(async () => {
 			win.history[direction]();
@@ -883,10 +899,12 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await openPage("Memories");
 		await selectFixture();
 		expect(container.querySelector(".chat")).not.toBeNull();
-		await click(container.querySelector(".new"));
+		const newChat = () =>
+			click(container.querySelector('nav button[aria-label="New conversation"]'));
+		await newChat();
 		const emptyState = win.history.state;
 		const emptyLength = win.history.length;
-		await click(container.querySelector(".new"));
+		await newChat();
 		expect(win.location.pathname).toBe("/app/");
 		expect(win.history.state).toEqual(emptyState);
 		expect(win.history.length).toBe(emptyLength);
@@ -1254,11 +1272,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		// composer holds the cleared text, exactly once.
 		expect(container.textContent).not.toContain("Couldn't start a conversation");
 		const newChat = () =>
-			click(
-				[...container.querySelectorAll("nav button.new")].find(
-					(b) => b.textContent === "New conversation",
-				),
-			);
+			click(container.querySelector('nav button[aria-label="New conversation"]'));
 		await newChat();
 		await waitFor(() => container.querySelector("form.composer") !== null, "the composer again");
 		const restored = container.querySelector("form.composer textarea")! as HTMLTextAreaElement;
@@ -1719,6 +1733,7 @@ describe("app projects surface", () => {
 	let projs: AppProject[];
 	let notes: AppNoteSummary[];
 	let notesTruncated: boolean;
+	let attentionItems: { id: string }[];
 	let stored: UIMessage[];
 	let conflictPatch: boolean;
 	// Conversation creation control: POST /api/app/conversations 500s.
@@ -1821,6 +1836,7 @@ describe("app projects surface", () => {
 		projs = [];
 		notes = [];
 		notesTruncated = false;
+		attentionItems = [];
 		stored = [];
 		conflictPatch = false;
 		failCreate = false;
@@ -1908,6 +1924,8 @@ describe("app projects surface", () => {
 				}
 				return Promise.resolve(jsonResponse({ projects: projs }));
 			}
+			if (url === "/api/app/attention")
+				return Promise.resolve(jsonResponse({ items: attentionItems, unavailable: [] }));
 			const projPatchMatch = /^\/api\/app\/projects\/([^/]+)$/.exec(url);
 			if (projPatchMatch !== null && method === "PATCH") {
 				const id = decodeURIComponent(projPatchMatch[1]!);
@@ -2186,7 +2204,7 @@ describe("app projects surface", () => {
 		await settle();
 	};
 
-	test("the rail's Projects section lists active projects; bound chats leave the main list", async () => {
+	test("the projects pane lists active projects; bound chats leave the chats pane", async () => {
 		projs = [
 			projRow("Goblin Work"),
 			projRow("Old Stuff", { archivedAt: "2026-10-09T00:00:00.000Z" }),
@@ -2194,18 +2212,19 @@ describe("app projects surface", () => {
 		convs = [convRow("loose chat"), convRow("inside chat", { projectId: "p-goblin" })];
 		await mount();
 
+		const railTitles = [...container.querySelectorAll(".rail .conv-title")].map(
+			(t) => t.textContent,
+		);
+		expect(railTitles).toContain("loose chat");
+		expect(railTitles).not.toContain("inside chat");
+
+		await openPane("Projects");
 		const section = container.querySelector(".rail-projects");
 		expect(section).not.toBeNull();
 		expect(section!.textContent).toContain("Goblin Work");
 		expect(section!.textContent).toContain("New project");
 		// Archived projects wait on the index.
 		expect(section!.textContent).not.toContain("Old Stuff");
-
-		const railTitles = [...container.querySelectorAll(".rail .conv-title")].map(
-			(t) => t.textContent,
-		);
-		expect(railTitles).toContain("loose chat");
-		expect(railTitles).not.toContain("inside chat");
 
 		// Bound chats live on the project page.
 		await click(
@@ -2218,8 +2237,9 @@ describe("app projects surface", () => {
 		]);
 
 		// The index page holds the archived shelf — collapsed by
-		// default, like the rail's archived chats.
-		await click(container.querySelector(".rail-section"));
+		// default, like the rail's archived chats. The panel head
+		// carries the index link now.
+		await click(container.querySelector(".panel-index"));
 		expect(win.location.pathname).toBe("/app/projects");
 		const details = container.querySelector("main .tuning");
 		expect(details).not.toBeNull();
@@ -2230,9 +2250,10 @@ describe("app projects surface", () => {
 
 	test("the create dialog posts its fields and lands on the new project's page", async () => {
 		await mount();
+		await openPane("Projects");
 		await click(
-			[...container.querySelectorAll(".rail-projects button")].find(
-				(b) => b.textContent === "New project",
+			[...container.querySelectorAll(".rail-projects button")].find((b) =>
+				b.textContent?.endsWith("New project"),
 			),
 		);
 		const sheet = container.querySelector(".msheet form");
@@ -2296,15 +2317,15 @@ describe("app projects surface", () => {
 		);
 	});
 
-	test("the rail's Notes entry opens the index", async () => {
+	test("the notes pane lists pinned-first and its head opens the index", async () => {
 		notes = [noteRow("Shopping"), noteRow("Trip plans", { pinnedAt: "2026-10-09T00:00:00Z" })];
 		await mount();
 
-		await click(
-			[...container.querySelectorAll(".rail-projects .rail-section")].find(
-				(b) => b.textContent === "Notes",
-			),
-		);
+		await openPane("Notes");
+		const rows = [...container.querySelectorAll(".line-row-title")].map((t) => t.textContent);
+		expect(rows).toEqual(["Trip plans", "Shopping"]);
+
+		await click(container.querySelector(".panel-index"));
 		await settleSlow();
 		expect(win.location.pathname).toBe("/app/notes");
 		const main = container.querySelector("main")!;
@@ -2414,6 +2435,7 @@ describe("app projects surface", () => {
 		const gate = hold();
 		createHold = gate.promise;
 		await sendComposer("come back to this");
+		await openPane("Projects");
 		await click(
 			[...container.querySelectorAll(".rail-projects .proj")].find(
 				(b) => b.textContent === "Goblin",
@@ -2421,11 +2443,7 @@ describe("app projects surface", () => {
 		);
 		gate.resolve();
 		await settle();
-		await click(
-			[...container.querySelectorAll("nav button.new")].find(
-				(b) => b.textContent === "New conversation",
-			),
-		);
+		await click(container.querySelector('nav button[aria-label="New conversation"]'));
 		await settle();
 		expect((container.querySelector("form.composer textarea") as HTMLTextAreaElement).value).toBe(
 			"come back to this",
@@ -2659,16 +2677,18 @@ describe("app projects surface", () => {
 			prompts.push(message ?? "");
 			return accept;
 		});
-		const notesButton = () =>
-			[...container.querySelectorAll(".rail-projects .rail-section")].find(
-				(button) => button.textContent === "Notes",
-			);
-		await click(notesButton());
+		// The pane's head carries the index link — the guarded navigation
+		// is the index open, not the pane switch.
+		const notesButton = async () => {
+			await openPane("Notes");
+			await click(container.querySelector(".panel-index"));
+		};
+		await notesButton();
 		expect(prompts).toEqual(["Discard unsaved note edits and any conflict?"]);
 		expect(win.location.pathname).toBe("/app/n/n-shopping");
 		expect(container.querySelector(".ProseMirror")?.textContent).toContain("paragraph to discard");
 		accept = true;
-		await click(notesButton());
+		await notesButton();
 		expect(prompts).toHaveLength(2);
 		expect(win.location.pathname).toBe("/app/notes");
 		await settleSlow();
@@ -3635,6 +3655,13 @@ describe("app projects surface", () => {
 		expect(container.querySelector(".note-readonly")).not.toBeNull();
 	});
 
+	// The gutter's glyph buttons name themselves by aria-label, not text.
+	const glyph = (label: string) =>
+		[...container.querySelectorAll(".gutter button")].find(
+			(b) => (b.getAttribute("aria-label") ?? "").startsWith(label),
+		) ?? null;
+	const openPane = async (label: "Chats" | "Projects" | "Notes") => click(glyph(label));
+	const openSearchPane = async () => click(glyph("Search history"));
 	const railSearch = () => container.querySelector("input.rail-search")!;
 	const searchAlert = () =>
 		[...container.querySelectorAll("p.error")].find((p) =>
@@ -3681,6 +3708,7 @@ describe("app projects surface", () => {
 		convs = [convRow("fixture chat")];
 		searchScript = new Map([["missing", { fail: true }]]);
 		await mount();
+		await openSearchPane();
 
 		await typeInto(railSearch(), "missing", win.HTMLInputElement.prototype);
 		await settleSlow();
@@ -3695,6 +3723,7 @@ describe("app projects surface", () => {
 	test("clearing a failed search then querying again drops the stale alert immediately", async () => {
 		searchScript = new Map([["missing", { fail: true }]]);
 		await mount();
+		await openSearchPane();
 		const box = railSearch();
 		await typeInto(box, "missing", win.HTMLInputElement.prototype);
 		await settleSlow();
@@ -3717,6 +3746,7 @@ describe("app projects surface", () => {
 	test("a fresh query typed over a displayed failure never flashes 'No matches.'", async () => {
 		searchScript = new Map([["missing", { fail: true }]]);
 		await mount();
+		await openSearchPane();
 		const box = railSearch();
 		await typeInto(box, "missing", win.HTMLInputElement.prototype);
 		await settleSlow();
@@ -3746,11 +3776,18 @@ describe("app projects surface", () => {
 				["gone", { hold: gate.promise, fail: outcome === "failure", hits: [searchHit("needle")] }],
 			]);
 			await mount();
+			await openSearchPane();
 			const box = railSearch();
 			await typeInto(box, "gone", win.HTMLInputElement.prototype);
 			await settleSlow();
 			expect(searchCalls).toContain("gone");
-			await typeInto(box, "", win.HTMLInputElement.prototype);
+			// Escape is the pane's clear — it empties the box and drops
+			// back to Chats, exercising the same sequence fence.
+			await act(async () => {
+				box.dispatchEvent(
+					new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event,
+				);
+			});
 			gate.resolve();
 			await settle();
 			expect(container.textContent).not.toContain("No matches.");
@@ -3771,6 +3808,7 @@ describe("app projects surface", () => {
 		await sendComposer("hi");
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
+		await openPane("Projects");
 		await click(
 			[...container.querySelectorAll(".rail-projects .proj")].find(
 				(b) => b.textContent === "Goblin",
@@ -3807,11 +3845,7 @@ describe("app projects surface", () => {
 		);
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
-		await click(
-			[...container.querySelectorAll("nav button.new")].find(
-				(b) => b.textContent === "New conversation",
-			),
-		);
+		await click(container.querySelector('nav button[aria-label="New conversation"]'));
 		expect(win.location.pathname).toBe("/app/");
 		expect(startAlert()).toBeNull();
 	});
@@ -3828,21 +3862,18 @@ describe("app projects surface", () => {
 		);
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
-		const railSection = (label: string) =>
-			click(
-				[...container.querySelectorAll(".rail-projects .rail-section")].find(
-					(b) => b.textContent === label,
-				),
-			);
+		// Index pages open from the pane head; ops pages from the spine.
+		const railSection = async (label: "Notes" | "Projects") => {
+			await openPane(label);
+			await click(container.querySelector(".panel-index"));
+		};
 		await railSection("Notes");
 		expect(win.location.pathname).toBe("/app/notes");
 		expect(startAlert()).toBeNull();
 		await railSection("Projects");
 		expect(win.location.pathname).toBe("/app/projects");
 		expect(startAlert()).toBeNull();
-		await click(
-			[...container.querySelectorAll(".rail-ops button")].find((b) => b.textContent === "Settings"),
-		);
+		await click(glyph("Settings"));
 		expect(win.location.pathname).toBe("/app/settings");
 		expect(startAlert()).toBeNull();
 
@@ -3891,6 +3922,7 @@ describe("app projects surface", () => {
 		expect(posts.some((p) => p.url === "/api/app/conversations")).toBe(true);
 		expect(startAlert()).toBeNull();
 
+		await openPane("Projects");
 		await click(
 			[...container.querySelectorAll(".rail-projects .proj")].find(
 				(b) => b.textContent === "Goblin",
@@ -3933,6 +3965,7 @@ describe("app projects surface", () => {
 			win.HTMLInputElement.prototype,
 		);
 
+		await openPane("Projects");
 		await click(
 			[...container.querySelectorAll(".rail-projects .proj")].find((b) => b.textContent === "Beta"),
 		);
@@ -4044,6 +4077,10 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 				return g.promise;
 			}
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
+			if (url === "/api/app/notes")
+				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
+			if (url === "/api/app/attention")
+				return Promise.resolve(jsonResponse({ items: [], unavailable: [] }));
 			if (url.endsWith("/messages"))
 				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
@@ -4196,6 +4233,10 @@ describe("chat width selector", () => {
 		globalThis.fetch = ((input: RequestInfo | URL) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
+			if (url === "/api/app/notes")
+				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
+			if (url === "/api/app/attention")
+				return Promise.resolve(jsonResponse({ items: [], unavailable: [] }));
 			if (url === "/api/app/conversations")
 				return Promise.resolve(jsonResponse({ conversations: [] }));
 			if (url.endsWith("/messages"))

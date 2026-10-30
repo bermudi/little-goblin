@@ -5,8 +5,11 @@ import {
 	ApiError,
 	clearToken,
 	createConversation,
+	createNote,
 	deleteConversation,
+	getAttention,
 	listConversations,
+	listNotes,
 	listProjects,
 	loadToken,
 	patchConversation,
@@ -36,6 +39,7 @@ import { NotesIndex, NoteView } from "./NoteView.tsx";
 import type {
 	AppConversationList,
 	AppNote,
+	AppNoteSummary,
 	AppProject,
 	AppSearchHit,
 } from "../../src/http/app-wire.ts";
@@ -320,6 +324,153 @@ const TrashGlyph = () => (
 		<path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
 	</ActionGlyph>
 );
+
+// The C gutter (design/app.md → mobile-nav ruling — the desktop half of
+// the prototypes at design/prototypes/sidebar/c-gutter.html): a 52px
+// glyph spine where every surface is one click away, and a 216px panel
+// that lists exactly one surface at a time — chats by default, search
+// as a mode. Glyph names live on the buttons' aria-labels, not in text.
+function G({ children, size = 17 }: { children: ReactNode; size?: number }) {
+	return (
+		<svg
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="1.75"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			width={size}
+			height={size}
+			aria-hidden="true"
+		>
+			{children}
+		</svg>
+	);
+}
+
+type ListPane = "chats" | "projects" | "notes";
+type Pane = ListPane | "search";
+
+// The three panes that own a list — order and icons from the prototype.
+const LIST_GLYPHS: { key: ListPane; label: string; svg: ReactNode }[] = [
+	{
+		key: "chats",
+		label: "Chats",
+		svg: (
+			<G>
+				<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4V6z" />
+			</G>
+		),
+	},
+	{
+		key: "projects",
+		label: "Projects",
+		svg: (
+			<G>
+				<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+			</G>
+		),
+	},
+	{
+		key: "notes",
+		label: "Notes",
+		svg: (
+			<G>
+				<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v18H6.5A1.5 1.5 0 0 1 5 19.5v-15z" />
+				<path d="M9 3v18" />
+			</G>
+		),
+	},
+];
+
+// The system surfaces — spine order from the prototype, Settings docked
+// at the foot (rendered separately, after the spacer).
+const OPS_GLYPHS: {
+	key: Exclude<Page, "chat" | "notes" | "note" | "projects" | "project" | "window">;
+	label: string;
+	svg: ReactNode;
+}[] = [
+	{
+		key: "attention",
+		label: "Attention",
+		svg: (
+			<G>
+				<path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6z" />
+				<path d="M10 19a2.2 2.2 0 0 0 4 0" />
+			</G>
+		),
+	},
+	{
+		key: "delegations",
+		label: "Delegations",
+		svg: (
+			<G>
+				<path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+				<path d="M12 3v11" />
+				<path d="M8 10l4 4 4-4" />
+			</G>
+		),
+	},
+	{
+		key: "memory",
+		label: "Memories",
+		svg: (
+			<G>
+				<path d="M12 3l9 5-9 5-9-5 9-5z" />
+				<path d="M3 13.5l9 5 9-5" />
+			</G>
+		),
+	},
+	{
+		key: "programs",
+		label: "Programs",
+		svg: (
+			<G>
+				<circle cx="12" cy="12" r="8.5" />
+				<path d="M10 8.5l6 3.5-6 3.5v-7z" />
+			</G>
+		),
+	},
+	{
+		key: "skills",
+		label: "Skills",
+		svg: (
+			<G>
+				<path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H13L13 2z" />
+			</G>
+		),
+	},
+	{
+		key: "files",
+		label: "Files",
+		svg: (
+			<G>
+				<path d="M6 3h8l4 4v14H6V3z" />
+				<path d="M14 3v4h4" />
+			</G>
+		),
+	},
+	{
+		key: "status",
+		label: "Status",
+		svg: (
+			<G>
+				<path d="M3 12h4l2.5-6 4 12L16 12h5" />
+			</G>
+		),
+	},
+	{
+		key: "log",
+		label: "Log",
+		svg: (
+			<G>
+				<rect x="3" y="4" width="18" height="16" rx="3" />
+				<path d="M7 9l3 3-3 3" />
+				<path d="M13 15h4" />
+			</G>
+		),
+	},
+];
 
 // Archive skips the confirm (reversible); delete keeps it — the one
 // destructive action. Hover actions overlay the preview line so the
@@ -644,6 +795,23 @@ function AppShell() {
 	// composer there — but on phone widths /app is the list, so the staged
 	// composer is its own bit. Irrelevant off phone widths (CSS decides).
 	const [composeStaged, setComposeStaged] = useState(false);
+	// Desktop (C): the panel lists exactly one surface at a time — chats
+	// by default; search is a mode the spine's glyph opens, not a standing
+	// box. The header's sidebar toggle collapses the whole rail.
+	const [pane, setPane] = useState<Pane>("chats");
+	const [railHidden, setRailHidden] = useState(false);
+	// The notes and attention feeds ride refresh() — the notes pane's
+	// rows and the Attention glyph's violet dot are rail furniture, not
+	// page state.
+	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
+	const [notesTruncated, setNotesTruncated] = useState(false);
+	const [attentionCount, setAttentionCount] = useState(0);
+	const [creatingNote, setCreatingNote] = useState(false);
+	const creatingNoteRef = useRef(false);
+	const searchRef = useRef<HTMLInputElement>(null);
+	useEffect(() => {
+		if (pane === "search") searchRef.current?.focus();
+	}, [pane]);
 	const [systemSheetOpen, setSystemSheetOpen] = useState(false);
 	useEffect(() => {
 		if (!systemSheetOpen) return;
@@ -822,10 +990,18 @@ function AppShell() {
 	const refresh = useCallback(async () => {
 		const seq = ++listSeq.current;
 		try {
-			const [list, plist] = await Promise.all([listConversations(token), listProjects(token)]);
+			const [list, plist, nlist, attn] = await Promise.all([
+				listConversations(token),
+				listProjects(token),
+				listNotes(token),
+				getAttention(token),
+			]);
 			if (seq !== listSeq.current) return;
 			setConversations(list.conversations);
 			setProjects(plist.projects);
+			setNotes(nlist.notes);
+			setNotesTruncated(nlist.truncated);
+			setAttentionCount(attn.items.length);
 			setListError(null);
 			setRowError(null);
 		} catch (err) {
@@ -1091,6 +1267,29 @@ function AppShell() {
 		pushRoute(`/app/n/${id}`);
 	};
 
+	// The notes pane's "New note" mirrors NotesIndex.newNote — create
+	// untitled, then open it.
+	const newNote = () => {
+		if (creatingNoteRef.current) return;
+		creatingNoteRef.current = true;
+		setCreatingNote(true);
+		void createNote(token, { title: "Untitled note" }).then(
+			(n) => {
+				creatingNoteRef.current = false;
+				setCreatingNote(false);
+				void refresh();
+				openNote(n.id);
+			},
+			(err) => {
+				creatingNoteRef.current = false;
+				setCreatingNote(false);
+				setRowError(
+					`Couldn't create the note: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			},
+		);
+	};
+
 	// The context-window view of one conversation — read-only, so the
 	// dirty guard has nothing to protect here.
 	const openWindow = (id: string) => {
@@ -1245,6 +1444,34 @@ function AppShell() {
 		(page === "chat" && (current !== null || composeStaged)) ||
 		page === "window" ||
 		page === "project";
+	// A glyph is on when its surface is live: its pane is showing, or its
+	// page family is open in the frame. The panel's surface and the open
+	// page can light two glyphs at once — the spine names both honestly.
+	const pagePane: ListPane | null =
+		page === "chat" || page === "window"
+			? "chats"
+			: page === "projects" || page === "project"
+				? "projects"
+				: page === "notes" || page === "note"
+					? "notes"
+					: null;
+	const surfaceOn = (key: ListPane) => pane === key || pagePane === key;
+	// The notes pane orders like the chats list: pinned float above the
+	// server's own updated order.
+	const paneNotes = notes === null ? [] : [
+		...notes.filter((n) => n.pinnedAt !== null),
+		...notes.filter((n) => n.pinnedAt === null),
+	];
+	const paneCount =
+		pane === "chats"
+			? String(rail.length)
+			: pane === "projects"
+				? String(activeProjects.length)
+				: pane === "notes"
+					? notes === null
+						? ""
+						: `${paneNotes.length}${notesTruncated ? "+" : ""}`
+					: "";
 	// The More sheet carries every system surface except Attention, which
 	// owns its own bar slot.
 	const MORE_TAB_KEYS = [
@@ -1303,6 +1530,7 @@ function AppShell() {
 							onClick={() => {
 								openConversation(h.conversationId);
 								setQuery("");
+								setPane("chats");
 							}}
 						>
 							<span className="hit-role">{h.role === "user" ? "you" : "goblin"}</span>
@@ -1332,97 +1560,257 @@ function AppShell() {
 				aria-expanded={archivedOpen}
 				onClick={() => setArchivedOpen((v) => !v)}
 			>
-				Archived ({archived.length})
+				Archived <span className="count">{archived.length}</span>
+				<svg
+					className="chev"
+					viewBox="0 0 24 24"
+					fill="none"
+					stroke="currentColor"
+					strokeWidth="1.75"
+					strokeLinecap="round"
+					strokeLinejoin="round"
+					width="12"
+					height="12"
+					aria-hidden="true"
+				>
+					<path d="M6 9l6 6 6-6" />
+				</svg>
 			</button>
 			{archivedOpen && <ul>{archived.map(renderRow)}</ul>}
 		</>
 	);
 
+	// The attention glyph's dot doubles in the accessible name — the
+	// count is information, not decoration.
+	const attentionLabel =
+		attentionCount > 0
+			? `Attention — ${attentionCount === 1 ? "1 item needs" : `${attentionCount} items need`} you`
+			: "Attention";
+	const plusGlyph = (
+		<svg
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="1.75"
+			strokeLinecap="round"
+			width="13"
+			height="13"
+			aria-hidden="true"
+		>
+			<path d="M12 5v14M5 12h14" />
+		</svg>
+	);
+
 	return (
 		<div className="shell">
-			<nav className="rail app-rail">
-				<button type="button" className="new" onClick={newConversation}>
-					New conversation
-				</button>
-				<input
-					className="rail-search"
-					type="search"
-					placeholder="Search history"
-					value={query}
-					onChange={(e) => setQuery(e.target.value)}
-					onKeyDown={(e) => {
-						if (e.key === "Escape") setQuery("");
-					}}
-				/>
-				{searchBody}
-				{hits === null && (
-					<>
-						{/* Projects and Notes sit below the chat list, never wedged
-							between New + search and the conversations. */}
-						<div className="rail-convs">
-							<div className="rail-label">Conversations</div>
-							<ul>{rail.map(renderRow)}</ul>
-							{archivedRows}
-						</div>
-						{projects !== null && (
-							<div className="rail-projects">
-								<button type="button" className="rail-section" onClick={openProjectsIndex}>
-									Projects
-								</button>
-								<ul>
-									{activeProjects.map((p) => (
-										<li key={p.id}>
+			{/* The C gutter — a 52px spine for every surface, a 216px panel
+				listing one at a time. Desktop-only chrome: phone widths take
+				the M thumb bar and never render this nav's DOM equivalent…
+				it stays mounted but display:none, same as the old rail. */}
+			{!railHidden && (
+				<nav className="rail app-rail" aria-label="Sidebar">
+					<div className="gutter" role="navigation" aria-label="Surfaces">
+						<button
+							type="button"
+							className="g g-new"
+							title="New conversation"
+							aria-label="New conversation"
+							onClick={newConversation}
+						>
+							<G>
+								<path d="M12 5v14M5 12h14" />
+							</G>
+						</button>
+						<button
+							type="button"
+							className={pane === "search" ? "g on" : "g"}
+							title="Search history"
+							aria-label="Search history"
+							onClick={() => setPane("search")}
+						>
+							<G size={16}>
+								<circle cx="11" cy="11" r="7" />
+								<path d="M20.5 20.5 16.2 16.2" />
+							</G>
+						</button>
+						<div className="g-gap" />
+						{LIST_GLYPHS.map((g) => (
+							<button
+								key={g.key}
+								type="button"
+								className={surfaceOn(g.key) ? "g on" : "g"}
+								title={g.label}
+								aria-label={g.label}
+								aria-current={pagePane === g.key ? "page" : undefined}
+								onClick={() => setPane(g.key)}
+							>
+								{g.svg}
+							</button>
+						))}
+						<div className="g-split" role="presentation" />
+						{OPS_GLYPHS.map((g) => (
+							<button
+								key={g.key}
+								type="button"
+								className={page === g.key ? "g on" : "g"}
+								title={g.key === "attention" ? attentionLabel : g.label}
+								aria-label={g.key === "attention" ? attentionLabel : g.label}
+								aria-current={page === g.key ? "page" : undefined}
+								onClick={() => openPage(g.key)}
+							>
+								{g.svg}
+								{g.key === "attention" && attentionCount > 0 && (
+									<span className="dot" aria-hidden="true" />
+								)}
+							</button>
+						))}
+						<div className="g-spacer" />
+						<button
+							type="button"
+							className={page === "settings" ? "g on" : "g"}
+							title="Settings"
+							aria-label="Settings"
+							aria-current={page === "settings" ? "page" : undefined}
+							onClick={() => openPage("settings")}
+						>
+							<G>
+								<circle cx="12" cy="12" r="3.4" />
+								<path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8" />
+							</G>
+						</button>
+					</div>
+					<div className="panel">
+						{pane === "search" ? (
+							<>
+								<input
+									ref={searchRef}
+									className="rail-search"
+									type="search"
+									placeholder="Search history"
+									aria-label="Search history"
+									value={query}
+									onChange={(e) => setQuery(e.target.value)}
+									onKeyDown={(e) => {
+										if (e.key === "Escape") {
+											setQuery("");
+											setPane("chats");
+										}
+									}}
+								/>
+								<div className="panes">{searchBody}</div>
+							</>
+						) : (
+							<>
+								<div className="panel-head">
+									{pane === "chats" ? (
+										<span className="panel-label">Chats</span>
+									) : (
+										<button
+											type="button"
+											className="panel-label panel-index"
+											title={pane === "projects" ? "All projects" : "All notes"}
+											onClick={
+												pane === "projects" ? openProjectsIndex : openNotesIndex
+											}
+										>
+											{pane === "projects" ? "Projects" : "Notes"}
+										</button>
+									)}
+									{paneCount !== "" && <span className="panel-count">{paneCount}</span>}
+								</div>
+								<div className="panes">
+									{pane === "chats" && (
+										<>
+											<ul>{rail.map(renderRow)}</ul>
+											{archivedRows}
+											{conversations !== null &&
+												rail.length === 0 &&
+												archived.length === 0 && (
+													<p className="empty">
+														Nothing here yet — start a conversation.
+													</p>
+												)}
+										</>
+									)}
+									{pane === "projects" && projects !== null && (
+										<div className="rail-projects">
+											<ul>
+												{activeProjects.map((p) => (
+													<li key={p.id}>
+														<button
+															type="button"
+															className={
+																page === "project" && projectId === p.id
+																	? "proj on"
+																	: "proj"
+															}
+															onClick={() => openProject(p.id)}
+														>
+															{p.name}
+														</button>
+													</li>
+												))}
+											</ul>
+											{activeProjects.length === 0 && (
+												<p className="empty">No projects yet.</p>
+											)}
 											<button
 												type="button"
-												className={page === "project" && projectId === p.id ? "proj on" : "proj"}
-												onClick={() => openProject(p.id)}
+												className="new"
+												onClick={() => setCreateProjectOpen(true)}
 											>
-												{p.name}
+												{plusGlyph} New project
 											</button>
-										</li>
-									))}
-								</ul>
-								<button type="button" className="new" onClick={() => setCreateProjectOpen(true)}>
-									New project
-								</button>
-								<button
-									type="button"
-									className={
-										page === "notes" || page === "note" ? "rail-section on" : "rail-section"
-									}
-									onClick={openNotesIndex}
-								>
-									Notes
-								</button>
-							</div>
+										</div>
+									)}
+									{pane === "notes" && notes !== null && (
+										<>
+											<ul>
+												{paneNotes.map((n) => (
+													<li key={n.id}>
+														<button
+															type="button"
+															className={
+																page === "note" && noteId === n.id
+																	? "line-row on"
+																	: "line-row"
+															}
+															onClick={() => openNote(n.id)}
+														>
+															{n.pinnedAt !== null && <PinGlyph />}
+															<span className="line-row-title">
+																{flatLine(n.title) || "Untitled note"}
+															</span>
+															<span className="conv-time">
+																{relTime(n.updatedAt)}
+															</span>
+														</button>
+													</li>
+												))}
+											</ul>
+											{paneNotes.length === 0 && <p className="empty">No notes yet.</p>}
+											<button
+												type="button"
+												className="new"
+												disabled={creatingNote}
+												onClick={newNote}
+											>
+												{plusGlyph} New note
+											</button>
+										</>
+									)}
+								</div>
+							</>
 						)}
-					</>
-				)}
-				{hits === null &&
-					conversations !== null &&
-					unbound.length === 0 &&
-					activeProjects.length === 0 && (
-						<p className="empty">Nothing here yet — start a conversation.</p>
-					)}
-				{listError !== null && <p className="error">Couldn't refresh the list.</p>}
-				{rowError !== null && (
-					<p className="error" role="alert">
-						{rowError}
-					</p>
-				)}
-				<div className="rail-ops">
-					{PAGES.map((p) => (
-						<button
-							key={p.key}
-							type="button"
-							className={page === p.key ? "rail-op on" : "rail-op"}
-							onClick={() => openPage(p.key)}
-						>
-							{p.label}
-						</button>
-					))}
-				</div>
-			</nav>
+						{listError !== null && <p className="error">Couldn't refresh the list.</p>}
+						{rowError !== null && (
+							<p className="error" role="alert">
+								{rowError}
+							</p>
+						)}
+					</div>
+				</nav>
+			)}
 			<main
 				className={
 					[chatWidth === "wide" ? "chat-wide" : "", chatListMode ? "list-mode" : ""]
@@ -1431,6 +1819,34 @@ function AppShell() {
 				}
 			>
 				<header>
+					{/* Desktop (C): collapses the whole rail — gutter and
+						panel — for a focused transcript. Phone widths take the
+						back doors below instead; the M ruling keeps this out
+						of their DOM. */}
+					{!phone && (
+						<button
+							type="button"
+							className="nav-toggle rail-toggle"
+							aria-label="Sidebar"
+							aria-expanded={!railHidden}
+							title="Sidebar"
+							onClick={() => setRailHidden((v) => !v)}
+						>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								width="18"
+								height="18"
+								aria-hidden="true"
+							>
+								<rect x="3" y="4" width="18" height="16" rx="3" />
+								<line x1="9.5" y1="4" x2="9.5" y2="20" />
+							</svg>
+						</button>
+					)}
 					{/* Phone-widths-only back doors: a thread and the staged
 						composer both stand down for the chats list, which is the
 						home surface on a phone; a project stands down for the

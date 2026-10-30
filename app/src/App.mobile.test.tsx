@@ -126,6 +126,10 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 				);
 			if (url === "/api/app/conversations") return Promise.resolve(json({ conversations }));
 			if (url === "/api/app/projects") return Promise.resolve(json({ projects }));
+			if (url === "/api/app/notes")
+				return Promise.resolve(json({ notes: [], truncated: false }));
+			if (url === "/api/app/attention")
+				return Promise.resolve(json({ items: [], unavailable: [] }));
 			if (url.startsWith("/api/app/notes")) return Promise.resolve(json({ notes: [] }));
 			if (url === "/api/app/settings")
 				return Promise.resolve(

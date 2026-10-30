@@ -135,6 +135,21 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   cipher counts as bytes in `JSON.stringify`, the compaction estimate
   exempts exactly `providerMetadata.codex.reasoningEncryptedContent`
   (call/result metadata included) — everything else counts as before.
+- **Codex session affinity & receipts.** Cache affinity rides a derived
+  session id — `sha256("goblin-codex-session:<convId>")` rendered as a
+  UUID, never the raw conversation id — sent as `session-id` +
+  `thread-id` headers and body `prompt_cache_key`; absent when no
+  session was given. `x-codex-turn-state` is captured once per model
+  instance (first non-empty response header wins, echoed on every later
+  request the instance makes) — one instance is one turn attempt, so
+  it never crosses turns. Compaction's summarizer marks itself
+  `x-openai-subagent: compact`. Rate-limit receipts land on the finish
+  part's `providerMetadata.codex` (the `codex.rate_limits` SSE event
+  overrides the header snapshot) and the `response-metadata` part; the
+  turn keeps the newest non-null quota into `TurnMetadata` and the
+  live `data-context` part, and the gauge's popover shows 5h/weekly
+  windows only when issued. Logs carry percentages and booleans —
+  never the turn-state value, tokens, or account id.
 - **Compaction.** History is unbounded on disk, bounded in the window by
   pointer relocation, never deletion. A completed turn crossing most of its
   model's catalog window — or `/compact` — compacts: the conversation's own

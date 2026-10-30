@@ -21,7 +21,8 @@ import {
 	ProviderContentFilterError,
 } from "../agent/provider-errors.ts";
 import { makeToolCallRepair } from "../agent/tool-repair.ts";
-import type { AppLiveContext } from "../http/app-wire.ts";
+import { quotaFromMetadata } from "../agent/codex/receipts.ts";
+import type { AppLiveContext, AppQuota } from "../http/app-wire.ts";
 import { log } from "../log.ts";
 import { type EvidenceLimits, summarize, type ToolCallDigest, toolOk } from "../reviewer.ts";
 import type { TurnJournal } from "../turn-journal.ts";
@@ -301,6 +302,9 @@ export async function driveStream<M extends WireMember>(
 		(typeof deps.step.model === "string" ? deps.step.model : deps.step.model.modelId);
 	let lastStepInputTokens: number | null = null;
 	let lastStepCacheRead: number | null = null;
+	// Latest codex quota receipt — the stream's rate_limits event can be
+	// fresher than the header read; keep the newest non-null snapshot.
+	let turnQuota: AppQuota | null = null;
 	let lastPromptChars: PromptSegments | null = null;
 	// The window record, captured in two stages — prepareStep stages the
 	// step's outbound prompt, onStepEnd promotes it. A staged prompt whose
@@ -541,6 +545,7 @@ export async function driveStream<M extends WireMember>(
 			}
 			lastStepInputTokens = step.usage.inputTokens ?? null;
 			lastStepCacheRead = step.usage.inputTokenDetails?.cacheReadTokens ?? null;
+			turnQuota = quotaFromMetadata(step.providerMetadata) ?? turnQuota;
 			// Assistant steps only — tool-result messages re-derive from
 			// the journal at resume, and carrying them doubles checkpoint
 			// bulk for nothing.
@@ -567,6 +572,7 @@ export async function driveStream<M extends WireMember>(
 				const liveContext: AppLiveContext = {
 					input: lastStepInputTokens,
 					cacheRead: lastStepCacheRead,
+					...(turnQuota !== null ? { quota: turnQuota } : {}),
 				};
 				emitChunk(convId, members, live, {
 					type: "data-context",
@@ -630,6 +636,7 @@ export async function driveStream<M extends WireMember>(
 				// characters (turn/itemize.ts); scaled to tokens by /context.
 				// Absent when no step ran.
 				...(lastPromptChars !== null ? { promptChars: { ...lastPromptChars } } : {}),
+				...(turnQuota !== null ? { quota: turnQuota } : {}),
 			};
 		},
 		onError: (error) =>

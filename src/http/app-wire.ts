@@ -222,6 +222,22 @@ export interface AppTtsResponse {
 	mediaType: "audio/ogg";
 }
 
+// One rate-limit window as the codex backend reports it — the
+// adapter's receipts.ts parses the headers/SSE event into this shape;
+// every other consumer sees it already validated.
+export interface AppQuotaWindow {
+	usedPercent: number;
+	windowMinutes: number | null;
+	/** Unix seconds. */
+	resetsAt: number | null;
+}
+
+export interface AppQuota {
+	limitName: string | null;
+	primary: AppQuotaWindow | null;
+	secondary: AppQuotaWindow | null;
+}
+
 export interface TurnMetadata {
 	model: string;
 	finishReason: string;
@@ -240,6 +256,8 @@ export interface TurnMetadata {
 	/** Itemization of the final step's prompt in serialized characters
 	 *  (src/turn/itemize.ts keys); absent on pre-itemization turns. */
 	promptChars?: Record<string, number>;
+	/** Codex rate-limit snapshot at turn end, when the provider issued one. */
+	quota?: AppQuota;
 }
 
 export interface AppContextSegment {
@@ -256,6 +274,8 @@ export interface AppContextSegment {
 export interface AppLiveContext {
 	input: number | null;
 	cacheRead: number | null;
+	/** Codex rate-limit snapshot while the turn runs, when issued. */
+	quota?: AppQuota;
 }
 
 export interface AppContextView {

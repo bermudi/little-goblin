@@ -18,14 +18,24 @@ import type {
 	SharedV4Warning,
 } from "@ai-sdk/provider";
 import { z } from "zod";
+import { log } from "../../log.ts";
 import {
 	codexCredentials,
 	resolveCodexAuthFile,
 	type CodexAuthFile,
 	type FetchLike,
 } from "./auth.ts";
+import { quotaFromEvent, quotaFromHeaders, type CodexQuota } from "./receipts.ts";
 
 export const RESPONSES_URL = "https://chatgpt.com/backend-api/codex/responses";
+
+// Instance-scoped request identity: sessionId derives from the
+// conversation (codexSessionId) and feeds the backend's cache-affinity
+// headers plus prompt_cache_key; subagent marks maintenance calls.
+export interface CodexModelOptions {
+	sessionId?: string;
+	subagent?: "compact";
+}
 
 // ---------- codex part metadata ----------
 //
@@ -380,6 +390,20 @@ interface StreamState {
 	// The request's replay scope — stamped into every item's codex
 	// metadata so the next call can prove compatibility before replay.
 	scope: string;
+	// Receipts: header snapshot first, codex.rate_limits events override.
+	quota: CodexQuota | null;
+	requestId: string | null;
+	servedModel: string | null;
+}
+
+// The finish part carries the response's receipts; nothing lands when
+// the backend stayed silent on all three.
+function receiptMeta(state: StreamState): SharedV4ProviderMetadata | undefined {
+	const codex: Record<string, unknown> = {};
+	if (state.quota !== null) codex.quota = state.quota;
+	if (state.requestId !== null) codex.requestId = state.requestId;
+	if (state.servedModel !== null) codex.servedModel = state.servedModel;
+	return Object.keys(codex).length > 0 ? ({ codex } as SharedV4ProviderMetadata) : undefined;
 }
 
 function mapEvent(
@@ -510,6 +534,13 @@ function mapEvent(
 				}
 			}
 			break;
+		case "codex.rate_limits": {
+			// The in-stream snapshot is fresher than the response headers —
+			// when it parses it wins.
+			const q = quotaFromEvent(event);
+			if (q !== null) state.quota = q;
+			break;
+		}
 		case "response.completed":
 		case "response.incomplete": {
 			state.sawTerminal = true;
@@ -555,6 +586,10 @@ function mapEvent(
 						reasoning: num(outDetails.reasoning_tokens),
 					},
 				},
+				...((): { providerMetadata: SharedV4ProviderMetadata } | Record<string, never> => {
+					const meta = receiptMeta(state);
+					return meta !== undefined ? { providerMetadata: meta } : {};
+				})(),
 			});
 			break;
 		}
@@ -619,11 +654,28 @@ export class CodexLanguageModel implements LanguageModelV4 {
 	readonly provider = "codex";
 	readonly supportedUrls = {};
 
+	readonly modelId: string;
+	readonly opts: CodexModelOptions;
+	private readonly authFile: string;
+	private readonly fetchImpl: FetchLike;
+	// The backend's per-turn affinity token — captured from the first
+	// non-empty response header and echoed on every later request this
+	// instance makes. One model instance is one turn attempt (callers
+	// resolve fresh per turn), so instance scope IS turn scope; never
+	// overwrite once set, never share across instances.
+	private turnState: string | null = null;
+
 	constructor(
-		readonly modelId: string,
-		private readonly authFile: string,
-		private readonly fetchImpl: FetchLike = fetch,
-	) {}
+		modelId: string,
+		authFile: string,
+		fetchImpl: FetchLike = fetch,
+		opts: CodexModelOptions = {},
+	) {
+		this.modelId = modelId;
+		this.authFile = authFile;
+		this.fetchImpl = fetchImpl;
+		this.opts = opts;
+	}
 
 	private async buildRequest(options: LanguageModelV4CallOptions): Promise<{
 		body: Record<string, unknown>;
@@ -643,6 +695,9 @@ export class CodexLanguageModel implements LanguageModelV4 {
 			store: false,
 			stream: true,
 			include: ["reasoning.encrypted_content"],
+			...(this.opts.sessionId !== undefined
+				? { prompt_cache_key: this.opts.sessionId }
+				: {}),
 		};
 		if (codexOpts.reasoningEffort) {
 			body.reasoning = { effort: codexOpts.reasoningEffort, summary: "auto" };
@@ -676,6 +731,13 @@ export class CodexLanguageModel implements LanguageModelV4 {
 				"OpenAI-Beta": "responses=experimental",
 				originator: "codex_cli_rs",
 				accept: "text/event-stream",
+				...(this.opts.sessionId !== undefined
+					? { "session-id": this.opts.sessionId, "thread-id": this.opts.sessionId }
+					: {}),
+				...(this.opts.subagent !== undefined
+					? { "x-openai-subagent": this.opts.subagent }
+					: {}),
+				...(this.turnState !== null ? { "x-codex-turn-state": this.turnState } : {}),
 			},
 		};
 	}
@@ -720,6 +782,10 @@ export class CodexLanguageModel implements LanguageModelV4 {
 			body: JSON.stringify(body),
 			signal: signal ?? null,
 		});
+		if (this.turnState === null) {
+			const ts = res.headers.get("x-codex-turn-state");
+			if (ts !== null && ts.length > 0) this.turnState = ts;
+		}
 		if (!res.ok || !res.body) {
 			let detail: string;
 			try {
@@ -729,7 +795,27 @@ export class CodexLanguageModel implements LanguageModelV4 {
 					cause: err,
 				});
 			}
-			throw new Error(`codex responses HTTP ${res.status}: ${detail.slice(0, 500)}`);
+			// A usage-limit 429 must explain itself in the logs — request
+			// id and the quota readout ride the same thrown Error type.
+			const extras: string[] = [];
+			const requestId = res.headers.get("x-request-id");
+			if (requestId !== null) extras.push(`request ${requestId}`);
+			const quota = quotaFromHeaders(res.headers);
+			for (const [name, w] of [
+				["primary", quota?.primary],
+				["secondary", quota?.secondary],
+			] as const) {
+				if (w !== null && w !== undefined) {
+					extras.push(
+						`${name} ${w.usedPercent}% used` +
+							(w.resetsAt !== null ? `, resets at ${w.resetsAt}` : ""),
+					);
+				}
+			}
+			throw new Error(
+				`codex responses HTTP ${res.status}: ${detail.slice(0, 500)}` +
+					(extras.length > 0 ? ` [${extras.join("; ")}]` : ""),
+			);
 		}
 		return res;
 	}
@@ -750,7 +836,25 @@ export class CodexLanguageModel implements LanguageModelV4 {
 			sawToolCall: false,
 			sawTerminal: false,
 			scope,
+			quota: quotaFromHeaders(res.headers),
+			requestId: res.headers.get("x-request-id"),
+			servedModel: res.headers.get("openai-model"),
 		};
+		// One receipts line per response — booleans/percentages only, the
+		// turn-state value and credentials never appear.
+		log.info("codex response receipts", {
+			sessionId: this.opts.sessionId ?? null,
+			subagent: this.opts.subagent ?? null,
+			requestId: state.requestId,
+			servedModel: state.servedModel,
+			turnStateHeld: this.turnState !== null,
+			primaryUsedPercent: state.quota?.primary?.usedPercent ?? null,
+			primaryWindowMinutes: state.quota?.primary?.windowMinutes ?? null,
+			primaryResetsAt: state.quota?.primary?.resetsAt ?? null,
+			secondaryUsedPercent: state.quota?.secondary?.usedPercent ?? null,
+			secondaryWindowMinutes: state.quota?.secondary?.windowMinutes ?? null,
+			secondaryResetsAt: state.quota?.secondary?.resetsAt ?? null,
+		});
 		let cancelled = false;
 		const stream = new ReadableStream<LanguageModelV4StreamPart>({
 			start: (controller) => {
@@ -758,6 +862,13 @@ export class CodexLanguageModel implements LanguageModelV4 {
 					if (!cancelled) controller.enqueue(part);
 				};
 				push({ type: "stream-start", warnings });
+				if (state.requestId !== null || state.servedModel !== null) {
+					push({
+						type: "response-metadata",
+						...(state.requestId !== null ? { id: state.requestId } : {}),
+						...(state.servedModel !== null ? { modelId: state.servedModel } : {}),
+					});
+				}
 				void (async () => {
 					try {
 						for await (const event of sseEvents(res.body!)) {
@@ -787,6 +898,7 @@ export class CodexLanguageModel implements LanguageModelV4 {
 		usage: LanguageModelV4Usage;
 		warnings: SharedV4Warning[];
 		request: { body: unknown };
+		providerMetadata?: SharedV4ProviderMetadata;
 	}> {
 		const { stream, request } = await this.doStream(options);
 		// Content stays in streaming order — each opened block's slot is
@@ -797,6 +909,7 @@ export class CodexLanguageModel implements LanguageModelV4 {
 		const content: LanguageModelV4Content[] = [];
 		const open = new Map<string, LanguageModelV4Text | LanguageModelV4Reasoning>();
 		let finishReason: LanguageModelV4FinishReason = { unified: "other", raw: undefined };
+		let finishMeta: SharedV4ProviderMetadata | undefined;
 		let warnings: SharedV4Warning[] = this.warningsFor(options);
 		let usage: LanguageModelV4Usage = {
 			inputTokens: {
@@ -895,6 +1008,7 @@ export class CodexLanguageModel implements LanguageModelV4 {
 				case "finish":
 					finishReason = value.finishReason;
 					usage = value.usage;
+					finishMeta = value.providerMetadata;
 					break;
 				case "error":
 					// Cancel before rethrowing — the reader loop never
@@ -912,6 +1026,7 @@ export class CodexLanguageModel implements LanguageModelV4 {
 			usage,
 			warnings,
 			request,
+			...(finishMeta !== undefined ? { providerMetadata: finishMeta } : {}),
 		};
 	}
 }
@@ -920,6 +1035,12 @@ export function codexModel(
 	modelId: string,
 	authFile?: string,
 	fetchImpl: FetchLike = fetch,
+	opts: CodexModelOptions = {},
 ): CodexLanguageModel {
-	return new CodexLanguageModel(modelId, resolveCodexAuthFile(authFile).path, fetchImpl);
+	return new CodexLanguageModel(
+		modelId,
+		resolveCodexAuthFile(authFile).path,
+		fetchImpl,
+		opts,
+	);
 }

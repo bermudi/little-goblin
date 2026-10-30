@@ -18,7 +18,7 @@ import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import { splitModelRef, type Config, type ThinkingLevel } from "../config.ts";
 import { log } from "../log.ts";
-import { codexModel, RESPONSES_URL } from "./codex/model.ts";
+import { codexModel, RESPONSES_URL, type CodexModelOptions } from "./codex/model.ts";
 import type { MediaPosition } from "./attachments.ts";
 import { isOneMinHost } from "./onemin.ts";
 import { isZaiHost, zaiReasoningFetch } from "./zai-responses.ts";
@@ -28,6 +28,8 @@ export async function resolveModel(
 	config: Config,
 	auth: AuthStore,
 	modelRef: string,
+	// Codex-only request identity — non-codex kinds ignore it.
+	opts: CodexModelOptions = {},
 ): Promise<LanguageModel> {
 	const { provider, modelId } = splitModelRef(modelRef);
 	const p = config.providers[provider];
@@ -62,7 +64,7 @@ export async function resolveModel(
 			return createOpenRouter({ apiKey }).chat(modelId) as unknown as LanguageModel;
 		}
 		case "codex":
-			return codexModel(modelId, p.authFile);
+			return codexModel(modelId, p.authFile, fetch, opts);
 	}
 }
 

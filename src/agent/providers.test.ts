@@ -3,7 +3,7 @@
 // live in thinking.test.ts.
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -15,6 +15,7 @@ import { APICallError } from "ai";
 import { generateModel, scriptedModel } from "../testkit/fake-model.ts";
 import type { AuthStore } from "../auth.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
+import { CodexLanguageModel } from "./codex/model.ts";
 
 // resolveModel resolves auth through a literal-key fixture — no records,
 // no commands, nothing secret.
@@ -587,5 +588,34 @@ describe("failure lines carry only safe categories", () => {
 			setLogFile(null);
 			db.close();
 		}
+	});
+});
+
+describe("resolveModel — codex session opts", () => {
+	test("session/subagent land on the codex model; other kinds ignore them", async () => {
+		const dir = tmpDir();
+		const authFile = join(dir, "auth.json");
+		writeFileSync(authFile, JSON.stringify({ tokens: { access_token: "t" } }));
+		const c: Config = {
+			...cfg,
+			providers: {
+				codex: { kind: "codex", authFile },
+				zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4", auth: "zai" },
+			},
+		};
+		const codex = await resolveModel(c, fixtureAuth("fixture-key"), "codex/gpt-6.1-sol", {
+			sessionId: "s-1",
+			subagent: "compact",
+		});
+		expect(codex).toBeInstanceOf(CodexLanguageModel);
+		expect((codex as CodexLanguageModel).opts).toEqual({
+			sessionId: "s-1",
+			subagent: "compact",
+		});
+		// Non-codex kinds accept and ignore the same opts.
+		const other = await resolveModel(c, fixtureAuth("fixture-key"), "zai/glm-5.3", {
+			sessionId: "s-1",
+		});
+		expect(other).not.toBeInstanceOf(CodexLanguageModel);
 	});
 });

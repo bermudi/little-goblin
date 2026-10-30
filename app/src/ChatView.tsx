@@ -64,6 +64,8 @@ import type {
 	AppContextView,
 	AppConversationMemoryView,
 	AppLiveContext,
+	AppQuota,
+	AppQuotaWindow,
 	AppNoteSummary,
 	AppRatedReply,
 	AppReplyRating,
@@ -504,6 +506,49 @@ export function MessageParts({
 	return <>{out}</>;
 }
 
+// ---------- quota narrowing ----------
+
+// The quota blob is server-validated AppQuota when present, but history
+// rows may predate the field — narrow, never trust.
+function quotaOf(v: unknown): AppQuota | undefined {
+	if (typeof v !== "object" || v === null) return undefined;
+	const o = v as Record<string, unknown>;
+	const window = (w: unknown): AppQuotaWindow | null => {
+		if (typeof w !== "object" || w === null) return null;
+		const wo = w as Record<string, unknown>;
+		if (typeof wo.usedPercent !== "number") return null;
+		return {
+			usedPercent: wo.usedPercent,
+			windowMinutes: typeof wo.windowMinutes === "number" ? wo.windowMinutes : null,
+			resetsAt: typeof wo.resetsAt === "number" ? wo.resetsAt : null,
+		};
+	};
+	const primary = window(o.primary);
+	const secondary = window(o.secondary);
+	if (primary === null && secondary === null) return undefined;
+	return {
+		limitName: typeof o.limitName === "string" ? o.limitName : null,
+		primary,
+		secondary,
+	};
+}
+
+// Window naming follows the backend's own shape: 300-minute = the 5h
+// block, 10080-minute = the weekly block.
+function quotaWindowLabel(minutes: number | null): string {
+	if (minutes === null) return "window";
+	if (minutes === 300) return "5h";
+	if (minutes === 10080) return "weekly";
+	return `${minutes}m`;
+}
+
+function quotaReset(resetsAt: number | null): string {
+	if (resetsAt === null) return "";
+	const d = new Date(resetsAt * 1000);
+	const sameDay = new Date().toDateString() === d.toDateString();
+	return ` · resets ${d.toLocaleString(undefined, sameDay ? { hour: "2-digit", minute: "2-digit" } : { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
+}
+
 // ---------- per-message actions + turn stats ----------
 
 // The runtime stamps finish metadata on the assistant message (model,
@@ -537,6 +582,10 @@ function turnMeta(m: UIMessage): TurnMetadata | null {
 			lastInput: num(hasFinalUsage ? usage.lastInput : usage.input),
 			lastCacheRead: num(hasFinalUsage ? usage.lastCacheRead : usage.cacheRead),
 		},
+		...((): { quota: AppQuota } | Record<string, never> => {
+			const q = quotaOf(o.quota);
+			return q !== undefined ? { quota: q } : {};
+		})(),
 	};
 }
 
@@ -1176,6 +1225,8 @@ export function ContextGauge({
 	// turn runs without a metered step — before the first report, or a
 	// step the provider didn't meter — the last settled read stands in.
 	const viewInput = (busy ? live?.input : null) ?? ctx?.input ?? null;
+	// Rate-limit receipts — present only on providers that issue them.
+	const quota = live?.quota ?? null;
 	const viewPct =
 		viewInput !== null && limit !== null ? Math.round((viewInput / limit) * 1000) / 10 : null;
 	const barPct = viewPct === null ? 0 : Math.min(100, Math.max(0, viewPct));
@@ -1343,6 +1394,24 @@ export function ContextGauge({
 							<dt>Avg cache hit</dt>
 							<dd className="mono">{contextRate(shown.avgCacheHitRate)}</dd>
 						</div>
+						{quota?.primary !== null && quota?.primary !== undefined && (
+							<div>
+								<dt>{quotaWindowLabel(quota.primary.windowMinutes)}</dt>
+								<dd className="mono">
+									{quota.primary.usedPercent}% used
+									{quotaReset(quota.primary.resetsAt)}
+								</dd>
+							</div>
+						)}
+						{quota?.secondary !== null && quota?.secondary !== undefined && (
+							<div>
+								<dt>{quotaWindowLabel(quota.secondary.windowMinutes)}</dt>
+								<dd className="mono">
+									{quota.secondary.usedPercent}% used
+									{quotaReset(quota.secondary.resetsAt)}
+								</dd>
+							</div>
+						)}
 					</dl>
 					<p className="empty">
 						{shown.model} · {shown.turns} {shown.turns === 1 ? "turn" : "turns"}
@@ -2723,7 +2792,12 @@ function Chat({
 					unknown
 				>;
 				const num = (v: unknown) => (typeof v === "number" ? v : null);
-				setLiveCtx({ input: num(d.input), cacheRead: num(d.cacheRead) });
+				const quota = quotaOf(d.quota);
+				setLiveCtx({
+					input: num(d.input),
+					cacheRead: num(d.cacheRead),
+					...(quota !== undefined ? { quota } : {}),
+				});
 			},
 			onFinish: ({ message, isAbort, isError }) => {
 				// The edit's server-side answer is final now — a later

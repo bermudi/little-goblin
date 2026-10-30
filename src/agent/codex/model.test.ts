@@ -11,7 +11,7 @@ import type { JSONObject, LanguageModelV4Prompt } from "@ai-sdk/provider";
 import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage } from "ai";
 import { z } from "zod";
 import { openStore } from "../../conversation.ts";
-import { tmpDb } from "../../testkit.ts";
+import { tmpDb, tmpDir } from "../../testkit.ts";
 import { CodexLanguageModel } from "./model.ts";
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -832,5 +832,267 @@ describe("CodexLanguageModel — reasoning retention", () => {
 		expect(input.some((i) => i.type === "reasoning")).toBe(false);
 		expect(JSON.stringify(input)).not.toContain("FOREIGN");
 		expect(result.warnings.filter((w) => w.type === "other").length).toBe(3);
+	});
+});
+
+// ---------- session affinity & receipts ----------
+//
+// session-id/thread-id/prompt_cache_key pin the backend's cache
+// affinity; x-codex-turn-state is captured once per instance and echoed
+// unchanged; quota receipts land on the finish part.
+
+import { createHash } from "node:crypto";
+import { codexSessionId } from "./session.ts";
+import { quotaFromMetadata } from "./receipts.ts";
+import { setLogFile, setLogWriter } from "../../log.ts";
+
+describe("codexSessionId", () => {
+	test("deterministic, UUID-shaped, conversation-scoped, never the raw id", () => {
+		const a = codexSessionId("dm:1");
+		expect(a).toBe(codexSessionId("dm:1"));
+		expect(a).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+		expect(a).not.toBe(codexSessionId("dm:2"));
+		expect(a).not.toContain("dm:1");
+		expect(createHash("sha256").update("goblin-codex-session:dm:1").digest("hex")).toContain(
+			a.replaceAll("-", "").slice(0, 20),
+		);
+	});
+});
+
+describe("CodexLanguageModel — session affinity", () => {
+	const done = () => ({
+		type: "response.completed",
+		response: { status: "completed", usage: {} },
+	});
+	const sse = (frames: Record<string, unknown>[]) =>
+		new Response(
+			new TextEncoder().encode(frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("")),
+		);
+
+	test("sessionId lands on headers and prompt_cache_key; absent opts send none", async () => {
+		const path = authDir({ access_token: jwt(FUTURE), account_id: "acct-1" });
+		const heads: Record<string, string>[] = [];
+		const bodies: Record<string, unknown>[] = [];
+		const withSession = new CodexLanguageModel(
+			"gpt-6-astra",
+			path,
+			async (_url, init) => {
+				const h: Record<string, string> = {};
+				new Headers(init?.headers).forEach((v, k) => (h[k] = v));
+				heads.push(h);
+				bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+				return sse([done()]);
+			},
+			{ sessionId: "sess-1", subagent: "compact" },
+		);
+		const prompt = [{ role: "user" as const, content: [{ type: "text" as const, text: "x" }] }];
+		await withSession.doGenerate({ prompt });
+		expect(heads[0]!["session-id"]).toBe("sess-1");
+		expect(heads[0]!["thread-id"]).toBe("sess-1");
+		expect(heads[0]!["x-openai-subagent"]).toBe("compact");
+		expect(bodies[0]!.prompt_cache_key).toBe("sess-1");
+
+		const bare = new CodexLanguageModel("gpt-6-astra", path, async (_url, init) => {
+			const h: Record<string, string> = {};
+			new Headers(init?.headers).forEach((v, k) => (h[k] = v));
+			heads.push(h);
+			bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+			return sse([done()]);
+		});
+		await bare.doGenerate({ prompt });
+		const h2 = heads[1]!;
+		expect(h2["session-id"]).toBeUndefined();
+		expect(h2["thread-id"]).toBeUndefined();
+		expect(h2["x-openai-subagent"]).toBeUndefined();
+		expect(bodies[1]!.prompt_cache_key).toBeUndefined();
+		expect(h2["x-codex-turn-state"]).toBeUndefined();
+	});
+
+	test("first turn-state wins per instance; a new instance starts blank", async () => {
+		const path = authDir({ access_token: jwt(FUTURE), account_id: "acct-1" });
+		const lines: string[] = [];
+		setLogFile(join(tmpDir("goblin-codex-log-"), "log.jsonl"));
+		setLogWriter((_p, l) => lines.push(l));
+		try {
+			const heads: Record<string, string>[] = [];
+			let call = 0;
+			const model = new CodexLanguageModel("gpt-6-astra", path, async (_url, init) => {
+				const h: Record<string, string> = {};
+				new Headers(init?.headers).forEach((v, k) => (h[k] = v));
+				heads.push(h);
+				call++;
+				return new Response(
+					new TextEncoder().encode(
+						`data: ${JSON.stringify({
+							type: "response.completed",
+							response: { status: "completed", usage: {} },
+						})}\n\n`,
+					),
+					{ headers: { "x-codex-turn-state": `ts-${call}` } },
+				);
+			});
+			const prompt = [{ role: "user" as const, content: [{ type: "text" as const, text: "x" }] }];
+			await model.doGenerate({ prompt });
+			await model.doGenerate({ prompt });
+			await model.doGenerate({ prompt });
+			expect(heads[0]!["x-codex-turn-state"]).toBeUndefined();
+			expect(heads[1]!["x-codex-turn-state"]).toBe("ts-1");
+			expect(heads[2]!["x-codex-turn-state"]).toBe("ts-1");
+			// New instance — never leaks across turns.
+			const fresh = new CodexLanguageModel("gpt-6-astra", path, async (_url, init) => {
+				const h: Record<string, string> = {};
+				new Headers(init?.headers).forEach((v, k) => (h[k] = v));
+				heads.push(h);
+				return sse([done()]);
+			});
+			await fresh.doGenerate({ prompt });
+			expect(heads[3]!["x-codex-turn-state"]).toBeUndefined();
+			// The value itself never lands in the log — only the boolean.
+			expect(lines.some((l) => l.includes("ts-1"))).toBe(false);
+			expect(lines.some((l) => l.includes("turnStateHeld"))).toBe(true);
+		} finally {
+			setLogWriter(null);
+			setLogFile(null);
+		}
+	});
+});
+
+describe("CodexLanguageModel — receipts", () => {
+	const done = () => ({
+		type: "response.completed",
+		response: { status: "completed", usage: {} },
+	});
+	const sse = (frames: Record<string, unknown>[]) =>
+		new Response(
+			new TextEncoder().encode(frames.map((f) => `data: ${JSON.stringify(f)}\n\n`).join("")),
+		);
+	const prompt = [{ role: "user" as const, content: [{ type: "text" as const, text: "x" }] }];
+
+	test("header quota, request id, and served model land on the finish part", async () => {
+		const path = authDir({ access_token: jwt(FUTURE), account_id: "acct-1" });
+		const model = new CodexLanguageModel(
+			"gpt-6-astra",
+			path,
+			async () =>
+				new Response(
+					new TextEncoder().encode(`data: ${JSON.stringify(done())}\n\n`),
+					{
+						headers: {
+							"x-codex-primary-used-percent": "42.5",
+							"x-codex-primary-window-minutes": "300",
+							"x-codex-primary-reset-at": "1730000000",
+							"x-codex-secondary-used-percent": "7",
+							"x-codex-secondary-window-minutes": "10080",
+							"x-codex-limit-name": "codex",
+							"x-request-id": "req-1",
+							"openai-model": "gpt-6.1-sol",
+						},
+					},
+				),
+		);
+		const parts: { type: string }[] = [];
+		const stream = (await model.doStream({ prompt })).stream;
+		const reader = stream.getReader();
+		let finishMeta: unknown;
+		for (;;) {
+			const { done: d, value } = await reader.read();
+			if (d) break;
+			parts.push(value);
+			if (value.type === "finish") finishMeta = value.providerMetadata;
+		}
+		expect(parts.some((p) => p.type === "response-metadata")).toBe(true);
+		const respMeta = parts.find((p) => p.type === "response-metadata") as unknown as {
+			id?: string;
+			modelId?: string;
+		};
+		expect(respMeta.id).toBe("req-1");
+		expect(respMeta.modelId).toBe("gpt-6.1-sol");
+		const codex = (finishMeta as Record<string, Record<string, unknown>>).codex!;
+		expect(codex.requestId).toBe("req-1");
+		expect(codex.servedModel).toBe("gpt-6.1-sol");
+		expect(quotaFromMetadata(finishMeta)).toEqual({
+			limitName: "codex",
+			primary: { usedPercent: 42.5, windowMinutes: 300, resetsAt: 1730000000 },
+			secondary: { usedPercent: 7, windowMinutes: 10080, resetsAt: null },
+		});
+	});
+
+	test("the codex.rate_limits SSE event overrides the header snapshot", async () => {
+		const path = authDir({ access_token: jwt(FUTURE), account_id: "acct-1" });
+		const model = new CodexLanguageModel(
+			"gpt-6-astra",
+			path,
+			async () =>
+				new Response(
+					new TextEncoder().encode(
+						[
+							{
+								type: "codex.rate_limits",
+								rate_limits: {
+									primary: {
+										used_percent: 88,
+										window_minutes: 300,
+										reset_at: 1730000500,
+									},
+								},
+								limit_name: "stream",
+							},
+							done(),
+						]
+							.map((f) => `data: ${JSON.stringify(f)}\n\n`)
+							.join(""),
+					),
+					{
+						headers: {
+							"x-codex-primary-used-percent": "42.5",
+							"x-codex-primary-window-minutes": "300",
+							"x-codex-primary-reset-at": "1730000000",
+						},
+					},
+				),
+		);
+		const r = await model.doGenerate({ prompt });
+		expect(quotaFromMetadata(r.providerMetadata)).toEqual({
+			limitName: "stream",
+			primary: { usedPercent: 88, windowMinutes: 300, resetsAt: 1730000500 },
+			secondary: null,
+		});
+	});
+
+	test("malformed quota headers produce no quota — and no quota key", async () => {
+		const path = authDir({ access_token: jwt(FUTURE), account_id: "acct-1" });
+		const model = new CodexLanguageModel(
+			"gpt-6-astra",
+			path,
+			async () =>
+				new Response(new TextEncoder().encode(`data: ${JSON.stringify(done())}\n\n`), {
+					headers: { "x-codex-primary-used-percent": "banana" },
+				}),
+		);
+		const r = await model.doGenerate({ prompt });
+		expect(quotaFromMetadata(r.providerMetadata)).toBeNull();
+		const codex = (r.providerMetadata as Record<string, Record<string, unknown>> | undefined)
+			?.codex;
+		expect(codex === undefined || !("quota" in codex)).toBe(true);
+	});
+
+	test("a 429's error message names the request id and quota readout", async () => {
+		const path = authDir({ access_token: jwt(FUTURE), account_id: "acct-1" });
+		const model = new CodexLanguageModel(
+			"gpt-6-astra",
+			path,
+			async () =>
+				new Response("rate limited", {
+					status: 429,
+					headers: {
+						"x-request-id": "req-429",
+						"x-codex-primary-used-percent": "99",
+						"x-codex-primary-reset-at": "1730000000",
+					},
+				}),
+		);
+		await expect(model.doGenerate({ prompt })).rejects.toThrow(
+			/HTTP 429.*req-429.*99% used.*1730000000/,
+		);
 	});
 });

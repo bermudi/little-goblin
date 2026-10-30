@@ -1,4 +1,5 @@
 import {
+	Fragment,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -58,6 +59,7 @@ import {
 	presentationsOf,
 } from "../../src/agent/tools/artifact-schema.ts";
 import type {
+	AppCompactionMark,
 	AppConfigView,
 	AppContextView,
 	AppConversationMemoryView,
@@ -571,6 +573,36 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 	return <div className="msg-meta">{bits.join(" · ")}</div>;
 }
 
+// A fold pointer rendered into the transcript: the pill sits right
+// after the last message its boundary folded — the durable record of
+// the same line the popover's compact outcome reports — and expands to
+// the summary the model actually kept. `live` marks the newest
+// pointer, the boundary the model's context currently starts from.
+export function FoldMark({ mark, live }: { mark: AppCompactionMark; live: boolean }) {
+	const line =
+		`folded ${mark.eventsCompacted} messages (~${Math.round(mark.tokensBefore / 1000)}k tok)` +
+		(mark.tailEvents === null ? "" : ` — kept the last ${mark.tailEvents}`);
+	const when = new Date(mark.createdAt).toLocaleString(undefined, {
+		month: "short",
+		day: "numeric",
+		hour: "numeric",
+		minute: "2-digit",
+	});
+	return (
+		<div className="fold-mark">
+			<details className={live ? "fold-pill live" : "fold-pill"}>
+				<summary title={`context fold — expand for the summary the model kept`}>{line}</summary>
+				<div className="fold-summary">
+					<Markdown text={mark.summary} />
+					<p className="fold-meta">
+						folded by {mark.model} · {when}
+					</p>
+				</div>
+			</details>
+		</div>
+	);
+}
+
 export function ActionBar({
 	message,
 	isLastAssistant,
@@ -1021,6 +1053,7 @@ export function ContextGauge({
 	busy,
 	live,
 	model,
+	onCompacted,
 }: {
 	token: string | null;
 	conversationId: string | undefined;
@@ -1034,6 +1067,10 @@ export function ContextGauge({
 	// the read's limit says nothing about the live window and only the
 	// bare token count shows until the re-read lands.
 	model?: string | undefined;
+	// A landed fold has a transcript mark — the host re-reads history
+	// so the pill appears. Only fires for the conversation the POST
+	// was issued under (the identity guard below).
+	onCompacted?: (() => void) | undefined;
 }) {
 	const [ctx, setCtx] = useState<AppContextView | null>(null);
 	const [failed, setFailed] = useState(false);
@@ -1330,6 +1367,9 @@ export function ContextGauge({
 											? `folded ${outcome.eventsCompacted} messages (~${Math.round(outcome.tokensBefore / 1000)}k tok) — kept the last ${outcome.tailEvents}`
 											: `nothing to compact — ${outcome.reason}`,
 									);
+									// The pointer is durable — the transcript marks it
+									// on the re-read (a noop changes nothing).
+									if (outcome.compacted) onCompacted?.();
 								})
 								.catch((err: unknown) => {
 									if (n === identity.current)
@@ -1376,6 +1416,7 @@ export function Composer({
 	onStagedMemoryToggle,
 	onSend,
 	onStop,
+	onCompacted,
 	quote,
 	focusSignal,
 	draftRestore,
@@ -1405,6 +1446,9 @@ export function Composer({
 	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
 	// Present only where a live turn exists to interrupt (ChatView).
 	onStop?: () => void;
+	// A manual compact landed a pointer — the host re-reads history so
+	// the transcript's fold marks update.
+	onCompacted?: () => void;
 	// A select-to-quote request — `n` bumps per click, so even repeated
 	// text appends again.
 	quote?: { text: string; n: number } | null;
@@ -2311,6 +2355,7 @@ export function Composer({
 					busy={busy}
 					live={liveCtx}
 					model={cfg?.model}
+					onCompacted={onCompacted}
 				/>
 				{busy && onStop !== undefined && (
 					// Stop means stop: ask the runtime to abort the turn, then
@@ -2482,6 +2527,7 @@ export function ChatView({
 		messages: UIMessage[];
 		ratings: AppRatedReply[];
 		rateableMessageIds: string[];
+		compactions: AppCompactionMark[];
 	} | null>(null);
 	const [loadError, setLoadError] = useState<string | null>(null);
 	useEffect(() => {
@@ -2493,6 +2539,7 @@ export function ChatView({
 					messages: r.messages,
 					ratings: r.ratings,
 					rateableMessageIds: r.rateableMessageIds,
+					compactions: r.compactions ?? [],
 				}),
 			(err) => live && setLoadError(err instanceof Error ? err.message : "history failed to load"),
 		);
@@ -2511,6 +2558,7 @@ export function ChatView({
 			initial={initial.messages}
 			initialRatings={initial.ratings}
 			initialRateableIds={initial.rateableMessageIds}
+			initialCompactions={initial.compactions}
 			seed={seed}
 			staged={staged}
 			setStaged={setStaged}
@@ -2534,6 +2582,7 @@ function Chat({
 	initial,
 	initialRatings,
 	initialRateableIds,
+	initialCompactions,
 	seed,
 	staged,
 	setStaged,
@@ -2553,6 +2602,7 @@ function Chat({
 	initial: UIMessage[];
 	initialRatings: AppRatedReply[];
 	initialRateableIds: string[];
+	initialCompactions: AppCompactionMark[];
 	seed: UIMessage["parts"] | null;
 	staged: StagedUpload[];
 	setStaged: Dispatch<SetStateAction<StagedUpload[]>>;
@@ -2588,6 +2638,10 @@ function Chat({
 	const [rateableIds, setRateableIds] = useState<ReadonlySet<string>>(
 		() => new Set(initialRateableIds),
 	);
+	// Fold pointers as transcript marks — a pill rides right after the
+	// last message each boundary folded. Replaced wholesale on every
+	// history read; a rewind's deleted marks must not linger.
+	const [marks, setMarks] = useState<AppCompactionMark[]>(initialCompactions);
 	// Rewriting a prompt is a rewind: everything from that message onward
 	// is dropped on the server before the edited text becomes the next
 	// turn. The backup exists only for an edit that fails while the
@@ -2700,6 +2754,7 @@ function Chat({
 			(r) => {
 				setMessages((current) => mergeTranscript(current, r.messages));
 				applyRatingSnapshot(r.ratings, r.rateableMessageIds);
+				setMarks(r.compactions ?? []);
 			},
 			() => onUnavailable?.(),
 		);
@@ -2713,7 +2768,8 @@ function Chat({
 		setRatingPending(null);
 		setRatingErrors({});
 		setRateableIds(new Set(initialRateableIds));
-	}, [initialRatings, initialRateableIds]);
+		setMarks(initialCompactions);
+	}, [initialRatings, initialRateableIds, initialCompactions]);
 	const rate = (messageId: string, rating: AppReplyRating) => {
 		if (ratingPending !== null) return;
 		setRatingPending(messageId);
@@ -2747,6 +2803,7 @@ function Chat({
 					setMessages((current) => mergeTranscript(current, r.messages));
 					setRatings(Object.fromEntries(r.ratings.map((rating) => [rating.messageId, rating])));
 					setRateableIds(new Set(r.rateableMessageIds));
+					setMarks(r.compactions ?? []);
 				},
 				() => {},
 			);
@@ -2804,6 +2861,12 @@ function Chat({
 	// The retry affordance belongs to the newest answer — anything older
 	// gets copy/read only.
 	const lastAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
+
+	// Fold marks interleave by display index — the pill sits right
+	// after the last message its boundary folded; the newest pointer is
+	// the live boundary the model's context currently starts from.
+	const marksByIndex = new Map(marks.map((mark) => [mark.afterIndex, mark]));
+	const liveMark = marks[marks.length - 1];
 
 	const beginEdit = (m: UIMessage) => {
 		if (busy) return;
@@ -2871,11 +2934,12 @@ function Chat({
 				>
 					<div className="transcript-inner">
 						{messages.length === 0 && <p className="empty">Say something.</p>}
-						{messages.map((m) => {
+						{messages.map((m, i) => {
+							let el: ReactNode;
 							if (m.role === "user") {
 								const isEditing = editing !== null && editing.id === m.id;
-								return (
-									<div key={m.id} className="msg user" data-outline-anchor={m.id}>
+								el = (
+									<div className="msg user" data-outline-anchor={m.id}>
 										{isEditing ? (
 											<div className="msg-edit">
 												<textarea
@@ -2916,10 +2980,9 @@ function Chat({
 										)}
 									</div>
 								);
-							}
-							if (m.role === "system")
-								return (
-									<div key={m.id} className="msg system">
+							} else if (m.role === "system") {
+								el = (
+									<div className="msg system">
 										<MessageParts
 											parts={m.parts}
 											token={token}
@@ -2929,39 +2992,48 @@ function Chat({
 										/>
 									</div>
 								);
-							const meta = turnMeta(m);
+							} else {
+								const meta = turnMeta(m);
+								el = (
+									<div className="msg assistant">
+										<MessageParts
+											parts={m.parts}
+											token={token}
+											noteProjectId={noteProjectId}
+											busy={busy}
+											streaming={status === "streaming" && m.id === lastAssistantId}
+											messages={messages}
+											onOpenNote={onOpenNote}
+											onAction={(text) => void submit({ text })}
+										/>
+										<ActionBar
+											message={m}
+											isLastAssistant={m.id === lastAssistantId}
+											busy={busy}
+											onRetry={() => {
+												setLiveCtx(null);
+												void regenerate();
+											}}
+											token={token}
+											rateable={rateableIds.has(m.id)}
+											rating={ratings[m.id]?.rating ?? null}
+											ratingPending={ratingPending === m.id}
+											ratingError={ratingErrors[m.id] ?? null}
+											onRate={(vote) => rate(m.id, vote)}
+											onBranch={() => branch(m)}
+											branchPending={branchPending === m.id}
+											branchError={branchErrors[m.id] ?? null}
+										/>
+										{meta !== null && <MetaLine meta={meta} />}
+									</div>
+								);
+							}
+							const mark = marksByIndex.get(i);
 							return (
-								<div key={m.id} className="msg assistant">
-									<MessageParts
-										parts={m.parts}
-										token={token}
-										noteProjectId={noteProjectId}
-										busy={busy}
-										streaming={status === "streaming" && m.id === lastAssistantId}
-										messages={messages}
-										onOpenNote={onOpenNote}
-										onAction={(text) => void submit({ text })}
-									/>
-									<ActionBar
-										message={m}
-										isLastAssistant={m.id === lastAssistantId}
-										busy={busy}
-										onRetry={() => {
-											setLiveCtx(null);
-											void regenerate();
-										}}
-										token={token}
-										rateable={rateableIds.has(m.id)}
-										rating={ratings[m.id]?.rating ?? null}
-										ratingPending={ratingPending === m.id}
-										ratingError={ratingErrors[m.id] ?? null}
-										onRate={(vote) => rate(m.id, vote)}
-										onBranch={() => branch(m)}
-										branchPending={branchPending === m.id}
-										branchError={branchErrors[m.id] ?? null}
-									/>
-									{meta !== null && <MetaLine meta={meta} />}
-								</div>
+								<Fragment key={m.id}>
+									{el}
+									{mark !== undefined && <FoldMark mark={mark} live={mark === liveMark} />}
+								</Fragment>
 							);
 						})}
 						{busy && <div className="msg assistant pending shimmer">…</div>}
@@ -2996,6 +3068,7 @@ function Chat({
 					stagedSkills={stagedSkills}
 					setStagedSkills={setStagedSkills}
 					quote={quote}
+					onCompacted={refreshTranscript}
 					onSend={(parts) => {
 						askNotifyPermission();
 						void submit({ parts });

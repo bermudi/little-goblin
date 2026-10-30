@@ -966,6 +966,69 @@ header h1 {
 	color: var(--app-fg-subtle);
 }
 
+/* Fold marks — a pill riding the transcript at each compaction
+   boundary; the newest (live) pointer carries the accent edge. The
+   details body is what the model kept, verbatim from the pointer row. */
+.fold-mark {
+	margin: -0.25rem 0 1.25rem;
+}
+.fold-pill > summary {
+	list-style: none;
+	display: block;
+	width: fit-content;
+	margin: 0 auto;
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	border: 1px solid var(--app-border);
+	border-radius: 999px;
+	padding: 0.15rem 0.6rem;
+	color: var(--app-fg-muted);
+	cursor: pointer;
+}
+.fold-pill > summary::-webkit-details-marker {
+	display: none;
+}
+.fold-pill > summary::after {
+	content: "▸";
+	margin-left: 0.45em;
+	opacity: 0.6;
+}
+.fold-pill[open] > summary::after {
+	content: "▾";
+}
+.fold-pill > summary:hover {
+	color: var(--app-fg);
+	border-color: var(--app-divider);
+}
+.fold-pill.live > summary {
+	border-color: color-mix(in oklab, var(--app-accent) 45%, transparent);
+}
+.fold-summary {
+	margin: 0.6rem auto 0;
+	max-width: 40rem;
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	padding: 0.55rem 0.8rem;
+	font-size: 12.5px;
+	line-height: 1.5;
+	color: var(--app-fg-muted);
+	text-align: left;
+}
+.fold-summary p {
+	margin: 0.4em 0;
+}
+.fold-summary p:first-child {
+	margin-top: 0;
+}
+.fold-summary p:last-child {
+	margin-bottom: 0;
+}
+.fold-meta {
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--app-fg-subtle);
+}
+
 /* ---------- transcript markdown ---------- */
 
 .md-h {

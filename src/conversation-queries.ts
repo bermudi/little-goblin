@@ -35,13 +35,28 @@ export function prepareConversationQueries(db: Database) {
 			tokens_before: number;
 			model: string;
 			created_at: string;
+			tail_events: number | null;
 		},
 		[string]
 	>(
-		"SELECT boundary_seq, summary, summary_eligible, tokens_before, model, created_at FROM compactions WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+		"SELECT boundary_seq, summary, summary_eligible, tokens_before, model, created_at, tail_events FROM compactions WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+	);
+	// Every pointer, oldest first — the transcript's fold marks.
+	const qCompactions = db.query<
+		{
+			boundary_seq: number;
+			summary: string;
+			tokens_before: number;
+			tail_events: number | null;
+			model: string;
+			created_at: string;
+		},
+		[string]
+	>(
+		"SELECT boundary_seq, summary, tokens_before, tail_events, model, created_at FROM compactions WHERE conversation_id = ? ORDER BY id",
 	);
 	const qInsertCompaction = db.query(
-		"INSERT INTO compactions (conversation_id, boundary_seq, summary, summary_eligible, tokens_before, model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO compactions (conversation_id, boundary_seq, summary, summary_eligible, tokens_before, model, created_at, tail_events) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
 	);
 	const qGet = db.query<Row, [string]>("SELECT * FROM conversations WHERE id = ?");
 	const qInsertConv = db.query(
@@ -305,6 +320,7 @@ export function prepareConversationQueries(db: Database) {
 
 	return {
 		qCompaction,
+		qCompactions,
 		qInsertCompaction,
 		qGet,
 		qInsertConv,

@@ -27,6 +27,9 @@ export interface CompactionStore {
 			tokensBefore: number;
 			model: string;
 			createdAt: string;
+			// Events left unfolded at fold time — the mark's "kept the
+			// last N" is recorded, never recomputed.
+			tailEvents: number;
 		},
 	): void;
 }
@@ -370,18 +373,20 @@ export async function runCompaction(
 			spanTokens: tokensBefore,
 		});
 	}
+	const tailEvents = detail.length - spanStart - span.length;
 	store.setCompaction(id, {
 		boundarySeq: boundary,
 		summary,
 		tokensBefore,
 		model,
 		createdAt: new Date().toISOString(),
+		tailEvents,
 	});
 	log.info("history compacted", {
 		conversation: id,
 		boundary,
 		eventsCompacted: span.length,
-		tailEvents: detail.length - spanStart - span.length,
+		tailEvents,
 		estimatedTokensBefore: tokensBefore,
 		summaryChars: summary.length,
 		chunks,
@@ -393,7 +398,7 @@ export async function runCompaction(
 		boundarySeq: boundary,
 		eventsCompacted: span.length,
 		tokensBefore,
-		tailEvents: detail.length - spanStart - span.length,
+		tailEvents,
 		summary,
 	};
 }

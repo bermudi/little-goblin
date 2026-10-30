@@ -4,7 +4,11 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { AppInterruptedList, AppRunCall } from "../../src/http/app-wire.ts";
+import type {
+	AppCompactionMark,
+	AppInterruptedList,
+	AppRunCall,
+} from "../../src/http/app-wire.ts";
 import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
 import {
 	appendQuote,
@@ -13,6 +17,7 @@ import {
 	ContextGauge,
 	contextCount,
 	editedParts,
+	FoldMark,
 	MessageParts,
 	mergeTranscript,
 } from "./ChatView.tsx";
@@ -1510,6 +1515,176 @@ describe("ContextGauge", () => {
 		expect(btn).not.toBeNull();
 		expect(btn?.title).toContain("read failed");
 		expect(dom.container.querySelector(".ctx-label")?.textContent).toBe("ctx failed");
+	});
+
+	test("a successful compact reports through onCompacted", async () => {
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				const method = init?.method ?? "GET";
+				if (url.endsWith("/compact") && method === "POST")
+					return new Response(
+						JSON.stringify({
+							compacted: true,
+							eventsCompacted: 15,
+							tailEvents: 6,
+							tokensBefore: 120_000,
+						}),
+					);
+				return new Response(
+					JSON.stringify({ input: 1000, limit: 200_000, pct: 0.5, model: "prov/model" }),
+				);
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		let folded = 0;
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ContextGauge
+					token={null}
+					conversationId="app/chat-01"
+					busy={false}
+					onCompacted={() => {
+						folded++;
+					}}
+				/>,
+			),
+		);
+		for (let i = 0; i < 100 && !dom.container.querySelector(".ctx-btn"); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		const compactBtn = () =>
+			[...dom.container.querySelectorAll<HTMLButtonElement>("button")].find(
+				(b) => b.textContent === "Compact now",
+			) ?? null;
+		await act(async () => {
+			dom.container.querySelector<HTMLButtonElement>(".ctx-btn")!.click();
+		});
+		for (let i = 0; i < 100 && compactBtn() === null; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		await act(async () => {
+			compactBtn()!.click();
+		});
+		expect(folded).toBe(1);
+		expect(dom.container.textContent).toContain("folded 15 messages");
+	});
+});
+
+// A compaction pointer renders as a pill in the transcript — the same
+// line the popover reports, durable and expandable to the summary the
+// model kept.
+describe("FoldMark", () => {
+	const dom = mountDom();
+	const mark = (over: Partial<AppCompactionMark> = {}): AppCompactionMark => ({
+		boundarySeq: 2,
+		afterIndex: 1,
+		eventsCompacted: 15,
+		tailEvents: 6,
+		tokensBefore: 120_000,
+		summary: "the summary the model kept",
+		model: "prov/model",
+		createdAt: "2026-10-20T12:00:00Z",
+		...over,
+	});
+
+	test("the pill carries the fold line and expands to the summary", () => {
+		const html = renderToStaticMarkup(<FoldMark mark={mark()} live />);
+		expect(html).toContain("folded 15 messages (~120k tok) — kept the last 6");
+		expect(html).toContain("fold-pill live");
+		expect(html).toContain("the summary the model kept");
+		expect(html).toContain("folded by prov/model");
+	});
+
+	test("a legacy row without a tail count omits the kept clause", () => {
+		const html = renderToStaticMarkup(<FoldMark mark={mark({ tailEvents: null })} live={false} />);
+		expect(html).toContain("folded 15 messages (~120k tok)");
+		expect(html).not.toContain("kept the last");
+		expect(html).toContain('class="fold-pill"');
+	});
+
+	test("history marks interleave after the folded message", async () => {
+		const stored: UIMessage[] = [
+			{ id: "u1", role: "user", parts: [{ type: "text", text: "earliest question" }] },
+			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "earliest answer" }] },
+			{ id: "u2", role: "user", parts: [{ type: "text", text: "fresh question" }] },
+		];
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return new Response(
+						JSON.stringify({
+							messages: stored,
+							ratings: [],
+							rateableMessageIds: [],
+							compactions: [mark({ afterIndex: 1 })],
+						}),
+						{ headers: { "content-type": "application/json" } },
+					);
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url.endsWith("/interrupted"))
+					return new Response(JSON.stringify({ runs: [] }), {
+						headers: { "content-type": "application/json" },
+					});
+				return new Response(
+					JSON.stringify({
+						model: "prov/model",
+						thinking: "off",
+						favorites: [],
+						catalog: [],
+						thinkingLevels: ["off"],
+					}),
+					{ headers: { "content-type": "application/json" } },
+				);
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		for (let i = 0; i < 100 && !dom.container.querySelector(".fold-pill"); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		const pill = dom.container.querySelector(".fold-pill");
+		expect(pill).not.toBeNull();
+		expect(pill?.className).toContain("live");
+		expect(pill?.querySelector("summary")?.textContent).toContain(
+			"folded 15 messages (~120k tok) — kept the last 6",
+		);
+		// Order in the transcript: answer, fold mark, fresh question.
+		const order = [...dom.container.querySelectorAll(".msg, .fold-mark")].map((el) =>
+			el.classList.contains("fold-mark") ? "fold" : (el.textContent ?? ""),
+		);
+		const foldAt = order.indexOf("fold");
+		expect(foldAt).toBeGreaterThan(0);
+		expect(order[foldAt - 1]).toContain("earliest answer");
+		expect(order[foldAt + 1]).toContain("fresh question");
 	});
 });
 

@@ -20,6 +20,7 @@ import {
 } from "./conversation-address.ts";
 import {
 	type Compaction,
+	type CompactionMark,
 	type CompactionWrite,
 	flatLine,
 	parseEvent,
@@ -58,7 +59,7 @@ export type {
 	RollingDmAddress,
 } from "./conversation-address.ts";
 export { flatLine, projectionKey, summaryMessage, toFtsQuery } from "./conversation-events.ts";
-export type { Compaction, CompactionWrite } from "./conversation-events.ts";
+export type { Compaction, CompactionMark, CompactionWrite } from "./conversation-events.ts";
 export type { HistoryContextRow, HistoryHit } from "./conversation-history.ts";
 export type { ConversationMetaPatch, ModelSettings } from "./conversation-settings.ts";
 
@@ -158,6 +159,9 @@ export interface ConversationStore {
 	readonly memoryDestinations: MemoryDestinations;
 	getCompaction(id: string): Compaction | null;
 	setCompaction(id: string, compaction: CompactionWrite): void;
+	// Every pointer, oldest first — the transcript's fold marks. The
+	// latest row is the one getCompaction returns.
+	listCompactions(id: string): CompactionMark[];
 	// Get-or-create. Private DMs route through rolling.ts — a legacy
 	// dm:<chat> row here is history, never current. (cwd is a legacy
 	// NOT NULL column: stamped, ignored.)
@@ -374,6 +378,7 @@ export function openStore(dbPath: string): ConversationStore {
 	const memoryDestinations = new MemoryDestinations(db);
 	const {
 		qCompaction,
+		qCompactions,
 		qInsertCompaction,
 		qGet,
 		qInsertConv,
@@ -451,8 +456,20 @@ export function openStore(dbPath: string): ConversationStore {
 					tokensBefore: row.tokens_before,
 					model: row.model,
 					createdAt: row.created_at,
+					tailEvents: row.tail_events,
 				}
 			: null;
+	}
+
+	function listCompactions(id: string): CompactionMark[] {
+		return qCompactions.all(id).map((row) => ({
+			boundarySeq: row.boundary_seq,
+			summary: row.summary,
+			tokensBefore: row.tokens_before,
+			tailEvents: row.tail_events,
+			model: row.model,
+			createdAt: row.created_at,
+		}));
 	}
 
 	const historyView = makeConversationHistory(
@@ -470,6 +487,8 @@ export function openStore(dbPath: string): ConversationStore {
 
 		getCompaction,
 
+		listCompactions,
+
 		setCompaction(id, compaction) {
 			// Derived text feeds memory-bound builders only when every event
 			// the pointer folds (causal position ≤ boundary — the key
@@ -485,6 +504,7 @@ export function openStore(dbPath: string): ConversationStore {
 				compaction.tokensBefore,
 				compaction.model,
 				compaction.createdAt,
+				compaction.tailEvents ?? null,
 			);
 		},
 
@@ -661,6 +681,7 @@ export function openStore(dbPath: string): ConversationStore {
 						compaction.tokens_before,
 						compaction.model,
 						compaction.created_at,
+						compaction.tail_events,
 					);
 				}
 				for (const c of through === undefined

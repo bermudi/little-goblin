@@ -45,8 +45,9 @@ describe("app conversations", () => {
 					messages: unknown[];
 					ratings: unknown[];
 					rateableMessageIds: unknown[];
+					compactions: unknown[];
 				},
-			).toEqual({ messages: [], ratings: [], rateableMessageIds: [] });
+			).toEqual({ messages: [], ratings: [], rateableMessageIds: [], compactions: [] });
 		} finally {
 			http.stop();
 		}
@@ -472,6 +473,29 @@ describe("app conversations", () => {
 				expect(body.tokensBefore).toBeGreaterThan(0);
 			}
 			expect(store.getCompaction("app/chat-01")).not.toBeNull();
+
+			// The transcript marks the fold: a pill rides after the last
+			// folded message — the same line the popover reports, durable.
+			const list = (await (await call("/api/app/conversations/chat-01/messages")).json()) as {
+				messages: { id: string }[];
+				compactions: {
+					boundarySeq: number;
+					afterIndex: number;
+					eventsCompacted: number;
+					tailEvents: number | null;
+					tokensBefore: number;
+					summary: string;
+				}[];
+			};
+			expect(list.compactions).toHaveLength(1);
+			const mark = list.compactions[0]!;
+			expect(mark.summary).toBe("folded");
+			expect(mark.tailEvents).toBeGreaterThanOrEqual(0);
+			// Folded events are a prefix of the causal order: the mark sits
+			// right after the last one it folded, inside the list bounds.
+			expect(mark.eventsCompacted).toBe(mark.afterIndex + 1);
+			expect(mark.eventsCompacted).toBeGreaterThan(0);
+			expect(mark.eventsCompacted).toBeLessThanOrEqual(list.messages.length);
 
 			await call("/api/app/conversations", {
 				method: "POST",

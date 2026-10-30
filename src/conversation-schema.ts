@@ -181,6 +181,12 @@ export function ensureConversationSchema(db: Database): void {
 	if (!compactCols.has("summary_eligible")) {
 		db.run("ALTER TABLE compactions ADD COLUMN summary_eligible INTEGER NOT NULL DEFAULT 0");
 	}
+	// Fold-time tail size — underivable later (an edit can drop tail
+	// events while the pointer survives), so it is recorded, not
+	// computed. NULL on rows that predate the column.
+	if (!compactCols.has("tail_events")) {
+		db.run("ALTER TABLE compactions ADD COLUMN tail_events INTEGER");
+	}
 	// Frozen system prompts: the bytes a conversation started with, served
 	// verbatim — file edits load at conversation boundaries, never
 	// mid-run, so a live prefix cache is never rewritten.

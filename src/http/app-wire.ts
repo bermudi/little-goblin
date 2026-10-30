@@ -97,6 +97,23 @@ export interface AppMessageList {
 	messages: UIMessage[];
 	ratings: AppRatedReply[];
 	rateableMessageIds: string[];
+	/** Fold pointers as transcript marks, oldest first — each renders a
+	 *  pill right after `messages[afterIndex]`. */
+	compactions: AppCompactionMark[];
+}
+
+export interface AppCompactionMark {
+	boundarySeq: number;
+	/** Index into `messages` of the last folded event (causal position
+	 *  ≤ boundarySeq — the same key the model view cuts on). */
+	afterIndex: number;
+	eventsCompacted: number;
+	/** Fold-time tail size; null on rows written before it was recorded. */
+	tailEvents: number | null;
+	tokensBefore: number;
+	summary: string;
+	model: string;
+	createdAt: string;
 }
 
 export interface AppRatedReply {

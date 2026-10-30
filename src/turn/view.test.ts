@@ -107,6 +107,7 @@ describe("the model view", () => {
 				tokensBefore: 0,
 				model: "m",
 				createdAt: "",
+				tailEvents: null,
 			},
 			"dm:1",
 		);

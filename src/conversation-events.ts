@@ -24,10 +24,27 @@ export interface Compaction {
 	tokensBefore: number;
 	model: string;
 	createdAt: string;
+	// Events left unfolded at fold time — recorded, not computed (an
+	// edit can drop tail events while the pointer survives). Null on
+	// rows written before the column existed.
+	tailEvents: number | null;
 }
 
 // What a caller writes — summaryEligible is store-computed, never input.
-export type CompactionWrite = Omit<Compaction, "summaryEligible">;
+export type CompactionWrite = Omit<Compaction, "summaryEligible" | "tailEvents"> & {
+	tailEvents?: number;
+};
+
+// A pointer as the transcript's fold mark — no eligibility internals;
+// eventsCompacted is derived at read time from consecutive boundaries.
+export interface CompactionMark {
+	boundarySeq: number;
+	summary: string;
+	tokensBefore: number;
+	tailEvents: number | null;
+	model: string;
+	createdAt: string;
+}
 
 // Disk state is a boundary: validated on read, loosely (the runtime's
 // converters own per-part semantics). A row that isn't an envelope degrades

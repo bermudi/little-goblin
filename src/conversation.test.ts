@@ -387,6 +387,49 @@ describe("compaction pointers", () => {
 		store.close();
 	});
 
+	test("listCompactions returns every pointer oldest-first, tail counts included", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("one"), msg("two"), msg("three")]);
+		store.setCompaction(c.id, {
+			boundarySeq: 1,
+			summary: "first era",
+			tokensBefore: 100,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+			tailEvents: 2,
+		});
+		// A row written without the count reads back null — the legacy
+		// shape, which the mark's line omits rather than fabricates.
+		store.setCompaction(c.id, {
+			boundarySeq: 2,
+			summary: "second era",
+			tokensBefore: 200,
+			model: "m",
+			createdAt: "2026-01-02T00:00:00Z",
+		});
+		expect(store.listCompactions(c.id)).toEqual([
+			{
+				boundarySeq: 1,
+				summary: "first era",
+				tokensBefore: 100,
+				tailEvents: 2,
+				model: "m",
+				createdAt: "2026-01-01T00:00:00Z",
+			},
+			{
+				boundarySeq: 2,
+				summary: "second era",
+				tokensBefore: 200,
+				tailEvents: null,
+				model: "m",
+				createdAt: "2026-01-02T00:00:00Z",
+			},
+		]);
+		expect(store.getCompaction(c.id)?.tailEvents).toBeNull();
+		store.close();
+	});
+
 	test("a late answer to a folded question rides into the summary — never orphaned in the tail", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -538,6 +581,7 @@ describe("forkToApp (Spin-off)", () => {
 			tokensBefore: 200,
 			model: "m",
 			createdAt: "2026-01-02T00:00:00Z",
+			tailEvents: 7,
 		});
 		store.memoryContexts.save(src.id, 1, "recall ctx", ["doc-1"]);
 		const app = store.forkToApp(src.id, "spun-1", "/w", "the work");
@@ -555,6 +599,7 @@ describe("forkToApp (Spin-off)", () => {
 		expect(store.getCompaction(app.id)).toMatchObject({
 			boundarySeq: 2,
 			summary: "latest fold",
+			tailEvents: 7,
 		});
 		const appView = store.modelEntries(app.id);
 		const srcView = store.modelEntries(src.id);

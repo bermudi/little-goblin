@@ -27,6 +27,7 @@ import type {
 	AppApprovalDecisionResponse,
 	AppApprovalsResponse,
 	AppCompactResponse,
+	AppCompactionMark,
 	AppContextSegment,
 	AppContextView,
 	AppConversationBranch,
@@ -996,10 +997,34 @@ export async function handleConversationsRoute(
 		}
 		const detail = store.historyDetail(convId.id);
 		const rateable = rateableAssistantEntries(detail);
+		// Fold marks ride the same causal order the messages list uses:
+		// sorted by (anchorSeq ?? seq), so a boundary's folded span is a
+		// prefix — the pill belongs right after its last folded entry.
+		// The span count each fold owns is derived from consecutive
+		// boundaries, matching runCompaction's span slice.
+		const causal = detail.map((entry) => entry.anchorSeq ?? entry.seq);
+		const compactions: AppCompactionMark[] = [];
+		let prevUpto = 0;
+		for (const mark of store.listCompactions(convId.id)) {
+			let upto = prevUpto;
+			while (upto < causal.length && causal[upto]! <= mark.boundarySeq) upto++;
+			compactions.push({
+				boundarySeq: mark.boundarySeq,
+				afterIndex: upto - 1,
+				eventsCompacted: upto - prevUpto,
+				tailEvents: mark.tailEvents,
+				tokensBefore: mark.tokensBefore,
+				summary: mark.summary,
+				model: mark.model,
+				createdAt: mark.createdAt,
+			});
+			prevUpto = upto;
+		}
 		const body: AppMessageList = {
 			messages: detail.map((entry) => entry.message),
 			ratings: ratedReplies(store, convId.id, rateable),
 			rateableMessageIds: [...rateable.keys()],
+			compactions,
 		};
 		log.debug("app history served", { conversation: convId.id, messages: body.messages.length });
 		return Response.json(body, { headers: NO_STORE });

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>goblin sidebar — six prototypes</title>
+<style>
+	:root {
+		--bg: #0d0d0d;
+		--fg: #e8e8ea;
+		--fg-muted: color-mix(in oklab, var(--fg) 62%, var(--bg));
+		--fg-subtle: color-mix(in oklab, var(--fg) 48%, var(--bg));
+		--divider: color-mix(in oklab, var(--fg) 8%, transparent);
+		--sans: "Inter", -apple-system, BlinkMacSystemFont, ui-sans-serif, system-ui, sans-serif;
+		--mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+		color-scheme: dark;
+	}
+	html, body { margin: 0; background: var(--bg); color: var(--fg); }
+	body { font-family: var(--sans); font-size: 13px; line-height: 1.45; padding: 2rem 1.5rem 3rem; max-width: 78rem; margin-inline: auto; }
+	h1 { font-size: 15px; font-weight: 600; }
+	.lede { color: var(--fg-muted); max-width: 46rem; margin-bottom: 2rem; }
+	section { margin-bottom: 2.5rem; }
+	h2 { font-size: 13px; font-weight: 600; margin: 0 0 0.2rem; }
+	h2 .k { font-family: var(--mono); font-size: 11px; color: var(--fg-subtle); margin-right: 0.5rem; }
+	.idea { color: var(--fg-muted); margin: 0 0 0.75rem; max-width: 46rem; }
+	.frame-box { border: 1px solid var(--divider); border-radius: 10px; overflow: hidden; }
+	iframe { display: block; width: 100%; height: 720px; border: 0; background: var(--bg); }
+	.frame-box.m iframe { height: 940px; }
+	.links { margin-top: 1.5rem; font-size: 12px; color: var(--fg-muted); }
+	.links a { color: var(--fg-muted); }
+</style>
+</head>
+<body>
+	<h1>goblin — sidebar, six ways</h1>
+	<p class="lede">Same theme (palette, type, radii untouched); the variable is what lives in the sidebar — A/B/C for desktop, M/N/O for mobile. All six are clickable — open menus, switch tabs, expand archived, summon the tray.</p>
+
+	<section>
+		<h2><span class="k">A</span>The chassis</h2>
+		<p class="idea">Subtractive. The rail becomes a pure conversation switcher — New, search-as-mode, chats, archived. Projects (with Notes) move to a header chip; the nine ops collapse into one grouped system menu in the frame.</p>
+		<div class="frame-box"><iframe src="a-chassis.html" title="Prototype A — the chassis"></iframe></div>
+	</section>
+
+	<section>
+		<h2><span class="k">B</span>Segments</h2>
+		<p class="idea">Re-tiered in place. A tab strip (Chats / Projects / Notes) gives each list the full column height; the nine ops become a 3×3 launcher grid docked at the foot — system nav reads as a distinct panel instead of nine quiet rows.</p>
+		<div class="frame-box"><iframe src="b-segments.html" title="Prototype B — segments"></iframe></div>
+	</section>
+
+	<section>
+		<h2><span class="k">C</span>The gutter</h2>
+		<p class="idea">Dimensional. The sidebar splits: a 52px glyph spine keeps every surface one click away (violet dot = live attention), and a 216px panel lists exactly one surface at a time — chats by default, anything else on demand.</p>
+		<div class="frame-box"><iframe src="c-gutter.html" title="Prototype C — the gutter"></iframe></div>
+	</section>
+
+	<section>
+		<h2><span class="k">M</span>Pocketed <span class="k" style="margin-left: 0.4rem">mobile</span></h2>
+		<p class="idea">C on a phone. The glyph spine becomes a bottom thumb bar — Chats · Projects · Notes · Attention (dot) · More — one surface per screen; the long tail opens as a bottom sheet; inside a thread the bar yields to the composer. Replaces the slide-in drawer entirely.</p>
+		<div class="frame-box m"><iframe src="m-pocket.html" title="Prototype M — pocketed (mobile)"></iframe></div>
+	</section>
+
+	<section>
+		<h2><span class="k">N</span>Drawer, finished <span class="k" style="margin-left: 0.4rem">mobile</span></h2>
+		<p class="idea">The conservative one. The slide-in drawer stays (no permanent chrome, transcripts never share space with nav), but C's structure moves inside: New + search, chats, spaces, and the system as a 5×2 glyph grid docked at the drawer's foot. Closest to what ships tomorrow.</p>
+		<div class="frame-box m"><iframe src="n-drawer.html" title="Prototype N — drawer, finished (mobile)"></iframe></div>
+	</section>
+
+	<section>
+		<h2><span class="k">O</span>The summoned spine <span class="k" style="margin-left: 0.4rem">mobile</span></h2>
+		<p class="idea">The radical one. No bar, no drawer — one floating pill condenses the whole gutter (its glyph mirrors the current surface, violet dot for attention) and opens it as a compact tray when called. Maximum content, everything two taps deep, quiet until summoned.</p>
+		<div class="frame-box m"><iframe src="o-summon.html" title="Prototype O — the summoned spine (mobile)"></iframe></div>
+	</section>
+
+	<p class="links">Standalone files: <a href="a-chassis.html">a-chassis.html</a> · <a href="b-segments.html">b-segments.html</a> · <a href="c-gutter.html">c-gutter.html</a> · <a href="m-pocket.html">m-pocket.html</a> · <a href="n-drawer.html">n-drawer.html</a> · <a href="o-summon.html">o-summon.html</a></p>
+</body>
+</html>

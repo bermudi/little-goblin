@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>C — gutter · goblin sidebar prototype</title>
+<style>
+	:root {
+		--bg: #0d0d0d;
+		--fg: #e8e8ea;
+		--fg-muted: color-mix(in oklab, var(--fg) 62%, var(--bg));
+		--fg-subtle: color-mix(in oklab, var(--fg) 48%, var(--bg));
+		--border: color-mix(in oklab, var(--fg) 1.5%, transparent);
+		--divider: color-mix(in oklab, var(--fg) 8%, transparent);
+		--hover: color-mix(in oklab, var(--fg) 6%, transparent);
+		--active: color-mix(in oklab, var(--fg) 7%, transparent);
+		--accent: #a78bfa;
+		--sans: "Inter", -apple-system, BlinkMacSystemFont, ui-sans-serif, system-ui, sans-serif;
+		--mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+		color-scheme: dark;
+	}
+	* { box-sizing: border-box; }
+	html, body { height: 100%; margin: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+	body { font-family: var(--sans); font-size: 13px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+	button { font: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; }
+	:focus-visible { outline: 1px solid color-mix(in oklab, var(--fg) 40%, transparent); outline-offset: -1px; }
+	@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+	.shell { display: flex; height: 100dvh; }
+	.rail { flex: none; display: flex; height: 100%; }
+
+	/* ---------- gutter: the system as a glyph spine ---------- */
+	.gutter {
+		width: 52px;
+		border-right: 1px solid var(--divider);
+		background: var(--bg);
+		display: flex; flex-direction: column; align-items: center;
+		padding: 0.6rem 0 0.55rem;
+		gap: 2px;
+		overflow-y: auto;
+		scrollbar-width: none;
+	}
+	.gutter::-webkit-scrollbar { display: none; }
+	.g {
+		position: relative;
+		width: 34px; height: 34px; flex: none;
+		display: inline-flex; align-items: center; justify-content: center;
+		border-radius: 8px;
+		color: var(--fg-muted);
+		transition: background-color 75ms, color 75ms;
+	}
+	.g:hover { background: var(--hover); color: var(--fg); }
+	.g.on { background: var(--active); color: var(--fg); }
+	.g .dot {
+		position: absolute; top: 6px; right: 6px;
+		width: 6px; height: 6px; border-radius: 50%;
+		background: var(--accent);
+	}
+	.g-new { color: var(--fg); }
+	.g-split { width: 18px; height: 1px; flex: none; background: var(--divider); margin: 0.4rem 0; }
+	.g-gap { height: 0.45rem; flex: none; }
+	.g-spacer { flex: 1; }
+
+	/* ---------- panel: one surface at a time ---------- */
+	.panel {
+		width: 216px;
+		border-right: 1px solid var(--divider);
+		background: var(--bg);
+		display: flex; flex-direction: column;
+		padding: 0.6rem 0.5rem 0.45rem;
+		gap: 0.15rem;
+		overflow: hidden;
+	}
+	.panel-head {
+		flex: none;
+		display: flex; align-items: baseline;
+		padding: 0.15rem 0.55rem 0.35rem;
+	}
+	.panel-label {
+		font-size: 11px; font-weight: 600;
+		text-transform: uppercase; letter-spacing: 0.04em;
+		color: var(--fg-subtle);
+	}
+	.panel-count { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--fg-subtle); font-variant-numeric: tabular-nums; }
+	.panes { flex: 1; min-height: 0; overflow-y: auto; }
+	.pane { display: none; flex-direction: column; gap: 1px; }
+	.pane.on { display: flex; }
+	.pane ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+
+	.conv { display: block; width: 100%; padding: 0.4rem 0.5rem; border-radius: 8px; text-decoration: none; color: inherit; transition: background-color 75ms; }
+	.conv:hover { background: var(--hover); }
+	.conv.current { background: var(--active); }
+	.conv-head { display: flex; align-items: baseline; gap: 0.4rem; }
+	.conv-pin { flex: none; align-self: center; color: var(--fg-subtle); }
+	.conv-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.conv-time { flex: none; font-family: var(--mono); font-size: 10px; color: var(--fg-muted); }
+	.conv-preview { display: block; margin-top: 1px; color: var(--fg-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+	.line-row {
+		display: flex; align-items: center; gap: 0.5rem;
+		width: 100%; text-align: left;
+		padding: 0.38rem 0.5rem;
+		border-radius: 8px;
+		font-size: 12.5px;
+		color: var(--fg-muted);
+		transition: background-color 75ms, color 75ms;
+	}
+	.line-row:hover { background: var(--hover); color: var(--fg); }
+	.line-row .t { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--fg-subtle); }
+	.ghost-row {
+		display: flex; align-items: center; gap: 0.5rem;
+		width: 100%; text-align: left;
+		padding: 0.38rem 0.5rem;
+		border-radius: 8px;
+		font-size: 12.5px;
+		color: var(--fg-subtle);
+	}
+	.ghost-row:hover { background: var(--hover); color: var(--fg-muted); }
+
+	.panes ul.archived-list { display: none; }
+	.panes ul.archived-list.open { display: flex; }
+	.archived-toggle {
+		display: flex; align-items: center; gap: 0.4rem;
+		width: 100%; text-align: left;
+		margin-top: 0.3rem;
+		padding: 0.32rem 0.5rem;
+		border-radius: 8px;
+		font-size: 12px;
+		color: var(--fg-subtle);
+	}
+	.archived-toggle:hover { background: var(--hover); color: var(--fg-muted); }
+	.archived-toggle .count { font-family: var(--mono); font-size: 10px; }
+	.archived-toggle .chev { margin-left: auto; transition: transform 120ms ease; }
+	.archived-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
+	.archived-list { display: none; }
+	.archived-list.open { display: flex; }
+
+	.rail-search {
+		display: none;
+		flex: none;
+		margin-bottom: 0.3rem;
+		font: inherit; font-size: 12px;
+		background: transparent;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		color: var(--fg);
+		padding: 0.32rem 0.55rem;
+		outline: none;
+	}
+	.rail-search:focus { border-color: color-mix(in oklab, var(--fg) 25%, transparent); }
+	.rail-search::placeholder { color: var(--fg-subtle); }
+
+	.stub { display: none; flex-direction: column; gap: 0.5rem; padding: 0.55rem 0.5rem; }
+	.stub.on { display: flex; }
+	.stub .bar { height: 8px; border-radius: 4px; background: var(--hover); }
+	.stub .note { font-family: var(--mono); font-size: 9.5px; color: var(--fg-subtle); }
+
+	/* ---------- main pane (kept quiet) ---------- */
+	.frame { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+	header {
+		flex: none; height: 3.25rem;
+		display: flex; align-items: center; gap: 0.55rem;
+		padding: 0 0.75rem;
+		border-bottom: 1px solid var(--divider);
+	}
+	header h1 { font-size: 13.5px; font-weight: 600; margin: 0; }
+	.header-title { color: var(--fg-muted); font-size: 12.5px; }
+	.spacer { flex: 1; }
+	.icon-btn {
+		width: 2.125rem; height: 2.125rem; flex: none;
+		display: inline-flex; align-items: center; justify-content: center;
+		border-radius: 8px; color: var(--fg-muted);
+	}
+	.icon-btn:hover { background: var(--hover); color: var(--fg); }
+	.transcript { flex: 1; overflow-y: auto; padding: 1.5rem 1rem 1rem; }
+	.thread { max-width: 40rem; margin: 0 auto; }
+	.msg { margin-bottom: 1.1rem; }
+	.who { font-family: var(--mono); font-size: 10px; color: var(--fg-subtle); margin-bottom: 0.2rem; }
+	.msg p { margin: 0; }
+	.composer { flex: none; padding: 0.75rem 1rem 1rem; }
+	.composer .field { max-width: 40rem; margin: 0 auto; border: 1px solid var(--divider); border-radius: 10px; padding: 0.6rem 0.75rem; color: var(--fg-subtle); }
+
+	.badge { position: fixed; right: 10px; bottom: 10px; z-index: 50; font-family: var(--mono); font-size: 10px; letter-spacing: 0.02em; color: var(--fg-subtle); pointer-events: none; }
+</style>
+</head>
+<body>
+<div class="shell">
+	<div class="rail">
+		<div class="gutter" role="navigation" aria-label="Surfaces">
+			<button type="button" class="g g-new" title="New conversation" aria-label="New conversation">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="17" height="17" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+			</button>
+			<button type="button" class="g" id="g-search" title="Search history" aria-label="Search history">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20.5 20.5 16.2 16.2"/></svg>
+			</button>
+			<div class="g-gap"></div>
+
+			<button type="button" class="g on" data-pane="chats" title="Chats" aria-label="Chats">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4V6z"/></svg>
+			</button>
+			<button type="button" class="g" data-pane="projects" title="Projects" aria-label="Projects">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+			</button>
+			<button type="button" class="g" data-pane="notes" title="Notes" aria-label="Notes">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v18H6.5A1.5 1.5 0 0 1 5 19.5v-15z"/><path d="M9 3v18"/></svg>
+			</button>
+			<div class="g-split" role="presentation"></div>
+
+			<button type="button" class="g" data-pane="attention" title="Attention" aria-label="Attention — new items">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 19a2.2 2.2 0 0 0 4 0"/></svg>
+				<span class="dot" aria-hidden="true"></span>
+			</button>
+			<button type="button" class="g" data-pane="delegations" title="Delegations" aria-label="Delegations">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><path d="M12 3v11"/><path d="M8 10l4 4 4-4"/></svg>
+			</button>
+			<button type="button" class="g" data-pane="memories" title="Memories" aria-label="Memories">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13.5l9 5 9-5"/></svg>
+			</button>
+			<button type="button" class="g" data-pane="programs" title="Programs" aria-label="Programs">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M10 8.5l6 3.5-6 3.5v-7z"/></svg>
+			</button>
+			<button type="button" class="g" data-pane="skills" title="Skills" aria-label="Skills">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H13L13 2z"/></svg>
+			</button>
+			<button type="button" class="g" data-pane="files" title="Files" aria-label="Files">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><path d="M6 3h8l4 4v14H6V3z"/><path d="M14 3v4h4"/></svg>
+			</button>
+			<button type="button" class="g" data-pane="status" title="Status" aria-label="Status">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><path d="M3 12h4l2.5-6 4 12L16 12h5"/></svg>
+			</button>
+			<button type="button" class="g" data-pane="log" title="Log" aria-label="Log">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg>
+			</button>
+
+			<div class="g-spacer"></div>
+			<button type="button" class="g" data-pane="settings" title="Settings" aria-label="Settings">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="17" height="17" aria-hidden="true"><circle cx="12" cy="12" r="3.4"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8"/></svg>
+			</button>
+		</div>
+
+		<div class="panel">
+			<input class="rail-search" id="panelSearch" type="search" placeholder="Search history" />
+			<div class="panel-head" id="panelHead">
+				<span class="panel-label" id="panelLabel">Chats</span>
+				<span class="panel-count" id="panelCount">7</span>
+			</div>
+			<div class="panes">
+				<div class="pane on" id="pane-chats">
+					<ul>
+						<li><a class="conv current" href="#">
+							<div class="conv-head">
+								<svg class="conv-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="10" height="10" aria-hidden="true"><path d="M9 3h6l2 8H7l2-8z"/><line x1="12" y1="11" x2="12" y2="21"/></svg>
+								<span class="conv-title">Fantasy Team</span><span class="conv-time">9h</span>
+							</div>
+							<span class="conv-preview">missed thursdays game xD</span>
+						</a></li>
+						<li><a class="conv" href="#">
+							<div class="conv-head"><span class="conv-title">Interesting Arxiv Find</span><span class="conv-time">11h</span></div>
+							<span class="conv-preview">It's a fair instinct, but the paper&hellip;</span>
+						</a></li>
+						<li><a class="conv" href="#">
+							<div class="conv-head"><span class="conv-title">Hello there</span><span class="conv-time">2d</span></div>
+							<span class="conv-preview">Two-dot and three-dot both work&hellip;</span>
+						</a></li>
+						<li><a class="conv" href="#">
+							<div class="conv-head"><span class="conv-title">Agents sandbox</span><span class="conv-time">2d</span></div>
+							<span class="conv-preview">Got them &mdash; handoff from the&hellip;</span>
+						</a></li>
+						<li><a class="conv" href="#">
+							<div class="conv-head"><span class="conv-title">Website Traffic &amp; Ad Revenue</span><span class="conv-time">2d</span></div>
+							<span class="conv-preview">Tar extracted &mdash; it's &ldquo;Frame Sheet&rdquo;&hellip;</span>
+						</a></li>
+						<li><a class="conv" href="#">
+							<div class="conv-head"><span class="conv-title">Getting Started with AI Ass&hellip;</span><span class="conv-time">3d</span></div>
+							<span class="conv-preview">proposed skill: herdr &mdash; parked&hellip;</span>
+						</a></li>
+						<li><a class="conv" href="#">
+							<div class="conv-head"><span class="conv-title">AI Prompting</span><span class="conv-time">6d</span></div>
+							<span class="conv-preview">Jules REST API &mdash; Google's coding&hellip;</span>
+						</a></li>
+					</ul>
+					<button type="button" class="archived-toggle" aria-expanded="false" id="archivedToggle">
+						Archived <span class="count">6</span>
+						<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+					</button>
+					<ul class="archived-list" id="archivedList">
+						<li><a class="conv" href="#"><div class="conv-head"><span class="conv-title">DSL wishlist</span><span class="conv-time">1w</span></div></a></li>
+						<li><a class="conv" href="#"><div class="conv-head"><span class="conv-title">Prompt caching test</span><span class="conv-time">2w</span></div></a></li>
+						<li><a class="conv" href="#"><div class="conv-head"><span class="conv-title">Convex sketch</span><span class="conv-time">2w</span></div></a></li>
+						<li><a class="conv" href="#"><div class="conv-head"><span class="conv-title">Weekend beta notes</span><span class="conv-time">3w</span></div></a></li>
+						<li><a class="conv" href="#"><div class="conv-head"><span class="conv-title">Tar pit log</span><span class="conv-time">4w</span></div></a></li>
+						<li><a class="conv" href="#"><div class="conv-head"><span class="conv-title">Open questions</span><span class="conv-time">5w</span></div></a></li>
+					</ul>
+				</div>
+
+				<div class="pane" id="pane-projects">
+					<ul>
+						<li><button type="button" class="line-row">Clients</button></li>
+						<li><button type="button" class="line-row">little-goblin</button></li>
+						<li><button type="button" class="line-row">throwaway</button></li>
+					</ul>
+					<button type="button" class="ghost-row">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="13" height="13" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+						New project
+					</button>
+				</div>
+
+				<div class="pane" id="pane-notes">
+					<ul>
+						<li><button type="button" class="line-row">League scoring rules <span class="t">9h</span></button></li>
+						<li><button type="button" class="line-row">Frame Sheet extraction <span class="t">2d</span></button></li>
+						<li><button type="button" class="line-row">Sandbox handoff <span class="t">2d</span></button></li>
+						<li><button type="button" class="line-row">herdr &mdash; proposed skill <span class="t">3d</span></button></li>
+						<li><button type="button" class="line-row">arXiv reading list <span class="t">6d</span></button></li>
+					</ul>
+					<button type="button" class="ghost-row">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="13" height="13" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+						New note
+					</button>
+				</div>
+
+				<div class="stub" id="stub-attention">
+					<div class="bar" style="width: 86%"></div>
+					<div class="bar" style="width: 64%"></div>
+					<div class="bar" style="width: 74%"></div>
+					<div class="note">attention items &mdash; stub</div>
+				</div>
+				<div class="stub" id="stub-delegations">
+					<div class="bar" style="width: 78%"></div>
+					<div class="bar" style="width: 52%"></div>
+					<div class="note">delegations &mdash; stub</div>
+				</div>
+				<div class="stub" id="stub-memories">
+					<div class="bar" style="width: 90%"></div>
+					<div class="bar" style="width: 70%"></div>
+					<div class="bar" style="width: 46%"></div>
+					<div class="note">memories &mdash; stub</div>
+				</div>
+				<div class="stub" id="stub-programs">
+					<div class="bar" style="width: 66%"></div>
+					<div class="bar" style="width: 82%"></div>
+					<div class="note">programs &mdash; stub</div>
+				</div>
+				<div class="stub" id="stub-skills">
+					<div class="bar" style="width: 58%"></div>
+					<div class="bar" style="width: 74%"></div>
+					<div class="note">skills &mdash; stub</div>
+				</div>
+				<div class="stub" id="stub-files">
+					<div class="bar" style="width: 70%"></div>
+					<div class="bar" style="width: 54%"></div>
+					<div class="note">files &mdash; stub</div>
+				</div>
+				<div class="stub" id="stub-status">
+					<div class="bar" style="width: 62%"></div>
+					<div class="bar" style="width: 84%"></div>
+					<div class="note">status &mdash; stub</div>
+				</div>
+				<div class="stub" id="stub-log">
+					<div class="bar" style="width: 92%"></div>
+					<div class="bar" style="width: 66%"></div>
+					<div class="note">log lines &mdash; stub</div>
+				</div>
+				<div class="stub" id="stub-settings">
+					<div class="bar" style="width: 48%"></div>
+					<div class="bar" style="width: 72%"></div>
+					<div class="note">settings sections &mdash; stub</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="frame">
+		<header>
+			<button type="button" class="icon-btn" aria-label="Toggle sidebar" title="Conversations">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="18" height="18" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9.5" y1="4" x2="9.5" y2="20"/></svg>
+			</button>
+			<h1>goblin</h1>
+			<span class="header-title">Fantasy Team</span>
+			<span class="spacer"></span>
+			<button type="button" class="icon-btn" aria-label="Context window" title="Context window">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="17" height="17" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/><path d="M9 13l-3 3 3 3"/><path d="M15 13l3 3-3 3"/></svg>
+			</button>
+		</header>
+		<div class="transcript">
+			<div class="thread">
+				<div class="msg"><div class="who">you</div><p>did we lose</p></div>
+				<div class="msg"><div class="who">goblin</div><p>134.4&ndash;109.2. Thursday scratches cost you the week &mdash; your TE spot zeroed after the late scratch. Want the week 8 plan?</p></div>
+			</div>
+		</div>
+		<div class="composer"><div class="field">Reply to goblin&hellip;</div></div>
+	</div>
+</div>
+
+<div class="badge">C &middot; gutter &mdash; a glyph spine for every surface; the panel lists one at a time</div>
+
+<script>
+	const label = document.getElementById("panelLabel");
+	const count = document.getElementById("panelCount");
+	const panelHead = document.getElementById("panelHead");
+	const panelSearch = document.getElementById("panelSearch");
+	const gutterButtons = [...document.querySelectorAll(".g[data-pane], #g-search")];
+	const TITLES = { chats: "Chats", projects: "Projects", notes: "Notes", attention: "Attention", delegations: "Delegations", memories: "Memories", programs: "Programs", skills: "Skills", files: "Files", status: "Status", log: "Log", settings: "Settings" };
+
+	function activate(key) {
+		for (const b of gutterButtons) {
+			const mine = b.dataset.pane === key || (b.id === "g-search" && key === "search");
+			b.classList.toggle("on", mine);
+		}
+		for (const p of document.querySelectorAll(".pane")) {
+			p.classList.toggle("on", p.id === "pane-" + key);
+		}
+		for (const s of document.querySelectorAll(".stub")) {
+			s.classList.toggle("on", s.id === "stub-" + key);
+		}
+		const searching = key === "search";
+		panelSearch.style.display = searching ? "block" : "none";
+		panelHead.style.display = searching ? "none" : "flex";
+		if (searching) {
+			panelSearch.focus();
+		} else {
+			label.textContent = TITLES[key] ?? key;
+			count.textContent = key === "chats" ? "7" : key === "projects" ? "3" : key === "notes" ? "5" : "";
+			count.style.display = count.textContent === "" ? "none" : "inline";
+		}
+	}
+	for (const b of gutterButtons) {
+		b.addEventListener("click", () => activate(b.id === "g-search" ? "search" : b.dataset.pane));
+	}
+	panelSearch.addEventListener("keydown", (e) => {
+		if (e.key === "Escape") {
+			panelSearch.value = "";
+			activate("chats");
+		}
+	});
+	const archToggle = document.getElementById("archivedToggle");
+	const archList = document.getElementById("archivedList");
+	archToggle.addEventListener("click", () => {
+		const open = archList.classList.toggle("open");
+		archToggle.setAttribute("aria-expanded", String(open));
+	});
+</script>
+</body>
+</html>

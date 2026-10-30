@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>A — chassis · goblin sidebar prototype</title>
+<style>
+	:root {
+		--bg: #0d0d0d;
+		--fg: #e8e8ea;
+		--fg-muted: color-mix(in oklab, var(--fg) 62%, var(--bg));
+		--fg-subtle: color-mix(in oklab, var(--fg) 48%, var(--bg));
+		--border: color-mix(in oklab, var(--fg) 1.5%, transparent);
+		--divider: color-mix(in oklab, var(--fg) 8%, transparent);
+		--hover: color-mix(in oklab, var(--fg) 6%, transparent);
+		--active: color-mix(in oklab, var(--fg) 7%, transparent);
+		--active-strong: color-mix(in oklab, var(--fg) 11%, transparent);
+		--raise: color-mix(in oklab, var(--bg) 90%, var(--fg));
+		--accent: #a78bfa;
+		--sans: "Inter", -apple-system, BlinkMacSystemFont, ui-sans-serif, system-ui, sans-serif;
+		--mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+		color-scheme: dark;
+	}
+	* { box-sizing: border-box; }
+	html, body { height: 100%; margin: 0; overflow: hidden; background: var(--bg); color: var(--fg); }
+	body { font-family: var(--sans); font-size: 13px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+	button { font: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; }
+	a { color: inherit; }
+	:focus-visible { outline: 1px solid color-mix(in oklab, var(--fg) 40%, transparent); outline-offset: -1px; }
+	@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+	.shell { display: flex; height: 100dvh; }
+
+	/* ---------- rail: conversations only ---------- */
+	.rail {
+		width: 240px; flex: none;
+		border-right: 1px solid var(--divider);
+		background: var(--bg);
+		display: flex; flex-direction: column;
+		padding: 0.6rem 0.55rem 0.5rem;
+		gap: 0.3rem;
+		overflow-y: auto;
+	}
+	.new-btn {
+		display: flex; align-items: center; gap: 0.5rem;
+		width: 100%; text-align: left;
+		padding: 0.5rem 0.6rem;
+		border-radius: 8px;
+		background: var(--active);
+		color: var(--fg); font-weight: 500;
+		transition: background-color 75ms;
+	}
+	.new-btn:hover { background: var(--active-strong); }
+	.new-btn svg { color: var(--fg-muted); flex: none; }
+	.search-ghost {
+		display: flex; align-items: center; gap: 0.5rem;
+		width: 100%; text-align: left;
+		padding: 0.42rem 0.6rem;
+		border-radius: 8px;
+		color: var(--fg-subtle);
+		transition: background-color 75ms, color 75ms;
+	}
+	.search-ghost:hover { background: var(--hover); color: var(--fg-muted); }
+	.rail-search {
+		display: none;
+		font: inherit; font-size: 12px;
+		background: transparent;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		color: var(--fg);
+		padding: 0.35rem 0.6rem;
+		outline: none;
+	}
+	.rail-search:focus { border-color: color-mix(in oklab, var(--fg) 25%, transparent); }
+	.rail-search::placeholder { color: var(--fg-subtle); }
+
+	.rail ul { list-style: none; margin: 0.15rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+	.conv {
+		display: block; width: 100%;
+		padding: 0.42rem 0.55rem;
+		border-radius: 8px;
+		text-decoration: none;
+		transition: background-color 75ms;
+	}
+	.conv:hover { background: var(--hover); }
+	.conv.current { background: var(--active); }
+	.conv-head { display: flex; align-items: baseline; gap: 0.45rem; }
+	.conv-pin { flex: none; align-self: center; color: var(--fg-subtle); }
+	.conv-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.conv-time { flex: none; font-family: var(--mono); font-size: 10px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+	.conv-preview {
+		display: block; margin-top: 1px;
+		color: var(--fg-muted); font-size: 11px;
+		overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+	}
+
+	.rail ul.archived-list { display: none; }
+	.rail ul.archived-list.open { display: flex; }
+	.archived-toggle {
+		display: flex; align-items: center; gap: 0.4rem;
+		width: 100%; text-align: left;
+		margin-top: 0.3rem;
+		padding: 0.35rem 0.55rem;
+		border-radius: 8px;
+		font-size: 12px;
+		color: var(--fg-subtle);
+		transition: background-color 75ms, color 75ms;
+	}
+	.archived-toggle:hover { background: var(--hover); color: var(--fg-muted); }
+	.archived-toggle .count { font-family: var(--mono); font-size: 10px; }
+	.archived-toggle .chev { margin-left: auto; transition: transform 120ms ease; }
+	.archived-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
+	.archived-list { display: none; }
+	.archived-list.open { display: flex; }
+	.rail-spacer { flex: 1; min-height: 0.5rem; }
+
+	/* ---------- frame header: spaces + system ---------- */
+	.frame { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+	header {
+		flex: none; height: 3.25rem;
+		display: flex; align-items: center; gap: 0.55rem;
+		padding: 0 0.75rem;
+		border-bottom: 1px solid var(--divider);
+	}
+	header h1 { font-size: 13.5px; font-weight: 600; margin: 0; }
+	.header-title { color: var(--fg-muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.spacer { flex: 1; }
+	.nav-toggle, .icon-btn {
+		width: 2.125rem; height: 2.125rem; flex: none;
+		display: inline-flex; align-items: center; justify-content: center;
+		border-radius: 8px; color: var(--fg-muted);
+		transition: background-color 75ms, color 75ms;
+	}
+	.nav-toggle:hover, .icon-btn:hover { background: var(--hover); color: var(--fg); }
+	.anchor { position: relative; display: inline-flex; }
+	.chip {
+		display: inline-flex; align-items: center; gap: 0.4rem;
+		height: 2.125rem;
+		padding: 0 0.65rem;
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		color: var(--fg-muted); font-size: 12.5px;
+		transition: background-color 75ms, color 75ms, border-color 75ms;
+	}
+	.chip:hover { background: var(--hover); color: var(--fg); }
+	.anchor.open .chip { background: var(--active); color: var(--fg); border-color: var(--divider); }
+	.chip .chev { color: var(--fg-subtle); }
+	.width-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+	.width-seg button { padding: 0.3rem 0.55rem; font-size: 11.5px; color: var(--fg-subtle); }
+	.width-seg button.on { background: var(--active); color: var(--fg); }
+
+	.menu {
+		display: none;
+		position: absolute; top: calc(100% + 6px); right: 0; z-index: 30;
+		min-width: 208px;
+		padding: 0.35rem;
+		background: var(--raise);
+		border: 1px solid var(--divider);
+		border-radius: 10px;
+		box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+	}
+	.anchor.open .menu { display: block; }
+	.menu .group-label {
+		padding: 0.4rem 0.55rem 0.15rem;
+		font-size: 10px; font-weight: 600;
+		text-transform: uppercase; letter-spacing: 0.05em;
+		color: var(--fg-subtle);
+	}
+	.menu button.item {
+		display: flex; width: 100%; text-align: left;
+		padding: 0.34rem 0.55rem;
+		border-radius: 7px;
+		font-size: 12.5px; color: var(--fg-muted);
+	}
+	.menu button.item:hover { background: var(--hover); color: var(--fg); }
+	.menu hr { border: none; border-top: 1px solid var(--divider); margin: 0.3rem 0.2rem; }
+	.menu .row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-right: 0.55rem; }
+	.menu .row .count { font-family: var(--mono); font-size: 10px; color: var(--fg-subtle); }
+
+	/* ---------- main pane (context, kept quiet) ---------- */
+	.transcript { flex: 1; overflow-y: auto; padding: 1.5rem 1rem 1rem; }
+	.thread { max-width: 40rem; margin: 0 auto; }
+	.msg { margin-bottom: 1.1rem; }
+	.who { font-family: var(--mono); font-size: 10px; color: var(--fg-subtle); margin-bottom: 0.2rem; }
+	.msg p { margin: 0; }
+	.composer { flex: none; padding: 0.75rem 1rem 1rem; }
+	.composer .field {
+		max-width: 40rem; margin: 0 auto;
+		border: 1px solid var(--divider);
+		border-radius: 10px;
+		padding: 0.6rem 0.75rem;
+		color: var(--fg-subtle);
+	}
+
+	.badge {
+		position: fixed; right: 10px; bottom: 10px; z-index: 50;
+		font-family: var(--mono); font-size: 10px; letter-spacing: 0.02em;
+		color: var(--fg-subtle); pointer-events: none;
+	}
+</style>
+</head>
+<body>
+<div class="shell">
+	<nav class="rail" aria-label="Conversations">
+		<button type="button" class="new-btn">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="15" height="15" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+			New conversation
+		</button>
+		<button type="button" class="search-ghost" id="searchGhost">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="15" height="15" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20.5 20.5 16.2 16.2"/></svg>
+			Search
+		</button>
+		<input class="rail-search" id="searchInput" type="search" placeholder="Search history" aria-hidden="true" tabindex="-1" />
+
+		<ul>
+			<li><a class="conv current" href="#">
+				<div class="conv-head">
+					<svg class="conv-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="10" height="10" aria-hidden="true"><path d="M9 3h6l2 8H7l2-8z"/><line x1="12" y1="11" x2="12" y2="21"/></svg>
+					<span class="conv-title">Fantasy Team</span><span class="conv-time">9h</span>
+				</div>
+				<span class="conv-preview">missed thursdays game xD</span>
+			</a></li>
+			<li><a class="conv" href="#">
+				<div class="conv-head"><span class="conv-title">Interesting Arxiv Find</span><span class="conv-time">11h</span></div>
+				<span class="conv-preview">It's a fair instinct, but the paper never &hellip;</span>
+			</a></li>
+			<li><a class="conv" href="#">
+				<div class="conv-head"><span class="conv-title">Hello there</span><span class="conv-time">2d</span></div>
+				<span class="conv-preview">Two-dot and three-dot both work as ra&hellip;</span>
+			</a></li>
+			<li><a class="conv" href="#">
+				<div class="conv-head"><span class="conv-title">Agents sandbox</span><span class="conv-time">2d</span></div>
+				<span class="conv-preview">Got them &mdash; handoff from the sandbox&hellip;</span>
+			</a></li>
+			<li><a class="conv" href="#">
+				<div class="conv-head"><span class="conv-title">Website Traffic &amp; Ad Revenue</span><span class="conv-time">2d</span></div>
+				<span class="conv-preview">Tar extracted &mdash; it's &ldquo;Frame Sheet&rdquo;, a c&hellip;</span>
+			</a></li>
+			<li><a class="conv" href="#">
+				<div class="conv-head"><span class="conv-title">Getting Started with AI Assist&hellip;</span><span class="conv-time">3d</span></div>
+				<span class="conv-preview">proposed skill: herdr &mdash; parked in skills&hellip;</span>
+			</a></li>
+			<li><a class="conv" href="#">
+				<div class="conv-head"><span class="conv-title">AI Prompting</span><span class="conv-time">6d</span></div>
+				<span class="conv-preview">Jules REST API &mdash; Google's coding ag&hellip;</span>
+			</a></li>
+		</ul>
+
+		<button type="button" class="archived-toggle" aria-expanded="false" id="archivedToggle">
+			Archived <span class="count">6</span>
+			<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+		</button>
+		<ul class="archived-list" id="archivedList">
+			<li><a class="conv" href="#"><div class="conv-head"><span class="conv-title">DSL wishlist</span><span class="conv-time">1w</span></div></a></li>
+			<li><a class="conv" href="#"><div class="conv-head"><span class="conv-title">Prompt caching test</span><span class="conv-time">2w</span></div></a></li>
+			<li><a class="conv" href="#"><div class="conv-head"><span class="conv-title">Convex sketch</span><span class="conv-time">2w</span></div></a></li>
+			<li><a class="conv" href="#"><div class="conv-head"><span class="conv-title">Weekend beta notes</span><span class="conv-time">3w</span></div></a></li>
+			<li><a class="conv" href="#"><div class="conv-head"><span class="conv-title">Tar pit log</span><span class="conv-time">4w</span></div></a></li>
+			<li><a class="conv" href="#"><div class="conv-head"><span class="conv-title">Open questions</span><span class="conv-time">5w</span></div></a></li>
+		</ul>
+		<div class="rail-spacer"></div>
+	</nav>
+
+	<div class="frame">
+		<header>
+			<button type="button" class="nav-toggle" aria-label="Toggle sidebar" title="Conversations">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="18" height="18" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="9.5" y1="4" x2="9.5" y2="20"/></svg>
+			</button>
+			<h1>goblin</h1>
+			<span class="header-title">Fantasy Team</span>
+			<span class="spacer"></span>
+
+			<span class="anchor" id="spacesAnchor">
+				<button type="button" class="chip" aria-haspopup="true" aria-expanded="false">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="15" height="15" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+					Projects
+					<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+				</button>
+				<div class="menu" role="menu">
+					<div class="row"><span class="group-label">Projects</span><span class="count">3</span></div>
+					<button type="button" class="item">Clients</button>
+					<button type="button" class="item">little-goblin</button>
+					<button type="button" class="item">throwaway</button>
+					<hr />
+					<button type="button" class="item">New project&hellip;</button>
+					<button type="button" class="item">All projects</button>
+				</div>
+			</span>
+
+			<button type="button" class="icon-btn" aria-label="Notes" title="Notes">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v18H6.5A1.5 1.5 0 0 1 5 19.5v-15z"/><path d="M9 3v18"/></svg>
+			</button>
+
+			<button type="button" class="icon-btn" aria-label="Context window" title="Context window">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="17" height="17" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/><path d="M9 13l-3 3 3 3"/><path d="M15 13l3 3-3 3"/></svg>
+			</button>
+			<button type="button" class="icon-btn" aria-label="From this thread" title="From this thread">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5"/><path d="M12 12v9"/><path d="M12 12L4 7.5"/></svg>
+			</button>
+
+			<span class="width-seg" role="group" aria-label="Chat width">
+				<button type="button" class="on">narrow</button>
+				<button type="button">wide</button>
+			</span>
+
+			<span class="anchor" id="systemAnchor">
+				<button type="button" class="icon-btn" aria-label="System" aria-haspopup="true" aria-expanded="false" title="System">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="17" height="17" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>
+				</button>
+				<div class="menu" role="menu">
+					<div class="group-label">Reads</div>
+					<button type="button" class="item">Attention</button>
+					<button type="button" class="item">Delegations</button>
+					<button type="button" class="item">Memories</button>
+					<div class="group-label">Operate</div>
+					<button type="button" class="item">Programs</button>
+					<button type="button" class="item">Skills</button>
+					<button type="button" class="item">Files</button>
+					<div class="group-label">Inspect</div>
+					<button type="button" class="item">Status</button>
+					<button type="button" class="item">Log</button>
+					<hr />
+					<button type="button" class="item">Settings</button>
+				</div>
+			</span>
+		</header>
+
+		<div class="transcript">
+			<div class="thread">
+				<div class="msg"><div class="who">you</div><p>did we lose</p></div>
+				<div class="msg"><div class="who">goblin</div><p>134.4&ndash;109.2. Thursday scratches cost you the week &mdash; your TE spot zeroed after the late scratch. Want the week 8 plan?</p></div>
+			</div>
+		</div>
+		<div class="composer"><div class="field">Reply to goblin&hellip;</div></div>
+	</div>
+</div>
+
+<div class="badge">A &middot; chassis &mdash; the rail switches chats; spaces &amp; system live in the frame</div>
+
+<script>
+	const ghost = document.getElementById("searchGhost");
+	const input = document.getElementById("searchInput");
+	ghost.addEventListener("click", () => {
+		ghost.style.display = "none";
+		input.style.display = "block";
+		input.focus();
+	});
+	input.addEventListener("keydown", (e) => {
+		if (e.key === "Escape") {
+			input.value = "";
+			input.style.display = "none";
+			ghost.style.display = "flex";
+		}
+	});
+
+	const archToggle = document.getElementById("archivedToggle");
+	const archList = document.getElementById("archivedList");
+	archToggle.addEventListener("click", () => {
+		const open = archList.classList.toggle("open");
+		archToggle.setAttribute("aria-expanded", String(open));
+	});
+
+	for (const anchor of document.querySelectorAll(".anchor")) {
+		const trigger = anchor.querySelector("button");
+		trigger.addEventListener("click", (e) => {
+			e.stopPropagation();
+			const wasOpen = anchor.classList.contains("open");
+			for (const a of document.querySelectorAll(".anchor.open")) {
+				a.classList.remove("open");
+				a.querySelector("button").setAttribute("aria-expanded", "false");
+			}
+			if (!wasOpen) {
+				anchor.classList.add("open");
+				trigger.setAttribute("aria-expanded", "true");
+			}
+		});
+	}
+	document.addEventListener("click", () => {
+		for (const a of document.querySelectorAll(".anchor.open")) {
+			a.classList.remove("open");
+			a.querySelector("button").setAttribute("aria-expanded", "false");
+		}
+	});
+	document.addEventListener("keydown", (e) => {
+		if (e.key === "Escape") {
+			for (const a of document.querySelectorAll(".anchor.open")) {
+				a.classList.remove("open");
+				a.querySelector("button").setAttribute("aria-expanded", "false");
+			}
+		}
+	});
+</script>
+</body>
+</html>

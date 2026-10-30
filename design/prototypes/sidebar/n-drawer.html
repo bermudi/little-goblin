@@ -1,0 +1,554 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>N — drawer, finished · goblin mobile prototype</title>
+<style>
+	:root {
+		--bg: #0d0d0d;
+		--fg: #e8e8ea;
+		--fg-muted: color-mix(in oklab, var(--fg) 62%, var(--bg));
+		--fg-subtle: color-mix(in oklab, var(--fg) 48%, var(--bg));
+		--border: color-mix(in oklab, var(--fg) 1.5%, transparent);
+		--divider: color-mix(in oklab, var(--fg) 8%, transparent);
+		--hover: color-mix(in oklab, var(--fg) 6%, transparent);
+		--active: color-mix(in oklab, var(--fg) 7%, transparent);
+		--active-strong: color-mix(in oklab, var(--fg) 11%, transparent);
+		--accent: #a78bfa;
+		--sans: "Inter", -apple-system, BlinkMacSystemFont, ui-sans-serif, system-ui, sans-serif;
+		--mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+		color-scheme: dark;
+	}
+	* { box-sizing: border-box; }
+	html, body { margin: 0; background: #080808; color: var(--fg); }
+	body {
+		font-family: var(--sans); font-size: 13px; line-height: 1.45;
+		-webkit-font-smoothing: antialiased;
+		min-height: 100dvh;
+		display: flex; flex-direction: column; align-items: center; justify-content: center;
+		padding: 2rem 1rem;
+		gap: 1rem;
+	}
+	button { font: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; }
+	a { color: inherit; text-decoration: none; }
+	:focus-visible { outline: 1px solid color-mix(in oklab, var(--fg) 40%, transparent); outline-offset: -1px; }
+	@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+	figcaption {
+		font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.02em;
+		color: var(--fg-subtle); text-align: center; max-width: 30rem;
+	}
+
+	/* ---------- phone ---------- */
+	.phone {
+		position: relative;
+		width: 390px; height: 844px; flex: none;
+		background: var(--bg);
+		border: 1px solid var(--divider);
+		border-radius: 46px;
+		overflow: hidden;
+		display: flex; flex-direction: column;
+	}
+	.statusbar {
+		flex: none; height: 44px;
+		display: flex; align-items: center; justify-content: space-between;
+		padding: 0 1.6rem 0 2rem;
+		color: var(--fg);
+	}
+	.statusbar .time { font-family: var(--mono); font-size: 12px; font-weight: 600; }
+	.statusbar svg { display: block; }
+
+	.screens { flex: 1; min-height: 0; position: relative; }
+	.page { position: absolute; inset: 0; display: none; flex-direction: column; }
+	.page.on { display: flex; }
+
+	.pagebar {
+		flex: none; height: 52px;
+		display: flex; align-items: center; gap: 0.55rem;
+		padding: 0 0.75rem 0 1.1rem;
+	}
+	.pagebar h1 { font-size: 15px; font-weight: 600; margin: 0; }
+	.pagebar .brand { font-size: 15px; font-weight: 600; }
+	.pagebar .title { font-size: 15px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.pagebar .spacer { flex: 1; }
+	.icon-btn {
+		width: 2.25rem; height: 2.25rem; flex: none;
+		display: inline-flex; align-items: center; justify-content: center;
+		border-radius: 9px; color: var(--fg-muted);
+	}
+	.icon-btn:hover { background: var(--hover); color: var(--fg); }
+
+	/* ---------- lists ---------- */
+	.list { flex: 1; min-height: 0; overflow-y: auto; padding: 0.15rem 0.5rem 0.75rem; }
+	.list ul, .rows ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+	.conv {
+		display: block; width: 100%;
+		padding: 0.48rem 0.6rem;
+		border-radius: 10px;
+		text-decoration: none;
+	}
+	.conv:hover { background: var(--hover); }
+	.conv.current { background: var(--active); }
+	.conv-head { display: flex; align-items: baseline; gap: 0.45rem; }
+	.conv-pin { flex: none; align-self: center; color: var(--fg-subtle); }
+	.conv-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.conv-time { flex: none; font-family: var(--mono); font-size: 10px; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
+	.conv-preview { display: block; margin-top: 1px; color: var(--fg-muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+	.archived-toggle {
+		display: flex; align-items: center; gap: 0.4rem;
+		width: 100%; text-align: left;
+		margin-top: 0.35rem;
+		padding: 0.45rem 0.6rem;
+		border-radius: 10px;
+		font-size: 12px;
+		color: var(--fg-subtle);
+	}
+	.archived-toggle:hover { background: var(--hover); color: var(--fg-muted); }
+	.archived-toggle .count { font-family: var(--mono); font-size: 10px; }
+	.archived-toggle .chev { margin-left: auto; transition: transform 120ms ease; }
+	.archived-toggle[aria-expanded="true"] .chev { transform: rotate(180deg); }
+	.list ul.archived-list { display: none; }
+	.list ul.archived-list.open { display: flex; }
+	.drawer ul.archived-list { display: none; }
+	.drawer ul.archived-list.open { display: flex; }
+
+	.rows { flex: 1; min-height: 0; overflow-y: auto; padding: 0.2rem 0.5rem 0.75rem; }
+	.line-row {
+		display: flex; align-items: center; gap: 0.5rem;
+		width: 100%; min-height: 2.5rem; text-align: left;
+		padding: 0.45rem 0.6rem;
+		border-radius: 10px;
+		font-size: 13px;
+		color: var(--fg-muted);
+	}
+	.line-row:hover { background: var(--hover); color: var(--fg); }
+	.line-row .t { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--fg-subtle); }
+	.ghost-row {
+		display: flex; align-items: center; gap: 0.5rem;
+		width: 100%; min-height: 2.5rem; text-align: left;
+		padding: 0.45rem 0.6rem;
+		border-radius: 10px;
+		font-size: 13px;
+		color: var(--fg-subtle);
+	}
+	.ghost-row:hover { background: var(--hover); color: var(--fg-muted); }
+
+	.stub { flex: 1; min-height: 0; overflow-y: auto; padding: 0.6rem 1rem; display: flex; flex-direction: column; gap: 0.55rem; }
+	.stub .bar { height: 9px; border-radius: 5px; background: var(--hover); }
+	.stub .note { font-family: var(--mono); font-size: 9.5px; color: var(--fg-subtle); margin-top: 0.4rem; }
+
+	/* ---------- thread ---------- */
+	.transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 0.75rem 1rem; }
+	.msg { margin-bottom: 1rem; }
+	.who { font-family: var(--mono); font-size: 10px; color: var(--fg-subtle); margin-bottom: 0.2rem; }
+	.msg p { margin: 0; }
+	.composer { flex: none; padding: 0.6rem 1rem 2.1rem; }
+	.composer .field { border: 1px solid var(--divider); border-radius: 12px; padding: 0.6rem 0.8rem; color: var(--fg-subtle); }
+
+	/* ---------- drawer ---------- */
+	.drawer-scrim {
+		position: absolute; inset: 0; z-index: 40;
+		background: rgba(0, 0, 0, 0.45);
+		opacity: 0; pointer-events: none;
+		transition: opacity 160ms ease;
+	}
+	.drawer-scrim.open { opacity: 1; pointer-events: auto; }
+	.drawer {
+		position: absolute; top: 0; bottom: 0; left: 0; z-index: 50;
+		width: min(82vw, 306px);
+		background: var(--bg);
+		border-right: 1px solid var(--divider);
+		transform: translateX(-106%);
+		visibility: hidden;
+		transition: transform 170ms ease, visibility 0s linear 170ms;
+		display: flex; flex-direction: column;
+		padding: 0.6rem 0.55rem 1.5rem;
+		gap: 0.3rem;
+		overflow-y: auto;
+	}
+	.drawer.open { transform: none; visibility: visible; transition: transform 170ms ease; }
+	.new-btn {
+		display: flex; align-items: center; gap: 0.5rem;
+		width: 100%; text-align: left;
+		padding: 0.5rem 0.6rem;
+		border-radius: 10px;
+		background: var(--active);
+		font-weight: 500;
+	}
+	.new-btn:hover { background: var(--active-strong); }
+	.new-btn svg { color: var(--fg-muted); flex: none; }
+	.drawer-search {
+		font: inherit; font-size: 12.5px;
+		background: var(--active);
+		border: 1px solid transparent;
+		border-radius: 10px;
+		color: var(--fg);
+		padding: 0.42rem 0.7rem;
+		outline: none;
+	}
+	.drawer-search:focus { border-color: color-mix(in oklab, var(--fg) 20%, transparent); background: transparent; }
+	.drawer-search::placeholder { color: var(--fg-subtle); }
+
+	.drawer ul { list-style: none; margin: 0.1rem 0 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+	.drawer-label {
+		padding: 0.5rem 0.6rem 0.15rem;
+		font-size: 10px; font-weight: 600;
+		text-transform: uppercase; letter-spacing: 0.05em;
+		color: var(--fg-subtle);
+	}
+	.drawer-row {
+		display: flex; align-items: center; gap: 0.5rem;
+		width: 100%; min-height: 2.4rem; text-align: left;
+		padding: 0.4rem 0.6rem;
+		border-radius: 10px;
+		font-size: 13px;
+		color: var(--fg-muted);
+	}
+	.drawer-row:hover { background: var(--hover); color: var(--fg); }
+	.drawer-row.on { background: var(--active); color: var(--fg); }
+	.drawer-row .t { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--fg-subtle); }
+	.drawer-row .chev { margin-left: auto; color: var(--fg-subtle); }
+
+	.drawer-split { width: 100%; height: 1px; background: var(--divider); margin: 0.55rem 0 0.2rem; flex: none; }
+	.grid {
+		display: grid; grid-template-columns: repeat(5, 1fr);
+		gap: 1px;
+		margin-top: 0.2rem;
+	}
+	.cell {
+		display: flex; flex-direction: column; align-items: center; gap: 0.2rem;
+		padding: 0.42rem 0 0.34rem;
+		border-radius: 10px;
+		font-size: 9.5px;
+		color: var(--fg-muted);
+		position: relative;
+	}
+	.cell:hover { background: var(--hover); color: var(--fg); }
+	.cell.on { background: var(--active); color: var(--fg); }
+	.cell svg { display: block; }
+	.cell .dot {
+		position: absolute; top: 6px; right: calc(50% - 12px);
+		width: 6px; height: 6px; border-radius: 50%;
+		background: var(--accent);
+	}
+
+	.home-pill {
+		position: absolute; bottom: 7px; left: 50%; transform: translateX(-50%);
+		width: 128px; height: 5px; border-radius: 3px;
+		background: color-mix(in oklab, var(--fg) 30%, transparent);
+		z-index: 60; pointer-events: none;
+	}
+
+	@media (max-height: 940px), (max-width: 440px) {
+		body { padding: 1rem 0.5rem; }
+		.phone { transform: scale(min(1, calc((100dvh - 6rem) / 844))); transform-origin: top center; }
+	}
+</style>
+</head>
+<body>
+<figure style="margin: 0; display: flex; flex-direction: column; align-items: center; gap: 1rem;">
+	<div class="phone">
+		<div class="statusbar" aria-hidden="true">
+			<span class="time">9:41</span>
+			<svg width="62" height="13" viewBox="0 0 62 13" fill="currentColor">
+				<rect x="0" y="7" width="3" height="5" rx="1"/><rect x="5" y="5" width="3" height="7" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="1" width="3" height="11" rx="1"/>
+				<path d="M28.5 4.5a8.5 8.5 0 0 1 11 0l-1.6 1.9a6 6 0 0 0-7.8 0z"/><circle cx="34" cy="9.5" r="1.8"/>
+				<rect x="44" y="1.5" width="14" height="9" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.2"/><rect x="46" y="3.5" width="8" height="5" rx="1"/><path d="M59.5 4.5v3a2 2 0 0 0 0-3z"/>
+			</svg>
+		</div>
+
+		<div class="screens">
+			<!-- CHATS -->
+			<section class="page on" id="page-chats">
+				<header class="pagebar">
+					<button type="button" class="icon-btn" id="menuBtn" aria-label="Open menu" title="Menu">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="19" height="19" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+					</button>
+					<h1>goblin</h1>
+					<span class="spacer"></span>
+					<button type="button" class="icon-btn" aria-label="New conversation" title="New conversation">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="19" height="19" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+					</button>
+				</header>
+				<div class="list">
+					<ul>
+						<li><a class="conv current" href="#" data-thread>
+							<div class="conv-head">
+								<svg class="conv-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="10" height="10" aria-hidden="true"><path d="M9 3h6l2 8H7l2-8z"/><line x1="12" y1="11" x2="12" y2="21"/></svg>
+								<span class="conv-title">Fantasy Team</span><span class="conv-time">9h</span>
+							</div>
+							<span class="conv-preview">missed thursdays game xD</span>
+						</a></li>
+						<li><a class="conv" href="#" data-thread>
+							<div class="conv-head"><span class="conv-title">Interesting Arxiv Find</span><span class="conv-time">11h</span></div>
+							<span class="conv-preview">It's a fair instinct, but the paper never &hellip;</span>
+						</a></li>
+						<li><a class="conv" href="#" data-thread>
+							<div class="conv-head"><span class="conv-title">Hello there</span><span class="conv-time">2d</span></div>
+							<span class="conv-preview">Two-dot and three-dot both work as ra&hellip;</span>
+						</a></li>
+						<li><a class="conv" href="#" data-thread>
+							<div class="conv-head"><span class="conv-title">Agents sandbox</span><span class="conv-time">2d</span></div>
+							<span class="conv-preview">Got them &mdash; handoff from the sandbox&hellip;</span>
+						</a></li>
+						<li><a class="conv" href="#" data-thread>
+							<div class="conv-head"><span class="conv-title">Website Traffic &amp; Ad Revenue</span><span class="conv-time">2d</span></div>
+							<span class="conv-preview">Tar extracted &mdash; it's &ldquo;Frame Sheet&rdquo;, a c&hellip;</span>
+						</a></li>
+						<li><a class="conv" href="#" data-thread>
+							<div class="conv-head"><span class="conv-title">Getting Started with AI Assist&hellip;</span><span class="conv-time">3d</span></div>
+							<span class="conv-preview">proposed skill: herdr &mdash; parked in skills&hellip;</span>
+						</a></li>
+						<li><a class="conv" href="#" data-thread>
+							<div class="conv-head"><span class="conv-title">AI Prompting</span><span class="conv-time">6d</span></div>
+							<span class="conv-preview">Jules REST API &mdash; Google's coding ag&hellip;</span>
+						</a></li>
+					</ul>
+					<button type="button" class="archived-toggle" aria-expanded="false" id="archivedToggle">
+						Archived <span class="count">6</span>
+						<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+					</button>
+					<ul class="archived-list" id="archivedList">
+						<li><a class="conv" href="#" data-thread><div class="conv-head"><span class="conv-title">DSL wishlist</span><span class="conv-time">1w</span></div></a></li>
+						<li><a class="conv" href="#" data-thread><div class="conv-head"><span class="conv-title">Prompt caching test</span><span class="conv-time">2w</span></div></a></li>
+						<li><a class="conv" href="#" data-thread><div class="conv-head"><span class="conv-title">Convex sketch</span><span class="conv-time">2w</span></div></a></li>
+						<li><a class="conv" href="#" data-thread><div class="conv-head"><span class="conv-title">Weekend beta notes</span><span class="conv-time">3w</span></div></a></li>
+						<li><a class="conv" href="#" data-thread><div class="conv-head"><span class="conv-title">Tar pit log</span><span class="conv-time">4w</span></div></a></li>
+						<li><a class="conv" href="#" data-thread><div class="conv-head"><span class="conv-title">Open questions</span><span class="conv-time">5w</span></div></a></li>
+					</ul>
+				</div>
+			</section>
+
+			<!-- PROJECTS -->
+			<section class="page" id="page-projects">
+				<header class="pagebar">
+					<button type="button" class="icon-btn menu-open" aria-label="Open menu" title="Menu">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="19" height="19" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+					</button>
+					<h1>Projects</h1>
+				</header>
+				<div class="rows">
+					<ul>
+						<li><button type="button" class="line-row">Clients</button></li>
+						<li><button type="button" class="line-row">little-goblin</button></li>
+						<li><button type="button" class="line-row">throwaway</button></li>
+					</ul>
+					<button type="button" class="ghost-row">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="14" height="14" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+						New project
+					</button>
+				</div>
+			</section>
+
+			<!-- NOTES -->
+			<section class="page" id="page-notes">
+				<header class="pagebar">
+					<button type="button" class="icon-btn menu-open" aria-label="Open menu" title="Menu">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="19" height="19" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+					</button>
+					<h1>Notes</h1>
+				</header>
+				<div class="rows">
+					<ul>
+						<li><button type="button" class="line-row">League scoring rules <span class="t">9h</span></button></li>
+						<li><button type="button" class="line-row">Frame Sheet extraction <span class="t">2d</span></button></li>
+						<li><button type="button" class="line-row">Sandbox handoff <span class="t">2d</span></button></li>
+						<li><button type="button" class="line-row">herdr &mdash; proposed skill <span class="t">3d</span></button></li>
+						<li><button type="button" class="line-row">arXiv reading list <span class="t">6d</span></button></li>
+					</ul>
+					<button type="button" class="ghost-row">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="14" height="14" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+						New note
+					</button>
+				</div>
+			</section>
+
+			<!-- ATTENTION -->
+			<section class="page" id="page-attention">
+				<header class="pagebar">
+					<button type="button" class="icon-btn menu-open" aria-label="Open menu" title="Menu">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="19" height="19" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+					</button>
+					<h1>Attention</h1>
+				</header>
+				<div class="stub">
+					<div class="bar" style="width: 84%"></div>
+					<div class="bar" style="width: 62%"></div>
+					<div class="bar" style="width: 74%"></div>
+					<div class="bar" style="width: 48%"></div>
+					<div class="note">attention items &mdash; stub</div>
+				</div>
+			</section>
+
+			<!-- GENERIC SURFACE STUB -->
+			<section class="page" id="page-more">
+				<header class="pagebar">
+					<button type="button" class="icon-btn menu-open" aria-label="Open menu" title="Menu">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="19" height="19" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+					</button>
+					<h1 id="moreTitle">Status</h1>
+				</header>
+				<div class="stub">
+					<div class="bar" style="width: 70%"></div>
+					<div class="bar" style="width: 84%"></div>
+					<div class="bar" style="width: 55%"></div>
+					<div class="note" id="moreNote">surface &mdash; stub</div>
+				</div>
+			</section>
+
+			<!-- THREAD -->
+			<section class="page" id="page-thread">
+				<header class="pagebar">
+					<button type="button" class="icon-btn menu-open" aria-label="Open menu" title="Menu">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="19" height="19" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+					</button>
+					<span class="title">Fantasy Team</span>
+					<span class="spacer"></span>
+					<button type="button" class="icon-btn" aria-label="Context window" title="Context window">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="18" height="18" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18"/><path d="M9 13l-3 3 3 3"/><path d="M15 13l3 3-3 3"/></svg>
+					</button>
+					<button type="button" class="icon-btn" aria-label="From this thread" title="From this thread">
+						<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="18" height="18" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M12 12l8-4.5"/><path d="M12 12v9"/><path d="M12 12L4 7.5"/></svg>
+					</button>
+				</header>
+				<div class="transcript">
+					<div class="msg"><div class="who">you</div><p>did we lose</p></div>
+					<div class="msg"><div class="who">goblin</div><p>134.4&ndash;109.2. Thursday scratches cost you the week &mdash; your TE spot zeroed after the late scratch. Want the week 8 plan?</p></div>
+				</div>
+				<div class="composer"><div class="field">Reply to goblin&hellip;</div></div>
+			</section>
+		</div>
+
+		<div class="drawer-scrim" id="drawerScrim"></div>
+		<div class="drawer" id="drawer" role="dialog" aria-label="Navigation">
+			<button type="button" class="new-btn">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="15" height="15" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+				New conversation
+			</button>
+			<input class="drawer-search" type="search" placeholder="Search history" aria-label="Search history" />
+
+			<ul id="drawerChats">
+				<li><a class="drawer-row on" href="#" data-thread>Fantasy Team <span class="t">9h</span></a></li>
+				<li><a class="drawer-row" href="#" data-thread>Interesting Arxiv Find <span class="t">11h</span></a></li>
+				<li><a class="drawer-row" href="#" data-thread>Hello there <span class="t">2d</span></a></li>
+				<li><a class="drawer-row" href="#" data-thread>Agents sandbox <span class="t">2d</span></a></li>
+				<li><a class="drawer-row" href="#" data-thread>Website Traffic &amp; Ad Revenue <span class="t">2d</span></a></li>
+				<li><a class="drawer-row" href="#" data-thread>Getting Started with AI Assist&hellip; <span class="t">3d</span></a></li>
+				<li><a class="drawer-row" href="#" data-thread>AI Prompting <span class="t">6d</span></a></li>
+			</ul>
+			<button type="button" class="archived-toggle" aria-expanded="false" id="archivedToggle2">
+				Archived <span class="count">6</span>
+				<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="12" height="12" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+			</button>
+			<ul class="archived-list" id="archivedList2">
+				<li><a class="drawer-row" href="#" data-thread>DSL wishlist <span class="t">1w</span></a></li>
+				<li><a class="drawer-row" href="#" data-thread>Prompt caching test <span class="t">2w</span></a></li>
+				<li><a class="drawer-row" href="#" data-thread>Convex sketch <span class="t">2w</span></a></li>
+				<li><a class="drawer-row" href="#" data-thread>Weekend beta notes <span class="t">3w</span></a></li>
+				<li><a class="drawer-row" href="#" data-thread>Tar pit log <span class="t">4w</span></a></li>
+				<li><a class="drawer-row" href="#" data-thread>Open questions <span class="t">5w</span></a></li>
+			</ul>
+
+			<div class="drawer-split" role="presentation"></div>
+			<div class="drawer-label">Spaces</div>
+			<ul>
+				<li><button type="button" class="drawer-row" data-page="projects">Projects <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="12" height="12" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button></li>
+				<li><button type="button" class="drawer-row" data-page="notes">Notes <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="12" height="12" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button></li>
+			</ul>
+
+			<div class="drawer-split" role="presentation"></div>
+			<div class="drawer-label">System</div>
+			<div class="grid">
+				<button type="button" class="cell" data-op="Attention">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true"><path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 19a2.2 2.2 0 0 0 4 0"/></svg>
+					<span class="dot" aria-hidden="true"></span>
+					Attention
+				</button>
+				<button type="button" class="cell" data-op="Delegations">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true"><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><path d="M12 3v11"/><path d="M8 10l4 4 4-4"/></svg>
+					Delegations
+				</button>
+				<button type="button" class="cell" data-op="Memories">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13.5l9 5 9-5"/></svg>
+					Memories
+				</button>
+				<button type="button" class="cell" data-op="Programs">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M10 8.5l6 3.5-6 3.5v-7z"/></svg>
+					Programs
+				</button>
+				<button type="button" class="cell" data-op="Skills">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true"><path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H13L13 2z"/></svg>
+					Skills
+				</button>
+				<button type="button" class="cell" data-op="Files">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true"><path d="M6 3h8l4 4v14H6V3z"/><path d="M14 3v4h4"/></svg>
+					Files
+				</button>
+				<button type="button" class="cell" data-op="Status">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true"><path d="M3 12h4l2.5-6 4 12L16 12h5"/></svg>
+					Status
+				</button>
+				<button type="button" class="cell" data-op="Log">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="16" height="16" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/></svg>
+					Log
+				</button>
+				<button type="button" class="cell" data-op="Settings">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="3.4"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8"/></svg>
+					Settings
+				</button>
+			</div>
+		</div>
+
+		<div class="home-pill" aria-hidden="true"></div>
+	</div>
+	<figcaption>N &middot; drawer, finished &mdash; the slide-in stays, C&rsquo;s structure moves in: every screen is content; one overlay holds everything. Open the menu, tap a system cell.</figcaption>
+</figure>
+
+<script>
+	const drawer = document.getElementById("drawer");
+	const scrim = document.getElementById("drawerScrim");
+	function setDrawer(open) {
+		drawer.classList.toggle("open", open);
+		scrim.classList.toggle("open", open);
+	}
+	document.getElementById("menuBtn").addEventListener("click", () => setDrawer(true));
+	for (const b of document.querySelectorAll(".menu-open")) {
+		b.addEventListener("click", () => setDrawer(true));
+	}
+	scrim.addEventListener("click", () => setDrawer(false));
+	document.addEventListener("keydown", (e) => { if (e.key === "Escape") setDrawer(false); });
+
+	const pages = [...document.querySelectorAll(".page")];
+	function show(name) {
+		for (const p of pages) p.classList.toggle("on", p.id === "page-" + name);
+	}
+	for (const a of document.querySelectorAll("[data-thread]")) {
+		a.addEventListener("click", (e) => { e.preventDefault(); setDrawer(false); show("thread"); });
+	}
+	for (const b of document.querySelectorAll("[data-page]")) {
+		b.addEventListener("click", () => { setDrawer(false); show(b.dataset.page); });
+	}
+	const moreTitle = document.getElementById("moreTitle");
+	const moreNote = document.getElementById("moreNote");
+	for (const c of document.querySelectorAll("[data-op]")) {
+		c.addEventListener("click", () => {
+			setDrawer(false);
+			moreTitle.textContent = c.dataset.op;
+			moreNote.textContent = c.dataset.op.toLowerCase() + " — stub";
+			show("more");
+		});
+	}
+
+	for (const id of ["archivedToggle", "archivedToggle2"]) {
+		const t = document.getElementById(id);
+		const list = document.getElementById(id === "archivedToggle" ? "archivedList" : "archivedList2");
+		t.addEventListener("click", () => {
+			const open = list.classList.toggle("open");
+			t.setAttribute("aria-expanded", String(open));
+		});
+	}
+</script>
+</body>
+</html>

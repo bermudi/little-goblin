@@ -17,7 +17,7 @@ import { SKILL_PART } from "./skill-part.ts";
 import { isCompactionSummaryId } from "./tags.ts";
 import { canAuthorizeRetry } from "./turn/retry-guard.ts";
 import type { LoopTurnState } from "./turn/state.ts";
-import type { WakeDeps } from "./wake.ts";
+import { sinkFor, type WakeDeps } from "./wake.ts";
 import {
 	type CallDecision,
 	recordedOutput,
@@ -80,8 +80,7 @@ export function makeResumeSinks(
 	deps: ResumeSinkDeps,
 ): Pick<ResumeDeps, "sinkFor" | "sinkHooks" | "notifyDone"> {
 	return {
-		sinkFor: (conv) =>
-			channelOf(conv.id) === "app" ? deps.wake.bell(conv) : (deps.wake.delivery?.(conv) ?? null),
+		sinkFor: (conv) => sinkFor(deps.wake, conv, "refuse"),
 		sinkHooks: (conv) =>
 			// The app bell composes appMediaSink — durable file and voice-note
 			// delivery (no recording indicator) — so its surface carries

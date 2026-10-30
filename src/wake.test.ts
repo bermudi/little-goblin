@@ -13,7 +13,7 @@ import type { RollDeps } from "./rolling.ts";
 import { delegationWake } from "./delegation-lifecycle.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "./testkit/fake-model.ts";
 import { useHome, waitUntil } from "./testkit.ts";
-import { wake, wakeApp, wakeConversation, wakeTarget, type WakeDeps } from "./wake.ts";
+import { sinkFor, wake, wakeApp, wakeConversation, wakeTarget, type WakeDeps } from "./wake.ts";
 
 const nullSink: TurnSink = {
 	onTextDelta: () => {},
@@ -382,4 +382,66 @@ test("a throwing submit is released and returns false", () => {
 	};
 	expect(wakeConversation(deps, conv.id, "subagent notice")).toBe(false);
 	store.close();
+});
+
+// ---------- sinkFor ----------
+
+function sinkStub(withDelivery: boolean): {
+	deps: Pick<WakeDeps, "bell" | "delivery">;
+	bellSink: TurnSink;
+	deliverySink: TurnSink;
+} {
+	const bellSink: TurnSink = {
+		onTextDelta: () => {},
+		onReasoningDelta: () => {},
+		onToolCall: () => {},
+		onDone: () => {},
+	};
+	const deliverySink: TurnSink = {
+		onTextDelta: () => {},
+		onReasoningDelta: () => {},
+		onToolCall: () => {},
+		onDone: () => {},
+	};
+	const deps: Pick<WakeDeps, "bell" | "delivery"> = {
+		bell: () => bellSink,
+		...(withDelivery ? { delivery: () => deliverySink } : {}),
+	};
+	return { deps, bellSink, deliverySink };
+}
+
+test("sinkFor routes app conversations to the bell in both modes", () => {
+	const app = { id: "app/chat-01" } as unknown as Conversation;
+	const withDelivery = sinkStub(true);
+	expect(sinkFor(withDelivery.deps, app, "bell")).toBe(withDelivery.bellSink);
+	expect(sinkFor(withDelivery.deps, app, "refuse")).toBe(withDelivery.bellSink);
+	const withoutDelivery = sinkStub(false);
+	expect(sinkFor(withoutDelivery.deps, app, "bell")).toBe(withoutDelivery.bellSink);
+	expect(sinkFor(withoutDelivery.deps, app, "refuse")).toBe(withoutDelivery.bellSink);
+});
+
+test("sinkFor routes telegram and guest to delivery when attached", () => {
+	const { deps, deliverySink } = sinkStub(true);
+	const telegram = { id: "dm:7" } as unknown as Conversation;
+	const guest = { id: "guest:5:9" } as unknown as Conversation;
+	expect(sinkFor(deps, telegram, "bell")).toBe(deliverySink);
+	expect(sinkFor(deps, telegram, "refuse")).toBe(deliverySink);
+	expect(sinkFor(deps, guest, "bell")).toBe(deliverySink);
+	expect(sinkFor(deps, guest, "refuse")).toBe(deliverySink);
+});
+
+test("sinkFor falls back to the bell for detached telegram/guest when onDetached is bell", () => {
+	const { deps, bellSink } = sinkStub(false);
+	const telegram = { id: "dm:7" } as unknown as Conversation;
+	const guest = { id: "guest:5:9" } as unknown as Conversation;
+	expect(sinkFor(deps, telegram, "bell")).toBe(bellSink);
+	expect(sinkFor(deps, guest, "bell")).toBe(bellSink);
+});
+
+test("sinkFor refuses detached telegram/guest when onDetached is refuse", () => {
+	const { deps } = sinkStub(false);
+	const telegram = { id: "dm:7" } as unknown as Conversation;
+	const guest = { id: "guest:5:9" } as unknown as Conversation;
+	expect(sinkFor(deps, telegram, "refuse")).toBeNull();
+	expect(sinkFor(deps, guest, "refuse")).toBeNull();
 });

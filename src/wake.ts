@@ -31,6 +31,31 @@ export interface WakeAddress {
 	threadId: number | null;
 }
 
+// One owner for the app/telegram sink route: app conversations always
+// take the bell; telegram and guest conversations take delivery when the
+// channel is attached. What happens with no delivery is the caller's
+// policy — "bell" falls back to the bell (durable wakes), "refuse"
+// returns null (subagent and resume wakes must not land headless).
+export function sinkFor(
+	deps: Pick<WakeDeps, "bell" | "delivery">,
+	conv: Conversation,
+	onDetached: "bell",
+): TurnSink;
+export function sinkFor(
+	deps: Pick<WakeDeps, "bell" | "delivery">,
+	conv: Conversation,
+	onDetached: "refuse",
+): TurnSink | null;
+export function sinkFor(
+	deps: Pick<WakeDeps, "bell" | "delivery">,
+	conv: Conversation,
+	onDetached: "bell" | "refuse",
+): TurnSink | null {
+	if (channelOf(conv.id) === "app") return deps.bell(conv);
+	if (deps.delivery !== undefined) return deps.delivery(conv);
+	return onDetached === "bell" ? deps.bell(conv) : null;
+}
+
 // A rejected or failed submit returns false so delegation notices can retry.
 export function wake(
 	deps: WakeDeps,
@@ -133,13 +158,11 @@ export function wakeConversation(deps: WakeDeps, conversationId: string, text: s
 		});
 		return true;
 	}
-	const channel = channelOf(conv.id);
-	const delivery = channel === "app" ? deps.bell : deps.delivery;
-	if (delivery === undefined) {
+	const sink = sinkFor(deps, conv, "refuse");
+	if (sink === null) {
 		log.warn("subagent wake refused — telegram channel disabled", { conversation: conv.id });
 		return false;
 	}
-	const sink = delivery(conv);
 	try {
 		const admitted = deps.runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
 		if (!admitted) {

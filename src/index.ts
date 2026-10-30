@@ -26,12 +26,7 @@ import {
 	type TtsConfig,
 } from "./config.ts";
 import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins.ts";
-import {
-	type Conversation,
-	captureConversationSettings,
-	channelOf,
-	openStore,
-} from "./conversation.ts";
+import { captureConversationSettings, openStore } from "./conversation.ts";
 import {
 	type DelegationLifecycle,
 	delegationWake,
@@ -86,7 +81,7 @@ import { sendInterruptedTurnNotices } from "./tg/turn-notice.ts";
 import { makeWakeDeps } from "./tg/wake.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 import { makeResumeOps, makeResumeSinks, type ResumeOps } from "./turn-resume.ts";
-import { wakeConversation } from "./wake.ts";
+import { sinkFor, wakeConversation } from "./wake.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import { makeResponsibilityObserver } from "./responsibility-observer.ts";
 import { makeResponsibilityService } from "./responsibility-service.ts";
@@ -598,10 +593,7 @@ async function boot() {
 		wakes: wakeStore,
 		journal: turnJournal,
 		runtime,
-		sinkFor: (conv) =>
-			channelOf(conv.id) === "app" || wakeDeps.delivery === undefined
-				? wakeDeps.bell(conv)
-				: wakeDeps.delivery(conv),
+		sinkFor: (conv) => sinkFor(wakeDeps, conv, "bell"),
 	});
 	wakeDispatcher.pump();
 	const stopWakeTicker = wakeDispatcher.startTicker();

@@ -119,7 +119,7 @@ export function makeResumeSinks(
 type RunRef = { kind: "found"; run: TurnRun } | { kind: "ambiguous" } | { kind: "missing" };
 
 function findRun(journal: TurnJournal, convId: string, ref: string): RunRef {
-	const runs = journal.interrupted().filter((r) => r.conversationId === convId);
+	const runs = journal.interruptedFor(convId);
 	const matches = runs.filter((r) => r.runId === ref || r.runId.startsWith(ref));
 	if (matches.length === 0) return { kind: "missing" };
 	if (matches.length > 1) return { kind: "ambiguous" };
@@ -383,8 +383,7 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 	return {
 		interrupted(convId) {
 			return journal
-				.interrupted()
-				.filter((r) => r.conversationId === convId)
+				.interruptedFor(convId)
 				.map((run) => ({ run, calls: journal.callsFor(run.runId) }));
 		},
 

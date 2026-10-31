@@ -199,6 +199,27 @@ describe("turn journal", () => {
 		fourth.close();
 	});
 
+	test("interruptedFor filters by conversation in SQL order", () => {
+		const store = openStore(tmpDb("goblin-tj-"));
+		const a = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const b = store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		const journal = openTurnJournal(store.db);
+		begunRun(journal, a.id, "run-a1");
+		begunRun(journal, b.id, "run-b1");
+		begunRun(journal, a.id, "run-a2");
+		interruptRun(store, "run-a1");
+		interruptRun(store, "run-b1");
+		interruptRun(store, "run-a2");
+		const idx = store.db
+			.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='index'")
+			.all()
+			.map((r) => r.name);
+		expect(idx).toContain("turn_runs_conv_status");
+		expect(journal.interruptedFor(a.id).map((r) => r.runId)).toEqual(["run-a1", "run-a2"]);
+		expect(journal.interruptedFor("no-such")).toEqual([]);
+		store.close();
+	});
+
 	test("checkpoint patches the nullable progress columns", () => {
 		const store = openStore(tmpDb("goblin-tj-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

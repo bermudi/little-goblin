@@ -155,6 +155,9 @@ export interface TurnJournal {
 	markRun(runId: string, status: "resumed" | "abandoned"): void;
 	inheritCalls(sourceRunId: string, intoRunId: string): void;
 	interrupted(): TurnRun[];
+	// Interrupted runs of one conversation, oldest first — the
+	// conversation filter lives in SQL, not a JS scan of every run.
+	interruptedFor(conversationId: string): TurnRun[];
 	readonly interruptedAtOpen: readonly TurnRun[];
 	get(runId: string): TurnRun | null;
 	// The newest run admitted as this row's resume continuation — null
@@ -409,6 +412,9 @@ export function openTurnJournal(db: Database): TurnJournal {
 		created_at TEXT NOT NULL,
 		resumed_from TEXT
 	)`);
+	db.run(
+		"CREATE INDEX IF NOT EXISTS turn_runs_conv_status ON turn_runs(conversation_id, status, started_ms, run_id)",
+	);
 	db.run(`CREATE TABLE IF NOT EXISTS turn_tool_calls (
 		run_id TEXT NOT NULL REFERENCES turn_runs(run_id) ON DELETE CASCADE,
 		tool_call_id TEXT NOT NULL,
@@ -575,6 +581,9 @@ export function openTurnJournal(db: Database): TurnJournal {
 	);
 	const qInterrupted = db.query(
 		`${RUN_SELECT} WHERE r.status = 'interrupted' ORDER BY r.started_ms, r.run_id`,
+	);
+	const qInterruptedFor = db.query(
+		`${RUN_SELECT} WHERE r.status = 'interrupted' AND r.conversation_id = ? ORDER BY r.started_ms, r.run_id`,
 	);
 	const qCalls = db.query("SELECT * FROM turn_tool_calls WHERE run_id = ? ORDER BY rowid");
 	const interruptedAtOpen = stale.map((r) => decodeRun(qGet.get(r.run_id)));
@@ -843,6 +852,9 @@ export function openTurnJournal(db: Database): TurnJournal {
 		},
 		interrupted() {
 			return qInterrupted.all().map(decodeRun);
+		},
+		interruptedFor(conversationId) {
+			return qInterruptedFor.all(conversationId).map(decodeRun);
 		},
 		interruptedAtOpen,
 		get(runId) {

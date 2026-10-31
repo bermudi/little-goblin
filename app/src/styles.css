@@ -5455,7 +5455,9 @@ button.link:hover {
 	overflow-wrap: anywhere;
 	font-family: var(--font-mono);
 	font-size: 12px;
-	background: var(--app-gray-950);
+	/* The codeblock inset mix — gray-950 is the ramp's LIGHT end, which
+	   painted a bright card under foreground-colored text. */
+	background: color-mix(in oklab, var(--app-fg) 3%, transparent);
 	border: 1px solid var(--app-divider);
 	border-radius: 8px;
 	padding: 0.5rem;

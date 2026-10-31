@@ -41,8 +41,8 @@ describe("spinOff", () => {
 		expect(titles).toEqual(["deploy the thing"]);
 		const retitled = store.get(conv.id)!;
 		expect(retitled.title).toBe("Deploy the thing");
-		// Still implicit — an operator rename always wins.
-		expect(retitled.titleImplicit).toBe(true);
+		// A successful auto-title clears the implicit flag (conversation.ts spec).
+		expect(retitled.titleImplicit).toBe(false);
 		store.close();
 	});
 

@@ -422,7 +422,7 @@ export async function handleChatRoute(
 						if (title === null || title === "") return;
 						const fresh = store.get(convId);
 						if (fresh !== null && fresh.title === null) {
-							store.setMeta(convId, { title, titleImplicit: true });
+							store.setMeta(convId, { title, titleImplicit: false });
 							log.info("app conversation titled", { conversation: convId, title });
 						}
 					})

@@ -450,7 +450,7 @@ describe("app chat", () => {
 			await waitUntil(() => store.get("app/chat-01")?.title !== null, "title lands");
 			const conv = store.get("app/chat-01");
 			expect(conv?.title).toBe("First Burst Title");
-			expect(conv?.titleImplicit).toBe(true);
+			expect(conv?.titleImplicit).toBe(false);
 			expect(titled).toEqual(["what is the meaning of this"]);
 		} finally {
 			http.stop();

@@ -90,7 +90,7 @@ async function retitle(deps: SpinOffDeps, conversationId: string): Promise<void>
 		// An explicit rename made while title generation was in flight wins.
 		const row = deps.store.get(conversationId);
 		if (row === null || !row.titleImplicit) return;
-		deps.store.setMeta(conversationId, { title, titleImplicit: true });
+		deps.store.setMeta(conversationId, { title, titleImplicit: false });
 		log.info("app conversation titled", { conversation: conversationId, title });
 	} catch (err) {
 		log.warn("app conversation titling failed", err, {

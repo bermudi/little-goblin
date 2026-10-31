@@ -62,11 +62,40 @@ export async function handleRateButton(query: RateQuery, deps: RateButtonDeps): 
 	}
 }
 
-async function stripRatingRow(
+// Strips for one message serialize on a module-level chain: concurrent
+// taps each carry their own (stale) reply_markup snapshot, so without
+// serialization the loser's snapshot would land last and resurrect the
+// opposite vote. The second strip in a chain sees the row already gone
+// and no-ops. Entries clear when the chain drains, so a later tap on a
+// fresh markup for the same message still strips normally.
+const stripChains = new Map<string, Promise<void>>();
+const strippedMessages = new Set<string>();
+
+function stripRatingRow(
 	api: Api,
 	message: NonNullable<RateQuery["message"]>,
 	rating: ReplyRating,
 ): Promise<void> {
+	const key = `${message.chat.id}:${message.message_id}`;
+	const prev = stripChains.get(key) ?? Promise.resolve();
+	const run = prev.then(() => doStripRatingRow(api, message, rating, key));
+	stripChains.set(key, run);
+	void run.finally(() => {
+		if (stripChains.get(key) === run) {
+			stripChains.delete(key);
+			strippedMessages.delete(key);
+		}
+	});
+	return run;
+}
+
+async function doStripRatingRow(
+	api: Api,
+	message: NonNullable<RateQuery["message"]>,
+	rating: ReplyRating,
+	key: string,
+): Promise<void> {
+	if (strippedMessages.has(key)) return;
 	const rows = message.reply_markup?.inline_keyboard;
 	if (rows === undefined) return;
 	const isRate = (b: InlineKeyboardButton) =>
@@ -75,17 +104,20 @@ async function stripRatingRow(
 	const rest = rows.filter((row) => !row.some(isRate));
 	const inline_keyboard =
 		rest.length === 0 ? [] : [[{ text: rating === "up" ? "👍" : "👎", disabled: {} }], ...rest];
-	await withTimeout(
-		api.editMessageReplyMarkup(message.chat.id, message.message_id, {
-			...(message.message_thread_id !== undefined
-				? { message_thread_id: message.message_thread_id }
-				: {}),
-			reply_markup: { inline_keyboard },
-		}),
-		"editMessageReplyMarkup",
-	).catch((err: unknown) => {
+	try {
+		await withTimeout(
+			api.editMessageReplyMarkup(message.chat.id, message.message_id, {
+				...(message.message_thread_id !== undefined
+					? { message_thread_id: message.message_thread_id }
+					: {}),
+				reply_markup: { inline_keyboard },
+			}),
+			"editMessageReplyMarkup",
+		);
+		strippedMessages.add(key);
+	} catch (err) {
 		log.debug("rate strip failed", { error: String(err) });
-	});
+	}
 }
 
 async function rate(query: RateQuery, deps: RateButtonDeps): Promise<void> {

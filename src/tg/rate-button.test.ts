@@ -179,6 +179,36 @@ describe("rate button", () => {
 		expect(ratings.records).toHaveLength(2);
 	});
 
+	test("concurrent opposite taps strip once — the loser's stale markup never lands last", async () => {
+		const fake = fakeApi();
+		const ratings = fakeRatings();
+		const markup = {
+			inline_keyboard: [
+				[
+					{ text: "👍", callback_data: rateCallbackData("up", "dm:1", 7) },
+					{ text: "👎", callback_data: rateCallbackData("down", "dm:1", 7) },
+				],
+				[{ text: "🔊", callback_data: "speak_reply" }],
+			],
+		};
+		await Promise.all([
+			handleRateButton(query(rateCallbackData("up", "dm:1", 7), 42, 77, markup), {
+				api: fake.api,
+				ratings,
+			}),
+			handleRateButton(query(rateCallbackData("down", "dm:1", 7), 42, 77, markup), {
+				api: fake.api,
+				ratings,
+			}),
+		]);
+		// Serialized per message: only the first tap edits; the second
+		// sees the rate row already gone and no-ops instead of landing
+		// its stale snapshot (with the opposite vote) last.
+		expect(markups(fake.calls)).toEqual([
+			[[{ text: "👍", disabled: {} }], [{ text: "🔊", callback_data: "speak_reply" }]],
+		]);
+	});
+
 	test("registration routes a rate update through a real bot — non-rate updates don't reach it", async () => {
 		const fake = fakeApi();
 		const ratings = fakeRatings();

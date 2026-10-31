@@ -1,7 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { Api, GrammyError, type RawApi, type Transformer } from "grammy";
 import type { ApiResponse, Message, ResponseParameters } from "grammy/types";
-import { floodWaitTransformer } from "./flood-wait.ts";
+import {
+	floodWaitTransformer as baseFloodWaitTransformer,
+	type FloodWaitOpts,
+} from "./flood-wait.ts";
+
+// Deterministic by default: existing cases pin exact sleeps, so jitter's
+// random seam is zeroed unless a case overrides it.
+function floodWaitTransformer(opts: FloodWaitOpts = {}) {
+	return baseFloodWaitTransformer({ random: () => 0, ...opts });
+}
 
 type Prev = Parameters<Transformer>[0];
 
@@ -263,6 +272,38 @@ describe("floodWaitTransformer", () => {
 		expect(err).toBeInstanceOf(GrammyError);
 		expect((err as GrammyError).error_code).toBe(429);
 		expect(sleeps).toEqual([1000, 1000]);
+	});
+});
+
+describe("floodWaitTransformer — jitter", () => {
+	test("retry_after sleep carries +0-250ms jitter from the random seam", async () => {
+		const { prev, calls } = scriptPrev([flood429(5), SENT]);
+		const { sleeps, sleep } = recordingSleep();
+
+		const res: ApiResponse<Message> = await floodWaitTransformer({
+			sleep,
+			random: () => 0.5,
+		})(prev, "sendMessage", { chat_id: 1, text: "hi" });
+
+		expect(res).toEqual(SENT);
+		expect(sleeps).toEqual([5125]); // 5000 demanded + 125 jitter (0.5 * 250ms)
+		expect(calls).toHaveLength(2);
+	});
+
+	test("jitter counts toward the cumulative cap", async () => {
+		// 20s demanded fits the default 20s cap exactly, but the jitter
+		// pushes the real sleep past it — refused, no sleep, no retry.
+		const err = flood429(20);
+		const { prev, calls } = scriptPrev([err]);
+		const { sleeps, sleep } = recordingSleep();
+
+		const res = await floodWaitTransformer({ sleep, random: () => 0.5 })(prev, "sendMessage", {
+			chat_id: 1,
+			text: "hi",
+		});
+		expect(res).toBe(err);
+		expect(sleeps).toEqual([]);
+		expect(calls).toHaveLength(1);
 	});
 });
 

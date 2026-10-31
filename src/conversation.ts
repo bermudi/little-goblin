@@ -167,6 +167,9 @@ export interface ConversationStore {
 	// NOT NULL column: stamped, ignored.)
 	resolve(addr: ConversationAddress, defaultCwd: string, defaults?: ModelSettings): Conversation;
 	get(id: string): Conversation | null;
+	// Epoch only — authority checks fence on this per tool call and must
+	// not materialize the whole conversation row to read one number.
+	epochOf(id: string): number | null;
 	// One current dm:<chat>:<n> per private chat; rollDm mints n+1 linked
 	// to the selected source, selected atomically. n is a creation
 	// high-water, never rewound by /back.
@@ -534,6 +537,10 @@ export function openStore(dbPath: string): ConversationStore {
 		get(id) {
 			const row = qGet.get(id);
 			return row ? toConversation(row) : null;
+		},
+
+		epochOf(id) {
+			return qEpoch.get(id)?.epoch ?? null;
 		},
 
 		listGuestConversationIds(chatId) {

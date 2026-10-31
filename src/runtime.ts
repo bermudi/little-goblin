@@ -675,7 +675,7 @@ export class Runtime {
 	// Awaiting work must not outlive the captured conversation epoch. Settings
 	// mutations advance the epoch even when they do not abort the controller.
 	private checkAuthority(convId: string, epoch: number): void {
-		const current = this.deps.store.get(convId)?.epoch;
+		const current = this.deps.store.epochOf(convId) ?? undefined;
 		if (current !== epoch) throw new FencedError(convId);
 	}
 

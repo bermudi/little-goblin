@@ -42,6 +42,14 @@ describe("conversation store", () => {
 		reopened.close();
 	});
 
+	test("epochOf reads the epoch without a conversation row, null when missing", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "topic", chatId: -100, threadId: 9 }, "/w");
+		expect(store.epochOf(c.id)).toBe(c.epoch);
+		expect(store.epochOf("topic:-100:404")).toBeNull();
+		store.close();
+	});
+
 	test("resolve creates then returns the same conversation", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const a = store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");

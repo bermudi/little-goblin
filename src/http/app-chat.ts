@@ -225,7 +225,7 @@ export async function handleChatRoute(
 					{ status: 409, headers: NO_STORE },
 				);
 			}
-			const lastUser = store.historyEntries(convId).findLast((e) => e.message.role === "user");
+			const lastUser = store.lastEntry(convId, "user") ?? undefined;
 			if (lastUser === undefined) {
 				return Response.json({ error: "nothing to retry" }, { status: 409, headers: NO_STORE });
 			}

@@ -50,7 +50,7 @@ export function makeBellSink(
 			let ping: string;
 			let pingKey: string | undefined;
 			if (done.kind === "completed") {
-				const assistant = deps.store.history(conv.id).findLast((m) => m.role === "assistant");
+				const assistant = deps.store.lastEntry(conv.id, "assistant")?.message;
 				const text = assistant === undefined ? "" : messageText(assistant);
 				if (assistant === undefined || text === "") {
 					log.warn("spin-off ping skipped — no assistant reply", {

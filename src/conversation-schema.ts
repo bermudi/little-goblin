@@ -172,6 +172,9 @@ export function ensureConversationSchema(db: Database): void {
 				model TEXT NOT NULL,
 				created_at TEXT NOT NULL
 			)`);
+	// getCompaction/listCompactions filter + order by conversation —
+	// without this the latest-pointer read scans every compaction row.
+	db.run("CREATE INDEX IF NOT EXISTS compactions_conv_id ON compactions(conversation_id, id)");
 	const compactCols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(compactions)")

@@ -267,6 +267,10 @@ export interface ConversationStore {
 	history(id: string): UIMessage[];
 	historyEntries(id: string): { seq: number; message: UIMessage }[];
 	historyDetail(id: string): { seq: number; anchorSeq: number | null; message: UIMessage }[];
+	// The causal-last event of one role (same key historyDetail sorts
+	// on), read as a single row — for boolean/last-message callers that
+	// would otherwise materialize the whole history. Null = none.
+	lastEntry(id: string, role: UIMessage["role"]): { seq: number; message: UIMessage } | null;
 	// What a turn sees: the causal view cut at the active boundary, the
 	// summary prepended, and committed event_projections overlaid on
 	// tool results. The cut is on causal position — (anchorSeq ??
@@ -392,6 +396,8 @@ export function openStore(dbPath: string): ConversationStore {
 		qSelectPrevious,
 		qLastActivity,
 		qHistory,
+		qHistoryCausal,
+		qLastByRole,
 		qLastEventSeq,
 		qLastUserSeq,
 		qLastReplyAnchor,
@@ -477,7 +483,7 @@ export function openStore(dbPath: string): ConversationStore {
 
 	const historyView = makeConversationHistory(
 		db,
-		{ qHistory, qProjections, qInsertProjection, qSearch, qContext },
+		{ qHistory, qHistoryCausal, qLastByRole, qProjections, qInsertProjection, qSearch, qContext },
 		getCompaction,
 	);
 

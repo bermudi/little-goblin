@@ -97,6 +97,22 @@ export function prepareConversationQueries(db: Database) {
 		{ seq: number; anchor_seq: number | null; role: string; data: string },
 		[string]
 	>("SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? ORDER BY seq");
+	// The model view's bounded twin: the compaction cut lives in SQL,
+	// so pre-boundary rows (data blobs included) are never read/parsed.
+	const qHistoryCausal = db.query<
+		{ seq: number; anchor_seq: number | null; role: string; data: string },
+		[string, number]
+	>(
+		"SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? AND COALESCE(anchor_seq, seq) > ? ORDER BY seq",
+	);
+	// Causal-last event of one role — ORDER BY the causal key, not seq:
+	// a late answer (high seq, early anchor) is causally earlier.
+	const qLastByRole = db.query<
+		{ seq: number; anchor_seq: number | null; role: string; data: string },
+		[string, string]
+	>(
+		"SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? AND role = ? ORDER BY COALESCE(anchor_seq, seq) DESC, seq DESC LIMIT 1",
+	);
 	const qLastEventSeq = db.query<{ seq: number | null }, [string]>(
 		"SELECT MAX(seq) AS seq FROM events WHERE conversation_id = ?",
 	);
@@ -331,6 +347,8 @@ export function prepareConversationQueries(db: Database) {
 		qSelectPrevious,
 		qLastActivity,
 		qHistory,
+		qHistoryCausal,
+		qLastByRole,
 		qLastEventSeq,
 		qLastUserSeq,
 		qLastReplyAnchor,

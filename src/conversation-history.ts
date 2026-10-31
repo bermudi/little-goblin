@@ -38,11 +38,25 @@ export function makeConversationHistory(
 	db: Database,
 	queries: Pick<
 		ConversationQueries,
-		"qHistory" | "qProjections" | "qInsertProjection" | "qSearch" | "qContext"
+		| "qHistory"
+		| "qHistoryCausal"
+		| "qLastByRole"
+		| "qProjections"
+		| "qInsertProjection"
+		| "qSearch"
+		| "qContext"
 	>,
 	getCompaction: (id: string) => Compaction | null,
 ) {
-	const { qHistory, qProjections, qInsertProjection, qSearch, qContext } = queries;
+	const {
+		qHistory,
+		qHistoryCausal,
+		qLastByRole,
+		qProjections,
+		qInsertProjection,
+		qSearch,
+		qContext,
+	} = queries;
 
 	// The message id is the only identity the client and the store share;
 	// resolve it by decoding rows (the JSON envelope is not a column the
@@ -109,8 +123,10 @@ export function makeConversationHistory(
 		return historyDetail(id).map((e) => ({ seq: e.seq, message: e.message }));
 	}
 
-	function historyDetail(id: string) {
-		const rows = qHistory.all(id).map((r) => ({
+	type RawRow = { seq: number; anchor_seq: number | null; role: string; data: string };
+
+	function detailFromRows(id: string, raw: RawRow[]) {
+		const rows = raw.map((r) => ({
 			seq: r.seq,
 			anchorSeq: r.anchor_seq,
 			message: parseEvent(id, r.seq, r.role, r.data) ?? corruptPlaceholder(r.seq, r.role),
@@ -126,14 +142,33 @@ export function makeConversationHistory(
 		return rows;
 	}
 
+	function historyDetail(id: string) {
+		return detailFromRows(id, qHistory.all(id));
+	}
+
+	// One-row reader for "what is the last <role> message?" callers —
+	// the causal-last row, parsed alone instead of the whole history.
+	function lastEntry(id: string, role: string) {
+		const row = qLastByRole.get(id, role);
+		if (row === null || row === undefined) return null;
+		return {
+			seq: row.seq,
+			message: parseEvent(id, row.seq, row.role, row.data) ?? corruptPlaceholder(row.seq, row.role),
+		};
+	}
+
 	function modelEntries(id: string) {
 		const compaction = getCompaction(id);
 		// Filter on the causal key: an anchored response to a compacted
 		// user event has a high seq but an early causal position — it
-		// belongs to the summarized span, not the tail.
-		const entries = historyDetail(id)
-			.filter((e) => compaction === null || (e.anchorSeq ?? e.seq) > compaction.boundarySeq)
-			.map((e) => ({ seq: e.seq, message: e.message }));
+		// belongs to the summarized span, not the tail. With a boundary
+		// the cut is in SQL (qHistoryCausal); without one the full
+		// causal view is the model view.
+		const detail =
+			compaction === null
+				? historyDetail(id)
+				: detailFromRows(id, qHistoryCausal.all(id, compaction.boundarySeq));
+		const entries = detail.map((e) => ({ seq: e.seq, message: e.message }));
 		// Committed pruning projections overlay the model-facing view
 		// only — parseEvent returns fresh objects, so mutating them
 		// here can never touch the stored row or the readers that must
@@ -209,6 +244,7 @@ export function makeConversationHistory(
 		history,
 		historyEntries,
 		historyDetail,
+		lastEntry,
 		modelEntries,
 		eventProjections,
 		applyEventProjections,

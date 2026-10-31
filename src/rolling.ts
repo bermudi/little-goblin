@@ -223,13 +223,14 @@ export async function routeDmMessage(
 	if (elapsed < deps.gapMinutes() * 60_000) {
 		return { conv: current, rolled: false, decidedBy: "gap" };
 	}
-	const history = deps.store.history(current.id);
 	// No assistant reply yet — nothing to judge against, so join
 	// without asking. Rolling here would orphan a fragment behind a
-	// second "— new conversation —" marker.
-	if (!history.some((m) => m.role === "assistant")) {
+	// second "— new conversation —" marker. Cheap one-row probe first;
+	// the full history is only needed once a reply exists to judge.
+	if (deps.store.lastEntry(current.id, "assistant") === null) {
 		return continued(current, "unanswered", gapMinutes);
 	}
+	const history = deps.store.history(current.id);
 	const gate = deps.gate?.();
 	if (gate === undefined) {
 		log.warn("follow-up check", {

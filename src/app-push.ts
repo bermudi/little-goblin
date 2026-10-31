@@ -73,7 +73,7 @@ interface SubscriptionRow {
 interface AppPushDeps {
 	auth: Pick<AuthStore, "has" | "resolve">;
 	storeSecret?: ((name: string, value: string) => void) | undefined;
-	store: Pick<ConversationStore, "get" | "historyDetail" | "lastSeq">;
+	store: Pick<ConversationStore, "get" | "lastEntry" | "lastSeq">;
 	/** VAPID subject — an https contact URL or mailto. */
 	subject(): string;
 	send?: (
@@ -184,9 +184,7 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 		} else if (done.kind === "error") {
 			key = `error:${conv.id}:${deps.store.lastSeq(conv.id) ?? 0}:${randomUUID()}`;
 		} else {
-			const assistant = deps.store
-				.historyDetail(conv.id)
-				.findLast((e) => e.message.role === "assistant");
+			const assistant = deps.store.lastEntry(conv.id, "assistant");
 			key = `completed:${conv.id}:${assistant?.seq ?? deps.store.lastSeq(conv.id) ?? 0}`;
 		}
 		doneKeys.set(done, key);

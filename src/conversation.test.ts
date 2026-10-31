@@ -466,6 +466,55 @@ describe("compaction pointers", () => {
 		store.close();
 	});
 
+	test("compactions_conv_id index exists; modelEntries tail unchanged past the boundary", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("first")]); // 1
+		store.append(c.id, [msg("barge")]); // 2
+		store.append(
+			c.id,
+			[{ id: "a1", role: "assistant", parts: [{ type: "text", text: "late answer" }] }],
+			{ anchorSeq: 1 },
+		); // 3, causal 1
+		store.append(c.id, [msg("tail")]); // 4
+		store.setCompaction(c.id, {
+			boundarySeq: 2,
+			summary: "folded",
+			tokensBefore: 100,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		const idx = store.db
+			.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='index'")
+			.all()
+			.map((r) => r.name);
+		expect(idx).toContain("compactions_conv_id");
+		expect(store.modelEntries(c.id).map((e) => e.seq)).toEqual([2, 4]);
+		store.close();
+	});
+
+	test("lastEntry returns the causal-last message of a role, not the max-seq one", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [{ ...msg("first"), id: "u1" }]); // 1
+		store.append(c.id, [{ ...msg("second"), id: "u2" }]); // 2
+		store.append(
+			c.id,
+			[{ id: "a2", role: "assistant", parts: [{ type: "text", text: "answer two" }] }],
+			{ anchorSeq: 2 },
+		); // 3, causal 2
+		store.append(
+			c.id,
+			[{ id: "a1", role: "assistant", parts: [{ type: "text", text: "late answer one" }] }],
+			{ anchorSeq: 1 },
+		); // 4, causal 1 — max seq, but causally earlier
+		expect(store.lastEntry(c.id, "assistant")?.seq).toBe(3);
+		expect(store.lastEntry(c.id, "assistant")?.message.id).toBe("a2");
+		expect(store.lastEntry(c.id, "user")?.message.id).toBe("u2");
+		expect(store.lastEntry(c.id, "system")).toBeNull();
+		store.close();
+	});
+
 	test("without a pointer, modelEntries is exactly the causal view", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");

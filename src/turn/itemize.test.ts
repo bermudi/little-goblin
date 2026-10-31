@@ -195,6 +195,22 @@ describe("measurePrompt", () => {
 		).toThrow(TypeError);
 	});
 
+	test("a tool's JSON schema is converted once per tool object, not per measure", () => {
+		let accesses = 0;
+		const counting = {
+			description: "counting probe",
+			get inputSchema() {
+				accesses++;
+				return z.object({ cmd: z.string() });
+			},
+		};
+		const tools = { counting } as unknown as Parameters<typeof measurePrompt>[1];
+		const first = measurePrompt("sys", tools, []);
+		const second = measurePrompt("sys", tools, []);
+		expect(second.toolDefs).toBe(first.toolDefs);
+		expect(accesses).toBe(1);
+	});
+
 	test("tool schema conversion failures propagate", () => {
 		const invalid = tool({
 			inputSchema: z.object({ date: z.date() }),

@@ -134,12 +134,21 @@ function messageChars(message: ModelMessage): { history: number; tool: number } 
 	return { history, tool };
 }
 
+// zod → JSON-Schema conversion is ~0.45 ms/tool and the tool set is
+// constant across a turn's steps, while measurePrompt runs per step:
+// convert once per tool object, reuse thereafter.
+const jsonSchemaByTool = new WeakMap<object, unknown>();
+
 function toolDefsChars(tools: ToolSet): number {
 	let total = 0;
 	for (const [name, t] of Object.entries(tools)) {
 		let size = name.length;
 		if (typeof t.description === "string") size += t.description.length;
-		const js = asSchema(t.inputSchema).jsonSchema;
+		let js = jsonSchemaByTool.get(t);
+		if (js === undefined) {
+			js = asSchema(t.inputSchema).jsonSchema;
+			jsonSchemaByTool.set(t, js);
+		}
 		// An async schema converter can't be measured synchronously —
 		// the name+description floor still counts.
 		if (typeof (js as { then?: unknown }).then !== "function") size += jsonLen(js);

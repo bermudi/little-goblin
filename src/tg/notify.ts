@@ -148,6 +148,7 @@ export async function sendSkillProposedNotice(
 		return;
 	}
 	const thread = addr.threadId !== null ? { message_thread_id: addr.threadId } : {};
+	const sent: string[] = [];
 	for (const skill of skills) {
 		const installData = skillInstallData(conversationId, skill);
 		const discardData = skillDiscardData(conversationId, skill);
@@ -158,24 +159,33 @@ export async function sendSkillProposedNotice(
 				skill,
 			});
 		}
-		await withTimeout(
-			api.sendMessage(addr.chatId, `proposed skill: ${skill} — approve to install`, {
-				...thread,
-				...(buttonsRide
-					? {
-							reply_markup: {
-								inline_keyboard: [
-									[
-										{ text: "✅ Install", callback_data: installData },
-										{ text: "🚫 Discard", callback_data: discardData },
+		try {
+			await withTimeout(
+				api.sendMessage(addr.chatId, `proposed skill: ${skill} — approve to install`, {
+					...thread,
+					...(buttonsRide
+						? {
+								reply_markup: {
+									inline_keyboard: [
+										[
+											{ text: "✅ Install", callback_data: installData },
+											{ text: "🚫 Discard", callback_data: discardData },
+										],
 									],
-								],
-							},
-						}
-					: {}),
-			}),
-			"sendMessage (skill proposal notice)",
-		);
+								},
+							}
+						: {}),
+				}),
+				"sendMessage (skill proposal notice)",
+			);
+			sent.push(skill);
+		} catch (err) {
+			// One undeliverable skill must not abort the rest of the batch.
+			log.error("skill proposal notice failed for one skill", err, {
+				conversation: conversationId,
+				skill,
+			});
+		}
 	}
-	log.info("skill proposal notice sent", { conversation: conversationId, skills });
+	log.info("skill proposal notice sent", { conversation: conversationId, skills: sent });
 }

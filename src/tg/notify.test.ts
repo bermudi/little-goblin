@@ -168,6 +168,23 @@ describe("skill proposal notice send", () => {
 		expect(sends[2]?.text).toBe("proposed skill: b — approve to install");
 	});
 
+	test("one failing skill does not abort the rest of the batch", async () => {
+		const sends: string[] = [];
+		const api = {
+			sendMessage: async (_chatId: number, text: string) => {
+				if (text.includes("skill: bad")) throw new Error("chat blocked");
+				sends.push(text);
+			},
+		} as unknown as Api;
+		await expect(
+			sendSkillProposedNotice(api, "dm:42", ["good-a", "bad", "good-b"]),
+		).resolves.toBeUndefined();
+		expect(sends).toEqual([
+			"proposed skill: good-a — approve to install",
+			"proposed skill: good-b — approve to install",
+		]);
+	});
+
 	test("callback data over 64 bytes degrades to the conversational notice", async () => {
 		const { api, sends } = noticeApi();
 		const long = "a".repeat(64); // spec-legal name, worst case

@@ -201,7 +201,8 @@ async function localExtract(url: string, baseUrl?: string): Promise<Extracted | 
 		target,
 		{
 			headers: {
-				Accept: "text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.9,*/*;q=0.5",
+				Accept:
+					"text/markdown,text/html,application/xhtml+xml,text/plain;q=0.9,application/json;q=0.9,*/*;q=0.5",
 			},
 			redirect: "follow",
 		},
@@ -227,6 +228,8 @@ async function localExtract(url: string, baseUrl?: string): Promise<Extracted | 
 	}
 	const meta = resMeta(res, body.bytes.byteLength);
 	const text = new TextDecoder("utf-8", { fatal: false }).decode(body.bytes);
+	// A negotiated text/markdown body (#125) rides the TEXTUAL branch
+	// below as-is — no readability pass, frontmatter and all.
 	const looksHtml =
 		contentType === "text/html" ||
 		contentType === "application/xhtml+xml" ||
@@ -451,6 +454,7 @@ export const fetchTool = (deps: WebToolDeps) =>
 			const logMeta = (m: HttpMeta) => ({
 				status: m.status,
 				contentType: m.contentType,
+				markdown: m.contentType === "text/markdown",
 				bytes: m.bytes,
 			});
 			if ("error" in extracted) {

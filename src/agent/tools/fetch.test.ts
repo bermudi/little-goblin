@@ -118,6 +118,59 @@ describe("fetch tool — local", () => {
 		expect(produced).toBeLessThan(20);
 	}, 20_000);
 
+	test("a server that negotiates text/markdown gets its body back unchanged", async () => {
+		const markdown =
+			"---\ntitle: Changelog\n---\n\n# Changelog\n\n- <b>raw</b> markup stays\n" +
+			"- another shipped fix worth announcing in the changelog entry\n".repeat(6);
+		let sawAccept = "";
+		const base = serve((req) => {
+			sawAccept = req.headers.get("accept") ?? "";
+			if (sawAccept.includes("text/markdown")) {
+				return new Response(markdown, {
+					headers: { "content-type": "text/markdown; charset=utf-8" },
+				});
+			}
+			return new Response(ARTICLE_HTML, { headers: { "content-type": "text/html" } });
+		});
+		const out = (await exec(fetchTool(depsWith(undefined)), { url: `${base}/page` })) as string;
+		expect(sawAccept).toContain("text/markdown");
+		expect(out).toContain("title: Changelog");
+		expect(out).toContain("- <b>raw</b> markup stays");
+		expect(out).not.toContain("# The Title");
+	});
+
+	test("an HTML-only server still goes through readability", async () => {
+		const base = serve(
+			() => new Response(ARTICLE_HTML, { headers: { "content-type": "text/html" } }),
+		);
+		const out = (await exec(fetchTool(depsWith(undefined)), { url: `${base}/page` })) as string;
+		expect(out).toContain("# The Title");
+		expect(out).toContain("Sentence about the subject matter.");
+		expect(out).not.toContain("<article>");
+	});
+
+	test("a markdown response over the cap with no content-length is refused while streaming", async () => {
+		let produced = 0;
+		const chunk = new Uint8Array(1024 * 1024).fill(65);
+		const stream = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				produced += 1;
+				if (produced > 40) controller.close();
+				else controller.enqueue(chunk);
+			},
+		});
+		const base = serve(
+			() => new Response(stream, { headers: { "content-type": "text/markdown" } }),
+		);
+		const out = (await exec(fetchTool(depsWith(undefined)), { url: `${base}/big.md` })) as {
+			error: string;
+			kind: string;
+		};
+		expect(out.kind).toBe("too-large");
+		expect(out.error).toContain("8 MiB");
+		expect(produced).toBeLessThan(20);
+	}, 20_000);
+
 	test("multi-chunk stream within the cap assembles in order", async () => {
 		const parts = [
 			`${"a".repeat(90)}alpha\n`,

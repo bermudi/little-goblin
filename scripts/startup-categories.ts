@@ -5,7 +5,6 @@ export const startupCategories: readonly string[] = [
 	"startup config unreadable",
 	"startup refuses existing invocation",
 	"startup watch refuses missing invocation",
-	"startup clock unavailable",
 	"startup failed or restarted",
 	"startup identity predates attempted start",
 	"startup invocation changed",

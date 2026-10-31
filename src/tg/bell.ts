@@ -78,6 +78,7 @@ export function makeBellSink(
 			}
 			const publicUrl = deps.publicUrl();
 			let delivered = false;
+			let recorded = false;
 			for (const chat of deps.operators()) {
 				try {
 					const sent = await withTimeout(
@@ -113,6 +114,7 @@ export function makeBellSink(
 								},
 							]);
 						}
+						recorded = true;
 					} catch (err) {
 						log.error("spin-off ping landed but record/journal failed", err, {
 							conversation: conv.id,
@@ -144,6 +146,15 @@ export function makeBellSink(
 			if (pingKey !== undefined && !delivered) {
 				pingedResponses.delete(pingKey);
 				log.warn("spin-off ping reached no chat — response stays unpinged", {
+					conversation: conv.id,
+					trigger,
+				});
+			} else if (pingKey !== undefined && !recorded) {
+				// The ping landed but record/journal failed for every chat:
+				// releasing the dedup key lets a later bell re-ping and
+				// retry the bookkeeping instead of losing it silently.
+				pingedResponses.delete(pingKey);
+				log.warn("spin-off ping unrecorded in every chat — response stays unpinged", {
 					conversation: conv.id,
 					trigger,
 				});

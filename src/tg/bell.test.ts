@@ -204,10 +204,29 @@ describe("makeBellSink", () => {
 		h.store.close();
 	});
 
-	test("bookkeeping failure after a landed ping keeps the dedup key", async () => {
-		// Dedup keys on the send landing, not on bookkeeping — a record
-		// failure after delivery must not let a second bell re-ring.
+	test("bookkeeping failure in one chat keeps the dedup key when another chat recorded", async () => {
+		// Dedup releases only when NO chat recorded: one fully recorded
+		// ping is enough to keep the response marked as pinged.
 		const h = harness({ allowedUsers: [1, 7] });
+		const conv = appConv(h.store);
+		reply(h.store, conv.id, "done");
+		const realRecord = h.pings.record.bind(h.pings);
+		let calls = 0;
+		h.pings.record = (chat, messageId, convId) => {
+			calls++;
+			if (calls === 1) throw new Error("ping store wedged");
+			return realRecord(chat, messageId, convId);
+		};
+		await makeBellSink(h.deps, conv).onDone({ kind: "completed" });
+		expect(h.sent.map((s) => s.chat)).toEqual([1, 7]);
+		h.pings.record = realRecord;
+		await makeBellSink(h.deps, conv).onDone({ kind: "completed" });
+		expect(h.sent).toHaveLength(2);
+		h.store.close();
+	});
+
+	test("record failure after a landed ping leaves the response unpinged — the next bell retries", async () => {
+		const h = harness({ allowedUsers: [1] });
 		const conv = appConv(h.store);
 		reply(h.store, conv.id, "done");
 		const realRecord = h.pings.record.bind(h.pings);
@@ -215,10 +234,11 @@ describe("makeBellSink", () => {
 			throw new Error("ping store wedged");
 		};
 		await makeBellSink(h.deps, conv).onDone({ kind: "completed" });
-		expect(h.sent.map((s) => s.chat)).toEqual([1, 7]);
+		expect(h.sent.map((s) => s.chat)).toEqual([1]);
 		h.pings.record = realRecord;
 		await makeBellSink(h.deps, conv).onDone({ kind: "completed" });
-		expect(h.sent).toHaveLength(2);
+		expect(h.sent.map((s) => s.chat)).toEqual([1, 1]);
+		expect(h.pings.lookup(1, 1002)).toBe(conv.id);
 		h.store.close();
 	});
 

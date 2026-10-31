@@ -174,6 +174,11 @@ describe("invokesPassCliDirectly", () => {
 		// whitespace trips even when it's an argument, not a command.
 		"echo pass-cli",
 		"sh -c 'pass-cli item view x'",
+		'p""ass-cli item view x',
+		"pass-cl''i item view x",
+		"pa\\ss-cli item view x",
+		"'pass-cli' item view x",
+		'"pass-cli" item view x',
 	])("poisons %s", (cmd) => {
 		expect(invokesPassCliDirectly(cmd)).toBe(true);
 	});
@@ -184,6 +189,8 @@ describe("invokesPassCliDirectly", () => {
 		"mypass-cli --help",
 		"cat ~/.pass-cli-env",
 		"printf pass-cli-extra",
+		"pass-clix --help",
+		"my-pass-cli-tool --help",
 		"echo nothing relevant",
 	])("ignores %s", (cmd) => {
 		expect(invokesPassCliDirectly(cmd)).toBe(false);

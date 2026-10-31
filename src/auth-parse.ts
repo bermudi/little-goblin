@@ -71,7 +71,12 @@ export function parseAuthRecords(raw: string, file: string): AuthRecord[] {
 // conservative — `echo pass-cli` trips it too; the fix is always
 // "route through pass-keys".
 export function invokesPassCliDirectly(command: string): boolean {
-	return /(?:^|[\s;&|()"'`])(?:[^\s;&|()"'`/]*\/)*pass-cli(?:[\s;&|)"'`]|$)/.test(command);
+	// Shell word-splicing can hide the token: p""ass-cli, pass-cl''i,
+	// pa\ss-cli, 'pass-cli'. Unescape and drop quote characters before
+	// matching so spliced spellings normalize to the bare token; the
+	// boundary checks below still exclude pass-clix / my-pass-cli-tool.
+	const normalized = command.replace(/\\(.)/gs, "$1").replace(/["']/g, "");
+	return /(?:^|[\s;&|()`])(?:[^\s;&|()`/]*\/)*pass-cli(?:[\s;&|)`]|$)/.test(normalized);
 }
 
 // Shared by scripts/install-options.ts and src/health.ts: a `!`

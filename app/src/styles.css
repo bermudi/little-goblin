@@ -215,6 +215,38 @@ p code,
 	margin: 0 0.15rem;
 }
 
+/* ---------- tooltip ---------- */
+
+/* The app's own hint bubble — `title=` stays the semantic source in the
+   markup while tooltip.ts repaints the text here on hover/focus, because
+   the native box is browser chrome the stylesheet can't reach. Fixed to
+   the viewport so nothing clips it. Flat card: a background shift and a
+   hairline border, never a shadow. */
+.tooltip {
+	position: fixed;
+	top: 0;
+	left: 0;
+	z-index: 50;
+	max-width: 18rem;
+	padding: 0.3rem 0.55rem;
+	border: 1px solid var(--app-divider);
+	border-radius: 7px;
+	background: var(--app-gray-100);
+	color: var(--app-fg-muted);
+	font-size: 12px;
+	line-height: 1.45;
+	white-space: pre-wrap;
+	overflow-wrap: break-word;
+	pointer-events: none;
+	opacity: 0;
+	transition: opacity 120ms ease;
+}
+.tooltip.on {
+	opacity: 1;
+	/* The native courtesy delay — a passing cursor never sees the card. */
+	transition-delay: 350ms;
+}
+
 /* ---------- token gate ---------- */
 
 .gate {

@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
 import { telegramDoor } from "./api.ts";
 import { installTelegramFallback } from "./telegram.ts";
+import { installTooltips } from "./tooltip.ts";
 import "./styles.css";
 
 // Telegram's SDK is never fetched: /t/ shares the PWA's origin — the
@@ -16,6 +17,7 @@ async function boot(): Promise<void> {
 	// Synchronous, before first render: the door reads initData in a
 	// useState initializer.
 	if (telegramDoor()) installTelegramFallback();
+	installTooltips(document);
 	const root = document.getElementById("root");
 	if (root === null) throw new Error("no #root");
 	createRoot(root).render(<App />);

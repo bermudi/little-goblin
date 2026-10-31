@@ -1,10 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
 import { formatAddress, type ConversationAddress } from "../conversation.ts";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { setLogFile, setLogWriter } from "../log.ts";
+import { proposalFingerprint } from "../skill-decisions.ts";
+import { TelegramTimeoutError } from "./deadline.ts";
 import {
 	parseConversationAddress,
 	sendMemoryBlockedNotice,
 	sendMemoryOutageNotice,
+	sendRollMarker,
 	sendSkillProposedNotice,
 } from "./notify.ts";
 
@@ -153,15 +160,28 @@ describe("skill proposal notice send", () => {
 
 	test("one message per skill, each with the install/discard row", async () => {
 		const { api, sends } = noticeApi();
-		await sendSkillProposedNotice(api, "topic:-100200300:546216", ["pdf-tables"]);
-		await sendSkillProposedNotice(api, "dm:42", ["a", "b"]);
+		const proposedDir = mkdtempSync(join(tmpdir(), "goblin-notify-proposed-"));
+		for (const name of ["pdf-tables", "a", "b"]) {
+			mkdirSync(join(proposedDir, name), { recursive: true });
+			writeFileSync(join(proposedDir, name, "SKILL.md"), `# ${name}\n`);
+		}
+		await sendSkillProposedNotice(api, "topic:-100200300:546216", ["pdf-tables"], proposedDir);
+		await sendSkillProposedNotice(api, "dm:42", ["a", "b"], proposedDir);
 		expect(sends).toHaveLength(3);
 		expect(sends[0]).toMatchObject({ chatId: -100200300, threadId: 546216 });
 		expect(sends[0]?.text).toBe("proposed skill: pdf-tables — approve to install");
+		const fp = proposalFingerprint(proposedDir, "pdf-tables");
+		expect(fp).not.toBeNull();
 		expect(sends[0]?.keyboard).toEqual([
 			[
-				{ text: "✅ Install", callback_data: "skill:install:topic:-100200300:546216:pdf-tables" },
-				{ text: "🚫 Discard", callback_data: "skill:discard:topic:-100200300:546216:pdf-tables" },
+				{
+					text: "✅ Install",
+					callback_data: `skill:install:topic:-100200300:546216:pdf-tables#${fp}`,
+				},
+				{
+					text: "🚫 Discard",
+					callback_data: `skill:discard:topic:-100200300:546216:pdf-tables#${fp}`,
+				},
 			],
 		]);
 		expect(sends[1]?.text).toBe("proposed skill: a — approve to install");
@@ -188,10 +208,51 @@ describe("skill proposal notice send", () => {
 	test("callback data over 64 bytes degrades to the conversational notice", async () => {
 		const { api, sends } = noticeApi();
 		const long = "a".repeat(64); // spec-legal name, worst case
-		await sendSkillProposedNotice(api, "dm:42", [long]);
+		const proposedDir = mkdtempSync(join(tmpdir(), "goblin-notify-proposed-"));
+		mkdirSync(join(proposedDir, long), { recursive: true });
+		writeFileSync(join(proposedDir, long, "SKILL.md"), "# long\n");
+		await sendSkillProposedNotice(api, "dm:42", [long], proposedDir);
 		expect(sends).toHaveLength(1);
 		expect(sends[0]?.text).toBe(`proposed skill: ${long} — approve to install`);
 		expect(sends[0]?.keyboard).toBeUndefined();
+	});
+
+	test("no fingerprintable proposal on disk degrades to the conversational notice", async () => {
+		const { api, sends } = noticeApi();
+		const proposedDir = mkdtempSync(join(tmpdir(), "goblin-notify-proposed-"));
+		await sendSkillProposedNotice(api, "dm:42", ["ghost"], proposedDir);
+		expect(sends).toHaveLength(1);
+		expect(sends[0]?.text).toBe("proposed skill: ghost — approve to install");
+		expect(sends[0]?.keyboard).toBeUndefined();
+	});
+});
+
+describe("roll marker", () => {
+	test("a timeout resolves without resending, logged at error as may-land-late with the marker text", async () => {
+		const lines: Array<Record<string, unknown>> = [];
+		setLogFile("/tmp/goblin-notify-test.log");
+		setLogWriter((_path, line) => {
+			lines.push(JSON.parse(line) as Record<string, unknown>);
+		});
+		let calls = 0;
+		const api = {
+			sendMessage: async () => {
+				calls++;
+				throw new TelegramTimeoutError("sendMessage (roll marker)", 30_000);
+			},
+		} as unknown as Api;
+		try {
+			await expect(sendRollMarker(api, 42, "dm:42:2")).resolves.toBeUndefined();
+		} finally {
+			setLogFile(null);
+			setLogWriter(null);
+		}
+		expect(calls).toBe(1); // abandoned send is never resent
+		const line = lines.find((l) => String(l.msg).includes("roll marker"));
+		expect(line).toBeDefined();
+		expect(line!.level).toBe("error");
+		expect(String(line!.msg)).toContain("may land late");
+		expect(line!.marker).toBe("— new conversation —");
 	});
 });
 

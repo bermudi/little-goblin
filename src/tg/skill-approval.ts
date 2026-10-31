@@ -4,32 +4,50 @@ import { log } from "../log.ts";
 import {
 	appendSkillResolution,
 	decideSkillProposal,
+	proposalFingerprint,
 	skillResolutionText,
 } from "../skill-decisions.ts";
 import { withTimeout } from "./deadline.ts";
 
-export const SKILL_CALLBACK_RE = /^skill:(install|discard):(.+):([^:]+)$/;
+// The fingerprint rides after '#': skill names and conversation ids can
+// contain ':' and hex, never '#', so the split stays unambiguous.
+export const SKILL_CALLBACK_RE = /^skill:(install|discard):(.+):([^:#]+)(?:#([0-9a-f]{12}))?$/;
 
-export function skillInstallData(conversationId: string, skill: string): string {
-	return `skill:install:${conversationId}:${skill}`;
+export function skillInstallData(
+	conversationId: string,
+	skill: string,
+	fingerprint?: string,
+): string {
+	return fingerprint === undefined
+		? `skill:install:${conversationId}:${skill}`
+		: `skill:install:${conversationId}:${skill}#${fingerprint}`;
 }
 
-export function skillDiscardData(conversationId: string, skill: string): string {
-	return `skill:discard:${conversationId}:${skill}`;
+export function skillDiscardData(
+	conversationId: string,
+	skill: string,
+	fingerprint?: string,
+): string {
+	return fingerprint === undefined
+		? `skill:discard:${conversationId}:${skill}`
+		: `skill:discard:${conversationId}:${skill}#${fingerprint}`;
 }
 
 const NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
-export function parseSkillCallback(
-	data: string,
-): { op: "install" | "discard"; conversationId: string; skill: string } | null {
+export function parseSkillCallback(data: string): {
+	op: "install" | "discard";
+	conversationId: string;
+	skill: string;
+	fingerprint: string | null;
+} | null {
 	const m = SKILL_CALLBACK_RE.exec(data);
 	if (m === null) return null;
 	const op = m[1] as "install" | "discard";
 	const conversationId = m[2]!;
 	const skill = m[3]!;
 	if (!NAME_RE.test(skill)) return null;
-	return { op, conversationId, skill };
+	return { op, conversationId, skill, fingerprint: m[4] ?? null };
 }
 
 export interface SkillApprovalQuery {
@@ -92,7 +110,12 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 	};
 
 	const runDecision = async (
-		parsed: { op: "install" | "discard"; conversationId: string; skill: string },
+		parsed: {
+			op: "install" | "discard";
+			conversationId: string;
+			skill: string;
+			fingerprint: string | null;
+		},
 		query: SkillApprovalQuery | null,
 	): Promise<string | undefined> => {
 		const { op, conversationId, skill } = parsed;
@@ -107,6 +130,23 @@ export function startSkillApproval(deps: SkillApprovalDeps): SkillApproval {
 				log.debug("skill proposal stamp failed", { skill, error: String(err) });
 			});
 		};
+
+		// The tap decides the proposal the operator saw: a fingerprint
+		// mismatch (or a legacy button with none) means the reviewer has
+		// parked new content since the notice — never install or discard
+		// it unseen. A gone proposal (null fingerprint) keeps the "gone"
+		// path in decideSkillProposal.
+		const current = proposalFingerprint(deps.proposedDir, skill);
+		if (current !== null && parsed.fingerprint !== current) {
+			log.warn("skill proposal decision refused — proposal changed since notice", {
+				skill,
+				conversation: conversationId,
+			});
+			await stamp(
+				`⚠ skill ${skill} not ${op === "install" ? "installed" : "discarded"} — proposal changed, review again`,
+			);
+			return "proposal changed, review again";
+		}
 
 		const outcome = decideSkillProposal(deps, skill, op, { conversation: conversationId });
 		if (!outcome.ok && outcome.reason === "gone") {

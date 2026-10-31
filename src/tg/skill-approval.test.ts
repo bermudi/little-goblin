@@ -13,6 +13,7 @@ import type { Api } from "grammy";
 import { fakeApi } from "../testkit/fake-api.ts";
 import { describe, expect, test } from "bun:test";
 import { setLogFile, setLogWriter } from "../log.ts";
+import { proposalFingerprint } from "../skill-decisions.ts";
 import {
 	parseSkillCallback,
 	skillDiscardData,
@@ -28,6 +29,8 @@ interface Harness {
 	}): Promise<void>;
 	skillsDir: string;
 	proposedDir: string;
+	installData(conversationId: string, skill: string): string;
+	discardData(conversationId: string, skill: string): string;
 	edits: Array<{ chatId: number; messageId: number; text: string; keyboard: unknown }>;
 	strips: number[];
 	answers: Array<string | undefined>;
@@ -104,6 +107,10 @@ function harness(initialProposals: string[], initialSkills: string[] = []): Harn
 			}),
 		skillsDir,
 		proposedDir,
+		installData: (conversationId: string, skill: string) =>
+			skillInstallData(conversationId, skill, proposalFingerprint(proposedDir, skill) ?? undefined),
+		discardData: (conversationId: string, skill: string) =>
+			skillDiscardData(conversationId, skill, proposalFingerprint(proposedDir, skill) ?? undefined),
 		edits,
 		strips,
 		answers,
@@ -114,15 +121,28 @@ function harness(initialProposals: string[], initialSkills: string[] = []): Harn
 
 describe("skill callback parse", () => {
 	test("round-trips install and discard data", () => {
+		expect(parseSkillCallback(skillInstallData("dm:42", "smoke-test", "0123456789ab"))).toEqual({
+			op: "install",
+			conversationId: "dm:42",
+			skill: "smoke-test",
+			fingerprint: "0123456789ab",
+		});
+		expect(parseSkillCallback(skillDiscardData("tg:-100:5", "smoke-test", "0123456789ab"))).toEqual(
+			{
+				op: "discard",
+				conversationId: "tg:-100:5",
+				skill: "smoke-test",
+				fingerprint: "0123456789ab",
+			},
+		);
+	});
+
+	test("legacy data without a fingerprint parses with a null fingerprint", () => {
 		expect(parseSkillCallback(skillInstallData("dm:42", "smoke-test"))).toEqual({
 			op: "install",
 			conversationId: "dm:42",
 			skill: "smoke-test",
-		});
-		expect(parseSkillCallback(skillDiscardData("tg:-100:5", "smoke-test"))).toEqual({
-			op: "discard",
-			conversationId: "tg:-100:5",
-			skill: "smoke-test",
+			fingerprint: null,
 		});
 	});
 
@@ -150,7 +170,7 @@ describe("skill approval taps", () => {
 		const done = silenceLogs();
 		const h = harness(["smoke-test"]);
 		try {
-			await h.handle({ data: skillInstallData("dm:42", "smoke-test") });
+			await h.handle({ data: h.installData("dm:42", "smoke-test") });
 			expect(existsSync(join(h.skillsDir, "smoke-test", "SKILL.md"))).toBe(true);
 			expect(existsSync(join(h.proposedDir, "smoke-test"))).toBe(false);
 			expect(h.edits).toHaveLength(1);
@@ -169,7 +189,7 @@ describe("skill approval taps", () => {
 		const done = silenceLogs();
 		const h = harness(["smoke-test"], ["smoke-test"]);
 		try {
-			await h.handle({ data: skillInstallData("dm:42", "smoke-test") });
+			await h.handle({ data: h.installData("dm:42", "smoke-test") });
 			expect(existsSync(join(h.skillsDir, "smoke-test", "SKILL.md"))).toBe(true);
 			const text = (await Bun.file(join(h.skillsDir, "smoke-test", "SKILL.md")).text()) as string;
 			expect(text).toBe("# smoke-test\n"); // the proposal, not the live copy
@@ -188,7 +208,7 @@ describe("skill approval taps", () => {
 			const outside = join(h.proposedDir, "..", "outside-skill");
 			mkdirSync(outside, { recursive: true });
 			symlinkSync(outside, join(h.skillsDir, "smoke-test"));
-			await h.handle({ data: skillInstallData("dm:42", "smoke-test") });
+			await h.handle({ data: h.installData("dm:42", "smoke-test") });
 			expect(existsSync(join(h.proposedDir, "smoke-test", "SKILL.md"))).toBe(true);
 			expect(h.edits[0]!.text).toContain("live skill is a symlink");
 			expect(h.appends).toEqual([]);
@@ -210,8 +230,9 @@ describe("skill approval taps", () => {
 			// An unreadable parent makes the proposal's lstat throw EACCES —
 			// a real error, not absence: nothing decides and the tap must
 			// answer the failure, not dead-press.
+			const data = h.installData("dm:42", "smoke-test");
 			chmodSync(h.proposedDir, 0o000);
-			await h.handle({ data: skillInstallData("dm:42", "smoke-test") });
+			await h.handle({ data });
 			expect(h.strips).toEqual([]);
 			expect(h.edits).toEqual([]);
 			expect(h.appends).toEqual([]);
@@ -249,7 +270,7 @@ describe("skill approval taps", () => {
 		const done = silenceLogs();
 		const h = harness(["smoke-test"]);
 		try {
-			await h.handle({ data: skillDiscardData("dm:42", "smoke-test") });
+			await h.handle({ data: h.discardData("dm:42", "smoke-test") });
 			expect(existsSync(join(h.proposedDir, "smoke-test"))).toBe(false);
 			expect(existsSync(join(h.skillsDir, "smoke-test"))).toBe(false);
 			expect(h.edits[0]!.text).toBe("🚫 skill smoke-test discarded — proposal deleted.");
@@ -283,10 +304,59 @@ describe("skill approval taps", () => {
 		const done = silenceLogs();
 		const h = harness(["smoke-test"]);
 		try {
-			await h.handle({ data: skillInstallData("dm:42", "smoke-test"), message: null });
+			await h.handle({ data: h.installData("dm:42", "smoke-test"), message: null });
 			expect(existsSync(join(h.skillsDir, "smoke-test", "SKILL.md"))).toBe(true);
 			expect(h.edits).toEqual([]);
 			expect(h.appends).toHaveLength(1);
+		} finally {
+			h.cleanup();
+			done();
+		}
+	});
+
+	test("a proposal changed after the notice does not install — review again", async () => {
+		const done = silenceLogs();
+		const h = harness(["smoke-test"]);
+		try {
+			const data = h.installData("dm:42", "smoke-test");
+			writeFileSync(join(h.proposedDir, "smoke-test", "SKILL.md"), "# smoke-test v2\n");
+			await h.handle({ data });
+			expect(h.answers).toEqual(["proposal changed, review again"]);
+			expect(h.edits[0]!.text).toContain("proposal changed");
+			expect(existsSync(join(h.proposedDir, "smoke-test", "SKILL.md"))).toBe(true);
+			expect(existsSync(join(h.skillsDir, "smoke-test"))).toBe(false);
+			expect(h.appends).toEqual([]);
+		} finally {
+			h.cleanup();
+			done();
+		}
+	});
+
+	test("a legacy tap without a fingerprint does not install the current proposal", async () => {
+		const done = silenceLogs();
+		const h = harness(["smoke-test"]);
+		try {
+			await h.handle({ data: skillInstallData("dm:42", "smoke-test") });
+			expect(h.answers).toEqual(["proposal changed, review again"]);
+			expect(existsSync(join(h.proposedDir, "smoke-test", "SKILL.md"))).toBe(true);
+			expect(existsSync(join(h.skillsDir, "smoke-test"))).toBe(false);
+			expect(h.appends).toEqual([]);
+		} finally {
+			h.cleanup();
+			done();
+		}
+	});
+
+	test("a changed proposal is not discarded on a stale tap either", async () => {
+		const done = silenceLogs();
+		const h = harness(["smoke-test"]);
+		try {
+			const data = h.discardData("dm:42", "smoke-test");
+			writeFileSync(join(h.proposedDir, "smoke-test", "SKILL.md"), "# smoke-test v2\n");
+			await h.handle({ data });
+			expect(h.answers).toEqual(["proposal changed, review again"]);
+			expect(existsSync(join(h.proposedDir, "smoke-test", "SKILL.md"))).toBe(true);
+			expect(h.appends).toEqual([]);
 		} finally {
 			h.cleanup();
 			done();
@@ -300,7 +370,7 @@ describe("skill approval taps", () => {
 			// A regular file where skills/ must be a directory — lstatSync
 			// fails ENOTDIR, which is deliberately not "gone".
 			writeFileSync(h.skillsDir, "not a dir\n");
-			await h.handle({ data: skillInstallData("dm:42", "smoke-test") });
+			await h.handle({ data: h.installData("dm:42", "smoke-test") });
 			expect(h.answers).toEqual(["internal error — nothing applied; check goblin logs"]);
 			// Nothing was decided — the proposal stands for a retry.
 			expect(existsSync(join(h.proposedDir, "smoke-test", "SKILL.md"))).toBe(true);

@@ -4,8 +4,8 @@
 // resolution history event is the durable correction to the reviewer's
 // "parked, not installed" claim.
 
-import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { log } from "./log.ts";
@@ -114,6 +114,45 @@ function discardProposal(
 	// regenerable reviewer artifact, never operator-authored work.
 	rmSync(proposed, { recursive: true, force: true });
 	return { ok: true };
+}
+
+/** Short content fingerprint of a staged proposal — the value approval
+ * buttons bind to, so a tap decides the proposal the operator saw, not
+ * whatever the reviewer parked later. First 12 hex of sha256 over the
+ * sorted (relative path, bytes) walk; symlinks are named, never followed.
+ * Null when there is no fingerprintable proposal (gone, symlink, not a
+ * directory); non-ENOENT filesystem errors propagate like everywhere else
+ * in this module. */
+export function proposalFingerprint(proposedDir: string, skill: string): string | null {
+	const root = join(proposedDir, skill);
+	let stats;
+	try {
+		stats = lstatSync(root);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		return null;
+	}
+	if (stats.isSymbolicLink() || !stats.isDirectory()) return null;
+	const hash = createHash("sha256");
+	const walk = (dir: string, rel: string): void => {
+		const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+			a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+		);
+		for (const entry of entries) {
+			const childRel = rel === "" ? entry.name : `${rel}/${entry.name}`;
+			if (entry.isSymbolicLink()) {
+				hash.update(`L ${childRel}\n`);
+			} else if (entry.isDirectory()) {
+				walk(join(dir, entry.name), childRel);
+			} else if (entry.isFile()) {
+				hash.update(`F ${childRel}\n`);
+				hash.update(readFileSync(join(dir, entry.name)));
+				hash.update("\n");
+			}
+		}
+	};
+	walk(root, "");
+	return hash.digest("hex").slice(0, 12);
 }
 
 // logFields carries the door's context (conversation, actor) onto the

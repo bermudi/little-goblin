@@ -1,6 +1,7 @@
 import type { Api } from "grammy";
 import { channelOf, parseAddress } from "../conversation.ts";
 import { log } from "../log.ts";
+import { proposalFingerprint } from "../skill-decisions.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { skillDiscardData, skillInstallData } from "./skill-approval.ts";
 
@@ -30,10 +31,17 @@ export async function sendRollMarker(
 		);
 	} catch (err) {
 		if (err instanceof TelegramTimeoutError) {
-			log.warn("dm roll marker delivery uncertain — send timed out", {
+			// A timeout abandons the send, it does not cancel it (deadline.ts):
+			// the marker may land late, after the answer it was meant to
+			// precede. Resending could duplicate it and throwing would break
+			// the fire-and-forget callers (wake.ts voids markRoll; intake
+			// awaits this before admission), so the honest surface is this
+			// error line carrying the marker text for the operator to spot.
+			log.error("dm roll marker delivery uncertain — send timed out, may land late", err, {
 				chat: chatId,
 				conversation: toConversation,
 				label: err.label,
+				marker: ROLL_MARKER,
 			});
 			return;
 		}
@@ -130,6 +138,7 @@ export async function sendSkillProposedNotice(
 	api: Api | null,
 	conversationId: string,
 	skills: string[],
+	proposedDir?: string,
 ): Promise<void> {
 	const addr = noticeDoor(conversationId);
 	if (addr === "app" || addr === "guest") {
@@ -150,20 +159,33 @@ export async function sendSkillProposedNotice(
 	const thread = addr.threadId !== null ? { message_thread_id: addr.threadId } : {};
 	const sent: string[] = [];
 	for (const skill of skills) {
-		const installData = skillInstallData(conversationId, skill);
-		const discardData = skillDiscardData(conversationId, skill);
-		const buttonsRide = installData.length <= 64 && discardData.length <= 64;
+		// Buttons bind to the proposal's content fingerprint: a tap on a
+		// since-changed proposal is refused at the door. No fingerprintable
+		// proposal (or callback data over Telegram's 64-byte cap) degrades
+		// to the conversational notice — never an unbound button.
+		const fingerprint = proposedDir === undefined ? null : proposalFingerprint(proposedDir, skill);
+		const installData =
+			fingerprint === null ? null : skillInstallData(conversationId, skill, fingerprint);
+		const discardData =
+			fingerprint === null ? null : skillDiscardData(conversationId, skill, fingerprint);
+		const buttonsRide =
+			installData !== null &&
+			discardData !== null &&
+			installData.length <= 64 &&
+			discardData.length <= 64;
 		if (!buttonsRide) {
-			log.info("skill proposal notice — callback data over 64 bytes; conversational only", {
+			log.info("skill proposal notice — no tappable buttons; conversational only", {
 				conversation: conversationId,
 				skill,
+				reason:
+					fingerprint === null ? "no fingerprintable proposal" : "callback data over 64 bytes",
 			});
 		}
 		try {
 			await withTimeout(
 				api.sendMessage(addr.chatId, `proposed skill: ${skill} — approve to install`, {
 					...thread,
-					...(buttonsRide
+					...(buttonsRide && installData !== null && discardData !== null
 						? {
 								reply_markup: {
 									inline_keyboard: [

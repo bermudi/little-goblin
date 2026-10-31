@@ -517,7 +517,7 @@ async function boot() {
 		observation: cacheObservations,
 		paths,
 		notify: (conversationId, skills) =>
-			sendSkillProposedNotice(tg?.bot.api ?? null, conversationId, skills),
+			sendSkillProposedNotice(tg?.bot.api ?? null, conversationId, skills, paths.skillsProposed()),
 		recordSources: (conversationId, reviewId, skills) => {
 			for (const skill of skills)
 				skillSources.record(conversationId, skill, "reviewer", undefined, reviewId);

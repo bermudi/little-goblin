@@ -56,7 +56,9 @@ apply next turn without interrupting the current answer.
   land — **never resend**: stop the turn and best-effort send a "delivery
   uncertain" notice (fencing suppresses retries); a sendVoice timeout
   likewise stops voice, no text fallback. Flood control: a 429's
-  `retry_after` is waited out once (bounded), then the 429 propagates.
+  `retry_after` is waited out (bounded retries, 20s cumulative cap) with
+  +0–250ms jitter per wait so simultaneous callers don't re-collide in
+  lockstep, then the 429 propagates.
 - **Reply ratings**: 👍/👎 and the 🔊 ride a clean-completed reply's last
   bubble; errors, fenced, voice-mode, and guest replies get none. The
   callback is only the Telegram adapter over the shared record-only
@@ -148,7 +150,11 @@ warn-logged.
 
 **The marker.** Fresh-conversation delivery sends the boundary marker before
 admission work — first, so the boundary shows before the answer; delivery,
-not history (in neither conversation's events).
+not history (in neither conversation's events). A marker send that times
+out is abandoned, never resent and never thrown at the fire-and-forget
+callers — but it may still land late, after the answer, so the timeout is
+logged at error carrying the marker text (`— new conversation —`) for the
+operator to spot in the chat (ruling 2026-10-31).
 
 **Settings stay per conversation** (operator ruling): `/voice` and `/memory`
 belong to the conversation they were set in; a fresh one starts at the
@@ -418,3 +424,13 @@ Invariants:
   tap time, and invokes only when the conversation still exists and
   its epoch still matches the capture — anything else is stamped
   stale/gone, never submitted.
+
+**Skill proposal taps are fingerprint-bound (ruling 2026-10-31).** The
+reviewer's proposal notice carries a short content fingerprint of the
+staged proposal (12 hex of sha256 over its files) in the ✅/🚫 callback
+data. A tap installs or discards only when the current on-disk proposal
+still hashes to it; a mismatch — or a legacy button carrying no
+fingerprint — answers "proposal changed, review again" and applies
+nothing, so a proposal the reviewer re-parked after the notice is never
+installed unseen. No fingerprintable proposal, or data over the 64-byte
+callback cap, degrades the notice to conversational approval.

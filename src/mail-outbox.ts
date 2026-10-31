@@ -15,7 +15,7 @@ import {
 	type ConversationTarget,
 } from "./targets.ts";
 
-export type OutboxStatus = "pending" | "sent" | "cancelled" | "expired";
+export type OutboxStatus = "pending" | "sending" | "sent" | "cancelled" | "expired";
 
 export interface OutboxEntry {
 	id: number;
@@ -59,11 +59,24 @@ export interface OutboxStore {
 	 *  pending — a double-tap or a sweeper race resolves to one winner. */
 	decide(
 		id: number,
-		to: Exclude<OutboxStatus, "pending">,
+		to: Exclude<OutboxStatus, "pending" | "sending">,
 		now?: Date,
 		sentId?: string,
 		actor?: string,
 	): boolean;
+	/** Claim a pending row for a Gmail send (pending → sending), recorded
+	 *  BEFORE the send so a crash mid-send never leaves a row the sweep
+	 *  can stamp "never sent". Only the claim holder may complete,
+	 *  release, or cancel the claim. */
+	claimSend(id: number, actor?: string): boolean;
+	/** Settle a claimed row as sent with Gmail's message id. */
+	completeSend(id: number, sentId: string, now?: Date, actor?: string): boolean;
+	/** Release a claim back to pending — the send provably failed, so the
+	 *  draft is re-tappable. */
+	releaseSend(id: number): boolean;
+	/** Settle a claimed row as cancelled — the operator abandons a claim
+	 *  whose send outcome is unknown. */
+	cancelSending(id: number, now?: Date, actor?: string): boolean;
 	/** Pending rows in queue order — the operator's actionable inbox. */
 	pending(): OutboxEntry[];
 	/** Mark every expired pending row; the watcher edits their drafts.
@@ -84,7 +97,7 @@ const rowSchema = z.object({
 	reply_to_id: z.string().nullable(),
 	target: z.string().refine(validTarget),
 	draft_message_id: z.number().nullable(),
-	status: z.enum(["pending", "sent", "cancelled", "expired"]),
+	status: z.enum(["pending", "sending", "sent", "cancelled", "expired"]),
 	created_at: z.string(),
 	expires_at: z.string(),
 	decided_at: z.string().nullable(),
@@ -178,6 +191,18 @@ export function openOutbox(dbPath: string): OutboxStore {
 	const qDecide = db.query(
 		"UPDATE mail_outbox SET status = ?, decided_at = ?, sent_id = ?, decided_by = ? WHERE id = ? AND status = 'pending'",
 	);
+	const qClaim = db.query(
+		"UPDATE mail_outbox SET status = 'sending' WHERE id = ? AND status = 'pending'",
+	);
+	const qComplete = db.query(
+		"UPDATE mail_outbox SET status = 'sent', decided_at = ?, sent_id = ?, decided_by = ? WHERE id = ? AND status = 'sending'",
+	);
+	const qRelease = db.query(
+		"UPDATE mail_outbox SET status = 'pending' WHERE id = ? AND status = 'sending'",
+	);
+	const qCancelSending = db.query(
+		"UPDATE mail_outbox SET status = 'cancelled', decided_at = ?, decided_by = ? WHERE id = ? AND status = 'sending'",
+	);
 	const qPending = db.query("SELECT * FROM mail_outbox WHERE status = 'pending' ORDER BY id");
 	const qExpired = db.query(
 		"SELECT * FROM mail_outbox WHERE status = 'pending' AND expires_at <= ? ORDER BY id",
@@ -228,6 +253,49 @@ export function openOutbox(dbPath: string): OutboxStore {
 			if (res.changes === 0) return false;
 			const entry = rowToEntry(qGet.get(id));
 			log.info(`mail outbox ${to}`, {
+				outbox: id,
+				to: entry.to.map(domainOf),
+				...(actor !== undefined ? { decidedBy: actor } : {}),
+			});
+			return true;
+		},
+
+		claimSend(id, actor) {
+			const res = qClaim.run(id);
+			if (res.changes === 0) return false;
+			const entry = rowToEntry(qGet.get(id));
+			log.info("mail outbox sending", {
+				outbox: id,
+				to: entry.to.map(domainOf),
+				...(actor !== undefined ? { decidedBy: actor } : {}),
+			});
+			return true;
+		},
+
+		completeSend(id, sentId, now = new Date(), actor) {
+			const res = qComplete.run(now.toISOString(), sentId, actor ?? null, id);
+			if (res.changes === 0) return false;
+			const entry = rowToEntry(qGet.get(id));
+			log.info("mail outbox sent", {
+				outbox: id,
+				to: entry.to.map(domainOf),
+				...(actor !== undefined ? { decidedBy: actor } : {}),
+			});
+			return true;
+		},
+
+		releaseSend(id) {
+			const res = qRelease.run(id);
+			if (res.changes === 0) return false;
+			log.info("mail outbox send claim released — draft pending again", { outbox: id });
+			return true;
+		},
+
+		cancelSending(id, now = new Date(), actor) {
+			const res = qCancelSending.run(now.toISOString(), actor ?? null, id);
+			if (res.changes === 0) return false;
+			const entry = rowToEntry(qGet.get(id));
+			log.info("mail outbox cancelled", {
 				outbox: id,
 				to: entry.to.map(domainOf),
 				...(actor !== undefined ? { decidedBy: actor } : {}),

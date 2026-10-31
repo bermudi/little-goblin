@@ -54,9 +54,9 @@ reproduces the checkpoint contract below with no new infrastructure.
   Only a callback from an `operators` id sends, via a send token no tool
   path and no skill ever touches; threading resolves at send time from
   the stored reply target over the read credential (the send-only scope
-  would 403 it). The row decides *after* Gmail accepts the send — a
-  crash between the two leaves a re-tappable pending row (a visible
-  duplicate on retry), never a silent loss — and only pending rows can
+  would 403 it). The row's *sent* verdict lands only after Gmail
+  accepts the send — the claim before it (next bullet) is what keeps a
+  crash between the two from ever reading as "never sent" — and only pending rows can
   send: cancelled, expired, and decided rows never do, while a restart
   keeps pending rows tappable. A Telegram timeout while posting proves
   nothing: keep the row pending, report the uncertainty, never repost
@@ -64,6 +64,16 @@ reproduces the checkpoint contract below with no new infrastructure.
   expires. The operator checks Telegram before requesting a replacement.
   Honest boundary: goblin already holds full-bash same-uid trust, so
   this stops a *tricked* model, not a hostile one.
+- **The send intent is recorded before Gmail (ruling 2026-10-31).** A
+  tap first claims the row `pending → sending`; only then does the
+  Gmail call run, settling `sending → sent` with the message id. A
+  failed send call releases the claim back to pending (re-tappable, as
+  before). A crash after the claim — even after Gmail accepted — leaves
+  a `sending` row: the expiry sweep only ever takes pending rows, so it
+  can never stamp "never sent" over a send that may have landed, a Send
+  tap on the stuck row answers busy instead of resending, and the
+  operator abandons the claim with Cancel (stamped outcome-unknown,
+  check Gmail Sent first) once they have looked.
 - **Watcher ownership and shutdown.** One mail watcher per programs
   store; duplicate starts throw until the stop settles, and stop fences
   new scans while joining in-flight work.

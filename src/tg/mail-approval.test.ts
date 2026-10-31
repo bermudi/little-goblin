@@ -724,7 +724,9 @@ describe("the expiry sweep", () => {
 		// instead of stamping a lie.
 		clock = new Date(NOW.getTime() + OUTBOX_TTL_MS + 60_000);
 		await gate.sweep();
-		expect(outbox.get(row.id)!.status).toBe("pending");
+		// Claimed ("sending") before the Gmail call — the sweep can no
+		// longer stamp it "never sent" mid-send or after a crash.
+		expect(outbox.get(row.id)!.status).toBe("sending");
 		expect(calls.edits).toHaveLength(0);
 		release();
 		await first;

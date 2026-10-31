@@ -137,6 +137,51 @@ describe("mail outbox", () => {
 		expect(s.get(done.id)!.status).toBe("cancelled");
 	});
 
+	test("claimSend takes a pending row once; completeSend settles it from sending", () => {
+		const s = store();
+		const row = s.queue({ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS }, NOW);
+		expect(s.claimSend(row.id, "app")).toBe(true);
+		expect(s.get(row.id)!.status).toBe("sending");
+		// A second claim (double-tap, another door) loses the CAS.
+		expect(s.claimSend(row.id, "app")).toBe(false);
+		// The generic decide stays pending-only — it cannot settle a claim.
+		expect(s.decide(row.id, "cancelled", NOW)).toBe(false);
+		expect(s.completeSend(row.id, "gmail-1", NOW, "app")).toBe(true);
+		const back = s.get(row.id)!;
+		expect(back.status).toBe("sent");
+		expect(back.sentId).toBe("gmail-1");
+		expect(back.decidedBy).toBe("app");
+	});
+
+	test("releaseSend returns a claimed row to pending for a retry", () => {
+		const s = store();
+		const row = s.queue({ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS }, NOW);
+		expect(s.claimSend(row.id)).toBe(true);
+		expect(s.releaseSend(row.id)).toBe(true);
+		expect(s.get(row.id)!.status).toBe("pending");
+		expect(s.releaseSend(row.id)).toBe(false); // no claim to release
+	});
+
+	test("expireDue never takes a sending row — a claimed send is not 'never sent'", () => {
+		const s = store();
+		const row = s.queue(
+			{ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS },
+			new Date(NOW.getTime() - OUTBOX_TTL_MS - 1000),
+		);
+		expect(s.claimSend(row.id)).toBe(true);
+		expect(s.expireDue(NOW)).toEqual([]);
+		expect(s.get(row.id)!.status).toBe("sending");
+	});
+
+	test("cancelSending settles a claimed row the operator abandons", () => {
+		const s = store();
+		const row = s.queue({ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS }, NOW);
+		expect(s.claimSend(row.id)).toBe(true);
+		expect(s.cancelSending(row.id, NOW, "app")).toBe(true);
+		expect(s.get(row.id)!.status).toBe("cancelled");
+		expect(s.cancelSending(row.id, NOW, "app")).toBe(false);
+	});
+
 	test("expireDue leaves excluded rows pending — a mid-send draft is not the sweep's", () => {
 		const s = store();
 		const sending = s.queue(

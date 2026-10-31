@@ -187,6 +187,30 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 		if (row === null) return { kind: "gone" };
 		const lane = laneFor(row);
 		const now = deps.now?.() ?? new Date();
+		if (row.status === "sending") {
+			// A claimed row: a live send in this process is busy; a claim
+			// with no live send is a crash survivor — its Gmail outcome is
+			// unknown, so Send never resends it, but the operator can
+			// abandon the claim explicitly once Gmail is checked.
+			if (inFlight.has(id)) return { kind: "busy", row };
+			if (action === "cancel") {
+				if (!deps.outbox.cancelSending(id, now, actor)) {
+					const fresh = deps.outbox.get(id);
+					return fresh === null ? { kind: "gone" } : { kind: "settled", row: fresh };
+				}
+				const fresh = deps.outbox.get(id)!;
+				await lane.settle(
+					fresh,
+					`🚫 Draft #${id} cancelled — the send outcome is unknown; check Gmail Sent before re-queueing.`,
+					opts,
+				);
+				return { kind: "cancelled", row: fresh };
+			}
+			log.warn("mail tap on a stuck sending row — send outcome unknown, not resending", {
+				outbox: id,
+			});
+			return { kind: "busy", row };
+		}
 		if (row.status !== "pending") {
 			await lane.strip(row, opts);
 			return { kind: "settled", row };
@@ -218,9 +242,15 @@ export function startMailApproval(deps: MailApprovalDeps, tickMs = SWEEP_TICK_MS
 				inFlight.delete(id);
 			}
 		})();
+		// The tracked copy swallows the rejection — the caller owns the
+		// original promise; an untracked throw (a crash-class failure
+		// recording the send) must not also surface as unhandled.
 		inFlight.set(
 			id,
-			send.then(() => undefined),
+			send.then(
+				() => undefined,
+				() => undefined,
+			),
 		);
 		return send;
 	};
@@ -316,6 +346,15 @@ async function sendApproved(
 		threadId = ctx.threadId;
 		inReplyTo = ctx.messageId;
 	}
+	// Record the intent BEFORE Gmail: from here a crash leaves a claimed
+	// ("sending") row — never a pending row the sweep can stamp "never
+	// sent" over a send that may have landed. A lost claim means another
+	// decision won the row between the tap and here.
+	if (!deps.outbox.claimSend(row.id, actor)) {
+		log.warn("mail send claim lost — row already decided", { outbox: row.id });
+		const fresh = deps.outbox.get(row.id);
+		return fresh === null ? { kind: "gone" } : { kind: "conflict", row: fresh };
+	}
 	let sent: { id: string; threadId: string };
 	try {
 		sent = await sender.send({
@@ -327,6 +366,11 @@ async function sendApproved(
 			...(inReplyTo !== undefined ? { inReplyTo } : {}),
 		});
 	} catch (err) {
+		// The send call itself failed — release the claim so the draft is
+		// pending and re-tappable, exactly as before the claim existed.
+		if (!deps.outbox.releaseSend(row.id)) {
+			log.warn("mail send failed and its claim was already settled", { outbox: row.id });
+		}
 		log.error("mail send failed — draft stays pending for a retry", err, {
 			outbox: row.id,
 			to: row.to.map(domainOf),
@@ -335,7 +379,7 @@ async function sendApproved(
 		await lane.notice(row, message);
 		return { kind: "retry", row, message };
 	}
-	if (!deps.outbox.decide(row.id, "sent", now, sent.id, actor)) {
+	if (!deps.outbox.completeSend(row.id, sent.id, now, actor)) {
 		log.warn("mail sent but the row was already decided — possible duplicate", { outbox: row.id });
 		const fresh = deps.outbox.get(row.id);
 		return fresh === null ? { kind: "gone" } : { kind: "conflict", row: fresh };

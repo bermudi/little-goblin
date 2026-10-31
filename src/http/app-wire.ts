@@ -420,7 +420,7 @@ export interface AppMailDraft {
 	body: string;
 	replyToId: string | null;
 	target: string;
-	status: "pending" | "sent" | "cancelled" | "expired";
+	status: "pending" | "sending" | "sent" | "cancelled" | "expired";
 	createdAt: string;
 	expiresAt: string;
 	decidedAt: string | null;

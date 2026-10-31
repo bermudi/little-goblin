@@ -26,6 +26,19 @@ export function installTooltips(doc: Document): () => void {
 		hide();
 		const text = el.getAttribute("title");
 		if (text === null || text === "") return;
+		// A hint that only repeats the host's own text earns its keep
+		// solely when that text is clipped — ellipsized labels get the
+		// tip, fully visible ones don't (an expanded outline row already
+		// shows its title, so the bubble would be a verbatim echo).
+		// Tips saying something new always show.
+		if (
+			el.textContent !== null &&
+			el.textContent.trim() === text.trim() &&
+			el.scrollWidth <= el.clientWidth &&
+			el.scrollHeight <= el.clientHeight
+		) {
+			return;
+		}
 		host = el;
 		saved = text;
 		el.removeAttribute("title");

@@ -109,7 +109,6 @@ export function Outline({
 					<li key={a.id} className={a.id === current ? "current" : undefined}>
 						<button
 							type="button"
-							title={a.title}
 							aria-label={`Jump: ${a.title}`}
 							aria-current={a.id === current ? "true" : undefined}
 							onClick={() => jump(a.id)}

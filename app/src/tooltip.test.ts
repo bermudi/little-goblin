@@ -83,6 +83,21 @@ describe("tooltip", () => {
 		expect(tip()?.classList.contains("on")).toBe(false);
 	});
 
+	test("a hint repeating the host's visible text is suppressed unless clipped", () => {
+		const el = doc.createElement("span");
+		el.textContent = "win % probability?";
+		el.setAttribute("title", "win % probability?");
+		doc.body.appendChild(el);
+		over(el);
+		expect(tip()?.classList.contains("on")).toBe(false);
+
+		// Same text, now ellipsized: the tip earns its keep.
+		Object.defineProperty(el, "scrollWidth", { value: 200, configurable: true });
+		Object.defineProperty(el, "clientWidth", { value: 100, configurable: true });
+		over(el);
+		expect(tip()?.classList.contains("on")).toBe(true);
+	});
+
 	test("an inner crossing keeps the hint", () => {
 		const el = host();
 		const child = doc.createElement("span");

@@ -6,6 +6,7 @@
 import type { Api } from "grammy";
 import { formatAddress } from "../conversation.ts";
 import {
+	describeMailDecision,
 	type MailApproval,
 	type MailApprovalLane,
 	type MailDecision,
@@ -114,24 +115,7 @@ export function startTelegramMailApproval(deps: {
 }
 
 function answerText(outcome: MailDecision): string {
-	switch (outcome.kind) {
-		case "gone":
-			return "draft gone";
-		case "settled":
-			return `already ${outcome.row.status}`;
-		case "busy":
-			return "sending — wait for the verdict";
-		case "expired":
-			return "draft expired";
-		case "cancelled":
-			return "cancelled";
-		case "sent":
-			return "sent";
-		case "retry":
-			return "send failed — see the notice";
-		case "conflict":
-			return "send raced another decision";
-	}
+	return describeMailDecision(outcome);
 }
 
 export function makeTelegramMailLane(api: Api): MailApprovalLane {

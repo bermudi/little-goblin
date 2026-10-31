@@ -95,6 +95,27 @@ export type MailDecision =
 	| { kind: "retry"; row: OutboxEntry; message: string }
 	| { kind: "conflict"; row: OutboxEntry };
 
+export function describeMailDecision(outcome: MailDecision): string {
+	switch (outcome.kind) {
+		case "gone":
+			return "draft gone";
+		case "settled":
+			return `already ${outcome.row.status}`;
+		case "busy":
+			return "sending — wait for the verdict";
+		case "expired":
+			return "draft expired";
+		case "cancelled":
+			return "cancelled";
+		case "sent":
+			return "sent";
+		case "retry":
+			return "send failed — see the notice";
+		case "conflict":
+			return "send raced another decision";
+	}
+}
+
 export interface MailApproval {
 	requestDraft(
 		input: MailDraftInput,

@@ -12,6 +12,7 @@ import { type Project, projectWorkdir } from "../projects.ts";
 import { openRatings } from "../reply-ratings.ts";
 import type { TurnToolCall } from "../turn-journal.ts";
 import type { InterruptedRunView, ResumeOps, ResumeRefusalCode } from "../turn-resume.ts";
+import { describeMailDecision } from "../mail-approval.ts";
 import { refusalText } from "../program-approval.ts";
 import { APP_ACTOR } from "../targets.ts";
 import { canAuthorizeRetry } from "../turn/retry-guard.ts";
@@ -390,22 +391,7 @@ export async function handleConversationsRoute(
 		);
 		const response: AppApprovalDecisionResponse = {
 			status: outcome.kind,
-			message:
-				outcome.kind === "gone"
-					? "draft gone"
-					: outcome.kind === "settled"
-						? `already ${outcome.row.status}`
-						: outcome.kind === "busy"
-							? "sending — wait for the verdict"
-							: outcome.kind === "expired"
-								? "draft expired"
-								: outcome.kind === "cancelled"
-									? "draft cancelled — never sent"
-									: outcome.kind === "sent"
-										? "draft sent"
-										: outcome.kind === "retry"
-											? outcome.message
-											: "send raced another decision",
+			message: describeMailDecision(outcome),
 		};
 		return Response.json(response, { headers: NO_STORE });
 	}

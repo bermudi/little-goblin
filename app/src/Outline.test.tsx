@@ -164,6 +164,56 @@ describe("Outline", () => {
 		expect(entries()[1]?.getAttribute("aria-current")).toBe("true");
 	});
 
+	test("at the tail the last section is current, its anchor below the mark or not", async () => {
+		await mount([msg("u1", "user", "first"), msg("u2", "user", "second")]);
+		const transcript = container.querySelector<HTMLElement>(".transcript");
+		if (transcript === null) throw new Error("no transcript");
+		const anchors = [...transcript.querySelectorAll<HTMLElement>("[data-outline-anchor]")];
+		const [first, second] = anchors;
+		if (first === undefined || second === undefined) throw new Error("missing anchors");
+		// A real tail: content overflows, scrollTop sits at the max, and the
+		// last anchor rests below the quarter mark — the quarter-mark rule
+		// alone would keep the earlier section lit.
+		Object.defineProperty(transcript, "scrollHeight", { value: 2000, configurable: true });
+		Object.defineProperty(transcript, "clientHeight", { value: 800, configurable: true });
+		transcript.scrollTop = 1200;
+		first.getBoundingClientRect = () => ({ top: -400 }) as DOMRect;
+		second.getBoundingClientRect = () => ({ top: 500 }) as DOMRect;
+		transcript.getBoundingClientRect = () => ({ top: 0 }) as DOMRect;
+
+		await act(async () => {
+			transcript.dispatchEvent(new win.Event("scroll") as unknown as Event);
+		});
+		await settle();
+
+		expect(entries()[0]?.getAttribute("aria-current")).toBeNull();
+		expect(entries()[1]?.getAttribute("aria-current")).toBe("true");
+	});
+
+	test("a scrollable transcript off the tail keeps the quarter-mark rule", async () => {
+		await mount([msg("u1", "user", "first"), msg("u2", "user", "second")]);
+		const transcript = container.querySelector<HTMLElement>(".transcript");
+		if (transcript === null) throw new Error("no transcript");
+		const anchors = [...transcript.querySelectorAll<HTMLElement>("[data-outline-anchor]")];
+		const [first, second] = anchors;
+		if (first === undefined || second === undefined) throw new Error("missing anchors");
+		// 500px short of the bottom: the tail override must not fire.
+		Object.defineProperty(transcript, "scrollHeight", { value: 2000, configurable: true });
+		Object.defineProperty(transcript, "clientHeight", { value: 800, configurable: true });
+		transcript.scrollTop = 700;
+		first.getBoundingClientRect = () => ({ top: -400 }) as DOMRect;
+		second.getBoundingClientRect = () => ({ top: 500 }) as DOMRect;
+		transcript.getBoundingClientRect = () => ({ top: 0 }) as DOMRect;
+
+		await act(async () => {
+			transcript.dispatchEvent(new win.Event("scroll") as unknown as Event);
+		});
+		await settle();
+
+		expect(entries()[0]?.getAttribute("aria-current")).toBe("true");
+		expect(entries()[1]?.getAttribute("aria-current")).toBeNull();
+	});
+
 	test("above every section nothing is current", async () => {
 		await mount([msg("u1", "user", "first")]);
 		const transcript = container.querySelector<HTMLElement>(".transcript");

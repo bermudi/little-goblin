@@ -45,7 +45,12 @@ export function Outline({
 	const anchorKey = anchors.map((a) => a.id).join("\n");
 
 	// The section in view is the last anchor at or above the viewport's
-	// quarter mark. Scroll events re-run it; React drops the no-op sets.
+	// quarter mark — except at the tail, where the last section owns the
+	// view even when its anchor rests below the mark. The 48px tolerance
+	// is the transcript's own pin threshold: the rail must agree with
+	// follow-mode about where "the bottom" is. A transcript too short to
+	// overflow has no tail and keeps the quarter-mark rule. Scroll
+	// events re-run it; React drops the no-op sets.
 	useEffect(() => {
 		const el = scrollRef.current;
 		if (el === null) return;
@@ -53,10 +58,18 @@ export function Outline({
 			const origin = el.getBoundingClientRect().top;
 			const limit = el.clientHeight * 0.25;
 			let found: string | null = null;
+			let last: string | null = null;
 			for (const node of el.querySelectorAll<HTMLElement>("[data-outline-anchor]")) {
+				last = node.dataset.outlineAnchor ?? null;
 				if (node.getBoundingClientRect().top - origin <= limit) {
-					found = node.dataset.outlineAnchor ?? null;
+					found = last;
 				}
+			}
+			if (
+				el.scrollHeight > el.clientHeight &&
+				el.scrollHeight - el.scrollTop - el.clientHeight < 48
+			) {
+				found = last;
 			}
 			setCurrent(found);
 		};

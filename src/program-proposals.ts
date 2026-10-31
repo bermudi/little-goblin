@@ -331,6 +331,24 @@ function rowToProposal(row: unknown): ProgramProposal {
 	};
 }
 
+function skipCorrupt(rows: unknown[]): ProgramProposal[] {
+	const out: ProgramProposal[] = [];
+	for (const row of rows) {
+		try {
+			out.push(rowToProposal(row));
+		} catch (err) {
+			const id =
+				typeof row === "object" && row !== null && "id" in row
+					? (row as { id: unknown }).id
+					: undefined;
+			log.warn("program proposal skipped — corrupt row", err, {
+				...(typeof id === "number" || typeof id === "string" ? { proposal: id } : {}),
+			});
+		}
+	}
+	return out;
+}
+
 export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): ProgramProposals {
 	db.exec(`CREATE TABLE IF NOT EXISTS program_proposals (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -547,10 +565,10 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 			return row === null ? null : rowToProposal(row);
 		},
 		list() {
-			return qList.all().map(rowToProposal);
+			return skipCorrupt(qList.all());
 		},
 		pending() {
-			return qPending.all().map(rowToProposal);
+			return skipCorrupt(qPending.all());
 		},
 		approve(id, decidedBy, opts = {}) {
 			const actor = actorOf(decidedBy);

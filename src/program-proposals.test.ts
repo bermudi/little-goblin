@@ -330,6 +330,20 @@ describe("program proposals — update", () => {
 		programs.close();
 	});
 
+	test("list and pending skip a corrupt row and keep the valid one", () => {
+		const path = tmpDb("goblin-proposals-");
+		const programs = openPrograms(path);
+		const corrupt = programs.proposals.proposeCreate(draft({ name: "corrupt" }), ADDRESS, NOW);
+		const valid = programs.proposals.proposeCreate(draft({ name: "valid" }), ADDRESS, NOW);
+		const db = new Database(path);
+		db.query("UPDATE program_proposals SET payload = '{nope' WHERE id = ?").run(corrupt.id);
+		db.close();
+		expect(programs.proposals.list().map((p) => p.id)).toEqual([valid.id]);
+		expect(programs.proposals.pending().map((p) => p.id)).toEqual([valid.id]);
+		expect(() => programs.proposals.get(corrupt.id)).toThrow(/corrupt payload/);
+		programs.close();
+	});
+
 	test("an update proposal stores its renderable base snapshot — the immutable render survives reopen", () => {
 		const path = tmpDb("goblin-proposals-");
 		const programs = openPrograms(path);

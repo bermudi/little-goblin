@@ -8,6 +8,7 @@ import {
 	ensureOpenRouterCatalog,
 	contextLimit,
 	contextLimitCached,
+	contextLimitDetailed,
 	inputModalities,
 	inputModalitiesCached,
 	modelOptionsCached,
@@ -158,6 +159,30 @@ describe("models.dev catalog", () => {
 			expect(contextLimitCached("testprov", "m1")).toBeNull();
 		} finally {
 			globalThis.fetch = prevFetch;
+			_resetModelsDevForTest();
+		}
+	});
+});
+
+describe("context limit provenance", () => {
+	test("direct hit reports its own provider; cross-provider fallback names the donor", async () => {
+		_primeModelsDevForTest({
+			testprov: { models: { m1: { limit: { context: 111 } } } },
+			donor: { models: { shared: { limit: { context: 222 } } } },
+		});
+		try {
+			expect(await contextLimitDetailed("testprov", "m1")).toEqual({
+				limit: 111,
+				source: "direct",
+				catalogProvider: "testprov",
+			});
+			expect(await contextLimitDetailed("testprov", "shared")).toEqual({
+				limit: 222,
+				source: "cross-provider",
+				catalogProvider: "donor",
+			});
+			expect(await contextLimitDetailed("testprov", "ghost")).toBeNull();
+		} finally {
 			_resetModelsDevForTest();
 		}
 	});

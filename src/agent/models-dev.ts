@@ -93,19 +93,39 @@ export function inputModalitiesCached(provider: string, modelId: string): Set<st
 	return new Set(["text"]);
 }
 
+export interface ContextLimit {
+	limit: number;
+	// "direct" = the model's own provider listed it; "cross-provider" =
+	// borrowed from another provider's entry for the same model id, so
+	// the number is a guess about this provider's window, not its truth.
+	source: "direct" | "cross-provider";
+	catalogProvider: string;
+}
+
 // Same lookup rule as inputModalities. Null when the catalog is cold
 // or doesn't list the model — callers treat null as "unknown", never
-// "unlimited".
-export async function contextLimit(provider: string, modelId: string): Promise<number | null> {
+// "unlimited". The detailed form carries provenance: a cross-provider
+// limit drives the compaction trigger, so its origin must be visible
+// wherever the window is reported.
+export async function contextLimitDetailed(
+	provider: string,
+	modelId: string,
+): Promise<ContextLimit | null> {
 	const cat = await modelsDev.ensure();
 	if (!cat) return null;
 	const direct = cat[provider]?.models[modelId]?.limit?.context;
-	if (direct !== undefined) return direct;
-	for (const p of Object.values(cat)) {
+	if (direct !== undefined) return { limit: direct, source: "direct", catalogProvider: provider };
+	for (const [key, p] of Object.entries(cat)) {
 		const found = p.models[modelId]?.limit?.context;
-		if (found !== undefined) return found;
+		if (found !== undefined)
+			return { limit: found, source: "cross-provider", catalogProvider: key };
 	}
 	return null;
+}
+
+export async function contextLimit(provider: string, modelId: string): Promise<number | null> {
+	const detailed = await contextLimitDetailed(provider, modelId);
+	return detailed?.limit ?? null;
 }
 
 // For read paths that must never stall on the network (HTTP routes) —

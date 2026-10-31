@@ -10,7 +10,7 @@ import type { ConversationStore } from "../conversation.ts";
 import type { NoteStore } from "../notes.ts";
 import type { ProjectStore } from "../projects.ts";
 import type { MediaPosition } from "./attachments.ts";
-import { contextLimit, inputModalities } from "./models-dev.ts";
+import { contextLimit, contextLimitDetailed, inputModalities } from "./models-dev.ts";
 import { modelCallMaxRetries } from "./onemin.ts";
 import { systemPromptFor } from "./prompt.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
@@ -37,11 +37,20 @@ export function makeStepBuilder(
 			const modelRef = conv.model!;
 			const { provider, modelId } = splitModelRef(modelRef);
 			// Auth "!command" and the catalog fetch may both be slow — run in parallel.
-			const [model, modalities, contextWindow] = await Promise.all([
+			const [model, modalities, contextLimitInfo] = await Promise.all([
 				resolveModel(cfg, auth, modelRef),
 				inputModalities(provider, modelId),
-				contextLimit(provider, modelId),
+				contextLimitDetailed(provider, modelId),
 			]);
+			const contextWindow = contextLimitInfo?.limit ?? null;
+			if (contextLimitInfo?.source === "cross-provider") {
+				log.warn("context window borrowed from another provider's catalog entry", {
+					conversation: conv.id,
+					model: modelRef,
+					catalogProvider: contextLimitInfo.catalogProvider,
+					limit: contextLimitInfo.limit,
+				});
+			}
 			// Catalog truth alone once cost a thrown turn — openai-compatible
 			// < v3 rejected file parts its converter now carries.
 			const p = cfg.providers[provider];

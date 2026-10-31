@@ -40,6 +40,8 @@ const MAX_DRAIN_ITERATIONS = 25;
 const MAX_STAGNANT = 3;
 const RECENT_REPLY_LIMIT = 256;
 const UNCERTAIN_NOTICE = "⚠ Delivery uncertain—check Telegram before retrying.";
+const TRUNCATED_NOTICE =
+	"⚠ Reply truncated — part of this reply didn't send. Ask me to repeat it if needed.";
 export const SPEAK_CALLBACK = "speak_reply";
 
 const recentReplies = new Map<string, string>();
@@ -200,6 +202,32 @@ export function makeDeliverySink(
 			...(chunk !== undefined ? { chunk } : {}),
 			...(error instanceof TelegramTimeoutError ? { timeoutMs: error.ms } : {}),
 		});
+	}
+
+	async function notifyTruncated(unsent: number): Promise<void> {
+		if (cancelled || !authoritative()) return;
+		try {
+			const notice = await withTimeout(
+				api.sendMessage(conv.chatId, TRUNCATED_NOTICE, {
+					...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+				}),
+				"sendMessage",
+			);
+			log.info("delivery truncation notice sent", {
+				conversation: conv.id,
+				chat: conv.chatId,
+				thread: conv.threadId,
+				message: notice.message_id,
+				unsent,
+			});
+		} catch (error) {
+			log.warn("delivery truncation notice failed — not retrying", error, {
+				conversation: conv.id,
+				chat: conv.chatId,
+				thread: conv.threadId,
+				unsent,
+			});
+		}
 	}
 
 	async function notifyUncertain(): Promise<void> {
@@ -1137,6 +1165,7 @@ export function makeDeliverySink(
 					unsent,
 				});
 			}
+			if (unsent > 0) await notifyTruncated(unsent);
 			if (unsent === 0) {
 				const landed = chunks.filter((c) => c.id > 0).length;
 				if (landed > 0) {

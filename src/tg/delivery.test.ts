@@ -468,13 +468,28 @@ describe("delivery", () => {
 			setLogFile(null);
 			setLogWriter(null);
 		}
-		expect(msgs).toHaveLength(2); // two chunks out, two dropped
+		expect(msgs).toHaveLength(3); // two chunks out, two dropped, plus the truncation notice
+		expect(msgs[2]).toContain("truncated");
 		expect(reactions).toEqual([]); // no 🫡 on an unfinished drain
 		const gaveUp = captured
 			.map((l) => JSON.parse(l) as Record<string, unknown>)
 			.filter((l) => l.msg === "delivery gave up on unsent chunks");
 		expect(gaveUp).toHaveLength(1);
 		expect(gaveUp[0]).toMatchObject({ level: "warn", conversation: "dm:1", unsent: 2 });
+	});
+
+	test("a drain that gives up tells the chat the reply was truncated", async () => {
+		const { api, msgs, reactions } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: Number.POSITIVE_INFINITY,
+			typingIntervalMs: 4_000,
+			maxDrainIterations: 2,
+		});
+		sink.onTextDelta("a".repeat(CHUNK * 4));
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toHaveLength(3); // two chunks out + the truncation notice
+		expect(msgs[2]).toContain("truncated");
+		expect(reactions).toEqual([]);
 	});
 
 	test("a completed turn that renders empty warns with the conversation id", async () => {

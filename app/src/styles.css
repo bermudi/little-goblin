@@ -129,46 +129,32 @@ body {
 	height: 100%;
 }
 
-/* Scrollbars — Open WebUI style: hidden until the region is hovered. */
-.transcript,
-.rail,
-.codeblock pre,
-.tool-clip {
+/* Scrollbars — Open WebUI style: hidden until the region is hovered.
+   Universal, not a region list: a curated list left .ops, .panes,
+   .doc-body and a dozen other scrollers on the browser's default bar.
+   `scrollbar-width: none` regions (.gutter, .outline ol, html/body)
+   keep winning on specificity. */
+* {
 	scrollbar-width: thin;
 	scrollbar-color: transparent transparent;
 }
-.transcript:hover,
-.rail:hover,
-.codeblock pre:hover,
-.tool-clip:hover {
+*:hover {
 	scrollbar-color: color-mix(in oklab, var(--app-fg) 32%, transparent) transparent;
 }
-.transcript::-webkit-scrollbar,
-.rail::-webkit-scrollbar,
-.codeblock pre::-webkit-scrollbar,
-.tool-clip::-webkit-scrollbar {
+*::-webkit-scrollbar {
 	width: 0.45rem;
 	height: 0.45rem;
 }
-.transcript::-webkit-scrollbar-thumb,
-.rail::-webkit-scrollbar-thumb,
-.codeblock pre::-webkit-scrollbar-thumb,
-.tool-clip::-webkit-scrollbar-thumb {
+*::-webkit-scrollbar-thumb {
 	background-color: color-mix(in oklab, var(--app-fg) 32%, transparent);
 	border: 1px solid var(--app-bg);
 	border-radius: 624.9375rem;
 	visibility: hidden;
 }
-.transcript:hover::-webkit-scrollbar-thumb,
-.rail:hover::-webkit-scrollbar-thumb,
-.codeblock pre:hover::-webkit-scrollbar-thumb,
-.tool-clip:hover::-webkit-scrollbar-thumb {
+*:hover::-webkit-scrollbar-thumb {
 	visibility: visible;
 }
-.transcript::-webkit-scrollbar-track,
-.rail::-webkit-scrollbar-track,
-.codeblock pre::-webkit-scrollbar-track,
-.tool-clip::-webkit-scrollbar-track {
+*::-webkit-scrollbar-track {
 	background: transparent;
 }
 

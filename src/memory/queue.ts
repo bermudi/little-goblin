@@ -431,6 +431,10 @@ export type WorkerOutcome =
 			attempts: number;
 	  };
 
+function backoffMs(attempts: number): number {
+	return Math.min(300_000, 1_000 * 2 ** Math.min(attempts, 9));
+}
+
 export class MemoryQueueWorker {
 	private running: Promise<boolean> | null = null;
 
@@ -489,7 +493,7 @@ export class MemoryQueueWorker {
 				return false;
 			}
 			state = err.retryable ? item.state : "blocked";
-			delayMs = Math.min(300_000, 1_000 * 2 ** Math.min(item.attempts, 9));
+			delayMs = backoffMs(item.attempts);
 			error = err.message;
 			transportFailure = err.retryable;
 		}
@@ -502,6 +506,7 @@ export class MemoryQueueWorker {
 				});
 			return true;
 		}
+		if (state === "submitted") delayMs = backoffMs(item.attempts);
 		this.queue.update(item, state, this.clock() + delayMs, error);
 		const conversationId = item.document.conversationId;
 		if (transportFailure) this.observe?.({ ok: false, transport: true, conversationId });

@@ -122,6 +122,38 @@ test("restart preserves operation identity; acknowledgement alone is not complet
 	expect(await worker.tick()).toBe(false);
 });
 
+test("submitted-but-not-terminal polls back off like the error branch", async () => {
+	let opId = "";
+	const client = service(async (request) => {
+		if (request.method === "POST") {
+			const body = (await request.json()) as { operation_id: string };
+			opId = body.operation_id;
+			return Response.json({
+				success: true,
+				bank_id: "g",
+				items_count: 1,
+				async: true,
+				operation_id: opId,
+			});
+		}
+		return Response.json({ operation_id: opId, status: "processing" });
+	});
+	const store = storeAt(database());
+	const id = enqueue(store, client);
+	let now = Date.now();
+	const worker = new MemoryQueueWorker(store.memoryQueue, client, () => now);
+	await worker.tick();
+	expect(store.memoryQueue.get(id)?.next_attempt).toBe(now + 1_000);
+	expect(await worker.tick()).toBe(false);
+	now += 1_000;
+	await worker.tick();
+	expect(store.memoryQueue.get(id)?.next_attempt).toBe(now + 2_000);
+	now += 2_000;
+	await worker.tick();
+	expect(store.memoryQueue.get(id)?.next_attempt).toBe(now + 4_000);
+	expect(store.memoryQueue.get(id)?.state).toBe("submitted");
+});
+
 test("lost acknowledgement retries the same operation with backoff; ticks never overlap", async () => {
 	const received: unknown[] = [];
 	let id = "";

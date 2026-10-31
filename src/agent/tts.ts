@@ -715,7 +715,8 @@ export async function synthesizeSpeech(
 		...(config.kind === "edge" && config.rate !== undefined ? { rate: config.rate } : {}),
 		outputFormat: config.kind === "edge" ? OUTPUT_FORMAT : "mp3",
 	};
-	const audio: Uint8Array[] = [];
+	const audio: (Uint8Array | undefined)[] = new Array<Uint8Array | undefined>(chunks.length);
+	let completedChunks = 0;
 	log.info("speech synthesis started", {
 		provider: config.kind,
 		...(config.kind !== "edge" ? { model: config.model } : {}),
@@ -725,25 +726,35 @@ export async function synthesizeSpeech(
 		chunks: chunks.length,
 	});
 	try {
-		for (const chunk of chunks) {
-			audio.push(await remux(await synthesize(chunk, options)));
-		}
+		// Bounded pool: chunks are independent, but the provider's
+		// concurrency tolerance is not — 3 in flight, order preserved
+		// by writing each result to its chunk index.
+		let next = 0;
+		const worker = async (): Promise<void> => {
+			while (next < chunks.length) {
+				const i = next++;
+				audio[i] = await remux(await synthesize(chunks[i]!, options));
+				completedChunks++;
+			}
+		};
+		await Promise.all(Array.from({ length: Math.min(3, chunks.length) }, () => worker()));
 	} catch (err) {
 		log.warn("speech synthesis failed", err, {
 			provider: config.kind,
 			...(config.kind !== "edge" ? { model: config.model } : {}),
 			voice,
-			completedChunks: audio.length,
+			completedChunks,
 		});
 		throw err;
 	}
+	const done = audio.filter((a): a is Uint8Array => a !== undefined);
 	log.info("speech synthesis completed", {
 		provider: config.kind,
 		voice,
-		chunks: audio.length,
-		bytes: audio.reduce((sum, chunk) => sum + chunk.byteLength, 0),
+		chunks: done.length,
+		bytes: done.reduce((sum, chunk) => sum + chunk.byteLength, 0),
 	});
-	return audio;
+	return done;
 }
 
 // null answers 503 rather than failing mid-synthesis — gated on the

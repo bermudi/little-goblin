@@ -161,6 +161,28 @@ describe("tts", () => {
 		expect(new TextDecoder().decode(audio[0]!.slice(0, 4))).toBe("OggS");
 	});
 
+	test("chunks synthesize with bounded parallelism, output stays in chunk order", async () => {
+		let inFlight = 0;
+		let maxInFlight = 0;
+		let callIndex = 0;
+		const synth = async () => {
+			const i = callIndex++;
+			inFlight++;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			await new Promise((r) => setTimeout(r, (7 - i) * 10));
+			inFlight--;
+			return new Uint8Array([i]);
+		};
+		const audio = await synthesizeSpeech(
+			"One. Two. Three. Four. Five. Six. Seven.",
+			{ kind: "edge", voice: "en-US-AriaNeural" },
+			{ synthesize: synth, chunkLimit: 7, remux: async (b: Uint8Array) => b },
+		);
+		expect(maxInFlight).toBeGreaterThan(1);
+		expect(maxInFlight).toBeLessThanOrEqual(3);
+		expect(audio.map((a) => a[0])).toEqual([0, 1, 2, 3, 4, 5, 6]);
+	});
+
 	test("an overridden voice carries its language into the SSML", async () => {
 		// The speak tool swaps the whole config voice exactly like index.ts
 		// does — the invariant this pins: a Spanish voice name must yield a

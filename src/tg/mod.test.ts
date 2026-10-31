@@ -2008,6 +2008,38 @@ describe("rolling dm", () => {
 		h.store.close();
 	});
 
+	test("a mixed batch (one quoted, one not) still gets the follow-up check", async () => {
+		const h = routerHarness({
+			...baseConfig,
+			operators: [1, 7],
+			telegram: { enabled: true, dmGapMinutes: 0, richReplies: true, showReasoning: false },
+		});
+		const calls: unknown[] = [];
+		h.env.deps.followUpGate = () => ({
+			decide: (state: string) => {
+				calls.push(state);
+				return Promise.resolve({ answers: { follow_up: 0.9 }, inputTokens: null, cost: null });
+			},
+		});
+		h.store.append(h.store.rollDm(7, "/w").id, [
+			{ id: "u", role: "user", parts: [{ type: "text", text: "q" }] },
+			{ id: "a", role: "assistant", parts: [{ type: "text", text: "a" }] },
+		]);
+		await flushTest(h.env, "dm:7", [
+			{
+				parts: [{ type: "text", text: "and this too" }],
+				replyTo: 9,
+				quoted: { messageId: 8, text: "earlier" },
+			},
+			{ parts: [{ type: "text", text: "unrelated new thing" }], replyTo: 10 },
+		]);
+		// Not all items are quoted, so the batch is not reply-pinned:
+		// the gate runs and (follow-up) joins the current conversation.
+		expect(calls).toHaveLength(1);
+		expect(h.store.currentDm(7)?.id).toBe("dm:7:1");
+		h.store.close();
+	});
+
 	test("a reply past the gap joins without asking the gate", async () => {
 		// dmGapMinutes 0 makes every flush past the gap.
 		const h = routerHarness({

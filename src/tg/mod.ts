@@ -761,7 +761,9 @@ async function flushRolling(
 				batch.map((item) => item.updateId),
 				laneKey,
 			);
-		const result = batch.some((i) => i.quoted !== undefined)
+		// Reply-pinning only when every item quotes: a mixed batch's
+		// non-quoted items still earn the follow-up check.
+		const result = batch.every((i) => i.quoted !== undefined)
 			? routeDm(rollDepsOf(deps), chatId, "reply")
 			: await routeDmMessage(
 					rollDepsOf(deps),

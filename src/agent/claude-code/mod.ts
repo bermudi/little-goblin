@@ -3,9 +3,10 @@
 // (module-boundaries.test.ts); everything the engine needs from the
 // vendor is adapted into the pinned shapes of translate.ts here.
 
+import { randomUUID } from "node:crypto";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { query as vendorQuery } from "@anthropic-ai/claude-agent-sdk";
-import type { ToolSet } from "ai";
+import { log } from "../../log.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { CacheObservation } from "../../cache-observation.ts";
 import type { ConfigRef } from "../../config.ts";
@@ -39,8 +40,8 @@ export interface ClaudeStep {
 	inputModalities?: Set<string> | undefined;
 	carries?: ((mediaType: string, position: MediaPosition) => boolean) | undefined;
 	contextWindow?: number | undefined;
-	/** The tool-loop cap — this engine's only cut (no forced toolChoice). */
-	maxTurns: number;
+	/** Optional tool-loop cap; unset = no step budget (design/model.md). */
+	maxTurns?: number | undefined;
 }
 
 // ---------- the vendor adapter ----------
@@ -169,11 +170,14 @@ export function liveQuery(call: ClaudeQueryCall): AsyncIterable<ClaudeEvent> {
 		options: {
 			model: options.model,
 			systemPrompt: options.systemPrompt,
-			maxTurns: options.maxTurns,
+			...(options.maxTurns !== undefined ? { maxTurns: options.maxTurns } : {}),
 			thinking: options.thinking,
 			...(options.effort !== undefined ? { effort: options.effort } : {}),
 			mcpServers: options.mcpServers as never,
 			allowedTools: options.allowedTools,
+			// allowedTools only auto-approves; `tools: []` is what actually
+			// removes the CLI's built-in tools (Bash, Read, Edit, ...).
+			tools: [],
 			cwd: options.cwd,
 			env: options.env,
 			abortController: options.abortController,
@@ -210,8 +214,6 @@ export interface ClaudeEngine {
 		prompt: string;
 		signal: AbortSignal;
 	}): Promise<string>;
-	/** The fenced tool surface a turn would expose (surface-leak guard). */
-	toolSurface(tools: ToolSet): string[];
 }
 
 export function createClaudeEngine(init: {
@@ -231,10 +233,6 @@ export function createClaudeEngine(init: {
 	return {
 		run: (deps) => driveClaude(config, deps),
 		compact: (input) => compactText(config, input),
-		toolSurface: (tools) =>
-			Object.entries(tools)
-				.filter(([, t]) => t.execute !== undefined)
-				.map(([name]) => name),
 	};
 }
 
@@ -255,6 +253,9 @@ async function compactText(
 		abortController.abort();
 	};
 	input.signal.addEventListener("abort", onAbort, { once: true });
+	const callId = randomUUID();
+	const started = Date.now();
+	log.info("model call", { call: "compaction", callId, model: input.modelId });
 	try {
 		const childEnv = await claudeChildEnv(config.auth, input.auth, config.configDir);
 		let text = "";
@@ -282,7 +283,18 @@ async function compactText(
 				throw new Error(ev.result);
 			}
 		}
+		log.info("model call usage", {
+			call: "compaction",
+			callId,
+			model: input.modelId,
+			ms: Date.now() - started,
+			chars: text.length,
+		});
 		return text;
+	} catch (err) {
+		// Boundary logging only: rethrown unchanged for the caller.
+		log.error("model call failed", err, { call: "compaction", callId, model: input.modelId });
+		throw err;
 	} finally {
 		input.signal.removeEventListener("abort", onAbort);
 	}

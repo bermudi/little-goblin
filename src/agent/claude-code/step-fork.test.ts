@@ -1,6 +1,6 @@
 // The step-builder fork: a claude-code provider builds a ClaudeStep
 // (auth record riding the step, no resolveModel, thinking arm
-// extracted, maxTurns cap) and routes compaction to the engine —
+// extracted, no step budget) and routes compaction to the engine —
 // an unbound engine fails loud, never silently degrades.
 
 import { describe, expect, test } from "bun:test";
@@ -17,7 +17,6 @@ const fakeEngine: ClaudeEngine = {
 		throw new Error("not driven in this suite");
 	}) as never,
 	compact: async () => "summary-text",
-	toolSurface: (tools) => Object.keys(tools),
 };
 
 function rig(providers: Config["providers"]) {
@@ -58,10 +57,10 @@ describe("makeStepBuilder — claude-code fork", () => {
 			label: "claude/claude-sonnet-4-5",
 			modelId: "claude-sonnet-4-5",
 			auth: "cc-token",
-			maxTurns: 50,
 			system: expect.stringContaining("goblin"),
 		});
 		expect("model" in step).toBe(false);
+		expect("maxTurns" in step).toBe(false);
 	});
 
 	test("the parsed default auth record (filled at config parse) rides the step verbatim", async () => {

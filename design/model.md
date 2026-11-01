@@ -259,8 +259,8 @@ decisions and their why:
   loop offers no mid-run injection seam — folding would mean a second
   query; queued steers lead the successor turn as usual). No forced
   toolChoice cuts: the loop detector and watchdog still journal their
-  state but cannot cut this engine; `maxTurns: 50` mirrors the API
-  lane's isLoopFinished ceiling and is the guardrail. Rate-limit and
+  state but cannot cut this engine; there is no `maxTurns` cap either — the
+  no-step-budget ruling below applies to this engine too. Rate-limit and
   auth failures fail loud with distinct text, no auto-retry (the
   subscription window resets on its own; switching the conversation to
   an API model is the operator's move). Overflow rides the existing

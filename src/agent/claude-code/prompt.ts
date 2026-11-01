@@ -172,7 +172,7 @@ function messageBlocks(msg: ModelMessage, out: PromptContent["blocks"]): void {
 	}
 }
 
-function safeJson(value: unknown): string {
+export function safeJson(value: unknown): string {
 	try {
 		return JSON.stringify(value) ?? "undefined";
 	} catch {

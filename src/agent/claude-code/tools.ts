@@ -13,6 +13,7 @@
 // queued results (FIFO, exact (name, input) match preferred) to emit
 // exact goblin outputs on the wire. The two namespaces never mix.
 
+import { randomUUID } from "node:crypto";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import { createSdkMcpServer, tool as sdkTool } from "@anthropic-ai/claude-agent-sdk";
 import type { ToolSet } from "ai";
@@ -128,10 +129,12 @@ function resultText(output: unknown): string {
 export interface ToolBridgeDeps {
 	convId: string;
 	tools: ToolSet;
+	/** The turn's abort signal, forwarded to every tool execute. */
+	signal?: AbortSignal | undefined;
 }
 
 export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
-	const { convId, tools } = deps;
+	const { convId, tools, signal } = deps;
 	const results: BridgeResult[] = [];
 	const handlers = new Map<
 		string,
@@ -141,20 +144,22 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 		}>
 	>();
 	const names: string[] = [];
+	const bridgeId = randomUUID().slice(0, 8);
+	let callSeq = 0;
 
 	for (const [name, t] of Object.entries(tools)) {
 		const execute = t.execute;
 		if (execute === undefined) continue;
-		const description = typeof t.description === "string" ? t.description : name;
 		const schema = asSchema(t.inputSchema);
-		const shape = rawShapeFor(schema.jsonSchema);
 		names.push(name);
 		handlers.set(
 			name,
 			async (
 				input: Record<string, unknown>,
 			): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> => {
-				const callId = `claude-${results.length + 1}-${names.indexOf(name)}`;
+				// Monotonic per bridge, plus a random bridge prefix so ids stay
+				// unique across turns (the bridge is rebuilt every turn).
+				const callId = `claude-${bridgeId}-${++callSeq}`;
 				// Parsed input or a loud tool error — the model sees the
 				// issues and can re-ask, like the API lane's tool errors.
 				// Schema.validate is safeParse-shaped ({success, value|error}).
@@ -182,6 +187,7 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 				try {
 					const output = await execute(args as never, {
 						toolCallId: callId,
+						...(signal !== undefined ? { abortSignal: signal } : {}),
 						messages: [] as never,
 						context: {} as never,
 					});

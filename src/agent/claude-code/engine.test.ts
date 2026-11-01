@@ -340,7 +340,7 @@ describe("driveClaude — tool round-trip through the real bridge", () => {
 		expect(toolPart).toMatchObject({ state: "output-error" });
 	});
 
-	test("the journal records planned calls and checkpoint partials", async () => {
+	test("the journal writes no stale planned rows and records checkpoint partials", async () => {
 		const { outcome, rec } = await run(
 			(getBridge) => [
 				{
@@ -354,9 +354,8 @@ describe("driveClaude — tool round-trip through the real bridge", () => {
 			{ tools: echoTools() },
 		);
 		expect(outcome.kind).toBe("ok");
-		expect(rec.inputs).toEqual([
-			{ callId: expect.any(String), name: "echo", args: { message: "journaled" } },
-		]);
+		// No planned rows: the CLI's ids never match fenceTools' journal ids.
+		expect(rec.inputs).toEqual([]);
 		expect(rec.checkpoints.length).toBeGreaterThanOrEqual(2);
 		const last = rec.checkpoints.at(-1) as { partial?: ModelMessage[] };
 		const partial = last.partial ?? [];

@@ -87,9 +87,7 @@ export function makeStepBuilder(
 					inputModalities: modalities,
 					carries,
 					...(contextWindow !== null ? { contextWindow } : {}),
-					// The API lane caps its loop at 50 steps (isLoopFinished);
-					// the CLI loop gets the same ceiling.
-					maxTurns: 50,
+					// No maxTurns: a turn has no step budget (design/model.md).
 				};
 			}
 			// Auth "!command" and the catalog fetch may both be slow — run in parallel.
@@ -97,7 +95,7 @@ export function makeStepBuilder(
 				resolveModel(cfg, auth, modelRef),
 				inputModalities(provider, modelId),
 				contextLimit(provider, modelId),
-				]);
+			]);
 			const providerOptions = thinkingOptions(cfg, modelRef, level);
 			// 1min bills every attempt — its chat calls carry no SDK retry
 			// budget.

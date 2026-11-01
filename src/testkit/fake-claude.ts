@@ -175,7 +175,7 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 							id: nextId("msg"),
 							model: "fake",
 							role: "assistant",
-							content: [{ type: "tool_use", id, name: step.name, input: step.input }],
+							content: [{ type: "tool_use", id, name: `mcp__goblin__${step.name}`, input: step.input }],
 							stop_reason: "tool_use",
 							usage: u,
 						},

@@ -7,7 +7,7 @@
 //
 // v1 rulings (design/model.md → claude-code):
 // - Steered messages defer to the next turn — no mid-run folding.
-// - No forced toolChoice cuts; maxTurns is the guardrail. The loop
+// - No forced toolChoice cuts and no step budget. The loop
 //   detector still journals its state (context landings, completed
 //   calls) for resume parity, but this engine cannot cut.
 // - Rate-limit and auth failures fail loud with distinct text; overflow
@@ -63,8 +63,8 @@ import {
 } from "../providers.ts";
 import { claudeChildEnv } from "./auth.ts";
 import type { ClaudeStep } from "./mod.ts";
-import { promptText, serializePrompt } from "./prompt.ts";
-import { createToolBridge } from "./tools.ts";
+import { promptText, safeJson, serializePrompt } from "./prompt.ts";
+import { createToolBridge, MCP_SERVER_NAME } from "./tools.ts";
 import type {
 	ClaudeContentBlock,
 	ClaudeMessage,
@@ -133,11 +133,18 @@ export function isRateLimitText(text: string): boolean {
 
 export function resultErrorText(text: string, assistantError: string | undefined): string {
 	const base = text || "claude code returned an error result";
+	// Typed SDK error codes first; text matching is only the fallback.
+	if (assistantError === "account_on_hold") {
+		return `Claude Code account is on hold — no retry; resolve it with Anthropic. (${base})`;
+	}
 	if (
-		assistantError === "rate_limit" ||
-		assistantError === "account_on_hold" ||
-		isRateLimitText(base)
+		assistantError === "authentication_failed" ||
+		assistantError === "oauth_org_not_allowed" ||
+		assistantError === "billing_error"
 	) {
+		return `Claude Code auth failed — the subscription token is missing, expired or not allowed; rotate the claude-code auth record. (${assistantError}: ${base})`;
+	}
+	if (assistantError === "rate_limit" || isRateLimitText(base)) {
 		return `Claude Code subscription limit hit — no retry; switch this conversation to an API model or wait for the window to reset. (${base})`;
 	}
 	if (/not logged in|authentication|oauth|credential|token\b(?!s)/i.test(base)) {
@@ -198,12 +205,10 @@ function modelOutput(output: unknown): ToolResultOutput {
 	}
 }
 
-function safeJson(value: unknown): string {
-	try {
-		return JSON.stringify(value) ?? "undefined";
-	} catch {
-		return String(value);
-	}
+// The CLI names MCP tools mcp__<server>__<tool>; goblin knows bare names.
+function bareToolName(name: string): string {
+	const prefix = `mcp__${MCP_SERVER_NAME}__`;
+	return name.startsWith(prefix) ? name.slice(prefix.length) : name;
 }
 
 // ---------- the driver ----------
@@ -438,6 +443,7 @@ export async function driveClaude<M extends WireMember>(
 	const handleStreamEvent = (ev: ClaudeStreamEvent): void => {
 		switch (ev.type) {
 			case "message_start":
+				flushAssistant();
 				beginCall();
 				return;
 			case "content_block_start": {
@@ -450,7 +456,7 @@ export async function driveClaude<M extends WireMember>(
 					run.openReasoningBlocks.add(ev.index);
 					emit({ type: "reasoning-start", id: blockId(ev.index, "reasoning") });
 				} else if (block.type === "tool_use" && typeof block.id === "string") {
-					run.toolNameById.set(block.id, block.name ?? "");
+					run.toolNameById.set(block.id, bareToolName(block.name ?? ""));
 				}
 				return;
 			}
@@ -498,12 +504,20 @@ export async function driveClaude<M extends WireMember>(
 		}
 	};
 
-	const handleAssistant = (message: ClaudeMessage, error: string | undefined): void => {
-		run.lastAssistantError = error;
-		// A complete assistant message without preceding stream frames (a
-		// call the CLI chose not to stream) still opens its model call.
-		if (!callOpen) beginCall();
-		if (message.content.length > 0) spendPendingCall();
+	// The CLI sends one `assistant` frame per content block; frames of one
+	// model reply share a message.id and usage. Group them: the step
+	// closes (flushAssistant) when a new message starts, the id changes,
+	// a tool-result echo arrives, or the stream ends — never per frame.
+	let curMessage: ClaudeMessage | null = null;
+	let curBlockOffset = 0;
+	let curParts: AssistantPart[] = [];
+
+	const flushAssistant = (): void => {
+		if (curMessage === null) return;
+		const message = curMessage;
+		curMessage = null;
+		curBlockOffset = 0;
+		curParts = [];
 		// Close any blocks the stream never stopped (defensive; the CLI
 		// emits content_block_stop for each).
 		for (const index of [...run.openTextBlocks]) {
@@ -515,29 +529,43 @@ export async function driveClaude<M extends WireMember>(
 			emit({ type: "reasoning-end", id: blockId(index, "reasoning") });
 		}
 		run.blockIds.clear();
-		const streamed = new Set(run.streamedBlocks);
 		run.streamedBlocks.clear();
-		const assistantContent: AssistantPart[] = [];
-		for (const [index, block] of message.content.entries()) {
+		run.lastStopReason = message.stop_reason ?? run.lastStopReason;
+		finishStep(message);
+	};
+
+	const handleAssistant = (message: ClaudeMessage, error: string | undefined): void => {
+		run.lastAssistantError = error;
+		if (curMessage !== null && curMessage.id !== message.id) flushAssistant();
+		if (curMessage === null) {
+			// A complete assistant message without preceding stream frames
+			// (a call the CLI chose not to stream) still opens its model call.
+			if (!callOpen) beginCall();
+			curParts = [];
+			run.partialMessages.push({ role: "assistant", content: curParts });
+		}
+		curMessage = message;
+		if (message.content.length > 0) spendPendingCall();
+		for (const [i, block] of message.content.entries()) {
 			const part = wireFromBlock(
 				run,
 				eventsDeps,
 				emit,
 				head,
 				block,
-				streamed.has(index),
+				run.streamedBlocks.has(curBlockOffset + i),
 				deps.journal,
 				deps.runId,
 			);
-			if (part !== null) assistantContent.push(part);
+			if (part !== null) curParts.push(part);
 		}
+		curBlockOffset += message.content.length;
 		if (message.content.some((b) => b.type === "tool_use")) run.sawToolUse = true;
 		run.lastStopReason = message.stop_reason ?? run.lastStopReason;
-		run.partialMessages.push({ role: "assistant", content: assistantContent });
-		finishStep(message);
 	};
 
 	const handleUserEcho = (content: string | ClaudeToolResultBlock[]): void => {
+		flushAssistant();
 		if (typeof content === "string") return;
 		const toolParts: ToolContent = [];
 		for (const block of content) {
@@ -598,7 +626,7 @@ export async function driveClaude<M extends WireMember>(
 
 	const childEnv = await claudeChildEnv(engine.auth, step.auth, engine.configDir);
 	const makeBridge = engine.bridgeFactory ?? createToolBridge;
-	const bridge = makeBridge({ convId, tools: deps.tools });
+	const bridge = makeBridge({ convId, tools: deps.tools, signal: deps.signal });
 
 	const messageId = randomUUID();
 	emit({ type: "start", messageId });
@@ -613,7 +641,7 @@ export async function driveClaude<M extends WireMember>(
 			options: {
 				model: step.modelId,
 				systemPrompt: step.system,
-				maxTurns: step.maxTurns,
+				...(step.maxTurns !== undefined ? { maxTurns: step.maxTurns } : {}),
 				thinking:
 					step.thinking !== undefined && step.thinking.disabled === true
 						? { type: "disabled" }
@@ -657,10 +685,12 @@ export async function driveClaude<M extends WireMember>(
 					// The result frame is the turn-complete signal — stop
 					// there (the vendor generator's return() cleans up the
 					// child), never waiting on post-result chatter.
+					flushAssistant();
 					resultFrame = ev;
 					break outer;
 			}
 		}
+		flushAssistant();
 	} catch (err) {
 		// A fenced/stopped turn must surface as the authority error, not a
 		// provider failure — /stop and shutdown ride this path.
@@ -818,7 +848,7 @@ function wireFromBlock(
 		}
 		case "tool_use": {
 			const id = block.id ?? `toolu-${randomUUID().slice(0, 8)}`;
-			const name = block.name ?? "unknown";
+			const name = bareToolName(block.name ?? "unknown");
 			const input = block.input ?? {};
 			run.toolNameById.set(id, name);
 			run.pendingToolUse.set(id, { name, input });
@@ -828,8 +858,9 @@ function wireFromBlock(
 				{
 					convId: eventsDeps.convId,
 					evidence: eventsDeps.evidence,
-					noteJournal: (callId, toolName, args) =>
-						journal?.noteToolInput(runId, callId, toolName, args),
+					// No noteJournal: the CLI's toolu_ ids never match the
+					// bridge ids fenceTools journals under, so a planned row
+					// here would stay stale beside the completed one.
 				},
 				id,
 				name,

@@ -118,9 +118,12 @@ export function carriesMedia(
 			// The Messages API takes images/PDFs in user content; the engine
 			// maps view FileParts to prompt content blocks there. Tool results
 			// ride the bridge as text — no media through that position.
+			// Images are limited to the four types the Messages API accepts;
+			// others fall back to the attachment text placeholder.
 			return (
 				position === "user" &&
-				(mediaType.startsWith("image/") || mediaType === "application/pdf")
+				(["image/gif", "image/jpeg", "image/png", "image/webp"].includes(mediaType) ||
+					mediaType === "application/pdf")
 			);
 		default:
 			return position === "user" && mediaType.startsWith("image/");
@@ -177,7 +180,7 @@ export function callHashes(
 			JSON.stringify({
 				system: (prompt as { role?: unknown }[]).filter((m) => m.role === "system"),
 				tools: tools ?? null,
-		}),
+			}),
 		),
 		requestHash: sha256hex(JSON.stringify(prompt)),
 		promptHashes: prompt.map((m) => sha256hex(JSON.stringify(m))),

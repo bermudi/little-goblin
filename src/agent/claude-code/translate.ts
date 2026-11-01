@@ -158,7 +158,8 @@ export type ClaudeEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export interface ClaudeQueryOptions {
 	model: string;
 	systemPrompt: string;
-	maxTurns: number;
+	// Unset = no step budget (design/model.md).
+	maxTurns?: number | undefined;
 	// SDK ThinkingConfig: adaptive is the model's own depth control.
 	thinking: { type: "disabled" } | { type: "adaptive" };
 	effort?: ClaudeEffort;

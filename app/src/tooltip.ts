@@ -8,13 +8,17 @@
 export function installTooltips(doc: Document): () => void {
 	const tip = doc.createElement("div");
 	tip.className = "tooltip";
-	tip.setAttribute("aria-hidden", "true");
+	tip.id = "goblin-tooltip";
+	tip.setAttribute("role", "tooltip");
 	doc.body.appendChild(tip);
 
 	let host: Element | null = null;
 	let saved: string | null = null;
 	let observer: MutationObserver | null = null;
 	let titleChanged = false;
+	// The host's title is its accessible description; while stashed, the
+	// bubble stands in for it via aria-describedby (restored on hide).
+	let describedByWas: string | null = null;
 
 	const hide = () => {
 		tip.classList.remove("on");
@@ -28,6 +32,11 @@ export function installTooltips(doc: Document): () => void {
 		if (host !== null && saved !== null && !titleChanged && host.getAttribute("title") === "") {
 			host.setAttribute("title", saved);
 		}
+		if (host !== null) {
+			if (describedByWas === null) host.removeAttribute("aria-describedby");
+			else host.setAttribute("aria-describedby", describedByWas);
+		}
+		describedByWas = null;
 		host = null;
 		saved = null;
 		titleChanged = false;
@@ -56,6 +65,8 @@ export function installTooltips(doc: Document): () => void {
 		// An empty title suppresses native hints (including inherited ones),
 		// but remains present so React's removeAttribute is observable.
 		el.setAttribute("title", "");
+		describedByWas = el.getAttribute("aria-describedby");
+		el.setAttribute("aria-describedby", tip.id);
 		const Observer = doc.defaultView?.MutationObserver;
 		if (Observer !== undefined) {
 			observer = new Observer(() => {
@@ -74,6 +85,9 @@ export function installTooltips(doc: Document): () => void {
 		const margin = 4;
 		let top = r.top - tip.offsetHeight - gap;
 		if (top < margin) top = r.bottom + gap;
+		if (doc.defaultView !== null) {
+			top = Math.max(margin, Math.min(top, doc.defaultView.innerHeight - tip.offsetHeight - margin));
+		}
 		const left = Math.max(
 			margin,
 			Math.min(

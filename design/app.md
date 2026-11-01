@@ -310,6 +310,12 @@ ChatGPT backend's own account-scoped /codex/models (design/model.md →
 Codex model catalog), so a signed-out codex lane still degrades to the
 typed path.
 
+**Picker scope (ruling 2026-11-01).** The provider dropdown filters
+every model row — favorites and the current ref included — not just
+the catalog groups: an unscoped Favorites block under a filtered
+provider reads as the filter not working (scope "codex" used to show
+only other providers' stars).
+
 **Favorites are stars (ruling 2026-10-23).** The shared `ModelPicker`
 sheet (Settings and composer) carries a star on every model row; a star
 never picks. The composer's model knob is a menu — current model,

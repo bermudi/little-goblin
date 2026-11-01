@@ -14,6 +14,10 @@ const CATALOG: ProviderModelCatalog[] = [
 			{ id: "b", name: "Beta", releaseDate: "2026-02-01" },
 		],
 	},
+	{
+		provider: "other",
+		models: [{ id: "z", name: "Zeta", releaseDate: "2026-03-01" }],
+	},
 ];
 
 describe("ModelPicker", () => {
@@ -59,6 +63,7 @@ describe("ModelPicker", () => {
 
 	const mount = async (props: {
 		favorites?: string[];
+		current?: string;
 		mode?: "pick" | "favorites";
 		onPick?: (ref: string) => void;
 		onToggleFavorite?: (ref: string, on: boolean) => void;
@@ -68,11 +73,11 @@ describe("ModelPicker", () => {
 			root?.render(
 				<ModelPicker
 					title="Pick a model"
-					current="prov/a"
+					current={props.current ?? "prov/a"}
 					allowOff={false}
 					favorites={props.favorites ?? []}
 					catalog={CATALOG}
-					provNames={["prov"]}
+					provNames={["prov", "other"]}
 					{...(props.mode !== undefined ? { mode: props.mode } : {})}
 					onPick={props.onPick ?? (() => {})}
 					onToggleFavorite={props.onToggleFavorite ?? (() => {})}
@@ -81,6 +86,20 @@ describe("ModelPicker", () => {
 			);
 		});
 	};
+
+	const setScope = async (scope: string) => {
+		const select = container.querySelector('select[aria-label="Model provider"]');
+		expect(select).toBeTruthy();
+		await act(async () => {
+			(select as HTMLSelectElement).value = scope;
+			select!.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+		});
+	};
+
+	const rowRefs = () =>
+		[...container.querySelectorAll(".mline .mrow, .msheet-body > .mrow")].map((r) =>
+			(r.querySelector(".ref")?.textContent ?? r.textContent ?? "").trim(),
+		);
 
 	test("the star toggles the favorite without picking the row", async () => {
 		const picked: string[] = [];
@@ -147,5 +166,31 @@ describe("ModelPicker", () => {
 		await click(row);
 		expect(toggled).toEqual([["prov/b", true]]);
 		expect(picked).toEqual([]);
+	});
+
+	test("the provider scope filters catalog groups, favorites and current", async () => {
+		await mount({ favorites: ["prov/b", "other/z"], current: "prov/a" });
+		expect(rowRefs()).toContain("prov/b");
+		expect(rowRefs()).toContain("other/z");
+		expect(rowRefs()).toContain("prov/a");
+		await setScope("other");
+		const refs = rowRefs();
+		// The scope wins over the pin: other-provider favorites and the
+		// current ref leave the sheet entirely.
+		expect(refs).toEqual(["other/z"]);
+		// Clearing restores every row.
+		await setScope("");
+		expect(rowRefs()).toEqual(
+			expect.arrayContaining(["prov/b", "other/z", "prov/a"]),
+		);
+	});
+
+	test("a scope with an empty catalog still shows that provider's favorites", async () => {
+		await mount({ favorites: ["prov/b", "other/z"], current: "prov/a" });
+		await setScope("prov");
+		const refs = rowRefs();
+		expect(refs).toContain("prov/b");
+		expect(refs).toContain("prov/a");
+		expect(refs).not.toContain("other/z");
 	});
 });

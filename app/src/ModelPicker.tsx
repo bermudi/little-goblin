@@ -51,8 +51,14 @@ export function ModelPicker({
 		const name = meta.get(ref)?.name?.toLowerCase() ?? "";
 		return ref.toLowerCase().includes(q) || name.includes(q);
 	};
-	const favs = favorites.filter(hit);
-	const showCurrent = current !== "" && !favorites.includes(current) && hit(current);
+	// The provider scope filters every model row — favorites and current
+	// included — or "codex" reads as broken: its catalog can be empty
+	// while other providers' favorites fill the sheet.
+	const scoped = (ref: string) =>
+		scope === "" || ref.toLowerCase().startsWith(`${scope.toLowerCase()}/`);
+	const favs = favorites.filter((f) => scoped(f) && hit(f));
+	const showCurrent =
+		current !== "" && !favorites.includes(current) && scoped(current) && hit(current);
 	const pinned = new Set([...favorites, current]);
 	const groups = catalog
 		.filter((group) => scope === "" || group.provider === scope)

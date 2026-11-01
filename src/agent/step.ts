@@ -81,6 +81,7 @@ export function makeStepBuilder(
 				label: modelRef,
 				inputModalities: modalities,
 				carries,
+				keepProviderExecuted: kind === "codex",
 				...(contextWindow !== null ? { contextWindow } : {}),
 				...(providerOptions ? { providerOptions } : {}),
 				...(maxRetries !== undefined ? { maxRetries } : {}),

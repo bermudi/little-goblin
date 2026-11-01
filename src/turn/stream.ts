@@ -28,7 +28,7 @@ import { type EvidenceLimits, summarize, type ToolCallDigest, toolOk } from "../
 import type { TurnJournal } from "../turn-journal.ts";
 import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
-import { measurePrompt, type PromptSegments } from "./itemize.ts";
+import { estimateHistoryChars, measurePrompt, type PromptSegments } from "./itemize.ts";
 import { PreemptSignal } from "./overflow.ts";
 import { attributedSkills, type SkillWatch } from "./skill-attribution.ts";
 import type { ForcedKind, LoopTurnState, TurnState } from "./state.ts";
@@ -346,14 +346,19 @@ export async function driveStream<M extends WireMember>(
 			// step's reported input plus everything appended since its
 			// dispatch (assistant output, tool results, steers), at
 			// chars/4. Null before the first completed step.
+			// Media is charged a fixed cost (estimateHistoryChars), not its
+			// base64 length — see itemize.ts.
+			const historyEstimate = estimateHistoryChars(messages);
 			const projectedInputTokens =
 				lastStepInputTokens !== null && lastWindow !== null
 					? lastStepInputTokens +
-						Math.ceil(Math.max(0, segments.history - lastWindow.segments.history) / 4)
+						Math.ceil(
+							Math.max(0, historyEstimate - estimateHistoryChars(lastWindow.messages)) / 4,
+						)
 					: null;
 			const arm = deps.preemptCheck({
 				projectedInputTokens,
-				historyChars: segments.history,
+				historyChars: historyEstimate,
 				stepNumber,
 			});
 			if (arm !== null) {
@@ -366,7 +371,7 @@ export async function driveStream<M extends WireMember>(
 					arm,
 					step: stepNumber,
 					projectedInputTokens,
-					historyChars: segments.history,
+					historyChars: historyEstimate,
 				});
 				throw new PreemptSignal(arm, stepNumber);
 			}

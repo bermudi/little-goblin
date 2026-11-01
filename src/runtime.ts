@@ -119,6 +119,9 @@ export interface ModelStep {
 	// Second, position-aware gate for inlining media through the provider pipe;
 	// a model capability alone is not enough when the provider cannot carry it.
 	carries?: (mediaType: string, position: MediaPosition) => boolean;
+	// Whether the provider replays provider-executed tool parts (Codex
+	// hosted web_search); false/absent drops them from the model view.
+	keepProviderExecuted?: boolean;
 	// Context-window denominator for utilization logging, when known.
 	contextWindow?: number;
 	// Retry budget for the provider's chat calls, when the provider's own
@@ -1194,6 +1197,7 @@ export class Runtime {
 				tools,
 				modalities: step.inputModalities,
 				carries: accepts.current.carries,
+				keepProviderExecuted: step.keepProviderExecuted === true,
 				skillRef: resolveSkillRef,
 			};
 			const merged = await buildModelView(viewCtx, {

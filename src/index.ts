@@ -995,9 +995,13 @@ async function boot() {
 						if (superseded !== null) {
 							telegramRunning = null;
 							if (superseded.bot.isRunning()) {
-								await superseded.bot.stop().catch(() => {});
+								await superseded.bot.stop().catch((err: unknown) => {
+									log.warn("superseded telegram bot failed to stop — retry may hit 409", err);
+								});
 							}
-							await superseded.drainIntake().catch(() => {});
+							await superseded.drainIntake().catch((err: unknown) => {
+								log.warn("superseded telegram intake failed to drain", err);
+							});
 						}
 						if (telegramSealed || !runtime.accepting()) return;
 						if (!configRef.current.telegram.enabled) {

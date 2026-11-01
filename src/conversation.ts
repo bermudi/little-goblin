@@ -3,7 +3,6 @@
 import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
-import { clampThinkingFor } from "./agent/thinking.ts";
 import { type Config, splitModelRef } from "./config.ts";
 import { log } from "./log.ts";
 import { MemoryDestinations } from "./memory/destinations.ts";

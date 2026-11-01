@@ -22,6 +22,13 @@ export interface ViewContext {
 	modalities: Set<string> | undefined;
 	carries: (mediaType: string, position: MediaPosition) => boolean;
 	/**
+	 * True when the current provider replays provider-executed tool parts
+	 * (Codex hosted web_search). Anywhere else they are dropped from the
+	 * view: other converters emit a tool_calls entry with no tool reply,
+	 * which the endpoint rejects on every later turn.
+	 */
+	keepProviderExecuted?: boolean;
+	/**
 	 * Resolves an invocation: the display name (the descriptor's, for a
 	 * temp skill) and the injected body — preamble plus SKILL.md — or
 	 * null when the body cannot ride (skill deleted, temp verdict
@@ -223,13 +230,51 @@ export async function buildModelView(
 			messages.push(...injectedBodies(ctx, invocations));
 		}
 	}
-	const merged = mergeConsecutiveUserModels(messages);
+	const scoped = ctx.keepProviderExecuted === true ? messages : dropProviderExecuted(ctx, messages);
+	const merged = mergeConsecutiveUserModels(scoped);
 
 	log.info("model request", {
 		conversation: ctx.convId,
 		messages: merged.length,
 	});
 	return merged;
+}
+
+function dropProviderExecuted(ctx: ViewContext, messages: ModelMessage[]): ModelMessage[] {
+	const out: ModelMessage[] = [];
+	let dropped = 0;
+	for (const m of messages) {
+		if (m.role !== "assistant" || !Array.isArray(m.content)) {
+			out.push(m);
+			continue;
+		}
+		// The SDK flags only the call; the result is matched by id.
+		const hostedIds = new Set<string>();
+		for (const p of m.content) {
+			const part = p as { type: string; toolCallId?: string; providerExecuted?: boolean };
+			if (part.type === "tool-call" && part.providerExecuted === true && part.toolCallId) {
+				hostedIds.add(part.toolCallId);
+			}
+		}
+		const kept = m.content.filter((p) => {
+			const part = p as { type: string; toolCallId?: string };
+			const hosted =
+				(part.type === "tool-call" || part.type === "tool-result") &&
+				part.toolCallId !== undefined &&
+				hostedIds.has(part.toolCallId);
+			if (hosted) dropped++;
+			return !hosted;
+		});
+		if (kept.length === m.content.length) out.push(m);
+		else if (kept.length > 0) out.push({ ...m, content: kept });
+	}
+	if (dropped > 0) {
+		log.info("provider-executed parts dropped from the model view", {
+			conversation: ctx.convId,
+			parts: dropped,
+		});
+	}
+	return out;
 }
 
 // The owning turn's tail: one appended user message per resolved

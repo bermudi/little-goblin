@@ -81,6 +81,16 @@ export class HistoryExpiredError extends Error {
 	}
 }
 
+/** The send POST may have been accepted by Gmail: transport failure
+ *  (timeout/drop) or an unparseable 2xx. The caller must NOT release
+ *  its claim or invite a retry — a second tap could deliver a copy. */
+export class AmbiguousSendError extends Error {
+	constructor(message: string, cause: unknown) {
+		super(message, { cause });
+		this.name = "AmbiguousSendError";
+	}
+}
+
 export function makeSender(deps: GmailSenderDeps): MailSender {
 	const inner = new Gmail(deps, deps.sendAuth);
 	return {
@@ -212,7 +222,13 @@ class Gmail {
 		const raw = buildRaw(draft);
 		const body: Record<string, unknown> = { raw };
 		if (draft.threadId !== undefined) body.threadId = draft.threadId;
-		const { data } = await this.call(
+		// Failures before the POST (token mint) and definitive 4xx rejections
+		// deliver nothing. Anything after the POST left — transport loss,
+		// 5xx/408, a 2xx with an unreadable or misshapen body — may have
+		// been accepted, so it surfaces as AmbiguousSendError.
+		let data: unknown;
+		try {
+			({ data } = await this.call(
 			"send",
 			"/users/me/messages/send",
 			token,
@@ -226,16 +242,39 @@ class Gmail {
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(body),
 			},
-		);
+			));
+		} catch (err) {
+			if (
+				err instanceof ProviderError &&
+				err.httpStatus !== undefined &&
+				err.httpStatus >= 400 &&
+				err.httpStatus < 500 &&
+				err.httpStatus !== 408
+			) {
+				throw err;
+			}
+			throw new AmbiguousSendError(
+				`send outcome unknown — ${err instanceof Error ? err.message : String(err)}`,
+				err,
+			);
+		}
 		// The wire's own contract, not a mask: a 2xx send owes an id and a
 		// threadId. Shape drift here used to collapse to `sentId: ""` via
 		// str() — a silent lie in the outbox row; now it fails loud as a
 		// ProviderError so the row stays pending and re-tappable.
-		const sent = parseOrThrow(
-			"send",
-			z.object({ id: z.string(), threadId: z.string() }).passthrough(),
-			data,
-		);
+		let sent: { id: string; threadId: string };
+		try {
+			sent = parseOrThrow(
+				"send",
+				z.object({ id: z.string(), threadId: z.string() }).passthrough(),
+				data,
+			);
+		} catch (err) {
+			throw new AmbiguousSendError(
+				`send accepted but response unreadable — ${(err as Error).message}`,
+				err,
+			);
+		}
 		return { id: sent.id, threadId: sent.threadId };
 	}
 }

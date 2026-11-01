@@ -3,7 +3,7 @@
 // transports only present the draft, render controls, report notices,
 // and stamp their own UI.
 
-import { domainOf, type MailPoller, type MailSender } from "./mail.ts";
+import { AmbiguousSendError, domainOf, type MailPoller, type MailSender } from "./mail.ts";
 import type { OutboxEntry, OutboxStore, QueueDraft } from "./mail-outbox.ts";
 import { log } from "./log.ts";
 import { telegramAddressOf, type ConversationTarget, type DecisionActor } from "./targets.ts";
@@ -366,7 +366,19 @@ async function sendApproved(
 			...(inReplyTo !== undefined ? { inReplyTo } : {}),
 		});
 	} catch (err) {
-		// The send call itself failed — release the claim so the draft is
+		if (err instanceof AmbiguousSendError) {
+			// The POST may have landed. Leave the row "sending" (the crash
+			// case the claim exists for): no release, no retry invitation.
+			log.error("mail send outcome unknown — row left sending, not resending", err, {
+				outbox: row.id,
+				to: row.to.map(domainOf),
+			});
+			const message = `⚠️ send outcome unknown (${err.message}) — check Sent mail before re-queuing; not retrying automatically.`;
+			await lane.notice(row, message);
+			const fresh = deps.outbox.get(row.id);
+			return fresh === null ? { kind: "gone" } : { kind: "conflict", row: fresh };
+		}
+		// Definitive failure — release the claim so the draft is
 		// pending and re-tappable, exactly as before the claim existed.
 		if (!deps.outbox.releaseSend(row.id)) {
 			log.warn("mail send failed and its claim was already settled", { outbox: row.id });

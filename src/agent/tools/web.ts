@@ -19,6 +19,8 @@ export class ProviderError extends Error {
 	constructor(
 		public readonly provider: string,
 		message: string,
+		/** HTTP status when the failure is a received non-2xx response. */
+		public readonly httpStatus?: number,
 	) {
 		super(`${provider}: ${message}`);
 		this.name = "ProviderError";
@@ -55,7 +57,7 @@ export async function fetchOk(
 			status: res.status,
 			bodyHead: body.slice(0, BODY_HEAD),
 		});
-		throw new ProviderError(provider, `HTTP ${res.status}`);
+		throw new ProviderError(provider, `HTTP ${res.status}`, res.status);
 	}
 	return res;
 }

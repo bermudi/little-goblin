@@ -4,11 +4,12 @@
 // provenance → history flow.
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import {
 	decideSkillProposal,
+	proposalFingerprint,
 	resolveSkillProposal,
 	skillResolutionText,
 } from "./skill-decisions.ts";
@@ -158,5 +159,18 @@ describe("skillResolutionText", () => {
 		expect(skillResolutionText({ action: "discard", ok: true }, "x")).toBe(
 			"skill proposal resolved: x — discarded (deleted)",
 		);
+	});
+});
+
+describe("proposalFingerprint", () => {
+	test("retargeting a symlink changes the fingerprint", () => {
+		const dir = tmpDir("fp-link-");
+		mkdirSync(join(dir, "s"));
+		const link = join(dir, "s", "SKILL.md");
+		symlinkSync("/etc/hostname", link);
+		const before = proposalFingerprint(dir, "s");
+		rmSync(link);
+		symlinkSync("/etc/hosts", link);
+		expect(proposalFingerprint(dir, "s")).not.toBe(before);
 	});
 });

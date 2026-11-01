@@ -5,7 +5,7 @@
 // "parked, not installed" claim.
 
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { log } from "./log.ts";
@@ -119,7 +119,7 @@ function discardProposal(
 /** Short content fingerprint of a staged proposal — the value approval
  * buttons bind to, so a tap decides the proposal the operator saw, not
  * whatever the reviewer parked later. First 12 hex of sha256 over the
- * sorted (relative path, bytes) walk; symlinks are named, never followed.
+ * sorted (relative path, bytes) walk; symlinks hash their target string, never followed.
  * Null when there is no fingerprintable proposal (gone, symlink, not a
  * directory); non-ENOENT filesystem errors propagate like everywhere else
  * in this module. */
@@ -141,7 +141,7 @@ export function proposalFingerprint(proposedDir: string, skill: string): string 
 		for (const entry of entries) {
 			const childRel = rel === "" ? entry.name : `${rel}/${entry.name}`;
 			if (entry.isSymbolicLink()) {
-				hash.update(`L ${childRel}\n`);
+				hash.update(`L ${childRel} -> ${readlinkSync(join(dir, entry.name))}\n`);
 			} else if (entry.isDirectory()) {
 				walk(join(dir, entry.name), childRel);
 			} else if (entry.isFile()) {

@@ -76,6 +76,13 @@ export function invokesPassCliDirectly(command: string): boolean {
 	// matching so spliced spellings normalize to the bare token; the
 	// boundary checks below still exclude pass-clix / my-pass-cli-tool.
 	const normalized = command.replace(/\\(.)/gs, "$1").replace(/["']/g, "");
+	// Parameter/command expansion inside a command word ($X, ${X}, $(…),
+	// backticks) can assemble pass-cli at exec time; refuse conservatively
+	// when an expansion is glued to a pass-cli-shaped word fragment.
+	if (/(?:^|[\s;&|()`])[^\s;&|()`]*\$[^\s;&|()`]*/.test(normalized)) {
+		const stripped = normalized.replace(/\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$\([^)]*\)/g, "");
+		if (/(?:^|[\s;&|()`])(?:[^\s;&|()`/]*\/)*pass-cli(?:[\s;&|)`]|$)/.test(stripped)) return true;
+	}
 	return /(?:^|[\s;&|()`])(?:[^\s;&|()`/]*\/)*pass-cli(?:[\s;&|)`]|$)/.test(normalized);
 }
 

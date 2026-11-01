@@ -179,6 +179,8 @@ describe("invokesPassCliDirectly", () => {
 		"pa\\ss-cli item view x",
 		"'pass-cli' item view x",
 		'"pass-cli" item view x',
+		"p${GOBLIN_UNSET_9F3C}ass-cli item view x",
+		"pass-${UNSET_VAR}cli item view x",
 	])("poisons %s", (cmd) => {
 		expect(invokesPassCliDirectly(cmd)).toBe(true);
 	});

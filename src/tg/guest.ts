@@ -611,22 +611,6 @@ function sendMemberLine(
 		});
 }
 
-export const GUEST_CHANNEL_EXCLUDED: ReadonlySet<string> = new Set([
-	"subagent",
-	"desktop",
-	"program",
-	"mail",
-	"delegate",
-	"herdr",
-	"memory_search",
-	"memory_reflect",
-	"history_search",
-	"note",
-	"speak",
-	"send_file",
-	"generate_image",
-]);
-
 export function filterGuestTools<T extends Record<string, unknown>>(
 	conv: Conversation,
 	tools: T,

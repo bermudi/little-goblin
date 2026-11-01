@@ -241,6 +241,21 @@ describe("isTransientTurnFailure", () => {
 		expect(quotaExhausted(new Error("rate limit: 10 per minute"))).toBeNull();
 	});
 
+	test("z.ai balance exhaustion (429 code 1113) is quota, not transient", () => {
+		// The phrase "Insufficient balance" is observed (design/subagents.md);
+		// the exact JSON envelope below is unverified.
+		const err = new APICallError({
+			message: "Insufficient balance",
+			url: "https://api.z.ai/v1/chat/completions",
+			requestBodyValues: {},
+			statusCode: 429,
+			responseBody: '{"error":{"code":"1113","message":"Insufficient balance"}}',
+			isRetryable: true,
+		});
+		expect(isTransientTurnFailure(err)).toBe(false);
+		expect(quotaExhausted(err)).toEqual({});
+	});
+
 	test("the truth hiding under a RetryError's errors still classifies", () => {
 		const err = new RetryError({
 			message: "Failed after 3 attempts",

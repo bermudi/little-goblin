@@ -97,7 +97,7 @@ Rulings:
   occurrence. Anything else — model output or spending, a non-transient
   or unknown cause (provider quota exhaustion is non-transient: a
   days-long wall, not a throttle — it fails and notifies, no retry;
-  retry-at-reset is deferred), a mid-ladder disable or delete (revoked authority
+  retry-at-reset is deferred; open item, operator decision pending: the AI SDK's own `maxRetries` still spends attempts on a quota 429 before classification), a mid-ladder disable or delete (revoked authority
   fences the retry), exhaustion, restart — ends the ladder. The cursor
   advanced at the original fire; the ladder never re-runs the run-mark.
 - **Webhooks: one secret address per program.** Served on the loopback

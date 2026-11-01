@@ -1,7 +1,7 @@
 // Test-to-source line ratio — report only, exits 0 at any ratio (a signal, not
 // a gate; DESIGN.md → Test posture). Scope: `git ls-files src/`, .ts/.tsx.
 // Test side = *.test.ts(x) (live drift checks included) plus test-support
-// modules (testkit.ts, testing.ts, *-testing.ts): they exist only for tests.
+// modules (testkit.ts, testing.ts, *-testing.ts, src/test-helpers/**): they exist only for tests.
 // Everything else is production.
 
 import { execFileSync } from "node:child_process";
@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 export const isTest = (f: string): boolean =>
-	/\.test\.tsx?$/.test(f) || /(?:^|\/|-)(?:testkit|testing)\.ts$/.test(f);
+	/\.test\.tsx?$/.test(f) || f.startsWith("src/test-helpers/") || /(?:^|\/|-)(?:testkit|testing)\.ts$/.test(f);
 
 export interface Tally {
 	prod: number;

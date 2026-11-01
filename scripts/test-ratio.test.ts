@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { isTest, tally } from "./test-ratio";
 
 test("test-support modules count as tests, live checks too", () => {
-	expect(["src/a.test.ts", "src/testkit.ts", "src/x/testing.ts", "src/http/app-testing.ts", "src/herdr.live.test.ts"].every(isTest)).toBe(true);
+	expect(["src/a.test.ts", "src/testkit.ts", "src/x/testing.ts", "src/http/app-testing.ts", "src/herdr.live.test.ts", "src/test-helpers/boot.ts"].every(isTest)).toBe(true);
 	expect(isTest("src/latest.ts")).toBe(false);
 });
 

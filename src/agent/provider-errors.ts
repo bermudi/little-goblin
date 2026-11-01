@@ -175,8 +175,14 @@ const TRANSIENT_PHRASES = [
 // ladder of seconds cannot cross it. Both phrasings are observed bodies —
 // z.ai HTTP 429 "Weekly/Monthly Limit Exhausted. Your limit will reset at
 // 2026-10-28 08:50:34" (goblin.log 2026-10-26) and Brave search HTTP 402
-// "Usage limit exceeded." Add phrasings only with an observed body.
-const QUOTA_PHRASES = ["limit exhausted", "usage limit exceeded"];
+// "Usage limit exceeded." z.ai's balance-exhausted body ("429 code 1113
+// Insufficient balance") is recorded in design/subagents.md and
+// design/memory.md. Add phrasings only with an observed body.
+const QUOTA_PHRASES = ["limit exhausted", "usage limit exceeded", "insufficient balance"];
+
+function quotaByPhrases(text: string): boolean {
+	return QUOTA_PHRASES.some((p) => text.includes(p));
+}
 const QUOTA_RESET = /will reset at (\d{4}-\d{2}-\d{2}[ t]\d{2}:\d{2}:\d{2})/;
 
 export interface QuotaExhausted {
@@ -187,7 +193,7 @@ export interface QuotaExhausted {
 // Quota wins over the 429 status that usually carries it.
 export function quotaExhausted(err: unknown): QuotaExhausted | null {
 	const text = collectAll(err).texts.join("\n").toLowerCase();
-	if (!QUOTA_PHRASES.some((p) => text.includes(p))) return null;
+	if (!quotaByPhrases(text)) return null;
 	const resetAt = QUOTA_RESET.exec(text)?.[1];
 	return resetAt === undefined ? {} : { resetAt };
 }
@@ -200,7 +206,7 @@ export function isTransientTurnFailure(err: unknown): boolean {
 	const collected = collectAll(err);
 	if (contentFilterDetected(collected)) return false;
 	const text = collected.texts.join("\n").toLowerCase();
-	if (QUOTA_PHRASES.some((p) => text.includes(p))) return false;
+	if (quotaByPhrases(text)) return false;
 	// Rate-limit evidence decides first — isContextOverflow's order in
 	// mirror, so a throttled rejection carrying overflow-ish body prose
 	// can't read as neither transient nor compactable.

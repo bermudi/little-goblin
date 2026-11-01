@@ -18,8 +18,8 @@ expansion), `scriptable`, `guestSandbox` (the sandbox persona's allowlist —
 search only) and `guestChannel` (kept on guest-channel turns). Consumers call
 `policyOf(name)`; a name with no row (a future dynamic/MCP tool) gets the
 conservative default — replay-unsafe, untrusted, not scriptable, no guest
-exposure. A new tool adds its row; `tool-policy.test.ts` fails if a built tool
-has none. The former `SAFE_READ_TOOLS`, `SCRIPT_CALLABLE`, `SANDBOX_TOOLS` and
+exposure. A new tool adds its row; `src/agent/tools/mod.test.ts` fails if a tool
+mounted by its fixture has none (coverage is only what that fixture mounts). The former `SAFE_READ_TOOLS`, `SCRIPT_CALLABLE`, `SANDBOX_TOOLS` and
 `GUEST_CHANNEL_EXCLUDED` lists are gone.
 
 Working outside the conversation's cwd is the agent's own business (`cd x &&
@@ -125,8 +125,9 @@ persistent kernel and remote backends; pi's `store`/`load`, `models`,
   so the runtime's authority fence wraps it, under the turn's abort
   signal. Calls that completed before a failure are not undone.
 - **Nested calls go through the fence's dispatch, never a raw `execute`**
-  (ruling 2026-11-01). `Runtime.fenceTools` is pure: it returns copies of
-  the tools whose executes route through one `dispatch(name, input,
+  (ruling 2026-11-01). `Runtime.fenceTools` returns new tool objects (not
+  strictly pure: it also binds the input set's `script` tool to the dispatch via
+  a WeakMap in script.ts, so fencing the same raw set twice throws) whose executes route through one `dispatch(name, input,
   options)` (authority epoch → journal fault → recovery guard → journal
   dispatch/result/error rows), and binds that same function into `script`
   (`bindScriptDispatch`). `script` keeps the pre-fence set only for

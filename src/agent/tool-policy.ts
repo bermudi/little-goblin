@@ -2,7 +2,8 @@
 // that used to match tool names against its own list (retry guard, script
 // composition, guest filtering, taint marking, skill attribution, nested-call
 // expansion). A new tool must add a row here — `TOOL_POLICY` is typed over
-// `ToolName`, and tool-policy.test.ts fails if a built tool has no row.
+// `ToolName`, and src/agent/tools/mod.test.ts fails if a tool mounted by its
+// fixture has no row (coverage is only the tools that fixture mounts).
 //
 // Unknown names (dynamic/foreign tools; none exist today) get CONSERVATIVE:
 // replay-unsafe, untrusted, not scriptable, not offered to any guest.

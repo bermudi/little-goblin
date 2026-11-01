@@ -1,3 +1,4 @@
+import { policyOf } from "../agent/tool-policy.ts";
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { Message } from "grammy/types";
@@ -610,8 +611,6 @@ function sendMemberLine(
 		});
 }
 
-export const SANDBOX_TOOLS: ReadonlySet<string> = new Set(["search"]);
-
 export const GUEST_CHANNEL_EXCLUDED: ReadonlySet<string> = new Set([
 	"subagent",
 	"desktop",
@@ -636,8 +635,8 @@ export function filterGuestTools<T extends Record<string, unknown>>(
 	const out: Record<string, unknown> = {};
 	for (const [name, tool] of Object.entries(tools)) {
 		if (conv.persona === "guest") {
-			if (SANDBOX_TOOLS.has(name)) out[name] = tool;
-		} else if (!guestChannel || !GUEST_CHANNEL_EXCLUDED.has(name)) {
+			if (policyOf(name).guestSandbox) out[name] = tool;
+		} else if (!guestChannel || policyOf(name).guestChannel) {
 			out[name] = tool;
 		}
 	}

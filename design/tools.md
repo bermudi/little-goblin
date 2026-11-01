@@ -9,6 +9,19 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 loop — and stays out of the script tool's callable set because it invokes a
 model.
 
+**Tool policy is declared, not matched by name.** `src/agent/tool-policy.ts`
+holds one descriptor per tool (`TOOL_POLICY`, typed over the closed `TOOL_NAMES`
+tuple): `replay` (safe reads re-execute under the retry guard; everything else
+refuses as an unowned repeat), `output` (untrusted taints a script's output),
+`writesFiles` / `composes` (skill-provenance attribution and nested-call
+expansion), `scriptable`, `guestSandbox` (the sandbox persona's allowlist —
+search only) and `guestChannel` (kept on guest-channel turns). Consumers call
+`policyOf(name)`; a name with no row (a future dynamic/MCP tool) gets the
+conservative default — replay-unsafe, untrusted, not scriptable, no guest
+exposure. A new tool adds its row; `tool-policy.test.ts` fails if a built tool
+has none. The former `SAFE_READ_TOOLS`, `SCRIPT_CALLABLE`, `SANDBOX_TOOLS` and
+`GUEST_CHANNEL_EXCLUDED` lists are gone.
+
 Working outside the conversation's cwd is the agent's own business (`cd x &&
 …` inside `bash`). The bash description's doctor shim is diagnosis only —
 never repairs or restarts ([Doctor](doctor.md)).

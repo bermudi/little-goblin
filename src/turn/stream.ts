@@ -14,6 +14,7 @@ import {
 	type UIMessageChunk,
 } from "ai";
 import { z } from "zod";
+import { policyOf } from "../agent/tool-policy.ts";
 import { filterErrorStream } from "../agent/filter-stream.ts";
 import {
 	isContentFilter,
@@ -738,7 +739,7 @@ export async function driveStream<M extends WireMember>(
 							break;
 						}
 					}
-					if (callById.get(chunk.toolCallId)?.tool === "script") {
+					if (policyOf(callById.get(chunk.toolCallId)?.tool ?? "").composes) {
 						const parsed = scriptOutputSchema.safeParse(chunk.output);
 						if (parsed.success) {
 							for (const [i, call] of parsed.data.calls.entries()) {
@@ -765,7 +766,7 @@ export async function driveStream<M extends WireMember>(
 					}
 					if (deps.skillWatch !== undefined) {
 						const tool = callById.get(chunk.toolCallId)?.tool ?? "";
-						if (tool === "write_file" || tool === "edit_file" || tool === "script") {
+						if (policyOf(tool).writesFiles) {
 							for (const skill of attributedSkills(deps.skillWatch, tool, chunk.output)) {
 								try {
 									deps.skillWatch.record(convId, skill);

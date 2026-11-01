@@ -11,7 +11,8 @@ import type { Conversation } from "../../conversation.ts";
 import { filterGuestTools } from "../../tg/guest.ts";
 import { bashTool } from "./bash.ts";
 import { fetchTool } from "./fetch.ts";
-import { SCRIPT_CALLABLE, withScript } from "./script.ts";
+import { policyOf } from "../tool-policy.ts";
+import { withScript } from "./script.ts";
 import { readFileTool } from "./read.ts";
 
 interface Out {
@@ -580,7 +581,7 @@ describe("guest composition (index.ts's order: filter → withScript → refilte
 });
 
 test("herdr is not in the script's callable set", () => {
-	expect(SCRIPT_CALLABLE.has("herdr")).toBe(false);
+	expect(policyOf("herdr").scriptable).toBe(false);
 	const tools = composed({
 		herdr: counter(() => "unreachable"),
 		bash: counter(() => "x"),

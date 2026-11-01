@@ -1,3 +1,4 @@
+import { policyOf } from "../agent/tool-policy.ts";
 import { relative, sep } from "node:path";
 import { z } from "zod";
 import { skillNameSchema } from "../skill-provenance.ts";
@@ -44,16 +45,16 @@ export function attributedSkills(watch: SkillWatch, tool: string, output: unknow
 		const name = skillUnder(watch, out.data.path);
 		if (name !== null) names.add(name);
 	};
-	if (tool === "write_file" || tool === "edit_file") {
+	if (policyOf(tool).writesFiles && !policyOf(tool).composes) {
 		collect(output);
 		return [...names];
 	}
-	if (tool === "script") {
+	if (policyOf(tool).composes) {
 		const parsed = scriptCallsSchema.safeParse(output);
 		if (!parsed.success) return [];
 		for (const call of parsed.data.calls) {
 			if (!call.ok) continue;
-			if (call.tool === "write_file" || call.tool === "edit_file")
+			if (policyOf(call.tool).writesFiles && !policyOf(call.tool).composes)
 				collect(parseSummarized(call.result));
 		}
 	}

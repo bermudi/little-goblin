@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config.ts";
+import { TOOL_NAMES } from "../tool-policy.ts";
+import { withScript } from "./script.ts";
 import { HindsightClient } from "../../memory/hindsight.ts";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { ProgramsStore } from "../../programs.ts";
@@ -198,6 +200,11 @@ describe("toolNames ↔ makeTools", () => {
 			},
 			image: {} as unknown as ImageToolDeps,
 		});
+		// Policy exhaustiveness: a new tool without a TOOL_POLICY row fails here.
+		const mounted = Object.keys(withScript(tools, { conversation: "c", maxCalls: 1 }));
+		for (const name of mounted) {
+			expect(TOOL_NAMES as readonly string[], `${name} needs a TOOL_POLICY row`).toContain(name);
+		}
 		for (const [name, t] of Object.entries(tools)) {
 			const schema = (t as unknown as { inputSchema?: unknown }).inputSchema;
 			expect(schema, `${name} exposes an input schema`).toBeDefined();

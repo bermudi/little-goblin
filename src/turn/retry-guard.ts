@@ -8,17 +8,8 @@
 // bounded preview — and historical CALL ids for grants. A signature is
 // evidence about what ran; it is never execution identity.
 
+import { policyOf } from "../agent/tool-policy.ts";
 import { RESOLVED_SKIP_NOTE, type ToolCallState, type TurnToolCall } from "../turn-journal.ts";
-
-// Reads whose observed value is only meaningful when freshly observed —
-// they execute again without an operator grant (a stale file listing is
-// worse than none). Everything else — bash, script, fetch, unknown names
-// — is conservatively potentially effectful.
-export const SAFE_READ_TOOLS: ReadonlySet<string> = new Set([
-	"read_file",
-	"history_search",
-	"memory_search",
-]);
 
 // States a call may be in for `authorize-retry` to take: the ambiguous
 // dispatched case plus the KNOWN completed/failed/resolved-done
@@ -120,7 +111,7 @@ export function classifyRetry(name: string, entries: GuardEntry[] | undefined): 
 						: `${RESOLVED_SKIP_NOTE} — ${skip.resolutionNote}`,
 			};
 		}
-		if (SAFE_READ_TOOLS.has(name)) return { kind: "execute" };
+		if (policyOf(name).replay === "safe") return { kind: "execute" };
 		const executions = entries.filter((e) => EXECUTION_STATES.has(e.state));
 		if (executions.length > 0) {
 			return { kind: "refuse", error: conflictError(name, executions) };

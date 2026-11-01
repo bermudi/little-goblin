@@ -6,7 +6,7 @@ import { openStore } from "../../conversation.ts";
 import { setLogFile } from "../../log.ts";
 import { noteFence, openNotes } from "../../notes.ts";
 import { openProjects } from "../../projects.ts";
-import { GUEST_CHANNEL_EXCLUDED, SANDBOX_TOOLS } from "../../tg/guest.ts";
+import { policyOf } from "../tool-policy.ts";
 import { noteInputSchema, noteTool, type NoteToolDeps } from "./note.ts";
 import { useHome } from "../../testkit.ts";
 
@@ -246,7 +246,7 @@ describe("note tool actions", () => {
 
 describe("guest exclusion", () => {
 	test("note is never mounted on a guest turn", () => {
-		expect(GUEST_CHANNEL_EXCLUDED.has("note")).toBe(true);
-		expect(SANDBOX_TOOLS.has("note")).toBe(false);
+		expect(policyOf("note").guestChannel).toBe(false);
+		expect(policyOf("note").guestSandbox).toBe(false);
 	});
 });

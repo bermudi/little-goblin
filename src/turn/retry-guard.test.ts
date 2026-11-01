@@ -3,12 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { TurnToolCall } from "../turn-journal.ts";
-import {
-	buildRetryGuard,
-	canAuthorizeRetry,
-	classifyRetry,
-	SAFE_READ_TOOLS,
-} from "./retry-guard.ts";
+import { buildRetryGuard, canAuthorizeRetry, classifyRetry } from "./retry-guard.ts";
 
 function call(over: Partial<TurnToolCall> & { toolCallId: string }): TurnToolCall {
 	return {
@@ -130,7 +125,7 @@ describe("classifyRetry", () => {
 	});
 
 	test("a matching safe read executes afresh while every other tool name conflicts", () => {
-		for (const name of SAFE_READ_TOOLS) {
+		for (const name of ["read_file", "history_search", "memory_search"]) {
 			expect(
 				classifyRetry(name, [
 					{

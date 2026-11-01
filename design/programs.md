@@ -95,7 +95,9 @@ Rulings:
   before any model call with a transient transport/availability cause
   re-fires the same occurrence, on short fixed delays — never a held
   occurrence. Anything else — model output or spending, a non-transient
-  or unknown cause, a mid-ladder disable or delete (revoked authority
+  or unknown cause (provider quota exhaustion is non-transient: a
+  days-long wall, not a throttle — it fails and notifies, no retry;
+  retry-at-reset is deferred), a mid-ladder disable or delete (revoked authority
   fences the retry), exhaustion, restart — ends the ladder. The cursor
   advanced at the original fire; the ladder never re-runs the run-mark.
 - **Webhooks: one secret address per program.** Served on the loopback

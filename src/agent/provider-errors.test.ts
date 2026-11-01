@@ -5,6 +5,7 @@ import {
 	isContentFilter,
 	isContextOverflow,
 	isTransientTurnFailure,
+	quotaExhausted,
 	ProviderContentFilterError,
 } from "./provider-errors.ts";
 
@@ -217,6 +218,28 @@ describe("isTransientTurnFailure", () => {
 			expect(isTransientTurnFailure(new Error("request failed", { cause: at(status) }))).toBe(true);
 		},
 	);
+
+	test("z.ai weekly quota wall (observed 429 body) is quota, not transient or overflow", () => {
+		const body =
+			"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-28 08:50:34[20261026103718cff7c6d5834b4b22]";
+		const err = new RetryError({
+			message: `Failed after 3 attempts. Last error: ${body}`,
+			reason: "maxRetriesExceeded",
+			errors: [
+				new APICallError({
+					message: body,
+					url: "https://api.z.ai/v1/chat/completions",
+					requestBodyValues: {},
+					statusCode: 429,
+					isRetryable: true,
+				}),
+			],
+		});
+		expect(isTransientTurnFailure(err)).toBe(false);
+		expect(isContextOverflow(err)).toBe(false);
+		expect(quotaExhausted(err)).toEqual({ resetAt: "2026-10-28 08:50:34" });
+		expect(quotaExhausted(new Error("rate limit: 10 per minute"))).toBeNull();
+	});
 
 	test("the truth hiding under a RetryError's errors still classifies", () => {
 		const err = new RetryError({

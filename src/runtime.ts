@@ -6,7 +6,7 @@ import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-uti
 import { type LanguageModel, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
 import { type CompactionOutcome, chooseBoundary, runCompaction } from "./agent/compaction.ts";
-import { isTransientTurnFailure } from "./agent/provider-errors.ts";
+import { isTransientTurnFailure, quotaExhausted } from "./agent/provider-errors.ts";
 import { resolveSkillRef } from "./agent/skill-inject.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
@@ -1536,7 +1536,14 @@ export class Runtime {
 				// Abort provider work on any escaping error, not only on fencing; the
 				// stream may still be producing after the chunk loop unwinds.
 				controller.abort();
-				log.error("turn failed", err, { conversation: convId });
+				// Quota is logged as its own class so a missing retry explains
+				// itself: the scheduler ladder only re-fires transient failures.
+				const quota = quotaExhausted(err);
+				log.error("turn failed", err, {
+					conversation: convId,
+					failureClass: quota !== null ? "quota" : isTransientTurnFailure(err) ? "transient" : "other",
+					...(quota?.resetAt !== undefined ? { quotaResetAt: quota.resetAt } : {}),
+				});
 				// The stamps are what lets a trigger owner (a schedule fire) tell
 				// a zero-call transport blip from a failure the provider already
 				// spent work on; other error paths stay unstamped.

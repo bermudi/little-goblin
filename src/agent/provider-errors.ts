@@ -171,6 +171,27 @@ const TRANSIENT_PHRASES = [
 	"network connection lost",
 ];
 
+// Quota exhaustion is a wall measured in days, not a throttle: a retry
+// ladder of seconds cannot cross it. Both phrasings are observed bodies —
+// z.ai HTTP 429 "Weekly/Monthly Limit Exhausted. Your limit will reset at
+// 2026-10-28 08:50:34" (goblin.log 2026-10-26) and Brave search HTTP 402
+// "Usage limit exceeded." Add phrasings only with an observed body.
+const QUOTA_PHRASES = ["limit exhausted", "usage limit exceeded"];
+const QUOTA_RESET = /will reset at (\d{4}-\d{2}-\d{2}[ t]\d{2}:\d{2}:\d{2})/;
+
+export interface QuotaExhausted {
+	// The provider's stated reset, verbatim — it carries no timezone.
+	resetAt?: string;
+}
+
+// Quota wins over the 429 status that usually carries it.
+export function quotaExhausted(err: unknown): QuotaExhausted | null {
+	const text = collectAll(err).texts.join("\n").toLowerCase();
+	if (!QUOTA_PHRASES.some((p) => text.includes(p))) return null;
+	const resetAt = QUOTA_RESET.exec(text)?.[1];
+	return resetAt === undefined ? {} : { resetAt };
+}
+
 // Availability-class only. Content filters and context overflows are
 // verdicts about the request, not the provider's availability —
 // retrying them unchanged cannot help, so they read false even when a
@@ -179,6 +200,7 @@ export function isTransientTurnFailure(err: unknown): boolean {
 	const collected = collectAll(err);
 	if (contentFilterDetected(collected)) return false;
 	const text = collected.texts.join("\n").toLowerCase();
+	if (QUOTA_PHRASES.some((p) => text.includes(p))) return false;
 	// Rate-limit evidence decides first — isContextOverflow's order in
 	// mirror, so a throttled rejection carrying overflow-ish body prose
 	// can't read as neither transient nor compactable.

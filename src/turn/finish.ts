@@ -3,13 +3,11 @@ import type { FinishReason, LanguageModelUsage, ToolSet, UIMessage } from "ai";
 import type { Conversation } from "../conversation.ts";
 import { log } from "../log.ts";
 import type { MemoryDocument } from "../memory/hindsight.ts";
-import { isCompactionSummaryId } from "../tags.ts";
 import {
 	buildRetentionDocument,
 	type MemoryEligibility,
 	MemoryRetentionTooLargeError,
 	type MemoryTurnDeps,
-	memoryBoundEntries,
 	messageText,
 	type RetentionSource,
 	retentionSourceFrom,
@@ -60,6 +58,10 @@ export interface LandDeps {
 	): void;
 	memory: MemoryTurnDeps | undefined;
 	steerMark: number;
+	// Durable seqs of inputs actually claimed by this attempt, including steers.
+	ownedInputSeqs: ReadonlySet<number>;
+	// Frozen admission view, carried across compaction and resume.
+	admissionExchangeExcluded?: boolean;
 	responseMessage: UIMessage | null;
 	finishReason: FinishReason | null;
 	usage: LanguageModelUsage | null;
@@ -92,27 +94,13 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 		}
 	}
 	const elig = deps.memoryEligibility();
-	const finalSource = retentionSourceFrom(memoryBoundEntries(finalEntries, elig));
-	// Taint: an excluded-era input inside this exchange (the trigger
-	// itself or a steer, written while memory was off) can leak
-	// through the reply even when the flag is back on — the stamps
-	// only filter the *source*, not what the answer derived from.
-	// Refuse retention, stamp the reply ineligible, and keep the
-	// reviewer out so later memory work stays clean too. Same
-	// segmentation as retentionSourceFrom: the exchange is what
-	// follows the last real assistant entry — by causal position,
-	// never seq: an anchored reply reorders the seqs behind it, so a
-	// seq boundary would read this exchange's own steer as history.
-	let lastAsstIndex = -1;
-	for (let i = 0; i < finalEntries.length; i++) {
-		const e = finalEntries[i]!;
-		if (e.message.role === "assistant" && !isCompactionSummaryId(e.message.id)) {
-			lastAsstIndex = i;
-		}
-	}
-	const exchangeExcluded = finalEntries.some(
-		(e, i) => i > lastAsstIndex && e.message.role === "user" && !elig.eligibleSeqs.has(e.seq),
-	);
+	const finalSource = retentionSourceFrom(finalEntries, elig);
+	// Ownership, not an assistant boundary in the causal view, identifies
+	// consumed inputs. Media can land inside a turn, and compaction can hide
+	// an owned input entirely. Missing eligibility fails closed.
+	const exchangeExcluded =
+		deps.admissionExchangeExcluded === true ||
+		[...deps.ownedInputSeqs].some((seq) => !elig.eligibleSeqs.has(seq));
 	let reply = deps.responseMessage;
 	const forcedKind = deps.forcedKind;
 	if (

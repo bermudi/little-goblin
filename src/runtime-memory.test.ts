@@ -1,11 +1,22 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { UIMessage } from "ai";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tool, type UIMessage } from "ai";
+import { z } from "zod";
+import { appMediaSink, composeTurnSinks } from "./app-media.ts";
 import { memoryConfigSchema } from "./config.ts";
 import { openStore } from "./conversation.ts";
 import { HindsightClient } from "./memory/hindsight.ts";
 import { Runtime, userMessage } from "./runtime.ts";
-import { textModel } from "./testkit/fake-model.ts";
-import { fakeModel, RecordingSink, tmpDb } from "./testkit.ts";
+import { openTurnJournal } from "./turn-journal.ts";
+import {
+	finishPart,
+	scriptedModel,
+	textModel,
+	textParts,
+	toolCallPart,
+} from "./testkit/fake-model.ts";
+import { deferred, fakeModel, RecordingSink, tmpDb, useHome } from "./testkit.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
 afterEach(() => {
@@ -113,6 +124,244 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 }
 
 describe("memory turn integration", () => {
+	test("unowned excluded input in the admission exchange taints reply and media after re-enable", async () => {
+		const h = harness();
+		const conv = h.store.get(h.conversation)!;
+		const home = useHome("goblin-unowned-media-");
+		const path = join(home, "output.txt");
+		writeFileSync(path, "output");
+		h.store.setMeta(conv.id, { memoryExcluded: true });
+		h.store.append(conv.id, [userMessage([{ type: "text", text: "failed private request" }])]);
+		// This intermediate media from the failed turn is not a completed reply.
+		h.store.append(conv.id, [
+			{
+				id: "media-old",
+				role: "assistant",
+				parts: [{ type: "data-attachment", data: { path: "/tmp/old" } }],
+			},
+		]);
+		h.store.setMeta(conv.id, { memoryExcluded: false });
+		const media = appMediaSink(conv.id, {
+			append: (messages, opts) => h.store.append(conv.id, messages, opts),
+		});
+		const journal = openTurnJournal(h.store.db);
+		const runtime = new Runtime({
+			store: h.store,
+			turnJournal: journal,
+			buildStep: () => ({
+				model: scriptedModel([
+					[toolCallPart("send-1", "send"), finishPart("tool-calls")],
+					textParts("derived reply"),
+				]).model,
+				system: "test",
+			}),
+			makeTools: () => ({
+				send: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						await media.onFile!({ path, filename: "output.txt", caption: "derived file" });
+						return "ok";
+					},
+				}),
+			}),
+			memory: {
+				client: h.client,
+				config: memConfig,
+				contexts: h.store.memoryContexts,
+				noteRecall: () => {},
+			},
+		});
+		const sink = new RecordingSink();
+		runtime.submit(
+			conv,
+			userMessage([{ type: "text", text: "continue" }]),
+			composeTurnSinks(sink, media),
+		);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		const entries = h.store.historyEntries(conv.id);
+		const eligible = h.store.memoryEligibility(conv.id).eligibleSeqs;
+		expect(eligible.has(entries[2]!.seq)).toBe(true);
+		for (const entry of entries.slice(3)) expect(eligible.has(entry.seq)).toBe(false);
+		expect(h.store.memoryQueue.next(h.client.target, Date.now())).toBeNull();
+		const row = h.store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").get()!;
+		expect(journal.get(row.run_id)!.admissionExchangeExcluded).toBe(true);
+		expect(h.recallQueries().join(" ")).not.toContain("failed private request");
+		h.store.close();
+	});
+
+	test("same-turn media leaves trigger as fresh retention evidence", async () => {
+		const h = harness();
+		const conv = h.store.get(h.conversation)!;
+		const home = useHome("goblin-source-media-");
+		const path = join(home, "output.txt");
+		writeFileSync(path, "output");
+		const media = appMediaSink(conv.id, {
+			append: (messages, opts) => h.store.append(conv.id, messages, opts),
+		});
+		const runtime = new Runtime({
+			store: h.store,
+			buildStep: () => ({
+				model: scriptedModel([
+					[toolCallPart("send-1", "send"), finishPart("tool-calls")],
+					textParts("finished"),
+				]).model,
+				system: "test",
+			}),
+			makeTools: () => ({
+				send: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						await media.onFile!({ path, filename: "output.txt" });
+						return "ok";
+					},
+				}),
+			}),
+			memory: {
+				client: h.client,
+				config: memConfig,
+				contexts: h.store.memoryContexts,
+				noteRecall: () => {},
+			},
+		});
+		const trigger = userMessage([{ type: "text", text: "remember this instruction" }]);
+		const sink = new RecordingSink();
+		runtime.submit(conv, trigger, composeTurnSinks(sink, media));
+		expect(await sink.done).toEqual({ kind: "completed" });
+		const doc = h.store.memoryQueue.next(h.client.target, Date.now())!.document;
+		expect(doc.content).toContain("Operator: remember this instruction");
+		expect(doc.sourceIds).toContain(trigger.id);
+		h.store.close();
+	});
+	test("app media and reply inherit owned trigger exclusion after memory is re-enabled", async () => {
+		const home = useHome("goblin-media-memory-");
+		const path = join(home, "output.txt");
+		writeFileSync(path, "output");
+		const store = openStore(tmpDb("goblin-media-memory-"));
+		const conv = store.resolve({ kind: "dm", chatId: 88 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({
+				model: textModel(["a", "b", "c"], { delayMs: 30 }).model,
+				system: "test",
+			}),
+			makeTools: () => ({}),
+		});
+		store.setMeta(conv.id, { memoryExcluded: true });
+		const recording = new RecordingSink();
+		const media = appMediaSink(conv.id, {
+			append: (messages, opts) => store.append(conv.id, messages, opts),
+		});
+		runtime.submit(
+			conv,
+			userMessage([{ type: "text", text: "private" }]),
+			composeTurnSinks(recording, media),
+		);
+		await recording.firstDelta;
+		store.setMeta(conv.id, { memoryExcluded: false });
+		await media.onFile!({ path, filename: "output.txt", caption: "private output" });
+		await media.onVoiceNote!(new Uint8Array([1, 2]));
+		expect(await recording.done).toEqual({ kind: "completed" });
+		const entries = store.historyEntries(conv.id);
+		expect(entries).toHaveLength(4);
+		const eligible = store.memoryEligibility(conv.id).eligibleSeqs;
+		for (const e of entries) expect(eligible.has(e.seq)).toBe(false);
+		store.close();
+	});
+
+	test("media after a successfully consumed excluded steer inherits its stamp", async () => {
+		const home = useHome("goblin-media-steer-");
+		const path = join(home, "output.txt");
+		writeFileSync(path, "output");
+		const store = openStore(tmpDb("goblin-media-steer-"));
+		const conv = store.resolve({ kind: "dm", chatId: 90 }, "/w");
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		const media = appMediaSink(conv.id, {
+			append: (messages, opts) => store.append(conv.id, messages, opts),
+		});
+		const model = scriptedModel([
+			[toolCallPart("gate-1", "gate"), finishPart("tool-calls")],
+			[toolCallPart("send-1", "send"), finishPart("tool-calls")],
+			textParts("done"),
+		]).model;
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({
+				gate: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						entered.resolve();
+						await release.promise;
+						return "ok";
+					},
+				}),
+				send: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						await media.onFile!({ path, filename: "output.txt", caption: "steer secret" });
+						return "ok";
+					},
+				}),
+			}),
+		});
+		const head = new RecordingSink();
+		runtime.submit(
+			conv,
+			userMessage([{ type: "text", text: "public" }]),
+			composeTurnSinks(head, media),
+		);
+		await entered.promise;
+		store.setMeta(conv.id, { memoryExcluded: true });
+		const steer = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "secret steer" }]), steer);
+		store.setMeta(conv.id, { memoryExcluded: false });
+		release.resolve();
+		expect(await head.done).toEqual({ kind: "completed" });
+		expect(await steer.done).toEqual({ kind: "completed" });
+		const entries = store.historyEntries(conv.id);
+		const eligible = store.memoryEligibility(conv.id).eligibleSeqs;
+		expect(eligible.has(entries.find((e) => e.message.id.startsWith("media-"))!.seq)).toBe(false);
+		expect(eligible.has(entries.findLast((e) => e.message.role === "assistant")!.seq)).toBe(false);
+		store.close();
+	});
+
+	test("queued excluded input does not taint media sent before that input is consumed", async () => {
+		const home = useHome("goblin-media-queued-");
+		const path = join(home, "output.txt");
+		writeFileSync(path, "output");
+		const store = openStore(tmpDb("goblin-media-queued-"));
+		const conv = store.resolve({ kind: "dm", chatId: 89 }, "/w");
+		const runtime = new Runtime({
+			store,
+			buildStep: () => ({
+				model: textModel(["a", "b", "c"], { delayMs: 30 }).model,
+				system: "test",
+			}),
+			makeTools: () => ({}),
+		});
+		const recording = new RecordingSink();
+		const media = appMediaSink(conv.id, {
+			append: (messages, opts) => store.append(conv.id, messages, opts),
+		});
+		runtime.submit(
+			conv,
+			userMessage([{ type: "text", text: "public" }]),
+			composeTurnSinks(recording, media),
+		);
+		await recording.firstDelta;
+		store.setMeta(conv.id, { memoryExcluded: true });
+		const queued = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "private queued" }]), queued);
+		store.setMeta(conv.id, { memoryExcluded: false });
+		await media.onFile!({ path, filename: "output.txt", caption: "public output" });
+		const event = store.historyEntries(conv.id).find((e) => e.message.id.startsWith("media-"))!;
+		expect(store.memoryEligibility(conv.id).eligibleSeqs.has(event.seq)).toBe(true);
+		expect(await recording.done).toEqual({ kind: "completed" });
+		await queued.done;
+		store.close();
+	});
+
 	test("completed turns recall, persist the block, and queue retention", async () => {
 		const h = harness({ factText: "Quiet mornings preferred." });
 		const sink = new RecordingSink();

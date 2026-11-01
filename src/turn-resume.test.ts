@@ -128,6 +128,7 @@ function interruptedRun(
 		snapshot?: { model: string | null; thinking: string | null };
 		toolNames?: string[];
 		ownedInputSeqs?: number[];
+		admissionExchangeExcluded?: boolean;
 		sourceInputSeq?: number | null;
 	} = {},
 ) {
@@ -141,6 +142,7 @@ function interruptedRun(
 		toolNames: opts.toolNames ?? ["probe"],
 		startedAt: "2026-10-11T00:00:00.000Z",
 		...(opts.ownedInputSeqs !== undefined ? { ownedInputSeqs: opts.ownedInputSeqs } : {}),
+		admissionExchangeExcluded: opts.admissionExchangeExcluded,
 		...(opts.sourceInputSeq !== undefined ? { sourceInputSeq: opts.sourceInputSeq } : {}),
 	});
 	store.db.run("UPDATE turn_runs SET status = 'interrupted' WHERE run_id = ?", [runId]);
@@ -2383,6 +2385,79 @@ describe("turn resume", () => {
 });
 
 describe("resume durable source identity", () => {
+	test("legacy interrupted runs with unknown admission taint fail closed", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		const anchorSeq = appendUser(store, conv, "continue");
+		interruptedRun(store, journal, conv, "run-legacy-taint", {
+			anchorSeq,
+			ownedInputSeqs: [anchorSeq],
+		});
+		store.db.run("UPDATE turn_runs SET admission_exchange_excluded = NULL WHERE run_id = ?", [
+			"run-legacy-taint",
+		]);
+		expect(journal.get("run-legacy-taint")!.admissionExchangeExcluded).toBe(true);
+		expect(ops.resume(conv.id, "run-legacy-taint").kind).toBe("resumed");
+		await waitUntil(() => !runtime.busy(conv.id), "resume drained");
+		const eligible = store.memoryEligibility(conv.id).eligibleSeqs;
+		for (const entry of store.historyEntries(conv.id).slice(1))
+			expect(eligible.has(entry.seq)).toBe(false);
+		await runtime.shutdown();
+		store.close();
+	});
+	test("journaled admission taint survives compaction hiding an unowned input", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		store.setMeta(conv.id, { memoryExcluded: true });
+		appendUser(store, conv, "unowned private request");
+		store.setMeta(conv.id, { memoryExcluded: false });
+		const anchorSeq = appendUser(store, conv, "continue");
+		interruptedRun(store, journal, conv, "run-private-context", {
+			anchorSeq,
+			ownedInputSeqs: [anchorSeq],
+			admissionExchangeExcluded: true,
+		});
+		expect(journal.get("run-private-context")!.admissionExchangeExcluded).toBe(true);
+		store.setCompaction(conv.id, {
+			boundarySeq: anchorSeq,
+			summary: "folded",
+			tokensBefore: 1,
+			model: "m",
+			createdAt: new Date().toISOString(),
+		});
+		expect(ops.resume(conv.id, "run-private-context").kind).toBe("resumed");
+		await waitUntil(() => !runtime.busy(conv.id), "resume drained");
+		const successor = journal.get(successorRunId(store, "run-private-context"))!;
+		expect(successor.admissionExchangeExcluded).toBe(true);
+		const entries = store.historyEntries(conv.id);
+		const eligible = store.memoryEligibility(conv.id).eligibleSeqs;
+		expect(eligible.has(anchorSeq)).toBe(true);
+		for (const entry of entries.slice(2)) expect(eligible.has(entry.seq)).toBe(false);
+		await runtime.shutdown();
+		store.close();
+	});
+	test("folded excluded source remains owned and excludes the resume marker and reply", async () => {
+		const { store, conv, journal, ops, runtime } = setup({});
+		store.setMeta(conv.id, { memoryExcluded: true });
+		const anchorSeq = appendUser(store, conv, "private request");
+		interruptedRun(store, journal, conv, "run-private", { anchorSeq, ownedInputSeqs: [anchorSeq] });
+		store.setMeta(conv.id, { memoryExcluded: false });
+		store.setCompaction(conv.id, {
+			boundarySeq: anchorSeq,
+			summary: "private summary",
+			tokensBefore: 1,
+			model: "m",
+			createdAt: new Date().toISOString(),
+		});
+		expect(ops.resume(conv.id, "run-private").kind).toBe("resumed");
+		await waitUntil(() => !runtime.busy(conv.id), "resume drained");
+		const successor = journal.get(successorRunId(store, "run-private"))!;
+		expect(successor.ownedInputSeqs).toContain(anchorSeq);
+		const entries = store.historyEntries(conv.id);
+		expect(entries).toHaveLength(3);
+		const eligible = store.memoryEligibility(conv.id).eligibleSeqs;
+		for (const e of entries) expect(eligible.has(e.seq)).toBe(false);
+		await runtime.shutdown();
+		store.close();
+	});
 	test("a resume keeps the source run's identity across generated markers, twice", async () => {
 		const { store, conv, journal, ops, runtime } = setup({});
 		const anchorSeq = appendUser(store, conv, "run the tool");

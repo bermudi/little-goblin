@@ -8,8 +8,10 @@ import { attachmentPart } from "../agent/attachments.ts";
 import { memoryConfigSchema } from "../config.ts";
 import { summaryMessage } from "../conversation.ts";
 import { log } from "../log.ts";
+import { compactionSummaryId } from "../tags.ts";
 import { HindsightClient } from "./hindsight.ts";
 import {
+	activeExchangeExcluded,
 	buildMemoryClient,
 	buildRecallQuery,
 	buildRetentionDocument,
@@ -102,6 +104,37 @@ describe("recall formatting", () => {
 		expect(down).toContain("unavailable");
 		expect(down).not.toContain("no relevant memories");
 		expect(results).toContain("Current operator statements take precedence");
+	});
+});
+
+describe("exchange boundaries", () => {
+	test("media and compaction do not close the exchange; completed replies do", () => {
+		const media: UIMessage = {
+			id: "media-123",
+			role: "assistant",
+			parts: [
+				{ type: "data-attachment", data: { path: "/tmp/x" } },
+				{ type: "text", text: "caption" },
+			],
+		};
+		const entries = [
+			{ seq: 1, message: user("old", "secret") },
+			{ seq: 2, message: media },
+			{ seq: 3, message: asst(compactionSummaryId(3), "folded") },
+			{ seq: 4, message: user("new", "continue") },
+		];
+		const elig = { eligibleSeqs: new Set([2, 3, 4]), summaryEligible: false };
+		expect(activeExchangeExcluded(entries, elig)).toBe(true);
+		expect(
+			activeExchangeExcluded(
+				[...entries.slice(0, 3), { seq: 5, message: asst("reply", "done") }, entries[3]!],
+				elig,
+			),
+		).toBe(false);
+		const source = retentionSourceFrom(entries);
+		expect(source.userTexts).toEqual(["secret", "continue"]);
+		expect(source.userIds).toEqual(["old", "new"]);
+		expect(retentionSourceFrom(entries, elig).userIds).toEqual(["new"]);
 	});
 });
 

@@ -137,6 +137,20 @@ describe("mail outbox", () => {
 		expect(s.get(done.id)!.status).toBe("cancelled");
 	});
 
+	test("the unresolved inbox retains a sending claim across reopen and past expiry", () => {
+		const path = tmpDb("goblin-outbox-");
+		const s = openOutbox(path);
+		const row = s.queue({ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS }, NOW);
+		expect(s.claimSend(row.id)).toBe(true);
+		s.close();
+		const reopened = openOutbox(path);
+		expect(reopened.expireDue(new Date(NOW.getTime() + OUTBOX_TTL_MS + 1))).toEqual([]);
+		expect(reopened.pending()).toMatchObject([{ id: row.id, status: "sending" }]);
+		expect(reopened.cancelSending(row.id, NOW, "app")).toBe(true);
+		expect(reopened.pending()).toEqual([]);
+		reopened.close();
+	});
+
 	test("claimSend takes a pending row once; completeSend settles it from sending", () => {
 		const s = store();
 		const row = s.queue({ to: ["a@x.com"], subject: "h", body: "b", address: ADDRESS }, NOW);

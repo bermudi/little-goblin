@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
 import { formatAddress, type ConversationAddress } from "../conversation.ts";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { tmpDir } from "../testkit.ts";
 import { join } from "node:path";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { proposalFingerprint } from "../skill-decisions.ts";
@@ -160,7 +160,7 @@ describe("skill proposal notice send", () => {
 
 	test("one message per skill, each with the install/discard row", async () => {
 		const { api, sends } = noticeApi();
-		const proposedDir = mkdtempSync(join(tmpdir(), "goblin-notify-proposed-"));
+		const proposedDir = tmpDir("notify-proposed-");
 		for (const name of ["pdf-tables", "a", "b"]) {
 			mkdirSync(join(proposedDir, name), { recursive: true });
 			writeFileSync(join(proposedDir, name, "SKILL.md"), `# ${name}\n`);
@@ -198,17 +198,61 @@ describe("skill proposal notice send", () => {
 		} as unknown as Api;
 		await expect(
 			sendSkillProposedNotice(api, "dm:42", ["good-a", "bad", "good-b"]),
-		).resolves.toBeUndefined();
+		).rejects.toThrow("skill proposal notice delivery failed for 1 skill(s)");
 		expect(sends).toEqual([
 			"proposed skill: good-a — approve to install",
 			"proposed skill: good-b — approve to install",
 		]);
 	});
 
+	test("fingerprint errors are aggregated without aborting later skills", async () => {
+		const { api, sends } = noticeApi();
+		const proposedDir = tmpDir("notify-fingerprint-");
+		writeFileSync(join(proposedDir, "not-a-directory"), "x");
+		mkdirSync(join(proposedDir, "good"));
+		writeFileSync(join(proposedDir, "good", "SKILL.md"), "# good");
+		try {
+			await sendSkillProposedNotice(api, "dm:42", ["not-a-directory/child", "good"], proposedDir);
+			throw new Error("expected failure");
+		} catch (err) {
+			expect(err).toBeInstanceOf(AggregateError);
+			const errors = (err as AggregateError).errors as Error[];
+			expect(errors).toHaveLength(1);
+			expect(errors[0]?.message).toContain("not-a-directory/child");
+			expect((errors[0]?.cause as NodeJS.ErrnoException).code).toBe("ENOTDIR");
+		}
+		expect(sends).toHaveLength(1);
+		expect(sends[0]?.text).toContain("skill: good");
+		expect(sends[0]?.keyboard).toBeDefined();
+	});
+
+	test("multiple delivery failures are aggregated after every skill is attempted", async () => {
+		const attempted: string[] = [];
+		const api = {
+			sendMessage: async (_chat: number, text: string) => {
+				attempted.push(text);
+				throw new Error(text);
+			},
+		} as unknown as Api;
+		try {
+			await sendSkillProposedNotice(api, "dm:42", ["a", "b"]);
+			throw new Error("expected failure");
+		} catch (err) {
+			expect(err).toBeInstanceOf(AggregateError);
+			const errors = (err as AggregateError).errors as Error[];
+			expect(errors.map((e) => e.message)).toEqual([
+				"skill proposal notice failed for a",
+				"skill proposal notice failed for b",
+			]);
+			expect(errors.every((e) => e.cause instanceof Error)).toBe(true);
+		}
+		expect(attempted).toHaveLength(2);
+	});
+
 	test("callback data over 64 bytes degrades to the conversational notice", async () => {
 		const { api, sends } = noticeApi();
 		const long = "a".repeat(64); // spec-legal name, worst case
-		const proposedDir = mkdtempSync(join(tmpdir(), "goblin-notify-proposed-"));
+		const proposedDir = tmpDir("notify-proposed-");
 		mkdirSync(join(proposedDir, long), { recursive: true });
 		writeFileSync(join(proposedDir, long, "SKILL.md"), "# long\n");
 		await sendSkillProposedNotice(api, "dm:42", [long], proposedDir);
@@ -219,7 +263,7 @@ describe("skill proposal notice send", () => {
 
 	test("no fingerprintable proposal on disk degrades to the conversational notice", async () => {
 		const { api, sends } = noticeApi();
-		const proposedDir = mkdtempSync(join(tmpdir(), "goblin-notify-proposed-"));
+		const proposedDir = tmpDir("notify-proposed-");
 		await sendSkillProposedNotice(api, "dm:42", ["ghost"], proposedDir);
 		expect(sends).toHaveLength(1);
 		expect(sends[0]?.text).toBe("proposed skill: ghost — approve to install");

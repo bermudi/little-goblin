@@ -148,7 +148,9 @@ The size-cap decision generalizes:
 
 Server side, `tts.ts` is hand-rolled like ASR: sentence chunks (10k chars),
 one synth + ffmpeg ogg remux per chunk — each chunk is a complete standalone
-ogg file on the wire (`/api/app/tts`, base64).
+ogg file on the wire (`/api/app/tts`, base64). Up to three chunks run in
+parallel; on the first failure no new chunk starts, and in-flight work is
+joined before the original failure is reported.
 
 **Every door strips reply markdown to spoken text before its speaker
 (ruling 2026-10-19).** The tg doors did this from the start (`speakable`,

@@ -61,10 +61,12 @@ export function NotesIndex({
 	token,
 	projects,
 	onOpen,
+	onChanged,
 }: {
 	token: string | null;
 	projects: AppProject[];
 	onOpen: (id: string) => void;
+	onChanged?: () => void;
 }) {
 	const [query, setQuery] = useState("");
 	const [filter, setFilter] = useState<string>("all");
@@ -141,6 +143,7 @@ export function NotesIndex({
 			...(filter !== "all" && filter !== "loose" ? { projectId: filter } : {}),
 		}).then(
 			(n) => {
+				onChanged?.();
 				if (!mounted.current || req !== createSeq.current) return;
 				creatingRef.current = false;
 				setCreating(false);
@@ -445,6 +448,7 @@ export function NoteView({
 	onChat,
 	onDeleted,
 	onDirtyChange,
+	onChanged,
 	discardRef,
 }: {
 	token: string | null;
@@ -454,6 +458,7 @@ export function NoteView({
 	// bound to the note's project when it has one.
 	onChat: (note: AppNote) => void | Promise<void | boolean>;
 	onDeleted: () => void;
+	onChanged?: () => void;
 	// Reports the leave-guard state: unsaved body or title edits, or a
 	// standing conflict — anything navigation would silently destroy.
 	onDirtyChange?: ((dirty: boolean) => void) | undefined;
@@ -687,6 +692,7 @@ export function NoteView({
 			({ data }) => {
 				setBusy(false);
 				adoptRemote(data);
+				onChanged?.();
 			},
 			(err) => {
 				setBusy(false);
@@ -748,7 +754,10 @@ export function NoteView({
 		if (!window.confirm(`Delete "${note.title}"? This removes the note and all its versions.`))
 			return;
 		void deleteNote(token, note.id).then(
-			() => onDeleted(),
+			() => {
+				onChanged?.();
+				onDeleted();
+			},
 			(err) => setOpError(`Couldn't delete: ${err instanceof Error ? err.message : String(err)}`),
 		);
 	};
@@ -938,7 +947,10 @@ export function NoteView({
 						// guard — they can resolve the bar (Keep mine's write
 						// landing on the conflicted state) but can never read
 						// as a fresh remote conflict.
-						onSaved={(n) => adoptRemote(n, true)}
+						onSaved={(n) => {
+							adoptRemote(n, true);
+							onChanged?.();
+						}}
 						onConflict={(theirs) => {
 							// Same fence as raiseConflict — a late 409 must
 							// not roll a newer bar (or accepted state) back.
@@ -973,7 +985,10 @@ export function NoteView({
 					// A landed restore rides the same forward guard as a
 					// focus refresh — a delayed or already-adopted ack is
 					// ignored, edits that landed mid-flight get the bar.
-					onRestored={(n) => adoptRemote(n)}
+					onRestored={(n) => {
+						adoptRemote(n);
+						onChanged?.();
+					}}
 					// The restore 409 carries the live note — the same
 					// conflict path as a remote write.
 					onConflict={raiseConflict}

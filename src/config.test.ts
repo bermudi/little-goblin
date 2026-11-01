@@ -21,6 +21,7 @@ import {
 	fetchKinds,
 	loadConfig,
 	missingAuthNames,
+	observeConfigWrites,
 	parseConfig,
 	paths,
 	providerKinds,
@@ -702,6 +703,30 @@ describe("goblin.json5", () => {
 		expect(out).toBe(`${JSON5.stringify(parseConfig({ ...cfg, thinking: "high" }), null, 2)}\n`);
 		expect(out).not.toContain("operator note");
 		expect(loadConfig()!.thinking).toBe("high");
+	});
+
+	test("write observers see only successful durable saves and can unsubscribe", () => {
+		useHome("goblin-cfg-");
+		const seen: boolean[] = [];
+		const unsubscribe = observeConfigWrites((written) => {
+			// The file is already replaced, not merely proposed.
+			expect(loadConfig()!.telegram.enabled).toBe(written.telegram.enabled);
+			seen.push(written.telegram.enabled);
+		});
+		try {
+			const enabled = parseConfig(valid);
+			writeConfig(enabled);
+			expect(() =>
+				writeConfig({ ...enabled, thinking: "not-a-level" } as unknown as Config),
+			).toThrow();
+			writeConfig(parseConfig({ ...enabled, telegram: { ...enabled.telegram, enabled: false } }));
+			expect(seen).toEqual([true, false]);
+			unsubscribe();
+			writeConfig(enabled);
+			expect(seen).toEqual([true, false]);
+		} finally {
+			unsubscribe();
+		}
 	});
 
 	for (const configured of [false, true]) {

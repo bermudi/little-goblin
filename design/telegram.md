@@ -17,14 +17,29 @@ When `true`, the channel attaches *deferred*: boot builds the runtime,
 mail/program owners, wake/resume seams, HTTP, the scheduler and the mail
 watcher on `tg = null` first, then runs the init task — token resolve,
 `getMe` (30s deadline), seam attach, interrupted-run notices, inbox
-replay, polling. Attach *retries with backoff* (5s → 15s → 30s → 60s →
+replay, polling. At the `getMe` deadline, the init signal is aborted and
+initialization is joined before any retry: grammY can retry transport errors,
+so abandoning the promise would leave a competing initialization alive.
+Attach *retries with backoff* (5s → 15s → 30s → 60s →
 5m cap) until it lands, the channel seals, or a live config write
 disables it (ruling 2026-10-25): the observed boot failure is the
 secrets wallet or the resolver still coming up — environmental,
 self-healing — and a one-shot attempt meant every such boot left the
-channel dead until the next restart. A partial attempt is superseded
+channel dead until the next restart. A successful in-process config write
+that disables Telegram latches cancellation for that attach, even if a later
+write re-enables it before an await finishes; it also wakes backoff promptly.
+External file edits are not watched. A partial attempt is superseded
 (stop/drain) before the next try so two `getUpdates` consumers never
-fight over the token. A `getUpdates` ending mid-run (grammy rethrows
+fight over the token. In-flight initialization checks the seal and live
+switch after each asynchronous boundary, including inside bot initialization
+before using the store or publishing Telegram commands. A bot obtained during
+cancellation remains owned and is stopped/drained; shutdown and attach share
+that cleanup. Cleanup stops polling, joins the polling promise (grammY's
+`stop()` alone does not wait for middleware), and only then drains intake.
+Each cleanup step is attempted and failures are logged with context; a failed
+cleanup stops retries instead of risking overlapping owners.
+The live switch only cancels an *in-progress* attach, not an already attached
+channel (the switch remains boot-pinned). A `getUpdates` ending mid-run (grammy rethrows
 401/409) still detaches the same seams without retry — that death is
 fatal, not environmental — and keeps the app up. The mini-app door and
 `botToken` fail closed until attach. A disabled channel keeps its saved
@@ -62,9 +77,13 @@ apply next turn without interrupting the current answer.
 - **Reply ratings**: 👍/👎 and the 🔊 ride a clean-completed reply's last
   bubble; errors, fenced, voice-mode, and guest replies get none. The
   callback is only the Telegram adapter over the shared record-only
-  `reply_ratings` store (design/app.md → Reply ratings). **Record-only by
-  ruling**: nothing consumes the rows — model view, history, FTS, memory,
-  reviewer; a consumer needs a ruling first.
+  `reply_ratings` store (design/app.md → Reply ratings). Concurrent taps
+  record latest-wins and serialize the message edits in the same order, so
+  successful edits show the latest recorded vote even when callbacks carry
+  stale markup. Telegram edit failures or timeouts can leave the display
+  stale; the stored rating remains authoritative. **Record-only by ruling**:
+  nothing consumes the rows — model view, history, FTS, memory, reviewer; a
+  consumer needs a ruling first.
 - **TTS**: default-on; `tts: ""` is explicit off. `edge` is unofficial
   read-aloud (can break); `logfare`/`mimo`/`onemin` doc-pinned, unverified
   live (1min's TEXT_TO_SPEECH feature: envelope answer, audio fetched

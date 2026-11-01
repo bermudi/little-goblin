@@ -565,7 +565,9 @@ describe("driveStream", () => {
 		// sweeps the failed seq 3 in with it, and a crash-resume would then
 		// accept input this turn never folded.
 		const checkpoints: Array<{ ownedInputSeqs?: number[]; steerMark?: number }> = [];
+		const consumed: number[][] = [];
 		const r = rig([textReply("answer")], {
+			onOwnedInputs: (seqs) => consumed.push([...seqs]),
 			journal: {
 				checkpoint: (_runId: string, patch: { ownedInputSeqs?: number[]; steerMark?: number }) =>
 					checkpoints.push(patch),
@@ -593,6 +595,7 @@ describe("driveStream", () => {
 		// The ownership checkpoint names only the converted event.
 		const ownership = checkpoints.find((c) => c.ownedInputSeqs !== undefined);
 		expect(ownership?.ownedInputSeqs).toEqual([2]);
+		expect(consumed).toEqual([[2]]);
 		expect(ownership?.steerMark).toBe(2);
 		expect(outcome.steerMark).toBe(2);
 	});

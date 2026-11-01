@@ -58,7 +58,9 @@ Rulings:
   store's, never proposal-input limits — a grandfathered or pre-limit
   charter beyond the input cap still stages and reads, and the stored
   payload is validated inside the staging transaction so no committed
-  row can fail its own reader. Posting is fenced by the staging turn's abort
+  row can fail its own reader. A corrupt stored proposal fails list and
+  pending reads with its row identity instead of silently vanishing from
+  the operator's approvals or attention view. Posting is fenced by the staging turn's abort
   signal chunk by chunk — a stopped turn sends no further chunks and
   never the buttons; the durable row stays pending for
   `program/review`. A hook the proposal requests is minted only at

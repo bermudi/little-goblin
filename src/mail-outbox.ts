@@ -77,7 +77,7 @@ export interface OutboxStore {
 	/** Settle a claimed row as cancelled — the operator abandons a claim
 	 *  whose send outcome is unknown. */
 	cancelSending(id: number, now?: Date, actor?: string): boolean;
-	/** Pending rows in queue order — the operator's actionable inbox. */
+	/** Unresolved pending and sending rows in queue order — the operator's actionable inbox. */
 	pending(): OutboxEntry[];
 	/** Mark every expired pending row; the watcher edits their drafts.
 	 *  Rows the caller excludes (a send in flight) stay pending — the
@@ -203,7 +203,9 @@ export function openOutbox(dbPath: string): OutboxStore {
 	const qCancelSending = db.query(
 		"UPDATE mail_outbox SET status = 'cancelled', decided_at = ?, decided_by = ? WHERE id = ? AND status = 'sending'",
 	);
-	const qPending = db.query("SELECT * FROM mail_outbox WHERE status = 'pending' ORDER BY id");
+	const qPending = db.query(
+		"SELECT * FROM mail_outbox WHERE status IN ('pending', 'sending') ORDER BY id",
+	);
 	const qExpired = db.query(
 		"SELECT * FROM mail_outbox WHERE status = 'pending' AND expires_at <= ? ORDER BY id",
 	);

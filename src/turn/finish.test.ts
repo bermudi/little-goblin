@@ -14,7 +14,7 @@ import { setLogFile } from "../log.ts";
 import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory/mod.ts";
 import type { CompletedTurn, PriorTurnContext, ReviewerDeps } from "../reviewer.ts";
 import { Reviewer } from "../reviewer.ts";
-import { compactionSummaryId } from "../tags.ts";
+import { compactionSummaryId, isCompactionSummaryId } from "../tags.ts";
 import { scriptedModel, textResult } from "../testkit/fake-model.ts";
 import { waitUntil } from "../testkit.ts";
 import { type LandDeps, landAttempt, retentionOpt, submitTurnReview } from "./finish.ts";
@@ -104,6 +104,7 @@ function land(over: Partial<LandDeps> = {}): LandHarness {
 		},
 		memory: undefined,
 		steerMark: 3,
+		ownedInputSeqs: new Set(),
 		responseMessage: msg("a2", "assistant", text("done")),
 		finishReason: "stop",
 		usage: null,
@@ -121,6 +122,16 @@ function land(over: Partial<LandDeps> = {}): LandHarness {
 		},
 		...over,
 	};
+	if (over.ownedInputSeqs === undefined) {
+		const entries = deps.modelEntries().filter((e) => e.seq <= deps.steerMark);
+		let lastAssistant = -1;
+		for (const [i, e] of entries.entries()) {
+			if (e.message.role === "assistant" && !isCompactionSummaryId(e.message.id)) lastAssistant = i;
+		}
+		deps.ownedInputSeqs = new Set(
+			entries.filter((e, i) => i > lastAssistant && e.message.role === "user").map((e) => e.seq),
+		);
+	}
 	return { landed: landAttempt(deps), appended, deltas, wire, live };
 }
 
@@ -341,6 +352,43 @@ describe("landAttempt", () => {
 		// forward — later memory work keeps it out too.
 		expect(h.appended[0]!.opts).toEqual({ anchorSeq: 4, exclude: true });
 		expect(h.landed.exchangeExcluded).toBe(true);
+	});
+
+	test("owned excluded inputs taint even behind an assistant event or outside the compacted view", () => {
+		for (const entries of [
+			[
+				{ seq: 1, message: msg("secret", "user", text("secret")) },
+				{ seq: 2, message: msg("media", "assistant", text("derived media")) },
+				{ seq: 3, message: msg("steer", "user", text("continue")) },
+			],
+			[{ seq: 3, message: msg("resume", "user", text("continue")) }],
+		]) {
+			const h = land({
+				memory: memDeps(),
+				modelEntries: () => entries,
+				steerMark: 3,
+				ownedInputSeqs: new Set([1, 3]),
+				memoryEligibility: () => ({ eligibleSeqs: new Set([2, 3]), summaryEligible: false }),
+			});
+			expect(h.landed.exchangeExcluded).toBe(true);
+			expect(h.appended[0]!.opts).toEqual({ anchorSeq: 3, exclude: true });
+		}
+	});
+
+	test("admission taint from an excluded unowned input survives landing", () => {
+		const h = land({
+			memory: memDeps(),
+			steerMark: 2,
+			ownedInputSeqs: new Set([2]),
+			admissionExchangeExcluded: true,
+			modelEntries: () => [
+				{ seq: 1, message: msg("unowned", "user", text("old")) },
+				{ seq: 2, message: msg("owned", "user", text("current")) },
+			],
+			memoryEligibility: () => ({ eligibleSeqs: new Set([2]), summaryEligible: false }),
+		});
+		expect(h.landed.exchangeExcluded).toBe(true);
+		expect(h.appended[0]!.opts).toEqual({ anchorSeq: 2, exclude: true });
 	});
 
 	test("an exchange of only eligible inputs retains and stamps normally", () => {

@@ -1237,6 +1237,17 @@ export function parseConfig(raw: unknown): Config {
 	return result.data;
 }
 
+// Synchronous observers see every successful in-process durable write, even
+// if a caller's subsequent reload or reconciliation fails. They must not
+// throw: the file has already been replaced when they run.
+const configWriteObservers = new Set<(config: Config) => void>();
+export function observeConfigWrites(observer: (config: Config) => void): () => void {
+	configWriteObservers.add(observer);
+	return () => {
+		configWriteObservers.delete(observer);
+	};
+}
+
 // A save replaces the whole file with the parsed object in canonical form.
 // An existing file is read first and must validate: malformed JSON5 or a
 // schema-invalid config is never silently reset to the incoming values.
@@ -1262,6 +1273,7 @@ export function writeConfig(config: Config): void {
 		}
 	}
 	durableWriteFile(path, `${JSON5.stringify(merged, null, 2)}\n`);
+	for (const observer of configWriteObservers) observer(merged);
 }
 
 // Split "<provider>/<model-id>" — model IDs themselves contain slashes

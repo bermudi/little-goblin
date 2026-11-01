@@ -73,7 +73,11 @@ reproduces the checkpoint contract below with no new infrastructure.
   can never stamp "never sent" over a send that may have landed, a Send
   tap on the stuck row answers busy instead of resending, and the
   operator abandons the claim with Cancel (stamped outcome-unknown,
-  check Gmail Sent first) once they have looked.
+  check Gmail Sent first) once they have looked. Both pending and sending
+  rows appear in the app approval inbox and attention list, including
+  claims surviving a restart. A sending card warns that the outcome is
+  unresolved, disables Send, and offers Cancel; an in-flight send still
+  answers busy to Cancel until it finishes.
 - **Watcher ownership and shutdown.** One mail watcher per programs
   store; duplicate starts throw until the stop settles, and stop fences
   new scans while joining in-flight work.

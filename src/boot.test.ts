@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { setLogFile } from "./log.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { openPrograms } from "./programs.ts";
-import { bootChild, fakeTelegram } from "./test-helpers/boot.ts";
+import { bootChild, fakeTelegram, type BootChild } from "./test-helpers/boot.ts";
 import { tmpDir } from "./testkit.ts";
 
 setLogFile(null);
@@ -34,6 +34,18 @@ function signedInitData(userId: number): string {
 	const secret = createHmac("sha256", "WebAppData").update(TG_TOKEN).digest();
 	params.set("hash", createHmac("sha256", secret).update(checkString).digest("hex"));
 	return params.toString();
+}
+
+async function setTelegramEnabled(child: BootChild, enabled: boolean): Promise<void> {
+	const settings = await child.http("/api/app/settings");
+	const etag = settings.headers.get("etag");
+	expect(etag).not.toBeNull();
+	const saved = await child.http("/api/app/settings", {
+		method: "POST",
+		headers: { "content-type": "application/json", "if-match": etag! },
+		body: JSON.stringify({ telegram: { enabled } }),
+	});
+	expect(saved.status).toBe(200);
 }
 
 describe("deferred telegram boot", () => {
@@ -293,6 +305,151 @@ describe("deferred telegram boot", () => {
 	);
 
 	test(
+		"disabling during attach backoff prevents the next auth attempt",
+		async () => {
+			const tg = fakeTelegram({ getMe: "unauthorized", getUpdates: "hold" });
+			const child = bootChild({
+				baseDir: tmpDir(),
+				telegram: { enabled: true, apiRoot: tg.apiRoot },
+			});
+			try {
+				await child.waitLog("http listening");
+				await child.waitLog("telegram attach failed");
+				const settings = await child.http("/api/app/settings");
+				const saved = await child.http("/api/app/settings", {
+					method: "POST",
+					headers: {
+						"content-type": "application/json",
+						"if-match": settings.headers.get("etag")!,
+					},
+					body: JSON.stringify({ telegram: { enabled: false } }),
+				});
+				expect(saved.status).toBe(200);
+				await child.waitLog("telegram attach stopped — channel disabled in config", 8_000);
+				expect(tg.methods.filter((method) => method === "getMe")).toHaveLength(1);
+			} finally {
+				await child.stop();
+				tg.stop();
+			}
+		},
+		T,
+	);
+
+	test(
+		"disabling while getMe is pending stops initialization before commands, replay, and polling",
+		async () => {
+			const tg = fakeTelegram({ getMe: "held", getUpdates: "hold" });
+			const child = bootChild({
+				baseDir: tmpDir(),
+				telegram: { enabled: true, apiRoot: tg.apiRoot },
+			});
+			try {
+				await child.waitLog("http listening");
+				await tg.waitMethod("getMe");
+				const settings = await child.http("/api/app/settings");
+				const etag = settings.headers.get("etag");
+				expect(etag).not.toBeNull();
+				const saved = await child.http("/api/app/settings", {
+					method: "POST",
+					headers: { "content-type": "application/json", "if-match": etag! },
+					body: JSON.stringify({ telegram: { enabled: false } }),
+				});
+				expect(saved.status).toBe(200);
+				tg.releaseGetMe();
+				await child.waitLog("telegram attach stopped — channel disabled in config");
+				expect(tg.methods).not.toContain("setMyCommands");
+				expect(tg.methods).not.toContain("setChatMenuButton");
+				expect(tg.methods).not.toContain("getUpdates");
+				expect(child.lines().join("\n")).not.toContain("telegram channel attached");
+			} finally {
+				tg.releaseGetMe();
+				await child.stop();
+				tg.stop();
+			}
+		},
+		T,
+	);
+
+	test(
+		"disable then re-enable during held getMe still cancels the outstanding attach",
+		async () => {
+			const tg = fakeTelegram({ getMe: "held", getUpdates: "hold" });
+			const child = bootChild({
+				baseDir: tmpDir(),
+				telegram: { enabled: true, apiRoot: tg.apiRoot },
+			});
+			try {
+				await child.waitLog("http listening");
+				await tg.waitMethod("getMe");
+				await setTelegramEnabled(child, false);
+				await setTelegramEnabled(child, true);
+				tg.releaseGetMe();
+				await child.waitLog("telegram attach stopped — channel disabled in config");
+				expect(tg.methods).not.toContain("setMyCommands");
+				expect(tg.methods).not.toContain("getUpdates");
+				expect(child.lines().join("\n")).not.toContain("telegram channel attached");
+			} finally {
+				tg.releaseGetMe();
+				await child.stop();
+				tg.stop();
+			}
+		},
+		T,
+	);
+
+	test(
+		"disable during backoff wakes cancellation and re-enable cannot restart it",
+		async () => {
+			const tg = fakeTelegram({ getMe: "unauthorized", getUpdates: "hold" });
+			const child = bootChild({
+				baseDir: tmpDir(),
+				telegram: { enabled: true, apiRoot: tg.apiRoot },
+			});
+			try {
+				await child.waitLog("http listening");
+				await child.waitLog("telegram attach failed");
+				await setTelegramEnabled(child, false);
+				await setTelegramEnabled(child, true);
+				await child.waitLog("telegram attach stopped — channel disabled in config", 2_000);
+				await Bun.sleep(5_200);
+				expect(tg.methods.filter((method) => method === "getMe")).toHaveLength(1);
+			} finally {
+				await child.stop();
+				tg.stop();
+			}
+		},
+		T,
+	);
+
+	test(
+		"disabling after polling starts leaves the boot-pinned channel running",
+		async () => {
+			const tg = fakeTelegram({ getMe: "ok", getUpdates: "hold" });
+			const child = bootChild({
+				baseDir: tmpDir(),
+				telegram: { enabled: true, apiRoot: tg.apiRoot },
+			});
+			try {
+				await child.waitLog("long polling started");
+				await tg.waitMethod("getUpdates");
+				await setTelegramEnabled(child, false);
+				expect((await child.http("/t/settings")).status).toBe(200);
+				expect(
+					(await child.http("/api/status", { headers: { "x-init-data": signedInitData(42) } }))
+						.status,
+				).toBe(200);
+				expect(child.lines().join("\n")).not.toContain(
+					"telegram attach stopped — channel disabled in config",
+				);
+			} finally {
+				await child.stop();
+				tg.stop();
+			}
+		},
+		T,
+	);
+
+	test(
 		"SIGTERM during a held getMe exits clean and never reaches replay or polling",
 		async () => {
 			const tg = fakeTelegram({ getMe: "held", getUpdates: "hold" });
@@ -309,6 +466,8 @@ describe("deferred telegram boot", () => {
 				tg.releaseGetMe();
 				expect(await done).toBe(0);
 				expect(tg.methods).not.toContain("getUpdates");
+				expect(tg.methods).not.toContain("setMyCommands");
+				expect(tg.methods).not.toContain("setChatMenuButton");
 				const logs = child.lines().join("\n");
 				expect(logs).not.toContain("telegram channel attached");
 				expect(logs).not.toContain("telegram inbox recovery queued");

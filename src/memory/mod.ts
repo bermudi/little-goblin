@@ -368,13 +368,36 @@ export interface RetentionSource {
 	program: boolean;
 }
 
+// App media is an intermediate assistant event, not a completed reply. Use
+// both the server-generated ID and attachment part to recognize legacy rows.
+function isExchangeBoundary(message: UIMessage): boolean {
+	return (
+		message.role === "assistant" &&
+		!isCompactionSummaryId(message.id) &&
+		!(message.id.startsWith("media-") && message.parts.some((p) => p.type === "data-attachment"))
+	);
+}
+
+export function activeExchangeExcluded(
+	entries: { seq: number; message: UIMessage }[],
+	elig: MemoryEligibility,
+): boolean {
+	let boundary = -1;
+	for (let i = 0; i < entries.length; i++) {
+		if (isExchangeBoundary(entries[i]!.message)) boundary = i;
+	}
+	return entries
+		.slice(boundary + 1)
+		.some((e) => e.message.role === "user" && !elig.eligibleSeqs.has(e.seq));
+}
+
 export function retentionSourceFrom(
 	entries: { seq: number; message: UIMessage }[],
+	elig?: MemoryEligibility,
 ): RetentionSource {
 	let lastAsstIndex = -1;
 	for (let i = 0; i < entries.length; i++) {
-		const m = entries[i]!.message;
-		if (m.role === "assistant" && !isCompactionSummaryId(m.id)) lastAsstIndex = i;
+		if (isExchangeBoundary(entries[i]!.message)) lastAsstIndex = i;
 	}
 	const userTexts: string[] = [];
 	const userIds: string[] = [];
@@ -383,6 +406,7 @@ export function retentionSourceFrom(
 	for (let i = 0; i < entries.length; i++) {
 		const e = entries[i]!;
 		if (isCompactionSummaryId(e.message.id)) continue;
+		if (elig !== undefined && !elig.eligibleSeqs.has(e.seq)) continue;
 		if (e.message.role !== "user" && e.message.role !== "assistant") continue;
 		const t = screenMemoryText(messageText(e.message), "retain-source");
 		if (t === "") continue;

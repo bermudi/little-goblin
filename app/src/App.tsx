@@ -808,6 +808,9 @@ function AppShell() {
 	const [attentionCount, setAttentionCount] = useState(0);
 	const [creatingNote, setCreatingNote] = useState(false);
 	const creatingNoteRef = useRef(false);
+	// A pending rail create may navigate only while its original route
+	// still owns the screen, even if the operator later returns there.
+	const navigationSeq = useRef(0);
 	const searchRef = useRef<HTMLInputElement>(null);
 	useEffect(() => {
 		if (pane === "search") searchRef.current?.focus();
@@ -932,6 +935,7 @@ function AppShell() {
 		return true;
 	};
 	const pushRoute = (path: string) => {
+		navigationSeq.current += 1;
 		const actual = historyPosition(window.history.state);
 		// A declined legacy traversal can leave the browser at a different
 		// entry while the editor stays open. Never extend its saved indices.
@@ -1068,6 +1072,7 @@ function AppShell() {
 				}
 				return;
 			}
+			navigationSeq.current += 1;
 			route.current = {
 				// A legacy gap breaks index continuity. New entries get a new
 				// segment so we never compute a distance across that gap.
@@ -1272,13 +1277,14 @@ function AppShell() {
 	const newNote = () => {
 		if (creatingNoteRef.current) return;
 		creatingNoteRef.current = true;
+		const navigationAtStart = navigationSeq.current;
 		setCreatingNote(true);
 		void createNote(token, { title: "Untitled note" }).then(
 			(n) => {
 				creatingNoteRef.current = false;
 				setCreatingNote(false);
 				void refresh();
-				openNote(n.id);
+				if (navigationSeq.current === navigationAtStart) openNote(n.id);
 			},
 			(err) => {
 				creatingNoteRef.current = false;
@@ -1458,10 +1464,10 @@ function AppShell() {
 	const surfaceOn = (key: ListPane) => pane === key || pagePane === key;
 	// The notes pane orders like the chats list: pinned float above the
 	// server's own updated order.
-	const paneNotes = notes === null ? [] : [
-		...notes.filter((n) => n.pinnedAt !== null),
-		...notes.filter((n) => n.pinnedAt === null),
-	];
+	const paneNotes =
+		notes === null
+			? []
+			: [...notes.filter((n) => n.pinnedAt !== null), ...notes.filter((n) => n.pinnedAt === null)];
 	const paneCount =
 		pane === "chats"
 			? String(rail.length)
@@ -1709,9 +1715,7 @@ function AppShell() {
 											type="button"
 											className="panel-label panel-index"
 											title={pane === "projects" ? "All projects" : "All notes"}
-											onClick={
-												pane === "projects" ? openProjectsIndex : openNotesIndex
-											}
+											onClick={pane === "projects" ? openProjectsIndex : openNotesIndex}
 										>
 											{pane === "projects" ? "Projects" : "Notes"}
 										</button>
@@ -1723,13 +1727,9 @@ function AppShell() {
 										<>
 											<ul>{rail.map(renderRow)}</ul>
 											{archivedRows}
-											{conversations !== null &&
-												rail.length === 0 &&
-												archived.length === 0 && (
-													<p className="empty">
-														Nothing here yet — start a conversation.
-													</p>
-												)}
+											{conversations !== null && rail.length === 0 && archived.length === 0 && (
+												<p className="empty">Nothing here yet — start a conversation.</p>
+											)}
 										</>
 									)}
 									{pane === "projects" && projects !== null && (
@@ -1740,9 +1740,7 @@ function AppShell() {
 														<button
 															type="button"
 															className={
-																page === "project" && projectId === p.id
-																	? "proj on"
-																	: "proj"
+																page === "project" && projectId === p.id ? "proj on" : "proj"
 															}
 															onClick={() => openProject(p.id)}
 														>
@@ -1751,9 +1749,7 @@ function AppShell() {
 													</li>
 												))}
 											</ul>
-											{activeProjects.length === 0 && (
-												<p className="empty">No projects yet.</p>
-											)}
+											{activeProjects.length === 0 && <p className="empty">No projects yet.</p>}
 											<button
 												type="button"
 												className="new"
@@ -1771,9 +1767,7 @@ function AppShell() {
 														<button
 															type="button"
 															className={
-																page === "note" && noteId === n.id
-																	? "line-row on"
-																	: "line-row"
+																page === "note" && noteId === n.id ? "line-row on" : "line-row"
 															}
 															onClick={() => openNote(n.id)}
 														>
@@ -1781,9 +1775,7 @@ function AppShell() {
 															<span className="line-row-title">
 																{flatLine(n.title) || "Untitled note"}
 															</span>
-															<span className="conv-time">
-																{relTime(n.updatedAt)}
-															</span>
+															<span className="conv-time">{relTime(n.updatedAt)}</span>
 														</button>
 													</li>
 												))}
@@ -2109,7 +2101,9 @@ function AppShell() {
 						onNew={() => setCreateProjectOpen(true)}
 					/>
 				)}
-				{page === "notes" && <NotesIndex token={token} projects={projectList} onOpen={openNote} />}
+				{page === "notes" && (
+					<NotesIndex token={token} projects={projectList} onOpen={openNote} onChanged={refresh} />
+				)}
 				{page === "note" && (
 					<div className="chat">
 						{noteId === null ? (
@@ -2122,6 +2116,7 @@ function AppShell() {
 									noteId={noteId}
 									projects={projectList}
 									discardRef={noteDiscard}
+									onChanged={refresh}
 									onChat={(note: AppNote) =>
 										startChat(note.projectId, [
 											{
@@ -2182,8 +2177,7 @@ function AppShell() {
 										stagedSkills={stagedSkills}
 										setStagedSkills={setStagedSkills}
 										stagedMemory={{
-											excluded:
-												currentProject.memory === "off" || stagedMemoryExcluded,
+											excluded: currentProject.memory === "off" || stagedMemoryExcluded,
 											locked: currentProject.memory === "off",
 										}}
 										onStagedMemoryToggle={setStagedMemoryExcluded}

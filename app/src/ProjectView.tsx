@@ -248,10 +248,12 @@ function ProjectNotes({
 	token,
 	project,
 	onOpenNote,
+	onChanged,
 }: {
 	token: string | null;
 	project: AppProject;
 	onOpenNote: (id: string) => void;
+	onChanged: () => void;
 }) {
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
 	const [truncated, setTruncated] = useState(false);
@@ -300,6 +302,7 @@ function ProjectNotes({
 		const seq = ++createSeq.current;
 		void createNote(token, { title: "Untitled note", projectId: project.id }).then(
 			(n) => {
+				onChanged();
 				if (!mounted.current || seq !== createSeq.current) return;
 				creatingRef.current = false;
 				setCreating(false);
@@ -537,7 +540,7 @@ export function ProjectView({
 				</p>
 			)}
 
-			<ProjectNotes token={token} project={project} onOpenNote={onOpenNote} />
+			<ProjectNotes token={token} project={project} onOpenNote={onOpenNote} onChanged={onChanged} />
 
 			<ResponsibilityFeed token={token} projectId={project.id} />
 

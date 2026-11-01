@@ -1768,6 +1768,7 @@ describe("app projects surface", () => {
 	// Same for a note PATCH — the stored row still mutates at request
 	// time (the restore ruling); only the reply is held.
 	let notePatchHold: Promise<void> | null;
+	let noteCreateHold: Promise<void> | null;
 	// Test-owned gates, resolved in afterEach so a failed assertion can
 	// never strand a pending mocked fetch.
 	let pendingGates: PromiseWithResolvers<void>[];
@@ -1856,6 +1857,7 @@ describe("app projects surface", () => {
 		searchScript = new Map();
 		createHold = null;
 		notePatchHold = null;
+		noteCreateHold = null;
 		pendingGates = [];
 		installGlobal("window", win);
 		installGlobal("document", win.document);
@@ -2101,7 +2103,10 @@ describe("app projects surface", () => {
 					const req = body as { title: string; projectId?: string };
 					const n = noteRow(req.title, { id: "n-new", projectId: req.projectId ?? null });
 					notes.push(n);
-					return Promise.resolve(jsonResponse(noteFull(n), 201));
+					const reply = jsonResponse(noteFull(n), 201);
+					return noteCreateHold === null
+						? Promise.resolve(reply)
+						: noteCreateHold.then(() => reply);
 				}
 				const u = new URL(url, "http://localhost");
 				const archivedOnly = u.searchParams.get("archived") === "1";
@@ -2315,6 +2320,53 @@ describe("app projects surface", () => {
 		expect(container.querySelector("main")!.textContent).toContain(
 			"This project is archived — unarchive it to start new chats here.",
 		);
+	});
+
+	test("a rail note create cannot override later navigation, but refreshes the pane", async () => {
+		await mount();
+		await openPane("Notes");
+		const gate = hold();
+		noteCreateHold = gate.promise;
+		await click(container.querySelector(".panel .new"));
+		await click(container.querySelector(".panel-index"));
+		expect(win.location.pathname).toBe("/app/notes");
+		gate.resolve();
+		await settle();
+		expect(win.location.pathname).toBe("/app/notes");
+		expect(container.querySelector(".line-row-title")?.textContent).toBe("Untitled note");
+	});
+
+	test("creating from the index updates the notes pane", async () => {
+		await mount();
+		await openPane("Notes");
+		await click(container.querySelector(".panel-index"));
+		await click(
+			[...container.querySelectorAll("main button")].find((b) => b.textContent === "New note"),
+		);
+		await settle();
+		expect(win.location.pathname).toBe("/app/n/n-new");
+		expect(container.querySelector(".line-row-title")?.textContent).toBe("Untitled note");
+	});
+
+	test("note pin and archive mutations refresh the pane immediately", async () => {
+		notes = [noteRow("Shopping"), noteRow("Other")];
+		await notePage("/app/n/n-shopping");
+		await openPane("Notes");
+		const rows = () =>
+			[...container.querySelectorAll(".line-row-title")].map((el) => el.textContent);
+		await click(
+			[...container.querySelectorAll(".note-flags button")].find((b) => b.textContent === "Pin"),
+		);
+		await settle();
+		expect(rows()).toEqual(["Shopping", "Other"]);
+		expect(container.querySelector(".line-row svg")).not.toBeNull();
+		await click(
+			[...container.querySelectorAll(".note-flags button")].find(
+				(b) => b.textContent === "Archive",
+			),
+		);
+		await settle();
+		expect(rows()).toEqual(["Other"]);
 	});
 
 	test("the notes pane lists pinned-first and its head opens the index", async () => {
@@ -2601,6 +2653,10 @@ describe("app projects surface", () => {
 		await settle();
 		const created = posts.find((p) => p.url === "/api/app/notes");
 		expect((created!.body as { projectId?: string }).projectId).toBe("p-goblin");
+		await openPane("Notes");
+		expect(
+			[...container.querySelectorAll(".line-row-title")].map((el) => el.textContent),
+		).toContain("Ideas");
 		const status = card!.querySelector(".note-card-status")!;
 		expect(status.textContent).toContain("Created");
 		expect(status.textContent).not.toContain("Appended to");
@@ -3657,8 +3713,8 @@ describe("app projects surface", () => {
 
 	// The gutter's glyph buttons name themselves by aria-label, not text.
 	const glyph = (label: string) =>
-		[...container.querySelectorAll(".gutter button")].find(
-			(b) => (b.getAttribute("aria-label") ?? "").startsWith(label),
+		[...container.querySelectorAll(".gutter button")].find((b) =>
+			(b.getAttribute("aria-label") ?? "").startsWith(label),
 		) ?? null;
 	const openPane = async (label: "Chats" | "Projects" | "Notes") => click(glyph(label));
 	const openSearchPane = async () => click(glyph("Search history"));

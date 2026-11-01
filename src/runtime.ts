@@ -12,6 +12,7 @@ import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import {
+	activeExchangeExcluded,
 	type MemoryTurnDeps,
 	memoryBoundEntries,
 	messageText,
@@ -102,7 +103,11 @@ export interface TurnSink {
 	// Voice synthesis exposes a visible wait and returns its stopper. Starting
 	// that indicator is a side effect and is fenced by the running turn.
 	onVoiceSynthesisStart?(): () => void;
-	setAuthorityCheck?(check: () => boolean, anchorSeq?: number | null): void;
+	setAuthorityCheck?(
+		check: () => boolean,
+		anchorSeq?: number | null,
+		memoryExcluded?: () => boolean,
+	): void;
 	onDone(done: TurnDone): void | Promise<void>;
 }
 
@@ -378,18 +383,22 @@ export class Runtime {
 	// submitPersisted.
 	resume(conv: Conversation, message: UIMessage, sink: TurnSink, seed: ResumeSeed): boolean {
 		const journal = this.deps.turnJournal;
+		const eligible = this.deps.store.memoryEligibility(conv.id).eligibleSeqs;
+		const exclude =
+			seed.admissionExchangeExcluded === true ||
+			(seed.ownedInputSeqs ?? []).some((seq) => !eligible.has(seq));
 		let seq: number;
 		if (journal !== undefined && seed.resumedFrom !== undefined) {
 			seq = this.deps.store.db.transaction(() => {
 				// The registry names the seq this append actually wrote —
 				// inferring it (e.g. lastUserSeq) would silently register an
 				// unrelated event if the message's shape ever changed.
-				const seqs = this.deps.store.append(conv.id, [message]);
+				const seqs = this.deps.store.append(conv.id, [message], { exclude });
 				journal.noteResumeRequest(seed.resumedFrom!, seqs[0]!);
 				return seqs[0]!;
 			})();
 		} else {
-			const seqs = this.deps.store.append(conv.id, [message]);
+			const seqs = this.deps.store.append(conv.id, [message], { exclude });
 			seq = seqs[0]!;
 		}
 		return this.admit(conv, message, sink, seq, seed);
@@ -1022,7 +1031,28 @@ export class Runtime {
 		const { conv, epoch, entries, anchorSeq, turnStartMs } = snapshot;
 		// Resume members join `turns` before admission so all paths settle them.
 		// An admission failure must not strand a member claimed during recovery.
-		sink.setAuthorityCheck?.(() => this.deps.store.get(convId)?.epoch === epoch, anchorSeq);
+		const ownedInputSeqs = new Set([
+			...snapshot.ownedInputSeqs,
+			...(recovery?.ownedInputSeqs ?? []),
+		]);
+		const admissionExchangeExcluded =
+			recovery?.admissionExchangeExcluded === true ||
+			activeExchangeExcluded(entries, store.memoryEligibility(convId));
+		if (admissionExchangeExcluded) {
+			log.info("memory exchange excluded at admission", {
+				conversation: convId,
+				inherited: recovery?.admissionExchangeExcluded === true,
+			});
+		}
+		const ownedInputExcluded = () => {
+			const eligible = store.memoryEligibility(convId).eligibleSeqs;
+			return admissionExchangeExcluded || [...ownedInputSeqs].some((seq) => !eligible.has(seq));
+		};
+		sink.setAuthorityCheck?.(
+			() => this.deps.store.get(convId)?.epoch === epoch,
+			anchorSeq,
+			ownedInputExcluded,
+		);
 		const controller = new AbortController();
 		this.lane(convId).controller = controller;
 		this.lanes.get(convId)!.live = live;
@@ -1141,7 +1171,8 @@ export class Runtime {
 				convSnapshot: { model: conv.model, thinking: conv.thinking },
 				toolNames: Object.keys(rawTools),
 				startedAt: new Date(turnStartMs).toISOString(),
-				ownedInputSeqs: snapshot.ownedInputSeqs,
+				ownedInputSeqs: [...ownedInputSeqs],
+				admissionExchangeExcluded,
 				sourceInputSeq: sourceInputSeq(),
 				resumedFrom: sourceRunId,
 				inheritFrom: recovery?.predecessorRun === undefined ? undefined : [recovery.predecessorRun],
@@ -1236,7 +1267,10 @@ export class Runtime {
 				unrequeueSteers: (steered) => this.lane(convId).pending.unshift(...steered),
 				settle: (m, done) => void this.notifyDone(m, done),
 				steerMarkSeed: snapshot.steerMarkSeed,
-				ownedInputSeqs: snapshot.ownedInputSeqs,
+				ownedInputSeqs: [...ownedInputSeqs],
+				onOwnedInputs: (seqs) => {
+					for (const seq of seqs) ownedInputSeqs.add(seq);
+				},
 				sourceInputSeq,
 				partial: recovery?.partial ?? null,
 				seenText: recovery?.seenText ?? false,
@@ -1330,6 +1364,11 @@ export class Runtime {
 			// Land the durable reply, then keep the post-delivery authority check:
 			// a stop during sink flushing must fence follow-up work. Persistence and
 			// delivery are both on the same authority-checked finish path.
+			// A pending or failed steer can have a seq below the final mark.
+			// Only admission-visible or successfully consumed users were read.
+			const visibleUserSeqs = new Set(
+				entries.filter((e) => e.message.role === "user").map((e) => e.seq),
+			);
 			const landed = landAttempt({
 				convId,
 				epoch,
@@ -1337,9 +1376,19 @@ export class Runtime {
 				// Live flag, like the reviewer's — a mid-turn exclusion
 				// lands the reply but ships no memory.
 				memoryExcluded: () => store.get(convId)?.memoryExcluded ?? conv.memoryExcluded,
-				modelEntries: () => store.modelEntries(convId),
+				modelEntries: () =>
+					store
+						.modelEntries(convId)
+						.filter(
+							(e) =>
+								e.message.role !== "user" ||
+								visibleUserSeqs.has(e.seq) ||
+								ownedInputSeqs.has(e.seq),
+						),
 				memoryEligibility: () => store.memoryEligibility(convId),
 				steerMark: outcome.steerMark,
+				ownedInputSeqs,
+				admissionExchangeExcluded,
 				responseMessage: outcome.responseMessage,
 				finishReason: outcome.finishReason,
 				usage: outcome.usage,
@@ -1469,6 +1518,8 @@ export class Runtime {
 					// No pre-run announcement: the fresh run links its members
 					// through its own begin.
 					stampRun("error", "undelivered");
+					outcome.recovery.ownedInputSeqs = [...ownedInputSeqs];
+					outcome.recovery.admissionExchangeExcluded = admissionExchangeExcluded;
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
 				announcePreRunFailure(err);

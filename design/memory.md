@@ -349,8 +349,25 @@ excluded-era input (a steer or trigger stamped while the flag was off)
 is refused retention and stamped ineligible itself — re-enabling cannot
 cleanse it. The reviewer's gate reads both the live flag and the landed
 exchange's own exclusion decision — a turn that consumed an excluded-era
-input never gates even when the flag lifted before review ran; fenced and
-failed turns commit no memory regardless of stamps;
+input never gates even when the flag lifted before review ran. Admission
+also checks every visible user input in the active exchange, even an unowned
+input left by a failed earlier turn: those inputs are still in the model
+view. The last completed assistant reply in causal order closes the prior
+exchange; app file/voice events and compaction summaries are not replies and
+never close it. Pending inputs are removed before this check. In addition,
+claimed input seqs remain tainted regardless of boundaries: only successfully
+consumed steers join that set. The admission decision is journaled with the
+run and carried through operator resume and overflow, even if compaction
+hides the original input; owned seqs also survive those continuations. A
+legacy interrupted run without a recorded admission decision fails closed
+on resume. A
+generated resume event inherits that decision and its owned inputs' exclusion,
+as do app file and voice events based on the inputs consumed at the instant
+of delivery; queued or failed steers do not taint an earlier media delivery.
+Retention uses the same reply boundary before filtering ineligible events,
+so same-turn media cannot demote the trigger from fresh user evidence and
+source IDs. The live flag still
+applies at each append. Fenced and failed turns commit no memory regardless of stamps;
 a compaction summary inherits its folded span's eligibility — eligible
 only when every event below the boundary was eligible, recomputed per
 pointer so repeated compactions stay consistent; spin-off forks copy

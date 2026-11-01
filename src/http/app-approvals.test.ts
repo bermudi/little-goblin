@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { appAddress } from "../conversation.ts";
 import { makeAppMailLane, presentProgramApproval } from "../app-approvals.ts";
 import { startMailApproval, type MailApproval } from "../mail-approval.ts";
@@ -35,7 +36,8 @@ const lane = {
 };
 
 function harness(opts: { publicUrl?: string; sender?: MailSender } = {}) {
-	const programs = openPrograms(tmpDb("goblin-app-approvals-"));
+	const programsPath = tmpDb("goblin-app-approvals-");
+	const programs = openPrograms(programsPath);
 	const outbox = openOutbox(tmpDb("goblin-app-approvals-"));
 	const sent: unknown[] = [];
 	const mail: MailApproval = startMailApproval(
@@ -63,7 +65,7 @@ function harness(opts: { publicUrl?: string; sender?: MailSender } = {}) {
 		token: APP_TOKEN_NAME,
 		approvals: { program, mail },
 	});
-	return { ...app, programs, outbox, program, mail, sent };
+	return { ...app, programs, programsPath, outbox, program, mail, sent };
 }
 
 async function cleanup(h: ReturnType<typeof harness>): Promise<void> {
@@ -74,6 +76,61 @@ async function cleanup(h: ReturnType<typeof harness>): Promise<void> {
 }
 
 describe("app approval routes", () => {
+	test("corrupt pending proposals fail the approval and attention requests rather than disappear", async () => {
+		const h = harness();
+		try {
+			const proposal = h.programs.proposals.proposeCreate(draft(), { target: "app/chat-01" }, NOW);
+			const db = new Database(h.programsPath);
+			db.query("UPDATE program_proposals SET payload = '{bad' WHERE id = ?").run(proposal.id);
+			db.close();
+			expect((await h.call("/api/app/approvals")).status).toBe(500);
+			expect((await h.call("/api/app/attention")).status).toBe(500);
+		} finally {
+			await cleanup(h);
+		}
+	});
+
+	test("a surviving send claim remains visible and can be abandoned, never resent", async () => {
+		const h = harness();
+		try {
+			const row = h.outbox.queue(
+				{
+					to: ["a@x.com"],
+					subject: "recover",
+					body: "hello",
+					address: { target: "app/chat-01" },
+				},
+				NOW,
+			);
+			expect(h.outbox.claimSend(row.id)).toBe(true);
+			const res = await h.call("/api/app/approvals");
+			const body = (await res.json()) as AppApprovalsResponse;
+			expect(body.mail).toMatchObject([{ id: row.id, status: "sending" }]);
+			const attention = await h.call("/api/app/attention");
+			const attentionBody = await attention.text();
+			expect(attentionBody).toContain("send outcome unresolved");
+			const send = await h.call(`/api/app/approvals/mail/${row.id}`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ action: "send" }),
+			});
+			expect(await send.json()).toMatchObject({ status: "busy" });
+			expect(h.sent).toEqual([]);
+			const cancel = await h.call(`/api/app/approvals/mail/${row.id}`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ action: "cancel" }),
+			});
+			expect(await cancel.json()).toMatchObject({ status: "cancelled" });
+			expect(h.outbox.get(row.id)).toMatchObject({ status: "cancelled", decidedBy: APP_ACTOR });
+			expect(
+				((await (await h.call("/api/app/approvals")).json()) as AppApprovalsResponse).mail,
+			).toEqual([]);
+		} finally {
+			await cleanup(h);
+		}
+	});
+
 	test("the pending list carries the complete program candidate and mail draft", async () => {
 		const h = harness();
 		try {

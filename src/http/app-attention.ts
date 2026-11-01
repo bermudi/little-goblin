@@ -62,7 +62,10 @@ export async function handleAttentionRoute(
 					id: `mail-approval:${draft.id}`,
 					kind: "mail-approval",
 					title: draft.subject === "" ? `Mail draft #${draft.id}` : draft.subject,
-					detail: `send approval — to ${draft.to.join(", ")}`,
+					detail:
+						draft.status === "sending"
+							? `send outcome unresolved — check Gmail Sent — to ${draft.to.join(", ")}`
+							: `send approval — to ${draft.to.join(", ")}`,
 					createdAt: draft.createdAt,
 					page: "programs",
 				}),

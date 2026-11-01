@@ -677,6 +677,13 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				conversation: captured,
 				partial,
 				sourceInputSeq,
+				admissionExchangeExcluded: run.admissionExchangeExcluded,
+				ownedInputSeqs: [
+					...new Set([
+						...(run.ownedInputSeqs ?? legacySeqs),
+						...(sourceInputSeq === null ? [] : [sourceInputSeq]),
+					]),
+				],
 				// The watchdog judges progress against the operator's real
 				// request — the run's anchor, or its first owned input when
 				// no anchor was recorded. The head event's marker text names

@@ -1,12 +1,13 @@
-// Tooltip contract: `title=` stays in the markup untouched; on hover or
-// focus the hint text moves into the shared bubble (styled, so the
-// native box never appears), positions above the host — flipping below
-// and clamping at the viewport edge — and the attribute is restored
-// when the hint ends. Inner crossings, scrolls, presses, and blurs all
-// end it.
+// Tooltip contract: on hover or focus `title=` is temporarily emptied
+// and the hint moves into the shared bubble (styled, so the native box
+// never appears), positioned above the host — flipping below and clamping
+// at the viewport edge. It is restored on dismissal unless changed while
+// open. Inner crossings keep it; scrolls, presses, and blurs end it.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { installTooltips } from "./tooltip.ts";
 
 let win: Window;
@@ -67,13 +68,58 @@ describe("tooltip", () => {
 		const el = host();
 		over(el);
 
-		expect(el.getAttribute("title")).toBeNull();
+		expect(el.getAttribute("title")).toBe("");
 		expect(tip()?.textContent).toBe("the hint");
 		expect(tip()?.classList.contains("on")).toBe(true);
 
 		leave(el);
 		expect(el.getAttribute("title")).toBe("the hint");
 		expect(tip()?.classList.contains("on")).toBe(false);
+	});
+
+	test("a title updated while the hint is open survives dismissal", () => {
+		const el = host("old");
+		over(el);
+		el.setAttribute("title", "new");
+		leave(el);
+		expect(el.getAttribute("title")).toBe("new");
+		over(el);
+		expect(tip()?.textContent).toBe("new");
+	});
+
+	test("a title removed while the hint is open stays removed, even on immediate dismissal", () => {
+		const el = host("old");
+		over(el);
+		el.removeAttribute("title");
+		leave(el);
+		expect(el.hasAttribute("title")).toBe(false);
+	});
+
+	test("React removing a title during hover does not resurrect it", async () => {
+		installGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+		const container = doc.createElement("div");
+		doc.body.appendChild(container);
+		const root = createRoot(container);
+		try {
+			await act(async () => root.render(createElement("button", { title: "old" }, "button")));
+			const el = container.querySelector("button");
+			if (el === null) throw new Error("button missing");
+			over(el);
+			await act(async () => root.render(createElement("button", { title: undefined }, "button")));
+			leave(el);
+			expect(el.hasAttribute("title")).toBe(false);
+		} finally {
+			await act(async () => root.unmount());
+		}
+	});
+
+	test("a title explicitly cleared while the hint is open stays empty", async () => {
+		const el = host("old");
+		over(el);
+		el.setAttribute("title", "");
+		await Promise.resolve();
+		leave(el);
+		expect(el.getAttribute("title")).toBe("");
 	});
 
 	test("an empty or absent title never engages", () => {
@@ -107,14 +153,14 @@ describe("tooltip", () => {
 
 		leave(child, el);
 		expect(tip()?.classList.contains("on")).toBe(true);
-		expect(el.getAttribute("title")).toBeNull();
+		expect(el.getAttribute("title")).toBe("");
 	});
 
 	test("focus shows it too; blur restores the attribute", () => {
 		const el = host();
 		el.dispatchEvent(new win.FocusEvent("focusin", { bubbles: true }) as unknown as Event);
 		expect(tip()?.classList.contains("on")).toBe(true);
-		expect(el.getAttribute("title")).toBeNull();
+		expect(el.getAttribute("title")).toBe("");
 
 		el.dispatchEvent(new win.FocusEvent("focusout", { bubbles: true }) as unknown as Event);
 		expect(tip()?.classList.contains("on")).toBe(false);
@@ -138,7 +184,7 @@ describe("tooltip", () => {
 		over(first);
 		over(second);
 		expect(first.getAttribute("title")).toBe("first");
-		expect(second.getAttribute("title")).toBeNull();
+		expect(second.getAttribute("title")).toBe("");
 		expect(tip()?.textContent).toBe("second");
 	});
 

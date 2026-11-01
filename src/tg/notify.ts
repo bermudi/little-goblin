@@ -158,30 +158,32 @@ export async function sendSkillProposedNotice(
 	}
 	const thread = addr.threadId !== null ? { message_thread_id: addr.threadId } : {};
 	const sent: string[] = [];
+	const failures: Error[] = [];
 	for (const skill of skills) {
-		// Buttons bind to the proposal's content fingerprint: a tap on a
-		// since-changed proposal is refused at the door. No fingerprintable
-		// proposal (or callback data over Telegram's 64-byte cap) degrades
-		// to the conversational notice — never an unbound button.
-		const fingerprint = proposedDir === undefined ? null : proposalFingerprint(proposedDir, skill);
-		const installData =
-			fingerprint === null ? null : skillInstallData(conversationId, skill, fingerprint);
-		const discardData =
-			fingerprint === null ? null : skillDiscardData(conversationId, skill, fingerprint);
-		const buttonsRide =
-			installData !== null &&
-			discardData !== null &&
-			installData.length <= 64 &&
-			discardData.length <= 64;
-		if (!buttonsRide) {
-			log.info("skill proposal notice — no tappable buttons; conversational only", {
-				conversation: conversationId,
-				skill,
-				reason:
-					fingerprint === null ? "no fingerprintable proposal" : "callback data over 64 bytes",
-			});
-		}
 		try {
+			// Buttons bind to the proposal's content fingerprint: a tap on a
+			// since-changed proposal is refused at the door. No fingerprintable
+			// proposal (or callback data over Telegram's 64-byte cap) degrades
+			// to the conversational notice — never an unbound button.
+			const fingerprint =
+				proposedDir === undefined ? null : proposalFingerprint(proposedDir, skill);
+			const installData =
+				fingerprint === null ? null : skillInstallData(conversationId, skill, fingerprint);
+			const discardData =
+				fingerprint === null ? null : skillDiscardData(conversationId, skill, fingerprint);
+			const buttonsRide =
+				installData !== null &&
+				discardData !== null &&
+				installData.length <= 64 &&
+				discardData.length <= 64;
+			if (!buttonsRide) {
+				log.info("skill proposal notice — no tappable buttons; conversational only", {
+					conversation: conversationId,
+					skill,
+					reason:
+						fingerprint === null ? "no fingerprintable proposal" : "callback data over 64 bytes",
+				});
+			}
 			await withTimeout(
 				api.sendMessage(addr.chatId, `proposed skill: ${skill} — approve to install`, {
 					...thread,
@@ -202,12 +204,23 @@ export async function sendSkillProposedNotice(
 			);
 			sent.push(skill);
 		} catch (err) {
-			// One undeliverable skill must not abort the rest of the batch.
+			// One failed skill must not abort the rest of the batch.
+			failures.push(new Error(`skill proposal notice failed for ${skill}`, { cause: err }));
 			log.error("skill proposal notice failed for one skill", err, {
 				conversation: conversationId,
 				skill,
 			});
 		}
 	}
-	log.info("skill proposal notice sent", { conversation: conversationId, skills: sent });
+	log.info("skill proposal notice batch finished", {
+		conversation: conversationId,
+		skills: sent,
+		failed: failures.length,
+	});
+	if (failures.length > 0) {
+		throw new AggregateError(
+			failures,
+			`skill proposal notice delivery failed for ${failures.length} skill(s)`,
+		);
+	}
 }

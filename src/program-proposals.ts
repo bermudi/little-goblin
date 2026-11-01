@@ -289,7 +289,12 @@ const baseSnapshotSchema = z
 // names itself with the row instead of surfacing downstream as a
 // mislabeled failure.
 function rowToProposal(row: unknown): ProgramProposal {
-	const r = rowSchema.parse(row);
+	const parsed = rowSchema.safeParse(row);
+	if (!parsed.success) {
+		const id = typeof row === "object" && row !== null && "id" in row ? String(row.id) : "unknown";
+		throw new Error(`program proposal ${id}: corrupt row — ${parsed.error.message}`);
+	}
+	const r = parsed.data;
 	let draft: ProgramDraft | null = null;
 	let patch: ProgramPatchRequest | null = null;
 	try {
@@ -329,24 +334,6 @@ function rowToProposal(row: unknown): ProgramProposal {
 		decidedBy: typeof r.decided_by === "number" ? `telegram:${r.decided_by}` : r.decided_by,
 		activatedId: r.activated_id,
 	};
-}
-
-function skipCorrupt(rows: unknown[]): ProgramProposal[] {
-	const out: ProgramProposal[] = [];
-	for (const row of rows) {
-		try {
-			out.push(rowToProposal(row));
-		} catch (err) {
-			const id =
-				typeof row === "object" && row !== null && "id" in row
-					? (row as { id: unknown }).id
-					: undefined;
-			log.warn("program proposal skipped — corrupt row", err, {
-				...(typeof id === "number" || typeof id === "string" ? { proposal: id } : {}),
-			});
-		}
-	}
-	return out;
 }
 
 export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): ProgramProposals {
@@ -565,10 +552,10 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 			return row === null ? null : rowToProposal(row);
 		},
 		list() {
-			return skipCorrupt(qList.all());
+			return qList.all().map(rowToProposal);
 		},
 		pending() {
-			return skipCorrupt(qPending.all());
+			return qPending.all().map(rowToProposal);
 		},
 		approve(id, decidedBy, opts = {}) {
 			const actor = actorOf(decidedBy);

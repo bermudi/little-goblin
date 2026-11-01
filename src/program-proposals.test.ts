@@ -330,17 +330,26 @@ describe("program proposals — update", () => {
 		programs.close();
 	});
 
-	test("list and pending skip a corrupt row and keep the valid one", () => {
+	test("list and pending surface a corrupt proposal rather than silently omitting it", () => {
 		const path = tmpDb("goblin-proposals-");
 		const programs = openPrograms(path);
 		const corrupt = programs.proposals.proposeCreate(draft({ name: "corrupt" }), ADDRESS, NOW);
-		const valid = programs.proposals.proposeCreate(draft({ name: "valid" }), ADDRESS, NOW);
+		programs.proposals.proposeCreate(draft({ name: "valid" }), ADDRESS, NOW);
 		const db = new Database(path);
 		db.query("UPDATE program_proposals SET payload = '{nope' WHERE id = ?").run(corrupt.id);
 		db.close();
-		expect(programs.proposals.list().map((p) => p.id)).toEqual([valid.id]);
-		expect(programs.proposals.pending().map((p) => p.id)).toEqual([valid.id]);
-		expect(() => programs.proposals.get(corrupt.id)).toThrow(/corrupt payload/);
+		const error = new RegExp(`program proposal ${corrupt.id}: corrupt payload`);
+		expect(() => programs.proposals.list()).toThrow(error);
+		expect(() => programs.proposals.pending()).toThrow(error);
+		expect(() => programs.proposals.get(corrupt.id)).toThrow(error);
+		const malformed = new Database(path);
+		malformed
+			.query("UPDATE program_proposals SET payload = '{}', target = 'invalid' WHERE id = ?")
+			.run(corrupt.id);
+		malformed.close();
+		expect(() => programs.proposals.pending()).toThrow(
+			`program proposal ${corrupt.id}: corrupt row`,
+		);
 		programs.close();
 	});
 

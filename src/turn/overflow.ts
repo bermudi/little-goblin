@@ -29,6 +29,10 @@ export interface TurnRecovery {
 	overflowed?: boolean | undefined;
 	recallVersion?: number | null | undefined;
 	sourceInputSeq?: number | null | undefined;
+	// Inputs consumed by earlier attempts, including those hidden by a fold.
+	ownedInputSeqs?: number[] | undefined;
+	// Taint from visible, potentially unowned inputs in the original admission.
+	admissionExchangeExcluded?: boolean | undefined;
 }
 
 export class ContextOverflowError extends Error {
@@ -251,16 +255,13 @@ export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<Ove
 		// found nothing (history moved mid-compaction). Same resume:
 		// nothing was interrupted for a fold that could not happen, so
 		// the turn continues unfolded.
-		log.warn(
-			"compaction pre-empt fold found nothing to fold — resuming on the unfolded view",
-			{
-				conversation: convId,
-				epoch,
-				arm: preempt.arm,
-				step: preempt.stepNumber,
-				reason: outcome.reason,
-			},
-		);
+		log.warn("compaction pre-empt fold found nothing to fold — resuming on the unfolded view", {
+			conversation: convId,
+			epoch,
+			arm: preempt.arm,
+			step: preempt.stepNumber,
+			reason: outcome.reason,
+		});
 	}
 	try {
 		deps.assertAuthority();

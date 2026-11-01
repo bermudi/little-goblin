@@ -2,9 +2,9 @@
 // stylesheet can never reach. `title=` stays the semantic source in
 // JSX; on hover or focus this moves the text into one shared bubble
 // fixed to the viewport (no clipping inside scroll containers, no
-// position:relative side effects on the host) and puts the attribute
-// back when the hint ends — DOM readers, tests, and accessibility
-// tooling never see the swap.
+// position:relative side effects on the host). While open, the DOM
+// title is empty to suppress native hints; it is restored on dismissal
+// unless the application changed or removed it in the meantime.
 export function installTooltips(doc: Document): () => void {
 	const tip = doc.createElement("div");
 	tip.className = "tooltip";
@@ -13,12 +13,24 @@ export function installTooltips(doc: Document): () => void {
 
 	let host: Element | null = null;
 	let saved: string | null = null;
+	let observer: MutationObserver | null = null;
+	let titleChanged = false;
 
 	const hide = () => {
 		tip.classList.remove("on");
-		if (host !== null && saved !== null) host.setAttribute("title", saved);
+		// Include synchronous changes that have not reached the observer's
+		// callback yet. A render can remove the title as well as replace it.
+		if (observer !== null) {
+			titleChanged ||= observer.takeRecords().length > 0;
+			observer.disconnect();
+			observer = null;
+		}
+		if (host !== null && saved !== null && !titleChanged && host.getAttribute("title") === "") {
+			host.setAttribute("title", saved);
+		}
 		host = null;
 		saved = null;
+		titleChanged = false;
 	};
 
 	const show = (el: Element) => {
@@ -41,7 +53,16 @@ export function installTooltips(doc: Document): () => void {
 		}
 		host = el;
 		saved = text;
-		el.removeAttribute("title");
+		// An empty title suppresses native hints (including inherited ones),
+		// but remains present so React's removeAttribute is observable.
+		el.setAttribute("title", "");
+		const Observer = doc.defaultView?.MutationObserver;
+		if (Observer !== undefined) {
+			observer = new Observer(() => {
+				titleChanged = true;
+			});
+			observer.observe(el, { attributes: true, attributeFilter: ["title"] });
+		}
 		tip.textContent = text;
 		// The bubble is opacity:0 through its show delay, so it can be
 		// measured and placed in the same frame it turns on — centered
@@ -74,8 +95,7 @@ export function installTooltips(doc: Document): () => void {
 		const el = titled(e);
 		if (el !== null) show(el);
 	};
-	// The host no longer carries [title] while stashed, so "leaving" is
-	// judged by containment, not by the selector: a mouseout whose
+	// Leaving is judged by containment, not by the selector: a mouseout whose
 	// relatedTarget is still inside the host is an inner crossing.
 	const node = (v: unknown): Node | null =>
 		v !== null && typeof v === "object" && "nodeType" in v ? (v as Node) : null;

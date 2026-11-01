@@ -222,11 +222,14 @@ export function MailApprovalCard({
 	onDone(): Promise<void>;
 }) {
 	const decision = useDecision(onDone);
+	const sending = draft.status === "sending";
 	return (
 		<div className="approval-card">
 			<div className="op-item-head">
 				<span className="op-item-title">Mail draft #{draft.id}</span>
-				<span className="pill pending">expires {draft.expiresAt}</span>
+				<span className="pill pending">
+					{sending ? "send outcome unresolved" : `expires ${draft.expiresAt}`}
+				</span>
 			</div>
 			<div className="approval-facts">
 				<span>To: {draft.to.join(", ")}</span>
@@ -235,10 +238,16 @@ export function MailApprovalCard({
 				{draft.replyToId !== null && <span>Reply to: {draft.replyToId}</span>}
 			</div>
 			<pre className="mail-body">{draft.body}</pre>
+			{sending && (
+				<p role="alert">
+					This send may still be in progress or may have completed. Check Gmail Sent before
+					cancelling or re-queueing; cancelling an abandoned send does not prove it was unsent.
+				</p>
+			)}
 			<div className="approval-actions">
 				<button
 					type="button"
-					disabled={decision.busy || decision.result?.hookUrl !== undefined}
+					disabled={sending || decision.busy || decision.result?.hookUrl !== undefined}
 					onClick={() => void decision.run(() => decideMailApproval(token, draft.id, "send"))}
 				>
 					Send

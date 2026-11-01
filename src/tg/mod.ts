@@ -34,6 +34,7 @@ import {
 	type CommandMemoryDeps,
 } from "./commands.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
+import { initializeBot } from "./init.ts";
 import { SPEAK_CALLBACK } from "./delivery.ts";
 import { floodWaitTransformer } from "./flood-wait.ts";
 import { registerGenerationStop } from "./generation-stop.ts";
@@ -143,6 +144,8 @@ export interface RunningBot {
 	/** A terminated poll is a channel failure, not a boot failure — the
 	 *  owner detaches in its callback. */
 	startPolling(onError: (err: unknown) => void): void;
+	/** Resolves when grammY's polling loop and its middleware have finished. */
+	waitForPolling(): Promise<void>;
 }
 
 export function accessGate(configRef: { current: Config }, opts?: { refusalTimeoutMs?: number }) {
@@ -1026,12 +1029,23 @@ export async function replayInbox(env: IntakeEnv): Promise<void> {
 	log.info("telegram inbox recovery queued", { updates: entries.length });
 }
 
-export async function createBot(deps: BotDeps): Promise<RunningBot> {
+export class TelegramInitializationCancelled extends Error {}
+
+export async function createBot(
+	deps: BotDeps,
+	canContinue: () => boolean = () => true,
+): Promise<RunningBot> {
 	const token = await deps.auth.resolve(AUTH_TELEGRAM_TOKEN);
+	if (!canContinue())
+		throw new TelegramInitializationCancelled(
+			"telegram bot initialization cancelled after token resolution",
+		);
 	const apiRoot = deps.configRef.current.telegram.apiRoot;
 	const bot = new Bot(token, apiRoot ? { client: { apiRoot } } : {});
 	bot.api.config.use(floodWaitTransformer());
-	await withTimeout(bot.init(), "getMe");
+	await initializeBot(bot);
+	if (!canContinue())
+		throw new TelegramInitializationCancelled("telegram bot initialization cancelled after getMe");
 	const base = {
 		deps,
 		api: bot.api,
@@ -1239,17 +1253,19 @@ export async function createBot(deps: BotDeps): Promise<RunningBot> {
 		if (err.error instanceof InboxRecordError) process.exit(1);
 	});
 
+	let polling: Promise<void> = Promise.resolve();
 	return {
 		bot,
 		replayInbox: () => replayInbox(env),
 		startPolling(onError: (err: unknown) => void) {
-			void bot
+			polling = bot
 				.start({ onStart: () => log.startup("long polling started") })
 				.catch((err: unknown) => {
 					log.error("long polling failed", err);
 					onError(err);
 				});
 		},
+		waitForPolling: () => polling,
 		async drainIntake() {
 			try {
 				await buffer.drain();
@@ -1283,8 +1299,14 @@ export function applyCommands(api: Api): void {
 		.catch((err: unknown) => log.warn("setMyCommands private scope failed", err));
 }
 
-export async function startBot(deps: BotDeps): Promise<RunningBot> {
-	const running = await createBot(deps);
+export async function startBot(
+	deps: BotDeps,
+	canContinue: () => boolean = () => true,
+): Promise<RunningBot> {
+	const running = await createBot(deps, canContinue);
+	// The owner must receive and drain a created bot, even if cancellation
+	// arrived between createBot returning and this continuation.
+	if (!canContinue()) return running;
 	const { bot } = running;
 	log.info("telegram bot ready — polling after inbox replay", { bot: bot.botInfo.username });
 

@@ -143,6 +143,10 @@ describe("rate button", () => {
 			[[{ text: "👍", disabled: {} }], [{ text: "🔊", callback_data: "speak_reply" }]],
 		]);
 		expect(answers(fake.calls)).toEqual(["👍 recorded"]);
+		expect(fake.calls.map((call) => call.method)).toEqual([
+			"editMessageReplyMarkup",
+			"answerCallbackQuery",
+		]);
 	});
 
 	test("a rating-only keyboard strips to empty", async () => {
@@ -179,8 +183,42 @@ describe("rate button", () => {
 		expect(ratings.records).toHaveLength(2);
 	});
 
-	test("concurrent opposite taps strip once — the loser's stale markup never lands last", async () => {
-		const fake = fakeApi();
+	test("an edit failure reports the saved vote and does not poison later edits", async () => {
+		let edits = 0;
+		const fake = fakeApi({
+			failOn: (method) => method === "editMessageReplyMarkup" && ++edits === 1,
+		});
+		const ratings = fakeRatings();
+		const markup = { inline_keyboard: [[{ text: "👍", callback_data: "rate:up|dm:1|7" }]] };
+		const deps = { api: fake.api, ratings };
+		await handleRateButton(query("rate:up|dm:1|7", 42, 76, markup), deps);
+		await handleRateButton(query("rate:down|dm:1|7", 42, 76, markup), deps);
+		expect(ratings.records.map((r) => r.rating)).toEqual(["up", "down"]);
+		expect(edits).toBe(2);
+		expect(answers(fake.calls)).toEqual(["rating recorded — display update failed", "👎 recorded"]);
+	});
+
+	test("a callback answer failure propagates without attempting a second answer", async () => {
+		const fake = fakeApi({ failOn: (method) => method === "answerCallbackQuery" });
+		const ratings = fakeRatings();
+		await expect(
+			handleRateButton(query("rate:up|dm:1|7"), { api: fake.api, ratings }),
+		).rejects.toThrow("rate button handler failed for query q-10");
+		expect(ratings.records).toHaveLength(1);
+		expect(answers(fake.calls)).toEqual(["👍 recorded"]);
+	});
+
+	test("concurrent opposite taps display the latest stored vote", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let edits = 0;
+		const fake = fakeApi({
+			before: (method) => {
+				if (method === "editMessageReplyMarkup" && ++edits === 1) return gate;
+			},
+		});
 		const ratings = fakeRatings();
 		const markup = {
 			inline_keyboard: [
@@ -191,22 +229,92 @@ describe("rate button", () => {
 				[{ text: "🔊", callback_data: "speak_reply" }],
 			],
 		};
-		await Promise.all([
-			handleRateButton(query(rateCallbackData("up", "dm:1", 7), 42, 77, markup), {
-				api: fake.api,
-				ratings,
-			}),
-			handleRateButton(query(rateCallbackData("down", "dm:1", 7), 42, 77, markup), {
-				api: fake.api,
-				ratings,
-			}),
-		]);
-		// Serialized per message: only the first tap edits; the second
-		// sees the rate row already gone and no-ops instead of landing
-		// its stale snapshot (with the opposite vote) last.
+		const first = handleRateButton(query(rateCallbackData("up", "dm:1", 7), 42, 77, markup), {
+			api: fake.api,
+			ratings,
+		});
+		const second = handleRateButton(query(rateCallbackData("down", "dm:1", 7), 42, 77, markup), {
+			api: fake.api,
+			ratings,
+		});
+		await Promise.resolve();
+		expect(edits).toBe(1); // The second edit waits for the first to land.
+		release();
+		await Promise.all([first, second]);
+		expect(ratings.records.map((r) => r.rating)).toEqual(["up", "down"]);
 		expect(markups(fake.calls)).toEqual([
 			[[{ text: "👍", disabled: {} }], [{ text: "🔊", callback_data: "speak_reply" }]],
+			[[{ text: "👎", disabled: {} }], [{ text: "🔊", callback_data: "speak_reply" }]],
 		]);
+	});
+
+	test("a timed-out edit still holds its queue until the underlying request settles", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let edits = 0;
+		const fake = fakeApi({
+			before: (method) => {
+				if (method === "editMessageReplyMarkup" && ++edits === 1) return gate;
+			},
+		});
+		const ratings = fakeRatings();
+		const markup = {
+			inline_keyboard: [
+				[{ text: "👍", callback_data: rateCallbackData("up", "dm:1", 7) }],
+				[{ text: "🔊", callback_data: "speak_reply" }],
+			],
+		};
+		const deps = { api: fake.api, ratings, editTimeoutMs: 10 };
+		const first = handleRateButton(query(rateCallbackData("up", "dm:1", 7), 42, 78, markup), deps);
+		const second = handleRateButton(
+			query(rateCallbackData("down", "dm:1", 7), 42, 78, markup),
+			deps,
+		);
+		// Keep the event loop alive: the production timeout is deliberately unref'd.
+		await Promise.all([first, second, Bun.sleep(30)]);
+		expect(edits).toBe(1);
+		expect(ratings.records.map((r) => r.rating)).toEqual(["up", "down"]);
+		expect(answers(fake.calls)).toEqual([
+			"rating recorded — display may be stale",
+			"rating recorded — display may be stale",
+		]);
+		release();
+		await Bun.sleep(10);
+		expect(edits).toBe(2);
+		expect(markups(fake.calls)).toEqual([
+			[[{ text: "👍", disabled: {} }], [{ text: "🔊", callback_data: "speak_reply" }]],
+			[[{ text: "👎", disabled: {} }], [{ text: "🔊", callback_data: "speak_reply" }]],
+		]);
+	});
+
+	test("a late failed edit releases its queue without blocking other messages", async () => {
+		let reject!: (error: Error) => void;
+		const gate = new Promise<void>((_resolve, fail) => {
+			reject = fail;
+		});
+		let edits = 0;
+		const fake = fakeApi({
+			before: (method) => {
+				if (method === "editMessageReplyMarkup" && ++edits === 1) return gate;
+			},
+		});
+		const markup = { inline_keyboard: [[{ text: "👍", callback_data: "rate:up|dm:1|7" }]] };
+		const deps = { api: fake.api, ratings: fakeRatings(), editTimeoutMs: 10 };
+		const first = handleRateButton(query("rate:up|dm:1|7", 42, 79, markup), deps);
+		const second = handleRateButton(query("rate:down|dm:1|7", 42, 79, markup), deps);
+		await handleRateButton(query("rate:up|dm:1|7", 42, 80, markup), deps);
+		expect(edits).toBe(2);
+		await Promise.all([first, second, Bun.sleep(30)]);
+		expect(answers(fake.calls)).toEqual([
+			"👍 recorded",
+			"rating recorded — display may be stale",
+			"rating recorded — display may be stale",
+		]);
+		reject(new Error("late network failure"));
+		await Bun.sleep(10);
+		expect(edits).toBe(3);
 	});
 
 	test("registration routes a rate update through a real bot — non-rate updates don't reach it", async () => {

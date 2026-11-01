@@ -371,6 +371,7 @@ export function MessageParts({
 	noteProjectId,
 	onAction,
 	onOpenNote,
+	onNotesChanged,
 	clipFences,
 	busy,
 	streaming,
@@ -385,6 +386,7 @@ export function MessageParts({
 	onAction?: ((text: string) => void) | undefined;
 	// Note chips and the fenced note card navigate in-app when wired.
 	onOpenNote?: ((id: string) => void) | undefined;
+	onNotesChanged?: (() => void) | undefined;
 	// Operator messages: long pasted fences clip to a preview. Model
 	// output renders whole — its fences are the answer, not clutter.
 	clipFences?: boolean | undefined;
@@ -484,6 +486,7 @@ export function MessageParts({
 					token={token}
 					noteProjectId={noteProjectId}
 					onOpenNote={onOpenNote}
+					onNotesChanged={onNotesChanged}
 					streaming={streaming}
 					clipFences={clipFences}
 				/>,
@@ -3004,6 +3007,7 @@ function Chat({
 											streaming={status === "streaming" && m.id === lastAssistantId}
 											messages={messages}
 											onOpenNote={onOpenNote}
+											onNotesChanged={onTurnDone}
 											onAction={(text) => void submit({ text })}
 										/>
 										<ActionBar

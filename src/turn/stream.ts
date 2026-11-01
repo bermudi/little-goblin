@@ -225,6 +225,7 @@ export interface StreamDeps<M extends WireMember> {
 	// The durable user-input seqs owned at admission; successfully folded
 	// steers advance it and persist with the steer mark.
 	ownedInputSeqs: number[];
+	onOwnedInputs?(seqs: readonly number[]): void;
 	sourceInputSeq?(): number | null;
 	partial: UIMessage | null;
 	seenText: boolean;
@@ -480,6 +481,7 @@ export async function driveStream<M extends WireMember>(
 				if (seq > steerMark) steerMark = seq;
 				ownedInputSeqs.add(seq);
 			}
+			deps.onOwnedInputs?.([...claimedSeqs]);
 			deps.journal?.checkpoint(deps.runId, {
 				ownedInputSeqs: [...ownedInputSeqs],
 				steerMark,

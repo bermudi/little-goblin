@@ -13,7 +13,7 @@ import { FencedError, type TurnDone, type TurnSink } from "./runtime.ts";
 import { attachmentContentType } from "./stateview.ts";
 
 export interface AppMediaDeps {
-	append(messages: UIMessage[], opts: { anchorSeq?: number | null }): void;
+	append(messages: UIMessage[], opts: { anchorSeq?: number | null; exclude?: boolean }): void;
 }
 
 export function composeTurnSinks(...sinks: TurnSink[]): TurnSink {
@@ -27,8 +27,8 @@ export function composeTurnSinks(...sinks: TurnSink[]): TurnSink {
 		onToolCall(toolName, input) {
 			for (const s of sinks) s.onToolCall(toolName, input);
 		},
-		setAuthorityCheck(check, anchorSeq) {
-			for (const s of sinks) s.setAuthorityCheck?.(check, anchorSeq);
+		setAuthorityCheck(check, anchorSeq, memoryExcluded) {
+			for (const s of sinks) s.setAuthorityCheck?.(check, anchorSeq, memoryExcluded);
 		},
 		async onDone(done) {
 			for (const s of sinks) await s.onDone(done);
@@ -104,6 +104,7 @@ export function appMediaSink(
 ): TurnSink {
 	let authorized: (() => boolean) | null = null;
 	let anchorSeq: number | null = null;
+	let inputExcluded: (() => boolean) | undefined;
 	const checkAuthority = () => {
 		if (authorized !== null && !authorized()) throw new FencedError(convId);
 	};
@@ -112,8 +113,10 @@ export function appMediaSink(
 		caption: string | undefined,
 		cleanup: string | null,
 	) => {
+		let excluded = false;
 		try {
 			checkAuthority();
+			excluded = inputExcluded?.() === true;
 			media.append(
 				[
 					{
@@ -125,7 +128,7 @@ export function appMediaSink(
 								: [attachmentPart(ref), { type: "text", text: caption }],
 					},
 				],
-				{ anchorSeq },
+				{ anchorSeq, ...(excluded ? { exclude: true } : {}) },
 			);
 		} catch (err) {
 			if (cleanup !== null) {
@@ -146,6 +149,7 @@ export function appMediaSink(
 			filename: ref.filename,
 			mediaType: ref.mediaType,
 			size: ref.size,
+			ownedInputExcluded: excluded,
 		});
 	};
 	return {
@@ -178,9 +182,10 @@ export function appMediaSink(
 			const { ref, cleanup } = await outgoingAttachment(file);
 			await record(ref, file.caption, cleanup);
 		},
-		setAuthorityCheck(check, anchor) {
+		setAuthorityCheck(check, anchor, memoryExcluded) {
 			authorized = check;
 			anchorSeq = anchor ?? null;
+			inputExcluded = memoryExcluded;
 		},
 		async onDone(done) {
 			await onDone?.(done);

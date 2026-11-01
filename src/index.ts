@@ -22,6 +22,7 @@ import {
 	goblinHome,
 	loadConfig,
 	missingAuthNames,
+	observeConfigWrites,
 	paths,
 	type TtsConfig,
 } from "./config.ts";
@@ -69,7 +70,14 @@ import {
 	sendMailNotice,
 	startTelegramMailApproval,
 } from "./tg/mail-approval.ts";
-import { AUTH_TELEGRAM_TOKEN, applyMenuButton, startBot, type RunningBot } from "./tg/mod.ts";
+import {
+	AUTH_TELEGRAM_TOKEN,
+	applyMenuButton,
+	startBot,
+	TelegramInitializationCancelled,
+	type RunningBot,
+} from "./tg/mod.ts";
+import { makeBotCleanup } from "./tg/cleanup.ts";
 import { postProgramApproval, startTelegramProgramApproval } from "./tg/program-approval.ts";
 import {
 	sendMemoryBlockedNotice,
@@ -787,6 +795,20 @@ async function boot() {
 		restartHints,
 	});
 	operatorSeams.chatgpt = chatgptLogin;
+	// Register before HTTP can accept a save, even if it arrives before the
+	// deferred task starts. A disable is latched for this attach only: a
+	// later enable cannot erase it, and the observer is removed once polling
+	// starts (or the attempt ends).
+	let telegramAttachDisabled = false;
+	const telegramDisableSignal = Promise.withResolvers<void>();
+	const stopObservingTelegramConfig = telegramEnabled
+		? observeConfigWrites((written) => {
+				if (!written.telegram.enabled && !telegramAttachDisabled) {
+					telegramAttachDisabled = true;
+					telegramDisableSignal.resolve();
+				}
+			})
+		: () => {};
 	const http = startHttp({
 		configRef,
 		...operatorSeams,
@@ -921,39 +943,51 @@ async function boot() {
 		// telegramRunning stays — its intake still belongs to this boot and
 		// shutdown drains it even while routing reads detached.
 	};
+	const cleanupBot = makeBotCleanup();
+	const canAttachTelegram = (): boolean => {
+		if (telegramSealed || !runtime.accepting()) {
+			log.info("telegram attach skipped — shutdown in progress");
+			return false;
+		}
+		if (telegramAttachDisabled || !configRef.current.telegram.enabled) {
+			log.info("telegram attach stopped — channel disabled in config");
+			return false;
+		}
+		return true;
+	};
 	const telegramInit = telegramEnabled
 		? (async () => {
 				for (let attempt = 1; ; attempt++) {
-					if (telegramSealed) return;
+					if (!canAttachTelegram()) return;
 					try {
 						// The token resolves inside this task only — the HTTP door
 						// fails closed until the attach below sets it live.
 						telegramToken = await auth.resolve(AUTH_TELEGRAM_TOKEN);
-						if (telegramSealed || !runtime.accepting()) {
-							log.info("telegram attach skipped — shutdown in progress");
-							return;
-						}
-						const running = await startBot({
-							configRef,
-							auth,
-							store,
-							runtime,
-							titleFor,
-							async synthesize(text, tts) {
-								return synthesizeSpeech(text, tts, { auth });
+						if (!canAttachTelegram()) return;
+						const running = await startBot(
+							{
+								configRef,
+								auth,
+								store,
+								runtime,
+								titleFor,
+								async synthesize(text, tts) {
+									return synthesizeSpeech(text, tts, { auth });
+								},
+								transcribe: transcribeFile,
+								...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
+								mail: () => telegramMailApproval,
+								programApproval: () => telegramProgramApproval,
+								followUpGate: () => system1Gate ?? undefined,
+								resumeOps: () => resumeOps,
 							},
-							transcribe: transcribeFile,
-							...(memorySurfaces ? { memory: { ...memorySurfaces } } : {}),
-							mail: () => telegramMailApproval,
-							programApproval: () => telegramProgramApproval,
-							followUpGate: () => system1Gate ?? undefined,
-							resumeOps: () => resumeOps,
-						});
+							canAttachTelegram,
+						);
 						// Own the bot the moment it exists — a later detach or a
 						// seal mid-replay must never strand its stop/drain.
 						telegramRunning = running;
-						if (telegramSealed || !runtime.accepting()) {
-							log.info("telegram attach skipped — shutdown in progress");
+						if (!canAttachTelegram()) {
+							await cleanupBot(running);
 							return;
 						}
 						attachTelegram(running);
@@ -969,16 +1003,18 @@ async function boot() {
 								(id) => store.get(id)?.title ?? undefined,
 							);
 						}
-						if (telegramSealed || !runtime.accepting()) {
+						if (!canAttachTelegram()) {
 							detachTelegram();
+							await cleanupBot(running);
 							return;
 						}
 						// Replay before polling — the offset must not advance past
 						// journaled input — then poll with a detach-on-end contract:
 						// a terminated long poll degrades the channel, never the boot.
 						await running.replayInbox();
-						if (telegramSealed || !runtime.accepting()) {
+						if (!canAttachTelegram()) {
 							detachTelegram();
+							await cleanupBot(running);
 							return;
 						}
 						running.startPolling((err) => {
@@ -999,15 +1035,21 @@ async function boot() {
 						const superseded = telegramRunning;
 						detachTelegram();
 						if (superseded !== null) {
-							telegramRunning = null;
-							if (superseded.bot.isRunning()) {
-								await superseded.bot.stop().catch(() => {});
+							// Keep ownership on failure: overlapping pollers or intake are unsafe.
+							try {
+								await cleanupBot(superseded);
+							} catch (cleanupError) {
+								log.error("telegram attach failed before cleanup", err, { attempt });
+								throw new Error("telegram attach cleanup failed — retry stopped", {
+									cause: cleanupError,
+								});
 							}
-							await superseded.drainIntake().catch(() => {});
+							telegramRunning = null;
 						}
-						if (telegramSealed || !runtime.accepting()) return;
-						if (!configRef.current.telegram.enabled) {
-							log.info("telegram attach stopped — channel disabled in config");
+						if (!canAttachTelegram()) {
+							if (!(err instanceof TelegramInitializationCancelled)) {
+								log.warn("telegram attach failed while stopping", err, { attempt });
+							}
 							return;
 						}
 						const retryMs = attachRetryMs(attempt);
@@ -1017,13 +1059,15 @@ async function boot() {
 						} else {
 							log.warn("telegram attach failed — retrying", err, { attempt, retryMs });
 						}
-						await Promise.race([sleep(retryMs), telegramSealSignal]);
+						await Promise.race([sleep(retryMs), telegramSealSignal, telegramDisableSignal.promise]);
 					}
 				}
-			})().catch((err: unknown) => {
-				log.error("telegram init task failed", err);
-				detachTelegram();
-			})
+			})()
+				.catch((err: unknown) => {
+					log.error("telegram init task failed", err);
+					detachTelegram();
+				})
+				.finally(stopObservingTelegramConfig)
 		: Promise.resolve();
 
 	// Shutdown's telegram stop: seals the attach path first (a late getMe
@@ -1036,12 +1080,10 @@ async function boot() {
 		// Owner, not router: a detached channel still has intake to drain.
 		const running = telegramRunning;
 		if (tg !== null) detachTelegram();
-		const pollStop =
-			running !== null && running.bot.isRunning() ? running.bot.stop() : Promise.resolve();
-		const intake = running === null ? Promise.resolve() : running.drainIntake();
-		const joined = Promise.allSettled([pollStop, intake, telegramInit]);
+		const cleanup = running === null ? Promise.resolve() : cleanupBot(running);
+		const joined = Promise.allSettled([cleanup, telegramInit]);
 		return joined.then((results) => {
-			const labels = ["telegram poll stop", "telegram intake drain", "telegram init join"];
+			const labels = ["telegram bot cleanup", "telegram init join"];
 			for (const [i, r] of results.entries()) {
 				if (r.status === "rejected") {
 					log.warn("shutdown step failed", r.reason, { step: labels[i] });

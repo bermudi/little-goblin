@@ -47,6 +47,7 @@ export interface TurnRun {
 	// every steer it folded in — resume reads it to tell the run's own
 	// inputs from foreign later ones. NULL = the row predates tracking.
 	ownedInputSeqs: number[] | null;
+	admissionExchangeExcluded: boolean;
 	sourceInputSeq: number | null;
 	// True when the column held non-NULL garbage — resume refuses that
 	// rather than silently applying the legacy policy.
@@ -109,6 +110,7 @@ export interface TurnJournal {
 		// The admitted user-entry seqs — real runtime passes them all;
 		// undefined keeps backward fixtures at legacy NULL ownership.
 		ownedInputSeqs?: number[] | undefined;
+		admissionExchangeExcluded?: boolean | undefined;
 		sourceInputSeq?: number | null | undefined;
 		resumedFrom?: string | undefined;
 		inheritFrom?: string[] | undefined;
@@ -191,6 +193,7 @@ const runRowSchema = z.object({
 	partial: z.string().nullable(),
 	loop_state: z.string().nullable(),
 	owned_input_seqs: z.string().nullable(),
+	admission_exchange_excluded: z.number().nullable(),
 	source_input_seq: z.number().int().positive().nullable(),
 	resume_request_seqs: z.string().nullable(),
 	filter_retry_used: z.number(),
@@ -347,6 +350,9 @@ function decodeRun(raw: unknown): TurnRun {
 				? null
 				: tryParseJson(r.loop_state, { run: r.run_id, field: "loop_state" }),
 		ownedInputSeqs: owned === "malformed" ? null : owned,
+		// A pre-column interrupted run never recorded its admission view.
+		// It may have consumed excluded unowned context, now hidden by a fold.
+		admissionExchangeExcluded: r.admission_exchange_excluded !== 0,
 		sourceInputSeq: r.source_input_seq,
 		ownedInputSeqsUnreadable: owned === "malformed",
 		resumeRequestSeqs: resumeRequests === "malformed" ? null : resumeRequests,
@@ -443,6 +449,9 @@ export function openTurnJournal(db: Database): TurnJournal {
 	if (!runCols.has("owned_input_seqs")) {
 		db.exec("ALTER TABLE turn_runs ADD COLUMN owned_input_seqs TEXT");
 	}
+	if (!runCols.has("admission_exchange_excluded")) {
+		db.exec("ALTER TABLE turn_runs ADD COLUMN admission_exchange_excluded INTEGER");
+	}
 	if (!runCols.has("resume_request_seqs")) {
 		db.exec("ALTER TABLE turn_runs ADD COLUMN resume_request_seqs TEXT");
 	}
@@ -496,8 +505,8 @@ export function openTurnJournal(db: Database): TurnJournal {
 	const qBegin = db.query(`INSERT INTO turn_runs (
 		run_id, conversation_id, epoch, anchor_seq, steer_mark,
 		conv_snapshot, tool_names, started_ms, status, created_at, resumed_from,
-		owned_input_seqs, source_input_seq
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`);
+		owned_input_seqs, source_input_seq, admission_exchange_excluded
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, ?)`);
 	// The registry lives on the interrupted source row — a generated
 	// resume event is trusted only when the source named it.
 	const qNoteResume = db.query(
@@ -637,6 +646,7 @@ export function openTurnJournal(db: Database): TurnJournal {
 					input.resumedFrom ?? null,
 					input.ownedInputSeqs === undefined ? null : JSON.stringify(input.ownedInputSeqs),
 					input.sourceInputSeq ?? null,
+					input.admissionExchangeExcluded === true ? 1 : 0,
 				);
 			};
 			if (input.resumedFrom === undefined && (input.inheritFrom?.length ?? 0) === 0) {

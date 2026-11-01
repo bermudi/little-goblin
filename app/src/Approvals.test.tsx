@@ -141,3 +141,51 @@ test("a decision without a hook URL refreshes immediately", async () => {
 	expect(lists).toBe(2);
 	expect(container.querySelector(".approval-card")).toBeNull();
 });
+
+test("an unresolved send warns and allows cancel but never offers a resend", async () => {
+	let cancelled = false;
+	globalThis.fetch = Object.assign(
+		async (input: string | URL | Request, init?: RequestInit) => {
+			const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost");
+			if (url.pathname === "/api/app/approvals")
+				return Response.json({
+					programs: [],
+					mail: cancelled
+						? []
+						: [
+								{
+									id: 9,
+									to: ["a@example.com"],
+									cc: [],
+									subject: "Report",
+									body: "body",
+									replyToId: null,
+									target: "app/chat-01",
+									status: "sending",
+									createdAt: "2026-10-21",
+									expiresAt: "2026-10-22",
+									decidedAt: null,
+									decidedBy: null,
+									sentId: null,
+								},
+							],
+				});
+			if (url.pathname === "/api/app/approvals/mail/9" && init?.method === "POST") {
+				expect(JSON.parse(String(init.body))).toEqual({ action: "cancel" });
+				cancelled = true;
+				return Response.json({ status: "cancelled", message: "cancelled" });
+			}
+			throw new Error(`unexpected request: ${url.pathname}`);
+		},
+		{ preconnect: realFetch.preconnect },
+	);
+	root = createRoot(container);
+	await act(async () => root?.render(<ApprovalsPanel token={null} />));
+	expect(container.textContent).toContain("Check Gmail Sent");
+	expect(container.textContent).toContain("send outcome unresolved");
+	expect(cardButton("Send")?.disabled).toBe(true);
+	expect(cardButton("Cancel")?.disabled).toBe(false);
+	await act(async () => cardButton("Cancel")?.click());
+	expect(cancelled).toBe(true);
+	expect(container.textContent).toContain("No pending approvals.");
+});

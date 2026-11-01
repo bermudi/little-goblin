@@ -183,6 +183,51 @@ describe("tts", () => {
 		expect(audio.map((a) => a[0])).toEqual([0, 1, 2, 3, 4, 5, 6]);
 	});
 
+	test("a worker failure stops new chunks and joins in-flight work before rejecting", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let fail!: (err: Error) => void;
+		const failure = new Promise<Uint8Array>((_resolve, reject) => {
+			fail = reject;
+		});
+		const calls: string[] = [];
+		let finished = false;
+		const speech = synthesizeSpeech(
+			"One. Two. Three. Four. Five.",
+			{ kind: "edge", voice: "en-US-AriaNeural" },
+			{
+				chunkLimit: 7,
+				synthesize: async (chunk) => {
+					calls.push(chunk);
+					if (chunk === "One.") return failure;
+					await gate;
+					return new Uint8Array([1]);
+				},
+				remux: async (audio) => audio,
+			},
+		);
+		const observed = speech.then(
+			() => {
+				finished = true;
+			},
+			() => {
+				finished = true;
+			},
+		);
+		expect(calls).toEqual(["One.", "Two.", "Three."]);
+		const err = new Error("provider failed");
+		fail(err);
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(finished).toBe(false);
+		release();
+		await expect(speech).rejects.toBe(err);
+		await observed;
+		expect(calls).toEqual(["One.", "Two.", "Three."]);
+	});
+
 	test("an overridden voice carries its language into the SSML", async () => {
 		// The speak tool swaps the whole config voice exactly like index.ts
 		// does — the invariant this pins: a Spanish voice name must yield a

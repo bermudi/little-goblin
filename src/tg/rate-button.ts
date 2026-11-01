@@ -1,10 +1,12 @@
 import type { Api, Bot } from "grammy";
 import type { InlineKeyboardButton, InlineKeyboardMarkup } from "grammy/types";
 import { log } from "../log.ts";
-import { withTimeout } from "./deadline.ts";
+import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import type { ReplyRating, ReplyRatings } from "../reply-ratings.ts";
 
 export const RATE_CALLBACK_RE = /^rate:/;
+// Callback queries expire quickly; don't wait for the normal 30s API deadline.
+const RATE_EDIT_WAIT_MS = 1_000;
 const RATE_DATA_RE = /^rate:(up|down)\|([^|]+)\|(\d+|x)$/;
 
 export function rateCallbackData(
@@ -44,6 +46,8 @@ export interface RateQuery {
 export interface RateButtonDeps {
 	api: Api;
 	ratings: ReplyRatings;
+	/** Deadline for waiting on an edit, including its place in the queue. */
+	editTimeoutMs?: number;
 }
 
 export function registerRateButton(bot: Bot, deps: RateButtonDeps): void {
@@ -54,48 +58,42 @@ export async function handleRateButton(query: RateQuery, deps: RateButtonDeps): 
 	try {
 		await rate(query, deps);
 	} catch (err) {
-		log.error("rate button handler failed", err, { query: query.id });
-		await withTimeout(
-			deps.api.answerCallbackQuery(query.id, { text: "internal error" }),
-			"answerCallbackQuery",
-		).catch((e: unknown) => log.debug("answerCallbackQuery failed", { error: String(e) }));
+		// In particular, do not attempt a second answer after an uncertain
+		// answerCallbackQuery failure: the first answer may have landed.
+		throw new Error(`rate button handler failed for query ${query.id}`, { cause: err });
 	}
 }
 
-// Strips for one message serialize on a module-level chain: concurrent
-// taps each carry their own (stale) reply_markup snapshot, so without
-// serialization the loser's snapshot would land last and resurrect the
-// opposite vote. The second strip in a chain sees the row already gone
-// and no-ops. Entries clear when the chain drains, so a later tap on a
-// fresh markup for the same message still strips normally.
+// Records are written synchronously in callback arrival order. Serialize
+// edits in that same order, including stale snapshots, so the final visible
+// vote matches the latest stored vote. A failed edit must not poison the queue.
 const stripChains = new Map<string, Promise<void>>();
-const strippedMessages = new Set<string>();
 
 function stripRatingRow(
 	api: Api,
 	message: NonNullable<RateQuery["message"]>,
 	rating: ReplyRating,
+	timeoutMs?: number,
 ): Promise<void> {
 	const key = `${message.chat.id}:${message.message_id}`;
 	const prev = stripChains.get(key) ?? Promise.resolve();
-	const run = prev.then(() => doStripRatingRow(api, message, rating, key));
+	const edit = () => doStripRatingRow(api, message, rating);
+	const run = prev.then(edit, edit);
 	stripChains.set(key, run);
-	void run.finally(() => {
-		if (stripChains.get(key) === run) {
-			stripChains.delete(key);
-			strippedMessages.delete(key);
-		}
-	});
-	return run;
+	const clear = () => {
+		if (stripChains.get(key) === run) stripChains.delete(key);
+	};
+	void run.then(clear, clear);
+	// Bound the handler, not the queue: a timed-out request can still land.
+	// Keep its successor behind the actual request until it settles.
+	return withTimeout(run, "editMessageReplyMarkup (rate queue)", timeoutMs ?? RATE_EDIT_WAIT_MS);
 }
 
 async function doStripRatingRow(
 	api: Api,
 	message: NonNullable<RateQuery["message"]>,
 	rating: ReplyRating,
-	key: string,
 ): Promise<void> {
-	if (strippedMessages.has(key)) return;
 	const rows = message.reply_markup?.inline_keyboard;
 	if (rows === undefined) return;
 	const isRate = (b: InlineKeyboardButton) =>
@@ -105,28 +103,25 @@ async function doStripRatingRow(
 	const inline_keyboard =
 		rest.length === 0 ? [] : [[{ text: rating === "up" ? "👍" : "👎", disabled: {} }], ...rest];
 	try {
-		await withTimeout(
-			api.editMessageReplyMarkup(message.chat.id, message.message_id, {
-				...(message.message_thread_id !== undefined
-					? { message_thread_id: message.message_thread_id }
-					: {}),
-				reply_markup: { inline_keyboard },
-			}),
-			"editMessageReplyMarkup",
-		);
-		strippedMessages.add(key);
+		await api.editMessageReplyMarkup(message.chat.id, message.message_id, {
+			...(message.message_thread_id !== undefined
+				? { message_thread_id: message.message_thread_id }
+				: {}),
+			reply_markup: { inline_keyboard },
+		});
+		log.info("rate strip applied", { chat: message.chat.id, message: message.message_id, rating });
 	} catch (err) {
-		log.debug("rate strip failed", { error: String(err) });
+		// This also records a late failure after the callback wait timed out.
+		log.error("rate strip failed", err, { chat: message.chat.id, message: message.message_id });
+		throw new Error(`rate strip failed for chat ${message.chat.id} message ${message.message_id}`, {
+			cause: err,
+		});
 	}
 }
 
 async function rate(query: RateQuery, deps: RateButtonDeps): Promise<void> {
 	const answer = (text: string) =>
-		withTimeout(deps.api.answerCallbackQuery(query.id, { text }), "answerCallbackQuery").catch(
-			(err: unknown) => {
-				log.debug("answerCallbackQuery failed", { error: String(err) });
-			},
-		);
+		withTimeout(deps.api.answerCallbackQuery(query.id, { text }), "answerCallbackQuery");
 
 	const parsed = query.data === undefined ? null : parseRateCallback(query.data);
 	if (parsed === null) {
@@ -162,8 +157,18 @@ async function rate(query: RateQuery, deps: RateButtonDeps): Promise<void> {
 		message: message.message_id,
 		rating: parsed.rating,
 	});
-	await Promise.all([
-		stripRatingRow(deps.api, message, parsed.rating),
-		answer(parsed.rating === "up" ? "👍 recorded" : "👎 recorded"),
-	]);
+	let text = parsed.rating === "up" ? "👍 recorded" : "👎 recorded";
+	try {
+		await stripRatingRow(deps.api, message, parsed.rating, deps.editTimeoutMs);
+	} catch (err) {
+		log.error("rate strip wait failed", err, {
+			chat: message.chat.id,
+			message: message.message_id,
+		});
+		text =
+			err instanceof TelegramTimeoutError
+				? "rating recorded — display may be stale"
+				: "rating recorded — display update failed";
+	}
+	await answer(text);
 }

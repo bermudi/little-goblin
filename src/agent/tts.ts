@@ -730,14 +730,29 @@ export async function synthesizeSpeech(
 		// concurrency tolerance is not — 3 in flight, order preserved
 		// by writing each result to its chunk index.
 		let next = 0;
+		let failed = false;
+		let firstError: unknown;
 		const worker = async (): Promise<void> => {
-			while (next < chunks.length) {
+			while (!failed && next < chunks.length) {
 				const i = next++;
-				audio[i] = await remux(await synthesize(chunks[i]!, options));
-				completedChunks++;
+				try {
+					const synthesized = await synthesize(chunks[i]!, options);
+					if (failed) return;
+					audio[i] = await remux(synthesized);
+					completedChunks++;
+				} catch (err) {
+					if (!failed) {
+						failed = true;
+						firstError = err;
+					}
+					return;
+				}
 			}
 		};
+		// Join all in-flight operations before reporting failure; no worker
+		// may claim more work once any one of them fails.
 		await Promise.all(Array.from({ length: Math.min(3, chunks.length) }, () => worker()));
+		if (failed) throw firstError;
 	} catch (err) {
 		log.warn("speech synthesis failed", err, {
 			provider: config.kind,

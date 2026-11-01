@@ -10,6 +10,7 @@ import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { systemPromptFor } from "./agent/prompt.ts";
 import { toolNames } from "./agent/tools/mod.ts";
 import { readFileTool } from "./agent/tools/read.ts";
+import { withScript } from "./agent/tools/script.ts";
 import { memoryConfigSchema, parseConfig } from "./config.ts";
 import { appAddress, captureConversationSettings, openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
@@ -948,6 +949,39 @@ describe("turn authority", () => {
 		bumpLanded.resolve(); // only now may the stale-epoch tool call flow
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		expect(executed).toBe(false); // the fenced tool's side effect never ran
+		r.store.close();
+	});
+
+	test("a nested script call under stale authority never executes — fence copies, same pipeline", async () => {
+		const ran: string[] = [];
+		const raw: ToolSet = {
+			bash: tool({
+				inputSchema: z.object({}),
+				execute: async () => {
+					ran.push("bash");
+					r.store.bumpEpoch(r.conv.id); // authority moves mid-script
+					return { ok: true };
+				},
+			}),
+			read_file: tool({
+				inputSchema: z.object({}),
+				execute: async () => {
+					ran.push("read_file");
+					return { ok: true };
+				},
+			}),
+		};
+		const code = `await tools.bash({}); try { await tools.read_file({}); } catch (e) { return e.message; }`;
+		const edge = scriptedEdge([
+			[toolCallPart("s1", "script", JSON.stringify({ code })), finishPart("tool-calls")],
+		]);
+		const r = rig({
+			model: edge.model,
+			makeTools: () => withScript(raw, { conversation: "c", maxCalls: 5 }),
+		});
+		const sink = submit(r, "hi");
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		expect(ran).toEqual(["bash"]); // the second nested call never ran
 		r.store.close();
 	});
 

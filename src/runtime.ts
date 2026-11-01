@@ -9,6 +9,7 @@ import { type CompactionOutcome, chooseBoundary, runCompaction } from "./agent/c
 import { isTransientTurnFailure, quotaExhausted } from "./agent/provider-errors.ts";
 import { resolveSkillRef } from "./agent/skill-inject.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
+import { bindScriptDispatch, type ToolDispatch } from "./agent/tools/script.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import {
@@ -721,85 +722,99 @@ export class Runtime {
 				throw err;
 			}
 		};
-		for (const [name, t] of Object.entries(tools)) {
-			const execute = t.execute?.bind(t);
-			if (execute === undefined) continue;
-			t.execute = (input: unknown, options: ToolExecutionOptions<unknown>) => {
-				this.checkAuthority(convId, epoch);
-				if (journalFault?.current !== undefined) throw journalFault.current;
-				if (journal !== undefined && runId !== undefined) {
-					// Recovery fence: a signature that collides with the
-					// interrupted attempt's own history is evidence, never an
-					// answer. An operator's grant CAS-consumes in the same
-					// transaction as the dispatch; a refusal journals as a
-					// synthetic replayed result — it never reads as execution.
-					const verdict = classifyRetry(name, guard?.get(replayKey(name, input)));
-					if (verdict.kind === "refuse") {
-						const value = { error: verdict.error };
-						note(() =>
-							journal.noteToolResult(runId, options.toolCallId, value, {
-								replayed: true,
-							}),
-						);
-						log.info("tool call refused by the recovery fence", {
-							conversation: convId,
-							tool: name,
-							toolCallId: options.toolCallId,
-						});
-						return value;
-					}
+		// One pipeline for every execute: a model-issued call and a call
+		// nested in `script` both enter by tool name. The input tools are
+		// never mutated — the returned set holds copies routed through here.
+		const dispatch: ToolDispatch = (name, input, options) => {
+			const raw = tools[name];
+			const execute = raw?.execute?.bind(raw);
+			if (execute === undefined) throw new Error(`tool ${name} has no execute`);
+			this.checkAuthority(convId, epoch);
+			if (journalFault?.current !== undefined) throw journalFault.current;
+			if (journal !== undefined && runId !== undefined) {
+				// Recovery fence: a signature that collides with the
+				// interrupted attempt's own history is evidence, never an
+				// answer. An operator's grant CAS-consumes in the same
+				// transaction as the dispatch; a refusal journals as a
+				// synthetic replayed result — it never reads as execution.
+				const verdict = classifyRetry(name, guard?.get(replayKey(name, input)));
+				if (verdict.kind === "refuse") {
+					const value = { error: verdict.error };
 					note(() =>
-						journal.noteToolDispatch(
-							runId,
-							options.toolCallId,
-							name,
-							input,
-							verdict.kind === "execute-grant"
-								? { retryCallId: verdict.grant.toolCallId }
-								: undefined,
-						),
+						journal.noteToolResult(runId, options.toolCallId, value, {
+							replayed: true,
+						}),
 					);
-					if (verdict.kind === "execute-grant") {
-						verdict.grant.retryConsumed = true;
-					}
+					log.info("tool call refused by the recovery fence", {
+						conversation: convId,
+						tool: name,
+						toolCallId: options.toolCallId,
+					});
+					return value;
 				}
-				let result: ReturnType<typeof execute>;
-				try {
-					result = execute(input as never, options);
-				} catch (err) {
-					if (journal !== undefined && runId !== undefined) {
-						note(() => journal.noteToolError(runId, options.toolCallId, err));
-					}
-					throw err;
+				note(() =>
+					journal.noteToolDispatch(
+						runId,
+						options.toolCallId,
+						name,
+						input,
+						verdict.kind === "execute-grant"
+							? { retryCallId: verdict.grant.toolCallId }
+							: undefined,
+					),
+				);
+				if (verdict.kind === "execute-grant") {
+					verdict.grant.retryConsumed = true;
 				}
-				if (
-					journal !== undefined &&
-					runId !== undefined &&
-					result !== null &&
-					typeof result === "object" &&
-					"then" in result &&
-					typeof (result as { then: unknown }).then === "function"
-				) {
-					// A settled promise is the earliest the result is known —
-					// the wrapper resolves only after the journal row lands.
-					return (result as PromiseLike<unknown>).then(
-						(value) => {
-							note(() => journal.noteToolResult(runId, options.toolCallId, value));
-							return value;
-						},
-						(err: unknown) => {
-							note(() => journal.noteToolError(runId, options.toolCallId, err));
-							throw err;
-						},
-					);
-				}
+			}
+			let result: ReturnType<typeof execute>;
+			try {
+				result = execute(input as never, options);
+			} catch (err) {
 				if (journal !== undefined && runId !== undefined) {
-					note(() => journal.noteToolResult(runId, options.toolCallId, result));
+					note(() => journal.noteToolError(runId, options.toolCallId, err));
 				}
-				return result;
-			};
+				throw err;
+			}
+			if (
+				journal !== undefined &&
+				runId !== undefined &&
+				result !== null &&
+				typeof result === "object" &&
+				"then" in result &&
+				typeof (result as { then: unknown }).then === "function"
+			) {
+				// A settled promise is the earliest the result is known —
+				// the wrapper resolves only after the journal row lands.
+				return (result as PromiseLike<unknown>).then(
+					(value) => {
+						note(() => journal.noteToolResult(runId, options.toolCallId, value));
+						return value;
+					},
+					(err: unknown) => {
+						note(() => journal.noteToolError(runId, options.toolCallId, err));
+						throw err;
+					},
+				);
+			}
+			if (journal !== undefined && runId !== undefined) {
+				note(() => journal.noteToolResult(runId, options.toolCallId, result));
+			}
+			return result;
+		};
+		const out: ToolSet = {};
+		for (const [name, t] of Object.entries(tools)) {
+			out[name] =
+				t.execute === undefined
+					? t
+					: {
+							...t,
+							execute: (input: unknown, options: ToolExecutionOptions<unknown>) =>
+								dispatch(name, input, options),
+						};
 		}
-		return tools;
+		bindScriptDispatch(tools, dispatch);
+		return out;
 	}
 
 	private claimQueuedMembers(
@@ -1541,7 +1556,8 @@ export class Runtime {
 				const quota = quotaExhausted(err);
 				log.error("turn failed", err, {
 					conversation: convId,
-					failureClass: quota !== null ? "quota" : isTransientTurnFailure(err) ? "transient" : "other",
+					failureClass:
+						quota !== null ? "quota" : isTransientTurnFailure(err) ? "transient" : "other",
 					...(quota?.resetAt !== undefined ? { quotaResetAt: quota.resetAt } : {}),
 				});
 				// The stamps are what lets a trigger owner (a schedule fire) tell

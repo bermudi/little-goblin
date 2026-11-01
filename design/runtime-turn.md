@@ -231,7 +231,8 @@ Invariants a refactor can still break silently — the audit list for any
 turn-structure change.
 
 - **The authority rule** (DESIGN.md). `checkAuthority` around every
-  await, `fenceTools` around every tool execute, epoch-compare guards in
+  await, `fenceTools` around every tool execute (a pure copy plus one `dispatch`
+  that `script`'s nested calls share), epoch-compare guards in
   `prepareStep` and the steer error path, `sink.setAuthorityCheck` wired
   at admission, and delivery-time checks in the queued Telegram action
   path. A phase module either runs between two checks (pure/derived

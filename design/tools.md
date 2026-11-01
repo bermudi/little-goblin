@@ -124,7 +124,16 @@ persistent kernel and remote backends; pi's `store`/`load`, `models`,
 - **Nested calls are real calls** — each runs the tool's live `execute`,
   so the runtime's authority fence wraps it, under the turn's abort
   signal. Calls that completed before a failure are not undone.
-- **Nested calls don't produce SDK tool parts** — they run `execute`
+- **Nested calls go through the fence's dispatch, never a raw `execute`**
+  (ruling 2026-11-01). `Runtime.fenceTools` is pure: it returns copies of
+  the tools whose executes route through one `dispatch(name, input,
+  options)` (authority epoch → journal fault → recovery guard → journal
+  dispatch/result/error rows), and binds that same function into `script`
+  (`bindScriptDispatch`). `script` keeps the pre-fence set only for
+  input schemas and descriptors; it executes solely via the bound dispatch,
+  and an unbound script refuses to run — no fallback to unfenced execute.
+  So fencing no longer depends on object identity or in-place mutation.
+- **Nested calls don't produce SDK tool parts** — they dispatch
   directly, so a presentation tool can't ride the allowlist alone
   (ruling 2026-10-21). `artifact` is the typed presentation seam: a
   nested call's `{artifact}` result is collected into

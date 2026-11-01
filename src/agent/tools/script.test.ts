@@ -12,7 +12,7 @@ import { filterGuestTools } from "../../tg/guest.ts";
 import { bashTool } from "./bash.ts";
 import { fetchTool } from "./fetch.ts";
 import { policyOf } from "../tool-policy.ts";
-import { withScript } from "./script.ts";
+import { bindScriptDispatch, withScript } from "./script.ts";
 import { readFileTool } from "./read.ts";
 
 interface Out {
@@ -33,8 +33,19 @@ const exec = (t: unknown, input: unknown, opts: { signal?: AbortSignal } = {}): 
 		...(opts.signal !== undefined ? { abortSignal: opts.signal } : {}),
 	});
 
+// Test stand-in for the runtime fence: a pass-through dispatch. The real
+// pipeline's refusals are pinned in the fence test below and in runtime tests.
+const bindPassthrough = (out: ToolSet, tools: ToolSet): ToolSet => {
+	bindScriptDispatch(out, (name, input, options) => {
+		const execute = tools[name]?.execute;
+		if (execute === undefined) throw new Error(`tool ${name} has no execute`);
+		return execute(input as never, options);
+	});
+	return out;
+};
+
 const composed = (tools: ToolSet, maxCalls = 50): ToolSet =>
-	withScript(tools, { conversation: "test/conv", maxCalls });
+	bindPassthrough(withScript(tools, { conversation: "test/conv", maxCalls }), tools);
 
 const scriptToolOf = (tools: ToolSet): unknown => (tools as Record<string, unknown>).script;
 
@@ -451,22 +462,24 @@ return keep.length;`,
 	expect(out.text).toContain("out of memory");
 }, 20_000);
 
-test("nested calls look up execute at call time — a fence swapped in later still wraps them", async () => {
-	const tools: ToolSet = { bash: bashTool(home) };
-	const wrapped = composed(tools);
-	tools.bash!.execute = (() => {
+test("nested calls only run through the bound dispatch — unbound fails loud, a refusing dispatch wins", async () => {
+	let ran = 0;
+	const tools: ToolSet = { bash: counter(() => ++ran) };
+	const code = `try { await tools.bash({}); return "ran"; } catch (e) { return e.message; }`;
+
+	const unbound = withScript(tools, { conversation: "test/conv", maxCalls: 5 });
+	const a = await exec(scriptToolOf(unbound), { code });
+	expect(a.text).toContain("not bound");
+	expect(ran).toBe(0);
+
+	const fenced = withScript(tools, { conversation: "test/conv", maxCalls: 5 });
+	bindScriptDispatch(fenced, () => {
 		throw new Error("epoch fenced");
-	}) as unknown as NonNullable<(typeof tools)["bash"]["execute"]>;
-	const out = await exec(scriptToolOf(wrapped), {
-		code: `try {
-	await tools.bash({ command: "echo hi" });
-	return "ran unfenced";
-} catch (e) {
-	return e.message;
-}`,
 	});
-	expect(out.text).toContain("epoch fenced");
-	expect(out.calls[0]!.ok).toBe(false);
+	const b = await exec(scriptToolOf(fenced), { code });
+	expect(b.text).toContain("epoch fenced");
+	expect(b.calls[0]!.ok).toBe(false);
+	expect(ran).toBe(0);
 });
 
 test("over-budget output is windowed and the full body spills to state/scriptcache", async () => {

@@ -131,6 +131,14 @@ export function ensureConversationSchema(db: Database): void {
 			events: stamped ?? 0,
 		});
 	}
+	// Causal key for the model-view cut and the last-by-role read. The
+	// expression must textually match the queries
+	// (`COALESCE(anchor_seq, seq)`) or SQLite won't use the index.
+	// Must run after the anchor_seq migration above — legacy DBs lack
+	// the column until then.
+	db.run(
+		"CREATE INDEX IF NOT EXISTS events_causal ON events(conversation_id, COALESCE(anchor_seq, seq), seq)",
+	);
 	// Contentless FTS5, not external-content — events stores JSON
 	// envelopes, so there is no plain-text column to point at. Created
 	// before the envelope migration below so the update trigger re-indexes

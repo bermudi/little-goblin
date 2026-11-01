@@ -14,6 +14,7 @@ import {
 	type ParsedAddress,
 	parseAddress,
 } from "./conversation.ts";
+import { HISTORY_CAUSAL_SQL, LAST_BY_ROLE_SQL } from "./conversation-queries.ts";
 import { openRatings } from "./reply-ratings.ts";
 import { tmpDb } from "./testkit.ts";
 
@@ -490,6 +491,32 @@ describe("compaction pointers", () => {
 			.map((r) => r.name);
 		expect(idx).toContain("compactions_conv_id");
 		expect(store.modelEntries(c.id).map((e) => e.seq)).toEqual([2, 4]);
+		store.close();
+	});
+
+	test("events_causal serves the model-view cut and last-by-role reads without a temp sort", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("first")]); // 1
+		store.append(c.id, [msg("barge")]); // 2
+		store.append(
+			c.id,
+			[{ id: "a1", role: "assistant", parts: [{ type: "text", text: "late answer" }] }],
+			{ anchorSeq: 1 },
+		); // 3, causal 1
+		store.append(c.id, [msg("tail")]); // 4
+		const queries: Array<[string, Array<string | number>]> = [
+			[HISTORY_CAUSAL_SQL, [c.id, 2]],
+			[LAST_BY_ROLE_SQL, [c.id, "assistant"]],
+		];
+		for (const [sql, params] of queries) {
+			const plan = store.db
+				.query<{ detail: string }, Array<string | number>>(`EXPLAIN QUERY PLAN ${sql}`)
+				.all(...params);
+			const details = plan.map((r) => r.detail);
+			expect(details.some((d) => d.includes("USING INDEX events_causal"))).toBe(true);
+			expect(details.some((d) => d.includes("TEMP B-TREE"))).toBe(false);
+		}
 		store.close();
 	});
 

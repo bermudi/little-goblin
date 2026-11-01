@@ -47,8 +47,3 @@ export async function claudeChildEnv(
 		configDir,
 	};
 }
-
-export function ensureClaudeConfigDir(configDir = paths.claudeCodeState()): string {
-	mkdirSync(configDir, { recursive: true });
-	return configDir;
-}

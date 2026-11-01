@@ -33,7 +33,15 @@ import {
 } from "./turn/overflow.ts";
 import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
-import { claimMembers, driveStream, endLive, type LiveChunks, type StreamDeps, openLive, type WireMember } from "./turn/stream.ts";
+import {
+	claimMembers,
+	driveStream,
+	endLive,
+	type LiveChunks,
+	type StreamDeps,
+	openLive,
+	type WireMember,
+} from "./turn/stream.ts";
 import type { ClaudeEngine, ClaudeStep } from "./agent/claude-code/mod.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import { replayKey, type TurnJournal } from "./turn-journal.ts";
@@ -78,9 +86,7 @@ export interface TurnSink {
 	onDone(done: TurnDone): void | Promise<void>;
 }
 
-export function isClaudeStep(
-	step: ModelStep | ClaudeStep,
-): step is ClaudeStep {
+export function isClaudeStep(step: ModelStep | ClaudeStep): step is ClaudeStep {
 	return "engine" in step && step.engine === "claude-code";
 }
 
@@ -128,7 +134,10 @@ export interface RuntimeDeps {
 	// Resolve model settings fresh per turn; auth resolution may be async.
 	// A claude-code provider yields a ClaudeStep (engine: "claude-code") —
 	// the turn runs on driveClaude, everything else on driveStream.
-	buildStep(conv: Conversation, tools: ToolSet): ModelStep | ClaudeStep | Promise<ModelStep | ClaudeStep>;
+	buildStep(
+		conv: Conversation,
+		tools: ToolSet,
+	): ModelStep | ClaudeStep | Promise<ModelStep | ClaudeStep>;
 	// The claude-code engine handle (index.ts binds it whenever a
 	// claude-code provider is configured). Present-but-unbound with a
 	// claude-code step fails the turn loud, never silently degrades.

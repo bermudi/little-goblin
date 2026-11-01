@@ -299,9 +299,7 @@ export type ClaudeCodeThinking = {
 function claudeCodeOptions(level: ThinkingLevel): ClaudeCodeThinking {
 	if (level === "off") return { disabled: true };
 	return {
-		effort: clampToLevels(CLAUDE_CODE_RUNGS, level) as NonNullable<
-			ClaudeCodeThinking["effort"]
-		>,
+		effort: clampToLevels(CLAUDE_CODE_RUNGS, level) as NonNullable<ClaudeCodeThinking["effort"]>,
 	};
 }
 
@@ -331,7 +329,7 @@ export function reasoningProfileFor(
 	if (kind === "codex" || bare.startsWith("gpt-")) {
 		return { levels: gptLevels(bare), off: "floor", knob: "effort" };
 	}
-	if (kind === "claude-code" || bare.startsWith("claude-")) {
+	if (kind === "claude-code") {
 		return { levels: [...CLAUDE_CODE_RUNGS], off: "disable", knob: "effort" };
 	}
 	// A generic OpenAI-compatible endpoint: the classic effort set, and

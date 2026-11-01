@@ -1011,9 +1011,17 @@ async function boot() {
 						if (superseded !== null) {
 							telegramRunning = null;
 							if (superseded.bot.isRunning()) {
-								await superseded.bot.stop().catch(() => {});
+								await superseded.bot.stop().catch((err: unknown) => {
+									log.warn("telegram attach retry: stopping superseded bot failed", {
+										error: err instanceof Error ? err.message : String(err),
+									});
+								});
 							}
-							await superseded.drainIntake().catch(() => {});
+							await superseded.drainIntake().catch((err: unknown) => {
+								log.warn("telegram attach retry: draining superseded intake failed", {
+									error: err instanceof Error ? err.message : String(err),
+								});
+							});
 						}
 						if (telegramSealed || !runtime.accepting()) return;
 						if (!configRef.current.telegram.enabled) {

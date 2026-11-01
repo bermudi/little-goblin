@@ -55,6 +55,9 @@ export const paths = {
 	// Goblin's own ChatGPT OAuth tokens from in-app sign-in — ~/.codex
 	// stays the codex CLI's file, this one is ours.
 	codexAuth: () => join(goblinHome(), "state", "codex-auth.json"),
+	// Per-auth-file codex catalog — the key is the auth-path hash
+	// (src/agent/codex/models.ts), so two accounts never share a file.
+	codexModelsCache: (key: string) => join(goblinHome(), "state", `codex-models-${key}.json`),
 	openrouterModelsCache: () => join(goblinHome(), "state", "openrouter-models.json"),
 	webcache: () => join(goblinHome(), "state", "webcache"),
 	scriptcache: () => join(goblinHome(), "state", "scriptcache"),

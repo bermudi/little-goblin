@@ -106,6 +106,28 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   inside every endpoint's accepted output (models.dev lists glm-5.3 at
   131k). Applies to the bounded calls — vision and note rewrite — not
   turn steps, which carry no output cap.
+- **Codex model catalog (ruling 2026-11-01).** models.dev has no codex
+  key and the kind carries no baseUrl to host-match, so the picker's
+  codex list comes from the ChatGPT backend itself:
+  `GET /backend-api/codex/models?client_version=<semver>` with the
+  responses call's own headers (probed 2026-11-01). `client_version`
+  is a server-side capability gate — each row's
+  `minimal_client_version` decides whether it lists at all (0.62
+  answers 200 with an empty list) — so `CODEX_CLIENT_VERSION` pins the
+  CLI generation the adapter's wire shape was written against and
+  bumps deliberately, never to silence an empty list. The catalog is
+  account-scoped: one `createCachedCatalog` per resolved auth file,
+  cache `state/codex-models-<path hash>.json`, TTL/backoff shared with
+  the other catalogs via the skeleton's `requestHeaders` hook (the
+  Bearer resolves per fetch so a token rotation can't strand it).
+  Offered rows are `visibility:"list"` + `supported_in_api` — "hide"
+  lanes (gpt-reserve, codex-auto-review) stay out — sorted by the
+  wire's `priority`. `context_window`, `input_modalities` and
+  `supported_reasoning_levels` ride the stored record for the gauge,
+  attachment and per-model thinking follow-ups, not yet consumed
+  ("ultra" sits outside the thinking vocabulary entirely).
+  `GOBLIN_CODEX_LIVE=1 bun test src/agent/codex/models.live.test.ts`
+  pins the contract: endpoint, headers, gate.
 - **History.** Rows stamp the format that wrote them — the SDK owns the part
   shapes — so a future shape change is a deliberate converter at open, never
   silent placeholder degradation of old rows; a straggler that skips the

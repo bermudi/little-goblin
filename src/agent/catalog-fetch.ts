@@ -17,6 +17,11 @@ export interface CatalogSpec<T> {
 	/** Log-line name — "models.dev", "openrouter catalog". */
 	name: string;
 	url: string;
+	/** Authenticated catalogs (codex) resolve their headers per refresh —
+	 *  a token refresh between reads must not ride a stale Bearer. Runs
+	 *  inside refresh()'s try, so an auth failure arms the backoff and
+	 *  degrades to stale/disk like a fetch error. */
+	requestHeaders?(): Promise<Record<string, string>>;
 	/** Resolved per read/write: tests retarget GOBLIN_HOME after import. */
 	cachePath(): string;
 	/** Warn-line tail for a failed fetch, naming the degradation. */
@@ -79,7 +84,11 @@ export function createCachedCatalog<T>(spec: CatalogSpec<T>): CachedCatalog<T> {
 		// the next caller straight back to the network.
 		nextFetchAt = Date.now() + RETRY_MS;
 		try {
-			const res = await fetch(spec.url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+			const headers = await spec.requestHeaders?.();
+			const res = await fetch(spec.url, {
+				...(headers ? { headers } : {}),
+				signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+			});
 			if (!res.ok) throw new Error(`${spec.name} HTTP ${res.status}`);
 			const parsed = spec.parseWire(await res.json());
 			value = parsed;

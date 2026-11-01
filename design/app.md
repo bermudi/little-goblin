@@ -304,6 +304,12 @@ opening settings cannot stall on models.dev (the boot warm refreshes the
 catalog like it already does for openrouter), and a failed or stale
 catalog degrades to the typed fallback rather than blocking a save.
 
+**Codex catalog source (ruling 2026-11-01).** Codex-kind providers
+are the catalog's one exception to models.dev: their list is the
+ChatGPT backend's own account-scoped /codex/models (design/model.md →
+Codex model catalog), so a signed-out codex lane still degrades to the
+typed path.
+
 **Favorites are stars (ruling 2026-10-23).** The shared `ModelPicker`
 sheet (Settings and composer) carries a star on every model row; a star
 never picks. The composer's model knob is a menu — current model,

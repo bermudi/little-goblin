@@ -6,6 +6,7 @@
 import { z } from "zod";
 import { type Config, paths } from "../config.ts";
 import { createCachedCatalog, type CachedCatalog } from "./catalog-fetch.ts";
+import { codexModelOptions } from "./codex/models.ts";
 
 // ---------- models.dev ----------
 
@@ -216,10 +217,15 @@ export function modelOptionsCached(
 // Every configured provider's cached options — the picker's catalog on
 // both operator and app config views. Cached-only like
 // modelOptionsCached: the operator surface never awaits models.dev.
+// Codex providers skip models.dev entirely — their catalog is the
+// ChatGPT backend's own account-scoped list (src/agent/codex/models.ts).
 export function modelCatalogFor(config: Config): { provider: string; models: ModelOption[] }[] {
 	return Object.entries(config.providers).map(([provider, p]) => ({
 		provider,
-		models: modelOptionsCached(provider, p.kind, "baseUrl" in p ? p.baseUrl : undefined),
+		models:
+			p.kind === "codex"
+				? codexModelOptions(p.authFile)
+				: modelOptionsCached(provider, p.kind, "baseUrl" in p ? p.baseUrl : undefined),
 	}));
 }
 

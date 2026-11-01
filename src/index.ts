@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import pkg from "../package.json";
 import { ensureModelsDevCatalog, ensureOpenRouterCatalog } from "./agent/models-dev.ts";
+import { ensureCodexModels } from "./agent/codex/models.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
 import { makeStepBuilder } from "./agent/step.ts";
 import { makeTitleFor } from "./agent/title.ts";
@@ -297,6 +298,11 @@ async function boot() {
 	// instead of a pre-name cache.
 	void ensureModelsDevCatalog();
 	void ensureOpenRouterCatalog();
+	// Codex providers read their own account-scoped list — warmed like
+	// the shared catalogs so the first settings view isn't typed-ref only.
+	for (const p of Object.values(config.providers)) {
+		if (p.kind === "codex") void ensureCodexModels(p.authFile);
+	}
 
 	// Long-term memory is a boot-time snapshot — queue rows bind to the
 	// endpoint+bank hash, so mini-app edits apply on restart, never mid-run.

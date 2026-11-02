@@ -38,7 +38,11 @@ interface Harness {
 	cleanup(): void;
 }
 
-function harness(initialProposals: string[], initialSkills: string[] = []): Harness {
+function harness(
+	initialProposals: string[],
+	initialSkills: string[] = [],
+	opts: { restageProbeMs?: number } = {},
+): Harness {
 	const root = mkdtempSync(join(tmpdir(), "goblin-skill-approval-"));
 	const workspaceDir = join(root, "workspace");
 	const skillsDir = join(workspaceDir, "skills");
@@ -91,6 +95,7 @@ function harness(initialProposals: string[], initialSkills: string[] = []): Harn
 		skillsDir,
 		proposedDir,
 		now: () => new Date(1_700_000_000_000),
+		...(opts.restageProbeMs === undefined ? {} : { restageProbeMs: opts.restageProbeMs }),
 	});
 	return {
 		handle: (query: {
@@ -260,6 +265,79 @@ describe("skill approval taps", () => {
 			expect(h.edits[0]!.keyboard).toEqual({ inline_keyboard: [] });
 			expect(h.answers).toEqual(["already handled — the proposal is gone, nothing applied"]);
 			expect(h.appends).toEqual([]);
+		} finally {
+			h.cleanup();
+			done();
+		}
+	});
+
+	test("a fingerprinted tap on a missing proposal refuses — never decides unseen", async () => {
+		const done = silenceLogs();
+		const h = harness(["smoke-test"], [], { restageProbeMs: 5 });
+		try {
+			const data = h.installData("dm:42", "smoke-test");
+			// Gone before the tap and still gone after the re-probe: the
+			// button's fingerprint covers nothing on disk, so neither the
+			// gone path nor any re-appeared content may decide.
+			rmSync(join(h.proposedDir, "smoke-test"), { recursive: true, force: true });
+			await h.handle({ data });
+			expect(h.answers).toEqual(["proposal missing, review again"]);
+			expect(h.edits[0]!.text).toContain("proposal missing");
+			expect(existsSync(join(h.skillsDir, "smoke-test"))).toBe(false);
+			expect(h.appends).toEqual([]);
+		} finally {
+			h.cleanup();
+			done();
+		}
+	});
+
+	test("a proposal restaged mid-tap is decided by fingerprint — changed content refuses", async () => {
+		const done = silenceLogs();
+		const h = harness(["smoke-test"], [], { restageProbeMs: 50 });
+		try {
+			const data = h.installData("dm:42", "smoke-test");
+			// The reviewer's same-name swap shows the gap as a null
+			// fingerprint, then the restage lands before the re-probe.
+			rmSync(join(h.proposedDir, "smoke-test"), { recursive: true, force: true });
+			const restage = setTimeout(() => {
+				mkdirSync(join(h.proposedDir, "smoke-test"), { recursive: true });
+				writeFileSync(join(h.proposedDir, "smoke-test", "SKILL.md"), "# smoke-test v2\n");
+			}, 5);
+			try {
+				await h.handle({ data });
+			} finally {
+				clearTimeout(restage);
+			}
+			expect(h.answers).toEqual(["proposal changed, review again"]);
+			expect(existsSync(join(h.skillsDir, "smoke-test"))).toBe(false);
+			expect(h.appends).toEqual([]);
+		} finally {
+			h.cleanup();
+			done();
+		}
+	});
+
+	test("a restage with the button's exact content still installs", async () => {
+		const done = silenceLogs();
+		const h = harness(["smoke-test"], [], { restageProbeMs: 50 });
+		try {
+			const data = h.installData("dm:42", "smoke-test");
+			rmSync(join(h.proposedDir, "smoke-test"), { recursive: true, force: true });
+			// Identical bytes re-stage the identical fingerprint — the tap
+			// still decides the proposal the operator saw.
+			const restage = setTimeout(() => {
+				mkdirSync(join(h.proposedDir, "smoke-test"), { recursive: true });
+				writeFileSync(join(h.proposedDir, "smoke-test", "SKILL.md"), "# smoke-test\n");
+			}, 5);
+			try {
+				await h.handle({ data });
+			} finally {
+				clearTimeout(restage);
+			}
+			expect(h.answers).toEqual([undefined]);
+			expect(h.edits[0]!.text).toBe("✅ skill smoke-test installed.");
+			expect(existsSync(join(h.skillsDir, "smoke-test", "SKILL.md"))).toBe(true);
+			expect(h.appends).toHaveLength(1);
 		} finally {
 			h.cleanup();
 			done();

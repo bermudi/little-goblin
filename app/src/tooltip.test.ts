@@ -77,6 +77,25 @@ describe("tooltip", () => {
 		expect(tip()?.classList.contains("on")).toBe(false);
 	});
 
+	test("while shown the host is described by the bubble, restored on hide", () => {
+		const el = host();
+		over(el);
+		expect(el.getAttribute("aria-describedby")).toBe("goblin-tooltip");
+
+		leave(el);
+		expect(el.hasAttribute("aria-describedby")).toBe(false);
+	});
+
+	test("a pre-existing aria-describedby is repointed while shown and restored on hide", () => {
+		const el = host();
+		el.setAttribute("aria-describedby", "field-help");
+		over(el);
+		expect(el.getAttribute("aria-describedby")).toBe("goblin-tooltip");
+
+		leave(el);
+		expect(el.getAttribute("aria-describedby")).toBe("field-help");
+	});
+
 	test("a title updated while the hint is open survives dismissal", () => {
 		const el = host("old");
 		over(el);
@@ -152,6 +171,27 @@ describe("tooltip", () => {
 		expect(tip()?.classList.contains("on")).toBe(true);
 
 		leave(child, el);
+		expect(tip()?.classList.contains("on")).toBe(true);
+		expect(el.getAttribute("title")).toBe("");
+	});
+
+	test("hovering untitled content hides a bubble orphaned by a removed host", () => {
+		const el = host();
+		over(el);
+		expect(tip()?.classList.contains("on")).toBe(true);
+
+		// React key-replacement detaches the hovered host without any
+		// mouseout; the next hover over untitled content retires the bubble.
+		el.remove();
+		over(doc.body);
+		expect(tip()?.classList.contains("on")).toBe(false);
+		expect(el.getAttribute("title")).toBe("the hint");
+	});
+
+	test("hovering untitled content leaves an attached host's hint alone", () => {
+		const el = host();
+		over(el);
+		over(doc.body);
 		expect(tip()?.classList.contains("on")).toBe(true);
 		expect(el.getAttribute("title")).toBe("");
 	});

@@ -107,7 +107,16 @@ export function installTooltips(doc: Document): () => void {
 
 	const over = (e: Event) => {
 		const el = titled(e);
-		if (el !== null) show(el);
+		if (el !== null) {
+			show(el);
+			return;
+		}
+		// A render can remove or key-replace the hovered host outright, and
+		// no mouseout ever leaves a detached node — the bubble would orphan
+		// over unrelated content. An untitled hover retires it, but only
+		// while the host is truly gone, so re-hovers elsewhere never
+		// disturb an attached host's hint.
+		if (host !== null && host.isConnected === false) hide();
 	};
 	// Leaving is judged by containment, not by the selector: a mouseout whose
 	// relatedTarget is still inside the host is an inner crossing.

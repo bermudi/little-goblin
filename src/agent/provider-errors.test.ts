@@ -256,6 +256,46 @@ describe("isTransientTurnFailure", () => {
 		expect(quotaExhausted(err)).toEqual({});
 	});
 
+	test("a throttled 'rate limit exhausted' 429 stays transient — not quota", () => {
+		// Regression: an unanchored "limit exhausted" phrase used to swallow
+		// this throttle prose, and the quota verdict outranks rate-limit
+		// evidence — a seconds-scale throttle classified as a days-long wall.
+		const err = new APICallError({
+			message: "rate limit exhausted",
+			url: "https://api.example.com/v1/chat/completions",
+			requestBodyValues: {},
+			statusCode: 429,
+			isRetryable: true,
+		});
+		expect(isTransientTurnFailure(err)).toBe(true);
+		expect(quotaExhausted(err)).toBeNull();
+	});
+
+	test("either half of z.ai's compound wall reads as quota when it presents alone", () => {
+		// Only the compound "Weekly/Monthly Limit Exhausted" body is observed;
+		// these pin the two halves it anchors.
+		expect(quotaExhausted(new Error("Weekly Limit Exhausted"))).toEqual({});
+		expect(quotaExhausted(new Error("Monthly Limit Exhausted"))).toEqual({});
+	});
+
+	test("OpenAI insufficient_quota (documented code, not observed) is quota, not transient", () => {
+		// The flattened data JSON reaches the matched text, so the stable
+		// error code rides the codex/OpenAI-compatible doors into the same
+		// middleware. Body shape per OpenAI's documented insufficient_quota
+		// error; not observed by goblin.
+		const err = new APICallError({
+			message: "You exceeded your current quota, please check your plan and billing details.",
+			url: "https://api.openai.com/v1/chat/completions",
+			requestBodyValues: {},
+			statusCode: 429,
+			responseBody:
+				'{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","code":"insufficient_quota"}}',
+			isRetryable: true,
+		});
+		expect(isTransientTurnFailure(err)).toBe(false);
+		expect(quotaExhausted(err)).toEqual({});
+	});
+
 	test("the truth hiding under a RetryError's errors still classifies", () => {
 		const err = new RetryError({
 			message: "Failed after 3 attempts",

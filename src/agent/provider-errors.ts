@@ -172,13 +172,27 @@ const TRANSIENT_PHRASES = [
 ];
 
 // Quota exhaustion is a wall measured in days, not a throttle: a retry
-// ladder of seconds cannot cross it. Both phrasings are observed bodies —
-// z.ai HTTP 429 "Weekly/Monthly Limit Exhausted. Your limit will reset at
-// 2026-10-28 08:50:34" (goblin.log 2026-10-26) and Brave search HTTP 402
+// ladder of seconds cannot cross it. Phrasings are anchored — an
+// unanchored "limit exhausted" matched throttle prose like "rate limit
+// exhausted", and the quota verdict outranks rate-limit evidence here
+// and in isTransientTurnFailure, so a throttled 429 would lose its SDK
+// retries to quotaNoRetry. Observed bodies: z.ai HTTP 429 "Weekly/Monthly
+// Limit Exhausted. Your limit will reset at 2026-10-28 08:50:34"
+// (goblin.log 2026-10-26 — matched through the "monthly" half; the
+// "weekly" half pins the compound's other edge) and Brave search HTTP 402
 // "Usage limit exceeded." z.ai's balance-exhausted body ("429 code 1113
 // Insufficient balance") is recorded in design/subagents.md and
-// design/memory.md. Add phrasings only with an observed body.
-const QUOTA_PHRASES = ["limit exhausted", "usage limit exceeded", "insufficient balance"];
+// design/memory.md. One deliberate exception to the observed-body rule:
+// OpenAI's stable documented error code "insufficient_quota" — the codex
+// and OpenAI-compatible doors flow through the same middleware, and the
+// flattened data JSON reaches the matched text.
+const QUOTA_PHRASES = [
+	"weekly limit exhausted",
+	"monthly limit exhausted",
+	"usage limit exceeded",
+	"insufficient balance",
+	"insufficient_quota",
+];
 
 function quotaByPhrases(text: string): boolean {
 	return QUOTA_PHRASES.some((p) => text.includes(p));

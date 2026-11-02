@@ -599,21 +599,35 @@ describe("resolveModel — provider quota walls skip the SDK's own retries", () 
 	const THROTTLE = '{"error":{"message":"Too many requests, slow down"}}';
 
 	// Fake at the HTTP edge: the real provider, parser and SDK retry loop run.
-	async function attempts(body: string, run: "generate" | "stream"): Promise<number> {
+	async function attempts(
+		body: string,
+		run: "generate" | "stream",
+		status = 429,
+	): Promise<number> {
+		return (await attempt(body, run, status)).calls;
+	}
+	async function attempt(
+		body: string,
+		run: "generate" | "stream",
+		status = 429,
+	): Promise<{ calls: number; caught: unknown }> {
 		const original = globalThis.fetch;
 		let calls = 0;
+		let caught: unknown;
 		globalThis.fetch = (async () => {
 			calls++;
 			// retry-after-ms: 0 keeps the SDK's backoff instant.
 			return new Response(body, {
-				status: 429,
+				status,
 				headers: { "content-type": "application/json", "retry-after-ms": "0" },
 			});
 		}) as unknown as typeof fetch;
 		try {
 			const model = await resolveModel(cfg, fixtureAuth("k"), "other/m");
 			if (run === "generate") {
-				await generateText({ model, prompt: "hi", maxRetries: 2 }).catch(() => undefined);
+				await generateText({ model, prompt: "hi", maxRetries: 2 }).catch((e: unknown) => {
+					caught = e;
+				});
 			} else {
 				const result = streamText({ model, prompt: "hi", maxRetries: 2, onError: () => {} });
 				await result.consumeStream({ onError: () => {} });
@@ -621,7 +635,7 @@ describe("resolveModel — provider quota walls skip the SDK's own retries", () 
 		} finally {
 			globalThis.fetch = original;
 		}
-		return calls;
+		return { calls, caught };
 	}
 
 	for (const run of ["generate", "stream"] as const) {
@@ -631,7 +645,40 @@ describe("resolveModel — provider quota walls skip the SDK's own retries", () 
 		test(`${run}: a plain 429 throttle still spends the retry ladder`, async () => {
 			expect(await attempts(THROTTLE, run)).toBe(3);
 		});
+		test(`${run}: a 503 without quota prose still spends the retry ladder`, async () => {
+			expect(await attempts('{"error":{"message":"upstream overloaded"}}', run, 503)).toBe(3);
+		});
 	}
+
+	test("the rethrown quota error keeps every field and logs one warn line", async () => {
+		const dir = tmpDir();
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		let caught: unknown;
+		try {
+			({ caught } = await attempt(ZAI_QUOTA, "generate"));
+		} finally {
+			setLogFile(null);
+		}
+		expect(APICallError.isInstance(caught)).toBe(true);
+		const err = caught as APICallError;
+		expect(err.isRetryable).toBe(false);
+		expect(err.statusCode).toBe(429);
+		expect(err.responseBody).toBe(ZAI_QUOTA);
+		expect(err.url).toBe("https://example.com/v1/chat/completions");
+		const warns = readFileSync(logPath, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.filter((l) => l.msg === "provider quota exhausted; SDK retries skipped");
+		expect(warns).toHaveLength(1);
+		expect(warns[0]).toMatchObject({
+			level: "warn",
+			model: "other/m",
+			statusCode: 429,
+			resetAt: "2026-10-28 08:50:34",
+		});
+	});
 });
 
 describe("resolveModel — codex session opts", () => {

@@ -26,16 +26,41 @@ export interface Row {
 	project_id: string | null;
 }
 
+// The causal key the events_causal index is keyed on (the DDL lives in
+// conversation-schema.ts). SQLite serves an expression from an expression
+// index only when the text matches, so the DDL and every statement below
+// must share this constant — drift silently degrades to full scan + sort.
+export const CAUSAL_KEY_SQL = "COALESCE(anchor_seq, seq)";
+
 // The model view's bounded twin: the compaction cut lives in SQL,
 // so pre-boundary rows (data blobs included) are never read/parsed.
 // Ordered by the causal key so events_causal serves the scan with no
 // temp sort; detailFromRows re-sorts to the same order anyway.
-export const HISTORY_CAUSAL_SQL =
-	"SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? AND COALESCE(anchor_seq, seq) > ? ORDER BY COALESCE(anchor_seq, seq), seq";
+export const HISTORY_CAUSAL_SQL = `SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? AND ${CAUSAL_KEY_SQL} > ? ORDER BY ${CAUSAL_KEY_SQL}, seq`;
 // Causal-last event of one role — ORDER BY the causal key, not seq:
 // a late answer (high seq, early anchor) is causally earlier.
-export const LAST_BY_ROLE_SQL =
-	"SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? AND role = ? ORDER BY COALESCE(anchor_seq, seq) DESC, seq DESC LIMIT 1";
+export const LAST_BY_ROLE_SQL = `SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? AND role = ? ORDER BY ${CAUSAL_KEY_SQL} DESC, seq DESC LIMIT 1`;
+// A branch's copy source: the causal prefix, cut exactly where the
+// compaction cut reads — a late answer to an earlier question rides
+// with its question, never past the branch point. Ordered by seq (the
+// copy lands as-is), so the causal index serves the lookup, not the sort.
+export const EVENTS_THROUGH_SQL = `SELECT seq, role, data, anchor_seq, created_at, memory_eligible FROM events
+				 WHERE conversation_id = ? AND ${CAUSAL_KEY_SQL} <= ? ORDER BY seq`;
+// A branch's projection copy rides the copied event set, not the raw
+// seq: a late answer that rides with its question takes its overlay
+// along — without it the branch's model view would serve the full
+// output where the source serves the replacement.
+export const PROJECTIONS_THROUGH_SQL = `SELECT seq, tool_call_id, replacement, route_key, settings_hash, created_at
+				 FROM event_projections WHERE conversation_id = ?1
+				 AND seq IN (SELECT seq FROM events WHERE conversation_id = ?1
+				  AND ${CAUSAL_KEY_SQL} <= ?2) ORDER BY seq`;
+// An edit's causal cut: the events the cut drops, and the projections
+// keyed on that same event set — the sweep order lives with the queries.
+export const REWIND_EVENTS_SQL = `DELETE FROM events WHERE conversation_id = ?1
+				 AND ${CAUSAL_KEY_SQL} >= ?2`;
+export const REWIND_PROJECTIONS_SQL = `DELETE FROM event_projections WHERE conversation_id = ?1
+				 AND seq IN (SELECT seq FROM events WHERE conversation_id = ?1
+				  AND ${CAUSAL_KEY_SQL} >= ?2)`;
 
 export function prepareConversationQueries(db: Database) {
 	const qCompaction = db.query<
@@ -161,9 +186,6 @@ export function prepareConversationQueries(db: Database) {
 	>(
 		"SELECT seq, role, data, anchor_seq, created_at, memory_eligible FROM events WHERE conversation_id = ? ORDER BY seq",
 	);
-	// A branch's copy source: the causal prefix, cut exactly where the
-	// compaction cut reads — a late answer to an earlier question rides
-	// with its question, never past the branch point.
 	const qEventsThrough = db.query<
 		{
 			seq: number;
@@ -174,10 +196,7 @@ export function prepareConversationQueries(db: Database) {
 			memory_eligible: number;
 		},
 		[string, number]
-	>(
-		`SELECT seq, role, data, anchor_seq, created_at, memory_eligible FROM events
-			 WHERE conversation_id = ? AND COALESCE(anchor_seq, seq) <= ? ORDER BY seq`,
-	);
+	>(EVENTS_THROUGH_SQL);
 	const qContextsFor = db.query<
 		{ anchor_seq: number; content: string; source_ids: string; created_at: string },
 		[string]
@@ -217,10 +236,6 @@ export function prepareConversationQueries(db: Database) {
 	const qInsertProjection = db.query(
 		"INSERT OR IGNORE INTO event_projections (conversation_id, seq, tool_call_id, replacement, route_key, settings_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 	);
-	// A branch's projection copy rides the copied event set, not the raw
-	// seq: a late answer that rides with its question takes its overlay
-	// along — without it the branch's model view would serve the full
-	// output where the source serves the replacement.
 	const qProjectionsThrough = db.query<
 		{
 			seq: number;
@@ -231,12 +246,7 @@ export function prepareConversationQueries(db: Database) {
 			created_at: string;
 		},
 		[string, number]
-	>(
-		`SELECT seq, tool_call_id, replacement, route_key, settings_hash, created_at
-			 FROM event_projections WHERE conversation_id = ?1
-			 AND seq IN (SELECT seq FROM events WHERE conversation_id = ?1
-			  AND COALESCE(anchor_seq, seq) <= ?2) ORDER BY seq`,
-	);
+	>(PROJECTIONS_THROUGH_SQL);
 	const qEpoch = db.query<{ epoch: number }, [string]>(
 		"SELECT epoch FROM conversations WHERE id = ?",
 	);
@@ -309,21 +319,14 @@ export function prepareConversationQueries(db: Database) {
 	// a late answer that rides with its question keeps its projection (the
 	// overlay follows the event it rewrites) and its rating — so the
 	// projection delete reads events and must run before the event delete.
-	const qRewindEvents = db.query(
-		`DELETE FROM events WHERE conversation_id = ?1
-			 AND COALESCE(anchor_seq, seq) >= ?2`,
-	);
+	const qRewindEvents = db.query(REWIND_EVENTS_SQL);
 	const qRewindCompactions = db.query(
 		"DELETE FROM compactions WHERE conversation_id = ? AND boundary_seq >= ?",
 	);
 	const qRewindContexts = db.query(
 		"DELETE FROM memory_contexts WHERE conversation_id = ? AND anchor_seq >= ?",
 	);
-	const qRewindProjections = db.query(
-		`DELETE FROM event_projections WHERE conversation_id = ?1
-			 AND seq IN (SELECT seq FROM events WHERE conversation_id = ?1
-			  AND COALESCE(anchor_seq, seq) >= ?2)`,
-	);
+	const qRewindProjections = db.query(REWIND_PROJECTIONS_SQL);
 	// A rating row denormalizes its event's seq and anchor, so the causal
 	// key evaluated on the row is the rated event's fate; a legacy null
 	// event_seq falls back to the anchor, as before.

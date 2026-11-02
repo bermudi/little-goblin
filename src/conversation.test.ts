@@ -14,7 +14,14 @@ import {
 	type ParsedAddress,
 	parseAddress,
 } from "./conversation.ts";
-import { HISTORY_CAUSAL_SQL, LAST_BY_ROLE_SQL } from "./conversation-queries.ts";
+import {
+	EVENTS_THROUGH_SQL,
+	HISTORY_CAUSAL_SQL,
+	LAST_BY_ROLE_SQL,
+	PROJECTIONS_THROUGH_SQL,
+	REWIND_EVENTS_SQL,
+	REWIND_PROJECTIONS_SQL,
+} from "./conversation-queries.ts";
 import { openRatings } from "./reply-ratings.ts";
 import { tmpDb } from "./testkit.ts";
 
@@ -494,7 +501,7 @@ describe("compaction pointers", () => {
 		store.close();
 	});
 
-	test("events_causal serves the model-view cut and last-by-role reads without a temp sort", () => {
+	test("events_causal serves the model-view cut, last-by-role, branch-copy and rewind statements", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("first")]); // 1
@@ -505,17 +512,29 @@ describe("compaction pointers", () => {
 			{ anchorSeq: 1 },
 		); // 3, causal 1
 		store.append(c.id, [msg("tail")]); // 4
-		const queries: Array<[string, Array<string | number>]> = [
-			[HISTORY_CAUSAL_SQL, [c.id, 2]],
-			[LAST_BY_ROLE_SQL, [c.id, "assistant"]],
+		// Third field: the statement must also sort without a TEMP B-TREE.
+		// The branch copy orders by seq after a causal range — the planner
+		// rightly takes the causal lookup and sorts, so only index use is
+		// pinned for it.
+		const queries: Array<[string, Array<string | number>, boolean]> = [
+			[HISTORY_CAUSAL_SQL, [c.id, 2], true],
+			[LAST_BY_ROLE_SQL, [c.id, "assistant"], true],
+			[EVENTS_THROUGH_SQL, [c.id, 2], false],
+			[PROJECTIONS_THROUGH_SQL, [c.id, 2], true],
+			[REWIND_EVENTS_SQL, [c.id, 2], true],
+			[REWIND_PROJECTIONS_SQL, [c.id, 2], true],
 		];
-		for (const [sql, params] of queries) {
+		for (const [sql, params, noTempSort] of queries) {
 			const plan = store.db
 				.query<{ detail: string }, Array<string | number>>(`EXPLAIN QUERY PLAN ${sql}`)
 				.all(...params);
 			const details = plan.map((r) => r.detail);
-			expect(details.some((d) => d.includes("USING INDEX events_causal"))).toBe(true);
-			expect(details.some((d) => d.includes("TEMP B-TREE"))).toBe(false);
+			// "COVERING INDEX" counts — the property is the causal lookup
+			// riding events_causal, plain or covering.
+			expect(details.some((d) => d.includes("INDEX events_causal"))).toBe(true);
+			if (noTempSort) {
+				expect(details.some((d) => d.includes("TEMP B-TREE"))).toBe(false);
+			}
 		}
 		store.close();
 	});

@@ -7,7 +7,7 @@
 
 import type { Database } from "bun:sqlite";
 import { isPrivateChatId, rollingDmOrdinal } from "./conversation-address.ts";
-import type { Row } from "./conversation-queries.ts";
+import { CAUSAL_KEY_SQL, type Row } from "./conversation-queries.ts";
 import { log } from "./log.ts";
 import { ensureNotesSchema } from "./notes.ts";
 import { ensureProjectsSchema } from "./projects.ts";
@@ -132,12 +132,12 @@ export function ensureConversationSchema(db: Database): void {
 		});
 	}
 	// Causal key for the model-view cut and the last-by-role read. The
-	// expression must textually match the queries
-	// (`COALESCE(anchor_seq, seq)`) or SQLite won't use the index.
+	// expression is CAUSAL_KEY_SQL, shared with every query that filters
+	// or sorts on it — SQLite won't use the index unless the text matches.
 	// Must run after the anchor_seq migration above — legacy DBs lack
 	// the column until then.
 	db.run(
-		"CREATE INDEX IF NOT EXISTS events_causal ON events(conversation_id, COALESCE(anchor_seq, seq), seq)",
+		`CREATE INDEX IF NOT EXISTS events_causal ON events(conversation_id, ${CAUSAL_KEY_SQL}, seq)`,
 	);
 	// Contentless FTS5, not external-content — events stores JSON
 	// envelopes, so there is no plain-text column to point at. Created

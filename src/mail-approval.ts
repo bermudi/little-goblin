@@ -93,6 +93,9 @@ export type MailDecision =
 	| { kind: "cancelled"; row: OutboxEntry }
 	| { kind: "sent"; row: OutboxEntry }
 	| { kind: "retry"; row: OutboxEntry; message: string }
+	// An ambiguous Gmail send: the POST may have landed and no other
+	// decision raced for the row — the verdict is unknown, not a conflict.
+	| { kind: "unknown"; row: OutboxEntry }
 	| { kind: "conflict"; row: OutboxEntry };
 
 export function describeMailDecision(outcome: MailDecision): string {
@@ -111,6 +114,8 @@ export function describeMailDecision(outcome: MailDecision): string {
 			return "sent";
 		case "retry":
 			return "send failed — see the notice";
+		case "unknown":
+			return "send outcome unknown — check Sent mail before re-queuing";
 		case "conflict":
 			return "send raced another decision";
 	}
@@ -369,6 +374,7 @@ async function sendApproved(
 		if (err instanceof AmbiguousSendError) {
 			// The POST may have landed. Leave the row "sending" (the crash
 			// case the claim exists for): no release, no retry invitation.
+			// The row is claimed, not raced — "unknown", never "conflict".
 			log.error("mail send outcome unknown — row left sending, not resending", err, {
 				outbox: row.id,
 				to: row.to.map(domainOf),
@@ -376,7 +382,7 @@ async function sendApproved(
 			const message = `⚠️ send outcome unknown (${err.message}) — check Sent mail before re-queuing; not retrying automatically.`;
 			await lane.notice(row, message);
 			const fresh = deps.outbox.get(row.id);
-			return fresh === null ? { kind: "gone" } : { kind: "conflict", row: fresh };
+			return fresh === null ? { kind: "gone" } : { kind: "unknown", row: fresh };
 		}
 		// Definitive failure — release the claim so the draft is
 		// pending and re-tappable, exactly as before the claim existed.

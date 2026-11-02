@@ -6,6 +6,7 @@ import {
 	type MailApprovalLane,
 	type MailDecision,
 } from "./mail-approval.ts";
+import { AmbiguousSendError } from "./mail.ts";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxEntry, type OutboxStore } from "./mail-outbox.ts";
 import { APP_ACTOR } from "./targets.ts";
 import { tmpDb } from "./testkit.ts";
@@ -39,11 +40,13 @@ describe("send crash window", () => {
 		delivered: number;
 		setNow(d: Date): void;
 		setCrash(v: boolean): void;
+		setAmbiguous(v: boolean): void;
 	}
 
 	function crashHarness(): CrashHarness {
 		const real = openOutbox(tmpDb("goblin-mail-crash-"));
 		let crash = false;
+		let ambiguous = false;
 		let delivered = 0;
 		let now = T0;
 		const settles: string[] = [];
@@ -68,6 +71,14 @@ describe("send crash window", () => {
 				sender: () => ({
 					send: async () => {
 						delivered++;
+						if (ambiguous) {
+							// Gmail accepted the POST but the response was lost —
+							// the dangerous case: a resend would be a duplicate.
+							throw new AmbiguousSendError(
+								"the send response was lost",
+								new Error("gmail: HTTP 502"),
+							);
+						}
 						return { id: "gmail-1", threadId: "t-1" };
 					},
 				}),
@@ -89,6 +100,9 @@ describe("send crash window", () => {
 			},
 			setCrash: (v) => {
 				crash = v;
+			},
+			setAmbiguous: (v) => {
+				ambiguous = v;
 			},
 		} as CrashHarness;
 	}
@@ -115,6 +129,37 @@ describe("send crash window", () => {
 			expect(again.kind).toBe("busy");
 			expect(h.delivered).toBe(1);
 			// …and the operator can abandon the claim explicitly.
+			const cancelled = await h.approval.decide(row.id, "cancel", APP_ACTOR);
+			expect(cancelled.kind).toBe("cancelled");
+			expect(h.outbox.get(row.id)!.status).toBe("cancelled");
+		} finally {
+			await h.approval.stop();
+			h.outbox.close();
+		}
+	});
+
+	test("an ambiguous Gmail send answers unknown — the claim holds, never a resend or a race", async () => {
+		const h = crashHarness();
+		try {
+			const row = h.outbox.queue(
+				{ to: ["a@x.com"], subject: "hi", body: "hello", address: { target: "app/app-1" } },
+				T0,
+			);
+			h.setAmbiguous(true);
+			const outcome = await h.approval.decide(row.id, "send", APP_ACTOR);
+			// The POST may have landed: no other decision raced for the row,
+			// so the verdict is "unknown", not "conflict" and not a retry.
+			expect(outcome.kind).toBe("unknown");
+			expect(describeMailDecision(outcome)).toBe(
+				"send outcome unknown — check Sent mail before re-queuing",
+			);
+			expect(h.delivered).toBe(1);
+			expect(h.outbox.get(row.id)!.status).toBe("sending");
+			// A re-tap refuses to resend while the outcome is unresolved…
+			const again = await h.approval.decide(row.id, "send", APP_ACTOR);
+			expect(again.kind).toBe("busy");
+			expect(h.delivered).toBe(1);
+			// …and the operator can still abandon the claim explicitly.
 			const cancelled = await h.approval.decide(row.id, "cancel", APP_ACTOR);
 			expect(cancelled.kind).toBe("cancelled");
 			expect(h.outbox.get(row.id)!.status).toBe("cancelled");
@@ -153,6 +198,10 @@ describe("describeMailDecision", () => {
 			[{ kind: "cancelled", row }, "cancelled"],
 			[{ kind: "sent", row }, "sent"],
 			[{ kind: "retry", row, message: "raw upstream detail" }, "send failed — see the notice"],
+			[
+				{ kind: "unknown", row: { ...row, status: "sending" } },
+				"send outcome unknown — check Sent mail before re-queuing",
+			],
 			[{ kind: "conflict", row }, "send raced another decision"],
 		];
 		for (const [outcome, text] of cases) expect(describeMailDecision(outcome)).toBe(text);

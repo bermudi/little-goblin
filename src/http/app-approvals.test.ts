@@ -4,7 +4,7 @@ import { appAddress } from "../conversation.ts";
 import { makeAppMailLane, presentProgramApproval } from "../app-approvals.ts";
 import { startMailApproval, type MailApproval } from "../mail-approval.ts";
 import { openOutbox } from "../mail-outbox.ts";
-import type { MailSender } from "../mail.ts";
+import { AmbiguousSendError, type MailSender } from "../mail.ts";
 import { startProgramApproval, type ProgramApproval } from "../program-approval.ts";
 import type { ProgramDraft } from "../program-proposals.ts";
 import { openPrograms } from "../programs.ts";
@@ -126,6 +126,41 @@ describe("app approval routes", () => {
 			expect(
 				((await (await h.call("/api/app/approvals")).json()) as AppApprovalsResponse).mail,
 			).toEqual([]);
+		} finally {
+			await cleanup(h);
+		}
+	});
+
+	test("an ambiguous send answers unknown — check Sent mail, not a race", async () => {
+		const h = harness({
+			sender: {
+				send: async () => {
+					throw new AmbiguousSendError("the send response was lost", new Error("gmail: HTTP 502"));
+				},
+			},
+		});
+		try {
+			const row = h.outbox.queue(
+				{
+					to: ["a@x.com"],
+					subject: "hi",
+					body: "hello",
+					address: { target: "app/chat-01" },
+				},
+				NOW,
+			);
+			const res = await h.call(`/api/app/approvals/mail/${row.id}`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ action: "send" }),
+			});
+			// The POST may have landed and no decision raced for the row:
+			// the verdict is "unknown" and says to check Sent mail.
+			expect(await res.json()).toEqual({
+				status: "unknown",
+				message: "send outcome unknown — check Sent mail before re-queuing",
+			});
+			expect(h.outbox.get(row.id)).toMatchObject({ status: "sending" });
 		} finally {
 			await cleanup(h);
 		}

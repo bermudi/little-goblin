@@ -471,6 +471,7 @@ export interface AppApprovalDecisionResponse {
 		| "cancelled"
 		| "sent"
 		| "retry"
+		| "unknown"
 		| "conflict";
 	message: string;
 	/** One authenticated reveal for a newly granted webhook URL. Never

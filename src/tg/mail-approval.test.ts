@@ -4,6 +4,7 @@ import type { Api } from "grammy";
 import { fakeApi as fakeTelegramApi } from "../testkit/fake-api.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import type { MailPoller, MailSender } from "../mail.ts";
+import { AmbiguousSendError } from "../mail.ts";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "../mail-outbox.ts";
 import {
 	startMailApproval,
@@ -490,6 +491,29 @@ describe("mail approval taps", () => {
 		await gate.handleTap(tap(row.id, "send"));
 		expect(outbox.get(row.id)!.status).toBe("pending");
 		expect(calls.sends[0]!.text).toContain("Send can retry");
+		outbox.close();
+	});
+
+	test("an ambiguous send toasts unknown — never the race wording", async () => {
+		const sender = fakeSender({
+			send: async () => {
+				throw new AmbiguousSendError("the send response was lost", new Error("gmail: HTTP 502"));
+			},
+		});
+		const { outbox, calls, gate } = setup(sender);
+		const row = queue(outbox);
+		await gate.handleTap(tap(row.id, "send"));
+		// The claim holds: the row is sending, and no other decision raced
+		// for it — the toast must agree with the honest notice, not call
+		// it a race the operator can dismiss.
+		expect(outbox.get(row.id)!.status).toBe("sending");
+		expect(calls.sends[0]!.text).toContain("send outcome unknown");
+		expect(calls.answers).toEqual([
+			{
+				id: `q-send-${row.id}`,
+				text: "send outcome unknown — check Sent mail before re-queuing",
+			},
+		]);
 		outbox.close();
 	});
 

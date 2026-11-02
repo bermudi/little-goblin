@@ -1,6 +1,8 @@
 import {
 	closeSync,
 	constants,
+	existsSync,
+	readFileSync,
 	fstatSync,
 	openSync,
 	readSync,
@@ -27,6 +29,7 @@ import {
 import { authReferences, parseConfigValue, type Config } from "./config.ts";
 import { boundedRun, killProc, spawnProc, type ProcessGroupMode } from "./proc.ts";
 import { sqliteProbeSchema } from "./health-sqlite.ts";
+import { summarize, tally } from "./test-ratio.ts";
 
 export const healthResultSchema = z.object({
 	id: z.string(),
@@ -85,6 +88,8 @@ const manualHints: Readonly<Record<string, string>> = {
 		"Inspect memory readiness and local installation metadata under the approved runbook; do not print credentials or alter bank data.",
 	sandbox:
 		"Inspect the podman engine and the configured image locally; images are pulled only with operator approval.",
+	"repo.test-ratio":
+		"Informational: trim redundant tests or fold them into invariant-level ones (DESIGN.md → Test posture); never a gate.",
 	"cache.contracts":
 		"Run the bounded public-doc check `bun scripts/check-cache-contracts.ts` — it verifies the pinned source fragments only and never changes policy; empirical lifetime policies wait on model_cache_calls telemetry.",
 };
@@ -1410,6 +1415,39 @@ async function sandbox(
 	}
 }
 
+// Repo health, not installation health: informational (warn, never fail). A
+// release built by `git archive` has no git metadata, so the ratio is skipped
+// there rather than guessed from the filesystem or silently passed.
+export async function testRatio(checkout: string, probe: ProbeContext = {}): Promise<HealthResult> {
+	const start = performance.now();
+	const scope = `diagnostic-checkout:${checkout}`;
+	if (!existsSync(join(checkout, ".git")))
+		return result("repo.test-ratio", scope, "skip", "No git metadata in this checkout (release archive); ratio unmeasured", start);
+	try {
+		const paths = (await command(["git", "-C", checkout, "ls-files", "src/"], 5_000, probe))
+			.split("\n")
+			.filter((p) => /\.tsx?$/.test(p));
+		const s = summarize(
+			tally(
+				paths.map((path) => ({
+					path,
+					lines: readFileSync(join(checkout, path), "utf8").split("\n").length - 1,
+				})),
+			),
+		);
+		const top = s.excess.slice(0, 3).map((d) => `${d.dir} +${d.excess}`).join(", ");
+		return result(
+			"repo.test-ratio",
+			scope,
+			s.ratio > 1 ? "warn" : "pass",
+			`tests ${s.test} / src ${s.prod} lines = ${s.ratio.toFixed(2)}x${s.ratio > 1 ? `; top excess: ${top}` : ""}`,
+			start,
+		);
+	} catch (error) {
+		return result("repo.test-ratio", scope, "warn", `Ratio unmeasured: ${errno(error)}`, start);
+	}
+}
+
 export async function runHealth(options: {
 	home: string;
 	checkout: string;
@@ -1433,18 +1471,19 @@ export async function runHealth(options: {
 		...options.probe,
 		...(options.signal ? { signal: options.signal } : {}),
 	};
-	const [db, install, keys, mem, sbx] = await Promise.all([
+	const [db, install, keys, mem, sbx, ratio] = await Promise.all([
 		sqlite(home, options.phase, probe, config.config),
 		installation(checkout, options.phase, probe, config.config?.delegation !== undefined),
 		snapshots(auth.profiles, options.phase, probe),
 		memory(config.config, probe),
 		sandbox(config.config, probe),
+		testRatio(checkout, probe),
 	]);
 	return healthReportSchema.parse({
 		version: 1,
 		checkedAt,
 		phase: options.phase,
 		target: { home, checkout },
-		results: [...local, ...db, ...install, ...keys, ...mem, ...sbx],
+		results: [...local, ...db, ...install, ...keys, ...mem, ...sbx, ratio],
 	});
 }

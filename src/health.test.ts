@@ -31,6 +31,7 @@ import {
 	healthReportSchema,
 	healthResultSchema,
 	runHealth,
+	testRatio,
 	type HealthReport,
 } from "./health.ts";
 import { waitUntil } from "./testkit.ts";
@@ -1170,5 +1171,28 @@ describe("cache contracts", () => {
 		const c = finding(report, "cache.contracts");
 		expect(c.status).toBe("warn");
 		expect(c.detail).toContain("overdue");
+	});
+});
+
+describe("repo.test-ratio", () => {
+	test("skips without git metadata; warns above 1.0 naming excess dirs; passes below", async () => {
+		const f = fixture();
+		expect(finding(await runHealth(f.options), "repo.test-ratio").status).toBe("skip");
+		mkdirSync(join(f.checkout, ".git"));
+		mkdirSync(join(f.checkout, "src/a"), { recursive: true });
+		writeFileSync(join(f.checkout, "src/a/x.ts"), "1\n2\n");
+		writeFileSync(join(f.checkout, "src/a/x.test.ts"), "1\n2\n3\n4\n");
+		f.script("git", "printf 'src/a/x.ts\\nsrc/a/x.test.ts\\n'");
+		const warn = await testRatio(f.checkout);
+		expect(warn.status).toBe("warn");
+		expect(warn.detail).toContain("2.00x");
+		expect(warn.detail).toContain("src/a +2");
+		writeFileSync(join(f.checkout, "src/a/x.test.ts"), "1\n");
+		expect((await testRatio(f.checkout)).status).toBe("pass");
+	});
+	test("unavailable git is a warning, not a silent pass", async () => {
+		const f = fixture();
+		mkdirSync(join(f.checkout, ".git"));
+		expect((await testRatio(f.checkout)).status).toBe("warn");
 	});
 });

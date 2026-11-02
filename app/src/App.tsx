@@ -994,18 +994,22 @@ function AppShell() {
 	const refresh = useCallback(async () => {
 		const seq = ++listSeq.current;
 		try {
-			const [list, plist, nlist, attn] = await Promise.all([
+			const [listR, plistR, nlistR, attnR] = await Promise.allSettled([
 				listConversations(token),
 				listProjects(token),
 				listNotes(token),
 				getAttention(token),
 			]);
 			if (seq !== listSeq.current) return;
-			setConversations(list.conversations);
-			setProjects(plist.projects);
-			setNotes(nlist.notes);
-			setNotesTruncated(nlist.truncated);
-			setAttentionCount(attn.items.length);
+			if (listR.status === "rejected") throw listR.reason;
+			if (plistR.status === "rejected") throw plistR.reason;
+			setConversations(listR.value.conversations);
+			setProjects(plistR.value.projects);
+			if (nlistR.status === "fulfilled") {
+				setNotes(nlistR.value.notes);
+				setNotesTruncated(nlistR.value.truncated);
+			}
+			if (attnR.status === "fulfilled") setAttentionCount(attnR.value.items.length);
 			setListError(null);
 			setRowError(null);
 		} catch (err) {
@@ -1368,7 +1372,10 @@ function AppShell() {
 		try {
 			const created = await createConversation(token, {
 				...(projectId === null ? {} : { projectId }),
-				memoryExcluded: stagedMemoryExcluded,
+				// Only a composer start carries the staged memory toggle —
+				// note-originated chats have no visible toggle and must not
+				// inherit a sticky exclusion.
+				...(composerScope === undefined ? {} : { memoryExcluded: stagedMemoryExcluded }),
 			});
 			// A navigation while the create was in flight bumped the
 			// sequence — this continuation closes over the old page, so

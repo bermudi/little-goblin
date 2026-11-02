@@ -180,7 +180,9 @@ function FeedRow({
 					<strong>Next Review:</strong>{" "}
 					{item.nextCheckinAt === null
 						? "not scheduled"
-						: `${fmt(item.nextCheckinAt)} - ${item.nextCheckinReason}`}
+						: item.nextCheckinReason === null
+							? fmt(item.nextCheckinAt)
+							: `${fmt(item.nextCheckinAt)} - ${item.nextCheckinReason}`}
 				</p>
 				<div className="resp-understanding">
 					<p>

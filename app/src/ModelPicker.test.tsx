@@ -193,4 +193,22 @@ describe("ModelPicker", () => {
 		expect(refs).toContain("prov/a");
 		expect(refs).not.toContain("other/z");
 	});
+
+	test("a typed current matching a favorite only by case renders once", async () => {
+		await mount({ favorites: ["zhipu/glm-5"], current: "Zhipu/GLM-5" });
+		expect(rowRefs().filter((r) => r.toLowerCase().includes("zhipu/glm-5"))).toEqual([
+			"zhipu/glm-5",
+		]);
+	});
+
+	test("a catalog row matching the current ref only by case is pinned out", async () => {
+		await mount({ current: "PROV/A" });
+		// Only the Current row carries that model — the catalog row, which
+		// differs just by case, is pinned out.
+		const rows = rowRefs().filter((r) => r.toLowerCase().includes("prov/a"));
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toContain("PROV/A");
+		// The untouched catalog row still shows.
+		expect(rowRefs()).toContain("prov/b");
+	});
 });

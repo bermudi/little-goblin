@@ -57,16 +57,18 @@ export function ModelPicker({
 	const scoped = (ref: string) =>
 		scope === "" || ref.toLowerCase().startsWith(`${scope.toLowerCase()}/`);
 	const favs = favorites.filter((f) => scoped(f) && hit(f));
+	// The typed path stores refs exactly as entered, so dedupe compares
+	// lowercased (like favSet/canonical) while display strings stay as-is.
 	const showCurrent =
-		current !== "" && !favorites.includes(current) && scoped(current) && hit(current);
-	const pinned = new Set([...favorites, current]);
+		current !== "" && !favSet.has(current.toLowerCase()) && scoped(current) && hit(current);
+	const pinned = new Set([...favorites, current].map((r) => r.toLowerCase()));
 	const groups = catalog
 		.filter((group) => scope === "" || group.provider === scope)
 		.map((group) => ({
 			provider: group.provider,
 			models: group.models
 				.map((model) => ({ ...model, ref: `${group.provider}/${model.id}` }))
-				.filter((model) => !pinned.has(model.ref) && hit(model.ref)),
+				.filter((model) => !pinned.has(model.ref.toLowerCase()) && hit(model.ref)),
 		}))
 		.filter((group) => group.models.length > 0);
 	const raw = query.trim();

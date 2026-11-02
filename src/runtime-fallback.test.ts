@@ -198,6 +198,29 @@ describe("model fallback list", () => {
 		}
 	});
 
+	test("a twice content-filtered request never advances — the filter rule ends the turn", async () => {
+		const models = lanes({
+			"zai/glm-5.3": [[finishPart("content-filter", 10)], [finishPart("content-filter", 10)]],
+			"codex/gpt-6.1-terra": [textParts("must not serve")],
+		});
+		const r = rig({ model: "zai/glm-5.3", fallbacks: ["codex/gpt-6.1-terra"], models });
+		try {
+			const { done, sink } = await r.turn("hello");
+			expect(done).toMatchObject({
+				kind: "error",
+				message: "Provider blocked this request again after one retry.",
+				modelCalls: 0,
+			});
+			expect(models["zai/glm-5.3"]!.streamCalls).toHaveLength(2);
+			expect(models["codex/gpt-6.1-terra"]!.streamCalls).toHaveLength(0);
+			expect(r.built).toEqual(["zai/glm-5.3"]);
+			expect(sink.chunks.filter((c) => c.type === "error")).toHaveLength(1);
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
 	test("a setup failure (unresolvable lane) advances too", async () => {
 		const models = lanes({ "codex/gpt-6.1-terra": [textParts("from codex")] });
 		const r = rig({ model: "gone/model", fallbacks: ["codex/gpt-6.1-terra"], models });

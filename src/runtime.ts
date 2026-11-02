@@ -15,7 +15,11 @@ import {
 	missReason,
 	nextCandidate,
 } from "./agent/model-fallback.ts";
-import { isTransientTurnFailure, quotaExhausted } from "./agent/provider-errors.ts";
+import {
+	isContentFilter,
+	isTransientTurnFailure,
+	quotaExhausted,
+} from "./agent/provider-errors.ts";
 import { resolveSkillRef } from "./agent/skill-inject.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import { bindScriptDispatch, type ToolDispatch } from "./agent/tools/script.ts";
@@ -1676,7 +1680,10 @@ export class Runtime {
 				const zeroEffect =
 					state.snapshot().modelCalls === 0 &&
 					(journal === undefined || runId === null || journal.callsFor(runId).length === 0);
-				const next = zeroEffect ? nextFallback() : undefined;
+				// A content-filtered request already spent its one same-model
+				// retry; the filter rule ends the turn, it never moves the
+				// blocked request to another lane (design/model.md).
+				const next = zeroEffect && !isContentFilter(err) ? nextFallback() : undefined;
 				if (next !== undefined && configuredModel !== null) {
 					log.warn("model fallback", {
 						conversation: convId,

@@ -95,6 +95,12 @@ sign-in it reads `~/.codex/auth.json` (run `codex login`); an explicit
 `authFile` pins a path and disables in-app sign-in. Expired tokens are
 refreshed in-process and written back.
 
+Codex conversations search the web with the backend's hosted `web_search`
+instead of goblin's `search` tool. `webSearch` picks the mode: `"live"`
+(default), `"cached"`, or `"off"` (falls back to goblin's own `search`
+when a `search` block is configured). Hosted results are read server-side,
+so they skip goblin's `<web>` fencing — see `design/web.md`.
+
 Blocks switched off in Settings move under `parked` instead of being
 deleted, so switching them back on restores every field — including the
 ones only this file edits.

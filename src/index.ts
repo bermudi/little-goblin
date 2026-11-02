@@ -5,6 +5,7 @@ import { ensureModelsDevCatalog, ensureOpenRouterCatalog } from "./agent/models-
 import { ensureCodexModels } from "./agent/codex/models.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
 import { makeStepBuilder } from "./agent/step.ts";
+import { createClaudeEngine } from "./agent/claude-code/mod.ts";
 import { makeTitleFor } from "./agent/title.ts";
 import { makeTurnTools as makeTurnToolsFactory } from "./agent/turn-tools.ts";
 import { makePrivateSender } from "./agent/tools/program.ts";
@@ -409,6 +410,11 @@ async function boot() {
 		filterGuests: filterGuestTools,
 	});
 
+	// The claude-code engine: bound whenever a claude-code provider is
+	// configured; harmless (never spawned) otherwise. Auth resolution and
+	// child env assembly happen per turn inside the engine.
+	const claudeEngine = createClaudeEngine({ auth, configRef, observation: cacheObservations });
+
 	const stepBuilder = makeStepBuilder({
 		configRef,
 		auth,
@@ -416,11 +422,13 @@ async function boot() {
 		projects,
 		notes,
 		observation: cacheObservations,
+		claudeEngine,
 	});
 
 	const runtime = new Runtime({
 		store,
 		turnJournal,
+		claudeEngine,
 		runOwnership: {
 			begin: (e) => wakeDispatcher?.hooks.begin(e),
 			members: (runId, convId, seqs) => wakeDispatcher?.hooks.members(runId, convId, seqs),

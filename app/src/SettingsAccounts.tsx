@@ -4,7 +4,7 @@
 // paste box only.
 
 import { useState } from "react";
-import type { ProviderPreset } from "../../src/http/operator-wire.ts";
+import type { ConfigResponse, ProviderPreset } from "../../src/http/operator-wire.ts";
 import { ChatGptAccount } from "./ChatGptAccount.tsx";
 import {
 	type ChainEntry,
@@ -17,9 +17,13 @@ import {
 import { authDefault, displayName, KeyStatus, type SettingsCtx } from "./settingsKit.tsx";
 
 // The provider's effective key record — explicit auth, else the
-// materialized name (openrouter's kind default, otherwise its own).
-const effectiveAuth = (p: ProvDraft, openrouterDefault: string): string =>
-	p.auth.trim() || (p.kind === "openrouter" ? openrouterDefault : p.name.trim());
+// materialized name (the kind's default; otherwise its own).
+const effectiveAuth = (p: ProvDraft, defaults: ConfigResponse["authDefaults"]): string => {
+	if (p.auth.trim()) return p.auth.trim();
+	if (p.kind === "openrouter") return defaults.openrouter;
+	if (p.kind === "claude-code") return defaults.claudeCode;
+	return p.name.trim();
+};
 
 // A provider equals a preset when the name, kind, and (for endpoints)
 // the base url all agree — the preset's display name then wins.
@@ -65,7 +69,7 @@ function ServiceCard({ prov, ctx }: { prov: ProvDraft; ctx: SettingsCtx }) {
 		} else setNameErr(null);
 	};
 	const refs = prov.name === "" ? [] : providerRefs(prov.name);
-	const effective = effectiveAuth(prov, kinds.authDefaults.openrouter);
+	const effective = effectiveAuth(prov, kinds.authDefaults);
 	// The edit disclosure needs the kind list minus the two kinds this
 	// section never offers: codex signs in above, openrouter is a preset.
 	const editableKinds = kinds.provider.filter((k) => k !== "codex" && k !== "openrouter");

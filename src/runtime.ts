@@ -38,7 +38,16 @@ import {
 import { buildRetryGuard, classifyRetry, type RetryGuard } from "./turn/retry-guard.ts";
 import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
-import { claimMembers, driveStream, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
+import {
+	claimMembers,
+	driveStream,
+	endLive,
+	type LiveChunks,
+	type StreamDeps,
+	openLive,
+	type WireMember,
+} from "./turn/stream.ts";
+import type { ClaudeEngine, ClaudeStep } from "./agent/claude-code/mod.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import { replayKey, type TurnJournal } from "./turn-journal.ts";
 import type { WindowCapture } from "./window-capture.ts";
@@ -112,6 +121,28 @@ export interface TurnSink {
 	onDone(done: TurnDone): void | Promise<void>;
 }
 
+export function isClaudeStep(step: ModelStep | ClaudeStep): step is ClaudeStep {
+	return "engine" in step && step.engine === "claude-code";
+}
+
+// The engine fork: one deps object, two drivers. driveClaude consumes
+// the same StreamDeps fields with a ClaudeStep-shaped step — both
+// engines emit the identical wire, journal, and telemetry contract.
+async function runTurnEngine<M extends WireMember, S extends ModelStep | ClaudeStep>(
+	deps: RuntimeDeps,
+	step: S,
+	fields: Omit<StreamDeps<M>, "step">,
+): Promise<ReturnType<typeof driveStream<M>>> {
+	if (!isClaudeStep(step)) return driveStream<M>({ ...fields, step });
+	const engine = deps.claudeEngine;
+	if (engine === undefined) {
+		throw new Error(
+			`conversation ${fields.convId} runs a claude-code model but no claude engine is bound`,
+		);
+	}
+	return engine.run<M>({ ...fields, step });
+}
+
 export interface ModelStep {
 	model: LanguageModel;
 	system: string;
@@ -139,7 +170,16 @@ export interface ModelStep {
 export interface RuntimeDeps {
 	store: ConversationStore;
 	// Resolve model settings fresh per turn; auth resolution may be async.
-	buildStep(conv: Conversation, tools: ToolSet): ModelStep | Promise<ModelStep>;
+	// A claude-code provider yields a ClaudeStep (engine: "claude-code") —
+	// the turn runs on driveClaude, everything else on driveStream.
+	buildStep(
+		conv: Conversation,
+		tools: ToolSet,
+	): ModelStep | ClaudeStep | Promise<ModelStep | ClaudeStep>;
+	// The claude-code engine handle (index.ts binds it whenever a
+	// claude-code provider is configured). Present-but-unbound with a
+	// claude-code step fails the turn loud, never silently degrades.
+	claudeEngine?: ClaudeEngine | undefined;
 	// Capture channel settings at admission so recovery and compaction share a
 	// stable snapshot. A later settings change fences the current attempt.
 	captureConversation?(conv: Conversation): Conversation;
@@ -1243,7 +1283,7 @@ export class Runtime {
 				tools,
 				modalities: step.inputModalities,
 				carries: accepts.current.carries,
-				keepProviderExecuted: step.keepProviderExecuted === true,
+				keepProviderExecuted: !isClaudeStep(step) && step.keepProviderExecuted === true,
 				skillRef: resolveSkillRef,
 			};
 			const merged = await buildModelView(viewCtx, {
@@ -1255,7 +1295,7 @@ export class Runtime {
 				assertAuthority: () => this.checkAuthority(convId, epoch),
 			});
 
-			const outcome = await driveStream({
+			const outcome = await runTurnEngine(this.deps, step, {
 				convId,
 				epoch,
 				head: sink,
@@ -1278,7 +1318,6 @@ export class Runtime {
 					if (journalFault.current !== undefined) throw journalFault.current;
 				},
 				holdsAuthority: () => this.deps.store.get(convId)?.epoch === epoch,
-				step,
 				messages: merged,
 				tools,
 				view: viewCtx,

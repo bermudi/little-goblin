@@ -90,6 +90,12 @@ Be resourceful with the inference actually available: subscriptions, trials,
 promotions, and useful free models. Strong inference is scarce management and
 execution capacity, not an unlimited background polling service.
 
+- The Claude Code subscription is a first-class lane (2026-10-27):
+      Anthropic conversations burn the OAuth subscription, not API credits
+      (goblin's claude-code engine; `design/model.md` → The claude-code
+      engine). Subscriptions already paid for are the cheapest inference
+      there is.
+
 - Observe status, deduplicate events, and make routine scheduling decisions
   in code. Spend inference when something needs judgment or useful work.
 - Use capable Herdr coding harnesses through their existing allowances.

@@ -135,7 +135,7 @@ export function openCachePruning(deps: CachePruningDeps): {
 				contract.lifetime !== "rolling-expiry" ||
 				contract.idleExpiryMs === null ||
 				profile.idleAfterMs < contract.idleExpiryMs ||
-				!cacheContractFresh(now())
+				!cacheContractFresh(now(), contract)
 			) {
 				notice(
 					"unsupported",

@@ -44,6 +44,16 @@
     // tokens are refreshed in-process and written back. authFile defaults
     // to ~/.codex/auth.json.
     // codex: { kind: "codex" },
+    //
+    // Claude Code subscription models — a parallel turn engine, not an
+    // API provider: conversations on <name>/<model-id> burn the Claude
+    // Code subscription (OAuth token) instead of API credits. auth names
+    // the auth.jsonl record (default "claude-code"):
+    //   {"name":"claude-code","value":"!pass-keys get goblin-dev claude-code-oauth"}
+    // Mint the token on a machine logged into the subscription
+    // (claude setup-token), then pass-keys add it. Rotation is
+    // operator-owned; an expired token fails the turn loud.
+    // claude: { kind: "claude-code" },
   },
 
   // App default for NEW conversations: "<provider>/<model-id>".

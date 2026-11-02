@@ -15,12 +15,19 @@ const SRC = import.meta.dir;
 const GRAMMY_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*)["']grammy(?:\/[^"']*)?["']/;
 const PI_IMPORT =
 	/(?:\bfrom\s*|\bimport\s*\(\s*)["']@earendil-works\/(?:pi-durable|pi-ai|chord)(?:\/[^"']*)?["']/;
+const CLAUDE_SDK_IMPORT =
+	/(?:\bfrom\s*|\bimport\s*\(\s*)["']@anthropic-ai\/claude-agent-sdk(?:\/[^"']*)?["']/;
 const RUNTIME_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*)["']\.\.\/runtime\.ts["']/;
 const SIBLING_MOD_IMPORT =
 	/(?:\bimport\b|\bexport\b)(?!\s*type\b)[^;]*from\s*["']\.\/mod\.ts["']|\bimport\s*\(\s*["']\.\/mod\.ts["']\s*\)/;
 
 // testkit's fake-api.ts builds the Api stub — not production code.
 const GRAMMY_EXEMPT_DIRS = new Set(["tg", "testkit"]);
+
+// The claude engine's vendor boundary: the SDK (and its bundled CLI
+// surface) is known only inside src/agent/claude-code/ — the same rule
+// shape as the pi packages under src/subagents/.
+const CLAUDE_SDK_DIR = "agent/claude-code";
 
 // Test-only edges: shared rigs that build the family's real entry to
 // fake at it, and the crash/podman tests' spawned child/driver processes.
@@ -65,6 +72,18 @@ describe("module boundaries", () => {
 			// This file carries the patterns; it names no package as an import.
 			.filter((file) => rel(file) !== "module-boundaries.test.ts")
 			.filter((file) => PI_IMPORT.test(readFileSync(file, "utf8")))
+			.map(rel);
+		expect(offenders).toEqual([]);
+	});
+
+	test("claude-agent-sdk is imported only under src/agent/claude-code", () => {
+		const offenders = walk(SRC)
+			// The engine dir is the sanctioned home; its tests fake the
+			// vendor at the edge like every other boundary adapter.
+			.filter((file) => !rel(file).split("/").includes("claude-code"))
+			// This file carries the pattern; it names no package as an import.
+			.filter((file) => rel(file) !== "module-boundaries.test.ts")
+			.filter((file) => CLAUDE_SDK_IMPORT.test(readFileSync(file, "utf8")))
 			.map(rel);
 		expect(offenders).toEqual([]);
 	});

@@ -304,6 +304,76 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   must never eat a voice message. ffmpeg presence is probed at boot when
   configured, and install warns when the config names it but PATH lacks it.
 
+## The claude-code engine — a second turn engine
+
+Ruling 2026-10-27: Anthropic models may ride the **Claude Code
+subscription** (OAuth) instead of API credits, via
+`@anthropic-ai/claude-agent-sdk` running as a parallel `driveClaude`
+engine (src/agent/claude-code/) behind the same turn machinery. Locked
+decisions and their why:
+
+- **Not a LanguageModelV4 adapter.** The SDK's contract is a whole
+  agent loop (its own tool loop, sessions, permission model), not a
+  chat-completions stream; flattening it into a provider adapter would
+  fight the CLI at every step. Instead the runtime forks at the step:
+  `buildStep` returns a `ClaudeStep` for `kind: "claude-code"` providers
+  and `runTurnEngine` routes to `driveClaude`; everything else keeps
+  `driveStream`. Both engines emit the identical UIMessageChunk wire,
+  journal rows, and model-call/model-call-usage/model-call-failed
+  telemetry, so both channel sinks, replay/attach, crash resume, and
+  the reviewer stay engine-neutral.
+- **One query() per turn, full replay.** No durable SDK sessions: each
+  turn feeds the whole assembled view through a deterministic
+  serializer (prompt.ts) — same history, same bytes; turn N+1's prompt
+  is turn N's plus the new exchange (the prefix-stability invariant
+  the API lane gets from append-only ModelMessages, by construction).
+  Media rides as Anthropic blocks at its transcript position (the
+  view's carries() gate already admitted only image/* and pdf);
+  prior-turn reasoning is dropped (thinking blocks cannot replay
+  without signatures); old tool results render capped with a stable
+  truncation marker. The prompt is machine-assembled, so
+  `verbatimPrompts` — no `@path` expansion, no slash-command dispatch.
+- **The tool surface is goblin's ToolSet, nothing else.** `settingSources:
+  []`, no built-in CLI tools, no CLI permissions; goblin's fenced tools
+  register through an in-process SDK MCP server (tools.ts) — handlers
+  run in goblin's process, the child only orchestrates model calls.
+  `Runtime.fenceTools` wraps every execute, so authority re-checks and
+  journal dispatch/result/error rows are inherited unchanged. Id
+  namespaces stay separate: the vendor handler receives no tool_use id,
+  so the bridge mints its own result queue; the engine pairs stream-frame
+  tool_use ids with queued results by (name, exact input) then FIFO,
+  emitting goblin's exact outputs on the wire.
+- **Auth isolation.** The auth.jsonl record resolves to
+  `CLAUDE_CODE_OAUTH_TOKEN`, injected into the child env ONLY — the
+  SDK's `env` option replaces the child environment wholesale
+  (spike-verified), so no spawned tool inherits goblin secrets and
+  goblin's process env never sees the token. `CLAUDE_CONFIG_DIR` pins
+  all child state under `$GOBLIN_HOME/state/claude-code/` — nothing
+  touches `~/.claude`. The updater and nonessential traffic are off.
+- **v1 rulings.** Steered messages defer to the next turn (the CLI's
+  loop offers no mid-run injection seam — folding would mean a second
+  query; queued steers lead the successor turn as usual). No forced
+  toolChoice cuts: the loop detector and watchdog still journal their
+  state but cannot cut this engine; there is no `maxTurns` cap either — the
+  no-step-budget ruling below applies to this engine too. Rate-limit and
+  auth failures fail loud with distinct text, no auto-retry (the
+  subscription window resets on its own; switching the conversation to
+  an API model is the operator's move). Overflow rides the existing
+  recovery (compaction + fresh turn) minus partial-resume — the partial
+  continuation seam is an API-lane SDK feature. Compaction summarizes
+  through the same engine (text-only, tools off); reviewer, titles,
+  and vision stay on AI SDK models (they are goblin's own calls, not
+  the operator's conversation).
+- **Pinned, not assumed.** The SDK's event shapes are pinned as
+  structural types (translate.ts) behind an injectable `ClaudeQuery`
+  seam — the fake query (testkit/fake-claude.ts) drives the engine
+  suite without the vendor. Model-serving frames (real event streams,
+  usage splits, rate-limit/overflow surface) were type-pinned from the
+  SDK's declarations and the no-auth spike; the live drift check
+  (`GOBLIN_CLAUDE_CODE_LIVE=1`, Phase 4) re-pins them against the real
+  subscription. Red drift check means the interface moved: one probe,
+  re-pin, fix the adapter.
+
 ## No step budget — loops are caught, not capped
 
 Ruling 2026-10-07 (operator): **a turn has no step budget.** Current

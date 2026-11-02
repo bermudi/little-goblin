@@ -39,6 +39,10 @@ export const paths = {
 	goblinMailShim: () => join(goblinHome(), "goblin-mail"),
 	doctorShim: () => join(goblinHome(), "doctor"),
 	workspace: () => join(goblinHome(), "workspace"),
+	// The claude-code child CLI's CLAUDE_CONFIG_DIR — all of its state
+	// (config, scratch, telemetry ids) lives under goblin's state tree,
+	// never ~/.claude.
+	claudeCodeState: () => join(goblinHome(), "state", "claude-code"),
 	soul: () => join(goblinHome(), "workspace", "SOUL.md"),
 	agents: () => join(goblinHome(), "workspace", "AGENTS.md"),
 	user: () => join(goblinHome(), "workspace", "USER.md"),
@@ -294,6 +298,7 @@ export const authDefaults = {
 	firecrawl: "firecrawl",
 	parallel: "parallel",
 	openrouter: "openrouter",
+	claudeCode: "claude-code",
 	logfare: "logfare",
 	mimo: "mimo",
 	onemin: "onemin",
@@ -302,7 +307,13 @@ export const authDefaults = {
 // Single source: config.test.ts pins this array against the schema
 // literals below in both directions — schema-only kind → the settings UI
 // can't offer it; array-only kind → the UI offers what the config rejects.
-export const providerKinds = ["openai-compatible", "responses", "openrouter", "codex"] as const;
+export const providerKinds = [
+	"openai-compatible",
+	"responses",
+	"openrouter",
+	"codex",
+	"claude-code",
+] as const;
 export const providerSchema = z.discriminatedUnion("kind", [
 	z
 		.object({
@@ -336,6 +347,16 @@ export const providerSchema = z.discriminatedUnion("kind", [
 			// conversations: live allows live fetches, cached is backend
 			// cache only, off keeps local search.
 			webSearch: z.enum(["off", "cached", "live"]).default("live"),
+		})
+		.strict(),
+	// The Claude Code subscription as a billing path — a parallel turn
+	// engine (agent/claude-code/), not a LanguageModel provider. auth names
+	// the auth.jsonl record holding the OAuth token ref; the engine injects
+	// it into the SDK child env only, never goblin's own.
+	z
+		.object({
+			kind: z.literal("claude-code"),
+			auth: z.string().min(1).default(authDefaults.claudeCode),
 		})
 		.strict(),
 ]);

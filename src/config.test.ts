@@ -1049,6 +1049,7 @@ describe("providerKinds", () => {
 			responses: { baseUrl: "https://api.example.com/v1", auth: "a" },
 			openrouter: { auth: "a" },
 			codex: {},
+			"claude-code": {},
 		};
 		for (const kind of providerKinds) {
 			expect(providerSchema.safeParse({ kind, ...fields[kind] }).success).toBe(true);
@@ -1060,6 +1061,12 @@ describe("providerKinds", () => {
 		expect(providerSchema.parse({ kind: "openrouter" })).toEqual({
 			kind: "openrouter",
 			auth: "openrouter",
+		});
+		// claude-code likewise materializes its kind default, whatever the
+		// provider is named — the record is the subscription token ref.
+		expect(providerSchema.parse({ kind: "claude-code" })).toEqual({
+			kind: "claude-code",
+			auth: "claude-code",
 		});
 		expect(
 			providerSchema.safeParse({ kind: "openai-compatible", baseUrl: "https://a.test" }).success,

@@ -663,7 +663,13 @@ describe("client serving", () => {
 				fetchKinds: string[];
 			};
 			expect(j.config.model).toBe("zai/m");
-			expect(j.providerKinds).toEqual(["openai-compatible", "responses", "openrouter", "codex"]);
+			expect(j.providerKinds).toEqual([
+				"openai-compatible",
+				"responses",
+				"openrouter",
+				"codex",
+				"claude-code",
+			]);
 			expect(j.searchKinds).toEqual([
 				"brave",
 				"exa",

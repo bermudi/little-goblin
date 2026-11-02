@@ -73,10 +73,12 @@ providers: {
   // zai: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai" },
   openrouter: { kind: "openrouter", auth: "openrouter" },
   // codex: { kind: "codex" },   // ChatGPT subscription via `codex login`
+  // claude: { kind: "claude-code", auth: "claude-code" },
+  //                               // Anthropic via the Claude Code subscription
 }
 ```
 
-Four kinds exist (the shipped example uses `responses` for Z.AI):
+Five kinds exist (the shipped example uses `responses` for Z.AI):
 
 | Kind | What it is | `auth` points at |
 |---|---|---|
@@ -84,6 +86,7 @@ Four kinds exist (the shipped example uses `responses` for Z.AI):
 | `responses` | OpenAI Responses endpoints; requires the appropriate `baseUrl`, not a Chat Completions URL | a secret in `auth.jsonl` |
 | `openrouter` | OpenRouter | a secret in `auth.jsonl` |
 | `codex` | ChatGPT-subscription models | nothing — sign in from Settings → Accounts & keys; tokens live in `$GOBLIN_HOME/state/codex-auth.json` (falls back to `~/.codex/auth.json`; `authFile` pins a path) |
+| `claude-code` | Anthropic models through the Claude Code subscription (a second turn engine — `design/model.md` → The claude-code engine) | an `auth.jsonl` record holding the OAuth token (default record name: `claude-code`) |
 
 For `codex`, use **Sign in with ChatGPT** in Settings (a device code you
 approve on any browser). Goblin keeps its own token file, so signing in or
@@ -95,6 +98,28 @@ refreshed in-process and written back.
 Blocks switched off in Settings move under `parked` instead of being
 deleted, so switching them back on restores every field — including the
 ones only this file edits.
+
+#### Claude Code (subscription lane)
+
+```json5
+claude: {
+  kind: "claude-code",
+  auth: "claude-code",   // auth.jsonl record holding the OAuth token
+},
+```
+
+A `claude-code` provider runs Anthropic models on the Claude Code
+subscription instead of API credits. The `auth` record's value must
+resolve to the subscription's OAuth token
+(`{"name": "claude-code", "value": "!pass-keys get goblin-dev claude-code"}`
+once the key exists in the goblin-dev profile). The token enters only
+the child CLI's environment; all child state stays under
+`$GOBLIN_HOME/state/claude-code/`, never `~/.claude`. Thinking levels map
+to the CLI's effort rungs (low..max; `off` disables). One behavioral
+note: steered messages (a second submit while the turn runs) queue
+into the next turn on this lane — see `design/model.md` → The
+claude-code engine. After adding the provider, pick a model with the
+typed-ref fallback (`claude/claude-sonnet-4-5` and friends).
 
 #### 1min.AI (OpenAI-compatible relay)
 

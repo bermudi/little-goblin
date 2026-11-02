@@ -58,7 +58,8 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 - **Selection scope (2026-10-06).** Telegram uses one shared selection across
   all DMs/topics, and root-default changes must never leak into it. Admission
   freezes a turn's settings (capability gates included) through overflow
-  retry and compaction. Summaries use the conversation's model and thinking;
+  retry and compaction. Summaries use the conversation's model and thinking
+  (and its fallback list, see "Model fallback list" below);
   reviewer fallback uses the conversation's model; explicit reviewer and
   title models stay independent.
 - **Thinking (ruling 2026-10-21).** `off|minimal|low|medium|high|xhigh|max` is
@@ -243,6 +244,77 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   match as the same `APICallError` (all fields kept) with `isRetryable:
   false`, logging one `warn` (model, statusCode, resetAt). Throttles, 5xx
   and overloads keep the SDK ladder; `maxRetries` is unchanged.
+- **Model fallback list** (ruling 2026-11-02, operator). The turn is the
+  one call that had no fallback, and 2026-10-26 cost ~50 minutes of
+  hand-failover (codex `server_is_overloaded`, then a z.ai quota wall).
+  The mechanism is design/web.md's fallback chain applied to model refs,
+  plus openclaw's `canFallbackAfterError` gate (the walk never replays
+  committed work).
+  - **Config.** `modelFallbacks: ref[]`, top-level and global, default
+    `[]`, edited from app settings as an ordered list (add with the
+    model picker, reorder, remove). Each entry is validated like `model`
+    (its provider must exist). Goblin ships no list and never infers
+    one: an empty list means today's behavior.
+  - **Order.** Every turn tries the conversation's own model first
+    (app or Telegram selection, unchanged), then `modelFallbacks` in
+    order, skipping an entry equal to a ref already tried. The walk
+    restarts at the conversation's model on every turn. There are no
+    holds, cooldowns or pinning. A quota refusal costs one fast call
+    (0.55–1.1 s on 2026-10-26, with no SDK retries since the quota-wall
+    ruling above). Any hold's "until" would be a guess: z.ai's reset
+    time has no timezone, quota detection matches phrases, and a top-up
+    ends a quota early. Revisit if logs show slow failures or noise.
+  - **When to advance: zero effect only.** The attempt failed before any
+    model call completed (`modelCalls === 0`, the gate both engines
+    already keep), before any text or reasoning reached a sink, and
+    before any tool was dispatched. Lane-specific setup failures count
+    too: auth resolution, or an unbound claude engine. Anything later
+    ends the turn as today. **Never mid-loop.**
+  - **What does not advance:** abort, authority fences, journal faults,
+    and content-filter (it has its own recovery above). Context overflow
+    on the conversation's own model keeps its recovery (compaction plus a
+    fresh attempt). Overflow on a fallback candidate counts as that
+    candidate's failure and advances.
+  - **Per-candidate binding.** For one attempt, the candidate stands in
+    for `conv.model` everywhere the turn reads it: tools (codex's hosted
+    search), view gates (modalities, carries, provider-executed parts),
+    thinking clamp (the stored level clamps per ref through the existing
+    profile), `maxRetries`, context window, and engine fork. The stored
+    selection is never written. The frozen system prompt is
+    per-conversation and unchanged. Each ref's request bytes stay a pure
+    function of ref plus history, so switching lanes is the sanctioned
+    model-switch cold cache, once per switch.
+  - **Crossing engines is allowed.** A list may mix AI-SDK and
+    claude-code refs. Both engines read the same transcript. The
+    claude-code engine replays the whole view each turn with no SDK
+    session. Codex hosted parts drop off non-codex views. A fallback
+    that lands on claude-code inherits that engine's v1 rulings (steers
+    defer to the next turn). **Gate:** a runtime test of one
+    conversation that goes AI-SDK turn with tool call → claude-code turn
+    → AI-SDK turn lands before mixing ships. No test covered a
+    mid-conversation engine switch as of 2026-11-02.
+  - **Run row and resume.** The row records the ref it ran on and the
+    conversation's configured ref. Resume continues on the recorded ref:
+    a resumed turn never switches models. The drift check compares
+    configured refs (an operator re-selection still refuses), and so
+    does the removal of the recorded ref's provider.
+  - **Compaction.** The summarizer walks the same list (its call is
+    single, tools-off and non-streamed, so any throw is zero effect).
+    This amends "the summarizer is the conversation's own model": it is
+    the conversation's lane list. There is still no deterministic
+    summary.
+  - **Visibility.** Each advance logs `model fallback` (conversation,
+    from, to, failureClass, error). The turn's finish metadata carries
+    `servedBy` and the failed refs with short reasons. The app shows it
+    under the reply. Telegram appends one line: `via zai/glm-5.3 —
+    codex/gpt-6.1-terra: quota exhausted` (search's `served_by`
+    pattern). If every candidate fails, one error lists each ref and its
+    reason. The scheduler sees `transient: true` only if every
+    candidate's failure was transient, so a quota-walled program still
+    fails and notifies.
+  - **Out of scope:** subagents (pinned), reviewer/title/vision models
+    (independent by the selection-scope ruling), per-conversation lists,
+    round-robin, health checks.
 - **Provider-filter recovery** (2026-10-05): one automatic retry per turn,
   same model, unchanged request, no fallback; only explicit signals qualify —
   the SDK's `content-filter` finish reason or the operator-pasted provider

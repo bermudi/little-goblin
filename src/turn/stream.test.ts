@@ -452,6 +452,60 @@ describe("driveStream", () => {
 		expect(md.promptChars!["identity"]).toBe("test".length);
 	});
 
+	test("a step's quota receipt rides data-context and the turn metadata", async () => {
+		const quota = {
+			limitName: "codex",
+			primary: { usedPercent: 42, windowMinutes: 300, resetsAt: 1730000000 },
+			secondary: null,
+		};
+		const r = rig([
+			[
+				{ type: "stream-start", warnings: [] },
+				{ type: "text-start", id: "t1" },
+				{ type: "text-delta", id: "t1", delta: "done" },
+				{ type: "text-end", id: "t1" },
+				{
+					type: "finish",
+					finishReason: { unified: "stop", raw: undefined },
+					usage: {
+						inputTokens: { total: 9, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+						outputTokens: { total: 1, text: undefined, reasoning: undefined },
+					},
+					providerMetadata: { codex: { quota } },
+				},
+			],
+		]);
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		const ctx = r.live.chunks.filter((c) => c.type === "data-context");
+		expect(ctx).toEqual([
+			{
+				type: "data-context",
+				transient: true,
+				data: { input: 9, cacheRead: null, quota },
+			},
+		]);
+		const md = outcome.responseMessage?.metadata as { quota?: unknown };
+		expect(md.quota).toEqual(quota);
+	});
+
+	test("a finish without receipts leaves quota off both surfaces", async () => {
+		const r = rig([textReply("done")]);
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		const ctx = r.live.chunks.filter((c) => c.type === "data-context");
+		expect(ctx).toEqual([
+			{ type: "data-context", transient: true, data: { input: 1, cacheRead: null } },
+		]);
+		expect(
+			"quota" in (ctx[0]! as unknown as { data: Record<string, unknown> }).data,
+		).toBe(false);
+		const md = outcome.responseMessage?.metadata as Record<string, unknown>;
+		expect("quota" in md).toBe(false);
+	});
+
 	test("each step pushes its window occupancy onto the wire as transient data-context", async () => {
 		const probe = probeTool();
 		const r = rig([

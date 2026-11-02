@@ -125,8 +125,8 @@ describe("turn journal — a real killed process", () => {
 	}, 60_000);
 
 	test("kill with a call never dispatched: the row stays 'planned'", async () => {
-		// plan-only's provider-executed call is journaled at the chunk
-		// seam but the fence never dispatches it.
+		// plan-only's execute-less call is journaled at the chunk seam
+		// but nothing can ever dispatch it.
 		const { child, dbPath, marker } = spawn("plan-only", "planned");
 		const probe = new Database(dbPath);
 		try {
@@ -146,8 +146,7 @@ describe("turn journal — a real killed process", () => {
 		} finally {
 			store.close();
 		}
-		// provider-executed calls never reach our tools — execute could
-		// not have been entered.
+		// the tool has no execute — it could not have been entered.
 		expect(existsSync(marker)).toBe(false);
 	}, 60_000);
 

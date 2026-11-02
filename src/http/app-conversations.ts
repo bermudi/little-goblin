@@ -31,6 +31,8 @@ import type {
 	AppCompactionMark,
 	AppContextSegment,
 	AppContextView,
+	AppQuota,
+	AppQuotaWindow,
 	AppConversationBranch,
 	AppConversationCreate,
 	AppConversationList,
@@ -79,6 +81,7 @@ function contextUsageOf(m: UIMessage): {
 	lastInput: number | null;
 	lastCacheRead: number | null;
 	promptChars: Record<string, number> | null;
+	quota: AppQuota | null;
 } | null {
 	const md = (m as { metadata?: unknown }).metadata;
 	if (typeof md !== "object" || md === null) return null;
@@ -105,6 +108,32 @@ function contextUsageOf(m: UIMessage): {
 		lastInput: num(hasFinalUsage ? u.lastInput : u.input),
 		lastCacheRead: num(hasFinalUsage ? u.lastCacheRead : u.cacheRead),
 		promptChars: chars,
+		quota: quotaOf((md as Record<string, unknown>).quota),
+	};
+}
+
+// The metadata's quota blob is already adapter-validated AppQuota when
+// present; anything else never reaches the view.
+function quotaOf(v: unknown): AppQuota | null {
+	if (typeof v !== "object" || v === null) return null;
+	const o = v as Record<string, unknown>;
+	const win = (w: unknown): AppQuotaWindow | null => {
+		if (typeof w !== "object" || w === null) return null;
+		const wo = w as Record<string, unknown>;
+		if (typeof wo.usedPercent !== "number") return null;
+		return {
+			usedPercent: wo.usedPercent,
+			windowMinutes: typeof wo.windowMinutes === "number" ? wo.windowMinutes : null,
+			resetsAt: typeof wo.resetsAt === "number" ? wo.resetsAt : null,
+		};
+	};
+	const primary = win(o.primary);
+	const secondary = win(o.secondary);
+	if (primary === null && secondary === null) return null;
+	return {
+		limitName: typeof o.limitName === "string" ? o.limitName : null,
+		primary,
+		secondary,
 	};
 }
 
@@ -690,6 +719,9 @@ export async function handleConversationsRoute(
 					: null,
 			turns: found.length,
 			segments: segmentsOf(last?.promptChars ?? null, input),
+			...(last?.quota !== null && last?.quota !== undefined
+				? { quota: last.quota }
+				: {}),
 		};
 		log.debug("app context served", {
 			conversation: convId.id,

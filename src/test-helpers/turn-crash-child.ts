@@ -1,6 +1,8 @@
 // Env: DB_PATH, MARKER_PATH, MODE — where MODE holds the stall point:
-//   plan-only:         provider-executed call — the fence never
-//                      dispatches those, so the row sits 'planned'.
+//   plan-only:         a call to a tool with no execute — journaled at
+//                      the chunk seam, never dispatched, so the row
+//                      sits 'planned'. (Provider-executed calls are no
+//                      longer journaled at all.)
 //                      (The SDK buffers tool parts until model-call-end
 //                      for retries, so a normal call has no
 //                      planned-before-dispatch window to hold open.)
@@ -15,7 +17,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import { tool, type LanguageModel } from "ai";
+import { tool, type LanguageModel, type ToolSet } from "ai";
 import { z } from "zod";
 import { openStore } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
@@ -39,12 +41,11 @@ const callPart: LanguageModelV4StreamPart = {
 	toolName: "probe",
 	input: "{}",
 };
-const providerCallPart: LanguageModelV4StreamPart = {
+const plannedCallPart: LanguageModelV4StreamPart = {
 	type: "tool-call",
 	toolCallId: "call-1",
-	toolName: "probe",
+	toolName: "declared",
 	input: "{}",
-	providerExecuted: true,
 };
 const finishPart: LanguageModelV4StreamPart = {
 	type: "finish",
@@ -102,13 +103,13 @@ const model = {
 		}
 		if (streamCalls > 1) return { stream: parts([]) }; // second step never answers
 		if (MODE === "plan-only") {
-			return { stream: parts([streamStart, providerCallPart, finishPart]) };
+			return { stream: parts([streamStart, plannedCallPart, finishPart]) };
 		}
 		return { stream: parts([streamStart, callPart, finishPart]) };
 	},
 } as unknown as LanguageModel;
 
-const tools = {
+const probeTools = {
 	probe: tool({
 		inputSchema: z.object({}),
 		execute: async () => {
@@ -118,6 +119,13 @@ const tools = {
 		},
 	}),
 };
+// No execute: the call is declared to the journal but nothing can ever
+// enter it — plan-only's never-dispatched row. Plan-only only: the
+// overflow mode's resume compares the tool surface.
+const tools: ToolSet =
+	MODE === "plan-only"
+		? { ...probeTools, declared: tool({ inputSchema: z.object({}) }) }
+		: probeTools;
 
 // Below DB_PATH's dir — a SIGKILLed child leaks nothing the parent
 // won't remove.

@@ -98,7 +98,15 @@ function dataLen(value: unknown): number {
 	return jsonLen(value);
 }
 
-function partChars(part: unknown): { history: number; tool: number } {
+// Fixed cost for one image/file part in the pre-emption estimate, in
+// chars (chars/4 ≈ 2k tokens). Base64 length is the right gauge for the
+// wire but a wild overestimate of what a provider bills for media.
+export const MEDIA_ESTIMATE_CHARS = 8000;
+
+function partChars(
+	part: unknown,
+	mediaChars: (part: unknown) => number = dataLen,
+): { history: number; tool: number } {
 	if (typeof part === "string") return { history: part.length, tool: 0 };
 	if (typeof part !== "object" || part === null) return { history: 0, tool: 0 };
 	const p = part as { type?: string; text?: unknown; input?: unknown; output?: unknown };
@@ -116,18 +124,21 @@ function partChars(part: unknown): { history: number; tool: number } {
 				: jsonLen(p.output);
 		return { history: n, tool: n };
 	}
-	if (p.type === "image" || p.type === "file") return { history: dataLen(part), tool: 0 };
+	if (p.type === "image" || p.type === "file") return { history: mediaChars(part), tool: 0 };
 	return { history: jsonLen(part), tool: 0 };
 }
 
-function messageChars(message: ModelMessage): { history: number; tool: number } {
+function messageChars(
+	message: ModelMessage,
+	mediaChars: (part: unknown) => number = dataLen,
+): { history: number; tool: number } {
 	const content = message.content as unknown;
 	if (typeof content === "string") return { history: content.length, tool: 0 };
 	if (!Array.isArray(content)) return { history: 0, tool: 0 };
 	let history = 0;
 	let tool = 0;
 	for (const part of content) {
-		const n = partChars(part);
+		const n = partChars(part, mediaChars);
 		history += n.history;
 		tool += n.tool;
 	}
@@ -175,4 +186,13 @@ export function measurePrompt(
 		history,
 		toolResults,
 	};
+}
+
+// History size for the compaction pre-emption arms, which convert chars
+// to tokens at /4: media is charged a fixed cost, not its base64 length,
+// so one inlined photo cannot read as a six-figure token span.
+export function estimateHistoryChars(messages: readonly ModelMessage[]): number {
+	let total = 0;
+	for (const m of messages) total += messageChars(m, () => MEDIA_ESTIMATE_CHARS).history;
+	return total;
 }

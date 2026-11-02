@@ -22,13 +22,14 @@ import {
 	ProviderContentFilterError,
 } from "../agent/provider-errors.ts";
 import { makeToolCallRepair } from "../agent/tool-repair.ts";
-import type { AppLiveContext } from "../http/app-wire.ts";
+import { quotaFromMetadata } from "../agent/codex/receipts.ts";
+import type { AppLiveContext, AppQuota } from "../http/app-wire.ts";
 import { log } from "../log.ts";
 import { type EvidenceLimits, summarize, type ToolCallDigest, toolOk } from "../reviewer.ts";
 import type { TurnJournal } from "../turn-journal.ts";
 import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
-import { measurePrompt, type PromptSegments } from "./itemize.ts";
+import { estimateHistoryChars, measurePrompt, type PromptSegments } from "./itemize.ts";
 import { PreemptSignal } from "./overflow.ts";
 import { attributedSkills, type SkillWatch } from "./skill-attribution.ts";
 import type { ForcedKind, LoopTurnState, TurnState } from "./state.ts";
@@ -303,6 +304,9 @@ export async function driveStream<M extends WireMember>(
 		(typeof deps.step.model === "string" ? deps.step.model : deps.step.model.modelId);
 	let lastStepInputTokens: number | null = null;
 	let lastStepCacheRead: number | null = null;
+	// Latest codex quota receipt — the stream's rate_limits event can be
+	// fresher than the header read; keep the newest non-null snapshot.
+	let turnQuota: AppQuota | null = null;
 	let lastPromptChars: PromptSegments | null = null;
 	// The window record, captured in two stages — prepareStep stages the
 	// step's outbound prompt, onStepEnd promotes it. A staged prompt whose
@@ -344,14 +348,19 @@ export async function driveStream<M extends WireMember>(
 			// step's reported input plus everything appended since its
 			// dispatch (assistant output, tool results, steers), at
 			// chars/4. Null before the first completed step.
+			// Media is charged a fixed cost (estimateHistoryChars), not its
+			// base64 length — see itemize.ts.
+			const historyEstimate = estimateHistoryChars(messages);
 			const projectedInputTokens =
 				lastStepInputTokens !== null && lastWindow !== null
 					? lastStepInputTokens +
-						Math.ceil(Math.max(0, segments.history - lastWindow.segments.history) / 4)
+						Math.ceil(
+							Math.max(0, historyEstimate - estimateHistoryChars(lastWindow.messages)) / 4,
+						)
 					: null;
 			const arm = deps.preemptCheck({
 				projectedInputTokens,
-				historyChars: segments.history,
+				historyChars: historyEstimate,
 				stepNumber,
 			});
 			if (arm !== null) {
@@ -364,7 +373,7 @@ export async function driveStream<M extends WireMember>(
 					arm,
 					step: stepNumber,
 					projectedInputTokens,
-					historyChars: segments.history,
+					historyChars: historyEstimate,
 				});
 				throw new PreemptSignal(arm, stepNumber);
 			}
@@ -544,7 +553,13 @@ export async function driveStream<M extends WireMember>(
 			}
 			lastStepInputTokens = step.usage.inputTokens ?? null;
 			lastStepCacheRead = step.usage.inputTokenDetails?.cacheReadTokens ?? null;
-			partialMessages.push(...step.response.messages);
+			turnQuota = quotaFromMetadata(step.providerMetadata) ?? turnQuota;
+			// Assistant steps only — tool-result messages re-derive from
+			// the journal at resume, and carrying them doubles checkpoint
+			// bulk for nothing.
+			for (const m of step.response.messages) {
+				if (m.role === "assistant") partialMessages.push(m);
+			}
 			deps.journal?.checkpoint(deps.runId, {
 				loopState: state.snapshot(),
 				filterRetryUsed,
@@ -565,6 +580,7 @@ export async function driveStream<M extends WireMember>(
 				const liveContext: AppLiveContext = {
 					input: lastStepInputTokens,
 					cacheRead: lastStepCacheRead,
+					...(turnQuota !== null ? { quota: turnQuota } : {}),
 				};
 				emitChunk(convId, members, live, {
 					type: "data-context",
@@ -628,6 +644,7 @@ export async function driveStream<M extends WireMember>(
 				// characters (turn/itemize.ts); scaled to tokens by /context.
 				// Absent when no step ran.
 				...(lastPromptChars !== null ? { promptChars: { ...lastPromptChars } } : {}),
+				...(turnQuota !== null ? { quota: turnQuota } : {}),
 			};
 		},
 		onError: (error) =>
@@ -653,6 +670,10 @@ export async function driveStream<M extends WireMember>(
 	});
 
 	const callById = new Map<string, { tool: string; input: unknown }>();
+	// Provider-executed calls (hosted web_search) ride the same wire
+	// chunks but are not local actions — no journal rows, no retry
+	// grants, no loop-detector evidence.
+	const providerExecutedIds = new Set<string>();
 	const noteCompletedCall = (toolCallId: string, result: unknown, failed: boolean): void => {
 		const call = callById.get(toolCallId);
 		state.noteCompletedCall(call?.tool ?? toolCallId, call?.input, result, failed);
@@ -699,6 +720,10 @@ export async function driveStream<M extends WireMember>(
 					break;
 				case "tool-input-available":
 					head.onToolCall(chunk.toolName, chunk.input);
+					if (chunk.providerExecuted === true) {
+						providerExecutedIds.add(chunk.toolCallId);
+						break;
+					}
 					toolCalls.push(chunk.toolName);
 					callById.set(chunk.toolCallId, { tool: chunk.toolName, input: chunk.input });
 					deps.journal?.noteToolInput(deps.runId, chunk.toolCallId, chunk.toolName, chunk.input);
@@ -721,6 +746,7 @@ export async function driveStream<M extends WireMember>(
 					});
 					break;
 				case "tool-input-error":
+					if (providerExecutedIds.has(chunk.toolCallId)) break;
 					// tool-output-error carries only the id — record name+input here or the detector hashes each rejection under a random call id and never trips.
 					callById.set(chunk.toolCallId, { tool: chunk.toolName, input: chunk.input });
 					log.warn("tool call rejected", {
@@ -731,6 +757,7 @@ export async function driveStream<M extends WireMember>(
 					});
 					break;
 				case "tool-output-available": {
+					if (providerExecutedIds.has(chunk.toolCallId)) break;
 					if (evidence !== undefined) {
 						for (let i = digestRing.length - 1; i >= 0; i--) {
 							if (digestRing[i]!.id !== chunk.toolCallId) continue;
@@ -785,6 +812,7 @@ export async function driveStream<M extends WireMember>(
 					break;
 				}
 				case "tool-output-error":
+					if (providerExecutedIds.has(chunk.toolCallId)) break;
 					log.warn("tool execute failed", {
 						conversation: convId,
 						tool: callById.get(chunk.toolCallId)?.tool ?? chunk.toolCallId,

@@ -43,6 +43,26 @@ describe("MessageParts", () => {
 		expect(html).toContain("the answer");
 	});
 
+	test("hosted-search source parts render as one row of citation links", () => {
+		const html = renderToStaticMarkup(
+			<MessageParts
+				parts={[
+					{ type: "text", text: "the answer" },
+					{ type: "source-url", sourceId: "s1", url: "https://developers.openai.com/learn/codex", title: "Codex | OpenAI Developers" },
+					{ type: "source-url", sourceId: "s2", url: "https://help.openai.com/en/articles/1" },
+				]}
+			/>,
+		);
+		expect(html.match(/class="sources-row"/g)).toHaveLength(1);
+		expect(html).toContain('href="https://developers.openai.com/learn/codex"');
+		expect(html).toContain(">Codex | OpenAI Developers</a>");
+		expect(html).toContain(">help.openai.com</a>");
+		expect(html).toContain('target="_blank"');
+		expect(renderToStaticMarkup(<MessageParts parts={[{ type: "text", text: "plain" }]} />)).not.toContain(
+			"sources-row",
+		);
+	});
+
 	test("markdown links render as anchors, not literal syntax", () => {
 		const html = renderToStaticMarkup(
 			<MessageParts

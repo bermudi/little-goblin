@@ -15,6 +15,7 @@ import { contextLimit, contextLimitDetailed, inputModalities } from "./models-de
 import { modelCallMaxRetries } from "./onemin.ts";
 import { systemPromptFor } from "./prompt.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
+import { codexSessionId } from "./codex/session.ts";
 import { thinkingOptions } from "./thinking.ts";
 import { toolNames } from "./tools/mod.ts";
 import { log } from "../log.ts";
@@ -50,7 +51,7 @@ export function makeStepBuilder(
 				p?.kind === "codex" ? codexContextWindow(modelId, p.authFile) : null;
 			// Auth "!command" and the catalog fetch may both be slow — run in parallel.
 			const [model, modalities, contextLimitInfo] = await Promise.all([
-				resolveModel(cfg, auth, modelRef),
+				resolveModel(cfg, auth, modelRef, { sessionId: codexSessionId(conv.id) }),
 				inputModalities(provider, modelId),
 				codexWindow !== null ? Promise.resolve(null) : contextLimitDetailed(provider, modelId),
 			]);
@@ -97,6 +98,7 @@ export function makeStepBuilder(
 				label: modelRef,
 				inputModalities: modalities,
 				carries,
+				keepProviderExecuted: kind === "codex",
 				...(contextWindow !== null ? { contextWindow } : {}),
 				...(providerOptions ? { providerOptions } : {}),
 				...(maxRetries !== undefined ? { maxRetries } : {}),
@@ -121,12 +123,18 @@ export function makeStepBuilder(
 			summarize: async (conv, system, prompt, signal) => {
 				const cfg = configRef.current;
 				const modelRef = conv.model!;
-				const model = observedModel(await resolveModel(cfg, auth, modelRef), {
-					conversation: conv.id,
-					purpose: "compaction",
-					observation,
-					route: cacheRouteFor(cfg, modelRef),
-				});
+				const model = observedModel(
+					await resolveModel(cfg, auth, modelRef, {
+						sessionId: codexSessionId(conv.id),
+						subagent: "compact",
+					}),
+					{
+						conversation: conv.id,
+						purpose: "compaction",
+						observation,
+						route: cacheRouteFor(cfg, modelRef),
+					},
+				);
 				const providerOptions = thinkingOptions(cfg, modelRef, conv.thinking as ThinkingLevel);
 				// Same provider rule as the turn step — 1min sends no SDK
 				// retries.

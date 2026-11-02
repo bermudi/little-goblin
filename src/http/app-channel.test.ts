@@ -1237,7 +1237,7 @@ describe("app operator surface — chatgpt sign-in", () => {
 			await call("/api/app/accounts/chatgpt/login", { method: "POST" });
 			await flush();
 			expect(login.status().state).toBe("signed-in");
-			expect(configRef.current.providers["codex"]).toEqual({ kind: "codex" });
+			expect(configRef.current.providers["codex"]).toEqual({ kind: "codex", webSearch: "live" });
 			expect(readFileSync(join(home, "state", "codex-auth.json"), "utf8")).toContain(
 				'"access_token"',
 			);

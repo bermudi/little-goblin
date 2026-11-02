@@ -525,7 +525,7 @@ export function ensureCodexProvider(
 	for (let suffix = 2; Object.hasOwn(base.providers, name); suffix++) name = `codex-${suffix}`;
 	const merged = parseConfig({
 		...base,
-		providers: { ...base.providers, [name]: { kind: "codex" } },
+		providers: { ...base.providers, [name]: { kind: "codex", webSearch: "live" } },
 	});
 	writeConfig(merged);
 	const fresh = loadConfig();

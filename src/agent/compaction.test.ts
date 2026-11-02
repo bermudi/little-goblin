@@ -610,3 +610,85 @@ describe("tool-call atomicity across the cut", () => {
 		}
 	});
 });
+
+describe("opaque reasoning state", () => {
+	// The codex namespace's encrypted reasoning is provider state, not
+	// visible content — its size must not move the cut or the span
+	// estimate, or a cipher-heavy turn compact-storms on its own state.
+	const ciphered = (cipher: string): CompactionEvent[] => {
+		const detail = sample();
+		detail[1] = {
+			seq: 2,
+			anchorSeq: 1,
+			message: {
+				id: "m2",
+				role: "assistant",
+				parts: [
+					{
+						type: "reasoning",
+						text: "",
+						providerMetadata: {
+							codex: {
+								itemId: "rs_1",
+								replayScope: "s1",
+								reasoningEncryptedContent: cipher,
+							},
+						},
+					},
+					{ type: "text", text: "hi there".repeat(200) },
+				],
+			},
+		};
+		return detail;
+	};
+
+	test("the cut and the span estimate are invariant to cipher size", async () => {
+		const small = ciphered("");
+		const huge = ciphered("x".repeat(60_000));
+		expect(chooseBoundary(huge, { tailTokenBudget: 1, previousBoundary: null })).toBe(
+			chooseBoundary(small, { tailTokenBudget: 1, previousBoundary: null }),
+		);
+		const summarize = async () => "folded";
+		const a = fakeStore(small);
+		const b = fakeStore(huge);
+		const opts = { tailTokenBudget: 1, inputTokenBudget: 32_000 };
+		const outA = await runCompaction("dm:1", a.store, "m", summarize, opts, signal());
+		const outB = await runCompaction("dm:1", b.store, "m", summarize, opts, signal());
+		expect(outA.kind).toBe("compacted");
+		expect(outB.kind).toBe("compacted");
+		if (outA.kind !== "compacted" || outB.kind !== "compacted") return;
+		expect(outA.boundarySeq).toBe(outB.boundarySeq);
+		expect(outA.tokensBefore).toBe(outB.tokensBefore);
+	});
+
+	test("only the codex namespace is exempt — foreign cipher still counts", async () => {
+		const foreign = ciphered("");
+		(foreign[1]!.message.parts[0] as { providerMetadata: unknown }).providerMetadata = {
+			otherProvider: { reasoningEncryptedContent: "x".repeat(60_000) },
+		};
+		// 60k chars of non-codex state is ordinary serialized bulk — it
+		// lands in tokensBefore where the codex cipher did not.
+		const summarize = async () => "folded";
+		const opts = { tailTokenBudget: 1, inputTokenBudget: 32_000 };
+		const codexOut = await runCompaction(
+			"dm:1",
+			fakeStore(ciphered("x".repeat(60_000))).store,
+			"m",
+			summarize,
+			opts,
+			signal(),
+		);
+		const foreignOut = await runCompaction(
+			"dm:1",
+			fakeStore(foreign).store,
+			"m",
+			summarize,
+			opts,
+			signal(),
+		);
+		if (codexOut.kind !== "compacted" || foreignOut.kind !== "compacted") {
+			throw new Error("expected both spans to fold");
+		}
+		expect(foreignOut.tokensBefore - codexOut.tokensBefore).toBeGreaterThan(10_000);
+	});
+});

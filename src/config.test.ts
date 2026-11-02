@@ -40,7 +40,7 @@ import { useHome } from "./testkit.ts";
 // ----- parseConfig (object input): value/throw tables -----
 
 const objBase = {
-	providers: { test: { kind: "codex" } },
+	providers: { test: { kind: "codex", webSearch: "live" } },
 	model: "test/m",
 	operators: [7],
 	allowedUsers: [7],
@@ -157,7 +157,7 @@ test("a disabled telegram pin keeps a stale provider ref; enabled stays strict",
 	// Restoring the provider re-enables the same pin without edits.
 	const restored = parseConfig({
 		providers: {
-			test: { kind: "codex" },
+			test: { kind: "codex", webSearch: "live" },
 			gone: { kind: "openai-compatible", baseUrl: "https://api.example.org", auth: "ref" },
 		},
 		model: "test/m",
@@ -1146,7 +1146,7 @@ describe("authReferences", () => {
 		const c = parseConfig({
 			providers: {
 				zai: { kind: "openai-compatible", baseUrl: "https://fixture.invalid", auth: "zai" },
-				codex: { kind: "codex" },
+				codex: { kind: "codex", webSearch: "live" },
 			},
 			model: "zai/glm-4.6",
 			operators: [7],
@@ -1249,7 +1249,7 @@ describe("authReferences", () => {
 test("legacy Telegram selection pins independently from app-default patches and survives saves", () => {
 	useHome("goblin-cfg-");
 	const legacy = parseConfig({
-		providers: { test: { kind: "codex" } },
+		providers: { test: { kind: "codex", webSearch: "live" } },
 		model: "test/old",
 		thinking: "high",
 		operators: [7],

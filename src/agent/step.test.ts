@@ -61,7 +61,7 @@ function rig(authFile: string, model: string) {
 	// catalogs and auth read the home useHome() set for this test.
 	const { store } = openTestStore("goblin-step-");
 	const cfg: Config = {
-		providers: { codex: { kind: "codex", authFile } },
+		providers: { codex: { kind: "codex", authFile, webSearch: "live" } },
 		model,
 		tts: false,
 		favorites: [],

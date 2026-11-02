@@ -1,4 +1,6 @@
 import type { ToolSet } from "ai";
+import { createProviderDefinedToolFactory } from "@ai-sdk/provider-utils";
+import { z } from "zod";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { type ArtifactToolDeps, artifactTool } from "./artifact.ts";
@@ -96,7 +98,24 @@ export interface MakeToolsOptions {
 	// Project conversations only — the handover/coordination surface.
 	responsibility?: ResponsibilityToolDeps | undefined;
 	ui?: boolean | undefined;
+	// Codex conversations mount the backend's hosted web_search instead of
+	// the local search tool — the mode only decides external_web_access.
+	hostedSearch?: { externalWebAccess: boolean } | undefined;
 }
+
+// The codex provider tool — args travel as the wire tool's
+// configuration (external_web_access), never a model-chosen input.
+// Exported for tests/live checks — the adapter's own provider tool id.
+export const codexWebSearch = createProviderDefinedToolFactory<
+	Record<string, unknown>,
+	{ externalWebAccess: boolean }
+>({
+	id: "codex.web_search",
+	// Loose, not strict: the input IS the wire action (type/query/url/
+	// sources) and replays verbatim — a stripping schema would store `{}`
+	// and the backend rejects a replayed action without its type.
+	inputSchema: z.looseObject({}),
+});
 
 export function makeTools(options: MakeToolsOptions): ToolSet {
 	const {
@@ -107,6 +126,7 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		artifact,
 		memory,
 		web,
+		hostedSearch,
 		transcribe,
 		delegate,
 		herdr,
@@ -153,7 +173,15 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 				}
 			: {}),
 		...(web ? { fetch: fetchTool(web) } : {}),
-		...(web?.configRef.current.search ? { search: searchTool(web) } : {}),
+		...(hostedSearch !== undefined
+			? {
+					web_search: codexWebSearch({
+						externalWebAccess: hostedSearch.externalWebAccess,
+					}),
+				}
+			: web?.configRef.current.search
+				? { search: searchTool(web) }
+				: {}),
 		...(history ? { history_search: historySearchTool(history) } : {}),
 		...(note ? { note: noteTool(note) } : {}),
 		...(sandbox ? { sandbox: sandboxTool(sandbox) } : {}),

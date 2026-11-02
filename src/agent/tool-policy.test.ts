@@ -25,7 +25,7 @@ test("descriptors reproduce the former name lists", () => {
 			"artifact",
 		].sort(),
 	);
-	expect(names((p) => p.guestSandbox)).toEqual(["search"]);
+	expect(names((p) => p.guestSandbox)).toEqual(["search", "web_search"]);
 	expect(names((p) => !p.guestChannel)).toEqual(
 		[
 			"subagent",
@@ -43,7 +43,7 @@ test("descriptors reproduce the former name lists", () => {
 			"generate_image",
 		].sort(),
 	);
-	expect(names((p) => p.output === "untrusted")).toEqual(["fetch", "search"]);
+	expect(names((p) => p.output === "untrusted")).toEqual(["fetch", "search", "web_search"]);
 	expect(names((p) => p.writesFiles)).toEqual(["edit_file", "script", "write_file"]);
 	expect(names((p) => p.composes)).toEqual(["script"]);
 });

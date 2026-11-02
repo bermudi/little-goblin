@@ -3,7 +3,7 @@
 // live in thinking.test.ts.
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -42,7 +42,7 @@ const cfg: Config = {
 			auth: "onemin",
 		},
 		openrouter: { kind: "openrouter", auth: "openrouter" },
-		codex: { kind: "codex" },
+		codex: { kind: "codex", webSearch: "live" },
 	},
 	model: "zai/glm-5.3-flash",
 	tts: false,
@@ -629,4 +629,44 @@ describe("resolveModel — provider quota walls skip the SDK's own retries", () 
 			expect(await attempts(THROTTLE, run)).toBe(3);
 		});
 	}
+});
+
+describe("resolveModel — codex session opts", () => {
+	test("session/subagent land on the codex model; other kinds ignore them", async () => {
+		const dir = tmpDir();
+		const authFile = join(dir, "auth.json");
+		writeFileSync(authFile, JSON.stringify({ tokens: { access_token: "t" } }));
+		const c: Config = {
+			...cfg,
+			providers: {
+				codex: { kind: "codex", authFile, webSearch: "live" },
+				zai: { kind: "openai-compatible", baseUrl: "https://api.z.ai/api/paas/v4", auth: "zai" },
+			},
+		};
+		// Fake at the HTTP edge: the wrapped codex model sends the request.
+		const original = globalThis.fetch;
+		const seen: Headers[] = [];
+		globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+			seen.push(new Headers(init?.headers));
+			return new Response("{}", { status: 400, headers: { "content-type": "application/json" } });
+		}) as unknown as typeof fetch;
+		try {
+			const codex = await resolveModel(c, fixtureAuth("fixture-key"), "codex/gpt-6.1-sol", {
+				sessionId: "s-1",
+				subagent: "compact",
+			});
+			await generateText({ model: codex, prompt: "hi", maxRetries: 0 }).catch(() => undefined);
+		} finally {
+			globalThis.fetch = original;
+		}
+		expect(seen).toHaveLength(1);
+		expect(seen[0]!.get("session-id")).toBe("s-1");
+		expect(seen[0]!.get("thread-id")).toBe("s-1");
+		expect(seen[0]!.get("x-openai-subagent")).toBe("compact");
+		// Non-codex kinds accept and ignore the same opts.
+		const other = await resolveModel(c, fixtureAuth("fixture-key"), "zai/glm-5.3", {
+			sessionId: "s-1",
+		});
+		expect(typeof other).not.toBe("string");
+	});
 });

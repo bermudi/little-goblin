@@ -93,6 +93,9 @@ export interface ProvDraft {
 	kind: string;
 	baseUrl: string;
 	auth: string;
+	// Codex-only hosted search mode — rides the draft so a save never
+	// drops a hand-set "off"/"cached" (same widening rule as tts).
+	webSearch?: "off" | "cached" | "live";
 }
 export type TtsKind = "edge" | "openrouter" | "logfare" | "mimo" | "onemin";
 // Widened like TrDraft: edge-only fields (rate/voices) and cloud-only
@@ -449,13 +452,20 @@ export function draftFromConfig(
 	// Union arms differ (openrouter has no baseUrl, codex uses authFile);
 	// widen once — absent fields read as undefined either way.
 	const providers: ProvDraft[] = Object.entries(c.providers || {}).map(([name, p]) => {
-		const w = p as { kind: string; baseUrl?: string; auth?: string; authFile?: string };
+		const w = p as {
+			kind: string;
+			baseUrl?: string;
+			auth?: string;
+			authFile?: string;
+			webSearch?: "off" | "cached" | "live";
+		};
 		return {
 			id: ++provSeq,
 			name,
 			kind: w.kind,
 			baseUrl: w.baseUrl || "",
 			auth: w.auth || w.authFile || "",
+			...(w.webSearch !== undefined ? { webSearch: w.webSearch } : {}),
 		};
 	});
 	return { draft, providers };
@@ -537,9 +547,10 @@ export function bodyFromDraft(
 		if (p.kind === "openai-compatible" || p.kind === "responses") {
 			providers[name] = { kind: p.kind, baseUrl: p.baseUrl.trim(), auth: p.auth.trim() || name };
 		} else if (p.kind === "codex") {
+			const webSearch = p.webSearch ?? "live";
 			providers[name] = p.auth.trim()
-				? { kind: p.kind, authFile: p.auth.trim() }
-				: { kind: p.kind };
+				? { kind: p.kind, authFile: p.auth.trim(), webSearch }
+				: { kind: p.kind, webSearch };
 		} else {
 			providers[name] = {
 				kind: p.kind as "openrouter",

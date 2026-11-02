@@ -15,7 +15,8 @@ tuple): `replay` (safe reads re-execute under the retry guard; everything else
 refuses as an unowned repeat), `output` (untrusted taints a script's output),
 `writesFiles` / `composes` (skill-provenance attribution and nested-call
 expansion), `scriptable`, `guestSandbox` (the sandbox persona's allowlist —
-search only) and `guestChannel` (kept on guest-channel turns). Consumers call
+search, plus codex's provider-executed `web_search`, which is not
+scriptable) and `guestChannel` (kept on guest-channel turns). Consumers call
 `policyOf(name)`; a name with no row (a future dynamic/MCP tool) gets the
 conservative default — replay-unsafe, untrusted, not scriptable, no guest
 exposure. A new tool adds its row; `src/agent/tools/mod.test.ts` fails if a tool

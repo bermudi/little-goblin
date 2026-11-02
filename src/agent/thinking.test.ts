@@ -38,7 +38,7 @@ const cfg: Config = {
 			auth: "onemin",
 		},
 		openrouter: { kind: "openrouter", auth: "openrouter" },
-		codex: { kind: "codex" },
+		codex: { kind: "codex", webSearch: "live" },
 	},
 	model: "zai/glm-5.3-flash",
 	tts: false,

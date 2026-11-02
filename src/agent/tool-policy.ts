@@ -69,6 +69,7 @@ export const TOOL_NAMES = [
 	"memory_reflect",
 	"fetch",
 	"search",
+	"web_search",
 	"history_search",
 	"note",
 	"sandbox",
@@ -100,6 +101,9 @@ export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
 	memory_reflect: P({ guestChannel: false }),
 	fetch: P({ output: "untrusted", scriptable: true }),
 	search: P({ output: "untrusted", scriptable: true, guestSandbox: true }),
+	// Provider-executed (codex hosted search): the model runs it, so a script
+	// cannot call it; guests keep it exactly like local search.
+	web_search: P({ output: "untrusted", guestSandbox: true }),
 	history_search: P({ replay: "safe", scriptable: true, guestChannel: false }),
 	note: P({ guestChannel: false }),
 	sandbox: P({ scriptable: true }),

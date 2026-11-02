@@ -18,7 +18,7 @@ import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import { splitModelRef, type Config, type ThinkingLevel } from "../config.ts";
 import { log } from "../log.ts";
-import { codexModel, RESPONSES_URL } from "./codex/model.ts";
+import { codexModel, RESPONSES_URL, type CodexModelOptions } from "./codex/model.ts";
 import type { MediaPosition } from "./attachments.ts";
 import { quotaExhausted } from "./provider-errors.ts";
 import { isOneMinHost } from "./onemin.ts";
@@ -34,8 +34,10 @@ export async function resolveModel(
 	config: Config,
 	auth: AuthStore,
 	modelRef: string,
+	// Codex-only request identity — non-codex kinds ignore it.
+	opts: CodexModelOptions = {},
 ): Promise<LanguageModel> {
-	const model = await resolveProviderModel(config, auth, modelRef);
+	const model = await resolveProviderModel(config, auth, modelRef, opts);
 	return wrapLanguageModel({ model, middleware: quotaNoRetry(modelRef) });
 }
 
@@ -83,6 +85,7 @@ async function resolveProviderModel(
 	config: Config,
 	auth: AuthStore,
 	modelRef: string,
+	opts: CodexModelOptions,
 ): Promise<Exclude<LanguageModel, string>> {
 	const { provider, modelId } = splitModelRef(modelRef);
 	const p = config.providers[provider];
@@ -117,7 +120,7 @@ async function resolveProviderModel(
 			return createOpenRouter({ apiKey }).chat(modelId) as unknown as Exclude<LanguageModel, string>;
 		}
 		case "codex":
-			return codexModel(modelId, p.authFile);
+			return codexModel(modelId, p.authFile, fetch, opts);
 	}
 }
 

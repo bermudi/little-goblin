@@ -219,6 +219,18 @@ describe("toolNames ↔ makeTools", () => {
 		// without its row would otherwise land on CONSERVATIVE_POLICY
 		// silently.
 		const mounted = Object.keys(withScript(tools, { conversation: "c", maxCalls: 1 }));
+		// Codex's hosted web_search replaces local search, so it mounts in
+		// its own set — the same fixture with hostedSearch on.
+		const hosted = Object.keys(
+			makeTools({
+				cwd: "/tmp",
+				web: { configRef: { current: { search: {} } as unknown as Config }, auth: {} as AuthStore },
+				hostedSearch: { externalWebAccess: true },
+			}),
+		);
+		expect(hosted).toContain("web_search");
+		expect(hosted).not.toContain("search");
+		mounted.push("web_search");
 		for (const name of mounted) {
 			expect(TOOL_NAMES as readonly string[], `${name} needs a TOOL_POLICY row`).toContain(name);
 		}

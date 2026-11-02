@@ -2094,6 +2094,28 @@ button.pathchip:hover svg {
 	font-size: inherit;
 	color: var(--app-accent);
 }
+/* Hosted-search citations: one wrapping row of small pills. */
+.sources-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25rem;
+	margin: 0.3rem 0;
+}
+.source-link {
+	font-size: 11px;
+	max-width: 16rem;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--app-accent);
+	text-decoration: none;
+	border: 1px solid var(--app-border);
+	border-radius: 999px;
+	padding: 0.1rem 0.5rem;
+}
+.source-link:hover {
+	border-color: var(--app-accent);
+}
 .msg-err {
 	align-self: center;
 	font-size: 11px;

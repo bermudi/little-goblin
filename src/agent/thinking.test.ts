@@ -588,13 +588,28 @@ describe("responses kind — the /api/v1 door", () => {
 		});
 	});
 
-	test("non-glm models pass the level through; off means the floor", () => {
+	test("expressible non-glm levels pass through; off means the floor", () => {
 		expect(thinkingOptions(cfg, "relay_responses/gpt-6-astra", "high")).toEqual({
 			relay_responses: { reasoningEffort: "high" },
 		});
 		expect(thinkingOptions(cfg, "relay_responses/gpt-6-astra", "off")).toEqual({
 			relay_responses: { reasoningEffort: "low" },
 		});
+	});
+
+	test("a level above the model's ladder clamps like the codex arm, and the headroom follows", () => {
+		// gpt-5-class rungs stop at xhigh; a stored global "max" (note-rewrite
+		// rides cfg.thinking unclamped) must not ride this wire verbatim
+		// while outputTokensFor budgets its smaller clamp.
+		expect(thinkingOptions(cfg, "relay_responses/gpt-5.4", "max")).toEqual({
+			relay_responses: { reasoningEffort: "xhigh" },
+		});
+		expect(outputTokensFor(cfg, "relay_responses/gpt-5.4", "max", 2_000)).toBe(18_384);
+		// gpt-6 expresses max — verbatim send, max headroom, in agreement.
+		expect(thinkingOptions(cfg, "relay_responses/gpt-6-astra", "max")).toEqual({
+			relay_responses: { reasoningEffort: "max" },
+		});
+		expect(outputTokensFor(cfg, "relay_responses/gpt-6-astra", "max", 2_000)).toBe(34_768);
 	});
 });
 

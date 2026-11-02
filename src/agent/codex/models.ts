@@ -31,10 +31,13 @@ export interface CodexModel {
 	name: string | null;
 	priority: number | null;
 	contextWindow: number | null;
-	inputModalities: string[];
-	reasoningLevels: string[];
 }
 
+// Only the fields a consumer reads — the picker's id/name/order and
+// the step builder's context window (the account's own window for a
+// codex slug, replacing the models.dev borrow). The endpoint also
+// returns input_modalities and supported_reasoning_levels; nothing
+// consumes them, so they are stripped here rather than persisted dead.
 const wireSchema = z.object({
 	models: z.array(
 		z.object({
@@ -44,8 +47,6 @@ const wireSchema = z.object({
 			visibility: z.string().optional(),
 			supported_in_api: z.boolean().optional(),
 			context_window: z.number().nullable().optional(),
-			input_modalities: z.array(z.string()).optional(),
-			supported_reasoning_levels: z.array(z.object({ effort: z.string() })).optional(),
 		}),
 	),
 });
@@ -57,8 +58,6 @@ const diskSchema = z.object({
 			name: z.string().nullable(),
 			priority: z.number().nullable(),
 			contextWindow: z.number().nullable(),
-			inputModalities: z.array(z.string()),
-			reasoningLevels: z.array(z.string()),
 		}),
 	),
 });
@@ -74,8 +73,6 @@ function toCatalog(models: z.infer<typeof wireSchema>["models"]): CodexModel[] {
 			name: m.display_name ?? null,
 			priority: m.priority ?? null,
 			contextWindow: m.context_window ?? null,
-			inputModalities: m.input_modalities ?? [],
-			reasoningLevels: (m.supported_reasoning_levels ?? []).map((r) => r.effort),
 		}))
 		.sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity) || a.id.localeCompare(b.id));
 }
@@ -139,6 +136,20 @@ export function codexModelOptions(authFile?: string): ModelOption[] {
 	const models = cat.current() ?? cat.readDisk();
 	if (models === null && !cat.backoffArmed()) void cat.ensure();
 	return (models ?? []).map((m) => ({ id: m.id, name: m.name, releaseDate: null }));
+}
+
+// The account's own context window for a codex slug — the step
+// builder's replacement for the models.dev borrow (models.dev has no
+// codex key; a borrowed window guesses from another provider's row).
+// Sync read like the picker: memory, else one disk-cache parse; a miss
+// kicks the fetch so the next turn sees the real number. null means
+// unknown — an unlisted slug or a row without a context_window — never
+// "unlimited".
+export function codexContextWindow(slug: string, authFile?: string): number | null {
+	const cat = catalogFor(resolveCodexAuthFile(authFile).path);
+	const models = cat.current() ?? cat.readDisk();
+	if (models === null && !cat.backoffArmed()) void cat.ensure();
+	return models?.find((m) => m.id === slug)?.contextWindow ?? null;
 }
 
 // Test hook.

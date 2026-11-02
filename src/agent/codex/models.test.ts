@@ -5,6 +5,7 @@ import { useHome } from "../../testkit.ts";
 import {
 	_resetCodexModelsForTest,
 	CODEX_CLIENT_VERSION,
+	codexContextWindow,
 	codexModelOptions,
 	ensureCodexModels,
 } from "./models.ts";
@@ -119,6 +120,43 @@ describe("codex model catalog", () => {
 			expect(codexModelOptions()).toEqual([]);
 		} finally {
 			globalThis.fetch = prev;
+		}
+	});
+
+	test("codexContextWindow reads the account's own context_window", async () => {
+		const dir = useHome();
+		writeAuth(dir);
+		const fx = fakeFetch();
+		try {
+			// Cold memory and disk: null, and the fetch is kicked for next turn.
+			expect(codexContextWindow("gpt-6.1-sol")).toBeNull();
+			await ensureCodexModels();
+			expect(codexContextWindow("gpt-6.1-sol")).toBe(500_000);
+			// A listed row without a context_window is unknown, not a guess.
+			expect(codexContextWindow("gpt-6-astra")).toBeNull();
+			// An unlisted slug is unknown too.
+			expect(codexContextWindow("gpt-9-ghost")).toBeNull();
+		} finally {
+			fx.restore();
+		}
+	});
+
+	test("codexContextWindow serves the disk cache without a fetch", async () => {
+		const dir = useHome();
+		writeAuth(dir);
+		const fx = fakeFetch();
+		try {
+			await ensureCodexModels();
+			_resetCodexModelsForTest();
+			fx.calls.length = 0;
+			globalThis.fetch = (() => {
+				throw new Error("offline — memory cleared, disk must serve");
+			}) as unknown as typeof fetch;
+			// readDisk answers the cold read; no ensure is kicked, so the
+			// throwing fetch must never fire at all.
+			expect(codexContextWindow("gpt-6.1-sol")).toBe(500_000);
+		} finally {
+			fx.restore();
 		}
 	});
 

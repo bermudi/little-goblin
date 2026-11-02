@@ -10,6 +10,7 @@ import type { ConversationStore } from "../conversation.ts";
 import type { NoteStore } from "../notes.ts";
 import type { ProjectStore } from "../projects.ts";
 import type { MediaPosition } from "./attachments.ts";
+import { codexContextWindow } from "./codex/models.ts";
 import { contextLimit, contextLimitDetailed, inputModalities } from "./models-dev.ts";
 import { modelCallMaxRetries } from "./onemin.ts";
 import { systemPromptFor } from "./prompt.ts";
@@ -36,14 +37,25 @@ export function makeStepBuilder(
 			const cfg = configRef.current;
 			const modelRef = conv.model!;
 			const { provider, modelId } = splitModelRef(modelRef);
+			// Catalog truth alone once cost a thrown turn — openai-compatible
+			// < v3 rejected file parts its converter now carries.
+			const p = cfg.providers[provider];
+			const kind = p?.kind ?? "";
+			// The codex catalog is the account's own truth for its slugs —
+			// its context_window replaces the models.dev borrow (models.dev
+			// has no codex key; the borrow guessed from another provider's
+			// row). A cold catalog answers null and kicks the fetch for the
+			// next turn, and the models.dev lookup is skipped entirely.
+			const codexWindow =
+				p?.kind === "codex" ? codexContextWindow(modelId, p.authFile) : null;
 			// Auth "!command" and the catalog fetch may both be slow — run in parallel.
 			const [model, modalities, contextLimitInfo] = await Promise.all([
 				resolveModel(cfg, auth, modelRef),
 				inputModalities(provider, modelId),
-				contextLimitDetailed(provider, modelId),
+				codexWindow !== null ? Promise.resolve(null) : contextLimitDetailed(provider, modelId),
 			]);
-			const contextWindow = contextLimitInfo?.limit ?? null;
-			if (contextLimitInfo?.source === "cross-provider") {
+			const contextWindow = codexWindow ?? contextLimitInfo?.limit ?? null;
+			if (codexWindow === null && contextLimitInfo?.source === "cross-provider") {
 				log.warn("context window borrowed from another provider's catalog entry", {
 					conversation: conv.id,
 					model: modelRef,
@@ -51,10 +63,6 @@ export function makeStepBuilder(
 					limit: contextLimitInfo.limit,
 				});
 			}
-			// Catalog truth alone once cost a thrown turn — openai-compatible
-			// < v3 rejected file parts its converter now carries.
-			const p = cfg.providers[provider];
-			const kind = p?.kind ?? "";
 			// Pipe truth is host-aware: 1min's relay carries no media at all.
 			const pipeBase = p !== undefined && "baseUrl" in p ? p.baseUrl : undefined;
 			const carries = (mediaType: string, position: MediaPosition): boolean =>
@@ -98,9 +106,16 @@ export function makeStepBuilder(
 			modelRef: (conv) => conv.model!,
 			// Metadata only — a catalog read. Resolving auth or building the
 			// prompt here would let a compaction pass mint a snapshot; the
-			// frozen prompt belongs to buildStep alone.
-			contextWindow: (conv) => {
+			// frozen prompt belongs to buildStep alone. Codex reads its own
+			// account catalog first, same precedence as buildStep.
+			contextWindow: async (conv) => {
+				const cfg = configRef.current;
 				const { provider, modelId } = splitModelRef(conv.model!);
+				const p = cfg.providers[provider];
+				if (p?.kind === "codex") {
+					const codex = codexContextWindow(modelId, p.authFile);
+					if (codex !== null) return codex;
+				}
 				return contextLimit(provider, modelId);
 			},
 			summarize: async (conv, system, prompt, signal) => {

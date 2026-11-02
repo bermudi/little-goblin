@@ -373,7 +373,15 @@ export function thinkingOptions(
 				}
 				return { [key]: { reasoningEffort: glmEffort(profile.levels, level) } };
 			}
-			return { [key]: { reasoningEffort: level === "off" ? "low" : level } };
+			// The same clamp the codex arm applies: a level above the
+			// model's ladder — a stored global "max" meeting a gpt-5 rung
+			// table (note-rewrite rides cfg.thinking unclamped) — collapses
+			// at-or-above instead of riding the wire verbatim, so
+			// outputTokensFor's headroom always buys the rung the wire
+			// actually carries. clampToLevels maps "off" to the floor rung,
+			// the old arm's "off" → "low".
+			const profile = reasoningProfileFor("responses", bare, p.baseUrl);
+			return { [key]: { reasoningEffort: clampToLevels(profile.levels, level) } };
 		}
 		case "codex":
 			// Codex has no "off" rung, so clamp to its available effort ladder.

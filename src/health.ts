@@ -2,7 +2,6 @@ import {
 	closeSync,
 	constants,
 	existsSync,
-	readFileSync,
 	fstatSync,
 	openSync,
 	readSync,
@@ -1417,7 +1416,10 @@ async function sandbox(
 
 // Repo health, not installation health: informational (warn, never fail). A
 // release built by `git archive` has no git metadata, so the ratio is skipped
-// there rather than guessed from the filesystem or silently passed.
+// there rather than guessed from the filesystem or silently passed. The reads
+// go through readBounded like every probe: an over-cap tracked file refuses
+// the measurement (a silently truncated read would corrupt the counts) rather
+// than shrink it.
 export async function testRatio(checkout: string, probe: ProbeContext = {}): Promise<HealthResult> {
 	const start = performance.now();
 	const scope = `diagnostic-checkout:${checkout}`;
@@ -1431,7 +1433,7 @@ export async function testRatio(checkout: string, probe: ProbeContext = {}): Pro
 			tally(
 				paths.map((path) => ({
 					path,
-					lines: readFileSync(join(checkout, path), "utf8").split("\n").length - 1,
+					lines: readBounded(join(checkout, path)).text.split("\n").length - 1,
 				})),
 			),
 		);

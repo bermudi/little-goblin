@@ -1195,4 +1195,24 @@ describe("repo.test-ratio", () => {
 		mkdirSync(join(f.checkout, ".git"));
 		expect((await testRatio(f.checkout)).status).toBe("warn");
 	});
+	test("an over-cap tracked file refuses the measurement instead of truncating counts", async () => {
+		const f = fixture();
+		mkdirSync(join(f.checkout, ".git"));
+		mkdirSync(join(f.checkout, "src/a"), { recursive: true });
+		writeFileSync(join(f.checkout, "src/a/big.ts"), "x".repeat(256 * 1024 + 1));
+		f.script("git", "printf 'src/a/big.ts\\n'");
+		const warn = await testRatio(f.checkout);
+		expect(warn.status).toBe("warn");
+		expect(warn.detail).toBe("Ratio unmeasured: oversized-file");
+	});
+	test("a tracked non-regular file (symlinked dir) refuses the read like every probe", async () => {
+		const f = fixture();
+		mkdirSync(join(f.checkout, ".git"));
+		mkdirSync(join(f.checkout, "src/a"), { recursive: true });
+		symlinkSync(f.bin, join(f.checkout, "src/a/link.ts"));
+		f.script("git", "printf 'src/a/link.ts\\n'");
+		const warn = await testRatio(f.checkout);
+		expect(warn.status).toBe("warn");
+		expect(warn.detail).toBe("Ratio unmeasured: not-regular-file");
+	});
 });

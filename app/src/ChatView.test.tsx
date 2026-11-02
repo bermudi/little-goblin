@@ -1572,6 +1572,11 @@ describe("ContextGauge", () => {
 		await act(async () => {
 			compactBtn()!.click();
 		});
+		for (let i = 0; i < 100 && !dom.container.textContent?.includes("folded 15 messages"); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
 		expect(folded).toBe(1);
 		expect(dom.container.textContent).toContain("folded 15 messages");
 	});

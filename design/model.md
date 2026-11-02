@@ -272,9 +272,11 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
     ends the turn as today. **Never mid-loop.**
   - **What does not advance:** abort, authority fences, journal faults,
     and content-filter (it has its own recovery above). Context overflow
-    on the conversation's own model keeps its recovery (compaction plus a
-    fresh attempt). Overflow on a fallback candidate counts as that
-    candidate's failure and advances.
+    is never a fallback trigger: it keeps its recovery (compaction plus a
+    fresh attempt) on whichever candidate is serving, and the
+    continuation stays on that candidate. (Amended at implementation,
+    2026-11-02: "advance on a fallback's overflow" would end a mid-loop
+    overflow outright, which is worse than compacting.)
   - **Per-candidate binding.** For one attempt, the candidate stands in
     for `conv.model` everywhere the turn reads it: tools (codex's hosted
     search), view gates (modalities, carries, provider-executed parts),
@@ -296,8 +298,9 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   - **Run row and resume.** The row records the ref it ran on and the
     conversation's configured ref. Resume continues on the recorded ref:
     a resumed turn never switches models. The drift check compares
-    configured refs (an operator re-selection still refuses), and so
-    does the removal of the recorded ref's provider.
+    configured refs (an operator re-selection still refuses). A recorded
+    ref whose provider has since been removed is not refused at resume;
+    the resumed turn fails loud at step build instead.
   - **Compaction.** The summarizer walks the same list (its call is
     single, tools-off and non-streamed, so any throw is zero effect).
     This amends "the summarizer is the conversation's own model": it is
@@ -305,7 +308,11 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
     summary.
   - **Visibility.** Each advance logs `model fallback` (conversation,
     from, to, failureClass, error). The turn's finish metadata carries
-    `servedBy` and the failed refs with short reasons. The app shows it
+    `servedBy` and the failed refs with short reasons (metadata
+    `fallback.from`; the label is the serving ref). A zero-effect error
+    is held off the wire while a candidate could follow or earlier ones
+    already failed, so the wire shows one error, the final story. The
+    app shows it
     under the reply. Telegram appends one line: `via zai/glm-5.3 —
     codex/gpt-6.1-terra: quota exhausted` (search's `served_by`
     pattern). If every candidate fails, one error lists each ref and its

@@ -901,6 +901,12 @@ const configSchema = z
 		providers: z.record(z.string(), providerSchema),
 		// Default for new app conversations only — Telegram owns its own selection.
 		model: z.string().min(1),
+		// Ordered model fallback list, global: every turn (and compaction
+		// summary) tries the conversation's own model first, then these in
+		// order, advancing only on a zero-effect failure. Operator-written,
+		// never inferred; [] = no fallback (design/model.md → Model
+		// fallback list).
+		modelFallbacks: z.array(z.string().min(1)).default([]),
 		// Auto-titling model for implicitly-named topics; "" = unset
 		// (mini-app clearing convention).
 		titleModel: z
@@ -1080,6 +1086,7 @@ const configSchema = z
 			["reviewer.model", cfg.reviewer?.model],
 			["vision.model", cfg.vision?.model],
 			["image.model", cfg.image?.model],
+			...cfg.modelFallbacks.map((ref, i) => [`modelFallbacks.${i}`, ref] as const),
 		] as const) {
 			if (ref === undefined) continue;
 			let provider: string;

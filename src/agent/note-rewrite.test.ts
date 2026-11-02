@@ -30,6 +30,7 @@ const testConfig = (model = "zai/glm-5.3-flash", thinking: Config["thinking"] = 
 		model,
 		tts: false,
 		favorites: [],
+		modelFallbacks: [],
 		thinking,
 		operators: [1],
 		allowedUsers: [1],

@@ -20,6 +20,7 @@ const config: Config = {
 	model: "zai/glm-5.3",
 	tts: false,
 	favorites: ["zai/glm-5.3"],
+	modelFallbacks: [],
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],

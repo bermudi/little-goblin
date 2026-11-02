@@ -65,6 +65,68 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 					<div className="cap ops-cap">Telegram is off — turn it on under Telegram.</div>
 				)}
 			</div>
+			<h2 className="ops-h2">Fallbacks</h2>
+			<div className="card">
+				{draft.modelFallbacks.map((f, i) => {
+					const name = modelNames.get(f);
+					const move = (d: number) => {
+						const j = i + d;
+						if (j < 0 || j >= draft.modelFallbacks.length) return;
+						const next = draft.modelFallbacks.slice();
+						next[i] = next[j]!;
+						next[j] = f;
+						patchDraft({ modelFallbacks: next });
+					};
+					return (
+						<div className="chain-card" key={`${i}:${f}`}>
+							<div className="chain-head">
+								<span className="fav-cell">
+									<span className="fav-name">
+										{i + 1}. {name ?? f}
+									</span>
+									{name !== undefined && <span className="fav-ref">{f}</span>}
+								</span>
+								<span className="chain-btns">
+									<button
+										type="button"
+										aria-label={`move fallback ${f} up`}
+										disabled={i === 0}
+										onClick={() => move(-1)}
+									>
+										↑
+									</button>
+									<button
+										type="button"
+										aria-label={`move fallback ${f} down`}
+										disabled={i === draft.modelFallbacks.length - 1}
+										onClick={() => move(1)}
+									>
+										↓
+									</button>
+									<button
+										type="button"
+										aria-label={`remove fallback ${f}`}
+										onClick={() =>
+											patchDraft({
+												modelFallbacks: draft.modelFallbacks.filter((_, j) => j !== i),
+											})
+										}
+									>
+										×
+									</button>
+								</span>
+							</div>
+						</div>
+					);
+				})}
+				<button className="ghost" type="button" onClick={() => setSheet("fallback")}>
+					+ Add fallback
+				</button>
+				<div className="cap">
+					When a chat's own model fails before doing anything (quota, outage, bad key), the turn
+					tries these in order. Every chat, app and Telegram; compaction too. Empty = no fallback.
+				</div>
+			</div>
 			{/* Helpers run on every surface — Telegram turns included — so
 			    the card sits outside both channel groupings. */}
 			<h2 className="ops-h2">Helpers</h2>

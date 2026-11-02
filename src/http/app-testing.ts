@@ -96,6 +96,7 @@ export function setup(
 			model: "zai/m",
 			tts: false,
 			favorites: [],
+			modelFallbacks: [],
 			thinking: "medium",
 			operators: [42],
 			allowedUsers: [42],

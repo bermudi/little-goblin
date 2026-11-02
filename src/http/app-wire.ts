@@ -258,6 +258,9 @@ export interface TurnMetadata {
 	promptChars?: Record<string, number>;
 	/** Codex rate-limit snapshot at turn end, when the provider issued one. */
 	quota?: AppQuota;
+	/** Candidates that failed before `model` served (design/model.md →
+	 *  Model fallback list); absent when the conversation's own model did. */
+	fallbackFrom?: Array<{ ref: string; reason: string }>;
 }
 
 export interface AppContextSegment {

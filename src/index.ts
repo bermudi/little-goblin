@@ -436,6 +436,7 @@ async function boot() {
 			preRunFailure: (e) => wakeDispatcher?.hooks.preRunFailure?.(e),
 		},
 		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
+		modelFallbacks: () => configRef.current.modelFallbacks,
 		pruneBetweenTurns: (convId) => {
 			cachePruning.pruneConversation(convId);
 		},

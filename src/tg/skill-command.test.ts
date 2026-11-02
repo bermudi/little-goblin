@@ -52,6 +52,7 @@ const baseConfig = (tts: Config["tts"] = false): Config =>
 		model: "zai/m",
 		tts,
 		favorites: [],
+		modelFallbacks: [],
 		thinking: "medium",
 		operators: [1],
 		allowedUsers: [],

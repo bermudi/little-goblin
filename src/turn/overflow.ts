@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
 import type { CompactionOutcome } from "../agent/compaction.ts";
+import type { FallbackTrail } from "../agent/model-fallback.ts";
 import { isContextOverflow } from "../agent/provider-errors.ts";
 import type { Conversation } from "../conversation.ts";
 import { log } from "../log.ts";
@@ -33,6 +34,11 @@ export interface TurnRecovery {
 	ownedInputSeqs?: number[] | undefined;
 	// Taint from visible, potentially unowned inputs in the original admission.
 	admissionExchangeExcluded?: boolean | undefined;
+	// Set once the turn has a fallback history (design/model.md → Model
+	// fallback list): `conversation.model` is then the serving candidate,
+	// `configured` the operator's selection, `tried` the candidates that
+	// failed before it. Carried through overflow recovery and resume.
+	fallback?: FallbackTrail | undefined;
 }
 
 export class ContextOverflowError extends Error {

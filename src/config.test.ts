@@ -138,6 +138,25 @@ test("telegram.enabled true keeps the one-operator floor", () => {
 	expect(() => parseConfig({ ...objBase, operators: [] })).toThrow(/operators/);
 });
 
+test("modelFallbacks: absent is [], order is kept, each ref needs a configured provider", () => {
+	expect(parseConfig(objBase).modelFallbacks).toEqual([]);
+	const two = {
+		...objBase,
+		providers: {
+			test: { kind: "codex", webSearch: "live" },
+			oc: { kind: "openai-compatible", baseUrl: "https://api.example.org", auth: "ref" },
+		},
+	};
+	expect(parseConfig({ ...two, modelFallbacks: ["oc/b", "test/a"] }).modelFallbacks).toEqual([
+		"oc/b",
+		"test/a",
+	]);
+	expect(() => parseConfig({ ...two, modelFallbacks: ["oc/b", "gone/m"] })).toThrow(
+		/modelFallbacks: custom/,
+	);
+	expect(() => parseConfig({ ...two, modelFallbacks: ["notaref"] })).toThrow(/modelFallbacks/);
+});
+
 test("a disabled telegram pin keeps a stale provider ref; enabled stays strict", () => {
 	const stale = {
 		...objBase,
@@ -185,6 +204,7 @@ const valid: Config = {
 	model: "zai/glm-4.6",
 	tts: false,
 	favorites: [],
+	modelFallbacks: [],
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [1],

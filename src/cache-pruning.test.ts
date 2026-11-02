@@ -44,6 +44,7 @@ function baseConfig(cachePruning?: CachePruningPolicy): Config {
 		model: MODEL,
 		tts: false,
 		favorites: [],
+		modelFallbacks: [],
 		thinking: "medium",
 		operators: [1],
 		allowedUsers: [1],

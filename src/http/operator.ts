@@ -249,6 +249,7 @@ const CONFIG_POST_KEYS = {
 	model: true,
 	titleModel: true,
 	favorites: true,
+	modelFallbacks: true,
 	thinking: true,
 	tts: true,
 	transcription: true,

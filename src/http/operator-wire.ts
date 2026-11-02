@@ -59,6 +59,7 @@ export interface ConfigPostBody {
 	model: string;
 	titleModel: string;
 	favorites: string[];
+	modelFallbacks: string[];
 	thinking: ThinkingLevel;
 	tts:
 		| ""

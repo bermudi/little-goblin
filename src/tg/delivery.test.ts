@@ -1434,6 +1434,23 @@ describe("forced-completion stamp", () => {
 		}
 	});
 
+	test("a fallback-served reply names who served and why the others didn't", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		sink.onTextDelta("answer from the fallback");
+		await sleep(0);
+		await sink.onDone({
+			kind: "completed",
+			fallback: {
+				servedBy: "zai/glm-5.3",
+				misses: [{ ref: "codex/gpt-6.1-terra", reason: "quota exhausted" }],
+			},
+		});
+		expect(msgs).toEqual([
+			`answer from the fallback${TAIL}via zai/glm-5.3 — codex/gpt-6.1-terra: quota exhausted`,
+		]);
+	});
+
 	test("natural completion adds no stamp", async () => {
 		const { api, msgs } = fakeApi({});
 		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });

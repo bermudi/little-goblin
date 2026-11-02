@@ -35,7 +35,14 @@ export type Section =
 	| "access"
 	| "capabilities"
 	| "system";
-export type SheetMode = "model" | "telegram" | "title" | "vision" | "image" | "favorites";
+export type SheetMode =
+	| "model"
+	| "telegram"
+	| "title"
+	| "vision"
+	| "image"
+	| "favorites"
+	| "fallback";
 
 // One channel's thinking rungs: the offered values plus whether the
 // capability lookup behind them failed.

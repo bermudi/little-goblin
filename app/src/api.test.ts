@@ -259,6 +259,7 @@ describe("operator surface", () => {
 			model: "p/m",
 			titleModel: "",
 			favorites: [],
+			modelFallbacks: [],
 			thinking: "medium",
 			tts: "",
 			transcription: "",

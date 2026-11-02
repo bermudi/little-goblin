@@ -56,6 +56,10 @@ function setup(opts: {
 	contextWindow?: number;
 	compaction?: RuntimeDeps["compaction"];
 	sinkFor?: (conv: Conversation) => TurnSink | null;
+	// Settings capture at resume (default: the stored conversation as-is),
+	// and a spy on the conversation each attempt's step is built from.
+	capture?: (conv: Conversation) => Conversation;
+	onBuild?: (conv: Conversation) => void;
 }) {
 	const store = openStore(tmpDb("goblin-tr-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -78,11 +82,14 @@ function setup(opts: {
 	const runtime = new Runtime({
 		store,
 		turnJournal: journal,
-		buildStep: () => ({
-			model: opts.model ?? edge.model,
-			system: "test",
-			...(opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}),
-		}),
+		buildStep: (c) => {
+			opts.onBuild?.(c);
+			return {
+				model: opts.model ?? edge.model,
+				system: "test",
+				...(opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {}),
+			};
+		},
 		makeTools,
 		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
 	});
@@ -93,7 +100,7 @@ function setup(opts: {
 		store,
 		journal,
 		runtime,
-		captureConversation: (c) => c,
+		captureConversation: opts.capture ?? ((c) => c),
 		makeTools,
 		sinkFor: (conv) => {
 			if (opts.sinkFor !== undefined) return opts.sinkFor(conv);
@@ -127,7 +134,7 @@ function interruptedRun(
 	runId: string,
 	opts: {
 		anchorSeq?: number | null;
-		snapshot?: { model: string | null; thinking: string | null };
+		snapshot?: { model: string | null; thinking: string | null; configuredModel?: string };
 		toolNames?: string[];
 		ownedInputSeqs?: number[];
 		admissionExchangeExcluded?: boolean;
@@ -495,6 +502,53 @@ describe("turn resume", () => {
 			expect(out.reason).toContain("model changed old/provider");
 			expect(out.reason).toContain("thinking changed low");
 		}
+		await runtime.shutdown();
+		store.close();
+	});
+
+	test("a fallback-served run resumes on the ref that served, compared on the selection", async () => {
+		const built: (string | null)[] = [];
+		const { store, conv, journal, ops, runtime, sink } = setup({
+			capture: (c) => ({ ...c, model: "zai/glm-5.3", thinking: "medium" }),
+			onBuild: (c) => built.push(c.model),
+		});
+		const anchorSeq = appendUser(store, conv, "go");
+		interruptedRun(store, journal, conv, "run-src", {
+			anchorSeq,
+			snapshot: {
+				model: "codex/gpt-6.1-terra",
+				thinking: "medium",
+				configuredModel: "zai/glm-5.3",
+			},
+		});
+		expect(ops.resume(conv.id, "run-src").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		await runtime.shutdown();
+		// A resumed turn never switches models: it runs where it left off.
+		expect(built).toEqual(["codex/gpt-6.1-terra"]);
+		const successor = journal.get(successorRunId(store, "run-src"))!;
+		expect(successor.convSnapshot).toMatchObject({
+			model: "codex/gpt-6.1-terra",
+			configuredModel: "zai/glm-5.3",
+		});
+		store.close();
+	});
+
+	test("a fallback-served run still refuses when the operator's selection moved", async () => {
+		const { store, conv, journal, ops, runtime } = setup({
+			capture: (c) => ({ ...c, model: "zai/glm-5.3", thinking: "medium" }),
+		});
+		interruptedRun(store, journal, conv, "run-src", {
+			snapshot: {
+				model: "codex/gpt-6.1-terra",
+				thinking: "medium",
+				configuredModel: "openrouter/old",
+			},
+		});
+		const out = ops.resume(conv.id, "run-src");
+		expect(out.kind).toBe("refused");
+		if (out.kind === "refused")
+			expect(out.reason).toContain("model changed openrouter/old → zai/glm-5.3");
 		await runtime.shutdown();
 		store.close();
 	});

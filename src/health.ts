@@ -330,6 +330,8 @@ function cacheContracts(config: Config | undefined, home: string): HealthResult 
 		["reviewer.model", config.reviewer?.model],
 	];
 	for (const ref of config.favorites) refs.push(["favorites", ref]);
+	// Fallbacks serve chat turns — their cache contracts count too.
+	for (const ref of config.modelFallbacks) refs.push(["modelFallbacks", ref]);
 	const groups = new Map<CacheContract["id"], { contract: CacheContract; refs: string[] }>();
 	// favorites isn't model-ref validated — one malformed entry must not
 	// take the whole report down, so an unresolvable ref degrades to a

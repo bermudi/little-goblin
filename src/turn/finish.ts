@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FinishReason, LanguageModelUsage, ToolSet, UIMessage } from "ai";
+import type { FallbackNote } from "../agent/model-fallback.ts";
 import type { Conversation } from "../conversation.ts";
 import { log } from "../log.ts";
 import type { MemoryDocument } from "../memory/hindsight.ts";
@@ -30,7 +31,7 @@ const DEFIANCE_NOTE: Record<ForcedKind, string> = {
 		'My context window filled up before I wrote my answer — the work above is what I checked. Say "continue" and I\'ll pick up from those findings.',
 };
 
-export type CompletedDone = { kind: "completed"; forced?: ForcedKind };
+export type CompletedDone = { kind: "completed"; forced?: ForcedKind; fallback?: FallbackNote };
 
 export interface WindowSignal {
 	input: number;

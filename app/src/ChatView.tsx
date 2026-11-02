@@ -628,7 +628,24 @@ function turnMeta(m: UIMessage): TurnMetadata | null {
 			const q = quotaOf(o.quota);
 			return q !== undefined ? { quota: q } : {};
 		})(),
+		...((): { fallbackFrom: Array<{ ref: string; reason: string }> } | Record<string, never> => {
+			const from = fallbackOf(o.fallback);
+			return from.length > 0 ? { fallbackFrom: from } : {};
+		})(),
 	};
+}
+
+// The runtime's `fallback.from` stamp — narrowed entry by entry; a
+// malformed entry is dropped, not trusted.
+function fallbackOf(v: unknown): Array<{ ref: string; reason: string }> {
+	if (typeof v !== "object" || v === null) return [];
+	const from = (v as Record<string, unknown>).from;
+	if (!Array.isArray(from)) return [];
+	return from.flatMap((e: unknown) => {
+		if (typeof e !== "object" || e === null) return [];
+		const { ref, reason } = e as Record<string, unknown>;
+		return typeof ref === "string" && typeof reason === "string" ? [{ ref, reason }] : [];
+	});
 }
 
 function messageText(m: UIMessage): string {
@@ -643,6 +660,11 @@ const kfmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
 
 function MetaLine({ meta }: { meta: TurnMetadata }) {
 	const bits: string[] = [meta.model];
+	// A fallback served: name who didn't and why, so the operator can fix
+	// the primary (search's served_by line, applied to models).
+	if (meta.fallbackFrom !== undefined) {
+		bits.push(`fallback — ${meta.fallbackFrom.map((m) => `${m.ref}: ${m.reason}`).join("; ")}`);
+	}
 	if (meta.finishReason !== "" && meta.finishReason !== "stop") bits.push(meta.finishReason);
 	// A forced answer is degraded goods — stamped, never passed off as
 	// natural. repeat: the deterministic detector; watchdog: system1

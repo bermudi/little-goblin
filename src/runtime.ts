@@ -6,6 +6,15 @@ import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-uti
 import { type LanguageModel, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
 import { type CompactionOutcome, chooseBoundary, runCompaction } from "./agent/compaction.ts";
+import {
+	candidateRefs,
+	exhaustedMessage,
+	type FallbackMiss,
+	type FallbackNote,
+	type FallbackTrail,
+	missReason,
+	nextCandidate,
+} from "./agent/model-fallback.ts";
 import { isTransientTurnFailure, quotaExhausted } from "./agent/provider-errors.ts";
 import { resolveSkillRef } from "./agent/skill-inject.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
@@ -41,6 +50,7 @@ import { type ForcedKind, TurnState } from "./turn/state.ts";
 import {
 	claimMembers,
 	driveStream,
+	emitChunk,
 	endLive,
 	type LiveChunks,
 	type StreamDeps,
@@ -87,7 +97,7 @@ export function compactionBudgets(contextWindow: number | null): {
 export type { ForcedKind } from "./turn/state.ts";
 
 export type TurnDone =
-	| { kind: "completed"; forced?: ForcedKind }
+	| { kind: "completed"; forced?: ForcedKind; fallback?: FallbackNote }
 	| { kind: "fenced" }
 	// modelCalls/transient are stamped only where the runtime can
 	// know them — the terminal failure path. Absent means unknown, and
@@ -183,6 +193,9 @@ export interface RuntimeDeps {
 	// Capture channel settings at admission so recovery and compaction share a
 	// stable snapshot. A later settings change fences the current attempt.
 	captureConversation?(conv: Conversation): Conversation;
+	// The operator's global model fallback list, read live per turn
+	// (design/model.md → Model fallback list). Absent or [] = no fallback.
+	modelFallbacks?(): readonly string[];
 	// Build tools for the deployment workspace and conversation; delivery hooks
 	// connect speak and file tools to the running sink.
 	makeTools(
@@ -1011,6 +1024,9 @@ export class Runtime {
 			}
 		}
 		let filterRetryUsed = recovery?.filterRetryUsed ?? false;
+		// Set when the engine withheld a zero-effect error off the wire for
+		// a possible fallback; the terminal path emits it if none follows.
+		let errorHeld = false;
 		// Preserve loop history across overflow, while attempt-scoped state resets.
 		// Completed tool calls stay in the recovery package as evidence —
 		// they are never re-entered from this list; the journal's recovery
@@ -1147,6 +1163,30 @@ export class Runtime {
 			}
 			return max ?? recovery?.sourceInputSeq ?? null;
 		};
+		// design/model.md → Model fallback list. Only a fresh turn walks the
+		// list: an operator resume, an overflow continuation, or anything
+		// carrying a partial or prior tool calls stays on its model (never
+		// mid-loop). A fallback attempt's recovery is fresh by construction.
+		const fallbackTrail: FallbackTrail | undefined = recovery?.fallback;
+		const configuredModel = fallbackTrail?.configured ?? conv.model;
+		const fallbackFresh =
+			recovery === undefined ||
+			(fallbackTrail !== undefined &&
+				recovery.partial === null &&
+				recovery.toolCalls.length === 0 &&
+				recovery.resumedFrom === undefined &&
+				recovery.overflowed !== true &&
+				recovery.operatorRequest === undefined);
+		const fallbackMisses: FallbackMiss[] = fallbackTrail?.tried ?? [];
+		const nextFallback = (): string | undefined => {
+			if (!fallbackFresh || conv.model === null || configuredModel === null) return undefined;
+			const list = this.deps.modelFallbacks?.() ?? [];
+			if (list.length === 0) return undefined;
+			return nextCandidate(candidateRefs(configuredModel, list), [
+				...fallbackMisses.map((m) => m.ref),
+				conv.model,
+			]);
+		};
 		let runId: string | null = null;
 		// A thrown journal write anywhere in the fence lands here — the
 		// catch below aborts the turn instead of letting the SDK report a
@@ -1226,7 +1266,13 @@ export class Runtime {
 				epoch,
 				anchorSeq,
 				steerMark: snapshot.steerMarkSeed,
-				convSnapshot: { model: conv.model, thinking: conv.thinking },
+				convSnapshot: {
+					model: conv.model,
+					thinking: conv.thinking,
+					// The operator's selection when a fallback serves — the
+					// resume drift check compares this; resume runs on `model`.
+					...(configuredModel !== conv.model ? { configuredModel } : {}),
+				},
 				toolNames: Object.keys(rawTools),
 				startedAt: new Date(turnStartMs).toISOString(),
 				ownedInputSeqs: [...ownedInputSeqs],
@@ -1394,6 +1440,11 @@ export class Runtime {
 				skillWatch: this.skillWatch,
 				turnStartMs,
 				signal: controller.signal,
+				// Held when a fallback could follow, or when earlier candidates
+				// already failed — the terminal error then lists every miss.
+				holdZeroEffectError:
+					fallbackFresh && (nextFallback() !== undefined || fallbackMisses.length > 0),
+				...(fallbackMisses.length > 0 ? { fallbackMisses } : {}),
 			});
 			// Record the window on both rails — the failed rail throws its
 			// recovery/error below, and the request went out either way.
@@ -1414,6 +1465,7 @@ export class Runtime {
 			if (outcome.kind === "failed") {
 				// Carry the filter retry budget into a possible resume.
 				filterRetryUsed = outcome.filterRetryUsed;
+				errorHeld = outcome.errorHeld === true;
 				throw failureFromStream(outcome);
 			}
 			// A stream that reached its finish while a journal write
@@ -1459,7 +1511,18 @@ export class Runtime {
 				append: (messages, opts) => store.append(convId, messages, opts),
 				memory: this.deps.memory,
 			});
-			await notifyAll(landed.done);
+			const fallbackNote: FallbackNote | undefined =
+				fallbackMisses.length > 0 && conv.model !== null
+					? {
+							servedBy: conv.model,
+							misses: fallbackMisses.map(({ ref, reason }) => ({ ref, reason })),
+						}
+					: undefined;
+			await notifyAll(
+				fallbackNote !== undefined && landed.done.kind === "completed"
+					? { ...landed.done, fallback: fallbackNote }
+					: landed.done,
+			);
 			stampRun("completed", "delivered");
 			// A stop during terminal delivery must prevent follow-up work.
 			this.checkAuthority(convId, epoch);
@@ -1578,6 +1641,9 @@ export class Runtime {
 					stampRun("error", "undelivered");
 					outcome.recovery.ownedInputSeqs = [...ownedInputSeqs];
 					outcome.recovery.admissionExchangeExcluded = admissionExchangeExcluded;
+					// The continuation stays on the serving candidate and keeps
+					// its fallback story (run-row configured ref, finish note).
+					outcome.recovery.fallback = fallbackTrail;
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
 				announcePreRunFailure(err);
@@ -1597,21 +1663,82 @@ export class Runtime {
 				// Quota is logged as its own class so a missing retry explains
 				// itself: the scheduler ladder only re-fires transient failures.
 				const quota = quotaExhausted(err);
+				const failureClass =
+					quota !== null ? "quota" : isTransientTurnFailure(err) ? "transient" : "other";
+				const miss: FallbackMiss = {
+					ref: conv.model ?? "(no model)",
+					reason: missReason(err),
+					transient: isTransientTurnFailure(err),
+				};
+				// Zero effect: no model call completed and no tool was
+				// dispatched under this run (design/model.md → Model fallback
+				// list — openclaw's canFallbackAfterError gate).
+				const zeroEffect =
+					state.snapshot().modelCalls === 0 &&
+					(journal === undefined || runId === null || journal.callsFor(runId).length === 0);
+				const next = zeroEffect ? nextFallback() : undefined;
+				if (next !== undefined && configuredModel !== null) {
+					log.warn("model fallback", {
+						conversation: convId,
+						from: miss.ref,
+						to: next,
+						failureClass,
+						...(quota?.resetAt !== undefined ? { quotaResetAt: quota.resetAt } : {}),
+						attempt: fallbackMisses.length + 1,
+						error: err instanceof Error ? err.message : String(err),
+					});
+					// Same hand-off as an overflow resume: this row ends
+					// undelivered and the successor inherits it (it holds no
+					// calls — zero effect — but owns the members' wakes).
+					stampRun("error", "undelivered");
+					return {
+						kind: "resume",
+						recovery: {
+							conversation: { ...conv, model: next },
+							partial: null,
+							memory,
+							seenText: false,
+							toolCalls: [],
+							digest: [],
+							loop: state.snapshot(),
+							startedAt: turnStartMs,
+							live,
+							filterRetryUsed,
+							predecessorRun: runId ?? undefined,
+							recallVersion,
+							sourceInputSeq: sourceInputSeq(),
+							ownedInputSeqs: [...ownedInputSeqs],
+							admissionExchangeExcluded,
+							fallback: { configured: configuredModel, tried: [...fallbackMisses, miss] },
+						},
+						turns,
+					};
+				}
+				// Only a fresh attempt's failure ends the walk; an overflow
+				// continuation or resume failing reports its own error.
+				const misses = fallbackFresh ? [...fallbackMisses, miss] : [miss];
 				log.error("turn failed", err, {
 					conversation: convId,
-					failureClass:
-						quota !== null ? "quota" : isTransientTurnFailure(err) ? "transient" : "other",
+					failureClass,
 					...(quota?.resetAt !== undefined ? { quotaResetAt: quota.resetAt } : {}),
+					...(misses.length > 1 ? { fallbacksTried: misses.map((m) => m.ref) } : {}),
 				});
 				// The stamps are what lets a trigger owner (a schedule fire) tell
 				// a zero-call transport blip from a failure the provider already
-				// spent work on; other error paths stay unstamped.
+				// spent work on; other error paths stay unstamped. After a
+				// fallback walk, transient means every candidate's was.
 				const done: TurnDone = {
 					kind: "error",
-					message: terminalFailureMessage(err, recovery !== undefined),
+					message:
+						misses.length > 1
+							? exhaustedMessage(misses)
+							: terminalFailureMessage(err, recovery !== undefined),
 					modelCalls: state.snapshot().modelCalls,
-					transient: isTransientTurnFailure(err),
+					transient: misses.every((m) => m.transient),
 				};
+				// A withheld error never reached the wire — the terminal
+				// story goes out now, before the sinks settle.
+				if (errorHeld) emitChunk(convId, turns, live, { type: "error", errorText: done.message });
 				announcePreRunFailure(err);
 				stampRun("error", "failed");
 				await notifyAll(done);

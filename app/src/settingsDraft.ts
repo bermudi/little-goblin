@@ -307,6 +307,8 @@ export interface SettingsDraft {
 	model: string;
 	titleModel: string;
 	favorites: string[];
+	// Ordered model fallback list (design/model.md → Model fallback list).
+	modelFallbacks: string[];
 	thinking: ThinkingLevel;
 	telegramEnabled: boolean;
 	telegramModel: string;
@@ -338,6 +340,7 @@ export const EMPTY_DRAFT: SettingsDraft = {
 	model: "",
 	titleModel: "",
 	favorites: [],
+	modelFallbacks: [],
 	thinking: "medium",
 	telegramEnabled: true,
 	telegramModel: "",
@@ -386,6 +389,7 @@ export function draftFromConfig(
 		model: c.model || "",
 		titleModel: c.titleModel || "",
 		favorites: (c.favorites || []).slice(),
+		modelFallbacks: (c.modelFallbacks || []).slice(),
 		thinking: c.thinking || "medium",
 		telegramEnabled: c.telegram.enabled,
 		telegramModel: c.telegram.model || c.model,
@@ -501,6 +505,9 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	// and defaulted server-side. The picker's "not in auth.jsonl" hint
 	// covers the typo case without blocking config-before-key.
 	if (!draft.model) return "Pick an app default model.";
+	if (new Set(draft.modelFallbacks).size !== draft.modelFallbacks.length) {
+		return "The fallback list names a model twice.";
+	}
 	if (draft.telegramEnabled && !draft.telegramModel) return "Pick a Telegram model.";
 	if (draft.tts && draft.tts.kind === "edge" && !draft.tts.voice.trim())
 		return "Text to speech is on — set a voice.";
@@ -602,6 +609,7 @@ export function bodyFromDraft(
 		// "" clears — server normalizes.
 		titleModel: draft.titleModel,
 		favorites: [...draft.favorites],
+		modelFallbacks: draft.modelFallbacks.map((r) => r.trim()).filter((r) => r !== ""),
 		thinking: draft.thinking,
 		tts:
 			draft.tts === null

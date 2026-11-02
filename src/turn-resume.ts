@@ -142,8 +142,12 @@ export function numberedCalls(calls: TurnToolCall[]): TurnToolCall[] {
 }
 
 const convSnapshotSchema = z.object({
+	// The ref the run ran on — a fallback candidate when one served.
 	model: z.string().nullable(),
 	thinking: z.string().nullable(),
+	// Present only when a fallback served: the operator's selection at
+	// the time (design/model.md → Model fallback list).
+	configuredModel: z.string().optional(),
 });
 
 const loopKindSchema = z.enum(["repeat", "watchdog", "context"]);
@@ -632,14 +636,31 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				return refused("invalid", "the recorded settings snapshot is unreadable — not resumed");
 			}
 			const drift: string[] = [];
-			if (snap.data.model !== captured.model) {
-				drift.push(`model changed ${snap.data.model} → ${captured.model}`);
+			// Drift is the operator's selection moving; a fallback-served run
+			// compares its recorded selection, then resumes on the ref that
+			// actually served — a resumed turn never switches models.
+			const recordedSelection = snap.data.configuredModel ?? snap.data.model;
+			if (recordedSelection !== captured.model) {
+				drift.push(`model changed ${recordedSelection} → ${captured.model}`);
 			}
 			if (snap.data.thinking !== captured.thinking) {
 				drift.push(`thinking changed ${snap.data.thinking} → ${captured.thinking}`);
 			}
 			if (drift.length > 0) {
 				return refused("invalid", `${drift.join("; ")} since the interruption — not resumed`);
+			}
+			const servedByFallback =
+				snap.data.configuredModel !== undefined &&
+				snap.data.model !== null &&
+				snap.data.model !== snap.data.configuredModel;
+			if (servedByFallback) {
+				log.info("resume stays on the fallback that served", {
+					conversation: convId,
+					run: run.runId,
+					configured: snap.data.configuredModel,
+					servedBy: snap.data.model,
+				});
+				captured = { ...captured, model: snap.data.model };
 			}
 			const hooks = deps.sinkHooks(conv);
 			let tools: ToolSet;
@@ -774,6 +795,9 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				(run.resumedFrom === null && legacySeqs.length > 0 ? Math.max(...legacySeqs) : null);
 			const seed: ResumeSeed = {
 				conversation: captured,
+				...(servedByFallback && snap.data.configuredModel !== undefined
+					? { fallback: { configured: snap.data.configuredModel, tried: [] } }
+					: {}),
 				partial,
 				sourceInputSeq,
 				admissionExchangeExcluded: run.admissionExchangeExcluded,

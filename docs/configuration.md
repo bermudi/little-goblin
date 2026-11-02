@@ -168,6 +168,20 @@ that's fine. The provider name must exist in `providers`, otherwise the bot
 fails loudly at startup/validation time instead of guessing.
 
 `favorites` is the quick-switch shortlist the Settings mini app shows you.
+
+```json5
+modelFallbacks: ["codex/gpt-6.1-terra", "zai/glm-5.3"],
+```
+
+`modelFallbacks` is an ordered list goblin tries when a conversation's own
+model fails **before doing anything**: a quota wall, an outage, a key that
+won't load. It applies to every conversation (app and Telegram) and to
+compaction summaries. Each turn starts at the conversation's own model
+again, so there are no cooldowns to clear. A failure after the model has
+answered or a tool has run never switches models mid-turn. The reply says
+who served (`via zai/glm-5.3 — codex/gpt-6.1-terra: quota exhausted` in
+Telegram, the meta line in the app). Empty (the default) means no
+fallback. Edit it under Settings → Models → Fallbacks.
 `titleModel` names
 a small cheap model used to auto-title new topics; leave it unset and topics
 keep Telegram's placeholder name.

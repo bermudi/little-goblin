@@ -248,6 +248,14 @@ export interface StreamDeps<M extends WireMember> {
 	runId: string;
 	turnStartMs: number;
 	signal: AbortSignal;
+	// design/model.md → Model fallback list. When the runtime has a next
+	// candidate, an error that arrives before any model call completed
+	// is held off the wire: the fallback attempt continues the same
+	// stream, and the runtime emits the error itself if it ends the turn.
+	holdZeroEffectError?: boolean | undefined;
+	// Candidates that already failed this turn; non-empty stamps the
+	// finish metadata (`fallback.from`) — the label names who served.
+	fallbackMisses?: ReadonlyArray<{ ref: string; reason: string }> | undefined;
 }
 
 export type StreamOutcome =
@@ -271,6 +279,9 @@ export type StreamOutcome =
 			errorText: string;
 			rawError: unknown;
 			holdForRecovery: boolean;
+			// The error chunk was withheld (holdZeroEffectError) — nothing
+			// about this failure reached the wire.
+			errorHeld?: boolean;
 			// Set when the failure is a step-boundary pre-empt, not a provider
 			// error: the recovery rail is the same, the compact reason and the
 			// operator-facing story are not.
@@ -616,6 +627,7 @@ export async function driveStream<M extends WireMember>(
 	let seenText = deps.seenText;
 	let pendingStep = false;
 	let streamError: string | null = null;
+	let errorHeld = false;
 	const uiStream = toUIMessageStream<ToolSet, UIMessage>({
 		stream: result.stream,
 		sendReasoning: true,
@@ -645,6 +657,13 @@ export async function driveStream<M extends WireMember>(
 				// Absent when no step ran.
 				...(lastPromptChars !== null ? { promptChars: { ...lastPromptChars } } : {}),
 				...(turnQuota !== null ? { quota: turnQuota } : {}),
+				...(deps.fallbackMisses !== undefined && deps.fallbackMisses.length > 0
+					? {
+							fallback: {
+								from: deps.fallbackMisses.map(({ ref, reason }) => ({ ref, reason })),
+							},
+						}
+					: {}),
 			};
 		},
 		onError: (error) =>
@@ -690,7 +709,14 @@ export async function driveStream<M extends WireMember>(
 					preemptInfo = { arm: rawError.arm, step: rawError.stepNumber };
 				}
 			}
-			if (!holdForRecovery) {
+			if (
+				chunk.type === "error" &&
+				!holdForRecovery &&
+				deps.holdZeroEffectError === true &&
+				state.snapshot().modelCalls === 0
+			) {
+				errorHeld = true;
+			} else if (!holdForRecovery) {
 				emitChunk(convId, members, live, chunk);
 			}
 			// The SDK emits start-step before an error part, so an error-only step must leave modelCalls at 0. Fail closed on anything else — modelCalls gates the retry ladder, so an unrecognized chunk type spends the call, never permits a retry.
@@ -797,6 +823,7 @@ export async function driveStream<M extends WireMember>(
 			errorText: streamError,
 			rawError,
 			holdForRecovery,
+			...(errorHeld ? { errorHeld: true } : {}),
 			...(preemptInfo !== null ? { preempt: preemptInfo } : {}),
 			partial: partialResponse as UIMessage | null,
 			seenText,

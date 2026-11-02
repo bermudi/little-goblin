@@ -753,12 +753,18 @@ export async function driveClaude<M extends WireMember>(
 	if (streamError !== null) {
 		// Failed turns surface an error chunk on the wire, like the API
 		// lane's error part — overflow recovery is the one holdback.
-		if (!holdForRecovery) emit({ type: "error", errorText: streamError });
+		// A zero-effect error with a fallback candidate waiting is held
+		// too (design/model.md → Model fallback list); the runtime emits
+		// it if the turn ends here.
+		const errorHeld =
+			!holdForRecovery && deps.holdZeroEffectError === true && state.snapshot().modelCalls === 0;
+		if (!holdForRecovery && !errorHeld) emit({ type: "error", errorText: streamError });
 		return {
 			kind: "failed",
 			errorText: streamError,
 			rawError,
 			holdForRecovery,
+			...(errorHeld ? { errorHeld: true } : {}),
 			partial: run.parts.length > 0 ? { id: messageId, role: "assistant", parts: run.parts } : null,
 			seenText: run.sawText,
 			toolCalls: run.events.toolCalls,
@@ -791,6 +797,9 @@ export async function driveClaude<M extends WireMember>(
 			lastCacheRead: run.lastCacheRead,
 		},
 		...(segments !== null ? { promptChars: { ...segments } } : {}),
+		...(deps.fallbackMisses !== undefined && deps.fallbackMisses.length > 0
+			? { fallback: { from: deps.fallbackMisses.map(({ ref, reason }) => ({ ref, reason })) } }
+			: {}),
 	};
 	emit({ type: "finish", finishReason, messageMetadata: metadata });
 	const responseMessage: UIMessage | null =

@@ -55,6 +55,7 @@ function _testConfig(vision: { model: string; maxTokens?: number }): Config {
 		model: "zai/glm-5.3-flash",
 		tts: false,
 		favorites: [],
+		modelFallbacks: [],
 		thinking: "medium",
 		operators: [1],
 		allowedUsers: [1],

@@ -22,6 +22,7 @@ const baseConfig: Config = {
 	model: "zai/m",
 	tts: false,
 	favorites: [],
+	modelFallbacks: [],
 	thinking: "medium",
 	operators: [1],
 	allowedUsers: [2],

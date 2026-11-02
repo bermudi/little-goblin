@@ -5,6 +5,7 @@ import { channelOf, parseAddress, type Conversation } from "../conversation.ts";
 import type { TurnDone, TurnSink } from "../runtime.ts";
 import { sniffImage } from "../agent/tools/read.ts";
 import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
+import { fallbackNotice } from "../agent/model-fallback.ts";
 import { speechContent, STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
@@ -91,7 +92,7 @@ function replyKey(chatId: number, messageId: number): string {
 	return `${chatId}:${messageId}`;
 }
 
-function forcedNotice(done: TurnDone): string | null {
+function forcedLine(done: TurnDone): string | null {
 	if (done.kind !== "completed" || done.forced === undefined) return null;
 	switch (done.forced) {
 		case "repeat":
@@ -101,6 +102,16 @@ function forcedNotice(done: TurnDone): string | null {
 		case "context":
 			return "⚠ context nearly full — answer forced";
 	}
+}
+
+// The status tail a completed reply carries: a forced landing, and a
+// fallback that served (design/model.md → Model fallback list).
+function forcedNotice(done: TurnDone): string | null {
+	const lines = [
+		forcedLine(done),
+		done.kind === "completed" && done.fallback !== undefined ? fallbackNotice(done.fallback) : null,
+	].filter((l): l is string => l !== null);
+	return lines.length > 0 ? lines.join("\n") : null;
 }
 
 export function rememberReply(chatId: number, messageId: number, text: string): void {

@@ -71,6 +71,7 @@ const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
 	model: "app model",
 	titleModel: "topic-title model",
 	favorites: "favorites",
+	modelFallbacks: "model fallbacks",
 	thinking: "app thinking",
 	telegramEnabled: "telegram channel",
 	telegramModel: "telegram model",
@@ -331,6 +332,7 @@ export function SettingsView({
 		if (draft.vision?.model.startsWith(pfx)) refs.push("vision");
 		if (draft.image?.model.startsWith(pfx)) refs.push("image generation");
 		if (draft.favorites.some((f) => f.startsWith(pfx))) refs.push("favorites");
+		if (draft.modelFallbacks.some((f) => f.startsWith(pfx))) refs.push("model fallbacks");
 		return refs;
 	};
 
@@ -392,6 +394,13 @@ export function SettingsView({
 			});
 		} else if (sheet === "telegram") {
 			patchDraft({ telegramModel: ref });
+		} else if (sheet === "fallback") {
+			// Appended in pick order; the list card reorders.
+			setDraft((d) =>
+				ref === "" || d.modelFallbacks.includes(ref)
+					? d
+					: { ...d, modelFallbacks: [...d.modelFallbacks, ref] },
+			);
 		} else {
 			patchDraft({ model: ref });
 		}
@@ -557,7 +566,9 @@ export function SettingsView({
 						? "Telegram model"
 						: sheet === "favorites"
 							? "Favorites"
-							: "App default model";
+							: sheet === "fallback"
+								? "Add a fallback model"
+								: "App default model";
 	const sheetCurrent =
 		sheet === "telegram"
 			? draft.telegramModel
@@ -567,7 +578,7 @@ export function SettingsView({
 					? (draft.vision?.model ?? "")
 					: sheet === "image"
 						? (draft.image?.model ?? "")
-						: sheet === "favorites"
+						: sheet === "favorites" || sheet === "fallback"
 							? ""
 							: draft.model;
 

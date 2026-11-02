@@ -27,6 +27,7 @@ const baseConfig = (): Config => ({
 	model: "main/gpt-5",
 	titleModel: undefined,
 	favorites: ["main/gpt-5", "route/auto"],
+	modelFallbacks: [],
 	thinking: "high",
 	tts: false,
 	transcription: undefined,
@@ -62,6 +63,7 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 	model: "main/gpt-5",
 	titleModel: "",
 	favorites: [],
+	modelFallbacks: [],
 	thinking: "medium",
 	telegramEnabled: true,
 	telegramModel: "main/gpt-5",
@@ -166,6 +168,13 @@ describe("validateDraft", () => {
 		expect(validateDraft(draft(), [prov()])).toBeNull();
 	});
 
+	test("the fallback list may not name a model twice", () => {
+		expect(validateDraft(draft({ modelFallbacks: ["main/a", "main/a"] }), [prov()])).toMatch(
+			/twice/,
+		);
+		expect(validateDraft(draft({ modelFallbacks: ["main/a", "main/b"] }), [prov()])).toBeNull();
+	});
+
 	test("provider names must be present and unique", () => {
 		expect(validateDraft(draft(), [prov({ name: " " })])).toMatch(/name/);
 		expect(
@@ -247,6 +256,18 @@ describe("validateDraft", () => {
 });
 
 describe("bodyFromDraft", () => {
+	test("the fallback list round-trips in order, blanks dropped", () => {
+		const c = { ...baseConfig(), modelFallbacks: ["route/auto", "main/gpt-5"] };
+		const { draft: d, providers } = draftFromConfig(c);
+		expect(d.modelFallbacks).toEqual(["route/auto", "main/gpt-5"]);
+		const body = bodyFromDraft(
+			{ ...d, modelFallbacks: [...d.modelFallbacks, " "] },
+			providers,
+			authDefaults,
+		);
+		expect(body.modelFallbacks).toEqual(["route/auto", "main/gpt-5"]);
+	});
+
 	test("null blocks serialize as the clearing convention", () => {
 		const body = bodyFromDraft(draft(), [prov()], authDefaults);
 		expect(body.tts).toBe("");

@@ -6,13 +6,20 @@ import type { RuntimeDeps } from "../runtime.ts";
 import { splitModelRef, type ConfigRef, type ThinkingLevel } from "../config.ts";
 import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
-import type { ConversationStore } from "../conversation.ts";
+import type { Conversation, ConversationStore } from "../conversation.ts";
 import type { NoteStore } from "../notes.ts";
 import type { ProjectStore } from "../projects.ts";
 import type { MediaPosition } from "./attachments.ts";
 import { codexContextWindow } from "./codex/models.ts";
 import { contextLimit, contextLimitDetailed, inputModalities } from "./models-dev.ts";
+import {
+	candidateRefs,
+	exhaustedMessage,
+	type FallbackMiss,
+	missReason,
+} from "./model-fallback.ts";
 import { modelCallMaxRetries } from "./onemin.ts";
+import { isTransientTurnFailure } from "./provider-errors.ts";
 import { systemPromptFor } from "./prompt.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
 import { codexSessionId } from "./codex/session.ts";
@@ -37,6 +44,60 @@ export function makeStepBuilder(
 	deps: StepBuilderDeps,
 ): Pick<RuntimeDeps, "buildStep" | "compaction"> {
 	const { configRef, auth, store, projects, notes, observation } = deps;
+	// One summary call on one ref — the fallback walk below picks refs.
+	const summarizeOn = async (
+		conv: Conversation,
+		modelRef: string,
+		system: string,
+		prompt: string,
+		signal: AbortSignal,
+	): Promise<string> => {
+		const cfg = configRef.current;
+		const { provider, modelId } = splitModelRef(modelRef);
+		const p = cfg.providers[provider];
+		// Compaction rides the same engine as the turn — a claude-code
+		// conversation summarizes on its subscription too (text-only,
+		// tools off, one call).
+		if (p?.kind === "claude-code") {
+			if (deps.claudeEngine === undefined) {
+				throw new Error(
+					`compaction for ${conv.id} uses claude-code model ${modelRef} but no claude engine is bound`,
+				);
+			}
+			return deps.claudeEngine.compact({
+				modelId,
+				auth: p.auth ?? "claude-code",
+				system,
+				prompt,
+				signal,
+			});
+		}
+		const model = observedModel(
+			await resolveModel(cfg, auth, modelRef, {
+				sessionId: codexSessionId(conv.id),
+				subagent: "compact",
+			}),
+			{
+				conversation: conv.id,
+				purpose: "compaction",
+				observation,
+				route: cacheRouteFor(cfg, modelRef),
+			},
+		);
+		const providerOptions = thinkingOptions(cfg, modelRef, conv.thinking as ThinkingLevel);
+		// Same provider rule as the turn step — 1min sends no SDK
+		// retries.
+		const maxRetries = modelCallMaxRetries(cfg, modelRef);
+		const { text } = await generateText({
+			model,
+			instructions: system,
+			prompt,
+			abortSignal: signal,
+			...(providerOptions ? { providerOptions } : {}),
+			...(maxRetries !== undefined ? { maxRetries } : {}),
+		});
+		return text;
+	};
 	return {
 		async buildStep(conv, tools) {
 			const cfg = configRef.current;
@@ -155,53 +216,38 @@ export function makeStepBuilder(
 				}
 				return contextLimit(provider, modelId);
 			},
+			// The conversation's model first, then the operator's fallback
+			// list (design/model.md → Model fallback list). One call, tools
+			// off, not streamed — any throw is zero effect, so every
+			// non-abort failure advances.
 			summarize: async (conv, system, prompt, signal) => {
-				const cfg = configRef.current;
-				const modelRef = conv.model!;
-				const { provider, modelId } = splitModelRef(modelRef);
-				const p = cfg.providers[provider];
-				// Compaction rides the same engine as the turn — a claude-code
-				// conversation summarizes on its subscription too (text-only,
-				// tools off, one call).
-				if (p?.kind === "claude-code") {
-					if (deps.claudeEngine === undefined) {
-						throw new Error(
-							`compaction for ${conv.id} uses claude-code model ${modelRef} but no claude engine is bound`,
-						);
+				const refs = candidateRefs(conv.model!, configRef.current.modelFallbacks);
+				const misses: FallbackMiss[] = [];
+				for (const [i, modelRef] of refs.entries()) {
+					try {
+						return await summarizeOn(conv, modelRef, system, prompt, signal);
+					} catch (err) {
+						if (signal.aborted) throw err;
+						misses.push({
+							ref: modelRef,
+							reason: missReason(err),
+							transient: isTransientTurnFailure(err),
+						});
+						const next = refs[i + 1];
+						if (next === undefined) {
+							if (misses.length === 1) throw err;
+							throw new Error(exhaustedMessage(misses), { cause: err });
+						}
+						log.warn("model fallback", {
+							conversation: conv.id,
+							purpose: "compaction",
+							from: modelRef,
+							to: next,
+							error: err instanceof Error ? err.message : String(err),
+						});
 					}
-					return deps.claudeEngine.compact({
-						modelId,
-						auth: p.auth ?? "claude-code",
-						system,
-						prompt,
-						signal,
-					});
 				}
-				const model = observedModel(
-					await resolveModel(cfg, auth, modelRef, {
-						sessionId: codexSessionId(conv.id),
-						subagent: "compact",
-					}),
-					{
-						conversation: conv.id,
-						purpose: "compaction",
-						observation,
-						route: cacheRouteFor(cfg, modelRef),
-					},
-				);
-				const providerOptions = thinkingOptions(cfg, modelRef, conv.thinking as ThinkingLevel);
-				// Same provider rule as the turn step — 1min sends no SDK
-				// retries.
-				const maxRetries = modelCallMaxRetries(cfg, modelRef);
-				const { text } = await generateText({
-					model,
-					instructions: system,
-					prompt,
-					abortSignal: signal,
-					...(providerOptions ? { providerOptions } : {}),
-					...(maxRetries !== undefined ? { maxRetries } : {}),
-				});
-				return text;
+				throw new Error(`compaction for ${conv.id} has no model to summarize with`);
 			},
 		},
 	};

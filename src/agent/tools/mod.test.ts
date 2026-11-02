@@ -9,11 +9,15 @@ import { HindsightClient } from "../../memory/hindsight.ts";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { ProgramsStore } from "../../programs.ts";
 import {
+	type ArtifactToolDeps,
 	type DelegateToolDeps,
 	type HistorySearchDeps,
 	type ImageToolDeps,
 	type MailToolDeps,
 	makeTools,
+	type NoteToolDeps,
+	type ResponsibilityToolDeps,
+	type SandboxToolDeps,
 	toolNames,
 	type VisionToolDeps,
 } from "./mod.ts";
@@ -165,8 +169,9 @@ describe("toolNames ↔ makeTools", () => {
 			},
 			web: {
 				// makeTools reads configRef.current.search even when merely
-				// deciding whether to mount the search tool.
-				configRef: { current: {} as Config },
+				// deciding whether to mount the search tool — the block is
+				// set so search mounts too and the guards below cover it.
+				configRef: { current: { search: {} } as unknown as Config },
 				auth: {} as AuthStore,
 			},
 			transcribe: { transcribe: async () => null },
@@ -199,16 +204,36 @@ describe("toolNames ↔ makeTools", () => {
 				desktops: {} as never,
 			},
 			image: {} as unknown as ImageToolDeps,
+			// The policy guard below is only as good as the fixture —
+			// every remaining optional dependency is mounted so the
+			// coverage is the whole tool set, not the always-on subset.
+			artifact: {} as unknown as ArtifactToolDeps,
+			note: {} as unknown as NoteToolDeps,
+			sandbox: {} as unknown as SandboxToolDeps,
+			responsibility: {} as unknown as ResponsibilityToolDeps,
+			ui: true,
 		});
-		// Policy exhaustiveness: a new tool without a TOOL_POLICY row fails here.
+		// Policy exhaustiveness, both ways: a mounted tool without a
+		// TOOL_POLICY row fails here, and so does a TOOL_NAMES entry
+		// this fixture fails to mount — a mount renamed in mod.ts
+		// without its row would otherwise land on CONSERVATIVE_POLICY
+		// silently.
 		const mounted = Object.keys(withScript(tools, { conversation: "c", maxCalls: 1 }));
 		for (const name of mounted) {
 			expect(TOOL_NAMES as readonly string[], `${name} needs a TOOL_POLICY row`).toContain(name);
 		}
+		for (const name of TOOL_NAMES) {
+			expect(mounted, `${name} must be mounted by this fixture`).toContain(name);
+		}
 		for (const [name, t] of Object.entries(tools)) {
 			const schema = (t as unknown as { inputSchema?: unknown }).inputSchema;
 			expect(schema, `${name} exposes an input schema`).toBeDefined();
-			const wire = z.toJSONSchema(schema as z.ZodType);
+			// ui's input is a jsonSchema() wrapper carrying the wire form
+			// directly (its root stays a zod-converted object); the rest
+			// are zod and convert here.
+			const wire: { type?: unknown } =
+				(schema as { jsonSchema?: { type?: unknown } }).jsonSchema ??
+				z.toJSONSchema(schema as z.ZodType);
 			expect(wire.type, `${name} wire schema must be an object, got ${wire.type}`).toBe("object");
 		}
 	});

@@ -197,6 +197,14 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   fallback summary — the summarizer is the conversation's own model, so
   when it can't summarize the turn can't answer either, and a degraded
   summary silently harms every later turn.
+- **Quota walls skip the SDK's retries** (2026-11-01): the AI SDK retries
+  only an `APICallError` with `isRetryable === true` and has no skip hook,
+  so a z.ai 429 "Limit Exhausted" burned its whole `maxRetries` ladder
+  (goblin.log 2026-10-26, "Failed after 3 attempts"). `resolveModel` wraps
+  every resolved model in a middleware that rethrows a `quotaExhausted`
+  match as the same `APICallError` (all fields kept) with `isRetryable:
+  false`, logging one `warn` (model, statusCode, resetAt). Throttles, 5xx
+  and overloads keep the SDK ladder; `maxRetries` is unchanged.
 - **Provider-filter recovery** (2026-10-05): one automatic retry per turn,
   same model, unchanged request, no fallback; only explicit signals qualify —
   the SDK's `content-filter` finish reason or the operator-pasted provider

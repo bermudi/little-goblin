@@ -11,7 +11,7 @@ import type { Config } from "../config.ts";
 import { openCacheObservation } from "../cache-observation.ts";
 import { setLogFile } from "../log.ts";
 import { tmpDir } from "../testkit.ts";
-import { APICallError } from "ai";
+import { APICallError, generateText, streamText } from "ai";
 import { generateModel, scriptedModel } from "../testkit/fake-model.ts";
 import type { AuthStore } from "../auth.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
@@ -588,4 +588,45 @@ describe("failure lines carry only safe categories", () => {
 			db.close();
 		}
 	});
+});
+
+describe("resolveModel — provider quota walls skip the SDK's own retries", () => {
+	const ZAI_QUOTA =
+		'{"error":{"code":"1310","message":"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-28 08:50:34"}}';
+	const THROTTLE = '{"error":{"message":"Too many requests, slow down"}}';
+
+	// Fake at the HTTP edge: the real provider, parser and SDK retry loop run.
+	async function attempts(body: string, run: "generate" | "stream"): Promise<number> {
+		const original = globalThis.fetch;
+		let calls = 0;
+		globalThis.fetch = (async () => {
+			calls++;
+			// retry-after-ms: 0 keeps the SDK's backoff instant.
+			return new Response(body, {
+				status: 429,
+				headers: { "content-type": "application/json", "retry-after-ms": "0" },
+			});
+		}) as unknown as typeof fetch;
+		try {
+			const model = await resolveModel(cfg, fixtureAuth("k"), "other/m");
+			if (run === "generate") {
+				await generateText({ model, prompt: "hi", maxRetries: 2 }).catch(() => undefined);
+			} else {
+				const result = streamText({ model, prompt: "hi", maxRetries: 2, onError: () => {} });
+				await result.consumeStream({ onError: () => {} });
+			}
+		} finally {
+			globalThis.fetch = original;
+		}
+		return calls;
+	}
+
+	for (const run of ["generate", "stream"] as const) {
+		test(`${run}: quota 429 makes exactly one attempt`, async () => {
+			expect(await attempts(ZAI_QUOTA, run)).toBe(1);
+		});
+		test(`${run}: a plain 429 throttle still spends the retry ladder`, async () => {
+			expect(await attempts(THROTTLE, run)).toBe(3);
+		});
+	}
 });

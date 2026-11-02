@@ -20,15 +20,70 @@ import { splitModelRef, type Config, type ThinkingLevel } from "../config.ts";
 import { log } from "../log.ts";
 import { codexModel, RESPONSES_URL } from "./codex/model.ts";
 import type { MediaPosition } from "./attachments.ts";
+import { quotaExhausted } from "./provider-errors.ts";
 import { isOneMinHost } from "./onemin.ts";
 import { isZaiHost, zaiReasoningFetch } from "./zai-responses.ts";
 import { thinkingOptions as thinkingOptionsFor } from "./thinking.ts";
 
+// Every chat-turn, compaction, title and reviewer model comes through
+// here, so the quota filter lives here once. The SDK retries only
+// APICallErrors flagged isRetryable and offers no skip hook; a provider
+// quota wall (days, not seconds) would burn its whole ladder first.
+// The rethrow keeps every field — only the retry verdict changes.
 export async function resolveModel(
 	config: Config,
 	auth: AuthStore,
 	modelRef: string,
 ): Promise<LanguageModel> {
+	const model = await resolveProviderModel(config, auth, modelRef);
+	return wrapLanguageModel({ model, middleware: quotaNoRetry(modelRef) });
+}
+
+function quotaNoRetry(modelRef: string): LanguageModelMiddleware {
+	const filter = (error: unknown): unknown => {
+		if (!APICallError.isInstance(error) || error.isRetryable !== true) return error;
+		const quota = quotaExhausted(error);
+		if (quota === null) return error;
+		log.warn("provider quota exhausted; SDK retries skipped", {
+			model: modelRef,
+			statusCode: error.statusCode,
+			...(quota.resetAt === undefined ? {} : { resetAt: quota.resetAt }),
+		});
+		return new APICallError({
+			message: error.message,
+			url: error.url,
+			requestBodyValues: error.requestBodyValues,
+			...(error.statusCode === undefined ? {} : { statusCode: error.statusCode }),
+			...(error.responseHeaders === undefined ? {} : { responseHeaders: error.responseHeaders }),
+			...(error.responseBody === undefined ? {} : { responseBody: error.responseBody }),
+			cause: error.cause,
+			isRetryable: false,
+			data: error.data,
+		});
+	};
+	return {
+		wrapGenerate: async ({ doGenerate }) => {
+			try {
+				return await doGenerate();
+			} catch (error) {
+				throw filter(error);
+			}
+		},
+		wrapStream: async ({ doStream }) => {
+			try {
+				return await doStream();
+			} catch (error) {
+				throw filter(error);
+			}
+		},
+	};
+}
+
+async function resolveProviderModel(
+	config: Config,
+	auth: AuthStore,
+	modelRef: string,
+): Promise<Exclude<LanguageModel, string>> {
 	const { provider, modelId } = splitModelRef(modelRef);
 	const p = config.providers[provider];
 	if (!p) {
@@ -59,7 +114,7 @@ export async function resolveModel(
 			const apiKey = await auth.resolve(p.auth);
 			// Provider metadata types lag exactOptionalPropertyTypes; the runtime
 			// value still has the LanguageModel shape.
-			return createOpenRouter({ apiKey }).chat(modelId) as unknown as LanguageModel;
+			return createOpenRouter({ apiKey }).chat(modelId) as unknown as Exclude<LanguageModel, string>;
 		}
 		case "codex":
 			return codexModel(modelId, p.authFile);

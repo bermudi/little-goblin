@@ -219,6 +219,18 @@ describe("isTransientTurnFailure", () => {
 		},
 	);
 
+	test("codex in-stream overload (observed response.failed body) classifies transient", () => {
+		// Verbatim from goblin.log 2026-10-26T01:52:51Z — the stream answered
+		// HTTP 200 and failed in-band, so no statusCode carries the 503.
+		const err = new Error(
+			'codex stream response.failed: {"type":"service_unavailable_error","param":null,"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}',
+		);
+		expect(isTransientTurnFailure(err)).toBe(true);
+		expect(isTransientTurnFailure(new Error("turn failed", { cause: err }))).toBe(true);
+		expect(quotaExhausted(err)).toBeNull();
+		expect(isContextOverflow(err)).toBe(false);
+	});
+
 	test("z.ai weekly quota wall (observed 429 body) is quota, not transient or overflow", () => {
 		const body =
 			"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-28 08:50:34[20261026103718cff7c6d5834b4b22]";

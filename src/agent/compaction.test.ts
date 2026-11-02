@@ -216,7 +216,7 @@ describe("runCompaction", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			"zai/glm-5.3",
+			["zai/glm-5.3"],
 			async (system, prompt) => {
 				prompts.push({ system, prompt });
 				return "the folded summary";
@@ -255,7 +255,7 @@ describe("runCompaction", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			"m",
+			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				return "folded";
@@ -296,7 +296,7 @@ describe("runCompaction", () => {
 		await runCompaction(
 			"dm:1",
 			store,
-			"m",
+			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				return "folded";
@@ -313,7 +313,7 @@ describe("runCompaction", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				"m",
+				["m"],
 				async () => {
 					throw new Error("provider down");
 				},
@@ -331,7 +331,7 @@ describe("runCompaction", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				"m",
+				["m"],
 				async () => {
 					controller.abort();
 					return "late summary";
@@ -352,7 +352,7 @@ describe("runCompaction", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				"m",
+				["m"],
 				async () => {
 					revoked = true; // the epoch bumps while the call is in flight
 					return "late summary";
@@ -377,7 +377,7 @@ describe("runCompaction", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				"m",
+				["m"],
 				async () => {
 					calls++;
 					return "must not run";
@@ -402,7 +402,7 @@ describe("runCompaction", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				"m",
+				["m"],
 				async () => "  ",
 				{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 				signal(),
@@ -426,7 +426,7 @@ describe("runCompaction", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			"m",
+			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				return "fold two";
@@ -460,7 +460,7 @@ describe("runCompaction", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			"m",
+			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				return `fold ${prompts.length}`;
@@ -497,7 +497,7 @@ describe("runCompaction", () => {
 		await runCompaction(
 			"dm:1",
 			store,
-			"m",
+			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				return "folded";
@@ -519,7 +519,7 @@ describe("runCompaction", () => {
 			runCompaction(
 				"dm:1",
 				store,
-				"m",
+				["m"],
 				// Ignores its abort — the race, not the model's good
 				// behavior, bounds the call.
 				() => new Promise<string>(() => {}),
@@ -590,7 +590,7 @@ describe("tool-call atomicity across the cut", () => {
 		const outcome = await runCompaction(
 			"dm:1",
 			store,
-			"m",
+			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
 				return "folded";
@@ -652,8 +652,8 @@ describe("opaque reasoning state", () => {
 		const a = fakeStore(small);
 		const b = fakeStore(huge);
 		const opts = { tailTokenBudget: 1, inputTokenBudget: 32_000 };
-		const outA = await runCompaction("dm:1", a.store, "m", summarize, opts, signal());
-		const outB = await runCompaction("dm:1", b.store, "m", summarize, opts, signal());
+		const outA = await runCompaction("dm:1", a.store, ["m"], summarize, opts, signal());
+		const outB = await runCompaction("dm:1", b.store, ["m"], summarize, opts, signal());
 		expect(outA.kind).toBe("compacted");
 		expect(outB.kind).toBe("compacted");
 		if (outA.kind !== "compacted" || outB.kind !== "compacted") return;
@@ -673,7 +673,7 @@ describe("opaque reasoning state", () => {
 		const codexOut = await runCompaction(
 			"dm:1",
 			fakeStore(ciphered("x".repeat(60_000))).store,
-			"m",
+			["m"],
 			summarize,
 			opts,
 			signal(),
@@ -681,7 +681,7 @@ describe("opaque reasoning state", () => {
 		const foreignOut = await runCompaction(
 			"dm:1",
 			fakeStore(foreign).store,
-			"m",
+			["m"],
 			summarize,
 			opts,
 			signal(),
@@ -690,5 +690,109 @@ describe("opaque reasoning state", () => {
 			throw new Error("expected both spans to fold");
 		}
 		expect(foreignOut.tokensBefore - codexOut.tokensBefore).toBeGreaterThan(10_000);
+	});
+});
+
+// The summarizer's fallback walk (design/model.md → Model fallback list
+// → Compaction): each candidate gets its own call timeout, the walk is
+// sticky within a pass, and the pointer names who wrote it.
+describe("runCompaction — fallback walk", () => {
+	const longSpan = (): CompactionEvent[] => {
+		const detail: CompactionEvent[] = [];
+		for (let i = 0; i < 10; i++) {
+			const u = 2 * i + 1;
+			detail.push(ev(u, "user", `question ${i} `.repeat(50)));
+			detail.push(ev(u + 1, "assistant", `answer ${i} `.repeat(50), u));
+		}
+		return detail;
+	};
+
+	test("a wedged primary times out alone — the fallback gets a live signal and writes the pointer", async () => {
+		const { store, writes } = fakeStore(sample());
+		const signals: Array<{ model: string; abortedAtStart: boolean }> = [];
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["zai/glm-5.3", "codex/gpt-6.1-terra"],
+			(_system, _prompt, callSignal, model) => {
+				signals.push({ model, abortedAtStart: callSignal.aborted });
+				// The primary ignores its abort — only the attempt's own
+				// timeout can end it.
+				if (model === "zai/glm-5.3") return new Promise<string>(() => {});
+				return Promise.resolve("folded by the fallback");
+			},
+			{ tailTokenBudget: 1, inputTokenBudget: 32_000, callTimeoutMs: 50 },
+			signal(),
+		);
+		expect(outcome).toMatchObject({ kind: "compacted", summary: "folded by the fallback" });
+		expect(signals).toEqual([
+			{ model: "zai/glm-5.3", abortedAtStart: false },
+			{ model: "codex/gpt-6.1-terra", abortedAtStart: false },
+		]);
+		// Provenance is the serving ref, not the conversation's model.
+		expect(writes).toHaveLength(1);
+		expect(writes[0]).toMatchObject({ model: "codex/gpt-6.1-terra" });
+	});
+
+	test("a candidate that failed a chunk is not retried on later chunks", async () => {
+		const { store, writes } = fakeStore(longSpan());
+		const asked: string[] = [];
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["a/primary", "b/backup"],
+			async (_system, _prompt, _signal, model) => {
+				asked.push(model);
+				if (model === "a/primary") throw new Error("server_is_overloaded");
+				return `fold ${asked.length}`;
+			},
+			{ tailTokenBudget: 1, inputTokenBudget: 1_200 },
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		// Several chunks, one primary attempt.
+		expect(asked.length).toBeGreaterThan(2);
+		expect(asked.filter((m) => m === "a/primary")).toEqual(["a/primary"]);
+		expect(asked[0]).toBe("a/primary");
+		expect(writes[0]).toMatchObject({ model: "b/backup" });
+	});
+
+	test("every candidate failing names each miss once, and nothing is written", async () => {
+		const { store, writes } = fakeStore(sample());
+		await expect(
+			runCompaction(
+				"dm:1",
+				store,
+				["a/primary", "b/backup"],
+				async (_system, _prompt, _signal, model) => {
+					throw new Error(`down: ${model}`);
+				},
+				{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
+				signal(),
+			),
+		).rejects.toThrow("every model failed — a/primary: down: a/primary; b/backup: down: b/backup");
+		expect(writes).toHaveLength(0);
+	});
+
+	test("a parent abort never advances the walk", async () => {
+		const { store, writes } = fakeStore(sample());
+		const controller = new AbortController();
+		const asked: string[] = [];
+		await expect(
+			runCompaction(
+				"dm:1",
+				store,
+				["a/primary", "b/backup"],
+				(_system, _prompt, _signal, model) => {
+					asked.push(model);
+					controller.abort(new Error("stopped"));
+					return new Promise<string>(() => {});
+				},
+				{ tailTokenBudget: 1, inputTokenBudget: 32_000, callTimeoutMs: 5_000 },
+				controller.signal,
+			),
+		).rejects.toThrow("stopped");
+		expect(asked).toEqual(["a/primary"]);
+		expect(writes).toHaveLength(0);
 	});
 });

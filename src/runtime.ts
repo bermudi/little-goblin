@@ -12,11 +12,13 @@ import {
 	type FallbackMiss,
 	type FallbackNote,
 	type FallbackTrail,
+	failureClass,
 	missReason,
 	nextCandidate,
 } from "./agent/model-fallback.ts";
 import {
 	isContentFilter,
+	isContextOverflow,
 	isTransientTurnFailure,
 	quotaExhausted,
 } from "./agent/provider-errors.ts";
@@ -220,8 +222,10 @@ export interface RuntimeDeps {
 	// is enqueued only while the turn retains authority. Memory input is kept
 	// separate from the model's complete conversation view.
 	memory?: MemoryTurnDeps;
-	// Optional compaction uses the conversation's model; its dedicated signal
-	// lets /stop and shutdown cancel an in-flight summary. A failed summary
+	// Optional compaction summarizes on the conversation's model, then
+	// walks `modelFallbacks` (runCompaction owns the walk; `summarize`
+	// runs one call on the ref it is handed). Its dedicated signal lets
+	// /stop and shutdown cancel an in-flight summary. A failed summary
 	// leaves the event stream and compaction pointer untouched.
 	compaction?: {
 		modelRef(conv: Conversation): string;
@@ -235,6 +239,7 @@ export interface RuntimeDeps {
 			system: string,
 			prompt: string,
 			signal: AbortSignal,
+			modelRef: string,
 		): Promise<string>;
 	};
 	// Between-turns persisted pruning: runs after the next batch is
@@ -668,8 +673,9 @@ export class Runtime {
 			const outcome = await runCompaction(
 				conv.id,
 				this.deps.store,
-				modelRef,
-				(system, prompt, signal) => compaction.summarize(conv, system, prompt, signal),
+				candidateRefs(modelRef, this.deps.modelFallbacks?.() ?? []),
+				(system, prompt, signal, model) =>
+					compaction.summarize(conv, system, prompt, signal, model),
 				{
 					tailTokenBudget: tail,
 					inputTokenBudget,
@@ -1196,6 +1202,18 @@ export class Runtime {
 		// catch below aborts the turn instead of letting the SDK report a
 		// tool error the model could retry.
 		const journalFault: { current: unknown } = { current: undefined };
+		// The attempt's own journal reads and writes (run creation, the
+		// recovery-guard read, the fallback gate's probe) classify a throw
+		// exactly like a fenced tool's: a journal fault, never a model
+		// failure — so it never advances the fallback walk.
+		const journaled = <T>(op: () => T): T => {
+			try {
+				return op();
+			} catch (err) {
+				if (journalFault.current === undefined) journalFault.current = err;
+				throw err;
+			}
+		};
 		let runStamped = false;
 		const stampRun = (
 			status: "fenced" | "completed" | "error",
@@ -1258,33 +1276,39 @@ export class Runtime {
 			// consumption are one journal transaction — a crash between
 			// them must never leave a successor that re-executes recorded
 			// side effects.
-			runId = randomUUID();
+			const newRunId = randomUUID();
 			const rawTools = this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts, {
-				runId,
+				runId: newRunId,
 				sourceMessageId: () => turns[turns.length - 1]!.message.id,
 				sourceInputSeq,
 			});
-			journal?.beginRun({
-				runId,
-				conversationId: convId,
-				epoch,
-				anchorSeq,
-				steerMark: snapshot.steerMarkSeed,
-				convSnapshot: {
-					model: conv.model,
-					thinking: conv.thinking,
-					// The operator's selection when a fallback serves — the
-					// resume drift check compares this; resume runs on `model`.
-					...(configuredModel !== conv.model ? { configuredModel } : {}),
-				},
-				toolNames: Object.keys(rawTools),
-				startedAt: new Date(turnStartMs).toISOString(),
-				ownedInputSeqs: [...ownedInputSeqs],
-				admissionExchangeExcluded,
-				sourceInputSeq: sourceInputSeq(),
-				resumedFrom: sourceRunId,
-				inheritFrom: recovery?.predecessorRun === undefined ? undefined : [recovery.predecessorRun],
-			});
+			journaled(() =>
+				journal?.beginRun({
+					runId: newRunId,
+					conversationId: convId,
+					epoch,
+					anchorSeq,
+					steerMark: snapshot.steerMarkSeed,
+					convSnapshot: {
+						model: conv.model,
+						thinking: conv.thinking,
+						// The operator's selection when a fallback serves — the
+						// resume drift check compares this; resume runs on `model`.
+						...(configuredModel !== conv.model ? { configuredModel } : {}),
+					},
+					toolNames: Object.keys(rawTools),
+					startedAt: new Date(turnStartMs).toISOString(),
+					ownedInputSeqs: [...ownedInputSeqs],
+					admissionExchangeExcluded,
+					sourceInputSeq: sourceInputSeq(),
+					resumedFrom: sourceRunId,
+					inheritFrom:
+						recovery?.predecessorRun === undefined ? undefined : [recovery.predecessorRun],
+				}),
+			);
+			// Set only once the row exists — a failed beginRun leaves no row
+			// to stamp and no run for ownership to end.
+			runId = newRunId;
 			// Every member claimed into this attempt — the drain's initial
 			// claim and a resume admission's queue claim are both already
 			// on `turns` — becomes this run's owned input here, before the
@@ -1308,7 +1332,9 @@ export class Runtime {
 			// attempt then makes never join the set — same-run intentional
 			// repetition is a live-turn matter, not recovery's.
 			const recoveryGuard =
-				journal === undefined ? undefined : buildRetryGuard(journal.callsFor(runId));
+				journal === undefined
+					? undefined
+					: buildRetryGuard(journaled(() => journal.callsFor(newRunId)));
 			const tools = this.fenceTools(
 				rawTools,
 				convId,
@@ -1579,13 +1605,13 @@ export class Runtime {
 				}
 			}
 		} catch (err) {
-			if (journalFault.current !== undefined) {
-				// The crash journal is the only record of what the turn's
-				// tools did — when it cannot write, the turn dies as an
-				// error (never 'fenced', never completed) so no reported
-				// failure can invite a repeat of an unjournaled effect.
+			// The crash journal is the only record of what the turn's
+			// tools did — when it cannot write, the turn dies as an error
+			// (never 'fenced', never completed, never a fallback advance)
+			// so no reported failure can invite a repeat of an unjournaled
+			// effect.
+			const failOnJournalFault = async (fault: unknown): Promise<void> => {
 				controller.abort();
-				const fault = journalFault.current;
 				log.error("turn aborted — the turn journal cannot write", fault, {
 					conversation: convId,
 					epoch,
@@ -1597,6 +1623,9 @@ export class Runtime {
 					message: terminalFailureMessage(fault, recovery !== undefined),
 					modelCalls: state.snapshot().modelCalls,
 				});
+			};
+			if (journalFault.current !== undefined) {
+				await failOnJournalFault(journalFault.current);
 			} else if (err instanceof FencedError || controller.signal.aborted) {
 				// Abort even an epoch-fenced provider call; otherwise it may keep
 				// generating into an abandoned stream and consume provider capacity.
@@ -1664,32 +1693,51 @@ export class Runtime {
 				// Abort provider work on any escaping error, not only on fencing; the
 				// stream may still be producing after the chunk loop unwinds.
 				controller.abort();
+				// Zero effect: no model call completed and no tool was
+				// dispatched under this run (design/model.md → Model fallback
+				// list — openclaw's canFallbackAfterError gate). The probe is
+				// a journal read: if it throws, the turn ends as a journal
+				// fault before any fallback is considered.
+				let journaledCalls = 0;
+				try {
+					if (journal !== undefined && runId !== null) {
+						const id = runId;
+						journaledCalls = journaled(() => journal.callsFor(id)).length;
+					}
+				} catch (probeErr) {
+					log.error("fallback gate could not read the turn journal", probeErr, {
+						conversation: convId,
+						cause: err instanceof Error ? err.message : String(err),
+					});
+					await failOnJournalFault(probeErr);
+					return { kind: "done" };
+				}
+				const zeroEffect = state.snapshot().modelCalls === 0 && journaledCalls === 0;
 				// Quota is logged as its own class so a missing retry explains
 				// itself: the scheduler ladder only re-fires transient failures.
 				const quota = quotaExhausted(err);
-				const failureClass =
-					quota !== null ? "quota" : isTransientTurnFailure(err) ? "transient" : "other";
+				const errClass = failureClass(err);
 				const miss: FallbackMiss = {
 					ref: conv.model ?? "(no model)",
 					reason: missReason(err),
 					transient: isTransientTurnFailure(err),
 				};
-				// Zero effect: no model call completed and no tool was
-				// dispatched under this run (design/model.md → Model fallback
-				// list — openclaw's canFallbackAfterError gate).
-				const zeroEffect =
-					state.snapshot().modelCalls === 0 &&
-					(journal === undefined || runId === null || journal.callsFor(runId).length === 0);
 				// A content-filtered request already spent its one same-model
 				// retry; the filter rule ends the turn, it never moves the
-				// blocked request to another lane (design/model.md).
-				const next = zeroEffect && !isContentFilter(err) ? nextFallback() : undefined;
+				// blocked request to another lane. Context overflow is never
+				// a trigger either — it reaches here only when compaction is
+				// not wired (no recovery to hand it to), and another lane
+				// would face the same history (design/model.md).
+				const next =
+					zeroEffect && !isContentFilter(err) && !isContextOverflow(err)
+						? nextFallback()
+						: undefined;
 				if (next !== undefined && configuredModel !== null) {
 					log.warn("model fallback", {
 						conversation: convId,
 						from: miss.ref,
 						to: next,
-						failureClass,
+						failureClass: errClass,
 						...(quota?.resetAt !== undefined ? { quotaResetAt: quota.resetAt } : {}),
 						attempt: fallbackMisses.length + 1,
 						error: err instanceof Error ? err.message : String(err),
@@ -1726,7 +1774,7 @@ export class Runtime {
 				const misses = fallbackFresh ? [...fallbackMisses, miss] : [miss];
 				log.error("turn failed", err, {
 					conversation: convId,
-					failureClass,
+					failureClass: errClass,
 					...(quota?.resetAt !== undefined ? { quotaResetAt: quota.resetAt } : {}),
 					...(misses.length > 1 ? { fallbacksTried: misses.map((m) => m.ref) } : {}),
 				});

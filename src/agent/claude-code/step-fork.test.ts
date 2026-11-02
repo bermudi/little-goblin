@@ -100,24 +100,12 @@ describe("makeStepBuilder — claude-code fork", () => {
 		await expect(builder.buildStep(conv, {})).rejects.toThrow("no claude engine is bound");
 	});
 
-	test("compaction summarize routes a claude-code conversation to the engine", async () => {
-		const { builder, conv } = rig({ claude: { kind: "claude-code", auth: "claude-code" } });
-		const text = await builder.compaction!.summarize(
-			conv,
-			"sys",
-			"prompt",
-			new AbortController().signal,
-		);
-		expect(text).toBe("summary-text");
-	});
-
-	test("compaction walks the fallback list when the conversation's model fails", async () => {
+	test("compaction summarize runs on the ref the walk hands it", async () => {
 		const asked: string[] = [];
 		const engine: ClaudeEngine = {
 			...fakeEngine,
 			compact: async ({ modelId }) => {
 				asked.push(modelId);
-				if (modelId === "claude-sonnet-4-5") throw new Error("rate limit reached");
 				return `summary-from-${modelId}`;
 			},
 		};
@@ -126,33 +114,16 @@ describe("makeStepBuilder — claude-code fork", () => {
 				claude: { kind: "claude-code", auth: "claude-code" },
 				backup: { kind: "claude-code", auth: "claude-code" },
 			},
-			{ modelFallbacks: ["backup/claude-haiku-4-5"], engine },
+			{ engine },
 		);
 		const signal = new AbortController().signal;
-		expect(await builder.compaction!.summarize(conv, "sys", "prompt", signal)).toBe(
-			"summary-from-claude-haiku-4-5",
+		expect(await builder.compaction!.summarize(conv, "sys", "prompt", signal, conv.model!)).toBe(
+			"summary-from-claude-sonnet-4-5",
 		);
+		// A fallback ref routes to its own model, never conv.model.
+		expect(
+			await builder.compaction!.summarize(conv, "sys", "prompt", signal, "backup/claude-haiku-4-5"),
+		).toBe("summary-from-claude-haiku-4-5");
 		expect(asked).toEqual(["claude-sonnet-4-5", "claude-haiku-4-5"]);
-	});
-
-	test("compaction with every model failing names each miss", async () => {
-		const engine: ClaudeEngine = {
-			...fakeEngine,
-			compact: async ({ modelId }) => {
-				throw new Error(`down: ${modelId}`);
-			},
-		};
-		const { builder, conv } = rig(
-			{
-				claude: { kind: "claude-code", auth: "claude-code" },
-				backup: { kind: "claude-code", auth: "claude-code" },
-			},
-			{ modelFallbacks: ["backup/claude-haiku-4-5"], engine },
-		);
-		await expect(
-			builder.compaction!.summarize(conv, "sys", "prompt", new AbortController().signal),
-		).rejects.toThrow(
-			"every model failed — claude/claude-sonnet-4-5: down: claude-sonnet-4-5; backup/claude-haiku-4-5: down: claude-haiku-4-5",
-		);
 	});
 });

@@ -18,7 +18,7 @@ import {
 	toolCallPart,
 } from "./testkit/fake-model.ts";
 import { RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
-import { openTurnJournal } from "./turn-journal.ts";
+import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
 
 const quotaWall = (): APICallError =>
 	new APICallError({
@@ -49,9 +49,12 @@ function rig(opts: {
 	fallbacks: string[];
 	models: Record<string, ReturnType<typeof scriptedModel>>;
 	tools?: ToolSet;
+	wrapJournal?: (journal: TurnJournal) => TurnJournal;
+	compaction?: RuntimeDeps["compaction"];
 }) {
 	const store = openStore(tmpDb("goblin-fallback-"));
-	const journal = openTurnJournal(store.db);
+	const realJournal = openTurnJournal(store.db);
+	const journal = opts.wrapJournal?.(realJournal) ?? realJournal;
 	const conv = store.resolve({ kind: "app", appId: "app-fallback", chatId: 0, threadId: 0 }, "/w", {
 		model: opts.model,
 		thinking: "medium",
@@ -69,6 +72,7 @@ function rig(opts: {
 		makeTools: () => opts.tools ?? {},
 		turnJournal: journal,
 		modelFallbacks: () => opts.fallbacks,
+		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
 	});
 	const turn = async (text: string) => {
 		const sink = new RecordingSink();
@@ -247,6 +251,137 @@ describe("model fallback list", () => {
 			expect(r.lastRun().convSnapshot).toEqual({
 				model: "zai/glm-5.3",
 				thinking: expect.anything(),
+			});
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+	test("a journal that cannot open the run row ends the turn as a journal fault — no advance", async () => {
+		const models = lanes({
+			"zai/glm-5.3": [textParts("must not serve")],
+			"codex/gpt-6.1-terra": [textParts("must not serve either")],
+		});
+		const r = rig({
+			model: "zai/glm-5.3",
+			fallbacks: ["codex/gpt-6.1-terra"],
+			models,
+			wrapJournal: (j) => ({
+				...j,
+				beginRun: () => {
+					throw new Error("database is locked");
+				},
+			}),
+		});
+		try {
+			const { done } = await r.turn("hello");
+			expect(done).toMatchObject({ kind: "error" });
+			const message = (done as { message: string }).message;
+			expect(message).toContain("database is locked");
+			expect(message).not.toContain("every model failed");
+			// No candidate was built, let alone advanced to.
+			expect(r.built).toEqual([]);
+			expect(models["codex/gpt-6.1-terra"]!.streamCalls).toHaveLength(0);
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a journal read failing at the fallback gate ends the turn as a journal fault — no advance", async () => {
+		const models = lanes({
+			"zai/glm-5.3": [quotaWall()],
+			"codex/gpt-6.1-terra": [textParts("must not serve")],
+		});
+		let reads = 0;
+		const r = rig({
+			model: "zai/glm-5.3",
+			fallbacks: ["codex/gpt-6.1-terra"],
+			models,
+			// The recovery guard's read succeeds; the gate's probe throws.
+			wrapJournal: (j) => ({
+				...j,
+				callsFor: (runId) => {
+					reads++;
+					if (reads > 1) throw new Error("disk I/O error");
+					return j.callsFor(runId);
+				},
+			}),
+		});
+		try {
+			const { done } = await r.turn("hello");
+			expect(done).toMatchObject({ kind: "error" });
+			const message = (done as { message: string }).message;
+			expect(message).toContain("disk I/O error");
+			expect(message).not.toContain("every model failed");
+			expect(r.built).toEqual(["zai/glm-5.3"]);
+			expect(models["codex/gpt-6.1-terra"]!.streamCalls).toHaveLength(0);
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a context overflow never advances, even with compaction unwired", async () => {
+		const overflow = new APICallError({
+			message:
+				"This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
+			url: "https://api.openai.com/v1/chat/completions",
+			requestBodyValues: {},
+			statusCode: 400,
+			isRetryable: false,
+		});
+		const models = lanes({
+			"zai/glm-5.3": [overflow],
+			"codex/gpt-6.1-terra": [textParts("must not serve")],
+		});
+		const r = rig({ model: "zai/glm-5.3", fallbacks: ["codex/gpt-6.1-terra"], models });
+		try {
+			const { done } = await r.turn("hello");
+			expect(done).toMatchObject({ kind: "error", modelCalls: 0 });
+			expect((done as { message: string }).message).not.toContain("every model failed");
+			expect(r.built).toEqual(["zai/glm-5.3"]);
+			expect(models["codex/gpt-6.1-terra"]!.streamCalls).toHaveLength(0);
+		} finally {
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("compaction walks the list and the fold names the ref that wrote it", async () => {
+		const asked: string[] = [];
+		const r = rig({
+			model: "zai/glm-5.3",
+			fallbacks: ["codex/gpt-6.1-terra"],
+			models: lanes({}),
+			compaction: {
+				modelRef: (c) => c.model!,
+				contextWindow: () => 1000,
+				summarize: async (_conv, _system, _prompt, _signal, modelRef) => {
+					asked.push(modelRef);
+					if (modelRef === "zai/glm-5.3") throw quotaWall();
+					return `folded by ${modelRef}`;
+				},
+			},
+		});
+		try {
+			const big = "x".repeat(600);
+			for (let i = 0; i < 3; i++) {
+				r.store.append(r.conv.id, [userMessage([{ type: "text", text: `${big} q${i}` }])]);
+				r.store.append(
+					r.conv.id,
+					[{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: `${big} r${i}` }] }],
+					{ anchorSeq: r.store.lastUserSeq(r.conv.id) },
+				);
+			}
+			const outcome = await r.runtime.compact(r.store.get(r.conv.id)!);
+			expect(outcome).toMatchObject({
+				kind: "compacted",
+				summary: "folded by codex/gpt-6.1-terra",
+			});
+			expect(asked).toEqual(["zai/glm-5.3", "codex/gpt-6.1-terra"]);
+			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({
+				model: "codex/gpt-6.1-terra",
 			});
 		} finally {
 			await r.runtime.shutdown();

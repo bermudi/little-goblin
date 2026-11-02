@@ -270,11 +270,14 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
     before any tool was dispatched. Lane-specific setup failures count
     too: auth resolution, or an unbound claude engine. Anything later
     ends the turn as today. **Never mid-loop.**
-  - **What does not advance:** abort, authority fences, journal faults,
-    and content-filter (it has its own recovery above). Context overflow
+  - **What does not advance:** abort, authority fences, journal faults
+    (any of the attempt's own journal reads or writes — run creation,
+    the recovery-guard read, the gate's zero-effect probe — not only a
+    fenced tool's), and content-filter (it has its own recovery above). Context overflow
     is never a fallback trigger: it keeps its recovery (compaction plus a
     fresh attempt) on whichever candidate is serving, and the
-    continuation stays on that candidate. (Amended at implementation,
+    continuation stays on that candidate. With compaction unwired the
+    overflow ends the turn; it still never advances. (Amended at implementation,
     2026-11-02: "advance on a fallback's overflow" would end a mid-loop
     overflow outright, which is worse than compacting.)
   - **Per-candidate binding.** For one attempt, the candidate stands in
@@ -305,7 +308,15 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
     single, tools-off and non-streamed, so any throw is zero effect).
     This amends "the summarizer is the conversation's own model": it is
     the conversation's lane list. There is still no deterministic
-    summary.
+    summary. `runCompaction` owns the walk (amended 2026-11-02, review):
+    each candidate's call gets its own timeout, never a parent signal
+    pre-armed with it, so a wedged primary times out alone and the next
+    candidate starts live; only the parent abort (/stop, a fence) ends
+    the walk. Within one pass the walk is sticky — a candidate that
+    failed a chunk is not retried on later chunks, so a wedged primary
+    costs one timeout, not one per chunk. The stored fold names the ref
+    that wrote the final chunk ("folded by" is the server, not the
+    selection).
   - **Visibility.** Each advance logs `model fallback` (conversation,
     from, to, failureClass, error). The turn's finish metadata carries
     `servedBy` and the failed refs with short reasons (metadata

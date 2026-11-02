@@ -4,6 +4,8 @@
 import type { UIMessage } from "ai";
 import { log } from "../log.ts";
 import { withoutReasoningCipher } from "./codex/replay-state.ts";
+import { exhaustedMessage, type FallbackMiss, failureClass, missReason } from "./model-fallback.ts";
+import { isTransientTurnFailure } from "./provider-errors.ts";
 
 // Rough chars-per-token for mixed chat text — enough to pick a cut; the
 // real number lands in the next turn's utilization log line.
@@ -211,16 +213,65 @@ export type CompactionOutcome =
 // forever.
 export const SUMMARY_CALL_TIMEOUT_MS = 180_000;
 
+// One summary call on one candidate. Its timeout is the attempt's own —
+// the parent signal is never pre-armed with it, so a wedged candidate
+// times out alone and the next one starts with a live signal. Combined
+// signal AND raced await: a summarizer that ignores its abort still
+// settles.
+async function attemptSummary(
+	summarize: Summarize,
+	prompt: string,
+	model: string,
+	signal: AbortSignal,
+	callTimeoutMs: number,
+	chunk: number,
+): Promise<string> {
+	const callSignal = AbortSignal.any([signal, AbortSignal.timeout(callTimeoutMs)]);
+	let abortRace: (err: unknown) => void = () => {};
+	const aborted = new Promise<never>((_, reject) => {
+		abortRace = reject;
+	});
+	const onAbort = () => abortRace(callSignal.reason);
+	callSignal.addEventListener("abort", onAbort, { once: true });
+	try {
+		return await Promise.race([summarize(SUMMARY_SYSTEM, prompt, callSignal, model), aborted]);
+	} catch (err) {
+		if (signal.aborted) throw err;
+		if (callSignal.aborted) {
+			throw new Error(`summary call timed out after ${callTimeoutMs / 1000}s (chunk ${chunk})`);
+		}
+		throw err;
+	} finally {
+		callSignal.removeEventListener("abort", onAbort);
+	}
+}
+
+export type Summarize = (
+	system: string,
+	prompt: string,
+	signal: AbortSignal,
+	model: string,
+) => Promise<string>;
+
 // The span folds through sequential calls bounded by inputTokenBudget —
 // each carries the running summary forward, so the last call's output
-// is the stored summary and no call sees the whole past. A summarizer
-// failure propagates: the caller warns, the view stays untouched, and
-// the next threshold crossing retries.
+// is the stored summary and no call sees the whole past.
+//
+// `models` is the summarizer's lane list (design/model.md → Model
+// fallback list → Compaction): the conversation's model, then the
+// operator's fallbacks. Every summary call is single, tools-off and
+// non-streamed, so any non-abort throw — a per-attempt timeout
+// included — is zero effect and advances. The walk is sticky within
+// one pass: a candidate that failed a chunk is not retried on the
+// next (a wedged primary would otherwise cost a full timeout per
+// chunk). The stored pointer names the ref that wrote the final
+// chunk. Exhausting the list propagates: the caller warns, the view
+// stays untouched, and the next threshold crossing retries.
 export async function runCompaction(
 	id: string,
 	store: CompactionStore,
-	model: string,
-	summarize: (system: string, prompt: string, signal: AbortSignal) => Promise<string>,
+	models: readonly string[],
+	summarize: Summarize,
 	opts: {
 		tailTokenBudget: number;
 		inputTokenBudget: number;
@@ -241,6 +292,7 @@ export async function runCompaction(
 	},
 	signal: AbortSignal,
 ): Promise<CompactionOutcome> {
+	if (models.length === 0) throw new Error(`compaction for ${id} has no model to summarize with`);
 	const detail = store.historyDetail(id);
 	const previous = store.getCompaction(id);
 	const boundary = chooseBoundary(detail, {
@@ -282,6 +334,11 @@ export async function runCompaction(
 		previous !== null ? "[summary carried from the previous compaction — fold it in]" : null;
 	let summary: string | null = null;
 	let chunks = 0;
+	// The walk's position (sticky across chunks), its misses, and who
+	// wrote the latest chunk.
+	let lane = 0;
+	const misses: FallbackMiss[] = [];
+	let servedBy: string | null = null;
 	for (let i = 0; i < span.length; ) {
 		// Authority before spend — a fenced compaction must not keep
 		// paying the summarizer for a pointer it may no longer write.
@@ -327,26 +384,38 @@ export async function runCompaction(
 			(carried !== null && carriedHeader !== null
 				? `${carriedHeader}\n${carried}\n\n---\n\n`
 				: "") + texts.join("\n\n");
-		// Combined signal AND raced await — a summarizer that ignores its
-		// abort still settles.
-		const callSignal = AbortSignal.any([signal, AbortSignal.timeout(callTimeoutMs)]);
-		let abortRace: (err: unknown) => void = () => {};
-		const aborted = new Promise<never>((_, reject) => {
-			abortRace = reject;
-		});
-		const onAbort = () => abortRace(callSignal.reason);
-		callSignal.addEventListener("abort", onAbort, { once: true });
-		let raw: string;
-		try {
-			raw = await Promise.race([summarize(SUMMARY_SYSTEM, prompt, callSignal), aborted]);
-		} catch (err) {
-			if (signal.aborted) throw err;
-			if (callSignal.aborted) {
-				throw new Error(`summary call timed out after ${callTimeoutMs / 1000}s (chunk ${chunks})`);
+		let raw: string | undefined;
+		while (raw === undefined) {
+			const model = models[lane]!;
+			try {
+				raw = await attemptSummary(summarize, prompt, model, signal, callTimeoutMs, chunks);
+				servedBy = model;
+			} catch (err) {
+				if (signal.aborted) throw err;
+				misses.push({
+					ref: model,
+					reason: missReason(err),
+					transient: isTransientTurnFailure(err),
+				});
+				const next = models[lane + 1];
+				if (next === undefined) {
+					if (misses.length === 1) throw err;
+					throw new Error(exhaustedMessage(misses), { cause: err });
+				}
+				log.warn("model fallback", {
+					conversation: id,
+					purpose: "compaction",
+					chunk: chunks,
+					from: model,
+					to: next,
+					failureClass: failureClass(err),
+					attempt: misses.length,
+					error: err instanceof Error ? err.message : String(err),
+				});
+				lane++;
+				// Authority before spend — the next candidate is new spend.
+				opts.assertAuthority?.();
 			}
-			throw err;
-		} finally {
-			callSignal.removeEventListener("abort", onAbort);
 		}
 		// Providers may resolve successfully even after an abort — the
 		// pointer must never commit a summary minted under revoked
@@ -368,7 +437,7 @@ export async function runCompaction(
 		carriedHeader = "[running summary of the earlier part of this span — fold it in]";
 		summary = out;
 	}
-	if (summary === null) {
+	if (summary === null || servedBy === null) {
 		// Unreachable — chooseBoundary only returns a boundary with a
 		// non-empty span; fail loud, never write a blank pointer.
 		throw new Error("compaction produced no summary");
@@ -388,7 +457,7 @@ export async function runCompaction(
 		boundarySeq: boundary,
 		summary,
 		tokensBefore,
-		model,
+		model: servedBy,
 		createdAt: new Date().toISOString(),
 		tailEvents,
 	});
@@ -401,7 +470,8 @@ export async function runCompaction(
 		summaryChars: summary.length,
 		chunks,
 		reason,
-		model,
+		model: servedBy,
+		...(misses.length > 0 ? { fallbacksTried: misses.map((m) => m.ref) } : {}),
 	});
 	return {
 		kind: "compacted",

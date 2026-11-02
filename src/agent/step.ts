@@ -12,14 +12,7 @@ import type { ProjectStore } from "../projects.ts";
 import type { MediaPosition } from "./attachments.ts";
 import { codexContextWindow } from "./codex/models.ts";
 import { contextLimit, contextLimitDetailed, inputModalities } from "./models-dev.ts";
-import {
-	candidateRefs,
-	exhaustedMessage,
-	type FallbackMiss,
-	missReason,
-} from "./model-fallback.ts";
 import { modelCallMaxRetries } from "./onemin.ts";
-import { isTransientTurnFailure } from "./provider-errors.ts";
 import { systemPromptFor } from "./prompt.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
 import { codexSessionId } from "./codex/session.ts";
@@ -111,8 +104,7 @@ export function makeStepBuilder(
 			// row). A cold catalog answers null and kicks the fetch for the
 			// next turn, and the models.dev lookup is skipped entirely.
 			const contextWindowFor = async (): Promise<number | null> => {
-				const codexWindow =
-					p?.kind === "codex" ? codexContextWindow(modelId, p.authFile) : null;
+				const codexWindow = p?.kind === "codex" ? codexContextWindow(modelId, p.authFile) : null;
 				if (codexWindow !== null) return codexWindow;
 				const info = await contextLimitDetailed(provider, modelId);
 				if (info?.source === "cross-provider") {
@@ -216,39 +208,10 @@ export function makeStepBuilder(
 				}
 				return contextLimit(provider, modelId);
 			},
-			// The conversation's model first, then the operator's fallback
-			// list (design/model.md → Model fallback list). One call, tools
-			// off, not streamed — any throw is zero effect, so every
-			// non-abort failure advances.
-			summarize: async (conv, system, prompt, signal) => {
-				const refs = candidateRefs(conv.model!, configRef.current.modelFallbacks);
-				const misses: FallbackMiss[] = [];
-				for (const [i, modelRef] of refs.entries()) {
-					try {
-						return await summarizeOn(conv, modelRef, system, prompt, signal);
-					} catch (err) {
-						if (signal.aborted) throw err;
-						misses.push({
-							ref: modelRef,
-							reason: missReason(err),
-							transient: isTransientTurnFailure(err),
-						});
-						const next = refs[i + 1];
-						if (next === undefined) {
-							if (misses.length === 1) throw err;
-							throw new Error(exhaustedMessage(misses), { cause: err });
-						}
-						log.warn("model fallback", {
-							conversation: conv.id,
-							purpose: "compaction",
-							from: modelRef,
-							to: next,
-							error: err instanceof Error ? err.message : String(err),
-						});
-					}
-				}
-				throw new Error(`compaction for ${conv.id} has no model to summarize with`);
-			},
+			// One call on the ref runCompaction's fallback walk hands it
+			// (design/model.md → Model fallback list → Compaction).
+			summarize: (conv, system, prompt, signal, modelRef) =>
+				summarizeOn(conv, modelRef, system, prompt, signal),
 		},
 	};
 }

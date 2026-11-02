@@ -3,7 +3,7 @@
 // notice. The runtime owns when to advance (zero-effect failures only);
 // this module owns what "next" and "why" mean.
 
-import { quotaExhausted } from "./provider-errors.ts";
+import { isTransientTurnFailure, quotaExhausted } from "./provider-errors.ts";
 
 // One candidate that failed before doing anything.
 export interface FallbackMiss {
@@ -64,4 +64,15 @@ export function fallbackNotice(note: FallbackNote): string {
 // The terminal message when every candidate failed.
 export function exhaustedMessage(misses: readonly FallbackMiss[]): string {
 	return `every model failed — ${misses.map((m) => `${m.ref}: ${m.reason}`).join("; ")}`;
+}
+
+export type FailureClass = "quota" | "transient" | "other";
+
+// The `failureClass` every `model fallback` and `turn failed` line
+// carries (design/model.md → Visibility). Quota wins: the scheduler
+// ladder only re-fires transient failures, so a quota wall must not
+// read as one.
+export function failureClass(err: unknown): FailureClass {
+	if (quotaExhausted(err) !== null) return "quota";
+	return isTransientTurnFailure(err) ? "transient" : "other";
 }

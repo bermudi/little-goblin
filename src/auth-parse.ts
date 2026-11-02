@@ -77,10 +77,18 @@ export function invokesPassCliDirectly(command: string): boolean {
 	// boundary checks below still exclude pass-clix / my-pass-cli-tool.
 	const normalized = command.replace(/\\(.)/gs, "$1").replace(/["']/g, "");
 	// Parameter/command expansion inside a command word ($X, ${X}, $(…),
-	// backticks) can assemble pass-cli at exec time; refuse conservatively
-	// when an expansion is glued to a pass-cli-shaped word fragment.
-	if (/(?:^|[\s;&|()`])[^\s;&|()`]*\$[^\s;&|()`]*/.test(normalized)) {
-		const stripped = normalized.replace(/\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$\([^)]*\)/g, "");
+	// $1-style positional/special params, backticks) can assemble pass-cli
+	// at exec time; refuse conservatively when an expansion is glued to a
+	// pass-cli-shaped word fragment. The strip removes expansion forms and
+	// re-checks the bare token — so a benign-but-odd spelling like
+	// pass-cli$$ (a different command at exec time) trips it too, like
+	// `echo pass-cli` does. Expansion OUTPUT is not simulated: a splice
+	// whose backtick output supplies letters of the token itself
+	// (p`echo a`ss-cli) stays unnoticed — this is a lint, not a sandbox.
+	if (/(?:^|[\s;&|()`])[^\s;&|()]*[$`][^\s;&|()]*/.test(normalized)) {
+		const stripped = normalized
+			.replace(/\$\{[^}]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\$\([^)]*\)|\$[0-9]+|\$[$@*#?!-]/g, "")
+			.replace(/`[^`]*`/g, "");
 		if (/(?:^|[\s;&|()`])(?:[^\s;&|()`/]*\/)*pass-cli(?:[\s;&|)`]|$)/.test(stripped)) return true;
 	}
 	return /(?:^|[\s;&|()`])(?:[^\s;&|()`/]*\/)*pass-cli(?:[\s;&|)`]|$)/.test(normalized);

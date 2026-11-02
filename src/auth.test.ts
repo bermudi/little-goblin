@@ -181,6 +181,17 @@ describe("invokesPassCliDirectly", () => {
 		'"pass-cli" item view x',
 		"p${GOBLIN_UNSET_9F3C}ass-cli item view x",
 		"pass-${UNSET_VAR}cli item view x",
+		// $1-style positional/special params expand empty in the resolver's
+		// /bin/sh -c (src/auth.ts), degenerating to the bare token.
+		'/bin/sh -c "pass-cli$1"',
+		"pa$1ss-cli item view x",
+		"pass-cli$@",
+		"pass-cli$12",
+		"pass-cli$$",
+		// Backtick side-effect groups strip to the bare token — the same
+		// conservative read that poisons `echo pass-cli`.
+		"pa`echo s`ss-cli",
+		"pass`x`-cli",
 	])("poisons %s", (cmd) => {
 		expect(invokesPassCliDirectly(cmd)).toBe(true);
 	});
@@ -194,6 +205,9 @@ describe("invokesPassCliDirectly", () => {
 		"pass-clix --help",
 		"my-pass-cli-tool --help",
 		"echo nothing relevant",
+		// Documented residual gap: substitution output that supplies
+		// letters of the token is not simulated (a lint, not a sandbox).
+		"p`echo a`ss-cli item view x",
 	])("ignores %s", (cmd) => {
 		expect(invokesPassCliDirectly(cmd)).toBe(false);
 	});

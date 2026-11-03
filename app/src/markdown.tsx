@@ -225,6 +225,73 @@ function splitRow(line: string): string[] {
 	return t.split("|").map((c) => c.trim());
 }
 
+// A column whose every cell is this short (visible chars) never wraps —
+// names, prices, dates, ids read as one line. Anything longer is prose
+// and wraps, floored by .md-table's min-width so it can't be crushed.
+const TABLE_SHORT_COL = 28;
+
+// Visible length of a cell: link targets and emphasis/code markers
+// don't take space on screen.
+function cellLen(raw: string): number {
+	return raw.replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/[*_`~]/g, "").length;
+}
+
+// Which columns are short, decided from content (header included) —
+// never from position, so a prose-first or prose-last table behaves the
+// same. Ragged rows count toward the columns they have.
+export function shortColumns(head: string[] | null, rows: string[][]): boolean[] {
+	const all = head === null ? rows : [head, ...rows];
+	const width = Math.max(0, ...all.map((r) => r.length));
+	return Array.from({ length: width }, (_, c) =>
+		all.every((r) => cellLen(r[c] ?? "") <= TABLE_SHORT_COL),
+	);
+}
+
+// The one table renderer — pipe tables and box-drawn tables both land
+// here. The wrapper owns horizontal overflow: an unbreakable cell (a
+// sha256 in code) scrolls the table, never blows the transcript column
+// past its width.
+function MdTable({
+	head,
+	rows,
+	onFileLink,
+}: {
+	head: string[] | null;
+	rows: string[][];
+	onFileLink?: ((path: string) => void) | undefined;
+}) {
+	const short = shortColumns(head, rows);
+	const cls = (c: number) => (short[c] ? "md-nw" : undefined);
+	return (
+		<div className="md-tablewrap">
+			<table className="md-table">
+				{head !== null && (
+					<thead>
+						<tr>
+							{head.map((h, c) => (
+								<th key={c} className={cls(c)}>
+									{inline(h, onFileLink)}
+								</th>
+							))}
+						</tr>
+					</thead>
+				)}
+				<tbody>
+					{rows.map((r, ri) => (
+						<tr key={ri}>
+							{r.map((cell, ci) => (
+								<td key={ci} className={cls(ci)}>
+									{inline(cell, onFileLink)}
+								</td>
+							))}
+						</tr>
+					))}
+				</tbody>
+			</table>
+		</div>
+	);
+}
+
 // Box-drawing runs (U+2500–U+257F): a pasted ╔═╗ table, a file tree,
 // a diagram — alignment-dependent art that collapses into noise in
 // proportional type. A run that tabulates cleanly renders through the
@@ -683,30 +750,7 @@ export function Markdown({
 				if (t === null)
 					blocks.push(<CodeBlock key={key++} lang="" code={run.join("\n")} clip={clipFences} />);
 				else
-					blocks.push(
-						<div key={key++} className="md-tablewrap">
-							<table className="md-table">
-								{t.head !== null && (
-									<thead>
-										<tr>
-											{t.head.map((h, c) => (
-												<th key={c}>{inline(h, onFileLink)}</th>
-											))}
-										</tr>
-									</thead>
-								)}
-								<tbody>
-									{t.rows.map((r, ri) => (
-										<tr key={ri}>
-											{r.map((c, ci) => (
-												<td key={ci}>{inline(c, onFileLink)}</td>
-											))}
-										</tr>
-									))}
-								</tbody>
-							</table>
-						</div>,
-					);
+					blocks.push(<MdTable key={key++} head={t.head} rows={t.rows} onFileLink={onFileLink} />);
 				i = j;
 				continue;
 			}
@@ -721,31 +765,7 @@ export function Markdown({
 				rows.push(splitRow(lines[i]!));
 				i++;
 			}
-			// The wrapper owns horizontal overflow — an unbreakable cell
-			// (a sha256 in code) must scroll the table, never blow the
-			// transcript column past its width.
-			blocks.push(
-				<div key={key++} className="md-tablewrap">
-					<table className="md-table">
-						<thead>
-							<tr>
-								{header.map((h, c) => (
-									<th key={c}>{inline(h, onFileLink)}</th>
-								))}
-							</tr>
-						</thead>
-						<tbody>
-							{rows.map((r, ri) => (
-								<tr key={ri}>
-									{r.map((c, ci) => (
-										<td key={ci}>{inline(c, onFileLink)}</td>
-									))}
-								</tr>
-							))}
-						</tbody>
-					</table>
-				</div>,
-			);
+			blocks.push(<MdTable key={key++} head={header} rows={rows} onFileLink={onFileLink} />);
 			continue;
 		}
 

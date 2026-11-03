@@ -169,8 +169,17 @@ polling starts" gets the by-design 500 because that fresh worktree had no
 concurrent steer" timed out under full-suite load and passed alone. No live
 prompts, deployment or restart.
 
-Still open in stage 1: pi-durable runs as responsibility workers (their
-`finish`/`ask_operator` filing `worker` reports), authority stamps on queued
+### Third Slice: Pi-Durable Runs As Responsibility Workers — Implemented, Not Yet Piloted
+
+`subagent start` takes an explicit `responsibility`; each settlement of a
+linked run (`finish`, `ask_operator`, crash hold, failure) files one deduped
+`worker` report before the notice wakes the conversation. A worker's claim
+is goblin's to assess; its question goes to the operator unchanged. Ruling:
+`design/programs.md` → Worker reports. The worker's own tools are
+unchanged — no new evidence or `dropped` outcome on `finish` yet; add them
+only if piloting shows goblin cannot assess from the result text.
+
+Still open in stage 1: authority stamps on queued
 wakes re-checked at dispatch, archive/queued-work authority consistency,
 and a useful real-world pilot. Already enqueued developments remain
 historical facts; this change does not introduce generic wake revocation or

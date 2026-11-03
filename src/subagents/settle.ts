@@ -31,6 +31,7 @@ export interface SettleDeps {
 	desktops: Desktops;
 	exportOutcomeFiles: ReturnType<typeof buildTransfer>["exportOutcomeFiles"];
 	wake: (conversationId: string, message: string) => boolean;
+	settled?: (row: SubagentRun) => void;
 	gate: ApprovalGate;
 	scheduleDrain: () => void;
 	admitAttempts: Map<number, number>;
@@ -73,6 +74,8 @@ function noticeBody(row: SubagentRun): string {
 	if (row.lifecycleNote !== null) body += `\nLifecycle warning: ${row.lifecycleNote}`;
 	const crash = crashDecisionNotice(row.crashDecisions);
 	if (crash !== null) body += `\n${crash}`;
+	if (row.responsibilityId !== null && row.status !== "stopped")
+		body += `\nResponsibility ${row.responsibilityId}: this is the worker's claim, filed as a worker report — check it, then file your own responsibility report.`;
 	return body;
 }
 
@@ -103,6 +106,16 @@ function notify(deps: SettleDeps, row: SubagentRun): void {
 	const rev = row.noticeRev + 1;
 	const fresh = deps.runs.update(row.id, { noticeRev: rev, noticePending: true });
 	let ok = false;
+	try {
+		deps.settled?.(fresh);
+	} catch (err) {
+		log.error("subagent settle hook failed — notice stays pending", err, {
+			run: fresh.id,
+			status: fresh.status,
+			responsibility: fresh.responsibilityId,
+		});
+		return;
+	}
 	try {
 		ok = deps.wake(
 			fresh.conversationId,

@@ -8,7 +8,7 @@ import type { DesktopAction, DesktopRow, Desktops, LeaseHolder } from "../deskto
 import { DesktopError, DesktopLeaseError } from "../desktops.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { SandboxError, type Sandboxes } from "../sandboxes.ts";
-import { openSubagentRuns, type SubagentRuns } from "../subagent-runs.ts";
+import { openSubagentRuns, type SubagentRun, type SubagentRuns } from "../subagent-runs.ts";
 import { openSubagents, type Subagents } from "./mod.ts";
 import { type SubagentModelProfile, subagentModelProfileSchema } from "./models.ts";
 
@@ -1145,6 +1145,7 @@ export function rig(opts?: {
 	modelProfiles?: Partial<Record<"worker" | "computer", SubagentModelProfile>>;
 	harnessSettings?: Record<string, unknown>;
 	admitRetryMs?: number;
+	settled?: (row: SubagentRun) => void;
 }): Rig {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-sub-"));
 	dirs.push(dir);
@@ -1199,6 +1200,7 @@ export function rig(opts?: {
 		...(opts?.modelProfiles !== undefined ? { modelProfiles: opts.modelProfiles } : {}),
 		...(opts?.harnessSettings !== undefined ? { harnessSettings: opts.harnessSettings } : {}),
 		...(opts?.admitRetryMs !== undefined ? { admitRetryMs: opts.admitRetryMs } : {}),
+		...(opts?.settled !== undefined ? { settled: opts.settled } : {}),
 	}).then(async (owner) => {
 		owners.push(owner);
 		r.owner = owner;

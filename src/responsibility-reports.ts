@@ -74,6 +74,9 @@ export interface ResponsibilityReport {
 	question: string | null;
 	resumeWhen: string | null;
 	evidence: ReportEvidence[];
+	/** Stable identity of an external settlement (a run's outcome) — a
+	 *  retried notice files it once. Null for goblin's own reports. */
+	sourceKey: string | null;
 	createdAt: string;
 }
 
@@ -87,6 +90,7 @@ const rowSchema = z.object({
 	question: z.string().nullable(),
 	resume_when: z.string().nullable(),
 	evidence_json: z.string(),
+	source_key: z.string().nullable(),
 	created_at: z.string(),
 });
 
@@ -102,6 +106,7 @@ export function toReport(row: unknown): ResponsibilityReport {
 		question: r.question,
 		resumeWhen: r.resume_when,
 		evidence: z.array(reportEvidenceSchema).parse(JSON.parse(r.evidence_json)),
+		sourceKey: r.source_key,
 		createdAt: r.created_at,
 	};
 }
@@ -118,8 +123,18 @@ export function ensureReportsSchema(db: Database): void {
 			question TEXT,
 			resume_when TEXT,
 			evidence_json TEXT NOT NULL,
+			source_key TEXT,
 			created_at TEXT NOT NULL
 		)`);
+	const cols = new Set(
+		(db.query("PRAGMA table_info(responsibility_reports)").all() as { name: string }[]).map(
+			(c) => c.name,
+		),
+	);
+	if (!cols.has("source_key")) db.run("ALTER TABLE responsibility_reports ADD COLUMN source_key TEXT");
+	db.run(
+		"CREATE UNIQUE INDEX IF NOT EXISTS responsibility_reports_source ON responsibility_reports (source_key) WHERE source_key IS NOT NULL",
+	);
 	db.run(
 		"CREATE INDEX IF NOT EXISTS responsibility_reports_resp ON responsibility_reports (responsibility_id, report_id)",
 	);

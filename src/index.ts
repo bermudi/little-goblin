@@ -62,6 +62,7 @@ import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./sch
 import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
+import { fileRunReport } from "./responsibility-runs.ts";
 import { openSubagentsGuarded, type Subagents } from "./subagents/mod.ts";
 import { telegramAddressOf } from "./targets.ts";
 
@@ -745,6 +746,9 @@ async function boot() {
 				storagePath: join(paths.state(), "subagents.sqlite"),
 				transferRoot: join(paths.state(), "subagent-transfer"),
 				wake: (conv, text) => wakeConversation(wakeDeps, conv, text),
+				// A linked run's settlement lands as a worker report before
+				// its notice wakes the conversation (responsibility-runs.ts).
+				settled: (row) => fileRunReport(responsibilities, row),
 			},
 			SHUTDOWN_DRAIN_MS,
 		);

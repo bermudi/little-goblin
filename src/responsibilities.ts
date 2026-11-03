@@ -200,8 +200,9 @@ export interface ResponsibilityStore {
 		id: string,
 		input: ReportInput,
 		reporter: ReportReporter,
+		opts?: { sourceKey?: string },
 	):
-		| { report: ResponsibilityReport; responsibility: Responsibility }
+		| { report: ResponsibilityReport; responsibility: Responsibility; duplicate: boolean }
 		| { refused: "closed" | "evidence-missing"; missing?: string[] };
 	latestReport(id: string): ResponsibilityReport | null;
 	reportsFor(id: string): ResponsibilityReport[];
@@ -706,8 +707,11 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		"UPDATE responsibilities SET armed = ?, not_armed_reason = ?, updated_at = ? WHERE responsibility_id = ?",
 	);
 	const qInsertReport = db.prepare(
-		`INSERT INTO responsibility_reports (responsibility_id, revision, reporter, state, reason, question, resume_when, evidence_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+		`INSERT INTO responsibility_reports (responsibility_id, revision, reporter, state, reason, question, resume_when, evidence_json, source_key, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+	);
+	const qReportBySource = db.query<unknown, [string]>(
+		"SELECT * FROM responsibility_reports WHERE source_key = ?",
 	);
 	const qLatestReport = db.query<unknown, [string]>(
 		"SELECT * FROM responsibility_reports WHERE responsibility_id = ? ORDER BY report_id DESC LIMIT 1",
@@ -856,13 +860,20 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			log.info("responsibility status", { responsibility: id, status, reason: opts?.reason });
 		},
 
-		report(id, input, reporter) {
+		report(id, input, reporter, opts) {
 			let result:
-				| { report: ResponsibilityReport; responsibility: Responsibility }
+				| { report: ResponsibilityReport; responsibility: Responsibility; duplicate: boolean }
 				| { refused: "closed" | "evidence-missing"; missing?: string[] }
 				| undefined;
 			db.transaction(() => {
 				const current = requireResp(id);
+				if (opts?.sourceKey !== undefined) {
+					const prior = qReportBySource.get(opts.sourceKey);
+					if (prior !== null) {
+						result = { report: toReport(prior), responsibility: current, duplicate: true };
+						return;
+					}
+				}
 				if (!OPEN_STATUSES.has(current.status)) {
 					result = { refused: "closed" };
 					return;
@@ -887,6 +898,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					input.question ?? null,
 					input.resumeWhen ?? null,
 					JSON.stringify(input.evidence ?? []),
+					opts?.sourceKey ?? null,
 					ts,
 				);
 				const report = toReport(row);
@@ -894,7 +906,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					qRespStatus.run("completed", ts, ts, id);
 					qPlan.run(JSON.stringify(silenceFollowup(new Date(ts))), ts, id);
 				}
-				result = { report, responsibility: requireResp(id) };
+				result = { report, responsibility: requireResp(id), duplicate: false };
 			}).immediate();
 			const r = result!;
 			if ("refused" in r) {
@@ -915,6 +927,8 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					question: r.report.question !== null,
 					evidence: r.report.evidence.length,
 					status: r.responsibility.status,
+					duplicate: r.duplicate,
+					source: r.report.sourceKey,
 				});
 			}
 			return r;

@@ -55,6 +55,10 @@ export interface SubagentsDeps {
 	storagePath: string;
 	transferRoot: string;
 	wake(conversationId: string, text: string): boolean;
+	/** Runs before each settlement notice, inside its retry: a throw
+	 *  leaves the notice pending for the next scan. Goblin files the
+	 *  linked responsibility's worker report here. */
+	settled?: (row: SubagentRun) => void;
 	modelProfiles?: Partial<Record<SubagentKind, SubagentModelProfile>>;
 	harnessSettings?: Record<string, unknown>;
 	admitRetryMs?: number;
@@ -67,6 +71,8 @@ export interface SubagentStart {
 	task: string;
 	desktop?: string;
 	files?: string[];
+	/** Explicit link — validated by the caller, stored and echoed here. */
+	responsibilityId?: string;
 }
 
 export interface Subagents {
@@ -230,6 +236,7 @@ export async function openSubagents(deps: SubagentsDeps): Promise<Subagents> {
 		desktops: deps.desktops,
 		exportOutcomeFiles,
 		wake: deps.wake,
+		...(deps.settled !== undefined ? { settled: deps.settled } : {}),
 		gate,
 		scheduleDrain,
 		admitAttempts,
@@ -396,12 +403,14 @@ async function ownerStart(
 		task: input.task,
 		files: input.files ?? [],
 		requestId: requestId ?? null,
+		responsibilityId: input.responsibilityId ?? null,
 	});
 	log.info("subagent queued", {
 		run: row.id,
 		kind,
 		conversation: input.conversationId,
 		desktop: input.desktop,
+		responsibility: row.responsibilityId,
 	});
 	b.scheduleDrain();
 	return row;

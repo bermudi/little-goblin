@@ -659,6 +659,7 @@ export interface AppResponsibilityStage {
 		| "paused"
 		| "delivery-uncertain"
 		| "question"
+		| "assess"
 		| "review"
 		| "blocked"
 		| "failed"
@@ -677,6 +678,7 @@ export interface AppResponsibilityReport {
 	question: string | null;
 	resumeWhen: string | null;
 	evidence: { item: string; ref: string; checked: string }[];
+	sourceKey: string | null;
 	createdAt: string;
 }
 

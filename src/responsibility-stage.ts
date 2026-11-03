@@ -14,6 +14,7 @@ export type StageName =
 	| "paused"
 	| "delivery-uncertain"
 	| "question"
+	| "assess"
 	| "review"
 	| "blocked"
 	| "failed"
@@ -60,6 +61,11 @@ export function responsibilityStage(
 	if (current !== null) {
 		if (current.question !== null) {
 			return { waitsFor: "operator", stage: "question", reason: current.question };
+		}
+		// A worker's claim — finished, failed, held — is goblin's to check
+		// before anything reaches the operator or closes.
+		if (current.reporter === "worker") {
+			return { waitsFor: "goblin", stage: "assess", reason: current.reason };
 		}
 		switch (current.state) {
 			case "ready":

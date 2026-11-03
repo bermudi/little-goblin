@@ -21,6 +21,9 @@ export interface SubagentToolDeps {
 	subagents: Subagents;
 	workerEnabled: boolean;
 	computerEnabled: boolean;
+	/** Project-bound turns only: refuses a responsibility outside this
+	 *  project or already closed; null admits the link. */
+	checkResponsibility?: ((id: string) => string | null) | undefined;
 }
 
 const startSchema = z.object({
@@ -29,6 +32,7 @@ const startSchema = z.object({
 	task: z.string().min(1).max(MAX_TASK_CHARS),
 	files: z.array(z.string().min(1)).max(MAX_INPUT_FILES).optional(),
 	desktop: desktopNameSchema.optional(),
+	responsibility: z.string().min(1).optional(),
 });
 const listSchema = z.object({ action: z.literal("list") });
 const statusSchema = z.object({
@@ -66,6 +70,7 @@ export const subagentInputSchema = z
 		task: startSchema.shape.task.optional(),
 		files: startSchema.shape.files,
 		desktop: startSchema.shape.desktop,
+		responsibility: startSchema.shape.responsibility,
 		id: statusSchema.shape.id.optional(),
 		message: sendSchema.shape.message.optional(),
 		decision: decideSchema.shape.decision.optional(),
@@ -85,6 +90,7 @@ function runSummary(row: SubagentRun) {
 		kind: row.kind,
 		status: row.status,
 		desktop: row.desktop ?? undefined,
+		responsibility: row.responsibilityId ?? undefined,
 		files: row.files.length > 0 ? row.files : undefined,
 		inbox: row.inbox.length > 0 ? row.inbox : undefined,
 		final_screenshot: row.finalScreenshot ?? undefined,
@@ -154,6 +160,13 @@ export const subagentTool = (deps: SubagentToolDeps) =>
 						if (input.kind === "computer" && input.desktop === undefined) {
 							return { error: "computer runs need a desktop name (the desktop tool lists them)" };
 						}
+						if (input.responsibility !== undefined) {
+							const refused =
+								deps.checkResponsibility === undefined
+									? "responsibility links need a project conversation"
+									: deps.checkResponsibility(input.responsibility);
+							if (refused !== null) return { error: refused };
+						}
 						const row = await deps.subagents.start(
 							{
 								kind: input.kind,
@@ -162,6 +175,9 @@ export const subagentTool = (deps: SubagentToolDeps) =>
 								task: input.task,
 								...(input.desktop !== undefined ? { desktop: input.desktop } : {}),
 								...(input.files !== undefined ? { files: input.files } : {}),
+								...(input.responsibility !== undefined
+									? { responsibilityId: input.responsibility }
+									: {}),
 							},
 							`subagent-tool:${toolCallId}`,
 						);

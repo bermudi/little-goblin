@@ -279,10 +279,29 @@ Rulings:
   `ready` waits for review only when the task has a checkpoint; verified
   `done` closes on its own.
 
+  **Worker reports (2026-11-02):** a pi-durable run is linked to a
+  responsibility only explicitly — `subagent start responsibility:<id>`,
+  admitted when the id is open in the conversation's own project; no
+  matching by topic or by "the project's only open one". The link lives
+  on the run row. Each settlement of a linked run files one `worker`
+  report before its notice wakes the conversation (`SubagentsDeps.settled`,
+  inside the notice retry: a failed write leaves the notice pending and
+  the next scan files it): `finish` → `ready` with the result,
+  `ask_operator` → `blocked` with the question verbatim, a crash
+  resolution hold → `blocked` without one (goblin decides those),
+  failure → `failed`; a stop states nothing. The key
+  `subagent:<run>:<inputRev>:<status>` dedupes retried notices while a
+  new input's settlement is a new report. Stage: a question goes to the
+  operator whoever asked; any other current worker report is goblin's
+  move (`assess`) — a worker's `ready` never closes or reaches the
+  operator as review until goblin reports on it. A worker cannot report
+  `done`. Herdr panes have no such tool path: goblin reports for them.
+
   Borrowed from dsh-superagent (deepseek-ai/dsh-superagent-prototype,
   docs/001 and 003): the Report vocabulary incl. `dropped`, the
   first-match stage table labelled by whom it waits for, the
-  `human_action`-style structured question, and the rejected concept
+  `human_action`-style structured question forwarded unchanged, the
+  Executor that reports only through structured tools, and the rejected concept
   "inferring 'waiting on a person' from a report's free text". Not
   taken: their Mandate/Policy/admission machinery (one operator), and
   completion bound to an external PR close — our evidence items play

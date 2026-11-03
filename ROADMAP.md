@@ -253,9 +253,13 @@ Verification: typecheck (both programs) passed. Full suite: 5,331 passed,
 happy-dom tests. It has not been seen in a real browser yet: builds belong
 on CI, and the mobile layout still needs a look.
 
-Next in stage 2: bring the cross-project feed and Attention together on
-the home view. Then typed posts for findings and drafts, beyond state
-reports.
+The cross-project feed moved from the Projects index to Attention, under
+the open decisions: one place to watch, with the badge the rail and tab
+bar already show. Project pages keep their own feed.
+
+Next in stage 2: typed posts for findings and drafts, beyond state
+reports. Then intentional empty, stale and mobile states, checked in a
+real browser.
 
 ## 3. Add Useful Cheap Capacity
 

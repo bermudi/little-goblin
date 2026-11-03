@@ -194,17 +194,13 @@ function ProjectIndexRow({
 // Archived projects wait behind the same collapsed-section pattern the
 // rail's archived chats use.
 export function ProjectsIndex({
-	token,
 	projects,
 	onOpen,
 	onNew,
-	onConversation,
 }: {
-	token: string | null;
 	projects: AppProject[];
 	onOpen: (id: string) => void;
 	onNew: () => void;
-	onConversation?: ((conversationId: string) => void) | undefined;
 }) {
 	const active = projects
 		.filter((p) => p.archivedAt === null)
@@ -215,7 +211,6 @@ export function ProjectsIndex({
 	return (
 		<div className="ops">
 			<h2 className="ops-h2">Projects</h2>
-			<ResponsibilityFeed token={token} projectId={null} onConversation={onConversation} />
 			{active.length === 0 ? (
 				<p className="empty">
 					No projects yet — a project gives related chats their own directory and instructions.

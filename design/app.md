@@ -793,6 +793,12 @@ conversation** goes to the coordination conversation, where comments and
 corrections already keep the item's context. That conversation is the
 item's discussion; there is no separate comment thread.
 
+**One place to watch.** The cross-project feed lives on Attention, under
+the operator's open decisions. It no longer sits on the Projects index, so
+Attention and a home feed don't compete as two inboxes. A project page
+keeps its own feed. Attention's `responsibility` items and the feed rows
+open the same coordination conversation.
+
 ## Pinning (ruling 2026-10-10)
 
 Pin is the rail's anchor action, archive's complement: a pinned conversation

@@ -1,6 +1,7 @@
 import { getAttention } from "./api.ts";
 import { KV, ts, useLoad } from "./opsShared.tsx";
 import { PushControls } from "./PushControls.tsx";
+import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
 import type {
 	AppAttentionItem,
 	AppAttentionPage,
@@ -75,6 +76,9 @@ export function AttentionView({
 					</div>
 				))
 			)}
+			{/* One place to watch: what needs the operator above, the work in
+			    flight across projects below (design/app.md → Outcome posts). */}
+			<ResponsibilityFeed token={token} projectId={null} onConversation={onConversation} />
 		</div>
 	);
 }

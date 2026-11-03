@@ -2102,11 +2102,9 @@ function AppShell() {
 				)}
 				{page === "projects" && (
 					<ProjectsIndex
-						token={token}
 						projects={projectList}
 						onOpen={openProject}
 						onNew={() => setCreateProjectOpen(true)}
-						onConversation={openConversation}
 					/>
 				)}
 				{page === "notes" && (

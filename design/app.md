@@ -101,6 +101,16 @@ demanded. TWA is rejected on mechanism: assetlinks verification cannot pass
 on a tailnet-only domain. PWA and APK are one channel in two shells; the
 server can't tell which talks.
 
+**Offline shell (ruling 2026-11-03, operator ask).** The service worker
+precaches the app shell only — the static `/app/` file list stamped per
+build as `goblin-shell-<hash>` (`app/sw-precache.ts`, injected at
+`vite build`). Navigations are network-first with a 3s timeout: any
+network response wins, errors included; only a rejection or a stall
+serves the cached `/app/index.html`. Data is never cached — `/api/` sits
+outside the worker's `/app/` scope. Accepted residual: on a bad link a
+cached older shell can open against a newer backend until the next
+successful navigation updates the worker.
+
 **App-native Web Push (ruling 2026-10-22, operator ask: closed-app app
 turns must ring without Telegram).** Enablement is explicit per browser on
 the Attention page — it is device state, not server-wide configuration.

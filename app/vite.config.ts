@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { injectPrecache } from "./sw-precache.ts";
 
 // Served by the goblin process under /app/ — base keeps asset URLs
 // relative to that mount. `bun run app:dev` runs the dev server: HMR
@@ -7,7 +8,18 @@ import react from "@vitejs/plugin-react";
 // (config http.port); GOBLIN_HTTP overrides the target.
 export default defineConfig({
 	base: "/app/",
-	plugins: [react()],
+	plugins: [
+		react(),
+		{
+			name: "goblin-sw-precache",
+			apply: "build",
+			// `vite build app` runs from the repo root — resolve outDir
+			// against the app root, not cwd.
+			closeBundle() {
+				injectPrecache(new URL("./dist", import.meta.url).pathname);
+			},
+		},
+	],
 	// Writes the served tree directly. Staging into dist.next existed only so a
 	// dev checkout's served bundle was never written in place; the live client
 	// now lives inside an immutable release (design/deploy.md), so a dev-tree

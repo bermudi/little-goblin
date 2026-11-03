@@ -87,7 +87,9 @@ lists on our non-goals list. Cite what you took in the design docs.
   `app/dist`; in prod that directory lives inside the running release,
   served per request for `/app/` (the PWA) and `/t/` (the Telegram mini
   app). So a client change *is* a release and a release *is* a restart —
-  client/backend skew is unrepresentable, and there is no second thing to
+  client/backend skew is unrepresentable — except offline, where the
+  service worker can serve a cached older shell against a newer backend
+  (design/app.md → Offline shell) — and there is no second thing to
   publish. The old `app/dist.a`/`dist.b` slots and
   `scripts/publish-app.sh` are gone: a dev-tree build is just a local
   artifact. `bun run app:dev` remains the HMR loop against the live

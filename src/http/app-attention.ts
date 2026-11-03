@@ -2,9 +2,17 @@
 // the surface that can resolve them; this module records no second state.
 
 import type { AppConversationSummary } from "../conversation.ts";
+import { responsibilityStage } from "../responsibility-stage.ts";
 import { listSkillDir } from "../stateview.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
 import type { AppAttentionItem, AppAttentionPage, AppAttentionResponse } from "./app-wire.ts";
+
+const STAGE_TITLE: Partial<Record<string, string>> = {
+	question: "Question",
+	review: "Ready for review",
+	blocked: "Blocked",
+	failed: "Failed",
+};
 
 function pageItem(
 	item: Omit<AppAttentionItem, "target"> & { page: AppAttentionPage },
@@ -128,6 +136,27 @@ export async function handleAttentionRoute(
 					delegation.appConversation === null
 						? { kind: "page", page: "delegations" }
 						: { kind: "conversation", conversationId: delegation.appConversation },
+			});
+		}
+	}
+
+	// Open work whose derived stage waits on the operator. A pause is
+	// the operator's own choice, not a request for attention.
+	const resps = deps.responsibilities?.resps;
+	if (resps === undefined) {
+		unavailable.push("responsibilities");
+	} else {
+		for (const resp of resps.open()) {
+			const latest = resps.latestReport(resp.responsibilityId);
+			const stage = responsibilityStage(resp, latest, resps.operationsFor(resp.responsibilityId));
+			if (stage.waitsFor !== "operator" || stage.stage === "paused") continue;
+			items.push({
+				id: `responsibility:${resp.responsibilityId}:${latest?.reportId ?? 0}`,
+				kind: "responsibility",
+				title: `${STAGE_TITLE[stage.stage] ?? "Needs you"} — ${resp.outcome}`,
+				detail: stage.reason,
+				createdAt: latest?.createdAt ?? resp.updatedAt,
+				target: { kind: "conversation", conversationId: resp.coordinationConversationId },
 			});
 		}
 	}

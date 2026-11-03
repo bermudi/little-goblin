@@ -4,7 +4,9 @@
 // action that binds attachments. Corrections bump the understanding's
 // revision — stale prepared sends then refuse at dispatch. Lifecycle
 // verbs are durable events on the responsibility, not Herdr
-// operations: pause/detach/cancel/complete never touch a workspace.
+// operations: pause/detach/cancel/report never touch a workspace.
+// Closing is a `report done` whose evidence covers every
+// completionEvidence entry — a status flip cannot claim completion.
 // Managed sends ride the service's persisted operations; the wired
 // edge is preflight-bound + post-send identity compared, and absent an
 // edge every send refuses identity-unenforceable.
@@ -26,6 +28,8 @@ import {
 } from "../../responsibilities.ts";
 import { cursorFromAgent } from "../../responsibility-observer.ts";
 import { followupCommitmentSchema } from "../../responsibility-followup.ts";
+import { reportInputSchema } from "../../responsibility-reports.ts";
+import { responsibilityStage } from "../../responsibility-stage.ts";
 import type { ManagedSend, ResponsibilityService } from "../../responsibility-service.ts";
 import { fenceUntrusted } from "./web.ts";
 
@@ -45,7 +49,7 @@ const inputSchema = z
 			"reattach",
 			"pause",
 			"resume",
-			"complete",
+			"report",
 			"cancel",
 			"send",
 			"reconcile",
@@ -60,6 +64,7 @@ const inputSchema = z
 		delivery: z.enum(["delivered", "not_delivered"]).optional(),
 		evidence: z.string().trim().min(1).optional(),
 		followup: followupCommitmentSchema.optional(),
+		report: reportInputSchema.optional(),
 	})
 	.superRefine((value, ctx) => {
 		const need = (cond: boolean, path: string[], msg: string) => {
@@ -68,6 +73,9 @@ const inputSchema = z
 		switch (value.action) {
 			case "followup":
 				need(value.followup !== undefined, ["followup"], "dueAt and reason required for followup");
+				break;
+			case "report":
+				need(value.report !== undefined, ["report"], "report {state, reason, …} required");
 				break;
 			case "accept":
 				need(value.understanding !== undefined, ["understanding"], "required for accept");
@@ -140,7 +148,7 @@ const fenceMetadata = (record: unknown) =>
 export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 	tool({
 		description:
-			"Coordinate this project's handed-over Herdr work — the durable record the operator watches. Actions: status {}; accept {understanding, attachments:[{pane|name}…]} — the first coordination grant, binds the explicitly selected agents by stable identity; revise {understanding}; followup {followup:{dueAt, reason}} — replace the next useful review with an ISO timestamp and a concrete purpose, not a status-polling heartbeat (otherwise a one-hour silence backstop applies); attach {attachments:[{pane|name}]}; detach/reattach {attachment}; pause/resume/complete/cancel {}; send {attachment, brief} — a tracked managed prompt that refuses rather than dispatch stale or unidentifiable; reconcile {operation, delivery: delivered|not_delivered, evidence} — record inspected delivery evidence for an ambiguous send; never use reconciliation merely to make a retry possible. Discover agents with the herdr tool first; accept only after the operator hands work over. Lifecycle verbs never touch a Herdr workspace.",
+			"Coordinate this project's handed-over Herdr work — the durable record the operator watches. Actions: status {}; accept {understanding, attachments:[{pane|name}…]} — the first coordination grant, binds the explicitly selected agents by stable identity; revise {understanding}; followup {followup:{dueAt, reason}} — replace the next useful review with an ISO timestamp and a concrete purpose, not a status-polling heartbeat (otherwise a one-hour silence backstop applies); attach {attachments:[{pane|name}]}; detach/reattach {attachment}; pause/resume/cancel {}; report {report:{state, reason, question?, resumeWhen?, evidence?:[{item, ref, checked}]}} — state the work's state from what you observed: progress (still moving), waiting (on an external condition — resumeWhen required), ready (at a task checkpoint for the operator to review), blocked/failed (the operator must act; say what), done (closes — evidence must cover every completionEvidence item verbatim, each with where it lives and what you actually checked; refused otherwise), dropped (closes — nothing to do, e.g. superseded or not reproducible). Put one concrete question for the operator in question, never only in reason. A worker finishing its turn is not done; send {attachment, brief} — a tracked managed prompt that refuses rather than dispatch stale or unidentifiable; reconcile {operation, delivery: delivered|not_delivered, evidence} — record inspected delivery evidence for an ambiguous send; never use reconciliation merely to make a retry possible. Discover agents with the herdr tool first; accept only after the operator hands work over. Lifecycle verbs never touch a Herdr workspace.",
 		inputSchema,
 		execute: async (raw, options) => {
 			const input = inputSchema.parse(raw);
@@ -260,6 +268,12 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 									notArmedReason: arm.reason,
 									attachments: deps.resps.attachmentsFor(r.responsibilityId),
 									operations: deps.resps.operationsFor(r.responsibilityId),
+									latestReport: deps.resps.latestReport(r.responsibilityId),
+									stage: responsibilityStage(
+										r,
+										deps.resps.latestReport(r.responsibilityId),
+										deps.resps.operationsFor(r.responsibilityId),
+									),
 								};
 							}),
 						),
@@ -409,9 +423,39 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 						followupStatus: deps.service.armedStatus(resp.responsibilityId),
 					};
 				}
+				case "report": {
+					const { resp, error } = resolve();
+					if (resp === undefined) return { error };
+					const result = deps.resps.report(resp.responsibilityId, input.report!, "goblin");
+					if ("refused" in result) {
+						done({ responsibility: resp.responsibilityId, outcome: `refused:${result.refused}` });
+						return {
+							error:
+								result.refused === "closed"
+									? `responsibility ${resp.status} — resume it before reporting`
+									: `done refused — no evidence item covers: ${result.missing!.map((m) => JSON.stringify(m)).join(", ")}. Check each, then report done again; report ready or blocked if one cannot be verified.`,
+						};
+					}
+					if (result.responsibility.status !== resp.status) {
+						deps.service.ensureFollowup(resp.responsibilityId);
+					}
+					done({
+						responsibility: resp.responsibilityId,
+						state: result.report.state,
+						status: result.responsibility.status,
+						outcome: "ok",
+					});
+					return {
+						report: result.report,
+						stage: responsibilityStage(
+							result.responsibility,
+							result.report,
+							deps.resps.operationsFor(resp.responsibilityId),
+						),
+					};
+				}
 				case "pause":
 				case "resume":
-				case "complete":
 				case "cancel": {
 					const { resp, error } = resolve();
 					if (resp === undefined) return { error };
@@ -420,9 +464,7 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 							? "paused"
 							: input.action === "resume"
 								? "active"
-								: input.action === "complete"
-									? "completed"
-									: "cancelled";
+								: "cancelled";
 					deps.resps.setStatus(resp.responsibilityId, status);
 					deps.service.ensureFollowup(
 						resp.responsibilityId,

@@ -5214,22 +5214,29 @@ button.link:hover {
 	background: #2a4;
 	color: #042;
 }
-.resp-status-paused {
-	background: #a83;
-	color: #210;
-}
-.resp-status-blocked,
-.resp-status-waiting_for_operator {
+.resp-waits-operator {
 	background: #c44;
 	color: #200;
 }
-.resp-status-completed {
+.resp-waits-goblin {
+	background: #c84;
+	color: #210;
+}
+.resp-waits-nobody {
 	background: #555;
 	color: #ddd;
 }
-.resp-status-cancelled {
+.resp-stage-paused {
+	background: #a83;
+	color: #210;
+}
+.resp-stage-closed {
 	background: #333;
 	color: #999;
+}
+.resp-evidence {
+	margin: 0.25rem 0 0;
+	padding-left: 1.25rem;
 }
 .resp-outcome {
 	font-weight: 600;

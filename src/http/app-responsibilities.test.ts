@@ -19,6 +19,7 @@ import { openWakeStore } from "../wake-store.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 import { deferred } from "../testkit.ts";
 import type { AppResponsibilityDeps } from "./app-responsibilities.ts";
+import type { AppAttentionResponse, AppResponsibilityFeed } from "./app-wire.ts";
 import type { ConversationStore } from "../conversation.ts";
 import type { ProjectStore } from "../projects.ts";
 
@@ -624,4 +625,69 @@ test("reattach to the same agent with an unresolved delivery is a 409, not a cra
 	} finally {
 		http.stop();
 	}
+});
+
+describe("reports and attention", () => {
+	test("a report the operator must answer reaches the feed stage and Attention", async () => {
+		let rig!: Rig;
+		const { http, call, store, projects } = setup({
+			token: APP_TOKEN_NAME,
+			responsibilities: (ctx) => {
+				rig = depsFor(ctx);
+				return rig.responsibilities;
+			},
+		});
+		try {
+			const project = projects.create({ name: "rig" });
+			const conv = store.resolve(
+				{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+				project.dir,
+			);
+			const { responsibility } = rig.resps.create({
+				projectId: project.id,
+				coordinationConversationId: conv.id,
+				handoverKey: "k-report",
+				understanding,
+			});
+			const id = responsibility.responsibilityId;
+			const attention = async () =>
+				((await (await call("/api/app/attention")).json()) as AppAttentionResponse).items.filter(
+					(i) => i.kind === "responsibility",
+				);
+			expect(await attention()).toEqual([]);
+
+			rig.resps.report(
+				id,
+				{ state: "blocked", reason: "CI needs a secret", question: "Add DEPLOY_KEY to the repo?" },
+				"goblin",
+			);
+			const feed = (await (
+				await call("/api/app/responsibilities")
+			).json()) as AppResponsibilityFeed;
+			expect(feed.items[0]!.stage).toEqual({
+				waitsFor: "operator",
+				stage: "question",
+				reason: "Add DEPLOY_KEY to the repo?",
+			});
+			expect(feed.items[0]!.latestReport?.reporter).toBe("goblin");
+			const items = await attention();
+			expect(items).toHaveLength(1);
+			expect(items[0]).toMatchObject({
+				detail: "Add DEPLOY_KEY to the repo?",
+				target: { kind: "conversation", conversationId: conv.id },
+			});
+
+			// The operator's correction answers it — the item leaves Attention.
+			const res = await call(`/api/app/responsibilities/${id}/correct`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ text: "added it" }),
+			});
+			expect(res.status).toBe(200);
+			expect(await attention()).toEqual([]);
+		} finally {
+			rig?.programs.close();
+			http.stop();
+		}
+	});
 });

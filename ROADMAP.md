@@ -148,11 +148,33 @@ of the new plan write or a live project handover. The full suite was not
 rerun for this slice; its previously recorded experimental failure remains
 unresolved. No live prompts, deployment, service restart, or push.
 
-Still open in stage 1: tool-facing blocked/waiting reasons and resumption
-conditions, agreed waiting reminders, archive/queued-work authority consistency,
-completion assessment with evidence, and a useful real-world pilot. Already
-enqueued developments remain historical facts; this change does not introduce
-generic wake revocation or strengthen the accepted Herdr send race.
+### Second Slice: Reports And Derived Stages — Implemented, Not Yet Piloted
+
+`responsibility action=report` states the work's state
+(`progress|waiting|ready|blocked|failed|done|dropped`) with a reason, an
+optional operator question, a `resumeWhen` for external waits, and evidence
+items. Stored status is lifecycle only; whom the work waits for is derived
+by one first-match stage function that the feed pill, Attention and the
+scheduler share. `done` closes only when evidence covers every
+completionEvidence entry; `dropped` closes "nothing to do". While the stage
+waits on the operator the silence backstop is held (an explicit commitment
+still fires); an operator correction answers the report. Ruling:
+`design/programs.md` → Reports and stages (mechanisms borrowed from
+dsh-superagent, cited there).
+
+Verification: typecheck (both programs) passed. Full non-live suite on the
+worktree: 5,313 pass, 91 skip, 2 fail — `boot.test.ts` "disabling after
+polling starts" gets the by-design 500 because that fresh worktree had no
+`app/dist` build; `subagents/mod.test.ts` "request recovery survives a
+concurrent steer" timed out under full-suite load and passed alone. No live
+prompts, deployment or restart.
+
+Still open in stage 1: pi-durable runs as responsibility workers (their
+`finish`/`ask_operator` filing `worker` reports), authority stamps on queued
+wakes re-checked at dispatch, archive/queued-work authority consistency,
+and a useful real-world pilot. Already enqueued developments remain
+historical facts; this change does not introduce generic wake revocation or
+strengthen the accepted Herdr send race.
 
 ## 2. Bring Back Outcomes, Not Just Activity
 

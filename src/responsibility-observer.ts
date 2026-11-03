@@ -114,7 +114,7 @@ function fencedObservation(data: Record<string, unknown>): string {
 }
 
 const SIGHTED: ReadonlySet<string> = new Set(["attached", "missing"]);
-const WATCHED: ReadonlySet<string> = new Set(["active", "waiting_for_operator", "blocked"]);
+const WATCHED: ReadonlySet<string> = new Set(["active"]);
 
 export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityObserver {
 	const { db, resps, wakes, pump, list } = deps;

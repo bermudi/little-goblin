@@ -33,6 +33,13 @@ function age(at: string | null): string {
 	return `${Math.floor(ms / 86_400_000)}d ago`;
 }
 
+const WAITS: Record<AppFeedItem["stage"]["waitsFor"], string> = {
+	operator: "Waiting on you",
+	goblin: "Goblin's move",
+	worker: "Worker's move",
+	nobody: "Nobody's move",
+};
+
 const HEALTH: Record<string, string> = {
 	attached: "attached",
 	missing: "missing",
@@ -109,11 +116,8 @@ function FeedRow({
 			`Couldn't ${action}: ${err instanceof Error ? err.message : String(err)}. Check the current state before retrying.`,
 		);
 	};
-	const open =
-		r.status === "active" ||
-		r.status === "waiting_for_operator" ||
-		r.status === "blocked" ||
-		r.status === "paused";
+	const open = r.status === "active" || r.status === "paused";
+	const report = item.latestReport;
 
 	const act = (action: "pause" | "resume" | "cancel") => {
 		setMutationError(null);
@@ -156,7 +160,12 @@ function FeedRow({
 	return (
 		<details className="resp-item">
 			<summary className="resp-pill">
-				<span className={`resp-status resp-status-${r.status}`}>{r.status}</span>
+				<span
+					className={`resp-status resp-waits-${item.stage.waitsFor} resp-stage-${item.stage.stage}`}
+					title={item.stage.reason}
+				>
+					{item.stage.stage}
+				</span>
 				<span className="resp-outcome">{r.outcome}</span>
 				<span className="resp-agents">
 					{item.attachments
@@ -176,6 +185,39 @@ function FeedRow({
 					</p>
 				)}
 				{r.notArmedReason !== null && <p className="resp-warn">not armed — {r.notArmedReason}</p>}
+				<p className="resp-stage-line">
+					<strong>{WAITS[item.stage.waitsFor]}:</strong> {item.stage.reason}
+				</p>
+				{report !== null && (
+					<div className="resp-report">
+						<p>
+							<strong>Latest report:</strong> {report.state} — {report.reason}{" "}
+							<span className="resp-rev">
+								({report.reporter}, rev {report.revision}, {fmt(report.createdAt)})
+							</span>
+						</p>
+						{report.question !== null && (
+							<p>
+								<strong>Question:</strong> {report.question}
+							</p>
+						)}
+						{report.resumeWhen !== null && (
+							<p>
+								<strong>Resumes when:</strong> {report.resumeWhen}
+							</p>
+						)}
+						{report.evidence.length > 0 && (
+							<ul className="resp-evidence">
+								{report.evidence.map((e) => (
+									<li key={e.item}>
+										<strong>{e.item}</strong> — {e.checked}{" "}
+										<span className="resp-rev">({e.ref})</span>
+									</li>
+								))}
+							</ul>
+						)}
+					</div>
+				)}
 				<p className="resp-next">
 					<strong>Next Review:</strong>{" "}
 					{item.nextCheckinAt === null

@@ -13,6 +13,8 @@ import type {
 } from "./responsibilities.ts";
 import { armedView } from "./responsibilities.ts";
 import { latestFireAtOrBefore, nextFire, type ProgramsStore } from "./programs.ts";
+import type { ResponsibilityReport } from "./responsibility-reports.ts";
+import { responsibilityStage, type ResponsibilityStage } from "./responsibility-stage.ts";
 
 export interface FeedWake {
 	wakeId: number;
@@ -38,6 +40,9 @@ export interface FeedItem {
 	responsibility: Responsibility;
 	attachments: Attachment[];
 	operations: PromptOperation[];
+	/** Whom the work waits for — the one derivation (responsibility-stage.ts). */
+	stage: ResponsibilityStage;
+	latestReport: ResponsibilityReport | null;
 	events: FeedEvent[];
 	/** Older durable events the window omitted — the rows remain. */
 	eventsTruncated: number;
@@ -151,6 +156,8 @@ function item(deps: FeedDeps, responsibility: Responsibility): FeedItem {
 						),
 					).toISOString();
 	}
+	const operations = deps.resps.operationsFor(responsibility.responsibilityId);
+	const latestReport = deps.resps.latestReport(responsibility.responsibilityId);
 	return {
 		responsibility: {
 			...responsibility,
@@ -158,7 +165,9 @@ function item(deps: FeedDeps, responsibility: Responsibility): FeedItem {
 			notArmedReason: arm.reason,
 		},
 		attachments: deps.resps.attachmentsFor(responsibility.responsibilityId),
-		operations: deps.resps.operationsFor(responsibility.responsibilityId),
+		operations,
+		stage: responsibilityStage(responsibility, latestReport, operations),
+		latestReport,
 		events,
 		eventsTruncated: truncated,
 		nextCheckinAt,

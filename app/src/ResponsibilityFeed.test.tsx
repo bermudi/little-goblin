@@ -93,6 +93,10 @@ function feed(paused: boolean, detached: boolean): AppFeedItem {
 			},
 		],
 		operations: [],
+		stage: paused
+			? { waitsFor: "operator", stage: "paused", reason: "paused by the operator" }
+			: { waitsFor: "worker", stage: "working", reason: "no report yet" },
+		latestReport: null,
 		events: [],
 		eventsTruncated: 0,
 		nextCheckinAt: null,
@@ -160,6 +164,11 @@ test("a stale poll that lands after a mutation's refresh cannot restore obsolete
 	const paused = {
 		...active,
 		responsibility: { ...active.responsibility, status: "paused" as const },
+		stage: {
+			waitsFor: "operator" as const,
+			stage: "paused" as const,
+			reason: "paused by the operator",
+		},
 	};
 	let latest: AppFeedItem = active;
 	// While gating, every GET is held in order — the test decides which
@@ -183,7 +192,7 @@ test("a stale poll that lands after a mutation's refresh cannot restore obsolete
 	await act(async () =>
 		root?.render(<ResponsibilityFeed token={null} projectId={null} pollMs={5} />),
 	);
-	expect(container.querySelector(".resp-status")?.textContent).toBe("active");
+	expect(container.querySelector(".resp-status")?.textContent).toBe("working");
 	// Gated slow reads hold the one ordinary poll in flight; the interval
 	// must not stack more on top of it.
 	gating = true;

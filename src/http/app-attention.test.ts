@@ -189,7 +189,7 @@ describe("app attention", () => {
 			const res = await call("/api/app/attention");
 			expect(res.status).toBe(200);
 			const body = (await res.json()) as AppAttentionResponse;
-			expect(body.unavailable).toEqual([]);
+			expect(body.unavailable).toEqual(["responsibilities"]);
 			expect(new Map(body.items.map((i) => [i.id, i.target]))).toEqual(
 				new Map([
 					["program-approval:7", { kind: "page", page: "programs" }],
@@ -217,6 +217,7 @@ describe("app attention", () => {
 				"memory",
 				"skills",
 				"delegations",
+				"responsibilities",
 				"recovery",
 			]);
 		} finally {

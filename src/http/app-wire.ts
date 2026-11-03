@@ -471,7 +471,8 @@ export interface AppAttentionItem {
 		| "memory-blocked"
 		| "skill-proposal"
 		| "interrupted-run"
-		| "delegation-input";
+		| "delegation-input"
+		| "responsibility";
 	title: string;
 	detail: string;
 	createdAt: string | null;
@@ -574,7 +575,7 @@ export interface AppResponsibilityUnderstanding {
 export interface AppResponsibility {
 	responsibilityId: string;
 	projectId: string;
-	status: "active" | "waiting_for_operator" | "blocked" | "paused" | "completed" | "cancelled";
+	status: "active" | "paused" | "completed" | "cancelled";
 	revision: number;
 	understanding: AppResponsibilityUnderstanding;
 	outcome: string;
@@ -651,12 +652,42 @@ export interface AppFeedEvent {
 	} | null;
 }
 
+export interface AppResponsibilityStage {
+	waitsFor: "operator" | "goblin" | "worker" | "nobody";
+	stage:
+		| "closed"
+		| "paused"
+		| "delivery-uncertain"
+		| "question"
+		| "review"
+		| "blocked"
+		| "failed"
+		| "waiting"
+		| "working";
+	reason: string;
+}
+
+export interface AppResponsibilityReport {
+	reportId: number;
+	responsibilityId: string;
+	revision: number;
+	reporter: "goblin" | "worker" | "migration";
+	state: "progress" | "waiting" | "ready" | "blocked" | "failed" | "done" | "dropped";
+	reason: string;
+	question: string | null;
+	resumeWhen: string | null;
+	evidence: { item: string; ref: string; checked: string }[];
+	createdAt: string;
+}
+
 /** One feed row — GET /api/app/responsibilities (open, all projects)
  * and GET /api/app/projects/<id>/responsibilities (the project feed). */
 export interface AppFeedItem {
 	responsibility: AppResponsibility;
 	attachments: AppResponsibilityAttachment[];
 	operations: AppPromptOperation[];
+	stage: AppResponsibilityStage;
+	latestReport: AppResponsibilityReport | null;
 	events: AppFeedEvent[];
 	/** Older durable events the feed window omitted — the rows remain. */
 	eventsTruncated: number;

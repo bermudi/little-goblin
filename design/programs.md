@@ -234,14 +234,59 @@ Rulings:
 
   Corrections, changed lifecycle status, and deliberate reattachment
   invalidate the old review and establish a fresh silence backstop.
-  Paused, blocked, waiting, completed, and cancelled work gets no timed
-  inference; resumption never resurrects the old promise. This slice
-  does not implement agreed waiting reminders or blocker resumption
-  conditions. Stale disabled/deleted/rescheduled follow-up snapshots
+  Paused, completed, and cancelled work gets no timed inference;
+  resumption never resurrects the old promise. While the derived stage
+  (below) waits on the operator, the silence backstop is held — not
+  consumed — and an explicit commitment still fires: it is the agreed
+  reminder. This slice does not implement waiting reminders beyond that. Stale disabled/deleted/rescheduled follow-up snapshots
   cannot fire. Already enqueued developments remain historical facts:
   turns must re-read current authority before acting, and existing
   revision/generation/send fences still govern effects. No new generic
   wake revocation or completion-verification protocol is implied.
+
+  **Reports and stages (2026-11-02):** whom a responsibility waits for
+  is derived, never stored twice. Stored status is lifecycle only —
+  `active | paused | completed | cancelled`; the legacy
+  `waiting_for_operator`/`blocked` values migrate on open into `active`
+  plus a `migration` report (the column's CHECK still admits them —
+  narrowing it means rebuilding an FK-referenced table — but nothing
+  writes them). `responsibility_reports` is append-only:
+  `progress | waiting | ready | blocked | failed | done | dropped`, a
+  reason, an optional single `question` for the operator, a
+  `resumeWhen` (required for `waiting`, an external condition), evidence
+  items `{item, ref, checked}`, the revision it was stated against, and
+  the reporter — `goblin` (the coordinating turn's assessment of the
+  Herdr observations), `worker` (reserved for pi-durable runs, which
+  already end through tools), or `migration`. A worker's claim and
+  goblin's assessment stay distinguishable at the data level.
+
+  `responsibility-stage.ts` is the one derivation, first match wins:
+  closed → paused (operator) → an `uncertain` send (goblin reconciles) →
+  a question (operator) → `ready` = review at a task checkpoint
+  (operator) → `blocked`/`failed` (operator) → `waiting` (nobody, names
+  the condition) → working (worker). A report stated against an older
+  revision no longer holds: every operator correction bumps revision and
+  is their answer. The feed pill, Attention (`responsibility` items,
+  pause excluded — it is the operator's own choice) and the scheduler's
+  silence hold read this function and nothing else.
+
+  Closing is a report, never a status flip from the agent: `done`
+  refuses unless evidence covers every `completionEvidence` entry
+  verbatim, naming what was checked; `dropped` (nothing to do —
+  superseded, not reproducible) closes without evidence. Both close in
+  the same transaction as the report. Operator pause/resume/cancel stay
+  direct lifecycle controls. There is no universal acceptance gate:
+  `ready` waits for review only when the task has a checkpoint; verified
+  `done` closes on its own.
+
+  Borrowed from dsh-superagent (deepseek-ai/dsh-superagent-prototype,
+  docs/001 and 003): the Report vocabulary incl. `dropped`, the
+  first-match stage table labelled by whom it waits for, the
+  `human_action`-style structured question, and the rejected concept
+  "inferring 'waiting on a person' from a report's free text". Not
+  taken: their Mandate/Policy/admission machinery (one operator), and
+  completion bound to an external PR close — our evidence items play
+  that role per task.
 
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an

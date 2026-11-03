@@ -56,7 +56,8 @@ const HOOK_THROTTLE_MS = 60_000;
 
 export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 	const hookLastFired = new Map<number, number>();
-	const serveClient = (rel: string) => serveAppDist(rel, deps.appDistDir);
+	const serveClient = (req: Request, rel: string) =>
+		serveAppDist(rel, deps.appDistDir, req.headers.get("accept-encoding"));
 
 	async function handleHook(req: Request, token: string): Promise<Response> {
 		const t0 = Date.now();
@@ -140,38 +141,38 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			return deps.appApi(req, url);
 		}
 		if (url.pathname === "/app") {
-			return serveClient("");
+			return serveClient(req, "");
 		}
 		if (url.pathname.startsWith("/app/c/")) {
 			const appId = url.pathname.slice("/app/c/".length);
 			if (!APP_ID_RE.test(appId)) {
 				return Response.json({ error: "not found" }, { status: 404 });
 			}
-			return serveClient("");
+			return serveClient(req, "");
 		}
 		if (
 			/^\/app\/(?:settings|memory|delegations|programs|status|projects|notes|skills|files|log)\/?$/.test(
 				url.pathname,
 			)
 		) {
-			return serveClient("");
+			return serveClient(req, "");
 		}
 		if (url.pathname.startsWith("/app/p/")) {
 			const projectId = url.pathname.slice("/app/p/".length);
 			if (!APP_ID_RE.test(projectId)) {
 				return Response.json({ error: "not found" }, { status: 404 });
 			}
-			return serveClient("");
+			return serveClient(req, "");
 		}
 		if (url.pathname.startsWith("/app/n/")) {
 			const noteId = url.pathname.slice("/app/n/".length);
 			if (!APP_ID_RE.test(noteId)) {
 				return Response.json({ error: "not found" }, { status: 404 });
 			}
-			return serveClient("");
+			return serveClient(req, "");
 		}
 		if (url.pathname.startsWith("/app/")) {
-			return serveClient(url.pathname.slice("/app/".length));
+			return serveClient(req, url.pathname.slice("/app/".length));
 		}
 		if (
 			url.pathname === "/t" ||
@@ -184,7 +185,7 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 					{ status: 503, headers: NO_STORE },
 				);
 			}
-			return serveClient("");
+			return serveClient(req, "");
 		}
 		if (url.pathname === "/" || url.pathname === "/index.html") {
 			return new Response(null, { status: 302, headers: { location: "/app/", ...NO_STORE } });

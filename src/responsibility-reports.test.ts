@@ -121,4 +121,30 @@ describe("responsibility reports", () => {
 		openResponsibilities(r.store.db);
 		expect(reopened.reportsFor(r.id)).toHaveLength(1);
 	});
+
+	test("purpose and artifacts round-trip; a pre-purpose table migrates with defaults", () => {
+		const r = rig();
+		const filed = r.resps.report(
+			r.id,
+			{
+				state: "ready",
+				reason: "upgrade notes drafted",
+				purpose: "draft",
+				artifacts: [{ title: "notes", ref: "docs/upgrade.md" }],
+			},
+			"goblin",
+		);
+		if ("refused" in filed) throw new Error("refused");
+		expect(filed.report).toMatchObject({
+			purpose: "draft",
+			artifacts: [{ title: "notes", ref: "docs/upgrade.md" }],
+		});
+
+		// An existing database from before the columns: its rows read as
+		// plain status posts with no artifacts.
+		r.store.db.run("ALTER TABLE responsibility_reports DROP COLUMN artifacts_json");
+		r.store.db.run("ALTER TABLE responsibility_reports DROP COLUMN purpose");
+		const reopened = openResponsibilities(r.store.db);
+		expect(reopened.latestReport(r.id)).toMatchObject({ purpose: "status", artifacts: [] });
+	});
 });

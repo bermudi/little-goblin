@@ -678,6 +678,8 @@ export interface AppResponsibilityReport {
 	question: string | null;
 	resumeWhen: string | null;
 	evidence: { item: string; ref: string; checked: string }[];
+	purpose: "status" | "finding" | "draft" | "change";
+	artifacts: { title: string; ref: string }[];
 	sourceKey: string | null;
 	createdAt: string;
 }

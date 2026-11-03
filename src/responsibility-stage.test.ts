@@ -15,6 +15,8 @@ const report = (over: Partial<ResponsibilityReport> = {}): ResponsibilityReport 
 	question: null,
 	resumeWhen: null,
 	evidence: [],
+	purpose: "status",
+	artifacts: [],
 	sourceKey: null,
 	createdAt: "2026-11-02T00:00:00.000Z",
 	...over,
@@ -85,7 +87,11 @@ describe("responsibility stage", () => {
 	test("a worker's claim is goblin's to assess; a worker's question goes to the operator", () => {
 		for (const state of ["ready", "failed", "blocked"] as const) {
 			expect(
-				responsibilityStage(active, report({ reporter: "worker", state, reason: "run #4 says so" }), []),
+				responsibilityStage(
+					active,
+					report({ reporter: "worker", state, reason: "run #4 says so" }),
+					[],
+				),
 			).toEqual({ waitsFor: "goblin", stage: "assess", reason: "run #4 says so" });
 		}
 		expect(

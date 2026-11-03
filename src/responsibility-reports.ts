@@ -38,6 +38,21 @@ export const reportEvidenceSchema = z.strictObject({
 });
 export type ReportEvidence = z.infer<typeof reportEvidenceSchema>;
 
+/** What a post carries beyond the work's state — the feed labels it.
+ *  status: the state report itself; finding: something learned worth
+ *  the operator's eyes; draft: a produced artifact for review; change:
+ *  a meaningful change made to the world. Orthogonal to state: a draft
+ *  awaiting review is `ready` + `draft`. */
+export const REPORT_PURPOSES = ["status", "finding", "draft", "change"] as const;
+export type ReportPurpose = (typeof REPORT_PURPOSES)[number];
+
+export const reportArtifactSchema = z.strictObject({
+	title: text(200),
+	/** Where it lives — a path, URL, or branch/commit. */
+	ref: text(2000),
+});
+export type ReportArtifact = z.infer<typeof reportArtifactSchema>;
+
 export const reportInputSchema = z
 	.strictObject({
 		state: z.enum(REPORT_STATES),
@@ -47,6 +62,8 @@ export const reportInputSchema = z
 		/** The external condition a `waiting` report resumes on. */
 		resumeWhen: text(2000).optional(),
 		evidence: z.array(reportEvidenceSchema).max(32).optional(),
+		purpose: z.enum(REPORT_PURPOSES).optional(),
+		artifacts: z.array(reportArtifactSchema).max(16).optional(),
 	})
 	.superRefine((v, ctx) => {
 		if (v.state === "waiting" && v.resumeWhen === undefined)
@@ -74,6 +91,8 @@ export interface ResponsibilityReport {
 	question: string | null;
 	resumeWhen: string | null;
 	evidence: ReportEvidence[];
+	purpose: ReportPurpose;
+	artifacts: ReportArtifact[];
 	/** Stable identity of an external settlement (a run's outcome) — a
 	 *  retried notice files it once. Null for goblin's own reports. */
 	sourceKey: string | null;
@@ -90,6 +109,8 @@ const rowSchema = z.object({
 	question: z.string().nullable(),
 	resume_when: z.string().nullable(),
 	evidence_json: z.string(),
+	purpose: z.enum(REPORT_PURPOSES),
+	artifacts_json: z.string(),
 	source_key: z.string().nullable(),
 	created_at: z.string(),
 });
@@ -106,6 +127,8 @@ export function toReport(row: unknown): ResponsibilityReport {
 		question: r.question,
 		resumeWhen: r.resume_when,
 		evidence: z.array(reportEvidenceSchema).parse(JSON.parse(r.evidence_json)),
+		purpose: r.purpose,
+		artifacts: z.array(reportArtifactSchema).parse(JSON.parse(r.artifacts_json)),
 		sourceKey: r.source_key,
 		createdAt: r.created_at,
 	};
@@ -124,6 +147,8 @@ export function ensureReportsSchema(db: Database): void {
 			resume_when TEXT,
 			evidence_json TEXT NOT NULL,
 			source_key TEXT,
+			purpose TEXT NOT NULL DEFAULT 'status',
+			artifacts_json TEXT NOT NULL DEFAULT '[]',
 			created_at TEXT NOT NULL
 		)`);
 	const cols = new Set(
@@ -131,7 +156,14 @@ export function ensureReportsSchema(db: Database): void {
 			(c) => c.name,
 		),
 	);
-	if (!cols.has("source_key")) db.run("ALTER TABLE responsibility_reports ADD COLUMN source_key TEXT");
+	if (!cols.has("source_key"))
+		db.run("ALTER TABLE responsibility_reports ADD COLUMN source_key TEXT");
+	if (!cols.has("purpose"))
+		db.run("ALTER TABLE responsibility_reports ADD COLUMN purpose TEXT NOT NULL DEFAULT 'status'");
+	if (!cols.has("artifacts_json"))
+		db.run(
+			"ALTER TABLE responsibility_reports ADD COLUMN artifacts_json TEXT NOT NULL DEFAULT '[]'",
+		);
 	db.run(
 		"CREATE UNIQUE INDEX IF NOT EXISTS responsibility_reports_source ON responsibility_reports (source_key) WHERE source_key IS NOT NULL",
 	);

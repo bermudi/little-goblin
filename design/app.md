@@ -787,6 +787,19 @@ Each post says whose word it is. `assessed` is goblin's own report.
 stale post stays visible and dimmed, never hidden. Review status is
 derived, never stored, so nothing can drift.
 
+**Typed posts.** A report's `purpose` says what the post carries:
+`status` (the default: the state report itself), `finding` (something
+learned that is worth the operator's eyes), `draft` (a produced artifact
+for review, usually `ready`) or `change` (a meaningful change made in the
+world). Purpose is independent of state, so the stage table never reads
+it. `artifacts` (title and ref) link what the post produced. A finished
+pi-durable run's exported files become its artifacts. Only an
+`http(s)` ref renders as a link; a path renders as text, so no
+model-supplied ref can become a `javascript:` URL. Findings and drafts
+are reports rather than a second table, which keeps review, revision
+and evidence semantics in one place. Routine check-ins with nothing new
+file no report.
+
 The newest post sits under the collapsed pill. The operator can read the
 result, question or blocker without opening each item. **Open
 conversation** goes to the coordination conversation, where comments and

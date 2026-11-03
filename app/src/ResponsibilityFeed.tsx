@@ -61,6 +61,7 @@ function PostCard({ post }: { post: AppFeedPost }) {
 		>
 			<p className="resp-post-head">
 				<span className="resp-post-state">{p.state}</span>
+				{p.purpose !== "status" && <span className="resp-post-purpose">{p.purpose}</span>}
 				<span className="resp-post-review">{REVIEW[post.review]}</span>
 				<span className="resp-rev">
 					{age(p.createdAt)} · rev {p.revision}
@@ -77,6 +78,23 @@ function PostCard({ post }: { post: AppFeedPost }) {
 				<p>
 					<strong>Resumes when:</strong> {p.resumeWhen}
 				</p>
+			)}
+			{p.artifacts.length > 0 && (
+				<ul className="resp-artifacts">
+					{p.artifacts.map((a) => (
+						<li key={a.ref}>
+							{/^https?:\/\//.test(a.ref) ? (
+								<a href={a.ref} target="_blank" rel="noreferrer">
+									{a.title}
+								</a>
+							) : (
+								<>
+									<strong>{a.title}</strong> <code>{a.ref}</code>
+								</>
+							)}
+						</li>
+					))}
+				</ul>
 			)}
 			{p.evidence.length > 0 && (
 				<ul className="resp-evidence">

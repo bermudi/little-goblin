@@ -5240,6 +5240,20 @@ button.link:hover {
 .resp-review-unreviewed .resp-post-review {
 	color: var(--app-warning);
 }
+.resp-post-purpose {
+	font-size: 0.75rem;
+	padding: 0 6px;
+	border-radius: 4px;
+	background: var(--app-active);
+}
+.resp-artifacts {
+	margin: 0.25rem 0 0;
+	padding-left: 1.25rem;
+}
+.resp-artifacts code {
+	font-size: 0.8rem;
+	overflow-wrap: anywhere;
+}
 .resp-post-question {
 	color: var(--app-accent);
 }

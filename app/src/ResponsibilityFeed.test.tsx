@@ -382,6 +382,8 @@ function post(
 			question: null,
 			resumeWhen: null,
 			evidence: [],
+			purpose: "status",
+			artifacts: [],
 			sourceKey: null,
 			createdAt: "2026-10-19T00:00:00Z",
 			...over,
@@ -437,6 +439,29 @@ test("the newest post reads at a glance, labelled by whose word it is, and opens
 	expect(container.querySelector(".resp-detail")?.textContent).toContain(
 		"2 older posts on the record",
 	);
+});
+
+test("a draft post names its purpose and links its artifacts", async () => {
+	const draft = post(1, "goblin", "assessed", {
+		purpose: "draft",
+		artifacts: [
+			{ title: "PR", ref: "https://example.test/pr/9" },
+			{ title: "notes", ref: "docs/upgrade.md" },
+		],
+	});
+	const item: AppFeedItem = { ...feed(false, false), posts: [draft] };
+	globalThis.fetch = Object.assign(() => Promise.resolve(Response.json({ items: [item] })), {
+		preconnect: realFetch.preconnect,
+	});
+	root = createRoot(container);
+	await act(async () => root?.render(<ResponsibilityFeed token={null} projectId={null} />));
+	const card = container.querySelector(".resp-glance .resp-post")!;
+	expect(card.querySelector(".resp-post-purpose")?.textContent).toBe("draft");
+	expect(card.querySelector(".resp-artifacts a")?.getAttribute("href")).toBe(
+		"https://example.test/pr/9",
+	);
+	// A path is shown, never turned into a link the browser can't open.
+	expect(card.querySelector(".resp-artifacts code")?.textContent).toBe("docs/upgrade.md");
 });
 
 test("a post overtaken by a correction says so", async () => {

@@ -58,13 +58,22 @@ function rig() {
 	mkdirSync(join(home, "state"), { recursive: true });
 	const store = openStore(join(home, "state", "goblin.sqlite"));
 	const project = openProjects(store).create({ name: "rig" });
-	const conv = store.resolve({ kind: "app", appId: project.slug, chatId: 0, threadId: 0 }, project.dir);
+	const conv = store.resolve(
+		{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+		project.dir,
+	);
 	const resps = openResponsibilities(store.db);
 	const { responsibility } = resps.create({
 		projectId: project.id,
 		coordinationConversationId: conv.id,
 		handoverKey: "k1",
-		understanding: { outcome: "o", situation: "", nextAction: "", checkpoints: [], completionEvidence: [] },
+		understanding: {
+			outcome: "o",
+			situation: "",
+			nextAction: "",
+			checkpoints: [],
+			completionEvidence: [],
+		},
 	});
 	return { resps, id: responsibility.responsibilityId };
 }
@@ -74,6 +83,15 @@ describe("run reports", () => {
 		expect(runReport(run())).toEqual({
 			state: "ready",
 			reason: "worker run #4 finished: patched and tested",
+		});
+		// Exported files ride as artifacts the feed links, not reason text.
+		expect(runReport(run({ exportedFiles: ["/ws/out/report.md", "/ws/out/fix.patch"] }))).toEqual({
+			state: "ready",
+			reason: "worker run #4 finished: patched and tested",
+			artifacts: [
+				{ title: "report.md", ref: "/ws/out/report.md" },
+				{ title: "fix.patch", ref: "/ws/out/fix.patch" },
+			],
 		});
 		expect(runReport(run({ status: "needs_input", question: "which account?" }))).toEqual({
 			state: "blocked",
@@ -110,7 +128,11 @@ describe("run reports", () => {
 		fileRunReport(r.resps, linked);
 		const reports = r.resps.reportsFor(r.id);
 		expect(reports).toHaveLength(1);
-		expect(reports[0]).toMatchObject({ reporter: "worker", state: "ready", sourceKey: "subagent:4:1:done" });
+		expect(reports[0]).toMatchObject({
+			reporter: "worker",
+			state: "ready",
+			sourceKey: "subagent:4:1:done",
+		});
 		expect(responsibilityStage(r.resps.get(r.id)!, reports[0]!, [])).toMatchObject({
 			waitsFor: "goblin",
 			stage: "assess",

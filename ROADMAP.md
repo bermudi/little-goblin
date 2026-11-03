@@ -257,9 +257,13 @@ The cross-project feed moved from the Projects index to Attention, under
 the open decisions: one place to watch, with the badge the rail and tab
 bar already show. Project pages keep their own feed.
 
-Next in stage 2: typed posts for findings and drafts, beyond state
-reports. Then intentional empty, stale and mobile states, checked in a
-real browser.
+Typed posts: a report's `purpose` (status, finding, draft or change)
+labels what it carries, and `artifacts` link what it produced. A finished
+run's exported files become artifacts. The `responsibility` tool
+describes both. Ruling: `design/app.md` → Outcome posts → Typed posts.
+
+Next in stage 2: intentional empty, stale and mobile states, checked in a
+real browser (needs a client build). The combined pilot also remains.
 
 ## 3. Add Useful Cheap Capacity
 

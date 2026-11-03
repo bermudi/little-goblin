@@ -707,8 +707,8 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		"UPDATE responsibilities SET armed = ?, not_armed_reason = ?, updated_at = ? WHERE responsibility_id = ?",
 	);
 	const qInsertReport = db.prepare(
-		`INSERT INTO responsibility_reports (responsibility_id, revision, reporter, state, reason, question, resume_when, evidence_json, source_key, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+		`INSERT INTO responsibility_reports (responsibility_id, revision, reporter, state, reason, question, resume_when, evidence_json, source_key, purpose, artifacts_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
 	);
 	const qReportBySource = db.query<unknown, [string]>(
 		"SELECT * FROM responsibility_reports WHERE source_key = ?",
@@ -899,6 +899,8 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					input.resumeWhen ?? null,
 					JSON.stringify(input.evidence ?? []),
 					opts?.sourceKey ?? null,
+					input.purpose ?? "status",
+					JSON.stringify(input.artifacts ?? []),
 					ts,
 				);
 				const report = toReport(row);
@@ -926,6 +928,8 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					revision: r.report.revision,
 					question: r.report.question !== null,
 					evidence: r.report.evidence.length,
+					purpose: r.report.purpose,
+					artifacts: r.report.artifacts.length,
 					status: r.responsibility.status,
 					duplicate: r.duplicate,
 					source: r.report.sourceKey,

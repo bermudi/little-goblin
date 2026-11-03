@@ -6,6 +6,7 @@
 import { HistoryExpiredError, type MailHit, type ThreadContext } from "./mail.ts";
 import type { DevelopmentInput } from "./wake-store.ts";
 import type { ResponsibilityStore } from "./responsibilities.ts";
+import { authorityStamp } from "./responsibility-authority.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
 import { log } from "./log.ts";
 
@@ -83,6 +84,7 @@ export function makeMailNoticeRouter(
 				facts: { program: program.id, name: program.name },
 				origin: "mail-watcher",
 				responsibilityId: resp.responsibilityId,
+				authority: authorityStamp(resp),
 			});
 			return;
 		}

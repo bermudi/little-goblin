@@ -22,7 +22,13 @@ import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import type { Runtime, RuntimeDeps, TurnSink } from "./runtime.ts";
 import type { JournalStatus, TurnJournal } from "./turn-journal.ts";
-import type { DevelopmentInput, ReconcilePlan, WakeRecord, WakeStore } from "./wake-store.ts";
+import type {
+	AuthorityRecheck,
+	DevelopmentInput,
+	ReconcilePlan,
+	WakeRecord,
+	WakeStore,
+} from "./wake-store.ts";
 
 export interface WakeDispatcherDeps {
 	store: ConversationStore;
@@ -36,6 +42,10 @@ export interface WakeDispatcherDeps {
 	// backoff; the defaults are production-sized, tests inject smaller.
 	backoff?: { baseMs: number; capMs: number };
 	now?(): number;
+	/** Re-checks each stamped development's authority as its trigger is
+	 *  appended (responsibility-authority.ts) — a lapsed stamp is
+	 *  delivered marked superseded, never dropped. */
+	recheck?: AuthorityRecheck;
 }
 
 export interface WakeDispatcher {
@@ -236,8 +246,11 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 			});
 			return;
 		}
-		const claimed = wakes.commit(rec.wakeId, ({ id, text }) =>
-			store.append(conv.id, [{ id, role: "user", parts: [{ type: "text", text }] }]),
+		const claimed = wakes.commit(
+			rec.wakeId,
+			({ id, text }) =>
+				store.append(conv.id, [{ id, role: "user", parts: [{ type: "text", text }] }]),
+			deps.recheck,
 		);
 		submitGuarded(claimed);
 	}

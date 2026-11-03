@@ -307,6 +307,33 @@ Rulings:
   completion bound to an external PR close — our evidence items play
   that role per task.
 
+- **Queued authority (2026-11-02).** Developments recorded by
+  autonomous recorders (the scheduler's check-ins, the observer, the mail
+  watcher) carry a stamp of the authority they acted on: responsibility
+  status and revision, plus attachment id and generation for an
+  observation. Operator-origin developments (handover, correction) carry
+  none, because they are the authority. When the wake carrying a stamped
+  development appends its trigger, one predicate (`stillAuthorized`,
+  `src/responsibility-authority.ts`) re-checks the stamp in the commit
+  transaction. These lapse it: a status change (pause, close), an
+  operator correction (revision bump), a detach, or a re-bind (generation
+  bump). A lapsed development is never dropped: it happened, so it is
+  still delivered, but its line is prefixed `[superseded — <reason>;
+  history only, not authority to act]`. The verdict is written to the
+  event once, before the append, so the trigger text never changes after
+  commit and retries submit the same message. This is not generic wake
+  revocation: wakes are pending only while their conversation is busy,
+  and suppressing a delivered fact would lose work. A malformed stamp is
+  corruption: the commit throws and nothing is appended. Prompt
+  operations already carry the same check (`validateForSend`: revision
+  and attachment generation). Project archive is visibility only
+  (design/app.md → Archiving), not authority: it hides the rail entry and
+  does not pause a responsibility, and a delivered wake unarchives the
+  coordination conversation as any appended event does. Stopping work
+  means pausing or closing the responsibility. Borrowed from
+  dsh-superagent: re-checking the original permission before a held
+  action resumes.
+
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an
 agent that wakes itself to decide whether to check things; ruled out

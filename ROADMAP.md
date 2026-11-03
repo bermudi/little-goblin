@@ -179,11 +179,26 @@ is goblin's to assess; its question goes to the operator unchanged. Ruling:
 unchanged — no new evidence or `dropped` outcome on `finish` yet; add them
 only if piloting shows goblin cannot assess from the result text.
 
-Still open in stage 1: authority stamps on queued
-wakes re-checked at dispatch, archive/queued-work authority consistency,
-and a useful real-world pilot. Already enqueued developments remain
-historical facts; this change does not introduce generic wake revocation or
-strengthen the accepted Herdr send race.
+### Fourth Slice: Queued Authority — Implemented, Not Yet Piloted
+
+Scheduler, observer and mail-watcher developments stamp the
+responsibility status, revision and (for observations) attachment
+generation they acted on. The wake commit re-checks each stamp. A
+development whose stamp lapsed since it was recorded (pause, close,
+correction, detach, re-bind) is still delivered, framed as superseded
+history, never as authority to act. Archive stays visibility-only:
+pausing the responsibility is what stops work. Ruling:
+`design/programs.md` → Queued authority. The responsibility store now
+opens before the wake dispatcher, so the boot pump re-checks too.
+
+Verification: typecheck passed on both programs. Focused suites (wakes,
+scheduler, responsibilities, mail watcher, module boundaries, app
+responsibilities, boot): 345 passed, 1 failed. The failure is the
+by-design `app/dist` 500 in `boot.test.ts` on this unbuilt worktree.
+
+Still open in stage 1: a useful real-world pilot. Already enqueued
+developments remain historical facts. This does not introduce generic wake
+revocation or strengthen the accepted Herdr send race.
 
 ## 2. Bring Back Outcomes, Not Just Activity
 

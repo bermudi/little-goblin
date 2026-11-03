@@ -14,6 +14,7 @@ import { programFireTag } from "./tags.ts";
 import { telegramAddressOf } from "./targets.ts";
 import { wakeTarget, type WakeDeps } from "./wake.ts";
 import type { ResponsibilityStore } from "./responsibilities.ts";
+import { authorityStamp } from "./responsibility-authority.ts";
 import { responsibilityStage } from "./responsibility-stage.ts";
 import { isFollowupProgram } from "./responsibility-followup.ts";
 import type { DevelopmentInput } from "./wake-store.ts";
@@ -636,6 +637,7 @@ function fireResponsibility(
 		},
 		origin: "scheduler",
 		responsibilityId: resp.responsibilityId,
+		authority: authorityStamp(resp),
 		// The text carries mutable state (revision, understanding,
 		// attachment health), so a crash-window replay after a correction
 		// re-records the same occurrence key with drifted text. The

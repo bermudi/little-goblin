@@ -63,6 +63,7 @@ import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
 import { fileRunReport } from "./responsibility-runs.ts";
+import { makeAuthorityRecheck } from "./responsibility-authority.ts";
 import { openSubagentsGuarded, type Subagents } from "./subagents/mod.ts";
 import { telegramAddressOf } from "./targets.ts";
 
@@ -615,12 +616,16 @@ async function boot() {
 	// hooks bound above. Built after wakeDeps (the sinks it uses) and
 	// before replayInbox: recovered wakes enter their lanes ahead of
 	// inbound traffic. The boot pump replays the last crash boundary.
+	// Opened before the dispatcher: the boot pump's commits re-check
+	// queued developments' authority against it.
+	const responsibilities: ResponsibilityStore = openResponsibilities(store.db);
 	wakeDispatcher = makeWakeDispatcher({
 		store,
 		wakes: wakeStore,
 		journal: turnJournal,
 		runtime,
 		sinkFor: (conv) => sinkFor(wakeDeps, conv, "bell"),
+		recheck: makeAuthorityRecheck(responsibilities),
 	});
 	wakeDispatcher.pump();
 	const stopWakeTicker = wakeDispatcher.startTicker();
@@ -630,7 +635,6 @@ async function boot() {
 	// snapshots into deduped durable developments. The observer's list
 	// seam is the local operator session; (server, session) on each
 	// attachment is the grouping key for when a second target exists.
-	const responsibilities: ResponsibilityStore = openResponsibilities(store.db);
 	const responsibilityService = makeResponsibilityService({
 		db: store.db,
 		resps: responsibilities,

@@ -31,6 +31,10 @@ export interface DevelopmentInput {
 	/** The project responsibility this development belongs to, when it
 	 *  carries one — the feed joins on it, delivery doesn't care. */
 	responsibilityId?: string;
+	/** Opaque JSON: what authorized an autonomous development (the
+	 *  responsibility state it acted on). commit()'s recheck reads it;
+	 *  the store never interprets it. Operator-origin events omit it. */
+	authority?: unknown;
 	/** Occurrence replay (the scheduler's crash recovery): the same
 	 *  source key may re-record with fresher mutable state in the text —
 	 *  a correction or attachment change between the original record and
@@ -101,7 +105,18 @@ const eventRefSchema = z.object({
 	event_id: z.number(),
 	source_key: z.string(),
 	text: z.string(),
+	responsibility_id: z.string().nullable(),
+	authority_json: z.string().nullable(),
+	superseded: z.string().nullable(),
 });
+
+/** One development's line(s) in the trigger. A superseded event is
+ *  still delivered — it happened — but framed as history. */
+function eventLine(e: z.infer<typeof eventRefSchema>): string {
+	return e.superseded === null
+		? e.text
+		: `[superseded — ${e.superseded}; history only, not authority to act]\n${e.text}`;
+}
 
 // The appended event's data envelope, as conversation.ts writes it.
 const appendedEventSchema = z.object({
@@ -115,6 +130,14 @@ const eventIdentitySchema = z.object({
 	kind: z.string(),
 	text: z.string(),
 });
+
+/** Commit-time authority re-check for one event: null = still holds,
+ *  else the reason it was superseded. Throwing aborts the commit. */
+export type AuthorityRecheck = (ev: {
+	eventId: number;
+	responsibilityId: string | null;
+	authority: unknown;
+}) => string | null;
 
 export interface WakeStore {
 	/** Record one development; a duplicate source key is a no-op that
@@ -134,7 +157,11 @@ export interface WakeStore {
 	/** The atomic append: compose the trigger, run `append` in the same
 	 *  transaction, verify it landed, stamp its seq, claim the wake.
 	 *  A wake past pending is returned unchanged, never appended twice. */
-	commit(wakeId: number, append: (trigger: { id: string; text: string }) => void): WakeRecord;
+	commit(
+		wakeId: number,
+		append: (trigger: { id: string; text: string }) => void,
+		recheck?: AuthorityRecheck,
+	): WakeRecord;
 	/** The run that will process this wake — called before model/tool
 	 *  execution. Idempotent for the same run. */
 	linkRun(wakeId: number, runId: string): void;
@@ -189,6 +216,15 @@ export function ensureWakeSchema(db: Database): void {
 	);
 	if (!eventCols.has("responsibility_id")) {
 		db.exec("ALTER TABLE work_events ADD COLUMN responsibility_id TEXT");
+	}
+	// authority_json: the recorder's stamp. superseded: why the stamp no
+	// longer held at commit — written once, inside the commit, before
+	// the append, so the composed trigger text never changes afterwards.
+	if (!eventCols.has("authority_json")) {
+		db.exec("ALTER TABLE work_events ADD COLUMN authority_json TEXT");
+	}
+	if (!eventCols.has("superseded")) {
+		db.exec("ALTER TABLE work_events ADD COLUMN superseded TEXT");
 	}
 	db.run(`
 		CREATE TABLE IF NOT EXISTS wake_deliveries (
@@ -261,7 +297,7 @@ export function openWakeStore(db: Database): WakeStore {
 		"SELECT event_id, conversation_id, kind, text FROM work_events WHERE source_key = ?",
 	);
 	const qInsertEvent = db.prepare(
-		"INSERT INTO work_events (source_key, conversation_id, kind, text, facts_json, origin, responsibility_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO work_events (source_key, conversation_id, kind, text, facts_json, origin, responsibility_id, authority_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
 	);
 	const qWakeForEvent = db.query<{ wake_id: number }, [number]>(
 		"SELECT wake_id FROM wake_events WHERE event_id = ?",
@@ -272,10 +308,13 @@ export function openWakeStore(db: Database): WakeStore {
 	const qInsertWake = db.prepare(
 		"INSERT INTO wake_deliveries (conversation_id, message_id, state, created_at) VALUES (?, ?, 'pending', ?)",
 	);
+	const qSupersede = db.prepare(
+		"UPDATE work_events SET superseded = ? WHERE event_id = ? AND superseded IS NULL",
+	);
 	const qLinkEvent = db.prepare("INSERT INTO wake_events (wake_id, event_id) VALUES (?, ?)");
 	const qWake = db.query<WakeRow, [number]>("SELECT * FROM wake_deliveries WHERE wake_id = ?");
 	const qWakeEvents = db.query<z.infer<typeof eventRefSchema>, [number]>(
-		"SELECT e.event_id, e.source_key, e.text FROM wake_events w JOIN work_events e ON e.event_id = w.event_id WHERE w.wake_id = ? ORDER BY e.event_id",
+		"SELECT e.event_id, e.source_key, e.text, e.responsibility_id, e.authority_json, e.superseded FROM wake_events w JOIN work_events e ON e.event_id = w.event_id WHERE w.wake_id = ? ORDER BY e.event_id",
 	);
 	const qPending = db.query<WakeRow, [string]>(
 		"SELECT * FROM wake_deliveries WHERE state = 'pending' AND conversation_id = ? ORDER BY wake_id",
@@ -337,7 +376,7 @@ export function openWakeStore(db: Database): WakeStore {
 			createdAt: parsed.created_at,
 			claimedAt: parsed.claimed_at,
 			settledAt: parsed.settled_at,
-			text: events.map((e) => e.text).join("\n"),
+			text: events.map(eventLine).join("\n"),
 			events: events.map((e) => ({ eventId: e.event_id, sourceKey: e.source_key })),
 		};
 	}
@@ -389,6 +428,7 @@ export function openWakeStore(db: Database): WakeStore {
 					JSON.stringify(input.facts ?? null),
 					input.origin,
 					input.responsibilityId ?? null,
+					input.authority === undefined ? null : JSON.stringify(input.authority),
 					now,
 				);
 				const eventId = Number(inserted.lastInsertRowid);
@@ -448,11 +488,35 @@ export function openWakeStore(db: Database): WakeStore {
 			return rows.map(rowToRecord);
 		},
 
-		commit(wakeId, append) {
+		commit(wakeId, append, recheck) {
 			const now = new Date().toISOString();
 			return db.transaction(() => {
-				const rec = requireWake(wakeId);
+				let rec = requireWake(wakeId);
 				if (rec.state !== "pending") return rec;
+				if (recheck !== undefined) {
+					// Same transaction as the append: the verdict and the text
+					// it shapes land together or not at all.
+					let marked = 0;
+					for (const e of qWakeEvents.all(wakeId).map((r) => eventRefSchema.parse(r))) {
+						if (e.superseded !== null) continue;
+						const reason = recheck({
+							eventId: e.event_id,
+							responsibilityId: e.responsibility_id,
+							authority: e.authority_json === null ? null : JSON.parse(e.authority_json),
+						});
+						if (reason === null) continue;
+						qSupersede.run(reason, e.event_id);
+						marked += 1;
+						log.info("wake development superseded at dispatch", {
+							wake: wakeId,
+							event: e.event_id,
+							sourceKey: e.source_key,
+							responsibility: e.responsibility_id,
+							reason,
+						});
+					}
+					if (marked > 0) rec = requireWake(wakeId);
+				}
 				append({ id: rec.messageId, text: rec.text });
 				// The stamp is the durable history reference: verify the
 				// append actually landed this trigger, don't trust it.

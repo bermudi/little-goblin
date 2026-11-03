@@ -2106,6 +2106,7 @@ function AppShell() {
 						projects={projectList}
 						onOpen={openProject}
 						onNew={() => setCreateProjectOpen(true)}
+						onConversation={openConversation}
 					/>
 				)}
 				{page === "notes" && (
@@ -2165,6 +2166,7 @@ function AppShell() {
 									renderRow={renderRow}
 									onChanged={() => void refresh()}
 									onOpenNote={openNote}
+									onConversation={openConversation}
 								/>
 								{startFailed && (
 									<p className="error">

@@ -769,6 +769,30 @@ delivery edges:
   instead of stacking requests whose every response arrives stale by
   sequence and gets discarded — the feed would never have rendered.
 
+## Outcome posts (ruling 2026-11-02)
+
+The feed separates outcomes from activity. A **post** is a responsibility
+report: a stated result, need or change, with reporter, evidence and
+revision (design/programs.md → Reports and stages). Activity means
+check-ins, observations and deliveries. It stays in the expanded row's
+History. There is no separate post table: reports are already durable,
+append-only and linked to the responsibility, so the feed is a read model
+over them. `feedPosts` serves the newest `FEED_POST_WINDOW` (20), newest
+first, plus `postsTruncated`.
+
+Each post says whose word it is. `assessed` is goblin's own report.
+`unreviewed` is a worker's claim with no later goblin report, and turns
+`reviewed` once goblin reports after it. `migrated` is a legacy status.
+`current` is false once an operator correction has overtaken the post. A
+stale post stays visible and dimmed, never hidden. Review status is
+derived, never stored, so nothing can drift.
+
+The newest post sits under the collapsed pill. The operator can read the
+result, question or blocker without opening each item. **Open
+conversation** goes to the coordination conversation, where comments and
+corrections already keep the item's context. That conversation is the
+item's discussion; there is no separate comment thread.
+
 ## Pinning (ruling 2026-10-10)
 
 Pin is the rail's anchor action, archive's complement: a pinned conversation

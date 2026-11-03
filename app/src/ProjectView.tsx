@@ -198,11 +198,13 @@ export function ProjectsIndex({
 	projects,
 	onOpen,
 	onNew,
+	onConversation,
 }: {
 	token: string | null;
 	projects: AppProject[];
 	onOpen: (id: string) => void;
 	onNew: () => void;
+	onConversation?: ((conversationId: string) => void) | undefined;
 }) {
 	const active = projects
 		.filter((p) => p.archivedAt === null)
@@ -213,7 +215,7 @@ export function ProjectsIndex({
 	return (
 		<div className="ops">
 			<h2 className="ops-h2">Projects</h2>
-			<ResponsibilityFeed token={token} projectId={null} />
+			<ResponsibilityFeed token={token} projectId={null} onConversation={onConversation} />
 			{active.length === 0 ? (
 				<p className="empty">
 					No projects yet — a project gives related chats their own directory and instructions.
@@ -365,6 +367,7 @@ export function ProjectView({
 	renderRow,
 	onChanged,
 	onOpenNote,
+	onConversation,
 }: {
 	token: string | null;
 	project: AppProject;
@@ -372,6 +375,7 @@ export function ProjectView({
 	renderRow: (conv: Summary) => ReactNode;
 	onChanged: () => void;
 	onOpenNote: (id: string) => void;
+	onConversation?: ((conversationId: string) => void) | undefined;
 }) {
 	const [renaming, setRenaming] = useState(false);
 	const [nameDraft, setNameDraft] = useState("");
@@ -542,7 +546,7 @@ export function ProjectView({
 
 			<ProjectNotes token={token} project={project} onOpenNote={onOpenNote} onChanged={onChanged} />
 
-			<ResponsibilityFeed token={token} projectId={project.id} />
+			<ResponsibilityFeed token={token} projectId={project.id} onConversation={onConversation} />
 
 			<h2 className="ops-h2">Chats</h2>
 			{activeChats.length === 0 ? (

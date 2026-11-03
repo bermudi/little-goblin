@@ -236,6 +236,27 @@ operator correction, a controlled restart, and evidenced completion. Separately
 exercise failure paths in isolation. Live prompts, service restarts, and other
 consequential operations retain their normal authorization requirements.
 
+### First Slice: Outcome Posts — Implemented, Not Yet Piloted
+
+The feed separates outcomes from activity. Responsibility reports are
+served as posts, newest first and bounded. Each post says whose word it
+is: goblin-assessed, a worker claim not yet reviewed, a reviewed worker
+claim, or a migrated status. A post an operator correction has overtaken
+is dimmed. The newest post shows under the collapsed pill with **Open
+conversation**, so the result or the decision needed reads without
+opening every item. Check-ins and observations stay in History. Ruling:
+`design/app.md` → Outcome posts.
+
+Verification: typecheck (both programs) passed. Full suite: 5,331 passed,
+91 skipped, 1 failed. The failure is the by-design `app/dist` 500 in
+`boot.test.ts` on this unbuilt worktree. Client behaviour is pinned in
+happy-dom tests. It has not been seen in a real browser yet: builds belong
+on CI, and the mobile layout still needs a look.
+
+Next in stage 2: bring the cross-project feed and Attention together on
+the home view. Then typed posts for findings and drafts, beyond state
+reports.
+
 ## 3. Add Useful Cheap Capacity
 
 Outcome: Goblin can use an explicitly configured free model for a bounded

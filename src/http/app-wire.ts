@@ -682,6 +682,15 @@ export interface AppResponsibilityReport {
 	createdAt: string;
 }
 
+/** An outcome post on a feed row — one report, with whose word it is.
+ * `unreviewed` is a worker's claim goblin has not yet reported on. */
+export interface AppFeedPost {
+	report: AppResponsibilityReport;
+	review: "assessed" | "unreviewed" | "reviewed" | "migrated";
+	/** False once an operator correction has overtaken it. */
+	current: boolean;
+}
+
 /** One feed row — GET /api/app/responsibilities (open, all projects)
  * and GET /api/app/projects/<id>/responsibilities (the project feed). */
 export interface AppFeedItem {
@@ -690,6 +699,9 @@ export interface AppFeedItem {
 	operations: AppPromptOperation[];
 	stage: AppResponsibilityStage;
 	latestReport: AppResponsibilityReport | null;
+	/** Outcome posts, newest first — bounded; older ones stay on record. */
+	posts: AppFeedPost[];
+	postsTruncated: number;
 	events: AppFeedEvent[];
 	/** Older durable events the feed window omitted — the rows remain. */
 	eventsTruncated: number;

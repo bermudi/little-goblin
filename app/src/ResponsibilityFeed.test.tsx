@@ -97,6 +97,8 @@ function feed(paused: boolean, detached: boolean): AppFeedItem {
 			? { waitsFor: "operator", stage: "paused", reason: "paused by the operator" }
 			: { waitsFor: "worker", stage: "working", reason: "no report yet" },
 		latestReport: null,
+		posts: [],
+		postsTruncated: 0,
 		events: [],
 		eventsTruncated: 0,
 		nextCheckinAt: null,
@@ -240,7 +242,10 @@ test("a truncated history names the older events still on the record", async () 
 	);
 	root = createRoot(container);
 	await act(async () => root?.render(<ResponsibilityFeed token={null} projectId={null} />));
-	container.querySelector("details")!.open = true;
+	await act(async () => {
+		container.querySelector("details")!.open = true;
+		await sleep(1);
+	});
 	expect(container.querySelector(".resp-events-older")?.textContent).toContain(
 		"3 older events on the record",
 	);
@@ -314,7 +319,10 @@ for (const [label, action] of [
 		);
 		root = createRoot(container);
 		await act(async () => root?.render(<ResponsibilityFeed token={null} projectId={null} />));
-		container.querySelector("details")!.open = true;
+		await act(async () => {
+			container.querySelector("details")!.open = true;
+			await sleep(1);
+		});
 		if (action === "correct") {
 			await act(async () => button("Correct").click());
 			const textarea = container.querySelector("textarea")!;
@@ -356,3 +364,92 @@ for (const [label, action] of [
 		}
 	});
 }
+
+function post(
+	reportId: number,
+	reporter: "goblin" | "worker",
+	review: AppFeedItem["posts"][number]["review"],
+	over: Partial<AppFeedItem["posts"][number]["report"]> = {},
+): AppFeedItem["posts"][number] {
+	return {
+		report: {
+			reportId,
+			responsibilityId: "r1",
+			revision: 1,
+			reporter,
+			state: "ready",
+			reason: `report ${reportId}`,
+			question: null,
+			resumeWhen: null,
+			evidence: [],
+			sourceKey: null,
+			createdAt: "2026-10-19T00:00:00Z",
+			...over,
+		},
+		review,
+		current: true,
+	};
+}
+
+test("the newest post reads at a glance, labelled by whose word it is, and opens the work", async () => {
+	const item: AppFeedItem = {
+		...feed(false, false),
+		posts: [
+			post(2, "worker", "unreviewed", {
+				state: "blocked",
+				reason: "pi run #4 asks the operator",
+				question: "Which branch should the fix land on?",
+			}),
+			post(1, "goblin", "assessed", { state: "progress", reason: "tests reproduced" }),
+		],
+		postsTruncated: 2,
+	};
+	globalThis.fetch = Object.assign(() => Promise.resolve(Response.json({ items: [item] })), {
+		preconnect: realFetch.preconnect,
+	});
+	const opened: string[] = [];
+	root = createRoot(container);
+	await act(async () =>
+		root?.render(
+			<ResponsibilityFeed token={null} projectId={null} onConversation={(id) => opened.push(id)} />,
+		),
+	);
+	const glance = container.querySelector(".resp-glance")!;
+	expect(glance.querySelectorAll(".resp-post")).toHaveLength(1);
+	expect(glance.querySelector(".resp-post-review")?.textContent).toBe("worker claim · unreviewed");
+	expect(glance.querySelector(".resp-post-question")?.textContent).toContain(
+		"Which branch should the fix land on?",
+	);
+	await act(async () => (glance.querySelector(".resp-open-conv") as HTMLButtonElement).click());
+	expect(opened).toEqual(["c1"]);
+
+	// Expanded, the row lists every post in the window and names the rest.
+	const details = container.querySelector("details")!;
+	await act(async () => {
+		details.open = true;
+		details.dispatchEvent(new win.Event("toggle") as unknown as Event);
+	});
+	expect(container.querySelector(".resp-glance")).toBeNull();
+	const listed = [...container.querySelectorAll(".resp-detail .resp-post-review")].map(
+		(n) => n.textContent,
+	);
+	expect(listed).toEqual(["worker claim · unreviewed", "goblin"]);
+	expect(container.querySelector(".resp-detail")?.textContent).toContain(
+		"2 older posts on the record",
+	);
+});
+
+test("a post overtaken by a correction says so", async () => {
+	const stale = { ...post(1, "goblin", "assessed"), current: false };
+	const item: AppFeedItem = { ...feed(false, false), posts: [stale] };
+	globalThis.fetch = Object.assign(() => Promise.resolve(Response.json({ items: [item] })), {
+		preconnect: realFetch.preconnect,
+	});
+	root = createRoot(container);
+	await act(async () => root?.render(<ResponsibilityFeed token={null} projectId={null} />));
+	const card = container.querySelector(".resp-glance .resp-post")!;
+	expect(card.className).toContain("resp-post-stale");
+	expect(card.textContent).toContain("before a correction");
+	// No navigation seam, no dead button.
+	expect(container.querySelector(".resp-open-conv")).toBeNull();
+});

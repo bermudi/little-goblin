@@ -15,7 +15,12 @@ import {
 	type ResponsibilityStore,
 	type Understanding,
 } from "./responsibilities.ts";
-import { feedForProject, feedOpen, FEED_EVENT_WINDOW } from "./responsibility-feed.ts";
+import {
+	FEED_EVENT_WINDOW,
+	FEED_POST_WINDOW,
+	feedForProject,
+	feedOpen,
+} from "./responsibility-feed.ts";
 import { openWakeStore, type WakeStore } from "./wake-store.ts";
 import { tmpDir, useHome } from "./testkit.ts";
 
@@ -117,5 +122,58 @@ describe("responsibility feed window", () => {
 		expect(home.events.map((e) => e.eventId)).toEqual(ids);
 		expect(home.eventsTruncated).toBe(0);
 		r.store.close();
+	});
+});
+
+describe("outcome posts", () => {
+	test("reports become posts, newest first, labelled by whose word they are", () => {
+		const r = rig();
+		const { responsibility } = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "posts",
+			understanding: understanding(),
+		});
+		const id = responsibility.responsibilityId;
+		r.resps.report(id, { state: "progress", reason: "reproduced" }, "goblin");
+		r.resps.report(id, { state: "ready", reason: "run #1 finished" }, "worker", {
+			sourceKey: "subagent:1:0:done",
+		});
+		// Routine activity stays out of posts.
+		seedEvents(r, id, 2);
+		let [item] = feedForProject({ db: r.store.db, resps: r.resps }, r.projectId);
+		expect(item!.posts.map((p) => [p.report.reason, p.review, p.current])).toEqual([
+			["run #1 finished", "unreviewed", true],
+			["reproduced", "assessed", true],
+		]);
+		expect(item!.events).toHaveLength(2);
+
+		// Goblin's later report reviews the claim; a correction leaves both
+		// on the record but no longer current.
+		r.resps.report(id, { state: "blocked", reason: "diff touches the ABI" }, "goblin");
+		r.resps.revise(id, { ...understanding(), nextAction: "keep the ABI" });
+		[item] = feedForProject({ db: r.store.db, resps: r.resps }, r.projectId);
+		expect(item!.posts.map((p) => [p.review, p.current])).toEqual([
+			["assessed", false],
+			["reviewed", false],
+			["assessed", false],
+		]);
+	});
+
+	test("beyond the window: newest posts only, older counted", () => {
+		const r = rig();
+		const { responsibility } = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "posts-window",
+			understanding: understanding(),
+		});
+		const id = responsibility.responsibilityId;
+		for (let i = 0; i < FEED_POST_WINDOW + 3; i++)
+			r.resps.report(id, { state: "progress", reason: `step ${i}` }, "goblin");
+		const [item] = feedOpen({ db: r.store.db, resps: r.resps });
+		expect(item!.posts).toHaveLength(FEED_POST_WINDOW);
+		expect(item!.posts[0]!.report.reason).toBe(`step ${FEED_POST_WINDOW + 2}`);
+		expect(item!.postsTruncated).toBe(3);
 	});
 });

@@ -71,8 +71,13 @@ export function ModelPicker({
 	);
 	// The typed path stores refs exactly as entered, so dedupe compares
 	// lowercased (like favSet/canonical) while display strings stay as-is.
+	// Current is suppressed only when the Favorites block renders it — a
+	// starred-but-hidden current must keep its Current row.
 	const showCurrent =
-		current !== "" && !favSet.has(current.toLowerCase()) && scoped(current) && hit(current);
+		current !== "" &&
+		!favs.some((f) => f.toLowerCase() === current.toLowerCase()) &&
+		scoped(current) &&
+		hit(current);
 	const pinned = new Set([...favorites, current].map((r) => r.toLowerCase()));
 	// Curated tail: the enabled non-favorites in list order — the same
 	// shape the settings list shows.
@@ -155,7 +160,13 @@ export function ModelPicker({
 	const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
 		if (e.key !== "Enter" || raw === "") return;
 		e.preventDefault();
-		const exact = canonical.get(raw.toLowerCase());
+		// Exact resolution ignores visibility: a catalog hit resolves to
+		// its catalog spelling, a favorite to its stored spelling — so the
+		// typed path reaches a hidden model (or a hidden favorite's exact
+		// ref) even when curation keeps it off every row.
+		const exact =
+			canonical.get(raw.toLowerCase()) ??
+			favorites.find((f) => f.toLowerCase() === raw.toLowerCase());
 		// A fully typed provider/model ref beats a catalog row that only
 		// contains it as a substring — Enter saves what was typed.
 		const pick =

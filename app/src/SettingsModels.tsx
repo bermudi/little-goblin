@@ -3,7 +3,7 @@
 // first, arrows = order within the pinned/unpinned segments).
 import { useState } from "react";
 import type { ThinkingLevel } from "../../src/config.ts";
-import { displayLevel } from "./settingsDraft.ts";
+import { displayLevel, type SettingsDraft } from "./settingsDraft.ts";
 import { Row, Seg, type SettingsCtx, Switch } from "./settingsKit.tsx";
 
 const IMAGE_SIZES = ["1024x1024", "1536x1024", "1024x1536"] as const;
@@ -45,23 +45,41 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 			? baseList()
 			: [...draft.favorites.filter((f) => draft.pickerModels!.some((r) => sameRef(r, f))), ...draft.pickerModels],
 	);
-	// Everything the operator could re-enable: catalog, stars, and the
-	// curated list (a removed provider's refs stay toggleable here).
-	const known = withDupe([...catalogRefs, ...draft.favorites, ...(draft.pickerModels ?? [])]);
+	// Everything the operator could re-enable: catalog, stars, the
+	// curated list, and the custom-ref inventory (hiding a custom model
+	// must not forget it — the inventory is the way back).
+	const known = withDupe([
+		...catalogRefs,
+		...draft.favorites,
+		...(draft.pickerModels ?? []),
+		...draft.customModels,
+	]);
 	const enabledSet = new Set(ordered.map((r) => r.toLowerCase()));
 	const hidden = known.filter((r) => !enabledSet.has(r.toLowerCase()));
 	// Segment boundary for the arrows — favorites float above the rest,
 	// and a move never crosses it.
 	const favCount = ordered.filter(isFav).length;
 
+	// Custom model rows — refs no configured provider's catalog knows.
+	const custom = (ref: string) => !catalogRefs.some((r) => sameRef(r, ref));
+
 	const setPicker = (refs: string[]) => patchDraft({ pickerModels: withDupe(refs) });
+	// A custom ref leaving the membership keeps its inventory entry —
+	// catalog refs rebuild themselves, custom refs can't.
+	const rememberCustom = (ref: string): Partial<SettingsDraft> =>
+		custom(ref) && !draft.customModels.some((r) => sameRef(r, ref))
+			? { customModels: [...draft.customModels, ref] }
+			: {};
 	const setEnabled = (ref: string, on: boolean) => {
 		const base = baseList();
 		if (on) {
 			if (!base.some((r) => sameRef(r, ref))) setPicker([...base, ref]);
 			return;
 		}
-		setPicker(base.filter((r) => !sameRef(r, ref)));
+		patchDraft({
+			pickerModels: withDupe(base.filter((r) => !sameRef(r, ref))),
+			...rememberCustom(ref),
+		});
 	};
 	// Favorites reorder within the visible favorites: hidden favorites
 	// (starred but toggled off) keep their array slots while the enabled
@@ -106,10 +124,9 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 			...(draft.pickerModels !== null
 				? { pickerModels: draft.pickerModels.filter((r) => !sameRef(r, ref)) }
 				: {}),
+			// × is the one exit that forgets: inventory, membership, star.
+			customModels: draft.customModels.filter((r) => !sameRef(r, ref)),
 		});
-
-	// Custom model rows — refs no configured provider's catalog knows.
-	const custom = (ref: string) => !catalogRefs.some((r) => sameRef(r, ref));
 
 	const [query, setQuery] = useState("");
 	const [adding, setAdding] = useState(false);
@@ -124,7 +141,10 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 
 	const addCustom = () => {
 		const ref = customRef.trim();
-		if (!/^[^/\s]+\/[^/\s]+$/.test(ref)) {
+		// splitModelRef's contract: provider up to the FIRST slash, the
+		// model id the rest — namespaced ids (openrouter/anthropic/...)
+		// carry slashes, only whitespace is a typo.
+		if (!/^[^\s/]+\/[^\s]+$/.test(ref)) {
 			setNotice({ text: "Custom models take a provider/model-id ref.", kind: "err" });
 			return;
 		}
@@ -132,22 +152,45 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 			setNotice({ text: `${ref} is already in the list.`, kind: "err" });
 			return;
 		}
-		setPicker([...baseList(), ref]);
+		patchDraft({
+			pickerModels: withDupe([...baseList(), ref]),
+			customModels: [...draft.customModels, ref],
+		});
 		setCustomRef("");
 		setAdding(false);
+	};
+
+	const disableAll = () => {
+		if (draft.pickerModels === null) {
+			// Uncurated has no custom membership to lose — favorites keep
+			// their refs.
+			setPicker([]);
+			return;
+		}
+		const strays = withDupe(
+			draft.pickerModels.filter((r) => custom(r) && !draft.customModels.some((x) => sameRef(x, r))),
+		);
+		patchDraft({
+			pickerModels: [],
+			...(strays.length > 0 ? { customModels: [...draft.customModels, ...strays] } : {}),
+		});
 	};
 
 	const row = (ref: string, on: boolean) => {
 		const name = modelNames.get(ref);
 		const i = ordered.indexOf(ref);
+		// The star mutates the STORED favorite spelling: the row may show
+		// the catalog's casing while favorites hold another (typed paths
+		// store as entered), and unfavorite compares exactly.
+		const fav = draft.favorites.find((f) => sameRef(f, ref)) ?? ref;
 		return (
 			<div className="chain-card pk-row" key={ref}>
 				<div className="chain-head">
 					<button
 						type="button"
 						className={isFav(ref) ? "pk-star on" : "pk-star"}
-						aria-label={isFav(ref) ? `unfavorite ${ref}` : `favorite ${ref}`}
-						onClick={() => toggleFavoriteDraft(ref, !isFav(ref))}
+						aria-label={isFav(ref) ? `unfavorite ${fav}` : `favorite ${fav}`}
+						onClick={() => toggleFavoriteDraft(fav, !isFav(fav))}
 					>
 						{isFav(ref) ? "★" : "☆"}
 					</button>
@@ -211,7 +254,7 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 						className="pk-toolbtn"
 						type="button"
 						disabled={ordered.length === 0}
-						onClick={() => setPicker([])}
+						onClick={disableAll}
 					>
 						Disable all
 					</button>
@@ -267,7 +310,8 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 				<div className="cap">
 					What the chat pickers offer, here and on every connected device. Stars pin a model
 					first; the toggle hides it from the picker without touching the bindings above. Custom
-					refs work even when the catalog doesn't know them.
+					refs — anything the catalog doesn't know — stay listed while hidden; only the × removes
+					one.
 				</div>
 			</div>
 			<h2 className="ops-h2">Default models</h2>

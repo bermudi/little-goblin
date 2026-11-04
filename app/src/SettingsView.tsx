@@ -72,6 +72,7 @@ const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
 	titleModel: "topic-title model",
 	favorites: "favorites",
 	pickerModels: "picker models",
+	customModels: "custom models",
 	modelFallbacks: "model fallbacks",
 	thinking: "app thinking",
 	telegramEnabled: "telegram channel",

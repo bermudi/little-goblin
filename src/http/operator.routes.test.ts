@@ -790,6 +790,12 @@ describe("config save", () => {
 		// the write must not collapse it.
 		expect((await postConfig(d, { pickerModels: [] }))?.status).toBe(200);
 		expect(d.configRef.current.pickerModels).toEqual([]);
+		// The custom inventory follows the same omit-when-empty rule.
+		expect(d.configRef.current.customModels).toBeUndefined();
+		expect((await postConfig(d, { customModels: ["test/custom"] }))?.status).toBe(200);
+		expect(d.configRef.current.customModels).toEqual(["test/custom"]);
+		expect((await postConfig(d, { thinking: "off" }))?.status).toBe(200);
+		expect(d.configRef.current.customModels).toEqual(["test/custom"]);
 	});
 
 	test("provider removal under a disabled telegram keeps its pin; re-enable needs it back", async () => {

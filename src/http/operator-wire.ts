@@ -62,6 +62,9 @@ export interface ConfigPostBody {
 	// Omitted = not curated (the picker offers the whole catalog) — the
 	// client only sends it once the operator toggles a membership switch.
 	pickerModels?: string[] | undefined;
+	// Same omit-when-empty rule: the inventory of catalog-unknown refs
+	// the settings picker remembers across visibility toggles.
+	customModels?: string[] | undefined;
 	modelFallbacks: string[];
 	thinking: ThinkingLevel;
 	tts:

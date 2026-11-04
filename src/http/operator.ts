@@ -250,6 +250,7 @@ const CONFIG_POST_KEYS = {
 	titleModel: true,
 	favorites: true,
 	pickerModels: true,
+	customModels: true,
 	modelFallbacks: true,
 	thinking: true,
 	tts: true,

@@ -173,8 +173,10 @@ fails loudly at startup/validation time instead of guessing.
 default) offers every catalog model, a list offers exactly those refs in
 order (refs the catalog doesn't know work too), and `[]` hides everything.
 Stars float to the top only within that list, so a favorite left out of
-`pickerModels` doesn't show in the pickers. Manage both in Settings →
-Models → Chat picker.
+`pickerModels` doesn't show in the pickers. `customModels` remembers the
+catalog-unknown refs added through the settings card, so hiding one keeps
+it listed; only removing it there forgets the ref. Manage all three in
+Settings → Models → Chat picker.
 
 ```json5
 modelFallbacks: ["codex/gpt-6.1-terra", "zai/glm-5.3"],

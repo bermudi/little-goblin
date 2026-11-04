@@ -346,17 +346,24 @@ rest under "Hidden from picker". The state is `pickerModels` in config
 — **absent = the whole catalog is offered** (a plain settings save never
 materializes it; the first toggle pins the display order the operator
 was looking at), present = exactly these refs, in order, custom
-catalog-unknown refs included, `[]` = none. Stars are orthogonal: they
-pin first *within what is shown*, so a hidden favorite leaves the
-pickers until re-enabled. The composer knob menu reads current, enabled
-stars, then the enabled rest (uncurated = today's favorites-only list);
-the sheet renders the curated list flat instead of provider groups when
-one exists. The typed `provider/model-id` path survives any curation —
-it is how the sheet reaches a hidden model without a settings trip.
-Role-binding sheets (app/telegram defaults, title, vision, image,
-fallback) still see the whole catalog: curation governs the chat
-picker, not job picks. Refs survive provider removal as custom rows the
-settings list keeps toggleable/removable.
+catalog-unknown refs included, `[]` = none. Custom refs carry a second
+config list, `customModels` (omit-when-empty): the inventory that keeps
+a hidden custom — or a removed provider's retained ref — recoverable
+from the hidden section; only the row's × drops it from the inventory.
+Stars are orthogonal: they pin first *within what is shown*, so a
+hidden favorite leaves the pickers until re-enabled — and a star
+mutates the stored favorite spelling, not the row's display casing.
+The composer knob menu reads current, enabled stars, then the enabled
+rest (uncurated = today's favorites-only list); the sheet renders the
+curated list flat instead of provider groups when one exists, and the
+current ref keeps its row whenever the Favorites block doesn't render
+it. The typed `provider/model-id` path survives any curation — exact
+Enter resolution consults the catalog and the stored favorites
+regardless of visibility, so a hidden model is always reachable without
+a settings trip. Custom refs split at the first slash like every ref
+(`splitModelRef`): namespaced ids carry slashes. Role-binding sheets
+(app/telegram defaults, title, vision, image, fallback) still see the
+whole catalog: curation governs the chat picker, not job picks.
 
 ## Settings shape (ruling 2026-10-23)
 

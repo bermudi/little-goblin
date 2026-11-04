@@ -201,6 +201,48 @@ describe("ModelPicker", () => {
 		expect(picked).toEqual(["other/z"]);
 	});
 
+	test("a hidden custom favorite resolves on exact Enter, independent of visibility", async () => {
+		const picked: string[] = [];
+		await mount({
+			favorites: ["prov/custom"],
+			pickerModels: [],
+			onPick: (ref) => picked.push(ref),
+		});
+		// Nothing lists it: not in the catalog, hidden by curation.
+		expect(rowRefs()).toEqual(["prov/a"]);
+		// The typed path still resolves the stored favorite exactly —
+		// Enter beats any substring hit.
+		const input = container.querySelector<HTMLInputElement>(
+			'input[aria-label="Search models"]',
+		);
+		await act(async () => {
+			(input as HTMLElement).focus();
+			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(
+				input,
+				"prov/custom",
+			);
+			input!.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			input!.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+		await act(async () => {
+			input!.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
+			);
+		});
+		expect(picked).toEqual(["prov/custom"]);
+	});
+
+	test("a starred hidden current keeps its Current row", async () => {
+		await mount({ favorites: ["prov/b"], pickerModels: [], current: "prov/b" });
+		// An empty curated list hides every model, but the current ref is
+		// in use — it renders via Current, exactly once.
+		expect(rowRefs()).toEqual(["prov/b"]);
+		const groups = [...container.querySelectorAll(".mgroup")].map((g) => g.textContent);
+		expect(groups).toEqual(["Current"]);
+	});
+
 	test("the provider scope filters catalog groups, favorites and current", async () => {
 		await mount({ favorites: ["prov/b", "other/z"], current: "prov/a" });
 		expect(rowRefs()).toContain("prov/b");

@@ -64,6 +64,7 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 	titleModel: "",
 	favorites: [],
 	pickerModels: null,
+	customModels: [],
 	modelFallbacks: [],
 	thinking: "medium",
 	telegramEnabled: true,
@@ -281,6 +282,16 @@ describe("bodyFromDraft", () => {
 			authDefaults,
 		);
 		expect(curated.pickerModels).toEqual(["main/gpt-5", "main/custom-x"]);
+	});
+
+	test("customModels: omit-when-empty, populated inventories ride the body", () => {
+		const empty = bodyFromDraft(draft(), [prov()], authDefaults);
+		expect("customModels" in empty).toBe(false);
+		const populated = bodyFromDraft(draft({ customModels: ["main/custom-x"] }), [prov()], authDefaults);
+		expect(populated.customModels).toEqual(["main/custom-x"]);
+		const { draft: d } = draftFromConfig({ ...baseConfig(), customModels: ["main/custom-x"] });
+		expect(d.customModels).toEqual(["main/custom-x"]);
+		expect(draftFromConfig(baseConfig()).draft.customModels).toEqual([]);
 	});
 
 	// A curated config reads back into the draft; an uncurated one stays

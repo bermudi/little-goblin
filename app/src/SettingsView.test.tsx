@@ -669,6 +669,118 @@ describe("main branch regressions", () => {
 		);
 		expect(savedBodies.at(-1)?.pickerModels).toEqual(["main/custom-x", "main/fav-b"]);
 	});
+
+	test("hiding and disabling preserves custom refs; only × forgets them", async () => {
+		settings = parseConfig({
+			...SETTINGS,
+			pickerModels: ["main/fav-b", "main/custom-x"],
+			customModels: ["main/custom-x"],
+		});
+		modelCatalog = [
+			{
+				provider: "main",
+				models: [{ id: "fav-b", name: "Fav Beta", releaseDate: "2026-01-01" }],
+			},
+		];
+		await mount();
+		await openSection("Models");
+		const card = [...container.querySelectorAll(".card")].find((c) =>
+			c.querySelector('input[aria-label="Filter models"]'),
+		);
+		expect(card?.textContent).toContain("2 models · 0 hidden");
+		// Hiding a custom moves the row to Hidden and keeps its inventory
+		// entry — membership and inventory are different lists.
+		await click(card?.querySelector('[aria-label="hide main/custom-x from the picker"]'));
+		await waitFor(
+			() => savedBodies.at(-1)?.pickerModels?.length === 1,
+			"the hide save",
+		);
+		expect(savedBodies.at(-1)?.pickerModels).toEqual(["main/fav-b"]);
+		expect(savedBodies.at(-1)?.customModels).toEqual(["main/custom-x"]);
+		expect(card?.textContent).toContain("Hidden from picker");
+		// Re-enabling needs no retyping.
+		await click(card?.querySelector('[aria-label="show main/custom-x in the picker"]'));
+		await waitFor(
+			() => savedBodies.at(-1)?.pickerModels?.length === 2,
+			"the re-enable save",
+		);
+		expect(savedBodies.at(-1)?.pickerModels).toEqual(["main/fav-b", "main/custom-x"]);
+		// Disable all empties membership, keeps the inventory.
+		await click(card?.querySelector(".pk-toolbtn"));
+		await waitFor(
+			() => savedBodies.at(-1)?.pickerModels?.length === 0,
+			"the disable-all save",
+		);
+		expect(savedBodies.at(-1)?.customModels).toEqual(["main/custom-x"]);
+		expect(card?.querySelector('[aria-label="show main/custom-x in the picker"]')).not.toBeNull();
+		// × is the one exit that forgets — an empty inventory is omitted
+		// from the body entirely.
+		await click(card?.querySelector('[aria-label="remove main/custom-x"]'));
+		await waitFor(
+			() => "customModels" in (savedBodies.at(-1) ?? {}) === false,
+			"the removal save",
+		);
+		expect(savedBodies.at(-1)?.pickerModels).toEqual([]);
+	});
+
+	test("custom refs take any splitModelRef shape; a stray keeps its inventory on hide", async () => {
+		settings = parseConfig({
+			...SETTINGS,
+			favorites: ["main/Fav-B"],
+			pickerModels: ["gone/custom"],
+		});
+		modelCatalog = [
+			{
+				provider: "main",
+				models: [{ id: "fav-b", name: "Fav Beta", releaseDate: "2026-01-01" }],
+			},
+		];
+		await mount();
+		await openSection("Models");
+		const card = [...container.querySelectorAll(".card")].find((c) =>
+			c.querySelector('input[aria-label="Filter models"]'),
+		);
+		// The star mutates the STORED spelling — the row shows the
+		// catalog's casing, unfavorite compares exactly.
+		const star = card?.querySelector('[aria-label="unfavorite main/Fav-B"]');
+		expect(star).not.toBeNull();
+		await click(star);
+		await waitFor(() => savedBodies.at(-1)?.favorites?.length === 0, "the unstar save");
+		expect(savedBodies.at(-1)?.favorites).toEqual([]);
+		// A pickerModels ref whose provider is gone promotes into the
+		// inventory when hidden — the row survives to be re-enabled.
+		await click(card?.querySelector('[aria-label="hide gone/custom from the picker"]'));
+		await waitFor(
+			() => savedBodies.at(-1)?.customModels?.includes("gone/custom") === true,
+			"the hide save",
+		);
+		expect(savedBodies.at(-1)?.pickerModels).toEqual([]);
+		expect(card?.querySelector('[aria-label="show gone/custom in the picker"]')).not.toBeNull();
+		// Namespaced ids — slashes inside the model id — are accepted.
+		await click(
+			[...card!.querySelectorAll("button")].find((b) => b.textContent === "+ Add custom model"),
+		);
+		await typeInto(
+			card!.querySelector('input[aria-label="Custom model ref"]')!,
+			"openrouter/anthropic/claude-sonnet-4.5",
+		);
+		await click([...card!.querySelectorAll("button")].find((b) => b.textContent === "Add"));
+		await waitFor(
+			() =>
+				savedBodies
+					.at(-1)
+					?.customModels?.includes("openrouter/anthropic/claude-sonnet-4.5") === true,
+			"the custom save",
+		);
+		// A bare id with no provider is refused with a notice, not a save.
+		await click(
+			[...card!.querySelectorAll("button")].find((b) => b.textContent === "+ Add custom model"),
+		);
+		await typeInto(card!.querySelector('input[aria-label="Custom model ref"]')!, "no-provider");
+		await click([...card!.querySelectorAll("button")].find((b) => b.textContent === "Add"));
+		expect(container.textContent).toContain("provider/model-id ref");
+		expect(savedBodies.at(-1)?.customModels).not.toContain("no-provider");
+	});
 });
 
 describe("quiet harbor regressions", () => {

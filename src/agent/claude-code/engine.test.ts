@@ -229,6 +229,11 @@ describe("driveClaude — wire and outcome parity", () => {
 				finishReason: "stop",
 				usage: { input: 10, output: 5, lastInput: 10 },
 			});
+			// The streamed delta noted the first token; the stamp rides the
+			// finish metadata in the same shape the API lane writes.
+			const md = finish.messageMetadata as { ttftMs?: unknown };
+			expect(typeof md.ttftMs).toBe("number");
+			expect(md.ttftMs as number).toBeGreaterThanOrEqual(0);
 		}
 	});
 

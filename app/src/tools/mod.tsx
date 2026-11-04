@@ -93,14 +93,22 @@ function faceFor(part: ToolUIPart | DynamicToolUIPart): PartFace {
 			};
 		default: {
 			// input-streaming / input-available / approval-requested and any
-			// future state: running rows get the skeleton, waiting rows the
-			// input dump — never a blank.
+			// future state: the expanded row shows the args received so far —
+			// running keeps the shimmer under them, waiting stands alone —
+			// never a blank.
 			const running = RUNNING.has(part.state);
 			return {
 				face: {
 					summary: view.inputHint(part.input) ?? "",
 					detail: running ? (
-						<Skeleton />
+						<Skeleton>
+							{part.input !== undefined && (
+								<>
+									<span className="tool-meta">input</span>
+									<Clip text={shortJson(part.input)} />
+								</>
+							)}
+						</Skeleton>
 					) : (
 						<div className="tool-body">
 							<Clip text={shortJson(part.input)} />

@@ -914,6 +914,11 @@ const configSchema = z
 			.transform((v) => v || undefined)
 			.optional(),
 		favorites: z.array(z.string()).default([]),
+		// The chat picker's curated membership (settings → Models): present
+		// = exactly these refs are offered, in order, custom refs included;
+		// absent = every catalog model is offered. Stars (favorites) pin
+		// within what is shown, so a hidden favorite leaves the pickers.
+		pickerModels: z.array(z.string().min(1)).optional(),
 		thinking: z.enum(thinkingLevels).default("medium"),
 		// Absent → edge with the default voice. "" is explicit off and
 		// parses to `false`, not undefined — an undefined key would be

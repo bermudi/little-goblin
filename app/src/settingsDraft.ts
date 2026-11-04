@@ -307,6 +307,10 @@ export interface SettingsDraft {
 	model: string;
 	titleModel: string;
 	favorites: string[];
+	// The chat picker's curated membership; null = not curated (the
+	// picker offers the whole catalog). Only an operator toggle
+	// materializes it — a plain save never pins the catalog snapshot.
+	pickerModels: string[] | null;
 	// Ordered model fallback list (design/model.md → Model fallback list).
 	modelFallbacks: string[];
 	thinking: ThinkingLevel;
@@ -340,6 +344,7 @@ export const EMPTY_DRAFT: SettingsDraft = {
 	model: "",
 	titleModel: "",
 	favorites: [],
+	pickerModels: null,
 	modelFallbacks: [],
 	thinking: "medium",
 	telegramEnabled: true,
@@ -389,6 +394,7 @@ export function draftFromConfig(
 		model: c.model || "",
 		titleModel: c.titleModel || "",
 		favorites: (c.favorites || []).slice(),
+		pickerModels: c.pickerModels ? [...c.pickerModels] : null,
 		modelFallbacks: (c.modelFallbacks || []).slice(),
 		thinking: c.thinking || "medium",
 		telegramEnabled: c.telegram.enabled,
@@ -609,6 +615,9 @@ export function bodyFromDraft(
 		// "" clears — server normalizes.
 		titleModel: draft.titleModel,
 		favorites: [...draft.favorites],
+		// Omitted while never curated — the saved file keeps "absent" (the
+		// whole catalog offered) until a toggle materializes the list.
+		...(draft.pickerModels !== null ? { pickerModels: [...draft.pickerModels] } : {}),
 		modelFallbacks: draft.modelFallbacks.map((r) => r.trim()).filter((r) => r !== ""),
 		thinking: draft.thinking,
 		tts:

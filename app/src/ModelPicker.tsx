@@ -1,8 +1,9 @@
 // The model sheet, shared by Settings and the chat composer: favorites
-// first, then the current value, then the catalog, with a search that
-// also accepts a typed provider/model-id. In "pick" mode a row chooses
-// the model; in "favorites" mode a row click toggles its star. The star
-// on every model row toggles the favorite without picking it.
+// first, then the current value, then what the picker offers — a
+// curated membership list when one exists (settings → Models), else the
+// whole catalog grouped by provider — with a search that also accepts a
+// typed provider/model-id. A row chooses the model; the star on every
+// model row toggles the favorite without picking it.
 import { Fragment, useState } from "react";
 import type { ModelOption, ProviderModelCatalog } from "../../src/http/app-wire.ts";
 
@@ -11,9 +12,9 @@ export function ModelPicker({
 	current,
 	allowOff,
 	favorites,
+	pickerModels,
 	catalog,
 	provNames,
-	mode = "pick",
 	onPick,
 	onToggleFavorite,
 	onClose,
@@ -22,17 +23,20 @@ export function ModelPicker({
 	current: string;
 	allowOff: boolean;
 	favorites: string[];
+	/** The curated membership (settings → Models) — null offers the
+	 *  whole catalog grouped by provider. */
+	pickerModels: string[] | null;
 	catalog: ProviderModelCatalog[];
 	provNames: string[];
-	/** "pick" chooses a model per row; "favorites" edits the list itself —
-	 *  a row click toggles that ref's star and the sheet stays open. */
-	mode?: "pick" | "favorites";
 	onPick: (ref: string) => void;
 	onToggleFavorite: (ref: string, on: boolean) => void;
 	onClose: () => void;
 }) {
 	const [query, setQuery] = useState("");
 	const [scope, setScope] = useState("");
+	// ?? null: an older backend's config view lacks the key — read as
+	// never curated, not an empty sheet.
+	const curatedList = pickerModels ?? null;
 	const q = query.trim().toLowerCase();
 	const meta = new Map<string, ModelOption>();
 	const canonical = new Map<string, string>();
@@ -56,12 +60,31 @@ export function ModelPicker({
 	// while other providers' favorites fill the sheet.
 	const scoped = (ref: string) =>
 		scope === "" || ref.toLowerCase().startsWith(`${scope.toLowerCase()}/`);
-	const favs = favorites.filter((f) => scoped(f) && hit(f));
+	// Curated membership: a star alone doesn't surface a model — hidden
+	// favorites stay hidden until the settings list re-enables them.
+	const curatedSet = new Set((curatedList ?? []).map((r) => r.toLowerCase()));
+	const favs = favorites.filter(
+		(f) =>
+			scoped(f) &&
+			hit(f) &&
+			(curatedList === null || curatedSet.has(f.toLowerCase())),
+	);
 	// The typed path stores refs exactly as entered, so dedupe compares
 	// lowercased (like favSet/canonical) while display strings stay as-is.
 	const showCurrent =
 		current !== "" && !favSet.has(current.toLowerCase()) && scoped(current) && hit(current);
 	const pinned = new Set([...favorites, current].map((r) => r.toLowerCase()));
+	// Curated tail: the enabled non-favorites in list order — the same
+	// shape the settings list shows.
+	const curatedRest =
+		curatedList === null
+			? []
+			: (curatedList ?? [])
+					.filter(
+						(r) =>
+							!favSet.has(r.toLowerCase()) && !pinned.has(r.toLowerCase()) && scoped(r) && hit(r),
+					)
+					.filter((r, i, a) => a.findIndex((x) => x.toLowerCase() === r.toLowerCase()) === i);
 	const groups = catalog
 		.filter((group) => scope === "" || group.provider === scope)
 		.map((group) => ({
@@ -84,56 +107,48 @@ export function ModelPicker({
 				: typedProvider === undefined
 					? null
 					: `${typedProvider}/${raw}`;
-	const hasResults = favs.length > 0 || showCurrent || groups.length > 0;
 	const known = (ref: string) =>
 		canonical.has(ref.toLowerCase()) ||
 		favorites.some((f) => f.toLowerCase() === ref.toLowerCase());
+	const curatedMode = curatedList !== null;
+	const hasResults =
+		favs.length > 0 ||
+		showCurrent ||
+		(curatedMode ? curatedRest.length > 0 : groups.length > 0);
 	const showCustom =
 		customRef !== null &&
 		!known(customRef) &&
 		customRef !== current &&
 		(!hasResults || customRef.includes("/"));
-	// The one row gesture: pick mode selects, favorites mode toggles —
-	// a not-yet-favorite ref toggles on, which is also what "Use …" means
-	// under "favorites".
-	const choose = (ref: string) =>
-		mode === "favorites" ? onToggleFavorite(ref, !isFav(ref)) : onPick(ref);
 	const row = (ref: string, label?: string) => {
 		const model = meta.get(ref);
 		const primary = label ?? model?.name ?? ref;
-		const pickButton = (
-			<button
-				key={ref || "off"}
-				type="button"
-				className={ref === current ? "mrow sel" : "mrow"}
-				onClick={() => choose(ref)}
-			>
-				<span className="mcell">
-					<span className={ref === "" ? "off-label" : "mname"}>{primary}</span>
-					{model?.name != null && (
-						<span className="ref" title={ref}>
-							{ref}
-						</span>
-					)}
-				</span>
-				{ref === current && <span className="check">✓</span>}
-			</button>
-		);
-		if (ref === "") return pickButton;
 		return (
 			<div className="mline" key={ref}>
-				{pickButton}
-				<button
-					type="button"
-					className={isFav(ref) ? "mstar on" : "mstar"}
-					aria-label={isFav(ref) ? `unfavorite ${ref}` : `favorite ${ref}`}
-					onClick={(e) => {
-						e.stopPropagation();
-						onToggleFavorite(ref, !isFav(ref));
-					}}
-				>
-					{isFav(ref) ? "★" : "☆"}
+				<button type="button" className={ref === current ? "mrow sel" : "mrow"} onClick={() => onPick(ref)}>
+					<span className="mcell">
+						<span className={ref === "" ? "off-label" : "mname"}>{primary}</span>
+						{model?.name != null && (
+							<span className="ref" title={ref}>
+								{ref}
+							</span>
+						)}
+					</span>
+					{ref === current && <span className="check">✓</span>}
 				</button>
+				{ref !== "" && (
+					<button
+						type="button"
+						className={isFav(ref) ? "mstar on" : "mstar"}
+						aria-label={isFav(ref) ? `unfavorite ${ref}` : `favorite ${ref}`}
+						onClick={(e) => {
+							e.stopPropagation();
+							onToggleFavorite(ref, !isFav(ref));
+						}}
+					>
+						{isFav(ref) ? "★" : "☆"}
+					</button>
+				)}
 			</div>
 		);
 	};
@@ -148,9 +163,9 @@ export function ModelPicker({
 			(showCustom && raw.includes("/") ? customRef : undefined) ??
 			favs[0] ??
 			(showCurrent ? current : undefined) ??
-			groups[0]?.models[0]?.ref ??
+			(curatedMode ? curatedRest[0] : groups[0]?.models[0]?.ref) ??
 			(showCustom ? customRef : null);
-		if (pick !== null) choose(pick);
+		if (pick !== null) onPick(pick);
 	};
 	return (
 		<div className="veil on" onClick={onClose}>
@@ -205,19 +220,30 @@ export function ModelPicker({
 					{showCustom && customRef !== null && (
 						<>
 							<div className="mgroup">Not in the catalog</div>
-							<button type="button" className="mrow" onClick={() => choose(customRef)}>
-								<span className="mcell">
-									<span className="mname">Use “{customRef}”</span>
-								</span>
-							</button>
+							<div className="mline">
+								<button type="button" className="mrow" onClick={() => onPick(customRef)}>
+									<span className="mcell">
+										<span className="mname">Use “{customRef}”</span>
+									</span>
+								</button>
+							</div>
 						</>
 					)}
-					{groups.map((group) => (
+				{curatedMode ? (
+					curatedRest.length > 0 && (
+						<>
+							{favs.length > 0 && <div className="mgroup">Models</div>}
+							{curatedRest.map((ref) => row(ref))}
+						</>
+					)
+				) : (
+					groups.map((group) => (
 						<Fragment key={group.provider}>
 							<div className="mgroup">{group.provider} models</div>
 							{group.models.map((model) => row(model.ref))}
 						</Fragment>
-					))}
+					))
+				)}
 					{q !== "" && !hasResults && !showCustom && <div className="mempty">No models match.</div>}
 				</div>
 			</div>

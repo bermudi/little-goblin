@@ -590,34 +590,7 @@ describe("main branch regressions", () => {
 		expect(btn?.textContent).toContain("main/test");
 	});
 
-	test("the favorites card lists, reorders, and removes entries", async () => {
-		settings = parseConfig({ ...SETTINGS, favorites: ["main/fav-a", "main/fav-b"] });
-		modelCatalog = [
-			{
-				provider: "main",
-				models: [{ id: "fav-b", name: "Fav Beta", releaseDate: "2026-01-01" }],
-			},
-		];
-		await mount();
-		await openSection("Models");
-		const card = [...container.querySelectorAll(".card")].find((c) =>
-			c.textContent?.includes("Add favorites"),
-		);
-		expect(card).toBeTruthy();
-		// Friendly name over the small ref; unknown entries show the ref.
-		expect(card?.textContent).toContain("Fav Beta");
-		expect(card?.textContent).toContain("main/fav-a");
-		// Reorder: moving fav-a down swaps the pair.
-		await click(card?.querySelector('[aria-label="move main/fav-a down"]'));
-		await waitFor(() => savedBodies.length > 0, "the reorder save");
-		expect(savedBodies.at(-1)?.favorites).toEqual(["main/fav-b", "main/fav-a"]);
-		// Remove drops the entry.
-		await click(card?.querySelector('[aria-label="remove main/fav-b"]'));
-		await waitFor(() => savedBodies.at(-1)?.favorites?.length === 1, "the removal save");
-		expect(savedBodies.at(-1)?.favorites).toEqual(["main/fav-a"]);
-	});
-
-	test("the Add favorites sheet toggles stars into the draft, not a pick", async () => {
+	test("the picker card lists the catalog and materializes the curated list on a toggle", async () => {
 		settings = parseConfig({ ...SETTINGS, favorites: ["main/fav-a"] });
 		modelCatalog = [
 			{
@@ -627,23 +600,74 @@ describe("main branch regressions", () => {
 		];
 		await mount();
 		await openSection("Models");
+		const card = [...container.querySelectorAll(".card")].find((c) =>
+			c.querySelector('input[aria-label="Filter models"]'),
+		);
+		expect(card).toBeTruthy();
+		// Uncurated: the whole catalog enabled, stars floated first.
+		expect(card?.textContent).toContain("2 models · 0 hidden");
+		const names = [...card!.querySelectorAll(".pk-row .fav-name")].map((n) => n.textContent);
+		expect(names).toEqual(["main/fav-a", "Fav Beta"]);
+		// Toggling a model off materializes the list in display order —
+		// a plain save never pins it.
+		await click(card?.querySelector('[aria-label="hide main/fav-b from the picker"]'));
+		await waitFor(
+			() => savedBodies.at(-1)?.pickerModels !== undefined,
+			"the materializing save",
+		);
+		expect(savedBodies.at(-1)?.pickerModels).toEqual(["main/fav-a"]);
+		expect(savedBodies.at(-1)?.favorites).toEqual(["main/fav-a"]);
+		expect(card?.textContent).toContain("Hidden from picker");
+		// Disable all empties the membership; the hidden row re-enables.
+		await click(card?.querySelector(".pk-toolbtn"));
+		await waitFor(() => savedBodies.at(-1)?.pickerModels?.length === 0, "the disable-all save");
+		await click(card?.querySelector('[aria-label="show main/fav-b in the picker"]'));
+		await waitFor(
+			() => savedBodies.at(-1)?.pickerModels?.length === 1,
+			"the re-enable save",
+		);
+		expect(savedBodies.at(-1)?.pickerModels).toEqual(["main/fav-b"]);
+	});
+
+	test("the picker card starts from a saved list: stars float, customs join, rows reorder", async () => {
+		settings = parseConfig({
+			...SETTINGS,
+			favorites: ["main/fav-a"],
+			pickerModels: ["main/fav-b"],
+		});
+		modelCatalog = [
+			{
+				provider: "main",
+				models: [{ id: "fav-b", name: "Fav Beta", releaseDate: "2026-01-01" }],
+			},
+		];
+		await mount();
+		await openSection("Models");
+		const card = [...container.querySelectorAll(".card")].find((c) =>
+			c.querySelector('input[aria-label="Filter models"]'),
+		);
+		expect(card).toBeTruthy();
+		// The star on a hidden favorite keeps glowing under Hidden.
+		expect(card?.textContent).toContain("2 models · 1 hidden");
+		expect(card?.querySelector('[aria-label="unfavorite main/fav-a"]')).not.toBeNull();
+		// A custom ref joins the enabled rows.
 		await click(
-			[...container.querySelectorAll("button")].find((b) => b.textContent === "+ Add favorites"),
+			[...card!.querySelectorAll("button")].find((b) => b.textContent === "+ Add custom model"),
 		);
-		const sheet = container.querySelector(".msheet");
-		expect(sheet).not.toBeNull();
-		expect(sheet?.getAttribute("aria-label")).toBe("Favorites");
-		// The existing favorite shows a filled star; the catalog row's row
-		// click adds it — the sheet stays open and nothing picks a model.
-		expect(sheet?.querySelector('[aria-label="unfavorite main/fav-a"]')).not.toBeNull();
-		const row = [...sheet!.querySelectorAll("button.mrow")].find((b) =>
-			b.textContent?.includes("Fav Beta"),
+		await typeInto(card!.querySelector('input[aria-label="Custom model ref"]')!, "main/custom-x");
+		await click([...card!.querySelectorAll("button")].find((b) => b.textContent === "Add"));
+		await waitFor(
+			() => savedBodies.at(-1)?.pickerModels?.includes("main/custom-x") === true,
+			"the custom save",
 		);
-		await click(row);
-		expect(sheet?.querySelector('[aria-label="unfavorite main/fav-b"]')).not.toBeNull();
-		await waitFor(() => savedBodies.length > 0, "the favorites save");
-		expect(savedBodies.at(-1)?.favorites).toEqual(["main/fav-a", "main/fav-b"]);
-		expect(savedBodies.at(-1)?.model).toBe("main/test");
+		expect(savedBodies.at(-1)?.pickerModels).toEqual(["main/fav-b", "main/custom-x"]);
+		// Arrows reorder the enabled rows (no star crossing the boundary).
+		await click(card?.querySelector('[aria-label="move main/fav-b down"]'));
+		await waitFor(
+			() => savedBodies.at(-1)?.pickerModels?.[0] === "main/custom-x",
+			"the reorder save",
+		);
+		expect(savedBodies.at(-1)?.pickerModels).toEqual(["main/custom-x", "main/fav-b"]);
 	});
 });
 

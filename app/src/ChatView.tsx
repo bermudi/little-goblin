@@ -2401,26 +2401,50 @@ export function Composer({
 							{modelMenuOpen && (
 								<div className="note-pick composer-pick model-pop" role="menu">
 									<ul>
-										{[...new Set([cfg.model, ...cfg.favorites])].map((ref) => (
-											<li key={ref}>
-												<button
-													type="button"
-													role="menuitemradio"
-													aria-checked={ref === cfg.model}
-													title={ref}
-													onClick={() => {
-														setModelMenuOpen(false);
-														if (ref !== cfg.model) setKnob({ model: ref });
-													}}
-												>
-													<span className="mi">
-														<span>{friendly(ref)}</span>
-														{friendly(ref) !== ref && <span className="mi-ref">{ref}</span>}
-													</span>
-													{ref === cfg.model && <span className="check">✓</span>}
-												</button>
-											</li>
-										))}
+										{(() => {
+											// Curated membership gates the quick menu: stars
+											// first (favorites order), then the enabled rest
+											// in list order. Uncurated = today's favorites.
+											// ?? null: an older backend's config view lacks
+											// the key — read as never curated, not a crash.
+											const list = cfg.pickerModels ?? null;
+											const stars =
+												list === null
+													? cfg.favorites
+													: cfg.favorites.filter((f) =>
+															list.some((r) => r.toLowerCase() === f.toLowerCase()),
+														);
+											const rest =
+												list === null
+													? []
+													: list.filter(
+															(r) =>
+																r !== cfg.model &&
+																!cfg.favorites.some(
+																	(f) => f.toLowerCase() === r.toLowerCase(),
+																),
+														);
+											return [...new Set([cfg.model, ...stars, ...rest])].map((ref) => (
+												<li key={ref}>
+													<button
+														type="button"
+														role="menuitemradio"
+														aria-checked={ref === cfg.model}
+														title={ref}
+														onClick={() => {
+															setModelMenuOpen(false);
+															if (ref !== cfg.model) setKnob({ model: ref });
+														}}
+													>
+														<span className="mi">
+															<span>{friendly(ref)}</span>
+															{friendly(ref) !== ref && <span className="mi-ref">{ref}</span>}
+														</span>
+														{ref === cfg.model && <span className="check">✓</span>}
+													</button>
+												</li>
+											));
+										})()}
 										<li className="menu-div" aria-hidden="true" />
 										<li>
 											<button
@@ -2471,6 +2495,7 @@ export function Composer({
 								current={cfg.model}
 								allowOff={false}
 								favorites={cfg.favorites}
+								pickerModels={cfg.pickerModels}
 								catalog={cfg.catalog}
 								provNames={cfg.catalog.map((g) => g.provider)}
 								onPick={(ref) => {

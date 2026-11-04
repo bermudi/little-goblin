@@ -59,6 +59,9 @@ export interface ConfigPostBody {
 	model: string;
 	titleModel: string;
 	favorites: string[];
+	// Omitted = not curated (the picker offers the whole catalog) — the
+	// client only sends it once the operator toggles a membership switch.
+	pickerModels?: string[] | undefined;
 	modelFallbacks: string[];
 	thinking: ThinkingLevel;
 	tts:

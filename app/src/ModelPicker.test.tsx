@@ -63,8 +63,8 @@ describe("ModelPicker", () => {
 
 	const mount = async (props: {
 		favorites?: string[];
+		pickerModels?: string[] | null;
 		current?: string;
-		mode?: "pick" | "favorites";
 		onPick?: (ref: string) => void;
 		onToggleFavorite?: (ref: string, on: boolean) => void;
 	}) => {
@@ -76,9 +76,9 @@ describe("ModelPicker", () => {
 					current={props.current ?? "prov/a"}
 					allowOff={false}
 					favorites={props.favorites ?? []}
+					pickerModels={props.pickerModels ?? null}
 					catalog={CATALOG}
 					provNames={["prov", "other"]}
-					{...(props.mode !== undefined ? { mode: props.mode } : {})}
 					onPick={props.onPick ?? (() => {})}
 					onToggleFavorite={props.onToggleFavorite ?? (() => {})}
 					onClose={() => {}}
@@ -152,20 +152,53 @@ describe("ModelPicker", () => {
 		expect(rows[0]).toContain("prov/b");
 	});
 
-	test("favorites mode toggles on a row click instead of picking", async () => {
+	test("a curated list renders favorites, current, then the list — the catalog rest stays hidden", async () => {
+		await mount({ favorites: ["prov/b"], pickerModels: ["prov/b", "other/z"] });
+		const rows = rowRefs();
+		// Favorites float first; the current ref stays pinned; the curated
+		// tail follows in list order. prov/a is only the Current row — the
+		// catalog groups are replaced by the membership list.
+		expect(rows).toEqual(["prov/b", "prov/a", "other/z"]);
+		const groups = [...container.querySelectorAll(".mgroup")].map((g) => g.textContent);
+		expect(groups).toEqual(["Favorites", "Current", "Models"]);
+	});
+
+	test("a hidden favorite stays hidden until the settings list re-enables it", async () => {
+		await mount({ favorites: ["other/z"], pickerModels: ["prov/b"] });
+		// Current renders before the curated tail; the hidden favorite is
+		// nowhere in the sheet.
+		expect(rowRefs()).toEqual(["prov/a", "prov/b"]);
+	});
+
+	test("an empty curated list leaves the current ref and the typed path", async () => {
 		const picked: string[] = [];
-		const toggled: [string, boolean][] = [];
-		await mount({
-			mode: "favorites",
-			onPick: (ref) => picked.push(ref),
-			onToggleFavorite: (ref, on) => toggled.push([ref, on]),
-		});
-		const row = [...container.querySelectorAll("button.mrow")].find((b) =>
-			b.textContent?.includes("Beta"),
+		await mount({ pickerModels: [], onPick: (ref) => picked.push(ref) });
+		expect(rowRefs()).toEqual(["prov/a"]);
+		// The typed path survives Disable all: Enter on a full ref picks it
+		// even though nothing is enabled. The type gesture is the repo's
+		// standard one — prototype value setter, then input+keyup (the
+		// keyup is what flushes React's change plugin under happy-dom).
+		const input = container.querySelector<HTMLInputElement>(
+			'input[aria-label="Search models"]',
 		);
-		await click(row);
-		expect(toggled).toEqual([["prov/b", true]]);
-		expect(picked).toEqual([]);
+		expect(input).toBeTruthy();
+		await act(async () => {
+			(input as HTMLElement).focus();
+			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(
+				input,
+				"other/z",
+			);
+			input!.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			input!.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+		await act(async () => {
+			input!.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
+			);
+		});
+		expect(picked).toEqual(["other/z"]);
 	});
 
 	test("the provider scope filters catalog groups, favorites and current", async () => {

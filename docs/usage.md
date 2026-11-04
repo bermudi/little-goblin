@@ -80,7 +80,8 @@ Files up to 2 GB work if you're running the self-hosted Telegram bot API
 ## The Settings mini app
 
 When `publicUrl` is set, the chat has a **Settings** menu button that opens
-a form for common settings: model, title model, favorites, thinking (the
+a form for common settings: model, title model, favorites, the chat
+picker's model list, thinking (the
 dropdown only offers levels the chosen model supports), speech,
 transcription, allowed users, URLs, providers, log level. Use this editor for
 routine configuration. Supported settings apply live; boot-pinned settings

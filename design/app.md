@@ -337,6 +337,27 @@ removing accepts anything so a stale entry can always leave). Settings
 stars edit the draft instead, so its autosave never races its own etag.
 The app config view carries the cached catalog for friendly names.
 
+**Picker membership (ruling 2026-11-03).** Settings → Models owns a
+curated membership list for the chat pickers, in one card: filter,
+"Disable all", a shown/hidden count, "+ Add custom model", and rows
+carrying star, ↑/↓ (segment-local — stars reorder stars, the rest
+reorders the rest, never across), and a visibility switch, with the
+rest under "Hidden from picker". The state is `pickerModels` in config
+— **absent = the whole catalog is offered** (a plain settings save never
+materializes it; the first toggle pins the display order the operator
+was looking at), present = exactly these refs, in order, custom
+catalog-unknown refs included, `[]` = none. Stars are orthogonal: they
+pin first *within what is shown*, so a hidden favorite leaves the
+pickers until re-enabled. The composer knob menu reads current, enabled
+stars, then the enabled rest (uncurated = today's favorites-only list);
+the sheet renders the curated list flat instead of provider groups when
+one exists. The typed `provider/model-id` path survives any curation —
+it is how the sheet reaches a hidden model without a settings trip.
+Role-binding sheets (app/telegram defaults, title, vision, image,
+fallback) still see the whole catalog: curation governs the chat
+picker, not job picks. Refs survive provider removal as custom rows the
+settings list keeps toggleable/removable.
+
 ## Settings shape (ruling 2026-10-23)
 
 Supersedes the form-mirrors-the-file layout. Operator rule: **anything

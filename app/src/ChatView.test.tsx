@@ -2231,6 +2231,7 @@ describe("composer model knob (happy-dom)", () => {
 		model: "prov/current",
 		thinking: "off",
 		favorites: ["prov/fav-b", "prov/fav-a"],
+		pickerModels: null as string[] | null,
 		catalog: [
 			{
 				provider: "prov",
@@ -2249,10 +2250,10 @@ describe("composer model knob (happy-dom)", () => {
 	let configPatches: { model?: string; thinking?: string }[];
 	let favorites: string[];
 
-	const mount = async () => {
+	const mount = async (cfg: typeof CFG = CFG) => {
 		favPosts = [];
 		configPatches = [];
-		favorites = CFG.favorites.slice();
+		favorites = cfg.favorites.slice();
 		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
@@ -2266,13 +2267,13 @@ describe("composer model knob (happy-dom)", () => {
 			}
 			if (url.endsWith("/config") && (method === "PATCH" || method === "POST")) {
 				configPatches.push(JSON.parse(String(init?.body)) as { model?: string });
-				return jsonResponse({ ...CFG, favorites, ...configPatches.at(-1) });
+				return jsonResponse({ ...cfg, favorites, ...configPatches.at(-1) });
 			}
 			if (url.endsWith("/messages"))
 				return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
 			if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
 			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
-			return jsonResponse({ ...CFG, favorites });
+			return jsonResponse({ ...cfg, favorites });
 		}) as typeof fetch;
 		dom.root = createRoot(dom.container);
 		await act(async () =>
@@ -2363,6 +2364,51 @@ describe("composer model knob (happy-dom)", () => {
 		// And the next menu open lists the new favorite.
 		await click(knob());
 		expect(popItem("Other Model")).toBeTruthy();
+	});
+
+	test("a curated list gates the menu: enabled stars, then the rest; hidden favorites out", async () => {
+		// fav-a is starred but not a member — hidden from the picker.
+		await mount({ ...CFG, pickerModels: ["prov/fav-b", "prov/other"] });
+		await click(knob());
+		const pop = dom.container.querySelector(".model-pop")!;
+		const items = [...pop.querySelectorAll("li button")].map((b) => b.textContent);
+		expect(items[0]).toContain("Current Model");
+		expect(items[1]).toContain("fav-b");
+		expect(items[2]).toContain("Other Model");
+		expect(pop.textContent).not.toContain("Fav A");
+	});
+
+	test("a curated list renders the sheet flat, without the hidden catalog", async () => {
+		await mount({ ...CFG, pickerModels: ["prov/fav-b", "prov/other"] });
+		await click(knob());
+		await click(popItem("All models…"));
+		const sheet = dom.container.querySelector(".msheet")!;
+		const groups = [...sheet.querySelectorAll(".mgroup")].map((g) => g.textContent);
+		// Provider groups give way to the membership list.
+		expect(groups).toEqual(["Favorites", "Current", "Models"]);
+		expect(sheet.textContent).toContain("Other Model");
+		expect(sheet.textContent).not.toContain("Fav A");
+		// The typed path still reaches the hidden model: Enter on the full
+		// ref picks it — no row ever lists it.
+		const input = sheet.querySelector<HTMLInputElement>('input[aria-label="Search models"]')!;
+		await act(async () => {
+			(input as HTMLElement).focus();
+			Object.getOwnPropertyDescriptor(dom.win.HTMLInputElement.prototype, "value")!.set!.call(
+				input,
+				"prov/fav-a",
+			);
+			input.dispatchEvent(new dom.win.Event("input", { bubbles: true }) as unknown as Event);
+			input.dispatchEvent(
+				new dom.win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+		await act(async () => {
+			input.dispatchEvent(
+				new dom.win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
+			);
+		});
+		expect(configPatches).toEqual([{ model: "prov/fav-a" }]);
+		expect(dom.container.querySelector(".msheet")).toBeNull();
 	});
 });
 

@@ -479,7 +479,7 @@ const NoteEditor = forwardRef<
 					// A detached write that can't land — the drain must not
 					// retry it forever.
 					drainDeadRef.current = true;
-				} else if (e instanceof TypeError || (e instanceof ApiError && e.status >= 500)) {
+				} else if (e instanceof TypeError || (e instanceof ApiError && (e.status === 0 || e.status >= 500))) {
 					// Transient (network/5xx) — settle reschedules.
 					markStatus("offline");
 				} else {

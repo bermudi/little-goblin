@@ -979,7 +979,9 @@ function AppShell() {
 				if (!(err instanceof ApiError) || err.status !== 401) {
 					setProbeHint(
 						err instanceof ApiError
-							? `The app channel answered ${err.status} — check goblin's log.`
+							? err.status === 0
+								? err.message
+								: `The app channel answered ${err.status} — check goblin's log.`
 							: "Couldn't reach goblin — check the tailnet.",
 					);
 				}

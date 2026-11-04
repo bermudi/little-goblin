@@ -148,6 +148,9 @@ async function rawRequest(
 	init?: RequestInit,
 ): Promise<Response> {
 	const telegram = telegramDoor();
+	// A rejected fetch is transport failure, not an HTTP status — label
+	// it so screens show "offline" instead of a bare exception.
+	// A caller's own abort keeps its original error.
 	return fetch(telegram ? `/api${path.slice("/api/app".length)}` : path, {
 		...init,
 		headers: {
@@ -158,6 +161,10 @@ async function rawRequest(
 					: { authorization: `Bearer ${token}` }),
 			...(init?.headers ?? {}),
 		},
+	}).catch((err: unknown) => {
+		if (init?.signal?.aborted === true) throw err;
+		const why = err instanceof Error ? ` (${err.message})` : "";
+		throw new ApiError(0, `can't reach goblin — offline or connection dropped${why}`);
 	});
 }
 

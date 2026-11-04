@@ -249,7 +249,9 @@ export function SettingsView({
 			(err) => {
 				if (live)
 					setLoadErr(
-						err instanceof ApiError
+						err instanceof ApiError && err.status === 0
+							? err.message
+							: err instanceof ApiError
 							? `The settings endpoint answered ${err.status}: ${err.message}`
 							: "Couldn't reach goblin — check the tailnet.",
 					);

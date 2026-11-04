@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Markdown } from "./markdown.tsx";
+import { Markdown, shortColumns } from "./markdown.tsx";
 
 // Static markup only — guards the render contract (which elements a
 // block shape produces), not React behavior.
@@ -38,8 +38,8 @@ describe("Markdown", () => {
 		const html = renderToStaticMarkup(<Markdown text={"| a | b |\n|---|---|\n| 1 | 2 |"} />);
 		expect(html).toContain('class="md-tablewrap"');
 		expect(html).toContain("<table");
-		expect(html).toContain("<th>a</th>");
-		expect(html).toContain("<td>1</td>");
+		expect(html).toContain(">a</th>");
+		expect(html).toContain(">1</td>");
 	});
 
 	// A pasted ╔═╗ table is alignment-dependent art — the mid-rule
@@ -61,10 +61,10 @@ describe("Markdown", () => {
 			/>,
 		);
 		expect(html).toContain('class="md-tablewrap"');
-		expect(html).toContain("<th>Name</th>");
-		expect(html).toContain("<th>Note</th>");
-		expect(html).toContain("<td>one two</td>");
-		expect(html).toContain("<td>three</td>");
+		expect(html).toContain(">Name</th>");
+		expect(html).toContain(">Note</th>");
+		expect(html).toContain(">one two</td>");
+		expect(html).toContain(">three</td>");
 	});
 
 	test("a box table without a mid rule renders rows without a header", () => {
@@ -72,9 +72,9 @@ describe("Markdown", () => {
 			<Markdown text={"┌───┬───┐\n│ a │ b │\n│ 1 │ 2 │\n└───┴───┘"} />,
 		);
 		expect(html).toContain('class="md-tablewrap"');
-		expect(html).not.toContain("<th>");
-		expect(html).toContain("<td>a</td>");
-		expect(html).toContain("<td>2</td>");
+		expect(html).not.toContain("<th");
+		expect(html).toContain(">a</td>");
+		expect(html).toContain(">2</td>");
 	});
 
 	test("box art that is not a table keeps its fixed-width shape in a fence", () => {
@@ -110,7 +110,7 @@ describe("Markdown", () => {
 			<Markdown text={"┌───┬───┐\n│ a │ b │\n├───┼───┤\n│ 1 │ 2 │\n└───┴───┘"} />,
 		);
 		expect(html).toContain('class="md-tablewrap"');
-		expect(html).toContain("<td>2</td>");
+		expect(html).toContain(">2</td>");
 	});
 
 	// Delegation and program notices open with a machinery tag line —
@@ -232,5 +232,33 @@ describe("Markdown", () => {
 		const html = renderToStaticMarkup(<Markdown text={`\`\`\`text\n${body}\n\`\`\``} />);
 		expect(html).not.toContain("codeblock-more");
 		expect(html).not.toContain('class="clip"');
+	});
+
+	// Column width policy is decided from content, never position: a
+	// column is nowrap only if every cell (header included) is short.
+	test("shortColumns classifies columns by content, not position", () => {
+		const prose = "Latest (Aug 2026). Same base as 5.2, post-training boost.";
+		expect(shortColumns(["Model", "Price", "Notes"], [["GLM-5.3", "$1.40 / $4.40", prose]])).toEqual([
+			true,
+			true,
+			false,
+		]);
+		// Prose first: the short columns after it stay short.
+		expect(shortColumns(["Notes", "Id"], [[prose, "a1"]])).toEqual([false, true]);
+		// One long cell anywhere makes the whole column wrap.
+		expect(shortColumns(null, [["a"], ["x".repeat(60)]])).toEqual([false]);
+		// Link targets and markers don't count toward the width.
+		expect(shortColumns(null, [["[docs](https://example.com/a/very/long/path/that/goes/on)"]])).toEqual([true]);
+		// Ragged rows: a missing cell is empty, not long.
+		expect(shortColumns(["a", "b"], [["1"]])).toEqual([true, true]);
+	});
+
+	test("a table marks short columns nowrap and leaves prose columns wrapping", () => {
+		const html = renderToStaticMarkup(
+			<Markdown text={"| id | note |\n|---|---|\n| a1 | " + "word ".repeat(12) + " |"} />,
+		);
+		expect(html).toContain('<th class="md-nw">id</th>');
+		expect(html).toContain('<td class="md-nw">a1</td>');
+		expect(html).toMatch(/<th>note<\/th>/);
 	});
 });

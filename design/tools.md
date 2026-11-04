@@ -208,6 +208,32 @@ thread so a new model never "remembers" a predecessor's answers.
   on every wire goblin drives, so the first call sends
   `outputTokensFor(cfg, model, "off", maxTokens)` — the answer budget
   plus the floored rung's headroom (`design/model.md` → Thinking).
+- **Timeouts are inactivity + overall, not a single wall clock**
+  (ruling 2026-11-04): the call runs through `streamText` so progress
+  is observable. An explicit per-attempt idle timer (production 120 s,
+  `VISION_IDLE_TIMEOUT_MS`) is armed before `streamText` is even
+  invoked — covering a `doStream` handshake that never resolves as
+  well as a silent or stalled body — and resets only on non-empty
+  semantic output consumed from `fullStream`: text/reasoning deltas
+  and generated files. Stream-start, response metadata, and empty
+  deltas count for nothing, so a provider emitting inert noise still
+  times out — while a slowly-writing or long-thinking model can
+  continue up to the overall ceiling (reasoning deltas count as
+  progress, which the empty-answer retry needs to survive a floored
+  thinker). The timer fires a "First chunk" TimeoutError before the
+  first output and a "Chunk" one after. Inactivity alone still can't
+  bound a call (a stream trickling a delta under the wire forever
+  would hold the serial lane), so a separate 600 s overall ceiling
+  (`VISION_TOTAL_TIMEOUT_MS`) rides the combined abort signal, shared
+  across the empty-answer re-ask — `/stop`'s turn signal shares
+  the same signal. Every failure — idle timeout, overall timeout,
+  abort, provider error chunk mid-stream — rejects the call: partial
+  output is never returned and never seeds the follow-up thread.
+  Timeouts surface as TimeoutErrors naming which budget fired
+  ("First chunk"/"Chunk" vs "Overall"), `/stop` surfaces the caller's
+  abort reason, and `vision call start`/`vision call failed` log lines
+  (conversation, model, image, duration, policy, partial char counts —
+  never content) keep an in-flight request diagnosable from the log.
 - **An empty answer re-asks once, right-sized from the usage split**
   (ruling 2026-10-29): empty text means the whole output budget went
   to non-visible tokens — a floored reasoning effort can still spin

@@ -1,14 +1,19 @@
 // The fake sits at the LanguageModel provider edge (testkit's
-// fakeGenerateModel) — generateText, the ModelMessage→prompt
+// scriptedModel, stream arm) — streamText, the ModelMessage→prompt
 // conversion, the observed middleware, and the abort/timeout wiring
 // all run as production code. What it captures is what a provider
-// would actually receive.
+// would actually receive. Generate-shaped fixtures ride the
+// generateResultParts bridge; timing tests stream real parts.
 
 import { beforeAll, describe, expect, test } from "bun:test";
 import type { LanguageModel } from "ai";
-import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
+import type {
+	LanguageModelV4CallOptions,
+	LanguageModelV4GenerateResult,
+	LanguageModelV4StreamPart,
+} from "@ai-sdk/provider";
 import { setLogFile } from "../log.ts";
-import { fakeGenerateModel, type GenerateCall, type GenerateResponder } from "../testkit.ts";
+import { generateResultParts, scriptedModel, type StreamAttempt } from "../testkit/fake-model.ts";
 import type { Config, ConfigRef } from "../config.ts";
 import {
 	_resetVisionThreadsForTest,
@@ -112,22 +117,38 @@ const blind = (): LanguageModelV4GenerateResult => ({
 	},
 });
 
-/** Fake at the provider edge, resolved per call. */
+/** One doStream's worth of parts — the stream-arm counterpart of the
+ *  old generate responder. Timing tests hand back drive/paced attempts;
+ *  everything else answers through the generateResultParts bridge. */
+type StreamResponder = (
+	opts: LanguageModelV4CallOptions,
+	index: number,
+) => StreamAttempt | Promise<StreamAttempt>;
+
+/** Fake at the provider edge, resolved per call. `calls` records the
+ *  raw wire options each doStream received, in order. */
 function deps(
 	vision: { model: string; maxTokens?: number },
-	calls: GenerateCall[],
-	respond: GenerateResponder = () => answer("a chart"),
+	calls: LanguageModelV4CallOptions[],
+	respond: StreamResponder = () => generateResultParts(answer("a chart")),
 	conversation = "c1",
-	extra: { signal?: AbortSignal; timeoutMs?: number } = {},
+	extra: { signal?: AbortSignal; timeoutMs?: number; totalTimeoutMs?: number } = {},
 ): Parameters<typeof askVision>[1] {
 	const configRef: ConfigRef = { current: _testConfig(vision), ttsDown: false };
 	return {
 		configRef,
 		auth: { resolve: async (name: string) => `key-for-${name}` } as never,
 		conversation,
-		resolve: async () => fakeGenerateModel(calls, respond),
+		resolve: async () =>
+			scriptedModel([], {
+				onStream: async (opts, index) => {
+					calls.push(opts);
+					return respond(opts, index);
+				},
+			}).model,
 		...(extra.signal ? { signal: extra.signal } : {}),
 		...(extra.timeoutMs !== undefined ? { timeoutMs: extra.timeoutMs } : {}),
+		...(extra.totalTimeoutMs !== undefined ? { totalTimeoutMs: extra.totalTimeoutMs } : {}),
 	};
 }
 
@@ -214,12 +235,12 @@ describe("buildVisionMessages", () => {
 	});
 });
 
-// ---------- the seam (real generateText, fake provider) ----------
+// ---------- the seam (real streamText, fake provider) ----------
 
 describe("askVision — provider edge", () => {
 	test("the converted prompt is what a provider receives", async () => {
 		_resetVisionThreadsForTest();
-		const calls: GenerateCall[] = [];
+		const calls: LanguageModelV4CallOptions[] = [];
 		const result = await askVision(query(), deps({ model: "zai/glm-5.3-flash" }, calls));
 		expect(result.answer).toBe("a chart");
 		expect(result.model).toBe("zai/glm-5.3-flash");
@@ -249,7 +270,7 @@ describe("askVision — provider edge", () => {
 
 	test("followUp replays the thread as text roles before the final turn", async () => {
 		_resetVisionThreadsForTest();
-		const calls: GenerateCall[] = [];
+		const calls: LanguageModelV4CallOptions[] = [];
 		const d = deps({ model: "zai/glm-5.3-flash" }, calls, undefined, "c1");
 		await askVision(query({ prompt: "q1" }), d);
 		const second = await askVision(query({ prompt: "q2", followUp: true }), d);
@@ -262,8 +283,8 @@ describe("askVision — provider edge", () => {
 
 	test("threads never cross conversations — B must not replay A", async () => {
 		_resetVisionThreadsForTest();
-		const a: GenerateCall[] = [];
-		const b: GenerateCall[] = [];
+		const a: LanguageModelV4CallOptions[] = [];
+		const b: LanguageModelV4CallOptions[] = [];
 		const q = query();
 		await askVision(q, deps({ model: "zai/glm-5.3-flash" }, a, undefined, "conv-a"));
 		// Same image, same stat — only the conversation differs.
@@ -284,7 +305,7 @@ describe("askVision — provider edge", () => {
 
 	test("a rewritten file (new stat) starts a clean thread", async () => {
 		_resetVisionThreadsForTest();
-		const calls: GenerateCall[] = [];
+		const calls: LanguageModelV4CallOptions[] = [];
 		const d = deps({ model: "zai/glm-5.3-flash" }, calls);
 		await askVision(query({ prompt: "q1" }), d);
 		const second = await askVision(
@@ -296,8 +317,8 @@ describe("askVision — provider edge", () => {
 
 	test("a vision-model switch drops the threads", async () => {
 		_resetVisionThreadsForTest();
-		const a: GenerateCall[] = [];
-		const b: GenerateCall[] = [];
+		const a: LanguageModelV4CallOptions[] = [];
+		const b: LanguageModelV4CallOptions[] = [];
 		await askVision(query({ prompt: "q1" }), deps({ model: "zai/glm-5.3-flash" }, a));
 		const second = await askVision(
 			query({ prompt: "q2", followUp: true }),
@@ -309,11 +330,11 @@ describe("askVision — provider edge", () => {
 
 	test("empty answer re-asks once — right-sized from the reported reasoning spend", async () => {
 		_resetVisionThreadsForTest();
-		const calls: GenerateCall[] = [];
+		const calls: LanguageModelV4CallOptions[] = [];
 		await expect(
 			askVision(
 				query(),
-				deps({ model: "zai/glm-5.3-flash" }, calls, () => spent(2_000)),
+				deps({ model: "zai/glm-5.3-flash" }, calls, () => generateResultParts(spent(2_000))),
 			),
 		).rejects.toThrow(/empty answer.*re-ask at 6000 maxTokens/s);
 		expect(calls).toHaveLength(2);
@@ -325,12 +346,12 @@ describe("askVision — provider edge", () => {
 
 	test("empty then answer — the measured re-ask recovers the call", async () => {
 		_resetVisionThreadsForTest();
-		const calls: GenerateCall[] = [];
+		const calls: LanguageModelV4CallOptions[] = [];
 		let n = 0;
 		const result = await askVision(
 			query(),
 			deps({ model: "zai/glm-5.3-flash" }, calls, () =>
-				n++ === 0 ? spent(2_000) : answer("a chart"),
+				n++ === 0 ? generateResultParts(spent(2_000)) : generateResultParts(answer("a chart")),
 			),
 		);
 		expect(result.answer).toBe("a chart");
@@ -340,11 +361,11 @@ describe("askVision — provider edge", () => {
 
 	test("an empty answer that spent little still re-asks at the same cap", async () => {
 		_resetVisionThreadsForTest();
-		const calls: GenerateCall[] = [];
+		const calls: LanguageModelV4CallOptions[] = [];
 		await expect(
 			askVision(
 				query(),
-				deps({ model: "zai/glm-5.3-flash" }, calls, () => answer("   ")),
+				deps({ model: "zai/glm-5.3-flash" }, calls, () => generateResultParts(answer("   "))),
 			),
 		).rejects.toThrow(/empty answer.*re-ask at 4048 maxTokens/s);
 		expect(calls).toHaveLength(2);
@@ -355,11 +376,11 @@ describe("askVision — provider edge", () => {
 
 	test("a coerced-zero split still rescues — the output total is the spend", async () => {
 		_resetVisionThreadsForTest();
-		const calls: GenerateCall[] = [];
+		const calls: LanguageModelV4CallOptions[] = [];
 		await expect(
 			askVision(
 				query(),
-				deps({ model: "zai/glm-5.3-flash" }, calls, () => splitZero(4_048)),
+				deps({ model: "zai/glm-5.3-flash" }, calls, () => generateResultParts(splitZero(4_048))),
 			),
 		).rejects.toThrow(/empty answer.*re-ask at 10096 maxTokens/s);
 		// reasoning reads 0 on an endpoint that hides the split — the
@@ -369,20 +390,23 @@ describe("askVision — provider edge", () => {
 
 	test("unreported usage can't be measured — the re-ask falls back to 4×", async () => {
 		_resetVisionThreadsForTest();
-		const calls: GenerateCall[] = [];
+		const calls: LanguageModelV4CallOptions[] = [];
 		await expect(
-			askVision(query(), deps({ model: "zai/glm-5.3-flash" }, calls, blind)),
+			askVision(
+				query(),
+				deps({ model: "zai/glm-5.3-flash" }, calls, () => generateResultParts(blind())),
+			),
 		).rejects.toThrow(/empty answer.*re-ask at 16192 maxTokens/s);
 		expect(calls[1]!.maxOutputTokens).toBe(16_192);
 	});
 
 	test("an all-zero usage reports nothing either — the re-ask falls back to 4×", async () => {
 		_resetVisionThreadsForTest();
-		const calls: GenerateCall[] = [];
+		const calls: LanguageModelV4CallOptions[] = [];
 		await expect(
 			askVision(
 				query(),
-				deps({ model: "zai/glm-5.3-flash" }, calls, () => splitZero(0)),
+				deps({ model: "zai/glm-5.3-flash" }, calls, () => generateResultParts(splitZero(0))),
 			),
 		).rejects.toThrow(/empty answer.*re-ask at 16192 maxTokens/s);
 		expect(calls[1]!.maxOutputTokens).toBe(16_192);
@@ -390,11 +414,13 @@ describe("askVision — provider edge", () => {
 
 	test("an empty answer at maxTokens 32768 still re-asks — capped at the wire ceiling", async () => {
 		_resetVisionThreadsForTest();
-		const calls: GenerateCall[] = [];
+		const calls: LanguageModelV4CallOptions[] = [];
 		await expect(
 			askVision(
 				query(),
-				deps({ model: "zai/glm-5.3-flash", maxTokens: 32_768 }, calls, () => spent(34_816)),
+				deps({ model: "zai/glm-5.3-flash", maxTokens: 32_768 }, calls, () =>
+					generateResultParts(spent(34_816)),
+				),
 			),
 		).rejects.toThrow(/empty answer.*re-ask at 65536 maxTokens/s);
 		expect(calls).toHaveLength(2);
@@ -414,45 +440,304 @@ describe("askVision — provider edge", () => {
 		).rejects.toThrow("HTTP 429");
 	});
 
-	test("the turn's abort signal settles an in-flight call", async () => {
+	test("the turn's abort signal settles an in-flight call — reason preserved, no re-ask", async () => {
 		_resetVisionThreadsForTest();
 		const controller = new AbortController();
-		// Hangs until abort fires — what a real fetch does under /stop.
-		// The SDK passes the combined signal through and relies on the
-		// provider honoring it; it does not race it.
-		const hang: GenerateResponder = (opts) =>
-			new Promise((_resolve, reject) => {
-				opts.abortSignal?.addEventListener("abort", () => {
-					const err = new Error("Operation aborted");
-					err.name = "AbortError";
-					reject(err);
-				});
-			});
+		const reason = new Error("operator stopped the turn");
+		const calls: LanguageModelV4CallOptions[] = [];
+		// Opens the stream then goes silent until the abort — what a real
+		// fetch body does under /stop.
+		const hang: StreamAttempt = {
+			drive: (ctx) =>
+				new Promise<void>((resolve) => {
+					ctx.enqueue({ type: "stream-start", warnings: [] });
+					ctx.options.abortSignal?.addEventListener("abort", () => resolve());
+				}),
+		};
 		const pending = askVision(
 			query(),
-			deps({ model: "zai/glm-5.3-flash" }, [], hang, "c1", {
+			deps({ model: "zai/glm-5.3-flash" }, calls, () => hang, "c1", {
 				signal: controller.signal,
-				timeoutMs: 5_000,
+				timeoutMs: 60_000,
 			}),
 		);
-		setTimeout(() => controller.abort(), 20);
-		await expect(pending).rejects.toThrow();
+		setTimeout(() => controller.abort(reason), 20);
+		// The caller's own reason object surfaces — /stop stays /stop,
+		// not a generic abort error.
+		const thrown = await pending.catch((e: unknown) => e);
+		expect(thrown).toBe(reason);
+		expect(calls).toHaveLength(1);
 	});
 
-	test("the timeout race settles a wedged call", async () => {
+	test("an already-aborted turn signal rejects up front", async () => {
 		_resetVisionThreadsForTest();
-		// Same provider shape — the engine's timeout door fires the
-		// combined signal at 40 ms, so the wedge cannot outlive the call.
-		const wedge: GenerateResponder = (opts) =>
-			new Promise((_resolve, reject) => {
-				opts.abortSignal?.addEventListener("abort", () => {
-					const err = new Error("Operation aborted");
-					err.name = "AbortError";
-					reject(err);
-				});
-			});
+		const controller = new AbortController();
+		controller.abort(new Error("stopped before dispatch"));
 		await expect(
-			askVision(query(), deps({ model: "zai/glm-5.3-flash" }, [], wedge, "c1", { timeoutMs: 40 })),
+			askVision(
+				query(),
+				deps({ model: "zai/glm-5.3-flash" }, [], undefined, "c1", {
+					signal: controller.signal,
+				}),
+			),
 		).rejects.toThrow();
+	});
+
+	test("a provider that never streams hits the first-chunk idle timeout", async () => {
+		_resetVisionThreadsForTest();
+		const silent: StreamAttempt = {
+			drive: (ctx) =>
+				new Promise<void>((resolve) => {
+					ctx.options.abortSignal?.addEventListener("abort", () => resolve());
+				}),
+		};
+		const started = Date.now();
+		await expect(
+			askVision(
+				query(),
+				deps({ model: "zai/glm-5.3-flash" }, [], () => silent, "c1", {
+					timeoutMs: 60,
+				}),
+			),
+		).rejects.toThrow(/first chunk timeout/i);
+		expect(Date.now() - started).toBeLessThan(5_000);
+	});
+
+	test("a doStream that never resolves hits the first-chunk idle timeout", async () => {
+		_resetVisionThreadsForTest();
+		let providerAborted = false;
+		// The old generateText hang shape: the provider call itself never
+		// settles — no stream ever opens. The engine's own idle clock is
+		// armed before streamText is invoked, so it still fires; the
+		// merged signal reaches the provider edge so a real fetch would
+		// drop the request.
+		const pending = askVision(
+			query(),
+			deps(
+				{ model: "zai/glm-5.3-flash" },
+				[],
+				(opts) =>
+					new Promise<StreamAttempt>((resolve) => {
+						opts.abortSignal?.addEventListener("abort", () => {
+							providerAborted = true;
+							resolve([]);
+						});
+					}),
+				"c1",
+				{ timeoutMs: 60, totalTimeoutMs: 1_000 },
+			),
+		);
+		await expect(pending).rejects.toThrow(/first chunk timeout/i);
+		expect(providerAborted).toBe(true);
+	});
+
+	test("a stalled stream after partial text rejects and seeds no history", async () => {
+		_resetVisionThreadsForTest();
+		const stall: StreamAttempt = {
+			drive: (ctx) =>
+				new Promise<void>((resolve) => {
+					ctx.enqueue({ type: "stream-start", warnings: [] });
+					ctx.enqueue({ type: "text-start", id: "t1" });
+					ctx.enqueue({ type: "text-delta", id: "t1", delta: "half an answ" });
+					ctx.options.abortSignal?.addEventListener("abort", () => resolve());
+				}),
+		};
+		await expect(
+			askVision(
+				query(),
+				deps({ model: "zai/glm-5.3-flash" }, [], () => stall, "c1", {
+					timeoutMs: 60,
+				}),
+			),
+		).rejects.toThrow(/chunk timeout/i);
+		// The partial answer is gone — a follow-up starts a clean thread.
+		const again = await askVision(
+			query({ prompt: "again?", followUp: true }),
+			deps({ model: "zai/glm-5.3-flash" }, []),
+		);
+		expect(again.followUps).toBe(0);
+	});
+
+	test("text streaming past the idle window succeeds while each gap stays under it", async () => {
+		_resetVisionThreadsForTest();
+		const deltas = ["a ", "slow ", "but ", "steady ", "chart"].map(
+			(delta): LanguageModelV4StreamPart => ({ type: "text-delta", id: "t1", delta }),
+		);
+		const parts: LanguageModelV4StreamPart[] = [
+			{ type: "stream-start", warnings: [] },
+			{ type: "text-start", id: "t1" },
+			...deltas,
+			{ type: "text-end", id: "t1" },
+			{
+				type: "finish",
+				finishReason: { unified: "stop", raw: undefined },
+				usage: answer("").usage,
+			},
+		];
+		// 5 deltas × 200 ms ≈ 1 s of streaming against a 1 s idle
+		// budget — every gap fits, the total doesn't have to. Wide
+		// margins on purpose: tight paces flake under scheduler jitter.
+		const result = await askVision(
+			query(),
+			deps(
+				{ model: "zai/glm-5.3-flash" },
+				[],
+				() => ({
+					parts,
+					delayMs: 200,
+					pace: new Set(deltas),
+				}),
+				"c1",
+				{ timeoutMs: 1_000 },
+			),
+		);
+		expect(result.answer).toBe("a slow but steady chart");
+	});
+
+	test("reasoning deltas count as output — a long think before text stays alive", async () => {
+		_resetVisionThreadsForTest();
+		const thinking = ["hmm", "…", "aha"].map(
+			(delta): LanguageModelV4StreamPart => ({ type: "reasoning-delta", id: "r1", delta }),
+		);
+		const parts: LanguageModelV4StreamPart[] = [
+			{ type: "stream-start", warnings: [] },
+			{ type: "reasoning-start", id: "r1" },
+			...thinking,
+			{ type: "reasoning-end", id: "r1" },
+			{ type: "text-start", id: "t1" },
+			{ type: "text-delta", id: "t1", delta: "a chart" },
+			{ type: "text-end", id: "t1" },
+			{
+				type: "finish",
+				finishReason: { unified: "stop", raw: undefined },
+				usage: answer("").usage,
+			},
+		];
+		// Same wide pacing as the text case — 200 ms gaps against a 1 s
+		// idle budget survive scheduler jitter on a loaded box.
+		const result = await askVision(
+			query(),
+			deps(
+				{ model: "zai/glm-5.3-flash" },
+				[],
+				() => ({
+					parts,
+					delayMs: 200,
+					pace: new Set(thinking),
+				}),
+				"c1",
+				{ timeoutMs: 1_000 },
+			),
+		);
+		expect(result.answer).toBe("a chart");
+	});
+
+	test("metadata and empty deltas do not postpone the idle timeout", async () => {
+		_resetVisionThreadsForTest();
+		const noise: LanguageModelV4StreamPart[] = [
+			{ type: "stream-start", warnings: [] },
+			{ type: "response-metadata", modelId: "fake-1" },
+			{ type: "text-start", id: "t1" },
+			{ type: "text-delta", id: "t1", delta: "" },
+			{ type: "reasoning-start", id: "r1" },
+			{ type: "reasoning-delta", id: "r1", delta: "" },
+		];
+		// 6 inert parts × 40 ms ≈ 240 ms of wire activity against an
+		// 80 ms idle budget — none of it is output, so the clock runs.
+		const started = Date.now();
+		await expect(
+			askVision(
+				query(),
+				deps(
+					{ model: "zai/glm-5.3-flash" },
+					[],
+					() => ({
+						parts: noise,
+						delayMs: 40,
+						pace: new Set(noise),
+					}),
+					"c1",
+					{ timeoutMs: 80 },
+				),
+			),
+		).rejects.toThrow(/first chunk timeout/i);
+		expect(Date.now() - started).toBeLessThan(1_000);
+	});
+
+	test("an in-stream provider error chunk rejects rather than answers partially", async () => {
+		_resetVisionThreadsForTest();
+		await expect(
+			askVision(
+				query(),
+				deps({ model: "zai/glm-5.3-flash" }, [], () => [
+					{ type: "stream-start", warnings: [] },
+					{ type: "text-start", id: "t1" },
+					{ type: "text-delta", id: "t1", delta: "half an answ" },
+					{ type: "error", error: new Error("mid-stream 500") },
+				]),
+			),
+		).rejects.toThrow("mid-stream 500");
+	});
+
+	test("the overall ceiling aborts a continuously progressing stream", async () => {
+		_resetVisionThreadsForTest();
+		const deltas = Array.from(
+			{ length: 10 },
+			(_, i): LanguageModelV4StreamPart => ({ type: "text-delta", id: "t1", delta: `w${i} ` }),
+		);
+		// 10 deltas × 40 ms ≈ 400 ms of unbroken output — every gap under
+		// the 1 s idle budget, but the 120 ms overall ceiling rules.
+		await expect(
+			askVision(
+				query(),
+				deps(
+					{ model: "zai/glm-5.3-flash" },
+					[],
+					() => ({
+						parts: [
+							{ type: "stream-start", warnings: [] },
+							{ type: "text-start", id: "t1" },
+							...deltas,
+						],
+						delayMs: 40,
+						pace: new Set(deltas),
+					}),
+					"c1",
+					{ timeoutMs: 1_000, totalTimeoutMs: 120 },
+				),
+			),
+		).rejects.toThrow(/overall timeout of 120ms/i);
+	});
+
+	test("the overall budget is shared across the empty-answer re-ask", async () => {
+		_resetVisionThreadsForTest();
+		const calls: LanguageModelV4CallOptions[] = [];
+		let n = 0;
+		// Both attempts burn real time under the idle budget: ~200 ms of
+		// whitespace on the first (triggers the re-ask), ~200 ms to the
+		// answer delta on the second — ≈400 ms end to end against a
+		// 300 ms ceiling. A per-attempt reset of the overall timer would
+		// let the second attempt answer; the shared ceiling rejects.
+		const paceDelta = (parts: LanguageModelV4StreamPart[], ms: number): StreamAttempt => ({
+			parts,
+			delayMs: ms,
+			pace: new Set(parts.filter((p) => p.type === "text-delta")),
+		});
+		await expect(
+			askVision(
+				query(),
+				deps(
+					{ model: "zai/glm-5.3-flash" },
+					calls,
+					() =>
+						n++ === 0
+							? paceDelta(generateResultParts(answer("   ")), 200)
+							: paceDelta(generateResultParts(answer("a chart")), 200),
+					"c1",
+					{ timeoutMs: 1_000, totalTimeoutMs: 300 },
+				),
+			),
+		).rejects.toThrow(/overall timeout/i);
+		expect(calls).toHaveLength(2);
 	});
 });

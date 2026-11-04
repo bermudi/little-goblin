@@ -71,6 +71,8 @@ const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
 	model: "app model",
 	titleModel: "topic-title model",
 	favorites: "favorites",
+	pickerModels: "picker models",
+	customModels: "custom models",
 	modelFallbacks: "model fallbacks",
 	thinking: "app thinking",
 	telegramEnabled: "telegram channel",
@@ -548,14 +550,6 @@ export function SettingsView({
 					: [...draft.favorites, ref]
 				: draft.favorites.filter((f) => f !== ref),
 		});
-	const moveFavorite = (i: number, d: number) => {
-		const j = i + d;
-		if (j < 0 || j >= draft.favorites.length) return;
-		const next = draft.favorites.slice();
-		next[i] = next[j]!;
-		next[j] = draft.favorites[i]!;
-		patchDraft({ favorites: next });
-	};
 
 	const sheetTitle =
 		sheet === "title"
@@ -566,11 +560,9 @@ export function SettingsView({
 					? "Image generation model"
 					: sheet === "telegram"
 						? "Telegram model"
-						: sheet === "favorites"
-							? "Favorites"
-							: sheet === "fallback"
-								? "Add a fallback model"
-								: "App default model";
+						: sheet === "fallback"
+							? "Add a fallback model"
+							: "App default model";
 	const sheetCurrent =
 		sheet === "telegram"
 			? draft.telegramModel
@@ -580,7 +572,7 @@ export function SettingsView({
 					? (draft.vision?.model ?? "")
 					: sheet === "image"
 						? (draft.image?.model ?? "")
-						: sheet === "favorites" || sheet === "fallback"
+						: sheet === "fallback"
 							? ""
 							: draft.model;
 
@@ -652,7 +644,6 @@ export function SettingsView({
 			}
 		},
 		toggleFavoriteDraft,
-		moveFavorite,
 		last,
 		ttsStash,
 		trStash,
@@ -773,9 +764,11 @@ export function SettingsView({
 					current={sheetCurrent}
 					allowOff={sheet === "title" || sheet === "vision" || sheet === "image"}
 					favorites={draft.favorites}
+					// Role bindings pick from the whole catalog — the curated
+					// membership governs the chat pickers, not these picks.
+					pickerModels={null}
 					catalog={sheet === "image" ? imageCatalog : modelCatalog}
 					provNames={provNames}
-					mode={sheet === "favorites" ? "favorites" : "pick"}
 					onPick={pickModel}
 					onToggleFavorite={toggleFavoriteDraft}
 					onClose={() => setSheet(null)}

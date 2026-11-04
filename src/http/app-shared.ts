@@ -80,6 +80,7 @@ export function configView(cfg: Config, settings: ModelSettings = cfg): AppConfi
 		model: settings.model,
 		thinking,
 		favorites: cfg.favorites,
+		pickerModels: cfg.pickerModels ?? null,
 		thinkingLevels: levels,
 		catalog: modelCatalogFor(cfg),
 	};

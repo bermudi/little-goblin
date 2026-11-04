@@ -63,6 +63,8 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 	model: "main/gpt-5",
 	titleModel: "",
 	favorites: [],
+	pickerModels: null,
+	customModels: [],
 	modelFallbacks: [],
 	thinking: "medium",
 	telegramEnabled: true,
@@ -266,6 +268,41 @@ describe("bodyFromDraft", () => {
 			authDefaults,
 		);
 		expect(body.modelFallbacks).toEqual(["route/auto", "main/gpt-5"]);
+	});
+
+	test("pickerModels: absent stays absent, curated lists ride the body", () => {
+		// Never curated — the key is omitted so the saved file keeps
+		// offering the whole catalog.
+		const uncurated = bodyFromDraft(draft(), [prov()], authDefaults);
+		expect("pickerModels" in uncurated).toBe(false);
+		// A curated config round-trips verbatim (Disable all = []).
+		const curated = bodyFromDraft(
+			draft({ pickerModels: ["main/gpt-5", "main/custom-x"] }),
+			[prov()],
+			authDefaults,
+		);
+		expect(curated.pickerModels).toEqual(["main/gpt-5", "main/custom-x"]);
+	});
+
+	test("customModels: omit-when-empty, populated inventories ride the body", () => {
+		const empty = bodyFromDraft(draft(), [prov()], authDefaults);
+		expect("customModels" in empty).toBe(false);
+		const populated = bodyFromDraft(draft({ customModels: ["main/custom-x"] }), [prov()], authDefaults);
+		expect(populated.customModels).toEqual(["main/custom-x"]);
+		const { draft: d } = draftFromConfig({ ...baseConfig(), customModels: ["main/custom-x"] });
+		expect(d.customModels).toEqual(["main/custom-x"]);
+		expect(draftFromConfig(baseConfig()).draft.customModels).toEqual([]);
+	});
+
+	// A curated config reads back into the draft; an uncurated one stays
+	// null even when favorites exist (stars don't pin the catalog).
+	test("draftFromConfig reads pickerModels as a tri-state", () => {
+		const curated = draftFromConfig({ ...baseConfig(), pickerModels: ["main/gpt-5"] }).draft;
+		expect(curated.pickerModels).toEqual(["main/gpt-5"]);
+		const empty = draftFromConfig({ ...baseConfig(), pickerModels: [] }).draft;
+		expect(empty.pickerModels).toEqual([]);
+		const absent = draftFromConfig(baseConfig()).draft;
+		expect(absent.pickerModels).toBeNull();
 	});
 
 	test("null blocks serialize as the clearing convention", () => {

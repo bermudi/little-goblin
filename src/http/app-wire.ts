@@ -187,6 +187,10 @@ export interface AppConfigView {
 	model: string;
 	thinking: string;
 	favorites: string[];
+	/** The chat picker's curated membership — null = not curated, the
+	 *  picker offers the whole catalog; a list = exactly these refs, in
+	 *  order, custom refs included (settings → Models owns it). */
+	pickerModels: string[] | null;
 	thinkingLevels: string[];
 	/** The configured providers' cached model catalogs — the composer
 	 *  picker's friendly names and its "All models…" list. Empty on a

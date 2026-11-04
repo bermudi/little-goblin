@@ -160,6 +160,7 @@ through 1min's feature API (TEXT_TO_SPEECH / SPEECH_TO_TEXT) with
 model: "zai/glm-5.3-flash", // app default for new conversations
 telegram: { model: "zai/glm-5.3-flash", thinking: "high" }, // independent
 favorites: ["zai/glm-5.3", "openrouter/anthropic/claude-sonnet-4.5", "onemin/gpt-5.4"],
+pickerModels: ["zai/glm-5.3", "onemin/gpt-5.4"], // optional
 ```
 
 A model is written `provider/model-id`, split at the **first** slash —
@@ -168,6 +169,14 @@ that's fine. The provider name must exist in `providers`, otherwise the bot
 fails loudly at startup/validation time instead of guessing.
 
 `favorites` is the quick-switch shortlist the Settings mini app shows you.
+`pickerModels` curates what the chat pickers offer at all: absent (the
+default) offers every catalog model, a list offers exactly those refs in
+order (refs the catalog doesn't know work too), and `[]` hides everything.
+Stars float to the top only within that list, so a favorite left out of
+`pickerModels` doesn't show in the pickers. `customModels` remembers the
+catalog-unknown refs added through the settings card, so hiding one keeps
+it listed; only removing it there forgets the ref. Manage all three in
+Settings → Models → Chat picker.
 
 ```json5
 modelFallbacks: ["codex/gpt-6.1-terra", "zai/glm-5.3"],

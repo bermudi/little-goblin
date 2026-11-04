@@ -160,6 +160,28 @@ describe("outcome posts", () => {
 		]);
 	});
 
+	test("a report counts as activity, so a post never sits under 'no activity'", () => {
+		const r = rig();
+		const { responsibility } = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "fresh",
+			understanding: understanding(),
+		});
+		const id = responsibility.responsibilityId;
+		let [item] = feedForProject({ db: r.store.db, resps: r.resps }, r.projectId);
+		expect(item!.lastActivityAt).toBeNull();
+		const filed = r.resps.report(id, { state: "progress", reason: "moving" }, "goblin");
+		if ("refused" in filed) throw new Error("refused");
+		[item] = feedForProject({ db: r.store.db, resps: r.resps }, r.projectId);
+		expect(item!.lastActivityAt).toBe(filed.report.createdAt);
+		// A newer development still wins.
+		const [ev] = seedEvents(r, id, 1);
+		expect(ev).toBeDefined();
+		[item] = feedForProject({ db: r.store.db, resps: r.resps }, r.projectId);
+		expect(item!.lastActivityAt! >= filed.report.createdAt).toBe(true);
+	});
+
 	test("beyond the window: newest posts only, older counted", () => {
 		const r = rig();
 		const { responsibility } = r.resps.create({

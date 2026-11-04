@@ -229,7 +229,12 @@ function item(deps: FeedDeps, responsibility: Responsibility): FeedItem {
 		eventsTruncated: truncated,
 		nextCheckinAt,
 		nextCheckinReason: nextCheckinAt === null ? null : responsibility.followup.reason,
-		lastActivityAt: events.length === 0 ? null : events[events.length - 1]!.createdAt,
+		// Freshness is the newest of a development and a report: a post filed
+		// just now must not read "no activity" because no event carries it.
+		lastActivityAt: [
+			events.length === 0 ? null : events[events.length - 1]!.createdAt,
+			latestReport?.createdAt ?? null,
+		].reduce<string | null>((a, b) => (a === null || (b !== null && b > a) ? b : a), null),
 	};
 }
 

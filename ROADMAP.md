@@ -262,8 +262,17 @@ labels what it carries, and `artifacts` link what it produced. A finished
 run's exported files become artifacts. The `responsibility` tool
 describes both. Ruling: `design/app.md` → Outcome posts → Typed posts.
 
-Next in stage 2: intentional empty, stale and mobile states, checked in a
-real browser (needs a client build). The combined pilot also remains.
+Browser check (2026-11-04): the Vite dev server (no production build)
+against a stub backend serving the real feed read model over seeded
+stores, headless at 1280px and 390px. Seeded: a worker claim, a question,
+a draft with a link and a path, a finding with an unbroken 150-character
+ref, a post overtaken by a correction, a paused item, and an empty
+feed. Nothing overflowed at 390px. Two fixes came out of it: a row said
+"no activity" while carrying a post filed seconds earlier (freshness now
+counts reports), and "Open conversation" wrapped onto two lines on a
+phone. The stub's non-feed endpoints were canned, so this is a layout and
+state check, not proof against the live backend. The combined pilot
+remains.
 
 ## 3. Add Useful Cheap Capacity
 

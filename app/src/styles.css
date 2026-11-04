@@ -5379,8 +5379,12 @@ button.link:hover {
 }
 .resp-controls {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 8px;
 	margin-top: 10px;
+}
+.resp-open-conv {
+	white-space: nowrap;
 }
 .resp-correct {
 	margin-top: 8px;

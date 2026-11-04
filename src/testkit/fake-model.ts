@@ -84,6 +84,33 @@ export function toolCallPart(
 	return { type: "tool-call", toolCallId, toolName, input };
 }
 
+// A finished generate result expressed as the stream that produces it —
+// the bridge for suites exercising streamText with generate-shaped
+// fixtures. Text and reasoning content only; fixtures needing other
+// content types stream real parts instead.
+export function generateResultParts(
+	result: LanguageModelV4GenerateResult,
+): LanguageModelV4StreamPart[] {
+	const parts: LanguageModelV4StreamPart[] = [{ type: "stream-start", warnings: result.warnings }];
+	for (const content of result.content) {
+		if (content.type === "text") {
+			parts.push(
+				{ type: "text-start", id: "t1" },
+				{ type: "text-delta", id: "t1", delta: content.text },
+				{ type: "text-end", id: "t1" },
+			);
+		} else if (content.type === "reasoning") {
+			parts.push(
+				{ type: "reasoning-start", id: "r1" },
+				{ type: "reasoning-delta", id: "r1", delta: content.text },
+				{ type: "reasoning-end", id: "r1" },
+			);
+		}
+	}
+	parts.push({ type: "finish", finishReason: result.finishReason, usage: result.usage });
+	return parts;
+}
+
 // The shape a provider returns for a finished text generation.
 export function textResult(
 	text: string,

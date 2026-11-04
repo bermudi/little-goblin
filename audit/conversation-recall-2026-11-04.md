@@ -108,3 +108,24 @@ failed to resolve those references remains unverified without a live
 controlled comparison or historical wire evidence. The initial attribution
 to model attention alone was premature; prepared context does not establish
 what text survived provider-side replay.
+
+## Status
+
+Fixed in source, not deployed: `src/agent/zai-responses.ts` exports
+`zaiStatelessReplay`, a `transformParams` middleware that forces the
+canonical `openai.store:false`, and `src/agent/providers.ts` wraps only
+`api.z.ai` responses models with it so assistant prose and tool items
+serialize inline rather than as `item_reference`. Wire-shape regression
+pins live in `src/agent/providers.test.ts` ("z.ai responses replays
+statelessly"). The change awaits release; no restart has occurred.
+
+Verification: the targeted run `bun test src/agent/providers.test.ts
+src/agent/zai-responses.test.ts` passes 32/32 and both tsc programs are
+clean. A full `bun test` run reported 5333 pass / 91 skip / 4 fail plus 1
+unhandled error: three timeouts (two `app notes` cases that also fail on a
+sibling worktree without this change, and a 20s `subagents owner` case),
+one `deferred telegram boot` case hitting the documented 500 when
+`app/dist` is unbuilt, and a "Database has closed" error logged after the
+subagents timeout — timing and environment artifacts rather than
+independently proven pre-existing failures. No authenticated live
+comparison against Zhipu was performed; serializer evidence only.

@@ -295,6 +295,14 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 				maxOutputTokens,
 				...(providerOptions ? { providerOptions } : {}),
 				...(maxRetries !== undefined ? { maxRetries } : {}),
+				// Deliberately narrower than the old generateText: maxRetries
+				// covers only the doStream handshake — a mid-stream provider
+				// error is terminal (the design ruling: partial output never
+				// answers, never seeds the thread). Same streamRetries: 0 the
+				// chat path pins — a silent retry would re-POST the whole
+				// image body and bill a second generation behind the log's
+				// back.
+				streamRetries: 0,
 				abortSignal: AbortSignal.any([signal, idle.signal]),
 				onAbort: ({ reason }) => {
 					abortReason = reason;

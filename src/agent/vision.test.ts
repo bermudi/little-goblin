@@ -574,8 +574,9 @@ describe("askVision — provider edge", () => {
 				usage: answer("").usage,
 			},
 		];
-		// 5 deltas × 45 ms ≈ 225 ms of streaming against an 80 ms idle
-		// budget — every gap fits, the total doesn't have to.
+		// 5 deltas × 200 ms ≈ 1 s of streaming against a 1 s idle
+		// budget — every gap fits, the total doesn't have to. Wide
+		// margins on purpose: tight paces flake under scheduler jitter.
 		const result = await askVision(
 			query(),
 			deps(
@@ -583,11 +584,11 @@ describe("askVision — provider edge", () => {
 				[],
 				() => ({
 					parts,
-					delayMs: 45,
+					delayMs: 200,
 					pace: new Set(deltas),
 				}),
 				"c1",
-				{ timeoutMs: 80 },
+				{ timeoutMs: 1_000 },
 			),
 		);
 		expect(result.answer).toBe("a slow but steady chart");
@@ -612,6 +613,8 @@ describe("askVision — provider edge", () => {
 				usage: answer("").usage,
 			},
 		];
+		// Same wide pacing as the text case — 200 ms gaps against a 1 s
+		// idle budget survive scheduler jitter on a loaded box.
 		const result = await askVision(
 			query(),
 			deps(
@@ -619,11 +622,11 @@ describe("askVision — provider edge", () => {
 				[],
 				() => ({
 					parts,
-					delayMs: 45,
+					delayMs: 200,
 					pace: new Set(thinking),
 				}),
 				"c1",
-				{ timeoutMs: 80 },
+				{ timeoutMs: 1_000 },
 			),
 		);
 		expect(result.answer).toBe("a chart");

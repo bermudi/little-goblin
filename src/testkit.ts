@@ -14,11 +14,7 @@ import { afterEach } from "bun:test";
 import { mkdtempSync, readdirSync, rmdirSync, rmSync, statSync, type Dirent } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-	LanguageModelV4CallOptions,
-	LanguageModelV4GenerateResult,
-	LanguageModelV4StreamPart,
-} from "@ai-sdk/provider";
+import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { LanguageModel, UIMessageChunk } from "ai";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import type { TurnDone, TurnSink } from "./runtime.ts";
@@ -293,38 +289,6 @@ export function recordingModel(
 		},
 	} as unknown as LanguageModel;
 	return { model, prompts };
-}
-
-/** What the generate-arm fake provider observed, per call. */
-export interface GenerateCall {
-	prompt: LanguageModelV4CallOptions["prompt"];
-	maxOutputTokens: number | undefined;
-	abortSignal: AbortSignal | undefined;
-}
-
-export type GenerateResponder = (
-	opts: LanguageModelV4CallOptions,
-) => LanguageModelV4GenerateResult | Promise<LanguageModelV4GenerateResult>;
-
-/** Generate-arm fake (doGenerate): records the call, answers via `respond`. */
-export function fakeGenerateModel(
-	calls: GenerateCall[],
-	respond: GenerateResponder,
-): LanguageModel {
-	return {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: "fake-1",
-		supportedUrls: {},
-		async doGenerate(opts: LanguageModelV4CallOptions) {
-			calls.push({
-				prompt: opts.prompt,
-				maxOutputTokens: opts.maxOutputTokens,
-				abortSignal: opts.abortSignal,
-			});
-			return respond(opts);
-		},
-	} as unknown as LanguageModel;
 }
 
 // ---------- turn sinks ----------

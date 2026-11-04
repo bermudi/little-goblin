@@ -22,7 +22,7 @@ import { codexModel, RESPONSES_URL, type CodexModelOptions } from "./codex/model
 import type { MediaPosition } from "./attachments.ts";
 import { quotaExhausted } from "./provider-errors.ts";
 import { isOneMinHost } from "./onemin.ts";
-import { isZaiHost, zaiReasoningFetch } from "./zai-responses.ts";
+import { isZaiHost, zaiReasoningFetch, zaiStatelessReplay } from "./zai-responses.ts";
 import { thinkingOptions as thinkingOptionsFor } from "./thinking.ts";
 
 // Every chat-turn, compaction, title and reviewer model comes through
@@ -103,16 +103,23 @@ async function resolveProviderModel(
 				// it: without it every usage log line is null.
 				...(isOneMinHost(p.baseUrl) ? { includeUsage: true } : {}),
 			}).chatModel(modelId);
-		case "responses":
+		case "responses": {
 			// z.ai emits raw reasoning_text events the SDK's schema drops;
-			// the shim maps them to reasoning_summary. `name` keeps options
-			// keyed to this config provider.
-			return createOpenAI({
+			// the shim maps them to reasoning_summary.
+			const model = createOpenAI({
 				name: provider,
 				baseURL: p.baseUrl,
 				apiKey: await auth.resolve(p.auth),
 				...(isZaiHost(p.baseUrl) ? { fetch: zaiReasoningFetch() } : {}),
 			}).responses(modelId);
+			if (!isZaiHost(p.baseUrl)) return model;
+			log.info("model adapter resolved", {
+				model: modelRef,
+				adapter: "zai-stateless-replay",
+				reason: "zhipu responses replays assistant items inline (store:false)",
+			});
+			return wrapLanguageModel({ model, middleware: zaiStatelessReplay() });
+		}
 		case "openrouter": {
 			const apiKey = await auth.resolve(p.auth);
 			// Provider metadata types lag exactOptionalPropertyTypes; the runtime

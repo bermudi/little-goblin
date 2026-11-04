@@ -7,11 +7,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import type { Config } from "../config.ts";
 import { openCacheObservation } from "../cache-observation.ts";
 import { setLogFile } from "../log.ts";
 import { tmpDir } from "../testkit.ts";
 import { APICallError, generateText, streamText } from "ai";
+import { z } from "zod";
 import { generateModel, scriptedModel } from "../testkit/fake-model.ts";
 import type { AuthStore } from "../auth.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
@@ -669,5 +671,156 @@ describe("resolveModel — codex session opts", () => {
 			sessionId: "s-1",
 		});
 		expect(typeof other).not.toBe("string");
+	});
+});
+
+describe("resolveModel — z.ai responses replays statelessly", () => {
+	// The SDK's Responses converter defaults store:true and substitutes an
+	// item_reference for every assistant part carrying openai.itemId, so
+	// prior prose reaches Zhipu only as ids it must resolve. The
+	// zaiStatelessReplay middleware forces openai.store:false before
+	// serialization, replaying text/tools inline. These pins run at the
+	// fetch edge with a deliberate 400 — the serializer's wire shape is the
+	// contract; nothing reaches a provider. Fictitious strings only.
+	const PROSE = "fictitious earlier prose QUOTED-NUMBER-240";
+	const CALL_ID = "call_fictitious_1";
+
+	const replayPrompt = {
+		prompt: [
+			{ role: "system" as const, content: "fictitious system" },
+			{ role: "user" as const, content: [{ type: "text" as const, text: "fictitious ask" }] },
+			{
+				role: "assistant" as const,
+				content: [
+					{
+						type: "reasoning" as const,
+						text: "fictitious reasoning",
+						providerOptions: { openai: { itemId: "rs_fictitious_1" } },
+					},
+					{
+						type: "text" as const,
+						text: PROSE,
+						providerOptions: { openai: { itemId: "msg_fictitious_1" } },
+					},
+				],
+			},
+			{
+				role: "assistant" as const,
+				content: [
+					{
+						type: "tool-call" as const,
+						toolCallId: CALL_ID,
+						toolName: "local_probe",
+						input: "{}",
+						providerOptions: { openai: { itemId: "fc_fictitious_1" } },
+					},
+				],
+			},
+			{
+				role: "tool" as const,
+				content: [
+					{
+						type: "tool-result" as const,
+						toolCallId: CALL_ID,
+						toolName: "local_probe",
+						output: { type: "text" as const, value: "fictitious result" },
+					},
+				],
+			},
+			{
+				role: "assistant" as const,
+				content: [
+					{
+						type: "text" as const,
+						text: "fictitious final prose",
+						providerOptions: { openai: { itemId: "msg_fictitious_2" } },
+					},
+				],
+			},
+			{ role: "user" as const, content: [{ type: "text" as const, text: "fictitious reply" }] },
+		],
+	};
+
+	const wireBodySchema = z.object({
+		store: z.boolean().optional(),
+		parallel_tool_calls: z.boolean().optional(),
+		input: z.array(
+			z.looseObject({
+				type: z.string().optional(),
+				role: z.string().optional(),
+				id: z.string().optional(),
+				call_id: z.string().optional(),
+				content: z.unknown().optional(),
+			}),
+		),
+	});
+
+	// Intercept at fetch, return a fixed 400: the SDK rejects with
+	// APICallError and the intercepted body is the serialization pin.
+	async function captureBody(
+		modelRef: string,
+		call: "generate" | "stream",
+		providerOptions?: ProviderOptions,
+	) {
+		let body: unknown;
+		const original = globalThis.fetch;
+		globalThis.fetch = (async (_input: unknown, init?: { body?: unknown }) => {
+			body = JSON.parse(String(init?.body ?? "{}"));
+			return new Response(JSON.stringify({ error: { message: "offline pin" } }), {
+				status: 400,
+				headers: { "content-type": "application/json" },
+			});
+		}) as unknown as typeof fetch;
+		try {
+			// The stub must be installed before resolution: the z.ai SSE shim
+			// binds globalThis.fetch at model construction.
+			const model = await resolveModel(cfg, fixtureAuth("fixture-key"), modelRef);
+			const v4 = model as LanguageModelV4;
+			const options = {
+				...replayPrompt,
+				...(providerOptions === undefined ? {} : { providerOptions }),
+			};
+			const pending = call === "generate" ? v4.doGenerate(options) : v4.doStream(options);
+			await expect(pending).rejects.toThrow(APICallError);
+		} finally {
+			globalThis.fetch = original;
+		}
+		return wireBodySchema.parse(body);
+	}
+
+	for (const call of ["generate", "stream"] as const) {
+		test(`${call}: store:false replays assistant prose and tools inline, never item_reference`, async () => {
+			// The configured provider is named zai_responses — not "openai" —
+			// which is exactly the namespace gotcha: the converter reads the
+			// canonical openai namespace, so forcing it there is the fix.
+			const wire = await captureBody("zai_responses/glm-5.3", call, {
+				openai: { store: true, parallelToolCalls: false },
+			});
+			expect(wire.store).toBe(false);
+			expect(wire.parallel_tool_calls).toBe(false);
+			expect(wire.input.filter((i) => i.type === "item_reference")).toHaveLength(0);
+			expect(
+				wire.input.filter(
+					(i) => i.role === "assistant" && JSON.stringify(i.content).includes(PROSE),
+				),
+			).toHaveLength(1);
+			const calls = wire.input.filter((i) => i.type === "function_call");
+			const outputs = wire.input.filter((i) => i.type === "function_call_output");
+			expect(calls.map((i) => i.call_id)).toContain(CALL_ID);
+			expect(outputs.map((i) => i.call_id)).toContain(CALL_ID);
+		});
+	}
+
+	test("a non-z.ai responses provider keeps SDK defaults: references, store untouched", async () => {
+		const wire = await captureBody("relay_responses/glm-5.3", "generate", {
+			openai: { store: true },
+		});
+		expect(wire.store).not.toBe(false);
+		expect(wire.input.filter((i) => i.type === "item_reference").length).toBeGreaterThan(0);
+		expect(
+			wire.input.filter(
+				(i) => i.role === "assistant" && JSON.stringify(i.content).includes(PROSE),
+			),
+		).toHaveLength(0);
 	});
 });

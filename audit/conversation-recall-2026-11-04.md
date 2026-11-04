@@ -52,5 +52,59 @@ not the provider-internal cause. The latest-only capture and lineage do not
 show the exact historical HTTP payload or how Zhipu processed replay and
 caching. Distinguishing model attention failure from provider/SDK replay
 behavior would require separate wire-level evidence or a controlled replay.
-No such experiment was run, and no code fix is justified by this evidence
-alone.
+At this initial stage, no such experiment had been run.
+
+## Follow-up: direct session transcript and offline wire serialization
+
+Read the live SQLite database using `bun:sqlite` with `readonly:true`, scoped
+to `app/d72da150-348d-418c-9e2b-16b1fb1c61d2`. The stored events are version-1
+message envelopes. Events 1 through 12 alternate user and assistant; all six
+turn runs completed with the expected owning user seq. There are no rows in
+`compactions` for this conversation.
+
+The full stored reasoning adds evidence absent from the initial excerpts:
+
+- Event 10: `my first two replies aren't shown to me in full`
+- Event 10: `My visible replies: I only made vision calls and (presumably)
+  short texts I can't see. The transcript shows my turns were tool calls
+  only... Actually my turns would have included some text. But I don't see
+  them, so I can't verify.`
+- Event 12: `my replies are not shown to me in this transcript, but they
+  happened`
+
+These are model self-reports, not reliable instrumentation, but they
+specifically describe missing assistant prose, not just failure to locate
+one number.
+
+The configured `zai` route is `kind: responses`, base URL
+`https://api.z.ai/api/v1`. The inspected release is
+`c63af11d38d1f95217b29739afe7e7bfd65aa110`, with `ai` 7.0.142 and
+`@ai-sdk/openai` 4.0.95. Its Responses converter defaults its internal
+`store` behavior to true and replaces assistant text carrying an OpenAI
+`itemId` with `item_reference`. The wire `store` field can still be omitted.
+Goblin's prepared-message capture precedes this conversion.
+
+An offline fetch-intercepted serialization experiment used the deployed SDK
+and the first 21 messages of the stored capture (through the "Try 258" input):
+
+- Default options: no inline assistant messages; 11 item references;
+  `going through 240` absent from the serialized input.
+- With `providerOptions.openai.store: false`: four inline assistant
+  messages; no item references; `going through 240` present.
+
+The experiment used a dummy credential and a stub fetch returning a deliberate
+400; no request reached Zhipu. Evidence is in
+`/tmp/goblin-recall-wire-evidence-provider.txt`. The initial `generateText`
+attempt failed high-level message-schema validation before fetch; the
+successful experiment used `model.doGenerate` directly with the captured
+message shapes. It proves the provider-converter behavior for these parts,
+not the exact historical full request.
+
+The concrete suspect is now Responses item-reference replay: the application
+has the assistant text, but the SDK substitutes references and relies on the
+provider to recover it. This closely matches the transcript's repeated
+description of absent assistant prose. Whether Zhipu actually dropped or
+failed to resolve those references remains unverified without a live
+controlled comparison or historical wire evidence. The initial attribution
+to model attention alone was premature; prepared context does not establish
+what text survived provider-side replay.

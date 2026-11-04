@@ -52,10 +52,12 @@ export function FileGlyph() {
 	);
 }
 
-/** The running-state body: two shimmer bars inside the fold. */
-export function Skeleton() {
+/** The running-state body: two shimmer bars inside the fold, under any
+ *  content the caller already has (e.g. the args streamed in so far). */
+export function Skeleton({ children }: { children?: ReactNode }) {
 	return (
 		<div className="tool-body">
+			{children}
 			<div className="skel skel-a" />
 			<div className="skel skel-b" />
 		</div>

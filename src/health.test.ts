@@ -870,7 +870,8 @@ describe("bounded external boundaries and cancellation", () => {
 			const report = await pending;
 			expect(performance.now() - start).toBeLessThan(abort ? 600 : 3000);
 			expect(finding(report, "service.goblin").detail).toContain(abort ? "cancelled" : "deadline");
-			for (const pid of ids) expect(running(pid)).toBe(false);
+			// SIGKILL is delivered asynchronously: allow the group to die, not to linger.
+			await waitUntil(() => !ids.some(running), "killed process group exits", 1_000);
 		}, 5000);
 });
 

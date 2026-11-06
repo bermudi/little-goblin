@@ -20,6 +20,7 @@ import {
 	mkdirSync,
 	readFileSync,
 	readdirSync,
+	renameSync,
 	statSync,
 	symlinkSync,
 	writeFileSync,
@@ -39,6 +40,8 @@ import {
 
 const REPO = resolve(import.meta.dir, "..");
 const BUN = process.execPath;
+// Each release() is a real bun, git and tar run; a cold CI runner takes about 5s for one.
+const RELEASE_TEST_TIMEOUT_MS = 30_000;
 
 // The fixture repository: three commits so HEAD~1 and HEAD~2 name older,
 // distinct revs, whatever the outer clone's depth. Built lazily per test —
@@ -250,202 +253,246 @@ function liveTarget(box: Box): string | null {
 }
 
 describe("release build", () => {
-	test("--build-only makes a complete private release and touches nothing live", () => {
-		const box = makeBox();
-		const rev = headRev(box);
-		const result = release(box, ["--build-only"]);
-		expect(result.status).toBe(0);
-		expect(result.stdout.trim()).toBe(
-			`built ${rev} at ${releaseDir(layoutFrom({ GOBLIN_RELEASES_ROOT: box.releases }), rev)}`,
-		);
-		const dir = join(box.releases, rev);
-		expect(readFileSync(join(dir, ".release-complete"), "utf8").trim()).toBe(rev);
-		// The release is exactly the tracked tree at that commit: every path git
-		// reports is present, and the fixture's untracked resolution symlinks
-		// (src/durable.ts, node_modules) are not.
-		const tracked = spawnSync(
-			"git",
-			["-C", fixtureRepo(box), "ls-tree", "-r", "--name-only", rev],
-			{ encoding: "utf8" },
-		)
-			.stdout.trim()
-			.split("\n");
-		expect(tracked.length).toBeGreaterThan(50);
-		for (const path of tracked) expect(existsSync(join(dir, path))).toBe(true);
-		expect(existsSync(join(dir, ".git"))).toBe(false);
-		expect(existsSync(join(dir, "app", "dist", "index.html"))).toBe(true);
-		expect(existsSync(join(dir, "node_modules", ".installed"))).toBe(true);
-		// Nothing addressable, nothing restarted.
-		expect(existsSync(box.live)).toBe(false);
-		expect(calls(box).some((line) => line.includes("restart"))).toBe(false);
-	});
+	test(
+		"--build-only makes a complete private release and touches nothing live",
+		() => {
+			const box = makeBox();
+			const rev = headRev(box);
+			const result = release(box, ["--build-only"]);
+			expect(result.status).toBe(0);
+			expect(result.stdout.trim()).toBe(
+				`built ${rev} at ${releaseDir(layoutFrom({ GOBLIN_RELEASES_ROOT: box.releases }), rev)}`,
+			);
+			const dir = join(box.releases, rev);
+			expect(readFileSync(join(dir, ".release-complete"), "utf8").trim()).toBe(rev);
+			// The release is exactly the tracked tree at that commit: every path git
+			// reports is present, and the fixture's untracked resolution symlinks
+			// (src/durable.ts, node_modules) are not.
+			const tracked = spawnSync(
+				"git",
+				["-C", fixtureRepo(box), "ls-tree", "-r", "--name-only", rev],
+				{ encoding: "utf8" },
+			)
+				.stdout.trim()
+				.split("\n");
+			expect(tracked.length).toBeGreaterThan(50);
+			for (const path of tracked) expect(existsSync(join(dir, path))).toBe(true);
+			expect(existsSync(join(dir, ".git"))).toBe(false);
+			expect(existsSync(join(dir, "app", "dist", "index.html"))).toBe(true);
+			expect(existsSync(join(dir, "node_modules", ".installed"))).toBe(true);
+			// Nothing addressable, nothing restarted.
+			expect(existsSync(box.live)).toBe(false);
+			expect(calls(box).some((line) => line.includes("restart"))).toBe(false);
+		},
+		RELEASE_TEST_TIMEOUT_MS,
+	);
 
-	test("a second build of the same rev is a no-op", () => {
-		const box = makeBox();
-		expect(release(box, ["--build-only"]).status).toBe(0);
-		const builds = calls(box).filter((line) => line.startsWith("bun install")).length;
-		const second = release(box, ["--build-only"]);
-		expect(second.status).toBe(0);
-		expect(second.stderr).toContain("already built");
-		expect(calls(box).filter((line) => line.startsWith("bun install")).length).toBe(builds);
-	});
+	test(
+		"a second build of the same rev is a no-op",
+		() => {
+			const box = makeBox();
+			expect(release(box, ["--build-only"]).status).toBe(0);
+			const builds = calls(box).filter((line) => line.startsWith("bun install")).length;
+			const second = release(box, ["--build-only"]);
+			expect(second.status).toBe(0);
+			expect(second.stderr).toContain("already built");
+			expect(calls(box).filter((line) => line.startsWith("bun install")).length).toBe(builds);
+		},
+		RELEASE_TEST_TIMEOUT_MS,
+	);
 
-	test("a failed typecheck leaves the staging directory and flips nothing", () => {
-		const box = makeBox();
-		const result = release(box, ["--build-only"], { FAKE_TYPECHECK_FAIL: "1" });
-		expect(result.status).toBe(1);
-		expect(result.stderr).toContain("typecheck failed");
-		const staging = readdirSync(box.releases).filter((name) => name.startsWith(".staging."));
-		expect(staging.length).toBe(1);
-		// Left for inspection, deliberately not deleted — and not addressable.
-		expect(readdirSync(box.releases).some((name) => isRev(name))).toBe(false);
-	});
+	test(
+		"a failed typecheck leaves the staging directory and flips nothing",
+		() => {
+			const box = makeBox();
+			const result = release(box, ["--build-only"], { FAKE_TYPECHECK_FAIL: "1" });
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain("typecheck failed");
+			const staging = readdirSync(box.releases).filter((name) => name.startsWith(".staging."));
+			expect(staging.length).toBe(1);
+			// Left for inspection, deliberately not deleted — and not addressable.
+			expect(readdirSync(box.releases).some((name) => isRev(name))).toBe(false);
+		},
+		RELEASE_TEST_TIMEOUT_MS,
+	);
 });
 
 describe("rollout", () => {
-	test("refuses while the unit still runs the in-place tree", () => {
-		const box = makeBox();
-		const result = release(box, []);
-		expect(result.status).toBe(1);
-		expect(result.stderr).toContain("--adopt-unit");
-		expect(calls(box).some((line) => line.includes("restart"))).toBe(false);
-	});
+	test(
+		"refuses while the unit still runs the in-place tree",
+		() => {
+			const box = makeBox();
+			const result = release(box, []);
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain("--adopt-unit");
+			expect(calls(box).some((line) => line.includes("restart"))).toBe(false);
+		},
+		RELEASE_TEST_TIMEOUT_MS,
+	);
 
-	test("--adopt-unit cuts over: builds, flips, rewrites only WorkingDirectory, restarts, annotates", () => {
-		const box = makeBox();
-		const rev = headRev(box);
-		const result = release(box, ["--adopt-unit"]);
-		expect(result.status).toBe(0);
-		expect(result.stdout.trim()).toBe(`adopted release layout and deployed ${rev}`);
-		expect(liveTarget(box)).toBe(rev);
-		const unit = readFileSync(box.unit, "utf8");
-		expect(unit).toContain(`WorkingDirectory=${box.live}`);
-		// Value rewritten, every other line preserved verbatim.
-		expect(unit).toContain(`Environment=GOBLIN_HOME=${box.home}`);
-		expect(unit).toContain(`ExecStart=${box.bin}/bun run src/index.ts`);
-		expect(unit).toContain("KillSignal=SIGTERM");
-		expect(statSync(box.unit).mode & 0o777).toBe(0o644);
-		const recorded = calls(box);
-		expect(recorded.some((line) => line === "systemctl --user daemon-reload")).toBe(true);
-		expect(recorded.some((line) => line === "systemctl --user restart goblin")).toBe(true);
-		expect(
-			recorded.some((line) => line.includes("/scripts/check-startup.ts --watch 0 75000")),
-		).toBe(true);
-		const annotations = readFileSync(join(box.home, "state", "goblin.log"), "utf8")
-			.trim()
-			.split("\n")
-			.map((line) => JSON.parse(line) as { msg: string; rev: string; level: string });
-		expect(annotations.map((entry) => entry.msg)).toEqual([
-			"deploy restarting goblin",
-			"deploy restart accepted — goblin live at deployed rev",
-		]);
-		expect(annotations.every((entry) => entry.rev === rev && entry.level === "info")).toBe(true);
-	});
+	test(
+		"--adopt-unit cuts over: builds, flips, rewrites only WorkingDirectory, restarts, annotates",
+		() => {
+			const box = makeBox();
+			const rev = headRev(box);
+			const result = release(box, ["--adopt-unit"]);
+			expect(result.status).toBe(0);
+			expect(result.stdout.trim()).toBe(`adopted release layout and deployed ${rev}`);
+			expect(liveTarget(box)).toBe(rev);
+			const unit = readFileSync(box.unit, "utf8");
+			expect(unit).toContain(`WorkingDirectory=${box.live}`);
+			// Value rewritten, every other line preserved verbatim.
+			expect(unit).toContain(`Environment=GOBLIN_HOME=${box.home}`);
+			expect(unit).toContain(`ExecStart=${box.bin}/bun run src/index.ts`);
+			expect(unit).toContain("KillSignal=SIGTERM");
+			expect(statSync(box.unit).mode & 0o777).toBe(0o644);
+			const recorded = calls(box);
+			expect(recorded.some((line) => line === "systemctl --user daemon-reload")).toBe(true);
+			expect(recorded.some((line) => line === "systemctl --user restart goblin")).toBe(true);
+			expect(
+				recorded.some((line) => line.includes("/scripts/check-startup.ts --watch 0 75000")),
+			).toBe(true);
+			const annotations = readFileSync(join(box.home, "state", "goblin.log"), "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as { msg: string; rev: string; level: string });
+			expect(annotations.map((entry) => entry.msg)).toEqual([
+				"deploy restarting goblin",
+				"deploy restart accepted — goblin live at deployed rev",
+			]);
+			expect(annotations.every((entry) => entry.rev === rev && entry.level === "info")).toBe(true);
+		},
+		RELEASE_TEST_TIMEOUT_MS,
+	);
 
-	test("a rollout flips to another rev and prints the rollback for the one it replaced", () => {
-		const box = makeBox();
-		expect(release(box, ["--adopt-unit"]).status).toBe(0);
-		const first = headRev(box);
-		const older = spawnSync("git", ["-C", fixtureRepo(box), "rev-parse", "HEAD~1"], {
-			encoding: "utf8",
-		}).stdout.trim();
-		const result = release(box, ["--rev", "HEAD~1"]);
-		expect(result.status).toBe(0);
-		expect(result.stdout).toContain(`deployed ${older}`);
-		expect(result.stdout).toContain(`rollback: bun scripts/release.ts --rollback ${first}`);
-		expect(liveTarget(box)).toBe(older);
-		// The replaced release is still whole: rollback rebuilds nothing.
-		expect(isCompleteRelease(join(box.releases, first), first)).toBe(true);
-		const back = release(box, ["--rollback", first]);
-		expect(back.status).toBe(0);
-		expect(back.stdout.trim()).toBe(`rolled back to ${first}`);
-		expect(liveTarget(box)).toBe(first);
-	});
+	test(
+		"a rollout flips to another rev and prints the rollback for the one it replaced",
+		() => {
+			const box = makeBox();
+			expect(release(box, ["--adopt-unit"]).status).toBe(0);
+			const first = headRev(box);
+			const older = spawnSync("git", ["-C", fixtureRepo(box), "rev-parse", "HEAD~1"], {
+				encoding: "utf8",
+			}).stdout.trim();
+			const result = release(box, ["--rev", "HEAD~1"]);
+			expect(result.status).toBe(0);
+			expect(result.stdout).toContain(`deployed ${older}`);
+			expect(result.stdout).toContain(`rollback: bun scripts/release.ts --rollback ${first}`);
+			expect(liveTarget(box)).toBe(older);
+			// The replaced release is still whole: rollback rebuilds nothing.
+			expect(isCompleteRelease(join(box.releases, first), first)).toBe(true);
+			const back = release(box, ["--rollback", first]);
+			expect(back.status).toBe(0);
+			expect(back.stdout.trim()).toBe(`rolled back to ${first}`);
+			expect(liveTarget(box)).toBe(first);
+		},
+		RELEASE_TEST_TIMEOUT_MS,
+	);
 
-	test("rollback refuses a rev that has no complete release", () => {
-		const box = makeBox();
-		expect(release(box, ["--adopt-unit"]).status).toBe(0);
-		const before = calls(box).filter((line) => line === "systemctl --user restart goblin").length;
-		// A real commit that was never built into a release here.
-		const unbuilt = spawnSync("git", ["-C", fixtureRepo(box), "rev-parse", "HEAD~2"], {
-			encoding: "utf8",
-		}).stdout.trim();
-		const result = release(box, ["--rollback", unbuilt]);
-		expect(result.status).toBe(1);
-		expect(result.stderr).toContain("no complete release");
-		expect(calls(box).filter((line) => line === "systemctl --user restart goblin").length).toBe(
-			before,
-		);
-	});
+	test(
+		"rollback refuses a rev that has no complete release",
+		() => {
+			const box = makeBox();
+			expect(release(box, ["--adopt-unit"]).status).toBe(0);
+			const before = calls(box).filter((line) => line === "systemctl --user restart goblin").length;
+			// A real commit that was never built into a release here.
+			const unbuilt = spawnSync("git", ["-C", fixtureRepo(box), "rev-parse", "HEAD~2"], {
+				encoding: "utf8",
+			}).stdout.trim();
+			const result = release(box, ["--rollback", unbuilt]);
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain("no complete release");
+			expect(calls(box).filter((line) => line === "systemctl --user restart goblin").length).toBe(
+				before,
+			);
+		},
+		RELEASE_TEST_TIMEOUT_MS,
+	);
 
-	test("a failed acceptance fails the rollout without rolling back on its own", () => {
-		const box = makeBox();
-		expect(release(box, ["--adopt-unit"]).status).toBe(0);
-		const first = headRev(box);
-		const older = spawnSync("git", ["-C", fixtureRepo(box), "rev-parse", "HEAD~1"], {
-			encoding: "utf8",
-		}).stdout.trim();
-		const result = release(box, ["--rev", "HEAD~1"], { FAKE_ACCEPT_FAIL: "1" });
-		expect(result.status).toBe(1);
-		expect(result.stderr).toContain("startup acceptance failed");
-		// The flip happened and stays: recovery is an explicit operator action —
-		// but the command for it is printed, not left to memory.
-		expect(liveTarget(box)).toBe(older);
-		expect(result.stderr).toContain(`recover with: bun scripts/release.ts --rollback ${first}`);
-		expect(result.stdout).toBe("");
-	});
+	test(
+		"a failed acceptance fails the rollout without rolling back on its own",
+		() => {
+			const box = makeBox();
+			expect(release(box, ["--adopt-unit"]).status).toBe(0);
+			const first = headRev(box);
+			const older = spawnSync("git", ["-C", fixtureRepo(box), "rev-parse", "HEAD~1"], {
+				encoding: "utf8",
+			}).stdout.trim();
+			const result = release(box, ["--rev", "HEAD~1"], { FAKE_ACCEPT_FAIL: "1" });
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain("startup acceptance failed");
+			// The flip happened and stays: recovery is an explicit operator action —
+			// but the command for it is printed, not left to memory.
+			expect(liveTarget(box)).toBe(older);
+			expect(result.stderr).toContain(`recover with: bun scripts/release.ts --rollback ${first}`);
+			expect(result.stdout).toBe("");
+		},
+		RELEASE_TEST_TIMEOUT_MS,
+	);
 
-	test("rollback needs no git object: a kept release is self-contained", () => {
-		const box = makeBox();
-		expect(release(box, ["--adopt-unit"]).status).toBe(0);
-		// A release whose commit git cannot resolve (pruned by a rebase or gc).
-		// Rolling back to it must work from the directory alone.
-		const orphan = "d".repeat(40);
-		const dir = join(box.releases, orphan);
-		for (const path of ["src", "app/dist", "node_modules"])
-			mkdirSync(join(dir, path), { recursive: true });
-		for (const path of ["package.json", "bun.lock", "src/index.ts", "app/dist/index.html"])
-			writeFileSync(join(dir, path), "");
-		writeFileSync(join(dir, ".release-complete"), `${orphan}\n`);
-		const result = release(box, ["--rollback", orphan]);
-		expect(result.status).toBe(0);
-		expect(result.stdout.trim()).toBe(`rolled back to ${orphan}`);
-		expect(liveTarget(box)).toBe(orphan);
-	});
+	test(
+		"rollback needs no git object: a kept release is self-contained",
+		() => {
+			const box = makeBox();
+			expect(release(box, ["--adopt-unit"]).status).toBe(0);
+			// A release whose commit git cannot resolve (pruned by a rebase or gc).
+			// Rolling back to it must work from the directory alone.
+			const orphan = "d".repeat(40);
+			const dir = join(box.releases, orphan);
+			for (const path of ["src", "app/dist", "node_modules"])
+				mkdirSync(join(dir, path), { recursive: true });
+			for (const path of ["package.json", "bun.lock", "src/index.ts", "app/dist/index.html"])
+				writeFileSync(join(dir, path), "");
+			writeFileSync(join(dir, ".release-complete"), `${orphan}\n`);
+			const result = release(box, ["--rollback", orphan]);
+			expect(result.status).toBe(0);
+			expect(result.stdout.trim()).toBe(`rolled back to ${orphan}`);
+			expect(liveTarget(box)).toBe(orphan);
+		},
+		RELEASE_TEST_TIMEOUT_MS,
+	);
 
-	test("rollback refuses a release whose tree is gone", () => {
-		const box = makeBox();
-		expect(release(box, ["--adopt-unit"]).status).toBe(0);
-		const gutted = join(box.releases, headRev(box));
-		spawnSync("trash", [join(gutted, "node_modules")]);
-		const before = calls(box).filter((line) => line === "systemctl --user restart goblin").length;
-		const result = release(box, ["--rollback", headRev(box)]);
-		expect(result.status).toBe(1);
-		expect(result.stderr).toContain("no complete release");
-		expect(calls(box).filter((line) => line === "systemctl --user restart goblin").length).toBe(
-			before,
-		);
-	});
+	test(
+		"rollback refuses a release whose tree is gone",
+		() => {
+			const box = makeBox();
+			expect(release(box, ["--adopt-unit"]).status).toBe(0);
+			const gutted = join(box.releases, headRev(box));
+			renameSync(join(gutted, "node_modules"), join(gutted, "node_modules.gone"));
+			const before = calls(box).filter((line) => line === "systemctl --user restart goblin").length;
+			const result = release(box, ["--rollback", headRev(box)]);
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain("no complete release");
+			expect(calls(box).filter((line) => line === "systemctl --user restart goblin").length).toBe(
+				before,
+			);
+		},
+		RELEASE_TEST_TIMEOUT_MS,
+	);
 });
 
 describe("status", () => {
-	test("reports what is live, whether the unit matches, and restarts still pending", async () => {
-		const box = makeBox();
-		expect(release(box, ["--adopt-unit"]).status).toBe(0);
-		const first = headRev(box);
-		expect(release(box, ["--rev", "HEAD~1"]).status).toBe(0);
-		// A process still sitting in the older release: the flip happened, the
-		// restart did not. That is the one inconsistency this layout can hold.
-		const sleeper = Bun.spawn(["sleep", "5"], { cwd: join(box.releases, first) });
-		const result = release(box, ["--status"], { FAKE_MAINPID: String(sleeper.pid) });
-		await sleeper.kill();
-		expect(result.status).toBe(0);
-		expect(result.stdout).toContain(`live: ${box.releases}/`);
-		expect(result.stdout).toContain("(release layout)");
-		expect(result.stdout).toContain("releases: 2");
-		expect(result.stdout).toContain("*live*");
-		expect(result.stdout).toContain(`running: ${first.slice(0, 7)} (restart pending)`);
-	});
+	test(
+		"reports what is live, whether the unit matches, and restarts still pending",
+		async () => {
+			const box = makeBox();
+			expect(release(box, ["--adopt-unit"]).status).toBe(0);
+			const first = headRev(box);
+			expect(release(box, ["--rev", "HEAD~1"]).status).toBe(0);
+			// A process still sitting in the older release: the flip happened, the
+			// restart did not. That is the one inconsistency this layout can hold.
+			const sleeper = Bun.spawn(["sleep", "5"], { cwd: join(box.releases, first) });
+			const result = release(box, ["--status"], { FAKE_MAINPID: String(sleeper.pid) });
+			await sleeper.kill();
+			expect(result.status).toBe(0);
+			expect(result.stdout).toContain(`live: ${box.releases}/`);
+			expect(result.stdout).toContain("(release layout)");
+			expect(result.stdout).toContain("releases: 2");
+			expect(result.stdout).toContain("*live*");
+			expect(result.stdout).toContain(`running: ${first.slice(0, 7)} (restart pending)`);
+		},
+		RELEASE_TEST_TIMEOUT_MS,
+	);
 });
 
 describe("unit parsing", () => {

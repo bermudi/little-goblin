@@ -14,7 +14,8 @@
 		"format:check": "biome format .",
 		"app:build": "vite build app",
 		"app:dev": "vite app",
-		"doctor": "bun --no-install run src/doctor.ts"
+		"doctor": "bun --no-install run src/doctor.ts",
+		"try": "bun --no-env-file .agents/skills/verify-goblin/scripts/instance.ts"
 	},
 	"dependencies": {
 		"@ai-sdk/openai": "4.0.95",

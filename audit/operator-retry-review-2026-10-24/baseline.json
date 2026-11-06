@@ -1,0 +1,51 @@
+{
+	"root": "/home/daniel/goblin/workspace",
+	"note": "Review baseline only; these files were not changed.",
+	"files": [
+		{
+			"path": "AGENTS.md",
+			"bytes": 9589,
+			"sha256": "7d25db482c1a596c9bdc33c231e016564df23ab786c7876bf89c82f3ceb4d9d3"
+		},
+		{
+			"path": "USER.md",
+			"bytes": 2465,
+			"sha256": "376fd5592fdec08da29dfbe4c0d49c82f5c84e22d6d633b1b4387c4785329847"
+		},
+		{
+			"path": "skills/herdr/SKILL.md",
+			"bytes": 6194,
+			"sha256": "95baef7590d745d77f6c6c5ab88718a6f254b7c890b6f6f7bf86ca3094fbc065"
+		},
+		{
+			"path": "skills/proxy-operator/SKILL.md",
+			"bytes": 5966,
+			"sha256": "c5c0e97c608cadc96729d37169200ba1bed6da885213c5b6bb86ad087c289fa8"
+		},
+		{
+			"path": "skills/talk-first/SKILL.md",
+			"bytes": 1705,
+			"sha256": "054c272c532d0eb439dc1a8b6eda24938e5ba96d5b92e3c039dac7ab151c6092"
+		},
+		{
+			"path": "skills-proposed/herdr/SKILL.md",
+			"bytes": 8552,
+			"sha256": "1af2e250aa6c22d277f23e9bf40307965c609c74ca1ba63a34b7b9ddbdfc3905"
+		},
+		{
+			"path": "skills-proposed/proxy-operator/SKILL.md",
+			"bytes": 7220,
+			"sha256": "da46f17757583dc1840318be16d35f24d1e4352a4c1b117de5775e8507343dbe"
+		},
+		{
+			"path": "skills-proposed/talk-first/SKILL.md",
+			"bytes": 2750,
+			"sha256": "72295df93f594ee85016a67877e5c012995c6e3d194151bac4b7004d222bdf99"
+		},
+		{
+			"path": "workflows/feature-branch-verify-merge.md",
+			"bytes": 2227,
+			"sha256": "9cf05be1c23f51509055cc71426841fa2495fe70fc4de5fc0cc324319fa8aa9c"
+		}
+	]
+}

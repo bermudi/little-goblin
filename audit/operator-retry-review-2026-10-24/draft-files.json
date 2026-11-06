@@ -1,0 +1,30 @@
+{
+	"note": "Uninstalled reviewed drafts; recheck baseline before application.",
+	"files": [
+		{
+			"path": "workspace/AGENTS.md",
+			"bytes": 7974,
+			"sha256": "f9de7105f376f1a2dbb9d0831e291ce5d8d158dcffe18ee8336630c694976968"
+		},
+		{
+			"path": "workspace/USER.md",
+			"bytes": 2519,
+			"sha256": "94e2a8cba17dc36d192ac32455034f2a1cc1190d762084a620ac5905f59bc2f0"
+		},
+		{
+			"path": "skills/proxy-operator/SKILL.md",
+			"bytes": 8527,
+			"sha256": "1d9373a709a7b10bcb841d93cf7d8d5b17bed01432f328770234a74d231a3a7d"
+		},
+		{
+			"path": "skills/herdr/SKILL.md",
+			"bytes": 4368,
+			"sha256": "3a85ebee91de8d4004d5d946dcf11236628d798c1b5b27f42a83572b9caf18dd"
+		},
+		{
+			"path": "skills/talk-first/SKILL.md",
+			"bytes": 2427,
+			"sha256": "ddc68cca7813a19a1dcb5837768767d46e12c5279f2e072e8eeb94f7e0082505"
+		}
+	]
+}

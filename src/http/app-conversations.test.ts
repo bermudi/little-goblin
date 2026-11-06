@@ -1772,4 +1772,68 @@ describe("app conversation branch", () => {
 			http.stop();
 		}
 	});
+
+	test("suggest-title sends a digest, passes the current title, and writes nothing", async () => {
+		const seen: { text: string; avoid: string | undefined }[] = [];
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			titleFor: async (text, avoid) => {
+				seen.push({ text, avoid });
+				return "Fresh Name";
+			},
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "sug-01", title: "Old Name" }),
+			});
+			const msgs = ["opening", "two", "three", "four", "five"].map((t, i) => ({
+				id: `u${i}`,
+				role: "user" as const,
+				parts: [{ type: "text" as const, text: t }],
+			}));
+			for (const m of msgs) store.append("app/sug-01", [m]);
+			store.append("app/sug-01", [
+				{ id: "a1", role: "assistant", parts: [{ type: "text", text: "assistant noise" }] },
+			]);
+			const res = await call("/api/app/conversations/sug-01/suggest-title", {
+				method: "POST",
+			});
+			expect(res.status).toBe(200);
+			expect(await res.json()).toEqual({ title: "Fresh Name" });
+			expect(seen).toHaveLength(1);
+			expect(seen[0]!.avoid).toBe("Old Name");
+			expect(seen[0]!.text).toContain("Opening message: opening");
+			expect(seen[0]!.text).toContain("Later: five");
+			expect(seen[0]!.text).not.toContain("Later: two");
+			expect(seen[0]!.text).not.toContain("assistant noise");
+			expect(store.get("app/sug-01")?.title).toBe("Old Name");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("suggest-title refuses an empty conversation and an empty suggestion", async () => {
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			titleFor: async () => null,
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "sug-02" }),
+			});
+			const url = "/api/app/conversations/sug-02/suggest-title";
+			expect((await call(url, { method: "POST" })).status).toBe(422);
+			store.append("app/sug-02", [
+				{ id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] },
+			]);
+			expect((await call(url, { method: "POST" })).status).toBe(502);
+			expect((await call(url, { method: "GET" })).status).toBe(405);
+		} finally {
+			http.stop();
+		}
+	});
 });

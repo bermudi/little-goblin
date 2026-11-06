@@ -7,7 +7,9 @@ import { clampThinkingFor } from "../agent/thinking.ts";
 import { listCalls } from "../cache-observation.ts";
 import { ConfigValidationError, parseConfig, paths, splitModelRef } from "../config.ts";
 import { appAddress, appIdSchema, type ConversationStore } from "../conversation.ts";
+import { flatLine } from "../conversation-events.ts";
 import { log } from "../log.ts";
+import { projectRollText } from "../rolling.ts";
 import { type Project, projectWorkdir } from "../projects.ts";
 import { openRatings } from "../reply-ratings.ts";
 import type { TurnToolCall } from "../turn-journal.ts";
@@ -28,6 +30,7 @@ import type {
 	AppApprovalDecisionResponse,
 	AppApprovalsResponse,
 	AppCompactResponse,
+	AppSuggestTitleResponse,
 	AppCompactionMark,
 	AppContextSegment,
 	AppContextView,
@@ -320,6 +323,23 @@ function ratedReplies(
 						},
 					];
 		});
+}
+
+// The titler's input for a re-title: the opening message plus the last
+// few user messages (where the chat ended up). Assistant text is noise
+// for naming. Total stays under the titler's own input cap.
+const TITLE_DIGEST_RECENT = 3;
+const TITLE_DIGEST_PART_CHARS = 500;
+export function titleDigest(history: readonly UIMessage[]): string {
+	const users = history
+		.filter((m) => m.role === "user")
+		.map((m) => projectRollText(m.parts).trim())
+		.filter((t) => t !== "");
+	if (users.length === 0) return "";
+	const clip = (t: string) => t.slice(0, TITLE_DIGEST_PART_CHARS);
+	const first = users[0]!;
+	const recent = users.slice(1).slice(-TITLE_DIGEST_RECENT);
+	return [`Opening message: ${clip(first)}`, ...recent.map((t) => `Later: ${clip(t)}`)].join("\n\n");
 }
 
 export async function handleConversationsRoute(
@@ -1187,6 +1207,49 @@ export async function handleConversationsRoute(
 			return Response.json(
 				{ error: `compact failed: ${err instanceof Error ? err.message : String(err)}` },
 				{ status: 500, headers: NO_STORE },
+			);
+		}
+	}
+
+	const suggestTitleMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/suggest-title$/);
+	if (suggestTitleMatch) {
+		if (req.method !== "POST") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(suggestTitleMatch[1]!);
+		if (convId instanceof Response) return convId;
+		const conv = store.get(convId.id);
+		if (conv === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		if (deps.titleFor === undefined) {
+			return Response.json({ error: "titling unavailable" }, { status: 503, headers: NO_STORE });
+		}
+		const input = titleDigest(store.history(convId.id));
+		if (input === "") {
+			return Response.json(
+				{ error: "nothing to title yet — the conversation has no user text" },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		try {
+			const current = flatLine(conv.title ?? "");
+			const title = await deps.titleFor(input, current === "" ? undefined : current);
+			if (title === null || title === "") {
+				log.warn("app suggest-title empty", { conversation: convId.id, inputChars: input.length });
+				return Response.json(
+					{ error: "no title suggested (is titleModel configured?)" },
+					{ status: 502, headers: NO_STORE },
+				);
+			}
+			log.info("app suggest-title", { conversation: convId.id, inputChars: input.length, title });
+			const body: AppSuggestTitleResponse = { title };
+			return Response.json(body, { headers: NO_STORE });
+		} catch (err) {
+			log.error("app suggest-title failed", err, { conversation: convId.id });
+			return Response.json(
+				{ error: `title suggestion failed: ${err instanceof Error ? err.message : String(err)}` },
+				{ status: 502, headers: NO_STORE },
 			);
 		}
 	}

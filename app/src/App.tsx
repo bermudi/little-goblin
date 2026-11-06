@@ -508,6 +508,8 @@ function ConversationRow({
 	// Enter commits and unmounts the input — its blur then fires
 	// commitRename a second time (a duplicate PATCH with the same title).
 	const committed = useRef(false);
+	const editSession = useRef(0);
+	const draftRevision = useRef(0);
 	useEffect(() => {
 		if (editing) {
 			committed.current = false;
@@ -526,6 +528,7 @@ function ConversationRow({
 	const commitRename = () => {
 		if (committed.current) return;
 		committed.current = true;
+		editSession.current += 1;
 		const t = draft.trim();
 		setEditing(false);
 		if (t === "" || t === title) return;
@@ -533,14 +536,28 @@ function ConversationRow({
 	};
 	// Suggest only: the result lands in the draft, and the usual
 	// Enter/blur commit is still the one saver.
+	// A suggestion belongs to the editing session and draft it started in:
+	// cancel/commit/reopen bump the session, manual typing bumps the draft
+	// revision, and a stale result is dropped.
 	const suggestTitle = () => {
 		if (suggesting) return;
+		const session = editSession.current;
+		const revision = draftRevision.current;
 		setSuggesting(true);
 		void suggestConversationTitle(token, conv.id)
-			.then((r) => setDraft(r.title), failed("suggest a title for"))
+			.then(
+				(r) => {
+					if (editSession.current !== session || draftRevision.current !== revision) return;
+					setDraft(r.title);
+					editRef.current?.focus();
+				},
+				(err: unknown) => {
+					if (editSession.current !== session) return;
+					failed("suggest a title for")(err);
+				},
+			)
 			.finally(() => {
-				setSuggesting(false);
-				editRef.current?.focus();
+				if (editSession.current === session) setSuggesting(false);
 			});
 	};
 	const toggleArchived = () => {
@@ -556,6 +573,8 @@ function ConversationRow({
 		);
 	};
 	const startRename = () => {
+		editSession.current += 1;
+		setSuggesting(false);
 		setDraft(title ?? "");
 		setEditing(true);
 	};
@@ -567,20 +586,34 @@ function ConversationRow({
 	if (editing) {
 		return (
 			<div className="conv editing">
-				<div className="rename-field">
+				<div
+					className="rename-field"
+					onBlur={(e) => {
+						// Focus moving between the input and the AI button stays
+						// inside the editor; only leaving the whole field commits.
+						const next = e.relatedTarget as Element | null;
+						if (next !== null && e.currentTarget.contains(next)) return;
+						commitRename();
+					}}
+					onKeyDown={(e) => {
+						// Escape is a cancel, from the input or the button: mark
+						// committed so the unmount's blur doesn't PATCH the draft.
+						if (e.key === "Escape") {
+							committed.current = true;
+							editSession.current += 1;
+							setEditing(false);
+						}
+					}}
+				>
 					<input
 						ref={editRef}
 						value={draft}
-						onChange={(e) => setDraft(e.target.value)}
-						onBlur={commitRename}
+						onChange={(e) => {
+							draftRevision.current += 1;
+							setDraft(e.target.value);
+						}}
 						onKeyDown={(e) => {
 							if (e.key === "Enter") commitRename();
-							// Escape is a cancel: mark committed so the
-							// unmount's blur doesn't PATCH the half-typed draft.
-							if (e.key === "Escape") {
-								committed.current = true;
-								setEditing(false);
-							}
 						}}
 					/>
 					{/* mousedown preventDefault keeps focus in the input, so the
@@ -590,7 +623,7 @@ function ConversationRow({
 						className="rename-ai"
 						title="Rename with AI"
 						aria-label="Rename with AI"
-						disabled={suggesting}
+						aria-disabled={suggesting || undefined}
 						data-busy={suggesting || undefined}
 						onMouseDown={(e) => e.preventDefault()}
 						onClick={suggestTitle}

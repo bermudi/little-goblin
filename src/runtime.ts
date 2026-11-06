@@ -1247,10 +1247,20 @@ export class Runtime {
 					partial: journal.get(id)?.partial ?? null,
 				});
 				if (rendered === null) return;
-				store.append(convId, [
-					{ id: randomUUID(), role: "system", parts: [{ type: "text", text: rendered.text }] },
-				]);
+				// Anchored to the latest input this attempt consumed (folded steers
+				// included, merely queued ones never) — the same value a completed
+				// reply derives as finalAnchor — so editing a later input keeps it.
+				let consumedAnchor: number | null = null;
+				for (const seq of ownedInputSeqs) {
+					if (consumedAnchor === null || seq > consumedAnchor) consumedAnchor = seq;
+				}
+				store.append(
+					convId,
+					[{ id: randomUUID(), role: "system", parts: [{ type: "text", text: rendered.text }] }],
+					{ anchorSeq: consumedAnchor },
+				);
 				log.info("failed-turn progress recorded", {
+					anchorSeq: consumedAnchor,
 					conversation: convId,
 					run: id,
 					calls: rendered.calls,

@@ -73,9 +73,14 @@ function renderCall(call: TurnToolCall): RenderedCall | null {
 		case "dispatched":
 			return { line: UNKNOWN_LINE, unknown: true };
 		case "resolved-retry":
-			// An unspent grant leaves the original outcome unsettled here.
-			// A consumed grant's execution is its successor dispatch row.
-			return call.retryConsumed ? null : { line: UNKNOWN_LINE, unknown: true };
+			// Spent or not, a retry grant over a known outcome keeps that
+			// outcome (the recorded error, else the result). Without
+			// retryFromKnown the original dispatch was ambiguous and may
+			// have run, so it stays unknown.
+			if (!call.retryFromKnown) return { line: UNKNOWN_LINE, unknown: true };
+			return call.error != null
+				? { line: `failed: ${clip(call.error, PREVIEW_CHARS)}`, unknown: false }
+				: { line: `completed: ${clip(call.result ?? "", PREVIEW_CHARS)}`, unknown: false };
 		case "planned":
 		case "resolved-skip":
 			return null;

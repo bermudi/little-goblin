@@ -89,15 +89,17 @@ describe("failed-turn progress rendering", () => {
 		});
 		expect(rendered).not.toBeNull();
 		const lines = rendered!.text.split("\n");
-		// Every unknown survives; resolved-retry without a spent grant renders
-		// unknown; the spent grant, planned, skip, and replayed rows are gone.
-		expect(lines.filter((l) => l.includes("OUTCOME UNKNOWN"))).toHaveLength(1);
-		expect(rendered!.unknown).toBe(1);
-		expect(rendered!.calls).toBe(31);
+		// Every unknown survives; resolved-retry without retryFromKnown renders
+		// unknown whether or not the grant was spent; planned, skip, and
+		// replayed rows are gone.
+		expect(lines.filter((l) => l.includes("OUTCOME UNKNOWN"))).toHaveLength(2);
+		expect(rendered!.unknown).toBe(2);
+		expect(rendered!.calls).toBe(32);
 		expect(rendered!.text).toContain("(11 earlier calls omitted)");
 		expect(rendered!.text).toContain("1. probe {} — OUTCOME UNKNOWN");
-		expect(rendered!.text).toContain("2. bulk-10");
-		expect(rendered!.text).toContain("31. bulk-39");
+		expect(rendered!.text).toContain("2. probe {} — OUTCOME UNKNOWN");
+		expect(rendered!.text).toContain("3. bulk-10");
+		expect(rendered!.text).toContain("32. bulk-39");
 		expect(rendered!.text).not.toContain("dropped-oldest");
 		expect(rendered!.text).not.toContain("bulk-9 ");
 
@@ -118,6 +120,27 @@ describe("failed-turn progress rendering", () => {
 		// Assistant text keeps the LAST 2000 chars (the 2500-char fixture above).
 		expect(rendered!.text).toContain(`Assistant text before the failure:\n${"x".repeat(2000)}`);
 		expect(rendered!.text).not.toContain(`Assistant text before the failure:\nx${"x".repeat(2000)}`);
+	});
+
+	test("resolved-retry keeps a known outcome, spent or not; an ambiguous one stays unknown", () => {
+		for (const retryConsumed of [false, true]) {
+			const render = (over: Partial<TurnToolCall>): string =>
+				renderFailedTurnProgress({
+					runId: "r",
+					failure: "f",
+					calls: [call("resolved-retry", { retryConsumed, ...over })],
+					partial: null,
+				})!.text;
+			expect(render({ retryFromKnown: true, result: "the-result" })).toContain(
+				"1. probe {} — completed: the-result",
+			);
+			expect(render({ retryFromKnown: true, error: "the-error" })).toContain(
+				"1. probe {} — failed: the-error",
+			);
+			expect(render({ retryFromKnown: false, result: "ignored" })).toContain(
+				"1. probe {} — OUTCOME UNKNOWN",
+			);
+		}
 	});
 
 	test("malformed partial (string, wrong shape) with no calls renders null and does not throw", () => {

@@ -223,6 +223,10 @@ journal dependency in the view. The operator sees it too.
   (overflow, fallback; the successor carries them), and journal faults (the
   record is unreadable). Split-turn compaction, automatic retry, wake
   ownership, and resume policy are unchanged.
+- **Anchored to the attempt's consumed input.** The event's `anchorSeq` is the
+  latest input the attempt consumed (folded steers included, merely queued
+  inputs never) — the value a completed reply would anchor to — so editing a
+  later input does not remove it.
 - **An append failure doesn't change the outcome.** It logs an error and the
   failure still reaches the sinks; the journal row remains the evidence.
 

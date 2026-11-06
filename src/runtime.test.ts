@@ -4075,6 +4075,69 @@ describe("failed-turn progress", () => {
 		}
 	});
 
+	test("T1: the event is anchored to the failed attempt's input — editing a later input keeps it", async () => {
+		const store = openStore(tmpDb("goblin-rt-fp-anchor-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		const edge = scriptedEdge([
+			// A: one tool step completes, then the final request is held and fails.
+			[toolCallPart("call-1", "probe", "{}"), finishPart("tool-calls")],
+			{
+				drive: async (ctx) => {
+					entered.resolve();
+					await release.promise;
+					ctx.enqueue({ type: "error", error: new Error("terminal boom") });
+					ctx.close();
+				},
+			},
+			textParts("answer to B"),
+		]);
+		const runtime = new Runtime({
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model: edge.model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => ({ ok: true }),
+				}),
+			}),
+		});
+		try {
+			const sinkA = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "A" }]), sinkA);
+			const aSeq = store.lastUserSeq(conv.id)!;
+			await entered.promise;
+			// B arrives while A's final model request is in flight: queued.
+			const bMessage = userMessage([{ type: "text", text: "B" }]);
+			const sinkB = new RecordingSink();
+			runtime.submit(conv, bMessage, sinkB);
+			const bSeq = store.lastUserSeq(conv.id)!;
+			expect(bSeq).toBeGreaterThan(aSeq);
+			release.resolve();
+			expect((await sinkA.done).kind).toBe("error");
+			expect((await sinkB.done).kind).toBe("completed");
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+
+			const event = systemEvents(store, conv.id);
+			expect(event).toHaveLength(1);
+			const detail = store.historyDetail(conv.id).find((e) => e.message.role === "system")!;
+			expect(detail.anchorSeq).toBe(aSeq);
+
+			// Editing B removes B's exchange but not A's progress.
+			expect(store.editUserMessage(conv.id, bMessage.id, userMessage([{ type: "text", text: "B2" }]))).not.toBeNull();
+			const after = store.history(conv.id).map((m) => m.role);
+			expect(after).toContain("system");
+			expect(systemEvents(store, conv.id)).toHaveLength(1);
+		} finally {
+			release.resolve();
+			await runtime.shutdown();
+			store.close();
+		}
+	});
+
 	test("the next ordinary turn's model prompt carries the failed-turn progress", async () => {
 		const store = openStore(tmpDb("goblin-rt-fp2-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");

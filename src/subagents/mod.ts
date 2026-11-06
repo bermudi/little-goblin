@@ -59,6 +59,8 @@ export interface SubagentsDeps {
 	 *  leaves the notice pending for the next scan. Goblin files the
 	 *  linked responsibility's worker report here. */
 	settled?: (row: SubagentRun) => void;
+	/** The linked responsibility's current revision, stamped on the run. */
+	responsibilityRevision?: (id: string) => number | null;
 	modelProfiles?: Partial<Record<SubagentKind, SubagentModelProfile>>;
 	harnessSettings?: Record<string, unknown>;
 	admitRetryMs?: number;
@@ -404,6 +406,10 @@ async function ownerStart(
 		files: input.files ?? [],
 		requestId: requestId ?? null,
 		responsibilityId: input.responsibilityId ?? null,
+		responsibilityRevision:
+			input.responsibilityId === undefined
+				? null
+				: (b.deps.responsibilityRevision?.(input.responsibilityId) ?? null),
 	});
 	log.info("subagent queued", {
 		run: row.id,

@@ -272,6 +272,20 @@ describe("deliberate responsibility follow-up", () => {
 		expect(r.events()).toHaveLength(1);
 	});
 
+	test("leaving the operator's stage re-arms the backstop instead of firing it stale", () => {
+		const r = rig();
+		r.resps.report(r.id, { state: "ready", reason: "at the checkpoint" }, "goblin");
+		const held = r.resps.get(r.id)!.followup.dueAt;
+		const next = r.programs.get(r.program.id)!.nextRun!;
+		r.tick(Date.parse(next) > Date.parse(held) ? next : held);
+		expect(r.events()).toHaveLength(0);
+		Bun.sleepSync(2);
+		r.resps.report(r.id, { state: "progress", reason: "carrying on" }, "goblin");
+		const rearmed = r.resps.get(r.id)!.followup;
+		expect(rearmed.kind).toBe("silence");
+		expect(Date.parse(rearmed.dueAt)).toBeGreaterThan(Date.parse(held));
+	});
+
 	test("the operator's correction releases a held silence backstop", () => {
 		const r = rig();
 		r.resps.report(r.id, { state: "ready", reason: "at the pre-send checkpoint" }, "goblin");

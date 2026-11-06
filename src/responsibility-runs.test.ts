@@ -23,6 +23,7 @@ const run = (over: Partial<SubagentRun> = {}): SubagentRun => ({
 	conversationId: "app/rig",
 	workspace: "/ws",
 	responsibilityId: null,
+	responsibilityRevision: null,
 	desktop: null,
 	piConversationId: null,
 	piSubmissionId: null,
@@ -141,6 +142,50 @@ describe("run reports", () => {
 		// A new input on the same run is a new settlement.
 		fileRunReport(r.resps, { ...linked, inputRev: 2, status: "needs_input", question: "ok?" });
 		expect(r.resps.reportsFor(r.id)).toHaveLength(2);
+	});
+
+	test("a claim from before a correction is not current", () => {
+		const r = rig();
+		const before = r.resps.get(r.id)!;
+		r.resps.revise(r.id, before.understanding);
+		fileRunReport(
+			r.resps,
+			run({
+				responsibilityId: r.id,
+				responsibilityRevision: before.revision,
+				status: "needs_input",
+				question: "which branch?",
+			}),
+		);
+		const latest = r.resps.latestReport(r.id)!;
+		expect(latest.revision).toBe(before.revision);
+		expect(responsibilityStage(r.resps.get(r.id)!, latest, []).waitsFor).toBe("goblin");
+	});
+
+	test("a report that can never file does not throw, so the notice still wakes", () => {
+		const r = rig();
+		expect(() => fileRunReport(r.resps, run({ responsibilityId: "gone" }))).not.toThrow();
+		const blank = run({ responsibilityId: r.id, exportedFiles: ["/out/   "] });
+		expect(() => fileRunReport(r.resps, blank)).not.toThrow();
+		expect(r.resps.reportsFor(r.id)).toEqual([]);
+		// Over the question bound: clipped, not refused.
+		fileRunReport(
+			r.resps,
+			run({ responsibilityId: r.id, status: "needs_input", question: "q".repeat(3000) }),
+		);
+		expect(r.resps.latestReport(r.id)!.question).toHaveLength(2000);
+	});
+
+	test("the store refuses an invalid report before it can poison reads", () => {
+		const r = rig();
+		expect(() =>
+			r.resps.report(
+				r.id,
+				{ state: "progress", reason: "x", artifacts: [{ title: "   ", ref: "y" }] },
+				"goblin",
+			),
+		).toThrow();
+		expect(r.resps.reportsFor(r.id)).toEqual([]);
 	});
 
 	test("a closed responsibility refuses without throwing", () => {

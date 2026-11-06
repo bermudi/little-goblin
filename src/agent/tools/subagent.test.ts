@@ -12,6 +12,7 @@ function fakeRun(over: Partial<SubagentRun> = {}): SubagentRun {
 		kind: "worker",
 		conversationId: CONV,
 		workspace: "/ws",
+		responsibilityRevision: null,
 		responsibilityId: null,
 		desktop: null,
 		piConversationId: "7",

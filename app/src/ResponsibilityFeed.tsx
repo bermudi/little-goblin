@@ -82,7 +82,7 @@ function PostCard({ post }: { post: AppFeedPost }) {
 			{p.artifacts.length > 0 && (
 				<ul className="resp-artifacts">
 					{p.artifacts.map((a) => (
-						<li key={a.ref}>
+						<li key={`${a.title}\0${a.ref}`}>
 							{/^https?:\/\//.test(a.ref) ? (
 								<a href={a.ref} target="_blank" rel="noreferrer">
 									{a.title}
@@ -99,7 +99,7 @@ function PostCard({ post }: { post: AppFeedPost }) {
 			{p.evidence.length > 0 && (
 				<ul className="resp-evidence">
 					{p.evidence.map((e) => (
-						<li key={e.item}>
+						<li key={`${e.item}\0${e.ref}\0${e.checked}`}>
 							<strong>{e.item}</strong> — {e.checked} <span className="resp-rev">({e.ref})</span>
 						</li>
 					))}

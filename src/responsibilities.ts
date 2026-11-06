@@ -37,7 +37,9 @@ import {
 	type ResponsibilityReport,
 	TERMINAL_REPORTS,
 	toReport,
+	reportInputSchema,
 } from "./responsibility-reports.ts";
+import { responsibilityStage } from "./responsibility-stage.ts";
 
 // Lifecycle only. Whom the work waits for (the operator, goblin, a
 // worker) is derived from reports — responsibility-stage.ts — never
@@ -200,7 +202,7 @@ export interface ResponsibilityStore {
 		id: string,
 		input: ReportInput,
 		reporter: ReportReporter,
-		opts?: { sourceKey?: string },
+		opts?: { sourceKey?: string; revision?: number | null },
 	):
 		| { report: ResponsibilityReport; responsibility: Responsibility; duplicate: boolean }
 		| { refused: "closed" | "evidence-missing"; missing?: string[] };
@@ -860,7 +862,10 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			log.info("responsibility status", { responsibility: id, status, reason: opts?.reason });
 		},
 
-		report(id, input, reporter, opts) {
+		report(id, rawInput, reporter, opts) {
+			// Every read re-parses strictly: an unvalidated row would make
+			// this responsibility's reads throw for good.
+			const input = reportInputSchema.parse(rawInput);
 			let result:
 				| { report: ResponsibilityReport; responsibility: Responsibility; duplicate: boolean }
 				| { refused: "closed" | "evidence-missing"; missing?: string[] }
@@ -889,9 +894,19 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					}
 				}
 				const ts = now();
+				const priorLatest = qLatestReport.get(id);
+				const operations = qOpsFor.all(id).map((r) => toOperation(opRowSchema.parse(r)));
+				const heldBefore =
+					responsibilityStage(
+						current,
+						priorLatest === null ? null : toReport(priorLatest),
+						operations,
+					).waitsFor === "operator";
 				const row = qInsertReport.get(
 					id,
-					current.revision,
+					// A worker states against the revision its run started from:
+					// a correction since then must overtake its claim.
+					Math.min(current.revision, opts?.revision ?? current.revision),
 					reporter,
 					input.state,
 					input.reason,
@@ -906,6 +921,15 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				const report = toReport(row);
 				if (TERMINAL_REPORTS.has(input.state)) {
 					qRespStatus.run("completed", ts, ts, id);
+					qPlan.run(JSON.stringify(silenceFollowup(new Date(ts))), ts, id);
+				} else if (
+					// The silence held while the operator owned the move; leaving
+					// that stage starts a fresh bound instead of firing the
+					// backstop that went overdue during the hold.
+					heldBefore &&
+					current.followup.kind === "silence" &&
+					responsibilityStage(current, report, operations).waitsFor !== "operator"
+				) {
 					qPlan.run(JSON.stringify(silenceFollowup(new Date(ts))), ts, id);
 				}
 				result = { report, responsibility: requireResp(id), duplicate: false };

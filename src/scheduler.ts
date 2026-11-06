@@ -584,7 +584,8 @@ function fireResponsibility(
 				resps.operationsFor(resp.responsibilityId),
 			);
 			if (stage.waitsFor === "operator") {
-				log.info("silence check-in held — waiting on the operator", {
+				// Debug: an overdue hold repeats on every scheduler tick.
+				log.debug("silence check-in held — waiting on the operator", {
 					program: program.id,
 					responsibility: resp.responsibilityId,
 					stage: stage.stage,

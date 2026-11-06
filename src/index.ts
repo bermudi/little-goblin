@@ -753,6 +753,7 @@ async function boot() {
 				// A linked run's settlement lands as a worker report before
 				// its notice wakes the conversation (responsibility-runs.ts).
 				settled: (row) => fileRunReport(responsibilities, row),
+				responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
 			},
 			SHUTDOWN_DRAIN_MS,
 		);

@@ -238,7 +238,9 @@ Rulings:
   resumption never resurrects the old promise. While the derived stage
   (below) waits on the operator, the silence backstop is held — not
   consumed — and an explicit commitment still fires: it is the agreed
-  reminder. This slice does not implement waiting reminders beyond that. Stale disabled/deleted/rescheduled follow-up snapshots
+  reminder. A report that moves the stage off the
+  operator re-arms a fresh silence bound, so the overdue check does not
+  fire stale. This slice does not implement waiting reminders beyond that. Stale disabled/deleted/rescheduled follow-up snapshots
   cannot fire. Already enqueued developments remain historical facts:
   turns must re-read current authority before acting, and existing
   revision/generation/send fences still govern effects. No new generic
@@ -297,7 +299,10 @@ Rulings:
   operator whoever asked; any other current worker report is goblin's
   move (`assess`) — a worker's `ready` never closes or reaches the
   operator as review until goblin reports on it. A worker cannot report
-  `done`. Herdr panes have no such tool path: goblin reports for them.
+  `done`. A run's reports carry the revision stamped when it was
+  linked, so a correction since then overtakes the claim and it becomes
+  goblin's move, even after a steer. A report that can never file (row
+  gone, invalid) is logged and the notice still wakes. Herdr panes have no such tool path: goblin reports for them.
 
   Borrowed from dsh-superagent (deepseek-ai/dsh-superagent-prototype,
   docs/001 and 003): the Report vocabulary incl. `dropped`, the

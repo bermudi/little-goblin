@@ -106,6 +106,8 @@ export interface SubagentRun {
 	// The responsibility this run works for, linked explicitly at start;
 	// its settlements file `worker` reports (responsibility-runs.ts).
 	responsibilityId: string | null;
+	// The responsibility revision when the run was linked.
+	responsibilityRevision: number | null;
 	desktop: string | null;
 	piConversationId: string | null;
 	piSubmissionId: string | null;
@@ -152,6 +154,7 @@ const runRowSchema = z.object({
 	conversation_id: z.string(),
 	workspace: z.string(),
 	responsibility_id: z.string().nullable(),
+	responsibility_revision: z.number().nullable(),
 	desktop: z.string().nullable(),
 	pi_conversation_id: z.string().nullable(),
 	pi_submission_id: z.string().nullable(),
@@ -191,6 +194,7 @@ function toRun(row: unknown): SubagentRun {
 		conversationId: r.conversation_id,
 		workspace: r.workspace,
 		responsibilityId: r.responsibility_id,
+		responsibilityRevision: r.responsibility_revision,
 		desktop: r.desktop,
 		piConversationId: r.pi_conversation_id,
 		piSubmissionId: r.pi_submission_id,
@@ -257,6 +261,7 @@ export interface SubagentRuns {
 		files?: string[];
 		requestId?: string | null;
 		responsibilityId?: string | null;
+		responsibilityRevision?: number | null;
 	}): SubagentRun;
 	get(id: number): SubagentRun | null;
 	// Sparse update; updated_at always bumps.
@@ -293,6 +298,7 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 		conversation_id TEXT NOT NULL,
 		workspace TEXT NOT NULL,
 		responsibility_id TEXT,
+		responsibility_revision INTEGER,
 		desktop TEXT,
 		pi_conversation_id TEXT,
 		pi_submission_id TEXT,
@@ -340,6 +346,10 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 		["pending_approval", "ALTER TABLE subagent_runs ADD COLUMN pending_approval TEXT"],
 		["responsibility_id", "ALTER TABLE subagent_runs ADD COLUMN responsibility_id TEXT"],
 		[
+			"responsibility_revision",
+			"ALTER TABLE subagent_runs ADD COLUMN responsibility_revision INTEGER",
+		],
+		[
 			"crash_decisions",
 			"ALTER TABLE subagent_runs ADD COLUMN crash_decisions TEXT NOT NULL DEFAULT '[]'",
 		],
@@ -349,8 +359,8 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 	const qGet = db.query("SELECT * FROM subagent_runs WHERE id = ?");
 	const qCreate = db.query(
 		`INSERT INTO subagent_runs
-			(kind, conversation_id, workspace, desktop, task, files, request_id, responsibility_id, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
+			(kind, conversation_id, workspace, desktop, task, files, request_id, responsibility_id, responsibility_revision, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
 	);
 	const qList = db.query("SELECT * FROM subagent_runs WHERE conversation_id = ? ORDER BY id");
 	// The lease holder is the row furthest along, not the oldest: a
@@ -395,6 +405,7 @@ export function openSubagentRuns(dbPath: string): SubagentRuns {
 				JSON.stringify(input.files ?? []),
 				input.requestId ?? null,
 				input.responsibilityId ?? null,
+				input.responsibilityRevision ?? null,
 				now,
 				now,
 			);

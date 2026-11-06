@@ -5,6 +5,7 @@ import type { UIMessage } from "ai";
 import { z } from "zod";
 import { type Config, splitModelRef } from "./config.ts";
 import { log } from "./log.ts";
+import { stampArrival } from "./message-context.ts";
 import { MemoryDestinations } from "./memory/destinations.ts";
 import type { MemoryDocument } from "./memory/hindsight.ts";
 import { MemoryContexts, type MemoryEligibility, messageText } from "./memory/mod.ts";
@@ -748,6 +749,7 @@ export function openStore(dbPath: string): ConversationStore {
 				const contexts = Number(qRewindContexts.run(id, cut).changes);
 				const ratings = Number(qRewindRatings.run(id, cut).changes);
 				const seq = (qNextSeq.get(id)?.n ?? 0) + 1;
+				stampArrival(id, message, new Date());
 				qInsertEvent.run(
 					id,
 					seq,
@@ -853,6 +855,7 @@ export function openStore(dbPath: string): ConversationStore {
 					unarchived = true;
 				}
 				for (const [i, m] of messages.entries()) {
+					stampArrival(id, m, new Date(now));
 					qInsertEvent.run(
 						id,
 						start + i + 1,
@@ -937,7 +940,14 @@ export function openStore(dbPath: string): ConversationStore {
 					activity: last?.id ?? 0,
 				});
 			}
-			out.sort((a, b) => b.activity - a.activity);
+			// Timestamp first: an eventless conversation (just created, no
+			// message yet) has activity 0 and would sink to the bottom of the
+			// rail until its first event, then jump to the top. Event id
+			// breaks same-instant ties.
+			out.sort(
+				(a, b) =>
+					Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.activity - a.activity,
+			);
 			// Pins float above the activity stream; within each group the
 			// activity order stands. applyPatch clears the pin on archive,
 			// so a pinned row is always on the active rail.

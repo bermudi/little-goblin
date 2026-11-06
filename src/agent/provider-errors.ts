@@ -169,6 +169,12 @@ const TRANSIENT_PHRASES = [
 	"other side closed",
 	"premature close",
 	"network connection lost",
+	// Codex reports overload in-stream (HTTP 200, then `response.failed`),
+	// so no 5xx status reaches the status check below. Observed body
+	// (goblin.log 2026-10-26T01:52:51Z): {"type":"service_unavailable_error",
+	// "code":"server_is_overloaded","message":"Our servers are currently
+	// overloaded. Please try again later."} — anchored on the stable code.
+	"server_is_overloaded",
 ];
 
 // Quota exhaustion is a wall measured in days, not a throttle: a retry

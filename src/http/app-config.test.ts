@@ -169,6 +169,31 @@ describe("app config", () => {
 		}
 	});
 
+	test("the config view reports picker curation; absent stays null, a list survives", async () => {
+		const { http, call, home } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const absent = (await (await call("/api/app/config")).json()) as { pickerModels: unknown };
+			expect(absent.pickerModels).toBeNull();
+			writeFileSync(
+				join(home, "goblin.json5"),
+				`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.example.com",auth:"zai"}},model:"zai/m",pickerModels:["zai/m"],operators:[42]}\n`,
+			);
+			// An app POST re-reads the file as its base — the whole-file
+			// write carries the curated list through, and the view ships it.
+			const write = await call("/api/app/config", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ thinking: "high" }),
+			});
+			expect(write.status).toBe(200);
+			const view = (await (await call("/api/app/config")).json()) as { pickerModels: unknown };
+			expect(view.pickerModels).toEqual(["zai/m"]);
+			expect(readFileSync(join(home, "goblin.json5"), "utf8")).toContain("pickerModels");
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("a disabled telegram pin survives app config writes untouched", async () => {
 		const { http, call, configRef, home } = setup({ token: APP_TOKEN_NAME });
 		try {

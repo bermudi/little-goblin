@@ -164,6 +164,9 @@ file — `bunfig.toml`'s `[test]` preload of `src/testkit.ts` and
 it, full-suite runs leaked ~86k mkdtemp dirs until /tmp hit ENOSPC,
 2026-10-22). Run `bun test` from the repo root so the preload loads;
 new fixture helpers must not rely on their own module-level hooks.
+The preloaded testkit gives each test a temporary `GOBLIN_HOME`, even
+when one was inherited. Tests that skipped `useHome()` previously
+created hundreds of `rig-*` and `events-*` dirs in the real home.
 `testkit.ts` also runs an import-time sweep over a test-owned
 namespace: every fixture it hands out lives under a per-process root
 `goblin-test-fixtures-<pid>-<random>` in tmpdir, and the sweep removes

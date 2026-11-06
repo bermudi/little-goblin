@@ -2,15 +2,16 @@
 // config schemas so a renamed auth default or provider kind drifts red.
 
 import { describe, expect, test } from "bun:test";
-import { capabilityNames, providerSchema, reviewerConfigSchema } from "./config.ts";
+import { authDefaults, capabilityNames, providerSchema, reviewerConfigSchema } from "./config.ts";
 import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "./services.ts";
 
 describe("service catalog", () => {
-	test("every provider preset parses through providerSchema; id = provider name = auth record", () => {
+	test("every provider preset parses through providerSchema; id = provider name = auth record, or the kind's auth default", () => {
 		expect(providerPresets.length).toBeGreaterThan(0);
 		for (const preset of providerPresets) {
 			expect(providerSchema.safeParse(preset.provider).success).toBe(true);
-			expect("auth" in preset.provider && preset.provider.auth).toBe(preset.id);
+			const expected = preset.provider.kind === "claude-code" ? authDefaults.claudeCode : preset.id;
+			expect("auth" in preset.provider && preset.provider.auth).toBe(expected);
 		}
 		expect(serviceNames.codex).toBe("ChatGPT");
 		expect(serviceNames.zai).toBe("Z.ai");

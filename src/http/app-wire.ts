@@ -145,6 +145,11 @@ export interface AppStopResponse {
 	stopped: boolean;
 }
 
+// A suggestion only — nothing is written; the PATCH stays the one saver.
+export interface AppSuggestTitleResponse {
+	title: string;
+}
+
 export type AppCompactResponse =
 	| {
 			compacted: true;
@@ -187,6 +192,10 @@ export interface AppConfigView {
 	model: string;
 	thinking: string;
 	favorites: string[];
+	/** The chat picker's curated membership — null = not curated, the
+	 *  picker offers the whole catalog; a list = exactly these refs, in
+	 *  order, custom refs included (settings → Models owns it). */
+	pickerModels: string[] | null;
 	thinkingLevels: string[];
 	/** The configured providers' cached model catalogs — the composer
 	 *  picker's friendly names and its "All models…" list. Empty on a
@@ -242,6 +251,10 @@ export interface TurnMetadata {
 	model: string;
 	finishReason: string;
 	durationMs: number;
+	/** Turn start → the model's first streamed content token (text,
+	 * reasoning, or tool input), same base as durationMs. Absent when
+	 * nothing streamed and on pre-stamp history. */
+	ttftMs?: number;
 	forcedCompletion: "repeat" | "watchdog" | "context" | null;
 	usage: {
 		/** Whole turn's billed prompt, summed across the tool loop's steps. */

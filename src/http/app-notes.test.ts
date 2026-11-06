@@ -67,63 +67,71 @@ describe("app notes", () => {
 		}
 	});
 
-	test("the index serves past the store's 200 default and reports its own bound truthfully", async () => {
-		const { http, call, notes } = setup({ token: APP_TOKEN_NAME });
-		try {
-			setLogLevel("error");
-			const ids: string[] = [];
-			for (let i = 0; i < 250; i++) ids.push(notes.create({ title: `bulk ${i}` }).id);
-			setLogLevel("info");
+	test(
+		"the index serves past the store's 200 default and reports its own bound truthfully",
+		async () => {
+			const { http, call, notes } = setup({ token: APP_TOKEN_NAME });
+			try {
+				setLogLevel("error");
+				const ids: string[] = [];
+				for (let i = 0; i < 250; i++) ids.push(notes.create({ title: `bulk ${i}` }).id);
+				setLogLevel("info");
 
-			const read = async (path: string) =>
-				(await (await call(path)).json()) as {
-					notes: { id: string }[];
-					truncated: boolean;
-				};
+				const read = async (path: string) =>
+					(await (await call(path)).json()) as {
+						notes: { id: string }[];
+						truncated: boolean;
+					};
 
-			let page = await read("/api/app/notes");
-			expect(page.notes).toHaveLength(250);
-			expect(page.truncated).toBe(false);
+				let page = await read("/api/app/notes");
+				expect(page.notes).toHaveLength(250);
+				expect(page.truncated).toBe(false);
 
-			setLogLevel("error");
-			for (let i = 250; i < 1000; i++) ids.push(notes.create({ title: `bulk ${i}` }).id);
-			setLogLevel("info");
+				setLogLevel("error");
+				for (let i = 250; i < 1000; i++) ids.push(notes.create({ title: `bulk ${i}` }).id);
+				setLogLevel("info");
 
-			page = await read("/api/app/notes");
-			expect(page.notes).toHaveLength(1000);
-			expect(page.truncated).toBe(false);
+				page = await read("/api/app/notes");
+				expect(page.notes).toHaveLength(1000);
+				expect(page.truncated).toBe(false);
 
-			setLogLevel("error");
-			ids.push(notes.create({ title: "bulk 1000" }).id);
-			setLogLevel("info");
+				setLogLevel("error");
+				ids.push(notes.create({ title: "bulk 1000" }).id);
+				setLogLevel("info");
 
-			page = await read("/api/app/notes");
-			expect(page.notes).toHaveLength(1000);
-			expect(page.truncated).toBe(true);
-			page = await read("/api/app/notes?q=bulk");
-			expect(page.notes).toHaveLength(1000);
-			expect(page.truncated).toBe(true);
-			page = await read("/api/app/notes?q=zebra");
-			expect(page.notes).toHaveLength(0);
-			expect(page.truncated).toBe(false);
+				page = await read("/api/app/notes");
+				expect(page.notes).toHaveLength(1000);
+				expect(page.truncated).toBe(true);
+				page = await read("/api/app/notes?q=bulk");
+				expect(page.notes).toHaveLength(1000);
+				expect(page.truncated).toBe(true);
+				page = await read("/api/app/notes?q=zebra");
+				expect(page.notes).toHaveLength(0);
+				expect(page.truncated).toBe(false);
 
-			setLogLevel("error");
-			for (const id of ids) notes.setArchived(id, true);
-			setLogLevel("info");
-			page = await read("/api/app/notes");
-			expect(page.notes).toHaveLength(0);
-			expect(page.truncated).toBe(false);
-			page = await read("/api/app/notes?archived=1");
-			expect(page.notes).toHaveLength(1000);
-			expect(page.truncated).toBe(true);
-			page = await read("/api/app/notes?archived=1&q=bulk");
-			expect(page.notes).toHaveLength(1000);
-			expect(page.truncated).toBe(true);
-		} finally {
-			setLogLevel("info");
-			http.stop();
-		}
-	});
+				setLogLevel("error");
+				for (const id of ids) notes.setArchived(id, true);
+				setLogLevel("info");
+				page = await read("/api/app/notes");
+				expect(page.notes).toHaveLength(0);
+				expect(page.truncated).toBe(false);
+				page = await read("/api/app/notes?archived=1");
+				expect(page.notes).toHaveLength(1000);
+				expect(page.truncated).toBe(true);
+				page = await read("/api/app/notes?archived=1&q=bulk");
+				expect(page.notes).toHaveLength(1000);
+				expect(page.truncated).toBe(true);
+			} finally {
+				setLogLevel("info");
+				http.stop();
+			}
+		},
+		// The 1001 creates + 1000 archives are 2001 transactions against the
+		// store's durability ruling (WAL + synchronous FULL, src/conversation.ts):
+		// each one fsyncs. Measured alone at ~10s total (~5.3s + ~4.7s) —
+		// legitimately longer than bun's 5s default, not a regression.
+		30_000,
+	);
 
 	test("content writes are If-Match guarded — 428 missing, 409 stale; flags are not", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });

@@ -1,3 +1,5 @@
+import type { LanguageModelMiddleware } from "ai";
+
 // api.z.ai's Responses endpoint streams chain-of-thought as
 // `response.reasoning_text.*` events — the spec's raw-CoT arm (OpenAI
 // added reasoning_text for gpt-oss). @ai-sdk/openai's stream schema
@@ -135,4 +137,22 @@ export function zaiReasoningFetch(
 		});
 	};
 	return Object.assign(wrapped, { preconnect: fetch.preconnect });
+}
+
+// The SDK's Responses converter defaults `store` to true and substitutes
+// an `item_reference` for assistant parts carrying `openai.itemId`, so
+// prior prose can leave the request entirely. Forcing store:false at
+// transformParams — before serialization, in the canonical `openai`
+// namespace the converter reads regardless of the config provider's
+// name — replays text and tools inline; other options pass through.
+export function zaiStatelessReplay(): LanguageModelMiddleware {
+	return {
+		transformParams: async ({ params }) => ({
+			...params,
+			providerOptions: {
+				...params.providerOptions,
+				openai: { ...params.providerOptions?.openai, store: false },
+			},
+		}),
+	};
 }

@@ -49,10 +49,12 @@
     // API provider: conversations on <name>/<model-id> burn the Claude
     // Code subscription (OAuth token) instead of API credits. auth names
     // the auth.jsonl record (default "claude-code"):
-    //   {"name":"claude-code","value":"!pass-keys get goblin-dev claude-code-oauth"}
+    //   {"name":"claude-code","value":"!pass-keys get goblin-dev claude-code"}
     // Mint the token on a machine logged into the subscription
-    // (claude setup-token), then pass-keys add it. Rotation is
-    // operator-owned; an expired token fails the turn loud.
+    // (claude setup-token), then pass-keys add it — or skip all of this:
+    // Settings → Accounts & keys adds the provider and takes a pasted
+    // token (plain text in auth.jsonl). Rotation is operator-owned; an
+    // expired token fails the turn loud.
     // claude: { kind: "claude-code" },
   },
 

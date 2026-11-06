@@ -105,6 +105,9 @@ function ServiceCard({ prov, ctx }: { prov: ProvDraft; ctx: SettingsCtx }) {
 				</span>
 			</div>
 			{nameErr !== null && <div className="cap err-inline">{nameErr}</div>}
+			{preset?.keyHint !== undefined && !authNames.includes(effective) && (
+				<div className="cap">{preset.keyHint}</div>
+			)}
 			{open && (
 				<>
 					<div className="frow">

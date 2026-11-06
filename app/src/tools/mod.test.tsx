@@ -247,6 +247,32 @@ describe("ToolRun", () => {
 		expect(html).toContain("npm i");
 	});
 
+	test("a running row expands to the args received so far", () => {
+		const html = renderToStaticMarkup(
+			<ToolRun
+				part={part({
+					type: "tool-bash",
+					state: "input-available",
+					input: { command: "npm test" },
+				})}
+			/>,
+		);
+		// The clip carries the full input JSON inside the body (the summary
+		// hint carries it too, so the body's copy is the last one), and the
+		// shimmer stays under it.
+		expect(html).toContain("tool-clip");
+		expect(html.lastIndexOf("npm test")).toBeGreaterThan(html.indexOf("tool-body"));
+		expect(html.indexOf("skel")).toBeGreaterThan(html.lastIndexOf("npm test"));
+	});
+
+	test("a running row with no input yet shows the skeleton alone", () => {
+		const html = renderToStaticMarkup(
+			<ToolRun part={part({ type: "tool-bash", state: "input-streaming" })} />,
+		);
+		expect(html).toContain("skel");
+		expect(html).not.toContain("tool-clip");
+	});
+
 	test("output-error renders the error text and opens the row", () => {
 		const html = renderToStaticMarkup(
 			<ToolRun

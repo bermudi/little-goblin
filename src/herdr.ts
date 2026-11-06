@@ -244,10 +244,19 @@ function makeCaller(prefix: string[], runner: HerdrRunner) {
 	};
 }
 
+// `agent prompt` returns ok once the text is typed, not once the TUI
+// accepted the Enter: a harness whose ready gate fires before its editor
+// is live (pi under parallel startup, 2026-11-06) keeps the task as an
+// unsent draft. Delivery is proven by the agent leaving idle or its
+// state_change_seq moving; one recovery Enter, then fail loud.
+const DELIVERY_POLL_MS = 400;
+const DELIVERY_WINDOW_MS = 3_000;
+
 export function makeHerdr(
 	target: HerdrTarget,
 	run: HerdrRunner = defaultRunner,
 	timeoutMs = "machine" in target ? HERDR_REMOTE_TIMEOUT_MS : HERDR_TIMEOUT_MS,
+	sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
 ): Herdr {
 	// `--machine` and `--session` are mutually exclusive — the machine
 	// profile pins its own remote session.
@@ -258,7 +267,7 @@ export function makeHerdr(
 	const runner = run === defaultRunner ? makeRunner(timeoutMs) : run;
 	const call = makeCaller(prefix, runner);
 
-	return {
+	const self: Herdr = {
 		async createWorkspace(cwd, label) {
 			const parsed = await call(
 				"workspace create",
@@ -308,8 +317,32 @@ export function makeHerdr(
 		},
 
 		async prompt(name, text) {
+			// Only an idle agent can be sitting on a draft; a working one
+			// queues the input itself.
+			const before = await self.get(name);
 			await call("agent prompt", name, ["agent", "prompt", name, text], (stdout) =>
 				envelopeSchema.parse(parseJson("agent prompt", stdout)),
+			);
+			if (before === null || before.agent_status !== "idle") return;
+			const delivered = async (): Promise<boolean> => {
+				for (let waited = 0; waited < DELIVERY_WINDOW_MS; waited += DELIVERY_POLL_MS) {
+					await sleep(DELIVERY_POLL_MS);
+					const now = await self.get(name);
+					if (now === null) return false;
+					if (now.agent_status !== "idle" || now.state_change_seq !== before.state_change_seq) {
+						return true;
+					}
+				}
+				return false;
+			};
+			if (await delivered()) return;
+			log.warn("herdr prompt left unsent — sending recovery enter", { agent: name });
+			await self.sendKey(name, "enter");
+			if (await delivered()) return;
+			throw new HerdrError(
+				"agent prompt",
+				"agent_prompt_unsubmitted",
+				"prompt was typed but the agent never left idle, even after a recovery Enter",
 			);
 		},
 
@@ -367,6 +400,7 @@ export function makeHerdr(
 			);
 		},
 	};
+	return self;
 }
 
 // ---------- the operator's session ----------

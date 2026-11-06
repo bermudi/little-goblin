@@ -373,7 +373,7 @@ describe("wake dispatcher", () => {
 		await waitUntil(() => wake(r, a!.wakeId).state === "settled", "wake settled");
 		const entries = r.store.historyEntries(r.conv.id);
 		const trigger = entries.find((e) => e.message.id === wake(r, a!.wakeId).messageId)!;
-		expect(trigger.message.parts).toEqual([{ type: "text", text: "line one\nline two" }]);
+		expect(trigger.message.parts.slice(0, -1)).toEqual([{ type: "text", text: "line one\nline two" }]);
 		r.store.close();
 	});
 

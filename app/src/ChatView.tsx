@@ -603,6 +603,7 @@ function turnMeta(m: UIMessage): TurnMetadata | null {
 	if (typeof o.model !== "string" || typeof o.durationMs !== "number") return null;
 	const usage = (o.usage ?? {}) as Record<string, unknown>;
 	const num = (v: unknown) => (typeof v === "number" ? v : null);
+	const ttftMs = num(o.ttftMs);
 	// Fall back as a pair only for legacy metadata; explicit null or
 	// a missing companion final-step field means unavailable.
 	const hasFinalUsage = "lastInput" in usage || "lastCacheRead" in usage;
@@ -610,6 +611,7 @@ function turnMeta(m: UIMessage): TurnMetadata | null {
 		model: o.model,
 		finishReason: typeof o.finishReason === "string" ? o.finishReason : "",
 		durationMs: o.durationMs,
+		...(ttftMs !== null ? { ttftMs } : {}),
 		forcedCompletion:
 			o.forcedCompletion === "repeat" ||
 			o.forcedCompletion === "watchdog" ||
@@ -683,6 +685,13 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 		if (cacheRead !== null && cacheRead > 0) tok += ` (${kfmt(cacheRead)} cached)`;
 		bits.push(tok);
 	}
+	// tok/s is effective throughput over the duration this line shows —
+	// the tool loop's time rides in it, not just decode time.
+	if (output !== null && output > 0 && meta.durationMs > 0) {
+		const tps = output / (meta.durationMs / 1000);
+		bits.push(`${tps >= 100 ? Math.round(tps) : tps.toFixed(1)} tok/s`);
+	}
+	if (meta.ttftMs !== undefined) bits.push(`TTFT ${(meta.ttftMs / 1000).toFixed(1)}s`);
 	return <div className="msg-meta">{bits.join(" · ")}</div>;
 }
 
@@ -2401,26 +2410,50 @@ export function Composer({
 							{modelMenuOpen && (
 								<div className="note-pick composer-pick model-pop" role="menu">
 									<ul>
-										{[...new Set([cfg.model, ...cfg.favorites])].map((ref) => (
-											<li key={ref}>
-												<button
-													type="button"
-													role="menuitemradio"
-													aria-checked={ref === cfg.model}
-													title={ref}
-													onClick={() => {
-														setModelMenuOpen(false);
-														if (ref !== cfg.model) setKnob({ model: ref });
-													}}
-												>
-													<span className="mi">
-														<span>{friendly(ref)}</span>
-														{friendly(ref) !== ref && <span className="mi-ref">{ref}</span>}
-													</span>
-													{ref === cfg.model && <span className="check">✓</span>}
-												</button>
-											</li>
-										))}
+										{(() => {
+											// Curated membership gates the quick menu: stars
+											// first (favorites order), then the enabled rest
+											// in list order. Uncurated = today's favorites.
+											// ?? null: an older backend's config view lacks
+											// the key — read as never curated, not a crash.
+											const list = cfg.pickerModels ?? null;
+											const stars =
+												list === null
+													? cfg.favorites
+													: cfg.favorites.filter((f) =>
+															list.some((r) => r.toLowerCase() === f.toLowerCase()),
+														);
+											const rest =
+												list === null
+													? []
+													: list.filter(
+															(r) =>
+																r !== cfg.model &&
+																!cfg.favorites.some(
+																	(f) => f.toLowerCase() === r.toLowerCase(),
+																),
+														);
+											return [...new Set([cfg.model, ...stars, ...rest])].map((ref) => (
+												<li key={ref}>
+													<button
+														type="button"
+														role="menuitemradio"
+														aria-checked={ref === cfg.model}
+														title={ref}
+														onClick={() => {
+															setModelMenuOpen(false);
+															if (ref !== cfg.model) setKnob({ model: ref });
+														}}
+													>
+														<span className="mi">
+															<span>{friendly(ref)}</span>
+															{friendly(ref) !== ref && <span className="mi-ref">{ref}</span>}
+														</span>
+														{ref === cfg.model && <span className="check">✓</span>}
+													</button>
+												</li>
+											));
+										})()}
 										<li className="menu-div" aria-hidden="true" />
 										<li>
 											<button
@@ -2471,6 +2504,7 @@ export function Composer({
 								current={cfg.model}
 								allowOff={false}
 								favorites={cfg.favorites}
+								pickerModels={cfg.pickerModels}
 								catalog={cfg.catalog}
 								provNames={cfg.catalog.map((g) => g.provider)}
 								onPick={(ref) => {

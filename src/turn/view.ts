@@ -6,6 +6,7 @@ import {
 } from "../agent/attachments.ts";
 import { log } from "../log.ts";
 import { messageText, type RecallContext, withMemoryBlocks } from "../memory/mod.ts";
+import { CONTEXT_PART, contextPartDataSchema, contextText } from "../message-context.ts";
 import { NOTE_PART, noteFence, notePartDataSchema } from "../notes.ts";
 import {
 	SKILL_PART,
@@ -57,6 +58,25 @@ function systemEventAsUser(m: UIMessage): UIMessage {
 		id: m.id,
 		role: "user",
 		parts: [{ type: "text", text: `[system event: ${messageText(m)}]` }],
+	};
+}
+
+// A malformed stamp renders nothing: it is a hint, not content, and a
+// placeholder would tell the model less than its absence does.
+function contextPartAsText(ctx: ViewContext, m: UIMessage): UIMessage {
+	if (!m.parts.some((p) => p.type === CONTEXT_PART)) return m;
+	return {
+		...m,
+		parts: m.parts.flatMap((p) => {
+			if (p.type !== CONTEXT_PART) return [p];
+			const parsed = contextPartDataSchema.safeParse((p as { data?: unknown }).data);
+			if (parsed.success) return [{ type: "text" as const, text: contextText(parsed.data) }];
+			log.warn("malformed context part — dropped from the model view", {
+				conversation: ctx.convId,
+				message: m.id,
+			});
+			return [];
+		}),
 	};
 }
 
@@ -191,7 +211,7 @@ export async function buildModelView(
 			m.role === "system" ? systemEventAsUser(m) : m,
 			includeBody,
 		);
-		const rendered = notePartsAsText(ctx, skillMarked);
+		const rendered = contextPartAsText(ctx, notePartsAsText(ctx, skillMarked));
 		const unfinished = incompleteToolCallIds(rendered);
 		if (unfinished.length > 0 && m.id === partialId) {
 			log.info("resume partial ends on an unfinished tool call — dropped from the model view", {
@@ -310,7 +330,7 @@ export async function convertSteeredMessage(
 	for (const m of materialized) {
 		const { message: skillMarked, invocations } = skillPartsAsText(ctx, m, true);
 		out.push(
-			...(await convertToModelMessages([notePartsAsText(ctx, skillMarked)], {
+			...(await convertToModelMessages([contextPartAsText(ctx, notePartsAsText(ctx, skillMarked))], {
 				tools: ctx.tools,
 				ignoreIncompleteToolCalls: true,
 			})),

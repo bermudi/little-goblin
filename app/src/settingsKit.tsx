@@ -41,7 +41,6 @@ export type SheetMode =
 	| "title"
 	| "vision"
 	| "image"
-	| "favorites"
 	| "fallback";
 
 // One channel's thinking rungs: the offered values plus whether the
@@ -107,7 +106,6 @@ export interface SettingsCtx {
 	setNotice(n: { text: string; kind: "err" | "ok" } | null): void;
 	reload(): void;
 	toggleFavoriteDraft(ref: string, on: boolean): void;
-	moveFavorite(i: number, d: number): void;
 	last: { current: LastStash };
 	ttsStash: { current: TtsKindStash };
 	trStash: { current: TrKindStash };

@@ -180,8 +180,12 @@ Consequences:
   function above; there is no whole-turn budget and no newest-first eviction
   — an old image never degrades to a path reference because newer ones
   arrived.
-- The system prompt carries no automatic per-turn variability — no clock;
-  current time comes from `date` via bash when it matters. Operator edits
+- The system prompt carries no automatic per-turn variability — no clock.
+  Time reaches the model as a `data-context` part on each user message
+  (`src/message-context.ts`): arrival time with the box's offset and the
+  surface, stamped once at append and rendered only in the model view, so
+  replay is byte-stable. Rows from before the part stay unstamped, never
+  backfilled. `date` via bash answers "now" mid-turn. Operator edits
   (SOUL.md, AGENTS.md, USER.md, skills) load at conversation boundaries, not
   mid-run: the system prompt is frozen per conversation (built at the
   first turn), so a live conversation's prefix cache is never rewritten under
@@ -217,13 +221,14 @@ a model switch — or a catalog refresh that changes a model's listed
 modalities — recomputes attachment representations once (and re-renders
 stored PDF fetch refs through the same modalities-and-pipe gate); a fenced or
 failed turn leaves its user message unanswered, and the successor turn's
-burst-merge (Causal view) rewrites that boundary; a corrupt row's placeholder
+burst-merge (Causal view) rewrites that boundary (a failed turn with recorded
+progress also leaves a system event there); a corrupt row's placeholder
 is a repair, not drift; a deploy that changes the read-time compaction
 marker's wording rewrites it once in every compacted conversation; the
 owning turn's injected skill body collapses to its `[skill: name]` marker
-on the next turn's view (owned-seq ruling); a
-committed pruning marker replaces an old textual tool result once, then
-replays verbatim forever. Everything else that moves the hash is a bug.
+on the next turn's view (owned-seq ruling); a committed pruning marker
+replaces an old textual tool result once, then replays verbatim forever.
+Everything else that moves the hash is a bug.
 
 ## Design areas
 

@@ -30,6 +30,7 @@ export interface ProviderPreset {
 	id: string;
 	name: string;
 	provider: ProviderConfig;
+	keyHint?: string;
 }
 
 export interface ConfigResponse {
@@ -59,6 +60,12 @@ export interface ConfigPostBody {
 	model: string;
 	titleModel: string;
 	favorites: string[];
+	// Omitted = not curated (the picker offers the whole catalog) — the
+	// client only sends it once the operator toggles a membership switch.
+	pickerModels?: string[] | undefined;
+	// Same omit-when-empty rule: the inventory of catalog-unknown refs
+	// the settings picker remembers across visibility toggles.
+	customModels?: string[] | undefined;
 	modelFallbacks: string[];
 	thinking: ThinkingLevel;
 	tts:

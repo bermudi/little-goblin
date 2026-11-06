@@ -500,6 +500,274 @@ describe("rail row actions and the pinned pool", () => {
 	});
 });
 
+// The rename editor is one field: the input plus the AI-suggest button.
+// Focus moving between them keeps it open; leaving the field commits;
+// Escape cancels from either. A suggestion belongs to the editing session
+// and draft that requested it.
+describe("rename editor with the AI button", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	let patches: unknown[];
+	let suggests: { resolve: (title: string) => void; reject: (msg: string) => void }[];
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	beforeEach(() => {
+		win = new Window();
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		patches = [];
+		suggests = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("sessionStorage", win.sessionStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
+			if (url === "/api/app/notes")
+				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
+			if (url === "/api/app/attention")
+				return Promise.resolve(jsonResponse({ items: [], unavailable: [] }));
+			if (url === "/api/app/conversations" && method === "GET") {
+				return Promise.resolve(
+					jsonResponse({
+						conversations: [
+							{
+								id: "app/solo",
+								title: "solo chat",
+								preview: "solo preview",
+								createdAt: "2026-10-08T00:00:00.000Z",
+								updatedAt: "2026-10-09T00:00:00.000Z",
+								archivedAt: null,
+								pinnedAt: null,
+							},
+						],
+					}),
+				);
+			}
+			if (url === "/api/app/conversations/solo/suggest-title" && method === "POST") {
+				return new Promise<Response>((resolve) => {
+					suggests.push({
+						resolve: (title) => resolve(jsonResponse({ title })),
+						reject: (msg) => resolve(jsonResponse({ error: msg }, 500)),
+					});
+				});
+			}
+			if (url.startsWith("/api/app/conversations/") && method === "PATCH") {
+				patches.push(JSON.parse(String(init?.body)));
+				return Promise.resolve(jsonResponse({}));
+			}
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
+			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
+			return Promise.resolve(
+				jsonResponse({
+					model: "fixture/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				}),
+			);
+		}) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const settle = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+	};
+
+	const input = () => container.querySelector<HTMLInputElement>(".rename-field input");
+	const aiButton = () => container.querySelector<HTMLButtonElement>(".rename-ai");
+
+	const openEditor = async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await settle();
+		const rename = container.querySelector<HTMLButtonElement>('.conv-actions button[aria-label="Rename"]');
+		await act(async () => {
+			rename?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+		expect(input()).not.toBeNull();
+	};
+
+	const focusEl = async (el: HTMLElement | null) => {
+		await act(async () => {
+			el?.focus();
+		});
+	};
+
+	const type = async (value: string) => {
+		const el = input()!;
+		await act(async () => {
+			// Focus + keyup too — React's text-input fallback needs it in
+			// this environment.
+			el.focus();
+			const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!;
+			setter.call(el, value);
+			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			el.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+	};
+
+	const keydown = async (el: Element | null, key: string) => {
+		await act(async () => {
+			el?.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key, bubbles: true }) as unknown as Event,
+			);
+		});
+		await settle();
+	};
+
+	const clickEl = async (el: Element | null) => {
+		await act(async () => {
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+	};
+
+	test("T3: focus moving input→button keeps the editor open; the button activates; leaving commits", async () => {
+		await openEditor();
+		await type("renamed by hand");
+		await focusEl(aiButton());
+		await settle();
+		expect(input()).not.toBeNull();
+		expect(patches).toEqual([]);
+
+		await clickEl(aiButton());
+		expect(suggests).toHaveLength(1);
+
+		// Leaving the whole field commits.
+		await focusEl(win.document.body.appendChild(win.document.createElement("button")) as unknown as HTMLElement);
+		await settle();
+		expect(input()).toBeNull();
+		expect(patches).toEqual([{ title: "renamed by hand" }]);
+	});
+
+	test("T3: Escape from the button cancels with no PATCH", async () => {
+		await openEditor();
+		await type("half typed");
+		await focusEl(aiButton());
+		await keydown(aiButton(), "Escape");
+		expect(input()).toBeNull();
+		expect(patches).toEqual([]);
+	});
+
+	test("T3: a busy button keeps focus (aria-disabled, not disabled)", async () => {
+		await openEditor();
+		await focusEl(aiButton());
+		await clickEl(aiButton());
+		expect(aiButton()!.disabled).toBe(false);
+		expect(aiButton()!.getAttribute("aria-disabled")).toBe("true");
+		expect((win.document.activeElement as unknown) === (aiButton() as unknown)).toBe(true);
+		// A second activation while busy is ignored.
+		await clickEl(aiButton());
+		expect(suggests).toHaveLength(1);
+	});
+
+	test("T4: Escape then reopen — the stale suggestion neither fills the new draft nor steals focus; the new button works", async () => {
+		await openEditor();
+		await clickEl(aiButton());
+		expect(suggests).toHaveLength(1);
+		await keydown(input(), "Escape");
+		expect(input()).toBeNull();
+
+		const rename = container.querySelector<HTMLButtonElement>('.conv-actions button[aria-label="Rename"]');
+		await clickEl(rename);
+		expect(input()!.value).toBe("solo chat");
+		await focusEl(aiButton());
+		// Reopened editor is not stuck busy while the stale request is pending.
+		expect(aiButton()!.getAttribute("aria-disabled")).toBeNull();
+		await clickEl(aiButton());
+		expect(suggests).toHaveLength(2);
+
+		await act(async () => {
+			suggests[0]!.resolve("stale title");
+		});
+		await settle();
+		expect(input()!.value).toBe("solo chat");
+		expect((win.document.activeElement as unknown) === (aiButton() as unknown)).toBe(true);
+		// The stale request settling must not clear the live request's busy state.
+		expect(aiButton()!.getAttribute("aria-disabled")).toBe("true");
+
+		await act(async () => {
+			suggests[1]!.resolve("fresh title");
+		});
+		await settle();
+		expect(input()!.value).toBe("fresh title");
+	});
+
+	test("T4: typing while a suggestion is pending keeps the typed text", async () => {
+		await openEditor();
+		await clickEl(aiButton());
+		await type("my own title");
+		await act(async () => {
+			suggests[0]!.resolve("suggested title");
+		});
+		await settle();
+		expect(input()!.value).toBe("my own title");
+	});
+
+	test("T4: the happy path fills the draft and refocuses the input", async () => {
+		await openEditor();
+		await clickEl(aiButton());
+		await act(async () => {
+			suggests[0]!.resolve("suggested title");
+		});
+		await settle();
+		expect(input()!.value).toBe("suggested title");
+		expect((win.document.activeElement as unknown) === (input() as unknown)).toBe(true);
+		await keydown(input(), "Enter");
+		expect(patches).toEqual([{ title: "suggested title" }]);
+	});
+
+	test("T4: a stale rejection after cancel shows no error", async () => {
+		await openEditor();
+		await clickEl(aiButton());
+		await keydown(input(), "Escape");
+		await act(async () => {
+			suggests[0]!.reject("model down");
+		});
+		await settle();
+		expect(container.querySelector('p.error[role="alert"]')).toBeNull();
+	});
+});
+
 // Back/forward is a navigation like any other. An unsaved settings editor
 // gets the same question the in-app links ask. Indexed history can undo a
 // declined traversal. Without native keys, legacy entries expose no direction:

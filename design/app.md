@@ -337,6 +337,34 @@ removing accepts anything so a stale entry can always leave). Settings
 stars edit the draft instead, so its autosave never races its own etag.
 The app config view carries the cached catalog for friendly names.
 
+**Picker membership (ruling 2026-11-03).** Settings → Models owns a
+curated membership list for the chat pickers, in one card: filter,
+"Disable all", a shown/hidden count, "+ Add custom model", and rows
+carrying star, ↑/↓ (segment-local — stars reorder stars, the rest
+reorders the rest, never across), and a visibility switch, with the
+rest under "Hidden from picker". The state is `pickerModels` in config
+— **absent = the whole catalog is offered** (a plain settings save never
+materializes it; the first toggle pins the display order the operator
+was looking at), present = exactly these refs, in order, custom
+catalog-unknown refs included, `[]` = none. Custom refs carry a second
+config list, `customModels` (omit-when-empty): the inventory that keeps
+a hidden custom — or a removed provider's retained ref — recoverable
+from the hidden section; only the row's × drops it from the inventory.
+Stars are orthogonal: they pin first *within what is shown*, so a
+hidden favorite leaves the pickers until re-enabled — and a star
+mutates the stored favorite spelling, not the row's display casing.
+The composer knob menu reads current, enabled stars, then the enabled
+rest (uncurated = today's favorites-only list); the sheet renders the
+curated list flat instead of provider groups when one exists, and the
+current ref keeps its row whenever the Favorites block doesn't render
+it. The typed `provider/model-id` path survives any curation — exact
+Enter resolution consults the catalog and the stored favorites
+regardless of visibility, so a hidden model is always reachable without
+a settings trip. Custom refs split at the first slash like every ref
+(`splitModelRef`): namespaced ids carry slashes. Role-binding sheets
+(app/telegram defaults, title, vision, image, fallback) still see the
+whole catalog: curation governs the chat picker, not job picks.
+
 ## Settings shape (ruling 2026-10-23)
 
 Supersedes the form-mirrors-the-file layout. Operator rule: **anything
@@ -353,7 +381,8 @@ as read-only text (System, the memory card).
   `design/auth.md` still decides what a blank derives to; it just stops
   being visible.
 - **Model services come from presets** (`providerPresets`, base URLs the
-  docs already carry); "custom endpoint" is the only place protocol and
+  docs already carry, plus the Claude subscription lane, whose card names
+  `claude setup-token` until a key exists); "custom endpoint" is the only place protocol and
   base URL appear. ChatGPT is an account, not a provider type.
 - **ChatGPT sign-in is in-app** — the Codex CLI's device-code flow
   (`src/agent/codex/login.ts`, wire pinned from codex-rs

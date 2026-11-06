@@ -424,3 +424,39 @@ describe("unfinished tool calls", () => {
 		}
 	});
 });
+
+describe("arrival stamp", () => {
+	const stamped = (id: string, text: string, at: string): UIMessage =>
+		({
+			id,
+			role: "user",
+			parts: [
+				{ type: "text", text },
+				{ type: "data-context", data: { at, surface: "telegram" } },
+			],
+		}) as UIMessage;
+
+	test("renders after the words, in history and when steered, byte-identically", async () => {
+		const m = stamped("u1", "hi", "2026-11-06 14:32 -06:00");
+		const view = await buildModelView(ctx, {
+			entries: entries([m]),
+			prior: [],
+			current: null,
+			partial: null,
+			assertAuthority: () => {},
+		});
+		expect(texts(view)).toEqual(["hi", "[2026-11-06 14:32 -06:00 · telegram]"]);
+		expect(await convertSteeredMessage(ctx, m)).toEqual(view);
+	});
+
+	test("an unstamped old row stays unstamped", async () => {
+		const view = await buildModelView(ctx, {
+			entries: entries([user("u1", "old")]),
+			prior: [],
+			current: null,
+			partial: null,
+			assertAuthority: () => {},
+		});
+		expect(texts(view)).toEqual(["old"]);
+	});
+});

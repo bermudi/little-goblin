@@ -774,6 +774,30 @@ describe("config save", () => {
 		});
 	});
 
+	test("pickerModels rides the settings body; omitting it preserves curation", async () => {
+		const d = deps();
+		// The never-curated save doesn't materialize the field — the saved
+		// file keeps offering the whole catalog.
+		expect((await postConfig(d, { model: "test/m", thinking: "medium" }))?.status).toBe(200);
+		expect(d.configRef.current.pickerModels).toBeUndefined();
+		// Curating persists, and a later save without the key keeps it —
+		// the whole-file merge only overlays what the body names.
+		expect((await postConfig(d, { pickerModels: ["test/m", "test/custom"] }))?.status).toBe(200);
+		expect(d.configRef.current.pickerModels).toEqual(["test/m", "test/custom"]);
+		expect((await postConfig(d, { thinking: "low" }))?.status).toBe(200);
+		expect(d.configRef.current.pickerModels).toEqual(["test/m", "test/custom"]);
+		// Disable all is an explicit empty list — falsy but meaningful,
+		// the write must not collapse it.
+		expect((await postConfig(d, { pickerModels: [] }))?.status).toBe(200);
+		expect(d.configRef.current.pickerModels).toEqual([]);
+		// The custom inventory follows the same omit-when-empty rule.
+		expect(d.configRef.current.customModels).toBeUndefined();
+		expect((await postConfig(d, { customModels: ["test/custom"] }))?.status).toBe(200);
+		expect(d.configRef.current.customModels).toEqual(["test/custom"]);
+		expect((await postConfig(d, { thinking: "off" }))?.status).toBe(200);
+		expect(d.configRef.current.customModels).toEqual(["test/custom"]);
+	});
+
 	test("provider removal under a disabled telegram keeps its pin; re-enable needs it back", async () => {
 		const gone = {
 			kind: "openai-compatible" as const,

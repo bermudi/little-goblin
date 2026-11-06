@@ -10,7 +10,7 @@
 // Mechanism ported from pi's vision extension
 // (agent-extensions/pi-packages/bermudis-pi-goodies/vision-core.ts).
 
-import { generateText, type LanguageModel, type ModelMessage } from "ai";
+import { type LanguageModel, type ModelMessage, streamText } from "ai";
 import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import { type Config, type ConfigRef, splitModelRef } from "../config.ts";
@@ -22,10 +22,19 @@ import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./prov
 import { OUTPUT_TOKEN_CEILING, outputTokensFor, thinkingOptions } from "./thinking.ts";
 import type { VisionToolDeps } from "./tools/vision.ts";
 
-// A wedged vision request would pin the turn's serial lane —
+// A vision request that goes silent would pin the turn's serial lane —
 // transcribe's 60 s rule doubled (image calls are heavier than a
-// whisper chunk).
-export const VISION_TIMEOUT_MS = 120_000;
+// whisper chunk). Streamed, the budget is inactivity-based: any
+// non-empty semantic output (text or reasoning deltas — metadata,
+// stream-start, and empty deltas don't count) resets the clock, so a
+// slowly-writing or long-thinking model can continue up to the overall
+// ceiling while a wedged or stalled stream still dies promptly.
+export const VISION_IDLE_TIMEOUT_MS = 120_000;
+
+// Inactivity alone can't bound a call — a stream trickling a delta
+// under the wire forever would hold the lane open. The overall ceiling
+// is shared across the empty-answer re-ask.
+export const VISION_TOTAL_TIMEOUT_MS = 600_000;
 
 export const VISION_SYSTEM_PROMPT = [
 	"You answer questions about images for goblin, a personal agent.",
@@ -139,12 +148,18 @@ export interface VisionCallDeps {
 	/** The turn's abort signal (/stop) — rides the call. */
 	signal?: AbortSignal | undefined;
 	/** Test door over the provider edge — production is resolveModel.
-	 *  Everything between this seam and the tool is real: generateText,
+	 *  Everything between this seam and the tool is real: streamText,
 	 *  the prompt conversion, the observed middleware, the abort wiring —
 	 *  stages tested in isolation hide the seam between them. */
 	resolve?: (config: Config, auth: AuthStore, modelRef: string) => Promise<LanguageModel>;
-	/** Test door over the timeout race (production: VISION_TIMEOUT_MS). */
+	/** Test door over the inactivity budget (production:
+	 *  VISION_IDLE_TIMEOUT_MS) — time until the first output chunk and
+	 *  between chunks; any non-empty semantic output resets it. */
 	timeoutMs?: number | undefined;
+	/** Test door over the overall ceiling (production:
+	 *  VISION_TOTAL_TIMEOUT_MS) — one budget shared across the
+	 *  empty-answer re-ask. */
+	totalTimeoutMs?: number | undefined;
 }
 
 /** Prior turns replay as plain text; the image rides only in the final
@@ -180,7 +195,9 @@ async function defaultResolve(
 }
 
 /** Failures throw (the tool layer reports them); aborts ride the
- *  combined signal and surface as the SDK's AbortError. */
+ *  combined signal and surface as the signal's reason — a TimeoutError
+ *  naming the idle or overall budget on a timeout, the caller's reason
+ *  on /stop. A failed attempt never seeds the answer or the thread. */
 export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promise<VisionAnswer> {
 	// Captured once — a config save mid-call must not splice a new model
 	// into a call already sized and billed to the old one.
@@ -212,76 +229,181 @@ export async function askVision(query: VisionQuery, deps: VisionCallDeps): Promi
 	// the bare registry-id string form, which carries neither field.
 	const label = cfg.model;
 
-	// Turn signal and timeout — either settles the call.
-	const signal = AbortSignal.any([
-		...(deps.signal ? [deps.signal] : []),
-		AbortSignal.timeout(deps.timeoutMs ?? VISION_TIMEOUT_MS),
-	]);
+	// Inactivity budget per attempt; the overall ceiling is one budget
+	// shared across the empty-answer re-ask. An explicit controller
+	// (not AbortSignal.timeout) so the timer dies when the call settles
+	// — a resolved call must not keep a minutes-long timer alive — and
+	// so the reason stays distinguishable: idle timeouts and /stop
+	// carry their own reasons.
+	const idleTimeoutMs = deps.timeoutMs ?? VISION_IDLE_TIMEOUT_MS;
+	const totalTimeoutMs = deps.totalTimeoutMs ?? VISION_TOTAL_TIMEOUT_MS;
+	const totalController = new AbortController();
+	const totalTimer = setTimeout(() => {
+		totalController.abort(
+			new DOMException(`Overall timeout of ${totalTimeoutMs}ms exceeded`, "TimeoutError"),
+		);
+	}, totalTimeoutMs);
+	const signal = AbortSignal.any([totalController.signal, ...(deps.signal ? [deps.signal] : [])]);
 
 	const started = Date.now();
+	// In-flight requests must be diagnosable from the log alone — a
+	// start line here plus the failure line below reconstructs any hang.
+	log.info("vision call start", {
+		conversation: deps.conversation,
+		model: label,
+		image: query.path,
+		followUps: history.length,
+		timeout: { idleMs: idleTimeoutMs, totalMs: totalTimeoutMs },
+	});
 	// Thinking pinned off — a forced-thinking vision model burns a
 	// reasoning round-trip per question.
 	const providerOptions = thinkingOptions(config, cfg.model, "off");
 	const maxRetries = modelCallMaxRetries(config, cfg.model);
 	const ask = async (maxOutputTokens: number) => {
-		const { text, usage, finishReason } = await generateText({
-			model,
-			instructions: VISION_SYSTEM_PROMPT,
-			messages: buildVisionMessages(
-				query.prompt,
-				{ bytes: query.bytes, mediaType: query.mediaType },
-				history,
-			),
-			maxOutputTokens,
-			...(providerOptions ? { providerOptions } : {}),
-			...(maxRetries !== undefined ? { maxRetries } : {}),
-			abortSignal: signal,
-		});
-		return { text, usage: usage as VisionUsage | undefined, finishReason };
+		// The idle clock is ours, armed before streamText is even
+		// invoked: the SDK's own chunk timers only start once the
+		// provider's doStream resolves, so they cannot cover a handshake
+		// that hangs. Only non-empty semantic output — text/reasoning
+		// deltas (and generated files, if a model ever emits them; no
+		// tools are registered) — resets it; stream-start, metadata and
+		// empty deltas count for nothing, so a provider emitting inert
+		// noise still times out.
+		const idle = new AbortController();
+		let sawOutput = false;
+		const armIdle = () =>
+			setTimeout(() => {
+				idle.abort(
+					new DOMException(
+						`${sawOutput ? "Chunk" : "First chunk"} timeout of ${idleTimeoutMs}ms exceeded`,
+						"TimeoutError",
+					),
+				);
+			}, idleTimeoutMs);
+		let idleTimer = armIdle();
+		let abortReason: unknown;
+		let partialTextChars = 0;
+		let partialReasoningChars = 0;
+		try {
+			const result = streamText({
+				model,
+				instructions: VISION_SYSTEM_PROMPT,
+				messages: buildVisionMessages(
+					query.prompt,
+					{ bytes: query.bytes, mediaType: query.mediaType },
+					history,
+				),
+				maxOutputTokens,
+				...(providerOptions ? { providerOptions } : {}),
+				...(maxRetries !== undefined ? { maxRetries } : {}),
+				// Deliberately narrower than the old generateText: maxRetries
+				// covers only the doStream handshake — a mid-stream provider
+				// error is terminal (the design ruling: partial output never
+				// answers, never seeds the thread). Same streamRetries: 0 the
+				// chat path pins — a silent retry would re-POST the whole
+				// image body and bill a second generation behind the log's
+				// back.
+				streamRetries: 0,
+				abortSignal: AbortSignal.any([signal, idle.signal]),
+				onAbort: ({ reason }) => {
+					abortReason = reason;
+				},
+			});
+			for await (const part of result.fullStream) {
+				if (part.type === "error") throw part.error;
+				if (part.type === "abort") {
+					// The signal's own reason rides through onAbort — it can
+					// legally be any value, so throw it as captured rather
+					// than narrowing it to Error.
+					if (abortReason !== undefined) throw abortReason;
+					throw new Error(`vision call aborted (${part.reason ?? "no reason"})`);
+				}
+				if (part.type === "text-delta" && part.text.length > 0) {
+					sawOutput = true;
+					partialTextChars += part.text.length;
+					clearTimeout(idleTimer);
+					idleTimer = armIdle();
+				} else if (part.type === "reasoning-delta" && part.text.length > 0) {
+					sawOutput = true;
+					partialReasoningChars += part.text.length;
+					clearTimeout(idleTimer);
+					idleTimer = armIdle();
+				} else if (part.type === "file" || part.type === "reasoning-file") {
+					sawOutput = true;
+					clearTimeout(idleTimer);
+					idleTimer = armIdle();
+				}
+			}
+			return {
+				text: await result.text,
+				usage: (await result.usage) as VisionUsage | undefined,
+				finishReason: await result.finishReason,
+			};
+		} catch (error) {
+			// Char counts only — partial content belongs to the wire, and a
+			// failed attempt never seeds an answer or the thread.
+			log.warn("vision call failed", error, {
+				conversation: deps.conversation,
+				model: label,
+				image: query.path,
+				durationMs: Date.now() - started,
+				timeout: { idleMs: idleTimeoutMs, totalMs: totalTimeoutMs },
+				partialTextChars,
+				partialReasoningChars,
+			});
+			throw error;
+		} finally {
+			clearTimeout(idleTimer);
+		}
 	};
 
 	// Reasoning rides inside the output cap on every wire — the first
 	// call buys the answer budget plus headroom for the rung the model's
 	// "off" actually means (a floor rung on forced thinkers).
 	const firstBudget = outputTokensFor(config, cfg.model, "off", cfg.maxTokens);
-	let result = await ask(firstBudget);
-	let answer = result.text.trim();
+	let result: Awaited<ReturnType<typeof ask>>;
+	let answer: string;
 	let retried = false;
-	// An empty answer means the whole budget went to non-visible tokens
-	// — a floored effort can still spin (observed: glm-5.3-flash burning
-	// all 2000 at "low"). One re-ask, right-sized from the usage split:
-	// the measured reasoning spend is a truncation lower bound — double
-	// it and re-add the answer budget. Vendor adapters coerce a missing
-	// split to 0, so "spend" falls to the output total (with empty text
-	// all of it was non-visible) — and, nothing reported at all, to 4×.
-	if (!answer) {
-		const spend = result.usage?.outputTokenDetails?.reasoningTokens || result.usage?.outputTokens;
-		const retryBudget = Math.min(
-			OUTPUT_TOKEN_CEILING,
-			spend ? Math.max(spend * 2 + cfg.maxTokens, firstBudget) : firstBudget * 4,
-		);
-		retried = true;
-		log.warn("vision answer empty — re-asking with raised output budget", {
-			conversation: deps.conversation,
-			model: label,
-			image: query.path,
-			answerTokens: cfg.maxTokens,
-			firstMaxTokens: firstBudget,
-			retryMaxTokens: retryBudget,
-			finish: result.finishReason,
-			outputTokens: result.usage?.outputTokens ?? null,
-			reasoningTokens: result.usage?.outputTokenDetails?.reasoningTokens ?? null,
-			spend: spend ?? null,
-		});
-		result = await ask(retryBudget);
+	try {
+		result = await ask(firstBudget);
 		answer = result.text.trim();
+		// An empty answer means the whole budget went to non-visible tokens
+		// — a floored effort can still spin (observed: glm-5.3-flash burning
+		// all 2000 at "low"). One re-ask, right-sized from the usage split:
+		// the measured reasoning spend is a truncation lower bound — double
+		// it and re-add the answer budget. Vendor adapters coerce a missing
+		// split to 0, so "spend" falls to the output total (with empty text
+		// all of it was non-visible) — and, nothing reported at all, to 4×.
 		if (!answer) {
-			throw new Error(
-				`empty answer from ${label} even on a re-ask at ${retryBudget} maxTokens ` +
-					`— a thinking model spending the output budget on reasoning? ` +
-					`Raise vision.maxTokens or switch the vision model.`,
+			const spend = result.usage?.outputTokenDetails?.reasoningTokens || result.usage?.outputTokens;
+			const retryBudget = Math.min(
+				OUTPUT_TOKEN_CEILING,
+				spend ? Math.max(spend * 2 + cfg.maxTokens, firstBudget) : firstBudget * 4,
 			);
+			retried = true;
+			log.warn("vision answer empty — re-asking with raised output budget", {
+				conversation: deps.conversation,
+				model: label,
+				image: query.path,
+				answerTokens: cfg.maxTokens,
+				firstMaxTokens: firstBudget,
+				retryMaxTokens: retryBudget,
+				finish: result.finishReason,
+				outputTokens: result.usage?.outputTokens ?? null,
+				reasoningTokens: result.usage?.outputTokenDetails?.reasoningTokens ?? null,
+				spend: spend ?? null,
+			});
+			result = await ask(retryBudget);
+			answer = result.text.trim();
+			if (!answer) {
+				throw new Error(
+					`empty answer from ${label} even on a re-ask at ${retryBudget} maxTokens ` +
+						`— a thinking model spending the output budget on reasoning? ` +
+						`Raise vision.maxTokens or switch the vision model.`,
+				);
+			}
 		}
+	} finally {
+		clearTimeout(totalTimer);
 	}
 
 	threads.record(key, { question: query.prompt, answer }, query.followUp ? "follow" : "fresh");

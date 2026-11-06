@@ -135,6 +135,21 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   envelope degrades to a placeholder, never parses as speech. Arrival seq
   stays the truth; the model view anchors each reply so none reads as having
   seen later input.
+- **Zhipu Responses replay is stateless (ruling 2026-11-04).** The SDK's
+  Responses converter defaults `store` to true and substitutes an
+  `item_reference` for every assistant part carrying `openai.itemId`, so
+  prior prose reaches the provider only as ids it must resolve — the
+  conversation-recall audit found assistant prose absent from the model's
+  reported view; failed reference resolution is the leading suspect, not
+  provider-verified. The `zaiStatelessReplay`
+  middleware wraps only `api.z.ai` responses models and forces
+  `openai.store:false` at `transformParams` — the canonical `openai`
+  namespace, which the converter reads regardless of the config provider's
+  name — so text and tool items always replay inline and no reliance is
+  placed on provider-stored item references. The pre-conversion context
+  window capture is not wire proof; what the SDK emits is the contract.
+  Reasoning parts without encrypted content may be omitted by the SDK when
+  store is false — prose must remain, cipherless reasoning may not.
 - **Codex reasoning persistence.** Codex sends `store:false`, so reasoning
   continuation is our problem: the adapter stamps each response item's
   replay state into `providerMetadata.codex` — `itemId` + `replayScope` on

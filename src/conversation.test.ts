@@ -1338,7 +1338,6 @@ describe("app channel store", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const idle = store.resolve(appAddress("chat-01"), "/w");
 		const active = store.resolve(appAddress("chat-02"), "/w");
-		expect(store.listAppConversations().map((c) => c.id)).toEqual([idle.id, active.id]);
 		store.append(active.id, [msg("latest app exchange")]);
 		const list = store.listAppConversations();
 		expect(list[0]!.id).toBe(active.id);
@@ -1346,6 +1345,16 @@ describe("app channel store", () => {
 		expect(list[0]!.updatedAt >= list[0]!.createdAt).toBe(true);
 		expect(list[1]!.id).toBe(idle.id);
 		expect(list[1]!.preview).toBe("");
+		store.close();
+	});
+
+	test("listAppConversations: a fresh eventless conversation lists above older ones", async () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const old = store.resolve(appAddress("chat-01"), "/w");
+		store.append(old.id, [msg("old exchange")]);
+		await Bun.sleep(5);
+		const fresh = store.resolve(appAddress("chat-02"), "/w");
+		expect(store.listAppConversations().map((c) => c.id)).toEqual([fresh.id, old.id]);
 		store.close();
 	});
 

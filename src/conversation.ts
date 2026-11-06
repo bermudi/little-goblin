@@ -937,7 +937,14 @@ export function openStore(dbPath: string): ConversationStore {
 					activity: last?.id ?? 0,
 				});
 			}
-			out.sort((a, b) => b.activity - a.activity);
+			// Timestamp first: an eventless conversation (just created, no
+			// message yet) has activity 0 and would sink to the bottom of the
+			// rail until its first event, then jump to the top. Event id
+			// breaks same-instant ties.
+			out.sort(
+				(a, b) =>
+					Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || b.activity - a.activity,
+			);
 			// Pins float above the activity stream; within each group the
 			// activity order stands. applyPatch clears the pin on archive,
 			// so a pinned row is always on the active rail.

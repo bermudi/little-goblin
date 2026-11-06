@@ -109,17 +109,23 @@ claude: {
 ```
 
 A `claude-code` provider runs Anthropic models on the Claude Code
-subscription instead of API credits. The `auth` record's value must
-resolve to the subscription's OAuth token
-(`{"name": "claude-code", "value": "!pass-keys get goblin-dev claude-code"}`
-once the key exists in the goblin-dev profile). The token enters only
+subscription instead of API credits. To set it up from the app: Settings
+→ Accounts & keys → + Add model service → Claude (subscription), run
+`claude setup-token` on a machine signed in to the subscription, and
+paste the token into the service's key box. A pasted key applies without
+a restart and is stored as plain text in the 0600 `auth.jsonl`.
+
+To keep the token encrypted instead, run `pass-keys add goblin-dev
+claude-code`, add
+`{"name": "claude-code", "value": "!pass-keys get goblin-dev claude-code"}`
+to `auth.jsonl`, and restart. The token enters only
 the child CLI's environment; all child state stays under
 `$GOBLIN_HOME/state/claude-code/`, never `~/.claude`. Thinking levels map
 to the CLI's effort rungs (low..max; `off` disables). One behavioral
 note: steered messages (a second submit while the turn runs) queue
 into the next turn on this lane — see `design/model.md` → The
-claude-code engine. After adding the provider, pick a model with the
-typed-ref fallback (`claude/claude-sonnet-4-5` and friends).
+claude-code engine. After adding the provider, pick a model from the
+model picker.
 
 #### 1min.AI (OpenAI-compatible relay)
 

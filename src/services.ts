@@ -35,10 +35,13 @@ export interface ProviderPreset {
 	id: string;
 	name: string;
 	provider: ProviderConfig;
+	/** Where the key comes from — shown on the service card until one exists. */
+	keyHint?: string;
 }
 
 // Only base URLs this repo's docs already describe. Preset id = the
-// provider name = the auth record the wizard asks for.
+// provider name = the auth record the wizard asks for, except where the
+// kind has its own auth default (claude-code).
 export const providerPresets: ProviderPreset[] = [
 	{
 		id: "zai",
@@ -67,6 +70,13 @@ export const providerPresets: ProviderPreset[] = [
 			baseUrl: "https://logfare.ai/v1",
 			auth: "logfare",
 		},
+	},
+	{
+		id: "claude",
+		name: "Claude (subscription)",
+		provider: { kind: "claude-code", auth: authDefaults.claudeCode },
+		keyHint:
+			"Run claude setup-token on a machine signed in to your Claude subscription, then add the token here.",
 	},
 ];
 

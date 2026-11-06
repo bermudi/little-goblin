@@ -133,6 +133,12 @@ beforeEach(() => {
 								name: "Z.ai",
 								provider: { kind: "responses", baseUrl: "https://api.z.ai/api/v1", auth: "zai" },
 							},
+							{
+								id: "claude",
+								name: "Claude (subscription)",
+								provider: { kind: "claude-code", auth: "claude-code" },
+								keyHint: "Run claude setup-token, then add the token here.",
+							},
 						],
 						capabilities: caps,
 						modelCatalog: [],
@@ -348,6 +354,28 @@ describe("Accounts & keys", () => {
 			baseUrl: "https://api.z.ai/api/v1",
 			auth: "zai",
 		});
+	});
+
+	test("the claude preset saves its kind and says where the token comes from", async () => {
+		await mountSettings();
+		await openSection("Accounts & keys");
+		await click(
+			[...container.querySelectorAll("button")].find(
+				(b) => b.textContent === "+ Add model service",
+			),
+		);
+		const select = container.querySelector('select[aria-label="add a service"]')!;
+		await act(async () => {
+			(select as HTMLSelectElement).value = "claude";
+			select.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+		});
+		await settle();
+		await waitFor(() => savedBodies.length > 0, "claude preset save");
+		expect(savedBodies.at(-1)?.providers?.claude).toEqual({
+			kind: "claude-code",
+			auth: "claude-code",
+		});
+		expect(container.textContent).toContain("claude setup-token");
 	});
 
 	test("custom endpoint adds an openai-compatible provider", async () => {

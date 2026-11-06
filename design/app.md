@@ -381,7 +381,8 @@ as read-only text (System, the memory card).
   `design/auth.md` still decides what a blank derives to; it just stops
   being visible.
 - **Model services come from presets** (`providerPresets`, base URLs the
-  docs already carry); "custom endpoint" is the only place protocol and
+  docs already carry, plus the Claude subscription lane, whose card names
+  `claude setup-token` until a key exists); "custom endpoint" is the only place protocol and
   base URL appear. ChatGPT is an account, not a provider type.
 - **ChatGPT sign-in is in-app** — the Codex CLI's device-code flow
   (`src/agent/codex/login.ts`, wire pinned from codex-rs

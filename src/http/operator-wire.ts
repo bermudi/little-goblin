@@ -30,6 +30,7 @@ export interface ProviderPreset {
 	id: string;
 	name: string;
 	provider: ProviderConfig;
+	keyHint?: string;
 }
 
 export interface ConfigResponse {

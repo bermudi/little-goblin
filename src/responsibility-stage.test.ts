@@ -113,18 +113,22 @@ describe("responsibility stage", () => {
 		).toEqual({ waitsFor: "nobody", stage: "waiting", reason: "CI run 42 finishes" });
 	});
 
-	test("a correction since the report answers it — back to the worker", () => {
+	test("a correction since the report is goblin's move and keeps the question", () => {
 		expect(
 			responsibilityStage(
 				{ status: "active", revision: 3 },
-				report({ state: "blocked", question: "?" }),
+				report({ state: "blocked", question: "which branch?" }),
 				[],
 			),
 		).toEqual({
-			waitsFor: "worker",
-			stage: "working",
-			reason: "operator corrected since the last report",
+			waitsFor: "goblin",
+			stage: "assess",
+			reason: "operator corrected since the last report — re-ask or resolve: which branch?",
 		});
+		expect(
+			responsibilityStage({ status: "active", revision: 3 }, report({ state: "progress" }), [])
+				.reason,
+		).toBe("operator corrected since the last report");
 	});
 
 	test("otherwise working, with the latest progress or its absence", () => {

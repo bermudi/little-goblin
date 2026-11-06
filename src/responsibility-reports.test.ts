@@ -78,11 +78,19 @@ describe("responsibility reports", () => {
 		});
 	});
 
-	test("dropped closes without evidence; non-closing reports leave status alone", () => {
+	test("dropped closes on its own evidence, not completionEvidence; non-closing reports leave status alone", () => {
 		const r = rig();
 		r.resps.report(r.id, { state: "blocked", reason: "needs key", question: "add key?" }, "goblin");
 		expect(r.resps.get(r.id)!.status).toBe("active");
-		r.resps.report(r.id, { state: "dropped", reason: "superseded by the operator's PR" }, "goblin");
+		r.resps.report(
+			r.id,
+			{
+				state: "dropped",
+				reason: "superseded by the operator's PR",
+				evidence: [{ item: "superseded", ref: "PR 1", checked: "merged, same change" }],
+			},
+			"goblin",
+		);
 		expect(r.resps.get(r.id)!.status).toBe("completed");
 		expect(r.resps.reportsFor(r.id).map((x) => x.state)).toEqual(["blocked", "dropped"]);
 	});
@@ -90,6 +98,7 @@ describe("responsibility reports", () => {
 	test("the input schema refuses shapes the stage cannot use", () => {
 		expect(reportInputSchema.safeParse({ state: "waiting", reason: "x" }).success).toBe(false);
 		expect(reportInputSchema.safeParse({ state: "done", reason: "x" }).success).toBe(false);
+		expect(reportInputSchema.safeParse({ state: "dropped", reason: "x" }).success).toBe(false);
 		expect(
 			reportInputSchema.safeParse({ state: "dropped", reason: "x", question: "really?" }).success,
 		).toBe(false);

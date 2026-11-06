@@ -56,8 +56,21 @@ export function responsibilityStage(
 		};
 	}
 	// A report stated against an older revision no longer holds: the
-	// operator's correction (which bumps revision) is their answer.
+	// operator's correction bumped the revision.
 	const current = latest !== null && latest.revision === resp.revision ? latest : null;
+	// Whether the correction answered the report is goblin's to judge: an
+	// unrelated correction must not silently erase an open question, and
+	// no worker is implied to be running.
+	if (latest !== null && current === null) {
+		return {
+			waitsFor: "goblin",
+			stage: "assess",
+			reason:
+				latest.question !== null
+					? `operator corrected since the last report — re-ask or resolve: ${latest.question}`
+					: "operator corrected since the last report",
+		};
+	}
 	if (current !== null) {
 		if (current.question !== null) {
 			return { waitsFor: "operator", stage: "question", reason: current.question };
@@ -92,8 +105,6 @@ export function responsibilityStage(
 				? current.state === "done" || current.state === "dropped"
 					? `resumed after ${current.state}`
 					: current.reason
-				: latest !== null
-					? "operator corrected since the last report"
-					: "no report yet",
+				: "no report yet",
 	};
 }

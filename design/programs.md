@@ -266,14 +266,16 @@ Rulings:
   (operator) → `blocked`/`failed` (operator) → `waiting` (nobody, names
   the condition) → working (worker). A report stated against an older
   revision no longer holds: every operator correction bumps revision and
-  is their answer. The feed pill, Attention (`responsibility` items,
+  makes it goblin's move (`assess`), naming any open question to re-ask
+  or resolve, because an unrelated correction must not erase it. The feed pill, Attention (`responsibility` items,
   pause excluded — it is the operator's own choice) and the scheduler's
   silence hold read this function and nothing else.
 
   Closing is a report, never a status flip from the agent: `done`
   refuses unless evidence covers every `completionEvidence` entry
   verbatim, naming what was checked; `dropped` (nothing to do —
-  superseded, not reproducible) closes without evidence. Both close in
+  superseded, not reproducible) needs at least one evidence item saying
+  what was checked, but not the completion entries. Both close in
   the same transaction as the report. Operator pause/resume/cancel stay
   direct lifecycle controls. There is no universal acceptance gate:
   `ready` waits for review only when the task has a checkpoint; verified

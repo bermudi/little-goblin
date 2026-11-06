@@ -231,9 +231,10 @@ Acceptance:
   chat message. Inspection can explain the item's sources and actions.
 - Empty, stale, failed, desktop, and mobile states are intentional.
 
-Deployed to g7 as release 7a0f8a6 (2026-11-06): schema migrations ran on the
-live store (work_events authority/superseded, report purpose/artifacts). No real
-handover has run yet.
+Briefly deployed to g7 as release 7a0f8a6 (2026-11-06, 00:48-03:04 CST), then
+replaced by a release from main. The schema migrations stayed on the live store
+(work_events authority/superseded, report purpose/artifacts). Prod stays on main:
+pilot after this merges and is released. No real handover has run yet.
 
 First combined pilot: explicit handover, a real development or blocker, an
 operator correction, a controlled restart, and evidenced completion. Separately

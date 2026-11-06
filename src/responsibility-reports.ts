@@ -29,7 +29,8 @@ export type ReportReporter = "goblin" | "worker" | "migration";
 const text = (max: number) => z.string().trim().min(1).max(max);
 
 export const reportEvidenceSchema = z.strictObject({
-	/** The understanding's completionEvidence entry this covers, verbatim. */
+	/** The understanding's completionEvidence entry this covers, verbatim;
+	 *  on `dropped`, the claim that makes the work unnecessary. */
 	item: text(2000),
 	/** Where the evidence lives — a path, URL, command, or event. */
 	ref: text(2000),
@@ -70,6 +71,12 @@ export const reportInputSchema = z
 			ctx.addIssue({ code: "custom", path: ["resumeWhen"], message: "waiting needs resumeWhen" });
 		if (v.state === "done" && (v.evidence?.length ?? 0) === 0)
 			ctx.addIssue({ code: "custom", path: ["evidence"], message: "done needs evidence" });
+		if (v.state === "dropped" && (v.evidence?.length ?? 0) === 0)
+			ctx.addIssue({
+				code: "custom",
+				path: ["evidence"],
+				message: "dropped needs evidence of why nothing is left to do",
+			});
 		if (TERMINAL_REPORTS.has(v.state) && v.question !== undefined)
 			ctx.addIssue({
 				code: "custom",

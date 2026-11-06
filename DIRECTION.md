@@ -84,6 +84,11 @@ completion. Preparing an email batch may finish at a pre-send review checkpoint;
 upgrading a machine's kernel must achieve and verify the operational outcome,
 not stop at "ready for review." There is no universal human acceptance gate.
 
+Repo work stays in that repo's GitHub Issues; Goblin's responsibilities record
+what it owes the operator and can point at them (operator, 2026-11-06). Code
+reaches main only after Goblin delivers proof it works and/or a way to try it,
+and the operator gives the green light.
+
 ## Inference Is A Core Constraint
 
 Be resourceful with the inference actually available: subscriptions, trials,

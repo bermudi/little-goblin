@@ -75,7 +75,7 @@ describe("conversation store", () => {
 		store.append(c.id, [{ id: "a1", role: "assistant", parts: [{ type: "text", text: "hi" }] }]);
 		const h = store.history(c.id);
 		expect(h.map((m) => m.role)).toEqual(["user", "user", "assistant"]);
-		expect((h[0]!.parts[0] as { text: string }).text).toBe("one");
+		expect((h[0]!.parts[1] as { text: string }).text).toBe("one");
 		store.close();
 	});
 
@@ -93,9 +93,9 @@ describe("conversation store", () => {
 		store.append(c.id, [asst("4.")], { anchorSeq: 1 });
 		const h = store.history(c.id);
 		expect(h.map((m) => m.role)).toEqual(["user", "assistant", "user", "user"]);
-		expect((h[0]!.parts[0] as { text: string }).text).toBe("2+2?");
+		expect((h[0]!.parts[1] as { text: string }).text).toBe("2+2?");
 		expect((h[1]!.parts[0] as { text: string }).text).toBe("4.");
-		expect((h[2]!.parts[0] as { text: string }).text).toBe("2+5?");
+		expect((h[2]!.parts[1] as { text: string }).text).toBe("2+5?");
 		expect(store.lastUserSeq(c.id)).toBe(3);
 		store.close();
 	});
@@ -312,7 +312,7 @@ describe("history payload envelope", () => {
 			.all()[0]!.data;
 		const parsed = JSON.parse(raw) as { v?: number; message?: UIMessage };
 		expect(parsed.v).toBe(1);
-		expect(parsed.message!.parts[0]).toMatchObject({ type: "text", text: "one" });
+		expect(parsed.message!.parts[1]).toMatchObject({ type: "text", text: "one" });
 	});
 
 	test("bare legacy rows are wrapped once at next open; the read itself is envelope-only", () => {
@@ -330,7 +330,7 @@ describe("history payload envelope", () => {
 		store.close();
 		// Migration at open: wrap, and never re-wrap (idempotent).
 		const reopened = openStore(path);
-		expect(reopened.history(c.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual([
+		expect(reopened.history(c.id).map((m) => (m.parts[1] as { text: string }).text)).toEqual([
 			"legacy",
 		]);
 		const raw = reopened.db.query<{ data: string }, []>("SELECT data FROM events").all()[0]!.data;
@@ -399,7 +399,7 @@ describe("compaction pointers", () => {
 		expect(marker).toContain("before seq 2");
 		expect(marker).toContain('history_search action="context"');
 		expect(view[0]!.message.id).toBe("compact-2");
-		expect((view[1]!.message.parts[0] as { text: string }).text).toBe("three");
+		expect((view[1]!.message.parts[1] as { text: string }).text).toBe("three");
 		store.close();
 	});
 
@@ -1214,7 +1214,7 @@ describe("chat search", () => {
 		expect(store.eventContext(c.id, 99, 3)).toEqual([]);
 		const mid = store.eventContext(c.id, 3, 0);
 		expect(mid).toHaveLength(1);
-		expect((mid[0]!.message.parts[0] as { text: string }).text).toBe("three");
+		expect((mid[0]!.message.parts[1] as { text: string }).text).toBe("three");
 		store.close();
 	});
 });
@@ -1325,10 +1325,10 @@ describe("app channel store", () => {
 		// Histories are disjoint — writes on one side never cross.
 		store.append(app.id, [msg("app side")]);
 		store.append(tg.id, [msg("telegram side")]);
-		expect(store.history(app.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual([
+		expect(store.history(app.id).map((m) => (m.parts[1] as { text: string }).text)).toEqual([
 			"app side",
 		]);
-		expect(store.history(tg.id).map((m) => (m.parts[0] as { text: string }).text)).toEqual([
+		expect(store.history(tg.id).map((m) => (m.parts[1] as { text: string }).text)).toEqual([
 			"telegram side",
 		]);
 		store.close();

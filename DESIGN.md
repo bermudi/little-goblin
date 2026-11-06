@@ -180,8 +180,12 @@ Consequences:
   function above; there is no whole-turn budget and no newest-first eviction
   — an old image never degrades to a path reference because newer ones
   arrived.
-- The system prompt carries no automatic per-turn variability — no clock;
-  current time comes from `date` via bash when it matters. Operator edits
+- The system prompt carries no automatic per-turn variability — no clock.
+  Time reaches the model as a `data-context` part on each user message
+  (`src/message-context.ts`): arrival time with the box's offset and the
+  surface, stamped once at append and rendered only in the model view, so
+  replay is byte-stable. Rows from before the part stay unstamped, never
+  backfilled. `date` via bash answers "now" mid-turn. Operator edits
   (SOUL.md, AGENTS.md, USER.md, skills) load at conversation boundaries, not
   mid-run: the system prompt is frozen per conversation (built at the
   first turn), so a live conversation's prefix cache is never rewritten under

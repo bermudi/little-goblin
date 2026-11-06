@@ -5,6 +5,7 @@ import type { UIMessage } from "ai";
 import { z } from "zod";
 import { type Config, splitModelRef } from "./config.ts";
 import { log } from "./log.ts";
+import { stampArrival } from "./message-context.ts";
 import { MemoryDestinations } from "./memory/destinations.ts";
 import type { MemoryDocument } from "./memory/hindsight.ts";
 import { MemoryContexts, type MemoryEligibility, messageText } from "./memory/mod.ts";
@@ -748,6 +749,7 @@ export function openStore(dbPath: string): ConversationStore {
 				const contexts = Number(qRewindContexts.run(id, cut).changes);
 				const ratings = Number(qRewindRatings.run(id, cut).changes);
 				const seq = (qNextSeq.get(id)?.n ?? 0) + 1;
+				stampArrival(id, message, new Date());
 				qInsertEvent.run(
 					id,
 					seq,
@@ -853,6 +855,7 @@ export function openStore(dbPath: string): ConversationStore {
 					unarchived = true;
 				}
 				for (const [i, m] of messages.entries()) {
+					stampArrival(id, m, new Date(now));
 					qInsertEvent.run(
 						id,
 						start + i + 1,

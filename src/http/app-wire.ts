@@ -246,6 +246,10 @@ export interface TurnMetadata {
 	model: string;
 	finishReason: string;
 	durationMs: number;
+	/** Turn start → the model's first streamed content token (text,
+	 * reasoning, or tool input), same base as durationMs. Absent when
+	 * nothing streamed and on pre-stamp history. */
+	ttftMs?: number;
 	forcedCompletion: "repeat" | "watchdog" | "context" | null;
 	usage: {
 		/** Whole turn's billed prompt, summed across the tool loop's steps. */

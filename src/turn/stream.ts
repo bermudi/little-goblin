@@ -628,18 +628,35 @@ export async function driveStream<M extends WireMember>(
 	let pendingStep = false;
 	let streamError: string | null = null;
 	let errorHeld = false;
+	// First model-produced content this turn — the finish stamp reads it
+	// for the TTFT field. Text/reasoning deltas and tool input count;
+	// structural parts (start, start-step, finish-step) never do.
+	// Declared before the factory call — messageMetadata is invoked while
+	// parts flow, so the capture must exist by then.
+	let firstTokenMs: number | null = null;
 	const uiStream = toUIMessageStream<ToolSet, UIMessage>({
 		stream: result.stream,
 		sendReasoning: true,
 		...(deps.partial ? { originalMessages: [deps.partial] } : {}),
 		generateMessageId: randomUUID,
 		messageMetadata: ({ part }) => {
+			if (
+				firstTokenMs === null &&
+				(part.type === "text-delta" ||
+					part.type === "reasoning-delta" ||
+					part.type === "tool-input-start" ||
+					part.type === "tool-input-delta" ||
+					part.type === "tool-call")
+			) {
+				firstTokenMs = Date.now() - deps.turnStartMs;
+			}
 			if (part.type !== "finish") return undefined;
 			const forcedKind = state.forcedCompletion();
 			return {
 				model: modelLabel,
 				finishReason: part.finishReason,
 				durationMs: Date.now() - deps.turnStartMs,
+				...(firstTokenMs !== null ? { ttftMs: firstTokenMs } : {}),
 				...(forcedKind !== null ? { forcedCompletion: forcedKind } : {}),
 				usage: {
 					input: part.totalUsage.inputTokens ?? null,

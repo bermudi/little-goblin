@@ -354,8 +354,73 @@ describe("turn metadata usage", () => {
 			);
 		});
 		await act(async () => {});
+		// Fixed fixture: output 10 over durationMs 10 — the derived
+		// throughput rides every row at 1000 tok/s.
 		expect(dom.container.querySelector(".msg-meta")?.textContent).toBe(
-			`prov/model · 0.0s · ${expected}`,
+			`prov/model · 0.0s · ${expected} · 1000 tok/s`,
+		);
+	});
+
+	// The runtime stamps turn start → first streamed token; absent on
+	// pre-stamp history, present and seconds-formatted when it rides.
+	test("turn metadata ttft stamp", async () => {
+		const json = (body: unknown) =>
+			new Response(JSON.stringify(body), {
+				headers: { "content-type": "application/json" },
+			});
+		globalThis.fetch = (async (request: RequestInfo | URL) => {
+			const url =
+				typeof request === "string" ? request : request instanceof URL ? request.href : request.url;
+			if (url.endsWith("/messages"))
+				return json({
+					ratings: [],
+					rateableMessageIds: ["a1"],
+					messages: [
+						{
+							id: "a1",
+							role: "assistant",
+							parts: [{ type: "text", text: "done" }],
+							metadata: {
+								model: "prov/model",
+								durationMs: 4000,
+								ttftMs: 1900,
+								usage: { input: 300, output: 10, lastInput: 300, lastCacheRead: null },
+							},
+						},
+					],
+				});
+			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+			if (url.endsWith("/interrupted")) return json({ runs: [] });
+			return json({
+				model: "prov/model",
+				thinking: "off",
+				favorites: [],
+				catalog: [],
+				thinkingLevels: ["off"],
+			});
+		}) as typeof fetch;
+		dom.root = createRoot(dom.container);
+		await act(async () => {
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/meta-ttft"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			);
+		});
+		await act(async () => {});
+		expect(dom.container.querySelector(".msg-meta")?.textContent).toBe(
+			"prov/model · 4.0s · 300→10 tok · 2.5 tok/s · TTFT 1.9s",
 		);
 	});
 });

@@ -452,6 +452,38 @@ describe("driveStream", () => {
 		expect(md.promptChars!["identity"]).toBe("test".length);
 	});
 
+	test("turn metadata stamps ttft — turn start to the first content part", async () => {
+		const r = rig([textReply("done")], { turnStartMs: Date.now() });
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		const md = outcome.responseMessage?.metadata as { ttftMs?: number };
+		expect(typeof md.ttftMs).toBe("number");
+		expect(md.ttftMs!).toBeGreaterThanOrEqual(0);
+		expect(md.ttftMs!).toBeLessThan(10_000);
+	});
+
+	test("a step that never streams content leaves ttft unstamped", async () => {
+		const r = rig([
+			[
+				{ type: "stream-start", warnings: [] },
+				{
+					type: "finish",
+					finishReason: { unified: "stop", raw: undefined },
+					usage: {
+						inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+						outputTokens: { total: 0, text: undefined, reasoning: undefined },
+					},
+				},
+			],
+		], { turnStartMs: Date.now() });
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		if (outcome.kind !== "ok") return;
+		const md = outcome.responseMessage?.metadata as { ttftMs?: number };
+		expect(md.ttftMs).toBeUndefined();
+	});
+
 	test("a step's quota receipt rides data-context and the turn metadata", async () => {
 		const quota = {
 			limitName: "codex",

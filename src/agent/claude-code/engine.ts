@@ -228,6 +228,10 @@ interface RunState {
 	totalCacheWrite: number | null;
 	lastInput: number | null;
 	lastCacheRead: number | null;
+	// First model-produced content this turn — the finish stamp reads it
+	// for the TTFT field. Streamed deltas, a tool_use block opening, and
+	// an unstreamed complete message all count; null until one lands.
+	firstTokenMs: number | null;
 	// call tracking
 	stepCount: number;
 	sawToolUse: boolean;
@@ -263,6 +267,7 @@ export async function driveClaude<M extends WireMember>(
 		totalCacheWrite: null,
 		lastInput: null,
 		lastCacheRead: null,
+		firstTokenMs: null,
 		stepCount: 0,
 		sawToolUse: false,
 		lastStopReason: null,
@@ -441,6 +446,9 @@ export async function driveClaude<M extends WireMember>(
 	};
 
 	const handleStreamEvent = (ev: ClaudeStreamEvent): void => {
+		const noteFirstToken = (): void => {
+			if (run.firstTokenMs === null) run.firstTokenMs = Date.now() - deps.turnStartMs;
+		};
 		switch (ev.type) {
 			case "message_start":
 				flushAssistant();
@@ -457,6 +465,7 @@ export async function driveClaude<M extends WireMember>(
 					emit({ type: "reasoning-start", id: blockId(ev.index, "reasoning") });
 				} else if (block.type === "tool_use" && typeof block.id === "string") {
 					run.toolNameById.set(block.id, bareToolName(block.name ?? ""));
+					noteFirstToken();
 				}
 				return;
 			}
@@ -464,6 +473,7 @@ export async function driveClaude<M extends WireMember>(
 				const d = ev.delta;
 				if (d.type === "text_delta" && typeof d.text === "string") {
 					spendPendingCall();
+					noteFirstToken();
 					run.streamedBlocks.add(ev.index);
 					const id = blockId(ev.index, "text");
 					if (run.sawText && run.lastTextPartId !== id) head.onTextDelta("\n\n");
@@ -477,6 +487,7 @@ export async function driveClaude<M extends WireMember>(
 					d.thinking !== ""
 				) {
 					spendPendingCall();
+					noteFirstToken();
 					run.streamedBlocks.add(ev.index);
 					head.onReasoningDelta(d.thinking);
 					emit({
@@ -545,7 +556,13 @@ export async function driveClaude<M extends WireMember>(
 			run.partialMessages.push({ role: "assistant", content: curParts });
 		}
 		curMessage = message;
-		if (message.content.length > 0) spendPendingCall();
+		if (message.content.length > 0) {
+			spendPendingCall();
+			// A call the CLI never streamed lands whole here — its first
+			// content arrived at this moment; a streamed call already noted
+			// its own first token, so this stays a no-op there.
+			if (run.firstTokenMs === null) run.firstTokenMs = Date.now() - deps.turnStartMs;
+		}
 		for (const [i, block] of message.content.entries()) {
 			const part = wireFromBlock(
 				run,
@@ -786,6 +803,7 @@ export async function driveClaude<M extends WireMember>(
 		model: label,
 		finishReason,
 		durationMs: Date.now() - deps.turnStartMs,
+		...(run.firstTokenMs !== null ? { ttftMs: run.firstTokenMs } : {}),
 		usage: {
 			input: run.totalInput,
 			output: run.totalOutput,

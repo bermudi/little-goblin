@@ -130,6 +130,42 @@ describe("stale fixture sweep", () => {
 });
 
 describe("multi-file fixture cleanup", () => {
+	test("tests cannot create projects in an inherited Goblin home", async () => {
+		const stage = tmpDir("goblin-home-guard-");
+		const realHome = join(stage, "operator-home");
+		mkdirSync(realHome);
+		const victim = join(stage, "home-guard.test.ts");
+		const projects = join(import.meta.dir, "projects.ts");
+		const conversation = join(import.meta.dir, "conversation.ts");
+		writeFileSync(
+			victim,
+			[
+				'import { test } from "bun:test";',
+				`import { openProjects } from ${JSON.stringify(projects)};`,
+				`import { openStore } from ${JSON.stringify(conversation)};`,
+				'test("project without useHome", () => {',
+				'  const store = openStore(":memory:");',
+				'  openProjects(store).create({ name: "rig" });',
+				"  store.close();",
+				"});",
+			].join("\n"),
+		);
+		const proc = Bun.spawn([process.execPath, "test", victim], {
+			cwd: join(import.meta.dir, ".."),
+			env: { ...process.env, GOBLIN_HOME: realHome },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [out, err, code] = await Promise.all([
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+			proc.exited,
+		]);
+		if (code !== 0) console.error(out + err);
+		expect(code).toBe(0);
+		expect(readdirSync(realHome)).toEqual([]);
+	});
+
 	// Two generated victim files run under one spawned `bun test`: file
 	// b's fixtures must not outlive the process just because bun scoped
 	// testkit's afterEach to file a. Bun never fires process-exit

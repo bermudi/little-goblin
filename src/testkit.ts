@@ -10,7 +10,7 @@
 // ~15GB, until /tmp hit ENOSPC). The preload makes this hook global;
 // the import-time sweep below heals what killed runs leave behind.
 
-import { afterEach } from "bun:test";
+import { afterEach, beforeEach } from "bun:test";
 import { mkdtempSync, readdirSync, rmdirSync, rmSync, statSync, type Dirent } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -26,6 +26,12 @@ let savedHome: string | undefined;
 let homeSaved = false;
 
 let fixtureRoot: string | null = null;
+
+// Every test starts isolated, including tests that forget to call useHome.
+// Never trust an inherited GOBLIN_HOME: it may point at the operator's home.
+beforeEach(() => {
+	useHome("goblin-test-home-");
+});
 
 function fixtureRootDir(): string {
 	if (fixtureRoot === null) {

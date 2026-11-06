@@ -237,13 +237,7 @@ describe("deliberate responsibility follow-up", () => {
 		expect(programs.get(r.program.id)!.nextRun).not.toBe(r.program.nextRun);
 	});
 
-	for (const status of [
-		"paused",
-		"blocked",
-		"waiting_for_operator",
-		"completed",
-		"cancelled",
-	] as const) {
+	for (const status of ["paused", "completed", "cancelled"] as const) {
 		test(`${status} suppresses timed inference and does not retain an obsolete promise`, () => {
 			const r = rig();
 			const previous = r.plan();
@@ -258,6 +252,51 @@ describe("deliberate responsibility follow-up", () => {
 			expect(r.events()).toHaveLength(0);
 		});
 	}
+
+	test("waiting on the operator holds the silence backstop, not an agreed review", () => {
+		const r = rig();
+		r.resps.report(
+			r.id,
+			{ state: "blocked", reason: "needs a key", question: "add DEPLOY_KEY?" },
+			"goblin",
+		);
+		const silence = r.resps.get(r.id)!.followup;
+		expect(silence.kind).toBe("silence");
+		r.tick(silence.dueAt);
+		expect(r.events()).toHaveLength(0);
+		// Held, not consumed — the backstop is still owed once answered.
+		expect(r.resps.get(r.id)!.followup.token).toBe(silence.token);
+
+		const promise = r.plan(r.programs.get(r.program.id)!.nextRun!);
+		r.tick(promise.dueAt);
+		expect(r.events()).toHaveLength(1);
+	});
+
+	test("leaving the operator's stage re-arms the backstop instead of firing it stale", () => {
+		const r = rig();
+		r.resps.report(r.id, { state: "ready", reason: "at the checkpoint" }, "goblin");
+		const held = r.resps.get(r.id)!.followup.dueAt;
+		const next = r.programs.get(r.program.id)!.nextRun!;
+		r.tick(Date.parse(next) > Date.parse(held) ? next : held);
+		expect(r.events()).toHaveLength(0);
+		Bun.sleepSync(2);
+		r.resps.report(r.id, { state: "progress", reason: "carrying on" }, "goblin");
+		const rearmed = r.resps.get(r.id)!.followup;
+		expect(rearmed.kind).toBe("silence");
+		expect(Date.parse(rearmed.dueAt)).toBeGreaterThan(Date.parse(held));
+	});
+
+	test("the operator's correction releases a held silence backstop", () => {
+		const r = rig();
+		r.resps.report(r.id, { state: "ready", reason: "at the pre-send checkpoint" }, "goblin");
+		r.tick(r.resps.get(r.id)!.followup.dueAt);
+		expect(r.events()).toHaveLength(0);
+		r.svc.correct(r.id, { text: "looks good, carry on" });
+		const due = r.resps.get(r.id)!.followup.dueAt;
+		const next = r.programs.get(r.program.id)!.nextRun!;
+		r.tick(Date.parse(next) > Date.parse(due) ? next : due);
+		expect(r.events()).toHaveLength(1);
+	});
 
 	test("correction invalidates the old promise and wakes the correct coordination lane", () => {
 		const r = rig();
@@ -454,9 +493,48 @@ describe("deliberate responsibility follow-up", () => {
 				options,
 			),
 		).toMatchObject({ error: expect.stringContaining("not found in this project") });
-		r.resps.setStatus(r.id, "waiting_for_operator");
+		r.resps.setStatus(r.id, "paused");
 		expect(await tool.execute({ action: "followup", followup }, options)).toMatchObject({
 			error: expect.stringContaining("resume first"),
 		});
+	});
+	test("the coordination tool reports; done names each unverified evidence item and disarms on close", async () => {
+		const r = rig();
+		const tool = responsibilityTool({
+			resps: r.resps,
+			service: r.svc,
+			projectId: r.resp.projectId,
+			coordinationConversationId: r.conv.id,
+			handoverKey: "tool",
+			listFor: async () => [],
+		});
+		if (tool.execute === undefined) throw new Error("missing execute");
+		const options = { toolCallId: "report", messages: [], context: {} };
+		const check = (item: string) => ({ item, ref: "uname -r", checked: `${item} observed` });
+		expect(
+			await tool.execute(
+				{
+					action: "report",
+					report: { state: "done", reason: "booted", evidence: [check("Booted new kernel")] },
+				},
+				options,
+			),
+		).toMatchObject({ error: expect.stringContaining('"Driver smoke tests passed"') });
+		expect(r.resps.get(r.id)!.status).toBe("active");
+		expect(
+			await tool.execute(
+				{
+					action: "report",
+					report: {
+						state: "done",
+						reason: "verified",
+						evidence: [check("Booted new kernel"), check("Driver smoke tests passed")],
+					},
+				},
+				options,
+			),
+		).toMatchObject({ report: { state: "done", reporter: "goblin" }, stage: { stage: "closed" } });
+		expect(r.resps.get(r.id)!.status).toBe("completed");
+		expect(r.svc.armedStatus(r.id).armed).toBe(false);
 	});
 });

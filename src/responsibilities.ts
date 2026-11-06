@@ -29,14 +29,22 @@ import {
 	silenceFollowup,
 	type ResponsibilityFollowup,
 } from "./responsibility-followup.ts";
+import {
+	ensureReportsSchema,
+	missingEvidence,
+	type ReportInput,
+	type ReportReporter,
+	type ResponsibilityReport,
+	TERMINAL_REPORTS,
+	toReport,
+	reportInputSchema,
+} from "./responsibility-reports.ts";
+import { responsibilityStage } from "./responsibility-stage.ts";
 
-export type ResponsibilityStatus =
-	| "active"
-	| "waiting_for_operator"
-	| "blocked"
-	| "paused"
-	| "completed"
-	| "cancelled";
+// Lifecycle only. Whom the work waits for (the operator, goblin, a
+// worker) is derived from reports — responsibility-stage.ts — never
+// stored twice (design/programs.md → Reports and stages).
+export type ResponsibilityStatus = "active" | "paused" | "completed" | "cancelled";
 
 export type AttachmentHealth = "attached" | "missing" | "identity_changed" | "detached";
 
@@ -187,6 +195,19 @@ export interface ResponsibilityStore {
 	/** Statuses that still owe the operator follow-through. */
 	open(): Responsibility[];
 	setStatus(id: string, status: ResponsibilityStatus, opts?: { reason?: string }): void;
+	/** Append a structured report. `done` refuses unless evidence covers
+	 *  every completionEvidence entry; `done`/`dropped` close the
+	 *  responsibility in the same transaction. */
+	report(
+		id: string,
+		input: ReportInput,
+		reporter: ReportReporter,
+		opts?: { sourceKey?: string; revision?: number | null },
+	):
+		| { report: ResponsibilityReport; responsibility: Responsibility; duplicate: boolean }
+		| { refused: "closed" | "evidence-missing"; missing?: string[] };
+	latestReport(id: string): ResponsibilityReport | null;
+	reportsFor(id: string): ResponsibilityReport[];
 	/** A correction — the durable operator event that bumps revision. */
 	revise(id: string, understanding: Understanding): Responsibility;
 	setFollowup(id: string, programId: string | null): void;
@@ -279,7 +300,7 @@ export interface ResponsibilityStore {
 const respRowSchema = z.object({
 	responsibility_id: z.string(),
 	project_id: z.string(),
-	status: z.enum(["active", "waiting_for_operator", "blocked", "paused", "completed", "cancelled"]),
+	status: z.enum(["active", "paused", "completed", "cancelled"]),
 	revision: z.number(),
 	understanding_json: z.string(),
 	outcome: z.string(),
@@ -420,12 +441,7 @@ const OP_EDGES: Readonly<Record<OperationState, ReadonlySet<OperationState>>> = 
 	superseded: new Set(),
 };
 
-const OPEN_STATUSES: ReadonlySet<ResponsibilityStatus> = new Set([
-	"active",
-	"waiting_for_operator",
-	"blocked",
-	"paused",
-]);
+const OPEN_STATUSES: ReadonlySet<ResponsibilityStatus> = new Set(["active", "paused"]);
 
 // The arm truth is the linked program, never the persisted flags: the
 // program tool can disable or delete the follow-up behind the
@@ -469,6 +485,9 @@ export function ensureResponsibilitiesSchema(db: Database): void {
 		CREATE TABLE IF NOT EXISTS responsibilities (
 			responsibility_id TEXT PRIMARY KEY,
 			project_id TEXT NOT NULL REFERENCES projects(id),
+			-- waiting_for_operator/blocked are legacy: migrated to reports on
+			-- open and never written. The CHECK keeps them because narrowing
+			-- it means rebuilding an FK-referenced table.
 			status TEXT NOT NULL CHECK (status IN ('active','waiting_for_operator','blocked','paused','completed','cancelled')),
 			revision INTEGER NOT NULL DEFAULT 1,
 			understanding_json TEXT NOT NULL,
@@ -601,6 +620,38 @@ export function ensureResponsibilitiesSchema(db: Database): void {
 			rowsBackfilled: backfilled,
 		});
 	}
+	ensureReportsSchema(db);
+	migrateLegacyStatuses(db);
+}
+
+// Stored waiting/blocked statuses predate reports: each becomes an
+// active row plus a migration report that keeps the operator-facing
+// stage (blocked → waits on the operator) — one immediate transaction,
+// so a crash leaves either the old status or the full pair.
+function migrateLegacyStatuses(db: Database): void {
+	let migrated = 0;
+	db.transaction(() => {
+		const rows = db
+			.query<{ responsibility_id: string; status: string; revision: number }, []>(
+				"SELECT responsibility_id, status, revision FROM responsibilities WHERE status IN ('waiting_for_operator','blocked')",
+			)
+			.all();
+		const ts = new Date().toISOString();
+		const insert = db.prepare(
+			`INSERT INTO responsibility_reports (responsibility_id, revision, reporter, state, reason, evidence_json, created_at)
+			 VALUES (?, ?, 'migration', 'blocked', ?, '[]', ?)`,
+		);
+		const activate = db.prepare(
+			"UPDATE responsibilities SET status = 'active', updated_at = ? WHERE responsibility_id = ?",
+		);
+		for (const row of rows) {
+			insert.run(row.responsibility_id, row.revision, `stored status was ${row.status}`, ts);
+			activate.run(ts, row.responsibility_id);
+		}
+		migrated = rows.length;
+	}).immediate();
+	if (migrated > 0)
+		log.info("responsibility legacy statuses migrated to reports", { rows: migrated });
 }
 
 // deleteConversation's anchor check — the responsibilities whose
@@ -633,7 +684,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		"SELECT * FROM responsibilities WHERE project_id = ? ORDER BY created_at",
 	);
 	const qRespOpen = db.query<RespRow, []>(
-		"SELECT * FROM responsibilities WHERE status IN ('active','waiting_for_operator','blocked','paused') ORDER BY created_at",
+		"SELECT * FROM responsibilities WHERE status IN ('active','paused') ORDER BY created_at",
 	);
 	const qInsertResp = db.prepare(
 		`INSERT INTO responsibilities (responsibility_id, project_id, status, understanding_json, outcome, coordination_conversation_id, handover_key, created_at, updated_at, followup_json)
@@ -656,6 +707,19 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 	);
 	const qArmed = db.prepare(
 		"UPDATE responsibilities SET armed = ?, not_armed_reason = ?, updated_at = ? WHERE responsibility_id = ?",
+	);
+	const qInsertReport = db.prepare(
+		`INSERT INTO responsibility_reports (responsibility_id, revision, reporter, state, reason, question, resume_when, evidence_json, source_key, purpose, artifacts_json, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+	);
+	const qReportBySource = db.query<unknown, [string]>(
+		"SELECT * FROM responsibility_reports WHERE source_key = ?",
+	);
+	const qLatestReport = db.query<unknown, [string]>(
+		"SELECT * FROM responsibility_reports WHERE responsibility_id = ? ORDER BY report_id DESC LIMIT 1",
+	);
+	const qReports = db.query<unknown, [string]>(
+		"SELECT * FROM responsibility_reports WHERE responsibility_id = ? ORDER BY report_id",
 	);
 	const qAttach = db.prepare(
 		`INSERT INTO attachments (responsibility_id, server, session, agent_name, pane_id, terminal_id, agent_session, kind, cwd, baseline_json, cursor_json, created_at)
@@ -797,6 +861,111 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			}).immediate();
 			log.info("responsibility status", { responsibility: id, status, reason: opts?.reason });
 		},
+
+		report(id, rawInput, reporter, opts) {
+			// Every read re-parses strictly: an unvalidated row would make
+			// this responsibility's reads throw for good.
+			const input = reportInputSchema.parse(rawInput);
+			let result:
+				| { report: ResponsibilityReport; responsibility: Responsibility; duplicate: boolean }
+				| { refused: "closed" | "evidence-missing"; missing?: string[] }
+				| undefined;
+			db.transaction(() => {
+				const current = requireResp(id);
+				if (opts?.sourceKey !== undefined) {
+					const prior = qReportBySource.get(opts.sourceKey);
+					if (prior !== null) {
+						result = { report: toReport(prior), responsibility: current, duplicate: true };
+						return;
+					}
+				}
+				if (!OPEN_STATUSES.has(current.status)) {
+					result = { refused: "closed" };
+					return;
+				}
+				if (input.state === "done") {
+					const missing = missingEvidence(
+						current.understanding.completionEvidence,
+						input.evidence ?? [],
+					);
+					if (missing.length > 0) {
+						result = { refused: "evidence-missing", missing };
+						return;
+					}
+				}
+				const ts = now();
+				const priorLatest = qLatestReport.get(id);
+				const operations = qOpsFor.all(id).map((r) => toOperation(opRowSchema.parse(r)));
+				const heldBefore =
+					responsibilityStage(
+						current,
+						priorLatest === null ? null : toReport(priorLatest),
+						operations,
+					).waitsFor === "operator";
+				const row = qInsertReport.get(
+					id,
+					// A worker states against the revision its run started from:
+					// a correction since then must overtake its claim.
+					Math.min(current.revision, opts?.revision ?? current.revision),
+					reporter,
+					input.state,
+					input.reason,
+					input.question ?? null,
+					input.resumeWhen ?? null,
+					JSON.stringify(input.evidence ?? []),
+					opts?.sourceKey ?? null,
+					input.purpose ?? "status",
+					JSON.stringify(input.artifacts ?? []),
+					ts,
+				);
+				const report = toReport(row);
+				if (TERMINAL_REPORTS.has(input.state)) {
+					qRespStatus.run("completed", ts, ts, id);
+					qPlan.run(JSON.stringify(silenceFollowup(new Date(ts))), ts, id);
+				} else if (
+					// The silence held while the operator owned the move; leaving
+					// that stage starts a fresh bound instead of firing the
+					// backstop that went overdue during the hold.
+					heldBefore &&
+					current.followup.kind === "silence" &&
+					responsibilityStage(current, report, operations).waitsFor !== "operator"
+				) {
+					qPlan.run(JSON.stringify(silenceFollowup(new Date(ts))), ts, id);
+				}
+				result = { report, responsibility: requireResp(id), duplicate: false };
+			}).immediate();
+			const r = result!;
+			if ("refused" in r) {
+				log.warn("responsibility report refused", {
+					responsibility: id,
+					state: input.state,
+					reporter,
+					refused: r.refused,
+					missing: r.missing,
+				});
+			} else {
+				log.info("responsibility report", {
+					responsibility: id,
+					report: r.report.reportId,
+					state: r.report.state,
+					reporter,
+					revision: r.report.revision,
+					question: r.report.question !== null,
+					evidence: r.report.evidence.length,
+					purpose: r.report.purpose,
+					artifacts: r.report.artifacts.length,
+					status: r.responsibility.status,
+					duplicate: r.duplicate,
+					source: r.report.sourceKey,
+				});
+			}
+			return r;
+		},
+		latestReport(id) {
+			const row = qLatestReport.get(id);
+			return row === null ? null : toReport(row);
+		},
+		reportsFor: (id) => qReports.all(id).map(toReport),
 
 		revise(id, understanding) {
 			const parsed = understandingSchema.parse(understanding);

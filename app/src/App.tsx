@@ -2167,7 +2167,6 @@ function AppShell() {
 				)}
 				{page === "projects" && (
 					<ProjectsIndex
-						token={token}
 						projects={projectList}
 						onOpen={openProject}
 						onNew={() => setCreateProjectOpen(true)}
@@ -2230,6 +2229,7 @@ function AppShell() {
 									renderRow={renderRow}
 									onChanged={() => void refresh()}
 									onOpenNote={openNote}
+									onConversation={openConversation}
 								/>
 								{startFailed && (
 									<p className="error">

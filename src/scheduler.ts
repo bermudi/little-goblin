@@ -14,6 +14,8 @@ import { programFireTag } from "./tags.ts";
 import { telegramAddressOf } from "./targets.ts";
 import { wakeTarget, type WakeDeps } from "./wake.ts";
 import type { ResponsibilityStore } from "./responsibilities.ts";
+import { authorityStamp } from "./responsibility-authority.ts";
+import { responsibilityStage } from "./responsibility-stage.ts";
 import { isFollowupProgram } from "./responsibility-followup.ts";
 import type { DevelopmentInput } from "./wake-store.ts";
 import { latestFireAtOrBefore, type Program, type ProgramsStore } from "./programs.ts";
@@ -30,7 +32,10 @@ export interface SchedulerDeps extends WakeDeps {
 	 *  wake path; its occurrence lands here as a durable development
 	 *  on the responsibility's coordination conversation. Absent = a
 	 *  loud skip, never a misrouted fire. */
-	responsibilities?: Pick<ResponsibilityStore, "get" | "attachmentsFor" | "consumeFollowup">;
+	responsibilities?: Pick<
+		ResponsibilityStore,
+		"get" | "attachmentsFor" | "consumeFollowup" | "latestReport" | "operationsFor"
+	>;
 	recordDevelopment?: ((input: DevelopmentInput) => void) | undefined;
 }
 
@@ -569,6 +574,25 @@ function fireResponsibility(
 				...followup,
 			});
 			return true;
+		} // The silence backstop catches stalled work, not an operator who
+		// hasn't answered yet: while the stage waits on them, it holds.
+		// An explicit commitment (an agreed review time) still fires.
+		if (followup.kind === "silence") {
+			const stage = responsibilityStage(
+				resp,
+				resps.latestReport(resp.responsibilityId),
+				resps.operationsFor(resp.responsibilityId),
+			);
+			if (stage.waitsFor === "operator") {
+				// Debug: an overdue hold repeats on every scheduler tick.
+				log.debug("silence check-in held — waiting on the operator", {
+					program: program.id,
+					responsibility: resp.responsibilityId,
+					stage: stage.stage,
+					reason: stage.reason,
+				});
+				return true;
+			}
 		}
 	}
 	const occurrence = (scheduledFor ?? now).toISOString();
@@ -614,6 +638,7 @@ function fireResponsibility(
 		},
 		origin: "scheduler",
 		responsibilityId: resp.responsibilityId,
+		authority: authorityStamp(resp),
 		// The text carries mutable state (revision, understanding,
 		// attachment health), so a crash-window replay after a correction
 		// re-records the same occurrence key with drifted text. The

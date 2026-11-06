@@ -93,6 +93,12 @@ function feed(paused: boolean, detached: boolean): AppFeedItem {
 			},
 		],
 		operations: [],
+		stage: paused
+			? { waitsFor: "operator", stage: "paused", reason: "paused by the operator" }
+			: { waitsFor: "worker", stage: "working", reason: "no report yet" },
+		latestReport: null,
+		posts: [],
+		postsTruncated: 0,
 		events: [],
 		eventsTruncated: 0,
 		nextCheckinAt: null,
@@ -160,6 +166,11 @@ test("a stale poll that lands after a mutation's refresh cannot restore obsolete
 	const paused = {
 		...active,
 		responsibility: { ...active.responsibility, status: "paused" as const },
+		stage: {
+			waitsFor: "operator" as const,
+			stage: "paused" as const,
+			reason: "paused by the operator",
+		},
 	};
 	let latest: AppFeedItem = active;
 	// While gating, every GET is held in order — the test decides which
@@ -183,7 +194,7 @@ test("a stale poll that lands after a mutation's refresh cannot restore obsolete
 	await act(async () =>
 		root?.render(<ResponsibilityFeed token={null} projectId={null} pollMs={5} />),
 	);
-	expect(container.querySelector(".resp-status")?.textContent).toBe("active");
+	expect(container.querySelector(".resp-status")?.textContent).toBe("working");
 	// Gated slow reads hold the one ordinary poll in flight; the interval
 	// must not stack more on top of it.
 	gating = true;
@@ -231,7 +242,10 @@ test("a truncated history names the older events still on the record", async () 
 	);
 	root = createRoot(container);
 	await act(async () => root?.render(<ResponsibilityFeed token={null} projectId={null} />));
-	container.querySelector("details")!.open = true;
+	await act(async () => {
+		container.querySelector("details")!.open = true;
+		await sleep(1);
+	});
 	expect(container.querySelector(".resp-events-older")?.textContent).toContain(
 		"3 older events on the record",
 	);
@@ -305,7 +319,10 @@ for (const [label, action] of [
 		);
 		root = createRoot(container);
 		await act(async () => root?.render(<ResponsibilityFeed token={null} projectId={null} />));
-		container.querySelector("details")!.open = true;
+		await act(async () => {
+			container.querySelector("details")!.open = true;
+			await sleep(1);
+		});
 		if (action === "correct") {
 			await act(async () => button("Correct").click());
 			const textarea = container.querySelector("textarea")!;
@@ -347,3 +364,117 @@ for (const [label, action] of [
 		}
 	});
 }
+
+function post(
+	reportId: number,
+	reporter: "goblin" | "worker",
+	review: AppFeedItem["posts"][number]["review"],
+	over: Partial<AppFeedItem["posts"][number]["report"]> = {},
+): AppFeedItem["posts"][number] {
+	return {
+		report: {
+			reportId,
+			responsibilityId: "r1",
+			revision: 1,
+			reporter,
+			state: "ready",
+			reason: `report ${reportId}`,
+			question: null,
+			resumeWhen: null,
+			evidence: [],
+			purpose: "status",
+			artifacts: [],
+			sourceKey: null,
+			createdAt: "2026-10-19T00:00:00Z",
+			...over,
+		},
+		review,
+		current: true,
+	};
+}
+
+test("the newest post reads at a glance, labelled by whose word it is, and opens the work", async () => {
+	const item: AppFeedItem = {
+		...feed(false, false),
+		posts: [
+			post(2, "worker", "unreviewed", {
+				state: "blocked",
+				reason: "pi run #4 asks the operator",
+				question: "Which branch should the fix land on?",
+			}),
+			post(1, "goblin", "assessed", { state: "progress", reason: "tests reproduced" }),
+		],
+		postsTruncated: 2,
+	};
+	globalThis.fetch = Object.assign(() => Promise.resolve(Response.json({ items: [item] })), {
+		preconnect: realFetch.preconnect,
+	});
+	const opened: string[] = [];
+	root = createRoot(container);
+	await act(async () =>
+		root?.render(
+			<ResponsibilityFeed token={null} projectId={null} onConversation={(id) => opened.push(id)} />,
+		),
+	);
+	const glance = container.querySelector(".resp-glance")!;
+	expect(glance.querySelectorAll(".resp-post")).toHaveLength(1);
+	expect(glance.querySelector(".resp-post-review")?.textContent).toBe("worker claim · unreviewed");
+	expect(glance.querySelector(".resp-post-question")?.textContent).toContain(
+		"Which branch should the fix land on?",
+	);
+	await act(async () => (glance.querySelector(".resp-open-conv") as HTMLButtonElement).click());
+	expect(opened).toEqual(["c1"]);
+
+	// Expanded, the row lists every post in the window and names the rest.
+	const details = container.querySelector("details")!;
+	await act(async () => {
+		details.open = true;
+		details.dispatchEvent(new win.Event("toggle") as unknown as Event);
+	});
+	expect(container.querySelector(".resp-glance")).toBeNull();
+	const listed = [...container.querySelectorAll(".resp-detail .resp-post-review")].map(
+		(n) => n.textContent,
+	);
+	expect(listed).toEqual(["worker claim · unreviewed", "goblin"]);
+	expect(container.querySelector(".resp-detail")?.textContent).toContain(
+		"2 older posts on the record",
+	);
+});
+
+test("a draft post names its purpose and links its artifacts", async () => {
+	const draft = post(1, "goblin", "assessed", {
+		purpose: "draft",
+		artifacts: [
+			{ title: "PR", ref: "https://example.test/pr/9" },
+			{ title: "notes", ref: "docs/upgrade.md" },
+		],
+	});
+	const item: AppFeedItem = { ...feed(false, false), posts: [draft] };
+	globalThis.fetch = Object.assign(() => Promise.resolve(Response.json({ items: [item] })), {
+		preconnect: realFetch.preconnect,
+	});
+	root = createRoot(container);
+	await act(async () => root?.render(<ResponsibilityFeed token={null} projectId={null} />));
+	const card = container.querySelector(".resp-glance .resp-post")!;
+	expect(card.querySelector(".resp-post-purpose")?.textContent).toBe("draft");
+	expect(card.querySelector(".resp-artifacts a")?.getAttribute("href")).toBe(
+		"https://example.test/pr/9",
+	);
+	// A path is shown, never turned into a link the browser can't open.
+	expect(card.querySelector(".resp-artifacts code")?.textContent).toBe("docs/upgrade.md");
+});
+
+test("a post overtaken by a correction says so", async () => {
+	const stale = { ...post(1, "goblin", "assessed"), current: false };
+	const item: AppFeedItem = { ...feed(false, false), posts: [stale] };
+	globalThis.fetch = Object.assign(() => Promise.resolve(Response.json({ items: [item] })), {
+		preconnect: realFetch.preconnect,
+	});
+	root = createRoot(container);
+	await act(async () => root?.render(<ResponsibilityFeed token={null} projectId={null} />));
+	const card = container.querySelector(".resp-glance .resp-post")!;
+	expect(card.className).toContain("resp-post-stale");
+	expect(card.textContent).toContain("before a correction");
+	// No navigation seam, no dead button.
+	expect(container.querySelector(".resp-open-conv")).toBeNull();
+});

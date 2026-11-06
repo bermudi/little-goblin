@@ -76,6 +76,32 @@ describe("subagents owner", () => {
 		);
 	});
 
+	test("a linked run's settle hook runs before its wake; a hook failure keeps the notice pending", async () => {
+		const seen: { status: string; responsibility: string | null; wakesBefore: number }[] = [];
+		let fail = true;
+		const r = rig({
+			settled: (row) => {
+				seen.push({ status: row.status, responsibility: row.responsibilityId, wakesBefore: r.wakes.length });
+				if (fail) throw new Error("report store down");
+			},
+		});
+		const o = await open(r);
+		r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "done-ok" } }] });
+		const row = await o.start(job(r, "linked", { responsibilityId: "resp-1" }));
+		expect(row.responsibilityId).toBe("resp-1");
+		await until(() => r.runs.get(row.id)?.status === "done", "run done");
+		await until(() => seen.length === 1, "hook ran");
+		expect(r.wakes).toHaveLength(0);
+		expect(r.runs.get(row.id)!.noticePending).toBe(true);
+
+		fail = false;
+		await o.scan();
+		await until(() => r.wakes.length === 1, "notice retried");
+		expect(seen.at(-1)).toEqual({ status: "done", responsibility: "resp-1", wakesBefore: 0 });
+		expect(r.wakes[0]!.text).toContain("Responsibility resp-1: this is the worker's claim");
+		expect(r.runs.get(row.id)!.noticePending).toBe(false);
+	});
+
 	test("maxRuns gates the fourth run until a slot frees", async () => {
 		const r = rig({ maxRuns: 1 });
 		const o = await open(r);

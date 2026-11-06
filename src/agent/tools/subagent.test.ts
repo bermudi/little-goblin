@@ -12,6 +12,8 @@ function fakeRun(over: Partial<SubagentRun> = {}): SubagentRun {
 		kind: "worker",
 		conversationId: CONV,
 		workspace: "/ws",
+		responsibilityRevision: null,
+		responsibilityId: null,
 		desktop: null,
 		piConversationId: "7",
 		piSubmissionId: "9",
@@ -43,7 +45,11 @@ function fakeRun(over: Partial<SubagentRun> = {}): SubagentRun {
 	};
 }
 
-function rig(owner: Partial<Subagents>, flags?: { worker?: boolean; computer?: boolean }) {
+function rig(
+	owner: Partial<Subagents>,
+	flags?: { worker?: boolean; computer?: boolean },
+	checkResponsibility?: (id: string) => string | null,
+) {
 	const subagents: Subagents = {
 		start: async () => fakeRun(),
 		list: () => [fakeRun()],
@@ -62,9 +68,32 @@ function rig(owner: Partial<Subagents>, flags?: { worker?: boolean; computer?: b
 		subagents,
 		workerEnabled: flags?.worker ?? true,
 		computerEnabled: flags?.computer ?? true,
+		checkResponsibility,
 	};
 	return subagentTool(deps);
 }
+
+describe("subagent responsibility link", () => {
+	test("start links only a responsibility the project check admits", async () => {
+		const starts: unknown[] = [];
+		const check = (id: string) => (id === "resp-ok" ? null : `responsibility ${id} not found in this project`);
+		const t = rig({ start: async (input) => (starts.push(input), fakeRun()) }, undefined, check);
+		expect(
+			await t.execute!({ action: "start", kind: "worker", task: "t", responsibility: "resp-other" }, opts),
+		).toEqual({ error: "responsibility resp-other not found in this project" });
+		expect(starts).toEqual([]);
+		await t.execute!({ action: "start", kind: "worker", task: "t", responsibility: "resp-ok" }, opts);
+		expect(starts).toEqual([expect.objectContaining({ responsibilityId: "resp-ok" })]);
+	});
+
+	test("outside a project conversation a link is refused, an unlinked start proceeds", async () => {
+		const t = rig({});
+		expect(
+			await t.execute!({ action: "start", kind: "worker", task: "t", responsibility: "resp-ok" }, opts),
+		).toEqual({ error: "responsibility links need a project conversation" });
+		expect(await t.execute!({ action: "start", kind: "worker", task: "t" }, opts)).toMatchObject({ id: 3 });
+	});
+});
 
 describe("subagentInputSchema", () => {
 	test("accepts every action's valid shape", () => {

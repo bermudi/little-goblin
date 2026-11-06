@@ -234,14 +234,112 @@ Rulings:
 
   Corrections, changed lifecycle status, and deliberate reattachment
   invalidate the old review and establish a fresh silence backstop.
-  Paused, blocked, waiting, completed, and cancelled work gets no timed
-  inference; resumption never resurrects the old promise. This slice
-  does not implement agreed waiting reminders or blocker resumption
-  conditions. Stale disabled/deleted/rescheduled follow-up snapshots
+  Paused, completed, and cancelled work gets no timed inference;
+  resumption never resurrects the old promise. While the derived stage
+  (below) waits on the operator, the silence backstop is held — not
+  consumed — and an explicit commitment still fires: it is the agreed
+  reminder. A report that moves the stage off the
+  operator re-arms a fresh silence bound, so the overdue check does not
+  fire stale. This slice does not implement waiting reminders beyond that. Stale disabled/deleted/rescheduled follow-up snapshots
   cannot fire. Already enqueued developments remain historical facts:
   turns must re-read current authority before acting, and existing
   revision/generation/send fences still govern effects. No new generic
   wake revocation or completion-verification protocol is implied.
+
+  **Reports and stages (2026-11-02):** whom a responsibility waits for
+  is derived, never stored twice. Stored status is lifecycle only —
+  `active | paused | completed | cancelled`; the legacy
+  `waiting_for_operator`/`blocked` values migrate on open into `active`
+  plus a `migration` report (the column's CHECK still admits them —
+  narrowing it means rebuilding an FK-referenced table — but nothing
+  writes them). `responsibility_reports` is append-only:
+  `progress | waiting | ready | blocked | failed | done | dropped`, a
+  reason, an optional single `question` for the operator, a
+  `resumeWhen` (required for `waiting`, an external condition), evidence
+  items `{item, ref, checked}`, the revision it was stated against, and
+  the reporter — `goblin` (the coordinating turn's assessment of the
+  Herdr observations), `worker` (reserved for pi-durable runs, which
+  already end through tools), or `migration`. A worker's claim and
+  goblin's assessment stay distinguishable at the data level.
+
+  `responsibility-stage.ts` is the one derivation, first match wins:
+  closed → paused (operator) → an `uncertain` send (goblin reconciles) →
+  a question (operator) → `ready` = review at a task checkpoint
+  (operator) → `blocked`/`failed` (operator) → `waiting` (nobody, names
+  the condition) → working (worker). A report stated against an older
+  revision no longer holds: every operator correction bumps revision and
+  makes it goblin's move (`assess`), naming any open question to re-ask
+  or resolve, because an unrelated correction must not erase it. The feed pill, Attention (`responsibility` items,
+  pause excluded — it is the operator's own choice) and the scheduler's
+  silence hold read this function and nothing else.
+
+  Closing is a report, never a status flip from the agent: `done`
+  refuses unless evidence covers every `completionEvidence` entry
+  verbatim, naming what was checked; `dropped` (nothing to do —
+  superseded, not reproducible) needs at least one evidence item saying
+  what was checked, but not the completion entries. Both close in
+  the same transaction as the report. Operator pause/resume/cancel stay
+  direct lifecycle controls. There is no universal acceptance gate:
+  `ready` waits for review only when the task has a checkpoint; verified
+  `done` closes on its own.
+
+  **Worker reports (2026-11-02):** a pi-durable run is linked to a
+  responsibility only explicitly — `subagent start responsibility:<id>`,
+  admitted when the id is open in the conversation's own project; no
+  matching by topic or by "the project's only open one". The link lives
+  on the run row. Each settlement of a linked run files one `worker`
+  report before its notice wakes the conversation (`SubagentsDeps.settled`,
+  inside the notice retry: a failed write leaves the notice pending and
+  the next scan files it): `finish` → `ready` with the result,
+  `ask_operator` → `blocked` with the question verbatim, a crash
+  resolution hold → `blocked` without one (goblin decides those),
+  failure → `failed`; a stop states nothing. The key
+  `subagent:<run>:<inputRev>:<status>` dedupes retried notices while a
+  new input's settlement is a new report. Stage: a question goes to the
+  operator whoever asked; any other current worker report is goblin's
+  move (`assess`) — a worker's `ready` never closes or reaches the
+  operator as review until goblin reports on it. A worker cannot report
+  `done`. A run's reports carry the revision stamped when it was
+  linked, so a correction since then overtakes the claim and it becomes
+  goblin's move, even after a steer. A report that can never file (row
+  gone, invalid) is logged and the notice still wakes. Herdr panes have no such tool path: goblin reports for them.
+
+  Borrowed from dsh-superagent (deepseek-ai/dsh-superagent-prototype,
+  docs/001 and 003): the Report vocabulary incl. `dropped`, the
+  first-match stage table labelled by whom it waits for, the
+  `human_action`-style structured question forwarded unchanged, the
+  Executor that reports only through structured tools, and the rejected concept
+  "inferring 'waiting on a person' from a report's free text". Not
+  taken: their Mandate/Policy/admission machinery (one operator), and
+  completion bound to an external PR close — our evidence items play
+  that role per task.
+
+- **Queued authority (2026-11-02).** Developments recorded by
+  autonomous recorders (the scheduler's check-ins, the observer, the mail
+  watcher) carry a stamp of the authority they acted on: responsibility
+  status and revision, plus attachment id and generation for an
+  observation. Operator-origin developments (handover, correction) carry
+  none, because they are the authority. When the wake carrying a stamped
+  development appends its trigger, one predicate (`stillAuthorized`,
+  `src/responsibility-authority.ts`) re-checks the stamp in the commit
+  transaction. These lapse it: a status change (pause, close), an
+  operator correction (revision bump), a detach, or a re-bind (generation
+  bump). A lapsed development is never dropped: it happened, so it is
+  still delivered, but its line is prefixed `[superseded — <reason>;
+  history only, not authority to act]`. The verdict is written to the
+  event once, before the append, so the trigger text never changes after
+  commit and retries submit the same message. This is not generic wake
+  revocation: wakes are pending only while their conversation is busy,
+  and suppressing a delivered fact would lose work. A malformed stamp is
+  corruption: the commit throws and nothing is appended. Prompt
+  operations already carry the same check (`validateForSend`: revision
+  and attachment generation). Project archive is visibility only
+  (design/app.md → Archiving), not authority: it hides the rail entry and
+  does not pause a responsibility, and a delivered wake unarchives the
+  coordination conversation as any appended event does. Stopping work
+  means pausing or closing the responsibility. Borrowed from
+  dsh-superagent: re-checking the original permission before a held
+  action resumes.
 
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an

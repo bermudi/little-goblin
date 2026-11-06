@@ -13,6 +13,8 @@ import type {
 } from "./responsibilities.ts";
 import { armedView } from "./responsibilities.ts";
 import { latestFireAtOrBefore, nextFire, type ProgramsStore } from "./programs.ts";
+import { type ResponsibilityReport, toReport } from "./responsibility-reports.ts";
+import { responsibilityStage, type ResponsibilityStage } from "./responsibility-stage.ts";
 
 export interface FeedWake {
 	wakeId: number;
@@ -34,10 +36,32 @@ export interface FeedEvent {
 	wake: FeedWake | null;
 }
 
+/** Whose word a post is, and whether goblin has stood behind it. A
+ *  worker's claim stays `unreviewed` until goblin files a later report
+ *  of its own on the same responsibility. */
+export type PostReview = "assessed" | "unreviewed" | "reviewed" | "migrated";
+
+/** An outcome post — a report, the work's stated result or need. Routine
+ *  activity (check-ins, observations) stays in `events`. */
+export interface FeedPost {
+	report: ResponsibilityReport;
+	review: PostReview;
+	/** Stated at the responsibility's current revision; false once an
+	 *  operator correction has answered or overtaken it. */
+	current: boolean;
+}
+
 export interface FeedItem {
 	responsibility: Responsibility;
 	attachments: Attachment[];
 	operations: PromptOperation[];
+	/** Whom the work waits for — the one derivation (responsibility-stage.ts). */
+	stage: ResponsibilityStage;
+	latestReport: ResponsibilityReport | null;
+	/** Newest first, bounded by FEED_POST_WINDOW. */
+	posts: FeedPost[];
+	/** Older reports the window omitted — the rows remain. */
+	postsTruncated: number;
 	events: FeedEvent[];
 	/** Older durable events the window omitted — the rows remain. */
 	eventsTruncated: number;
@@ -76,6 +100,41 @@ interface EventRow {
 // (its history is unprunable by ruling), while the app refetches every 15s —
 // so the payload is bounded by this window, never by the work.
 export const FEED_EVENT_WINDOW = 50;
+export const FEED_POST_WINDOW = 20;
+
+function feedPosts(
+	db: Database,
+	resp: Pick<Responsibility, "responsibilityId" | "revision">,
+): { posts: FeedPost[]; truncated: number } {
+	const reports = db
+		.query<unknown, [string, number]>(
+			"SELECT * FROM responsibility_reports WHERE responsibility_id = ? ORDER BY report_id DESC LIMIT ?",
+		)
+		.all(resp.responsibilityId, FEED_POST_WINDOW)
+		.map(toReport);
+	const total = db
+		.query<{ n: number }, [string]>(
+			"SELECT COUNT(*) AS n FROM responsibility_reports WHERE responsibility_id = ?",
+		)
+		.get(resp.responsibilityId)!.n;
+	// Walking newest → oldest: a worker claim is reviewed once any goblin
+	// report follows it. A goblin report older than the window cannot
+	// follow a claim inside it, so the window decides nothing wrongly.
+	let goblinAfter = false;
+	const posts = reports.map((report): FeedPost => {
+		const review: PostReview =
+			report.reporter === "goblin"
+				? "assessed"
+				: report.reporter === "migration"
+					? "migrated"
+					: goblinAfter
+						? "reviewed"
+						: "unreviewed";
+		if (report.reporter === "goblin") goblinAfter = true;
+		return { report, review, current: report.revision === resp.revision };
+	});
+	return { posts, truncated: total - posts.length };
+}
 
 function feedEvents(
 	db: Database,
@@ -151,6 +210,9 @@ function item(deps: FeedDeps, responsibility: Responsibility): FeedItem {
 						),
 					).toISOString();
 	}
+	const operations = deps.resps.operationsFor(responsibility.responsibilityId);
+	const latestReport = deps.resps.latestReport(responsibility.responsibilityId);
+	const { posts, truncated: postsTruncated } = feedPosts(deps.db, responsibility);
 	return {
 		responsibility: {
 			...responsibility,
@@ -158,12 +220,21 @@ function item(deps: FeedDeps, responsibility: Responsibility): FeedItem {
 			notArmedReason: arm.reason,
 		},
 		attachments: deps.resps.attachmentsFor(responsibility.responsibilityId),
-		operations: deps.resps.operationsFor(responsibility.responsibilityId),
+		operations,
+		stage: responsibilityStage(responsibility, latestReport, operations),
+		latestReport,
+		posts,
+		postsTruncated,
 		events,
 		eventsTruncated: truncated,
 		nextCheckinAt,
 		nextCheckinReason: nextCheckinAt === null ? null : responsibility.followup.reason,
-		lastActivityAt: events.length === 0 ? null : events[events.length - 1]!.createdAt,
+		// Freshness is the newest of a development and a report: a post filed
+		// just now must not read "no activity" because no event carries it.
+		lastActivityAt: [
+			events.length === 0 ? null : events[events.length - 1]!.createdAt,
+			latestReport?.createdAt ?? null,
+		].reduce<string | null>((a, b) => (a === null || (b !== null && b > a) ? b : a), null),
 	};
 }
 

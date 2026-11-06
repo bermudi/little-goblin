@@ -21,6 +21,7 @@ import {
 } from "../responsibilities.ts";
 import type { ResponsibilityService } from "../responsibility-service.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
+import type { AppResponsibilityFeed } from "./app-wire.ts";
 
 export interface AppResponsibilityDeps {
 	feed: FeedDeps;
@@ -83,7 +84,9 @@ export async function handleResponsibilitiesRoute(
 
 	// Home aggregation — open responsibilities across projects.
 	if (path === "/api/app/responsibilities" && req.method === "GET") {
-		return Response.json({ items: feedOpen(respsDeps.feed) }, { headers: NO_STORE });
+		return Response.json({ items: feedOpen(respsDeps.feed) } satisfies AppResponsibilityFeed, {
+			headers: NO_STORE,
+		});
 	}
 
 	// Project feed — every responsibility under the project.
@@ -94,7 +97,7 @@ export async function handleResponsibilitiesRoute(
 			return Response.json({ error: "no such project" }, { status: 404, headers: NO_STORE });
 		}
 		return Response.json(
-			{ items: feedForProject(respsDeps.feed, project.id) },
+			{ items: feedForProject(respsDeps.feed, project.id) } satisfies AppResponsibilityFeed,
 			{ headers: NO_STORE },
 		);
 	}

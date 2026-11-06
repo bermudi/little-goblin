@@ -254,9 +254,9 @@ describe("fresh installer", () => {
 			expect(next).toBeGreaterThan(last);
 			last = next;
 		}
-		expect(result.units).toContain("WorkingDirectory=/tmp/goblin-install-test-");
+		expect(result.units).toContain(`WorkingDirectory=${join(tmpdir(), "goblin-install-test-")}`);
 		expect(result.calls.split("\n")).toContain("loginctl --no-ask-password enable-linger fixture");
-		expect(result.units).toContain("Environment=PATH=/tmp/goblin-install-test-");
+		expect(result.units).toContain(`Environment=PATH=${join(tmpdir(), "goblin-install-test-")}`);
 		expect(result.stderr).toContain("end-to-end acceptance");
 	});
 	for (const mode of ["existing", "manager"])

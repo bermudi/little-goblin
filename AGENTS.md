@@ -176,6 +176,17 @@ every other name or error preserve). Legacy `goblin-*` dirs and
 foreign scratch are never touched. Crash/interrupt leftovers of tracked
 fixture roots self-heal on the next run.
 
+Test scratch lives in RAM: `src/test-tmpdir.ts`, which preloads first,
+points `TMPDIR` at `/dev/shm` unless `TMPDIR` is already set or tmpfs has
+less than 2 GB free. g7's `/tmp` is disk-backed since 2026-11-02, and
+SQLite fsyncs there took a full run from about 8 to 33 minutes, with
+timeouts. A full run peaks around 200 MB. Never hardcode `/tmp/` in an
+assertion; compare against `tmpdir()`.
+
+The same preload defaults `GOBLIN_HOME` to a throwaway dir, so a test that
+forgets `useHome()` can't write into the real `~/goblin` (it left ~960
+empty `projects/rig-N` dirs there, 2026-10-19 → 11-06).
+
 ## Process
 
 `bun run doctor` is read-only diagnosis — no repair, no restart

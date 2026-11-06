@@ -1,7 +1,12 @@
 import { getAttention } from "./api.ts";
 import { KV, ts, useLoad } from "./opsShared.tsx";
 import { PushControls } from "./PushControls.tsx";
-import type { AppAttentionPage, AppAttentionTarget } from "../../src/http/app-wire.ts";
+import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
+import type {
+	AppAttentionItem,
+	AppAttentionPage,
+	AppAttentionTarget,
+} from "../../src/http/app-wire.ts";
 
 const KIND_LABEL = {
 	"program-approval": "program",
@@ -10,7 +15,8 @@ const KIND_LABEL = {
 	"skill-proposal": "skill",
 	"interrupted-run": "recovery",
 	"delegation-input": "delegation",
-} as const;
+	responsibility: "work",
+} as const satisfies Record<AppAttentionItem["kind"], string>;
 
 export function AttentionView({
 	token,
@@ -70,6 +76,9 @@ export function AttentionView({
 					</div>
 				))
 			)}
+			{/* One place to watch: what needs the operator above, the work in
+			    flight across projects below (design/app.md → Outcome posts). */}
+			<ResponsibilityFeed token={token} projectId={null} onConversation={onConversation} />
 		</div>
 	);
 }

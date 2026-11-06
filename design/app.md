@@ -808,6 +808,49 @@ delivery edges:
   instead of stacking requests whose every response arrives stale by
   sequence and gets discarded — the feed would never have rendered.
 
+## Outcome posts (ruling 2026-11-02)
+
+The feed separates outcomes from activity. A **post** is a responsibility
+report: a stated result, need or change, with reporter, evidence and
+revision (design/programs.md → Reports and stages). Activity means
+check-ins, observations and deliveries. It stays in the expanded row's
+History. There is no separate post table: reports are already durable,
+append-only and linked to the responsibility, so the feed is a read model
+over them. `feedPosts` serves the newest `FEED_POST_WINDOW` (20), newest
+first, plus `postsTruncated`.
+
+Each post says whose word it is. `assessed` is goblin's own report.
+`unreviewed` is a worker's claim with no later goblin report, and turns
+`reviewed` once goblin reports after it. `migrated` is a legacy status.
+`current` is false once an operator correction has overtaken the post. A
+stale post stays visible and dimmed, never hidden. Review status is
+derived, never stored, so nothing can drift.
+
+**Typed posts.** A report's `purpose` says what the post carries:
+`status` (the default: the state report itself), `finding` (something
+learned that is worth the operator's eyes), `draft` (a produced artifact
+for review, usually `ready`) or `change` (a meaningful change made in the
+world). Purpose is independent of state, so the stage table never reads
+it. `artifacts` (title and ref) link what the post produced. A finished
+pi-durable run's exported files become its artifacts. Only an
+`http(s)` ref renders as a link; a path renders as text, so no
+model-supplied ref can become a `javascript:` URL. Findings and drafts
+are reports rather than a second table, which keeps review, revision
+and evidence semantics in one place. Routine check-ins with nothing new
+file no report.
+
+The newest post sits under the collapsed pill. The operator can read the
+result, question or blocker without opening each item. **Open
+conversation** goes to the coordination conversation, where comments and
+corrections already keep the item's context. That conversation is the
+item's discussion; there is no separate comment thread.
+
+**One place to watch.** The cross-project feed lives on Attention, under
+the operator's open decisions. It no longer sits on the Projects index, so
+Attention and a home feed don't compete as two inboxes. A project page
+keeps its own feed. Attention's `responsibility` items and the feed rows
+open the same coordination conversation.
+
 ## Pinning (ruling 2026-10-10)
 
 Pin is the rail's anchor action, archive's complement: a pinned conversation

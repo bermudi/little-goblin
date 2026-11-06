@@ -5285,10 +5285,77 @@ button.link:hover {
 	margin: 0 0 8px;
 	font-size: 1rem;
 }
-.resp-item {
+.resp-row {
 	border: 1px solid var(--app-divider);
 	border-radius: 8px;
 	margin-bottom: 8px;
+}
+/* The newest outcome post, readable without expanding the row. */
+.resp-glance {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: flex-start;
+	gap: 8px;
+	padding: 0 10px 10px;
+}
+.resp-glance .resp-post {
+	flex: 1 1 16rem;
+	min-width: 0;
+}
+.resp-post {
+	border-left: 3px solid var(--app-divider);
+	padding: 2px 0 2px 8px;
+	margin: 6px 0;
+	overflow-wrap: anywhere;
+}
+.resp-post p {
+	margin: 2px 0;
+}
+.resp-post-head {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: baseline;
+	font-size: 0.8rem;
+}
+.resp-post-state {
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	font-weight: 600;
+}
+.resp-post-ready,
+.resp-post-done {
+	border-left-color: var(--app-success);
+}
+.resp-post-blocked,
+.resp-post-failed {
+	border-left-color: var(--app-danger);
+}
+.resp-post-waiting {
+	border-left-color: var(--app-warning);
+}
+.resp-review-unreviewed .resp-post-review {
+	color: var(--app-warning);
+}
+.resp-post-purpose {
+	font-size: 0.75rem;
+	padding: 0 6px;
+	border-radius: 4px;
+	background: var(--app-active);
+}
+.resp-artifacts {
+	margin: 0.25rem 0 0;
+	padding-left: 1.25rem;
+}
+.resp-artifacts code {
+	font-size: 0.8rem;
+	overflow-wrap: anywhere;
+}
+.resp-post-question {
+	color: var(--app-accent);
+}
+.resp-post-stale {
+	opacity: 0.6;
 }
 .resp-pill {
 	display: flex;
@@ -5311,22 +5378,29 @@ button.link:hover {
 	background: #2a4;
 	color: #042;
 }
-.resp-status-paused {
-	background: #a83;
-	color: #210;
-}
-.resp-status-blocked,
-.resp-status-waiting_for_operator {
+.resp-waits-operator {
 	background: #c44;
 	color: #200;
 }
-.resp-status-completed {
+.resp-waits-goblin {
+	background: #c84;
+	color: #210;
+}
+.resp-waits-nobody {
 	background: #555;
 	color: #ddd;
 }
-.resp-status-cancelled {
+.resp-stage-paused {
+	background: #a83;
+	color: #210;
+}
+.resp-stage-closed {
 	background: #333;
 	color: #999;
+}
+.resp-evidence {
+	margin: 0.25rem 0 0;
+	padding-left: 1.25rem;
 }
 .resp-outcome {
 	font-weight: 600;
@@ -5394,8 +5468,12 @@ button.link:hover {
 }
 .resp-controls {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 8px;
 	margin-top: 10px;
+}
+.resp-open-conv {
+	white-space: nowrap;
 }
 .resp-correct {
 	margin-top: 8px;

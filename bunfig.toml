@@ -5,4 +5,6 @@
 # incident — 86k leaked dirs, ~15GB). Loading both fixture modules
 # before any test file makes their cleanup hooks global to the run.
 [test]
-preload = ["./src/testkit.ts", "./src/subagents/testing.ts"]
+# test-tmpdir.ts comes first: it points TMPDIR at RAM before anything
+# reads os.tmpdir() (see its header).
+preload = ["./src/test-tmpdir.ts", "./src/testkit.ts", "./src/subagents/testing.ts"]

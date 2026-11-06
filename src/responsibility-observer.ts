@@ -18,6 +18,7 @@ import { z } from "zod";
 import { log } from "./log.ts";
 import { HerdrError, type OperatorAgent } from "./herdr.ts";
 import type { Attachment, ResponsibilityStore } from "./responsibilities.ts";
+import { type AuthorityStamp, authorityStamp } from "./responsibility-authority.ts";
 import type { WakeStore } from "./wake-store.ts";
 
 const observedCursorSchema = z.object({
@@ -114,7 +115,7 @@ function fencedObservation(data: Record<string, unknown>): string {
 }
 
 const SIGHTED: ReadonlySet<string> = new Set(["attached", "missing"]);
-const WATCHED: ReadonlySet<string> = new Set(["active", "waiting_for_operator", "blocked"]);
+const WATCHED: ReadonlySet<string> = new Set(["active"]);
 
 export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityObserver {
 	const { db, resps, wakes, pump, list } = deps;
@@ -127,6 +128,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 	function commit(
 		att: Attachment,
 		conversationId: string,
+		authority: AuthorityStamp,
 		cursor: ObservedCursor,
 		health: "attached" | "missing" | "identity_changed" | null,
 		dev: { sourceKey: string; kind: string; text: string; facts: unknown } | null,
@@ -143,6 +145,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 				facts: dev.facts,
 				origin: "observer",
 				responsibilityId: att.responsibilityId,
+				authority,
 			});
 			if (recorded.created) {
 				resps.deferSilenceFollowup(att.responsibilityId, deps.now?.() ?? new Date());
@@ -174,13 +177,14 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 				});
 				return;
 			}
-			reconcileCurrent(att, resp.coordinationConversationId, agents);
+			reconcileCurrent(att, resp.coordinationConversationId, authorityStamp(resp, att), agents);
 		})();
 	}
 
 	function reconcileCurrent(
 		att: Attachment,
 		conversationId: string,
+		authority: AuthorityStamp,
 		agents: OperatorAgent[],
 	): void {
 		const g = att.generation;
@@ -204,7 +208,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 				bumpEpoch();
 				const cur = cursorFrom(null, prev);
 				cur.epoch = epoch;
-				commit(att, conversationId, cur, "missing", {
+				commit(att, conversationId, authority, cur, "missing", {
 					sourceKey: key("missing", prev?.seq ?? "na"),
 					kind: "agent-missing",
 					text: `The attached Herdr agent is no longer listed on its target.\n${fencedObservation({
@@ -216,7 +220,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 					facts: { attachmentId: att.attachmentId, generation: g },
 				});
 			} else {
-				commit(att, conversationId, cursorFrom(null, prev), null, null);
+				commit(att, conversationId, authority, cursorFrom(null, prev), null, null);
 			}
 			return;
 		}
@@ -234,7 +238,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 			cur.agentSession !== null &&
 			cur.agentSession !== att.target.agentSession
 		) {
-			commit(att, conversationId, cur, "identity_changed", {
+			commit(att, conversationId, authority, cur, "identity_changed", {
 				sourceKey: key("identity", cur.agentSession),
 				kind: "identity-changed",
 				text: `The attached Herdr agent was replaced by a different harness session — observation stops until a deliberate reattach.\n${fencedObservation(
@@ -258,7 +262,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		}
 		// Recovered availability after a disappearance.
 		if (prev?.missing === true) {
-			commit(att, conversationId, cur, "attached", {
+			commit(att, conversationId, authority, cur, "attached", {
 				sourceKey: key("recovered", cur.seq ?? "na"),
 				kind: "agent-recovered",
 				text: `The attached Herdr agent is listed again on its target.\n${fencedObservation({
@@ -276,7 +280,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		// epoch makes a later reused completion number fresh, not a
 		// collision with a development from before the reset.
 		if (reset) {
-			commit(att, conversationId, cur, null, {
+			commit(att, conversationId, authority, cur, null, {
 				sourceKey: key("cursor-reset", cur.seq ?? "na"),
 				kind: "cursor-reset",
 				text: `The attached agent's observation sequence regressed — its target's server may have reset.\n${fencedObservation(
@@ -299,7 +303,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		// predates observation and is not a development. Diffs start
 		// on the next poll.
 		if (prev === null) {
-			commit(att, conversationId, cur, null, null);
+			commit(att, conversationId, authority, cur, null, null);
 			return;
 		}
 		// A completion tick the cursor hasn't seen.
@@ -307,7 +311,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 			cur.completionSeq !== null &&
 			(prev.completionSeq === null || cur.completionSeq > prev.completionSeq)
 		) {
-			commit(att, conversationId, cur, null, {
+			commit(att, conversationId, authority, cur, null, {
 				sourceKey: key("done", cur.completionSeq),
 				kind: "done-candidate",
 				text: `The attached Herdr agent reported a completion.\n${fencedObservation({
@@ -334,7 +338,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		// silently dedupe every genuine transition after the first.
 		if (cur.status === "blocked" && prev?.status !== "blocked") {
 			cur.blockedTransitions += 1;
-			commit(att, conversationId, cur, null, {
+			commit(att, conversationId, authority, cur, null, {
 				sourceKey: key("blocked", `t${cur.blockedTransitions}`),
 				kind: "blocked-candidate",
 				text: `The attached Herdr agent looks blocked awaiting input.\n${fencedObservation({
@@ -349,7 +353,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 			return;
 		}
 		// Stable work: cursor only, no event, no model spend.
-		commit(att, conversationId, cur, null, null);
+		commit(att, conversationId, authority, cur, null, null);
 	}
 
 	let inflight: Promise<void> | null = null;

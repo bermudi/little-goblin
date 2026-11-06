@@ -148,11 +148,57 @@ of the new plan write or a live project handover. The full suite was not
 rerun for this slice; its previously recorded experimental failure remains
 unresolved. No live prompts, deployment, service restart, or push.
 
-Still open in stage 1: tool-facing blocked/waiting reasons and resumption
-conditions, agreed waiting reminders, archive/queued-work authority consistency,
-completion assessment with evidence, and a useful real-world pilot. Already
-enqueued developments remain historical facts; this change does not introduce
-generic wake revocation or strengthen the accepted Herdr send race.
+### Second Slice: Reports And Derived Stages — Implemented, Not Yet Piloted
+
+`responsibility action=report` states the work's state
+(`progress|waiting|ready|blocked|failed|done|dropped`) with a reason, an
+optional operator question, a `resumeWhen` for external waits, and evidence
+items. Stored status is lifecycle only; whom the work waits for is derived
+by one first-match stage function that the feed pill, Attention and the
+scheduler share. `done` closes only when evidence covers every
+completionEvidence entry; `dropped` closes "nothing to do". While the stage
+waits on the operator the silence backstop is held (an explicit commitment
+still fires); an operator correction answers the report. Ruling:
+`design/programs.md` → Reports and stages (mechanisms borrowed from
+dsh-superagent, cited there).
+
+Verification: typecheck (both programs) passed. Full non-live suite on the
+worktree: 5,313 pass, 91 skip, 2 fail — `boot.test.ts` "disabling after
+polling starts" gets the by-design 500 because that fresh worktree had no
+`app/dist` build; `subagents/mod.test.ts` "request recovery survives a
+concurrent steer" timed out under full-suite load and passed alone. No live
+prompts, deployment or restart.
+
+### Third Slice: Pi-Durable Runs As Responsibility Workers — Implemented, Not Yet Piloted
+
+`subagent start` takes an explicit `responsibility`; each settlement of a
+linked run (`finish`, `ask_operator`, crash hold, failure) files one deduped
+`worker` report before the notice wakes the conversation. A worker's claim
+is goblin's to assess; its question goes to the operator unchanged. Ruling:
+`design/programs.md` → Worker reports. The worker's own tools are
+unchanged — no new evidence or `dropped` outcome on `finish` yet; add them
+only if piloting shows goblin cannot assess from the result text.
+
+### Fourth Slice: Queued Authority — Implemented, Not Yet Piloted
+
+Scheduler, observer and mail-watcher developments stamp the
+responsibility status, revision and (for observations) attachment
+generation they acted on. The wake commit re-checks each stamp. A
+development whose stamp lapsed since it was recorded (pause, close,
+correction, detach, re-bind) is still delivered, framed as superseded
+history, never as authority to act. Archive stays visibility-only:
+pausing the responsibility is what stops work. Ruling:
+`design/programs.md` → Queued authority. The responsibility store now
+opens before the wake dispatcher, so the boot pump re-checks too.
+
+Verification: typecheck passed on both programs. Focused suites (wakes,
+scheduler, responsibilities, mail watcher, module boundaries, app
+responsibilities, boot): 345 passed, 1 failed. The failure is the
+by-design `app/dist` 500 in `boot.test.ts` on this unbuilt worktree.
+
+Still open in stage 1: a useful real-world pilot. Already enqueued
+developments remain historical facts. This does not introduce generic wake
+revocation or strengthen the accepted Herdr send race.
 
 ## 2. Bring Back Outcomes, Not Just Activity
 
@@ -185,10 +231,53 @@ Acceptance:
   chat message. Inspection can explain the item's sources and actions.
 - Empty, stale, failed, desktop, and mobile states are intentional.
 
+Briefly deployed to g7 as release 7a0f8a6 (2026-11-06, 00:48-03:04 CST), then
+replaced by a release from main. The schema migrations stayed on the live store
+(work_events authority/superseded, report purpose/artifacts). Prod stays on main:
+pilot after this merges and is released. No real handover has run yet.
+
 First combined pilot: explicit handover, a real development or blocker, an
 operator correction, a controlled restart, and evidenced completion. Separately
 exercise failure paths in isolation. Live prompts, service restarts, and other
 consequential operations retain their normal authorization requirements.
+
+### First Slice: Outcome Posts — Implemented, Not Yet Piloted
+
+The feed separates outcomes from activity. Responsibility reports are
+served as posts, newest first and bounded. Each post says whose word it
+is: goblin-assessed, a worker claim not yet reviewed, a reviewed worker
+claim, or a migrated status. A post an operator correction has overtaken
+is dimmed. The newest post shows under the collapsed pill with **Open
+conversation**, so the result or the decision needed reads without
+opening every item. Check-ins and observations stay in History. Ruling:
+`design/app.md` → Outcome posts.
+
+Verification: typecheck (both programs) passed. Full suite: 5,331 passed,
+91 skipped, 1 failed. The failure is the by-design `app/dist` 500 in
+`boot.test.ts` on this unbuilt worktree. Client behaviour is pinned in
+happy-dom tests. It has not been seen in a real browser yet: builds belong
+on CI, and the mobile layout still needs a look.
+
+The cross-project feed moved from the Projects index to Attention, under
+the open decisions: one place to watch, with the badge the rail and tab
+bar already show. Project pages keep their own feed.
+
+Typed posts: a report's `purpose` (status, finding, draft or change)
+labels what it carries, and `artifacts` link what it produced. A finished
+run's exported files become artifacts. The `responsibility` tool
+describes both. Ruling: `design/app.md` → Outcome posts → Typed posts.
+
+Browser check (2026-11-04): the Vite dev server (no production build)
+against a stub backend serving the real feed read model over seeded
+stores, headless at 1280px and 390px. Seeded: a worker claim, a question,
+a draft with a link and a path, a finding with an unbroken 150-character
+ref, a post overtaken by a correction, a paused item, and an empty
+feed. Nothing overflowed at 390px. Two fixes came out of it: a row said
+"no activity" while carrying a post filed seconds earlier (freshness now
+counts reports), and "Open conversation" wrapped onto two lines on a
+phone. The stub's non-feed endpoints were canned, so this is a layout and
+state check, not proof against the live backend. The combined pilot
+remains.
 
 ## 3. Add Useful Cheap Capacity
 

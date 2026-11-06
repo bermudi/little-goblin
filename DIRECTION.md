@@ -67,6 +67,12 @@ Inspection does not require flooding the feed with every tool call.
 Goblin owns the outcome or continuing concern; workers and sessions execute
 parts of it. Durable work outlives an individual agent run.
 
+These are the two concepts: what Goblin owes, and who executes a piece of it
+(operator, 2026-11-06). What the model sees should follow them, not the
+plumbing underneath. The operator suspects overlapping tools hurt the model's
+performance; this is not measured yet. Judge the tools by what makes sense for
+a capable agent, not by usage, because much of this code is new.
+
 For existing Herdr work: discover and summarize read-only, then coordinate
 only after an explicit handover. The intended interaction is to open/create
 a Goblin project, identify the existing work, and say "take over this."

@@ -359,6 +359,40 @@ const TOPOLOGY = [
 	opOk({ result: { tabs: [{ tab_id: "w8B:t1", workspace_id: "w8B", label: "other" }] } }),
 ];
 
+describe("herdr adapter — prompt delivery", () => {
+	const agent = (status: string, seq: number) => ok({ result: { agent: { ...AGENT, agent_status: status, state_change_seq: seq } } });
+	const sent = ok({ id: "cli:agent:prompt", result: {} });
+	const noSleep = async () => {};
+	const verbs = (calls: string[][]) => calls.map((c) => c.slice(2, 4).join(" "));
+
+	test("an idle agent that starts working needs no recovery", async () => {
+		const f = fakeRunner([agent("idle", 3), sent, agent("working", 4)]);
+		await makeHerdr({ session: "goblin" }, f.run, 1000, noSleep).prompt("g1-test", "task");
+		expect(verbs(f.calls)).toEqual(["agent get", "agent prompt", "agent get"]);
+	});
+
+	test("an unsent draft gets one recovery Enter", async () => {
+		const idle = Array.from({ length: 8 }, () => agent("idle", 3));
+		const f = fakeRunner([agent("idle", 3), sent, ...idle.slice(0, 8), ok({ id: "k", result: {} }), agent("working", 4)]);
+		await makeHerdr({ session: "goblin" }, f.run, 1000, noSleep).prompt("g1-test", "task");
+		expect(f.calls.some((c) => c.includes("send-keys") && c.includes("enter"))).toBe(true);
+	});
+
+	test("still idle after the recovery Enter fails loud", async () => {
+		const idle = Array.from({ length: 16 }, () => agent("idle", 3));
+		const f = fakeRunner([agent("idle", 3), sent, ...idle.slice(0, 8), ok({ id: "k", result: {} }), ...idle.slice(8)]);
+		await expect(
+			makeHerdr({ session: "goblin" }, f.run, 1000, noSleep).prompt("g1-test", "task"),
+		).rejects.toMatchObject({ code: "agent_prompt_unsubmitted" });
+	});
+
+	test("a working agent is not probed for a draft", async () => {
+		const f = fakeRunner([agent("working", 3), sent]);
+		await makeHerdr({ session: "goblin" }, f.run, 1000, noSleep).prompt("g1-test", "task");
+		expect(verbs(f.calls)).toEqual(["agent get", "agent prompt"]);
+	});
+});
+
 describe("operator herdr adapter", () => {
 	test("every verb runs under --session default", async () => {
 		const f = opRunner([

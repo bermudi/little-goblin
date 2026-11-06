@@ -1,4 +1,4 @@
-// Arrival facts on a user message: when it arrived and on which surface.
+// Arrival facts on a user message, its footer: when it arrived and on which surface.
 // A part, not text — the transcript, search and memory keep the words as
 // sent; only the model view renders it. Written once at the store's
 // append, so replay is byte-stable and rows older than this part simply
@@ -40,7 +40,7 @@ export function stampArrival(conversationId: string, message: UIMessage, now: Da
 	if (message.role !== "user") return;
 	const data: ContextPartData = { at: formatArrival(now), surface: channelOf(conversationId) };
 	const rest = message.parts.filter((p) => p.type !== CONTEXT_PART);
-	message.parts = [{ type: CONTEXT_PART, data } as UIMessage["parts"][number], ...rest];
+	message.parts = [...rest, { type: CONTEXT_PART, data } as UIMessage["parts"][number]];
 }
 
 export function contextText(data: ContextPartData): string {

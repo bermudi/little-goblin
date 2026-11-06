@@ -11,7 +11,7 @@ describe("stampArrival", () => {
 		const reply: UIMessage = { id: "a", role: "assistant", parts: [] };
 		stampArrival("app:x", user, now);
 		stampArrival("app:x", reply, now);
-		expect(user.parts[0]?.type).toBe(CONTEXT_PART);
+		expect(user.parts.at(-1)?.type).toBe(CONTEXT_PART);
 		expect(messageText(user)).toBe("hi");
 		expect(reply.parts).toEqual([]);
 	});

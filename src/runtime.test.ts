@@ -1020,7 +1020,7 @@ describe("turn authority", () => {
 		}[];
 		const msgs = wire.filter((m) => m.role !== "system");
 		expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
-		expect(msgs[0]!.content.slice(1).map((c) => c.text)).toEqual(["2+2?"]);
+		expect(msgs[0]!.content.slice(0, -1).map((c) => c.text)).toEqual(["2+2?"]);
 		expect(msgs[1]!.content.map((c) => c.text)).toEqual(["answer"]);
 		expect(msgs[2]!.content.map((c) => c.text).filter((t) => !t?.startsWith("[20"))).toEqual(["2+5?", "2+8?"]);
 		r.store.close();

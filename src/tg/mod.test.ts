@@ -1107,8 +1107,8 @@ describe("operator-only command gate", () => {
 		await Bun.sleep(10);
 		const conv = h.store.get("topic:-100:7")!;
 		const durable = h.store.history(conv.id).at(-1)!.parts;
-		expect((durable[1] as { text: string }).text).toBe(SHARED_CHAT_NOTE);
-		expect((durable[2] as { type: string }).type).toBe("data-skill");
+		expect((durable[0] as { text: string }).text).toBe(SHARED_CHAT_NOTE);
+		expect((durable[1] as { type: string }).type).toBe("data-skill");
 		expect(submitted).toHaveLength(1);
 		// The sink the skill door built is the real conversation sink —
 		// it delivers into the topic, not a stub.
@@ -1236,7 +1236,7 @@ describe("ping replies (Spin-off)", () => {
 		expect(submitted[0]!.sink).toBe(nullSink); // the bell, never a delivery sink
 		expect(h.bellConvs).toEqual([app.id]);
 		expect(h.env.titleAttempts.size).toBe(0);
-		expect(h.store.history(app.id).at(-1)!.parts.slice(1)).toEqual([{ type: "text", text: "looks good" }]);
+		expect(h.store.history(app.id).at(-1)!.parts.slice(0, -1)).toEqual([{ type: "text", text: "looks good" }]);
 		h.store.close();
 	});
 
@@ -1379,7 +1379,7 @@ describe("flushConversation", () => {
 		expect(submitted).toHaveLength(1);
 		// The audience note rides every group-addressed burst ahead of
 		// the batch's own parts.
-		expect(submitted[0]!.parts.slice(1)).toEqual([
+		expect(submitted[0]!.parts.slice(0, -1)).toEqual([
 			{ type: "text", text: SHARED_CHAT_NOTE },
 			{ type: "text", text: "[attachment failed to download: boom]" },
 			{ type: "text", text: "what did the photo say?" },
@@ -1917,7 +1917,7 @@ describe("rolling dm", () => {
 		await flushTest(h.env, "dm:7", [{ parts: [{ type: "text", text: "hello" }], replyTo: 40 }]);
 		const current = h.store.currentDm(7)!;
 		expect(current.id).toBe("dm:7:1");
-		expect(h.store.history(current.id).at(-1)?.parts.slice(1)).toEqual([{ type: "text", text: "hello" }]);
+		expect(h.store.history(current.id).at(-1)?.parts.slice(0, -1)).toEqual([{ type: "text", text: "hello" }]);
 		h.store.close();
 	});
 
@@ -2065,7 +2065,7 @@ describe("rolling dm", () => {
 		]);
 		expect(calls).toHaveLength(0);
 		expect(h.store.currentDm(7)?.id).toBe("dm:7:1"); // joined, not rolled
-		expect(h.store.history("dm:7:1").at(-1)?.parts.slice(1)).toEqual([
+		expect(h.store.history("dm:7:1").at(-1)?.parts.slice(0, -1)).toEqual([
 			{ type: "text", text: "and this too" },
 		]);
 		h.store.close();
@@ -2193,7 +2193,7 @@ describe("manual DM navigation", () => {
 		await h.env.intake.get("dm:7");
 		handleMessage(h.env, tgMsg({ message_id: 10, chat, text: "/new" }), 10);
 		await flushConversation(h.env, "dm:7", batch(h));
-		expect(h.store.history(old.id)[0]?.parts.slice(1)).toEqual([{ type: "text", text: "old question" }]);
+		expect(h.store.history(old.id)[0]?.parts.slice(0, -1)).toEqual([{ type: "text", text: "old question" }]);
 		expect(h.store.history("dm:7:2")).toEqual([]);
 		expect(h.env.inbox.pending()).toEqual([]);
 		expect(submits).toBe(0);
@@ -2323,7 +2323,7 @@ describe("manual DM navigation", () => {
 		await h.env.intake.get("dm:7");
 		await flushConversation(h.env, "dm:7", batch(h));
 		expect(JSON.stringify(h.store.history(old.id))).toContain("old photo");
-		expect(h.store.history("dm:7:2")[0]?.parts.slice(1)).toEqual([{ type: "text", text: "new question" }]);
+		expect(h.store.history("dm:7:2")[0]?.parts.slice(0, -1)).toEqual([{ type: "text", text: "new question" }]);
 		expect(targets).toEqual(["dm:7:2"]);
 		expect(h.env.inbox.pending()).toEqual([]);
 		h.store.close();
@@ -2355,7 +2355,7 @@ describe("manual DM navigation", () => {
 		await replayInbox(h.env);
 		await Promise.all([...h.env.intake.values()]);
 		await h.env.buffer.drain();
-		expect(reopened.history(old.id)[0]?.parts.slice(1)).toEqual([{ type: "text", text: "old question" }]);
+		expect(reopened.history(old.id)[0]?.parts.slice(0, -1)).toEqual([{ type: "text", text: "old question" }]);
 		expect(reopened.history("dm:7:2")).toEqual([]);
 		expect(submits).toBe(0);
 		expect(h.env.inbox.pending()).toEqual([]);

@@ -291,7 +291,7 @@ export function buildSystemPrompt(
 			: [
 					`- Working directory: ${project.dir} — this project's directory, the same for every chat in it.`,
 				]),
-		`- Time: each user message opens with a system stamp of when it arrived and`,
+		`- Time: each user message ends with a system stamp of when it arrived and`,
 		`  on which surface, like [YYYY-MM-DD HH:MM ±HH:MM · app]. Older messages may`,
 		`  have none. Gaps between stamps tell you what may be stale. For the time`,
 		`  right now, mid-turn, run \`date\` via bash.`,

@@ -1183,8 +1183,8 @@ test("the context window view serves the captured prompt and the call lineage", 
 			{
 				role: "user",
 				content: [
-					{ type: "text", text: expect.stringMatching(/^\[20.* · app\]$/) },
 					{ type: "text", text: "hi" },
+					{ type: "text", text: expect.stringMatching(/^\[20.* · app\]$/) },
 				],
 			},
 		]);

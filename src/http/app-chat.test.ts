@@ -544,7 +544,7 @@ describe("app chat", () => {
 			await res.text();
 			expect(heard).toEqual([{ filename: "note.ogg" }]);
 			const stored = store.history("app/chat-01")[0]!;
-			const part = stored.parts[1] as { type: string; data: { transcript?: string } };
+			const part = stored.parts[0] as { type: string; data: { transcript?: string } };
 			expect(part.data.transcript).toBe("spoken words here");
 		} finally {
 			http.stop();
@@ -693,7 +693,7 @@ describe("app chat", () => {
 			expect(res.status).toBe(200);
 			expect((await res.text()).trimEnd().endsWith("data: [DONE]")).toBe(true);
 			const stored = store.history("app/chat-01")[0]!;
-			const part = stored.parts[1] as {
+			const part = stored.parts[0] as {
 				data: { transcript?: string; transcriptionError?: string; path: string };
 			};
 			expect(part.data.transcript).toBeUndefined();
@@ -742,7 +742,7 @@ describe("app chat edit (rewind)", () => {
 			const history = store.historyDetail("app/chat-01");
 			expect(history.map((e) => e.message.role)).toEqual(["user", "assistant"]);
 			expect(history[0]!.message.id).toBe("m1b");
-			expect(history[0]!.message.parts[1]).toEqual({
+			expect(history[0]!.message.parts[0]).toEqual({
 				type: "text",
 				text: "first, rewritten",
 			});

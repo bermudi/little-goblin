@@ -431,12 +431,12 @@ describe("arrival stamp", () => {
 			id,
 			role: "user",
 			parts: [
-				{ type: "data-context", data: { at, surface: "telegram" } },
 				{ type: "text", text },
+				{ type: "data-context", data: { at, surface: "telegram" } },
 			],
 		}) as UIMessage;
 
-	test("renders before the words, in history and when steered, byte-identically", async () => {
+	test("renders after the words, in history and when steered, byte-identically", async () => {
 		const m = stamped("u1", "hi", "2026-11-06 14:32 -06:00");
 		const view = await buildModelView(ctx, {
 			entries: entries([m]),
@@ -445,7 +445,7 @@ describe("arrival stamp", () => {
 			partial: null,
 			assertAuthority: () => {},
 		});
-		expect(texts(view)).toEqual(["[2026-11-06 14:32 -06:00 · telegram]", "hi"]);
+		expect(texts(view)).toEqual(["hi", "[2026-11-06 14:32 -06:00 · telegram]"]);
 		expect(await convertSteeredMessage(ctx, m)).toEqual(view);
 	});
 

@@ -13,6 +13,7 @@ import {
 	listProjects,
 	loadToken,
 	patchConversation,
+	suggestConversationTitle,
 	saveToken,
 	searchConversations,
 	telegramDoor,
@@ -503,6 +504,7 @@ function ConversationRow({
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState("");
 	const editRef = useRef<HTMLInputElement>(null);
+	const [suggesting, setSuggesting] = useState(false);
 	// Enter commits and unmounts the input — its blur then fires
 	// commitRename a second time (a duplicate PATCH with the same title).
 	const committed = useRef(false);
@@ -529,6 +531,18 @@ function ConversationRow({
 		if (t === "" || t === title) return;
 		void patchConversation(token, conv.id, { title: t }).then(onRenamed, failed("rename"));
 	};
+	// Suggest only: the result lands in the draft, and the usual
+	// Enter/blur commit is still the one saver.
+	const suggestTitle = () => {
+		if (suggesting) return;
+		setSuggesting(true);
+		void suggestConversationTitle(token, conv.id)
+			.then((r) => setDraft(r.title), failed("suggest a title for"))
+			.finally(() => {
+				setSuggesting(false);
+				editRef.current?.focus();
+			});
+	};
 	const toggleArchived = () => {
 		void patchConversation(token, conv.id, { archived: !archived }).then(
 			() => onToggleArchived(conv.id, !archived),
@@ -553,21 +567,37 @@ function ConversationRow({
 	if (editing) {
 		return (
 			<div className="conv editing">
-				<input
-					ref={editRef}
-					value={draft}
-					onChange={(e) => setDraft(e.target.value)}
-					onBlur={commitRename}
-					onKeyDown={(e) => {
-						if (e.key === "Enter") commitRename();
-						// Escape is a cancel: mark committed so the
-						// unmount's blur doesn't PATCH the half-typed draft.
-						if (e.key === "Escape") {
-							committed.current = true;
-							setEditing(false);
-						}
-					}}
-				/>
+				<div className="rename-field">
+					<input
+						ref={editRef}
+						value={draft}
+						onChange={(e) => setDraft(e.target.value)}
+						onBlur={commitRename}
+						onKeyDown={(e) => {
+							if (e.key === "Enter") commitRename();
+							// Escape is a cancel: mark committed so the
+							// unmount's blur doesn't PATCH the half-typed draft.
+							if (e.key === "Escape") {
+								committed.current = true;
+								setEditing(false);
+							}
+						}}
+					/>
+					{/* mousedown preventDefault keeps focus in the input, so the
+					    click doesn't blur-commit and close the editor first. */}
+					<button
+						type="button"
+						className="rename-ai"
+						title="Rename with AI"
+						aria-label="Rename with AI"
+						disabled={suggesting}
+						data-busy={suggesting || undefined}
+						onMouseDown={(e) => e.preventDefault()}
+						onClick={suggestTitle}
+					>
+						✨
+					</button>
+				</div>
 			</div>
 		);
 	}

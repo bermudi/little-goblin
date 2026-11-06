@@ -87,6 +87,15 @@ Rulings:
   (no cost, no auth, no panes). Run after harness upgrades; red means re-pin — probe the new
   bundle for the renamed key, fix `harness-trust.ts`, never discover it
   in a live launch.
+- **A prompt is delivered only once the agent moves (2026-11-06).**
+  `agent prompt` returns ok when the text is typed, not when the TUI
+  took the Enter: pi under parallel startup passed herdr's ready gate
+  early and kept the task as an unsent draft (4/4 reproduced). The
+  adapter's `prompt` on an idle agent polls `agent get` for the status
+  leaving idle or `state_change_seq` moving; if neither within 3 s it
+  sends one recovery Enter, then fails loud (`agent_prompt_unsubmitted`).
+  The operator `herdr` tool's `--wait` path already fails with
+  `agent_prompt_stalled` but leaves the draft; it has no recovery.
 - **State is rows.** `delegations` rows survive restarts while the
   herdr unit keeps the panes alive. Three postures carry rulings: a
   failed post-prompt baseline read leaves the row baseline-pending —

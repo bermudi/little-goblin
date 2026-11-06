@@ -178,6 +178,10 @@ fixture roots self-heal on the next run.
 
 ## Process
 
+To run a branch on a throwaway instance and prove a change, use the
+`verify-goblin` skill (`.agents/skills/verify-goblin/`): `bun run try <name>`
+prints a URL, `bun run try down <name>` stops it.
+
 `bun run doctor` is read-only diagnosis — no repair, no restart
 authority. Its contract (stdout/stderr split, shared-check rules,
 422/500 boundaries) lives in `design/doctor.md`.

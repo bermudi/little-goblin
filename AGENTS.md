@@ -180,6 +180,10 @@ SQLite fsyncs there took a full run from about 8 to 33 minutes, with
 timeouts. A full run peaks around 200 MB. Never hardcode `/tmp/` in an
 assertion; compare against `tmpdir()`.
 
+The same preload defaults `GOBLIN_HOME` to a throwaway dir, so a test that
+forgets `useHome()` can't write into the real `~/goblin` (it left ~960
+empty `projects/rig-N` dirs there, 2026-10-19 → 11-06).
+
 ## Process
 
 `bun run doctor` is read-only diagnosis — no repair, no restart

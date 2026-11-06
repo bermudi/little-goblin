@@ -451,6 +451,37 @@ p code,
 .conv.editing {
 	padding: 0.3rem;
 }
+.rename-field {
+	position: relative;
+	width: 100%;
+}
+.rename-ai {
+	position: absolute;
+	right: 4px;
+	top: 50%;
+	transform: translateY(-50%);
+	font-size: 12px;
+	line-height: 1;
+	padding: 2px 3px;
+	background: transparent;
+	border: 0;
+	border-radius: 4px;
+	cursor: pointer;
+	opacity: 0.6;
+}
+.rename-ai:hover {
+	opacity: 1;
+	background: var(--app-hover);
+}
+.rename-ai[data-busy] {
+	opacity: 0.6;
+	animation: rename-ai-pulse 1s ease-in-out infinite;
+}
+@keyframes rename-ai-pulse {
+	50% {
+		opacity: 0.2;
+	}
+}
 .conv.editing input {
 	font: inherit;
 	font-size: 12px;
@@ -459,7 +490,7 @@ p code,
 	border: 1px solid var(--app-border);
 	border-radius: 6px;
 	color: var(--app-fg);
-	padding: 0.3rem 0.5rem;
+	padding: 0.3rem 1.8rem 0.3rem 0.5rem;
 	outline: none;
 }
 .conv.editing input:focus {

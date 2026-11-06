@@ -145,6 +145,11 @@ export interface AppStopResponse {
 	stopped: boolean;
 }
 
+// A suggestion only — nothing is written; the PATCH stays the one saver.
+export interface AppSuggestTitleResponse {
+	title: string;
+}
+
 export type AppCompactResponse =
 	| {
 			compacted: true;

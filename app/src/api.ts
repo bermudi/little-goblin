@@ -14,6 +14,7 @@ import type {
 	AppAttachmentResponse,
 	AppAttentionResponse,
 	AppCompactResponse,
+	AppSuggestTitleResponse,
 	AppConfigPatch,
 	AppConfigView,
 	AppContextView,
@@ -736,6 +737,14 @@ export async function resumeRun(
 // shows up as a slow response.
 export function compactConversation(token: string | null, id: string): Promise<AppCompactResponse> {
 	return request(token, `/api/app/conversations/${seg(id)}/compact`, { method: "POST" });
+}
+
+// Suggest only — the caller decides whether to save via patchConversation.
+export function suggestConversationTitle(
+	token: string | null,
+	id: string,
+): Promise<AppSuggestTitleResponse> {
+	return request(token, `/api/app/conversations/${seg(id)}/suggest-title`, { method: "POST" });
 }
 
 // Read-aloud — reply text in, base64 ogg chunks out.

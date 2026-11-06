@@ -22,14 +22,20 @@ export async function generateTopicTitle(
 	firstText: string,
 	providerOptions?: ProviderOptions,
 	maxRetries?: number,
+	avoid?: string,
 ): Promise<string | null> {
 	const input = firstText.slice(0, MAX_INPUT_CHARS);
+	// A re-title (avoid set) names the whole chat, not its opening, and
+	// must not hand back the title the operator already has.
 	const result = await generateText({
 		model,
 		instructions:
-			"Write a short title — a few words — for a chat that begins with the " +
-			"message below. Output only the title: no quotes, no preamble, no " +
-			"trailing period.",
+			(avoid === undefined
+				? "Write a short title — a few words — for a chat that begins with the " +
+					"message below. "
+				: "Write a short title — a few words — for the chat summarized by the " +
+					`messages below. The current title is "${avoid}"; write a different one. `) +
+			"Output only the title: no quotes, no preamble, no trailing period.",
 		prompt: input,
 		...(providerOptions ? { providerOptions } : {}),
 		...(maxRetries !== undefined ? { maxRetries } : {}),
@@ -68,8 +74,8 @@ export function makeTitleFor(deps: {
 	configRef: ConfigRef;
 	auth: AuthStore;
 	observation: CacheObservation;
-}): (text: string) => Promise<string | null> {
-	return async (text) => {
+}): (text: string, avoid?: string) => Promise<string | null> {
+	return async (text, avoid) => {
 		const cfg = deps.configRef.current;
 		if (!cfg.titleModel) return null;
 		const model = await resolveModel(cfg, deps.auth, cfg.titleModel);
@@ -82,6 +88,7 @@ export function makeTitleFor(deps: {
 			text,
 			thinkingOptions(cfg, cfg.titleModel, "off"),
 			modelCallMaxRetries(cfg, cfg.titleModel),
+			avoid,
 		);
 	};
 }

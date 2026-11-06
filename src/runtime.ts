@@ -39,6 +39,7 @@ import type { PriorTurnContext } from "./reviewer.ts";
 import { Reviewer } from "./reviewer.ts";
 import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
+import { renderFailedTurnProgress } from "./turn/failed-progress.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
 import {
 	ContextOverflowError,
@@ -1227,6 +1228,42 @@ export class Runtime {
 			// dispatcher's settle read never sees a live run by mistake.
 			this.deps.runOwnership?.end(runId, status, delivery);
 		};
+		// design/runtime-turn.md → Failed-turn progress: one system event
+		// recording what a terminally failed journaled turn completed, so the
+		// next turn does not lose the work. Must run BEFORE the terminal
+		// stamp — the stamp is what wake settling reads — and stays silent
+		// when the reply already landed, nothing survived, or this attempt
+		// lost authority. An append failure never changes the outcome.
+		let replyLanded = false;
+		const recordFailedProgress = (failure: string): void => {
+			if (journal === undefined || runId === null || runStamped || replyLanded) return;
+			if (this.deps.store.get(convId)?.epoch !== epoch) return;
+			const id = runId;
+			try {
+				const rendered = renderFailedTurnProgress({
+					runId: id,
+					failure,
+					calls: journal.callsFor(id),
+					partial: journal.get(id)?.partial ?? null,
+				});
+				if (rendered === null) return;
+				store.append(convId, [
+					{ id: randomUUID(), role: "system", parts: [{ type: "text", text: rendered.text }] },
+				]);
+				log.info("failed-turn progress recorded", {
+					conversation: convId,
+					run: id,
+					calls: rendered.calls,
+					unknown: rendered.unknown,
+					textChars: rendered.textChars,
+				});
+			} catch (err) {
+				log.error("failed-turn progress record failed — failure still delivered", err, {
+					conversation: convId,
+					run: id,
+				});
+			}
+		};
 		try {
 			this.checkAuthority(convId, epoch);
 			// Recall uses admission-time eligibility; the model view still sees the
@@ -1541,6 +1578,9 @@ export class Runtime {
 				append: (messages, opts) => store.append(convId, messages, opts),
 				memory: this.deps.memory,
 			});
+			// The reply landed durably — a failure past this point must not
+			// also record a progress event (the final reply is the record).
+			replyLanded = true;
 			const fallbackNote: FallbackNote | undefined =
 				fallbackMisses.length > 0 && conv.model !== null
 					? {
@@ -1679,6 +1719,7 @@ export class Runtime {
 					outcome.recovery.fallback = fallbackTrail;
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
+				if (outcome.kind === "error") recordFailedProgress(outcome.message);
 				announcePreRunFailure(err);
 				stampRun(
 					outcome.kind === "fenced" ? "fenced" : "error",
@@ -1794,6 +1835,7 @@ export class Runtime {
 				// A withheld error never reached the wire — the terminal
 				// story goes out now, before the sinks settle.
 				if (errorHeld) emitChunk(convId, turns, live, { type: "error", errorText: done.message });
+				recordFailedProgress(done.message);
 				announcePreRunFailure(err);
 				stampRun("error", "failed");
 				await notifyAll(done);

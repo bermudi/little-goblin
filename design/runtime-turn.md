@@ -202,6 +202,30 @@ latest owned input), except a legacy already-resumed row, which keeps
 NULL: a handover on missing durable identity refuses rather than key
 on a client message id.
 
+## Failed-turn progress
+
+**A terminal failure records its progress in history** (ruling 2026-11-05;
+slice 1 of the 2026-10-31 reference review's F1). When a journaled turn ends
+on the terminal error rail, the runtime appends one `system` event before the
+run's terminal stamp: the owning run id, the failure message, the journal's
+tool ledger, and the assistant text checkpointed before the failure. It is
+ordinary history, so the next turn's view and compaction see it with no
+journal dependency in the view. The operator sees it too.
+
+- **Outcome labels are the journal's, never upgraded.** A dispatched call
+  with no recorded result renders as outcome unknown. The event is evidence,
+  not proof of exactly-once execution, and it does not retire the journal,
+  replay decisions, retry grants, or resume.
+- **No duplicate.** Nothing is appended when the reply landed, when there is
+  no progress to report, or when this attempt no longer holds authority.
+- **Out of scope for this slice:** fenced and interrupted runs (`/stop`,
+  process death; resume seeds those), attempts handed to a continuation
+  (overflow, fallback; the successor carries them), and journal faults (the
+  record is unreadable). Split-turn compaction, automatic retry, wake
+  ownership, and resume policy are unchanged.
+- **An append failure doesn't change the outcome.** It logs an error and the
+  failure still reaches the sinks; the journal row remains the evidence.
+
 ## What must not change
 
 Durable wake delivery (`wake-store.ts`, `wake-dispatcher.ts`) follows

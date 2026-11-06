@@ -648,6 +648,10 @@ describe("resolveModel — provider quota walls skip the SDK's own retries", () 
 		test(`${run}: a 503 without quota prose still spends the retry ladder`, async () => {
 			expect(await attempts('{"error":{"message":"upstream overloaded"}}', run, 503)).toBe(3);
 		});
+		test(`${run}: a 503 whose body is the quota prose makes exactly one attempt`, async () => {
+			// Pins current behavior: the filter keys on prose, not status.
+			expect(await attempts(ZAI_QUOTA, run, 503)).toBe(1);
+		});
 	}
 
 	test("the rethrown quota error keeps every field and logs one warn line", async () => {

@@ -217,13 +217,14 @@ a model switch — or a catalog refresh that changes a model's listed
 modalities — recomputes attachment representations once (and re-renders
 stored PDF fetch refs through the same modalities-and-pipe gate); a fenced or
 failed turn leaves its user message unanswered, and the successor turn's
-burst-merge (Causal view) rewrites that boundary; a corrupt row's placeholder
+burst-merge (Causal view) rewrites that boundary (a failed turn with recorded
+progress also leaves a system event there); a corrupt row's placeholder
 is a repair, not drift; a deploy that changes the read-time compaction
 marker's wording rewrites it once in every compacted conversation; the
 owning turn's injected skill body collapses to its `[skill: name]` marker
-on the next turn's view (owned-seq ruling); a
-committed pruning marker replaces an old textual tool result once, then
-replays verbatim forever. Everything else that moves the hash is a bug.
+on the next turn's view (owned-seq ruling); a committed pruning marker
+replaces an old textual tool result once, then replays verbatim forever.
+Everything else that moves the hash is a bug.
 
 ## Design areas
 

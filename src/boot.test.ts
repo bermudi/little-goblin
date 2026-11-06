@@ -433,7 +433,18 @@ describe("deferred telegram boot", () => {
 				await child.waitLog("long polling started");
 				await tg.waitMethod("getUpdates");
 				await setTelegramEnabled(child, false);
-				expect((await child.http("/t/settings")).status).toBe(200);
+				// The channel gate must stay open across a mid-poll disable:
+				// /t/settings is served by the client door once the bot token
+				// exists (design/app.md → Client). The client build itself is a
+				// release artifact (gitignored; CI never builds it), so the
+				// door's sanctioned fail-loud 500 — body naming the missing
+				// build — passes the gate here. A 503 would be the
+				// channel-disabled regression this test guards.
+				const settings = await child.http("/t/settings");
+				if (settings.status !== 200) {
+					expect(settings.status).toBe(500);
+					expect(await settings.text()).toContain("app client not built");
+				}
 				expect(
 					(await child.http("/api/status", { headers: { "x-init-data": signedInitData(42) } }))
 						.status,

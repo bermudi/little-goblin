@@ -3,19 +3,25 @@
 // Only the process boundary is faked: `bun`, `systemctl` and `journalctl` are
 // PATH fixtures that record what they were asked to do. Everything the tool
 // reasons about — the git archive, the extracted release tree, the symlink
-// flip, the unit rewrite, the durable marker — is real. The fixture checkout
-// is this repository at HEAD, read-only, so the archive under test is the code
-// a real deploy would ship.
+// flip, the unit rewrite, the durable marker — is real. The history under
+// test is a fixture repository the tests build themselves (three commits),
+// so HEAD~1 and HEAD~2 resolve no matter how shallow the outer checkout is
+// (CI uses fetch-depth: 1). The real scripts/release.ts is copied into the
+// fixture because the tool discovers its repo as the tree the script itself
+// lives in; its ../src/durable.ts and zod imports resolve through untracked
+// symlinks, so the archive stays exactly the fixture's committed tree.
 
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
 	chmodSync,
+	copyFileSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
@@ -34,6 +40,61 @@ import {
 const REPO = resolve(import.meta.dir, "..");
 const BUN = process.execPath;
 
+// The fixture repository: three commits so HEAD~1 and HEAD~2 name older,
+// distinct revs, whatever the outer clone's depth. Built lazily per test —
+// testkit's afterEach removes tracked temp dirs, so a fixture cannot outlive
+// its test — and read-only afterwards.
+function fixtureRepo(box: Box): string {
+	if (box.repo !== null) return box.repo;
+	const dir = tmpDir("goblin-release-history-");
+	const git = (args: string[]): void => {
+		const result = spawnSync(
+			"git",
+			[
+				"-c",
+				"user.name=fixture",
+				"-c",
+				"user.email=fixture@invalid",
+				"-c",
+				"commit.gpgsign=false",
+				...args,
+			],
+			{ cwd: dir, encoding: "utf8" },
+		);
+		if (result.status !== 0) {
+			throw new Error(`fixture git ${args.join(" ")} failed: ${result.stderr}`);
+		}
+	};
+	git(["init", "-q", "-b", "main"]);
+	writeFileSync(join(dir, "bun.lock"), "{}\n");
+	writeFileSync(join(dir, "package.json"), "{}\n");
+	// Resolution seams for the copied tool — untracked, so never archived.
+	mkdirSync(join(dir, "src"));
+	symlinkSync(join(REPO, "src", "durable.ts"), join(dir, "src", "durable.ts"));
+	symlinkSync(join(REPO, "node_modules"), join(dir, "node_modules"));
+	// Completeness shape only (REQUIRED_IN_RELEASE): nothing executes the
+	// archived tree, the build steps are fakes — the tool under test is the
+	// scripts/release.ts copy, which is the real current file.
+	writeFileSync(join(dir, "src", "index.ts"), "// fixture tree, never executed\n");
+	mkdirSync(join(dir, "scripts"));
+	copyFileSync(join(REPO, "scripts", "release.ts"), join(dir, "scripts", "release.ts"));
+	mkdirSync(join(dir, "content"));
+	let made = 0;
+	for (const step of [31, 15, 15]) {
+		for (let i = 0; i < step; i++) {
+			made += 1;
+			writeFileSync(
+				join(dir, "content", `file-${String(made).padStart(3, "0")}.txt`),
+				`content file ${made}\n`,
+			);
+		}
+		git(["add", "bun.lock", "package.json", "src/index.ts", "scripts", "content"]);
+		git(["commit", "-q", "-m", `fixture history, ${made} content files`]);
+	}
+	box.repo = dir;
+	return dir;
+}
+
 interface Box {
 	root: string;
 	releases: string;
@@ -42,6 +103,9 @@ interface Box {
 	bin: string;
 	home: string;
 	log: string;
+	// The fixture repository, built on first use (testkit's afterEach removes
+	// tracked temp dirs, so it cannot outlive one test).
+	repo: string | null;
 }
 
 function unitText(box: Box, workingDirectory: string): string {
@@ -69,6 +133,7 @@ function makeBox(): Box {
 		bin: join(root, "bin"),
 		home: join(root, "home"),
 		log: join(root, "calls.log"),
+		repo: null,
 	};
 	mkdirSync(box.bin);
 	mkdirSync(join(box.home, "state"), { recursive: true });
@@ -135,7 +200,7 @@ interface Result {
 }
 
 function release(box: Box, args: string[], extraEnv: Record<string, string> = {}): Result {
-	const result = spawnSync(BUN, [join(REPO, "scripts", "release.ts"), ...args], {
+	const result = spawnSync(BUN, [join(fixtureRepo(box), "scripts", "release.ts"), ...args], {
 		cwd: box.root,
 		encoding: "utf8",
 		// git and tar stay real; only the process boundary is faked. The fake
@@ -159,8 +224,10 @@ function calls(box: Box): string[] {
 		.filter((line) => line !== "");
 }
 
-function headRev(): string {
-	return spawnSync("git", ["-C", REPO, "rev-parse", "HEAD"], { encoding: "utf8" }).stdout.trim();
+function headRev(box: Box): string {
+	return spawnSync("git", ["-C", fixtureRepo(box), "rev-parse", "HEAD"], {
+		encoding: "utf8",
+	}).stdout.trim();
 }
 
 function liveTarget(box: Box): string | null {
@@ -185,7 +252,7 @@ function liveTarget(box: Box): string | null {
 describe("release build", () => {
 	test("--build-only makes a complete private release and touches nothing live", () => {
 		const box = makeBox();
-		const rev = headRev();
+		const rev = headRev(box);
 		const result = release(box, ["--build-only"]);
 		expect(result.status).toBe(0);
 		expect(result.stdout.trim()).toBe(
@@ -194,11 +261,13 @@ describe("release build", () => {
 		const dir = join(box.releases, rev);
 		expect(readFileSync(join(dir, ".release-complete"), "utf8").trim()).toBe(rev);
 		// The release is exactly the tracked tree at that commit: every path git
-		// reports is present, and the untracked files of the dev tree (this new
-		// script among them, before it was committed) are not.
-		const tracked = spawnSync("git", ["-C", REPO, "ls-tree", "-r", "--name-only", rev], {
-			encoding: "utf8",
-		})
+		// reports is present, and the fixture's untracked resolution symlinks
+		// (src/durable.ts, node_modules) are not.
+		const tracked = spawnSync(
+			"git",
+			["-C", fixtureRepo(box), "ls-tree", "-r", "--name-only", rev],
+			{ encoding: "utf8" },
+		)
 			.stdout.trim()
 			.split("\n");
 		expect(tracked.length).toBeGreaterThan(50);
@@ -244,7 +313,7 @@ describe("rollout", () => {
 
 	test("--adopt-unit cuts over: builds, flips, rewrites only WorkingDirectory, restarts, annotates", () => {
 		const box = makeBox();
-		const rev = headRev();
+		const rev = headRev(box);
 		const result = release(box, ["--adopt-unit"]);
 		expect(result.status).toBe(0);
 		expect(result.stdout.trim()).toBe(`adopted release layout and deployed ${rev}`);
@@ -276,8 +345,8 @@ describe("rollout", () => {
 	test("a rollout flips to another rev and prints the rollback for the one it replaced", () => {
 		const box = makeBox();
 		expect(release(box, ["--adopt-unit"]).status).toBe(0);
-		const first = headRev();
-		const older = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD~1"], {
+		const first = headRev(box);
+		const older = spawnSync("git", ["-C", fixtureRepo(box), "rev-parse", "HEAD~1"], {
 			encoding: "utf8",
 		}).stdout.trim();
 		const result = release(box, ["--rev", "HEAD~1"]);
@@ -298,7 +367,7 @@ describe("rollout", () => {
 		expect(release(box, ["--adopt-unit"]).status).toBe(0);
 		const before = calls(box).filter((line) => line === "systemctl --user restart goblin").length;
 		// A real commit that was never built into a release here.
-		const unbuilt = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD~2"], {
+		const unbuilt = spawnSync("git", ["-C", fixtureRepo(box), "rev-parse", "HEAD~2"], {
 			encoding: "utf8",
 		}).stdout.trim();
 		const result = release(box, ["--rollback", unbuilt]);
@@ -312,8 +381,8 @@ describe("rollout", () => {
 	test("a failed acceptance fails the rollout without rolling back on its own", () => {
 		const box = makeBox();
 		expect(release(box, ["--adopt-unit"]).status).toBe(0);
-		const first = headRev();
-		const older = spawnSync("git", ["-C", REPO, "rev-parse", "HEAD~1"], {
+		const first = headRev(box);
+		const older = spawnSync("git", ["-C", fixtureRepo(box), "rev-parse", "HEAD~1"], {
 			encoding: "utf8",
 		}).stdout.trim();
 		const result = release(box, ["--rev", "HEAD~1"], { FAKE_ACCEPT_FAIL: "1" });
@@ -347,10 +416,10 @@ describe("rollout", () => {
 	test("rollback refuses a release whose tree is gone", () => {
 		const box = makeBox();
 		expect(release(box, ["--adopt-unit"]).status).toBe(0);
-		const gutted = join(box.releases, headRev());
+		const gutted = join(box.releases, headRev(box));
 		spawnSync("trash", [join(gutted, "node_modules")]);
 		const before = calls(box).filter((line) => line === "systemctl --user restart goblin").length;
-		const result = release(box, ["--rollback", headRev()]);
+		const result = release(box, ["--rollback", headRev(box)]);
 		expect(result.status).toBe(1);
 		expect(result.stderr).toContain("no complete release");
 		expect(calls(box).filter((line) => line === "systemctl --user restart goblin").length).toBe(
@@ -363,7 +432,7 @@ describe("status", () => {
 	test("reports what is live, whether the unit matches, and restarts still pending", async () => {
 		const box = makeBox();
 		expect(release(box, ["--adopt-unit"]).status).toBe(0);
-		const first = headRev();
+		const first = headRev(box);
 		expect(release(box, ["--rev", "HEAD~1"]).status).toBe(0);
 		// A process still sitting in the older release: the flip happened, the
 		// restart did not. That is the one inconsistency this layout can hold.

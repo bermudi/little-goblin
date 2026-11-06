@@ -1046,6 +1046,7 @@ describe("app operator surface — capability parking", () => {
 			// The service catalog rides the same GET.
 			expect(first.serviceNames.codex).toBe("ChatGPT");
 			expect(first.providerPresets.map((p) => p.id).sort()).toEqual([
+				"claude",
 				"logfare",
 				"onemin",
 				"openrouter",

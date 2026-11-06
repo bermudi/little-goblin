@@ -156,7 +156,11 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 			: `turn run ${rec.runId} ended ${status}`;
 	}
 
+	// The durable row when it exists: it carries the arrival stamp, and a
+	// steered trigger must render the bytes later requests replay.
 	function triggerOf(rec: WakeRecord): UIMessage {
+		const stored = store.history(rec.conversationId).find((m) => m.id === rec.messageId);
+		if (stored !== undefined) return stored;
 		return { id: rec.messageId, role: "user", parts: [{ type: "text", text: rec.text }] };
 	}
 

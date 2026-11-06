@@ -1179,7 +1179,15 @@ test("the context window view serves the captured prompt and the call lineage", 
 		expect(body.segments!.history).toBeGreaterThan(0);
 		// The outbound of the turn's single step: the user message only —
 		// the reply is the response, never its own input.
-		expect(body.messages).toEqual([{ role: "user", content: [{ type: "text", text: "hi" }] }]);
+		expect(body.messages).toEqual([
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: "hi" },
+					{ type: "text", text: expect.stringMatching(/^\[20.* · app\]$/) },
+				],
+			},
+		]);
 		expect(body.calls).toHaveLength(1);
 		expect(body.calls[0]).toMatchObject({
 			status: "completed",

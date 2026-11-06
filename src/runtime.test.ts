@@ -1020,9 +1020,9 @@ describe("turn authority", () => {
 		}[];
 		const msgs = wire.filter((m) => m.role !== "system");
 		expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
-		expect(msgs[0]!.content.map((c) => c.text)).toEqual(["2+2?"]);
+		expect(msgs[0]!.content.slice(0, -1).map((c) => c.text)).toEqual(["2+2?"]);
 		expect(msgs[1]!.content.map((c) => c.text)).toEqual(["answer"]);
-		expect(msgs[2]!.content.map((c) => c.text)).toEqual(["2+5?", "2+8?"]);
+		expect(msgs[2]!.content.map((c) => c.text).filter((t) => !t?.startsWith("[20"))).toEqual(["2+5?", "2+8?"]);
 		r.store.close();
 	});
 
@@ -1056,7 +1056,7 @@ describe("turn authority", () => {
 		expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
 		// The event merges with the trailing user submit: the bracketed
 		// note leads the merged message's content, the submit follows.
-		expect(msgs[2]!.content.map((c) => c.text)).toEqual([
+		expect(msgs[2]!.content.map((c) => c.text).filter((t) => !t?.startsWith("[20"))).toEqual([
 			`[system event: ${event}]`,
 			"what did you save?",
 		]);
@@ -2892,7 +2892,7 @@ describe("steering", () => {
 		}[];
 		const texts = wire
 			.filter((m) => m.role === "user")
-			.flatMap((m) => m.content.filter((c) => c.type === "text").map((c) => c.text!));
+			.flatMap((m) => m.content.filter((c) => c.type === "text" && !c.text!.startsWith("[20")).map((c) => c.text!));
 		expect(texts).toEqual(["start this", "actually pivot"]);
 		// History: both user messages, then one assistant exchange. The
 		// reply anchors after the steered message — the burst it

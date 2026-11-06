@@ -275,7 +275,8 @@ turn-structure change.
 - **Cache stability** (DESIGN.md). Prompt assembly stays byte-stable:
   the view is a pure function of its inputs; steering appends tails
   only — prefix bytes untouched; the merge runs after per-message
-  conversion; no clock, no per-turn variability. The sanctioned one-time
+  conversion; no clock read at view time, no per-turn variability (arrival
+  stamps are stored facts, DESIGN.md → Cache stability). The sanctioned one-time
   rewrites (DESIGN.md → Cache stability) remain the complete list of
   legal hash moves.
 - **Turn metadata separates billing from the window** (2026-10-19).

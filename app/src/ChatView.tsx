@@ -95,9 +95,9 @@ function Activity({ parts, live }: { parts: ActivityPart[]; live?: boolean | und
 	const lines = tools.map(partSummaryLine);
 	// The fold drives itself until the operator steers it: activity
 	// opens it, the lull between calls holds whatever it had (folding
-	// for the gap flashes on every new call), and sealing — the
-	// message done arriving, the run unable to grow — settles it:
-	// clean closes, failures stay open. A summary click outranks auto
+	// for the gap flashes on every new call), and sealing — a part
+	// lands behind the run, or the message stops arriving — settles
+	// it: clean closes, failures stay open. A summary click outranks auto
 	// for the rest of this fold's life: preventDefault keeps the DOM
 	// from flipping on its own so React's `open` stays the one writer.
 	const [auto, setAuto] = useState(active);
@@ -490,7 +490,12 @@ export function MessageParts({
 				// nothing — they never split a run.
 				j++;
 			}
-			out.push(<Activity key={`w${i}`} parts={run} live={streaming} />);
+			// A run can still grow only while it owns the tail of a
+			// streaming message — a run-ender behind it seals it even
+			// while the message streams on.
+			out.push(
+				<Activity key={`w${i}`} parts={run} live={streaming === true && j === parts.length} />,
+			);
 			// Published artifacts hoist out of the fold into cards — the
 			// fold records that the call ran; the card is the openable
 			// thing. Direct artifact calls and a script's collected

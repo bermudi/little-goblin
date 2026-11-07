@@ -334,8 +334,10 @@ podman runs at every container start. Register/update them with:
 ```sh
 # Pass any value on stdin; the no-op store discards it — the lookup is
 # what matters. Repeat per credential name.
+# Podman parses --driver-opts as CSV: a double quote in the lookup is a parse
+# error, so tr's argument stays single-quoted.
 printf 'x\n' | podman secret create --replace --driver shell \
-  --driver-opts 'lookup=env PATH=$HOME/.local/bin:$PATH pass-keys get goblin-dev OPENROUTER_API_KEY | tr -d "\n",store=cat >/dev/null,list=true,delete=true' \
+  --driver-opts "lookup=env PATH=\$HOME/.local/bin:\$PATH pass-keys get goblin-dev OPENROUTER_API_KEY | tr -d '\\n',store=cat >/dev/null,list=true,delete=true" \
   HINDSIGHT_API_LLM_API_KEY -
 ```
 
@@ -697,6 +699,12 @@ drifting call is recorded.
   `observations_mission` were set to the canonical English-pinned texts
   via the `/config` PATCH above (the generic `mission` field was left —
   it feeds the explicit memory_reflect tool, not extraction).
+- 2026-11-06: g7 moved from the env-file stack to the pod and a podman
+  shell secret (#158). `retain_mission` is now the stricter text from #153,
+  which differs from the installer's `DEFAULT_MISSION`; `reflect_mission`
+  is `DEFAULT_MISSION`. On a throwaway bank that text gave 0 facts for a
+  greeting and 1 for a stated decision. The API now needs an unlocked
+  wallet to start.
 - Container→host networking: bridge net `goblin-memory`;
   `host.containers.internal` does NOT reach host loopback listeners
   (refused) — the `goblin-embed-relay` socat unit on the tailscale /32

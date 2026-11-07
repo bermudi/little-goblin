@@ -20,7 +20,7 @@ One `System1Client` is built at boot and shared by every consumer.
 
 - **Models.** Default and backup are both `typesafe/jev-1.13` (operator
   ruling, 2026-10-05); the configured primary is
-  `inception/mercury-decide:free`.
+  `perplexity/pplx-decider-v1.2` (operator ruling, 2026-11-06).
 - **Logging.** Never state text, credentials, response bodies, or endpoint
   URLs.
 
@@ -68,6 +68,37 @@ This block has no Settings controls yet; file edits follow the bootstrap and
 recovery validation policy in `DESIGN.md` → Config.
 
 With neither block there is no client: the layer is off.
+
+## Model evaluation
+
+`bun scripts/system1-eval.ts [--runs N] [--only check] [--out file] [--stored] model ...`
+runs labeled cases through each check's real questions and state shape,
+with the backup off, and judges them at the score production acts on. The
+decision model catalog is
+`https://openrouter.ai/api/v1/models?output_modalities=decisions`.
+
+The cases are synthetic and the labels hand-written, so results compare
+models; they do not measure accuracy on live traffic. `--stored` adds
+hand-labeled real turns and sends their text to the provider.
+
+Results, 2026-11-06, 54 cases, 3 runs each, 252 judged answers:
+
+| Model | Correct | Brier | Median | Cost per call |
+|---|---:|---:|---:|---:|
+| `perplexity/pplx-decider-v1.2` | 249 | 0.017 | 368 ms | $0.000008 |
+| `cloudflare/clef` | 249 | 0.017 | 433 ms | $0.000103 |
+| `baseten/mammoth-1` | 249 | 0.027 | 284 ms | $0.000043 |
+| `liquid/d1-ultra` | 247 | 0.018 | 383 ms | $0.000017 |
+| `typesafe/jev-1.14` | 246 | 0.045 | 359 ms | $0.000028 |
+| `typesafe/jev-1.13` | 245 | 0.035 | 291 ms | $0.000028 |
+| `liquid/d1.1` | 245 | 0.029 | 373 ms | $0.000008 |
+| `microsoft/microsoft-decision-1` | 243 | 0.021 | 445 ms | $0.000015 |
+| `inception/mercury-decide` | 242 | 0.034 | 323 ms | $0.000008 |
+
+`inception/mercury-decide:free` is gone: the API answers 404 and names the
+paid slug. The operator chose `perplexity/pplx-decider-v1.2` to replace it.
+That model also scored 14/14 on the loop cases with `--stored`, which include
+three hand-labeled real turns.
 
 ## Provenance
 

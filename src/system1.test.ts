@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { System1Client, System1Error, FALLBACK_MODEL, DEFAULT_MODEL } from "./system1.ts";
+import { DEFAULT_MODEL, FALLBACK_MODEL, System1Client, System1Error } from "./system1.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
 afterEach(() => {
@@ -124,6 +124,24 @@ describe("System1Client", () => {
 			.catch((e: unknown) => e);
 		expect(err).toBeInstanceOf(System1Error);
 		expect((err as System1Error).kind).toBe("transport");
+	});
+
+	test("with fallback off, a primary failure throws and never calls the backup", async () => {
+		const models: string[] = [];
+		const baseUrl = served(async (request) => {
+			models.push(z.object({ model: z.string() }).parse(await request.json()).model);
+			return new Response("primary unavailable", { status: 503 });
+		});
+		const client = new System1Client({
+			baseUrl,
+			model: "inception/mercury-decide",
+			fallback: false,
+			auth: async () => "key",
+		});
+		await expect(client.decide("state", { correction: question })).rejects.toBeInstanceOf(
+			System1Error,
+		);
+		expect(models).toEqual(["inception/mercury-decide"]);
 	});
 
 	test("configured primary failure retries the identical payload once with backup and one auth resolution", async () => {

@@ -20,3 +20,5 @@
 - **Consolidation:** the automatic Hindsight step that merges facts into observations.
 - **Mission:** the plain-language rule that guides a Hindsight step. `retain_mission` guides extraction and `observations_mission` guides consolidation.
 - **Recall:** finding memories and adding them to the prompt before a reply.
+- **System One:** Goblin's yes/no check layer. A decision model returns a probability for a question about the current state.
+- **Decision model:** a model that answers typed questions with scores and does not write text.

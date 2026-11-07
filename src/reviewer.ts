@@ -281,7 +281,7 @@ export function toolOk(output: unknown): boolean {
 
 // ---------- gate ----------
 
-const GATE_QUESTIONS: Record<string, System1Question> = {
+export const GATE_QUESTIONS: Record<string, System1Question> = {
 	correction: {
 		type: "noul",
 		instructions:
@@ -310,7 +310,9 @@ const MAX_OPERATOR_CHARS = 10_000;
 const MAX_REPLY_CHARS = 12_000;
 const FALLBACK_TOOL_CALLS = 8;
 
-export function buildGateState(turn: CompletedTurn): string {
+export function buildGateState(
+	turn: Pick<CompletedTurn, "operatorTexts" | "replyText" | "toolNames">,
+): string {
 	const counts = new Map<string, number>();
 	for (const name of turn.toolNames) counts.set(name, (counts.get(name) ?? 0) + 1);
 	const tools = [...counts.entries()]

@@ -57,8 +57,26 @@ describe("MemoryView", () => {
 		document: DOC,
 		originalText: "the exchange text",
 		facts: [
-			{ id: "f1", text: "likes rain", factType: "world", state: "valid", occurredStart: null, occurredEnd: null, mentionedAt: null, entities: null },
-			{ id: "f2", text: "lives in Oslo", factType: "world", state: "invalidated", occurredStart: null, occurredEnd: null, mentionedAt: null, entities: null },
+			{
+				id: "f1",
+				text: "likes rain",
+				factType: "world",
+				state: "valid",
+				occurredStart: null,
+				occurredEnd: null,
+				mentionedAt: null,
+				entities: null,
+			},
+			{
+				id: "f2",
+				text: "lives in Oslo",
+				factType: "world",
+				state: "invalidated",
+				occurredStart: null,
+				occurredEnd: null,
+				mentionedAt: null,
+				entities: null,
+			},
 		],
 		factsTotal: 2,
 	};
@@ -213,7 +231,9 @@ describe("MemoryView", () => {
 		const card = container.querySelector(".mem-problem")!;
 		expect(card.textContent).toContain("hindsight 500");
 		expect(card.textContent).toContain("Trip plans");
-		const retryBtn = [...card.querySelectorAll("button")].find((b) => b.textContent === "Try again");
+		const retryBtn = [...card.querySelectorAll("button")].find(
+			(b) => b.textContent === "Try again",
+		);
 		await click(retryBtn);
 		expect(posts).toHaveLength(1);
 	});

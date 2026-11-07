@@ -1,6 +1,7 @@
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import type { AppConversationList, AppNoteSummary, AppProject } from "../../src/http/app-wire.ts";
 import { ApiError, createNote, createProject, listNotes, patchProject } from "./api.ts";
+import { relTime } from "./memoryShared.tsx";
 import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
 
 type Summary = AppConversationList["conversations"][number];
@@ -261,6 +262,41 @@ export function ProjectsIndex({
 	);
 }
 
+// Notes and chats share one shape: name | preview | updated | pinned.
+const ITEM_COLS = {
+	"--dt-cols": "minmax(10rem, 1.4fr) minmax(12rem, 3fr) 6.5rem 5rem",
+} as CSSProperties;
+
+// The table cell is one line; a chat's newest text may span many.
+const flatPreview = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+// A page section: the heading and its action sit on one line, the
+// count beside the heading (design/app.md → Non-chat page layout).
+function ProjectSection({
+	title,
+	count,
+	action,
+	children,
+}: {
+	title: string;
+	count?: number | undefined;
+	action?: ReactNode;
+	children: ReactNode;
+}) {
+	return (
+		<section className="proj-sec">
+			<div className="proj-sec-head">
+				<h2 className="ops-h2">
+					{title}
+					{count !== undefined && <span className="pill">{count}</span>}
+				</h2>
+				{action}
+			</div>
+			{children}
+		</section>
+	);
+}
+
 // The project's notes — fetched per page visit; a new note is bound
 // here from birth.
 function ProjectNotes({
@@ -319,7 +355,10 @@ function ProjectNotes({
 		creatingRef.current = true;
 		setCreating(true);
 		const seq = ++createSeq.current;
-		void createNote(token, { title: "Untitled note", projectId: project.id }).then(
+		void createNote(token, {
+			title: "Untitled note",
+			projectId: project.id,
+		}).then(
 			(n) => {
 				onChanged();
 				if (!mounted.current || seq !== createSeq.current) return;
@@ -336,13 +375,15 @@ function ProjectNotes({
 		);
 	};
 	return (
-		<>
-			<div className="row">
-				<h2 className="ops-h2">Notes</h2>
-				<button type="button" className="ghost" disabled={creating} onClick={newNote}>
+		<ProjectSection
+			title="Notes"
+			count={notes?.length}
+			action={
+				<button type="button" className="addbtn proj-btn" disabled={creating} onClick={newNote}>
 					New note
 				</button>
-			</div>
+			}
+		>
 			{error !== null && (
 				<p className="error" role="alert">
 					{error}
@@ -358,20 +399,28 @@ function ProjectNotes({
 			) : notes.length === 0 ? (
 				<p className="empty">No notes here yet.</p>
 			) : (
-				<div className="card">
+				<div className="dtable" style={ITEM_COLS}>
+					<div className="dt-head" aria-hidden="true">
+						<span>Note</span>
+						<span>Preview</span>
+						<span>Updated</span>
+						<span />
+					</div>
 					{notes.map((n) => (
-						<button key={n.id} type="button" className="idx" onClick={() => onOpenNote(n.id)}>
-							<span className="ilabel">
-								{n.title}
-								<small>{n.preview !== "" ? n.preview : `rev ${n.rev}`}</small>
+						<button key={n.id} type="button" className="dt-row" onClick={() => onOpenNote(n.id)}>
+							<span className="dt-cell dt-main">{n.title}</span>
+							<span className="dt-cell">{n.preview !== "" ? n.preview : `rev ${n.rev}`}</span>
+							<span className="dt-cell" data-label="Updated">
+								{relTime(n.updatedAt)}
 							</span>
-							{n.pinnedAt !== null && <span className="pill">pinned</span>}
-							<span className="chev">›</span>
+							<span className="dt-cell dt-status">
+								{n.pinnedAt !== null && <span className="pill">pinned</span>}
+							</span>
 						</button>
 					))}
 				</div>
 			)}
-		</>
+		</ProjectSection>
 	);
 }
 
@@ -447,11 +496,18 @@ export function ProjectView({
 		}
 		patch({ memory: next }, "change memory");
 	};
-	const toggleArchived = () =>
-		patch(
-			{ archived: project.archivedAt === null },
-			project.archivedAt === null ? "archive the project" : "unarchive the project",
-		);
+	const toggleArchived = () => {
+		const archiving = project.archivedAt === null;
+		if (
+			archiving &&
+			!window.confirm(
+				`Archive "${project.name}"? It moves to Archived projects and its composer closes. Chats and notes are kept.`,
+			)
+		) {
+			return;
+		}
+		patch({ archived: archiving }, archiving ? "archive the project" : "unarchive the project");
+	};
 
 	// The page shows every chat bound here — archived ones in their own
 	// collapsed section (an archived project's chats only live here).
@@ -462,6 +518,11 @@ export function ProjectView({
 		.sort((a, b) => Date.parse(b.archivedAt!) - Date.parse(a.archivedAt!));
 	const instrDirty = instructions !== project.instructions;
 
+	const memoryNote =
+		project.memory === "shared"
+			? "This project uses goblin's long-term memory like any chat."
+			: "Chats in this project neither send nor recall memories.";
+
 	return (
 		<div className="ops projfields">
 			{renaming ? (
@@ -469,6 +530,7 @@ export function ProjectView({
 					<input
 						ref={nameRef}
 						value={nameDraft}
+						aria-label="Project name"
 						onChange={(e) => setNameDraft(e.target.value)}
 						onBlur={commitRename}
 						onKeyDown={(e) => {
@@ -483,11 +545,11 @@ export function ProjectView({
 					/>
 				</div>
 			) : (
-				<div className="row proj-head">
+				<div className="proj-head">
 					<h2 className="proj-name">{project.name}</h2>
 					<button
 						type="button"
-						className="ghost-inline"
+						className="ghost proj-btn"
 						aria-label="Rename project"
 						title="Rename"
 						onClick={() => {
@@ -495,90 +557,139 @@ export function ProjectView({
 							setRenaming(true);
 						}}
 					>
-						rename
+						Rename
 					</button>
 				</div>
 			)}
-			<div className="kv">
-				<span className="kv-k">Directory</span>
-				<span className="kv-v">
-					<code className="mono">{project.dir}</code>{" "}
-					<span className="pill">{project.managed ? "managed" : "linked"}</span>{" "}
-					{project.archivedAt !== null && <span className="pill">archived</span>}
-				</span>
+			<div className="proj-dir">
+				<span className="proj-dir-k">Directory</span>
+				<code className="mono proj-dir-v" title={project.dir}>
+					{project.dir}
+				</code>
+				<span className="pill">{project.managed ? "managed" : "linked"}</span>
+				{project.archivedAt !== null && <span className="pill">archived</span>}
 			</div>
-
-			<h2 className="ops-h2">Instructions</h2>
-			<div className="frow">
-				<textarea
-					rows={5}
-					value={instructions}
-					aria-label="Instructions"
-					onChange={(e) => setInstructions(e.target.value)}
-					placeholder="What should goblin know or do in this project?"
-				/>
-				<div className="row">
-					<button
-						type="button"
-						className="addbtn"
-						disabled={!instrDirty || busy}
-						onClick={saveInstructions}
-					>
-						Save
-					</button>
-					<span className="cap">
-						Edits apply to new chats — a running chat keeps the prompt it started with.
-					</span>
-				</div>
-			</div>
-
-			<h2 className="ops-h2">Memory</h2>
-			<div className="frow">
-				<select
-					value={project.memory}
-					disabled={busy}
-					aria-label="Memory mode"
-					onChange={(e) => changeMemory(e.target.value === "off" ? "off" : "shared")}
-				>
-					<option value="shared">
-						Shared memory — this project uses goblin's long-term memory like any chat
-					</option>
-					<option value="off">
-						Memory off — chats in this project neither send nor recall memories
-					</option>
-				</select>
-				<span className="cap">
-					Switching off reaches existing chats too — they stop sending and recalling memories.
-				</span>
-			</div>
-
-			<button type="button" className="ghost" disabled={busy} onClick={toggleArchived}>
-				{project.archivedAt === null ? "Archive project" : "Unarchive project"}
-			</button>
 			{error !== null && (
 				<p className="error" role="alert">
 					{error}
 				</p>
 			)}
 
+			<ProjectSection
+				title="Instructions"
+				action={
+					<button
+						type="button"
+						className="addbtn proj-btn"
+						disabled={!instrDirty || busy}
+						onClick={saveInstructions}
+					>
+						Save
+					</button>
+				}
+			>
+				<div className="frow">
+					<textarea
+						rows={6}
+						value={instructions}
+						aria-label="Instructions"
+						onChange={(e) => setInstructions(e.target.value)}
+						placeholder="What should goblin know or do in this project?"
+					/>
+					<span className="cap">
+						Edits apply to new chats — a running chat keeps the prompt it started with.
+					</span>
+				</div>
+			</ProjectSection>
+
+			<ProjectSection title="Memory">
+				<div className="frow">
+					<div className="seg proj-seg" role="radiogroup" aria-label="Memory mode">
+						{(["shared", "off"] as const).map((mode) => (
+							<button
+								key={mode}
+								type="button"
+								role="radio"
+								aria-checked={project.memory === mode}
+								className={project.memory === mode ? "seg-btn on" : "seg-btn"}
+								disabled={busy}
+								onClick={() => changeMemory(mode)}
+							>
+								{mode === "shared" ? "Shared" : "Off"}
+							</button>
+						))}
+					</div>
+					<span className="cap">{memoryNote} Switching off reaches existing chats too.</span>
+				</div>
+			</ProjectSection>
+
 			<ProjectNotes token={token} project={project} onOpenNote={onOpenNote} onChanged={onChanged} />
 
 			<ResponsibilityFeed token={token} projectId={project.id} onConversation={onConversation} />
 
-			<h2 className="ops-h2">Chats</h2>
-			{activeChats.length === 0 ? (
-				<p className="empty">No chats here yet — write below to start one.</p>
-			) : (
-				<ul className="convlist">{activeChats.map((c) => renderRow(c))}</ul>
-			)}
-			{archivedChats.length > 0 && (
-				<details className="tuning">
-					<summary>Archived chats ({archivedChats.length})</summary>
-					<div className="inner">
-						<ul className="convlist">{archivedChats.map((c) => renderRow(c))}</ul>
+			<ProjectSection title="Chats" count={activeChats.length}>
+				{activeChats.length === 0 ? (
+					<p className="empty">No chats here yet — write below to start one.</p>
+				) : (
+					<div className="dtable" style={ITEM_COLS}>
+						<div className="dt-head" aria-hidden="true">
+							<span>Chat</span>
+							<span>Last message</span>
+							<span>Updated</span>
+							<span />
+						</div>
+						{activeChats.map((c) => {
+							const preview = flatPreview(c.preview);
+							return (
+								<button
+									key={c.id}
+									type="button"
+									className="dt-row"
+									onClick={() => onConversation?.(c.id)}
+								>
+									<span className="dt-cell dt-main">
+										{c.title ?? (preview === "" ? "new conversation" : preview)}
+									</span>
+									<span className="dt-cell">{c.title !== null ? preview : ""}</span>
+									<span className="dt-cell" data-label="Updated">
+										{relTime(c.updatedAt)}
+									</span>
+									<span className="dt-cell dt-status">
+										{c.pinnedAt !== null && <span className="pill">pinned</span>}
+									</span>
+								</button>
+							);
+						})}
 					</div>
-				</details>
-			)}
+				)}
+				{archivedChats.length > 0 && (
+					<details className="tuning">
+						<summary>Archived chats ({archivedChats.length})</summary>
+						<div className="inner">
+							<ul className="convlist">{archivedChats.map((c) => renderRow(c))}</ul>
+						</div>
+					</details>
+				)}
+			</ProjectSection>
+
+			<section className={project.archivedAt === null ? "proj-foot danger-zone" : "proj-foot"}>
+				<div className="proj-foot-text">
+					<b>{project.archivedAt === null ? "Archive this project" : "This project is archived"}</b>
+					<span className="cap">
+						{project.archivedAt === null
+							? "Moves it to Archived projects and closes its composer. Chats and notes are kept; you can unarchive it later."
+							: "Unarchive it to start new chats here."}
+					</span>
+				</div>
+				<button
+					type="button"
+					className={project.archivedAt === null ? "danger proj-btn" : "ghost proj-btn"}
+					disabled={busy}
+					onClick={toggleArchived}
+				>
+					{project.archivedAt === null ? "Archive project" : "Unarchive project"}
+				</button>
+			</section>
 		</div>
 	);
 }

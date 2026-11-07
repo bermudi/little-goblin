@@ -494,7 +494,11 @@ comparison, not a bare candidate: the approvals response carries
 diff for instructions — computed against the proposal's immutable base
 (the same snapshot the Telegram card renders), never the live row. Unchanged
 fields are omitted; the Attention card names the changed fields. The full
-candidate stays one fold away.
+candidate stays one fold away. The diff is open next to the Approve/Reject
+buttons (non-chat page layout rule), drawn by the same `DiffView` and
+`src/line-diff.ts` as the skill-update diff — one differ, one renderer. A
+schedule reads in plain words with the cron beside it ("Daily 07:00 →
+Weekdays 06:30"); shapes `src/cron-words.ts` does not cover show the raw cron.
 
 **Telegram rings.** Every completed background turn pings the *current* DM
 — `<title>: <head of the reply>` plus a link, appended as an assistant

@@ -346,6 +346,20 @@ Rulings:
   dsh-superagent: re-checking the original permission before a held
   action resumes.
 
+**Programs page (ruling 2026-11-07, #183, layout per design/app.md →
+Non-chat page layout).** A summary strip (awaiting approval, enabled, late),
+pending approvals with the reason left and the evidence open right (program
+diff, or the mail body; stacked on a narrow pane), then the programs as a
+table: program | schedule in words (`src/cron-words.ts`, raw cron when the
+shape is not covered; "Webhook" / "On new mail" / "Manual" without a cron) |
+max lateness | last run | next run | status. Opening a row replaces the list
+with the detail (facts, instructions in a prose block, actions) and a back
+link. Status is only what the row can say: disabled, *late* (an enabled
+scheduled program whose `next_run` is more than 90 s past — three scheduler
+scans — shown as `late N min`), or enabled. A "failed" status and a recent
+runs list are not shown: no run outcome is stored (see below), and
+inventing one would be fiction.
+
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an
 agent that wakes itself to decide whether to check things; ruled out

@@ -485,6 +485,12 @@ claiming needs Google domain verification, which cannot reach a tailnet-only
 host (the same wall as TWA) — expect a one-time "open supported links"
 toggle.
 
+**One URL list (#180).** `src/http/app-routes.ts` is the only list of client
+paths (pages, `/c/<id>`, `/c/<id>/window`, `/p/<id>`, `/n/<id>`). The server
+serves the shell for exactly what `parseAppPath` accepts, and the client
+parses and pushes through the same function, so a URL the client pushes
+always loads on reload. Anything else under `/app/` is an asset or a 404.
+
 **Landing rulings (stage 2, 2026-10-03).** Every operator id gets the ping
 as a private chat, one per account. A deleted app conversation drops the
 notice with a warning (no retry loop). The fork takes the delegation's name

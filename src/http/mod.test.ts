@@ -12,6 +12,7 @@ import { SkillSources } from "../skill-provenance.ts";
 import { tmpDir, useHome } from "../testkit.ts";
 import { type HttpDeps, startHttp } from "./mod.ts";
 import type { MemoryStatusResponse } from "./operator-wire.ts";
+import { APP_PAGES } from "./app-routes.ts";
 
 const TOKEN = "test-bot-token";
 
@@ -1340,18 +1341,7 @@ describe("app deep links (Notes)", () => {
 	test("every operator-console page serves the client shell", async () => {
 		const { http, get } = setup();
 		try {
-			for (const page of [
-				"settings",
-				"memory",
-				"delegations",
-				"programs",
-				"status",
-				"projects",
-				"notes",
-				"skills",
-				"files",
-				"log",
-			]) {
+			for (const page of APP_PAGES) {
 				await shellOrLoud500(await get(`/app/${page}`));
 			}
 		} finally {
@@ -1402,17 +1392,32 @@ describe("app deep links (Notes)", () => {
 			writeFileSync(join(dir, "assets", "fixture.a1b2c3.js"), "export {};\n");
 			const { http, get } = setup(undefined, undefined, undefined, dir);
 			try {
-				for (const page of ["skills", "files", "log"]) {
-					for (const path of [`/app/${page}`, `/app/${page}/`]) {
-						const res = await get(path);
-						expect(res.status, path).toBe(200);
-						expect(res.headers.get("content-type")).toContain("text/html");
-						expect(res.headers.get("cache-control")).toBe("no-store");
-						expect(await res.text()).toContain("SENTINEL SHELL");
-					}
+				// Every URL the client pushes must load on reload (#180).
+				const pagePaths = APP_PAGES.flatMap((page) => [`/app/${page}`, `/app/${page}/`]);
+				const idPaths = [
+					"/app/c/spun-1_valid",
+					"/app/c/spun-1_valid/window",
+					`/app/p/${crypto.randomUUID()}`,
+					`/app/n/${crypto.randomUUID()}`,
+				];
+				for (const path of [...pagePaths, ...idPaths]) {
+					const res = await get(path);
+					expect(res.status, path).toBe(200);
+					expect(res.headers.get("content-type")).toContain("text/html");
+					expect(res.headers.get("cache-control")).toBe("no-store");
+					expect(await res.text()).toContain("SENTINEL SHELL");
 				}
-				for (const p of ["/app/skills/x", "/app/nope"]) {
-					expect((await get(p)).status).toBe(404);
+				for (const p of [
+					"/app/skills/x",
+					"/app/nope",
+					"/app/attention/x",
+					"/app/c/valid/extra",
+					"/app/c/valid/window/",
+					"/app/p/valid/window",
+					"/app/n/valid/window",
+					"/app/c//window",
+				]) {
+					expect((await get(p)).status, p).toBe(404);
 				}
 				const asset = await get("/app/assets/fixture.a1b2c3.js");
 				expect(asset.status).toBe(200);

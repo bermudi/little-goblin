@@ -31,7 +31,8 @@ import { MemoryView } from "./MemoryView.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
 import { WindowView } from "./WindowView.tsx";
-import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
+import { DelegationsView } from "./DelegationsView.tsx";
+import { ProgramsView, StatusView } from "./OperatorViews.tsx";
 import { FilesView, SkillsView } from "./StateViews.tsx";
 import { AttentionView } from "./AttentionView.tsx";
 import { LogView } from "./LogView.tsx";
@@ -2131,7 +2132,9 @@ function AppShell() {
 					/>
 				)}
 				{page === "memory" && <MemoryView token={token} />}
-				{page === "delegations" && <DelegationsView token={token} />}
+				{page === "delegations" && (
+					<DelegationsView token={token} onOpenConversation={openConversation} />
+				)}
 				{page === "programs" && <ProgramsView token={token} />}
 				{page === "status" && <StatusView token={token} />}
 				{page === "skills" && <SkillsView token={token} />}

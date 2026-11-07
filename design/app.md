@@ -201,6 +201,19 @@ stacks and nested values in `pre` blocks. The tail stays a bounded
 server-side window; the page says how many older matching lines it did not
 show (`matched` on the wire) and offers the next limit.
 
+*Delegations page (#169).* Current work (starting, running, needs input)
+leads as panels (`.deleg-now`): name, status pill, harness and start time,
+what it waits for, a one-line brief summary, and a direct action — "Answer in
+conversation" / "Open conversation" for a delegation pinned to an app
+conversation, always "Details". Needs-input panels carry a warning edge. A
+`.sumstrip` counts need input / running / done / failed or stopped. Finished
+delegations are a `.dtable` (name + brief summary | harness | status pill |
+started | ended), newest first, 15 rows at a time with "Show more". A brief is
+never printed in a list; opening a row replaces the list with the detail
+(back link, facts, full brief in `.prose`). The wire carries no outcome or
+result link, so none is shown; Telegram-pinned delegations have no app
+conversation to link.
+
 **Note page is an editor (ruling 2026-11-07, #172).** The note page must read
 as a place to write: the title is a bordered field (placeholder "Note title";
 a fresh "Untitled note" selects on focus), the text sits on a visible surface

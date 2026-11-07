@@ -5438,8 +5438,14 @@ button.link:hover {
 .logtable .log-row.open::after {
 	transform: rotate(90deg);
 }
+/* A flex child with overflow hidden would shrink to the pane height. */
+.logtable {
+	flex: none;
+}
+.logtable .log-row.sub .log-when {
+	padding-left: 1.2rem;
+}
 .logtable .log-row.sub {
-	padding-left: 2.1rem;
 	background: color-mix(in oklab, var(--app-fg) 3%, transparent);
 }
 .logtable .log-msg {
@@ -5538,9 +5544,6 @@ button.link:hover {
 	padding: 0.4rem 0.6rem;
 }
 @container (max-width: 40rem) {
-	.logtable .log-row.sub {
-		padding-left: 1.4rem;
-	}
 	.log-detail dl {
 		grid-template-columns: minmax(0, 1fr);
 		gap: 0;

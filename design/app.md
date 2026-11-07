@@ -188,6 +188,19 @@ existing long-text classes get these caps by selector until their page is
 redone. `.sumstrip` / `.sumtile` is the optional count strip. The Projects
 index is the reference table.
 
+*Log page (#166).* A `.dtable` (`.logtable`) of lines, newest first: time
+(clock today, day + clock older), level pill, message, key fields (scalar
+fields, the error first). The level filter is visible chips and means *at
+least* that severity (Info+, Warnings+, Errors; the server `level` param
+too); the text filter searches itself after a short pause. Warnings and
+errors carry a colored edge. Consecutive debug/info lines with the same
+message fold into one `×N` row; warnings and errors never fold. A row opens
+*in place* (not a replacing detail view) because the neighbouring lines are
+the context of an event; the opened line lists its fields as key/value, with
+stacks and nested values in `pre` blocks. The tail stays a bounded
+server-side window; the page says how many older matching lines it did not
+show (`matched` on the wire) and offers the next limit.
+
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
 forever (no route may ever render it, structure included). Two layers, each

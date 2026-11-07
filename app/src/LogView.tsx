@@ -319,8 +319,18 @@ export function LogView({ token }: { token: string | null }) {
 			{data !== null && (
 				<p className="log-summary">
 					{data.lines.length} {data.lines.length === 1 ? "line" : "lines"}, newest first
-					{errors > 0 && <span className="log-count bad"> · {errors} errors</span>}
-					{warns > 0 && <span className="log-count warn"> · {warns} warnings</span>}
+					{errors > 0 && (
+						<span className="log-count bad">
+							{" "}
+							· {errors} {errors === 1 ? "error" : "errors"}
+						</span>
+					)}
+					{warns > 0 && (
+						<span className="log-count warn">
+							{" "}
+							· {warns} {warns === 1 ? "warning" : "warnings"}
+						</span>
+					)}
 				</p>
 			)}
 			{data !== null && data.lines.length === 0 && <p className="empty">No matching lines.</p>}

@@ -4641,10 +4641,18 @@ button.note-card-append:hover {
 	padding: 0.75rem;
 	margin: 0;
 }
+/* .notepage is a flex column with a fixed height: without this the
+   editor (min-height only) shrinks to fit and its text overflows
+   onto whatever follows it — the versions panel. */
+.notepage > * {
+	flex-shrink: 0;
+}
 .note-versions {
-	border-top: 1px solid var(--app-border);
+	border: 1px solid var(--app-border);
+	border-radius: 10px;
+	background: var(--app-gray-50);
 	margin-top: 0.75rem;
-	padding-top: 0.5rem;
+	padding: 0.5rem 0.75rem;
 	font-size: 12px;
 }
 .note-versions ul {

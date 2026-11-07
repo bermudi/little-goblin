@@ -4094,6 +4094,10 @@ button.pathchip:hover svg {
 	align-items: center;
 	gap: 0.5rem;
 }
+.mem-actions > button {
+	margin-top: 0;
+	align-self: center;
+}
 .mem-confirm {
 	font-size: 12.5px;
 }
@@ -4107,6 +4111,8 @@ button.pathchip:hover svg {
 }
 .mem-retry .sumstrip {
 	margin-top: 0.5rem;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 0.4rem;
 }
 .mem-retry-table {
 	margin-top: 0.6rem;

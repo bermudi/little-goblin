@@ -5,7 +5,7 @@ import {
 	registerPushSubscription,
 	unregisterPushSubscription,
 } from "./api.ts";
-import { describe, KV, useLoad } from "./opsShared.tsx";
+import { describe, useLoad } from "./opsShared.tsx";
 import type { AppPushStatus, AppPushSubscriptionRequest } from "../../src/http/app-wire.ts";
 
 interface PushState {
@@ -148,32 +148,26 @@ export function PushControls({ token }: { token: string | null }) {
 					? "browser only — re-register"
 					: "off";
 
+	// One quiet line: notifications are not a decision, so the page keeps
+	// them at the foot (design/app.md → Attention page, #150).
 	return (
-		<div className="card">
-			<div className="op-item-head">
-				<span className="op-item-title">Notifications</span>
-				<span className={`pill${enabled ? " on" : ""}`}>{state}</span>
-			</div>
-			<KV k="server" v={data.status.configured ? "ready" : "no key yet"} />
-			<KV k="devices" v={String(data.status.subscriptions.length)} />
-			<div className="cap ops-cap">
-				Background app turns ring this browser; notifications carry only a link back to the
-				conversation.
-			</div>
-			{actErr !== null && <div className="error">{actErr}</div>}
+		<div className="attn-footer">
+			<span className="attn-footer-text">
+				Notifications: {state}
+				{!data.status.configured && " · server has no key yet"} · {data.status.subscriptions.length}{" "}
+				{data.status.subscriptions.length === 1 ? "device" : "devices"}
+			</span>
 			{data.supported && (
-				<div className="approval-actions">
-					{enabled ? (
-						<button type="button" disabled={busy} onClick={() => void disable()}>
-							Disable on this device
-						</button>
-					) : (
-						<button type="button" disabled={busy} onClick={() => void enable()}>
-							Enable on this device
-						</button>
-					)}
-				</div>
+				<button
+					type="button"
+					className="ghost"
+					disabled={busy}
+					onClick={() => void (enabled ? disable() : enable())}
+				>
+					{enabled ? "Disable on this device" : "Enable on this device"}
+				</button>
 			)}
+			{actErr !== null && <div className="error">{actErr}</div>}
 		</div>
 	);
 }

@@ -158,7 +158,7 @@ function Description({ skill }: { skill: OperatorSkillItem }) {
 	);
 }
 
-function ProposalCard({
+export function ProposalCard({
 	proposal,
 	token,
 	onDecided,

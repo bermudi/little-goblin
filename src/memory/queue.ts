@@ -408,7 +408,8 @@ export class MemoryQueue {
 		target: string,
 		scope: BlockedScope,
 	): { operation_id: string; document_id: string }[] {
-		const base = "SELECT operation_id, document_id FROM memory_outbox WHERE target = ? AND state = 'blocked'";
+		const base =
+			"SELECT operation_id, document_id FROM memory_outbox WHERE target = ? AND state = 'blocked'";
 		return scope === undefined
 			? this.db.query<{ operation_id: string; document_id: string }, [string]>(base).all(target)
 			: this.db

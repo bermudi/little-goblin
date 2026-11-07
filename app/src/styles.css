@@ -7210,3 +7210,154 @@ button.link:hover {
 .status-raw .card {
 	margin-top: 0.4rem;
 }
+
+/* ---------- Attention page (#150) ---------- */
+.attn-title {
+	margin: 0.2rem 0.4rem 0;
+	font-size: 17px;
+	font-weight: 600;
+}
+.attn-summary {
+	margin: 0.15rem 0.4rem 0;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.attn-card {
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	padding: 0.7rem 0.8rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.55rem;
+	font-size: 13px;
+	line-height: 1.45;
+}
+.attn-card + .attn-card {
+	margin-top: 0.5rem;
+}
+.attn-problem {
+	border-color: color-mix(in oklab, var(--app-danger) 35%, var(--app-divider));
+	background: color-mix(in oklab, var(--app-danger) 6%, var(--app-gray-50));
+}
+.attn-head {
+	display: flex;
+	align-items: baseline;
+	gap: 0.6rem;
+}
+.attn-head h3 {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+	font-size: 14px;
+	font-weight: 600;
+}
+.attn-age {
+	flex: none;
+	font-size: 12px;
+	color: var(--app-fg-subtle);
+}
+.attn-body p,
+.attn-detail {
+	margin: 0;
+}
+.attn-body p + p {
+	margin-top: 0.4rem;
+}
+.attn-detail {
+	color: var(--app-fg-muted);
+	max-width: var(--prose-col);
+}
+.attn-error {
+	font-family: var(--font-mono);
+	font-size: 12px;
+	overflow-wrap: anywhere;
+}
+.attn-fix,
+.attn-from {
+	color: var(--app-fg-muted);
+}
+.attn-wait {
+	display: flex;
+	gap: 0.5rem;
+	margin: 0.2rem 0.1rem 0;
+	padding-top: 0.45rem;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.attn-card > .attn-wait {
+	margin: 0;
+	border-top: 1px solid var(--app-divider);
+}
+.attn-wait b {
+	flex: none;
+	font-weight: 600;
+	color: var(--app-fg);
+}
+.attn-decision + .attn-decision {
+	margin-top: 0.9rem;
+}
+.attn-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+}
+.attn-confirm {
+	font-size: 12.5px;
+}
+.attn-primary {
+	background: var(--app-fg);
+	color: var(--app-bg);
+	border: 1px solid var(--app-fg);
+	border-radius: 8px;
+	padding: 0.35rem 0.8rem;
+	font-size: 12.5px;
+	font-weight: 500;
+}
+.attn-primary:disabled {
+	opacity: 0.5;
+}
+.attn-link {
+	padding: 0.35rem 0.3rem;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+	text-decoration: underline;
+	text-underline-offset: 2px;
+}
+.attn-link:hover {
+	color: var(--app-fg);
+}
+.attn-done {
+	margin: 0.5rem 0.4rem 0;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.attn-clear {
+	margin: 1.25rem 0.4rem 0;
+}
+.attn-clear h2 {
+	margin: 0;
+	font-size: 14px;
+	font-weight: 600;
+}
+.attn-clear p {
+	margin: 0.2rem 0 0;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.attn-unavailable {
+	margin: 1rem 0.4rem 0;
+}
+.attn-footer {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem 1rem;
+	margin: 1.5rem 0.4rem 0;
+	padding-top: 0.7rem;
+	border-top: 1px solid var(--app-divider);
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}

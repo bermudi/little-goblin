@@ -169,8 +169,7 @@ describe("app attention", () => {
 					blockedDetail: () => memStore.memoryQueue.blockedDetail(memClient.target),
 					queue: memStore.memoryQueue,
 					client: memClient,
-					conversationTitle: (id: string) =>
-						id === "app/chat-01" ? { title: "Primary" } : null,
+					conversationTitle: (id: string) => (id === "app/chat-01" ? { title: "Primary" } : null),
 					lastRecallOk: () => null,
 					lastRecallAt: () => null,
 				},

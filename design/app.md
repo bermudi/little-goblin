@@ -366,6 +366,17 @@ a settings trip. Custom refs split at the first slash like every ref
 (app/telegram defaults, title, vision, image, fallback) still see the
 whole catalog: curation governs the chat picker, not job picks.
 
+## Visible controls (ruling 2026-11-07, #170)
+
+A field, select or button must read as usable at rest, in both themes,
+before it is touched. Controls draw their edge with `--app-control-border`
+(30% of the foreground; 48% on hover), fields and secondary buttons carry
+`--app-control-bg`, and focus is `--app-focus` (accent) plus a 2px ring.
+`--app-border` is the card/separator hairline (10%) and must not be used
+for a control. Native selects get a drawn chevron. A zero-specificity net
+under `.ops`, `.msheet` and dialogs styles any field a page forgot, so a
+new field is never a bare native control.
+
 ## Settings shape (ruling 2026-10-23)
 
 Supersedes the form-mirrors-the-file layout. Operator rule: **anything

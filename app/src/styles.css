@@ -2827,7 +2827,7 @@ button.pathchip:hover svg {
 .msheet-filter select {
 	font: inherit;
 	font-size: 12.5px;
-	background: var(--app-bg);
+	background-color: var(--app-control-bg);
 	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
@@ -3009,8 +3009,13 @@ button.pathchip:hover svg {
 .valuebtn,
 .approval-actions button,
 .secret-reveal button,
-.log-controls button {
+.log-controls button,
+.ghost-inline {
 	background: var(--app-control-bg);
+	border: 1px solid var(--app-control-border);
+}
+.ghost-inline:hover {
+	border-color: var(--app-control-border-hover);
 }
 .addbtn,
 .ghost {
@@ -3121,6 +3126,58 @@ button.pathchip:hover svg {
 	background: var(--app-bg);
 	color: var(--app-fg);
 }
+/* Safety net for every other field on a page or dialog (note page, model
+   filter, window search, …): zero specificity, so any class rule above or
+   below still wins, but no field is ever left as a bare native control. */
+:where(.ops, .msheet, [role="dialog"])
+	:where(
+		input:not([type]),
+		input[type="text"],
+		input[type="search"],
+		input[type="url"],
+		input[type="password"],
+		input[type="number"],
+		input[type="email"],
+		textarea,
+		select
+	) {
+	font: inherit;
+	font-size: 12.5px;
+	color: var(--app-fg);
+	background-color: var(--app-control-bg);
+	border: 1px solid var(--app-control-border);
+	border-radius: 8px;
+	padding: 0.35rem 0.6rem;
+}
+:where(.ops, .msheet, [role="dialog"]) :where(select) {
+	appearance: none;
+	-webkit-appearance: none;
+	padding-right: 1.7rem;
+	background-image:
+		linear-gradient(45deg, transparent 50%, var(--app-fg-muted) 50%),
+		linear-gradient(135deg, var(--app-fg-muted) 50%, transparent 50%);
+	background-position:
+		calc(100% - 14px) 55%,
+		calc(100% - 9px) 55%;
+	background-size: 5px 5px;
+	background-repeat: no-repeat;
+	cursor: pointer;
+}
+:where(.ops, .msheet, [role="dialog"]) :where(select option) {
+	background: var(--app-bg);
+	color: var(--app-fg);
+}
+:where(.ops, .msheet, [role="dialog"])
+	:where(input[type="text"], input[type="search"], input:not([type]), textarea, select):hover {
+	border-color: var(--app-control-border-hover);
+}
+:where(.ops, .msheet, [role="dialog"])
+	:where(input[type="text"], input[type="search"], input:not([type]), textarea, select):focus {
+	border-color: var(--app-focus);
+	box-shadow: 0 0 0 2px color-mix(in oklab, var(--app-focus) 30%, transparent);
+	outline: none;
+}
+
 /* Fields get a faint fill so an empty box is a box, not blank space. */
 .frow input,
 .chain-card input,
@@ -3930,7 +3987,7 @@ button.pathchip:hover svg {
 .program-editor textarea {
 	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
-	background: var(--app-bg);
+	background-color: var(--app-control-bg);
 	color: var(--app-fg);
 	padding: 0.45rem 0.6rem;
 	font: inherit;
@@ -4522,13 +4579,17 @@ select.ui-input option {
 .projfields select {
 	font: inherit;
 	font-size: 12.5px;
-	background: var(--app-bg);
+	background-color: var(--app-control-bg);
 	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
 	padding: 0.4rem 0.6rem;
 	outline: none;
 	resize: vertical;
+}
+.projform select,
+.projfields select {
+	padding-right: 1.7rem;
 }
 .projform textarea:focus,
 .projform input:focus,
@@ -4571,7 +4632,7 @@ select.ui-input option {
 .proj-rename input {
 	font: inherit;
 	font-size: 13px;
-	background: var(--app-bg);
+	background-color: var(--app-control-bg);
 	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
@@ -4615,7 +4676,7 @@ select.ui-input option {
 .note-pick input[type="search"] {
 	font: inherit;
 	font-size: 12px;
-	background: var(--app-bg);
+	background-color: var(--app-control-bg);
 	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
@@ -4664,7 +4725,7 @@ form.composer {
 }
 .note-pick .note-new {
 	font-size: 12px;
-	background: var(--app-bg);
+	background-color: var(--app-control-bg);
 	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
@@ -4728,7 +4789,7 @@ button.note-card-append:hover {
 	flex: 1;
 	font: inherit;
 	font-size: 12.5px;
-	background: var(--app-bg);
+	background-color: var(--app-control-bg);
 	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
@@ -4961,7 +5022,7 @@ button.link:hover {
 .note-rewrite-field textarea {
 	font: inherit;
 	color: var(--app-fg);
-	background: var(--app-bg);
+	background-color: var(--app-control-bg);
 	border: 1px solid var(--app-control-border);
 	border-radius: 6px;
 	padding: 0.3rem 0.5rem;
@@ -5052,12 +5113,15 @@ button.link:hover {
 }
 .log-controls select,
 .log-controls input {
-	background: var(--app-gray-50);
+	background-color: var(--app-control-bg);
 	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
 	font-size: 12.5px;
 	padding: 0.3rem 0.5rem;
+}
+.log-controls select {
+	padding-right: 1.7rem;
 }
 .log-controls input {
 	flex: 1;

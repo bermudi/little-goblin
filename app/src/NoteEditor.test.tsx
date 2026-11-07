@@ -1854,7 +1854,7 @@ describe("formatting toolbar", () => {
 		expect(tool("strong").getAttribute("aria-pressed")).toBe("true");
 		await notice();
 		await settle();
-		expect(patches.at(-1)!.body.body).toBe("**hello** world");
+		expect(patches.at(-1)!.body.body).toBe("**hello** world\n");
 		expect(tool("undo").disabled).toBe(false);
 	});
 
@@ -1871,6 +1871,6 @@ describe("formatting toolbar", () => {
 		});
 		await notice();
 		await settle();
-		expect(patches.at(-1)!.body.body).toBe("Title");
+		expect(patches.at(-1)!.body.body).toBe("Title\n");
 	});
 });

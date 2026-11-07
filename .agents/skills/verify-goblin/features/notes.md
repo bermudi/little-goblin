@@ -24,3 +24,9 @@ Proof: the row has the new title and it survives a reload.
 ## Gotchas
 
 Saving isn't instant, so wait before reading the row.
+
+The app only writes a version every 10 minutes (`APP_VERSION_GAP_MS`), so
+several quick edits give one version. To see a full Versions list, insert
+extra rows into `note_versions` in the throwaway database (fiction, label it).
+Use a long note: the list once drew over the text only when the note was taller
+than the pane.

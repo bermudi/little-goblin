@@ -411,8 +411,20 @@ describe("quiet harbor regressions", () => {
 						}),
 					);
 				}
-				if (url === "/api/app/notes/versions")
-					return Promise.resolve(jsonResponse({ versions: [] }));
+				if (url === `/api/app/notes/${note.id}/versions`)
+					return Promise.resolve(
+						jsonResponse({
+							versions: [
+								{
+									rev: 2,
+									source: "app",
+									conversation: null,
+									at: "2026-11-07T16:04:34.783Z",
+									bytes: 12,
+								},
+							],
+						}),
+					);
 				return Promise.resolve(jsonResponse({ error: "unstubbed fetch" }, 404));
 			}) as typeof fetch;
 		});
@@ -479,6 +491,21 @@ describe("quiet harbor regressions", () => {
 				chat?.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
 			});
 			expect(chatted).toBe(false);
+		});
+
+		test("the versions list shows a readable time, not the stored ISO stamp", async () => {
+			await mount(
+				<NoteView token={null} noteId="n1" projects={[]} onChat={() => {}} onDeleted={() => {}} />,
+			);
+			const toggle = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+				(b) => b.textContent === "Versions",
+			);
+			await act(async () => {
+				toggle?.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+			});
+			await waitFor(() => container.querySelector(".note-versions li") !== null, "the versions");
+			const row = container.querySelector(".note-versions li small")?.textContent ?? "";
+			expect(row).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{2}:\d{2} · 12 B$/);
 		});
 
 		test("a title edit reports dirty to the App and a clean page reports clean — unmount resets", async () => {

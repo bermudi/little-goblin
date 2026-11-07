@@ -243,6 +243,19 @@ export function NotesIndex({
 
 // ---------- /app/n/<id> ----------
 
+// "Nov 7, 16:04" — the raw ISO stamp is storage format, not for reading.
+function versionTime(iso: string): string {
+	const ts = Date.parse(iso);
+	if (Number.isNaN(ts)) return iso;
+	return new Date(ts).toLocaleString("en-US", {
+		month: "short",
+		day: "numeric",
+		hour: "2-digit",
+		minute: "2-digit",
+		hour12: false,
+	});
+}
+
 function VersionsPanel({
 	token,
 	note,
@@ -324,7 +337,7 @@ function VersionsPanel({
 								{v.conversation !== null ? " (chat)" : ""}
 							</button>
 							<small>
-								{v.at} · {v.bytes} B
+								<time dateTime={v.at}>{versionTime(v.at)}</time> · {v.bytes} B
 							</small>
 						</li>
 					))}

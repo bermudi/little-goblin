@@ -1049,101 +1049,112 @@ header h1 {
 
 /* ---------- conversation outline ---------- */
 
-/* DeepSeek's section rail: dashes at the right edge collapsed; hover or
-   keyboard focus expands the titles; the section in view carries the
-   accent. JSX-gated off phones (usePhoneWidth) — the display:none in the
-   M block is the style sheet's own guarantee. Flat card: a background
-   shift and a hairline border, never a shadow. */
+/* t3code's timeline minimap, on the right edge: evenly spaced dashes that
+   fan out around the hovered one (transform + opacity only — compositor
+   work, 150ms) and one floating card for the section under the pointer.
+   JSX-gated off phones (usePhoneWidth) — the display:none in the M block
+   is the style sheet's own guarantee. Flat card: a background shift and a
+   hairline border, never a shadow. */
 .outline {
 	position: absolute;
 	right: 0.5rem;
 	top: 50%;
 	transform: translateY(-50%);
 	z-index: 6;
-	/* Collapsed, the rail is a narrow edge zone over the dashes — never a
-	   wide invisible click strip over the transcript text. */
-	width: 3.25rem;
-	transition: width 180ms ease;
-}
-.outline:hover,
-.outline:focus-within {
-	width: min(16rem, 30vw);
+	/* Collapsed, the rail is just the dash column — never a wide invisible
+	   click strip over the transcript text. */
+	width: 1.875rem;
+	height: min(calc(var(--outline-count) * 8px), calc(100% - 12rem));
+	min-height: 8px;
 }
 .outline ol {
 	list-style: none;
 	margin: 0;
-	padding: 0.375rem 0;
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	max-height: 55vh;
-	overflow-y: auto;
-	scrollbar-width: none;
-	border-radius: 10px;
-	border: 1px solid transparent;
-	background: transparent;
-	transition:
-		background 150ms ease,
-		border-color 150ms ease;
-}
-.outline:hover ol,
-.outline:focus-within ol {
-	background: var(--app-gray-50);
-	border-color: var(--app-border);
+	padding: 0;
+	position: absolute;
+	inset: 0;
 }
 .outline li {
-	display: block;
+	display: contents;
 }
+.outline-dash {
+	position: absolute;
+	right: 0;
+	width: 24px;
+	height: 2px;
+	margin-top: -1px;
+	border-radius: 1px;
+	transform-origin: right;
+	pointer-events: none;
+	background: color-mix(in oklab, var(--app-fg) 25%, transparent);
+	transition:
+		transform 150ms ease,
+		background-color 150ms ease;
+}
+.outline-dash[data-active="true"] {
+	background: color-mix(in oklab, var(--app-fg) 60%, transparent);
+}
+.outline li.current .outline-dash {
+	background: color-mix(in oklab, var(--app-fg) 60%, transparent);
+}
+/* Each button is the band nearest its dash: bands tile the rail, so the
+   pointer never crosses a dead gap. Top/bottom come from the JSX. */
 .outline button {
-	display: flex;
-	align-items: center;
-	justify-content: flex-end;
-	gap: 0.5rem;
-	width: 100%;
-	padding: 0.3rem 0.75rem;
+	position: absolute;
+	left: 0;
+	right: 0;
+	padding: 0;
 	background: none;
 	border: 0;
-	color: var(--app-fg-subtle);
 	cursor: pointer;
-	border-radius: 6px;
+	border-radius: 2px;
 }
-.outline button:hover {
-	background: var(--app-hover);
-	color: var(--app-fg);
+.outline button:focus-visible {
+	outline: 2px solid color-mix(in oklab, var(--app-fg) 50%, transparent);
+	outline-offset: -2px;
 }
-.outline-title {
-	min-width: 0;
-	max-width: 0;
-	opacity: 0;
+/* The wrap sits flush against the rail and carries the gap as padding, so
+   the pointer can travel from dash to card without leaving the nav. */
+.outline-card-wrap {
+	position: absolute;
+	right: 100%;
+	width: min(15rem, 60vw);
+	padding-right: 0.5rem;
+	animation: outline-card-in 120ms ease-out;
+}
+.outline-card {
+	display: flex;
+	flex-direction: column;
+	gap: 0.125rem;
+	padding: 0.5rem 0.625rem;
+	border-radius: 10px;
+	border: 1px solid var(--app-border);
+	background: var(--app-gray-100);
+	text-align: left;
+	user-select: text;
+}
+.outline-card-title {
 	overflow: hidden;
 	white-space: nowrap;
 	text-overflow: ellipsis;
-	font-size: 12.5px;
-	line-height: 1.5;
-	transition:
-		max-width 180ms ease,
-		opacity 150ms ease;
+	font-size: 12px;
+	font-weight: 500;
+	line-height: 16px;
+	color: var(--app-fg);
 }
-.outline:hover .outline-title,
-.outline:focus-within .outline-title {
-	max-width: calc(min(16rem, 30vw) - 3.5rem);
-	opacity: 1;
+.outline-card-preview {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 3;
+	overflow: hidden;
+	font-size: 11px;
+	line-height: 15px;
+	color: var(--app-fg-muted);
 }
-.outline-dash {
-	flex: none;
-	width: 14px;
-	height: 2px;
-	border-radius: 1px;
-	background: currentColor;
-	opacity: 0.7;
-	transition: width 180ms ease;
-}
-.outline li.current button {
-	color: var(--app-accent);
-}
-.outline li.current .outline-dash {
-	width: 18px;
-	opacity: 1;
+@keyframes outline-card-in {
+	from {
+		opacity: 0;
+	}
 }
 
 .transcript a {

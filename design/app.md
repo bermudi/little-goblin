@@ -220,24 +220,31 @@ first cell marks a continuation. Any other run keeps its fixed-width
 shape inside a `text` fence — scrollable, clippable, intact.
 Render-side only; history text is never rewritten.
 
-## Conversation outline (ruling 2026-10-24, operator ask)
+## Conversation outline (ruling 2026-10-24, operator ask; feel replaced 2026-11-07)
 
-Operator ask, with DeepSeek's section rail on screen: conversation navigation
-should be a joy — copy the mechanism, not the screenshots. The chat gains a
-right-edge outline (`app/src/Outline.tsx`): one dash per operator message
-collapsed (the section list — assistant turns belong to the section above
-them), hover or keyboard focus expands it into a flat card of titles (first
-line of the message text; staged-chip kind as fallback title), a click jumps
-the transcript to that message, and a scroll spy marks the section in view
-with the accent. Collapsed the rail is a narrow edge zone — never a wide
-invisible click strip over the transcript text. Jumping scrolls the
-transcript and follow-mode unpins exactly the way any upward scroll does; no
-special case. It is a pointer/keyboard affordance, so it is JSX-gated off
-phone widths through the shared `usePhoneWidth` module (extracted from the
-shell, ruling 2026-10-24 → Mobile navigation — the same principle: width
-gated chrome must not exist as hidden DOM duplicates), and the style sheet's
-phone `display:none` is its own guarantee. Client-render only: history is
-already on the wire, no store or API change.
+Operator ask: conversation navigation should be a joy — copy the mechanism,
+not the screenshots. The chat has a right-edge outline (`app/src/Outline.tsx`):
+one dash per operator message (the section list — assistant turns belong to
+the section above them), evenly spaced on a short vertical rail. The first
+cut borrowed DeepSeek's expanding title list; on 2026-11-07 the operator asked
+for t3code's timeline minimap feel instead (`TimelineMinimap.tsx`), kept on the
+right. What was taken: dashes rest short and fan out around the hovered one
+(widths 1 / .667 / .417 / .333 by distance, 150ms) animating **transform and
+opacity only**; each dash's hit slot is the band nearest to it, so the pointer
+never crosses a dead gap; one floating card follows the hovered dash and shows
+the operator's message plus the first three lines of the reply (flat card —
+hairline border, no shadow, unlike t3code's glass); wheel over the rail
+scrolls the transcript; arrows/Home/End move focus (one tab stop). A click
+jumps the transcript to the message; a scroll spy lights the section in view.
+Jumping scrolls the transcript and follow-mode unpins exactly the way any
+upward scroll does. Collapsed the rail is a narrow edge zone — never a wide
+invisible click strip over the transcript text. It is a pointer/keyboard
+affordance, so it is JSX-gated off phone widths through the shared
+`usePhoneWidth` module (ruling 2026-10-24 → Mobile navigation — width-gated
+chrome must not exist as hidden DOM duplicates), and the style sheet's phone
+`display:none` is its own guarantee. Not taken: t3code's prev/next chevrons
+and its rAF wheel glide (the transcript's native smooth scroll covers it).
+Client-render only: history is already on the wire, no store or API change.
 
 ## Streaming members & resumable streams (ruling 2026-10-04)
 

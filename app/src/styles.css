@@ -5343,6 +5343,14 @@ button.link:hover {
 .files-table {
 	flex-shrink: 0;
 }
+.file-detail > .ops-h2 {
+	text-transform: none;
+	letter-spacing: 0;
+	font-size: 14px;
+	color: var(--app-fg);
+	margin-top: 0.9rem;
+	overflow-wrap: anywhere;
+}
 .file-meta {
 	display: flex;
 	flex-wrap: wrap;

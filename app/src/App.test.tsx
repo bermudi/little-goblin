@@ -866,6 +866,23 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			if (url.endsWith("/messages"))
 				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
+			if (url.endsWith("/context"))
+				return Promise.resolve(
+					jsonResponse({
+						model: "main/test",
+						input: null,
+						output: null,
+						cacheRead: null,
+						cacheWrite: null,
+						cacheHitRate: null,
+						avgCacheHitRate: null,
+						limit: null,
+						pct: null,
+						compactAtPct: 75,
+						turns: 0,
+						segments: null,
+					}),
+				);
 			if (url.endsWith("/window"))
 				return Promise.resolve(
 					jsonResponse({
@@ -1153,7 +1170,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await settle();
 		expect(win.location.pathname).toBe("/app/c/fixture/window");
 		expect(container.querySelector(".ops")?.textContent).toContain("You are goblin.");
-		expect(container.querySelector(".ops")?.textContent).toContain("Model calls · 0");
+		expect(container.querySelector(".ops")?.textContent).toContain("Model calls 0");
 
 		await traverse("back");
 		await settle();

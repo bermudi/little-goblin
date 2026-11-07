@@ -2130,7 +2130,7 @@ function AppShell() {
 						}}
 					/>
 				)}
-				{page === "memory" && <MemoryView token={token} />}
+				{page === "memory" && <MemoryView token={token} onConversation={openConversation} />}
 				{page === "delegations" && <DelegationsView token={token} />}
 				{page === "programs" && <ProgramsView token={token} />}
 				{page === "status" && <StatusView token={token} />}

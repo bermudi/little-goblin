@@ -17,6 +17,7 @@ import { openStore } from "../conversation.ts";
 import { HindsightClient, HindsightError, type MemoryDocSummary } from "../memory/hindsight.ts";
 import type { MemoryContexts } from "../memory/mod.ts";
 import type { MemoryQueue } from "../memory/queue.ts";
+import type { MemorySavesResponse, MemoryStatusResponse } from "./operator-wire.ts";
 import { resolveSkillProposal, type SkillDecision } from "../skill-decisions.ts";
 import { SkillSources } from "../skill-provenance.ts";
 import type { UIMessage } from "ai";
@@ -939,6 +940,196 @@ describe("memory/blocked route", () => {
 			store.close();
 		}
 		expect((await postBlocked({ action: "retry" }, deps()))?.status).toBe(503);
+	});
+});
+
+describe("memory/status and memory/saves routes (#163)", () => {
+	const NAMES: Record<string, { title: string | null }> = {
+		"app/garden": { title: "Garden notes" },
+		"app/blank": { title: null },
+	};
+	function getRoute(d: OperatorDeps, tail: string, query = ""): Promise<Response | null> {
+		return handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request(`http://x/${tail}${query}`),
+			tail,
+			new URL(`http://x/${tail}${query}`),
+		);
+	}
+	function wired(items: MemoryDocSummary[] = []): {
+		d: OperatorDeps;
+		store: ReturnType<typeof openStore>;
+		target: string;
+	} {
+		const store = openStore(join(home, "goblin.sqlite"));
+		const target = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" }).target;
+		const client = {
+			target,
+			listDocuments: (o: { limit: number; offset: number }) =>
+				Promise.resolve({
+					items: items.slice(o.offset, o.offset + o.limit),
+					total: items.length,
+					limit: o.limit,
+					offset: o.offset,
+				}),
+		} as unknown as HindsightClient;
+		const d = deps();
+		d.configRef.current = parseConfig({
+			providers: { test: { kind: "codex" } },
+			model: "test/m",
+			operators: [7],
+			allowedUsers: [],
+			memory: { baseUrl: "http://127.0.0.1:1", bankId: "g" },
+		});
+		d.memory = {
+			target: { baseUrl: "http://127.0.0.1:1", bankId: "g" },
+			client,
+			queue: store.memoryQueue,
+			counts: () => store.memoryQueue.counts(target),
+			deletingAll: () => store.memoryQueue.deletingCount(),
+			blockedDetail: () => store.memoryQueue.blockedDetail(target),
+			lastRecallOk: () => null,
+			lastRecallAt: () => null,
+			conversationTitle: (id) => NAMES[id] ?? null,
+		};
+		return { d, store, target };
+	}
+
+	test("status reports retry progress by conversation, last save, and true blocked counts", async () => {
+		const { d, store, target } = wired();
+		try {
+			const ids: string[] = [];
+			const add = (n: number, conversationId: string) => {
+				const id = store.memoryQueue.enqueue(target, {
+					id: `exchange/${conversationId}/${n}/a`,
+					content: "Operator: hi\nGoblin: hello",
+					timestamp: new Date().toISOString(),
+					conversationId,
+					sourceIds: ["u1", "a1"],
+				});
+				ids.push(id);
+				const item = store.memoryQueue.get(id);
+				if (item === null) throw new Error("expected queued memory");
+				store.memoryQueue.update(item, "blocked", 0, "remote operation failed");
+			};
+			add(1, "app/garden");
+			add(2, "app/garden");
+			add(3, "app/blank");
+			add(4, "app/gone");
+			const before = (await (await getRoute(d, "memory/status"))?.json()) as MemoryStatusResponse;
+			expect(before.retry).toBeNull();
+			expect(before.lastSaveAt).toBeNull();
+			expect(before.blockedConversations).toEqual([
+				{ conversationId: "app/garden", name: "Garden notes", count: 2 },
+				{ conversationId: "app/blank", name: "Untitled conversation", count: 1 },
+				{ conversationId: "app/gone", name: "Deleted conversation", count: 1 },
+			]);
+			expect(before.blockedCauses).toEqual([{ error: "remote operation failed", count: 4 }]);
+
+			expect(store.memoryQueue.retryBlocked(target)).toBe(4);
+			// One saved, one failed again, two still queued.
+			const finish = (document: string, state: "completed" | "blocked") => {
+				const row = store.db
+					.query<{ operation_id: string }, [string]>(
+						"SELECT operation_id FROM memory_outbox WHERE document_id = ?",
+					)
+					.get(document);
+				const item = store.memoryQueue.get(row?.operation_id ?? "");
+				if (item === null) throw new Error("expected retried row");
+				store.memoryQueue.update(item, state, 0, state === "blocked" ? "boom" : null);
+			};
+			finish("exchange/app/garden/1/a", "completed");
+			finish("exchange/app/blank/3/a", "blocked");
+			const after = (await (await getRoute(d, "memory/status"))?.json()) as MemoryStatusResponse;
+			expect(after.retry).toMatchObject({ done: 1, queued: 2, failed: 1 });
+			expect(after.retry?.conversations).toContainEqual({
+				conversationId: "app/garden",
+				name: "Garden notes",
+				done: 1,
+				queued: 1,
+				failed: 0,
+			});
+			expect(after.retry?.conversations).toContainEqual({
+				conversationId: "app/blank",
+				name: "Untitled conversation",
+				done: 0,
+				queued: 0,
+				failed: 1,
+			});
+			expect(typeof after.lastSaveAt).toBe("string");
+			expect(after.blockedDetail).toEqual([
+				{
+					document: "a",
+					error: "boom",
+					attempts: 1,
+					conversationId: "app/blank",
+					conversationName: "Untitled conversation",
+				},
+			]);
+		} finally {
+			store.close();
+		}
+	});
+
+	const doc = (
+		id: string,
+		createdAt: string,
+		units: number,
+		conversation?: string,
+	): MemoryDocSummary => ({
+		id,
+		created_at: createdAt,
+		updated_at: createdAt,
+		text_length: 50,
+		memory_unit_count: units,
+		...(conversation === undefined ? {} : { document_metadata: { conversation_id: conversation } }),
+	});
+
+	test("saves lists kept exchanges newest first and rolls up the empty ones by conversation", async () => {
+		const { d, store } = wired([
+			doc("exchange/app/garden/1/x", "2026-11-01T10:00:00Z", 2, "app/garden"),
+			doc("exchange/app/garden/5/y", "2026-11-03T10:00:00Z", 0),
+			doc("exchange/app/blank/2/z", "2026-11-02T10:00:00Z", 1),
+			doc("exchange/app/garden/9/w", "2026-11-04T10:00:00Z", 0, "app/garden"),
+		]);
+		try {
+			const res = await getRoute(d, "memory/saves", "?limit=1");
+			expect(res?.status).toBe(200);
+			const body = (await res?.json()) as MemorySavesResponse;
+			expect(body.kept.total).toBe(2);
+			expect(body.kept.items).toHaveLength(1);
+			expect(body.kept.items[0]).toMatchObject({
+				id: "exchange/app/blank/2/z",
+				factCount: 1,
+				// No metadata on this one: the name comes from the document id.
+				conversationId: "app/blank",
+				conversationName: "Untitled conversation",
+			});
+			expect(body.nothingKept).toEqual({
+				total: 2,
+				conversations: [
+					{
+						conversationId: "app/garden",
+						name: "Garden notes",
+						count: 2,
+						latestAt: "2026-11-04T10:00:00Z",
+					},
+				],
+			});
+			const page2 = (await (
+				await getRoute(d, "memory/saves", "?limit=1&offset=1")
+			)?.json()) as MemorySavesResponse;
+			expect(page2.kept.items[0]?.id).toBe("exchange/app/garden/1/x");
+			// Search matches conversation names, not only ids.
+			const hit = (await (
+				await getRoute(d, "memory/saves", "?q=garden%20notes")
+			)?.json()) as MemorySavesResponse;
+			expect(hit.kept.items.map((i) => i.id)).toEqual(["exchange/app/garden/1/x"]);
+			expect((await getRoute(d, "memory/saves", "?limit=0"))?.status).toBe(422);
+		} finally {
+			store.close();
+		}
 	});
 });
 

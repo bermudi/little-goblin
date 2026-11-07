@@ -21,7 +21,7 @@ import {
 } from "../config.ts";
 import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "../services.ts";
 import { appendAuthRecord, type WritableAuthStore } from "../auth.ts";
-import { prepareAppSettingsForConfig, type ConversationStore } from "../conversation.ts";
+import { flatLine, prepareAppSettingsForConfig, type ConversationStore } from "../conversation.ts";
 import type { Delegation, DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
 import { checkInjection } from "../injection.ts";
@@ -40,6 +40,7 @@ import {
 } from "../memory/hindsight.ts";
 import { type MemoryContexts, memoryStatus, type MemoryWiring } from "../memory/mod.ts";
 import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory/queue.ts";
+import { conversationOfDocId, splitSaves } from "../memory/saves.ts";
 import type { Program, ProgramsStore } from "../programs.ts";
 import {
 	liveStateOf,
@@ -70,6 +71,7 @@ import type {
 	MemoryFactItem,
 	MemoryForgetResponse,
 	MemoryForgetThreadResponse,
+	MemorySavesResponse,
 	MemoryStatusResponse,
 	OperatorDelegationItem,
 	OperatorDelegationsResponse,
@@ -115,6 +117,8 @@ export interface OperatorDeps {
 		clientForTarget?: (target: string) => HindsightClient | null;
 		contexts?: MemoryContexts;
 		queue?: MemoryQueue;
+		/** null = the conversation no longer exists; title null = never named. */
+		conversationTitle?: (id: string) => { title: string | null } | null;
 		withWorkerPaused?: <T>(fn: () => Promise<T>) => Promise<T>;
 	};
 	programs?: Pick<ProgramsStore, "list">;
@@ -198,6 +202,11 @@ export function makeOperatorSeams(
 						counts: () => store.memoryQueue.counts(surfaces.client.target),
 						deletingAll: () => store.memoryQueue.deletingCount(),
 						blockedDetail: () => store.memoryQueue.blockedDetail(surfaces.client.target),
+						conversationTitle: (id: string) => {
+							const conv = store.get(id);
+							if (conv === null) return null;
+							return { title: conv.title === null ? null : flatLine(conv.title) || null };
+						},
 					},
 				}
 			: {}),
@@ -544,6 +553,19 @@ function memoryUpstreamError(err: unknown, what: string): Response {
 	);
 }
 
+// What the page shows for a conversation: its name, else why it has none.
+// Without the lookup seam the raw id stays — the pre-#163 behaviour.
+function conversationName(
+	mem: NonNullable<OperatorDeps["memory"]>,
+	id: string | null,
+): string | null {
+	if (id === null) return null;
+	if (mem.conversationTitle === undefined) return id;
+	const found = mem.conversationTitle(id);
+	if (found === null) return "Deleted conversation";
+	return found.title ?? "Untitled conversation";
+}
+
 function memoryStatusResponse(deps: OperatorDeps): MemoryStatusResponse {
 	const gate = memoryGate(deps);
 	if (typeof gate === "string") {
@@ -559,6 +581,10 @@ function memoryStatusResponse(deps: OperatorDeps): MemoryStatusResponse {
 			lastRecallOk: null,
 			topicNote: null,
 			blockedDetail: [],
+			lastSaveAt: null,
+			blockedConversations: [],
+			blockedCauses: [],
+			retry: null,
 		};
 	}
 	const mem = gate;
@@ -573,6 +599,14 @@ function memoryStatusResponse(deps: OperatorDeps): MemoryStatusResponse {
 		lastRecallAt,
 		blockedDetail: mem.blockedDetail(),
 	});
+	const target = mem.client?.target;
+	const queue = mem.queue;
+	const summary =
+		queue !== undefined && target !== undefined && counts.blocked > 0
+			? queue.blockedSummary(target)
+			: null;
+	const retry = queue !== undefined && target !== undefined ? queue.retryProgress(target) : null;
+	const lastSave = queue !== undefined && target !== undefined ? queue.lastSaveAt(target) : null;
 	return {
 		state: status.state,
 		detail: status.detail,
@@ -584,18 +618,50 @@ function memoryStatusResponse(deps: OperatorDeps): MemoryStatusResponse {
 		lastRecallAt,
 		lastRecallOk,
 		topicNote: null,
-		blockedDetail: status.blockedDetail,
+		blockedDetail: status.blockedDetail.map((b) => ({
+			document: b.document,
+			error: b.error,
+			attempts: b.attempts,
+			conversationId: b.conversationId,
+			conversationName: conversationName(mem, b.conversationId),
+		})),
+		lastSaveAt: lastSave === null ? null : new Date(lastSave).toISOString(),
+		blockedConversations: (summary?.byConversation ?? []).map((g) => ({
+			conversationId: g.conversationId,
+			name: conversationName(mem, g.conversationId),
+			count: g.count,
+		})),
+		blockedCauses: summary?.byCause ?? [],
+		retry:
+			retry === null
+				? null
+				: {
+						startedAt: new Date(retry.startedAt).toISOString(),
+						done: retry.done,
+						queued: retry.queued,
+						failed: retry.failed,
+						conversations: retry.conversations.map((c) => ({
+							...c,
+							name: conversationName(mem, c.conversationId),
+						})),
+					},
 	};
 }
 
-function memoryDocListItem(source: MemoryDocSummary): MemoryDocListItem {
+function memoryDocListItem(
+	source: MemoryDocSummary,
+	mem: NonNullable<OperatorDeps["memory"]>,
+): MemoryDocListItem {
+	const conversationId =
+		source.document_metadata?.conversation_id ?? conversationOfDocId(source.id);
 	return {
 		id: source.id,
 		createdAt: source.created_at ?? null,
 		updatedAt: source.updated_at ?? null,
 		textLength: source.text_length ?? 0,
 		factCount: source.memory_unit_count ?? 0,
-		conversationId: source.document_metadata?.conversation_id ?? null,
+		conversationId,
+		conversationName: conversationName(mem, conversationId),
 	};
 }
 
@@ -886,6 +952,79 @@ export async function handleOperatorRoute(
 		return Response.json(body, { headers: NO_STORE });
 	}
 
+	if (tail === "memory/saves") {
+		if (req.method !== "GET")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		const gate = browseGate(deps);
+		if (typeof gate === "string") {
+			return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
+		}
+		const parsed = z
+			.object({
+				q: z.string().min(1).max(256).optional(),
+				limit: z.coerce.number().int().min(1).max(100).default(20),
+				offset: z.coerce.number().int().min(0).default(0),
+			})
+			.safeParse({
+				...(url.searchParams.has("q") ? { q: url.searchParams.get("q") ?? undefined } : {}),
+				limit: url.searchParams.get("limit") ?? undefined,
+				offset: url.searchParams.get("offset") ?? undefined,
+			});
+		if (!parsed.success) {
+			return Response.json(
+				{ error: z.prettifyError(parsed.error) },
+				{ status: 422, headers: NO_STORE },
+			);
+		}
+		try {
+			const { q, limit, offset } = parsed.data;
+			// Hindsight filters only by id substring, so splitting kept from
+			// nothing-kept (and matching conversation names) means scanning
+			// the whole exchange set, then paging here.
+			const rows: { doc: MemoryDocSummary; conversationId: string | null; name: string | null }[] =
+				[];
+			for (let scanOffset = 0; ; ) {
+				const batch = await gate.client.listDocuments({
+					q: "exchange/",
+					limit: 100,
+					offset: scanOffset,
+				});
+				for (const doc of batch.items) {
+					const conversationId =
+						doc.document_metadata?.conversation_id ?? conversationOfDocId(doc.id);
+					rows.push({ doc, conversationId, name: conversationName(gate.mem, conversationId) });
+				}
+				scanOffset += batch.items.length;
+				if (scanOffset >= batch.total) break;
+				if (batch.items.length === 0) throw new HindsightError("protocol");
+			}
+			const split = splitSaves(rows, q);
+			const body: MemorySavesResponse = {
+				kept: {
+					items: split.kept
+						.slice(offset, offset + limit)
+						.map((r) => memoryDocListItem(r.doc, gate.mem)),
+					total: split.kept.length,
+					limit,
+					offset,
+				},
+				nothingKept: split.nothingKept,
+			};
+			log.debug("memory saves served", {
+				...who,
+				via: actor.via,
+				q: q ?? null,
+				scanned: rows.length,
+				kept: body.kept.total,
+				nothingKept: body.nothingKept.total,
+				offset,
+			});
+			return Response.json(body, { headers: NO_STORE });
+		} catch (err) {
+			return memoryUpstreamError(err, "memory saves failed");
+		}
+	}
+
 	if (tail === "memory/documents") {
 		if (req.method !== "GET")
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
@@ -939,7 +1078,7 @@ export async function handleOperatorRoute(
 				});
 			}
 			const body: MemoriesListResponse = {
-				items: page.items.map(memoryDocListItem),
+				items: page.items.map((d) => memoryDocListItem(d, gate.mem)),
 				total: page.total,
 				limit: page.limit,
 				offset: page.offset,
@@ -987,13 +1126,16 @@ export async function handleOperatorRoute(
 					return Response.json({ error: "no such document" }, { status: 404, headers: NO_STORE });
 				}
 				const body: MemoryDocDetailResponse = {
-					document: memoryDocListItem({
-						id: doc.id,
-						created_at: doc.created_at,
-						updated_at: doc.updated_at,
-						text_length: doc.original_text === null ? 0 : doc.original_text.length,
-						memory_unit_count: doc.memory_unit_count,
-					}),
+					document: memoryDocListItem(
+						{
+							id: doc.id,
+							created_at: doc.created_at,
+							updated_at: doc.updated_at,
+							text_length: doc.original_text === null ? 0 : doc.original_text.length,
+							memory_unit_count: doc.memory_unit_count,
+						},
+						gate.mem,
+					),
 					originalText: doc.original_text,
 					facts: facts.items.map(memoryFactItem),
 					factsTotal: facts.total,

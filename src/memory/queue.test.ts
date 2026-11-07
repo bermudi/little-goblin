@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -569,7 +570,12 @@ test("an undecodable row is quarantined as blocked, not a permanent drain stall"
 	expect(counts.blocked).toBe(1);
 	expect(counts.pending).toBe(0);
 	expect(store.memoryQueue.blockedDetail(client.target)).toEqual([
-		{ document: "poison", error: expect.stringContaining("undecodable row"), attempts: 0 },
+		{
+			document: "poison",
+			error: expect.stringContaining("undecodable row"),
+			attempts: 0,
+			conversationId: null,
+		},
 	]);
 	store.db.run(
 		"INSERT INTO memory_outbox (operation_id, target, document_id, payload) VALUES (?, ?, ?, ?)",
@@ -578,4 +584,75 @@ test("an undecodable row is quarantined as blocked, not a permanent drain stall"
 	store.memoryQueue.enqueue(client.target, { ...doc, id: "exchange-2" });
 	expect(store.memoryQueue.cancelConversation("dm:1")).toBe(1);
 	expect(store.memoryQueue.counts(client.target).blocked).toBe(2);
+});
+
+test("blocked summaries and retry progress survive an undecodable payload row", () => {
+	const store = storeAt(database());
+	const target = "f".repeat(64);
+	store.db.run(
+		"INSERT INTO memory_outbox (operation_id, target, document_id, payload, state) VALUES (?, ?, ?, ?, 'blocked')",
+		["7f1d2e3c-0000-4000-8000-000000000003", target, "poison", "{not json"],
+	);
+	expect(store.memoryQueue.blockedSummary(target)).toEqual({
+		total: 1,
+		byConversation: [{ conversationId: null, count: 1 }],
+		byCause: [{ error: null, count: 1 }],
+	});
+	expect(store.memoryQueue.retryBlocked(target)).toBe(1);
+	expect(store.memoryQueue.retryProgress(target)).toMatchObject({
+		done: 0,
+		queued: 1,
+		failed: 0,
+		conversations: [{ conversationId: null, queued: 1 }],
+	});
+});
+
+test("retry progress follows only the newest retry and ignores dismissed rows", () => {
+	const store = storeAt(database());
+	const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+	const queue = store.memoryQueue;
+	expect(queue.retryProgress(client.target)).toBeNull();
+	const block = (id: string) => {
+		const op = queue.enqueue(client.target, { ...doc, id });
+		const item = queue.get(op);
+		if (item === null) throw new Error("expected queued row");
+		queue.update(item, "blocked", 0, "remote operation failed");
+	};
+	block("exchange-a");
+	block("exchange-b");
+	queue.retryBlocked(client.target);
+	expect(queue.retryProgress(client.target)).toMatchObject({ queued: 2, done: 0, failed: 0 });
+	const first = queue.next(client.target, Date.now());
+	if (first === null) throw new Error("expected pending row");
+	queue.update(first, "blocked", 0, "again");
+	expect(queue.dismissBlocked(client.target)).toBe(1);
+	// The dismissed row left the batch; the other is still queued.
+	expect(queue.retryProgress(client.target)).toMatchObject({ queued: 1, done: 0, failed: 0 });
+});
+
+test("the last recall time is read back after the database reopens", () => {
+	const path = database();
+	const first = storeAt(path);
+	expect(first.memoryQueue.lastRecall()).toBeNull();
+	first.memoryQueue.recordRecall(true, "2026-11-07T10:00:00.000Z");
+	first.memoryQueue.recordRecall(false, "2026-11-07T11:00:00.000Z");
+	first.close();
+	const second = openStore(path);
+	stores.push(second);
+	expect(second.memoryQueue.lastRecall()).toEqual({ at: "2026-11-07T11:00:00.000Z", ok: false });
+});
+
+test("a database from before settled_at and retried_at gains the columns", () => {
+	const path = database();
+	const raw = new Database(path);
+	raw.run(`CREATE TABLE memory_outbox (
+		operation_id TEXT PRIMARY KEY, target TEXT NOT NULL, document_id TEXT NOT NULL,
+		payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending',
+		attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0,
+		error TEXT, UNIQUE(target, document_id))`);
+	raw.close();
+	const store = storeAt(path);
+	const target = "f".repeat(64);
+	expect(store.memoryQueue.lastSaveAt(target)).toBeNull();
+	expect(store.memoryQueue.retryProgress(target)).toBeNull();
 });

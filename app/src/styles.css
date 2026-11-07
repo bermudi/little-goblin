@@ -4211,6 +4211,9 @@ button.pathchip:hover svg {
    body) open on the right once the list is wide enough; narrow, they stack
    as reason, evidence, buttons. The container is the list, not the viewport,
    because the pane width depends on the rail. */
+.programs-page > * {
+	flex-shrink: 0;
+}
 .pill.warn {
 	color: var(--app-warning);
 	border-color: color-mix(in oklab, var(--app-warning) 40%, transparent);

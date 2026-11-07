@@ -6838,3 +6838,14 @@ button.link:hover {
 		line-clamp: 3;
 	}
 }
+.skill-proposal .skill-desc,
+.skill-proposal .empty,
+.skill-proposal .error {
+	padding: 0;
+	margin: 0;
+}
+.skill-proposal .skill-diff {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3rem;
+}

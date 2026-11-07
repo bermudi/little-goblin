@@ -238,6 +238,22 @@ the same table. The project page's notes table has the same shape without
 the project column. Who edited last is not on the wire summary, so it is not
 shown yet.
 
+*Skills page (#176).* `SkillsView.tsx`. Proposals come first, under a count
+strip (awaiting decision / updates / installed). Each proposal is an
+`.approval-card` (`.skill-proposal`): name, new/update pill, what the skill
+does (its SKILL.md `description`), then the evidence already open — for an
+update the per-file diff (`DiffView`), for a new skill its SKILL.md — and real
+buttons: Install / Discard for a new skill, Install update / Discard update for
+an update (a bare "Discard" could read as removing the installed copy).
+Installed skills are a `.dtable` (`.skills-table`): skill | what it does
+(two-line clamp, from `description`; "No description in SKILL.md" in italics
+when the frontmatter is missing or bad) | files | updated. A row opens the
+skill *in place of* the list with a back link: description in `.prose`,
+updated/size/files, the file list, and SKILL.md already open. The wire items
+carry `description` (`stateview.ts`, parsed with the catalog's own
+frontmatter reader; `null` when absent). Not shown: when a skill was last
+*used* (no such record exists yet), search and grouping.
+
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
 forever (no route may ever render it, structure included). Two layers, each

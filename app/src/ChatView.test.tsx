@@ -2566,3 +2566,210 @@ describe("composer staged memory toggle (happy-dom)", () => {
 		expect(toggled()).toBeNull();
 	});
 });
+
+// The thread view's composer claims focus when it can (#184): on mount
+// and whenever a turn settles. The guards are the point as much as the
+// steal — a foreign text entry, an open dialog, or a phone width all
+// keep the focus where it is.
+describe("composer focus stealing", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+	const userMsg = (id: string, text: string): UIMessage => ({
+		id,
+		role: "user",
+		parts: [{ type: "text", text }],
+	});
+	const assistantMsg = (id: string, text: string): UIMessage => ({
+		id,
+		role: "assistant",
+		parts: [{ type: "text", text }],
+	});
+	const sseHeaders = {
+		"content-type": "text/event-stream",
+		"x-vercel-ai-ui-message-stream": "v1",
+	};
+	const streamOf = (chunks: unknown[]): Response => {
+		const encoder = new TextEncoder();
+		return new Response(
+			new ReadableStream<Uint8Array>({
+				start(c) {
+					for (const chunk of chunks)
+						c.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+					c.enqueue(encoder.encode("data: [DONE]\n\n"));
+					c.close();
+				},
+			}),
+			{ headers: sseHeaders },
+		);
+	};
+	const settle = async (check: () => boolean) => {
+		for (let i = 0; i < 100 && !check(); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+	};
+	const configFallback = () => ({
+		model: "prov/model",
+		thinking: "off",
+		favorites: [],
+		catalog: [],
+		thinkingLevels: ["off"],
+	});
+	let sent = false;
+	const installFetch = () => {
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages")) {
+					return jsonResponse({
+						messages: [
+							userMsg("u1", "hello"),
+							assistantMsg(sent ? "a2" : "a1", sent ? "done twice" : "done once"),
+						],
+						ratings: [],
+						rateableMessageIds: [sent ? "a2" : "a1"],
+					});
+				}
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url === "/api/app/chat") {
+					sent = true;
+					return streamOf([
+						{ type: "start", messageId: "a2" },
+						{ type: "text-start", id: "t1" },
+						{ type: "text-delta", id: "t1", delta: "done twice" },
+						{ type: "text-end", id: "t1" },
+						{ type: "finish" },
+					]);
+				}
+				void init;
+				return jsonResponse(configFallback());
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+	};
+	const mountThread = async () => {
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/focus-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		await settle(() => dom.container.textContent?.includes("done once") ?? false);
+	};
+	const composerTa = () =>
+		dom.container.querySelector<HTMLTextAreaElement>("form.composer textarea");
+	const typeAgain = async () => {
+		const ta = composerTa()!;
+		await act(async () => {
+			ta.focus();
+			Object.getOwnPropertyDescriptor(dom.win.HTMLTextAreaElement.prototype, "value")!.set!.call(
+				ta,
+				"again",
+			);
+			ta.dispatchEvent(new dom.win.Event("input", { bubbles: true }) as unknown as Event);
+			ta.dispatchEvent(
+				new dom.win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+	};
+	const submitAgain = async () => {
+		await act(async () => {
+			dom.container
+				.querySelector("form.composer")!
+				.dispatchEvent(
+					new dom.win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+		});
+	};
+
+	beforeEach(() => {
+		sent = false;
+	});
+
+	test("opening a thread focuses the composer", async () => {
+		installFetch();
+		await mountThread();
+		expect(composerTa()).toBeTruthy();
+		expect(document.activeElement).toBe(composerTa());
+	});
+
+	test("a settled turn re-claims focus after it drifted to a control", async () => {
+		installFetch();
+		await mountThread();
+		// Focus drifts mid-turn — a click on some transcript control
+		// leaves it on a plain button, nowhere useful for typing. The
+		// drift happens before the submit so an instantly-settling
+		// stream can't win the race.
+		const stray = document.createElement("button");
+		stray.type = "button";
+		stray.textContent = "stray";
+		document.body.appendChild(stray);
+		await typeAgain();
+		await act(async () => {
+			stray.focus();
+		});
+		expect(document.activeElement).toBe(stray);
+		await submitAgain();
+		await settle(() => dom.container.textContent?.includes("done twice") ?? false);
+		expect(document.activeElement).toBe(composerTa());
+	});
+
+	test("a foreign text entry keeps its focus — the steal never fights typing", async () => {
+		installFetch();
+		const foreign = document.createElement("input");
+		foreign.type = "text";
+		document.body.appendChild(foreign);
+		foreign.focus();
+		expect(document.activeElement).toBe(foreign);
+		await mountThread();
+		expect(document.activeElement).toBe(foreign);
+		// The settle path shares the guard: typing elsewhere survives a
+		// turn finishing underneath.
+		await typeAgain();
+		await act(async () => {
+			foreign.focus();
+		});
+		await submitAgain();
+		await settle(() => dom.container.textContent?.includes("done twice") ?? false);
+		expect(document.activeElement).toBe(foreign);
+	});
+
+	test("an open dialog keeps the focus — nothing is claimed under a veil", async () => {
+		installFetch();
+		const veil = document.createElement("div");
+		veil.setAttribute("role", "dialog");
+		document.body.appendChild(veil);
+		await mountThread();
+		expect(document.activeElement).not.toBe(composerTa());
+	});
+
+	test("phone widths never steal — the keyboard stays closed", async () => {
+		Reflect.set(dom.win, "matchMedia", (query: string) => ({
+			matches: query.includes("max-width: 720"),
+			media: query,
+			addEventListener() {},
+			removeEventListener() {},
+		}));
+		installFetch();
+		await mountThread();
+		expect(composerTa()).toBeTruthy();
+		expect(document.activeElement).not.toBe(composerTa());
+	});
+});

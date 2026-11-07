@@ -251,20 +251,24 @@ export function rewriteWorkingDirectory(text: string, value: string): string {
 }
 
 function readUnit(layout: Layout): { text: string; facts: UnitFacts } {
-	let stat;
+	let text: string;
 	try {
-		stat = lstatSync(layout.unit);
+		// Follows a stitch symlink: reading through one is harmless, and only
+		// --adopt-unit ever writes (assertUnitWritable).
+		if (!statSync(layout.unit).isFile()) fail(`${layout.unit} is not a regular file`);
+		text = readFileSync(layout.unit, "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") fail(`unit not found: ${layout.unit}`);
 		throw error;
 	}
-	// Writing through a stitch symlink replaces the link with a regular file
-	// and silently forks the config — edit the target instead.
-	if (stat.isSymbolicLink())
-		fail(`${layout.unit} is a symlink — rewrite its target in place, not the link`);
-	if (!stat.isFile()) fail(`${layout.unit} is not a regular file`);
-	const text = readFileSync(layout.unit, "utf8");
 	return { text, facts: parseUnit(text) };
+}
+
+/** Writing through a stitch symlink replaces the link with a regular file and
+ *  silently forks the config: edit the target instead. */
+function assertUnitWritable(layout: Layout): void {
+	if (lstatSync(layout.unit).isSymbolicLink())
+		fail(`${layout.unit} is a symlink — rewrite its target in place, not the link`);
 }
 
 /** True when the unit already runs out of the release symlink. Compared by
@@ -761,6 +765,7 @@ async function adoptUnit(ctx: Context, rev: string): Promise<void> {
 		await rollout(ctx, rev);
 		return;
 	}
+	assertUnitWritable(ctx.layout);
 	const dir = await buildRelease(ctx, rev);
 	flipLive(ctx.layout, dir);
 	const rewritten = rewriteWorkingDirectory(text, ctx.layout.live);

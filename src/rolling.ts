@@ -68,7 +68,7 @@ export const FRESH_BELOW = 0.3;
 const CHECK_DEADLINE_MS = 3_000;
 const HEAD_CHARS = 2_000;
 
-const FOLLOW_UP_QUESTIONS: Record<string, System1Question> = {
+export const FOLLOW_UP_QUESTIONS: Record<string, System1Question> = {
 	follow_up: {
 		type: "noul",
 		instructions:
@@ -156,7 +156,7 @@ export function projectRollText(parts: readonly UIMessage["parts"][number][]): s
 
 // A missing side is the rare all-assistant or unrenderable edge — it
 // still reads "".
-function checkState(history: UIMessage[], gapMinutes: number, burstText: string): string {
+export function checkState(history: UIMessage[], gapMinutes: number, burstText: string): string {
 	let user = "";
 	let assistant = "";
 	for (let i = history.length - 1; i >= 0 && (user === "" || assistant === ""); i--) {

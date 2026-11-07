@@ -26,7 +26,7 @@ const REPEAT_WARN = `Loop check: you have made the same tool call and gotten the
 const WATCHDOG_WARN =
 	"Progress check: your recent tool calls look stuck — they are not producing new information. Change approach, or if this cannot be done this way, stop and tell the operator what is blocking you.";
 
-const LOOP_STUCK_SCORE = 0.7;
+export const LOOP_STUCK_SCORE = 0.7;
 
 const CONTEXT_LANDING_PCT = 0.85;
 

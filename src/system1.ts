@@ -90,17 +90,21 @@ export class System1Client {
 	private readonly model: string;
 	private readonly timeoutMs: number;
 	private readonly auth: () => Promise<string>;
+	private readonly fallback: boolean;
 
 	constructor(options: {
 		baseUrl?: string;
 		model?: string;
 		timeoutMs?: number;
+		// Off for model evals: a backup answer would score the wrong model.
+		fallback?: boolean;
 		auth: () => Promise<string>;
 	}) {
 		this.url = `${(options.baseUrl ?? "https://openrouter.ai").replace(/\/+$/, "")}${DECISIONS_PATH}`;
 		this.model = options.model ?? DEFAULT_MODEL;
 		this.timeoutMs = options.timeoutMs ?? 30_000;
 		this.auth = options.auth;
+		this.fallback = options.fallback ?? true;
 	}
 
 	async decide(
@@ -123,7 +127,7 @@ export class System1Client {
 		let model = this.model;
 		try {
 			const token = await this.authorize(controller.signal);
-			const canFallback = this.model !== FALLBACK_MODEL;
+			const canFallback = this.fallback && this.model !== FALLBACK_MODEL;
 			const attempt = (attemptModel: string, budgetMs: number): Promise<System1Decision> => {
 				log.info("system1 request", {
 					requestId,

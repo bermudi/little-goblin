@@ -1,17 +1,17 @@
 // Outline contract: one dash per operator message (assistant turns are
 // not sections), titles come from the message's first text line with a
 // kind fallback for media-only sends, a click jumps the transcript to the
-// section, and the scroll spy marks the section in view. The DOM is real
+// section, the scroll spy marks the section in view, and hovering a dash
+// shows one card with the section's message and the reply's opening. The DOM is real
 // (happy-dom); only per-element layout rects are stubbed, which is the
 // layout engine's job, not the component's.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
 import { Window } from "happy-dom";
-import { act } from "react";
+import { act, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { useRef } from "react";
-import { Outline, outlineTitle } from "./Outline.tsx";
+import { Outline, outlinePreview, outlineTitle } from "./Outline.tsx";
 
 let win: Window;
 let container: HTMLElement;
@@ -111,7 +111,52 @@ describe("outlineTitle", () => {
 	});
 });
 
+describe("outlinePreview", () => {
+	test("squashes whitespace from the last reply, none without one", () => {
+		expect(outlinePreview([])).toBeNull();
+		expect(
+			outlinePreview([msg("a", "assistant", "one\n\n  two"), msg("b", "assistant", "x\ny  z")]),
+		).toBe("x y z");
+		expect(outlinePreview([msg("a", "assistant")])).toBeNull();
+	});
+});
+
 describe("Outline", () => {
+	test("hovering a dash fans its neighbours and shows one card with the reply", async () => {
+		await mount([
+			msg("u1", "user", "first"),
+			msg("a1", "assistant", "first answer"),
+			msg("u2", "user", "second"),
+			msg("a2", "assistant", "second answer"),
+			msg("u3", "user", "third"),
+		]);
+		expect(container.querySelector(".outline-card")).toBeNull();
+		const dashes = () => [...container.querySelectorAll<HTMLElement>(".outline-dash")];
+		// At rest every dash is the short resting width.
+		expect(dashes().map((d) => d.style.transform)).toEqual(
+			Array(3).fill("translateY(-50%) scaleX(0.333)"),
+		);
+		await act(async () => {
+			entries()[1]?.dispatchEvent(
+				new win.MouseEvent("mouseover", { bubbles: true }) as unknown as Event,
+			);
+		});
+		expect(dashes().map((d) => d.style.transform)).toEqual([
+			"translateY(-50%) scaleX(0.667)",
+			"translateY(-50%) scaleX(1)",
+			"translateY(-50%) scaleX(0.667)",
+		]);
+		expect(container.querySelectorAll(".outline-card").length).toBe(1);
+		expect(container.querySelector(".outline-card-title")?.textContent).toBe("second");
+		expect(container.querySelector(".outline-card-preview")?.textContent).toBe("second answer");
+		await act(async () => {
+			container
+				.querySelector(".outline")
+				?.dispatchEvent(new win.MouseEvent("mouseout", { bubbles: true }) as unknown as Event);
+		});
+		expect(container.querySelector(".outline-card")).toBeNull();
+	});
+
 	test("one entry per operator message, none for replies", async () => {
 		await mount([
 			msg("u1", "user", "first"),

@@ -1,13 +1,18 @@
-// Conversation outline — DeepSeek's right-edge section rail, borrowed as
-// a mechanism: one dash per operator message collapsed; hover or keyboard
-// focus expands it into a card of titles; a click jumps the transcript to
-// that message. The scroll spy highlights the section in view. It is a
-// pointer/keyboard affordance, so ChatView mounts it only off phone
-// widths (usePhoneWidth); the style sheet's phone display:none is its own
-// guarantee. Flat and hairline per the design language — a background
-// shift and 1px border, never a shadow.
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+// Conversation outline — t3code's timeline minimap, borrowed as a
+// mechanism and mirrored to the right edge: one dash per operator message,
+// spaced evenly on a rail. Hovering (or arrowing) fans the dashes out
+// around the pointer like a dock — transform and opacity only, so every
+// frame stays on the compositor — and one floating card shows the section
+// under it: the operator's message plus the first lines of the reply. A
+// click jumps the transcript there; the scroll spy lights the section in
+// view. Each dash's hit slot is the band nearest to it, so the pointer
+// never crosses a dead gap. A pointer/keyboard affordance: ChatView mounts
+// it only off phone widths (usePhoneWidth); the style sheet's phone
+// display:none is its own guarantee. Flat and hairline per the design
+// language — a background shift and 1px border, never a shadow.
+
 import type { UIMessage } from "ai";
+import { type KeyboardEvent, type RefObject, useEffect, useMemo, useState } from "react";
 
 // The outline entry for one operator message: the first line of text, or
 // the staged chip kind when the send carried media only.
@@ -23,6 +28,38 @@ export function outlineTitle(m: UIMessage): string {
 	return "message";
 }
 
+const SPACING_PX = 8;
+const EDGE_PX = 6;
+// Fisheye widths by distance from the hovered dash — t3code's ratios.
+const FAN = [1, 0.667, 0.417] as const;
+const REST_SCALE = 0.333;
+const PREVIEW_CHARS = 400;
+
+// First lines of the section's reply, whitespace squashed — the card
+// clamps to three lines, so the bound only keeps long replies cheap.
+export function outlinePreview(replies: readonly UIMessage[]): string | null {
+	const last = replies.at(-1);
+	if (last === undefined) return null;
+	const text = last.parts
+		.map((p) => (p.type === "text" ? p.text : ""))
+		.join(" ")
+		.replace(/\s+/g, " ")
+		.trim();
+	return text === "" ? null : text.slice(0, PREVIEW_CHARS);
+}
+
+type Anchor = { id: string; title: string; preview: string | null };
+
+// Compositor-only wheel forwarding: the rail floats over the transcript,
+// so a wheel over it must still scroll the transcript.
+function forwardWheel(event: WheelEvent, el: HTMLElement) {
+	if (event.ctrlKey || event.deltaY === 0) return;
+	event.preventDefault();
+	const px = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? el.clientHeight : 1;
+	const coarse = event.deltaMode !== 0 || Number.isInteger(event.deltaY / 100);
+	el.scrollBy({ top: event.deltaY * px, behavior: coarse ? "smooth" : "auto" });
+}
+
 export function Outline({
 	messages,
 	scrollRef,
@@ -32,12 +69,27 @@ export function Outline({
 }) {
 	// Sections are the operator's own messages — one dash each, in
 	// transcript order. Assistant turns belong to the section above them.
-	const anchors = useMemo(
-		() =>
-			messages.filter((m) => m.role === "user").map((m) => ({ id: m.id, title: outlineTitle(m) })),
-		[messages],
-	);
+	const anchors = useMemo(() => {
+		const out: Anchor[] = [];
+		let replies: UIMessage[] = [];
+		const close = () => {
+			const last = out.at(-1);
+			if (last !== undefined) last.preview = outlinePreview(replies);
+			replies = [];
+		};
+		for (const m of messages) {
+			if (m.role === "user") {
+				close();
+				out.push({ id: m.id, title: outlineTitle(m), preview: null });
+			} else if (m.role === "assistant") {
+				replies.push(m);
+			}
+		}
+		close();
+		return out;
+	}, [messages]);
 	const [current, setCurrent] = useState<string | null>(null);
+	const [active, setActive] = useState<number | null>(null);
 	// The spy re-measures when the section set changes, not when `messages`
 	// changes identity — every stream chunk is a fresh array, and
 	// re-measuring per token is forced layout for nothing. Scroll events
@@ -101,24 +153,108 @@ export function Outline({
 		el.scrollTop += node.getBoundingClientRect().top - el.getBoundingClientRect().top - 12;
 	};
 
-	if (anchors.length === 0) return null;
+	const count = anchors.length;
+	const [rail, setRail] = useState<HTMLElement | null>(null);
+	useEffect(() => {
+		if (rail === null) return;
+		const onWheel = (e: WheelEvent) => {
+			const el = scrollRef.current;
+			if (el !== null) forwardWheel(e, el);
+		};
+		rail.addEventListener("wheel", onWheel, { passive: false });
+		return () => rail.removeEventListener("wheel", onWheel);
+	}, [rail, scrollRef]);
+
+	if (count === 0) return null;
+	const shown = active !== null && active < count ? active : null;
+	const card = shown === null ? null : (anchors[shown] ?? null);
+	// Percent of the track: first dash on the top edge, last on the bottom.
+	const topPct = (i: number) => (count <= 1 ? 0 : (i / (count - 1)) * 100);
+	const scaleFor = (i: number) => {
+		if (shown === null) return REST_SCALE;
+		return FAN[Math.abs(i - shown)] ?? REST_SCALE;
+	};
+	const currentIdx = anchors.findIndex((x) => x.id === current);
+	const tabStop = shown ?? (currentIdx === -1 ? 0 : currentIdx);
+	const cardShift = shown === 0 ? "0%" : shown === count - 1 ? "-100%" : "-50%";
+
+	// Roving focus: one tab stop, arrows move between dashes.
+	const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+		const next =
+			e.key === "ArrowDown"
+				? Math.min(count - 1, (shown ?? 0) + 1)
+				: e.key === "ArrowUp"
+					? Math.max(0, (shown ?? 0) - 1)
+					: e.key === "Home"
+						? 0
+						: e.key === "End"
+							? count - 1
+							: null;
+		if (next === null) return;
+		e.preventDefault();
+		setActive(next);
+		e.currentTarget.querySelectorAll<HTMLElement>("button")[next]?.focus();
+	};
+
 	return (
-		<nav className="outline" aria-label="Conversation outline">
-			<ol>
-				{anchors.map((a) => (
-					<li key={a.id} className={a.id === current ? "current" : undefined}>
-						<button
-							type="button"
-							aria-label={`Jump: ${a.title}`}
-							aria-current={a.id === current ? "true" : undefined}
-							onClick={() => jump(a.id)}
-						>
-							<span className="outline-title">{a.title}</span>
-							<span className="outline-dash" aria-hidden="true" />
-						</button>
-					</li>
-				))}
+		<nav
+			className="outline"
+			aria-label="Conversation outline"
+			ref={setRail}
+			style={{ "--outline-count": Math.max(1, count - 1) } as React.CSSProperties}
+			onMouseLeave={() => setActive(null)}
+			onBlur={(e) => {
+				if (!e.currentTarget.contains(e.relatedTarget)) setActive(null);
+			}}
+		>
+			<ol onKeyDown={onKeyDown}>
+				{anchors.map((a, i) => {
+					const isCurrent = a.id === current;
+					const slotTop = i === 0 ? `-${EDGE_PX}px` : `${((i - 0.5) / (count - 1)) * 100}%`;
+					const slotEnd =
+						i === count - 1 ? `-${EDGE_PX}px` : `${(1 - (i + 0.5) / (count - 1)) * 100}%`;
+					return (
+						<li key={a.id} className={isCurrent ? "current" : undefined}>
+							<span
+								className="outline-dash"
+								aria-hidden="true"
+								data-active={i === shown ? "true" : "false"}
+								style={{
+									top: `${topPct(i)}%`,
+									transform: `translateY(-50%) scaleX(${scaleFor(i)})`,
+								}}
+							/>
+							<button
+								type="button"
+								aria-label={`Jump: ${a.title}`}
+								aria-current={isCurrent ? "true" : undefined}
+								tabIndex={i === tabStop ? 0 : -1}
+								style={
+									count === 1
+										? { top: `-${EDGE_PX}px`, bottom: `-${EDGE_PX}px` }
+										: { top: slotTop, bottom: slotEnd }
+								}
+								onMouseEnter={() => setActive(i)}
+								onFocus={() => setActive(i)}
+								onClick={() => jump(a.id)}
+							/>
+						</li>
+					);
+				})}
 			</ol>
+			{card === null ? null : (
+				<div
+					className="outline-card-wrap"
+					style={{ top: `${topPct(shown ?? 0)}%`, transform: `translateY(${cardShift})` }}
+				>
+					<div className="outline-card">
+						<span className="outline-card-title">{card.title}</span>
+						{card.preview === null ? null : (
+							<span className="outline-card-preview">{card.preview}</span>
+						)}
+					</div>
+				</div>
+			)}
 		</nav>
 	);
 }

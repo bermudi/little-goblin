@@ -786,7 +786,7 @@ mirroring the Telegram `/decide` / `/resume` surface:
 Archive replaces delete as the rail's declutter action; an archived
 conversation keeps everything (history, FTS hits, settings, pings,
 `/app/c/<id>` links) — the stamp is list visibility, nothing more. Delete
-is offered only on archived rows (the rail offers archive, the archive
+is offered only on the Archive page (the rail offers archive, the archive
 offers delete) and is undoable for a few seconds — see Undo below.
 
 Archiving never fences a live turn (unlike DELETE's `runtime.stop`) — the
@@ -794,6 +794,21 @@ turn finishes into history either way. And **any appended event
 auto-unarchives**: a delegation notice or a message sent via the ping link
 brings a shelved spin-off back to the rail instead of accumulating replies
 unseen.
+
+### Archive page (ruling 2026-11-07, operator pick)
+
+The archive grows without bound, so it is a page, not a rail section.
+The rail (and the phone chats list) shows one `Archived N` link, shown
+only when something is archived; it opens `/app/archive` (an app page key
+in `app-routes.ts`, so it reloads). The page is a `.dtable` of every
+archived unbound chat, newest-archived first, grouped by archive month,
+with a client-side filter over title and preview and 100 rows per slice
+("Show more"). Each row: title (the open link) · archived · last active ·
+Unarchive · Delete. Rename is not offered there — open the chat to rename.
+Project-bound chats stay on their project page, as on the rail. The
+rail's archived list, its disclosure state and the chevron are gone.
+Options not taken: a capped rail list with "Show all", and search-only
+(no browse).
 
 ### Undo (ruling 2026-11-07)
 

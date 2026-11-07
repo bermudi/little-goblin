@@ -30,6 +30,7 @@ import { SettingsView } from "./SettingsView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { useUndoToast } from "./undoToast.tsx";
+import { ArchiveView } from "./ArchiveView.tsx";
 import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
 import { WindowView } from "./WindowView.tsx";
 import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
@@ -110,7 +111,10 @@ const newHistorySegment = () => crypto.getRandomValues(new Uint32Array(2)).join(
 
 interface BrowserNavigation {
 	readonly currentEntry: { readonly key: string };
-	traverseTo(key: string): { committed: Promise<unknown>; finished: Promise<unknown> };
+	traverseTo(key: string): {
+		committed: Promise<unknown>;
+		finished: Promise<unknown>;
+	};
 }
 
 // Native keys also identify entries created before we started tagging history.
@@ -144,7 +148,10 @@ function relTime(iso: string): string {
 	if (diffHr < 24) return `${diffHr}h`;
 	const diffDay = Math.floor(diffHr / 24);
 	if (diffDay < 7) return `${diffDay}d`;
-	return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+	return new Date(ts).toLocaleDateString(undefined, {
+		month: "short",
+		day: "numeric",
+	});
 }
 
 // Mirrors conversation.ts's flatLine — the client does its own pass
@@ -880,7 +887,10 @@ function AppShell() {
 	const searchSeq = useRef(0);
 	// The empty state has the composer too — its send creates the
 	// conversation, then ChatView delivers the parked message as `seed`.
-	const [seed, setSeed] = useState<{ id: string; parts: UIMessage["parts"] } | null>(null);
+	const [seed, setSeed] = useState<{
+		id: string;
+		parts: UIMessage["parts"];
+	} | null>(null);
 	// Staged uploads are owned here, above any composer: the first send
 	// swaps the empty state's composer for the new conversation's, and
 	// uploads still in flight (or failed chips) must carry across that
@@ -923,7 +933,6 @@ function AppShell() {
 		startSeq.current += 1;
 		setStartFailed(false);
 	};
-	const [archivedOpen, setArchivedOpen] = useState(false);
 	const undoToast = useUndoToast();
 	// Deleted rows stay out of the lists while their DELETE is held back
 	// for the undo window.
@@ -1307,6 +1316,18 @@ function AppShell() {
 		pushRoute("/app/projects");
 	};
 
+	const openArchive = () => {
+		if (page === "archive") return;
+		if (!leaveDirty()) return;
+		clearStartFailure();
+		setPage("archive");
+		setProjectId(null);
+		setNoteId(null);
+		setWindowConv(null);
+		setComposeStaged(false);
+		pushRoute("/app/archive");
+	};
+
 	const openNotesIndex = () => {
 		if (!leaveDirty()) return;
 		clearStartFailure();
@@ -1382,22 +1403,23 @@ function AppShell() {
 		const preview = flatLine(c.preview);
 		return title ?? (preview === "" ? "new conversation" : preview);
 	};
+	const unarchive = (c: AppConversationList["conversations"][number]) => {
+		void patchConversation(token, c.id, { archived: false }).then(
+			() => {
+				setRowError(null);
+				void refresh();
+			},
+			(err: unknown) =>
+				setRowError(
+					`Couldn't unarchive "${rowLabel(c)}": ` +
+						(err instanceof Error ? err.message : String(err)),
+				),
+		);
+	};
 	const archivedWithUndo = (c: AppConversationList["conversations"][number]) => {
 		undoToast.show({
 			message: `Archived "${rowLabel(c)}"`,
-			undo: () => {
-				void patchConversation(token, c.id, { archived: false }).then(
-					() => {
-						setRowError(null);
-						void refresh();
-					},
-					(err: unknown) =>
-						setRowError(
-							`Couldn't unarchive "${rowLabel(c)}": ` +
-								(err instanceof Error ? err.message : String(err)),
-						),
-				);
-			},
+			undo: () => unarchive(c),
 		});
 	};
 	// The server delete is irreversible, so it waits out the undo window:
@@ -1572,7 +1594,7 @@ function AppShell() {
 	// page family is open in the frame. The panel's surface and the open
 	// page can light two glyphs at once — the spine names both honestly.
 	const pagePane: ListPane | null =
-		page === "chat" || page === "window"
+		page === "chat" || page === "window" || page === "archive"
 			? "chats"
 			: page === "projects" || page === "project"
 				? "projects"
@@ -1675,32 +1697,31 @@ function AppShell() {
 			{searchError === null && hits.length === 0 && <p className="empty">No matches.</p>}
 		</>
 	);
+	// The archive is a page, not a rail section — the rail only links to
+	// it, so a long archive never crowds the list.
 	const archivedRows = archived.length > 0 && (
-		<>
-			<button
-				type="button"
-				className="rail-archived"
-				aria-expanded={archivedOpen}
-				onClick={() => setArchivedOpen((v) => !v)}
+		<button
+			type="button"
+			className="rail-archived"
+			aria-current={page === "archive" ? "page" : undefined}
+			onClick={openArchive}
+		>
+			Archived <span className="count">{archived.length}</span>
+			<svg
+				className="chev"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				strokeWidth="1.75"
+				strokeLinecap="round"
+				strokeLinejoin="round"
+				width="12"
+				height="12"
+				aria-hidden="true"
 			>
-				Archived <span className="count">{archived.length}</span>
-				<svg
-					className="chev"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					strokeWidth="1.75"
-					strokeLinecap="round"
-					strokeLinejoin="round"
-					width="12"
-					height="12"
-					aria-hidden="true"
-				>
-					<path d="M6 9l6 6 6-6" />
-				</svg>
-			</button>
-			{archivedOpen && <ul>{archived.map(renderRow)}</ul>}
-		</>
+				<path d="M9 6l6 6-6 6" />
+			</svg>
+		</button>
 	);
 
 	// The attention glyph's dot doubles in the accessible name — the
@@ -2010,6 +2031,28 @@ function AppShell() {
 							</svg>
 						</button>
 					)}
+					{phone && page === "archive" && (
+						<button
+							type="button"
+							className="mobile-back"
+							aria-label="Back to chats"
+							title="Chats"
+							onClick={() => select(null)}
+						>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								width="19"
+								height="19"
+							>
+								<path d="M14.5 5 7.5 12l7 7" />
+							</svg>
+						</button>
+					)}
 					{phone && page === "project" && (
 						<button
 							type="button"
@@ -2038,6 +2081,7 @@ function AppShell() {
 					)}
 					{page === "window" && <span className="header-title">Context window</span>}
 					{page === "projects" && <span className="header-title">Projects</span>}
+					{page === "archive" && <span className="header-title">Archive</span>}
 					{page === "chat" && current !== null && (
 						<button
 							type="button"
@@ -2215,6 +2259,30 @@ function AppShell() {
 						projects={projectList}
 						onOpen={openProject}
 						onNew={() => setCreateProjectOpen(true)}
+					/>
+				)}
+				{page === "archive" && (
+					<ArchiveView
+						rows={archived.map((c) => ({
+							id: c.id,
+							label: rowLabel(c),
+							preview:
+								flatTitle(c.title) !== null && flatLine(c.preview) !== ""
+									? flatLine(c.preview)
+									: null,
+							archivedAt: c.archivedAt!,
+							updatedAt: c.updatedAt,
+						}))}
+						error={rowError}
+						onOpen={openConversation}
+						onUnarchive={(id) => {
+							const c = archived.find((x) => x.id === id);
+							if (c !== undefined) unarchive(c);
+						}}
+						onDelete={(id) => {
+							const c = archived.find((x) => x.id === id);
+							if (c !== undefined) deleteConversationHeld(c);
+						}}
 					/>
 				)}
 				{page === "notes" && (

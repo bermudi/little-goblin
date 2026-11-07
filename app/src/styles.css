@@ -596,10 +596,10 @@ p code,
 }
 .rail-archived .chev {
 	margin-left: auto;
-	transition: transform 120ms ease;
 }
-.rail-archived[aria-expanded="true"] .chev {
-	transform: rotate(180deg);
+.rail-archived[aria-current="page"] {
+	background: var(--app-active);
+	color: var(--app-fg);
 }
 
 /* ---------- the C gutter (design/app.md → mobile-nav ruling) ----------
@@ -2877,6 +2877,55 @@ button.pathchip:hover svg {
 	}
 	.dt-row > .dt-hide-m {
 		display: none;
+	}
+}
+
+/* Archive page (design/app.md → Archive page): a dtable whose rows are not
+   one big button — the title is the open link, the trailing cell holds
+   Unarchive/Delete instead of the chevron. Groups share one header. */
+.ops-h2 .count {
+	font-family: var(--font-mono);
+	font-size: 10px;
+	color: var(--app-fg-subtle);
+}
+.ops-h3 {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--app-fg-subtle);
+	margin: 1rem 0.4rem 0.4rem;
+}
+.archive-table .dt-row {
+	cursor: default;
+	grid-template-columns: var(--dt-cols);
+}
+.archive-table .dt-row::after {
+	content: none;
+}
+.archive-table .dt-head {
+	grid-template-columns: var(--dt-cols);
+}
+.archive-table > .dt-row:first-child {
+	border-top: 0;
+}
+.archive-table a.dt-main {
+	color: var(--app-fg);
+	text-decoration: none;
+}
+.archive-table a.dt-main:hover {
+	text-decoration: underline;
+}
+.archive-table .dt-actions {
+	overflow: visible;
+	gap: 0.35rem;
+	justify-content: flex-end;
+}
+.archive-table .dt-actions .ghost {
+	padding: 0.2rem 0.5rem;
+	font-size: 11.5px;
+}
+@container (max-width: 40rem) {
+	.archive-table .dt-row {
+		grid-template-columns: minmax(0, 1fr) auto;
 	}
 }
 

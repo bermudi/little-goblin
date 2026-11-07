@@ -496,6 +496,8 @@ export function NoteView({
 	// launch an ordinary save that races it.
 	const [rewriteApplying, setRewriteApplying] = useState(false);
 	const editorRef = useRef<NoteEditorHandle>(null);
+	const versionsPopRef = useRef<HTMLDivElement>(null);
+	const versionsBtnRef = useRef<HTMLButtonElement>(null);
 	const dirtyRef = useRef(false);
 	// Refs mirror what the focus check and the async restore guard
 	// read outside render — including the title draft, itself an
@@ -693,6 +695,27 @@ export function NoteView({
 		};
 	}, [token, noteId]);
 
+	// The Versions popover closes on an outside press or Escape; Escape
+	// hands focus back to the button that opened it.
+	useEffect(() => {
+		if (!versionsOpen) return;
+		const onDown = (e: PointerEvent) => {
+			if (e.target instanceof Node && versionsPopRef.current?.contains(e.target)) return;
+			setVersionsOpen(false);
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Escape") return;
+			setVersionsOpen(false);
+			versionsBtnRef.current?.focus();
+		};
+		document.addEventListener("pointerdown", onDown);
+		document.addEventListener("keydown", onKey);
+		return () => {
+			document.removeEventListener("pointerdown", onDown);
+			document.removeEventListener("keydown", onKey);
+		};
+	}, [versionsOpen]);
+
 	if (loadError !== null) return <div className="error">{loadError}</div>;
 	if (note === null) return <div className="loading">…</div>;
 
@@ -875,7 +898,14 @@ export function NoteView({
 				<input
 					className="note-title"
 					value={titleDraft}
+					placeholder="Note title"
 					onChange={(e) => setTitleDraft(e.target.value)}
+					onFocus={(e) => {
+						// A fresh note's placeholder title is meant to be typed over.
+						if (note.title === "Untitled note" && titleDraft === note.title) {
+							e.currentTarget.select();
+						}
+					}}
 					onBlur={saveTitle}
 					onKeyDown={(e) => {
 						if (e.key === "Enter") saveTitle();
@@ -887,24 +917,27 @@ export function NoteView({
 				{archived && <span className="pill">archived</span>}
 			</div>
 			<div className="row note-flags">
-				<select
-					value={note.projectId ?? ""}
-					disabled={busy || rewriteBusy || chatBusy}
-					aria-label="Assign to project"
-					onChange={(e) =>
-						flag({ projectId: e.target.value === "" ? null : e.target.value }, "move the note")
-					}
-				>
-					<option value="">Loose</option>
-					{projects.map((p) => (
-						<option key={p.id} value={p.id}>
-							{p.name}
-						</option>
-					))}
-				</select>
+				<label className="note-proj">
+					<span>Project</span>
+					<select
+						value={note.projectId ?? ""}
+						disabled={busy || rewriteBusy || chatBusy}
+						aria-label="Assign to project"
+						onChange={(e) =>
+							flag({ projectId: e.target.value === "" ? null : e.target.value }, "move the note")
+						}
+					>
+						<option value="">None (loose)</option>
+						{projects.map((p) => (
+							<option key={p.id} value={p.id}>
+								{p.name}
+							</option>
+						))}
+					</select>
+				</label>
 				<button
 					type="button"
-					className="ghost-inline"
+					className="ghost"
 					disabled={busy || rewriteBusy || chatBusy}
 					onClick={() => flag({ pinned: note.pinnedAt === null }, "pin the note")}
 				>
@@ -912,7 +945,7 @@ export function NoteView({
 				</button>
 				<button
 					type="button"
-					className="ghost-inline"
+					className="ghost"
 					disabled={busy || rewriteBusy || chatBusy}
 					onClick={() => flag({ archived: !archived }, "archive the note")}
 				>
@@ -921,19 +954,55 @@ export function NoteView({
 				{archived && (
 					<button
 						type="button"
-						className="ghost-inline"
+						className="ghost"
 						disabled={busy || rewriteBusy || chatBusy}
 						onClick={remove}
 					>
 						Delete
 					</button>
 				)}
-				<button type="button" className="ghost-inline" onClick={() => setVersionsOpen((v) => !v)}>
-					Versions
-				</button>
+				<div className="note-pop" ref={versionsPopRef}>
+					<button
+						ref={versionsBtnRef}
+						type="button"
+						className="ghost"
+						aria-expanded={versionsOpen}
+						aria-haspopup="dialog"
+						onClick={() => setVersionsOpen((v) => !v)}
+					>
+						Versions
+					</button>
+					{versionsOpen && (
+						<VersionsPanel
+							token={token}
+							note={note}
+							canRestore={conflict === null && !dirty && !rewriteBusy && titleDraft === note.title}
+							canRestoreNow={() => {
+								const cur = noteRef.current;
+								return (
+									cur !== null &&
+									conflictRef.current === null &&
+									!rewriteBusyRef.current &&
+									titleDraftRef.current === cur.title &&
+									!(dirtyRef.current || (editorRef.current?.dirty() ?? false))
+								);
+							}}
+							// A landed restore rides the same forward guard as a
+							// focus refresh — a delayed or already-adopted ack is
+							// ignored, edits that landed mid-flight get the bar.
+							onRestored={(n) => {
+								adoptRemote(n);
+								onChanged?.();
+							}}
+							// The restore 409 carries the live note — the same
+							// conflict path as a remote write.
+							onConflict={raiseConflict}
+						/>
+					)}
+				</div>
 				<button
 					type="button"
-					className="ghost"
+					className="ghost note-chat"
 					disabled={busy || rewriteBusy || chatBusy || archived || conflict !== null}
 					title={archived ? "Unarchive this note to chat with it." : undefined}
 					onClick={() => void chat()}
@@ -979,33 +1048,6 @@ export function NoteView({
 						onRewriteApplying={setRewriteApplying}
 					/>
 				</Suspense>
-			)}
-			{versionsOpen && (
-				<VersionsPanel
-					token={token}
-					note={note}
-					canRestore={conflict === null && !dirty && !rewriteBusy && titleDraft === note.title}
-					canRestoreNow={() => {
-						const cur = noteRef.current;
-						return (
-							cur !== null &&
-							conflictRef.current === null &&
-							!rewriteBusyRef.current &&
-							titleDraftRef.current === cur.title &&
-							!(dirtyRef.current || (editorRef.current?.dirty() ?? false))
-						);
-					}}
-					// A landed restore rides the same forward guard as a
-					// focus refresh — a delayed or already-adopted ack is
-					// ignored, edits that landed mid-flight get the bar.
-					onRestored={(n) => {
-						adoptRemote(n);
-						onChanged?.();
-					}}
-					// The restore 409 carries the live note — the same
-					// conflict path as a remote write.
-					onConflict={raiseConflict}
-				/>
 			)}
 		</div>
 	);

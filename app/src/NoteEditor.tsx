@@ -479,7 +479,10 @@ const NoteEditor = forwardRef<
 					// A detached write that can't land — the drain must not
 					// retry it forever.
 					drainDeadRef.current = true;
-				} else if (e instanceof TypeError || (e instanceof ApiError && (e.status === 0 || e.status >= 500))) {
+				} else if (
+					e instanceof TypeError ||
+					(e instanceof ApiError && (e.status === 0 || e.status >= 500))
+				) {
 					// Transient (network/5xx) — settle reschedules.
 					markStatus("offline");
 				} else {
@@ -1241,16 +1244,6 @@ const NoteEditor = forwardRef<
 	return (
 		<div className="note-editor">
 			<div ref={containerRef} className="note-editor-body" />
-			<div className="note-editor-bar">
-				<button
-					type="button"
-					className="ghost-inline"
-					disabled={!ready || selEmpty || status === "conflict" || rewrite !== null}
-					onClick={openRewrite}
-				>
-					Rewrite selection
-				</button>
-			</div>
 			{rewrite !== null && (
 				<div className="note-rewrite">
 					<pre className="note-rewrite-sel">{rewrite.selection}</pre>
@@ -1317,7 +1310,19 @@ const NoteEditor = forwardRef<
 					)}
 				</div>
 			)}
-			<div className={`note-save-status ${status}`}>{label}</div>
+			<div className="note-editor-foot">
+				<button
+					type="button"
+					className="ghost-inline"
+					disabled={!ready || selEmpty || status === "conflict" || rewrite !== null}
+					onClick={openRewrite}
+				>
+					Rewrite selection
+				</button>
+				<div className={`note-save-status ${status}`} role="status">
+					{label}
+				</div>
+			</div>
 		</div>
 	);
 });

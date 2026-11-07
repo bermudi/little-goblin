@@ -188,6 +188,20 @@ existing long-text classes get these caps by selector until their page is
 redone. `.sumstrip` / `.sumtile` is the optional count strip. The Projects
 index is the reference table.
 
+**Note page is an editor (ruling 2026-11-07, #172).** The note page must read
+as a place to write: the title is a bordered field (placeholder "Note title";
+a fresh "Untitled note" selects on focus), the text sits on a visible surface
+(control border and background) that shows "Start writing…" while empty, and
+the toolbar is one row of same-height controls — labelled "Project" select,
+Pin, Archive, Versions — with "Chat with this note" at the right edge (the row
+wraps under 40rem). Title, toolbar and surface share one 41rem column (about
+70ch of the 15px note text, `--note-col`). The footer of the surface holds
+Rewrite selection and the save state (dot + "Saved" / "Saving…" / "Offline —
+retrying" / "Save failed" / "Conflict"). Versions is a popover anchored to its
+button (so it opens where the press was on a long note), closing on outside
+press or Escape; under 40rem it spans the toolbar row. No formatting toolbar
+(#173 is separate).
+
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
 forever (no route may ever render it, structure included). Two layers, each

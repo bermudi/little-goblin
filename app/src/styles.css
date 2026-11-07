@@ -2888,7 +2888,8 @@ button.pathchip:hover svg {
 .prose {
 	max-width: var(--prose-col);
 }
-.ops:not(.settings) :is(.lead, .ops-cap, .op-item-body, .fact-text, .win-tooldesc, .win-text, .approval-facts),
+.ops:not(.settings)
+	:is(.lead, .ops-cap, .op-item-body, .fact-text, .win-tooldesc, .win-text, .approval-facts),
 .ops.projfields :is(.cap, textarea, select),
 .ops.notepage :is(.note-editor, .note-readonly) {
 	max-width: var(--prose-col);
@@ -3335,17 +3336,17 @@ button.pathchip:hover svg {
    filter, window search, …): zero specificity, so any class rule above or
    below still wins, but no field is ever left as a bare native control. */
 :where(.ops, .msheet, [role="dialog"])
-	:where(
-		input:not([type]),
-		input[type="text"],
-		input[type="search"],
-		input[type="url"],
-		input[type="password"],
-		input[type="number"],
-		input[type="email"],
-		textarea,
-		select
-	) {
+:where(
+	input:not([type]),
+	input[type="text"],
+	input[type="search"],
+	input[type="url"],
+	input[type="password"],
+	input[type="number"],
+	input[type="email"],
+	textarea,
+	select
+) {
 	font: inherit;
 	font-size: 12.5px;
 	color: var(--app-fg);
@@ -5037,31 +5038,96 @@ button.note-card-append:hover {
 .notepage {
 	overflow-y: auto;
 	height: 100%;
+	/* One column for title, toolbar and the writing surface: about 70ch
+	   of the 15px note text (ruling #168). */
+	--note-col: 41rem;
+}
+.ops.notepage :is(.note-head, .note-flags, .note-conflict, .note-editor, .note-readonly) {
+	max-width: var(--note-col);
 }
 .note-head {
 	align-items: center;
 	gap: 0.5rem;
 }
+/* The title is a field, not a heading: a visible edge says it can be
+   renamed (#172). */
 .note-title {
 	flex: 1;
+	min-width: 0;
 	font: inherit;
-	font-size: 16px;
+	font-size: 17px;
 	font-weight: 600;
-	background: transparent;
-	border: none;
-	border-bottom: 1px solid transparent;
+	background: var(--app-control-bg);
+	border: 1px solid var(--app-control-border);
+	border-radius: 8px;
 	color: var(--app-fg);
-	padding: 0.2rem 0;
+	padding: 0.4rem 0.65rem;
 	outline: none;
 }
-.note-title:focus {
-	border-bottom-color: var(--app-divider);
+.note-title::placeholder {
+	color: var(--app-fg-subtle);
+	font-weight: 400;
 }
+.note-title:hover:not(:disabled) {
+	border-color: var(--app-control-border-hover);
+}
+.note-title:focus {
+	border-color: var(--app-focus);
+	box-shadow: 0 0 0 2px color-mix(in oklab, var(--app-focus) 30%, transparent);
+}
+.note-title:disabled {
+	opacity: 0.7;
+}
+/* The toolbar: real controls of one height on one line. Chat sits at
+   the right edge; the row wraps only when the pane is narrow. */
 .note-flags {
-	gap: 0.4rem;
+	position: relative;
+	gap: 0.5rem;
 	align-items: center;
-	margin: 0.35rem 0 0.6rem;
+	margin: 0.6rem 0 0.75rem;
 	flex-wrap: wrap;
+}
+.note-flags :is(.ghost, select) {
+	height: 2rem;
+	box-sizing: border-box;
+	margin: 0;
+	font-size: 12.5px;
+	display: inline-flex;
+	align-items: center;
+}
+.note-proj {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+}
+.note-proj select {
+	appearance: none;
+	font: inherit;
+	font-size: 12.5px;
+	color: var(--app-fg);
+	background-color: var(--app-control-bg);
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: right 0.55rem center;
+	border: 1px solid var(--app-control-border);
+	border-radius: 8px;
+	padding: 0 1.7rem 0 0.6rem;
+}
+.note-proj select:hover:not(:disabled) {
+	border-color: var(--app-control-border-hover);
+}
+.note-proj select:focus {
+	outline: none;
+	border-color: var(--app-focus);
+	box-shadow: 0 0 0 2px color-mix(in oklab, var(--app-focus) 30%, transparent);
+}
+.note-flags .note-chat {
+	margin-left: auto;
+}
+.note-pop {
+	position: relative;
 }
 .note-conflict {
 	display: flex;
@@ -5093,13 +5159,33 @@ button.note-card-append:hover {
 .notepage > * {
 	flex-shrink: 0;
 }
+/* Versions is a popover anchored to its button, so it opens where the
+   press happened however long the note is (#172). Under 40rem the anchor
+   is the toolbar row, so the popover can use the full pane width. */
 .note-versions {
-	border: 1px solid var(--app-border);
+	position: absolute;
+	top: calc(100% + 6px);
+	left: 0;
+	z-index: 20;
+	width: min(24rem, calc(100vw - 2rem));
+	max-height: min(28rem, 70vh);
+	overflow-y: auto;
+	border: 1px solid var(--app-control-border);
 	border-radius: 10px;
-	background: var(--app-gray-50);
-	margin-top: 0.75rem;
+	background: var(--app-bg);
+	box-shadow: 0 10px 30px color-mix(in oklab, var(--app-fg) 22%, transparent);
 	padding: 0.5rem 0.75rem;
 	font-size: 12px;
+}
+@media (max-width: 40rem) {
+	.note-pop {
+		position: static;
+	}
+	.note-versions {
+		left: 0;
+		right: 0;
+		width: auto;
+	}
 }
 .note-versions ul {
 	list-style: none;
@@ -5152,25 +5238,38 @@ button.link:hover {
 	flex-direction: column;
 	border: 1px solid var(--app-control-border);
 	border-radius: 10px;
-	min-height: 16rem;
+	background: var(--app-control-bg);
+	min-height: 20rem;
 }
 .note-editor-body {
 	flex: 1;
-	padding: 0.75rem 0.9rem;
+	padding: 0.9rem 1.1rem;
 }
 .note-editor .milkdown {
 	outline: none;
 }
 .note-editor .ProseMirror {
 	outline: none;
-	font-size: 13px;
-	line-height: 1.55;
-	min-height: 12rem;
+	font-size: 15px;
+	line-height: 1.6;
+	min-height: 16rem;
 	/* ProseMirror expects pre-wrap for correct editing behavior. */
 	white-space: pre-wrap;
 }
 .note-editor .ProseMirror p {
 	margin: 0.35rem 0;
+}
+/* An empty note says where to write: ProseMirror leaves one empty
+   paragraph holding only a trailing break. */
+.note-editor .ProseMirror > p:only-child:has(> br.ProseMirror-trailingBreak:only-child) {
+	position: relative;
+}
+.note-editor .ProseMirror > p:only-child:has(> br.ProseMirror-trailingBreak:only-child)::before {
+	content: "Start writing…";
+	position: absolute;
+	left: 0;
+	pointer-events: none;
+	color: var(--app-fg-subtle);
 }
 .note-editor .ProseMirror h1,
 .note-editor .ProseMirror h2,
@@ -5230,9 +5329,16 @@ button.link:hover {
 	text-decoration: line-through;
 	color: var(--app-fg-muted);
 }
-.note-editor-bar {
+.note-editor-foot {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
 	border-top: 1px solid var(--app-border);
-	padding: 0.25rem 0.6rem;
+	padding: 0.35rem 0.6rem 0.35rem 0.75rem;
+}
+.note-editor-foot .ghost-inline {
+	font-size: 12px;
 }
 .note-rewrite {
 	border-top: 1px solid var(--app-border);
@@ -5280,10 +5386,25 @@ button.link:hover {
 	gap: 0.5rem;
 }
 .note-save-status {
-	font-size: 11px;
-	color: var(--app-fg-subtle);
-	border-top: 1px solid var(--app-border);
-	padding: 0.25rem 0.75rem;
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+	margin-left: auto;
+}
+.note-save-status::before {
+	content: "";
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--app-success);
+}
+.note-save-status.saving::before {
+	background: var(--app-warning);
+}
+.note-save-status:is(.offline, .conflict, .error)::before {
+	background: var(--app-danger);
 }
 .note-save-status.offline {
 	color: var(--app-danger);

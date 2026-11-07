@@ -291,6 +291,24 @@ unchanged beside it. An unreadable record stays in place behind an
 error line until the first write replaces it. Text only — staged
 chips are uploads, not prose.
 
+**The thread view's composer steals focus when it can (ruling
+2026-11-07, operator ask).** It claims keyboard focus at the moments
+the next keystroke is a reply — mount (thread open, branch switch,
+the lazy create swapping the empty state), every busy → idle settle
+(send accepted, stream done, stopped, failed), and the window
+returning to the foreground (window focus; no busy check there —
+coming back to steer a streaming turn is still typing into the box) —
+so typing never needs a click first. "When it can" is a guard set:
+the claim stands down while another text entry holds focus (sidebar
+search, an inline note editor, a picker's filter), while a composer
+popover is open — picker states and the context gauge's popover alike,
+the latter matched by its `.composer-pick` class since its state lives
+in the gauge — while any dialog is open, and on phone widths,
+where focus() pops the on-screen keyboard over a thread the operator
+just opened to read. The conversation-less composers keep their
+explicit paths (the "New conversation" focusSignal) — stealing is a
+thread-view property, opt-in per mount.
+
 **Transcript rendering (ruling 2026-10-21, operator ask: tables blow out
 the column, the column wastes the desktop, machinery tags read as
 prose).** Three transcript fixes, all render-side — history text is

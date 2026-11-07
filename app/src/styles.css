@@ -6800,3 +6800,111 @@ button.link:hover {
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 }
+
+/* ---------- status page (#175): verdict first, parts, raw details ---------- */
+.status-verdict {
+	display: flex;
+	flex-direction: column;
+	gap: 0.15rem;
+	margin-top: 0.9rem;
+	padding: 0.8rem 1rem;
+	border: 1px solid var(--app-divider);
+	border-left: 4px solid var(--app-success);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+}
+.status-verdict b {
+	font-size: 20px;
+	font-weight: 500;
+	letter-spacing: -0.01em;
+}
+.status-verdict span {
+	font-size: 13px;
+	color: var(--app-fg-muted);
+}
+.status-verdict.ok b {
+	color: var(--app-success);
+}
+.status-verdict.warn {
+	border-left-color: var(--app-warning);
+}
+.status-verdict.warn b {
+	color: var(--app-warning);
+}
+.status-verdict.bad {
+	border-left-color: var(--app-danger);
+}
+.status-verdict.bad b {
+	color: var(--app-danger);
+}
+.status-page > * {
+	flex-shrink: 0;
+}
+.status-strip {
+	grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+.status-part {
+	gap: 0.35rem;
+	align-items: flex-start;
+}
+.status-part-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+	width: 100%;
+}
+.status-part-name {
+	font-size: 14px;
+	font-weight: 500;
+	color: var(--app-fg);
+}
+.status-part .status-part-line {
+	font-size: 12.5px;
+	line-height: 1.45;
+	color: var(--app-fg-muted);
+}
+.status-pill.ok {
+	color: var(--app-success);
+	border-color: color-mix(in oklab, var(--app-success) 40%, transparent);
+}
+.status-pill.warn {
+	color: var(--app-warning);
+	border-color: color-mix(in oklab, var(--app-warning) 40%, transparent);
+}
+.status-pill.bad {
+	color: var(--app-danger);
+	border-color: color-mix(in oklab, var(--app-danger) 40%, transparent);
+}
+.status-part.warn {
+	border-color: color-mix(in oklab, var(--app-warning) 50%, var(--app-divider));
+}
+.status-part.bad {
+	border-color: color-mix(in oklab, var(--app-danger) 50%, var(--app-divider));
+}
+.status-part-go {
+	margin-top: auto;
+	padding: 0;
+	border: 0;
+	background: none;
+	font: inherit;
+	font-size: 12.5px;
+	color: var(--app-accent);
+	text-decoration: underline;
+	cursor: pointer;
+}
+.status-note {
+	margin: 0.6rem 0 0;
+}
+.status-raw {
+	margin-top: 1rem;
+}
+.status-raw summary {
+	cursor: pointer;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+	padding: 0.3rem 0;
+}
+.status-raw .card {
+	margin-top: 0.4rem;
+}

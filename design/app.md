@@ -188,6 +188,18 @@ existing long-text classes get these caps by selector until their page is
 redone. `.sumstrip` / `.sumtile` is the optional count strip. The Projects
 index is the reference table.
 
+*Status page (#175).* Leads with one verdict line computed from the status
+API only: "Goblin is OK", "N thing(s) need attention" (memory needs review,
+a restart waits) or "Something is broken" (memory recall failing; also shown
+when the status request itself fails). Under it a `.sumstrip` (`.status-strip`)
+of part tiles — Service, Memory, Programs, Delegations — each with a state
+pill, one plain line (what is wrong and what to do) and an "Open …" link to
+the page that fixes it. Programs and Delegations only report counts, so their
+pill says "no signal", never a guessed "ok". A note says model providers,
+Telegram, keys and the herdr host are not in the status API and points to
+`bun run doctor`; no new probes. The old label/value cards live on in a
+collapsed "Raw details" block. Memory "off" is neutral, not a problem.
+
 *Log page (#166).* A `.dtable` (`.logtable`) of lines, newest first: time
 (clock today, day + clock older), level pill, message, key fields (scalar
 fields, the error first). The level filter is visible chips and means *at

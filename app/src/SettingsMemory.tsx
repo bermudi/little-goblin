@@ -3,7 +3,7 @@
 // edits only the switch and the recall budget.
 
 import { relTime } from "./memoryShared.tsx";
-import { Row, Seg, type SettingsCtx, Switch } from "./settingsKit.tsx";
+import { Row, SectionHead, Seg, type SettingsCtx, Switch } from "./settingsKit.tsx";
 
 export function SettingsMemory({ ctx }: { ctx: SettingsCtx }) {
 	const { draft, setDraft, capStates, status, last } = ctx;
@@ -11,15 +11,17 @@ export function SettingsMemory({ ctx }: { ctx: SettingsCtx }) {
 	const memStatus = status?.memory ?? null;
 	return (
 		<>
-			<p className="lead">What goblin retains and recalls — browse it in the Memories view.</p>
-			<h2 className="ops-h2">Long-term memory</h2>
+			<SectionHead
+				title="Long-term memory"
+				purpose="What goblin remembers between chats. Browse it in the Memories view."
+			/>
 			<div className="card">
 				<Row
 					label="Memory"
 					cap={
 						memState?.state === "needs-setup"
 							? (memState.hint ?? "Needs setup first.")
-							: "Self-hosted hindsight. Completed exchanges are retained; relevant facts are recalled into new turns."
+							: "Goblin saves finished chats and recalls useful facts in new ones."
 					}
 				>
 					<Switch
@@ -51,7 +53,7 @@ export function SettingsMemory({ ctx }: { ctx: SettingsCtx }) {
 							Hindsight · {draft.memory.baseUrl || "(url unset)"} · bank{" "}
 							{draft.memory.bankId || "(unset)"} — set by the memory installer.
 						</div>
-						<Row label="Recall budget" col>
+						<Row label="Recall budget" cap="How much memory goblin may pull into each turn." col>
 							<Seg
 								options={["low", "mid", "high"]}
 								value={draft.memory.budget || "mid"}

@@ -171,24 +171,45 @@ export function Switch({
 	);
 }
 
+// A group heading with its one-line purpose (#179). Same h2 element the
+// sections always used; the Settings CSS gives it sentence case.
+export function SectionHead({ title, purpose }: { title: string; purpose: string }) {
+	return (
+		<>
+			<h2 className="ops-h2 set-h2">{title}</h2>
+			<p className="set-purpose">{purpose}</p>
+		</>
+	);
+}
+
+// What a setting costs to change: a badge beside its label.
+export type RowTag = "restart" | "careful";
+const TAG_TEXT: Record<RowTag, string> = {
+	restart: "needs restart",
+	careful: "careful",
+};
+
 export function Row({
 	label,
 	cap,
 	children,
 	col,
 	labelId,
+	tag,
 }: {
 	label: string;
 	cap?: string | undefined;
 	children?: ReactNode;
 	col?: boolean;
 	labelId?: string;
+	tag?: RowTag;
 }) {
 	return (
 		<div className={col ? "row col" : "row"}>
 			<div className="rstack">
 				<div className="rlabel" id={labelId}>
 					{label}
+					{tag !== undefined && <span className={`rtag rtag-${tag}`}>{TAG_TEXT[tag]}</span>}
 				</div>
 				{cap !== undefined && <div className="cap">{cap}</div>}
 			</div>

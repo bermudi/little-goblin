@@ -14,7 +14,7 @@ import {
 	SEARCH_META,
 	switchProviderKind,
 } from "./settingsDraft.ts";
-import { authDefault, displayName, KeyStatus, type SettingsCtx } from "./settingsKit.tsx";
+import { authDefault, displayName, KeyStatus, SectionHead, type SettingsCtx } from "./settingsKit.tsx";
 
 // The provider's effective key record — explicit auth, else the
 // materialized name (the kind's default; otherwise its own).
@@ -233,7 +233,7 @@ export function SettingsAccounts({ ctx }: { ctx: SettingsCtx }) {
 	return (
 		<>
 			<ChatGptAccount token={token} onSignedIn={reload} />
-			<h2 className="ops-h2">Model services</h2>
+			<SectionHead title="Model services" purpose="Companies that run the AI models goblin uses." />
 			<div className="card">
 				{services.map((p) => (
 					<ServiceCard key={p.id} prov={p} ctx={ctx} />
@@ -342,7 +342,7 @@ export function SettingsAccounts({ ctx }: { ctx: SettingsCtx }) {
 					</>
 				)}
 			</div>
-			<h2 className="ops-h2">Service keys</h2>
+			<SectionHead title="Service keys" purpose="Keys for search and voice services. Model keys live on their service card." />
 			<div className="card">
 				{keys.length === 0 && (
 					<div className="cap">

@@ -586,6 +586,20 @@ as read-only text (System, the memory card).
   and show explicit uncertainty; unavailable status never confirms that
   a saved change needs no restart.
 
+*Settings readability (#179).* Presentation only; the shape ruling, save
+rules and dirty-state prompts above are unchanged. Every group has a
+sentence-case heading (`SectionHead`) with a one-line purpose. Every
+setting is a row: label, a short plain help line, the control aligned on
+the right; under 640px the control stacks under its label (the switch stays
+beside it). `Row` takes a `tag`: `restart` (boot-pinned: Telegram channel,
+skill reviewer) or `careful` (sandbox, coding-agent delegation) shows a
+small badge by the label. Help text avoids internal words; a message
+belongs on the row it explains (e.g. "Telegram is off" is a Telegram row in
+Default models). Filter, Disable all, Add custom model and Add fallback are
+bordered buttons/inputs. The rules are all scoped under `.settings`; the
+shared `.ops-h2`, `.card` and `.row` base rules are untouched. The page
+renders the same in the `/t/settings` mini app door.
+
 ## Spin-off (ruling 2026-10-03)
 
 Operator ask, paired with Rolling DM: durable work — something that runs,

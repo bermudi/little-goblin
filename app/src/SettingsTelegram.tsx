@@ -1,17 +1,18 @@
 // Telegram — the bot channel and its reply behavior. The model picks
 // live in Models; apiRoot stays file-managed and is never shown.
 
-import { Field, Row, type SettingsCtx, Switch } from "./settingsKit.tsx";
+import { Field, Row, SectionHead, type SettingsCtx, Switch } from "./settingsKit.tsx";
 
 export function SettingsTelegram({ ctx }: { ctx: SettingsCtx }) {
 	const { draft, patchDraft } = ctx;
 	return (
 		<>
-			<h2 className="ops-h2">Telegram</h2>
+			<SectionHead title="Telegram" purpose="The bot channel and how it replies. The app works without it." />
 			<div className="card">
 				<Row
 					label="Telegram channel"
-					cap="Off runs the app without a bot token, polling, or the Telegram mini app. Existing Telegram settings stay saved for a later re-enable; restart applies."
+					tag="restart"
+					cap="Off runs only the app: no bot, no mini app. Your Telegram settings stay saved."
 				>
 					<Switch
 						on={draft.telegramEnabled}
@@ -23,7 +24,7 @@ export function SettingsTelegram({ ctx }: { ctx: SettingsCtx }) {
 					<>
 						<Row
 							label="Rich replies"
-							cap="Markdown replies in your DM with a live draft preview while goblin works. Off restores plain text — the off-switch if streaming misbehaves. Applies to new turns."
+							cap="Formatted replies with a live preview while goblin works. Turn off for plain text if streaming misbehaves."
 						>
 							<Switch
 								on={draft.richReplies}
@@ -34,7 +35,7 @@ export function SettingsTelegram({ ctx }: { ctx: SettingsCtx }) {
 						{draft.richReplies && (
 							<Row
 								label="Show reasoning"
-								cap="The model's thinking streams into its own preview bubble and lands collapsed above the reply. DMs only."
+								cap="Shows the model's thinking in a separate bubble, folded above the reply. DMs only."
 							>
 								<Switch
 									on={draft.showReasoning}
@@ -44,13 +45,13 @@ export function SettingsTelegram({ ctx }: { ctx: SettingsCtx }) {
 							</Row>
 						)}
 						<Field
-							label="Start a new conversation after (quiet minutes)"
+							label="New conversation after quiet minutes"
 							value={draft.dmGap}
 							onChange={(v) => patchDraft({ dmGap: v })}
 							placeholder="45"
 							numeric
 							mono
-							cap="Quiet minutes before a DM may roll into a new conversation. Applies immediately."
+							cap="After this many quiet minutes, your next DM starts a fresh conversation."
 						/>
 					</>
 				)}

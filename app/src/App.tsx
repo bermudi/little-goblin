@@ -44,27 +44,14 @@ import type {
 	AppProject,
 	AppSearchHit,
 } from "../../src/http/app-wire.ts";
+import { parseAppPath, type AppPageKey } from "../../src/http/app-routes.ts";
 
 // `project` and `note` carry ids parsed separately (/app/p/<id>,
 // /app/n/<id>) — the union holds the page key only.
-type Page =
-	| "chat"
-	| "attention"
-	| "settings"
-	| "memory"
-	| "delegations"
-	| "programs"
-	| "status"
-	| "skills"
-	| "files"
-	| "log"
-	| "projects"
-	| "project"
-	| "notes"
-	| "note"
-	| "window";
+// Every page key is also a server shell path (src/http/app-routes.ts).
+type Page = "chat" | "project" | "note" | "window" | AppPageKey;
 
-const PAGES: { key: Exclude<Page, "chat" | "notes" | "note">; label: string }[] = [
+const PAGES: { key: Exclude<AppPageKey, "notes">; label: string }[] = [
 	{ key: "attention", label: "Attention" },
 	{ key: "settings", label: "Settings" },
 	{ key: "memory", label: "Memories" },
@@ -76,33 +63,32 @@ const PAGES: { key: Exclude<Page, "chat" | "notes" | "note">; label: string }[] 
 	{ key: "log", label: "Log" },
 ];
 
+// The URL space lives in src/http/app-routes.ts, shared with the server's
+// shell dispatch — a path the client can push is a path a reload can load.
 function pageFromPath(pathname: string): Page | null {
 	// Both doors serve this bundle: /app/ the PWA, /t/ the Telegram mini
 	// app — each door clamps the result to its own page scope.
-	const m =
-		/^\/(?:app|t)\/(attention|settings|memory|delegations|programs|status|skills|files|log|projects|notes)\/?$/.exec(
-			pathname,
-		);
-	return m === null ? null : (m[1] as Page);
+	const route = parseAppPath(pathname) ?? parseAppPath(pathname, "t");
+	return route?.kind === "page" ? route.page : null;
 }
 
 // /app/p/<projectId> — project ids are server-minted randomUUIDs, the
 // same url-safe shape the /app/c/ link checks.
 export function projectFromPath(pathname: string): string | null {
-	const m = /^\/app\/p\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/.exec(pathname);
-	return m === null ? null : m[1]!;
+	const route = parseAppPath(pathname);
+	return route?.kind === "project" ? route.id : null;
 }
 
 // /app/n/<noteId> — same id shape as projects.
 function noteFromPath(pathname: string): string | null {
-	const m = /^\/app\/n\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/?$/.exec(pathname);
-	return m === null ? null : m[1]!;
+	const route = parseAppPath(pathname);
+	return route?.kind === "note" ? route.id : null;
 }
 
 // /app/c/<appId>/window — the context-window view of one conversation.
 function windowFromPath(pathname: string): string | null {
-	const m = /^\/app\/c\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})\/window$/.exec(pathname);
-	return m === null ? null : `app/${m[1]!}`;
+	const route = parseAppPath(pathname);
+	return route?.kind === "window" ? `app/${route.id}` : null;
 }
 
 function historyPosition(state: unknown): { index: number; segment: string } | null {
@@ -185,8 +171,8 @@ function flatTitle(title: string | null): string | null {
 // /app/c/<appId> opens one conversation — the id matches the server's
 // appIdSchema; the conversation id is "app/<appId>".
 export function deepLinkConv(pathname: string): string | null {
-	const m = /^\/app\/c\/([A-Za-z0-9][A-Za-z0-9_-]{0,63})$/.exec(pathname);
-	return m === null ? null : `app/${m[1]}`;
+	const route = parseAppPath(pathname);
+	return route?.kind === "conversation" ? `app/${route.id}` : null;
 }
 
 // The token is the operator-pasted credential behind the auth.jsonl
@@ -1388,7 +1374,7 @@ function AppShell() {
 		}
 	};
 
-	const openPage = (p: Exclude<Page, "chat" | "notes" | "note">) => {
+	const openPage = (p: AppPageKey) => {
 		if (page === p) return;
 		if (!leaveDirty()) return;
 		clearStartFailure();

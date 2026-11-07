@@ -4,6 +4,7 @@ import type { DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
 import { readBodyCapped, serveInjectionCheck } from "./check.ts";
 import { serveAppDist } from "./app-dist.ts";
+import { parseAppPath } from "./app-routes.ts";
 import { validateInitData, type InitDataResult } from "./auth.ts";
 import { handleOperatorRoute, type OperatorDeps } from "./operator.ts";
 
@@ -24,8 +25,6 @@ export interface HttpDeps extends OperatorDeps {
 }
 
 const NO_STORE = { "cache-control": "no-store" };
-
-const APP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 
 const OPERATOR_TAILS: Record<string, string> = {
 	"/api/settings": "config",
@@ -143,33 +142,12 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		if (url.pathname === "/app") {
 			return serveClient(req, "");
 		}
-		if (url.pathname.startsWith("/app/c/")) {
-			const appId = url.pathname.slice("/app/c/".length);
-			if (!APP_ID_RE.test(appId)) {
-				return Response.json({ error: "not found" }, { status: 404 });
-			}
+		if (parseAppPath(url.pathname) !== null) {
 			return serveClient(req, "");
 		}
-		if (
-			/^\/app\/(?:settings|memory|delegations|programs|status|projects|notes|skills|files|log)\/?$/.test(
-				url.pathname,
-			)
-		) {
-			return serveClient(req, "");
-		}
-		if (url.pathname.startsWith("/app/p/")) {
-			const projectId = url.pathname.slice("/app/p/".length);
-			if (!APP_ID_RE.test(projectId)) {
-				return Response.json({ error: "not found" }, { status: 404 });
-			}
-			return serveClient(req, "");
-		}
-		if (url.pathname.startsWith("/app/n/")) {
-			const noteId = url.pathname.slice("/app/n/".length);
-			if (!APP_ID_RE.test(noteId)) {
-				return Response.json({ error: "not found" }, { status: 404 });
-			}
-			return serveClient(req, "");
+		if (/^\/app\/[cpn]\//.test(url.pathname)) {
+			// An id route with a malformed id is a 404, never an asset lookup.
+			return Response.json({ error: "not found" }, { status: 404 });
 		}
 		if (url.pathname.startsWith("/app/")) {
 			return serveClient(req, url.pathname.slice("/app/".length));

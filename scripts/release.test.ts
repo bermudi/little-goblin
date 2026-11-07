@@ -17,6 +17,7 @@ import {
 	chmodSync,
 	copyFileSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readFileSync,
 	readdirSync,
@@ -326,6 +327,35 @@ describe("rollout", () => {
 			expect(result.status).toBe(1);
 			expect(result.stderr).toContain("--adopt-unit");
 			expect(calls(box).some((line) => line.includes("restart"))).toBe(false);
+		},
+		RELEASE_TEST_TIMEOUT_MS,
+	);
+
+	test(
+		"a symlinked unit still rolls out, and --adopt-unit refuses to write through it",
+		() => {
+			const adopted = makeBox();
+			expect(release(adopted, ["--adopt-unit"]).status).toBe(0);
+			const target = `${adopted.unit}.target`;
+			renameSync(adopted.unit, target);
+			symlinkSync(target, adopted.unit);
+			const rolled = release(adopted, ["--status"]);
+			expect(rolled.status).toBe(0);
+			expect(rolled.stdout).toContain("(release layout)");
+			expect(release(adopted, []).status).toBe(0);
+			expect(lstatSync(adopted.unit).isSymbolicLink()).toBe(true);
+
+			const fresh = makeBox();
+			const freshTarget = `${fresh.unit}.target`;
+			renameSync(fresh.unit, freshTarget);
+			symlinkSync(freshTarget, fresh.unit);
+			const before = readFileSync(freshTarget, "utf8");
+			const refused = release(fresh, ["--adopt-unit"]);
+			expect(refused.status).toBe(1);
+			expect(refused.stderr).toContain("is a symlink");
+			expect(lstatSync(fresh.unit).isSymbolicLink()).toBe(true);
+			expect(readFileSync(freshTarget, "utf8")).toBe(before);
+			expect(existsSync(fresh.live)).toBe(false);
 		},
 		RELEASE_TEST_TIMEOUT_MS,
 	);

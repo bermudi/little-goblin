@@ -22,6 +22,8 @@ import {
 	type NoteDraft,
 } from "./noteDraft.ts";
 import type { AppNote } from "../../src/http/app-wire.ts";
+import { formatState, runFormat, type FormatAction, type FormatState } from "./noteFormat.ts";
+import NoteToolbar from "./NoteToolbar.tsx";
 
 export interface NoteEditorHandle {
 	// A server-side content change landed (append, restore, another
@@ -73,6 +75,10 @@ interface RewriteFlow {
 	instruction: string;
 	replacement: string | null;
 	error: string | null;
+}
+
+function sameFormat(a: FormatState, b: FormatState): boolean {
+	return (Object.keys(a) as (keyof FormatState)[]).every((k) => a[k] === b[k]);
 }
 
 const DEBOUNCE_MS = 1000;
@@ -203,6 +209,10 @@ const NoteEditor = forwardRef<
 	const rewriteRef = useRef<RewriteFlow | null>(null);
 	rewriteRef.current = rewrite;
 	const [selEmpty, setSelEmpty] = useState(true);
+	// What the toolbar highlights — recomputed on every editor state
+	// change by the plugin below.
+	const [fmt, setFmt] = useState<FormatState | null>(null);
+	const [linkOpen, setLinkOpen] = useState(false);
 	const [ready, setReady] = useState(false);
 	const [status, setStatus] = useState<SaveStatus>("saved");
 	const [statusDetail, setStatusDetail] = useState<string | null>(null);
@@ -1231,6 +1241,12 @@ const NoteEditor = forwardRef<
 		};
 	});
 
+	function onFormat(a: FormatAction): void {
+		const ed = editorRef.current;
+		if (ed === null || rewriteActiveRef.current) return;
+		runFormat(ed, a);
+	}
+
 	const label =
 		status === "saved"
 			? "Saved"
@@ -1242,7 +1258,24 @@ const NoteEditor = forwardRef<
 						? `Save failed: ${statusDetail ?? "unknown error"}`
 						: "Conflict";
 	return (
-		<div className="note-editor">
+		<div
+			className="note-editor"
+			onKeyDown={(e) => {
+				if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
+					e.preventDefault();
+					setLinkOpen(true);
+				}
+			}}
+		>
+			{fmt !== null && (
+				<NoteToolbar
+					fmt={fmt}
+					disabled={!ready || rewrite !== null}
+					linkOpen={linkOpen}
+					onLinkOpen={setLinkOpen}
+					onAction={onFormat}
+				/>
+			)}
 			<div ref={containerRef} className="note-editor-body" />
 			{rewrite !== null && (
 				<div className="note-rewrite">

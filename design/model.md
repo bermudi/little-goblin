@@ -521,7 +521,8 @@ The threshold sits in the gap for both; the MCPi turn (16 searches for an
 unannounced project) scores stuck on the prod model — correctly. Small
 sample, no real turn over 28 calls: rerun when a long turn lands,
 re-calibrate before changing either model. `inception/mercury-decide:free`
-has returned 404 since 2026-10-29 (design/system1.md → Model evaluation).
+has returned 404 since 2026-10-29 and `perplexity/pplx-decider-v1.2` replaced
+it on 2026-11-06 (design/system1.md → Model evaluation).
 
 **3. The context landing.** With no budget, an overflow is the one
 remaining way a long turn dies without an answer — the in-flight reply

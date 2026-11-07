@@ -20,7 +20,7 @@ One `System1Client` is built at boot and shared by every consumer.
 
 - **Models.** Default and backup are both `typesafe/jev-1.13` (operator
   ruling, 2026-10-05); the configured primary is
-  `inception/mercury-decide:free`.
+  `perplexity/pplx-decider-v1.2` (operator ruling, 2026-11-06).
 - **Logging.** Never state text, credentials, response bodies, or endpoint
   URLs.
 
@@ -96,7 +96,9 @@ Results, 2026-11-06, 54 cases, 3 runs each, 252 judged answers:
 | `inception/mercury-decide` | 242 | 0.034 | 323 ms | $0.000008 |
 
 `inception/mercury-decide:free` is gone: the API answers 404 and names the
-paid slug. No replacement is chosen here.
+paid slug. The operator chose `perplexity/pplx-decider-v1.2` to replace it.
+That model also scored 14/14 on the loop cases with `--stored`, which include
+three hand-labeled real turns.
 
 ## Provenance
 

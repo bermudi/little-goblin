@@ -2898,6 +2898,17 @@ button.pathchip:hover svg {
 	max-width: var(--code-col);
 }
 
+/* A direct child of a .card carries the card's divider line, so capping its
+   width would cut the line short: cap the text with right padding instead. */
+.ops:not(.settings) .card > .op-item-body {
+	max-width: none;
+	padding-right: max(0.75rem, calc(100% - var(--prose-col)));
+}
+.ops:not(.settings) .card > .doc-text {
+	max-width: none;
+	padding-right: max(0.75rem, calc(100% - var(--code-col)));
+}
+
 /* Summary strip: counts that need attention, on top of a page. */
 .sumstrip {
 	display: grid;

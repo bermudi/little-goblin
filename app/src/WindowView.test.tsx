@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { WindowView } from "./WindowView.tsx";
-import type { AppWindowView } from "../../src/http/app-wire.ts";
+import type { AppContextView, AppWindowView } from "../../src/http/app-wire.ts";
 
 // Mounted like MemoryView's tests: the network is faked at
 // globalThis.fetch, the DOM is happy-dom, and the test drives clicks.
@@ -129,12 +129,31 @@ describe("WindowView", () => {
 		installed = [];
 	});
 
-	const mount = (over: Partial<AppWindowView> = {}) => {
+	const CTX: AppContextView = {
+		model: "zai/glm-5.3-flash",
+		input: 3100,
+		output: 210,
+		cacheRead: 2900,
+		cacheWrite: null,
+		cacheHitRate: 2900 / 3100,
+		avgCacheHitRate: null,
+		limit: 10000,
+		pct: 31,
+		compactAtPct: 75,
+		turns: 1,
+		segments: [{ key: "history", tokens: 1700 }],
+	};
+
+	const mount = (over: Partial<AppWindowView> = {}, ctx: Partial<AppContextView> | null = {}) => {
 		globalThis.fetch = ((input: RequestInfo | URL) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const path = new URL(url, "http://localhost").pathname;
 			if (path === "/api/app/conversations/one/window")
 				return Promise.resolve(json({ ...VIEW, ...over }));
+			if (path === "/api/app/conversations/one/context")
+				return Promise.resolve(
+					ctx === null ? json({ error: "down" }, 500) : json({ ...CTX, ...ctx }),
+				);
 			return Promise.resolve(json({ error: "unmapped" }, 404));
 		}) as typeof fetch;
 		const onBack = (): boolean => {
@@ -154,13 +173,6 @@ describe("WindowView", () => {
 				expect(el).toBeTruthy();
 				await act(async () => {
 					(el as HTMLElement).click();
-				});
-			},
-			toggle: async (label: string) => {
-				const el = [...container.querySelectorAll("label")].find((l) => l.textContent === label);
-				expect(el).toBeTruthy();
-				await act(async () => {
-					(el as HTMLLabelElement).click();
 				});
 			},
 		};
@@ -184,10 +196,38 @@ describe("WindowView", () => {
 		// The call lineage table carries the cache split.
 		expect(text).toContain("append");
 		expect(text).toContain("3,100");
-		// The segment bar names the biggest slice.
-		expect(text).toContain("history · 2,000");
+		// The breakdown table names the biggest slice first.
+		const rows = [...container.querySelectorAll(".win-break tbody tr")].map(
+			(r) => r.firstElementChild?.textContent,
+		);
+		expect(rows[0]).toBe("history");
 		expect(text).toContain("3,700 chars serialized");
-		expect(text).toContain("incl. 500 in tool results");
+		expect(text).toContain("500 of the history are tool calls and results");
+	});
+
+	test("leads with used / limit and says when compaction happens", async () => {
+		mount();
+		await act(async () => {});
+		const tiles = [...container.querySelectorAll(".sumtile")].map((e) => e.textContent);
+		expect(tiles[0]).toContain("3,100");
+		expect(tiles[0]).toContain("of 10,000");
+		expect(container.textContent).toContain("compacts the history. 4,400 tokens of room remain");
+		// The raw parts are folded; nothing scrolls inside the page.
+		expect(container.querySelectorAll("details.win-fold[open]").length).toBe(0);
+	});
+
+	test("above the threshold the note says the history compacts", async () => {
+		mount({}, { input: 8000, pct: 80 });
+		await act(async () => {});
+		expect(container.textContent).toContain("At or above 75% of the window");
+	});
+
+	test("without the context read the page still shows the capture", async () => {
+		mount({}, null);
+		await act(async () => {});
+		const text = container.textContent ?? "";
+		expect(text).toContain("3,700 chars serialized");
+		expect(text).not.toContain("room remain");
 	});
 
 	test("a null segments row keeps the no-window and no-model states working", async () => {
@@ -201,7 +241,7 @@ describe("WindowView", () => {
 		await act(async () => {});
 		const text = container.textContent ?? "";
 		expect(text).not.toContain("chars serialized");
-		expect(text).toContain("Model calls · 1");
+		expect(text).toContain("Model calls");
 	});
 
 	test("role filters narrow the message list, raw JSON swaps the rendering", async () => {
@@ -218,7 +258,7 @@ describe("WindowView", () => {
 		await h.click(button("tools"));
 		expect(container.querySelectorAll(".win-msg").length).toBe(1);
 		await h.click(button("all"));
-		await h.toggle("raw JSON");
+		await h.click(button("raw JSON"));
 		const text = container.textContent ?? "";
 		expect(text).toContain('"toolCallId"');
 	});
@@ -242,7 +282,7 @@ describe("WindowView", () => {
 		await act(async () => {});
 		const text = container.textContent ?? "";
 		expect(text).toContain("No model call yet");
-		expect(text).toContain("Model calls · 1");
+		expect(text).toContain("Model calls");
 	});
 
 	test("back returns to the conversation", async () => {

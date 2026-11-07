@@ -9,6 +9,11 @@ import type { ToolCallDigest } from "../reviewer.ts";
 import type { LoopTurnState } from "./state.ts";
 import type { LiveChunks, StreamOutcome } from "./stream.ts";
 
+// Completed turns at/above this compact in-lane — the lane stays occupied
+// until the summary finishes so the next turn sees one whole view. The
+// context view serves it so the window page states it, never copies it.
+export const COMPACT_AT_PCT = 75;
+
 export interface TurnRecovery {
 	conversation: Conversation;
 	partial: UIMessage | null;

@@ -6515,7 +6515,7 @@ button.link:hover {
 	flex-wrap: wrap;
 	align-items: center;
 	gap: 0.6rem;
-	margin: 0.6rem 0.4rem;
+	margin: 0.6rem 0;
 }
 .win-controls .chip {
 	cursor: pointer;
@@ -6525,76 +6525,21 @@ button.link:hover {
 	background: var(--app-hover);
 	color: var(--app-fg);
 }
-.win-toggle {
-	display: inline-flex;
-	align-items: center;
-	gap: 0.35rem;
-	font-size: 12.5px;
-	color: var(--app-fg-muted);
-}
 .win-search {
-	min-width: 10rem;
-	flex: 1;
+	min-width: 0;
+	flex: 1 1 10rem;
 	max-width: 18rem;
 }
 .win-cap {
-	margin: 0.4rem;
+	margin: 0.4rem 0;
 	color: var(--app-fg-muted);
 	font-size: 12.5px;
 }
 .win-stale {
 	color: var(--app-warning, #d7a94b);
 }
-.win-bar {
-	display: flex;
-	height: 8px;
-	border-radius: 4px;
-	overflow: hidden;
-	margin: 0.4rem;
-	background: var(--app-divider);
-}
-/* Segment hues — nth-child, so order = builder order in the view. */
-.win-bar-seg {
-	min-width: 1px;
-}
-.win-bar-seg:nth-child(6n + 1) {
-	background: color-mix(in oklab, var(--app-fg) 70%, var(--app-bg));
-}
-.win-bar-seg:nth-child(6n + 2) {
-	background: color-mix(in oklab, var(--app-fg) 55%, var(--app-bg));
-}
-.win-bar-seg:nth-child(6n + 3) {
-	background: color-mix(in oklab, var(--app-fg) 42%, var(--app-bg));
-}
-.win-bar-seg:nth-child(6n + 4) {
-	background: color-mix(in oklab, var(--app-fg) 32%, var(--app-bg));
-}
-.win-bar-seg:nth-child(6n + 5) {
-	background: color-mix(in oklab, var(--app-fg) 24%, var(--app-bg));
-}
-.win-bar-seg:nth-child(6n + 6) {
-	background: color-mix(in oklab, var(--app-fg) 17%, var(--app-bg));
-}
-.win-segments {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 0.3rem 1rem;
-	list-style: none;
-	margin: 0.2rem 0.4rem 0.6rem;
-	padding: 0;
-	font-size: 12px;
-	color: var(--app-fg-muted);
-}
-.win-segments .win-dot {
-	display: inline-block;
-	width: 7px;
-	height: 7px;
-	border-radius: 2px;
-	margin-right: 0.35rem;
-	background: var(--app-fg-muted);
-}
 .win-h3 {
-	margin: 0.8rem 0.4rem 0.3rem;
+	margin: 1.1rem 0 0.4rem;
 	font-size: 13px;
 	color: var(--app-fg-muted);
 	text-transform: uppercase;
@@ -6612,11 +6557,6 @@ button.link:hover {
 	border-radius: 8px;
 	padding: 0.5rem;
 	margin: 0.3rem 0;
-	max-height: 24rem;
-	overflow: auto;
-}
-.win-system {
-	max-height: 32rem;
 }
 .win-text {
 	font-size: 13.5px;
@@ -6624,8 +6564,8 @@ button.link:hover {
 .win-tools,
 .win-msgs {
 	list-style: none;
-	margin: 0;
-	padding: 0 0.4rem;
+	margin: 0.4rem 0;
+	padding: 0;
 	display: flex;
 	flex-direction: column;
 	gap: 0.5rem;
@@ -6689,7 +6629,7 @@ button.link:hover {
 }
 .win-tablewrap {
 	overflow-x: auto;
-	margin: 0.3rem 0.4rem;
+	margin: 0.3rem 0;
 }
 .win-table {
 	border-collapse: collapse;
@@ -6706,6 +6646,92 @@ button.link:hover {
 .win-table th {
 	color: var(--app-fg-subtle);
 	font-weight: 500;
+}
+
+/* Window page (#178): summary on top, raw parts folded below. */
+.win-summary .sumstrip {
+	margin-top: 0.4rem;
+}
+.win-fill {
+	position: relative;
+	height: 10px;
+	border-radius: 5px;
+	background: var(--app-divider);
+	margin: 0.8rem 0 0.4rem;
+}
+.win-fill-used {
+	display: block;
+	height: 100%;
+	border-radius: 5px;
+	background: color-mix(in oklab, var(--app-fg) 55%, var(--app-bg));
+}
+.win-fill-used.warn {
+	background: var(--app-warning);
+}
+.win-fill-mark {
+	position: absolute;
+	top: -3px;
+	bottom: -3px;
+	width: 2px;
+	background: var(--app-fg);
+}
+.win-next {
+	margin: 0.2rem 0;
+	font-size: 13px;
+	color: var(--app-fg-muted);
+}
+.win-next.warn {
+	color: var(--app-warning);
+}
+.win-break {
+	width: 100%;
+	max-width: var(--code-col);
+	border-collapse: collapse;
+	font-size: 12.5px;
+}
+.win-break th,
+.win-break td {
+	text-align: left;
+	padding: 0.3rem 0.6rem 0.3rem 0;
+	border-bottom: 1px solid var(--app-divider);
+}
+.win-break th {
+	color: var(--app-fg-subtle);
+	font-weight: 500;
+}
+.win-break .num {
+	text-align: right;
+	font-family: var(--font-mono);
+	white-space: nowrap;
+}
+.win-break-bar {
+	width: 30%;
+}
+.win-break-bar span {
+	display: block;
+	height: 6px;
+	border-radius: 3px;
+	background: color-mix(in oklab, var(--app-fg) 55%, var(--app-bg));
+}
+.win-fold {
+	border-top: 1px solid var(--app-divider);
+	padding: 0.5rem 0;
+}
+.win-fold > summary {
+	cursor: pointer;
+	font-size: 14px;
+}
+.win-h3-inline {
+	font-weight: 500;
+}
+.win-fold pre,
+.win-fold .win-tools {
+	max-width: var(--code-col);
+}
+@media (max-width: 40rem) {
+	.win-break-bar {
+		display: none;
+	}
 }
 
 .keystat {

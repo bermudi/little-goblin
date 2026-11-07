@@ -5,10 +5,10 @@
 // stubbed at capture and render as counts, never images.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getWindow } from "./api.ts";
+import { getContext, getWindow } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
 import { bytes, describe, ts } from "./opsShared.tsx";
-import type { AppWindowView } from "../../src/http/app-wire.ts";
+import type { AppContextView, AppWindowView } from "../../src/http/app-wire.ts";
 
 type Segments = NonNullable<AppWindowView["segments"]>;
 
@@ -215,6 +215,160 @@ function CallsTable({ calls }: { calls: AppWindowView["calls"] }) {
 	);
 }
 
+const num = (n: number): string => n.toLocaleString();
+
+// The parts of the window, biggest first. Characters come from the
+// captured window; tokens come from the context read (the gauge's scaling
+// of the same itemization) when it answered. Neither is invented here.
+function Breakdown({
+	segments,
+	tokens,
+}: {
+	segments: Segments;
+	tokens: Map<string, number> | null;
+}) {
+	const rows = SEGMENTS.map(({ key, label }) => ({ key, label, n: segments[key] }))
+		.filter((r) => r.n > 0)
+		.sort((a, b) => b.n - a.n);
+	const total = rows.reduce((sum, r) => sum + r.n, 0);
+	if (total === 0) return null;
+	return (
+		<table className="win-break">
+			<thead>
+				<tr>
+					<th>part</th>
+					<th className="num">chars</th>
+					{tokens !== null && <th className="num">tokens</th>}
+					<th className="num">share</th>
+					<th aria-hidden />
+				</tr>
+			</thead>
+			<tbody>
+				{rows.map((r) => {
+					const share = (r.n / total) * 100;
+					return (
+						<tr key={r.key}>
+							<td>{r.label}</td>
+							<td className="num">{num(r.n)}</td>
+							{tokens !== null && (
+								<td className="num">{tokens.has(r.key) ? num(tokens.get(r.key)!) : "—"}</td>
+							)}
+							<td className="num">{share < 1 ? "<1" : Math.round(share)}%</td>
+							<td className="win-break-bar" aria-hidden>
+								<span style={{ width: `${Math.max(share, 1)}%` }} />
+							</td>
+						</tr>
+					);
+				})}
+			</tbody>
+		</table>
+	);
+}
+
+// What the next turn will do, from figures the backend serves: the
+// window's last input, the model's limit, and the compaction threshold.
+function nextTurnNote(ctx: AppContextView | null, stale: boolean): string | null {
+	if (stale) return "The model changed since this capture: the next turn rebuilds the window.";
+	if (ctx === null || ctx.input === null || ctx.limit === null || ctx.limit <= 0) return null;
+	const at = Math.floor((ctx.limit * ctx.compactAtPct) / 100);
+	if (ctx.input >= at) {
+		return `At or above ${ctx.compactAtPct}% of the window: the turn that just ended compacts the history before the next one.`;
+	}
+	return `A finished turn at ${ctx.compactAtPct}% of the window (${num(at)} tokens) compacts the history. ${num(at - ctx.input)} tokens of room remain before that.`;
+}
+
+function WindowSummary({
+	view,
+	ctx,
+	stale,
+}: {
+	view: AppWindowView;
+	ctx: AppContextView | null;
+	stale: boolean;
+}) {
+	const used = ctx?.input ?? null;
+	const limit = ctx?.limit ?? null;
+	const pct = ctx?.pct ?? null;
+	const note = nextTurnNote(ctx, stale);
+	const nearing = ctx !== null && pct !== null && pct >= ctx.compactAtPct;
+	const segments = view.segments;
+	const totalChars = segments === null ? null : SEGMENTS.reduce((sum, { key }) => sum + segments[key], 0);
+	const tokens =
+		ctx?.segments != null && ctx.segments.length > 0
+			? new Map(ctx.segments.map((s) => [s.key, s.tokens]))
+			: null;
+	return (
+		<section className="win-summary">
+			<div className="sumstrip">
+				<div className={`sumtile${nearing ? " warn" : ""}`}>
+					<b>{used === null ? "—" : num(used)}</b>
+					<span>{limit === null ? "tokens used" : `tokens used of ${num(limit)}`}</span>
+				</div>
+				<div className={`sumtile${nearing ? " warn" : ""}`}>
+					<b>{pct === null ? "—" : `${pct}%`}</b>
+					<span>of the window</span>
+				</div>
+				<div className="sumtile">
+					<b>{view.messages === null ? "—" : num(view.messages.length)}</b>
+					<span>messages</span>
+				</div>
+				<div className="sumtile">
+					<b>{view.tools === null ? "—" : num(view.tools.length)}</b>
+					<span>tools</span>
+				</div>
+				{ctx?.cacheHitRate != null && (
+					<div className="sumtile">
+						<b>{Math.round(ctx.cacheHitRate * 100)}%</b>
+						<span>read from cache</span>
+					</div>
+				)}
+			</div>
+			{pct !== null && ctx !== null && (
+				<div
+					className="win-fill"
+					role="img"
+					aria-label={`${pct}% of the window used; compaction at ${ctx.compactAtPct}%`}
+				>
+					<span className={nearing ? "win-fill-used warn" : "win-fill-used"} style={{ width: `${Math.min(pct, 100)}%` }} />
+					<span className="win-fill-mark" style={{ left: `${ctx.compactAtPct}%` }} />
+				</div>
+			)}
+			{note !== null && <p className={nearing ? "win-next warn" : "win-next"}>{note}</p>}
+			{segments !== null && totalChars !== null && (
+				<>
+					<h3 className="win-h3">What takes the space</h3>
+					<Breakdown segments={segments} tokens={tokens} />
+					<p className="win-cap">
+						{num(totalChars)} chars serialized
+						{segments.toolResults > 0 && ` · ${num(segments.toolResults)} of the history are tool calls and results`}
+						{tokens !== null && " · tokens are the gauge's scaling of the same split"}
+					</p>
+				</>
+			)}
+		</section>
+	);
+}
+
+function Fold({
+	title,
+	count,
+	children,
+}: {
+	title: string;
+	count?: string | undefined;
+	children: React.ReactNode;
+}) {
+	return (
+		<details className="win-fold">
+			<summary>
+				<span className="win-h3-inline">{title}</span>
+				{count !== undefined && <span className="win-size"> {count}</span>}
+			</summary>
+			{children}
+		</details>
+	);
+}
+
 export function WindowView({
 	token,
 	conversationId,
@@ -232,11 +386,22 @@ export function WindowView({
 	const [openBodies, setOpenBodies] = useState(false);
 	const [raw, setRaw] = useState(false);
 	const [query, setQuery] = useState("");
+	const [ctx, setCtx] = useState<AppContextView | null>(null);
 	const seq = useRef(0);
 
 	const load = useCallback(() => {
 		const n = ++seq.current;
 		setErr(null);
+		// Tokens and the limit come from the gauge's read; without it the
+		// page still shows the capture in characters.
+		getContext(token, conversationId).then(
+			(c) => {
+				if (n === seq.current) setCtx(c);
+			},
+			() => {
+				if (n === seq.current) setCtx(null);
+			},
+		);
 		getWindow(token, conversationId).then(
 			(v) => {
 				if (n === seq.current) setView(v);
@@ -298,13 +463,14 @@ export function WindowView({
 				(role === "all" || e.message.role === role) &&
 				(q === "" || haystacks[e.index]!.includes(q)),
 		);
-	const segments = view.segments;
-	const totalChars =
-		segments === null ? null : SEGMENTS.reduce((sum, { key }) => sum + segments[key], 0);
-
 	return (
-		<div className="ops">
-			<h2 className="ops-h2">Context window</h2>
+		<div className="ops win-page">
+			<div className="proj-sec-head">
+				<h2 className="ops-h2">Context window</h2>
+				<button type="button" className="ghost" onClick={load}>
+					Refresh
+				</button>
+			</div>
 			<p className="lead">
 				{view.capturedAt === null ? (
 					"No model call yet — the window appears after this conversation's first turn."
@@ -322,104 +488,25 @@ export function WindowView({
 				)}
 			</p>
 
-			<div className="win-controls">
-				<div className="chips" role="group" aria-label="role filter">
-					{ROLE_FILTERS.map((f) => (
-						<button
-							key={f.key}
-							type="button"
-							className={role === f.key ? "chip on" : "chip"}
-							aria-pressed={role === f.key}
-							onClick={() => setRole(f.key)}
-						>
-							{f.label}
-						</button>
-					))}
-				</div>
-				<label className="win-toggle">
-					<input
-						type="checkbox"
-						checked={openBodies}
-						onChange={(e) => setOpenBodies(e.target.checked)}
-					/>
-					thinking &amp; tool bodies
-				</label>
-				<label className="win-toggle">
-					<input type="checkbox" checked={raw} onChange={(e) => setRaw(e.target.checked)} />
-					raw JSON
-				</label>
-				<input
-					type="search"
-					className="win-search"
-					placeholder="filter messages…"
-					aria-label="filter messages"
-					value={query}
-					onChange={(e) => setQuery(e.target.value)}
-				/>
-				<button type="button" className="ghost" onClick={load}>
-					refresh
-				</button>
-			</div>
-
 			{view.capturedAt !== null && (
 				<>
-					{totalChars !== null && (
-						<p className="win-cap">
-							{totalChars.toLocaleString()} chars serialized
-							{segments?.toolResults !== undefined && segments.toolResults > 0 && (
-								<span className="win-size">
-									{" "}
-									· incl. {segments.toolResults.toLocaleString()} in tool results
-								</span>
-							)}
-						</p>
-					)}
-					<div className="win-bar" aria-hidden>
-						{segments !== null &&
-							SEGMENTS.map(({ key }) => {
-								const n = segments[key];
-								if (n <= 0) return null;
-								return (
-									<span
-										key={key}
-										className="win-bar-seg"
-										style={{ flexGrow: n }}
-										title={`${SEGMENTS.find((s) => s.key === key)?.label}: ${n.toLocaleString()} chars`}
-									/>
-								);
-							})}
-					</div>
-					{segments !== null && (
-						<ul className="win-segments">
-							{SEGMENTS.map(({ key, label }) => {
-								const n = segments[key];
-								if (n <= 0) return null;
-								return (
-									<li key={key}>
-										<span className="win-dot" />
-										{label} · {n.toLocaleString()}
-									</li>
-								);
-							})}
-						</ul>
-					)}
+					<WindowSummary view={view} ctx={ctx} stale={stale} />
 
-					<section>
-						<h3 className="win-h3">
-							System prompt
-							{view.system !== null ? ` · ${view.system.length.toLocaleString()} chars` : ""}
-						</h3>
+					<h3 className="win-h3">Raw parts</h3>
+					<Fold
+						title="System prompt"
+						count={view.system !== null ? `${num(view.system.length)} chars` : undefined}
+					>
 						{view.system === null ? (
 							<p className="empty">not captured</p>
 						) : raw ? (
 							<Json value={view.system} />
 						) : (
-							<pre className="win-json win-system">{view.system}</pre>
+							<pre className="win-json">{view.system}</pre>
 						)}
-					</section>
+					</Fold>
 
-					<section>
-						<h3 className="win-h3">Tools{view.tools !== null ? ` · ${view.tools.length}` : ""}</h3>
+					<Fold title="Tools" count={view.tools !== null ? String(view.tools.length) : undefined}>
 						{view.tools === null || view.tools.length === 0 ? (
 							<p className="empty">{view.tools === null ? "not captured" : "no tools mounted"}</p>
 						) : (
@@ -441,14 +528,57 @@ export function WindowView({
 								))}
 							</ul>
 						)}
-					</section>
+					</Fold>
 
-					<section>
-						<h3 className="win-h3">
-							Messages · {messages.length}
-							{messages.length !== (view.messages ?? []).length &&
-								` of ${(view.messages ?? []).length}`}
-						</h3>
+					<Fold
+						title="Messages"
+						count={`${messages.length}${
+							messages.length !== (view.messages ?? []).length
+								? ` of ${(view.messages ?? []).length}`
+								: ""
+						}`}
+					>
+						<div className="win-controls">
+							<div className="chips" role="group" aria-label="role filter">
+								{ROLE_FILTERS.map((f) => (
+									<button
+										key={f.key}
+										type="button"
+										className={role === f.key ? "chip on" : "chip"}
+										aria-pressed={role === f.key}
+										onClick={() => setRole(f.key)}
+									>
+										{f.label}
+									</button>
+								))}
+							</div>
+							<div className="chips" role="group" aria-label="display">
+								<button
+									type="button"
+									className={openBodies ? "chip on" : "chip"}
+									aria-pressed={openBodies}
+									onClick={() => setOpenBodies(!openBodies)}
+								>
+									thinking &amp; tool bodies
+								</button>
+								<button
+									type="button"
+									className={raw ? "chip on" : "chip"}
+									aria-pressed={raw}
+									onClick={() => setRaw(!raw)}
+								>
+									raw JSON
+								</button>
+							</div>
+							<input
+								type="search"
+								className="win-search"
+								placeholder="filter messages…"
+								aria-label="filter messages"
+								value={query}
+								onChange={(e) => setQuery(e.target.value)}
+							/>
+						</div>
 						<ul className="win-msgs">
 							{messages.map((e) => (
 								<MessageCard
@@ -461,18 +591,17 @@ export function WindowView({
 							))}
 						</ul>
 						{messages.length === 0 && <p className="empty">nothing matches</p>}
-					</section>
+					</Fold>
 				</>
 			)}
 
-			<section>
-				<h3 className="win-h3">Model calls · {view.calls.length}</h3>
+			<Fold title="Model calls" count={String(view.calls.length)}>
 				{view.calls.length === 0 ? (
 					<p className="empty">no model calls recorded for this conversation</p>
 				) : (
 					<CallsTable calls={view.calls} />
 				)}
-			</section>
+			</Fold>
 
 			<div className="ops-back">
 				<button type="button" className="ghost" onClick={onBack}>

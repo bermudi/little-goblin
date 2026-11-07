@@ -616,7 +616,9 @@ describe("rename editor with the AI button", () => {
 			root?.render(<App />);
 		});
 		await settle();
-		const rename = container.querySelector<HTMLButtonElement>('.conv-actions button[aria-label="Rename"]');
+		const rename = container.querySelector<HTMLButtonElement>(
+			'.conv-actions button[aria-label="Rename"]',
+		);
 		await act(async () => {
 			rename?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
 		});
@@ -673,7 +675,9 @@ describe("rename editor with the AI button", () => {
 		expect(suggests).toHaveLength(1);
 
 		// Leaving the whole field commits.
-		await focusEl(win.document.body.appendChild(win.document.createElement("button")) as unknown as HTMLElement);
+		await focusEl(
+			win.document.body.appendChild(win.document.createElement("button")) as unknown as HTMLElement,
+		);
 		await settle();
 		expect(input()).toBeNull();
 		expect(patches).toEqual([{ title: "renamed by hand" }]);
@@ -707,7 +711,9 @@ describe("rename editor with the AI button", () => {
 		await keydown(input(), "Escape");
 		expect(input()).toBeNull();
 
-		const rename = container.querySelector<HTMLButtonElement>('.conv-actions button[aria-label="Rename"]');
+		const rename = container.querySelector<HTMLButtonElement>(
+			'.conv-actions button[aria-label="Rename"]',
+		);
 		await clickEl(rename);
 		expect(input()!.value).toBe("solo chat");
 		await focusEl(aiButton());
@@ -2505,9 +2511,9 @@ describe("app projects surface", () => {
 		);
 		expect(win.location.pathname).toBe("/app/p/p-goblin");
 		expect(container.querySelector("main")!.textContent).toContain("Goblin Work");
-		expect([...container.querySelectorAll("main .conv-title")].map((t) => t.textContent)).toEqual([
-			"inside chat",
-		]);
+		expect(
+			[...container.querySelectorAll("main .dt-row .dt-main")].map((t) => t.textContent),
+		).toEqual(["inside chat"]);
 
 		// The index page holds the archived shelf — collapsed by
 		// default, like the rail's archived chats. The panel head
@@ -4152,7 +4158,9 @@ describe("app projects surface", () => {
 		expect(startAlert()).toContain("Couldn't start a conversation");
 
 		await click(
-			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.startsWith("Spec")),
+			[...container.querySelectorAll("button.dt-row")].find((b) =>
+				b.textContent?.startsWith("Spec"),
+			),
 		);
 		expect(win.location.pathname).toBe("/app/n/n-spec");
 		expect(startAlert()).toBeNull();

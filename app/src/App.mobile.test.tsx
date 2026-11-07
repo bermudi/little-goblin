@@ -363,13 +363,13 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		await click(tab("Projects"));
 		await waitFor(
 			() =>
-				[...container.querySelectorAll("button.idx")].some((b) =>
+				[...container.querySelectorAll("button.dt-row")].some((b) =>
 					b.textContent?.includes("Goblin Work"),
 				),
 			"projects index",
 		);
 		await click(
-			[...container.querySelectorAll("button.idx")].find((b) =>
+			[...container.querySelectorAll("button.dt-row")].find((b) =>
 				b.textContent?.includes("Goblin Work"),
 			),
 		);

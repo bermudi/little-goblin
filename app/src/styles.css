@@ -5104,13 +5104,41 @@ button.note-card-append:hover {
 	border-radius: 0 0 10px 10px;
 }
 
-/* /app/notes */
+/* /app/notes (#177): heading row is .proj-sec-head; the filter row wraps
+   instead of outgrowing the pane (min-width: 0 on the flex search field). */
 .note-filters {
-	gap: 0.5rem;
-	margin-bottom: 0.6rem;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.4rem;
+	margin: 0 0 0.6rem;
+}
+.note-filters select {
+	flex: none;
+	max-width: 100%;
+	min-width: 0;
+	font-size: 12.5px;
+	padding: 0.4rem 1.7rem 0.4rem 0.6rem;
+	background-color: var(--app-control-bg);
+	border: 1px solid var(--app-control-border);
+	border-radius: 8px;
+	color: var(--app-fg);
+	appearance: none;
+	-webkit-appearance: none;
+	background-image:
+		linear-gradient(45deg, transparent 50%, var(--app-fg-muted) 50%),
+		linear-gradient(135deg, var(--app-fg-muted) 50%, transparent 50%);
+	background-position:
+		calc(100% - 14px) 55%,
+		calc(100% - 9px) 55%;
+	background-size: 5px 5px;
+	background-repeat: no-repeat;
+	cursor: pointer;
 }
 .note-filters input[type="search"] {
-	flex: 1;
+	flex: 1 1 12rem;
+	min-width: 0;
+	max-width: 28rem;
 	font: inherit;
 	font-size: 12.5px;
 	background-color: var(--app-control-bg);
@@ -5119,6 +5147,13 @@ button.note-card-append:hover {
 	color: var(--app-fg);
 	padding: 0.4rem 0.6rem;
 	outline: none;
+}
+.note-filters select option {
+	background: var(--app-bg);
+	color: var(--app-fg);
+}
+.notes-table {
+	margin-bottom: 0.6rem;
 }
 
 /* /app/n/<id> */

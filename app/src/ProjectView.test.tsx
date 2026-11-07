@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { StrictMode, act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
-import { NewProjectDialog, ProjectView } from "./ProjectView.tsx";
+import { renderToStaticMarkup } from "react-dom/server";
+import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
 import type { AppNote, AppProject, AppNoteList } from "../../src/http/app-wire.ts";
 
 describe("main branch regressions", () => {
@@ -338,5 +339,44 @@ describe("quiet harbor regressions", () => {
 		await act(async () => win.dispatchEvent(new win.Event("focus")));
 		expect(container.querySelector('[role="status"]')).toBeNull();
 		expect(container.textContent).toContain("Outline");
+	});
+});
+
+describe("projects index table (#168)", () => {
+	const row = (name: string, over: Partial<AppProject> = {}): AppProject => ({
+		id: `p-${name.toLowerCase()}`,
+		name,
+		slug: name.toLowerCase(),
+		dir: `/home/x/${name}`,
+		managed: true,
+		instructions: "",
+		memory: "shared",
+		createdAt: "2026-10-08T00:00:00.000Z",
+		archivedAt: null,
+		...over,
+	});
+
+	test("active projects are table rows with the kind as a status pill; archived ones wait in the shelf", () => {
+		const html = renderToStaticMarkup(
+			<ProjectsIndex
+				projects={[
+					row("Alpha", { managed: false, memory: "off" }),
+					row("Beta"),
+					row("Old", { archivedAt: "2026-10-09T00:00:00.000Z" }),
+				]}
+				onOpen={() => {}}
+				onNew={() => {}}
+			/>,
+		);
+		const doc = new Window().document;
+		doc.body.innerHTML = html;
+		const tables = [...doc.querySelectorAll(".dtable")];
+		expect(tables).toHaveLength(2);
+		const active = [...tables[0]!.querySelectorAll("button.dt-row")];
+		expect(active.map((r) => r.querySelector(".dt-main")?.textContent)).toEqual(["Alpha", "Beta"]);
+		expect(active[0]!.querySelector(".dt-status .pill")?.textContent).toBe("linked");
+		expect(active[0]!.textContent).toContain("off");
+		expect(tables[0]!.querySelector(".dt-head")?.textContent).toContain("Directory");
+		expect(doc.querySelector("details.tuning")?.contains(tables[1]!)).toBe(true);
 	});
 });

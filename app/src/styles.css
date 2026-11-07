@@ -2698,15 +2698,18 @@ button.pathchip:hover svg {
 	font-weight: 500;
 }
 
+/* The pane scrolls at full width; the content column is inset by side
+   padding, so the wheel works over the empty margins and the scrollbar
+   sits at the pane edge. The column width lives in --page-col, the one
+   place to change it (a page may override it, as .ops.settings does). */
 .ops {
+	--page-col: 46rem;
 	flex: 1;
 	overflow-y: auto;
-	padding: 1.25rem 1rem 5rem;
+	padding: 1.25rem max(1rem, calc((100% - var(--page-col)) / 2 + 1rem)) 5rem;
 	display: flex;
 	flex-direction: column;
-	margin-inline: auto;
 	width: 100%;
-	max-width: 46rem;
 }
 .ops-h2 {
 	font-size: 12px;
@@ -3158,7 +3161,7 @@ button.pathchip:hover svg {
 		display: grid;
 		grid-template-columns: 12.5rem minmax(0, 1fr);
 		column-gap: 2.25rem;
-		max-width: 68rem;
+		--page-col: 68rem;
 	}
 	.ops.settings > * {
 		grid-column: 2;

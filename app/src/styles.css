@@ -5349,14 +5349,17 @@ button.link:hover {
 	color: var(--app-fg);
 }
 
+/* Log page (#166): controls, then a .dtable of lines. Modifier classes only;
+   the .dtable / .dt-row base rules are shared. */
 .log-controls {
 	display: flex;
 	flex-wrap: wrap;
+	align-items: center;
 	gap: 0.4rem;
-	margin-bottom: 0.6rem;
+	margin: 0 0 0.5rem;
 }
 .log-controls select,
-.log-controls input {
+.log-controls input[type="search"] {
 	background-color: var(--app-control-bg);
 	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
@@ -5367,15 +5370,13 @@ button.link:hover {
 .log-controls select {
 	padding-right: 1.7rem;
 }
-.log-controls input {
+.log-controls input[type="search"] {
 	flex: 1;
-	min-width: 10rem;
-	font-family: var(--font-mono);
+	min-width: 12rem;
+	max-width: 28rem;
 }
 .log-controls button {
-	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
-	background: transparent;
 	color: var(--app-fg-muted);
 	font-size: 12.5px;
 	padding: 0.3rem 0.7rem;
@@ -5385,54 +5386,174 @@ button.link:hover {
 	background: var(--app-hover);
 	color: var(--app-fg);
 }
-
-.logview {
-	border: 1px solid var(--app-divider);
-	border-radius: 10px;
-	background: var(--app-gray-50);
-	padding: 0.4rem 0.6rem;
-	max-height: 32rem;
-	overflow: auto;
+.log-levels {
+	display: inline-flex;
+	gap: 0.25rem;
 }
-.logline {
-	display: flex;
-	gap: 0.6rem;
-	align-items: baseline;
+.log-levels button.on {
+	background: var(--app-active);
+	color: var(--app-fg);
+	border-color: var(--app-focus);
+}
+.log-fold {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+	cursor: pointer;
+}
+.log-refresh {
+	border: 1px solid var(--app-control-border);
+	background: var(--app-control-bg);
+	color: var(--app-fg-muted);
+	border-radius: 8px;
+	font-size: 12.5px;
+	padding: 0.2rem 0.7rem;
+	cursor: pointer;
+}
+.log-summary,
+.log-more {
+	margin: 0 0.1rem 0.5rem;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.log-more {
+	margin-top: 0.6rem;
+}
+.log-count.bad {
+	color: var(--app-danger);
+	font-weight: 600;
+}
+.log-count.warn {
+	color: var(--app-warning);
+	font-weight: 600;
+}
+.logtable .log-row {
+	cursor: pointer;
+}
+.logtable .log-row::after {
+	transition: transform 0.12s;
+}
+.logtable .log-row.open::after {
+	transform: rotate(90deg);
+}
+/* A flex child with overflow hidden would shrink to the pane height. */
+.logtable {
+	flex: none;
+}
+.logtable .log-row.sub .log-when {
+	padding-left: 1.2rem;
+}
+.logtable .log-row.sub {
+	background: color-mix(in oklab, var(--app-fg) 3%, transparent);
+}
+.logtable .log-msg {
+	color: var(--app-fg);
+}
+.logtable .log-row.lv-debug .log-msg,
+.logtable .log-row.lv-debug .log-when {
+	color: var(--app-fg-subtle);
+}
+.logtable .log-fields {
+	color: var(--app-fg-muted);
+}
+/* Warnings and errors carry a colored edge and a faint wash. */
+.logtable .log-row.lv-warn {
+	background: color-mix(in oklab, var(--app-warning) 7%, transparent);
+	box-shadow: inset 3px 0 var(--app-warning);
+}
+.logtable .log-row.lv-error {
+	background: color-mix(in oklab, var(--app-danger) 9%, transparent);
+	box-shadow: inset 3px 0 var(--app-danger);
+}
+.logtable .log-row.lv-error .log-msg {
+	color: var(--app-danger);
+	font-weight: 600;
+}
+.logtable .log-row.lv-warn:hover,
+.logtable .log-row.lv-error:hover {
+	background-color: var(--app-hover);
+}
+.logtable .pill.lv-warn {
+	color: var(--app-warning);
+	border-color: color-mix(in oklab, var(--app-warning) 45%, transparent);
+}
+.logtable .pill.lv-error {
+	color: var(--app-danger);
+	border-color: color-mix(in oklab, var(--app-danger) 45%, transparent);
+	font-weight: 600;
+}
+.logtable .pill.lv-debug {
+	color: var(--app-fg-subtle);
+}
+.log-times {
+	margin-left: 0.5rem;
+	font-family: var(--font-mono);
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--app-fg-muted);
+	border: 1px solid var(--app-divider);
+	border-radius: 999px;
+	padding: 0 0.45rem;
+}
+.log-detail {
+	border-top: 1px solid var(--app-divider);
+	background: var(--app-bg);
+	padding: 0.6rem 0.85rem 0.8rem;
+	font-size: 12.5px;
+}
+.log-detail dl {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 0.3rem 1rem;
+	margin: 0;
+	max-width: calc(var(--code-col) + 14ch);
+}
+.log-detail dt {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+	color: var(--app-fg-subtle);
+}
+.log-detail dd {
+	margin: 0;
+	min-width: 0;
+	overflow-wrap: anywhere;
+	color: var(--app-fg);
+}
+.log-detail .log-iso,
+.log-detail .log-null,
+.log-nofields {
+	color: var(--app-fg-muted);
+}
+.log-nofields {
+	margin: 0.5rem 0 0;
+}
+.log-pre {
+	margin: 0;
 	font-family: var(--font-mono);
 	font-size: 11.5px;
 	line-height: 1.5;
-	padding: 0.1rem 0;
-	border-bottom: 1px solid var(--app-border);
-}
-.logline:last-child {
-	border-bottom: none;
-}
-.log-ts {
-	flex: none;
-	color: var(--app-fg-subtle);
-}
-.log-level {
-	flex: none;
-	width: 4.2rem;
-	color: var(--app-fg-muted);
-}
-.log-msg {
-	min-width: 0;
-	overflow-wrap: anywhere;
 	white-space: pre-wrap;
-	color: var(--app-fg);
+	overflow-wrap: anywhere;
+	max-height: 18rem;
+	overflow: auto;
+	background: var(--app-gray-50);
+	border: 1px solid var(--app-divider);
+	border-radius: 8px;
+	padding: 0.4rem 0.6rem;
 }
-.logline.lv-warn .log-level {
-	color: #facc15;
-}
-.logline.lv-error .log-level {
-	color: var(--app-danger);
-}
-.logline.lv-error .log-msg {
-	color: color-mix(in oklab, var(--app-danger) 80%, var(--app-fg));
-}
-.logline.lv-debug .log-msg {
-	color: var(--app-fg-muted);
+@container (max-width: 40rem) {
+	.log-detail dl {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 0;
+	}
+	.log-detail dd {
+		margin-bottom: 0.45rem;
+	}
+	.logtable .log-msg {
+		font-size: 12.5px;
+	}
 }
 
 .interrupted {

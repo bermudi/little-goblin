@@ -20,6 +20,7 @@ import {
 } from "node:fs";
 import { join, sep } from "node:path";
 import { loadCatalog } from "./agent/skills.ts";
+import { LEVELS, type LogLevel } from "./log.ts";
 import { diffSkill, type SkillDiff } from "./skill-diff.ts";
 
 // ---------- skills ----------
@@ -418,8 +419,8 @@ export interface LogTailItem {
 	ts: string | null;
 	level: string;
 	msg: string;
-	/** The raw JSONL line, for anything the parsed view leaves out. */
-	line: string;
+	/** Every other key of the record, as logged. Values are JSON, unvetted. */
+	fields: Record<string, unknown>;
 }
 
 export interface LogTailResponse {
@@ -427,12 +428,14 @@ export interface LogTailResponse {
 	/** True when content existed beyond the scan window or the limit. */
 	truncated: boolean;
 	scannedBytes: number;
+	/** Lines that passed the filters inside the scan window, before `limit`. */
+	matched: number;
 }
 
 export interface LogTailOptions {
 	limit: number;
-	/** Exact level match; null/undefined keeps every level. */
-	level?: string | null;
+	/** At least this severity (warn keeps warn and error); null/undefined keeps every level. */
+	level?: LogLevel | null;
 	/** Substring match against the raw line. */
 	q?: string | null;
 	/** Scan window from the end of the file; default 512 KiB. */
@@ -451,7 +454,7 @@ export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse 
 		size = statSync(logFile).size;
 	} catch (e) {
 		if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-			return { lines: [], truncated: false, scannedBytes: 0 };
+			return { lines: [], truncated: false, scannedBytes: 0, matched: 0 };
 		}
 		throw e;
 	}
@@ -494,13 +497,14 @@ export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse 
 			continue;
 		}
 		if (q !== null && !line.includes(q)) continue;
-		const rec = parsed as Record<string, unknown>;
-		if (level !== null && rec["level"] !== level) continue;
+		const { ts, level: lv, msg, ...fields } = parsed as Record<string, unknown>;
+		if (level !== null && !(typeof lv === "string" && isLevel(lv) && LEVELS[lv] >= LEVELS[level]))
+			continue;
 		matching.push({
-			ts: typeof rec["ts"] === "string" ? rec["ts"] : null,
-			level: typeof rec["level"] === "string" ? rec["level"] : "?",
-			msg: typeof rec["msg"] === "string" ? rec["msg"] : "",
-			line,
+			ts: typeof ts === "string" ? ts : null,
+			level: typeof lv === "string" ? lv : "?",
+			msg: typeof msg === "string" ? msg : "",
+			fields,
 		});
 	}
 	const limit = Math.max(1, opts.limit);
@@ -509,5 +513,10 @@ export function tailLog(logFile: string, opts: LogTailOptions): LogTailResponse 
 		lines,
 		truncated: windowCut || discarded > 0 || matching.length > limit,
 		scannedBytes: len,
+		matched: matching.length,
 	};
+}
+
+function isLevel(v: string): v is LogLevel {
+	return Object.hasOwn(LEVELS, v);
 }

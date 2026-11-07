@@ -78,7 +78,7 @@ describe.skipIf(!LIVE)("subagent live drift (GOBLIN_SUBAGENTS_LIVE=1)", () => {
 	beforeAll(async () => {
 		if (AUTH_FILE === "") {
 			throw new Error(
-				"GOBLIN_SUBAGENTS_AUTH_FILE is unset — point it at an auth.jsonl with a `zai` record; never pass the key itself",
+				"GOBLIN_SUBAGENTS_AUTH_FILE is unset — point it at an auth.jsonl with an `openrouter` record; never pass the key itself",
 			);
 		}
 		cwd = mkdtempSync(join(tmpdir(), "goblin-subdrift-"));
@@ -127,18 +127,18 @@ describe.skipIf(!LIVE)("subagent live drift (GOBLIN_SUBAGENTS_LIVE=1)", () => {
 				maxRuns: 2,
 				worker: {
 					model: {
-						auth: "zai",
-						id: "glm-5.3",
-						baseUrl: "https://api.z.ai/api/coding/paas/v4",
+						auth: "openrouter",
+						id: "minimax/minimax-m3.1-flash",
+						baseUrl: "https://openrouter.ai/api/v1",
 						api: "openai-completions",
 						thinking: "high",
 					},
 				},
 				computer: {
 					model: {
-						auth: "zai",
-						id: "glm-5.3-flash",
-						baseUrl: "https://api.z.ai/api/coding/paas/v4",
+						auth: "openrouter",
+						id: "minimax/minimax-m3.1-flash",
+						baseUrl: "https://openrouter.ai/api/v1",
 						api: "openai-completions",
 						thinking: "low",
 					},

@@ -23,7 +23,7 @@ import type { ClaudeEvent } from "./translate.ts";
 
 const LIVE = process.env.GOBLIN_CLAUDE_CODE_LIVE === "1";
 const AUTH_FILE = process.env.GOBLIN_CLAUDE_CODE_AUTH_FILE ?? "";
-const MODEL = process.env.GOBLIN_CLAUDE_CODE_MODEL ?? "claude-sonnet-4-5";
+const MODEL = process.env.GOBLIN_CLAUDE_CODE_MODEL ?? "claude-haiku-5-5";
 
 describe.skipIf(!LIVE)("claude-code live drift (GOBLIN_CLAUDE_CODE_LIVE=1)", () => {
 	let token = "";

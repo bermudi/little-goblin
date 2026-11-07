@@ -115,7 +115,7 @@ test(
 		if (!LIVE) return;
 		const auth = resolveCodexAuthFile(undefined);
 		const bodies: Record<string, unknown>[] = [];
-		const model = new CodexLanguageModel("gpt-6.1-sol", auth.path, async (url, init) => {
+		const model = new CodexLanguageModel("gpt-6-luna", auth.path, async (url, init) => {
 			bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
 			const res = await fetch(url, init);
 			if (!res.ok) {
@@ -172,7 +172,7 @@ test(
 		// Turn 2 replays turn 1's assistant output — the search item must
 		// ride at its position or the backend rejects the request.
 		const bodies2: Record<string, unknown>[] = [];
-		const model2 = new CodexLanguageModel("gpt-6.1-sol", auth.path, async (url, init) => {
+		const model2 = new CodexLanguageModel("gpt-6-luna", auth.path, async (url, init) => {
 			bodies2.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
 			return fetch(url, init);
 		});

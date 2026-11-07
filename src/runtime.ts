@@ -42,6 +42,7 @@ import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { renderFailedTurnProgress } from "./turn/failed-progress.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
 import {
+	COMPACT_AT_PCT,
 	ContextOverflowError,
 	failureFromStream,
 	overflowHoldable,
@@ -70,9 +71,6 @@ import { replayKey, type TurnJournal } from "./turn-journal.ts";
 import type { WindowCapture } from "./window-capture.ts";
 
 const LOOP_CHECK_EVERY = 16;
-// Completed turns at/above this compact in-lane — the lane stays occupied
-// until the summary finishes so the next turn sees one whole view.
-const COMPACT_AT_PCT = 75;
 // design/compaction.md → Budgets: absolute at scale (the 1M-era rule —
 // fractions of a big window are consumption rules, not safety rules),
 // clamped to the window's own fractions on small models so a 32k window

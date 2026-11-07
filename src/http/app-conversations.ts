@@ -17,6 +17,7 @@ import type { InterruptedRunView, ResumeOps, ResumeRefusalCode } from "../turn-r
 import { describeMailDecision } from "../mail-approval.ts";
 import { refusalText } from "../program-approval.ts";
 import { APP_ACTOR } from "../targets.ts";
+import { COMPACT_AT_PCT } from "../turn/overflow.ts";
 import { canAuthorizeRetry } from "../turn/retry-guard.ts";
 import {
 	type AppChannelDeps,
@@ -744,6 +745,7 @@ export async function handleConversationsRoute(
 				input !== null && limit !== null && limit > 0
 					? Math.round((input / limit) * 1000) / 10
 					: null,
+			compactAtPct: COMPACT_AT_PCT,
 			turns: found.length,
 			segments: segmentsOf(last?.promptChars ?? null, input),
 			...(last?.quota !== null && last?.quota !== undefined

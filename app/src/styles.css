@@ -5372,7 +5372,12 @@ button.link:hover {
 }
 .file-detail .attach-preview {
 	display: block;
+	align-self: flex-start;
+	max-width: min(100%, 48rem);
 	margin: 0.25rem 0 0.6rem;
+}
+.file-meta .kv-k {
+	width: auto;
 }
 .file-detail .attach-download,
 .file-detail > .pill {

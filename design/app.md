@@ -173,6 +173,21 @@ column:
   helps, e.g. Programs, Memory, Status.
 - Chat stays as it is.
 
+*Building blocks (landed with #168; classes in `app/src/styles.css`).*
+`.ops` pages fill the pane; side padding is `--page-pad`
+(`clamp(1rem, 3%, 2.5rem)`) and `--page-col` only caps very wide screens
+(110rem; Settings keeps 68rem; sheets keep 46rem and a 1rem gutter).
+`.dtable` is the list table: columns come from `--dt-cols` on the table,
+rows are `button.dt-row` (row click = open), `.dt-status` is the status-pill
+column, a chevron column is added by the CSS. Under 40rem of *table* width
+(a container query, not the viewport) a row stacks: first cell, status and
+chevron on top, other cells as muted lines named by `data-label`;
+`.dt-hide-m` drops a cell. `.prose` caps a block at `--prose-col` (70ch);
+code-like text (diffs, file contents, dumps) uses `--code-col` (78ch). The
+existing long-text classes get these caps by selector until their page is
+redone. `.sumstrip` / `.sumtile` is the optional count strip. The Projects
+index is the reference table.
+
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
 forever (no route may ever render it, structure included). Two layers, each

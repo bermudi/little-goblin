@@ -74,7 +74,7 @@ What counts:
 - The real user path, not internal setters or direct API calls that skip the UI being changed.
 - The action and the resulting state, not only the final screen.
 - Side effects next to what's visible: the row in the database, the file written, the log line.
-- The fake model only stands in for the provider. If a change depends on real model behaviour, say the fake can't prove it.
+- The fake model only stands in for the provider. If a change depends on real model behaviour, say the fake can't prove it, and test it with a model from the repo AGENTS.md → Tests.
 - Say what you didn't check.
 
 For a backend change with no UI, drive the HTTP route the app uses and capture the response plus the side effect.

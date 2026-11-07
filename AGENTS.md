@@ -150,6 +150,10 @@ Tests guard boundaries and invariants, not implementations. Fake the model
 provider and the Telegram API at the edge; don't mock module internals. The
 suite stays smaller than `src/`.
 
+Real model requests in tests use one of these three (operator, 2026-11-06):
+`gpt-6-luna` on the codex provider, `claude-haiku-5-5` on the Claude provider,
+or `minimax/minimax-m3.1-flash` on OpenRouter.
+
 Live drift checks for unowned boundaries (herdr, gws, harness-trust,
 podman) are env-gated — `GOBLIN_<NAME>_LIVE=1 bun test
 src/<module>.live.test.ts` — and run after any upstream upgrade; red

@@ -11,3 +11,12 @@
 - **Settlement:** the point where a delegation or subagent run stops and states a result: done, needs input, or failed.
 - **Worker report:** one settlement filed on a responsibility. It is the agent's claim, and Goblin still checks it.
 - **Notice:** the machine message that gives a settlement to Goblin and wakes the conversation.
+- **Hindsight:** the separate memory service. It extracts, stores and searches memories for Goblin.
+- **Bank:** the store of memories in Hindsight. Goblin uses the bank named `goblin`.
+- **Exchange:** one operator message and Goblin's reply. It is the source that memory saves.
+- **Retention:** saving an exchange to memory. Goblin queues it, then Hindsight extracts from it.
+- **Fact:** one statement that the extraction LLM takes from an exchange. It is either `world` or `experience`.
+- **Observation:** a merged statement that consolidation builds from facts.
+- **Consolidation:** the automatic Hindsight step that merges facts into observations.
+- **Mission:** the plain-language rule that guides a Hindsight step. `retain_mission` guides extraction and `observations_mission` guides consolidation.
+- **Recall:** finding memories and adding them to the prompt before a reply.

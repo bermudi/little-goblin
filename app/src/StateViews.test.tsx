@@ -2,9 +2,9 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Window } from "happy-dom";
 import { decideSkillProposal } from "../../src/skill-decisions.ts";
 import { listSkills, readSkillFile } from "../../src/stateview.ts";
 import { FilesView, SkillsView } from "./StateViews.tsx";
@@ -230,6 +230,13 @@ test("discarding an update deletes the staged copy, never the installed one", as
 		(el) => el.querySelector(".skill-decide") !== null,
 	);
 	expect(card?.querySelector(".op-item-title")?.textContent).toBe("weather");
+	// The card shows what changes before the operator decides.
+	expect(card?.querySelector(".pill")?.textContent).toBe("update");
+	expect(card?.querySelector(".skill-diff-file summary")?.textContent).toBe(
+		"SKILL.md — changed (+1 −1)",
+	);
+	expect(card?.querySelector(".diff-line.del")?.textContent).toBe("-live body");
+	expect(card?.querySelector(".diff-line.add")?.textContent).toBe("+updated body");
 	const discard = cardButton(card!, "Discard update");
 	expect(cardButton(card!, "Install update")).toBeDefined();
 	expect(discard).toBeDefined();

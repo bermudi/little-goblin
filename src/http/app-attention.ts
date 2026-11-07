@@ -3,7 +3,7 @@
 
 import type { AppConversationSummary } from "../conversation.ts";
 import { responsibilityStage } from "../responsibility-stage.ts";
-import { listSkillDir } from "../stateview.ts";
+import { listProposedSkills } from "../stateview.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
 import type { AppAttentionItem, AppAttentionPage, AppAttentionResponse } from "./app-wire.ts";
 
@@ -106,13 +106,22 @@ export async function handleAttentionRoute(
 	if (skills === undefined) {
 		unavailable.push("skills");
 	} else {
-		for (const skill of listSkillDir(skills.proposedDir)) {
+		for (const skill of listProposedSkills(skills.skillsDir, skills.proposedDir)) {
+			const { diff } = skill;
+			const counts = (["changed", "added", "removed"] as const)
+				.map((status) => [status, diff.files.filter((f) => f.status === status).length] as const)
+				.filter(([, n]) => n > 0)
+				.map(([status, n]) => `${n} ${status}`);
 			items.push(
 				pageItem({
 					id: `skill-proposal:${skill.name}`,
 					kind: "skill-proposal",
-					title: `Skill proposal — ${skill.name}`,
-					detail: `${skill.files.length} files waiting for install or discard`,
+					title:
+						diff.kind === "update" ? `Skill update — ${skill.name}` : `New skill — ${skill.name}`,
+					detail:
+						diff.kind === "update"
+							? `${counts.length === 0 ? "no file differs from the installed copy" : counts.join(", ")} — review the diff, then install or discard`
+							: `${skill.files.length} ${skill.files.length === 1 ? "file" : "files"} — review, then install or discard`,
 					createdAt: skill.updatedAt,
 					page: "skills",
 				}),

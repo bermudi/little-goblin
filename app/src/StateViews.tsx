@@ -5,6 +5,15 @@
 // one mutable row: install/discard ride the same skills/decide
 // mechanics as the Telegram ✅/🚫 row.
 import { useEffect, useRef, useState } from "react";
+import type {
+	AttachmentsResponse,
+	IdentityResponse,
+	OperatorAttachmentItem,
+	OperatorSkillItem,
+	ProposedSkillItem,
+	SkillDiff,
+	SkillsResponse,
+} from "../../src/http/operator-wire.ts";
 import {
 	decideSkill,
 	fetchAttachment,
@@ -13,14 +22,8 @@ import {
 	listAttachments,
 	listSkills,
 } from "./api.ts";
+import { DiffView } from "./DiffView.tsx";
 import { bytes, describe, KV, ts, useLoad } from "./opsShared.tsx";
-import type {
-	AttachmentsResponse,
-	IdentityResponse,
-	OperatorAttachmentItem,
-	OperatorSkillItem,
-	SkillsResponse,
-} from "../../src/http/operator-wire.ts";
 
 function OpsError({ err }: { err: string }) {
 	return (
@@ -38,15 +41,57 @@ function OpsLoading() {
 	);
 }
 
+function plural(n: number, one: string): string {
+	return `${n} ${one}${n === 1 ? "" : "s"}`;
+}
+
+// What the proposal changes against the installed copy — the evidence
+// the install decision needs (#162). A new skill has nothing to compare;
+// its files open below.
+function SkillDiffPanel({ diff }: { diff: SkillDiff }) {
+	if (diff.kind === "new") {
+		return (
+			<p className="empty">New skill — no installed copy to compare. Open a file to read it.</p>
+		);
+	}
+	if (diff.files.length === 0) {
+		return <p className="empty">No file differs from the installed copy.</p>;
+	}
+	return (
+		<div className="skill-diff">
+			<p className="empty">
+				Changes against the installed copy — {plural(diff.files.length, "file")}
+				{diff.unchanged.length > 0 && `, ${diff.unchanged.length} unchanged`}
+			</p>
+			{diff.files.map((f) => (
+				<details key={f.path} className="skill-diff-file" open>
+					<summary>
+						{f.path} — {f.status}
+						{!f.binary && ` (+${f.added} −${f.removed})`}
+					</summary>
+					{f.binary ? (
+						<p className="empty">binary file — no line diff</p>
+					) : (
+						<DiffView lines={f.lines} />
+					)}
+				</details>
+			))}
+		</div>
+	);
+}
+
 function SkillCard({
 	skill,
 	origin,
+	diff,
 	update,
 	token,
 	onDecided,
 }: {
 	skill: OperatorSkillItem;
 	origin: "skills" | "proposed";
+	/** Proposals only: what the proposal changes against the installed copy. */
+	diff?: SkillDiff | undefined;
 	/** This proposal is an update to a live skill — the decide labels
 	    say so, since bare "discard" could read as removing the
 	    installed copy. */
@@ -109,12 +154,22 @@ function SkillCard({
 			<div className="op-item-head">
 				<span className="op-item-title">{skill.name}</span>
 				<span className={origin === "skills" ? "pill on" : "pill"}>
-					{origin === "skills" ? "installed" : "proposed"}
+					{origin === "skills" ? "installed" : diff?.kind === "update" ? "update" : "new"}
 				</span>
 			</div>
-			<KV k="updated" v={ts(skill.updatedAt)} />
-			<KV k="size" v={bytes(skill.sizeBytes)} mono />
-			{skill.truncated && <p className="empty">file list truncated — size is a floor</p>}
+			{origin === "skills" && (
+				<>
+					<KV k="updated" v={ts(skill.updatedAt)} />
+					<KV k="size" v={bytes(skill.sizeBytes)} mono />
+				</>
+			)}
+			{skill.truncated && (
+				<p className="empty">
+					file list truncated —{" "}
+					{origin === "proposed" ? "the diff is incomplete" : "size is a floor"}
+				</p>
+			)}
+			{diff !== undefined && <SkillDiffPanel diff={diff} />}
 			<div className="skill-files">
 				{skill.files.map((f) => (
 					<button
@@ -161,16 +216,12 @@ function SkillSection({
 	title,
 	items,
 	origin,
-	installedNames,
 	token,
 	onDecided,
 }: {
 	title: string;
-	items: OperatorSkillItem[];
+	items: (OperatorSkillItem | ProposedSkillItem)[];
 	origin: "skills" | "proposed";
-	/** Names of installed skills — a proposed card matching one is an
-	    update, not a new skill. */
-	installedNames?: ReadonlySet<string>;
 	token: string | null;
 	onDecided?: (() => void) | undefined;
 }) {
@@ -185,7 +236,8 @@ function SkillSection({
 					key={`${origin}:${s.name}`}
 					skill={s}
 					origin={origin}
-					update={installedNames?.has(s.name)}
+					diff={"diff" in s ? s.diff : undefined}
+					update={"diff" in s ? s.diff.kind === "update" : undefined}
 					token={token}
 					onDecided={onDecided}
 				/>
@@ -199,7 +251,6 @@ export function SkillsView({ token }: { token: string | null }) {
 	if (err !== null) return <OpsError err={err} />;
 	if (data === null) return <OpsLoading />;
 	const d: SkillsResponse = data;
-	const installedNames = new Set(d.skills.map((s) => s.name));
 	return (
 		<div className="ops">
 			<SkillSection title="Skills" items={d.skills} origin="skills" token={token} />
@@ -207,7 +258,6 @@ export function SkillsView({ token }: { token: string | null }) {
 				title="Proposed"
 				items={d.proposed}
 				origin="proposed"
-				installedNames={installedNames}
 				token={token}
 				onDecided={reload}
 			/>

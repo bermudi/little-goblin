@@ -216,6 +216,47 @@ describe("app approval routes", () => {
 		}
 	});
 
+	test("an update proposal lists what changes versus the running program", async () => {
+		const h = harness();
+		try {
+			const program = h.programs.create(
+				{
+					name: "digest",
+					charter: "Summarise the inbox.\nNever send mail.",
+					cron: "0 9 * * *",
+					maxLatenessMinutes: 30,
+					address: { target: "app/chat-01" },
+				},
+				NOW,
+			);
+			const proposal = h.programs.proposals.proposeUpdate(
+				program.id,
+				{
+					cron: "0 7 * * *",
+					maxLatenessMinutes: 120,
+					charter: "Summarise the inbox.\nNever send mail.\nMay reply to family.",
+				},
+				{ target: "app/chat-01" },
+				NOW,
+			);
+			const body = (await (await h.call("/api/app/approvals")).json()) as AppApprovalsResponse;
+			const changes = body.programs.find((p) => p.id === proposal.id)!.changes!;
+			expect(changes.map((c) => c.field)).toEqual(["charter", "cron", "maxLatenessMinutes"]);
+			expect(changes.find((c) => c.field === "cron")).toMatchObject({
+				before: "0 9 * * *",
+				after: "0 7 * * *",
+			});
+			expect(changes.find((c) => c.field === "charter")!.lines).toContainEqual({
+				op: "add",
+				text: "May reply to family.",
+			});
+			const attention = await (await h.call("/api/app/attention")).text();
+			expect(attention).toContain("changes instructions, schedule, allowed lateness");
+		} finally {
+			await cleanup(h);
+		}
+	});
+
 	test("a program approval activates once through the app door and reveals the hook only there", async () => {
 		const h = harness({ publicUrl: "https://g.ts.net" });
 		try {

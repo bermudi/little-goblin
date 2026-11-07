@@ -42,6 +42,8 @@ export interface ProgramApproval {
 	): Promise<ProgramDecisionOutcome>;
 	pending(): ProgramProposal[];
 	candidate(proposal: ProgramProposal): ProgramCandidate | null;
+	/** An update's immutable base — what the candidate is compared with. */
+	base(proposal: ProgramProposal): ProgramCandidate | null;
 	/** Joins in-flight requestApproval posts — shutdown's drain budget
 	 *  bounds the wait. */
 	stop(): Promise<void>;
@@ -104,6 +106,9 @@ export function startProgramApproval(deps: ProgramApprovalDeps): ProgramApproval
 		candidate(proposal) {
 			return proposalCandidate(deps.programs, proposal);
 		},
+		base(proposal) {
+			return proposalBase(deps.programs, proposal);
+		},
 		async stop() {
 			const waits = [...inFlight];
 			if (waits.length > 0) {
@@ -155,18 +160,27 @@ export interface ProgramCandidate {
 // itself, and that is exactly the base while the fingerprint matches.
 // Once it drifts there is nothing immutable left to show — null, not a
 // guess. Approval grants this exact result, not the diff.
-export function proposalCandidate(
+export function proposalBase(
 	programs: Pick<ProgramsStore, "get">,
 	proposal: ProgramProposal,
 ): ProgramCandidate | null {
-	if (proposal.kind === "create") return proposal.draft;
-	const patch = proposal.patch!;
+	if (proposal.kind === "create") return null;
 	const target = proposal.targetId !== null ? programs.get(proposal.targetId) : null;
 	if (target === null) return null;
 	if (proposal.baseSnapshot === null && programFingerprint(target) !== proposal.base) {
 		return null;
 	}
-	const base = proposal.baseSnapshot ?? snapshotProgram(target);
+	return proposal.baseSnapshot ?? snapshotProgram(target);
+}
+
+export function proposalCandidate(
+	programs: Pick<ProgramsStore, "get">,
+	proposal: ProgramProposal,
+): ProgramCandidate | null {
+	if (proposal.kind === "create") return proposal.draft;
+	const base = proposalBase(programs, proposal);
+	if (base === null) return null;
+	const patch = proposal.patch!;
 	return {
 		name: patch.name ?? base.name,
 		charter: patch.charter ?? base.charter,

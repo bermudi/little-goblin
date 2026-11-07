@@ -119,6 +119,7 @@ describe("app attention", () => {
 				program: {
 					pending: () => [proposal],
 					candidate: () => proposal.draft,
+					base: () => null,
 					decide: async () => ({ kind: "refused", proposal, refusal: "gone" }),
 				},
 				mail: {

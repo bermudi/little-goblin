@@ -4,6 +4,7 @@
 import type { AppConversationSummary } from "../conversation.ts";
 import { responsibilityStage } from "../responsibility-stage.ts";
 import { listProposedSkills } from "../stateview.ts";
+import { changesSummary, programChanges } from "./app-program-diff.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
 import type { AppAttentionItem, AppAttentionPage, AppAttentionResponse } from "./app-wire.ts";
 
@@ -47,6 +48,7 @@ export async function handleAttentionRoute(
 	} else {
 		for (const proposal of deps.approvals.program.pending()) {
 			const candidate = deps.approvals.program.candidate(proposal);
+			const base = deps.approvals.program.base(proposal);
 			items.push(
 				pageItem({
 					id: `program-approval:${proposal.id}`,
@@ -58,7 +60,9 @@ export async function handleAttentionRoute(
 					detail:
 						proposal.kind === "create"
 							? "standing authority needs approval"
-							: "standing-authority update needs approval",
+							: candidate !== null && base !== null
+								? `needs approval — ${changesSummary(programChanges(base, candidate))}`
+								: "standing-authority update needs approval",
 					createdAt: proposal.createdAt,
 					page: "programs",
 				}),

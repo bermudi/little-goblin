@@ -25,6 +25,7 @@ import {
 	jsonBodyRefusal,
 	NO_STORE,
 } from "./app-shared.ts";
+import { programChanges } from "./app-program-diff.ts";
 import { appSseWriter } from "./app-sse.ts";
 import type {
 	AppApprovalDecisionResponse,
@@ -355,19 +356,25 @@ export async function handleConversationsRoute(
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
 		if (deps.approvals === undefined) return approvalUnavailable();
+		const owner = deps.approvals.program;
 		const body: AppApprovalsResponse = {
-			programs: deps.approvals.program.pending().map((proposal) => ({
-				id: proposal.id,
-				kind: proposal.kind,
-				targetId: proposal.targetId,
-				target: proposal.target,
-				state: proposal.state,
-				createdAt: proposal.createdAt,
-				decidedAt: proposal.decidedAt,
-				decidedBy: proposal.decidedBy,
-				activatedId: proposal.activatedId,
-				candidate: deps.approvals!.program.candidate(proposal),
-			})),
+			programs: owner.pending().map((proposal) => {
+				const candidate = owner.candidate(proposal);
+				const base = owner.base(proposal);
+				return {
+					id: proposal.id,
+					kind: proposal.kind,
+					targetId: proposal.targetId,
+					target: proposal.target,
+					state: proposal.state,
+					createdAt: proposal.createdAt,
+					decidedAt: proposal.decidedAt,
+					decidedBy: proposal.decidedBy,
+					activatedId: proposal.activatedId,
+					candidate,
+					changes: candidate !== null && base !== null ? programChanges(base, candidate) : null,
+				};
+			}),
 			mail: deps.approvals.mail.pending().map((row) => ({
 				id: row.id,
 				to: row.to,

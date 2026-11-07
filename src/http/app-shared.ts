@@ -46,7 +46,7 @@ export interface AppChannelDeps {
 	operator?: Omit<OperatorDeps, "configRef" | "onConfigWritten">;
 	resumeOps?: () => ResumeOps | undefined;
 	approvals?: {
-		program: Pick<ProgramApproval, "candidate" | "decide" | "pending">;
+		program: Pick<ProgramApproval, "base" | "candidate" | "decide" | "pending">;
 		mail: Pick<MailApproval, "decide" | "pending">;
 	};
 	programOps?: ProgramOps;

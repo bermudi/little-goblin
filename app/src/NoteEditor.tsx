@@ -22,6 +22,8 @@ import {
 	type NoteDraft,
 } from "./noteDraft.ts";
 import type { AppNote } from "../../src/http/app-wire.ts";
+import { formatState, runFormat, type FormatAction, type FormatState } from "./noteFormat.ts";
+import NoteToolbar from "./NoteToolbar.tsx";
 
 export interface NoteEditorHandle {
 	// A server-side content change landed (append, restore, another
@@ -73,6 +75,10 @@ interface RewriteFlow {
 	instruction: string;
 	replacement: string | null;
 	error: string | null;
+}
+
+function sameFormat(a: FormatState, b: FormatState): boolean {
+	return (Object.keys(a) as (keyof FormatState)[]).every((k) => a[k] === b[k]);
 }
 
 const DEBOUNCE_MS = 1000;
@@ -203,6 +209,10 @@ const NoteEditor = forwardRef<
 	const rewriteRef = useRef<RewriteFlow | null>(null);
 	rewriteRef.current = rewrite;
 	const [selEmpty, setSelEmpty] = useState(true);
+	// What the toolbar highlights — recomputed on every editor state
+	// change by the plugin below.
+	const [fmt, setFmt] = useState<FormatState | null>(null);
+	const [linkOpen, setLinkOpen] = useState(false);
 	const [ready, setReady] = useState(false);
 	const [status, setStatus] = useState<SaveStatus>("saved");
 	const [statusDetail, setStatusDetail] = useState<string | null>(null);
@@ -971,6 +981,57 @@ const NoteEditor = forwardRef<
 			.use(gfm)
 			.use(listener)
 			.use(history)
+			// The toolbar's state: recomputed on every editor state change.
+			.use(
+				$prose(
+					() =>
+						new Plugin({
+							view: (view) => {
+								const publish = (state: typeof view.state): void => {
+									if (unmountedRef.current) return;
+									const next = formatState(state);
+									setFmt((cur) => (cur !== null && sameFormat(cur, next) ? cur : next));
+								};
+								publish(view.state);
+								return { update: (v) => publish(v.state) };
+							},
+						}),
+				),
+			)
+			// A task item's checkbox is a ::before drawn left of the item
+			// (CSS) — a press there (offsetX < 0 on the li) toggles it.
+			.use(
+				$prose(
+					() =>
+						new Plugin({
+							props: {
+								handleDOMEvents: {
+									mousedown: (view, event) => {
+										const li = event.target;
+										if (
+											!(li instanceof HTMLElement) ||
+											li.tagName !== "LI" ||
+											!li.hasAttribute("data-checked") ||
+											event.offsetX >= 0
+										)
+											return false;
+										const pos = view.posAtDOM(li, 0) - 1;
+										const node = view.state.doc.nodeAt(pos);
+										if (node === null || node.attrs.checked == null) return false;
+										view.dispatch(
+											view.state.tr.setNodeMarkup(pos, undefined, {
+												...node.attrs,
+												checked: !node.attrs.checked,
+											}),
+										);
+										event.preventDefault();
+										return true;
+									},
+								},
+							},
+						}),
+				),
+			)
 			// Draft capture runs synchronously on EVERY doc change —
 			// the listener's debounce owns autosave timing, but a
 			// typed-then-gone body can't wait for it.
@@ -1231,6 +1292,12 @@ const NoteEditor = forwardRef<
 		};
 	});
 
+	function onFormat(a: FormatAction): void {
+		const ed = editorRef.current;
+		if (ed === null || rewriteActiveRef.current) return;
+		runFormat(ed, a);
+	}
+
 	const label =
 		status === "saved"
 			? "Saved"
@@ -1242,7 +1309,24 @@ const NoteEditor = forwardRef<
 						? `Save failed: ${statusDetail ?? "unknown error"}`
 						: "Conflict";
 	return (
-		<div className="note-editor">
+		<div
+			className="note-editor"
+			onKeyDown={(e) => {
+				if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
+					e.preventDefault();
+					setLinkOpen(true);
+				}
+			}}
+		>
+			{fmt !== null && (
+				<NoteToolbar
+					fmt={fmt}
+					disabled={!ready || rewrite !== null}
+					linkOpen={linkOpen}
+					onLinkOpen={setLinkOpen}
+					onAction={onFormat}
+				/>
+			)}
 			<div ref={containerRef} className="note-editor-body" />
 			{rewrite !== null && (
 				<div className="note-rewrite">

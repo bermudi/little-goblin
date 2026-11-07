@@ -5697,6 +5697,122 @@ button.link:hover {
 	text-decoration: line-through;
 	color: var(--app-fg-muted);
 }
+/* Formatting row at the top of the writing surface (#173). */
+.note-fmt {
+	border-bottom: 1px solid var(--app-border);
+	padding: 0.35rem 0.5rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+.note-fmt-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.25rem 0.15rem;
+}
+.note-fmt-group {
+	display: inline-flex;
+	gap: 0.1rem;
+	padding-left: 0.3rem;
+	margin-left: 0.2rem;
+	border-left: 1px solid var(--app-divider);
+}
+.note-fmt-btn {
+	width: 2rem;
+	height: 2rem;
+	padding: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font: inherit;
+	font-size: 13px;
+	color: var(--app-fg-muted);
+	background: none;
+	border: 1px solid transparent;
+	border-radius: 6px;
+	cursor: pointer;
+}
+.note-fmt-btn:hover:not(:disabled) {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.note-fmt-btn.on {
+	color: var(--app-accent);
+	background: color-mix(in oklab, var(--app-accent) 16%, transparent);
+	border-color: color-mix(in oklab, var(--app-accent) 40%, transparent);
+}
+.note-fmt-btn:focus-visible,
+.note-fmt-block:focus-visible {
+	outline: 2px solid var(--app-focus);
+	outline-offset: 1px;
+}
+.note-fmt-btn:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+.note-fmt-block {
+	appearance: none;
+	height: 2rem;
+	font: inherit;
+	font-size: 12.5px;
+	color: var(--app-fg);
+	background-color: var(--app-control-bg);
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: right 0.5rem center;
+	border: 1px solid var(--app-control-border);
+	border-radius: 6px;
+	padding: 0 1.6rem 0 0.55rem;
+	margin-right: 0.15rem;
+}
+.note-fmt-link {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.35rem;
+}
+.note-fmt-link input {
+	flex: 1 1 12rem;
+	min-width: 0;
+	height: 2rem;
+	box-sizing: border-box;
+	font: inherit;
+	font-size: 13px;
+	color: var(--app-fg);
+	background: var(--app-control-bg);
+	border: 1px solid var(--app-control-border);
+	border-radius: 6px;
+	padding: 0 0.55rem;
+}
+.note-fmt-link input:focus {
+	outline: none;
+	border-color: var(--app-focus);
+}
+/* Task items: the checkbox is a ::before left of the item; the editor
+   toggles it on a press there. */
+.note-editor .ProseMirror li[data-checked] {
+	position: relative;
+	list-style: none;
+}
+.note-editor .ProseMirror li[data-checked]::before {
+	content: "";
+	position: absolute;
+	left: -1.35rem;
+	top: 0.28rem;
+	width: 0.95rem;
+	height: 0.95rem;
+	box-sizing: border-box;
+	border: 1.5px solid var(--app-control-border-hover);
+	border-radius: 3px;
+	cursor: pointer;
+}
+.note-editor .ProseMirror li[data-checked="true"]::before {
+	background: var(--app-accent)
+		url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E")
+		center / 80% no-repeat;
+	border-color: var(--app-accent);
+}
 .note-editor-foot {
 	display: flex;
 	align-items: center;

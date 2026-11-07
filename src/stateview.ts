@@ -8,18 +8,19 @@
 
 import {
 	closeSync,
+	type Dirent,
 	lstatSync,
 	openSync,
 	readdirSync,
 	readFileSync,
 	readSync,
 	realpathSync,
-	statSync,
-	type Dirent,
 	type Stats,
+	statSync,
 } from "node:fs";
 import { join, sep } from "node:path";
 import { loadCatalog } from "./agent/skills.ts";
+import { diffSkill, type SkillDiff } from "./skill-diff.ts";
 
 // ---------- skills ----------
 
@@ -34,9 +35,14 @@ export interface OperatorSkillItem {
 	truncated: boolean;
 }
 
+/** A parked proposal plus what it changes against the installed skill. */
+export interface ProposedSkillItem extends OperatorSkillItem {
+	diff: SkillDiff;
+}
+
 export interface SkillsResponse {
 	skills: OperatorSkillItem[];
-	proposed: OperatorSkillItem[];
+	proposed: ProposedSkillItem[];
 	/** The invocation picker's view: valid catalog entries, manual-only included. */
 	catalog: PickerSkillItem[];
 }
@@ -161,10 +167,51 @@ export function listSkillDir(dir: string): OperatorSkillItem[] {
 	return items;
 }
 
+// Every file of one real (non-linked) skill dir, read as bytes through
+// the same containment wall as the viewer. null: no such skill dir.
+function readSkillTree(base: string, name: string): Map<string, Buffer> | null {
+	try {
+		if (!lstatSync(join(base, name)).isDirectory()) return null;
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw e;
+	}
+	const skillDir = contained(base, name);
+	if (skillDir === null) return null;
+	const rels: string[] = [];
+	listFilesUnder(skillDir, "", 1, rels);
+	const files = new Map<string, Buffer>();
+	for (const rel of rels) {
+		const full = contained(skillDir, rel);
+		if (full === null) continue;
+		try {
+			const size = statSync(full).size;
+			if (size > TEXT_VIEW_CAP)
+				throw new Error(`file too large to diff (${size} bytes): ${name}/${rel}`);
+			files.set(rel, readFileSync(full));
+		} catch (e) {
+			if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+		}
+	}
+	return files;
+}
+
+/** Parked proposals, each diffed against the installed skill of its name. */
+export function listProposedSkills(skillsDir: string, proposedDir: string): ProposedSkillItem[] {
+	const items: ProposedSkillItem[] = [];
+	for (const item of listSkillDir(proposedDir)) {
+		const proposed = readSkillTree(proposedDir, item.name);
+		// Vanished between the listing and the read — decided meanwhile.
+		if (proposed === null) continue;
+		items.push({ ...item, diff: diffSkill(readSkillTree(skillsDir, item.name), proposed) });
+	}
+	return items;
+}
+
 export function listSkills(skillsDir: string, proposedDir: string): SkillsResponse {
 	return {
 		skills: listSkillDir(skillsDir),
-		proposed: listSkillDir(proposedDir),
+		proposed: listProposedSkills(skillsDir, proposedDir),
 		catalog: listPickerSkills(skillsDir),
 	};
 }

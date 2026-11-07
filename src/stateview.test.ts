@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
 	mkdirSync,
@@ -5,17 +6,16 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
-	writeFileSync,
 	utimesSync,
+	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { setLogFile, setLogWriter } from "./log.ts";
 import {
+	AttachmentTooLargeError,
 	attachmentContentType,
 	attachmentPath,
-	AttachmentTooLargeError,
 	identityFiles,
 	listAttachments,
 	listPickerSkills,
@@ -102,6 +102,49 @@ describe("listSkills", () => {
 				}
 			}
 		}
+	});
+
+	test("a proposal is diffed against the installed skill of the same name", () => {
+		writeRel("skills/weather/SKILL.md", "---\nname: weather\n---\nask the sky\n");
+		writeRel("skills/weather/same.md", "same");
+		writeRel("skills/weather/old.md", "gone soon");
+		writeRel("skills-proposed/weather/SKILL.md", "---\nname: weather\n---\nask the radar\n");
+		writeRel("skills-proposed/weather/same.md", "same");
+		writeRel("skills-proposed/weather/fresh.md", "brand new");
+		writeRel("skills-proposed/other/SKILL.md", "solo");
+		const res = listSkills(join(home, "skills"), join(home, "skills-proposed"));
+		const byName = new Map(res.proposed.map((p) => [p.name, p.diff]));
+		const weather = byName.get("weather")!;
+		expect(weather.kind).toBe("update");
+		expect(weather.unchanged).toEqual(["same.md"]);
+		expect(weather.files.map((f) => [f.path, f.status])).toEqual([
+			["SKILL.md", "changed"],
+			["fresh.md", "added"],
+			["old.md", "removed"],
+		]);
+		expect(weather.files[0]).toMatchObject({ added: 1, removed: 1 });
+		expect(weather.files[0]!.lines).toContainEqual({ op: "add", text: "ask the radar" });
+		expect(weather.files[0]!.lines).toContainEqual({ op: "del", text: "ask the sky" });
+		// No installed copy: a new skill.
+		expect(byName.get("other")!.kind).toBe("new");
+	});
+
+	test("a binary file differs by status only, with no line diff", () => {
+		writeRel("skills/img/SKILL.md", "x");
+		writeRel("skills/img/a.bin", "ab\0cd");
+		writeRel("skills-proposed/img/SKILL.md", "x");
+		writeRel("skills-proposed/img/a.bin", "ab\0ce");
+		const [p] = listSkills(join(home, "skills"), join(home, "skills-proposed")).proposed;
+		expect(p!.diff.files).toEqual([
+			{ path: "a.bin", status: "changed", binary: true, added: 0, removed: 0, lines: [] },
+		]);
+	});
+
+	test("an identical proposal is an update with no changed files", () => {
+		writeRel("skills/same/SKILL.md", "x");
+		writeRel("skills-proposed/same/SKILL.md", "x");
+		const [p] = listSkills(join(home, "skills"), join(home, "skills-proposed")).proposed;
+		expect(p!.diff).toEqual({ kind: "update", files: [], unchanged: ["SKILL.md"] });
 	});
 
 	test("missing directories render as empty, not an error", () => {

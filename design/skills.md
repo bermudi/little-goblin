@@ -272,6 +272,18 @@ job (tune it, don't duplicate it).
   proposals too, so an approve request works in any conversation. Manual
   installs are unchanged: the operator asking in chat IS the approval —
   the ruling covers only the unattended path.
+- **A proposal shows what it changes (ruling 2026-11-07, issue #162).**
+  The operator cannot judge an update from the new bytes alone. The
+  Skills read (`listSkills`) attaches a `diff` to every parked proposal,
+  computed from disk at read time against the installed skill of the
+  same name: per-file added / removed / changed, a line diff with three
+  lines of context for text files, status only for a file with a NUL
+  byte, and the unchanged paths. No installed copy means `kind: "new"`.
+  The Attention item reads the same diff — "Skill update — NAME" with
+  counts, or "New skill — NAME". The proposal card shows the diff and
+  drops the updated/size rows, which do not inform the decision.
+  `src/line-diff.ts` is the pure differ; `src/skill-diff.ts` the
+  per-skill shape.
 - **Instrumentation.** Every line carries the review id; outcomes are
   where the skill dir sits, so `scripts/reviewer-stats.ts` reads the log
   back by review id and reports proposals against disk (still proposed /

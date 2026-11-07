@@ -346,6 +346,8 @@ export interface SkillDecideResponse {
 	state: "installed" | "gone";
 }
 
+export type { DiffLine } from "../line-diff.ts";
+export type { SkillDiff, SkillFileDiff } from "../skill-diff.ts";
 export type {
 	AttachmentsResponse,
 	IdentityFile,
@@ -354,6 +356,7 @@ export type {
 	LogTailResponse,
 	OperatorAttachmentItem,
 	OperatorSkillItem,
+	ProposedSkillItem,
 	SkillFileResponse,
 	SkillsResponse,
 } from "../stateview.ts";

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OutboxEntry } from "../mail-outbox.ts";
@@ -108,6 +108,11 @@ describe("app attention", () => {
 		const proposed = join(dirs, "skills-proposed", "watcher");
 		mkdirSync(proposed, { recursive: true });
 		writeFileSync(join(proposed, "SKILL.md"), "# watcher\n");
+		// An installed skill with a parked update, to prove update vs new.
+		mkdirSync(join(dirs, "skills", "radar"), { recursive: true });
+		writeFileSync(join(dirs, "skills", "radar", "SKILL.md"), "old\n");
+		mkdirSync(join(dirs, "skills-proposed", "radar"), { recursive: true });
+		writeFileSync(join(dirs, "skills-proposed", "radar", "SKILL.md"), "new\n");
 		const { http, call } = setup({
 			token: APP_TOKEN_NAME,
 			approvals: {
@@ -192,11 +197,17 @@ describe("app attention", () => {
 			expect(res.status).toBe(200);
 			const body = (await res.json()) as AppAttentionResponse;
 			expect(body.unavailable).toEqual(["responsibilities"]);
+			const skillItems = body.items.filter((i) => i.kind === "skill-proposal");
+			expect(skillItems.map((i) => [i.title, i.detail])).toEqual([
+				["Skill update — radar", "1 changed — review the diff, then install or discard"],
+				["New skill — watcher", "1 files — review, then install or discard"],
+			]);
 			expect(new Map(body.items.map((i) => [i.id, i.target]))).toEqual(
 				new Map([
 					["program-approval:7", { kind: "page", page: "programs" }],
 					["mail-approval:9", { kind: "page", page: "programs" }],
 					["memory-blocked:exchange/app/chat-01/1/a", { kind: "page", page: "memory" }],
+					["skill-proposal:radar", { kind: "page", page: "skills" }],
 					["skill-proposal:watcher", { kind: "page", page: "skills" }],
 					["delegation-input:3", { kind: "conversation", conversationId: "app/chat-01" }],
 					["interrupted-run:run-1", { kind: "conversation", conversationId: "app/chat-01" }],

@@ -150,6 +150,14 @@ Tests guard boundaries and invariants, not implementations. Fake the model
 provider and the Telegram API at the edge; don't mock module internals. The
 suite stays smaller than `src/`.
 
+Replay tests freeze real model responses so CI can check the code around a tool
+call without a model: `src/testkit/model-replay.ts`, first used by
+`src/agent/tools/delegate.replay.test.ts`. They say nothing about model
+behaviour; only live tests do. A changed prompt or tool description fails them
+on purpose, and the error prints the command to re-record. Only a person or
+agent re-records; CI never calls a model. Recordings are public: use test
+prompts with nothing private.
+
 Live drift checks for unowned boundaries (herdr, gws, harness-trust,
 podman) are env-gated — `GOBLIN_<NAME>_LIVE=1 bun test
 src/<module>.live.test.ts` — and run after any upstream upgrade; red

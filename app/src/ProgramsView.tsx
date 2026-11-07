@@ -7,7 +7,7 @@ import type { AppProgramMutationResponse } from "../../src/http/app-wire.ts";
 import type { OperatorProgramItem } from "../../src/http/operator-wire.ts";
 import { ApprovalsPanel, SecretReveal, useApprovals } from "./Approvals.tsx";
 import { deleteProgram, listPrograms, programHook, toggleProgram, updateProgram } from "./api.ts";
-import { KV, ts, useLoad } from "./opsShared.tsx";
+import { KV, ts, tzAbbrev, useLoad } from "./opsShared.tsx";
 
 // The scheduler scans every 30 s (src/scheduler.ts TICK_MS); a program is
 // only "late" once a few scans have passed its due time.
@@ -35,6 +35,13 @@ export function triggerWords(p: OperatorProgramItem): string {
 	if (p.hasHook) return "Webhook";
 	if (p.mailFilter !== null) return "On new mail";
 	return "Manual";
+}
+
+/** Trigger words plus the zone the cron is evaluated in — the same zone the
+ *  run-time columns render, so the two never read as different clocks. */
+function scheduleLabel(p: OperatorProgramItem, timeZone: string): string {
+	const words = triggerWords(p);
+	return p.cron === null ? words : `${words} ${tzAbbrev(timeZone)}`;
 }
 
 function lateness(p: OperatorProgramItem): string {
@@ -70,6 +77,7 @@ export function ProgramsView({ token }: { token: string | null }) {
 			</div>
 		);
 	const now = Date.now();
+	const timeZone = data.serverTimeZone;
 	const open = data.programs.find((p) => p.id === openId) ?? null;
 	if (open !== null) {
 		return (
@@ -77,6 +85,7 @@ export function ProgramsView({ token }: { token: string | null }) {
 				token={token}
 				program={open}
 				now={now}
+				timeZone={timeZone}
 				onBack={() => setOpenId(null)}
 				onChanged={reload}
 			/>
@@ -98,7 +107,7 @@ export function ProgramsView({ token }: { token: string | null }) {
 			{data.programs.length === 0 ? (
 				<p className="empty">No programs defined.</p>
 			) : (
-				<ProgramTable programs={data.programs} now={now} onOpen={setOpenId} />
+				<ProgramTable programs={data.programs} now={now} timeZone={timeZone} onOpen={setOpenId} />
 			)}
 		</div>
 	);
@@ -121,10 +130,12 @@ const PROGRAM_COLS = {
 function ProgramTable({
 	programs,
 	now,
+	timeZone,
 	onOpen,
 }: {
 	programs: OperatorProgramItem[];
 	now: number;
+	timeZone: string;
 	onOpen(id: number): void;
 }) {
 	return (
@@ -141,14 +152,14 @@ function ProgramTable({
 				<button type="button" className="dt-row" key={p.id} onClick={() => onOpen(p.id)}>
 					<span className="dt-cell dt-main">{p.name}</span>
 					<span className="dt-cell" data-label="Schedule">
-						{triggerWords(p)}
+						{scheduleLabel(p, timeZone)}
 					</span>
 					<span className="dt-cell dt-hide-m">{lateness(p)}</span>
 					<span className="dt-cell" data-label="Last run">
-						{p.lastRun === null ? "never" : ts(p.lastRun)}
+						{p.lastRun === null ? "never" : ts(p.lastRun, timeZone)}
 					</span>
 					<span className="dt-cell" data-label="Next run">
-						{ts(p.nextRun)}
+						{ts(p.nextRun, timeZone)}
 					</span>
 					<span className="dt-cell dt-status">
 						<StatusPill status={programStatus(p, now)} />
@@ -163,12 +174,14 @@ function ProgramDetail({
 	token,
 	program,
 	now,
+	timeZone,
 	onBack,
 	onChanged,
 }: {
 	token: string | null;
 	program: OperatorProgramItem;
 	now: number;
+	timeZone: string;
 	onBack(): void;
 	onChanged(): void;
 }) {
@@ -231,11 +244,14 @@ function ProgramDetail({
 			</div>
 			<h2 className="ops-h2">Facts</h2>
 			<div className="card prog-facts">
-				<KV k="schedule" v={triggerWords(program)} />
+				<KV k="schedule" v={scheduleLabel(program, timeZone)} />
 				{words !== null && program.cron !== null && <KV k="cron" v={program.cron} mono />}
 				<KV k="max lateness" v={lateness(program)} />
-				<KV k="last run" v={program.lastRun === null ? "never" : ts(program.lastRun)} />
-				<KV k="next run" v={ts(program.nextRun)} />
+				<KV
+					k="last run"
+					v={program.lastRun === null ? "never" : ts(program.lastRun, timeZone)}
+				/>
+				<KV k="next run" v={ts(program.nextRun, timeZone)} />
 				{program.hasHook && <KV k="hook" v="attached" mono />}
 				{program.mailFilter !== null && <KV k="mail filter" v={program.mailFilter} mono />}
 				<KV k="pinned to" v={program.target} mono />
@@ -299,7 +315,7 @@ function ProgramDetail({
 						<textarea value={charter} onChange={(e) => setCharter(e.target.value)} rows={8} />
 					</label>
 					<label>
-						Cron
+						Cron ({tzAbbrev(timeZone)})
 						<input
 							value={cron}
 							onChange={(e) => setCron(e.target.value)}

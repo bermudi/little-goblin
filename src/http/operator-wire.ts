@@ -321,6 +321,9 @@ export interface OperatorProgramItem {
 
 export interface OperatorProgramsResponse {
 	programs: OperatorProgramItem[];
+	/** IANA name of the zone crons are evaluated in — the schedule words and
+	 *  run instants share this frame or they disagree. */
+	serverTimeZone: string;
 }
 
 export interface OperatorDelegationItem {

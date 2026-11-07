@@ -85,11 +85,16 @@ afterEach(async () => {
 	globals.clear();
 });
 
-function fakeServer(programs: OperatorProgramItem[], approvals: AppApprovalsResponse) {
+function fakeServer(
+	programs: OperatorProgramItem[],
+	approvals: AppApprovalsResponse,
+	serverTimeZone = "America/Mexico_City",
+) {
 	globalThis.fetch = Object.assign(
 		async (input: string | URL | Request) => {
 			const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost");
-			if (url.pathname === "/api/app/programs") return Response.json({ programs });
+			if (url.pathname === "/api/app/programs")
+				return Response.json({ programs, serverTimeZone });
 			if (url.pathname === "/api/app/approvals") return Response.json(approvals);
 			throw new Error(`unexpected request: ${url.pathname}`);
 		},
@@ -153,4 +158,18 @@ test("the list is a table; opening a row replaces it with the detail and a back 
 	expect(back).toBeDefined();
 	await act(async () => (back as HTMLElement).click());
 	expect(container.querySelector(".dtable")).not.toBeNull();
+});
+
+test("schedule and run times share the server's zone (#187)", async () => {
+	// A cron at 07:00 server time with the server on UTC: the words, the zone
+	// label and the run columns must all say the same clock — before the fix
+	// the runs rendered in the browser's zone and disagreed by hours.
+	fakeServer([program({})], { programs: [], mail: [] }, "UTC");
+	root = createRoot(container);
+	await act(async () => root?.render(<ProgramsView token={null} />));
+
+	const row = container.querySelector(".dtable .dt-row");
+	expect(row?.textContent).toContain("Daily 07:00 UTC");
+	expect(row?.querySelector('[data-label="Next run"]')?.textContent).toContain("07:00");
+	expect(row?.querySelector('[data-label="Last run"]')?.textContent).toContain("07:00");
 });

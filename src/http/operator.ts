@@ -1336,7 +1336,10 @@ export async function handleOperatorRoute(
 		if (!deps.programs) {
 			return Response.json({ error: "programs are not wired" }, { status: 503, headers: NO_STORE });
 		}
-		const body: OperatorProgramsResponse = { programs: deps.programs.list().map(programItem) };
+		const body: OperatorProgramsResponse = {
+			programs: deps.programs.list().map(programItem),
+			serverTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+		};
 		return Response.json(body, { headers: NO_STORE });
 	}
 

@@ -518,6 +518,33 @@ describe("wake store", () => {
 		expect(String(err?.error)).toContain("attempts");
 	});
 
+	test("an idle reconcile pass logs nothing; a pass with work logs its counts", () => {
+		const { conv, wakes } = setup();
+		const lines: Record<string, unknown>[] = [];
+		setLogFile("wake-store-op.log");
+		setLogWriter((_p, line) => lines.push(JSON.parse(line) as Record<string, unknown>));
+		try {
+			wakes.reconcile(new Date().toISOString(), () => null);
+			expect(lines.filter((l) => l.msg === "wake reconcile")).toHaveLength(0);
+
+			wakes.record({
+				sourceKey: "poll:idle-log",
+				conversationId: conv.id,
+				kind: "done-candidate",
+				text: "line",
+				facts: {},
+				origin: "observer",
+			});
+			wakes.reconcile(new Date().toISOString(), () => null);
+		} finally {
+			setLogWriter(null);
+			setLogFile(null);
+		}
+		const passes = lines.filter((l) => l.msg === "wake reconcile");
+		expect(passes).toHaveLength(1);
+		expect(passes[0]).toMatchObject({ toAppend: 1, toFail: 0 });
+	});
+
 	test("a pending wake whose conversation row is gone fails terminally, not the pass", () => {
 		const { store, conv, other, wakes } = setup();
 		const rec = wakes.record({

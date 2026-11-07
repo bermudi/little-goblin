@@ -2779,6 +2779,8 @@ button.pathchip:hover svg {
    on top, every other cell on its own muted line (data-label names it).
    A cell with .dt-hide-m drops out at that width. */
 .dtable {
+	/* A flex child with overflow hidden would shrink to the pane height. */
+	flex: none;
 	container-type: inline-size;
 	border: 1px solid var(--app-divider);
 	border-radius: 10px;
@@ -5437,10 +5439,6 @@ button.link:hover {
 }
 .logtable .log-row.open::after {
 	transform: rotate(90deg);
-}
-/* A flex child with overflow hidden would shrink to the pane height. */
-.logtable {
-	flex: none;
 }
 .logtable .log-row.sub .log-when {
 	padding-left: 1.2rem;

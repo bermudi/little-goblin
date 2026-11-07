@@ -786,14 +786,29 @@ mirroring the Telegram `/decide` / `/resume` surface:
 Archive replaces delete as the rail's declutter action; an archived
 conversation keeps everything (history, FTS hits, settings, pings,
 `/app/c/<id>` links) — the stamp is list visibility, nothing more. Delete
-keeps its confirm but only on archived rows: the rail offers archive, the
-archive offers delete.
+is offered only on archived rows (the rail offers archive, the archive
+offers delete) and is undoable for a few seconds — see Undo below.
 
 Archiving never fences a live turn (unlike DELETE's `runtime.stop`) — the
 turn finishes into history either way. And **any appended event
 auto-unarchives**: a delegation notice or a message sent via the ping link
 brings a shelved spin-off back to the rail instead of accumulating replies
 unseen.
+
+### Undo (ruling 2026-11-07)
+
+Archiving a chat and deleting an archived chat both raise a six-second
+Undo toast (`undoToast.tsx`) in place of the delete confirm. One toast at
+a time; a newer action settles the older one, so only the latest is
+undoable. Archive undo is an ordinary unarchive PATCH. Delete is
+irreversible server-side, so the client holds it back: the row hides at
+once, `DELETE` fires when the toast settles (timeout, × button, a newer
+toast, `pagehide`), and Undo just un-hides the row — no request. Closing
+the tab inside the window may cancel the delete (best effort on
+`pagehide`); the chat then stays. This is the one place the "no optimistic
+mutation" rule bends, and only for hiding a row. Unarchive, pin and
+rename raise no toast. Notes and projects have their own archive and are
+not covered yet.
 
 ## Deletion's dependents (ruling 2026-10-19)
 

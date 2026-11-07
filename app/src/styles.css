@@ -4740,6 +4740,60 @@ select.ui-input option {
 	}
 }
 
+/* ---------- undo toast (design/app.md → Undo) ----------
+   One at a time, top-centre under the page header on desktop (the
+   composer owns the bottom edge); on phones it rides above the thumb bar. */
+.undo-toast {
+	position: fixed;
+	left: 50%;
+	top: 3.25rem;
+	transform: translateX(-50%);
+	z-index: 60;
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	max-width: min(28rem, calc(100vw - 2rem));
+	padding: 0.45rem 0.5rem 0.45rem 0.85rem;
+	border: 1px solid var(--app-control-border);
+	border-radius: 10px;
+	background: var(--app-gray-100);
+	color: var(--app-fg);
+	font-size: 13px;
+	box-shadow: 0 6px 24px rgb(0 0 0 / 0.25);
+}
+.undo-message {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.undo-action {
+	font-weight: 600;
+	color: var(--app-accent);
+	padding: 0.2rem 0.5rem;
+	border-radius: 6px;
+}
+.undo-close {
+	color: var(--app-fg-subtle);
+	padding: 0.2rem 0.45rem;
+	border-radius: 6px;
+	line-height: 1;
+}
+.undo-action:hover,
+.undo-close:hover {
+	background: var(--app-hover);
+}
+@media (max-width: 720px) {
+	.undo-toast {
+		left: 0.75rem;
+		right: 0.75rem;
+		top: auto;
+		transform: none;
+		max-width: none;
+		bottom: calc(4.5rem + env(safe-area-inset-bottom));
+	}
+}
+
 /* ---------- projects (design/projects.md) ---------- */
 
 /* The projects pane: single-line project rows, then New project. The

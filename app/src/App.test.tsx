@@ -479,6 +479,29 @@ describe("rail row actions and the pinned pool", () => {
 		expect(rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
 	});
 
+	test("archive raises an Undo toast that unshelves the row", async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await settle();
+		await click(
+			[...container.querySelectorAll(".conv")]
+				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
+				?.querySelectorAll(".conv-actions button")[2],
+		);
+		expect(container.querySelector(".undo-toast")?.textContent).toContain('Archived "fresh chat"');
+		expect(rowActions("fresh chat")).toEqual([]);
+
+		await click(container.querySelector(".undo-action"));
+		expect(container.querySelector(".undo-toast")).toBeNull();
+		expect(patches).toEqual([
+			{ id: "fresh", body: { archived: true } },
+			{ id: "fresh", body: { archived: false } },
+		]);
+		expect(rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
+	});
+
 	test("a failed row mutation surfaces an alert naming the action and the row", async () => {
 		failPatch = true;
 		root = createRoot(container);
@@ -1094,12 +1117,18 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await click(container.querySelector(".conv-main"));
 		expect(win.location.pathname).toBe("/app/c/fixture");
 	};
-	const removeFixture = async (action: "Archive" | "Delete") =>
+	const clickRowAction = (action: "Archive" | "Delete") =>
 		click(
 			[...container.querySelectorAll(".conv-actions button")].find(
 				(b) => (b.getAttribute("aria-label") ?? b.textContent) === action,
 			),
 		);
+	// Delete is held back for the undo window; closing the toast makes it
+	// final, so the helper does that to reach the settled state.
+	const removeFixture = async (action: "Archive" | "Delete") => {
+		await clickRowAction(action);
+		if (action === "Delete") await click(container.querySelector(".undo-close"));
+	};
 
 	test("the chat header opens the thread-sources sheet for the open conversation", async () => {
 		seedConversation();
@@ -1235,7 +1264,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				expect(win.history.length).toBe(length);
 				expect(container.querySelector("main > header .header-title")?.textContent).toBe(page);
 				expect(container.querySelector(".settings")).toBe(editor);
-				expect(confirmMessages).toEqual(archived ? ['Delete "fixture chat"?'] : []);
+				expect(confirmMessages).toEqual([]);
 				if (label === "dirty Settings") {
 					expect(container.textContent).toContain("unsaved");
 					expect(operatorChips()).toBe(0);
@@ -1259,6 +1288,32 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			expect(container.querySelector("header .header-title")).toBeNull();
 		});
 	}
+
+	test("Delete hides the row at once but only sends DELETE when the toast settles", async () => {
+		seedConversation(true);
+		await mount();
+		await selectFixture(true);
+		await clickRowAction("Delete");
+		expect(confirmCalls).toBe(0);
+		expect(container.querySelector(".undo-toast")?.textContent).toContain('Deleted "fixture chat"');
+		expect(container.querySelector(".conv")).toBeNull();
+		// Still on the server until the toast settles.
+		expect(conversations).not.toEqual([]);
+
+		await click(container.querySelector(".undo-close"));
+		expect(conversations).toEqual([]);
+	});
+
+	test("Undo after Delete restores the row and never sends DELETE", async () => {
+		seedConversation(true);
+		await mount();
+		await selectFixture(true);
+		await clickRowAction("Delete");
+		await click(container.querySelector(".undo-action"));
+		expect(container.querySelector(".undo-toast")).toBeNull();
+		expect(container.querySelector(".conv")).not.toBeNull();
+		expect(conversations).not.toEqual([]);
+	});
 
 	test("removing a chain entry drops its key record from the saved body", async () => {
 		settings = parseConfig({

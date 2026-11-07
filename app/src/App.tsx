@@ -29,6 +29,7 @@ import { loadChatWidth, saveChatWidth, type ChatWidth } from "./chatWidth.ts";
 import { SettingsView } from "./SettingsView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
+import { useUndoToast } from "./undoToast.tsx";
 import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
 import { WindowView } from "./WindowView.tsx";
 import { DelegationsView, ProgramsView, StatusView } from "./OperatorViews.tsx";
@@ -459,8 +460,9 @@ const OPS_GLYPHS: {
 	},
 ];
 
-// Archive skips the confirm (reversible); delete keeps it — the one
-// destructive action. Hover actions overlay the preview line so the
+// Archive and delete both skip the confirm: each raises an Undo toast
+// instead (delete is held back for that window — see the App's
+// deleteConversationHeld). Hover actions overlay the preview line so the
 // title never trades width for them.
 function ConversationRow({
 	conv,
@@ -469,7 +471,7 @@ function ConversationRow({
 	onRenamed,
 	onToggleArchived,
 	onTogglePinned,
-	onDeleted,
+	onDelete,
 	onError,
 	token,
 }: {
@@ -479,7 +481,7 @@ function ConversationRow({
 	onRenamed: () => void;
 	onToggleArchived: (id: string, archived: boolean) => void;
 	onTogglePinned: (id: string, pinned: boolean) => void;
-	onDeleted: (id: string) => void;
+	onDelete: (conv: AppConversationList["conversations"][number]) => void;
 	onError: (message: string) => void;
 	token: string | null;
 }) {
@@ -564,10 +566,7 @@ function ConversationRow({
 		setDraft(title ?? "");
 		setEditing(true);
 	};
-	const remove = () => {
-		if (!window.confirm(`Delete "${title ?? preview ?? "this conversation"}"?`)) return;
-		void deleteConversation(token, conv.id).then(() => onDeleted(conv.id), failed("delete"));
-	};
+	const remove = () => onDelete(conv);
 
 	if (editing) {
 		return (
@@ -925,6 +924,10 @@ function AppShell() {
 		setStartFailed(false);
 	};
 	const [archivedOpen, setArchivedOpen] = useState(false);
+	const undoToast = useUndoToast();
+	// Deleted rows stay out of the lists while their DELETE is held back
+	// for the undo window.
+	const [heldDeletes, setHeldDeletes] = useState<ReadonlySet<string>>(new Set());
 	const listSeq = useRef(0);
 	// The deep link applies once — after the first list load — so an
 	// operator's own navigation is never overridden later.
@@ -1374,6 +1377,63 @@ function AppShell() {
 		}
 	};
 
+	const rowLabel = (c: AppConversationList["conversations"][number]) => {
+		const title = flatTitle(c.title);
+		const preview = flatLine(c.preview);
+		return title ?? (preview === "" ? "new conversation" : preview);
+	};
+	const archivedWithUndo = (c: AppConversationList["conversations"][number]) => {
+		undoToast.show({
+			message: `Archived "${rowLabel(c)}"`,
+			undo: () => {
+				void patchConversation(token, c.id, { archived: false }).then(
+					() => {
+						setRowError(null);
+						void refresh();
+					},
+					(err: unknown) =>
+						setRowError(
+							`Couldn't unarchive "${rowLabel(c)}": ` +
+								(err instanceof Error ? err.message : String(err)),
+						),
+				);
+			},
+		});
+	};
+	// The server delete is irreversible, so it waits out the undo window:
+	// the row hides now, the DELETE fires when the toast settles, and Undo
+	// just un-hides it. Closing the page inside the window cancels it.
+	const deleteConversationHeld = (c: AppConversationList["conversations"][number]) => {
+		const release = () =>
+			setHeldDeletes((prev) => {
+				const next = new Set(prev);
+				next.delete(c.id);
+				return next;
+			});
+		setRowError(null);
+		setHeldDeletes((prev) => new Set(prev).add(c.id));
+		rowRemoved(c.id);
+		undoToast.show({
+			message: `Deleted "${rowLabel(c)}"`,
+			undo: release,
+			settle: () => {
+				void deleteConversation(token, c.id).then(
+					() => {
+						release();
+						void refresh();
+					},
+					(err: unknown) => {
+						release();
+						setRowError(
+							`Couldn't delete "${rowLabel(c)}": ` +
+								(err instanceof Error ? err.message : String(err)),
+						);
+					},
+				);
+			},
+		});
+	};
+
 	const openPage = (p: AppPageKey) => {
 		if (page === p) return;
 		if (!leaveDirty()) return;
@@ -1475,7 +1535,7 @@ function AppShell() {
 	// section toggle. Project-bound chats leave the rail for their
 	// project page; `?? null` keeps pre-projects fixtures (field
 	// absent) on the rail.
-	const all = conversations ?? [];
+	const all = (conversations ?? []).filter((c) => !heldDeletes.has(c.id));
 	const unbound = all.filter((c) => (c.projectId ?? null) === null);
 	const active = unbound.filter((c) => c.archivedAt === null);
 	const rail = [
@@ -1563,18 +1623,17 @@ function AppShell() {
 				}}
 				onToggleArchived={(id, isArchived) => {
 					setRowError(null);
-					if (isArchived) rowRemoved(id);
+					if (isArchived) {
+						rowRemoved(id);
+						archivedWithUndo(c);
+					}
 					void refresh();
 				}}
 				onTogglePinned={() => {
 					setRowError(null);
 					void refresh();
 				}}
-				onDeleted={(id) => {
-					setRowError(null);
-					rowRemoved(id);
-					void refresh();
-				}}
+				onDelete={deleteConversationHeld}
 				onError={setRowError}
 			/>
 		</li>
@@ -2525,6 +2584,7 @@ function AppShell() {
 					onClose={() => setSourcesOpen(false)}
 				/>
 			)}
+			{undoToast.view}
 			{createProjectOpen && (
 				<NewProjectDialog
 					token={token}

@@ -10,7 +10,7 @@ import type {
 import { decideMailApproval, decideProgramApproval, listApprovals } from "./api.ts";
 import { DiffView } from "./DiffView.tsx";
 
-interface ApprovalState {
+export interface ApprovalState {
 	data: AppApprovalsResponse | null;
 	err: string | null;
 	loading: boolean;
@@ -67,8 +67,18 @@ export function ApprovalCard({
 	);
 }
 
-export function ApprovalsPanel({ token }: { token: string | null }) {
-	const approvals = useApprovals(token);
+/** The pending list on the Programs page: cards in the wide layout (reason
+ *  left, evidence right). The page owns the load, so its summary strip and
+ *  this list read one answer; `onChanged` lets it reload what a decision moved. */
+export function ApprovalsPanel({
+	token,
+	approvals,
+	onChanged,
+}: {
+	token: string | null;
+	approvals: ApprovalState;
+	onChanged?(): void;
+}) {
 	if (approvals.loading) return <p className="empty">Loading approvals…</p>;
 	if (approvals.err !== null) return <p className="error">{approvals.err}</p>;
 	const programs = approvals.data?.programs ?? [];
@@ -76,14 +86,19 @@ export function ApprovalsPanel({ token }: { token: string | null }) {
 	if (programs.length === 0 && mail.length === 0) {
 		return <p className="empty">No pending approvals.</p>;
 	}
+	const onDone = async () => {
+		await approvals.refresh();
+		onChanged?.();
+	};
 	return (
-		<div className="approval-list">
+		<div className="approval-list ap-list">
 			{programs.map((proposal) => (
 				<ProgramApprovalCard
 					key={`p${proposal.id}`}
 					token={token}
 					proposal={proposal}
-					onDone={approvals.refresh}
+					onDone={onDone}
+					layout="page"
 				/>
 			))}
 			{mail.map((draft) => (
@@ -91,7 +106,8 @@ export function ApprovalsPanel({ token }: { token: string | null }) {
 					key={`m${draft.id}`}
 					token={token}
 					draft={draft}
-					onDone={approvals.refresh}
+					onDone={onDone}
+					layout="page"
 				/>
 			))}
 		</div>
@@ -156,36 +172,25 @@ export function ProgramApprovalCard({
 	token,
 	proposal,
 	onDone,
+	layout,
 }: {
 	token: string | null;
 	proposal: AppProgramProposal;
 	onDone(): Promise<void>;
+	layout?: "page";
 }) {
 	const decision = useDecision(onDone);
 	const candidate = proposal.candidate;
-	return (
-		<div className="approval-card">
-			<div className="op-item-head">
-				<span className="op-item-title">
-					Program proposal #{proposal.id} — {proposal.kind === "create" ? "new" : "update"}
-				</span>
-				<span className="pill pending">pending</span>
-			</div>
-			{candidate === null ? (
-				<p className="error">The target program is gone; approval will refuse.</p>
-			) : (
-				<>
-					{proposal.changes !== null && <ProgramChanges changes={proposal.changes} />}
-					{proposal.changes !== null ? (
-						<details className="approval-full">
-							<summary>Full program after approval</summary>
-							<ProgramCandidateView candidate={candidate} />
-						</details>
-					) : (
-						<ProgramCandidateView candidate={candidate} />
-					)}
-				</>
-			)}
+	const head = (
+		<div className="op-item-head">
+			<span className="op-item-title">
+				Program proposal #{proposal.id} — {proposal.kind === "create" ? "new" : "update"}
+			</span>
+			<span className="pill pending">pending</span>
+		</div>
+	);
+	const actions = (
+		<>
 			<div className="approval-actions">
 				<button
 					type="button"
@@ -208,32 +213,93 @@ export function ProgramApprovalCard({
 				</button>
 			</div>
 			<DecisionResult decision={decision} />
+		</>
+	);
+	const page = layout === "page";
+	// On the page the facts move to the reason column, so the evidence shows
+	// the program text alone.
+	const Program = page ? CandidateBody : ProgramCandidateView;
+	const evidence =
+		candidate === null ? (
+			<p className="error">The target program is gone; approval will refuse.</p>
+		) : (
+			<>
+				{proposal.changes !== null && <ProgramChanges changes={proposal.changes} />}
+				{proposal.changes !== null ? (
+					<details className="approval-full">
+						<summary>Full program after approval</summary>
+						<Program candidate={candidate} />
+					</details>
+				) : (
+					<Program candidate={candidate} />
+				)}
+			</>
+		);
+	if (page) {
+		// Reason on the left, evidence already open on the right; stacked on a
+		// narrow pane with the evidence before the buttons.
+		return (
+			<div className="approval-card ap-page">
+				<div className="ap-meta">
+					{head}
+					{candidate !== null && (
+						<div className="approval-facts">
+							<span>
+								{proposal.kind === "create" ? "New program" : `Update to “${candidate.name}”`}
+							</span>
+							<span>pinned to {proposal.target}</span>
+							<CandidateFacts candidate={candidate} />
+						</div>
+					)}
+				</div>
+				<div className="ap-evidence">{evidence}</div>
+				<div className="ap-actions">{actions}</div>
+			</div>
+		);
+	}
+	return (
+		<div className="approval-card">
+			{head}
+			{evidence}
+			{actions}
 		</div>
 	);
 }
 
-function ProgramCandidateView({
-	candidate,
-}: {
-	candidate: NonNullable<AppProgramProposal["candidate"]>;
-}) {
+type Candidate = NonNullable<AppProgramProposal["candidate"]>;
+
+function CandidateBody({ candidate }: { candidate: Candidate }) {
+	return (
+		<div className="op-item-body">
+			<strong>{candidate.name}</strong>
+			<pre>{candidate.charter}</pre>
+		</div>
+	);
+}
+
+function CandidateFacts({ candidate }: { candidate: Candidate }) {
 	return (
 		<>
-			<div className="op-item-body">
-				<strong>{candidate.name}</strong>
-				<pre>{candidate.charter}</pre>
-			</div>
+			{candidate.cron !== null && (
+				<span>
+					<Schedule cron={candidate.cron} />
+				</span>
+			)}
+			{candidate.maxLatenessMinutes !== null && (
+				<span>max {candidate.maxLatenessMinutes}m late</span>
+			)}
+			{candidate.hook && <span>webhook</span>}
+			{candidate.mailFilter !== null && <span>mail {candidate.mailFilter}</span>}
+		</>
+	);
+}
+
+function ProgramCandidateView({ candidate }: { candidate: Candidate }) {
+	return (
+		<>
+			<CandidateBody candidate={candidate} />
 			<div className="approval-facts">
-				{candidate.cron !== null && (
-					<span>
-						<Schedule cron={candidate.cron} />
-					</span>
-				)}
-				{candidate.maxLatenessMinutes !== null && (
-					<span>max {candidate.maxLatenessMinutes}m late</span>
-				)}
-				{candidate.hook && <span>webhook</span>}
-				{candidate.mailFilter !== null && <span>mail {candidate.mailFilter}</span>}
+				<CandidateFacts candidate={candidate} />
 			</div>
 		</>
 	);
@@ -287,28 +353,34 @@ export function MailApprovalCard({
 	token,
 	draft,
 	onDone,
+	layout,
 }: {
 	token: string | null;
 	draft: AppMailDraft;
 	onDone(): Promise<void>;
+	layout?: "page";
 }) {
 	const decision = useDecision(onDone);
 	const sending = draft.status === "sending";
-	return (
-		<div className="approval-card">
-			<div className="op-item-head">
-				<span className="op-item-title">Mail draft #{draft.id}</span>
-				<span className="pill pending">
-					{sending ? "send outcome unresolved" : `expires ${draft.expiresAt}`}
-				</span>
-			</div>
-			<div className="approval-facts">
-				<span>To: {draft.to.join(", ")}</span>
-				{draft.cc.length > 0 && <span>Cc: {draft.cc.join(", ")}</span>}
-				<span>Subject: {draft.subject || "(no subject)"}</span>
-				{draft.replyToId !== null && <span>Reply to: {draft.replyToId}</span>}
-			</div>
-			<pre className="mail-body">{draft.body}</pre>
+	const head = (
+		<div className="op-item-head">
+			<span className="op-item-title">Mail draft #{draft.id}</span>
+			<span className="pill pending">
+				{sending ? "send outcome unresolved" : `expires ${draft.expiresAt}`}
+			</span>
+		</div>
+	);
+	const facts = (
+		<div className="approval-facts">
+			<span>To: {draft.to.join(", ")}</span>
+			{draft.cc.length > 0 && <span>Cc: {draft.cc.join(", ")}</span>}
+			<span>Subject: {draft.subject || "(no subject)"}</span>
+			{draft.replyToId !== null && <span>Reply to: {draft.replyToId}</span>}
+		</div>
+	);
+	const body = <pre className="mail-body">{draft.body}</pre>;
+	const actions = (
+		<>
 			{sending && (
 				<p role="alert">
 					This send may still be in progress or may have completed. Check Gmail Sent before
@@ -333,6 +405,26 @@ export function MailApprovalCard({
 				</button>
 			</div>
 			<DecisionResult decision={decision} />
+		</>
+	);
+	if (layout === "page") {
+		return (
+			<div className="approval-card ap-page">
+				<div className="ap-meta">
+					{head}
+					{facts}
+				</div>
+				<div className="ap-evidence">{body}</div>
+				<div className="ap-actions">{actions}</div>
+			</div>
+		);
+	}
+	return (
+		<div className="approval-card">
+			{head}
+			{facts}
+			{body}
+			{actions}
 		</div>
 	);
 }

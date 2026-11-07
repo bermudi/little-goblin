@@ -5,11 +5,11 @@
 // globalThis.fetch.
 
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Window } from "happy-dom";
-import { ApprovalsPanel } from "./Approvals.tsx";
 import type { AppProgramProposal } from "../../src/http/app-wire.ts";
+import { ApprovalsPanel, useApprovals } from "./Approvals.tsx";
 
 let win: Window;
 let container: HTMLElement;
@@ -66,6 +66,11 @@ const PROPOSAL: AppProgramProposal = {
 	changes: null,
 };
 
+// The Programs page owns the load; the test stands in for it.
+function Page() {
+	return <ApprovalsPanel token={null} approvals={useApprovals(null)} />;
+}
+
 const cardButton = (label: string) =>
 	[...container.querySelectorAll(".approval-card button")].find((el) => el.textContent === label) as
 		| HTMLButtonElement
@@ -94,7 +99,7 @@ test("a granted hook URL stays on screen until the operator dismisses it", async
 		{ preconnect: realFetch.preconnect },
 	);
 	root = createRoot(container);
-	await act(async () => root?.render(<ApprovalsPanel token={null} />));
+	await act(async () => root?.render(<Page />));
 	const approve = cardButton("Approve");
 	expect(approve).toBeDefined();
 	await act(async () => approve?.click());
@@ -134,7 +139,7 @@ test("a decision without a hook URL refreshes immediately", async () => {
 		{ preconnect: realFetch.preconnect },
 	);
 	root = createRoot(container);
-	await act(async () => root?.render(<ApprovalsPanel token={null} />));
+	await act(async () => root?.render(<Page />));
 	const reject = cardButton("Reject");
 	expect(reject).toBeDefined();
 	await act(async () => reject?.click());
@@ -181,7 +186,7 @@ test("an unresolved send warns and allows cancel but never offers a resend", asy
 		{ preconnect: realFetch.preconnect },
 	);
 	root = createRoot(container);
-	await act(async () => root?.render(<ApprovalsPanel token={null} />));
+	await act(async () => root?.render(<Page />));
 	expect(container.textContent).toContain("Check Gmail Sent");
 	expect(container.textContent).toContain("send outcome unresolved");
 	expect(cardButton("Send")?.disabled).toBe(true);
@@ -214,7 +219,7 @@ test("an update card shows old → new per changed field and a line diff for ins
 		preconnect: realFetch.preconnect,
 	});
 	root = createRoot(container);
-	await act(async () => root?.render(<ApprovalsPanel token={null} />));
+	await act(async () => root?.render(<Page />));
 	const text = container.querySelector(".approval-changes")?.textContent ?? "";
 	expect(text).toContain("ScheduleDaily 09:00 (0 9 * * *) → Daily 07:00 (0 7 * * *)");
 	expect(container.querySelector(".diff .diff-line.add")?.textContent).toBe("+c");

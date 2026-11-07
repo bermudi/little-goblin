@@ -7,7 +7,7 @@ import { appLink } from "../app-link.ts";
 import { appIdOf } from "../conversation.ts";
 import { log } from "../log.ts";
 import { type OperatorReminder, reminderText } from "../responsibility-reminder.ts";
-import { API_CALL_TIMEOUT_MS, withTimeout } from "./deadline.ts";
+import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import type { DeliveryApi } from "./delivery.ts";
 import type { PingStore } from "./pings.ts";
 
@@ -18,6 +18,7 @@ export interface TelegramReminderDeps {
 	api(): DeliveryApi | null;
 	operators(): number[];
 	publicUrl(): string | undefined;
+	timeoutMs?: number;
 }
 
 export function openTelegramReminders(
@@ -45,35 +46,59 @@ export function openTelegramReminders(
 		}
 		const appId = appIdOf(reminder.conversationId);
 		const publicUrl = deps.publicUrl();
-		for (const chat of deps.operators()) {
-			if ((qSent.get(reminder.key, chat)?.n ?? 0) > 0) continue;
-			try {
-				const sent = await withTimeout(
-					api.sendMessage(
-						chat,
-						reminderText(reminder.stage),
-						appId === null || publicUrl === undefined
-							? {}
-							: {
-									reply_markup: {
-										inline_keyboard: [[{ text: "Open in app", url: appLink(publicUrl, appId) }]],
-									},
-								},
-					),
-					"sendMessage (operator reminder)",
-					API_CALL_TIMEOUT_MS,
-				);
-				qMark.run(reminder.key, chat, new Date().toISOString());
-				// A swipe reply reaches the waiting app conversation, as with the bell.
-				if (appId !== null) deps.pings.record(chat, sent.message_id, reminder.conversationId);
-				log.info("operator reminder sent on telegram", { ...fields, chat });
-			} catch (err) {
-				log.warn("operator reminder telegram send failed — will retry", {
-					...fields,
+		await Promise.all(
+			deps.operators().map(async (chat) => {
+				if ((qSent.get(reminder.key, chat)?.n ?? 0) > 0) return;
+				const sending = api.sendMessage(
 					chat,
-					error: err instanceof Error ? err.message : String(err),
-				});
-			}
-		}
+					reminderText(reminder.stage),
+					appId === null || publicUrl === undefined
+						? {}
+						: {
+								reply_markup: {
+									inline_keyboard: [[{ text: "Open in app", url: appLink(publicUrl, appId) }]],
+								},
+							},
+				);
+				let messageId: number;
+				try {
+					messageId = (
+						await withTimeout(sending, "sendMessage (operator reminder)", deps.timeoutMs)
+					).message_id;
+				} catch (err) {
+					if (!(err instanceof TelegramTimeoutError)) {
+						log.warn("operator reminder telegram send failed — will retry", {
+							...fields,
+							chat,
+							error: err instanceof Error ? err.message : String(err),
+						});
+						return;
+					}
+					// A timeout never proves non-delivery. The sweep won't retry a
+					// key that is still in flight, so keep waiting for the real result.
+					log.warn("operator reminder delivery uncertain — waiting for late result", {
+						...fields,
+						chat,
+					});
+					try {
+						messageId = (await sending).message_id;
+					} catch (late) {
+						log.warn("operator reminder telegram send failed — will retry", {
+							...fields,
+							chat,
+							error: late instanceof Error ? late.message : String(late),
+						});
+						return;
+					}
+				}
+				// Persistence failures propagate: they are not send failures.
+				deps.db.transaction(() => {
+					qMark.run(reminder.key, chat, new Date().toISOString());
+					// A swipe reply reaches the waiting app conversation, as with the bell.
+					if (appId !== null) deps.pings.record(chat, messageId, reminder.conversationId);
+				})();
+				log.info("operator reminder sent on telegram", { ...fields, chat });
+			}),
+		);
 	};
 }

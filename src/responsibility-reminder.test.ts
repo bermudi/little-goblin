@@ -4,7 +4,12 @@ import { appAddress } from "./conversation.ts";
 import { openPrograms } from "./programs.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities } from "./responsibilities.ts";
-import { dueReminder, REMINDER_EVERY_MS, REMINDER_FIRST_MS } from "./responsibility-reminder.ts";
+import {
+	deliverOperatorReminder,
+	dueReminder,
+	REMINDER_EVERY_MS,
+	REMINDER_FIRST_MS,
+} from "./responsibility-reminder.ts";
 import { type SchedulerDeps, startScheduler, sweepOperatorReminders } from "./scheduler.ts";
 import { openTestStore, tmpDb } from "./testkit.ts";
 
@@ -42,17 +47,18 @@ function rig() {
 		},
 	});
 	const attempts = new Map<string, number>();
-	const pending: Promise<boolean>[] = [];
+	const inFlight = new Map<string, Promise<void>>();
+	const pending: Promise<unknown>[] = [];
 	const deps = {
 		responsibilities: resps,
 		remindOperator: (r: Parameters<typeof push.notifyReminder>[0]) => {
 			const p = push.notifyReminder(r);
 			pending.push(p);
-			return p;
+			return p.then(() => {});
 		},
 	} as unknown as SchedulerDeps;
 	const sweep = async (at: number) => {
-		sweepOperatorReminders(deps, new Date(at), attempts);
+		sweepOperatorReminders(deps, new Date(at), attempts, inFlight);
 		await Promise.all(pending);
 	};
 	const subscribe = () =>
@@ -167,6 +173,81 @@ describe("operator reminders", () => {
 		r.failures.next = 1;
 		expect(await r.push.notifyReminder(due)).toBe(false);
 		expect(await r.push.notifyReminder(due)).toBe(true);
+	});
+
+	test("steps of one series share a replacement tag but deliver separately", async () => {
+		const r = rig();
+		await r.subscribe();
+		const t = r.ask();
+		await r.sweep(t + REMINDER_FIRST_MS);
+		await r.sweep(t + REMINDER_FIRST_MS + REMINDER_EVERY_MS);
+		expect(r.sent).toHaveLength(2);
+		expect(r.sent[0]!.tag).toBe(r.sent[1]!.tag);
+	});
+
+	test("the Telegram fallback skips work that is no longer due", async () => {
+		const r = rig();
+		const t = r.ask();
+		const due = dueReminder(
+			r.resps.get(r.id)!,
+			r.resps.latestReport(r.id),
+			[],
+			new Date(t + REMINDER_FIRST_MS),
+		)!;
+		const telegram: string[] = [];
+		const realNow = Date;
+		const after = t + REMINDER_FIRST_MS;
+		globalThis.Date = class extends realNow {
+			constructor(...args: []) {
+				super(...(args.length === 0 ? ([after] as unknown as []) : args));
+			}
+		} as DateConstructor;
+		try {
+			const deliver = () =>
+				deliverOperatorReminder(due, {
+					push: () => {
+						return Promise.resolve(false);
+					},
+					telegram: (x) => {
+						telegram.push(x.key);
+						return Promise.resolve();
+					},
+					resps: r.resps,
+				});
+			await deliver();
+			expect(telegram).toEqual([due.key]);
+			r.resps.setStatus(r.id, "paused");
+			await deliver();
+			expect(telegram).toEqual([due.key]);
+		} finally {
+			globalThis.Date = realNow;
+		}
+	});
+
+	test("the sweep skips an in-flight key and shutdown can join it", async () => {
+		const r = rig();
+		const t = r.ask();
+		let calls = 0;
+		let release = () => {};
+		const deps = {
+			responsibilities: r.resps,
+			remindOperator: () => {
+				calls++;
+				return new Promise<void>((resolve) => {
+					release = resolve;
+				});
+			},
+		} as unknown as SchedulerDeps;
+		const attempts = new Map<string, number>();
+		const inFlight = new Map<string, Promise<void>>();
+		const at = t + REMINDER_FIRST_MS;
+		sweepOperatorReminders(deps, new Date(at), attempts, inFlight);
+		sweepOperatorReminders(deps, new Date(at + 60 * 60_000), attempts, inFlight);
+		expect(calls).toBe(1);
+		expect(inFlight.size).toBe(1);
+		release();
+		await Promise.all(inFlight.values());
+		expect(inFlight.size).toBe(0);
 	});
 
 	test("no subscribed device is not an error", async () => {

@@ -222,6 +222,7 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 			},
 			{
 				// A phone off overnight should still get it; the next step replaces it anyway.
+				replaces: reminder.series,
 				ttl: REMINDER_EVERY_MS / 1000,
 				fields: {
 					conversation: reminder.conversationId,
@@ -236,7 +237,7 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 	async function ring(
 		key: string,
 		message: { title: string; body: string; url: string },
-		opts: { ttl: number; fields: Record<string, string> },
+		opts: { ttl: number; fields: Record<string, string>; replaces?: string },
 	): Promise<void> {
 		const subscriptions = qList.all();
 		if (subscriptions.length === 0) {
@@ -256,7 +257,12 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 				log.error("app push send skipped — VAPID unavailable", err, opts.fields);
 				return;
 			}
-			const payload = JSON.stringify({ ...message, tag: key });
+			const replaces = opts.replaces ?? key;
+			const payload = JSON.stringify({
+				...message,
+				tag: replaces,
+				...(opts.replaces === undefined ? {} : { renotify: true }),
+			});
 			for (const row of pending) {
 				try {
 					await send(subscriptionFor(row), payload, {
@@ -268,7 +274,7 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 						TTL: opts.ttl,
 						timeout: 10_000,
 						urgency: "normal",
-						topic: createHash("sha256").update(key).digest("base64url").slice(0, 32),
+						topic: createHash("sha256").update(replaces).digest("base64url").slice(0, 32),
 					});
 					qMarkDelivered.run(key, row.endpoint_hash, new Date().toISOString());
 					log.info("app push sent", { ...opts.fields, endpointHash: row.endpoint_hash });

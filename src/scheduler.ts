@@ -48,6 +48,8 @@ export interface Scheduler {
 	/** Stops the timer and drops pending retries — the cursor already
 	 *  advanced, so a dropped retry is what a crash does anyway. */
 	stop(): void;
+	/** Resolves when reminder sends in flight have settled. */
+	joinReminders(): Promise<void>;
 }
 
 export type ProgramTrigger = "schedule" | "webhook" | "mail";
@@ -67,12 +69,13 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 	const ladder = ladderFor(deps);
 	let stopped = false;
 	const reminderAttempts = new Map<string, number>();
+	const remindersInFlight = new Map<string, Promise<void>>();
 	const scan = (): void => {
 		if (stopped) return;
 		const now = new Date();
 		reconcilePendingMarks(deps);
 		try {
-			sweepOperatorReminders(deps, now, reminderAttempts);
+			sweepOperatorReminders(deps, now, reminderAttempts, remindersInFlight);
 		} catch (err) {
 			log.error("operator reminder sweep failed", err, {});
 		}
@@ -114,6 +117,9 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 			for (const t of ladder.timers.values()) clearTimeout(t);
 			ladder.timers.clear();
 		},
+		joinReminders: async () => {
+			await Promise.all(remindersInFlight.values());
+		},
 	};
 }
 
@@ -126,6 +132,7 @@ export function sweepOperatorReminders(
 	deps: SchedulerDeps,
 	now: Date,
 	attempts: Map<string, number>,
+	inFlight: Map<string, Promise<void>>,
 ): void {
 	const remind = deps.remindOperator;
 	const resps = deps.responsibilities;
@@ -136,13 +143,21 @@ export function sweepOperatorReminders(
 		const reminder = dueReminder(resp, resps.latestReport(id), resps.operationsFor(id), now);
 		if (reminder === null) continue;
 		due.add(reminder.key);
+		if (inFlight.has(reminder.key)) continue;
 		const last = attempts.get(reminder.key);
 		if (last !== undefined && now.getTime() - last < REMINDER_RETRY_MS) continue;
 		attempts.set(reminder.key, now.getTime());
 		log.debug("operator reminder due", { ...reminder });
-		remind(reminder).catch((err: unknown) => {
-			log.error("operator reminder failed", err, { ...reminder });
-		});
+		inFlight.set(
+			reminder.key,
+			remind(reminder)
+				.catch((err: unknown) => {
+					log.error("operator reminder failed", err, { ...reminder });
+				})
+				.finally(() => {
+					inFlight.delete(reminder.key);
+				}),
+		);
 	}
 	for (const key of attempts.keys()) if (!due.has(key)) attempts.delete(key);
 }

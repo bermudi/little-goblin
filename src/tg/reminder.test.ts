@@ -31,6 +31,7 @@ function rig(api: "up" | "down" = "up") {
 	});
 	const reminder: OperatorReminder = {
 		key: "reminder:r:1:1",
+		series: "reminder:r",
 		responsibilityId: "r",
 		conversationId: conv.id,
 		stage: "question",
@@ -63,4 +64,54 @@ test("a detached channel sends nothing and does not throw", async () => {
 	const r = rig("down");
 	await r.remind(r.reminder);
 	expect(r.sent).toHaveLength(0);
+});
+
+test("a marker and reply route save together, and a storage failure propagates", async () => {
+	const r = rig();
+	const record = r.pings.record;
+	r.pings.record = () => {
+		throw new Error("disk");
+	};
+	await expect(r.remind(r.reminder)).rejects.toThrow("disk");
+	r.pings.record = record;
+	await r.remind(r.reminder);
+	expect(r.sent).toHaveLength(2);
+});
+
+test("a late result after a timeout is recorded, with no second send", async () => {
+	const { store } = openTestStore("goblin-tg-late-");
+	const conv = store.resolve(appAddress("room"), "/w");
+	const pings = openPings(store.db);
+	let finish = (_: { message_id: number }) => {};
+	let sends = 0;
+	const remind = openTelegramReminders({
+		db: store.db,
+		pings,
+		api: () =>
+			({
+				sendMessage() {
+					sends++;
+					return new Promise((resolve) => {
+						finish = resolve;
+					});
+				},
+			}) as unknown as DeliveryApi,
+		operators: () => [1],
+		publicUrl: () => undefined,
+		timeoutMs: 1,
+	});
+	const reminder: OperatorReminder = {
+		key: "k",
+		series: "s",
+		responsibilityId: "r",
+		conversationId: conv.id,
+		stage: "question",
+	};
+	const delivery = remind(reminder);
+	await Bun.sleep(10);
+	finish({ message_id: 7 });
+	await delivery;
+	expect(pings.lookup(1, 7)).toBe(conv.id);
+	await remind(reminder);
+	expect(sends).toBe(1);
 });

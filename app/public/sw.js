@@ -108,6 +108,7 @@ self.addEventListener("push", (event) => {
 				icon: "/app/icon-192.png",
 				badge: "/app/icon-192.png",
 				tag: typeof data.tag === "string" ? data.tag : "goblin-attention",
+				renotify: data.renotify === true && typeof data.tag === "string",
 				data: { url: target },
 			},
 		),

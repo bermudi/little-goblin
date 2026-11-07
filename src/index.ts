@@ -58,7 +58,7 @@ import { openProjects } from "./projects.ts";
 import { wireReviewer } from "./reviewer.ts";
 import { Runtime, type RuntimeDeps } from "./runtime.ts";
 import { makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
-import type { OperatorReminder } from "./responsibility-reminder.ts";
+import { deliverOperatorReminder, type OperatorReminder } from "./responsibility-reminder.ts";
 import { openTelegramReminders } from "./tg/reminder.ts";
 import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
 import { SkillSources } from "./skill-provenance.ts";
@@ -706,9 +706,12 @@ async function boot() {
 		// dispatcher owns their wake from the record on.
 		responsibilities,
 		recordDevelopment: (input: DevelopmentInput) => wakeDispatcher!.record(input),
-		remindOperator: async (reminder: OperatorReminder) => {
-			if (!(await appPush.notifyReminder(reminder))) await remindOnTelegram(reminder);
-		},
+		remindOperator: (reminder: OperatorReminder) =>
+			deliverOperatorReminder(reminder, {
+				push: appPush.notifyReminder,
+				telegram: remindOnTelegram,
+				resps: responsibilities,
+			}),
 		// The System One gate doubles as the watcher-event scorer (fail-open) — unscored absent.
 		...(system1Gate ? { checkMail: system1Gate as Pick<typeof system1Gate, "decide"> } : {}),
 	});
@@ -1239,6 +1242,7 @@ async function shutdown(signal: string): Promise<void> {
 			})
 		: Promise.resolve();
 	const settled = Promise.allSettled([
+		scheduler.joinReminders(),
 		stopping,
 		drained,
 		delegationScan,

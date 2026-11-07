@@ -1859,23 +1859,25 @@ export function Composer({
 		};
 	}, [modelMenuOpen]);
 
-	// Focus stealing (`stealFocus`, the thread view): on mount and at
-	// every busy → idle settle — the two moments the next keystroke is a
-	// reply — the composer claims focus, so typing never needs a click
-	// first. "When it can": never against a surface holding focus for
-	// its own typing (matched by tag/contenteditable — bare DOM classes
-	// like HTMLElement don't exist in bun's test runtime), never while
-	// one of the composer's own pickers or any dialog is open, and
-	// never on phone widths, where focus() pops the on-screen keyboard
-	// over a thread the operator just opened to read. The picker flags
-	// ride a ref so only `busy` flips re-run the effect — a picker
-	// opening must not snatch focus from itself.
+	// Focus stealing (`stealFocus`, the thread view): on mount, at every
+	// busy → idle settle, and when the window comes back to the
+	// foreground — the moments the next keystroke is a reply — the
+	// composer claims focus, so typing never needs a click first. "When
+	// it can": never against a surface holding focus for its own typing
+	// (matched by tag/contenteditable — bare DOM classes like
+	// HTMLElement don't exist in bun's test runtime), never while one of
+	// the composer's own pickers or any dialog is open, and never on
+	// phone widths, where focus() pops the on-screen keyboard over a
+	// thread the operator just opened to read. The picker flags ride a
+	// ref so effect identity tracks only its real triggers — a picker
+	// opening must not snatch focus from itself. The refocus claim
+	// skips the busy check deliberately: coming back to a streaming
+	// turn to steer it is still typing into the box.
 	const stealGuard = useRef({ pickers: false });
 	stealGuard.current.pickers =
 		notePickerOpen || skillPickerOpen || modelMenuOpen || modelSheetOpen;
 	const phone = usePhoneWidth();
-	useEffect(() => {
-		if (!stealFocus || phone || busy) return;
+	const claimFocus = () => {
 		// activeElement is an HTMLElement in practice; the cast only
 		// reaches isContentEditable, which Element lacks.
 		const el = document.activeElement as HTMLElement | null;
@@ -1884,7 +1886,17 @@ export function Composer({
 		if (stealGuard.current.pickers) return;
 		if (document.querySelector('[role="dialog"]') !== null) return;
 		textareaRef.current?.focus();
+	};
+	useEffect(() => {
+		if (!stealFocus || phone || busy) return;
+		claimFocus();
 	}, [stealFocus, phone, busy]);
+	useEffect(() => {
+		if (!stealFocus || phone) return;
+		const onWinFocus = () => claimFocus();
+		window.addEventListener("focus", onWinFocus);
+		return () => window.removeEventListener("focus", onWinFocus);
+	}, [stealFocus, phone]);
 
 	// ref → catalog display name; the fallbacks are the ref's last path
 	// segment, then the ref itself for single-segment ids.

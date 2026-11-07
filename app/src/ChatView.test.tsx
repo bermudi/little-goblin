@@ -2567,10 +2567,11 @@ describe("composer staged memory toggle (happy-dom)", () => {
 	});
 });
 
-// The thread view's composer claims focus when it can (#184): on mount
-// and whenever a turn settles. The guards are the point as much as the
-// steal — a foreign text entry, an open dialog, or a phone width all
-// keep the focus where it is.
+// The thread view's composer claims focus when it can (#184): on mount,
+// whenever a turn settles, and when the window returns to the
+// foreground. The guards are the point as much as the steal — a foreign
+// text entry, an open dialog, or a phone width all keep the focus where
+// it is.
 describe("composer focus stealing", () => {
 	const dom = mountDom();
 
@@ -2748,6 +2749,39 @@ describe("composer focus stealing", () => {
 		});
 		await submitAgain();
 		await settle(() => dom.container.textContent?.includes("done twice") ?? false);
+		expect(document.activeElement).toBe(foreign);
+	});
+
+	test("the window returning to the foreground re-claims focus", async () => {
+		installFetch();
+		await mountThread();
+		// Alt-tab away and back: focus died on some control while the
+		// window was in the background.
+		const stray = document.createElement("button");
+		stray.type = "button";
+		stray.textContent = "stray";
+		document.body.appendChild(stray);
+		await act(async () => {
+			stray.focus();
+		});
+		expect(document.activeElement).toBe(stray);
+		await act(async () => {
+			window.dispatchEvent(new dom.win.Event("focus") as unknown as Event);
+		});
+		expect(document.activeElement).toBe(composerTa());
+	});
+
+	test("a foreign text entry survives the foreground return", async () => {
+		installFetch();
+		const foreign = document.createElement("input");
+		foreign.type = "text";
+		document.body.appendChild(foreign);
+		foreign.focus();
+		await mountThread();
+		expect(document.activeElement).toBe(foreign);
+		await act(async () => {
+			window.dispatchEvent(new dom.win.Event("focus") as unknown as Event);
+		});
 		expect(document.activeElement).toBe(foreign);
 	});
 

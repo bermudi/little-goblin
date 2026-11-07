@@ -141,6 +141,8 @@ test("proposals come first with their diff open; installed skills say what they 
 	const fresh = cards.find((c) => c.querySelector(".op-item-title")?.textContent === "tide")!;
 	expect(fresh.querySelector(".pill")?.textContent).toBe("new");
 	expect(fresh.querySelector("pre")?.textContent).toContain("tide body");
+	// SKILL.md's frontmatter is metadata, not evidence — the source skips it.
+	expect(fresh.querySelector("pre")?.textContent).not.toContain("name: tide");
 	expect(button(fresh, "Install")).toBeDefined();
 	// The table carries the description from SKILL.md.
 	const rows = [...container.querySelectorAll(".dtable .dt-row")];

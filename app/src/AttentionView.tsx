@@ -3,7 +3,7 @@
 // open and their buttons on the card, then everything else. Work in
 // progress and notifications sit below because they are not decisions.
 
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { decideBlockedMemory, getAttention, getMemoryStatus, listSkills } from "./api.ts";
 import { MailApprovalCard, ProgramApprovalCard, useApprovals } from "./Approvals.tsx";
 import { RetryCard } from "./MemoryView.tsx";
@@ -16,6 +16,7 @@ import type {
 	AppAttentionMemoryCause,
 	AppAttentionPage,
 	AppAttentionTarget,
+	AppFeedItem,
 } from "../../src/http/app-wire.ts";
 import type { MemoryStatusResponse } from "../../src/http/operator-wire.ts";
 
@@ -219,6 +220,10 @@ export function AttentionView({
 	const [watching, setWatching] = useState(false);
 	const [memoryStatus, setMemoryStatus] = useState<MemoryStatusResponse | null>(null);
 	const [dropped, setDropped] = useState<string[]>([]);
+	// null = no feed snapshot yet (loading or failed); the "Work in
+	// progress" section only disappears once the feed says it's empty.
+	const [feedItems, setFeedItems] = useState<AppFeedItem[] | null>(null);
+	const onFeedItems = useCallback((items: AppFeedItem[] | null) => setFeedItems(items), []);
 
 	// After Try again the exchanges leave the blocked list; the page follows
 	// them (saved / queued / failed again) until the batch has settled, and
@@ -286,34 +291,31 @@ export function AttentionView({
 			if (proposal === undefined)
 				return approvals.loading ? <p className="empty">Loading…</p> : null;
 			return (
-				<>
-					<ProgramApprovalCard token={token} proposal={proposal} onDone={reloadAll} layout="page" />
+				<ProgramApprovalCard token={token} proposal={proposal} onDone={reloadAll} layout="page">
 					<IfYouWait>
 						{proposal.kind === "create"
 							? "the program does not exist yet, so nothing runs."
 							: "it keeps running under its current rules."}
 					</IfYouWait>
-				</>
+				</ProgramApprovalCard>
 			);
 		}
 		if (item.kind === "mail-approval") {
 			const draft = approvals.data?.mail.find((m) => String(m.id) === key);
 			if (draft === undefined) return approvals.loading ? <p className="empty">Loading…</p> : null;
 			return (
-				<>
-					<MailApprovalCard token={token} draft={draft} onDone={reloadAll} layout="page" />
+				<MailApprovalCard token={token} draft={draft} onDone={reloadAll} layout="page">
 					<IfYouWait>it is not sent, and the draft expires.</IfYouWait>
-				</>
+				</MailApprovalCard>
 			);
 		}
 		const proposal = skills.data?.proposed.find((p) => p.name === key);
 		if (proposal === undefined)
 			return skills.data === null ? <p className="empty">Loading…</p> : null;
 		return (
-			<>
-				<ProposalCard proposal={proposal} token={token} onDecided={reloadAll} />
+			<ProposalCard proposal={proposal} token={token} onDecided={reloadAll}>
 				<IfYouWait>Goblin keeps working with the skills it has.</IfYouWait>
-			</>
+			</ProposalCard>
 		);
 	};
 
@@ -391,9 +393,19 @@ export function AttentionView({
 
 			{/* One place to watch: what needs the operator above, the work in
 			    flight across projects below (design/app.md → Outcome posts). */}
-			<section aria-label="Work in progress">
+			{/* The feed stays mounted when empty so its poll keeps running —
+			    only the section is hidden. */}
+			<section
+				aria-label="Work in progress"
+				hidden={feedItems !== null && feedItems.length === 0}
+			>
 				<h2 className="ops-h2">Work in progress</h2>
-				<ResponsibilityFeed token={token} projectId={null} onConversation={onConversation} />
+				<ResponsibilityFeed
+					token={token}
+					projectId={null}
+					onConversation={onConversation}
+					onItems={onFeedItems}
+				/>
 			</section>
 			<PushControls token={token} />
 		</div>

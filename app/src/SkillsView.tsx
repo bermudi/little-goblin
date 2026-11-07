@@ -1,7 +1,14 @@
 // The Skills page (design/app.md → Non-chat page layout, #176): proposals
 // first, each with its evidence open; installed skills as a table that says
 // what each one does. Opening a skill replaces the list with its detail.
-import { type CSSProperties, useCallback, useEffect, useRef, useState } from "react";
+import {
+	type CSSProperties,
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import type {
 	OperatorSkillItem,
 	ProposedSkillItem,
@@ -97,6 +104,10 @@ function FileList({
 	);
 }
 
+// SKILL.md's frontmatter is metadata the card and table already show —
+// the source view skips it. An unterminated block strips nothing.
+const FRONTMATTER = /^---[^\n]*\n[\s\S]*?\n---[ \t]*\n/;
+
 function FileSource({
 	file,
 	content,
@@ -106,12 +117,13 @@ function FileSource({
 	content: string | null;
 	err: string | null;
 }) {
+	const shown = file === "SKILL.md" && content !== null ? content.replace(FRONTMATTER, "") : content;
 	return (
 		<>
 			{err !== null && <p className="error">{err}</p>}
-			{content !== null && (
+			{shown !== null && (
 				<div className="codeblock skill-source" data-file={file ?? undefined}>
-					<pre>{content}</pre>
+					<pre>{shown}</pre>
 				</div>
 			)}
 		</>
@@ -162,10 +174,12 @@ export function ProposalCard({
 	proposal,
 	token,
 	onDecided,
+	children,
 }: {
 	proposal: ProposedSkillItem;
 	token: string | null;
 	onDecided(): void;
+	children?: ReactNode;
 }) {
 	const isUpdate = proposal.diff.kind === "update";
 	const reader = useSkillFile(token, "proposed", proposal, !isUpdate);
@@ -198,6 +212,7 @@ export function ProposalCard({
 			<SkillDiffPanel diff={proposal.diff} />
 			<FileList files={proposal.files} current={reader.file} onOpen={reader.open} />
 			<FileSource file={reader.file} content={reader.content} err={reader.err} />
+			{children}
 			<div className="approval-actions skill-decide">
 				<button type="button" disabled={deciding} onClick={() => decide("install")}>
 					{isUpdate ? "Install update" : "Install"}

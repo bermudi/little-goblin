@@ -448,6 +448,7 @@ export function ResponsibilityFeed({
 	projectId,
 	pollMs = POLL_MS,
 	onConversation,
+	onItems,
 }: {
 	token: string | null;
 	/** null = the home aggregation across projects. */
@@ -457,6 +458,9 @@ export function ResponsibilityFeed({
 	/** Opens the work's coordination conversation — where comments and
 	 *  corrections keep the item's context. */
 	onConversation?: ((conversationId: string) => void) | undefined;
+	/** Reports the loaded items so a page can hide its heading when the
+	 *  feed is empty. `null` means no snapshot yet (loading or failed). */
+	onItems?: ((items: AppFeedItem[] | null) => void) | undefined;
 }) {
 	const [items, setItems] = useState<AppFeedItem[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -504,6 +508,10 @@ export function ResponsibilityFeed({
 		}, pollMs);
 		return () => clearInterval(t);
 	}, [refresh, pollMs]);
+
+	useEffect(() => {
+		onItems?.(items);
+	}, [items, onItems]);
 
 	if (items === null && error === null) return null;
 	if (items === null || items.length === 0) {

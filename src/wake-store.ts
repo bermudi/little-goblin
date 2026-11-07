@@ -715,14 +715,25 @@ export function openWakeStore(db: Database): WakeStore {
 					plan.toFail.push(rec);
 				} else plan.preserved.push(rec);
 			}
-			log.info("wake reconcile", {
-				toAppend: plan.toAppend.length,
-				toResubmit: plan.toResubmit.length,
-				waitingBackoff: plan.waitingBackoff.length,
-				toSettle: plan.toSettle.length,
-				toFail: plan.toFail.length,
-				preserved: plan.preserved.length,
-			});
+			// The dispatcher reconciles every 15s. Only a pass that will act
+			// logs: waitingBackoff and preserved are waits with no state
+			// change (they sit there for minutes), so alone they stay silent.
+			if (
+				plan.toAppend.length +
+					plan.toResubmit.length +
+					plan.toSettle.length +
+					plan.toFail.length >
+				0
+			) {
+				log.info("wake reconcile", {
+					toAppend: plan.toAppend.length,
+					toResubmit: plan.toResubmit.length,
+					waitingBackoff: plan.waitingBackoff.length,
+					toSettle: plan.toSettle.length,
+					toFail: plan.toFail.length,
+					preserved: plan.preserved.length,
+				});
+			}
 			return plan;
 		},
 	};

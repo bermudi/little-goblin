@@ -39,12 +39,12 @@ import { LogView } from "./LogView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { NotesIndex, NoteView } from "./NoteView.tsx";
 import { DelegationsView } from "./DelegationsView.tsx";
-import { StatusView } from "./OperatorViews.tsx";
 import { ProgramsView } from "./ProgramsView.tsx";
 import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
 import { SettingsView } from "./SettingsView.tsx";
 import { SkillsView } from "./SkillsView.tsx";
 import { FilesView } from "./StateViews.tsx";
+import { StatusView } from "./StatusView.tsx";
 import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { WindowView } from "./WindowView.tsx";
@@ -2138,7 +2138,7 @@ function AppShell() {
 					<DelegationsView token={token} onOpenConversation={openConversation} />
 				)}
 				{page === "programs" && <ProgramsView token={token} />}
-				{page === "status" && <StatusView token={token} />}
+				{page === "status" && <StatusView token={token} onPage={openPage} />}
 				{page === "skills" && <SkillsView token={token} />}
 				{page === "files" && <FilesView token={token} />}
 				{page === "log" && <LogView token={token} />}

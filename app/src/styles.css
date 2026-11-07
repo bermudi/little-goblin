@@ -6900,6 +6900,7 @@ button.link:hover {
 	line-height: 1.55;
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
+}
 
 /* ---------- Skills page (#176) ----------
    Proposals first (cards with their diff open), installed skills as a
@@ -6948,6 +6949,7 @@ button.link:hover {
 	display: flex;
 	flex-direction: column;
 	gap: 0.3rem;
+}
 
 /* ---------- status page (#175): verdict first, parts, raw details ---------- */
 .status-verdict {

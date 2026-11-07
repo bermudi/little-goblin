@@ -149,6 +149,13 @@ token — a held or rejected `getMe`, or a poll that dies mid-run, leaves
 the PWA fully usable. The mini-app door (`/t/`, initData validation)
 fails closed with 503 until a live `botToken` attaches.
 
+**Page scroll (ruling 2026-11-07, #161).** On every `.ops` page the full-width
+pane is the scroll container; the content column is inset by side padding
+computed from `--page-col` (default `46rem`; Settings sets `68rem`). So the
+wheel works over the margins beside the column and the scrollbar sits at the
+pane edge, as in chat. Change a page's column width only through `--page-col`;
+never give the scroll container a `max-width`.
+
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
 forever (no route may ever render it, structure included). Two layers, each

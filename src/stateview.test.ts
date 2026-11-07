@@ -46,6 +46,19 @@ function writeRel(rel: string, content: string, mtime?: Date): string {
 }
 
 describe("listSkills", () => {
+	test("lists each skill's frontmatter description, null when it has none", () => {
+		writeRel(
+			"skills/weather/SKILL.md",
+			"---\nname: weather\ndescription: Look up a forecast.\n---\nbody",
+		);
+		writeRel("skills/bare/SKILL.md", "no frontmatter");
+		const res = listSkills(join(home, "skills"), join(home, "skills-proposed"));
+		expect(res.skills.map((s) => [s.name, s.description])).toEqual([
+			["bare", null],
+			["weather", "Look up a forecast."],
+		]);
+	});
+
 	test("lists installed and proposed skills, SKILL.md first", () => {
 		writeRel("skills/weather/SKILL.md", "---\ndescription: weather\n---\nbody");
 		writeRel("skills/weather/extra.md", "x");

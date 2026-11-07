@@ -1,6 +1,15 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
 import type { UIMessage } from "ai";
+import type { ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { type AppPageKey, parseAppPath } from "../../src/http/app-routes.ts";
+import type {
+	AppConversationList,
+	AppNote,
+	AppNoteSummary,
+	AppProject,
+	AppSearchHit,
+} from "../../src/http/app-wire.ts";
+import { AttentionView } from "./AttentionView.tsx";
 import {
 	ApiError,
 	clearToken,
@@ -13,9 +22,9 @@ import {
 	listProjects,
 	loadToken,
 	patchConversation,
-	suggestConversationTitle,
 	saveToken,
 	searchConversations,
+	suggestConversationTitle,
 	telegramDoor,
 } from "./api.ts";
 import {
@@ -25,28 +34,20 @@ import {
 	type StagedSkill,
 	type StagedUpload,
 } from "./ChatView.tsx";
-import { loadChatWidth, saveChatWidth, type ChatWidth } from "./chatWidth.ts";
-import { SettingsView } from "./SettingsView.tsx";
+import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
+import { LogView } from "./LogView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
-import { usePhoneWidth } from "./usePhoneWidth.ts";
-import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
-import { WindowView } from "./WindowView.tsx";
+import { NotesIndex, NoteView } from "./NoteView.tsx";
 import { DelegationsView } from "./DelegationsView.tsx";
 import { StatusView } from "./OperatorViews.tsx";
 import { ProgramsView } from "./ProgramsView.tsx";
-import { FilesView, SkillsView } from "./StateViews.tsx";
-import { AttentionView } from "./AttentionView.tsx";
-import { LogView } from "./LogView.tsx";
 import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
-import { NotesIndex, NoteView } from "./NoteView.tsx";
-import type {
-	AppConversationList,
-	AppNote,
-	AppNoteSummary,
-	AppProject,
-	AppSearchHit,
-} from "../../src/http/app-wire.ts";
-import { parseAppPath, type AppPageKey } from "../../src/http/app-routes.ts";
+import { SettingsView } from "./SettingsView.tsx";
+import { SkillsView } from "./SkillsView.tsx";
+import { FilesView } from "./StateViews.tsx";
+import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
+import { usePhoneWidth } from "./usePhoneWidth.ts";
+import { WindowView } from "./WindowView.tsx";
 
 // `project` and `note` carry ids parsed separately (/app/p/<id>,
 // /app/n/<id>) — the union holds the page key only.

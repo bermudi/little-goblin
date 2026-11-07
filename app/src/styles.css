@@ -6900,4 +6900,52 @@ button.link:hover {
 	line-height: 1.55;
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
+
+/* ---------- Skills page (#176) ----------
+   Proposals first (cards with their diff open), installed skills as a
+   .dtable with a "what it does" column. */
+.skills-page .skill-proposals {
+	display: flex;
+	flex-direction: column;
+	gap: 0.75rem;
+}
+.skill-proposal .skill-desc {
+	margin: 0;
+	color: var(--app-fg);
+}
+.skills-page .skill-desc {
+	margin: 0.25rem 0.4rem 0.5rem;
+	line-height: 1.5;
+}
+.skill-proposal .skill-decide {
+	margin-top: 0;
+}
+.skill-nodesc {
+	font-style: italic;
+	color: var(--app-fg-subtle);
+}
+/* The description may run to two lines in the table; the other cells stay one. */
+.skills-table .dt-cell.skill-what {
+	white-space: normal;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-clamp: 2;
+}
+@container (max-width: 40rem) {
+	.skills-table .dt-cell.skill-what {
+		-webkit-line-clamp: 3;
+		line-clamp: 3;
+	}
+}
+.skill-proposal .skill-desc,
+.skill-proposal .empty,
+.skill-proposal .error {
+	padding: 0;
+	margin: 0;
+}
+.skill-proposal .skill-diff {
+	display: flex;
+	flex-direction: column;
+	gap: 0.3rem;
 }

@@ -36,12 +36,9 @@ export function memoryDocLabel(id: string): string | null {
 export function MemoryDocRow({
 	doc,
 	onOpen,
-	withConversation = false,
 }: {
 	doc: MemoryDocListItem;
 	onOpen: (id: string) => void;
-	/** Global Memories tab: rows span conversations, so name them. */
-	withConversation?: boolean;
 }) {
 	const label = memoryDocLabel(doc.id);
 	return (
@@ -50,7 +47,6 @@ export function MemoryDocRow({
 			<span className="doc-sub">
 				{relTime(doc.createdAt)} · {doc.textLength.toLocaleString()} chars · {doc.factCount}{" "}
 				{doc.factCount === 1 ? "fact" : "facts"}
-				{withConversation && doc.conversationId !== null ? ` · ${doc.conversationId}` : ""}
 			</span>
 			<span className="chev">›</span>
 		</button>

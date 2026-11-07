@@ -68,6 +68,7 @@ import type {
 	MemoryForgetThreadBody,
 	MemoryForgetThreadResponse,
 	MemoriesListResponse,
+	MemorySavesResponse,
 	MemoryStatusResponse,
 	OperatorDelegationsResponse,
 	OperatorProgramsResponse,
@@ -846,6 +847,18 @@ export function listMemoryDocuments(
 	if (opts.offset !== undefined) params.set("offset", String(opts.offset));
 	const q = params.toString();
 	return request(token, `/api/app/memory/documents${q === "" ? "" : `?${q}`}`);
+}
+
+export function listMemorySaves(
+	token: string | null,
+	opts: { q?: string; limit?: number; offset?: number } = {},
+): Promise<MemorySavesResponse> {
+	const params = new URLSearchParams();
+	if (opts.q !== undefined && opts.q !== "") params.set("q", opts.q);
+	if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+	if (opts.offset !== undefined) params.set("offset", String(opts.offset));
+	const q = params.toString();
+	return request(token, `/api/app/memory/saves${q === "" ? "" : `?${q}`}`);
 }
 
 export function listThreadSkills(

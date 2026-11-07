@@ -830,10 +830,23 @@ export interface MemoryWiring {
 export function wireMemory(deps: MemoryWiringDeps): MemoryWiring {
 	const { config, auth, store } = deps;
 	const client = buildMemoryClient(config, auth);
-	const state = { lastRecallOk: null as boolean | null, lastRecallAt: null as string | null };
+	// The last recall outlives restarts: it is read back from the state db,
+	// so "last recall" never resets to "never" just because goblin restarted.
+	const saved = store.memoryQueue.lastRecall();
+	const state = {
+		lastRecallOk: saved === null ? (null as boolean | null) : saved.ok,
+		lastRecallAt: saved === null ? (null as string | null) : saved.at,
+	};
 	const noteRecall = (ok: boolean): void => {
 		state.lastRecallOk = ok;
 		state.lastRecallAt = new Date().toISOString();
+		// Status bookkeeping, not turn state: a failed write must not fail
+		// the recall that just succeeded, but it is logged.
+		try {
+			store.memoryQueue.recordRecall(ok, state.lastRecallAt);
+		} catch (err) {
+			log.error("memory last-recall time not persisted", err);
+		}
 	};
 	if (client && config) {
 		store.memoryDestinations.record(config);

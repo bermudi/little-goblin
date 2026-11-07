@@ -279,6 +279,22 @@ carry `description` (`stateview.ts`, parsed with the catalog's own
 frontmatter reader; `null` when absent). Not shown: when a skill was last
 *used* (no such record exists yet), search and grouping.
 
+*Memory page (#163).* It answers three questions in order. **Is memory
+working?** A health line first ("Memory is working", last save, last
+recall; "can't save" or "can't recall" when not). Last recall is stored in
+the state db, so a restart does not reset it to "never". **What did it
+keep?** A "Recent saves" `.dtable`: the conversation NAME, "Kept N facts",
+and age; a row expands to the facts, the exchange text and Forget. Exchanges
+that kept nothing fold into a collapsed "Nothing kept (N exchanges)" section
+grouped by conversation. A "processed so far" line sits in the footer.
+Blocked exchanges get a problem card (cause, conversations, Try again,
+Drop them with a confirm). After Try again, a progress card shows saved /
+still queued / failed again, in total and per conversation, and the page
+polls fast while any are queued. The wire shapes (`blockedConversations`,
+`blockedCauses`, `retry`) are reusable by the Attention blocked card (#150).
+Restoring dropped exchanges ("Save them now") is design only; it waits for
+memory tuning and is not built.
+
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
 forever (no route may ever render it, structure included). Two layers, each

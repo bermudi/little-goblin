@@ -154,6 +154,33 @@ export interface MemoryBlockedItem {
 	document: string;
 	error: string | null;
 	attempts: number;
+	conversationId: string | null;
+	conversationName: string | null;
+}
+
+// A conversation's share of some queue bucket; `name` is display-ready
+// (see conversationName in operator.ts), null when there is no id.
+export interface MemoryConversationCount {
+	conversationId: string | null;
+	name: string | null;
+	count: number;
+}
+
+// What the last Retry's exchanges did since: done, still queued, or
+// failed again — in total and per conversation. Reusable by the
+// Attention blocked card (#150).
+export interface MemoryRetryProgress {
+	startedAt: string;
+	done: number;
+	queued: number;
+	failed: number;
+	conversations: {
+		conversationId: string | null;
+		name: string | null;
+		done: number;
+		queued: number;
+		failed: number;
+	}[];
 }
 
 export interface MemoryStatusResponse {
@@ -168,6 +195,12 @@ export interface MemoryStatusResponse {
 	lastRecallOk: boolean | null;
 	topicNote: null;
 	blockedDetail: MemoryBlockedItem[];
+	/** When the newest exchange finished saving; null if none has since times were recorded. */
+	lastSaveAt: string | null;
+	/** True blocked counts (blockedDetail stops at 10 rows). */
+	blockedConversations: MemoryConversationCount[];
+	blockedCauses: { error: string | null; count: number }[];
+	retry: MemoryRetryProgress | null;
 }
 
 export interface MemoryBlockedResponse {
@@ -183,6 +216,8 @@ export interface MemoryDocListItem {
 	textLength: number;
 	factCount: number;
 	conversationId: string | null;
+	/** Display-ready conversation name; null when the exchange has no conversation. */
+	conversationName: string | null;
 }
 
 export interface MemoriesListResponse {
@@ -190,6 +225,21 @@ export interface MemoriesListResponse {
 	total: number;
 	limit: number;
 	offset: number;
+}
+
+// The Memory page's "what did it keep" view: exchanges that kept facts
+// (newest first, paged) and a roll-up of the ones that kept none.
+export interface MemorySavesResponse {
+	kept: MemoriesListResponse;
+	nothingKept: {
+		total: number;
+		conversations: {
+			conversationId: string | null;
+			name: string | null;
+			count: number;
+			latestAt: string | null;
+		}[];
+	};
 }
 
 export interface MemoryFactItem {

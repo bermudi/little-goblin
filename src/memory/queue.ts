@@ -24,6 +24,22 @@ export interface BlockedRetention {
 	document: string;
 	error: string | null;
 	attempts: number;
+	conversationId: string | null;
+}
+// True counts of everything blocked, not just the first ten rows.
+export interface BlockedSummary {
+	total: number;
+	byConversation: { conversationId: string | null; count: number }[];
+	byCause: { error: string | null; count: number }[];
+}
+// What happened to the exchanges the last Retry requeued. dismissed and
+// deleting rows left the batch by operator choice and are not counted.
+export interface RetryProgress {
+	startedAt: number;
+	done: number;
+	queued: number;
+	failed: number;
+	conversations: { conversationId: string | null; done: number; queued: number; failed: number }[];
 }
 const rowSchema = z.object({
 	operation_id: z.uuid(),
@@ -52,11 +68,30 @@ export class MemoryQueue {
 			attempts INTEGER NOT NULL DEFAULT 0,
 			next_attempt INTEGER NOT NULL DEFAULT 0,
 			error TEXT,
+			settled_at INTEGER,
+			retried_at INTEGER,
 			UNIQUE(target, document_id)
 		)`);
+		// settled_at: when the row reached completed. retried_at: the
+		// ms timestamp of the Retry that requeued it; rows sharing the
+		// newest value are the batch the page reports progress on.
+		const columns = new Set(
+			db
+				.query<{ name: string }, []>("PRAGMA table_info(memory_outbox)")
+				.all()
+				.map((c) => c.name),
+		);
+		for (const column of ["settled_at", "retried_at"]) {
+			if (!columns.has(column)) db.run(`ALTER TABLE memory_outbox ADD COLUMN ${column} INTEGER`);
+		}
 		db.run(
 			"CREATE INDEX IF NOT EXISTS memory_outbox_due ON memory_outbox(target, state, next_attempt)",
 		);
+		db.run(`CREATE TABLE IF NOT EXISTS memory_recall_state (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			at TEXT NOT NULL,
+			ok INTEGER NOT NULL
+		)`);
 		db.run(`CREATE TABLE IF NOT EXISTS memory_blocked_notices (
 			document_id TEXT PRIMARY KEY,
 			created_at TEXT NOT NULL
@@ -188,9 +223,18 @@ export class MemoryQueue {
 		error: string | null,
 	): void {
 		const change = this.db.run(
-			`UPDATE memory_outbox SET state = ?, next_attempt = ?, attempts = attempts + 1, error = ?
+			`UPDATE memory_outbox SET state = ?, next_attempt = ?, attempts = attempts + 1, error = ?,
+			 settled_at = COALESCE(?, settled_at)
 			 WHERE operation_id = ? AND state = ? AND attempts = ?`,
-			[state, nextAttempt, error, item.operation_id, item.state, item.attempts],
+			[
+				state,
+				nextAttempt,
+				error,
+				state === "completed" ? Date.now() : null,
+				item.operation_id,
+				item.state,
+				item.attempts,
+			],
 		);
 		if (change.changes !== 1) throw new Error("Memory queue changed during processing");
 		log.info("memory queue transition", {
@@ -354,12 +398,14 @@ export class MemoryQueue {
 				"SELECT operation_id, document_id FROM memory_outbox WHERE target = ? AND state = 'blocked'",
 			)
 			.all(target);
+		const retriedAt = Date.now();
 		for (const row of rows) {
 			const fresh = randomUUID();
 			const change = this.db.run(
-				`UPDATE memory_outbox SET operation_id = ?, state = 'pending', attempts = 0, next_attempt = 0, error = NULL
+				`UPDATE memory_outbox SET operation_id = ?, state = 'pending', attempts = 0, next_attempt = 0, error = NULL,
+				 retried_at = ?
 				 WHERE operation_id = ? AND state = 'blocked'`,
-				[fresh, row.operation_id],
+				[fresh, retriedAt, row.operation_id],
 			);
 			if (change.changes !== 1) throw new Error("Memory queue changed during retry");
 			log.info("memory blocked retention requeued with fresh operation", {
@@ -401,8 +447,17 @@ export class MemoryQueue {
 	blockedDetail(target: string): BlockedRetention[] {
 		targetSchema.parse(target);
 		const rows = this.db
-			.query<{ document_id: string; error: string | null; attempts: number }, [string]>(
-				"SELECT document_id, error, attempts FROM memory_outbox WHERE target = ? AND state = 'blocked' ORDER BY rowid LIMIT 10",
+			.query<
+				{
+					document_id: string;
+					error: string | null;
+					attempts: number;
+					conversation: string | null;
+				},
+				[string]
+			>(
+				`SELECT document_id, error, attempts, CASE WHEN json_valid(payload) THEN json_extract(payload, '$.conversationId') END AS conversation
+				 FROM memory_outbox WHERE target = ? AND state = 'blocked' ORDER BY rowid LIMIT 10`,
 			)
 			.all(target);
 		return rows.map((r) => ({
@@ -411,7 +466,105 @@ export class MemoryQueue {
 				: r.document_id,
 			error: r.error === null ? null : r.error.slice(0, 120),
 			attempts: r.attempts,
+			conversationId: r.conversation,
 		}));
+	}
+
+	blockedSummary(target: string): BlockedSummary {
+		targetSchema.parse(target);
+		const byConversation = this.db
+			.query<{ conversationId: string | null; count: number }, [string]>(
+				`SELECT CASE WHEN json_valid(payload) THEN json_extract(payload, '$.conversationId') END AS conversationId, COUNT(*) AS count
+				 FROM memory_outbox WHERE target = ? AND state = 'blocked'
+				 GROUP BY conversationId ORDER BY count DESC, conversationId LIMIT 100`,
+			)
+			.all(target);
+		const byCause = this.db
+			.query<{ error: string | null; count: number }, [string]>(
+				`SELECT substr(error, 1, 120) AS error, COUNT(*) AS count
+				 FROM memory_outbox WHERE target = ? AND state = 'blocked'
+				 GROUP BY 1 ORDER BY count DESC LIMIT 20`,
+			)
+			.all(target);
+		return {
+			total: byConversation.reduce((n, g) => n + g.count, 0),
+			byConversation,
+			byCause,
+		};
+	}
+
+	// ms timestamp of the newest completed retention, or null: rows
+	// completed before settled_at existed carry no time.
+	lastSaveAt(target: string): number | null {
+		targetSchema.parse(target);
+		const row = this.db
+			.query<{ at: number | null }, [string]>(
+				"SELECT MAX(settled_at) AS at FROM memory_outbox WHERE target = ? AND state = 'completed'",
+			)
+			.get(target);
+		return row?.at ?? null;
+	}
+
+	retryProgress(target: string): RetryProgress | null {
+		targetSchema.parse(target);
+		const rows = this.db
+			.query<
+				{ state: string; conversationId: string | null; at: number; n: number },
+				[string, string]
+			>(
+				`SELECT state, CASE WHEN json_valid(payload) THEN json_extract(payload, '$.conversationId') END AS conversationId,
+				 retried_at AS at, COUNT(*) AS n
+				 FROM memory_outbox
+				 WHERE target = ? AND retried_at = (SELECT MAX(retried_at) FROM memory_outbox WHERE target = ?)
+				 GROUP BY state, conversationId`,
+			)
+			.all(target, target);
+		const first = rows[0];
+		if (first === undefined) return null;
+		const out: RetryProgress = {
+			startedAt: first.at,
+			done: 0,
+			queued: 0,
+			failed: 0,
+			conversations: [],
+		};
+		const byConversation = new Map<string | null, RetryProgress["conversations"][number]>();
+		for (const r of rows) {
+			const bucket =
+				r.state === "completed"
+					? "done"
+					: r.state === "pending" || r.state === "submitted"
+						? "queued"
+						: r.state === "blocked"
+							? "failed"
+							: null;
+			if (bucket === null) continue;
+			out[bucket] += r.n;
+			let entry = byConversation.get(r.conversationId);
+			if (entry === undefined) {
+				entry = { conversationId: r.conversationId, done: 0, queued: 0, failed: 0 };
+				byConversation.set(r.conversationId, entry);
+			}
+			entry[bucket] += r.n;
+		}
+		if (out.done + out.queued + out.failed === 0) return null;
+		out.conversations = [...byConversation.values()];
+		return out;
+	}
+
+	recordRecall(ok: boolean, at: string): void {
+		this.db.run(
+			`INSERT INTO memory_recall_state (id, at, ok) VALUES (1, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET at = excluded.at, ok = excluded.ok`,
+			[at, ok ? 1 : 0],
+		);
+	}
+
+	lastRecall(): { at: string; ok: boolean } | null {
+		const row = this.db
+			.query<{ at: string; ok: number }, []>("SELECT at, ok FROM memory_recall_state WHERE id = 1")
+			.get();
+		return row === null ? null : { at: row.at, ok: row.ok === 1 };
 	}
 }
 

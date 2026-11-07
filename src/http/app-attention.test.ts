@@ -147,7 +147,12 @@ describe("app attention", () => {
 					}),
 					deletingAll: () => 0,
 					blockedDetail: () => [
-						{ document: "exchange/app/chat-01/1/a", error: "HTTP 429", attempts: 1 },
+						{
+							document: "exchange/app/chat-01/1/a",
+							error: "HTTP 429",
+							attempts: 1,
+							conversationId: "app/chat-01",
+						},
 					],
 					lastRecallOk: () => null,
 					lastRecallAt: () => null,

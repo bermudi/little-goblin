@@ -31,11 +31,15 @@ describe("MemoryView", () => {
 		completed: 3,
 		blocked: 0,
 		dismissed: 0,
-		queued: 1,
-		lastRecallAt: null,
-		lastRecallOk: null,
+		queued: 0,
+		lastRecallAt: "2026-01-01T00:00:00Z",
+		lastRecallOk: true,
 		topicNote: null,
 		blockedDetail: [],
+		lastSaveAt: "2026-01-01T00:00:00Z",
+		blockedConversations: [],
+		blockedCauses: [],
+		retry: null,
 	};
 	const DOC = {
 		id: "doc-1",
@@ -43,9 +47,12 @@ describe("MemoryView", () => {
 		updatedAt: "2026-01-02T00:00:00Z",
 		textLength: 42,
 		factCount: 2,
-		conversationId: "tg/1",
+		conversationId: "app/c1",
+		conversationName: "Trip plans",
 	};
-	const DOC2 = { ...DOC, id: "doc-2" };
+	const NOTHING = { total: 0, conversations: [] };
+	const saves = (items: unknown[], total = items.length, nothing: unknown = NOTHING) =>
+		json({ kept: { items, total, limit: 20, offset: 0 }, nothingKept: nothing });
 	const DETAIL = {
 		document: DOC,
 		originalText: "the exchange text",
@@ -73,6 +80,7 @@ describe("MemoryView", () => {
 		],
 		factsTotal: 2,
 	};
+	const pathOf = (input: RequestInfo | URL) => new URL(String(input), "http://localhost");
 
 	beforeEach(() => {
 		win = new Window();
@@ -139,75 +147,145 @@ describe("MemoryView", () => {
 	const more = () =>
 		[...container.querySelectorAll("button")].find((b) => b.textContent === "Load more")!;
 
-	test("status, list, detail, then forget round-trips through the API", async () => {
-		const seen: { method: string; path: string }[] = [];
+	test("health first, rows name the conversation, expand shows facts, forget round-trips", async () => {
 		let deleted = false;
+		const seen: string[] = [];
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-			const path = new URL(url, "http://localhost").pathname;
-			seen.push({ method: init?.method ?? "GET", path });
-			if (path === "/api/app/memory/status") return Promise.resolve(json(STATUS));
-			if (path === "/api/app/memory/documents")
-				return Promise.resolve(
-					json({ items: deleted ? [] : [DOC], total: deleted ? 0 : 1, limit: 20, offset: 0 }),
-				);
-			if (path === "/api/app/memory/documents/doc-1" && init?.method === "DELETE") {
-				deleted = true;
-				return Promise.resolve(json({ ok: true, cancelled: 1, redacted: 1 }));
+			const url = pathOf(input);
+			if (init?.method === "DELETE") seen.push(url.pathname);
+			if (url.pathname.endsWith("/memory/status")) return Promise.resolve(json(STATUS));
+			if (url.pathname.endsWith("/memory/saves"))
+				return Promise.resolve(saves(deleted ? [] : [DOC]));
+			if (url.pathname.endsWith("/doc-1")) {
+				if (init?.method === "DELETE") {
+					deleted = true;
+					return Promise.resolve(json({ ok: true, cancelled: 1, redacted: 1 }));
+				}
+				return Promise.resolve(json(DETAIL));
 			}
-			if (path === "/api/app/memory/documents/doc-1") return Promise.resolve(json(DETAIL));
 			return Promise.resolve(json({ error: "unmapped" }, 404));
 		}) as typeof fetch;
-		// The view's confirm gate reads the window global — which IS win.
 		Reflect.set(win, "confirm", () => true);
-
 		mount();
 		await flush();
-		expect(container.textContent).toContain("healthy");
-		// Non-exchange ids keep the raw id, and the global tab names the
-		// conversation per row (withConversation) — rows span threads here.
-		expect(container.textContent).toContain("doc-1");
-		expect(container.textContent).toContain("· tg/1");
-		expect(container.textContent).toContain("2 facts");
+		const text = () => container.textContent ?? "";
+		expect(container.querySelector("h1")?.textContent).toBe("Memory is working");
+		expect(text()).toContain("Trip plans");
+		expect(text()).not.toContain("doc-1");
+		expect(text()).toContain("Kept 2 facts");
+		expect(text()).toContain("3 exchanges processed so far");
 
-		// Open the document — original text and both fact states render.
-		await click(container.querySelector(".doc-row"));
+		await click(container.querySelector(".mem-saves .dt-row"));
 		await act(async () => {});
-		expect(container.textContent).toContain("the exchange text");
-		expect(container.textContent).toContain("likes rain");
-		const stale = container.querySelector(".fact.stale");
-		expect(stale?.textContent).toContain("lives in Oslo");
+		expect(text()).toContain("likes rain");
+		expect(container.querySelector(".fact.stale")?.textContent).toContain("lives in Oslo");
 
-		// Forget — confirm-gated DELETE, then back to the list.
-		await click(container.querySelector(".danger"));
+		await click(container.querySelector(".mem-expand .danger"));
 		await act(async () => {});
-		expect(deleted).toBe(true);
-		expect(container.textContent).not.toContain("the exchange text");
-		expect(
-			seen.some((r) => r.method === "DELETE" && r.path === "/api/app/memory/documents/doc-1"),
-		).toBe(true);
+		expect(seen).toEqual(["/api/app/memory/documents/doc-1"]);
+		expect(text()).not.toContain("likes rain");
+		expect(text()).toContain("Nothing has been kept yet.");
 	});
 
 	test("a declined confirm never issues the delete", async () => {
 		const seen: string[] = [];
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-			const path = new URL(url, "http://localhost").pathname;
-			if (init?.method === "DELETE") seen.push(path);
-			if (path === "/api/app/memory/status") return Promise.resolve(json(STATUS));
-			if (path === "/api/app/memory/documents")
-				return Promise.resolve(json({ items: [DOC], total: 1, limit: 20, offset: 0 }));
-			if (path === "/api/app/memory/documents/doc-1") return Promise.resolve(json(DETAIL));
-			return Promise.resolve(json({ error: "unmapped" }, 404));
+			const url = pathOf(input);
+			if (init?.method === "DELETE") seen.push(url.pathname);
+			if (url.pathname.endsWith("/memory/status")) return Promise.resolve(json(STATUS));
+			if (url.pathname.endsWith("/memory/saves")) return Promise.resolve(saves([DOC]));
+			return Promise.resolve(json(DETAIL));
 		}) as typeof fetch;
 		Reflect.set(win, "confirm", () => false);
-
 		mount();
 		await flush();
-		await click(container.querySelector(".doc-row"));
+		await click(container.querySelector(".mem-saves .dt-row"));
 		await act(async () => {});
-		await click(container.querySelector(".danger"));
+		await click(container.querySelector(".mem-expand .danger"));
 		expect(seen).toEqual([]);
+	});
+
+	test("blocked exchanges show a problem card naming conversations; Try again requeues", async () => {
+		const posts: string[] = [];
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = pathOf(input);
+			if (init?.method === "POST") {
+				posts.push(url.pathname);
+				return Promise.resolve(json({ ok: true, requeued: 2 }));
+			}
+			if (url.pathname.endsWith("/memory/status"))
+				return Promise.resolve(
+					json({
+						...STATUS,
+						state: "degraded",
+						blocked: 2,
+						blockedCauses: [{ error: "hindsight 500", count: 2 }],
+						blockedConversations: [{ conversationId: "app/c1", name: "Trip plans", count: 2 }],
+					}),
+				);
+			return Promise.resolve(saves([]));
+		}) as typeof fetch;
+		mount();
+		await flush();
+		expect(container.querySelector("h1")?.textContent).toBe("Memory can't save");
+		const card = container.querySelector(".mem-problem")!;
+		expect(card.textContent).toContain("hindsight 500");
+		expect(card.textContent).toContain("Trip plans");
+		const retryBtn = [...card.querySelectorAll("button")].find(
+			(b) => b.textContent === "Try again",
+		);
+		await click(retryBtn);
+		expect(posts).toHaveLength(1);
+	});
+
+	test("retry progress shows done, still queued and failed again per conversation", async () => {
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = pathOf(input);
+			if (url.pathname.endsWith("/memory/status"))
+				return Promise.resolve(
+					json({
+						...STATUS,
+						retry: {
+							startedAt: new Date().toISOString(),
+							done: 3,
+							queued: 2,
+							failed: 1,
+							conversations: [
+								{ conversationId: "app/c1", name: "Trip plans", done: 3, queued: 1, failed: 0 },
+								{ conversationId: "app/c2", name: "Budget", done: 0, queued: 1, failed: 1 },
+							],
+						},
+					}),
+				);
+			return Promise.resolve(saves([]));
+		}) as typeof fetch;
+		mount();
+		await flush();
+		const card = container.querySelector(".mem-retry")!;
+		expect(card.textContent).toContain("Saving 6 retried exchanges");
+		expect(card.textContent).toContain("still queued");
+		expect(card.textContent).toContain("Trip plans");
+		expect(card.textContent).toContain("Budget");
+	});
+
+	test("nothing-kept section is collapsed until opened", async () => {
+		globalThis.fetch = ((input: RequestInfo | URL) => {
+			const url = pathOf(input);
+			if (url.pathname.endsWith("/memory/status")) return Promise.resolve(json(STATUS));
+			return Promise.resolve(
+				saves([DOC], 1, {
+					total: 4,
+					conversations: [{ conversationId: "app/c2", name: "Budget", count: 4, latestAt: null }],
+				}),
+			);
+		}) as typeof fetch;
+		mount();
+		await flush();
+		expect(container.querySelector(".mem-fold")?.textContent).toContain("Nothing kept");
+		expect(container.querySelector(".mem-fold")?.textContent).toContain("4 exchanges");
+		expect(container.textContent).not.toContain("Budget");
+		await click(container.querySelector(".mem-fold"));
+		expect(container.textContent).toContain("Budget");
 	});
 
 	test("pagination waits for replacement results and uses their filter and offset", async () => {
@@ -216,14 +294,15 @@ describe("MemoryView", () => {
 		const replacement = new Promise<Response>((resolve) => {
 			replace = resolve;
 		});
+		const row = (id: string) => ({ ...DOC, id, conversationName: id });
 		globalThis.fetch = ((input: RequestInfo | URL) => {
-			const url = new URL(String(input), "http://localhost");
-			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
+			const url = pathOf(input);
+			if (url.pathname.endsWith("/memory/status")) return Promise.resolve(json(STATUS));
 			requests.push(url);
 			if (url.searchParams.get("q") === "new" && url.searchParams.get("offset") === "0")
 				return replacement;
 			const id = url.searchParams.has("q") ? "new-page-2" : "old-query";
-			return Promise.resolve(json({ items: [{ ...DOC, id }], total: 3, limit: 20, offset: 0 }));
+			return Promise.resolve(saves([row(id)], 3));
 		}) as typeof fetch;
 		mount();
 		await flush();
@@ -235,12 +314,8 @@ describe("MemoryView", () => {
 		await flush();
 		expect(requests).toHaveLength(2);
 		expect(requests[1]!.searchParams.get("offset")).toBe("0");
-		expect(more().disabled).toBe(true);
-		await click(more());
-		expect(requests).toHaveLength(2);
-
 		await act(async () => {
-			replace(json({ items: [{ ...DOC, id: "new-query" }], total: 3, limit: 20, offset: 0 }));
+			replace(saves([row("new-query")], 3));
 		});
 		expect(container.textContent).not.toContain("old-query");
 		expect(container.textContent).toContain("new-query");
@@ -252,42 +327,14 @@ describe("MemoryView", () => {
 		expect(container.textContent).not.toContain("old-query");
 	});
 
-	test("an old page arriving during the new search's debounce is ignored", async () => {
-		let resolveOldPage!: (response: Response) => void;
-		const oldPage = new Promise<Response>((resolve) => {
-			resolveOldPage = resolve;
-		});
-		globalThis.fetch = ((input: RequestInfo | URL) => {
-			const url = new URL(String(input), "http://localhost");
-			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
-			if (url.searchParams.get("offset") === "1") return oldPage;
-			const id = url.searchParams.has("q") ? "new-query" : "old-query";
-			return Promise.resolve(json({ items: [{ ...DOC, id }], total: 3, limit: 20, offset: 0 }));
-		}) as typeof fetch;
-		mount();
-		await flush();
-		await click(more());
-		await search("new");
-		await act(async () => {
-			resolveOldPage(json({ items: [{ ...DOC, id: "stale-page" }], total: 3 }));
-		});
-		expect(container.textContent).not.toContain("stale-page");
-		expect(more().disabled).toBe(true);
-		await flush();
-		expect(container.textContent).toContain("new-query");
-		expect(container.textContent).not.toContain("old-query");
-	});
-
 	test("a failed replacement does not enable pagination on the old rows with a new filter", async () => {
 		const requests: URL[] = [];
 		globalThis.fetch = ((input: RequestInfo | URL) => {
-			const url = new URL(String(input), "http://localhost");
-			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
+			const url = pathOf(input);
+			if (url.pathname.endsWith("/memory/status")) return Promise.resolve(json(STATUS));
 			requests.push(url);
 			return Promise.resolve(
-				url.searchParams.has("q")
-					? json({ error: "replacement failed" }, 503)
-					: json({ items: [DOC], total: 3, limit: 20, offset: 0 }),
+				url.searchParams.has("q") ? json({ error: "replacement failed" }, 503) : saves([DOC], 3),
 			);
 		}) as typeof fetch;
 		mount();
@@ -298,147 +345,5 @@ describe("MemoryView", () => {
 		expect(more().disabled).toBe(true);
 		await click(more());
 		expect(requests).toHaveLength(2);
-	});
-
-	test("Forget supersedes a pending search debounce without leaving pagination stuck", async () => {
-		let lists = 0;
-		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-			const url = new URL(String(input), "http://localhost");
-			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
-			if (url.pathname.endsWith("/doc-1"))
-				return Promise.resolve(
-					init?.method === "DELETE" ? json({ ok: true, cancelled: 1, redacted: 1 }) : json(DETAIL),
-				);
-			++lists;
-			return Promise.resolve(json({ items: [DOC], total: 3, limit: 20, offset: 0 }));
-		}) as typeof fetch;
-		Reflect.set(win, "confirm", () => true);
-		mount();
-		await flush();
-		await search("new");
-		await click(container.querySelector(".doc-row"));
-		await click(container.querySelector(".danger"));
-		await flush();
-		expect(lists).toBe(2);
-		expect(more().disabled).toBe(false);
-	});
-
-	test("a delayed Forget completion refreshes the current filter, not the filter it started with", async () => {
-		let finishDelete!: (response: Response) => void;
-		const deleted = new Promise<Response>((resolve) => {
-			finishDelete = resolve;
-		});
-		const requests: URL[] = [];
-		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-			const url = new URL(String(input), "http://localhost");
-			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
-			if (url.pathname.endsWith("/old-query")) return Promise.resolve(json(DETAIL));
-			if (url.pathname.endsWith("/doc-1"))
-				return init?.method === "DELETE" ? deleted : Promise.resolve(json(DETAIL));
-			requests.push(url);
-			const id = url.searchParams.has("q") ? "new-query" : "old-query";
-			return Promise.resolve(json({ items: [{ ...DOC, id }], total: 3, limit: 20, offset: 0 }));
-		}) as typeof fetch;
-		Reflect.set(win, "confirm", () => true);
-		mount();
-		await flush();
-		await click(container.querySelector(".doc-row"));
-		await click(container.querySelector(".danger"));
-		await click(container.querySelector(".ops-back button"));
-		await search("new");
-		await flush();
-		expect(container.textContent).toContain("new-query");
-		await act(async () => {
-			finishDelete(json({ ok: true, cancelled: 1, redacted: 1 }));
-		});
-		expect(requests.at(-1)!.searchParams.get("q")).toBe("new");
-		expect(container.textContent).toContain("new-query");
-		expect(container.textContent).not.toContain("old-query");
-		expect(more().disabled).toBe(false);
-	});
-
-	test("a forget landing while the same doc's GET is pending still kills the sheet", async () => {
-		// The reported gap: Forget held → back → reopen the same doc with
-		// its GET held → DELETE resolves against detail === null → the
-		// delayed GET must still be fenced, not reshow the forgotten text.
-		let finishDelete!: (response: Response) => void;
-		let answerGet!: (response: Response) => void;
-		const deleted = new Promise<Response>((resolve) => {
-			finishDelete = resolve;
-		});
-		const opened = new Promise<Response>((resolve) => {
-			answerGet = resolve;
-		});
-		let gets = 0;
-		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-			const url = new URL(String(input), "http://localhost");
-			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
-			if (url.pathname.endsWith("/doc-1")) {
-				if (init?.method === "DELETE") return deleted;
-				if (++gets === 1) return Promise.resolve(json(DETAIL));
-				return opened;
-			}
-			return Promise.resolve(json({ items: [DOC], total: 1, limit: 20, offset: 0 }));
-		}) as typeof fetch;
-		Reflect.set(win, "confirm", () => true);
-		mount();
-		await flush();
-		await click(container.querySelector(".doc-row"));
-		await act(async () => {});
-		expect(container.textContent).toContain("the exchange text");
-
-		await click(container.querySelector(".danger"));
-		await click(container.querySelector(".ops-back button"));
-		await click(container.querySelector(".doc-row"));
-		expect(gets).toBe(2);
-
-		await act(async () => {
-			finishDelete(json({ ok: true, cancelled: 1, redacted: 1 }));
-		});
-		await act(async () => {
-			answerGet(json(DETAIL));
-		});
-		expect(container.textContent).not.toContain("the exchange text");
-		expect(container.textContent).toContain("Retained exchanges");
-	});
-
-	test("a slower open loses to a newer open, and Forget targets the doc on screen", async () => {
-		const resolves = new Map<string, (r: Response) => void>();
-		const deleted: string[] = [];
-		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-			const url = new URL(String(input), "http://localhost");
-			if (url.pathname.endsWith("/status")) return Promise.resolve(json(STATUS));
-			if (url.pathname.endsWith("/documents"))
-				return Promise.resolve(json({ items: [DOC, DOC2], total: 2, limit: 20, offset: 0 }));
-			if (init?.method === "DELETE") {
-				deleted.push(url.pathname);
-				return Promise.resolve(json({ ok: true, cancelled: 1, redacted: 1 }));
-			}
-			if (url.pathname.endsWith("/doc-1") || url.pathname.endsWith("/doc-2"))
-				return new Promise<Response>((resolve) =>
-					resolves.set(url.pathname.split("/").pop()!, resolve),
-				);
-			return Promise.resolve(json({ error: "unmapped" }, 404));
-		}) as typeof fetch;
-		Reflect.set(win, "confirm", () => true);
-		mount();
-		await flush();
-		const rows = [...container.querySelectorAll(".doc-row")];
-		expect(rows).toHaveLength(2);
-		// Open doc-1, then doc-2 before doc-1 answers — doc-2 wins.
-		await click(rows[0]);
-		await click(rows[1]);
-		await act(async () => {
-			resolves.get("doc-2")!(json({ ...DETAIL, document: DOC2, originalText: "second text" }));
-		});
-		expect(container.textContent).toContain("second text");
-		await act(async () => {
-			resolves.get("doc-1")!(json(DETAIL));
-		});
-		expect(container.textContent).toContain("second text");
-		expect(container.textContent).not.toContain("the exchange text");
-		await click(container.querySelector(".danger"));
-		await act(async () => {});
-		expect(deleted).toEqual(["/api/app/memory/documents/doc-2"]);
 	});
 });

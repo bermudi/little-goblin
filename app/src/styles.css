@@ -4027,6 +4027,160 @@ button.pathchip:hover svg {
 	line-height: 1.45;
 }
 
+/* ---------- memory page (#163) ----------
+   Health first, then what was kept, then what was skipped. Additive: the
+   shared .dtable / .sumstrip / .card rules above are not touched. */
+.mem-health {
+	display: flex;
+	align-items: baseline;
+	gap: 0.65rem;
+	margin: 0.2rem 0.4rem 0.4rem;
+}
+.mem-health h1 {
+	margin: 0;
+	font-size: 17px;
+	font-weight: 600;
+}
+.mem-summary {
+	margin: 0.15rem 0 0;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.mem-dot {
+	flex: none;
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	background: var(--app-success);
+	transform: translateY(-1px);
+}
+.mem-dot.bad {
+	background: var(--app-danger);
+}
+.mem-dot.warn {
+	background: var(--app-warning);
+}
+.mem-dot.off {
+	background: var(--app-fg-subtle);
+}
+.mem-note {
+	margin: 0.3rem 0.4rem 0;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+}
+.mem-problem {
+	margin-top: 0.8rem;
+	border-color: color-mix(in oklab, var(--app-danger) 35%, var(--app-divider));
+}
+.mem-problem-head h2 {
+	margin: 0;
+	font-size: 14px;
+	font-weight: 600;
+}
+.mem-problem-body p {
+	margin: 0;
+	font-size: 12.5px;
+	line-height: 1.45;
+}
+.mem-problem-body p + p {
+	margin-top: 0.4rem;
+}
+.mem-from {
+	color: var(--app-fg-muted);
+}
+.mem-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+}
+.mem-actions > button {
+	margin-top: 0;
+	align-self: center;
+}
+.mem-confirm {
+	font-size: 12.5px;
+}
+.mem-retry .mem-progress {
+	display: block;
+	width: 100%;
+	max-width: var(--prose-col);
+	height: 6px;
+	margin: 0 0.4rem 0.2rem;
+	accent-color: var(--app-success);
+}
+.mem-retry .sumstrip {
+	margin-top: 0.5rem;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 0.4rem;
+}
+.mem-retry-table {
+	margin-top: 0.6rem;
+}
+.mem-bad {
+	color: var(--app-danger);
+}
+/* A table row that only reports: no chevron, no hover. */
+.dt-row.dt-static {
+	cursor: default;
+}
+.dt-row.dt-static::after {
+	content: none;
+}
+.dt-row.dt-static:hover {
+	background: none;
+}
+.dt-row.open::after {
+	content: "⌄";
+}
+.mem-kept {
+	color: var(--app-fg);
+}
+.mem-expand {
+	border-top: 1px solid var(--app-divider);
+	padding: 0.6rem 0.85rem 0.8rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+}
+.mem-facts {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+.mem-source summary {
+	cursor: pointer;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+}
+.mem-source .doc-text {
+	margin-top: 0.4rem;
+}
+.mem-nothing {
+	margin-top: 0.9rem;
+}
+.mem-fold {
+	display: flex;
+	align-items: baseline;
+	gap: 0.45rem;
+	min-height: 2.4rem;
+	padding: 0.4rem 0.4rem;
+	color: var(--app-fg-muted);
+	font-size: 12.5px;
+}
+.mem-chev {
+	width: 1em;
+	color: var(--app-fg-subtle);
+}
+.mem-footer {
+	display: flex;
+	flex-direction: column;
+	gap: 0.2rem;
+	margin: 1.4rem 0.4rem 0;
+	padding-top: 0.7rem;
+	border-top: 1px solid var(--app-divider);
+}
+
 /* ---------- read-only operator lists ---------- */
 
 .kv {

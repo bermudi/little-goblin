@@ -11,6 +11,7 @@ import {
 	isMachineryText,
 	memoryBlockId,
 	programFireTag,
+	subagentNoticeTag,
 } from "./tags.ts";
 
 describe("message tags", () => {
@@ -62,5 +63,15 @@ describe("message tags", () => {
 		expect(memoryBlockId(5)).not.toBe(memoryBlockId(6));
 		expect(corruptRowId(9)).toBe("corrupt-9");
 		expect(corruptRowId(9)).not.toBe(corruptRowId(10));
+	});
+});
+
+describe("subagentNoticeTag", () => {
+	test("shares the delegation shape and counts as machinery speech", () => {
+		expect(subagentNoticeTag(3, "worker", "done")).toBe("[subagent: #3 worker · done]");
+		expect(subagentNoticeTag(3, "worker", "needs_input")).toBe(
+			"[subagent: #3 worker · needs input]",
+		);
+		expect(isMachineryText(subagentNoticeTag(3, "worker", "done"))).toBe(true);
 	});
 });

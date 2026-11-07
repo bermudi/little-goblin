@@ -10,7 +10,13 @@ import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities } from "./responsibilities.ts";
-import { fileRunReport, runReport } from "./responsibility-runs.ts";
+import {
+	delegationReport,
+	fileDelegationReport,
+	fileRunReport,
+	runReport,
+} from "./responsibility-runs.ts";
+import type { Delegation } from "./delegations.ts";
 import { responsibilityStage } from "./responsibility-stage.ts";
 import type { SubagentRun } from "./subagent-runs.ts";
 import { tmpDir, useHome } from "./testkit.ts";
@@ -193,5 +199,91 @@ describe("run reports", () => {
 		r.resps.setStatus(r.id, "cancelled");
 		expect(() => fileRunReport(r.resps, run({ responsibilityId: r.id }))).not.toThrow();
 		expect(r.resps.reportsFor(r.id)).toEqual([]);
+	});
+});
+
+const delegation = (over: Partial<Delegation> = {}): Delegation => ({
+	id: 9,
+	name: "fix it",
+	harness: "codex",
+	cwd: "/w",
+	task: "t",
+	chatId: 0,
+	threadId: null,
+	appConversation: "app/rig",
+	agentName: "g9-fix-it",
+	workspaceId: "w1",
+	paneId: "w1:p1",
+	status: "running",
+	target: null,
+	baselineSeq: 3,
+	promptedAt: "2026-11-06T00:00:00.000Z",
+	promptPending: false,
+	responsibilityId: null,
+	responsibilityRevision: null,
+	createdAt: "2026-11-06T00:00:00.000Z",
+	finishedAt: null,
+	...over,
+});
+
+describe("delegation reports", () => {
+	test("each verdict maps to the agent's claim; a blocked agent asks no question", () => {
+		expect(delegationReport(delegation(), "done", "patched")).toEqual({
+			state: "ready",
+			reason: "delegation #9 fix it finished: patched",
+		});
+		expect(delegationReport(delegation(), "needs input", "dialog")).toEqual({
+			state: "blocked",
+			reason: "delegation #9 fix it needs input: dialog",
+		});
+		expect(delegationReport(delegation(), "failed", "gone")).toEqual({
+			state: "failed",
+			reason: "delegation #9 fix it failed: gone",
+		});
+	});
+
+	test("an unlinked delegation states nothing", () => {
+		const { resps, id } = rig();
+		fileDelegationReport(resps, delegation(), "done", "patched");
+		expect(resps.reportsFor(id)).toEqual([]);
+	});
+
+	test("a retried notice files once; a later dialog on the same prompt files again", () => {
+		const { resps, id } = rig();
+		const d = delegation({ responsibilityId: id, responsibilityRevision: 1 });
+		fileDelegationReport(resps, d, "needs input", "first dialog");
+		fileDelegationReport(resps, d, "needs input", "first dialog");
+		expect(resps.reportsFor(id)).toHaveLength(1);
+		fileDelegationReport(resps, { ...d, baselineSeq: 5 }, "needs input", "second dialog");
+		expect(resps.reportsFor(id)).toHaveLength(2);
+		fileDelegationReport(
+			resps,
+			{ ...d, promptedAt: "2026-11-06T01:00:00.000Z" },
+			"done",
+			"follow-up done",
+		);
+		expect(resps.reportsFor(id)).toHaveLength(3);
+	});
+
+	test("a blocked agent waits for goblin, not the operator", () => {
+		const { resps, id } = rig();
+		fileDelegationReport(resps, delegation({ responsibilityId: id }), "needs input", "dialog");
+		const resp = resps.get(id)!;
+		const [latest] = resps.reportsFor(id);
+		expect(responsibilityStage(resp, latest ?? null, []).waitsFor).toBe("goblin");
+	});
+
+	test("a closed responsibility refuses without failing the notice", () => {
+		const { resps, id } = rig();
+		resps.setStatus(id, "cancelled");
+		const d = delegation({ responsibilityId: id });
+		expect(() => fileDelegationReport(resps, d, "done", "patched")).not.toThrow();
+		expect(resps.reportsFor(id)).toEqual([]);
+	});
+
+	test("a gone responsibility logs and does not throw", () => {
+		const { resps } = rig();
+		const d = delegation({ responsibilityId: "nope" });
+		expect(() => fileDelegationReport(resps, d, "done", "patched")).not.toThrow();
 	});
 });

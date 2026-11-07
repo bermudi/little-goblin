@@ -110,6 +110,18 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		const desktops = deps.desktops();
 		const subagentsBoot = deps.subagentsBoot();
 		const responsibilitySvc = deps.responsibility();
+		// One gate for every executor that can link work to what goblin owes.
+		const checkResponsibility =
+			conv.projectId !== null && responsibilitySvc !== null
+				? (id: string) => {
+						const resp = responsibilitySvc.resps.get(id);
+						if (resp === null || resp.projectId !== conv.projectId)
+							return `responsibility ${id} not found in this project`;
+						if (resp.status !== "active" && resp.status !== "paused")
+							return `responsibility ${id} is ${resp.status} — resume it before linking a run`;
+						return null;
+					}
+				: undefined;
 		const tts = configRef.current.tts;
 		// Guests get a reduced set below; app and Telegram turns share the
 		// approval-capable operator tools through canonical targets.
@@ -118,6 +130,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		// relative-path anchor, and delegation's workspaceDir — a
 		// vanished dir throws here and the turn fails at admission.
 		const workdir = projectWorkdir(projects, conv);
+		const delegate = delegateDeps(conv, workdir);
 		const tools = makeTools({
 			cwd: workdir,
 			voice:
@@ -200,7 +213,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			})(),
 			transcribe: configRef.current.transcription !== undefined ? { transcribe } : undefined,
 			// Boot fixtures under a live gate.
-			delegate: delegateDeps(conv, workdir),
+			delegate: delegate === undefined ? undefined : { ...delegate, checkResponsibility },
 			// Unconditional — guests are filtered below and script's
 			// allowlist excludes it.
 			herdr: { herdr: operatorHerdr },
@@ -255,17 +268,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							workerEnabled:
 								subagentsBoot?.worker !== undefined && configRef.current.sandbox !== undefined,
 							computerEnabled: subagentsBoot?.computer !== undefined,
-							checkResponsibility:
-								conv.projectId !== null && responsibilitySvc !== null
-									? (id: string) => {
-											const resp = responsibilitySvc.resps.get(id);
-											if (resp === null || resp.projectId !== conv.projectId)
-												return `responsibility ${id} not found in this project`;
-											if (resp.status !== "active" && resp.status !== "paused")
-												return `responsibility ${id} is ${resp.status} — resume it before linking a run`;
-											return null;
-										}
-									: undefined,
+							checkResponsibility,
 						}
 					: undefined,
 			desktop:

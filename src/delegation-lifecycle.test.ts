@@ -1924,3 +1924,46 @@ test("delegation ticker owns its store until shutdown joins, and stopped handles
 		await w.stopTicker();
 	}
 });
+
+describe("delegation settlement hook", () => {
+	test("the report is filed before the notice wakes, and a failed wake retries with the same row", async () => {
+		const h = harness();
+		const d = runningRow(h, "linked", 1);
+		h.agents.set(d.agentName, agent(d.agentName, "idle", 2));
+		const order: string[] = [];
+		const keys: string[] = [];
+		h.deps.settled = (row, verdict) => {
+			order.push("settled");
+			keys.push(`${row.promptedAt}:${row.baselineSeq}:${verdict}`);
+		};
+		let land = false;
+		h.deps.wake = () => {
+			order.push("wake");
+			return land;
+		};
+		const w = startDelegationLifecycle(h.deps);
+		await w.tick();
+		expect(order).toEqual(["settled", "wake"]);
+		expect(h.store.get(d.id)!.status).toBe("running");
+		land = true;
+		await w.tick();
+		w.stopTicker();
+		expect(order).toEqual(["settled", "wake", "settled", "wake"]);
+		expect(keys[0]).toBe(keys[1]!);
+		expect(h.store.get(d.id)!.status).toBe("done");
+	});
+
+	test("a throwing hook holds the notice back for the next scan", async () => {
+		const h = harness();
+		const d = runningRow(h, "linked", 1);
+		h.agents.set(d.agentName, agent(d.agentName, "idle", 2));
+		h.deps.settled = () => {
+			throw new Error("store busy");
+		};
+		const w = startDelegationLifecycle(h.deps);
+		await w.tick();
+		w.stopTicker();
+		expect(h.wakes).toEqual([]);
+		expect(h.store.get(d.id)!.status).toBe("running");
+	});
+});

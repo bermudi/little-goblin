@@ -18,9 +18,19 @@ export function delegationNoticeTag(
 	return `[delegation: #${id} ${name} · ${verdict}]${extra ? ` ${extra}` : ""}`;
 }
 
+// Opens a subagent notice, same machinery-speech prefix rule and the
+// same "#id subject · verdict" shape as a delegation notice.
+export function subagentNoticeTag(id: number, kind: string, status: string): string {
+	return `[subagent: #${id} ${kind} · ${status.replaceAll("_", " ")}]`;
+}
+
 // Whether a user-role text is machinery speech, not operator memory.
 export function isMachineryText(text: string): boolean {
-	return text.startsWith("[program: ") || text.startsWith("[delegation: ");
+	return (
+		text.startsWith("[program: ") ||
+		text.startsWith("[delegation: ") ||
+		text.startsWith("[subagent: ")
+	);
 }
 
 // The id the compaction summary rides the model view under — readers

@@ -187,3 +187,35 @@ describe("delegations store", () => {
 		store.close();
 	});
 });
+
+describe("responsibility link columns", () => {
+	test("a table from before the link opens, and its rows read as unlinked", () => {
+		const dbPath = join(mkdtempSync(join(tmpdir(), "goblin-deleglink-")), "goblin.sqlite");
+		const db = new Database(dbPath);
+		db.exec(`CREATE TABLE delegations (
+			id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, harness TEXT NOT NULL,
+			cwd TEXT NOT NULL, task TEXT NOT NULL, chat_id INTEGER NOT NULL, thread_id INTEGER,
+			agent_name TEXT NOT NULL, workspace_id TEXT NOT NULL, pane_id TEXT NOT NULL,
+			status TEXT NOT NULL, target TEXT, baseline_seq INTEGER, prompted_at TEXT NOT NULL,
+			created_at TEXT NOT NULL, finished_at TEXT, app_conversation TEXT,
+			prompt_pending INTEGER NOT NULL DEFAULT 0)`);
+		db.exec(`INSERT INTO delegations (name, harness, cwd, task, chat_id, agent_name, workspace_id,
+			pane_id, status, prompted_at, created_at)
+			VALUES ('old', 'codex', '/w', 't', 1, '', '', '', 'done', 'x', 'x')`);
+		db.close();
+		const store = openDelegations(dbPath);
+		expect(store.get(1)?.responsibilityId).toBeNull();
+		const linked = store.create({
+			name: "new",
+			harness: "codex",
+			cwd: "/w",
+			task: "t",
+			address: { chatId: 1, threadId: null },
+			responsibilityId: "r1",
+			responsibilityRevision: 4,
+		});
+		expect(linked.responsibilityId).toBe("r1");
+		expect(linked.responsibilityRevision).toBe(4);
+		store.close();
+	});
+});

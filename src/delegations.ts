@@ -41,6 +41,11 @@ export interface Delegation {
 	// The task text was never delivered — the launch parked on a startup
 	// dialog; the watcher delivers it on the first seq advance past the park.
 	promptPending: boolean;
+	// Linked responsibility: each settlement files a worker report on it.
+	responsibilityId: string | null;
+	// The revision the delegation started from; a later correction
+	// overtakes its claim.
+	responsibilityRevision: number | null;
 	createdAt: string;
 	finishedAt: string | null;
 }
@@ -53,6 +58,8 @@ export interface CreateDelegation {
 	address: { chatId: number; threadId: number | null };
 	appConversation?: string;
 	target?: string | null;
+	responsibilityId?: string | null;
+	responsibilityRevision?: number | null;
 }
 
 export interface DelegationsStore {
@@ -117,6 +124,8 @@ const delegationSchema = z.object({
 	baseline_seq: z.number().nullable(),
 	prompted_at: z.string(),
 	prompt_pending: z.number(),
+	responsibility_id: z.string().nullable(),
+	responsibility_revision: z.number().nullable(),
 	created_at: z.string(),
 	finished_at: z.string().nullable(),
 });
@@ -142,6 +151,8 @@ function rowToDelegation(row: unknown): Delegation {
 		baselineSeq: r.baseline_seq,
 		promptedAt: r.prompted_at,
 		promptPending: r.prompt_pending === 1,
+		responsibilityId: r.responsibility_id,
+		responsibilityRevision: r.responsibility_revision,
 		createdAt: r.created_at,
 		finishedAt: r.finished_at,
 	};
@@ -176,7 +187,9 @@ const DELEGATIONS_COLUMNS = `
 		created_at TEXT NOT NULL,
 		finished_at TEXT,
 		app_conversation TEXT,
-		prompt_pending INTEGER NOT NULL DEFAULT 0`;
+		prompt_pending INTEGER NOT NULL DEFAULT 0,
+		responsibility_id TEXT,
+		responsibility_revision INTEGER`;
 
 export function openDelegations(dbPath: string): DelegationsStore {
 	const db = new Database(dbPath);
@@ -202,6 +215,13 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	// Predates machine targets: NULL = own local session.
 	if (!cols.has("target")) {
 		db.exec("ALTER TABLE delegations ADD COLUMN target TEXT");
+	}
+	// Predates responsibility links: NULL = not linked.
+	if (!cols.has("responsibility_id")) {
+		db.exec("ALTER TABLE delegations ADD COLUMN responsibility_id TEXT");
+	}
+	if (!cols.has("responsibility_revision")) {
+		db.exec("ALTER TABLE delegations ADD COLUMN responsibility_revision INTEGER");
 	}
 	// Predates the baseline-pending posture: baseline_seq was NOT NULL, so
 	// a failed post-prompt read had to record some pre-prompt number — a
@@ -236,8 +256,8 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	);
 	const qStarting = db.query("SELECT * FROM delegations WHERE status = 'starting' ORDER BY id");
 	const qInsert = db.query(`INSERT INTO delegations
-		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation)
-		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', ?, 0, ?, ?, NULL, ?)`);
+		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, responsibility_id, responsibility_revision)
+		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', ?, 0, ?, ?, NULL, ?, ?, ?)`);
 	const qBind = db.query(
 		"UPDATE delegations SET agent_name = ?, workspace_id = ?, pane_id = ? WHERE id = ?",
 	);
@@ -261,7 +281,20 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	const qStatus = db.query("UPDATE delegations SET status = ?, finished_at = ? WHERE id = ?");
 
 	return {
-		create({ name, harness, cwd, task, address, appConversation, target }, now = new Date()) {
+		create(
+			{
+				name,
+				harness,
+				cwd,
+				task,
+				address,
+				appConversation,
+				target,
+				responsibilityId,
+				responsibilityRevision,
+			},
+			now = new Date(),
+		) {
 			const ts = now.toISOString();
 			const res = qInsert.run(
 				name,
@@ -274,6 +307,8 @@ export function openDelegations(dbPath: string): DelegationsStore {
 				ts,
 				ts,
 				appConversation ?? null,
+				responsibilityId ?? null,
+				responsibilityRevision ?? null,
 			);
 			return rowToDelegation(qGet.get(Number(res.lastInsertRowid)));
 		},

@@ -62,7 +62,7 @@ import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./sch
 import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
-import { fileRunReport } from "./responsibility-runs.ts";
+import { fileDelegationReport, fileRunReport } from "./responsibility-runs.ts";
 import { makeAuthorityRecheck } from "./responsibility-authority.ts";
 import { openSubagentsGuarded, type Subagents } from "./subagents/mod.ts";
 import { telegramAddressOf } from "./targets.ts";
@@ -713,6 +713,8 @@ async function boot() {
 					delegationsDir: paths.delegations(),
 					homeDir: homedir(),
 					...delegationWake(wakeDeps),
+					settled: (d, verdict, body) => fileDelegationReport(responsibilities, d, verdict, body),
+					responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
 				})
 			: null;
 	completeBoot(delegationLifecycle, memoryWorker);

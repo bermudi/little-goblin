@@ -439,7 +439,7 @@ export function FilesView({ token }: { token: string | null }) {
 	return (
 		<div className="ops" ref={page}>
 			<h2 className="ops-h2">Identity</h2>
-			<div className="dtable" style={IDENTITY_COLS}>
+			<div className="dtable files-table" style={IDENTITY_COLS}>
 				<div className="dt-head" aria-hidden="true">
 					<span>File</span>
 					<span>Size</span>
@@ -483,7 +483,7 @@ export function FilesView({ token }: { token: string | null }) {
 					{shown.length === 0 ? (
 						<p className="empty">No attachment matches.</p>
 					) : (
-						<div className="dtable" style={ATTACH_COLS}>
+						<div className="dtable files-table" style={ATTACH_COLS}>
 							<div className="dt-head" aria-hidden="true">
 								<span>Name</span>
 								<span>Size</span>

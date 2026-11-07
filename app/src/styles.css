@@ -5338,6 +5338,11 @@ button.link:hover {
 
 /* Files page (#164): an opened file replaces the list. Text wraps at a
    readable width and the page scrolls; no inner scroller. */
+/* .ops is a flex column and .dtable clips (overflow: hidden), so a long table
+   would shrink to the pane height and the page would never scroll. */
+.files-table {
+	flex-shrink: 0;
+}
 .file-meta {
 	display: flex;
 	flex-wrap: wrap;

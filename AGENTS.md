@@ -153,6 +153,8 @@ suite stays smaller than `src/`.
 Real model requests in tests use one of these three (operator, 2026-11-06):
 `gpt-6-luna` on the codex provider, `claude-haiku-5-5` on the Claude provider,
 or `minimax/minimax-m3.1-flash` on OpenRouter.
+One exception (operator, 2026-11-06): the codex reasoning replay check uses
+`gpt-6.1-terra`, because `gpt-6-luna` returned no reasoning item to replay.
 
 Replay tests freeze real model responses so CI can check the code around a tool
 call without a model: `src/testkit/model-replay.ts`, first used by

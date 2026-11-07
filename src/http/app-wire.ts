@@ -490,6 +490,16 @@ export type AppAttentionTarget =
 	| { kind: "page"; page: AppAttentionPage }
 	| { kind: "conversation"; conversationId: string };
 
+/** One cause of blocked memory saves, with what the operator needs to decide. */
+export interface AppAttentionMemoryCause {
+	/** The stored error text; the key that scopes Try again / Drop them. */
+	error: string | null;
+	count: number;
+	conversations: { conversationId: string | null; name: string | null; count: number }[];
+	/** What to do about this kind of error. */
+	fix: string;
+}
+
 export interface AppAttentionItem {
 	id: string;
 	kind:
@@ -504,6 +514,8 @@ export interface AppAttentionItem {
 	detail: string;
 	createdAt: string | null;
 	target: AppAttentionTarget;
+	/** Only on `memory-blocked` items. */
+	memory?: AppAttentionMemoryCause;
 }
 
 export interface AppAttentionResponse {

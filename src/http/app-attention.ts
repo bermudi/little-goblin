@@ -4,6 +4,7 @@
 import type { AppConversationSummary } from "../conversation.ts";
 import { responsibilityStage } from "../responsibility-stage.ts";
 import { listProposedSkills } from "../stateview.ts";
+import { conversationName } from "./operator.ts";
 import { changesSummary, programChanges } from "./app-program-diff.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
 import type { AppAttentionItem, AppAttentionPage, AppAttentionResponse } from "./app-wire.ts";
@@ -14,6 +15,23 @@ const STAGE_TITLE: Partial<Record<string, string>> = {
 	blocked: "Blocked",
 	failed: "Failed",
 };
+
+// What to do about a failed memory save, from the error text the queue
+// stored (a Hindsight status code or a transport failure). Unknown text
+// gets the honest generic answer.
+function memoryFix(error: string | null): string {
+	const text = error ?? "";
+	if (/\b40[13]\b|unauthori[sz]ed|forbidden|api key|auth/i.test(text)) {
+		return "Memory's model provider rejects its key. Update the key, restart memory, then try again.";
+	}
+	if (/\b429\b|rate.?limit|quota/i.test(text)) {
+		return "The model provider is limiting memory's requests. Wait a while or check the plan, then try again.";
+	}
+	if (/\b5\d\d\b|ECONN|timed? ?out|fetch failed|unreachable/i.test(text)) {
+		return "Memory's server failed or can't be reached. Check that it is running, then try again.";
+	}
+	return "Check the memory service log for the reason, fix it, then try again.";
+}
 
 function pageItem(
 	item: Omit<AppAttentionItem, "target"> & { page: AppAttentionPage },
@@ -89,20 +107,34 @@ export async function handleAttentionRoute(
 	if (memory === undefined) {
 		unavailable.push("memory");
 	} else {
-		for (const blocked of memory.blockedDetail()) {
-			items.push(
-				pageItem({
-					id: `memory-blocked:${blocked.document}`,
-					kind: "memory-blocked",
-					title: "Memory retention blocked",
-					detail:
-						blocked.error === null
-							? `${blocked.document} — ${blocked.attempts} attempts`
-							: `${blocked.document} — ${blocked.error}`,
-					createdAt: null,
-					page: "memory",
-				}),
-			);
+		const { queue, client } = memory;
+		if (queue !== undefined && client !== undefined) {
+			// One card per cause, not per exchange: the operator decides
+			// about a failure, and its count comes from the whole queue.
+			for (const cause of queue.blockedSummary(client.target).byCause) {
+				items.push(
+					pageItem({
+						id: `memory-blocked:${cause.error ?? ""}`,
+						kind: "memory-blocked",
+						title:
+							cause.count === 1
+								? "Memory can't save 1 exchange"
+								: `Memory can't save ${cause.count} exchanges`,
+						detail: cause.error ?? "Saving failed; no error was recorded.",
+						createdAt: cause.since,
+						page: "memory",
+						memory: {
+							error: cause.error,
+							count: cause.count,
+							conversations: cause.conversations.map((c) => ({
+								...c,
+								name: conversationName(memory, c.conversationId),
+							})),
+							fix: memoryFix(cause.error),
+						},
+					}),
+				);
+			}
 		}
 	}
 

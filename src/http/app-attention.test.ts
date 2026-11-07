@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { openStore } from "../conversation.ts";
+import { HindsightClient } from "../memory/hindsight.ts";
 import type { OutboxEntry } from "../mail-outbox.ts";
 import type { ProgramProposal } from "../program-proposals.ts";
 import type { TurnRun, TurnToolCall } from "../turn-journal.ts";
@@ -113,6 +115,24 @@ describe("app attention", () => {
 		writeFileSync(join(dirs, "skills", "radar", "SKILL.md"), "old\n");
 		mkdirSync(join(dirs, "skills-proposed", "radar"), { recursive: true });
 		writeFileSync(join(dirs, "skills-proposed", "radar", "SKILL.md"), "new\n");
+		const memStore = openStore(join(dirs, "memory.sqlite"));
+		const memClient = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+		const block = (id: string, conversationId: string, error: string, timestamp: string) => {
+			const op = memStore.memoryQueue.enqueue(memClient.target, {
+				id,
+				content: "Operator: hi\nGoblin: hello",
+				timestamp,
+				conversationId,
+				sourceIds: ["u1", "a1"],
+			});
+			const row = memStore.memoryQueue.get(op);
+			if (row === null) throw new Error("expected queued memory");
+			memStore.memoryQueue.update(row, "blocked", 0, error);
+		};
+		block("exchange/app/chat-01/1/a", "app/chat-01", "HTTP 401", "2026-10-01T00:00:00.000Z");
+		block("exchange/app/chat-01/2/a", "app/chat-01", "HTTP 401", "2026-10-02T00:00:00.000Z");
+		block("exchange/app/gone/1/a", "app/gone", "HTTP 401", "2026-10-03T00:00:00.000Z");
+		block("exchange/app/chat-01/3/a", "app/chat-01", "HTTP 500", "2026-10-04T00:00:00.000Z");
 		const { http, call } = setup({
 			token: APP_TOKEN_NAME,
 			approvals: {
@@ -146,14 +166,11 @@ describe("app attention", () => {
 						deleting: 0,
 					}),
 					deletingAll: () => 0,
-					blockedDetail: () => [
-						{
-							document: "exchange/app/chat-01/1/a",
-							error: "HTTP 429",
-							attempts: 1,
-							conversationId: "app/chat-01",
-						},
-					],
+					blockedDetail: () => memStore.memoryQueue.blockedDetail(memClient.target),
+					queue: memStore.memoryQueue,
+					client: memClient,
+					conversationTitle: (id: string) =>
+						id === "app/chat-01" ? { title: "Primary" } : null,
 					lastRecallOk: () => null,
 					lastRecallAt: () => null,
 				},
@@ -208,11 +225,27 @@ describe("app attention", () => {
 				["Skill update — radar", "1 changed — review the diff, then install or discard"],
 				["New skill — watcher", "1 file — review, then install or discard"],
 			]);
+			// One card per cause, not per exchange, counted over the whole queue.
+			const memoryItems = body.items.filter((i) => i.kind === "memory-blocked");
+			expect(memoryItems.map((i) => [i.title, i.detail, i.createdAt])).toEqual([
+				["Memory can't save 3 exchanges", "HTTP 401", "2026-10-01T00:00:00.000Z"],
+				["Memory can't save 1 exchange", "HTTP 500", "2026-10-04T00:00:00.000Z"],
+			]);
+			expect(memoryItems[0]?.memory).toEqual({
+				error: "HTTP 401",
+				count: 3,
+				conversations: [
+					{ conversationId: "app/chat-01", name: "Primary", count: 2 },
+					{ conversationId: "app/gone", name: "Deleted conversation", count: 1 },
+				],
+				fix: expect.stringContaining("rejects its key"),
+			});
 			expect(new Map(body.items.map((i) => [i.id, i.target]))).toEqual(
 				new Map([
 					["program-approval:7", { kind: "page", page: "programs" }],
 					["mail-approval:9", { kind: "page", page: "programs" }],
-					["memory-blocked:exchange/app/chat-01/1/a", { kind: "page", page: "memory" }],
+					["memory-blocked:HTTP 401", { kind: "page", page: "memory" }],
+					["memory-blocked:HTTP 500", { kind: "page", page: "memory" }],
 					["skill-proposal:radar", { kind: "page", page: "skills" }],
 					["skill-proposal:watcher", { kind: "page", page: "skills" }],
 					["delegation-input:3", { kind: "conversation", conversationId: "app/chat-01" }],
@@ -221,6 +254,7 @@ describe("app attention", () => {
 			);
 		} finally {
 			http.stop();
+			memStore.close();
 		}
 	});
 

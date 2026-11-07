@@ -555,7 +555,7 @@ function memoryUpstreamError(err: unknown, what: string): Response {
 
 // What the page shows for a conversation: its name, else why it has none.
 // Without the lookup seam the raw id stays — the pre-#163 behaviour.
-function conversationName(
+export function conversationName(
 	mem: NonNullable<OperatorDeps["memory"]>,
 	id: string | null,
 ): string | null {
@@ -631,7 +631,7 @@ function memoryStatusResponse(deps: OperatorDeps): MemoryStatusResponse {
 			name: conversationName(mem, g.conversationId),
 			count: g.count,
 		})),
-		blockedCauses: summary?.byCause ?? [],
+		blockedCauses: (summary?.byCause ?? []).map(({ error, count }) => ({ error, count })),
 		retry:
 			retry === null
 				? null
@@ -689,7 +689,11 @@ const browseQuerySchema = z
 		message: "q and conversation are mutually exclusive",
 	});
 
-const memoryBlockedBody = z.object({ action: z.enum(["retry", "dismiss"]) }).strict();
+// `error` scopes the action to one cause (an attention card); absent
+// means every blocked exchange (the Memory page).
+const memoryBlockedBody = z
+	.object({ action: z.enum(["retry", "dismiss"]), error: z.string().nullable().optional() })
+	.strict();
 
 function programItem(program: Program): OperatorProgramItem {
 	return {
@@ -940,13 +944,14 @@ export async function handleOperatorRoute(
 				{ status: 422, headers: NO_STORE },
 			);
 		}
+		const scope = parsed.data.error === undefined ? undefined : { error: parsed.data.error };
 		const affected =
 			parsed.data.action === "retry"
-				? gate.queue.retryBlocked(gate.client.target)
-				: gate.queue.dismissBlocked(gate.client.target);
+				? gate.queue.retryBlocked(gate.client.target, scope)
+				: gate.queue.dismissBlocked(gate.client.target, scope);
 		log.info(
 			`memory blocked retentions ${parsed.data.action === "retry" ? "requeued" : "dismissed"} via ${actor.via}`,
-			{ ...who, affected },
+			{ ...who, affected, scoped: scope !== undefined, cause: scope?.error ?? null },
 		);
 		const body: MemoryBlockedResponse = { ok: true, action: parsed.data.action, affected };
 		return Response.json(body, { headers: NO_STORE });

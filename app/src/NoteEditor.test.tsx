@@ -319,7 +319,7 @@ async function select(
 }
 
 const toolbarBtn = (): HTMLButtonElement | null =>
-	container.querySelector<HTMLButtonElement>(".note-editor-bar button");
+	container.querySelector<HTMLButtonElement>(".note-editor-foot button");
 
 // The durable draft record for this note — the happy-dom localStorage
 // installed as the global is the module's store.

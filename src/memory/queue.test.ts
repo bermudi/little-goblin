@@ -596,7 +596,9 @@ test("blocked summaries and retry progress survive an undecodable payload row", 
 	expect(store.memoryQueue.blockedSummary(target)).toEqual({
 		total: 1,
 		byConversation: [{ conversationId: null, count: 1 }],
-		byCause: [{ error: null, count: 1 }],
+		byCause: [
+			{ error: null, count: 1, since: null, conversations: [{ conversationId: null, count: 1 }] },
+		],
 	});
 	expect(store.memoryQueue.retryBlocked(target)).toBe(1);
 	expect(store.memoryQueue.retryProgress(target)).toMatchObject({
@@ -605,6 +607,43 @@ test("blocked summaries and retry progress survive an undecodable payload row", 
 		failed: 0,
 		conversations: [{ conversationId: null, queued: 1 }],
 	});
+});
+
+test("blocked causes carry their own conversations, and retry or dismiss can be scoped to one cause", () => {
+	const store = storeAt(database());
+	const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+	const queue = store.memoryQueue;
+	const block = (id: string, conversationId: string, error: string, timestamp: string) => {
+		const op = queue.enqueue(client.target, { ...doc, id, conversationId, timestamp });
+		const item = queue.get(op);
+		if (item === null) throw new Error("expected queued row");
+		queue.update(item, "blocked", 0, error);
+	};
+	block("e1", "app/a", "HTTP 401", "2026-10-01T10:00:00.000Z");
+	block("e2", "app/a", "HTTP 401", "2026-10-02T10:00:00.000Z");
+	block("e3", "app/b", "HTTP 401", "2026-10-03T10:00:00.000Z");
+	block("e4", "app/b", "HTTP 500", "2026-10-04T10:00:00.000Z");
+	expect(queue.blockedSummary(client.target).byCause).toEqual([
+		{
+			error: "HTTP 401",
+			count: 3,
+			since: "2026-10-01T10:00:00.000Z",
+			conversations: [
+				{ conversationId: "app/a", count: 2 },
+				{ conversationId: "app/b", count: 1 },
+			],
+		},
+		{
+			error: "HTTP 500",
+			count: 1,
+			since: "2026-10-04T10:00:00.000Z",
+			conversations: [{ conversationId: "app/b", count: 1 }],
+		},
+	]);
+	expect(queue.retryBlocked(client.target, { error: "HTTP 500" })).toBe(1);
+	expect(queue.counts(client.target)).toMatchObject({ blocked: 3, pending: 1 });
+	expect(queue.dismissBlocked(client.target, { error: "HTTP 401" })).toBe(3);
+	expect(queue.counts(client.target)).toMatchObject({ blocked: 0, dismissed: 3 });
 });
 
 test("retry progress follows only the newest retry and ignores dismissed rows", () => {

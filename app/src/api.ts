@@ -826,11 +826,13 @@ export function getMemoryStatus(token: string | null): Promise<MemoryStatusRespo
 export function decideBlockedMemory(
 	token: string | null,
 	action: "retry" | "dismiss",
+	/** Scope to one cause (its stored error text, null = none recorded); omit for all. */
+	error?: string | null,
 ): Promise<MemoryBlockedResponse> {
 	return request(token, "/api/app/memory/blocked", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ action }),
+		body: JSON.stringify(error === undefined ? { action } : { action, error }),
 	});
 }
 

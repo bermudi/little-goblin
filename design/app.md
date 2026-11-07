@@ -312,6 +312,24 @@ polls fast while any are queued. The wire shapes (`blockedConversations`,
 Restoring dropped exchanges ("Save them now") is design only; it waits for
 memory tuning and is not built.
 
+*Attention page (#150; mockup `design/prototypes/attention/`, operator: "love it").*
+`AttentionView.tsx`. One summary line on top ("1 thing is broken. 4 decisions
+wait for you." / "Nothing needs you."). **Broken** comes first: memory is ONE
+card per *cause* (the stored error text), not one per exchange — real error,
+how many exchanges, which conversations by name, a fix hint
+(`memoryFix` in `app-attention.ts`, chosen from the error text), an "If you
+wait:" line, and the actions on the card: Try again, Drop them (inline
+confirm) and a link to the Memory page. Try again and Drop them are scoped to
+that cause (`POST /memory/blocked` takes an optional `error`; the Memory page
+sends none and still means all). After Try again the page polls like the
+Memory page and shows its `RetryCard`. **Your decisions** show program, mail
+and skill proposals as the Programs/Skills page cards (`ProgramApprovalCard`,
+`MailApprovalCard`, `ProposalCard`) with their diff already open and the
+buttons on the card; each has an "If you wait:" line. **Needs you** holds the
+rest (interrupted runs, delegations, responsibilities) with a plain Open.
+**Work in progress** is the responsibility feed; notifications are one line at
+the foot. "Drop them" still cannot be undone ("Save them now" is design only).
+
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
 forever (no route may ever render it, structure included). Two layers, each

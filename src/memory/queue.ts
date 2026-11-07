@@ -30,8 +30,21 @@ export interface BlockedRetention {
 export interface BlockedSummary {
 	total: number;
 	byConversation: { conversationId: string | null; count: number }[];
-	byCause: { error: string | null; count: number }[];
+	byCause: {
+		error: string | null;
+		count: number;
+		/** Timestamp of the oldest blocked exchange in this cause. */
+		since: string | null;
+		conversations: { conversationId: string | null; count: number }[];
+	}[];
 }
+
+/** Which blocked rows an action covers: every one, or one cause (the
+ *  first 120 chars of the stored error, as blockedSummary groups them;
+ *  null = rows with no error text). */
+export type BlockedScope = { error: string | null } | undefined;
+
+const CAUSE_KEY = "substr(error, 1, 120)";
 // What happened to the exchanges the last Retry requeued. dismissed and
 // deleting rows left the batch by operator choice and are not counted.
 export interface RetryProgress {
@@ -391,13 +404,24 @@ export class MemoryQueue {
 		return row.n;
 	}
 
-	retryBlocked(target: string): number {
+	private blockedRows(
+		target: string,
+		scope: BlockedScope,
+	): { operation_id: string; document_id: string }[] {
+		const base =
+			"SELECT operation_id, document_id FROM memory_outbox WHERE target = ? AND state = 'blocked'";
+		return scope === undefined
+			? this.db.query<{ operation_id: string; document_id: string }, [string]>(base).all(target)
+			: this.db
+					.query<{ operation_id: string; document_id: string }, [string, string | null]>(
+						`${base} AND ${CAUSE_KEY} IS ?`,
+					)
+					.all(target, scope.error);
+	}
+
+	retryBlocked(target: string, scope?: BlockedScope): number {
 		targetSchema.parse(target);
-		const rows = this.db
-			.query<{ operation_id: string; document_id: string }, [string]>(
-				"SELECT operation_id, document_id FROM memory_outbox WHERE target = ? AND state = 'blocked'",
-			)
-			.all(target);
+		const rows = this.blockedRows(target, scope);
 		const retriedAt = Date.now();
 		for (const row of rows) {
 			const fresh = randomUUID();
@@ -418,13 +442,9 @@ export class MemoryQueue {
 		return rows.length;
 	}
 
-	dismissBlocked(target: string): number {
+	dismissBlocked(target: string, scope?: BlockedScope): number {
 		targetSchema.parse(target);
-		const rows = this.db
-			.query<{ operation_id: string; document_id: string }, [string]>(
-				"SELECT operation_id, document_id FROM memory_outbox WHERE target = ? AND state = 'blocked'",
-			)
-			.all(target);
+		const rows = this.blockedRows(target, scope);
 		for (const row of rows) {
 			const change = this.db.run(
 				"UPDATE memory_outbox SET state = 'dismissed' WHERE operation_id = ? AND state = 'blocked'",
@@ -479,13 +499,24 @@ export class MemoryQueue {
 				 GROUP BY conversationId ORDER BY count DESC, conversationId LIMIT 100`,
 			)
 			.all(target);
-		const byCause = this.db
-			.query<{ error: string | null; count: number }, [string]>(
-				`SELECT substr(error, 1, 120) AS error, COUNT(*) AS count
+		const causes = this.db
+			.query<{ error: string | null; count: number; since: string | null }, [string]>(
+				`SELECT ${CAUSE_KEY} AS error, COUNT(*) AS count,
+				 MIN(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.timestamp') END) AS since
 				 FROM memory_outbox WHERE target = ? AND state = 'blocked'
 				 GROUP BY 1 ORDER BY count DESC LIMIT 20`,
 			)
 			.all(target);
+		const byCause = causes.map((cause) => ({
+			...cause,
+			conversations: this.db
+				.query<{ conversationId: string | null; count: number }, [string, string | null]>(
+					`SELECT CASE WHEN json_valid(payload) THEN json_extract(payload, '$.conversationId') END AS conversationId, COUNT(*) AS count
+					 FROM memory_outbox WHERE target = ? AND state = 'blocked' AND ${CAUSE_KEY} IS ?
+					 GROUP BY conversationId ORDER BY count DESC, conversationId LIMIT 100`,
+				)
+				.all(target, cause.error),
+		}));
 		return {
 			total: byConversation.reduce((n, g) => n + g.count, 0),
 			byConversation,

@@ -932,6 +932,31 @@ describe("memory/blocked route", () => {
 		}
 	});
 
+	test("an action with an error key covers only that cause", async () => {
+		const { d, store, target } = memoryDeps();
+		try {
+			const block = (id: string, error: string) => {
+				const op = store.memoryQueue.enqueue(target, {
+					id,
+					content: "Operator: hi\nGoblin: hello",
+					timestamp: new Date().toISOString(),
+					conversationId: "app/chat-01",
+					sourceIds: ["u1", "a1"],
+				});
+				const item = store.memoryQueue.get(op);
+				if (item === null) throw new Error("expected queued memory");
+				store.memoryQueue.update(item, "blocked", 0, error);
+			};
+			block("exchange/app/chat-01/1/a", "HTTP 401");
+			block("exchange/app/chat-01/2/a", "HTTP 500");
+			const res = await postBlocked({ action: "retry", error: "HTTP 500" }, d);
+			expect(await res?.json()).toEqual({ ok: true, action: "retry", affected: 1 });
+			expect(store.memoryQueue.counts(target)).toMatchObject({ blocked: 1, pending: 1 });
+		} finally {
+			store.close();
+		}
+	});
+
 	test("bad actions and unwired memory get typed refusals", async () => {
 		const { d, store } = memoryDeps();
 		try {

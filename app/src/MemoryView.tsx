@@ -167,7 +167,7 @@ function ProblemCard({
 	);
 }
 
-function RetryCard({ retry }: { retry: MemoryRetryProgress }) {
+export function RetryCard({ retry }: { retry: MemoryRetryProgress }) {
 	const total = retry.done + retry.queued + retry.failed;
 	const title =
 		retry.queued > 0

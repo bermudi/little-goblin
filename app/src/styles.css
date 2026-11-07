@@ -47,7 +47,14 @@
 	--app-fg: #e8e8ea;
 	--app-fg-muted: color-mix(in oklab, var(--app-fg) 62%, var(--app-bg));
 	--app-fg-subtle: color-mix(in oklab, var(--app-fg) 48%, var(--app-bg));
-	--app-border: color-mix(in oklab, var(--app-fg) 1.5%, transparent);
+	/* Decorative hairline for cards and separators. */
+	--app-border: color-mix(in oklab, var(--app-fg) 10%, transparent);
+	/* Controls (fields, selects, buttons) must read at rest in both themes.
+	   Never reuse --app-border for them: it is a card edge, not an affordance. */
+	--app-control-border: color-mix(in oklab, var(--app-fg) 30%, transparent);
+	--app-control-border-hover: color-mix(in oklab, var(--app-fg) 48%, transparent);
+	--app-control-bg: color-mix(in oklab, var(--app-fg) 4%, var(--app-bg));
+	--app-focus: var(--app-accent);
 	--app-divider: color-mix(in oklab, var(--app-fg) 8%, transparent);
 	--app-hover: color-mix(in oklab, var(--app-fg) 6%, transparent);
 	--app-active: color-mix(in oklab, var(--app-fg) 7%, transparent);
@@ -258,7 +265,7 @@ p code,
 	font: inherit;
 	font-size: 13px;
 	background: transparent;
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
 	padding: 0.55rem 0.75rem;
@@ -266,7 +273,7 @@ p code,
 	outline: none;
 }
 .gate input:focus {
-	border-color: color-mix(in oklab, var(--app-fg) 25%, transparent);
+	border-color: var(--app-focus);
 }
 .gate button {
 	background: var(--app-fg);
@@ -325,7 +332,7 @@ p code,
 	font: inherit;
 	font-size: 12px;
 	background: transparent;
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
 	padding: 0.35rem 0.6rem;
@@ -333,7 +340,7 @@ p code,
 	margin-bottom: 0.2rem;
 }
 .rail-search:focus {
-	border-color: color-mix(in oklab, var(--app-fg) 25%, transparent);
+	border-color: var(--app-focus);
 }
 .rail-search::placeholder {
 	color: var(--app-fg-subtle);
@@ -487,14 +494,14 @@ p code,
 	font-size: 12px;
 	width: 100%;
 	background: transparent;
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 6px;
 	color: var(--app-fg);
 	padding: 0.3rem 1.8rem 0.3rem 0.5rem;
 	outline: none;
 }
 .conv.editing input:focus {
-	border-color: color-mix(in oklab, var(--app-fg) 25%, transparent);
+	border-color: var(--app-focus);
 }
 
 /* Search results — one row per hit: who said it, the line, which conv. */
@@ -2820,7 +2827,7 @@ button.pathchip:hover svg {
 	font: inherit;
 	font-size: 12.5px;
 	background: var(--app-bg);
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
 	padding: 0.4rem 0.6rem;
@@ -2829,7 +2836,7 @@ button.pathchip:hover svg {
 .frow input:focus,
 .chain-card input:focus,
 .msheet-filter input:focus {
-	border-color: color-mix(in oklab, var(--app-fg) 25%, transparent);
+	border-color: var(--app-focus);
 }
 .mono {
 	font-family: var(--font-mono);
@@ -2839,7 +2846,7 @@ button.pathchip:hover svg {
 	display: flex;
 	align-items: center;
 	gap: 0.5rem;
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	padding: 0.35rem 0.6rem;
 	color: var(--app-fg);
@@ -2899,7 +2906,7 @@ button.pathchip:hover svg {
 	gap: 4px;
 }
 .seg-btn {
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 7px;
 	padding: 0.25rem 0.6rem;
 	font-size: 12px;
@@ -2911,7 +2918,7 @@ button.pathchip:hover svg {
 .seg-btn.on {
 	background: var(--app-active);
 	color: var(--app-fg);
-	border-color: color-mix(in oklab, var(--app-fg) 20%, transparent);
+	border-color: color-mix(in oklab, var(--app-fg) 60%, transparent);
 }
 
 .switch {
@@ -2920,7 +2927,7 @@ button.pathchip:hover svg {
 	height: 1.35rem;
 	flex: none;
 	border-radius: 999px;
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	background: var(--app-gray-100);
 	transition: background-color 100ms;
 }
@@ -2977,7 +2984,7 @@ button.pathchip:hover svg {
 }
 .addbtn,
 .ghost {
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	padding: 0.35rem 0.7rem;
 	font-size: 12.5px;
@@ -2987,6 +2994,143 @@ button.pathchip:hover svg {
 .ghost:hover {
 	background: var(--app-hover);
 	color: var(--app-fg);
+}
+
+/* Controls at rest (#170): one shared skin so a field, a select and a
+   button each read as something you can use before you touch them.
+   Colors, borders and focus only — no layout. */
+.addbtn,
+.ghost,
+.rm,
+.pk-toolbtn,
+.chain-btns button,
+.seg-btn,
+.valuebtn,
+.approval-actions button,
+.secret-reveal button,
+.log-controls button {
+	background: var(--app-control-bg);
+}
+.addbtn,
+.ghost {
+	color: var(--app-fg);
+}
+.addbtn:hover:not(:disabled),
+.ghost:hover:not(:disabled),
+.rm:hover:not(:disabled),
+.pk-toolbtn:hover:not(:disabled),
+.chain-btns button:hover:not(:disabled),
+.seg-btn:hover,
+.valuebtn:hover,
+.approval-actions button:hover:not(:disabled),
+.secret-reveal button:hover,
+.log-controls button:hover {
+	border-color: var(--app-control-border-hover);
+}
+.addbtn:disabled,
+.ghost:disabled {
+	opacity: 0.5;
+}
+.frow input:hover,
+.chain-card input:hover,
+.chain-card select:hover,
+.prov input:hover,
+.prov select:hover,
+.keyentry input:hover,
+.msheet-filter input:hover,
+.msheet-filter select:hover,
+.projform textarea:hover,
+.projform select:hover,
+.projfields textarea:hover,
+.projfields select:hover,
+.proj-rename input:hover,
+.settings select:hover,
+.program-editor input:hover,
+.program-editor textarea:hover,
+.log-controls input:hover,
+.log-controls select:hover,
+.note-filters input[type="search"]:hover,
+.note-pick input[type="search"]:hover,
+.note-rewrite-field textarea:hover,
+.rail-search:hover,
+.gate input:hover {
+	border-color: var(--app-control-border-hover);
+}
+/* Focus: accent border plus a soft ring, on every field the page owns.
+   Fields set outline: none, so the ring has to come from here. */
+.frow input:focus,
+.chain-card input:focus,
+.chain-card select:focus,
+.prov input:focus,
+.prov select:focus,
+.keyentry input:focus,
+.msheet-filter input:focus,
+.msheet-filter select:focus,
+.projform textarea:focus,
+.projform select:focus,
+.projfields textarea:focus,
+.projfields select:focus,
+.proj-rename input:focus,
+.settings select:focus,
+.program-editor input:focus,
+.program-editor textarea:focus,
+.log-controls input:focus,
+.log-controls select:focus,
+.note-filters input[type="search"]:focus,
+.note-pick input[type="search"]:focus,
+.note-rewrite-field textarea:focus,
+.rail-search:focus,
+.gate input:focus,
+.note-editor:focus-within {
+	border-color: var(--app-focus);
+	box-shadow: 0 0 0 2px color-mix(in oklab, var(--app-focus) 30%, transparent);
+}
+/* Native selects: draw our own chevron so they look like selects, not text.
+   .settings select already does; share its recipe with the other pages. */
+.chain-card select,
+.prov select,
+.msheet-filter select,
+.projform select,
+.projfields select,
+.log-controls select {
+	appearance: none;
+	-webkit-appearance: none;
+	padding-right: 1.7rem;
+	background-color: var(--app-control-bg);
+	background-image:
+		linear-gradient(45deg, transparent 50%, var(--app-fg-muted) 50%),
+		linear-gradient(135deg, var(--app-fg-muted) 50%, transparent 50%);
+	background-position:
+		calc(100% - 14px) 55%,
+		calc(100% - 9px) 55%;
+	background-size: 5px 5px;
+	background-repeat: no-repeat;
+	cursor: pointer;
+}
+.chain-card select option,
+.prov select option,
+.msheet-filter select option,
+.projform select option,
+.projfields select option,
+.log-controls select option {
+	background: var(--app-bg);
+	color: var(--app-fg);
+}
+/* Fields get a faint fill so an empty box is a box, not blank space. */
+.frow input,
+.chain-card input,
+.prov input,
+.keyentry input,
+.msheet-filter input,
+.projform textarea,
+.projfields textarea,
+.proj-rename input,
+.program-editor input,
+.program-editor textarea,
+.note-filters input[type="search"],
+.note-pick input[type="search"],
+.note-rewrite-field textarea {
+	background-color: var(--app-control-bg);
 }
 .ghost {
 	align-self: flex-start;
@@ -3040,7 +3184,7 @@ button.pathchip:hover svg {
 	font-weight: 500;
 }
 .rm {
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 7px;
 	padding: 0.25rem 0.6rem;
 	font-size: 12px;
@@ -3079,7 +3223,7 @@ button.pathchip:hover svg {
 	gap: 2px;
 }
 .chain-btns button {
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 6px;
 	padding: 0.05rem 0.45rem;
 	font-size: 12px;
@@ -3377,7 +3521,7 @@ button.pathchip:hover svg {
 }
 .pk-toolbtn {
 	flex: none;
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 7px;
 	padding: 0.3rem 0.6rem;
 	font-size: 12px;
@@ -3730,7 +3874,7 @@ button.pathchip:hover svg {
 }
 .approval-actions button,
 .secret-reveal button {
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	padding: 0.4rem 0.8rem;
 	font-size: 12.5px;
@@ -3779,7 +3923,7 @@ button.pathchip:hover svg {
 }
 .program-editor input,
 .program-editor textarea {
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	background: var(--app-bg);
 	color: var(--app-fg);
@@ -4374,7 +4518,7 @@ select.ui-input option {
 	font: inherit;
 	font-size: 12.5px;
 	background: var(--app-bg);
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
 	padding: 0.4rem 0.6rem;
@@ -4385,7 +4529,7 @@ select.ui-input option {
 .projform input:focus,
 .projfields textarea:focus,
 .projfields select:focus {
-	border-color: color-mix(in oklab, var(--app-fg) 25%, transparent);
+	border-color: var(--app-focus);
 }
 .projform .radio {
 	display: flex;
@@ -4423,7 +4567,7 @@ select.ui-input option {
 	font: inherit;
 	font-size: 13px;
 	background: var(--app-bg);
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
 	padding: 0.4rem 0.6rem;
@@ -4467,7 +4611,7 @@ select.ui-input option {
 	font: inherit;
 	font-size: 12px;
 	background: var(--app-bg);
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
 	padding: 0.35rem 0.55rem;
@@ -4516,7 +4660,7 @@ form.composer {
 .note-pick .note-new {
 	font-size: 12px;
 	background: var(--app-bg);
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
 	padding: 0.35rem 0.55rem;
@@ -4580,7 +4724,7 @@ button.note-card-append:hover {
 	font: inherit;
 	font-size: 12.5px;
 	background: var(--app-bg);
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
 	padding: 0.4rem 0.6rem;
@@ -4696,7 +4840,7 @@ button.link:hover {
 .note-editor {
 	display: flex;
 	flex-direction: column;
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 10px;
 	min-height: 16rem;
 }
@@ -4813,7 +4957,7 @@ button.link:hover {
 	font: inherit;
 	color: var(--app-fg);
 	background: var(--app-bg);
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 6px;
 	padding: 0.3rem 0.5rem;
 	resize: vertical;
@@ -4904,7 +5048,7 @@ button.link:hover {
 .log-controls select,
 .log-controls input {
 	background: var(--app-gray-50);
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
 	font-size: 12.5px;
@@ -4916,7 +5060,7 @@ button.link:hover {
 	font-family: var(--font-mono);
 }
 .log-controls button {
-	border: 1px solid var(--app-border);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	background: transparent;
 	color: var(--app-fg-muted);
@@ -5079,7 +5223,7 @@ button.link:hover {
 	font: inherit;
 	font-size: 12px;
 	background: transparent;
-	border: 1px solid var(--app-divider);
+	border: 1px solid var(--app-control-border);
 	border-radius: 6px;
 	color: var(--app-fg);
 	padding: 0.4rem 0.55rem;
@@ -5088,7 +5232,7 @@ button.link:hover {
 	outline: none;
 }
 .interrupted-note-label textarea:focus {
-	border-color: color-mix(in oklab, var(--app-fg) 25%, transparent);
+	border-color: var(--app-focus);
 }
 .interrupted-actions {
 	display: flex;
@@ -5754,8 +5898,8 @@ button.link:hover {
 	-webkit-appearance: none;
 	font: inherit;
 	font-size: 12.5px;
-	background: var(--app-bg);
-	border: 1px solid var(--app-border);
+	background-color: var(--app-control-bg);
+	border: 1px solid var(--app-control-border);
 	border-radius: 8px;
 	color: var(--app-fg);
 	padding: 0.4rem 1.7rem 0.4rem 0.6rem;

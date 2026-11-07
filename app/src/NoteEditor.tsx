@@ -981,6 +981,57 @@ const NoteEditor = forwardRef<
 			.use(gfm)
 			.use(listener)
 			.use(history)
+			// The toolbar's state: recomputed on every editor state change.
+			.use(
+				$prose(
+					() =>
+						new Plugin({
+							view: (view) => {
+								const publish = (state: typeof view.state): void => {
+									if (unmountedRef.current) return;
+									const next = formatState(state);
+									setFmt((cur) => (cur !== null && sameFormat(cur, next) ? cur : next));
+								};
+								publish(view.state);
+								return { update: (v) => publish(v.state) };
+							},
+						}),
+				),
+			)
+			// A task item's checkbox is a ::before drawn left of the item
+			// (CSS) — a press there (offsetX < 0 on the li) toggles it.
+			.use(
+				$prose(
+					() =>
+						new Plugin({
+							props: {
+								handleDOMEvents: {
+									mousedown: (view, event) => {
+										const li = event.target;
+										if (
+											!(li instanceof HTMLElement) ||
+											li.tagName !== "LI" ||
+											!li.hasAttribute("data-checked") ||
+											event.offsetX >= 0
+										)
+											return false;
+										const pos = view.posAtDOM(li, 0) - 1;
+										const node = view.state.doc.nodeAt(pos);
+										if (node === null || node.attrs.checked == null) return false;
+										view.dispatch(
+											view.state.tr.setNodeMarkup(pos, undefined, {
+												...node.attrs,
+												checked: !node.attrs.checked,
+											}),
+										);
+										event.preventDefault();
+										return true;
+									},
+								},
+							},
+						}),
+				),
+			)
 			// Draft capture runs synchronously on EVERY doc change —
 			// the listener's debounce owns autosave timing, but a
 			// typed-then-gone body can't wait for it.

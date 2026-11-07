@@ -1839,3 +1839,38 @@ describe("NoteEditor startup ordering", () => {
 		expect(patches).toHaveLength(0);
 	});
 });
+
+describe("formatting toolbar", () => {
+	const tool = (id: string): HTMLButtonElement =>
+		container.querySelector<HTMLButtonElement>(`[data-tool="${id}"]`)!;
+
+	test("a control formats the selection, shows active, and saves plain markdown", async () => {
+		root = createRoot(container);
+		const ref = await mount("hello world", DELAY);
+		await notice();
+		await select(ref, 1, 6);
+		expect(tool("strong").getAttribute("aria-pressed")).toBe("false");
+		await act(async () => tool("strong").click());
+		expect(tool("strong").getAttribute("aria-pressed")).toBe("true");
+		await notice();
+		await settle();
+		expect(patches.at(-1)!.body.body).toBe("**hello** world");
+		expect(tool("undo").disabled).toBe(false);
+	});
+
+	test("Text style → Paragraph turns a heading back into text", async () => {
+		root = createRoot(container);
+		const ref = await mount("# Title", DELAY);
+		await notice();
+		await select(ref, 2, 2);
+		const sel = container.querySelector<HTMLSelectElement>(".note-fmt-block")!;
+		expect(sel.value).toBe("h1");
+		await act(async () => {
+			sel.value = "paragraph";
+			sel.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+		});
+		await notice();
+		await settle();
+		expect(patches.at(-1)!.body.body).toBe("Title");
+	});
+});

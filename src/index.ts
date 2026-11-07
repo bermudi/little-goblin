@@ -697,6 +697,7 @@ async function boot() {
 		// dispatcher owns their wake from the record on.
 		responsibilities,
 		recordDevelopment: (input: DevelopmentInput) => wakeDispatcher!.record(input),
+		remindOperator: appPush.notifyReminder,
 		// The System One gate doubles as the watcher-event scorer (fail-open) — unscored absent.
 		...(system1Gate ? { checkMail: system1Gate as Pick<typeof system1Gate, "decide"> } : {}),
 	});

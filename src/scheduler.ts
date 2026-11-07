@@ -17,6 +17,7 @@ import type { ResponsibilityStore } from "./responsibilities.ts";
 import { authorityStamp } from "./responsibility-authority.ts";
 import { responsibilityStage } from "./responsibility-stage.ts";
 import { isFollowupProgram } from "./responsibility-followup.ts";
+import { dueReminder, type OperatorReminder } from "./responsibility-reminder.ts";
 import type { DevelopmentInput } from "./wake-store.ts";
 import { latestFireAtOrBefore, type Program, type ProgramsStore } from "./programs.ts";
 import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
@@ -34,9 +35,11 @@ export interface SchedulerDeps extends WakeDeps {
 	 *  loud skip, never a misrouted fire. */
 	responsibilities?: Pick<
 		ResponsibilityStore,
-		"get" | "attachmentsFor" | "consumeFollowup" | "latestReport" | "operationsFor"
+		"get" | "attachmentsFor" | "consumeFollowup" | "latestReport" | "operationsFor" | "open"
 	>;
 	recordDevelopment?: ((input: DevelopmentInput) => void) | undefined;
+	/** Rings the operator about work still waiting on them. Absent = no reminders. */
+	remindOperator?: ((reminder: OperatorReminder) => Promise<void>) | undefined;
 }
 
 export interface Scheduler {
@@ -63,10 +66,16 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 	if (ladders.get(deps)?.stopped) ladders.delete(deps);
 	const ladder = ladderFor(deps);
 	let stopped = false;
+	const reminderAttempts = new Map<string, number>();
 	const scan = (): void => {
 		if (stopped) return;
 		const now = new Date();
 		reconcilePendingMarks(deps);
+		try {
+			sweepOperatorReminders(deps, now, reminderAttempts);
+		} catch (err) {
+			log.error("operator reminder sweep failed", err, {});
+		}
 		// The due query runs from a synchronous interval callback: a throw
 		// here (an I/O error on the programs file) would be an uncaught
 		// exception — exit(1), and the same throw again five seconds into
@@ -106,6 +115,36 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 			ladder.timers.clear();
 		},
 	};
+}
+
+// Runs apart from the follow-up Programs, so a future commitment or a
+// disabled Program can't silence a reminder. The push owner's sent markers
+// are the durable dedupe; this only stops a failing or absent device from
+// being retried every tick.
+const REMINDER_RETRY_MS = 15 * 60_000;
+export function sweepOperatorReminders(
+	deps: SchedulerDeps,
+	now: Date,
+	attempts: Map<string, number>,
+): void {
+	const remind = deps.remindOperator;
+	const resps = deps.responsibilities;
+	if (remind === undefined || resps === undefined) return;
+	const due = new Set<string>();
+	for (const resp of resps.open()) {
+		const id = resp.responsibilityId;
+		const reminder = dueReminder(resp, resps.latestReport(id), resps.operationsFor(id), now);
+		if (reminder === null) continue;
+		due.add(reminder.key);
+		const last = attempts.get(reminder.key);
+		if (last !== undefined && now.getTime() - last < REMINDER_RETRY_MS) continue;
+		attempts.set(reminder.key, now.getTime());
+		log.debug("operator reminder due", { ...reminder });
+		remind(reminder).catch((err: unknown) => {
+			log.error("operator reminder failed", err, { ...reminder });
+		});
+	}
+	for (const key of attempts.keys()) if (!due.has(key)) attempts.delete(key);
 }
 
 // Retry ladder (hermes' bounded zero-API-call re-run): a fire whose

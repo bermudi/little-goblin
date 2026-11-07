@@ -937,6 +937,7 @@ function AppShell() {
 	// Deleted rows stay out of the lists while their DELETE is held back
 	// for the undo window.
 	const [heldDeletes, setHeldDeletes] = useState<ReadonlySet<string>>(new Set());
+	const rowRemovedLatest = useRef<(id: string) => void>(() => {});
 	const listSeq = useRef(0);
 	// The deep link applies once — after the first list load — so an
 	// operator's own navigation is never overridden later.
@@ -1422,10 +1423,15 @@ function AppShell() {
 			undo: () => unarchive(c),
 		});
 	};
-	// The server delete is irreversible, so it waits out the undo window:
-	// the row hides now, the DELETE fires when the toast settles, and Undo
-	// just un-hides it. Closing the page inside the window cancels it.
+	// The settle callback runs seconds later: it must see the selection and
+	// page of that moment, not of the click.
+	rowRemovedLatest.current = rowRemoved;
+	// The server delete is irreversible: it keeps its confirm, then waits
+	// out the undo window. The row hides now, the DELETE fires when the
+	// toast settles, and Undo just un-hides it. Closing the page inside the
+	// window cancels it.
 	const deleteConversationHeld = (c: AppConversationList["conversations"][number]) => {
+		if (!window.confirm(`Delete "${rowLabel(c)}"?`)) return;
 		const release = () =>
 			setHeldDeletes((prev) => {
 				const next = new Set(prev);
@@ -1441,7 +1447,12 @@ function AppShell() {
 			settle: () => {
 				void deleteConversation(token, c.id).then(
 					() => {
+						// Drop the row before releasing the hold, so it can't
+						// reappear while (or if) the refresh is pending or fails.
+						setConversations((prev) => prev?.filter((x) => x.id !== c.id) ?? prev);
 						release();
+						// It may have been reopened (search, history) during the window.
+						rowRemovedLatest.current(c.id);
 						void refresh();
 					},
 					(err: unknown) => {

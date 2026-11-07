@@ -813,12 +813,17 @@ Options not taken: a capped rail list with "Show all", and search-only
 ### Undo (ruling 2026-11-07)
 
 Archiving a chat and deleting an archived chat both raise a six-second
-Undo toast (`undoToast.tsx`) in place of the delete confirm. One toast at
+Undo toast (`undoToast.tsx`). Delete keeps its confirm first (operator,
+2026-11-07); the toast is a second chance, not a replacement. One toast at
 a time; a newer action settles the older one, so only the latest is
 undoable. Archive undo is an ordinary unarchive PATCH. Delete is
 irreversible server-side, so the client holds it back: the row hides at
 once, `DELETE` fires when the toast settles (timeout, × button, a newer
-toast, `pagehide`), and Undo just un-hides the row — no request. Closing
+toast, `pagehide`), and Undo just un-hides the row — no request. On
+success the row leaves local state before the hold lifts (it can't flash
+back while the refresh runs, or stay if it fails), and a chat reopened
+during the window (search, history) is closed with the selection of that
+moment. Closing
 the tab inside the window may cancel the delete (best effort on
 `pagehide`); the chat then stays. This is the one place the "no optimistic
 mutation" rule bends, and only for hiding a row. Unarchive, pin and

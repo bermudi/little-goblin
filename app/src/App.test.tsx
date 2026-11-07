@@ -1342,7 +1342,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(win.location.pathname).toBe("/app/archive");
 		await removeFixture("Delete");
 		expect(win.location.pathname).toBe("/app/archive");
-		expect(confirmCalls).toBe(0);
+		expect(confirmCalls).toBe(1);
 		expect(conversations).toEqual([]);
 		expect(container.querySelector(".ops .empty")?.textContent).toContain("Nothing archived");
 	});
@@ -1352,7 +1352,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await mount();
 		await click(container.querySelector(".rail-archived"));
 		await clickRowAction("Delete");
-		expect(confirmCalls).toBe(0);
+		expect(confirmMessages).toEqual(['Delete "fixture chat"?']);
 		expect(container.querySelector(".undo-toast")?.textContent).toContain('Deleted "fixture chat"');
 		expect(container.querySelector(".archive-table .dt-row")).toBeNull();
 		// Still on the server until the toast settles.
@@ -1360,6 +1360,31 @@ describe("browser back/forward and the unsaved settings editor", () => {
 
 		await click(container.querySelector(".undo-close"));
 		expect(conversations).toEqual([]);
+	});
+
+	test("a reopened chat is closed when its held delete lands", async () => {
+		seedConversation(true);
+		await mount();
+		await click(container.querySelector(".rail-archived"));
+		await clickRowAction("Delete");
+		// Reopen it inside the undo window, the way history or search can.
+		await act(async () => {
+			win.history.pushState(null, "", "/app/c/fixture");
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await click(container.querySelector(".undo-close"));
+		expect(conversations).toEqual([]);
+		expect(container.querySelector(".chat")?.textContent).toContain("Pick a conversation");
+	});
+
+	test("a declined confirm neither hides the row nor raises a toast", async () => {
+		seedConversation(true);
+		await mount();
+		await click(container.querySelector(".rail-archived"));
+		Reflect.set(win, "confirm", () => false);
+		await clickRowAction("Delete");
+		expect(container.querySelector(".undo-toast")).toBeNull();
+		expect(container.querySelector(".archive-table .dt-row")).not.toBeNull();
 	});
 
 	test("Undo after Delete restores the row and never sends DELETE", async () => {

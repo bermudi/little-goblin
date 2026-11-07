@@ -12,8 +12,24 @@ import { containerNameFor, makeSandboxes, openSandboxes, type Sandboxes } from "
 import { SUBAGENT_DRIFT_INPUTS } from "../subagent-prompts.ts";
 import { openSubagentRuns, type SubagentRuns } from "../subagent-runs.ts";
 import { openSubagents, type Subagents } from "./mod.ts";
+import type { SubagentModelProfile } from "./models.ts";
 
 const LIVE = process.env.GOBLIN_SUBAGENTS_LIVE === "1";
+// Public OpenRouter facts (2026-11-06). maxTokens caps this test's spend.
+const MINIMAX_PROFILE = {
+	id: "minimax/minimax-m3.1-flash",
+	input: ["text", "image"],
+	reasoning: false,
+	contextWindow: 1_048_576,
+	maxTokens: 16_384,
+	cost: { input: 0.1125, output: 0.45, cacheRead: 0, cacheWrite: 0 },
+	compat: {
+		supportsStore: false,
+		supportsDeveloperRole: false,
+		supportsReasoningEffort: false,
+		maxTokensField: "max_tokens",
+	},
+} satisfies SubagentModelProfile;
 const AUTH_FILE = process.env.GOBLIN_SUBAGENTS_AUTH_FILE ?? "";
 
 const TOKEN = `${process.pid.toString(36)}${Math.random().toString(36).slice(2, 5)}`;
@@ -123,6 +139,7 @@ describe.skipIf(!LIVE)("subagent live drift (GOBLIN_SUBAGENTS_LIVE=1)", () => {
 		});
 		runs = openSubagentRuns(join(cwd, "goblin.sqlite"));
 		owner = await openSubagents({
+			modelProfiles: { worker: MINIMAX_PROFILE, computer: MINIMAX_PROFILE },
 			config: subagentsConfigSchema.parse({
 				maxRuns: 2,
 				worker: {
@@ -131,7 +148,7 @@ describe.skipIf(!LIVE)("subagent live drift (GOBLIN_SUBAGENTS_LIVE=1)", () => {
 						id: "minimax/minimax-m3.1-flash",
 						baseUrl: "https://openrouter.ai/api/v1",
 						api: "openai-completions",
-						thinking: "high",
+						thinking: "off",
 					},
 				},
 				computer: {
@@ -140,7 +157,7 @@ describe.skipIf(!LIVE)("subagent live drift (GOBLIN_SUBAGENTS_LIVE=1)", () => {
 						id: "minimax/minimax-m3.1-flash",
 						baseUrl: "https://openrouter.ai/api/v1",
 						api: "openai-completions",
-						thinking: "low",
+						thinking: "off",
 					},
 				},
 			}),

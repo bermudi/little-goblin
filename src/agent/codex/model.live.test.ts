@@ -4,7 +4,7 @@
 //   GOBLIN_CODEX_LIVE=1 bun test src/agent/codex/model.live.test.ts
 //
 // This drives ONE real two-step exchange on the operator's own codex
-// auth (gpt-6.1-sol, high effort): step 1 forces a reasoning item plus
+// auth (gpt-6.1-terra, high effort): step 1 forces a reasoning item plus
 // a trivial echo tool call, step 2's request body must carry the
 // replayed reasoning item. It also observes the receipts surface —
 // response headers are captured, step 1's finish metadata must carry a
@@ -36,7 +36,7 @@ test(
 		const bodies: Record<string, unknown>[] = [];
 		const respHeaders: Record<string, string>[] = [];
 		const reqHeaders: Record<string, string>[] = [];
-		const model = new CodexLanguageModel("gpt-6.1-sol", auth.path, async (url, init) => {
+		const model = new CodexLanguageModel("gpt-6.1-terra", auth.path, async (url, init) => {
 			bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
 			const h: Record<string, string> = {};
 			new Headers(init?.headers).forEach((v, k) => (h[k] = v));

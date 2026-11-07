@@ -18,6 +18,7 @@ import {
 	KeyStatus,
 	OrderedList,
 	Row,
+	SectionHead,
 	type SettingsCtx,
 	Switch,
 } from "./settingsKit.tsx";
@@ -130,9 +131,9 @@ export function SettingsVoice({ ctx }: { ctx: SettingsCtx }) {
 	const tr = draft.transcription;
 	return (
 		<>
-			<h2 className="ops-h2">Speaking</h2>
+			<SectionHead title="Speaking" purpose="Goblin reads replies aloud and sends voice notes." />
 			<div className="card">
-				<Row label="Text to speech" cap="Read replies aloud and send voice notes.">
+				<Row label="Text to speech" cap="Off means text replies only.">
 					<Switch
 						on={tts !== null}
 						ariaLabel="text to speech"
@@ -267,18 +268,18 @@ export function SettingsVoice({ ctx }: { ctx: SettingsCtx }) {
 									placeholder="add a voice"
 									ariaLabel="add alternate voice"
 									suggestions={VOICE_SUGGESTIONS}
-									cap="Alternate voices — picked by reply language wherever speech is synthesized. Only English and Spanish are recognized."
+									cap="Extra voices, chosen by the language of the reply. Only English and Spanish are recognized."
 								/>
 							</>
 						)}
 					</>
 				)}
 			</div>
-			<h2 className="ops-h2">Transcription</h2>
+			<SectionHead title="Listening" purpose="Goblin turns voice and video notes into text." />
 			<div className="card">
 				<Row
 					label="Speech to text"
-					cap="Voice and video notes are transcribed on arrival; the bot can transcribe other audio files on request."
+					cap="Voice and video notes are turned into text when they arrive. Goblin can also transcribe other audio files on request."
 				>
 					<Switch
 						on={tr !== null}

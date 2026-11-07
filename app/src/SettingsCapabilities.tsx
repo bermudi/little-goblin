@@ -3,21 +3,21 @@
 // the server's hint.
 
 import type { CapabilityName } from "../../src/config.ts";
-import { Row, type SettingsCtx, Switch } from "./settingsKit.tsx";
+import { Row, type RowTag, SectionHead, type SettingsCtx, Switch } from "./settingsKit.tsx";
 
-const CAPS: { key: CapabilityName; label: string; cap: string }[] = [
-	{ key: "sandbox", label: "Sandboxed shell", cap: "Run untrusted code in a container." },
-	{ key: "subagents", label: "Subagents & computer use", cap: "Delegate long work to sub-agents." },
-	{ key: "scripting", label: "Script tool", cap: "Chain tool calls in one step." },
-	{ key: "delegation", label: "Delegate to coding agents", cap: "Codex, Claude, and friends." },
-	{ key: "reviewer", label: "Learn skills automatically", cap: "Review and install new skills." },
+const CAPS: { key: CapabilityName; label: string; cap: string; tag?: RowTag }[] = [
+	{ key: "sandbox", label: "Sandboxed shell", cap: "Runs untrusted code in a container.", tag: "careful" },
+	{ key: "subagents", label: "Subagents & computer use", cap: "Hands long jobs to helper agents." },
+	{ key: "scripting", label: "Script tool", cap: "Lets goblin chain several tool calls in one step." },
+	{ key: "delegation", label: "Delegate to coding agents", cap: "Lets goblin start coding agents such as Codex and Claude.", tag: "careful" },
+	{ key: "reviewer", label: "Learn skills automatically", cap: "Reviews and installs new skills on its own.", tag: "restart" },
 ];
 
 export function SettingsCapabilities({ ctx }: { ctx: SettingsCtx }) {
 	const { draft, setDraft, capStates } = ctx;
 	return (
 		<>
-			<h2 className="ops-h2">Capabilities</h2>
+			<SectionHead title="Capabilities" purpose="Extra tools goblin may use. Each one you turn on gives goblin more power." />
 			<div className="card">
 				{CAPS.map((c) => {
 					const st = capStates?.[c.key];
@@ -25,6 +25,7 @@ export function SettingsCapabilities({ ctx }: { ctx: SettingsCtx }) {
 						<Row
 							key={c.key}
 							label={c.label}
+							{...(c.tag !== undefined ? { tag: c.tag } : {})}
 							cap={st?.state === "needs-setup" ? (st.hint ?? c.cap) : c.cap}
 						>
 							<Switch
@@ -42,7 +43,7 @@ export function SettingsCapabilities({ ctx }: { ctx: SettingsCtx }) {
 					);
 				})}
 				<div className="cap ops-cap">
-					Switching one off keeps its settings — turning it back on restores them.
+					Turning one off keeps its settings. Turning it on again restores them.
 				</div>
 			</div>
 		</>

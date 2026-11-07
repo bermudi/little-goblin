@@ -7242,3 +7242,134 @@ button.link:hover {
 .status-raw .card {
 	margin-top: 0.4rem;
 }
+
+/* Settings readability (#179). Presentation only, scoped to .settings:
+   a sentence-case heading with a one-line purpose, and every setting a
+   row — label + short help on the left, control aligned on the right.
+   Narrow containers stack the control under its label. */
+.settings .set-h2 {
+	font-size: 15px;
+	font-weight: 600;
+	text-transform: none;
+	letter-spacing: 0;
+	color: var(--app-fg);
+	margin: 1.75rem 0.1rem 0.15rem;
+}
+.settings .set-purpose {
+	margin: 0 0.1rem 0.55rem;
+	font-size: 12.5px;
+	color: var(--app-fg-muted);
+	max-width: var(--prose-col, 70ch);
+}
+.settings .card > .row,
+.settings .card > .frow:has(> label.flabel) {
+	padding: 0.8rem 0.9rem;
+}
+.settings .rlabel {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.4rem;
+	font-size: 13.5px;
+}
+.settings .rstack .cap,
+.settings .frow > .cap {
+	font-size: 12px;
+	line-height: 1.4;
+	max-width: 52ch;
+}
+.rtag {
+	font-size: 10.5px;
+	font-weight: 500;
+	line-height: 1.5;
+	padding: 0 0.4rem;
+	border-radius: 999px;
+	border: 1px solid currentColor;
+	white-space: nowrap;
+}
+.rtag-restart {
+	color: var(--app-warning);
+}
+.rtag-careful {
+	color: var(--app-danger);
+}
+.settings .row.col {
+	flex-direction: row;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 0.6rem 1rem;
+}
+.settings .row.col .rstack {
+	flex: 1 1 14rem;
+}
+.settings .row .valuebtn {
+	min-width: 12rem;
+}
+.settings .card > .frow:has(> label.flabel) {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(10rem, 20rem);
+	grid-template-areas:
+		"l c"
+		"h c";
+	column-gap: 1rem;
+	row-gap: 0;
+	align-items: center;
+}
+.settings .card > .frow:has(> label.flabel) > .flabel {
+	grid-area: l;
+	font-size: 13.5px;
+	font-weight: 500;
+	color: var(--app-fg);
+}
+.settings .card > .frow:has(> label.flabel) > input {
+	grid-area: c;
+}
+.settings .card > .frow:has(> label.flabel) > .cap {
+	grid-area: h;
+}
+.settings .pk-filter {
+	background-color: var(--app-control-bg);
+	border: 1px solid var(--app-control-border);
+	border-radius: 8px;
+	padding: 0.4rem 0.6rem;
+	font-size: 12.5px;
+	color: var(--app-fg);
+}
+.settings .pk-toolbtn,
+.settings .pk-add .keylink {
+	align-self: auto;
+	background: var(--app-control-bg);
+	border: 1px solid var(--app-control-border);
+	border-radius: 8px;
+	padding: 0.35rem 0.7rem;
+	font-size: 12.5px;
+	color: var(--app-fg);
+}
+.settings .pk-add .keylink:hover {
+	text-decoration: none;
+	border-color: var(--app-control-border-hover);
+}
+.settings .card > .ghost {
+	margin: 0.6rem 0.9rem;
+}
+@media (max-width: 639px) {
+	.settings .row,
+	.settings .row.col {
+		flex-direction: column;
+		align-items: stretch;
+		gap: 0.5rem;
+	}
+	.settings .row:has(> .switch) {
+		flex-direction: row;
+		align-items: center;
+	}
+	.settings .row .valuebtn {
+		min-width: 0;
+	}
+	.settings .card > .frow:has(> label.flabel) {
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+		gap: 0.35rem;
+	}
+}

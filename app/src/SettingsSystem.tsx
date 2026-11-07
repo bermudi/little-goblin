@@ -1,14 +1,14 @@
 // System — version, uptime, log level, and the read-only doors. The
 // restart banner lives in the shell so it shows on every section.
 
-import { Field, Row, Seg, type SettingsCtx } from "./settingsKit.tsx";
+import { Row, SectionHead, Seg, type SettingsCtx } from "./settingsKit.tsx";
 
 export function SettingsSystem({ ctx }: { ctx: SettingsCtx }) {
 	const { draft, patchDraft, status } = ctx;
 	const started = status === null ? null : new Date(status.startedAt);
 	return (
 		<>
-			<h2 className="ops-h2">System</h2>
+			<SectionHead title="System" purpose="What is running, and how much it writes to the log. Read-only facts are set in goblin.json5." />
 			<div className="card">
 				{status !== null && (
 					<Row
@@ -18,7 +18,7 @@ export function SettingsSystem({ ctx }: { ctx: SettingsCtx }) {
 						<span className="cap">v{status.version}</span>
 					</Row>
 				)}
-				<Row label="Log level" col>
+				<Row label="Log level" cap="How much goblin writes to its log. Debug is noisy." col>
 					<Seg
 						options={["debug", "info", "warn", "error"]}
 						value={draft.logLevel}

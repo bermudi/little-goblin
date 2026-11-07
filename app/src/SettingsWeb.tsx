@@ -9,6 +9,7 @@ import {
 	KeyStatus,
 	OrderedList,
 	Row,
+	SectionHead,
 	type SettingsCtx,
 	Switch,
 } from "./settingsKit.tsx";
@@ -111,9 +112,9 @@ export function SettingsWeb({ ctx }: { ctx: SettingsCtx }) {
 		});
 	return (
 		<>
-			<h2 className="ops-h2">Search</h2>
+			<SectionHead title="Web search" purpose="How goblin looks things up on the web." />
 			<div className="card">
-				<Row label="Web search" cap="Off removes search from the agent's tools.">
+				<Row label="Web search" cap="Off takes search away from goblin.">
 					<Switch
 						on={draft.search !== null}
 						ariaLabel="web search"
@@ -148,16 +149,15 @@ export function SettingsWeb({ ctx }: { ctx: SettingsCtx }) {
 							}
 						/>
 						<div className="cap ops-cap">
-							Tried top to bottom; a failure moves to the next. No results is an answer.
+							Services are tried top to bottom. If one fails, goblin tries the next. An empty result counts as an answer.
 						</div>
 					</>
 				)}
 			</div>
-			<h2 className="ops-h2">Page reading</h2>
+			<SectionHead title="Page reading" purpose="How goblin fetches and reads a web page." />
 			<div className="card">
 				<div className="cap ops-cap">
-					Pages are read top to bottom through these services. JS-heavy sites need the browser skill
-					either way.
+					Services are tried top to bottom. Sites that need JavaScript need the browser skill.
 				</div>
 				<ServiceChain
 					entries={fetchShown}

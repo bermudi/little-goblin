@@ -1,14 +1,14 @@
 // Access — who may talk to goblin. Operators get the full agent;
 // "Other people" is the guest lane (sandboxed, search-only, no memory).
 
-import { ChipsEditor, Row, type SettingsCtx, Switch } from "./settingsKit.tsx";
+import { ChipsEditor, Row, SectionHead, type SettingsCtx, Switch } from "./settingsKit.tsx";
 
 export function SettingsAccess({ ctx }: { ctx: SettingsCtx }) {
 	const { draft, patchDraft, setDraft, addId, capStates } = ctx;
 	const guest = capStates?.guest;
 	return (
 		<>
-			<h2 className="ops-h2">Operators</h2>
+			<SectionHead title="Operators" purpose="People with full control of goblin, these settings included." />
 			<div className="card">
 				<ChipsEditor
 					values={draft.operators.map(String)}
@@ -19,19 +19,19 @@ export function SettingsAccess({ ctx }: { ctx: SettingsCtx }) {
 					numeric
 					cap={
 						draft.telegramEnabled
-							? "Telegram user ids with the full personal agent on every surface — these settings included. The list can't be emptied — that would lock everyone out."
-							: "Telegram user ids with the full personal agent on every surface — these settings included. The list may be empty while Telegram is off."
+							? "Telegram user ids. The list can't be empty while Telegram is on — that would lock everyone out."
+							: "Telegram user ids. The list may be empty while Telegram is off."
 					}
 				/>
 			</div>
-			<h2 className="ops-h2">Other people</h2>
+			<SectionHead title="Other people" purpose="People who may chat with a limited, safe version of goblin." />
 			<div className="card">
 				<Row
 					label="Answer allowed users"
 					cap={
 						guest?.state === "needs-setup"
 							? (guest.hint ?? "Guest replies need setup first.")
-							: "A guest persona — search-only tools, no memory, no app."
+							: "Guests get search only. No memory, no app."
 					}
 				>
 					<Switch
@@ -57,7 +57,7 @@ export function SettingsAccess({ ctx }: { ctx: SettingsCtx }) {
 					numeric
 					cap={
 						draft.capabilities.guest === true
-							? "Telegram user ids that may talk to goblin sandboxed — DM them directly or @mention in groups; everyone else gets a refusal line."
+							? "Telegram user ids. They can DM goblin or @mention it in groups. Everyone else gets a refusal."
 							: "Off — allowed users get no replies."
 					}
 				/>

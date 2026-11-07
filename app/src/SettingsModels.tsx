@@ -4,7 +4,7 @@
 import { useState } from "react";
 import type { ThinkingLevel } from "../../src/config.ts";
 import { displayLevel, type SettingsDraft } from "./settingsDraft.ts";
-import { Row, Seg, type SettingsCtx, Switch } from "./settingsKit.tsx";
+import { Row, SectionHead, Seg, type SettingsCtx, Switch } from "./settingsKit.tsx";
 
 const IMAGE_SIZES = ["1024x1024", "1536x1024", "1024x1536"] as const;
 
@@ -237,7 +237,7 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 
 	return (
 		<>
-			<h2 className="ops-h2">Chat picker</h2>
+			<SectionHead title="Chat picker" purpose="Which models the model menu offers in chats, on every device." />
 			<div className="card">
 				<div className="pk-tools">
 					<input
@@ -308,17 +308,16 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 					<div className="cap ops-cap">No models match.</div>
 				)}
 				<div className="cap">
-					What the chat pickers offer, here and on every connected device. Stars pin a model
-					first; the toggle hides it from the picker without touching the bindings above. Custom
-					refs — anything the catalog doesn't know — stay listed while hidden; only the × removes
-					one.
+					Star a model to pin it to the top. The switch hides a model from the menu; your default
+					models above stay as they are. Models you added by hand stay in this list while hidden.
+					Only × removes them.
 				</div>
 			</div>
-			<h2 className="ops-h2">Default models</h2>
+			<SectionHead title="Default models" purpose="The model a new chat starts with." />
 			<div className="card">
 				{modelButton(
 					"App chats",
-					"New app conversations only. Each chat remembers its own model and thinking level.",
+					"New app chats start with this. Each chat then keeps its own model and thinking level.",
 					"model",
 					draft.model,
 					"appModelLabel",
@@ -327,8 +326,8 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 					label="Thinking"
 					cap={
 						levels.app.unavailable
-							? "Couldn't check this model's levels — every rung is shown; the server clamps at send time."
-							: "Only levels this model can express are shown."
+							? "Couldn't check this model's levels, so all are shown. The server limits it when sending."
+							: "Shows only the levels this model supports."
 					}
 					col
 				>
@@ -343,7 +342,7 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 					<>
 						{modelButton(
 							"Telegram",
-							"Shared by all Telegram conversations.",
+							"Every Telegram chat uses this model.",
 							"telegram",
 							draft.telegramModel,
 							"tgModelLabel",
@@ -366,10 +365,13 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 						</Row>
 					</>
 				) : (
-					<div className="cap ops-cap">Telegram is off — turn it on under Telegram.</div>
+					<Row
+						label="Telegram"
+						cap="Telegram is off, so it has no model here. Turn it on in the Telegram section."
+					/>
 				)}
 			</div>
-			<h2 className="ops-h2">Fallbacks</h2>
+			<SectionHead title="Fallbacks" purpose="Backup models goblin tries when a chat's own model fails." />
 			<div className="card">
 				{draft.modelFallbacks.map((f, i) => {
 					const name = modelNames.get(f);
@@ -427,37 +429,38 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 					+ Add fallback
 				</button>
 				<div className="cap">
-					When a chat's own model fails before doing anything (quota, outage, bad key), the turn
-					tries these in order. Every chat, app and Telegram; compaction too. Empty = no fallback.
+					If a chat's model fails before it answers (quota, outage, bad key), goblin tries these in
+					order. This covers app and Telegram chats, and the summaries goblin writes of long
+					chats. An empty list means no backup.
 				</div>
 			</div>
 			{/* Helpers run on every surface — Telegram turns included — so
 			    the card sits outside both channel groupings. */}
-			<h2 className="ops-h2">Helpers</h2>
+			<SectionHead title="Helpers" purpose="Small extra models for one job each. Each is off until you pick a model." />
 			<div className="card">
 				{modelButton(
 					"Topic titles",
-					"Names Telegram topics and new app chats, then stops.",
+					"Writes a short title for new Telegram topics and app chats. Off: no titles.",
 					"title",
 					draft.titleModel,
 					"titleModelLabel",
 				)}
 				{modelButton(
 					"Vision",
-					"Adds a vision tool — answers questions about image files. Needed when the chat model can't see attachments. Telegram and app turns.",
+					"Lets goblin look at images. Needed if the chat model can't see attachments. Off: no vision tool.",
 					"vision",
 					draft.vision?.model ?? "",
 					"visionLabel",
 				)}
 				{modelButton(
 					"Image generation",
-					"Adds an image tool — the OpenAI images endpoint.",
+					"Lets goblin make images with the OpenAI images API. Off: no image tool.",
 					"image",
 					draft.image?.model ?? "",
 					"imageLabel",
 				)}
 				{draft.image !== null && (
-					<Row label="Image size" cap="A default for the tool's calls — it may pick another." col>
+					<Row label="Image size" cap="The usual image size. Goblin may pick another for a given image." col>
 						<Seg
 							options={["default", ...IMAGE_SIZES]}
 							value={draft.image.size === "" ? "default" : draft.image.size}

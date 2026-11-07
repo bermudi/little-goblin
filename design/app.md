@@ -188,6 +188,17 @@ existing long-text classes get these caps by selector until their page is
 redone. `.sumstrip` / `.sumtile` is the optional count strip. The Projects
 index is the reference table.
 
+*Project page (#171).* Title and Rename share a line; Directory, its kind
+pill and the archived pill sit under it. Each section (Instructions,
+Memory, Notes, Chats) puts its heading and its action on one line
+(`.proj-sec-head`): Save, New note. Notes and chats are `.dtable`s (name |
+preview | updated | pinned); a chat row opens the chat. Memory is a two-way
+radio group (Shared / Off), not a dropdown; the long sentences are a
+caption. Archive is a destructive action, so it sits in a footer panel at
+the very end (`.proj-foot.danger-zone`) and asks to confirm; Unarchive is
+a plain button in the same footer. Archived chats stay in a collapsed
+shelf with their row actions, because rename/unarchive/delete live there.
+
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
 forever (no route may ever render it, structure included). Two layers, each

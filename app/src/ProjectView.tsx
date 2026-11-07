@@ -650,7 +650,11 @@ export function ProjectView({
 									<span className="dt-cell dt-main">
 										{c.title ?? (preview === "" ? "new conversation" : preview)}
 									</span>
-									<span className="dt-cell">{c.title !== null ? preview : ""}</span>
+									<span
+										className={c.title !== null && preview !== "" ? "dt-cell" : "dt-cell dt-hide-m"}
+									>
+										{c.title !== null && preview !== "" ? preview : "—"}
+									</span>
 									<span className="dt-cell" data-label="Updated">
 										{relTime(c.updatedAt)}
 									</span>

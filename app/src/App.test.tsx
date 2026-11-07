@@ -949,6 +949,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 					}),
 				);
 			if (url === "/api/app/programs") return Promise.resolve(jsonResponse({ programs: [] }));
+			if (url === "/api/app/approvals")
+				return Promise.resolve(jsonResponse({ programs: [], mail: [] }));
 			if (url === "/api/app/delegations") return Promise.resolve(jsonResponse({ delegations: [] }));
 			if (url === "/api/app/status")
 				return Promise.resolve(
@@ -4212,7 +4214,7 @@ describe("app projects surface", () => {
 		await railSection("Notes");
 		await settleSlow();
 		await click(
-			[...container.querySelectorAll("button.idx")].find((b) =>
+			[...container.querySelectorAll("button.dt-row")].find((b) =>
 				b.textContent?.startsWith("Shopping"),
 			),
 		);

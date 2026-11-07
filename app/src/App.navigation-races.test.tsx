@@ -289,6 +289,8 @@ describe("navigation races: late completions", () => {
 			if (url.startsWith("/api/app/memory/documents"))
 				return Promise.resolve(jsonResponse({ items: [], total: 0, limit: 20, offset: 0 }));
 			if (url === "/api/app/programs") return Promise.resolve(jsonResponse({ programs: [] }));
+			if (url === "/api/app/approvals")
+				return Promise.resolve(jsonResponse({ programs: [], mail: [] }));
 			if (url === "/api/app/delegations") return Promise.resolve(jsonResponse({ delegations: [] }));
 			if (url === "/api/app/status")
 				return Promise.resolve(

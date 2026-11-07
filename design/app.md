@@ -156,6 +156,23 @@ wheel works over the margins beside the column and the scrollbar sits at the
 pane edge, as in chat. Change a page's column width only through `--page-col`;
 never give the scroll container a `max-width`.
 
+**Non-chat page layout (ruling 2026-11-07, #168, operator pick: option B of
+`design/prototypes/page-layout/`).** The narrow reading column is the
+chat's, not every page's. Non-chat pages use the full pane width, in one
+column:
+- Lists of like things are tables with columns (e.g. program | schedule |
+  lateness | last run | next run | status), not stacks of cards.
+- Long text keeps a readable line length (about 70ch) inside its own block:
+  instructions, notes, diffs, file contents.
+- A decision shows its evidence next to its reason, already open. An
+  approval shows its diff without a click.
+- Opening an item replaces the list in the same pane, with a back link. No
+  detail panel: the app already has the rail and the list panel, and a third
+  column reads as a double side panel (operator, 2026-11-07).
+- A summary strip (counts that need attention) is allowed on top where it
+  helps, e.g. Programs, Memory, Status.
+- Chat stays as it is.
+
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
 forever (no route may ever render it, structure included). Two layers, each

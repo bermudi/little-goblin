@@ -249,45 +249,54 @@ const actionSchema = z.discriminatedUnion("action", [
 	answerSchema,
 ]);
 
-export const delegateInputSchema = z
-	.object({
-		action: z.enum(["start", "list", "read", "send", "answer", "stop"]),
-		harness: startSchema.shape.harness.optional(),
-		task: startSchema.shape.task.optional(),
-		cwd: startSchema.shape.cwd,
-		name: startSchema.shape.name,
-		on: startSchema.shape.on,
-		responsibility: startSchema.shape.responsibility,
-		id: readSchema.shape.id.optional(),
-		lines: readSchema.shape.lines,
-		text: sendSchema.shape.text.optional(),
-		key: answerSchema.shape.key.optional(),
-	})
-	.superRefine((value, ctx) => {
-		const result = actionSchema.safeParse(value);
-		if (!result.success)
-			for (const issue of result.error.issues) {
-				ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
-			}
-	});
+const delegateInputFields = z.object({
+	action: z.enum(["start", "list", "read", "send", "answer", "stop"]),
+	harness: startSchema.shape.harness.optional(),
+	task: startSchema.shape.task.optional(),
+	cwd: startSchema.shape.cwd,
+	name: startSchema.shape.name,
+	on: startSchema.shape.on,
+	responsibility: startSchema.shape.responsibility,
+	id: readSchema.shape.id.optional(),
+	lines: readSchema.shape.lines,
+	text: sendSchema.shape.text.optional(),
+	key: answerSchema.shape.key.optional(),
+});
 
-export const delegateTool = (deps: DelegateToolDeps) =>
-	tool({
-		description: `Delegate work in the operator's repos to an external coding harness — a separate agent in its own workspace, running full-auto. Standalone long or code-heavy work belongs with a worker subagent, and screen work with a computer subagent. Delegations are your own acts: delegate on your own judgment instead of blocking the chat with bash, and say that you did; you own the result when it arrives and decide what the operator needs to hear. Targets: your own local session (default)${Object.keys(deps.config.machines ?? {}).length > 0 ? ` plus configured machines (${Object.keys(deps.config.machines ?? {}).join(", ")})` : " (no machines configured)"} — pass 'on' to pick one; work tied to another host's repos runs there, and each target runs the harnesses installed on that host. Harnesses (own session): ${Object.keys(deps.config.harnesses).join(", ")}. Actions — start {harness, task, cwd?, name?, on?, responsibility?}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went. In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself.`,
-		inputSchema: delegateInputSchema,
+function checkedAgainstAction(value: unknown, ctx: z.core.$RefinementCtx<unknown>) {
+	const result = actionSchema.safeParse(value);
+	if (!result.success)
+		for (const issue of result.error.issues) {
+			ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
+		}
+}
+
+export const delegateInputSchema = delegateInputFields.superRefine(checkedAgainstAction);
+/** Outside a project no link can succeed, so the model is not offered one. */
+const unlinkableDelegateInputSchema = delegateInputFields
+	.omit({ responsibility: true })
+	.superRefine(checkedAgainstAction);
+
+export const delegateTool = (deps: DelegateToolDeps) => {
+	const linkable = deps.checkResponsibility !== undefined;
+	return tool({
+		description: `Delegate work in the operator's repos to an external coding harness — a separate agent in its own workspace, running full-auto. Standalone long or code-heavy work belongs with a worker subagent, and screen work with a computer subagent. Delegations are your own acts: delegate on your own judgment instead of blocking the chat with bash, and say that you did; you own the result when it arrives and decide what the operator needs to hear. Targets: your own local session (default)${Object.keys(deps.config.machines ?? {}).length > 0 ? ` plus configured machines (${Object.keys(deps.config.machines ?? {}).join(", ")})` : " (no machines configured)"} — pass 'on' to pick one; work tied to another host's repos runs there, and each target runs the harnesses installed on that host. Harnesses (own session): ${Object.keys(deps.config.harnesses).join(", ")}. Actions — start {harness, task, cwd?, name?, on?${linkable ? ", responsibility?" : ""}}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.${linkable ? " In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself." : ""}`,
+		inputSchema: (linkable
+			? delegateInputSchema
+			: unlinkableDelegateInputSchema) as typeof delegateInputSchema,
 		execute: async (raw) => {
 			const input = actionSchema.parse(raw);
 			switch (input.action) {
 				case "start": {
 					// Checked before the pin: a refused link must not spin off.
-						if (input.responsibility !== undefined) {
-							const refused =
-								deps.checkResponsibility === undefined
-									? "responsibility links need a project conversation"
-									: deps.checkResponsibility(input.responsibility);
-							if (refused !== null) return { error: refused };
-						}
-						const on = input.on ?? null;
+					if (input.responsibility !== undefined) {
+						const refused =
+							deps.checkResponsibility === undefined
+								? "responsibility links need a project conversation"
+								: deps.checkResponsibility(input.responsibility);
+						if (refused !== null) return { error: refused };
+					}
+					const on = input.on ?? null;
 					const target = on !== null ? deps.config.machines?.[on] : undefined;
 					if (on !== null && target === undefined) {
 						const known = Object.keys(deps.config.machines ?? {}).join(", ") || "none configured";
@@ -382,3 +391,4 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 			}
 		},
 	});
+};

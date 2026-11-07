@@ -1,6 +1,6 @@
 import { tool } from "ai";
 import { z } from "zod";
-import { SUBAGENT_TOOL_DESCRIPTION, subagentNotice } from "../../subagent-prompts.ts";
+import { subagentNotice, subagentToolDescription } from "../../subagent-prompts.ts";
 import {
 	approvalDecisionInputSchema,
 	crashDecisionNotice,
@@ -63,26 +63,32 @@ const actionSchema = z.discriminatedUnion("action", [
 	decideSchema,
 ]);
 
-export const subagentInputSchema = z
-	.object({
-		action: z.enum(["start", "list", "status", "send", "stop", "decide"]),
-		kind: startSchema.shape.kind.optional(),
-		task: startSchema.shape.task.optional(),
-		files: startSchema.shape.files,
-		desktop: startSchema.shape.desktop,
-		responsibility: startSchema.shape.responsibility,
-		id: statusSchema.shape.id.optional(),
-		message: sendSchema.shape.message.optional(),
-		decision: decideSchema.shape.decision.optional(),
-	})
-	.superRefine((value, ctx) => {
-		const result = actionSchema.safeParse(value);
-		if (!result.success) {
-			for (const issue of result.error.issues) {
-				ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
-			}
+const subagentInputFields = z.object({
+	action: z.enum(["start", "list", "status", "send", "stop", "decide"]),
+	kind: startSchema.shape.kind.optional(),
+	task: startSchema.shape.task.optional(),
+	files: startSchema.shape.files,
+	desktop: startSchema.shape.desktop,
+	responsibility: startSchema.shape.responsibility,
+	id: statusSchema.shape.id.optional(),
+	message: sendSchema.shape.message.optional(),
+	decision: decideSchema.shape.decision.optional(),
+});
+
+function checkedAgainstAction(value: unknown, ctx: z.core.$RefinementCtx<unknown>) {
+	const result = actionSchema.safeParse(value);
+	if (!result.success) {
+		for (const issue of result.error.issues) {
+			ctx.addIssue({ code: "custom", path: issue.path, message: issue.message });
 		}
-	});
+	}
+}
+
+export const subagentInputSchema = subagentInputFields.superRefine(checkedAgainstAction);
+/** Outside a project no link can succeed, so the model is not offered one. */
+const unlinkableSubagentInputSchema = subagentInputFields
+	.omit({ responsibility: true })
+	.superRefine(checkedAgainstAction);
 
 function runSummary(row: SubagentRun) {
 	return {
@@ -130,10 +136,13 @@ function fenced(row: SubagentRun): string {
 	return subagentNotice(row.id, row.kind, row.status, runBody(row));
 }
 
-export const subagentTool = (deps: SubagentToolDeps) =>
-	tool({
-		description: SUBAGENT_TOOL_DESCRIPTION,
-		inputSchema: subagentInputSchema,
+export const subagentTool = (deps: SubagentToolDeps) => {
+	const linkable = deps.checkResponsibility !== undefined;
+	return tool({
+		description: subagentToolDescription(linkable),
+		inputSchema: (linkable
+			? subagentInputSchema
+			: unlinkableSubagentInputSchema) as typeof subagentInputSchema,
 		execute: async (raw, { toolCallId }) => {
 			const parsed = actionSchema.safeParse(raw);
 			if (!parsed.success) {
@@ -218,3 +227,4 @@ export const subagentTool = (deps: SubagentToolDeps) =>
 			}
 		},
 	});
+};

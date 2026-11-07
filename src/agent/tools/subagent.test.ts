@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import type { SubagentRun } from "../../subagent-runs.ts";
 import { SubagentError, type Subagents } from "../../subagents/mod.ts";
 import { type SubagentToolDeps, subagentInputSchema, subagentTool } from "./subagent.ts";
@@ -84,6 +85,17 @@ describe("subagent responsibility link", () => {
 		expect(starts).toEqual([]);
 		await t.execute!({ action: "start", kind: "worker", task: "t", responsibility: "resp-ok" }, opts);
 		expect(starts).toEqual([expect.objectContaining({ responsibilityId: "resp-ok" })]);
+	});
+
+	test("the option is offered only where a link can succeed", () => {
+		const project = rig({}, undefined, () => null);
+		const elsewhere = rig({});
+		const props = (t: typeof project) =>
+			Object.keys((z.toJSONSchema(t.inputSchema as z.ZodType) as { properties: object }).properties);
+		expect(props(project)).toContain("responsibility");
+		expect(project.description).toContain("responsibility:<id>");
+		expect(props(elsewhere)).not.toContain("responsibility");
+		expect(elsewhere.description).not.toContain("responsibility");
 	});
 
 	test("outside a project conversation a link is refused, an unlinked start proceeds", async () => {

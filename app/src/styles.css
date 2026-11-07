@@ -2817,6 +2817,7 @@ button.pathchip:hover svg {
 	color: var(--app-fg-muted);
 }
 .frow input,
+.frow select,
 .chain-card input,
 .chain-card select,
 .prov input,
@@ -3032,6 +3033,7 @@ button.pathchip:hover svg {
 	opacity: 0.5;
 }
 .frow input:hover,
+.frow select:hover,
 .chain-card input:hover,
 .chain-card select:hover,
 .prov input:hover,
@@ -3059,6 +3061,7 @@ button.pathchip:hover svg {
 /* Focus: accent border plus a soft ring, on every field the page owns.
    Fields set outline: none, so the ring has to come from here. */
 .frow input:focus,
+.frow select:focus,
 .chain-card input:focus,
 .chain-card select:focus,
 .prov input:focus,
@@ -3087,6 +3090,7 @@ button.pathchip:hover svg {
 }
 /* Native selects: draw our own chevron so they look like selects, not text.
    .settings select already does; share its recipe with the other pages. */
+.frow select,
 .chain-card select,
 .prov select,
 .msheet-filter select,
@@ -3107,6 +3111,7 @@ button.pathchip:hover svg {
 	background-repeat: no-repeat;
 	cursor: pointer;
 }
+.frow select option,
 .chain-card select option,
 .prov select option,
 .msheet-filter select option,

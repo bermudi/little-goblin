@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { cronWords } from "../../src/cron-words.ts";
 import type {
 	AppApprovalDecisionResponse,
@@ -173,18 +173,24 @@ export function ProgramApprovalCard({
 	proposal,
 	onDone,
 	layout,
+	children,
 }: {
 	token: string | null;
 	proposal: AppProgramProposal;
 	onDone(): Promise<void>;
 	layout?: "page";
+	children?: ReactNode;
 }) {
 	const decision = useDecision(onDone);
 	const candidate = proposal.candidate;
 	const head = (
 		<div className="op-item-head">
 			<span className="op-item-title">
-				Program proposal #{proposal.id} — {proposal.kind === "create" ? "new" : "update"}
+				{candidate === null
+					? `Program proposal #${proposal.id} — ${proposal.kind === "create" ? "new" : "update"}`
+					: proposal.kind === "create"
+						? `New program “${candidate.name}”`
+						: `Program “${candidate.name}” — update`}
 			</span>
 			<span className="pill pending">pending</span>
 		</div>
@@ -253,7 +259,10 @@ export function ProgramApprovalCard({
 					)}
 				</div>
 				<div className="ap-evidence">{evidence}</div>
-				<div className="ap-actions">{actions}</div>
+				<div className="ap-actions">
+					{children}
+					{actions}
+				</div>
 			</div>
 		);
 	}
@@ -261,6 +270,7 @@ export function ProgramApprovalCard({
 		<div className="approval-card">
 			{head}
 			{evidence}
+			{children}
 			{actions}
 		</div>
 	);
@@ -354,11 +364,13 @@ export function MailApprovalCard({
 	draft,
 	onDone,
 	layout,
+	children,
 }: {
 	token: string | null;
 	draft: AppMailDraft;
 	onDone(): Promise<void>;
 	layout?: "page";
+	children?: ReactNode;
 }) {
 	const decision = useDecision(onDone);
 	const sending = draft.status === "sending";
@@ -415,7 +427,10 @@ export function MailApprovalCard({
 					{facts}
 				</div>
 				<div className="ap-evidence">{body}</div>
-				<div className="ap-actions">{actions}</div>
+				<div className="ap-actions">
+					{children}
+					{actions}
+				</div>
 			</div>
 		);
 	}
@@ -424,6 +439,7 @@ export function MailApprovalCard({
 			{head}
 			{facts}
 			{body}
+			{children}
 			{actions}
 		</div>
 	);

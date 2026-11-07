@@ -7,7 +7,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { AttentionView } from "./AttentionView.tsx";
-import type { AppApprovalsResponse, AppAttentionResponse } from "../../src/http/app-wire.ts";
+import type {
+	AppApprovalsResponse,
+	AppAttentionResponse,
+	AppFeedItem,
+} from "../../src/http/app-wire.ts";
 import type { SkillsResponse } from "../../src/http/operator-wire.ts";
 
 let win: Window;
@@ -77,18 +81,72 @@ async function mount(onPage: (p: string) => void = () => {}) {
 const noSkills: SkillsResponse = { skills: [], proposed: [] } as unknown as SkillsResponse;
 const noApprovals: AppApprovalsResponse = { programs: [], mail: [] };
 
+function feedItem(): AppFeedItem {
+	const at = "2026-10-19T00:00:00Z";
+	return {
+		responsibility: {
+			responsibilityId: "r1",
+			projectId: "p1",
+			status: "active",
+			revision: 1,
+			understanding: {
+				outcome: "ship fix",
+				situation: "under review",
+				nextAction: "inspect tests",
+				checkpoints: [],
+				completionEvidence: [],
+			},
+			outcome: "ship fix",
+			coordinationConversationId: "c1",
+			handoverKey: "k1",
+			followupProgramId: null,
+			followup: { token: "review-1", kind: "silence", dueAt: at, reason: "Verify progress" },
+			armed: false,
+			notArmedReason: null,
+			createdAt: at,
+			updatedAt: at,
+			closedAt: null,
+		},
+		attachments: [],
+		operations: [],
+		stage: { waitsFor: "worker", stage: "working", reason: "no report yet" },
+		latestReport: null,
+		posts: [],
+		postsTruncated: 0,
+		events: [],
+		eventsTruncated: 0,
+		nextCheckinAt: null,
+		nextCheckinReason: null,
+		lastActivityAt: at,
+	};
+}
+
 test("Attention carries the cross-project work feed beneath its decisions", async () => {
 	const attention: AppAttentionResponse = { items: [], unavailable: [] };
 	const seen = stubFetch({
 		"/api/app/attention": attention,
 		"/api/app/skills": noSkills,
 		"/api/app/approvals": noApprovals,
+		"/api/app/responsibilities": { items: [feedItem()] },
 	});
 	await mount();
 	expect(container.textContent).toContain("Nothing needs you.");
 	expect(container.textContent).toContain("All clear");
+	const section = container.querySelector('section[aria-label="Work in progress"]');
+	expect(section?.hasAttribute("hidden")).toBe(false);
 	expect(container.textContent).toContain("Work in progress");
 	expect(seen.map((r) => r.path)).toContain("/api/app/responsibilities");
+});
+
+test("the Work in progress section hides when nothing is running", async () => {
+	stubFetch({
+		"/api/app/attention": { items: [], unavailable: [] } satisfies AppAttentionResponse,
+		"/api/app/skills": noSkills,
+		"/api/app/approvals": noApprovals,
+	});
+	await mount();
+	const section = container.querySelector('section[aria-label="Work in progress"]');
+	expect(section?.hasAttribute("hidden")).toBe(true);
 });
 
 const memoryItem = (error: string, count: number): AppAttentionResponse["items"][number] => ({
@@ -215,7 +273,12 @@ test("a program approval shows its changes open and approves from the card", asy
 	expect(text).toContain("1 decision waits for you.");
 	expect(text).toContain("Your decisions");
 	expect(text).toContain("check frost at ten");
+	expect(text).toContain("Program “garden-care” — update");
+	expect(text).not.toContain("Program proposal #7");
 	expect(text).toContain("If you wait:");
+	// The wait line reads inside the decision card, not under it.
+	const card = container.querySelector(".approval-card");
+	expect(card?.querySelector(".attn-wait")).not.toBeNull();
 	const approve = [...container.querySelectorAll("button")].find(
 		(b) => b.textContent === "Approve",
 	);

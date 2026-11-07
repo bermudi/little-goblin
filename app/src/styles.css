@@ -2888,8 +2888,7 @@ button.pathchip:hover svg {
 .prose {
 	max-width: var(--prose-col);
 }
-.ops:not(.settings)
-	:is(.lead, .ops-cap, .op-item-body, .fact-text, .win-tooldesc, .win-text, .approval-facts),
+.ops:not(.settings) :is(.lead, .ops-cap, .op-item-body, .fact-text, .win-tooldesc, .win-text, .approval-facts),
 .ops.projfields :is(.cap, textarea, select),
 .ops.notepage :is(.note-editor, .note-readonly) {
 	max-width: var(--prose-col);

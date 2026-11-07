@@ -844,6 +844,19 @@ describe("delegate responsibility link", () => {
 		expect(h.store.list()).toEqual([]);
 	});
 
+	test("the option is offered only where a link can succeed", () => {
+		const h = harness();
+		const project = delegateTool({ ...h.deps, checkResponsibility: () => null });
+		const elsewhere = delegateTool({ ...h.deps, checkResponsibility: undefined });
+		const props = (t: typeof project) =>
+			Object.keys((z.toJSONSchema(t.inputSchema as z.ZodType) as { properties: object }).properties);
+		expect(props(project)).toContain("responsibility");
+		expect(project.description).toContain("responsibility:<id>");
+		expect(project.description).toContain("responsibility?");
+		expect(props(elsewhere)).not.toContain("responsibility");
+		expect(elsewhere.description).not.toContain("responsibility");
+	});
+
 	test("a refused responsibility launches nothing", async () => {
 		const h = harness();
 		const tool = delegateTool({ ...h.deps, checkResponsibility: () => "responsibility r1 is done" });

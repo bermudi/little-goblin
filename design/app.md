@@ -237,8 +237,25 @@ wraps under 40rem). Title, toolbar and surface share one 41rem column (about
 Rewrite selection and the save state (dot + "Saved" / "Saving…" / "Offline —
 retrying" / "Save failed" / "Conflict"). Versions is a popover anchored to its
 button (so it opens where the press was on a long note), closing on outside
-press or Escape; under 40rem it spans the toolbar row. No formatting toolbar
-(#173 is separate).
+press or Escape; under 40rem it spans the toolbar row.
+
+**Note editor controls (ruling 2026-11-07, #173).** The top of the writing
+surface is a formatting row (`.note-fmt`, `NoteToolbar.tsx`): a "Text style"
+select (Paragraph, Heading 1–3 — Paragraph is how a heading, typed or
+chosen, turns back into plain text), then bold, italic, strikethrough,
+inline code, link | bulleted, numbered, task list, quote, code block,
+rule | undo, redo. Buttons never take focus from the editor; the ones that
+apply to the selection show `aria-pressed` (accent fill), and the select
+shows the current block. Each tooltip names its shortcut (Ctrl/⌘ per
+platform) — the keys are Milkdown's own, plus Ctrl/⌘+K for Link, which opens
+a one-line address row (Apply/Update, Remove link, Cancel). The row wraps
+onto more lines on a phone; the page never scrolls sideways. Commands are
+Milkdown's (`noteFormat.ts`); lists, links and the rule use ProseMirror
+directly because Milkdown has no toggle for them. A task item is a bullet
+item with `checked`, saved as `* [ ] x`; its checkbox (CSS `::before`) is
+clickable. The rule goes after the current block, not through Milkdown's
+`insertHr` (which leaves a `<br />` paragraph). The row is disabled while a
+rewrite is open; saved text stays plain markdown.
 
 *Project page (#171).* Title and Rename share a line; Directory, its kind
 pill and the archived pill sit under it. Each section (Instructions,

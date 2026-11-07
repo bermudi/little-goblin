@@ -105,7 +105,7 @@ async function with_(body: string, text: string, a: FormatAction, caret = false)
 }
 
 describe("toolbar → markdown", () => {
-	const marks: [FormatAction["kind"], string][] = [
+	const marks: ["strong" | "emphasis" | "strike" | "code", string][] = [
 		["strong", "**word**"],
 		["emphasis", "*word*"],
 		["strike", "~~word~~"],
@@ -113,10 +113,10 @@ describe("toolbar → markdown", () => {
 	];
 	for (const [kind, want] of marks) {
 		test(`${kind} wraps the selection and toggles back off`, async () => {
-			const { ed, out } = await with_("a word here", "word", { kind } as FormatAction);
+			const { ed, out } = await with_("a word here", "word", { kind });
 			expect(out).toBe(`a ${want} here`);
-			expect(fmtOf(ed)[kind === "code" ? "code" : kind === "strike" ? "strike" : kind]).toBe(true);
-			runFormat(ed, { kind } as FormatAction);
+			expect(fmtOf(ed)[kind]).toBe(true);
+			runFormat(ed, { kind });
 			expect(md(ed).trimEnd()).toBe("a word here");
 		});
 	}

@@ -6800,3 +6800,104 @@ button.link:hover {
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 }
+
+/* Delegations page (#169): current work as panels, the rest as a paged
+   .dtable; modifier classes only. */
+.deleg-now-list {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+}
+.deleg-now {
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	padding: 0.7rem 0.9rem;
+}
+.deleg-now.attn {
+	border-left: 3px solid var(--app-warning);
+}
+.deleg-now-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.3rem 0.7rem;
+}
+.deleg-now-name {
+	font-weight: 600;
+	font-size: 14px;
+	overflow-wrap: anywhere;
+}
+.deleg-now-meta {
+	margin-left: auto;
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+}
+.deleg-now-wait {
+	margin: 0.4rem 0 0;
+	font-size: 12.5px;
+}
+.deleg-now.attn .deleg-now-wait {
+	color: var(--app-warning);
+	font-weight: 500;
+}
+.deleg-now-sum {
+	margin: 0.2rem 0 0;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.deleg-now-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	margin-top: 0.6rem;
+}
+.deleg-table {
+	flex-shrink: 0;
+}
+.deleg-more {
+	align-self: flex-start;
+	margin-top: 0.5rem;
+}
+.deleg-detail .deleg-title {
+	text-transform: none;
+	letter-spacing: 0;
+	font-size: 15px;
+	color: var(--app-fg);
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.6rem;
+	overflow-wrap: anywhere;
+}
+.deleg-facts {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 0.25rem 1.5rem;
+	margin: 0.6rem 0.4rem;
+	font-size: 12.5px;
+}
+.deleg-facts dt {
+	color: var(--app-fg-muted);
+}
+.deleg-facts dd {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+.deleg-brief {
+	margin: 0.25rem 0 0;
+	padding: 0.75rem 1rem;
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	font-size: 13.5px;
+	line-height: 1.55;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}

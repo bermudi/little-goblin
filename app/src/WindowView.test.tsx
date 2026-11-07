@@ -228,6 +228,7 @@ describe("WindowView", () => {
 		const text = container.textContent ?? "";
 		expect(text).toContain("3,700 chars serialized");
 		expect(text).not.toContain("room remain");
+		expect(text).toContain("No token count for this window");
 	});
 
 	test("a null segments row keeps the no-window and no-model states working", async () => {

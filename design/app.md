@@ -816,6 +816,28 @@ thinking/tool-body expansion, a raw-JSON mode. App conversations only;
 the mini app door has no chat and gets no pages. A conversation with no
 captured window says so — the view never fabricates one.
 
+**Page layout (ruling 2026-11-07, #178).** The page leads with what decides
+the next turn, then folds the raw parts away.
+- Top: a `.sumstrip` (tokens used of the limit, share of the window, message
+  count, tool count, cache-read share) and a fill bar with a mark at the
+  compaction threshold. One sentence says what happens next: room left before
+  compaction, or that the history compacts, or that a model change rebuilds
+  the window.
+- Tokens, limit, share and cache come from the gauge's `/context` read, not
+  from the window route. `compactAtPct` rides that read (the runtime's
+  `COMPACT_AT_PCT`, now in `src/turn/overflow.ts`) so the client never copies
+  the 75. When the read has no input or limit (e.g. the provider reported no
+  usage) the tiles show "—" and the page says why; it never estimates tokens.
+- "What takes the space": a table of the itemized parts, biggest first, with
+  chars, tokens (only where the context read has that part), share and a
+  bar. The backend splits identity, environment, project, AGENTS.md, USER.md,
+  skills, tool schemas and history. It has no separate memory-recall or
+  attachment split, so none is shown.
+- Raw parts (system prompt, tools, messages with their filters, model
+  calls) sit in closed `details.win-fold` blocks, code-width (`--code-col`),
+  with no inner scroll box. Filters are chips, not checkboxes.
+- Checked at 390px: no sideways scroll; the table drops its bar column.
+
 The row dies with the conversation: `context_windows` carries no FK, so
 it rides `deleteConversation`'s sweep — a re-minted id starts empty and
 never inherits the last generation's prompt (operator-chosen app ids

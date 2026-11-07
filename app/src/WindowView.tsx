@@ -269,7 +269,9 @@ function Breakdown({
 // window's last input, the model's limit, and the compaction threshold.
 function nextTurnNote(ctx: AppContextView | null, stale: boolean): string | null {
 	if (stale) return "The model changed since this capture: the next turn rebuilds the window.";
-	if (ctx === null || ctx.input === null || ctx.limit === null || ctx.limit <= 0) return null;
+	if (ctx === null || ctx.input === null || ctx.limit === null || ctx.limit <= 0) {
+		return "No token count for this window: the provider reported no usage or the model has no known limit, so the fill and the room before compaction are unknown.";
+	}
 	const at = Math.floor((ctx.limit * ctx.compactAtPct) / 100);
 	if (ctx.input >= at) {
 		return `At or above ${ctx.compactAtPct}% of the window: the turn that just ended compacts the history before the next one.`;

@@ -6649,6 +6649,10 @@ button.link:hover {
 }
 
 /* Window page (#178): summary on top, raw parts folded below. */
+.win-page .lead {
+	margin-left: 0;
+	margin-right: 0;
+}
 .win-summary .sumstrip {
 	margin-top: 0.4rem;
 }

@@ -39,6 +39,7 @@ interface Harness {
 	homeDir: string;
 	pinned: string[];
 	pinOverride: DelegateToolDeps["pin"] | undefined;
+	deps: DelegateToolDeps;
 }
 
 function harness(
@@ -127,6 +128,7 @@ function harness(
 		homeDir,
 		pinned,
 		pinOverride: undefined,
+		deps,
 	};
 	return h;
 }
@@ -828,5 +830,37 @@ describe("delegate tool", () => {
 		await expect(exec(tool, { action: "start", harness: "codex", task: "do it" })).rejects.toThrow(
 			"launch exploded",
 		);
+	});
+});
+
+describe("delegate responsibility link", () => {
+	const start = { action: "start", harness: "codex", task: "do it", responsibility: "r1" };
+
+	test("outside a project the link is refused before anything launches or spins off", async () => {
+		const h = harness();
+		const out = (await exec(h.tool, start)) as { error: string };
+		expect(out.error).toContain("project conversation");
+		expect(h.pinned).toEqual([]);
+		expect(h.store.list()).toEqual([]);
+	});
+
+	test("a refused responsibility launches nothing", async () => {
+		const h = harness();
+		const tool = delegateTool({ ...h.deps, checkResponsibility: () => "responsibility r1 is done" });
+		const out = (await exec(tool, start)) as { error: string };
+		expect(out.error).toBe("responsibility r1 is done");
+		expect(h.pinned).toEqual([]);
+		expect(h.store.list()).toEqual([]);
+	});
+
+	test("an admitted link rides the row and shows in list", async () => {
+		const h = harness();
+		const tool = delegateTool({ ...h.deps, checkResponsibility: () => null });
+		const out = (await exec(tool, start)) as { id: number };
+		expect(h.store.get(out.id)?.responsibilityId).toBe("r1");
+		const listed = (await exec(tool, { action: "list" })) as {
+			delegations: { responsibility?: string }[];
+		};
+		expect(listed.delegations[0]?.responsibility).toBe("r1");
 	});
 });

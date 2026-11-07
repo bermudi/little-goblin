@@ -181,8 +181,15 @@ Rulings:
   cwds are remote-controlled metadata. The herdr skill's operator
   section points at the tool; the seeded skill (v2.2) syncs to the live
   workspace only with the approved backend deploy — not ahead of it.
-- **Goblin may delegate on its own judgment** within a turn — long or
-  coding-heavy work belongs in a harness, not in a lane-blocking `bash`
+- **A delegation can count toward what goblin owes (2026-11-06).**
+  `delegate start` takes `responsibility:<id>` in a project conversation,
+  like a subagent run. Each settlement files one worker report before its
+  notice wakes the conversation; a blocked agent carries no `question`, so
+  it waits for goblin to read and relay. `delegate` stays separate from
+  `subagent`: their controls differ, and a merged tool would hide the
+  choice inside one schema instead of removing it.
+- **Goblin may delegate on its own judgment** within a turn — work in the
+  operator's repos belongs in a harness, not in a lane-blocking `bash`
   call — and says that it did. Which harness (2026-10-11): work on the
   operator's projects goes to his agents through herdr; standalone
   code-heavy work goes to goblin's own worker subagent, and screen work

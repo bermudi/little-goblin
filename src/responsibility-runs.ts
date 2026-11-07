@@ -9,6 +9,8 @@ import { basename } from "node:path";
 import { log } from "./log.ts";
 import type { ResponsibilityStore } from "./responsibilities.ts";
 import { reportInputSchema, type ReportInput } from "./responsibility-reports.ts";
+import type { Delegation } from "./delegations.ts";
+import type { DelegationVerdict } from "./delegation-lifecycle.ts";
 import type { SubagentRun } from "./subagent-runs.ts";
 
 const MAX_REASON = 4000;
@@ -68,32 +70,81 @@ export function fileRunReport(
 	if (row.responsibilityId === null) return;
 	const input = runReport(row);
 	if (input === null) return;
+	fileReport(resps, row.responsibilityId, input, {
+		sourceKey: `subagent:${row.id}:${row.inputRev}:${row.status}`,
+		revision: row.responsibilityRevision,
+		logFields: { run: row.id },
+	});
+}
+
+/** The report a delegation's settlement states. A delegation has no
+ *  structured question, only a screen or report, so a blocked agent is
+ *  goblin's to read and relay: no `question` means it waits for goblin. */
+export function delegationReport(
+	d: Delegation,
+	verdict: DelegationVerdict,
+	body: string,
+): ReportInput {
+	const tag = `delegation #${d.id} ${d.name}`;
+	switch (verdict) {
+		case "done":
+			return { state: "ready", reason: clip(`${tag} finished: ${body}`) };
+		case "needs input":
+			return { state: "blocked", reason: clip(`${tag} needs input: ${body}`) };
+		case "failed":
+			return { state: "failed", reason: clip(`${tag} failed: ${body}`) };
+	}
+}
+
+/** One settlement, one report. The key carries the prompt and the seq
+ *  baseline: a retried notice repeats both and files nothing new, while a
+ *  follow-up or a later dialog on the same prompt moves one of them. */
+export function fileDelegationReport(
+	resps: Pick<ResponsibilityStore, "report" | "get">,
+	d: Delegation,
+	verdict: DelegationVerdict,
+	body: string,
+): void {
+	if (d.responsibilityId === null) return;
+	fileReport(resps, d.responsibilityId, delegationReport(d, verdict, body), {
+		sourceKey: `delegation:${d.id}:${d.promptedAt}:${d.baselineSeq ?? "pending"}:${verdict}`,
+		revision: d.responsibilityRevision,
+		logFields: { delegation: d.id },
+	});
+}
+
+function fileReport(
+	resps: Pick<ResponsibilityStore, "report" | "get">,
+	responsibilityId: string,
+	input: ReportInput,
+	opts: { sourceKey: string; revision: number | null; logFields: Record<string, unknown> },
+): void {
 	// These can never succeed on retry, and a throw here holds the notice
 	// back, so the conversation would never wake. The notice itself still
 	// carries the worker's claim. Store errors still throw and retry.
-	if (resps.get(row.responsibilityId) === null) {
+	if (resps.get(responsibilityId) === null) {
 		log.warn("worker report not filed — responsibility is gone", {
-			run: row.id,
-			responsibility: row.responsibilityId,
+			...opts.logFields,
+			responsibility: responsibilityId,
 		});
 		return;
 	}
 	const parsed = reportInputSchema.safeParse(input);
 	if (!parsed.success) {
 		log.error("worker report not filed — invalid report", parsed.error, {
-			run: row.id,
-			responsibility: row.responsibilityId,
+			...opts.logFields,
+			responsibility: responsibilityId,
 		});
 		return;
 	}
-	const result = resps.report(row.responsibilityId, parsed.data, "worker", {
-		sourceKey: `subagent:${row.id}:${row.inputRev}:${row.status}`,
-		revision: row.responsibilityRevision,
+	const result = resps.report(responsibilityId, parsed.data, "worker", {
+		sourceKey: opts.sourceKey,
+		revision: opts.revision,
 	});
 	if ("refused" in result) {
 		log.warn("worker report not filed — responsibility refused it", {
-			run: row.id,
-			responsibility: row.responsibilityId,
+			...opts.logFields,
+			responsibility: responsibilityId,
 			refused: result.refused,
 		});
 	}

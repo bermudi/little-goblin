@@ -29,6 +29,9 @@ export interface DelegateToolDeps {
 	config: DelegationConfig;
 	pin(name: string): DelegationPin;
 	workspaceDir: string;
+	/** Project-bound turns only: refuses a responsibility outside this
+	 *  project or already closed; null admits the link. */
+	checkResponsibility?: ((id: string) => string | null) | undefined;
 }
 
 function view(d: Delegation, reportPath: string): Record<string, unknown> {
@@ -39,6 +42,7 @@ function view(d: Delegation, reportPath: string): Record<string, unknown> {
 		cwd: d.cwd,
 		status: d.status,
 		target: d.target ?? "local",
+		responsibility: d.responsibilityId ?? undefined,
 		agent_name: d.agentName || undefined,
 		workspace_id: d.workspaceId || undefined,
 		report: reportPath,
@@ -197,6 +201,7 @@ const startSchema = z.object({
 	cwd: z.string().min(1).optional(),
 	name: z.string().min(1).max(40).optional(),
 	on: z.string().min(1).optional(),
+	responsibility: z.string().min(1).optional(),
 });
 const listSchema = z.object({ action: z.literal("list") });
 const readSchema = z.object({
@@ -252,6 +257,7 @@ export const delegateInputSchema = z
 		cwd: startSchema.shape.cwd,
 		name: startSchema.shape.name,
 		on: startSchema.shape.on,
+		responsibility: startSchema.shape.responsibility,
 		id: readSchema.shape.id.optional(),
 		lines: readSchema.shape.lines,
 		text: sendSchema.shape.text.optional(),
@@ -267,13 +273,21 @@ export const delegateInputSchema = z
 
 export const delegateTool = (deps: DelegateToolDeps) =>
 	tool({
-		description: `Delegate a task to an external coding harness — a separate agent in its own workspace, running full-auto. Delegations are your own acts: delegate on your own judgment for long or coding-heavy work instead of blocking the chat with bash, and say that you did; you own the result when it arrives and decide what the operator needs to hear. Targets: your own local session (default)${Object.keys(deps.config.machines ?? {}).length > 0 ? ` plus configured machines (${Object.keys(deps.config.machines ?? {}).join(", ")})` : " (no machines configured)"} — pass 'on' to pick one; work tied to another host's repos runs there, and each target runs the harnesses installed on that host. Harnesses (own session): ${Object.keys(deps.config.harnesses).join(", ")}. Actions — start {harness, task, cwd?, name?, on?}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.`,
+		description: `Delegate work in the operator's repos to an external coding harness — a separate agent in its own workspace, running full-auto. Standalone long or code-heavy work belongs with a worker subagent, and screen work with a computer subagent. Delegations are your own acts: delegate on your own judgment instead of blocking the chat with bash, and say that you did; you own the result when it arrives and decide what the operator needs to hear. Targets: your own local session (default)${Object.keys(deps.config.machines ?? {}).length > 0 ? ` plus configured machines (${Object.keys(deps.config.machines ?? {}).join(", ")})` : " (no machines configured)"} — pass 'on' to pick one; work tied to another host's repos runs there, and each target runs the harnesses installed on that host. Harnesses (own session): ${Object.keys(deps.config.harnesses).join(", ")}. Actions — start {harness, task, cwd?, name?, on?, responsibility?}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went. In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself.`,
 		inputSchema: delegateInputSchema,
 		execute: async (raw) => {
 			const input = actionSchema.parse(raw);
 			switch (input.action) {
 				case "start": {
-					const on = input.on ?? null;
+					// Checked before the pin: a refused link must not spin off.
+						if (input.responsibility !== undefined) {
+							const refused =
+								deps.checkResponsibility === undefined
+									? "responsibility links need a project conversation"
+									: deps.checkResponsibility(input.responsibility);
+							if (refused !== null) return { error: refused };
+						}
+						const on = input.on ?? null;
 					const target = on !== null ? deps.config.machines?.[on] : undefined;
 					if (on !== null && target === undefined) {
 						const known = Object.keys(deps.config.machines ?? {}).join(", ") || "none configured";
@@ -328,6 +342,9 @@ export const delegateTool = (deps: DelegateToolDeps) =>
 							...(pin.appConversation === undefined
 								? {}
 								: { appConversation: pin.appConversation }),
+							...(input.responsibility === undefined
+								? {}
+								: { responsibilityId: input.responsibility }),
 						});
 					} catch (err) {
 						discard("threw");

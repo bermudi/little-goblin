@@ -165,6 +165,8 @@ describe("app attention", () => {
 							baselineSeq: null,
 							promptedAt: "2026-10-21T00:03:00.000Z",
 							promptPending: false,
+							responsibilityId: null,
+							responsibilityRevision: null,
 							createdAt: "2026-10-21T00:02:30.000Z",
 							finishedAt: null,
 						},

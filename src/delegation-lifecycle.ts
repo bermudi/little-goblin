@@ -42,6 +42,8 @@ import { claudeFreshTrustJson, codexTrustSection, seedHarnessTrust } from "./har
 import { delegationNoticeTag } from "./tags.ts";
 import { wake, wakeApp, type WakeDeps } from "./wake.ts";
 
+export type DelegationVerdict = "done" | "needs input" | "failed";
+
 export interface DelegationLifecycleDeps {
 	delegations: DelegationsStore;
 	// Own local herdr session; never selected by config.
@@ -53,6 +55,11 @@ export interface DelegationLifecycleDeps {
 	wake(address: { chatId: number; threadId: number | null }, text: string): boolean;
 	wakeApp(conversationId: string, text: string): boolean;
 	homeDir: string;
+	// A linked delegation's settlement lands as a worker report before its
+	// notice wakes the conversation (responsibility-runs.ts). A throw leaves
+	// the row eligible for retry; the report is keyed, so a retry files once.
+	settled?: (d: Delegation, verdict: DelegationVerdict, body: string) => void;
+	responsibilityRevision?: (id: string) => number | null;
 }
 
 export interface DelegationTargetDeps {
@@ -73,6 +80,7 @@ export interface LaunchInput {
 	target?: string | null;
 	address: { chatId: number; threadId: number | null };
 	appConversation?: string;
+	responsibilityId?: string;
 }
 
 export type LaunchOutcome =
@@ -507,6 +515,12 @@ async function launch(deps: DelegationLifecycleDeps, input: LaunchInput): Promis
 		address: input.address,
 		target: input.target ?? null,
 		...(input.appConversation === undefined ? {} : { appConversation: input.appConversation }),
+		...(input.responsibilityId === undefined
+			? {}
+			: {
+					responsibilityId: input.responsibilityId,
+					responsibilityRevision: deps.responsibilityRevision?.(input.responsibilityId) ?? null,
+				}),
 	});
 	// A failed launch must close any bound workspace — no watcher owns
 	// cleanup after the failure.
@@ -1027,10 +1041,11 @@ function readReport(path: string, id: number): string | null {
 async function notify(
 	deps: DelegationLifecycleDeps,
 	d: Delegation,
-	verdict: "done" | "needs input" | "failed",
+	verdict: DelegationVerdict,
 	opts: { extra?: string; agentGone?: boolean } = {},
 ): Promise<boolean> {
 	const body = await reportBody(deps, d, opts.agentGone ?? false, verdict === "done");
+	deps.settled?.(d, verdict, body);
 	const extra = opts.extra;
 	// Fence delegated output so it cannot close its event wrapper or gain tool authority;
 	// the header remains trusted outside the fence.

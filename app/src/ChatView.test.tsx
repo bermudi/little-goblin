@@ -2635,6 +2635,24 @@ describe("composer focus stealing", () => {
 						rateableMessageIds: [sent ? "a2" : "a1"],
 					});
 				}
+				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+				if (url.endsWith("/context")) {
+					// The gauge's popover only opens over a read that
+					// succeeded.
+					return jsonResponse({
+						model: "prov/model",
+						input: 1000,
+						output: 100,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cacheHitRate: null,
+						avgCacheHitRate: null,
+						limit: 8000,
+						pct: 12,
+						turns: 1,
+						segments: null,
+					});
+				}
 				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
 				if (url === "/api/app/chat") {
 					sent = true;
@@ -2783,6 +2801,55 @@ describe("composer focus stealing", () => {
 			window.dispatchEvent(new dom.win.Event("focus") as unknown as Event);
 		});
 		expect(document.activeElement).toBe(foreign);
+	});
+
+	// happy-dom's el.click() doesn't reach React's root listener the
+	// way a real pointer does — dispatch a bubbling MouseEvent like the
+	// rest of this file.
+	const fireClick = async (el: Element) => {
+		await act(async () => {
+			el.dispatchEvent(new dom.win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		});
+	};
+
+	test("the context gauge's popover keeps the focus — its state lives outside the composer", async () => {
+		installFetch();
+		await mountThread();
+		// The gauge popover is a composer popover whose open state the
+		// composer doesn't hold — the DOM check is its only guard. The
+		// memory knob shares .ctx-btn, so anchor inside the gauge.
+		const gaugeBtn = dom.container.querySelector(".ctx-gauge > .ctx-btn");
+		expect(gaugeBtn).toBeTruthy();
+		await fireClick(gaugeBtn!);
+		await settle(() => dom.container.querySelector(".composer-pick.ctx-pop") !== null);
+		expect(dom.container.querySelector(".composer-pick.ctx-pop")).not.toBeNull();
+		// A synthetic click doesn't move focus — park it on the opener
+		// like a real pointer press would, then prove the claim leaves
+		// it there.
+		await act(async () => {
+			(gaugeBtn as HTMLElement).focus();
+		});
+		await act(async () => {
+			window.dispatchEvent(new dom.win.Event("focus") as unknown as Event);
+		});
+		expect(document.activeElement).toBe(gaugeBtn);
+	});
+
+	test("the model menu keeps the focus — the picker states guard the refocus claim", async () => {
+		installFetch();
+		await mountThread();
+		const knob = dom.container.querySelector('button[aria-label="Conversation model"]');
+		expect(knob).toBeTruthy();
+		await fireClick(knob!);
+		await settle(() => dom.container.querySelector(".model-pop") !== null);
+		expect(dom.container.querySelector(".model-pop")).not.toBeNull();
+		await act(async () => {
+			(knob as HTMLElement).focus();
+		});
+		await act(async () => {
+			window.dispatchEvent(new dom.win.Event("focus") as unknown as Event);
+		});
+		expect(document.activeElement).toBe(knob);
 	});
 
 	test("an open dialog keeps the focus — nothing is claimed under a veil", async () => {

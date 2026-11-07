@@ -264,8 +264,10 @@ returning to the foreground (window focus; no busy check there —
 coming back to steer a streaming turn is still typing into the box) —
 so typing never needs a click first. "When it can" is a guard set:
 the claim stands down while another text entry holds focus (sidebar
-search, an inline note editor, a picker's filter), while one of the
-composer's own pickers or any dialog is open, and on phone widths,
+search, an inline note editor, a picker's filter), while a composer
+popover is open — picker states and the context gauge's popover alike,
+the latter matched by its `.composer-pick` class since its state lives
+in the gauge — while any dialog is open, and on phone widths,
 where focus() pops the on-screen keyboard over a thread the operator
 just opened to read. The conversation-less composers keep their
 explicit paths (the "New conversation" focusSignal) — stealing is a

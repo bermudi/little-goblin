@@ -1865,12 +1865,14 @@ export function Composer({
 	// composer claims focus, so typing never needs a click first. "When
 	// it can": never against a surface holding focus for its own typing
 	// (matched by tag/contenteditable — bare DOM classes like
-	// HTMLElement don't exist in bun's test runtime), never while one of
-	// the composer's own pickers or any dialog is open, and never on
-	// phone widths, where focus() pops the on-screen keyboard over a
-	// thread the operator just opened to read. The picker flags ride a
-	// ref so effect identity tracks only its real triggers — a picker
-	// opening must not snatch focus from itself. The refocus claim
+	// HTMLElement don't exist in bun's test runtime), never while a
+	// composer popover is open — the picker flags here cover the states
+	// living in this component (they ride a ref so the window-focus
+	// listener's closure stays fresh without re-subscribing); the
+	// `.composer-pick` DOM check covers popovers whose state lives
+	// elsewhere, the context gauge's — never under any dialog, and
+	// never on phone widths, where focus() pops the on-screen keyboard
+	// over a thread the operator just opened to read. The refocus claim
 	// skips the busy check deliberately: coming back to a streaming
 	// turn to steer it is still typing into the box.
 	const stealGuard = useRef({ pickers: false });
@@ -1884,6 +1886,7 @@ export function Composer({
 		if (el != null && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable))
 			return;
 		if (stealGuard.current.pickers) return;
+		if (document.querySelector(".composer-pick") !== null) return;
 		if (document.querySelector('[role="dialog"]') !== null) return;
 		textareaRef.current?.focus();
 	};

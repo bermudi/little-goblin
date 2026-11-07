@@ -15,6 +15,7 @@ import {
 import type { AuthStore } from "./auth.ts";
 import { appIdOf, type Conversation, type ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
+import { type OperatorReminder, REMINDER_EVERY_MS, reminderText } from "./responsibility-reminder.ts";
 import type { TurnDone, TurnSink } from "./runtime.ts";
 
 export const APP_PUSH_VAPID = "app-push-vapid";
@@ -93,6 +94,8 @@ export interface AppPush {
 	): Promise<{ endpointHash: string }>;
 	unregister(endpoint: string): boolean;
 	notifyDone(conv: Conversation, done: TurnDone): Promise<void>;
+	/** True when at least one subscribed device has this reminder. */
+	notifyReminder(reminder: OperatorReminder): Promise<boolean>;
 }
 
 function endpointHash(endpoint: string): string {
@@ -197,7 +200,50 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 		if (appId === null || deps.store.get(conv.id) === null) return;
 		const key = notificationKey(conv, done);
 		if (key === null) return;
+		await ring(
+			key,
+			{
+				title: "goblin",
+				body: done.kind === "completed" ? "A background turn finished" : "A background turn failed",
+				url: `/app/c/${appId}`,
+			},
+			{ ttl: 3600, fields: { conversation: conv.id, outcome: done.kind } },
+		);
+	}
+
+	async function notifyReminder(reminder: OperatorReminder): Promise<boolean> {
+		const appId = appIdOf(reminder.conversationId);
+		await ring(
+			reminder.key,
+			{
+				title: "goblin",
+				body: reminderText(reminder.stage),
+				url: appId === null ? "/app/" : `/app/c/${appId}`,
+			},
+			{
+				// A phone off overnight should still get it; the next step replaces it anyway.
+				replaces: reminder.series,
+				ttl: REMINDER_EVERY_MS / 1000,
+				fields: {
+					conversation: reminder.conversationId,
+					responsibility: reminder.responsibilityId,
+					outcome: `reminder:${reminder.stage}`,
+				},
+			},
+		);
+		return qList.all().some((row) => (qDelivered.get(reminder.key, row.endpoint_hash)?.n ?? 0) > 0);
+	}
+
+	async function ring(
+		key: string,
+		message: { title: string; body: string; url: string },
+		opts: { ttl: number; fields: Record<string, string>; replaces?: string },
+	): Promise<void> {
 		const subscriptions = qList.all();
+		if (subscriptions.length === 0) {
+			log.info("app push skipped — no device subscribed", { key, ...opts.fields });
+			return;
+		}
 		const pending = subscriptions.filter((row) => qDelivered.get(key, row.endpoint_hash)?.n === 0);
 		if (pending.length === 0) return;
 
@@ -208,14 +254,14 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 			try {
 				pair = (await vapid(true))!;
 			} catch (err) {
-				log.error("app push send skipped — VAPID unavailable", err, { conversation: conv.id });
+				log.error("app push send skipped — VAPID unavailable", err, opts.fields);
 				return;
 			}
+			const replaces = opts.replaces ?? key;
 			const payload = JSON.stringify({
-				title: "goblin",
-				body: done.kind === "completed" ? "A background turn finished" : "A background turn failed",
-				url: `/app/c/${appId}`,
-				tag: key,
+				...message,
+				tag: replaces,
+				...(opts.replaces === undefined ? {} : { renotify: true }),
 			});
 			for (const row of pending) {
 				try {
@@ -225,30 +271,26 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 							publicKey: pair.publicKey,
 							privateKey: pair.privateKey,
 						},
-						TTL: 3600,
+						TTL: opts.ttl,
 						timeout: 10_000,
 						urgency: "normal",
-						topic: createHash("sha256").update(key).digest("base64url").slice(0, 32),
+						topic: createHash("sha256").update(replaces).digest("base64url").slice(0, 32),
 					});
 					qMarkDelivered.run(key, row.endpoint_hash, new Date().toISOString());
-					log.info("app push sent", {
-						conversation: conv.id,
-						endpointHash: row.endpoint_hash,
-						outcome: done.kind,
-					});
+					log.info("app push sent", { ...opts.fields, endpointHash: row.endpoint_hash });
 				} catch (err) {
 					const status = statusCodeOf(err);
 					if (status === 404 || status === 410) {
 						qDelete.run(row.endpoint_hash);
 						log.info("app push subscription pruned — endpoint gone", {
-							conversation: conv.id,
+							...opts.fields,
 							endpointHash: row.endpoint_hash,
 							status,
 						});
 						continue;
 					}
 					log.warn("app push send failed — subscription retained for retry", {
-						conversation: conv.id,
+						...opts.fields,
 						endpointHash: row.endpoint_hash,
 						status: status ?? null,
 					});
@@ -303,6 +345,7 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 			return removed;
 		},
 		notifyDone,
+		notifyReminder,
 	};
 }
 

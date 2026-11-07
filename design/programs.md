@@ -240,7 +240,12 @@ Rulings:
   consumed — and an explicit commitment still fires: it is the agreed
   reminder. A report that moves the stage off the
   operator re-arms a fresh silence bound, so the overdue check does not
-  fire stale. This slice does not implement waiting reminders beyond that. Stale disabled/deleted/rescheduled follow-up snapshots
+  fire stale. Separately, the scheduler's sweep reminds the operator with
+  an app push and no model call: 4 hours after the report that made the
+  stage wait on them, then every 24 hours until the stage changes. Paused
+  work gets none. Downtime rings only the newest step. Payloads stay
+  generic. When no subscribed device got it (none exist, or every send failed), it
+  goes to the operators on Telegram. With neither path, it is a warn line. Stale disabled/deleted/rescheduled follow-up snapshots
   cannot fire. Already enqueued developments remain historical facts:
   turns must re-read current authority before acting, and existing
   revision/generation/send fences still govern effects. No new generic

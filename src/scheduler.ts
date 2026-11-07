@@ -17,6 +17,7 @@ import type { ResponsibilityStore } from "./responsibilities.ts";
 import { authorityStamp } from "./responsibility-authority.ts";
 import { responsibilityStage } from "./responsibility-stage.ts";
 import { isFollowupProgram } from "./responsibility-followup.ts";
+import { dueReminder, type OperatorReminder } from "./responsibility-reminder.ts";
 import type { DevelopmentInput } from "./wake-store.ts";
 import { latestFireAtOrBefore, type Program, type ProgramsStore } from "./programs.ts";
 import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
@@ -34,9 +35,11 @@ export interface SchedulerDeps extends WakeDeps {
 	 *  loud skip, never a misrouted fire. */
 	responsibilities?: Pick<
 		ResponsibilityStore,
-		"get" | "attachmentsFor" | "consumeFollowup" | "latestReport" | "operationsFor"
+		"get" | "attachmentsFor" | "consumeFollowup" | "latestReport" | "operationsFor" | "open"
 	>;
 	recordDevelopment?: ((input: DevelopmentInput) => void) | undefined;
+	/** Rings the operator about work still waiting on them. Absent = no reminders. */
+	remindOperator?: ((reminder: OperatorReminder) => Promise<void>) | undefined;
 }
 
 export interface Scheduler {
@@ -45,6 +48,8 @@ export interface Scheduler {
 	/** Stops the timer and drops pending retries — the cursor already
 	 *  advanced, so a dropped retry is what a crash does anyway. */
 	stop(): void;
+	/** Resolves when reminder sends in flight have settled. */
+	joinReminders(): Promise<void>;
 }
 
 export type ProgramTrigger = "schedule" | "webhook" | "mail";
@@ -63,10 +68,17 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 	if (ladders.get(deps)?.stopped) ladders.delete(deps);
 	const ladder = ladderFor(deps);
 	let stopped = false;
+	const reminderAttempts = new Map<string, number>();
+	const remindersInFlight = new Map<string, Promise<void>>();
 	const scan = (): void => {
 		if (stopped) return;
 		const now = new Date();
 		reconcilePendingMarks(deps);
+		try {
+			sweepOperatorReminders(deps, now, reminderAttempts, remindersInFlight);
+		} catch (err) {
+			log.error("operator reminder sweep failed", err, {});
+		}
 		// The due query runs from a synchronous interval callback: a throw
 		// here (an I/O error on the programs file) would be an uncaught
 		// exception — exit(1), and the same throw again five seconds into
@@ -105,7 +117,49 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 			for (const t of ladder.timers.values()) clearTimeout(t);
 			ladder.timers.clear();
 		},
+		joinReminders: async () => {
+			await Promise.all(remindersInFlight.values());
+		},
 	};
+}
+
+// Runs apart from the follow-up Programs, so a future commitment or a
+// disabled Program can't silence a reminder. The push owner's sent markers
+// are the durable dedupe; this only stops a failing or absent device from
+// being retried every tick.
+const REMINDER_RETRY_MS = 15 * 60_000;
+export function sweepOperatorReminders(
+	deps: SchedulerDeps,
+	now: Date,
+	attempts: Map<string, number>,
+	inFlight: Map<string, Promise<void>>,
+): void {
+	const remind = deps.remindOperator;
+	const resps = deps.responsibilities;
+	if (remind === undefined || resps === undefined) return;
+	const due = new Set<string>();
+	for (const resp of resps.open()) {
+		const id = resp.responsibilityId;
+		const reminder = dueReminder(resp, resps.latestReport(id), resps.operationsFor(id), now);
+		if (reminder === null) continue;
+		due.add(reminder.key);
+		if (inFlight.has(reminder.key)) continue;
+		const last = attempts.get(reminder.key);
+		if (last !== undefined && now.getTime() - last < REMINDER_RETRY_MS) continue;
+		attempts.set(reminder.key, now.getTime());
+		log.debug("operator reminder due", { ...reminder });
+		inFlight.set(
+			reminder.key,
+			remind(reminder)
+				.catch((err: unknown) => {
+					log.error("operator reminder failed", err, { ...reminder });
+				})
+				.finally(() => {
+					inFlight.delete(reminder.key);
+				}),
+		);
+	}
+	for (const key of attempts.keys()) if (!due.has(key)) attempts.delete(key);
 }
 
 // Retry ladder (hermes' bounded zero-API-call re-run): a fire whose

@@ -119,7 +119,8 @@ subscriptions and sent markers live in SQLite; API state exposes endpoint
 hashes, never endpoints or subscription keys. Payloads are generic
 (title/body + `/app/c/<id>`) and contain no reply text or authority.
 Background app turns notify on terminal success or failure; fenced turns
-stay silent. An interactive turn notifies only if its SSE wire died before
+stay silent. Work still waiting on the operator also rings, with
+Telegram as the fallback (`design/programs.md` → Reports and stages). An interactive turn notifies only if its SSE wire died before
 the terminal callback — a live app reply never double-rings. `404`/`410`
 prune an endpoint; transient send failures keep it retryable. Telegram
 stays the bell for its own conversations and still rings app turns as the

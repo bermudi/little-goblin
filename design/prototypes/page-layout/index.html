@@ -1,0 +1,678 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>goblin page layout — prototype (#168)</title>
+<style>
+	/* Tokens copied from app/src/styles.css (two knobs, everything else mixed off them). */
+	:root {
+		--app-bg: #0d0d0d;
+		--app-fg: #e8e8ea;
+		--app-accent: #a78bfa;
+		--app-danger: #f87171;
+		--app-success: #4ade80;
+		--app-warning: #facc15;
+		--font-sans: "Inter", -apple-system, BlinkMacSystemFont, ui-sans-serif, system-ui, sans-serif;
+		--font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+		color-scheme: dark;
+	}
+	:root[data-theme="light"] {
+		--app-bg: #ffffff;
+		--app-fg: #1f1f23;
+		--app-accent: #6d28d9;
+		--app-danger: #dc2626;
+		--app-success: #15803d;
+		--app-warning: #b45309;
+		color-scheme: light;
+	}
+	:root {
+		--app-fg-muted: color-mix(in oklab, var(--app-fg) 62%, var(--app-bg));
+		--app-fg-subtle: color-mix(in oklab, var(--app-fg) 48%, var(--app-bg));
+		--app-border: color-mix(in oklab, var(--app-fg) 1.5%, transparent);
+		--app-divider: color-mix(in oklab, var(--app-fg) 8%, transparent);
+		--app-hover: color-mix(in oklab, var(--app-fg) 6%, transparent);
+		--app-active: color-mix(in oklab, var(--app-fg) 7%, transparent);
+		--app-gray-50: color-mix(in oklab, var(--app-bg) 96%, var(--app-fg));
+		--app-gray-200: color-mix(in oklab, var(--app-bg) 85%, var(--app-fg));
+		--app-diff-add-bg: color-mix(in oklab, #2ea043 24%, var(--app-bg));
+		--app-diff-del-bg: color-mix(in oklab, #f85149 24%, var(--app-bg));
+	}
+	* { box-sizing: border-box; }
+	html, body { margin: 0; background: var(--app-bg); color: var(--app-fg); }
+	body { font: 13px/1.45 var(--font-sans); -webkit-font-smoothing: antialiased; overflow-x: hidden; }
+	button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: inherit; }
+	button:disabled { opacity: .45; cursor: default; }
+	:focus-visible { outline: 1px solid color-mix(in oklab, var(--app-fg) 45%, transparent); outline-offset: -1px; }
+	[hidden] { display: none !important; }
+	@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+	/* ================= Prototype controls (not part of the design) ================= */
+	.controls {
+		position: sticky; top: 0; z-index: 20;
+		display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; align-items: center;
+		padding: .6rem 1rem;
+		background: color-mix(in oklab, var(--app-bg) 92%, var(--app-accent));
+		border-bottom: 1px solid var(--app-divider);
+		font-size: 12.5px;
+	}
+	.ctl { display: inline-flex; align-items: center; gap: .45rem; }
+	.ctl .name { color: var(--app-fg-muted); }
+	.seg { display: inline-flex; border: 1px solid var(--app-divider); border-radius: 8px; overflow: hidden; }
+	.seg button { padding: .3rem .65rem; color: var(--app-fg-muted); min-height: 30px; }
+	.seg button[aria-pressed="true"] { background: var(--app-fg); color: var(--app-bg); font-weight: 500; }
+	.lnk { color: var(--app-fg-muted); text-decoration: underline; text-underline-offset: 2px; min-height: 30px; }
+	.lnk:hover { color: var(--app-fg); }
+	.scalenote { color: var(--app-fg-subtle); font-family: var(--font-mono); font-size: 11px; }
+	.stage { padding: 1rem 16px 0; }
+	.idea { max-width: 62rem; margin: 0 auto .75rem; color: var(--app-fg-muted); }
+	.idea b { color: var(--app-fg); font-weight: 600; }
+	.fitbox { margin-inline: auto; position: relative; overflow: hidden; border: 1px solid var(--app-divider); border-radius: 12px; }
+	.fitbox.phone { border-radius: 22px; }
+	.fitbox > .app { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+
+	/* Notes below the frame */
+	.notes { max-width: 78rem; margin: 1.75rem auto 2.5rem; padding: 0 16px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; }
+	.note { border: 1px solid var(--app-divider); border-radius: 10px; padding: .8rem .9rem; background: var(--app-gray-50); color: var(--app-fg-muted); font-size: 12.5px; }
+	.note.cur { border-color: color-mix(in oklab, var(--app-accent) 55%, transparent); }
+	.note h2 { margin: 0 0 .35rem; font-size: 13px; color: var(--app-fg); }
+	.note h2 .k { font-family: var(--font-mono); font-size: 11px; color: var(--app-fg-subtle); margin-right: .4rem; }
+	.note dl { margin: 0; }
+	.note dt { margin-top: .5rem; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--app-fg-subtle); }
+	.note dd { margin: .1rem 0 0; }
+	@media (max-width: 900px) { .notes { grid-template-columns: 1fr; } }
+
+	/* ================= The app frame (everything inside copies the real app) ================= */
+	.app {
+		height: 880px; display: flex; position: absolute; overflow: hidden;
+		background: var(--app-bg); color: var(--app-fg);
+		container-type: inline-size; container-name: app;
+	}
+	.side { flex: none; display: flex; height: 100%; background: var(--app-bg); z-index: 6; }
+	.rail { width: 52px; border-right: 1px solid var(--app-divider); display: flex; flex-direction: column; align-items: center; padding: .6rem 0 .55rem; gap: 2px; overflow: hidden; }
+	.g { position: relative; width: 34px; height: 34px; flex: none; display: inline-flex; align-items: center; justify-content: center; border-radius: 8px; color: var(--app-fg-muted); }
+	.g:hover { background: var(--app-hover); color: var(--app-fg); }
+	.g.on { background: var(--app-active); color: var(--app-fg); }
+	.g .dot { position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--app-accent); }
+	.g-split { width: 18px; height: 1px; flex: none; background: var(--app-divider); margin: .4rem 0; }
+	.g-spacer { flex: 1; }
+	.panel { width: 216px; border-right: 1px solid var(--app-divider); padding: .6rem .5rem .45rem; display: flex; flex-direction: column; gap: .15rem; overflow: hidden; }
+	.panel-head { display: flex; align-items: baseline; padding: .15rem .55rem .35rem; }
+	.panel-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--app-fg-subtle); }
+	.pconv { display: block; width: 100%; padding: .4rem .5rem; border-radius: 8px; }
+	.pconv:hover { background: var(--app-hover); }
+	.pconv.current { background: var(--app-active); }
+	.pconv-head { display: flex; align-items: baseline; gap: .4rem; }
+	.pconv-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.pconv-time { flex: none; font: 10px var(--font-mono); color: var(--app-fg-muted); }
+	.pconv-prev { display: block; margin-top: 1px; color: var(--app-fg-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+	.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+	.app-head { flex: none; display: flex; align-items: center; gap: .5rem; padding: .45rem .75rem; min-height: 2.7rem; border-bottom: 1px solid var(--app-divider); }
+	.app-head h1 { font-size: 13px; font-weight: 600; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.burger { display: none; width: 2rem; height: 2rem; align-items: center; justify-content: center; border-radius: 8px; color: var(--app-fg-muted); }
+	.scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: transparent transparent; }
+	.scroll:hover { scrollbar-color: var(--app-divider) transparent; }
+	.composer-wrap { flex: none; display: flex; flex-direction: column; }
+	.composer { background: var(--app-gray-200); border: 1px solid var(--app-divider); border-radius: 14px; width: min(46rem, calc(100% - 2rem)); align-self: center; margin: .25rem 0 .75rem; padding: .1rem .35rem .4rem; }
+	.composer textarea { display: block; width: 100%; font: inherit; font-size: 15px; line-height: 1.5; color: var(--app-fg); background: transparent; border: 0; outline: none; padding: .6rem .6rem .2rem; resize: none; min-height: 2.5rem; }
+	.composer textarea::placeholder { color: var(--app-fg-subtle); }
+	.composer-bar { display: flex; align-items: center; padding: 0 .15rem; font: 11px var(--font-mono); color: var(--app-fg-muted); }
+	.composer-bar .send { margin-left: auto; width: 1.9rem; height: 1.9rem; border-radius: 999px; background: var(--app-fg); color: var(--app-bg); display: inline-flex; align-items: center; justify-content: center; }
+	.toast { position: absolute; left: 50%; bottom: 1rem; transform: translateX(-50%); z-index: 30; padding: .45rem .8rem; border-radius: 8px; background: var(--app-fg); color: var(--app-bg); font-size: 12px; max-width: 80%; }
+	.scrim { display: none; }
+
+	/* Phone: the real app turns the rail + list panel into a drawer under 720px. */
+	@container app (max-width: 720px) {
+		.side { position: absolute; left: 0; top: 0; transform: translateX(-100%); transition: transform .15s ease; box-shadow: none; }
+		.app.drawer .side { transform: none; }
+		.app.drawer .scrim { display: block; position: absolute; inset: 0; z-index: 5; background: color-mix(in oklab, var(--app-bg) 60%, transparent); }
+		.burger { display: inline-flex; }
+	}
+
+	/* ---- Shared real-app atoms ---- */
+	.mono { font-family: var(--font-mono); }
+	.ops-h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--app-fg-muted); margin: 1.25rem .4rem .45rem; display: flex; align-items: center; gap: .5rem; }
+	.row { display: flex; align-items: center; gap: .7rem; }
+	.cap { font-size: 11.5px; color: var(--app-fg-muted); margin-top: 2px; }
+	.lead { color: var(--app-fg-muted); font-size: 12.5px; margin: .6rem .4rem 0; }
+	.card { border: 1px solid var(--app-divider); border-radius: 10px; background: var(--app-gray-50); display: flex; flex-direction: column; }
+	.card > * { padding: .6rem .75rem; }
+	.card > * + * { border-top: 1px solid var(--app-divider); }
+	.card + .card { margin-top: .6rem; }
+	.op-head { display: flex; align-items: center; gap: .6rem; }
+	.op-title { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; }
+	.op-body { font-size: 12.5px; color: var(--app-fg-muted); white-space: pre-wrap; }
+	.kv { display: flex; align-items: baseline; gap: .75rem; font-size: 12.5px; }
+	.kv-k { flex: none; width: 8.5rem; font-size: 11.5px; color: var(--app-fg-muted); }
+	.kv-v { min-width: 0; word-break: break-word; }
+	.pill { flex: none; font: 10.5px var(--font-mono); border: 1px solid var(--app-border); border-radius: 999px; padding: .1rem .55rem; color: var(--app-fg-muted); white-space: nowrap; }
+	.pill.on { color: var(--app-success); border-color: color-mix(in oklab, var(--app-success) 40%, transparent); }
+	.pill.warn { color: var(--app-warning); border-color: color-mix(in oklab, var(--app-warning) 40%, transparent); }
+	.pill.bad { color: var(--app-danger); border-color: color-mix(in oklab, var(--app-danger) 40%, transparent); }
+	.btn { border: 1px solid var(--app-border); border-radius: 8px; padding: .35rem .7rem; font-size: 12.5px; color: var(--app-fg-muted); white-space: nowrap; text-align: center; }
+	.btn:hover:not(:disabled) { background: var(--app-hover); color: var(--app-fg); }
+	.btn.primary { background: var(--app-fg); color: var(--app-bg); border-color: var(--app-fg); }
+	.btn.primary:hover:not(:disabled) { background: color-mix(in oklab, var(--app-fg) 88%, var(--app-bg)); color: var(--app-bg); }
+	.btn.danger { color: var(--app-danger); border-color: color-mix(in oklab, var(--app-danger) 40%, transparent); }
+	.btns { display: flex; flex-wrap: wrap; gap: .45rem; align-items: center; }
+	.ghost-inline { font-size: 11.5px; color: var(--app-fg-subtle); border-radius: 6px; padding: .15rem .4rem; }
+	.ghost-inline:hover { background: var(--app-hover); color: var(--app-fg); }
+	.proj-name { font-size: 15px; font-weight: 600; margin: 0; }
+	.field input, .field select, .field textarea { font: inherit; font-size: 12.5px; background: var(--app-bg); border: 1px solid var(--app-border); border-radius: 8px; color: var(--app-fg); padding: .4rem .6rem; outline: none; width: 100%; }
+	.field textarea { line-height: 1.5; resize: vertical; }
+	.field input:focus, .field textarea:focus, .field select:focus { border-color: color-mix(in oklab, var(--app-fg) 25%, transparent); }
+	.field { display: flex; flex-direction: column; gap: .35rem; }
+	.flabel { font-size: 11.5px; font-weight: 500; color: var(--app-fg-muted); }
+	.result { font-size: 12.5px; }
+	.result.ok { color: var(--app-success); }
+	.result.no { color: var(--app-fg-muted); }
+
+	/* Diff block */
+	.diff { border: 1px solid var(--app-divider); border-radius: 8px; overflow: hidden; font: 12px/1.5 var(--font-mono); background: var(--app-bg); }
+	.diff .fh { padding: .2rem .6rem; background: var(--app-hover); color: var(--app-fg-muted); }
+	.diff .ln { display: flex; gap: .5rem; padding: 0 .6rem; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--app-fg-muted); }
+	.diff .ln.add { background: var(--app-diff-add-bg); color: var(--app-fg); }
+	.diff .ln.del { background: var(--app-diff-del-bg); color: var(--app-fg); }
+	.diff .mk { flex: none; width: 1ch; }
+	.diff .fh + .ln, .diff .ln + .fh { margin-top: 0; }
+	.diff .fh:not(:first-child) { border-top: 1px solid var(--app-divider); }
+
+	/* ================= Option A: today (46rem column) ================= */
+	.ops { display: flex; flex-direction: column; margin-inline: auto; width: 100%; max-width: 46rem; padding: 1.25rem 1rem 3rem; }
+	.ops .ap-text { color: var(--app-fg-muted); font-size: 12.5px; }
+	.ops .btns.act { padding-top: .6rem; }
+	.ops .tbl-note { display: none; }
+	.ops .proj-sec { display: flex; flex-direction: column; gap: .35rem; margin-top: .3rem; }
+	.ops .field.pad { margin: .3rem 0 0; }
+	.ops .rowlist .item { display: flex; align-items: center; gap: .7rem; width: 100%; padding: .6rem .75rem; text-align: left; }
+	.ops .rowlist .item:hover { background: var(--app-hover); }
+	.ops .rowlist .item + .item { border-top: 1px solid var(--app-divider); }
+	.ops .newnote { align-self: flex-start; }
+	.item-main { flex: 1; min-width: 0; }
+	.item-title { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.item-sub { color: var(--app-fg-muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.item-time { flex: none; font: 10.5px var(--font-mono); color: var(--app-fg-subtle); }
+	.chev { color: var(--app-fg-subtle); }
+
+	/* ================= Shared by B and C: full-width page ================= */
+	.pg { --pad: clamp(1rem, 3cqw, 2.5rem); padding: 1.25rem var(--pad) 3.5rem; width: 100%; }
+	.pg .pg-title { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; margin: 0 0 .15rem; }
+	.pg .pg-title h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+	.pg .pg-sub { color: var(--app-fg-muted); margin: 0; max-width: 70ch; }
+	.pg .sec { margin-top: 1.5rem; }
+	.pg .sec-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: .5rem; min-height: 2rem; }
+	.pg .sec-head h3 { margin: 0; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--app-fg-muted); display: flex; align-items: center; gap: .5rem; }
+	.prose { max-width: 70ch; }
+	.pg .diff { max-width: 78ch; }
+	.pg .field textarea, .pg .field select, .pg .field input { max-width: 70ch; }
+	.back { display: inline-flex; align-items: center; gap: .35rem; color: var(--app-fg-muted); font-size: 12.5px; padding: .25rem .4rem; margin-left: -.4rem; border-radius: 6px; }
+	.back:hover { background: var(--app-hover); color: var(--app-fg); }
+
+	/* list tables */
+	.tbl { border: 1px solid var(--app-divider); border-radius: 10px; background: var(--app-gray-50); overflow: hidden; }
+	.tr { display: grid; grid-template-columns: var(--cols); gap: 1rem; align-items: center; width: 100%; padding: .55rem .85rem; border-top: 1px solid var(--app-divider); text-align: left; }
+	.tr:first-child { border-top: 0; }
+	.th { padding-block: .4rem; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--app-fg-subtle); background: var(--app-hover); }
+	button.tr:hover { background: var(--app-hover); }
+	.tr.sel { background: var(--app-active); box-shadow: inset 2px 0 0 var(--app-accent); }
+	.tr .cell { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.tr .cell.strong { font-weight: 500; }
+	.tr .cell.dim { color: var(--app-fg-muted); }
+	.tr .cell.mono { font-size: 11.5px; }
+	.tr .mrow { display: none; }
+	.tbl.programs { --cols: minmax(11rem, 2.2fr) minmax(9rem, 1.4fr) 6.5rem minmax(8rem, 1.2fr) minmax(8rem, 1.2fr) 6.5rem; }
+	.tbl.notes-t { --cols: minmax(11rem, 1.4fr) minmax(12rem, 3fr) 4rem 4.5rem; }
+	.tbl.chats-t { --cols: minmax(11rem, 1.4fr) minmax(12rem, 3fr) 4.5rem; }
+	.tbl.compact.notes-t, .tbl.compact.chats-t { --cols: minmax(0, 1fr) 4.5rem; }
+	@container app (max-width: 720px) {
+		.tr { grid-template-columns: minmax(0, 1fr) auto; gap: .1rem .6rem; }
+		.th { display: none; }
+		.tr .hide-m { display: none; }
+		.tr .mrow { display: block; grid-column: 1 / -1; color: var(--app-fg-muted); font-size: 11.5px; white-space: normal; }
+		.tbl.compact .tr { grid-template-columns: minmax(0, 1fr) auto; }
+	}
+
+	/* approval cards in B and C: meta left, diff right when there is room */
+	.ap { padding: 0; }
+	.ap-grid { display: grid; grid-template-columns: 1fr; gap: .75rem 1.25rem; padding: .75rem; }
+	.ap-meta .op-title { font-size: 14px; }
+	.ap-meta p { margin: .3rem 0 0; color: var(--app-fg-muted); max-width: 52ch; }
+	.ap-meta .btns { margin-top: .75rem; }
+	.ap-meta .btns .btn[aria-expanded] { margin-right: .5rem; }
+	@container app (min-width: 1000px) {
+		.pg.b .ap-grid { grid-template-columns: minmax(16rem, 24rem) minmax(0, 1fr); }
+	}
+
+	/* detail panels */
+	.facts { display: grid; grid-template-columns: 1fr; gap: .35rem 2rem; }
+	.facts .kv-k { width: 7rem; }
+	@container app (min-width: 1000px) { .pg.b .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 62rem; } }
+	.panel-box { border: 1px solid var(--app-divider); border-radius: 10px; background: var(--app-gray-50); padding: .75rem .9rem; }
+	.panel-box > h4 { margin: 0 0 .5rem; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--app-fg-subtle); }
+	.runs { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+	.runs li { display: flex; justify-content: space-between; gap: .75rem; padding: .25rem 0; border-top: 1px solid var(--app-divider); }
+	.runs li:first-child { border-top: 0; }
+
+	/* ================= Option C: strip + list zone + detail zone ================= */
+	.strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .6rem; margin-top: 1rem; }
+	.tile { border: 1px solid var(--app-divider); border-radius: 10px; background: var(--app-gray-50); padding: .6rem .8rem; }
+	.tile b { display: block; font: 500 20px/1.2 var(--font-mono); letter-spacing: -.02em; }
+	.tile span { color: var(--app-fg-muted); font-size: 11.5px; }
+	.tile.warn b { color: var(--app-warning); }
+	.apgrid { display: grid; grid-template-columns: 1fr; gap: .6rem; }
+	.apgrid .card + .card { margin-top: 0; }
+	@container app (min-width: 1000px) {
+		.pg.c .apgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	}
+	.zone-detail { margin-top: 1.5rem; border-top: 1px solid var(--app-divider); padding-top: 1rem; }
+	.dgrid { display: grid; grid-template-columns: 1fr; gap: .75rem; }
+	@container app (min-width: 1000px) { .pg.c .dgrid { grid-template-columns: minmax(15rem, 1fr) minmax(0, 1.6fr) minmax(12rem, 1fr); } }
+	.twin { display: grid; grid-template-columns: 1fr; gap: 0 1.5rem; }
+	@container app (min-width: 1000px) { .pg.c .twin { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+	.pg.c .twin .tbl { min-width: 0; }
+	.proj-band { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .9rem; padding: .7rem .9rem; border: 1px solid var(--app-divider); border-radius: 10px; background: var(--app-gray-50); margin-top: .5rem; }
+	.proj-band .grow { flex: 1; }
+	.hint { color: var(--app-fg-subtle); padding: .8rem 0; }
+	.cols2 { display: grid; grid-template-columns: 1fr; gap: 1rem 2rem; }
+	@container app (min-width: 1000px) { .pg.c .cols2 { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); } }
+	.pg.c .field textarea, .pg.c .field select { max-width: 70ch; }
+	@container app (max-width: 720px) { .strip { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+</style>
+</head>
+<body>
+
+<div class="controls" role="toolbar" aria-label="Prototype controls">
+	<span class="ctl"><span class="name">Layout</span><span class="seg" data-ctl="opt">
+		<button type="button" data-v="a">A · Today</button><button type="button" data-v="b">B · Full width</button><button type="button" data-v="c">C · Two zones</button></span></span>
+	<span class="ctl"><span class="name">Page</span><span class="seg" data-ctl="page">
+		<button type="button" data-v="programs">Programs</button><button type="button" data-v="project">Project</button></span></span>
+	<span class="ctl"><span class="name">Width</span><span class="seg" data-ctl="width">
+		<button type="button" data-v="phone">Phone 390</button><button type="button" data-v="laptop">Laptop 1280</button><button type="button" data-v="wide">Wide 1600</button></span></span>
+	<span class="ctl"><span class="name">Theme</span><span class="seg" data-ctl="theme">
+		<button type="button" data-v="dark">Dark</button><button type="button" data-v="light">Light</button></span></span>
+	<button type="button" class="lnk" data-act="reset">Reset</button>
+	<span class="scalenote" id="scalenote"></span>
+</div>
+
+<div class="stage">
+	<p class="idea" id="idea"></p>
+	<div class="fitbox" id="fitbox"><div class="app" id="app"></div></div>
+</div>
+
+<div class="notes" id="notes"></div>
+
+<script>
+(() => {
+	"use strict";
+	const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+	/* ---------- made-up data (public repo: nothing real) ---------- */
+	const APPROVALS = [
+		{ id: "ap1", kind: "Change program", title: "Morning digest", meta: "proposed by goblin · 12 min ago",
+			why: "The weekend backlog was summarised twice last Monday. Run earlier on weekdays and look back two days instead of one.",
+			diff: [
+				{ f: "charter", l: [["c", "Collect overnight feed items and write a five-line summary."], ["d", "Skip anything already covered yesterday."], ["a", "Skip anything already covered in the last two days."], ["a", "On Mondays, add one line for the weekend."]] },
+				{ f: "cron", l: [["d", "0 7 * * *"], ["a", "30 6 * * 1-5"]] },
+				{ f: "max lateness", l: [["d", "30 min"], ["a", "20 min"]] },
+			] },
+		{ id: "ap2", kind: "New program", title: "Seed order reminder", meta: "proposed by goblin · 2 h ago",
+			why: "You asked for a nudge before the supplier's spring sale ends. It runs once, by hand or by hook, so it has no schedule.",
+			diff: [
+				{ f: "name", l: [["a", "Seed order reminder"]] },
+				{ f: "charter", l: [["a", "Check the supplier price list note and the wishlist note."], ["a", "Say which wishlist items are on sale and what they cost in total."]] },
+				{ f: "cron", l: [["a", "(none — manual or hook)"]] },
+			] },
+	];
+	const PROGRAMS = [
+		{ id: "digest", name: "Morning digest", on: true, cron: "0 7 * * *", human: "Daily 07:00", late: 30, last: "Today 07:00", next: "Tomorrow 07:00", st: ["on", "ok"], target: "Chat: Morning digest",
+			charter: "Collect overnight feed items and write a five-line summary.\nSkip anything already covered yesterday.", runs: [["Today 07:00", "ok · 41 s"], ["Fri 6 Nov 07:00", "ok · 38 s"], ["Thu 5 Nov 07:01", "ok · 44 s"], ["Wed 4 Nov 07:00", "ok · 36 s"]] },
+		{ id: "backup", name: "Backup check", on: true, cron: "0 3 * * 0", human: "Sundays 03:00", late: 120, last: "Sun 1 Nov 03:00", next: "Sun 8 Nov 03:00", st: ["on", "ok"], target: "New chat each run",
+			charter: "Look at the newest archive in the backup folder.\nReport only if it is older than eight days or smaller than the last one.", runs: [["Sun 1 Nov 03:00", "ok · 12 s"], ["Sun 25 Oct 03:00", "ok · 11 s"], ["Sun 18 Oct 03:02", "ok · 12 s"]] },
+		{ id: "late", name: "Link rot scan", on: true, cron: "0 21 * * *", human: "Daily 21:00", late: 15, last: "Fri 6 Nov 21:00", next: "Today 21:00", st: ["warn", "late 14 min"], target: "Chat: Site upkeep",
+			charter: "Fetch every link in the site's link list.\nReport those that return an error twice in a row, with the page they appear on.", runs: [["Fri 6 Nov 21:14", "ok · 3 min · started 14 min late"], ["Thu 5 Nov 21:00", "ok · 3 min"], ["Wed 4 Nov 21:00", "ok · 3 min"], ["Tue 3 Nov 21:01", "ok · 4 min"]] },
+		{ id: "inbox", name: "Inbox triage", on: true, cron: "*/30 8-18 * * 1-5", human: "Every 30 min, weekdays", late: 10, last: "Fri 6 Nov 18:00", next: "Mon 9 Nov 08:00", st: ["on", "ok"], target: "Chat: Inbox",
+			charter: "Read new mail matching the mail filter.\nFlag anything that needs a reply today. Do not reply on your own.", runs: [["Fri 6 Nov 18:00", "ok · 9 s"], ["Fri 6 Nov 17:30", "ok · 8 s"], ["Fri 6 Nov 17:00", "ok · 11 s"]] },
+		{ id: "notes", name: "Release notes draft", on: true, cron: "0 16 * * 5", human: "Fridays 16:00", late: null, last: "Fri 6 Nov 16:00", next: "Fri 13 Nov 16:00", st: ["bad", "failed"], target: "Chat: Release notes",
+			charter: "Read the merged changes of the week and draft release notes.\nGroup them by area. Keep each entry to one line.", runs: [["Fri 6 Nov 16:00", "failed · tool timeout"], ["Fri 30 Oct 16:00", "ok · 1 min"], ["Fri 23 Oct 16:00", "ok · 1 min"]] },
+		{ id: "invoice", name: "Invoice sweep", on: false, cron: "0 9 1 * *", human: "1st of month 09:00", late: 60, last: "Sun 1 Nov 09:00", next: "—", st: ["", "disabled"], target: "Chat: Paperwork",
+			charter: "List invoices received this month that have no matching payment.", runs: [["Sun 1 Nov 09:00", "ok · 22 s"], ["Thu 1 Oct 09:00", "ok · 19 s"]] },
+		{ id: "seed", name: "Seed order reminder", on: true, cron: null, human: "Manual / hook", late: null, last: "Never", next: "—", st: ["on", "ok"], target: "New chat each run",
+			charter: "Check the supplier price list note.\nSay which wishlist items are on sale.", runs: [["No runs yet", ""]] },
+	];
+	const NOTES = [
+		{ id: "n1", t: "Spring planting calendar", prev: "Tomatoes start indoors in March, peppers a week earlier. Beans wait until the nights stay above 10 °C.", age: "2d", pin: true,
+			body: ["Tomatoes start indoors in March, peppers a week earlier. Beans wait until the nights stay above 10 °C, which in a sheltered corner is usually the second week of May.", "Herbs go out last: basil is the first to complain about a cold night, so it stays inside until the forecast has been clear for a week."], list: ["Early March — tomatoes, peppers", "Mid April — lettuce, radish direct sow", "Mid May — beans, basil, herbs out"] },
+		{ id: "n2", t: "Pot sizes and soil mix", prev: "Twenty-litre pots for tomatoes, ten for peppers. Mix: two parts compost, one part coarse sand, one part bark.", age: "5d", pin: false,
+			body: ["Twenty-litre pots for tomatoes, ten for peppers. Mix two parts compost, one part coarse sand and one part bark.", "Mulch the top with straw once the plants are out; it halves how often the pots need water."], list: [] },
+		{ id: "n3", t: "Watering schedule", prev: "Morning only. Tomatoes every second day in July, daily in a heat wave. Check the drip tray first.", age: "1w", pin: false,
+			body: ["Morning only. Tomatoes every second day in July, daily in a heat wave. Check the drip tray before pouring."], list: [] },
+		{ id: "n4", t: "Supplier prices", prev: "Three suppliers compared. The cheapest seed packet is not the cheapest per plant once germination is counted.", age: "2w", pin: false,
+			body: ["Three suppliers compared. The cheapest seed packet is not the cheapest per plant once germination is counted."], list: [] },
+		{ id: "n5", t: "Pests seen so far", prev: "Aphids on the pepper tips in June; a soap spray worked. Slugs only after rain.", age: "3w", pin: false,
+			body: ["Aphids on the pepper tips in June; a soap spray worked. Slugs only after rain."], list: [] },
+	];
+	const CHATS = [
+		["Which herbs survive shade?", "Mint and parsley both cope with four hours…", "2h"],
+		["Drip irrigation parts list", "A timer, a 4 mm line and eight drippers should…", "1d"],
+		["Balcony railing planters", "Check the railing's weight limit before…", "3d"],
+		["Frost warning plan", "Cover with fleece and move the pots against…", "5d"],
+		["Compost bin smell", "Too wet. Add torn cardboard and turn it…", "1w"],
+		["Seed starting lights", "A cheap full-spectrum strip is enough for…", "2w"],
+	];
+	const SIDE_CHATS = [["Which herbs survive shade?", "Mint and parsley both cope…", "2h", 0], ["Morning digest", "Five items today: the feed…", "7h", 1], ["Site upkeep", "Two links failed twice in a row…", "11h", 0], ["Release notes", "Draft is ready for review…", "1d", 0], ["Inbox", "Nothing needs a reply today.", "1d", 0], ["Paperwork", "One invoice has no payment…", "3d", 0]];
+	const SIDE_PROJECTS = ["Balcony garden", "Home network", "Bike rebuild", "Recipe index"];
+	const INSTR = "You help plan a small north-facing balcony garden. Prefer plants that tolerate four hours of sun or less.\nKeep answers short, use metric units and list costs in euros.\nWhen I ask for a plan, give a dated checklist rather than prose. Never suggest anything that needs a drain to be installed.";
+
+	const initial = () => ({
+		opt: "b", page: "programs", width: "laptop", theme: "dark",
+		openProg: null, selProg: "late", editProg: null, progs: PROGRAMS.map((p) => ({ ...p })),
+		ap: {}, apOpen: {}, openNote: null, selNote: null, notes: NOTES.map((n) => ({ ...n })),
+		renaming: false, name: "Balcony garden", instr: INSTR, savedInstr: INSTR, memory: "shared", archived: false,
+		drawer: false, toast: "",
+	});
+	let S = initial();
+	const WIDTHS = { phone: 390, laptop: 1280, wide: 1600 };
+	const H = 880;
+
+	/* ---------- icons (same set as the sidebar prototypes) ---------- */
+	const ic = (d, s = 17) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" width="${s}" height="${s}" aria-hidden="true">${d}</svg>`;
+	const I = {
+		plus: ic('<path d="M12 5v14M5 12h14"/>'), search: ic('<circle cx="11" cy="11" r="7"/><path d="M20.5 20.5 16.2 16.2"/>', 16),
+		chats: ic('<path d="M4 6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-5 4V6z"/>'), projects: ic('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>'),
+		notes: ic('<path d="M5 4.5A1.5 1.5 0 0 1 6.5 3H19v18H6.5A1.5 1.5 0 0 1 5 19.5v-15z"/><path d="M9 3v18"/>'),
+		attention: ic('<path d="M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6z"/><path d="M10 19a2.2 2.2 0 0 0 4 0"/>'),
+		delegations: ic('<path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/><path d="M12 3v11"/><path d="M8 10l4 4 4-4"/>'),
+		memories: ic('<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13.5l9 5 9-5"/>'),
+		programs: ic('<circle cx="12" cy="12" r="8.5"/><path d="M10 8.5l6 3.5-6 3.5v-7z"/>'), skills: ic('<path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H13L13 2z"/>'),
+		files: ic('<path d="M6 3h8l4 4v14H6V3z"/><path d="M14 3v4h4"/>'), status: ic('<path d="M3 12h4l2.5-6 4 12L16 12h5"/>'),
+		log: ic('<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M7 9l3 3-3 3"/><path d="M13 15h4"/>'),
+		settings: ic('<circle cx="12" cy="12" r="3.4"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8"/>'),
+		burger: ic('<path d="M4 7h16M4 12h16M4 17h16"/>'), back: ic('<path d="M15 6l-6 6 6 6"/>', 13), send: ic('<path d="M12 19V5M5 12l7-7 7 7"/>', 14),
+	};
+
+	/* ---------- small builders ---------- */
+	const pill = (cls, txt) => `<span class="pill ${cls}">${esc(txt)}</span>`;
+	const kv = (k, v, mono) => `<div class="kv"><span class="kv-k">${esc(k)}</span><span class="kv-v${mono ? " mono" : ""}">${v}</span></div>`;
+	const lateTxt = (p) => (p.cron === null ? "—" : p.late === null ? "unlimited" : `${p.late} min`);
+	const stPill = (p) => (p.on ? pill(p.st[0], p.st[1]) : pill("", "disabled"));
+
+	function diffHtml(files) {
+		return `<div class="diff">${files.map((f) => `<div class="fh">${esc(f.f)}</div>` + f.l.map(([t, s]) => `<div class="ln ${t === "a" ? "add" : t === "d" ? "del" : ""}"><span class="mk">${t === "a" ? "+" : t === "d" ? "−" : ""}</span><span>${esc(s)}</span></div>`).join("")).join("")}</div>`;
+	}
+	function approvalBody(a, layout) {
+		const done = S.ap[a.id];
+		const buttons = done
+			? `<span class="result ${done === "ok" ? "ok" : "no"}">${done === "ok" ? "Approved — change applied" : "Rejected — nothing changed"}</span>`
+			: `<span class="btns"><button type="button" class="btn primary" data-act="approve" data-id="${a.id}">Approve</button><button type="button" class="btn" data-act="reject" data-id="${a.id}">Reject</button></span>`;
+		const head = `<div class="op-head"><span class="op-title">${esc(a.kind)}: ${esc(a.title)}</span></div>`;
+		const why = `<div class="ap-text"><span style="color:var(--app-fg-subtle)">${esc(a.meta)}</span><br>${esc(a.why)}</div>`;
+		if (layout === "compact") {
+			const open = S.apOpen[a.id];
+			return `<div class="card ap"><div class="ap-grid" style="grid-template-columns:1fr"><div class="ap-meta"><div class="op-head"><span class="op-title">${esc(a.kind)}: ${esc(a.title)}</span></div><p>${esc(a.why)}</p><div class="btns"><button type="button" class="btn" data-act="apdiff" data-id="${a.id}" aria-expanded="${open ? "true" : "false"}">${open ? "Hide" : "Show"} changes (${a.diff.length})</button>${buttons}</div></div>${open ? diffHtml(a.diff) : ""}</div></div>`;
+		}
+		if (layout === "stack") {
+			return `<div class="card">${head}${why}<div style="padding:.5rem .75rem">${diffHtml(a.diff)}</div><div>${buttons}</div></div>`;
+		}
+		return `<div class="card ap"><div class="ap-grid"><div class="ap-meta">${head}<p><span style="color:var(--app-fg-subtle)">${esc(a.meta)}</span><br>${esc(a.why)}</p><div class="btns">${buttons}</div></div><div>${diffHtml(a.diff)}</div></div></div>`;
+	}
+
+	/* ---------- programs: shared detail pieces ---------- */
+	const progFacts = (p) => `<div class="facts">${kv("schedule", `<span class="mono">${esc(p.cron ?? "—")}</span> ${p.cron ? `<span style="color:var(--app-fg-subtle)">· ${esc(p.human)}</span>` : ""}`)}${kv("max lateness", esc(lateTxt(p)))}${kv("last run", esc(p.last))}${kv("next run", esc(p.next))}${kv("pinned to", esc(p.target), true)}${kv("status", stPill(p))}</div>`;
+	const progActions = (p) => `<div class="btns"><button type="button" class="btn" data-act="togglep" data-id="${p.id}">${p.on ? "Disable" : "Enable"}</button><button type="button" class="btn" data-act="editp" data-id="${p.id}">${S.editProg === p.id ? "Close editor" : "Edit"}</button><button type="button" class="btn danger" data-act="delp" data-id="${p.id}">Delete</button></div>`;
+	const progEditor = (p) => (S.editProg === p.id ? `<div class="prose field" style="gap:.6rem;margin-top:.8rem"><label class="field"><span class="flabel">Name</span><input value="${esc(p.name)}" aria-label="Name"></label><label class="field"><span class="flabel">Charter</span><textarea rows="5" aria-label="Charter">${esc(p.charter)}</textarea></label><label class="field"><span class="flabel">Cron</span><input value="${esc(p.cron ?? "")}" placeholder="blank clears the schedule" aria-label="Cron"></label><span class="btns"><button type="button" class="btn primary" data-act="toast" data-msg="Saving is not part of this prototype">Save changes</button></span></div>` : "");
+	const progRuns = (p) => `<ul class="runs">${p.runs.map(([a, b]) => `<li><span>${esc(a)}</span><span style="color:var(--app-fg-muted)">${esc(b)}</span></li>`).join("")}</ul>`;
+
+	function progTable(sel, attr) {
+		const head = `<div class="tr th"><span>Program</span><span class="hide-m">Schedule</span><span class="hide-m">Max lateness</span><span class="hide-m">Last run</span><span class="hide-m">Next run</span><span>Status</span></div>`;
+		const rows = S.progs.map((p) => `<button type="button" class="tr${sel === p.id ? " sel" : ""}" data-act="${attr}" data-id="${p.id}"${sel === p.id ? ' aria-current="true"' : ""}><span class="cell strong">${esc(p.name)}</span><span class="cell dim hide-m">${esc(p.human)}</span><span class="cell dim hide-m mono">${esc(lateTxt(p))}</span><span class="cell dim hide-m">${esc(p.last)}</span><span class="cell dim hide-m">${esc(p.next)}</span><span class="cell">${stPill(p)}</span><span class="mrow">${esc(p.human)} · last ${esc(p.last)}</span></button>`).join("");
+		return `<div class="tbl programs">${head}${rows}</div>`;
+	}
+
+	/* ---------- Programs page, three layouts ---------- */
+	function programsA() {
+		const cards = S.progs.map((p) => `<div class="card"><div class="op-head"><span class="op-title">${esc(p.name)}</span>${p.on ? pill("on", "enabled") : pill("", "disabled")}${p.on && p.st[0] !== "on" ? pill(p.st[0], p.st[1]) : ""}</div><div class="op-body">${esc(p.charter)}</div>${kv("cron", esc(p.cron ?? "—"), true)}${p.cron ? kv("max lateness", esc(lateTxt(p))) : ""}${kv("last run", esc(p.last))}${kv("next run", esc(p.next))}${kv("pinned to", esc(p.target), true)}<div>${progActions(p)}${progEditor(p)}</div></div>`).join("");
+		return `<div class="ops"><h2 class="ops-h2">Pending approvals</h2>${APPROVALS.map((a) => approvalBody(a, "stack")).join("")}<h2 class="ops-h2">Programs (${S.progs.length})</h2>${cards}</div>`;
+	}
+	function programsB() {
+		if (S.openProg) {
+			const p = S.progs.find((x) => x.id === S.openProg);
+			if (p) return `<div class="pg b"><button type="button" class="back" data-act="back">${I.back} Programs</button><div class="pg-title" style="margin-top:.5rem"><h2>${esc(p.name)}</h2>${stPill(p)}</div><p class="pg-sub">Pinned to ${esc(p.target)}</p><div class="sec">${progFacts(p)}</div><div class="sec"><div class="sec-head"><h3>Charter</h3></div><div class="prose op-body" style="font-size:13px;color:var(--app-fg)">${esc(p.charter)}</div></div><div class="sec"><div class="sec-head"><h3>Recent runs</h3></div><div class="prose panel-box">${progRuns(p)}</div></div><div class="sec">${progActions(p)}${progEditor(p)}</div></div>`;
+		}
+		return `<div class="pg b"><div class="pg-title"><h2>Programs</h2></div><p class="pg-sub">Scheduled work goblin does on its own. Open a program to see its charter and runs.</p>
+			<div class="sec"><div class="sec-head"><h3>Pending approvals <span class="pill">${APPROVALS.filter((a) => !S.ap[a.id]).length}</span></h3></div>${APPROVALS.map((a) => approvalBody(a, "wide")).join("")}</div>
+			<div class="sec"><div class="sec-head"><h3>Programs <span class="pill">${S.progs.length}</span></h3></div>${progTable(null, "openprog")}</div></div>`;
+	}
+	function programsC() {
+		const pend = APPROVALS.filter((a) => !S.ap[a.id]).length;
+		const late = S.progs.filter((p) => p.on && p.st[0] === "warn").length;
+		const failed = S.progs.filter((p) => p.on && p.st[0] === "bad").length;
+		const p = S.progs.find((x) => x.id === S.selProg);
+		const detail = p
+			? `<div class="zone-detail"><div class="sec-head"><h3 style="margin:0;font-size:15px;font-weight:600;text-transform:none;letter-spacing:0;color:var(--app-fg)">${esc(p.name)} ${stPill(p)}</h3>${progActions(p)}</div><div class="dgrid"><div class="panel-box"><h4>Facts</h4><div class="facts">${kv("schedule", `<span class="mono">${esc(p.cron ?? "—")}</span>`)}${kv("human", esc(p.human))}${kv("max lateness", esc(lateTxt(p)))}${kv("last run", esc(p.last))}${kv("next run", esc(p.next))}${kv("pinned to", esc(p.target), true)}</div></div><div class="panel-box"><h4>Charter</h4><div class="prose op-body" style="font-size:13px;color:var(--app-fg)">${esc(p.charter)}</div>${progEditor(p)}</div><div class="panel-box"><h4>Recent runs</h4>${progRuns(p)}</div></div></div>`
+			: `<div class="zone-detail hint">Select a program above — its detail opens here, the list stays.</div>`;
+		return `<div class="pg c"><div class="pg-title"><h2>Programs</h2></div><p class="pg-sub">Scheduled work goblin does on its own.</p>
+			<div class="strip"><div class="tile ${pend ? "warn" : ""}"><b>${pend}</b><span>awaiting approval</span></div><div class="tile"><b>${S.progs.filter((x) => x.on).length}/${S.progs.length}</b><span>enabled</span></div><div class="tile ${late ? "warn" : ""}"><b>${late}</b><span>started late</span></div><div class="tile ${failed ? "warn" : ""}"><b>${failed}</b><span>failed last run</span></div></div>
+			<div class="sec"><div class="sec-head"><h3>Pending approvals</h3></div><div class="apgrid">${APPROVALS.map((a) => approvalBody(a, "compact")).join("")}</div></div>
+			<div class="sec"><div class="sec-head"><h3>Programs <span class="pill">${S.progs.length}</span></h3></div>${progTable(S.selProg, "selprog")}</div>${detail}</div>`;
+	}
+
+	/* ---------- Project page ---------- */
+	const headRow = (layout) => {
+		if (S.renaming) return `<div class="field" style="max-width:24rem"><input id="renameInput" value="${esc(S.name)}" aria-label="Project name"></div>`;
+		return `<div class="row"><h2 class="proj-name">${esc(S.name)}</h2><button type="button" class="ghost-inline" data-act="rename" aria-label="Rename project" title="Rename">rename</button></div>`;
+	};
+	const dirKv = () => `<div class="kv" style="margin-top:.5rem"><span class="kv-k" style="width:6rem">Directory</span><span class="kv-v"><code class="mono">~/projects/balcony-garden</code> ${pill("", "managed")} ${S.archived ? pill("warn", "archived") : ""}</span></div>`;
+	const instrBlock = () => `<div class="field"><textarea id="instr" rows="6" aria-label="Instructions" placeholder="What should goblin know or do in this project?">${esc(S.instr)}</textarea><div class="row"><button type="button" class="btn" id="saveInstr" data-act="saveinstr" ${S.instr === S.savedInstr ? "disabled" : ""}>Save</button><span class="cap">Edits apply to new chats — a running chat keeps the prompt it started with.</span></div></div>`;
+	const memBlock = () => `<div class="field"><select aria-label="Memory mode" data-act="memory"><option value="shared"${S.memory === "shared" ? " selected" : ""}>Shared memory — this project uses goblin's long-term memory like any chat</option><option value="off"${S.memory === "off" ? " selected" : ""}>Memory off — chats in this project neither send nor recall memories</option></select><span class="cap">Switching off reaches existing chats too — they stop sending and recalling memories.</span></div>`;
+	const archBtn = () => `<button type="button" class="btn" data-act="archive">${S.archived ? "Unarchive project" : "Archive project"}</button>`;
+	const newNoteBtn = () => `<button type="button" class="btn newnote" data-act="newnote">New note</button>`;
+
+	function noteTable(compact) {
+		const head = compact ? "" : `<div class="tr th"><span>Note</span><span class="hide-m">Preview</span><span class="hide-m"></span><span>Updated</span></div>`;
+		const rows = S.notes.map((n) => compact
+			? `<button type="button" class="tr${S.selNote === n.id ? " sel" : ""}" data-act="${S.opt === "c" ? "selnote" : "opennote"}" data-id="${n.id}"><span class="cell strong">${esc(n.t)}${n.pin ? ` ${pill("", "pinned")}` : ""}</span><span class="cell dim mono">${esc(n.age)}</span></button>`
+			: `<button type="button" class="tr" data-act="opennote" data-id="${n.id}"><span class="cell strong">${esc(n.t)}</span><span class="cell dim hide-m">${esc(n.prev)}</span><span class="cell hide-m">${n.pin ? pill("", "pinned") : ""}</span><span class="cell dim mono">${esc(n.age)}</span><span class="mrow">${esc(n.prev)}</span></button>`).join("");
+		return `<div class="tbl notes-t${compact ? " compact" : ""}">${head}${rows}</div>`;
+	}
+	function chatTable(compact) {
+		const head = compact ? "" : `<div class="tr th"><span>Chat</span><span class="hide-m">Last message</span><span>Updated</span></div>`;
+		const rows = CHATS.map(([t, p, a]) => compact
+			? `<button type="button" class="tr" data-act="toast" data-msg="Opening a chat is outside this prototype"><span class="cell strong">${esc(t)}</span><span class="cell dim mono">${a}</span></button>`
+			: `<button type="button" class="tr" data-act="toast" data-msg="Opening a chat is outside this prototype"><span class="cell strong">${esc(t)}</span><span class="cell dim hide-m">${esc(p)}</span><span class="cell dim mono">${a}</span><span class="mrow">${esc(p)}</span></button>`).join("");
+		return `<div class="tbl chats-t${compact ? " compact" : ""}">${head}${rows}</div>`;
+	}
+	function noteDetail(n, wrapCls) {
+		return `<div class="${wrapCls}"><div class="pg-title" style="margin:.25rem 0 .1rem"><h2>${esc(n.t)}</h2>${n.pin ? pill("", "pinned") : ""}</div><p class="pg-sub" style="font-size:11.5px">Updated ${esc(n.age)} ago · Balcony garden</p><div class="prose" style="margin-top:.9rem;font-size:13.5px;line-height:1.6">${n.body.map((b) => `<p style="margin:0 0 .8rem">${esc(b)}</p>`).join("")}${n.list.length ? `<ul style="margin:0 0 .8rem;padding-left:1.2rem">${n.list.map((l) => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}</div><div class="btns" style="margin-top:.6rem"><button type="button" class="btn" data-act="toast" data-msg="Editing is not part of this prototype">Edit</button><button type="button" class="btn danger" data-act="toast" data-msg="Deleting is not part of this prototype">Delete</button></div></div>`;
+	}
+
+	function projectA() {
+		if (S.openNote) {
+			const n = S.notes.find((x) => x.id === S.openNote);
+			return `<div class="ops"><button type="button" class="back" data-act="back">${I.back} ${esc(S.name)}</button>${noteDetail(n, "")}</div>`;
+		}
+		const notes = S.notes.map((n) => `<button type="button" class="item" data-act="opennote" data-id="${n.id}"><span class="item-main"><span class="item-title" style="display:block">${esc(n.t)}</span><span class="item-sub" style="display:block">${esc(n.prev)}</span></span>${n.pin ? pill("", "pinned") : ""}<span class="chev">›</span></button>`).join("");
+		const chats = CHATS.map(([t, p, a]) => `<button type="button" class="item" data-act="toast" data-msg="Opening a chat is outside this prototype"><span class="item-main"><span class="item-title" style="display:block">${esc(t)}</span><span class="item-sub" style="display:block">${esc(p)}</span></span><span class="item-time">${a}</span></button>`).join("");
+		return `<div class="ops">${headRow()}${dirKv()}
+			<h2 class="ops-h2">Instructions</h2>${instrBlock()}
+			<h2 class="ops-h2">Memory</h2>${memBlock()}
+			<div style="margin-top:.5rem">${archBtn()}</div>
+			<div class="row" style="margin-top:0"><h2 class="ops-h2">Notes</h2>${newNoteBtn()}</div><div class="card rowlist" style="padding:0">${notes}</div>
+			<h2 class="ops-h2">Chats</h2><div class="card rowlist" style="padding:0">${chats}</div></div>`;
+	}
+	function projectB() {
+		if (S.openNote) {
+			const n = S.notes.find((x) => x.id === S.openNote);
+			return `<div class="pg b"><button type="button" class="back" data-act="back">${I.back} ${esc(S.name)}</button>${noteDetail(n, "")}</div>`;
+		}
+		return `<div class="pg b"><div class="sec-head" style="margin-bottom:0"><div>${headRow()}</div>${archBtn()}</div>${dirKv()}
+			<div class="sec"><div class="sec-head"><h3>Instructions</h3></div>${instrBlock()}</div>
+			<div class="sec"><div class="sec-head"><h3>Memory</h3></div>${memBlock()}</div>
+			<div class="sec"><div class="sec-head"><h3>Notes <span class="pill">${S.notes.length}</span></h3>${newNoteBtn()}</div>${noteTable(false)}</div>
+			<div class="sec"><div class="sec-head"><h3>Chats <span class="pill">${CHATS.length}</span></h3></div>${chatTable(false)}</div></div>`;
+	}
+	function projectC() {
+		const n = S.notes.find((x) => x.id === S.selNote);
+		const zone = n
+			? `<div class="zone-detail"><div class="sec-head"><h3 style="margin:0">Note preview</h3><span class="btns"><button type="button" class="btn" data-act="closenote">Close</button></span></div>${noteDetail(n, "")}</div>`
+			: "";
+		return `<div class="pg c"><div class="proj-band"><div class="grow">${headRow()}${dirKv()}</div><span class="pill">${S.memory === "shared" ? "shared memory" : "memory off"}</span>${S.archived ? pill("warn", "archived") : ""}${archBtn()}</div>
+			<div class="strip"><div class="tile"><b>${S.notes.length}</b><span>notes</span></div><div class="tile"><b>${CHATS.length}</b><span>chats</span></div><div class="tile"><b>2</b><span>programs here</span></div><div class="tile"><b>${S.notes.filter((x) => x.pin).length}</b><span>pinned</span></div></div>
+			<div class="sec twin"><div><div class="sec-head"><h3>Notes <span class="pill">${S.notes.length}</span></h3>${newNoteBtn()}</div>${noteTable(true)}</div><div><div class="sec-head"><h3>Chats <span class="pill">${CHATS.length}</span></h3></div>${chatTable(true)}</div></div>
+			${zone}
+			<div class="zone-detail"><div class="sec-head"><h3 style="margin:0">Project settings</h3></div><div class="cols2"><div><div class="flabel" style="margin-bottom:.35rem">Instructions</div>${instrBlock()}</div><div><div class="flabel" style="margin-bottom:.35rem">Memory</div>${memBlock()}</div></div></div></div>`;
+	}
+
+	/* ---------- frame ---------- */
+	function sidePanel() {
+		if (S.page === "project") {
+			return `<div class="panel-head"><span class="panel-label">Projects</span></div>` + SIDE_PROJECTS.map((p, i) => `<button type="button" class="pconv${i === 0 ? " current" : ""}" data-act="${i === 0 ? "gopage" : "toast"}" data-page="project" data-msg="Other projects are outside this prototype"><span class="pconv-head"><span class="pconv-title">${i === 0 ? esc(S.name) : esc(p)}</span></span></button>`).join("");
+		}
+		return `<div class="panel-head"><span class="panel-label">Chats</span></div>` + SIDE_CHATS.map(([t, p, a]) => `<button type="button" class="pconv" data-act="toast" data-msg="Chats are outside this prototype"><span class="pconv-head"><span class="pconv-title">${esc(t)}</span><span class="pconv-time">${a}</span></span><span class="pconv-prev">${esc(p)}</span></button>`).join("");
+	}
+	function rail() {
+		const g = (key, label, extra = "") => `<button type="button" class="g${S.page === key ? " on" : ""}" data-act="${key === "programs" || key === "project" ? "gopage" : "toast"}" data-page="${key}" data-msg="${esc(label)} is outside this prototype" title="${esc(label)}" aria-label="${esc(label)}">${I[key === "project" ? "projects" : key]}${extra}</button>`;
+		return `<div class="rail" role="navigation" aria-label="Surfaces">
+			<button type="button" class="g" data-act="toast" data-msg="New chat is outside this prototype" title="New conversation" aria-label="New conversation">${I.plus}</button>
+			<button type="button" class="g" data-act="toast" data-msg="Search is outside this prototype" title="Search" aria-label="Search">${I.search}</button>
+			<div class="g-split"></div>
+			<button type="button" class="g" data-act="toast" data-msg="Chats are outside this prototype" title="Chats" aria-label="Chats">${I.chats}</button>
+			${g("project", "Projects")}
+			<button type="button" class="g" data-act="toast" data-msg="Notes is outside this prototype" title="Notes" aria-label="Notes">${I.notes}</button>
+			<div class="g-split"></div>
+			${g("attention", "Attention", '<span class="dot"></span>')}${g("delegations", "Delegations")}${g("memories", "Memories")}${g("programs", "Programs")}${g("skills", "Skills")}${g("files", "Files")}${g("status", "Status")}${g("log", "Log")}
+			<div class="g-spacer"></div>${g("settings", "Settings")}</div>`;
+	}
+	function content() {
+		const f = { programs: { a: programsA, b: programsB, c: programsC }, project: { a: projectA, b: projectB, c: projectC } };
+		return f[S.page][S.opt]();
+	}
+	function composer() {
+		if (S.page !== "project") return "";
+		return `<div class="composer-wrap"><div class="composer"><textarea rows="1" aria-label="Message" placeholder="Write to start a chat in ${esc(S.name)}…"></textarea><div class="composer-bar"><span>model · auto</span><button type="button" class="send" data-act="toast" data-msg="Sending is outside this prototype" aria-label="Send">${I.send}</button></div></div></div>`;
+	}
+	function title() {
+		if (S.page === "project") return S.openNote ? S.notes.find((n) => n.id === S.openNote).t : S.name;
+		return S.openProg ? S.progs.find((p) => p.id === S.openProg).name : "Programs";
+	}
+
+	const IDEAS = {
+		a: "<b>A · Today.</b> The chat's 46rem reading column, reused by every page. Shown for reference.",
+		b: "<b>B · Full width, one column.</b> The page uses the whole pane. Lists become tables with columns; long text keeps its own ~70ch block; opening an item swaps the list for the item, with a back link. No extra panel.",
+		c: "<b>C · Two zones.</b> A summary strip and the list sit on top; the selected item's detail fills a second zone below, in columns, while the list stays. On wide screens zones use side-by-side columns inside the pane — no third panel.",
+	};
+	const NOTES_TXT = {
+		a: { name: "A · Today", cost: "Nothing — this is what ships.", suits: "Chat and note reading. Prose read top to bottom.", watch: "Programs and Project: tall cards, long lines wrap, 'New note' and diffs sit far from what they act on. About 55% of a 1600px screen is empty." },
+		b: { name: "B · Full width, one column", cost: "Low to medium. Swap the shared 46rem wrapper for a full-width page wrapper. Add one table component and a 70ch text-block class. Programs and Delegations need an open-item state so the detail replaces the list. Projects and notes already navigate.", suits: "Programs, Delegations, Skills, Files, Log, Memories (lists). Project and Settings (forms in 70ch blocks). Status.", watch: "Very wide screens still leave the right of a form empty (the 70ch blocks stay left). A detail view loses sight of the list." },
+		c: { name: "C · Two zones", cost: "Medium to high. Everything in B, plus a selected-item state per page, summary tiles, a detail layout per page type, and container queries so each zone stacks on narrow panes.", suits: "Programs, Delegations, Log, Files — pages where you scan a list and then act on one row. Project as an overview.", watch: "Approval diffs fold behind a button so the list stays in view. More surface per page to design and test. Poor fit for Settings, Status, and the note editor: single documents with nothing to select. Those would still use B." },
+	};
+
+	/* ---------- render ---------- */
+	const $ = (id) => document.getElementById(id);
+	function render() {
+		const root = document.documentElement;
+		root.dataset.theme = S.theme;
+		const app = $("app"), fit = $("fitbox");
+		const keep = app.querySelector(".scroll");
+		const scrollTop = keep ? keep.scrollTop : 0;
+		const W = WIDTHS[S.width];
+		app.style.width = W + "px";
+		app.style.height = H + "px";
+		app.className = "app" + (S.drawer ? " drawer" : "");
+		app.innerHTML = `<div class="side">${rail()}<div class="panel">${sidePanel()}</div></div><div class="scrim" data-act="scrim"></div>
+			<div class="main"><div class="app-head"><button type="button" class="burger" data-act="burger" aria-label="Open sidebar">${I.burger}</button><h1>${esc(title())}</h1></div>
+			<div class="scroll" id="scroll">${content()}</div>${composer()}</div>${S.toast ? `<div class="toast" role="status">${esc(S.toast)}</div>` : ""}`;
+		const sc = app.querySelector(".scroll");
+		if (sc) sc.scrollTop = scrollTop;
+		fit.classList.toggle("phone", S.width === "phone");
+		fitScale();
+		for (const seg of document.querySelectorAll(".seg")) {
+			for (const b of seg.querySelectorAll("button")) b.setAttribute("aria-pressed", String(b.dataset.v === S[seg.dataset.ctl === "width" ? "width" : seg.dataset.ctl]));
+		}
+		$("idea").innerHTML = IDEAS[S.opt];
+		$("notes").innerHTML = ["a", "b", "c"].map((k) => { const n = NOTES_TXT[k]; return `<section class="note${k === S.opt ? " cur" : ""}"><h2><span class="k">${k.toUpperCase()}</span>${esc(n.name.slice(4))}</h2><dl><dt>Cost to build</dt><dd>${esc(n.cost)}</dd><dt>Suits</dt><dd>${esc(n.suits)}</dd><dt>Watch out</dt><dd>${esc(n.watch)}</dd></dl></section>`; }).join("");
+		if (S.renaming) { const r = $("renameInput"); if (r) { r.focus(); r.select(); } }
+		try { history.replaceState(null, "", `#opt=${S.opt}&page=${S.page}&w=${S.width}&theme=${S.theme}`); } catch (_) { /* file:// may refuse */ }
+	}
+	function fitScale() {
+		const W = WIDTHS[S.width];
+		const stage = document.querySelector(".stage");
+		const cs = getComputedStyle(stage);
+		const avail = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+		const s = Math.min(1, avail / W);
+		const fit = $("fitbox");
+		fit.style.width = Math.floor(W * s) + "px";
+		fit.style.height = Math.ceil(H * s) + "px";
+		$("app").style.transform = s < 1 ? `scale(${s})` : "none";
+		$("scalenote").textContent = s < 1 ? `shown at ${Math.round(s * 100)}% of ${W}px` : `${W}px`;
+	}
+	let toastTimer = 0;
+	function toast(msg) {
+		S.toast = msg; render();
+		clearTimeout(toastTimer);
+		toastTimer = setTimeout(() => { S.toast = ""; render(); }, 2200);
+	}
+
+	/* ---------- events ---------- */
+	function setProg(id, fn) { const p = S.progs.find((x) => x.id === id); if (p) fn(p); }
+	function commitRename() { if (!S.renaming) return; const v = $("renameInput")?.value.trim(); if (v) S.name = v; S.renaming = false; render(); }
+
+	document.addEventListener("click", (e) => {
+		const seg = e.target.closest(".seg button");
+		if (seg) {
+			const k = seg.parentElement.dataset.ctl, v = seg.dataset.v;
+			if (k === "opt") S.opt = v; else if (k === "page") { S.page = v; S.openNote = null; S.openProg = null; } else if (k === "width") { S.width = v; S.drawer = false; } else if (k === "theme") S.theme = v;
+			render(); return;
+		}
+		const el = e.target.closest("[data-act]");
+		if (!el) return;
+		const act = el.dataset.act, id = el.dataset.id;
+		switch (act) {
+			case "reset": S = initial(); render(); break;
+			case "toast": toast(el.dataset.msg || "Outside this prototype"); S.drawer = false; break;
+			case "gopage": S.page = el.dataset.page; S.openNote = null; S.openProg = null; S.drawer = false; render(); break;
+			case "burger": S.drawer = !S.drawer; render(); break;
+			case "scrim": S.drawer = false; render(); break;
+			case "approve": S.ap[id] = "ok"; render(); break;
+			case "apdiff": S.apOpen[id] = !S.apOpen[id]; render(); break;
+			case "reject": S.ap[id] = "no"; render(); break;
+			case "openprog": S.openProg = id; S.editProg = null; render(); $("scroll").scrollTop = 0; break;
+			case "selprog": S.selProg = id; S.editProg = null; render(); break;
+			case "back": S.openProg = null; S.openNote = null; S.editProg = null; render(); break;
+			case "togglep": setProg(id, (p) => { p.on = !p.on; }); render(); break;
+			case "editp": S.editProg = S.editProg === id ? null : id; render(); break;
+			case "delp": S.progs = S.progs.filter((p) => p.id !== id); if (S.openProg === id) S.openProg = null; if (S.selProg === id) S.selProg = null; render(); break;
+			case "rename": S.renaming = true; render(); break;
+			case "newnote": { const n = { id: "n" + (S.notes.length + 1) + "-" + Date.now(), t: "Untitled note", prev: "Empty so far.", age: "now", pin: false, body: ["Empty so far."], list: [] }; S.notes.unshift(n); render(); break; }
+			case "opennote": S.openNote = id; render(); $("scroll").scrollTop = 0; break;
+			case "selnote": S.selNote = id; render(); break;
+			case "closenote": S.selNote = null; render(); break;
+			case "archive": S.archived = !S.archived; render(); break;
+			case "saveinstr": S.savedInstr = S.instr; render(); break;
+		}
+	});
+	document.addEventListener("input", (e) => {
+		if (e.target.id === "instr") { S.instr = e.target.value; const b = $("saveInstr"); if (b) b.disabled = S.instr === S.savedInstr; }
+	});
+	document.addEventListener("change", (e) => {
+		if (e.target.dataset && e.target.dataset.act === "memory") { S.memory = e.target.value; render(); }
+	});
+	document.addEventListener("keydown", (e) => {
+		if (e.target.id !== "renameInput") return;
+		if (e.key === "Enter") commitRename();
+		if (e.key === "Escape") { S.renaming = false; render(); }
+	});
+	document.addEventListener("focusout", (e) => { if (e.target.id === "renameInput") commitRename(); });
+	window.addEventListener("resize", fitScale);
+
+	/* initial state from the hash, so a link can open one exact view */
+	const h = new URLSearchParams(location.hash.slice(1));
+	if (["a", "b", "c"].includes(h.get("opt"))) S.opt = h.get("opt");
+	if (["programs", "project"].includes(h.get("page"))) S.page = h.get("page");
+	if (h.get("w") in WIDTHS) S.width = h.get("w");
+	if (["dark", "light"].includes(h.get("theme"))) S.theme = h.get("theme");
+	render();
+})();
+</script>
+</body>
+</html>

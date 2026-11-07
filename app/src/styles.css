@@ -5459,6 +5459,62 @@ button.link:hover {
 	overflow: auto;
 }
 
+/* Files page (#164): an opened file replaces the list. Text wraps at a
+   readable width and the page scrolls; no inner scroller. */
+/* .ops is a flex column and .dtable clips (overflow: hidden), so a long table
+   would shrink to the pane height and the page would never scroll. */
+.files-table {
+	flex-shrink: 0;
+}
+.file-detail > .ops-h2 {
+	text-transform: none;
+	letter-spacing: 0;
+	font-size: 14px;
+	color: var(--app-fg);
+	margin-top: 0.9rem;
+	overflow-wrap: anywhere;
+}
+.file-meta {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0 1.5rem;
+	margin: 0 0.4rem 0.6rem;
+}
+.file-text {
+	max-width: var(--code-col);
+	margin: 0.25rem 0 0;
+	padding: 0.75rem 1rem;
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	font-family: var(--font-mono);
+	font-size: 13px;
+	line-height: 1.55;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+.file-detail .attach-preview {
+	display: block;
+	align-self: flex-start;
+	max-width: min(100%, 48rem);
+	margin: 0.25rem 0 0.6rem;
+}
+.file-meta .kv-k {
+	width: auto;
+}
+.file-detail .attach-download,
+.file-detail > .pill {
+	align-self: flex-start;
+	margin: 0 0.4rem;
+}
+.file-detail {
+	display: flex;
+	flex-direction: column;
+}
+.ops .file-filter {
+	max-width: 24rem;
+}
+
 .attach-preview {
 	max-width: 100%;
 	border-radius: 8px;

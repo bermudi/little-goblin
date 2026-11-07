@@ -343,6 +343,18 @@ function filesHarness(files: { name: string; bytes: Uint8Array }[], status = 200
 	return requests;
 }
 
+// The Files page is a table; a row opens the file in place of the list.
+const openRow = async (name: string): Promise<Element> => {
+	const row = [...container.querySelectorAll(".dt-row")].find((el) =>
+		el.querySelector(".dt-main")?.textContent?.includes(name),
+	);
+	expect(row, name).toBeDefined();
+	await act(async () => (row as HTMLElement).click());
+	return container.querySelector(".file-detail")!;
+};
+const back = () =>
+	act(async () => (container.querySelector(".ops-back button") as HTMLElement).click());
+
 test("non-media attachments fetch on demand and expose a download link", async () => {
 	const files = [
 		{ name: "report.pdf", bytes: new TextEncoder().encode("PDF") },
@@ -352,20 +364,23 @@ test("non-media attachments fetch on demand and expose a download link", async (
 	const requests = filesHarness(files);
 	root = createRoot(container);
 	await act(async () => root?.render(<FilesView token={null} />));
-	// Nothing fetched until the row's button is clicked.
+	// Nothing fetched until a file is opened and its button is clicked.
 	expect(requests.filter((u) => u.startsWith("/api/app/attachments/file"))).toEqual([]);
 	for (const { name } of files) {
-		const card = [...container.querySelectorAll(".card")].find(
-			(el) => el.querySelector(".op-item-title")?.textContent === name,
+		const card = await openRow(name);
+		// Opening a non-media file fetches nothing by itself.
+		expect(requests.filter((u) => u.startsWith("/api/app/attachments/file")).length).toBeLessThan(
+			files.length,
 		);
-		const button = cardButton(card!, "fetch file");
+		const button = cardButton(card, "fetch file");
 		expect(button, name).toBeDefined();
 		await act(async () => button?.click());
-		const link = card!.querySelector("a.attach-download");
+		const link = card.querySelector("a.attach-download");
 		expect(link?.getAttribute("href")?.startsWith("blob:")).toBe(true);
 		expect(link?.getAttribute("download")).toBe(name);
 		expect(link?.textContent).toBe("download");
-		expect(card!.querySelector("img, audio, video")).toBeNull();
+		expect(card.querySelector("img, audio, video")).toBeNull();
+		await back();
 	}
 	expect(requests.filter((u) => u.startsWith("/api/app/attachments/file")).length).toBe(3);
 });
@@ -416,7 +431,7 @@ test("a fetch resolving after unmount mints no blob url", async () => {
 	try {
 		root = createRoot(container);
 		await act(async () => root?.render(<FilesView token={null} />));
-		const card = container.querySelector(".card")!;
+		const card = await openRow("report.pdf");
 		await act(async () => cardButton(card, "fetch file")?.click());
 		expect(pending.size).toBe(1);
 		await act(async () => root?.unmount());
@@ -432,15 +447,15 @@ test("a fetch resolving after unmount mints no blob url", async () => {
 	}
 });
 
-test("a second click while the fetch is held sends no second request", async () => {
+test("opening an image fetches it once and shows the preview", async () => {
 	const { pending, requests } = heldAttachmentHarness([
 		{ name: "pic.png", bytes: new TextEncoder().encode("PNG") },
 	]);
 	root = createRoot(container);
 	await act(async () => root?.render(<FilesView token={null} />));
-	const card = container.querySelector(".card")!;
-	await act(async () => cardButton(card, "preview")?.click());
-	await act(async () => cardButton(card, "preview")?.click());
+	const card = await openRow("pic.png");
+	// Media previews load on open; nothing to click, no second request.
+	expect(cardButton(card, "fetch file")).toBeUndefined();
 	expect(requests).toEqual(["pic.png"]);
 	expect(pending.size).toBe(1);
 	await act(async () => {
@@ -477,10 +492,10 @@ test("a failed fetch reports the error and the retry refetches", async () => {
 	);
 	root = createRoot(container);
 	await act(async () => root?.render(<FilesView token={null} />));
-	const card = container.querySelector(".card")!;
+	const card = await openRow("report.pdf");
 	await act(async () => cardButton(card, "fetch file")?.click());
 	expect(card.querySelector(".error")?.textContent).toContain("http 500");
-	await act(async () => cardButton(card, "fetch file")?.click());
+	await act(async () => cardButton(card, "retry")?.click());
 	expect(requests).toEqual(["report.pdf", "report.pdf"]);
 	expect(card.querySelector("a.attach-download")?.getAttribute("href")?.startsWith("blob:")).toBe(
 		true,
@@ -493,7 +508,7 @@ test("a failed fetch shows the error; the blob is revoked on unmount", async () 
 	const requests = filesHarness(files, 500);
 	root = createRoot(container);
 	await act(async () => root?.render(<FilesView token={null} />));
-	const card = container.querySelector(".card")!;
+	const card = await openRow("report.pdf");
 	await act(async () => cardButton(card, "fetch file")?.click());
 	expect(card.querySelector(".error")?.textContent).toContain("http 500");
 	// Now a healthy render whose blob must be released at unmount.
@@ -505,7 +520,7 @@ test("a failed fetch shows the error; the blob is revoked on unmount", async () 
 	try {
 		root = createRoot(container);
 		await act(async () => root?.render(<FilesView token={null} />));
-		await act(async () => cardButton(container.querySelector(".card")!, "fetch file")?.click());
+		await act(async () => cardButton(await openRow("report.pdf"), "fetch file")?.click());
 		await act(async () => root?.unmount());
 		root = null;
 		expect(revoked.length).toBe(1);
@@ -513,4 +528,75 @@ test("a failed fetch shows the error; the blob is revoked on unmount", async () 
 		URL.revokeObjectURL = realRevoke;
 	}
 	expect(requests.filter((u) => u.startsWith("/api/app/attachments/file")).length).toBe(1);
+});
+
+test("an identity file opens in place of the list, with its text and a back link", async () => {
+	const long = `${"word ".repeat(80)}\nsecond line`;
+	globalThis.fetch = Object.assign(
+		async (input: string | URL | Request) => {
+			const url = new URL(input instanceof Request ? input.url : String(input), "http://localhost");
+			if (url.pathname === "/api/app/identity")
+				return Response.json({
+					files: [
+						{ name: "SOUL.md", content: long },
+						{ name: "USER.md", content: null },
+					],
+				});
+			if (url.pathname === "/api/app/attachments") return Response.json({ files: [] });
+			throw new Error(`unexpected request: ${url.pathname}`);
+		},
+		{ preconnect: realFetch.preconnect },
+	);
+	root = createRoot(container);
+	await act(async () => root?.render(<FilesView token={null} />));
+	// The list shows no file text; a missing file says so in its status.
+	expect(container.querySelector("pre")).toBeNull();
+	expect(container.textContent).toContain("not created");
+	const detail = await openRow("SOUL.md");
+	expect(detail.querySelector("pre.file-text")?.textContent).toBe(long);
+	expect(container.querySelector(".dtable")).toBeNull();
+	await back();
+	expect(container.querySelector(".dtable")).not.toBeNull();
+	expect(container.querySelector(".file-detail")).toBeNull();
+	const missing = await openRow("USER.md");
+	expect(missing.textContent).toContain("Not created yet.");
+});
+
+test("a long attachment list gets a name filter", async () => {
+	// React's input handling reads these off the global scope.
+	const extra = [
+		"HTMLInputElement",
+		"HTMLElement",
+		"HTMLUnknownElement",
+		"Node",
+		"Event",
+		"MutationObserver",
+		"getComputedStyle",
+	] as const;
+	for (const name of extra) {
+		globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+		Reflect.set(globalThis, name, Reflect.get(win, name));
+	}
+	const files = Array.from({ length: 10 }, (_, i) => ({
+		name: i === 3 ? "needle.pdf" : `file-${i}.txt`,
+		bytes: new TextEncoder().encode("x"),
+	}));
+	filesHarness(files);
+	root = createRoot(container);
+	await act(async () => root?.render(<FilesView token={null} />));
+	const input = container.querySelector<HTMLInputElement>(
+		"input[aria-label='filter attachments']",
+	)!;
+	expect(container.querySelectorAll(".dt-row").length).toBe(10);
+	await act(async () => {
+		const setter = Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!;
+		input.focus();
+		setter.call(input, "needle");
+		input.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+		// React's text-input fallback needs a keyup in this environment.
+		input.dispatchEvent(
+			new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+		);
+	});
+	expect(container.querySelectorAll(".dt-row").length).toBe(1);
 });

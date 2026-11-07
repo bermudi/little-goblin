@@ -3937,6 +3937,35 @@ button.pathchip:hover svg {
 .approval-card.settled {
 	color: var(--app-fg-muted);
 }
+.approval-changes {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+.approval-change-label {
+	font-weight: 600;
+	font-size: 12px;
+}
+.approval-change-values .old {
+	color: var(--app-danger);
+	text-decoration: line-through;
+}
+.approval-change-values .cron-raw {
+	color: var(--app-fg-muted);
+	font-size: 11.5px;
+}
+.approval-change-values .new {
+	color: var(--app-success);
+	font-weight: 600;
+}
+.approval-changes .diff {
+	max-width: 70ch;
+}
+.approval-full summary {
+	cursor: pointer;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+}
 .approval-facts {
 	display: flex;
 	flex-wrap: wrap;

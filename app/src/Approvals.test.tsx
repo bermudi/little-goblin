@@ -63,6 +63,7 @@ const PROPOSAL: AppProgramProposal = {
 		hook: true,
 		mailFilter: null,
 	},
+	changes: null,
 };
 
 const cardButton = (label: string) =>
@@ -188,4 +189,34 @@ test("an unresolved send warns and allows cancel but never offers a resend", asy
 	await act(async () => cardButton("Cancel")?.click());
 	expect(cancelled).toBe(true);
 	expect(container.textContent).toContain("No pending approvals.");
+});
+
+test("an update card shows old → new per changed field and a line diff for instructions", async () => {
+	const update: AppProgramProposal = {
+		...PROPOSAL,
+		kind: "update",
+		targetId: 3,
+		changes: [
+			{ field: "cron", label: "Schedule", before: "0 9 * * *", after: "0 7 * * *", lines: null },
+			{
+				field: "charter",
+				label: "Instructions",
+				before: "a\nb",
+				after: "a\nb\nc",
+				lines: [
+					{ op: "ctx", text: "a" },
+					{ op: "add", text: "c" },
+				],
+			},
+		],
+	};
+	globalThis.fetch = Object.assign(async () => Response.json({ programs: [update], mail: [] }), {
+		preconnect: realFetch.preconnect,
+	});
+	root = createRoot(container);
+	await act(async () => root?.render(<ApprovalsPanel token={null} />));
+	const text = container.querySelector(".approval-changes")?.textContent ?? "";
+	expect(text).toContain("ScheduleDaily 09:00 (0 9 * * *) → Daily 07:00 (0 7 * * *)");
+	expect(container.querySelector(".diff .diff-line.add")?.textContent).toBe("+c");
+	expect(container.querySelector(".approval-full")).not.toBeNull();
 });

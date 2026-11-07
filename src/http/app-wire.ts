@@ -5,6 +5,7 @@
 import type { UIMessage } from "ai";
 import type { AppConversationSummary } from "../conversation.ts";
 import type { AttachmentRef } from "../agent/attachments.ts";
+import type { DiffLine } from "../line-diff.ts";
 
 export interface AppConversationList {
 	conversations: AppConversationSummary[];
@@ -437,6 +438,16 @@ export interface AppProgramCandidate {
 	mailFilter: string | null;
 }
 
+/** One field an update proposal changes. `lines` is a line diff (unchanged
+ *  runs collapsed to gaps) for long text; null for single-line fields. */
+export interface AppProgramChange {
+	field: keyof AppProgramCandidate;
+	label: string;
+	before: string;
+	after: string;
+	lines: DiffLine[] | null;
+}
+
 export interface AppProgramProposal {
 	id: number;
 	kind: "create" | "update";
@@ -448,6 +459,9 @@ export interface AppProgramProposal {
 	decidedBy: string | null;
 	activatedId: number | null;
 	candidate: AppProgramCandidate | null;
+	/** Update proposals: fields that differ from the program the proposal
+	 *  was staged against. null on creates and when that base is gone. */
+	changes: AppProgramChange[] | null;
 }
 
 export interface AppMailDraft {

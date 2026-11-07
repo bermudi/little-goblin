@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { decideMailApproval, decideProgramApproval, listApprovals } from "./api.ts";
+import { cronWords } from "../../src/cron-words.ts";
 import type {
 	AppApprovalDecisionResponse,
 	AppApprovalsResponse,
 	AppMailDraft,
+	AppProgramChange,
 	AppProgramProposal,
 } from "../../src/http/app-wire.ts";
+import { decideMailApproval, decideProgramApproval, listApprovals } from "./api.ts";
+import { DiffView } from "./DiffView.tsx";
 
 interface ApprovalState {
 	data: AppApprovalsResponse | null;
@@ -172,18 +175,15 @@ export function ProgramApprovalCard({
 				<p className="error">The target program is gone; approval will refuse.</p>
 			) : (
 				<>
-					<div className="op-item-body">
-						<strong>{candidate.name}</strong>
-						<pre>{candidate.charter}</pre>
-					</div>
-					<div className="approval-facts">
-						{candidate.cron !== null && <span>cron {candidate.cron}</span>}
-						{candidate.maxLatenessMinutes !== null && (
-							<span>max {candidate.maxLatenessMinutes}m late</span>
-						)}
-						{candidate.hook && <span>webhook</span>}
-						{candidate.mailFilter !== null && <span>mail {candidate.mailFilter}</span>}
-					</div>
+					{proposal.changes !== null && <ProgramChanges changes={proposal.changes} />}
+					{proposal.changes !== null ? (
+						<details className="approval-full">
+							<summary>Full program after approval</summary>
+							<ProgramCandidateView candidate={candidate} />
+						</details>
+					) : (
+						<ProgramCandidateView candidate={candidate} />
+					)}
 				</>
 			)}
 			<div className="approval-actions">
@@ -208,6 +208,77 @@ export function ProgramApprovalCard({
 				</button>
 			</div>
 			<DecisionResult decision={decision} />
+		</div>
+	);
+}
+
+function ProgramCandidateView({
+	candidate,
+}: {
+	candidate: NonNullable<AppProgramProposal["candidate"]>;
+}) {
+	return (
+		<>
+			<div className="op-item-body">
+				<strong>{candidate.name}</strong>
+				<pre>{candidate.charter}</pre>
+			</div>
+			<div className="approval-facts">
+				{candidate.cron !== null && (
+					<span>
+						<Schedule cron={candidate.cron} />
+					</span>
+				)}
+				{candidate.maxLatenessMinutes !== null && (
+					<span>max {candidate.maxLatenessMinutes}m late</span>
+				)}
+				{candidate.hook && <span>webhook</span>}
+				{candidate.mailFilter !== null && <span>mail {candidate.mailFilter}</span>}
+			</div>
+		</>
+	);
+}
+
+function Schedule({ cron }: { cron: string }) {
+	const words = cronWords(cron);
+	return words === null ? (
+		<>{cron}</>
+	) : (
+		<>
+			{words} <span className="cron-raw">({cron})</span>
+		</>
+	);
+}
+
+/** Old → new for a single-line field; a schedule reads in words, cron beside it. */
+function ChangeValues({ change }: { change: AppProgramChange }) {
+	const show = (v: string) => (change.field === "cron" && v !== "none" ? <Schedule cron={v} /> : v);
+	return (
+		<div className="approval-change-values">
+			<span className="old">{show(change.before)}</span>
+			<span aria-hidden="true"> → </span>
+			<span className="new">{show(change.after)}</span>
+		</div>
+	);
+}
+
+function ProgramChanges({ changes }: { changes: AppProgramChange[] }) {
+	if (changes.length === 0) {
+		return <p className="cap">No fields change — the update matches the running program.</p>;
+	}
+	return (
+		<div className="approval-changes">
+			<div className="cap">What changes</div>
+			{changes.map((change) => (
+				<div key={change.field} className="approval-change">
+					<div className="approval-change-label">{change.label}</div>
+					{change.lines === null ? (
+						<ChangeValues change={change} />
+					) : (
+						<DiffView lines={change.lines} />
+					)}
+				</div>
+			))}
 		</div>
 	);
 }

@@ -746,7 +746,7 @@ describe("quiet harbor regressions", () => {
 			});
 			// The list's own fetch is debounced — a rendered row is the
 			// loaded marker, not the filters that paint immediately.
-			await waitFor(() => container.querySelector(".idx") !== null, "a rendered note row");
+			await waitFor(() => container.querySelector(".dt-row") !== null, "a rendered note row");
 		};
 
 		test("a capped list says so — active and archived carry their own notice", async () => {

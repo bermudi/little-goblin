@@ -226,6 +226,18 @@ the very end (`.proj-foot.danger-zone`) and asks to confirm; Unarchive is
 a plain button in the same footer. Archived chats stay in a collapsed
 shelf with their row actions, because rename/unarchive/delete live there.
 
+*Notes index (#177).* The heading row is `.proj-sec-head`: "Notes" at the
+left, "New note" at the right edge. Under it one filter row (search field and
+a project select: "All projects", "No project", then each project); the row
+wraps and the search field has `min-width: 0`, so it never outgrows the pane
+(it did by ~27px at 390px). Notes are a `.dtable` (`.notes-table`): note |
+project | preview | updated | pinned, pinned notes first and the newest edit
+first inside each group. A note with no project shows "No project". No
+internal words on the page: no "loose", no "rev N". The archived shelf uses
+the same table. The project page's notes table has the same shape without
+the project column. Who edited last is not on the wire summary, so it is not
+shown yet.
+
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
 forever (no route may ever render it, structure included). Two layers, each

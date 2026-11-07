@@ -5,6 +5,7 @@ import {
 	useImperativeHandle,
 	useRef,
 	useState,
+	type CSSProperties,
 	type RefObject,
 } from "react";
 import type {
@@ -27,33 +28,61 @@ import {
 	restoreNoteVersion,
 } from "./api.ts";
 import type { NoteEditorHandle } from "./NoteEditor.tsx";
+import { relTime } from "./memoryShared.tsx";
 import { discardNoteDraft, loadNoteDraft, rawNoteDraft, type NoteDraft } from "./noteDraft.ts";
 
 const Editor = lazy(() => import("./NoteEditor.tsx"));
 
 // ---------- /app/notes ----------
 
-function NoteIndexRow({
-	note,
+// name | project | preview | updated | pinned — same shape as the project
+// page's notes table, plus the project column.
+const NOTES_COLS = {
+	"--dt-cols": "minmax(9rem, 1.3fr) minmax(7rem, 0.8fr) minmax(10rem, 2.6fr) 6.5rem 5rem",
+} as CSSProperties;
+
+const flatPreview = (text: string): string => text.replace(/\s+/g, " ").trim();
+
+// Pinned first; the server's order (newest edit first) holds inside each group.
+const pinnedFirst = (notes: AppNoteSummary[]): AppNoteSummary[] => [
+	...notes.filter((n) => n.pinnedAt !== null),
+	...notes.filter((n) => n.pinnedAt === null),
+];
+
+function NotesTable({
+	notes,
 	projectName,
 	onOpen,
 }: {
-	note: AppNoteSummary;
-	projectName: string | null;
+	notes: AppNoteSummary[];
+	projectName: (id: string | null) => string | null;
 	onOpen: (id: string) => void;
 }) {
 	return (
-		<button type="button" className="idx" onClick={() => onOpen(note.id)}>
-			<span className="ilabel">
-				{note.title}
-				<small>
-					{projectName ?? "loose"} · rev {note.rev}
-					{note.preview !== "" ? ` — ${note.preview}` : ""}
-				</small>
-			</span>
-			{note.pinnedAt !== null && <span className="pill">pinned</span>}
-			<span className="chev">›</span>
-		</button>
+		<div className="dtable notes-table" style={NOTES_COLS}>
+			<div className="dt-head" aria-hidden="true">
+				<span>Note</span>
+				<span>Project</span>
+				<span>Preview</span>
+				<span>Updated</span>
+				<span />
+			</div>
+			{pinnedFirst(notes).map((n) => (
+				<button key={n.id} type="button" className="dt-row" onClick={() => onOpen(n.id)}>
+					<span className="dt-cell dt-main">{n.title}</span>
+					<span className="dt-cell" data-label="Project">
+						{projectName(n.projectId) ?? "No project"}
+					</span>
+					<span className="dt-cell">{flatPreview(n.preview)}</span>
+					<span className="dt-cell" data-label="Updated">
+						{relTime(n.updatedAt)}
+					</span>
+					<span className="dt-cell dt-status">
+						{n.pinnedAt !== null && <span className="pill">pinned</span>}
+					</span>
+				</button>
+			))}
+		</div>
 	);
 }
 
@@ -160,8 +189,13 @@ export function NotesIndex({
 
 	return (
 		<div className="ops">
-			<h2 className="ops-h2">Notes</h2>
-			<div className="row note-filters">
+			<div className="proj-sec-head">
+				<h2 className="ops-h2">Notes</h2>
+				<button type="button" className="addbtn proj-btn" disabled={creating} onClick={newNote}>
+					New note
+				</button>
+			</div>
+			<div className="note-filters">
 				<input
 					type="search"
 					placeholder="Search notes"
@@ -174,17 +208,14 @@ export function NotesIndex({
 					onChange={(e) => setFilter(e.target.value)}
 					aria-label="Filter notes by project"
 				>
-					<option value="all">All</option>
-					<option value="loose">Loose</option>
+					<option value="all">All projects</option>
+					<option value="loose">No project</option>
 					{projects.map((p) => (
 						<option key={p.id} value={p.id}>
 							{p.name}
 						</option>
 					))}
 				</select>
-				<button type="button" className="ghost" disabled={creating} onClick={newNote}>
-					New note
-				</button>
 			</div>
 			{error !== null && (
 				<p className="error" role="alert">
@@ -196,16 +227,7 @@ export function NotesIndex({
 			) : notes.length === 0 ? (
 				<p className="empty">{query === "" ? "No notes yet." : "No matches."}</p>
 			) : (
-				<div className="card">
-					{notes.map((n) => (
-						<NoteIndexRow
-							key={n.id}
-							note={n}
-							projectName={projectName(n.projectId)}
-							onOpen={onOpen}
-						/>
-					))}
-				</div>
+				<NotesTable notes={notes} projectName={projectName} onOpen={onOpen} />
 			)}
 			{notes !== null && notes.length > 0 && truncated.active && (
 				<p className="empty" role="status">
@@ -225,15 +247,8 @@ export function NotesIndex({
 							project to find the rest.
 						</p>
 					)}
-					<div className="inner card">
-						{archived.map((n) => (
-							<NoteIndexRow
-								key={n.id}
-								note={n}
-								projectName={projectName(n.projectId)}
-								onOpen={onOpen}
-							/>
-						))}
+					<div className="inner">
+						<NotesTable notes={archived} projectName={projectName} onOpen={onOpen} />
 					</div>
 				</details>
 			)}

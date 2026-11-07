@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import type { AppConversationList, AppNoteSummary, AppProject } from "../../src/http/app-wire.ts";
 import { ApiError, createNote, createProject, listNotes, patchProject } from "./api.ts";
 import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
@@ -172,22 +172,50 @@ export function NewProjectDialog({
 	);
 }
 
-function ProjectIndexRow({
-	project,
+const PROJECT_COLS = {
+	"--dt-cols": "minmax(10rem, 1.6fr) minmax(12rem, 3fr) 6rem 6.5rem 5.5rem",
+} as CSSProperties;
+
+// A table of like things (design/app.md → Non-chat page layout): the
+// row is the open action; "kind" is the status-pill column.
+function ProjectTable({
+	projects,
 	onOpen,
 }: {
-	project: AppProject;
+	projects: AppProject[];
 	onOpen: (id: string) => void;
 }) {
 	return (
-		<button type="button" className="idx" onClick={() => onOpen(project.id)}>
-			<span className="ilabel">
-				{project.name}
-				<small>{project.dir}</small>
-			</span>
-			<span className="pill">{project.managed ? "managed" : "linked"}</span>
-			<span className="chev">›</span>
-		</button>
+		<div className="dtable" style={PROJECT_COLS}>
+			<div className="dt-head" aria-hidden="true">
+				<span>Project</span>
+				<span>Directory</span>
+				<span>Memory</span>
+				<span>Created</span>
+				<span>Kind</span>
+			</div>
+			{projects.map((p) => (
+				<button type="button" className="dt-row" key={p.id} onClick={() => onOpen(p.id)}>
+					<span className="dt-cell dt-main">{p.name}</span>
+					<span className="dt-cell dt-mono" data-label="Directory">
+						{p.dir}
+					</span>
+					<span className="dt-cell" data-label="Memory">
+						{p.memory === "off" ? "off" : "shared"}
+					</span>
+					<span className="dt-cell dt-hide-m">
+						{new Date(p.createdAt).toLocaleDateString(undefined, {
+							month: "short",
+							day: "numeric",
+							year: "numeric",
+						})}
+					</span>
+					<span className="dt-cell dt-status">
+						<span className="pill">{p.managed ? "managed" : "linked"}</span>
+					</span>
+				</button>
+			))}
+		</div>
 	);
 }
 
@@ -216,11 +244,7 @@ export function ProjectsIndex({
 					No projects yet — a project gives related chats their own directory and instructions.
 				</p>
 			) : (
-				<div className="card">
-					{active.map((p) => (
-						<ProjectIndexRow key={p.id} project={p} onOpen={onOpen} />
-					))}
-				</div>
+				<ProjectTable projects={active} onOpen={onOpen} />
 			)}
 			<button type="button" className="ghost" onClick={onNew}>
 				New project
@@ -228,10 +252,8 @@ export function ProjectsIndex({
 			{archived.length > 0 && (
 				<details className="tuning">
 					<summary>Archived projects ({archived.length})</summary>
-					<div className="inner card">
-						{archived.map((p) => (
-							<ProjectIndexRow key={p.id} project={p} onOpen={onOpen} />
-						))}
+					<div className="inner">
+						<ProjectTable projects={archived} onOpen={onOpen} />
 					</div>
 				</details>
 			)}

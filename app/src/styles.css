@@ -2705,18 +2705,29 @@ button.pathchip:hover svg {
 	font-weight: 500;
 }
 
-/* The pane scrolls at full width; the content column is inset by side
-   padding, so the wheel works over the empty margins and the scrollbar
-   sits at the pane edge. The column width lives in --page-col, the one
-   place to change it (a page may override it, as .ops.settings does). */
+/* The pane scrolls at full width; the content is inset by side padding, so
+   the wheel works over the empty margins and the scrollbar sits at the pane
+   edge (#161). Non-chat pages use the whole pane (#168, option B): the
+   padding is --page-pad, and --page-col only caps the content on very wide
+   screens (a page may lower it, as .ops.settings does). Chat has its own
+   column (.transcript) and is not an .ops page. */
 .ops {
-	--page-col: 46rem;
+	--page-col: 110rem;
+	--page-pad: clamp(1rem, 3%, 2.5rem);
+	--prose-col: 70ch;
+	--code-col: 78ch;
 	flex: 1;
 	overflow-y: auto;
-	padding: 1.25rem max(1rem, calc((100% - var(--page-col)) / 2 + 1rem)) 5rem;
+	padding: 1.25rem max(var(--page-pad), calc((100% - var(--page-col)) / 2 + var(--page-pad))) 5rem;
 	display: flex;
 	flex-direction: column;
 	width: 100%;
+}
+/* Pages reused inside a sheet keep the sheet's own width: the old 46rem
+   column and 1rem gutter. */
+.msheet .ops {
+	--page-col: 46rem;
+	--page-pad: 1rem;
 }
 .ops-h2 {
 	font-size: 12px;
@@ -2749,6 +2760,175 @@ button.pathchip:hover svg {
 .ops .empty {
 	padding: 0.5rem 0.4rem;
 	font-size: 12.5px;
+}
+
+/* ---------- non-chat page building blocks (#168, option B) ----------
+   Lists of like things are a data table; long text is a prose block;
+   counts that need attention are a summary strip. Markup:
+
+     <div class="dtable" style="--dt-cols: minmax(10rem, 2fr) 6rem">
+       <div class="dt-head" aria-hidden="true"><span>Name</span><span>Status</span></div>
+       <button type="button" class="dt-row" onClick={open}>
+         <span class="dt-cell dt-main">Name<small>sub line</small></span>
+         <span class="dt-cell dt-status"><span class="pill on">on</span></span>
+       </button>
+     </div>
+
+   --dt-cols lists the columns; a trailing chevron column is added here.
+   Under 40rem of table width a row stacks: first cell + status + chevron
+   on top, every other cell on its own muted line (data-label names it).
+   A cell with .dt-hide-m drops out at that width. */
+.dtable {
+	container-type: inline-size;
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	overflow: hidden;
+}
+.dt-head,
+.dt-row {
+	display: grid;
+	grid-template-columns: var(--dt-cols) 1rem;
+	gap: 0.15rem 1rem;
+	align-items: center;
+	width: 100%;
+	padding: 0.55rem 0.85rem;
+	text-align: left;
+}
+.dt-head {
+	padding-block: 0.4rem;
+	background: var(--app-hover);
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--app-fg-subtle);
+}
+.dt-row {
+	border-top: 1px solid var(--app-divider);
+	font-size: 12.5px;
+}
+.dt-head + .dt-row {
+	border-top: 0;
+}
+.dt-row:hover {
+	background: var(--app-hover);
+}
+.dt-row::after {
+	content: "›";
+	justify-self: end;
+	color: var(--app-fg-subtle);
+}
+.dt-cell {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--app-fg-muted);
+}
+.dt-cell.dt-main {
+	color: var(--app-fg);
+	font-weight: 500;
+	display: flex;
+	flex-direction: column;
+}
+.dt-cell small {
+	font-weight: 400;
+	font-size: 11px;
+	color: var(--app-fg-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.dt-cell.dt-mono {
+	font-family: var(--font-mono);
+	font-size: 11.5px;
+}
+.dt-cell.dt-status {
+	display: flex;
+}
+@container (max-width: 40rem) {
+	.dt-head {
+		display: none;
+	}
+	.dt-row {
+		grid-template-columns: minmax(0, 1fr) auto 1rem;
+	}
+	.dt-row > .dt-cell:first-child {
+		grid-column: 1;
+		grid-row: 1;
+	}
+	.dt-row > .dt-status {
+		grid-column: 2;
+		grid-row: 1;
+	}
+	.dt-row::after {
+		grid-column: 3;
+		grid-row: 1;
+	}
+	.dt-row > .dt-cell:not(:first-child):not(.dt-status) {
+		grid-column: 1 / -1;
+		font-size: 11.5px;
+		white-space: normal;
+		overflow-wrap: anywhere;
+	}
+	.dt-cell[data-label]:not(:first-child)::before {
+		content: attr(data-label) ": ";
+		color: var(--app-fg-subtle);
+	}
+	.dt-row > .dt-hide-m {
+		display: none;
+	}
+}
+
+/* Long text keeps a readable line length inside its own block; the page
+   around it stays full width. .prose is the block; the selectors below
+   apply it to the long text that already exists on non-chat pages, until
+   each page is redone. Code-like text (diffs, file contents, dumps) gets
+   the slightly wider --code-col. */
+.prose {
+	max-width: var(--prose-col);
+}
+.ops:not(.settings) :is(.lead, .ops-cap, .op-item-body, .fact-text, .win-tooldesc, .win-text, .approval-facts),
+.ops.projfields :is(.cap, textarea, select),
+.ops.notepage :is(.note-editor, .note-readonly) {
+	max-width: var(--prose-col);
+}
+.ops:not(.settings)
+	:is(.diff, .doc-text, .mail-body, .win-json, .codeblock, .approval-card pre, .skill-diff) {
+	max-width: var(--code-col);
+}
+
+/* Summary strip: counts that need attention, on top of a page. */
+.sumstrip {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+	gap: 0.6rem;
+	margin: 0.9rem 0 0.2rem;
+}
+.sumtile {
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+	background: var(--app-gray-50);
+	padding: 0.55rem 0.8rem;
+	display: flex;
+	flex-direction: column;
+}
+.sumtile b {
+	font-family: var(--font-mono);
+	font-size: 20px;
+	font-weight: 500;
+	line-height: 1.2;
+	letter-spacing: -0.02em;
+}
+.sumtile span {
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+}
+.sumtile.warn b {
+	color: var(--app-warning);
+}
+.sumtile.bad b {
+	color: var(--app-danger);
 }
 
 .card {
@@ -3352,6 +3532,8 @@ button.pathchip:hover svg {
    savebar pins to the scrollport bottom while scrolling and lands
    flush at scroll end, instead of floating over dead padding. */
 .ops.settings {
+	--page-col: 46rem;
+	--page-pad: 1rem;
 	padding-bottom: 0;
 }
 /* At the index, the narrow screen sees only the index and the save

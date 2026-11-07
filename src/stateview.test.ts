@@ -509,7 +509,8 @@ describe("tailLog", () => {
 		expect(res.lines.length).toBe(2);
 		expect(res.lines[1]!.level).toBe("error");
 		expect(res.lines[1]!.msg).toBe("boom");
-		expect(res.lines[1]!.line).toContain('"chat":7');
+		expect(res.lines[1]!.fields).toEqual({ chat: 7 });
+		expect(res.matched).toBe(2);
 	});
 
 	test("level and substring filters apply to the raw line", () => {
@@ -519,6 +520,11 @@ describe("tailLog", () => {
 			JSON.stringify({ ts: "t3", level: "error", msg: "send failed", conversation: "dm:1" }),
 		]);
 		expect(tailLog(f, { limit: 10, level: "error" }).lines.length).toBe(1);
+		// A level means "at least": warn keeps warn and error.
+		expect(tailLog(f, { limit: 10, level: "warn" }).lines.map((l) => l.msg)).toEqual([
+			"slow",
+			"send failed",
+		]);
 		expect(tailLog(f, { limit: 10, q: "dm:2" }).lines.length).toBe(1);
 		expect(tailLog(f, { limit: 10, q: "dm:1", level: "error" }).lines[0]!.msg).toBe("send failed");
 		// Filtering is intentional selection, not dropped content.
@@ -535,6 +541,7 @@ describe("tailLog", () => {
 		const res = tailLog(f, { limit: 2 });
 		expect(res.lines.map((l) => l.msg)).toEqual(["b", "c"]);
 		expect(res.truncated).toBe(true);
+		expect(res.matched).toBe(3);
 	});
 
 	test("a torn line inside the window is skipped and reported as truncation", () => {

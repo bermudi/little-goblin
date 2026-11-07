@@ -8,7 +8,8 @@ import { dirname } from "node:path";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
-const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
+/** Severity order; the state viewer filters the log tail by "at least this". */
+export const LEVELS: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
 
 let threshold: number = LEVELS.info;
 

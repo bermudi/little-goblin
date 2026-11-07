@@ -508,6 +508,49 @@ describe("quiet harbor regressions", () => {
 			expect(row).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{2}:\d{2} · 12 B$/);
 		});
 
+		test("the versions popover sits in the Versions button's wrapper and closes on outside press or Escape", async () => {
+			await mount(
+				<NoteView token={null} noteId="n1" projects={[]} onChat={() => {}} onDeleted={() => {}} />,
+			);
+			const toggle = () =>
+				[...container.querySelectorAll<HTMLButtonElement>("button")].find(
+					(b) => b.textContent === "Versions",
+				);
+			const open = async () => {
+				await act(async () => {
+					toggle()?.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
+				});
+				await waitFor(() => container.querySelector(".note-versions li") !== null, "the versions");
+			};
+			await open();
+			// Anchored: the list lives inside the same wrapper as its button.
+			expect(toggle()?.parentElement?.querySelector(".note-versions")).not.toBeNull();
+			expect(toggle()?.getAttribute("aria-expanded")).toBe("true");
+			// A press inside the popover keeps it open.
+			await act(async () => {
+				container
+					.querySelector(".note-versions")
+					?.dispatchEvent(new win.Event("pointerdown", { bubbles: true }) as unknown as Event);
+			});
+			expect(container.querySelector(".note-versions")).not.toBeNull();
+			// A press elsewhere closes it.
+			await act(async () => {
+				container
+					.querySelector(".note-title")
+					?.dispatchEvent(new win.Event("pointerdown", { bubbles: true }) as unknown as Event);
+			});
+			expect(container.querySelector(".note-versions")).toBeNull();
+			// Escape closes it too.
+			await open();
+			await act(async () => {
+				win.document.dispatchEvent(
+					new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+				);
+			});
+			expect(container.querySelector(".note-versions")).toBeNull();
+			expect(toggle()?.getAttribute("aria-expanded")).toBe("false");
+		});
+
 		test("a title edit reports dirty to the App and a clean page reports clean — unmount resets", async () => {
 			const reports: boolean[] = [];
 			await mount(

@@ -200,7 +200,7 @@ describe("app attention", () => {
 			const skillItems = body.items.filter((i) => i.kind === "skill-proposal");
 			expect(skillItems.map((i) => [i.title, i.detail])).toEqual([
 				["Skill update — radar", "1 changed — review the diff, then install or discard"],
-				["New skill — watcher", "1 files — review, then install or discard"],
+				["New skill — watcher", "1 file — review, then install or discard"],
 			]);
 			expect(new Map(body.items.map((i) => [i.id, i.target]))).toEqual(
 				new Map([

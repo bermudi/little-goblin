@@ -121,7 +121,7 @@ export async function handleAttentionRoute(
 					detail:
 						diff.kind === "update"
 							? `${counts.length === 0 ? "no file differs from the installed copy" : counts.join(", ")} — review the diff, then install or discard`
-							: `${skill.files.length} files — review, then install or discard`,
+							: `${skill.files.length} ${skill.files.length === 1 ? "file" : "files"} — review, then install or discard`,
 					createdAt: skill.updatedAt,
 					page: "skills",
 				}),

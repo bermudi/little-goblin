@@ -19,7 +19,7 @@ import {
 	statSync,
 } from "node:fs";
 import { join, sep } from "node:path";
-import { loadCatalog } from "./agent/skills.ts";
+import { loadCatalog, parseSkill, readHead } from "./agent/skills.ts";
 import { LEVELS, type LogLevel } from "./log.ts";
 import { diffSkill, type SkillDiff } from "./skill-diff.ts";
 
@@ -32,6 +32,8 @@ export interface OperatorSkillItem {
 	sizeBytes: number;
 	/** SKILL.md's mtime when present, else the dir's own. */
 	updatedAt: string | null;
+	/** SKILL.md frontmatter `description`; null when SKILL.md is missing or malformed. */
+	description: string | null;
 	/** The walk hit a cap — files/sizeBytes are a floor, not the whole tree. */
 	truncated: boolean;
 }
@@ -121,6 +123,20 @@ function listFilesUnder(dir: string, rel: string, depth: number, out: string[]):
 	return truncated;
 }
 
+// A skill the catalog would skip (no or bad frontmatter) still lists; it
+// just has no description to show.
+function skillDescription(skillMd: string): string | null {
+	let head: string;
+	try {
+		head = readHead(skillMd);
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw e;
+	}
+	const parsed = parseSkill(head);
+	return "fm" in parsed ? parsed.fm.description : null;
+}
+
 export function listSkillDir(dir: string): OperatorSkillItem[] {
 	let entries: Dirent[];
 	try {
@@ -162,7 +178,14 @@ export function listSkillDir(dir: string): OperatorSkillItem[] {
 				if ((e2 as NodeJS.ErrnoException).code !== "ENOENT") throw e2;
 			}
 		}
-		items.push({ name: entry.name, files, sizeBytes, updatedAt, truncated });
+		items.push({
+			name: entry.name,
+			files,
+			sizeBytes,
+			updatedAt,
+			truncated,
+			description: skillDescription(join(skillDir, "SKILL.md")),
+		});
 	}
 	items.sort((a, b) => a.name.localeCompare(b.name));
 	return items;

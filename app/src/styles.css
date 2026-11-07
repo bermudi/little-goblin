@@ -4846,14 +4846,99 @@ select.ui-input option {
 	display: block;
 }
 
-/* The project page header: name + a quiet text rename action. */
+/* The project page (#171): header, then sections whose heading and
+   action sit on one line, then a quiet footer for the destructive
+   action. Tables are the shared .dtable block. */
 .proj-head {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
 	gap: 0.6rem;
 }
 .proj-name {
-	font-size: 15px;
+	font-size: 18px;
 	font-weight: 600;
 	margin: 0;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+/* Small bordered buttons on this page: the shared .ghost/.addbtn skin
+   without .ghost's top margin and flex-start alignment. */
+.projfields .proj-btn {
+	margin: 0;
+	align-self: auto;
+	padding: 0.3rem 0.75rem;
+	flex: none;
+}
+.proj-dir {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 0.3rem 0.6rem;
+	margin-top: 0.45rem;
+	font-size: 12.5px;
+}
+.proj-dir-k {
+	font-size: 11.5px;
+	color: var(--app-fg-muted);
+}
+.proj-dir-v {
+	min-width: 0;
+	overflow-wrap: anywhere;
+	font-size: 12px;
+}
+.proj-sec {
+	margin-top: 1.6rem;
+}
+.proj-sec-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.75rem;
+	min-height: 2rem;
+	margin-bottom: 0.5rem;
+}
+.proj-sec-head .ops-h2 {
+	margin: 0;
+}
+.proj-seg {
+	flex-wrap: nowrap;
+	align-self: flex-start;
+}
+.proj-seg .seg-btn {
+	padding: 0.3rem 1rem;
+}
+.proj-foot {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	margin-top: 2.5rem;
+	padding: 0.8rem 1rem;
+	border: 1px solid var(--app-divider);
+	border-radius: 10px;
+}
+.proj-foot.danger-zone {
+	border-color: color-mix(in oklab, var(--app-danger) 35%, transparent);
+}
+.proj-foot-text {
+	display: flex;
+	flex-direction: column;
+	gap: 0.15rem;
+	min-width: 0;
+	font-size: 12.5px;
+}
+.proj-foot-text .cap {
+	max-width: 60ch;
+}
+@media (max-width: 40rem) {
+	.proj-foot {
+		flex-direction: column;
+		align-items: stretch;
+	}
+	.projfields .proj-foot .proj-btn {
+		align-self: flex-start;
+	}
 }
 .ghost-inline {
 	font-size: 11.5px;

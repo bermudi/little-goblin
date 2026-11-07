@@ -4,7 +4,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import { renderToStaticMarkup } from "react-dom/server";
 import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
-import type { AppNote, AppProject, AppNoteList } from "../../src/http/app-wire.ts";
+import type {
+	AppConversationList,
+	AppNote,
+	AppProject,
+	AppNoteList,
+} from "../../src/http/app-wire.ts";
+
+type Summary = AppConversationList["conversations"][number];
 
 describe("main branch regressions", () => {
 	// StrictMode liveness: the dialog's `live` and the notes section's
@@ -14,7 +21,10 @@ describe("main branch regressions", () => {
 	// globalThis.fetch with test-owned failure flips; no module mocks.
 
 	const jsonResponse = (body: unknown, status = 200): Response =>
-		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+		new Response(JSON.stringify(body), {
+			status,
+			headers: { "content-type": "application/json" },
+		});
 
 	const projRow = (name: string, over: Partial<AppProject> = {}): AppProject => ({
 		id: `p-${name.split(" ")[0]!.toLowerCase()}`,
@@ -138,7 +148,10 @@ describe("main branch regressions", () => {
 				Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
 				el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
 				el.dispatchEvent(
-					new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+					new win.KeyboardEvent("keyup", {
+						bubbles: true,
+						key: "e",
+					}) as unknown as Event,
 				);
 			});
 			await settle();
@@ -179,7 +192,10 @@ describe("main branch regressions", () => {
 			}
 			await act(async () => {
 				sheet.dispatchEvent(
-					new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+					new win.Event("submit", {
+						bubbles: true,
+						cancelable: true,
+					}) as unknown as Event,
 				);
 			});
 			await settle();
@@ -378,5 +394,91 @@ describe("projects index table (#168)", () => {
 		expect(active[0]!.textContent).toContain("off");
 		expect(tables[0]!.querySelector(".dt-head")?.textContent).toContain("Directory");
 		expect(doc.querySelector("details.tuning")?.contains(tables[1]!)).toBe(true);
+	});
+});
+
+describe("project page layout (#171)", () => {
+	const project: AppProject = {
+		id: "p-garden",
+		name: "Balcony garden",
+		slug: "balcony-garden",
+		dir: "/home/x/projects/balcony-garden",
+		managed: true,
+		instructions: "",
+		memory: "shared",
+		createdAt: "2026-10-14T00:00:00Z",
+		archivedAt: null,
+	};
+	const chat = (id: string, over: Partial<Summary> = {}): Summary => ({
+		id,
+		title: null,
+		createdAt: "2026-10-14T00:00:00Z",
+		updatedAt: "2026-10-14T00:00:00Z",
+		preview: "",
+		archivedAt: null,
+		pinnedAt: null,
+		projectId: project.id,
+		...over,
+	});
+	const view = (over: Partial<AppProject> = {}, convs: Summary[] = []) => {
+		const doc = new Window().document;
+		doc.body.innerHTML = renderToStaticMarkup(
+			<ProjectView
+				token={null}
+				project={{ ...project, ...over }}
+				conversations={convs}
+				renderRow={(c) => <li key={c.id}>{c.id}</li>}
+				onChanged={() => {}}
+				onOpenNote={() => {}}
+			/>,
+		);
+		return doc;
+	};
+
+	test("each section heading shares one line with its action; chats are a table", () => {
+		const doc = view({}, [
+			chat("app/1", {
+				title: "Soil mix",
+				preview: "Use 2 parts coco\ncoir",
+				pinnedAt: "2026-10-15T00:00:00Z",
+			}),
+			chat("app/2", { preview: "water the basil" }),
+			chat("app/3", { title: "Old", archivedAt: "2026-10-16T00:00:00Z" }),
+			chat("app/other", { projectId: "p-else", title: "Elsewhere" }),
+		]);
+		const heads = [...doc.querySelectorAll(".proj-sec-head")];
+		const byTitle = (t: string) =>
+			heads.find((h) => h.querySelector("h2")?.textContent?.startsWith(t));
+		expect(byTitle("Instructions")?.querySelector("button")?.textContent).toBe("Save");
+		expect(byTitle("Notes")?.querySelector("button")?.textContent).toBe("New note");
+		const rows = [...doc.querySelectorAll(".dtable button.dt-row")];
+		expect(rows.map((r) => r.querySelector(".dt-main")?.textContent)).toEqual([
+			"Soil mix",
+			"water the basil",
+		]);
+		expect(rows[0]!.textContent).toContain("Use 2 parts coco coir");
+		expect(rows[0]!.querySelector(".dt-status .pill")?.textContent).toBe("pinned");
+		expect(doc.querySelector("details.tuning")?.textContent).toContain("app/3");
+	});
+
+	test("archive lives in a footer danger zone, after the chats", () => {
+		const doc = view();
+		const foot = doc.querySelector(".proj-foot.danger-zone")!;
+		expect(foot.querySelector("button.danger")?.textContent).toBe("Archive project");
+		const chats = [...doc.querySelectorAll(".proj-sec")].at(-1)!;
+		expect(chats.compareDocumentPosition(foot) & 4).toBeTruthy(); // foot follows
+		expect(view({ archivedAt: "2026-10-16T00:00:00Z" }).querySelector(".danger")).toBeNull();
+	});
+
+	test("memory is a labelled two-way control, not a dropdown", () => {
+		const doc = view({ memory: "off" });
+		expect(doc.querySelector("select")).toBeNull();
+		const radios = [
+			...doc.querySelectorAll('[role="radiogroup"][aria-label="Memory mode"] [role="radio"]'),
+		];
+		expect(radios.map((r) => [r.textContent, r.getAttribute("aria-checked")])).toEqual([
+			["Shared", "false"],
+			["Off", "true"],
+		]);
 	});
 });

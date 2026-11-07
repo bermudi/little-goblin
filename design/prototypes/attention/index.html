@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>goblin attention and memory — prototype</title>
+<style>
+	:root {
+		--bg: #0d0d0d;
+		--fg: #e8e8ea;
+		--accent: #a78bfa;
+		--danger: #f87171;
+		--success: #4ade80;
+		--warning: #facc15;
+		color-scheme: dark;
+	}
+	@media (prefers-color-scheme: light) {
+		:root {
+			--bg: #ffffff;
+			--fg: #1f1f23;
+			--accent: #6d28d9;
+			--danger: #dc2626;
+			--success: #15803d;
+			--warning: #b45309;
+			color-scheme: light;
+		}
+	}
+	:root {
+		--muted: color-mix(in oklab, var(--fg) 66%, var(--bg));
+		--subtle: color-mix(in oklab, var(--fg) 50%, var(--bg));
+		--divider: color-mix(in oklab, var(--fg) 10%, transparent);
+		--hover: color-mix(in oklab, var(--fg) 6%, transparent);
+		--raised: color-mix(in oklab, var(--bg) 96%, var(--fg));
+		--sans: "Inter", -apple-system, BlinkMacSystemFont, ui-sans-serif, system-ui, sans-serif;
+		--mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+	}
+	* { box-sizing: border-box; }
+	html, body { margin: 0; background: var(--bg); color: var(--fg); }
+	body { font: 13.5px/1.5 var(--sans); }
+	button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+	:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+	/* Prototype controls: not part of the proposed design. */
+	.controls {
+		position: sticky; top: 0; z-index: 2;
+		display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; align-items: center;
+		padding: .6rem 1rem;
+		background: color-mix(in oklab, var(--bg) 90%, var(--accent));
+		border-bottom: 1px solid var(--divider);
+		font-size: 12.5px;
+	}
+	.controls .name { color: var(--muted); }
+	.seg { display: inline-flex; border: 1px solid var(--divider); border-radius: 8px; overflow: hidden; }
+	.seg button { padding: .3rem .65rem; color: var(--muted); min-height: 30px; }
+	.seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); font-weight: 500; }
+	.ctl { display: inline-flex; align-items: center; gap: .45rem; }
+
+	/* The proposed page. */
+	.stage { padding: 1.25rem 16px 2.5rem; }
+	.frame { margin-inline: auto; width: 100%; max-width: 44rem; transition: max-width .18s ease; }
+	.frame.phone {
+		max-width: 390px;
+		border: 1px solid var(--divider);
+		border-radius: 18px;
+		overflow: hidden;
+	}
+	.page { padding: 1.1rem 1rem 1.5rem; }
+	.frame:not(.phone) .page { padding-inline: 0; }
+	h1 { font-size: 21px; line-height: 1.25; font-weight: 600; letter-spacing: -.012em; margin: 0; }
+	.summary { color: var(--muted); margin: .2rem 0 0; }
+
+	section { margin-top: 1.5rem; }
+	h2 { font-size: 13.5px; font-weight: 600; margin: 0 0 .5rem; color: var(--muted); }
+
+	.item {
+		background: var(--raised);
+		border: 1px solid var(--divider);
+		border-radius: 12px;
+		padding: .9rem 1rem;
+	}
+	.item + .item { margin-top: .6rem; }
+	.item.problem {
+		background: color-mix(in oklab, var(--danger) 8%, var(--bg));
+		border-color: color-mix(in oklab, var(--danger) 35%, transparent);
+	}
+	.head { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
+	.head h3 { margin: 0; font-size: 15px; line-height: 1.35; font-weight: 600; }
+	.age { flex: none; color: var(--subtle); font-size: 12px; }
+	.item p { margin: .35rem 0 0; max-width: 62ch; }
+	.fix { color: var(--muted); }
+
+	/* What waiting costs: the one line every card must be able to state. */
+	.wait {
+		display: flex; gap: .5rem;
+		margin-top: .7rem; padding-top: .6rem;
+		border-top: 1px solid var(--divider);
+		color: var(--muted);
+	}
+	.wait b { flex: none; font-weight: 600; color: var(--fg); }
+
+	.actions { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: .75rem; align-items: center; }
+	.btn { min-height: 36px; padding: .4rem .85rem; border-radius: 8px; font-size: 13px; font-weight: 500; border: 1px solid var(--divider); }
+	.btn:hover { background: var(--hover); }
+	.btn.primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+	.btn.primary:hover { background: color-mix(in oklab, var(--fg) 88%, var(--bg)); }
+	.btn.quiet { border-color: transparent; color: var(--muted); padding-inline: .5rem; }
+	.btn.risky { color: var(--danger); border-color: color-mix(in oklab, var(--danger) 45%, transparent); }
+	.done { color: var(--muted); }
+	.done b { color: var(--success); font-weight: 600; }
+
+	.changes { margin: .65rem 0 0; display: grid; grid-template-columns: auto 1fr; gap: .25rem .9rem; }
+	.changes dt { color: var(--muted); }
+	.changes dd { margin: 0; }
+	.old { color: var(--subtle); text-decoration: line-through; }
+	.new { font-weight: 600; }
+
+	.more { margin: .65rem 0 0; padding: .6rem .7rem; border-radius: 8px; background: var(--hover); color: var(--muted); font-size: 12.5px; }
+	.more ul { margin: 0; padding: 0; list-style: none; }
+	.more li { display: flex; justify-content: space-between; gap: 1rem; padding: .1rem 0; }
+
+	.skill { padding: .7rem 0; border-top: 1px solid var(--divider); }
+	.item > p + .skill { margin-top: .6rem; }
+	.skill .name { font-weight: 600; }
+	.skill p { color: var(--muted); }
+	.skill .actions { margin-top: .5rem; }
+
+	.tag { display: inline-block; margin-left: .35rem; padding: 0 .4rem; border-radius: 6px; font-size: 11px; font-weight: 500; line-height: 1.6; vertical-align: 1px; border: 1px solid var(--divider); color: var(--muted); }
+	.tag.upd { color: var(--warning); border-color: color-mix(in oklab, var(--warning) 40%, transparent); }
+	.tag.pendtag { margin-left: 0; color: var(--accent); border-color: color-mix(in oklab, var(--accent) 45%, transparent); }
+	.pending { color: var(--muted); font-size: 12.5px; }
+	.newnote { font-size: 12.5px; }
+	.diff { margin-top: .5rem; border: 1px solid var(--divider); border-radius: 8px; overflow: hidden; font: 12px/1.5 var(--mono); }
+	.file + .file { border-top: 1px solid var(--divider); }
+	.filehead { display: flex; justify-content: space-between; gap: .75rem; padding: .25rem .6rem; background: var(--hover); color: var(--muted); }
+	.ln { display: flex; gap: .5rem; padding: 0 .6rem; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
+	.ln .mk { flex: none; width: 1ch; }
+	.ln.add { background: color-mix(in oklab, var(--success) 14%, transparent); color: var(--fg); }
+	.ln.del { background: color-mix(in oklab, var(--danger) 14%, transparent); color: var(--fg); }
+	.ln.add .mk { color: var(--success); }
+	.ln.del .mk { color: var(--danger); }
+
+	.quietline { color: var(--muted); }
+	.link { color: var(--muted); text-decoration: underline; text-underline-offset: 2px; min-height: 32px; }
+	.link:hover { color: var(--fg); }
+	.footer { margin-top: 1.5rem; padding-top: .7rem; border-top: 1px solid var(--divider); display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; align-items: center; }
+
+	.allclear { margin-top: 1.5rem; }
+	.allclear h3 { margin: 0; font-size: 15px; font-weight: 600; }
+
+	/* Memory page. */
+	.health { display: flex; gap: .6rem; align-items: baseline; }
+	.dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--success); transform: translateY(-1px); }
+	.dot.bad { background: var(--danger); }
+	.search { width: 100%; min-height: 38px; padding: .4rem .7rem; border-radius: 8px; border: 1px solid var(--divider); background: transparent; color: inherit; font: inherit; }
+	.search::placeholder { color: var(--subtle); }
+	.row { width: 100%; text-align: left; display: flex; flex-direction: column; padding: .6rem 0; border-top: 1px solid var(--divider); }
+	.row:first-of-type { border-top: 0; }
+	.rowhead { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
+	.rowtitle { font-weight: 600; }
+	.when { flex: none; color: var(--subtle); font-size: 12px; }
+	.verdict { color: var(--muted); }
+	.verdict.kept { color: var(--fg); }
+	.verdict.waiting { color: var(--warning); }
+	.facts { margin: .4rem 0 0; padding: 0 0 0 1rem; color: var(--muted); }
+	.facts li { margin: .15rem 0; max-width: 62ch; }
+	.fold { width: 100%; display: flex; align-items: baseline; gap: .45rem; min-height: 40px; padding: .6rem 0; border-top: 1px solid var(--divider); text-align: left; color: var(--muted); }
+	.fold .rowtitle { flex: 1; }
+	.chev { width: 1em; color: var(--subtle); }
+	.row.nested { padding-left: 1.45rem; color: var(--muted); }
+	.rowbtn { text-align: left; width: 100%; padding: 0; display: block; }
+
+	/* Phone chrome. */
+	.tabbar { display: none; }
+	.frame.phone .tabbar {
+		display: grid; grid-template-columns: repeat(5, 1fr);
+		border-top: 1px solid var(--divider);
+		text-align: center; font-size: 11.5px; color: var(--muted);
+	}
+	.tabbar span { padding: .75rem 0 .85rem; }
+	.tabbar .on { color: var(--fg); font-weight: 600; }
+
+	/* Notes for the operator, outside the mock. */
+	.notes { max-width: 44rem; margin: 2rem auto 0; padding-top: 1rem; border-top: 1px dashed var(--divider); color: var(--muted); font-size: 12.5px; }
+	.notes h2 { color: var(--fg); }
+	.notes ul { margin: 0; padding-left: 1.1rem; }
+	.notes li { margin: .2rem 0; }
+	[hidden] { display: none !important; }
+	@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+	@media (max-width: 480px) { .frame.phone { border: 0; border-radius: 0; } .stage { padding-inline: 0; } .notes { padding-inline: 16px; } }
+</style>
+</head>
+<body>
+
+<div class="controls" role="toolbar" aria-label="Mockup controls">
+	<span class="ctl"><span class="name">Page</span><span class="seg" data-ctl="page"><button data-v="attention">Attention</button><button data-v="memory">Memory</button></span></span>
+	<span class="ctl"><span class="name">Situation</span><span class="seg" data-ctl="scene"><button data-v="today">Today</button><button data-v="outage">During the outage</button></span></span>
+	<span class="ctl"><span class="name">Width</span><span class="seg" data-ctl="width"><button data-v="phone">Phone</button><button data-v="desktop">Desktop</button></span></span>
+	<button class="link" id="reset">Reset</button>
+</div>
+
+<div class="stage">
+	<div class="frame" id="frame">
+		<main class="page" id="page"></main>
+		<div class="tabbar" aria-hidden="true"><span>Chats</span><span>Projects</span><span>Notes</span><span class="on" id="tabAttention">Attention</span><span id="tabMore">More</span></div>
+	</div>
+
+	<aside class="notes">
+		<h2>Reading this mockup</h2>
+		<ul>
+			<li>All names, titles and facts here are made up. "During the outage" shows what a memory failure should look like. The error wording there is written by hand.</li>
+			<li>Two details are placeholders: the notifications line is made up, and the last recall time is a sample.</li>
+			<li>Buttons only change this page. Nothing reaches Goblin.</li>
+		</ul>
+		<h2 style="margin-top:.9rem">What this needs that Goblin does not have yet</h2>
+		<ul>
+			<li>The real error from Hindsight. The outbox only stores "remote operation failed".</li>
+			<li>Failures grouped by cause, with a true count. Today's list stops at 10.</li>
+			<li>Conversation names on memory rows. Today they show IDs.</li>
+			<li>A way to bring dropped exchanges back ("Save them now"). Dismiss can't be undone today, and this waits for memory tuning.</li>
+			<li>For skill updates: the installed files next to the proposed files, so the card can show a per-file diff.</li>
+			<li>Approve, reject, install and discard working from the card, using the same owners as today.</li>
+		</ul>
+	</aside>
+</div>
+
+<script>
+const initial = () => ({ page: "attention", scene: "today", width: innerWidth < 720 ? "phone" : "desktop", acted: {}, open: {} });
+let s = initial();
+
+const SKILLS = [
+	{ id: "answer-first", kind: "update", age: "13 days", installed: "v3",
+		text: "Update: also stop tools when you say \"wait\", not only when you ask a question or say stop.",
+		files: [
+			{ path: "SKILL.md", lines: [
+				[" ", "## When to answer first"],
+				[" ", "Reply in plain words, with no tool calls, when the operator:"],
+				[" ", "- asks a question"],
+				["-", "- interrupts or says \"stop\""],
+				["+", "- interrupts, or says \"stop\" or \"wait\""],
+				["+", "- sends a message while a tool call is still running"],
+			] },
+		] },
+	{ id: "delegated-agents", kind: "update", age: "13 days", installed: "v1",
+		text: "Update: adds a limit on when Goblin may look at your own terminal panes, and drops a rule that no longer applies.",
+		files: [
+			{ path: "SKILL.md", lines: [
+				[" ", "## Hosting delegated agents"],
+				["-", "Goblin may read any pane in the shared session."],
+				["+", "Goblin reads only the panes it started. It asks before reading any other pane."],
+				[" ", "Start each agent in its own pane and name the pane after the task."],
+			] },
+			{ path: "references/cleanup.md", lines: [
+				["-", "Close idle panes after 24 hours."],
+				["+", "Close idle panes after 8 hours, and say which ones were closed."],
+			] },
+		] },
+	{ id: "frost-check", kind: "new", age: "2 days",
+		text: "Check the overnight frost forecast, list the plants to bring indoors, and re-check the list after each change.",
+		files: [{ path: "SKILL.md", lines: [] }] },
+];
+
+const DROPPED = [["Planning a weekend trip", 12], ["Garden notes", 9], ["Trivia night", 8], ["Sourdough starter troubleshooting", 3], ["6 other conversations", 9]];
+
+const RECENT = [
+	{ id: "r3", title: "Kitchen renovation", when: "Oct 22", kept: 2, facts: ["Goblin is holding the cabinet order until the operator confirms the final layout.", "The countertop measurements were checked twice. Choosing the finish is still pending."] },
+	{ id: "r4", title: "Photography class", when: "Oct 21", kept: 19, facts: ["The operator approved street reflections as the theme of the final portfolio.", "The operator rejected a fixed shot-count target in favor of a three-good-frames-per-outing rule."], more: 17 },
+	{ id: "r5", title: "Bike repair", when: "Oct 21", kept: 2 },
+	{ id: "r6", title: "Garden notes", when: "Oct 21", kept: 5 },
+];
+const NOTHING = [
+	{ title: "Trivia night", when: "Today, 23:56", n: 8 },
+	{ title: "Quick question", when: "Today, 23:45", n: 1 },
+	{ title: "Test message", when: "Oct 22", n: 2 },
+];
+const DROPPED_NOW = [["Planning a weekend trip", 12], ["Garden notes", 9], ["Sourdough starter troubleshooting", 3], ["6 other conversations", 9]];
+
+const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const act = (id, v, label, cls = "") => `<button class="btn ${cls}" data-act="${id}" data-val="${v}">${label}</button>`;
+const toggle = (id, label) => `<button class="btn quiet" data-toggle="${id}" aria-expanded="${!!s.open[id]}">${label}</button>`;
+
+function memoryProblem() {
+	const a = s.acted.memory;
+	if (a === "saved") return `<article class="item"><p class="done" style="margin:0"><b>All 41 exchanges saved.</b> Memory is working again.</p></article>`;
+	if (a === "dropped") return `<article class="item"><p class="done" style="margin:0">Dropped 41 exchanges. You can bring them back from the Memory page. <button class="link" data-act="memory" data-val="">Undo</button></p></article>`;
+	const confirm = a === "confirm";
+	return `<article class="item problem">
+		<div class="head"><h3>Memory can't save new conversations</h3><span class="age">13 days</span></div>
+		<p>OpenRouter rejects the key that memory uses, so every save fails. You can still chat, and Goblin can still recall what it already knows.</p>
+		<p class="fix">To fix it, update the key in pass-keys, then restart memory.</p>
+		${s.open.dropped ? `<div class="more"><ul>${DROPPED.map(([t, n]) => `<li><span>${esc(t)}</span><span>${n}</span></li>`).join("")}</ul></div>` : ""}
+		<div class="wait"><b>If you wait:</b><span>41 exchanges stay queued, and more join them. None are lost.</span></div>
+		${confirm
+			? `<p><b>Drop all 41?</b> Goblin won't remember these conversations unless you bring them back.</p>
+			   <div class="actions">${act("memory", "dropped", "Drop 41 exchanges", "risky")}${act("memory", "", "Keep them", "quiet")}</div>`
+			: `<div class="actions">${act("memory", "saved", "Try again", "primary")}${act("memory", "confirm", "Drop them")}${toggle("dropped", s.open.dropped ? "Hide the 41" : "Show the 41")}</div>`}
+	</article>`;
+}
+
+function programCard() {
+	const a = s.acted.program;
+	if (a === "approved") return `<article class="item"><p class="done" style="margin:0"><b>Approved.</b> garden-care now runs at 10:35.</p></article>`;
+	if (a === "rejected") return `<article class="item"><p class="done" style="margin:0">Rejected. garden-care stays at 9:00.</p></article>`;
+	return `<article class="item">
+		<div class="head"><h3>Garden program wants to run later</h3><span class="age">2 days</span></div>
+		<p>It says the 9:00 run comes too early to see the day's updated frost forecast.</p>
+		<dl class="changes">
+			<dt>Sun, Tue, Wed</dt><dd><span class="old">9:00</span> <span class="new">10:35</span></dd>
+			<dt>May start late by</dt><dd><span class="old">4 hours</span> <span class="new">1 hour</span></dd>
+			<dt>Its instructions</dt><dd class="new">Rewritten</dd>
+		</dl>
+		${s.open.charter ? `<div class="more">Its grant changes from "reminders and list edits" to "reminders, list edits and drafting orders". Purchases stay draft-only. It also says to check frost warnings that change which plants need moving indoors.</div>` : ""}
+		<div class="wait"><b>If you wait:</b><span>it keeps running at 9:00 under the current rules.</span></div>
+		<div class="actions">${act("program", "approved", "Approve", "primary")}${act("program", "rejected", "Reject")}${toggle("charter", s.open.charter ? "Hide changes" : "What changed in the instructions")}</div>
+	</article>`;
+}
+
+const diffHtml = (k) => k.kind === "new" ? `<p class="newnote">New skill, 1 file. Nothing is installed under this name yet.</p>` : `<div class="diff">
+	${k.files.map((f) => `<div class="file"><div class="filehead"><span>${esc(f.path)}</span><span>${f.lines.filter((l) => l[0] === "+").length} added, ${f.lines.filter((l) => l[0] === "-").length} removed</span></div>
+	${f.lines.map(([m, x]) => `<div class="ln ${m === "+" ? "add" : m === "-" ? "del" : ""}"><span class="mk">${m === " " ? "" : m}</span><span>${esc(x)}</span></div>`).join("")}</div>`).join("")}
+</div>`;
+
+function skillsCard() {
+	const left = SKILLS.filter((k) => !["installed", "discarded"].includes(s.acted["skill:" + k.id]));
+	const count = SKILLS.length;
+	const updates = SKILLS.filter((k) => k.kind === "update").length;
+	return `<article class="item">
+		<div class="head"><h3>${count} skills wait for a yes or no</h3></div>
+		<p class="fix">${updates} of them change skills you already have. They do nothing until you install them.</p>
+		${SKILLS.map((k) => {
+			const a = s.acted["skill:" + k.id];
+			const upd = k.kind === "update";
+			const hidden = !!s.open["hd:" + k.id];
+			return `<div class="skill">
+				<div class="head"><span class="name">${k.id} <span class="tag ${upd ? "upd" : "newtag"}">${upd ? "Update from " + k.installed : "New"}</span></span><span class="age">${k.age}</span></div>
+				${a ? `<p class="done">${a === "installed" ? (upd ? "<b>Updated.</b>" : "<b>Installed.</b>") : "Discarded."}</p>`
+					: `<p>${esc(k.text)}</p>
+					${upd && hidden ? "" : diffHtml(k)}
+					<div class="actions">${act("skill:" + k.id, "installed", upd ? "Install update" : "Install")}${act("skill:" + k.id, "discarded", "Discard")}${upd ? toggle("hd:" + k.id, hidden ? "Show the diff" : "Hide the diff") : `<button class="btn quiet">Read it</button>`}</div>`}
+			</div>`;
+		}).join("")}
+		${left.length ? `<div class="wait"><b>If you wait:</b><span>Goblin keeps working with the skills it has.</span></div>` : ""}
+	</article>`;
+}
+
+function attentionPage() {
+	const outage = s.scene === "outage" && !["saved", "dropped"].includes(s.acted.memory);
+	const program = !s.acted.program;
+	const skillsLeft = SKILLS.filter((k) => !s.acted["skill:" + k.id]).length;
+	const decisions = (program ? 1 : 0) + skillsLeft;
+	const parts = [];
+	if (outage) parts.push("1 thing is broken.");
+	if (decisions) parts.push(`${decisions} decision${decisions === 1 ? "" : "s"} wait for you.`);
+	const clear = !parts.length;
+	return `<h1>Attention</h1>
+		<p class="summary">${clear ? "Nothing needs you." : parts.join(" ")}</p>
+		${s.scene === "outage" ? `<section><h2>Broken</h2>${memoryProblem()}</section>` : ""}
+		${clear
+			? `<section class="allclear"><h3>All clear</h3><p class="quietline">Memory is saving. No work is waiting on you.</p></section>`
+			: `<section><h2>Your decisions</h2>${programCard()}${skillsCard()}</section>`}
+		<section><h2>Work in progress</h2><p class="quietline" style="margin:0">Nothing is running right now.</p></section>
+		<div class="footer"><span class="quietline">Notifications are on for this device.</span><button class="link">Change</button></div>`;
+}
+
+function memoryPage() {
+	const outage = s.scene === "outage";
+	const stillBroken = outage && !["saved", "dropped"].includes(s.acted.memory);
+	const restored = s.acted.restore === "restored";
+	const health = stillBroken
+		? `<div class="health"><span class="dot bad"></span><div><h1>Memory can't save</h1><p class="summary">Last save Oct 22. 41 exchanges are waiting.</p></div></div>`
+		: `<div class="health"><span class="dot"></span><div><h1>Memory is working</h1><p class="summary">Last save today at 23:56. Last recall today at 22:21.</p></div></div>`;
+	const issue = stillBroken
+		? `<section>${memoryProblem()}</section>`
+		: restored
+			? `<section><article class="item"><p class="done" style="margin:0"><b>33 exchanges queued.</b> Memory will save them in the background.</p></article></section>`
+			: !outage || s.acted.memory === "dropped"
+				? `<section><article class="item">
+					<div class="head"><h3>33 exchanges were dropped during the outage</h3><span class="age">Oct 22 to Nov 6</span></div>
+					<p>They come from 9 conversations, including Garden notes. Goblin can't recall them.</p>
+					<div class="actions">${act("restore", "restored", "Save them now", "primary")}${toggle("dropped", s.open.dropped ? "Hide the list" : "Show the list")}</div>
+					<p class="pending"><span class="tag pendtag">Design only</span> Not built yet. This waits for memory tuning, so the button only shows the intended result here.</p>
+					${s.open.dropped ? `<div class="more"><ul>${DROPPED_NOW.map(([t, n]) => `<li><span>${esc(t)}</span><span>${n}</span></li>`).join("")}</ul></div>` : ""}
+				</article></section>`
+				: "";
+	const waiting = stillBroken ? `<div class="row"><div class="rowhead"><span class="rowtitle">Trivia night</span><span class="when">Nov 5</span></div><span class="verdict waiting">Waiting to save</span></div>` : "";
+	const rows = RECENT.map((r) => `
+		<div class="row">
+			<button class="rowbtn" data-toggle="${r.id}" aria-expanded="${!!s.open[r.id]}">
+				<span class="rowhead"><span class="rowtitle">${esc(r.title)}</span><span class="when">${r.when}</span></span>
+				<span class="verdict ${r.kept ? "kept" : ""}">${r.kept ? `Kept ${r.kept} fact${r.kept === 1 ? "" : "s"}` : "Nothing kept"}</span>
+			</button>
+			${s.open[r.id] ? (r.facts
+				? `<ul class="facts">${r.facts.map((f) => `<li>${esc(f)}</li>`).join("")}${r.more ? `<li>and ${r.more} more</li>` : ""}</ul><div class="actions"><button class="btn quiet">Open conversation</button><button class="btn quiet">Forget this</button></div>`
+				: `<div class="actions"><button class="btn quiet">Open conversation</button></div>`) : ""}
+		</div>`).join("");
+	return `${health}${issue}
+		<section><h2>Recent saves</h2><input class="search" type="search" placeholder="Search what Goblin remembers" aria-label="Search memory" />
+		<div style="margin-top:.35rem">${waiting}${rows}</div>
+		${outage ? "" : `<button class="fold" data-toggle="nothing" aria-expanded="${!!s.open.nothing}"><span class="chev">${s.open.nothing ? "▾" : "▸"}</span><span class="rowtitle">Nothing kept</span><span class="when">11 exchanges</span></button>
+		${s.open.nothing ? NOTHING.map((r) => `<div class="row nested"><div class="rowhead"><span>${esc(r.title)}${r.n > 1 ? ` <span class="when">${r.n} exchanges</span>` : ""}</span><span class="when">${r.when}</span></div></div>`).join("") : ""}`}
+		</section>
+		<div class="footer"><span class="quietline">67 exchanges processed so far.</span><button class="link">Memory settings</button></div>`;
+}
+
+function render() {
+	document.getElementById("page").innerHTML = s.page === "attention" ? attentionPage() : memoryPage();
+	document.getElementById("frame").classList.toggle("phone", s.width === "phone");
+	document.getElementById("tabAttention").classList.toggle("on", s.page === "attention");
+	document.getElementById("tabMore").classList.toggle("on", s.page === "memory");
+	document.querySelectorAll(".seg").forEach((seg) => {
+		seg.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(s[seg.dataset.ctl] === b.dataset.v)));
+	});
+}
+
+document.addEventListener("click", (e) => {
+	const b = e.target.closest("button");
+	if (!b) return;
+	const seg = b.closest(".seg");
+	if (seg) { s[seg.dataset.ctl] = b.dataset.v; render(); return; }
+	if (b.id === "reset") { s = initial(); render(); return; }
+	if (b.dataset.act) { s.acted[b.dataset.act] = b.dataset.val; render(); return; }
+	if (b.dataset.toggle) { s.open[b.dataset.toggle] = !s.open[b.dataset.toggle]; render(); }
+});
+
+// Deep links let each state be opened and captured directly.
+const q = new URLSearchParams(location.search);
+for (const k of ["page", "scene", "width"]) if (q.get(k)) s[k] = q.get(k);
+render();
+</script>
+</body>
+</html>
+

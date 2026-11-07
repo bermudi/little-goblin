@@ -16,6 +16,7 @@ export const APP_PAGES = [
 	"log",
 	"projects",
 	"notes",
+	"archive",
 ] as const;
 export type AppPageKey = (typeof APP_PAGES)[number];
 

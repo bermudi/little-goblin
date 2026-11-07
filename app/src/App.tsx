@@ -9,6 +9,7 @@ import type {
 	AppProject,
 	AppSearchHit,
 } from "../../src/http/app-wire.ts";
+import { ArchiveView } from "./ArchiveView.tsx";
 import { AttentionView } from "./AttentionView.tsx";
 import {
 	ApiError,
@@ -35,10 +36,10 @@ import {
 	type StagedUpload,
 } from "./ChatView.tsx";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
+import { DelegationsView } from "./DelegationsView.tsx";
 import { LogView } from "./LogView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { NotesIndex, NoteView } from "./NoteView.tsx";
-import { DelegationsView } from "./DelegationsView.tsx";
 import { ProgramsView } from "./ProgramsView.tsx";
 import { NewProjectDialog, ProjectsIndex, ProjectView } from "./ProjectView.tsx";
 import { SettingsView } from "./SettingsView.tsx";
@@ -46,6 +47,7 @@ import { SkillsView } from "./SkillsView.tsx";
 import { FilesView } from "./StateViews.tsx";
 import { StatusView } from "./StatusView.tsx";
 import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
+import { useUndoToast } from "./undoToast.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { WindowView } from "./WindowView.tsx";
 
@@ -112,7 +114,10 @@ const newHistorySegment = () => crypto.getRandomValues(new Uint32Array(2)).join(
 
 interface BrowserNavigation {
 	readonly currentEntry: { readonly key: string };
-	traverseTo(key: string): { committed: Promise<unknown>; finished: Promise<unknown> };
+	traverseTo(key: string): {
+		committed: Promise<unknown>;
+		finished: Promise<unknown>;
+	};
 }
 
 // Native keys also identify entries created before we started tagging history.
@@ -146,7 +151,10 @@ function relTime(iso: string): string {
 	if (diffHr < 24) return `${diffHr}h`;
 	const diffDay = Math.floor(diffHr / 24);
 	if (diffDay < 7) return `${diffDay}d`;
-	return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+	return new Date(ts).toLocaleDateString(undefined, {
+		month: "short",
+		day: "numeric",
+	});
 }
 
 // Mirrors conversation.ts's flatLine — the client does its own pass
@@ -462,8 +470,9 @@ const OPS_GLYPHS: {
 	},
 ];
 
-// Archive skips the confirm (reversible); delete keeps it — the one
-// destructive action. Hover actions overlay the preview line so the
+// Archive and delete both skip the confirm: each raises an Undo toast
+// instead (delete is held back for that window — see the App's
+// deleteConversationHeld). Hover actions overlay the preview line so the
 // title never trades width for them.
 function ConversationRow({
 	conv,
@@ -472,7 +481,7 @@ function ConversationRow({
 	onRenamed,
 	onToggleArchived,
 	onTogglePinned,
-	onDeleted,
+	onDelete,
 	onError,
 	token,
 }: {
@@ -482,7 +491,7 @@ function ConversationRow({
 	onRenamed: () => void;
 	onToggleArchived: (id: string, archived: boolean) => void;
 	onTogglePinned: (id: string, pinned: boolean) => void;
-	onDeleted: (id: string) => void;
+	onDelete: (conv: AppConversationList["conversations"][number]) => void;
 	onError: (message: string) => void;
 	token: string | null;
 }) {
@@ -567,10 +576,7 @@ function ConversationRow({
 		setDraft(title ?? "");
 		setEditing(true);
 	};
-	const remove = () => {
-		if (!window.confirm(`Delete "${title ?? preview ?? "this conversation"}"?`)) return;
-		void deleteConversation(token, conv.id).then(() => onDeleted(conv.id), failed("delete"));
-	};
+	const remove = () => onDelete(conv);
 
 	if (editing) {
 		return (
@@ -884,7 +890,10 @@ function AppShell() {
 	const searchSeq = useRef(0);
 	// The empty state has the composer too — its send creates the
 	// conversation, then ChatView delivers the parked message as `seed`.
-	const [seed, setSeed] = useState<{ id: string; parts: UIMessage["parts"] } | null>(null);
+	const [seed, setSeed] = useState<{
+		id: string;
+		parts: UIMessage["parts"];
+	} | null>(null);
 	// Staged uploads are owned here, above any composer: the first send
 	// swaps the empty state's composer for the new conversation's, and
 	// uploads still in flight (or failed chips) must carry across that
@@ -927,7 +936,11 @@ function AppShell() {
 		startSeq.current += 1;
 		setStartFailed(false);
 	};
-	const [archivedOpen, setArchivedOpen] = useState(false);
+	const undoToast = useUndoToast();
+	// Deleted rows stay out of the lists while their DELETE is held back
+	// for the undo window.
+	const [heldDeletes, setHeldDeletes] = useState<ReadonlySet<string>>(new Set());
+	const rowRemovedLatest = useRef<(id: string) => void>(() => {});
 	const listSeq = useRef(0);
 	// The deep link applies once — after the first list load — so an
 	// operator's own navigation is never overridden later.
@@ -1307,6 +1320,18 @@ function AppShell() {
 		pushRoute("/app/projects");
 	};
 
+	const openArchive = () => {
+		if (page === "archive") return;
+		if (!leaveDirty()) return;
+		clearStartFailure();
+		setPage("archive");
+		setProjectId(null);
+		setNoteId(null);
+		setWindowConv(null);
+		setComposeStaged(false);
+		pushRoute("/app/archive");
+	};
+
 	const openNotesIndex = () => {
 		if (!leaveDirty()) return;
 		clearStartFailure();
@@ -1375,6 +1400,74 @@ function AppShell() {
 		} else {
 			setCurrent(null);
 		}
+	};
+
+	const rowLabel = (c: AppConversationList["conversations"][number]) => {
+		const title = flatTitle(c.title);
+		const preview = flatLine(c.preview);
+		return title ?? (preview === "" ? "new conversation" : preview);
+	};
+	const unarchive = (c: AppConversationList["conversations"][number]) => {
+		void patchConversation(token, c.id, { archived: false }).then(
+			() => {
+				setRowError(null);
+				void refresh();
+			},
+			(err: unknown) =>
+				setRowError(
+					`Couldn't unarchive "${rowLabel(c)}": ` +
+						(err instanceof Error ? err.message : String(err)),
+				),
+		);
+	};
+	const archivedWithUndo = (c: AppConversationList["conversations"][number]) => {
+		undoToast.show({
+			message: `Archived "${rowLabel(c)}"`,
+			undo: () => unarchive(c),
+		});
+	};
+	// The settle callback runs seconds later: it must see the selection and
+	// page of that moment, not of the click.
+	rowRemovedLatest.current = rowRemoved;
+	// The server delete is irreversible: it keeps its confirm, then waits
+	// out the undo window. The row hides now, the DELETE fires when the
+	// toast settles, and Undo just un-hides it. Closing the page inside the
+	// window cancels it.
+	const deleteConversationHeld = (c: AppConversationList["conversations"][number]) => {
+		if (!window.confirm(`Delete "${rowLabel(c)}"?`)) return;
+		const release = () =>
+			setHeldDeletes((prev) => {
+				const next = new Set(prev);
+				next.delete(c.id);
+				return next;
+			});
+		setRowError(null);
+		setHeldDeletes((prev) => new Set(prev).add(c.id));
+		rowRemoved(c.id);
+		undoToast.show({
+			message: `Deleted "${rowLabel(c)}"`,
+			undo: release,
+			settle: () => {
+				void deleteConversation(token, c.id).then(
+					() => {
+						// Drop the row before releasing the hold, so it can't
+						// reappear while (or if) the refresh is pending or fails.
+						setConversations((prev) => prev?.filter((x) => x.id !== c.id) ?? prev);
+						release();
+						// It may have been reopened (search, history) during the window.
+						rowRemovedLatest.current(c.id);
+						void refresh();
+					},
+					(err: unknown) => {
+						release();
+						setRowError(
+							`Couldn't delete "${rowLabel(c)}": ` +
+								(err instanceof Error ? err.message : String(err)),
+						);
+					},
+				);
+			},
+		});
 	};
 
 	const openPage = (p: AppPageKey) => {
@@ -1478,7 +1571,7 @@ function AppShell() {
 	// section toggle. Project-bound chats leave the rail for their
 	// project page; `?? null` keeps pre-projects fixtures (field
 	// absent) on the rail.
-	const all = conversations ?? [];
+	const all = (conversations ?? []).filter((c) => !heldDeletes.has(c.id));
 	const unbound = all.filter((c) => (c.projectId ?? null) === null);
 	const active = unbound.filter((c) => c.archivedAt === null);
 	const rail = [
@@ -1515,7 +1608,7 @@ function AppShell() {
 	// page family is open in the frame. The panel's surface and the open
 	// page can light two glyphs at once — the spine names both honestly.
 	const pagePane: ListPane | null =
-		page === "chat" || page === "window"
+		page === "chat" || page === "window" || page === "archive"
 			? "chats"
 			: page === "projects" || page === "project"
 				? "projects"
@@ -1566,18 +1659,17 @@ function AppShell() {
 				}}
 				onToggleArchived={(id, isArchived) => {
 					setRowError(null);
-					if (isArchived) rowRemoved(id);
+					if (isArchived) {
+						rowRemoved(id);
+						archivedWithUndo(c);
+					}
 					void refresh();
 				}}
 				onTogglePinned={() => {
 					setRowError(null);
 					void refresh();
 				}}
-				onDeleted={(id) => {
-					setRowError(null);
-					rowRemoved(id);
-					void refresh();
-				}}
+				onDelete={deleteConversationHeld}
 				onError={setRowError}
 			/>
 		</li>
@@ -1619,32 +1711,31 @@ function AppShell() {
 			{searchError === null && hits.length === 0 && <p className="empty">No matches.</p>}
 		</>
 	);
+	// The archive is a page, not a rail section — the rail only links to
+	// it, so a long archive never crowds the list.
 	const archivedRows = archived.length > 0 && (
-		<>
-			<button
-				type="button"
-				className="rail-archived"
-				aria-expanded={archivedOpen}
-				onClick={() => setArchivedOpen((v) => !v)}
+		<button
+			type="button"
+			className="rail-archived"
+			aria-current={page === "archive" ? "page" : undefined}
+			onClick={openArchive}
+		>
+			Archived <span className="count">{archived.length}</span>
+			<svg
+				className="chev"
+				viewBox="0 0 24 24"
+				fill="none"
+				stroke="currentColor"
+				strokeWidth="1.75"
+				strokeLinecap="round"
+				strokeLinejoin="round"
+				width="12"
+				height="12"
+				aria-hidden="true"
 			>
-				Archived <span className="count">{archived.length}</span>
-				<svg
-					className="chev"
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					strokeWidth="1.75"
-					strokeLinecap="round"
-					strokeLinejoin="round"
-					width="12"
-					height="12"
-					aria-hidden="true"
-				>
-					<path d="M6 9l6 6 6-6" />
-				</svg>
-			</button>
-			{archivedOpen && <ul>{archived.map(renderRow)}</ul>}
-		</>
+				<path d="M9 6l6 6-6 6" />
+			</svg>
+		</button>
 	);
 
 	// The attention glyph's dot doubles in the accessible name — the
@@ -1954,6 +2045,28 @@ function AppShell() {
 							</svg>
 						</button>
 					)}
+					{phone && page === "archive" && (
+						<button
+							type="button"
+							className="mobile-back"
+							aria-label="Back to chats"
+							title="Chats"
+							onClick={() => select(null)}
+						>
+							<svg
+								viewBox="0 0 24 24"
+								fill="none"
+								stroke="currentColor"
+								strokeWidth="1.75"
+								strokeLinecap="round"
+								strokeLinejoin="round"
+								width="19"
+								height="19"
+							>
+								<path d="M14.5 5 7.5 12l7 7" />
+							</svg>
+						</button>
+					)}
 					{phone && page === "project" && (
 						<button
 							type="button"
@@ -1982,6 +2095,7 @@ function AppShell() {
 					)}
 					{page === "window" && <span className="header-title">Context window</span>}
 					{page === "projects" && <span className="header-title">Projects</span>}
+					{page === "archive" && <span className="header-title">Archive</span>}
 					{page === "chat" && current !== null && (
 						<button
 							type="button"
@@ -2161,6 +2275,30 @@ function AppShell() {
 						projects={projectList}
 						onOpen={openProject}
 						onNew={() => setCreateProjectOpen(true)}
+					/>
+				)}
+				{page === "archive" && (
+					<ArchiveView
+						rows={archived.map((c) => ({
+							id: c.id,
+							label: rowLabel(c),
+							preview:
+								flatTitle(c.title) !== null && flatLine(c.preview) !== ""
+									? flatLine(c.preview)
+									: null,
+							archivedAt: c.archivedAt!,
+							updatedAt: c.updatedAt,
+						}))}
+						error={rowError}
+						onOpen={openConversation}
+						onUnarchive={(id) => {
+							const c = archived.find((x) => x.id === id);
+							if (c !== undefined) unarchive(c);
+						}}
+						onDelete={(id) => {
+							const c = archived.find((x) => x.id === id);
+							if (c !== undefined) deleteConversationHeld(c);
+						}}
 					/>
 				)}
 				{page === "notes" && (
@@ -2530,6 +2668,7 @@ function AppShell() {
 					onClose={() => setSourcesOpen(false)}
 				/>
 			)}
+			{undoToast.view}
 			{createProjectOpen && (
 				<NewProjectDialog
 					token={token}

@@ -596,10 +596,10 @@ p code,
 }
 .rail-archived .chev {
 	margin-left: auto;
-	transition: transform 120ms ease;
 }
-.rail-archived[aria-expanded="true"] .chev {
-	transform: rotate(180deg);
+.rail-archived[aria-current="page"] {
+	background: var(--app-active);
+	color: var(--app-fg);
 }
 
 /* ---------- the C gutter (design/app.md → mobile-nav ruling) ----------
@@ -2882,6 +2882,55 @@ button.pathchip:hover svg {
 	}
 }
 
+/* Archive page (design/app.md → Archive page): a dtable whose rows are not
+   one big button — the title is the open link, the trailing cell holds
+   Unarchive/Delete instead of the chevron. Groups share one header. */
+.ops-h2 .count {
+	font-family: var(--font-mono);
+	font-size: 10px;
+	color: var(--app-fg-subtle);
+}
+.ops-h3 {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--app-fg-subtle);
+	margin: 1rem 0.4rem 0.4rem;
+}
+.archive-table .dt-row {
+	cursor: default;
+	grid-template-columns: var(--dt-cols);
+}
+.archive-table .dt-row::after {
+	content: none;
+}
+.archive-table .dt-head {
+	grid-template-columns: var(--dt-cols);
+}
+.archive-table > .dt-row:first-child {
+	border-top: 0;
+}
+.archive-table a.dt-main {
+	color: var(--app-fg);
+	text-decoration: none;
+}
+.archive-table a.dt-main:hover {
+	text-decoration: underline;
+}
+.archive-table .dt-actions {
+	overflow: visible;
+	gap: 0.35rem;
+	justify-content: flex-end;
+}
+.archive-table .dt-actions .ghost {
+	padding: 0.2rem 0.5rem;
+	font-size: 11.5px;
+}
+@container (max-width: 40rem) {
+	.archive-table .dt-row {
+		grid-template-columns: minmax(0, 1fr) auto;
+	}
+}
+
 /* Long text keeps a readable line length inside its own block; the page
    around it stays full width. .prose is the block; the selectors below
    apply it to the long text that already exists on non-chat pages, until
@@ -4986,6 +5035,60 @@ select.ui-input option {
 	*::after {
 		transition: none !important;
 		animation: none !important;
+	}
+}
+
+/* ---------- undo toast (design/app.md → Undo) ----------
+   One at a time, top-centre under the page header on desktop (the
+   composer owns the bottom edge); on phones it rides above the thumb bar. */
+.undo-toast {
+	position: fixed;
+	left: 50%;
+	top: 3.25rem;
+	transform: translateX(-50%);
+	z-index: 60;
+	display: flex;
+	align-items: center;
+	gap: 0.5rem;
+	max-width: min(28rem, calc(100vw - 2rem));
+	padding: 0.45rem 0.5rem 0.45rem 0.85rem;
+	border: 1px solid var(--app-control-border);
+	border-radius: 10px;
+	background: var(--app-gray-100);
+	color: var(--app-fg);
+	font-size: 13px;
+	box-shadow: 0 6px 24px rgb(0 0 0 / 0.25);
+}
+.undo-message {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.undo-action {
+	font-weight: 600;
+	color: var(--app-accent);
+	padding: 0.2rem 0.5rem;
+	border-radius: 6px;
+}
+.undo-close {
+	color: var(--app-fg-subtle);
+	padding: 0.2rem 0.45rem;
+	border-radius: 6px;
+	line-height: 1;
+}
+.undo-action:hover,
+.undo-close:hover {
+	background: var(--app-hover);
+}
+@media (max-width: 720px) {
+	.undo-toast {
+		left: 0.75rem;
+		right: 0.75rem;
+		top: auto;
+		transform: none;
+		max-width: none;
+		bottom: calc(4.5rem + env(safe-area-inset-bottom));
 	}
 }
 

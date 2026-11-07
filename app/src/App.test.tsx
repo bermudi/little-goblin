@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { UIMessage } from "ai";
+import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Window } from "happy-dom";
-import type { UIMessage } from "ai";
 import {
 	authDefaults,
 	parseConfig,
@@ -438,14 +438,14 @@ describe("rail row actions and the pinned pool", () => {
 		expect(rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
 	});
 
-	test("archive shelves the row; the archived row swaps pin/archive for unarchive and delete", async () => {
+	test("archive shelves the row; the rail links to the Archive page, which offers unarchive and delete", async () => {
 		root = createRoot(container);
 		await act(async () => {
 			root?.render(<App />);
 		});
 		await settle();
 
-		// Delete is unreachable from the rail — the archived section first.
+		// Delete is unreachable from the rail — the archive page only.
 		expect(
 			[...container.querySelectorAll(".conv-actions button")].some(
 				(b) => b.getAttribute("aria-label") === "Delete",
@@ -461,17 +461,80 @@ describe("rail row actions and the pinned pool", () => {
 		// Only the fresh row shelves — the pinned row stays.
 		expect(rowActions("fresh chat")).toEqual([]);
 		expect(rowActions("pinned chat")).toEqual(["Unpin", "Rename", "Archive"]);
-		const toggle = container.querySelector(".rail-archived");
-		expect(toggle?.textContent).toBe("Archived 1");
+		const link = container.querySelector(".rail-archived");
+		expect(link?.textContent).toBe("Archived 1");
 
-		await click(toggle);
-		expect(rowActions("fresh chat")).toEqual(["Rename", "Unarchive", "Delete"]);
+		// The rail holds no archived rows; the link opens the page.
+		await click(link);
+		expect(container.querySelector("main > header .header-title")?.textContent).toBe("Archive");
+		const archiveRows = [...container.querySelectorAll(".archive-table .dt-row")];
+		expect(archiveRows.map((r) => r.querySelector(".dt-main")?.childNodes[0]?.textContent)).toEqual(
+			["fresh chat"],
+		);
+		expect([...archiveRows[0]!.querySelectorAll("button")].map((b) => b.textContent)).toEqual([
+			"Unarchive",
+			"Delete",
+		]);
 
+		await click(archiveRows[0]!.querySelector("button"));
+		expect(patches).toEqual([
+			{ id: "fresh", body: { archived: true } },
+			{ id: "fresh", body: { archived: false } },
+		]);
+		expect(container.querySelector(".archive-table")).toBeNull();
+		expect(container.querySelector(".ops .empty")?.textContent).toContain("Nothing archived");
+	});
+
+	test("the Archive page filters by title and preview", async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await settle();
+		for (const title of ["fresh chat", "pinned chat"]) {
+			await click(
+				[...container.querySelectorAll(".conv")]
+					.find((r) => r.querySelector(".conv-title")?.textContent === title)
+					?.querySelector('button[aria-label="Archive"]'),
+			);
+		}
+		await click(container.querySelector(".rail-archived"));
+		const names = () =>
+			[...container.querySelectorAll(".archive-table .dt-main")].map(
+				(n) => n.childNodes[0]?.textContent,
+			);
+		expect(names()).toHaveLength(2);
+		const input = container.querySelector('input[aria-label="Filter archived chats"]')!;
+		await act(async () => {
+			(input as HTMLElement).focus();
+			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(
+				input,
+				"pinned",
+			);
+			input.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+			input.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+			);
+		});
+		expect(names()).toEqual(["pinned chat"]);
+	});
+
+	test("archive raises an Undo toast that unshelves the row", async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await settle();
 		await click(
 			[...container.querySelectorAll(".conv")]
 				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
-				?.querySelectorAll(".conv-actions button")[1],
+				?.querySelectorAll(".conv-actions button")[2],
 		);
+		expect(container.querySelector(".undo-toast")?.textContent).toContain('Archived "fresh chat"');
+		expect(rowActions("fresh chat")).toEqual([]);
+
+		await click(container.querySelector(".undo-action"));
+		expect(container.querySelector(".undo-toast")).toBeNull();
 		expect(patches).toEqual([
 			{ id: "fresh", body: { archived: true } },
 			{ id: "fresh", body: { archived: false } },
@@ -1115,16 +1178,27 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		];
 	};
 	const selectFixture = async (archived = false) => {
-		if (archived) await click(container.querySelector(".rail-archived"));
-		await click(container.querySelector(".conv-main"));
+		if (archived) {
+			await click(container.querySelector(".rail-archived"));
+			await click(container.querySelector(".archive-table a.dt-main"));
+		} else await click(container.querySelector(".conv-main"));
 		expect(win.location.pathname).toBe("/app/c/fixture");
 	};
-	const removeFixture = async (action: "Archive" | "Delete") =>
+	// Archive is a rail row action; Delete lives on the Archive page.
+	const clickRowAction = (action: "Archive" | "Delete") =>
 		click(
-			[...container.querySelectorAll(".conv-actions button")].find(
-				(b) => (b.getAttribute("aria-label") ?? b.textContent) === action,
-			),
+			action === "Archive"
+				? container.querySelector('.conv-actions button[aria-label="Archive"]')
+				: [...container.querySelectorAll(".archive-table button")].find(
+						(b) => b.textContent === "Delete",
+					),
 		);
+	// Delete is held back for the undo window; closing the toast makes it
+	// final, so the helper does that to reach the settled state.
+	const removeFixture = async (action: "Archive" | "Delete") => {
+		await clickRowAction(action);
+		if (action === "Delete") await click(container.querySelector(".undo-close"));
+	};
 
 	test("the chat header opens the thread-sources sheet for the open conversation", async () => {
 		seedConversation();
@@ -1231,59 +1305,117 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(ctrl.defaultPrevented).toBe(false);
 	});
 
-	for (const action of ["Archive", "Delete"] as const) {
-		for (const label of [
-			"Settings",
-			"Memories",
-			"Delegations",
-			"Programs",
-			"Status",
-			"dirty Settings",
-		]) {
-			test(`${action} of the remembered conversation preserves ${label} without a discard prompt`, async () => {
-				const archived = action === "Delete";
-				seedConversation(archived);
-				await mount();
-				await selectFixture(archived);
-				await openPage(label === "dirty Settings" ? "Settings" : label);
-				if (label === "dirty Settings") await dirtyTheForm();
-				const page = container.querySelector("main > header .header-title")?.textContent;
-				const path = win.location.pathname;
-				const state = win.history.state;
-				const length = win.history.length;
-				const editor = container.querySelector(".settings");
-
-				await removeFixture(action);
-
-				expect(win.location.pathname).toBe(path);
-				expect(win.history.state).toEqual(state);
-				expect(win.history.length).toBe(length);
-				expect(container.querySelector("main > header .header-title")?.textContent).toBe(page);
-				expect(container.querySelector(".settings")).toBe(editor);
-				expect(confirmMessages).toEqual(archived ? ['Delete "fixture chat"?'] : []);
-				if (label === "dirty Settings") {
-					expect(container.textContent).toContain("unsaved");
-					expect(operatorChips()).toBe(0);
-				}
-				if (archived) expect(conversations).toEqual([]);
-				else {
-					expect(conversations[0]?.archivedAt).not.toBeNull();
-					await click(container.querySelector(".rail-archived"));
-					expect(container.querySelector(".conv")).not.toBeNull();
-					expect(container.querySelector(".conv.current")).toBeNull();
-				}
-			});
-		}
-		test(`${action} of the open conversation still goes to empty chat`, async () => {
-			seedConversation(action === "Delete");
+	for (const label of [
+		"Settings",
+		"Memories",
+		"Delegations",
+		"Programs",
+		"Status",
+		"dirty Settings",
+	]) {
+		test(`Archive of the remembered conversation preserves ${label} without a discard prompt`, async () => {
+			seedConversation();
 			await mount();
-			await selectFixture(action === "Delete");
-			await removeFixture(action);
-			expect(win.location.pathname).toBe("/app/");
-			expect(container.querySelector(".chat")?.textContent).toContain("Pick a conversation");
-			expect(container.querySelector("header .header-title")).toBeNull();
+			await selectFixture();
+			await openPage(label === "dirty Settings" ? "Settings" : label);
+			if (label === "dirty Settings") await dirtyTheForm();
+			const page = container.querySelector("main > header .header-title")?.textContent;
+			const path = win.location.pathname;
+			const state = win.history.state;
+			const length = win.history.length;
+			const editor = container.querySelector(".settings");
+
+			await removeFixture("Archive");
+
+			expect(win.location.pathname).toBe(path);
+			expect(win.history.state).toEqual(state);
+			expect(win.history.length).toBe(length);
+			expect(container.querySelector("main > header .header-title")?.textContent).toBe(page);
+			expect(container.querySelector(".settings")).toBe(editor);
+			expect(confirmMessages).toEqual([]);
+			if (label === "dirty Settings") {
+				expect(container.textContent).toContain("unsaved");
+				expect(operatorChips()).toBe(0);
+			}
+			expect(conversations[0]?.archivedAt).not.toBeNull();
+			expect(container.querySelector(".rail-archived")?.textContent).toBe("Archived 1");
+			expect(container.querySelector(".conv")).toBeNull();
 		});
 	}
+	test("Archive of the open conversation still goes to empty chat", async () => {
+		seedConversation();
+		await mount();
+		await selectFixture();
+		await removeFixture("Archive");
+		expect(win.location.pathname).toBe("/app/");
+		expect(container.querySelector(".chat")?.textContent).toContain("Pick a conversation");
+		expect(container.querySelector("header .header-title")).toBeNull();
+	});
+
+	test("Delete of the remembered conversation from the Archive page keeps the page and forgets the chat", async () => {
+		seedConversation(true);
+		await mount();
+		await selectFixture(true);
+		await openPage("Settings");
+		await click(container.querySelector(".rail-archived"));
+		expect(win.location.pathname).toBe("/app/archive");
+		await removeFixture("Delete");
+		expect(win.location.pathname).toBe("/app/archive");
+		expect(confirmCalls).toBe(1);
+		expect(conversations).toEqual([]);
+		expect(container.querySelector(".ops .empty")?.textContent).toContain("Nothing archived");
+	});
+
+	test("Delete hides the row at once but only sends DELETE when the toast settles", async () => {
+		seedConversation(true);
+		await mount();
+		await click(container.querySelector(".rail-archived"));
+		await clickRowAction("Delete");
+		expect(confirmMessages).toEqual(['Delete "fixture chat"?']);
+		expect(container.querySelector(".undo-toast")?.textContent).toContain('Deleted "fixture chat"');
+		expect(container.querySelector(".archive-table .dt-row")).toBeNull();
+		// Still on the server until the toast settles.
+		expect(conversations).not.toEqual([]);
+
+		await click(container.querySelector(".undo-close"));
+		expect(conversations).toEqual([]);
+	});
+
+	test("a reopened chat is closed when its held delete lands", async () => {
+		seedConversation(true);
+		await mount();
+		await click(container.querySelector(".rail-archived"));
+		await clickRowAction("Delete");
+		// Reopen it inside the undo window, the way history or search can.
+		await act(async () => {
+			win.history.pushState(null, "", "/app/c/fixture");
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await click(container.querySelector(".undo-close"));
+		expect(conversations).toEqual([]);
+		expect(container.querySelector(".chat")?.textContent).toContain("Pick a conversation");
+	});
+
+	test("a declined confirm neither hides the row nor raises a toast", async () => {
+		seedConversation(true);
+		await mount();
+		await click(container.querySelector(".rail-archived"));
+		Reflect.set(win, "confirm", () => false);
+		await clickRowAction("Delete");
+		expect(container.querySelector(".undo-toast")).toBeNull();
+		expect(container.querySelector(".archive-table .dt-row")).not.toBeNull();
+	});
+
+	test("Undo after Delete restores the row and never sends DELETE", async () => {
+		seedConversation(true);
+		await mount();
+		await click(container.querySelector(".rail-archived"));
+		await clickRowAction("Delete");
+		await click(container.querySelector(".undo-action"));
+		expect(container.querySelector(".undo-toast")).toBeNull();
+		expect(container.querySelector(".archive-table .dt-row")).not.toBeNull();
+		expect(conversations).not.toEqual([]);
+	});
 
 	test("removing a chain entry drops its key record from the saved body", async () => {
 		settings = parseConfig({

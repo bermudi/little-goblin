@@ -69,7 +69,7 @@ function Current({
 			<p className="deleg-now-sum">{summary(d.task)}</p>
 			<div className="deleg-now-actions">
 				{conv !== null && onConversation !== null && (
-					<button type="button" onClick={() => onConversation(conv)}>
+					<button type="button" className="ghost" onClick={() => onConversation(conv)}>
 						{d.status === "needs_input" ? "Answer in conversation" : "Open conversation"}
 					</button>
 				)}
@@ -103,7 +103,7 @@ function Detail({
 			</h2>
 			{conv !== null && onConversation !== null && (
 				<div className="deleg-now-actions">
-					<button type="button" onClick={() => onConversation(conv)}>
+					<button type="button" className="ghost" onClick={() => onConversation(conv)}>
 						Open conversation
 					</button>
 				</div>

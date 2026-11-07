@@ -2230,6 +2230,37 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
 		expect(fold().open).toBe(false);
 	});
 
+	test("prose behind a run seals it mid-stream — the fold settles while the turn goes on", async () => {
+		dom.root = createRoot(dom.container);
+		await render([part("b1", "input-available")], true);
+		expect(fold().open).toBe(true);
+		// A text part lands behind the batch: the run can't grow even
+		// though the message is still arriving — settle now, not at
+		// the end of the turn.
+		await render([part("b1", "output-available"), { type: "text", text: "confirmed" }], true);
+		expect(fold().open).toBe(false);
+		// The next batch gets its own fold, open while it works.
+		await render(
+			[
+				part("b1", "output-available"),
+				{ type: "text", text: "confirmed" },
+				part("b2", "input-available"),
+			],
+			true,
+		);
+		const folds = dom.container.querySelectorAll<HTMLDetailsElement>(".worked");
+		expect(folds.length).toBe(2);
+		expect(folds[0]!.open).toBe(false);
+		expect(folds[1]!.open).toBe(true);
+	});
+
+	test("a failed batch stays open when prose seals it mid-stream", async () => {
+		dom.root = createRoot(dom.container);
+		await render([part("b1", "input-available")], true);
+		await render([part("b1", "output-error"), { type: "text", text: "that failed" }], true);
+		expect(fold().open).toBe(true);
+	});
+
 	test("a settled clean fold mounts closed — the operator can open it", async () => {
 		dom.root = createRoot(dom.container);
 		await render([part("b1", "output-available"), part("b2", "output-available")], false);

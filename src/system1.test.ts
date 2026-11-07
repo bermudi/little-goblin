@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { System1Client, System1Error, FALLBACK_MODEL, DEFAULT_MODEL } from "./system1.ts";
+import { DEFAULT_MODEL, FALLBACK_MODEL, System1Client, System1Error } from "./system1.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
 afterEach(() => {

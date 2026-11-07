@@ -58,6 +58,8 @@ import { openProjects } from "./projects.ts";
 import { wireReviewer } from "./reviewer.ts";
 import { Runtime, type RuntimeDeps } from "./runtime.ts";
 import { makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
+import type { OperatorReminder } from "./responsibility-reminder.ts";
+import { openTelegramReminders } from "./tg/reminder.ts";
 import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
 import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
@@ -690,6 +692,13 @@ async function boot() {
 
 	// The scheduler rides the SAME wakeDeps object — a spread here would
 	// snapshot delivery/bell before the telegram attach ever lands.
+	const remindOnTelegram = openTelegramReminders({
+		db: store.db,
+		pings,
+		api: () => tg?.bot.api ?? null,
+		operators: () => configRef.current.operators,
+		publicUrl: () => configRef.current.publicUrl || undefined,
+	});
 	const firingDeps: SchedulerDeps = Object.assign(wakeDeps, {
 		programs,
 		// Responsibility-destination programs fire as durable
@@ -697,7 +706,9 @@ async function boot() {
 		// dispatcher owns their wake from the record on.
 		responsibilities,
 		recordDevelopment: (input: DevelopmentInput) => wakeDispatcher!.record(input),
-		remindOperator: appPush.notifyReminder,
+		remindOperator: async (reminder: OperatorReminder) => {
+			if (!(await appPush.notifyReminder(reminder))) await remindOnTelegram(reminder);
+		},
 		// The System One gate doubles as the watcher-event scorer (fail-open) — unscored absent.
 		...(system1Gate ? { checkMail: system1Gate as Pick<typeof system1Gate, "decide"> } : {}),
 	});

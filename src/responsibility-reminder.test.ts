@@ -4,7 +4,7 @@ import { appAddress } from "./conversation.ts";
 import { openPrograms } from "./programs.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities } from "./responsibilities.ts";
-import { REMINDER_EVERY_MS, REMINDER_FIRST_MS } from "./responsibility-reminder.ts";
+import { dueReminder, REMINDER_EVERY_MS, REMINDER_FIRST_MS } from "./responsibility-reminder.ts";
 import { type SchedulerDeps, startScheduler, sweepOperatorReminders } from "./scheduler.ts";
 import { openTestStore, tmpDb } from "./testkit.ts";
 
@@ -42,7 +42,7 @@ function rig() {
 		},
 	});
 	const attempts = new Map<string, number>();
-	const pending: Promise<void>[] = [];
+	const pending: Promise<boolean>[] = [];
 	const deps = {
 		responsibilities: resps,
 		remindOperator: (r: Parameters<typeof push.notifyReminder>[0]) => {
@@ -73,7 +73,7 @@ function rig() {
 		if ("refused" in out) throw new Error("refused");
 		return Date.parse(out.report.createdAt);
 	};
-	return { resps, id, sent, failures, sweep, subscribe, ask, deps, pending };
+	return { resps, id, sent, failures, sweep, subscribe, ask, deps, pending, push };
 }
 
 describe("operator reminders", () => {
@@ -151,6 +151,22 @@ describe("operator reminders", () => {
 		}
 		await Promise.all(r.pending);
 		expect(r.sent).toHaveLength(1);
+	});
+
+	test("tells the caller whether a device got it, so Telegram can take over", async () => {
+		const r = rig();
+		const t = r.ask();
+		const due = dueReminder(
+			r.resps.get(r.id)!,
+			r.resps.latestReport(r.id),
+			[],
+			new Date(t + REMINDER_FIRST_MS),
+		)!;
+		expect(await r.push.notifyReminder(due)).toBe(false);
+		await r.subscribe();
+		r.failures.next = 1;
+		expect(await r.push.notifyReminder(due)).toBe(false);
+		expect(await r.push.notifyReminder(due)).toBe(true);
 	});
 
 	test("no subscribed device is not an error", async () => {

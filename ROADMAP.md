@@ -158,8 +158,9 @@ by one first-match stage function that the feed pill, Attention and the
 scheduler share. `done` closes only when evidence covers every
 completionEvidence entry; `dropped` closes "nothing to do". While the stage
 waits on the operator the silence backstop is held (an explicit commitment
-still fires); an operator correction answers the report. An app push reminds the operator
-without a model call, 4 hours after the report and then daily. Ruling:
+still fires); an operator correction answers the report. An app push, or Telegram when no device
+gets it, reminds the operator without a model call, 4 hours after the report
+and then daily. Ruling:
 `design/programs.md` → Reports and stages (mechanisms borrowed from
 dsh-superagent, cited there).
 

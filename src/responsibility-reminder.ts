@@ -19,6 +19,17 @@ export interface OperatorReminder {
 	stage: StageName;
 }
 
+const REMINDER_TEXT: Partial<Record<StageName, string>> = {
+	question: "A question is still waiting for you",
+	review: "Work is still waiting for your review",
+	blocked: "Blocked work is still waiting for you",
+	failed: "Failed work is still waiting for you",
+};
+
+export function reminderText(stage: StageName): string {
+	return REMINDER_TEXT[stage] ?? "Work is still waiting for you";
+}
+
 export function dueReminder(
 	resp: Pick<
 		Responsibility,

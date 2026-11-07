@@ -15,7 +15,7 @@ import {
 import type { AuthStore } from "./auth.ts";
 import { appIdOf, type Conversation, type ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
-import { type OperatorReminder, REMINDER_EVERY_MS } from "./responsibility-reminder.ts";
+import { type OperatorReminder, REMINDER_EVERY_MS, reminderText } from "./responsibility-reminder.ts";
 import type { TurnDone, TurnSink } from "./runtime.ts";
 
 export const APP_PUSH_VAPID = "app-push-vapid";
@@ -94,7 +94,8 @@ export interface AppPush {
 	): Promise<{ endpointHash: string }>;
 	unregister(endpoint: string): boolean;
 	notifyDone(conv: Conversation, done: TurnDone): Promise<void>;
-	notifyReminder(reminder: OperatorReminder): Promise<void>;
+	/** True when at least one subscribed device has this reminder. */
+	notifyReminder(reminder: OperatorReminder): Promise<boolean>;
 }
 
 function endpointHash(endpoint: string): string {
@@ -210,20 +211,13 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 		);
 	}
 
-	const REMINDER_BODY: Partial<Record<string, string>> = {
-		question: "A question is still waiting for you",
-		review: "Work is still waiting for your review",
-		blocked: "Blocked work is still waiting for you",
-		failed: "Failed work is still waiting for you",
-	};
-
-	async function notifyReminder(reminder: OperatorReminder): Promise<void> {
+	async function notifyReminder(reminder: OperatorReminder): Promise<boolean> {
 		const appId = appIdOf(reminder.conversationId);
 		await ring(
 			reminder.key,
 			{
 				title: "goblin",
-				body: REMINDER_BODY[reminder.stage] ?? "Work is still waiting for you",
+				body: reminderText(reminder.stage),
 				url: appId === null ? "/app/" : `/app/c/${appId}`,
 			},
 			{
@@ -236,6 +230,7 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 				},
 			},
 		);
+		return qList.all().some((row) => (qDelivered.get(reminder.key, row.endpoint_hash)?.n ?? 0) > 0);
 	}
 
 	async function ring(

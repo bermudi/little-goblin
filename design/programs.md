@@ -244,7 +244,8 @@ Rulings:
   an app push and no model call: 4 hours after the report that made the
   stage wait on them, then every 24 hours until the stage changes. Paused
   work gets none. Downtime rings only the newest step. Payloads stay
-  generic. Without a subscribed device the reminder is only a log line. Stale disabled/deleted/rescheduled follow-up snapshots
+  generic. When no subscribed device got it (none exist, or every send failed), it
+  goes to the operators on Telegram. With neither path, it is a warn line. Stale disabled/deleted/rescheduled follow-up snapshots
   cannot fire. Already enqueued developments remain historical facts:
   turns must re-read current authority before acting, and existing
   revision/generation/send fences still govern effects. No new generic

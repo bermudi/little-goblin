@@ -705,6 +705,27 @@ drifting call is recorded.
   is `DEFAULT_MISSION`. On a throwaway bank that text gave 0 facts for a
   greeting and 1 for a stated decision. The API now needs an unlocked
   wallet to start.
+- 2026-11-07: that stricter text saved 0 facts from a real election-night
+  chat, and the operator wanted its concrete details kept. `retain_mission`
+  is now the operator-approved draft below. It also differs from
+  `DEFAULT_MISSION`; the previous config is in
+  `~/.config/goblin-memory-backup-20261106/bank-config-before-draft-c.json`.
+  Known miss: quoted Goblin text is saved as the operator's (#182).
+
+  > Remember the operator's preferences, decisions, commitments, people,
+  > ongoing work, interests, stated views, and what they want from Goblin.
+  > Keep the concrete details of events the operator reports or follows:
+  > names, numbers, and dates. Do not store greetings, small talk,
+  > emotional reactions on their own, complaints about a single reply, or
+  > tool output. Text written by the assistant, including assistant text
+  > the operator quotes back, is not the operator's statement, and do not
+  > store the assistant's analysis or admissions. If nothing qualifies,
+  > extract nothing. Date every fact. Extract every fact in English
+  > regardless of the conversation language; keep proper nouns, product
+  > names, and quoted terms verbatim.
+- Test a mission with `POST /v1/default/banks/goblin/memories/dry-run-extract`
+  (`{content, context, timestamp, retain_mission}`): it returns the facts
+  and stores nothing, so no throwaway bank is needed.
 - Container→host networking: bridge net `goblin-memory`;
   `host.containers.internal` does NOT reach host loopback listeners
   (refused) — the `goblin-embed-relay` socat unit on the tailscale /32

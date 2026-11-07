@@ -471,6 +471,10 @@ describe("memory status", () => {
 				lastRecallOk: null,
 				topicNote: null,
 				blockedDetail: [],
+				lastSaveAt: null,
+				blockedConversations: [],
+				blockedCauses: [],
+				retry: null,
 			});
 		} finally {
 			http.stop();
@@ -554,7 +558,13 @@ describe("memory status", () => {
 			expect(j.detail).toContain("operator review");
 			expect(j.blocked).toBe(1);
 			expect(j.blockedDetail).toEqual([
-				{ document: "msg-1234", error: "hindsight 500", attempts: 3, conversationId: null },
+				{
+					document: "msg-1234",
+					error: "hindsight 500",
+					attempts: 3,
+					conversationId: null,
+					conversationName: null,
+				},
 			]);
 			expect(j.queued).toBe(2);
 			expect(j.dismissed).toBe(1);

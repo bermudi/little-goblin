@@ -1118,16 +1118,16 @@ header h1 {
 .outline-card-wrap {
 	position: absolute;
 	right: 100%;
-	width: min(21rem, 70vw);
+	width: min(15rem, 60vw);
 	padding-right: 0.5rem;
 	animation: outline-card-in 120ms ease-out;
 }
 .outline-card {
 	display: flex;
 	flex-direction: column;
-	gap: 0.25rem;
-	padding: 0.75rem;
-	border-radius: 12px;
+	gap: 0.125rem;
+	padding: 0.5rem 0.625rem;
+	border-radius: 10px;
 	border: 1px solid var(--app-border);
 	background: var(--app-gray-100);
 	text-align: left;
@@ -1137,9 +1137,9 @@ header h1 {
 	overflow: hidden;
 	white-space: nowrap;
 	text-overflow: ellipsis;
-	font-size: 14px;
+	font-size: 12px;
 	font-weight: 500;
-	line-height: 20px;
+	line-height: 16px;
 	color: var(--app-fg);
 }
 .outline-card-preview {
@@ -1147,8 +1147,8 @@ header h1 {
 	-webkit-box-orient: vertical;
 	-webkit-line-clamp: 3;
 	overflow: hidden;
-	font-size: 14px;
-	line-height: 20px;
+	font-size: 11px;
+	line-height: 15px;
 	color: var(--app-fg-muted);
 }
 @keyframes outline-card-in {

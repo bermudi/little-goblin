@@ -1172,6 +1172,8 @@ header h1 {
 
 .msg {
 	margin-bottom: 1.25rem;
+	/* Unbroken runs (JSON in a failed-turn notice) must wrap, not widen the page. */
+	overflow-wrap: anywhere;
 }
 
 /* User turns sit right in a soft bubble (Computer); the text inside the

@@ -257,7 +257,13 @@ bun scripts/release.ts --status          # live, running, kept, unit match
 bun scripts/release.ts --build-only      # build + gate, touch nothing live
 bun scripts/release.ts --rev <rev>       # deploy a specific commit
 bun scripts/release.ts --rollback <rev>  # flip back to a kept release
+bun scripts/release.ts --now             # with rollout/rollback: skip the idle wait
 ```
+
+A rollout does not restart over a running turn: after the flip it polls the
+loopback `/api/runtime/busy` endpoint of the running release and restarts
+once no lane is busy (a turn in flight, queued work, or a compaction).
+`--now` skips that wait when the restart cannot wait.
 
 Invariants and the reasoning behind the layout are in
 [design/deploy.md](../design/deploy.md). In short: a release directory that

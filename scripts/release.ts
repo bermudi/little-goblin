@@ -3,10 +3,10 @@
 // The live service runs from `<root>/live`, a symlink resolved at process
 // start. `live` points at one complete, private release directory named by
 // the commit it was built from: tracked sources via `git archive`, its own
-// dependencies, its own built client. Deploying is build-if-missing → flip
-// the symlink (one rename) → restart → verify. Rolling back is the same
-// without the build, because the previous release is still sitting there,
-// intact and complete.
+// dependencies, its own built client. Deploying is build-if-missing → wait
+// for idle turns → flip the symlink (one rename) → restart → verify.
+// Rolling back is the same without the build, because the previous release
+// is still sitting there, intact and complete.
 //
 // Why this replaced the in-place deploy: the server is TypeScript run in
 // place, so a writable live tree meant the running process could drift from
@@ -46,6 +46,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
+import { loadConfig } from "../src/config.ts";
 import { durableWriteFile, fsyncDirectory } from "../src/durable.ts";
 
 // Written last, before the staging rename: its presence is what makes "this
@@ -455,6 +456,95 @@ async function buildRelease(context: Context, rev: string): Promise<string> {
 // Restart, acceptance, annotations
 // ---------------------------------------------------------------------------
 
+const busySchema = z.object({ busy: z.array(z.string()) });
+
+export interface WaitForIdleOptions {
+	port: number;
+	/** Injectable for tests; the real fetch when absent. The wait only
+	 *  ever GETs one loopback URL, so the seam is that narrow. */
+	fetchImpl?: (url: string) => Promise<Response>;
+	/** Poll interval; default 2000 ms. */
+	sleepMs?: number;
+	/** Called with the busy conversation ids whenever the set changes. */
+	onWaiting: (ids: string[]) => void;
+}
+
+/** Why the wait ended: drained, goblin not answering (down — nothing runs),
+ *  or a release that predates the endpoint. */
+export type IdleOutcome = "idle" | "unreachable" | "no-endpoint";
+
+/** Poll the loopback busy endpoint until goblin holds no running turn
+ *  (issue #196). No overall timeout: a stuck turn is the operator's call,
+ *  and Ctrl-C ends the wait. */
+export async function waitForIdle(opts: WaitForIdleOptions): Promise<IdleOutcome> {
+	const doFetch = opts.fetchImpl ?? fetch;
+	const sleepMs = opts.sleepMs ?? 2000;
+	const url = `http://127.0.0.1:${opts.port}/api/runtime/busy`;
+	let lastKey: string | null = null;
+	for (;;) {
+		let response: Response;
+		try {
+			response = await doFetch(url);
+		} catch {
+			// Connection refused or the like: nothing is listening, so
+			// nothing is running to drain.
+			return "unreachable";
+		}
+		if (response.status === 404) return "no-endpoint"; // an older release
+		if (response.status !== 200) fail(`idle check at ${url} answered HTTP ${response.status}`);
+		let body: unknown;
+		try {
+			body = await response.json();
+		} catch (error) {
+			fail(`idle check at ${url} answered a non-JSON body: ${String(error)}`);
+		}
+		const parsed = busySchema.safeParse(body);
+		if (!parsed.success) fail(`idle check at ${url} answered an unparseable body`);
+		const ids = parsed.data.busy;
+		if (ids.length === 0) return "idle";
+		const key = ids.join(",");
+		if (key !== lastKey) {
+			lastKey = key;
+			opts.onWaiting(ids);
+		}
+		await Bun.sleep(sleepMs);
+	}
+}
+
+/** A restart fences any running turn, so the rollout waits for idle lanes
+ *  before anything live changes: an interrupt during the wait must leave
+ *  `live` naming the code that is still running. Port comes from the unit's
+ *  own home (never a shell GOBLIN_HOME); an unresolved home or an
+ *  unreadable-but-absent config skips the wait with a warning — a corrupt
+ *  config fails the rollout instead of guessing. */
+async function waitForIdleOrWarn(context: Context, now: boolean): Promise<void> {
+	if (now) return;
+	if (context.goblinHome === null) {
+		step("WARNING — GOBLIN_HOME unresolved from the unit; idle wait skipped");
+		return;
+	}
+	const previous = process.env.GOBLIN_HOME;
+	process.env.GOBLIN_HOME = context.goblinHome;
+	let port: number | undefined;
+	try {
+		port = loadConfig()?.http.port;
+	} finally {
+		if (previous === undefined) delete process.env.GOBLIN_HOME;
+		else process.env.GOBLIN_HOME = previous;
+	}
+	if (port === undefined) {
+		step("WARNING — no goblin.json5 in the unit's home; idle wait skipped");
+		return;
+	}
+	const outcome = await waitForIdle({
+		port,
+		onWaiting: (ids) => step(`waiting for idle: ${ids.length} running turn(s): ${ids.join(", ")}`),
+	});
+	if (outcome === "no-endpoint")
+		step("WARNING — the running release predates /api/runtime/busy; idle wait skipped");
+	step("goblin idle — restarting");
+}
+
 const identitySchema = z.object({
 	invocationId: z.string().regex(/^(?:[a-f0-9]{32})?$/),
 	monotonic: z.coerce.number().int().nonnegative(),
@@ -720,7 +810,7 @@ async function context(): Promise<Context> {
 	return { repo, layout, bun, goblinHome };
 }
 
-async function rollout(ctx: Context, rev: string): Promise<void> {
+async function rollout(ctx: Context, rev: string, now = false): Promise<void> {
 	const { facts } = readUnit(ctx.layout);
 	if (!unitRunsLive(ctx.layout, facts)) {
 		fail(
@@ -729,16 +819,17 @@ async function rollout(ctx: Context, rev: string): Promise<void> {
 		);
 	}
 	const dir = await buildRelease(ctx, rev);
+	await waitForIdleOrWarn(ctx, now);
 	const live = readLive(ctx.layout);
 	step(`flip: ${live === null ? "none" : short(live.rev)} -> ${short(rev)}`);
 	flipLive(ctx.layout, dir);
-	await finish(ctx, dir, rev, live?.rev ?? null);
+	await finish(ctx, dir, rev, live?.rev ?? null, "");
 	process.stdout.write(`deployed ${rev}\n`);
 	if (live !== null)
 		process.stdout.write(`rollback: bun scripts/release.ts --rollback ${live.rev}\n`);
 }
 
-async function rollback(ctx: Context, rev: string): Promise<void> {
+async function rollback(ctx: Context, rev: string, now = false): Promise<void> {
 	const { facts } = readUnit(ctx.layout);
 	if (!unitRunsLive(ctx.layout, facts)) {
 		fail(
@@ -747,10 +838,11 @@ async function rollback(ctx: Context, rev: string): Promise<void> {
 	}
 	const dir = releaseDir(ctx.layout, rev);
 	if (!isCompleteRelease(dir, rev)) fail(`no complete release for ${rev} at ${dir}`);
+	await waitForIdleOrWarn(ctx, now);
 	const live = readLive(ctx.layout);
 	step(`flip: ${live === null ? "none" : short(live.rev)} -> ${short(rev)} (rollback)`);
 	flipLive(ctx.layout, dir);
-	await finish(ctx, dir, rev, live?.rev ?? null);
+	await finish(ctx, dir, rev, live?.rev ?? null, "");
 	process.stdout.write(`rolled back to ${rev}\n`);
 }
 
@@ -758,15 +850,16 @@ async function rollback(ctx: Context, rev: string): Promise<void> {
  *  rewrite the single WorkingDirectory line so every later release is a
  *  symlink flip. Only the value changes — a hand-edited unit is reported,
  *  never silently replaced with a rendered copy. */
-async function adoptUnit(ctx: Context, rev: string): Promise<void> {
+async function adoptUnit(ctx: Context, rev: string, now = false): Promise<void> {
 	const { text, facts } = readUnit(ctx.layout);
 	if (unitRunsLive(ctx.layout, facts)) {
 		step("unit already runs from the release symlink — deploying instead of adopting");
-		await rollout(ctx, rev);
+		await rollout(ctx, rev, now);
 		return;
 	}
 	assertUnitWritable(ctx.layout);
 	const dir = await buildRelease(ctx, rev);
+	await waitForIdleOrWarn(ctx, now);
 	flipLive(ctx.layout, dir);
 	const rewritten = rewriteWorkingDirectory(text, ctx.layout.live);
 	durableWriteFile(ctx.layout.unit, rewritten, 0o644);
@@ -841,10 +934,10 @@ async function status(ctx: Context): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export type Command =
-	| { kind: "rollout"; rev: string | null }
+	| { kind: "rollout"; rev: string | null; now: boolean }
 	| { kind: "build"; rev: string | null }
-	| { kind: "rollback"; rev: string }
-	| { kind: "adopt-unit"; rev: string | null }
+	| { kind: "rollback"; rev: string; now: boolean }
+	| { kind: "adopt-unit"; rev: string | null; now: boolean }
 	| { kind: "status" }
 	| { kind: "help" };
 
@@ -853,38 +946,51 @@ const USAGE = `usage: bun scripts/release.ts [command]
   (none)                 build HEAD if missing, flip live, restart, verify
   --rev <rev>            deploy a specific commit (any rev git can resolve)
   --rollback <rev>       flip back to an existing release and restart
+  --now                  skip the idle wait: restart even if turns run
   --build-only           build and gate a release; touch nothing live
   --adopt-unit           ONE TIME: cut this box over to the release layout
   --status               what is live, what is running, what is kept
 
 Restarting prod is the operator's call: running the rollout command is that
-call. Nothing is pushed, fetched or pulled; no release is ever deleted.
+call. A rollout waits for running turns to finish before it restarts;
+--now (with a rollout or rollback) skips that wait. Nothing is pushed,
+fetched or pulled; no release is ever deleted.
 `;
 
 export function parseArgs(argv: string[]): Command {
-	const [first, ...rest] = argv;
+	// --now leads or trails the restart commands; anywhere else it is a
+	// mistake, not a silent no-op.
+	const args = argv.filter((part) => part !== "--now");
+	const now = args.length !== argv.length;
+	const [first, ...rest] = args;
+	const refuseNow = (): void => {
+		if (now) fail("--now only applies to a rollout or rollback");
+	};
 	switch (first) {
 		case undefined:
-			return { kind: "rollout", rev: null };
+			return { kind: "rollout", rev: null, now };
 		case "--help":
 		case "-h":
+			refuseNow();
 			return { kind: "help" };
 		case "--status":
+			refuseNow();
 			return { kind: "status" };
 		case "--build-only":
+			refuseNow();
 			return { kind: "build", rev: rest[0] ?? null };
 		case "--rev": {
 			const rev = rest[0];
 			if (rev === undefined) fail("--rev needs a rev (any commit git can resolve)");
-			return { kind: "rollout", rev };
+			return { kind: "rollout", rev, now };
 		}
 		case "--rollback": {
 			const rev = rest[0];
 			if (rev === undefined) fail("--rollback needs a rev (an existing release)");
-			return { kind: "rollback", rev };
+			return { kind: "rollback", rev, now };
 		}
 		case "--adopt-unit":
-			return { kind: "adopt-unit", rev: rest[0] ?? null };
+			return { kind: "adopt-unit", rev: rest[0] ?? null, now };
 		default:
 			fail(`unknown argument: ${first} (try --help)`);
 	}
@@ -923,9 +1029,9 @@ export async function main(argv: string[]): Promise<void> {
 					command.kind === "rollback" && isRev(command.rev)
 						? command.rev
 						: await resolveRev(ctx.repo, "rev" in command ? command.rev : null);
-				if (command.kind === "rollout") await rollout(ctx, rev);
-				else if (command.kind === "rollback") await rollback(ctx, rev);
-				else await adoptUnit(ctx, rev);
+				if (command.kind === "rollout") await rollout(ctx, rev, command.now);
+				else if (command.kind === "rollback") await rollback(ctx, rev, command.now);
+				else await adoptUnit(ctx, rev, command.now);
 			} finally {
 				release();
 			}

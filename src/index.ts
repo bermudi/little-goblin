@@ -868,6 +868,9 @@ async function boot() {
 			accepting: () => runtime.accepting(),
 			fire: (program, event, now) => fireWebhook(firingDeps, program, event, now),
 		},
+		// The loopback /api/runtime/busy door: release.ts's idle wait reads
+		// the runtime's lanes through this before restarting.
+		busyConversations: () => runtime.busyConversations(),
 		// The System One gate doubles as the loopback injection checker — absent = 503.
 		...(system1Gate ? { checkInjection: { gate: system1Gate } } : {}),
 		// The app handler stays opaque here: app-channel.ts imports the

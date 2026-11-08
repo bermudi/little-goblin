@@ -665,17 +665,6 @@ describe("provider-filter retry", () => {
 		r.store.close();
 	});
 
-	test("shutdown fences a live turn as a restart, /stop does not", async () => {
-		const started = deferred<void>();
-		const edge = scriptedEdge([{ drive: () => started.resolve(), cancel: async () => {} }]);
-		const r = rig({ model: edge.model, addr: appAddress("shutdown-cause") });
-		const sink = submit(r, "test");
-		await started.promise;
-		await r.runtime.shutdown();
-		expect(await sink.done).toEqual({ kind: "fenced", shutdown: true });
-		r.store.close();
-	});
-
 	test("stop during filter cleanup prevents a second model request", async () => {
 		const cleaning = deferred<void>();
 		const gate = deferred<void>();
@@ -906,8 +895,8 @@ describe("turn authority", () => {
 		r.runtime.submit(conv2, userMessage([{ type: "text", text: "two" }]), s2);
 		await Promise.all([s1.firstDelta, s2.firstDelta]); // both turns mid-stream
 		await r.runtime.shutdown();
-		expect(await s1.done).toEqual({ kind: "fenced" });
-		expect(await s2.done).toEqual({ kind: "fenced" });
+		expect(await s1.done).toEqual({ kind: "fenced", shutdown: true });
+		expect(await s2.done).toEqual({ kind: "fenced", shutdown: true });
 		// fenced turns commit no assistant output
 		expect(roles(r)).toEqual(["user"]);
 		expect(r.store.history(conv2.id).map((m) => m.role)).toEqual(["user"]);
@@ -918,7 +907,7 @@ describe("turn authority", () => {
 		const r = rig({ deltas: ["a"], delayMs: 5 });
 		await r.runtime.shutdown();
 		const sink = submit(r, "hi");
-		expect(await sink.done).toEqual({ kind: "fenced" });
+		expect(await sink.done).toEqual({ kind: "fenced", shutdown: true });
 		await sleep(50); // prove no turn ever starts
 		expect(sink.text).toBe("");
 		expect(roles(r)).toEqual(["user"]);

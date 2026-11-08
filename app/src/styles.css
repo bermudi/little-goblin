@@ -2594,7 +2594,8 @@ button.pathchip:hover svg {
 .ctx-seg-rows {
 	font-size: 11.5px;
 }
-.ctx-seg-rows > div.sub dd {
+.ctx-seg-rows > div.sub {
+	padding-left: 12px;
 	color: var(--app-fg-muted);
 }
 /* The manual lever — a quiet footer action under a hairline, not a

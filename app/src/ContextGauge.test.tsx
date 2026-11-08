@@ -229,7 +229,7 @@ describe("ContextGauge", () => {
 			"Environment",
 			"Tool definitions",
 			"History",
-			"· tool calls & results",
+			"tool calls & results",
 		]);
 		// The strip's widths exclude toolResults (a subset of history).
 		const bars = [...container.querySelectorAll(".ctx-segbar span")] as HTMLElement[];
@@ -851,6 +851,38 @@ describe("ContextGauge", () => {
 		expect(popRow("5h")).toBe("42% used");
 		expect(popRow("weekly")).toContain("7% used");
 		expect(popRow("weekly")).toContain("resets");
+	});
+
+	test("a receipt whose window already reset drops its stale percentage", async () => {
+		globalThis.fetch = mockFetch(() =>
+			Promise.resolve(json(view({ input: 100, limit: 1000, pct: 10, turns: 1 }))),
+		);
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(
+				<ContextGauge
+					token={null}
+					conversationId="app/aaa"
+					busy={false}
+					live={{
+						input: 100,
+						cacheRead: null,
+						quota: {
+							limitName: "codex",
+							primary: { usedPercent: 13, windowMinutes: 300, resetsAt: 1_000_000_000 },
+							secondary: null,
+						},
+					}}
+				/>,
+			);
+		});
+		act(() => {
+			(container.querySelector(".ctx-btn") as HTMLButtonElement).click();
+		});
+		const dd = [...container.querySelectorAll(".ctx-rows > div")]
+			.find((r) => r.querySelector("dt")?.textContent === "5h")
+			?.querySelector("dd")?.textContent;
+		expect(dd).toBe("reset since last turn");
 	});
 
 	test("a settled turn's quota shows without a live context", async () => {

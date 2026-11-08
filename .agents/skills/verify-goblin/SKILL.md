@@ -29,6 +29,19 @@ Several instances can run side by side. It does still fetch public model catalog
 
 A real model turn needs a real key. Add it under Settings → Accounts & keys in the throwaway instance. Only the operator does this, and only if the change depends on it. Never copy keys or `auth.jsonl` from the real home.
 
+## Real state
+
+To reproduce what the operator saw, start on a copy of the real database:
+
+```sh
+bun run try <name> --real app/c/<conversation-id>   # prints that conversation's URL
+bun run try <name> --real                           # whole copy, app root
+```
+
+The real `~/goblin/state/goblin.sqlite` is opened read-only and copied (`VACUUM INTO`). The copy is then scrubbed so it can't reach anyone: push subscriptions, queued mail and memory writes are deleted, programs are disabled, responsibilities disarmed. The seeded config still applies: fake model, no keys, Telegram, mail and memory off. `GOBLIN_REAL_HOME` points it at another home.
+
+The copy is private data. Keep its screenshots out of public issues and commits, and `down` the instance when done.
+
 ## Doctor
 
 ```sh

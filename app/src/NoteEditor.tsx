@@ -1316,7 +1316,14 @@ const NoteEditor = forwardRef<
 		<div
 			className="note-editor"
 			onKeyDown={(e) => {
-				if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "k") {
+				if (
+					ready &&
+					rewrite === null &&
+					(e.ctrlKey || e.metaKey) &&
+					!e.shiftKey &&
+					!e.altKey &&
+					e.key.toLowerCase() === "k"
+				) {
 					e.preventDefault();
 					setLinkOpen(true);
 				}

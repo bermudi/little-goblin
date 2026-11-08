@@ -4,13 +4,6 @@
 // progress and notifications sit below because they are not decisions.
 
 import { Fragment, useEffect, useRef, useState } from "react";
-import { decideBlockedMemory, getAttention, getMemoryStatus, listSkills } from "./api.ts";
-import { MailApprovalCard, ProgramApprovalCard, useApprovals } from "./Approvals.tsx";
-import { RetryCard } from "./MemoryView.tsx";
-import { describe, useLoad } from "./opsShared.tsx";
-import { PushControls } from "./PushControls.tsx";
-import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
-import { ProposalCard } from "./SkillsView.tsx";
 import type {
 	AppAttentionItem,
 	AppAttentionMemoryCause,
@@ -18,6 +11,13 @@ import type {
 	AppAttentionTarget,
 } from "../../src/http/app-wire.ts";
 import type { MemoryStatusResponse } from "../../src/http/operator-wire.ts";
+import { MailApprovalCard, ProgramApprovalCard, useApprovals } from "./Approvals.tsx";
+import { decideBlockedMemory, getAttention, getMemoryStatus, listSkills } from "./api.ts";
+import { RetryCard } from "./MemoryView.tsx";
+import { describe, useLoad } from "./opsShared.tsx";
+import { PushControls } from "./PushControls.tsx";
+import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
+import { ProposalCard } from "./SkillsView.tsx";
 
 const KIND_LABEL = {
 	"program-approval": "program",

@@ -3,27 +3,27 @@
 // Saves ride PATCH If-Match = baseline rev; a conflict (409 or
 // handed in) blocks every automatic write until resolved.
 
-import { Editor, defaultValueCtx, editorViewCtx, rootCtx, serializerCtx } from "@milkdown/kit/core";
-import type { Node as PMNode } from "@milkdown/kit/prose/model";
-import { Plugin } from "@milkdown/kit/prose/state";
-import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
+import { defaultValueCtx, Editor, editorViewCtx, rootCtx, serializerCtx } from "@milkdown/kit/core";
 import { history } from "@milkdown/kit/plugin/history";
+import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
 import { commonmark } from "@milkdown/kit/preset/commonmark";
 import { gfm } from "@milkdown/kit/preset/gfm";
+import type { Node as PMNode } from "@milkdown/kit/prose/model";
+import { Plugin } from "@milkdown/kit/prose/state";
 import { $prose, getMarkdown, markdownToSlice, replaceAll } from "@milkdown/kit/utils";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import type { AppNote } from "../../src/http/app-wire.ts";
 import { ApiError, NoteConflictError, patchNote, rewriteNote } from "./api.ts";
+import NoteToolbar from "./NoteToolbar.tsx";
 import {
 	clearNoteDraft,
 	discardNoteDraft,
 	loadNoteDraft,
+	type NoteDraft,
 	rawNoteDraft,
 	writeNoteDraft,
-	type NoteDraft,
 } from "./noteDraft.ts";
-import type { AppNote } from "../../src/http/app-wire.ts";
-import { formatState, runFormat, type FormatAction, type FormatState } from "./noteFormat.ts";
-import NoteToolbar from "./NoteToolbar.tsx";
+import { type FormatAction, type FormatState, formatState, runFormat } from "./noteFormat.ts";
 
 export interface NoteEditorHandle {
 	// A server-side content change landed (append, restore, another
@@ -1007,6 +1007,10 @@ const NoteEditor = forwardRef<
 							props: {
 								handleDOMEvents: {
 									mousedown: (view, event) => {
+										// Runs even while locked (rewrite in
+										// flight) — a press there must not
+										// change the doc.
+										if (!view.editable) return false;
 										const li = event.target;
 										if (
 											!(li instanceof HTMLElement) ||

@@ -4,13 +4,6 @@
 // progress and notifications sit below because they are not decisions.
 
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { decideBlockedMemory, getAttention, getMemoryStatus, listSkills } from "./api.ts";
-import { MailApprovalCard, ProgramApprovalCard, useApprovals } from "./Approvals.tsx";
-import { RetryCard } from "./MemoryView.tsx";
-import { describe, useLoad } from "./opsShared.tsx";
-import { PushControls } from "./PushControls.tsx";
-import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
-import { ProposalCard } from "./SkillsView.tsx";
 import type {
 	AppAttentionItem,
 	AppAttentionMemoryCause,
@@ -19,6 +12,13 @@ import type {
 	AppFeedItem,
 } from "../../src/http/app-wire.ts";
 import type { MemoryStatusResponse } from "../../src/http/operator-wire.ts";
+import { MailApprovalCard, ProgramApprovalCard, useApprovals } from "./Approvals.tsx";
+import { decideBlockedMemory, getAttention, getMemoryStatus, listSkills } from "./api.ts";
+import { RetryCard } from "./MemoryView.tsx";
+import { describe, useLoad } from "./opsShared.tsx";
+import { PushControls } from "./PushControls.tsx";
+import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
+import { ProposalCard } from "./SkillsView.tsx";
 
 const KIND_LABEL = {
 	"program-approval": "program",
@@ -311,7 +311,9 @@ export function AttentionView({
 		}
 		const proposal = skills.data?.proposed.find((p) => p.name === key);
 		if (proposal === undefined)
-			return skills.data === null ? <p className="empty">Loading…</p> : null;
+			// data === null with err set means listSkills failed — fall
+			// through to OtherCard's Open instead of Loading… forever.
+			return skills.data === null && skills.err === null ? <p className="empty">Loading…</p> : null;
 		return (
 			<ProposalCard proposal={proposal} token={token} onDecided={reloadAll}>
 				<IfYouWait>Goblin keeps working with the skills it has.</IfYouWait>
@@ -338,8 +340,12 @@ export function AttentionView({
 								token={token}
 								onMemoryPage={() => onPage("memory")}
 								onActed={(action, affected) => {
-									if (action === "retry") setWatching(true);
-									else
+									if (action === "retry") {
+										// Drop the settled batch, or a second
+										// retry never restarts the poll.
+										setMemoryStatus(null);
+										setWatching(true);
+									} else
 										setDropped((d) => [
 											...d,
 											`Dropped ${plural(affected, "exchange")}. They are not in memory.`,

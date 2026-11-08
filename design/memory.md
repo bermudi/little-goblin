@@ -17,6 +17,112 @@ service, not an agent runtime — Goblin owns history, tools, reasoning,
 and Telegram delivery — no MCP, replacement turn loop, or generic
 multi-backend framework.
 
+### Integration and logic flows (mermaid)
+
+Drawn from the code 2026-11-07. Terms per the root `GLOSSARY.md`.
+
+**Integration and logic flows** — read path (recall, turn start),
+write path (retention, turn end), tools, forget, and the pod:
+
+```mermaid
+flowchart TB
+    subgraph GOB["goblin.service — host process, this repo"]
+        OP["operator<br/>Telegram · app"]
+        LANE["turn lane<br/>runtime.ts"]
+        REC["recallMemory<br/>memory/mod.ts"]
+        VIEW["withMemoryBlocks<br/>dated-evidence block<br/>ahead of the anchored user msg"]
+        MODEL["model turn<br/>Vercel AI SDK"]
+        LAND["landAttempt<br/>turn/finish.ts"]
+        RET["retentionOpt gates:<br/>memory off · excluded event ·<br/>program · no text ·<br/>over 1M chars · suppressed"]
+        OBX[("outbox<br/>SQLite — same txn<br/>as the reply")]
+        WORK["queue worker<br/>1 op in flight · 5 s tick<br/>backoff 1s x 2^n, max 5 min"]
+        HC["HindsightClient<br/>memory/hindsight.ts<br/>zod on every response"]
+        TOOL["tools<br/>memory_search · memory_reflect"]
+        SURF["operator surfaces<br/>/memory status·retry·dismiss<br/>/forget · app memories browser"]
+        FORG["forgetDocument<br/>memory/forget.ts"]
+        CTX[("memory contexts<br/>+ suppressions<br/>SQLite")]
+    end
+
+    subgraph POD["goblin-memory.pod — podman quadlets"]
+        API["hindsight-api :8888<br/>/v1/default/banks/goblin"]
+        EXT["extraction<br/>LLM gpt-6-luna · retain_mission"]
+        CONS["auto-consolidation<br/>observations_mission"]
+        RETR["recall fusion<br/>semantic + bm25 + graph legs<br/>merged by RRF"]
+        REFL["reflect — synthesis<br/>+ mental models · directives"]
+        PG[("pgvector · Postgres 17<br/>facts · episodes · entities<br/>observations · graph")]
+    end
+
+    LLM["OpenRouter<br/>openai/gpt-6-luna"]
+    EMB["ollama embeddinggemma<br/>via goblin-embed-relay"]
+
+    OP -->|"user msg"| LANE
+    LANE -->|"1 turn start"| REC
+    REC -->|"2 query from memory-bound history<br/>max 2000 chars · screened"| HC
+    HC -->|"3 POST /memories/recall"| RETR
+    RETR -->|"4 embed query"| EMB
+    RETR --> PG
+    RETR -->|"5 scored facts"| HC
+    REC -->|"6 save block at anchor"| CTX
+    REC -->|"7 block + prior blocks"| VIEW
+    VIEW --> MODEL
+    REC -.->|"outage: proceed-without-it block<br/>memory status shows degraded"| VIEW
+
+    MODEL -->|"8 reply lands"| LAND
+    LAND --> RET
+    RET -->|"9 enqueue pending"| OBX
+    WORK -->|"10 POST /memories<br/>async + operation id"| API
+    WORK <-->|"11 GET /operations/id<br/>poll until completed"| API
+    API --> EXT
+    EXT --> PG
+    EXT -->|"embed facts"| EMB
+    EXT --> LLM
+    API -->|"after retain/delete/update"| CONS
+    CONS --> LLM
+    CONS --> PG
+
+    MODEL -->|"tool call"| TOOL
+    TOOL -->|"memory_search → recall"| HC
+    TOOL -->|"memory_reflect → POST /reflect"| REFL
+    REFL --> PG
+    REFL --> LLM
+
+    SURF -->|"browse, read-only<br/>GET /documents · GET /memories/list"| HC
+    SURF -->|"/forget delete"| FORG
+    FORG -->|"worker paused · settle in-flight ops<br/>DELETE /documents/id on every bank"| HC
+    FORG -->|"park rows, then confirm deleted"| OBX
+    FORG -->|"suppress + redact blocks<br/>invalidate window captures"| CTX
+```
+
+**Outbox state machine** (`memory_outbox`, src/memory/queue.ts):
+
+```mermaid
+stateDiagram-v2
+    direction TB
+    [*] --> pending: exchange lands — durable txn with the reply
+    pending --> submitted: POST /memories accepted, op id kept
+    submitted --> submitted: op still processing — backoff poll
+    submitted --> completed: op completed
+    pending --> pending: retryable error — backoff 1s x 2^n, max 5 min
+    pending --> blocked: non-retryable error
+    submitted --> blocked: op failed / cancelled / missing
+    blocked --> pending: /memory retry — fresh op id
+    blocked --> dismissed: /memory dismiss
+    pending --> deleting: /forget delete parks the row
+    submitted --> deleting: in-flight op settled first, max 30 s
+    deleting --> [*]: DELETE confirmed + contexts redacted
+    pending --> [*]: edit purge / cancel
+    completed --> [*]
+    dismissed --> [*]
+```
+
+Invariants the diagrams encode: recall is the read path and
+synchronous at turn start; retention is the write path and fully
+async behind the durable outbox (the reply and its outbox row land in
+one SQLite transaction); every LLM call — extraction, consolidation,
+reflect — happens inside the hindsight-api container, never in
+Goblin; a recall or retention failure never blocks a turn; score
+floors are enforced server-side and re-checked client-side.
+
 ### Slice 2 rulings (locked)
 
 1. **Config: an optional `memory` block; absent = exact current

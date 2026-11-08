@@ -60,7 +60,13 @@ function StatusPill({ status }: { status: ProgramStatus }) {
 	}
 }
 
-export function ProgramsView({ token }: { token: string | null }) {
+export function ProgramsView({
+	token,
+	now = Date.now(),
+}: {
+	token: string | null;
+	now?: number;
+}) {
 	const { data, err, reload } = useLoad(() => listPrograms(token));
 	const approvals = useApprovals(token);
 	const [openId, setOpenId] = useState<number | null>(null);
@@ -76,7 +82,6 @@ export function ProgramsView({ token }: { token: string | null }) {
 				<p className="empty">Loading…</p>
 			</div>
 		);
-	const now = Date.now();
 	const timeZone = data.serverTimeZone;
 	const open = data.programs.find((p) => p.id === openId) ?? null;
 	if (open !== null) {

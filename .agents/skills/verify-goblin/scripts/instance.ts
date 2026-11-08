@@ -1,13 +1,18 @@
 #!/usr/bin/env bun
+
 // Throwaway goblin instances for verifying a branch. Each one gets its own
 // home, HOME, port and scripted fake model, and never sees the real home,
 // the checkout's .env, the systemd service or Telegram.
 //
 //   bun run try [name]          start one and print its URL
+//   bun run try [name] --real [conversation]
+//                               same, on a scrubbed copy of the real database;
+//                               prints that conversation's URL when given
 //   bun run try status [name]   read-only: is it worth driving?
 //   bun run try down [name]     stop what we started, keep the evidence
 //   bun run try list            show every instance from this machine
 
+import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -127,6 +132,49 @@ function seedHome(home: string, fakePort: number): void {
 	);
 }
 
+const REAL_DB = join(
+	process.env.GOBLIN_REAL_HOME ?? join(homedir(), "goblin"),
+	"state/goblin.sqlite",
+);
+
+// The copy must never reach anyone: no push targets, no queued mail or memory
+// writes, no scheduled programs or armed responsibilities. Telegram, mail and
+// memory are already off in the seeded config.
+const SCRUB = [
+	"DELETE FROM app_push_deliveries",
+	"DELETE FROM app_push_subscriptions",
+	"DELETE FROM mail_outbox",
+	"DELETE FROM memory_outbox",
+	"UPDATE programs SET enabled = 0",
+	"UPDATE responsibilities SET armed = 0",
+];
+
+function copyRealDb(home: string): void {
+	if (!existsSync(REAL_DB)) fail(`no real database at ${REAL_DB}`);
+	const target = join(home, "state/goblin.sqlite");
+	const real = new Database(REAL_DB, { readonly: true });
+	try {
+		real.run("VACUUM INTO ?", [target]);
+	} finally {
+		real.close();
+	}
+	const copy = new Database(target);
+	try {
+		copy.run("PRAGMA foreign_keys = ON");
+		for (const sql of SCRUB) copy.run(sql);
+	} finally {
+		copy.close();
+	}
+	note(`copied ${REAL_DB} (read-only) and scrubbed outbound state`);
+}
+
+// Accepts a bare id or anything ending in one, like app/c/<id>.
+function conversationId(arg: string): string {
+	const match = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/.exec(arg);
+	if (match?.[1] === undefined) fail(`not a conversation id: ${arg}`);
+	return match[1];
+}
+
 async function waitFor<T>(what: string, probe: () => Promise<T | null> | T | null): Promise<T> {
 	const deadline = Date.now() + READY_TIMEOUT_MS;
 	while (Date.now() < deadline) {
@@ -162,7 +210,7 @@ function stop(pid: number, marker: string): void {
 	if (ownsPid(pid, marker)) process.kill(pid, "SIGTERM");
 }
 
-async function up(name: string): Promise<void> {
+async function up(name: string, real: { conversation: string | null } | null): Promise<void> {
 	const existing = readState(name);
 	if (existing !== null) {
 		if (ownsPid(existing.goblinPid, `GOBLIN_VERIFY_INSTANCE=${name}`)) {
@@ -197,6 +245,7 @@ async function up(name: string): Promise<void> {
 	);
 
 	seedHome(home, fakePort);
+	if (real !== null) copyRealDb(home);
 	const logPath = join(home, "goblin.stdout");
 	const goblin = Bun.spawn(["bun", "--no-env-file", join(REPO, "src/index.ts")], {
 		cwd: home,
@@ -227,7 +276,8 @@ async function up(name: string): Promise<void> {
 		writeFileSync(stateFile(name), `${JSON.stringify(state, null, 2)}\n`);
 		note(`stop it with: bun run try down ${name}`);
 		note(`evidence goes in: ${evidenceDir(name)}`);
-		process.stdout.write(`${url}\n`);
+		const conversation = real?.conversation;
+		process.stdout.write(`${conversation ? `${url}c/${conversation}` : url}\n`);
 		process.exit(0);
 	} catch (error) {
 		stop(goblin.pid, marker);
@@ -280,8 +330,15 @@ function list(): void {
 	}
 }
 
-const [first, second] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const [first, second] = args;
 if (first === "status") await status(checkName(second ?? "default"));
 else if (first === "down") down(checkName(second ?? "default"));
 else if (first === "list") list();
-else await up(checkName(first ?? "default"));
+else {
+	const realAt = args.indexOf("--real");
+	const positional = realAt === -1 ? args : args.slice(0, realAt);
+	const after = realAt === -1 ? undefined : args[realAt + 1];
+	const real = realAt === -1 ? null : { conversation: after ? conversationId(after) : null };
+	await up(checkName(positional[0] ?? "default"), real);
+}

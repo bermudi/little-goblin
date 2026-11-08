@@ -5,13 +5,9 @@ import { randomUUID } from "node:crypto";
 import { appLink } from "./app-link.ts";
 import type { DelegationPin } from "./agent/tools/delegate.ts";
 import { paths } from "./config.ts";
-import {
-	channelOf,
-	parseAddress,
-	type Conversation,
-	type ConversationStore,
-	type ModelSettings,
-} from "./conversation.ts";
+import type { Conversation, ConversationStore } from "./conversation.ts";
+import { channelOf, parseAddress } from "./conversation-address.ts";
+import type { ModelSettings } from "./conversation-settings.ts";
 import { log } from "./log.ts";
 import { isRollingChat, projectRollText } from "./rolling.ts";
 

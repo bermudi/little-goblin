@@ -10,7 +10,8 @@
 import { FencedError, type RuntimeDeps } from "../runtime.ts";
 
 import { splitModelRef, type Config, type ConfigRef } from "../config.ts";
-import { channelOf, type Conversation, type ConversationStore } from "../conversation.ts";
+import type { Conversation, ConversationStore } from "../conversation.ts";
+import { channelOf } from "../conversation-address.ts";
 import type { AuthStore } from "../auth.ts";
 import type { NoteStore } from "../notes.ts";
 import { projectWorkdir, type ProjectStore } from "../projects.ts";

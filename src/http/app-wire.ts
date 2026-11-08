@@ -3,7 +3,7 @@
 // ReadableStream is not async-iterable, so nothing deeper may enter.
 
 import type { UIMessage } from "ai";
-import type { AppConversationSummary } from "../conversation.ts";
+import type { AppConversationSummary } from "../conversation-read.ts";
 import type { AttachmentRef } from "../agent/attachments.ts";
 import type { DiffLine } from "../line-diff.ts";
 

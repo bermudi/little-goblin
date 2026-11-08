@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { convertToModelMessages, type ModelMessage, type UIMessage } from "ai";
 import { attachmentPart } from "../agent/attachments.ts";
-import { summaryMessage } from "../conversation.ts";
+import { summaryMessage } from "../conversation-events.ts";
 import { setLogFile } from "../log.ts";
 import type { RecallContext } from "../memory/mod.ts";
 import {

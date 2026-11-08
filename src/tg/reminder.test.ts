@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { appAddress } from "../conversation.ts";
+import { appAddress } from "../conversation-address.ts";
 import type { OperatorReminder } from "../responsibility-reminder.ts";
 import { openTestStore } from "../testkit.ts";
 import type { DeliveryApi } from "./delivery.ts";

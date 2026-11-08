@@ -119,6 +119,7 @@ const ALLOWED_CYCLES: readonly string[][] = [
 	[
 		"src/agent/prompt.ts",
 		"src/conversation-history.ts",
+		"src/conversation-read.ts",
 		"src/conversation-schema.ts",
 		"src/conversation.ts",
 		"src/memory/mod.ts",

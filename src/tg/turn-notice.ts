@@ -1,5 +1,5 @@
 import type { Api } from "grammy";
-import { APP_ID_PREFIX } from "../conversation.ts";
+import { APP_ID_PREFIX } from "../conversation-address.ts";
 import { log } from "../log.ts";
 import type { TurnRun } from "../turn-journal.ts";
 import { withTimeout } from "./deadline.ts";

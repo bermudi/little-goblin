@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Api } from "grammy";
-import { formatAddress, type ConversationAddress } from "../conversation.ts";
+import { formatAddress } from "../conversation-address.ts";
+import type { ConversationAddress } from "../conversation-address.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpDir } from "../testkit.ts";
 import { join } from "node:path";

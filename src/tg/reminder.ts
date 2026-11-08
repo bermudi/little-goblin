@@ -4,7 +4,7 @@
 
 import type { Database } from "bun:sqlite";
 import { appLink } from "../app-link.ts";
-import { appIdOf } from "../conversation.ts";
+import { appIdOf } from "../conversation-address.ts";
 import { log } from "../log.ts";
 import { type OperatorReminder, reminderText } from "../responsibility-reminder.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";

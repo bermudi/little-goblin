@@ -4,13 +4,9 @@ import type { MenuButton, Message } from "grammy/types";
 import type { UIMessage } from "ai";
 import type { AuthStore } from "../auth.ts";
 import { paths, type Config, type ConfigRef, type TtsConfig } from "../config.ts";
-import {
-	formatAddress,
-	channelOf,
-	type Conversation,
-	type ConversationAddress,
-	type ConversationStore,
-} from "../conversation.ts";
+import type { Conversation, ConversationStore } from "../conversation.ts";
+import { formatAddress, channelOf } from "../conversation-address.ts";
+import type { ConversationAddress } from "../conversation-address.ts";
 import type { System1Client } from "../system1.ts";
 import {
 	isRollingChat,

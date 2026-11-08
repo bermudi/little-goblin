@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import type { SendResult } from "web-push";
 import { APP_PUSH_VAPID, openAppPush } from "./app-push.ts";
-import { appAddress, openStore } from "./conversation.ts";
+import { openStore } from "./conversation.ts";
+import { appAddress } from "./conversation-address.ts";
 import type { TurnDone } from "./turn/sink.ts";
 import { openTestStore } from "./testkit.ts";
 

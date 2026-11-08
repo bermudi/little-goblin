@@ -4,7 +4,7 @@
 // outbox CAS live in ../mail-approval.ts.
 
 import type { Api } from "grammy";
-import { formatAddress } from "../conversation.ts";
+import { formatAddress } from "../conversation-address.ts";
 import {
 	describeMailDecision,
 	type MailApproval,

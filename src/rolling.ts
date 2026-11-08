@@ -1,11 +1,7 @@
 import type { UIMessage } from "ai";
 import { paths } from "./config.ts";
-import {
-	formatAddress,
-	parseAddress,
-	type Conversation,
-	type ConversationStore,
-} from "./conversation.ts";
+import type { Conversation, ConversationStore } from "./conversation.ts";
+import { formatAddress, parseAddress } from "./conversation-address.ts";
 import {
 	System1Error,
 	type System1Client,

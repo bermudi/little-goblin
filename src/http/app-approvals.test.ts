@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { appAddress } from "../conversation.ts";
+import { appAddress } from "../conversation-address.ts";
 import { makeAppMailLane, presentProgramApproval } from "../app-approvals.ts";
 import { startMailApproval, type MailApproval } from "../mail-approval.ts";
 import { openOutbox } from "../mail-outbox.ts";

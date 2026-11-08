@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { openAppPush } from "./app-push.ts";
-import { appAddress } from "./conversation.ts";
+import { appAddress } from "./conversation-address.ts";
 import { openPrograms } from "./programs.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities } from "./responsibilities.ts";

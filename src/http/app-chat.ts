@@ -6,7 +6,7 @@ import {
 	attachmentRefSchema,
 	isStoredAttachmentPath,
 } from "../agent/attachments.ts";
-import { appIdOf } from "../conversation.ts";
+import { appIdOf } from "../conversation-address.ts";
 import { speechContent } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { NOTE_PART, type Note } from "../notes.ts";

@@ -2,7 +2,8 @@
 // list below. A cycle passes only when its members all sit inside ONE
 // frozen cluster. A cycle that grew past a cluster, spans two clusters,
 // or has no cluster fails the test. A cluster that shrank or vanished
-// passes — prune those by hand so the list keeps shrinking; print the
+// passes, but a fully empty one warns on stderr — an unpruned cluster
+// would let its old tangle return silently. Prune by hand; print the
 // live clusters to copy from with:
 //   GOBLIN_PRINT_CYCLES=1 bun test src/import-cycles.test.ts
 // Every import form counts as an edge (value, `import type`, re-export,
@@ -152,6 +153,13 @@ function fitsAllowedCluster(members: readonly string[], allowed: readonly string
 	return allowed.some((cluster) => members.every((m) => cluster.includes(m)));
 }
 
+// A cluster with no cycle left inside it guards nothing anymore — its only
+// remaining effect is letting that tangle return silently. Warn, don't
+// fail: pruning is a hand edit in the same spirit as the shrink itself.
+function staleClusters(cycles: readonly string[][], allowed: readonly string[][]): string[][] {
+	return allowed.filter((cluster) => !cycles.some((members) => fitsAllowedCluster(members, [cluster])));
+}
+
 describe("import cycles", () => {
 	test("no import cycle exists outside the frozen clusters", () => {
 		const cycles = stronglyConnected(buildGraph())
@@ -170,6 +178,14 @@ describe("import cycles", () => {
 			);
 		}
 		expect(offenders).toEqual([]);
+		const stale = staleClusters(cycles, ALLOWED_CYCLES);
+		if (stale.length > 0) {
+			process.stderr.write(
+				`prune ALLOWED_CYCLES — these clusters have no cycle left inside them, so a re-tangle of their members would pass silently:\n${stale
+					.map((cluster) => JSON.stringify([...cluster].sort()))
+					.join("\n")}\n`,
+			);
+		}
 	});
 
 	test("containment judges clusters, not signatures", () => {
@@ -185,5 +201,9 @@ describe("import cycles", () => {
 		expect(fitsAllowedCluster(["a.ts", "b.ts", "c.ts", "d.ts"], allowed)).toBe(false);
 		expect(fitsAllowedCluster(["a.ts", "x.ts"], allowed)).toBe(false);
 		expect(fitsAllowedCluster(["q.ts", "r.ts"], allowed)).toBe(false);
+		// Stale = no detected cycle sits fully inside the cluster anymore.
+		expect(staleClusters([["a.ts", "b.ts"], ["x.ts", "y.ts"]], allowed)).toEqual([]);
+		expect(staleClusters([["a.ts", "b.ts"]], allowed)).toEqual([["x.ts", "y.ts"]]);
+		expect(staleClusters([["a.ts", "x.ts"]], allowed)).toEqual(allowed);
 	});
 });

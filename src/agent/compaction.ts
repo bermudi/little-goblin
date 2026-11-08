@@ -92,6 +92,11 @@ export function chooseBoundary(
 	// the tail rather than being stranded.
 	let i = detail.length - 1;
 	let tailTokens = estimateMessageTokens(detail[i]!.message);
+	// Last complete cut whose tail fit the budget — the fallback when the
+	// walk's own cut folds nothing: one oversized exchange pulled whole
+	// into the tail lands the cut on the previous boundary, and a huge
+	// conversation reports "nothing worth compacting".
+	let fitStart: number | null = null;
 	while (i > 0) {
 		const boundaryIndex = i - 1;
 		if (!exchangeComplete(detail, boundaryIndex)) {
@@ -99,13 +104,23 @@ export function chooseBoundary(
 			tailTokens += estimateMessageTokens(detail[boundaryIndex]!.message);
 			continue;
 		}
+		if (tailTokens <= opts.tailTokenBudget) fitStart = i;
 		if (tailTokens >= opts.tailTokenBudget) break;
 		if (opts.previousBoundary !== null && detail[boundaryIndex]!.seq <= opts.previousBoundary)
 			break;
 		i = boundaryIndex;
 		tailTokens += estimateMessageTokens(detail[boundaryIndex]!.message);
 	}
-	const boundaryIndex = i - 1;
+	const cut = cutAt(detail, i - 1, opts);
+	if (cut !== null || fitStart === null || tailTokens <= opts.tailTokenBudget) return cut;
+	return cutAt(detail, fitStart - 1, opts);
+}
+
+function cutAt(
+	detail: CompactionEvent[],
+	boundaryIndex: number,
+	opts: { previousBoundary: number | null; minSpanTokens?: number },
+): number | null {
 	if (boundaryIndex < 0) return null;
 	const boundary = detail[boundaryIndex]!.seq;
 	if (opts.previousBoundary !== null && boundary <= opts.previousBoundary) return null;

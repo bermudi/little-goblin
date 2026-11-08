@@ -39,6 +39,22 @@ function sample(): CompactionEvent[] {
 }
 
 describe("chooseBoundary", () => {
+	test("an oversized exchange past the tail budget still folds instead of noop", () => {
+		// Real shape (2026-11-08): one tool-heavy turn of ~110k tokens
+		// after the previous boundary, then a small exchange. The walk
+		// used to swallow the giant exchange into the tail and land the
+		// cut on the previous boundary.
+		const detail = [
+			ev(1, "user", "old".repeat(200)),
+			ev(2, "assistant", "old reply".repeat(200), 1),
+			ev(3, "user", "research it"),
+			ev(4, "assistant", "x".repeat(400_000), 3),
+			ev(5, "user", "follow up"),
+			ev(6, "assistant", "short", 5),
+		];
+		expect(chooseBoundary(detail, { tailTokenBudget: 30_000, previousBoundary: 2 })).toBe(4);
+	});
+
 	test("attachment summaries retain the stored path rather than saying unnamed", () => {
 		const event = ev(1, "user", "please read this");
 		event.message.parts.push(

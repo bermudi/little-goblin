@@ -33,7 +33,7 @@ model output, tool arguments, and persisted artifacts with zod.
 
 | Shape | Required facts and invariants |
 | --- | --- |
-| Review request | Repository, explicit comparison mode, base/head refs, scope, operator-selected runner/model, and resource limits. No provider/model fallback. |
+| Review request | Repository, explicit comparison mode, base/head refs, scope, operator-selected discovery and challenge runner/model (two distinct identities), and resource limits. No provider/model fallback. |
 | Snapshot | Resolved base/head commit IDs and tree IDs, scope/config hash, analyzer version, compiler version, and dependency lock hash for each endpoint. No moving refs after capture. |
 | Location | Endpoint, repository-relative path, blob ID, and line range. A location always names bytes from one snapshot, never the current checkout by accident. |
 | Relationship | Source/target identities, relation kind, evidence location, and basis: compiler-resolved, explicitly declared, or candidate. Resolution describes a static relation, not proof of runtime execution. |
@@ -199,8 +199,11 @@ that invalidates its assumptions can be.
 
 Use a fresh session with candidates and source access, without the
 author's conversation or the discovery session's persuasive reasoning.
-It can use the same explicitly configured model; no second provider is
-assumed. This is a challenge pass, not a majority vote.
+It uses a different, explicitly configured runner/model from discovery,
+so the two passes do not share one model's blind spots. A request that
+names the same identity for both passes is refused before inference.
+A different model family is preferred over a sibling of the discovery
+model; the operator chooses. This is a challenge pass, not a majority vote.
 
 For each candidate, ask:
 
@@ -254,14 +257,15 @@ initialize Goblin's real home or runtime logger to run a developer review.
 
 ## Limits and failure behavior
 
-Require explicit runner/model configuration before inference. Bound unit
+Require explicit discovery and challenge runner/model configuration
+before inference. Bound unit
 count, source/context bytes, input/output tokens, tool calls, total calls,
 and wall time. Money limits can apply only where usage/pricing supports
 them. Reaching a limit produces partial coverage. Provider failure stays
 failed/partial; no silent model substitution or open-ended retry.
 
 Cache/resume identity includes snapshots, rules, analyzer, prompt,
-runner/model, and limits. Changed identity starts new work. Retain
+both runner/models, and limits. Changed identity starts new work. Retain
 completed unit results where safe, but never automatically repeat an
 uncertain inference request as if it were known not to have happened.
 
@@ -297,9 +301,10 @@ Recommended starting branches of the decision tree, not settled choices:
 
 1. **Entry: local on-demand CLI.** If automatic later, choose the
    event and inference allowance first; do not install hooks now.
-2. **Inference: one explicit runner/model, reused in fresh sessions.**
-   The operator supplies the identity and limits. If multiple models
-   later, compare measured benefit before adding fan-out.
+2. **Inference: two explicit runner/models, one per pass.** Discovery
+   and challenge use different models, each in fresh sessions. The
+   operator supplies both identities and limits. More fan-out later
+   needs measured benefit first.
 3. **Output: local JSON + Markdown.** If GitHub or Goblin UI delivery
    later, agree publication/privacy rules and reuse existing owners.
 4. **Judgment: advisory findings only.** Any future blocking policy

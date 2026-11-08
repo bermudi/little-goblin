@@ -355,7 +355,11 @@ turn-structure change.
   tool fence (`turn/tool-fence.ts`) rides the same boundary: an injected
   authority check and journal, never the Runtime. So does the compaction
   job (`turn/compact-job.ts`): injected store, authority, fold ceiling,
-  and lane-cancellation seams.
+  and lane-cancellation seams. And so does the run record
+  (`turn/run-record.ts`), opened per attempt: the journal row's fault
+  box, terminal stamp, and failed-progress recorder plus the attempt's
+  model-fallback config, with the run id read through an injected
+  getter — adoption itself stays a runtime statement after `beginRun`.
 
 ## The two text projections (#84 / #111)
 

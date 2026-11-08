@@ -353,7 +353,9 @@ turn-structure change.
   rides a runtime-injected queue function and persistence a
   runtime-injected append — queue policy never leaves `runtime.ts`. The
   tool fence (`turn/tool-fence.ts`) rides the same boundary: an injected
-  authority check and journal, never the Runtime.
+  authority check and journal, never the Runtime. So does the compaction
+  job (`turn/compact-job.ts`): injected store, authority, fold ceiling,
+  and lane-cancellation seams.
 
 ## The two text projections (#84 / #111)
 

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { type LanguageModel, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
-import { type CompactionOutcome, chooseBoundary, runCompaction } from "./agent/compaction.ts";
+import { type CompactionOutcome, chooseBoundary } from "./agent/compaction.ts";
 import {
 	candidateRefs,
 	exhaustedMessage,
@@ -38,6 +38,7 @@ import type { PriorTurnContext } from "./reviewer.ts";
 import { Reviewer } from "./reviewer.ts";
 import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
+import { runCompactJob } from "./turn/compact-job.ts";
 import { isClaudeStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
 import { renderFailedTurnProgress } from "./turn/failed-progress.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
@@ -600,83 +601,29 @@ export class Runtime {
 		});
 	}
 
-	// Compaction summarizes the event delta without rewriting the event stream.
-	// Its dedicated controller handles stop/shutdown; authority checks leave the
-	// pointer and prompt snapshot unchanged on cancellation or fencing. The
-	// caller decides whether a failure is reported or retried. activeFloor,
-	// when given, is the running turn's earliest member seq — the fold stays
-	// strictly below it (and below any still-queued input; foldCeiling).
 	private async doCompact(
 		conv: Conversation,
 		reason: "threshold" | "manual" | "overflow" | "preempt",
 		activeFloor?: number,
 	): Promise<CompactionOutcome> {
-		if (reason === "manual") {
-			conv = this.deps.store.get(conv.id) ?? conv;
-			conv = this.deps.captureConversation?.(conv) ?? conv;
-		}
-		const compaction = this.deps.compaction;
-		if (!compaction) return { kind: "noop", reason: "compaction not configured" };
-		// Threshold/overflow use the admitted epoch; manual jobs resolve a fresh
-		// conversation before taking authority.
-		const epoch = conv.epoch;
-		// Register before the first await so /stop can cancel a pending
-		// contextWindow lookup.
-		const lane = this.lane(conv.id);
-		const controller = new AbortController();
-		lane.compactController = controller;
-		try {
-			// Metadata only — never buildStep: resolving a model and building
-			// a system prompt here would freeze a snapshot no turn asked for.
-			const contextWindow = await compaction.contextWindow(conv);
-			// The authority check doubles as the abort check: compactController
-			// is only aborted by cancelFenced after the epoch commits, so a
-			// /stop during the lookup already reports as a fence. runCompaction
-			// reverses the order after each call — a provider may resolve under
-			// abort, so there the signal check must land first.
-			this.checkAuthority(conv.id, epoch);
-			const { tailTokenBudget, inputTokenBudget } = compactionBudgets(contextWindow);
-			// Overflow recovery uses a smaller tail to stay below the provider's
-			// observed limit. A pre-empt folds before any failure — full tail.
-			const tail = reason === "overflow" ? Math.floor(tailTokenBudget / 2) : tailTokenBudget;
-			const modelRef = compaction.modelRef(conv);
-			log.info("compaction window", {
-				conversation: conv.id,
-				model: modelRef,
-				contextWindow,
-				tailTokenBudget: tail,
-				inputTokenBudget,
-				reason,
-			});
-			const outcome = await runCompaction(
-				conv.id,
-				this.deps.store,
-				candidateRefs(modelRef, this.deps.modelFallbacks?.() ?? []),
-				(system, prompt, signal, model) =>
-					compaction.summarize(conv, system, prompt, signal, model),
-				{
-					tailTokenBudget: tail,
-					inputTokenBudget,
-					reason,
-					// Evaluated at history-read time: work may have queued while
-					// the contextWindow lookup awaited.
-					beforeSeq: () => this.foldCeiling(conv.id, activeFloor),
-					assertAuthority: () => this.checkAuthority(conv.id, epoch),
-				},
-				controller.signal,
-			);
-			if (outcome.kind === "compacted") {
-				// Rebuild the frozen prompt after compaction changed history.
-				this.deps.store.clearPromptSnapshot(conv.id);
-				log.info("prompt snapshot cleared for rebuild", {
-					conversation: conv.id,
-					reason,
-				});
-			}
-			return outcome;
-		} finally {
-			if (lane.compactController === controller) lane.compactController = null;
-		}
+		return runCompactJob(conv, reason, activeFloor, {
+			store: this.deps.store,
+			compaction: this.deps.compaction,
+			captureConversation: this.deps.captureConversation,
+			modelFallbacks: this.deps.modelFallbacks,
+			budgets: compactionBudgets,
+			checkAuthority: (convId, epoch) => this.checkAuthority(convId, epoch),
+			foldCeiling: (convId, floor) => this.foldCeiling(convId, floor),
+			holdController: (controller) => {
+				this.lane(conv.id).compactController = controller;
+			},
+			releaseController: (controller) => {
+				const lane = this.lanes.get(conv.id);
+				if (lane !== undefined && lane.compactController === controller) {
+					lane.compactController = null;
+				}
+			},
+		});
 	}
 
 	private lane(convId: string): Lane {

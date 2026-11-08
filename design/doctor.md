@@ -95,6 +95,20 @@ associations warn/skip instead of testing unrelated local Ollama. Installed
 settings do not establish the running process's loaded settings; readiness,
 embedding and application authorization are separate results.
 
+Memory-stack unit drift is file comparison, not runtime inspection: every
+installed unit file (quadlets under `~/.config/containers/systemd`, user
+units under `~/.config/systemd/user`) is compared with its `deploy/memory/`
+source in the diagnostic checkout, and differing, missing or unreadable
+files are named in one warning that points at the manual runbook — never
+copied, reloaded or restarted. No env file is opened and no value read; the
+API quadlet's installer-managed `# goblin:secrets-begin/end` `Secret=`
+region is excluded on both sides, so a correctly reconfigured install is
+not drift, and opt-in `goblin-embed-*` units are compared only while the
+relay switch file exists (existence only). Installed Quadlets are
+operator-editable and the stack is never auto-deployed, so drift warns
+about source/installation divergence — not proof of breakage — and
+preflight skips the check: the runbook owns first placement.
+
 Keep measured capacity evidence when later mount-identity inspection fails.
 Missing inode accounting warns rather than inventing a healthy percentage;
 capacity findings are not a write/fsync guarantee.

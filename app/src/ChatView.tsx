@@ -620,6 +620,13 @@ function quotaWindowLabel(minutes: number | null): string {
 	return `${minutes}m`;
 }
 
+// A receipt is a snapshot from the last metered turn. Once its window
+// has reset, its percentage describes a window that no longer exists.
+function quotaUsage(w: AppQuotaWindow): string {
+	if (w.resetsAt !== null && w.resetsAt * 1000 <= Date.now()) return "reset since last turn";
+	return `${w.usedPercent}% used${quotaReset(w.resetsAt)}`;
+}
+
 function quotaReset(resetsAt: number | null): string {
 	if (resetsAt === null) return "";
 	const d = new Date(resetsAt * 1000);
@@ -1192,7 +1199,7 @@ const SEGMENT_LABELS: Record<string, string> = {
 	skills: "Skills",
 	toolDefs: "Tool definitions",
 	history: "History",
-	toolResults: "· tool calls & results",
+	toolResults: "tool calls & results",
 };
 
 // The gauge's one-line label for a context view. Null input reads as
@@ -1477,12 +1484,12 @@ export function ContextGauge({
 									/>
 								))}
 							</div>
-							<dl className="ctx-rows ctx-seg-rows">
+							<dl className="ctx-rows ctx-seg-rows" title="Estimated from serialized characters">
 								{segs.map((s) => (
 									<div key={s.key} className={s.key === "toolResults" ? "sub" : undefined}>
 										<dt>{SEGMENT_LABELS[s.key] ?? s.key}</dt>
 										<dd className="mono">
-											{contextCount(s.tokens)} tok
+											~{contextCount(s.tokens)} tok
 											{s.key !== "toolResults" && segTotal > 0
 												? ` · ${Math.round((s.tokens / segTotal) * 100)}%`
 												: ""}
@@ -1490,7 +1497,6 @@ export function ContextGauge({
 									</div>
 								))}
 							</dl>
-							<p className="empty">estimated from serialized characters</p>
 						</div>
 					)}
 					<dl className="ctx-rows">
@@ -1511,19 +1517,13 @@ export function ContextGauge({
 						{quota?.primary !== null && quota?.primary !== undefined && (
 							<div>
 								<dt>{quotaWindowLabel(quota.primary.windowMinutes)}</dt>
-								<dd className="mono">
-									{quota.primary.usedPercent}% used
-									{quotaReset(quota.primary.resetsAt)}
-								</dd>
+								<dd className="mono">{quotaUsage(quota.primary)}</dd>
 							</div>
 						)}
 						{quota?.secondary !== null && quota?.secondary !== undefined && (
 							<div>
 								<dt>{quotaWindowLabel(quota.secondary.windowMinutes)}</dt>
-								<dd className="mono">
-									{quota.secondary.usedPercent}% used
-									{quotaReset(quota.secondary.resetsAt)}
-								</dd>
+								<dd className="mono">{quotaUsage(quota.secondary)}</dd>
 							</div>
 						)}
 					</dl>

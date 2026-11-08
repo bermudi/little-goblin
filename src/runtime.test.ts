@@ -26,6 +26,7 @@ import {
 	type TurnSink,
 	userMessage,
 } from "./runtime.ts";
+import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import type { System1Client } from "./system1.ts";
 import {
 	finishPart,
@@ -87,6 +88,7 @@ function rig(
 	const store = opts.store ?? openStore(tmpDb("goblin-rt-"));
 	const conv = store.resolve(opts.addr ?? { kind: "dm", chatId: 1 }, "/w");
 	const runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store,
 		buildStep:
 			opts.buildStep ??
@@ -895,11 +897,33 @@ describe("turn authority", () => {
 		r.runtime.submit(conv2, userMessage([{ type: "text", text: "two" }]), s2);
 		await Promise.all([s1.firstDelta, s2.firstDelta]); // both turns mid-stream
 		await r.runtime.shutdown();
-		expect(await s1.done).toEqual({ kind: "fenced" });
-		expect(await s2.done).toEqual({ kind: "fenced" });
+		expect(await s1.done).toEqual({ kind: "fenced", shutdown: true });
+		expect(await s2.done).toEqual({ kind: "fenced", shutdown: true });
 		// fenced turns commit no assistant output
 		expect(roles(r)).toEqual(["user"]);
 		expect(r.store.history(conv2.id).map((m) => m.role)).toEqual(["user"]);
+		r.store.close();
+	});
+
+	test("shutdown fences a reattached live-chunk subscriber with the cause", async () => {
+		const r = rig({ deltas: ["a", "b", "c", "d", "e"], delayMs: 20 });
+		const s1 = submit(r, "one");
+		await s1.firstDelta; // mid-stream
+		const ends: TurnDone[] = [];
+		expect(
+			r.runtime.subscribeLiveChunks(
+				r.conv.id,
+				() => {},
+				(d) => {
+					ends.push(d);
+				},
+			),
+		).not.toBeNull();
+		await r.runtime.shutdown();
+		expect(await s1.done).toEqual({ kind: "fenced", shutdown: true });
+		// The reattached stream ends with the same stamped fence, not a bare
+		// one — a restart must read as a restart, not "stopped before finishing".
+		expect(ends).toEqual([{ kind: "fenced", shutdown: true }]);
 		r.store.close();
 	});
 
@@ -907,7 +931,7 @@ describe("turn authority", () => {
 		const r = rig({ deltas: ["a"], delayMs: 5 });
 		await r.runtime.shutdown();
 		const sink = submit(r, "hi");
-		expect(await sink.done).toEqual({ kind: "fenced" });
+		expect(await sink.done).toEqual({ kind: "fenced", shutdown: true });
 		await sleep(50); // prove no turn ever starts
 		expect(sink.text).toBe("");
 		expect(roles(r)).toEqual(["user"]);
@@ -2454,6 +2478,7 @@ describe("cache stability", () => {
 		const summarizeStarted = deferred<void>();
 		let summarizeImpl: (signal: AbortSignal) => Promise<string> = async () => "folded";
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: (c, toolset) => ({
 				model: fakeModel(["ok"], 1),
@@ -2579,6 +2604,7 @@ describe("cache stability", () => {
 		const { model, prompts } = recordingModel(["ok"], 5);
 		const calls: string[] = [];
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ model, system: "test" }),
 			makeTools: () => ({}),
@@ -2615,6 +2641,7 @@ describe("cache stability", () => {
 		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ model: fakeModel(["ok"], 5), system: "test" }),
 			makeTools: () => ({}),
@@ -3696,6 +3723,7 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 	let calls = 0;
 	const summaries: string[] = [];
 	const runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store,
 		captureConversation: (conv) => captureConversationSettings(store, conv, cfg),
 		async buildStep(conv) {
@@ -3773,6 +3801,7 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 	const selections: string[] = [];
 	const summarySelections: string[] = [];
 	const runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store,
 		captureConversation: (row) => captureConversationSettings(store, row, cfg),
 		buildStep: (row) => {
@@ -3824,6 +3853,7 @@ test("invalid durable app settings report admission error exactly once without s
 	let completions = 0;
 	const sink = new RecordingSink();
 	const runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store,
 		captureConversation: (row) => captureConversationSettings(store, row, cfg),
 		buildStep: () => {
@@ -3861,6 +3891,7 @@ describe("turn journal", () => {
 			textParts("done"),
 		]);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
@@ -3900,6 +3931,7 @@ describe("turn journal", () => {
 		const journal = openTurnJournal(store.db);
 		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: gated.model, system: "test" }),
@@ -3953,6 +3985,7 @@ describe("turn journal", () => {
 		]);
 		let executions = 0;
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
@@ -4039,6 +4072,7 @@ describe("failed-turn progress", () => {
 			new Error("terminal boom"),
 		]);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
@@ -4095,6 +4129,7 @@ describe("failed-turn progress", () => {
 			textParts("answer to B"),
 		]);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
@@ -4148,6 +4183,7 @@ describe("failed-turn progress", () => {
 			textParts("recovered"),
 		]);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
@@ -4184,6 +4220,7 @@ describe("failed-turn progress", () => {
 		const journal = openTurnJournal(store.db);
 		const edge = scriptedEdge([new Error("boom straight away"), textParts("all good")]);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
@@ -4224,6 +4261,7 @@ describe("failed-turn progress", () => {
 		};
 		const edge = scriptedEdge([textParts("the answer")]);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
@@ -4248,6 +4286,7 @@ describe("failed-turn progress", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: (c) => {
@@ -4289,6 +4328,7 @@ describe("failed-turn progress", () => {
 		})]);
 		const serving = scriptedEdge([textParts("from codex")]);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: (c) => ({
@@ -4334,6 +4374,7 @@ describe("failed-turn progress", () => {
 		};
 		const edge = scriptedEdge([new Error("original boom")]);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
@@ -4575,6 +4616,7 @@ describe("tool context", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const seen: { runId: string; source: string }[] = [];
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ model: fakeModel(["ok"]), system: "test" }),
 			makeTools: (_c, _v, _r, _f, _a, context) => {
@@ -4605,6 +4647,7 @@ describe("tool context", () => {
 			[...textParts("again"), finishPart("stop", 10)],
 		]);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),

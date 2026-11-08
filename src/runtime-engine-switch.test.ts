@@ -17,6 +17,8 @@ import type { AuthStore } from "./auth.ts";
 import type { Config, ConfigRef } from "./config.ts";
 import { openStore } from "./conversation.ts";
 import { type ModelStep, Runtime, userMessage } from "./runtime.ts";
+import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
+import { isClaudeStep } from "./turn/engine.ts";
 import { fakeClaude } from "./testkit/fake-claude.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "./testkit/fake-model.ts";
 import { RecordingSink, tmpDb, tmpDir, useHome, waitUntil } from "./testkit.ts";
@@ -93,6 +95,8 @@ describe("one conversation across turn engines", () => {
 			},
 		};
 		const claudeEngine: ClaudeEngine = {
+			id: "claude-code",
+			accepts: isClaudeStep,
 			run: (deps) => driveClaude(engineConfig, deps),
 			compact: async () => {
 				throw new Error("compaction not exercised here");
@@ -112,8 +116,8 @@ describe("one conversation across turn engines", () => {
 
 		const runtime = new Runtime({
 			store,
+			engines: [claudeEngine, aiSdkEngine],
 			buildStep: () => (lane === "sdk" ? sdkStep() : claudeStep),
-			claudeEngine,
 			makeTools: () => tools,
 			turnJournal: journal,
 		});

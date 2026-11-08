@@ -15,6 +15,7 @@ import type { MediaPosition } from "../attachments.ts";
 import type { ClaudeCodeThinking } from "../thinking.ts";
 import { claudeChildEnv } from "./auth.ts";
 import { type ClaudeEngineConfig, type ClaudeRunDeps, driveClaude } from "./engine.ts";
+import { isClaudeStep, type TurnEngine } from "../../turn/engine.ts";
 import type {
 	ClaudeEvent,
 	ClaudeQuery,
@@ -200,7 +201,7 @@ export function liveQuery(call: ClaudeQueryCall): AsyncIterable<ClaudeEvent> {
 
 // ---------- the engine handle the runtime holds ----------
 
-export interface ClaudeEngine {
+export interface ClaudeEngine extends TurnEngine<ClaudeStep> {
 	/** Runs one turn. Sibling of driveStream; same deps, ClaudeStep-shaped step. */
 	run<M extends WireMember>(deps: ClaudeRunDeps<M>): Promise<StreamOutcome>;
 	/**
@@ -231,6 +232,8 @@ export function createClaudeEngine(init: {
 		...(init.configDir !== undefined ? { configDir: init.configDir } : {}),
 	};
 	return {
+		id: "claude-code",
+		accepts: isClaudeStep,
 		run: (deps) => driveClaude(config, deps),
 		compact: (input) => compactText(config, input),
 	};

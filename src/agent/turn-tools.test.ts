@@ -13,6 +13,7 @@ import { openProjects, type ProjectStore } from "../projects.ts";
 import { openResponsibilities } from "../responsibilities.ts";
 import { makeResponsibilityService } from "../responsibility-service.ts";
 import { Runtime, userMessage } from "../runtime.ts";
+import { aiSdkEngine } from "../turn/ai-sdk-engine.ts";
 import { openTurnJournal } from "../turn-journal.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 import { openWakeStore } from "../wake-store.ts";
@@ -123,6 +124,7 @@ describe("turn-tools responsibility composition", () => {
 		});
 		const edge = scriptedModel(attempts);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ model: edge.model, system: "test" }),
 			makeTools: toolsFor,
@@ -275,6 +277,7 @@ describe("turn-tools managed send linkage", () => {
 			[...textParts("sent"), finishPart("stop", 10)],
 		]);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
@@ -392,6 +395,7 @@ describe("responsibility epoch authority", () => {
 				[...textParts("sent"), finishPart("stop", 10)],
 			]);
 			const runtime = new Runtime({
+				engines: [aiSdkEngine],
 				store,
 				buildStep: () => ({ model: edge.model, system: "test" }),
 				makeTools: toolsFor,
@@ -544,6 +548,7 @@ describe("operator correction authority", () => {
 			{ extra: textParts("done") },
 		);
 		runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
@@ -732,6 +737,7 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 		{ extra: textParts("done") },
 	);
 	runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store,
 		turnJournal: journal,
 		buildStep: () => ({ model: edge.model, system: "test" }),

@@ -20,6 +20,7 @@ import type { Desktops } from "../desktops.ts";
 import { DesktopError } from "../desktops.ts";
 import { setLogFile } from "../log.ts";
 import { Runtime, type TurnDone, type TurnSink, userMessage } from "../runtime.ts";
+import { aiSdkEngine } from "../turn/ai-sdk-engine.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 import { type DeliveryApi, makeDeliverySink } from "../tg/delivery.ts";
 import { type WakeDeps, wakeConversation } from "../wake.ts";
@@ -3570,6 +3571,7 @@ describe("origin responsiveness over the real wake path", () => {
 		const store = openStore(r.dbPath);
 		const requests: unknown[] = [];
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ model: recordingChatModel(requests, "chat-ok"), system: "test" }),
 			makeTools: () => ({}),

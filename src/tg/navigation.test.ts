@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "../runtime.ts";
+import { aiSdkEngine } from "../turn/ai-sdk-engine.ts";
 import { openTelegramInbox } from "./inbox.ts";
 import { navigateDm } from "./navigation.ts";
 import { waitUntil } from "../testkit.ts";
@@ -319,6 +320,7 @@ function heldTurn(deps: ReturnType<typeof fixture>) {
 		},
 	};
 	const runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store: deps.store,
 		buildStep: () => ({ model, system: "test" }),
 		makeTools: () => ({}),

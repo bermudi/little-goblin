@@ -131,7 +131,7 @@ test("the list is a table; opening a row replaces it with the detail and a back 
 		},
 	);
 	root = createRoot(container);
-	await act(async () => root?.render(<ProgramsView token={null} />));
+	await act(async () => root?.render(<ProgramsView token={null} now={NOW} />));
 
 	const rows = [...container.querySelectorAll(".dtable .dt-row")];
 	expect(rows.map((r) => r.querySelector(".dt-main")?.textContent)).toEqual([

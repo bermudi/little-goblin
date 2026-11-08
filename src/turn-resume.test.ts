@@ -17,6 +17,7 @@ import { makeTools as realMakeTools } from "./agent/tools/mod.ts";
 import { withScript } from "./agent/tools/script.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 import { Runtime, type RuntimeDeps, type TurnDone, type TurnSink, userMessage } from "./runtime.ts";
+import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { SKILL_PART } from "./skill-part.ts";
 import { makeDeliverySink } from "./tg/delivery.ts";
 import { fakeApi } from "./testkit/fake-api.ts";
@@ -80,6 +81,7 @@ function setup(opts: {
 		}));
 	const edge = scriptedModel(opts.attempts ?? [textParts("resumed answer")]);
 	const runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store,
 		turnJournal: journal,
 		buildStep: (c) => {
@@ -2651,6 +2653,7 @@ describe("turn resume", () => {
 				...(file !== undefined ? { file: { deliver: file } } : {}),
 			});
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),

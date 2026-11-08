@@ -71,6 +71,39 @@ logical-turn scope, and hands it to each attempt.
 - One logical turn, one loop history — unchanged (`design/model.md` →
   review-round rulings).
 
+## Engine boundary
+
+The agent loop's engine fork is named, not implicit: `src/turn/engine.ts`
+holds the `TurnEngine` interface (`id`, `accepts`, `run`) and
+`pickEngine`, which the runtime calls once per attempt — the first
+engine whose `accepts(step)` is true wins; none fails the turn loud.
+Every engine consumes the same deps object minus the step
+(`EngineInput`) plus its own step variant, and returns the same
+`StreamOutcome`. Engines today:
+
+- `ai-sdk` — `src/turn/ai-sdk-engine.ts`, wrapping `turn/stream.ts`'s
+  `driveStream` (streamText). Accepts every non-claude step.
+- `claude-code` — `src/agent/claude-code/`; its `ClaudeEngine` handle
+  also carries `compact`, the compaction seam's claude lane. Accepts
+  `ClaudeStep` (`engine: "claude-code"`).
+
+Ruling: `UIMessage` / `UIMessageChunk` stay goblin's storage and wire
+format. The app channel is `useChat`; an engine translates at its own
+edge, as the claude engine already does (`agent/claude-code/translate.ts`).
+Both engines emit the identical wire, journal rows, and telemetry;
+`src/turn/engine.conformance.test.ts` pins that per engine through the
+real Runtime.
+
+### Adding an engine
+
+- Implement `TurnEngine` in its own adapter directory (one vendor
+  package, one dir — the claude-code layout).
+- Add the engine's step variant to `buildStep`'s union and gate it with
+  `accepts`.
+- Register it in `src/index.ts`'s `engines` array (first match wins).
+- Add it to `src/turn/engine.conformance.test.ts`'s engine table.
+- Add a `module-boundaries.test.ts` entry for its vendor packages.
+
 ## The turn journal
 
 `src/turn-journal.ts` is the crash journal. The run row lands before any
@@ -318,7 +351,15 @@ turn-structure change.
   it.
 - **Turn-module boundary.** No `turn/` module sees a `Lane`; steering
   rides a runtime-injected queue function and persistence a
-  runtime-injected append — queue policy never leaves `runtime.ts`.
+  runtime-injected append — queue policy never leaves `runtime.ts`. The
+  tool fence (`turn/tool-fence.ts`) rides the same boundary: an injected
+  authority check and journal, never the Runtime. So does the compaction
+  job (`turn/compact-job.ts`): injected store, authority, fold ceiling,
+  and lane-cancellation seams. And so does the run record
+  (`turn/run-record.ts`), opened per attempt: the journal row's fault
+  box, terminal stamp, and failed-progress recorder plus the attempt's
+  model-fallback config, with the run id read through an injected
+  getter — adoption itself stays a runtime statement after `beginRun`.
 
 ## The two text projections (#84 / #111)
 

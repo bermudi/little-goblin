@@ -94,6 +94,7 @@ import { openPings } from "./tg/pings.ts";
 import { sendInterruptedTurnNotices } from "./tg/turn-notice.ts";
 import { makeWakeDeps } from "./tg/wake.ts";
 import { openTurnJournal } from "./turn-journal.ts";
+import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { makeResumeOps, makeResumeSinks, type ResumeOps } from "./turn-resume.ts";
 import { sinkFor, wakeConversation } from "./wake.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
@@ -432,7 +433,9 @@ async function boot() {
 	const runtime = new Runtime({
 		store,
 		turnJournal,
-		claudeEngine,
+		// First match wins: the claude engine accepts ClaudeSteps, the
+		// ai-sdk engine everything else (turn/engine.ts pickEngine).
+		engines: [claudeEngine, aiSdkEngine],
 		runOwnership: {
 			begin: (e) => wakeDispatcher?.hooks.begin(e),
 			members: (runId, convId, seqs) => wakeDispatcher?.hooks.members(runId, convId, seqs),

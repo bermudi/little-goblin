@@ -10,6 +10,7 @@ import { type LanguageModel, type ToolSet, tool } from "ai";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { type ModelStep, Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
+import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import {
 	finishPart,
 	type StreamAttempt,
@@ -67,6 +68,7 @@ function rig(opts: {
 		return { model: m.model as LanguageModel, system: "test", label: c.model ?? "", maxRetries: 0 };
 	};
 	const runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store,
 		buildStep,
 		makeTools: () => opts.tools ?? {},

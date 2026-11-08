@@ -68,7 +68,8 @@ function describeWarning(w: CallWarning): string {
 
 export type WireEnd =
 	| { kind: "completed" }
-	| { kind: "fenced" }
+	// shutdown: the process is going down (deploy/restart), not a /stop.
+	| { kind: "fenced"; shutdown?: true }
 	| { kind: "error"; message: string };
 
 export interface LiveSubscriber {

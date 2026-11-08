@@ -13,6 +13,7 @@ import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { Runtime } from "./runtime.ts";
+import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { scriptedModel, textParts } from "./testkit/fake-model.ts";
 import { RecordingSink, waitUntil } from "./testkit.ts";
 import { openTurnJournal } from "./turn-journal.ts";
@@ -214,6 +215,7 @@ describe("turn journal — a real killed process", () => {
 				textParts("the resumed answer"),
 			]);
 			const runtime = new Runtime({
+				engines: [aiSdkEngine],
 				store,
 				turnJournal: journal,
 				buildStep: () => ({ model: edge.model, system: "crash test" }),

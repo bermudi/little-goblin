@@ -2,19 +2,16 @@
 // terminal callbacks so every sink is settled.
 
 import { randomUUID } from "node:crypto";
-import type { ProviderOptions, ToolExecutionOptions } from "@ai-sdk/provider-utils";
+import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { type LanguageModel, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
-import { type CompactionOutcome, chooseBoundary, runCompaction } from "./agent/compaction.ts";
+import { type CompactionOutcome, chooseBoundary } from "./agent/compaction.ts";
 import {
-	candidateRefs,
 	exhaustedMessage,
 	type FallbackMiss,
 	type FallbackNote,
-	type FallbackTrail,
 	failureClass,
 	missReason,
-	nextCandidate,
 } from "./agent/model-fallback.ts";
 import {
 	isContentFilter,
@@ -24,7 +21,6 @@ import {
 } from "./agent/provider-errors.ts";
 import { resolveSkillRef } from "./agent/skill-inject.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
-import { bindScriptDispatch, type ToolDispatch } from "./agent/tools/script.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import {
@@ -39,7 +35,8 @@ import type { PriorTurnContext } from "./reviewer.ts";
 import { Reviewer } from "./reviewer.ts";
 import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
-import { renderFailedTurnProgress } from "./turn/failed-progress.ts";
+import { runCompactJob } from "./turn/compact-job.ts";
+import { isClaudeStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
 import {
 	COMPACT_AT_PCT,
@@ -52,12 +49,12 @@ import {
 	type TurnRecovery,
 	terminalFailureMessage,
 } from "./turn/overflow.ts";
-import { buildRetryGuard, classifyRetry, type RetryGuard } from "./turn/retry-guard.ts";
+import { openRunRecord } from "./turn/run-record.ts";
+import { buildRetryGuard } from "./turn/retry-guard.ts";
 import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
 import {
 	claimMembers,
-	driveStream,
 	emitChunk,
 	endLive,
 	type LiveChunks,
@@ -65,9 +62,10 @@ import {
 	openLive,
 	type WireMember,
 } from "./turn/stream.ts";
-import type { ClaudeEngine, ClaudeStep } from "./agent/claude-code/mod.ts";
+import { fenceTools } from "./turn/tool-fence.ts";
+import type { ClaudeStep } from "./agent/claude-code/mod.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
-import { replayKey, type TurnJournal } from "./turn-journal.ts";
+import type { TurnJournal } from "./turn-journal.ts";
 import type { WindowCapture } from "./window-capture.ts";
 
 const LOOP_CHECK_EVERY = 16;
@@ -103,7 +101,8 @@ export type { ForcedKind } from "./turn/state.ts";
 
 export type TurnDone =
 	| { kind: "completed"; forced?: ForcedKind; fallback?: FallbackNote }
-	| { kind: "fenced" }
+	// shutdown: the process is going down (deploy/restart), not a /stop.
+	| { kind: "fenced"; shutdown?: true }
 	// modelCalls/transient are stamped only where the runtime can
 	// know them — the terminal failure path. Absent means unknown, and
 	// consumers must treat unknown as not-retryable.
@@ -136,28 +135,6 @@ export interface TurnSink {
 	onDone(done: TurnDone): void | Promise<void>;
 }
 
-export function isClaudeStep(step: ModelStep | ClaudeStep): step is ClaudeStep {
-	return "engine" in step && step.engine === "claude-code";
-}
-
-// The engine fork: one deps object, two drivers. driveClaude consumes
-// the same StreamDeps fields with a ClaudeStep-shaped step — both
-// engines emit the identical wire, journal, and telemetry contract.
-async function runTurnEngine<M extends WireMember, S extends ModelStep | ClaudeStep>(
-	deps: RuntimeDeps,
-	step: S,
-	fields: Omit<StreamDeps<M>, "step">,
-): Promise<ReturnType<typeof driveStream<M>>> {
-	if (!isClaudeStep(step)) return driveStream<M>({ ...fields, step });
-	const engine = deps.claudeEngine;
-	if (engine === undefined) {
-		throw new Error(
-			`conversation ${fields.convId} runs a claude-code model but no claude engine is bound`,
-		);
-	}
-	return engine.run<M>({ ...fields, step });
-}
-
 export interface ModelStep {
 	model: LanguageModel;
 	system: string;
@@ -186,15 +163,15 @@ export interface RuntimeDeps {
 	store: ConversationStore;
 	// Resolve model settings fresh per turn; auth resolution may be async.
 	// A claude-code provider yields a ClaudeStep (engine: "claude-code") —
-	// the turn runs on driveClaude, everything else on driveStream.
+	// the turn runs on whichever engine accepts the step (turn/engine.ts).
 	buildStep(
 		conv: Conversation,
 		tools: ToolSet,
 	): ModelStep | ClaudeStep | Promise<ModelStep | ClaudeStep>;
-	// The claude-code engine handle (index.ts binds it whenever a
-	// claude-code provider is configured). Present-but-unbound with a
-	// claude-code step fails the turn loud, never silently degrades.
-	claudeEngine?: ClaudeEngine | undefined;
+	// The turn engines, tried in order (turn/engine.ts pickEngine):
+	// index.ts binds [claude-code, ai-sdk]. A step no engine accepts
+	// fails the turn loud, never silently degrades.
+	engines: readonly TurnEngine[];
 	// Capture channel settings at admission so recovery and compaction share a
 	// stable snapshot. A later settings change fences the current attempt.
 	captureConversation?(conv: Conversation): Conversation;
@@ -621,83 +598,29 @@ export class Runtime {
 		});
 	}
 
-	// Compaction summarizes the event delta without rewriting the event stream.
-	// Its dedicated controller handles stop/shutdown; authority checks leave the
-	// pointer and prompt snapshot unchanged on cancellation or fencing. The
-	// caller decides whether a failure is reported or retried. activeFloor,
-	// when given, is the running turn's earliest member seq — the fold stays
-	// strictly below it (and below any still-queued input; foldCeiling).
 	private async doCompact(
 		conv: Conversation,
 		reason: "threshold" | "manual" | "overflow" | "preempt",
 		activeFloor?: number,
 	): Promise<CompactionOutcome> {
-		if (reason === "manual") {
-			conv = this.deps.store.get(conv.id) ?? conv;
-			conv = this.deps.captureConversation?.(conv) ?? conv;
-		}
-		const compaction = this.deps.compaction;
-		if (!compaction) return { kind: "noop", reason: "compaction not configured" };
-		// Threshold/overflow use the admitted epoch; manual jobs resolve a fresh
-		// conversation before taking authority.
-		const epoch = conv.epoch;
-		// Register before the first await so /stop can cancel a pending
-		// contextWindow lookup.
-		const lane = this.lane(conv.id);
-		const controller = new AbortController();
-		lane.compactController = controller;
-		try {
-			// Metadata only — never buildStep: resolving a model and building
-			// a system prompt here would freeze a snapshot no turn asked for.
-			const contextWindow = await compaction.contextWindow(conv);
-			// The authority check doubles as the abort check: compactController
-			// is only aborted by cancelFenced after the epoch commits, so a
-			// /stop during the lookup already reports as a fence. runCompaction
-			// reverses the order after each call — a provider may resolve under
-			// abort, so there the signal check must land first.
-			this.checkAuthority(conv.id, epoch);
-			const { tailTokenBudget, inputTokenBudget } = compactionBudgets(contextWindow);
-			// Overflow recovery uses a smaller tail to stay below the provider's
-			// observed limit. A pre-empt folds before any failure — full tail.
-			const tail = reason === "overflow" ? Math.floor(tailTokenBudget / 2) : tailTokenBudget;
-			const modelRef = compaction.modelRef(conv);
-			log.info("compaction window", {
-				conversation: conv.id,
-				model: modelRef,
-				contextWindow,
-				tailTokenBudget: tail,
-				inputTokenBudget,
-				reason,
-			});
-			const outcome = await runCompaction(
-				conv.id,
-				this.deps.store,
-				candidateRefs(modelRef, this.deps.modelFallbacks?.() ?? []),
-				(system, prompt, signal, model) =>
-					compaction.summarize(conv, system, prompt, signal, model),
-				{
-					tailTokenBudget: tail,
-					inputTokenBudget,
-					reason,
-					// Evaluated at history-read time: work may have queued while
-					// the contextWindow lookup awaited.
-					beforeSeq: () => this.foldCeiling(conv.id, activeFloor),
-					assertAuthority: () => this.checkAuthority(conv.id, epoch),
-				},
-				controller.signal,
-			);
-			if (outcome.kind === "compacted") {
-				// Rebuild the frozen prompt after compaction changed history.
-				this.deps.store.clearPromptSnapshot(conv.id);
-				log.info("prompt snapshot cleared for rebuild", {
-					conversation: conv.id,
-					reason,
-				});
-			}
-			return outcome;
-		} finally {
-			if (lane.compactController === controller) lane.compactController = null;
-		}
+		return runCompactJob(conv, reason, activeFloor, {
+			store: this.deps.store,
+			compaction: this.deps.compaction,
+			captureConversation: this.deps.captureConversation,
+			modelFallbacks: this.deps.modelFallbacks,
+			budgets: compactionBudgets,
+			checkAuthority: (convId, epoch) => this.checkAuthority(convId, epoch),
+			foldCeiling: (convId, floor) => this.foldCeiling(convId, floor),
+			holdController: (controller) => {
+				this.lane(conv.id).compactController = controller;
+			},
+			releaseController: (controller) => {
+				const lane = this.lanes.get(conv.id);
+				if (lane !== undefined && lane.compactController === controller) {
+					lane.compactController = null;
+				}
+			},
+		});
 	}
 
 	private lane(convId: string): Lane {
@@ -733,13 +656,20 @@ export class Runtime {
 		return ceiling;
 	}
 
+	// A fence landing while the runtime is closed is a shutdown — stamp the
+	// cause once so every consumer (member sinks and reattached live
+	// streams) sees the same terminal value. Idempotent.
+	private withCause(done: TurnDone): TurnDone {
+		return done.kind === "fenced" && this.closed ? { kind: "fenced", shutdown: true } : done;
+	}
+
 	// Keep terminal delivery exactly once, even when a sink throws. Mark before
 	// invoking the hook so re-entrant error handling cannot notify it twice.
 	private async notifyDone(turn: QueuedTurn, done: TurnDone): Promise<void> {
 		if (turn.doneSent) return;
 		turn.doneSent = true;
 		try {
-			await turn.sink.onDone(done);
+			await turn.sink.onDone(this.withCause(done));
 		} catch (err) {
 			log.warn("sink onDone failed", err);
 		} finally {
@@ -752,134 +682,6 @@ export class Runtime {
 	private checkAuthority(convId: string, epoch: number): void {
 		const current = this.deps.store.epochOf(convId) ?? undefined;
 		if (current !== epoch) throw new FencedError(convId);
-	}
-
-	// Tools execute inside the SDK stream, so each tool needs its own authority
-	// check; tools are fresh per turn. A tool cannot rely on the outer chunk
-	// loop's check to fence its side effects. The same seam writes the crash
-	// journal's dispatch/result/error transitions — dispatch only after the
-	// authority check passes, so a fenced call never reads as entered.
-	//
-	// A journal write that throws is fatal to the turn, not a tool error:
-	// the row is the only record of what ran — letting the SDK surface an
-	// ordinary tool failure invites the model to repeat a side effect the
-	// journal can no longer describe. The first fault aborts the attempt
-	// and fences every later dispatch; the attempt's catch reports it as
-	// a turn error, never 'fenced'.
-	private fenceTools(
-		tools: ToolSet,
-		convId: string,
-		epoch: number,
-		runId?: string,
-		guard?: RetryGuard,
-		journalFault?: { current: unknown },
-		onJournalFault?: () => void,
-	): ToolSet {
-		const journal = this.deps.turnJournal;
-		const note = (write: () => void): void => {
-			try {
-				write();
-			} catch (err) {
-				if (journalFault !== undefined && journalFault.current === undefined) {
-					journalFault.current = err;
-				}
-				onJournalFault?.();
-				throw err;
-			}
-		};
-		// One pipeline for every execute: a model-issued call and a call
-		// nested in `script` both enter by tool name. The input tools are
-		// never mutated — the returned set holds copies routed through here.
-		const dispatch: ToolDispatch = (name, input, options) => {
-			const raw = tools[name];
-			const execute = raw?.execute?.bind(raw);
-			if (execute === undefined) throw new Error(`tool ${name} has no execute`);
-			this.checkAuthority(convId, epoch);
-			if (journalFault?.current !== undefined) throw journalFault.current;
-			if (journal !== undefined && runId !== undefined) {
-				// Recovery fence: a signature that collides with the
-				// interrupted attempt's own history is evidence, never an
-				// answer. An operator's grant CAS-consumes in the same
-				// transaction as the dispatch; a refusal journals as a
-				// synthetic replayed result — it never reads as execution.
-				const verdict = classifyRetry(name, guard?.get(replayKey(name, input)));
-				if (verdict.kind === "refuse") {
-					const value = { error: verdict.error };
-					note(() =>
-						journal.noteToolResult(runId, options.toolCallId, value, {
-							replayed: true,
-						}),
-					);
-					log.info("tool call refused by the recovery fence", {
-						conversation: convId,
-						tool: name,
-						toolCallId: options.toolCallId,
-					});
-					return value;
-				}
-				note(() =>
-					journal.noteToolDispatch(
-						runId,
-						options.toolCallId,
-						name,
-						input,
-						verdict.kind === "execute-grant"
-							? { retryCallId: verdict.grant.toolCallId }
-							: undefined,
-					),
-				);
-				if (verdict.kind === "execute-grant") {
-					verdict.grant.retryConsumed = true;
-				}
-			}
-			let result: ReturnType<typeof execute>;
-			try {
-				result = execute(input as never, options);
-			} catch (err) {
-				if (journal !== undefined && runId !== undefined) {
-					note(() => journal.noteToolError(runId, options.toolCallId, err));
-				}
-				throw err;
-			}
-			if (
-				journal !== undefined &&
-				runId !== undefined &&
-				result !== null &&
-				typeof result === "object" &&
-				"then" in result &&
-				typeof (result as { then: unknown }).then === "function"
-			) {
-				// A settled promise is the earliest the result is known —
-				// the wrapper resolves only after the journal row lands.
-				return (result as PromiseLike<unknown>).then(
-					(value) => {
-						note(() => journal.noteToolResult(runId, options.toolCallId, value));
-						return value;
-					},
-					(err: unknown) => {
-						note(() => journal.noteToolError(runId, options.toolCallId, err));
-						throw err;
-					},
-				);
-			}
-			if (journal !== undefined && runId !== undefined) {
-				note(() => journal.noteToolResult(runId, options.toolCallId, result));
-			}
-			return result;
-		};
-		const out: ToolSet = {};
-		for (const [name, t] of Object.entries(tools)) {
-			out[name] =
-				t.execute === undefined
-					? t
-					: {
-							...t,
-							execute: (input: unknown, options: ToolExecutionOptions<unknown>) =>
-								dispatch(name, input, options),
-						};
-		}
-		bindScriptDispatch(tools, dispatch);
-		return out;
 	}
 
 	private claimQueuedMembers(
@@ -1056,8 +858,11 @@ export class Runtime {
 		// conversation, not to the connection that submitted first.
 		const sink = turns[0]!.sink;
 		const notifyAll = async (done: TurnDone) => {
-			endLive(live, done, convId);
-			for (const t of turns) await this.notifyDone(t, done);
+			// One stamped value for the live wire and every member sink — a
+			// reattached app stream reads the shutdown cause off endLive too.
+			const final = this.withCause(done);
+			endLive(live, final, convId);
+			for (const t of turns) await this.notifyDone(t, final);
 		};
 		// The ownership window: from admission until the begin hook, the
 		// attempt's members are unlinked — a terminal failure in that span
@@ -1153,11 +958,9 @@ export class Runtime {
 			prior: [],
 			current: null,
 		};
-		// The crash journal's per-attempt state: a fresh runId per attempt
-		// (an overflow resume opens a second row — the failed attempt keeps
-		// its own record), stamped terminal exactly once. The finally guard
-		// is the invariant's backstop: a begun row never escapes this attempt
-		// still 'running', whatever the escape path.
+		// The crash journal's per-attempt row — turn/run-record.ts owns its
+		// lifecycle; the attempt's finally guard is the backstop that a
+		// begun row never escapes still 'running'.
 		const journal = this.deps.turnJournal;
 		// An operator-resume admission carries the interrupted run it
 		// continues — every attempt of this turn links its run row to it
@@ -1172,106 +975,20 @@ export class Runtime {
 			}
 			return max ?? recovery?.sourceInputSeq ?? null;
 		};
-		// design/model.md → Model fallback list. Only a fresh turn walks the
-		// list: an operator resume, an overflow continuation, or anything
-		// carrying a partial or prior tool calls stays on its model (never
-		// mid-loop). A fallback attempt's recovery is fresh by construction.
-		const fallbackTrail: FallbackTrail | undefined = recovery?.fallback;
-		const configuredModel = fallbackTrail?.configured ?? conv.model;
-		const fallbackFresh =
-			recovery === undefined ||
-			(fallbackTrail !== undefined &&
-				recovery.partial === null &&
-				recovery.toolCalls.length === 0 &&
-				recovery.resumedFrom === undefined &&
-				recovery.overflowed !== true &&
-				recovery.operatorRequest === undefined);
-		const fallbackMisses: FallbackMiss[] = fallbackTrail?.tried ?? [];
-		const nextFallback = (): string | undefined => {
-			if (!fallbackFresh || conv.model === null || configuredModel === null) return undefined;
-			const list = this.deps.modelFallbacks?.() ?? [];
-			if (list.length === 0) return undefined;
-			return nextCandidate(candidateRefs(configuredModel, list), [
-				...fallbackMisses.map((m) => m.ref),
-				conv.model,
-			]);
-		};
 		let runId: string | null = null;
-		// A thrown journal write anywhere in the fence lands here — the
-		// catch below aborts the turn instead of letting the SDK report a
-		// tool error the model could retry.
-		const journalFault: { current: unknown } = { current: undefined };
-		// The attempt's own journal reads and writes (run creation, the
-		// recovery-guard read, the fallback gate's probe) classify a throw
-		// exactly like a fenced tool's: a journal fault, never a model
-		// failure — so it never advances the fallback walk.
-		const journaled = <T>(op: () => T): T => {
-			try {
-				return op();
-			} catch (err) {
-				if (journalFault.current === undefined) journalFault.current = err;
-				throw err;
-			}
-		};
-		let runStamped = false;
-		const stampRun = (
-			status: "fenced" | "completed" | "error",
-			delivery: "delivered" | "undelivered" | "failed",
-		) => {
-			if (journal === undefined || runId === null || runStamped) return;
-			journal.finishRun(runId, status, delivery);
-			runStamped = true;
-			// The terminal stamp IS the durable acknowledgement a wake
-			// waits on — the hook fires after the row lands so the
-			// dispatcher's settle read never sees a live run by mistake.
-			this.deps.runOwnership?.end(runId, status, delivery);
-		};
-		// design/runtime-turn.md → Failed-turn progress: one system event
-		// recording what a terminally failed journaled turn completed, so the
-		// next turn does not lose the work. Must run BEFORE the terminal
-		// stamp — the stamp is what wake settling reads — and stays silent
-		// when the reply already landed, nothing survived, or this attempt
-		// lost authority. An append failure never changes the outcome.
-		let replyLanded = false;
-		const recordFailedProgress = (failure: string): void => {
-			if (journal === undefined || runId === null || runStamped || replyLanded) return;
-			if (this.deps.store.get(convId)?.epoch !== epoch) return;
-			const id = runId;
-			try {
-				const rendered = renderFailedTurnProgress({
-					runId: id,
-					failure,
-					calls: journal.callsFor(id),
-					partial: journal.get(id)?.partial ?? null,
-				});
-				if (rendered === null) return;
-				// Anchored to the latest input this attempt consumed (folded steers
-				// included, merely queued ones never) — the same value a completed
-				// reply derives as finalAnchor — so editing a later input keeps it.
-				let consumedAnchor: number | null = null;
-				for (const seq of ownedInputSeqs) {
-					if (consumedAnchor === null || seq > consumedAnchor) consumedAnchor = seq;
-				}
-				store.append(
-					convId,
-					[{ id: randomUUID(), role: "system", parts: [{ type: "text", text: rendered.text }] }],
-					{ anchorSeq: consumedAnchor },
-				);
-				log.info("failed-turn progress recorded", {
-					anchorSeq: consumedAnchor,
-					conversation: convId,
-					run: id,
-					calls: rendered.calls,
-					unknown: rendered.unknown,
-					textChars: rendered.textChars,
-				});
-			} catch (err) {
-				log.error("failed-turn progress record failed — failure still delivered", err, {
-					conversation: convId,
-					run: id,
-				});
-			}
-		};
+		const record = openRunRecord({
+			journal,
+			store,
+			runOwnership: this.deps.runOwnership,
+			modelFallbacks: this.deps.modelFallbacks,
+			convId,
+			epoch,
+			convModel: conv.model,
+			recovery,
+			ownedInputSeqs,
+			runId: () => runId,
+		});
+		const { journalFault, journaled, stampRun, recordFailedProgress, fallback } = record;
 		try {
 			this.checkAuthority(convId, epoch);
 			// Recall uses admission-time eligibility; the model view still sees the
@@ -1339,7 +1056,7 @@ export class Runtime {
 						thinking: conv.thinking,
 						// The operator's selection when a fallback serves — the
 						// resume drift check compares this; resume runs on `model`.
-						...(configuredModel !== conv.model ? { configuredModel } : {}),
+						...(fallback.configured !== conv.model ? { configuredModel: fallback.configured } : {}),
 					},
 					toolNames: Object.keys(rawTools),
 					startedAt: new Date(turnStartMs).toISOString(),
@@ -1380,15 +1097,17 @@ export class Runtime {
 				journal === undefined
 					? undefined
 					: buildRetryGuard(journaled(() => journal.callsFor(newRunId)));
-			const tools = this.fenceTools(
-				rawTools,
+			const tools = fenceTools({
+				tools: rawTools,
 				convId,
 				epoch,
+				journal,
+				checkAuthority: () => this.checkAuthority(convId, epoch),
 				runId,
-				recoveryGuard,
+				guard: recoveryGuard,
 				journalFault,
-				() => controller.abort(),
-			);
+				onJournalFault: () => controller.abort(),
+			});
 			const step = await this.deps.buildStep(conv, tools);
 			this.checkAuthority(convId, epoch);
 			accepts.current = {
@@ -1416,7 +1135,7 @@ export class Runtime {
 				assertAuthority: () => this.checkAuthority(convId, epoch),
 			});
 
-			const outcome = await runTurnEngine(this.deps, step, {
+			const outcome = await pickEngine(this.deps.engines, step, convId).run({
 				convId,
 				epoch,
 				head: sink,
@@ -1518,8 +1237,9 @@ export class Runtime {
 				// Held when a fallback could follow, or when earlier candidates
 				// already failed — the terminal error then lists every miss.
 				holdZeroEffectError:
-					fallbackFresh && (nextFallback() !== undefined || fallbackMisses.length > 0),
-				...(fallbackMisses.length > 0 ? { fallbackMisses } : {}),
+					fallback.fresh && (fallback.next() !== undefined || fallback.misses.length > 0),
+				...(fallback.misses.length > 0 ? { fallbackMisses: fallback.misses } : {}),
+				step,
 			});
 			// Record the window on both rails — the failed rail throws its
 			// recovery/error below, and the request went out either way.
@@ -1588,12 +1308,12 @@ export class Runtime {
 			});
 			// The reply landed durably — a failure past this point must not
 			// also record a progress event (the final reply is the record).
-			replyLanded = true;
+			record.markReplyLanded();
 			const fallbackNote: FallbackNote | undefined =
-				fallbackMisses.length > 0 && conv.model !== null
+				fallback.misses.length > 0 && conv.model !== null
 					? {
 							servedBy: conv.model,
-							misses: fallbackMisses.map(({ ref, reason }) => ({ ref, reason })),
+							misses: fallback.misses.map(({ ref, reason }) => ({ ref, reason })),
 						}
 					: undefined;
 			await notifyAll(
@@ -1724,7 +1444,7 @@ export class Runtime {
 					outcome.recovery.admissionExchangeExcluded = admissionExchangeExcluded;
 					// The continuation stays on the serving candidate and keeps
 					// its fallback story (run-row configured ref, finish note).
-					outcome.recovery.fallback = fallbackTrail;
+					outcome.recovery.fallback = fallback.trail;
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
 				if (outcome.kind === "error") recordFailedProgress(outcome.message);
@@ -1779,16 +1499,16 @@ export class Runtime {
 				// would face the same history (design/model.md).
 				const next =
 					zeroEffect && !isContentFilter(err) && !isContextOverflow(err)
-						? nextFallback()
+						? fallback.next()
 						: undefined;
-				if (next !== undefined && configuredModel !== null) {
+				if (next !== undefined && fallback.configured !== null) {
 					log.warn("model fallback", {
 						conversation: convId,
 						from: miss.ref,
 						to: next,
 						failureClass: errClass,
 						...(quota?.resetAt !== undefined ? { quotaResetAt: quota.resetAt } : {}),
-						attempt: fallbackMisses.length + 1,
+						attempt: fallback.misses.length + 1,
 						error: err instanceof Error ? err.message : String(err),
 					});
 					// Same hand-off as an overflow resume: this row ends
@@ -1813,14 +1533,14 @@ export class Runtime {
 							sourceInputSeq: sourceInputSeq(),
 							ownedInputSeqs: [...ownedInputSeqs],
 							admissionExchangeExcluded,
-							fallback: { configured: configuredModel, tried: [...fallbackMisses, miss] },
+							fallback: { configured: fallback.configured, tried: [...fallback.misses, miss] },
 						},
 						turns,
 					};
 				}
 				// Only a fresh attempt's failure ends the walk; an overflow
 				// continuation or resume failing reports its own error.
-				const misses = fallbackFresh ? [...fallbackMisses, miss] : [miss];
+				const misses = fallback.fresh ? [...fallback.misses, miss] : [miss];
 				log.error("turn failed", err, {
 					conversation: convId,
 					failureClass: errClass,

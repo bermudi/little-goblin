@@ -27,5 +27,3 @@
 - **RRF:** reciprocal rank fusion. A model-free way to merge ranked lists; also the pinned reranker choice for the memory service.
 - **System One:** Goblin's yes/no check layer. A decision model returns a probability for a question about the current state.
 - **Decision model:** a model that answers typed questions with scores and does not write text.
-- **Review harness:** the proposed local developer tool for reviewing a pinned Goblin code change with related code and design context. It is separate from the runtime skill reviewer.
-- **Review unit:** a bounded part of a code review, containing related changes, their affected contracts, and the evidence needed to assess them.

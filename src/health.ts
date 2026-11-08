@@ -4,6 +4,7 @@ import {
 	existsSync,
 	fstatSync,
 	openSync,
+	readdirSync,
 	readSync,
 	realpathSync,
 	statSync,
@@ -85,6 +86,8 @@ const manualHints: Readonly<Record<string, string>> = {
 		"Inspect relay and Ollama readiness and model identity; do not change a populated bank's embedding model.",
 	memory:
 		"Inspect memory readiness and local installation metadata under the approved runbook; do not print credentials or alter bank data.",
+	"memory.units-drift":
+		"Reconcile installed memory units with deploy/memory via the runbook (docs/memory.md → Operator setup / Manual path) — the stack is never auto-deployed and installed Quadlets are operator-editable; doctor never copies, reloads or restarts.",
 	sandbox:
 		"Inspect the podman engine and the configured image locally; images are pulled only with operator approval.",
 	"repo.test-ratio":
@@ -1296,8 +1299,122 @@ async function memoryVolume(probe: ProbeContext = {}): Promise<HealthResult> {
 		);
 	}
 }
+// Installed memory-stack unit files vs their deploy/memory sources: the
+// manual runbook installs by copy and quadlets are operator-editable, so
+// the box drifts from the repo silently (#158's two-week EnvironmentFile=
+// relic). Pure file comparison — no podman/systemd calls, no env files,
+// no values — and the API quadlet's installer-managed secrets region is
+// excluded on both sides, so a correctly reconfigured install is not drift.
+const SECRETS_MARKER_BEGIN = "# goblin:secrets-begin";
+const SECRETS_MARKER_END = "# goblin:secrets-end";
+
+function withoutManagedSecretRegion(text: string): string {
+	const lines = text.split("\n");
+	const begin = lines.indexOf(SECRETS_MARKER_BEGIN);
+	const end = lines.indexOf(SECRETS_MARKER_END);
+	// Mismatched or absent markers compare literally: a deleted marker
+	// region is real drift, not noise to normalize away.
+	if (begin === -1 || end === -1 || end < begin) return text;
+	return [...lines.slice(0, begin + 1), ...lines.slice(end)].join("\n");
+}
+
+function memoryUnitDrift(
+	checkout: string,
+	config: Config | undefined,
+	phase: HealthReport["phase"],
+): HealthResult {
+	const start = performance.now(),
+		scope = "caller-home;local-memory-installation",
+		id = "memory.units-drift";
+	if (phase === "preflight")
+		return result(
+			id,
+			scope,
+			"skip",
+			"Unit files not yet installed at preflight; the install runbook owns first placement",
+			start,
+		);
+	const url = new URL(config?.memory?.baseUrl ?? "https://invalid.invalid");
+	if (
+		url.protocol !== "http:" ||
+		!["127.0.0.1", "localhost"].includes(url.hostname) ||
+		url.port !== "8888" ||
+		!["", "/"].includes(url.pathname)
+	)
+		return result(
+			id,
+			scope,
+			"skip",
+			"Configured API is not the supported local installation; installed unit drift not checked",
+			start,
+		);
+	try {
+		const sources = join(checkout, "deploy", "memory");
+		const names = readdirSync(sources)
+			.filter((name) => /\.(?:container|network|volume|pod|service|timer)$/.test(name))
+			.sort();
+		if (names.length === 0) throw new ProbeError("no-deploy-memory-unit-sources");
+		// The goblin-embed-* units are opt-in: installed only when the
+		// operator wrote the relay switch. Existence is the whole check —
+		// the env file's contents are never read here.
+		const embedOptIn = existsSync(join(homedir(), ".config/goblin-memory/embed-relay.env"));
+		const quadletDir = join(homedir(), ".config/containers/systemd");
+		const unitDir = join(homedir(), ".config/systemd/user");
+		const differs: string[] = [],
+			missing: string[] = [],
+			unreadable: string[] = [];
+		let checked = 0;
+		for (const name of names) {
+			if (name.startsWith("goblin-embed-") && !embedOptIn) continue;
+			const dir = /\.(?:service|timer)$/.test(name) ? unitDir : quadletDir;
+			let installed: string;
+			try {
+				installed = readBounded(join(dir, name), 64 * 1024).text;
+			} catch (error) {
+				const code = errno(error);
+				if (code === "ENOENT") missing.push(name);
+				else unreadable.push(`${name}:${code}`);
+				continue;
+			}
+			const source = readBounded(join(sources, name), 64 * 1024).text;
+			if (withoutManagedSecretRegion(installed) !== withoutManagedSecretRegion(source))
+				differs.push(name);
+			else checked++;
+		}
+		const problems = [
+			...(differs.length > 0 ? [`differs: ${differs.join(", ")}`] : []),
+			...(missing.length > 0 ? [`missing: ${missing.join(", ")}`] : []),
+			...(unreadable.length > 0 ? [`unreadable: ${unreadable.join(", ")}`] : []),
+		];
+		if (problems.length > 0)
+			return result(
+				id,
+				scope,
+				"warn",
+				`Installed memory unit files drift from deploy/memory (${problems.join("; ")}); installed Quadlets are operator-editable — confirm edits before reconciling`,
+				start,
+			);
+		const optOut = names.length - checked - missing.length - unreadable.length - differs.length;
+		return result(
+			id,
+			scope,
+			"pass",
+			`All ${checked} installed unit files match deploy/memory (installer-managed Secret= region excluded)` +
+				(optOut > 0
+					? `; ${optOut} opt-in goblin-embed-* units unchecked (no embed-relay.env switch)`
+					: "") +
+				"; runtime unit state unverified",
+			start,
+		);
+	} catch (error) {
+		return failure(id, scope, error, start, "Compare installed memory units with deploy/memory");
+	}
+}
+
 async function memory(
 	config: Config | undefined,
+	checkout: string,
+	phase: HealthReport["phase"],
 	probe: ProbeContext = {},
 ): Promise<HealthResult[]> {
 	const scope = "caller-home;configured-memory-endpoint";
@@ -1312,6 +1429,7 @@ async function memory(
 				"skip",
 				config ? "Memory disabled" : "Blocked by config",
 			),
+			result("memory.units-drift", scope, "skip", config ? "Memory disabled" : "Blocked by config"),
 		];
 	const start = performance.now();
 	let ready: HealthResult;
@@ -1342,6 +1460,7 @@ async function memory(
 			"Application credentials, bank existence/access and running Goblin memory queues unverified; no auth resolution or memory writes",
 		),
 		...(await localMemory(config, probe)),
+		memoryUnitDrift(checkout, config, phase),
 	];
 }
 
@@ -1426,7 +1545,13 @@ export async function testRatio(checkout: string, probe: ProbeContext = {}): Pro
 	const start = performance.now();
 	const scope = `diagnostic-checkout:${checkout}`;
 	if (!existsSync(join(checkout, ".git")))
-		return result("repo.test-ratio", scope, "skip", "No git metadata in this checkout (release archive); ratio unmeasured", start);
+		return result(
+			"repo.test-ratio",
+			scope,
+			"skip",
+			"No git metadata in this checkout (release archive); ratio unmeasured",
+			start,
+		);
 	try {
 		const paths = (await command(["git", "-C", checkout, "ls-files", "src/"], 5_000, probe))
 			.split("\n")
@@ -1439,7 +1564,10 @@ export async function testRatio(checkout: string, probe: ProbeContext = {}): Pro
 				})),
 			),
 		);
-		const top = s.excess.slice(0, 3).map((d) => `${d.dir} +${d.excess}`).join(", ");
+		const top = s.excess
+			.slice(0, 3)
+			.map((d) => `${d.dir} +${d.excess}`)
+			.join(", ");
 		return result(
 			"repo.test-ratio",
 			scope,
@@ -1479,7 +1607,7 @@ export async function runHealth(options: {
 		sqlite(home, options.phase, probe, config.config),
 		installation(checkout, options.phase, probe, config.config?.delegation !== undefined),
 		snapshots(auth.profiles, options.phase, probe),
-		memory(config.config, probe),
+		memory(config.config, checkout, options.phase, probe),
 		sandbox(config.config, probe),
 		testRatio(checkout, probe),
 	]);

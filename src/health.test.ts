@@ -8,6 +8,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	symlinkSync,
@@ -1105,6 +1106,142 @@ describe("capacity thresholds and local embedding identity (synthetic metadata o
 				"--format\n{{json .}}\ngoblin-memory",
 			);
 		});
+});
+
+describe("memory unit drift vs deploy/memory", () => {
+	// The real shipped assets are the fixture sources: copying them into a
+	// temp checkout proves the actual goblin-memory-api.container round-trips
+	// through marker-region normalization. Installed copies land under the
+	// mocked OS home, never the real one.
+	const repoUnits = join(import.meta.dir, "..", "deploy", "memory");
+	const unitNames = () =>
+		readdirSync(repoUnits).filter((name) =>
+			/\.(?:container|network|volume|pod|service|timer)$/.test(name),
+		);
+	function copySources(checkout: string) {
+		const deploy = join(checkout, "deploy", "memory");
+		mkdirSync(deploy, { recursive: true });
+		for (const name of unitNames()) {
+			writeFileSync(join(deploy, name), readFileSync(join(repoUnits, name)));
+		}
+		return deploy;
+	}
+	function installUnits(
+		root: string,
+		deploy: string,
+		transform?: (name: string, text: string) => string,
+	) {
+		const quadlets = join(root, ".config/containers/systemd");
+		const userUnits = join(root, ".config/systemd/user");
+		mkdirSync(quadlets, { recursive: true });
+		mkdirSync(userUnits, { recursive: true });
+		for (const name of unitNames()) {
+			if (name.startsWith("goblin-embed-")) continue;
+			const text = readFileSync(join(deploy, name), "utf8");
+			const dir = /\.(?:service|timer)$/.test(name) ? userUnits : quadlets;
+			writeFileSync(join(dir, name), transform ? transform(name, text) : text);
+		}
+	}
+	function enableMemory(f: ReturnType<typeof fixture>, baseUrl = "http://127.0.0.1:8888") {
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({ ...f.config, memory: { baseUrl, bankId: secret } }),
+		);
+		const fetch = spyOn(globalThis, "fetch").mockImplementation(
+			Object.assign(async () => new Response("ok"), {
+				preconnect: globalThis.fetch.preconnect,
+			}),
+		);
+		restorers.push(() => fetch.mockRestore());
+	}
+
+	test("match: installed copies equal except the installer-managed Secret= region", async () => {
+		const f = fixture(),
+			deploy = copySources(f.checkout);
+		installUnits(f.root, deploy, (name, text) =>
+			name === "goblin-memory-api.container"
+				? text.replace(
+						"# goblin:secrets-begin\n# goblin:secrets-end",
+						"# goblin:secrets-begin\nSecret=HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY,type=mount\n# goblin:secrets-end",
+					)
+				: text,
+		);
+		enableMemory(f);
+		// The fixture is not vacuous: the installed api.container really
+		// differs from the source outside the comparison's blind spot.
+		expect(
+			readFileSync(join(f.root, ".config/containers/systemd/goblin-memory-api.container"), "utf8"),
+		).not.toBe(readFileSync(join(deploy, "goblin-memory-api.container"), "utf8"));
+		const report = await runHealth({ ...f.options, phase: "installed" });
+		const drift = finding(report, "memory.units-drift");
+		expect(drift.status).toBe("pass");
+		expect(drift.detail).toContain("match deploy/memory");
+		expect(drift.detail).toContain("opt-in goblin-embed-* units unchecked");
+		expect(JSON.stringify(report)).not.toContain(secret);
+	});
+
+	test("differs: #158's pre-secrets quadlet (no Secret= line, no markers) is named", async () => {
+		const f = fixture(),
+			deploy = copySources(f.checkout);
+		installUnits(f.root, deploy, (name, text) =>
+			name === "goblin-memory-api.container"
+				? text
+						.split("\n")
+						.filter(
+							(line) =>
+								line !== "Secret=HINDSIGHT_API_LLM_API_KEY,type=mount" &&
+								line !== "# goblin:secrets-begin" &&
+								line !== "# goblin:secrets-end",
+						)
+						.join("\n")
+				: text,
+		);
+		enableMemory(f);
+		const report = await runHealth({ ...f.options, phase: "installed" });
+		const drift = finding(report, "memory.units-drift");
+		expect(drift.status).toBe("warn");
+		expect(drift.detail).toContain("differs: goblin-memory-api.container");
+		expect(drift.detail).not.toContain("EnvironmentFile");
+		expect(drift.next).toContain("docs/memory.md");
+		expect(JSON.stringify(report)).not.toContain(secret);
+	});
+
+	test("missing: absent always-on and opted-in units are named", async () => {
+		const f = fixture(),
+			deploy = copySources(f.checkout);
+		installUnits(f.root, deploy);
+		rmSync(join(f.root, ".config/systemd/user/goblin-memory-watch.timer"));
+		// The relay switch opts the embed units in; none of them is installed.
+		mkdirSync(join(f.root, ".config/goblin-memory"), { recursive: true });
+		writeFileSync(join(f.root, ".config/goblin-memory/embed-relay.env"), "");
+		enableMemory(f);
+		const report = await runHealth({ ...f.options, phase: "installed" });
+		const drift = finding(report, "memory.units-drift");
+		expect(drift.status).toBe("warn");
+		expect(drift.detail).toContain("missing: goblin-embed-pin.service");
+		expect(drift.detail).toContain("goblin-embed-relay.service");
+		expect(drift.detail).toContain("goblin-memory-watch.timer");
+	});
+
+	test("gates: memory disabled, preflight and non-local API skip without drift claims", async () => {
+		const disabled = fixture();
+		const disabledReport = await runHealth({ ...disabled.options, phase: "installed" });
+		expect(finding(disabledReport, "memory.units-drift").status).toBe("skip");
+		expect(finding(disabledReport, "memory.units-drift").detail).toBe("Memory disabled");
+
+		const f = fixture();
+		copySources(f.checkout);
+		enableMemory(f);
+		// Nothing installed: preflight must not report missing units.
+		const preflight = await runHealth({ ...f.options, phase: "preflight" });
+		expect(finding(preflight, "memory.units-drift").detail).toContain("preflight");
+
+		enableMemory(f, "https://memory.example.invalid");
+		const remote = await runHealth({ ...f.options, phase: "installed" });
+		expect(finding(remote, "memory.units-drift").detail).toContain(
+			"not the supported local installation",
+		);
+	});
 });
 
 describe("cache contracts", () => {

@@ -30,6 +30,16 @@ Deploying is: build the release if it is not already complete → flip `live`
 by rename → restart → verify. Rolling back is the same without the build,
 because the previous release is untouched and complete on disk.
 
+Before the restart, the rollout waits for goblin to go idle: it polls the
+loopback `GET /api/runtime/busy` endpoint of the running release and
+restarts only once it reports no busy lane (a running turn, queued work, or
+an in-flight compaction). `--now` skips the wait — with a rollout or a
+rollback — when the operator wants the restart immediately. One race is
+accepted: a turn submitted between the last idle poll and the restart is
+still fenced by the shutdown, exactly as before; the wait narrows that
+window, it cannot close it. A release that predates the endpoint, or a
+goblin that is not answering, has nothing to wait for and proceeds.
+
 ## Invariants
 
 - **A release directory that exists is complete.** A build assembles under
@@ -134,9 +144,10 @@ rollout.
 ```sh
 bun scripts/release.ts --status          # live, running, kept, unit match
 bun scripts/release.ts --build-only      # build + gate a release, touch nothing live
-bun scripts/release.ts                   # build HEAD if needed, flip, restart, verify
+bun scripts/release.ts                   # build HEAD if needed, flip, wait for idle, restart, verify
 bun scripts/release.ts --rev <rev>       # deploy a specific commit
 bun scripts/release.ts --rollback <rev>  # flip back to a kept release, restart, verify
+bun scripts/release.ts --now             # with rollout/rollback: restart without the idle wait
 ```
 
 Rollouts take a `mkdir`-based lock in the releases root, so two sessions

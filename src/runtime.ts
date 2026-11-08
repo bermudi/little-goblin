@@ -529,6 +529,12 @@ export class Runtime {
 		);
 	}
 
+	// Every conversation busy() would report — the release script's idle
+	// wait reads this through the loopback /api/runtime/busy endpoint.
+	busyConversations(): string[] {
+		return [...this.lanes.keys()].filter((convId) => this.busy(convId));
+	}
+
 	// Replay the existing wire and subscribe atomically; the replay/live union is
 	// gapless. `onEnd` is delivered once with the same terminal outcome as the
 	// member sink. Null means the caller should fall back to history.

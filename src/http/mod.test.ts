@@ -10,7 +10,7 @@ import { setLogFile } from "../log.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { SkillSources } from "../skill-provenance.ts";
 import { tmpDir, useHome } from "../testkit.ts";
-import { type HttpDeps, startHttp } from "./mod.ts";
+import { type HttpDeps, isLoopback, startHttp } from "./mod.ts";
 import type { MemoryStatusResponse } from "./operator-wire.ts";
 import { APP_PAGES } from "./app-routes.ts";
 
@@ -1565,5 +1565,41 @@ describe("transcription config", () => {
 		} finally {
 			http.stop();
 		}
+	});
+});
+
+describe("runtime busy endpoint", () => {
+	// The listener binds loopback, so a real socket cannot present a
+	// non-loopback peer: the refusal path is covered by isLoopback below,
+	// the route itself through the genuine loopback connection.
+	test("a loopback GET answers the busy list; other methods get 405", async () => {
+		useHome("goblin-http-");
+		const http = startHttp({
+			configRef: { current: { ...baseConfig } },
+			botToken: TOKEN,
+			onConfigWritten: () => {},
+			busyConversations: () => ["conv-1", "conv-2"],
+		});
+		try {
+			const url = `http://127.0.0.1:${http.port}/api/runtime/busy`;
+			const res = await fetch(url);
+			expect(res.status).toBe(200);
+			expect(res.headers.get("cache-control")).toBe("no-store");
+			expect(await res.json()).toEqual({ busy: ["conv-1", "conv-2"] });
+			const post = await fetch(url, { method: "POST" });
+			expect(post.status).toBe(405);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("isLoopback accepts exactly the loopback spellings", () => {
+		for (const addr of ["127.0.0.1", "::1", "::ffff:127.0.0.1"]) {
+			expect(isLoopback(addr)).toBe(true);
+		}
+		for (const addr of ["192.168.1.5", "10.0.0.1", "::ffff:192.168.1.5", "fe80::1", ""]) {
+			expect(isLoopback(addr)).toBe(false);
+		}
+		expect(isLoopback(undefined)).toBe(false);
 	});
 });

@@ -743,6 +743,23 @@ describe("provider-filter retry", () => {
 	});
 });
 
+describe("busy conversations", () => {
+	test("busyConversations is empty when idle, holds the conv mid-turn, empties after", async () => {
+		const gated = pauseFakeModelAtDelta(["a", "b", "c"], 1);
+		const r = rig({ model: gated.model });
+		expect(r.runtime.busyConversations()).toEqual([]);
+		const sink = submit(r, "hi");
+		await sink.firstDelta; // first delta observed — turn is mid-stream
+		await gated.entered; // the next delta is held inside the provider stream
+		expect(r.runtime.busyConversations()).toEqual([r.conv.id]);
+		gated.release();
+		expect(await sink.done).toEqual({ kind: "completed" });
+		await drain(r);
+		expect(r.runtime.busyConversations()).toEqual([]);
+		r.store.close();
+	});
+});
+
 describe("turn authority", () => {
 	test("clean turn completes and persists the assistant message", async () => {
 		const r = rig({ deltas: ["hello", " world"], delayMs: 5 });

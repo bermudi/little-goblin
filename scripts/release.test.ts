@@ -8,8 +8,9 @@
 // so HEAD~1 and HEAD~2 resolve no matter how shallow the outer checkout is
 // (CI uses fetch-depth: 1). The real scripts/release.ts is copied into the
 // fixture because the tool discovers its repo as the tree the script itself
-// lives in; its ../src/durable.ts and zod imports resolve through untracked
-// symlinks, so the archive stays exactly the fixture's committed tree.
+// lives in; its ../src imports (durable.ts, and config.ts with its module
+// graph) resolve through untracked symlinks, so the archive stays exactly
+// the fixture's committed tree.
 
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -37,6 +38,7 @@ import {
 	readLive,
 	releaseDir,
 	rewriteWorkingDirectory,
+	waitForIdle,
 } from "./release.ts";
 
 const REPO = resolve(import.meta.dir, "..");
@@ -73,8 +75,21 @@ function fixtureRepo(box: Box): string {
 	writeFileSync(join(dir, "bun.lock"), "{}\n");
 	writeFileSync(join(dir, "package.json"), "{}\n");
 	// Resolution seams for the copied tool — untracked, so never archived.
-	mkdirSync(join(dir, "src"));
-	symlinkSync(join(REPO, "src", "durable.ts"), join(dir, "src", "durable.ts"));
+	// config.ts's whole local import graph ships with it: release.ts loads
+	// the config (for the idle wait's port) before doing anything else.
+	mkdirSync(join(dir, "src", "memory"), { recursive: true });
+	for (const name of [
+		"config.ts",
+		"auth-parse.ts",
+		"cache-pruning-policy.ts",
+		"durable.ts",
+		"goblin-home.ts",
+		"log.ts",
+		"memory/hindsight.ts",
+		"memory/policy.ts",
+		"memory/screen.ts",
+	])
+		symlinkSync(join(REPO, "src", name), join(dir, "src", name));
 	symlinkSync(join(REPO, "node_modules"), join(dir, "node_modules"));
 	// Completeness shape only (REQUIRED_IN_RELEASE): nothing executes the
 	// archived tree, the build steps are fakes — the tool under test is the
@@ -601,11 +616,105 @@ describe("layout invariants", () => {
 	});
 
 	test("the CLI refuses to guess", () => {
-		expect(parseArgs([])).toEqual({ kind: "rollout", rev: null });
-		expect(parseArgs(["--rev", "HEAD"])).toEqual({ kind: "rollout", rev: "HEAD" });
+		expect(parseArgs([])).toEqual({ kind: "rollout", rev: null, now: false });
+		expect(parseArgs(["--rev", "HEAD"])).toEqual({ kind: "rollout", rev: "HEAD", now: false });
 		expect(parseArgs(["--status"])).toEqual({ kind: "status" });
 		expect(() => parseArgs(["--rev"])).toThrow(/needs a rev/);
 		expect(() => parseArgs(["--rollback"])).toThrow(/needs a rev/);
 		expect(() => parseArgs(["--nope"])).toThrow(/unknown argument/);
+	});
+
+	test("--now rides a rollout or rollback and is refused elsewhere", () => {
+		expect(parseArgs(["--now"])).toEqual({ kind: "rollout", rev: null, now: true });
+		expect(parseArgs(["--now", "--rev", "HEAD"])).toEqual({
+			kind: "rollout",
+			rev: "HEAD",
+			now: true,
+		});
+		expect(parseArgs(["--rollback", "a".repeat(40), "--now"])).toEqual({
+			kind: "rollback",
+			rev: "a".repeat(40),
+			now: true,
+		});
+		expect(() => parseArgs(["--now", "--status"])).toThrow(/only applies to/);
+		expect(() => parseArgs(["--build-only", "--now"])).toThrow(/only applies to/);
+	});
+});
+
+describe("idle wait", () => {
+	const jsonResponse = (status: number, body: unknown): Response =>
+		new Response(JSON.stringify(body), {
+			status,
+			headers: { "content-type": "application/json" },
+		});
+
+	test("returns immediately when nothing is busy", async () => {
+		const seen: string[][] = [];
+		await expect(
+			waitForIdle({
+				port: 1,
+				fetchImpl: async () => jsonResponse(200, { busy: [] }),
+				sleepMs: 0,
+				onWaiting: (ids) => seen.push(ids),
+			}),
+		).resolves.toBe("idle");
+		expect(seen).toEqual([]);
+	});
+
+	test("polls while busy and calls onWaiting only when the set changes", async () => {
+		const polls = [["a"], ["a"], []].map((busy) => jsonResponse(200, { busy }));
+		let calls = 0;
+		const seen: string[][] = [];
+		await expect(
+			waitForIdle({
+				port: 1,
+				fetchImpl: async () => polls[calls++ % polls.length]!,
+				sleepMs: 0,
+				onWaiting: (ids) => seen.push(ids),
+			}),
+		).resolves.toBe("idle");
+		expect(calls).toBe(3);
+		expect(seen).toEqual([["a"]]);
+	});
+
+	test("a 404 release predates the endpoint: no wait", async () => {
+		await expect(
+			waitForIdle({
+				port: 1,
+				fetchImpl: async () => new Response(null, { status: 404 }),
+				sleepMs: 0,
+				onWaiting: () => {
+					throw new Error("must not be called");
+				},
+			}),
+		).resolves.toBe("no-endpoint");
+	});
+
+	test("connection refused means nothing is running to drain", async () => {
+		await expect(
+			waitForIdle({
+				port: 1,
+				fetchImpl: async () => {
+					throw new TypeError("fetch failed");
+				},
+				sleepMs: 0,
+				onWaiting: () => {
+					throw new Error("must not be called");
+				},
+			}),
+		).resolves.toBe("unreachable");
+	});
+
+	test("any other failure is loud", async () => {
+		await expect(
+			waitForIdle({
+				port: 1,
+				fetchImpl: async () => jsonResponse(500, { error: "internal" }),
+				sleepMs: 0,
+				onWaiting: () => {
+					throw new Error("must not be called");
+				},
+			}),
+		).rejects.toThrow(/HTTP 500/);
 	});
 });

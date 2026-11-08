@@ -12,6 +12,9 @@ export interface HttpDeps extends OperatorDeps {
 	/** Absent when Telegram is disabled: /app stays live, while the
 	 * Telegram mini-app door and its /api tails answer an explicit 503. */
 	botToken?: string | undefined;
+	/** The runtime's busy lanes for the loopback /api/runtime/busy endpoint
+	 * (the release script's idle wait). Absent — only in tests — answers 503. */
+	busyConversations?: () => string[];
 	programs?: Pick<ProgramsStore, "list">;
 	delegations?: Pick<DelegationsStore, "list" | "active"> | null;
 	hooks?: {
@@ -25,6 +28,12 @@ export interface HttpDeps extends OperatorDeps {
 }
 
 const NO_STORE = { "cache-control": "no-store" };
+
+// The busy endpoint answers only the box itself: the listener binds
+// loopback, so these are the only addresses a connected peer can have.
+export function isLoopback(addr: string | undefined): boolean {
+	return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+}
 
 const OPERATOR_TAILS: Record<string, string> = {
 	"/api/settings": "config",
@@ -195,6 +204,25 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 		}
 		if (url.pathname === "/api/check-injection") {
 			return serveInjectionCheck(req, deps.checkInjection);
+		}
+		if (url.pathname === "/api/runtime/busy") {
+			// Loopback only: this answers the release script's idle wait on
+			// this box; the network never sees which lanes are running.
+			const address = server.requestIP(req)?.address;
+			if (!isLoopback(address)) {
+				log.warn("runtime busy refused — not loopback", { path: url.pathname });
+				return Response.json({ error: "loopback only" }, { status: 403, headers: NO_STORE });
+			}
+			if (req.method !== "GET") {
+				return Response.json({ error: "method not allowed" }, { status: 405, headers: NO_STORE });
+			}
+			const busyConversations = deps.busyConversations;
+			if (busyConversations === undefined) {
+				return Response.json({ error: "runtime not wired" }, { status: 503, headers: NO_STORE });
+			}
+			const busy = busyConversations();
+			log.debug("runtime busy served", { count: busy.length });
+			return Response.json({ busy }, { headers: NO_STORE });
 		}
 		return new Response("not found", { status: 404 });
 	}

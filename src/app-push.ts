@@ -16,7 +16,7 @@ import type { AuthStore } from "./auth.ts";
 import { appIdOf, type Conversation, type ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import { type OperatorReminder, REMINDER_EVERY_MS, reminderText } from "./responsibility-reminder.ts";
-import type { TurnDone, TurnSink } from "./runtime.ts";
+import type { TurnDone, TurnSink } from "./turn/sink.ts";
 
 export const APP_PUSH_VAPID = "app-push-vapid";
 

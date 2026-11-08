@@ -15,7 +15,8 @@ import { createToolBridge, type ToolBridge } from "../agent/claude-code/tools.ts
 import type { AuthStore } from "../auth.ts";
 import type { Config, ConfigRef } from "../config.ts";
 import { type ConversationStore, openStore } from "../conversation.ts";
-import { type ModelStep, Runtime, userMessage } from "../runtime.ts";
+import { Runtime, userMessage } from "../runtime.ts";
+import type { ModelStep } from "../turn/engine.ts";
 import { fakeClaude } from "../testkit/fake-claude.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
 import {
@@ -239,9 +240,7 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			const reply = history[1]!;
 			expect(reply.parts.some((p) => p.type === "tool-echo")).toBe(true);
 			expect(textOf(reply)).toContain("CONF-AFTER-TOOL");
-			const rows = rig.store.db
-				.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs")
-				.all();
+			const rows = rig.store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").all();
 			expect(rows).toHaveLength(1);
 			const echo = rig.journal.callsFor(rows[0]!.run_id).find((c) => c.name === "echo");
 			expect(echo?.state).toBe("completed");

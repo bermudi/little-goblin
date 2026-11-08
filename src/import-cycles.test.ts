@@ -103,14 +103,10 @@ function stronglyConnected(graph: Map<string, string[]>): string[][] {
 // The two clusters the untangle campaign (#201) is shrinking: the
 // runtime↔turn cluster and the conversation-store cluster.
 const ALLOWED_CYCLES: readonly string[][] = [
-	[
-		"src/agent/claude-code/engine.ts",
-		"src/agent/claude-code/mod.ts",
-		"src/runtime.ts",
-		"src/turn/compact-job.ts",
-		"src/turn/engine.ts",
-		"src/turn/run-record.ts",
-	],
+	// The engine fork's type-level shape: TurnEngine names ClaudeStep,
+	// the claude engine implements TurnEngine. Runtime and the turn
+	// seams left this cluster in #201 stage 2.
+	["src/agent/claude-code/engine.ts", "src/agent/claude-code/mod.ts", "src/turn/engine.ts"],
 	["src/agent/codex/models.ts", "src/agent/models-dev.ts"],
 	[
 		"src/agent/onemin-speech.ts",

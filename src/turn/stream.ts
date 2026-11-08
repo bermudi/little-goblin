@@ -360,9 +360,7 @@ export async function driveStream<M extends WireMember>(
 			const projectedInputTokens =
 				lastStepInputTokens !== null && lastWindow !== null
 					? lastStepInputTokens +
-						Math.ceil(
-							Math.max(0, historyEstimate - estimateHistoryChars(lastWindow.messages)) / 4,
-						)
+						Math.ceil(Math.max(0, historyEstimate - estimateHistoryChars(lastWindow.messages)) / 4)
 					: null;
 			const arm = deps.preemptCheck({
 				projectedInputTokens,

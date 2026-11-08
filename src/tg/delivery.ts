@@ -2,7 +2,7 @@ import { GrammyError, HttpError, InputFile, type Api } from "grammy";
 import { MAX_SEND_BYTES } from "../agent/tools/send.ts";
 import { stat } from "node:fs/promises";
 import { channelOf, parseAddress, type Conversation } from "../conversation.ts";
-import type { TurnDone, TurnSink } from "../runtime.ts";
+import type { TurnDone, TurnSink } from "../turn/sink.ts";
 import { sniffImage } from "../agent/tools/read.ts";
 import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
 import { fallbackNotice } from "../agent/model-fallback.ts";

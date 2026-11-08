@@ -8,6 +8,7 @@
 // resumed attempt would actually get.
 
 import { FencedError, type RuntimeDeps } from "../runtime.ts";
+
 import { splitModelRef, type Config, type ConfigRef } from "../config.ts";
 import { channelOf, type Conversation, type ConversationStore } from "../conversation.ts";
 import type { AuthStore } from "../auth.ts";

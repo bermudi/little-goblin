@@ -3,7 +3,7 @@ import { appLink } from "../app-link.ts";
 import { appIdOf, type Conversation, type ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
 import { messageText } from "../memory/mod.ts";
-import type { TurnSink } from "../runtime.ts";
+import type { TurnSink } from "../turn/sink.ts";
 import { API_CALL_TIMEOUT_MS, TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import type { DeliveryApi } from "./delivery.ts";
 import type { PingStore } from "./pings.ts";

@@ -20,7 +20,8 @@ import { isFollowupProgram } from "./responsibility-followup.ts";
 import { dueReminder, type OperatorReminder } from "./responsibility-reminder.ts";
 import type { DevelopmentInput } from "./wake-store.ts";
 import { latestFireAtOrBefore, type Program, type ProgramsStore } from "./programs.ts";
-import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
+import type { Runtime } from "./runtime.ts";
+import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { fenceUntrusted } from "./agent/tools/web.ts";
 
 export interface SchedulerDeps extends WakeDeps {

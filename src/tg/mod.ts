@@ -20,7 +20,8 @@ import {
 	routeDmMessage,
 	type RollDeps,
 } from "../rolling.ts";
-import { userMessage, type Runtime, type TurnSink } from "../runtime.ts";
+import { userMessage, type Runtime } from "../runtime.ts";
+import type { TurnSink } from "../turn/sink.ts";
 import type { ResumeOps } from "../turn-resume.ts";
 import { log } from "../log.ts";
 import { makeBellSink } from "./bell.ts";

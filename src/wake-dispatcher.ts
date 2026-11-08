@@ -20,7 +20,8 @@
 import type { UIMessage } from "ai";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
-import type { Runtime, RuntimeDeps, TurnSink } from "./runtime.ts";
+import type { Runtime, RuntimeDeps } from "./runtime.ts";
+import type { TurnSink } from "./turn/sink.ts";
 import type { JournalStatus, TurnJournal } from "./turn-journal.ts";
 import type {
 	AuthorityRecheck,

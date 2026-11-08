@@ -15,6 +15,7 @@ import {
 import { log } from "./log.ts";
 import type { Runtime } from "./runtime.ts";
 
+
 // Telegram: private chat ids are positive, group ids negative.
 export function isRollingChat(chatId: number): boolean {
 	return chatId > 0;

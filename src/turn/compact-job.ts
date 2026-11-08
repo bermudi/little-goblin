@@ -4,13 +4,34 @@ import { type CompactionOutcome, runCompaction } from "../agent/compaction.ts";
 import { candidateRefs } from "../agent/model-fallback.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
-import type { RuntimeDeps } from "../runtime.ts";
+
+// Optional compaction summarizes on the conversation's model, then walks
+// `modelFallbacks` (runCompaction owns the walk; `summarize` runs one
+// call on the ref it is handed). Its dedicated signal lets /stop and
+// shutdown cancel an in-flight summary. A failed summary leaves the
+// event stream and compaction pointer untouched.
+export interface CompactionSeam {
+	modelRef(conv: Conversation): string;
+	// Catalog window lookup — metadata only, never a model step: no auth
+	// resolution and no prompt build, so a compaction pass can never mint
+	// or rewrite the frozen prompt snapshot. Null means unknown; budgets
+	// fall back to the defaults.
+	contextWindow(conv: Conversation): number | null | Promise<number | null>;
+	summarize(
+		conv: Conversation,
+		system: string,
+		prompt: string,
+		signal: AbortSignal,
+		modelRef: string,
+	): Promise<string>;
+}
 
 export interface CompactJobDeps {
 	store: ConversationStore;
-	compaction?: RuntimeDeps["compaction"];
-	captureConversation?: RuntimeDeps["captureConversation"];
-	modelFallbacks?: RuntimeDeps["modelFallbacks"];
+	compaction?: CompactionSeam | undefined;
+	// Capture channel settings so the job summarizes on a stable snapshot.
+	captureConversation?: ((conv: Conversation) => Conversation) | undefined;
+	modelFallbacks?: (() => readonly string[]) | undefined;
 	// design/compaction.md → Budgets, as a pure function of the window.
 	budgets(contextWindow: number | null): { tailTokenBudget: number; inputTokenBudget: number };
 	checkAuthority(convId: string, epoch: number): void;

@@ -13,6 +13,7 @@ import { openProjects } from "../../projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "../../responsibilities.ts";
 import { makeResponsibilityService, type ManagedSend } from "../../responsibility-service.ts";
 import { FencedError } from "../../runtime.ts";
+
 import { deferred, tmpDir, useHome, waitUntil } from "../../testkit.ts";
 import { openWakeStore } from "../../wake-store.ts";
 import { responsibilityTool } from "./responsibility.ts";

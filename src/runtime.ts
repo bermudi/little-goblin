@@ -2,9 +2,8 @@
 // terminal callbacks so every sink is settled.
 
 import { randomUUID } from "node:crypto";
-import type { ProviderOptions } from "@ai-sdk/provider-utils";
-import { type LanguageModel, type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
-import type { AcceptsMedia, MediaPosition } from "./agent/attachments.ts";
+import { type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
+import type { AcceptsMedia } from "./agent/attachments.ts";
 import { type CompactionOutcome, chooseBoundary } from "./agent/compaction.ts";
 import {
 	exhaustedMessage,
@@ -20,7 +19,6 @@ import {
 	quotaExhausted,
 } from "./agent/provider-errors.ts";
 import { resolveSkillRef } from "./agent/skill-inject.ts";
-import type { OutgoingFile } from "./agent/tools/send.ts";
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import {
@@ -35,8 +33,9 @@ import type { PriorTurnContext } from "./reviewer.ts";
 import { Reviewer } from "./reviewer.ts";
 import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
-import { runCompactJob } from "./turn/compact-job.ts";
-import { isClaudeStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
+import { type CompactionSeam, runCompactJob } from "./turn/compact-job.ts";
+import { sinkDelivery } from "./turn/delivery.ts";
+import { isClaudeStep, type ModelStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
 import {
 	COMPACT_AT_PCT,
@@ -50,19 +49,12 @@ import {
 	terminalFailureMessage,
 } from "./turn/overflow.ts";
 import { openRunRecord } from "./turn/run-record.ts";
-import { buildRetryGuard } from "./turn/retry-guard.ts";
+import type { RunOwnershipHooks } from "./turn/run-ownership.ts";
 import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
-import {
-	claimMembers,
-	emitChunk,
-	endLive,
-	type LiveChunks,
-	type StreamDeps,
-	openLive,
-	type WireMember,
-} from "./turn/stream.ts";
-import { fenceTools } from "./turn/tool-fence.ts";
+import { claimMembers, emitChunk, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
+import { openToolAuthority, type TurnToolMaker } from "./turn/tool-authority.ts";
+import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import type { ClaudeStep } from "./agent/claude-code/mod.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import type { TurnJournal } from "./turn-journal.ts";
@@ -97,68 +89,6 @@ export function compactionBudgets(contextWindow: number | null): {
 	};
 }
 
-export type { ForcedKind } from "./turn/state.ts";
-
-export type TurnDone =
-	| { kind: "completed"; forced?: ForcedKind; fallback?: FallbackNote }
-	// shutdown: the process is going down (deploy/restart), not a /stop.
-	| { kind: "fenced"; shutdown?: true }
-	// modelCalls/transient are stamped only where the runtime can
-	// know them — the terminal failure path. Absent means unknown, and
-	// consumers must treat unknown as not-retryable.
-	| { kind: "error"; message: string; modelCalls?: number; transient?: boolean };
-
-// Exactly one terminal notification per submitted sink, including work
-// dropped from the queue — channel sinks release typing and stream
-// resources on completed, fenced, and failed turns alike.
-export interface TurnSink {
-	onTextDelta(delta: string): void;
-	onReasoningDelta(delta: string): void;
-	onToolCall(toolName: string, input: unknown): void;
-	// The head receives emitted UIMessage chunks after authority checks. Overflow
-	// recovery withholds its error chunk and successors, not prior partial output;
-	// terminal status reaches sinks through onDone.
-	onStreamChunk?(chunk: UIMessageChunk): void;
-	onVoiceNote?(audio: Uint8Array): Promise<void>;
-	// The sink owns file delivery, so it remains on the serialized,
-	// authority-fenced delivery path. Both sides of its await re-check
-	// authority; `asFile` preserves exact document bytes.
-	onFile?(file: OutgoingFile): Promise<void>;
-	// Voice synthesis exposes a visible wait and returns its stopper. Starting
-	// that indicator is a side effect and is fenced by the running turn.
-	onVoiceSynthesisStart?(): () => void;
-	setAuthorityCheck?(
-		check: () => boolean,
-		anchorSeq?: number | null,
-		memoryExcluded?: () => boolean,
-	): void;
-	onDone(done: TurnDone): void | Promise<void>;
-}
-
-export interface ModelStep {
-	model: LanguageModel;
-	system: string;
-	providerOptions?: ProviderOptions;
-	// Stored reply metadata uses this resolved config reference.
-	label?: string;
-	// Controls which stored attachments materialize as file parts; absent means
-	// attachments degrade to path references. This keeps unsupported media out
-	// of the model request rather than failing the whole turn.
-	inputModalities?: Set<string>;
-	// Second, position-aware gate for inlining media through the provider pipe;
-	// a model capability alone is not enough when the provider cannot carry it.
-	carries?: (mediaType: string, position: MediaPosition) => boolean;
-	// Whether the provider replays provider-executed tool parts (Codex
-	// hosted web_search); false/absent drops them from the model view.
-	keepProviderExecuted?: boolean;
-	// Context-window denominator for utilization logging, when known.
-	contextWindow?: number;
-	// Retry budget for the provider's chat calls, when the provider's own
-	// rules override the SDK default (2) — 1min bills every attempt, so
-	// its steps carry 0. Absent keeps the default.
-	maxRetries?: number;
-}
-
 export interface RuntimeDeps {
 	store: ConversationStore;
 	// Resolve model settings fresh per turn; auth resolution may be async.
@@ -178,46 +108,16 @@ export interface RuntimeDeps {
 	// The operator's global model fallback list, read live per turn
 	// (design/model.md → Model fallback list). Absent or [] = no fallback.
 	modelFallbacks?(): readonly string[];
-	// Build tools for the deployment workspace and conversation; delivery hooks
-	// connect speak and file tools to the running sink.
-	makeTools(
-		conv: Conversation,
-		deliverVoice?: (audio: Uint8Array) => Promise<void>,
-		recording?: () => () => void,
-		deliverFile?: (file: OutgoingFile) => Promise<void>,
-		// Filled after buildStep so fetch can render stored PDF references with
-		// this turn's media capabilities.
-		accepts?: { current: AcceptsMedia },
-		context?: {
-			runId: string;
-			sourceMessageId(): string;
-			sourceInputSeq(): number | null;
-		},
-	): ToolSet;
+	// Tool authority's tool builder (turn/tool-authority.ts): builds the
+	// deployment workspace's tools; delivery hooks connect speak and file
+	// tools to the running sink.
+	makeTools: TurnToolMaker;
 	// Optional memory recall is bounded, fail-open, and cache-stable; retention
 	// is enqueued only while the turn retains authority. Memory input is kept
 	// separate from the model's complete conversation view.
 	memory?: MemoryTurnDeps;
-	// Optional compaction summarizes on the conversation's model, then
-	// walks `modelFallbacks` (runCompaction owns the walk; `summarize`
-	// runs one call on the ref it is handed). Its dedicated signal lets
-	// /stop and shutdown cancel an in-flight summary. A failed summary
-	// leaves the event stream and compaction pointer untouched.
-	compaction?: {
-		modelRef(conv: Conversation): string;
-		// Catalog window lookup — metadata only, never a model step: no
-		// auth resolution and no prompt build, so a compaction pass can
-		// never mint or rewrite the frozen prompt snapshot. Null means
-		// unknown; budgets fall back to the defaults.
-		contextWindow(conv: Conversation): number | null | Promise<number | null>;
-		summarize(
-			conv: Conversation,
-			system: string,
-			prompt: string,
-			signal: AbortSignal,
-			modelRef: string,
-		): Promise<string>;
-	};
+	// Optional compaction: the seam turn/compact-job.ts consumes.
+	compaction?: CompactionSeam;
 	// Between-turns persisted pruning: runs after the next batch is
 	// claimed and before runTurn builds its view, so committed markers are
 	// visible to the admission read. A throw is logged and the turn
@@ -226,40 +126,9 @@ export interface RuntimeDeps {
 	// Each admitted attempt opens a run row before any tool side effect
 	// can run. Optional — test rigs journal nothing.
 	turnJournal?: TurnJournal;
-	// Durable wake ownership (wake-dispatcher.ts): the composition's
-	// window into which journal run processes which submitted message.
-	// `begin` fires after the run row exists and before the stream can
-	// reach a tool — the admitted members' durable event seqs plus the
-	// run rows this attempt continues (explicit resume) or inherits
-	// (overflow). `members` fires when a steered submit joins the
-	// membership mid-run. `end` fires at the run's terminal journal
-	// stamp. Membership is named by event seq, never by client message
-	// id — ids are untrusted and may repeat across events, so an id
-	// match could hand a wake to a run that never processed it. Only
-	// meaningful when turnJournal exists; hooks must not throw (they
-	// observe the turn, they never gate it).
-	runOwnership?: {
-		begin(event: {
-			runId: string;
-			conversationId: string;
-			memberSeqs: number[];
-			resumedFrom?: string;
-			inheritFrom?: string[];
-		}): void;
-		members(runId: string, conversationId: string, memberSeqs: number[]): void;
-		end(
-			runId: string,
-			status: "fenced" | "completed" | "error",
-			delivery: "delivered" | "undelivered" | "failed",
-		): void;
-		/** The attempt died before `begin` could link its members — no run
-		 *  row exists for reconcile to read, so the attempt's terminal
-		 *  outcome is otherwise invisible to ownership. Fired on every
-		 *  pre-run terminal path (a refused admission, an overflow that
-		 *  will NOT resume — a resuming attempt's fresh run links
-		 *  normally). Hooks must not throw, like the rest. */
-		preRunFailure?(event: { conversationId: string; memberSeqs: number[]; error: string }): void;
-	};
+	// Durable wake ownership (wake-dispatcher.ts): the hooks contract
+	// lives at turn/run-ownership.ts.
+	runOwnership?: RunOwnershipHooks;
 	// The context-window view's store (window-capture.ts): the attempt's
 	// final outbound prompt, recorded per conversation, latest wins.
 	// Observability, never turn state — a throw is logged, the turn
@@ -1009,111 +878,50 @@ export class Runtime {
 					epoch,
 				));
 			this.checkAuthority(convId, epoch);
-			const deliverVoice = sink.onVoiceNote
-				? async (audio: Uint8Array) => {
-						this.checkAuthority(convId, epoch);
-						await sink.onVoiceNote!(audio);
-						this.checkAuthority(convId, epoch);
-					}
-				: undefined;
-			// File delivery is fenced before and after its await.
-			const deliverFile = sink.onFile
-				? async (file: OutgoingFile) => {
-						this.checkAuthority(convId, epoch);
-						await sink.onFile!(file);
-						this.checkAuthority(convId, epoch);
-					}
-				: undefined;
-			// Fence the chat action that starts synthesis; the sink's stopper can
-			// resume its delivery UI after synthesis.
-			const recording = sink.onVoiceSynthesisStart
-				? () => {
-						this.checkAuthority(convId, epoch);
-						return sink.onVoiceSynthesisStart!();
-					}
-				: undefined;
+			// Delivery and tool authority are turn-owned seams: the fenced
+			// sink hooks (turn/delivery.ts), then the run row + ownership
+			// link + the tool fence (turn/tool-authority.ts) — #195 (save
+			// each step as it ends) grows its per-step record there.
+			const delivery = sinkDelivery(sink, () => this.checkAuthority(convId, epoch));
 			// Until buildStep resolves, media capability must conservatively reject
 			// inlining.
 			const accepts: { current: AcceptsMedia } = {
 				current: { modalities: new Set(["text"]), carries: () => false },
 			};
-			// The run row lands before the SDK's loop can reach a tool:
-			// after this line every dispatch is journaled under runId.
-			// Creation, evidence inheritance (an operator-resume source
-			// and any overflow-failed predecessor), and the source's
-			// consumption are one journal transaction — a crash between
-			// them must never leave a successor that re-executes recorded
-			// side effects.
-			const newRunId = randomUUID();
-			const rawTools = this.deps.makeTools(conv, deliverVoice, recording, deliverFile, accepts, {
-				runId: newRunId,
-				sourceMessageId: () => turns[turns.length - 1]!.message.id,
-				sourceInputSeq,
-			});
-			journaled(() =>
-				journal?.beginRun({
-					runId: newRunId,
-					conversationId: convId,
-					epoch,
-					anchorSeq,
-					steerMark: snapshot.steerMarkSeed,
-					convSnapshot: {
-						model: conv.model,
-						thinking: conv.thinking,
-						// The operator's selection when a fallback serves — the
-						// resume drift check compares this; resume runs on `model`.
-						...(fallback.configured !== conv.model ? { configuredModel: fallback.configured } : {}),
-					},
-					toolNames: Object.keys(rawTools),
-					startedAt: new Date(turnStartMs).toISOString(),
-					ownedInputSeqs: [...ownedInputSeqs],
-					admissionExchangeExcluded,
-					sourceInputSeq: sourceInputSeq(),
-					resumedFrom: sourceRunId,
-					inheritFrom:
-						recovery?.predecessorRun === undefined ? undefined : [recovery.predecessorRun],
-				}),
-			);
-			// Set only once the row exists — a failed beginRun leaves no row
-			// to stamp and no run for ownership to end.
-			runId = newRunId;
-			// Every member claimed into this attempt — the drain's initial
-			// claim and a resume admission's queue claim are both already
-			// on `turns` — becomes this run's owned input here, before the
-			// stream can reach a tool. A wake linked to a predecessor the
-			// row continues or inherits moves with it.
-			if (journal !== undefined) {
-				this.deps.runOwnership?.begin({
-					runId,
-					conversationId: convId,
-					memberSeqs: turns.map((t) => t.seq),
-					...(sourceRunId !== undefined ? { resumedFrom: sourceRunId } : {}),
-					...(recovery?.predecessorRun !== undefined
-						? { inheritFrom: [recovery.predecessorRun] }
-						: {}),
-				});
-				ownershipBegun = true;
-			}
-			// The recovery guard reads the fresh row once, after
-			// inheritance: it already carries the source's decisions and
-			// every predecessor attempt's recorded executions. Calls this
-			// attempt then makes never join the set — same-run intentional
-			// repetition is a live-turn matter, not recovery's.
-			const recoveryGuard =
-				journal === undefined
-					? undefined
-					: buildRetryGuard(journaled(() => journal.callsFor(newRunId)));
-			const tools = fenceTools({
-				tools: rawTools,
+			const authority = openToolAuthority({
+				conv,
 				convId,
 				epoch,
+				makeTools: this.deps.makeTools,
+				delivery,
+				accepts,
+				sourceMessageId: () => turns[turns.length - 1]!.message.id,
+				record: {
+					anchorSeq,
+					steerMarkSeed: snapshot.steerMarkSeed,
+					startedAtMs: turnStartMs,
+					ownedInputSeqs,
+					admissionExchangeExcluded,
+					memberSeqs: turns.map((t) => t.seq),
+					sourceInputSeq,
+					resumedFrom: sourceRunId,
+					predecessorRun: recovery?.predecessorRun,
+					fallbackConfigured: fallback.configured,
+				},
 				journal,
-				checkAuthority: () => this.checkAuthority(convId, epoch),
-				runId,
-				guard: recoveryGuard,
+				journaled,
 				journalFault,
 				onJournalFault: () => controller.abort(),
+				runOwnership: this.deps.runOwnership,
+				checkAuthority: () => this.checkAuthority(convId, epoch),
+				onRunId: (id) => {
+					runId = id;
+				},
+				onOwnershipBegun: () => {
+					ownershipBegun = true;
+				},
 			});
+			const tools = authority.tools;
 			const step = await this.deps.buildStep(conv, tools);
 			this.checkAuthority(convId, epoch);
 			accepts.current = {
@@ -1149,7 +957,9 @@ export class Runtime {
 				live,
 				state,
 				journal,
-				runId,
+				// The authority seam minted it; the local `runId` var only
+				// re-reads for the terminal paths below.
+				runId: authority.runId,
 				// A steer that joins mid-run is processed by this run — the
 				// wake hook hears only the joined seqs (converts that failed
 				// were settled, never joined). Journaled turns only.

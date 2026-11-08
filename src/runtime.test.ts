@@ -17,15 +17,9 @@ import { setLogFile } from "./log.ts";
 import { forgetDocument } from "./memory/forget.ts";
 import type { HindsightClient } from "./memory/hindsight.ts";
 import { Reviewer } from "./reviewer.ts";
-import {
-	compactionBudgets,
-	type ModelStep,
-	Runtime,
-	type RuntimeDeps,
-	type TurnDone,
-	type TurnSink,
-	userMessage,
-} from "./runtime.ts";
+import { compactionBudgets, Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
+import type { TurnDone, TurnSink } from "./turn/sink.ts";
+import type { ModelStep } from "./turn/engine.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import type { System1Client } from "./system1.ts";
 import {

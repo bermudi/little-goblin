@@ -79,9 +79,7 @@ export function fenceTools(opts: {
 					options.toolCallId,
 					name,
 					input,
-					verdict.kind === "execute-grant"
-						? { retryCallId: verdict.grant.toolCallId }
-						: undefined,
+					verdict.kind === "execute-grant" ? { retryCallId: verdict.grant.toolCallId } : undefined,
 				),
 			);
 			if (verdict.kind === "execute-grant") {

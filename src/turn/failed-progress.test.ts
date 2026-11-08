@@ -119,7 +119,9 @@ describe("failed-turn progress rendering", () => {
 		expect(bounded!.text).not.toContain("r".repeat(241));
 		// Assistant text keeps the LAST 2000 chars (the 2500-char fixture above).
 		expect(rendered!.text).toContain(`Assistant text before the failure:\n${"x".repeat(2000)}`);
-		expect(rendered!.text).not.toContain(`Assistant text before the failure:\nx${"x".repeat(2000)}`);
+		expect(rendered!.text).not.toContain(
+			`Assistant text before the failure:\nx${"x".repeat(2000)}`,
+		);
 	});
 
 	test("resolved-retry keeps a known outcome, spent or not; an ambiguous one stays unknown", () => {

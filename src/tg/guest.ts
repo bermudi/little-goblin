@@ -11,7 +11,8 @@ import {
 	type Conversation,
 	type ConversationStore,
 } from "../conversation.ts";
-import type { Runtime, TurnDone, TurnSink } from "../runtime.ts";
+import type { Runtime } from "../runtime.ts";
+import type { TurnDone, TurnSink } from "../turn/sink.ts";
 import type { UIMessage } from "ai";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";

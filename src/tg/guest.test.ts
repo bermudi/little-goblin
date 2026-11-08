@@ -7,7 +7,8 @@ import {
 	type ConversationStore,
 } from "../conversation.ts";
 import type { Config, ConfigRef } from "../config.ts";
-import type { Runtime, TurnSink } from "../runtime.ts";
+import type { Runtime } from "../runtime.ts";
+import type { TurnSink } from "../turn/sink.ts";
 import type { UIMessage } from "ai";
 import type { Message, User } from "grammy/types";
 import type { Api } from "grammy";

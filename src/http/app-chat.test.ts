@@ -5,7 +5,7 @@ import type { UIMessage } from "ai";
 import { sendFileTool } from "../agent/tools/send.ts";
 import { speakTool } from "../agent/tools/speak.ts";
 import { setLogFile } from "../log.ts";
-import type { TurnDone } from "../runtime.ts";
+import type { TurnDone } from "../turn/sink.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
 import { sleep, tmpDir, waitUntil } from "../testkit.ts";
 import type { AppChannelDeps } from "./app-shared.ts";

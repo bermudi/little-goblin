@@ -9,7 +9,7 @@ import type { Api } from "grammy";
 import type { ConfigRef, TtsConfig } from "../config.ts";
 import { channelOf, type Conversation, type ConversationStore } from "../conversation.ts";
 import { makeDeliverySink } from "./delivery.ts";
-import type { TurnSink } from "../runtime.ts";
+import type { TurnSink } from "../turn/sink.ts";
 
 export const SHARED_CHAT_NOTE =
 	"[note: this is a shared chat — everyone in it can read your replies. " +

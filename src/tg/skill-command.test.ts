@@ -7,7 +7,7 @@ import { SKILL_PART } from "../skill-part.ts";
 import { fakeApi, type FakeApi } from "../testkit/fake-api.ts";
 import { deferred, openTestStore, useHome } from "../testkit.ts";
 import type { Config } from "../config.ts";
-import type { TurnSink } from "../runtime.ts";
+import type { TurnSink } from "../turn/sink.ts";
 import { SHARED_CHAT_NOTE, makeConversationDeliverySink } from "./turn-input.ts";
 import {
 	handleSkillCommand,

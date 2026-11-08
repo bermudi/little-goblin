@@ -9,7 +9,8 @@ import { APICallError } from "@ai-sdk/provider";
 import { type LanguageModel, type ToolSet, tool } from "ai";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
-import { type ModelStep, Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
+import { Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
+import type { ModelStep } from "./turn/engine.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import {
 	finishPart,

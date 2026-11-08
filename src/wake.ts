@@ -8,7 +8,8 @@ import {
 	type ConversationStore,
 } from "./conversation.ts";
 import { paths } from "./config.ts";
-import { userMessage, type Runtime, type TurnSink } from "./runtime.ts";
+import { userMessage, type Runtime } from "./runtime.ts";
+import type { TurnSink } from "./turn/sink.ts";
 import { isRollingChat, routeDm, type RollDeps } from "./rolling.ts";
 import { appConversationOf, telegramAddressOf, type ConversationTarget } from "./targets.ts";
 import { log } from "./log.ts";

@@ -665,6 +665,17 @@ describe("provider-filter retry", () => {
 		r.store.close();
 	});
 
+	test("shutdown fences a live turn as a restart, /stop does not", async () => {
+		const started = deferred<void>();
+		const edge = scriptedEdge([{ drive: () => started.resolve(), cancel: async () => {} }]);
+		const r = rig({ model: edge.model, addr: appAddress("shutdown-cause") });
+		const sink = submit(r, "test");
+		await started.promise;
+		await r.runtime.shutdown();
+		expect(await sink.done).toEqual({ kind: "fenced", shutdown: true });
+		r.store.close();
+	});
+
 	test("stop during filter cleanup prevents a second model request", async () => {
 		const cleaning = deferred<void>();
 		const gate = deferred<void>();

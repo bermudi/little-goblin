@@ -103,7 +103,8 @@ export type { ForcedKind } from "./turn/state.ts";
 
 export type TurnDone =
 	| { kind: "completed"; forced?: ForcedKind; fallback?: FallbackNote }
-	| { kind: "fenced" }
+	// shutdown: the process is going down (deploy/restart), not a /stop.
+	| { kind: "fenced"; shutdown?: true }
 	// modelCalls/transient are stamped only where the runtime can
 	// know them — the terminal failure path. Absent means unknown, and
 	// consumers must treat unknown as not-retryable.
@@ -738,8 +739,11 @@ export class Runtime {
 	private async notifyDone(turn: QueuedTurn, done: TurnDone): Promise<void> {
 		if (turn.doneSent) return;
 		turn.doneSent = true;
+		// Every fence path funnels here, so stamp the shutdown cause once.
+		const final: TurnDone =
+			done.kind === "fenced" && this.closed ? { kind: "fenced", shutdown: true } : done;
 		try {
-			await turn.sink.onDone(done);
+			await turn.sink.onDone(final);
 		} catch (err) {
 			log.warn("sink onDone failed", err);
 		} finally {

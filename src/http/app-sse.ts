@@ -72,7 +72,12 @@ export function appSseWriter(
 				push(
 					`data: ${JSON.stringify({
 						type: "error",
-						errorText: done.kind === "error" ? done.message : "turn stopped before finishing",
+						errorText:
+							done.kind === "error"
+								? done.message
+								: done.shutdown
+									? 'turn stopped: goblin restarted (deploy or service restart). Send "continue" to resume.'
+									: "turn stopped before finishing",
 					})}\n\n`,
 				);
 			}

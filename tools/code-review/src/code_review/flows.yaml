@@ -1,0 +1,58 @@
+# Declared-flow registry for the Goblin code review harness.
+#
+# Routing hints, not rules. Anchors are path/symbol patterns; clauses point
+# at EXISTING design docs — this file never duplicates their prose. A failed
+# lookup is a gap, not permission to invent a relationship.
+#
+# Validate with code_review.flows.load_flows.
+
+flows:
+  - id: turn-admission
+    description: Turn admission, tools, or delivery
+    path_patterns: ['^src/(runtime|turn|tools|delivery)', '^src/http/']
+    symbol_patterns: ['admit', 'turn', 'tool', 'deliver']
+    clauses:
+      - 'DESIGN.md'
+      - 'design/runtime-turn.md'
+      - 'design/model.md'
+
+  - id: responsibility-scheduler
+    description: Responsibility, scheduler, observer, or wakes
+    path_patterns: ['^src/(programs|responsibilities|scheduler|wakes|observer)']
+    symbol_patterns: ['responsibility', 'schedule', 'wake', 'observer']
+    clauses:
+      - 'design/programs.md'
+
+  - id: config-wire-types
+    description: Config or app wire types (server + app consumers)
+    path_patterns: ['^src/http/app-config', '^app/src/', '^src/config']
+    symbol_patterns: ['config', 'settings', 'AppConfig']
+    clauses:
+      - 'design/app.md'
+      - 'src/http/app-config.ts'
+
+  - id: auth-adapter
+    description: Auth or an external adapter boundary
+    path_patterns: ['^src/(auth|tg|herdr|podman|mail-gws|subagents)/?']
+    symbol_patterns: ['auth', 'oauth', 'credential', 'adapter']
+    clauses:
+      - 'design/auth.md'
+
+  - id: durable-storage
+    description: Durable storage and recovery paths
+    path_patterns: ['^src/(state|storage|journal|memory)', 'state/']
+    symbol_patterns: ['write', 'fsync', 'rename', 'journal', 'persist']
+    clauses:
+      - 'DESIGN.md'
+
+  - id: prompt-assembly
+    description: Prompt assembly and sanctioned prefix boundaries
+    path_patterns: ['^src/(prompt|context|memory)']
+    symbol_patterns: ['prompt', 'prefix', 'assembly']
+    clauses:
+      - 'DESIGN.md'
+
+default_clauses:
+  - AGENTS.md
+  - DIRECTION.md
+  - DESIGN.md

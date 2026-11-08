@@ -2,3 +2,10 @@ node_modules/
 .env
 __pycache__/
 app/dist*
+
+# Review harness (Python) local env
+tools/code-review/.venv/
+tools/code-review/__pycache__/
+tools/code-review/**/__pycache__/
+tools/code-review/**/*.egg-info/
+.pytest_cache/

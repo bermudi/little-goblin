@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "goblin-code-review"
+version = "0.1.0"
+description = "On-demand, local code review harness for pinned Goblin changes (design/code-review.md)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+dependencies = [
+  "smolagents==1.26.0",
+  "pydantic>=2",
+  "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+# smolagents[litellm] pulls litellm but not its optional `mcp` dependency,
+# which litellm imports eagerly whenever function tools are passed. Pin it
+# here so the tool-calling path works.
+litellm = ["smolagents[litellm]==1.26.0", "mcp>=1.2"]
+openai = ["smolagents[openai]==1.26.0"]
+inference = ["smolagents[inference]==1.26.0"]
+all = ["smolagents[litellm,openai,inference]==1.26.0", "mcp>=1.2"]
+
+[project.scripts]
+goblin-code-review = "code_review.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+code_review = ["worker/*.mjs", "flows.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

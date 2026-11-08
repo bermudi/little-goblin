@@ -9,6 +9,7 @@ import { sendFileTool } from "./agent/tools/send.ts";
 import { appAddress, openStore, type Conversation } from "./conversation.ts";
 import type { Config } from "./config.ts";
 import { Runtime, type TurnDone, type TurnSink } from "./runtime.ts";
+import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import type { RollDeps } from "./rolling.ts";
 import { delegationWake } from "./delegation-lifecycle.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "./testkit/fake-model.ts";
@@ -91,6 +92,7 @@ test("wake after runtime close neither records history nor reports delivery", as
 	dirs.push(dir);
 	const store = openStore(join(dir, "goblin.sqlite"));
 	const runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store,
 		buildStep: () => {
 			throw new Error("closed runtime must not run a turn");
@@ -244,6 +246,7 @@ test("a background app turn persists generated media without an SSE stream", asy
 		textParts("report sent"),
 	]).model;
 	const runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store,
 		buildStep: () => ({ model, system: "test" }),
 		makeTools: (_conv, _deliverVoice, _recording, deliverFile) => ({
@@ -358,6 +361,7 @@ test.each(["app", "dm"] as const)(
 				? store.resolve(appAddress("closed"), "/w")
 				: store.resolve({ kind: "dm", chatId: 3 }, "/w");
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => {
 				throw new Error("closed runtime ran a turn");

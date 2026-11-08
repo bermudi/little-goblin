@@ -22,6 +22,7 @@ import { z } from "zod";
 import { openStore } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
 import { Runtime, userMessage, type TurnDone, type TurnSink } from "../runtime.ts";
+import { aiSdkEngine } from "../turn/ai-sdk-engine.ts";
 import { openTurnJournal } from "../turn-journal.ts";
 
 const DB_PATH = process.env.DB_PATH ?? "";
@@ -147,6 +148,7 @@ if (MODE === "overflow-stall") {
 	}
 }
 const runtime = new Runtime({
+	engines: [aiSdkEngine],
 	store,
 	turnJournal,
 	buildStep: () => ({

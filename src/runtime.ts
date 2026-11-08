@@ -39,6 +39,7 @@ import type { PriorTurnContext } from "./reviewer.ts";
 import { Reviewer } from "./reviewer.ts";
 import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
+import { isClaudeStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
 import { renderFailedTurnProgress } from "./turn/failed-progress.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
 import {
@@ -57,7 +58,6 @@ import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
 import {
 	claimMembers,
-	driveStream,
 	emitChunk,
 	endLive,
 	type LiveChunks,
@@ -65,7 +65,7 @@ import {
 	openLive,
 	type WireMember,
 } from "./turn/stream.ts";
-import type { ClaudeEngine, ClaudeStep } from "./agent/claude-code/mod.ts";
+import type { ClaudeStep } from "./agent/claude-code/mod.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import { replayKey, type TurnJournal } from "./turn-journal.ts";
 import type { WindowCapture } from "./window-capture.ts";
@@ -137,28 +137,6 @@ export interface TurnSink {
 	onDone(done: TurnDone): void | Promise<void>;
 }
 
-export function isClaudeStep(step: ModelStep | ClaudeStep): step is ClaudeStep {
-	return "engine" in step && step.engine === "claude-code";
-}
-
-// The engine fork: one deps object, two drivers. driveClaude consumes
-// the same StreamDeps fields with a ClaudeStep-shaped step — both
-// engines emit the identical wire, journal, and telemetry contract.
-async function runTurnEngine<M extends WireMember, S extends ModelStep | ClaudeStep>(
-	deps: RuntimeDeps,
-	step: S,
-	fields: Omit<StreamDeps<M>, "step">,
-): Promise<ReturnType<typeof driveStream<M>>> {
-	if (!isClaudeStep(step)) return driveStream<M>({ ...fields, step });
-	const engine = deps.claudeEngine;
-	if (engine === undefined) {
-		throw new Error(
-			`conversation ${fields.convId} runs a claude-code model but no claude engine is bound`,
-		);
-	}
-	return engine.run<M>({ ...fields, step });
-}
-
 export interface ModelStep {
 	model: LanguageModel;
 	system: string;
@@ -187,15 +165,15 @@ export interface RuntimeDeps {
 	store: ConversationStore;
 	// Resolve model settings fresh per turn; auth resolution may be async.
 	// A claude-code provider yields a ClaudeStep (engine: "claude-code") —
-	// the turn runs on driveClaude, everything else on driveStream.
+	// the turn runs on whichever engine accepts the step (turn/engine.ts).
 	buildStep(
 		conv: Conversation,
 		tools: ToolSet,
 	): ModelStep | ClaudeStep | Promise<ModelStep | ClaudeStep>;
-	// The claude-code engine handle (index.ts binds it whenever a
-	// claude-code provider is configured). Present-but-unbound with a
-	// claude-code step fails the turn loud, never silently degrades.
-	claudeEngine?: ClaudeEngine | undefined;
+	// The turn engines, tried in order (turn/engine.ts pickEngine):
+	// index.ts binds [claude-code, ai-sdk]. A step no engine accepts
+	// fails the turn loud, never silently degrades.
+	engines: readonly TurnEngine[];
 	// Capture channel settings at admission so recovery and compaction share a
 	// stable snapshot. A later settings change fences the current attempt.
 	captureConversation?(conv: Conversation): Conversation;
@@ -1420,7 +1398,7 @@ export class Runtime {
 				assertAuthority: () => this.checkAuthority(convId, epoch),
 			});
 
-			const outcome = await runTurnEngine(this.deps, step, {
+			const outcome = await pickEngine(this.deps.engines, step, convId).run({
 				convId,
 				epoch,
 				head: sink,
@@ -1524,6 +1502,7 @@ export class Runtime {
 				holdZeroEffectError:
 					fallbackFresh && (nextFallback() !== undefined || fallbackMisses.length > 0),
 				...(fallbackMisses.length > 0 ? { fallbackMisses } : {}),
+				step,
 			});
 			// Record the window on both rails — the failed rail throws its
 			// recovery/error below, and the request went out either way.

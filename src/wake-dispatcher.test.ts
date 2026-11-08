@@ -12,6 +12,7 @@ import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
+import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
 import { deferred, fakeModel, HeadlessSink, RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
 import {
@@ -59,6 +60,7 @@ function rig(
 	const wakes = opts.wrapWakes?.(openWakeStore(store.db)) ?? openWakeStore(store.db);
 	let dispatcher!: WakeDispatcher;
 	const runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store,
 		turnJournal: journal,
 		buildStep:

@@ -8,6 +8,7 @@ import { memoryConfigSchema } from "./config.ts";
 import { openStore } from "./conversation.ts";
 import { HindsightClient } from "./memory/hindsight.ts";
 import { Runtime, userMessage } from "./runtime.ts";
+import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 import {
 	finishPart,
@@ -99,6 +100,7 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 	});
 	const recallOk = { current: null as boolean | null };
 	const runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store,
 		buildStep: () => ({ model: textModel(["ok"]).model, system: "test" }),
 		makeTools: () => ({}),
@@ -146,6 +148,7 @@ describe("memory turn integration", () => {
 		});
 		const journal = openTurnJournal(h.store.db);
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store: h.store,
 			turnJournal: journal,
 			buildStep: () => ({
@@ -199,6 +202,7 @@ describe("memory turn integration", () => {
 			append: (messages, opts) => h.store.append(conv.id, messages, opts),
 		});
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store: h.store,
 			buildStep: () => ({
 				model: scriptedModel([
@@ -239,6 +243,7 @@ describe("memory turn integration", () => {
 		const store = openStore(tmpDb("goblin-media-memory-"));
 		const conv = store.resolve({ kind: "dm", chatId: 88 }, "/w");
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
 				model: textModel(["a", "b", "c"], { delayMs: 30 }).model,
@@ -285,6 +290,7 @@ describe("memory turn integration", () => {
 			textParts("done"),
 		]).model;
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ model, system: "test" }),
 			makeTools: () => ({
@@ -333,6 +339,7 @@ describe("memory turn integration", () => {
 		const store = openStore(tmpDb("goblin-media-queued-"));
 		const conv = store.resolve({ kind: "dm", chatId: 89 }, "/w");
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
 				model: textModel(["a", "b", "c"], { delayMs: 30 }).model,
@@ -470,6 +477,7 @@ describe("memory turn integration", () => {
 		servers.push(server);
 		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
 				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
@@ -520,6 +528,7 @@ describe("memory turn integration", () => {
 		servers.push(server);
 		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
 				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
@@ -565,6 +574,7 @@ describe("memory turn integration", () => {
 		servers.push(server);
 		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
 				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
@@ -638,6 +648,7 @@ describe("memory turn integration", () => {
 		servers.push(server);
 		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ model: textModel(["ok"]).model, system: "test" }),
 			makeTools: () => ({}),
@@ -692,6 +703,7 @@ describe("memory turn integration", () => {
 		servers.push(server);
 		const client = new HindsightClient({ baseUrl: `http://127.0.0.1:${server.port}`, bankId: "g" });
 		const runtime = new Runtime({
+			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ model: textModel(["ok"]).model, system: "test" }),
 			makeTools: () => ({}),

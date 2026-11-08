@@ -7,6 +7,7 @@ import { openNotes } from "../notes.ts";
 import { observedModel } from "../agent/providers.ts";
 import { openProjects, projectWorkdir, type ProjectStore } from "../projects.ts";
 import { Runtime } from "../runtime.ts";
+import { aiSdkEngine } from "../turn/ai-sdk-engine.ts";
 import { textModel } from "../testkit/fake-model.ts";
 import { useHome } from "../testkit.ts";
 import { openTurnJournal } from "../turn-journal.ts";
@@ -60,6 +61,7 @@ export function setup(
 	// lineage-reading surfaces see rows in tests.
 	const cacheObservations = openCacheObservation(store.db);
 	const runtime = new Runtime({
+		engines: [aiSdkEngine],
 		store,
 		turnJournal,
 		recordWindow: (conversationId, input) => {

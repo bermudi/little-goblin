@@ -287,7 +287,9 @@ DDL the feature creates at open, never central schema. Channels and
 stores reach it through the seams it exports; it never owns a channel
 adapter (reminders sends through tg's `DeliveryApi`, it does not know
 grammy). `src/reminders/` is the pilot. Import cycles are frozen by
-`src/import-cycles.test.ts` — the allowlist only shrinks.
+`src/import-cycles.test.ts` — a cycle must sit inside one frozen cluster;
+growth or anything new fails the guard, and pruned clusters shrink the
+list by hand.
 
 ## Non-goals (v1 — return only on demand)
 

@@ -1,10 +1,12 @@
 // The cycle guard: import cycles in src/ and app/src/ are frozen at the
-// list below. Any NEW cycle fails this test; a FIXED cycle also fails so
-// the list stays honest — the failure tells you which side moved.
+// list below. A cycle passes only when its members all sit inside ONE
+// frozen cluster. A cycle that grew past a cluster, spans two clusters,
+// or has no cluster fails the test. A cluster that shrank or vanished
+// passes — prune those by hand so the list keeps shrinking; print the
+// live clusters to copy from with:
+//   GOBLIN_PRINT_CYCLES=1 bun test src/import-cycles.test.ts
 // Every import form counts as an edge (value, `import type`, re-export,
 // dynamic import): a type-only cycle tangles the tree just the same.
-// Print the current signature list with:
-//   GOBLIN_PRINT_CYCLES=1 bun test src/import-cycles.test.ts
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -98,8 +100,9 @@ function stronglyConnected(graph: Map<string, string[]>): string[][] {
 	return out;
 }
 
-// Today's cycles, frozen. A cycle signature is its member set — a new
-// module joining an existing cycle is a new signature, not the old one.
+// Today's cycles, frozen as clusters. Detection is containment, not
+// exact signatures: edits inside a cluster (a member's imports changing)
+// must not turn this test red, only growth or a new cycle may.
 // The two clusters the untangle campaign (#201) is shrinking: the
 // runtime↔turn cluster and the conversation-store cluster.
 const ALLOWED_CYCLES: readonly string[][] = [
@@ -142,29 +145,45 @@ const ALLOWED_CYCLES: readonly string[][] = [
 	["src/sandbox-lifecycle.ts", "src/sandboxes.ts"],
 ];
 
+// Containment: a cycle passes only when every member already sits inside
+// one single frozen cluster. Shrunk clusters are fine (prune by hand);
+// growth or anything new is not.
+function fitsAllowedCluster(members: readonly string[], allowed: readonly string[][]): boolean {
+	return allowed.some((cluster) => members.every((m) => cluster.includes(m)));
+}
+
 describe("import cycles", () => {
-	test("no import cycle exists outside the frozen allowlist", () => {
+	test("no import cycle exists outside the frozen clusters", () => {
 		const cycles = stronglyConnected(buildGraph())
 			.map((members) => [...members].sort())
 			.sort((a, b) => a.join().localeCompare(b.join()));
-		const signatures = cycles.map((members) => JSON.stringify(members));
 		if (process.env.GOBLIN_PRINT_CYCLES === "1") {
+			const signatures = cycles.map((members) => JSON.stringify(members));
 			process.stderr.write(`cycle signatures:\n${signatures.join("\n")}\n`);
 		}
-		const allowed = new Set(ALLOWED_CYCLES.map((members) => JSON.stringify([...members].sort())));
-		const added = signatures.filter((s) => !allowed.has(s));
-		const removed = [...allowed].filter((s) => !signatures.includes(s));
-		if (added.length > 0) {
+		const offenders = cycles.filter((members) => !fitsAllowedCluster(members, ALLOWED_CYCLES));
+		if (offenders.length > 0) {
 			throw new Error(
-				`new import cycles — untangle them, or (only if the operator accepts the tangle) add to ALLOWED_CYCLES:\n${added.join("\n")}`,
+				`import cycles grew or appeared — untangle them first; only the operator may freeze a new tangle in ALLOWED_CYCLES:\n${offenders
+					.map((members) => JSON.stringify(members))
+					.join("\n")}`,
 			);
 		}
-		if (removed.length > 0) {
-			throw new Error(
-				`cycles fixed or changed since the allowlist was frozen — prune ALLOWED_CYCLES:\n${removed.join("\n")}`,
-			);
-		}
-		expect(added).toEqual([]);
-		expect(removed).toEqual([]);
+		expect(offenders).toEqual([]);
+	});
+
+	test("containment judges clusters, not signatures", () => {
+		const allowed = [
+			["a.ts", "b.ts", "c.ts"],
+			["x.ts", "y.ts"],
+		];
+		// A cluster that matches, shrank, or split passes.
+		expect(fitsAllowedCluster(["a.ts", "b.ts", "c.ts"], allowed)).toBe(true);
+		expect(fitsAllowedCluster(["a.ts", "b.ts"], allowed)).toBe(true);
+		expect(fitsAllowedCluster(["x.ts"], allowed)).toBe(true);
+		// Growth past one cluster fails, spanning two fails, brand new fails.
+		expect(fitsAllowedCluster(["a.ts", "b.ts", "c.ts", "d.ts"], allowed)).toBe(false);
+		expect(fitsAllowedCluster(["a.ts", "x.ts"], allowed)).toBe(false);
+		expect(fitsAllowedCluster(["q.ts", "r.ts"], allowed)).toBe(false);
 	});
 });

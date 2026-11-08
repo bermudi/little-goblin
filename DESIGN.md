@@ -240,6 +240,10 @@ stability, or the non-goals goes here. A superseded ruling is rewritten in
 place, not amended: state the surviving rule with its provenance anchor;
 narration of retired behavior belongs in git, not the spec.
 
+Developer tooling proposal: [Code review harness](design/code-review.md)
+sketches local, context-aware change review. It is not implemented or an
+accepted runtime ruling.
+
 ## State layout
 
 `$GOBLIN_HOME`: config (`goblin.json5`, `auth.jsonl`), `workspace/` (the

@@ -17,7 +17,7 @@ import { join } from "node:path";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { LanguageModel, UIMessageChunk } from "ai";
 import { openStore, type ConversationStore } from "./conversation.ts";
-import type { TurnDone, TurnSink } from "./runtime.ts";
+import type { TurnDone, TurnSink } from "./turn/sink.ts";
 
 // ---------- filesystem fixtures ----------
 

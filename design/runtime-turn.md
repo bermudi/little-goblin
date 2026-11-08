@@ -360,6 +360,14 @@ turn-structure change.
   box, terminal stamp, and failed-progress recorder plus the attempt's
   model-fallback config, with the run id read through an injected
   getter — adoption itself stays a runtime statement after `beginRun`.
+  Since #201 the same boundary carries the two seams `runAttempt` no
+  longer inlines: **delivery** (`turn/delivery.ts` — the fenced
+  voice/file/synthesis hooks, `TurnSink`/`TurnDone` at `turn/sink.ts`)
+  and **tool authority** (`turn/tool-authority.ts` — run row before any
+  tool side effect, ownership begin, recovery guard, fence; the
+  `makeTools` contract is its `TurnToolMaker`). #195 (save each step as
+  it ends) lands its per-step record at that tool-authority seam, where
+  every dispatch of both engines already passes — no second home.
 
 ## The two text projections (#84 / #111)
 

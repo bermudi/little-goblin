@@ -1,0 +1,171 @@
+// Tool authority: the run row lands before any tool side effect can
+// execute, ownership links at begin, and every dispatch is fenced and
+// journaled (tool-fence.ts). One seam, so runAttempt assembles tools
+// without owning the journal's ordering invariants — and #195 (save
+// each step as it ends) grows its per-step record here, where both
+// engines' dispatches already pass through.
+
+import { randomUUID } from "node:crypto";
+import type { ToolSet } from "ai";
+import type { AcceptsMedia } from "../agent/attachments.ts";
+import type { OutgoingFile } from "../agent/tools/send.ts";
+import type { Conversation } from "../conversation.ts";
+import type { TurnJournal } from "../turn-journal.ts";
+import type { SinkDelivery } from "./delivery.ts";
+import { fenceTools } from "./tool-fence.ts";
+import { buildRetryGuard } from "./retry-guard.ts";
+import type { RunOwnershipHooks } from "./run-ownership.ts";
+
+// Build tools for the deployment workspace and conversation; delivery
+// hooks connect speak and file tools to the running sink.
+export type TurnToolMaker = (
+	conv: Conversation,
+	deliverVoice?: (audio: Uint8Array) => Promise<void>,
+	recording?: () => () => void,
+	deliverFile?: (file: OutgoingFile) => Promise<void>,
+	// Filled after buildStep so fetch can render stored PDF references with
+	// this turn's media capabilities.
+	accepts?: { current: AcceptsMedia },
+	context?: {
+		runId: string;
+		sourceMessageId(): string;
+		sourceInputSeq(): number | null;
+	},
+) => ToolSet;
+
+// Everything the run row's creation records about the attempt.
+export interface ToolAuthorityRecord {
+	anchorSeq: number | null;
+	steerMarkSeed: number;
+	startedAtMs: number;
+	ownedInputSeqs: Set<number>;
+	admissionExchangeExcluded: boolean;
+	memberSeqs: number[];
+	/** The newest owned input's event seq, read at begin time. */
+	sourceInputSeq(): number | null;
+	/** An operator-resume source, when this attempt continues one. */
+	resumedFrom?: string | undefined;
+	/** An overflow/fallback predecessor whose calls this row inherits. */
+	predecessorRun?: string | undefined;
+	/** The operator's configured selection when a fallback serves. */
+	fallbackConfigured: string | null;
+}
+
+export interface ToolAuthorityDeps {
+	conv: Conversation;
+	convId: string;
+	epoch: number;
+	makeTools: TurnToolMaker;
+	delivery: SinkDelivery;
+	// Until buildStep resolves, media capability must conservatively reject
+	// inlining.
+	accepts: { current: AcceptsMedia };
+	sourceMessageId(): string;
+	record: ToolAuthorityRecord;
+	journal: TurnJournal | undefined;
+	// The run record's fault-classifying wrapper and fault box — beginRun
+	// and the recovery-guard read classify a throw as a journal fault,
+	// never a model failure.
+	journaled<T>(op: () => T): T;
+	journalFault: { current: unknown };
+	onJournalFault(): void;
+	runOwnership?: RunOwnershipHooks | undefined;
+	checkAuthority(): void;
+	/** Fires once the beginRun write has succeeded — the attempt's run id
+	 *  becomes live exactly when its row does, so the attempt's terminal
+	 *  backstop can stamp a row that a later hook fault strands. */
+	onRunId(runId: string): void;
+	/** Fires once the ownership begin hook has linked the members — the
+	 *  pre-run failure announcement stops announcing past this point. */
+	onOwnershipBegun(): void;
+}
+
+export interface ToolAuthority {
+	tools: ToolSet;
+	runId: string;
+}
+
+export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
+	const { conv, convId, epoch, journal, record } = deps;
+	// The run row lands before the SDK's loop can reach a tool: after this
+	// line every dispatch is journaled under runId. Creation, evidence
+	// inheritance (an operator-resume source and any overflow-failed
+	// predecessor), and the source's consumption are one journal
+	// transaction — a crash between them must never leave a successor that
+	// re-executes recorded side effects.
+	const newRunId = randomUUID();
+	const rawTools = deps.makeTools(
+		conv,
+		deps.delivery.deliverVoice,
+		deps.delivery.recording,
+		deps.delivery.deliverFile,
+		deps.accepts,
+		{
+			runId: newRunId,
+			sourceMessageId: deps.sourceMessageId,
+			sourceInputSeq: record.sourceInputSeq,
+		},
+	);
+	deps.journaled(() =>
+		journal?.beginRun({
+			runId: newRunId,
+			conversationId: convId,
+			epoch,
+			anchorSeq: record.anchorSeq,
+			steerMark: record.steerMarkSeed,
+			convSnapshot: {
+				model: conv.model,
+				thinking: conv.thinking,
+				// The operator's selection when a fallback serves — the resume
+				// drift check compares this; resume runs on `model`.
+				...(record.fallbackConfigured !== conv.model
+					? { configuredModel: record.fallbackConfigured }
+					: {}),
+			},
+			toolNames: Object.keys(rawTools),
+			startedAt: new Date(record.startedAtMs).toISOString(),
+			ownedInputSeqs: [...record.ownedInputSeqs],
+			admissionExchangeExcluded: record.admissionExchangeExcluded,
+			sourceInputSeq: record.sourceInputSeq(),
+			resumedFrom: record.resumedFrom,
+			inheritFrom: record.predecessorRun === undefined ? undefined : [record.predecessorRun],
+		}),
+	);
+	// Set only once the row exists — a failed beginRun leaves no row to
+	// stamp and no run for ownership to end.
+	deps.onRunId(newRunId);
+	// Every member claimed into this attempt becomes this run's owned input
+	// here, before the stream can reach a tool. A wake linked to a
+	// predecessor the row continues or inherits moves with it.
+	if (journal !== undefined) {
+		deps.runOwnership?.begin({
+			runId: newRunId,
+			conversationId: convId,
+			memberSeqs: record.memberSeqs,
+			...(record.resumedFrom !== undefined ? { resumedFrom: record.resumedFrom } : {}),
+			...(record.predecessorRun !== undefined ? { inheritFrom: [record.predecessorRun] } : {}),
+		});
+		deps.onOwnershipBegun();
+	}
+	// The recovery guard reads the fresh row once, after inheritance: it
+	// already carries the source's decisions and every predecessor
+	// attempt's recorded executions. Calls this attempt then makes never
+	// join the set — same-run intentional repetition is a live-turn
+	// matter, not recovery's.
+	const recoveryGuard =
+		journal === undefined
+			? undefined
+			: buildRetryGuard(deps.journaled(() => journal.callsFor(newRunId)));
+	const tools = fenceTools({
+		tools: rawTools,
+		convId,
+		epoch,
+		journal,
+		checkAuthority: deps.checkAuthority,
+		runId: newRunId,
+		guard: recoveryGuard,
+		journalFault: deps.journalFault,
+		onJournalFault: deps.onJournalFault,
+	});
+	return { tools, runId: newRunId };
+}

@@ -1,13 +1,13 @@
 import { tool } from "ai";
 import { z } from "zod";
-import type { ConversationStore } from "../../conversation.ts";
+import type { ConversationReads } from "../../conversation-read.ts";
 import { log } from "../../log.ts";
 import { renderEventText } from "../compaction.ts";
 import { windowText } from "./truncate.ts";
 import { fenceUntrusted } from "./web.ts";
 
 export interface HistorySearchDeps {
-	store: Pick<ConversationStore, "searchHistory" | "eventContext" | "get">;
+	store: Pick<ConversationReads, "searchHistory" | "eventContext" | "get">;
 	conversationId: string;
 	isExcluded: () => boolean;
 }

@@ -11,16 +11,17 @@ import type { System1Client } from "./system1.ts";
 import { log } from "./log.ts";
 import type { MailHit } from "./mail.ts";
 import { programFireTag } from "./tags.ts";
+import { sweepOperatorReminders, type OperatorReminder } from "./reminders/index.ts";
 import { telegramAddressOf } from "./targets.ts";
 import { wakeTarget, type WakeDeps } from "./wake.ts";
 import type { ResponsibilityStore } from "./responsibilities.ts";
 import { authorityStamp } from "./responsibility-authority.ts";
 import { responsibilityStage } from "./responsibility-stage.ts";
 import { isFollowupProgram } from "./responsibility-followup.ts";
-import { dueReminder, type OperatorReminder } from "./responsibility-reminder.ts";
 import type { DevelopmentInput } from "./wake-store.ts";
 import { latestFireAtOrBefore, type Program, type ProgramsStore } from "./programs.ts";
-import type { Runtime, TurnDone, TurnSink } from "./runtime.ts";
+import type { Runtime } from "./runtime.ts";
+import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { fenceUntrusted } from "./agent/tools/web.ts";
 
 export interface SchedulerDeps extends WakeDeps {
@@ -121,45 +122,6 @@ export function startScheduler(deps: SchedulerDeps, tickMs = TICK_MS): Scheduler
 			await Promise.all(remindersInFlight.values());
 		},
 	};
-}
-
-// Runs apart from the follow-up Programs, so a future commitment or a
-// disabled Program can't silence a reminder. The push owner's sent markers
-// are the durable dedupe; this only stops a failing or absent device from
-// being retried every tick.
-const REMINDER_RETRY_MS = 15 * 60_000;
-export function sweepOperatorReminders(
-	deps: SchedulerDeps,
-	now: Date,
-	attempts: Map<string, number>,
-	inFlight: Map<string, Promise<void>>,
-): void {
-	const remind = deps.remindOperator;
-	const resps = deps.responsibilities;
-	if (remind === undefined || resps === undefined) return;
-	const due = new Set<string>();
-	for (const resp of resps.open()) {
-		const id = resp.responsibilityId;
-		const reminder = dueReminder(resp, resps.latestReport(id), resps.operationsFor(id), now);
-		if (reminder === null) continue;
-		due.add(reminder.key);
-		if (inFlight.has(reminder.key)) continue;
-		const last = attempts.get(reminder.key);
-		if (last !== undefined && now.getTime() - last < REMINDER_RETRY_MS) continue;
-		attempts.set(reminder.key, now.getTime());
-		log.debug("operator reminder due", { ...reminder });
-		inFlight.set(
-			reminder.key,
-			remind(reminder)
-				.catch((err: unknown) => {
-					log.error("operator reminder failed", err, { ...reminder });
-				})
-				.finally(() => {
-					inFlight.delete(reminder.key);
-				}),
-		);
-	}
-	for (const key of attempts.keys()) if (!due.has(key)) attempts.delete(key);
 }
 
 // Retry ladder (hermes' bounded zero-API-call re-run): a fire whose

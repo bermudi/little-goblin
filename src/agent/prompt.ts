@@ -11,7 +11,9 @@ import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { paths } from "../config.ts";
 import { log } from "../log.ts";
-import { channelOf, type Conversation, type ConversationStore, flatLine } from "../conversation.ts";
+import type { Conversation, ConversationStore } from "../conversation.ts";
+import { channelOf } from "../conversation-address.ts";
+import { flatLine } from "../conversation-events.ts";
 import type { Project } from "../projects.ts";
 import { formatSkillsSection, loadCatalog } from "./skills.ts";
 

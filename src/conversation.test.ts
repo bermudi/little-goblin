@@ -4,16 +4,10 @@ import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { _primeOpenRouterCatalog } from "./agent/models-dev.ts";
 import { pruningReplacement } from "./cache-pruning.ts";
-import {
-	appAddress,
-	appIdOf,
-	type ConversationStore,
-	channelOf,
-	formatAddress,
-	openStore,
-	type ParsedAddress,
-	parseAddress,
-} from "./conversation.ts";
+import { appAddress, appIdOf, channelOf, formatAddress, parseAddress } from "./conversation-address.ts";
+import type { ParsedAddress } from "./conversation-address.ts";
+import type { ConversationStore } from "./conversation.ts";
+import { openStore } from "./conversation.ts";
 import {
 	EVENTS_THROUGH_SQL,
 	HISTORY_CAUSAL_SQL,

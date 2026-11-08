@@ -21,7 +21,8 @@ import { tool, type LanguageModel, type ToolSet } from "ai";
 import { z } from "zod";
 import { openStore } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
-import { Runtime, userMessage, type TurnDone, type TurnSink } from "../runtime.ts";
+import { Runtime, userMessage } from "../runtime.ts";
+import type { TurnDone, TurnSink } from "../turn/sink.ts";
 import { aiSdkEngine } from "../turn/ai-sdk-engine.ts";
 import { openTurnJournal } from "../turn-journal.ts";
 

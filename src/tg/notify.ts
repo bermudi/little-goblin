@@ -1,5 +1,5 @@
 import type { Api } from "grammy";
-import { channelOf, parseAddress } from "../conversation.ts";
+import { channelOf, parseAddress } from "../conversation-address.ts";
 import { log } from "../log.ts";
 import { proposalFingerprint } from "../skill-decisions.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";

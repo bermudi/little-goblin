@@ -57,9 +57,13 @@ import { startProgramOps } from "./program-ops.ts";
 import { openProjects } from "./projects.ts";
 import { wireReviewer } from "./reviewer.ts";
 import { Runtime, type RuntimeDeps } from "./runtime.ts";
+
 import { makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
-import { deliverOperatorReminder, type OperatorReminder } from "./responsibility-reminder.ts";
-import { openTelegramReminders } from "./tg/reminder.ts";
+import {
+	deliverOperatorReminder,
+	type OperatorReminder,
+	openTelegramReminders,
+} from "./reminders/index.ts";
 import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
 import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";

@@ -1,7 +1,7 @@
 import type { UIMessageChunk } from "ai";
 import { appMediaSink, composeTurnSinks, type AppMediaDeps } from "../app-media.ts";
 import { log } from "../log.ts";
-import type { TurnDone, TurnSink } from "../runtime.ts";
+import type { TurnDone, TurnSink } from "../turn/sink.ts";
 
 const SSE_HEARTBEAT_MS = 5_000;
 

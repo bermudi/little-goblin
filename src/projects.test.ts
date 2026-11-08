@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { paths } from "./config.ts";
-import { appAddress, type ConversationStore, openStore } from "./conversation.ts";
+import { type ConversationStore, openStore } from "./conversation.ts";
+import { appAddress } from "./conversation-address.ts";
 import {
 	openProjects,
 	ProjectInputError,

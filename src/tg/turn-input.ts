@@ -7,9 +7,11 @@
 
 import type { Api } from "grammy";
 import type { ConfigRef, TtsConfig } from "../config.ts";
-import { channelOf, type Conversation, type ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation.ts";
+import type { ConversationReads } from "../conversation-read.ts";
+import { channelOf } from "../conversation-address.ts";
 import { makeDeliverySink } from "./delivery.ts";
-import type { TurnSink } from "../runtime.ts";
+import type { TurnSink } from "../turn/sink.ts";
 
 export const SHARED_CHAT_NOTE =
 	"[note: this is a shared chat — everyone in it can read your replies. " +
@@ -28,7 +30,7 @@ export function sharedChatPart(
 // import back into mod.ts.
 export interface ConversationSinkDeps {
 	configRef: ConfigRef;
-	store: Pick<ConversationStore, "lastReplyAnchor">;
+	store: Pick<ConversationReads, "lastReplyAnchor">;
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
 }
 

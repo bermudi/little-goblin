@@ -21,9 +21,7 @@ const UNKNOWN_LINE =
 // even degrades to the raw string). Accept an array of assistant messages
 // whose content is a string or parts; anything malformed contributes no
 // text and does not throw.
-const partialSchema = z.array(
-	z.object({ content: z.union([z.string(), z.array(z.unknown())]) }),
-);
+const partialSchema = z.array(z.object({ content: z.union([z.string(), z.array(z.unknown())]) }));
 const textPartSchema = z.object({ type: z.literal("text"), text: z.string() });
 
 function partialText(partial: unknown): string {

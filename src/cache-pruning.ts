@@ -10,11 +10,8 @@ import {
 import { fenceUntrusted } from "./agent/tools/web.ts";
 import type { CacheObservation } from "./cache-observation.ts";
 import type { Config } from "./config.ts";
-import {
-	captureConversationSettings,
-	projectionKey,
-	type ConversationStore,
-} from "./conversation.ts";
+import { captureConversationSettings, type ConversationStore } from "./conversation.ts";
+import { projectionKey } from "./conversation-events.ts";
 import { log } from "./log.ts";
 import { stableStringify } from "./loop-detect.ts";
 import { pruningRecoveryAddress } from "./pruning-marker.ts";

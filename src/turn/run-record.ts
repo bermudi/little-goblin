@@ -9,9 +9,9 @@ import {
 } from "../agent/model-fallback.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
-import type { RuntimeDeps } from "../runtime.ts";
 import { renderFailedTurnProgress } from "./failed-progress.ts";
 import type { TurnRecovery } from "./overflow.ts";
+import type { RunOwnershipHooks } from "./run-ownership.ts";
 import type { TurnJournal } from "../turn-journal.ts";
 
 // design/model.md → Model fallback list, resolved for this attempt.
@@ -51,8 +51,8 @@ export interface RunRecord {
 export interface RunRecordDeps {
 	journal: TurnJournal | undefined;
 	store: ConversationStore;
-	runOwnership?: RuntimeDeps["runOwnership"];
-	modelFallbacks?: RuntimeDeps["modelFallbacks"];
+	runOwnership?: RunOwnershipHooks | undefined;
+	modelFallbacks?: (() => readonly string[]) | undefined;
 	convId: string;
 	epoch: number;
 	convModel: string | null;

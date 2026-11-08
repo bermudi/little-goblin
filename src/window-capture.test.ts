@@ -3,7 +3,8 @@ import { Database } from "bun:sqlite";
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { listCalls, openCacheObservation, type CacheCallInput } from "./cache-observation.ts";
-import { appAddress, openStore } from "./conversation.ts";
+import { openStore } from "./conversation.ts";
+import { appAddress } from "./conversation-address.ts";
 import { tmpDb } from "./testkit.ts";
 import {
 	invalidateWindowCaptures,

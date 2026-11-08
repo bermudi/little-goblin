@@ -1,7 +1,7 @@
 // Read-only attention projection over the durable owners. Items point at
 // the surface that can resolve them; this module records no second state.
 
-import type { AppConversationSummary } from "../conversation.ts";
+import type { AppConversationSummary } from "../conversation-read.ts";
 import { responsibilityStage } from "../responsibility-stage.ts";
 import { listProposedSkills } from "../stateview.ts";
 import { conversationName } from "./operator.ts";

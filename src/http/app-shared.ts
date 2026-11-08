@@ -4,10 +4,12 @@ import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import type { AuthStore } from "../auth.ts";
 import { type Config, type ConfigRef, splitModelRef, thinkingLevels } from "../config.ts";
-import { type ConversationStore, type ModelSettings } from "../conversation.ts";
+import type { ConversationStore } from "../conversation.ts";
+import type { ModelSettings } from "../conversation-settings.ts";
 import type { NoteStore } from "../notes.ts";
 import type { ProjectStore } from "../projects.ts";
 import type { Runtime } from "../runtime.ts";
+
 import type { ResumeOps } from "../turn-resume.ts";
 import type { MailApproval } from "../mail-approval.ts";
 import type { ProgramApproval } from "../program-approval.ts";

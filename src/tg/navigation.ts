@@ -1,14 +1,11 @@
 // Manual DM selection. All durable effects share the store transaction;
 // Telegram delivery and slow intake deliberately live outside this module.
 import { z } from "zod";
-import {
-	formatAddress,
-	parseAddress,
-	type Conversation,
-	type ConversationStore,
-} from "../conversation.ts";
+import type { Conversation, ConversationStore } from "../conversation.ts";
+import { formatAddress, parseAddress } from "../conversation-address.ts";
 import { log } from "../log.ts";
 import type { Runtime } from "../runtime.ts";
+
 import type { openTelegramInbox } from "./inbox.ts";
 
 const positiveId = z.number().int().safe().positive();

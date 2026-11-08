@@ -4,10 +4,9 @@
 // the latest report's age, so nothing here needs its own stored state,
 // and a report or correction that changes the stage ends the series.
 
-import { log } from "./log.ts";
-import type { PromptOperation, Responsibility, ResponsibilityStore } from "./responsibilities.ts";
-import type { ResponsibilityReport } from "./responsibility-reports.ts";
-import { responsibilityStage, type StageName } from "./responsibility-stage.ts";
+import type { PromptOperation, Responsibility } from "../responsibilities.ts";
+import type { ResponsibilityReport } from "../responsibility-reports.ts";
+import { responsibilityStage, type StageName } from "../responsibility-stage.ts";
 
 export const REMINDER_FIRST_MS = 4 * 60 * 60_000;
 export const REMINDER_EVERY_MS = 24 * 60 * 60_000;
@@ -57,27 +56,4 @@ export function dueReminder(
 		conversationId: resp.coordinationConversationId,
 		stage: stage.stage,
 	};
-}
-
-export async function deliverOperatorReminder(
-	reminder: OperatorReminder,
-	deps: {
-		push(reminder: OperatorReminder): Promise<boolean>;
-		telegram(reminder: OperatorReminder): Promise<void>;
-		resps: Pick<ResponsibilityStore, "get" | "latestReport" | "operationsFor">;
-	},
-): Promise<void> {
-	if (await deps.push(reminder)) return;
-	// The push may have taken a while: the operator can have answered or paused since.
-	const id = reminder.responsibilityId;
-	const resp = deps.resps.get(id);
-	const current =
-		resp === null
-			? null
-			: dueReminder(resp, deps.resps.latestReport(id), deps.resps.operationsFor(id), new Date());
-	if (current?.key !== reminder.key) {
-		log.info("operator reminder fallback skipped — no longer due", { key: reminder.key });
-		return;
-	}
-	await deps.telegram(reminder);
 }

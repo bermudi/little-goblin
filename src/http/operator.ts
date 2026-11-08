@@ -21,7 +21,8 @@ import {
 } from "../config.ts";
 import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "../services.ts";
 import { appendAuthRecord, type WritableAuthStore } from "../auth.ts";
-import { flatLine, prepareAppSettingsForConfig, type ConversationStore } from "../conversation.ts";
+import { prepareAppSettingsForConfig, type ConversationStore } from "../conversation.ts";
+import { flatLine } from "../conversation-events.ts";
 import type { Delegation, DelegationsStore } from "../delegations.ts";
 import { log } from "../log.ts";
 import { checkInjection } from "../injection.ts";

@@ -1,14 +1,12 @@
 // Wakes use ordinary turn submission so queued and live turns share ordering
 // and epoch fencing. A constructed sink must be released if submission throws.
 
-import {
-	channelOf,
-	type Conversation,
-	type ConversationAddress,
-	type ConversationStore,
-} from "./conversation.ts";
+import type { Conversation, ConversationStore } from "./conversation.ts";
+import { channelOf } from "./conversation-address.ts";
+import type { ConversationAddress } from "./conversation-address.ts";
 import { paths } from "./config.ts";
-import { userMessage, type Runtime, type TurnSink } from "./runtime.ts";
+import { userMessage, type Runtime } from "./runtime.ts";
+import type { TurnSink } from "./turn/sink.ts";
 import { isRollingChat, routeDm, type RollDeps } from "./rolling.ts";
 import { appConversationOf, telegramAddressOf, type ConversationTarget } from "./targets.ts";
 import { log } from "./log.ts";

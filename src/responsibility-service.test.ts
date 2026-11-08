@@ -32,6 +32,7 @@ import { openWakeStore, type WakeStore } from "./wake-store.ts";
 import { responsibilityTool } from "./agent/tools/responsibility.ts";
 import { FencedError } from "./runtime.ts";
 
+
 setLogFile(null);
 
 interface Rig {

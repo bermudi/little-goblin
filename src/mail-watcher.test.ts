@@ -18,7 +18,8 @@ import { openPrograms, type Program, type ProgramsStore } from "./programs.ts";
 import { openStore } from "./conversation.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities } from "./responsibilities.ts";
-import type { Runtime, TurnSink } from "./runtime.ts";
+import type { Runtime } from "./runtime.ts";
+import type { TurnSink } from "./turn/sink.ts";
 import type { Config } from "./config.ts";
 
 let dirs: string[] = [];

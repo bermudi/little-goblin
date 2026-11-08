@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { TurnDone } from "../runtime.ts";
+import type { TurnDone } from "../turn/sink.ts";
 import { appStreamSink } from "./app-sse.ts";
 
 describe("app stream sink", () => {

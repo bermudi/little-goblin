@@ -16,7 +16,8 @@ import { createToolBridge, type ToolBridge } from "./agent/claude-code/tools.ts"
 import type { AuthStore } from "./auth.ts";
 import type { Config, ConfigRef } from "./config.ts";
 import { openStore } from "./conversation.ts";
-import { type ModelStep, Runtime, userMessage } from "./runtime.ts";
+import { Runtime, userMessage } from "./runtime.ts";
+import type { ModelStep } from "./turn/engine.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { isClaudeStep } from "./turn/engine.ts";
 import { fakeClaude } from "./testkit/fake-claude.ts";

@@ -12,6 +12,7 @@ import type { AuthStore } from "../auth.ts";
 import { parseConfig, type Config, type ConfigRef } from "../config.ts";
 import { openStore } from "../conversation.ts";
 import type { Runtime } from "../runtime.ts";
+
 import { createBot, type BotDeps, type RunningBot } from "./mod.ts";
 
 function testConfig(apiRoot: string): Config {

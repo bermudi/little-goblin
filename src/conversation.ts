@@ -42,26 +42,8 @@ import { retargetPruningMarker } from "./pruning-marker.ts";
 import { coordinationAnchors } from "./responsibilities.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import { sweepConversationWakes } from "./wake-store.ts";
-
-export {
-	APP_ID_PREFIX,
-	appAddress,
-	appIdOf,
-	appIdSchema,
-	channelOf,
-	formatAddress,
-	guestAddress,
-	parseAddress,
-} from "./conversation-address.ts";
-export type {
-	ConversationAddress,
-	ParsedAddress,
-	RollingDmAddress,
-} from "./conversation-address.ts";
-export { flatLine, projectionKey, summaryMessage, toFtsQuery } from "./conversation-events.ts";
-export type { Compaction, CompactionMark, CompactionWrite } from "./conversation-events.ts";
-export type { HistoryContextRow, HistoryHit } from "./conversation-history.ts";
-export type { ConversationMetaPatch, ModelSettings } from "./conversation-settings.ts";
+import type { ConversationReads } from "./conversation-read.ts";
+import type { AppConversationSummary } from "./conversation-read.ts";
 
 export interface Conversation {
 	id: string;
@@ -149,7 +131,10 @@ export interface MessageEdit {
 	ratings: number;
 }
 
-export interface ConversationStore {
+// The write side plus the shared handles. Every read lives on
+// ConversationReads (conversation-read.ts), which this extends —
+// consumers that only read type against the reads view.
+export interface ConversationStore extends ConversationReads {
 	// Shared handle — the memory/outage modules each own tables in this file.
 	readonly db: Database;
 	readonly memoryQueue: MemoryQueue;
@@ -157,35 +142,19 @@ export interface ConversationStore {
 	// Boot records the live endpoint+bank so forget can reconstruct a
 	// previous bank's client.
 	readonly memoryDestinations: MemoryDestinations;
-	getCompaction(id: string): Compaction | null;
 	setCompaction(id: string, compaction: CompactionWrite): void;
-	// Every pointer, oldest first — the transcript's fold marks. The
-	// latest row is the one getCompaction returns.
-	listCompactions(id: string): CompactionMark[];
 	// Get-or-create. Private DMs route through rolling.ts — a legacy
 	// dm:<chat> row here is history, never current. (cwd is a legacy
 	// NOT NULL column: stamped, ignored.)
 	resolve(addr: ConversationAddress, defaultCwd: string, defaults?: ModelSettings): Conversation;
-	get(id: string): Conversation | null;
-	// Epoch only — authority checks fence on this per tool call and must
-	// not materialize the whole conversation row to read one number.
-	epochOf(id: string): number | null;
 	// One current dm:<chat>:<n> per private chat; rollDm mints n+1 linked
 	// to the selected source, selected atomically. n is a creation
 	// high-water, never rewound by /back.
-	currentDm(chatId: number): Conversation | null;
 	rollDm(chatId: number, defaultCwd: string): Conversation;
-	// Read-only predecessor — rolling private DMs in this chat only.
-	previousDm(chatId: number): Conversation | null;
 	// Atomically select the predecessor and reset the quiet-gap clock;
 	// null = no state change. No history replays; the caller owns logs
 	// and pending input.
 	backDm(chatId: number): Conversation | null;
-	// Latest event/creation time, plus selected_at when current — the quiet-gap clock.
-	lastActivityAt(id: string): string;
-	// Highest event seq. The spin-off discard compares it against
-	// fork-time seq: a change means operator input arrived.
-	lastSeq(id: string): number | null;
 	// Spin-off/branch: copy model state into a fresh app conversation, one
 	// transaction — every event verbatim, the latest compaction pointer,
 	// every memory_contexts row. The memory queue is NOT replayed (copies
@@ -207,10 +176,6 @@ export interface ConversationStore {
 			titleImplicit?: boolean;
 		},
 	): Conversation;
-	// Resolve a durable event by its message id — the edit/branch routes'
-	// handle onto an append-only seq. Null when this conversation never
-	// stored that id (a client id, a deleted event, another chat).
-	messageEvent(id: string, messageId: string): { seq: number; role: string } | null;
 	// Edit a user message: drop it and every causally later event in one
 	// transaction, sweep their compaction/recall/projection/rating
 	// dependents, then append the edited message at a seq no event has
@@ -229,18 +194,10 @@ export interface ConversationStore {
 		id: string,
 		defaults: ModelSettings & { providers?: Config["providers"] },
 	): ModelSettings;
-	// The stored pair with defaults filling gaps — no clamp, no write.
-	// Missing/non-app ids throw.
-	readAppSettings(id: string, defaults: ModelSettings): ModelSettings;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
-	// All guest conversations in a chat — closing guest access fences
-	// their running turns.
-	listGuestConversationIds(chatId: number): string[];
 	// Settings changes and cancellation bump the epoch; in-flight turns
 	// fence on it. A recreated address must advance past its deleted row.
 	bumpEpoch(id: string, previousEpoch?: number): number;
-	// Frozen system-prompt snapshot; null = none yet (first turn, or cleared by compaction).
-	promptSnapshot(id: string): { text: string; sources: string[] } | null;
 	savePromptSnapshot(id: string, text: string, sources: string[]): void;
 	// Compaction busts the prompt prefix anyway — the snapshot rebuilds
 	// from current files on the next turn.
@@ -264,26 +221,6 @@ export interface ConversationStore {
 			exclude?: boolean;
 		},
 	): number[];
-	// The causal view (anchored responses sort right after their user
-	// event) as messages; historyEntries adds seqs (recall blocks need
-	// positions); historyDetail adds anchors (compaction's cut rule).
-	history(id: string): UIMessage[];
-	historyEntries(id: string): { seq: number; message: UIMessage }[];
-	historyDetail(id: string): { seq: number; anchorSeq: number | null; message: UIMessage }[];
-	// The causal-last event of one role (same key historyDetail sorts
-	// on), read as a single row — for boolean/last-message callers that
-	// would otherwise materialize the whole history. Null = none.
-	lastEntry(id: string, role: UIMessage["role"]): { seq: number; message: UIMessage } | null;
-	// What a turn sees: the causal view cut at the active boundary, the
-	// summary prepended, and committed event_projections overlaid on
-	// tool results. The cut is on causal position — (anchorSeq ??
-	// seq) > boundarySeq — so a late answer to a folded question rides
-	// into the summary instead of stranding in the tail.
-	modelEntries(id: string): { seq: number; message: UIMessage }[];
-	// Committed pruning projections — the overlay input for modelEntries
-	// and the pruning scan's dedupe set. Empty for a never-pruned
-	// conversation.
-	eventProjections(id: string): { seq: number; toolCallId: string; replacement: string }[];
 	// INSERT OR IGNORE in one transaction, so a re-scan can never rewrite
 	// a committed row. Returns the number of rows actually inserted.
 	applyEventProjections(
@@ -296,55 +233,14 @@ export interface ConversationStore {
 			settingsHash: string;
 		}[],
 	): number;
-	// Seq of the newest user event — a turn's response anchors to it.
-	lastUserSeq(id: string): number | null;
-	// Anchor of the newest assistant event — the durable reply identity
-	// the rating buttons' callback payload carries. Null when no reply
-	// has landed yet.
-	lastReplyAnchor(id: string): number | null;
-	// Every event's append-time stamp plus the summary's derived
-	// eligibility — the filter input for memory-bound builders.
-	// Re-enabling memory reads this, never the live flag: excluded-era
-	// messages stay out of recall and retention retroactively.
-	memoryEligibility(id: string): MemoryEligibility;
-	// Full-text search over user/assistant event text. Excluded
-	// conversations filter at query time against the live flag —
-	// retroactive, unlike the event stamps. channelPrefix is a LIKE
-	// pattern ("app/%").
-	searchHistory(query: string, limit: number, channelPrefix?: string): HistoryHit[];
-	// Arrival-ordered window around one event. No exclusion check here —
-	// the tool owns exclusion (with its own-conversation exception).
-	eventContext(id: string, seq: number, window: number): HistoryContextRow[];
-	// The app channel's own pool, most recently active first.
-	listAppConversations(): AppConversationSummary[];
 	// The one write to project_id — creation only. A row already bound
 	// to a different project refuses; rebinding the same id is a no-op.
 	bindProject(id: string, projectId: string): void;
-	// Ids bound to one project — the memory-off propagation walks them.
-	listProjectConversationIds(projectId: string): string[];
 	// Drop a conversation and everything it owns (events fire the FTS
 	// delete trigger). A live turn must be fenced first (runtime.stop) —
 	// this only touches the store.
 	deleteConversation(id: string): void;
 	close(): void;
-}
-
-export interface AppConversationSummary {
-	id: string;
-	title: string | null;
-	createdAt: string;
-	// Newest event's timestamp, else createdAt — the list's ordering key.
-	updatedAt: string;
-	// Newest event's text, capped; "" when no text parts.
-	preview: string;
-	// Non-null = archived. A stamp, not a bool, so the client's archived
-	// section can sort by when the row was shelved.
-	archivedAt: string | null;
-	// Non-null = pinned: the row floats above the rail's activity order.
-	pinnedAt: string | null;
-	// Null = an unscoped chat on the main rail; set = the row lives under
-	// its project's page.
-	projectId: string | null;
 }
 
 function toConversation(r: Row): Conversation {

@@ -2,7 +2,7 @@
 // TurnEngine boundary (turn/engine.ts).
 
 import type { ClaudeStep } from "../agent/claude-code/mod.ts";
-import type { ModelStep } from "../runtime.ts";
+import type { ModelStep } from "../turn/engine.ts";
 import { type EngineInput, isClaudeStep, type TurnEngine } from "./engine.ts";
 import { type StreamOutcome, driveStream, type WireMember } from "./stream.ts";
 

@@ -330,10 +330,13 @@ export async function convertSteeredMessage(
 	for (const m of materialized) {
 		const { message: skillMarked, invocations } = skillPartsAsText(ctx, m, true);
 		out.push(
-			...(await convertToModelMessages([contextPartAsText(ctx, notePartsAsText(ctx, skillMarked))], {
-				tools: ctx.tools,
-				ignoreIncompleteToolCalls: true,
-			})),
+			...(await convertToModelMessages(
+				[contextPartAsText(ctx, notePartsAsText(ctx, skillMarked))],
+				{
+					tools: ctx.tools,
+					ignoreIncompleteToolCalls: true,
+				},
+			)),
 		);
 		// A claimed steer is owned by construction — the claiming turn
 		// is the only one that folds it in.

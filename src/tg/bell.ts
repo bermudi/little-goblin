@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { appLink } from "../app-link.ts";
-import { appIdOf, type Conversation, type ConversationStore } from "../conversation.ts";
+import type { Conversation, ConversationStore } from "../conversation.ts";
+import { appIdOf } from "../conversation-address.ts";
 import { log } from "../log.ts";
 import { messageText } from "../memory/mod.ts";
-import type { TurnSink } from "../runtime.ts";
+import type { TurnSink } from "../turn/sink.ts";
 import { API_CALL_TIMEOUT_MS, TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import type { DeliveryApi } from "./delivery.ts";
 import type { PingStore } from "./pings.ts";

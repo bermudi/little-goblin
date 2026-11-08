@@ -2,16 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { JSONValue } from "@ai-sdk/provider";
 import type { ProviderMetadata, ToolSet, UIMessage } from "ai";
 import { z } from "zod";
-import { channelOf, type Conversation, type ConversationStore } from "./conversation.ts";
+import type { Conversation, ConversationStore } from "./conversation.ts";
+import { channelOf } from "./conversation-address.ts";
 import { log } from "./log.ts";
-import {
-	type ResumeSeed,
-	type Runtime,
-	type RuntimeDeps,
-	type TurnDone,
-	type TurnSink,
-	userMessage,
-} from "./runtime.ts";
+import { type ResumeSeed, type Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
+import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { messageText } from "./memory/mod.ts";
 import { summarize, toolOk, type ToolCallDigest } from "./reviewer.ts";
 import { SKILL_PART } from "./skill-part.ts";

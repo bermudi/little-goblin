@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { appAddress } from "../conversation.ts";
-import type { OperatorReminder } from "../responsibility-reminder.ts";
+import { appAddress } from "../conversation-address.ts";
+import type { OperatorReminder } from "./index.ts";
 import { openTestStore } from "../testkit.ts";
-import type { DeliveryApi } from "./delivery.ts";
-import { openPings } from "./pings.ts";
-import { openTelegramReminders } from "./reminder.ts";
+import type { DeliveryApi } from "../tg/delivery.ts";
+import { openPings } from "../tg/pings.ts";
+import { openTelegramReminders } from "./index.ts";
 
 function rig(api: "up" | "down" = "up") {
 	const { store } = openTestStore("goblin-tg-reminder-");

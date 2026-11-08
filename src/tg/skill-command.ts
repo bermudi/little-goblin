@@ -31,7 +31,8 @@ import { paths } from "../config.ts";
 import { SKILL_PART, type CachedSkillDescriptor, type SkillRef } from "../skill-part.ts";
 import { fetchSkill, stampVerdict, SkillFetchError } from "../agent/skill-fetch.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
-import { userMessage, type Runtime, type TurnSink } from "../runtime.ts";
+import { userMessage, type Runtime } from "../runtime.ts";
+import type { TurnSink } from "../turn/sink.ts";
 import { sharedChatPart } from "./turn-input.ts";
 import { withTimeout } from "./deadline.ts";
 

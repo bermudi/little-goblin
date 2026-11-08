@@ -9,7 +9,8 @@ import {
 } from "./agent/attachments.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import { log } from "./log.ts";
-import { FencedError, type TurnDone, type TurnSink } from "./runtime.ts";
+import { FencedError } from "./runtime.ts";
+import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { attachmentContentType } from "./stateview.ts";
 
 export interface AppMediaDeps {

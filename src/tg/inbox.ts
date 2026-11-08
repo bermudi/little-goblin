@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
-import { parseAddress } from "../conversation.ts";
+import { parseAddress } from "../conversation-address.ts";
 import { log } from "../log.ts";
 import type { IncomingMedia } from "./media.ts";
 

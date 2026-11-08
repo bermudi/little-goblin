@@ -6,7 +6,7 @@
 // token's plaintext exists only inside that delivery.
 
 import type { Api } from "grammy";
-import { formatAddress } from "../conversation.ts";
+import { formatAddress } from "../conversation-address.ts";
 import { log } from "../log.ts";
 import {
 	proposalText,

@@ -464,19 +464,27 @@ describe("driveStream", () => {
 	});
 
 	test("a step that never streams content leaves ttft unstamped", async () => {
-		const r = rig([
+		const r = rig(
 			[
-				{ type: "stream-start", warnings: [] },
-				{
-					type: "finish",
-					finishReason: { unified: "stop", raw: undefined },
-					usage: {
-						inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-						outputTokens: { total: 0, text: undefined, reasoning: undefined },
+				[
+					{ type: "stream-start", warnings: [] },
+					{
+						type: "finish",
+						finishReason: { unified: "stop", raw: undefined },
+						usage: {
+							inputTokens: {
+								total: 1,
+								noCache: undefined,
+								cacheRead: undefined,
+								cacheWrite: undefined,
+							},
+							outputTokens: { total: 0, text: undefined, reasoning: undefined },
+						},
 					},
-				},
+				],
 			],
-		], { turnStartMs: Date.now() });
+			{ turnStartMs: Date.now() },
+		);
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
 		if (outcome.kind !== "ok") return;
@@ -500,7 +508,12 @@ describe("driveStream", () => {
 					type: "finish",
 					finishReason: { unified: "stop", raw: undefined },
 					usage: {
-						inputTokens: { total: 9, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+						inputTokens: {
+							total: 9,
+							noCache: undefined,
+							cacheRead: undefined,
+							cacheWrite: undefined,
+						},
 						outputTokens: { total: 1, text: undefined, reasoning: undefined },
 					},
 					providerMetadata: { codex: { quota } },
@@ -531,9 +544,7 @@ describe("driveStream", () => {
 		expect(ctx).toEqual([
 			{ type: "data-context", transient: true, data: { input: 1, cacheRead: null } },
 		]);
-		expect(
-			"quota" in (ctx[0]! as unknown as { data: Record<string, unknown> }).data,
-		).toBe(false);
+		expect("quota" in (ctx[0]! as unknown as { data: Record<string, unknown> }).data).toBe(false);
 		const md = outcome.responseMessage?.metadata as Record<string, unknown>;
 		expect("quota" in md).toBe(false);
 	});

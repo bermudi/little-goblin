@@ -351,7 +351,9 @@ turn-structure change.
   it.
 - **Turn-module boundary.** No `turn/` module sees a `Lane`; steering
   rides a runtime-injected queue function and persistence a
-  runtime-injected append — queue policy never leaves `runtime.ts`.
+  runtime-injected append — queue policy never leaves `runtime.ts`. The
+  tool fence (`turn/tool-fence.ts`) rides the same boundary: an injected
+  authority check and journal, never the Runtime.
 
 ## The two text projections (#84 / #111)
 

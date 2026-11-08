@@ -1,17 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { openAppPush } from "./app-push.ts";
-import { appAddress } from "./conversation-address.ts";
-import { openPrograms } from "./programs.ts";
-import { openProjects } from "./projects.ts";
-import { openResponsibilities } from "./responsibilities.ts";
+import { openAppPush } from "../app-push.ts";
+import { appAddress } from "../conversation-address.ts";
+import { openPrograms } from "../programs.ts";
+import { openProjects } from "../projects.ts";
+import { openResponsibilities } from "../responsibilities.ts";
 import {
-	deliverOperatorReminder,
-	dueReminder,
 	REMINDER_EVERY_MS,
 	REMINDER_FIRST_MS,
-} from "./responsibility-reminder.ts";
-import { type SchedulerDeps, startScheduler, sweepOperatorReminders } from "./scheduler.ts";
-import { openTestStore, tmpDb } from "./testkit.ts";
+	deliverOperatorReminder,
+	dueReminder,
+} from "./index.ts";
+import { type SchedulerDeps, startScheduler } from "../scheduler.ts";
+import { sweepOperatorReminders } from "./index.ts";
+import { openTestStore, tmpDb } from "../testkit.ts";
 
 function rig() {
 	const { store } = openTestStore("goblin-reminder-");

@@ -279,6 +279,16 @@ Flat modules, one job each, tests colocated; the tree itself is the map,
 before it may live here. Inside a module, state clusters by lifetime live in
 their own units — never one scope of closures.
 
+A **feature** whose pieces span channels and stores may instead live as a
+feature folder (ruling 2026-11-08, #201): one directory under `src/`, a
+single public `index.ts` as the only import outside callers ever name,
+private modules for its policy and delivery paths, and its own tables —
+DDL the feature creates at open, never central schema. Channels and
+stores reach it through the seams it exports; it never owns a channel
+adapter (reminders sends through tg's `DeliveryApi`, it does not know
+grammy). `src/reminders/` is the pilot. Import cycles are frozen by
+`src/import-cycles.test.ts` — the allowlist only shrinks.
+
 ## Non-goals (v1 — return only on demand)
 
 The list below is a record, not a law. The law, applied to any capability:

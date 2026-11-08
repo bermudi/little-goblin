@@ -27,3 +27,5 @@
 - **RRF:** reciprocal rank fusion. A model-free way to merge ranked lists; also the pinned reranker choice for the memory service.
 - **System One:** Goblin's yes/no check layer. A decision model returns a probability for a question about the current state.
 - **Decision model:** a model that answers typed questions with scores and does not write text.
+- **Cycle guard:** `src/import-cycles.test.ts`. It freezes the import cycles that exist today and fails on any new one; the allowlist only shrinks.
+- **Feature folder:** a feature that lives as one directory under `src/` with a single public `index.ts` and its own tables. `src/reminders/` is the first.

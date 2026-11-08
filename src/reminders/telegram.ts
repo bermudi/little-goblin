@@ -1,15 +1,17 @@
 // Telegram fallback for an operator reminder that reached no app device.
 // The sent table is the durable dedupe: the sweep retries a failed chat,
-// and a restart must not ring a chat again for the same step.
+// and a restart must not ring a chat again for the same step. This file
+// owns the feature's only table (tg_reminder_sends); grammy stays behind
+// src/tg's DeliveryApi.
 
 import type { Database } from "bun:sqlite";
 import { appLink } from "../app-link.ts";
 import { appIdOf } from "../conversation-address.ts";
 import { log } from "../log.ts";
-import { type OperatorReminder, reminderText } from "../responsibility-reminder.ts";
-import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
-import type { DeliveryApi } from "./delivery.ts";
-import type { PingStore } from "./pings.ts";
+import { TelegramTimeoutError, withTimeout } from "../tg/deadline.ts";
+import type { DeliveryApi } from "../tg/delivery.ts";
+import type { PingStore } from "../tg/pings.ts";
+import { type OperatorReminder, reminderText } from "./policy.ts";
 
 export interface TelegramReminderDeps {
 	db: Database;

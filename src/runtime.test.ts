@@ -905,6 +905,28 @@ describe("turn authority", () => {
 		r.store.close();
 	});
 
+	test("shutdown fences a reattached live-chunk subscriber with the cause", async () => {
+		const r = rig({ deltas: ["a", "b", "c", "d", "e"], delayMs: 20 });
+		const s1 = submit(r, "one");
+		await s1.firstDelta; // mid-stream
+		const ends: TurnDone[] = [];
+		expect(
+			r.runtime.subscribeLiveChunks(
+				r.conv.id,
+				() => {},
+				(d) => {
+					ends.push(d);
+				},
+			),
+		).not.toBeNull();
+		await r.runtime.shutdown();
+		expect(await s1.done).toEqual({ kind: "fenced", shutdown: true });
+		// The reattached stream ends with the same stamped fence, not a bare
+		// one — a restart must read as a restart, not "stopped before finishing".
+		expect(ends).toEqual([{ kind: "fenced", shutdown: true }]);
+		r.store.close();
+	});
+
 	test("a submit after shutdown lands in history but never runs", async () => {
 		const r = rig({ deltas: ["a"], delayMs: 5 });
 		await r.runtime.shutdown();

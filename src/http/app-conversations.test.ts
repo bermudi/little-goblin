@@ -564,6 +564,49 @@ describe("app conversations", () => {
 		}
 	});
 
+	test("a reattached stream reports a shutdown fence as a restart, not a plain stop", async () => {
+		const { http, call, runtime } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["a", "b", "c", "d", "e"],
+			delayMs: 60,
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const chatP = call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			await Bun.sleep(140);
+			const res = await call("/api/app/conversations/chat-01/stream");
+			expect(res.status).toBe(200);
+			await runtime.shutdown(); // the deploy case: the process is going down
+			const text = await res.text();
+			const events = text
+				.split("\n\n")
+				.filter((l) => l.startsWith("data: "))
+				.map((l) => l.slice("data: ".length));
+			expect(events.at(-1)).toBe("[DONE]");
+			expect(
+				JSON.parse(events.at(-2)!) as { type: string; errorText: string },
+			).toMatchObject({
+				type: "error",
+				errorText:
+					'turn stopped: goblin restarted (deploy or service restart). Send "continue" to resume.',
+			});
+			await chatP;
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("the idle 204 never precedes durability — history holds the reply the moment the stream endpoint says nothing is live (#79)", async () => {
 		const { http, call, store } = setup({
 			token: APP_TOKEN_NAME,

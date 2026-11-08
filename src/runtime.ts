@@ -656,16 +656,20 @@ export class Runtime {
 		return ceiling;
 	}
 
+	// A fence landing while the runtime is closed is a shutdown — stamp the
+	// cause once so every consumer (member sinks and reattached live
+	// streams) sees the same terminal value. Idempotent.
+	private withCause(done: TurnDone): TurnDone {
+		return done.kind === "fenced" && this.closed ? { kind: "fenced", shutdown: true } : done;
+	}
+
 	// Keep terminal delivery exactly once, even when a sink throws. Mark before
 	// invoking the hook so re-entrant error handling cannot notify it twice.
 	private async notifyDone(turn: QueuedTurn, done: TurnDone): Promise<void> {
 		if (turn.doneSent) return;
 		turn.doneSent = true;
-		// Every fence path funnels here, so stamp the shutdown cause once.
-		const final: TurnDone =
-			done.kind === "fenced" && this.closed ? { kind: "fenced", shutdown: true } : done;
 		try {
-			await turn.sink.onDone(final);
+			await turn.sink.onDone(this.withCause(done));
 		} catch (err) {
 			log.warn("sink onDone failed", err);
 		} finally {
@@ -854,8 +858,11 @@ export class Runtime {
 		// conversation, not to the connection that submitted first.
 		const sink = turns[0]!.sink;
 		const notifyAll = async (done: TurnDone) => {
-			endLive(live, done, convId);
-			for (const t of turns) await this.notifyDone(t, done);
+			// One stamped value for the live wire and every member sink — a
+			// reattached app stream reads the shutdown cause off endLive too.
+			const final = this.withCause(done);
+			endLive(live, final, convId);
+			for (const t of turns) await this.notifyDone(t, final);
 		};
 		// The ownership window: from admission until the begin hook, the
 		// attempt's members are unlinked — a terminal failure in that span

@@ -20,6 +20,11 @@
 - **Consolidation:** the automatic Hindsight step that merges facts into observations.
 - **Mission:** the plain-language rule that guides a Hindsight step. `retain_mission` guides extraction and `observations_mission` guides consolidation.
 - **Recall:** finding memories and adding them to the prompt before a reply.
+- **Anchor:** the sequence number of the user message that a recall block or a retention attaches to.
+- **Memory contexts:** saved recall blocks, one per conversation and anchor. The model view replays them ahead of the anchored message.
+- **Outbox:** the durable table `memory_outbox`. Retentions wait in it until the service accepts them.
+- **Screening:** the filter that replaces keys, tokens, and passwords with `[REDACTED:…]` before text reaches memory.
+- **RRF:** reciprocal rank fusion. A model-free way to merge ranked lists; also the pinned reranker choice for the memory service.
 - **System One:** Goblin's yes/no check layer. A decision model returns a probability for a question about the current state.
 - **Decision model:** a model that answers typed questions with scores and does not write text.
 - **Review harness:** the proposed local developer tool for reviewing a pinned Goblin code change with related code and design context. It is separate from the runtime skill reviewer.

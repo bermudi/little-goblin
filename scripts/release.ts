@@ -3,8 +3,8 @@
 // The live service runs from `<root>/live`, a symlink resolved at process
 // start. `live` points at one complete, private release directory named by
 // the commit it was built from: tracked sources via `git archive`, its own
-// dependencies, its own built client. Deploying is build-if-missing → flip
-// the symlink (one rename) → wait for idle turns → restart → verify.
+// dependencies, its own built client. Deploying is build-if-missing → wait
+// for idle turns → flip the symlink (one rename) → restart → verify.
 // Rolling back is the same without the build, because the previous release
 // is still sitting there, intact and complete.
 //
@@ -512,9 +512,11 @@ export async function waitForIdle(opts: WaitForIdleOptions): Promise<IdleOutcome
 }
 
 /** A restart fences any running turn, so the rollout waits for idle lanes
- *  first. Port comes from the unit's own home (never a shell GOBLIN_HOME);
- *  an unresolved home or an unreadable-but-absent config skips the wait with
- *  a warning — a corrupt config fails the rollout instead of guessing. */
+ *  before anything live changes: an interrupt during the wait must leave
+ *  `live` naming the code that is still running. Port comes from the unit's
+ *  own home (never a shell GOBLIN_HOME); an unresolved home or an
+ *  unreadable-but-absent config skips the wait with a warning — a corrupt
+ *  config fails the rollout instead of guessing. */
 async function waitForIdleOrWarn(context: Context, now: boolean): Promise<void> {
 	if (now) return;
 	if (context.goblinHome === null) {
@@ -639,12 +641,10 @@ async function restartAndVerify(
 	release: string,
 	rev: string,
 	was: string | null,
-	now = false,
 ): Promise<void> {
 	const floor = await serviceIdentity();
 	const logPath =
 		context.goblinHome === null ? null : join(context.goblinHome, "state", "goblin.log");
-	await waitForIdleOrWarn(context, now);
 	annotate(logPath, "restarting goblin", rev, was);
 	const startedAt = Math.floor(Date.now() / 1000);
 	await run(["systemctl", "--user", "restart", "goblin"], "restart goblin");
@@ -701,10 +701,9 @@ async function finish(
 	rev: string,
 	previous: string | null,
 	noPreviousAdvice = "",
-	now = false,
 ): Promise<void> {
 	try {
-		await restartAndVerify(ctx, release, rev, previous, now);
+		await restartAndVerify(ctx, release, rev, previous);
 	} catch (error) {
 		const detail = error instanceof Error ? error.message : String(error);
 		step(`live is now ${short(rev)} and the rollout did not verify: ${detail}`);
@@ -820,10 +819,11 @@ async function rollout(ctx: Context, rev: string, now = false): Promise<void> {
 		);
 	}
 	const dir = await buildRelease(ctx, rev);
+	await waitForIdleOrWarn(ctx, now);
 	const live = readLive(ctx.layout);
 	step(`flip: ${live === null ? "none" : short(live.rev)} -> ${short(rev)}`);
 	flipLive(ctx.layout, dir);
-	await finish(ctx, dir, rev, live?.rev ?? null, "", now);
+	await finish(ctx, dir, rev, live?.rev ?? null, "");
 	process.stdout.write(`deployed ${rev}\n`);
 	if (live !== null)
 		process.stdout.write(`rollback: bun scripts/release.ts --rollback ${live.rev}\n`);
@@ -838,10 +838,11 @@ async function rollback(ctx: Context, rev: string, now = false): Promise<void> {
 	}
 	const dir = releaseDir(ctx.layout, rev);
 	if (!isCompleteRelease(dir, rev)) fail(`no complete release for ${rev} at ${dir}`);
+	await waitForIdleOrWarn(ctx, now);
 	const live = readLive(ctx.layout);
 	step(`flip: ${live === null ? "none" : short(live.rev)} -> ${short(rev)} (rollback)`);
 	flipLive(ctx.layout, dir);
-	await finish(ctx, dir, rev, live?.rev ?? null, "", now);
+	await finish(ctx, dir, rev, live?.rev ?? null, "");
 	process.stdout.write(`rolled back to ${rev}\n`);
 }
 
@@ -858,6 +859,7 @@ async function adoptUnit(ctx: Context, rev: string, now = false): Promise<void> 
 	}
 	assertUnitWritable(ctx.layout);
 	const dir = await buildRelease(ctx, rev);
+	await waitForIdleOrWarn(ctx, now);
 	flipLive(ctx.layout, dir);
 	const rewritten = rewriteWorkingDirectory(text, ctx.layout.live);
 	durableWriteFile(ctx.layout.unit, rewritten, 0o644);
@@ -870,7 +872,6 @@ async function adoptUnit(ctx: Context, rev: string, now = false): Promise<void> 
 		rev,
 		null,
 		`; the unit now points at ${ctx.layout.live} — restore its WorkingDirectory=${facts.workingDirectory} line and run systemctl --user daemon-reload to return to the in-place layout`,
-		now,
 	);
 	process.stdout.write(`adopted release layout and deployed ${rev}\n`);
 }

@@ -423,6 +423,13 @@ describe("rollout", () => {
 			expect(result.status).toBe(0);
 			expect(result.stdout).toContain(`deployed ${older}`);
 			expect(result.stdout).toContain(`rollback: bun scripts/release.ts --rollback ${first}`);
+			// The fixture home has no goblin.json5, so the wait skips with this
+			// warning; it must be issued before the flip, so an interrupt during
+			// a long wait leaves `live` naming the still-running release.
+			expect(result.stderr).toContain("idle wait skipped");
+			expect(result.stderr.indexOf("idle wait skipped")).toBeLessThan(
+				result.stderr.indexOf("deploy: flip:"),
+			);
 			expect(liveTarget(box)).toBe(older);
 			// The replaced release is still whole: rollback rebuilds nothing.
 			expect(isCompleteRelease(join(box.releases, first), first)).toBe(true);

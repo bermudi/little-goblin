@@ -26,15 +26,17 @@ and `ExecStart=/usr/bin/bun run src/index.ts`. The symlink is resolved when
 the process starts and never re-read by a running process, so what is
 serving a request is exactly one immutable release.
 
-Deploying is: build the release if it is not already complete → flip `live`
-by rename → restart → verify. Rolling back is the same without the build,
-because the previous release is untouched and complete on disk.
+Deploying is: build the release if it is not already complete → wait for
+idle turns → flip `live` by rename → restart → verify. Rolling back is the
+same without the build, because the previous release is untouched and
+complete on disk.
 
-Before the restart, the rollout waits for goblin to go idle: it polls the
-loopback `GET /api/runtime/busy` endpoint of the running release and
-restarts only once it reports no busy lane (a running turn, queued work, or
-an in-flight compaction). `--now` skips the wait — with a rollout or a
-rollback — when the operator wants the restart immediately. One race is
+Before the flip — never after it, so an interrupted wait leaves `live`
+naming the code that is still running — the rollout waits for goblin to go
+idle: it polls the loopback `GET /api/runtime/busy` endpoint of the running
+release and flips only once it reports no busy lane (a running turn, queued
+work, or an in-flight compaction). `--now` skips the wait — with a rollout
+or a rollback — when the operator wants the restart immediately. One race is
 accepted: a turn submitted between the last idle poll and the restart is
 still fenced by the shutdown, exactly as before; the wait narrows that
 window, it cannot close it. A release that predates the endpoint, or a
@@ -144,7 +146,7 @@ rollout.
 ```sh
 bun scripts/release.ts --status          # live, running, kept, unit match
 bun scripts/release.ts --build-only      # build + gate a release, touch nothing live
-bun scripts/release.ts                   # build HEAD if needed, flip, wait for idle, restart, verify
+bun scripts/release.ts                   # build HEAD if needed, wait for idle, flip, restart, verify
 bun scripts/release.ts --rev <rev>       # deploy a specific commit
 bun scripts/release.ts --rollback <rev>  # flip back to a kept release, restart, verify
 bun scripts/release.ts --now             # with rollout/rollback: restart without the idle wait

@@ -279,9 +279,10 @@ export function AttentionView({
 		attention.reload();
 	};
 
-	const broken = items.filter((i) => i.kind === "memory-blocked" && i.memory !== undefined);
+	const isBroken = (i: AppAttentionItem) => i.kind === "memory-blocked" && i.memory !== undefined;
+	const broken = items.filter(isBroken);
 	const decisions = items.filter((i) => DECISION_KINDS.has(i.kind));
-	const others = items.filter((i) => i.kind !== "memory-blocked" && !DECISION_KINDS.has(i.kind));
+	const others = items.filter((i) => !isBroken(i) && !DECISION_KINDS.has(i.kind));
 	const retry = watching ? (memoryStatus?.retry ?? null) : null;
 
 	const decisionCard = (item: AppAttentionItem) => {
@@ -355,8 +356,8 @@ export function AttentionView({
 							/>
 						),
 					)}
-					{dropped.map((text) => (
-						<p className="attn-done" key={text}>
+					{dropped.map((text, i) => (
+						<p className="attn-done" key={`${i}:${text}`}>
 							{text}
 						</p>
 					))}

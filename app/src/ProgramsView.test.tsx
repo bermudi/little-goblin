@@ -166,7 +166,7 @@ test("schedule and run times share the server's zone (#187)", async () => {
 	// the runs rendered in the browser's zone and disagreed by hours.
 	fakeServer([program({})], { programs: [], mail: [] }, "UTC");
 	root = createRoot(container);
-	await act(async () => root?.render(<ProgramsView token={null} />));
+	await act(async () => root?.render(<ProgramsView token={null} now={NOW} />));
 
 	const row = container.querySelector(".dtable .dt-row");
 	expect(row?.textContent).toContain("Daily 07:00 UTC");

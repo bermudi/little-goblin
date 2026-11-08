@@ -1007,6 +1007,10 @@ const NoteEditor = forwardRef<
 							props: {
 								handleDOMEvents: {
 									mousedown: (view, event) => {
+										// Runs even while locked (rewrite in
+										// flight) — a press there must not
+										// change the doc.
+										if (!view.editable) return false;
 										const li = event.target;
 										if (
 											!(li instanceof HTMLElement) ||

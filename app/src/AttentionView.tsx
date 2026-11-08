@@ -308,7 +308,9 @@ export function AttentionView({
 		}
 		const proposal = skills.data?.proposed.find((p) => p.name === key);
 		if (proposal === undefined)
-			return skills.data === null ? <p className="empty">Loading…</p> : null;
+			// data === null with err set means listSkills failed — fall
+			// through to OtherCard's Open instead of Loading… forever.
+			return skills.data === null && skills.err === null ? <p className="empty">Loading…</p> : null;
 		return (
 			<>
 				<ProposalCard proposal={proposal} token={token} onDecided={reloadAll} />
@@ -336,8 +338,12 @@ export function AttentionView({
 								token={token}
 								onMemoryPage={() => onPage("memory")}
 								onActed={(action, affected) => {
-									if (action === "retry") setWatching(true);
-									else
+									if (action === "retry") {
+										// Drop the settled batch, or a second
+										// retry never restarts the poll.
+										setMemoryStatus(null);
+										setWatching(true);
+									} else
 										setDropped((d) => [
 											...d,
 											`Dropped ${plural(affected, "exchange")}. They are not in memory.`,

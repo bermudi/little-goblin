@@ -14,6 +14,7 @@
 - **Hindsight:** the separate memory service. It extracts, stores and searches memories for Goblin.
 - **Bank:** the store of memories in Hindsight. Goblin uses the bank named `goblin`.
 - **Exchange:** one operator message and Goblin's reply. It is the source that memory saves.
+- **Unlanded turn:** a turn whose reply never landed — terminal error, fence, or process death. Its completed steps reach history as one system event (design/runtime-turn.md → Unlanded-turn progress).
 - **Retention:** saving an exchange to memory. Goblin queues it, then Hindsight extracts from it.
 - **Fact:** one statement that the extraction LLM takes from an exchange. It is either `world` or `experience`.
 - **Observation:** a merged statement that consolidation builds from facts.

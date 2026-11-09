@@ -4048,7 +4048,7 @@ describe("turn journal", () => {
 	});
 });
 
-describe("failed-turn progress", () => {
+describe("unlanded-turn progress — error rail", () => {
 	function systemEvents(store: ReturnType<typeof openStore>, convId: string): UIMessage[] {
 		return store.history(convId).filter((m) => m.role === "system");
 	}
@@ -4185,7 +4185,7 @@ describe("failed-turn progress", () => {
 		}
 	});
 
-	test("the next ordinary turn's model prompt carries the failed-turn progress", async () => {
+	test("the next ordinary turn's model prompt carries the unlanded-turn progress", async () => {
 		const store = openStore(tmpDb("goblin-rt-fp2-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
@@ -4374,7 +4374,7 @@ describe("failed-turn progress", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const real = openTurnJournal(store.db);
 		// Reads 1 and 2 are the recovery guard's and the fallback gate's;
-		// read 3 is the failed-turn progress helper's.
+		// read 3 is the unlanded-turn progress helper's.
 		let reads = 0;
 		const journal: TurnJournal = {
 			...real,

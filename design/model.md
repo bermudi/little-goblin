@@ -216,20 +216,20 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   so a fence spends no further calls and clears no frozen prompt snapshot —
   the crossing retries under the new settings. Ruling 2026-10-25
   ([compaction](compaction.md) → Timing): the normal fold is now a
-  **step-boundary pre-emption** — both trigger arms (pressure: the
-  projected upcoming request ≥75% of the window; fidelity: an unfolded
-  span ≥120k tokens) are checked at the `prepareStep` seam before every
-  model call, gate-checked for foldable stored history, and a firing arm
+  **step-boundary pre-emption** — the trigger (the projected upcoming
+  request ≥ the lower of 50% of the window and 128k) is checked at the
+  `prepareStep` seam before every model call, gate-checked for foldable
+  stored history, and when it fires it
   stops the next dispatch, folds mid-turn, and resumes the
   turn on the compacted view through the overflow rail (full tail,
   reason `preempt`; it consumes the turn's one fold-resume; a context
   landing at the same boundary retracts in its favor). The serial-lane
   end-of-turn fold stays as the backstop when pre-emption could not or
   did not fire, and `/compact` serializes through it and still compacts
-  with the window unknown (a forced scrub). Ruling 2026-11-09, not yet built ([compaction](compaction.md)):
-  the two arms become one trigger (lower of 50% of the window and 128k),
-  the tail becomes 20k shrunk to fit, cuts may split a turn, and the
-  summary gains required headings, an audit and code-made parts. Ruling 2026-10-19: the window
+  with the window unknown (a forced scrub). Ruling 2026-11-09 ([compaction](compaction.md)):
+  the two arms became one trigger and the tail 20k (built, #399); cuts
+  that split a turn (#403) and the summary's required headings, audit
+  and code-made parts are not yet built. Ruling 2026-10-19: the window
   lookup is
   metadata, not a model step — `compaction.contextWindow` reads the
   catalog only, resolving no auth and building no model step, so the

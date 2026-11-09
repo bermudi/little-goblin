@@ -825,11 +825,13 @@ describe("memory turn integration", () => {
 		const item = h.store.memoryQueue.next(h.client.target, Date.now());
 		expect(item).not.toBeNull();
 		// The mid-turn message and this turn's trigger are the burst;
-		// only the pre-response exchange is prior context.
+		// only the pre-response exchange is prior context. Two operator
+		// messages span lines, so the speech goes under the Operator
+		// label (#182's layout), not glued inline after it.
 		expect(item?.document.content).toBe(
 			"[Context — not fresh evidence]: what about the coffee order\n" +
 				"got it\n" +
-				"Operator: remember: i take my coffee black\n" +
+				"Operator:\nremember: i take my coffee black\n" +
 				"and what else is new\n" +
 				"Goblin: ok",
 		);

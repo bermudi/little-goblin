@@ -578,19 +578,23 @@ export async function driveStream<M extends WireMember>(
 				// (agent/providers.ts).
 				deps.assertAuthority();
 				const delayMs = deps.step.transientRetryDelayMs ?? TRANSIENT_RETRY_DELAY_MS;
-				await awaitRetryDelay(delayMs, deps.signal);
+				// Sleep only when a retry will actually be granted — the
+				// budget-spent and aborted paths must not pay the delay.
 				if (!deps.signal.aborted && retryGrantedStep !== stepCount) {
-					retryGrantedStep = stepCount;
-					transientRetries++;
-					transientRetryPending = true;
-					log.warn("transient model stream error — retrying the failed model step", error, {
-						conversation: convId,
-						epoch,
-						model: modelLabel,
-						attempt: transientRetries,
-						delayMs,
-					});
-					return { retry: true };
+					await awaitRetryDelay(delayMs, deps.signal);
+					if (!deps.signal.aborted) {
+						retryGrantedStep = stepCount;
+						transientRetries++;
+						transientRetryPending = true;
+						log.warn("transient model stream error — retrying the failed model step", error, {
+							conversation: convId,
+							epoch,
+							model: modelLabel,
+							attempt: transientRetries,
+							delayMs,
+						});
+						return { retry: true };
+					}
 				}
 				// An aborted turn takes the fence path below — one story, not two.
 				if (!deps.signal.aborted) {

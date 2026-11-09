@@ -380,6 +380,7 @@ export async function runCompaction(
 		while (i < span.length) {
 			const e = span[i]!;
 			let text = serializeEvent(e);
+			let seenChars = Number.POSITIVE_INFINITY;
 			if (events === 0) {
 				// Always take ≥1 event — a message bigger than the
 				// allowance is cut down rather than stalling the
@@ -392,13 +393,17 @@ export async function runCompaction(
 						chars: text.length,
 						keptChars,
 					});
+					seenChars = keptChars;
 					text = `${text.slice(0, keptChars)}\n[… ${text.length - keptChars} chars truncated for summarization]`;
 				}
 			} else if (chunkTokens + estimateTokens(text) > allowance) {
 				break;
 			}
 			texts.push(text);
-			latestAsk = operatorText(e.message) ?? latestAsk;
+			// The audit checks the ask as the summarizer saw it — a
+			// truncated event's cut tail is not the model's to restate.
+			const ask = operatorText(e.message);
+			if (ask !== null) latestAsk = ask.slice(0, seenChars);
 			chunkTokens += estimateTokens(text);
 			events++;
 			i++;

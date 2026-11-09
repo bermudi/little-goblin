@@ -5,6 +5,7 @@
 // stamp. Fakes live at the edges: the model is scripted, the runtime
 // is real, the store/journal/wake store are real SQLite.
 
+import { foldSummary } from "./testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { APICallError } from "@ai-sdk/provider";
 import { type LanguageModel, tool, type ToolSet, type UIMessage } from "ai";
@@ -299,7 +300,7 @@ describe("wake dispatcher", () => {
 			compaction: {
 				modelRef: () => "m",
 				contextWindow: () => 1000,
-				summarize: async () => "folded era",
+				summarize: async (_c, _s, prompt) => foldSummary("folded era", prompt),
 			},
 		});
 		for (let i = 0; i < 3; i++) {

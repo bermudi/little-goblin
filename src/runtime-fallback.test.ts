@@ -4,6 +4,7 @@
 // never shows a withheld error; the run row keeps the operator's
 // selection; the terminal error lists every miss.
 
+import { foldSummary } from "./testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { APICallError } from "@ai-sdk/provider";
 import { type LanguageModel, type ToolSet, tool } from "ai";
@@ -360,10 +361,10 @@ describe("model fallback list", () => {
 			compaction: {
 				modelRef: (c) => c.model!,
 				contextWindow: () => 1000,
-				summarize: async (_conv, _system, _prompt, _signal, modelRef) => {
+				summarize: async (_conv, _system, prompt, _signal, modelRef) => {
 					asked.push(modelRef);
 					if (modelRef === "zai/glm-5.3") throw quotaWall();
-					return `folded by ${modelRef}`;
+					return foldSummary(`folded by ${modelRef}`, prompt);
 				},
 			},
 		});
@@ -378,10 +379,10 @@ describe("model fallback list", () => {
 				);
 			}
 			const outcome = await r.runtime.compact(r.store.get(r.conv.id)!);
-			expect(outcome).toMatchObject({
-				kind: "compacted",
-				summary: "folded by codex/gpt-6.1-terra",
-			});
+			expect(outcome).toMatchObject({ kind: "compacted" });
+			if (outcome.kind === "compacted") {
+				expect(outcome.summary).toStartWith("folded by codex/gpt-6.1-terra\n");
+			}
 			expect(asked).toEqual(["zai/glm-5.3", "codex/gpt-6.1-terra"]);
 			expect(r.store.listCompactions(r.conv.id).at(-1)).toMatchObject({
 				model: "codex/gpt-6.1-terra",

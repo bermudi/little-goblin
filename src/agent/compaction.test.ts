@@ -1,3 +1,4 @@
+import { foldSummary } from "../testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
 import {
@@ -12,12 +13,6 @@ import { attachmentPart } from "./attachments.ts";
 
 const signal = () => new AbortController().signal;
 
-// A fake summary that passes the quality audit: the required headings, with
-// the prompt's last operator line echoed under Pending user asks.
-function passing(text: string, prompt: string): string {
-	const ask = [...prompt.matchAll(/^user: ([^[].*)$/gm)].at(-1)?.[1]?.slice(0, 200) ?? "";
-	return `${text}\n## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\n${ask}\n## Exact identifiers`;
-}
 
 function ev(
 	seq: number,
@@ -242,7 +237,7 @@ describe("runCompaction", () => {
 			["zai/glm-5.3"],
 			async (system, prompt) => {
 				prompts.push({ system, prompt });
-				return passing("the folded summary", prompt);
+				return foldSummary("the folded summary", prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 			signal(),
@@ -280,7 +275,7 @@ describe("runCompaction", () => {
 			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
-				return passing("folded", prompt);
+				return foldSummary("folded", prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000, beforeSeq: () => 7 },
 			signal(),
@@ -321,7 +316,7 @@ describe("runCompaction", () => {
 			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
-				return passing("folded", prompt);
+				return foldSummary("folded", prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 			signal(),
@@ -451,7 +446,7 @@ describe("runCompaction", () => {
 			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
-				return passing("fold two", prompt);
+				return foldSummary("fold two", prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 			signal(),
@@ -486,7 +481,7 @@ describe("runCompaction", () => {
 			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
-				return passing(`fold ${prompts.length}`, prompt);
+				return foldSummary(`fold ${prompts.length}`, prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget },
 			signal(),
@@ -523,7 +518,7 @@ describe("runCompaction", () => {
 			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
-				return passing("folded", prompt);
+				return foldSummary("folded", prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 1_200 },
 			signal(),
@@ -616,7 +611,7 @@ describe("tool-call atomicity across the cut", () => {
 			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
-				return passing("folded", prompt);
+				return foldSummary("folded", prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 			signal(),
@@ -671,7 +666,7 @@ describe("opaque reasoning state", () => {
 		expect(chooseBoundary(huge, { tailTokenBudget: 1, previousBoundary: null })).toBe(
 			chooseBoundary(small, { tailTokenBudget: 1, previousBoundary: null }),
 		);
-		const summarize = async (_s: string, prompt: string) => passing("folded", prompt);
+		const summarize = async (_s: string, prompt: string) => foldSummary("folded", prompt);
 		const a = fakeStore(small);
 		const b = fakeStore(huge);
 		const opts = { tailTokenBudget: 1, inputTokenBudget: 32_000 };
@@ -691,7 +686,7 @@ describe("opaque reasoning state", () => {
 		};
 		// 60k chars of non-codex state is ordinary serialized bulk — it
 		// lands in tokensBefore where the codex cipher did not.
-		const summarize = async (_s: string, prompt: string) => passing("folded", prompt);
+		const summarize = async (_s: string, prompt: string) => foldSummary("folded", prompt);
 		const opts = { tailTokenBudget: 1, inputTokenBudget: 32_000 };
 		const codexOut = await runCompaction(
 			"dm:1",
@@ -742,7 +737,7 @@ describe("runCompaction — fallback walk", () => {
 				// The primary ignores its abort — only the attempt's own
 				// timeout can end it.
 				if (model === "zai/glm-5.3") return new Promise<string>(() => {});
-				return Promise.resolve(passing("folded by the fallback", prompt));
+				return Promise.resolve(foldSummary("folded by the fallback", prompt));
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000, callTimeoutMs: 50 },
 			signal(),
@@ -768,7 +763,7 @@ describe("runCompaction — fallback walk", () => {
 			async (_system, prompt, _signal, model) => {
 				asked.push(model);
 				if (model === "a/primary") throw new Error("server_is_overloaded");
-				return passing(`fold ${asked.length}`, prompt);
+				return foldSummary(`fold ${asked.length}`, prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 1_200 },
 			signal(),
@@ -835,7 +830,7 @@ describe("summary contents (design/compaction.md → The summary)", () => {
 			["m"],
 			async (_s, prompt) => {
 				prompts.push(prompt);
-				return prompts.length === 1 ? "free prose" : passing("fixed", prompt);
+				return prompts.length === 1 ? "free prose" : foldSummary("fixed", prompt);
 			},
 			opts,
 			signal(),
@@ -904,7 +899,7 @@ describe("summary contents (design/compaction.md → The summary)", () => {
 			ev(8, "assistant", "sure", 7),
 		];
 		const a = fakeStore(first);
-		const summarizer = async (_s: string, prompt: string) => passing("model text", prompt);
+		const summarizer = async (_s: string, prompt: string) => foldSummary("model text", prompt);
 		await runCompaction("dm:1", a.store, ["m"], summarizer, opts, signal());
 		const stored = a.writes[0]!.summary;
 		expect(stored).toContain(JSON.stringify("don't drop Herbert from the invite list, ever"));
@@ -930,7 +925,7 @@ describe("summary contents (design/compaction.md → The summary)", () => {
 			["m"],
 			async (_s, prompt) => {
 				prompts.push(prompt);
-				return passing("model text two", prompt);
+				return foldSummary("model text two", prompt);
 			},
 			opts,
 			signal(),

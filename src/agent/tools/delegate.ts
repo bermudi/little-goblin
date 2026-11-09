@@ -64,6 +64,7 @@ function renderLaunch(
 			return {
 				id: d.id,
 				name: d.name,
+				harness: d.harness,
 				agent_name: d.agentName,
 				status: "running",
 				attach,
@@ -79,6 +80,7 @@ function renderLaunch(
 			return {
 				id: out.delegation.id,
 				name: out.delegation.name,
+				harness: out.delegation.harness,
 				agent_name: out.delegation.agentName,
 				status: "needs_input",
 				attach,
@@ -196,7 +198,11 @@ function renderRead(out: ReadOutcome): Record<string, unknown> {
 
 const startSchema = z.object({
 	action: z.literal("start"),
-	harness: z.string().min(1),
+	// Neither named: the role's configured default decides. Both named:
+	// the explicit harness wins (a role is a staffing hint, never an
+	// override of an explicit choice).
+	harness: z.string().min(1).optional(),
+	role: z.string().min(1).optional(),
 	task: z.string().min(1),
 	cwd: z.string().min(1).optional(),
 	name: z.string().min(1).max(40).optional(),
@@ -251,7 +257,8 @@ const actionSchema = z.discriminatedUnion("action", [
 
 const delegateInputFields = z.object({
 	action: z.enum(["start", "list", "read", "send", "answer", "stop"]),
-	harness: startSchema.shape.harness.optional(),
+	harness: startSchema.shape.harness,
+	role: startSchema.shape.role,
 	task: startSchema.shape.task.optional(),
 	cwd: startSchema.shape.cwd,
 	name: startSchema.shape.name,
@@ -279,8 +286,16 @@ const unlinkableDelegateInputSchema = delegateInputFields
 
 export const delegateTool = (deps: DelegateToolDeps) => {
 	const linkable = deps.checkResponsibility !== undefined;
+	const defaults = deps.config.defaults ?? {};
+	const roles = Object.entries(defaults);
+	// The model sees the staffing table the operator set, not prose from
+	// its notes — one authority, enforced here.
+	const roleLine =
+		roles.length === 0
+			? "No delegation defaults are configured: name a harness explicitly."
+			: `With no harness named, the call uses its role's default (role omitted = \`default\`, which is ${defaults.default === undefined ? "unset — name a role or a harness" : `\`${defaults.default}\``}). Configured roles: ${roles.map(([role, name]) => `${role} → ${name}`).join(", ")}. An explicit harness always wins over a role.`;
 	return tool({
-		description: `Delegate work in the operator's repos to an external coding harness — a separate agent in its own workspace, running full-auto. Standalone long or code-heavy work belongs with a worker subagent, and screen work with a computer subagent. Delegations are your own acts: delegate on your own judgment instead of blocking the chat with bash, and say that you did; you own the result when it arrives and decide what the operator needs to hear. Targets: your own local session (default)${Object.keys(deps.config.machines ?? {}).length > 0 ? ` plus configured machines (${Object.keys(deps.config.machines ?? {}).join(", ")})` : " (no machines configured)"} — pass 'on' to pick one; work tied to another host's repos runs there, and each target runs the harnesses installed on that host. Harnesses (own session): ${Object.keys(deps.config.harnesses).join(", ")}. Actions — start {harness, task, cwd?, name?, on?${linkable ? ", responsibility?" : ""}}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.${linkable ? " In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself." : ""}`,
+		description: `Delegate work in the operator's repos to an external coding harness — a separate agent in its own workspace, running full-auto. Standalone long or code-heavy work belongs with a worker subagent, and screen work with a computer subagent. Delegations are your own acts: delegate on your own judgment instead of blocking the chat with bash, and say that you did; you own the result when it arrives and decide what the operator needs to hear. Targets: your own local session (default)${Object.keys(deps.config.machines ?? {}).length > 0 ? ` plus configured machines (${Object.keys(deps.config.machines ?? {}).join(", ")})` : " (no machines configured)"} — pass 'on' to pick one; work tied to another host's repos runs there, and each target runs the harnesses installed on that host. Harnesses (own session): ${Object.keys(deps.config.harnesses).join(", ")}. ${roleLine} Actions — start {harness?, role?, task, cwd?, name?, on?${linkable ? ", responsibility?" : ""}}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.${linkable ? " In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself." : ""}`,
 		inputSchema: (linkable
 			? delegateInputSchema
 			: unlinkableDelegateInputSchema) as typeof delegateInputSchema,
@@ -303,10 +318,28 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 						return { error: `unknown delegation target "${on}" — configured: ${known}` };
 					}
 					const harnesses = (on !== null ? target?.harnesses : undefined) ?? deps.config.harnesses;
-					const h = harnesses[input.harness];
+					const role = input.role ?? "default";
+					// Explicit harness → role default → the `default` role.
+					// A named role with no entry of its own uses the
+					// operator's fallback; only a missing fallback errors.
+					const named =
+						input.harness ??
+						deps.config.defaults?.[role] ??
+						(role === "default" ? undefined : deps.config.defaults?.default);
+					if (named === undefined) {
+						const roles = Object.entries(deps.config.defaults ?? {});
+						const why =
+							roles.length === 0
+								? "no delegation defaults are configured"
+								: `no default is configured for ${input.role === undefined ? "delegation" : `role "${role}"`}`;
+						return {
+							error: `${why} — name a harness${roles.length > 0 ? ` or use a configured role (${roles.map(([r]) => r).join(", ")})` : ""}; configured harnesses on ${on ?? "the local session"}: ${Object.keys(harnesses).join(", ") || "none"}`,
+						};
+					}
+					const h = harnesses[named];
 					if (!h) {
 						return {
-							error: `unknown harness "${input.harness}" on ${on ?? "the local session"} — configured: ${Object.keys(harnesses).join(", ")}`,
+							error: `unknown harness "${named}" on ${on ?? "the local session"} — configured: ${Object.keys(harnesses).join(", ")}`,
 						};
 					}
 					const isMachine = target?.machine !== undefined;
@@ -342,7 +375,7 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 					let out: LaunchOutcome;
 					try {
 						out = await deps.lifecycle.launch({
-							harness: { name: input.harness, kind: h.kind, args: h.args ?? [] },
+							harness: { name: named, kind: h.kind, args: h.args ?? [] },
 							task: input.task,
 							cwd,
 							name,

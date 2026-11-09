@@ -350,6 +350,32 @@ host restart never reaps — files inside survive until the next call
 restarts the container. `memory`/`cpus`/`pids` are the container's
 resource caps; disk is not capped (reaping bounds it).
 
+### Delegation
+
+Off when unset. With a `delegation` block, the bot gets a `delegate`
+tool: it hands work to another coding harness running in the operator's
+herdr session (Codex, Claude, pi, devin, opencode, …). Settings →
+Delegation edits the harness list and the role defaults; the block is
+boot-pinned, so a change applies after an approved restart.
+
+```json5
+delegation: {
+  harnesses: {
+    pi: { kind: "pi", args: ["--model", "zai/glm-5.3"] },
+    "pi-review": { kind: "pi", args: ["--model", "gpt-6.1-sol"] },
+  },
+  // Role → harness name. `default` is what a call with no role uses;
+  // a named role with no entry also falls back to `default`.
+  defaults: { default: "pi", build: "pi", review: "pi-review" },
+  // machines: other hosts that run their own harnesses.
+},
+```
+
+Each harness is a herdr agent kind plus native CLI args — full-auto flags
+and model choice live in `args`, and goblin never invents either. A
+default naming an undeclared harness is a config error. An explicit
+harness in a `delegate` call always wins over a role.
+
 ### Telegram
 
 ```json5

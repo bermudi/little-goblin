@@ -8,6 +8,7 @@ How to reach and prove each feature from the user's point of view. Every entry h
 | Notes: create and rename | [notes.md](notes.md) |
 | Projects: create one | [projects.md](projects.md) |
 | Settings: model services | [settings-accounts.md](settings-accounts.md) |
+| Settings: delegation agents and defaults | [settings-delegation.md](settings-delegation.md) |
 | Status: service and memory state | [status.md](status.md) |
 
-Not yet mapped: search, attention, delegations, memories, programs, skills, files, log, voice, attachments, Telegram.
+Not yet mapped: search, attention, memories, programs, skills, files, log, voice, attachments, Telegram.

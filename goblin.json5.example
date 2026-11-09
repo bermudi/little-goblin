@@ -244,11 +244,17 @@
   // Panes run your interactive shell, so aliases apply — never repeat a
   // flag an alias already adds (the codex alias's bypass flag, devin's
   // --permission-mode): a duplicate makes the harness refuse to start.
+  // `defaults` maps a work role to a harness name; `delegate` uses it
+  // when a call names no harness. Role `default` is the fallback when a
+  // call names no role. Editable in Settings → Delegation (restart to
+  // apply); machine targets stay file-only here.
   // delegation: {
   //   harnesses: {
   //     codex: { kind: "codex" }, // the shell alias carries the bypass flag
   //     pi: { kind: "pi", args: ["--model", "<provider>/<model>"] },
+  //     "pi-review": { kind: "pi", args: ["--model", "<provider>/<review-model>"] },
   //   },
+  //   defaults: { default: "pi", build: "pi", review: "pi-review" },
   //   machines: {
   //     // lithium: { session: "goblin" },
   //     // g7: { machine: "g7", root: "~/build",

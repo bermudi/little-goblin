@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { authDefaults, type Config, memoryConfigSchema, parseConfig } from "../../src/config.ts";
+import {
+	authDefaults,
+	type Config,
+	delegationConfigSchema,
+	memoryConfigSchema,
+	parseConfig,
+} from "../../src/config.ts";
 import {
 	bodyFromDraft,
 	capabilityFlags,
@@ -87,10 +93,59 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 	port: "8787",
 	logLevel: "info",
 	memory: null,
+	delegation: null,
 	...over,
 });
 
 describe("draftFromConfig", () => {
+	test("a delegation block round-trips harnesses, args and role defaults", () => {
+		const c = baseConfig();
+		c.delegation = delegationConfigSchema.parse({
+			harnesses: {
+				pi: { kind: "pi", args: ["--model", "zai/glm-5.3"] },
+				"pi-review": { kind: "pi", args: ["--model", "sol"] },
+			},
+			machines: { g7: { machine: "g7", root: "~/build" } },
+			defaults: { default: "pi", review: "pi-review" },
+		});
+		const { draft: d } = draftFromConfig(c);
+		expect(d.delegation?.harnesses).toEqual([
+			{ name: "pi", kind: "pi", args: "--model\nzai/glm-5.3" },
+			{ name: "pi-review", kind: "pi", args: "--model\nsol" },
+		]);
+		// The fallback role sorts first.
+		expect(d.delegation?.roles).toEqual([
+			{ role: "default", harness: "pi" },
+			{ role: "review", harness: "pi-review" },
+		]);
+		expect(bodyFromDraft(d, draftFromConfig(c).providers, authDefaults).delegation).toEqual({
+			harnesses: {
+				pi: { kind: "pi", args: ["--model", "zai/glm-5.3"] },
+				"pi-review": { kind: "pi", args: ["--model", "sol"] },
+			},
+			defaults: { default: "pi", review: "pi-review" },
+		});
+	});
+
+	test("delegation validation catches unnamed, duplicate and dangling entries", () => {
+		const { draft: d } = draftFromConfig(baseConfig());
+		d.delegation = {
+			harnesses: [{ name: "pi", kind: "pi", args: "" }],
+			roles: [{ role: "default", harness: "pi" }],
+		};
+		expect(validateDraft(d, [prov()])).toBeNull();
+		d.delegation.roles = [{ role: "default", harness: "ghost" }];
+		expect(validateDraft(d, [prov()])).toContain("unlisted coding agent");
+		d.delegation.roles = [
+			{ role: "default", harness: "pi" },
+			{ role: "default", harness: "pi" },
+		];
+		expect(validateDraft(d, [prov()])).toContain("Duplicate delegation role");
+		d.delegation.roles = [{ role: "default", harness: "pi" }];
+		d.delegation.harnesses = [{ name: "Pi", kind: "pi", args: "" }];
+		expect(validateDraft(d, [prov()])).toContain("lowercase letters");
+	});
+
 	test("absent optional blocks become null; telegram falls back to the top-level picks", () => {
 		const c = baseConfig();
 		c.telegram = { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false };
@@ -287,7 +342,11 @@ describe("bodyFromDraft", () => {
 	test("customModels: omit-when-empty, populated inventories ride the body", () => {
 		const empty = bodyFromDraft(draft(), [prov()], authDefaults);
 		expect("customModels" in empty).toBe(false);
-		const populated = bodyFromDraft(draft({ customModels: ["main/custom-x"] }), [prov()], authDefaults);
+		const populated = bodyFromDraft(
+			draft({ customModels: ["main/custom-x"] }),
+			[prov()],
+			authDefaults,
+		);
 		expect(populated.customModels).toEqual(["main/custom-x"]);
 		const { draft: d } = draftFromConfig({ ...baseConfig(), customModels: ["main/custom-x"] });
 		expect(d.customModels).toEqual(["main/custom-x"]);
@@ -330,7 +389,11 @@ describe("bodyFromDraft", () => {
 			baseUrl: "https://api.example.test",
 			auth: "KEY",
 		});
-		expect(body.providers["dex"]).toEqual({ kind: "codex", authFile: "/home/me/.codex/auth.json", webSearch: "live" });
+		expect(body.providers["dex"]).toEqual({
+			kind: "codex",
+			authFile: "/home/me/.codex/auth.json",
+			webSearch: "live",
+		});
 		expect(body.providers["dex2"]).toEqual({ kind: "codex", webSearch: "live" });
 	});
 

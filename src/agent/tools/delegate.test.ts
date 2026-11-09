@@ -197,6 +197,66 @@ describe("delegate tool", () => {
 		expect(out.error).toContain("pi");
 	});
 
+	test("no harness uses the operator's default; the result names it", async () => {
+		const h = harness();
+		h.deps.config.defaults = { default: "pi" };
+		const out = (await exec(h.tool, {
+			action: "start",
+			task: "do it",
+		})) as { id: number; harness: string };
+		expect(out.harness).toBe("pi");
+		expect(h.store.get(out.id)!.harness).toBe("pi");
+	});
+
+	test("a named role picks its agent; an unlisted role falls back to the default", async () => {
+		const h = harness();
+		h.deps.config.harnesses["pi-review"] = { kind: "pi", args: ["--model", "sol"] };
+		h.deps.config.defaults = { default: "pi", review: "pi-review" };
+		const review = (await exec(h.tool, {
+			action: "start",
+			role: "review",
+			task: "review it",
+		})) as { id: number; harness: string };
+		expect(review.harness).toBe("pi-review");
+		const other = (await exec(h.tool, {
+			action: "start",
+			role: "docs",
+			task: "write it",
+		})) as { id: number; harness: string };
+		expect(other.harness).toBe("pi");
+	});
+
+	test("an explicit harness wins over a role", async () => {
+		const h = harness();
+		h.deps.config.defaults = { default: "pi", review: "pi" };
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			role: "review",
+			task: "do it",
+		})) as { harness: string };
+		expect(out.harness).toBe("codex");
+	});
+
+	test("no harness and no defaults fails loud, naming the configured agents", async () => {
+		const h = harness();
+		const out = (await exec(h.tool, {
+			action: "start",
+			task: "do it",
+		})) as { error: string };
+		expect(out.error).toContain("no delegation defaults are configured");
+		expect(out.error).toContain("codex");
+		expect(out.error).toContain("pi");
+	});
+
+	test("the description carries the operator's role table, not notes", () => {
+		const h = harness();
+		h.deps.config.defaults = { default: "pi", review: "codex" };
+		const tool = delegateTool(h.deps);
+		expect(tool.description).toContain("review → codex");
+		expect(tool.description).toContain("`pi`");
+	});
+
 	test("a bad cwd is rejected before any herdr call", async () => {
 		const h = harness();
 		const out = (await exec(h.tool, {
@@ -849,7 +909,9 @@ describe("delegate responsibility link", () => {
 		const project = delegateTool({ ...h.deps, checkResponsibility: () => null });
 		const elsewhere = delegateTool({ ...h.deps, checkResponsibility: undefined });
 		const props = (t: typeof project) =>
-			Object.keys((z.toJSONSchema(t.inputSchema as z.ZodType) as { properties: object }).properties);
+			Object.keys(
+				(z.toJSONSchema(t.inputSchema as z.ZodType) as { properties: object }).properties,
+			);
 		expect(props(project)).toContain("responsibility");
 		expect(project.description).toContain("responsibility:<id>");
 		expect(project.description).toContain("responsibility?");
@@ -859,7 +921,10 @@ describe("delegate responsibility link", () => {
 
 	test("a refused responsibility launches nothing", async () => {
 		const h = harness();
-		const tool = delegateTool({ ...h.deps, checkResponsibility: () => "responsibility r1 is done" });
+		const tool = delegateTool({
+			...h.deps,
+			checkResponsibility: () => "responsibility r1 is done",
+		});
 		const out = (await exec(tool, start)) as { error: string };
 		expect(out.error).toBe("responsibility r1 is done");
 		expect(h.pinned).toEqual([]);

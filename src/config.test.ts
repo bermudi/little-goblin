@@ -640,6 +640,22 @@ describe("goblin.json5", () => {
 			(c) => c.delegation?.machines?.["dev"]?.session,
 			"goblin.dev",
 		],
+		[
+			"delegation defaults map roles to configured harnesses",
+			Z(
+				`,delegation:{harnesses:{pi:{kind:"pi"},"pi-review":{kind:"pi",args:["--model","gpt-6.1-sol"]}},defaults:{default:"pi",build:"pi",review:"pi-review"}}`,
+			),
+			(c) => c.delegation?.defaults,
+			{ default: "pi", build: "pi", review: "pi-review" },
+		],
+		[
+			"delegation defaults may name a machine-only harness",
+			Z(
+				`,delegation:{harnesses:{pi:{kind:"pi"}},machines:{g7:{machine:"g7",harnesses:{devin:{kind:"devin"}}}},defaults:{review:"devin"}}`,
+			),
+			(c) => c.delegation?.defaults?.["review"],
+			"devin",
+		],
 	];
 	for (const [name, content, pick, expected] of singles) {
 		test(name, () => {
@@ -687,6 +703,12 @@ describe("goblin.json5", () => {
 		[
 			"delegation.machines rejects machine+session targets",
 			Z(`,delegation:{machines:{both:{machine:"g7",session:"goblin"}},harnesses:{pi:{kind:"pi"}}}`),
+			"delegation: custom",
+		],
+		// A default naming nothing is a silent staffing hole — reject at parse.
+		[
+			"delegation.defaults rejects an unknown harness",
+			Z(`,delegation:{harnesses:{pi:{kind:"pi"}},defaults:{build:"ghost"}}`),
 			"delegation: custom",
 		],
 	];

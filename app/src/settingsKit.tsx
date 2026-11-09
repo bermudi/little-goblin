@@ -14,6 +14,7 @@ import type {
 import { ApiError, storeSecret } from "./api.ts";
 import type {
 	ChainEntry,
+	DelegationDraft,
 	MemDraft,
 	ProvDraft,
 	SettingsDraft,
@@ -34,14 +35,9 @@ export type Section =
 	| "telegram"
 	| "access"
 	| "capabilities"
+	| "delegation"
 	| "system";
-export type SheetMode =
-	| "model"
-	| "telegram"
-	| "title"
-	| "vision"
-	| "image"
-	| "fallback";
+export type SheetMode = "model" | "telegram" | "title" | "vision" | "image" | "fallback";
 
 // One channel's thinking rungs: the offered values plus whether the
 // capability lookup behind them failed.
@@ -59,6 +55,7 @@ export interface LastStash {
 	search: ChainEntry[] | null;
 	fetch: ChainEntry[] | null;
 	memory: MemDraft | null;
+	delegation: DelegationDraft | null;
 }
 
 // What the sections see — every piece of editor state plus its

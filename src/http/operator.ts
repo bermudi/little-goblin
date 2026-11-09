@@ -271,6 +271,7 @@ const CONFIG_POST_KEYS = {
 	fetch: true,
 	operators: true,
 	allowedUsers: true,
+	delegation: true,
 	telegram: true,
 	publicUrl: true,
 	http: true,
@@ -412,6 +413,21 @@ async function saveConfig(
 			if (k === "capabilities") continue;
 			if (k === "telegram" && typeof v === "object" && v !== null && !Array.isArray(v)) {
 				candidate.telegram = { ...normalized.telegram, ...v };
+				continue;
+			}
+			// Machine targets are host-bound and file-only — the settings
+			// editor sends harnesses/defaults, and this merge keeps the
+			// rest of the block exactly as the file had it.
+			if (k === "delegation" && typeof v === "object" && v !== null && !Array.isArray(v)) {
+				candidate.delegation = {
+					...(normalized.delegation?.machines === undefined
+						? {}
+						: { machines: normalized.delegation.machines }),
+					...v,
+				};
+				// An edited block supersedes a parked copy — leaving it
+				// would resurrect the old value on the next off/on flip.
+				delete parked.delegation;
 				continue;
 			}
 			// "" on a parkable block keeps its contents — off, not deleted.

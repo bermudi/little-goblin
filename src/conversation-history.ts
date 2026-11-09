@@ -123,12 +123,19 @@ export function makeConversationHistory(
 		return historyDetail(id).map((e) => ({ seq: e.seq, message: e.message }));
 	}
 
-	type RawRow = { seq: number; anchor_seq: number | null; role: string; data: string };
+	type RawRow = {
+		seq: number;
+		anchor_seq: number | null;
+		role: string;
+		data: string;
+		created_at: string;
+	};
 
 	function detailFromRows(id: string, raw: RawRow[]) {
 		const rows = raw.map((r) => ({
 			seq: r.seq,
 			anchorSeq: r.anchor_seq,
+			createdAt: r.created_at,
 			message: parseEvent(id, r.seq, r.role, r.data) ?? corruptPlaceholder(r.seq, r.role),
 		}));
 		// Arrival order stays on disk; this sorts each anchored response

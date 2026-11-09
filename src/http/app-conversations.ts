@@ -1045,20 +1045,29 @@ export async function handleConversationsRoute(
 		}
 		const detail = store.historyDetail(convId.id);
 		const rateable = rateableAssistantEntries(detail);
-		// Fold marks ride the same causal order the messages list uses:
-		// sorted by (anchorSeq ?? seq), so a boundary's folded span is a
-		// prefix — the pill belongs right after its last folded entry.
-		// The span count each fold owns is derived from consecutive
-		// boundaries, matching runCompaction's span slice.
+		// Fold marks render where the fold RAN (design/compaction.md →
+		// "Fold marks in the app"): afterIndex is the last message whose
+		// created_at is at or before the compaction row's — not the cut.
+		// eventsCompacted still counts the folded span: consecutive
+		// boundaries over the causal order, matching runCompaction's
+		// slice. firstKeptIndex is the cut's far side — the first message
+		// the model still sees verbatim.
 		const causal = detail.map((entry) => entry.anchorSeq ?? entry.seq);
+		const createdMs = detail.map((entry) => Date.parse(entry.createdAt));
 		const compactions: AppCompactionMark[] = [];
 		let prevUpto = 0;
 		for (const mark of store.listCompactions(convId.id)) {
 			let upto = prevUpto;
 			while (upto < causal.length && causal[upto]! <= mark.boundarySeq) upto++;
+			const foldMs = Date.parse(mark.createdAt);
+			let afterIndex = -1;
+			for (let i = 0; i < createdMs.length; i++) {
+				if (createdMs[i]! <= foldMs) afterIndex = i;
+			}
 			compactions.push({
 				boundarySeq: mark.boundarySeq,
-				afterIndex: upto - 1,
+				afterIndex,
+				firstKeptIndex: upto,
 				eventsCompacted: upto - prevUpto,
 				tailEvents: mark.tailEvents,
 				tokensBefore: mark.tokensBefore,

@@ -7,7 +7,7 @@ import { pruningReplacement } from "./cache-pruning.ts";
 import { appAddress, appIdOf, channelOf, formatAddress, parseAddress } from "./conversation-address.ts";
 import type { ParsedAddress } from "./conversation-address.ts";
 import type { ConversationStore } from "./conversation.ts";
-import { openStore } from "./conversation.ts";
+import { DeleteRefused, openStore } from "./conversation.ts";
 import {
 	EVENTS_THROUGH_SQL,
 	HISTORY_CAUSAL_SQL,
@@ -17,6 +17,8 @@ import {
 	REWIND_PROJECTIONS_SQL,
 } from "./conversation-queries.ts";
 import { openRatings } from "./reply-ratings.ts";
+import { openProjects } from "./projects.ts";
+import { openResponsibilities } from "./responsibilities.ts";
 import { tmpDb } from "./testkit.ts";
 import { openWakeStore } from "./wake-store.ts";
 import { openWindowCapture } from "./window-capture.ts";
@@ -2189,6 +2191,32 @@ describe("event projections", () => {
 				)
 				.get(c.id)!.n,
 		).toBe(0);
+		store.close();
+	});
+
+	test("deleteRefusal is the advisory text of deleteConversation's DeleteRefused", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 9 }, "/w");
+		expect(store.deleteRefusal(c.id)).toBeNull();
+		const project = openProjects(store).create({ name: "anchored" });
+		const { responsibilityId } = openResponsibilities(store.db).create({
+			projectId: project.id,
+			coordinationConversationId: c.id,
+			handoverKey: "kl",
+			understanding: {
+				outcome: "land the fix",
+				situation: "agent is mid-task",
+				nextAction: "check the diff",
+				checkpoints: ["before the publish step"],
+				completionEvidence: ["ci green"],
+			},
+		}).responsibility;
+		expect(store.deleteRefusal(c.id)).toContain(responsibilityId);
+		expect(() => store.deleteConversation(c.id)).toThrow(DeleteRefused);
+		// The refusal keeps the row; the advisory answer and the throw
+		// carry the same text.
+		expect(store.get(c.id)).not.toBeNull();
+		expect(() => store.deleteConversation(c.id)).toThrow(store.deleteRefusal(c.id));
 		store.close();
 	});
 

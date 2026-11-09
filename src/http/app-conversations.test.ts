@@ -9,6 +9,7 @@ import {
 } from "../agent/models-dev.ts";
 import { type ConversationStore, openStore } from "../conversation.ts";
 import { appAddress } from "../conversation-address.ts";
+import { openResponsibilities } from "../responsibilities.ts";
 import type { Runtime } from "../runtime.ts";
 
 import { HeadlessSink, sleep, waitUntil } from "../testkit.ts";
@@ -17,6 +18,20 @@ import { makeResumeOps } from "../turn-resume.ts";
 import { handleAppApi } from "./app-channel.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
 import type { AppInterruptedList, AppResumeBlocked } from "./app-wire.ts";
+
+// The text a chat SSE body delivered — the fused text-delta stream, so a
+// fenced turn (partial) and an undisturbed one (full) are distinguishable.
+function streamedText(body: string): string {
+	return body
+		.split("\n\n")
+		.filter((f) => f.startsWith("data: "))
+		.map((f) => f.slice("data: ".length))
+		.filter((f) => f !== "[DONE]")
+		.map((f) => JSON.parse(f) as { type: string; delta?: string })
+		.filter((c) => c.type === "text-delta")
+		.map((c) => c.delta ?? "")
+		.join("");
+}
 
 describe("app conversations", () => {
 	test("create, list, and history ride the app pool only", async () => {
@@ -828,6 +843,61 @@ describe("app conversations", () => {
 			expect(store.get("app/chat-01")).toBeNull();
 			const body = await chat.text();
 			expect(body.trimEnd().endsWith("data: [DONE]")).toBe(true);
+			// The fence aborted generation — the tail deltas never stream.
+			expect(streamedText(body)).not.toBe("abcde");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a refused delete answers 409 with the refusal and never stops the live turn", async () => {
+		const { http, call, store, projects } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["a", "b", "c", "d", "e"],
+			delayMs: 50,
+		});
+		const resps = openResponsibilities(store.db);
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const project = projects.create({ name: "anchored" });
+			const { responsibilityId } = resps.create({
+				projectId: project.id,
+				coordinationConversationId: "app/chat-01",
+				handoverKey: "kl",
+				understanding: {
+					outcome: "land the fix",
+					situation: "agent is mid-task",
+					nextAction: "check the diff",
+					checkpoints: ["before the publish step"],
+					completionEvidence: ["ci green"],
+				},
+			}).responsibility;
+			const chat = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			expect(chat.status).toBe(200);
+			const epoch = store.get("app/chat-01")?.epoch;
+
+			const del = await call("/api/app/conversations/chat-01", { method: "DELETE" });
+			expect(del.status).toBe(409);
+			const refusal = ((await del.json()) as { error: string }).error;
+			expect(refusal).toContain(responsibilityId);
+			expect(refusal).toContain("resolve them before deleting");
+
+			// The row, the epoch, and the live turn all survive the refusal.
+			expect(store.get("app/chat-01")).not.toBeNull();
+			expect(store.get("app/chat-01")?.epoch).toBe(epoch);
+			expect(streamedText(await chat.text())).toBe("abcde");
+			expect(store.history("app/chat-01").map((m) => m.role)).toEqual(["user", "assistant"]);
 		} finally {
 			http.stop();
 		}

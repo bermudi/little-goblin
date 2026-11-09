@@ -1043,6 +1043,17 @@ conversation that had ever carried a wake. Two shapes, two rulings:
   on that surface, and closed records keep their history. The refusal is
   the operator's to resolve, not the delete's to cascade.
 
+The refusal's wire contract (ruling 2026-11-08, #205): a DELETE the store
+refuses answers `409` with the refusal text — never an opaque 500 — and
+**must not fence the live turn**: the route asks the store
+(`deleteRefusal`, advisory) before `runtime.stop`, so the operator keeps
+both the turn and the reason. A delete that will proceed still stops the
+turn first, as always. The ask is advisory, not a fence: an anchor minted
+after it (the still-live turn taking a responsibility) refuses inside
+`deleteConversation` — a typed `DeleteRefused` — and that answer is a 409
+with the message too, after the fence; only it can lose the turn, and it
+never hides the reason.
+
 Reconcile treats a wake whose conversation row is gone (out-of-band
 surgery only — the FK chain and the sweep keep them together) exactly
 like a ghost run link: that wake fails loudly and terminally;

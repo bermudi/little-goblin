@@ -35,12 +35,15 @@ Proof: the savebar says `Saved.`, the block appears in
 
 - Turn the master switch on first. With it off the section is a single
   switch and the tables are absent.
-- An empty role makes the save refuse with `Role "review" has no coding
-  agent.` Fill the select and it saves.
+- A role left on `— none —` is absent, not invalid — the editor never
+  blocks a save on an empty role, and `— none —` clears an existing
+  default.
 - Turning delegation off parks the block under `parked.delegation`;
   turning it back on writes it to the top level again. An edited block
   must leave no `parked.delegation` behind.
 - Machine targets (`delegation.machines`) are file-only. Add one by hand
-  to `goblin.json5`, save from the page, and it survives.
+  to `goblin.json5`, save from the page, and it survives — including a
+  park → re-enable round trip. Machine-side harness names are offered in
+  the role selects as `<name> (machine)`.
 - Nothing here proves a launch. `delegate` needs herdr and a real agent
   binary, which the throwaway instance does not have.

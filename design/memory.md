@@ -502,7 +502,10 @@ source IDs. The live flag still
 applies at each append. Fenced and failed turns commit no memory regardless of stamps;
 a compaction summary inherits its folded span's eligibility — eligible
 only when every event below the boundary was eligible, recomputed per
-pointer so repeated compactions stay consistent; spin-off forks copy
+pointer so repeated compactions stay consistent; the summary is the entry
+at the store-assigned boundary seq (`MemoryEligibility.summarySeq`), never
+an id prefix — client ids are untrusted (#206, compaction.md → "The
+summary's identity"); spin-off forks copy
 stamps verbatim. Events predating the stamp are ineligible; eligibility
 accrues only from new exchanges.
 

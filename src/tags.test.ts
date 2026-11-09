@@ -7,7 +7,6 @@ import {
 	compactionSummaryId,
 	corruptRowId,
 	delegationNoticeTag,
-	isCompactionSummaryId,
 	isMachineryText,
 	memoryBlockId,
 	programFireTag,
@@ -50,12 +49,11 @@ describe("message tags", () => {
 		}
 	});
 
-	test("compaction summary ids build and match exactly", () => {
+	// The id is a legibility label only (#206): no predicate matches on it,
+	// so the exact spelling is all there is to pin.
+	test("compaction summary ids build exactly", () => {
 		expect(compactionSummaryId(2)).toBe("compact-2");
-		expect(isCompactionSummaryId(compactionSummaryId(1234))).toBe(true);
-		for (const id of ["compact", "compacted-2", "u1", "a-compact-2", ""]) {
-			expect(isCompactionSummaryId(id)).toBe(false);
-		}
+		expect(compactionSummaryId(1234)).toBe("compact-1234");
 	});
 
 	test("synthetic block and placeholder ids are unique per anchor/seq", () => {

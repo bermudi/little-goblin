@@ -5,7 +5,7 @@ import type { AuthStore } from "../auth.ts";
 import type { MemoryConfig } from "../config.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
-import { isCompactionSummaryId, isMachineryText, memoryBlockId } from "../tags.ts";
+import { isMachineryText, memoryBlockId } from "../tags.ts";
 import {
 	HindsightClient,
 	HindsightError,
@@ -93,6 +93,11 @@ const MAX_QUERY_CHARS = 2000;
 
 export interface MemoryEligibility {
 	eligibleSeqs: Set<number>;
+	// The live summary is the model view's entry whose seq equals the
+	// compaction boundary — a seq the store assigns, so a client-chosen
+	// message id can never claim the summary class (#206). Null when no
+	// compaction exists, in which case no entry is the summary.
+	summarySeq: number | null;
 	summaryEligible: boolean;
 }
 
@@ -101,7 +106,7 @@ export function memoryBoundEntries(
 	elig: MemoryEligibility,
 ): { seq: number; message: UIMessage }[] {
 	return entries.filter((e) =>
-		isCompactionSummaryId(e.message.id) ? elig.summaryEligible : elig.eligibleSeqs.has(e.seq),
+		e.seq === elig.summarySeq ? elig.summaryEligible : elig.eligibleSeqs.has(e.seq),
 	);
 }
 
@@ -378,11 +383,18 @@ export interface RetentionSource {
 
 // App media is an intermediate assistant event, not a completed reply. Use
 // both the server-generated ID and attachment part to recognize legacy rows.
-function isExchangeBoundary(message: UIMessage): boolean {
+// The summary is excluded by its boundary seq, never its id (#206).
+function isExchangeBoundary(
+	entry: { seq: number; message: UIMessage },
+	summarySeq: number | null,
+): boolean {
 	return (
-		message.role === "assistant" &&
-		!isCompactionSummaryId(message.id) &&
-		!(message.id.startsWith("media-") && message.parts.some((p) => p.type === "data-attachment"))
+		entry.message.role === "assistant" &&
+		entry.seq !== summarySeq &&
+		!(
+			entry.message.id.startsWith("media-") &&
+			entry.message.parts.some((p) => p.type === "data-attachment")
+		)
 	);
 }
 
@@ -392,7 +404,7 @@ export function activeExchangeExcluded(
 ): boolean {
 	let boundary = -1;
 	for (let i = 0; i < entries.length; i++) {
-		if (isExchangeBoundary(entries[i]!.message)) boundary = i;
+		if (isExchangeBoundary(entries[i]!, elig.summarySeq)) boundary = i;
 	}
 	return entries
 		.slice(boundary + 1)
@@ -401,11 +413,11 @@ export function activeExchangeExcluded(
 
 export function retentionSourceFrom(
 	entries: { seq: number; message: UIMessage }[],
-	elig?: MemoryEligibility,
+	elig: MemoryEligibility,
 ): RetentionSource {
 	let lastAsstIndex = -1;
 	for (let i = 0; i < entries.length; i++) {
-		if (isExchangeBoundary(entries[i]!.message)) lastAsstIndex = i;
+		if (isExchangeBoundary(entries[i]!, elig.summarySeq)) lastAsstIndex = i;
 	}
 	const userTexts: string[] = [];
 	const userIds: string[] = [];
@@ -413,8 +425,8 @@ export function retentionSourceFrom(
 	let sawProgram = false;
 	for (let i = 0; i < entries.length; i++) {
 		const e = entries[i]!;
-		if (isCompactionSummaryId(e.message.id)) continue;
-		if (elig !== undefined && !elig.eligibleSeqs.has(e.seq)) continue;
+		if (e.seq === elig.summarySeq) continue;
+		if (!elig.eligibleSeqs.has(e.seq)) continue;
 		if (e.message.role !== "user" && e.message.role !== "assistant") continue;
 		const t = screenMemoryText(messageText(e.message), "retain-source");
 		if (t === "") continue;
@@ -589,6 +601,10 @@ export function withMemoryBlocks(
 	entries: { seq: number; message: UIMessage }[],
 	contexts: RecallContext[],
 	current: RecallContext | null,
+	// The summary's boundary seq — the one user entry that never gets a
+	// block of its own (and whose borrowed seq must not inherit the
+	// boundary event's block). By seq, not id: ids are client-chosen (#206).
+	summarySeq: number | null,
 ): UIMessage[] {
 	const byAnchor = new Map<number, RecallContext>();
 	for (const c of contexts) {
@@ -598,7 +614,7 @@ export function withMemoryBlocks(
 	if (byAnchor.size === 0) return entries.map((e) => e.message);
 	const out: UIMessage[] = [];
 	for (const e of entries) {
-		if (e.message.role === "user" && !isCompactionSummaryId(e.message.id)) {
+		if (e.message.role === "user" && e.seq !== summarySeq) {
 			const block = byAnchor.get(e.seq);
 			if (block) {
 				out.push({

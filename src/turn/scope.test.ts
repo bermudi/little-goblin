@@ -46,6 +46,7 @@ describe("provider-executed parts", () => {
 			prior: [],
 			current: null,
 			partial: null,
+			summarySeq: null,
 			assertAuthority: () => {},
 		});
 	};

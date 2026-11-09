@@ -52,12 +52,14 @@ const build = async (
 	prior: RecallContext[] = [],
 	current: RecallContext | null = null,
 	partial: UIMessage | null = null,
+	summarySeq: number | null = null,
 ): Promise<ModelMessage[]> =>
 	buildModelView(ctx, {
 		entries: entriesList,
 		prior,
 		current,
 		partial,
+		summarySeq,
 		assertAuthority: () => {},
 	});
 
@@ -115,7 +117,7 @@ describe("the model view", () => {
 			{ seq: 2, message: summary },
 			{ seq: 3, message: user("u3", "fresh question") },
 		];
-		const view = await build(boundary, [recall(2, "stale evidence")], null);
+		const view = await build(boundary, [recall(2, "stale evidence")], null, null, 2);
 		expect(view.map((m) => m.role)).toEqual(["user"]);
 		const marker = (summary.parts[0] as { text: string }).text;
 		expect(marker).toContain("conversation dm:1");
@@ -204,6 +206,7 @@ describe("the model view", () => {
 				prior: [],
 				current: null,
 				partial: null,
+				summarySeq: null,
 				assertAuthority: () => {
 					calls++;
 					throw sentinel;
@@ -443,6 +446,7 @@ describe("arrival stamp", () => {
 			prior: [],
 			current: null,
 			partial: null,
+			summarySeq: null,
 			assertAuthority: () => {},
 		});
 		expect(texts(view)).toEqual(["hi", "[2026-11-06 14:32 -06:00 · telegram]"]);
@@ -455,6 +459,7 @@ describe("arrival stamp", () => {
 			prior: [],
 			current: null,
 			partial: null,
+			summarySeq: null,
 			assertAuthority: () => {},
 		});
 		expect(texts(view)).toEqual(["old"]);

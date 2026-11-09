@@ -33,14 +33,13 @@ export function isMachineryText(text: string): boolean {
 	);
 }
 
-// The id the compaction summary rides the model view under — readers
-// treat it as carried context, never operator speech.
+// The id the compaction summary rides the model view under — a legibility
+// label only, never a classification key: readers recognize the summary by
+// its store-assigned boundary seq (#206), because client message ids are
+// neither unique nor trusted and a client-chosen `compact-`-prefixed id is
+// an ordinary client message.
 export function compactionSummaryId(boundarySeq: number): string {
 	return `compact-${boundarySeq}`;
-}
-
-export function isCompactionSummaryId(messageId: string): boolean {
-	return messageId.startsWith("compact-");
 }
 
 // A recall block's id. Model-view fusion keys on positions, so the id

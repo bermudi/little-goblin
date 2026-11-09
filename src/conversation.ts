@@ -847,11 +847,16 @@ export function openStore(dbPath: string): ConversationStore {
 		},
 
 		memoryEligibility(id) {
+			const compaction = this.getCompaction(id);
 			return {
 				eligibleSeqs: new Set(qEligibleSeqs.all(id).map((r) => r.seq)),
+				// The summary is the model view's entry at the boundary seq —
+				// store-assigned, so classification by seq cannot be forged
+				// through a client-chosen message id (#206).
+				summarySeq: compaction?.boundarySeq ?? null,
 				// No compaction = no summary in any view; false keeps the
 				// default fail-closed anyway.
-				summaryEligible: this.getCompaction(id)?.summaryEligible ?? false,
+				summaryEligible: compaction?.summaryEligible ?? false,
 			};
 		},
 

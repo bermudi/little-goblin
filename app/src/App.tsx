@@ -2543,6 +2543,7 @@ function AppShell() {
 								noteProjectId={currentConv?.projectId ?? null}
 								onSeeded={() => setSeed(null)}
 								onTurnDone={() => void refresh()}
+								onSendAccepted={() => void refresh()}
 								onOpenNote={openNote}
 								onBranched={(id) => {
 									void refresh();

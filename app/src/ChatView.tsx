@@ -2786,6 +2786,7 @@ export function ChatView({
 	noteProjectId,
 	onSeeded,
 	onTurnDone,
+	onSendAccepted,
 	onOpenNote,
 	onBranched,
 }: {
@@ -2810,6 +2811,11 @@ export function ChatView({
 	noteProjectId?: string | null | undefined;
 	onSeeded: () => void;
 	onTurnDone: () => void;
+	// A send's stream response began — the server persisted the user
+	// message before answering, so the conversation's activity stamp
+	// already moved. The host refreshes the rail here, not only at
+	// turn end, so the time tracks the send itself.
+	onSendAccepted?: (() => void) | undefined;
 	// Note chips + fenced note cards navigate to the note page in-app.
 	onOpenNote?: ((id: string) => void) | undefined;
 	// A branch opened a new conversation — the host refreshes and opens it.
@@ -2861,6 +2867,7 @@ export function ChatView({
 			noteProjectId={noteProjectId}
 			onSeeded={onSeeded}
 			onTurnDone={onTurnDone}
+			onSendAccepted={onSendAccepted}
 			onOpenNote={onOpenNote}
 			onBranched={onBranched}
 		/>
@@ -2885,6 +2892,7 @@ function Chat({
 	noteProjectId,
 	onSeeded,
 	onTurnDone,
+	onSendAccepted,
 	onOpenNote,
 	onBranched,
 }: {
@@ -2905,6 +2913,9 @@ function Chat({
 	noteProjectId?: string | null | undefined;
 	onSeeded: () => void;
 	onTurnDone: () => void;
+	// See ChatView's prop doc — fired by the transport once per accepted
+	// send, while the turn is still running.
+	onSendAccepted?: (() => void) | undefined;
 	onOpenNote?: ((id: string) => void) | undefined;
 	// A branch exists now — the host refreshes the rail and opens it.
 	onBranched?: ((id: string) => void) | undefined;
@@ -2922,6 +2933,11 @@ function Chat({
 	// below useChat — the reconnect's answer resolves after a network
 	// round-trip, so it can never beat that effect's assignment.
 	const idleReconnect = useRef<() => void>(() => {});
+	// Same latest-ref shape as idleReconnect: the host's callback is an
+	// inline closure, so it must not enter the transport's useMemo deps —
+	// a new transport identity would re-seat useChat on every host render.
+	const sendAccepted = useRef<(() => void) | undefined>(undefined);
+	sendAccepted.current = onSendAccepted;
 	const [ratings, setRatings] = useState<Record<string, AppRatedReply>>(() =>
 		Object.fromEntries(initialRatings.map((r) => [r.messageId, r])),
 	);
@@ -2989,7 +3005,16 @@ function Chat({
 			}),
 		});
 		return {
-			sendMessages: (options) => base.sendMessages(options),
+			sendMessages: async (options) => {
+				const stream = await base.sendMessages(options);
+				// Response headers mean the POST handler already ran
+				// runtime.submit — the user message is durable and the
+				// conversation's activity stamp has moved. The rail
+				// refreshes on this, not onFinish: a long turn must not
+				// hold the new time hostage until it ends.
+				sendAccepted.current?.();
+				return stream;
+			},
 			reconnectToStream: async (options) => {
 				const stream = await base.reconnectToStream(options);
 				// null is the server's 204 — nothing is live, and the runtime

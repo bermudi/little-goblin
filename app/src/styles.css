@@ -7660,6 +7660,13 @@ button.link:hover {
 .settings .card > .ghost {
 	margin: 0.6rem 0.9rem;
 }
+/* The subagents row's inline form: inset to the row's own padding so it
+   belongs to its row, and no card-edge divider above it (the card's
+   sibling divider is suppressed). */
+.settings .sub-form {
+	padding: 0 0.9rem 0.4rem;
+	border-top: 0;
+}
 @media (max-width: 639px) {
 	.settings .row,
 	.settings .row.col {

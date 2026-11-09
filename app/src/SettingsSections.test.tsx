@@ -615,20 +615,69 @@ describe("Capabilities + memory", () => {
 		expect(savedBodies.at(-1)?.capabilities).toEqual({ sandbox: true });
 	});
 
-	test("a needs-setup capability renders disabled with the hint", async () => {
+	test("a needs-setup capability without an in-app form renders disabled with the hint", async () => {
 		caps = CAPS({
-			subagents: {
+			delegation: {
 				state: "needs-setup",
-				hint: "set it up in goblin.json5 first (docs/configuration.md)",
+				hint: "add a coding agent in Settings → Delegation",
 			},
+		});
+		await mountSettings();
+		await openSection("Capabilities");
+		const sw = container.querySelector(
+			'[aria-label="Delegate to coding agents"]',
+		) as HTMLButtonElement;
+		expect(sw.disabled).toBe(true);
+		expect(container.textContent).toContain("add a coding agent in Settings → Delegation");
+	});
+
+	test("needs-setup subagents can be set up in place and saved", async () => {
+		caps = CAPS({
+			subagents: { state: "needs-setup", hint: "pick a model for the worker or computer use" },
 		});
 		await mountSettings();
 		await openSection("Capabilities");
 		const sw = container.querySelector(
 			'[aria-label="Subagents & computer use"]',
 		) as HTMLButtonElement;
-		expect(sw.disabled).toBe(true);
-		expect(container.textContent).toContain("set it up in goblin.json5 first");
+		expect(sw.disabled).toBe(false);
+		expect(container.textContent).toContain("pick a model for the worker or computer use");
+		await click(sw);
+		// Neither type is on yet — the form says so.
+		expect(container.textContent).toContain("Pick at least one.");
+		// Code worker on → prefilled fields and the sandbox note (sandbox
+		// is off in this fixture).
+		await click(container.querySelector('[aria-label="Code worker"]'));
+		expect(container.textContent).toContain("The code worker also needs Sandboxed shell.");
+		const value = (v: string) =>
+			[...container.querySelectorAll("input")].some((i) => (i as HTMLInputElement).value === v);
+		expect(value("glm-5.3")).toBe(true);
+		expect(value("https://api.z.ai/api/coding/paas/v4")).toBe(true);
+		const thinking = container.querySelector(
+			'select[aria-label="thinking for the code worker"]',
+		) as HTMLSelectElement;
+		expect(thinking.value).toBe("high");
+		// A saved key from the fixture's authNames list.
+		const key = container.querySelector('select[aria-label="key for the code worker"]');
+		await act(async () => {
+			Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, "value")!.set!.call(
+				key,
+				"fixture",
+			);
+			key!.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+		});
+		await waitFor(() => savedBodies.length > 0, "subagents save");
+		expect(savedBodies.at(-1)?.capabilities).toEqual({ subagents: true });
+		expect(savedBodies.at(-1)?.subagents).toEqual({
+			worker: {
+				auth: "fixture",
+				id: "glm-5.3",
+				baseUrl: "https://api.z.ai/api/coding/paas/v4",
+				thinking: "high",
+			},
+			computer: null,
+			desktopImage: "localhost/goblin-desktop:1",
+		});
 	});
 
 	test("chatgpt pending → signed-in reloads the settings GET when clean", async () => {

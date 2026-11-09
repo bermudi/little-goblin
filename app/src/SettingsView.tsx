@@ -33,6 +33,7 @@ import {
 	EMPTY_DRAFT,
 	type ProvDraft,
 	type SettingsDraft,
+	subagentsDraftFromWire,
 	THINKING_ORDER,
 	type TrDraft,
 	type TrKindStash,
@@ -98,6 +99,7 @@ const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
 	logLevel: "log level",
 	memory: "memory",
 	delegation: "delegation",
+	subagents: "subagents",
 };
 
 export function SettingsView({
@@ -152,6 +154,7 @@ export function SettingsView({
 		fetch: null,
 		memory: null,
 		delegation: null,
+		subagents: null,
 	});
 	const ttsStash = useRef<TtsKindStash>({});
 	const trStash = useRef<TrKindStash>({});
@@ -218,7 +221,11 @@ export function SettingsView({
 					setLoadErr("The settings endpoint predates this client — restart goblin, then reload.");
 					return;
 				}
-				const { draft: d, providers } = draftFromConfig(data.config, data.capabilities);
+				const { draft: d, providers } = draftFromConfig(
+					data.config,
+					data.capabilities,
+					data.subagents,
+				);
 				// Parked content belongs in the restoration stash, not the active
 				// draft: switches must stay off until the operator enables them.
 				const restored = draftFromConfig({ ...data.config, ...data.config.parked }).draft;
@@ -230,6 +237,12 @@ export function SettingsView({
 					fetch: restored.fetch,
 					memory: restored.memory,
 					delegation: restored.delegation,
+					// The wire block already prefers the active block, so it
+					// carries the parked copy only when nothing is active.
+					subagents:
+						data.subagents === null || data.subagents === undefined
+							? null
+							: subagentsDraftFromWire(data.subagents),
 				};
 				setCapStates(data.capabilities ?? null);
 				setHasAppToken(data.config.appToken !== undefined);

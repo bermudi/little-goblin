@@ -14,6 +14,8 @@ import {
 	emptyTranscription,
 	type ProvDraft,
 	type SettingsDraft,
+	type SubagentModelDraft,
+	type SubagentsDraft,
 	switchProviderKind,
 	switchTranscriptionKind,
 	switchTtsKind,
@@ -94,6 +96,7 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 	logLevel: "info",
 	memory: null,
 	delegation: null,
+	subagents: null,
 	...over,
 });
 
@@ -345,6 +348,77 @@ describe("validateDraft", () => {
 		expect(body.operators).toEqual([]);
 		expect(body.telegram.enabled).toBe(false);
 		expect(body.telegram).not.toHaveProperty("model");
+	});
+
+	// A subagents draft exists only while the switch is on — an
+	// incomplete one holds the autosave instead of surfacing the
+	// server's neither-type 422 in the savebar.
+	const WORKER_MODEL: SubagentModelDraft = {
+		auth: "fixture",
+		id: "glm-5.3",
+		baseUrl: "https://api.z.ai/api/coding/paas/v4",
+		thinking: "high",
+	};
+	const COMPUTER_MODEL: SubagentModelDraft = {
+		auth: "fixture",
+		id: "glm-5.3-flash",
+		baseUrl: "https://api.z.ai/api/coding/paas/v4",
+		thinking: "low",
+	};
+	const subDraft = (over: Partial<SubagentsDraft> = {}): SubagentsDraft => ({
+		worker: WORKER_MODEL,
+		computer: null,
+		desktopImage: "localhost/goblin-desktop:1",
+		...over,
+	});
+
+	test("an incomplete subagents draft holds the autosave with its reason", () => {
+		// The switch just flipped on — no type picked yet.
+		expect(validateDraft(draft({ subagents: subDraft({ worker: null }) }), [prov()])).toBe(
+			"Pick a code worker or computer use for subagents.",
+		);
+		for (const [patch, reason] of [
+			[{ auth: " " }, "Pick a key for the code worker."],
+			[{ id: "" }, "The code worker needs a model."],
+			[{ baseUrl: "" }, "The code worker needs a base url."],
+		] as const) {
+			expect(
+				validateDraft(draft({ subagents: subDraft({ worker: { ...WORKER_MODEL, ...patch } }) }), [
+					prov(),
+				]),
+			).toBe(reason);
+		}
+		for (const [patch, reason] of [
+			[{ auth: "" }, "Pick a key for computer use."],
+			[{ id: " " }, "Computer use needs a model."],
+			[{ baseUrl: "" }, "Computer use needs a base url."],
+		] as const) {
+			expect(
+				validateDraft(
+					draft({
+						subagents: subDraft({ worker: null, computer: { ...COMPUTER_MODEL, ...patch } }),
+					}),
+					[prov()],
+				),
+			).toBe(reason);
+		}
+		expect(
+			validateDraft(
+				draft({
+					subagents: subDraft({ worker: null, computer: COMPUTER_MODEL, desktopImage: "" }),
+				}),
+				[prov()],
+			),
+		).toBe("Computer use needs a desktop image.");
+	});
+
+	test("complete subagents drafts validate — worker-only and computer-only", () => {
+		expect(validateDraft(draft({ subagents: subDraft() }), [prov()])).toBeNull();
+		expect(
+			validateDraft(draft({ subagents: subDraft({ worker: null, computer: COMPUTER_MODEL }) }), [
+				prov(),
+			]),
+		).toBeNull();
 	});
 });
 

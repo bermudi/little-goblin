@@ -417,6 +417,19 @@ describe("driveStream — transient transport step retries (#191)", () => {
 		}
 	});
 
+	test("a 1min-budget step (maxRetries 0) is not re-dispatched on a transient error", async () => {
+		const failing = scriptedModel([[reset()], textReply("never")]);
+		const r = rig([], {
+			step: { model: failing.model, system: "test", maxRetries: 0, transientRetryDelayMs: 0 },
+		});
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("failed");
+		// The lane denies retries because every POST bills — the
+		// transient path must not spend the request the step budget
+		// already refused.
+		expect(failing.prompts).toHaveLength(1);
+	});
+
 	test("the budget is one retry per step — a second transient error ends the stream", async () => {
 		const failing = scriptedModel([[reset()], [reset()], textReply("never")]);
 		const r = rig([], { step: { model: failing.model, system: "test", transientRetryDelayMs: 0 } });

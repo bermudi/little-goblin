@@ -24,6 +24,7 @@ import {
 import { makeToolCallRepair } from "../agent/tool-repair.ts";
 import type { AppLiveContext, AppQuota } from "../http/app-wire.ts";
 import { log } from "../log.ts";
+import { awaitRetryDelay, RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
 import type { EvidenceLimits, ToolCallDigest } from "../reviewer.ts";
 import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
@@ -194,29 +195,12 @@ export interface StreamStep {
 	label?: string;
 	contextWindow?: number;
 	// Provider retry rule for the call — 1min carries 0, absent keeps
-	// the SDK default.
+	// the SDK default. Gates both the SDK ladder and the transient
+	// step retry below; the content-filter re-ask is the exception.
 	maxRetries?: number;
 	// Delay before the transient-transport step retry re-dispatches.
 	// Absent keeps the SDK retry ladder's initial delay; tests zero it.
 	transientRetryDelayMs?: number;
-}
-
-// The SDK retry ladder's initialDelayInMs default — one delay story for
-// every retry goblin grants.
-const TRANSIENT_RETRY_DELAY_MS = 2000;
-
-// A stopped turn must not hold the lane for the full backoff.
-function awaitRetryDelay(ms: number, signal: AbortSignal): Promise<void> {
-	if (ms <= 0 || signal.aborted) return Promise.resolve();
-	return new Promise((resolve) => {
-		const timer = setTimeout(finish, ms);
-		function finish(): void {
-			clearTimeout(timer);
-			signal.removeEventListener("abort", finish);
-			resolve();
-		}
-		signal.addEventListener("abort", finish, { once: true });
-	});
 }
 
 export interface StreamDeps<M extends WireMember> {
@@ -582,10 +566,14 @@ export async function driveStream<M extends WireMember>(
 				// pre-stream surface is the transport middleware's lane
 				// (agent/providers.ts).
 				deps.assertAuthority();
-				const delayMs = deps.step.transientRetryDelayMs ?? TRANSIENT_RETRY_DELAY_MS;
+				const delayMs = deps.step.transientRetryDelayMs ?? RETRY_INITIAL_DELAY_MS;
 				// Sleep only when a retry will actually be granted — the
 				// budget-spent and aborted paths must not pay the delay.
-				if (!deps.signal.aborted && retryGrantedStep !== stepCount) {
+				// The lane's own retry rule applies here the same as the
+				// pre-stream transport middleware: a 1min step carries
+				// maxRetries 0 (every POST bills), so the transient
+				// re-dispatch is denied.
+				if (!deps.signal.aborted && deps.step.maxRetries !== 0 && retryGrantedStep !== stepCount) {
 					await awaitRetryDelay(delayMs, deps.signal);
 					if (!deps.signal.aborted) {
 						retryGrantedStep = stepCount;
@@ -603,12 +591,18 @@ export async function driveStream<M extends WireMember>(
 				}
 				// An aborted turn takes the fence path below — one story, not two.
 				if (!deps.signal.aborted) {
-					log.warn("transient model stream error — step retry budget spent", error, {
-						conversation: convId,
-						epoch,
-						model: modelLabel,
-						attempt: transientRetries,
-					});
+					log.warn(
+						deps.step.maxRetries === 0
+							? "transient model stream error — lane carries no retry budget (every POST bills)"
+							: "transient model stream error — step retry budget spent",
+						error,
+						{
+							conversation: convId,
+							epoch,
+							model: modelLabel,
+							attempt: transientRetries,
+						},
+					);
 				}
 			}
 			rawError = error;

@@ -39,8 +39,8 @@ import { sinkDelivery } from "./turn/delivery.ts";
 import { isClaudeStep, type ModelStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
 import {
-	COMPACT_AT_PCT,
 	ContextOverflowError,
+	compactTriggerTokens,
 	failureFromStream,
 	overflowHoldable,
 	PreemptCompactError,
@@ -65,21 +65,19 @@ import type { TurnJournal } from "./turn-journal.ts";
 import type { WindowCapture } from "./window-capture.ts";
 
 const LOOP_CHECK_EVERY = 16;
-// design/compaction.md → Budgets: absolute at scale (the 1M-era rule —
+// design/compaction.md → Budgets: the verbatim tail is 20k tokens —
+// pi/OpenClaw's keepRecentTokens — absolute at scale (the 1M-era rule:
 // fractions of a big window are consumption rules, not safety rules),
 // clamped to the window's own fractions on small models so a 32k window
 // keeps a working tail and chunk instead of a tail that swallows it.
-const COMPACT_TAIL_TOKENS = 30_000;
+const COMPACT_TAIL_TOKENS = 20_000;
 const COMPACT_CHUNK_TOKENS = 100_000;
-// design/compaction.md → Triggers: the fidelity arm — the unfolded span
-// since the previous boundary, in estimated tokens (chars/4).
-const COMPACT_FIDELITY_SPAN_TOKENS = 120_000;
 
 // The compaction budgets as a pure function (design/compaction.md →
-// Budgets) — exported for the ruling's tests. Small windows keep today's
-// ratios exactly (the caps never bind below 120k/200k); at scale the
-// absolute values take over. A null window (manual /compact with the
-// catalog silent) takes the absolute values.
+// Budgets) — exported for the ruling's tests. Small windows keep the
+// window's own fractions exactly (the caps never bind below 80k tail /
+// 200k chunk); at scale the absolute values take over. A null window
+// (manual /compact with the catalog silent) takes the absolute values.
 export function compactionBudgets(contextWindow: number | null): {
 	tailTokenBudget: number;
 	inputTokenBudget: number;
@@ -1009,35 +1007,24 @@ export class Runtime {
 				digest: recovery ? [...recovery.digest] : [],
 				filterRetryUsed,
 				overflowRecoverable: overflowHoldable(recovery, this.deps.compaction !== undefined),
-				// design/compaction.md → Timing: the step-boundary arms. Wired
-				// only when the fold-resume is possible — the gate and the budget
-				// are the same invariant (one fold-resume per logical turn), so an
-				// already-resumed attempt keeps dispatching and the 85% context
-				// landing stays its backstop.
+				// design/compaction.md → Timing: the step-boundary trigger.
+				// Wired only when the fold-resume is possible — the gate and
+				// the budget are the same invariant (one fold-resume per
+				// logical turn), so an already-resumed attempt keeps
+				// dispatching and the 85% context landing stays its backstop.
 				...(this.deps.compaction !== undefined && recovery?.overflowed !== true
 					? {
-							preemptCheck: (info: {
-								projectedInputTokens: number | null;
-								historyChars: number;
-								stepNumber: number;
-							}) => {
+							preemptCheck: (info: { projectedInputTokens: number | null; stepNumber: number }) => {
 								const previousFold = store.getCompaction(convId);
-								const arm = preemptArm(
-									{
-										...info,
-										summaryChars: previousFold?.summary.length ?? 0,
-										contextWindow: step.contextWindow,
-									},
-									{
-										pressurePct: COMPACT_AT_PCT / 100,
-										fidelitySpanTokens: COMPACT_FIDELITY_SPAN_TOKENS,
-									},
-								);
+								const arm = preemptArm({
+									projectedInputTokens: info.projectedInputTokens,
+									contextWindow: step.contextWindow,
+								});
 								if (arm === null) return null;
 								// Never interrupt for a fold that cannot happen: a
 								// no-op compact on the recovery rail is a TERMINAL
 								// error, and the live turn's own growth is never
-								// foldable — only stored history is. An arm with
+								// foldable — only stored history is. A trigger with
 								// nothing to fold stands down; a genuinely doomed
 								// turn still fails honestly through the overflow
 								// rail (a real 400, not a projection).
@@ -1194,7 +1181,9 @@ export class Runtime {
 			});
 			// Keep the lane busy through auto-compaction so successors see a whole
 			// compacted view; failure writes no boundary and retries later.
-			if (landed.window && landed.window.pct >= COMPACT_AT_PCT) {
+			// design/compaction.md → Triggers: the landed input against the
+			// same trigger the step boundary checks.
+			if (landed.window && landed.window.input >= compactTriggerTokens(landed.window.limit)) {
 				try {
 					await this.doCompact(conv, "threshold");
 				} catch (err) {

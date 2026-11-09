@@ -9,10 +9,22 @@ import type { ToolCallDigest } from "../reviewer.ts";
 import type { LoopTurnState } from "./state.ts";
 import type { LiveChunks, StreamOutcome } from "./stream.ts";
 
-// Completed turns at/above this compact in-lane — the lane stays occupied
-// until the summary finishes so the next turn sees one whole view. The
-// context view serves it so the window page states it, never copies it.
-export const COMPACT_AT_PCT = 75;
+// design/compaction.md → Triggers: the one fold trigger — the lower of
+// 50% of the catalog window and an absolute 128k cap. Every call
+// re-sends the whole context, so the cap bounds the per-call input bill
+// on a 1M window. The same threshold drives the step-boundary pre-empt,
+// the end-of-turn backstop, and the app's compaction gauge.
+export const COMPACT_TRIGGER_RATIO = 0.5;
+export const COMPACT_TRIGGER_CAP_TOKENS = 128_000;
+
+// The trigger in tokens for a catalog window; an unknown window fires
+// at the cap alone.
+export function compactTriggerTokens(contextWindow: number | undefined | null): number {
+	if (contextWindow === undefined || contextWindow === null) {
+		return COMPACT_TRIGGER_CAP_TOKENS;
+	}
+	return Math.min(Math.round(contextWindow * COMPACT_TRIGGER_RATIO), COMPACT_TRIGGER_CAP_TOKENS);
+}
 
 export interface TurnRecovery {
 	conversation: Conversation;
@@ -68,7 +80,7 @@ export class ContextOverflowError extends Error {
 // the partial lives.
 export class PreemptSignal extends Error {
 	constructor(
-		readonly arm: "pressure" | "fidelity",
+		readonly arm: "pressure",
 		readonly stepNumber: number,
 	) {
 		super("compaction pre-empt — the step boundary folded the context before dispatch");
@@ -87,7 +99,7 @@ export class PreemptCompactError extends ContextOverflowError {
 		toolCalls: string[],
 		digest: { id: string; entry: ToolCallDigest }[],
 		loop: LoopTurnState,
-		readonly arm: "pressure" | "fidelity",
+		readonly arm: "pressure",
 		readonly stepNumber: number,
 	) {
 		super(partial, seenText, toolCalls, digest, loop);
@@ -95,35 +107,23 @@ export class PreemptCompactError extends ContextOverflowError {
 	}
 }
 
-// The two arms (design/compaction.md → Triggers). Pressure budgets the
-// UPCOMING request — the last completed step's reported input plus the
-// growth since its dispatch (assistant output, tool results, steers),
-// estimated at chars/4 — because a tool result can blow the window in one
-// step while the previous request read small. Fidelity estimates the
-// unfolded span since the previous boundary (history chars minus the
-// carried summary, chars/4) — it exists because the fold is the lossy
-// step and span size sets its loss. Fidelity wins ties: it is checked
-// first and fires at any window. Both arms are gate-checked for
-// foldability by the runtime before any interruption — an arm with
-// nothing stored to fold stands down.
+// The one arm (design/compaction.md → Triggers). It budgets the UPCOMING
+// request — the last completed step's reported input plus the growth
+// since its dispatch (assistant output, tool results, steers), estimated
+// at chars/4 — because a tool result can blow the window in one step
+// while the previous request read small. The runtime gate-checks
+// foldability before any interruption — a trigger with nothing stored
+// to fold stands down.
 export interface PreemptInfo {
-	/** Null before the first completed step — pressure cannot fire blind. */
+	/** Null before the first completed step — no reported input to project from. */
 	projectedInputTokens: number | null;
-	historyChars: number;
-	summaryChars: number;
 	contextWindow: number | undefined;
 }
 
-export function preemptArm(
-	info: PreemptInfo,
-	arms: { pressurePct: number; fidelitySpanTokens: number },
-): "pressure" | "fidelity" | null {
-	const span = Math.ceil(Math.max(0, info.historyChars - info.summaryChars) / 4);
-	if (span >= arms.fidelitySpanTokens) return "fidelity";
+export function preemptArm(info: PreemptInfo): "pressure" | null {
 	if (
-		info.contextWindow !== undefined &&
 		info.projectedInputTokens !== null &&
-		info.projectedInputTokens >= info.contextWindow * arms.pressurePct
+		info.projectedInputTokens >= compactTriggerTokens(info.contextWindow)
 	) {
 		return "pressure";
 	}

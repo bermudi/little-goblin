@@ -246,9 +246,8 @@ export interface StreamDeps<M extends WireMember> {
 	// (one fold-resume per logical turn; a fenced turn takes the fence path).
 	preemptCheck?(info: {
 		projectedInputTokens: number | null;
-		historyChars: number;
 		stepNumber: number;
-	}): "pressure" | "fidelity" | null;
+	}): "pressure" | null;
 	evidence: EvidenceLimits | undefined;
 	skillWatch?: SkillWatch | undefined;
 	journal?: TurnJournal | undefined;
@@ -297,7 +296,7 @@ export type StreamOutcome =
 			// Set when the failure is a step-boundary pre-empt, not a provider
 			// error: the recovery rail is the same, the compact reason and the
 			// operator-facing story are not.
-			preempt?: { arm: "pressure" | "fidelity"; step: number };
+			preempt?: { arm: "pressure"; step: number };
 			partial: UIMessage | null;
 			seenText: boolean;
 			toolCalls: string[];
@@ -352,7 +351,7 @@ export async function driveStream<M extends WireMember>(
 	// The pre-empt decision, captured when the signal surfaces so the
 	// failed outcome can name the arm and step. Also read only after the
 	// stream settles — declared here for the same TDZ reason.
-	let preemptInfo: { arm: "pressure" | "fidelity"; step: number } | null = null;
+	let preemptInfo: { arm: "pressure"; step: number } | null = null;
 	const partialMessages: ModelMessage[] = [];
 	let steerMark = deps.steerMarkSeed;
 	const ownedInputSeqs = new Set<number>(deps.ownedInputSeqs);
@@ -383,7 +382,6 @@ export async function driveStream<M extends WireMember>(
 					: null;
 			const arm = deps.preemptCheck({
 				projectedInputTokens,
-				historyChars: historyEstimate,
 				stepNumber,
 			});
 			if (arm !== null) {

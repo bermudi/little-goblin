@@ -854,18 +854,11 @@ describe("driveStream", () => {
 		expect(head.chunks).toEqual(r.live.chunks);
 	});
 
-	// The runtime's real closure: pressure reads the last completed
-	// step's reported input; fidelity the unfolded span. Reused so the
-	// stream tests exercise the same decision the runtime installs.
-	const realArms = (info: {
-		projectedInputTokens: number | null;
-		historyChars: number;
-		stepNumber: number;
-	}) =>
-		preemptArm(
-			{ ...info, summaryChars: 0, contextWindow: 1000 },
-			{ pressurePct: 0.75, fidelitySpanTokens: 120_000 },
-		);
+	// The runtime's real closure: the projected upcoming request against
+	// the trigger. Reused so the stream tests exercise the same decision
+	// the runtime installs.
+	const realArms = (info: { projectedInputTokens: number | null; stepNumber: number }) =>
+		preemptArm({ projectedInputTokens: info.projectedInputTokens, contextWindow: 1000 });
 
 	test("a pre-empt arm at the step boundary stops the next call and holds the rail for the fold-resume", async () => {
 		const r = rig([toolCallStep("c1", 900), textReply("never reached")]);
@@ -908,73 +901,6 @@ describe("driveStream", () => {
 		expect(outcome.kind).toBe("ok");
 		expect(r.prompts).toHaveLength(2);
 		expect(consulted).toBe(0);
-	});
-
-	test("preemptArm: fidelity reads the unfolded span, pressure the reported input", () => {
-		const arms = { pressurePct: 0.75, fidelitySpanTokens: 120_000 };
-		// Fidelity: history chars over the carried summary, chars/4.
-		expect(
-			preemptArm(
-				{
-					projectedInputTokens: null,
-					historyChars: 480_001,
-					summaryChars: 0,
-					contextWindow: undefined,
-				},
-				arms,
-			),
-		).toBe("fidelity");
-		expect(
-			preemptArm(
-				{
-					projectedInputTokens: null,
-					historyChars: 480_001,
-					summaryChars: 400_000,
-					contextWindow: undefined,
-				},
-				arms,
-			),
-		).toBeNull();
-		// Pressure: the last step's input against the catalog window.
-		expect(
-			preemptArm(
-				{
-					projectedInputTokens: 750_000,
-					historyChars: 0,
-					summaryChars: 0,
-					contextWindow: 1_000_000,
-				},
-				arms,
-			),
-		).toBe("pressure");
-		expect(
-			preemptArm(
-				{
-					projectedInputTokens: 749_999,
-					historyChars: 0,
-					summaryChars: 0,
-					contextWindow: 1_000_000,
-				},
-				arms,
-			),
-		).toBeNull();
-		expect(
-			preemptArm(
-				{
-					projectedInputTokens: 750_000,
-					historyChars: 0,
-					summaryChars: 0,
-					contextWindow: undefined,
-				},
-				arms,
-			),
-		).toBeNull();
-		expect(
-			preemptArm(
-				{ projectedInputTokens: null, historyChars: 0, summaryChars: 0, contextWindow: 1_000_000 },
-				arms,
-			),
-		).toBeNull();
 	});
 
 	test("an unrecoverable failure reaches the wire and reports its text", async () => {

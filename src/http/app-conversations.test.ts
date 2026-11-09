@@ -1145,6 +1145,8 @@ test("conversation context reports last-turn usage, limit, and cache rates", asy
 			output: 2,
 			limit: 1000,
 			pct: 0.1,
+			// design/compaction.md → Triggers: 50% of the 1000 window.
+			compactAtPct: 50,
 			turns: 1,
 			cacheHitRate: null,
 			avgCacheHitRate: null,

@@ -1729,31 +1729,35 @@ describe("context overflow recovery", () => {
 		// 262k tail, 50% a 524k summarizer call; neither is a bigger
 		// version of the small-window behavior.
 		expect(compactionBudgets(1_048_576)).toEqual({
-			tailTokenBudget: 30_000,
+			tailTokenBudget: 20_000,
 			inputTokenBudget: 100_000,
 		});
 		expect(compactionBudgets(200_000)).toEqual({
-			tailTokenBudget: 30_000,
+			tailTokenBudget: 20_000,
 			inputTokenBudget: 100_000,
 		});
-		// Small models keep today's ratios exactly — the caps never bind
-		// below 120k (tail) / 200k (chunk).
+		// Small models keep the window's own fractions — the caps never
+		// bind below 80k (tail) / 200k (chunk).
 		expect(compactionBudgets(65_536)).toEqual({
 			tailTokenBudget: 16_384,
 			inputTokenBudget: 32_768,
 		});
+		expect(compactionBudgets(64_000)).toEqual({
+			tailTokenBudget: 16_000,
+			inputTokenBudget: 32_000,
+		});
 		expect(compactionBudgets(32_768)).toEqual({ tailTokenBudget: 8_192, inputTokenBudget: 16_384 });
 		expect(compactionBudgets(1_000)).toEqual({ tailTokenBudget: 250, inputTokenBudget: 500 });
 		// A null window (manual /compact, catalog silent) takes absolutes.
-		expect(compactionBudgets(null)).toEqual({ tailTokenBudget: 30_000, inputTokenBudget: 100_000 });
+		expect(compactionBudgets(null)).toEqual({ tailTokenBudget: 20_000, inputTokenBudget: 100_000 });
 	});
 
-	test("a fresh conversation whose live tool output crosses the fidelity threshold is not interrupted", async () => {
-		// design/compaction.md → Timing (2026-10-25): the fidelity arm is
-		// maintenance, never a killer. The live turn's growth is not
-		// foldable — with nothing stored to fold, the arm stands down and
-		// the turn proceeds on the big window. Regression: this exact shape
-		// previously terminated the turn with "nothing left to compact".
+	test("a fresh conversation whose live tool output crosses the trigger is not interrupted", async () => {
+		// design/compaction.md → Timing: the trigger is maintenance, never
+		// a killer. The live turn's growth is not foldable — with nothing
+		// stored to fold, the arm stands down and the turn proceeds on the
+		// big window. Regression: this exact shape previously terminated
+		// the turn with "nothing left to compact".
 		const s = scripted(
 			[
 				[
@@ -1771,7 +1775,8 @@ describe("context overflow recovery", () => {
 			tools: {
 				probe: tool({
 					inputSchema: z.object({}),
-					// ~130k estimated tokens — past the 120k fidelity arm.
+					// ~130k estimated tokens — past the 128k trigger cap on a
+					// 1M window (50% would be ~524k).
 					execute: async () => "x".repeat(520_000),
 				}),
 			},
@@ -1832,7 +1837,7 @@ describe("context overflow recovery", () => {
 			},
 		});
 		// ~12k tokens stored against a 2k tail budget (25% of 8k, under
-		// the 30k cap) — a fold is real.
+		// the 20k cap) — a fold is real.
 		seedBigExchanges(r.store, r.conv.id, 6, 4_000);
 		const sink = submit(r, "run the probe");
 		expect(await sink.done).toEqual({ kind: "completed" });
@@ -2271,9 +2276,10 @@ describe("cache stability", () => {
 		r.store.close();
 	});
 
-	test("a completed turn at ≥75% of the window compacts; below it does not", async () => {
+	test("a completed turn at the compaction trigger folds; below it does not", async () => {
 		// Seed three big exchanges + the turn's own: the compactor must fold
 		// the first three into a summary and keep the live one whole.
+		// Window 1000 → trigger 500 tokens (50%); 750 lands over it.
 		const summaries: string[] = [];
 		const r = rig({
 			model: scriptedEdge([textParts("ok", 750)]).model,
@@ -2296,9 +2302,9 @@ describe("cache stability", () => {
 		// resolving only means the reply landed. Poll for the pointer,
 		// bounded, instead of a fixed sleep.
 		await waitUntil(() => r.store.getCompaction(r.conv.id) !== null, "compaction pointer lands");
-		// Exactly 75% is inclusive — the trigger fired. The compactor ran
-		// in-lane before onDone settled the next queued turn's snapshot —
-		// here, before done resolves.
+		// Exactly at the trigger is inclusive — the fold fired. The
+		// compactor ran in-lane before onDone settled the next queued
+		// turn's snapshot — here, before done resolves.
 		expect(summaries).toHaveLength(1);
 		expect(summaries[0]).toContain("q0");
 		const pointer = r.store.getCompaction(r.conv.id);
@@ -2323,9 +2329,10 @@ describe("cache stability", () => {
 		expect(lastText?.text).toBe("ok");
 		r.store.close();
 
-		// Just below the threshold (74%): no compaction, no pointer.
+		// Just below the trigger (490 of the 500-token trigger): no
+		// compaction, no pointer.
 		const r2 = rig({
-			model: scriptedEdge([textParts("ok", 740)]).model,
+			model: scriptedEdge([textParts("ok", 490)]).model,
 			step: { contextWindow: 1000 },
 			deps: {
 				compaction: {
@@ -2477,8 +2484,9 @@ describe("cache stability", () => {
 		const started = deferred<void>();
 		const gate = deferred<string>();
 		let summarizeCalls = 0;
-		// Turn one crosses the threshold (75%); the barrier turn below stays
-		// far under it so it triggers no second compaction.
+		// Turn one crosses the trigger (750 of the 500-token trigger on a
+		// 1000 window); the barrier turn below stays far under it so it
+		// triggers no second compaction.
 		const edge = scriptedEdge([textParts("ok", 750)], { extra: textParts("ok", 50) });
 		const r = rig({
 			model: edge.model,

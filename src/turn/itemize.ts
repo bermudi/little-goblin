@@ -188,9 +188,9 @@ export function measurePrompt(
 	};
 }
 
-// History size for the compaction pre-emption arms, which convert chars
-// to tokens at /4: media is charged a fixed cost, not its base64 length,
-// so one inlined photo cannot read as a six-figure token span.
+// History size for the compaction pre-emption trigger, which converts
+// chars to tokens at /4: media is charged a fixed cost, not its base64
+// length, so one inlined photo cannot read as a six-figure token span.
 export function estimateHistoryChars(messages: readonly ModelMessage[]): number {
 	let total = 0;
 	for (const m of messages) total += messageChars(m, () => MEDIA_ESTIMATE_CHARS).history;

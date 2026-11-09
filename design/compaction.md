@@ -24,8 +24,9 @@ earlier deviations from pi were reasoning without measurement. The ruling:
 default. A goblin difference must name a goblin-only constraint or a measured
 result, in this file. "It seemed better" is not a reason.
 
-**Status:** ruling only (2026-11-09). Prod still runs the previous summary
-method (75% pressure arm, 120k span arm, 30k tail). Superseded and removed
+**Status:** Staging 1's trigger and 20k tail are built (#399); its
+split-turn cut is not (#403). Stage 3's fold marks are built (#401);
+stage 2 is not. Superseded and removed
 from this file: the ledger/atlas/narrative method, the understudy, and the
 known-missing manifest — the audit and lean parts below cover the same
 ground with evidence behind them. Git history has the old text.
@@ -41,8 +42,8 @@ A fold fires at the **lower** of:
 
 So a 1M window folds at 128k; a 200k window at 100k; a 64k window at 32k.
 The previous 75% pressure arm and the 120k span-fidelity arm are retired.
-Both values are named constants beside `compactionBudgets` in
-`src/runtime.ts`.
+Both values are named constants in `src/turn/overflow.ts` (the
+pre-emption arm needs them there without an import cycle).
 
 Hermes also runs an 85% check at the gateway, before each incoming message,
 for sessions that grew between turns. Goblin does not add one: the

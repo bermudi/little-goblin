@@ -933,8 +933,8 @@ the next turn, then folds the raw parts away.
   the window.
 - Tokens, limit, share and cache come from the gauge's `/context` read, not
   from the window route. `compactAtPct` rides that read (the runtime's
-  `COMPACT_AT_PCT`, now in `src/turn/overflow.ts`) so the client never copies
-  the 75. When the read has no input or limit (e.g. the provider reported no
+  `compactTriggerTokens`, in `src/turn/overflow.ts`) so the client never
+  copies the trigger. When the read has no input or limit (e.g. the provider reported no
   usage) the tiles show "—" and the page says why; it never estimates tokens.
 - "What takes the space": a table of the itemized parts, biggest first, with
   chars, tokens (only where the context read has that part), share and a

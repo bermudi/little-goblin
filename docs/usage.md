@@ -30,7 +30,7 @@ current settings — never a mix.
 |---|---|
 | `/voice` | Toggles voice-note replies for this topic. Speech is on by default; it needs `ffmpeg` and can be turned off with `tts: ""`. |
 | `/stop` | Interrupts the running reply and drops anything queued behind it. |
-| `/compact` | Compacts this topic's older history into a summary right now — the same thing the bot does automatically once a turn crosses 75% of the context window. Recent messages stay; nothing is deleted. |
+| `/compact` | Compacts this topic's older history into a summary right now — the same thing the bot does automatically once a turn crosses the compaction trigger (the lower of half the model's context window and 128,000 tokens). Recent messages stay; nothing is deleted. |
 | `/memory` | With no argument: memory status (health, queue, last recall, blocked rows) and whether this topic is included. `/memory on`·`off` set per-topic inclusion; `/memory retry`·`dismiss` handle blocked retention. [Memory](memory.md) has the full picture. |
 | `/forget` | Deletes remembered content: `/forget <query>` lists matching sources, `/forget delete <n>` removes one for good — irreversible, and suppressed from future retention. |
 | `/start` | A canned hello (Telegram sends it when a chat first opens). Nothing more. |

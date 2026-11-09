@@ -1,3 +1,4 @@
+import { foldSummary } from "./testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -1427,7 +1428,7 @@ describe("context overflow recovery", () => {
 					contextWindow: () => 1000,
 					summarize: async (_conv, _system, prompt) => {
 						summaries.push(prompt);
-						return "the folded era";
+						return foldSummary("the folded era", prompt);
 					},
 				},
 			},
@@ -1484,7 +1485,7 @@ describe("context overflow recovery", () => {
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 1000,
-					summarize: async () => "folded past",
+					summarize: async (_c, _s, prompt) => foldSummary("folded past", prompt),
 				},
 			},
 		});
@@ -1553,7 +1554,7 @@ describe("context overflow recovery", () => {
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 1000,
-					summarize: async () => "folded past",
+					summarize: async (_c, _s, prompt) => foldSummary("folded past", prompt),
 				},
 			},
 		});
@@ -1631,7 +1632,7 @@ describe("context overflow recovery", () => {
 					contextWindow: () => 1000,
 					summarize: async (_conv, _system, prompt) => {
 						summaryPrompts.push(prompt);
-						return "folded past";
+						return foldSummary("folded past", prompt);
 					},
 				},
 			},
@@ -1684,7 +1685,7 @@ describe("context overflow recovery", () => {
 					contextWindow: () => 1000,
 					summarize: async (_conv, _system, prompt) => {
 						summaryPrompts.push(prompt);
-						return "folded past";
+						return foldSummary("folded past", prompt);
 					},
 				},
 			},
@@ -1832,7 +1833,7 @@ describe("context overflow recovery", () => {
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 8_000,
-					summarize: async () => "folded past",
+					summarize: async (_c, _s, prompt) => foldSummary("folded past", prompt),
 				},
 			},
 		});
@@ -1920,9 +1921,9 @@ describe("context overflow recovery", () => {
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 1000,
-					summarize: async () => {
+					summarize: async (_conv, _system, prompt) => {
 						summarizeCalls++;
-						return "folded";
+						return foldSummary("folded", prompt);
 					},
 				},
 			},
@@ -1951,9 +1952,9 @@ describe("context overflow recovery", () => {
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 1000,
-					summarize: async () => {
+					summarize: async (_conv, _system, prompt) => {
 						summarizeCalls++;
-						return "folded past";
+						return foldSummary("folded past", prompt);
 					},
 				},
 			},
@@ -1986,7 +1987,7 @@ describe("context overflow recovery", () => {
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 1000,
-					summarize: async () => "folded",
+					summarize: async (_c, _s, prompt) => foldSummary("folded", prompt),
 				},
 			},
 		});
@@ -2087,11 +2088,11 @@ describe("context overflow recovery", () => {
 				compaction: {
 					modelRef: () => "fixture",
 					contextWindow: () => 1000,
-					summarize: async () => {
+					summarize: async (_conv, _system, prompt) => {
 						started.resolve();
 						await gate.promise;
 						failRead = true;
-						return "folded fixture history";
+						return foldSummary("folded fixture history", prompt);
 					},
 				},
 			},
@@ -2290,7 +2291,7 @@ describe("cache stability", () => {
 					contextWindow: () => 1000,
 					summarize: async (_conv, _system, prompt) => {
 						summaries.push(prompt);
-						return "the folded era";
+						return foldSummary("the folded era", prompt);
 					},
 				},
 			},
@@ -2311,11 +2312,8 @@ describe("cache stability", () => {
 		// The budget keeps a chunky recent tail (whole exchanges only), so
 		// the cut lands at the end of the second exchange — seq 4 — with the
 		// live exchange (u7/a7) whole in the tail.
-		expect(pointer).toMatchObject({
-			boundarySeq: 4,
-			summary: "the folded era",
-			model: "zai/glm-5.3",
-		});
+		expect(pointer).toMatchObject({ boundarySeq: 4, model: "zai/glm-5.3" });
+		expect(pointer!.summary).toStartWith("the folded era\n");
 		// The record stays whole; the model view is summary + kept tail.
 		expect(r.store.history(r.conv.id)).toHaveLength(8);
 		const view = r.store.modelEntries(r.conv.id);
@@ -2358,7 +2356,7 @@ describe("cache stability", () => {
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 1000,
-					summarize: async () => "folded",
+					summarize: async (_c, _s, prompt) => foldSummary("folded", prompt),
 				},
 			},
 		});
@@ -2396,7 +2394,7 @@ describe("cache stability", () => {
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 1000,
-					summarize: async () => "folded",
+					summarize: async (_c, _s, prompt) => foldSummary("folded", prompt),
 				},
 			},
 		});
@@ -2464,7 +2462,7 @@ describe("cache stability", () => {
 						lookupStarted.resolve();
 						return windowGate.promise.then(() => 1000);
 					},
-					summarize: async () => "must not summarize",
+					summarize: async (_c, _s, prompt) => foldSummary("must not summarize", prompt),
 				},
 			},
 		});
@@ -2584,7 +2582,7 @@ describe("cache stability", () => {
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 1,
-					summarize: async () => "should not run",
+					summarize: async (_c, _s, prompt) => foldSummary("should not run", prompt),
 				},
 			},
 		});
@@ -2618,6 +2616,7 @@ describe("cache stability", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const summarizeStarted = deferred<void>();
 		let summarizeImpl: (signal: AbortSignal) => Promise<string> = async () => "folded";
+		let summaryPrompt = "";
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],
 			store,
@@ -2634,7 +2633,10 @@ describe("cache stability", () => {
 			compaction: {
 				modelRef: () => "m",
 				contextWindow: () => 1000,
-				summarize: (_c, _system, _prompt, signal) => summarizeImpl(signal),
+				summarize: async (_c, _system, prompt, signal) => {
+					summaryPrompt = prompt;
+					return foldSummary(await summarizeImpl(signal), summaryPrompt);
+				},
 			},
 		});
 		try {
@@ -3883,9 +3885,9 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		compaction: {
 			modelRef: (conv) => conv.model!,
 			contextWindow: () => null,
-			summarize: async (conv) => {
+			summarize: async (conv, _system, prompt) => {
 				summaries.push(`${conv.model}:${conv.thinking}`);
-				return "summary";
+				return foldSummary("summary", prompt);
 			},
 		},
 	});
@@ -3957,10 +3959,10 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 		compaction: {
 			modelRef: (row) => row.model!,
 			contextWindow: () => 1000,
-			summarize: async (row) => {
+			summarize: async (row, _system, prompt) => {
 				store.setMeta(row.id, { model: "test/changed", thinking: "low" });
 				summarySelections.push(`${row.model}:${row.thinking}`);
-				return "summary";
+				return foldSummary("summary", prompt);
 			},
 		},
 	});
@@ -4632,7 +4634,7 @@ describe("unlanded-turn progress — error rail", () => {
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 1000,
-					summarize: async () => "folded past",
+					summarize: async (_c, _s, prompt) => foldSummary("folded past", prompt),
 				},
 			},
 		});
@@ -4708,7 +4710,7 @@ describe("unlanded-turn progress — error rail", () => {
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 1000,
-					summarize: async () => "folded past",
+					summarize: async (_c, _s, prompt) => foldSummary("folded past", prompt),
 				},
 			},
 		});
@@ -4781,7 +4783,7 @@ describe("unlanded-turn progress — error rail", () => {
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 1000,
-					summarize: async () => "folded past",
+					summarize: async (_c, _s, prompt) => foldSummary("folded past", prompt),
 				},
 			},
 		});

@@ -1,3 +1,4 @@
+import { foldSummary } from "../testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { tool } from "ai";
@@ -461,7 +462,7 @@ describe("app conversations", () => {
 			compaction: {
 				modelRef: () => "m",
 				contextWindow: () => null,
-				summarize: async () => "folded",
+				summarize: async (_c, _s, prompt) => foldSummary("folded", prompt),
 			},
 		});
 		try {
@@ -508,7 +509,7 @@ describe("app conversations", () => {
 			};
 			expect(list.compactions).toHaveLength(1);
 			const mark = list.compactions[0]!;
-			expect(mark.summary).toBe("folded");
+			expect(mark.summary).toStartWith("folded\n");
 			expect(mark.tailEvents).toBeGreaterThanOrEqual(0);
 			// Every appended event predates the fold, so the pill sits
 			// after the last message — not at the cut. firstKeptIndex is

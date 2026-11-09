@@ -17,6 +17,7 @@
 //   reply-stall:       the reply lands durably, then onDone never
 //                      resolves — the kill lands inside terminal
 //                      delivery, after the commit, before the stamp.
+import { foldSummary } from "../testkit/fake-summary.ts";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -190,7 +191,7 @@ const runtime = new Runtime({
 				compaction: {
 					modelRef: () => "m",
 					contextWindow: () => 1000,
-					summarize: async () => "the folded era",
+					summarize: async (_c, _s, prompt) => foldSummary("the folded era", prompt),
 				},
 			}
 		: {}),

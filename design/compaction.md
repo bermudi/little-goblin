@@ -26,7 +26,9 @@ result, in this file. "It seemed better" is not a reason.
 
 **Status:** Staging 1's trigger and 20k tail are built (#399); its
 split-turn cut is not (#403). Stage 3's fold marks are built (#401);
-stage 2 is not. Superseded and removed
+stage 2's headings, audit, identifier index and verbatim user messages are
+built (#400, `src/agent/compaction-summary.ts`); its memory flush is not
+(#405). Superseded and removed
 from this file: the ledger/atlas/narrative method, the understudy, and the
 known-missing manifest — the audit and lean parts below cover the same
 ground with evidence behind them. Git history has the old text.
@@ -233,13 +235,24 @@ never passed through a model:
    boundary seq, `history_search action="context"`. The tool already
    exists (`src/agent/tools/history.ts`); nothing new is built.
 
+**Carried across folds.** The stored summary is the model's text, a fixed
+marker line, then the code-made sections as one JSON string per line. The
+next fold parses it back: only the model's text goes to the summarizer;
+the code merges the new span's quotes and identifiers in front of the
+carried ones, dedupes, and cuts each list to its budget. A summary with no
+marker (written before stage 2) is all model text.
+
 ## Quality audit (OpenClaw)
 
 After the model writes the summary and before the pointer lands:
 
 - all five headings present;
-- the latest unresolved operator request appears under `Pending user asks`
-  (word-overlap check, as OpenClaw);
+- the latest operator request in the folded span is reflected in the
+  summary (OpenClaw's word-overlap check: up to 12 distinct meaningful
+  words, 2 matches when there are 3 or more). OpenClaw checks the whole
+  summary, not only `Pending user asks`, unless it knows the ask is
+  unresolved; goblin has no such signal (the span is completed history, so
+  the ask may be done), so it does the same;
 - the `Exact identifiers` check is dropped: the code-made index carries
   identifiers by construction.
 

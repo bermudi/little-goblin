@@ -1,6 +1,7 @@
 // "Interrupted" runs are fixture-stamped the way openTurnJournal's
 // reclassify leaves them; assertions ride the real fence/admission path.
 
+import { foldSummary } from "./testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
@@ -1476,9 +1477,9 @@ describe("turn resume", () => {
 			compaction: {
 				modelRef: () => "m",
 				contextWindow: () => 1000,
-				summarize: () => {
+				summarize: (_c, _s, prompt) => {
 					started.resolve();
-					return gate.promise;
+					return gate.promise.then((text) => foldSummary(text, prompt));
 				},
 			},
 		});
@@ -1534,7 +1535,11 @@ describe("turn resume", () => {
 		);
 		expect(parts).toContain("original ask");
 		expect(parts).toContain("steered while running");
-		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		// Once outside the fold summary, which quotes folded operator
+		// messages verbatim by design.
+		const prompt = JSON.stringify(
+			edge.streamCalls[0]!.prompt.filter((m) => !JSON.stringify(m).includes("[history compacted")),
+		);
 		expect(prompt.split("original ask").length - 1).toBe(1);
 		expect(prompt.split("steered while running").length - 1).toBe(1);
 		await runtime.shutdown();
@@ -2343,7 +2348,7 @@ describe("turn resume", () => {
 			compaction: {
 				modelRef: () => "m",
 				contextWindow: () => 1000,
-				summarize: async () => "folded past",
+				summarize: async (_c, _s, prompt) => foldSummary("folded past", prompt),
 			},
 		});
 		seedExchanges(store, conv.id);

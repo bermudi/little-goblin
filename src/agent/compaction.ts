@@ -5,6 +5,17 @@ import type { UIMessage } from "ai";
 import { log } from "../log.ts";
 import { withoutReasoningCipher } from "./codex/replay-state.ts";
 import { exhaustedMessage, type FallbackMiss, failureClass, missReason } from "./model-fallback.ts";
+import {
+	AUDIT_RETRIES,
+	auditSummary,
+	composeSummary,
+	correctiveInstruction,
+	extractIdentifiers,
+	mergeCodeMade,
+	operatorText,
+	parseSummary,
+	SUMMARY_SYSTEM,
+} from "./compaction-summary.ts";
 import { isTransientTurnFailure } from "./provider-errors.ts";
 
 // Rough chars-per-token for mixed chat text — enough to pick a cut; the
@@ -141,14 +152,6 @@ function cutAt(
 }
 
 // ---------- summarizer prompt ----------
-
-export const SUMMARY_SYSTEM = `You are summarizing your own conversation history so you can continue seamlessly with only this summary plus the recent messages that follow it. Write in the operator's dominant language. Preserve, tersely:
-- What the operator asked for and what was done about it, including the current status of anything unfinished
-- Decisions made and their rationale; commitments and follow-ups made on either side
-- Standing instructions or preferences the operator expressed in this span
-- Open questions, unresolved threads, and the state of any multi-step work
-- File paths, attachment names, and identifiers that matter for continuity
-Omit small talk and process chatter. Plain text with short labeled bullets. Never invent anything not present in the span.`;
 
 // Shared with history_search's context action — reading back a folded
 // span must return the tool evidence the fold took.
@@ -344,7 +347,11 @@ export async function runCompaction(
 	});
 	const callTimeoutMs = opts.callTimeoutMs ?? SUMMARY_CALL_TIMEOUT_MS;
 	const systemTokens = estimateTokens(SUMMARY_SYSTEM);
-	let carried = previous?.summary ?? null;
+	const carriedParsed = previous !== null ? parseSummary(previous.summary) : null;
+	let carried = carriedParsed?.modelText ?? null;
+	// The newest real operator message consumed so far — what the audit
+	// checks each chunk's summary reflects.
+	let latestAsk: string | null = null;
 	let carriedHeader =
 		previous !== null ? "[summary carried from the previous compaction — fold it in]" : null;
 	let summary: string | null = null;
@@ -373,6 +380,7 @@ export async function runCompaction(
 		while (i < span.length) {
 			const e = span[i]!;
 			let text = serializeEvent(e);
+			let seenChars = Number.POSITIVE_INFINITY;
 			if (events === 0) {
 				// Always take ≥1 event — a message bigger than the
 				// allowance is cut down rather than stalling the
@@ -385,12 +393,17 @@ export async function runCompaction(
 						chars: text.length,
 						keptChars,
 					});
+					seenChars = keptChars;
 					text = `${text.slice(0, keptChars)}\n[… ${text.length - keptChars} chars truncated for summarization]`;
 				}
 			} else if (chunkTokens + estimateTokens(text) > allowance) {
 				break;
 			}
 			texts.push(text);
+			// The audit checks the ask as the summarizer saw it — a
+			// truncated event's cut tail is not the model's to restate.
+			const ask = operatorText(e.message);
+			if (ask !== null) latestAsk = ask.slice(0, seenChars);
 			chunkTokens += estimateTokens(text);
 			events++;
 			i++;
@@ -399,48 +412,73 @@ export async function runCompaction(
 			(carried !== null && carriedHeader !== null
 				? `${carriedHeader}\n${carried}\n\n---\n\n`
 				: "") + texts.join("\n\n");
-		let raw: string | undefined;
-		while (raw === undefined) {
-			const model = models[lane]!;
-			try {
-				raw = await attemptSummary(summarize, prompt, model, signal, callTimeoutMs, chunks);
-				servedBy = model;
-			} catch (err) {
-				if (signal.aborted) throw err;
-				misses.push({
-					ref: model,
-					reason: missReason(err),
-					transient: isTransientTurnFailure(err),
-				});
-				const next = models[lane + 1];
-				if (next === undefined) {
-					if (misses.length === 1) throw err;
-					throw new Error(exhaustedMessage(misses), { cause: err });
+		// One summary call down the sticky lane: a call failure advances to
+		// the next candidate; exhausting the list propagates.
+		const call = async (callPrompt: string): Promise<string> => {
+			let raw: string | undefined;
+			while (raw === undefined) {
+				const model = models[lane]!;
+				try {
+					raw = await attemptSummary(summarize, callPrompt, model, signal, callTimeoutMs, chunks);
+					servedBy = model;
+				} catch (err) {
+					if (signal.aborted) throw err;
+					misses.push({
+						ref: model,
+						reason: missReason(err),
+						transient: isTransientTurnFailure(err),
+					});
+					const next = models[lane + 1];
+					if (next === undefined) {
+						if (misses.length === 1) throw err;
+						throw new Error(exhaustedMessage(misses), { cause: err });
+					}
+					log.warn("model fallback", {
+						conversation: id,
+						purpose: "compaction",
+						chunk: chunks,
+						from: model,
+						to: next,
+						failureClass: failureClass(err),
+						attempt: misses.length,
+						error: err instanceof Error ? err.message : String(err),
+					});
+					lane++;
+					// Authority before spend — the next candidate is new spend.
+					opts.assertAuthority?.();
 				}
-				log.warn("model fallback", {
-					conversation: id,
-					purpose: "compaction",
-					chunk: chunks,
-					from: model,
-					to: next,
-					failureClass: failureClass(err),
-					attempt: misses.length,
-					error: err instanceof Error ? err.message : String(err),
-				});
-				lane++;
-				// Authority before spend — the next candidate is new spend.
-				opts.assertAuthority?.();
 			}
+			// Providers may resolve successfully even after an abort — the
+			// pointer must never commit a summary minted under revoked
+			// authority. Same for settings fences.
+			signal.throwIfAborted();
+			opts.assertAuthority?.();
+			const out = raw.trim();
+			if (out === "") throw new Error(`summarizer returned an empty summary (chunk ${chunks})`);
+			return out;
+		};
+		let out = await call(prompt);
+		// The quality audit: a deficient summary retries with a corrective
+		// instruction; still failing, the fold writes nothing.
+		for (let attempt = 0; ; attempt++) {
+			const reasons = auditSummary(out, latestAsk);
+			if (reasons.length === 0) break;
+			log.warn("compaction summary failed audit", {
+				conversation: id,
+				chunk: chunks,
+				attempt,
+				reasons,
+			});
+			if (attempt >= AUDIT_RETRIES) {
+				throw new Error(
+					`compaction summary failed the quality audit after ${AUDIT_RETRIES} retries: ${reasons.join("; ")}`,
+				);
+			}
+			opts.assertAuthority?.();
+			out = await call(
+				`${prompt}\n\n---\n\n[your previous summary]\n${out}\n\n${correctiveInstruction(reasons, latestAsk)}`,
+			);
 		}
-		// Providers may resolve successfully even after an abort — the
-		// pointer must never commit a summary minted under revoked
-		// authority.
-		signal.throwIfAborted();
-		// Same for settings fences: the epoch must still be the captured
-		// one, or the pointer stays unwritten.
-		opts.assertAuthority?.();
-		const out = raw.trim();
-		if (out === "") throw new Error(`summarizer returned an empty summary (chunk ${chunks})`);
 		log.info("compaction chunk summarized", {
 			conversation: id,
 			chunk: chunks,
@@ -457,6 +495,18 @@ export async function runCompaction(
 		// non-empty span; fail loud, never write a blank pointer.
 		throw new Error("compaction produced no summary");
 	}
+	// Code-made parts, never through a model: they cannot be paraphrased
+	// away by this fold or any later one.
+	summary = composeSummary(
+		summary,
+		mergeCodeMade(
+			{
+				quotes: span.flatMap((e) => operatorText(e.message) ?? []).reverse(),
+				identifiers: extractIdentifiers(span.map(serializeEvent)),
+			},
+			carriedParsed?.parts ?? { quotes: [], identifiers: [] },
+		),
+	);
 	// A summary comparable to the span buys nothing and re-fires every
 	// turn — warn, don't fail; the pointer still moves, the log explains.
 	const summaryTokens = estimateTokens(summary);
@@ -497,3 +547,4 @@ export async function runCompaction(
 		summary,
 	};
 }
+

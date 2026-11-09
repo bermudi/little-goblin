@@ -6,8 +6,9 @@ import { createHash } from "node:crypto";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { tmpDb } from "./testkit.ts";
-import { openTurnJournal, replayKey } from "./turn-journal.ts";
 import { buildRetryGuard } from "./turn/retry-guard.ts";
+import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
+import { openTurnJournal, replayKey } from "./turn-journal.ts";
 
 setLogFile(null);
 
@@ -197,6 +198,62 @@ describe("turn journal", () => {
 				.sort(),
 		).toEqual(["run-new", "run-old"]);
 		fourth.close();
+	});
+
+	test("the open hook appends interrupted progress atomically with the reclassify (#195)", () => {
+		const dbPath = tmpDb("goblin-tj-");
+		const store = openStore(dbPath);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id);
+		journal.noteToolInput(runId, "call-1", "probe", {});
+		journal.noteToolDispatch(runId, "call-1", "probe", {});
+		journal.noteToolResult(runId, "call-1", { ok: true });
+		journal.checkpoint(runId, { partial: [{ role: "assistant", content: "halfway." }] });
+		store.close();
+
+		// A throwing append rolls the reclassify back with it — the row
+		// stays 'running' and the next open retries both, so the record
+		// can be neither lost nor duplicated.
+		const failing = openStore(dbPath);
+		let hookCalls = 0;
+		expect(() =>
+			openTurnJournal(failing.db, {
+				onInterrupted: () => {
+					hookCalls++;
+					throw new Error("progress append exploded");
+				},
+			}),
+		).toThrow("progress append exploded");
+		expect(hookCalls).toBe(1);
+		const stillRunning = failing.db
+			.query<{ status: string }, [string]>("SELECT status FROM turn_runs WHERE run_id = ?")
+			.get(runId);
+		expect(stillRunning).toEqual({ status: "running" });
+		failing.close();
+
+		// The working hook records once; a later open finds nothing left.
+		const reopened = openStore(dbPath);
+		const journal2 = openTurnJournal(reopened.db, {
+			onInterrupted: (run, calls) => appendInterruptedProgress(reopened, run, calls),
+		});
+		expect(journal2.get(runId)!.status).toBe("interrupted");
+		const history = reopened.history(conv.id);
+		expect(history.map((m) => m.role)).toEqual(["system"]);
+		const event = history[0]!.parts[0];
+		if (event?.type !== "text") throw new Error("progress event is not text");
+		expect(event.text).toContain("was interrupted");
+		expect(event.text).toContain('completed: {"ok":true}');
+		expect(event.text).toContain("halfway.");
+		reopened.close();
+
+		const third = openStore(dbPath);
+		const journal3 = openTurnJournal(third.db, {
+			onInterrupted: (run, calls) => appendInterruptedProgress(third, run, calls),
+		});
+		expect(journal3.interruptedAtOpen).toEqual([]);
+		expect(third.history(conv.id)).toHaveLength(1);
+		third.close();
 	});
 
 	test("interruptedFor filters by conversation in SQL order", () => {

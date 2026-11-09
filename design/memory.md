@@ -322,6 +322,22 @@ reference, compaction's format; transcript-less attachments stay
 dropped — no text, no speech — so an untranscribed voice note retains
 nothing, not a filename.
 
+**Quoted speech keeps its speaker (ruling 2026-11-08, #182).** The
+retention document labels speakers `Operator:` / `Goblin:`; operator
+speech that spans lines goes under the label on its own lines, never
+glued inline. `Operator: > quote…` on one line killed the blockquote
+structure and the extractor saved the quoted words as the operator's
+statement (issue evidence 2026-11-07, live retain, two runs per layout:
+inline 1 and 1 misattributed; label on its own line 1 and 1; annotation
+line above a surviving blockquote 0 and 0 — the only proven layout).
+The annotation is written where the quote is made — the app's Quote
+button (design/app.md → quote ruling), because only the quote-time seam
+knows the source; retention-time matching against earlier assistant
+text would heal memory but leave Goblin misreading its own words in
+chat. Attribution is honest, not exhaustive: a quote made without a
+known speaker (a Telegram `[replying to: "…"]`, a selection spanning
+messages) retains unattributed.
+
 Completed-turn memory commits under the turn's existing authority
 check: a failed or fenced turn cannot commit it, and a committed
 exchange is independent background indexing work — a later epoch

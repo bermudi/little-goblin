@@ -259,6 +259,25 @@ describe("delegate tool", () => {
 		expect(tool.description).toContain("`pi`");
 	});
 
+	test("the description rules staffing goblin's call and names ask-first harnesses", () => {
+		const h = harness();
+		const plain = delegateTool(h.deps).description;
+		expect(plain).toContain("never ask the operator which one");
+		expect(plain).not.toContain("ask-first");
+
+		h.deps.config.harnesses["claude"] = { kind: "claude", askFirst: true };
+		const flagged = delegateTool(h.deps).description;
+		expect(flagged).toContain("ask-first harnesses (claude)");
+		expect(flagged).toContain("ask the operator before each use");
+
+		// A machine-side askFirst counts too — the name lands in the same list.
+		const machine = harness();
+		machine.deps.config.machines = {
+			g7: { machine: "g7", harnesses: { devin: { kind: "devin", askFirst: true } } },
+		};
+		expect(delegateTool(machine.deps).description).toContain("ask-first harnesses (devin)");
+	});
+
 	test("the description names only the subagent tools this turn mounts", () => {
 		const h = harness();
 		const description = (mountedSubagents: { worker: boolean; computer: boolean }) =>

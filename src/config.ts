@@ -469,6 +469,9 @@ export const harnessMapSchema = z
 			.object({
 				kind: z.string().min(1),
 				args: z.array(z.string()).optional(),
+				// askFirst rides the delegate tool's description — a prompt
+				// rule (the model asks the operator), not a launch gate.
+				askFirst: z.boolean().optional(),
 			})
 			.strict(),
 	)

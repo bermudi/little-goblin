@@ -5,6 +5,7 @@
 - **Harness:** a coding agent program that a delegation runs, such as codex or pi.
 - **Role:** the kind of work a delegation serves (build, review, or any operator-coined label). `default` is the role a call with none uses.
 - **Delegation default:** the role → harness tie in `delegation.defaults`. The `delegate` tool uses it when a call names no harness. Settings → Delegation edits it.
+- **Ask-first harness:** a delegation harness with `askFirst: true`. The `delegate` tool tells goblin to ask the operator before each use. Settings → Delegation edits it.
 - **Herdr:** the terminal multiplexer where harnesses run.
 - **Desk:** the operator's own Herdr session, `default`. The `herdr` tool reaches it.
 - **Subagent:** a durable run on Goblin's own Pi Durable runtime. It has two kinds, worker and computer.

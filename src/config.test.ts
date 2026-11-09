@@ -656,6 +656,17 @@ describe("goblin.json5", () => {
 			(c) => c.delegation?.defaults?.["review"],
 			"devin",
 		],
+		[
+			"delegation askFirst parses on local and machine harnesses",
+			Z(
+				`,delegation:{harnesses:{claude:{kind:"claude",askFirst:true}},machines:{g7:{machine:"g7",harnesses:{devin:{kind:"devin",askFirst:true}}}}}`,
+			),
+			(c) => [
+				c.delegation?.harnesses["claude"]?.askFirst,
+				c.delegation?.machines?.["g7"]?.harnesses?.["devin"]?.askFirst,
+			],
+			[true, true],
+		],
 	];
 	for (const [name, content, pick, expected] of singles) {
 		test(name, () => {
@@ -710,6 +721,13 @@ describe("goblin.json5", () => {
 			"delegation.defaults rejects an unknown harness",
 			Z(`,delegation:{harnesses:{pi:{kind:"pi"}},defaults:{build:"ghost"}}`),
 			"delegation: custom",
+		],
+		// askFirst is a boolean flag, not a string knob — the delegation
+		// union (block | "") reports the miss as invalid_union.
+		[
+			"delegation askFirst rejects a non-boolean",
+			Z(`,delegation:{harnesses:{claude:{kind:"claude",askFirst:"yes"}}}`),
+			"delegation: invalid_union",
 		],
 	];
 	for (const [name, content, message] of rawThrows) {

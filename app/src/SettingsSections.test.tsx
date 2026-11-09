@@ -494,6 +494,23 @@ describe("Delegation", () => {
 		});
 	});
 
+	test("ask first tick puts askFirst on the saved harness", async () => {
+		settings = parseConfig({
+			...BASE,
+			delegation: {
+				harnesses: { pi: { kind: "pi" } },
+				defaults: { default: "pi" },
+			},
+		});
+		await mountSettings();
+		await openSection("Delegation");
+		await click(container.querySelector('[aria-label="ask first for pi"]'));
+		await waitFor(() => savedBodies.length > 0, "ask-first save");
+		expect(savedBodies.at(-1)?.delegation).toMatchObject({
+			harnesses: { pi: { kind: "pi", askFirst: true } },
+		});
+	});
+
 	test("turning delegation on with no agents blocks a save and says why", async () => {
 		await mountSettings();
 		await openSection("Delegation");

@@ -133,7 +133,7 @@ export interface ConfigPostBody {
 	delegation?:
 		| ""
 		| {
-				harnesses: Record<string, { kind: string; args?: string[] }>;
+				harnesses: Record<string, { kind: string; args?: string[]; askFirst?: boolean }>;
 				defaults?: Record<string, string>;
 		  }
 		| undefined;

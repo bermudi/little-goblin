@@ -304,8 +304,26 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 		: mounted.computer
 			? " Screen work belongs with a computer subagent."
 			: "";
+	// askFirst harnesses — local and machine-side — become a prompt rule
+	// in the description: the model asks, execute stays ungated.
+	const askFirst = [
+		...new Set(
+			[
+				...Object.entries(deps.config.harnesses),
+				...Object.values(deps.config.machines ?? {}).flatMap((m) =>
+					Object.entries(m.harnesses ?? {}),
+				),
+			]
+				.filter(([, h]) => h.askFirst === true)
+				.map(([name]) => name),
+		),
+	].sort();
+	const staffingLine =
+		askFirst.length === 0
+			? " Choosing a harness is your call — never ask the operator which one."
+			: ` Choosing a harness is your call — never ask the operator which one — except ask-first harnesses (${askFirst.join(", ")}): ask the operator before each use, and start one only on their explicit yes for that task.`;
 	return tool({
-		description: `Delegate work in the operator's repos to an external coding harness — a separate agent in its own workspace, running full-auto.${subagentRoute} Delegations are your own acts: delegate on your own judgment instead of blocking the chat with bash, and say that you did; you own the result when it arrives and decide what the operator needs to hear. Targets: your own local session (default)${Object.keys(deps.config.machines ?? {}).length > 0 ? ` plus configured machines (${Object.keys(deps.config.machines ?? {}).join(", ")})` : " (no machines configured)"} — pass 'on' to pick one; work tied to another host's repos runs there, and each target runs the harnesses installed on that host. Harnesses (own session): ${Object.keys(deps.config.harnesses).join(", ")}. ${roleLine} Actions — start {harness?, role?, task, cwd?, name?, on?${linkable ? ", responsibility?" : ""}}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.${linkable ? " In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself." : ""}`,
+		description: `Delegate work in the operator's repos to an external coding harness — a separate agent in its own workspace, running full-auto.${subagentRoute} Delegations are your own acts: delegate on your own judgment instead of blocking the chat with bash, and say that you did; you own the result when it arrives and decide what the operator needs to hear. Targets: your own local session (default)${Object.keys(deps.config.machines ?? {}).length > 0 ? ` plus configured machines (${Object.keys(deps.config.machines ?? {}).join(", ")})` : " (no machines configured)"} — pass 'on' to pick one; work tied to another host's repos runs there, and each target runs the harnesses installed on that host. Harnesses (own session): ${Object.keys(deps.config.harnesses).join(", ")}.${staffingLine} ${roleLine} Actions — start {harness?, role?, task, cwd?, name?, on?${linkable ? ", responsibility?" : ""}}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.${linkable ? " In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself." : ""}`,
 		inputSchema: (linkable
 			? delegateInputSchema
 			: unlinkableDelegateInputSchema) as typeof delegateInputSchema,

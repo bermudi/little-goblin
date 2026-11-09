@@ -8,15 +8,21 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
-import type { Config } from "../config.ts";
-import { openCacheObservation } from "../cache-observation.ts";
-import { setLogFile } from "../log.ts";
-import { tmpDir } from "../testkit.ts";
-import { APICallError, generateText, streamText } from "ai";
+import { APICallError, generateText, streamText, wrapLanguageModel } from "ai";
 import { z } from "zod";
-import { generateModel, scriptedModel } from "../testkit/fake-model.ts";
 import type { AuthStore } from "../auth.ts";
-import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
+import { openCacheObservation } from "../cache-observation.ts";
+import type { Config } from "../config.ts";
+import { setLogFile } from "../log.ts";
+import { generateModel, scriptedModel, textParts } from "../testkit/fake-model.ts";
+import { tmpDir } from "../testkit.ts";
+import {
+	cacheRouteFor,
+	carriesMedia,
+	observedModel,
+	resolveModel,
+	transportRetry,
+} from "./providers.ts";
 
 // resolveModel resolves auth through a literal-key fixture — no records,
 // no commands, nothing secret.
@@ -599,11 +605,7 @@ describe("resolveModel — provider quota walls skip the SDK's own retries", () 
 	const THROTTLE = '{"error":{"message":"Too many requests, slow down"}}';
 
 	// Fake at the HTTP edge: the real provider, parser and SDK retry loop run.
-	async function attempts(
-		body: string,
-		run: "generate" | "stream",
-		status = 429,
-	): Promise<number> {
+	async function attempts(body: string, run: "generate" | "stream", status = 429): Promise<number> {
 		return (await attempt(body, run, status)).calls;
 	}
 	async function attempt(
@@ -682,6 +684,194 @@ describe("resolveModel — provider quota walls skip the SDK's own retries", () 
 			statusCode: 429,
 			resetAt: "2026-10-28 08:50:34",
 		});
+	});
+});
+
+describe("transportRetry — raw transport failures retry before the call is lost (#191)", () => {
+	// The SDK ladder retries only errors it flagged itself; a raw fetch
+	// TypeError (ECONNRESET/ECONNREFUSED before the first byte) spent
+	// nothing and one blip killed the call.
+	const blip = (): TypeError =>
+		new TypeError("fetch failed", { cause: new Error("connect ECONNREFUSED 1.2.3.4:443") });
+
+	const wrapped = (model: LanguageModelV4, ref = "other/m") =>
+		wrapLanguageModel({ model, middleware: transportRetry(ref, cfg, 0) }) as LanguageModelV4;
+
+	test("stream: a transient throw retries the identical call and completes", async () => {
+		const failing = scriptedModel([blip(), textParts("ok")]);
+		const model = wrapped(failing.model as unknown as LanguageModelV4);
+		const result = streamText({ model, prompt: "hi", maxRetries: 0, onError: () => {} });
+		const text = await result.text;
+		expect(text).toBe("ok");
+		expect(failing.streamCalls).toHaveLength(2);
+	});
+
+	test("generate: exhaustion rethrows the last error after the full ladder", async () => {
+		const last = blip();
+		const inner = scriptedModel([]).model as unknown as LanguageModelV4;
+		const calls: unknown[] = [];
+		const model = wrapped({
+			...inner,
+			async doGenerate(o: never) {
+				calls.push(o);
+				throw last;
+			},
+		} as unknown as LanguageModelV4);
+		let caught: unknown;
+		await generateText({ model, prompt: "hi", maxRetries: 0 }).catch((e: unknown) => {
+			caught = e;
+		});
+		expect(caught).toBe(last);
+		// 1 attempt + the lane's SDK-default budget of 2 retries.
+		expect(calls).toHaveLength(3);
+	});
+
+	test("an APICallError keeps the SDK's own ladder — no transport retry", async () => {
+		const apiError = new APICallError({
+			message: "upstream had a hiccup",
+			url: "https://example.com/v1/chat/completions",
+			requestBodyValues: {},
+			statusCode: 503,
+		});
+		const calls: unknown[] = [];
+		const inner = scriptedModel([]).model as unknown as LanguageModelV4;
+		const model = wrapped({
+			...inner,
+			async doGenerate(o: never) {
+				calls.push(o);
+				throw apiError;
+			},
+		} as unknown as LanguageModelV4);
+		let caught: unknown;
+		await generateText({ model, prompt: "hi", maxRetries: 0 }).catch((e: unknown) => {
+			caught = e;
+		});
+		expect(caught).toBe(apiError);
+		expect(calls).toHaveLength(1);
+	});
+
+	test("a non-transient plain error is not retried", async () => {
+		const calls: unknown[] = [];
+		const inner = scriptedModel([]).model as unknown as LanguageModelV4;
+		const model = wrapped({
+			...inner,
+			async doGenerate(o: never) {
+				calls.push(o);
+				throw new Error("bad request shape");
+			},
+		} as unknown as LanguageModelV4);
+		await generateText({ model, prompt: "hi", maxRetries: 0 }).catch(() => undefined);
+		expect(calls).toHaveLength(1);
+	});
+
+	test("the 1min rule carries: budget 0 means no transport retries", async () => {
+		const inner = scriptedModel([]).model as unknown as LanguageModelV4;
+		const calls: unknown[] = [];
+		const model = wrapLanguageModel({
+			model: {
+				...inner,
+				async doGenerate(o: never) {
+					calls.push(o);
+					throw blip();
+				},
+			} as unknown as LanguageModelV4,
+			middleware: transportRetry("onemin/m", cfg, 0),
+		}) as LanguageModelV4;
+		await generateText({ model, prompt: "hi", maxRetries: 0 }).catch(() => undefined);
+		expect(calls).toHaveLength(1);
+	});
+
+	test("an aborted signal never retries", async () => {
+		const controller = new AbortController();
+		const calls: unknown[] = [];
+		const inner = scriptedModel([]).model as unknown as LanguageModelV4;
+		const model = wrapped({
+			...inner,
+			async doStream(o: never) {
+				calls.push(o);
+				controller.abort();
+				throw blip();
+			},
+		} as unknown as LanguageModelV4);
+		await Promise.resolve(
+			streamText({
+				model,
+				prompt: "hi",
+				maxRetries: 0,
+				abortSignal: controller.signal,
+				onError: () => {},
+			}).text,
+		).catch(() => undefined);
+		expect(calls).toHaveLength(1);
+	});
+
+	test("each retry logs one line with attempt and delay", async () => {
+		const dir = tmpDir();
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		try {
+			const failing = scriptedModel([blip(), blip(), textParts("ok")]);
+			const model = wrapped(failing.model as unknown as LanguageModelV4);
+			await streamText({ model, prompt: "hi", maxRetries: 0, onError: () => {} }).text;
+			const lines = readFileSync(logPath, "utf8")
+				.trim()
+				.split("\n")
+				.map((l) => JSON.parse(l) as Record<string, unknown>);
+			const retries = lines.filter((l) => l.msg === "model call transport retry");
+			expect(retries).toHaveLength(2);
+			expect(retries[0]).toMatchObject({
+				model: "other/m",
+				call: "stream",
+				attempt: 1,
+				delayMs: 0,
+			});
+			expect(retries[1]).toMatchObject({ attempt: 2, delayMs: 0 });
+		} finally {
+			setLogFile(null);
+		}
+	});
+
+	test("resolveModel wires it in: a codex blip retries the raw throw", async () => {
+		// The codex lane is where raw transport throws actually occur —
+		// SDK-native providers normalize a failed fetch into an
+		// isRetryable APICallError the SDK ladder already retries.
+		const dir = tmpDir();
+		const authFile = join(dir, "auth.json");
+		writeFileSync(authFile, JSON.stringify({ tokens: { access_token: "t" } }));
+		const c: Config = {
+			...cfg,
+			providers: { ...cfg.providers, codex: { kind: "codex", authFile, webSearch: "live" } },
+		};
+		const original = globalThis.fetch;
+		let calls = 0;
+		globalThis.fetch = (async () => {
+			calls++;
+			if (calls === 1) throw blip();
+			return new Response(
+				new TextEncoder().encode(
+					`data: ${JSON.stringify({
+						type: "response.completed",
+						response: {
+							status: "completed",
+							usage: {
+								input_tokens: 5,
+								output_tokens: 3,
+								total_tokens: 8,
+								input_tokens_details: { cached_tokens: 3 },
+							},
+						},
+					})}\n\n`,
+				),
+			);
+		}) as unknown as typeof fetch;
+		try {
+			const model = await resolveModel(c, fixtureAuth("k"), "codex/gpt-6.1-sol");
+			const result = await generateText({ model, prompt: "hi", maxRetries: 0 });
+			expect(result.finishReason).toBe("stop");
+			expect(calls).toBe(2);
+		} finally {
+			globalThis.fetch = original;
+		}
 	});
 });
 
@@ -869,9 +1059,7 @@ describe("resolveModel — z.ai responses replays statelessly", () => {
 		expect(wire.store).not.toBe(false);
 		expect(wire.input.filter((i) => i.type === "item_reference").length).toBeGreaterThan(0);
 		expect(
-			wire.input.filter(
-				(i) => i.role === "assistant" && JSON.stringify(i.content).includes(PROSE),
-			),
+			wire.input.filter((i) => i.role === "assistant" && JSON.stringify(i.content).includes(PROSE)),
 		).toHaveLength(0);
 	});
 });

@@ -363,6 +363,44 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   attempts; the pasted warning is real operator evidence, its HTTP/SSE
   envelope unverified; unreported billing is unknown, and cache reuse and
   blocked-request charges are provider-dependent.
+- **Transient transport retries** (2026-11-08, issue #191): a dropped
+  connection must not kill a turn that already executed tools. The SDK
+  retries only errors it flagged itself (`APICallError` `isRetryable`),
+  so a raw fetch `TypeError` / `ECONNRESET` — mid-stream or before the
+  first byte — spent nothing and one blip ended the turn (goblin.log
+  2026-11-08: 13 completed tool calls, then `provider-error` TypeError
+  ECONNRESET). Two surfaces, two bounds, one log line per retry
+  (attempt, error, delay):
+  - **Mid-stream** — an error part on the provider stream (codex
+    surfaces a socket reset there). `driveStream`'s `onError` grants
+    the SDK's one callback-requested retry per model step
+    (`streamRetries: 0` keeps retries callback-directed) when the
+    transient classifier owns the error (`isTransientTurnFailure` —
+    never a content filter, quota wall or overflow verdict). Only
+    stream-surface errors are granted (tagged in `filterErrorStream`):
+    a pre-stream throw bypasses the retry machinery, and a granted
+    request the SDK would ignore is a log line lying about a retry.
+    The retry re-dispatches the failed step only; earlier steps and
+    their tool results are preserved (SDK stream-retry contract), and
+    the failed attempt's tool parts were buffered and dropped, so no
+    tool runs twice. Delay 2 s (the SDK ladder's `initialDelayInMs`
+    default), ended early by abort; recovery logs one line.
+  - **Before first byte** — `doStream`/`doGenerate` rejects (raw
+    `TypeError`, `ECONNREFUSED`). `resolveModel` wraps every model in
+    a transport-retry middleware: the SDK ladder's twin (same envelope
+    — the lane's own retry rule, so 1min's billed-every-attempt ruling
+    keeps 0; exponential backoff from 2 s) with a different predicate:
+    transient throws the SDK will not flag, `APICallError` excluded so
+    flagged errors keep the SDK's own ladder and nothing compounds.
+    Only the single vendor call retries — completed steps and tools
+    are untouched. The raw-throw gap is the codex lane (its own fetch,
+    no provider-utils normalization); SDK-native providers normalize a
+    failed fetch into an `isRetryable` `APICallError` the SDK ladder
+    already retried.
+  Both bounds are per step; exhaustion falls to today's failure rails
+  (turn error, transient stamp, failed-turn progress). Mid-loop model
+  fallback still never advances (zero effect only) — the walk sees a
+  turn only after both surfaces are spent.
 - **Capabilities**: no hand-maintained matrix — the SDK's model objects plus
   the `models.dev` catalog for input modalities.
 - **Content**: each part's representation — file part vs text reference

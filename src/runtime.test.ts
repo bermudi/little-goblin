@@ -19,9 +19,6 @@ import { forgetDocument } from "./memory/forget.ts";
 import type { HindsightClient } from "./memory/hindsight.ts";
 import { Reviewer } from "./reviewer.ts";
 import { compactionBudgets, Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
-import type { TurnDone, TurnSink } from "./turn/sink.ts";
-import type { ModelStep } from "./turn/engine.ts";
-import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import type { System1Client } from "./system1.ts";
 import {
 	finishPart,
@@ -44,6 +41,9 @@ import {
 	useHome,
 	waitUntil,
 } from "./testkit.ts";
+import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
+import type { ModelStep } from "./turn/engine.ts";
+import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
 import { openWindowCapture } from "./window-capture.ts";
 
@@ -740,6 +740,118 @@ describe("provider-filter retry", () => {
 	});
 });
 
+describe("transient transport retry (#191)", () => {
+	const answer = (text = "Recovered answer"): LanguageModelV4StreamPart[] => [
+		{ type: "text-start", id: "text" },
+		{ type: "text-delta", id: "text", delta: text },
+		{ type: "text-end", id: "text" },
+		finishPart("stop", 10),
+	];
+	// The prod shape (goblin.log 2026-11-08): the raw fetch TypeError
+	// rides a stream error part — codex pushes it after receipts arrived.
+	const reset = (): LanguageModelV4StreamPart => ({
+		type: "error",
+		error: new TypeError("fetch failed", {
+			cause: new Error("read ECONNRESET: The socket connection was closed unexpectedly"),
+		}),
+	});
+
+	test("a mid-stream socket reset retries the failed step — the turn completes", async () => {
+		const s = scripted([[reset()], answer()]);
+		const r = rig({ model: s.model, step: { transientRetryDelayMs: 0 } });
+		const sink = submit(r, "test");
+		expect(await sink.done).toEqual({ kind: "completed" });
+		await drain(r);
+		await r.runtime.shutdown();
+		// The identical step re-dispatched exactly once.
+		expect(s.requests).toHaveLength(2);
+		expect(s.requests[0]).toBe(s.requests[1]);
+		expect(sink.text).toBe("Recovered answer");
+		expect(sink.chunkTypes).not.toContain("error");
+		r.store.close();
+	});
+
+	test("a completed tool step is not replayed when a later step's retry runs", async () => {
+		const s = scripted([
+			[toolCallPart("call-1", "probe"), finishPart("tool-calls", 10)],
+			[reset()],
+			answer(),
+		]);
+		let executions = 0;
+		const r = rig({
+			model: s.model,
+			step: { transientRetryDelayMs: 0 },
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: () => {
+						executions++;
+						return "done";
+					},
+				}),
+			},
+		});
+		const sink = submit(r, "test");
+		expect(await sink.done).toEqual({ kind: "completed" });
+		await drain(r);
+		await r.runtime.shutdown();
+		expect(executions).toBe(1);
+		expect(s.requests).toHaveLength(3);
+		r.store.close();
+	});
+
+	test("exhausted step retries fail the turn with today's progress recording", async () => {
+		// A completed tool step, then a step whose reset survives its one retry.
+		const s = scripted([
+			[toolCallPart("call-1", "probe"), finishPart("tool-calls", 10)],
+			[reset()],
+			[reset()],
+		]);
+		const store = openStore(tmpDb("goblin-rt-tretry-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runtime = new Runtime({
+			engines: [aiSdkEngine],
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model: s.model, system: "test", transientRetryDelayMs: 0 }),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => "done",
+				}),
+			}),
+		});
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			const done = (await sink.done) as { kind: string; transient?: boolean };
+			expect(done.kind).toBe("error");
+			// The scheduler ladder still sees the failure as transient.
+			expect(done.transient).toBe(true);
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			// Step 1 plus the failed step's initial call and its one retry.
+			expect(s.requests).toHaveLength(3);
+			// Today's failed-turn progress: one system event naming the run,
+			// the completed tool, and an error/failed run row.
+			const events = store.history(conv.id).filter((m) => m.role === "system");
+			expect(events).toHaveLength(1);
+			const part = events[0]!.parts[0];
+			const text = part !== undefined && part.type === "text" ? part.text : "";
+			expect(text).toContain("The previous turn did not finish");
+			expect(text).toContain('1. probe {} — completed: "done"');
+			const row = store.db
+				.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs ORDER BY rowid DESC LIMIT 1")
+				.get()!;
+			expect(journal.get(row.run_id)!.status).toBe("error");
+			expect(journal.get(row.run_id)!.delivery).toBe("failed");
+		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
+	});
+});
+
 describe("busy conversations", () => {
 	test("busyConversations is empty when idle, holds the conv mid-turn, empties after", async () => {
 		const gated = pauseFakeModelAtDelta(["a", "b", "c"], 1);
@@ -1058,7 +1170,10 @@ describe("turn authority", () => {
 		expect(msgs.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
 		expect(msgs[0]!.content.slice(0, -1).map((c) => c.text)).toEqual(["2+2?"]);
 		expect(msgs[1]!.content.map((c) => c.text)).toEqual(["answer"]);
-		expect(msgs[2]!.content.map((c) => c.text).filter((t) => !t?.startsWith("[20"))).toEqual(["2+5?", "2+8?"]);
+		expect(msgs[2]!.content.map((c) => c.text).filter((t) => !t?.startsWith("[20"))).toEqual([
+			"2+5?",
+			"2+8?",
+		]);
 		r.store.close();
 	});
 
@@ -1886,9 +2001,15 @@ describe("context overflow recovery", () => {
 	test("a mid-stream provider error leaves modelCalls at 0 — the retry ladder's precondition", async () => {
 		// The error arrives as a stream part, not a doStream rejection —
 		// the 200-then-SSE-error shape (upstream 429s) the scheduler's
-		// zero-call retry ladder exists to re-fire.
-		const s = scripted([[{ type: "error", error: new Error("Rate limit reached for requests") }]]);
-		const r = rig({ model: s.model, step: { contextWindow: 1000 } });
+		// zero-call retry ladder exists to re-fire. The transient step
+		// retry (#191) runs first — one re-dispatch per step — and when
+		// it fails the same way, the turn still ends at modelCalls 0.
+		const throttled = (): LanguageModelV4StreamPart => ({
+			type: "error",
+			error: new Error("Rate limit reached for requests"),
+		});
+		const s = scripted([[throttled()], [throttled()]]);
+		const r = rig({ model: s.model, step: { contextWindow: 1000, transientRetryDelayMs: 0 } });
 		seedExchanges(r.store, r.conv.id);
 		const sink = submit(r, "hi");
 		expect(await sink.done).toEqual({
@@ -1897,7 +2018,7 @@ describe("context overflow recovery", () => {
 			modelCalls: 0,
 			transient: true,
 		});
-		expect(s.prompts).toHaveLength(1);
+		expect(s.prompts).toHaveLength(2);
 		r.store.close();
 	});
 
@@ -2931,7 +3052,11 @@ describe("steering", () => {
 		}[];
 		const texts = wire
 			.filter((m) => m.role === "user")
-			.flatMap((m) => m.content.filter((c) => c.type === "text" && !c.text!.startsWith("[20")).map((c) => c.text!));
+			.flatMap((m) =>
+				m.content
+					.filter((c) => c.type === "text" && !c.text!.startsWith("[20"))
+					.map((c) => c.text!),
+			);
 		expect(texts).toEqual(["start this", "actually pivot"]);
 		// History: both user messages, then one assistant exchange. The
 		// reply anchors after the steered message — the burst it
@@ -4174,7 +4299,9 @@ describe("failed-turn progress", () => {
 			expect(detail.anchorSeq).toBe(aSeq);
 
 			// Editing B removes B's exchange but not A's progress.
-			expect(store.editUserMessage(conv.id, bMessage.id, userMessage([{ type: "text", text: "B2" }]))).not.toBeNull();
+			expect(
+				store.editUserMessage(conv.id, bMessage.id, userMessage([{ type: "text", text: "B2" }])),
+			).not.toBeNull();
 			const after = store.history(conv.id).map((m) => m.role);
 			expect(after).toContain("system");
 			expect(systemEvents(store, conv.id)).toHaveLength(1);
@@ -4325,19 +4452,20 @@ describe("failed-turn progress", () => {
 
 	test("the zero-effect fallback hand-off appends nothing", async () => {
 		const store = openStore(tmpDb("goblin-rt-fp6-"));
-		const conv = store.resolve(
-			{ kind: "app", appId: "app-fp", chatId: 0, threadId: 0 },
-			"/w",
-			{ model: "zai/glm-5.3", thinking: "medium" },
-		);
+		const conv = store.resolve({ kind: "app", appId: "app-fp", chatId: 0, threadId: 0 }, "/w", {
+			model: "zai/glm-5.3",
+			thinking: "medium",
+		});
 		const journal = openTurnJournal(store.db);
-		const quota = scriptedEdge([new APICallError({
-			message: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-28 08:50:34",
-			url: "https://api.z.ai/api/v1/responses",
-			requestBodyValues: {},
-			statusCode: 429,
-			isRetryable: false,
-		})]);
+		const quota = scriptedEdge([
+			new APICallError({
+				message: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-28 08:50:34",
+				url: "https://api.z.ai/api/v1/responses",
+				requestBodyValues: {},
+				statusCode: 429,
+				isRetryable: false,
+			}),
+		]);
 		const serving = scriptedEdge([textParts("from codex")]);
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],

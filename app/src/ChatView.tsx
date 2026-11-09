@@ -705,6 +705,19 @@ function messageText(m: UIMessage): string {
 		.trim();
 }
 
+// The expanded fold pill names where the model's context now starts —
+// the first message the fold left verbatim, as a short single-line
+// excerpt. Null when the index is out of range or the message carries
+// no text.
+function foldStartExcerpt(mark: AppCompactionMark, messages: UIMessage[]): string | null {
+	const part = messages[mark.firstKeptIndex]?.parts.find((p) => p.type === "text");
+	const text = part?.type === "text" ? part.text : null;
+	if (text === null) return null;
+	const collapsed = text.replace(/\s+/g, " ").trim();
+	if (collapsed === "") return null;
+	return collapsed.length > 80 ? `${collapsed.slice(0, 80)}…` : collapsed;
+}
+
 // Compact stat formatting — "1.2k", "340", "4.2s".
 const kfmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
 
@@ -743,12 +756,22 @@ function MetaLine({ meta }: { meta: TurnMetadata }) {
 	return <div className="msg-meta">{bits.join(" · ")}</div>;
 }
 
-// A fold pointer rendered into the transcript: the pill sits right
-// after the last message its boundary folded — the durable record of
-// the same line the popover's compact outcome reports — and expands to
-// the summary the model actually kept. `live` marks the newest
-// pointer, the boundary the model's context currently starts from.
-export function FoldMark({ mark, live }: { mark: AppCompactionMark; live: boolean }) {
+// A fold pointer rendered into the transcript: the pill sits where the
+// fold ran — after the last message that existed then, not at the cut —
+// the durable record of the same line the popover's compact outcome
+// reports — and expands to the summary the model actually kept.
+// `keptStart` is an excerpt of the first message the fold left
+// verbatim; `live` marks the newest pointer, the boundary the model's
+// context currently starts from.
+export function FoldMark({
+	mark,
+	live,
+	keptStart = null,
+}: {
+	mark: AppCompactionMark;
+	live: boolean;
+	keptStart?: string | null;
+}) {
 	const line =
 		`folded ${mark.eventsCompacted} messages (~${Math.round(mark.tokensBefore / 1000)}k tok)` +
 		(mark.tailEvents === null ? "" : ` — kept the last ${mark.tailEvents}`);
@@ -763,6 +786,9 @@ export function FoldMark({ mark, live }: { mark: AppCompactionMark; live: boolea
 			<details className={live ? "fold-pill live" : "fold-pill"}>
 				<summary title={`context fold — expand for the summary the model kept`}>{line}</summary>
 				<div className="fold-summary">
+					{keptStart !== null && keptStart !== "" && (
+						<p className="fold-start">context now starts at: “{keptStart}”</p>
+					)}
 					<Markdown text={mark.summary} />
 					<p className="fold-meta">
 						folded by {mark.model} · {when}
@@ -2946,9 +2972,9 @@ function Chat({
 	const [rateableIds, setRateableIds] = useState<ReadonlySet<string>>(
 		() => new Set(initialRateableIds),
 	);
-	// Fold pointers as transcript marks — a pill rides right after the
-	// last message each boundary folded. Replaced wholesale on every
-	// history read; a rewind's deleted marks must not linger.
+	// Fold pointers as transcript marks — a pill rides where each fold
+	// ran, after the last message that existed then. Replaced wholesale
+	// on every history read; a rewind's deleted marks must not linger.
 	const [marks, setMarks] = useState<AppCompactionMark[]>(initialCompactions);
 	// Rewriting a prompt is a rewind: everything from that message onward
 	// is dropped on the server before the edited text becomes the next
@@ -3210,10 +3236,23 @@ function Chat({
 	// gets copy/read only.
 	const lastAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
 
-	// Fold marks interleave by display index — the pill sits right
-	// after the last message its boundary folded; the newest pointer is
-	// the live boundary the model's context currently starts from.
-	const marksByIndex = new Map(marks.map((mark) => [mark.afterIndex, mark]));
+	// Fold marks interleave by display index — the pill sits where the
+	// fold ran, after the last message that existed then; afterIndex -1
+	// is a fold older than every message, rendered at the top. The
+	// newest pointer is the live boundary the model's context currently
+	// starts from. Two folds can land on one index, so each slot holds
+	// a list.
+	const marksByIndex = new Map<number, AppCompactionMark[]>();
+	const topMarks: AppCompactionMark[] = [];
+	for (const mark of marks) {
+		if (mark.afterIndex < 0) {
+			topMarks.push(mark);
+			continue;
+		}
+		const list = marksByIndex.get(mark.afterIndex) ?? [];
+		list.push(mark);
+		marksByIndex.set(mark.afterIndex, list);
+	}
 	const liveMark = marks[marks.length - 1];
 
 	const beginEdit = (m: UIMessage) => {
@@ -3287,6 +3326,14 @@ function Chat({
 				>
 					<div className="transcript-inner">
 						{messages.length === 0 && <p className="empty">Say something.</p>}
+						{topMarks.map((mark, i) => (
+							<FoldMark
+								key={`top-${i}`}
+								mark={mark}
+								live={mark === liveMark}
+								keptStart={foldStartExcerpt(mark, messages)}
+							/>
+						))}
 						{messages.map((m, i) => {
 							let el: ReactNode;
 							if (m.role === "user") {
@@ -3382,11 +3429,18 @@ function Chat({
 									</div>
 								);
 							}
-							const mark = marksByIndex.get(i);
+							const marksAt = marksByIndex.get(i);
 							return (
 								<Fragment key={m.id}>
 									{el}
-									{mark !== undefined && <FoldMark mark={mark} live={mark === liveMark} />}
+									{marksAt?.map((mark, j) => (
+										<FoldMark
+											key={`${mark.boundarySeq}-${mark.createdAt}-${j}`}
+											mark={mark}
+											live={mark === liveMark}
+											keptStart={foldStartExcerpt(mark, messages)}
+										/>
+									))}
 								</Fragment>
 							);
 						})}

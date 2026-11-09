@@ -491,13 +491,15 @@ describe("app conversations", () => {
 			}
 			expect(store.getCompaction("app/chat-01")).not.toBeNull();
 
-			// The transcript marks the fold: a pill rides after the last
-			// folded message — the same line the popover reports, durable.
+			// The transcript marks the fold: a pill rides where the fold
+			// ran — after the last message that existed then — the same
+			// line the popover reports, durable.
 			const list = (await (await call("/api/app/conversations/chat-01/messages")).json()) as {
 				messages: { id: string }[];
 				compactions: {
 					boundarySeq: number;
 					afterIndex: number;
+					firstKeptIndex: number;
 					eventsCompacted: number;
 					tailEvents: number | null;
 					tokensBefore: number;
@@ -508,9 +510,12 @@ describe("app conversations", () => {
 			const mark = list.compactions[0]!;
 			expect(mark.summary).toBe("folded");
 			expect(mark.tailEvents).toBeGreaterThanOrEqual(0);
-			// Folded events are a prefix of the causal order: the mark sits
-			// right after the last one it folded, inside the list bounds.
-			expect(mark.eventsCompacted).toBe(mark.afterIndex + 1);
+			// Every appended event predates the fold, so the pill sits
+			// after the last message — not at the cut. firstKeptIndex is
+			// the cut's far side: the first message the model still sees
+			// verbatim (single mark, so it equals the folded count).
+			expect(mark.afterIndex).toBe(list.messages.length - 1);
+			expect(mark.firstKeptIndex).toBe(mark.eventsCompacted);
 			expect(mark.eventsCompacted).toBeGreaterThan(0);
 			expect(mark.eventsCompacted).toBeLessThanOrEqual(list.messages.length);
 
@@ -528,6 +533,178 @@ describe("app conversations", () => {
 				404,
 			);
 			expect((await call("/api/app/conversations/chat-02/compact")).status).toBe(405);
+		} finally {
+			http.stop();
+		}
+	});
+
+	// Issue #401: the pill must render where the fold RAN — after the
+	// last message that existed at fold time — not at the causal cut.
+	// Prod's frozen timeline: boundary_seq 46, tail_events 3, fold at
+	// 2026-11-09T14:09:05.456Z; the cut sat after seq 46 but seqs 47-49
+	// already existed when the fold landed (the operator's "we now have
+	// 3 QBs? xD" rode in right after).
+	test("fold mark places at fold time, not at the cut — prod timeline", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "fold-401" }),
+			});
+			const msg = (id: string, text: string, role: "user" | "assistant" = "user") => ({
+				id,
+				role,
+				parts: [{ type: "text" as const, text }],
+			});
+			// 43 earlier events keep prod's literal seqs 44..51.
+			store.append(
+				"app/fold-401",
+				Array.from({ length: 43 }, (_, i) => msg(`f${i + 1}`, `filler ${i + 1}`)),
+			);
+			store.append("app/fold-401", [msg("e44", "q44")]);
+			store.append("app/fold-401", [msg("e45", "a45", "assistant")], { anchorSeq: 44 });
+			store.append("app/fold-401", [msg("e46", "q46"), msg("e47", "q47")]);
+			store.append("app/fold-401", [msg("e48", "a48", "assistant")], { anchorSeq: 47 });
+			store.append("app/fold-401", [msg("e49", "we now have 3 QBs? xD"), msg("e50", "q50")]);
+			store.append("app/fold-401", [msg("e51", "a51", "assistant")], { anchorSeq: 50 });
+			// append() stamps wall-clock created_at; rewrite the eight rows
+			// to prod's frozen stamps so the fold-vs-message ordering is
+			// the incident's, not the test run's.
+			const stamps: [number, string][] = [
+				[44, "2026-11-08T00:30:03.000Z"],
+				[45, "2026-11-08T00:36:22.000Z"],
+				[46, "2026-11-08T05:35:03.000Z"],
+				[47, "2026-11-08T16:35:06.000Z"],
+				[48, "2026-11-08T16:42:12.000Z"],
+				[49, "2026-11-08T16:42:33.000Z"],
+				[50, "2026-11-09T14:10:08.000Z"],
+				[51, "2026-11-09T14:10:22.000Z"],
+			];
+			for (const [seq, createdAt] of stamps) {
+				store.db.run("UPDATE events SET created_at = ? WHERE conversation_id = ? AND seq = ?", [
+					createdAt,
+					"app/fold-401",
+					seq,
+				]);
+			}
+			store.setCompaction("app/fold-401", {
+				boundarySeq: 46,
+				summary: "folded",
+				tokensBefore: 120_000,
+				model: "test/model",
+				createdAt: "2026-11-09T14:09:05.456Z",
+				tailEvents: 3,
+			});
+			const res = await call("/api/app/conversations/fold-401/messages");
+			expect(res.status).toBe(200);
+			const list = (await res.json()) as {
+				messages: { id: string }[];
+				compactions: {
+					boundarySeq: number;
+					afterIndex: number;
+					firstKeptIndex: number;
+					eventsCompacted: number;
+					tailEvents: number | null;
+				}[];
+			};
+			expect(list.compactions).toHaveLength(1);
+			const mark = list.compactions[0]!;
+			// The cut is unchanged: causal keys ≤ 46 fold seqs 1..46, so
+			// the first verbatim-kept message is seq 47.
+			expect(mark.boundarySeq).toBe(46);
+			expect(mark.eventsCompacted).toBe(46);
+			expect(mark.firstKeptIndex).toBe(46);
+			expect(list.messages[mark.firstKeptIndex]!.id).toBe("e47");
+			// The fold ran 2026-11-09T14:09:05Z — after seq 49 landed
+			// (2026-11-08T16:42:33Z), before seqs 50/51 (14:10:08/14:10:22Z
+			// next day). The pill sits after seq 49 — three messages below
+			// where the old cut-position rule put it.
+			expect(mark.afterIndex).toBe(48);
+			expect(list.messages[mark.afterIndex]!.id).toBe("e49");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("each fold mark places by its own fold time", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "fold-402" }),
+			});
+			store.append(
+				"app/fold-402",
+				["k1", "k2", "k3", "k4", "k5", "k6"].map((id) => ({
+					id,
+					role: "user" as const,
+					parts: [{ type: "text" as const, text: id }],
+				})),
+			);
+			const stamps: [number, string][] = [
+				[1, "2026-11-08T10:00:00.000Z"],
+				[2, "2026-11-08T10:05:00.000Z"],
+				[3, "2026-11-08T10:10:00.000Z"],
+				[4, "2026-11-08T10:15:00.000Z"],
+				[5, "2026-11-08T10:20:00.000Z"],
+				[6, "2026-11-08T10:25:00.000Z"],
+			];
+			for (const [seq, createdAt] of stamps) {
+				store.db.run("UPDATE events SET created_at = ? WHERE conversation_id = ? AND seq = ?", [
+					createdAt,
+					"app/fold-402",
+					seq,
+				]);
+			}
+			// Fold one ran at 10:12 — k3 existed, k4 did not; its cut was
+			// after k2. Fold two ran at 10:22 — through k5; its cut was
+			// after k4. Each pill lands after the last message alive at
+			// its own fold time.
+			store.setCompaction("app/fold-402", {
+				boundarySeq: 2,
+				summary: "fold one",
+				tokensBefore: 10_000,
+				model: "test/model",
+				createdAt: "2026-11-08T10:12:00.000Z",
+				tailEvents: 4,
+			});
+			store.setCompaction("app/fold-402", {
+				boundarySeq: 4,
+				summary: "fold two",
+				tokensBefore: 20_000,
+				model: "test/model",
+				createdAt: "2026-11-08T10:22:00.000Z",
+				tailEvents: 2,
+			});
+			const res = await call("/api/app/conversations/fold-402/messages");
+			expect(res.status).toBe(200);
+			const list = (await res.json()) as {
+				messages: { id: string }[];
+				compactions: {
+					boundarySeq: number;
+					afterIndex: number;
+					firstKeptIndex: number;
+					eventsCompacted: number;
+					summary: string;
+				}[];
+			};
+			expect(list.compactions).toHaveLength(2);
+			const first = list.compactions[0]!;
+			const second = list.compactions[1]!;
+			expect(first.summary).toBe("fold one");
+			expect(first.eventsCompacted).toBe(2);
+			expect(first.firstKeptIndex).toBe(2);
+			expect(list.messages[first.firstKeptIndex]!.id).toBe("k3");
+			expect(first.afterIndex).toBe(2);
+			expect(list.messages[first.afterIndex]!.id).toBe("k3");
+			expect(second.summary).toBe("fold two");
+			expect(second.eventsCompacted).toBe(2);
+			expect(second.firstKeptIndex).toBe(4);
+			expect(list.messages[second.firstKeptIndex]!.id).toBe("k5");
+			expect(second.afterIndex).toBe(4);
+			expect(list.messages[second.afterIndex]!.id).toBe("k5");
 		} finally {
 			http.stop();
 		}

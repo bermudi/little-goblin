@@ -36,7 +36,7 @@ export const CAUSAL_KEY_SQL = "COALESCE(anchor_seq, seq)";
 // so pre-boundary rows (data blobs included) are never read/parsed.
 // Ordered by the causal key so events_causal serves the scan with no
 // temp sort; detailFromRows re-sorts to the same order anyway.
-export const HISTORY_CAUSAL_SQL = `SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? AND ${CAUSAL_KEY_SQL} > ? ORDER BY ${CAUSAL_KEY_SQL}, seq`;
+export const HISTORY_CAUSAL_SQL = `SELECT seq, anchor_seq, role, data, created_at FROM events WHERE conversation_id = ? AND ${CAUSAL_KEY_SQL} > ? ORDER BY ${CAUSAL_KEY_SQL}, seq`;
 // Causal-last event of one role — ORDER BY the causal key, not seq:
 // a late answer (high seq, early anchor) is causally earlier.
 export const LAST_BY_ROLE_SQL = `SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? AND role = ? ORDER BY ${CAUSAL_KEY_SQL} DESC, seq DESC LIMIT 1`;
@@ -130,11 +130,13 @@ export function prepareConversationQueries(db: Database) {
 		"SELECT created_at FROM events WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1",
 	);
 	const qHistory = db.query<
-		{ seq: number; anchor_seq: number | null; role: string; data: string },
+		{ seq: number; anchor_seq: number | null; role: string; data: string; created_at: string },
 		[string]
-	>("SELECT seq, anchor_seq, role, data FROM events WHERE conversation_id = ? ORDER BY seq");
+	>(
+		"SELECT seq, anchor_seq, role, data, created_at FROM events WHERE conversation_id = ? ORDER BY seq",
+	);
 	const qHistoryCausal = db.query<
-		{ seq: number; anchor_seq: number | null; role: string; data: string },
+		{ seq: number; anchor_seq: number | null; role: string; data: string; created_at: string },
 		[string, number]
 	>(HISTORY_CAUSAL_SQL);
 	const qLastByRole = db.query<

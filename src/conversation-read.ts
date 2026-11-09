@@ -54,10 +54,16 @@ export interface ConversationReads {
 	messageEvent(id: string, messageId: string): { seq: number; role: string } | null;
 	// The causal view (anchored responses sort right after their user
 	// event) as messages; historyEntries adds seqs (recall blocks need
-	// positions); historyDetail adds anchors (compaction's cut rule).
+	// positions); historyDetail adds anchors (compaction's cut rule) and
+	// append stamps (the app's fold-mark placement).
 	history(id: string): UIMessage[];
 	historyEntries(id: string): { seq: number; message: UIMessage }[];
-	historyDetail(id: string): { seq: number; anchorSeq: number | null; message: UIMessage }[];
+	historyDetail(id: string): {
+		seq: number;
+		anchorSeq: number | null;
+		createdAt: string;
+		message: UIMessage;
+	}[];
 	// The causal-last event of one role (same key historyDetail sorts
 	// on), read as a single row — for boolean/last-message callers that
 	// would otherwise materialize the whole history. Null = none.

@@ -1802,6 +1802,7 @@ describe("FoldMark", () => {
 	const mark = (over: Partial<AppCompactionMark> = {}): AppCompactionMark => ({
 		boundarySeq: 2,
 		afterIndex: 1,
+		firstKeptIndex: 2,
 		eventsCompacted: 15,
 		tailEvents: 6,
 		tokensBefore: 120_000,
@@ -1817,6 +1818,21 @@ describe("FoldMark", () => {
 		expect(html).toContain("fold-pill live");
 		expect(html).toContain("the summary the model kept");
 		expect(html).toContain("folded by prov/model");
+	});
+
+	test("the expanded mark names where context now starts", () => {
+		const html = renderToStaticMarkup(
+			<FoldMark mark={mark()} live keptStart="we now have 3 QBs? xD" />,
+		);
+		expect(html).toContain("context now starts at");
+		expect(html).toContain("we now have 3 QBs? xD");
+		expect(html).toContain("fold-start");
+	});
+
+	test("no kept-start excerpt omits the context line", () => {
+		const html = renderToStaticMarkup(<FoldMark mark={mark()} live />);
+		expect(html).not.toContain("context now starts at");
+		expect(html).not.toContain("fold-start");
 	});
 
 	test("a legacy row without a tail count omits the kept clause", () => {

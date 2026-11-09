@@ -99,15 +99,19 @@ export interface AppMessageList {
 	ratings: AppRatedReply[];
 	rateableMessageIds: string[];
 	/** Fold pointers as transcript marks, oldest first — each renders a
-	 *  pill right after `messages[afterIndex]`. */
+	 *  pill after `messages[afterIndex]` (-1 = before the first). */
 	compactions: AppCompactionMark[];
 }
 
 export interface AppCompactionMark {
 	boundarySeq: number;
-	/** Index into `messages` of the last folded event (causal position
-	 *  ≤ boundarySeq — the same key the model view cuts on). */
+	/** Index into `messages` the pill renders after: the last message
+	 *  that existed when the fold ran (its created_at ≤ the row's) —
+	 *  where the fold ran, not at the cut. -1 = before every message. */
 	afterIndex: number;
+	/** Index into `messages` of the first message the model still sees
+	 *  verbatim after this fold — the causal cut's far side. */
+	firstKeptIndex: number;
 	eventsCompacted: number;
 	/** Fold-time tail size; null on rows written before it was recorded. */
 	tailEvents: number | null;

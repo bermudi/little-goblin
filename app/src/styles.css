@@ -1270,7 +1270,8 @@ header h1 {
 .fold-summary p:last-child {
 	margin-bottom: 0;
 }
-.fold-meta {
+.fold-meta,
+.fold-start {
 	font-family: var(--font-mono);
 	font-size: 10.5px;
 	color: var(--app-fg-subtle);

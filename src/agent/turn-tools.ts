@@ -55,7 +55,10 @@ export interface TurnToolsDeps {
 		noteRecall(ok: boolean): void;
 	} | null;
 	transcribe: TranscribeToolDeps["transcribe"];
-	delegateDeps(conv: Conversation, workdir: string): DelegateToolDeps | undefined;
+	delegateDeps(
+		conv: Conversation,
+		workdir: string,
+	): Omit<DelegateToolDeps, "mountedSubagents"> | undefined;
 	// The operator's own `default` session — guest surfaces lose it in
 	// filterGuests.
 	operatorHerdr: OperatorHerdr;
@@ -111,6 +114,14 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		const subagents = deps.subagents();
 		const desktops = deps.desktops();
 		const subagentsBoot = deps.subagentsBoot();
+		// One mount decision feeds the subagent tool and the delegate
+		// description's routing sentence — both name only mounted types.
+		const subagentMounted = subagents !== null && configRef.current.subagents !== undefined;
+		const workerEnabled =
+			subagentMounted &&
+			subagentsBoot?.worker !== undefined &&
+			configRef.current.sandbox !== undefined;
+		const computerEnabled = subagentMounted && subagentsBoot?.computer !== undefined;
 		const responsibilitySvc = deps.responsibility();
 		// One gate for every executor that can link work to what goblin owes.
 		const checkResponsibility =
@@ -215,7 +226,14 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			})(),
 			transcribe: configRef.current.transcription !== undefined ? { transcribe } : undefined,
 			// Boot fixtures under a live gate.
-			delegate: delegate === undefined ? undefined : { ...delegate, checkResponsibility },
+			delegate:
+				delegate === undefined
+					? undefined
+					: {
+							...delegate,
+							mountedSubagents: { worker: workerEnabled, computer: computerEnabled },
+							checkResponsibility,
+						},
 			// Unconditional — guests are filtered below and script's
 			// allowlist excludes it.
 			herdr: { herdr: operatorHerdr },
@@ -261,18 +279,16 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 					: undefined,
 			// The subagents block is boot-frozen — a live config read
 			// can only hide the tools, never swap models mid-run.
-			subagent:
-				subagents !== null && configRef.current.subagents !== undefined
-					? {
-							conversation: conv.id,
-							workspace: workdir,
-							subagents,
-							workerEnabled:
-								subagentsBoot?.worker !== undefined && configRef.current.sandbox !== undefined,
-							computerEnabled: subagentsBoot?.computer !== undefined,
-							checkResponsibility,
-						}
-					: undefined,
+			subagent: subagentMounted
+				? {
+						conversation: conv.id,
+						workspace: workdir,
+						subagents,
+						workerEnabled,
+						computerEnabled,
+						checkResponsibility,
+					}
+				: undefined,
 			desktop:
 				subagents !== null && desktops !== null && configRef.current.subagents !== undefined
 					? { conversation: conv.id, workspace: workdir, desktops }

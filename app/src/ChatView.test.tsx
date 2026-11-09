@@ -988,6 +988,131 @@ describe("ChatView mid-turn steer", () => {
 	});
 });
 
+// The rail's activity stamp is server truth the moment the POST is
+// answered — the user message is durable before the stream starts.
+// onSendAccepted must fire on that answer, not onFinish: a long turn
+// cannot hold the conversation's new time hostage until it ends.
+describe("ChatView send accepted", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+	const sseHeaders = {
+		"content-type": "text/event-stream",
+		"x-vercel-ai-ui-message-stream": "v1",
+	};
+
+	test("fires when the send's stream response begins, ahead of turn end", async () => {
+		const encoder = new TextEncoder();
+		// The turn's wire opens but never produces — the send is
+		// accepted while the turn is still running.
+		let live!: ReadableStreamDefaultController<Uint8Array>;
+		const liveStream = new ReadableStream<Uint8Array>({
+			start(controller) {
+				live = controller;
+			},
+		});
+		let chatPosts = 0;
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+				if (url === "/api/app/chat") {
+					chatPosts += 1;
+					return new Response(liveStream, { headers: sseHeaders });
+				}
+				return jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				});
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		const accepted: string[] = [];
+		const done: string[] = [];
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-02"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => done.push("done")}
+					onSendAccepted={() => accepted.push("accepted")}
+				/>,
+			),
+		);
+		const ta = dom.container.querySelector("form.composer textarea")!;
+		await act(async () => {
+			(ta as HTMLElement).focus();
+			Object.getOwnPropertyDescriptor(dom.win.HTMLTextAreaElement.prototype, "value")!.set!.call(
+				ta,
+				"hello",
+			);
+			ta.dispatchEvent(new dom.win.Event("input", { bubbles: true }) as unknown as Event);
+			ta.dispatchEvent(
+				new dom.win.KeyboardEvent("keyup", { bubbles: true, key: "o" }) as unknown as Event,
+			);
+		});
+		await act(async () => {
+			dom.container
+				.querySelector("form.composer")!
+				.dispatchEvent(
+					new dom.win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+		});
+		for (let i = 0; i < 100 && chatPosts === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		expect(chatPosts).toBe(1);
+		// The POST answered — the callback fired while the turn still runs.
+		for (let i = 0; i < 100 && accepted.length === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		expect(accepted).toHaveLength(1);
+		expect(done).toHaveLength(0);
+		// Closing the wire ends the turn — done lands after accepted, once.
+		await act(async () => {
+			for (const chunk of [
+				{ type: "start", messageId: "a1" },
+				{ type: "text-start", id: "t1" },
+				{ type: "text-delta", id: "t1", delta: "hi" },
+				{ type: "text-end", id: "t1" },
+				{ type: "finish" },
+			])
+				live.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+			live.enqueue(encoder.encode("data: [DONE]\n\n"));
+			live.close();
+		});
+		for (let i = 0; i < 100 && done.length === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		expect(done).toHaveLength(1);
+		expect(accepted).toHaveLength(1);
+	});
+});
+
 describe("ChatView edit and branch", () => {
 	const dom = mountDom();
 

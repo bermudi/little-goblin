@@ -6,7 +6,7 @@ import { readWorkspaceFile, workspaceReadStatus } from "../box-files.ts";
 import { clampThinkingFor } from "../agent/thinking.ts";
 import { listCalls } from "../cache-observation.ts";
 import { ConfigValidationError, parseConfig, paths, splitModelRef } from "../config.ts";
-import type { ConversationStore } from "../conversation.ts";
+import { type ConversationStore, DeleteRefused } from "../conversation.ts";
 import { appAddress, appIdSchema } from "../conversation-address.ts";
 import { flatLine } from "../conversation-events.ts";
 import { log } from "../log.ts";
@@ -1362,8 +1362,32 @@ export async function handleConversationsRoute(
 			return Response.json(body, { headers: NO_STORE });
 		}
 		if (req.method === "DELETE") {
+			// Ask before fencing: a refused delete must not abort a live
+			// turn, and the refusal is the operator's to read, not a 500.
+			// The ask is advisory — an anchor minted after it (the turn
+			// taking a responsibility before the fence lands) still
+			// refuses inside the delete; that answer carries the message
+			// too, after the fence.
+			const refusal = store.deleteRefusal(convId.id);
+			if (refusal !== null) {
+				log.warn("app conversation delete refused", {
+					conversation: convId.id,
+					refusal,
+				});
+				return Response.json({ error: refusal }, { status: 409, headers: NO_STORE });
+			}
 			const { stopped } = runtime.stop(convId.id);
-			store.deleteConversation(convId.id);
+			try {
+				store.deleteConversation(convId.id);
+			} catch (err) {
+				if (!(err instanceof DeleteRefused)) throw err;
+				log.warn("app conversation delete refused after fence", {
+					conversation: convId.id,
+					turnFenced: stopped,
+					refusal: err.message,
+				});
+				return Response.json({ error: err.message }, { status: 409, headers: NO_STORE });
+			}
 			log.info("app conversation deleted", {
 				conversation: convId.id,
 				turnFenced: stopped,

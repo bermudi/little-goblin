@@ -131,6 +131,21 @@ export interface MessageEdit {
 	ratings: number;
 }
 
+// deleteConversation's designed refusal (coordination anchors), typed so
+// a boundary can tell it from a real failure — the app's DELETE route
+// must answer it, not 500 it.
+export class DeleteRefused extends Error {}
+
+// One text for both surfaces: deleteRefusal's advisory answer and
+// deleteConversation's throw must never drift apart.
+const deleteRefusalText = (
+	id: string,
+	anchors: { responsibilityId: string; status: string }[],
+): string =>
+	`conversation ${id} coordinates ${anchors
+		.map((a) => `${a.responsibilityId} (${a.status})`)
+		.join(", ")} — resolve them before deleting`;
+
 // The write side plus the shared handles. Every read lives on
 // ConversationReads (conversation-read.ts), which this extends —
 // consumers that only read type against the reads view.
@@ -236,9 +251,14 @@ export interface ConversationStore extends ConversationReads {
 	// The one write to project_id — creation only. A row already bound
 	// to a different project refuses; rebinding the same id is a no-op.
 	bindProject(id: string, projectId: string): void;
+	// The refusal deleteConversation would raise right now, as the message
+	// the caller should show — null when the delete would proceed.
+	// Advisory, not a fence: an anchor minted after this answer (a live
+	// turn taking a responsibility) still refuses inside deleteConversation.
+	deleteRefusal(id: string): string | null;
 	// Drop a conversation and everything it owns (events fire the FTS
 	// delete trigger). A live turn must be fenced first (runtime.stop) —
-	// this only touches the store.
+	// this only touches the store. The anchor refusal is DeleteRefused.
 	deleteConversation(id: string): void;
 	close(): void;
 }
@@ -886,6 +906,11 @@ export function openStore(dbPath: string): ConversationStore {
 			return qProjectConvs.all(projectId).map((r) => r.id);
 		},
 
+		deleteRefusal(id) {
+			const anchors = coordinationAnchors(db, id);
+			return anchors.length > 0 ? deleteRefusalText(id, anchors) : null;
+		},
+
 		deleteConversation(id) {
 			const swept = db.transaction((): { wakes: number; workEvents: number } => {
 				// A coordination surface must not outlive the responsibility
@@ -895,11 +920,7 @@ export function openStore(dbPath: string): ConversationStore {
 				// not the bare FK error the row delete would raise.
 				const anchors = coordinationAnchors(db, id);
 				if (anchors.length > 0) {
-					throw new Error(
-						`conversation ${id} coordinates ${anchors
-							.map((a) => `${a.responsibilityId} (${a.status})`)
-							.join(", ")} — resolve them before deleting`,
-					);
+					throw new DeleteRefused(deleteRefusalText(id, anchors));
 				}
 				// Sever the rolling navigation chain first — successors'
 				// previous_dm_id would FK-fail the row delete (a demoted

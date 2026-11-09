@@ -1,13 +1,17 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { modelCatalogFor } from "../agent/models-dev.ts";
+import { fetchSkill, SkillFetchError, stampVerdict } from "../agent/skill-fetch.ts";
 import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
+import { appendAuthRecord, type WritableAuthStore } from "../auth.ts";
 import {
 	authDefaults,
-	capabilityNames,
 	type CapabilityName,
 	type Config,
 	ConfigValidationError,
+	capabilityNames,
+	type DelegationConfig,
 	fetchKinds,
 	loadConfig,
 	parseConfig,
@@ -19,17 +23,11 @@ import {
 	ttsCloudDefaults,
 	writeConfig,
 } from "../config.ts";
-import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "../services.ts";
-import { appendAuthRecord, type WritableAuthStore } from "../auth.ts";
-import { prepareAppSettingsForConfig, type ConversationStore } from "../conversation.ts";
+import { type ConversationStore, prepareAppSettingsForConfig } from "../conversation.ts";
 import { flatLine } from "../conversation-events.ts";
 import type { Delegation, DelegationsStore } from "../delegations.ts";
-import { log } from "../log.ts";
 import { checkInjection } from "../injection.ts";
-import type { System1Client } from "../system1.ts";
-import { fetchSkill, SkillFetchError, stampVerdict } from "../agent/skill-fetch.ts";
-import { readFileSync } from "node:fs";
-import { resolveSkillProposal, type SkillAction, type SkillDecision } from "../skill-decisions.ts";
+import { log } from "../log.ts";
 import { type ForgetSource, forgetDocument } from "../memory/forget.ts";
 import {
 	type HindsightClient,
@@ -39,18 +37,19 @@ import {
 	type MemoryDocSummary,
 	type MemoryFact,
 } from "../memory/hindsight.ts";
-import { type MemoryContexts, memoryStatus, type MemoryWiring } from "../memory/mod.ts";
+import { type MemoryContexts, type MemoryWiring, memoryStatus } from "../memory/mod.ts";
 import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory/queue.ts";
 import { conversationOfDocId, splitSaves } from "../memory/saves.ts";
 import type { Program, ProgramsStore } from "../programs.ts";
+import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "../services.ts";
+import { resolveSkillProposal, type SkillAction, type SkillDecision } from "../skill-decisions.ts";
 import {
 	liveStateOf,
-	skillDiskPresence,
 	type SkillSourceRow,
 	SkillSources,
+	skillDiskPresence,
 	skillNameSchema,
 } from "../skill-provenance.ts";
-import type { SkillDecideResponse, SkillPreviewResponse } from "./operator-wire.ts";
 import {
 	AttachmentTooLargeError,
 	identityFiles,
@@ -60,15 +59,16 @@ import {
 	readSkillFile,
 	tailLog,
 } from "../stateview.ts";
+import type { System1Client } from "../system1.ts";
 import type {
 	CapabilityState,
 	ChatGptStatus,
 	ConfigPostBody,
 	ConfigResponse,
 	MemoriesListResponse,
+	MemoryBlockedResponse,
 	MemoryDocDetailResponse,
 	MemoryDocListItem,
-	MemoryBlockedResponse,
 	MemoryFactItem,
 	MemoryForgetResponse,
 	MemoryForgetThreadResponse,
@@ -80,7 +80,9 @@ import type {
 	OperatorProgramsResponse,
 	OperatorStatusResponse,
 	SecretStoreResponse,
+	SkillDecideResponse,
 	SkillForgetResponse,
+	SkillPreviewResponse,
 	ThreadSkillItem,
 	ThreadSkillsResponse,
 } from "./operator-wire.ts";
@@ -417,12 +419,14 @@ async function saveConfig(
 			}
 			// Machine targets are host-bound and file-only — the settings
 			// editor sends harnesses/defaults, and this merge keeps the
-			// rest of the block exactly as the file had it.
+			// file's own copy: the active block's, else the parked one a
+			// re-enable leaves behind.
 			if (k === "delegation" && typeof v === "object" && v !== null && !Array.isArray(v)) {
+				const machines =
+					normalized.delegation?.machines ??
+					(parked.delegation as DelegationConfig | undefined)?.machines;
 				candidate.delegation = {
-					...(normalized.delegation?.machines === undefined
-						? {}
-						: { machines: normalized.delegation.machines }),
+					...(machines === undefined ? {} : { machines }),
 					...v,
 				};
 				// An edited block supersedes a parked copy — leaving it

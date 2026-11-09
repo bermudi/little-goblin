@@ -215,7 +215,7 @@ function mountDom() {
 }
 
 const click = (dom: { win: Window }, el: Element) =>
-	el.dispatchEvent(new dom.win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+	el.dispatchEvent(new dom.win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 const settle = () =>
 	act(async () => {
 		await new Promise((r) => setTimeout(r, 20));

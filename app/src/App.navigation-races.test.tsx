@@ -15,6 +15,7 @@ import type {
 	AppProject,
 } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
+import { confirmSheet } from "./testkit.ts";
 
 // Late completions must not drive navigation: a held create dialog's
 // onCreated, a held note mint's onOpenNote, and a second note→chat
@@ -78,7 +79,6 @@ describe("navigation races: late completions", () => {
 	let notes: AppNoteSummary[];
 	let noteBodies: Record<string, string>;
 	let posts: { url: string; body: unknown }[];
-	let confirmCalls: number;
 	let deletedConversations: string[];
 	// Held replies — a POST waits on its gate until the test releases
 	// it; pendingGates resolve in afterEach so a failed assertion can
@@ -106,7 +106,6 @@ describe("navigation races: late completions", () => {
 		notes = [];
 		noteBodies = {};
 		posts = [];
-		confirmCalls = 0;
 		deletedConversations = [];
 		convCreateHold = null;
 		convDeleteHold = null;
@@ -140,12 +139,6 @@ describe("navigation races: late completions", () => {
 			if (value !== undefined) installGlobal(name, value);
 		}
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-		// The dirty-settings guard declines — a phantom confirm means a
-		// late completion reached a navigation it had no business in.
-		Reflect.set(win, "confirm", () => {
-			confirmCalls += 1;
-			return false;
-		});
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
@@ -361,7 +354,7 @@ describe("navigation races: late completions", () => {
 	const click = async (el: Element | null | undefined) => {
 		expect(el).toBeTruthy();
 		await act(async () => {
-			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 		});
 		await settle();
 	};
@@ -435,7 +428,6 @@ describe("navigation races: late completions", () => {
 		);
 		await waitFor(() => container.textContent?.includes("unsaved") === true, "dirty marker");
 
-		const confirmsBefore = confirmCalls;
 		gate.resolve();
 		await settle();
 		// The late success never ran onCreated: Settings stays mounted,
@@ -443,7 +435,7 @@ describe("navigation races: late completions", () => {
 		expect(win.location.pathname).toBe("/app/settings");
 		expect(container.querySelector(".settings")).not.toBeNull();
 		expect(container.textContent).toContain("unsaved");
-		expect(confirmCalls).toBe(confirmsBefore);
+		expect(confirmSheet(container)).toBeNull();
 		expect(projs.some((p) => p.id === "p-new")).toBe(true);
 	});
 
@@ -515,13 +507,12 @@ describe("navigation races: late completions", () => {
 		);
 		await waitFor(() => container.textContent?.includes("unsaved") === true, "dirty marker");
 
-		const confirmsBefore = confirmCalls;
 		gate.resolve();
 		await settle();
 		expect(win.location.pathname).toBe("/app/settings");
 		expect(container.querySelector(".settings")).not.toBeNull();
 		expect(container.textContent).toContain("unsaved");
-		expect(confirmCalls).toBe(confirmsBefore);
+		expect(confirmSheet(container)).toBeNull();
 		expect(notes.some((n) => n.id === "n-new")).toBe(true);
 	});
 

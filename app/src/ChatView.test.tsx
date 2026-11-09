@@ -10,6 +10,7 @@ import type {
 	AppRunCall,
 } from "../../src/http/app-wire.ts";
 import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
+import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 import {
 	appendQuote,
 	ChatView,
@@ -1048,8 +1049,12 @@ describe("ChatView edit and branch", () => {
 			);
 		});
 	};
-	const confirmAll = () => {
-		Reflect.set(dom.win, "confirm", () => true);
+	// The rewind ask is an in-app sheet now — answering it is a click on
+	// its confirm button, like the operator's.
+	const approveEdit = async () => {
+		await act(async () => {
+			clickConfirm(dom.container, true);
+		});
 	};
 	const mountChat = async () => {
 		dom.root = createRoot(dom.container);
@@ -1135,11 +1140,6 @@ describe("ChatView edit and branch", () => {
 			},
 			{ preconnect: dom.realFetch.preconnect },
 		);
-		const confirms: string[] = [];
-		Reflect.set(dom.win, "confirm", (message?: string) => {
-			confirms.push(message ?? "");
-			return true;
-		});
 		dom.root = createRoot(dom.container);
 		await act(async () =>
 			dom.root?.render(
@@ -1179,9 +1179,9 @@ describe("ChatView edit and branch", () => {
 		await act(async () => {
 			save.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
 		});
+		expect(confirmText(dom.container)).toContain("1 message");
+		await approveEdit();
 		await settle(() => chatPosts.length > 0);
-		expect(confirms).toHaveLength(1);
-		expect(confirms[0]).toContain("1 message");
 		expect(chatPosts[0]?.conversationId).toBe("app/meta-01");
 		expect(chatPosts[0]?.editMessageId).toBe("u1");
 		expect(chatPosts[0]?.message?.parts).toEqual([{ type: "text", text: "hello, edited" }]);
@@ -1228,11 +1228,11 @@ describe("ChatView edit and branch", () => {
 			},
 			{ preconnect: dom.realFetch.preconnect },
 		);
-		confirmAll();
 		await mountChat();
 		await settle(() => dom.container.textContent?.includes("hi there") ?? false);
 
 		await editFirstMessage("hello, edited");
+		await approveEdit();
 		await settle(() => dom.container.textContent?.includes("The turn failed") ?? false);
 		// The error path reconciled with durable history, not the backup:
 		// the server kept the committed edit, so the pre-edit tail must not
@@ -1266,11 +1266,11 @@ describe("ChatView edit and branch", () => {
 			},
 			{ preconnect: dom.realFetch.preconnect },
 		);
-		confirmAll();
 		await mountChat();
 		await settle(() => dom.container.textContent?.includes("hi there") ?? false);
 
 		await editFirstMessage("hello, edited");
+		await approveEdit();
 		// The optimistic rewind dropped the tail locally…
 		await settle(() => !(dom.container.textContent?.includes("hi there") ?? true));
 		// …the send never reached the server, so the error path's refresh
@@ -1314,11 +1314,11 @@ describe("ChatView edit and branch", () => {
 			},
 			{ preconnect: dom.realFetch.preconnect },
 		);
-		confirmAll();
 		await mountChat();
 		await settle(() => dom.container.textContent?.includes("hi there") ?? false);
 
 		await editFirstMessage("hello, edited");
+		await approveEdit();
 		// The refresh cannot reach the server either — the pre-edit backup
 		// stands in so the tail is not silently hidden while offline.
 		await settle(
@@ -1371,11 +1371,6 @@ describe("ChatView edit and branch", () => {
 			},
 			{ preconnect: dom.realFetch.preconnect },
 		);
-		const confirms: string[] = [];
-		Reflect.set(dom.win, "confirm", (message?: string) => {
-			confirms.push(message ?? "");
-			return false;
-		});
 		dom.root = createRoot(dom.container);
 		await act(async () =>
 			dom.root?.render(
@@ -1412,9 +1407,9 @@ describe("ChatView edit and branch", () => {
 			save.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
 		});
 		await settle(() => chatPosts.length > 0);
-		// A confirm stub that refuses everything: reaching the POST proves
-		// the empty tail skipped the prompt.
-		expect(confirms).toEqual([]);
+		// Reaching the POST proves the empty tail skipped the ask — no
+		// sheet ever opened for it.
+		expect(confirmSheet(dom.container)).toBeNull();
 		expect(chatPosts[0]?.editMessageId).toBe("u1");
 	});
 
@@ -2888,7 +2883,7 @@ describe("composer focus stealing", () => {
 	// rest of this file.
 	const fireClick = async (el: Element) => {
 		await act(async () => {
-			el.dispatchEvent(new dom.win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			el.dispatchEvent(new dom.win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 		});
 	};
 

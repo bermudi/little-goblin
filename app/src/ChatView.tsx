@@ -39,6 +39,7 @@ import {
 	uploadAttachment,
 } from "./api.ts";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft.ts";
+import { useConfirm } from "./confirm.tsx";
 import { Outline } from "./Outline.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { ApprovalCard } from "./Approvals.tsx";
@@ -2946,6 +2947,7 @@ function Chat({
 	// re-sync would otherwise run after the error path's replace —
 	// re-admitting the failed optimistic message the replace removed.
 	const editFailed = useRef(false);
+	const confirm = useConfirm();
 	// A branch is a copy in a new chat; the click opens it via the host's
 	// navigation. Errors stay on the reply's action row.
 	const [branchPending, setBranchPending] = useState<string | null>(null);
@@ -3194,7 +3196,7 @@ function Chat({
 		setEditing({ id: m.id, draft: messageText(m) });
 	};
 	const cancelEdit = () => setEditing(null);
-	const saveEdit = (m: UIMessage) => {
+	const saveEdit = async (m: UIMessage) => {
 		if (busy || editing === null || editing.id !== m.id) return;
 		const index = messages.findIndex((x) => x.id === m.id);
 		if (index === -1) return;
@@ -3205,9 +3207,11 @@ function Chat({
 		// drop real messages; the branch action is the way to keep them.
 		if (
 			tail > 0 &&
-			!window.confirm(
-				`Editing this message drops the ${tail} message${tail === 1 ? "" : "s"} after it. Branch first if you want to keep them. Continue?`,
-			)
+			!(await confirm.ask({
+				message: `Editing this message drops the ${tail} message${tail === 1 ? "" : "s"} after it. Branch first if you want to keep them.`,
+				confirmLabel: "Edit anyway",
+				danger: true,
+			}))
 		) {
 			return;
 		}
@@ -3281,7 +3285,7 @@ function Chat({
 													<button
 														type="button"
 														className="primary"
-														onClick={() => saveEdit(m)}
+														onClick={() => void saveEdit(m)}
 														disabled={
 															editing.draft.trim() === "" && !m.parts.some((p) => p.type !== "text")
 														}
@@ -3407,6 +3411,7 @@ function Chat({
 						void stop();
 					}}
 				/>
+				{confirm.view}
 			</div>
 		</DocViewerProvider>
 	);

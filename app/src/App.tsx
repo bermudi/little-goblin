@@ -48,6 +48,7 @@ import { FilesView } from "./StateViews.tsx";
 import { StatusView } from "./StatusView.tsx";
 import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
 import { useUndoToast } from "./undoToast.tsx";
+import { useConfirm } from "./confirm.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { WindowView } from "./WindowView.tsx";
 
@@ -708,6 +709,7 @@ function TelegramDoor() {
 	// selector here, but Telegram Desktop's viewport is desktop-wide.
 	const [chatWidth] = useState<ChatWidth>(loadChatWidth);
 	const settingsDirty = useRef(false);
+	const confirm = useConfirm();
 	// Empty initData = not opened by Telegram — every request would 401,
 	// so say so rather than render a form that cannot save.
 	// window.Telegram is settled before first render — injected by the
@@ -732,12 +734,16 @@ function TelegramDoor() {
 		window.Telegram?.WebApp.disableClosingConfirmation?.();
 		return () => window.Telegram?.WebApp.disableClosingConfirmation?.();
 	}, []);
-	const openPage = (p: Exclude<Page, "chat">) => {
+	const openPage = async (p: Exclude<Page, "chat">) => {
 		if (p === page) return;
 		if (
 			page === "settings" &&
 			settingsDirty.current &&
-			!window.confirm("Discard unsaved settings changes?")
+			!(await confirm.ask({
+				message: "Discard unsaved settings changes?",
+				confirmLabel: "Discard",
+				danger: true,
+			}))
 		)
 			return;
 		// Approved navigation throws the draft away — disarm the guard.
@@ -754,7 +760,7 @@ function TelegramDoor() {
 							type="button"
 							className={page === p.key ? "rail-op on" : "rail-op"}
 							onClick={() => {
-								openPage(p.key);
+								void openPage(p.key);
 								setNavOpen(false);
 							}}
 						>
@@ -799,6 +805,7 @@ function TelegramDoor() {
 				)}
 				{authed && page === "memory" && <MemoryView token={null} />}
 			</main>
+			{confirm.view}
 		</div>
 	);
 }
@@ -937,6 +944,7 @@ function AppShell() {
 		setStartFailed(false);
 	};
 	const undoToast = useUndoToast();
+	const confirm = useConfirm();
 	// Deleted rows stay out of the lists while their DELETE is held back
 	// for the undo window.
 	const [heldDeletes, setHeldDeletes] = useState<ReadonlySet<string>>(new Set());
@@ -988,15 +996,40 @@ function AppShell() {
 		segment: position?.segment ?? newHistorySegment(),
 		key: navigation?.currentEntry.key ?? null,
 	});
-	// Leaving a dirty page asks once, with the page's own wording.
-	const leaveDirty = () => {
+	// The traversal a pop already performed, parked while the leave-guard
+	// ask is open — its answer replays or reverts this entry. A second
+	// pop re-parks: the newest target is the only one that can land.
+	const pendingPop = useRef<{
+		p: Page | null;
+		position: { index: number; segment: string } | null;
+	} | null>(null);
+	const popAskOpen = useRef(false);
+	// Leaving a dirty page asks once, with the page's own wording. The
+	// ask is a sheet now, not a blocking window.confirm, so the guard
+	// splits in two: what to ask (dirtyGuard) and the answer's await.
+	// popstate uses the same pair — a traversal can't be vetoed, so it
+	// restores-or-applies around the answer instead.
+	const dirtyGuard = (): { message: string; disarm: () => void } | null => {
 		if (pageRef.current === "settings" && settingsDirty.current)
-			return window.confirm("Discard unsaved settings changes?");
-		if (pageRef.current === "note" && noteDirty.current) {
-			if (!window.confirm("Discard unsaved note edits and any conflict?")) return false;
-			noteDiscard.current?.();
-			return true;
-		}
+			return {
+				message: "Discard unsaved settings changes?",
+				disarm: () => {
+					settingsDirty.current = false;
+				},
+			};
+		if (pageRef.current === "note" && noteDirty.current)
+			return {
+				message: "Discard unsaved note edits and any conflict?",
+				disarm: () => noteDiscard.current?.(),
+			};
+		return null;
+	};
+	const leaveDirty = async (): Promise<boolean> => {
+		const guard = dirtyGuard();
+		if (guard === null) return true;
+		if (!(await confirm.ask({ message: guard.message, confirmLabel: "Discard", danger: true })))
+			return false;
+		guard.disarm();
 		return true;
 	};
 	const pushRoute = (path: string) => {
@@ -1107,42 +1140,7 @@ function AppShell() {
 	}, [conversations]);
 
 	useEffect(() => {
-		const onPop = () => {
-			const p = pageFromPath(window.location.pathname);
-			const nextPosition = historyPosition(window.history.state);
-			// Only a pop that actually leaves the dirty page asks — the
-			// guard's own restoration below lands right back on it, and a
-			// second ask there would double every decline.
-			const stillHome =
-				(page === "settings" && p === "settings") ||
-				(page === "note" && noteFromPath(window.location.pathname) === noteId);
-			if (!stillHome && !leaveDirty()) {
-				// popstate arrives after traversal. Undo it rather than push a
-				// replacement entry, which would erase the forward history.
-				if (navigation !== null && route.current.key !== null) {
-					const failed = (err: unknown) =>
-						setNavigationError(
-							`Couldn't restore history: ${err instanceof Error ? err.message : String(err)}`,
-						);
-					try {
-						const { committed, finished } = navigation.traverseTo(route.current.key);
-						void Promise.all([committed, finished]).catch(failed);
-					} catch (err) {
-						failed(err);
-					}
-				} else if (
-					nextPosition !== null &&
-					nextPosition.segment === route.current.segment &&
-					nextPosition.index !== route.current.index
-				) {
-					window.history.go(route.current.index - nextPosition.index);
-				} else {
-					setNavigationError(
-						"Your unsaved edits are still here. This browser cannot restore an older history entry; save or discard your changes before navigating again.",
-					);
-				}
-				return;
-			}
+		const applyPop = (p: Page | null, nextPosition: { index: number; segment: string } | null) => {
 			navigationSeq.current += 1;
 			route.current = {
 				// A legacy gap breaks index continuity. New entries get a new
@@ -1192,9 +1190,75 @@ function AppShell() {
 			setComposeStaged(false);
 			setCurrent(id);
 		};
+		// popstate arrives after traversal. Undo it rather than push a
+		// replacement entry, which would erase the forward history.
+		const restoreEntry = (nextPosition: { index: number; segment: string } | null) => {
+			if (navigation !== null && route.current.key !== null) {
+				const failed = (err: unknown) =>
+					setNavigationError(
+						`Couldn't restore history: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				try {
+					const { committed, finished } = navigation.traverseTo(route.current.key);
+					void Promise.all([committed, finished]).catch(failed);
+				} catch (err) {
+					failed(err);
+				}
+			} else if (
+				nextPosition !== null &&
+				nextPosition.segment === route.current.segment &&
+				nextPosition.index !== route.current.index
+			) {
+				window.history.go(route.current.index - nextPosition.index);
+			} else {
+				setNavigationError(
+					"Your unsaved edits are still here. This browser cannot restore an older history entry; save or discard your changes before navigating again.",
+				);
+			}
+		};
+		const onPop = () => {
+			const p = pageFromPath(window.location.pathname);
+			const nextPosition = historyPosition(window.history.state);
+			// Only a pop that actually leaves the dirty page asks — the
+			// restore lands right back on it, and an ask there would double
+			// every decline.
+			const stillHome =
+				(page === "settings" && p === "settings") ||
+				(page === "note" && noteFromPath(window.location.pathname) === noteId);
+			const guard = stillHome ? null : dirtyGuard();
+			if (guard === null) {
+				// A pending ask's target dies here: this pop applied under
+				// the open sheet, so the page it guarded no longer stands —
+				// the late answer must neither restore nor replay.
+				pendingPop.current = null;
+				applyPop(p, nextPosition);
+				return;
+			}
+			// The traversal already happened and can't be vetoed — park it
+			// and ask. A decline undoes the traversal; an approval applies
+			// it as if the guard had passed. A second pop re-parks: the
+			// newest target is the only one that can land.
+			pendingPop.current = { p, position: nextPosition };
+			if (popAskOpen.current) return;
+			popAskOpen.current = true;
+			void confirm
+				.ask({ message: guard.message, confirmLabel: "Discard", danger: true })
+				.then((ok) => {
+					popAskOpen.current = false;
+					const target = pendingPop.current;
+					pendingPop.current = null;
+					if (target === null) return;
+					if (ok) {
+						guard.disarm();
+						applyPop(target.p, target.position);
+					} else {
+						restoreEntry(target.position);
+					}
+				});
+		};
 		window.addEventListener("popstate", onPop);
 		return () => window.removeEventListener("popstate", onPop);
-	}, [page, noteId]);
+	}, [page, noteId, confirm.ask]);
 
 	useEffect(() => {
 		const onUnload = (event: BeforeUnloadEvent) => {
@@ -1283,8 +1347,8 @@ function AppShell() {
 
 	// Selection owns the URL — /app/c/<id> for a conversation, /app/
 	// for the list/empty state, matching the deep link the pings carry.
-	const select = (id: string | null, opts?: { skipDirtyGuard?: boolean }) => {
-		if (opts?.skipDirtyGuard !== true && !leaveDirty()) return;
+	const select = async (id: string | null, opts?: { skipDirtyGuard?: boolean }) => {
+		if (opts?.skipDirtyGuard !== true && !(await leaveDirty())) return;
 		clearStartFailure();
 		setPage("chat");
 		setProjectId(null);
@@ -1298,8 +1362,8 @@ function AppShell() {
 		if (path !== window.location.pathname) pushRoute(path);
 	};
 
-	const openProject = (id: string) => {
-		if (!leaveDirty()) return;
+	const openProject = async (id: string) => {
+		if (!(await leaveDirty())) return;
 		clearStartFailure();
 		setPage("project");
 		setProjectId(id);
@@ -1309,8 +1373,8 @@ function AppShell() {
 		pushRoute(`/app/p/${id}`);
 	};
 
-	const openProjectsIndex = () => {
-		if (!leaveDirty()) return;
+	const openProjectsIndex = async () => {
+		if (!(await leaveDirty())) return;
 		clearStartFailure();
 		setPage("projects");
 		setProjectId(null);
@@ -1320,9 +1384,9 @@ function AppShell() {
 		pushRoute("/app/projects");
 	};
 
-	const openArchive = () => {
+	const openArchive = async () => {
 		if (page === "archive") return;
-		if (!leaveDirty()) return;
+		if (!(await leaveDirty())) return;
 		clearStartFailure();
 		setPage("archive");
 		setProjectId(null);
@@ -1332,8 +1396,8 @@ function AppShell() {
 		pushRoute("/app/archive");
 	};
 
-	const openNotesIndex = () => {
-		if (!leaveDirty()) return;
+	const openNotesIndex = async () => {
+		if (!(await leaveDirty())) return;
 		clearStartFailure();
 		setPage("notes");
 		setProjectId(null);
@@ -1343,9 +1407,9 @@ function AppShell() {
 		pushRoute("/app/notes");
 	};
 
-	const openNote = (id: string) => {
+	const openNote = async (id: string) => {
 		if (page === "note" && noteId === id) return;
-		if (!leaveDirty()) return;
+		if (!(await leaveDirty())) return;
 		clearStartFailure();
 		setPage("note");
 		setProjectId(null);
@@ -1367,7 +1431,7 @@ function AppShell() {
 				creatingNoteRef.current = false;
 				setCreatingNote(false);
 				void refresh();
-				if (navigationSeq.current === navigationAtStart) openNote(n.id);
+				if (navigationSeq.current === navigationAtStart) void openNote(n.id);
 			},
 			(err) => {
 				creatingNoteRef.current = false;
@@ -1396,7 +1460,7 @@ function AppShell() {
 		if (id !== current) return;
 		if (page === "chat") {
 			setComposeStaged(false);
-			select(null);
+			void select(null);
 		} else {
 			setCurrent(null);
 		}
@@ -1433,8 +1497,15 @@ function AppShell() {
 	// out the undo window. The row hides now, the DELETE fires when the
 	// toast settles, and Undo just un-hides it. Closing the page inside the
 	// window cancels it.
-	const deleteConversationHeld = (c: AppConversationList["conversations"][number]) => {
-		if (!window.confirm(`Delete "${rowLabel(c)}"?`)) return;
+	const deleteConversationHeld = async (c: AppConversationList["conversations"][number]) => {
+		if (
+			!(await confirm.ask({
+				message: `Delete "${rowLabel(c)}"?`,
+				confirmLabel: "Delete",
+				danger: true,
+			}))
+		)
+			return;
 		const release = () =>
 			setHeldDeletes((prev) => {
 				const next = new Set(prev);
@@ -1470,9 +1541,9 @@ function AppShell() {
 		});
 	};
 
-	const openPage = (p: AppPageKey) => {
+	const openPage = async (p: AppPageKey) => {
 		if (page === p) return;
-		if (!leaveDirty()) return;
+		if (!(await leaveDirty())) return;
 		clearStartFailure();
 		setPage(p);
 		setWindowConv(null);
@@ -1487,11 +1558,11 @@ function AppShell() {
 	const newConversation = () => {
 		setComposeStaged(true);
 		setComposerFocus((t) => t + 1);
-		select(null);
+		void select(null);
 	};
 
 	const openConversation = (id: string) => {
-		select(id);
+		void select(id);
 	};
 
 	// One start path for every composer — the empty state passes null,
@@ -1501,7 +1572,7 @@ function AppShell() {
 		parts: UIMessage["parts"],
 		composerScope?: string,
 	): Promise<boolean> => {
-		if (!leaveDirty()) return false;
+		if (!(await leaveDirty())) return false;
 		if (startBusyRef.current) {
 			// Refuse loudly — a silent no-op reads as success to awaited
 			// callers. A composer-scoped send parks its parts back in the
@@ -1544,7 +1615,7 @@ function AppShell() {
 			setSeed({ id: created.id, parts });
 			// The guard above already asked — select's own check would
 			// confirm the still-dirty page a second time.
-			select(created.id, { skipDirtyGuard: true });
+			void select(created.id, { skipDirtyGuard: true });
 			await refresh();
 			return true;
 		} catch {
@@ -2002,11 +2073,13 @@ function AppShell() {
 							aria-label="Back to chats"
 							title="Chats"
 							onClick={() => {
-								if (!leaveDirty()) return;
-								setComposeStaged(false);
-								// The guard above settled the question — select's
-								// own guard must not ask it again.
-								select(null, { skipDirtyGuard: true });
+								void leaveDirty().then((ok) => {
+									if (!ok) return;
+									setComposeStaged(false);
+									// The guard above settled the question — select's
+									// own guard must not ask it again.
+									void select(null, { skipDirtyGuard: true });
+								});
 							}}
 						>
 							<svg
@@ -2263,10 +2336,12 @@ function AppShell() {
 						conversationId={windowConv}
 						title={flatTitle(conversations?.find((c) => c.id === windowConv)?.title ?? null)}
 						onBack={() => {
-							if (!leaveDirty()) return;
-							setPage("chat");
-							setWindowConv(null);
-							select(windowConv);
+							void leaveDirty().then((ok) => {
+								if (!ok) return;
+								setPage("chat");
+								setWindowConv(null);
+								void select(windowConv);
+							});
 						}}
 					/>
 				)}
@@ -2297,7 +2372,7 @@ function AppShell() {
 						}}
 						onDelete={(id) => {
 							const c = archived.find((x) => x.id === id);
-							if (c !== undefined) deleteConversationHeld(c);
+							if (c !== undefined) void deleteConversationHeld(c);
 						}}
 					/>
 				)}
@@ -2329,7 +2404,7 @@ function AppShell() {
 									// the bit before the index navigation runs the check.
 									onDeleted={() => {
 										noteDirty.current = false;
-										openNotesIndex();
+										void openNotesIndex();
 									}}
 									onDirtyChange={(d) => {
 										noteDirty.current = d;
@@ -2489,12 +2564,14 @@ function AppShell() {
 						aria-current={page === "chat" ? "page" : undefined}
 						onClick={() => {
 							if (page === "chat") return;
-							if (!leaveDirty()) return;
-							setComposeStaged(false);
-							// The guard above settled the question — select's own
-							// guard must not ask again (a decline there would
-							// silently cancel an approved navigation).
-							select(null, { skipDirtyGuard: true });
+							void leaveDirty().then((ok) => {
+								if (!ok) return;
+								setComposeStaged(false);
+								// The guard above settled the question — select's own
+								// guard must not ask again (a decline there would
+								// silently cancel an approved navigation).
+								void select(null, { skipDirtyGuard: true });
+							});
 						}}
 					>
 						<svg
@@ -2637,7 +2714,7 @@ function AppShell() {
 											className="sheet-row"
 											onClick={() => {
 												setSystemSheetOpen(false);
-												openPage(k);
+												void openPage(k);
 											}}
 										>
 											{PAGES.find((p) => p.key === k)?.label ?? k}
@@ -2651,7 +2728,7 @@ function AppShell() {
 								className="sheet-row"
 								onClick={() => {
 									setSystemSheetOpen(false);
-									openPage("settings");
+									void openPage("settings");
 								}}
 							>
 								Settings
@@ -2669,6 +2746,7 @@ function AppShell() {
 				/>
 			)}
 			{undoToast.view}
+			{confirm.view}
 			{createProjectOpen && (
 				<NewProjectDialog
 					token={token}
@@ -2676,7 +2754,7 @@ function AppShell() {
 					onCreated={(p) => {
 						setCreateProjectOpen(false);
 						void refresh();
-						openProject(p.id);
+						void openProject(p.id);
 					}}
 				/>
 			)}

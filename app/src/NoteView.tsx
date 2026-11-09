@@ -27,6 +27,7 @@ import {
 	patchNote,
 	restoreNoteVersion,
 } from "./api.ts";
+import { useConfirm } from "./confirm.tsx";
 import type { NoteEditorHandle } from "./NoteEditor.tsx";
 import { relTime } from "./memoryShared.tsx";
 import { discardNoteDraft, loadNoteDraft, rawNoteDraft, type NoteDraft } from "./noteDraft.ts";
@@ -512,6 +513,7 @@ export function NoteView({
 	const [rewriteApplying, setRewriteApplying] = useState(false);
 	const editorRef = useRef<NoteEditorHandle>(null);
 	const versionsPopRef = useRef<HTMLDivElement>(null);
+	const confirm = useConfirm();
 	const versionsBtnRef = useRef<HTMLButtonElement>(null);
 	const dirtyRef = useRef(false);
 	// Refs mirror what the focus check and the async restore guard
@@ -801,8 +803,14 @@ export function NoteView({
 		titleFlightRef.current = h.saveTitle(t).then(settle, (err: unknown) => settle(false, err));
 	};
 
-	const remove = () => {
-		if (!window.confirm(`Delete "${note.title}"? This removes the note and all its versions.`))
+	const remove = async () => {
+		if (
+			!(await confirm.ask({
+				message: `Delete "${note.title}"? This removes the note and all its versions.`,
+				confirmLabel: "Delete",
+				danger: true,
+			}))
+		)
 			return;
 		void deleteNote(token, note.id).then(
 			() => {
@@ -872,6 +880,7 @@ export function NoteView({
 	const archived = note.archivedAt !== null;
 	return (
 		<div className="ops notepage">
+			{confirm.view}
 			{opError !== null && (
 				<p className="error" role="alert">
 					{opError}
@@ -971,7 +980,7 @@ export function NoteView({
 						type="button"
 						className="ghost"
 						disabled={busy || rewriteBusy || chatBusy}
-						onClick={remove}
+						onClick={() => void remove()}
 					>
 						Delete
 					</button>

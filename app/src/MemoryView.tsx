@@ -6,6 +6,7 @@ import {
 	getMemoryStatus,
 	listMemorySaves,
 } from "./api.ts";
+import { useConfirm } from "./confirm.tsx";
 import { describe } from "./opsShared.tsx";
 import { relTime } from "./memoryShared.tsx";
 import type {
@@ -255,6 +256,7 @@ export function MemoryView({
 	const listSeq = useRef(0);
 	const latestFilter = useRef<SavesFilter>({ query: "", token });
 	const seenCompleted = useRef<number | null>(null);
+	const confirm = useConfirm();
 
 	// Live view of the memory queue — polled while the tab is open, and
 	// closely while a retry drains so its progress reads as it happens.
@@ -361,9 +363,14 @@ export function MemoryView({
 		);
 	};
 
-	const forget = (id: string) => {
+	const forget = async (id: string) => {
 		if (
-			!window.confirm("Forget this exchange? It will be deleted from memory and redacted locally.")
+			!(await confirm.ask({
+				message:
+					"Forget this exchange? It will be deleted from memory and redacted locally.",
+				confirmLabel: "Forget",
+				danger: true,
+			}))
 		)
 			return;
 		setForgetting(id);
@@ -402,6 +409,7 @@ export function MemoryView({
 
 	return (
 		<div className="ops mem-page">
+			{confirm.view}
 			{statusErr !== null && <p className="error">{statusErr}</p>}
 			{blockedErr !== null && <p className="error">{blockedErr}</p>}
 			{status === null ? (

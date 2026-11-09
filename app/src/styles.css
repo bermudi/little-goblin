@@ -3914,6 +3914,46 @@ button.pathchip:hover svg {
 	}
 }
 
+/* ---------- confirm sheet (confirm.tsx) ----------
+   window.confirm's replacement — a question in the app's own chrome.
+   It must stand over every sheet (they carry asks of their own) and the
+   undo toast: a pending question blocks work underneath. The neutral
+   skin is scoped :not(.danger) so a destructive confirm keeps the
+   shared .danger look declared further down. */
+.confirm-veil {
+	z-index: 70;
+}
+.confirm-sheet {
+	max-width: 26rem;
+}
+.confirm-body {
+	padding: 0.95rem 1rem;
+	display: flex;
+	flex-direction: column;
+	gap: 0.9rem;
+}
+.confirm-msg {
+	margin: 0;
+	font-size: 13px;
+	line-height: 1.5;
+}
+.confirm-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 0.5rem;
+}
+.confirm-ok:not(.danger) {
+	background: var(--app-control-bg);
+	border: 1px solid var(--app-control-border);
+	border-radius: 8px;
+	padding: 0.4rem 0.8rem;
+	font-size: 12.5px;
+	color: var(--app-fg);
+}
+.confirm-ok:not(.danger):hover {
+	background: var(--app-hover);
+}
+
 /* ---------- memory browser ---------- */
 
 .stat-grid {

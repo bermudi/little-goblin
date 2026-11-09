@@ -3,8 +3,10 @@
 // and the same forget affordance — one implementation, two surfaces.
 // The forget protocol itself is server-owned; both surfaces only ask.
 import { useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { MemoryDocDetailResponse, MemoryDocListItem } from "../../src/http/operator-wire.ts";
 import { forgetMemoryDocument, getMemoryDocument } from "./api.ts";
+import { useConfirm } from "./confirm.tsx";
 import { describe } from "./opsShared.tsx";
 
 export function relTime(iso: string | null): string {
@@ -67,6 +69,8 @@ export function useMemoryDocSheet(
 	open: (id: string) => void;
 	close: () => void;
 	forget: (id: string) => void;
+	// The forget ask's sheet — the caller mounts it inside its own root.
+	view: ReactNode;
 } {
 	const [detail, setDetail] = useState<MemoryDocDetailResponse | null>(null);
 	const [detailErr, setDetailErr] = useState<string | null>(null);
@@ -76,6 +80,7 @@ export function useMemoryDocSheet(
 	// sheet's GET is still in flight detail is null, and a forget that
 	// lands in that gap must still fence the pending fetch.
 	const openDocId = useRef<string | null>(null);
+	const confirm = useConfirm();
 
 	const open = (id: string) => {
 		const seq = ++detailSeq.current;
@@ -100,9 +105,14 @@ export function useMemoryDocSheet(
 		setDetail(null);
 	};
 
-	const forget = (id: string) => {
+	const forget = async (id: string) => {
 		if (
-			!window.confirm("Forget this exchange? It will be deleted from memory and redacted locally.")
+			!(await confirm.ask({
+				message:
+					"Forget this exchange? It will be deleted from memory and redacted locally.",
+				confirmLabel: "Forget",
+				danger: true,
+			}))
 		)
 			return;
 		setForgetting(true);
@@ -129,7 +139,7 @@ export function useMemoryDocSheet(
 		);
 	};
 
-	return { detail, detailErr, forgetting, open, close, forget };
+	return { detail, detailErr, forgetting, open, close, forget, view: confirm.view };
 }
 
 // The detail view: exchange card + facts + forget. The parent owns the

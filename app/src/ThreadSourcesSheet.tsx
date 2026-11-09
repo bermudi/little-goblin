@@ -17,6 +17,7 @@ import {
 	listMemoryDocuments,
 	listThreadSkills,
 } from "./api.ts";
+import { useConfirm } from "./confirm.tsx";
 import { MemoryDocDetail, MemoryDocRow, relTime, useMemoryDocSheet } from "./memoryShared.tsx";
 import { describe } from "./opsShared.tsx";
 
@@ -153,17 +154,21 @@ export function ThreadSourcesSheet({
 	}, [token, conversationId]);
 
 	const sheet = useMemoryDocSheet(token, () => loadDocs(0, false));
+	const confirm = useConfirm();
 
 	// Bulk forget runs the thread's whole footprint through the two
 	// thread-scoped endpoints; the per-doc/per-proposal affordances
 	// above stay the surgical path. Empty sections forget zero items —
 	// that's a success, the emptied list is the feedback.
-	const forgetMemories = () => {
+	const forgetMemories = async () => {
 		if (forgetting !== null) return;
 		if (
-			!window.confirm(
-				"Forget every retained exchange from this thread? Each is deleted from memory and redacted locally.",
-			)
+			!(await confirm.ask({
+				message:
+					"Forget every retained exchange from this thread? Each is deleted from memory and redacted locally.",
+				confirmLabel: "Forget",
+				danger: true,
+			}))
 		)
 			return;
 		setForgetting("memories");
@@ -184,12 +189,15 @@ export function ThreadSourcesSheet({
 		);
 	};
 
-	const forgetSkills = () => {
+	const forgetSkills = async () => {
 		if (forgetting !== null) return;
 		if (
-			!window.confirm(
-				"Remove this thread's skill-generation records? Installed skills and pending updates are not touched — those stay on the Skills page.",
-			)
+			!(await confirm.ask({
+				message:
+					"Remove this thread's skill-generation records? Installed skills and pending updates are not touched — those stay on the Skills page.",
+				confirmLabel: "Remove",
+				danger: true,
+			}))
 		)
 			return;
 		setForgetting("skills");
@@ -206,12 +214,15 @@ export function ThreadSourcesSheet({
 		);
 	};
 
-	const forgetEverything = () => {
+	const forgetEverything = async () => {
 		if (forgetting !== null) return;
 		if (
-			!window.confirm(
-				"Forget everything from this thread — all retained exchanges and skill-generation records?",
-			)
+			!(await confirm.ask({
+				message:
+					"Forget everything from this thread — all retained exchanges and skill-generation records?",
+				confirmLabel: "Forget",
+				danger: true,
+			}))
 		)
 			return;
 		setForgetting("everything");
@@ -311,7 +322,7 @@ export function ThreadSourcesSheet({
 									type="button"
 									className="pill"
 									disabled={forgetting !== null}
-									onClick={forgetMemories}
+									onClick={() => void forgetMemories()}
 								>
 									{forgetting === "memories" ? "Forgetting…" : "Forget memories"}
 								</button>
@@ -319,7 +330,7 @@ export function ThreadSourcesSheet({
 									type="button"
 									className="pill"
 									disabled={forgetting !== null}
-									onClick={forgetSkills}
+									onClick={() => void forgetSkills()}
 								>
 									{forgetting === "skills" ? "Forgetting…" : "Forget skills"}
 								</button>
@@ -327,7 +338,7 @@ export function ThreadSourcesSheet({
 									type="button"
 									className="danger"
 									disabled={forgetting !== null}
-									onClick={forgetEverything}
+									onClick={() => void forgetEverything()}
 								>
 									{forgetting === "everything" ? "Forgetting…" : "Forget everything"}
 								</button>
@@ -337,6 +348,8 @@ export function ThreadSourcesSheet({
 					)}
 				</div>
 			</div>
+			{confirm.view}
+			{sheet.view}
 		</div>
 	);
 }

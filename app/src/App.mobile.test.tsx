@@ -15,6 +15,7 @@ import {
 } from "../../src/config.ts";
 import type { AppConversationList, AppMessageList, AppProject } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
+import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 
 const json = (body: unknown, status = 200) =>
 	new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -51,9 +52,6 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 	let projects: AppProject[];
 	let threadMessages: AppMessageList["messages"];
 	let settings: typeof SETTINGS;
-	let confirmAnswer = false;
-	let confirmCalls = 0;
-	let confirmMessages: string[] = [];
 	const realFetch = globalThis.fetch;
 
 	const installGlobal = (name: string, value: unknown) => {
@@ -71,9 +69,6 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		projects = [];
 		threadMessages = [];
 		settings = SETTINGS;
-		confirmAnswer = false;
-		confirmCalls = 0;
-		confirmMessages = [];
 		conversations = [
 			{
 				id: "app/fixture",
@@ -105,11 +100,6 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
 		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
-		Reflect.set(win, "confirm", (message: string) => {
-			confirmCalls += 1;
-			confirmMessages.push(message);
-			return confirmAnswer;
-		});
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		// The realm's width: the stub is what puts the realm on a phone.
 		Reflect.set(win, "matchMedia", (query: string) => ({
@@ -233,7 +223,15 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 	const click = async (el: Element | null | undefined) => {
 		expect(el).toBeTruthy();
 		await act(async () => {
-			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
+		});
+		await settle();
+	};
+	// The leave ask is a sheet in the app chrome — answering is a click
+	// on its buttons, like the operator.
+	const answerConfirm = async (ok: boolean) => {
+		await act(async () => {
+			clickConfirm(container, ok);
 		});
 		await settle();
 	};
@@ -409,12 +407,12 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		await click(container.querySelector(".chip button"));
 		await waitFor(() => container.textContent?.includes("unsaved") === true, "dirty editor");
 
-		confirmAnswer = true;
 		await click(tab("Chats"));
-		// One question, one answer — a second confirm declining here
-		// would silently cancel a navigation just approved.
-		expect(confirmCalls).toBe(1);
-		expect(confirmMessages).toEqual(["Discard unsaved settings changes?"]);
+		// One question, one answer — a second ask declining here would
+		// silently cancel a navigation just approved.
+		expect(confirmText(container)).toBe("Discard unsaved settings changes?");
+		await answerConfirm(true);
+		expect(confirmSheet(container)).toBeNull();
 		await waitFor(
 			() => container.querySelector(".chatlist-screen") !== null,
 			"chats screen to return",

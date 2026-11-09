@@ -20,6 +20,7 @@ import type {
 } from "../../src/http/app-wire.ts";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import { App, deepLinkConv, flatLine } from "./App.tsx";
+import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 
 // Stored titles predate store-side flattening — the sidebar row must
 // render them clean regardless of the server's vintage.
@@ -380,7 +381,7 @@ describe("rail row actions and the pinned pool", () => {
 
 	const click = async (el: Element | null | undefined) => {
 		await act(async () => {
-			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 		});
 		await settle();
 	};
@@ -683,7 +684,7 @@ describe("rename editor with the AI button", () => {
 			'.conv-actions button[aria-label="Rename"]',
 		);
 		await act(async () => {
-			rename?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			rename?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 		});
 		await settle();
 		expect(input()).not.toBeNull();
@@ -721,7 +722,7 @@ describe("rename editor with the AI button", () => {
 
 	const clickEl = async (el: Element | null) => {
 		await act(async () => {
-			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 		});
 		await settle();
 	};
@@ -846,9 +847,6 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	let container: HTMLElement;
 	let root: Root | null = null;
 	let installed: string[] = [];
-	let confirmAnswer = false;
-	let confirmCalls = 0;
-	let confirmMessages: string[] = [];
 	let conversations: AppConversationList["conversations"] = [];
 	let settings: typeof SETTINGS;
 	let savedBodies: ConfigPostBody[] = [];
@@ -881,9 +879,6 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		win.document.body.appendChild(div);
 		container = div as unknown as HTMLElement;
 		installed = [];
-		confirmAnswer = false;
-		confirmCalls = 0;
-		confirmMessages = [];
 		conversations = [];
 		settings = SETTINGS;
 		savedBodies = [];
@@ -903,11 +898,6 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		// happy-dom realm like the rest of the DOM globals here.
 		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-		Reflect.set(win, "confirm", (message: string) => {
-			confirmCalls += 1;
-			confirmMessages.push(message);
-			return message.startsWith("Delete ") || confirmAnswer;
-		});
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
 			if (url === "/api/app/conversations" && init?.method === "POST")
@@ -1105,7 +1095,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	const click = async (el: Element | null | undefined) => {
 		expect(el).toBeTruthy();
 		await act(async () => {
-			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			el?.dispatchEvent(
+				new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
 		});
 		await settle();
 	};
@@ -1145,6 +1137,15 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await act(async () => {
 			win.history.replaceState(null, "", path);
 			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await settle();
+	};
+	// The leave/delete asks are sheets in the app chrome now — answering
+	// one is a click on its buttons, the way the operator does it. A
+	// decline replays the traversal restore before settling.
+	const answerConfirm = async (ok: boolean) => {
+		await act(async () => {
+			clickConfirm(container, ok);
 		});
 		await settle();
 	};
@@ -1197,7 +1198,10 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	// final, so the helper does that to reach the settled state.
 	const removeFixture = async (action: "Archive" | "Delete") => {
 		await clickRowAction(action);
-		if (action === "Delete") await click(container.querySelector(".undo-close"));
+		if (action === "Delete") {
+			await answerConfirm(true);
+			await click(container.querySelector(".undo-close"));
+		}
 	};
 
 	test("the chat header opens the thread-sources sheet for the open conversation", async () => {
@@ -1332,7 +1336,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			expect(win.history.length).toBe(length);
 			expect(container.querySelector("main > header .header-title")?.textContent).toBe(page);
 			expect(container.querySelector(".settings")).toBe(editor);
-			expect(confirmMessages).toEqual([]);
+			expect(confirmSheet(container)).toBeNull();
 			if (label === "dirty Settings") {
 				expect(container.textContent).toContain("unsaved");
 				expect(operatorChips()).toBe(0);
@@ -1361,7 +1365,6 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(win.location.pathname).toBe("/app/archive");
 		await removeFixture("Delete");
 		expect(win.location.pathname).toBe("/app/archive");
-		expect(confirmCalls).toBe(1);
 		expect(conversations).toEqual([]);
 		expect(container.querySelector(".ops .empty")?.textContent).toContain("Nothing archived");
 	});
@@ -1371,7 +1374,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await mount();
 		await click(container.querySelector(".rail-archived"));
 		await clickRowAction("Delete");
-		expect(confirmMessages).toEqual(['Delete "fixture chat"?']);
+		expect(confirmText(container)).toBe('Delete "fixture chat"?');
+		await answerConfirm(true);
 		expect(container.querySelector(".undo-toast")?.textContent).toContain('Deleted "fixture chat"');
 		expect(container.querySelector(".archive-table .dt-row")).toBeNull();
 		// Still on the server until the toast settles.
@@ -1386,6 +1390,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await mount();
 		await click(container.querySelector(".rail-archived"));
 		await clickRowAction("Delete");
+		await answerConfirm(true);
 		// Reopen it inside the undo window, the way history or search can.
 		await act(async () => {
 			win.history.pushState(null, "", "/app/c/fixture");
@@ -1400,8 +1405,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		seedConversation(true);
 		await mount();
 		await click(container.querySelector(".rail-archived"));
-		Reflect.set(win, "confirm", () => false);
 		await clickRowAction("Delete");
+		await answerConfirm(false);
 		expect(container.querySelector(".undo-toast")).toBeNull();
 		expect(container.querySelector(".archive-table .dt-row")).not.toBeNull();
 	});
@@ -1411,6 +1416,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await mount();
 		await click(container.querySelector(".rail-archived"));
 		await clickRowAction("Delete");
+		await answerConfirm(true);
 		await click(container.querySelector(".undo-action"));
 		expect(container.querySelector(".undo-toast")).toBeNull();
 		expect(container.querySelector(".archive-table .dt-row")).not.toBeNull();
@@ -1653,14 +1659,13 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		// the editor.
 		await openPage("Settings");
 		await dirtyTheForm();
-		const confirmsBefore = confirmCalls;
 		await act(async () => releaseCreate());
 		await settle();
 		// The stale success never reached select(): Settings stays open,
 		// the guard was never asked, the draft survives.
 		expect(win.location.pathname).toBe("/app/settings");
 		expect(container.querySelector(".settings")).not.toBeNull();
-		expect(confirmCalls).toBe(confirmsBefore);
+		expect(confirmSheet(container)).toBeNull();
 		expect(container.textContent).toContain("unsaved");
 		expect(operatorChips()).toBe(0);
 	});
@@ -1728,15 +1733,15 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			const entries = win.history.length;
 
 			await traverse(direction);
-			expect(confirmCalls).toBe(1);
+			expect(confirmSheet(container)).not.toBeNull();
+			await answerConfirm(false);
 			expect(win.location.pathname).toBe("/app/settings");
 			expect(win.history.length).toBe(entries);
 			expect(container.textContent).toContain("unsaved");
 			expect(operatorChips()).toBe(0);
 
-			confirmAnswer = true;
 			await traverse(direction);
-			expect(confirmCalls).toBe(2);
+			await answerConfirm(true);
 			expect(win.location.pathname).toBe("/app/memory");
 			expect(container.querySelector(".settings")).toBeNull();
 			await traverse(direction === "back" ? "forward" : "back");
@@ -1761,7 +1766,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			await dirtyTheForm();
 
 			await traverse(direction);
-			expect(confirmCalls).toBe(1);
+			expect(confirmSheet(container)).not.toBeNull();
+			await answerConfirm(false);
 			expect(container.querySelector(".settings")).not.toBeNull();
 			expect(container.textContent).toContain("unsaved");
 			expect(container.querySelector('[role="alert"]')?.textContent).toContain(
@@ -1771,9 +1777,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			expect(win.history.state).toEqual({ legacy: "memory" });
 
 			await traverse(direction === "back" ? "forward" : "back");
-			confirmAnswer = true;
 			await traverse(direction);
-			expect(confirmCalls).toBe(2);
+			await answerConfirm(true);
 			expect(container.querySelector(".settings")).toBeNull();
 			expect(win.location.pathname).toBe("/app/memory");
 		});
@@ -1788,8 +1793,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		const dirty = new win.Event("beforeunload", { cancelable: true });
 		win.dispatchEvent(dirty);
 		expect(dirty.defaultPrevented).toBe(true);
-		confirmAnswer = true;
 		await openPage("Memories");
+		await answerConfirm(true);
 		const afterLeaving = new win.Event("beforeunload", { cancelable: true });
 		win.dispatchEvent(afterLeaving);
 		expect(afterLeaving.defaultPrevented).toBe(false);
@@ -1809,7 +1814,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			await new Promise((r) => setTimeout(r, 30));
 		});
 		await settle();
-		expect(confirmCalls).toBe(1);
+		expect(confirmSheet(container)).not.toBeNull();
+		await answerConfirm(false);
 		expect(container.textContent).toContain("unsaved");
 		expect(container.querySelector('[role="alert"]')?.textContent).toContain(
 			"cannot restore an older history entry",
@@ -1827,7 +1833,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await mount();
 		await dirtyTheForm();
 		await browserGoesTo("/app/");
-		expect(confirmCalls).toBe(1);
+		expect(confirmSheet(container)).not.toBeNull();
+		await answerConfirm(false);
 		expect(container.querySelector(".settings")).not.toBeNull();
 	});
 
@@ -1837,8 +1844,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		await traverse("back");
 		await dirtyTheForm();
 		await traverse("forward");
-		confirmAnswer = true;
+		await answerConfirm(false);
 		await openPage("Memories");
+		await answerConfirm(true);
 		const memoryState = win.history.state;
 		await openPage("Settings");
 		await dirtyTheForm();
@@ -1848,14 +1856,13 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		});
 		await settle();
 		expect(win.location.pathname).toBe("/app/settings");
-		const calls = confirmCalls;
-		confirmAnswer = false;
 		await act(async () => {
 			win.history.go(2);
 			await new Promise((r) => setTimeout(r, 30));
 		});
 		await settle();
-		expect(confirmCalls - calls).toBe(1);
+		expect(confirmSheet(container)).not.toBeNull();
+		await answerConfirm(false);
 		expect(win.history.state).toEqual(memoryState);
 		expect(container.querySelector('[role="alert"]')?.textContent).toContain(
 			"cannot restore an older history entry",
@@ -1866,7 +1873,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	test("Back from a clean editor needs no question", async () => {
 		await mount();
 		await browserGoesTo("/app/memory");
-		expect(confirmCalls).toBe(0);
+		expect(confirmSheet(container)).toBeNull();
 		expect(container.querySelector(".settings")).toBeNull();
 	});
 });
@@ -2058,7 +2065,15 @@ describe("App telegram door", () => {
 	const click = async (el: Element | null | undefined) => {
 		expect(el).toBeTruthy();
 		await act(async () => {
-			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
+		});
+		await settle();
+	};
+	// The door's leave ask is a sheet in the app chrome — answering is a
+	// click on its buttons, like the operator.
+	const answerConfirm = async (ok: boolean) => {
+		await act(async () => {
+			clickConfirm(container, ok);
 		});
 		await settle();
 	};
@@ -2087,24 +2102,17 @@ describe("App telegram door", () => {
 
 	test("a dirty draft arms the guard; discarding or saving disarms it", async () => {
 		stubClosingConfirmation();
-		let confirmAnswer = false;
-		let confirmCalls = 0;
-		Reflect.set(win, "confirm", () => {
-			confirmCalls += 1;
-			return confirmAnswer;
-		});
 		await renderDoor();
 		await dirtyTheForm();
 		expect(sdkCalls.at(-1)).toBe("enable");
 		// A declined navigation keeps the draft and the armed guard.
 		await click(memoriesButton());
-		expect(confirmCalls).toBe(1);
+		await answerConfirm(false);
 		expect(container.textContent).toContain("unsaved");
 		expect(sdkCalls.at(-1)).toBe("enable");
 		// An accepted navigation throws the draft away — guard disarmed.
-		confirmAnswer = true;
 		await click(memoriesButton());
-		expect(confirmCalls).toBe(2);
+		await answerConfirm(true);
 		expect(sdkCalls.at(-1)).toBe("disable");
 		expect(container.textContent).toContain("Memories");
 		expect(container.textContent).not.toContain("unsaved");
@@ -2615,7 +2623,16 @@ describe("app projects surface", () => {
 	const click = async (el: Element | null | undefined) => {
 		expect(el).toBeTruthy();
 		await act(async () => {
-			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
+		});
+		await settle();
+	};
+
+	// The leave ask is a sheet in the app chrome — answering is a click
+	// on its buttons, like the operator.
+	const answerConfirm = async (ok: boolean) => {
+		await act(async () => {
+			clickConfirm(container, ok);
 		});
 		await settle();
 	};
@@ -3152,12 +3169,6 @@ describe("app projects surface", () => {
 			pm!.querySelector("p")!.firstChild!.textContent = "paragraph to discard";
 			await new Promise((resolve) => setTimeout(resolve, 280));
 		});
-		let accept = false;
-		const prompts: string[] = [];
-		Reflect.set(win, "confirm", (message?: string) => {
-			prompts.push(message ?? "");
-			return accept;
-		});
 		// The pane's head carries the index link — the guarded navigation
 		// is the index open, not the pane switch.
 		const notesButton = async () => {
@@ -3165,12 +3176,12 @@ describe("app projects surface", () => {
 			await click(container.querySelector(".panel-index"));
 		};
 		await notesButton();
-		expect(prompts).toEqual(["Discard unsaved note edits and any conflict?"]);
+		expect(confirmText(container)).toBe("Discard unsaved note edits and any conflict?");
+		await answerConfirm(false);
 		expect(win.location.pathname).toBe("/app/n/n-shopping");
 		expect(container.querySelector(".ProseMirror")?.textContent).toContain("paragraph to discard");
-		accept = true;
 		await notesButton();
-		expect(prompts).toHaveLength(2);
+		await answerConfirm(true);
 		expect(win.location.pathname).toBe("/app/notes");
 		await settleSlow();
 		expect(patchCalls).toBe(0);
@@ -4776,7 +4787,7 @@ describe("chat width selector", () => {
 
 		const wide = [...(seg?.querySelectorAll("button") ?? [])].find((b) => b.textContent === "wide");
 		await act(async () => {
-			wide?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			wide?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 		});
 		await settle();
 

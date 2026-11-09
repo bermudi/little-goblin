@@ -203,7 +203,7 @@ describe("main branch regressions", () => {
 	const click = async (el: Element | null | undefined) => {
 		expect(el).toBeTruthy();
 		await act(async () => {
-			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 		});
 		await settle();
 	};
@@ -916,14 +916,14 @@ describe("quiet harbor regressions", () => {
 			);
 			if (nav === undefined) throw new Error("System section button not found");
 			await act(async () => {
-				nav.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+				nav.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 			});
 			const debug = [...container.querySelectorAll('[aria-label="Log level"] button')].find(
 				(b) => b.textContent === "debug",
 			);
 			if (debug === undefined) throw new Error("Debug log-level button not found");
 			await act(async () => {
-				debug.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+				debug.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 			});
 		}
 
@@ -953,7 +953,7 @@ describe("quiet harbor regressions", () => {
 			expect(retryButton()).toBeTruthy();
 			await act(async () => {
 				retryButton()!.dispatchEvent(
-					new win.MouseEvent("click", { bubbles: true }) as unknown as Event,
+					new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
 				);
 			});
 			await tick(120);
@@ -988,12 +988,12 @@ describe("quiet harbor regressions", () => {
 			await act(async () => {
 				[...container.querySelectorAll("button.idx")]
 					.find((b) => b.textContent?.includes("Voice"))
-					?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+					?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 			});
 			const ttsOn = container.querySelector('button[aria-label="text to speech"]');
 			expect(ttsOn).not.toBeNull();
 			await act(async () => {
-				ttsOn?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+				ttsOn?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 			});
 			const kind = container.querySelector<HTMLSelectElement>('select[aria-label="tts kind"]');
 			expect(kind).not.toBeNull();

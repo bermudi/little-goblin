@@ -200,7 +200,7 @@ const waitFor = async (pred: () => boolean, label: string) => {
 const click = async (el: Element | null | undefined) => {
 	expect(el).toBeTruthy();
 	await act(async () => {
-		el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 	});
 	await settle();
 };

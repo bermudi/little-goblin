@@ -271,6 +271,50 @@ export type Summarize = (
 	model: string,
 ) => Promise<string>;
 
+export type Flush = (spanText: string, signal: AbortSignal) => Promise<{ noteCalls: number }>;
+
+// The flush sees one bounded slice of the span — the newest events, since a
+// span bigger than one call already loses its head to the summary chunks
+// alone. Abort propagates (a /stop cancels the fold too); any other failure,
+// a timeout included, is a warning.
+async function runFlush(
+	id: string,
+	flush: Flush,
+	span: CompactionEvent[],
+	inputTokenBudget: number,
+	signal: AbortSignal,
+	callTimeoutMs: number,
+): Promise<void> {
+	const full = serializeSpan(span);
+	const keptChars = Math.max(inputTokenBudget * 4 - 4000, 4000);
+	const text =
+		full.length > keptChars
+			? `[… ${full.length - keptChars} older chars omitted]\n${full.slice(-keptChars)}`
+			: full;
+	const callSignal = AbortSignal.any([signal, AbortSignal.timeout(callTimeoutMs)]);
+	try {
+		const { noteCalls } = await flush(text, callSignal);
+		log.info("compaction flush", {
+			conversation: id,
+			events: span.length,
+			chars: text.length,
+			truncated: text !== full,
+			noteCalls,
+		});
+	} catch (err) {
+		if (signal.aborted) throw err;
+		log.warn("compaction flush failed; folding anyway", {
+			conversation: id,
+			events: span.length,
+			error: callSignal.aborted
+				? `flush call timed out after ${callTimeoutMs / 1000}s`
+				: err instanceof Error
+					? err.message
+					: String(err),
+		});
+	}
+}
+
 // The span folds through sequential calls bounded by inputTokenBudget —
 // each carries the running summary forward, so the last call's output
 // is the stored summary and no call sees the whole past.
@@ -307,6 +351,10 @@ export async function runCompaction(
 		// before the pointer commits — a settings fence must land
 		// exactly like the abort signal.
 		assertAuthority?: () => void;
+		// design/compaction.md → Memory flush: one tools-limited call that
+		// may save durable facts from the span to notes before it folds.
+		// The caller owns the gate; a failure warns and the fold goes on.
+		flush?: Flush;
 	},
 	signal: AbortSignal,
 ): Promise<CompactionOutcome> {
@@ -346,6 +394,10 @@ export async function runCompaction(
 		reason,
 	});
 	const callTimeoutMs = opts.callTimeoutMs ?? SUMMARY_CALL_TIMEOUT_MS;
+	if (opts.flush !== undefined) {
+		opts.assertAuthority?.();
+		await runFlush(id, opts.flush, span, opts.inputTokenBudget, signal, callTimeoutMs);
+	}
 	const systemTokens = estimateTokens(SUMMARY_SYSTEM);
 	const carriedParsed = previous !== null ? parseSummary(previous.summary) : null;
 	let carried = carriedParsed?.modelText ?? null;

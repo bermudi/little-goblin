@@ -1,7 +1,7 @@
 // index.ts binds configRef/auth/observation and spreads this into
 // RuntimeDeps — the shape is RuntimeDeps["buildStep"|"compaction"].
 
-import { generateText } from "ai";
+import { generateText, isStepCount } from "ai";
 import type { RuntimeDeps } from "../runtime.ts";
 
 import { splitModelRef, type ConfigRef, type ThinkingLevel } from "../config.ts";
@@ -18,9 +18,21 @@ import { systemPromptFor } from "./prompt.ts";
 import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./providers.ts";
 import { codexSessionId } from "./codex/session.ts";
 import { thinkingOptions } from "./thinking.ts";
+import { noteTool } from "./tools/note.ts";
 import { toolNames } from "./tools/mod.ts";
 import { log } from "../log.ts";
 import type { ClaudeEngine } from "./claude-code/mod.ts";
+
+// A flush reads notes before it edits them: list, read, then a few writes.
+const FLUSH_MAX_STEPS = 8;
+
+const FLUSH_SYSTEM = [
+	"You are goblin, about to lose the conversation span below from your context: it is being folded into a summary.",
+	"Save to your notes, with the note tool, any durable fact from it that you would need later and that is not already in a note:",
+	"operator preferences, decisions, standing rules, names, paths, and commitments.",
+	"Do not save chatter, one-off task state, or anything secret. Read a note before you edit it; prefer append.",
+	"If nothing is worth saving, call no tool. Your text reply is discarded; no one reads it.",
+].join("\n");
 
 export interface StepBuilderDeps {
 	configRef: ConfigRef;
@@ -38,6 +50,30 @@ export function makeStepBuilder(
 	deps: StepBuilderDeps,
 ): Pick<RuntimeDeps, "buildStep" | "compaction"> {
 	const { configRef, auth, store, projects, notes, observation } = deps;
+	// The provider side of one compaction-lane call: model, thinking, and
+	// the retry rule, shared by the summary and the flush.
+	const compactCall = async (
+		conv: Conversation,
+		modelRef: string,
+		purpose: "compaction" | "compaction-flush",
+	) => {
+		const cfg = configRef.current;
+		const model = observedModel(
+			await resolveModel(cfg, auth, modelRef, {
+				sessionId: codexSessionId(conv.id),
+				subagent: "compact",
+			}),
+			{ conversation: conv.id, purpose, observation, route: cacheRouteFor(cfg, modelRef) },
+		);
+		const providerOptions = thinkingOptions(cfg, modelRef, conv.thinking as ThinkingLevel);
+		// Same provider rule as the turn step — 1min sends no SDK retries.
+		const maxRetries = modelCallMaxRetries(cfg, modelRef);
+		return {
+			model,
+			...(providerOptions ? { providerOptions } : {}),
+			...(maxRetries !== undefined ? { maxRetries } : {}),
+		};
+	};
 	// One summary call on one ref — the fallback walk below picks refs.
 	const summarizeOn = async (
 		conv: Conversation,
@@ -66,29 +102,11 @@ export function makeStepBuilder(
 				signal,
 			});
 		}
-		const model = observedModel(
-			await resolveModel(cfg, auth, modelRef, {
-				sessionId: codexSessionId(conv.id),
-				subagent: "compact",
-			}),
-			{
-				conversation: conv.id,
-				purpose: "compaction",
-				observation,
-				route: cacheRouteFor(cfg, modelRef),
-			},
-		);
-		const providerOptions = thinkingOptions(cfg, modelRef, conv.thinking as ThinkingLevel);
-		// Same provider rule as the turn step — 1min sends no SDK
-		// retries.
-		const maxRetries = modelCallMaxRetries(cfg, modelRef);
 		const { text } = await generateText({
-			model,
+			...(await compactCall(conv, modelRef, "compaction")),
 			instructions: system,
 			prompt,
 			abortSignal: signal,
-			...(providerOptions ? { providerOptions } : {}),
-			...(maxRetries !== undefined ? { maxRetries } : {}),
 		});
 		return text;
 	};
@@ -213,6 +231,45 @@ export function makeStepBuilder(
 			// (design/model.md → Model fallback list → Compaction).
 			summarize: (conv, system, prompt, signal, modelRef) =>
 				summarizeOn(conv, modelRef, system, prompt, signal),
+			// design/compaction.md → Memory flush. With Hindsight on, the
+			// outbox already carries every event; an excluded conversation
+			// lets nothing durable leave. The claude-code engine's compact
+			// call is text-only, so it has no note tool to flush with.
+			flush: (conv, modelRef) => {
+				const cfg = configRef.current;
+				const skip =
+					cfg.memory !== undefined
+						? "memory configured"
+						: conv.memoryExcluded
+							? "memory excluded"
+							: cfg.providers[splitModelRef(modelRef).provider]?.kind === "claude-code"
+								? "claude-code engine has no tools on the compaction lane"
+								: null;
+				if (skip !== null) {
+					log.debug("compaction flush skipped", { conversation: conv.id, why: skip });
+					return null;
+				}
+				return async (spanText, signal) => {
+					const result = await generateText({
+						...(await compactCall(conv, modelRef, "compaction-flush")),
+						instructions: FLUSH_SYSTEM,
+						prompt: spanText,
+						tools: {
+							note: noteTool({
+								notes,
+								projects,
+								conversation: conv.id,
+								projectId: conv.projectId,
+							}),
+						},
+						stopWhen: isStepCount(FLUSH_MAX_STEPS),
+						abortSignal: signal,
+					});
+					return {
+						noteCalls: result.steps.reduce((n, step) => n + step.toolCalls.length, 0),
+					};
+				};
+			},
 		},
 	};
 }

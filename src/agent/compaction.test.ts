@@ -938,3 +938,82 @@ describe("summary contents (design/compaction.md → The summary)", () => {
 		expect(restored.indexOf("now book the room")).toBeLessThan(restored.indexOf("Herbert"));
 	});
 });
+
+describe("runCompaction memory flush", () => {
+	test("flushes the span once, before the first summary call", async () => {
+		const { store, writes } = fakeStore(sample());
+		const order: string[] = [];
+		let seen = "";
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async (_s, prompt) => {
+				order.push("summary");
+				return foldSummary("folded", prompt);
+			},
+			{
+				tailTokenBudget: 1,
+				inputTokenBudget: 32_000,
+				flush: async (text) => {
+					order.push("flush");
+					seen = text;
+					return { noteCalls: 1 };
+				},
+			},
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		expect(order).toEqual(["flush", "summary"]);
+		expect(seen).toContain("did it");
+		expect(seen).not.toContain("done");
+		expect(writes).toHaveLength(1);
+	});
+
+	test("a failed flush still lands the fold", async () => {
+		const { store, writes } = fakeStore(sample());
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async (_s, prompt) => foldSummary("folded", prompt),
+			{
+				tailTokenBudget: 1,
+				inputTokenBudget: 32_000,
+				flush: async () => {
+					throw new Error("provider 500");
+				},
+			},
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		expect(writes).toHaveLength(1);
+	});
+
+	test("a stop during the flush cancels the fold", async () => {
+		const { store, writes } = fakeStore(sample());
+		const controller = new AbortController();
+		let summarized = false;
+		const run = runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async (_s, prompt) => {
+				summarized = true;
+				return foldSummary("folded", prompt);
+			},
+			{
+				tailTokenBudget: 1,
+				inputTokenBudget: 32_000,
+				flush: async (_t, flushSignal) => {
+					controller.abort(new Error("stopped"));
+					throw flushSignal.reason;
+				},
+			},
+			controller.signal,
+		);
+		await expect(run).rejects.toThrow("stopped");
+		expect(summarized).toBe(false);
+		expect(writes).toHaveLength(0);
+	});
+});

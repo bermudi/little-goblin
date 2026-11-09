@@ -45,9 +45,11 @@ Both values are named constants beside `compactionBudgets` in
 `src/runtime.ts`.
 
 Hermes also runs an 85% check at the gateway, before each incoming message,
-for sessions that grew between turns. Goblin does not need it: step-boundary
-pre-emption (Timing, below) already checks before the **first** model call of
-every turn, including a scheduled run arriving overnight.
+for sessions that grew between turns. Goblin does not add one: the
+end-of-turn backstop folds any turn that lands over the trigger, so a turn
+never starts over it from its own history. Step-boundary pre-emption cannot
+cover a turn's first call (the projection is null until a step completes);
+a first call that overflows rides the overflow rail.
 
 Manual `/compact` stays a forced fold: no trigger, window possibly unknown.
 `minSpanTokens` stays: a fold that buys nothing still spends a call and
@@ -57,16 +59,16 @@ moves the cache boundary.
 
 | quantity | value | source |
 | --- | --- | --- |
-| verbatim tail | **20,000**, shrunk to fit | pi / OpenClaw `keepRecentTokens` |
+| verbatim tail | **20,000**, ≤25% of window | pi / OpenClaw `keepRecentTokens` |
 | summarizer chunk cap | 100,000 | unchanged |
 | verbatim user messages | **4,000**, newest first | Hermes lean (budgeted) |
 | identifier index | **1,000** | Hermes lean |
 
-**Shrunk to fit** (OpenClaw): when the fold runs at the step boundary with
-the request known, the tail shrinks so system prompt + tool schemas +
-pending input + reply reserve + summary + tail all fit the window. Without
-request facts (manual `/compact`, unknown window) the tail is 20k.
 Small windows keep the old ratio as a ceiling: tail ≤ 25% of the window.
+OpenClaw's shrink-to-fit (tail shrinks so prompt + tools + pending input +
+reserve fit) is not adopted: with the trigger at ≤50% of the window, a
+≤25% tail plus summary leaves the other quarter free. Revisit only if an
+overflow right after a fold is ever logged.
 
 ## Cut rule: pi's cut, over causal order
 
@@ -293,7 +295,7 @@ the headings and code-made parts. No migration: old rows render as before
 
 ## Staging
 
-1. **Triggers, tail, cut.** 50%/128k trigger, 20k fit-to-request tail,
+1. **Triggers, tail, cut.** 50%/128k trigger, 20k tail,
    pi's cut over causal order with split turns, overflow contract.
 2. **Summary contents.** Required headings, quality audit, identifier
    index, verbatim user messages, gated memory flush.

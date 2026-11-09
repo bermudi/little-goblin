@@ -13,6 +13,7 @@ import {
 	type UIMessage,
 	type UIMessageChunk,
 } from "ai";
+import { quotaFromMetadata } from "../agent/codex/receipts.ts";
 import { filterErrorStream } from "../agent/filter-stream.ts";
 import {
 	isContentFilter,
@@ -20,7 +21,6 @@ import {
 	ProviderContentFilterError,
 } from "../agent/provider-errors.ts";
 import { makeToolCallRepair } from "../agent/tool-repair.ts";
-import { quotaFromMetadata } from "../agent/codex/receipts.ts";
 import type { AppLiveContext, AppQuota } from "../http/app-wire.ts";
 import { log } from "../log.ts";
 import type { EvidenceLimits, ToolCallDigest } from "../reviewer.ts";

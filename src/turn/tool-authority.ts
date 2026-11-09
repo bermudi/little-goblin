@@ -12,9 +12,9 @@ import type { OutgoingFile } from "../agent/tools/send.ts";
 import type { Conversation } from "../conversation.ts";
 import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import type { SinkDelivery } from "./delivery.ts";
-import { fenceTools } from "./tool-fence.ts";
 import { buildRetryGuard } from "./retry-guard.ts";
 import type { RunOwnershipHooks } from "./run-ownership.ts";
+import { fenceTools } from "./tool-fence.ts";
 
 // Build tools for the deployment workspace and conversation; delivery
 // hooks connect speak and file tools to the running sink.

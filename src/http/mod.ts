@@ -35,6 +35,12 @@ export function isLoopback(addr: string | undefined): boolean {
 	return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 }
 
+// A /hook/ pathname is the webhook credential itself — logs record the
+// route, never the token (design/programs.md → Webhooks).
+export function redactHookPath(pathname: string): string {
+	return pathname.startsWith("/hook/") ? "/hook/<token>" : pathname;
+}
+
 const OPERATOR_TAILS: Record<string, string> = {
 	"/api/settings": "config",
 	"/api/thinking-levels": "thinking-levels",
@@ -69,6 +75,10 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 
 	async function handleHook(req: Request, token: string): Promise<Response> {
 		const t0 = Date.now();
+		// The program the token resolved to before any failure — the
+		// error line below carries it because the token itself (and so
+		// the pathname it rode in on) must never log.
+		let matched: Program | null = null;
 		const done = (
 			status: number,
 			program?: Program,
@@ -84,27 +94,38 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 				headers: { ...NO_STORE, ...extraHeaders },
 			});
 		};
-		if (req.method !== "POST") return done(405);
-		const hooks = deps.hooks;
-		if (!hooks) return done(404);
-		const hash = new Bun.CryptoHasher("sha256").update(token).digest("hex");
-		const program = hooks.programs.findByHook(hash);
-		if (program === null || !program.enabled) return done(404, program ?? undefined);
-		const body = await readBodyCapped(req, HOOK_BODY_CAP);
-		if (body.oversize) return done(413, program);
-		const fresh = hooks.programs.findByHook(hash);
-		if (fresh === null || !fresh.enabled) return done(404, fresh ?? undefined);
-		const last = hookLastFired.get(fresh.id);
-		const now = new Date();
-		if (last !== undefined && now.getTime() - last < HOOK_THROTTLE_MS) {
-			return done(429, fresh);
+		try {
+			if (req.method !== "POST") return done(405);
+			const hooks = deps.hooks;
+			if (!hooks) return done(404);
+			const hash = new Bun.CryptoHasher("sha256").update(token).digest("hex");
+			const program = hooks.programs.findByHook(hash);
+			if (program === null || !program.enabled) return done(404, program ?? undefined);
+			matched = program;
+			const body = await readBodyCapped(req, HOOK_BODY_CAP);
+			if (body.oversize) return done(413, program);
+			const fresh = hooks.programs.findByHook(hash);
+			if (fresh === null || !fresh.enabled) return done(404, fresh ?? undefined);
+			matched = fresh;
+			const last = hookLastFired.get(fresh.id);
+			const now = new Date();
+			if (last !== undefined && now.getTime() - last < HOOK_THROTTLE_MS) {
+				return done(429, fresh);
+			}
+			if (!hooks.accepting()) return done(503, fresh, { "retry-after": "30" });
+			const landed = hooks.fire(fresh, body.text, now);
+			if (landed) {
+				hookLastFired.set(fresh.id, now.getTime());
+			}
+			return done(landed ? 202 : 500, fresh);
+		} catch (err) {
+			log.error("program hook failed", err, {
+				method: req.method,
+				ms: Date.now() - t0,
+				...(matched !== null ? { program: matched.id } : {}),
+			});
+			return new Response(null, { status: 500, headers: NO_STORE });
 		}
-		if (!hooks.accepting()) return done(503, fresh, { "retry-after": "30" });
-		const landed = hooks.fire(fresh, body.text, now);
-		if (landed) {
-			hookLastFired.set(fresh.id, now.getTime());
-		}
-		return done(landed ? 202 : 500, fresh);
 	}
 	type AuthOutcome = InitDataResult | { ok: false; why: "channel-disabled" };
 	function authedUser(req: Request): AuthOutcome {
@@ -127,7 +148,10 @@ export function startHttp(deps: HttpDeps): { port: number; stop(): void } {
 			} catch (err) {
 				log.error("http request failed", err, {
 					method: req.method,
-					path: url.pathname,
+					// Backstop: hook errors are caught inside handleHook with
+					// the matched program; if one ever escapes, the token
+					// still never logs.
+					path: redactHookPath(url.pathname),
 				});
 				return Response.json({ error: "internal" }, { status: 500, headers: NO_STORE });
 			}

@@ -109,7 +109,12 @@ Rulings:
   outside conversation history, and the model learns only that delivery
   happened. Zero DMs delivered = tool error (hook stays set; rotate
   resends). Unknown and disabled tokens read identically — no existence
-  oracle, no body echo. A hook disabled or rotated mid-upload is dead
+  oracle, no body echo. **No log line carries the token** — the route's
+  pathname *is* the credential, so a throw anywhere inside it (sender
+  dropped mid-body, store read failure) logs `program hook failed` with
+  method, error and the matched program, and the server's catch-all
+  redacts `/hook/` pathnames so an escaping error still cannot leak it.
+  A hook disabled or rotated mid-upload is dead
   (revoked authority fences in flight), and once the runtime stops
   accepting turns the route refuses rather than fake-accepts — a closed
   runtime only records submits. The body rides in fenced as untrusted

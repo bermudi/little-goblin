@@ -43,3 +43,4 @@
 - **Development:** a durable event recorded on a responsibility, such as a program occurrence, an observation, or an operator correction.
 - **Fold:** one compaction: older messages become a summary, a recent tail stays verbatim. The full history stays on disk.
 - **Fold mark:** the pill in the app transcript that shows where a fold ran and expands to its summary.
+- **Code-made parts:** the sections of a fold summary that code writes, never a model: verbatim operator messages and the identifier index. Later folds carry them forward untouched.

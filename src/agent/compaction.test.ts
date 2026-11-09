@@ -12,6 +12,13 @@ import { attachmentPart } from "./attachments.ts";
 
 const signal = () => new AbortController().signal;
 
+// A fake summary that passes the quality audit: the required headings, with
+// the prompt's last operator line echoed under Pending user asks.
+function passing(text: string, prompt: string): string {
+	const ask = [...prompt.matchAll(/^user: ([^[].*)$/gm)].at(-1)?.[1]?.slice(0, 200) ?? "";
+	return `${text}\n## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\n${ask}\n## Exact identifiers`;
+}
+
 function ev(
 	seq: number,
 	role: "user" | "assistant",
@@ -235,7 +242,7 @@ describe("runCompaction", () => {
 			["zai/glm-5.3"],
 			async (system, prompt) => {
 				prompts.push({ system, prompt });
-				return "the folded summary";
+				return passing("the folded summary", prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 			signal(),
@@ -243,14 +250,13 @@ describe("runCompaction", () => {
 		expect(outcome.kind).toBe("compacted");
 		if (outcome.kind !== "compacted") return;
 		expect(outcome.boundarySeq).toBe(4);
-		expect(outcome.summary).toBe("the folded summary");
+		expect(outcome.summary).toStartWith("the folded summary");
 		expect(prompts).toHaveLength(1);
 		expect(prompts[0]!.prompt).toContain("earlier era");
 		expect(prompts[0]!.prompt).toContain("did it");
 		expect(writes).toHaveLength(1);
 		expect(writes[0]).toMatchObject({
 			boundarySeq: 4,
-			summary: "the folded summary",
 			model: "zai/glm-5.3",
 		});
 	});
@@ -274,7 +280,7 @@ describe("runCompaction", () => {
 			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
-				return "folded";
+				return passing("folded", prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000, beforeSeq: () => 7 },
 			signal(),
@@ -315,7 +321,7 @@ describe("runCompaction", () => {
 			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
-				return "folded";
+				return passing("folded", prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 			signal(),
@@ -445,7 +451,7 @@ describe("runCompaction", () => {
 			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
-				return "fold two";
+				return passing("fold two", prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 			signal(),
@@ -458,7 +464,8 @@ describe("runCompaction", () => {
 		expect(prompts[0]).toContain("later question");
 		expect(prompts[0]).not.toContain("hello");
 		expect(prompts[0]).not.toContain("newest question");
-		expect(writes[0]).toMatchObject({ boundarySeq: 8, summary: "fold two" });
+		expect(writes[0]).toMatchObject({ boundarySeq: 8 });
+		expect(writes[0]!.summary).toStartWith("fold two");
 	});
 
 	test("an oversized span folds through sequential calls inside the input budget", async () => {
@@ -479,7 +486,7 @@ describe("runCompaction", () => {
 			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
-				return `fold ${prompts.length}`;
+				return passing(`fold ${prompts.length}`, prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget },
 			signal(),
@@ -498,7 +505,7 @@ describe("runCompaction", () => {
 			expect(prompts[i]).toContain("running summary of the earlier part of this span");
 		}
 		// The final call's output is the stored summary.
-		expect(writes[0]!.summary).toBe(`fold ${prompts.length}`);
+		expect(writes[0]!.summary).toStartWith(`fold ${prompts.length}\n`);
 	});
 
 	test("a single event bigger than the allowance is truncated, never dropped", async () => {
@@ -516,7 +523,7 @@ describe("runCompaction", () => {
 			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
-				return "folded";
+				return passing("folded", prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 1_200 },
 			signal(),
@@ -609,7 +616,7 @@ describe("tool-call atomicity across the cut", () => {
 			["m"],
 			async (_system, prompt) => {
 				prompts.push(prompt);
-				return "folded";
+				return passing("folded", prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
 			signal(),
@@ -664,7 +671,7 @@ describe("opaque reasoning state", () => {
 		expect(chooseBoundary(huge, { tailTokenBudget: 1, previousBoundary: null })).toBe(
 			chooseBoundary(small, { tailTokenBudget: 1, previousBoundary: null }),
 		);
-		const summarize = async () => "folded";
+		const summarize = async (_s: string, prompt: string) => passing("folded", prompt);
 		const a = fakeStore(small);
 		const b = fakeStore(huge);
 		const opts = { tailTokenBudget: 1, inputTokenBudget: 32_000 };
@@ -684,7 +691,7 @@ describe("opaque reasoning state", () => {
 		};
 		// 60k chars of non-codex state is ordinary serialized bulk — it
 		// lands in tokensBefore where the codex cipher did not.
-		const summarize = async () => "folded";
+		const summarize = async (_s: string, prompt: string) => passing("folded", prompt);
 		const opts = { tailTokenBudget: 1, inputTokenBudget: 32_000 };
 		const codexOut = await runCompaction(
 			"dm:1",
@@ -730,17 +737,18 @@ describe("runCompaction — fallback walk", () => {
 			"dm:1",
 			store,
 			["zai/glm-5.3", "codex/gpt-6.1-terra"],
-			(_system, _prompt, callSignal, model) => {
+			(_system, prompt, callSignal, model) => {
 				signals.push({ model, abortedAtStart: callSignal.aborted });
 				// The primary ignores its abort — only the attempt's own
 				// timeout can end it.
 				if (model === "zai/glm-5.3") return new Promise<string>(() => {});
-				return Promise.resolve("folded by the fallback");
+				return Promise.resolve(passing("folded by the fallback", prompt));
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 32_000, callTimeoutMs: 50 },
 			signal(),
 		);
-		expect(outcome).toMatchObject({ kind: "compacted", summary: "folded by the fallback" });
+		expect(outcome).toMatchObject({ kind: "compacted" });
+		if (outcome.kind === "compacted") expect(outcome.summary).toStartWith("folded by the fallback");
 		expect(signals).toEqual([
 			{ model: "zai/glm-5.3", abortedAtStart: false },
 			{ model: "codex/gpt-6.1-terra", abortedAtStart: false },
@@ -757,10 +765,10 @@ describe("runCompaction — fallback walk", () => {
 			"dm:1",
 			store,
 			["a/primary", "b/backup"],
-			async (_system, _prompt, _signal, model) => {
+			async (_system, prompt, _signal, model) => {
 				asked.push(model);
 				if (model === "a/primary") throw new Error("server_is_overloaded");
-				return `fold ${asked.length}`;
+				return passing(`fold ${asked.length}`, prompt);
 			},
 			{ tailTokenBudget: 1, inputTokenBudget: 1_200 },
 			signal(),
@@ -810,5 +818,128 @@ describe("runCompaction — fallback walk", () => {
 		).rejects.toThrow("stopped");
 		expect(asked).toEqual(["a/primary"]);
 		expect(writes).toHaveLength(0);
+	});
+});
+
+describe("summary contents (design/compaction.md → The summary)", () => {
+	const opts = { tailTokenBudget: 1, inputTokenBudget: 32_000 };
+	// Clears the fold's 500-token minimum span.
+	const pad = " filler".repeat(400);
+
+	test("a summary missing its headings retries with a correction, then lands", async () => {
+		const { store, writes } = fakeStore(sample());
+		const prompts: string[] = [];
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async (_s, prompt) => {
+				prompts.push(prompt);
+				return prompts.length === 1 ? "free prose" : passing("fixed", prompt);
+			},
+			opts,
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		expect(prompts).toHaveLength(2);
+		expect(prompts[1]).toContain("failed the quality check");
+		expect(prompts[1]).toContain("missing section ## Pending user asks");
+		expect(writes[0]!.summary).toStartWith("fixed");
+	});
+
+	test("a summary still failing after two retries writes nothing", async () => {
+		const { store, writes } = fakeStore(sample());
+		let calls = 0;
+		await expect(
+			runCompaction(
+				"dm:1",
+				store,
+				["m"],
+				async () => {
+					calls++;
+					return "free prose";
+				},
+				opts,
+				signal(),
+			),
+		).rejects.toThrow("quality audit");
+		expect(calls).toBe(3);
+		expect(writes).toHaveLength(0);
+	});
+
+	test("a summary that drops the latest operator request fails the audit", async () => {
+		const detail = [
+			ev(1, "user", "rename the backup bucket to herbert-archive"),
+			ev(2, "assistant", `on it${pad}`, 1),
+			ev(3, "user", "next"),
+			ev(4, "assistant", "ok", 3),
+		];
+		const { store, writes } = fakeStore(detail);
+		const headingsOnly =
+			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nnothing\n## Exact identifiers";
+		await expect(
+			runCompaction("dm:1", store, ["m"], async () => headingsOnly, opts, signal()),
+		).rejects.toThrow("latest operator request");
+		expect(writes).toHaveLength(0);
+	});
+
+	test("operator words and identifiers survive a later fold verbatim, machinery and resumes do not count", async () => {
+		const first = [
+			ev(1, "user", "don't drop Herbert from the invite list, ever"),
+			ev(2, "assistant", "noted — see https://example.test/invites and /srv/lists/invite.txt", 1),
+			ev(3, "user", "[program: digest · trigger: daily]"),
+			ev(4, "assistant", `digest sent${pad}`, 3),
+			{
+				seq: 5,
+				anchorSeq: null,
+				message: {
+					id: "r",
+					role: "user",
+					metadata: { goblinResume: { sourceRunId: "run-1" } },
+					parts: [{ type: "text", text: "[operator resumed interrupted run run-1]" }],
+				},
+			} satisfies CompactionEvent,
+			ev(6, "assistant", "resumed", 5),
+			ev(7, "user", "thanks"),
+			ev(8, "assistant", "sure", 7),
+		];
+		const a = fakeStore(first);
+		const summarizer = async (_s: string, prompt: string) => passing("model text", prompt);
+		await runCompaction("dm:1", a.store, ["m"], summarizer, opts, signal());
+		const stored = a.writes[0]!.summary;
+		expect(stored).toContain(JSON.stringify("don't drop Herbert from the invite list, ever"));
+		expect(stored).toContain("https://example.test/invites");
+		expect(stored).toContain("/srv/lists/invite.txt");
+		expect(stored).not.toContain(JSON.stringify("[program: digest · trigger: daily]"));
+		expect(stored).not.toContain(JSON.stringify("[operator resumed interrupted run run-1]"));
+
+		// Second fold: the model only ever sees the model text; the code
+		// carries the quote and identifiers forward untouched.
+		const second = [
+			...first,
+			ev(9, "user", "now book the room"),
+			ev(10, "assistant", `booked${pad}`, 9),
+			ev(11, "user", "bye"),
+			ev(12, "assistant", "bye", 11),
+		];
+		const b = fakeStore(second, { boundarySeq: a.writes[0]!.boundarySeq, summary: stored });
+		const prompts: string[] = [];
+		await runCompaction(
+			"dm:1",
+			b.store,
+			["m"],
+			async (_s, prompt) => {
+				prompts.push(prompt);
+				return passing("model text two", prompt);
+			},
+			opts,
+			signal(),
+		);
+		expect(prompts[0]).not.toContain("code-made");
+		const restored = b.writes[0]!.summary;
+		expect(restored).toContain(JSON.stringify("don't drop Herbert from the invite list, ever"));
+		expect(restored).toContain("/srv/lists/invite.txt");
+		// Newest first.
+		expect(restored.indexOf("now book the room")).toBeLessThan(restored.indexOf("Herbert"));
 	});
 });

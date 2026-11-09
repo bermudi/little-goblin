@@ -195,7 +195,8 @@ export interface StreamStep {
 	label?: string;
 	contextWindow?: number;
 	// Provider retry rule for the call — 1min carries 0, absent keeps
-	// the SDK default.
+	// the SDK default. Gates both the SDK ladder and the transient
+	// step retry below; the content-filter re-ask is the exception.
 	maxRetries?: number;
 	// Delay before the transient-transport step retry re-dispatches.
 	// Absent keeps the SDK retry ladder's initial delay; tests zero it.
@@ -568,7 +569,11 @@ export async function driveStream<M extends WireMember>(
 				const delayMs = deps.step.transientRetryDelayMs ?? RETRY_INITIAL_DELAY_MS;
 				// Sleep only when a retry will actually be granted — the
 				// budget-spent and aborted paths must not pay the delay.
-				if (!deps.signal.aborted && retryGrantedStep !== stepCount) {
+				// The lane's own retry rule applies here the same as the
+				// pre-stream transport middleware: a 1min step carries
+				// maxRetries 0 (every POST bills), so the transient
+				// re-dispatch is denied.
+				if (!deps.signal.aborted && deps.step.maxRetries !== 0 && retryGrantedStep !== stepCount) {
 					await awaitRetryDelay(delayMs, deps.signal);
 					if (!deps.signal.aborted) {
 						retryGrantedStep = stepCount;
@@ -586,12 +591,18 @@ export async function driveStream<M extends WireMember>(
 				}
 				// An aborted turn takes the fence path below — one story, not two.
 				if (!deps.signal.aborted) {
-					log.warn("transient model stream error — step retry budget spent", error, {
-						conversation: convId,
-						epoch,
-						model: modelLabel,
-						attempt: transientRetries,
-					});
+					log.warn(
+						deps.step.maxRetries === 0
+							? "transient model stream error — lane carries no retry budget (every POST bills)"
+							: "transient model stream error — step retry budget spent",
+						error,
+						{
+							conversation: convId,
+							epoch,
+							model: modelLabel,
+							attempt: transientRetries,
+						},
+					);
 				}
 			}
 			rawError = error;

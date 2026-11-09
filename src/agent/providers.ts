@@ -18,6 +18,7 @@ import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import { splitModelRef, type Config, type ThinkingLevel } from "../config.ts";
 import { log } from "../log.ts";
+import { awaitRetryDelay, RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
 import type { MediaPosition } from "./attachments.ts";
 import { codexModel, RESPONSES_URL, type CodexModelOptions } from "./codex/model.ts";
 import { isOneMinHost, modelCallMaxRetries } from "./onemin.ts";
@@ -44,24 +45,6 @@ export async function resolveModel(
 	});
 }
 
-// The SDK retry ladder's initialDelayInMs default — the transport retry
-// keeps the ladder's delay story.
-const TRANSPORT_RETRY_DELAY_MS = 2000;
-
-// A stopped call must not hold its lane for the full backoff.
-function awaitRetryDelay(ms: number, signal: AbortSignal | undefined): Promise<void> {
-	if (ms <= 0 || signal?.aborted) return Promise.resolve();
-	return new Promise((resolve) => {
-		const timer = setTimeout(finish, ms);
-		function finish(): void {
-			clearTimeout(timer);
-			signal?.removeEventListener("abort", finish);
-			resolve();
-		}
-		signal?.addEventListener("abort", finish, { once: true });
-	});
-}
-
 // The transport twin of the SDK's retry ladder. The SDK retries only
 // errors it flagged itself (APICallError isRetryable — 5xx, throttles),
 // so a raw fetch TypeError / ECONNRESET before the first byte exhausted
@@ -75,7 +58,7 @@ export function transportRetry(
 	modelRef: string,
 	config: Pick<Config, "providers">,
 	// Tests zero the delay; production keeps the SDK ladder's default.
-	initialDelayMs = TRANSPORT_RETRY_DELAY_MS,
+	initialDelayMs = RETRY_INITIAL_DELAY_MS,
 ): LanguageModelMiddleware {
 	const maxRetries = modelCallMaxRetries(config, modelRef) ?? 2;
 	const attempt = <T>(

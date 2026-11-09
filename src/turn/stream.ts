@@ -24,6 +24,7 @@ import {
 import { makeToolCallRepair } from "../agent/tool-repair.ts";
 import type { AppLiveContext, AppQuota } from "../http/app-wire.ts";
 import { log } from "../log.ts";
+import { awaitRetryDelay, RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
 import type { EvidenceLimits, ToolCallDigest } from "../reviewer.ts";
 import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
@@ -199,24 +200,6 @@ export interface StreamStep {
 	// Delay before the transient-transport step retry re-dispatches.
 	// Absent keeps the SDK retry ladder's initial delay; tests zero it.
 	transientRetryDelayMs?: number;
-}
-
-// The SDK retry ladder's initialDelayInMs default — one delay story for
-// every retry goblin grants.
-const TRANSIENT_RETRY_DELAY_MS = 2000;
-
-// A stopped turn must not hold the lane for the full backoff.
-function awaitRetryDelay(ms: number, signal: AbortSignal): Promise<void> {
-	if (ms <= 0 || signal.aborted) return Promise.resolve();
-	return new Promise((resolve) => {
-		const timer = setTimeout(finish, ms);
-		function finish(): void {
-			clearTimeout(timer);
-			signal.removeEventListener("abort", finish);
-			resolve();
-		}
-		signal.addEventListener("abort", finish, { once: true });
-	});
 }
 
 export interface StreamDeps<M extends WireMember> {
@@ -582,7 +565,7 @@ export async function driveStream<M extends WireMember>(
 				// pre-stream surface is the transport middleware's lane
 				// (agent/providers.ts).
 				deps.assertAuthority();
-				const delayMs = deps.step.transientRetryDelayMs ?? TRANSIENT_RETRY_DELAY_MS;
+				const delayMs = deps.step.transientRetryDelayMs ?? RETRY_INITIAL_DELAY_MS;
 				// Sleep only when a retry will actually be granted — the
 				// budget-spent and aborted paths must not pay the delay.
 				if (!deps.signal.aborted && retryGrantedStep !== stepCount) {

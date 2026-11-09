@@ -226,7 +226,10 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   landing at the same boundary retracts in its favor). The serial-lane
   end-of-turn fold stays as the backstop when pre-emption could not or
   did not fire, and `/compact` serializes through it and still compacts
-  with the window unknown (a forced scrub). Ruling 2026-10-19: the window
+  with the window unknown (a forced scrub). Ruling 2026-11-09, not yet built ([compaction](compaction.md)):
+  the two arms become one trigger (lower of 50% of the window and 128k),
+  the tail becomes 20k shrunk to fit, cuts may split a turn, and the
+  summary gains required headings, an audit and code-made parts. Ruling 2026-10-19: the window
   lookup is
   metadata, not a model step — `compaction.contextWindow` reads the
   catalog only, resolving no auth and building no model step, so the

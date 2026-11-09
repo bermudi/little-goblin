@@ -40,3 +40,5 @@
 - **Attachment:** the durable row that binds a conversation to one delegated agent session, keyed by terminal and agent session.
 - **Binding:** the link between a conversation and a delegated agent session. The attachment row is its durable record.
 - **Development:** a durable event recorded on a responsibility, such as a program occurrence, an observation, or an operator correction.
+- **Fold:** one compaction: older messages become a summary, a recent tail stays verbatim. The full history stays on disk.
+- **Fold mark:** the pill in the app transcript that shows where a fold ran and expands to its summary.

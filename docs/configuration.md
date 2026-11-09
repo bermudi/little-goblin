@@ -380,6 +380,10 @@ on a harness (local or machine-side) makes goblin ask you before each
 use — the delegate tool carries it as a prompt rule, editable in
 Settings → Delegation; choosing the harness itself stays goblin's call.
 
+opencode: keep the full TUI (`args: ["--auto"]`). `opencode mini` takes
+`--model` but rejects `--auto`, and herdr never reports it `working` or
+`done`, so a delegation to it would never settle (probe, 2026-11-09).
+
 ### Subagents
 
 Off when unset. With a `subagents` block, the bot gets `subagent` and

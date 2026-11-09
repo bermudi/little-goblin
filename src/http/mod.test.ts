@@ -11,7 +11,7 @@ import { setLogFile } from "../log.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { SkillSources } from "../skill-provenance.ts";
 import { tmpDir, useHome } from "../testkit.ts";
-import { type HttpDeps, isLoopback, startHttp } from "./mod.ts";
+import { type HttpDeps, isLoopback, redactHookPath, startHttp } from "./mod.ts";
 import type { MemoryStatusResponse } from "./operator-wire.ts";
 import { APP_PAGES } from "./app-routes.ts";
 
@@ -881,6 +881,65 @@ describe("program webhooks", () => {
 		} finally {
 			http.stop();
 		}
+	});
+
+	function logLines(logFile: string): Array<{ msg: string; program?: number; error?: string }> {
+		return readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l) as { msg: string; program?: number; error?: string });
+	}
+
+	test("a sender dropping mid-body fails loud — the log names the program, never the token", async () => {
+		const { http, hit, program, token, fired } = hookSetup();
+		const logFile = join(process.env.GOBLIN_HOME!, "goblin.log");
+		setLogFile(logFile);
+		try {
+			const body = new ReadableStream<Uint8Array>({
+				async start(c) {
+					c.enqueue(new TextEncoder().encode("part one"));
+					await new Promise((r) => setTimeout(r, 20));
+					c.error(new Error("sender dropped mid-body"));
+				},
+			});
+			// The client's fetch rejects when its own stream errors; the
+			// server experiences the same tear as a body-read failure.
+			await expect(hit(token, { body })).rejects.toThrow("sender dropped mid-body");
+			await new Promise((r) => setTimeout(r, 100));
+			expect(fired).toEqual([]);
+			const failed = logLines(logFile).find((l) => l.msg === "program hook failed");
+			expect(failed?.error).toBe("The connection was closed.");
+			expect(failed?.program).toBe(program.id);
+			expect(readFileSync(logFile, "utf8")).not.toContain(token);
+		} finally {
+			http.stop();
+			setLogFile(null);
+		}
+	});
+
+	test("a store read failure inside the hook is a logged 500 — no token, no phantom program", async () => {
+		const { http, hit, programs, token } = hookSetup();
+		const logFile = join(process.env.GOBLIN_HOME!, "goblin.log");
+		setLogFile(logFile);
+		try {
+			programs.close();
+			const res = await hit(token, { body: "x" });
+			expect(res.status).toBe(500);
+			expect(await res.text()).toBe("");
+			const failed = logLines(logFile).find((l) => l.msg === "program hook failed");
+			expect(failed?.error).toBe("Database has closed");
+			expect("program" in (failed ?? {})).toBe(false);
+			expect(readFileSync(logFile, "utf8")).not.toContain(token);
+		} finally {
+			http.stop();
+			setLogFile(null);
+		}
+	});
+
+	test("redactHookPath keeps ordinary routes, swallows the credential", () => {
+		expect(redactHookPath("/hook/tok-abc.def")).toBe("/hook/<token>");
+		expect(redactHookPath("/hook/")).toBe("/hook/<token>");
+		expect(redactHookPath("/api/app/chat/1")).toBe("/api/app/chat/1");
 	});
 });
 

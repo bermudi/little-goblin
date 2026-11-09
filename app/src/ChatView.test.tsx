@@ -20,6 +20,7 @@ import {
 	FoldMark,
 	MessageParts,
 	mergeTranscript,
+	quoteSpeaker,
 } from "./ChatView.tsx";
 
 // Static markup — guards the render contract, not React behavior.
@@ -1940,6 +1941,54 @@ describe("appendQuote", () => {
 
 	test("multi-line selections quote every line", () => {
 		expect(appendQuote("", "line one\n\nline two")).toBe("> line one\n>\n> line two\n\n");
+	});
+
+	// The annotation line above the block is the proven #182 layout —
+	// memory extraction and Goblin in chat both read whose words the
+	// quote holds.
+	test("an assistant quote names Goblin above the block (#182)", () => {
+		expect(appendQuote("", "deploy on friday", "assistant")).toBe(
+			"[quoting Goblin's earlier reply]\n> deploy on friday\n\n",
+		);
+	});
+
+	test("an operator self-quote names the operator, not Goblin (#182)", () => {
+		expect(appendQuote("", "my earlier words", "user")).toBe(
+			"[quoting the operator's earlier message]\n> my earlier words\n\n",
+		);
+	});
+});
+
+// Speaker attribution rides on the message bubble's class — the QuoteFab
+// resolves it from the selection's position in the transcript DOM (#182).
+describe("quoteSpeaker (happy-dom)", () => {
+	const dom = mountDom();
+
+	const inBubble = (cls: string): Element => {
+		const msg = document.createElement("div");
+		msg.className = cls;
+		const inner = document.createElement("span");
+		msg.appendChild(inner);
+		dom.container.appendChild(msg);
+		return inner;
+	};
+
+	test("a selection inside a user bubble quotes the operator", () => {
+		expect(quoteSpeaker(inBubble("msg user"))).toBe("user");
+	});
+
+	test("a selection inside an assistant bubble quotes Goblin", () => {
+		expect(quoteSpeaker(inBubble("msg assistant"))).toBe("assistant");
+	});
+
+	// System bubbles and selections outside any bubble (across messages,
+	// transcript chrome) carry no attribution — the quote lands plain.
+	test("system bubbles and bubble-less selections have no speaker", () => {
+		expect(quoteSpeaker(inBubble("msg system"))).toBeNull();
+		const bare = document.createElement("span");
+		dom.container.appendChild(bare);
+		expect(quoteSpeaker(bare)).toBeNull();
+		expect(quoteSpeaker(null)).toBeNull();
 	});
 });
 

@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { type AppPageKey, parseAppPath } from "../../src/http/app-routes.ts";
 import type {
+	AppAttentionItem,
 	AppConversationList,
 	AppNote,
 	AppNoteSummary,
@@ -867,7 +868,8 @@ function AppShell() {
 	const [railHidden, setRailHidden] = useState(false);
 	// The notes and attention feeds ride refresh() — the notes pane's
 	// rows and the Attention glyph's violet dot are rail furniture, not
-	// page state.
+	// page state. The open Attention page reports its own (fresher)
+	// snapshot into the count via onItems.
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
 	const [notesTruncated, setNotesTruncated] = useState(false);
 	const [attentionCount, setAttentionCount] = useState(0);
@@ -1123,6 +1125,12 @@ function AppShell() {
 	useEffect(() => {
 		if (gate === "passed") void refresh();
 	}, [gate, refresh]);
+
+	// While the Attention page is mounted its own load is the freshest
+	// snapshot — let it drive the dot so page and glyph can't disagree.
+	const onAttentionItems = useCallback((items: AppAttentionItem[] | null) => {
+		if (items !== null) setAttentionCount(items.length);
+	}, []);
 
 	// A /app/c/<id> load selects that conversation once the list
 	// arrives.
@@ -2310,7 +2318,12 @@ function AppShell() {
 					</p>
 				)}
 				{page === "attention" && (
-					<AttentionView token={token} onPage={openPage} onConversation={openConversation} />
+					<AttentionView
+						token={token}
+						onPage={openPage}
+						onConversation={openConversation}
+						onItems={onAttentionItems}
+					/>
 				)}
 				{page === "settings" && (
 					<SettingsView

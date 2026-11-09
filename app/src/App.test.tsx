@@ -10,6 +10,7 @@ import {
 	transcriptionKinds,
 } from "../../src/config.ts";
 import type {
+	AppAttentionItem,
 	AppConversationList,
 	AppNote,
 	AppNoteSummary,
@@ -2166,7 +2167,7 @@ describe("app projects surface", () => {
 	let projs: AppProject[];
 	let notes: AppNoteSummary[];
 	let notesTruncated: boolean;
-	let attentionItems: { id: string }[];
+	let attentionItems: AppAttentionItem[];
 	let stored: UIMessage[];
 	let conflictPatch: boolean;
 	// Conversation creation control: POST /api/app/conversations 500s.
@@ -2361,6 +2362,8 @@ describe("app projects surface", () => {
 			}
 			if (url === "/api/app/attention")
 				return Promise.resolve(jsonResponse({ items: attentionItems, unavailable: [] }));
+			if (url === "/api/app/push")
+				return Promise.resolve(jsonResponse({ configured: false, subscriptions: [] }));
 			const projPatchMatch = /^\/api\/app\/projects\/([^/]+)$/.exec(url);
 			if (projPatchMatch !== null && method === "PATCH") {
 				const id = decodeURIComponent(projPatchMatch[1]!);
@@ -4519,6 +4522,33 @@ describe("app projects surface", () => {
 		expect(notePatches[0]!.id).toBe("n-beta");
 		expect(notePatches[0]!.ifMatch).toBe('"4"');
 		expect((notePatches[0]!.body as { body?: string }).body).toContain("beta bodyx");
+	});
+
+	test("the attention dot reads the open page's snapshot, not a stale refresh", async () => {
+		// One item at boot: the refresh() count paints the dot.
+		attentionItems = [
+			{
+				id: "interrupted-run:r1",
+				kind: "interrupted-run",
+				title: "Interrupted turn — fixture chat",
+				detail: "2 recorded calls — resume or abandon",
+				createdAt: "2026-11-05T00:00:00.000Z",
+				target: { kind: "conversation", conversationId: "app/fixture" },
+			},
+		];
+		await mount();
+		const bell = () => glyph("Attention");
+		expect(bell()?.getAttribute("aria-label")).toBe("Attention — 1 item needs you");
+		expect(bell()?.querySelector(".dot")).not.toBeNull();
+
+		// The item resolved elsewhere — the endpoint answers empty now,
+		// but no refresh() ran, so the count is stale. The page's own
+		// load is the fresher truth and must clear the dot it shows up.
+		attentionItems = [];
+		await click(glyph("Attention"));
+		expect(container.textContent).toContain("All clear");
+		expect(bell()?.getAttribute("aria-label")).toBe("Attention");
+		expect(bell()?.querySelector(".dot")).toBeNull();
 	});
 });
 

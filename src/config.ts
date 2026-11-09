@@ -513,13 +513,41 @@ export const delegationTargetSchema = z
 	});
 export type DelegationTargetConfig = z.infer<typeof delegationTargetSchema>;
 
+// A delegation role names the kind of work a default serves — build,
+// review, or any operator-coined label. `default` is the fallback when
+// a call names no role at all; it is not privileged in the map.
+const roleNameSchema = z
+	.string()
+	.regex(/^[a-z][a-z0-9_-]{0,15}$/, "role must be lowercase letters, digits, _ or -");
+
 export const delegationConfigSchema = z
 	.object({
 		// No cap by design — volume is goblin's judgment, not a knob.
 		machines: z.record(harnessNameSchema, delegationTargetSchema).optional(),
 		harnesses: harnessMapSchema,
+		// Role → configured harness name. The delegate tool uses this
+		// when the call names no harness; it never invents a harness or
+		// model. Values are checked against every declared harness,
+		// local and machine-side — the target's own map still gates the
+		// launch, so a role default missing there fails loud.
+		defaults: z.record(roleNameSchema, harnessNameSchema).optional(),
 	})
-	.strict();
+	.strict()
+	.superRefine((d, ctx) => {
+		if (d.defaults === undefined) return;
+		const known = new Set([
+			...Object.keys(d.harnesses),
+			...Object.values(d.machines ?? {}).flatMap((m) => Object.keys(m.harnesses ?? {})),
+		]);
+		for (const [role, name] of Object.entries(d.defaults)) {
+			if (known.has(name)) continue;
+			ctx.addIssue({
+				code: "custom",
+				path: ["defaults", role],
+				message: `delegation.defaults.${role} names unknown harness "${name}"`,
+			});
+		}
+	});
 export type DelegationConfig = z.infer<typeof delegationConfigSchema>;
 
 // A container image ref: no leading '-' and a conservative charset —
@@ -1024,7 +1052,10 @@ const configSchema = z
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
 		// Hand-edited only; a mini-app save round-trips it through the merge untouched.
-		delegation: delegationConfigSchema.optional(),
+		delegation: z
+			.union([delegationConfigSchema, z.literal("")])
+			.transform((v) => (v === "" ? undefined : v))
+			.optional(),
 		// Hand-edited only, like delegation.
 		mail: mailConfigSchema.optional(),
 		// Sandboxed execution — hand-edited only; live-read per turn so a

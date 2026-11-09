@@ -58,6 +58,25 @@ Rulings:
 - **Harnesses are config, never guessed** — the operator's choice of
   kind, native args, full-auto flags and model; goblin never picks a
   model for a harness.
+- **Staffing defaults are config, not notes (2026-11-09).** The operator
+  sets `delegation.defaults` — role → configured harness name — instead
+  of the agent carrying the table in `USER.md` / workspace notes, where
+  two prose copies could drift and nothing enforced them.
+  `delegate start` takes an optional `role` (omitted = `default`); with
+  no `harness`, the role's entry decides, and a named role with no entry
+  falls back to `default`. An explicit harness always wins. No default
+  and no harness fails loud listing the configured agents and roles —
+  never a silent arbitrary pick. A default must name a declared harness
+  (local or machine-side) at config parse time; the selected target's
+  own map still gates the launch, so a local role pointed at a
+  machine-only name fails there with herdr's error, not a wrong launch.
+  Model choice stays in each harness's `args`: a defaults entry selects
+  a whole configured agent, never a bare model. Settings → Delegation
+  edits the harness table and defaults; machine targets stay file-only
+  (their herdr profiles are host-bound), and the save merge preserves
+  them. An edited block also supersedes a parked copy — the off/on flip
+  is a stash, and a stale stash would resurrect an old table. The block
+  remains boot-frozen — the page shows the restart hint.
 - **Agents run full-auto; goblin never answers approvals.** Harnesses
   start in their no-approval mode (the configured args); nothing to
   approve, and no new trust level — goblin already has `bash`. If an

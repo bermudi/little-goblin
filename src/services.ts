@@ -97,7 +97,7 @@ export const capabilityHints: Record<CapabilityName, string | null> = {
 	sandbox: null,
 	subagents: "set it up in goblin.json5 first (docs/configuration.md)",
 	scripting: null,
-	delegation: "set it up in goblin.json5 first (docs/configuration.md)",
+	delegation: "add a coding agent in Settings → Delegation",
 	guest: null,
 	reviewer: null,
 };

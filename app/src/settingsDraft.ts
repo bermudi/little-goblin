@@ -86,6 +86,33 @@ export interface ChainEntry {
 	kind: string;
 	auth: string;
 }
+
+// The delegation editor's two tables. Args stay one-per-line text so an
+// argument with a space survives the round trip; the row order is the
+// saved order (matters only for legibility — the map is keyed).
+export interface HarnessDraft {
+	name: string;
+	kind: string;
+	args: string;
+}
+export interface DelegationRoleDraft {
+	role: string;
+	harness: string;
+}
+export interface DelegationDraft {
+	harnesses: HarnessDraft[];
+	roles: DelegationRoleDraft[];
+	// Harness names declared under delegation.machines.* — file-only,
+	// kept so a role default may name them like the server allows.
+	machineHarnesses: string[];
+}
+
+/** One argument per line; blank lines are not arguments. */
+export const argsToList = (text: string): string[] =>
+	text
+		.split("\n")
+		.map((a) => a.trim())
+		.filter((a) => a !== "");
 /** Numeric-ish fields stay strings while editing. */
 export interface ProvDraft {
 	id: number;
@@ -342,6 +369,7 @@ export interface SettingsDraft {
 	port: string;
 	logLevel: "debug" | "info" | "warn" | "error";
 	memory: MemDraft | null;
+	delegation: DelegationDraft | null;
 }
 
 export const EMPTY_DRAFT: SettingsDraft = {
@@ -372,6 +400,7 @@ export const EMPTY_DRAFT: SettingsDraft = {
 	port: "8787",
 	logLevel: "info",
 	memory: null,
+	delegation: null,
 };
 
 // All-off flag map — EMPTY_DRAFT's baseline.
@@ -464,6 +493,23 @@ export function draftFromConfig(
 					},
 				}
 			: null,
+		delegation: c.delegation
+			? {
+					harnesses: Object.entries(c.delegation.harnesses).map(([name, h]) => ({
+						name,
+						kind: h.kind,
+						args: (h.args ?? []).join("\n"),
+					})),
+					roles: Object.entries(c.delegation.defaults ?? {})
+						.map(([role, harness]) => ({ role, harness }))
+						.sort((a, b) =>
+							a.role === "default" ? -1 : b.role === "default" ? 1 : a.role.localeCompare(b.role),
+						),
+					machineHarnesses: Object.values(c.delegation.machines ?? {}).flatMap((m) =>
+						Object.keys(m.harnesses ?? {}),
+					),
+				}
+			: null,
 	};
 	// Union arms differ (openrouter has no baseUrl, codex uses authFile,
 	// claude-code is auth-only); widen once — absent fields read as
@@ -534,6 +580,32 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 	if (draft.memory) {
 		if (!draft.memory.baseUrl.trim()) return "Memory is on — set the hindsight url.";
 		if (!draft.memory.bankId.trim()) return "Memory is on — set a bank id.";
+	}
+	if (draft.delegation) {
+		const nameRe = /^[a-z][a-z0-9_-]{0,15}$/;
+		const names = draft.delegation.harnesses.map((h) => h.name.trim());
+		if (names.some((n) => !n)) return "Every coding agent needs a name.";
+		if (names.some((n) => !nameRe.test(n)))
+			return "Coding agent names use lowercase letters, digits, _ or - (16 max).";
+		if (new Set(names).size !== names.length) return "Duplicate coding agent name.";
+		if (names.length === 0) return "Delegation is on — add at least one coding agent.";
+		if (draft.delegation.harnesses.some((h) => !h.kind.trim()))
+			return "Every coding agent needs a herdr kind.";
+		const roleRe = /^[a-z][a-z0-9_-]{0,15}$/;
+		// A row with no agent is an absent mapping — the body builder
+		// drops it, and "none" is how an existing default gets cleared.
+		const named = draft.delegation.roles.filter((r) => r.harness.trim() !== "");
+		const roles = named.map((r) => r.role.trim());
+		if (roles.some((r) => !roleRe.test(r)))
+			return "Role names use lowercase letters, digits, _ or - (16 max).";
+		if (new Set(roles).size !== roles.length) return "Duplicate delegation role.";
+		// Defaults may name a machine-side harness — the server schema
+		// accepts them and the file-only target gates the actual launch.
+		const known = [...names, ...draft.delegation.machineHarnesses];
+		for (const r of named) {
+			const target = r.harness.trim();
+			if (!known.includes(target)) return `Role "${r.role}" names an unlisted coding agent.`;
+		}
 	}
 	const port = Number(draft.port);
 	if (!Number.isInteger(port) || port < 0 || port > 65535)
@@ -695,6 +767,22 @@ export function bodyFromDraft(
 			maxTokens: numOrUndef(m.tokens),
 			recallTimeoutMs: numOrUndef(m.timeout),
 		})) as ConfigPostBody["memory"],
+		delegation: capEmit("delegation", draft.delegation, (d) => ({
+			harnesses: Object.fromEntries(
+				d.harnesses.map((h) => {
+					const args = argsToList(h.args);
+					return [h.name.trim(), { kind: h.kind.trim(), ...(args.length > 0 ? { args } : {}) }];
+				}),
+			),
+			...(() => {
+				const defaults = Object.fromEntries(
+					d.roles
+						.filter((r) => r.role.trim() !== "" && r.harness.trim() !== "")
+						.map((r) => [r.role.trim(), r.harness.trim()]),
+				);
+				return Object.keys(defaults).length > 0 ? { defaults } : {};
+			})(),
+		})) as ConfigPostBody["delegation"],
 		logLevel: draft.logLevel,
 		...(capabilities !== undefined && Object.keys(capabilities).length > 0 ? { capabilities } : {}),
 	};

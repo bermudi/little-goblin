@@ -3,6 +3,8 @@
 - **Responsibility:** what Goblin owes the operator, as a durable record. It is separate from who does the work.
 - **Delegation:** one external coding agent that Goblin starts with the `delegate` tool. It runs in a Herdr terminal.
 - **Harness:** a coding agent program that a delegation runs, such as codex or pi.
+- **Role:** the kind of work a delegation serves (build, review, or any operator-coined label). `default` is the role a call with none uses.
+- **Delegation default:** the role → harness tie in `delegation.defaults`. The `delegate` tool uses it when a call names no harness. Settings → Delegation edits it.
 - **Herdr:** the terminal multiplexer where harnesses run.
 - **Desk:** the operator's own Herdr session, `default`. The `herdr` tool reaches it.
 - **Subagent:** a durable run on Goblin's own Pi Durable runtime. It has two kinds, worker and computer.
@@ -30,6 +32,7 @@
 - **Decision model:** a model that answers typed questions with scores and does not write text.
 - **Cycle guard:** `src/import-cycles.test.ts`. It freezes today's import cycles as clusters and fails on any cycle that grew past or appeared outside them; clusters are pruned by hand as cycles are untangled.
 - **Feature folder:** a feature that lives as one directory under `src/` with a single public `index.ts` and its own tables. `src/reminders/` is the first.
+- **Parked block:** a capability's config kept under `config.parked` while the capability is off. Re-enabling restores it.
 - **Turn:** one model run from an admitted trigger, including its tool calls and reply.
 - **Epoch:** the monotonic counter on a conversation. A settings change or cancellation bumps it; an action prepared under an older epoch is refused.
 - **Fence:** a re-check of authority at the moment of a side effect. A fenced action stops without acting.

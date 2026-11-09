@@ -86,12 +86,15 @@ dropdown only offers levels the chosen model supports), speech,
 transcription, allowed users, URLs, providers, log level. Use this editor for
 routine configuration. Supported settings apply live; boot-pinned settings
 still need an approved restart. The Telegram mini app won't let you save a
-config that removes your own Telegram user id. Advanced blocks such as
-delegation, Gmail, and the skill reviewer have no controls yet: configure
-them during bootstrap/recovery,
-validate with Doctor, and use an approved restart. Settings preserves their
-validated values. See [Configuration](configuration.md) for the save and
-recovery rules.
+config that removes your own Telegram user id. Delegation has its own
+section: the coding agents (name, herdr kind, native args — the model
+lives here) and the role defaults the delegate tool uses when a call
+names no harness. Machine targets, Gmail, and the skill reviewer have no
+controls yet: configure them during bootstrap/recovery, validate with
+Doctor, and use an approved restart. A delegation change is boot-pinned —
+the page says when a restart is needed. Settings preserves validated
+values it cannot edit. See [Configuration](configuration.md) for the save
+and recovery rules.
 
 Behind the scenes it's a page served by the bot on localhost, loaded by your
 Telegram client over HTTPS — which is why `publicUrl` (a tailnet serve,

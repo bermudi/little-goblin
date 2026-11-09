@@ -1,3 +1,4 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
 	existsSync,
@@ -9,18 +10,17 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { handleOperatorRoute, type OperatorActor, type OperatorDeps } from "./operator.ts";
+import type { UIMessage } from "ai";
 import { appendAuthRecord, loadAuthFile } from "../auth.ts";
 import { loadConfig, parseConfig } from "../config.ts";
 import { openStore } from "../conversation.ts";
 import { HindsightClient, HindsightError, type MemoryDocSummary } from "../memory/hindsight.ts";
 import type { MemoryContexts } from "../memory/mod.ts";
 import type { MemoryQueue } from "../memory/queue.ts";
-import type { MemorySavesResponse, MemoryStatusResponse } from "./operator-wire.ts";
 import { resolveSkillProposal, type SkillDecision } from "../skill-decisions.ts";
 import { SkillSources } from "../skill-provenance.ts";
-import type { UIMessage } from "ai";
+import { handleOperatorRoute, type OperatorActor, type OperatorDeps } from "./operator.ts";
+import type { MemorySavesResponse, MemoryStatusResponse } from "./operator-wire.ts";
 
 const ACTOR: OperatorActor = { via: "app" };
 
@@ -856,6 +856,124 @@ describe("config save", () => {
 			enabled: true,
 			model: "gone/glm-5.3",
 		});
+	});
+
+	test("a delegation save keeps the machine targets the editor cannot edit", async () => {
+		const d: OperatorDeps = {
+			configRef: {
+				current: parseConfig({
+					providers: { test: { kind: "codex" } },
+					model: "test/m",
+					operators: [7],
+					allowedUsers: [],
+					delegation: {
+						harnesses: { pi: { kind: "pi" }, old: { kind: "codex" } },
+						machines: { g7: { machine: "g7", root: "~/build" } },
+						defaults: { default: "pi" },
+					},
+				}),
+			},
+			onConfigWritten: () => {},
+		};
+		const res = await postConfig(d, {
+			delegation: {
+				harnesses: { pi: { kind: "pi", args: ["--model", "sol"] }, review: { kind: "pi" } },
+				defaults: { default: "pi", review: "review" },
+			},
+		});
+		expect(res?.status).toBe(200);
+		expect(loadConfig()?.delegation).toEqual({
+			harnesses: { pi: { kind: "pi", args: ["--model", "sol"] }, review: { kind: "pi" } },
+			machines: { g7: { machine: "g7", root: "~/build" } },
+			defaults: { default: "pi", review: "review" },
+		});
+		// A default naming nothing is rejected before any write.
+		const bad = await postConfig(d, {
+			delegation: {
+				harnesses: { pi: { kind: "pi" } },
+				defaults: { default: "pi", build: "ghost" },
+			},
+		});
+		expect(bad?.status).toBe(422);
+		expect(loadConfig()?.delegation?.defaults).toEqual({ default: "pi", review: "review" });
+	});
+
+	test("turning delegation off then saving a block drops the parked copy", async () => {
+		const d: OperatorDeps = {
+			configRef: {
+				current: parseConfig({
+					providers: { test: { kind: "codex" } },
+					model: "test/m",
+					operators: [7],
+					allowedUsers: [],
+					delegation: { harnesses: { pi: { kind: "pi" } }, defaults: { default: "pi" } },
+				}),
+			},
+			onConfigWritten: () => {},
+		};
+		// Off parks the block so an on-flip can restore it.
+		expect((await postConfig(d, { capabilities: { delegation: false } }))?.status).toBe(200);
+		expect(loadConfig()?.delegation).toBeUndefined();
+		expect(loadConfig()?.parked?.delegation).toEqual({
+			harnesses: { pi: { kind: "pi" } },
+			defaults: { default: "pi" },
+		});
+		// An edited block supersedes it — the stale copy must not come back.
+		expect(
+			(
+				await postConfig(d, {
+					delegation: { harnesses: { codex: { kind: "codex" } }, defaults: { default: "codex" } },
+				})
+			)?.status,
+		).toBe(200);
+		expect(loadConfig()?.delegation).toEqual({
+			harnesses: { codex: { kind: "codex" } },
+			defaults: { default: "codex" },
+		});
+		expect(loadConfig()?.parked?.delegation).toBeUndefined();
+	});
+
+	test("re-enabling delegation keeps the machine targets parked with the block", async () => {
+		const d: OperatorDeps = {
+			configRef: {
+				current: parseConfig({
+					providers: { test: { kind: "codex" } },
+					model: "test/m",
+					operators: [7],
+					allowedUsers: [],
+					delegation: {
+						harnesses: { pi: { kind: "pi" } },
+						machines: { g7: { machine: "g7", root: "~/build" } },
+						defaults: { default: "pi" },
+					},
+				}),
+			},
+			onConfigWritten: () => {},
+		};
+		// Off parks the whole block — machine targets included.
+		expect((await postConfig(d, { capabilities: { delegation: false } }))?.status).toBe(200);
+		expect(loadConfig()?.parked?.delegation).toMatchObject({
+			machines: { g7: { machine: "g7", root: "~/build" } },
+		});
+		// The editor's re-enable sends only harnesses and defaults —
+		// machines live in the parked block, not the active one.
+		expect(
+			(
+				await postConfig(d, {
+					capabilities: { delegation: true },
+					delegation: {
+						harnesses: { pi: { kind: "pi" }, codex: { kind: "codex" } },
+						defaults: { default: "pi" },
+					},
+				})
+			)?.status,
+		).toBe(200);
+		expect(loadConfig()?.delegation).toEqual({
+			harnesses: { pi: { kind: "pi" }, codex: { kind: "codex" } },
+			machines: { g7: { machine: "g7", root: "~/build" } },
+			defaults: { default: "pi" },
+		});
+		expect(loadConfig()?.parked?.delegation).toBeUndefined();
 	});
 });
 

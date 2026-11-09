@@ -1,19 +1,19 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { Window } from "happy-dom";
 import {
 	authDefaults,
-	parseConfig,
-	transcriptionDefaults,
-	ttsCloudDefaults,
-	transcriptionKinds,
 	fetchKinds,
+	parseConfig,
 	searchKinds,
+	transcriptionDefaults,
+	transcriptionKinds,
+	ttsCloudDefaults,
 } from "../../src/config.ts";
+import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import { SettingsView } from "./SettingsView.tsx";
 import { KeyStatus } from "./settingsKit.tsx";
-import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 
 // DOM harness shared by the KeyStatus unit tests and the section
 // walkthroughs — same happy-dom mount and faked fetch as
@@ -200,7 +200,9 @@ const waitFor = async (pred: () => boolean, label: string) => {
 const click = async (el: Element | null | undefined) => {
 	expect(el).toBeTruthy();
 	await act(async () => {
-		el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
+		el?.dispatchEvent(
+			new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+		);
 	});
 	await settle();
 };
@@ -459,6 +461,121 @@ describe("Web", () => {
 		await openSection("Web");
 		expect(container.querySelector('input[aria-label*="secret name"]')).toBeNull();
 		expect(container.textContent).not.toContain("auth.jsonl");
+	});
+});
+
+describe("Delegation", () => {
+	test("role selects and harness args edit the delegation body", async () => {
+		settings = parseConfig({
+			...BASE,
+			delegation: {
+				harnesses: {
+					pi: { kind: "pi" },
+					"pi-review": { kind: "pi", args: ["--model", "sol"] },
+				},
+				defaults: { default: "pi", review: "pi-review" },
+			},
+		});
+		await mountSettings();
+		await openSection("Delegation");
+		const select = container.querySelector('select[aria-label="agent for role review"]');
+		expect(select).toBeTruthy();
+		await act(async () => {
+			Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, "value")!.set!.call(
+				select,
+				"pi",
+			);
+			select!.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+		});
+		await waitFor(() => savedBodies.length > 0, "delegation save");
+		expect(savedBodies.at(-1)?.delegation).toMatchObject({
+			harnesses: { pi: { kind: "pi" }, "pi-review": { kind: "pi", args: ["--model", "sol"] } },
+			defaults: { default: "pi", review: "pi" },
+		});
+	});
+
+	test("turning delegation on with no agents blocks a save and says why", async () => {
+		await mountSettings();
+		await openSection("Delegation");
+		await click(container.querySelector('[aria-label="delegation"]'));
+		await settle();
+		expect(savedBodies.length).toBe(0);
+		expect(container.textContent).toContain("add at least one coding agent");
+	});
+
+	test("the Capabilities off switch parks the block instead of re-saving it", async () => {
+		settings = parseConfig({
+			...BASE,
+			delegation: {
+				harnesses: { pi: { kind: "pi" } },
+				defaults: { default: "pi" },
+			},
+		});
+		caps = CAPS({ delegation: { state: "on", hint: null } });
+		await mountSettings();
+		await openSection("Capabilities");
+		await click(container.querySelector('[aria-label="Delegate to coding agents"]'));
+		await waitFor(() => savedBodies.length > 0, "delegation park save");
+		// An emitted block would merge back over the park and leave
+		// delegation on — off must send the park marker.
+		expect(savedBodies.at(-1)?.delegation).toBe("");
+		expect(savedBodies.at(-1)?.capabilities).toEqual({ delegation: false });
+	});
+
+	test("editing a lone non-default role does not invent a broken default row", async () => {
+		settings = parseConfig({
+			...BASE,
+			delegation: {
+				harnesses: {
+					pi: { kind: "pi" },
+					"pi-review": { kind: "pi" },
+				},
+				defaults: { review: "pi" },
+			},
+		});
+		caps = CAPS({ delegation: { state: "on", hint: null } });
+		await mountSettings();
+		await openSection("Delegation");
+		const select = container.querySelector('select[aria-label="agent for role review"]');
+		expect(select).toBeTruthy();
+		await act(async () => {
+			Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, "value")!.set!.call(
+				select,
+				"pi-review",
+			);
+			select!.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+		});
+		await waitFor(() => savedBodies.length > 0, "delegation save");
+		expect(savedBodies.at(-1)?.delegation).toEqual({
+			harnesses: { pi: { kind: "pi" }, "pi-review": { kind: "pi" } },
+			defaults: { review: "pi-review" },
+		});
+	});
+
+	test('choosing "none" clears the fallback default', async () => {
+		settings = parseConfig({
+			...BASE,
+			delegation: {
+				harnesses: { pi: { kind: "pi" } },
+				defaults: { default: "pi" },
+			},
+		});
+		caps = CAPS({ delegation: { state: "on", hint: null } });
+		await mountSettings();
+		await openSection("Delegation");
+		const select = container.querySelector('select[aria-label="agent for role default"]');
+		expect(select).toBeTruthy();
+		await act(async () => {
+			Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, "value")!.set!.call(
+				select,
+				"",
+			);
+			select!.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+		});
+		await waitFor(() => savedBodies.length > 0, "delegation save");
+		expect(savedBodies.at(-1)?.delegation).toEqual({
+			harnesses: { pi: { kind: "pi" } },
+		});
 	});
 });
 

@@ -3078,6 +3078,7 @@ button.pathchip:hover svg {
 }
 .frow input,
 .frow select,
+.frow textarea,
 .chain-card input,
 .chain-card select,
 .prov input,
@@ -3095,9 +3096,54 @@ button.pathchip:hover svg {
 	outline: none;
 }
 .frow input:focus,
+.frow textarea:focus,
 .chain-card input:focus,
 .msheet-filter input:focus {
 	border-color: var(--app-focus);
+}
+.frow textarea {
+	resize: vertical;
+	min-height: 2.8rem;
+	line-height: 1.35;
+}
+.del-harness {
+	border-top: 1px solid var(--app-border);
+	padding: 0.7rem 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.55rem;
+}
+.del-harness:first-child {
+	border-top: 0;
+}
+.del-harness-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+}
+.del-grid {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 0.7rem;
+}
+.del-role {
+	display: flex;
+	align-items: center;
+	gap: 0.6rem;
+	padding: 0.35rem 0;
+}
+.del-role-name {
+	min-width: 5.5rem;
+	font-size: 12.5px;
+}
+.del-role select {
+	flex: 1;
+}
+@media (max-width: 560px) {
+	.del-grid {
+		grid-template-columns: 1fr;
+	}
 }
 .mono {
 	font-family: var(--font-mono);

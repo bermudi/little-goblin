@@ -145,11 +145,14 @@ curl -s -X PUT http://127.0.0.1:8888/v1/default/banks/goblin \
 # both of these itself at creation; the curl is for repair. The generic
 # `mission` above lands on reflect_mission (Hindsight 0.10), which only
 # affects the explicit memory_reflect investigation. Extraction follows
-# retain_mission; consolidation follows observations_mission:
+# retain_mission; consolidation follows observations_mission. The
+# canonical texts live in code (`DEFAULT_RETAIN_MISSION` /
+# `DEFAULT_OBSERVATIONS_MISSION` in deploy/memory/install.py) — a fresh
+# install applies exactly these:
 curl -s -X PATCH http://127.0.0.1:8888/v1/default/banks/goblin/config \
   -H 'content-type: application/json' \
   -d '{"updates": {
-    "retain_mission": "Remember the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Date every fact. Extract every fact in English regardless of the conversation language; keep proper nouns, product names, and quoted terms verbatim.",
+    "retain_mission": "Remember the operator'"'"'s preferences, decisions, commitments, people, ongoing work, interests, stated views, and what they want from Goblin. Keep the concrete details of events the operator reports or follows: names, numbers, and dates. Do not store greetings, small talk, emotional reactions on their own, complaints about a single reply, or tool output. Text written by the assistant, including assistant text the operator quotes back, is not the operator'"'"'s statement, and do not store the assistant'"'"'s analysis or admissions. If nothing qualifies, extract nothing. Date every fact. Extract every fact in English regardless of the conversation language; keep proper nouns, product names, and quoted terms verbatim.",
     "observations_mission": "Consolidate the operator'"'"'s preferences, decisions, commitments, people, and ongoing work. Assistant suggestions are not operator decisions. Preserve corrections as dated evolution. Write consolidated facts in English; keep proper nouns, product names, and quoted terms verbatim."
   }}'
 ```
@@ -723,6 +726,12 @@ drifting call is recorded.
   > extract nothing. Date every fact. Extract every fact in English
   > regardless of the conversation language; keep proper nouns, product
   > names, and quoted terms verbatim.
+- 2026-11-08 (#153): that draft now ships in code — the installer carries
+  it as `DEFAULT_RETAIN_MISSION` and applies it at bank creation, so a
+  fresh install extracts exactly the way the live bank does. The
+  interactive mission prompt steers reflection only
+  (`reflect_mission`); extraction and consolidation missions are
+  code-owned canonical texts, not prompt defaults.
 - Test a mission with `POST /v1/default/banks/goblin/memories/dry-run-extract`
   (`{content, context, timestamp, retain_mission}`): it returns the facts
   and stores nothing, so no throwaway bank is needed.

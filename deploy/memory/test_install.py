@@ -701,9 +701,10 @@ class BootActivationTest(unittest.TestCase):
 
 
 class CreateBankTest(unittest.TestCase):
-    """Bank creation must seed retain_mission, not just the generic
-    mission — extraction reads retain_mission and Goblin never calls
-    reflect(). urlopen is faked at the module edge; no network."""
+    """Bank creation must seed retain_mission with the canonical
+    extraction text, not the typed (reflection) mission — extraction
+    reads retain_mission and Goblin never calls reflect(). urlopen is
+    faked at the module edge; no network."""
 
     class _Resp:
         status = 200
@@ -741,11 +742,41 @@ class CreateBankTest(unittest.TestCase):
                  {"mission": "synthetic mission"}),
                 ("PATCH", f"{install.MEMORY_API_URL}/v1/default/banks/goblin/config",
                  {"updates": {
-                     "retain_mission": "synthetic mission",
+                     "retain_mission": install.DEFAULT_RETAIN_MISSION,
                      "observations_mission": install.DEFAULT_OBSERVATIONS_MISSION,
                  }}),
             ],
         )
+
+    def test_default_install_gets_the_stricter_retain_text(self) -> None:
+        # The defaults a fresh install actually flows (prompt_bank's Enter
+        # path): reflection gets DEFAULT_MISSION, extraction gets the
+        # operator-approved stricter text — never the generic mission.
+        install.create_bank("goblin", install.DEFAULT_MISSION)
+        put_method, _, put_body = self.calls[0]
+        patch_body = self.calls[1][2]
+        assert isinstance(patch_body, dict)
+        updates = patch_body["updates"]
+        self.assertEqual(put_method, "PUT")
+        self.assertEqual(put_body, {"mission": install.DEFAULT_MISSION})
+        self.assertEqual(updates["retain_mission"],
+                         install.DEFAULT_RETAIN_MISSION)
+        self.assertNotEqual(install.DEFAULT_RETAIN_MISSION,
+                            install.DEFAULT_MISSION)
+
+    def test_retain_mission_is_the_operator_approved_draft(self) -> None:
+        # The canonical extraction text (docs/memory.md → Environment
+        # facts, 2026-11-07): the stricter clauses that keep it from
+        # storing greetings or quoted assistant text, plus the English
+        # pin. Guards against regressing to a softer default.
+        text = install.DEFAULT_RETAIN_MISSION
+        for clause in (
+            "If nothing qualifies, extract nothing.",
+            "including assistant text the operator quotes back",
+            "Do not store greetings",
+            "Extract every fact in English",
+        ):
+            self.assertIn(clause, text)
 
     def fake_409(
         self, config: dict[str, object],
@@ -793,12 +824,13 @@ class CreateBankTest(unittest.TestCase):
         argv = shlex.split(curl)
         self.assertEqual(argv[argv.index("-X") + 1], "PATCH")
         body = json.loads(argv[argv.index("-d") + 1])
-        self.assertEqual(body["updates"]["retain_mission"], "the operator's mission")
+        self.assertEqual(body["updates"]["retain_mission"],
+                         install.DEFAULT_RETAIN_MISSION)
 
     def test_matching_existing_bank_warns_nothing(self) -> None:
         stderr = io.StringIO()
         with self.fake_409({
-            "retain_mission": "synthetic mission",
+            "retain_mission": install.DEFAULT_RETAIN_MISSION,
             "observations_mission": install.DEFAULT_OBSERVATIONS_MISSION,
         }), contextlib.redirect_stderr(stderr):
             install.create_bank("goblin", "synthetic mission")

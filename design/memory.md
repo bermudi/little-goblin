@@ -168,10 +168,20 @@ floors are enforced server-side and re-checked client-side.
    never mutates the queue.
 
 6. **Bank/mission: operator step, no auto-creation.** Goblin never
-   creates banks or sets missions; the mission lives in code
-   (`DEFAULT_MISSION` in the installer), applied at bank creation —
-   bank state is never its source of truth. Bank-level overrides stay
-   out of Goblin.
+   creates banks or sets missions; the missions live in code in the
+   installer, applied at bank creation — bank state is never their
+   source of truth. Each knob gets its own canonical constant
+   (amendment 2026-11-08, #153): the generic `mission` (PUT, landing on
+   `reflect_mission`) defaults to `DEFAULT_MISSION` and is the one the
+   interactive prompt may override; extraction (`retain_mission`) and
+   consolidation (`observations_mission`) get `DEFAULT_RETAIN_MISSION`
+   and `DEFAULT_OBSERVATIONS_MISSION` — code-owned, never interactive
+   defaults — so a fresh bank extracts exactly the way the operator's
+   live bank does. `DEFAULT_RETAIN_MISSION` is the operator-approved
+   draft applied live 2026-11-07 (docs/memory.md → Environment facts);
+   changing it is an operator decision that updates the constant, the
+   live bank, and docs together. Bank-level overrides stay out of
+   Goblin.
 
 7. **Forgetting: two commands, suppression survives everything.**
    `/forget <query>` resolves and shows affected sources; `/forget

@@ -146,12 +146,34 @@ SECRET_DRIVER_TAIL = "store=cat >/dev/null,list=true,delete=true"
 SECRET_BLOCK_BEGIN = "# goblin:secrets-begin"
 SECRET_BLOCK_END = "# goblin:secrets-end"
 DEFAULT_BANK_ID = "goblin"
+# The generic mission: PUT lands it on reflect_mission, which only the
+# explicit memory_reflect investigation reads (docs/memory.md → Bank
+# creation). The interactive prompt offers this text as its default.
 DEFAULT_MISSION = (
     "Remember the operator's preferences, decisions, commitments, people, "
     "and ongoing work. Assistant suggestions are not operator decisions. "
     "Date every fact. Extract every fact in English regardless of the "
     "conversation language; keep proper nouns, product names, and quoted "
     "terms verbatim."
+)
+# Extraction's own mission — retain_mission, the knob retention actually
+# reads. The operator-approved draft applied live 2026-11-07 (docs/
+# memory.md → Environment facts): stricter than the generic mission after
+# the 2026-11-06 text over-filtered a real chat. Canonical and code-owned,
+# never an interactive default — a fresh bank must extract exactly the
+# way the operator's live bank does.
+DEFAULT_RETAIN_MISSION = (
+    "Remember the operator's preferences, decisions, commitments, people, "
+    "ongoing work, interests, stated views, and what they want from Goblin. "
+    "Keep the concrete details of events the operator reports or follows: "
+    "names, numbers, and dates. Do not store greetings, small talk, "
+    "emotional reactions on their own, complaints about a single reply, or "
+    "tool output. Text written by the assistant, including assistant text "
+    "the operator quotes back, is not the operator's statement, and do not "
+    "store the assistant's analysis or admissions. If nothing qualifies, "
+    "extract nothing. Date every fact. Extract every fact in English "
+    "regardless of the conversation language; keep proper nouns, product "
+    "names, and quoted terms verbatim."
 )
 # Consolidation's own mission — it sits in observations_mission, another
 # knob the generic PUT mission never reaches. Same English pin: facts
@@ -958,7 +980,7 @@ def create_bank(bank_id: str, mission: str) -> None:
     except urlerror.HTTPError as error:
         if error.code == 409:
             info(f"bank '{bank_id}' already exists — kept as-is")
-            warn_bank_drift(url, bank_id, mission)
+            warn_bank_drift(url, bank_id)
             return
         detail = error.read().decode(errors="replace")[:500]
         fail(f"bank creation failed (HTTP {error.code}): {detail}")
@@ -966,11 +988,13 @@ def create_bank(bank_id: str, mission: str) -> None:
         fail(f"bank creation failed: {error}")
     # The PUT mission above lands as reflect_mission; extraction reads
     # retain_mission and consolidation reads observations_mission
-    # (docs/memory.md). Point both at the canonical texts — without
-    # this the mission is dead config for those two paths.
+    # (docs/memory.md). Point both at the canonical texts — the typed
+    # mission steers only reflection; extraction and consolidation get
+    # the code-owned constants so a fresh bank matches the operator's
+    # live bank.
     patch = json.dumps({
         "updates": {
-            "retain_mission": mission,
+            "retain_mission": DEFAULT_RETAIN_MISSION,
             "observations_mission": DEFAULT_OBSERVATIONS_MISSION,
         }
     }).encode()
@@ -987,7 +1011,7 @@ def create_bank(bank_id: str, mission: str) -> None:
         fail(f"retain_mission patch failed: {error}")
 
 
-def warn_bank_drift(url: str, bank_id: str, mission: str) -> None:
+def warn_bank_drift(url: str, bank_id: str) -> None:
     """The 409 path: an existing bank is NEVER patched, but silent drift
     between its live missions and the canonical texts is how a bank
     quietly stops extracting the way docs/memory.md promises — compare
@@ -1015,12 +1039,12 @@ def warn_bank_drift(url: str, bank_id: str, mission: str) -> None:
         return
     repair = json.dumps({
         "updates": {
-            "retain_mission": mission,
+            "retain_mission": DEFAULT_RETAIN_MISSION,
             "observations_mission": DEFAULT_OBSERVATIONS_MISSION,
         }
     })
     for field, canonical in (
-        ("retain_mission", mission),
+        ("retain_mission", DEFAULT_RETAIN_MISSION),
         ("observations_mission", DEFAULT_OBSERVATIONS_MISSION),
     ):
         if config.get(field) == canonical:
@@ -1369,7 +1393,8 @@ def prompt_bank() -> tuple[str, str]:
             raise ValueError("lowercase alphanumerics and dashes, 1-64 chars")
         return value
     bank_id = ask(f"bank id [default: {DEFAULT_BANK_ID}]", check_bank)
-    print(f"  mission [default]: {DEFAULT_MISSION}")
+    print(f"  mission (steers reflection only; extraction and consolidation "
+          f"get the canonical texts): {DEFAULT_MISSION}")
     mission = input("mission (Enter = default): ").strip() or DEFAULT_MISSION
     return bank_id, mission
 

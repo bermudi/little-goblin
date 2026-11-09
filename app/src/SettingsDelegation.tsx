@@ -138,8 +138,8 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 										onChange={(e) => setHarness(i, { args: e.target.value })}
 									/>
 									<div className="cap">
-										The model lives here when the agent needs one. Full-auto flags already in the
-										operator's shell alias must not be repeated.
+										The model goes here when the agent needs one. Do not repeat full-auto flags the
+										operator's shell alias already adds.
 									</div>
 								</div>
 							</div>
@@ -162,7 +162,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 
 					<SectionHead
 						title="Defaults"
-						purpose="Which agent a role uses. `default` is the fallback when a call names no role."
+						purpose="Which agent each role uses. The role named default is the fallback when a call names no role."
 					/>
 					<div className="card">
 						{roles.map((r, i) => (

@@ -256,6 +256,36 @@ describe("turn journal", () => {
 		third.close();
 	});
 
+	test("an interrupted run whose reply landed records no 'no reply' progress event", () => {
+		const dbPath = tmpDb("goblin-tj-");
+		const store = openStore(dbPath);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runId = begunRun(journal, conv.id);
+		journal.noteToolInput(runId, "call-1", "probe", {});
+		journal.noteToolDispatch(runId, "call-1", "probe", {});
+		journal.noteToolResult(runId, "call-1", { ok: true });
+		// The reply and its landed fact commit together — a kill in the
+		// delivery window leaves a durable reply behind the 'running' row.
+		journal.noteReplyLanded(runId);
+		store.append(conv.id, [
+			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "the landed reply" }] },
+		]);
+		store.close();
+
+		const reopened = openStore(dbPath);
+		const journal2 = openTurnJournal(reopened.db, {
+			onInterrupted: (run, calls) => appendInterruptedProgress(reopened, run, calls),
+		});
+		// The process still died mid-delivery — 'interrupted' stays honest —
+		// but the landed reply IS the record: no 'no final reply' event.
+		const run = journal2.get(runId)!;
+		expect(run.status).toBe("interrupted");
+		expect(run.replyLanded).toBe(true);
+		expect(reopened.history(conv.id).map((m) => m.role)).toEqual(["assistant"]);
+		reopened.close();
+	});
+
 	test("interruptedFor filters by conversation in SQL order", () => {
 		const store = openStore(tmpDb("goblin-tj-"));
 		const a = store.resolve({ kind: "dm", chatId: 1 }, "/w");

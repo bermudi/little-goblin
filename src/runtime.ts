@@ -1136,7 +1136,16 @@ export class Runtime {
 				sink,
 				members: turns,
 				live,
-				append: (messages, opts) => store.append(convId, messages, opts),
+				// The reply and the fact it landed are one commit: a kill
+				// inside terminal delivery must never leave a durable
+				// reply behind a run row that still claims none — boot
+				// recovery's interrupted rail reads the flag.
+				append: (messages, opts) =>
+					store.db.transaction(() => {
+						const seqs = store.append(convId, messages, opts);
+						journaled(() => journal?.noteReplyLanded(auth.runId));
+						return seqs;
+					})(),
 				memory: this.deps.memory,
 			});
 			// The reply landed durably — a failure past this point must not

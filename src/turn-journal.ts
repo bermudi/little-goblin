@@ -74,6 +74,12 @@ export interface TurnRun {
 	// registered event as foreign input).
 	resumeRequestSeqsUnreadable: boolean;
 	filterRetryUsed: boolean;
+	// The durable reply committed with this stamp — one transaction, so
+	// the fact can never lag the message. Boot recovery's interrupted
+	// rail reads it as "the reply is the record": no 'no final reply'
+	// progress event over a reply that is history. NULL on pre-column
+	// rows reads false — those runs genuinely never recorded it.
+	replyLanded: boolean;
 	createdAt: string;
 	resumedFrom: string | null;
 	calls: {
@@ -151,6 +157,10 @@ export interface TurnJournal {
 	// the same transaction that appends it to history. Refuses a source
 	// that is not interrupted and a registry that does not decode.
 	noteResumeRequest(runId: string, eventSeq: number): void;
+	// The attempt's durable reply committed — written inside the reply's
+	// own append transaction so a kill in the delivery window can never
+	// leave a reply behind a run row that still claims none.
+	noteReplyLanded(runId: string): void;
 	finishRun(
 		runId: string,
 		status: "fenced" | "completed" | "error",
@@ -200,6 +210,7 @@ const runRowSchema = z.object({
 	source_input_seq: z.number().int().positive().nullable(),
 	resume_request_seqs: z.string().nullable(),
 	filter_retry_used: z.number(),
+	reply_landed: z.number().nullable(),
 	created_at: z.string(),
 	resumed_from: z.string().nullable(),
 	calls_planned: z.number(),
@@ -395,6 +406,7 @@ function decodeRun(raw: unknown): TurnRun {
 		resumeRequestSeqs: resumeRequests === "malformed" ? null : resumeRequests,
 		resumeRequestSeqsUnreadable: resumeRequests === "malformed",
 		filterRetryUsed: r.filter_retry_used !== 0,
+		replyLanded: r.reply_landed === 1,
 		createdAt: r.created_at,
 		resumedFrom: r.resumed_from,
 		calls: {
@@ -504,6 +516,11 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 	if (!runCols.has("source_input_seq")) {
 		db.exec("ALTER TABLE turn_runs ADD COLUMN source_input_seq INTEGER");
 	}
+	// Nullable like the rest of the added columns: a pre-column row never
+	// recorded the fact, so it cannot read as landed.
+	if (!runCols.has("reply_landed")) {
+		db.exec("ALTER TABLE turn_runs ADD COLUMN reply_landed INTEGER");
+	}
 	const callCols = new Set(
 		(db.query("PRAGMA table_info(turn_tool_calls)").all() as { name: string }[]).map((c) => c.name),
 	);
@@ -544,6 +561,7 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 	const qNoteResume = db.query(
 		"UPDATE turn_runs SET resume_request_seqs = ? WHERE run_id = ? AND status = 'interrupted'",
 	);
+	const qReplyLanded = db.query("UPDATE turn_runs SET reply_landed = 1 WHERE run_id = ?");
 	// The chunk seam (planned) and the fence seam (dispatch/result) ride different SDK pipelines — either can commit first, so every write upserts; the only invariant held is that terminal states never move.
 	const qInput = db.query(`INSERT INTO turn_tool_calls
 		(run_id, tool_call_id, name, args, args_hash, state, retry_consumed)
@@ -852,6 +870,9 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 		},
 		finishRun(runId, status, delivery) {
 			qFinish.run(status, delivery, Date.now(), runId);
+		},
+		noteReplyLanded(runId) {
+			qReplyLanded.run(runId);
 		},
 		resolveCall(runId, callId, decision, note) {
 			const row = qCallState.get(runId, callId);

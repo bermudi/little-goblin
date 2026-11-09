@@ -95,7 +95,7 @@ export const capabilityHints: Record<CapabilityName, string | null> = {
 	vision: "pick an engine/model",
 	image: "pick an engine/model",
 	sandbox: null,
-	subagents: "set it up in goblin.json5 first (docs/configuration.md)",
+	subagents: "pick a model for the worker or computer use",
 	scripting: null,
 	delegation: "add a coding agent in Settings → Delegation",
 	guest: null,

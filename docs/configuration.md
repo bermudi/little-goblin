@@ -376,6 +376,46 @@ and model choice live in `args`, and goblin never invents either. A
 default naming an undeclared harness is a config error. An explicit
 harness in a `delegate` call always wins over a role.
 
+### Subagents
+
+Off when unset. With a `subagents` block, the bot gets `subagent` and
+`desktop` tools: a code worker and a computer-use agent, each with its
+own model. Settings → Capabilities edits both models and the desktop
+image; the block is boot-pinned, so a change applies after an approved
+restart.
+
+```json5
+subagents: {
+  maxRuns: 3,
+  worker: {
+    model: {
+      auth: "zai", // auth.jsonl record name
+      id: "glm-5.3",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      api: "openai-completions",
+      thinking: "high",
+    },
+  },
+  // computer: { model: { auth: "zai", id: "glm-5.3-flash",
+  //   baseUrl: "https://api.z.ai/api/coding/paas/v4",
+  //   api: "openai-completions", thinking: "low" } },
+  desktops: {
+    image: "localhost/goblin-desktop:1",
+    max: 3, idleHours: 24, memory: "3g", cpus: 2, pids: 1024,
+  },
+},
+```
+
+An absent type = that type is off; a block with neither is a config
+error. The models above are the operator ruling (design/subagents.md →
+Models): both on z.ai's Coding Plan URL, and `glm-5.3-flash` cannot
+disable thinking — `low` is its minimum. The worker runs its code
+through the sandbox, so it also needs a `sandbox` block (Settings notes
+this while Sandboxed shell is off). The desktop image must already be
+built on this machine; goblin never pulls it. `maxRuns` and the other
+`desktops` fields are hand-edited only — Settings preserves them when
+saving.
+
 ### Telegram
 
 ```json5

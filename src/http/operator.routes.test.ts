@@ -975,6 +975,186 @@ describe("config save", () => {
 		});
 		expect(loadConfig()?.parked?.delegation).toBeUndefined();
 	});
+
+	const WORKER_WIRE = {
+		auth: "zai",
+		id: "glm-5.3",
+		baseUrl: "https://api.z.ai/api/coding/paas/v4",
+		thinking: "high",
+	} as const;
+
+	test("first-time subagents enablement writes the worker model with the fixed api", async () => {
+		const d = deps();
+		expect(d.configRef.current.subagents).toBeUndefined();
+		const res = await postConfig(d, {
+			capabilities: { subagents: true },
+			subagents: {
+				worker: WORKER_WIRE,
+				computer: null,
+				desktopImage: "localhost/goblin-desktop:1",
+			},
+		});
+		expect(res?.status).toBe(200);
+		expect(loadConfig()?.subagents?.worker?.model).toEqual({
+			...WORKER_WIRE,
+			api: "openai-completions",
+		});
+	});
+
+	test("first-time subagents enablement validates the block before writing", async () => {
+		const d = deps();
+		const before = d.configRef.current;
+		const res = await postConfig(d, {
+			capabilities: { subagents: true },
+			subagents: {
+				worker: { ...WORKER_WIRE, baseUrl: "not-a-url" },
+				computer: null,
+				desktopImage: "localhost/goblin-desktop:1",
+			},
+		});
+		expect(res?.status).toBe(422);
+		const detail = (await res?.json()) as { error: string };
+		expect(detail.error).toContain("baseUrl");
+		expect(d.configRef.current).toBe(before);
+		expect(loadConfig()).toBeNull();
+	});
+
+	test("subagents enablement without a block names the new hint", async () => {
+		const d = deps();
+		const res = await postConfig(d, { capabilities: { subagents: true } });
+		expect(res?.status).toBe(422);
+		const detail = (await res?.json()) as { error: string };
+		expect(detail.error).toContain("pick a model for the worker or computer use");
+		expect(loadConfig()).toBeNull();
+	});
+
+	test("a subagents block naming no model type is refused", async () => {
+		const d = deps();
+		const res = await postConfig(d, {
+			subagents: { worker: null, computer: null, desktopImage: "localhost/goblin-desktop:1" },
+		});
+		expect(res?.status).toBe(422);
+		expect(((await res?.json()) as { error: string }).error).toContain(
+			"pick a model for the worker or computer use",
+		);
+		expect(loadConfig()).toBeNull();
+	});
+
+	test("a subagents save keeps the file-only tuning the editor cannot edit", async () => {
+		const d: OperatorDeps = {
+			configRef: {
+				current: parseConfig({
+					providers: { test: { kind: "codex" } },
+					model: "test/m",
+					operators: [7],
+					allowedUsers: [],
+					subagents: {
+						maxRuns: 5,
+						worker: { model: { ...WORKER_WIRE, api: "openai-completions" } },
+						desktops: { image: "localhost/goblin-desktop:1", max: 2 },
+					},
+				}),
+			},
+			onConfigWritten: () => {},
+		};
+		const res = await postConfig(d, {
+			subagents: {
+				worker: { ...WORKER_WIRE, id: "glm-5.3-air" },
+				computer: null,
+				desktopImage: "localhost/goblin-desktop:1",
+			},
+		});
+		expect(res?.status).toBe(200);
+		const saved = loadConfig()?.subagents;
+		expect(saved?.maxRuns).toBe(5);
+		expect(saved?.desktops.max).toBe(2);
+		expect(saved?.worker?.model.id).toBe("glm-5.3-air");
+		expect(saved?.worker?.model.api).toBe("openai-completions");
+	});
+
+	test("the settings GET maps the subagents block to its wire shape", async () => {
+		const d: OperatorDeps = {
+			configRef: {
+				current: parseConfig({
+					providers: { test: { kind: "codex" } },
+					model: "test/m",
+					operators: [7],
+					allowedUsers: [],
+					subagents: {
+						maxRuns: 5,
+						worker: { model: { ...WORKER_WIRE, api: "openai-completions" } },
+						computer: {
+							model: {
+								auth: "zai",
+								id: "glm-5.3-flash",
+								baseUrl: "https://api.z.ai/api/coding/paas/v4",
+								api: "openai-completions",
+								thinking: "low",
+							},
+						},
+						desktops: { image: "localhost/goblin-desktop:1", max: 2 },
+					},
+				}),
+			},
+			onConfigWritten: () => {},
+		};
+		const view = await handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/config"),
+			"config",
+			new URL("http://x/config"),
+		);
+		const body = (await view?.json()) as { subagents: unknown };
+		expect(body.subagents).toEqual({
+			worker: WORKER_WIRE,
+			computer: {
+				auth: "zai",
+				id: "glm-5.3-flash",
+				baseUrl: "https://api.z.ai/api/coding/paas/v4",
+				thinking: "low",
+			},
+			desktopImage: "localhost/goblin-desktop:1",
+		});
+	});
+
+	test("a parked subagents block still maps to the wire — the editor's restore stash", async () => {
+		const d: OperatorDeps = {
+			configRef: {
+				current: parseConfig({
+					providers: { test: { kind: "codex" } },
+					model: "test/m",
+					operators: [7],
+					allowedUsers: [],
+					parked: {
+						subagents: {
+							maxRuns: 5,
+							worker: { model: { ...WORKER_WIRE, api: "openai-completions" } },
+						},
+					},
+				}),
+			},
+			onConfigWritten: () => {},
+		};
+		const view = await handleOperatorRoute(
+			d,
+			ACTOR,
+			new Request("http://x/config"),
+			"config",
+			new URL("http://x/config"),
+		);
+		const body = (await view?.json()) as {
+			subagents: { worker: unknown; computer: unknown; desktopImage: string } | null;
+			capabilities: { subagents: { state: string } };
+		};
+		// Off, but its content is visible for the re-enable prefill.
+		expect(body.capabilities.subagents.state).toBe("off");
+		expect(body.subagents).toEqual({
+			worker: WORKER_WIRE,
+			computer: null,
+			desktopImage: "localhost/goblin-desktop:1",
+		});
+	});
 });
 
 describe("memory/blocked route", () => {

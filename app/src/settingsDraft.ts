@@ -11,7 +11,11 @@ import type {
 	TranscriptionEntry,
 	transcriptionKinds,
 } from "../../src/config.ts";
-import type { ConfigPostBody, ConfigResponse } from "../../src/http/operator-wire.ts";
+import type {
+	ConfigPostBody,
+	ConfigResponse,
+	SubagentsWire,
+} from "../../src/http/operator-wire.ts";
 
 // Mirrors src/config.ts's capabilityNames — the server module isn't
 // bundle-safe, so the client keeps its own copy (a test pins parity).
@@ -105,6 +109,60 @@ export interface DelegationDraft {
 	// Harness names declared under delegation.machines.* — file-only,
 	// kept so a role default may name them like the server allows.
 	machineHarnesses: string[];
+}
+
+// One subagent type's model — the wire's editable fields (api is
+// server-set; maxRuns and the desktop pool limits are file-only).
+export interface SubagentModelDraft {
+	auth: string;
+	id: string;
+	baseUrl: string;
+	thinking: ThinkingLevel;
+}
+export interface SubagentsDraft {
+	worker: SubagentModelDraft | null;
+	computer: SubagentModelDraft | null;
+	desktopImage: string;
+}
+
+// First-time prefills — the operator ruling on models (design/
+// subagents.md → Models): both types on z.ai's Coding Plan URL; the
+// flash model cannot disable thinking, so "low" is its floor.
+export const SUBAGENT_DEFAULTS = {
+	baseUrl: "https://api.z.ai/api/coding/paas/v4",
+	desktopImage: "localhost/goblin-desktop:1",
+	worker: { id: "glm-5.3", thinking: "high" as ThinkingLevel },
+	computer: { id: "glm-5.3-flash", thinking: "low" as ThinkingLevel },
+};
+
+// The row's on-flip content: no type picked yet — each type toggle
+// materializes its own prefilled model from SUBAGENT_DEFAULTS, so a
+// first-time setup never silently enables a type the operator didn't.
+export function emptySubagentsDraft(): SubagentsDraft {
+	return { worker: null, computer: null, desktopImage: SUBAGENT_DEFAULTS.desktopImage };
+}
+
+export function subagentsDraftFromWire(w: SubagentsWire): SubagentsDraft {
+	const arm = (m: SubagentsWire["worker"]): SubagentsDraft["worker"] =>
+		m === null ? null : { auth: m.auth, id: m.id, baseUrl: m.baseUrl, thinking: m.thinking };
+	return { worker: arm(w.worker), computer: arm(w.computer), desktopImage: w.desktopImage };
+}
+
+// The save arm — unlike the other parkable blocks this one omits rather
+// than parks with "": the config schema has no "" arm for subagents, and
+// on/off moves through the `capabilities` diff alone.
+export function subagentsBody(s: SubagentsDraft): SubagentsWire {
+	const model = (m: SubagentModelDraft): SubagentsWire["worker"] => ({
+		auth: m.auth.trim(),
+		id: m.id.trim(),
+		baseUrl: m.baseUrl.trim(),
+		thinking: m.thinking,
+	});
+	return {
+		worker: s.worker === null ? null : model(s.worker),
+		computer: s.computer === null ? null : model(s.computer),
+		desktopImage: s.desktopImage.trim(),
+	};
 }
 
 /** One argument per line; blank lines are not arguments. */
@@ -370,6 +428,7 @@ export interface SettingsDraft {
 	logLevel: "debug" | "info" | "warn" | "error";
 	memory: MemDraft | null;
 	delegation: DelegationDraft | null;
+	subagents: SubagentsDraft | null;
 }
 
 export const EMPTY_DRAFT: SettingsDraft = {
@@ -401,6 +460,7 @@ export const EMPTY_DRAFT: SettingsDraft = {
 	logLevel: "info",
 	memory: null,
 	delegation: null,
+	subagents: null,
 };
 
 // All-off flag map — EMPTY_DRAFT's baseline.
@@ -415,15 +475,20 @@ let provSeq = 0;
 
 // Optional blocks arrive as their config arm or absent; draft nulls are
 // "off". `caps` is the GET's capability states — absent (tests) infers
-// on/off from the config's own blocks.
+// on/off from the config's own blocks. `subagents` is the GET's wire
+// block (it may carry parked content, so the on/off call is caps'/the
+// config's, never the wire's).
 export function draftFromConfig(
 	c: Config,
 	caps?: ConfigResponse["capabilities"],
+	subagents?: SubagentsWire | null,
 ): { draft: SettingsDraft; providers: ProvDraft[] } {
 	const widen = (e: { kind: string; auth?: string | undefined }): ChainEntry => ({
 		kind: e.kind,
 		auth: e.auth ?? "",
 	});
+	const subagentsOn =
+		caps !== undefined ? caps.subagents.state === "on" : c.subagents !== undefined;
 	const draft: SettingsDraft = {
 		model: c.model || "",
 		titleModel: c.titleModel || "",
@@ -510,6 +575,7 @@ export function draftFromConfig(
 					),
 				}
 			: null,
+		subagents: subagentsOn && subagents != null ? subagentsDraftFromWire(subagents) : null,
 	};
 	// Union arms differ (openrouter has no baseUrl, codex uses authFile,
 	// claude-code is auth-only); widen once — absent fields read as
@@ -606,6 +672,27 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 			const target = r.harness.trim();
 			if (!known.includes(target)) return `Role "${r.role}" names an unlisted coding agent.`;
 		}
+	}
+	// A subagents draft exists only while its switch is on — an
+	// incomplete one holds the autosave instead of surfacing the
+	// server's neither-type 422 in the savebar.
+	if (draft.subagents) {
+		const { worker, computer, desktopImage } = draft.subagents;
+		if (worker === null && computer === null)
+			return "Pick a code worker or computer use for subagents.";
+		// Either type needs the same three fields, in the form's order;
+		// the wording names the type ("The code worker" vs "Computer use").
+		const model = (m: SubagentModelDraft, key: string, named: string): string | null => {
+			if (!m.auth.trim()) return `Pick a key for ${key}.`;
+			if (!m.id.trim()) return `${named} needs a model.`;
+			if (!m.baseUrl.trim()) return `${named} needs a base url.`;
+			return null;
+		};
+		const w = worker !== null ? model(worker, "the code worker", "The code worker") : null;
+		if (w !== null) return w;
+		const c = computer !== null ? model(computer, "computer use", "Computer use") : null;
+		if (c !== null) return c;
+		if (computer !== null && !desktopImage.trim()) return "Computer use needs a desktop image.";
 	}
 	const port = Number(draft.port);
 	if (!Number.isInteger(port) || port < 0 || port > 65535)
@@ -783,6 +870,7 @@ export function bodyFromDraft(
 				return Object.keys(defaults).length > 0 ? { defaults } : {};
 			})(),
 		})) as ConfigPostBody["delegation"],
+		subagents: draft.subagents === null ? undefined : subagentsBody(draft.subagents),
 		logLevel: draft.logLevel,
 		...(capabilities !== undefined && Object.keys(capabilities).length > 0 ? { capabilities } : {}),
 	};

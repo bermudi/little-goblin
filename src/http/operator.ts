@@ -18,6 +18,8 @@ import {
 	paths,
 	providerKinds,
 	searchKinds,
+	type SubagentsConfig,
+	thinkingLevels,
 	transcriptionDefaults,
 	transcriptionKinds,
 	ttsCloudDefaults,
@@ -83,6 +85,7 @@ import type {
 	SkillDecideResponse,
 	SkillForgetResponse,
 	SkillPreviewResponse,
+	SubagentsWire,
 	ThreadSkillItem,
 	ThreadSkillsResponse,
 } from "./operator-wire.ts";
@@ -274,6 +277,7 @@ const CONFIG_POST_KEYS = {
 	operators: true,
 	allowedUsers: true,
 	delegation: true,
+	subagents: true,
 	telegram: true,
 	publicUrl: true,
 	http: true,
@@ -317,6 +321,42 @@ const configPostBodySchema = z
 	.strict();
 
 const capabilitiesPostSchema = z.partialRecord(z.enum(capabilityNames), z.boolean());
+
+// The subagents wire arm — the settings editor's face of the block. The
+// config schema stays the gate for urls and thinking rungs; this only
+// pins the shape the merge reads.
+const subagentModelPostSchema = z
+	.object({
+		auth: z.string().min(1),
+		id: z.string().min(1),
+		baseUrl: z.url(),
+		thinking: z.enum(thinkingLevels),
+	})
+	.strict();
+const subagentsPostSchema = z
+	.object({
+		worker: subagentModelPostSchema.nullable(),
+		computer: subagentModelPostSchema.nullable(),
+		desktopImage: z.string().min(1),
+	})
+	.strict();
+
+// Active block, else the parked one — a parked block still prefills the
+// editor and its restoration stash.
+function subagentsWire(config: Config): SubagentsWire | null {
+	const s = config.subagents ?? config.parked?.subagents;
+	if (s === undefined) return null;
+	const arm = (t: SubagentsConfig["worker"]): SubagentsWire["worker"] =>
+		t === undefined
+			? null
+			: {
+					auth: t.model.auth,
+					id: t.model.id,
+					baseUrl: t.model.baseUrl,
+					thinking: t.model.thinking,
+				};
+	return { worker: arm(s.worker), computer: arm(s.computer), desktopImage: s.desktops.image };
+}
 
 function capabilityState(config: Config, k: CapabilityName): CapabilityState {
 	if (config[k] !== undefined) return { state: "on", hint: null };
@@ -432,6 +472,35 @@ async function saveConfig(
 				// An edited block supersedes a parked copy — leaving it
 				// would resurrect the old value on the next off/on flip.
 				delete parked.delegation;
+				continue;
+			}
+			// maxRuns and the desktop pool limits are file-only — the
+			// editor sends models and the image; this merge keeps the
+			// file's own tuning: the active block's, else the parked one.
+			if (k === "subagents" && typeof v === "object" && v !== null && !Array.isArray(v)) {
+				const w = subagentsPostSchema.parse(v);
+				if (w.worker === null && w.computer === null) {
+					log.warn(`${actor.via} config save refused — subagents with no model type`, who);
+					return Response.json(
+						{ error: "pick a model for the worker or computer use" },
+						{ status: 422, headers: NO_STORE },
+					);
+				}
+				const prev = normalized.subagents ?? (parked.subagents as SubagentsConfig | undefined);
+				const model = (m: NonNullable<(typeof w)["worker"]>) => ({
+					model: { ...m, api: "openai-completions" as const },
+				});
+				candidate.subagents = {
+					...(prev === undefined ? {} : { maxRuns: prev.maxRuns }),
+					...(w.worker === null ? {} : { worker: model(w.worker) }),
+					...(w.computer === null ? {} : { computer: model(w.computer) }),
+					desktops:
+						prev === undefined
+							? { image: w.desktopImage }
+							: { ...prev.desktops, image: w.desktopImage },
+				};
+				// Like delegation: an edited block supersedes a parked copy.
+				delete parked.subagents;
 				continue;
 			}
 			// "" on a parkable block keeps its contents — off, not deleted.
@@ -790,6 +859,7 @@ export async function handleOperatorRoute(
 				// Cached only: the settings door never waits on models.dev.
 				modelCatalog: modelCatalogFor(config),
 				capabilities: capabilityStates(config),
+				subagents: subagentsWire(config),
 				serviceNames,
 				providerPresets,
 			};

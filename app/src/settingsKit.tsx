@@ -18,6 +18,7 @@ import type {
 	MemDraft,
 	ProvDraft,
 	SettingsDraft,
+	SubagentsDraft,
 	TranscriptionKind,
 	TrDraft,
 	TrKindStash,
@@ -56,6 +57,7 @@ export interface LastStash {
 	fetch: ChainEntry[] | null;
 	memory: MemDraft | null;
 	delegation: DelegationDraft | null;
+	subagents: SubagentsDraft | null;
 }
 
 // What the sections see — every piece of editor state plus its

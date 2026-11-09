@@ -942,18 +942,52 @@ export function editedParts(message: UIMessage, text: string): UIMessage["parts"
 
 // ---------- the composer ----------
 
+// Who wrote a quoted selection. The annotation names the retention
+// document's speaker labels (Operator/Goblin) so both readers — Goblin
+// in chat and memory extraction — see whose words the blockquote holds;
+// unattributed quotes used to extract as the operator's own statements
+// (#182).
+export type QuoteSpeaker = "user" | "assistant";
+
+export function quoteSourceNote(speaker: QuoteSpeaker): string {
+	return speaker === "assistant"
+		? "[quoting Goblin's earlier reply]"
+		: "[quoting the operator's earlier message]";
+}
+
 // A quote goes into the draft as a markdown blockquote — appended, never
 // replaced, so one reply can collect quotes from several sections of a
-// message. Trailing blank line lands the cursor under the block, ready
-// to type the answer.
-export function appendQuote(draft: string, text: string): string {
+// message. A known speaker lands as an annotation line above the block
+// (the proven #182 layout: blockquote on its own line, source named
+// above it). Trailing blank line lands the cursor under the block,
+// ready to type the answer.
+export function appendQuote(draft: string, text: string, speaker?: QuoteSpeaker): string {
 	const block = text
 		.trim()
 		.split("\n")
 		.map((l) => (l.trim() === "" ? ">" : `> ${l}`))
 		.join("\n");
+	const quoted = speaker === undefined ? block : `${quoteSourceNote(speaker)}\n${block}`;
 	const head = draft.trimEnd();
-	return head === "" ? `${block}\n\n` : `${head}\n\n${block}\n\n`;
+	return head === "" ? `${quoted}\n\n` : `${head}\n\n${quoted}\n\n`;
+}
+
+// The selection's element, or null with no selection — used both to
+// keep the pill inside the transcript and to find the quoted bubble.
+function selectionElement(sel: Selection | null): Element | null {
+	if (sel === null || sel.rangeCount === 0) return null;
+	const node = sel.getRangeAt(0).commonAncestorContainer;
+	return node instanceof Element ? node : node.parentElement;
+}
+
+// Speaker of a quoted selection: the message bubble's class says who
+// wrote it. No bubble — a selection across messages or in transcript
+// chrome — has no speaker; that quote lands unattributed, as before.
+export function quoteSpeaker(el: Element | null): QuoteSpeaker | null {
+	const msg = el?.closest(".msg") ?? null;
+	if (msg?.classList.contains("user")) return "user";
+	if (msg?.classList.contains("assistant")) return "assistant";
+	return null;
 }
 
 // Selection → quote: a pill parked at the selection's rect while a
@@ -965,7 +999,7 @@ function QuoteFab({
 	onQuote,
 }: {
 	root: RefObject<HTMLElement | null>;
-	onQuote: (text: string) => void;
+	onQuote: (text: string, speaker: QuoteSpeaker | null) => void;
 }) {
 	const [pos, setPos] = useState<{ x: number; y: number; above: boolean } | null>(null);
 	useEffect(() => {
@@ -983,8 +1017,7 @@ function QuoteFab({
 				return;
 			}
 			const range = sel.getRangeAt(0);
-			const node = range.commonAncestorContainer;
-			const container = node instanceof Element ? node : node.parentElement;
+			const container = selectionElement(sel);
 			if (container === null || !el.contains(container)) {
 				setPos(null);
 				return;
@@ -1025,9 +1058,10 @@ function QuoteFab({
 			onClick={() => {
 				const sel = document.getSelection();
 				const text = sel === null ? "" : sel.toString();
+				const speaker = quoteSpeaker(selectionElement(sel));
 				sel?.removeAllRanges();
 				setPos(null);
-				if (text.trim() !== "") onQuote(text);
+				if (text.trim() !== "") onQuote(text, speaker);
 			}}
 		>
 			Quote
@@ -1634,8 +1668,9 @@ export function Composer({
 	// the transcript's fold marks update.
 	onCompacted?: () => void;
 	// A select-to-quote request — `n` bumps per click, so even repeated
-	// text appends again.
-	quote?: { text: string; n: number } | null;
+	// text appends again. The speaker lands as the quote's annotation
+	// line; null quotes stay unattributed.
+	quote?: { text: string; speaker: QuoteSpeaker | null; n: number } | null;
 	// Bumped by the caller when the composer should grab focus (the
 	// "New conversation" click) — covers the already-mounted case that
 	// an autoFocus attribute can't.
@@ -1719,7 +1754,7 @@ export function Composer({
 	useEffect(() => {
 		if (quote == null || quote.n === 0) return;
 		editedAfterSend.current = true;
-		setDraft((d) => appendQuote(d, quote.text));
+		setDraft((d) => appendQuote(d, quote.text, quote.speaker ?? undefined));
 		const ta = textareaRef.current;
 		if (ta !== null) {
 			ta.focus();
@@ -3100,8 +3135,12 @@ function Chat({
 	// hover, so it never mounts there (the stylesheet hides it too).
 	const phone = usePhoneWidth();
 	// Select-to-quote: each QuoteFab click bumps `n`; the Composer appends
-	// the text as a blockquote.
-	const [quote, setQuote] = useState<{ text: string; n: number }>({ text: "", n: 0 });
+	// the text as a blockquote with the quoted speaker's annotation.
+	const [quote, setQuote] = useState<{ text: string; speaker: QuoteSpeaker | null; n: number }>({
+		text: "",
+		speaker: null,
+		n: 0,
+	});
 	// Follow-mode: the transcript auto-scrolls to the tail while the view
 	// is pinned there; scrolling up unpins it, scrolling back (or sending)
 	// re-pins. Streaming chunks ride the same effect — the tail follows
@@ -3202,7 +3241,10 @@ function Chat({
 	return (
 		<DocViewerProvider token={token} conversationId={conversationId}>
 			<div className="chat">
-				<QuoteFab root={scrollRef} onQuote={(text) => setQuote((q) => ({ text, n: q.n + 1 }))} />
+				<QuoteFab
+					root={scrollRef}
+					onQuote={(text, speaker) => setQuote((q) => ({ text, speaker, n: q.n + 1 }))}
+				/>
 				{/* The outline is a hover rail — a pointer affordance, so it does
 				    not exist in a phone DOM at all. */}
 				{phone ? null : <Outline messages={messages} scrollRef={scrollRef} />}

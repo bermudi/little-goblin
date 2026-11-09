@@ -388,6 +388,21 @@ just opened to read. The conversation-less composers keep their
 explicit paths (the "New conversation" focusSignal) — stealing is a
 thread-view property, opt-in per mount.
 
+**A quote records its speaker (ruling 2026-11-08, #182).** The Quote
+button knows which message bubble the selection lives in, so the quote
+lands attributed: an annotation line above the blockquote —
+`[quoting Goblin's earlier reply]` for assistant text, `[quoting the
+operator's earlier message]` for the operator's own — with the wording
+pinned in `quoteSourceNote` (app/src/ChatView.tsx). The annotation is
+draft prose, not metadata: it rides the sent message so both readers
+see the source — Goblin in chat recognizes its own earlier words, and
+memory extraction stops saving a quoted block as the operator's
+statement (design/memory.md → quoted-speech ruling; the annotation
+above a surviving blockquote is the only layout that measured zero
+misattributions). A selection with no single bubble — spanning
+messages, in transcript chrome, a system notice — quotes unattributed,
+as before: the button records the speaker, it never guesses one.
+
 **Transcript rendering (ruling 2026-10-21, operator ask: tables blow out
 the column, the column wastes the desktop, machinery tags read as
 prose).** Three transcript fixes, all render-side — history text is

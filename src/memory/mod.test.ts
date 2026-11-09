@@ -266,6 +266,31 @@ describe("retention documents", () => {
 		expect(doc?.content).toContain("Context");
 		expect(doc?.sourceIds).toContain("a2");
 	});
+
+	// The app's Quote button annotates the quoted speaker above a
+	// blockquote (#182); the retention layout must keep that structure —
+	// `Operator: > quote…` glued to the label made the extractor save
+	// Goblin's words as the operator's statement. The annotation line on
+	// its own under the Operator label is the layout that measured zero
+	// misattributed facts (issue evidence, 2026-11-07).
+	test("a quoted block keeps its speaker annotation off the Operator line (#182)", () => {
+		const doc = buildRetentionDocument({
+			conversationId: "dm:1",
+			anchorSeq: 3,
+			userTexts: [
+				"[quoting Goblin's earlier reply]\n> deploy on friday\n\nforgot about this already?",
+			],
+			userIds: ["u3"],
+			assistant: asst("a3", "not forgotten"),
+			priorContext: "",
+			timestamp: "2026-11-07T10:00:00Z",
+		});
+		expect(doc?.content).toContain(
+			"Operator:\n[quoting Goblin's earlier reply]\n> deploy on friday\n\nforgot about this already?",
+		);
+		expect(doc?.content).not.toContain("Operator: [quoting");
+		expect(doc?.content).not.toContain("Operator: > ");
+	});
 });
 
 describe("attachment transcripts in retention text", () => {

@@ -344,7 +344,15 @@ export function buildRetentionDocument(options: {
 	const content = screenMemoryText(
 		[
 			...(context !== "" ? [`[Context — not fresh evidence]: ${context}`] : []),
-			...(userText !== "" ? [`Operator: ${userText}`] : []),
+			// Multi-line operator speech goes under the label on its own
+			// lines: gluing it inline mangles markdown structure — a
+			// quoted block (#182) stopped being a blockquote and extracted
+			// as the operator's own statement. The annotation line the app
+			// puts above a quote names its speaker; the label alone on a
+			// line keeps that annotation off the Operator line.
+			...(userText !== ""
+				? [userText.includes("\n") ? `Operator:\n${userText}` : `Operator: ${userText}`]
+				: []),
 			`Goblin: ${assistantText}`,
 		].join("\n"),
 		"retain-enqueue",

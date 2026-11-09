@@ -363,6 +363,7 @@ delegation: {
   harnesses: {
     pi: { kind: "pi", args: ["--model", "zai/glm-5.3"] },
     "pi-review": { kind: "pi", args: ["--model", "gpt-6.1-sol"] },
+    claude: { kind: "claude", askFirst: true },
   },
   // Role → harness name. `default` is what a call with no role uses;
   // a named role with no entry also falls back to `default`.
@@ -374,7 +375,10 @@ delegation: {
 Each harness is a herdr agent kind plus native CLI args — full-auto flags
 and model choice live in `args`, and goblin never invents either. A
 default naming an undeclared harness is a config error. An explicit
-harness in a `delegate` call always wins over a role.
+harness in a `delegate` call always wins over a role. `askFirst: true`
+on a harness (local or machine-side) makes goblin ask you before each
+use — the delegate tool carries it as a prompt rule, editable in
+Settings → Delegation; choosing the harness itself stays goblin's call.
 
 ### Subagents
 

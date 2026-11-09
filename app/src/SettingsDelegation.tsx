@@ -155,6 +155,16 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 										operator's shell alias already adds.
 									</div>
 								</div>
+								<Row
+									label="Ask me first"
+									cap="Goblin asks before each use (e.g. it spends a subscription)."
+								>
+									<Switch
+										on={h.askFirst}
+										ariaLabel={`ask first for ${h.name || "new agent"}`}
+										onChange={(on) => setHarness(i, { askFirst: on })}
+									/>
+								</Row>
 							</div>
 						))}
 						<div className="addrow">
@@ -164,7 +174,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 								onClick={() =>
 									edit((d) => ({
 										...d,
-										harnesses: [...d.harnesses, { name: "", kind: "", args: "" }],
+										harnesses: [...d.harnesses, { name: "", kind: "", args: "", askFirst: false }],
 									}))
 								}
 							>

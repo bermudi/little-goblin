@@ -77,6 +77,15 @@ Rulings:
   them. An edited block also supersedes a parked copy — the off/on flip
   is a stash, and a stale stash would resurrect an old table. The block
   remains boot-frozen — the page shows the restart hint.
+- **Ask-first is a description rule, not a gate (2026-11-09).** A harness
+  with `askFirst: true` — local or machine-side, one schema — adds a
+  line to the `delegate` description: goblin asks the operator before
+  each use and starts only on their explicit yes. The model asks;
+  `execute` never refuses. The operator wants occasional use *with*
+  permission, which removing the harness cannot give — the block is
+  boot-frozen, so a removal needs a restart anyway. The same sentence
+  rules staffing goblin's call: choosing a harness is never a question
+  to the operator. Settings → Delegation edits the flag.
 - **Agents run full-auto; goblin never answers approvals.** Harnesses
   start in their no-approval mode (the configured args); nothing to
   approve, and no new trust level — goblin already has `bash`. If an

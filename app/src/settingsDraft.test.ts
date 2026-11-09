@@ -113,8 +113,8 @@ describe("draftFromConfig", () => {
 		});
 		const { draft: d } = draftFromConfig(c);
 		expect(d.delegation?.harnesses).toEqual([
-			{ name: "pi", kind: "pi", args: "--model\nzai/glm-5.3" },
-			{ name: "pi-review", kind: "pi", args: "--model\nsol" },
+			{ name: "pi", kind: "pi", args: "--model\nzai/glm-5.3", askFirst: false },
+			{ name: "pi-review", kind: "pi", args: "--model\nsol", askFirst: false },
 		]);
 		// The fallback role sorts first.
 		expect(d.delegation?.roles).toEqual([
@@ -130,10 +130,33 @@ describe("draftFromConfig", () => {
 		});
 	});
 
+	test("askFirst round-trips; unflagged harnesses emit no key", () => {
+		const c = baseConfig();
+		c.delegation = delegationConfigSchema.parse({
+			harnesses: { claude: { kind: "claude", askFirst: true }, pi: { kind: "pi" } },
+		});
+		const { draft: d, providers } = draftFromConfig(c);
+		expect(d.delegation?.harnesses).toEqual([
+			{ name: "claude", kind: "claude", args: "", askFirst: true },
+			{ name: "pi", kind: "pi", args: "", askFirst: false },
+		]);
+		const del = bodyFromDraft(d, providers, authDefaults).delegation;
+		expect(del).toEqual({
+			harnesses: {
+				claude: { kind: "claude", askFirst: true },
+				pi: { kind: "pi" },
+			},
+		});
+		if (typeof del === "object") {
+			expect("askFirst" in del.harnesses["claude"]!).toBe(true);
+			expect("askFirst" in del.harnesses["pi"]!).toBe(false);
+		}
+	});
+
 	test("delegation validation catches unnamed, duplicate and dangling entries", () => {
 		const { draft: d } = draftFromConfig(baseConfig());
 		d.delegation = {
-			harnesses: [{ name: "pi", kind: "pi", args: "" }],
+			harnesses: [{ name: "pi", kind: "pi", args: "", askFirst: false }],
 			roles: [{ role: "default", harness: "pi" }],
 			machineHarnesses: [],
 		};
@@ -146,7 +169,7 @@ describe("draftFromConfig", () => {
 		];
 		expect(validateDraft(d, [prov()])).toContain("Duplicate delegation role");
 		d.delegation.roles = [{ role: "default", harness: "pi" }];
-		d.delegation.harnesses = [{ name: "Pi", kind: "pi", args: "" }];
+		d.delegation.harnesses = [{ name: "Pi", kind: "pi", args: "", askFirst: false }];
 		expect(validateDraft(d, [prov()])).toContain("lowercase letters");
 	});
 
@@ -170,7 +193,7 @@ describe("draftFromConfig", () => {
 	test("a role row with no agent is an absent mapping, not an error", () => {
 		const { draft: d, providers } = draftFromConfig(baseConfig());
 		d.delegation = {
-			harnesses: [{ name: "pi", kind: "pi", args: "" }],
+			harnesses: [{ name: "pi", kind: "pi", args: "", askFirst: false }],
 			// The always-visible default row, picked at "none".
 			roles: [
 				{ role: "default", harness: "" },

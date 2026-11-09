@@ -98,6 +98,7 @@ export interface HarnessDraft {
 	name: string;
 	kind: string;
 	args: string;
+	askFirst: boolean;
 }
 export interface DelegationRoleDraft {
 	role: string;
@@ -564,6 +565,7 @@ export function draftFromConfig(
 						name,
 						kind: h.kind,
 						args: (h.args ?? []).join("\n"),
+						askFirst: h.askFirst === true,
 					})),
 					roles: Object.entries(c.delegation.defaults ?? {})
 						.map(([role, harness]) => ({ role, harness }))
@@ -858,7 +860,14 @@ export function bodyFromDraft(
 			harnesses: Object.fromEntries(
 				d.harnesses.map((h) => {
 					const args = argsToList(h.args);
-					return [h.name.trim(), { kind: h.kind.trim(), ...(args.length > 0 ? { args } : {}) }];
+					return [
+						h.name.trim(),
+						{
+							kind: h.kind.trim(),
+							...(args.length > 0 ? { args } : {}),
+							...(h.askFirst ? { askFirst: true } : {}),
+						},
+					];
 				}),
 			),
 			...(() => {

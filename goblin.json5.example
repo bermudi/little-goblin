@@ -246,13 +246,17 @@
   // --permission-mode): a duplicate makes the harness refuse to start.
   // `defaults` maps a work role to a harness name; `delegate` uses it
   // when a call names no harness. Role `default` is the fallback when a
-  // call names no role. Editable in Settings → Delegation (restart to
+  // call names no role. `askFirst: true` on a harness makes goblin ask
+  // you before each use — a prompt rule the delegate description
+  // carries, not a launch gate; choosing the harness stays goblin's
+  // call. Editable in Settings → Delegation (restart to
   // apply); machine targets stay file-only here.
   // delegation: {
   //   harnesses: {
   //     codex: { kind: "codex" }, // the shell alias carries the bypass flag
   //     pi: { kind: "pi", args: ["--model", "<provider>/<model>"] },
   //     "pi-review": { kind: "pi", args: ["--model", "<provider>/<review-model>"] },
+  //     claude: { kind: "claude", askFirst: true }, // spends a subscription — ask first
   //   },
   //   defaults: { default: "pi", build: "pi", review: "pi-review" },
   //   machines: {

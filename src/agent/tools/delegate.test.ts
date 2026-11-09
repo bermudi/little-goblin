@@ -114,6 +114,7 @@ function harness(
 				: h.pinOverride(name);
 		},
 		workspaceDir,
+		mountedSubagents: { worker: false, computer: false },
 	};
 	const h: Harness = {
 		tool: delegateTool(deps),
@@ -173,6 +174,7 @@ describe("delegate tool", () => {
 			},
 			pin: () => ({ address: { chatId: 1, threadId: null } }),
 			workspaceDir: h.workspaceDir,
+			mountedSubagents: { worker: false, computer: false },
 		});
 		const parsed = delegateInputSchema.parse({
 			action: "start",
@@ -257,6 +259,25 @@ describe("delegate tool", () => {
 		expect(tool.description).toContain("`pi`");
 	});
 
+	test("the description names only the subagent tools this turn mounts", () => {
+		const h = harness();
+		const description = (mountedSubagents: { worker: boolean; computer: boolean }) =>
+			delegateTool({ ...h.deps, mountedSubagents }).description;
+		const neither = description({ worker: false, computer: false });
+		expect(neither).not.toContain("worker subagent");
+		expect(neither).not.toContain("computer subagent");
+		expect(neither).not.toContain("  ");
+		const workerOnly = description({ worker: true, computer: false });
+		expect(workerOnly).toContain("worker subagent");
+		expect(workerOnly).not.toContain("computer subagent");
+		const computerOnly = description({ worker: false, computer: true });
+		expect(computerOnly).toContain("computer subagent");
+		expect(computerOnly).not.toContain("worker subagent");
+		expect(description({ worker: true, computer: true })).toContain(
+			"Standalone long or code-heavy work belongs with a worker subagent, and screen work with a computer subagent.",
+		);
+	});
+
 	test("a bad cwd is rejected before any herdr call", async () => {
 		const h = harness();
 		const out = (await exec(h.tool, {
@@ -281,6 +302,7 @@ describe("delegate tool", () => {
 			},
 			pin: () => ({ address: { chatId: 1, threadId: null } }),
 			workspaceDir: h.workspaceDir,
+			mountedSubagents: { worker: false, computer: false },
 		});
 		const out = (await exec(tool, {
 			action: "start",
@@ -306,6 +328,7 @@ describe("delegate tool", () => {
 			},
 			pin: () => ({ address: { chatId: 1, threadId: null } }),
 			workspaceDir: h.workspaceDir,
+			mountedSubagents: { worker: false, computer: false },
 		});
 		targets.set("lth", { machine: "lth", root: "~/build", herdr: h.herdr });
 		const out3 = (await exec(toolTilde, {
@@ -337,6 +360,7 @@ describe("delegate tool", () => {
 			},
 			pin: () => ({ address: { chatId: 1, threadId: null } }),
 			workspaceDir: h.workspaceDir,
+			mountedSubagents: { worker: false, computer: false },
 		});
 		const out = (await exec(tool, {
 			action: "start",
@@ -863,6 +887,7 @@ describe("delegate tool", () => {
 				discard: (reason) => discarded.push(reason ?? ""),
 			}),
 			workspaceDir: dir,
+			mountedSubagents: { worker: false, computer: false },
 		});
 		await expect(exec(tool, { action: "start", harness: "codex", task: "do it" })).rejects.toThrow(
 			"launch exploded",
@@ -886,6 +911,7 @@ describe("delegate tool", () => {
 				},
 			}),
 			workspaceDir: dir,
+			mountedSubagents: { worker: false, computer: false },
 		});
 		await expect(exec(tool, { action: "start", harness: "codex", task: "do it" })).rejects.toThrow(
 			"launch exploded",

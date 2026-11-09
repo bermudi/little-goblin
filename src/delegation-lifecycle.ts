@@ -182,7 +182,10 @@ export interface DelegationWiring {
 	herdr: Herdr | null;
 	operatorHerdr: OperatorHerdr;
 	targets: Map<string, DelegationTargetDeps>;
-	delegateDeps(conv: Conversation, workdir: string): DelegateToolDeps | undefined;
+	delegateDeps(
+		conv: Conversation,
+		workdir: string,
+	): Omit<DelegateToolDeps, "mountedSubagents"> | undefined;
 }
 
 export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
@@ -205,7 +208,10 @@ export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
 			});
 		}
 	}
-	const delegateDeps = (conv: Conversation, workdir: string): DelegateToolDeps | undefined => {
+	const delegateDeps = (
+		conv: Conversation,
+		workdir: string,
+	): Omit<DelegateToolDeps, "mountedSubagents"> | undefined => {
 		if (
 			delegationBoot === undefined ||
 			configRef.current.delegation === undefined ||

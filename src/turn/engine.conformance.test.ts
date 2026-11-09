@@ -16,7 +16,6 @@ import type { AuthStore } from "../auth.ts";
 import type { Config, ConfigRef } from "../config.ts";
 import { type ConversationStore, openStore } from "../conversation.ts";
 import { Runtime, userMessage } from "../runtime.ts";
-import type { ModelStep } from "../turn/engine.ts";
 import { fakeClaude } from "../testkit/fake-claude.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
 import {
@@ -28,6 +27,7 @@ import {
 	useHome,
 	waitUntil,
 } from "../testkit.ts";
+import type { ModelStep } from "../turn/engine.ts";
 import { openTurnJournal, type TurnJournal } from "../turn-journal.ts";
 import { aiSdkEngine } from "./ai-sdk-engine.ts";
 import { isClaudeStep, pickEngine } from "./engine.ts";
@@ -52,6 +52,9 @@ interface EngineRig {
 	scriptToolThenReply(message: string, text: string): void;
 	/** Script the next turn to block mid-run; `entered` fires once it has. */
 	scriptHeldRun(): HeldRun;
+	/** Script one COMPLETED step (assistant text + echo tool call), then
+	 *  hold mid-run — the fence lands with real progress to record. */
+	scriptProgressThenHold(): HeldRun;
 }
 
 const echoTools = (): ToolSet => ({
@@ -120,6 +123,33 @@ function sdkRig(): EngineRig {
 			const gated = pauseFakeModelAtDelta(["a", "b"], 1);
 			step = { model: gated.model, system: "test" };
 			return { entered: gated.entered, release: () => gated.release() };
+		},
+		scriptProgressThenHold: () => {
+			// Step 1 completes: assistant text + an echo call that settles.
+			// Step 2's call never answers — the turn holds mid-run with a
+			// checkpointed step behind it (the #195 fence fixture).
+			const entered = deferred<void>();
+			const gate = deferred<void>();
+			const model = scriptedModel([
+				[
+					{ type: "stream-start", warnings: [] },
+					{ type: "text-start", id: "t1" },
+					{ type: "text-delta", id: "t1", delta: "FENCED-STEP1-TEXT" },
+					{ type: "text-end", id: "t1" },
+					toolCallPart("conf-fence-1", "echo", JSON.stringify({ message: "first" })),
+					finishPart("tool-calls"),
+				],
+				{
+					drive: async ({ enqueue, close }) => {
+						enqueue({ type: "stream-start", warnings: [] });
+						entered.resolve();
+						await gate.promise;
+						close();
+					},
+				},
+			]);
+			step = { model: model.model, system: "test" };
+			return { entered: entered.promise, release: () => gate.resolve() };
 		},
 	};
 }
@@ -212,6 +242,33 @@ function claudeRig(): EngineRig {
 			]);
 			return { entered: entered.promise, release: () => gate.resolve() };
 		},
+		scriptProgressThenHold: () => {
+			// Step 1 completes: streamed assistant text + an echo call that
+			// settles and journals. Step 2's tool gates before the bridge —
+			// the turn holds mid-run with a checkpointed step behind it.
+			const entered = deferred<void>();
+			const gate = deferred<void>();
+			fake.script([
+				{ kind: "stream-text", text: "FENCED-STEP1-TEXT" },
+				{
+					kind: "tool",
+					name: "echo",
+					input: { message: "first" },
+					run: () => bridgeRef.current!.invoke("echo", { message: "first" }),
+				},
+				{
+					kind: "tool",
+					name: "echo",
+					input: { message: "hold" },
+					run: async () => {
+						entered.resolve();
+						await gate.promise;
+						return bridgeRef.current!.invoke("echo", { message: "hold" });
+					},
+				},
+			]);
+			return { entered: entered.promise, release: () => gate.resolve() };
+		},
 	};
 }
 
@@ -260,6 +317,35 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			expect(await sink.done).toEqual({ kind: "fenced" });
 			await drain(rig);
 			expect(roles(rig)).toEqual(["user"]);
+		},
+	},
+	{
+		name: "/stop after completed steps leaves them in history as ended-aborted (#195)",
+		async run(rig) {
+			const held = rig.scriptProgressThenHold();
+			const sink = submit(rig, "work then hold");
+			await held.entered;
+			rig.runtime.stop(rig.conv.id);
+			held.release();
+			expect(await sink.done).toEqual({ kind: "fenced" });
+			await drain(rig);
+			// No assistant reply landed — the record is one system event
+			// carrying the completed call and the streamed text.
+			const history = rig.store.history(rig.conv.id);
+			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
+			const event = textOf(history[1]!);
+			expect(event).toContain("was stopped");
+			expect(event).toContain("echo");
+			expect(event).toContain('completed: "echo:first"');
+			expect(event).toContain("FENCED-STEP1-TEXT");
+			const rows = rig.store.db
+				.query<{ run_id: string; status: string }, []>("SELECT run_id, status FROM turn_runs")
+				.all();
+			expect(rows).toHaveLength(1);
+			expect(rows[0]!.status).toBe("fenced");
+			// The completed steps ran once; the hold's call never executed.
+			const calls = rig.journal.callsFor(rows[0]!.run_id);
+			expect(calls.filter((c) => c.name === "echo" && c.state === "completed")).toHaveLength(1);
 		},
 	},
 	{

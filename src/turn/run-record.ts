@@ -1,6 +1,5 @@
-// The attempt's journal run row — fault box, terminal stamp, failed-progress record — plus the model-fallback config the attempt serves; the run id, store, and ownership hooks stay injected.
+// The attempt's journal run row — fault box, terminal stamp, unlanded-progress record — plus the model-fallback config the attempt serves; the run id, store, and ownership hooks stay injected.
 
-import { randomUUID } from "node:crypto";
 import {
 	candidateRefs,
 	type FallbackMiss,
@@ -9,10 +8,14 @@ import {
 } from "../agent/model-fallback.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
-import { renderFailedTurnProgress } from "./failed-progress.ts";
+import type { TurnJournal } from "../turn-journal.ts";
 import type { TurnRecovery } from "./overflow.ts";
 import type { RunOwnershipHooks } from "./run-ownership.ts";
-import type { TurnJournal } from "../turn-journal.ts";
+import {
+	renderUnlandedTurnProgress,
+	type UnlandedOutcome,
+	unlandedProgressEvent,
+} from "./unlanded-progress.ts";
 
 // design/model.md → Model fallback list, resolved for this attempt.
 export interface RunRecordFallback {
@@ -41,7 +44,7 @@ export interface RunRecord {
 		status: "fenced" | "completed" | "error",
 		delivery: "delivered" | "undelivered" | "failed",
 	): void;
-	recordFailedProgress(failure: string): void;
+	recordUnlandedProgress(outcome: UnlandedOutcome): void;
 	// The reply landed durably — a failure past it must not also record a
 	// progress event (the final reply is the record).
 	markReplyLanded(): void;
@@ -57,7 +60,7 @@ export interface RunRecordDeps {
 	epoch: number;
 	convModel: string | null;
 	recovery: TurnRecovery | undefined;
-	// The engine's owned-input folds mutate this set; the failed-progress
+	// The engine's owned-input folds mutate this set; the unlanded-progress
 	// anchor reads it at terminal time.
 	ownedInputSeqs: Set<number>;
 	// The attempt's run row — null until beginRun landed.
@@ -124,21 +127,25 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 		// dispatcher's settle read never sees a live run by mistake.
 		deps.runOwnership?.end(id, status, delivery);
 	};
-	// design/runtime-turn.md → Failed-turn progress: one system event
-	// recording what a terminally failed journaled turn completed, so the
-	// next turn does not lose the work. Must run BEFORE the terminal
+	// design/runtime-turn.md → Unlanded-turn progress: one system event
+	// recording what a journaled turn whose reply never landed completed
+	// — terminal error, fence, or (at journal open) process death — so
+	// the next turn does not lose the work. Must run BEFORE the terminal
 	// stamp — the stamp is what wake settling reads — and stays silent
-	// when the reply already landed, nothing survived, or this attempt
-	// lost authority. An append failure never changes the outcome.
+	// when the reply already landed or nothing survived. The failed
+	// outcome keeps its authority silence; the aborted one records past
+	// the fence — that is its point (the sanctioned post-fence state
+	// write, like the ⏹ superseded display stamp). An append failure
+	// never changes the outcome.
 	let replyLanded = false;
-	const recordFailedProgress = (failure: string): void => {
+	const recordUnlandedProgress = (outcome: UnlandedOutcome): void => {
 		const id = deps.runId();
 		if (journal === undefined || id === null || runStamped || replyLanded) return;
-		if (store.get(convId)?.epoch !== epoch) return;
+		if (outcome.kind === "failed" && store.get(convId)?.epoch !== epoch) return;
 		try {
-			const rendered = renderFailedTurnProgress({
+			const rendered = renderUnlandedTurnProgress({
 				runId: id,
-				failure,
+				outcome,
 				calls: journal.callsFor(id),
 				partial: journal.get(id)?.partial ?? null,
 			});
@@ -150,12 +157,11 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 			for (const seq of ownedInputSeqs) {
 				if (consumedAnchor === null || seq > consumedAnchor) consumedAnchor = seq;
 			}
-			store.append(
-				convId,
-				[{ id: randomUUID(), role: "system", parts: [{ type: "text", text: rendered.text }] }],
-				{ anchorSeq: consumedAnchor },
-			);
-			log.info("failed-turn progress recorded", {
+			store.append(convId, [unlandedProgressEvent(rendered.text)], {
+				anchorSeq: consumedAnchor,
+			});
+			log.info("unlanded-turn progress recorded", {
+				outcome: outcome.kind,
 				anchorSeq: consumedAnchor,
 				conversation: convId,
 				run: id,
@@ -164,9 +170,10 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 				textChars: rendered.textChars,
 			});
 		} catch (err) {
-			log.error("failed-turn progress record failed — failure still delivered", err, {
+			log.error("unlanded-turn progress record failed — outcome still delivered", err, {
 				conversation: convId,
 				run: id,
+				outcome: outcome.kind,
 			});
 		}
 	};
@@ -174,7 +181,7 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 		journalFault,
 		journaled,
 		stampRun,
-		recordFailedProgress,
+		recordUnlandedProgress,
 		markReplyLanded: () => {
 			replyLanded = true;
 		},

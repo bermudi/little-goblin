@@ -4,6 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import type { AcceptsMedia } from "./agent/attachments.ts";
+import type { ClaudeStep } from "./agent/claude-code/mod.ts";
 import { type CompactionOutcome, chooseBoundary } from "./agent/compaction.ts";
 import {
 	exhaustedMessage,
@@ -48,14 +49,17 @@ import {
 	type TurnRecovery,
 	terminalFailureMessage,
 } from "./turn/overflow.ts";
-import { openRunRecord } from "./turn/run-record.ts";
 import type { RunOwnershipHooks } from "./turn/run-ownership.ts";
+import { openRunRecord } from "./turn/run-record.ts";
+import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
 import { claimMembers, emitChunk, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
-import { openToolAuthority, type ToolAuthority, type TurnToolMaker } from "./turn/tool-authority.ts";
-import type { TurnDone, TurnSink } from "./turn/sink.ts";
-import type { ClaudeStep } from "./agent/claude-code/mod.ts";
+import {
+	openToolAuthority,
+	type ToolAuthority,
+	type TurnToolMaker,
+} from "./turn/tool-authority.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import type { TurnJournal } from "./turn-journal.ts";
 import type { WindowCapture } from "./window-capture.ts";
@@ -866,7 +870,13 @@ export class Runtime {
 			// reads it through this getter — never a write-back callback.
 			runId: () => authority?.runId ?? null,
 		});
-		const { journalFault, journaled, stampRun, recordFailedProgress, fallback } = record;
+		const { journalFault, journaled, stampRun, recordUnlandedProgress, fallback } = record;
+		// The aborted outcome's cause: a shutdown fence must read as a
+		// restart, not an operator stop.
+		const fencedCause = (): string =>
+			this.closed
+				? "the process was shutting down"
+				: "stopped by /stop or superseded by a settings change";
 		try {
 			this.checkAuthority(convId, epoch);
 			// Recall uses admission-time eligibility; the model view still sees the
@@ -1218,6 +1228,9 @@ export class Runtime {
 				controller.abort();
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
 				announcePreRunFailure(err);
+				// What already ran stays transcript — the sanctioned post-fence
+				// state write, before the stamp wake settling reads.
+				recordUnlandedProgress({ kind: "aborted", cause: fencedCause() });
 				stampRun("fenced", "undelivered");
 				await notifyAll({ kind: "fenced" });
 			} else if (err instanceof ContextOverflowError) {
@@ -1265,7 +1278,13 @@ export class Runtime {
 					outcome.recovery.fallback = fallback.trail;
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
-				if (outcome.kind === "error") recordFailedProgress(outcome.message);
+				if (outcome.kind === "error") {
+					recordUnlandedProgress({ kind: "failed", failure: outcome.message });
+				} else if (outcome.kind === "fenced") {
+					// A fence landing during recovery is still a fence: the
+					// attempt's completed work stays transcript.
+					recordUnlandedProgress({ kind: "aborted", cause: fencedCause() });
+				}
 				announcePreRunFailure(err);
 				stampRun(
 					outcome.kind === "fenced" ? "fenced" : "error",
@@ -1381,7 +1400,7 @@ export class Runtime {
 				// A withheld error never reached the wire — the terminal
 				// story goes out now, before the sinks settle.
 				if (errorHeld) emitChunk(convId, turns, live, { type: "error", errorText: done.message });
-				recordFailedProgress(done.message);
+				recordUnlandedProgress({ kind: "failed", failure: done.message });
 				announcePreRunFailure(err);
 				stampRun("error", "failed");
 				await notifyAll(done);

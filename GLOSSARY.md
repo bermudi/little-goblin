@@ -29,3 +29,10 @@
 - **Decision model:** a model that answers typed questions with scores and does not write text.
 - **Cycle guard:** `src/import-cycles.test.ts`. It freezes today's import cycles as clusters and fails on any cycle that grew past or appeared outside them; clusters are pruned by hand as cycles are untangled.
 - **Feature folder:** a feature that lives as one directory under `src/` with a single public `index.ts` and its own tables. `src/reminders/` is the first.
+- **Turn:** one model run from an admitted trigger, including its tool calls and reply.
+- **Epoch:** the monotonic counter on a conversation. A settings change or cancellation bumps it; an action prepared under an older epoch is refused.
+- **Fence:** a re-check of authority at the moment of a side effect. A fenced action stops without acting.
+- **Wake:** a durable queued trigger that asks a conversation to start a turn. `wake-store.ts` and `wake-dispatcher.ts` own it.
+- **Attachment:** the durable row that binds a conversation to one delegated agent session, keyed by terminal and agent session.
+- **Binding:** the link between a conversation and a delegated agent session. The attachment row is its durable record.
+- **Development:** a durable event recorded on a responsibility, such as a program occurrence, an observation, or an operator correction.

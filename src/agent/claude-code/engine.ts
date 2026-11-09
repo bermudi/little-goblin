@@ -421,7 +421,7 @@ export async function driveClaude<M extends WireMember>(
 			const liveContext: AppLiveContext = { input: run.lastInput, cacheRead: run.lastCacheRead };
 			emit({ type: "data-context", transient: true, data: liveContext });
 		}
-		deps.journal?.checkpoint(deps.runId, {
+		deps.saveStep({
 			loopState: state.snapshot(),
 			filterRetryUsed: deps.filterRetryUsed,
 			...(run.partialMessages.length > 0 ? { partial: run.partialMessages } : {}),

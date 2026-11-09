@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolCallState, TurnToolCall } from "../turn-journal.ts";
-import { renderFailedTurnProgress } from "./failed-progress.ts";
+import { renderUnlandedTurnProgress } from "./unlanded-progress.ts";
 
 function call(state: ToolCallState, over: Partial<TurnToolCall> = {}): TurnToolCall {
 	return {
@@ -23,11 +23,11 @@ function call(state: ToolCallState, over: Partial<TurnToolCall> = {}): TurnToolC
 	};
 }
 
-describe("failed-turn progress rendering", () => {
+describe("unlanded-turn progress rendering", () => {
 	test("completed, failed, and dispatched calls plus assistant text render the exact wording", () => {
-		const rendered = renderFailedTurnProgress({
+		const rendered = renderUnlandedTurnProgress({
 			runId: "r-123",
-			failure: "provider exploded",
+			outcome: { kind: "failed", failure: "provider exploded" },
 			calls: [
 				call("completed", {
 					toolCallId: "c1",
@@ -81,9 +81,9 @@ describe("failed-turn progress rendering", () => {
 				call("completed", { toolCallId: `bulk-${i}`, name: `bulk-${i}`, result: "bulk" }),
 			),
 		];
-		const rendered = renderFailedTurnProgress({
+		const rendered = renderUnlandedTurnProgress({
 			runId: "r",
-			failure: "f",
+			outcome: { kind: "failed", failure: "f" },
 			calls,
 			partial: [{ role: "assistant", content: "x".repeat(2500) }],
 		});
@@ -104,9 +104,9 @@ describe("failed-turn progress rendering", () => {
 		expect(rendered!.text).not.toContain("bulk-9 ");
 
 		// Args and result previews are bounded.
-		const bounded = renderFailedTurnProgress({
+		const bounded = renderUnlandedTurnProgress({
 			runId: "r",
-			failure: "f",
+			outcome: { kind: "failed", failure: "f" },
 			calls: [call("completed", { toolCallId: "b", args, result: "r".repeat(400), name: "big" })],
 			partial: null,
 		});
@@ -127,9 +127,9 @@ describe("failed-turn progress rendering", () => {
 	test("resolved-retry keeps a known outcome, spent or not; an ambiguous one stays unknown", () => {
 		for (const retryConsumed of [false, true]) {
 			const render = (over: Partial<TurnToolCall>): string =>
-				renderFailedTurnProgress({
+				renderUnlandedTurnProgress({
 					runId: "r",
-					failure: "f",
+					outcome: { kind: "failed", failure: "f" },
 					calls: [call("resolved-retry", { retryConsumed, ...over })],
 					partial: null,
 				})!.text;
@@ -147,20 +147,25 @@ describe("failed-turn progress rendering", () => {
 
 	test("malformed partial (string, wrong shape) with no calls renders null and does not throw", () => {
 		expect(
-			renderFailedTurnProgress({ runId: "r", failure: "f", calls: [], partial: "raw text" }),
+			renderUnlandedTurnProgress({
+				runId: "r",
+				outcome: { kind: "failed", failure: "f" },
+				calls: [],
+				partial: "raw text",
+			}),
 		).toBeNull();
 		expect(
-			renderFailedTurnProgress({
+			renderUnlandedTurnProgress({
 				runId: "r",
-				failure: "f",
+				outcome: { kind: "failed", failure: "f" },
 				calls: [],
 				partial: { role: "assistant", content: "not an array" },
 			}),
 		).toBeNull();
 		expect(
-			renderFailedTurnProgress({
+			renderUnlandedTurnProgress({
 				runId: "r",
-				failure: "f",
+				outcome: { kind: "failed", failure: "f" },
 				calls: [],
 				partial: [{ role: "assistant", content: [{ type: "reasoning", text: "no text part" }] }],
 			}),
@@ -168,23 +173,53 @@ describe("failed-turn progress rendering", () => {
 	});
 
 	test("text-only progress renders without the tool-call section; calls-only without the text section", () => {
-		const textOnly = renderFailedTurnProgress({
+		const textOnly = renderUnlandedTurnProgress({
 			runId: "r",
-			failure: "f",
+			outcome: { kind: "failed", failure: "f" },
 			calls: [],
 			partial: [{ role: "assistant", content: "I had started rewriting the file." }],
 		});
 		expect(textOnly).not.toBeNull();
 		expect(textOnly!.text).not.toContain("Tool calls:");
 		expect(textOnly!.text).toContain("Assistant text before the failure:");
-		const callsOnly = renderFailedTurnProgress({
+		const callsOnly = renderUnlandedTurnProgress({
 			runId: "r",
-			failure: "f",
+			outcome: { kind: "failed", failure: "f" },
 			calls: [call("dispatched", { toolCallId: "d" })],
 			partial: [{ role: "assistant", content: [{ type: "reasoning", text: "thinking" }] }],
 		});
 		expect(callsOnly).not.toBeNull();
 		expect(callsOnly!.text).toContain("Tool calls:");
 		expect(callsOnly!.text).not.toContain("Assistant text before the failure:");
+	});
+
+	test("aborted and interrupted outcomes carry their own lead and caption", () => {
+		const aborted = renderUnlandedTurnProgress({
+			runId: "r-9",
+			outcome: {
+				kind: "aborted",
+				cause: "stopped by /stop, superseded by a settings change, or fenced by an operator action",
+			},
+			calls: [call("completed", { toolCallId: "c1", name: "bash", result: '{"ok":true}' })],
+			partial: [{ role: "assistant", content: "halfway." }],
+		});
+		expect(aborted).not.toBeNull();
+		expect(aborted!.text).toContain(
+			"The previous turn was stopped (run r-9): stopped by /stop, superseded by a settings change, or fenced by an operator action",
+		);
+		expect(aborted!.text).toContain("Assistant text before it stopped:");
+		expect(aborted!.text).not.toContain("before the failure");
+
+		const interrupted = renderUnlandedTurnProgress({
+			runId: "r-10",
+			outcome: { kind: "interrupted" },
+			calls: [],
+			partial: [{ role: "assistant", content: "started." }],
+		});
+		expect(interrupted).not.toBeNull();
+		expect(interrupted!.text).toContain(
+			"The previous turn was interrupted (run r-10): the process stopped before the turn finished",
+		);
+		expect(interrupted!.text).toContain("Assistant text before it stopped:");
 	});
 });

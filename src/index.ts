@@ -1,21 +1,22 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import pkg from "../package.json";
-import { ensureModelsDevCatalog, ensureOpenRouterCatalog } from "./agent/models-dev.ts";
+import { createClaudeEngine } from "./agent/claude-code/mod.ts";
+import { createChatGptLogin, ensureCodexProvider } from "./agent/codex/login.ts";
 import { ensureCodexModels } from "./agent/codex/models.ts";
+import { ensureModelsDevCatalog, ensureOpenRouterCatalog } from "./agent/models-dev.ts";
 import { generateNoteRewrite } from "./agent/note-rewrite.ts";
 import { makeStepBuilder } from "./agent/step.ts";
-import { createClaudeEngine } from "./agent/claude-code/mod.ts";
 import { makeTitleFor } from "./agent/title.ts";
-import { makeTurnTools as makeTurnToolsFactory } from "./agent/turn-tools.ts";
 import { makePrivateSender } from "./agent/tools/program.ts";
 import { checkBootMedia, makeTranscriber } from "./agent/transcribe.ts";
-import { makeVisionDepsFor } from "./agent/vision.ts";
 import { makeSpeaker, synthesizeSpeech } from "./agent/tts.ts";
-import { appendAuthRecord, loadAuth } from "./auth.ts";
+import { makeTurnTools as makeTurnToolsFactory } from "./agent/turn-tools.ts";
+import { makeVisionDepsFor } from "./agent/vision.ts";
+import { makeAppMailLane, presentProgramApproval } from "./app-approvals.ts";
 import { openAppPush } from "./app-push.ts";
+import { appendAuthRecord, loadAuth } from "./auth.ts";
 import { openCacheObservation } from "./cache-observation.ts";
-import { openWindowCapture } from "./window-capture.ts";
 import { openCachePruning } from "./cache-pruning.ts";
 import {
 	type Config,
@@ -37,42 +38,42 @@ import {
 	wireDelegation,
 } from "./delegation-lifecycle.ts";
 import { makeDesktops, openDesktops } from "./desktops.ts";
-import { makeAppMailLane, presentProgramApproval } from "./app-approvals.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { startHttp } from "./http/mod.ts";
 import { makeOperatorSeams } from "./http/operator.ts";
-import { createChatGptLogin, ensureCodexProvider } from "./agent/codex/login.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { wireMailAuthority } from "./mail.ts";
-import { startMailApproval, unavailableMailLane, type MailApproval } from "./mail-approval.ts";
+import { type MailApproval, startMailApproval, unavailableMailLane } from "./mail-approval.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { makeMailNoticeRouter, startMailWatcher } from "./mail-watcher.ts";
 import { type MemoryWorker, startMemoryWorker, wireMemory } from "./memory/mod.ts";
 import { OutageTracker } from "./memory/outage.ts";
 import { openNotes } from "./notes.ts";
 import { makePodman } from "./podman.ts";
-import { openPrograms } from "./programs.ts";
-import { startProgramApproval, type ProgramApproval } from "./program-approval.ts";
+import { type ProgramApproval, startProgramApproval } from "./program-approval.ts";
 import { startProgramOps } from "./program-ops.ts";
+import { openPrograms } from "./programs.ts";
 import { openProjects } from "./projects.ts";
-import { wireReviewer } from "./reviewer.ts";
-import { Runtime, type RuntimeDeps } from "./runtime.ts";
-
-import { makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
 import {
 	deliverOperatorReminder,
 	type OperatorReminder,
 	openTelegramReminders,
 } from "./reminders/index.ts";
+import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
+import { makeAuthorityRecheck } from "./responsibility-authority.ts";
+import { makeResponsibilityObserver } from "./responsibility-observer.ts";
+import { fileDelegationReport, fileRunReport } from "./responsibility-runs.ts";
+import { makeResponsibilityService } from "./responsibility-service.ts";
+import { wireReviewer } from "./reviewer.ts";
+import { Runtime, type RuntimeDeps } from "./runtime.ts";
+import { makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
 import { fireMail, fireWebhook, type SchedulerDeps, startScheduler } from "./scheduler.ts";
 import { SkillSources } from "./skill-provenance.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
-import { fileDelegationReport, fileRunReport } from "./responsibility-runs.ts";
-import { makeAuthorityRecheck } from "./responsibility-authority.ts";
 import { openSubagentsGuarded, type Subagents } from "./subagents/mod.ts";
 import { telegramAddressOf } from "./targets.ts";
-
+import { makeBotCleanup } from "./tg/cleanup.ts";
 import { withTimeout } from "./tg/deadline.ts";
 import { filterGuestTools } from "./tg/guest.ts";
 import {
@@ -83,29 +84,27 @@ import {
 import {
 	AUTH_TELEGRAM_TOKEN,
 	applyMenuButton,
+	type RunningBot,
 	startBot,
 	TelegramInitializationCancelled,
-	type RunningBot,
 } from "./tg/mod.ts";
-import { makeBotCleanup } from "./tg/cleanup.ts";
-import { postProgramApproval, startTelegramProgramApproval } from "./tg/program-approval.ts";
 import {
 	sendMemoryBlockedNotice,
 	sendMemoryOutageNotice,
 	sendSkillProposedNotice,
 } from "./tg/notify.ts";
 import { openPings } from "./tg/pings.ts";
+import { postProgramApproval, startTelegramProgramApproval } from "./tg/program-approval.ts";
 import { sendInterruptedTurnNotices } from "./tg/turn-notice.ts";
 import { makeWakeDeps } from "./tg/wake.ts";
-import { openTurnJournal } from "./turn-journal.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
+import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
+import { openTurnJournal } from "./turn-journal.ts";
 import { makeResumeOps, makeResumeSinks, type ResumeOps } from "./turn-resume.ts";
 import { sinkFor, wakeConversation } from "./wake.ts";
-import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
-import { makeResponsibilityObserver } from "./responsibility-observer.ts";
-import { makeResponsibilityService } from "./responsibility-service.ts";
 import { makeWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.ts";
 import { type DevelopmentInput, openWakeStore } from "./wake-store.ts";
+import { openWindowCapture } from "./window-capture.ts";
 
 // The file sink attaches before anything that can fail — boot errors
 // must land in goblin.log, not stderr against an empty log.
@@ -181,8 +180,13 @@ async function boot() {
 	const windowCapture = openWindowCapture(store.db);
 	// The crash journal shares the store's handle like the tg inbox.
 	// Its open reclassifies rows left 'running' — a graceful shutdown
-	// fences first, so 'running' at open means the process died mid-turn.
-	const turnJournal = openTurnJournal(store.db);
+	// fences first, so 'running' at open means the process died mid-turn
+	// — and records each such run's unlanded progress in history inside
+	// the same transaction (#195): the work that already happened stays
+	// transcript even though the process never got to say so.
+	const turnJournal = openTurnJournal(store.db, {
+		onInterrupted: (run, calls) => appendInterruptedProgress(store, run, calls),
+	});
 	// Durable wakes share the store handle — the trigger append, its
 	// history reference, and the delivery state commit together. The
 	// dispatcher binds after the runtime exists (the ownership hooks

@@ -235,33 +235,60 @@ latest owned input), except a legacy already-resumed row, which keeps
 NULL: a handover on missing durable identity refuses rather than key
 on a client message id.
 
-## Failed-turn progress
+## Unlanded-turn progress
 
-**A terminal failure records its progress in history** (ruling 2026-11-05;
-slice 1 of the 2026-10-31 reference review's F1). When a journaled turn ends
-on the terminal error rail, the runtime appends one `system` event before the
-run's terminal stamp: the owning run id, the failure message, the journal's
-tool ledger, and the assistant text checkpointed before the failure. It is
-ordinary history, so the next turn's view and compaction see it with no
-journal dependency in the view. The operator sees it too.
+**A turn whose reply never landed records its progress in history**
+(ruling 2026-11-05; extended 2026-11-08 to fences and process death —
+slice 1 of the 2026-10-31 reference review's F1, completed by #195).
+Operator rule: if it happened, it is part of the session transcript.
+Three rails append the same event shape — one `system` event carrying
+the owning run id, the outcome, the journal's tool ledger, and the
+assistant text checkpointed before the end. It is ordinary history, so
+the next turn's view and compaction see it with no journal dependency in
+the view. The operator sees it too.
+
+- **The error rail** (2026-11-05): a terminal failure appends the event
+  before the run's terminal stamp, with the failure message.
+- **The fenced rail** (2026-11-08, #195): a graceful fence — `/stop`, a
+  settings change, shutdown, deploy restart, a fence landing during
+  overflow recovery — appends the same event labeled ended-aborted,
+  before the `fenced` stamp. The write happens DESPITE the lost epoch:
+  it is the sanctioned post-fence state write (the ⏹ superseded display
+  stamp's precedent), recording what already ran, never continuing the
+  turn. A shutdown names itself; a stop names the stop.
+- **The interrupted rail** (2026-11-08, #195): process death. At journal
+  open, each row reclassified `interrupted` gets its event appended
+  INSIDE the reclassify transaction (one SQLite handle — the append
+  joins it): the two commit atomically, a failure rolls both back and
+  fails the open loud, and the next boot retries both — the record can
+  be neither lost nor duplicated. Only rows newly reclassified at that
+  open; historical interrupted rows keep their resume-only semantics.
+  Resuming a run whose progress was recorded keeps the verbatim seed —
+  the event is bounded evidence overlap, accepted (evidence, not
+  instructions).
 
 - **Outcome labels are the journal's, never upgraded.** A dispatched call
   with no recorded result renders as outcome unknown. The event is evidence,
   not proof of exactly-once execution, and it does not retire the journal,
   replay decisions, retry grants, or resume.
 - **No duplicate.** Nothing is appended when the reply landed, when there is
-  no progress to report, or when this attempt no longer holds authority.
-- **Out of scope for this slice:** fenced and interrupted runs (`/stop`,
-  process death; resume seeds those), attempts handed to a continuation
-  (overflow, fallback; the successor carries them), and journal faults (the
-  record is unreadable). Split-turn compaction, automatic retry, wake
-  ownership, and resume policy are unchanged.
+  no progress to report, or — error rail only — when this attempt no longer
+  holds authority. Attempts handed to a continuation (overflow, fallback)
+  record nothing; the successor carries them. Journal faults (the journal
+  cannot write, or the record is unreadable) attempt no event — the journal
+  row remains the evidence.
+- **Steps that ran are never replayed.** The event is a record, not a
+  rerun: boot stays notice-only, resume keeps its recovery guard, and the
+  event closes with exactly that instruction.
 - **Anchored to the attempt's consumed input.** The event's `anchorSeq` is the
   latest input the attempt consumed (folded steers included, merely queued
   inputs never) — the value a completed reply would anchor to — so editing a
-  later input does not remove it.
-- **An append failure doesn't change the outcome.** It logs an error and the
-  failure still reaches the sinks; the journal row remains the evidence.
+  later input does not remove it. The interrupted rail derives it from the
+  row's owned seqs, falling back to the admission anchor on legacy rows.
+- **An append failure doesn't change the outcome.** On the error and fenced
+  rails it logs an error and the outcome still reaches the sinks; the
+  interrupted rail is deliberately the loud exception — its append is
+  transactional with the reclassify and fails the open.
 
 ## What must not change
 
@@ -357,7 +384,7 @@ turn-structure change.
   job (`turn/compact-job.ts`): injected store, authority, fold ceiling,
   and lane-cancellation seams. And so does the run record
   (`turn/run-record.ts`), opened per attempt: the journal row's fault
-  box, terminal stamp, and failed-progress recorder plus the attempt's
+  box, terminal stamp, and unlanded-progress recorder plus the attempt's
   model-fallback config, with the run id read through an injected
   getter — adoption itself stays a runtime statement after `beginRun`.
   Since #201 the same boundary carries the two seams `runAttempt` no
@@ -365,9 +392,14 @@ turn-structure change.
   voice/file/synthesis hooks, `TurnSink`/`TurnDone` at `turn/sink.ts`)
   and **tool authority** (`turn/tool-authority.ts` — run row before any
   tool side effect, ownership begin, recovery guard, fence; the
-  `makeTools` contract is its `TurnToolMaker`). #195 (save each step as
-  it ends) lands its per-step record at that tool-authority seam, where
-  every dispatch of both engines already passes — no second home.
+  `makeTools` contract is its `TurnToolMaker`). Since #195 (2026-11-08)
+  that seam also owns step-end persistence: `saveStep` is the ONE home
+  for the run row's step checkpoints — both engines route their
+  step-end and steer-fold writes through it, never the journal
+  directly, so a checkpoint fault classifies as a journal fault exactly
+  like a fenced tool's write. The returned authority carries the run id
+  and the ownership-begun fact as fields the runtime reads — no
+  write-back callbacks into `runtime.ts`.
 
 ## The two text projections (#84 / #111)
 

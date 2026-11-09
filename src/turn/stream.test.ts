@@ -17,7 +17,6 @@ import { isTransientTurnFailure } from "../agent/provider-errors.ts";
 import { log } from "../log.ts";
 import { LOOP_DETECT_WARN } from "../loop-detect.ts";
 import { scriptedModel as scriptedEdge } from "../testkit/fake-model.ts";
-import type { TurnJournal } from "../turn-journal.ts";
 import {
 	ContextOverflowError,
 	failureFromStream,
@@ -224,6 +223,7 @@ function rig(
 		overflowRecoverable: false,
 		evidence: undefined,
 		runId: "rig-run",
+		saveStep: () => {},
 		turnStartMs: 0,
 		signal: new AbortController().signal,
 		...over,
@@ -748,10 +748,7 @@ describe("driveStream", () => {
 		const consumed: number[][] = [];
 		const r = rig([textReply("answer")], {
 			onOwnedInputs: (seqs) => consumed.push([...seqs]),
-			journal: {
-				checkpoint: (_runId: string, patch: { ownedInputSeqs?: number[]; steerMark?: number }) =>
-					checkpoints.push(patch),
-			} as unknown as TurnJournal,
+			saveStep: (patch) => checkpoints.push(patch),
 		});
 		const ok = member("converts", true, 2);
 		ok.message = { ...ok.message, id: "dup" };

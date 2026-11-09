@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { withoutReasoningCipher } from "./agent/codex/replay-state.ts";
 import { log } from "./log.ts";
@@ -24,6 +24,18 @@ export type ToolCallState =
 	| "resolved-skip";
 
 export type CallDecision = "record-result" | "authorize-retry" | "skip";
+
+// The run row's step checkpoint — what the tool-authority seam's saveStep
+// (#195) persists as each step ends: the assistant partial, the loop
+// state, and the steer-fold ownership writes ride the same patch.
+export interface TurnCheckpointPatch {
+	partial?: unknown;
+	loopState?: unknown;
+	filterRetryUsed?: boolean;
+	ownedInputSeqs?: number[];
+	steerMark?: number;
+	sourceInputSeq?: number | null | undefined;
+}
 const decisionToState: Record<CallDecision, ToolCallState> = {
 	"record-result": "resolved-done",
 	"authorize-retry": "resolved-retry",
@@ -134,17 +146,7 @@ export interface TurnJournal {
 		opts?: { replayed?: boolean },
 	): void;
 	noteToolError(runId: string, callId: string, error: unknown): void;
-	checkpoint(
-		runId: string,
-		patch: {
-			partial?: unknown;
-			loopState?: unknown;
-			filterRetryUsed?: boolean;
-			ownedInputSeqs?: number[];
-			steerMark?: number;
-			sourceInputSeq?: number | null | undefined;
-		},
-	): void;
+	checkpoint(runId: string, patch: TurnCheckpointPatch): void;
 	// Registers a generated resume-request event on an interrupted source —
 	// the same transaction that appends it to history. Refuses a source
 	// that is not interrupted and a registry that does not decode.
@@ -434,7 +436,16 @@ const RUN_SELECT = `SELECT r.*,
 	(SELECT COUNT(*) FROM turn_tool_calls c WHERE c.run_id = r.run_id AND c.state IN ('resolved-done','resolved-retry','resolved-skip')) AS calls_resolved
 	FROM turn_runs r`;
 
-export function openTurnJournal(db: Database): TurnJournal {
+export interface OpenTurnJournalOpts {
+	/** design/runtime-turn.md → Unlanded-turn progress: called inside the
+	 *  open transaction that reclassifies a 'running' row to
+	 *  'interrupted', with the decoded row and its calls — the hook
+	 *  appends the run's progress event to history, committing with the
+	 *  reclassify or not at all. Absent = reclassify only (test rigs). */
+	onInterrupted?(run: TurnRun, calls: TurnToolCall[]): void;
+}
+
+export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): TurnJournal {
 	db.run(`CREATE TABLE IF NOT EXISTS turn_runs (
 		run_id TEXT PRIMARY KEY,
 		conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -521,20 +532,6 @@ export function openTurnJournal(db: Database): TurnJournal {
 	// and take their immediate source's namespace at the next copy.
 	if (!callCols.has("origin_run")) {
 		db.exec("ALTER TABLE turn_tool_calls ADD COLUMN origin_run TEXT");
-	}
-	const stale = db
-		.query<{ run_id: string; conversation_id: string; started_ms: number }, [number]>(
-			"UPDATE turn_runs SET status = 'interrupted', finished_ms = ? WHERE status = 'running' RETURNING run_id, conversation_id, started_ms",
-		)
-		.all(Date.now());
-	if (stale.length > 0) {
-		for (const r of stale) {
-			log.warn("interrupted turn found", {
-				run: r.run_id,
-				conversation: r.conversation_id,
-				started: new Date(r.started_ms).toISOString(),
-			});
-		}
 	}
 
 	const qBegin = db.query(`INSERT INTO turn_runs (
@@ -630,7 +627,35 @@ export function openTurnJournal(db: Database): TurnJournal {
 		`${RUN_SELECT} WHERE r.status = 'interrupted' AND r.conversation_id = ? ORDER BY r.started_ms, r.run_id`,
 	);
 	const qCalls = db.query("SELECT * FROM turn_tool_calls WHERE run_id = ? ORDER BY rowid");
-	const interruptedAtOpen = stale.map((r) => decodeRun(qGet.get(r.run_id)));
+	// A row still 'running' at open means the process died mid-turn.
+	// Reclassify it 'interrupted' and — when the open wires the hook —
+	// record its unlanded progress in history in the SAME transaction
+	// (design/runtime-turn.md → Unlanded-turn progress): a crash between
+	// the two must neither lose the record nor duplicate it, so a hook
+	// throw rolls the reclassify back and fails the open loud; the next
+	// boot retries both.
+	const qStale = db.query<
+		{ run_id: string; conversation_id: string; started_ms: number },
+		[number]
+	>(
+		"UPDATE turn_runs SET status = 'interrupted', finished_ms = ? WHERE status = 'running' RETURNING run_id, conversation_id, started_ms",
+	);
+	const reclassify = (): TurnRun[] => {
+		const interrupted: TurnRun[] = [];
+		for (const r of qStale.all(Date.now())) {
+			log.warn("interrupted turn found", {
+				run: r.run_id,
+				conversation: r.conversation_id,
+				started: new Date(r.started_ms).toISOString(),
+			});
+			const run = decodeRun(qGet.get(r.run_id));
+			opts.onInterrupted?.(run, qCalls.all(run.runId).map(decodeCall));
+			interrupted.push(run);
+		}
+		return interrupted;
+	};
+	const interruptedAtOpen =
+		opts.onInterrupted === undefined ? reclassify() : db.transaction(reclassify)();
 	// Inherited evidence copies are namespaced by their ORIGIN run, never
 	// carried under the raw provider id. The primary key (run_id,
 	// tool_call_id) spans both the inherited copies and this attempt's

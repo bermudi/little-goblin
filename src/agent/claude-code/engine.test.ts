@@ -32,11 +32,13 @@ function recordingJournal() {
 		noteToolInput: (_runId: string, callId: string, name: string, args: unknown) => {
 			inputs.push({ callId, name, args });
 		},
-		checkpoint: (_runId: string, patch: unknown) => {
-			checkpoints.push(patch);
-		},
 	} as unknown as TurnJournal;
-	return { journal, inputs, checkpoints };
+	// The engines checkpoint through the saveStep seam (#195), never the
+	// journal directly — the recorder mirrors the seam, not the vendor.
+	const saveStep = (patch: unknown): void => {
+		checkpoints.push(patch);
+	};
+	return { journal, inputs, checkpoints, saveStep };
 }
 
 const fakeAuth: AuthStore = {
@@ -155,6 +157,7 @@ function rig(over: RigOver = {}) {
 		overflowRecoverable: false,
 		evidence: undefined,
 		runId: "run-claude-1",
+		saveStep: () => {},
 		turnStartMs: Date.now(),
 		signal: new AbortController().signal,
 		...over,
@@ -194,7 +197,7 @@ async function run(
 				return real;
 			},
 		} as unknown as ClaudeEngineConfig,
-		{ ...r.deps, journal },
+		{ ...r.deps, journal, saveStep: rec.saveStep },
 	);
 	return { outcome, fake, bridge: bridgeRef.current, ...r, journal, rec };
 }

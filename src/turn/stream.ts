@@ -13,6 +13,7 @@ import {
 	type UIMessage,
 	type UIMessageChunk,
 } from "ai";
+import { quotaFromMetadata } from "../agent/codex/receipts.ts";
 import { filterErrorStream, streamSurfaceErrors } from "../agent/filter-stream.ts";
 import {
 	isContentFilter,
@@ -21,11 +22,10 @@ import {
 	ProviderContentFilterError,
 } from "../agent/provider-errors.ts";
 import { makeToolCallRepair } from "../agent/tool-repair.ts";
-import { quotaFromMetadata } from "../agent/codex/receipts.ts";
 import type { AppLiveContext, AppQuota } from "../http/app-wire.ts";
 import { log } from "../log.ts";
 import type { EvidenceLimits, ToolCallDigest } from "../reviewer.ts";
-import type { TurnJournal } from "../turn-journal.ts";
+import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
 import { estimateHistoryChars, measurePrompt, type PromptSegments } from "./itemize.ts";
@@ -269,6 +269,11 @@ export interface StreamDeps<M extends WireMember> {
 	skillWatch?: SkillWatch | undefined;
 	journal?: TurnJournal | undefined;
 	runId: string;
+	// #195 — the run row's step checkpoint through its one home (the
+	// tool-authority seam's saveStep): both the step-end checkpoint and
+	// the steer fold's ownership write ride this, never the journal
+	// directly, so a throw classifies as a journal fault.
+	saveStep(patch: TurnCheckpointPatch): void;
 	turnStartMs: number;
 	signal: AbortSignal;
 	// design/model.md → Model fallback list. When the runtime has a next
@@ -526,7 +531,7 @@ export async function driveStream<M extends WireMember>(
 				ownedInputSeqs.add(seq);
 			}
 			deps.onOwnedInputs?.([...claimedSeqs]);
-			deps.journal?.checkpoint(deps.runId, {
+			deps.saveStep({
 				ownedInputSeqs: [...ownedInputSeqs],
 				steerMark,
 				sourceInputSeq: deps.sourceInputSeq?.(),
@@ -639,7 +644,7 @@ export async function driveStream<M extends WireMember>(
 			for (const m of step.response.messages) {
 				if (m.role === "assistant") partialMessages.push(m);
 			}
-			deps.journal?.checkpoint(deps.runId, {
+			deps.saveStep({
 				loopState: state.snapshot(),
 				filterRetryUsed,
 				...(partialMessages.length > 0 ? { partial: partialMessages } : {}),

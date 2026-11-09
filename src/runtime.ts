@@ -4,6 +4,7 @@
 import { randomUUID } from "node:crypto";
 import { type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import type { AcceptsMedia } from "./agent/attachments.ts";
+import type { ClaudeStep } from "./agent/claude-code/mod.ts";
 import { type CompactionOutcome, chooseBoundary } from "./agent/compaction.ts";
 import {
 	exhaustedMessage,
@@ -48,14 +49,17 @@ import {
 	type TurnRecovery,
 	terminalFailureMessage,
 } from "./turn/overflow.ts";
-import { openRunRecord } from "./turn/run-record.ts";
 import type { RunOwnershipHooks } from "./turn/run-ownership.ts";
+import { openRunRecord } from "./turn/run-record.ts";
+import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
 import { claimMembers, emitChunk, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
-import { openToolAuthority, type TurnToolMaker } from "./turn/tool-authority.ts";
-import type { TurnDone, TurnSink } from "./turn/sink.ts";
-import type { ClaudeStep } from "./agent/claude-code/mod.ts";
+import {
+	openToolAuthority,
+	type ToolAuthority,
+	type TurnToolMaker,
+} from "./turn/tool-authority.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import type { TurnJournal } from "./turn-journal.ts";
 import type { WindowCapture } from "./window-capture.ts";
@@ -743,10 +747,12 @@ export class Runtime {
 		// attempt's members are unlinked — a terminal failure in that span
 		// (a refused admission included) is invisible to the dispatcher's
 		// reconcile (no run row to read), so it must be announced instead
-		// of re-admitting the trigger forever.
-		let ownershipBegun = false;
+		// of re-admitting the trigger forever. The authority seam owns the
+		// begun fact; before it exists there is no row to link, so
+		// announcing is always right there.
+		let authority: ToolAuthority | undefined;
 		const announcePreRunFailure = (err: unknown) => {
-			if (ownershipBegun) return;
+			if (authority?.ownershipBegun === true) return;
 			this.deps.runOwnership?.preRunFailure?.({
 				conversationId: convId,
 				memberSeqs: turns.map((t) => t.seq),
@@ -850,7 +856,6 @@ export class Runtime {
 			}
 			return max ?? recovery?.sourceInputSeq ?? null;
 		};
-		let runId: string | null = null;
 		const record = openRunRecord({
 			journal,
 			store,
@@ -861,9 +866,19 @@ export class Runtime {
 			convModel: conv.model,
 			recovery,
 			ownedInputSeqs,
-			runId: () => runId,
+			// The authority seam mints the id and holds it; the record
+			// reads it through this getter — never a write-back callback.
+			runId: () => authority?.runId ?? null,
 		});
-		const { journalFault, journaled, stampRun, recordFailedProgress, fallback } = record;
+		const { journalFault, journaled, stampRun, recordUnlandedProgress, fallback } = record;
+		// The aborted outcome's cause: a shutdown fence must read as a
+		// restart, not an operator stop. Other fences have several sources
+		// (stop, settings change, correction, navigation roll) — the wording
+		// stays neutral rather than naming one that may not apply.
+		const fencedCause = (): string =>
+			this.closed
+				? "the process was shutting down"
+				: "stopped by /stop, superseded by a settings change, or fenced by an operator action";
 		try {
 			this.checkAuthority(convId, epoch);
 			// Recall uses admission-time eligibility; the model view still sees the
@@ -880,15 +895,15 @@ export class Runtime {
 			this.checkAuthority(convId, epoch);
 			// Delivery and tool authority are turn-owned seams: the fenced
 			// sink hooks (turn/delivery.ts), then the run row + ownership
-			// link + the tool fence (turn/tool-authority.ts) — #195 (save
-			// each step as it ends) grows its per-step record there.
+			// link + the tool fence + step-end persistence's one home,
+			// saveStep (turn/tool-authority.ts).
 			const delivery = sinkDelivery(sink, () => this.checkAuthority(convId, epoch));
 			// Until buildStep resolves, media capability must conservatively reject
 			// inlining.
 			const accepts: { current: AcceptsMedia } = {
 				current: { modalities: new Set(["text"]), carries: () => false },
 			};
-			const authority = openToolAuthority({
+			const auth = openToolAuthority({
 				conv,
 				convId,
 				epoch,
@@ -914,14 +929,11 @@ export class Runtime {
 				onJournalFault: () => controller.abort(),
 				runOwnership: this.deps.runOwnership,
 				checkAuthority: () => this.checkAuthority(convId, epoch),
-				onRunId: (id) => {
-					runId = id;
-				},
-				onOwnershipBegun: () => {
-					ownershipBegun = true;
-				},
 			});
-			const tools = authority.tools;
+			// The const is what closures below capture — the mutable slot
+			// above only bridges the pre-authority failure paths.
+			authority = auth;
+			const tools = auth.tools;
 			const step = await this.deps.buildStep(conv, tools);
 			this.checkAuthority(convId, epoch);
 			accepts.current = {
@@ -957,9 +969,11 @@ export class Runtime {
 				live,
 				state,
 				journal,
-				// The authority seam minted it; the local `runId` var only
-				// re-reads for the terminal paths below.
-				runId: authority.runId,
+				// The authority seam minted the run id and owns it.
+				runId: auth.runId,
+				// #195: step-end persistence's one home — the engines'
+				// checkpoints ride the seam, never the journal directly.
+				saveStep: auth.saveStep,
 				// A steer that joins mid-run is processed by this run — the
 				// wake hook hears only the joined seqs (converts that failed
 				// were settled, never joined). Journaled turns only.
@@ -967,7 +981,7 @@ export class Runtime {
 					? {}
 					: {
 							noteRunMembers: (seqs: number[]) =>
-								this.deps.runOwnership?.members(runId!, convId, seqs),
+								this.deps.runOwnership?.members(auth.runId, convId, seqs),
 						}),
 				assertAuthority: () => {
 					this.checkAuthority(convId, epoch);
@@ -1216,6 +1230,9 @@ export class Runtime {
 				controller.abort();
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
 				announcePreRunFailure(err);
+				// What already ran stays transcript — the sanctioned post-fence
+				// state write, before the stamp wake settling reads.
+				recordUnlandedProgress({ kind: "aborted", cause: fencedCause() });
 				stampRun("fenced", "undelivered");
 				await notifyAll({ kind: "fenced" });
 			} else if (err instanceof ContextOverflowError) {
@@ -1233,7 +1250,7 @@ export class Runtime {
 					live,
 					filterRetryUsed,
 					resumedFrom: sourceRunId,
-					failedRunId: runId ?? undefined,
+					failedRunId: authority?.runId,
 					operatorRequest: recovery?.operatorRequest,
 					recallVersion,
 					sourceInputSeq: sourceInputSeq(),
@@ -1263,7 +1280,13 @@ export class Runtime {
 					outcome.recovery.fallback = fallback.trail;
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
-				if (outcome.kind === "error") recordFailedProgress(outcome.message);
+				if (outcome.kind === "error") {
+					recordUnlandedProgress({ kind: "failed", failure: outcome.message });
+				} else if (outcome.kind === "fenced") {
+					// A fence landing during recovery is still a fence: the
+					// attempt's completed work stays transcript.
+					recordUnlandedProgress({ kind: "aborted", cause: fencedCause() });
+				}
 				announcePreRunFailure(err);
 				stampRun(
 					outcome.kind === "fenced" ? "fenced" : "error",
@@ -1285,8 +1308,8 @@ export class Runtime {
 				// fault before any fallback is considered.
 				let journaledCalls = 0;
 				try {
-					if (journal !== undefined && runId !== null) {
-						const id = runId;
+					if (journal !== undefined && authority !== undefined) {
+						const id = authority.runId;
 						journaledCalls = journaled(() => journal.callsFor(id)).length;
 					}
 				} catch (probeErr) {
@@ -1344,7 +1367,7 @@ export class Runtime {
 							startedAt: turnStartMs,
 							live,
 							filterRetryUsed,
-							predecessorRun: runId ?? undefined,
+							predecessorRun: authority?.runId,
 							recallVersion,
 							sourceInputSeq: sourceInputSeq(),
 							ownedInputSeqs: [...ownedInputSeqs],
@@ -1379,7 +1402,7 @@ export class Runtime {
 				// A withheld error never reached the wire — the terminal
 				// story goes out now, before the sinks settle.
 				if (errorHeld) emitChunk(convId, turns, live, { type: "error", errorText: done.message });
-				recordFailedProgress(done.message);
+				recordUnlandedProgress({ kind: "failed", failure: done.message });
 				announcePreRunFailure(err);
 				stampRun("error", "failed");
 				await notifyAll(done);

@@ -1,22 +1,22 @@
 // A real Runtime + real goblin.sqlite in a CHILD process, SIGKILLed at
 // observable points; the parent reopens the store.
 
+import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { Database } from "bun:sqlite";
-import type { Subprocess } from "bun";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { tool } from "ai";
+import type { Subprocess } from "bun";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { Runtime } from "./runtime.ts";
-
-import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { scriptedModel, textParts } from "./testkit/fake-model.ts";
 import { RecordingSink, waitUntil } from "./testkit.ts";
+import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
+import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 import { makeResumeOps } from "./turn-resume.ts";
 
@@ -104,6 +104,18 @@ async function killAndReopen(child: Subprocess, dbPath: string) {
 	return { store, journal };
 }
 
+// The production boot shape (index.ts): the open's reclassify records
+// each killed run's progress in history inside the same transaction.
+async function killAndReopenRecorded(child: Subprocess, dbPath: string) {
+	child.kill(9);
+	await child.exited;
+	const store = openStore(dbPath);
+	const journal = openTurnJournal(store.db, {
+		onInterrupted: (run, calls) => appendInterruptedProgress(store, run, calls),
+	});
+	return { store, journal };
+}
+
 describe("turn journal — a real killed process", () => {
 	test("kill after dispatch, before the result: call stays 'dispatched'", async () => {
 		const { child, dbPath, marker } = spawn("hang-in-tool", "dispatched");
@@ -170,6 +182,42 @@ describe("turn journal — a real killed process", () => {
 			expect(calls[0]!.result).toBe('{"ok":true}');
 			expect(calls[0]!.beganMs).not.toBeNull();
 			expect(calls[0]!.settledMs).not.toBeNull();
+		} finally {
+			store.close();
+		}
+	}, 60_000);
+
+	test("a killed turn's completed steps land in history at reopen — nothing replays (#195)", async () => {
+		const { child, dbPath } = spawn("complete-then-stall", "progress-recorded");
+		const probe = new Database(dbPath);
+		try {
+			await until(() => probeCallState(probe).includes("completed"), "completed row in child");
+		} finally {
+			probe.close();
+		}
+		const { store, journal } = await killAndReopenRecorded(child, dbPath);
+		try {
+			const runs = journal.interrupted();
+			expect(runs).toHaveLength(1);
+			const run = runs[0]!;
+			// The work that already happened is transcript: one system
+			// event records the completed call, ended-aborted.
+			const history = store.history(run.conversationId);
+			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
+			const event = history[1]!.parts[0];
+			expect(event).toMatchObject({ type: "text" });
+			if (event?.type !== "text") return;
+			expect(event.text).toContain("was interrupted");
+			expect(event.text).toContain("probe");
+			expect(event.text).toContain('completed: {"ok":true}');
+			// Boot is notice-only: reopen begot no new run row, and the
+			// completed step is never re-executed — resume alone may
+			// continue it, fenced by the recovery guard.
+			const rows = store.db
+				.query<{ run_id: string; status: string }, []>("SELECT run_id, status FROM turn_runs")
+				.all();
+			expect(rows).toHaveLength(1);
+			expect(rows[0]).toEqual({ run_id: run.runId, status: "interrupted" });
 		} finally {
 			store.close();
 		}

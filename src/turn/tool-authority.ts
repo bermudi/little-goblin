@@ -1,20 +1,20 @@
 // Tool authority: the run row lands before any tool side effect can
 // execute, ownership links at begin, and every dispatch is fenced and
 // journaled (tool-fence.ts). One seam, so runAttempt assembles tools
-// without owning the journal's ordering invariants — and #195 (save
-// each step as it ends) grows its per-step record here, where both
-// engines' dispatches already pass through.
+// without owning the journal's ordering invariants — and #195's
+// step-end persistence (saveStep) lives here too, the one home both
+// engines' step checkpoints pass through.
 
 import { randomUUID } from "node:crypto";
 import type { ToolSet } from "ai";
 import type { AcceptsMedia } from "../agent/attachments.ts";
 import type { OutgoingFile } from "../agent/tools/send.ts";
 import type { Conversation } from "../conversation.ts";
-import type { TurnJournal } from "../turn-journal.ts";
+import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import type { SinkDelivery } from "./delivery.ts";
-import { fenceTools } from "./tool-fence.ts";
 import { buildRetryGuard } from "./retry-guard.ts";
 import type { RunOwnershipHooks } from "./run-ownership.ts";
+import { fenceTools } from "./tool-fence.ts";
 
 // Build tools for the deployment workspace and conversation; delivery
 // hooks connect speak and file tools to the running sink.
@@ -71,18 +71,22 @@ export interface ToolAuthorityDeps {
 	onJournalFault(): void;
 	runOwnership?: RunOwnershipHooks | undefined;
 	checkAuthority(): void;
-	/** Fires once the beginRun write has succeeded — the attempt's run id
-	 *  becomes live exactly when its row does, so the attempt's terminal
-	 *  backstop can stamp a row that a later hook fault strands. */
-	onRunId(runId: string): void;
-	/** Fires once the ownership begin hook has linked the members — the
-	 *  pre-run failure announcement stops announcing past this point. */
-	onOwnershipBegun(): void;
 }
 
 export interface ToolAuthority {
 	tools: ToolSet;
 	runId: string;
+	/** True once the ownership begin hook has linked the members — the
+	 *  pre-run failure announcement stops announcing past this point. The
+	 *  begin runs inside open with no await after it, so the fact is
+	 *  final at return; false means no journal, so no row to link. */
+	ownershipBegun: boolean;
+	/** #195 — step-end persistence's one home. Both engines route their
+	 *  step-end checkpoints and steer-fold ownership writes through here,
+	 *  never the journal directly, so a checkpoint throw classifies as a
+	 *  journal fault exactly like a fenced tool's write: the turn dies as
+	 *  an error and never advances the fallback walk. */
+	saveStep(patch: TurnCheckpointPatch): void;
 }
 
 export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
@@ -132,8 +136,10 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 		}),
 	);
 	// Set only once the row exists — a failed beginRun leaves no row to
-	// stamp and no run for ownership to end.
-	deps.onRunId(newRunId);
+	// stamp and no run for ownership to end. The runtime reads the id off
+	// the returned authority; the run record reads it through the
+	// runtime-injected getter, never a write-back callback.
+	//
 	// Every member claimed into this attempt becomes this run's owned input
 	// here, before the stream can reach a tool. A wake linked to a
 	// predecessor the row continues or inherits moves with it.
@@ -145,8 +151,8 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 			...(record.resumedFrom !== undefined ? { resumedFrom: record.resumedFrom } : {}),
 			...(record.predecessorRun !== undefined ? { inheritFrom: [record.predecessorRun] } : {}),
 		});
-		deps.onOwnershipBegun();
 	}
+	const begunOwnership = journal !== undefined;
 	// The recovery guard reads the fresh row once, after inheritance: it
 	// already carries the source's decisions and every predecessor
 	// attempt's recorded executions. Calls this attempt then makes never
@@ -167,5 +173,8 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 		journalFault: deps.journalFault,
 		onJournalFault: deps.onJournalFault,
 	});
-	return { tools, runId: newRunId };
+	const saveStep = (patch: TurnCheckpointPatch): void => {
+		deps.journaled(() => journal?.checkpoint(newRunId, patch));
+	};
+	return { tools, runId: newRunId, ownershipBegun: begunOwnership, saveStep };
 }

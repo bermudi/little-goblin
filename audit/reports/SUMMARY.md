@@ -70,5 +70,5 @@ verifiers — verdict ledger with per-finding evidence and fix commits:
 - Surviving counted findings + partial remainders were filed 2026-11-08 as
   issues **#245–#335** (91: 2 P2, 89 P3; 89 `bug`, 2 `refactor`). Known re-finds
   not duplicated: #232, #237, #241.
-- Surviving smell/simplification items stay unfiled by this hunt's own convention
-  (they were never counted); they are itemized in the ledger.
+- Surviving smell/simplification items were filed 2026-11-08 as `refactor`/P3
+  issues **#336–#385** (50; mapping by report in the ledger).

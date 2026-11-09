@@ -14,9 +14,11 @@ no live services.
   **#245–#335** (91 issues; 89 `bug`, 2 `refactor`; 2 P2, 89 P3). Two known
   re-finds were not re-filed: hunt-08's restoreNoteVersion = #232, hunt-20 F6 = #237
   (and S4 = #241).
-- Still-there **smell/simplification** items (S-ids below) are recorded here but not
-  filed — the original hunt kept them out of its counts too. Say the word and they
-  become `refactor` issues.
+- Still-there **smell/simplification** items (S-ids below) were filed 2026-11-08 as
+  `refactor`/P3 issues **#336–#385** (50), in ledger order per report: hunt-01
+  #336–#341 · hunt-02 #342–#346 · hunt-08 #347–#352 · hunt-10 #353–#360 · hunt-15
+  #381–#385 · hunt-16 #361–#364 · hunt-17 #365–#370 · hunt-20 #371–#372 · hunt-21
+  #373–#380. (hunt-16 SIMPL-5 was skipped as the same mechanism as bug #311.)
 - The 37 fixed findings were fixed almost entirely on 2026-10-23/24, the days right
   after the hunt — commits cited per row.
 

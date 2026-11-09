@@ -209,10 +209,14 @@ export function AttentionView({
 	token,
 	onPage,
 	onConversation,
+	onItems,
 }: {
 	token: string | null;
 	onPage(page: AppAttentionPage): void;
 	onConversation(conversationId: string): void;
+	/** Reports the loaded items so the rail's dot reads this same
+	 *  snapshot. `null` means no truth yet (loading or failed). */
+	onItems?: ((items: AppAttentionItem[] | null) => void) | undefined;
 }) {
 	const attention = useLoad(() => getAttention(token));
 	const skills = useLoad(() => listSkills(token));
@@ -254,6 +258,12 @@ export function AttentionView({
 			clearInterval(t);
 		};
 	}, [polling, token]);
+
+	// The rail's dot rides refresh(), but this view's own load is fresher
+	// whenever it's open — report each snapshot so the two can't disagree.
+	useEffect(() => {
+		onItems?.(attention.data === null || attention.err !== null ? null : attention.data.items);
+	}, [attention.data, attention.err, onItems]);
 
 	if (attention.err !== null)
 		return (

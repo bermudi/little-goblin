@@ -55,3 +55,20 @@ Totals: **0 P0 · 9 P1 · 15 P2 · ~60 P3** + per-area simplification/smell list
 ## Clean areas (checked, nothing above P3)
 
 Subagents/delegation/herdr (9), voice (5), skills (17), projects/notes (16, one P2), testkit (21), programs/wake scheduler core (15, one P2), cache stability core invariants (4).
+
+## Verification 2026-11-08 (status column)
+
+All 21 reports were re-verified against HEAD `9f294218` by independent read-only
+verifiers — verdict ledger with per-finding evidence and fix commits:
+[verification-2026-11-08.md](verification-2026-11-08.md).
+
+**183 findings verified: 138 still-there · 37 fixed · 7 partial · 1 gone-unclear · 46 stayed leads.**
+
+- All P1s and P2s of this hunt were fixed — almost all on 2026-10-23/24, the days
+  right after it (fix commits in the ledger); two P2s and one P1 left partial
+  remainders, filed below.
+- Surviving counted findings + partial remainders were filed 2026-11-08 as
+  issues **#245–#335** (91: 2 P2, 89 P3; 89 `bug`, 2 `refactor`). Known re-finds
+  not duplicated: #232, #237, #241.
+- Surviving smell/simplification items stay unfiled by this hunt's own convention
+  (they were never counted); they are itemized in the ledger.

@@ -15,7 +15,7 @@ From the root of the checkout you changed:
 bun run try <name>      # defaults to "default"
 ```
 
-It installs dependencies and builds the app if needed, boots goblin, waits until the client and API both answer, and prints the URL on stdout. A cold start takes a few seconds. Names are lowercase letters, digits and dashes. Use your branch or issue as the name.
+It installs dependencies and builds the app if needed, boots goblin, waits until the client and API both answer, and prints the URL on stdout. A cold start takes a few seconds. If your tool runner kills the process group when the command returns (the instance dies right after boot), launch it as `setsid bun run try <name>`. Names are lowercase letters, digits and dashes. Use your branch or issue as the name.
 
 Each instance gets:
 

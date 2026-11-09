@@ -16,6 +16,11 @@ agents, his repos (design/delegation.md). Standalone long or code-heavy
 work goes to a worker subagent; anything needing a screen to a computer
 subagent. Goblin's own turn stays for chat and short work.
 
+**Status (2026-11-08).** Built, never enabled: prod `goblin.json5` has
+never held a `subagents` or `sandbox` block, so the tool is unmounted and
+no run has happened. Setup from the PWA is #390; the delegate tool
+description pointing at unmounted subagents is #392.
+
 ### Why not the obvious seams
 
 - **Not goblin's own turn.** The daily driver (`zai/glm-5.3`) is text-only

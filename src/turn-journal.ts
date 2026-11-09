@@ -24,6 +24,18 @@ export type ToolCallState =
 	| "resolved-skip";
 
 export type CallDecision = "record-result" | "authorize-retry" | "skip";
+
+// The run row's step checkpoint — what the tool-authority seam's saveStep
+// (#195) persists as each step ends: the assistant partial, the loop
+// state, and the steer-fold ownership writes ride the same patch.
+export interface TurnCheckpointPatch {
+	partial?: unknown;
+	loopState?: unknown;
+	filterRetryUsed?: boolean;
+	ownedInputSeqs?: number[];
+	steerMark?: number;
+	sourceInputSeq?: number | null | undefined;
+}
 const decisionToState: Record<CallDecision, ToolCallState> = {
 	"record-result": "resolved-done",
 	"authorize-retry": "resolved-retry",
@@ -134,17 +146,7 @@ export interface TurnJournal {
 		opts?: { replayed?: boolean },
 	): void;
 	noteToolError(runId: string, callId: string, error: unknown): void;
-	checkpoint(
-		runId: string,
-		patch: {
-			partial?: unknown;
-			loopState?: unknown;
-			filterRetryUsed?: boolean;
-			ownedInputSeqs?: number[];
-			steerMark?: number;
-			sourceInputSeq?: number | null | undefined;
-		},
-	): void;
+	checkpoint(runId: string, patch: TurnCheckpointPatch): void;
 	// Registers a generated resume-request event on an interrupted source —
 	// the same transaction that appends it to history. Refuses a source
 	// that is not interrupted and a registry that does not decode.

@@ -53,7 +53,7 @@ import type { RunOwnershipHooks } from "./turn/run-ownership.ts";
 import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
 import { claimMembers, emitChunk, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
-import { openToolAuthority, type TurnToolMaker } from "./turn/tool-authority.ts";
+import { openToolAuthority, type ToolAuthority, type TurnToolMaker } from "./turn/tool-authority.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import type { ClaudeStep } from "./agent/claude-code/mod.ts";
 import { buildModelView, type ViewContext } from "./turn/view.ts";
@@ -743,10 +743,12 @@ export class Runtime {
 		// attempt's members are unlinked — a terminal failure in that span
 		// (a refused admission included) is invisible to the dispatcher's
 		// reconcile (no run row to read), so it must be announced instead
-		// of re-admitting the trigger forever.
-		let ownershipBegun = false;
+		// of re-admitting the trigger forever. The authority seam owns the
+		// begun fact; before it exists there is no row to link, so
+		// announcing is always right there.
+		let authority: ToolAuthority | undefined;
 		const announcePreRunFailure = (err: unknown) => {
-			if (ownershipBegun) return;
+			if (authority?.ownershipBegun === true) return;
 			this.deps.runOwnership?.preRunFailure?.({
 				conversationId: convId,
 				memberSeqs: turns.map((t) => t.seq),
@@ -850,7 +852,6 @@ export class Runtime {
 			}
 			return max ?? recovery?.sourceInputSeq ?? null;
 		};
-		let runId: string | null = null;
 		const record = openRunRecord({
 			journal,
 			store,
@@ -861,7 +862,9 @@ export class Runtime {
 			convModel: conv.model,
 			recovery,
 			ownedInputSeqs,
-			runId: () => runId,
+			// The authority seam mints the id and holds it; the record
+			// reads it through this getter — never a write-back callback.
+			runId: () => authority?.runId ?? null,
 		});
 		const { journalFault, journaled, stampRun, recordFailedProgress, fallback } = record;
 		try {
@@ -880,15 +883,15 @@ export class Runtime {
 			this.checkAuthority(convId, epoch);
 			// Delivery and tool authority are turn-owned seams: the fenced
 			// sink hooks (turn/delivery.ts), then the run row + ownership
-			// link + the tool fence (turn/tool-authority.ts) — #195 (save
-			// each step as it ends) grows its per-step record there.
+			// link + the tool fence + step-end persistence's one home,
+			// saveStep (turn/tool-authority.ts).
 			const delivery = sinkDelivery(sink, () => this.checkAuthority(convId, epoch));
 			// Until buildStep resolves, media capability must conservatively reject
 			// inlining.
 			const accepts: { current: AcceptsMedia } = {
 				current: { modalities: new Set(["text"]), carries: () => false },
 			};
-			const authority = openToolAuthority({
+			const auth = openToolAuthority({
 				conv,
 				convId,
 				epoch,
@@ -914,14 +917,11 @@ export class Runtime {
 				onJournalFault: () => controller.abort(),
 				runOwnership: this.deps.runOwnership,
 				checkAuthority: () => this.checkAuthority(convId, epoch),
-				onRunId: (id) => {
-					runId = id;
-				},
-				onOwnershipBegun: () => {
-					ownershipBegun = true;
-				},
 			});
-			const tools = authority.tools;
+			// The const is what closures below capture — the mutable slot
+			// above only bridges the pre-authority failure paths.
+			authority = auth;
+			const tools = auth.tools;
 			const step = await this.deps.buildStep(conv, tools);
 			this.checkAuthority(convId, epoch);
 			accepts.current = {
@@ -957,9 +957,11 @@ export class Runtime {
 				live,
 				state,
 				journal,
-				// The authority seam minted it; the local `runId` var only
-				// re-reads for the terminal paths below.
-				runId: authority.runId,
+				// The authority seam minted the run id and owns it.
+				runId: auth.runId,
+				// #195: step-end persistence's one home — the engines'
+				// checkpoints ride the seam, never the journal directly.
+				saveStep: auth.saveStep,
 				// A steer that joins mid-run is processed by this run — the
 				// wake hook hears only the joined seqs (converts that failed
 				// were settled, never joined). Journaled turns only.
@@ -967,7 +969,7 @@ export class Runtime {
 					? {}
 					: {
 							noteRunMembers: (seqs: number[]) =>
-								this.deps.runOwnership?.members(runId!, convId, seqs),
+								this.deps.runOwnership?.members(auth.runId, convId, seqs),
 						}),
 				assertAuthority: () => {
 					this.checkAuthority(convId, epoch);
@@ -1233,7 +1235,7 @@ export class Runtime {
 					live,
 					filterRetryUsed,
 					resumedFrom: sourceRunId,
-					failedRunId: runId ?? undefined,
+					failedRunId: authority?.runId,
 					operatorRequest: recovery?.operatorRequest,
 					recallVersion,
 					sourceInputSeq: sourceInputSeq(),
@@ -1285,8 +1287,8 @@ export class Runtime {
 				// fault before any fallback is considered.
 				let journaledCalls = 0;
 				try {
-					if (journal !== undefined && runId !== null) {
-						const id = runId;
+					if (journal !== undefined && authority !== undefined) {
+						const id = authority.runId;
 						journaledCalls = journaled(() => journal.callsFor(id)).length;
 					}
 				} catch (probeErr) {
@@ -1344,7 +1346,7 @@ export class Runtime {
 							startedAt: turnStartMs,
 							live,
 							filterRetryUsed,
-							predecessorRun: runId ?? undefined,
+							predecessorRun: authority?.runId,
 							recallVersion,
 							sourceInputSeq: sourceInputSeq(),
 							ownedInputSeqs: [...ownedInputSeqs],

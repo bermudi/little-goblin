@@ -162,6 +162,21 @@ earliest member seq while a turn runs, else the first still-queued input,
 re-read when the fold reads history so late arrivals are covered. A landed
 reply needs no ceiling — the anchor rule already protects its exchange.
 
+## The summary's identity: the boundary seq, never the id
+
+Ruling (2026-11-08, #206): `summaryMessage` is minted at read time and rides
+the model view under a `compact-<boundarySeq>` id — a legibility label, never
+a classification key. Client message ids are neither unique nor trusted (the
+app intake stores them verbatim), and a client message whose chosen id starts
+with `compact-` is an ordinary client message everywhere: memory recall,
+retention eligibility, recall-block anchoring, and the resume visible set.
+Every reader recognizes the summary as the entry whose **seq equals the live
+compaction boundary** — a seq the store assigns and the client cannot forge.
+`MemoryEligibility` carries that seq (`summarySeq`) beside the span's
+eligibility stamp, so the memory-bound projection, the exchange-boundary walk,
+and `withMemoryBlocks` all classify by seq; operator resume reads the boundary
+from the store the same way.
+
 ## Timing: pre-empt at the step boundary
 
 The operator's ruling: pi's mid-run timing is right. Goblin compacts mid-turn

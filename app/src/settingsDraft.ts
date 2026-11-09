@@ -102,6 +102,9 @@ export interface DelegationRoleDraft {
 export interface DelegationDraft {
 	harnesses: HarnessDraft[];
 	roles: DelegationRoleDraft[];
+	// Harness names declared under delegation.machines.* — file-only,
+	// kept so a role default may name them like the server allows.
+	machineHarnesses: string[];
 }
 
 /** One argument per line; blank lines are not arguments. */
@@ -502,6 +505,9 @@ export function draftFromConfig(
 						.sort((a, b) =>
 							a.role === "default" ? -1 : b.role === "default" ? 1 : a.role.localeCompare(b.role),
 						),
+					machineHarnesses: Object.values(c.delegation.machines ?? {}).flatMap((m) =>
+						Object.keys(m.harnesses ?? {}),
+					),
 				}
 			: null,
 	};
@@ -586,14 +592,19 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 		if (draft.delegation.harnesses.some((h) => !h.kind.trim()))
 			return "Every coding agent needs a herdr kind.";
 		const roleRe = /^[a-z][a-z0-9_-]{0,15}$/;
-		const roles = draft.delegation.roles.map((r) => r.role.trim());
+		// A row with no agent is an absent mapping — the body builder
+		// drops it, and "none" is how an existing default gets cleared.
+		const named = draft.delegation.roles.filter((r) => r.harness.trim() !== "");
+		const roles = named.map((r) => r.role.trim());
 		if (roles.some((r) => !roleRe.test(r)))
 			return "Role names use lowercase letters, digits, _ or - (16 max).";
 		if (new Set(roles).size !== roles.length) return "Duplicate delegation role.";
-		for (const r of draft.delegation.roles) {
+		// Defaults may name a machine-side harness — the server schema
+		// accepts them and the file-only target gates the actual launch.
+		const known = [...names, ...draft.delegation.machineHarnesses];
+		for (const r of named) {
 			const target = r.harness.trim();
-			if (target === "") return `Role "${r.role}" has no coding agent.`;
-			if (!names.includes(target)) return `Role "${r.role}" names an unlisted coding agent.`;
+			if (!known.includes(target)) return `Role "${r.role}" names an unlisted coding agent.`;
 		}
 	}
 	const port = Number(draft.port);

@@ -12,9 +12,9 @@ import {
 	displayLevel,
 	draftFromConfig,
 	emptyTranscription,
-	switchProviderKind,
 	type ProvDraft,
 	type SettingsDraft,
+	switchProviderKind,
 	switchTranscriptionKind,
 	switchTtsKind,
 	type TrKindStash,
@@ -132,6 +132,7 @@ describe("draftFromConfig", () => {
 		d.delegation = {
 			harnesses: [{ name: "pi", kind: "pi", args: "" }],
 			roles: [{ role: "default", harness: "pi" }],
+			machineHarnesses: [],
 		};
 		expect(validateDraft(d, [prov()])).toBeNull();
 		d.delegation.roles = [{ role: "default", harness: "ghost" }];
@@ -144,6 +145,41 @@ describe("draftFromConfig", () => {
 		d.delegation.roles = [{ role: "default", harness: "pi" }];
 		d.delegation.harnesses = [{ name: "Pi", kind: "pi", args: "" }];
 		expect(validateDraft(d, [prov()])).toContain("lowercase letters");
+	});
+
+	test("a role default may name a harness declared only under a machine target", () => {
+		const c = baseConfig();
+		c.delegation = delegationConfigSchema.parse({
+			harnesses: { pi: { kind: "pi" } },
+			machines: { g7: { machine: "g7", harnesses: { devin: { kind: "devin" } } } },
+			defaults: { review: "devin" },
+		});
+		const { draft: d, providers } = draftFromConfig(c);
+		expect(d.delegation?.machineHarnesses).toEqual(["devin"]);
+		// The server schema accepts machine-side names — an unchanged
+		// save must not be blocked as "unlisted".
+		expect(validateDraft(d, providers)).toBeNull();
+		expect(bodyFromDraft(d, providers, authDefaults).delegation).toMatchObject({
+			defaults: { review: "devin" },
+		});
+	});
+
+	test("a role row with no agent is an absent mapping, not an error", () => {
+		const { draft: d, providers } = draftFromConfig(baseConfig());
+		d.delegation = {
+			harnesses: [{ name: "pi", kind: "pi", args: "" }],
+			// The always-visible default row, picked at "none".
+			roles: [
+				{ role: "default", harness: "" },
+				{ role: "review", harness: "pi" },
+			],
+			machineHarnesses: [],
+		};
+		expect(validateDraft(d, providers)).toBeNull();
+		expect(bodyFromDraft(d, providers, authDefaults).delegation).toEqual({
+			harnesses: { pi: { kind: "pi" } },
+			defaults: { review: "pi" },
+		});
 	});
 
 	test("absent optional blocks become null; telegram falls back to the top-level picks", () => {

@@ -16,6 +16,12 @@ function withDefault(roles: DelegationRoleDraft[]): DelegationRoleDraft[] {
 	return [{ role: "default", harness: "" }, ...roles];
 }
 
+// The injected default row stays display-only until it names an agent —
+// an unset default is absent, never a saved empty row.
+function savedRoles(list: DelegationRoleDraft[]): DelegationRoleDraft[] {
+	return list.filter((r) => !(r.role === "default" && r.harness === ""));
+}
+
 export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 	const { draft, setDraft, last } = ctx;
 	const del = draft.delegation;
@@ -31,11 +37,14 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 
 	const roles = del === null ? [] : withDefault(del.roles);
 	const names = del === null ? [] : del.harnesses.map((h) => h.name.trim()).filter((n) => n !== "");
+	// Machine-side harnesses are file-only but valid role picks — offer
+	// them marked so they aren't mistaken for editable local agents.
+	const machineNames = del === null ? [] : del.machineHarnesses.filter((n) => !names.includes(n));
 
 	const setRole = (i: number, patch: Partial<DelegationRoleDraft>) =>
 		edit((d) => {
 			const list = withDefault(d.roles);
-			return { ...d, roles: list.map((r, j) => (j === i ? { ...r, ...patch } : r)) };
+			return { ...d, roles: savedRoles(list.map((r, j) => (j === i ? { ...r, ...patch } : r))) };
 		});
 
 	return (
@@ -59,7 +68,11 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 										...d,
 										capabilities: { ...d.capabilities, delegation: true },
 										delegation: d.delegation ??
-											last.current.delegation ?? { harnesses: [], roles: [] },
+											last.current.delegation ?? {
+												harnesses: [],
+												roles: [],
+												machineHarnesses: [],
+											},
 									};
 								}
 								last.current.delegation = d.delegation;
@@ -179,9 +192,16 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 											{n}
 										</option>
 									))}
-									{r.harness !== "" && !names.includes(r.harness) && (
-										<option value={r.harness}>{r.harness} (unlisted)</option>
-									)}
+									{machineNames.map((n) => (
+										<option key={n} value={n}>
+											{n} (machine)
+										</option>
+									))}
+									{r.harness !== "" &&
+										!names.includes(r.harness) &&
+										!machineNames.includes(r.harness) && (
+											<option value={r.harness}>{r.harness} (unlisted)</option>
+										)}
 								</select>
 								{r.role !== "default" && (
 									<button
@@ -191,7 +211,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 										onClick={() =>
 											edit((d) => ({
 												...d,
-												roles: withDefault(d.roles).filter((_, j) => j !== i),
+												roles: savedRoles(withDefault(d.roles).filter((_, j) => j !== i)),
 											}))
 										}
 									>
@@ -203,7 +223,10 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 						<RoleAdder
 							taken={roles.map((r) => r.role)}
 							onAdd={(role) =>
-								edit((d) => ({ ...d, roles: [...withDefault(d.roles), { role, harness: "" }] }))
+								edit((d) => ({
+									...d,
+									roles: savedRoles([...withDefault(d.roles), { role, harness: "" }]),
+								}))
 							}
 						/>
 						<div className="cap ops-cap">A named role with no entry uses the default agent.</div>

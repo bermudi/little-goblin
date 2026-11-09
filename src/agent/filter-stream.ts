@@ -5,8 +5,15 @@
 
 import type { LanguageModelV4StreamPart, LanguageModelV4StreamResult } from "@ai-sdk/provider";
 import { wrapLanguageModel, type LanguageModel } from "ai";
-import { isContentFilter, ProviderContentFilterError } from "./provider-errors.ts";
 import { log } from "../log.ts";
+import { isContentFilter, ProviderContentFilterError } from "./provider-errors.ts";
+
+// Errors that reached the wire as provider stream error parts — the one
+// surface streamText's onError-retry machinery can re-dispatch (a
+// pre-stream throw bypasses it and surfaces as a top-level part). The
+// transient step retry grants only for members: a granted request the
+// SDK would ignore is a log line lying about a retry that never ran.
+export const streamSurfaceErrors = new WeakSet<object>();
 
 export function filterErrorStream(model: LanguageModel, conversation: string): LanguageModel {
 	if (typeof model === "string") return model;
@@ -76,6 +83,13 @@ export function filterErrorStream(model: LanguageModel, conversation: string): L
 										controller.enqueue({ type: "error", error });
 										controller.close();
 									} else if (value.type === "finish" || value.type === "error") {
+										if (
+											value.type === "error" &&
+											typeof value.error === "object" &&
+											value.error !== null
+										) {
+											streamSurfaceErrors.add(value.error);
+										}
 										flush();
 										controller.enqueue(value);
 									} else if (buffered.length > 0 || isToolPart(value)) {

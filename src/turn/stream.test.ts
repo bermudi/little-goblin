@@ -13,6 +13,7 @@ import {
 import { type LanguageModel, tool, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
 import { ATTACHMENT_PART } from "../agent/attachments.ts";
+import { isTransientTurnFailure } from "../agent/provider-errors.ts";
 import { log } from "../log.ts";
 import { LOOP_DETECT_WARN } from "../loop-detect.ts";
 import { scriptedModel as scriptedEdge } from "../testkit/fake-model.ts";
@@ -369,6 +370,88 @@ describe("driveStream — the provider retry budget (1min)", () => {
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("failed");
 		expect(failing.prompts.length).toBe(1);
+	});
+});
+
+describe("driveStream — transient transport step retries (#191)", () => {
+	// The prod shape (goblin.log 2026-11-08): a raw fetch TypeError rides a
+	// stream error part after output had already started — not SDK-flagged
+	// retryable, so nothing retried it and the turn died.
+	const reset = (): LanguageModelV4StreamPart => ({
+		type: "error",
+		error: new TypeError("fetch failed", {
+			cause: new Error("read ECONNRESET: The socket connection was closed unexpectedly"),
+		}),
+	});
+
+	test("a mid-stream socket reset retries the failed step once — the turn completes", async () => {
+		const warning = spyOn(log, "warn").mockImplementation(() => {});
+		try {
+			const failing = scriptedModel([
+				[
+					{ type: "stream-start", warnings: [] },
+					{ type: "text-start", id: "t1" },
+					{ type: "text-delta", id: "t1", delta: "partial " },
+					reset(),
+				],
+				textReply("recovered"),
+			]);
+			const r = rig([], {
+				step: { model: failing.model, system: "test", transientRetryDelayMs: 0 },
+			});
+			const outcome = await driveStream(r.deps);
+			expect(outcome.kind).toBe("ok");
+			expect(failing.prompts).toHaveLength(2);
+			expect(failing.prompts[0]).toBe(failing.prompts[1]);
+			// Already-streamed partial text stays; the recovered answer lands.
+			expect(r.head.text.replace(/\s+/g, "").trim()).toBe("partialrecovered");
+			// The retry line names attempt and delay; the error never hit the wire.
+			const retryLine = warning.mock.calls.find(([msg]) =>
+				msg.includes("retrying the failed model step"),
+			);
+			expect(retryLine).toBeDefined();
+			expect(retryLine![2]).toMatchObject({ attempt: 1, delayMs: 0, model: "fake-1" });
+			expect(r.live.chunks.map((c) => c.type)).not.toContain("error");
+		} finally {
+			warning.mockRestore();
+		}
+	});
+
+	test("the budget is one retry per step — a second transient error ends the stream", async () => {
+		const failing = scriptedModel([[reset()], [reset()], textReply("never")]);
+		const r = rig([], { step: { model: failing.model, system: "test", transientRetryDelayMs: 0 } });
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("failed");
+		if (outcome.kind !== "failed") return;
+		expect(failing.prompts).toHaveLength(2);
+		expect(outcome.errorText).toContain("fetch failed");
+		// The scheduler stamp survives: the failure is still transient-class.
+		expect(isTransientTurnFailure(outcome.rawError)).toBe(true);
+	});
+
+	test("a later step gets a fresh budget — earlier tools are never replayed", async () => {
+		const probe = probeTool();
+		const failing = scriptedModel([toolCallStep("c1", 10), [reset()], textReply("done")]);
+		const r = rig([], {
+			step: { model: failing.model, system: "test", transientRetryDelayMs: 0 },
+		});
+		r.deps.tools = { probe };
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		// Tool step, failed step, retry — the tool ran exactly once.
+		expect(failing.prompts).toHaveLength(3);
+		expect(r.head.calls).toEqual([{ tool: "probe", input: {} }]);
+	});
+
+	test("a non-transient error part is not retried", async () => {
+		const failing = scriptedModel([
+			[{ type: "error", error: new Error("bad request shape") }],
+			textReply("never"),
+		]);
+		const r = rig([], { step: { model: failing.model, system: "test", transientRetryDelayMs: 0 } });
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("failed");
+		expect(failing.prompts).toHaveLength(1);
 	});
 });
 

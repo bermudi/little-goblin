@@ -13,10 +13,11 @@ import {
 	type UIMessage,
 	type UIMessageChunk,
 } from "ai";
-import { filterErrorStream } from "../agent/filter-stream.ts";
+import { filterErrorStream, streamSurfaceErrors } from "../agent/filter-stream.ts";
 import {
 	isContentFilter,
 	isContextOverflow,
+	isTransientTurnFailure,
 	ProviderContentFilterError,
 } from "../agent/provider-errors.ts";
 import { makeToolCallRepair } from "../agent/tool-repair.ts";
@@ -195,6 +196,27 @@ export interface StreamStep {
 	// Provider retry rule for the call — 1min carries 0, absent keeps
 	// the SDK default.
 	maxRetries?: number;
+	// Delay before the transient-transport step retry re-dispatches.
+	// Absent keeps the SDK retry ladder's initial delay; tests zero it.
+	transientRetryDelayMs?: number;
+}
+
+// The SDK retry ladder's initialDelayInMs default — one delay story for
+// every retry goblin grants.
+const TRANSIENT_RETRY_DELAY_MS = 2000;
+
+// A stopped turn must not hold the lane for the full backoff.
+function awaitRetryDelay(ms: number, signal: AbortSignal): Promise<void> {
+	if (ms <= 0 || signal.aborted) return Promise.resolve();
+	return new Promise((resolve) => {
+		const timer = setTimeout(finish, ms);
+		function finish(): void {
+			clearTimeout(timer);
+			signal.removeEventListener("abort", finish);
+			resolve();
+		}
+		signal.addEventListener("abort", finish, { once: true });
+	});
 }
 
 export interface StreamDeps<M extends WireMember> {
@@ -326,6 +348,14 @@ export async function driveStream<M extends WireMember>(
 	let rawError: unknown = null;
 	let filterRetryPending = false;
 	let filterRetryUsed = deps.filterRetryUsed;
+	// The SDK grants one onError-requested retry per model step
+	// (callbackStreamRetryCount), shared by every branch below —
+	// retryGrantedStep mirrors that budget so a granted request is
+	// always a real re-dispatch, never a logged wish. stepCount is the
+	// ended-steps gauge; a retried step ends once, after its retry.
+	let retryGrantedStep: number | null = null;
+	let transientRetries = 0;
+	let transientRetryPending = false;
 	// Read inside streamText's onStepEnd, so it must be declared before
 	// the factory call — an await inserted between the two leaves every
 	// step end in the TDZ while still compiling.
@@ -518,12 +548,13 @@ export async function driveStream<M extends WireMember>(
 		abortSignal: deps.signal,
 		// Callback-directed retries only (onError): the SDK buffers tool parts until the attempt ends cleanly, so blanket step retries would redo completed work against the identical prompt.
 		streamRetries: 0,
-		onError: ({ error }) => {
+		onError: async ({ error }) => {
 			if (isContentFilter(error)) {
 				deps.assertAuthority();
-				if (!filterRetryUsed) {
+				if (!filterRetryUsed && retryGrantedStep !== stepCount) {
 					filterRetryUsed = true;
 					filterRetryPending = true;
+					retryGrantedStep = stepCount;
 					log.warn("provider content filter — retrying unchanged model call once", error, {
 						conversation: convId,
 						epoch,
@@ -538,6 +569,42 @@ export async function driveStream<M extends WireMember>(
 					epoch,
 					blockedUsage: error instanceof ProviderContentFilterError ? (error.usage ?? null) : null,
 				});
+			} else if (streamSurfaceErrors.has(error as object) && isTransientTurnFailure(error)) {
+				// A transient transport failure (socket reset mid-stream) on one
+				// model step — the failed step re-dispatches, earlier steps and
+				// their tool results are preserved (SDK stream-retry contract).
+				// Only stream-surface errors reach the retry machinery; the
+				// pre-stream surface is the transport middleware's lane
+				// (agent/providers.ts).
+				deps.assertAuthority();
+				const delayMs = deps.step.transientRetryDelayMs ?? TRANSIENT_RETRY_DELAY_MS;
+				// Sleep only when a retry will actually be granted — the
+				// budget-spent and aborted paths must not pay the delay.
+				if (!deps.signal.aborted && retryGrantedStep !== stepCount) {
+					await awaitRetryDelay(delayMs, deps.signal);
+					if (!deps.signal.aborted) {
+						retryGrantedStep = stepCount;
+						transientRetries++;
+						transientRetryPending = true;
+						log.warn("transient model stream error — retrying the failed model step", error, {
+							conversation: convId,
+							epoch,
+							model: modelLabel,
+							attempt: transientRetries,
+							delayMs,
+						});
+						return { retry: true };
+					}
+				}
+				// An aborted turn takes the fence path below — one story, not two.
+				if (!deps.signal.aborted) {
+					log.warn("transient model stream error — step retry budget spent", error, {
+						conversation: convId,
+						epoch,
+						model: modelLabel,
+						attempt: transientRetries,
+					});
+				}
 			}
 			rawError = error;
 			log.error("model stream error", error, { conversation: convId });
@@ -553,6 +620,14 @@ export async function driveStream<M extends WireMember>(
 				log.info("provider content filter retry recovered", {
 					conversation: convId,
 					epoch,
+				});
+			}
+			if (transientRetryPending && step.finishReason !== "error") {
+				transientRetryPending = false;
+				log.info("transient stream retry recovered", {
+					conversation: convId,
+					epoch,
+					retries: transientRetries,
 				});
 			}
 			lastStepInputTokens = step.usage.inputTokens ?? null;

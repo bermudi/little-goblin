@@ -33,6 +33,9 @@ export interface ModelStep {
 	// rules override the SDK default (2) — 1min bills every attempt, so
 	// its steps carry 0. Absent keeps the default.
 	maxRetries?: number;
+	// Delay before the transient-transport step retry re-dispatches.
+	// Absent keeps the SDK retry ladder's initial delay; tests zero it.
+	transientRetryDelayMs?: number;
 }
 
 /** The deps object every engine consumes, minus the step it adds back. */

@@ -17,6 +17,7 @@ import {
 import { SettingsAccess } from "./SettingsAccess.tsx";
 import { SettingsAccounts } from "./SettingsAccounts.tsx";
 import { SettingsCapabilities } from "./SettingsCapabilities.tsx";
+import { SettingsDelegation } from "./SettingsDelegation.tsx";
 import { SettingsMemory } from "./SettingsMemory.tsx";
 import { SettingsModels } from "./SettingsModels.tsx";
 import { SettingsSystem } from "./SettingsSystem.tsx";
@@ -57,6 +58,7 @@ const SECTIONS: { key: Section; label: string; sub: string }[] = [
 	{ key: "telegram", label: "Telegram", sub: "Bot channel and replies" },
 	{ key: "access", label: "Access", sub: "Who can talk to goblin" },
 	{ key: "capabilities", label: "Capabilities", sub: "Tools goblin can use" },
+	{ key: "delegation", label: "Delegation", sub: "Coding agents and defaults" },
 	{ key: "system", label: "System", sub: "Version, restarts, log level" },
 ];
 
@@ -95,6 +97,7 @@ const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
 	port: "http port",
 	logLevel: "log level",
 	memory: "memory",
+	delegation: "delegation",
 };
 
 export function SettingsView({
@@ -148,6 +151,7 @@ export function SettingsView({
 		search: null,
 		fetch: null,
 		memory: null,
+		delegation: null,
 	});
 	const ttsStash = useRef<TtsKindStash>({});
 	const trStash = useRef<TrKindStash>({});
@@ -225,6 +229,7 @@ export function SettingsView({
 					search: restored.search,
 					fetch: restored.fetch,
 					memory: restored.memory,
+					delegation: restored.delegation,
 				};
 				setCapStates(data.capabilities ?? null);
 				setHasAppToken(data.config.appToken !== undefined);
@@ -254,8 +259,8 @@ export function SettingsView({
 						err instanceof ApiError && err.status === 0
 							? err.message
 							: err instanceof ApiError
-							? `The settings endpoint answered ${err.status}: ${err.message}`
-							: "Couldn't reach goblin — check the tailnet.",
+								? `The settings endpoint answered ${err.status}: ${err.message}`
+								: "Couldn't reach goblin — check the tailnet.",
 					);
 			},
 		);
@@ -728,6 +733,7 @@ export function SettingsView({
 			{eff === "telegram" && <SettingsTelegram ctx={ctx} />}
 			{eff === "access" && <SettingsAccess ctx={ctx} />}
 			{eff === "capabilities" && <SettingsCapabilities ctx={ctx} />}
+			{eff === "delegation" && <SettingsDelegation ctx={ctx} />}
 			{eff === "system" && <SettingsSystem ctx={ctx} />}
 
 			<div className="savebar">

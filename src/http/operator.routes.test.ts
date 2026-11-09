@@ -857,6 +857,81 @@ describe("config save", () => {
 			model: "gone/glm-5.3",
 		});
 	});
+
+	test("a delegation save keeps the machine targets the editor cannot edit", async () => {
+		const d: OperatorDeps = {
+			configRef: {
+				current: parseConfig({
+					providers: { test: { kind: "codex" } },
+					model: "test/m",
+					operators: [7],
+					allowedUsers: [],
+					delegation: {
+						harnesses: { pi: { kind: "pi" }, old: { kind: "codex" } },
+						machines: { g7: { machine: "g7", root: "~/build" } },
+						defaults: { default: "pi" },
+					},
+				}),
+			},
+			onConfigWritten: () => {},
+		};
+		const res = await postConfig(d, {
+			delegation: {
+				harnesses: { pi: { kind: "pi", args: ["--model", "sol"] }, review: { kind: "pi" } },
+				defaults: { default: "pi", review: "review" },
+			},
+		});
+		expect(res?.status).toBe(200);
+		expect(loadConfig()?.delegation).toEqual({
+			harnesses: { pi: { kind: "pi", args: ["--model", "sol"] }, review: { kind: "pi" } },
+			machines: { g7: { machine: "g7", root: "~/build" } },
+			defaults: { default: "pi", review: "review" },
+		});
+		// A default naming nothing is rejected before any write.
+		const bad = await postConfig(d, {
+			delegation: {
+				harnesses: { pi: { kind: "pi" } },
+				defaults: { default: "pi", build: "ghost" },
+			},
+		});
+		expect(bad?.status).toBe(422);
+		expect(loadConfig()?.delegation?.defaults).toEqual({ default: "pi", review: "review" });
+	});
+
+	test("turning delegation off then saving a block drops the parked copy", async () => {
+		const d: OperatorDeps = {
+			configRef: {
+				current: parseConfig({
+					providers: { test: { kind: "codex" } },
+					model: "test/m",
+					operators: [7],
+					allowedUsers: [],
+					delegation: { harnesses: { pi: { kind: "pi" } }, defaults: { default: "pi" } },
+				}),
+			},
+			onConfigWritten: () => {},
+		};
+		// Off parks the block so an on-flip can restore it.
+		expect((await postConfig(d, { capabilities: { delegation: false } }))?.status).toBe(200);
+		expect(loadConfig()?.delegation).toBeUndefined();
+		expect(loadConfig()?.parked?.delegation).toEqual({
+			harnesses: { pi: { kind: "pi" } },
+			defaults: { default: "pi" },
+		});
+		// An edited block supersedes it — the stale copy must not come back.
+		expect(
+			(
+				await postConfig(d, {
+					delegation: { harnesses: { codex: { kind: "codex" } }, defaults: { default: "codex" } },
+				})
+			)?.status,
+		).toBe(200);
+		expect(loadConfig()?.delegation).toEqual({
+			harnesses: { codex: { kind: "codex" } },
+			defaults: { default: "codex" },
+		});
+		expect(loadConfig()?.parked?.delegation).toBeUndefined();
+	});
 });
 
 describe("memory/blocked route", () => {

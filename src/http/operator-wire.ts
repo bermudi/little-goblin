@@ -106,6 +106,17 @@ export interface ConfigPostBody {
 	fetch: "" | Array<{ kind: string; auth?: string }>;
 	operators: number[];
 	allowedUsers: number[];
+	// The editable face of delegation: harness definitions and the
+	// role → harness defaults. Machine targets stay file-only (their
+	// herdr profiles are host-bound) and the server merge preserves
+	// them untouched.
+	delegation?:
+		| ""
+		| {
+				harnesses: Record<string, { kind: string; args?: string[] }>;
+				defaults?: Record<string, string>;
+		  }
+		| undefined;
 	telegram: {
 		enabled?: boolean;
 		apiRoot: string;

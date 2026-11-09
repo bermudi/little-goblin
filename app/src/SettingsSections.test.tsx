@@ -200,7 +200,9 @@ const waitFor = async (pred: () => boolean, label: string) => {
 const click = async (el: Element | null | undefined) => {
 	expect(el).toBeTruthy();
 	await act(async () => {
-		el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
+		el?.dispatchEvent(
+			new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+		);
 	});
 	await settle();
 };
@@ -459,6 +461,46 @@ describe("Web", () => {
 		await openSection("Web");
 		expect(container.querySelector('input[aria-label*="secret name"]')).toBeNull();
 		expect(container.textContent).not.toContain("auth.jsonl");
+	});
+});
+
+describe("Delegation", () => {
+	test("role selects and harness args edit the delegation body", async () => {
+		settings = parseConfig({
+			...BASE,
+			delegation: {
+				harnesses: {
+					pi: { kind: "pi" },
+					"pi-review": { kind: "pi", args: ["--model", "sol"] },
+				},
+				defaults: { default: "pi", review: "pi-review" },
+			},
+		});
+		await mountSettings();
+		await openSection("Delegation");
+		const select = container.querySelector('select[aria-label="agent for role review"]');
+		expect(select).toBeTruthy();
+		await act(async () => {
+			Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, "value")!.set!.call(
+				select,
+				"pi",
+			);
+			select!.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+		});
+		await waitFor(() => savedBodies.length > 0, "delegation save");
+		expect(savedBodies.at(-1)?.delegation).toMatchObject({
+			harnesses: { pi: { kind: "pi" }, "pi-review": { kind: "pi", args: ["--model", "sol"] } },
+			defaults: { default: "pi", review: "pi" },
+		});
+	});
+
+	test("turning delegation on with no agents blocks a save and says why", async () => {
+		await mountSettings();
+		await openSection("Delegation");
+		await click(container.querySelector('[aria-label="delegation"]'));
+		await settle();
+		expect(savedBodies.length).toBe(0);
+		expect(container.textContent).toContain("add at least one coding agent");
 	});
 });
 

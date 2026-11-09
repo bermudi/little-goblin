@@ -1,6 +1,7 @@
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import type { AppConversationList, AppNoteSummary, AppProject } from "../../src/http/app-wire.ts";
 import { ApiError, createNote, createProject, listNotes, patchProject } from "./api.ts";
+import { useConfirm } from "./confirm.tsx";
 import { relTime } from "./memoryShared.tsx";
 import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
 
@@ -452,6 +453,7 @@ export function ProjectView({
 	// Same double-commit guard as ConversationRow's rename — Enter
 	// unmounts the input, whose blur would PATCH a second time.
 	const committed = useRef(false);
+	const confirm = useConfirm();
 	useEffect(() => {
 		if (renaming) {
 			committed.current = false;
@@ -484,25 +486,27 @@ export function ProjectView({
 		patch({ name: t }, "rename the project");
 	};
 	const saveInstructions = () => patch({ instructions }, "save instructions");
-	const changeMemory = (next: "shared" | "off") => {
+	const changeMemory = async (next: "shared" | "off") => {
 		if (next === project.memory) return;
 		if (
 			next === "off" &&
-			!window.confirm(
-				`Turn memory off for "${project.name}"? Its existing chats will stop sending and recalling memories.`,
-			)
+			!(await confirm.ask({
+				message: `Turn memory off for "${project.name}"? Its existing chats will stop sending and recalling memories.`,
+				confirmLabel: "Turn off",
+			}))
 		) {
 			return;
 		}
 		patch({ memory: next }, "change memory");
 	};
-	const toggleArchived = () => {
+	const toggleArchived = async () => {
 		const archiving = project.archivedAt === null;
 		if (
 			archiving &&
-			!window.confirm(
-				`Archive "${project.name}"? It moves to Archived projects and its composer closes. Chats and notes are kept.`,
-			)
+			!(await confirm.ask({
+				message: `Archive "${project.name}"? It moves to Archived projects and its composer closes. Chats and notes are kept.`,
+				confirmLabel: "Archive",
+			}))
 		) {
 			return;
 		}
@@ -613,7 +617,7 @@ export function ProjectView({
 								aria-checked={project.memory === mode}
 								className={project.memory === mode ? "seg-btn on" : "seg-btn"}
 								disabled={busy}
-								onClick={() => changeMemory(mode)}
+								onClick={() => void changeMemory(mode)}
 							>
 								{mode === "shared" ? "Shared" : "Off"}
 							</button>
@@ -689,11 +693,12 @@ export function ProjectView({
 					type="button"
 					className={project.archivedAt === null ? "danger proj-btn" : "ghost proj-btn"}
 					disabled={busy}
-					onClick={toggleArchived}
+					onClick={() => void toggleArchived()}
 				>
 					{project.archivedAt === null ? "Archive project" : "Unarchive project"}
 				</button>
 			</section>
+			{confirm.view}
 		</div>
 	);
 }

@@ -12,6 +12,7 @@ import {
 	startChatGptLogin,
 	telegramDoor,
 } from "./api.ts";
+import { useConfirm } from "./confirm.tsx";
 import { useCopy } from "./useCopy.ts";
 import { Row } from "./settingsKit.tsx";
 
@@ -38,6 +39,7 @@ export function ChatGptAccount({
 	const [busy, setBusy] = useState(false);
 	const [nowMs, setNowMs] = useState(() => Date.now());
 	const { copy, copied } = useCopy();
+	const confirm = useConfirm();
 	const wasPending = useRef(false);
 	// onSignedIn rides a ref, not the deps: the parent rebuilds its ctx
 	// (and this callback) on every render, and a dep here would refetch
@@ -172,9 +174,11 @@ export function ChatGptAccount({
 							className="ghost"
 							disabled={busy}
 							onClick={() => {
-								if (window.confirm("Sign goblin out of ChatGPT?")) {
-									void act(signOutChatGpt);
-								}
+								void confirm
+									.ask({ message: "Sign goblin out of ChatGPT?", confirmLabel: "Sign out" })
+									.then((ok) => {
+										if (ok) void act(signOutChatGpt);
+									});
 							}}
 						>
 							Sign out
@@ -204,6 +208,7 @@ export function ChatGptAccount({
 				{status.error !== null && <div className="cap err-inline">{status.error}</div>}
 				{err !== null && <div className="cap err-inline">{err}</div>}
 			</div>
+			{confirm.view}
 		</>
 	);
 }

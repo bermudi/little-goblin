@@ -285,7 +285,7 @@ describe("Composer skill staging", () => {
 		expect(sendBtn).not.toBeNull();
 		expect(sendBtn!.disabled).toBe(false);
 		await act(async () => {
-			sendBtn!.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			sendBtn!.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 		});
 		expect(sent).toHaveLength(1);
 		expect(sent[0]!.map((p) => p.type)).toEqual(["data-skill"]);
@@ -351,7 +351,7 @@ describe("Composer skill staging", () => {
 			// for happy-dom's form submission.
 			container
 				.querySelector('button[aria-label="Send"]')!
-				.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+				.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 		});
 	};
 	const chipNames = () =>

@@ -112,9 +112,10 @@ describe("ThreadSourcesSheet", () => {
 			(el as HTMLElement).click();
 		});
 	};
-	const confirmSpy = (ok: boolean) => {
-		// happy-dom's typings miss confirm; the runtime has it.
-		(win as unknown as { confirm(ok: boolean): boolean }).confirm = () => ok;
+	// The forget asks are sheets in the app chrome — answering is a
+	// click on the sheet's confirm button, like the operator's.
+	const approveForget = async () => {
+		await click(container.querySelector(".confirm-ok"));
 	};
 	const btn = (label: string) =>
 		[...container.querySelectorAll("button")].find((b) => b.textContent === label);
@@ -175,11 +176,11 @@ describe("ThreadSourcesSheet", () => {
 		await flush();
 		expect(container.textContent).toContain("the exchange text");
 
-		confirmSpy(true);
 		const forget = [...container.querySelectorAll("button")].find(
 			(b) => b.textContent === "Forget this exchange",
 		);
 		await click(forget);
+		await approveForget();
 		await flush();
 		// The delete rode the doc's own endpoint; the list reload comes
 		// back empty.
@@ -351,8 +352,8 @@ describe("ThreadSourcesSheet", () => {
 
 		mount();
 		await flush();
-		confirmSpy(true);
 		await click(btn("Forget memories"));
+		await approveForget();
 		await flush();
 		const post = seen.find((s) => s.path === "/api/app/memory/forget-thread");
 		expect(post?.method).toBe("POST");
@@ -388,8 +389,8 @@ describe("ThreadSourcesSheet", () => {
 
 		mount();
 		await flush();
-		confirmSpy(true);
 		await click(btn("Forget skills"));
+		await approveForget();
 		await flush();
 		const post = seen.find((s) => s.path === "/api/app/skills/forget-thread");
 		expect(post?.method).toBe("POST");
@@ -413,10 +414,12 @@ describe("ThreadSourcesSheet", () => {
 
 		mount();
 		await flush();
-		confirmSpy(false);
 		await click(btn("Forget memories"));
+		await click(container.querySelector(".confirm-cancel"));
 		await click(btn("Forget skills"));
+		await click(container.querySelector(".confirm-cancel"));
 		await click(btn("Forget everything"));
+		await click(container.querySelector(".confirm-cancel"));
 		await flush();
 		expect(seen.filter((s) => s.path.endsWith("/forget-thread"))).toHaveLength(0);
 		// Nothing re-fetched either — each list still has its one read.
@@ -453,8 +456,8 @@ describe("ThreadSourcesSheet", () => {
 
 		mount();
 		await flush();
-		confirmSpy(true);
 		await click(btn("Forget memories"));
+		await approveForget();
 		await flush();
 		expect(forgot).toBe(true);
 		expect(container.textContent).toContain("Forgot 2; 1 failed — try again for the rest");
@@ -498,8 +501,8 @@ describe("ThreadSourcesSheet", () => {
 
 		mount();
 		await flush();
-		confirmSpy(true);
 		await click(btn("Forget everything"));
+		await approveForget();
 		await flush();
 		expect(order).toEqual(["memories", "skills"]);
 		const memPost = seen.find((s) => s.path === "/api/app/memory/forget-thread");
@@ -531,8 +534,8 @@ describe("ThreadSourcesSheet", () => {
 
 		mount();
 		await flush();
-		confirmSpy(true);
 		await click(btn("Forget everything"));
+		await approveForget();
 		// The held-open POST fences the whole row: the active button
 		// wears its busy word, all three go disabled.
 		const inFlight = [...container.querySelectorAll(".thread-forget button")];

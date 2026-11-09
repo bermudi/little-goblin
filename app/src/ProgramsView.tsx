@@ -7,6 +7,7 @@ import type { AppProgramMutationResponse } from "../../src/http/app-wire.ts";
 import type { OperatorProgramItem } from "../../src/http/operator-wire.ts";
 import { ApprovalsPanel, SecretReveal, useApprovals } from "./Approvals.tsx";
 import { deleteProgram, listPrograms, programHook, toggleProgram, updateProgram } from "./api.ts";
+import { useConfirm } from "./confirm.tsx";
 import { KV, ts, tzAbbrev, useLoad } from "./opsShared.tsx";
 
 // The scheduler scans every 30 s (src/scheduler.ts TICK_MS); a program is
@@ -201,6 +202,7 @@ function ProgramDetail({
 		program.maxLatenessMinutes === null ? "" : String(program.maxLatenessMinutes),
 	);
 	const [mailFilter, setMailFilter] = useState(program.mailFilter ?? "");
+	const confirm = useConfirm();
 
 	const run = async (action: () => Promise<AppProgramMutationResponse>) => {
 		setBusy(true);
@@ -233,6 +235,18 @@ function ProgramDetail({
 				mailFilter: mailFilter.trim() === "" ? null : mailFilter.trim(),
 			}),
 		);
+	};
+
+	const remove = async () => {
+		if (
+			!(await confirm.ask({
+				message: `Delete program "${program.name}"?`,
+				confirmLabel: "Delete",
+				danger: true,
+			}))
+		)
+			return;
+		await run(() => deleteProgram(token, program.id));
 	};
 
 	const words = program.cron === null ? null : cronWords(program.cron);
@@ -300,11 +314,7 @@ function ProgramDetail({
 					type="button"
 					className="danger"
 					disabled={busy}
-					onClick={() => {
-						if (window.confirm(`Delete program "${program.name}"?`)) {
-							void run(() => deleteProgram(token, program.id));
-						}
-					}}
+					onClick={() => void remove()}
 				>
 					Delete
 				</button>
@@ -358,6 +368,7 @@ function ProgramDetail({
 					{result.hookUrl !== undefined && <SecretReveal url={result.hookUrl} />}
 				</div>
 			)}
+			{confirm.view}
 		</div>
 	);
 }

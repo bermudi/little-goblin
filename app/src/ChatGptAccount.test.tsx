@@ -86,7 +86,7 @@ const waitFor = async (pred: () => boolean, label: string) => {
 const click = async (el: Element | null | undefined) => {
 	expect(el).toBeTruthy();
 	await act(async () => {
-		el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+		el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 	});
 	await settle();
 };
@@ -256,9 +256,8 @@ describe("ChatGptAccount", () => {
 	test("sign out POSTs logout and shows signed-out", async () => {
 		statusQueue = [st({ state: "signed-in", source: "goblin", email: "op@example.test" }), st({})];
 		await mountCard();
-		// happy-dom's window.confirm — stub it true.
-		(win as unknown as { confirm: () => boolean }).confirm = () => true;
 		await click(button("Sign out"));
+		await click(container.querySelector(".confirm-ok"));
 		expect(calls.some((c) => c.method === "POST" && c.url.includes("/logout"))).toBe(true);
 		await waitFor(
 			() => container.textContent?.includes("Not signed in") ?? false,

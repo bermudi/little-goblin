@@ -183,7 +183,7 @@ describe("Outline", () => {
 		// what the assertion pins: target(0) − container(0) − headroom(12).
 		await act(async () => {
 			entries()[1]?.dispatchEvent(
-				new win.MouseEvent("click", { bubbles: true }) as unknown as Event,
+				new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
 			);
 		});
 		expect(transcript.scrollTop).toBe(88);

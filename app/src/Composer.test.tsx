@@ -249,7 +249,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 				const button = container.querySelector(`button[aria-label="${label}"]`);
 				expect(button).not.toBeNull();
 				await act(async () => {
-					button?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+					button?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 				});
 			};
 			await click("Record a voice note");
@@ -333,7 +333,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		const mic = () => container.querySelector('button[aria-label="Record a voice note"]');
 		expect(mic()).not.toBeNull();
 		await act(async () => {
-			mic()?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+			mic()?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 		});
 		// Recording is live: the flipped label and the rec row, tracks open.
 		expect(container.querySelector('button[aria-label="Stop and send"]')).not.toBeNull();
@@ -393,7 +393,7 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		await act(async () => {
 			container
 				.querySelector('button[aria-label="Record a voice note"]')
-				?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event);
+				?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
 		});
 		// Still waiting on the prompt — nothing is recording yet.
 		expect(container.querySelector('button[aria-label="Record a voice note"]')).not.toBeNull();

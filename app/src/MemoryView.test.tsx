@@ -165,7 +165,6 @@ describe("MemoryView", () => {
 			}
 			return Promise.resolve(json({ error: "unmapped" }, 404));
 		}) as typeof fetch;
-		Reflect.set(win, "confirm", () => true);
 		mount();
 		await flush();
 		const text = () => container.textContent ?? "";
@@ -181,6 +180,7 @@ describe("MemoryView", () => {
 		expect(container.querySelector(".fact.stale")?.textContent).toContain("lives in Oslo");
 
 		await click(container.querySelector(".mem-expand .danger"));
+		await click(container.querySelector(".confirm-ok"));
 		await act(async () => {});
 		expect(seen).toEqual(["/api/app/memory/documents/doc-1"]);
 		expect(text()).not.toContain("likes rain");
@@ -196,12 +196,12 @@ describe("MemoryView", () => {
 			if (url.pathname.endsWith("/memory/saves")) return Promise.resolve(saves([DOC]));
 			return Promise.resolve(json(DETAIL));
 		}) as typeof fetch;
-		Reflect.set(win, "confirm", () => false);
 		mount();
 		await flush();
 		await click(container.querySelector(".mem-saves .dt-row"));
 		await act(async () => {});
 		await click(container.querySelector(".mem-expand .danger"));
+		await click(container.querySelector(".confirm-cancel"));
 		expect(seen).toEqual([]);
 	});
 

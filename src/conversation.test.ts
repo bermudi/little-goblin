@@ -16,6 +16,7 @@ import {
 	REWIND_EVENTS_SQL,
 	REWIND_PROJECTIONS_SQL,
 } from "./conversation-queries.ts";
+import { memoryBoundEntries } from "./memory/mod.ts";
 import { openRatings } from "./reply-ratings.ts";
 import { tmpDb } from "./testkit.ts";
 import { openWakeStore } from "./wake-store.ts";
@@ -439,6 +440,48 @@ describe("compaction pointers", () => {
 			},
 		]);
 		expect(store.getCompaction(c.id)?.tailEvents).toBeNull();
+		store.close();
+	});
+
+	// #206: the client chooses the message id, and the app intake stores it
+	// verbatim — so classification may never key on the compact- label.
+	// The store names the summary by its boundary seq; the forged id is an
+	// ordinary client message with its own seq and eligibility.
+	test("eligibility names the summary by boundary seq, not the id (#206)", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("one")]); // seq 1, folds below the boundary
+		store.append(c.id, [{ ...msg("remember the lighthouse"), id: "compact-99" }]); // seq 2
+		// Uncompacted: nothing is the summary, the forged id is ordinary.
+		let elig = store.memoryEligibility(c.id);
+		expect(elig.summarySeq).toBeNull();
+		expect(memoryBoundEntries(store.modelEntries(c.id), elig).map((e) => e.message.id)).toEqual([
+			"m1",
+			"compact-99",
+		]);
+		store.setCompaction(c.id, {
+			boundarySeq: 1,
+			summary: "folded",
+			tokensBefore: 100,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+		});
+		elig = store.memoryEligibility(c.id);
+		// The folded span (seq 1) was eligible, so the store stamps the
+		// summary eligible; both entries ride the memory-bound projection.
+		expect(elig).toEqual({
+			eligibleSeqs: new Set([1, 2]),
+			summarySeq: 1,
+			summaryEligible: true,
+		});
+		const view = store.modelEntries(c.id);
+		expect(view.map((e) => e.message.id)).toEqual(["compact-1", "compact-99"]);
+		// The genuine summary still classifies as the summary — an
+		// ineligible folded span drops it while the forged message rides
+		// its own eligible seq.
+		expect(
+			memoryBoundEntries(view, { ...elig, summaryEligible: false }).map((e) => e.message.id),
+		).toEqual(["compact-99"]);
 		store.close();
 	});
 

@@ -115,6 +115,7 @@ describe("admitTurn", () => {
 				prior: [],
 				current: null,
 				partial: null,
+				summarySeq: null,
 				assertAuthority() {},
 			},
 		);

@@ -1103,6 +1103,51 @@ describe("turn resume", () => {
 		store.close();
 	});
 
+	// #206: a steer whose client-chosen id starts with "compact-" is an
+	// ordinary visible event — the resume recognizes the summary by its
+	// store-assigned boundary seq, never the id, so the steer is NOT
+	// revived as folded content on top of its own model-view entry.
+	test("a client compact-prefixed steer stays visible — revived once, not twice", async () => {
+		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
+		const trigger = appendUserMsg(store, conv, "ORIGINAL-ASK");
+		const steer: UIMessage = {
+			id: "compact-99",
+			role: "user",
+			parts: [{ type: "text", text: "STEERED-INPUT" }],
+		};
+		store.append(conv.id, [steer]);
+		const steerSeq = store.lastUserSeq(conv.id)!;
+		interruptedRun(store, journal, conv, "run-forged", {
+			anchorSeq: trigger.seq,
+			ownedInputSeqs: [trigger.seq, steerSeq],
+		});
+		// Fold only the trigger — the steer rides the tail, in the model view.
+		store.setCompaction(conv.id, {
+			boundarySeq: trigger.seq,
+			summary: "folded past",
+			tokensBefore: 1,
+			model: "m",
+			createdAt: new Date().toISOString(),
+		});
+		expect(ops.resume(conv.id, "run-forged").kind).toBe("resumed");
+		expect(await sink()!.done).toEqual({ kind: "completed" });
+		const detail = store.historyDetail(conv.id);
+		const resumeEvent = detail.find(
+			(e) => e.message.role === "user" && e.message.id !== trigger.message.id && e.seq !== steerSeq,
+		)!;
+		const parts = JSON.stringify(resumeEvent.message.parts);
+		expect(parts).toContain("ORIGINAL-ASK");
+		// The visible steer contributes its own entry only — its text is
+		// not copied into the resume event as folded content.
+		expect(parts).not.toContain("STEERED-INPUT");
+		expect(parts).toContain("original request follows");
+		expect(parts).not.toContain("consumed steering");
+		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(prompt.split("STEERED-INPUT").length - 1).toBe(1);
+		await runtime.shutdown();
+		store.close();
+	});
+
 	test("a resume that revives the trigger and folded steering names both", async () => {
 		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
 		const trigger = appendUserMsg(store, conv, "ORIGINAL-ASK");
@@ -1662,12 +1707,7 @@ describe("turn resume", () => {
 		)!;
 		expect(step1.role).toBe("assistant");
 		const step1Parts = step1.content as unknown as Array<Record<string, unknown>>;
-		expect(step1Parts.map((p) => p.type)).toEqual([
-			"reasoning",
-			"text",
-			"tool-call",
-			"tool-call",
-		]);
+		expect(step1Parts.map((p) => p.type)).toEqual(["reasoning", "text", "tool-call", "tool-call"]);
 		// Opaque state survives verbatim — the checkpoint's providerOptions
 		// become the converted part's providerOptions untouched.
 		expect((step1Parts[0]!.providerOptions as { codex: unknown }).codex).toEqual({
@@ -1764,9 +1804,9 @@ describe("turn resume", () => {
 			expect(flat).toContain("kept text");
 			expect(flat).toContain('"c1"');
 			expect(flat).not.toContain("C".repeat(600_000));
-			expect(
-				lines.filter((l) => l.includes("reasoning cipher stripped")).length,
-			).toBeGreaterThan(0);
+			expect(lines.filter((l) => l.includes("reasoning cipher stripped")).length).toBeGreaterThan(
+				0,
+			);
 			store.close();
 		} finally {
 			setLogWriter(null);
@@ -1806,7 +1846,13 @@ describe("turn resume", () => {
 			expect(flat).toContain("found it");
 			expect(flat).not.toContain("ws_1");
 			// The journal was never asked — no row, no "no journal row" warn.
-			expect(journal.get("run-src")!.calls).toEqual({planned:0,dispatched:0,completed:0,failed:0,resolved:0});
+			expect(journal.get("run-src")!.calls).toEqual({
+				planned: 0,
+				dispatched: 0,
+				completed: 0,
+				failed: 0,
+				resolved: 0,
+			});
 			expect(lines.some((l) => l.includes("no journal row"))).toBe(false);
 			expect(lines.some((l) => l.includes("provider-executed call skipped"))).toBe(true);
 			store.close();

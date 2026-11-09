@@ -175,12 +175,19 @@ export async function buildModelView(
 		prior: RecallContext[];
 		current: RecallContext | null;
 		partial: UIMessage | null;
+		/** The compaction boundary the entries were cut at — null when uncompacted. */
+		summarySeq: number | null;
 		/** Seqs this turn injected — only these get skill bodies (ruling 2026-10-21: owning-turn only). */
 		ownedSeqs?: readonly number[] | ReadonlySet<number>;
 		assertAuthority(): void;
 	},
 ): Promise<ModelMessage[]> {
-	const view = withMemoryBlocks(options.entries, options.prior, options.current);
+	const view = withMemoryBlocks(
+		options.entries,
+		options.prior,
+		options.current,
+		options.summarySeq,
+	);
 	if (options.partial !== null) view.push(options.partial);
 	const prepared = await materializeAttachments(
 		view,

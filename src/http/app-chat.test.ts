@@ -49,6 +49,40 @@ describe("app chat", () => {
 		}
 	});
 
+	// #206: the compact- prefix is a server label, but the id is the
+	// client's to choose — intake must accept it and store it verbatim;
+	// downstream classification keys on the store-assigned seq, not the id.
+	test("a client-chosen compact-prefixed id is accepted and stored verbatim", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "forged-01" }),
+			});
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/forged-01",
+					message: {
+						id: "compact-7",
+						role: "user",
+						parts: [{ type: "text", text: "remember the lighthouse" }],
+					},
+				}),
+			});
+			expect(res.status).toBe(200);
+			await res.text();
+			expect(store.history("app/forged-01").map((m) => m.id)).toEqual([
+				"compact-7",
+				expect.any(String),
+			]);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("a malformed part payload is refused before persistence — no poison pill", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {

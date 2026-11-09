@@ -60,6 +60,7 @@ describe("skill part data schema", () => {
 			prior: [],
 			current: null,
 			partial: null,
+			summarySeq: null,
 			ownedSeqs: [1],
 			assertAuthority: () => {},
 		});
@@ -89,6 +90,7 @@ describe("skill invocation in the model view", () => {
 			prior: [],
 			current: null,
 			partial: null,
+			summarySeq: null,
 			ownedSeqs: [1],
 			assertAuthority: () => {},
 		});
@@ -109,6 +111,7 @@ describe("skill invocation in the model view", () => {
 			prior: [],
 			current: null,
 			partial: null,
+			summarySeq: null,
 			ownedSeqs: [2],
 			assertAuthority: () => {},
 		});
@@ -130,6 +133,7 @@ describe("skill invocation in the model view", () => {
 			prior: [],
 			current: null,
 			partial: null,
+			summarySeq: null,
 			ownedSeqs: [1],
 			assertAuthority: () => {},
 		});
@@ -151,6 +155,7 @@ describe("skill invocation in the model view", () => {
 			prior: [],
 			current: null,
 			partial: null,
+			summarySeq: null,
 			ownedSeqs: [1],
 			assertAuthority: () => {},
 		});
@@ -184,6 +189,7 @@ describe("skill invocation in the model view", () => {
 			prior: [],
 			current: null,
 			partial: null,
+			summarySeq: null,
 			ownedSeqs: [1],
 			assertAuthority: () => {},
 		});
@@ -227,6 +233,7 @@ describe("skill invocation in the model view", () => {
 			prior: [],
 			current: null,
 			partial: null,
+			summarySeq: null,
 			ownedSeqs: [2],
 			assertAuthority: () => {},
 		});
@@ -260,6 +267,7 @@ describe("skill invocation in the model view", () => {
 			prior: [],
 			current: null,
 			partial: null,
+			summarySeq: null,
 			ownedSeqs: [1],
 			assertAuthority: () => {},
 		});
@@ -285,6 +293,7 @@ describe("skill invocation in the model view", () => {
 			prior: [{ anchorSeq: 1, content: "memory block rides before its anchor", sourceIds: ["e1"] }],
 			current: null,
 			partial: null,
+			summarySeq: null,
 			ownedSeqs: [2],
 			assertAuthority: () => {},
 		});

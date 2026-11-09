@@ -123,7 +123,7 @@ describe("exchange boundaries", () => {
 			{ seq: 3, message: asst(compactionSummaryId(3), "folded") },
 			{ seq: 4, message: user("new", "continue") },
 		];
-		const elig = { eligibleSeqs: new Set([2, 3, 4]), summaryEligible: false };
+		const elig = { eligibleSeqs: new Set([2, 3, 4]), summarySeq: 3, summaryEligible: false };
 		expect(activeExchangeExcluded(entries, elig)).toBe(true);
 		expect(
 			activeExchangeExcluded(
@@ -131,10 +131,30 @@ describe("exchange boundaries", () => {
 				elig,
 			),
 		).toBe(false);
-		const source = retentionSourceFrom(entries);
+		const all = { eligibleSeqs: new Set([1, 2, 3, 4]), summarySeq: 3, summaryEligible: false };
+		const source = retentionSourceFrom(entries, all);
 		expect(source.userTexts).toEqual(["secret", "continue"]);
 		expect(source.userIds).toEqual(["old", "new"]);
 		expect(retentionSourceFrom(entries, elig).userIds).toEqual(["new"]);
+	});
+
+	// #206: the client chooses the message id, so a `compact-`-prefixed id
+	// is not the summary. The summary is the entry at the store-assigned
+	// boundary seq — here seq 3 — whatever any message's id says.
+	test("a client compact-prefixed id is an ordinary message, the boundary seq is the summary", () => {
+		const entries = [
+			{ seq: 1, message: user("old", "secret") },
+			{ seq: 2, message: asst("a1", "done") },
+			// Forged client id on a real user event.
+			{ seq: 3, message: user(compactionSummaryId(9), "remember the lighthouse") },
+			{ seq: 4, message: user("new", "continue") },
+		];
+		const elig = { eligibleSeqs: new Set([1, 2, 3, 4]), summarySeq: null, summaryEligible: false };
+		const source = retentionSourceFrom(entries, elig);
+		expect(source.userTexts).toEqual(["remember the lighthouse", "continue"]);
+		expect(source.userIds).toEqual([compactionSummaryId(9), "new"]);
+		// It draws no exchange boundary either — only a completed reply does.
+		expect(activeExchangeExcluded(entries, elig)).toBe(false);
 	});
 });
 
@@ -143,11 +163,14 @@ describe("retention documents", () => {
 		const material = "SYNTHETIC_PRIVATE_MATERIAL".repeat(200);
 		const key = `-----BEGIN PRIVATE KEY-----\n${material}\n-----END PRIVATE KEY-----`;
 		expect(buildRecallQuery([user("u1", key)])).not.toContain("SYNTHETIC_PRIVATE_MATERIAL");
-		const source = retentionSourceFrom([
-			{ seq: 1, message: user("u1", key) },
-			{ seq: 2, message: asst("a1", "noted") },
-			{ seq: 3, message: user("u2", "Remember the decision.") },
-		]);
+		const source = retentionSourceFrom(
+			[
+				{ seq: 1, message: user("u1", key) },
+				{ seq: 2, message: asst("a1", "noted") },
+				{ seq: 3, message: user("u2", "Remember the decision.") },
+			],
+			{ eligibleSeqs: new Set([1, 2, 3]), summarySeq: null, summaryEligible: false },
+		);
 		expect(source.priorContext).not.toContain("SYNTHETIC_PRIVATE_MATERIAL");
 		const doc = buildRetentionDocument({
 			conversationId: "dm:1",
@@ -360,18 +383,18 @@ describe("cache-stable materialization", () => {
 
 	test("no blocks, no change — disabled memory is byte-identical", () => {
 		const h = [user("u1", "hi"), asst("a1", "hello")];
-		expect(withMemoryBlocks(entries(h), [], null)).toEqual(h);
+		expect(withMemoryBlocks(entries(h), [], null, null)).toEqual(h);
 	});
 
 	test("blocks ride before their anchored user; turn N+1 extends turn N", () => {
 		const turn1 = [user("u1", "i like quiet")];
 		const r1 = { anchorSeq: 1, content: "prefers quiet", sourceIds: ["e1"] };
-		const req1 = withMemoryBlocks(entries(turn1), [], r1);
+		const req1 = withMemoryBlocks(entries(turn1), [], r1, null);
 		expect(req1.map((m) => m.id)).toEqual(["memory-1", "u1"]);
 
 		const turn2 = [user("u1", "i like quiet"), asst("a1", "noted"), user("u2", "and dark mode")];
 		const r2 = { anchorSeq: 3, content: "prefers dark", sourceIds: ["e2"] };
-		const req2 = withMemoryBlocks(entries(turn2), [r1], r2);
+		const req2 = withMemoryBlocks(entries(turn2), [r1], r2, null);
 		expect(req2.map((m) => m.id)).toEqual(["memory-1", "u1", "a1", "memory-3", "u2"]);
 		expect(req2.slice(0, 2).map((m) => m.id)).toEqual(req1.map((m) => m.id));
 	});
@@ -396,7 +419,23 @@ describe("cache-stable materialization", () => {
 			{ seq: 3, message: user("u3", "fresh question") },
 		];
 		const stale = { anchorSeq: 2, content: "stale evidence", sourceIds: ["e1"] };
-		expect(withMemoryBlocks(view, [stale], null).map((m) => m.id)).toEqual(["compact-2", "u3"]);
+		expect(withMemoryBlocks(view, [stale], null, 2).map((m) => m.id)).toEqual(["compact-2", "u3"]);
+	});
+
+	// #206: a user message whose client-chosen id starts with "compact-"
+	// gets its anchored block like any other — only the boundary seq is
+	// the summary, and no compaction exists here.
+	test("a client compact-prefixed id still gets its anchored recall block", () => {
+		const view = [
+			{ seq: 2, message: user(compactionSummaryId(2), "hi") },
+			{ seq: 3, message: user("u3", "fresh question") },
+		];
+		const block = { anchorSeq: 2, content: "stale evidence", sourceIds: ["e1"] };
+		expect(withMemoryBlocks(view, [block], null, null).map((m) => m.id)).toEqual([
+			"memory-2",
+			"compact-2",
+			"u3",
+		]);
 	});
 });
 
@@ -411,6 +450,7 @@ describe("memory-bound projection", () => {
 		]);
 		const filtered = memoryBoundEntries(view, {
 			eligibleSeqs: new Set([1, 3]),
+			summarySeq: null,
 			summaryEligible: false,
 		});
 		expect(filtered.map((e) => e.message.id)).toEqual(["u1", "u3"]);
@@ -435,17 +475,33 @@ describe("memory-bound projection", () => {
 			},
 			{ seq: 3, message: user("u3", "fresh") },
 		];
-		const elig = { eligibleSeqs: new Set([2, 3]), summaryEligible: false };
+		const elig = { eligibleSeqs: new Set([2, 3]), summarySeq: 2, summaryEligible: false };
 		expect(memoryBoundEntries(view, elig).map((e) => e.message.id)).toEqual(["u3"]);
 		elig.summaryEligible = true;
 		expect(memoryBoundEntries(view, elig).map((e) => e.message.id)).toEqual(["compact-2", "u3"]);
 	});
 
+	// #206: with no compaction the client's compact-prefixed id is just an
+	// id — the entry rides its own seq's eligibility, and a fail-closed
+	// summaryEligible cannot drop it.
+	test("a client compact-prefixed id reaches the recall-bound set by its own seq", () => {
+		const view = entries([
+			user(compactionSummaryId(2), "remember the lighthouse"),
+			user("u3", "fresh"),
+		]);
+		const elig = { eligibleSeqs: new Set([1, 2]), summarySeq: null, summaryEligible: false };
+		expect(memoryBoundEntries(view, elig).map((e) => e.message.id)).toEqual(["compact-2", "u3"]);
+	});
+
 	test("empty eligibility yields the empty projection — fail closed", () => {
 		const view = entries([user("u1", "anything")]);
-		expect(memoryBoundEntries(view, { eligibleSeqs: new Set(), summaryEligible: true })).toEqual(
-			[],
-		);
+		expect(
+			memoryBoundEntries(view, {
+				eligibleSeqs: new Set(),
+				summarySeq: null,
+				summaryEligible: true,
+			}),
+		).toEqual([]);
 	});
 });
 

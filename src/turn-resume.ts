@@ -10,7 +10,6 @@ import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { messageText } from "./memory/mod.ts";
 import { summarize, toolOk, type ToolCallDigest } from "./reviewer.ts";
 import { SKILL_PART } from "./skill-part.ts";
-import { isCompactionSummaryId } from "./tags.ts";
 import { canAuthorizeRetry } from "./turn/retry-guard.ts";
 import type { LoopTurnState } from "./turn/state.ts";
 import { sinkFor, type WakeDeps } from "./wake.ts";
@@ -714,10 +713,14 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			// the new run to own.
 			// The compaction summary borrows boundarySeq, which can equal a
 			// folded event's seq — exclude it or it masquerades as the anchor.
+			// Recognized by that store-assigned seq, never the id: a client
+			// message whose chosen id starts with "compact-" stays in the
+			// visible set (#206).
+			const summarySeq = store.getCompaction(convId)?.boundarySeq ?? null;
 			const viewSeqs = new Set(
 				store
 					.modelEntries(convId)
-					.filter((e) => !isCompactionSummaryId(e.message.id))
+					.filter((e) => e.seq !== summarySeq)
 					.map((e) => e.seq),
 			);
 			// A folded event's whole content is revived; a visible event

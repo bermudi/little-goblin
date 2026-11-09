@@ -945,6 +945,9 @@ export class Runtime {
 				prior: memory.prior,
 				current: memory.current,
 				partial: recovery?.partial ?? null,
+				// The summary entry rides `entries` by its boundary seq —
+				// the same store fact eligibility classifies by (#206).
+				summarySeq: store.memoryEligibility(convId).summarySeq,
 				ownedSeqs: snapshot.ownedInputSeqs,
 				assertAuthority: () => this.checkAuthority(convId, epoch),
 			});

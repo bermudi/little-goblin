@@ -14,7 +14,7 @@ import { setLogFile } from "../log.ts";
 import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory/mod.ts";
 import type { CompletedTurn, PriorTurnContext, ReviewerDeps } from "../reviewer.ts";
 import { Reviewer } from "../reviewer.ts";
-import { compactionSummaryId, isCompactionSummaryId } from "../tags.ts";
+import { compactionSummaryId } from "../tags.ts";
 import { scriptedModel, textResult } from "../testkit/fake-model.ts";
 import { waitUntil } from "../testkit.ts";
 import { type LandDeps, landAttempt, retentionOpt, submitTurnReview } from "./finish.ts";
@@ -57,7 +57,11 @@ const msg = (id: string, role: "user" | "assistant", ...parts: UIMessage["parts"
 
 const text = (t: string) => ({ type: "text", text: t }) as const;
 
-const elig: MemoryEligibility = { eligibleSeqs: new Set([1, 2, 3, 4, 5]), summaryEligible: false };
+const elig: MemoryEligibility = {
+	eligibleSeqs: new Set([1, 2, 3, 4, 5]),
+	summarySeq: null,
+	summaryEligible: false,
+};
 
 const source = (over: Partial<RetentionSource> = {}): RetentionSource => ({
 	userTexts: [],
@@ -124,9 +128,10 @@ function land(over: Partial<LandDeps> = {}): LandHarness {
 	};
 	if (over.ownedInputSeqs === undefined) {
 		const entries = deps.modelEntries().filter((e) => e.seq <= deps.steerMark);
+		const summarySeq = deps.memoryEligibility().summarySeq;
 		let lastAssistant = -1;
 		for (const [i, e] of entries.entries()) {
-			if (e.message.role === "assistant" && !isCompactionSummaryId(e.message.id)) lastAssistant = i;
+			if (e.message.role === "assistant" && e.seq !== summarySeq) lastAssistant = i;
 		}
 		deps.ownedInputSeqs = new Set(
 			entries.filter((e, i) => i > lastAssistant && e.message.role === "user").map((e) => e.seq),
@@ -345,7 +350,11 @@ describe("landAttempt", () => {
 			steerMark: 4,
 			// The steer landed while memory was off — stamped ineligible
 			// even though the flag is back on at land time.
-			memoryEligibility: () => ({ eligibleSeqs: new Set([1, 2, 3]), summaryEligible: false }),
+			memoryEligibility: () => ({
+				eligibleSeqs: new Set([1, 2, 3]),
+				summarySeq: null,
+				summaryEligible: false,
+			}),
 		});
 		expect(h.appended).toHaveLength(1);
 		// No memory document, and the reply carries the exclusion stamp
@@ -368,7 +377,11 @@ describe("landAttempt", () => {
 				modelEntries: () => entries,
 				steerMark: 3,
 				ownedInputSeqs: new Set([1, 3]),
-				memoryEligibility: () => ({ eligibleSeqs: new Set([2, 3]), summaryEligible: false }),
+				memoryEligibility: () => ({
+					eligibleSeqs: new Set([2, 3]),
+					summarySeq: null,
+					summaryEligible: false,
+				}),
 			});
 			expect(h.landed.exchangeExcluded).toBe(true);
 			expect(h.appended[0]!.opts).toEqual({ anchorSeq: 3, exclude: true });
@@ -385,7 +398,11 @@ describe("landAttempt", () => {
 				{ seq: 1, message: msg("unowned", "user", text("old")) },
 				{ seq: 2, message: msg("owned", "user", text("current")) },
 			],
-			memoryEligibility: () => ({ eligibleSeqs: new Set([2]), summaryEligible: false }),
+			memoryEligibility: () => ({
+				eligibleSeqs: new Set([2]),
+				summarySeq: null,
+				summaryEligible: false,
+			}),
 		});
 		expect(h.landed.exchangeExcluded).toBe(true);
 		expect(h.appended[0]!.opts).toEqual({ anchorSeq: 2, exclude: true });
@@ -423,7 +440,11 @@ describe("landAttempt", () => {
 				{ seq: 4, message: msg("u2", "user", text("run it")) },
 			],
 			steerMark: 4,
-			memoryEligibility: () => ({ eligibleSeqs: new Set([1, 3, 4]), summaryEligible: false }),
+			memoryEligibility: () => ({
+				eligibleSeqs: new Set([1, 3, 4]),
+				summarySeq: null,
+				summaryEligible: false,
+			}),
 		});
 		expect(h.appended).toHaveLength(1);
 		expect(h.appended[0]!.opts).toEqual({ anchorSeq: 4, exclude: true });
@@ -442,7 +463,11 @@ describe("landAttempt", () => {
 				{ seq: 4, message: msg("u2", "user", text("run it")) },
 			],
 			steerMark: 4,
-			memoryEligibility: () => ({ eligibleSeqs: new Set([1, 2, 3, 4]), summaryEligible: false }),
+			memoryEligibility: () => ({
+				eligibleSeqs: new Set([1, 2, 3, 4]),
+				summarySeq: null,
+				summaryEligible: false,
+			}),
 		});
 		expect(h.appended).toHaveLength(1);
 		expect(h.appended[0]!.opts).toEqual({
@@ -466,7 +491,11 @@ describe("landAttempt", () => {
 				{ seq: 4, message: msg("u2", "user", text("run it")) },
 			],
 			steerMark: 4,
-			memoryEligibility: () => ({ eligibleSeqs: new Set([2, 3, 4]), summaryEligible: false }),
+			memoryEligibility: () => ({
+				eligibleSeqs: new Set([2, 3, 4]),
+				summarySeq: null,
+				summaryEligible: false,
+			}),
 		});
 		expect(h.appended).toHaveLength(1);
 		expect(h.appended[0]!.opts).toEqual({
@@ -486,7 +515,11 @@ describe("landAttempt", () => {
 				{ seq: 4, message: msg("u3", "user", text("arrived after the mark")) },
 			],
 			steerMark: 3,
-			memoryEligibility: () => ({ eligibleSeqs: new Set([1, 2, 3]), summaryEligible: false }),
+			memoryEligibility: () => ({
+				eligibleSeqs: new Set([1, 2, 3]),
+				summarySeq: null,
+				summaryEligible: false,
+			}),
 		});
 		expect(h.appended).toHaveLength(1);
 		expect(h.appended[0]!.opts).toEqual({
@@ -508,7 +541,11 @@ describe("landAttempt", () => {
 				{ seq: 3, message: msg("u2", "user", text("run it")) },
 			],
 			steerMark: 3,
-			memoryEligibility: () => ({ eligibleSeqs: new Set([2, 3]), summaryEligible: false }),
+			memoryEligibility: () => ({
+				eligibleSeqs: new Set([2, 3]),
+				summarySeq: 2,
+				summaryEligible: false,
+			}),
 		});
 		expect(h.appended).toHaveLength(1);
 		expect(h.appended[0]!.opts).toEqual({ anchorSeq: 3, exclude: true });
@@ -527,7 +564,11 @@ describe("landAttempt", () => {
 				{ seq: 3, message: msg("u2", "user", text("private steer")) },
 			],
 			steerMark: 3,
-			memoryEligibility: () => ({ eligibleSeqs: new Set([1, 2]), summaryEligible: false }),
+			memoryEligibility: () => ({
+				eligibleSeqs: new Set([1, 2]),
+				summarySeq: null,
+				summaryEligible: false,
+			}),
 		});
 		expect(h.appended).toHaveLength(0);
 		expect(h.landed.exchangeExcluded).toBe(true);
@@ -761,7 +802,11 @@ describe("submitTurnReview", () => {
 				{ seq: 3, message: msg("steer", "user", text("secret steer")) },
 			],
 			steerMark: 3,
-			memoryEligibility: () => ({ eligibleSeqs: new Set([1, 2]), summaryEligible: false }),
+			memoryEligibility: () => ({
+				eligibleSeqs: new Set([1, 2]),
+				summarySeq: null,
+				summaryEligible: false,
+			}),
 		});
 		expect(landed.exchangeExcluded).toBe(true);
 		h.state.exchangeExcluded = landed.exchangeExcluded;

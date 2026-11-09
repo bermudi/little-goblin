@@ -196,13 +196,16 @@ describe("unlanded-turn progress rendering", () => {
 	test("aborted and interrupted outcomes carry their own lead and caption", () => {
 		const aborted = renderUnlandedTurnProgress({
 			runId: "r-9",
-			outcome: { kind: "aborted", cause: "stopped by /stop or superseded by a settings change" },
+			outcome: {
+				kind: "aborted",
+				cause: "stopped by /stop, superseded by a settings change, or fenced by an operator action",
+			},
 			calls: [call("completed", { toolCallId: "c1", name: "bash", result: '{"ok":true}' })],
 			partial: [{ role: "assistant", content: "halfway." }],
 		});
 		expect(aborted).not.toBeNull();
 		expect(aborted!.text).toContain(
-			"The previous turn was stopped (run r-9): stopped by /stop or superseded by a settings change",
+			"The previous turn was stopped (run r-9): stopped by /stop, superseded by a settings change, or fenced by an operator action",
 		);
 		expect(aborted!.text).toContain("Assistant text before it stopped:");
 		expect(aborted!.text).not.toContain("before the failure");

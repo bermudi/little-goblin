@@ -872,11 +872,13 @@ export class Runtime {
 		});
 		const { journalFault, journaled, stampRun, recordUnlandedProgress, fallback } = record;
 		// The aborted outcome's cause: a shutdown fence must read as a
-		// restart, not an operator stop.
+		// restart, not an operator stop. Other fences have several sources
+		// (stop, settings change, correction, navigation roll) — the wording
+		// stays neutral rather than naming one that may not apply.
 		const fencedCause = (): string =>
 			this.closed
 				? "the process was shutting down"
-				: "stopped by /stop or superseded by a settings change";
+				: "stopped by /stop, superseded by a settings change, or fenced by an operator action";
 		try {
 			this.checkAuthority(convId, epoch);
 			// Recall uses admission-time eligibility; the model view still sees the

@@ -4171,6 +4171,57 @@ describe("turn journal", () => {
 			store.close();
 		}
 	});
+
+	test("a journal read fault after the run began still stamps the row terminal", async () => {
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const real = openTurnJournal(store.db);
+		// beginRun commits and ownership links BEFORE the recovery guard's
+		// callsFor read — a fault there must terminate the begun row, not
+		// leave it 'running' for the next boot's reclassify while linked
+		// wakes wait on a stamp that never comes.
+		const journal: TurnJournal = {
+			...real,
+			callsFor() {
+				throw new Error("injected journal read failure");
+			},
+		};
+		const ended: { runId: string; status: string; delivery: string }[] = [];
+		const runtime = new Runtime({
+			engines: [aiSdkEngine],
+			store,
+			turnJournal: journal,
+			runOwnership: {
+				begin() {},
+				members() {},
+				end(runId, status, delivery) {
+					ended.push({ runId, status, delivery });
+				},
+			},
+			buildStep: () => {
+				throw new Error("unreachable — tool-authority init died first");
+			},
+			makeTools: () => ({}),
+		});
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			const done = await sink.done;
+			expect(done.kind).toBe("error");
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			const ids = store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").all();
+			expect(ids).toHaveLength(1);
+			const run = journal.get(ids[0]!.run_id)!;
+			expect(run.status).toBe("error");
+			expect(run.delivery).toBe("failed");
+			// Linked wakes settle off the stamp, not at the next boot.
+			expect(ended).toEqual([{ runId: run.runId, status: "error", delivery: "failed" }]);
+			expect(journal.interrupted()).toEqual([]);
+		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
+	});
 });
 
 describe("unlanded-turn progress — error rail", () => {

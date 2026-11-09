@@ -10,6 +10,7 @@ import type { ToolSet } from "ai";
 import type { AcceptsMedia } from "../agent/attachments.ts";
 import type { OutgoingFile } from "../agent/tools/send.ts";
 import type { Conversation } from "../conversation.ts";
+import { log } from "../log.ts";
 import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import type { SinkDelivery } from "./delivery.ts";
 import { buildRetryGuard } from "./retry-guard.ts";
@@ -139,42 +140,63 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 	// stamp and no run for ownership to end. The runtime reads the id off
 	// the returned authority; the run record reads it through the
 	// runtime-injected getter, never a write-back callback.
-	//
-	// Every member claimed into this attempt becomes this run's owned input
-	// here, before the stream can reach a tool. A wake linked to a
-	// predecessor the row continues or inherits moves with it.
-	if (journal !== undefined) {
-		deps.runOwnership?.begin({
+	try {
+		// Every member claimed into this attempt becomes this run's owned
+		// input here, before the stream can reach a tool. A wake linked to
+		// a predecessor the row continues or inherits moves with it.
+		if (journal !== undefined) {
+			deps.runOwnership?.begin({
+				runId: newRunId,
+				conversationId: convId,
+				memberSeqs: record.memberSeqs,
+				...(record.resumedFrom !== undefined ? { resumedFrom: record.resumedFrom } : {}),
+				...(record.predecessorRun !== undefined
+					? { inheritFrom: [record.predecessorRun] }
+					: {}),
+			});
+		}
+		const begunOwnership = journal !== undefined;
+		// The recovery guard reads the fresh row once, after inheritance: it
+		// already carries the source's decisions and every predecessor
+		// attempt's recorded executions. Calls this attempt then makes never
+		// join the set — same-run intentional repetition is a live-turn
+		// matter, not recovery's.
+		const recoveryGuard =
+			journal === undefined
+				? undefined
+				: buildRetryGuard(deps.journaled(() => journal.callsFor(newRunId)));
+		const tools = fenceTools({
+			tools: rawTools,
+			convId,
+			epoch,
+			journal,
+			checkAuthority: deps.checkAuthority,
 			runId: newRunId,
-			conversationId: convId,
-			memberSeqs: record.memberSeqs,
-			...(record.resumedFrom !== undefined ? { resumedFrom: record.resumedFrom } : {}),
-			...(record.predecessorRun !== undefined ? { inheritFrom: [record.predecessorRun] } : {}),
+			guard: recoveryGuard,
+			journalFault: deps.journalFault,
+			onJournalFault: deps.onJournalFault,
 		});
+		const saveStep = (patch: TurnCheckpointPatch): void => {
+			deps.journaled(() => journal?.checkpoint(newRunId, patch));
+		};
+		return { tools, runId: newRunId, ownershipBegun: begunOwnership, saveStep };
+	} catch (err) {
+		// A begun row must not escape init still 'running': every stamp
+		// path in the runtime keys off the returned authority, which this
+		// throw never reaches. Terminate the row here so wakes linked by
+		// begin settle off the stamp like any other run end — then let
+		// the turn's catch report the original error.
+		if (journal !== undefined) {
+			try {
+				deps.journaled(() => journal.finishRun(newRunId, "error", "failed"));
+				deps.runOwnership?.end(newRunId, "error", "failed");
+			} catch (stampErr) {
+				log.error("run row terminal stamp failed while unwinding a failed init", stampErr, {
+					run: newRunId,
+					conversation: convId,
+				});
+			}
+		}
+		throw err;
 	}
-	const begunOwnership = journal !== undefined;
-	// The recovery guard reads the fresh row once, after inheritance: it
-	// already carries the source's decisions and every predecessor
-	// attempt's recorded executions. Calls this attempt then makes never
-	// join the set — same-run intentional repetition is a live-turn
-	// matter, not recovery's.
-	const recoveryGuard =
-		journal === undefined
-			? undefined
-			: buildRetryGuard(deps.journaled(() => journal.callsFor(newRunId)));
-	const tools = fenceTools({
-		tools: rawTools,
-		convId,
-		epoch,
-		journal,
-		checkAuthority: deps.checkAuthority,
-		runId: newRunId,
-		guard: recoveryGuard,
-		journalFault: deps.journalFault,
-		onJournalFault: deps.onJournalFault,
-	});
-	const saveStep = (patch: TurnCheckpointPatch): void => {
-		deps.journaled(() => journal?.checkpoint(newRunId, patch));
-	};
-	return { tools, runId: newRunId, ownershipBegun: begunOwnership, saveStep };
 }

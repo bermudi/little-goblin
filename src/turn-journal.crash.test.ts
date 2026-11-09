@@ -223,6 +223,25 @@ describe("turn journal — a real killed process", () => {
 		}
 	}, 60_000);
 
+	test("a kill inside terminal delivery appends no 'no reply' event — the reply is the record", async () => {
+		const { child, dbPath, marker } = spawn("reply-stall", "reply-stall");
+		await until(() => existsSync(marker), "child stalled inside onDone");
+		const { store, journal } = await killAndReopenRecorded(child, dbPath);
+		try {
+			const runs = journal.interrupted();
+			expect(runs).toHaveLength(1);
+			const run = runs[0]!;
+			// The process died mid-delivery — 'interrupted' stays honest —
+			// but the reply committed with its landed fact, so the boot
+			// appends no false 'no final reply' event over it.
+			expect(run.replyLanded).toBe(true);
+			const history = store.history(run.conversationId);
+			expect(history.map((m) => m.role)).toEqual(["user", "assistant"]);
+		} finally {
+			store.close();
+		}
+	}, 60_000);
+
 	test("a killed overflow continuation carries the failed attempt's calls — resume conflicts, never re-executes", async () => {
 		const { child, dbPath, marker } = spawn("overflow-stall", "overflow");
 		// Wait for both: the overflowed attempt stamps error/undelivered

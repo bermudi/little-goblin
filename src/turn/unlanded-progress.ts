@@ -187,6 +187,16 @@ export function appendInterruptedProgress(
 	run: TurnRun,
 	calls: readonly TurnToolCall[],
 ): void {
+	// The reply is the record: a run whose reply committed with its
+	// landed fact has nothing to report — the process died inside
+	// terminal delivery, between the commit and the terminal stamp.
+	if (run.replyLanded) {
+		log.info("interrupted run's reply already landed — no progress event", {
+			conversation: run.conversationId,
+			run: run.runId,
+		});
+		return;
+	}
 	const rendered = renderUnlandedTurnProgress({
 		runId: run.runId,
 		outcome: { kind: "interrupted" },

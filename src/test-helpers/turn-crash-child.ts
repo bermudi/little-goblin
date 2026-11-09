@@ -14,6 +14,9 @@
 //                      wired, exchanges pre-seeded) and the resumed
 //                      attempt's first call never answers — the kill
 //                      lands on the continuation, not the overflowed one.
+//   reply-stall:       the reply lands durably, then onDone never
+//                      resolves — the kill lands inside terminal
+//                      delivery, after the commit, before the stamp.
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
@@ -57,6 +60,20 @@ const finishPart: LanguageModelV4StreamPart = {
 		outputTokens: { total: 1, text: undefined, reasoning: undefined },
 	},
 };
+const finishStop: LanguageModelV4StreamPart = {
+	type: "finish",
+	finishReason: { unified: "stop", raw: undefined },
+	usage: {
+		inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+		outputTokens: { total: 1, text: undefined, reasoning: undefined },
+	},
+};
+const textReply = (text: string): LanguageModelV4StreamPart[] => [
+	{ type: "text-start", id: "t1" },
+	{ type: "text-delta", id: "t1", delta: text },
+	{ type: "text-end", id: "t1" },
+	finishStop,
+];
 
 const parts = (list: LanguageModelV4StreamPart[]) =>
 	new ReadableStream<LanguageModelV4StreamPart>({
@@ -87,6 +104,13 @@ const model = {
 	},
 	doStream() {
 		streamCalls += 1;
+		if (MODE === "reply-stall") {
+			// 1: probe runs to a journaled result; 2: the reply streams and
+			// lands — the kill then lands inside onDone.
+			if (streamCalls === 1) return { stream: closedParts([streamStart, callPart, finishPart]) };
+			if (streamCalls === 2) return { stream: closedParts([streamStart, ...textReply("the landed reply")]) };
+			return { stream: parts([]) };
+		}
 		if (MODE === "overflow-stall") {
 			// 1: probe runs (marker + journaled result); 2: the provider
 			// rejects for context size (compaction + resume); 3: the
@@ -115,7 +139,8 @@ const probeTools = {
 	probe: tool({
 		inputSchema: z.object({}),
 		execute: async () => {
-			appendFileSync(MARKER_PATH, "dispatched\n");
+			// reply-stall's marker means "inside onDone" — it must not fire early.
+			if (MODE !== "reply-stall") appendFileSync(MARKER_PATH, "dispatched\n");
 			if (MODE === "hang-in-tool") await idle();
 			return { ok: true };
 		},
@@ -174,7 +199,11 @@ const sink: TurnSink = {
 	onTextDelta() {},
 	onReasoningDelta() {},
 	onToolCall() {},
-	onDone(_done: TurnDone) {},
+	async onDone(_done: TurnDone) {
+		if (MODE !== "reply-stall") return;
+		appendFileSync(MARKER_PATH, "done-entered\n");
+		await idle();
+	},
 };
 runtime.submit(conv, userMessage([{ type: "text", text: "run probe" }]), sink);
 // The parent watches the marker or the journal; this process never

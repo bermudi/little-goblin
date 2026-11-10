@@ -61,6 +61,11 @@ interface EngineRig {
 	scriptTextThenHold(text: string): HeldRun;
 	/** Script the next turn to stream `text` then fail the stream. */
 	scriptTextThenFail(text: string): void;
+	/** Script the next turn to open the provider call then hold before
+	 *  any content — the wire carries only the message start (#408 F1). */
+	scriptPreContentHold(): HeldRun;
+	/** Script the next turn to fail before any content reaches the wire. */
+	scriptPreContentFail(): void;
 	/** Script the next turn as a plain reply whose prompts are captured. */
 	scriptRecordedReply(text: string): { prompts(): string[] };
 }
@@ -178,6 +183,30 @@ function sdkRig(): EngineRig {
 				},
 			]);
 			step = { model: model.model, system: "test" };
+		},
+		scriptPreContentHold: () => {
+			// The provider accepts the request then says nothing — the
+			// wire carries only the message start when the fence lands.
+			const entered = deferred<void>();
+			const gate = deferred<void>();
+			const model = scriptedModel([
+				{
+					drive: async ({ enqueue, close }) => {
+						enqueue({ type: "stream-start", warnings: [] });
+						entered.resolve();
+						await gate.promise;
+						close();
+					},
+				},
+			]);
+			step = { model: model.model, system: "test" };
+			return { entered: entered.promise, release: () => gate.resolve() };
+		},
+		scriptPreContentFail: () => {
+			step = {
+				model: scriptedModel([new Error("provider exploded before streaming")]).model,
+				system: "test",
+			};
 		},
 		scriptHeldRun: () => {
 			// Delta 0 streams out, delta 1 is held inside the provider
@@ -317,6 +346,17 @@ function claudeRig(): EngineRig {
 				{ kind: "stream-text", text },
 				{ kind: "error", resultText: "invalid_request_error: the model was retired" },
 			]);
+		},
+		scriptPreContentHold: () => {
+			// Provider silence: the query yields nothing until released —
+			// the wire carries only the engine's start chunk.
+			const entered = deferred<void>();
+			const gate = deferred<void>();
+			fake.script([{ kind: "hold", onEnter: () => entered.resolve(), until: gate.promise }]);
+			return { entered: entered.promise, release: () => gate.resolve() };
+		},
+		scriptPreContentFail: () => {
+			fake.script([{ kind: "error", resultText: "invalid_request_error: provider exploded" }]);
 		},
 		scriptHeldRun: () => {
 			// The tool execution is the hold: `run` gates before invoking
@@ -521,6 +561,74 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			};
 			expect(meta.unlanded?.kind).toBe("failed");
 			expect(meta.unlanded?.reply?.some((p) => p.type === "text" && p.text === "half")).toBe(true);
+		},
+	},
+	{
+		name: "/stop before the first content records one stopped event with the wire's id (#408 F1)",
+		async run(rig) {
+			const held = rig.scriptPreContentHold();
+			const sink = submit(rig, "hold before content");
+			await held.entered;
+			// The wire opened the assistant message; no content part ever
+			// arrived — the exact state that used to leave no record.
+			await waitUntil(() => sink.chunks.some((c) => c.type === "start"), "wire start");
+			const wireStart = sink.chunks.find((c) => c.type === "start");
+			const wireId = (wireStart as { messageId: string }).messageId;
+			rig.runtime.stop(rig.conv.id);
+			held.release();
+			expect(await sink.done).toEqual({ kind: "fenced" });
+			await drain(rig);
+			// Exactly one record, role system, id from the wire's start
+			// chunk — it replaces the empty optimistic assistant the
+			// client showed; its reply carries no content parts.
+			const history = rig.store.history(rig.conv.id);
+			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
+			const record = history[1]!;
+			expect(record.id).toBe(wireId);
+			const meta = record.metadata as {
+				unlanded?: { kind?: string; reply?: { type: string }[] };
+			};
+			expect(meta.unlanded?.kind).toBe("aborted");
+			expect(Array.isArray(meta.unlanded?.reply)).toBe(true);
+			expect(meta.unlanded!.reply!.every((p) => p.type === "step-start")).toBe(true);
+			// The next turn's model view carries the record once.
+			const recorded = rig.scriptRecordedReply("moving on");
+			const next = submit(rig, "next turn");
+			expect(await next.done).toEqual({ kind: "completed" });
+			await drain(rig);
+			const prompt = recorded.prompts().at(-1)!;
+			expect(prompt.split("[system event: The previous turn was stopped").length - 1).toBe(1);
+		},
+	},
+	{
+		name: "a failure before the first content records one failed event (#408 F1)",
+		async run(rig) {
+			rig.scriptPreContentFail();
+			const sink = submit(rig, "fail before content");
+			// The wire still opened the assistant message before the
+			// provider's error arrived.
+			await waitUntil(() => sink.chunks.some((c) => c.type === "start"), "wire start");
+			const wireStart = sink.chunks.find((c) => c.type === "start");
+			const wireId = (wireStart as { messageId: string }).messageId;
+			expect((await sink.done).kind).toBe("error");
+			await drain(rig);
+			const history = rig.store.history(rig.conv.id);
+			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
+			const record = history[1]!;
+			expect(record.id).toBe(wireId);
+			const meta = record.metadata as {
+				unlanded?: { kind?: string; reply?: { type: string }[] };
+			};
+			expect(meta.unlanded?.kind).toBe("failed");
+			expect(Array.isArray(meta.unlanded?.reply)).toBe(true);
+			expect(meta.unlanded!.reply!.every((p) => p.type === "step-start")).toBe(true);
+			// The next turn's model view carries the record once.
+			const recorded = rig.scriptRecordedReply("moving on");
+			const next = submit(rig, "next turn");
+			expect(await next.done).toEqual({ kind: "completed" });
+			await drain(rig);
+			const prompt = recorded.prompts().at(-1)!;
+			expect(prompt.split("[system event: The previous turn did not finish").length - 1).toBe(1);
 		},
 	},
 ];

@@ -298,6 +298,35 @@ describe("unlanded turn records (issue #408)", () => {
 			]);
 		});
 
+		test("an empty streamed assistant and its record share an id — the durable role wins", () => {
+			// The turn ended after the wire's start but before any part —
+			// the optimistic card has no parts, and the record still
+			// replaces it because the id matches.
+			const empty = asMsg({ id: "a1", role: "assistant", parts: [] });
+			const record = asMsg({
+				id: "a1",
+				role: "system",
+				parts: [{ type: "text", text: "[system event: …]" }],
+				metadata: { unlanded: { kind: "aborted", runId: "r1", reply: [] } },
+			});
+			expect(mergeTranscript([asMsg(user), empty], [asMsg(user), record])).toEqual([
+				asMsg(user),
+				record,
+			]);
+		});
+
+		test("a record with no wire reply appends after history — there was no card to replace", () => {
+			// No start chunk ever reached the wire, so the client's view
+			// holds only the user message; the record lands behind it.
+			const record = asMsg({
+				id: "sys-1",
+				role: "system",
+				parts: [{ type: "text", text: "[system event: …]" }],
+				metadata: { unlanded: { kind: "failed", runId: "r9" } },
+			});
+			expect(mergeTranscript([asMsg(user)], [asMsg(user), record])).toEqual([asMsg(user), record]);
+		});
+
 		test("identical ids and roles keep the live reference", () => {
 			const a1 = asMsg({ id: "a1", role: "assistant", parts: [{ type: "text", text: "hey" }] });
 			const current = [asMsg(user), a1];
@@ -339,6 +368,12 @@ describe("unlanded turn records (issue #408)", () => {
 			expect(
 				unlandedMeta(system({ unlanded: { kind: "failed", runId: "r1", reply: [42] } }))?.reply,
 			).toBeNull();
+		});
+
+		test("an empty reply array still counts — the start-only record keeps its card", () => {
+			expect(
+				unlandedMeta(system({ unlanded: { kind: "aborted", runId: "r1", reply: [] } })),
+			).toEqual({ kind: "aborted", runId: "r1", reply: [] });
 		});
 	});
 
@@ -450,6 +485,74 @@ describe("unlanded turn records (issue #408)", () => {
 			expect(note).not.toBeNull();
 			expect(note?.querySelector("summary")?.textContent).toBe("Turn interrupted — record");
 		});
+
+		test("a stopped turn with a start-only reply renders the marked card — no extra assistant", async () => {
+			fakeFetch([
+				{ id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				{
+					id: "a1",
+					role: "system",
+					parts: [
+						{
+							type: "text",
+							text: "[system event: The previous turn was stopped (run r1): stopped]",
+						},
+					],
+					metadata: { unlanded: { kind: "aborted", runId: "r1", reply: [] } },
+				},
+			]);
+			await mount();
+			const card = dom.container.querySelector(".msg.assistant.unlanded");
+			expect(card).not.toBeNull();
+			expect(dom.container.querySelector(".msg-meta")?.textContent).toBe("Stopped");
+			// The record fold still carries what the next turn is told.
+			const note = card?.querySelector("details.unlanded-note");
+			expect(note?.querySelector("summary")?.textContent).toBe("What the next turn is told");
+			// Exactly one assistant-flavored card — the record replaced the
+			// empty optimistic one; nothing else dangles.
+			expect(dom.container.querySelectorAll(".msg.assistant")).toHaveLength(1);
+		});
+
+		test("a failed turn with a start-only reply renders the card marked Failed", async () => {
+			fakeFetch([
+				{
+					id: "a2",
+					role: "system",
+					parts: [
+						{
+							type: "text",
+							text: "[system event: The previous turn did not finish (run r2): provider exploded]",
+						},
+					],
+					metadata: { unlanded: { kind: "failed", runId: "r2", reply: [] } },
+				},
+			]);
+			await mount();
+			expect(dom.container.querySelector(".msg.assistant.unlanded")).not.toBeNull();
+			expect(dom.container.querySelector(".msg-meta")?.textContent).toBe("Failed");
+		});
+
+		test.each([
+			["aborted", "Turn stopped — record"],
+			["failed", "Turn failed — record"],
+		] as const)(
+			"a %s turn with no wire reply stays a plain system message",
+			async (kind, summary) => {
+				fakeFetch([
+					{
+						id: "a3",
+						role: "system",
+						parts: [{ type: "text", text: "[system event: record]" }],
+						metadata: { unlanded: { kind, runId: "r3" } },
+					},
+				]);
+				await mount();
+				expect(dom.container.querySelector(".msg.system")).not.toBeNull();
+				expect(dom.container.querySelector(".msg.assistant.unlanded")).toBeNull();
+				const note = dom.container.querySelector("details.unlanded-note");
+				expect(note?.querySelector("summary")?.textContent).toBe(summary);
+			},
+		);
 
 		test("a system message without the stamp renders unchanged", async () => {
 			fakeFetch([

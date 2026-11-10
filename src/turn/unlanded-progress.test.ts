@@ -160,34 +160,35 @@ describe("unlanded-turn progress rendering", () => {
 		}
 	});
 
-	test("malformed partial (string, wrong shape) with no calls renders null and does not throw", () => {
-		expect(
-			renderUnlandedTurnProgress({
+	test("malformed partial (string, wrong shape) contributes no text and never throws", () => {
+		const partials: unknown[] = [
+			"raw text",
+			{ role: "assistant", content: "not an array" },
+			[{ role: "assistant", content: [{ type: "reasoning", text: "no text part" }] }],
+		];
+		for (const partial of partials) {
+			const failed = renderUnlandedTurnProgress({
 				runId: "r",
 				outcome: { kind: "failed", failure: "f" },
 				calls: [],
-				partial: "raw text",
+				partial,
 				reply: null,
-			}),
-		).toBeNull();
-		expect(
-			renderUnlandedTurnProgress({
-				runId: "r",
-				outcome: { kind: "failed", failure: "f" },
-				calls: [],
-				partial: { role: "assistant", content: "not an array" },
-				reply: null,
-			}),
-		).toBeNull();
-		expect(
-			renderUnlandedTurnProgress({
-				runId: "r",
-				outcome: { kind: "failed", failure: "f" },
-				calls: [],
-				partial: [{ role: "assistant", content: [{ type: "reasoning", text: "no text part" }] }],
-				reply: null,
-			}),
-		).toBeNull();
+			});
+			// A live turn's outcome alone is the record — no assistant
+			// section appears for a partial that carried no text.
+			expect(failed).not.toBeNull();
+			expect(failed!.text).not.toContain("Assistant text");
+			// The process-death rail still stays silent on nothing.
+			expect(
+				renderUnlandedTurnProgress({
+					runId: "r",
+					outcome: { kind: "interrupted" },
+					calls: [],
+					partial,
+					reply: null,
+				}),
+			).toBeNull();
+		}
 	});
 
 	test("text-only progress renders without the tool-call section; calls-only without the text section", () => {
@@ -291,11 +292,24 @@ describe("replyFromWire", () => {
 		).toBe(false);
 	});
 
-	test("empty log and plumbing-only logs yield no reply", async () => {
+	test("empty and start-less logs yield no reply; a start-only log keeps the opened id", async () => {
 		expect(await replyFromWire([])).toBeNull();
-		expect(
-			await replyFromWire([{ type: "start", messageId: "m4" }, { type: "start-step" }]),
-		).toBeNull();
+		expect(await replyFromWire([{ type: "start-step" }])).toBeNull();
+		const startOnly = await replyFromWire([
+			{ type: "start", messageId: "m4" },
+			{ type: "start-step" },
+		]);
+		expect(startOnly).not.toBeNull();
+		expect(startOnly!.id).toBe("m4");
+		expect(startOnly!.role).toBe("assistant");
+		expect(startOnly!.parts).toEqual([]);
+		const failed = await replyFromWire([
+			{ type: "start", messageId: "m5" },
+			{ type: "error", errorText: "boom" },
+		]);
+		expect(failed).not.toBeNull();
+		expect(failed!.id).toBe("m5");
+		expect(failed!.parts).toEqual([]);
 	});
 });
 
@@ -313,7 +327,7 @@ describe("unlanded reply in the body and the event", () => {
 		expect(rendered!.text).not.toContain("journal-side text");
 	});
 
-	test("reply alone keeps the record alive without calls or partial", () => {
+	test("reply alone keeps the record alive without calls or partial; a live outcome alone does too", () => {
 		const withReply = renderUnlandedTurnProgress({
 			runId: "r",
 			outcome: { kind: "aborted", cause: "stopped" },
@@ -323,14 +337,32 @@ describe("unlanded reply in the body and the event", () => {
 		});
 		expect(withReply).not.toBeNull();
 		expect(withReply!.text).toContain("Hi");
-		const withoutReply = renderUnlandedTurnProgress({
-			runId: "r",
-			outcome: { kind: "aborted", cause: "stopped" },
-			calls: [],
-			partial: [],
-			reply: null,
-		});
-		expect(withoutReply).toBeNull();
+		for (const outcome of [
+			{ kind: "aborted", cause: "stopped" },
+			{ kind: "failed", failure: "provider exploded" },
+		] as const) {
+			const withoutReply = renderUnlandedTurnProgress({
+				runId: "r",
+				outcome,
+				calls: [],
+				partial: [],
+				reply: null,
+			});
+			expect(withoutReply).not.toBeNull();
+			expect(withoutReply!.text).toContain("Its request has no final reply.");
+			expect(withoutReply!.text).not.toContain("Assistant text");
+			expect(withoutReply!.text).not.toContain("Tool calls:");
+		}
+		// Process death with nothing to say still records nothing.
+		expect(
+			renderUnlandedTurnProgress({
+				runId: "r",
+				outcome: { kind: "interrupted" },
+				calls: [],
+				partial: [],
+				reply: null,
+			}),
+		).toBeNull();
 	});
 
 	test("the event carries the reply's id and rides its parts in metadata", () => {

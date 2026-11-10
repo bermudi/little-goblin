@@ -4488,7 +4488,7 @@ describe("unlanded-turn progress — error rail", () => {
 		}
 	});
 
-	test("no progress, no event — a clean terminal failure and a completed turn append nothing", async () => {
+	test("a failure before any content records the outcome; a completed turn appends nothing", async () => {
 		const store = openStore(tmpDb("goblin-rt-fp3-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
@@ -4505,12 +4505,55 @@ describe("unlanded-turn progress — error rail", () => {
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), failed);
 			expect((await failed.done).kind).toBe("error");
 			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-			expect(systemEvents(store, conv.id)).toHaveLength(0);
+			// #408 F1: the failed turn's wire start gives the record its
+			// identity — exactly one event, marked failed, no content parts.
+			const events = systemEvents(store, conv.id);
+			expect(events).toHaveLength(1);
+			const meta = events[0]!.metadata as { unlanded?: { kind?: string } };
+			expect(meta.unlanded?.kind).toBe("failed");
+			expect(eventText(events[0]!)).toContain("The previous turn did not finish");
 			const good = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi again" }]), good);
 			expect(await good.done).toEqual({ kind: "completed" });
 			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
-			expect(systemEvents(store, conv.id)).toHaveLength(0);
+			expect(systemEvents(store, conv.id)).toHaveLength(1);
+		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
+	});
+
+	test("a turn that fails before the wire opens still records failed — no reply, fresh id", async () => {
+		const store = openStore(tmpDb("goblin-rt-fp8-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(store.db);
+		const runtime = new Runtime({
+			engines: [aiSdkEngine],
+			store,
+			turnJournal: journal,
+			buildStep: () => {
+				throw new Error("step assembly exploded");
+			},
+			makeTools: () => ({}),
+		});
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			expect((await sink.done).kind).toBe("error");
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			// No start chunk ever reached the wire — the record mints its
+			// own id, carries no reply parts, and still lands once.
+			const events = systemEvents(store, conv.id);
+			expect(events).toHaveLength(1);
+			const meta = events[0]!.metadata as {
+				unlanded?: { kind?: string; reply?: unknown; runId?: string };
+			};
+			expect(meta.unlanded?.kind).toBe("failed");
+			expect("reply" in (meta.unlanded ?? {})).toBe(false);
+			const text = eventText(events[0]!);
+			expect(text).toContain(`The previous turn did not finish (run ${meta.unlanded!.runId})`);
+			expect(text).toContain("step assembly exploded");
+			expect(text).toContain("Its request has no final reply.");
 		} finally {
 			await runtime.shutdown();
 			store.close();

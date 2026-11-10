@@ -268,16 +268,24 @@ the view. The operator sees it too.
   instructions).
 
 - **One record, and it is the reply the operator watched** (ruling
-  2026-11-09, #408). On the error and fenced rails the event takes the
-  id of the assistant message the wire streamed and carries that reply's
-  parts in `metadata.unlanded.reply`, rebuilt from the turn's wire log
-  (`replyFromWire`). The app reconciles its local partial with the event
-  by id and draws the reply marked Stopped or Failed, the model-facing
-  text folded under it — one thing on screen, the same after a reload.
-  Before this the streamed partial lived only in the browser beside a
-  random-id event: shown twice, then lost on reload. The model view is
-  untouched: it reads the event's text only, never the metadata, so the
-  stopped reply is display, not replayed assistant output (pi's rule —
+  2026-11-09, #408; start-only identity 2026-11-10). On the error and
+  fenced rails the event takes the id of the assistant message the wire
+  streamed and carries that reply's parts in
+  `metadata.unlanded.reply`, rebuilt from the turn's wire log
+  (`replyFromWire`). The wire's `start` chunk alone is enough: a turn
+  stopped or failed before its first content part still opened an
+  assistant message, and keeping its id — with whatever parts arrived,
+  possibly none — is what lets the app replace the empty optimistic
+  card it showed. When no `start` ever reached the wire the event
+  mints a fresh id and carries no reply: a plain system record with
+  nothing to reconcile. The app reconciles its local partial with the
+  event by id and draws the reply marked Stopped or Failed, the
+  model-facing text folded under it — one thing on screen, the same
+  after a reload. Before this the streamed partial lived only in the
+  browser beside a random-id event: shown twice, then lost on reload.
+  The model view is untouched: it reads the event's text only, never
+  the metadata, so the stopped reply is display, not replayed assistant
+  output (pi's rule —
   `pi-mono/packages/ai/src/api/transform-messages.ts` skips errored and
   aborted assistant messages on replay). The body's assistant text comes
   from the streamed reply when it has text (it includes the unfinished
@@ -293,12 +301,18 @@ the view. The operator sees it too.
   with no recorded result renders as outcome unknown. The event is evidence,
   not proof of exactly-once execution, and it does not retire the journal,
   replay decisions, retry grants, or resume.
-- **No duplicate.** Nothing is appended when the reply landed, when there is
-  no progress to report (no call, no text, and nothing streamed), or — error rail only — when this attempt no longer
-  holds authority. Attempts handed to a continuation (overflow, fallback)
-  record nothing; the successor carries them. Journal faults (the journal
-  cannot write, or the record is unreadable) attempt no event — the journal
-  row remains the evidence.
+- **No duplicate.** Nothing is appended when the reply landed, when the
+  interrupted rail has no progress to report (no call, no text, and no
+  wire reply — process death before any output stays silent, as
+  before), or — error rail only — when this attempt no longer holds
+  authority. Once a run row exists, the error and fenced rails record a
+  live turn's outcome even with nothing else to show: a stop or failure before the
+  first content part still lands exactly one event — the outcome itself
+  is the evidence the next turn needs. Attempts handed to a
+  continuation (overflow, fallback) record nothing; the successor
+  carries them. Journal faults (the journal cannot write, or the record
+  is unreadable) attempt no event — the journal row remains the
+  evidence.
 - **Steps that ran are never replayed.** The event is a record, not a
   rerun: boot stays notice-only, resume keeps its recovery guard, and the
   event closes with exactly that instruction.

@@ -6618,6 +6618,16 @@ button.link:hover {
 .doc-back {
 	font-size: 15px !important;
 }
+.msheet-head .doc-copy {
+	font-size: 11px;
+	padding: 0.15rem 0.45rem;
+	margin-right: 0.3rem;
+	border-radius: 6px;
+}
+.msheet-head .doc-copy:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
 .doc-body {
 	flex: 1;
 	min-height: 0;

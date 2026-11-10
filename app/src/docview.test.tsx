@@ -355,6 +355,7 @@ describe("doc viewer journey (happy-dom)", () => {
 		// freeze, not just the string decode.
 		expect(dom.container.querySelector(".doc-md")).toBeNull();
 		expect(dom.container.querySelector(".doc-download")?.textContent).toContain("big.md");
+		expect(dom.container.querySelector(".doc-copy")).toBeNull();
 	});
 
 	// Destinations aren't paths until they're interpreted: percent
@@ -454,5 +455,88 @@ describe("doc viewer journey (happy-dom)", () => {
 		await settle();
 		expect(dom.container.querySelector(".doc-frame")).toBeNull();
 		expect(dom.container.querySelector(".doc-download")?.textContent).toContain("doc.pdf");
+		expect(dom.container.querySelector(".doc-copy")).toBeNull();
 	});
+
+	test("an image shows no copy button", async () => {
+		globalThis.fetch = (async (_input: RequestInfo | URL) =>
+			new Response(new Uint8Array([137, 80, 78, 71]), {
+				status: 200,
+				headers: { "content-type": "image/png" },
+			})) as typeof fetch;
+		dom.root = createRoot(dom.container);
+		await act(async () => {
+			dom.root?.render(
+				<DocViewerProvider token={null} conversationId="app/x">
+					<PathChip path="pic.png" />
+				</DocViewerProvider>,
+			);
+		});
+		await act(async () => {
+			click(dom, dom.container.querySelector("button.pathchip-link")!);
+		});
+		await settle();
+		expect(dom.container.querySelector(".doc-media")).not.toBeNull();
+		expect(dom.container.querySelector(".doc-copy")).toBeNull();
+	});
+
+	test("an image shows no copy button", async () => {
+		globalThis.fetch = (async (_input: RequestInfo | URL) =>
+			new Response(new Uint8Array([137, 80, 78, 71]), {
+				status: 200,
+				headers: { "content-type": "image/png" },
+			})) as typeof fetch;
+		dom.root = createRoot(dom.container);
+		await act(async () => {
+			dom.root?.render(
+				<DocViewerProvider token={null} conversationId="app/x">
+					<PathChip path="pic.png" />
+				</DocViewerProvider>,
+			);
+		});
+		await act(async () => {
+			click(dom, dom.container.querySelector("button.pathchip-link")!);
+		});
+		await settle();
+		expect(dom.container.querySelector(".doc-media")).not.toBeNull();
+		expect(dom.container.querySelector(".doc-copy")).toBeNull();
+	});
+
+	// Copy hands over the decoded source — markdown and html as written,
+	// not as rendered — and shows the shared copied state.
+	for (const [path, type, body] of [
+		["notes.md", "text/markdown", "# Notes\n\n**raw** source"],
+		["page.html", "text/html", "<h1>Page</h1><script>1</script>"],
+		["run.log", "text/plain", "line one\nline two"],
+	] as const) {
+		test(`a ${type} doc copies its raw text`, async () => {
+			const written: string[] = [];
+			Object.defineProperty(dom.win.navigator, "clipboard", {
+				configurable: true,
+				value: { writeText: async (t: string) => void written.push(t) },
+			});
+			globalThis.fetch = (async (_input: RequestInfo | URL) =>
+				new Response(body, { status: 200, headers: { "content-type": type } })) as typeof fetch;
+			dom.root = createRoot(dom.container);
+			await act(async () => {
+				dom.root?.render(
+					<DocViewerProvider token={null} conversationId="app/x">
+						<PathChip path={path} />
+					</DocViewerProvider>,
+				);
+			});
+			await act(async () => {
+				click(dom, dom.container.querySelector("button.pathchip-link")!);
+			});
+			await settle();
+			const btn = dom.container.querySelector(".doc-head .doc-copy");
+			expect(btn?.textContent).toBe("copy");
+			await act(async () => {
+				click(dom, btn!);
+			});
+			await settle();
+			expect(written).toEqual([body]);
+			expect(dom.container.querySelector(".doc-copy")?.textContent).toBe("✓");
+		});
+	}
 });

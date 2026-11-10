@@ -182,6 +182,7 @@ describe("toolNames ↔ makeTools", () => {
 				lifecycle: {},
 				pin: () => ({ address: { chatId: 0, threadId: null } }),
 				workspaceDir: "/tmp",
+				mountedSubagents: { worker: false, computer: false },
 			} as unknown as DelegateToolDeps,
 			mail: {} as unknown as MailToolDeps,
 			// Mounted so the wire-schema invariant covers herdr too.

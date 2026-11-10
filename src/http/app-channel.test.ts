@@ -1039,7 +1039,9 @@ describe("app operator surface — capability parking", () => {
 			expect(first.capabilities.sandbox.state).toBe("off");
 			expect(first.capabilities.reviewer.state).toBe("off");
 			expect(first.capabilities.subagents.state).toBe("needs-setup");
-			expect(first.capabilities.subagents.hint).toContain("goblin.json5");
+			expect(first.capabilities.subagents.hint).toContain(
+				"pick a model for the worker or computer use",
+			);
 			expect(first.capabilities.delegation.state).toBe("needs-setup");
 			expect(first.capabilities.transcription.hint).toBe("pick an engine/model");
 			expect(first.capabilities.memory.hint).toBeNull();
@@ -1086,7 +1088,7 @@ describe("app operator surface — capability parking", () => {
 			const needsSetup = await post({ capabilities: { subagents: true } });
 			expect(needsSetup.status).toBe(422);
 			expect(((await needsSetup.json()) as { error: string }).error).toContain(
-				"set it up in goblin.json5 first",
+				"pick a model for the worker or computer use",
 			);
 			const noInstaller = await post({ capabilities: { image: true } });
 			expect(noInstaller.status).toBe(422);

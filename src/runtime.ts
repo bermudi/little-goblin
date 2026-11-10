@@ -36,14 +36,9 @@ import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { type CompactionSeam, runCompactJob } from "./turn/compact-job.ts";
 import { sinkDelivery } from "./turn/delivery.ts";
-import {
-	isClaudeStep,
-	type ModelStep,
-	pickEngine,
-	stepModelRef,
-	type TurnEngine,
-} from "./turn/engine.ts";
+import { isClaudeStep, type ModelStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
+import { stepModelRef } from "./turn/model-ref.ts";
 import {
 	ContextOverflowError,
 	compactTriggerTokens,

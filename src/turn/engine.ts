@@ -48,18 +48,6 @@ export interface TurnEngine<S extends ModelStep | ClaudeStep = ModelStep | Claud
 	run<M extends WireMember>(input: EngineInput<M> & { step: S }): Promise<StreamOutcome>;
 }
 
-/**
- * The ref stamped on the landed reply's metadata.model — one
- * computation shared by the view context (reasoning origin, #417) and
- * both engines' reply metadata so they cannot diverge.
- */
-export function stepModelRef(step: ModelStep | ClaudeStep): string {
-	if (step.label !== undefined) return step.label;
-	// ModelStep is the only variant whose label can be absent.
-	const model = (step as ModelStep).model;
-	return typeof model === "string" ? model : model.modelId;
-}
-
 export function isClaudeStep(step: ModelStep | ClaudeStep): step is ClaudeStep {
 	return "engine" in step && step.engine === "claude-code";
 }

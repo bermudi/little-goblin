@@ -37,8 +37,8 @@ import type { CacheObservation } from "../../cache-observation.ts";
 import type { ConfigRef } from "../../config.ts";
 import type { AppLiveContext } from "../../http/app-wire.ts";
 import { log } from "../../log.ts";
-import { stepModelRef } from "../../turn/engine.ts";
 import { measurePrompt } from "../../turn/itemize.ts";
+import { stepModelRef } from "../../turn/model-ref.ts";
 import {
 	emitChunk,
 	type StreamDeps,

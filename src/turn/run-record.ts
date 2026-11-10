@@ -1,5 +1,6 @@
 // The attempt's journal run row — fault box, terminal stamp, unlanded-progress record — plus the model-fallback config the attempt serves; the run id, store, and ownership hooks stay injected.
 
+import type { UIMessage } from "ai";
 import {
 	candidateRefs,
 	type FallbackMiss,
@@ -44,7 +45,9 @@ export interface RunRecord {
 		status: "fenced" | "completed" | "error",
 		delivery: "delivered" | "undelivered" | "failed",
 	): void;
-	recordUnlandedProgress(outcome: UnlandedOutcome): void;
+	// `reply` is the wire-streamed partial (replyFromWire) — it donates
+	// the event's id and rides its metadata; null when nothing streamed.
+	recordUnlandedProgress(outcome: UnlandedOutcome, reply: UIMessage | null): void;
 	// The reply landed durably — a failure past it must not also record a
 	// progress event (the final reply is the record).
 	markReplyLanded(): void;
@@ -138,7 +141,7 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 	// write, like the ⏹ superseded display stamp). An append failure
 	// never changes the outcome.
 	let replyLanded = false;
-	const recordUnlandedProgress = (outcome: UnlandedOutcome): void => {
+	const recordUnlandedProgress = (outcome: UnlandedOutcome, reply: UIMessage | null): void => {
 		const id = deps.runId();
 		if (journal === undefined || id === null || runStamped || replyLanded) return;
 		if (outcome.kind === "failed" && store.get(convId)?.epoch !== epoch) return;
@@ -148,6 +151,7 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 				outcome,
 				calls: journal.callsFor(id),
 				partial: journal.get(id)?.partial ?? null,
+				reply,
 			});
 			if (rendered === null) return;
 			// Anchored to the latest input this attempt consumed (folded steers
@@ -157,7 +161,12 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 			for (const seq of ownedInputSeqs) {
 				if (consumedAnchor === null || seq > consumedAnchor) consumedAnchor = seq;
 			}
-			store.append(convId, [unlandedProgressEvent(rendered.text)], {
+			const event = unlandedProgressEvent(rendered.text, {
+				kind: outcome.kind,
+				runId: id,
+				reply,
+			});
+			store.append(convId, [event], {
 				anchorSeq: consumedAnchor,
 			});
 			log.info("unlanded-turn progress recorded", {
@@ -168,6 +177,8 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 				calls: rendered.calls,
 				unknown: rendered.unknown,
 				textChars: rendered.textChars,
+				replyParts: reply?.parts.length ?? 0,
+				eventId: event.id,
 			});
 		} catch (err) {
 			log.error("unlanded-turn progress record failed — outcome still delivered", err, {

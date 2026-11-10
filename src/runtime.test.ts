@@ -1005,6 +1005,80 @@ describe("turn authority", () => {
 		r.store.close();
 	});
 
+	test("stop().active stays pending until the turn's unlanded record lands", async () => {
+		const store = openStore(tmpDb("goblin-rt-stopactive-"));
+		const journal = openTurnJournal(store.db);
+		const r = rig({
+			deltas: ["a", "b", "c", "d"],
+			delayMs: 20,
+			store,
+			deps: { turnJournal: journal },
+		});
+		// A slow onDone gates the fenced unwind: the terminal fan-out awaits
+		// it before runTurn returns, and `active` resolves only then.
+		const gate = deferred<void>();
+		const chunks: UIMessageChunk[] = [];
+		const sink: TurnSink = {
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onStreamChunk(c) {
+				chunks.push(c);
+			},
+			onDone: async () => {
+				await gate.promise;
+			},
+		};
+		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "hi" }]), sink);
+		await waitUntil(() => chunks.some((c) => c.type === "text-delta"), "wire carries the delta");
+		const { active } = stop(r);
+		let activeDone = false;
+		void active.then(() => {
+			activeDone = true;
+		});
+		await sleep(15);
+		expect(activeDone).toBe(false);
+		gate.resolve();
+		await active;
+		// Settlement implies the record is durable history — never before.
+		const record = store
+			.history(r.conv.id)
+			.find((m) => m.role === "system" && (m.metadata as { unlanded?: unknown }).unlanded);
+		expect(record).toBeDefined();
+		expect((record!.metadata as { unlanded: { kind: string } }).unlanded.kind).toBe("aborted");
+		store.close();
+	});
+
+	test("stop().active resolves immediately on an idle lane", async () => {
+		const r = rig({ deltas: ["a"], delayMs: 5 });
+		await stop(r).active;
+		r.store.close();
+	});
+
+	test("stop().active does not wait for a turn submitted after the stop", async () => {
+		const store = openStore(tmpDb("goblin-rt-stopactive-2"));
+		const journal = openTurnJournal(store.db);
+		const r = rig({
+			deltas: ["a", "b", "c", "d"],
+			delayMs: 100,
+			store,
+			deps: { turnJournal: journal },
+		});
+		const first = submit(r, "one");
+		await first.firstDelta; // mid-stream
+		const { active } = stop(r);
+		const later = submit(r, "two"); // admitted on the bumped epoch, slow
+		let laterDone = false;
+		void later.done.then(() => {
+			laterDone = true;
+		});
+		await active;
+		// The later turn neither delayed nor was dropped by `active`.
+		expect(laterDone).toBe(false);
+		expect((await later.done).kind).toBe("completed");
+		store.close();
+	});
+
 	test("a finished lane does not report stoppable turns", async () => {
 		const r = rig({ deltas: ["a"], delayMs: 5 });
 		const sink = submit(r, "hi");

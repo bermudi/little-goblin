@@ -406,7 +406,7 @@ describe("app conversations", () => {
 	});
 
 	test("stop aborts a live turn — the stream ends with the error chunk", async () => {
-		const { http, call } = setup({
+		const { http, call, store } = setup({
 			token: APP_TOKEN_NAME,
 			deltas: ["a", "b", "c", "d", "e"],
 			delayMs: 50,
@@ -428,7 +428,16 @@ describe("app conversations", () => {
 			expect(chat.status).toBe(200);
 			const stop = await call("/api/app/conversations/chat-01/stop", { method: "POST" });
 			expect(stop.status).toBe(200);
-			expect((await stop.json()) as { stopped: boolean }).toEqual({ stopped: true });
+			// `settled` says the stop waited for the turn's record: the
+			// unlanded event is durable history before this response lands.
+			expect((await stop.json()) as { stopped: boolean; settled: boolean }).toEqual({
+				stopped: true,
+				settled: true,
+			});
+			const record = store
+				.history("app/chat-01")
+				.find((m) => m.role === "system" && (m.metadata as { unlanded?: unknown }).unlanded);
+			expect(record).toBeDefined();
 			const body = await chat.text();
 			expect(body).toContain('"type":"error"');
 			expect(body.trimEnd().endsWith("data: [DONE]")).toBe(true);
@@ -447,7 +456,10 @@ describe("app conversations", () => {
 			});
 			const idle = await call("/api/app/conversations/chat-01/stop", { method: "POST" });
 			expect(idle.status).toBe(200);
-			expect((await idle.json()) as { stopped: boolean }).toEqual({ stopped: false });
+			expect((await idle.json()) as { stopped: boolean; settled: boolean }).toEqual({
+				stopped: false,
+				settled: true,
+			});
 			expect((await call("/api/app/conversations/ghost/stop", { method: "POST" })).status).toBe(
 				404,
 			);
@@ -789,9 +801,7 @@ describe("app conversations", () => {
 				.filter((l) => l.startsWith("data: "))
 				.map((l) => l.slice("data: ".length));
 			expect(events.at(-1)).toBe("[DONE]");
-			expect(
-				JSON.parse(events.at(-2)!) as { type: string; errorText: string },
-			).toMatchObject({
+			expect(JSON.parse(events.at(-2)!) as { type: string; errorText: string }).toMatchObject({
 				type: "error",
 				errorText:
 					'turn stopped: goblin restarted (deploy or service restart). Send "continue" to resume.',

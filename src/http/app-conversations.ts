@@ -331,6 +331,10 @@ function ratedReplies(
 // The titler's input for a re-title: the opening message plus the last
 // few user messages (where the chat ended up). Assistant text is noise
 // for naming. Total stays under the titler's own input cap.
+// The /stop response waits this long for the stopped turn to settle
+// (its unlanded-progress record lands in history before runTurn
+// returns) — past it, 200 with settled:false, never a hang.
+const STOP_SETTLE_TIMEOUT_MS = 5000;
 const TITLE_DIGEST_RECENT = 3;
 const TITLE_DIGEST_PART_CHARS = 500;
 export function titleDigest(history: readonly UIMessage[]): string {
@@ -1188,9 +1192,27 @@ export async function handleConversationsRoute(
 		if (store.get(convId.id) === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		const { stopped } = runtime.stop(convId.id);
-		log.info("app stop", { conversation: convId.id, stopped });
-		const body: AppStopResponse = { stopped };
+		const { stopped, active } = runtime.stop(convId.id);
+		const started = Date.now();
+		let settled = true;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<void>((resolve) => {
+			timer = setTimeout(() => {
+				settled = false;
+				resolve();
+			}, STOP_SETTLE_TIMEOUT_MS);
+		});
+		await Promise.race([active, timeout]);
+		clearTimeout(timer);
+		const waitedMs = Date.now() - started;
+		log.info("app stop", { conversation: convId.id, stopped, settled, waitedMs });
+		if (!settled) {
+			log.warn("app stop settle timeout — the turn's record may land after this response", {
+				conversation: convId.id,
+				waitedMs,
+			});
+		}
+		const body: AppStopResponse = { stopped, settled };
 		return Response.json(body, { headers: NO_STORE });
 	}
 

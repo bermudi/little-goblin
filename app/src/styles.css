@@ -1580,6 +1580,22 @@ h6.md-h {
 	font-variant-numeric: tabular-nums;
 }
 
+/* The unlanded record's foldable model-facing text — muted, small, no
+   marker; the card's label line already names the outcome. */
+.unlanded-note {
+	margin-top: 0.5em;
+	font-size: 12px;
+	color: var(--app-fg-muted);
+}
+.unlanded-note summary {
+	cursor: pointer;
+	list-style: none;
+	color: var(--app-fg-subtle);
+}
+.unlanded-note summary::-webkit-details-marker {
+	display: none;
+}
+
 /* Reasoning folds like a Worked row — collapsed by default. */
 .reasoning-fold {
 	font-size: 12px;

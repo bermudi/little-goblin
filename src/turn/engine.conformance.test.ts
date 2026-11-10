@@ -21,6 +21,7 @@ import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/f
 import {
 	deferred,
 	pauseFakeModelAtDelta,
+	recordingModel,
 	RecordingSink,
 	tmpDb,
 	tmpDir,
@@ -55,6 +56,13 @@ interface EngineRig {
 	/** Script one COMPLETED step (assistant text + echo tool call), then
 	 *  hold mid-run — the fence lands with real progress to record. */
 	scriptProgressThenHold(): HeldRun;
+	/** Script the next turn to stream `text` then block mid-run — the
+	 *  stop lands after the wire streamed the words, before the step ends. */
+	scriptTextThenHold(text: string): HeldRun;
+	/** Script the next turn to stream `text` then fail the stream. */
+	scriptTextThenFail(text: string): void;
+	/** Script the next turn as a plain reply whose prompts are captured. */
+	scriptRecordedReply(text: string): { prompts(): string[] };
 }
 
 const echoTools = (): ToolSet => ({
@@ -72,6 +80,15 @@ function submit(rig: EngineRig, text: string): RecordingSink {
 }
 
 const drain = (rig: EngineRig) => waitUntil(() => !rig.runtime.busy(rig.conv.id), "lane drains");
+
+// `entered` means the provider produced the held part; the engine's
+// chunk loop may still be a tick behind. The fence must land only
+// after content reached the wire — the state the record pins.
+const waitForWireContent = (sink: RecordingSink) =>
+	waitUntil(
+		() => sink.chunks.some((c) => c.type === "text-delta" || c.type === "tool-input-available"),
+		"wire carries streamed content",
+	);
 
 const roles = (rig: EngineRig): string[] => rig.store.history(rig.conv.id).map((m) => m.role);
 
@@ -96,6 +113,7 @@ function sdkRig(): EngineRig {
 		makeTools: () => echoTools(),
 		turnJournal: journal,
 	});
+	let recorded: { prompts: string[] } | null = null;
 	return {
 		name: "ai-sdk",
 		runtime,
@@ -116,6 +134,50 @@ function sdkRig(): EngineRig {
 				]).model,
 				system: "test",
 			};
+		},
+		scriptRecordedReply: (text) => {
+			const rec = recordingModel([text], 1);
+			recorded = rec;
+			step = { model: rec.model, system: "test" };
+			return { prompts: () => recorded?.prompts ?? [] };
+		},
+		scriptTextThenHold: (text) => {
+			// The text streams whole, then the provider stream stalls open —
+			// the stop lands before the step ends (no text-end, no finish).
+			const entered = deferred<void>();
+			const gate = deferred<void>();
+			const model = scriptedModel([
+				{
+					drive: async ({ enqueue }) => {
+						enqueue({ type: "stream-start", warnings: [] });
+						enqueue({ type: "text-start", id: "t1" });
+						enqueue({ type: "text-delta", id: "t1", delta: text });
+						entered.resolve();
+						await gate.promise;
+					},
+				},
+			]);
+			step = { model: model.model, system: "test" };
+			return { entered: entered.promise, release: () => gate.resolve() };
+		},
+		scriptTextThenFail: (text) => {
+			// Text out, then a non-transient provider error part — the turn
+			// fails with the words already on the wire.
+			const model = scriptedModel([
+				{
+					drive: ({ enqueue, close }) => {
+						enqueue({ type: "stream-start", warnings: [] });
+						enqueue({ type: "text-start", id: "t1" });
+						enqueue({ type: "text-delta", id: "t1", delta: text });
+						enqueue({
+							type: "error",
+							error: new Error("invalid_request_error: the model was retired"),
+						});
+						close();
+					},
+				},
+			]);
+			step = { model: model.model, system: "test" };
 		},
 		scriptHeldRun: () => {
 			// Delta 0 streams out, delta 1 is held inside the provider
@@ -223,6 +285,39 @@ function claudeRig(): EngineRig {
 				},
 				{ kind: "stream-text", text },
 			]),
+		scriptRecordedReply: (text) => {
+			fake.script([{ kind: "stream-text", text }]);
+			// Each query call serializes the whole assembled view — the
+			// prompts() mirror records those serializations.
+			return { prompts: () => fake.calls.map((c) => JSON.stringify(c.prompt.blocks)) };
+		},
+		scriptTextThenHold: (text) => {
+			// The text streams whole, then a gated tool call holds mid-run —
+			// the fake has no mid-text stall, so the stop lands after the
+			// words reached the wire, before the turn ends.
+			const entered = deferred<void>();
+			const gate = deferred<void>();
+			fake.script([
+				{ kind: "stream-text", text },
+				{
+					kind: "tool",
+					name: "echo",
+					input: { message: "hold" },
+					run: async () => {
+						entered.resolve();
+						await gate.promise;
+						return bridgeRef.current!.invoke("echo", { message: "hold" });
+					},
+				},
+			]);
+			return { entered: entered.promise, release: () => gate.resolve() };
+		},
+		scriptTextThenFail: (text) => {
+			fake.script([
+				{ kind: "stream-text", text },
+				{ kind: "error", resultText: "invalid_request_error: the model was retired" },
+			]);
+		},
 		scriptHeldRun: () => {
 			// The tool execution is the hold: `run` gates before invoking
 			// the bridge, so the turn sits mid-run at `entered`.
@@ -307,16 +402,23 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 		},
 	},
 	{
-		name: "/stop mid-run fences without storing an assistant message",
+		name: "/stop mid-run fences and records without storing an assistant message",
 		async run(rig) {
 			const held = rig.scriptHeldRun();
 			const sink = submit(rig, "hold still");
 			await held.entered;
+			await waitForWireContent(sink);
 			rig.runtime.stop(rig.conv.id);
 			held.release();
 			expect(await sink.done).toEqual({ kind: "fenced" });
 			await drain(rig);
-			expect(roles(rig)).toEqual(["user"]);
+			// No assistant reply lands — the one record is a system event
+			// carrying whatever the wire had streamed so far (the ai-sdk
+			// rig streamed one delta; the claude rig a tool-input part).
+			const history = rig.store.history(rig.conv.id);
+			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
+			const meta = history[1]!.metadata as { unlanded?: { kind?: string } };
+			expect(meta.unlanded?.kind).toBe("aborted");
 		},
 	},
 	{
@@ -354,12 +456,71 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			const held = rig.scriptHeldRun();
 			const sink = submit(rig, "hold still");
 			await held.entered;
+			await waitForWireContent(sink);
 			// Not awaited yet — the turn must be released first.
 			const shutdown = rig.runtime.shutdown();
 			held.release();
 			expect(await sink.done).toEqual({ kind: "fenced", shutdown: true });
 			await shutdown;
-			expect(roles(rig)).toEqual(["user"]);
+			// The record still lands on the shutdown rail.
+			expect(roles(rig)).toEqual(["user", "system"]);
+		},
+	},
+	{
+		name: "/stop mid-stream stores one system record with the wire's id and reply",
+		async run(rig) {
+			const held = rig.scriptTextThenHold("partial words");
+			const sink = submit(rig, "talk then stop");
+			await held.entered;
+			await waitForWireContent(sink);
+			const wireStart = sink.chunks.find((c) => c.type === "start");
+			expect(wireStart).toBeDefined();
+			const wireId = (wireStart as { messageId: string }).messageId;
+			rig.runtime.stop(rig.conv.id);
+			held.release();
+			expect(await sink.done).toEqual({ kind: "fenced" });
+			await drain(rig);
+			// Exactly one event, role system, id from the wire's start chunk,
+			// carrying the streamed words — never an assistant-role event.
+			const history = rig.store.history(rig.conv.id);
+			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
+			const record = history[1]!;
+			expect(record.id).toBe(wireId);
+			const meta = record.metadata as {
+				unlanded?: { kind?: string; reply?: { type: string; text?: string }[] };
+			};
+			expect(meta.unlanded?.kind).toBe("aborted");
+			expect(
+				meta.unlanded?.reply?.some((p) => p.type === "text" && p.text === "partial words"),
+			).toBe(true);
+			// The next turn's model view: the record rides as one system-event
+			// block — the text appears exactly once.
+			const recorded = rig.scriptRecordedReply("moving on");
+			const next = submit(rig, "next turn");
+			expect(await next.done).toEqual({ kind: "completed" });
+			await drain(rig);
+			const prompt = recorded.prompts().at(-1)!;
+			expect(prompt.split("[system event: The previous turn was stopped").length - 1).toBe(1);
+		},
+	},
+	{
+		name: "a failed stream stores the same record with kind failed",
+		async run(rig) {
+			rig.scriptTextThenFail("half");
+			const sink = submit(rig, "talk then fail");
+			expect((await sink.done).kind).toBe("error");
+			await drain(rig);
+			const history = rig.store.history(rig.conv.id);
+			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
+			const record = history[1]!;
+			const wireStart = sink.chunks.find((c) => c.type === "start");
+			expect(wireStart).toBeDefined();
+			expect(record.id).toBe((wireStart as { messageId: string }).messageId);
+			const meta = record.metadata as {
+				unlanded?: { kind?: string; reply?: { type: string; text?: string }[] };
+			};
+			expect(meta.unlanded?.kind).toBe("failed");
+			expect(meta.unlanded?.reply?.some((p) => p.type === "text" && p.text === "half")).toBe(true);
 		},
 	},
 ];

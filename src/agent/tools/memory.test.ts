@@ -21,7 +21,7 @@ function served(
 }
 
 const exec = (t: ReturnType<typeof memorySearchTool>, input: unknown) =>
-	// biome-ignore lint: the tool's execute is the boundary under test
+	// the tool's execute is the boundary under test
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 const deps = (client: HindsightClient, excluded = false) => ({

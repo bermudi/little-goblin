@@ -8,7 +8,7 @@ import { tmpDb } from "../../testkit.ts";
 import { fenceUntrusted } from "./web.ts";
 
 const exec = (t: ReturnType<typeof historySearchTool>, input: unknown) =>
-	// biome-ignore lint: the tool's execute is the boundary under test
+	// the tool's execute is the boundary under test
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 const deps = (store: ConversationStore, excluded = false, conversationId = "self") => ({

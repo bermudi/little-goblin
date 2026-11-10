@@ -482,6 +482,20 @@ a finished-looking chat whose next send steered a ghost turn (#43).
   for every reply that could have been live at snapshot; the client
   re-reads history once on idle resume and merges by message id, never
   dropping a live local tail.
+- **A stopped or failed turn reconciles too (2026-11-09, #408; pre-content
+  2026-11-10).** Its one durable record is a `system` event under the
+  streamed assistant message's id (design/runtime-turn.md → Unlanded-turn
+  progress), so the merge compares role as well as id: the durable record
+  replaces the local partial instead of standing beside it — including an
+  empty optimistic assistant when the turn ended after the wire's `start`
+  but before any part. A turn that never opened the wire records under a
+  fresh id and draws as a plain system message; either way exactly one
+  record shows, immediately and after reload. The record draws as the
+  reply the operator watched, marked Stopped / Failed / Interrupted, with
+  the model-facing text in a closed fold and no actions; a tool part
+  with no result reads "no result recorded", never a running shimmer.
+  Stop answers after the turn settled (`settled` in the response, false
+  only past the 5 s bound) and the client refreshes then.
 - **Parked, with a trigger.** A *passive* screen (no submit, no reload)
   still doesn't live-update; promote when "app open while turns happen"
   becomes a daily pattern — the server machinery is ready. Until then it

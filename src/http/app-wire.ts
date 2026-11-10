@@ -148,6 +148,20 @@ export interface AppAttachmentResponse {
 
 export interface AppStopResponse {
 	stopped: boolean;
+	/** True when the stopped turn's terminal delivery (history writes,
+	 *  sink notifications) had settled before this response was sent —
+	 *  false only when the settle wait timed out. */
+	settled: boolean;
+}
+
+// Rides `metadata` of the system unlanded-progress event (design/runtime-turn.md → Unlanded-turn progress).
+export interface UnlandedTurnMetadata {
+	unlanded: {
+		kind: "failed" | "aborted" | "interrupted";
+		runId: string;
+		// The reply as the wire streamed it, for display. Absent when no wire log exists or nothing was streamed.
+		reply?: UIMessage["parts"];
+	};
 }
 
 // A suggestion only — nothing is written; the PATCH stays the one saver.

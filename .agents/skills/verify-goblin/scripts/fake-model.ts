@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 // A scripted OpenAI-style Chat Completions endpoint, so a verification turn
 // exercises goblin's real provider path without a paid model or a real key.
-// It replies "verify-reply: <the last user message>".
+// It replies "verify-reply: <the last user message>". A message containing
+// "[slow]" streams one word every 400ms (time to press Stop); "[fail]"
+// streams a few words, then breaks the connection.
 
 import { writeFileSync } from "node:fs";
 import { z } from "zod";
@@ -57,12 +59,36 @@ const server = Bun.serve({
 				usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
 			});
 		}
-		const stream = [
-			chunk({ role: "assistant", content: reply }, null),
-			chunk({}, "stop"),
-			"data: [DONE]\n\n",
-		].join("");
-		return new Response(stream, { headers: { "content-type": "text/event-stream" } });
+		const headers = { "content-type": "text/event-stream" };
+		const slow = reply.includes("[slow]");
+		const fail = reply.includes("[fail]");
+		if (!slow && !fail) {
+			const stream = [
+				chunk({ role: "assistant", content: reply }, null),
+				chunk({}, "stop"),
+				"data: [DONE]\n\n",
+			].join("");
+			return new Response(stream, { headers });
+		}
+		const words = slow ? Array.from({ length: 40 }, (_, i) => `word${i} `) : ["partial ", "text "];
+		const enc = new TextEncoder();
+		const body = new ReadableStream<Uint8Array>({
+			async start(controller) {
+				controller.enqueue(enc.encode(chunk({ role: "assistant", content: "" }, null)));
+				for (const w of words) {
+					controller.enqueue(enc.encode(chunk({ content: w }, null)));
+					await Bun.sleep(slow ? 400 : 100);
+				}
+				if (fail) {
+					controller.error(new Error("verify: scripted mid-stream failure"));
+					return;
+				}
+				controller.enqueue(enc.encode(chunk({}, "stop")));
+				controller.enqueue(enc.encode("data: [DONE]\n\n"));
+				controller.close();
+			},
+		});
+		return new Response(body, { headers });
 	},
 });
 writeFileSync(portFile, String(server.port));

@@ -56,6 +56,7 @@ import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
 import { claimMembers, emitChunk, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
+import { replyFromWire } from "./turn/unlanded-progress.ts";
 import {
 	openToolAuthority,
 	type ToolAuthority,
@@ -199,6 +200,12 @@ interface Lane {
 	draining: Promise<void> | null;
 	live: LiveChunks | null;
 	admitted: Map<string, QueuedTurn[]>;
+	// The turn currently holding the lane: set by drain around runTurn,
+	// resolved once that runTurn has returned (history writes and terminal
+	// sink notifications included, the crash guard either way). /stop hands
+	// it out as `active` — the wait-for-the-record seam. A turn submitted
+	// after the stop replaces it, so an old waiter never follows the new turn.
+	activeTurn: Promise<void> | null;
 }
 
 // A streaming submit stays queued behind a headless turn so it can lead its
@@ -416,9 +423,16 @@ export class Runtime {
 
 	// /stop advances the epoch, aborts live work, drops queued work, cancels
 	// compaction and reviews, and still settles every dropped sink. `stopped`
-	// is synchronous; `settled` waits for terminal delivery. A queued compact
-	// resolves as a noop so the command waiting on it still completes.
-	stop(convId: string): { stopped: boolean; settled: Promise<void>; reviewsCancelled: number } {
+	// is synchronous; `settled` waits for terminal delivery; `active` waits
+	// for the turn that was running at call time to leave runTurn — the
+	// record (the unlanded progress event) is in history by then. A queued
+	// compact resolves as a noop so the command waiting on it still completes.
+	stop(convId: string): {
+		stopped: boolean;
+		settled: Promise<void>;
+		reviewsCancelled: number;
+		active: Promise<void>;
+	} {
 		const epoch = this.deps.store.bumpEpoch(convId);
 		return this.cancelFenced(convId, epoch);
 	}
@@ -428,7 +442,7 @@ export class Runtime {
 	cancelFenced(
 		convId: string,
 		epoch: number,
-	): { stopped: boolean; settled: Promise<void>; reviewsCancelled: number } {
+	): { stopped: boolean; settled: Promise<void>; reviewsCancelled: number; active: Promise<void> } {
 		if (
 			!Number.isSafeInteger(epoch) ||
 			epoch <= 0 ||
@@ -464,7 +478,13 @@ export class Runtime {
 		} else {
 			log.debug("stop — nothing was running", { conversation: convId, epoch, reviewsCancelled });
 		}
-		return { stopped, settled: Promise.all(notifies).then(() => undefined), reviewsCancelled };
+		return {
+			stopped,
+			settled: Promise.all(notifies).then(() => undefined),
+			reviewsCancelled,
+			// Captured here — the turn running at call time, not any submitted later.
+			active: lane?.activeTurn ?? Promise.resolve(),
+		};
 	}
 
 	// Queue compaction behind the running turn so its response is not orphaned.
@@ -513,6 +533,7 @@ export class Runtime {
 				draining: null,
 				live: null,
 				admitted: new Map(),
+				activeTurn: null,
 			};
 			this.lanes.set(convId, l);
 		}
@@ -618,24 +639,38 @@ export class Runtime {
 							conversation: convId,
 						});
 					}
+					// The /stop settle seam: `active` resolves once this turn's
+					// runTurn has returned — history writes and terminal sink
+					// notifications included, the crash guard either way. Set
+					// before the first await so a stop racing the claim reads it.
+					let settleActiveTurn: () => void = () => {};
+					const activeTurn = new Promise<void>((resolve) => {
+						settleActiveTurn = resolve;
+					});
+					lane.activeTurn = activeTurn;
 					try {
-						await this.runTurn(convId, turns);
-					} catch (err) {
-						// Last-ditch guard: one bad turn must not stall the lane or leak sinks.
-						// Expected failures have already notified their members.
-						log.error("turn crashed", err, { conversation: convId });
-						const done: TurnDone = {
-							kind: "error",
-							message: err instanceof Error ? err.message : String(err),
-						};
-						// End before a successor can replace lane.live, or attached
-						// subscribers would hang without a terminal event.
-						const crashed = this.lanes.get(convId)?.live;
-						if (crashed != null) endLive(crashed, done, convId);
-						for (const t of turns) await this.notifyDone(t, done);
+						try {
+							await this.runTurn(convId, turns);
+						} catch (err) {
+							// Last-ditch guard: one bad turn must not stall the lane or leak sinks.
+							// Expected failures have already notified their members.
+							log.error("turn crashed", err, { conversation: convId });
+							const done: TurnDone = {
+								kind: "error",
+								message: err instanceof Error ? err.message : String(err),
+							};
+							// End before a successor can replace lane.live, or attached
+							// subscribers would hang without a terminal event.
+							const crashed = this.lanes.get(convId)?.live;
+							if (crashed != null) endLive(crashed, done, convId);
+							for (const t of turns) await this.notifyDone(t, done);
+						}
+						// A finished turn must not make /stop report live work.
+						this.lane(convId).controller = null;
+					} finally {
+						settleActiveTurn();
+						lane.activeTurn = null;
 					}
-					// A finished turn must not make /stop report live work.
-					this.lane(convId).controller = null;
 					continue;
 				}
 				// Run queued compaction only between whole turns.
@@ -1235,7 +1270,10 @@ export class Runtime {
 				announcePreRunFailure(err);
 				// What already ran stays transcript — the sanctioned post-fence
 				// state write, before the stamp wake settling reads.
-				recordUnlandedProgress({ kind: "aborted", cause: fencedCause() });
+				recordUnlandedProgress(
+					{ kind: "aborted", cause: fencedCause() },
+					await replyFromWire(live.chunks),
+				);
 				stampRun("fenced", "undelivered");
 				await notifyAll({ kind: "fenced" });
 			} else if (err instanceof ContextOverflowError) {
@@ -1284,11 +1322,17 @@ export class Runtime {
 					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
 				}
 				if (outcome.kind === "error") {
-					recordUnlandedProgress({ kind: "failed", failure: outcome.message });
+					recordUnlandedProgress(
+						{ kind: "failed", failure: outcome.message },
+						await replyFromWire(live.chunks),
+					);
 				} else if (outcome.kind === "fenced") {
 					// A fence landing during recovery is still a fence: the
 					// attempt's completed work stays transcript.
-					recordUnlandedProgress({ kind: "aborted", cause: fencedCause() });
+					recordUnlandedProgress(
+						{ kind: "aborted", cause: fencedCause() },
+						await replyFromWire(live.chunks),
+					);
 				}
 				announcePreRunFailure(err);
 				stampRun(
@@ -1405,7 +1449,10 @@ export class Runtime {
 				// A withheld error never reached the wire — the terminal
 				// story goes out now, before the sinks settle.
 				if (errorHeld) emitChunk(convId, turns, live, { type: "error", errorText: done.message });
-				recordUnlandedProgress({ kind: "failed", failure: done.message });
+				recordUnlandedProgress(
+					{ kind: "failed", failure: done.message },
+					await replyFromWire(live.chunks),
+				);
 				announcePreRunFailure(err);
 				stampRun("error", "failed");
 				await notifyAll(done);

@@ -4,11 +4,7 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import type {
-	AppCompactionMark,
-	AppInterruptedList,
-	AppRunCall,
-} from "../../src/http/app-wire.ts";
+import type { AppCompactionMark, AppInterruptedList, AppRunCall } from "../../src/http/app-wire.ts";
 import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
 import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 import {
@@ -22,6 +18,7 @@ import {
 	MessageParts,
 	mergeTranscript,
 	quoteSpeaker,
+	unlandedMeta,
 } from "./ChatView.tsx";
 
 // Static markup — guards the render contract, not React behavior.
@@ -50,7 +47,12 @@ describe("MessageParts", () => {
 			<MessageParts
 				parts={[
 					{ type: "text", text: "the answer" },
-					{ type: "source-url", sourceId: "s1", url: "https://developers.openai.com/learn/codex", title: "Codex | OpenAI Developers" },
+					{
+						type: "source-url",
+						sourceId: "s1",
+						url: "https://developers.openai.com/learn/codex",
+						title: "Codex | OpenAI Developers",
+					},
 					{ type: "source-url", sourceId: "s2", url: "https://help.openai.com/en/articles/1" },
 				]}
 			/>,
@@ -60,9 +62,9 @@ describe("MessageParts", () => {
 		expect(html).toContain(">Codex | OpenAI Developers</a>");
 		expect(html).toContain(">help.openai.com</a>");
 		expect(html).toContain('target="_blank"');
-		expect(renderToStaticMarkup(<MessageParts parts={[{ type: "text", text: "plain" }]} />)).not.toContain(
-			"sources-row",
-		);
+		expect(
+			renderToStaticMarkup(<MessageParts parts={[{ type: "text", text: "plain" }]} />),
+		).not.toContain("sources-row");
 	});
 
 	test("markdown links render as anchors, not literal syntax", () => {
@@ -269,6 +271,305 @@ function mountDom() {
 	});
 	return dom;
 }
+
+describe("unlanded turn records (issue #408)", () => {
+	const asMsg = (m: unknown) => m as UIMessage;
+
+	describe("mergeTranscript", () => {
+		const user = { id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] };
+
+		test("the streamed partial and its durable record share an id — the durable role wins", () => {
+			const partial = asMsg({
+				id: "a1",
+				role: "assistant",
+				parts: [{ type: "text", text: "partial words" }],
+			});
+			const record = asMsg({
+				id: "a1",
+				role: "system",
+				parts: [{ type: "text", text: "[system event: …]" }],
+				metadata: { unlanded: { kind: "aborted", runId: "r1" } },
+			});
+			// Same ids in the same order, but the roles moved — the view's
+			// optimistic partial must be replaced by the durable record.
+			expect(mergeTranscript([asMsg(user), partial], [asMsg(user), record])).toEqual([
+				asMsg(user),
+				record,
+			]);
+		});
+
+		test("an empty streamed assistant and its record share an id — the durable role wins", () => {
+			// The turn ended after the wire's start but before any part —
+			// the optimistic card has no parts, and the record still
+			// replaces it because the id matches.
+			const empty = asMsg({ id: "a1", role: "assistant", parts: [] });
+			const record = asMsg({
+				id: "a1",
+				role: "system",
+				parts: [{ type: "text", text: "[system event: …]" }],
+				metadata: { unlanded: { kind: "aborted", runId: "r1", reply: [] } },
+			});
+			expect(mergeTranscript([asMsg(user), empty], [asMsg(user), record])).toEqual([
+				asMsg(user),
+				record,
+			]);
+		});
+
+		test("a record with no wire reply appends after history — there was no card to replace", () => {
+			// No start chunk ever reached the wire, so the client's view
+			// holds only the user message; the record lands behind it.
+			const record = asMsg({
+				id: "sys-1",
+				role: "system",
+				parts: [{ type: "text", text: "[system event: …]" }],
+				metadata: { unlanded: { kind: "failed", runId: "r9" } },
+			});
+			expect(mergeTranscript([asMsg(user)], [asMsg(user), record])).toEqual([asMsg(user), record]);
+		});
+
+		test("identical ids and roles keep the live reference", () => {
+			const a1 = asMsg({ id: "a1", role: "assistant", parts: [{ type: "text", text: "hey" }] });
+			const current = [asMsg(user), a1];
+			const history = [asMsg(user), asMsg({ ...a1 })];
+			expect(mergeTranscript(current, history)).toBe(current);
+		});
+	});
+
+	describe("unlandedMeta", () => {
+		const system = (metadata: unknown) =>
+			asMsg({
+				id: "a1",
+				role: "system",
+				parts: [{ type: "text", text: "body" }],
+				metadata,
+			});
+
+		test("a well-formed stamp narrows with its reply", () => {
+			const reply: UIMessage["parts"] = [{ type: "text", text: "partial words" }];
+			expect(unlandedMeta(system({ unlanded: { kind: "aborted", runId: "r1", reply } }))).toEqual({
+				kind: "aborted",
+				runId: "r1",
+				reply,
+			});
+		});
+
+		test("a missing or wrong stamp narrows to null", () => {
+			expect(unlandedMeta(system(undefined))).toBeNull();
+			expect(unlandedMeta(system({ other: true }))).toBeNull();
+			expect(unlandedMeta(system({ unlanded: { kind: "nope", runId: "r1" } }))).toBeNull();
+			expect(unlandedMeta(system({ unlanded: { kind: "aborted" } }))).toBeNull();
+		});
+
+		test("a reply that is not an array of part objects reads as absent", () => {
+			expect(unlandedMeta(system({ unlanded: { kind: "failed", runId: "r1" } }))?.reply).toBeNull();
+			expect(
+				unlandedMeta(system({ unlanded: { kind: "failed", runId: "r1", reply: "junk" } }))?.reply,
+			).toBeNull();
+			expect(
+				unlandedMeta(system({ unlanded: { kind: "failed", runId: "r1", reply: [42] } }))?.reply,
+			).toBeNull();
+		});
+
+		test("an empty reply array still counts — the start-only record keeps its card", () => {
+			expect(
+				unlandedMeta(system({ unlanded: { kind: "aborted", runId: "r1", reply: [] } })),
+			).toEqual({ kind: "aborted", runId: "r1", reply: [] });
+		});
+	});
+
+	describe("render", () => {
+		const dom = mountDom();
+
+		const fakeFetch = (messages: unknown) => {
+			const json = (body: unknown) =>
+				new Response(JSON.stringify(body), {
+					headers: { "content-type": "application/json" },
+				});
+			globalThis.fetch = (async (request: RequestInfo | URL) => {
+				const url =
+					typeof request === "string"
+						? request
+						: request instanceof URL
+							? request.href
+							: request.url;
+				if (url.endsWith("/messages"))
+					return json({
+						ratings: [],
+						rateableMessageIds: [],
+						messages,
+					});
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url.endsWith("/interrupted")) return json({ runs: [] });
+				return json({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				});
+			}) as typeof fetch;
+		};
+
+		const mount = async () => {
+			dom.root = createRoot(dom.container);
+			await act(async () => {
+				dom.root?.render(
+					<ChatView
+						token={null}
+						conversationId="app/unlanded-01"
+						title={null}
+						seed={null}
+						staged={[]}
+						setStaged={() => {}}
+						stagedNotes={[]}
+						setStagedSkills={() => {}}
+						stagedSkills={[]}
+						setStagedNotes={() => {}}
+						onSeeded={() => {}}
+						onTurnDone={() => {}}
+					/>,
+				);
+			});
+			await act(async () => {});
+		};
+
+		test("a stopped turn renders the streamed reply once, marked Stopped, record folded", async () => {
+			fakeFetch([
+				{ id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				{
+					id: "a1",
+					role: "system",
+					parts: [
+						{
+							type: "text",
+							text: "[system event: The previous turn was stopped (run r1): stopped]",
+						},
+					],
+					metadata: {
+						unlanded: {
+							kind: "aborted",
+							runId: "r1",
+							reply: [{ type: "text", text: "partial words" }],
+						},
+					},
+				},
+			]);
+			await mount();
+			const html = dom.container.innerHTML;
+			// The streamed reply appears exactly once — as the card the
+			// operator watched, not again inside the record note.
+			expect(html.match(/partial words/g)).toHaveLength(1);
+			expect(dom.container.querySelector(".msg.assistant.unlanded")).not.toBeNull();
+			expect(dom.container.querySelector(".msg-meta")?.textContent).toBe("Stopped");
+			// The model-facing record rides a closed fold.
+			const note = dom.container.querySelector("details.unlanded-note");
+			expect(note).not.toBeNull();
+			expect((note as HTMLDetailsElement).open).toBe(false);
+			expect(note?.textContent).toContain("[system event: The previous turn was stopped");
+			expect(note?.querySelector("summary")?.textContent).toBe("What the next turn is told");
+		});
+
+		test("a record without a reply stays a plain system message with the fold", async () => {
+			fakeFetch([
+				{
+					id: "a2",
+					role: "system",
+					parts: [{ type: "text", text: "[system event: The previous turn was interrupted]" }],
+					metadata: { unlanded: { kind: "interrupted", runId: "r2" } },
+				},
+			]);
+			await mount();
+			expect(dom.container.querySelector(".msg.system")).not.toBeNull();
+			expect(dom.container.querySelector(".msg.assistant.unlanded")).toBeNull();
+			const note = dom.container.querySelector("details.unlanded-note");
+			expect(note).not.toBeNull();
+			expect(note?.querySelector("summary")?.textContent).toBe("Turn interrupted — record");
+		});
+
+		test("a stopped turn with a start-only reply renders the marked card — no extra assistant", async () => {
+			fakeFetch([
+				{ id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				{
+					id: "a1",
+					role: "system",
+					parts: [
+						{
+							type: "text",
+							text: "[system event: The previous turn was stopped (run r1): stopped]",
+						},
+					],
+					metadata: { unlanded: { kind: "aborted", runId: "r1", reply: [] } },
+				},
+			]);
+			await mount();
+			const card = dom.container.querySelector(".msg.assistant.unlanded");
+			expect(card).not.toBeNull();
+			expect(dom.container.querySelector(".msg-meta")?.textContent).toBe("Stopped");
+			// The record fold still carries what the next turn is told.
+			const note = card?.querySelector("details.unlanded-note");
+			expect(note?.querySelector("summary")?.textContent).toBe("What the next turn is told");
+			// Exactly one assistant-flavored card — the record replaced the
+			// empty optimistic one; nothing else dangles.
+			expect(dom.container.querySelectorAll(".msg.assistant")).toHaveLength(1);
+		});
+
+		test("a failed turn with a start-only reply renders the card marked Failed", async () => {
+			fakeFetch([
+				{
+					id: "a2",
+					role: "system",
+					parts: [
+						{
+							type: "text",
+							text: "[system event: The previous turn did not finish (run r2): provider exploded]",
+						},
+					],
+					metadata: { unlanded: { kind: "failed", runId: "r2", reply: [] } },
+				},
+			]);
+			await mount();
+			expect(dom.container.querySelector(".msg.assistant.unlanded")).not.toBeNull();
+			expect(dom.container.querySelector(".msg-meta")?.textContent).toBe("Failed");
+		});
+
+		test.each([
+			["aborted", "Turn stopped — record"],
+			["failed", "Turn failed — record"],
+		] as const)(
+			"a %s turn with no wire reply stays a plain system message",
+			async (kind, summary) => {
+				fakeFetch([
+					{
+						id: "a3",
+						role: "system",
+						parts: [{ type: "text", text: "[system event: record]" }],
+						metadata: { unlanded: { kind, runId: "r3" } },
+					},
+				]);
+				await mount();
+				expect(dom.container.querySelector(".msg.system")).not.toBeNull();
+				expect(dom.container.querySelector(".msg.assistant.unlanded")).toBeNull();
+				const note = dom.container.querySelector("details.unlanded-note");
+				expect(note?.querySelector("summary")?.textContent).toBe(summary);
+			},
+		);
+
+		test("a system message without the stamp renders unchanged", async () => {
+			fakeFetch([
+				{
+					id: "s3",
+					role: "system",
+					parts: [{ type: "text", text: "plain service notice" }],
+				},
+			]);
+			await mount();
+			const sys = dom.container.querySelector(".msg.system");
+			expect(sys).not.toBeNull();
+			expect(sys?.textContent).toContain("plain service notice");
+			expect(dom.container.querySelector("details.unlanded-note")).toBeNull();
+		});
+	});
+});
 
 describe("turn metadata usage", () => {
 	const dom = mountDom();
@@ -3024,7 +3325,9 @@ describe("composer focus stealing", () => {
 	// rest of this file.
 	const fireClick = async (el: Element) => {
 		await act(async () => {
-			el.dispatchEvent(new dom.win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
+			el.dispatchEvent(
+				new dom.win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
 		});
 	};
 

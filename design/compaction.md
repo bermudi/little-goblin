@@ -276,8 +276,23 @@ flush on with no other change.
   durable leaves it.
 - The flush is optional maintenance (OpenClaw): its failure warns and the
   fold continues.
-- Open for branch 2: confirm the outbox has accepted every folded event
-  before the fold commits. If not, fix that ordering; do not add a flush.
+- Outbox order holds (checked 2026-11-09, #405): `appendMessages` enqueues
+  a turn's memory document in the same SQLite transaction that stores its
+  completed assistant event, and a fold only covers completed history
+  (`foldCeiling`, `exchangeComplete`). So every folded event that memory
+  retains was queued before the fold could read it.
+- **Mechanism (operator, 2026-11-09):** one direct `generateText` call in
+  the fold job with only the `note` tool (at most 8 steps), before the first
+  summary chunk. No runtime turn, no stored reply: a hidden turn would run
+  in the lane the fold already holds. The call sees the newest slice of the
+  span that fits `inputTokenBudget`, shares the summary call's timeout, and
+  logs `compaction flush` (events, chars, truncated, noteCalls). `/stop`
+  aborts it and the fold together; any other failure warns.
+- **Reasons (operator, 2026-11-09):** every fold except `overflow` — that
+  one recovers mid-turn from a provider error, and an extra call only
+  delays the answer.
+- A claude-code conversation never flushes: its compaction lane is
+  text-only, with no tool to save through.
 
 ## Overflow recovery
 

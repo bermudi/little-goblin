@@ -9,7 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadAuth } from "../auth.ts";
 import { openCacheObservation } from "../cache-observation.ts";
-import type { Config } from "../config.ts";
+import { type Config, memoryConfigSchema } from "../config.ts";
 import { captureConversationSettings } from "../conversation.ts";
 import { _resetModelsDevForTest } from "./models-dev.ts";
 import { openNotes } from "../notes.ts";
@@ -87,7 +87,7 @@ function rig(authFile: string, model: string) {
 		store.resolve({ kind: "dm", chatId: 1 }, "/w"),
 		cfg,
 	);
-	return { store, ...builder, conv };
+	return { store, cfg, ...builder, conv };
 }
 
 describe("step builder context window — codex catalog vs models.dev", () => {
@@ -146,6 +146,22 @@ describe("step builder context window — codex catalog vs models.dev", () => {
 			}
 		} finally {
 			fx.restore();
+		}
+	});
+});
+
+describe("compaction memory flush gate", () => {
+	test("flushes only with no memory block and a conversation that is not excluded", () => {
+		const dir = useHome();
+		const r = rig(writeCodexAuth(dir), "codex/gpt-6.1-sol");
+		try {
+			const ref = "codex/gpt-6.1-sol";
+			expect(r.compaction!.flush!(r.conv, ref)).toBeFunction();
+			expect(r.compaction!.flush!({ ...r.conv, memoryExcluded: true }, ref)).toBeNull();
+			r.cfg.memory = memoryConfigSchema.parse({ baseUrl: "http://127.0.0.1:8888", bankId: "test" });
+			expect(r.compaction!.flush!(r.conv, ref)).toBeNull();
+		} finally {
+			r.store.close();
 		}
 	});
 });

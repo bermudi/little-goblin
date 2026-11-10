@@ -1,6 +1,6 @@
 // A queued compaction job: window lookup, budgets, the summary walk, and the prompt-snapshot rebuild — the runtime injects store, authority, and lane cancellation.
 
-import { type CompactionOutcome, runCompaction } from "../agent/compaction.ts";
+import { type CompactionOutcome, type Flush, runCompaction } from "../agent/compaction.ts";
 import { candidateRefs } from "../agent/model-fallback.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
@@ -24,6 +24,9 @@ export interface CompactionSeam {
 		signal: AbortSignal,
 		modelRef: string,
 	): Promise<string>;
+	// design/compaction.md → Memory flush. Null when this conversation must
+	// not flush (memory configured, memory-excluded, no tool-capable engine).
+	flush?(conv: Conversation, modelRef: string): Flush | null;
 }
 
 export interface CompactJobDeps {
@@ -84,6 +87,14 @@ export async function runCompactJob(
 		// observed limit. A pre-empt folds before any failure — full tail.
 		const tail = reason === "overflow" ? Math.floor(tailTokenBudget / 2) : tailTokenBudget;
 		const modelRef = compaction.modelRef(conv);
+		// Overflow recovery runs mid-turn behind a provider error: an extra
+		// call there only delays the answer (operator, 2026-11-09).
+		// The gate reads exclusion fresh: setMeta does not bump the epoch, so
+		// a queued job's snapshot can miss an exclusion made while it waited.
+		const flush =
+			reason === "overflow"
+				? null
+				: (compaction.flush?.(deps.store.get(conv.id) ?? conv, modelRef) ?? null);
 		log.info("compaction window", {
 			conversation: conv.id,
 			model: modelRef,
@@ -91,6 +102,7 @@ export async function runCompactJob(
 			tailTokenBudget: tail,
 			inputTokenBudget,
 			reason,
+			flush: flush !== null,
 		});
 		const outcome = await runCompaction(
 			conv.id,
@@ -105,6 +117,7 @@ export async function runCompactJob(
 				// the contextWindow lookup awaited.
 				beforeSeq: () => deps.foldCeiling(conv.id, activeFloor),
 				assertAuthority: () => deps.checkAuthority(conv.id, epoch),
+				...(flush !== null ? { flush } : {}),
 			},
 			controller.signal,
 		);

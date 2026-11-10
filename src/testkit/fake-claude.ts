@@ -57,6 +57,13 @@ export type FakeStep =
 			resultText?: string;
 			assistantError?: string;
 	  }
+	| {
+			/** Provider silence: yields nothing until `until` resolves. */
+			kind: "hold";
+			/** Fires when the hold is reached — the test's inside-the-call signal. */
+			onEnter?: () => void;
+			until: Promise<void>;
+	  }
 	| { kind: "raw"; events: ClaudeEvent[] };
 
 export interface FakeClaudeHandle {
@@ -175,7 +182,9 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 							id: nextId("msg"),
 							model: "fake",
 							role: "assistant",
-							content: [{ type: "tool_use", id, name: `mcp__goblin__${step.name}`, input: step.input }],
+							content: [
+								{ type: "tool_use", id, name: `mcp__goblin__${step.name}`, input: step.input },
+							],
 							stop_reason: "tool_use",
 							usage: u,
 						},
@@ -220,6 +229,11 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 					};
 					yield result;
 					return;
+				}
+				case "hold": {
+					step.onEnter?.();
+					await step.until;
+					break;
 				}
 				case "raw": {
 					yield* step.events;

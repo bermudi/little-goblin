@@ -71,6 +71,7 @@ import type {
 	AppRatedReply,
 	AppReplyRating,
 	TurnMetadata,
+	UnlandedTurnMetadata,
 } from "../../src/http/app-wire.ts";
 
 // ---------- transcript rendering ----------
@@ -88,9 +89,19 @@ function isActivityPart(p: UIMessage["parts"][number]): boolean {
 		(isToolUIPart(p) && getToolName(p) !== "ui") || (p.type === "reasoning" && p.text.trim() !== "")
 	);
 }
-function Activity({ parts, live }: { parts: ActivityPart[]; live?: boolean | undefined }) {
+function Activity({
+	parts,
+	live,
+	ended,
+}: {
+	parts: ActivityPart[];
+	live?: boolean | undefined;
+	// The owning message's turn is over (unlanded record) — a stuck
+	// streaming state can never progress, so it draws ended, not running.
+	ended?: boolean | undefined;
+}) {
 	const tools = parts.filter((p): p is ToolUIPart | DynamicToolUIPart => isToolUIPart(p));
-	const running = tools.some(partRunning);
+	const running = !ended && tools.some(partRunning);
 	const failures = tools.filter(partFailed).length;
 	const active = running || failures > 0;
 	const lines = tools.map(partSummaryLine);
@@ -139,7 +150,12 @@ function Activity({ parts, live }: { parts: ActivityPart[]; live?: boolean | und
 			<ul>
 				{parts.map((p, i) =>
 					isToolUIPart(p) ? (
-						<ToolRun key={p.toolCallId === "" ? i : p.toolCallId} part={p} />
+						<ToolRun
+							key={p.toolCallId === "" ? i : p.toolCallId}
+							part={p}
+							// exactOptionalPropertyTypes: absent, never explicit undefined.
+							{...(ended === true ? { ended: true } : {})}
+						/>
 					) : (
 						<li key={`t${i}`}>
 							<details className="reasoning-fold">
@@ -409,6 +425,7 @@ export function MessageParts({
 	clipFences,
 	busy,
 	streaming,
+	ended,
 	messages,
 }: {
 	parts: UIMessage["parts"];
@@ -427,6 +444,9 @@ export function MessageParts({
 	busy?: boolean | undefined;
 	// This message is still arriving; older cards stay actionable during later turns.
 	streaming?: boolean | undefined;
+	// The owning turn is over (unlanded record): stuck tool states draw
+	// ended — "no result recorded" — never a running shimmer.
+	ended?: boolean | undefined;
 	// The full transcript, when the caller has it: ui surfaces re-derive
 	// their picked choice row from persisted [ui] messages.
 	messages?: readonly UIMessage[] | undefined;
@@ -495,7 +515,12 @@ export function MessageParts({
 			// streaming message — a run-ender behind it seals it even
 			// while the message streams on.
 			out.push(
-				<Activity key={`w${i}`} parts={run} live={streaming === true && j === parts.length} />,
+				<Activity
+					key={`w${i}`}
+					parts={run}
+					live={streaming === true && j === parts.length}
+					ended={ended}
+				/>,
 			);
 			// Published artifacts hoist out of the fold into cards — the
 			// fold records that the call ran; the card is the openable
@@ -696,6 +721,36 @@ function fallbackOf(v: unknown): Array<{ ref: string; reason: string }> {
 		const { ref, reason } = e as Record<string, unknown>;
 		return typeof ref === "string" && typeof reason === "string" ? [{ ref, reason }] : [];
 	});
+}
+
+// The runtime stamps unlanded metadata on the system record of a turn
+// that ended without a reply (stopped, failed, interrupted) — the
+// streamed reply rides along for display. Narrow the unknown blob
+// rather than trusting the shape.
+type Unlanded = UnlandedTurnMetadata["unlanded"];
+export function unlandedMeta(m: UIMessage): {
+	kind: Unlanded["kind"];
+	runId: string;
+	reply: NonNullable<Unlanded["reply"]> | null;
+} | null {
+	const md = (m as { metadata?: unknown }).metadata;
+	if (typeof md !== "object" || md === null) return null;
+	const o = md as Record<string, unknown>;
+	const unlanded = o.unlanded;
+	if (typeof unlanded !== "object" || unlanded === null) return null;
+	const u = unlanded as Record<string, unknown>;
+	if (u.kind !== "failed" && u.kind !== "aborted" && u.kind !== "interrupted") return null;
+	if (typeof u.runId !== "string") return null;
+	// The reply is parts as streamed; anything but an array of part-ish
+	// objects renders as absent.
+	const reply = u.reply;
+	const hasReply =
+		Array.isArray(reply) && reply.every((p) => typeof p === "object" && p !== null && "type" in p);
+	return {
+		kind: u.kind,
+		runId: u.runId,
+		reply: hasReply ? (reply as NonNullable<Unlanded["reply"]>) : null,
+	};
 }
 
 function messageText(m: UIMessage): string {
@@ -2783,8 +2838,12 @@ export function mergeTranscript(current: UIMessage[], history: UIMessage[]): UIM
 	// reply that folded it in, which the optimistic tail-append gets
 	// backwards; identical order keeps the live reference untouched.
 	if (current.every((m) => historyIds.has(m.id))) {
+		// Same id AND role — a stopped turn's streamed assistant partial and
+		// its durable system record share an id; the durable role wins so
+		// the local partial is replaced, not kept beside the record.
 		const sameOrder =
-			current.length === history.length && current.every((m, i) => m.id === history[i]!.id);
+			current.length === history.length &&
+			current.every((m, i) => m.id === history[i]!.id && m.role === history[i]!.role);
 		return sameOrder ? current : history;
 	}
 	const arrivals = history.filter((m) => !currentIds.has(m.id));
@@ -3381,17 +3440,65 @@ function Chat({
 									</div>
 								);
 							} else if (m.role === "system") {
-								el = (
-									<div className="msg system">
-										<MessageParts
-											parts={m.parts}
-											token={token}
-											noteProjectId={noteProjectId}
-											messages={messages}
-											onOpenNote={onOpenNote}
-										/>
-									</div>
-								);
+								const unlanded = unlandedMeta(m);
+								if (unlanded === null) {
+									el = (
+										<div className="msg system">
+											<MessageParts
+												parts={m.parts}
+												token={token}
+												noteProjectId={noteProjectId}
+												messages={messages}
+												onOpenNote={onOpenNote}
+											/>
+										</div>
+									);
+								} else {
+									// The one record of a turn that ended without a
+									// reply: the streamed reply renders as the card the
+									// operator watched, the model-facing text stays a
+									// foldable note, and there is nothing to act on.
+									const label =
+										unlanded.kind === "aborted"
+											? "Stopped"
+											: unlanded.kind === "failed"
+												? "Failed"
+												: "Interrupted";
+									const note = (
+										<details className="unlanded-note">
+											<summary>
+												{unlanded.reply !== null
+													? "What the next turn is told"
+													: `Turn ${label.toLowerCase()} — record`}
+											</summary>
+											<MessageParts
+												parts={m.parts}
+												token={token}
+												noteProjectId={noteProjectId}
+												messages={messages}
+												onOpenNote={onOpenNote}
+											/>
+										</details>
+									);
+									if (unlanded.reply !== null) {
+										el = (
+											<div className="msg assistant unlanded">
+												<MessageParts
+													parts={unlanded.reply}
+													token={token}
+													noteProjectId={noteProjectId}
+													messages={messages}
+													onOpenNote={onOpenNote}
+													ended
+												/>
+												<div className="msg-meta">{label}</div>
+												{note}
+											</div>
+										);
+									} else {
+										el = <div className="msg system">{note}</div>;
+									}
+								}
 							} else {
 								const meta = turnMeta(m);
 								el = (
@@ -3484,9 +3591,14 @@ function Chat({
 					}}
 					onStop={() => {
 						setStopError(null);
-						void stopConversation(token, conversationId).catch((err: unknown) =>
-							setStopError(err instanceof Error ? err.message : "request failed"),
-						);
+						// The stop route settles the turn before responding — the
+						// unlanded record is in history by then, so one refresh
+						// swaps the local partial for the durable record.
+						void stopConversation(token, conversationId)
+							.then(() => refreshTranscript())
+							.catch((err: unknown) =>
+								setStopError(err instanceof Error ? err.message : "request failed"),
+							);
 						void stop();
 					}}
 				/>

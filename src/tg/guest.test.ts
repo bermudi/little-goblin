@@ -744,7 +744,12 @@ describe("handleGuestUpdate", () => {
 			env.runtime.stop = (id) => {
 				stopped.push(id);
 				store.bumpEpoch(id);
-				return { stopped: true, settled: Promise.resolve(), reviewsCancelled: 0 };
+				return {
+					stopped: true,
+					settled: Promise.resolve(),
+					reviewsCancelled: 0,
+					active: Promise.resolve(),
+				};
 			};
 			try {
 				const demoted = ensurePersonaClass(env, store.get(conv.id)!, "guest", true);

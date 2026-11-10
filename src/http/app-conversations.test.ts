@@ -13,7 +13,8 @@ import { appAddress } from "../conversation-address.ts";
 import { openResponsibilities } from "../responsibilities.ts";
 import type { Runtime } from "../runtime.ts";
 
-import { HeadlessSink, sleep, waitUntil } from "../testkit.ts";
+import { deferred, HeadlessSink, sleep, waitUntil } from "../testkit.ts";
+import { scriptedModel } from "../testkit/fake-model.ts";
 import { openTurnJournal } from "../turn-journal.ts";
 import { makeResumeOps } from "../turn-resume.ts";
 import { handleAppApi } from "./app-channel.ts";
@@ -406,7 +407,7 @@ describe("app conversations", () => {
 	});
 
 	test("stop aborts a live turn — the stream ends with the error chunk", async () => {
-		const { http, call } = setup({
+		const { http, call, store } = setup({
 			token: APP_TOKEN_NAME,
 			deltas: ["a", "b", "c", "d", "e"],
 			delayMs: 50,
@@ -428,11 +429,83 @@ describe("app conversations", () => {
 			expect(chat.status).toBe(200);
 			const stop = await call("/api/app/conversations/chat-01/stop", { method: "POST" });
 			expect(stop.status).toBe(200);
-			expect((await stop.json()) as { stopped: boolean }).toEqual({ stopped: true });
+			// `settled` says the stop waited for the turn's record: the
+			// unlanded event is durable history before this response lands.
+			expect((await stop.json()) as { stopped: boolean; settled: boolean }).toEqual({
+				stopped: true,
+				settled: true,
+			});
+			const record = store
+				.history("app/chat-01")
+				.find((m) => m.role === "system" && (m.metadata as { unlanded?: unknown }).unlanded);
+			expect(record).toBeDefined();
 			const body = await chat.text();
 			expect(body).toContain('"type":"error"');
 			expect(body.trimEnd().endsWith("data: [DONE]")).toBe(true);
 		} finally {
+			http.stop();
+		}
+	});
+
+	test("stop before the first content still leaves one durable record (#408 F1)", async () => {
+		// Provider silence: the request is accepted, then nothing streams.
+		const entered = deferred<void>();
+		const gate = deferred<void>();
+		const model = scriptedModel([
+			{
+				drive: async ({ enqueue, close }) => {
+					enqueue({ type: "stream-start", warnings: [] });
+					entered.resolve();
+					await gate.promise;
+					close();
+				},
+			},
+		]).model;
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME, model });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const chat = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			expect(chat.status).toBe(200);
+			await entered.promise;
+			// Let the wire's start chunk land before the fence.
+			await sleep(50);
+			const stop = await call("/api/app/conversations/chat-01/stop", { method: "POST" });
+			expect(stop.status).toBe(200);
+			expect((await stop.json()) as { stopped: boolean; settled: boolean }).toEqual({
+				stopped: true,
+				settled: true,
+			});
+			gate.resolve();
+			const body = await chat.text();
+			expect(body).toContain('"type":"error"');
+			// The durable record is in history — and served — before reload.
+			const record = store
+				.history("app/chat-01")
+				.find((m) => m.role === "system" && (m.metadata as { unlanded?: unknown }).unlanded);
+			expect(record).toBeDefined();
+			const meta = record!.metadata as { unlanded: { kind: string } };
+			expect(meta.unlanded.kind).toBe("aborted");
+			const messages = await call("/api/app/conversations/chat-01/messages");
+			const served = (await messages.json()) as {
+				messages: { role: string; metadata?: { unlanded?: { kind?: string } } }[];
+			};
+			const servedRecord = served.messages.find(
+				(m) => m.role === "system" && m.metadata?.unlanded !== undefined,
+			);
+			expect(servedRecord?.metadata?.unlanded?.kind).toBe("aborted");
+		} finally {
+			gate.resolve();
 			http.stop();
 		}
 	});
@@ -447,7 +520,10 @@ describe("app conversations", () => {
 			});
 			const idle = await call("/api/app/conversations/chat-01/stop", { method: "POST" });
 			expect(idle.status).toBe(200);
-			expect((await idle.json()) as { stopped: boolean }).toEqual({ stopped: false });
+			expect((await idle.json()) as { stopped: boolean; settled: boolean }).toEqual({
+				stopped: false,
+				settled: true,
+			});
 			expect((await call("/api/app/conversations/ghost/stop", { method: "POST" })).status).toBe(
 				404,
 			);
@@ -789,9 +865,7 @@ describe("app conversations", () => {
 				.filter((l) => l.startsWith("data: "))
 				.map((l) => l.slice("data: ".length));
 			expect(events.at(-1)).toBe("[DONE]");
-			expect(
-				JSON.parse(events.at(-2)!) as { type: string; errorText: string },
-			).toMatchObject({
+			expect(JSON.parse(events.at(-2)!) as { type: string; errorText: string }).toMatchObject({
 				type: "error",
 				errorText:
 					'turn stopped: goblin restarted (deploy or service restart). Send "continue" to resume.',

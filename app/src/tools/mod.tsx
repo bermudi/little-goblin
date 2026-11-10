@@ -50,8 +50,11 @@ interface PartFace {
 
 // The part → face mapping, shared by the row renderer and the Worked
 // fold's collapsed summary (which needs the same one-liner without the
-// detail body).
-function faceFor(part: ToolUIPart | DynamicToolUIPart): PartFace {
+// detail body). `ended` marks a part on a message whose turn is over
+// (the unlanded record) — a streaming state can never progress there,
+// so it draws settled with "no result recorded" instead of the
+// running shimmer.
+function faceFor(part: ToolUIPart | DynamicToolUIPart, ended?: boolean): PartFace {
 	const name = getToolName(part);
 	const view = VIEWS[name] ?? genericView;
 	switch (part.state) {
@@ -95,8 +98,10 @@ function faceFor(part: ToolUIPart | DynamicToolUIPart): PartFace {
 			// input-streaming / input-available / approval-requested and any
 			// future state: the expanded row shows the args received so far —
 			// running keeps the shimmer under them, waiting stands alone —
-			// never a blank.
-			const running = RUNNING.has(part.state);
+			// never a blank. An ended message's stuck states stand alone too:
+			// the turn is over, so the args are the record, not a live call.
+			const running = !ended && RUNNING.has(part.state);
+			const stranded = !running && ended && RUNNING.has(part.state);
 			return {
 				face: {
 					summary: view.inputHint(part.input) ?? "",
@@ -116,7 +121,13 @@ function faceFor(part: ToolUIPart | DynamicToolUIPart): PartFace {
 					),
 				},
 				open: running,
-				stateLabel: running ? "running" : WAITING.has(part.state) ? "waiting" : part.state,
+				stateLabel: running
+					? "running"
+					: stranded
+						? "no result recorded"
+						: WAITING.has(part.state)
+							? "waiting"
+							: part.state,
 			};
 		}
 	}
@@ -131,10 +142,16 @@ export function partSummaryLine(part: ToolUIPart | DynamicToolUIPart): string {
 	return summary === "" ? getToolName(part) : `${getToolName(part)} ${summary}`;
 }
 
-export function ToolRun({ part }: { part: ToolUIPart | DynamicToolUIPart }) {
+export function ToolRun({
+	part,
+	ended,
+}: {
+	part: ToolUIPart | DynamicToolUIPart;
+	ended?: boolean;
+}) {
 	const name = getToolName(part);
 	const view = VIEWS[name] ?? genericView;
-	const { face, open, stateLabel } = faceFor(part);
+	const { face, open, stateLabel } = faceFor(part, ended);
 	return (
 		<li>
 			<details className="tool-run" open={open}>

@@ -22,3 +22,5 @@ Proof: the reply is on screen, the conversation is in the rail, the meta line na
 ## Gotchas
 
 The fake model takes the rail title from its own reply, so the title starts with `verify-reply:`. Tool calls and thinking can't be exercised with it.
+
+To test Stop or a failed turn, put `[slow]` in the message (one word every 400ms, so there's time to press Stop) or `[fail]` (a few words, then the connection breaks). The fake checks the last user-role message as goblin sends it, and an unlanded-turn record from a previous turn quotes that turn's text. So after a `[slow]` turn is stopped, a `[fail]` turn also streams slowly before it fails.

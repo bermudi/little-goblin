@@ -52,6 +52,9 @@ export async function handleAppApi(
 		(path === "/api/app/attachments" && req.method === "GET" ? "attachments" : null) ??
 		(path.startsWith("/api/app/memory/")
 			? `memory/${path.slice("/api/app/memory/".length)}`
+			: null) ??
+		(path.startsWith("/api/app/delegations/")
+			? `delegations/${path.slice("/api/app/delegations/".length)}`
 			: null);
 	if (opTail !== null) {
 		if (deps.operator === undefined) {

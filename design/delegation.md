@@ -145,6 +145,18 @@ Rulings:
   config stops by verdict, not observation — the operator's explicit
   stop wins over "can't prove dead", and the note says the agent may
   still run host-side (restore the entry to retire it by hand).
+- **A stop is the operator's, wherever it came from (#414, 2026-11-10).**
+  The app's Delegations page has a Stop on every current delegation
+  (`POST /api/app/delegations/<id>/stop` → `stopByOperator`): the same
+  `stop`, then a `· stopped` notice to the owning conversation saying
+  the operator stopped it — accept it, don't relaunch, retry or resend
+  unasked. A finished row's stop is cleanup and sends nothing. The
+  watcher reads an agent that vanished on its own the same way: goblin
+  never ends its agents without marking the row first, so a gone agent
+  is an outside stop, settled `stopped` with the same don't-revive
+  note, not `failed`. A crash looks identical from outside; either way
+  the operator decides what happens next. A responsibility gets a
+  `blocked` report, not `failed`.
 - **No concurrency cap** (operator, 2026-10-06): `maxRunning` is gone —
   the tool never refuses on volume; how much runs, where, is goblin's
   judgment.

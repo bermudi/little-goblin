@@ -42,7 +42,13 @@ import { claudeFreshTrustJson, codexTrustSection, seedHarnessTrust } from "./har
 import { delegationNoticeTag } from "./tags.ts";
 import { wake, wakeApp, type WakeDeps } from "./wake.ts";
 
-export type DelegationVerdict = "done" | "needs input" | "failed";
+export type DelegationVerdict = "done" | "needs input" | "failed" | "stopped";
+
+// Either way the stop is the operator's call, not a fault to repair.
+const OPERATOR_STOP_NOTE =
+	"(the operator stopped it from the app — accept the stop; don't relaunch, retry or resend unless the operator asks)";
+const OUTSIDE_STOP_NOTE =
+	"(the agent ended outside goblin — most likely the operator stopped it by hand; treat it as the operator's stop, not a failure: don't relaunch, retry or resend unless the operator asks)";
 
 export interface DelegationLifecycleDeps {
 	delegations: DelegationsStore;
@@ -127,6 +133,9 @@ export interface DelegationLifecycle {
 	// Gone targets still return stopped with a warning; a failed close
 	// triggers an agent liveness check.
 	stop(id: number): Promise<StopOutcome>;
+	// The operator's stop from the app: same stop, then a notice so the
+	// owning conversation records it as theirs.
+	stopByOperator(id: number): Promise<StopOutcome>;
 	// Screen output is raw; callers fence it as untrusted agent data.
 	read(id: number, lines: number): Promise<ReadOutcome>;
 	reportPath(id: number): string;
@@ -316,6 +325,7 @@ export function startDelegationLifecycle(
 		send: (id, text) => tracked(send(deps, id, text)),
 		answer: (id, key) => tracked(answer(deps, id, key)),
 		stop: (id) => tracked(stop(deps, id)),
+		stopByOperator: (id) => tracked(stopByOperator(deps, id)),
 		read: (id, lines) => tracked(read(deps, id, lines)),
 		reportPath: (id) => {
 			const d = deps.delegations.get(id);
@@ -962,6 +972,20 @@ async function stop(deps: DelegationLifecycleDeps, id: number): Promise<StopOutc
 	return { kind: "stopped", delegation: deps.delegations.get(d.id) ?? d, notes };
 }
 
+async function stopByOperator(deps: DelegationLifecycleDeps, id: number): Promise<StopOutcome> {
+	const before = deps.delegations.get(id);
+	const out = await stop(deps, id);
+	log.info("delegation stop by operator", { delegation: id, outcome: out.kind });
+	// A finished row's stop is cleanup — nothing was cut short, so no notice.
+	if (out.kind !== "stopped" || before === null) return out;
+	if (before.status === "done" || before.status === "failed" || before.status === "stopped") {
+		return out;
+	}
+	// The row is already stopped; a lost notice is logged, not retried.
+	await notify(deps, out.delegation, "stopped", { extra: OPERATOR_STOP_NOTE, agentGone: true });
+	return out;
+}
+
 async function read(
 	deps: DelegationLifecycleDeps,
 	id: number,
@@ -1196,13 +1220,16 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 		return;
 	}
 	if (info === null) {
+		// Goblin never ends its own agents without marking the row first, so a
+		// vanished agent was stopped from outside (#414). A crash looks the
+		// same; either way the operator decides what happens next.
 		// A gone agent may leave useful exit text in the surviving pane, so the fallback
 		// read still accompanies the failed notice.
-		const landed = await notify(deps, d, "failed", {
-			extra: "(agent gone)",
+		const landed = await notify(deps, d, "stopped", {
+			extra: OUTSIDE_STOP_NOTE,
 			agentGone: true,
 		});
-		if (landed) transition(deps, d, "failed");
+		if (landed) transition(deps, d, "stopped");
 		return;
 	}
 

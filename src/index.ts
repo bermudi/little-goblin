@@ -847,6 +847,9 @@ async function boot() {
 		restartHints,
 	});
 	operatorSeams.chatgpt = chatgptLogin;
+	if (delegationLifecycle !== null) {
+		operatorSeams.stopDelegation = (id) => delegationLifecycle.stopByOperator(id);
+	}
 	// Register before HTTP can accept a save, even if it arrives before the
 	// deferred task starts. A disable is latched for this attach only: a
 	// later enable cannot erase it, and the observer is removed once polling

@@ -381,6 +381,13 @@ export interface OperatorDelegationsResponse {
 	delegations: OperatorDelegationItem[];
 }
 
+/** stopped = the row is stopped; still-running = herdr could not close it. */
+export interface OperatorDelegationStopResponse {
+	outcome: "stopped" | "still running";
+	delegation: OperatorDelegationItem;
+	notes: string[];
+}
+
 export interface OperatorStatusResponse {
 	version: string;
 	startedAt: string;

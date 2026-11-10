@@ -822,17 +822,46 @@ describe("delegation watcher", () => {
 		expect(h.store.get(d.id)!.status).toBe("running");
 	});
 
-	test("agent gone → failed, notice carries the pane tail", async () => {
+	// #414: goblin never ends an agent without marking the row first, so a
+	// vanished agent is the operator's stop — never a failure to repair.
+	test("agent gone → stopped as the operator's stop, notice carries the pane tail", async () => {
 		const h = harness();
 		const d = runningRow(h, "died", 1);
 		h.screens.set(`pane:${d.paneId}`, "codex exited: oom");
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
 		w.stopTicker();
-		expect(h.store.get(d.id)!.status).toBe("failed");
+		expect(h.store.get(d.id)!.status).toBe("stopped");
 		expect(h.wakes).toHaveLength(1);
-		expect(h.wakes[0]).toContain(`[delegation: #${d.id} died · failed]`);
+		expect(h.wakes[0]).toContain(`[delegation: #${d.id} died · stopped]`);
+		expect(h.wakes[0]).toContain("operator's stop");
+		expect(h.wakes[0]).toContain("don't relaunch");
 		expect(h.wakes[0]).toContain("codex exited: oom");
+	});
+
+	test("an operator stop from the app stops the row and tells its conversation", async () => {
+		const h = harness();
+		const d = runningRow(h, "busy", 1);
+		h.agents.set(d.agentName, agent(d.agentName, "working", 1));
+		const w = startDelegationLifecycle(h.deps);
+		const out = await w.stopByOperator(d.id);
+		await w.stopTicker();
+		expect(out.kind).toBe("stopped");
+		expect(h.store.get(d.id)!.status).toBe("stopped");
+		expect(h.wakes).toHaveLength(1);
+		expect(h.wakes[0]).toContain(`[delegation: #${d.id} busy · stopped]`);
+		expect(h.wakes[0]).toContain("the operator stopped it from the app");
+	});
+
+	test("an operator stop on a finished row is cleanup — no notice", async () => {
+		const h = harness();
+		const d = runningRow(h, "finished", 1);
+		h.store.setStatus(d.id, "done");
+		const w = startDelegationLifecycle(h.deps);
+		const out = await w.stopByOperator(d.id);
+		await w.stopTicker();
+		expect(out.kind).toBe("stopped");
+		expect(h.wakes).toHaveLength(0);
 	});
 
 	test("the report file beats the screen and caps at 16 KiB", async () => {

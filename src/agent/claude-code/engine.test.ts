@@ -133,6 +133,7 @@ function rig(over: RigOver = {}) {
 		tools: {},
 		view: {
 			convId: "c-claude",
+			modelRef: "claude/claude-sonnet-4-5",
 			tools: {},
 			modalities: new Set(["text"]),
 			carries: () => true,

@@ -37,6 +37,7 @@ import type { CacheObservation } from "../../cache-observation.ts";
 import type { ConfigRef } from "../../config.ts";
 import type { AppLiveContext } from "../../http/app-wire.ts";
 import { log } from "../../log.ts";
+import { stepModelRef } from "../../turn/engine.ts";
 import { measurePrompt } from "../../turn/itemize.ts";
 import {
 	emitChunk,
@@ -253,7 +254,7 @@ export async function driveClaude<M extends WireMember>(
 ): Promise<StreamOutcome> {
 	const { convId, head, members, live, state } = deps;
 	const step = deps.step;
-	const label = step.label;
+	const label = stepModelRef(step);
 
 	const run: RunState = {
 		parts: [],

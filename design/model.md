@@ -173,6 +173,14 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   cipher counts as bytes in `JSON.stringify`, the compaction estimate
   exempts exactly `providerMetadata.codex.reasoningEncryptedContent`
   (call/result metadata included) — everything else counts as before.
+- **Reasoning replays only to its author (ruling 2026-11-10, #417).**
+  The model view drops assistant `reasoning`/`reasoning-file` parts
+  unless the message's `metadata.model` equals the attempt's serving
+  ref — the same `stepModelRef` value stamped on the landed reply.
+  Missing or foreign origin fails closed; the resume partial is exempt
+  (a resumed turn never switches models). Codex `replayScope` still
+  applies on top, narrower still (model+account). Prior art: pi-ai
+  `transformMessages` (pi-mono/packages/ai/src/api/transform-messages.ts).
 - **Codex session affinity & receipts.** Cache affinity rides a derived
   session id — `sha256("goblin-codex-session:<convId>")` rendered as a
   UUID, never the raw conversation id — sent as `session-id` +

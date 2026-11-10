@@ -48,6 +48,7 @@ describe("skill part data schema", () => {
 	test("an over-long stored name degrades to the placeholder — resolver untouched", async () => {
 		const ctx: ViewContext = {
 			convId: "dm:1",
+			modelRef: "test/model-1",
 			tools: {},
 			modalities: undefined,
 			carries: () => false,
@@ -74,6 +75,7 @@ describe("skill invocation in the model view", () => {
 		const seen: string[] = [];
 		const ctx: ViewContext = {
 			convId: "dm:1",
+			modelRef: "test/model-1",
 			tools: {},
 			modalities: undefined,
 			carries: () => false,
@@ -123,6 +125,7 @@ describe("skill invocation in the model view", () => {
 	test("a refused body degrades to the marker alone", async () => {
 		const ctx: ViewContext = {
 			convId: "dm:1",
+			modelRef: "test/model-1",
 			tools: {},
 			modalities: undefined,
 			carries: () => false,
@@ -143,6 +146,7 @@ describe("skill invocation in the model view", () => {
 	test("malformed part data degrades to a placeholder, not a throw", async () => {
 		const ctx: ViewContext = {
 			convId: "dm:1",
+			modelRef: "test/model-1",
 			tools: {},
 			modalities: undefined,
 			carries: () => false,
@@ -174,6 +178,7 @@ describe("skill invocation in the model view", () => {
 		writeFileSync(cached, "x");
 		const ctx: ViewContext = {
 			convId: "dm:1",
+			modelRef: "test/model-1",
 			tools: {},
 			modalities: undefined,
 			carries: () => false,
@@ -201,6 +206,7 @@ describe("skill invocation in the model view", () => {
 	test("steered invocation: the claiming turn owns the body", async () => {
 		const ctx: ViewContext = {
 			convId: "dm:1",
+			modelRef: "test/model-1",
 			tools: {},
 			modalities: undefined,
 			carries: () => false,
@@ -217,6 +223,7 @@ describe("skill invocation in the model view", () => {
 		const calls: Array<{ ref: unknown; includeBody: boolean }> = [];
 		const ctx: ViewContext = {
 			convId: "dm:1",
+			modelRef: "test/model-1",
 			tools: {},
 			modalities: undefined,
 			carries: () => false,
@@ -246,6 +253,7 @@ describe("skill invocation in the model view", () => {
 	test("a non-user stored data-skill never injects a body even when owned", async () => {
 		const ctx: ViewContext = {
 			convId: "dm:1",
+			modelRef: "test/model-1",
 			tools: {},
 			modalities: undefined,
 			carries: () => false,
@@ -278,6 +286,7 @@ describe("skill invocation in the model view", () => {
 	test("ownership survives inserted recall blocks and attachment materialization clones", async () => {
 		const ctx: ViewContext = {
 			convId: "dm:1",
+			modelRef: "test/model-1",
 			tools: {},
 			modalities: undefined,
 			carries: () => false,

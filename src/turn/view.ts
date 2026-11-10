@@ -19,6 +19,13 @@ import {
 
 export interface ViewContext {
 	convId: string;
+	/**
+	 * The serving model ref of this attempt — the same value the landed
+	 * reply's metadata.model carries (turn/engine.ts stepModelRef).
+	 * Assistant reasoning replays only when its author's metadata.model
+	 * matches it (#417).
+	 */
+	modelRef: string;
 	tools: ToolSet;
 	modalities: Set<string> | undefined;
 	carries: (mediaType: string, position: MediaPosition) => boolean;
@@ -146,6 +153,29 @@ function skillPartsAsText(
 	return { message, invocations };
 }
 
+const REASONING_PART_TYPES: ReadonlySet<string> = new Set(["reasoning", "reasoning-file"]);
+
+// #417: reasoning replays only to the model that wrote it. The landed
+// reply's metadata.model is the producing ref; foreign or unstamped
+// assistant reasoning drops — fail-closed, since an unverifiable origin
+// is the leak this guards. The resume partial is exempt: a resumed or
+// overflow turn never switches models (turn-resume.ts), so its
+// reasoning belongs to this target by construction. Every other part
+// keeps its order.
+function dropForeignReasoning(
+	ctx: ViewContext,
+	m: UIMessage,
+	isPartial: boolean,
+): { message: UIMessage; dropped: number } {
+	if (isPartial || m.role !== "assistant") return { message: m, dropped: 0 };
+	const metadata = m.metadata as { model?: unknown } | undefined;
+	if (metadata?.model === ctx.modelRef) return { message: m, dropped: 0 };
+	const parts = m.parts.filter((p) => !REASONING_PART_TYPES.has(p.type));
+	const dropped = m.parts.length - parts.length;
+	if (dropped === 0) return { message: m, dropped: 0 };
+	return { message: { ...m, parts }, dropped };
+}
+
 interface SkillInvocation {
 	name: string;
 	body: string | null;
@@ -208,6 +238,8 @@ export async function buildModelView(
 	const seqByIndex = view.map((m) => seqByMessage.get(m) ?? null);
 	const messages: ModelMessage[] = [];
 	const partialId = options.partial?.id ?? null;
+	let foreignReasoningMessages = 0;
+	let foreignReasoningParts = 0;
 	for (const [i, m] of prepared.entries()) {
 		const entrySeq = seqByIndex[i] ?? null;
 		// Bodies are a user-input privilege as well as an owned one — a
@@ -219,7 +251,16 @@ export async function buildModelView(
 			includeBody,
 		);
 		const rendered = contextPartAsText(ctx, notePartsAsText(ctx, skillMarked));
-		const unfinished = incompleteToolCallIds(rendered);
+		const { message: originScoped, dropped: foreignReasoning } = dropForeignReasoning(
+			ctx,
+			rendered,
+			m.id === partialId,
+		);
+		if (foreignReasoning > 0) {
+			foreignReasoningMessages += 1;
+			foreignReasoningParts += foreignReasoning;
+		}
+		const unfinished = incompleteToolCallIds(originScoped);
 		if (unfinished.length > 0 && m.id === partialId) {
 			log.info("resume partial ends on an unfinished tool call — dropped from the model view", {
 				conversation: ctx.convId,
@@ -235,7 +276,7 @@ export async function buildModelView(
 		}
 		try {
 			messages.push(
-				...(await convertToModelMessages([rendered], {
+				...(await convertToModelMessages([originScoped], {
 					tools: ctx.tools,
 					ignoreIncompleteToolCalls: true,
 				})),
@@ -247,7 +288,7 @@ export async function buildModelView(
 				role: m.role,
 			});
 			messages.push(
-				...(await convertToModelMessages([unconvertiblePlaceholder(rendered)], {
+				...(await convertToModelMessages([unconvertiblePlaceholder(originScoped)], {
 					tools: ctx.tools,
 					ignoreIncompleteToolCalls: true,
 				})),
@@ -256,6 +297,14 @@ export async function buildModelView(
 		if (includeBody) {
 			messages.push(...injectedBodies(ctx, invocations));
 		}
+	}
+	if (foreignReasoningParts > 0) {
+		log.info("foreign reasoning dropped from the model view", {
+			conversation: ctx.convId,
+			target: ctx.modelRef,
+			messages: foreignReasoningMessages,
+			parts: foreignReasoningParts,
+		});
 	}
 	const scoped = ctx.keepProviderExecuted === true ? messages : dropProviderExecuted(ctx, messages);
 	const merged = mergeConsecutiveUserModels(scoped);

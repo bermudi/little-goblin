@@ -9,12 +9,12 @@ export function DiffView({ lines }: { lines: DiffLine[] }) {
 		<div className="diff">
 			{lines.map((line, i) =>
 				line.op === "gap" ? (
-					// biome-ignore lint/suspicious/noArrayIndexKey: hunks are static, never reordered
+					// index keys are fine: hunks are static, never reordered
 					<div key={i} className="diff-line gap">
 						{line.skipped} unchanged {line.skipped === 1 ? "line" : "lines"}
 					</div>
 				) : (
-					// biome-ignore lint/suspicious/noArrayIndexKey: hunks are static, never reordered
+					// index keys are fine: hunks are static, never reordered
 					<div key={i} className={`diff-line ${line.op}`}>
 						<span className="diff-mark" aria-hidden="true">
 							{MARK[line.op]}

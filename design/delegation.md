@@ -226,6 +226,25 @@ Rulings:
   runs there. `/stop` fences goblin's turn, not delegations: they aren't
   turns. `delegate stop` ends one.
 
+- **An issue build is one lead delegation (operator, 2026-11-09).**
+  Goblin coordinates across issues; inside one issue a `lead`-role
+  delegation runs the operator's fusion skill: it designs, has its own
+  sidekick implement, reviews the diff, has a clean-session verifier drive
+  the change, and opens a draft PR carrying the verdict (`PASS`,
+  `PASS+NOTES`, `FAIL`). The lead's agents are its own acts, not
+  goblin's: they run in the lead's workspace, the goblin-session adapter
+  never lists or addresses them (it has no list call), and goblin's view
+  of them is the lead's report. Ready = a PR closing the issue, a
+  `PASS`/`PASS+NOTES` verdict on its head SHA, and CI green on that SHA;
+  goblin checks those itself, the report being a claim. Rework and the
+  post-green-light merge go to the same lead (`send`), so one agent stays
+  accountable per issue. At most two leads run at once (each fans out to
+  several agents on one box) — the procedure's limit, not a tool refusal;
+  the 2026-10-06 no-cap ruling for the tool stands. Handover is explicit;
+  goblin does not pick issues up on its own. The procedure lives in the
+  workspace `proxy-operator` skill; the lead harness in
+  `delegation.defaults.lead`.
+
 Still out: subagent fleets inside goblin (a delegation is one external
-agent per task, not an orchestrator), nesting, fan-out tooling, ACP, the
-AI SDK harness wrappers.
+agent per task, not an orchestrator), goblin-managed nesting (a lead's own
+agents are the lead's), fan-out tooling, ACP, the AI SDK harness wrappers.

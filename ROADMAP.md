@@ -69,6 +69,13 @@ The first two stages below serve this same target. A representative pilot is
 the proving ground throughout, not a ceremony after building everything.
 Re-use actual pilot evidence if it already exists.
 
+Issue builds now run through one lead delegation per issue (2026-11-09,
+design/delegation.md → An issue build is one lead delegation). The pilot:
+the operator hands over one real issue; goblin briefs a lead, and the
+issue ends merged with a verifier verdict on the PR, without the operator
+relaying between agents. Until code checks readiness, goblin checks the
+PR, verdict and CI by hand per the `proxy-operator` skill. Not yet piloted.
+
 ## 1. Make Follow-Through Deliberate
 
 Outcome: Goblin remembers why and when to check, without a blanket inference

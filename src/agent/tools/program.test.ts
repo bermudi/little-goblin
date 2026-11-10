@@ -51,7 +51,7 @@ function toolFor(
 }
 
 const exec = (t: ReturnType<typeof programTool>, input: unknown) =>
-	// biome-ignore lint: the tool's execute is the boundary under test
+	// the tool's execute is the boundary under test
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 // Approving through the store is the operator-tap's store half — the

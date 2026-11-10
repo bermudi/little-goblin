@@ -135,7 +135,7 @@ function harness(
 }
 
 const exec = (t: ReturnType<typeof delegateTool>, input: unknown) =>
-	// biome-ignore lint: the tool's execute is the boundary under test
+	// the tool's execute is the boundary under test
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("delegate tool", () => {

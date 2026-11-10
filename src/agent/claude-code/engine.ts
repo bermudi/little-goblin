@@ -34,6 +34,7 @@ import type {
 } from "ai";
 import type { AuthStore } from "../../auth.ts";
 import type { CacheObservation } from "../../cache-observation.ts";
+import type { ClaudeSessionStore } from "../../claude-sessions.ts";
 import type { ConfigRef } from "../../config.ts";
 import type { AppLiveContext } from "../../http/app-wire.ts";
 import { log } from "../../log.ts";
@@ -87,10 +88,26 @@ export interface ClaudeEngineConfig {
 	configDir?: string | undefined;
 	/** Test seam: wrap or replace the bridge factory (production uses the real one). */
 	bridgeFactory?: typeof createToolBridge | undefined;
+	/** #418: the claude_sessions store — native compaction reads/writes it. */
+	sessions?: ClaudeSessionStore | undefined;
 }
 
 export interface ClaudeRunDeps<M extends WireMember> extends Omit<StreamDeps<M>, "step"> {
 	step: ClaudeStep;
+	/**
+	 * #418 native session plan for this attempt. `resume` names the
+	 * recorded session and its head anchor; absent = fresh session.
+	 * `fullPrompt` lazily rebuilds the complete view — the one-shot
+	 * retry's prompt when the recorded session fails to resume.
+	 * `onDrop` tells the store the record is dead.
+	 */
+	claudeSession?:
+		| {
+				resume?: { sessionId: string; headUuid: string } | undefined;
+				fullPrompt?: (() => Promise<ModelMessage[]>) | undefined;
+				onDrop?: (() => void) | undefined;
+		  }
+		| undefined;
 }
 
 // ---------- pure helpers ----------
@@ -129,6 +146,32 @@ const RATE_LIMIT_TEXT = /rate.?limit|usage limit|5-hour|per hour|quota/i;
 
 export function isRateLimitText(text: string): boolean {
 	return RATE_LIMIT_TEXT.test(text);
+}
+
+// #418: a resume that dies before any content reached the wire gets one
+// fresh-session retry in the same attempt. These are the shapes a dead
+// session file or a rejected resumeSessionAt surface as.
+const RESUME_FAILURE_TEXT =
+	/resume rejected|failed to resume|resume_session_at|no conversation found/i;
+
+function isResumeFailure(
+	resultFrame: ClaudeResultEvent | null,
+	errorText: string | null,
+	rawError: unknown,
+): boolean {
+	const blob = [
+		resultFrame?.result ?? "",
+		errorText ?? "",
+		rawError instanceof Error ? rawError.message : String(rawError ?? ""),
+	].join("\n");
+	if (RESUME_FAILURE_TEXT.test(blob)) return true;
+	if (
+		/resume|session/i.test(blob) &&
+		/not found|missing|enoent|no such|does not exist|expired|invalid/i.test(blob)
+	) {
+		return true;
+	}
+	return resultFrame?.subtype === "error_during_execution" && /resume|session/i.test(blob);
 }
 
 export function resultErrorText(text: string, assistantError: string | undefined): string {
@@ -297,13 +340,21 @@ export async function driveClaude<M extends WireMember>(
 	};
 
 	// --- request identity: hash + observation parity with the API lane ---
-	const prompt = serializePrompt(deps.messages);
-	const promptForHash: unknown[] = [
-		{ role: "system", content: step.system },
-		{ role: "user", content: promptText(prompt) },
-	];
+	// Recomputed per attempt — the resume-failure retry sends the full
+	// prompt, not the seq delta deps.messages carries.
 	const toolDefs = serializeToolDefs(deps.tools);
-	const hashes = callHashes(promptForHash, toolDefs);
+	const hashesFor = (messages: ModelMessage[]) => {
+		const prompt = serializePrompt(messages);
+		return callHashes(
+			[
+				{ role: "system", content: step.system },
+				{ role: "user", content: promptText(prompt) },
+			],
+			toolDefs,
+		);
+	};
+	let sentMessages = deps.messages;
+	let hashes = hashesFor(sentMessages);
 	const settingsHash = hashCacheSettings({
 		providerOptions: { "claude-code": step.thinking },
 		toolChoice: { type: "auto" },
@@ -345,7 +396,7 @@ export async function driveClaude<M extends WireMember>(
 			...baseFields,
 			callId,
 			call: "stream",
-			messages: deps.messages.length,
+			messages: sentMessages.length,
 			headHash: hashes.headHash.slice(0, 16),
 			requestHash: hashes.requestHash.slice(0, 16),
 			settingsHash: settingsHash.slice(0, 16),
@@ -639,7 +690,6 @@ export async function driveClaude<M extends WireMember>(
 	const onAbort = (): void => {
 		abortController.abort();
 	};
-	deps.signal.addEventListener("abort", onAbort, { once: true });
 
 	const childEnv = await claudeChildEnv(engine.auth, step.auth, engine.configDir);
 	const makeBridge = engine.bridgeFactory ?? createToolBridge;
@@ -648,92 +698,199 @@ export async function driveClaude<M extends WireMember>(
 	const messageId = randomUUID();
 	emit({ type: "start", messageId });
 
+	// #418: the turn's head anchor — the last top-level assistant uuid
+	// the query emitted (subagent sidechains never pin one).
+	let lastAssistantUuid: string | null = null;
+
+	const sessionPlan = deps.claudeSession;
+	const resumeSession = sessionPlan?.resume ?? null;
+	let retriedFresh = false;
+	let landedSessionId = "";
+
+	// The retry only runs at zero effect, so every content accumulator is
+	// already empty — this is belt-and-braces for the bookkeeping fields
+	// (call identity, stream block maps, uuid anchors). run.events is
+	// deliberately untouched: it carries the inherited tool-call ledger.
+	const resetForRetry = (): void => {
+		run.parts.length = 0;
+		run.partialMessages.length = 0;
+		run.sawText = deps.seenText;
+		run.lastTextPartId = null;
+		run.totalInput = null;
+		run.totalOutput = null;
+		run.totalCacheRead = null;
+		run.totalCacheWrite = null;
+		run.lastInput = null;
+		run.lastCacheRead = null;
+		run.firstTokenMs = null;
+		run.stepCount = 0;
+		run.sawToolUse = false;
+		run.lastStopReason = null;
+		run.lastAssistantError = undefined;
+		run.pendingCall = false;
+		run.streamedBlocks.clear();
+		run.blockIds.clear();
+		run.openTextBlocks.clear();
+		run.openReasoningBlocks.clear();
+		run.toolNameById.clear();
+		run.pendingToolUse.clear();
+		curMessage = null;
+		curParts = [];
+		curBlockOffset = 0;
+		callId = null;
+		obs = undefined;
+		callOpen = false;
+		lastAssistantUuid = null;
+	};
+
 	let resultFrame: ClaudeResultEvent | null = null;
 	let streamError: string | null = null;
 	let rawError: unknown = null;
 
-	try {
-		outer: for await (const ev of engine.query({
-			prompt,
-			options: {
-				model: step.modelId,
-				systemPrompt: step.system,
-				...(step.maxTurns !== undefined ? { maxTurns: step.maxTurns } : {}),
-				thinking:
-					step.thinking !== undefined && step.thinking.disabled === true
-						? { type: "disabled" }
-						: { type: "adaptive" },
-				...(step.thinking?.effort !== undefined ? { effort: step.thinking.effort } : {}),
-				mcpServers: { goblin: bridge.server() },
-				allowedTools: bridge.allowedTools(),
-				cwd: process.cwd(),
-				env: childEnv.env,
-				abortController,
-				stderr: (data) => {
-					log.debug("claude-code child stderr", {
-						conversation: convId,
-						stderr: data.slice(0, 500),
-					});
+	// A resume that fails before any content reached the wire retries
+	// once, fresh, in this same attempt — the record is already dropped
+	// by onDrop so nothing resumes a dead session again.
+	for (;;) {
+		const useResume = resumeSession !== null && !retriedFresh;
+		const sessionId = useResume ? resumeSession.sessionId : randomUUID();
+		landedSessionId = sessionId;
+		resultFrame = null;
+		streamError = null;
+		rawError = null;
+
+		deps.signal.addEventListener("abort", onAbort, { once: true });
+		try {
+			outer: for await (const ev of engine.query({
+				prompt: serializePrompt(sentMessages),
+				options: {
+					model: step.modelId,
+					systemPrompt: step.system,
+					...(step.maxTurns !== undefined ? { maxTurns: step.maxTurns } : {}),
+					thinking:
+						step.thinking !== undefined && step.thinking.disabled === true
+							? { type: "disabled" }
+							: { type: "adaptive" },
+					...(step.thinking?.effort !== undefined ? { effort: step.thinking.effort } : {}),
+					mcpServers: { goblin: bridge.server() },
+					allowedTools: bridge.allowedTools(),
+					cwd: childEnv.workdir,
+					env: childEnv.env,
+					abortController,
+					persistSession: true,
+					...(useResume
+						? {
+								resume: resumeSession.sessionId,
+								resumeSessionAt: resumeSession.headUuid,
+							}
+						: { sessionId }),
+					stderr: (data) => {
+						log.debug("claude-code child stderr", {
+							conversation: convId,
+							stderr: data.slice(0, 500),
+						});
+					},
 				},
-			},
-		})) {
-			deps.assertAuthority();
-			switch (ev.type) {
-				case "init":
-					log.info("claude engine session", {
+			})) {
+				deps.assertAuthority();
+				if (ev.type === "assistant" && typeof ev.uuid === "string") {
+					lastAssistantUuid = ev.uuid;
+				}
+				if (ev.type === "compact_boundary") {
+					log.info("claude native compaction boundary", {
 						conversation: convId,
-						model: ev.model ?? null,
-						cli: ev.cliVersion ?? null,
-						session: ev.sessionId ?? null,
-						tools: Array.isArray(ev.tools) ? ev.tools.length : null,
-						mcpServers: Array.isArray(ev.mcpServers) ? ev.mcpServers.length : null,
+						model: label,
+						trigger: ev.trigger,
+						preTokens: ev.preTokens,
+						postTokens: ev.postTokens ?? null,
 					});
-					break;
-				case "stream":
-					handleStreamEvent(ev.event);
-					break;
-				case "assistant":
-					handleAssistant(ev.message, ev.error);
-					break;
-				case "user":
-					handleUserEcho(ev.content);
-					break;
-				case "result":
-					// The result frame is the turn-complete signal — stop
-					// there (the vendor generator's return() cleans up the
-					// child), never waiting on post-result chatter.
-					flushAssistant();
-					resultFrame = ev;
-					break outer;
+				}
+				switch (ev.type) {
+					case "init":
+						log.info("claude engine session", {
+							conversation: convId,
+							model: ev.model ?? null,
+							cli: ev.cliVersion ?? null,
+							session: ev.sessionId ?? null,
+							tools: Array.isArray(ev.tools) ? ev.tools.length : null,
+							mcpServers: Array.isArray(ev.mcpServers) ? ev.mcpServers.length : null,
+						});
+						break;
+					case "stream":
+						handleStreamEvent(ev.event);
+						break;
+					case "assistant":
+						handleAssistant(ev.message, ev.error);
+						break;
+					case "user":
+						handleUserEcho(ev.content);
+						break;
+					case "result":
+						// The result frame is the turn-complete signal — stop
+						// there (the vendor generator's return() cleans up the
+						// child), never waiting on post-result chatter.
+						flushAssistant();
+						resultFrame = ev;
+						break outer;
+				}
 			}
+			flushAssistant();
+		} catch (err) {
+			// A fenced/stopped turn must surface as the authority error, not a
+			// provider failure — /stop and shutdown ride this path.
+			deps.assertAuthority();
+			rawError = err;
+			if (deps.signal.aborted) throw err;
+			failCall("read", err);
+			log.error("model stream error", err, { conversation: convId, model: label });
+			streamError =
+				resultFrame !== null && resultFrame.isError
+					? resultErrorText(resultFrame.result, run.lastAssistantError)
+					: err instanceof Error
+						? err.message
+						: String(err);
+		} finally {
+			deps.signal.removeEventListener("abort", onAbort);
 		}
-		flushAssistant();
-	} catch (err) {
-		// A fenced/stopped turn must surface as the authority error, not a
-		// provider failure — /stop and shutdown ride this path.
-		deps.assertAuthority();
-		rawError = err;
-		if (deps.signal.aborted) throw err;
-		failCall("read", err);
-		log.error("model stream error", err, { conversation: convId, model: label });
-		streamError =
-			resultFrame !== null && resultFrame.isError
-				? resultErrorText(resultFrame.result, run.lastAssistantError)
-				: err instanceof Error
-					? err.message
-					: String(err);
-	} finally {
-		deps.signal.removeEventListener("abort", onAbort);
+
+		// The result frame carries terminal truth even when the iterator
+		// completed cleanly — an error result without a throw still fails.
+		if (streamError === null && resultFrame !== null && resultFrame.isError) {
+			streamError = resultErrorText(resultFrame.result, run.lastAssistantError);
+			rawError = rawError ?? new Error(streamError);
+			failCall("provider-error", rawError);
+			log.error("model stream error", rawError, { conversation: convId, model: label });
+		}
+
+		// Zero effect means nothing content-bearing reached the wire —
+		// no finished step, no first token, no reconstructed parts. Only
+		// then is a fresh-session retry safe (and honest: the fallback
+		// zero-effect gate still sees modelCalls === 0).
+		const zeroEffect =
+			run.stepCount === 0 && run.firstTokenMs === null && run.parts.length === 0;
+		if (
+			useResume &&
+			!retriedFresh &&
+			streamError !== null &&
+			zeroEffect &&
+			sessionPlan?.fullPrompt !== undefined &&
+			isResumeFailure(resultFrame, streamError, rawError)
+		) {
+			retriedFresh = true;
+			log.warn("claude session resume failed — starting fresh", {
+				conversation: convId,
+				model: label,
+				session: resumeSession.sessionId,
+				error: streamError,
+			});
+			sessionPlan.onDrop?.();
+			sentMessages = await sessionPlan.fullPrompt();
+			hashes = hashesFor(sentMessages);
+			resetForRetry();
+			continue;
+		}
+		break;
 	}
 
-	// The result frame carries terminal truth even when the iterator
-	// completed cleanly — an error result without a throw still fails.
-	if (streamError === null && resultFrame !== null && resultFrame.isError) {
-		streamError = resultErrorText(resultFrame.result, run.lastAssistantError);
-		rawError = rawError ?? new Error(streamError);
-		failCall("provider-error", rawError);
-		log.error("model stream error", rawError, { conversation: convId, model: label });
-	}
 	if (streamError !== null && isContextOverflow(streamError) && deps.overflowRecoverable) {
 		holdForRecovery = true;
 	}
@@ -761,8 +918,8 @@ export async function driveClaude<M extends WireMember>(
 			v: 1,
 			system: step.system,
 			tools: toolDefs,
-			messages: deps.messages,
-			segments: measurePrompt(step.system, deps.tools, deps.messages),
+			messages: sentMessages,
+			segments: measurePrompt(step.system, deps.tools, sentMessages),
 		};
 	};
 
@@ -798,7 +955,7 @@ export async function driveClaude<M extends WireMember>(
 	// The reply message the durable lane lands: metadata in the same
 	// shape messageMetadata writes for the API lane.
 	const finishReason = finishReasonOf(run.lastStopReason, run.sawToolUse);
-	const segments = measurePrompt(step.system, deps.tools, deps.messages);
+	const segments = measurePrompt(step.system, deps.tools, sentMessages);
 	const metadata = {
 		model: label,
 		finishReason,
@@ -835,6 +992,9 @@ export async function driveClaude<M extends WireMember>(
 		window: windowCapture(),
 		model: label,
 		steps: run.stepCount,
+		// #418: the session this attempt ran — the runtime persists the
+		// record only after the reply lands durably.
+		claudeSession: { sessionId: landedSessionId, headUuid: lastAssistantUuid ?? "" },
 	};
 }
 

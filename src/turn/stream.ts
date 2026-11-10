@@ -284,6 +284,10 @@ export type StreamOutcome =
 			// Window-row metadata: which model ran, how many steps.
 			model: string;
 			steps: number;
+			// #418: the native Claude session this attempt ran — the
+			// runtime persists the claude_sessions record only after the
+			// reply lands durably. Absent on non-Claude engines.
+			claudeSession?: { sessionId: string; headUuid: string } | undefined;
 	  }
 	| {
 			kind: "failed";

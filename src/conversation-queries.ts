@@ -313,6 +313,10 @@ export function prepareConversationQueries(db: Database) {
 	const qDeleteCompactions = db.query("DELETE FROM compactions WHERE conversation_id = ?");
 	const qDeleteContexts = db.query("DELETE FROM memory_contexts WHERE conversation_id = ?");
 	const qDeleteWindows = db.query("DELETE FROM context_windows WHERE conversation_id = ?");
+	// #418: a rewind or delete retires every native session record — the
+	// SDK transcript still holds the retracted content, so the record
+	// can never honestly resume.
+	const qDeleteClaudeSessions = db.query("DELETE FROM claude_sessions WHERE conversation_id = ?");
 	const qDeleteConv = db.query("DELETE FROM conversations WHERE id = ?");
 	// An edit's targeted deletes, all keyed by the same causal cut. Each
 	// dependent was derived from the events the cut drops, so keeping it
@@ -383,6 +387,7 @@ export function prepareConversationQueries(db: Database) {
 		qDeleteCompactions,
 		qDeleteContexts,
 		qDeleteWindows,
+		qDeleteClaudeSessions,
 		qDeleteConv,
 		qRewindEvents,
 		qRewindCompactions,

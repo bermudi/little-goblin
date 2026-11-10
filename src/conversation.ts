@@ -343,6 +343,7 @@ export function openStore(dbPath: string): ConversationStore {
 		qDeleteCompactions,
 		qDeleteContexts,
 		qDeleteWindows,
+		qDeleteClaudeSessions,
 		qDeleteConv,
 		qRewindEvents,
 		qRewindCompactions,
@@ -693,8 +694,10 @@ export function openStore(dbPath: string): ConversationStore {
 				// The captured outbound prompt is verbatim pre-edit content —
 				// the window view must not serve it after the rewind. Same
 				// sweep deleteConversation runs; the next turn's capture
-				// rewrites the row.
+				// rewrites the row. The native session records go too: the
+				// SDK transcript still holds the retracted content.
 				qDeleteWindows.run(id);
+				qDeleteClaudeSessions.run(id);
 				if (
 					conv.archived_at !== null &&
 					db.run("UPDATE conversations SET archived_at = NULL WHERE id = ?", [id]).changes > 0
@@ -966,7 +969,9 @@ export function openStore(dbPath: string): ConversationStore {
 				qDeleteContexts.run(id);
 				// The captured window has no FK — it rides the sweep so a
 				// re-minted id never inherits the last generation's prompt.
+				// Same for the native session records (#418).
 				qDeleteWindows.run(id);
+				qDeleteClaudeSessions.run(id);
 				qDeleteConv.run(id);
 				return counts;
 			})();

@@ -107,12 +107,27 @@ export interface ClaudeAssistantEvent {
 	message: ClaudeMessage;
 	/** The CLI's typed error taxonomy when this message is a synthetic error. */
 	error?: string;
+	/** Chain-entry uuid — the resumeSessionAt head anchor (#418). */
+	uuid?: string;
 }
 
 export interface ClaudeUserEvent {
 	type: "user";
 	content: string | ClaudeToolResultBlock[];
 	toolUseResult?: unknown;
+	uuid?: string;
+}
+
+/**
+ * system/compact_boundary — the CLI's own compaction marker. Carries the
+ * chain uuid so a native /compact query's head stays resumable (#418).
+ */
+export interface ClaudeCompactBoundaryEvent {
+	type: "compact_boundary";
+	trigger: string;
+	preTokens: number;
+	postTokens?: number;
+	uuid?: string;
 }
 
 export interface ClaudeResultEvent {
@@ -126,6 +141,7 @@ export interface ClaudeResultEvent {
 	usage: ClaudeUsage | null;
 	modelUsage: Record<string, ClaudeModelUsage> | null;
 	terminalReason?: string | null;
+	uuid?: string;
 }
 
 /** The frames the engine consumes; every other SDK frame type is ignored. */
@@ -134,6 +150,7 @@ export type ClaudeEvent =
 	| ClaudeStreamFrameEvent
 	| ClaudeAssistantEvent
 	| ClaudeUserEvent
+	| ClaudeCompactBoundaryEvent
 	| ClaudeResultEvent;
 
 // ---------- the injectable query seam ----------
@@ -169,6 +186,16 @@ export interface ClaudeQueryOptions {
 	env: Record<string, string>;
 	abortController: AbortController;
 	stderr?: (data: string) => void;
+	// #418 native session options. Turn queries always persist under a
+	// sessionId (fresh) or resume an existing one at its head; the
+	// throwaway compaction summary passes neither.
+	resume?: string | undefined;
+	resumeSessionAt?: string | undefined;
+	sessionId?: string | undefined;
+	persistSession?: boolean | undefined;
+	// Machine-composed prompts stay verbatim; the native /compact query
+	// alone passes false so the CLI dispatches the slash command.
+	verbatimPrompts?: boolean | undefined;
 }
 
 export type ClaudeQuery = (call: ClaudeQueryCall) => AsyncIterable<ClaudeEvent>;

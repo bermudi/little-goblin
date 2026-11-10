@@ -190,6 +190,7 @@ function claudeRig(): EngineRig {
 		compact: async () => {
 			throw new Error("compaction not exercised here");
 		},
+		nativeCompact: async () => null,
 	};
 	const step: ClaudeStep = {
 		engine: "claude-code",

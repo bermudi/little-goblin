@@ -88,7 +88,7 @@ describe("pinEvent", () => {
 			session_id: "s",
 			uuid: "u",
 		} as unknown as SDKMessage);
-		expect(ok).toEqual({ type: "assistant", message });
+		expect(ok).toEqual({ type: "assistant", message, uuid: "u" });
 		const errored = pinEvent({
 			type: "assistant",
 			parent_tool_use_id: null,
@@ -128,6 +128,28 @@ describe("pinEvent", () => {
 			type: "user",
 			content: [{ type: "tool_result", tool_use_id: "t1", content: "out", is_error: false }],
 			toolUseResult: { shaped: true },
+			uuid: "u",
+		});
+	});
+
+	test("a compact_boundary system frame keeps trigger, tokens and chain uuid (#418)", () => {
+		const pinned = pinEvent({
+			type: "system",
+			subtype: "compact_boundary",
+			session_id: "s",
+			uuid: "boundary-uuid",
+			compact_metadata: {
+				trigger: "auto",
+				pre_tokens: 180_000,
+				post_tokens: 12_000,
+			},
+		} as unknown as SDKMessage);
+		expect(pinned).toEqual({
+			type: "compact_boundary",
+			trigger: "auto",
+			preTokens: 180_000,
+			postTokens: 12_000,
+			uuid: "boundary-uuid",
 		});
 	});
 

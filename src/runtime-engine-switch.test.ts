@@ -102,6 +102,7 @@ describe("one conversation across turn engines", () => {
 			compact: async () => {
 				throw new Error("compaction not exercised here");
 			},
+			nativeCompact: async () => null,
 		};
 
 		let lane: "sdk" | "claude" = "sdk";

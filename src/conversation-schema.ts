@@ -260,6 +260,20 @@ export function ensureConversationSchema(db: Database): void {
 	db.run(
 		"CREATE INDEX IF NOT EXISTS reply_ratings_event ON reply_ratings(channel, conversation_id, event_seq)",
 	);
+	// #418: one native Claude SDK session per (conversation, model ref).
+	// The claude-code engine resumes it each turn; the record advances
+	// only on a landed reply (src/claude-sessions.ts owns access).
+	db.run(`
+			CREATE TABLE IF NOT EXISTS claude_sessions (
+				conversation_id TEXT NOT NULL,
+				model_ref TEXT NOT NULL,
+				session_id TEXT NOT NULL,
+				head_uuid TEXT NOT NULL,
+				seen_seq INTEGER NOT NULL,
+				reply_seq INTEGER,
+				updated_at INTEGER NOT NULL,
+				PRIMARY KEY (conversation_id, model_ref)
+			)`);
 	// Web Push subscriptions are endpoint-scoped operator devices. The
 	// endpoint and its keys are send credentials, so callers/log lines use
 	// endpoint_hash; only the sender boundary reads the raw row.

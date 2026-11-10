@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
 import type { AcceptsMedia } from "./agent/attachments.ts";
 import type { ClaudeStep } from "./agent/claude-code/mod.ts";
+import type { ClaudeSessionStore } from "./claude-sessions.ts";
 import { type CompactionOutcome, chooseBoundary } from "./agent/compaction.ts";
 import {
 	exhaustedMessage,
@@ -141,6 +142,10 @@ export interface RuntimeDeps {
 		input: { model: string; step: number; capture: WindowCapture; recallVersion: number },
 	): void;
 	windowVersion?(): number;
+	// #418: native Claude session records, one per (conversation, model
+	// ref). Absent = every claude turn runs the pre-#418 full-prompt
+	// path and nothing is persisted.
+	claudeSessions?: ClaudeSessionStore | undefined;
 }
 
 export class FencedError extends Error {
@@ -950,8 +955,23 @@ export class Runtime {
 				keepProviderExecuted: !isClaudeStep(step) && step.keepProviderExecuted === true,
 				skillRef: resolveSkillRef,
 			};
-			const merged = await buildModelView(viewCtx, {
-				entries,
+			// #418: a recorded native session sees only the seq delta —
+			// entries past seen_seq, minus the reply the session itself
+			// produced (it already holds that natively). Entries with no
+			// seq — recall inserts, the resume partial — belong to this
+			// turn and ride along inside the view.
+			const claudeRec =
+				isClaudeStep(step) && this.deps.claudeSessions !== undefined
+					? this.deps.claudeSessions.get(convId, step.label)
+					: null;
+			const viewEntries =
+				claudeRec === null
+					? entries
+					: entries.filter((e) => e.seq > claudeRec.seenSeq && e.seq !== claudeRec.replySeq);
+			const sentSeqMax =
+				viewEntries.length === 0 ? null : Math.max(...viewEntries.map((e) => e.seq));
+			const viewOptions = {
+				entries: viewEntries,
 				prior: memory.prior,
 				current: memory.current,
 				partial: recovery?.partial ?? null,
@@ -960,7 +980,33 @@ export class Runtime {
 				summarySeq: store.memoryEligibility(convId).summarySeq,
 				ownedSeqs: snapshot.ownedInputSeqs,
 				assertAuthority: () => this.checkAuthority(convId, epoch),
-			});
+			};
+			const merged = await buildModelView(viewCtx, viewOptions);
+			// The engine resumes the recorded session at its head; the
+			// fullPrompt thunk stays lazy — only a dead-session retry pays
+			// for the second view build.
+			const claudeSessionPlan = isClaudeStep(step)
+				? {
+						...(claudeRec !== null
+							? {
+									resume: {
+										sessionId: claudeRec.sessionId,
+										headUuid: claudeRec.headUuid,
+									},
+									fullPrompt: () => buildModelView(viewCtx, { ...viewOptions, entries }),
+								}
+							: {}),
+						onDrop: () => {
+							try {
+								this.deps.claudeSessions?.drop(convId, step.label, "session resume failed");
+							} catch (err) {
+								log.warn("claude session drop failed — turn continues", err, {
+									conversation: convId,
+								});
+							}
+						},
+					}
+				: undefined;
 
 			const outcome = await pickEngine(this.deps.engines, step, convId).run({
 				convId,
@@ -1060,6 +1106,7 @@ export class Runtime {
 					fallback.fresh && (fallback.next() !== undefined || fallback.misses.length > 0),
 				...(fallback.misses.length > 0 ? { fallbackMisses: fallback.misses } : {}),
 				step,
+				...(claudeSessionPlan !== undefined ? { claudeSession: claudeSessionPlan } : {}),
 			});
 			// Record the window on both rails — the failed rail throws its
 			// recovery/error below, and the request went out either way.
@@ -1094,6 +1141,7 @@ export class Runtime {
 			const visibleUserSeqs = new Set(
 				entries.filter((e) => e.message.role === "user").map((e) => e.seq),
 			);
+			let landedReplySeq: number | null = null;
 			const landed = landAttempt({
 				convId,
 				epoch,
@@ -1130,6 +1178,7 @@ export class Runtime {
 				append: (messages, opts) =>
 					store.db.transaction(() => {
 						const seqs = store.append(convId, messages, opts);
+						landedReplySeq = seqs[0] ?? null;
 						journaled(() => journal?.noteReplyLanded(auth.runId));
 						return seqs;
 					})(),
@@ -1138,6 +1187,37 @@ export class Runtime {
 			// The reply landed durably — a failure past this point must not
 			// also record a progress event (the final reply is the record).
 			record.markReplyLanded();
+			// #418: advance the native session record only now — the reply
+			// is durable, so the next turn resumes at this head with a
+			// delta cut at these seqs. Interrupted and failed turns never
+			// reach this line and leave the record at the last finish.
+			if (
+				isClaudeStep(step) &&
+				outcome.claudeSession !== undefined &&
+				landedReplySeq !== null
+			) {
+				const headUuid = outcome.claudeSession.headUuid;
+				if (headUuid !== "") {
+					try {
+						this.deps.claudeSessions?.put({
+							conversationId: convId,
+							modelRef: step.label,
+							sessionId: outcome.claudeSession.sessionId,
+							headUuid,
+							seenSeq: sentSeqMax ?? claudeRec?.seenSeq ?? 0,
+							replySeq: landedReplySeq,
+						});
+					} catch (err) {
+						log.warn("claude session record write failed — turn continues", err, {
+							conversation: convId,
+						});
+					}
+				} else {
+					log.warn("claude session head missing — record not advanced", {
+						conversation: convId,
+					});
+				}
+			}
 			const fallbackNote: FallbackNote | undefined =
 				fallback.misses.length > 0 && conv.model !== null
 					? {

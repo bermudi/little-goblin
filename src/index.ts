@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import pkg from "../package.json";
 import { createClaudeEngine } from "./agent/claude-code/mod.ts";
+import { openClaudeSessions } from "./claude-sessions.ts";
 import { createChatGptLogin, ensureCodexProvider } from "./agent/codex/login.ts";
 import { ensureCodexModels } from "./agent/codex/models.ts";
 import { ensureModelsDevCatalog, ensureOpenRouterCatalog } from "./agent/models-dev.ts";
@@ -425,8 +426,16 @@ async function boot() {
 
 	// The claude-code engine: bound whenever a claude-code provider is
 	// configured; harmless (never spawned) otherwise. Auth resolution and
-	// child env assembly happen per turn inside the engine.
-	const claudeEngine = createClaudeEngine({ auth, configRef, observation: cacheObservations });
+	// child env assembly happen per turn inside the engine. The session
+	// store (#418) is shared with the runtime — the engine's native
+	// compaction reads/writes the same records the turn path does.
+	const claudeSessions = openClaudeSessions(store.db);
+	const claudeEngine = createClaudeEngine({
+		auth,
+		configRef,
+		observation: cacheObservations,
+		sessions: claudeSessions,
+	});
 
 	const stepBuilder = makeStepBuilder({
 		configRef,
@@ -457,6 +466,7 @@ async function boot() {
 		},
 		recordWindow: windowCapture.record,
 		windowVersion: windowCapture.version,
+		claudeSessions,
 		...stepBuilder,
 		makeTools: makeTurnTools,
 		...(memory.turnDeps ? { memory: memory.turnDeps } : {}),

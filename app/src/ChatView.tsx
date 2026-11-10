@@ -3347,7 +3347,7 @@ function Chat({
 													rows={Math.min(10, Math.max(2, editing.draft.split("\n").length))}
 													onChange={(e) => setEditing({ id: m.id, draft: e.target.value })}
 													aria-label="Edit message"
-													// biome-ignore lint/a11y/noAutofocus: opening the editor is the user's request
+													// autofocus is intended: opening the editor is the user's request
 													autoFocus
 												/>
 												<div className="msg-edit-actions">

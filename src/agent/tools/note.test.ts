@@ -27,7 +27,7 @@ function setup(projectId: string | null = null): {
 }
 
 const exec = (t: ReturnType<typeof noteTool>, input: unknown) =>
-	// biome-ignore lint: the tool's execute is the boundary under test
+	// the tool's execute is the boundary under test
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("note tool input schema", () => {

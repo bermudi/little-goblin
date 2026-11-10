@@ -328,13 +328,14 @@ function ratedReplies(
 		});
 }
 
-// The titler's input for a re-title: the opening message plus the last
-// few user messages (where the chat ended up). Assistant text is noise
-// for naming. Total stays under the titler's own input cap.
 // The /stop response waits this long for the stopped turn to settle
 // (its unlanded-progress record lands in history before runTurn
 // returns) — past it, 200 with settled:false, never a hang.
 const STOP_SETTLE_TIMEOUT_MS = 5000;
+
+// The titler's input for a re-title: the opening message plus the last
+// few user messages (where the chat ended up). Assistant text is noise
+// for naming. Total stays under the titler's own input cap.
 const TITLE_DIGEST_RECENT = 3;
 const TITLE_DIGEST_PART_CHARS = 500;
 export function titleDigest(history: readonly UIMessage[]): string {

@@ -71,6 +71,7 @@ import type {
 	AppRatedReply,
 	AppReplyRating,
 	TurnMetadata,
+	UnlandedTurnMetadata,
 } from "../../src/http/app-wire.ts";
 
 // ---------- transcript rendering ----------
@@ -726,10 +727,11 @@ function fallbackOf(v: unknown): Array<{ ref: string; reason: string }> {
 // that ended without a reply (stopped, failed, interrupted) — the
 // streamed reply rides along for display. Narrow the unknown blob
 // rather than trusting the shape.
+type Unlanded = UnlandedTurnMetadata["unlanded"];
 export function unlandedMeta(m: UIMessage): {
-	kind: "failed" | "aborted" | "interrupted";
+	kind: Unlanded["kind"];
 	runId: string;
-	reply: UIMessage["parts"] | null;
+	reply: NonNullable<Unlanded["reply"]> | null;
 } | null {
 	const md = (m as { metadata?: unknown }).metadata;
 	if (typeof md !== "object" || md === null) return null;
@@ -747,7 +749,7 @@ export function unlandedMeta(m: UIMessage): {
 	return {
 		kind: u.kind,
 		runId: u.runId,
-		reply: hasReply ? (reply as UIMessage["parts"]) : null,
+		reply: hasReply ? (reply as NonNullable<Unlanded["reply"]>) : null,
 	};
 }
 

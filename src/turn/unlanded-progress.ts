@@ -149,9 +149,8 @@ function replyText(reply: UIMessage | null): string {
 export function renderUnlandedTurnProgress(
 	input: UnlandedTurnProgressInput,
 ): UnlandedTurnProgress | null {
-	const text = (
-		replyText(input.reply) !== "" ? replyText(input.reply) : partialText(input.partial)
-	).slice(-TEXT_TAIL_CHARS);
+	const fromReply = replyText(input.reply);
+	const text = (fromReply !== "" ? fromReply : partialText(input.partial)).slice(-TEXT_TAIL_CHARS);
 	const rendered: { index: number; call: RenderedCall }[] = [];
 	for (const [index, call] of input.calls.entries()) {
 		const line = renderCall(call);

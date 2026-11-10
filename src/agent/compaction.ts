@@ -292,8 +292,15 @@ async function runFlush(
 			? `[… ${full.length - keptChars} older chars omitted]\n${full.slice(-keptChars)}`
 			: full;
 	const callSignal = AbortSignal.any([signal, AbortSignal.timeout(callTimeoutMs)]);
+	// Raced like attemptSummary: a flush that ignores its abort still settles.
+	let abortRace: (err: unknown) => void = () => {};
+	const aborted = new Promise<never>((_, reject) => {
+		abortRace = reject;
+	});
+	const onAbort = () => abortRace(callSignal.reason);
+	callSignal.addEventListener("abort", onAbort, { once: true });
 	try {
-		const { noteCalls } = await flush(text, callSignal);
+		const { noteCalls } = await Promise.race([flush(text, callSignal), aborted]);
 		log.info("compaction flush", {
 			conversation: id,
 			events: span.length,
@@ -312,6 +319,8 @@ async function runFlush(
 					? err.message
 					: String(err),
 		});
+	} finally {
+		callSignal.removeEventListener("abort", onAbort);
 	}
 }
 

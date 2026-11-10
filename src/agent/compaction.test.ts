@@ -1017,3 +1017,22 @@ describe("runCompaction memory flush", () => {
 		expect(writes).toHaveLength(0);
 	});
 });
+
+test("a flush that ignores its abort still times out and the fold lands", async () => {
+	const { store, writes } = fakeStore(sample());
+	const outcome = await runCompaction(
+		"dm:1",
+		store,
+		["m"],
+		async (_s, prompt) => foldSummary("folded", prompt),
+		{
+			tailTokenBudget: 1,
+			inputTokenBudget: 32_000,
+			callTimeoutMs: 20,
+			flush: () => new Promise(() => {}),
+		},
+		signal(),
+	);
+	expect(outcome.kind).toBe("compacted");
+	expect(writes).toHaveLength(1);
+});

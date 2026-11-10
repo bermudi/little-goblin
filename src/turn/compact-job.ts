@@ -89,7 +89,12 @@ export async function runCompactJob(
 		const modelRef = compaction.modelRef(conv);
 		// Overflow recovery runs mid-turn behind a provider error: an extra
 		// call there only delays the answer (operator, 2026-11-09).
-		const flush = reason === "overflow" ? null : (compaction.flush?.(conv, modelRef) ?? null);
+		// The gate reads exclusion fresh: setMeta does not bump the epoch, so
+		// a queued job's snapshot can miss an exclusion made while it waited.
+		const flush =
+			reason === "overflow"
+				? null
+				: (compaction.flush?.(deps.store.get(conv.id) ?? conv, modelRef) ?? null);
 		log.info("compaction window", {
 			conversation: conv.id,
 			model: modelRef,

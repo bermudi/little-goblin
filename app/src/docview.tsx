@@ -101,11 +101,13 @@ export function DocViewerProvider({
 				: fetchAttachment(token, basenameOf(ref.artifact.path)),
 		[token, conversationId],
 	);
+	const top = stack.at(-1);
 	return (
 		<DocViewerContext.Provider value={value}>
 			{children}
-			{stack.length > 0 && (
+			{top !== undefined && (
 				<DocModal
+					key={`${stack.length}:${top.kind}:${top.kind === "file" ? top.path : top.artifact.path}`}
 					stack={stack}
 					fetchDoc={fetchDoc}
 					onClose={() => setStack([])}
@@ -278,7 +280,7 @@ function DocModal({
 						<button
 							type="button"
 							className="doc-copy"
-							aria-label={failed ? "Copy failed" : "Copy"}
+							aria-label={failed ? "Copy failed" : copied ? "Copied" : "Copy"}
 							aria-live="polite"
 							onClick={() => copy(text)}
 						>
@@ -291,7 +293,6 @@ function DocModal({
 				</header>
 				<div className="doc-body">
 					<DocBody
-						key={stack.length}
 						doc={top}
 						fetchDoc={fetchDoc}
 						onFileLink={base === null ? undefined : onNavigate}

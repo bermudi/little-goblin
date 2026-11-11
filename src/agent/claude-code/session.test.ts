@@ -73,6 +73,7 @@ function rig() {
 		tools: {},
 		view: {
 			convId: "c-session",
+			modelRef: STEP.label,
 			tools: {},
 			modalities: new Set(["text"]),
 			carries: () => true,

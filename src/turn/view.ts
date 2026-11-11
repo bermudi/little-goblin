@@ -254,7 +254,9 @@ export async function buildModelView(
 		const { message: originScoped, dropped: foreignReasoning } = dropForeignReasoning(
 			ctx,
 			rendered,
-			m.id === partialId,
+			// By position, not id: ids are app-controlled and can collide with
+			// history; the partial is always the appended last view item.
+			options.partial !== null && i === prepared.length - 1,
 		);
 		if (foreignReasoning > 0) {
 			foreignReasoningMessages += 1;

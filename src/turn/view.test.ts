@@ -323,6 +323,15 @@ describe("reasoning origin (#417)", () => {
 		expect(JSON.stringify(view)).toContain("partial thinking");
 	});
 
+	test("a history message sharing the partial's id is still filtered", async () => {
+		const history = asstReasoning("p", "other/model-2", "foreign thinking");
+		const partial = asstReasoning("p", undefined, "partial thinking");
+		const view = await build(entries([user("u1", "q"), history]), [], null, partial);
+		const wire = JSON.stringify(view);
+		expect(wire).not.toContain("foreign thinking");
+		expect(wire).toContain("partial thinking");
+	});
+
 	test("a foreign reasoning-file part drops like reasoning", async () => {
 		const foreign = {
 			id: "a1",

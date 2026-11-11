@@ -205,7 +205,8 @@ describe.skipIf(!LIVE)("claude-code live drift (GOBLIN_CLAUDE_CODE_LIVE=1)", () 
 			.filter((e): e is Extract<ClaudeEvent, { type: "assistant" }> => e.type === "assistant")
 			.flatMap((e) => e.message.content)
 			.find((b) => b.type === "tool_use");
-		expect(toolUse).toMatchObject({ name: "drift_probe" });
+		// Raw SDK frames retain the MCP namespace; only the engine strips it.
+		expect(toolUse).toMatchObject({ name: "mcp__goblin__drift_probe" });
 		const echo = events.find(
 			(e): e is Extract<ClaudeEvent, { type: "user" }> =>
 				e.type === "user" &&

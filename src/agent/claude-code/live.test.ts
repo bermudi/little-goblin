@@ -218,4 +218,43 @@ describe.skipIf(!LIVE)("claude-code live drift (GOBLIN_CLAUDE_CODE_LIVE=1)", () 
 		const result = events.find((e) => e.type === "result");
 		expect(result?.type === "result" && !result.isError).toBe(true);
 	}, 180_000);
+
+	// #418: the whole point of the native session — turn two resumes the
+	// persisted session at the head uuid turn one ended on, with only the
+	// new ask as its prompt, and the model still knows what it was told.
+	test("a persisted session resumes at its head and keeps turn-one context", async () => {
+		const sessionId = crypto.randomUUID();
+		const codeWord = "VELVET-OTTER-42";
+		const assistantUuid = (events: ClaudeEvent[]): string | undefined => {
+			const last = events.filter((e) => e.type === "assistant").at(-1);
+			return last?.type === "assistant" ? last.uuid : undefined;
+		};
+		const replyText = (events: ClaudeEvent[]): string =>
+			events
+				.filter((e): e is Extract<ClaudeEvent, { type: "assistant" }> => e.type === "assistant")
+				.flatMap((e) => e.message.content)
+				.filter((b) => b.type === "text")
+				.map((b) => b.text ?? "")
+				.join("");
+
+		const first = await collect(
+			`Remember this code word exactly: ${codeWord}. Reply with exactly: noted`,
+			{ persistSession: true, sessionId },
+		);
+		const firstResult = first.find((e) => e.type === "result");
+		expect(firstResult?.type === "result" && !firstResult.isError).toBe(true);
+		const head = assistantUuid(first);
+		expect(typeof head).toBe("string");
+
+		// The delta-only second turn: no replay of turn one's prompt —
+		// just the question, resumed at the recorded head.
+		const second = await collect("What is the code word I gave you? Reply with only the code word.", {
+			persistSession: true,
+			resume: sessionId,
+			resumeSessionAt: head,
+		});
+		const secondResult = second.find((e) => e.type === "result");
+		expect(secondResult?.type === "result" && !secondResult.isError).toBe(true);
+		expect(replyText(second).toLowerCase()).toContain(codeWord.toLowerCase());
+	}, 360_000);
 });

@@ -20,6 +20,7 @@ const fakeEngine: ClaudeEngine = {
 		throw new Error("not driven in this suite");
 	}) as never,
 	compact: async () => "summary-text",
+	nativeCompact: async () => null,
 };
 
 function rig(

@@ -27,6 +27,10 @@ export interface CompactionSeam {
 	// design/compaction.md → Memory flush. Null when this conversation must
 	// not flush (memory configured, memory-excluded, no tool-capable engine).
 	flush?(conv: Conversation, modelRef: string): Flush | null;
+	// #418: the recorded native Claude session compacts itself alongside
+	// the goblin fold. Runs only when the fold actually compacts; a
+	// failure is logged and never fails the job.
+	nativeCompact?(conv: Conversation, modelRef: string, signal: AbortSignal): Promise<unknown>;
 }
 
 export interface CompactJobDeps {
@@ -128,6 +132,19 @@ export async function runCompactJob(
 				conversation: conv.id,
 				reason,
 			});
+			// #418: Claude compacts its own session next to the fold —
+			// best-effort; the engine drops a failed session's record so
+			// the next turn starts fresh from the folded view.
+			if (compaction.nativeCompact !== undefined) {
+				try {
+					await compaction.nativeCompact(conv, modelRef, controller.signal);
+				} catch (err) {
+					log.warn("claude native compaction failed — goblin fold unaffected", err, {
+						conversation: conv.id,
+						model: modelRef,
+					});
+				}
+			}
 		}
 		return outcome;
 	} finally {

@@ -5,6 +5,7 @@
 // the script tool and every spawned tool would inherit it.
 
 import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import type { AuthStore } from "../../auth.ts";
 import { paths } from "../../config.ts";
 import { log } from "../../log.ts";
@@ -12,6 +13,15 @@ import { log } from "../../log.ts";
 export interface ClaudeChildEnv {
 	env: Record<string, string>;
 	configDir: string;
+	/**
+	 * The child's cwd, stable across releases: the SDK files sessions
+	 * under `<config>/projects/<sanitized-cwd>/` and prod's
+	 * WorkingDirectory changes per deploy — a cwd keyed to it would
+	 * orphan every recorded session on release (#418). Built-in CLI
+	 * tools are off (`tools: []`, `settingSources: []`), so cwd has no
+	 * other effect.
+	 */
+	workdir: string;
 }
 
 export async function claudeChildEnv(
@@ -23,13 +33,18 @@ export async function claudeChildEnv(
 	// buildStep's contract (a configured model must resolve or the turn
 	// fails with the cause, never a silent fallback).
 	const token = await auth.resolve(record);
+	// The session workdir lives beside the config dir so both derive
+	// from the one base — engine.configDir overrides move them together.
+	const workdir = join(configDir, "workdir");
 	try {
 		mkdirSync(configDir, { recursive: true });
+		mkdirSync(workdir, { recursive: true });
 	} catch (err) {
 		log.error("claude-code config dir unavailable", err, { configDir });
 		throw err;
 	}
 	return {
+		workdir,
 		env: {
 			PATH: process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/bin",
 			HOME: process.env.HOME ?? "/root",

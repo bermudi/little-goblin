@@ -70,8 +70,12 @@ export interface FakeClaudeHandle {
 	query: ClaudeQuery;
 	/** One entry per query() call, in order. */
 	calls: ClaudeQueryCall[];
+	/** Every assistant-frame uuid emitted, in order — the #418 head anchors. */
+	assistantUuids: string[];
 	/** Script for the NEXT uncalled turn (tests usually script one). */
 	script(steps: FakeStep[]): void;
+	/** Per-call scripts consumed in order — resume-failure retries need two. */
+	scriptSequence(scripts: FakeStep[][]): void;
 }
 
 let blockSeq = 0;
@@ -79,7 +83,13 @@ const nextId = (p: string): string => `${p}-fake-${(blockSeq += 1)}`;
 
 export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 	const calls: ClaudeQueryCall[] = [];
+	const assistantUuids: string[] = [];
 	let nextScript: FakeStep[] | null = initial.length > 0 ? initial : null;
+	let scriptQueue: FakeStep[][] = [];
+	const noteUuid = (uuid: string): string => {
+		assistantUuids.push(uuid);
+		return uuid;
+	};
 
 	const stepEvents = async function* (steps: FakeStep[]): AsyncGenerator<ClaudeEvent> {
 		const resultUsage: ClaudeUsage = {
@@ -140,6 +150,7 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 					yield { type: "stream", event: { type: "message_stop" } };
 					yield {
 						type: "assistant",
+						uuid: noteUuid(nextId("uuid")),
 						message: {
 							id: nextId("msg"),
 							model: "fake",
@@ -161,6 +172,7 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 							: { type: "thinking", thinking: step.text };
 					yield {
 						type: "assistant",
+						uuid: noteUuid(nextId("uuid")),
 						message: {
 							id: nextId("msg"),
 							model: "fake",
@@ -178,6 +190,7 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 					const id = nextId("toolu");
 					yield {
 						type: "assistant",
+						uuid: noteUuid(nextId("uuid")),
 						message: {
 							id: nextId("msg"),
 							model: "fake",
@@ -257,7 +270,8 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 
 	const query: ClaudeQuery = (call) => {
 		calls.push(call);
-		const steps = nextScript ?? [];
+		const steps =
+			scriptQueue.length > 0 ? scriptQueue.shift()! : (nextScript ?? []);
 		nextScript = null;
 		return stepEvents(steps);
 	};
@@ -265,8 +279,13 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 	return {
 		query,
 		calls,
+		assistantUuids,
 		script: (steps) => {
 			nextScript = steps;
+		},
+		scriptSequence: (scripts) => {
+			scriptQueue = [...scripts];
+			nextScript = null;
 		},
 	};
 }

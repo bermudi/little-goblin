@@ -9,7 +9,8 @@ import { query as vendorQuery } from "@anthropic-ai/claude-agent-sdk";
 import { log } from "../../log.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { CacheObservation } from "../../cache-observation.ts";
-import type { ConfigRef } from "../../config.ts";
+import { splitModelRef, type ConfigRef } from "../../config.ts";
+import type { ClaudeSessionStore } from "../../claude-sessions.ts";
 import type { StreamOutcome, WireMember } from "../../turn/stream.ts";
 import type { MediaPosition } from "../attachments.ts";
 import type { ClaudeCodeThinking } from "../thinking.ts";
@@ -104,6 +105,16 @@ export function pinEvent(msg: SDKMessage): ClaudeEvent | null {
 					mcpServers: msg.mcp_servers,
 				};
 			}
+			if (msg.subtype === "compact_boundary") {
+				const meta = msg.compact_metadata;
+				return {
+					type: "compact_boundary",
+					trigger: meta.trigger,
+					preTokens: meta.pre_tokens,
+					...(meta.post_tokens !== undefined ? { postTokens: meta.post_tokens } : {}),
+					uuid: msg.uuid,
+				};
+			}
 			return null;
 		case "stream_event":
 			if (msg.parent_tool_use_id !== null) return null;
@@ -114,6 +125,7 @@ export function pinEvent(msg: SDKMessage): ClaudeEvent | null {
 				type: "assistant",
 				message: msg.message,
 				...(msg.error !== undefined ? { error: msg.error } : {}),
+				...(typeof msg.uuid === "string" ? { uuid: msg.uuid } : {}),
 			};
 		}
 		case "user": {
@@ -131,6 +143,7 @@ export function pinEvent(msg: SDKMessage): ClaudeEvent | null {
 				type: "user",
 				content,
 				...(msg.tool_use_result !== undefined ? { toolUseResult: msg.tool_use_result } : {}),
+				...(typeof msg.uuid === "string" ? { uuid: msg.uuid } : {}),
 			};
 		}
 		case "result": {
@@ -153,6 +166,7 @@ export function pinEvent(msg: SDKMessage): ClaudeEvent | null {
 				...(msg.terminal_reason !== undefined
 					? { terminalReason: msg.terminal_reason as string | null }
 					: {}),
+				...(typeof msg.uuid === "string" ? { uuid: msg.uuid } : {}),
 			};
 		}
 		default:
@@ -185,10 +199,19 @@ export function liveQuery(call: ClaudeQueryCall): AsyncIterable<ClaudeEvent> {
 			...(options.stderr !== undefined ? { stderr: options.stderr } : {}),
 			settingSources: [],
 			includePartialMessages: true,
-			persistSession: false,
+			// Turn queries persist (#418): a fresh sessionId mints the
+			// file, resume+resumeSessionAt continues a recorded one. The
+			// throwaway summary query passes neither.
+			persistSession: options.persistSession === true,
+			...(options.sessionId !== undefined ? { sessionId: options.sessionId } : {}),
+			...(options.resume !== undefined ? { resume: options.resume } : {}),
+			...(options.resumeSessionAt !== undefined
+				? { resumeSessionAt: options.resumeSessionAt }
+				: {}),
 			// The prompt is machine-assembled from the conversation view —
-			// no @path expansion, no slash-command dispatch on it.
-			verbatimPrompts: true,
+			// no @path expansion, no slash-command dispatch on it. The
+			// native /compact query alone opts out (#418).
+			verbatimPrompts: options.verbatimPrompts !== false,
 		},
 	});
 	return (async function* (): AsyncIterable<ClaudeEvent> {
@@ -215,6 +238,19 @@ export interface ClaudeEngine extends TurnEngine<ClaudeStep> {
 		prompt: string;
 		signal: AbortSignal;
 	}): Promise<string>;
+	/**
+	 * Native session compaction (#418): resumes the recorded session at
+	 * its head and runs /compact inside it — Claude compacts its own
+	 * transcript while goblin's fold summarizes separately. Returns the
+	 * session's head uuid after the query (the record's new anchor), or
+	 * null when no record exists for the key. Throws on provider failure
+	 * — the record is dropped inside, so the next turn starts fresh.
+	 */
+	nativeCompact(input: {
+		conversationId: string;
+		modelRef: string;
+		signal: AbortSignal;
+	}): Promise<string | null>;
 }
 
 export function createClaudeEngine(init: {
@@ -223,6 +259,7 @@ export function createClaudeEngine(init: {
 	observation?: CacheObservation | undefined;
 	configDir?: string | undefined;
 	query?: ClaudeQuery | undefined;
+	sessions?: ClaudeSessionStore | undefined;
 }): ClaudeEngine {
 	const config: ClaudeEngineConfig = {
 		query: init.query ?? liveQuery,
@@ -230,12 +267,14 @@ export function createClaudeEngine(init: {
 		configRef: init.configRef,
 		...(init.observation !== undefined ? { observation: init.observation } : {}),
 		...(init.configDir !== undefined ? { configDir: init.configDir } : {}),
+		...(init.sessions !== undefined ? { sessions: init.sessions } : {}),
 	};
 	return {
 		id: "claude-code",
 		accepts: isClaudeStep,
 		run: (deps) => driveClaude(config, deps),
 		compact: (input) => compactText(config, input),
+		nativeCompact: (input) => nativeCompactSession(config, input),
 	};
 }
 
@@ -271,7 +310,7 @@ async function compactText(
 				thinking: { type: "disabled" },
 				mcpServers: {},
 				allowedTools: [],
-				cwd: process.cwd(),
+				cwd: childEnv.workdir,
 				env: childEnv.env,
 				abortController,
 			},
@@ -297,6 +336,107 @@ async function compactText(
 	} catch (err) {
 		// Boundary logging only: rethrown unchanged for the caller.
 		log.error("model call failed", err, { call: "compaction", callId, model: input.modelId });
+		throw err;
+	} finally {
+		input.signal.removeEventListener("abort", onAbort);
+	}
+}
+
+// ---------- native session compaction (#418) ----------
+
+// Claude compacts its own transcript: resume the recorded session at
+// its head and send /compact as a real command — verbatimPrompts off,
+// the one query where slash dispatch is wanted. The record's head
+// advances to the last chain uuid the query emitted (any frame with a
+// uuid, last wins); seen_seq/reply_seq are untouched — the goblin fold
+// owns those semantics. A provider failure drops the record: the next
+// turn starts fresh from goblin's folded view. An aborted (fenced)
+// attempt leaves the record alone.
+async function nativeCompactSession(
+	config: ClaudeEngineConfig,
+	input: { conversationId: string; modelRef: string; signal: AbortSignal },
+): Promise<string | null> {
+	const sessions = config.sessions;
+	if (sessions === undefined) return null;
+	const { provider, modelId } = splitModelRef(input.modelRef);
+	const p = config.configRef.current.providers[provider];
+	if (p?.kind !== "claude-code") return null;
+	const record = sessions.get(input.conversationId, input.modelRef);
+	if (record === null) return null;
+
+	const abortController = new AbortController();
+	const onAbort = (): void => {
+		abortController.abort();
+	};
+	input.signal.addEventListener("abort", onAbort, { once: true });
+	const callId = randomUUID();
+	const started = Date.now();
+	log.info("model call", {
+		call: "claude-native-compact",
+		callId,
+		model: input.modelRef,
+		session: record.sessionId,
+	});
+	try {
+		const childEnv = await claudeChildEnv(config.auth, p.auth ?? "claude-code", config.configDir);
+		let headUuid: string | null = null;
+		for await (const ev of config.query({
+			prompt: { blocks: [{ kind: "text", text: "/compact" }] },
+			options: {
+				model: modelId,
+				systemPrompt: "You are goblin.",
+				maxTurns: 1,
+				thinking: { type: "disabled" },
+				mcpServers: {},
+				allowedTools: [],
+				cwd: childEnv.workdir,
+				env: childEnv.env,
+				abortController,
+				resume: record.sessionId,
+				resumeSessionAt: record.headUuid,
+				persistSession: true,
+				verbatimPrompts: false,
+			},
+		})) {
+			if ("uuid" in ev && typeof ev.uuid === "string") headUuid = ev.uuid;
+			if (ev.type === "compact_boundary") {
+				log.info("claude native compaction boundary", {
+					conversation: input.conversationId,
+					model: input.modelRef,
+					trigger: ev.trigger,
+					preTokens: ev.preTokens,
+					postTokens: ev.postTokens ?? null,
+				});
+			}
+			if (ev.type === "result" && ev.isError) {
+				throw new Error(ev.result);
+			}
+		}
+		if (headUuid !== null) {
+			sessions.put({
+				conversationId: input.conversationId,
+				modelRef: input.modelRef,
+				sessionId: record.sessionId,
+				headUuid,
+				seenSeq: record.seenSeq,
+				replySeq: record.replySeq,
+			});
+		}
+		log.info("model call usage", {
+			call: "claude-native-compact",
+			callId,
+			model: input.modelRef,
+			ms: Date.now() - started,
+		});
+		return headUuid ?? record.headUuid;
+	} catch (err) {
+		if (!input.signal.aborted) {
+			sessions.drop(input.conversationId, input.modelRef, "native compaction failed");
+		}
+		log.error("claude native compaction failed", err, {
+			conversation: input.conversationId,
+			model: input.modelRef,
+		});
 		throw err;
 	} finally {
 		input.signal.removeEventListener("abort", onAbort);

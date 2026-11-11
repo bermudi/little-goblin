@@ -231,6 +231,17 @@ export function makeStepBuilder(
 			// (design/model.md → Model fallback list → Compaction).
 			summarize: (conv, system, prompt, signal, modelRef) =>
 				summarizeOn(conv, modelRef, system, prompt, signal),
+			// #418: the recorded native session compacts itself alongside
+			// the goblin fold — same (conversation, model ref) keying as
+			// the turn records. No-op without a claude engine or record.
+			nativeCompact: async (conv, modelRef, signal) => {
+				const engine = deps.claudeEngine;
+				if (engine === undefined) return;
+				const cfg = configRef.current;
+				const { provider } = splitModelRef(modelRef);
+				if (cfg.providers[provider]?.kind !== "claude-code") return;
+				await engine.nativeCompact({ conversationId: conv.id, modelRef, signal });
+			},
 			// design/compaction.md → Memory flush. With Hindsight on, the
 			// outbox already carries every event; an excluded conversation
 			// lets nothing durable leave. The claude-code engine's compact

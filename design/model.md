@@ -476,17 +476,35 @@ decisions and their why:
   journal rows, and model-call/model-call-usage/model-call-failed
   telemetry, so both channel sinks, replay/attach, crash resume, and
   the reviewer stay engine-neutral.
-- **One query() per turn, full replay.** No durable SDK sessions: each
-  turn feeds the whole assembled view through a deterministic
-  serializer (prompt.ts) — same history, same bytes; turn N+1's prompt
-  is turn N's plus the new exchange (the prefix-stability invariant
-  the API lane gets from append-only ModelMessages, by construction).
-  Media rides as Anthropic blocks at its transcript position (the
-  view's carries() gate already admitted only image/* and pdf);
-  prior-turn reasoning is dropped (thinking blocks cannot replay
-  without signatures); old tool results render capped with a stable
-  truncation marker. The prompt is machine-assembled, so
-  `verbatimPrompts` — no `@path` expansion, no slash-command dispatch.
+- **One native SDK session per (conversation, model ref)** (ruling
+  2026-11-10, #418 — replaces the old one-query-full-replay ruling).
+  `claude_sessions` records `session_id`, `head_uuid` (the last
+  top-level assistant chain uuid — sidechain frames never pin one),
+  `seen_seq` (highest event seq whose content entered the session's
+  prompt) and `reply_seq` (the reply the session itself landed). A
+  recorded turn resumes with `persistSession` + `resume` +
+  `resumeSessionAt: head_uuid` and sends only the delta — entries past
+  `seen_seq`, minus `reply_seq` — through the same deterministic
+  serializer, so the model keeps its own thinking across turns and
+  prior-turn reasoning replays natively. No record (first turn, dropped
+  record, non-Claude interlude on a fresh ref) takes the old path: full
+  view, `persistSession` + fresh `sessionId`. The record advances only
+  after the reply lands durably — an interrupted or failed turn leaves
+  it at the last finish and the next attempt resumes there; the turn
+  journal stays the crash authority, the record is supplementary
+  native-context state, never recovery. A resume that fails before any
+  content reached the wire drops the record and retries once fresh in
+  the same attempt with the lazily rebuilt full view; any other error
+  propagates. A different claude model ref keys a different record —
+  reasoning signatures stay with their model (#417); no `setModel`.
+  `verbatimPrompts` stays on for turns. The child's `cwd` is a stable
+  goblin-owned `workdir` under the claude-code state dir — session files
+  key on `<config>/projects/<sanitized-cwd>/` and prod's release
+  WorkingDirectory changes per deploy; built-in tools are off
+  (`tools: []`, `settingSources: []`), so cwd has no other effect.
+  Prior art: t3code's
+  ClaudeAdapterV2 (`resumeSessionAt` head tracking per turn) and
+  ContextHandoffService's `delta_since_target_last_seen` cut.
 - **The tool surface is goblin's ToolSet, nothing else.** `settingSources:
   []`, no built-in CLI tools, no CLI permissions; goblin's fenced tools
   register through an in-process SDK MCP server (tools.ts) — handlers
@@ -515,7 +533,14 @@ decisions and their why:
   an API model is the operator's move). Overflow rides the existing
   recovery (compaction + fresh turn) minus partial-resume — the partial
   continuation seam is an API-lane SDK feature. Compaction summarizes
-  through the same engine (text-only, tools off); reviewer, titles,
+  through the same engine (text-only, tools off) AND compacts the
+  native session alongside the fold (#418): after a landed goblin
+  compaction, a `/compact` query resumes the recorded session at its
+  head with `verbatimPrompts` off for that one call, the
+  `compact_boundary` frame's chain uuid becomes the new head, and
+  `seen_seq`/`reply_seq` ride unchanged; a native failure drops the
+  record (next turn starts fresh from the folded view) and never fails
+  the goblin fold. Reviewer, titles,
   and vision stay on AI SDK models (they are goblin's own calls, not
   the operator's conversation).
 - **Pinned, not assumed.** The SDK's event shapes are pinned as

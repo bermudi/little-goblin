@@ -39,6 +39,7 @@ const texts = (view: ModelMessage[]): string[] =>
 
 const ctx: ViewContext = {
 	convId: "dm:1",
+	modelRef: "test/model-1",
 	tools: {},
 	modalities: undefined,
 	carries: () => false,
@@ -214,6 +215,141 @@ describe("the model view", () => {
 			}),
 		).rejects.toBe(sentinel);
 		expect(calls).toBe(1);
+	});
+});
+
+describe("reasoning origin (#417)", () => {
+	let logDir: string | null = null;
+	afterEach(() => {
+		setLogFile(null);
+		if (logDir !== null) rmSync(logDir, { recursive: true, force: true });
+		logDir = null;
+	});
+	const dropMsg = "foreign reasoning dropped from the model view";
+	const capture = (): string => {
+		logDir = mkdtempSync(join(tmpdir(), "goblin-viewlog-"));
+		const target = join(logDir, "goblin.log");
+		setLogFile(target);
+		return target;
+	};
+	const lines = (target: string): Record<string, unknown>[] =>
+		readFileSync(target, "utf8")
+			.split("\n")
+			.filter((l) => l !== "")
+			.map((l) => JSON.parse(l) as Record<string, unknown>);
+
+	const asstReasoning = (id: string, model: string | undefined, text: string): UIMessage => ({
+		id,
+		role: "assistant",
+		...(model !== undefined ? { metadata: { model } } : {}),
+		parts: [
+			{
+				type: "reasoning",
+				text,
+				providerMetadata: {
+					codex: { itemId: "rs_1", replayScope: "s1", reasoningEncryptedContent: "C1" },
+				},
+			},
+			{ type: "text", text: "the answer" },
+		],
+	});
+
+	test("reasoning from the serving model replays with provider options intact", async () => {
+		const view = await build(entries([asstReasoning("a1", "test/model-1", "chain of thought")]));
+		const wire = JSON.stringify(view);
+		expect(wire).toContain("chain of thought");
+		expect(wire).toContain("reasoningEncryptedContent");
+		const assistant = view.find((m) => m.role === "assistant");
+		if (assistant === undefined) throw new Error("no assistant message in view");
+		const content = assistant.content as Array<{
+			type: string;
+			text?: string;
+			providerOptions?: unknown;
+		}>;
+		const reasoning = content.find((p) => p.type === "reasoning");
+		expect(reasoning?.text).toBe("chain of thought");
+		expect(reasoning?.providerOptions).toEqual({
+			codex: { itemId: "rs_1", replayScope: "s1", reasoningEncryptedContent: "C1" },
+		});
+	});
+
+	test("foreign reasoning drops; sibling text and tool parts stay", async () => {
+		const target = capture();
+		const foreign = {
+			id: "a1",
+			role: "assistant",
+			metadata: { model: "other/model-2" },
+			parts: [
+				{ type: "reasoning", text: "foreign thinking" },
+				{ type: "text", text: "still here" },
+				{
+					type: "tool-bash",
+					toolCallId: "t1",
+					state: "output-available",
+					input: { command: "pwd" },
+					output: "/workspace",
+				},
+			],
+		} as unknown as UIMessage;
+		const view = await build(entries([foreign]));
+		const wire = JSON.stringify(view);
+		expect(wire).not.toContain("foreign thinking");
+		expect(wire).not.toContain('"type":"reasoning"');
+		expect(wire).toContain("still here");
+		expect(wire).toContain("tool-call");
+		expect(wire).toContain("tool-result");
+		expect(wire).toContain("/workspace");
+		const entry = lines(target).find((l) => l.msg === dropMsg);
+		expect(entry).toMatchObject({
+			level: "info",
+			conversation: "dm:1",
+			target: "test/model-1",
+			messages: 1,
+			parts: 1,
+		});
+	});
+
+	test("unstamped assistant reasoning drops — origin cannot be proven", async () => {
+		const view = await build(entries([asstReasoning("a1", undefined, "unstamped thinking")]));
+		const wire = JSON.stringify(view);
+		expect(wire).not.toContain("unstamped thinking");
+		expect(wire).not.toContain('"type":"reasoning"');
+		expect(texts(view)).toContain("the answer");
+	});
+
+	test("the resume partial keeps its reasoning — a resumed turn never switches models", async () => {
+		const partial = asstReasoning("p", undefined, "partial thinking");
+		const view = await build(entries([user("u1", "q")]), [], null, partial);
+		expect(JSON.stringify(view)).toContain("partial thinking");
+	});
+
+	test("a history message sharing the partial's id is still filtered", async () => {
+		const history = asstReasoning("p", "other/model-2", "foreign thinking");
+		const partial = asstReasoning("p", undefined, "partial thinking");
+		const view = await build(entries([user("u1", "q"), history]), [], null, partial);
+		const wire = JSON.stringify(view);
+		expect(wire).not.toContain("foreign thinking");
+		expect(wire).toContain("partial thinking");
+	});
+
+	test("a foreign reasoning-file part drops like reasoning", async () => {
+		const foreign = {
+			id: "a1",
+			role: "assistant",
+			metadata: { model: "other/model-2" },
+			parts: [
+				{
+					type: "reasoning-file",
+					mediaType: "image/png",
+					url: "https://example.com/secret-diagram.png",
+				},
+				{ type: "text", text: "kept text" },
+			],
+		} as UIMessage;
+		const view = await build(entries([foreign]));
+		const wire = JSON.stringify(view);
+		expect(wire).not.toContain("secret-diagram.png");
+		expect(wire).toContain("kept text");
 	});
 });
 

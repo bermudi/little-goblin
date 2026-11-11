@@ -30,6 +30,7 @@ import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
 import { estimateHistoryChars, measurePrompt, type PromptSegments } from "./itemize.ts";
+import { stepModelRef } from "./model-ref.ts";
 import { PreemptSignal } from "./overflow.ts";
 import type { SkillWatch } from "./skill-attribution.ts";
 import type { ForcedKind, LoopTurnState, TurnState } from "./state.ts";
@@ -319,9 +320,7 @@ export async function driveStream<M extends WireMember>(
 	deps: StreamDeps<M>,
 ): Promise<StreamOutcome> {
 	const { convId, epoch, head, members, live, state } = deps;
-	const modelLabel =
-		deps.step.label ??
-		(typeof deps.step.model === "string" ? deps.step.model : deps.step.model.modelId);
+	const modelLabel = stepModelRef(deps.step);
 	let lastStepInputTokens: number | null = null;
 	let lastStepCacheRead: number | null = null;
 	// Latest codex quota receipt — the stream's rate_limits event can be

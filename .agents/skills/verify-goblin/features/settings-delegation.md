@@ -53,7 +53,7 @@ Proof: the savebar says `Saved.`, the block appears in
   must leave no `parked.delegation` behind.
 - Machine targets (`delegation.machines`) are file-only. Add one by hand
   to `goblin.json5`, save from the page, and it survives — including a
-park → re-enable round trip. Machine-side harness names are offered in
+  park → re-enable round trip. Machine-side harness names are offered in
   the role selects as `<name> (machine)`.
 - Nothing here proves a launch. `delegate` needs herdr and a real agent
   binary, which the throwaway instance does not have.

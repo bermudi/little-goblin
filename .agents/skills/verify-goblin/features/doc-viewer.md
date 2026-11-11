@@ -70,11 +70,27 @@ first click.
 7. Close the viewer. Expand **Worked**, then the `read_file` tool, and
    click its `index.md` chip. Copy must equal the live workspace file.
 
-Capture the action and result, plus the reader-route lines in
-`state/goblin.log`. Clipboard reads in headless Chrome can require an
-explicit permission grant for this loopback origin. Grant it only in the
-test-owned browser. Do not replace `navigator.clipboard` for a successful
-copy test; a stub cannot prove that the actual clipboard was written.
+For each clipboard comparison, close the dialog after Copy, clear and
+focus `[aria-label="Message draft"]`, press native `Control+v`, then read
+the draft value and compare it exactly with the fixture. Reopen the
+artifact and navigate as needed. Clear the draft afterwards; never send
+it. Do not replace `navigator.clipboard` for a successful copy test; a
+stub cannot prove that the actual clipboard was written.
+
+Capture the action and result, plus the reader requests from
+`agent-browser --session <name> network requests --json` (filter to URL,
+method and status). Save the instance log too.
+
+## Gotchas
+
+- Managed Chrome can deny `navigator.clipboard.readText` even after a
+  permission-grant attempt. Native keyboard paste proves the real
+  clipboard without a permission override.
+- The default fixture logs at info; successful live-file reads log at
+  debug. Do not claim reader-route log evidence when there is none.
+  Capture the actual browser requests instead.
+- Check the cleared draft's value directly. Waiting for Send to become
+  disabled was not a reliable cleanup assertion in the verified fixture.
 
 Clipboard-denial feedback, pending writes during navigation, empty files
 and non-text media are also covered by `app/src/docview.test.tsx`; those

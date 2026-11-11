@@ -35,6 +35,7 @@ describe("provider-executed parts", () => {
 	const run = (keep: boolean) => {
 		const ctx: ViewContext = {
 			convId: "c",
+			modelRef: "test/model-1",
 			tools: {},
 			modalities: undefined,
 			carries: () => true,

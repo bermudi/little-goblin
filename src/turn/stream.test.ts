@@ -203,6 +203,7 @@ function rig(
 		tools: {},
 		view: {
 			convId: "c1",
+			modelRef: "fake-1",
 			tools: {},
 			modalities: new Set(["text"]),
 			carries: () => true,
@@ -804,6 +805,7 @@ describe("driveStream", () => {
 			holdsAuthority: () => holds,
 			view: {
 				convId: "c1",
+				modelRef: "fake-1",
 				tools: {},
 				modalities: new Set(["text", "image"]),
 				carries: () => true,

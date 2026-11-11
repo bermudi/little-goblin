@@ -101,6 +101,7 @@ describe("admitTurn", () => {
 		const view = await buildModelView(
 			{
 				convId: "dm:1",
+				modelRef: "test/model-1",
 				tools: {},
 				modalities: undefined,
 				carries: () => false,

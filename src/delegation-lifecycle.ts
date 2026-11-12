@@ -991,7 +991,9 @@ async function stopByOperator(deps: DelegationLifecycleDeps, id: number): Promis
 		log.error("delegation stop notice body unreadable — sending header only", err, {
 			delegation: d.id,
 		});
-		const text = `${delegationNoticeTag(d.id, d.name, "stopped", OPERATOR_STOP_NOTE)}\n\n(report unreadable: ${err instanceof Error ? err.message : String(err)})`;
+		const body = `(report unreadable: ${err instanceof Error ? err.message : String(err)})`;
+		deps.settled?.(d, "stopped", body);
+		const text = `${delegationNoticeTag(d.id, d.name, "stopped", OPERATOR_STOP_NOTE)}\n\n${body}`;
 		landed =
 			d.appConversation !== null
 				? deps.wakeApp(d.appConversation, text)

@@ -858,6 +858,8 @@ describe("delegation watcher", () => {
 		const d = runningRow(h, "bad report", 1);
 		h.agents.set(d.agentName, agent(d.agentName, "working", 1));
 		writeFileSync(h.delegationsDir, "not a directory");
+		const settled: string[] = [];
+		h.deps.settled = (_d, verdict) => settled.push(verdict);
 		const w = startDelegationLifecycle(h.deps);
 		const out = await w.stopByOperator(d.id);
 		await w.stopTicker();
@@ -866,6 +868,7 @@ describe("delegation watcher", () => {
 		expect(h.wakes).toHaveLength(1);
 		expect(h.wakes[0]).toContain(`[delegation: #${d.id} bad report · stopped]`);
 		expect(h.wakes[0]).toContain("report unreadable");
+		expect(settled).toEqual(["stopped"]);
 	});
 
 	test("an operator stop on a finished row is cleanup — no notice", async () => {

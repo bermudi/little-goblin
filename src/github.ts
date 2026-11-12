@@ -1,4 +1,5 @@
 // gh owns authentication. Only this adapter knows GitHub's wire contract.
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { log } from "./log.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
@@ -112,14 +113,18 @@ function latestVerdict(comments: z.infer<typeof commentSchema>[]): VerifierVerdi
 	for (const c of candidates) {
 		const verdict = /^(PASS\+NOTES|PASS|FAIL)(?=\s|$)/.exec(c.body.trimStart())?.[1];
 		if (verdict !== "PASS" && verdict !== "PASS+NOTES" && verdict !== "FAIL") continue;
-		const shas = [...c.body.matchAll(/^Checked-SHA: ([a-f0-9]{40})\s*$/gm)];
+		const declarations = c.body.split(/\r?\n/).filter((line) => line.trimStart().startsWith("Checked-SHA:"));
+		const sha = declarations.length === 1
+			? /^Checked-SHA: ([a-f0-9]{40})[ \t]*$/.exec(declarations[0]!)?.[1] ?? null
+			: null;
 		return {
 			verdict,
-			sha: shas.length === 1 ? shas[0]![1]! : null,
+			sha,
 			source: c.url,
 			author: c.author?.login ?? null,
 			notes: c.body.slice(0, 6000),
 			notesTruncated: c.body.length > 6000,
+			notesDigest: createHash("sha256").update(c.body).digest("hex"),
 		};
 	}
 	return null;

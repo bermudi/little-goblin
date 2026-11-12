@@ -22,6 +22,7 @@ import {
 	agentNameFor,
 	type Delegation,
 	type DelegationStatus,
+	type DelegationVerdict,
 	type DelegationsStore,
 	openDelegations,
 } from "./delegations.ts";
@@ -42,8 +43,6 @@ import { claudeFreshTrustJson, codexTrustSection, seedHarnessTrust } from "./har
 import { delegationNoticeTag } from "./tags.ts";
 import { wake, wakeApp, type WakeDeps } from "./wake.ts";
 import { readinessKey, readinessSummary, type GithubIssue, type PrReadiness } from "./pr-readiness.ts";
-
-export type DelegationVerdict = "done" | "needs input" | "failed";
 
 export interface DelegationLifecycleDeps {
 	delegations: DelegationsStore;
@@ -1070,11 +1069,13 @@ async function notify(
 ): Promise<boolean> {
 	const body = await reportBody(deps, d, opts.agentGone ?? false, verdict === "done");
 	const readiness = isIssueLead(d)
-		? opts.readiness ?? await observeReadiness(deps, d.issue)
+		? opts.readiness ??
+			(d.readinessPendingVerdict === verdict ? d.readiness : null) ??
+			await observeReadiness(deps, d.issue)
 		: undefined;
 	if (opts.readiness !== undefined && d.responsibilityId !== null &&
 		deps.watchResponsibility?.(d.responsibilityId, d.responsibilityRevision) === false) return false;
-	if (readiness !== undefined && !deps.delegations.recordReadiness(d.id, d, readiness)) {
+	if (readiness !== undefined && !deps.delegations.recordReadiness(d.id, d, readiness, false, verdict)) {
 		log.info("delegation readiness superseded", { delegation: d.id });
 		return false;
 	}

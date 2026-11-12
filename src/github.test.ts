@@ -1,6 +1,7 @@
 // Synthetic GitHub wire responses test policy; live probing is read-only via scripts/pr-readiness.ts.
 import { describe, expect, test } from "bun:test";
 import { makeGithubReadiness, type GithubRunner } from "./github.ts";
+import { readinessKey } from "./pr-readiness.ts";
 
 const HEAD = "a".repeat(40);
 const OLD = "b".repeat(40);
@@ -61,6 +62,7 @@ describe("GitHub PR readiness", () => {
 		["missing SHA", "PASS\nLooks fine.", "no full Checked-SHA"],
 		["short SHA", `PASS\nChecked-SHA: ${HEAD.slice(0, 7)}`, "no full Checked-SHA"],
 		["contradictory SHA", `PASS\nChecked-SHA: ${HEAD}\nChecked-SHA: ${OLD}`, "no full Checked-SHA"],
+		["malformed duplicate SHA", `PASS\nChecked-SHA: ${HEAD}\nChecked-SHA: bbbbbbb`, "no full Checked-SHA"],
 		["failed verdict", `FAIL\nChecked-SHA: ${HEAD}`, "FAIL"],
 		["no verdict", "The lead says everything passed.", "Missing verifier"],
 	])("%s cannot make the PR ready", async (_name, body, reason) => {
@@ -112,6 +114,20 @@ describe("GitHub PR readiness", () => {
 			kind: "checked", ready: true,
 			verifier: { notesTruncated: true, source: `${prUrl}#issuecomment-1` },
 		});
+	});
+
+	test("an edit beyond the delivered excerpt still changes readiness identity", async () => {
+		const f = fixture();
+		const g = fixture();
+		const prefix = `PASS+NOTES\nChecked-SHA: ${HEAD}\n${"note ".repeat(2000)}`;
+		f.pr.comments.nodes = [comment(`${prefix}Old caveat.`)];
+		g.pr.comments.nodes = [comment(`${prefix}New caveat.`)];
+		const first = await f.observe();
+		const second = await g.observe();
+		if (first.result.kind !== "checked" || second.result.kind !== "checked") throw new Error("Expected PR evidence");
+		expect(first.result.verifier?.notes).toEqual(second.result.verifier?.notes);
+		expect(first.result.verifier?.notesDigest).not.toEqual(second.result.verifier?.notesDigest);
+		expect(readinessKey(first)).not.toBe(readinessKey(second));
 	});
 
 	test("missing and ambiguous PRs are explicit, without choosing a convenient PR", async () => {

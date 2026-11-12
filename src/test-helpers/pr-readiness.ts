@@ -1,4 +1,5 @@
 import { readinessReasons, type CheckedPr, type PrReadiness } from "../pr-readiness.ts";
+import { createHash } from "node:crypto";
 
 export function prReadinessFixture(
 	ci: CheckedPr["ci"]["state"] = "pending",
@@ -9,6 +10,7 @@ export function prReadinessFixture(
 		verdict: "PASS" as const, sha: head, source: `${pr}#issuecomment-1`,
 		author: "verifier", notes: `PASS\nChecked-SHA: ${head}`,
 		notesTruncated: false,
+		notesDigest: createHash("sha256").update(`PASS\nChecked-SHA: ${head}`).digest("hex"),
 	};
 	const reasons = readinessReasons(head, verifier, ci);
 	return {

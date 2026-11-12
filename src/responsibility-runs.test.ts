@@ -212,6 +212,7 @@ const delegation = (over: Partial<Delegation> = {}): Delegation => ({
 	readiness: null,
 	readinessNotifiedKey: null,
 	readinessVersion: 0,
+	readinessPendingVerdict: null,
 	cwd: "/w",
 	task: "t",
 	chatId: 0,

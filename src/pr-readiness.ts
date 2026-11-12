@@ -15,6 +15,8 @@ export const verifierVerdictSchema = z.object({
 	author: z.string().nullable(),
 	notes: z.string(),
 	notesTruncated: z.boolean(),
+	// Older disk observations have only the excerpt; a fresh GitHub read fills the digest.
+	notesDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 });
 export type VerifierVerdict = z.infer<typeof verifierVerdictSchema>;
 

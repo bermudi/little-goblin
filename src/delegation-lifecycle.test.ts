@@ -226,6 +226,56 @@ describe("lead PR readiness watcher", () => {
 		} finally { await second.stopTicker(); reopened.close(); }
 	});
 
+	test("a failed initial settlement retries its saved observation after restart before polling again", async () => {
+		const h = harness();
+		const d = issueLead(h);
+		h.agents.set(d.agentName, agent(d.agentName, "done", 2));
+		let reads = 0;
+		const pending = prReadinessFixture();
+		h.deps.readiness = async () => { reads++; return reads === 1 ? pending : prReadinessFixture("green"); };
+		h.deps.wake = () => false;
+		const first = startDelegationLifecycle(h.deps, 3_600_000);
+		await first.tick();
+		await first.stopTicker();
+		expect(h.store.get(d.id)).toMatchObject({
+			status: "running", readiness: pending, readinessPendingVerdict: "done",
+		});
+		h.store.close();
+		const reopened = openDelegations(h.dbPath);
+		const wakes: string[] = [];
+		const second = startDelegationLifecycle({
+			...h.deps, delegations: reopened,
+			wake: (_address, text) => { wakes.push(text); return true; },
+		}, 3_600_000);
+		try {
+			await second.tick();
+			expect(reads).toBe(1);
+			expect(wakes).toHaveLength(1);
+			expect(wakes[0]).toContain("CI is pending");
+			expect(reopened.get(d.id)).toMatchObject({
+				status: "done", readinessVersion: 1, readinessPendingVerdict: null,
+			});
+		} finally { await second.stopTicker(); reopened.close(); }
+	});
+
+	test("a delivered blocked settlement cannot lend its old observation to a later completion", async () => {
+		const h = harness();
+		const d = issueLead(h);
+		h.agents.set(d.agentName, agent(d.agentName, "blocked", 2));
+		let reads = 0;
+		h.deps.readiness = async () => { reads++; return prReadinessFixture(reads === 1 ? "pending" : "green"); };
+		const lifecycle = startDelegationLifecycle(h.deps, 3_600_000);
+		try {
+			await lifecycle.tick();
+			expect(h.store.get(d.id)?.readinessPendingVerdict).toBeNull();
+			h.agents.set(d.agentName, agent(d.agentName, "done", 3));
+			await lifecycle.tick();
+			expect(reads).toBe(2);
+			expect(h.wakes).toHaveLength(2);
+			expect(h.store.get(d.id)?.readiness?.result).toMatchObject({ kind: "checked", ready: true });
+		} finally { await lifecycle.stopTicker(); h.store.close(); }
+	});
+
 	test("a correction or pause during the remote read suppresses the late wake", async () => {
 		const h = harness();
 		const d = issueLead(h);

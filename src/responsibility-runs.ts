@@ -9,8 +9,7 @@ import { basename } from "node:path";
 import { log } from "./log.ts";
 import type { ResponsibilityStore } from "./responsibilities.ts";
 import { reportInputSchema, type ReportInput } from "./responsibility-reports.ts";
-import type { Delegation } from "./delegations.ts";
-import type { DelegationVerdict } from "./delegation-lifecycle.ts";
+import type { Delegation, DelegationVerdict } from "./delegations.ts";
 import type { SubagentRun } from "./subagent-runs.ts";
 import { readinessSummary, type PrReadiness } from "./pr-readiness.ts";
 

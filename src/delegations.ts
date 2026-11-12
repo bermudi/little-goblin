@@ -14,6 +14,7 @@ export type DelegationStatus =
 	| "done"
 	| "failed"
 	| "stopped";
+export type DelegationVerdict = "done" | "needs input" | "failed";
 
 export interface Delegation {
 	id: number;
@@ -24,6 +25,7 @@ export interface Delegation {
 	readiness: PrReadiness | null;
 	readinessNotifiedKey: string | null;
 	readinessVersion: number;
+	readinessPendingVerdict: DelegationVerdict | null;
 	cwd: string;
 	task: string;
 	// Pinned Telegram address — notices land where it was delegated.
@@ -113,7 +115,7 @@ export interface DelegationsStore {
 	active(): Delegation[];
 	// A `starting` row across a restart means goblin died mid-start.
 	starting(): Delegation[];
-	recordReadiness(id: number, expect: Delegation, readiness: PrReadiness, notified?: boolean): boolean;
+	recordReadiness(id: number, expect: Delegation, readiness: PrReadiness, notified?: boolean, verdict?: DelegationVerdict): boolean;
 	close(): void;
 }
 
@@ -126,6 +128,7 @@ const delegationSchema = z.object({
 	readiness_json: z.string().nullable(),
 	readiness_notified_key: z.string().nullable(),
 	readiness_version: z.number().int().nonnegative(),
+	readiness_pending_verdict: z.enum(["done", "needs input", "failed"]).nullable(),
 	cwd: z.string(),
 	task: z.string(),
 	chat_id: z.number(),
@@ -158,6 +161,7 @@ function rowToDelegation(row: unknown): Delegation {
 		readiness: r.readiness_json === null ? null : prReadinessSchema.parse(JSON.parse(r.readiness_json)),
 		readinessNotifiedKey: r.readiness_notified_key,
 		readinessVersion: r.readiness_version,
+		readinessPendingVerdict: r.readiness_pending_verdict,
 		cwd: r.cwd,
 		task: r.task,
 		chatId: r.chat_id,
@@ -214,7 +218,8 @@ const DELEGATIONS_COLUMNS = `
 		issue_json TEXT,
 		readiness_json TEXT,
 		readiness_notified_key TEXT,
-		readiness_version INTEGER NOT NULL DEFAULT 0`;
+		readiness_version INTEGER NOT NULL DEFAULT 0,
+		readiness_pending_verdict TEXT`;
 
 export function openDelegations(dbPath: string): DelegationsStore {
 	const db = new Database(dbPath);
@@ -249,7 +254,7 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		db.exec("ALTER TABLE delegations ADD COLUMN responsibility_revision INTEGER");
 	}
 	if (!cols.has("role")) db.exec("ALTER TABLE delegations ADD COLUMN role TEXT NOT NULL DEFAULT 'default'");
-	for (const column of ["issue_json", "readiness_json", "readiness_notified_key"]) {
+	for (const column of ["issue_json", "readiness_json", "readiness_notified_key", "readiness_pending_verdict"]) {
 		if (!cols.has(column)) db.exec(`ALTER TABLE delegations ADD COLUMN ${column} TEXT`);
 	}
 	if (!cols.has("readiness_version"))
@@ -268,8 +273,8 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		try {
 			db.exec(`CREATE TABLE delegations_migrated (${DELEGATIONS_COLUMNS})`);
 			db.exec(`INSERT INTO delegations_migrated
-				(id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version)
-				SELECT id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version
+				(id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict)
+				SELECT id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict
 				FROM delegations`);
 			db.exec("DROP TABLE delegations");
 			db.exec("ALTER TABLE delegations_migrated RENAME TO delegations");
@@ -293,7 +298,7 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		"UPDATE delegations SET agent_name = ?, workspace_id = ?, pane_id = ? WHERE id = ?",
 	);
 	const qRunning = db.query(
-		"UPDATE delegations SET baseline_seq = ?, prompted_at = ?, status = 'running', finished_at = NULL, prompt_pending = 0, readiness_json = NULL, readiness_notified_key = NULL WHERE id = ? AND status != 'stopped'",
+		"UPDATE delegations SET baseline_seq = ?, prompted_at = ?, status = 'running', finished_at = NULL, prompt_pending = 0, readiness_json = NULL, readiness_notified_key = NULL, readiness_pending_verdict = NULL WHERE id = ? AND status != 'stopped'",
 	);
 	const qParked = db.query(
 		"UPDATE delegations SET status = 'needs_input', prompt_pending = 1, baseline_seq = ? WHERE id = ? AND status != 'stopped'",
@@ -311,7 +316,8 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	);
 	const qStatus = db.query("UPDATE delegations SET status = ?, finished_at = ? WHERE id = ?");
 	const qReadiness = db.query(`UPDATE delegations SET readiness_json = ?, readiness_version = readiness_version + ?,
-		readiness_notified_key = CASE WHEN ? THEN ? ELSE readiness_notified_key END
+		readiness_notified_key = CASE WHEN ? THEN ? ELSE readiness_notified_key END,
+		readiness_pending_verdict = CASE WHEN ? THEN NULL ELSE COALESCE(?, readiness_pending_verdict) END
 		WHERE id = ? AND status = ? AND prompted_at = ? AND baseline_seq IS ?`);
 
 	return {
@@ -396,12 +402,13 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		starting() {
 			return qStarting.all().map(rowToDelegation);
 		},
-		recordReadiness(id, expect, readiness, notified = false) {
+		recordReadiness(id, expect, readiness, notified = false, verdict) {
 			const row = qGet.get(id);
 			const previous = row === null ? null : rowToDelegation(row);
 			const prior = previous?.readiness ?? null;
 			const changed = prior === null || readinessKey(prior) !== readinessKey(readiness);
 			const saved = qReadiness.run(JSON.stringify(readiness), changed ? 1 : 0, notified ? 1 : 0, readinessKey(readiness),
+				notified ? 1 : 0, verdict ?? null,
 				id, expect.status, expect.promptedAt, expect.baselineSeq).changes > 0;
 			if (saved && (changed || notified && previous?.readinessNotifiedKey !== readinessKey(readiness))) {
 				log.info("delegation readiness recorded", {

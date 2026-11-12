@@ -27,6 +27,32 @@ function tmpdirPath(): string {
 }
 
 describe("delegations store", () => {
+	test("pre-digest observations reopen without losing sources and upgrade on the next read", () => {
+		const path = join(tmpdirPath(), "goblin.sqlite");
+		const first = openDelegations(path);
+		const d = first.create({
+			name: "old observation", harness: "codex", role: "lead",
+			issue: { repository: "owner/repo", number: 7 }, cwd: "/w", task: "build",
+			address: { chatId: 0, threadId: null }, responsibilityId: "r1",
+		});
+		first.setStatus(d.id, "done");
+		const observation = prReadinessFixture("green");
+		delete observation.result.verifier!.notesDigest;
+		first.recordReadiness(d.id, first.get(d.id)!, observation, true);
+		first.close();
+		const second = openDelegations(path);
+		try {
+			const saved = second.list()[0]!;
+			expect(saved.readiness).toEqual(observation);
+			expect(saved.readinessVersion).toBe(1);
+			second.recordReadiness(saved.id, saved, prReadinessFixture("green"));
+			expect(second.get(saved.id)?.readinessVersion).toBe(2);
+			expect(second.get(saved.id)?.readiness?.result).toMatchObject({
+				kind: "checked", verifier: { notesDigest: expect.stringMatching(/^[a-f0-9]{64}$/) },
+			});
+		} finally { second.close(); }
+	});
+
 	test("lead identity and observations survive reopen; a new prompt fences old readiness", () => {
 		const path = join(tmpdirPath(), "goblin.sqlite");
 		const first = openDelegations(path);

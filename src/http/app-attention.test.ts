@@ -185,6 +185,7 @@ describe("app attention", () => {
 							readiness: null,
 							readinessNotifiedKey: null,
 							readinessVersion: 0,
+							readinessPendingVerdict: null,
 							cwd: "/tmp",
 							task: "finish the report",
 							chatId: 0,

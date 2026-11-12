@@ -266,7 +266,8 @@ Rulings:
   Notes remain untrusted text for Goblin to assess; `PASS+NOTES` passes
   the fact check but does not settle its notes or grant merge authority.
   Notices include at most 6,000 characters of notes with an explicit
-  truncation flag; the comment URL is the source for the rest.
+  truncation flag; the comment URL is the source for the rest. A digest
+  of the complete comment detects edits beyond that excerpt.
 
   `github.ts` alone owns the GitHub contract: read-only `gh api` GraphQL
   against github.com, using gh's existing authentication. It observes
@@ -290,6 +291,10 @@ Rulings:
   The observation is persisted on the delegation before notice delivery.
   Readiness versions make a regression a new report even if the same
   facts occurred earlier; retries of one version file once.
+  The pending settlement verdict is persisted with its observation, so
+  even a failed initial notice (before the row becomes `done`) retries
+  the saved facts rather than polling again. A delivered settlement or
+  new prompt cannot lend that snapshot to a later settlement.
 
   The existing delegation ticker observes settled leads at most once a
   minute, with no model or second scheduler. An unchanged observation

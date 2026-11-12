@@ -156,7 +156,10 @@ Rulings:
   is an outside stop, settled `stopped` with the same don't-revive
   note, not `failed`. A crash looks identical from outside; either way
   the operator decides what happens next. A responsibility gets a
-  `blocked` report, not `failed`.
+  worker `blocked` report, not `failed` — goblin assesses it next. The
+  app stop's notice is its only one (a retried stop sends nothing), so
+  an unreadable report sends the header alone, and stop notes (e.g. a
+  target gone from config) stay on screen after the row moves.
 - **No concurrency cap** (operator, 2026-10-06): `maxRunning` is gone —
   the tool never refuses on volume; how much runs, where, is goblin's
   judgment.

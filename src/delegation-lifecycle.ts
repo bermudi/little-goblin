@@ -981,8 +981,26 @@ async function stopByOperator(deps: DelegationLifecycleDeps, id: number): Promis
 	if (before.status === "done" || before.status === "failed" || before.status === "stopped") {
 		return out;
 	}
-	// The row is already stopped; a lost notice is logged, not retried.
-	await notify(deps, out.delegation, "stopped", { extra: OPERATOR_STOP_NOTE, agentGone: true });
+	// The row is already stopped and a retried stop sends nothing, so this is
+	// the notice's only chance: an unreadable report must not cost it.
+	const d = out.delegation;
+	let landed: boolean;
+	try {
+		landed = await notify(deps, d, "stopped", { extra: OPERATOR_STOP_NOTE, agentGone: true });
+	} catch (err) {
+		log.error("delegation stop notice body unreadable — sending header only", err, {
+			delegation: d.id,
+		});
+		const text = `${delegationNoticeTag(d.id, d.name, "stopped", OPERATOR_STOP_NOTE)}\n\n(report unreadable: ${err instanceof Error ? err.message : String(err)})`;
+		landed =
+			d.appConversation !== null
+				? deps.wakeApp(d.appConversation, text)
+				: deps.wake({ chatId: d.chatId, threadId: d.threadId }, text);
+	}
+	if (!landed) {
+		log.error("delegation stop notice lost", undefined, { delegation: d.id });
+		return { ...out, notes: [...out.notes, "goblin's conversation was not told about this stop"] };
+	}
 	return out;
 }
 

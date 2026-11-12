@@ -52,7 +52,7 @@ function StopButton({
 }: {
 	d: OperatorDelegationItem;
 	token: string | null;
-	onStopped: () => void;
+	onStopped: (name: string, notes: string[]) => void;
 }) {
 	const confirm = useConfirm();
 	const [busy, setBusy] = useState(false);
@@ -67,8 +67,8 @@ function StopButton({
 		setBusy(true);
 		setErr(null);
 		try {
-			await stopDelegation(token, d.id);
-			onStopped();
+			const res = await stopDelegation(token, d.id);
+			onStopped(d.name, res.notes);
 		} catch (e) {
 			setErr(describe(e));
 		} finally {
@@ -101,7 +101,7 @@ function Current({
 	token: string | null;
 	onOpen: (id: number) => void;
 	onConversation: ((id: string) => void) | null;
-	onStopped: () => void;
+	onStopped: (name: string, notes: string[]) => void;
 }) {
 	const conv = d.appConversation;
 	return (
@@ -141,7 +141,7 @@ function Detail({
 	token: string | null;
 	onBack: () => void;
 	onConversation: ((id: string) => void) | null;
-	onStopped: () => void;
+	onStopped: (name: string, notes: string[]) => void;
 }) {
 	const conv = d.appConversation;
 	return (
@@ -198,6 +198,14 @@ export function DelegationsView({
 	const { data, err, reload } = useLoad(() => listDelegations(token));
 	const [openId, setOpenId] = useState<number | null>(null);
 	const [shown, setShown] = useState(PAGE);
+	// Stop warnings outlive the row's move to Earlier: "stopped" with notes
+	// can mean the agent may still run somewhere.
+	const [warn, setWarn] = useState<{ name: string; notes: string[] } | null>(null);
+	const onStopped = (name: string, notes: string[]) => {
+		setWarn(notes.length > 0 ? { name, notes } : null);
+		setOpenId(null);
+		reload();
+	};
 	if (err !== null)
 		return (
 			<div className="ops">
@@ -219,7 +227,7 @@ export function DelegationsView({
 				token={token}
 				onBack={() => setOpenId(null)}
 				onConversation={onConv}
-				onStopped={reload}
+				onStopped={onStopped}
 			/>
 		);
 	}
@@ -235,6 +243,16 @@ export function DelegationsView({
 	return (
 		<div className="ops">
 			<h2 className="ops-h2">Delegations ({data.delegations.length})</h2>
+			{warn !== null && (
+				<div className="error deleg-stop-warn" role="alert">
+					<p>Stopped {warn.name}, with warnings:</p>
+					<ul>
+						{warn.notes.map((n) => (
+							<li key={n}>{n}</li>
+						))}
+					</ul>
+				</div>
+			)}
 			{data.delegations.length === 0 && <p className="empty">No delegations.</p>}
 			{data.delegations.length > 0 && (
 				<div className="sumstrip">
@@ -269,7 +287,7 @@ export function DelegationsView({
 									token={token}
 									onOpen={setOpenId}
 									onConversation={onConv}
-									onStopped={reload}
+									onStopped={onStopped}
 								/>
 							))}
 						</ul>

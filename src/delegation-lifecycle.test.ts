@@ -853,6 +853,21 @@ describe("delegation watcher", () => {
 		expect(h.wakes[0]).toContain("the operator stopped it from the app");
 	});
 
+	test("an operator stop with an unreadable report still tells its conversation", async () => {
+		const h = harness();
+		const d = runningRow(h, "bad report", 1);
+		h.agents.set(d.agentName, agent(d.agentName, "working", 1));
+		writeFileSync(h.delegationsDir, "not a directory");
+		const w = startDelegationLifecycle(h.deps);
+		const out = await w.stopByOperator(d.id);
+		await w.stopTicker();
+		expect(out.kind).toBe("stopped");
+		expect(h.store.get(d.id)!.status).toBe("stopped");
+		expect(h.wakes).toHaveLength(1);
+		expect(h.wakes[0]).toContain(`[delegation: #${d.id} bad report · stopped]`);
+		expect(h.wakes[0]).toContain("report unreadable");
+	});
+
 	test("an operator stop on a finished row is cleanup — no notice", async () => {
 		const h = harness();
 		const d = runningRow(h, "finished", 1);

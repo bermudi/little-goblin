@@ -52,8 +52,8 @@ surface conflicts with the direction rather than silently overriding it.
   programs) before committing.
 - **Each external contract is known by one adapter.** Only `src/tg/`
   knows grammy; only `src/subagents/` knows pi-durable/pi-ai/chord;
-  the herdr, podman and gws wire contracts live in `src/{herdr,podman,
-  mail-gws}.ts`. Domain modules see the adapter's types, never the
+  the herdr, podman, gws and GitHub wire contracts live in `src/{herdr,podman,
+  mail-gws,github}.ts`. Domain modules see the adapter's types, never the
   vendor's — `module-boundaries.test.ts` enforces the importable cases.
   (The Vercel AI SDK is the platform, not a boundary.)
 

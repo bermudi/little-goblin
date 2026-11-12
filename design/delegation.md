@@ -236,7 +236,7 @@ Rulings:
   never lists or addresses them (it has no list call), and goblin's view
   of them is the lead's report. Ready = a PR closing the issue, a
   `PASS`/`PASS+NOTES` verdict on its head SHA, and CI green on that SHA;
-  goblin checks those itself, the report being a claim. Rework and the
+  code checks those facts (PR readiness below), the report being a claim. Rework and the
   post-green-light merge go to the same lead (`send`), so one agent stays
   accountable per issue. At most two leads run at once (each fans out to
   several agents on one box) — the procedure's limit, not a tool refusal;
@@ -244,6 +244,64 @@ Rulings:
   goblin does not pick issues up on its own. The procedure lives in the
   workspace `proxy-operator` skill; the lead harness in
   `delegation.defaults.lead`.
+
+- **PR readiness is observed, not inferred (operator, 2026-11-12; #406).**
+  A responsibility-linked `role:"lead"` start requires
+  `issue:{repository:"owner/repo",number:N}`. Role and issue are durable;
+  neither is reconstructed from a report, task, cwd, or harness name.
+  Older delegations keep role `default` and no issue; no implicit adoption.
+  The lead's prompt carries the verifier comment contract:
+
+  ```text
+  PASS
+
+  Checked-SHA: <full 40-character lowercase commit SHA>
+  ```
+
+  `PASS+NOTES` and `FAIL` are the other opening verdicts. Exactly one
+  standalone `Checked-SHA` line is required. The latest non-minimized
+  verdict comment by update time wins; no fallback to an older passing
+  comment. A missing, short, contradictory or stale SHA is not ready.
+  Comment author and URL are evidence, not proof of verifier independence.
+  Notes remain untrusted text for Goblin to assess; `PASS+NOTES` passes
+  the fact check but does not settle its notes or grant merge authority.
+  Notices include at most 6,000 characters of notes with an explicit
+  truncation flag; the comment URL is the source for the rest.
+
+  `github.ts` alone owns the GitHub contract: read-only `gh api` GraphQL
+  against github.com, using gh's existing authentication. It observes
+  the issue's closing PR reference, rechecks the PR's closing issue
+  reference, and reads the PR head, comments and that exact commit's
+  check/status rollup. Closing PRs can live in another repository; historical
+  closed PRs do not compete with an open one. A `SUCCESS` rollup must contain
+  an actually successful completed check or status to be green; no checks
+  or skipped-only checks is missing, running/expected is pending,
+  failure/error is red.
+  Multiple closing PRs are ambiguous, not an invitation to choose one.
+  Bounded reads (100 PR/issue links, check contexts and the last 100 comments, 1 MiB,
+  30 seconds per command) fail closed if evidence is partial, inaccessible,
+  malformed, or changes inconsistently during the read.
+
+  Each lead settlement carries a timestamped structured observation,
+  source URLs, and a readiness summary outside the worker's claim.
+  The worker report's evidence names the closing PR, head, verdict/SHA
+  and CI/SHA; pending CI reports `waiting`, other missing/negative
+  evidence `blocked`, passing facts `ready`. None closes the responsibility.
+  The observation is persisted on the delegation before notice delivery.
+  Readiness versions make a regression a new report even if the same
+  facts occurred earlier; retries of one version file once.
+
+  The existing delegation ticker observes settled leads at most once a
+  minute, with no model or second scheduler. An unchanged observation
+  updates its timestamp but sends no notice. Changes (including changed
+  notes, errors, head or CI) wake Goblin for judgment; a failed notice
+  remains due across restart without re-fetching GitHub. Watch through
+  pending/missing evidence and readiness regressions until the issue
+  closes, the delegation resumes/stops, or the responsibility is paused,
+  closed, removed or corrected to a new revision. Async observations
+  cannot overwrite a newer prompt or stopped row. No model polls GitHub
+  while CI runs. The one-shot read-only probe is
+  `bun --no-env-file scripts/pr-readiness.ts owner/repo N`.
 
 Still out: subagent fleets inside goblin (a delegation is one external
 agent per task, not an orchestrator), goblin-managed nesting (a lead's own

@@ -64,6 +64,7 @@ import { openResponsibilities, type ResponsibilityStore } from "./responsibiliti
 import { makeAuthorityRecheck } from "./responsibility-authority.ts";
 import { makeResponsibilityObserver } from "./responsibility-observer.ts";
 import { fileDelegationReport, fileRunReport } from "./responsibility-runs.ts";
+import { makeGithubReadiness } from "./github.ts";
 import { makeResponsibilityService } from "./responsibility-service.ts";
 import { wireReviewer } from "./reviewer.ts";
 import { Runtime, type RuntimeDeps } from "./runtime.ts";
@@ -749,8 +750,13 @@ async function boot() {
 					delegationsDir: paths.delegations(),
 					homeDir: homedir(),
 					...delegationWake(wakeDeps),
-					settled: (d, verdict, body) => fileDelegationReport(responsibilities, d, verdict, body),
+					settled: (d, verdict, body, readiness) => fileDelegationReport(responsibilities, d, verdict, body, readiness),
 					responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
+					readiness: makeGithubReadiness(),
+					watchResponsibility: (id, revision) => {
+						const r = responsibilities.get(id);
+						return r !== null && r.status === "active" && r.revision === revision;
+					},
 				})
 			: null;
 	completeBoot(delegationLifecycle, memoryWorker);

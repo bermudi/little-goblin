@@ -4,6 +4,8 @@
 - **Delegation:** one external coding agent that Goblin starts with the `delegate` tool. It runs in a Herdr terminal.
 - **Harness:** a coding agent program that a delegation runs, such as codex or pi.
 - **Role:** the kind of work a delegation serves (build, review, or any operator-coined label). `default` is the role a call with none uses.
+- **Lead:** the delegation accountable for one issue build, including its implementation, review, and verification.
+- **PR readiness:** code-observed evidence that a lead's issue has a closing PR, a passing verifier comment for its current head SHA, and green CI for that SHA. It is not permission to merge.
 - **Delegation default:** the role → harness tie in `delegation.defaults`. The `delegate` tool uses it when a call names no harness. Settings → Delegation edits it.
 - **Ask-first harness:** a delegation harness with `askFirst: true`. The `delegate` tool tells goblin to ask the operator before each use. Settings → Delegation edits it.
 - **Herdr:** the terminal multiplexer where harnesses run.

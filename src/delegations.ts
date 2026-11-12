@@ -4,6 +4,8 @@
 import { Database } from "bun:sqlite";
 import { z } from "zod";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
+import { log } from "./log.ts";
+import { githubIssueSchema, prReadinessSchema, readinessKey, type GithubIssue, type PrReadiness } from "./pr-readiness.ts";
 
 export type DelegationStatus =
 	| "starting"
@@ -17,6 +19,11 @@ export interface Delegation {
 	id: number;
 	name: string;
 	harness: string;
+	role: string;
+	issue: GithubIssue | null;
+	readiness: PrReadiness | null;
+	readinessNotifiedKey: string | null;
+	readinessVersion: number;
 	cwd: string;
 	task: string;
 	// Pinned Telegram address — notices land where it was delegated.
@@ -53,6 +60,8 @@ export interface Delegation {
 export interface CreateDelegation {
 	name: string;
 	harness: string;
+	role?: string;
+	issue?: GithubIssue;
 	cwd: string;
 	task: string;
 	address: { chatId: number; threadId: number | null };
@@ -104,6 +113,7 @@ export interface DelegationsStore {
 	active(): Delegation[];
 	// A `starting` row across a restart means goblin died mid-start.
 	starting(): Delegation[];
+	recordReadiness(id: number, expect: Delegation, readiness: PrReadiness, notified?: boolean): boolean;
 	close(): void;
 }
 
@@ -111,6 +121,11 @@ const delegationSchema = z.object({
 	id: z.number(),
 	name: z.string(),
 	harness: z.string(),
+	role: z.string(),
+	issue_json: z.string().nullable(),
+	readiness_json: z.string().nullable(),
+	readiness_notified_key: z.string().nullable(),
+	readiness_version: z.number().int().nonnegative(),
 	cwd: z.string(),
 	task: z.string(),
 	chat_id: z.number(),
@@ -138,6 +153,11 @@ function rowToDelegation(row: unknown): Delegation {
 		id: r.id,
 		name: r.name,
 		harness: r.harness,
+		role: r.role,
+		issue: r.issue_json === null ? null : githubIssueSchema.parse(JSON.parse(r.issue_json)),
+		readiness: r.readiness_json === null ? null : prReadinessSchema.parse(JSON.parse(r.readiness_json)),
+		readinessNotifiedKey: r.readiness_notified_key,
+		readinessVersion: r.readiness_version,
 		cwd: r.cwd,
 		task: r.task,
 		chatId: r.chat_id,
@@ -189,7 +209,12 @@ const DELEGATIONS_COLUMNS = `
 		app_conversation TEXT,
 		prompt_pending INTEGER NOT NULL DEFAULT 0,
 		responsibility_id TEXT,
-		responsibility_revision INTEGER`;
+		responsibility_revision INTEGER,
+		role TEXT NOT NULL DEFAULT 'default',
+		issue_json TEXT,
+		readiness_json TEXT,
+		readiness_notified_key TEXT,
+		readiness_version INTEGER NOT NULL DEFAULT 0`;
 
 export function openDelegations(dbPath: string): DelegationsStore {
 	const db = new Database(dbPath);
@@ -223,6 +248,12 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	if (!cols.has("responsibility_revision")) {
 		db.exec("ALTER TABLE delegations ADD COLUMN responsibility_revision INTEGER");
 	}
+	if (!cols.has("role")) db.exec("ALTER TABLE delegations ADD COLUMN role TEXT NOT NULL DEFAULT 'default'");
+	for (const column of ["issue_json", "readiness_json", "readiness_notified_key"]) {
+		if (!cols.has(column)) db.exec(`ALTER TABLE delegations ADD COLUMN ${column} TEXT`);
+	}
+	if (!cols.has("readiness_version"))
+		db.exec("ALTER TABLE delegations ADD COLUMN readiness_version INTEGER NOT NULL DEFAULT 0");
 	// Predates the baseline-pending posture: baseline_seq was NOT NULL, so
 	// a failed post-prompt read had to record some pre-prompt number — a
 	// stale comparison the next poll could turn into a spurious done. NULL
@@ -237,8 +268,8 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		try {
 			db.exec(`CREATE TABLE delegations_migrated (${DELEGATIONS_COLUMNS})`);
 			db.exec(`INSERT INTO delegations_migrated
-				(id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending)
-				SELECT id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending
+				(id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version)
+				SELECT id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version
 				FROM delegations`);
 			db.exec("DROP TABLE delegations");
 			db.exec("ALTER TABLE delegations_migrated RENAME TO delegations");
@@ -256,13 +287,13 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	);
 	const qStarting = db.query("SELECT * FROM delegations WHERE status = 'starting' ORDER BY id");
 	const qInsert = db.query(`INSERT INTO delegations
-		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, responsibility_id, responsibility_revision)
-		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', ?, 0, ?, ?, NULL, ?, ?, ?)`);
+		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, responsibility_id, responsibility_revision, role, issue_json)
+		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', ?, 0, ?, ?, NULL, ?, ?, ?, ?, ?)`);
 	const qBind = db.query(
 		"UPDATE delegations SET agent_name = ?, workspace_id = ?, pane_id = ? WHERE id = ?",
 	);
 	const qRunning = db.query(
-		"UPDATE delegations SET baseline_seq = ?, prompted_at = ?, status = 'running', finished_at = NULL, prompt_pending = 0 WHERE id = ? AND status != 'stopped'",
+		"UPDATE delegations SET baseline_seq = ?, prompted_at = ?, status = 'running', finished_at = NULL, prompt_pending = 0, readiness_json = NULL, readiness_notified_key = NULL WHERE id = ? AND status != 'stopped'",
 	);
 	const qParked = db.query(
 		"UPDATE delegations SET status = 'needs_input', prompt_pending = 1, baseline_seq = ? WHERE id = ? AND status != 'stopped'",
@@ -279,12 +310,17 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		WHERE id = ? AND status = ? AND prompted_at = ?`,
 	);
 	const qStatus = db.query("UPDATE delegations SET status = ?, finished_at = ? WHERE id = ?");
+	const qReadiness = db.query(`UPDATE delegations SET readiness_json = ?, readiness_version = readiness_version + ?,
+		readiness_notified_key = CASE WHEN ? THEN ? ELSE readiness_notified_key END
+		WHERE id = ? AND status = ? AND prompted_at = ? AND baseline_seq IS ?`);
 
 	return {
 		create(
 			{
 				name,
 				harness,
+				role,
+				issue,
 				cwd,
 				task,
 				address,
@@ -309,6 +345,8 @@ export function openDelegations(dbPath: string): DelegationsStore {
 				appConversation ?? null,
 				responsibilityId ?? null,
 				responsibilityRevision ?? null,
+				role ?? "default",
+				issue === undefined ? null : JSON.stringify(issue),
 			);
 			return rowToDelegation(qGet.get(Number(res.lastInsertRowid)));
 		},
@@ -357,6 +395,21 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		},
 		starting() {
 			return qStarting.all().map(rowToDelegation);
+		},
+		recordReadiness(id, expect, readiness, notified = false) {
+			const row = qGet.get(id);
+			const previous = row === null ? null : rowToDelegation(row);
+			const prior = previous?.readiness ?? null;
+			const changed = prior === null || readinessKey(prior) !== readinessKey(readiness);
+			const saved = qReadiness.run(JSON.stringify(readiness), changed ? 1 : 0, notified ? 1 : 0, readinessKey(readiness),
+				id, expect.status, expect.promptedAt, expect.baselineSeq).changes > 0;
+			if (saved && (changed || notified && previous?.readinessNotifiedKey !== readinessKey(readiness))) {
+				log.info("delegation readiness recorded", {
+					delegation: id, version: (previous?.readinessVersion ?? 0) + (changed ? 1 : 0),
+					notified, kind: readiness.result.kind,
+				});
+			}
+			return saved;
 		},
 		close() {
 			db.close();

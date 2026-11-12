@@ -12,6 +12,7 @@ import { reportInputSchema, type ReportInput } from "./responsibility-reports.ts
 import type { Delegation } from "./delegations.ts";
 import type { DelegationVerdict } from "./delegation-lifecycle.ts";
 import type { SubagentRun } from "./subagent-runs.ts";
+import { readinessSummary, type PrReadiness } from "./pr-readiness.ts";
 
 const MAX_REASON = 4000;
 const clipTo = (s: string, max: number): string =>
@@ -84,8 +85,28 @@ export function delegationReport(
 	d: Delegation,
 	verdict: DelegationVerdict,
 	body: string,
+	readiness?: PrReadiness,
 ): ReportInput {
 	const tag = `delegation #${d.id} ${d.name}`;
+	if (readiness !== undefined) {
+		const r = readiness.result;
+		const pending = r.kind === "checked" && r.ci.state === "pending";
+		return {
+			state: verdict === "failed" ? "failed" : verdict !== "done" ? "blocked"
+				: r.kind === "checked" && r.ready ? "ready" : pending ? "waiting" : "blocked",
+			reason: clip(`${readinessSummary(readiness)}\n${tag} ${verdict}: ${body}`),
+			...(verdict === "done" && pending ? { resumeWhen: "Code observes a change in GitHub readiness" } : {}),
+			evidence: [
+				{ item: "Closing PR", ref: readiness.source, checked: r.kind === "checked" ? r.pr : readinessSummary(readiness) },
+				...(r.kind !== "checked" ? [] : [
+					{ item: "PR head", ref: r.head.source, checked: r.head.sha },
+					{ item: "Verifier verdict", ref: r.verifier?.source ?? r.pr,
+						checked: r.verifier === null ? "Missing verdict" : `${r.verifier.verdict}; Checked-SHA: ${r.verifier.sha ?? "missing"}` },
+					{ item: "CI on PR head", ref: r.ci.source, checked: `${r.ci.state}; SHA: ${r.ci.sha}` },
+				]),
+			],
+		};
+	}
 	switch (verdict) {
 		case "done":
 			return { state: "ready", reason: clip(`${tag} finished: ${body}`) };
@@ -104,10 +125,11 @@ export function fileDelegationReport(
 	d: Delegation,
 	verdict: DelegationVerdict,
 	body: string,
+	readiness?: PrReadiness,
 ): void {
 	if (d.responsibilityId === null) return;
-	fileReport(resps, d.responsibilityId, delegationReport(d, verdict, body), {
-		sourceKey: `delegation:${d.id}:${d.promptedAt}:${d.baselineSeq ?? "pending"}:${verdict}`,
+	fileReport(resps, d.responsibilityId, delegationReport(d, verdict, body, readiness), {
+		sourceKey: `delegation:${d.id}:${d.promptedAt}:${d.baselineSeq ?? "pending"}:${verdict}${readiness === undefined ? "" : `:readiness:${d.readinessVersion}`}`,
 		revision: d.responsibilityRevision,
 		logFields: { delegation: d.id },
 	});

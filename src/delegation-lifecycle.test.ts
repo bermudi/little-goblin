@@ -26,6 +26,8 @@ import { startDelegationLifecycle, type DelegationLifecycleDeps } from "./delega
 import { HerdrError, makeHerdr, type AgentInfo, type Herdr } from "./herdr.ts";
 import type { DelegationTargetDeps } from "./delegation-lifecycle.ts";
 import { setLogFile } from "./log.ts";
+import { prReadinessFixture } from "./test-helpers/pr-readiness.ts";
+import type { PrReadiness } from "./pr-readiness.ts";
 
 let dirs: string[] = [];
 function tmpdirPath(): string {
@@ -135,6 +137,147 @@ function runningRow(
 	h.store.markRunning(d.id, seq, new Date(Date.now() - promptedAgoMs));
 	return h.store.get(d.id)!;
 }
+
+function issueLead(h: Harness): Delegation {
+	const d = h.store.create({
+		name: "issue lead", harness: "codex", role: "lead", issue: { repository: "owner/repo", number: 7 },
+		cwd: "/w", task: "build the issue", address: { chatId: 1, threadId: null },
+		responsibilityId: "responsibility-7", responsibilityRevision: 1,
+	});
+	h.store.bindLaunch(d.id, { agentName: agentNameFor(d.id, d.name), workspaceId: "w1", paneId: "w1:p1" });
+	h.store.markRunning(d.id, 1, new Date());
+	return h.store.get(d.id)!;
+}
+
+function ageReadiness(h: Pick<Harness, "store">, id: number): void {
+	const d = h.store.get(id)!;
+	h.store.recordReadiness(id, d, { ...d.readiness!, observedAt: "2000-01-01T00:00:00.000Z" });
+}
+
+describe("lead PR readiness watcher", () => {
+	test("settlement carries code evidence; unchanged CI polls wake no model; regressions report again", async () => {
+		const h = harness();
+		const d = issueLead(h);
+		h.agents.set(d.agentName, agent(d.agentName, "done", 2));
+		let observation = prReadinessFixture();
+		let reads = 0;
+		h.deps.readiness = async () => { reads++; return observation; };
+		const reports: { version: number; readiness: PrReadiness | undefined }[] = [];
+		h.deps.settled = (row, _verdict, _body, readiness) => {
+			reports.push({ version: row.readinessVersion, readiness });
+		};
+		const lifecycle = startDelegationLifecycle(h.deps, 3_600_000);
+		try {
+			await lifecycle.tick();
+			expect(h.store.get(d.id)?.status).toBe("done");
+			expect(h.wakes).toHaveLength(1);
+			expect(h.wakes[0]).toContain("CI is pending");
+			expect(h.wakes[0]).toContain("do not poll");
+			expect(reports[0]?.readiness?.result).toMatchObject({ kind: "checked", ready: false });
+			expect(reads).toBe(1);
+			for (let i = 0; i < 3; i++) {
+				ageReadiness(h, d.id);
+				observation = prReadinessFixture();
+				await lifecycle.tick();
+			}
+			expect(reads).toBe(4);
+			expect(h.wakes).toHaveLength(1);
+			expect(reports).toHaveLength(1);
+			ageReadiness(h, d.id);
+			observation = prReadinessFixture("green");
+			await lifecycle.tick();
+			expect(h.wakes).toHaveLength(2);
+			expect(reports[1]?.readiness?.result).toMatchObject({ ready: true });
+			ageReadiness(h, d.id);
+			observation = prReadinessFixture("pending");
+			await lifecycle.tick();
+			expect(h.wakes).toHaveLength(3);
+			expect(reports.map((r) => r.version)).toEqual([1, 2, 3]);
+			expect(reports[2]?.readiness?.result).toMatchObject({ ready: false });
+		} finally { await lifecycle.stopTicker(); h.store.close(); }
+	});
+
+	test("a failed readiness notice survives a store reopen and retries without a GitHub poll", async () => {
+		const h = harness();
+		const d = issueLead(h);
+		h.store.setStatus(d.id, "done");
+		let reads = 0;
+		h.deps.readiness = async () => { reads++; return prReadinessFixture("green"); };
+		h.deps.wake = () => false;
+		const first = startDelegationLifecycle(h.deps, 3_600_000);
+		await first.tick();
+		await first.stopTicker();
+		expect(h.store.get(d.id)?.readinessNotifiedKey).toBeNull();
+		h.store.close();
+		const reopened = openDelegations(h.dbPath);
+		const wakes: string[] = [];
+		const second = startDelegationLifecycle({
+			...h.deps, delegations: reopened,
+			wake: (_address, text) => { wakes.push(text); return true; },
+		}, 3_600_000);
+		try {
+			await second.tick();
+			expect(reads).toBe(1);
+			expect(wakes).toHaveLength(1);
+			expect(wakes[0]).toContain("PR readiness facts pass");
+			await second.tick();
+			expect(wakes).toHaveLength(1);
+			expect(reopened.get(d.id)?.readinessNotifiedKey).not.toBeNull();
+		} finally { await second.stopTicker(); reopened.close(); }
+	});
+
+	test("a correction or pause during the remote read suppresses the late wake", async () => {
+		const h = harness();
+		const d = issueLead(h);
+		h.store.setStatus(d.id, "done");
+		let current = true;
+		h.deps.watchResponsibility = () => current;
+		h.deps.readiness = async () => { current = false; return prReadinessFixture("green"); };
+		const lifecycle = startDelegationLifecycle(h.deps, 3_600_000);
+		try {
+			await lifecycle.tick();
+			expect(h.wakes).toHaveLength(0);
+			expect(h.store.get(d.id)?.readiness).toBeNull();
+		} finally { await lifecycle.stopTicker(); h.store.close(); }
+	});
+
+	test("a new prompt during a GitHub read owns the row and its evidence", async () => {
+		const h = harness();
+		const d = issueLead(h);
+		h.store.setStatus(d.id, "done");
+		h.deps.readiness = async () => {
+			h.store.markRunning(d.id, 3, new Date(Date.now() + 1000));
+			return prReadinessFixture("green");
+		};
+		const lifecycle = startDelegationLifecycle(h.deps, 3_600_000);
+		try {
+			await lifecycle.tick();
+			expect(h.wakes).toHaveLength(0);
+			expect(h.store.get(d.id)).toMatchObject({ status: "running", readiness: null });
+		} finally { await lifecycle.stopTicker(); h.store.close(); }
+	});
+
+	test("closed issues stop monitoring; ordinary delegations never query GitHub", async () => {
+		const h = harness();
+		const d = issueLead(h);
+		h.store.setStatus(d.id, "done");
+		const ordinary = runningRow(h);
+		h.store.setStatus(ordinary.id, "done");
+		let reads = 0;
+		h.deps.readiness = async (issue) => {
+			reads++;
+			return { ...prReadinessFixture(), issue, result: { kind: "no-pr", issueClosed: true } };
+		};
+		const lifecycle = startDelegationLifecycle(h.deps, 3_600_000);
+		try {
+			await lifecycle.tick();
+			expect(reads).toBe(1);
+			ageReadiness(h, d.id);
+			await lifecycle.tick();
+			expect(reads).toBe(1);
+		} finally { await lifecycle.stopTicker(); h.store.close(); }
+	});
+});
 
 describe("delegation watcher", () => {
 	test("shutdown joins a late scan without recording a history-only notice as landed", async () => {

@@ -156,7 +156,7 @@ Rulings:
   is an outside stop, settled `stopped` with the same don't-revive
   note, not `failed`. A crash looks identical from outside; either way
   the operator decides what happens next. A responsibility gets a
-  worker `blocked` report, not `failed` — goblin assesses it next. The
+  worker `blocked` report, not `failed` — goblin assesses it next (operator, 2026-11-12: goblin looks first, no direct question). The
   app stop's notice is its only one (a retried stop sends nothing), so
   an unreadable report sends the header alone, and stop notes (e.g. a
   target gone from config) stay on screen after the row moves.

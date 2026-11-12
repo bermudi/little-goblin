@@ -11,6 +11,7 @@ const CHANNEL_NEUTRAL = [
 	"src/app-push.ts",
 	"src/http/app-push.ts",
 	"src/agent/turn-tools.ts",
+	"src/http/app-approvals.ts",
 	"src/http/app-conversations.ts",
 	"src/http/app-programs.ts",
 	"src/http/app-shared.ts",

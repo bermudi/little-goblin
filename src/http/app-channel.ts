@@ -2,6 +2,7 @@ import { log } from "../log.ts";
 import { handleAttachmentsRoute } from "./app-attachments.ts";
 import { handleAttentionRoute } from "./app-attention.ts";
 import { appAuth } from "./app-auth.ts";
+import { handleApprovalsRoute } from "./app-approvals.ts";
 import { handleChatRoute } from "./app-chat.ts";
 import { handleConfigRoute } from "./app-config.ts";
 import { handleConversationsRoute } from "./app-conversations.ts";
@@ -9,8 +10,10 @@ import { handleNotesRoute } from "./app-notes.ts";
 import { handleProgramRoutes } from "./app-programs.ts";
 import { handleProjectsRoute } from "./app-projects.ts";
 import { handleAppPushRoute } from "./app-push.ts";
+import { handleSearchRoute } from "./app-search.ts";
 import { handleResponsibilitiesRoute } from "./app-responsibilities.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
+import { handleTurnsRoute } from "./app-turns.ts";
 import { handleOperatorRoute } from "./operator.ts";
 
 export { resolveAppAuth } from "./app-auth.ts";
@@ -88,15 +91,18 @@ export async function handleAppApi(
 	}
 
 	const route =
+		(await handleApprovalsRoute(req, url, deps)) ??
 		(await handleProgramRoutes(req, url, deps)) ??
 		(await handleAttentionRoute(req, url, deps)) ??
 		(await handleAppPushRoute(req, url, deps)) ??
 		(await handleConversationsRoute(req, url, deps)) ??
+		(await handleTurnsRoute(req, url, deps)) ??
 		(await handleProjectsRoute(req, url, deps)) ??
 		(await handleResponsibilitiesRoute(req, url, deps)) ??
 		(await handleNotesRoute(req, url, deps)) ??
 		(await handleConfigRoute(req, url, deps)) ??
 		(await handleChatRoute(req, url, deps)) ??
+		(await handleSearchRoute(req, url, deps)) ??
 		(await handleAttachmentsRoute(req, url, deps));
 	return route ?? Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
 }

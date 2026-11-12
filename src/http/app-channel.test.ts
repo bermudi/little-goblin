@@ -894,6 +894,51 @@ describe("app operator surface", () => {
 		}
 	});
 
+	test("delegations/<id>/stop runs the operator stop and maps its outcome", async () => {
+		const { http, call, home } = setup({ token: APP_TOKEN_NAME, operator: {} });
+		const delegations = openDelegations(join(home, "goblin.sqlite"));
+		const row = delegations.create({
+			name: "lead-414",
+			harness: "codex",
+			cwd: "/work",
+			task: "build it",
+			address: { chatId: 1, threadId: null },
+		});
+		const stopped: number[] = [];
+		let outcome: "stopped" | "still running" = "stopped";
+		const wired = setup({
+			token: APP_TOKEN_NAME,
+			operator: {
+				delegations,
+				stopDelegation: async (id) => {
+					stopped.push(id);
+					const d = delegations.get(id);
+					return d === null ? { kind: "no row", id } : { kind: outcome, delegation: d, notes: [] };
+				},
+			},
+		});
+		try {
+			const ok = await wired.call(`/api/app/delegations/${row.id}/stop`, { method: "POST" });
+			expect(ok.status).toBe(200);
+			expect(((await ok.json()) as { outcome: string }).outcome).toBe("stopped");
+			outcome = "still running";
+			expect(
+				(await wired.call(`/api/app/delegations/${row.id}/stop`, { method: "POST" })).status,
+			).toBe(409);
+			expect((await wired.call("/api/app/delegations/999/stop", { method: "POST" })).status).toBe(
+				404,
+			);
+			expect((await wired.call(`/api/app/delegations/${row.id}/stop`)).status).toBe(405);
+			expect(stopped).toEqual([row.id, row.id, 999]);
+			expect((await call(`/api/app/delegations/${row.id}/stop`, { method: "POST" })).status).toBe(
+				503,
+			);
+		} finally {
+			wired.http.stop();
+			http.stop();
+		}
+	});
+
 	test("programs, delegations and status answer the read-only lists", async () => {
 		const { http, call, home } = setup({ token: APP_TOKEN_NAME, operator: {} });
 		const db = join(home, "goblin.sqlite");

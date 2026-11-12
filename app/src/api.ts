@@ -70,6 +70,7 @@ import type {
 	MemoriesListResponse,
 	MemorySavesResponse,
 	MemoryStatusResponse,
+	OperatorDelegationStopResponse,
 	OperatorDelegationsResponse,
 	OperatorProgramsResponse,
 	ChatGptStatus,
@@ -963,6 +964,17 @@ export function programHook(
 
 export function listDelegations(token: string | null): Promise<OperatorDelegationsResponse> {
 	return request(token, "/api/app/delegations");
+}
+
+export function stopDelegation(
+	token: string | null,
+	id: number,
+): Promise<OperatorDelegationStopResponse> {
+	return request(token, `/api/app/delegations/${id}/stop`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: "{}",
+	});
 }
 
 export function getServiceStatus(token: string | null): Promise<OperatorStatusResponse> {

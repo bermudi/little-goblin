@@ -69,6 +69,60 @@ describe("DelegationsView", () => {
 		for (const k of installed) Reflect.deleteProperty(globalThis, k);
 	});
 
+	test("a stop with warnings keeps them on screen after the row moves", async () => {
+		let rows = [item(4, "running")];
+		globalThis.fetch = ((_input: string, init?: RequestInit) => {
+			const post = init?.method === "POST";
+			if (post) rows = [item(4, "stopped")];
+			const body = post
+				? { outcome: "stopped", delegation: rows[0], notes: ["agent may still be running on that host"] }
+				: { delegations: rows };
+			return Promise.resolve(
+				new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } }),
+			);
+		}) as unknown as typeof fetch;
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<DelegationsView token={null} />);
+		});
+		const click = async (el: Element | null | undefined) =>
+			act(async () => el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
+		await click([...container.querySelectorAll("button")].find((b) => b.textContent === "Stop"));
+		await click(container.querySelector(".confirm-ok"));
+		expect(container.querySelector(".deleg-stop-warn")?.textContent).toContain(
+			"agent may still be running on that host",
+		);
+	});
+
+	test("Stop asks first, posts the stop, then reloads the list (#414)", async () => {
+		let rows = [item(3, "running")];
+		const calls: string[] = [];
+		globalThis.fetch = ((input: string, init?: RequestInit) => {
+			const method = init?.method ?? "GET";
+			calls.push(`${method} ${input}`);
+			if (method === "POST") rows = [item(3, "stopped")];
+			const body = method === "POST" ? { outcome: "stopped", delegation: rows[0], notes: [] } : { delegations: rows };
+			return Promise.resolve(
+				new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } }),
+			);
+		}) as unknown as typeof fetch;
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<DelegationsView token={null} />);
+		});
+		const stop = [...container.querySelectorAll("button")].find((b) => b.textContent === "Stop");
+		await act(async () => stop?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
+		expect(calls.filter((c) => c.startsWith("POST"))).toEqual([]);
+		await act(async () =>
+			container
+				.querySelector(".confirm-ok")
+				?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event),
+		);
+		expect(calls).toContain("POST /api/app/delegations/3/stop");
+		expect(container.querySelectorAll(".deleg-now").length).toBe(0);
+		expect(container.textContent).toContain("stopped");
+	});
+
 	test("current work leads, old work is a table, brief shows one line", async () => {
 		await mount([
 			item(1, "done", { finishedAt: "2026-10-01T05:00:00.000Z" }),

@@ -27,6 +27,7 @@ import {
 } from "../config.ts";
 import { type ConversationStore, prepareAppSettingsForConfig } from "../conversation.ts";
 import { flatLine } from "../conversation-events.ts";
+import type { DelegationLifecycle } from "../delegation-lifecycle.ts";
 import type { Delegation, DelegationsStore } from "../delegations.ts";
 import { checkInjection } from "../injection.ts";
 import { log } from "../log.ts";
@@ -77,6 +78,7 @@ import type {
 	MemorySavesResponse,
 	MemoryStatusResponse,
 	OperatorDelegationItem,
+	OperatorDelegationStopResponse,
 	OperatorDelegationsResponse,
 	OperatorProgramItem,
 	OperatorProgramsResponse,
@@ -129,6 +131,8 @@ export interface OperatorDeps {
 	};
 	programs?: Pick<ProgramsStore, "list">;
 	delegations?: Pick<DelegationsStore, "list" | "active"> | null;
+	// The lifecycle's operator stop; absent = the stop route answers 503.
+	stopDelegation?: DelegationLifecycle["stopByOperator"];
 	// auth.jsonl record names only — values never cross this surface.
 	authNames?: () => string[];
 	secrets?: {
@@ -1446,6 +1450,30 @@ export async function handleOperatorRoute(
 		const rows = deps.delegations.list();
 		const body: OperatorDelegationsResponse = { delegations: rows.map(delegationItem) };
 		return Response.json(body, { headers: NO_STORE });
+	}
+
+	const stopMatch = /^delegations\/(\d{1,9})\/stop$/.exec(tail);
+	if (stopMatch !== null) {
+		if (req.method !== "POST")
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		if (!deps.stopDelegation) {
+			return Response.json(
+				{ error: "delegation is not configured" },
+				{ status: 503, headers: NO_STORE },
+			);
+		}
+		const id = Number(stopMatch[1]);
+		log.info(`delegation stop via ${actor.via}`, { ...who, delegation: id });
+		const out = await deps.stopDelegation(id);
+		if (out.kind === "no row") {
+			return Response.json({ error: "no such delegation" }, { status: 404, headers: NO_STORE });
+		}
+		const body: OperatorDelegationStopResponse = {
+			outcome: out.kind,
+			delegation: delegationItem(out.delegation),
+			notes: out.notes,
+		};
+		return Response.json(body, { status: out.kind === "stopped" ? 200 : 409, headers: NO_STORE });
 	}
 
 	if (tail === "status") {

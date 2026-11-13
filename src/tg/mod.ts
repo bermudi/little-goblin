@@ -34,7 +34,6 @@ import {
 } from "./commands.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { initializeBot } from "./init.ts";
-import { SPEAK_CALLBACK } from "./delivery.ts";
 import { floodWaitTransformer } from "./flood-wait.ts";
 import { registerGenerationStop } from "./generation-stop.ts";
 import {
@@ -58,7 +57,7 @@ import {
 	TEMP_SKILL_CALLBACK_RE,
 	type SkillCommandDeps,
 } from "./skill-command.ts";
-import { handleSpeakButton } from "./speak-button.ts";
+import { handleSpeakButton, SPEAK_CALLBACK } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import { mediaFromMessage, mediaParts, saveAttachment, unhandledMediaKind } from "./media.ts";
 import {

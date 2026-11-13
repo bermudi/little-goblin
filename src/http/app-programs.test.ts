@@ -5,11 +5,8 @@ import { join } from "node:path";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { startProgramOps } from "../program-ops.ts";
 import { hookTokenHash } from "../program-hook.ts";
-import {
-	openResponsibilities,
-	type ResponsibilityStore,
-	type Understanding,
-} from "../responsibilities.ts";
+import { openResponsibilities, type ResponsibilityStore } from "../responsibilities.ts";
+import type { Understanding } from "../responsibility-types.ts";
 import { makeResponsibilityService } from "../responsibility-service.ts";
 import { openWakeStore } from "../wake-store.ts";
 import { setup } from "./app-testing.ts";

@@ -25,7 +25,7 @@ import { makeToolCallRepair } from "../agent/tool-repair.ts";
 import type { AppLiveContext, AppQuota } from "../http/app-wire.ts";
 import { log } from "../log.ts";
 import { awaitRetryDelay, RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
-import type { EvidenceLimits, ToolCallDigest } from "../reviewer.ts";
+import type { EvidenceLimits, ToolCallDigest } from "../reviewer-evidence.ts";
 import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";

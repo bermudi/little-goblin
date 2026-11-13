@@ -13,7 +13,7 @@ import {
 import { policyOf } from "../tool-policy.ts";
 import { paths } from "../../home-layout.ts";
 import { log } from "../../log.ts";
-import { summarize } from "../../reviewer.ts";
+import { summarize } from "../../reviewer-evidence.ts";
 import { encodeScriptWorkerCode, SCRIPT_WORKER_URL } from "./script-worker.ts";
 import { truncatedFooter, trySpill, windowText } from "./truncate.ts";
 import { type ArtifactPresentation, artifactOf } from "./artifact-schema.ts";

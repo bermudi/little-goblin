@@ -11,7 +11,8 @@ import { join } from "node:path";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { openProjects } from "./projects.ts";
-import { type AttachmentTarget, openResponsibilities } from "./responsibilities.ts";
+import { openResponsibilities } from "./responsibilities.ts";
+import type { AttachmentTarget } from "./responsibility-types.ts";
 import {
 	authorityStamp,
 	makeAuthorityRecheck,

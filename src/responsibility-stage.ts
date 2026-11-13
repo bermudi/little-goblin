@@ -4,8 +4,8 @@
 // Attention and the scheduler all read this one definition, so "needs
 // the operator" cannot mean two things.
 
-import type { PromptOperation, Responsibility } from "./responsibilities.ts";
 import type { ResponsibilityReport } from "./responsibility-reports.ts";
+import type { PromptOperation, Responsibility } from "./responsibility-types.ts";
 
 export type WaitsFor = "operator" | "goblin" | "worker" | "nobody";
 

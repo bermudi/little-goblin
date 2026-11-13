@@ -1,7 +1,7 @@
 import { log } from "../log.ts";
 import { LOOP_DETECT_WARN, LoopDetector, type LoopDetectorState } from "../loop-detect.ts";
 import { LOOP_CHARS, LOOP_QUESTIONS, LOOP_WINDOW, loopState } from "../loop-watchdog.ts";
-import { summarize, type ToolCallDigest, toolOk } from "../reviewer.ts";
+import { summarize, type ToolCallDigest, toolOk } from "../reviewer-evidence.ts";
 import type { System1Client } from "../system1.ts";
 
 export type ForcedKind = "repeat" | "watchdog" | "context";

@@ -28,7 +28,8 @@ import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins
 import { captureConversationSettings, openStore } from "./conversation.ts";
 import { delegationWake, wireDelegation } from "./delegation-lifecycle.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
-import { makeDesktops, openDesktops } from "./desktops.ts";
+import { makeDesktops } from "./desktops.ts";
+import { openDesktops } from "./desktops-store.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { startHttp } from "./http/mod.ts";
 import { makeOperatorSeams } from "./http/operator.ts";
@@ -50,7 +51,7 @@ import { makeResponsibilityObserver } from "./responsibility-observer.ts";
 import { fileDelegationReport, fileRunReport } from "./responsibility-runs.ts";
 import { makeGithubReadiness } from "./github.ts";
 import { makeResponsibilityService } from "./responsibility-service.ts";
-import { wireReviewer } from "./reviewer.ts";
+import { wireReviewer } from "./reviewer-wiring.ts";
 import { Runtime } from "./runtime.ts";
 import { makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
 import { fireMail, fireWebhook, startScheduler } from "./scheduler.ts";

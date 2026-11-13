@@ -70,7 +70,9 @@ apply next turn without interrupting the current answer.
   journal existed. A duplicate never makes a second turn; an
   `edited_message` is not a second message (ruling 2026-10-13): while the
   original coalesces the edit amends buffered text in place, after commit
-  it's ack-and-log. A `file_unique_id` swap is a different message.
+  it's ack-and-log — acked in-channel with `Edit not applied — I already
+  read the original. Send it again to change it.` (2026-11-13). A
+  `file_unique_id` swap is a different message.
 - **Delivery**: a sendMessage timeout is ambiguous — the request may still
   land — **never resend**: stop the turn and best-effort send a "delivery
   uncertain" notice (fencing suppresses retries); a sendVoice timeout
@@ -185,6 +187,13 @@ part — the sender-selected `quote.text` when present, else a
 placeholder naming the origin (`@user`, hidden-user name, `chat
 "title"`, `channel "title"`) and the media kind — never silently
 dropped (2026-11-13).
+The quoted part is bound to 8000 chars in the model's view — the durable
+row keeps the full text — and a cut is marked `…[truncated N chars]`; a
+reply to a textless message renders `[replying to a <media kind>
+message]` (`[replying to a message]` when there is none) so the marker
+is never absent (2026-11-13). A `forward_origin` on the incoming message
+prefixes its text with `[Forwarded from <name> at <ISO date>]` — the
+model sees provenance, not unattributed words.
 (3) past the gap: with an assistant reply on record, the follow-up check decides (follow-up →
 current, new subject → fresh); with none, join. (4) no current conversation
 → fresh, no check. A fresh conversation starts empty; memory and

@@ -132,17 +132,55 @@ export function mediaFromMessage(msg: {
 	if (msg.sticker) {
 		const s = msg.sticker;
 		const staticImage = s.is_animated !== true && s.is_video !== true;
+		const video = s.is_video === true;
 		return {
 			fileId: s.file_id,
 			fileUniqueId: s.file_unique_id,
-			fileName: `sticker-${s.file_unique_id}.webp`,
-			mimeType: staticImage ? "image/webp" : "application/octet-stream",
+			fileName: `sticker-${s.file_unique_id}.${video ? "webm" : "webp"}`,
+			mimeType: video ? "video/webm" : staticImage ? "image/webp" : "application/octet-stream",
 		};
 	}
 	return null;
 }
 
 export type { SavedAttachment };
+
+// The bare-noun media kind of a message — for "[replying to a <kind>
+// message]" placeholders when a reply's target carries no text.
+export function repliedMediaKind(msg: {
+	photo?: unknown;
+	video?: unknown;
+	video_note?: unknown;
+	animation?: unknown;
+	audio?: unknown;
+	voice?: unknown;
+	document?: unknown;
+	sticker?: unknown;
+	location?: unknown;
+	venue?: unknown;
+	contact?: unknown;
+	poll?: unknown;
+	story?: unknown;
+	dice?: unknown;
+	paid_media?: unknown;
+}): string | null {
+	if (msg.photo !== undefined) return "photo";
+	if (msg.video !== undefined) return "video";
+	if (msg.video_note !== undefined) return "video note";
+	if (msg.animation !== undefined) return "animation";
+	if (msg.audio !== undefined) return "audio";
+	if (msg.voice !== undefined) return "voice";
+	if (msg.document !== undefined) return "document";
+	if (msg.sticker !== undefined) return "sticker";
+	if (msg.location !== undefined) return "location";
+	if (msg.venue !== undefined) return "venue";
+	if (msg.contact !== undefined) return "contact";
+	if (msg.poll !== undefined) return "poll";
+	if (msg.story !== undefined) return "story";
+	if (msg.dice !== undefined) return "dice";
+	if (msg.paid_media !== undefined) return "paid media";
+	return null;
+}
 
 export function unhandledMediaKind(msg: {
 	location?: unknown;

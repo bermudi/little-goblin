@@ -26,7 +26,13 @@ import { ensurePersonaClass, guestRefusalText, refusalDue } from "./guest.ts";
 import { sendRollMarker } from "./notify.ts";
 import { handleSkillCommand, skillCommandDeps } from "./skill-command.ts";
 import { pingTypingOnce } from "./delivery.ts";
-import { mediaFromMessage, mediaParts, saveAttachment, unhandledMediaKind } from "./media.ts";
+import {
+	mediaFromMessage,
+	mediaParts,
+	repliedMediaKind,
+	saveAttachment,
+	unhandledMediaKind,
+} from "./media.ts";
 import {
 	openTelegramInbox,
 	validatedInboxMedia,
@@ -41,6 +47,9 @@ import { navigateDm } from "./navigation.ts";
 export const QUIET_WINDOW_MS = 500;
 export const COALESCE_MAX_WAIT_MS = 10_000;
 export const ATTACHMENT_FAILED_PREFIX = "[attachment failed to download:";
+// Model-view bound on quoted reply context; the durable row keeps the
+// full text — longer input is marked, not silently cut (#493-L6).
+export const QUOTED_TEXT_LIMIT = 8_000;
 const OPERATOR_ONLY_REPLY = "This command is only available to operators.";
 const OPERATOR_ONLY_COMMANDS = new Set([
 	"/voice",
@@ -97,6 +106,22 @@ function describeExternalReply(ext: ExternalReplyInfo): string {
 	return `external reply to ${kind} from ${externalOriginLabel(ext.origin)}`;
 }
 
+function forwardOriginLabel(origin: MessageOrigin): string {
+	switch (origin.type) {
+		case "user": {
+			const u = origin.sender_user;
+			const name = [u.first_name, u.last_name].filter(Boolean).join(" ");
+			return name !== "" ? name : `user ${u.id}`;
+		}
+		case "hidden_user":
+			return origin.sender_user_name;
+		case "chat":
+			return origin.sender_chat.title ?? `chat ${origin.sender_chat.id}`;
+		case "channel":
+			return origin.chat.title ?? `channel ${origin.chat.id}`;
+	}
+}
+
 // `message_thread_id` also rides on non-forum comment threads (is_topic_message unset) — those stay bare-chat.
 export function conversationAddress(msg: {
 	chat: { id: number; type: string };
@@ -119,7 +144,12 @@ export interface BufferedItem {
 	parts: UIMessage["parts"];
 	replyTo: number | undefined;
 	quoted?:
-		| { messageId: number; text: string; excerpt?: boolean | undefined }
+		| {
+				messageId: number;
+				text: string;
+				excerpt?: boolean | undefined;
+				mediaKind?: string | undefined;
+			}
 		| undefined;
 	textIndex: number;
 	hasText: boolean;
@@ -212,7 +242,15 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 		});
 		return;
 	}
-	const text = msg.text ?? msg.caption ?? "";
+	// Forwarded text arrives indistinguishable from the sender's own words
+	// — the model needs the origin marker up front (#493-L5).
+	const body = msg.text ?? msg.caption ?? "";
+	const text =
+		msg.forward_origin === undefined
+			? body
+			: `[Forwarded from ${forwardOriginLabel(msg.forward_origin)} at ${new Date(msg.forward_origin.date * 1000).toISOString()}]${
+					body === "" ? "" : `\n${body}`
+				}`;
 	const addr = conversationAddress(msg);
 	const rolling = msg.chat.type === "private" && addr.kind === "dm" && isRollingChat(addr.chatId);
 	const lane = formatAddress(addr);
@@ -457,6 +495,12 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 	// with no reply_to_message. It is still quoted context — quote.text when
 	// the sender selected one, else a placeholder naming origin + media kind
 	// so the reply is never silently dropped (#476).
+	// An empty quote is a reply to media — remember what kind so the model
+	// view can still mark the reply (#493-L8).
+	const quotedMedia =
+		quotedReply !== undefined && (quotedReply.text ?? quotedReply.caption ?? "") === ""
+			? repliedMediaKind(quotedReply)
+			: null;
 	const quoted =
 		pingedConv !== null
 			? undefined
@@ -468,7 +512,10 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 						// context they never referenced (#475).
 						...(msg.quote?.text !== undefined
 							? { text: msg.quote.text, excerpt: true as const }
-							: { text: quotedReply.text ?? quotedReply.caption ?? "" }),
+							: {
+									text: quotedReply.text ?? quotedReply.caption ?? "",
+									...(quotedMedia !== null ? { mediaKind: quotedMedia } : {}),
+								}),
 					}
 				: msg.external_reply !== undefined
 					? {
@@ -511,10 +558,17 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 	const { deps } = env;
 	return enqueueIntake(env.intake, convId, async () => {
 		const parts: UIMessage["parts"] = [];
-		if (quoted !== undefined && quoted.text !== "") {
+		if (quoted !== undefined) {
 			parts.push({
 				type: "text",
-				text: `[replying to${quoted.excerpt === true ? " selected excerpt" : ""}: "${quoted.text.slice(0, 2_000)}"]`,
+				text:
+					quoted.text === ""
+						? `[replying to a ${quoted.mediaKind !== undefined ? `${quoted.mediaKind} ` : ""}message]`
+						: `[replying to${quoted.excerpt === true ? " selected excerpt" : ""}: "${
+								quoted.text.length > QUOTED_TEXT_LIMIT
+									? `${quoted.text.slice(0, QUOTED_TEXT_LIMIT)}…[truncated ${quoted.text.length - QUOTED_TEXT_LIMIT} chars]`
+									: quoted.text
+							}"]`,
 			});
 		}
 		const textIndex = parts.length;
@@ -610,6 +664,25 @@ function amendBufferedText(item: BufferedItem, text: string): void {
 	}
 }
 
+// An edit that lands after its batch committed cannot re-enter history
+// (settled ruling) — ack it in-channel so it isn't silently ignored
+// (#493-L7).
+function notifyEditMissed(env: IntakeEnv, msg: Message): void {
+	const addr = conversationAddress(msg);
+	void withTimeout(
+		env.api.sendMessage(
+			msg.chat.id,
+			"Edit not applied — I already read the original. Send it again to change it.",
+			addr.kind === "topic" ? { message_thread_id: addr.threadId } : {},
+		),
+		"sendMessage (post-commit edit notice)",
+	)
+		.then(() => undefined)
+		.catch((err: unknown) => {
+			log.warn("post-commit edit notice failed", err, { chat: msg.chat.id });
+		});
+}
+
 export function handleEditedMessage(env: IntakeEnv, msg: Message): void {
 	const hit = env.inbox.pendingByMessage(msg.chat.id, msg.message_id);
 	if (hit === null) {
@@ -617,6 +690,7 @@ export function handleEditedMessage(env: IntakeEnv, msg: Message): void {
 			chat: msg.chat.id,
 			message: msg.message_id,
 		});
+		notifyEditMissed(env, msg);
 		return;
 	}
 	void enqueueIntake(env.intake, hit.laneKey, async () => {
@@ -626,6 +700,7 @@ export function handleEditedMessage(env: IntakeEnv, msg: Message): void {
 				chat: msg.chat.id,
 				message: msg.message_id,
 			});
+			notifyEditMissed(env, msg);
 			return;
 		}
 		let mediaUniqueId: string | null | undefined;

@@ -35,6 +35,9 @@ const payloadSchema = z.strictObject({
 			// Set when text is the sender-selected quote excerpt
 			// (msg.quote), not the whole replied-to message.
 			excerpt: z.boolean().optional(),
+			// Media noun of the reply target when text is empty — the
+			// model still needs a reply marker (#493-L8).
+			mediaKind: z.string().optional(),
 		})
 		.optional(),
 	// Source topic for the intake typing ack — the destination
@@ -51,7 +54,12 @@ export interface InboxPayload {
 	media: IncomingMedia | null;
 	mediaError: string | null;
 	quoted?:
-		| { messageId: number; text: string; excerpt?: boolean | undefined }
+		| {
+				messageId: number;
+				text: string;
+				excerpt?: boolean | undefined;
+				mediaKind?: string | undefined;
+			}
 		| undefined;
 	threadId?: number | null | undefined;
 }

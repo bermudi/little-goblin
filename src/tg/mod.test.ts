@@ -1929,8 +1929,16 @@ describe("handleEditedMessage", () => {
 			tgMsg({ message_id: 44, chat: { id: 2, type: "private" }, text: "hello" }),
 		);
 		// A tombstone replay never reads — the landed turn keeps its
-		// history.
+		// history — but the edit is acked in-channel, not silently dropped.
 		expect(h.env.inbox.pending()).toEqual([]);
+		expect(h.apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				text: "Edit not applied — I already read the original. Send it again to change it.",
+				chat: 2,
+				opts: {},
+			},
+		]);
 		h.store.close();
 	});
 
@@ -2193,6 +2201,91 @@ describe("rolling dm", () => {
 		expect(h.apiCalls).toHaveLength(1);
 		expect(h.env.inbox.pending()).toEqual([]);
 		expect(h.pushed).toEqual([]);
+		h.store.close();
+	});
+
+	test("a reply to a media-only message marks the reply by media kind", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 41,
+				chat: { id: 7, type: "private" },
+				text: "what is this?",
+				reply_to_message: {
+					message_id: 39,
+					photo: [{ file_id: "f", file_unique_id: "u", width: 1, height: 1 }],
+				},
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({
+			type: "text",
+			text: "[replying to a photo message]",
+		});
+		expect(h.pushed[0]!.parts[1]).toEqual({ type: "text", text: "what is this?" });
+		h.store.close();
+	});
+
+	test("a reply to a plain textless message still marks the reply", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 42,
+				chat: { id: 7, type: "private" },
+				text: "hm",
+				reply_to_message: { message_id: 39 },
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({ type: "text", text: "[replying to a message]" });
+		h.store.close();
+	});
+
+	test("quoted context keeps 8000 chars and marks what it cut", async () => {
+		const h = routerHarness();
+		const long = "x".repeat(8_100);
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 43,
+				chat: { id: 7, type: "private" },
+				text: "yep",
+				reply_to_message: { message_id: 39, text: long },
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({
+			type: "text",
+			text: `[replying to: "${"x".repeat(8_000)}…[truncated 100 chars]"]`,
+		});
+		// The durable row keeps the full text — only the model view is bound.
+		expect(h.env.inbox.pending()[0]?.payload.quoted?.text).toBe(long);
+		h.store.close();
+	});
+
+	test("a forwarded message leads with its origin", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 44,
+				chat: { id: 7, type: "private" },
+				text: "look at this",
+				forward_origin: {
+					type: "channel",
+					date: 1_700_000_000,
+					chat: { id: -100, type: "channel", title: "Announce" },
+					message_id: 900,
+				},
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({
+			type: "text",
+			text: "[Forwarded from Announce at 2023-11-14T22:13:20.000Z]\nlook at this",
+		});
 		h.store.close();
 	});
 

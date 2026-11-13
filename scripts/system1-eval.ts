@@ -17,12 +17,11 @@ import { DEFAULT_INJECTION_THRESHOLDS, INJECTION_QUESTIONS } from "../src/inject
 import { setLogLevel } from "../src/log.ts";
 import { LOOP_QUESTIONS, loopState } from "../src/loop-watchdog.ts";
 import {
-	buildGateState,
-	GATE_QUESTIONS,
 	summarize,
 	type ToolCallDigest,
 	toolOk,
-} from "../src/reviewer.ts";
+} from "../src/reviewer-evidence.ts";
+import { buildGateState, GATE_QUESTIONS } from "../src/reviewer.ts";
 import { checkState, FOLLOW_UP_QUESTIONS, FRESH_BELOW } from "../src/rolling.ts";
 import {
 	DEFAULT_MODEL,

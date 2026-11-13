@@ -8,6 +8,7 @@ import { summarize, tally } from "./test-ratio.ts";
 import { checkAppAssets } from "./health/app-assets.ts";
 import { authCheck, cacheContracts, configCheck } from "./health/config-auth.ts";
 import { http } from "./health/http.ts";
+import { workspace } from "./health/workspace.ts";
 import {
 	capacity,
 	command,
@@ -22,42 +23,6 @@ import {
 	type ProbeContext,
 } from "./health/shared.ts";
 
-function workspace(home: string, phase: HealthReport["phase"]): HealthResult[] {
-	return [
-		["workspace", "directory", true],
-		["state", "directory", true],
-		["workspace/skills", "directory", true],
-		["workspace/skills-proposed", "directory", true],
-		["workspace/attachments", "directory", true],
-		["workspace/SOUL.md", "file", true],
-		["workspace/AGENTS.md", "file", true],
-		["workspace/USER.md", "file", false],
-	].map(([name, kind, required]) => {
-		const start = performance.now(),
-			path = join(home, String(name)),
-			scope = `caller-home:${home}`,
-			id = `workspace.${String(name).replaceAll("/", ".")}`;
-		try {
-			if (kind === "file") readBounded(path, 128 * 1024);
-			else {
-				if (!statSync(path).isDirectory()) throw new ProbeError("not-directory");
-				const fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
-				closeSync(fd);
-			}
-			return result(id, scope, "pass", `Readable expected ${kind}: ${name}`, start);
-		} catch (error) {
-			if (errno(error) === "ENOENT")
-				return result(
-					id,
-					scope,
-					!required || phase === "preflight" ? "skip" : "fail",
-					`${name}: ENOENT; ${!required ? "optional prompt" : phase === "preflight" ? "boot-created layout not yet required" : "required installed layout missing"}`,
-					start,
-				);
-			return failure(id, scope, error, start, `Inspect ${name}`);
-		}
-	});
-}
 // Feature tables join the expectation only while their config block
 // exists — delegations needs `delegation`, memory_outage needs
 // `memory`, and the telegram channel tables need the boot-pinned

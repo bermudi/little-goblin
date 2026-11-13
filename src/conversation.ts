@@ -4,7 +4,6 @@ import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { type Config, splitModelRef } from "./config-schema.ts";
-import { log } from "./log.ts";
 import { MemoryDestinations } from "./memory/destinations.ts";
 import type { MemoryDocument } from "./memory/hindsight.ts";
 import { MemoryContexts, type MemoryEligibility, messageText } from "./memory/mod.ts";
@@ -17,6 +16,7 @@ import {
 	makeConversationHistory,
 } from "./conversation-history.ts";
 import { makeConversationCompaction } from "./conversation-compaction.ts";
+import { makeConversationDelete } from "./conversation-delete.ts";
 import { makeConversationFork } from "./conversation-fork.ts";
 import { makeConversationRolling } from "./conversation-rolling.ts";
 import { type MessageEdit, makeConversationTranscript } from "./conversation-transcript.ts";
@@ -29,7 +29,6 @@ import {
 } from "./conversation-settings.ts";
 import { coordinationAnchors } from "./responsibilities.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
-import { sweepConversationWakes } from "./wake-store.ts";
 import {
 	type AppConversationSummary,
 	type Conversation,
@@ -80,21 +79,6 @@ export function prepareAppSettingsForConfig(
 		for (const row of rows) store.initializeAppSettings(row.id, previous);
 	})();
 }
-
-// deleteConversation's designed refusal (coordination anchors), typed so
-// a boundary can tell it from a real failure — the app's DELETE route
-// must answer it, not 500 it.
-export class DeleteRefused extends Error {}
-
-// One text for both surfaces: deleteRefusal's advisory answer and
-// deleteConversation's throw must never drift apart.
-const deleteRefusalText = (
-	id: string,
-	anchors: { responsibilityId: string; status: string }[],
-): string =>
-	`conversation ${id} coordinates ${anchors
-		.map((a) => `${a.responsibilityId} (${a.status})`)
-		.join(", ")} — resolve them before deleting`;
 
 // The write side plus the shared handles. Every read lives on
 // ConversationReads (conversation-read.ts), which this extends —
@@ -253,15 +237,9 @@ export function openStore(dbPath: string): ConversationStore {
 		qListApp,
 		qProjectConvs,
 		qLastAppEvent,
-		qDeleteEvents,
-		qDeleteCompactions,
-		qDeleteContexts,
-		qDeleteWindows,
-		qDeleteClaudeSessions,
-		qDeleteConv,
 	} = queries;
 
-	const rolling = makeConversationRolling(db, queries);
+	const rolling = makeConversationRolling(db, queries, toConversation);
 
 	const { applyPatch, readSettings, initializeSettings, bump } = makeConversationSettings(
 		db,
@@ -271,7 +249,7 @@ export function openStore(dbPath: string): ConversationStore {
 
 	const compaction = makeConversationCompaction(queries);
 
-	const fork = makeConversationFork(db, queries, applyPatch);
+	const fork = makeConversationFork(db, queries, applyPatch, toConversation);
 
 	const historyView = makeConversationHistory(
 		db,
@@ -284,6 +262,8 @@ export function openStore(dbPath: string): ConversationStore {
 		bump,
 		messageEvent: historyView.messageEvent,
 	});
+
+	const deletion = makeConversationDelete(db, queries, memoryQueue, coordinationAnchors);
 
 	return {
 		db,
@@ -483,87 +463,7 @@ export function openStore(dbPath: string): ConversationStore {
 			return qProjectConvs.all(projectId).map((r) => r.id);
 		},
 
-		deleteRefusal(id) {
-			const anchors = coordinationAnchors(db, id);
-			return anchors.length > 0 ? deleteRefusalText(id, anchors) : null;
-		},
-
-		deleteConversation(id) {
-			const swept = db.transaction((): { wakes: number; workEvents: number } => {
-				// A coordination surface must not outlive the responsibility
-				// that stands on it: the handover loop and wake delivery
-				// would both dangle. Terminal responsibilities keep their
-				// records — the conversation stays too. Refuse with names,
-				// not the bare FK error the row delete would raise.
-				const anchors = coordinationAnchors(db, id);
-				if (anchors.length > 0) {
-					throw new DeleteRefused(deleteRefusalText(id, anchors));
-				}
-				// Sever the rolling navigation chain first — successors'
-				// previous_dm_id would FK-fail the row delete (a demoted
-				// lane's persona reset is the one caller that deletes a
-				// rolled conversation; /back must not reach it anyway).
-				db.run("UPDATE conversations SET previous_dm_id = NULL WHERE previous_dm_id = ?", [id]);
-				// Preserve the lane's rolling ordinal high-water before
-				// dropping the FK-enforced dm_rolls row, so a demoted lane
-				// re-mints a fresh id instead of colliding with (or reusing)
-				// the deleted conversation.
-				db.run(
-					`INSERT INTO dm_roll_highwater (chat_id, n)
-					SELECT chat_id, n FROM dm_rolls WHERE current_id = ?
-					ON CONFLICT(chat_id) DO UPDATE SET
-						n = MAX(dm_roll_highwater.n, excluded.n)`,
-					[id],
-				);
-				// The lane pointer is NOT NULL — dropping the deleted row's
-				// dm_rolls entry is the sever; the high-water survives in
-				// dm_roll_highwater and rollDm re-mints the lane (the reset
-				// flow calls it immediately).
-				db.run("DELETE FROM dm_rolls WHERE current_id = ?", [id]);
-				// Record the final epoch before the row goes — a recreated id
-				// must not collide with a token this generation issued.
-				const gone = qGet.get(id);
-				if (gone !== null) {
-					db.run(
-						`INSERT INTO conversation_epoch_hwm (conversation_id, epoch) VALUES (?, ?)
-						 ON CONFLICT(conversation_id) DO UPDATE SET epoch = MAX(epoch, excluded.epoch)`,
-						[gone.id, gone.epoch],
-					);
-				}
-				// Wake rows are this conversation's delivery bookkeeping —
-				// they ride the delete, in the same transaction.
-				const counts = sweepConversationWakes(db, id);
-				qDeleteEvents.run(id);
-				qDeleteCompactions.run(id);
-				qDeleteContexts.run(id);
-				// The captured window has no FK — it rides the sweep so a
-				// re-minted id never inherits the last generation's prompt.
-				// Same for the native session records (#418).
-				qDeleteWindows.run(id);
-				qDeleteClaudeSessions.run(id);
-				qDeleteConv.run(id);
-				return counts;
-			})();
-			if (swept.wakes > 0) {
-				log.info("wake rows swept with conversation", {
-					conversation: id,
-					wakes: swept.wakes,
-					workEvents: swept.workEvents,
-				});
-			}
-			// The purge waits for the commit: queued retention rides the
-			// append transaction only, so cancelling before the delete and
-			// then rolling back would strand those rows forever. A purge
-			// failure is still a warn — a corrupt payload must not bar the
-			// delete that already landed.
-			try {
-				memoryQueue.cancelConversation(id);
-			} catch (err) {
-				log.warn("retention purge failed during conversation delete", err, {
-					conversation: id,
-				});
-			}
-		},
+		...deletion,
 
 		close() {
 			db.close();

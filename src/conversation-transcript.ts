@@ -8,7 +8,7 @@ import type { UIMessage } from "ai";
 import { log } from "./log.ts";
 import { stampArrival } from "./message-context.ts";
 import type { MemoryDocument } from "./memory/hindsight.ts";
-import { MemoryQueue } from "./memory/queue.ts";
+import type { MemoryQueue } from "./memory/queue.ts";
 import type { ConversationQueries } from "./conversation-queries.ts";
 
 // The observable shape of an edit's sweep: the cut is the edited event's

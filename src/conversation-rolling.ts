@@ -11,9 +11,12 @@ import {
 	rollingDmOrdinal,
 } from "./conversation-address.ts";
 import type { ConversationQueries, Row } from "./conversation-queries.ts";
-import { toConversation } from "./conversation-read.ts";
 
-export function makeConversationRolling(
+// toConversation arrives as a dep, not an import: conversation-read sits
+// inside the frozen import-cycle cluster, and importing it — even as a
+// type — would pull this module in (import-cycles.test.ts). The factory
+// is generic over the mapped shape for the same reason.
+export function makeConversationRolling<TConversation>(
 	db: Database,
 	queries: Pick<
 		ConversationQueries,
@@ -25,6 +28,7 @@ export function makeConversationRolling(
 		| "qGet"
 		| "qInsertConv"
 	>,
+	toConversation: (r: Row) => TConversation,
 ) {
 	const { qDmRoll, qDmOrdinalCandidates, qDmRollHighwater, qUpsertRoll, qSelectPrevious, qGet, qInsertConv } =
 		queries;

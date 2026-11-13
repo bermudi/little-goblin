@@ -7,7 +7,8 @@ import { pruningReplacement } from "./cache-pruning.ts";
 import { appAddress, appIdOf, channelOf, formatAddress, parseAddress } from "./conversation-address.ts";
 import type { ParsedAddress } from "./conversation-address.ts";
 import type { ConversationStore } from "./conversation.ts";
-import { DeleteRefused, openStore } from "./conversation.ts";
+import { DeleteRefused } from "./conversation-delete.ts";
+import { openStore } from "./conversation.ts";
 import {
 	EVENTS_THROUGH_SQL,
 	HISTORY_CAUSAL_SQL,

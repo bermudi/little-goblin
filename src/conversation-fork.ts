@@ -5,13 +5,16 @@
 
 import type { Database } from "bun:sqlite";
 import { appAddress, formatAddress } from "./conversation-address.ts";
-import type { ConversationQueries } from "./conversation-queries.ts";
-import { toConversation } from "./conversation-read.ts";
+import type { ConversationQueries, Row } from "./conversation-queries.ts";
 import type { ConversationMetaPatch, ModelSettings } from "./conversation-settings.ts";
 import { modelSettingsSchema } from "./conversation-settings.ts";
 import { retargetPruningMarker } from "./pruning-marker.ts";
 
-export function makeConversationFork(
+// toConversation arrives as a dep, not an import: conversation-read sits
+// inside the frozen import-cycle cluster, and importing it — even as a
+// type — would pull this module in (import-cycles.test.ts). The factory
+// is generic over the mapped shape for the same reason.
+export function makeConversationFork<TConversation>(
 	db: Database,
 	queries: Pick<
 		ConversationQueries,
@@ -30,6 +33,7 @@ export function makeConversationFork(
 		| "qInsertProjection"
 	>,
 	applyPatch: (id: string, patch: ConversationMetaPatch) => void,
+	toConversation: (r: Row) => TConversation,
 ) {
 	const {
 		qGet,

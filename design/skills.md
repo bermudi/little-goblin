@@ -271,7 +271,10 @@ job (tune it, don't duplicate it).
   operator's hands for installs. The `## skills` section lists pending
   proposals too, so an approve request works in any conversation. Manual
   installs are unchanged: the operator asking in chat IS the approval —
-  the ruling covers only the unattended path.
+  the ruling covers only the unattended path. The section header says
+  so outright (#485): write or edit only when the operator asks, never
+  on the model's own initiative — self-initiated lessons are the
+  reviewer's job when configured, not a direct catalog write.
 - **A proposal shows what it changes (ruling 2026-11-07, issue #162).**
   The operator cannot judge an update from the new bytes alone. The
   Skills read (`listSkills`) attaches a `diff` to every parked proposal,

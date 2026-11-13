@@ -69,8 +69,11 @@ Tell the bot your sources once and it remembers.
 
 ## Automatic proposals
 
-After a turn where you corrected it or it worked through a repeatable
-procedure, the bot may draft what it learned as a skill on its own.
+This runs only with the optional `reviewer` block in the config —
+without it the bot writes skills only when you ask, never on its own.
+With it: after a turn where you corrected it or it worked through a
+repeatable procedure, the bot may draft what it learned as a skill on
+its own.
 Drafts never install themselves: they park in `workspace/skills-proposed/`
 and the bot says so in the topic (*"proposed skill: X — approve to
 install"*). Approve and it moves the draft into the catalog; say discard

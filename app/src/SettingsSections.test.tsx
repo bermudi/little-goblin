@@ -539,6 +539,121 @@ describe("Delegation", () => {
 		expect(savedBodies.at(-1)?.capabilities).toEqual({ delegation: false });
 	});
 
+	const delegationSwitches = [
+		{ section: "Delegation", label: "delegation" },
+		{ section: "Capabilities", label: "Delegate to coding agents" },
+	];
+	for (const off of delegationSwitches) {
+		for (const on of delegationSwitches) {
+			test(`${off.section} off → save → reload → ${on.section} on restores delegation`, async () => {
+				const delegation = {
+					harnesses: {
+						pi: { kind: "pi" },
+						"pi-review": {
+							kind: "pi",
+							args: ["--model", "fixture/review", "--verbose"],
+							askFirst: true,
+						},
+					},
+					defaults: { default: "pi", review: "pi-review", overflow: "remote" },
+				};
+				const machines = {
+					testbox: {
+						machine: "testbox",
+						root: "~/build",
+						harnesses: { remote: { kind: "pi" } },
+					},
+				};
+				settings = parseConfig({ ...BASE, delegation: { ...delegation, machines } });
+				caps = CAPS({ delegation: { state: "on", hint: null } });
+				await mountSettings();
+				await openSection(off.section);
+				const offSwitch = () => container.querySelector(`[aria-label="${off.label}"]`);
+				expect(offSwitch()?.getAttribute("aria-pressed")).toBe("true");
+				await click(offSwitch());
+				await waitFor(
+					() =>
+						savedBodies.length === 1 &&
+						container.querySelector(".savebar-msg")?.textContent === "Saved.",
+					"delegation off save acknowledgement",
+				);
+				expect(offSwitch()?.getAttribute("aria-pressed")).toBe("false");
+				expect(savedBodies[0]?.delegation).toBe("");
+				expect(savedBodies[0]?.capabilities).toEqual({ delegation: false });
+
+				// A new mount loses the in-memory stash. Supply the server's
+				// post-save GET shape; route tests cover the actual parking write.
+				await act(async () => root?.unmount());
+				root = null;
+				settings = parseConfig({
+					...BASE,
+					parked: { delegation: { ...delegation, machines } },
+				});
+				caps = CAPS();
+				await mountSettings();
+				await openSection("Delegation");
+				expect(
+					container.querySelector('[aria-label="delegation"]')?.getAttribute("aria-pressed"),
+				).toBe("false");
+				expect(container.querySelector(".del-harness")).toBeNull();
+				await click(container.querySelector(".ops-back button"));
+				await openSection("Capabilities");
+				expect(
+					container
+						.querySelector('[aria-label="Delegate to coding agents"]')
+						?.getAttribute("aria-pressed"),
+				).toBe("false");
+				expect(savedBodies).toHaveLength(1);
+				if (on.section === "Delegation") {
+					await click(container.querySelector(".ops-back button"));
+					await openSection("Delegation");
+				}
+				await click(container.querySelector(`[aria-label="${on.label}"]`));
+				await waitFor(
+					() =>
+						savedBodies.length === 2 &&
+						container.querySelector(".savebar-msg")?.textContent === "Saved.",
+					"restored delegation save acknowledgement",
+				);
+				expect(savedBodies[1]?.capabilities).toEqual({ delegation: true });
+				// Machine config is file-only, but its harness remains a valid
+				// role pick. The page must not serialize machines into the POST.
+				expect(savedBodies[1]?.delegation).toEqual(delegation);
+
+				await click(container.querySelector(".ops-back button"));
+				await openSection("Capabilities");
+				expect(
+					container
+						.querySelector('[aria-label="Delegate to coding agents"]')
+						?.getAttribute("aria-pressed"),
+				).toBe("true");
+				await click(container.querySelector(".ops-back button"));
+				await openSection("Delegation");
+				expect(
+					container.querySelector('[aria-label="delegation"]')?.getAttribute("aria-pressed"),
+				).toBe("true");
+				expect(container.querySelectorAll(".del-harness")).toHaveLength(2);
+				expect(container.querySelector<HTMLTextAreaElement>("#del-args-1")?.value).toBe(
+					"--model\nfixture/review\n--verbose",
+				);
+				expect(
+					container
+						.querySelector('[aria-label="ask first for pi-review"]')
+						?.getAttribute("aria-pressed"),
+				).toBe("true");
+				for (const [role, harness] of Object.entries(delegation.defaults)) {
+					expect(
+						container.querySelector<HTMLSelectElement>(`[aria-label="agent for role ${role}"]`)
+							?.value,
+					).toBe(harness);
+				}
+				expect(container.querySelector('option[value="remote"]')?.textContent).toBe(
+					"remote (machine)",
+				);
+			});
+		}
+	}
+
 	test("editing a lone non-default role does not invent a broken default row", async () => {
 		settings = parseConfig({
 			...BASE,

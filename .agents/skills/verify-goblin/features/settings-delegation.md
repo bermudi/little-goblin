@@ -8,6 +8,12 @@ before each use), and the role → agent defaults. Driven: add an agent,
 set the `default` role, add a `review` role, remove a role, off/on
 parking.
 
+The page regression tests cover all four off → save → reload → on
+combinations of the Delegation and Capabilities switches. They check the
+park marker, both switches staying off after a fresh mount, restored
+args/ask-first/defaults, and machine-side role choices. Their settings
+GET/POST responses are fixtures; the route tests cover the parking write.
+
 ## How to get to it (user POV)
 
 Sidebar → Settings → Delegation → switch "delegate to coding agents" on.
@@ -51,3 +57,11 @@ Proof: the savebar says `Saved.`, the block appears in
   the role selects as `<name> (machine)`.
 - Nothing here proves a launch. `delegate` needs herdr and a real agent
   binary, which the throwaway instance does not have.
+
+To check restoration after a page reload, wait for `Saved.` after setup,
+then switch delegation off and wait for `Saved.` again. Reload the page.
+Both Settings → Delegation and Settings → Capabilities must show it off.
+Enable it from Capabilities, wait for `Saved.`, then open Delegation:
+the agents, args, ask-first flags and role defaults must be back. Repeat
+with the sections swapped. Check `goblin.json5` after each save: off has
+only `parked.delegation`; on has only the active `delegation` block.

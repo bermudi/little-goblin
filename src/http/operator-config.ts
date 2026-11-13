@@ -23,7 +23,7 @@ import {
 } from "../config.ts";
 import { log } from "../log.ts";
 import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "../services.ts";
-import type { OperatorRequest } from "./operator.ts";
+import type { OperatorRequest } from "./operator-deps.ts";
 import { fail, json, methodNotAllowed, NO_STORE, readBody } from "./operator-http.ts";
 import type {
 	CapabilityState,

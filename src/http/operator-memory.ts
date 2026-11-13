@@ -11,7 +11,7 @@ import {
 } from "../memory/hindsight.ts";
 import { memoryStatus } from "../memory/mod.ts";
 import { conversationOfDocId, splitSaves } from "../memory/saves.ts";
-import type { OperatorDeps, OperatorRequest } from "./operator.ts";
+import type { OperatorDeps, OperatorRequest } from "./operator-deps.ts";
 import { fail, json, methodNotAllowed, readBody } from "./operator-http.ts";
 import type {
 	MemoriesListResponse,

@@ -6,7 +6,7 @@ import { checkInjection } from "../injection.ts";
 import { log } from "../log.ts";
 import { liveStateOf, skillDiskPresence, skillNameSchema } from "../skill-provenance.ts";
 import { listSkills, readSkillFile } from "../stateview.ts";
-import type { OperatorRequest } from "./operator.ts";
+import type { OperatorRequest } from "./operator-deps.ts";
 import { fail, json, methodNotAllowed, readBody, SEGMENT_SCHEMA } from "./operator-http.ts";
 import type {
 	SkillDecideResponse,

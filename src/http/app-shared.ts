@@ -16,7 +16,7 @@ import type { ProgramApproval } from "../program-approval.ts";
 import type { ProgramOps } from "../program-ops.ts";
 import type { AppPush } from "../app-push.ts";
 import type { AppConfigView, AppNoteRewriteRequest } from "./app-wire.ts";
-import type { OperatorDeps } from "./operator.ts";
+import type { OperatorDeps } from "./operator-deps.ts";
 
 export const NO_STORE = { "cache-control": "no-store" };
 

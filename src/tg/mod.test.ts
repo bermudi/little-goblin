@@ -7,13 +7,10 @@ import { HindsightClient } from "../memory/hindsight.ts";
 import { tmpDb, useHome } from "../testkit.ts";
 import { COMMANDS, type CommandMemoryDeps, DM_COMMANDS } from "./commands.ts";
 import { GUEST_REFUSAL, resetRefusalLatchForTests } from "./guest.ts";
-import {
-	accessGate,
-	applyCommands,
-	applyMenuButton,
-	conversationAddress,
-	SHARED_CHAT_NOTE,
-} from "./mod.ts";
+import { accessGate } from "./access-gate.ts";
+import { applyCommands, applyMenuButton } from "./bot.ts";
+import { conversationAddress } from "./intake.ts";
+import { SHARED_CHAT_NOTE } from "./turn-input.ts";
 
 const baseConfig: Config = {
 	providers: {
@@ -329,16 +326,16 @@ import type { TurnSink } from "../turn/sink.ts";
 import { CoalescingBuffer } from "./buffer.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { type InboxPayload, openTelegramInbox } from "./inbox.ts";
+import { flushConversation } from "./flush.ts";
 import {
 	type BufferedItem,
-	flushConversation,
 	handleEditedMessage,
 	handleMessage,
 	handleMessageDurably,
 	InboxRecordError,
 	type IntakeEnv,
 	replayInbox,
-} from "./mod.ts";
+} from "./intake.ts";
 import { openPings, type PingStore } from "./pings.ts";
 
 function tgMsg(p: Record<string, unknown>): Message {

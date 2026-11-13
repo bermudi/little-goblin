@@ -108,7 +108,7 @@ async function boot() {
 	// Shared ref: the mini app swaps this in place on save; everything
 	// reads .current at point of use.
 	const configRef: ConfigRef = { current: config, ttsDown: false };
-	// The Telegram client reads apiRoot once, at process start (tg/mod.ts).
+	// The Telegram client reads apiRoot once, at process start (tg/bot.ts).
 	// A later save writes the file but not the live client, so it is hinted.
 	const apiRootBoot = config.telegram.apiRoot;
 	const auth = loadAuth();

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { type ApiClientOptions, Bot } from "grammy";
 import { makeBotCleanup } from "./cleanup.ts";
-import type { RunningBot } from "./mod.ts";
+import type { RunningBot } from "./bot.ts";
 
 function fixture(failStop: boolean, failDrain: boolean) {
 	const calls: string[] = [];

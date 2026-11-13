@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { checkAppAssets } from "../src/health.ts";
+import { checkAppAssets } from "../src/health/app-assets.ts";
 
 try {
 	if (process.argv.length !== 3) throw new Error("usage");

@@ -27,11 +27,8 @@ import { openTelegramInbox } from "./tg/inbox.ts";
 import { openPings } from "./tg/pings.ts";
 import { openCacheObservation } from "./cache-observation.ts";
 import { openTurnJournal } from "./turn-journal.ts";
-import {
-	checkAppAssets,
-	runHealth,
-	testRatio,
-} from "./health.ts";
+import { checkAppAssets } from "./health/app-assets.ts";
+import { runHealth, testRatio } from "./health.ts";
 import {
 	healthReportSchema,
 	healthResultSchema,

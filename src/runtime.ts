@@ -721,7 +721,8 @@ export class Runtime {
 		};
 		// The crash journal's per-attempt row — turn/run-record.ts owns its
 		// lifecycle; the attempt's finally guard is the backstop that a
-		// begun row never escapes still 'running'.
+		// begun row never escapes still 'running' except a deliberate
+		// shutdown leave (#471).
 		const journal = this.deps.turnJournal;
 		// An operator-resume admission carries the interrupted run it
 		// continues — every attempt of this turn links its run row to it
@@ -750,7 +751,8 @@ export class Runtime {
 			// reads it through this getter — never a write-back callback.
 			runId: () => authority?.runId ?? null,
 		});
-		const { journalFault, journaled, stampRun, recordUnlandedProgress, fallback } = record;
+		const { journalFault, journaled, stampRun, leaveRunning, recordUnlandedProgress, fallback } =
+			record;
 		// The aborted outcome's cause: a shutdown fence must read as a
 		// restart, not an operator stop. Other fences have several sources
 		// (stop, settings change, correction, navigation roll) — the wording
@@ -1186,13 +1188,22 @@ export class Runtime {
 				controller.abort();
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
 				announcePreRunFailure(err);
-				// What already ran stays transcript — the sanctioned post-fence
-				// state write, before the stamp wake settling reads.
-				recordUnlandedProgress(
-					{ kind: "aborted", cause: fencedCause() },
-					await replyFromWire(live.chunks),
-				);
-				stampRun("fenced", "undelivered");
+				if (this.closed) {
+					// #471 — a shutdown fence is a crash for the journal: the row
+					// stays 'running' and nothing is recorded here. The next open
+					// reclassifies it 'interrupted' and records its unlanded
+					// progress in the same transaction, so the boot notice,
+					// /interrupted and /resume all reach it.
+					leaveRunning();
+				} else {
+					// What already ran stays transcript — the sanctioned post-fence
+					// state write, before the stamp wake settling reads.
+					recordUnlandedProgress(
+						{ kind: "aborted", cause: fencedCause() },
+						await replyFromWire(live.chunks),
+					);
+					stampRun("fenced", "undelivered");
+				}
 				await notifyAll({ kind: "fenced" });
 			} else if (err instanceof ContextOverflowError) {
 				// Recover once: compact the failed attempt and resume with its partial
@@ -1244,19 +1255,25 @@ export class Runtime {
 						{ kind: "failed", failure: outcome.message },
 						await replyFromWire(live.chunks),
 					);
-				} else if (outcome.kind === "fenced") {
+				} else if (outcome.kind === "fenced" && !this.closed) {
 					// A fence landing during recovery is still a fence: the
-					// attempt's completed work stays transcript.
+					// attempt's completed work stays transcript. A shutdown
+					// fence skips the record — the next open's interrupted
+					// rail owns it (#471).
 					recordUnlandedProgress(
 						{ kind: "aborted", cause: fencedCause() },
 						await replyFromWire(live.chunks),
 					);
 				}
 				announcePreRunFailure(err);
-				stampRun(
-					outcome.kind === "fenced" ? "fenced" : "error",
-					outcome.kind === "fenced" ? "undelivered" : "failed",
-				);
+				if (outcome.kind === "fenced" && this.closed) {
+					leaveRunning();
+				} else {
+					stampRun(
+						outcome.kind === "fenced" ? "fenced" : "error",
+						outcome.kind === "fenced" ? "undelivered" : "failed",
+					);
+				}
 				await notifyAll(
 					outcome.kind === "fenced"
 						? { kind: "fenced" }
@@ -1378,8 +1395,10 @@ export class Runtime {
 		} finally {
 			// Whatever escaped the catch above — a throw inside recovery
 			// or notifyAll — must not leave a begun row 'running': rows
-			// left 'running' mean process death, and only the journal
-			// gets to say that.
+			// left 'running' mean process death (a graceful shutdown
+			// included, #471), and only the journal gets to say that. The
+			// shutdown fence's leaveRunning seals the record first, so
+			// this guard stays a no-op on the one deliberate escape.
 			stampRun("error", "failed");
 		}
 		return { kind: "done" };

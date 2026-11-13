@@ -45,6 +45,14 @@ export interface RunRecord {
 		status: "fenced" | "completed" | "error",
 		delivery: "delivered" | "undelivered" | "failed",
 	): void;
+	// A shutdown fence leaves the row 'running' on purpose (#471): for
+	// the journal a graceful restart IS process death, so the next open
+	// reclassifies it 'interrupted' and records its unlanded progress
+	// itself — boot notices, /interrupted and /resume all reach it.
+	// Seals the record so the attempt's finally guard cannot stamp over
+	// the deliberate 'running'; no ownership end either — there is no
+	// terminal stamp for the dispatcher to settle off.
+	leaveRunning(): void;
 	// `reply` is the wire-streamed partial (replyFromWire) — it donates
 	// the event's id and rides its metadata; null when nothing streamed.
 	recordUnlandedProgress(outcome: UnlandedOutcome, reply: UIMessage | null): void;
@@ -74,7 +82,8 @@ export interface RunRecordDeps {
 // overflow resume opens a second row — the failed attempt keeps its own
 // record), stamped terminal exactly once. The attempt's finally guard is
 // the invariant's backstop: a begun row never escapes the attempt still
-// 'running', whatever the escape path.
+// 'running', whatever the escape path — except a shutdown fence, whose
+// leaveRunning is the deliberate exception (#471).
 export function openRunRecord(deps: RunRecordDeps): RunRecord {
 	const { journal, store, convId, epoch, convModel, recovery, ownedInputSeqs } = deps;
 	// design/model.md → Model fallback list. Only a fresh turn walks the
@@ -116,6 +125,10 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 			throw err;
 		}
 	};
+	// True once the row's fate is decided: stamped terminal, or left
+	// 'running' on purpose by a shutdown fence. Both suppress the
+	// attempt's finally guard — the second is the one 'running' a begun
+	// row may legitimately escape with.
 	let runStamped = false;
 	const stampRun = (
 		status: "fenced" | "completed" | "error",
@@ -192,6 +205,9 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 		journalFault,
 		journaled,
 		stampRun,
+		leaveRunning: () => {
+			runStamped = true;
+		},
 		recordUnlandedProgress,
 		markReplyLanded: () => {
 			replyLanded = true;

@@ -144,9 +144,10 @@ async function boot() {
 	const windowCapture = openWindowCapture(store.db);
 	// The crash journal shares the store's handle like the tg inbox.
 	// Its open reclassifies rows left 'running' — a graceful shutdown
-	// fences first, so 'running' at open means the process died mid-turn
-	// — and records each such run's unlanded progress in history inside
-	// the same transaction (#195): the work that already happened stays
+	// leaves its fenced rows 'running' on purpose (#471), so 'running'
+	// at open means the turn died with the process — and records each
+	// such run's unlanded progress in history inside the same
+	// transaction (#195): the work that already happened stays
 	// transcript even though the process never got to say so.
 	const turnJournal = openTurnJournal(store.db, {
 		onInterrupted: (run, calls) => appendInterruptedProgress(store, run, calls),

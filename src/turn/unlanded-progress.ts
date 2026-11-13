@@ -24,11 +24,12 @@ const KEPT_CALLS = 30;
 const UNKNOWN_LINE =
 	"OUTCOME UNKNOWN: dispatched with no recorded result; the effect may or may not have happened.";
 
-// How the turn ended without a reply. `aborted` is a graceful fence —
-// /stop, a settings change, shutdown — recorded at fence time even
+// How the turn ended without a reply. `aborted` is an operator/epoch
+// fence — /stop, a settings change — recorded at fence time even
 // though the attempt has lost authority (the sanctioned post-fence
 // state write). `interrupted` is process death, recorded at the next
-// journal open.
+// journal open — a shutdown fence rides it too, its row left 'running'
+// on purpose (#471).
 export type UnlandedOutcome =
 	| { kind: "failed"; failure: string }
 	| { kind: "aborted"; cause: string }

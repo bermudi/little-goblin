@@ -1,7 +1,7 @@
 // The clock guard (#386, pitfall 5): a test that freezes `NOW` cannot pin
 // code that reads the real clock itself — 3acc0ba5 went red once the
 // fixture's date passed. New time-dependent code takes `now` from its
-// caller (a `now = Date.now()` default parameter is the seam). Direct
+// caller; a `now = Date.now()` default parameter is not counted. Direct
 // reads in src/ and app/src/ are frozen per file below: a file may lose
 // reads, never gain them, and a file not listed may have none. Prune by
 // hand; print the live counts to copy from with:
@@ -11,7 +11,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
-const CLOCK_RE = /\bDate\.now\(\)|\bnew Date\(\s*\)/g;
+// A `now = Date.now()` default parameter is the seam, not a read.
+const CLOCK_RE = /(?<!(?:^|[(,])\s*now(?:\??\s*:\s*number)?\s*=\s*)\bDate\.now\(\)|\bnew Date\(\s*\)/gm;
 
 function walk(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -56,6 +57,12 @@ describe("clock guard", () => {
 		expect(clockReadGrowth(live, FROZEN)).toEqual([]);
 	});
 
+	test("the seam is not a read", () => {
+		const seam = "function age(at: number,\n\tnow = Date.now(),\n) {}\nconst f = (now: number = Date.now()) => now;";
+		expect([...seam.matchAll(CLOCK_RE)]).toHaveLength(0);
+		expect([..."const now = Date.now();".matchAll(CLOCK_RE)]).toHaveLength(1);
+	});
+
 	test("the guard fails on the old pattern", () => {
 		// The 3acc0ba5 shape: a new view computing age from the real clock.
 		const live = new Map([
@@ -80,7 +87,6 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"app/src/LogView.tsx": 1,
 	"app/src/memoryShared.tsx": 1,
 	"app/src/MemoryView.tsx": 1,
-	"app/src/ProgramsView.tsx": 1,
 	"app/src/ResponsibilityFeed.tsx": 1,
 	"src/agent/catalog-fetch.ts": 5,
 	"src/agent/claude-code/engine.ts": 3,
@@ -165,12 +171,12 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/test-helpers/boot.ts": 4,
 	"src/test-helpers/loopback-preload.ts": 1,
 	"src/test-helpers/pr-readiness.ts": 1,
-	"src/testkit.ts": 3,
+	"src/testkit.ts": 2,
 	"src/tg/buffer.ts": 2,
 	"src/tg/commands.ts": 1,
 	"src/tg/delivery.ts": 8,
 	"src/tg/forget-listings.ts": 1,
-	"src/tg/guest.ts": 4,
+	"src/tg/guest.ts": 3,
 	"src/tg/inbox.ts": 1,
 	"src/tg/pings.ts": 1,
 	"src/tg/skill-command.ts": 2,

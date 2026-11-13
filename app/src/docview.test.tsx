@@ -281,6 +281,11 @@ describe("doc viewer journey (happy-dom)", () => {
 
 	test("an artifact card opens its published snapshot through the attachment route", async () => {
 		const seen: string[] = [];
+		const written: string[] = [];
+		Object.defineProperty(dom.win.navigator, "clipboard", {
+			configurable: true,
+			value: { writeText: async (text: string) => void written.push(text) },
+		});
 		globalThis.fetch = (async (input) => {
 			const url = String(input);
 			seen.push(url);
@@ -308,6 +313,11 @@ describe("doc viewer journey (happy-dom)", () => {
 		expect(seen[0]).toContain("/api/app/attachments/file?name=abc-report.md");
 		expect(dom.container.querySelector(".doc-head h3")?.textContent).toBe("Quarterly report");
 		expect(dom.container.querySelector(".doc-md")?.textContent).toContain("body");
+		await act(async () => {
+			click(dom, dom.container.querySelector(".doc-copy")!);
+		});
+		expect(written).toEqual(["# Quarterly report\n\nbody"]);
+		expect(dom.container.querySelector(".doc-copy")?.getAttribute("aria-label")).toBe("Copied");
 	});
 
 	test("a refused read surfaces the server error, never silent nothing", async () => {
@@ -331,6 +341,7 @@ describe("doc viewer journey (happy-dom)", () => {
 		expect(dom.container.querySelector(".doc-err")?.textContent).toContain(
 			"auth.jsonl is never served",
 		);
+		expect(dom.container.querySelector(".doc-copy")).toBeNull();
 	});
 
 	test("an oversized markdown downloads instead of rendering", async () => {
@@ -355,6 +366,7 @@ describe("doc viewer journey (happy-dom)", () => {
 		// freeze, not just the string decode.
 		expect(dom.container.querySelector(".doc-md")).toBeNull();
 		expect(dom.container.querySelector(".doc-download")?.textContent).toContain("big.md");
+		expect(dom.container.querySelector(".doc-copy")).toBeNull();
 	});
 
 	// Destinations aren't paths until they're interpreted: percent
@@ -454,5 +466,189 @@ describe("doc viewer journey (happy-dom)", () => {
 		await settle();
 		expect(dom.container.querySelector(".doc-frame")).toBeNull();
 		expect(dom.container.querySelector(".doc-download")?.textContent).toContain("doc.pdf");
+		expect(dom.container.querySelector(".doc-copy")).toBeNull();
+	});
+
+	for (const [path, type, selector] of [
+		["pic.png", "image/png", "img.doc-media"],
+		["sound.ogg", "audio/ogg", "audio.doc-media"],
+		["movie.webm", "video/webm", "video.doc-media"],
+		["data.bin", "application/octet-stream", ".doc-download"],
+	] as const) {
+		test(`a ${type} doc shows no copy button`, async () => {
+			globalThis.fetch = (async (_input: RequestInfo | URL) =>
+				new Response(new Uint8Array([137, 80, 78, 71]), {
+					status: 200,
+					headers: { "content-type": type },
+				})) as typeof fetch;
+			dom.root = createRoot(dom.container);
+			await act(async () => {
+				dom.root?.render(
+					<DocViewerProvider token={null} conversationId="app/x">
+						<PathChip path={path} />
+					</DocViewerProvider>,
+				);
+			});
+			await act(async () => {
+				click(dom, dom.container.querySelector("button.pathchip-link")!);
+			});
+			await settle();
+			expect(dom.container.querySelector(selector)).not.toBeNull();
+			expect(dom.container.querySelector(".doc-copy")).toBeNull();
+		});
+	}
+
+	// Copy hands over the decoded source — markdown and html as written,
+	// not as rendered — and shows the shared copied state.
+	for (const [path, type, body] of [
+		["notes.md", "text/markdown", "# Notes\n\n**raw** source"],
+		["page.html", "text/html", "<h1>Page</h1><script>1</script>"],
+		["run.log", "text/plain", "line one\nline two\nλ 中文 🙂"],
+		["empty.txt", "text/plain", ""],
+	] as const) {
+		test(`${path} copies its raw text`, async () => {
+			const written: string[] = [];
+			Object.defineProperty(dom.win.navigator, "clipboard", {
+				configurable: true,
+				value: { writeText: async (t: string) => void written.push(t) },
+			});
+			globalThis.fetch = (async (_input: RequestInfo | URL) =>
+				new Response(body, { status: 200, headers: { "content-type": type } })) as typeof fetch;
+			dom.root = createRoot(dom.container);
+			await act(async () => {
+				dom.root?.render(
+					<DocViewerProvider token={null} conversationId="app/x">
+						<PathChip path={path} />
+					</DocViewerProvider>,
+				);
+			});
+			await act(async () => {
+				click(dom, dom.container.querySelector("button.pathchip-link")!);
+			});
+			await settle();
+			const btn = dom.container.querySelector(".doc-head .doc-copy");
+			expect(btn?.textContent).toBe("copy");
+			await act(async () => {
+				click(dom, btn!);
+			});
+			await settle();
+			expect(written).toEqual([body]);
+			expect(dom.container.querySelector(".doc-copy")?.textContent).toBe("✓");
+			expect(dom.container.querySelector(".doc-copy")?.getAttribute("aria-label")).toBe("Copied");
+		});
+	}
+
+	for (const verdict of ["copied", "failed", "pending"] as const) {
+		test(`${verdict} feedback belongs to the document that was copied`, async () => {
+			const index = "# Index\n\n[other](other.md)";
+			const written: string[] = [];
+			let finishWrite: (() => void) | undefined;
+			Object.defineProperty(dom.win.navigator, "clipboard", {
+				configurable: true,
+				value: {
+					writeText: async (text: string) => {
+						written.push(text);
+						if (written.length !== 1) return;
+						if (verdict === "failed") throw new Error("clipboard denied");
+						if (verdict === "pending")
+							await new Promise<void>((resolve) => {
+								finishWrite = resolve;
+							});
+					},
+				},
+			});
+			let finishFetch: ((response: Response) => void) | undefined;
+			globalThis.fetch = (async (input) => {
+				const path = new URL(String(input), "http://x").searchParams.get("path");
+				return path === "index.md"
+					? new Response(index, { headers: { "content-type": "text/markdown" } })
+					: new Promise<Response>((resolve) => {
+							finishFetch = resolve;
+						});
+			}) as typeof fetch;
+			dom.root = createRoot(dom.container);
+			await act(async () => {
+				dom.root?.render(
+					<DocViewerProvider token={null} conversationId="app/x">
+						<PathChip path="index.md" />
+					</DocViewerProvider>,
+				);
+			});
+			await act(async () => {
+				click(dom, dom.container.querySelector("button.pathchip-link")!);
+			});
+			await settle();
+			await act(async () => {
+				click(dom, dom.container.querySelector(".doc-copy")!);
+			});
+			expect(dom.container.querySelector(".doc-copy")?.getAttribute("aria-label")).toBe(
+				verdict === "copied" ? "Copied" : verdict === "failed" ? "Copy failed" : "Copy",
+			);
+			await act(async () => {
+				click(dom, dom.container.querySelector(".md-filelink")!);
+			});
+			expect(dom.container.querySelector(".doc-body")?.textContent).toBe("loading…");
+			expect(dom.container.querySelector(".doc-copy")).toBeNull();
+			await act(async () => {
+				finishFetch!(new Response("Other text", { headers: { "content-type": "text/plain" } }));
+			});
+			await settle();
+			expect(dom.container.querySelector(".doc-copy")?.getAttribute("aria-label")).toBe("Copy");
+			if (verdict === "pending") {
+				await act(async () => {
+					finishWrite!();
+				});
+				expect(dom.container.querySelector(".doc-copy")?.getAttribute("aria-label")).toBe("Copy");
+			}
+			await act(async () => {
+				click(dom, dom.container.querySelector(".doc-copy")!);
+			});
+			expect(written).toEqual([index, "Other text"]);
+			await act(async () => {
+				click(dom, dom.container.querySelector(".doc-back")!);
+			});
+			await settle();
+			expect(dom.container.querySelector(".doc-copy")?.getAttribute("aria-label")).toBe("Copy");
+			await act(async () => {
+				click(dom, dom.container.querySelector(".doc-copy")!);
+			});
+			expect(written).toEqual([index, "Other text", index]);
+		});
+	}
+
+	test("a rejected copy shows failure and can be retried", async () => {
+		let attempts = 0;
+		Object.defineProperty(dom.win.navigator, "clipboard", {
+			configurable: true,
+			value: {
+				writeText: async () => {
+					if (++attempts === 1) throw new Error("clipboard denied");
+				},
+			},
+		});
+		globalThis.fetch = (async (_input: RequestInfo | URL) =>
+			new Response("retry me", { headers: { "content-type": "text/plain" } })) as typeof fetch;
+		dom.root = createRoot(dom.container);
+		await act(async () => {
+			dom.root?.render(
+				<DocViewerProvider token={null} conversationId="app/x">
+					<PathChip path="retry.txt" />
+				</DocViewerProvider>,
+			);
+		});
+		await act(async () => {
+			click(dom, dom.container.querySelector("button.pathchip-link")!);
+		});
+		await settle();
+		await act(async () => {
+			click(dom, dom.container.querySelector(".doc-copy")!);
+		});
+		expect(dom.container.querySelector(".doc-copy")?.textContent).toBe("copy failed");
+		expect(dom.container.querySelector(".doc-copy")?.getAttribute("aria-label")).toBe("Copy failed");
+		await act(async () => {
+			click(dom, dom.container.querySelector(".doc-copy")!);
+		});
+		expect(attempts).toBe(2);
+		expect(dom.container.querySelector(".doc-copy")?.getAttribute("aria-label")).toBe("Copied");
 	});
 });

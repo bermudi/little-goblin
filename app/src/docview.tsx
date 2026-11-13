@@ -17,6 +17,7 @@ import { fetchAttachment, fetchConversationFile } from "./api.ts";
 import { Markdown } from "./markdown.tsx";
 import { bytes } from "./opsShared.tsx";
 import { srcdoc } from "./ui/HtmlFrame.tsx";
+import { useCopy } from "./useCopy.ts";
 
 export type DocRef = { kind: "file"; path: string } | { kind: "artifact"; artifact: Artifact };
 
@@ -100,11 +101,13 @@ export function DocViewerProvider({
 				: fetchAttachment(token, basenameOf(ref.artifact.path)),
 		[token, conversationId],
 	);
+	const top = stack.at(-1);
 	return (
 		<DocViewerContext.Provider value={value}>
 			{children}
-			{stack.length > 0 && (
+			{top !== undefined && (
 				<DocModal
+					key={`${stack.length}:${top.kind}:${top.kind === "file" ? top.path : top.artifact.path}`}
 					stack={stack}
 					fetchDoc={fetchDoc}
 					onClose={() => setStack([])}
@@ -246,6 +249,11 @@ function DocModal({
 	const title =
 		top.kind === "file" ? basenameOf(top.path) : (top.artifact.title ?? top.artifact.name);
 	const base = baseOf(top);
+	// The decoded text of the doc on top, or null while loading and for
+	// kinds with no text to copy (media, pdf, download, the decode cap).
+	// Html copies its source, not the rendered page.
+	const [text, setText] = useState<string | null>(null);
+	const { copied, failed, copy } = useCopy();
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === "Escape") onClose();
@@ -268,16 +276,27 @@ function DocModal({
 						</button>
 					)}
 					<h3>{title}</h3>
+					{text !== null && (
+						<button
+							type="button"
+							className="doc-copy"
+							aria-label={failed ? "Copy failed" : copied ? "Copied" : "Copy"}
+							aria-live="polite"
+							onClick={() => copy(text)}
+						>
+							{copied ? "✓" : failed ? "copy failed" : "copy"}
+						</button>
+					)}
 					<button type="button" aria-label="Close" onClick={onClose}>
 						×
 					</button>
 				</header>
 				<div className="doc-body">
 					<DocBody
-						key={stack.length}
 						doc={top}
 						fetchDoc={fetchDoc}
 						onFileLink={base === null ? undefined : onNavigate}
+						onText={setText}
 					/>
 				</div>
 			</div>
@@ -294,10 +313,12 @@ function DocBody({
 	doc,
 	fetchDoc,
 	onFileLink,
+	onText,
 }: {
 	doc: DocRef;
 	fetchDoc: (ref: DocRef) => Promise<Response | Blob>;
 	onFileLink: ((path: string) => void) | undefined;
+	onText: (text: string | null) => void;
 }) {
 	const [state, setState] = useState<BodyState>({ phase: "loading" });
 	const name = doc.kind === "file" ? basenameOf(doc.path) : doc.artifact.name;
@@ -307,6 +328,7 @@ function DocBody({
 		let live = true;
 		let objectUrl: string | null = null;
 		setState({ phase: "loading" });
+		onText(null);
 		fetchDoc(doc)
 			.then(async (res) => {
 				const blob = res instanceof Blob ? res : await res.blob();
@@ -332,6 +354,7 @@ function DocBody({
 					objectUrl = url;
 				}
 				setState({ phase: "ready", blob, url, text, render });
+				onText(text);
 			})
 			.catch((err) => {
 				if (!live) return;
@@ -344,7 +367,7 @@ function DocBody({
 			live = false;
 			if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
 		};
-	}, [doc, fetchDoc, name, declaredType]);
+	}, [doc, fetchDoc, name, declaredType, onText]);
 
 	if (state.phase === "loading") return <div className="doc-note">loading…</div>;
 	if (state.phase === "error") return <div className="doc-err">{state.error}</div>;

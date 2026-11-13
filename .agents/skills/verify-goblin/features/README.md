@@ -5,6 +5,7 @@ How to reach and prove each feature from the user's point of view. Every entry h
 | Feature | File |
 | --- | --- |
 | Chat: send a message, get a reply | [chat.md](chat.md) |
+| Document viewer: copy published or live text | [doc-viewer.md](doc-viewer.md) |
 | Notes: create and rename | [notes.md](notes.md) |
 | Projects: create one | [projects.md](projects.md) |
 | Settings: model services | [settings-accounts.md](settings-accounts.md) |

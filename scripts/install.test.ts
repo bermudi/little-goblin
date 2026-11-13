@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { healthReportSchema } from "../src/health.ts";
+import { healthReportSchema } from "../src/health/shared.ts";
 
 const realBun = process.execPath;
 const root = join(import.meta.dir, "..");

@@ -19,7 +19,8 @@ import type { MemoryContexts } from "../memory/mod.ts";
 import type { MemoryQueue } from "../memory/queue.ts";
 import { resolveSkillProposal, type SkillDecision } from "../skill-decisions.ts";
 import { SkillSources } from "../skill-provenance.ts";
-import { handleOperatorRoute, type OperatorActor, type OperatorDeps } from "./operator.ts";
+import { handleOperatorRoute } from "./operator.ts";
+import type { OperatorActor, OperatorDeps } from "./operator-deps.ts";
 import type { MemorySavesResponse, MemoryStatusResponse } from "./operator-wire.ts";
 
 const ACTOR: OperatorActor = { via: "app" };

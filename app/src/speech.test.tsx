@@ -11,7 +11,7 @@ import { Window } from "happy-dom";
 import type { ReactElement } from "react";
 import type { UIMessage } from "ai";
 import { SPEECH_RATES, SpeechPlayer, tfmt, useSpeech } from "./speech.tsx";
-import { ActionBar } from "./ChatView.tsx";
+import { ActionBar } from "./chat/MetaLine.tsx";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 

@@ -12,7 +12,8 @@ import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
-import { Composer, type StagedNote, type StagedSkill, type StagedUpload } from "./ChatView.tsx";
+import { Composer } from "./Composer.tsx";
+import type { StagedNote, StagedSkill, StagedUpload } from "./staged.ts";
 
 // The server's side of the contract: each upload lands on its own
 // UUID-stemmed path (persistAttachment), so distinct uploads NEVER share

@@ -6,7 +6,8 @@ import { readBodyCapped, serveInjectionCheck } from "./check.ts";
 import { serveAppDist } from "./app-dist.ts";
 import { parseAppPath } from "./app-routes.ts";
 import { validateInitData, type InitDataResult } from "./auth.ts";
-import { handleOperatorRoute, type OperatorDeps } from "./operator.ts";
+import type { OperatorDeps } from "./operator-deps.ts";
+import { handleOperatorRoute } from "./operator.ts";
 
 export interface HttpDeps extends OperatorDeps {
 	/** Absent when Telegram is disabled: /app stays live, while the

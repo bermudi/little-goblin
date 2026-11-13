@@ -1,5 +1,5 @@
 // The auth.jsonl record grammar — shared by the loader (src/auth.ts),
-// the health probe (src/health.ts), the installer option scan
+// the health probe (src/health/config-auth.ts), the installer option scan
 // (scripts/install-options.ts) and the pre-install poison gate
 // (scripts/check-auth.ts). This leaf stays dependency-free on purpose:
 // check-auth runs BEFORE `bun install` on a fresh checkout, so nothing
@@ -94,7 +94,7 @@ export function invokesPassCliDirectly(command: string): boolean {
 	return /(?:^|[\s;&|()`])(?:[^\s;&|()`/]*\/)*pass-cli(?:[\s;&|)`]|$)/.test(normalized);
 }
 
-// Shared by scripts/install-options.ts and src/health.ts: a `!`
+// Shared by scripts/install-options.ts and src/health/config-auth.ts: a `!`
 // record whose FIRST word is `pass-keys` (literal or path-prefixed,
 // by basename) is a recognized credential command; everything else
 // stays a general unverified command. Parsing only — never executes

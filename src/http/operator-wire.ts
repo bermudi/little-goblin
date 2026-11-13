@@ -194,7 +194,7 @@ export interface MemoryBlockedItem {
 }
 
 // A conversation's share of some queue bucket; `name` is display-ready
-// (see conversationName in operator.ts), null when there is no id.
+// (see conversationName in operator-memory.ts), null when there is no id.
 export interface MemoryConversationCount {
 	conversationId: string | null;
 	name: string | null;

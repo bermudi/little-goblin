@@ -7,19 +7,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { AppCompactionMark, AppInterruptedList, AppRunCall } from "../../src/http/app-wire.ts";
 import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
 import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
-import {
-	appendQuote,
-	ChatView,
-	Composer,
-	ContextGauge,
-	contextCount,
-	editedParts,
-	FoldMark,
-	MessageParts,
-	mergeTranscript,
-	quoteSpeaker,
-	unlandedMeta,
-} from "./ChatView.tsx";
+import { MessageParts } from "./chat/MessageParts.tsx";
+import { editedParts, FoldMark, unlandedMeta } from "./chat/MetaLine.tsx";
+import { appendQuote, quoteSpeaker } from "./chat/QuoteFab.tsx";
+import { ContextGauge, contextCount } from "./chat/ContextGauge.tsx";
+import { Composer } from "./chat/Composer.tsx";
+import { ChatView, mergeTranscript } from "./ChatView.tsx";
 
 // Static markup — guards the render contract, not React behavior.
 

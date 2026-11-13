@@ -20,7 +20,9 @@ import type {
 	AppSearchHit,
 } from "../../src/http/app-wire.ts";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
-import { App, deepLinkConv, flatLine } from "./App.tsx";
+import { App } from "./App.tsx";
+import { flatLine } from "./ConversationList.tsx";
+import { deepLinkConv } from "./routing.ts";
 import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 
 // Stored titles predate store-side flattening — the sidebar row must

@@ -525,6 +525,17 @@ bump, abort, or interrupted answer. Running turns keep their captured
 settings, queued successors use the latest, manual compaction resolves at
 its lane job; a model change legitimately makes the next turn's cache cold.
 
+**Switch feedback rides the wire, not just the log (ruling 2026-11-13, #529).**
+The config PATCH response adds `appliesFrom: "next-turn"` whenever a turn is
+running on that conversation, and `thinkingClamped: {from, to}` whenever the
+stored level moved onto the destination ladder; the composer renders each as a
+one-line note — the same fields on the app-defaults PATCH carry the clamp.
+A resume refused on selection drift answers `{error, restore: {model,
+thinking}}` — the pair the run's snapshot was admitted on — and the
+interrupted-turn card offers it as a one-tap restore: PATCH the pair back,
+then retry the resume. A half-pair (`model` or `thinking` null) produces no
+offer, since a partial write can never pass the drift gate.
+
 **The memory toggle follows the same rule (ruling 2026-10-29).** A flag
 write, never `applySettings`: no epoch bump — a running turn finishes and
 its retention is refused at the live gates (design/memory.md → exclusion).

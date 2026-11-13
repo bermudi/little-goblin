@@ -29,7 +29,14 @@ export type ResumeRefusalCode = "not-found" | "conflict" | "invalid" | "unavaila
 export type ResumeOutcome =
 	| { kind: "resumed"; runId: string }
 	| { kind: "needs-decisions"; runId: string; calls: TurnToolCall[]; numbered: TurnToolCall[] }
-	| { kind: "refused"; code: ResumeRefusalCode; reason: string };
+	| {
+			kind: "refused";
+			code: ResumeRefusalCode;
+			reason: string;
+			/** The recorded model pair — set on selection drift so the
+			 *  client can offer a one-tap restore before retrying. */
+			restore?: { model: string | null; thinking: string | null };
+	  };
 
 export type DecideOutcome =
 	| { kind: "ok" }
@@ -122,8 +129,12 @@ function findRun(journal: TurnJournal, convId: string, ref: string): RunRef {
 	return { kind: "found", run: matches[0]! };
 }
 
-function refused(code: ResumeRefusalCode, reason: string) {
-	return { kind: "refused" as const, code, reason };
+function refused(
+	code: ResumeRefusalCode,
+	reason: string,
+	restore?: { model: string | null; thinking: string | null },
+) {
+	return { kind: "refused" as const, code, reason, ...(restore === undefined ? {} : { restore }) };
 }
 
 export function numberedCalls(calls: TurnToolCall[]): TurnToolCall[] {
@@ -642,7 +653,13 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				drift.push(`thinking changed ${snap.data.thinking} → ${captured.thinking}`);
 			}
 			if (drift.length > 0) {
-				return refused("invalid", `${drift.join("; ")} since the interruption — not resumed`);
+				return refused(
+					"invalid",
+					`${drift.join("; ")} since the interruption — not resumed`,
+					// The pair the snapshot was admitted on — a restore PATCH
+					// writes it back so the retry passes the drift gate.
+					{ model: recordedSelection, thinking: snap.data.thinking },
+				);
 			}
 			const servedByFallback =
 				snap.data.configuredModel !== undefined &&

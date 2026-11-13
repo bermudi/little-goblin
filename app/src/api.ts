@@ -16,6 +16,7 @@ import type {
 	AppCompactResponse,
 	AppSuggestTitleResponse,
 	AppConfigPatch,
+	AppConfigPatchResponse,
 	AppConfigView,
 	AppContextView,
 	AppConversationBranch,
@@ -127,6 +128,9 @@ export class ApiError extends Error {
 	constructor(
 		readonly status: number,
 		message: string,
+		/** The parsed error body — structured fields like a resume
+		 *  refusal's `restore` pair ride it, beyond the error string. */
+		readonly data?: unknown,
 	) {
 		super(message);
 	}
@@ -179,13 +183,15 @@ async function requestMeta<T>(
 	const res = await rawRequest(token, path, init);
 	if (!res.ok) {
 		let detail = `http ${res.status}`;
+		let body: unknown;
 		try {
-			const body = (await res.json()) as { error?: string };
-			if (body.error !== undefined) detail = body.error;
+			body = (await res.json()) as { error?: string };
+			const error = (body as { error?: string }).error;
+			if (error !== undefined) detail = error;
 		} catch {
 			/* not json */
 		}
-		throw new ApiError(res.status, detail);
+		throw new ApiError(res.status, detail, body);
 	}
 	return { data: (await res.json()) as T, etag: res.headers.get("etag") };
 }
@@ -572,7 +578,10 @@ export function getConfig(token: string | null): Promise<AppConfigView> {
 	return request(token, "/api/app/config");
 }
 
-export function patchConfig(token: string | null, patch: AppConfigPatch): Promise<AppConfigView> {
+export function patchConfig(
+	token: string | null,
+	patch: AppConfigPatch,
+): Promise<AppConfigPatchResponse> {
 	return request(token, "/api/app/config", {
 		method: "POST",
 		headers: { "content-type": "application/json" },
@@ -588,7 +597,7 @@ export function patchConversationConfig(
 	token: string | null,
 	id: string,
 	patch: AppConfigPatch,
-): Promise<AppConfigView> {
+): Promise<AppConfigPatchResponse> {
 	return request(token, `/api/app/conversations/${seg(id)}/config`, {
 		method: "PATCH",
 		headers: { "content-type": "application/json" },

@@ -2911,6 +2911,33 @@ describe("composer model knob (happy-dom)", () => {
 		await click(popItem("Fav A"));
 		expect(configPatches).toEqual([{ model: "prov/fav-a" }]);
 		expect(dom.container.querySelector(".model-pop")).toBeNull();
+		// A plain PATCH response carries no note.
+		expect(dom.container.querySelector(".composer-note")).toBeNull();
+	});
+
+	test("a clamped or running-turn PATCH response surfaces as a one-line note", async () => {
+		await mount();
+		// After mount, the PATCH responder reports both notes at once:
+		// the thinking clamp and the applies-from-next-turn ack.
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url =
+				typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url.endsWith("/config") && (method === "PATCH" || method === "POST")) {
+				return jsonResponse({
+					...CFG,
+					model: "prov/fav-a",
+					thinkingClamped: { from: "xhigh", to: "max" },
+					appliesFrom: "next-turn",
+				});
+			}
+			return jsonResponse({ ...CFG });
+		}) as typeof fetch;
+		await click(knob());
+		await click(popItem("Fav A"));
+		const note = dom.container.querySelector(".composer-note");
+		expect(note?.textContent).toContain("thinking clamped xhigh → max");
+		expect(note?.textContent).toContain("applies from the next turn");
 	});
 
 	test("All models… opens the picker sheet; a pick writes the knob", async () => {

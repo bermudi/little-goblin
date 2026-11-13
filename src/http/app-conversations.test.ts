@@ -1278,8 +1278,10 @@ test("conversation config writes persist a level the model can express — never
 			body: JSON.stringify({ id: "clamp-01" }),
 		});
 		const a = "/api/app/conversations/clamp-01/config";
-		// xhigh is real on zai/m — it persists verbatim.
-		expect((await patch(a, { model: "zai/m", thinking: "xhigh" })).status).toBe(200);
+		// xhigh is real on zai/m — it persists verbatim, no clamp note.
+		const verbatim = await patch(a, { model: "zai/m", thinking: "xhigh" });
+		expect(verbatim.status).toBe(200);
+		expect(((await verbatim.json()) as { thinkingClamped?: unknown }).thinkingClamped).toBeUndefined();
 		expect(store.get("app/clamp-01")).toMatchObject({ model: "zai/m", thinking: "xhigh" });
 		// Switching only the model re-clamps the staged level — glm-5.3 has
 		// no xhigh, so the row lands on the rung the wire would send.
@@ -1292,13 +1294,71 @@ test("conversation config writes persist a level the model can express — never
 		expect(await switched.json()).toMatchObject({
 			thinking: "max",
 			thinkingLevels: ["low", "high", "max"],
+			// The clamp says what the operator asked for and what landed —
+			// the composer renders it as a one-line note.
+			thinkingClamped: { from: "xhigh", to: "max" },
 		});
 		// An explicit unexpressible level clamps the same way, and "off"
 		// lands on the forced-thinking floor.
-		expect((await patch(a, { thinking: "xhigh" })).status).toBe(200);
+		const again = await patch(a, { thinking: "xhigh" });
+		expect(again.status).toBe(200);
+		expect(((await again.json()) as { thinkingClamped?: unknown }).thinkingClamped).toEqual({
+			from: "xhigh",
+			to: "max",
+		});
 		expect(store.get("app/clamp-01")).toMatchObject({ thinking: "max" });
-		expect((await patch(a, { thinking: "off" })).status).toBe(200);
+		const off = await patch(a, { thinking: "off" });
+		expect(off.status).toBe(200);
+		expect(((await off.json()) as { thinkingClamped?: unknown }).thinkingClamped).toEqual({
+			from: "off",
+			to: "low",
+		});
 		expect(store.get("app/clamp-01")).toMatchObject({ thinking: "low" });
+	} finally {
+		http.stop();
+	}
+});
+
+test("a config PATCH during a turn says the switch applies from the next turn", async () => {
+	const { http, call, runtime } = setup({
+		token: APP_TOKEN_NAME,
+		deltas: ["a", "b", "c", "d", "e"],
+		delayMs: 50,
+	});
+	try {
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "busy-01" }),
+		});
+		const chat = await call("/api/app/chat", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				conversationId: "app/busy-01",
+				message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+			}),
+		});
+		expect(chat.status).toBe(200);
+		await waitUntil(() => runtime.busy("app/busy-01"), "turn running");
+		const switched = await call("/api/app/conversations/busy-01/config", {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: "zai/glm-5.3" }),
+		});
+		expect(switched.status).toBe(200);
+		// The running turn keeps the pair it admitted on — the response
+		// carries the acknowledgement, not just the log line.
+		expect(((await switched.json()) as { appliesFrom?: string }).appliesFrom).toBe("next-turn");
+		await chat.text();
+		await waitUntil(() => !runtime.busy("app/busy-01"), "turn settled");
+		const idle = await call("/api/app/conversations/busy-01/config", {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ thinking: "low" }),
+		});
+		expect(idle.status).toBe(200);
+		expect(((await idle.json()) as { appliesFrom?: string }).appliesFrom).toBeUndefined();
 	} finally {
 		http.stop();
 	}
@@ -1728,7 +1788,10 @@ describe("app channel interrupted-run routes", () => {
 		journal: ReturnType<typeof openTurnJournal>,
 		convId: string,
 		runId: string,
-		opts: { anchorSeq?: number | null } = {},
+		opts: {
+			anchorSeq?: number | null;
+			snapshot?: { model: string | null; thinking: string | null };
+		} = {},
 	) {
 		const conv = store.get(convId)!;
 		journal.beginRun({
@@ -1737,7 +1800,7 @@ describe("app channel interrupted-run routes", () => {
 			epoch: conv.epoch,
 			anchorSeq: opts.anchorSeq ?? null,
 			steerMark: null,
-			convSnapshot: { model: conv.model, thinking: conv.thinking },
+			convSnapshot: opts.snapshot ?? { model: conv.model, thinking: conv.thinking },
 			toolNames: ["probe"],
 			startedAt: "2026-10-11T00:00:00.000Z",
 		});
@@ -1939,6 +2002,31 @@ describe("app channel interrupted-run routes", () => {
 			const refused = (await resumed.json()) as { error: string };
 			expect(refused.error).toContain("tool surface is unreadable");
 			expect(wired.journal.get("run-bad")!.status).toBe("interrupted");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a model-drift refusal carries the recorded pair for a one-tap restore", async () => {
+		const { http, call, store, wired } = setupWithResume();
+		try {
+			const convId = await makeConv(call);
+			interruptedRun(store, wired.journal, convId, "run-drift", {
+				snapshot: { model: "old/provider", thinking: "low" },
+			});
+			const resumed = await call("/api/app/conversations/chat-01/runs/run-drift/resume", {
+				method: "POST",
+			});
+			expect(resumed.status).toBe(422);
+			const refused = (await resumed.json()) as {
+				error: string;
+				restore?: { model: string | null; thinking: string | null };
+			};
+			expect(refused.error).toContain("model changed old/provider");
+			// The recorded pair rides the refusal — the client offers to
+			// write it back, then retries the resume.
+			expect(refused.restore).toEqual({ model: "old/provider", thinking: "low" });
+			expect(wired.journal.get("run-drift")!.status).toBe("interrupted");
 		} finally {
 			http.stop();
 		}

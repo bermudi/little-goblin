@@ -1007,6 +1007,13 @@ header h1 {
 .chat .error {
 	margin: 0 1rem;
 }
+.composer-note {
+	color: var(--app-fg-muted);
+	padding: 0.4rem 1rem;
+}
+.chat .composer-note {
+	margin: 0 1rem;
+}
 .empty {
 	color: var(--app-fg-muted);
 }

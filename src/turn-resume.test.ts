@@ -507,6 +507,9 @@ describe("turn resume", () => {
 			expect(out.code).toBe("invalid");
 			expect(out.reason).toContain("model changed old/provider");
 			expect(out.reason).toContain("thinking changed low");
+			// The recorded pair rides the refusal — the app offers a
+			// one-tap restore before the operator retries.
+			expect(out.restore).toEqual({ model: "old/provider", thinking: "low" });
 		}
 		await runtime.shutdown();
 		store.close();

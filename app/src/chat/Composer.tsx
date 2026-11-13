@@ -145,6 +145,7 @@ export function Composer({
 	// the app's new-chat defaults; neither path changes Telegram.
 	const [cfg, setCfg] = useState<AppConfigView | null>(null);
 	const [configError, setConfigError] = useState<string | null>(null);
+	const [configNote, setConfigNote] = useState<string | null>(null);
 	const [configSaving, setConfigSaving] = useState(false);
 	const [modelMenuOpen, setModelMenuOpen] = useState(false);
 	const [modelSheetOpen, setModelSheetOpen] = useState(false);
@@ -154,6 +155,7 @@ export function Composer({
 		let live = true;
 		setCfg(null);
 		setConfigError(null);
+		setConfigNote(null);
 		setModelMenuOpen(false);
 		setModelSheetOpen(false);
 		const load =
@@ -171,13 +173,26 @@ export function Composer({
 	const setKnob = (patch: { model?: string; thinking?: string }) => {
 		setConfigSaving(true);
 		setConfigError(null);
+		setConfigNote(null);
 		const save =
 			conversationId === undefined
 				? patchConfig(token, patch)
 				: patchConversationConfig(token, conversationId, patch);
 		void save
 			.then(
-				(c) => setCfg(c),
+				(c) => {
+					setCfg(c);
+					const notes: string[] = [];
+					if (c.thinkingClamped !== undefined) {
+						notes.push(
+							`thinking clamped ${c.thinkingClamped.from} → ${c.thinkingClamped.to} — the model doesn't offer ${c.thinkingClamped.from}`,
+						);
+					}
+					if (c.appliesFrom === "next-turn") {
+						notes.push("the running turn keeps its model — the switch applies from the next turn");
+					}
+					setConfigNote(notes.length === 0 ? null : notes.join(" · "));
+				},
 				(err: unknown) => setConfigError(String(err)),
 			)
 			.finally(() => setConfigSaving(false));
@@ -385,6 +400,11 @@ export function Composer({
 			{configError !== null && (
 				<div className="error" role="alert">
 					Model settings failed: {configError}
+				</div>
+			)}
+			{configNote !== null && (
+				<div className="composer-note" role="status">
+					{configNote}
 				</div>
 			)}
 			{memoryError !== null && (

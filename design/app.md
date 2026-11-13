@@ -334,6 +334,10 @@ is "Memory can't recall". Both are the same durable states the Telegram
 notices ride (the `memory_outage` row, the `memory_recall_state` flag)
 and clear on their own when the service is healthy — projections, not
 notices, so memory.md's two-notice rule still bounds pushes.
+A declared observation outage is a card of its own
+(`observation-unreachable`, #491): "Can't observe \<agent\>" names the
+target and the outage start, and disappears on the next successful poll —
+there is nothing to decide, only something to notice.
 **Work in progress** is the responsibility feed; notifications are one line at
 the foot. "Drop them" still cannot be undone ("Save them now" is design only).
 
@@ -1496,6 +1500,19 @@ section: same file.
   mid-listing wins whole instead of being overwritten. An observer
   cursor refresh alone is not a binding change and never conflicts;
   callers without a snapshot keep the unconditional behavior.
+- **Observation unavailability is declared, not inferred (ruling
+  2026-11-13, #491).** A target whose list call fails keeps every
+  attachment's health (outage ≠ disappearance); the poll records a
+  durable consecutive count plus the first failure's time on each row.
+  The third consecutive failure declares the outage — `unreachableSince`
+  projects from the row only at the threshold — and the feed pill reads
+  `<name> (unreachable since HH:MM)`, an `observation-unreachable`
+  Attention item opens the responsibility's conversation, and doctor's
+  `observer.unreachable` warns while declared. The next successful
+  reconcile clears count and declaration before its ordinary cursor
+  commit; a success between failures restarts the count. Detach and
+  reattach both reset the bookkeeping — deliberate binding changes are
+  not outages.
 - **Responsibility-destination programs are durable enqueues.** If the
   `recordDevelopment` write throws, `fireScheduled` does not `markRan` —
   the occurrence stays due and the next scan retries the same source

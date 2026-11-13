@@ -125,6 +125,15 @@ expected-table list is a validated argv contract of its own: a
 present-but-malformed list fails the worker rather than silently checking
 nothing, and only an absent list skips the check.
 
+`observer.unreachable` (#491) reads only the durable declaration: the
+responsibility observer records consecutive list failures on each
+attachment row and exposes the outage start once the threshold holds
+(design/app.md → Observation unavailability). Doctor reports those
+declared rows as one warning naming agent, target and start; it never
+probes a Herdr target itself, and a recovered poll clears the row on its
+own — the hint points at inspecting the named target, not at resetting
+anything. A store that predates the columns skips rather than fails.
+
 `repo.test-ratio` is informational repo health, scoped to the diagnostic
 checkout: it reuses `src/test-ratio.ts` (the measurement behind
 `scripts/test-ratio.ts`) over `git ls-files src/`; ratio ≤ 1.0 passes, above

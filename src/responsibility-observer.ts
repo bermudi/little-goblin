@@ -18,7 +18,7 @@ import { z } from "zod";
 import { log } from "./log.ts";
 import { HerdrError, type OperatorAgent } from "./herdr.ts";
 import type { ResponsibilityStore } from "./responsibilities.ts";
-import type { Attachment } from "./responsibility-types.ts";
+import { UNREACHABLE_POLLS, type Attachment } from "./responsibility-types.ts";
 import { type AuthorityStamp, authorityStamp } from "./responsibility-authority.ts";
 import type { WakeStore } from "./wake-store.ts";
 
@@ -134,6 +134,15 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		health: "attached" | "missing" | "identity_changed" | null,
 		dev: { sourceKey: string; kind: string; text: string; facts: unknown } | null,
 	): void {
+		// A reconcile only runs on a successful listing — whatever the
+		// outcome, observation is available again and any outage closes.
+		if (att.unreachableSince !== null)
+			log.info("responsibility observation restored", {
+				attachment: att.attachmentId,
+				agent: att.target.agentName,
+				since: att.unreachableSince,
+			});
+		resps.clearUnreachable(att.attachmentId);
 		// Joins reconcile's transaction, including its lifecycle checks.
 		resps.updateCursor(att.attachmentId, cursor);
 		if (health !== null) resps.setHealth(att.attachmentId, health);
@@ -408,6 +417,34 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 							attachments: group.atts.map((a) => a.attachmentId),
 							error: err.message,
 						});
+						// Consecutive failures declare the outage on the
+						// durable row so surfaces can say since when — the
+						// observer instance is not guaranteed to persist.
+						const at = deps.now?.() ?? new Date();
+						db.transaction(() => {
+							const declared: Attachment[] = [];
+							for (const snapshot of group.atts) {
+								const att = resps.getAttachment(snapshot.attachmentId);
+								if (
+									att === null ||
+									att.generation !== snapshot.generation ||
+									!SIGHTED.has(att.health)
+								)
+									continue;
+								const count = resps.markUnreachable(
+									att.attachmentId,
+									at.toISOString(),
+								);
+								if (count === UNREACHABLE_POLLS) declared.push(att);
+							}
+							if (declared.length > 0)
+								log.warn("responsibility observation declared unreachable", {
+									server: group.server,
+									session: group.session,
+									attachments: declared.map((a) => a.attachmentId),
+									since: at.toISOString(),
+								});
+						}).immediate();
 						continue;
 					}
 					// Malformed output and unexpected errors rethrow after

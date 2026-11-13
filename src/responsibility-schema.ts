@@ -9,7 +9,13 @@ import { z } from "zod";
 import { log } from "./log.ts";
 import { followupSchema, silenceFollowup } from "./responsibility-followup.ts";
 import { ensureReportsSchema } from "./responsibility-reports.ts";
-import { understandingSchema, type Attachment, type PromptOperation, type Responsibility } from "./responsibility-types.ts";
+import {
+	UNREACHABLE_POLLS,
+	understandingSchema,
+	type Attachment,
+	type PromptOperation,
+	type Responsibility,
+} from "./responsibility-types.ts";
 
 export const respRowSchema = z.object({
 	responsibility_id: z.string(),
@@ -45,6 +51,8 @@ export const attRowSchema = z.object({
 	baseline_json: z.string(),
 	health: z.enum(["attached", "missing", "identity_changed", "detached"]),
 	cursor_json: z.string().nullable(),
+	unreachable_count: z.number(),
+	unreachable_since: z.string().nullable(),
 	created_at: z.string(),
 	detached_at: z.string().nullable(),
 });
@@ -109,6 +117,10 @@ export function toAttachment(r: AttRow): Attachment {
 		},
 		baseline: JSON.parse(r.baseline_json),
 		health: r.health,
+		// The outage start is durable from the first failed poll, but
+		// surfaces read only the declared state.
+		unreachableSince:
+			r.unreachable_count >= UNREACHABLE_POLLS ? r.unreachable_since : null,
 		cursor: r.cursor_json === null ? null : JSON.parse(r.cursor_json),
 		createdAt: r.created_at,
 		detachedAt: r.detached_at,
@@ -186,6 +198,8 @@ export function ensureResponsibilitiesSchema(db: Database): void {
 			baseline_json TEXT NOT NULL,
 			health TEXT NOT NULL DEFAULT 'attached' CHECK (health IN ('attached','missing','identity_changed','detached')),
 			cursor_json TEXT,
+			unreachable_count INTEGER NOT NULL DEFAULT 0,
+			unreachable_since TEXT,
 			created_at TEXT NOT NULL,
 			detached_at TEXT
 		)`);
@@ -216,6 +230,16 @@ export function ensureResponsibilitiesSchema(db: Database): void {
 		if (!columns.some((c) => c.name === "followup_json")) {
 			db.run("ALTER TABLE responsibilities ADD COLUMN followup_json TEXT");
 		}
+		const attColumns = new Set(
+			db
+				.query<{ name: string }, []>("PRAGMA table_info(attachments)")
+				.all()
+				.map((c) => c.name),
+		);
+		if (!attColumns.has("unreachable_count"))
+			db.run("ALTER TABLE attachments ADD COLUMN unreachable_count INTEGER NOT NULL DEFAULT 0");
+		if (!attColumns.has("unreachable_since"))
+			db.run("ALTER TABLE attachments ADD COLUMN unreachable_since TEXT");
 		const rows = db
 			.query<{ responsibility_id: string; created_at: string }, []>(
 				"SELECT responsibility_id, created_at FROM responsibilities WHERE followup_json IS NULL",

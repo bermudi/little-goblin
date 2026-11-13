@@ -14,6 +14,11 @@ export type ResponsibilityStatus = "active" | "paused" | "completed" | "cancelle
 
 export type AttachmentHealth = "attached" | "missing" | "identity_changed" | "detached";
 
+/** Consecutive failed polls of one Herdr target before its attachments
+ *  surface as unreachable — observation availability, not agent state:
+ *  health keeps its last sighted value while polling is down. */
+export const UNREACHABLE_POLLS = 3;
+
 export type OperationState =
 	| "prepared"
 	| "sent"
@@ -71,6 +76,10 @@ export interface Attachment {
 	/** Observed state at bind — the reference the observer diffs against. */
 	baseline: unknown;
 	health: AttachmentHealth;
+	/** Outage start once the target has been unreachable for
+	 *  UNREACHABLE_POLLS consecutive polls, else null — the next
+	 *  successful reconcile clears it. */
+	unreachableSince: string | null;
 	/** Persisted observation cursor — sequence keys namespaced by generation. */
 	cursor: unknown;
 	createdAt: string;

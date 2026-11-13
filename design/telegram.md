@@ -396,9 +396,17 @@ finalizing send carries `reply_markup` (ruling 2026-10-13): the rating row
 goes out on the `sendRichMessage`, not a follow-up `editMessageReplyMarkup`
 racing "bubble up" against "buttons on".
 
-**DMs only in v1.** Group and topic conversations keep the current
-edit-streaming sink untouched; group rich rendering and reply-threading are
-unprobed.
+**Rich stays DM-only; the plain sink renders HTML everywhere (ruling
+2026-11-13).** Draft streaming and `sendRichMessage` remain DM-lane
+primitives — group rich rendering and reply-threading stay unprobed. But
+the plain edit-streaming sink no longer ships literal markdown in groups
+and topics: each chunk window renders the model's markdown to Telegram
+HTML (`parse_mode: "HTML"`; `src/tg/tg-html.ts`), with a split code fence
+closed and reopened at the window boundary so both halves stay monospace.
+A window whose render overshoots the 4096-char cap sends raw text, and a
+definite 400 `can't parse entities` rejection retries that chunk once
+unformatted — it stays raw for the rest of the turn; any other send
+failure keeps the existing uncertainty handling.
 
 **Guest answers edit into rich (ruling 2026-10-13).** `editMessageText`'s
 `text_or_rich_message` accepts an `InputRichMessage` (`{markdown}`) with

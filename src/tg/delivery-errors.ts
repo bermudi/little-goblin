@@ -24,6 +24,20 @@ export function isNotModifiedError(err: unknown): boolean {
 	);
 }
 
+// "can't parse entities" — a definite 400: nothing landed, so the same
+// send may be retried as plain text. Never a timeout's ambiguity.
+export function isParseEntitiesError(err: unknown): boolean {
+	const haystacks: unknown[] = [err];
+	if (typeof err === "object" && err !== null) {
+		const rec = err as Record<string, unknown>;
+		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
+		haystacks.push(rec.description, rec.message);
+	}
+	return haystacks.some(
+		(h) => typeof h === "string" && h.toLowerCase().includes("can't parse entities"),
+	);
+}
+
 export function isMessageGoneError(err: unknown): boolean {
 	const haystacks: unknown[] = [err];
 	if (typeof err === "object" && err !== null) {

@@ -2,7 +2,7 @@
 // scanned row so an in-flight send/stop wins. `starting` rows are boot
 // recovery: they transition in finally even if their notice fails.
 
-import { statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "./log.ts";
 import type { Delegation, DelegationStatus } from "./delegations.ts";
@@ -285,6 +285,37 @@ async function deliverPendingPrompt(
 	});
 }
 
+// A report whose last words are a question is not a finished answer — the
+// agent stopped to ask, so the run settles needs_input like a dialog block
+// would (#493-L27). Only the file tail is read; a long report costs one
+// bounded read. Machine rows have no local report and keep seq judgment.
+const QUESTION_TAIL_BYTES = 8 * 1024;
+function reportEndsInQuestion(deps: DelegationLifecycleDeps, d: Delegation): boolean {
+	if (machineRootFor(deps, d.target) !== null) return false;
+	let fd: number | null = null;
+	try {
+		const path = reportPathFor(deps, d);
+		// A non-regular report path means no report — the notice path
+		// falls back to the screen tail the same way.
+		if (!statSync(path).isFile()) return false;
+		fd = openSync(path, "r");
+		const size = fstatSync(fd).size;
+		const tail = Buffer.alloc(Math.min(size, QUESTION_TAIL_BYTES));
+		const got = readSync(fd, tail, 0, tail.length, Math.max(0, size - tail.length));
+		const lines = tail.subarray(0, got).toString("utf8").split("\n");
+		for (let i = lines.length - 1; i >= 0; i--) {
+			const line = lines[i]!.trim();
+			if (line.length > 0) return line.endsWith("?");
+		}
+		return false;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		return false;
+	} finally {
+		if (fd !== null) closeSync(fd);
+	}
+}
+
 // Freshness is attributed by the local report's mtime — send archives the old
 // report first so a previous run cannot complete the new one. Machine rows have
 // no local report and rely on seq.
@@ -374,7 +405,13 @@ async function check(
 			info.agent_status === "done" ||
 			(info.agent_status === "idle" && info.completion_seq !== undefined);
 		if (finished) {
-			if (freshReportFor(deps, d)) {
+			if (freshReportFor(deps, d) && reportEndsInQuestion(deps, d)) {
+				const landed = await notify(deps, d, "needs input", {
+					extra:
+						"(its report ends in a question — the agent is waiting on an answer; send one with action 'send' or attach)",
+				});
+				if (landed && capture()) transition(deps, d, "needs_input", info.state_change_seq);
+			} else if (freshReportFor(deps, d)) {
 				const landed = await notify(deps, d, "done");
 				if (landed && capture()) transition(deps, d, "done");
 			} else {
@@ -423,8 +460,19 @@ async function check(
 		// startup idle with neither signal stays in flight until the stall rule.
 		const doneSeq = info.completion_seq ?? info.state_change_seq;
 		if (doneSeq > d.baselineSeq || freshReport) {
-			const landed = await notify(deps, d, "done");
-			if (landed) transition(deps, d, "done");
+			// A completion whose report asks a question parks for the
+			// answer instead of settling done — same verdict a dialog
+			// block would reach (#493-L27).
+			if (reportEndsInQuestion(deps, d)) {
+				const landed = await notify(deps, d, "needs input", {
+					extra:
+						"(its report ends in a question — the agent is waiting on an answer; send one with action 'send' or attach)",
+				});
+				if (landed) transition(deps, d, "needs_input", info.state_change_seq);
+			} else {
+				const landed = await notify(deps, d, "done");
+				if (landed) transition(deps, d, "done");
+			}
 			return;
 		}
 		if (info.agent_status === "idle" && Date.now() - Date.parse(d.promptedAt) > STALL_MS) {

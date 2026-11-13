@@ -77,10 +77,14 @@ export type SendOutcome =
 	| { kind: "prompt failed"; error: string }
 	| { kind: "stopped mid send"; id: number };
 
+// Answers refuse for the send reasons too, plus two of their own: the
+// live agent must be sitting on a dialog for a keypress to mean anything.
+export type AnswerRefusal = SendRefusal | "not blocked" | "agent gone";
+
 export type AnswerOutcome =
 	| { kind: "sent"; delegation: Delegation }
 	| { kind: "no row"; id: number }
-	| { kind: "refused"; id: number; why: SendRefusal }
+	| { kind: "refused"; id: number; why: AnswerRefusal }
 	| { kind: "key failed"; id: number; error: string };
 
 export type StopOutcome =

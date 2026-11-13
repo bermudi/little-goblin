@@ -1947,6 +1947,147 @@ describe("ChatView edit and branch", () => {
 	});
 });
 
+describe("ChatView paged history", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+	const msg = (id: string, role: "user" | "assistant", text: string): UIMessage => ({
+		id,
+		role,
+		parts: [{ type: "text", text }],
+	});
+	const configFallback = () => ({
+		model: "prov/model",
+		thinking: "off",
+		favorites: [],
+		catalog: [],
+		thinkingLevels: ["off"],
+	});
+	const settle = async (check: () => boolean) => {
+		for (let i = 0; i < 100 && !check(); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+	};
+	const mountChat = async () => {
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/paged-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+	};
+	const msgTexts = () =>
+		[...dom.container.querySelectorAll(".msg")].map((el) => el.textContent ?? "");
+
+	test("Load older prepends the previous page — the fold mark maps to the transcript", async () => {
+		const mark = {
+			boundarySeq: 2,
+			afterIndex: 1,
+			firstKeptIndex: 0,
+			eventsCompacted: 2,
+			tailEvents: null,
+			tokensBefore: 1200,
+			summary: "the early exchange",
+			model: "prov/model",
+			createdAt: "2026-01-01T00:00:00Z",
+		};
+		globalThis.fetch = (async (input: RequestInfo | URL) => {
+			const url =
+				typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes("/messages?before=")) {
+				return jsonResponse({
+					messages: [msg("u1", "user", "first question"), msg("a1", "assistant", "first answer")],
+					start: 0,
+					olderCursor: null,
+					ratings: [],
+					rateableMessageIds: ["a1", "a2"],
+					compactions: [mark],
+				});
+			}
+			if (url.endsWith("/messages")) {
+				return jsonResponse({
+					messages: [msg("u2", "user", "second question"), msg("a2", "assistant", "second answer")],
+					start: 2,
+					olderCursor: "2:3",
+					ratings: [],
+					rateableMessageIds: ["a1", "a2"],
+					compactions: [mark],
+				});
+			}
+			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+			if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+			return jsonResponse(configFallback());
+		}) as typeof fetch;
+
+		await mountChat();
+		await settle(() => dom.container.querySelector(".load-older") !== null);
+		// The fold ran before the loaded window — its pill parks at the top.
+		expect(dom.container.querySelector(".fold-mark")).not.toBeNull();
+		expect(msgTexts().join(" ")).toContain("second question");
+		expect(msgTexts().join(" ")).not.toContain("first question");
+
+		const btn = dom.container.querySelector<HTMLButtonElement>(".load-older")!;
+		await act(async () => {
+			btn.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle(() => msgTexts().join(" ").includes("first answer"));
+		expect(msgTexts()).toEqual([
+			expect.stringContaining("first question"),
+			expect.stringContaining("first answer"),
+			expect.stringContaining("second question"),
+			expect.stringContaining("second answer"),
+		]);
+		// The mark's absolute index now lands inside the loaded span —
+		// the pill sits after the first answer, before the second question.
+		const order = [...dom.container.querySelectorAll(".transcript-inner > *")].map((el) =>
+			el.classList.contains("fold-mark") ? "mark" : el.classList.contains("msg") ? "msg" : "?",
+		);
+		expect(order).toEqual(["msg", "msg", "mark", "msg", "msg"]);
+		// No cursor left — the control is gone.
+		expect(dom.container.querySelector(".load-older")).toBeNull();
+	});
+
+	test("a single page never shows the control", async () => {
+		globalThis.fetch = (async (input: RequestInfo | URL) => {
+			const url =
+				typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url.endsWith("/messages")) {
+				return jsonResponse({
+					messages: [msg("u1", "user", "only question")],
+					start: 0,
+					olderCursor: null,
+					ratings: [],
+					rateableMessageIds: [],
+					compactions: [],
+				});
+			}
+			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+			if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+			return jsonResponse(configFallback());
+		}) as typeof fetch;
+
+		await mountChat();
+		await settle(() => msgTexts().join(" ").includes("only question"));
+		expect(dom.container.querySelector(".load-older")).toBeNull();
+	});
+});
+
 describe("editedParts", () => {
 	test("replaces the text and keeps every non-text part", () => {
 		const message: UIMessage = {

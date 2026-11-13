@@ -983,6 +983,42 @@ returns that list with the ratings, and POSTing any other id is refused.
 The action bar refreshes the list after reconnect reconciliation and turn
 finish, so a newly committed reply gets controls without a manual reload.
 
+## Paged history (ruling 2026-11-13, #492)
+
+`GET /messages` mapped the entire durable history with no bound — the
+payload, the response and the rendered DOM all grew forever (the migration
+audit flagged exactly this). It now serves the newest 200-message window
+plus `start` (the window's absolute causal index) and `olderCursor`;
+`?before=<cursor>` serves the next page up. No virtualization.
+
+**Skeleton first, payloads for the window.** `historySlim` reads the whole
+transcript's causal skeleton (seq, anchor, role, created_at — never
+`data`): windowing, fold-mark placement and rateable-winner picks all need
+the full order but none of the payloads. `historyData` then fetches
+`data` only for the served window's seqs, so a big history never parses
+what it won't serve.
+
+**The cursor is a causal position,** `<key>:<seq>` naming the first entry
+of the page just served; `?before` returns the window that ends right
+before it. A mid-order anchored arrival sorts before or after that point
+on its own merits — it can never skip a row or serve one twice the way an
+index cursor would under inserts.
+
+**Marks and ratings stay transcript-wide.** Fold-mark `afterIndex` /
+`firstKeptIndex` are absolute — the client subtracts its loaded base and
+holds marks below the loaded range until their page arrives.
+`rateableMessageIds` and `ratings` cover the whole transcript on every
+page: a later turn can demote a winner inside a page the client already
+holds, so replace-not-union keeps the seam honest.
+
+**The client keeps pages out of `useChat`.** Paged-in messages form a
+durable-only prefix above the live window — `mergeTranscript` would park
+them after the newest page, so they never enter the merge at all. They
+are read-only: edit stays on the live window because a rewind's view
+reconciliation doesn't cover loaded pages; copy, branch and rating work
+anywhere. Loading a page shifts scrollTop by the added height so the view
+doesn't jump.
+
 ## Interrupted turn recovery (ruling 2026-10-17)
 
 A crash leaves a turn `interrupted` in the journal (design/runtime-turn.md →

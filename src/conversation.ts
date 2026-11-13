@@ -224,6 +224,9 @@ export function openStore(dbPath: string): ConversationStore {
 		qLastActivity,
 		qHistory,
 		qHistoryCausal,
+		qHistorySlim,
+		qHistoryData,
+		qMessageIds,
 		qLastByRole,
 		qLastEventSeq,
 		qLastUserSeq,
@@ -253,7 +256,18 @@ export function openStore(dbPath: string): ConversationStore {
 
 	const historyView = makeConversationHistory(
 		db,
-		{ qHistory, qHistoryCausal, qLastByRole, qProjections, qInsertProjection, qSearch, qContext },
+		{
+			qHistory,
+			qHistoryCausal,
+			qHistorySlim,
+			qHistoryData,
+			qMessageIds,
+			qLastByRole,
+			qProjections,
+			qInsertProjection,
+			qSearch,
+			qContext,
+		},
 		compaction.getCompaction,
 	);
 

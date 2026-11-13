@@ -168,18 +168,19 @@ const replyRatingBody = z.object({
 	rating: z.enum(["up", "down"]),
 });
 
-type HistoryDetailEntry = ReturnType<ConversationStore["historyDetail"]>[number];
+type HistorySlimEntry = ReturnType<ConversationStore["historySlim"]>[number];
 
 // Telegram puts the vote row on a turn's final bubble. App turns can
 // commit several assistant events for one user anchor (media records,
 // then the prose reply), so the rateable event is the last assistant
-// event for each anchor — not every assistant row.
-function rateableAssistantEntries(detail: HistoryDetailEntry[]): Map<string, HistoryDetailEntry> {
-	const lastByAnchor = new Map<number | string, HistoryDetailEntry>();
+// event for each anchor — not every assistant row. Runs over the
+// skeleton: anchor, role and seq decide winners — no payload reads.
+function rateableSeqs(slim: HistorySlimEntry[]): number[] {
+	const lastByAnchor = new Map<number | string, HistorySlimEntry>();
 	let unanchoredRun = 0;
 	let inUnanchoredRun = false;
-	for (const entry of detail) {
-		if (entry.message.role !== "assistant") {
+	for (const entry of slim) {
+		if (entry.role !== "assistant") {
 			inUnanchoredRun = false;
 			continue;
 		}
@@ -192,22 +193,30 @@ function rateableAssistantEntries(detail: HistoryDetailEntry[]): Map<string, His
 		lastByAnchor.set(`unanchored:${unanchoredRun}`, entry);
 		inUnanchoredRun = true;
 	}
-	return new Map([...lastByAnchor.values()].map((entry) => [entry.message.id, entry]));
+	return [...lastByAnchor.values()].map((entry) => entry.seq);
+}
+
+// The rating seam's authority: winner seq → stored message id, for the
+// whole transcript — the set survives paging because a later turn can
+// demote a winner inside a page the client already holds.
+function rateableIds(
+	store: ConversationStore,
+	conversationId: string,
+	slim: HistorySlimEntry[],
+): Map<number, string> {
+	return store.messageIdsForSeqs(conversationId, rateableSeqs(slim));
 }
 
 function ratedReplies(
 	store: ConversationStore,
 	conversationId: string,
-	rateable: Map<string, HistoryDetailEntry>,
+	seqToMessageId: Map<number, string>,
 ): AppRatedReply[] {
-	const assistantBySeq = new Map(
-		[...rateable.values()].map((entry) => [entry.seq, entry.message.id] as const),
-	);
 	return openRatings(store.db)
 		.listApp(conversationId)
 		.flatMap((record) => {
 			if (record.eventSeq === null) return [];
-			const messageId = assistantBySeq.get(record.eventSeq);
+			const messageId = seqToMessageId.get(record.eventSeq);
 			return messageId === undefined
 				? []
 				: [
@@ -227,6 +236,10 @@ function ratedReplies(
 // for naming. Total stays under the titler's own input cap.
 const TITLE_DIGEST_RECENT = 3;
 const TITLE_DIGEST_PART_CHARS = 500;
+
+// /messages serves the newest window plus an olderCursor instead of
+// the whole transcript — history stays bounded however big it grows.
+const MESSAGES_PAGE = 200;
 export function titleDigest(history: readonly UIMessage[]): string {
 	const users = history
 		.filter((m) => m.role === "user")
@@ -667,12 +680,13 @@ export async function handleConversationsRoute(
 		if (store.get(convId.id) === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		const detail = store.historyDetail(convId.id);
-		const rateable = rateableAssistantEntries(detail);
+		const slim = store.historySlim(convId.id);
+		const bySeq = new Map(slim.map((entry) => [entry.seq, entry]));
+		const seqToId = rateableIds(store, convId.id, slim);
 		const ratings = openRatings(store.db);
 		if (req.method === "GET") {
 			const body: AppReplyRatingList = {
-				ratings: ratedReplies(store, convId.id, rateable),
+				ratings: ratedReplies(store, convId.id, seqToId),
 			};
 			return Response.json(body, { headers: NO_STORE });
 		}
@@ -681,7 +695,8 @@ export async function handleConversationsRoute(
 		}
 		const body = await parsedJson(req, replyRatingBody);
 		if (body instanceof Response) return body;
-		const entry = rateable.get(body.messageId);
+		const seq = new Map([...seqToId].map(([s, mid]) => [mid, s])).get(body.messageId);
+		const entry = seq === undefined ? undefined : bySeq.get(seq);
 		if (entry === undefined) {
 			return Response.json(
 				{ error: "no such assistant reply" },
@@ -696,7 +711,7 @@ export async function handleConversationsRoute(
 		});
 		const record = ratings.latestEvent(convId.id, entry.seq)!;
 		const rating: AppRatedReply = {
-			messageId: entry.message.id,
+			messageId: body.messageId,
 			eventSeq: entry.seq,
 			anchorSeq: record.anchorSeq,
 			rating: record.rating,
@@ -721,17 +736,43 @@ export async function handleConversationsRoute(
 		if (store.get(convId.id) === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		const detail = store.historyDetail(convId.id);
-		const rateable = rateableAssistantEntries(detail);
+		const slim = store.historySlim(convId.id);
+		// The window cut rides the skeleton's causal order: ?before=k:s
+		// serves the page that ENDS right before the entry the cursor
+		// names, so a mid-order anchored arrival can never skip or
+		// double-serve a row.
+		let end = slim.length;
+		const before = new URL(req.url).searchParams.get("before");
+		if (before !== null) {
+			const m = /^(\d+):(\d+)$/.exec(before);
+			if (m === null) {
+				return Response.json({ error: "bad cursor" }, { status: 400, headers: NO_STORE });
+			}
+			const ck = Number(m[1]);
+			const cs = Number(m[2]);
+			// First entry at or after the cursor — the cursor's own index
+			// while it stands, its insertion point after a rewind.
+			const i = slim.findIndex((e) => {
+				const k = e.anchorSeq ?? e.seq;
+				return k > ck || (k === ck && e.seq >= cs);
+			});
+			end = i === -1 ? slim.length : i;
+		}
+		const start = Math.max(0, end - MESSAGES_PAGE);
+		const entries = store.historyData(
+			convId.id,
+			slim.slice(start, end).map((e) => e.seq),
+		);
 		// Fold marks render where the fold RAN (design/compaction.md →
 		// "Fold marks in the app"): afterIndex is the last message whose
 		// created_at is at or before the compaction row's — not the cut.
 		// eventsCompacted still counts the folded span: consecutive
 		// boundaries over the causal order, matching runCompaction's
 		// slice. firstKeptIndex is the cut's far side — the first message
-		// the model still sees verbatim.
-		const causal = detail.map((entry) => entry.anchorSeq ?? entry.seq);
-		const createdMs = detail.map((entry) => Date.parse(entry.createdAt));
+		// the model still sees verbatim. All indexes are
+		// transcript-absolute — the client subtracts its loaded base.
+		const causal = slim.map((entry) => entry.anchorSeq ?? entry.seq);
+		const createdMs = slim.map((entry) => Date.parse(entry.createdAt));
 		const compactions: AppCompactionMark[] = [];
 		let prevUpto = 0;
 		for (const mark of store.listCompactions(convId.id)) {
@@ -755,10 +796,15 @@ export async function handleConversationsRoute(
 			});
 			prevUpto = upto;
 		}
+		const seqToId = rateableIds(store, convId.id, slim);
 		const body: AppMessageList = {
-			messages: detail.map((entry) => entry.message),
-			ratings: ratedReplies(store, convId.id, rateable),
-			rateableMessageIds: [...rateable.keys()],
+			messages: entries.map((entry) => entry.message),
+			start,
+			// The next page ends right before this window's first entry.
+			olderCursor:
+				start > 0 ? `${causal[start]}:${slim[start]!.seq}` : null,
+			ratings: ratedReplies(store, convId.id, seqToId),
+			rateableMessageIds: [...seqToId.values()],
 			compactions,
 		};
 		log.debug("app history served", { conversation: convId.id, messages: body.messages.length });

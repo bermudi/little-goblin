@@ -96,21 +96,30 @@ export type AppReplyRating = "up" | "down";
 
 export interface AppMessageList {
 	messages: UIMessage[];
+	/** Absolute causal index of `messages[0]` in the full transcript —
+	 *  mark indexes and the paging cursor are transcript-absolute, so
+	 *  subtract `start` to address this page's array. */
+	start: number;
+	/** Set while entries older than `start` remain — feed back as
+	 *  `?before=` for the next page up. */
+	olderCursor: string | null;
 	ratings: AppRatedReply[];
 	rateableMessageIds: string[];
 	/** Fold pointers as transcript marks, oldest first — each renders a
-	 *  pill after `messages[afterIndex]` (-1 = before the first). */
+	 *  pill after the message at `afterIndex` (-1 = before the first).
+	 *  Indexes are transcript-absolute: `afterIndex - start` addresses
+	 *  this page's array. */
 	compactions: AppCompactionMark[];
 }
 
 export interface AppCompactionMark {
 	boundarySeq: number;
-	/** Index into `messages` the pill renders after: the last message
+	/** Transcript-absolute index the pill renders after: the last message
 	 *  that existed when the fold ran (its created_at ≤ the row's) —
 	 *  where the fold ran, not at the cut. -1 = before every message. */
 	afterIndex: number;
-	/** Index into `messages` of the first message the model still sees
-	 *  verbatim after this fold — the causal cut's far side. */
+	/** Transcript-absolute index of the first message the model still
+	 *  sees verbatim after this fold — the causal cut's far side. */
 	firstKeptIndex: number;
 	eventsCompacted: number;
 	/** Fold-time tail size; null on rows written before it was recorded. */

@@ -139,6 +139,27 @@ export function prepareConversationQueries(db: Database) {
 		{ seq: number; anchor_seq: number | null; role: string; data: string; created_at: string },
 		[string, number]
 	>(HISTORY_CAUSAL_SQL);
+	// The transcript's skeleton without message payloads: windowing,
+	// fold-mark positions and rateable-winner detection all read this —
+	// the app's paged history must never parse data for unserved rows.
+	const qHistorySlim = db.query<
+		{ seq: number; anchor_seq: number | null; role: string; created_at: string },
+		[string]
+	>("SELECT seq, anchor_seq, role, created_at FROM events WHERE conversation_id = ? ORDER BY seq");
+	// Full rows for one served window; the seq list rides a json_each
+	// parameter so one prepared statement serves every window size.
+	const qHistoryData = db.query<
+		{ seq: number; anchor_seq: number | null; role: string; data: string; created_at: string },
+		[string, string]
+	>(
+		"SELECT seq, anchor_seq, role, data, created_at FROM events WHERE conversation_id = ? AND seq IN (SELECT value FROM json_each(?))",
+	);
+	// Message ids for a seq set — the rating seam joins durable seqs to
+	// the envelope's message.id without parsing every row. Corrupt rows
+	// surface NULL; the caller names them like corruptPlaceholder does.
+	const qMessageIds = db.query<{ seq: number; mid: string | null }, [string, string]>(
+		"SELECT seq, json_extract(data, '$.message.id') AS mid FROM events WHERE conversation_id = ? AND seq IN (SELECT value FROM json_each(?))",
+	);
 	const qLastByRole = db.query<
 		{ seq: number; anchor_seq: number | null; role: string; data: string },
 		[string, string]
@@ -360,6 +381,9 @@ export function prepareConversationQueries(db: Database) {
 		qLastActivity,
 		qHistory,
 		qHistoryCausal,
+		qHistorySlim,
+		qHistoryData,
+		qMessageIds,
 		qLastByRole,
 		qLastEventSeq,
 		qLastUserSeq,

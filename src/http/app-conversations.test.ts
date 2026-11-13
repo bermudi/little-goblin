@@ -62,11 +62,86 @@ describe("app conversations", () => {
 			expect(
 				(await messages.json()) as {
 					messages: unknown[];
+					start: number;
+					olderCursor: string | null;
 					ratings: unknown[];
 					rateableMessageIds: unknown[];
 					compactions: unknown[];
 				},
-			).toEqual({ messages: [], ratings: [], rateableMessageIds: [], compactions: [] });
+			).toEqual({
+				messages: [],
+				start: 0,
+				olderCursor: null,
+				ratings: [],
+				rateableMessageIds: [],
+				compactions: [],
+			});
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("history pages newest-first — the cursor reaches every one of 500 events", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "paged-01" }),
+			});
+			// 250 real-shaped turns: each reply anchors to its user event,
+			// so causal order exercises the anchor key, not just seq.
+			const ids: string[] = [];
+			for (let i = 0; i < 250; i++) {
+				const userSeq = 2 * i + 1;
+				const u = `u${i}`;
+				const a = `a${i}`;
+				store.append("app/paged-01", [
+					{ id: u, role: "user", parts: [{ type: "text", text: `q${i}` }] },
+				]);
+				store.append(
+					"app/paged-01",
+					[{ id: a, role: "assistant", parts: [{ type: "text", text: `r${i}` }] }],
+					{ anchorSeq: userSeq },
+				);
+				ids.push(u, a);
+			}
+
+			type Page = {
+				messages: { id: string }[];
+				start: number;
+				olderCursor: string | null;
+				rateableMessageIds: string[];
+				compactions: unknown[];
+			};
+			const seen: string[] = [];
+			let cursor: string | null = null;
+			let first: Page | null = null;
+			for (let page = 0; ; page++) {
+				const res = await call(
+					`/api/app/conversations/paged-01/messages${cursor === null ? "" : `?before=${cursor}`}`,
+				);
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Page;
+				if (first === null) first = body;
+				expect(body.start).toBe(Math.max(0, 500 - (page + 1) * 200));
+				expect(body.messages).toHaveLength(page < 2 ? 200 : 100);
+				// Slices chain with no gap or overlap.
+				expect(body.messages.map((m) => m.id)).toEqual(
+					ids.slice(body.start, body.start + body.messages.length),
+				);
+				seen.unshift(...body.messages.map((m) => m.id));
+				cursor = body.olderCursor;
+				if (cursor === null) break;
+			}
+			expect(seen).toEqual(ids);
+			// The rating seam stays transcript-wide across pages: every
+			// reply's winner id is in the set, on every page.
+			expect(first!.rateableMessageIds).toEqual(ids.filter((_, i) => i % 2 === 1));
+
+			expect(
+				(await call("/api/app/conversations/paged-01/messages?before=garbage")).status,
+			).toBe(400);
 		} finally {
 			http.stop();
 		}

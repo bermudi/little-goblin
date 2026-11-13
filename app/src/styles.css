@@ -1053,6 +1053,20 @@ header h1 {
 .transcript-inner > .empty {
 	text-align: center;
 }
+/* Paged history's top affordance — the transcript's own quiet button,
+   centered over the column. */
+.load-older {
+	align-self: center;
+	margin-bottom: 0.75rem;
+	font-size: 0.85em;
+	opacity: 0.75;
+}
+.load-older:hover:not(:disabled) {
+	opacity: 1;
+}
+.load-older:disabled {
+	cursor: default;
+}
 
 /* ---------- conversation outline ---------- */
 

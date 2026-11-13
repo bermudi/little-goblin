@@ -14,6 +14,7 @@ import {
 	summaryMessage,
 	toFtsQuery,
 } from "./conversation-events.ts";
+import { corruptRowId } from "./tags.ts";
 import type { ConversationQueries } from "./conversation-queries.ts";
 import { messageText } from "./memory/mod.ts";
 
@@ -34,12 +35,24 @@ export interface HistoryContextRow {
 	createdAt: string;
 }
 
+// The causal skeleton of one event: everything windowing, fold-mark
+// placement and rateable-winner detection needs, without the payload.
+export interface HistorySlimEntry {
+	seq: number;
+	anchorSeq: number | null;
+	role: string;
+	createdAt: string;
+}
+
 export function makeConversationHistory(
 	db: Database,
 	queries: Pick<
 		ConversationQueries,
 		| "qHistory"
 		| "qHistoryCausal"
+		| "qHistorySlim"
+		| "qHistoryData"
+		| "qMessageIds"
 		| "qLastByRole"
 		| "qProjections"
 		| "qInsertProjection"
@@ -51,6 +64,9 @@ export function makeConversationHistory(
 	const {
 		qHistory,
 		qHistoryCausal,
+		qHistorySlim,
+		qHistoryData,
+		qMessageIds,
 		qLastByRole,
 		qProjections,
 		qInsertProjection,
@@ -131,16 +147,10 @@ export function makeConversationHistory(
 		created_at: string;
 	};
 
-	function detailFromRows(id: string, raw: RawRow[]) {
-		const rows = raw.map((r) => ({
-			seq: r.seq,
-			anchorSeq: r.anchor_seq,
-			createdAt: r.created_at,
-			message: parseEvent(id, r.seq, r.role, r.data) ?? corruptPlaceholder(r.seq, r.role),
-		}));
-		// Arrival order stays on disk; this sorts each anchored response
-		// right after its user event. Key = anchor ?? seq, tiebreak = seq
-		// — an anchor always precedes its own seq.
+	// Arrival order stays on disk; the causal sort puts each anchored
+	// response right after its user event. Key = anchor ?? seq,
+	// tiebreak = seq — an anchor always precedes its own seq.
+	function causalOrder<T extends { seq: number; anchorSeq: number | null }>(rows: T[]): T[] {
 		rows.sort((a, b) => {
 			const ka = a.anchorSeq ?? a.seq;
 			const kb = b.anchorSeq ?? b.seq;
@@ -149,8 +159,50 @@ export function makeConversationHistory(
 		return rows;
 	}
 
+	function detailFromRows(id: string, raw: RawRow[]) {
+		return causalOrder(
+			raw.map((r) => ({
+				seq: r.seq,
+				anchorSeq: r.anchor_seq,
+				createdAt: r.created_at,
+				message: parseEvent(id, r.seq, r.role, r.data) ?? corruptPlaceholder(r.seq, r.role),
+			})),
+		);
+	}
+
 	function historyDetail(id: string) {
 		return detailFromRows(id, qHistory.all(id));
+	}
+
+	// The whole transcript's causal skeleton — the paged reader's index.
+	// No payloads cross the wire on this read.
+	function historySlim(id: string): HistorySlimEntry[] {
+		return causalOrder(
+			qHistorySlim.all(id).map((r) => ({
+				seq: r.seq,
+				anchorSeq: r.anchor_seq,
+				role: r.role,
+				createdAt: r.created_at,
+			})),
+		);
+	}
+
+	// Payloads for one served window, causal-ordered like historyDetail.
+	function historyData(id: string, seqs: readonly number[]) {
+		if (seqs.length === 0) return [];
+		return detailFromRows(id, qHistoryData.all(id, JSON.stringify(seqs)));
+	}
+
+	// Stored message ids for a seq set — corrupt rows name themselves
+	// like corruptPlaceholder so the rating seam sees the same id either
+	// way.
+	function messageIdsForSeqs(id: string, seqs: readonly number[]): Map<number, string> {
+		if (seqs.length === 0) return new Map();
+		return new Map(
+			qMessageIds
+				.all(id, JSON.stringify(seqs))
+				.map((r) => [r.seq, r.mid ?? corruptRowId(r.seq)]),
+		);
 	}
 
 	// One-row reader for "what is the last <role> message?" callers —
@@ -251,6 +303,9 @@ export function makeConversationHistory(
 		history,
 		historyEntries,
 		historyDetail,
+		historySlim,
+		historyData,
+		messageIdsForSeqs,
 		lastEntry,
 		modelEntries,
 		eventProjections,

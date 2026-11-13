@@ -478,10 +478,16 @@ export async function restoreNoteVersion(
 	return (await decodeNoteMutation(res)).data;
 }
 
-export function getMessages(token: string | null, id: string): Promise<AppMessageList> {
+export function getMessages(
+	token: string | null,
+	id: string,
+	before?: string,
+): Promise<AppMessageList> {
 	return request(
 		token,
-		`/api/app/conversations/${encodeURIComponent(id.slice("app/".length))}/messages`,
+		`/api/app/conversations/${encodeURIComponent(id.slice("app/".length))}/messages${
+			before === undefined ? "" : `?before=${encodeURIComponent(before)}`
+		}`,
 	);
 }
 

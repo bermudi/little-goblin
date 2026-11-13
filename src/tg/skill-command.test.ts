@@ -16,7 +16,7 @@ import {
 	type SkillCommandDeps,
 	type TempSkillQuery,
 } from "./skill-command.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 
 let homes: string[] = [];
 afterEach(() => {

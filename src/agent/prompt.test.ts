@@ -7,7 +7,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { paths } from "../home-layout.ts";
 import { setLogFile } from "../log.ts";
-import { openStore, type Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import { openStore } from "../conversation.ts";
 import { _resetPromptSourcesForTest, buildSystemPrompt, systemPromptFor } from "./prompt.ts";
 import { useHome } from "../testkit.ts";
 

@@ -2,7 +2,8 @@
 
 import { type CompactionOutcome, type Flush, runCompaction } from "../agent/compaction.ts";
 import { candidateRefs } from "../agent/model-fallback.ts";
-import type { Conversation, ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import type { ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
 
 // Optional compaction summarizes on the conversation's model, then walks

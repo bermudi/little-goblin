@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import type { ToolSet } from "ai";
 import type { AcceptsMedia } from "../agent/attachments.ts";
 import type { OutgoingFile } from "../agent/tools/send.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { log } from "../log.ts";
 import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import type { SinkDelivery } from "./delivery.ts";

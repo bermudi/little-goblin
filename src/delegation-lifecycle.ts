@@ -12,7 +12,7 @@ import {
 import { makeHerdr, makeOperatorHerdr, type Herdr, type OperatorHerdr } from "./herdr.ts";
 import type { ConfigRef } from "./config.ts";
 import type { DelegationConfig } from "./config-schema.ts";
-import type { Conversation } from "./conversation.ts";
+import type { Conversation } from "./conversation-read.ts";
 import type { DelegateToolDeps, DelegationPin } from "./agent/tools/delegate.ts";
 import { wake, wakeApp, type WakeDeps } from "./wake.ts";
 import type { GithubIssue, PrReadiness } from "./pr-readiness.ts";

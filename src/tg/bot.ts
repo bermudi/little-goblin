@@ -8,7 +8,7 @@
 import { Bot, type Api } from "grammy";
 import type { MenuButton } from "grammy/types";
 import { paths } from "../home-layout.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import type { TurnSink } from "../turn/sink.ts";
 import { log } from "../log.ts";
 import { makeBellSink } from "./bell.ts";

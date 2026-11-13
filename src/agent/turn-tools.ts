@@ -11,7 +11,8 @@ import { FencedError, type RuntimeDeps } from "../runtime.ts";
 
 import type { ConfigRef } from "../config.ts";
 import { splitModelRef, type Config } from "../config-schema.ts";
-import type { Conversation, ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import type { ConversationStore } from "../conversation.ts";
 import { channelOf } from "../conversation-address.ts";
 import type { AuthStore } from "../auth.ts";
 import type { NoteStore } from "../notes.ts";

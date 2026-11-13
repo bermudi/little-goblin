@@ -21,7 +21,8 @@ import {
 	quotaExhausted,
 } from "./agent/provider-errors.ts";
 import { resolveSkillRef } from "./agent/skill-inject.ts";
-import type { Conversation, ConversationStore } from "./conversation.ts";
+import type { Conversation } from "./conversation-read.ts";
+import type { ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import {
 	activeExchangeExcluded,

@@ -1,5 +1,6 @@
 import type { Api } from "grammy";
-import type { Conversation, ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import type { ConversationStore } from "../conversation.ts";
 import type { ConversationMetaPatch } from "../conversation-settings.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";

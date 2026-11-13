@@ -40,6 +40,24 @@ export interface ClaudeSessionStore {
 	drop(conversationId: string, modelRef: string, reason: string): void;
 }
 
+// #418: one native Claude SDK session per (conversation, model ref).
+// The claude-code engine resumes it each turn; the record advances
+// only on a landed reply. ensureConversationSchema calls this so the
+// rewind/delete sweeps in conversation-queries always find the table.
+export function ensureClaudeSessionsSchema(db: Database): void {
+	db.run(`
+			CREATE TABLE IF NOT EXISTS claude_sessions (
+				conversation_id TEXT NOT NULL,
+				model_ref TEXT NOT NULL,
+				session_id TEXT NOT NULL,
+				head_uuid TEXT NOT NULL,
+				seen_seq INTEGER NOT NULL,
+				reply_seq INTEGER,
+				updated_at INTEGER NOT NULL,
+				PRIMARY KEY (conversation_id, model_ref)
+			)`);
+}
+
 export function openClaudeSessions(db: Database): ClaudeSessionStore {
 	const row = db.query<z.input<typeof rowSchema>, [string, string]>(
 		`SELECT conversation_id, model_ref, session_id, head_uuid, seen_seq, reply_seq, updated_at

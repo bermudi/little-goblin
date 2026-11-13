@@ -2,7 +2,7 @@ import type { UIMessage } from "ai";
 import type { CompactionOutcome } from "../agent/compaction.ts";
 import type { FallbackTrail } from "../agent/model-fallback.ts";
 import { isContextOverflow } from "../agent/provider-errors.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { log } from "../log.ts";
 import type { RecallContext } from "../memory/mod.ts";
 import type { ToolCallDigest } from "../reviewer-evidence.ts";

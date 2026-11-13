@@ -9,7 +9,7 @@ import {
 	type UIMessage,
 	type UIMessageChunk,
 } from "ai";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { setLogFile } from "../log.ts";
 import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory/mod.ts";
 import type { CompletedTurn, PriorTurnContext } from "../reviewer-evidence.ts";

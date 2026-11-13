@@ -18,7 +18,8 @@
 // fence holds resubmission and each pump retries the closure.
 
 import type { UIMessage } from "ai";
-import type { Conversation, ConversationStore } from "./conversation.ts";
+import type { Conversation } from "./conversation-read.ts";
+import type { ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import type { Runtime, RuntimeDeps } from "./runtime.ts";
 import type { TurnSink } from "./turn/sink.ts";

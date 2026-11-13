@@ -7,7 +7,7 @@
 
 import type { UIMessage } from "ai";
 import { paths } from "../home-layout.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { channelOf } from "../conversation-address.ts";
 import { projectRollText, rollingChatId, routeDm, routeDmMessage } from "../rolling.ts";
 import { userMessage } from "../runtime.ts";

@@ -12,7 +12,7 @@ import type { Message } from "grammy/types";
 import type { UIMessage } from "ai";
 import type { Config } from "../config-schema.ts";
 import { paths } from "../home-layout.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { formatAddress } from "../conversation-address.ts";
 import type { ConversationAddress } from "../conversation-address.ts";
 import { isRollingChat, routeDm, type RollDeps } from "../rolling.ts";

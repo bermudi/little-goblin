@@ -4,75 +4,37 @@ import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
 import { type Config, splitModelRef } from "./config-schema.ts";
-import { log } from "./log.ts";
-import { stampArrival } from "./message-context.ts";
 import { MemoryDestinations } from "./memory/destinations.ts";
 import type { MemoryDocument } from "./memory/hindsight.ts";
 import { MemoryContexts, type MemoryEligibility, messageText } from "./memory/mod.ts";
 import { MemoryQueue } from "./memory/queue.ts";
-import {
-	appAddress,
-	channelOf,
-	type ConversationAddress,
-	formatAddress,
-	privateChatIdSchema,
-	rollingDmOrdinal,
-} from "./conversation-address.ts";
-import {
-	type Compaction,
-	type CompactionMark,
-	type CompactionWrite,
-	flatLine,
-	parseEvent,
-} from "./conversation-events.ts";
+import { channelOf, type ConversationAddress, formatAddress } from "./conversation-address.ts";
+import { type CompactionWrite, flatLine, parseEvent } from "./conversation-events.ts";
 import {
 	type HistoryContextRow,
 	type HistoryHit,
 	makeConversationHistory,
 } from "./conversation-history.ts";
+import { makeConversationCompaction } from "./conversation-compaction.ts";
+import { makeConversationDelete } from "./conversation-delete.ts";
+import { makeConversationFork } from "./conversation-fork.ts";
+import { makeConversationRolling } from "./conversation-rolling.ts";
+import { type MessageEdit, makeConversationTranscript } from "./conversation-transcript.ts";
 import { prepareConversationQueries, type Row } from "./conversation-queries.ts";
 import { ensureConversationSchema } from "./conversation-schema.ts";
 import {
 	type ConversationMetaPatch,
 	makeConversationSettings,
 	type ModelSettings,
-	modelSettingsSchema,
 } from "./conversation-settings.ts";
-import { retargetPruningMarker } from "./pruning-marker.ts";
 import { coordinationAnchors } from "./responsibilities.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
-import { sweepConversationWakes } from "./wake-store.ts";
-import type { ConversationReads } from "./conversation-read.ts";
-import type { AppConversationSummary } from "./conversation-read.ts";
-
-export interface Conversation {
-	id: string;
-	// Real only on dm:/topic: — app rows store 0/NULL (legacy NOT NULL
-	// columns). channelOf(id) is the routing check, never these.
-	chatId: number;
-	threadId: number | null;
-	title: string | null;
-	// Telegram placeholder name — the bot owes it a real one. Cleared by
-	// explicit rename or a successful auto-title.
-	titleImplicit: boolean;
-	// Durable per-conversation selection on app rows only; telegram ignores
-	// these columns for its one shared config selection.
-	model: string | null;
-	thinking: string | null;
-	voice: boolean;
-	memoryExcluded: boolean; // operator opt-out: this topic sends/recalls no memory
-	persona: "personal" | "guest"; // prompt class + sandbox tool filter (Guest mode)
-	// Hidden from the app rail, still answerable; any appended event clears it.
-	archivedAt: string | null;
-	// Floats above the app rail's activity order; survives activity,
-	// cleared by archive.
-	pinnedAt: string | null;
-	// Bound once at creation; app conversations only — every other row
-	// stays null forever.
-	projectId: string | null;
-	epoch: number;
-	createdAt: string;
-}
+import {
+	type AppConversationSummary,
+	type Conversation,
+	type ConversationReads,
+	toConversation,
+} from "./conversation-read.ts";
 
 // Called at admission (and manual compaction), never at submit time:
 // a queued turn sees the latest settings, a running turn keeps its copy.
@@ -117,34 +79,6 @@ export function prepareAppSettingsForConfig(
 		for (const row of rows) store.initializeAppSettings(row.id, previous);
 	})();
 }
-
-// The observable shape of an edit's sweep: the cut is the edited event's
-// seq, seq is the new event's (never-reused) position, and the counts
-// name every dependent the delete removed.
-export interface MessageEdit {
-	seq: number;
-	cutSeq: number;
-	events: number;
-	compactions: number;
-	contexts: number;
-	projections: number;
-	ratings: number;
-}
-
-// deleteConversation's designed refusal (coordination anchors), typed so
-// a boundary can tell it from a real failure — the app's DELETE route
-// must answer it, not 500 it.
-export class DeleteRefused extends Error {}
-
-// One text for both surfaces: deleteRefusal's advisory answer and
-// deleteConversation's throw must never drift apart.
-const deleteRefusalText = (
-	id: string,
-	anchors: { responsibilityId: string; status: string }[],
-): string =>
-	`conversation ${id} coordinates ${anchors
-		.map((a) => `${a.responsibilityId} (${a.status})`)
-		.join(", ")} — resolve them before deleting`;
 
 // The write side plus the shared handles. Every read lives on
 // ConversationReads (conversation-read.ts), which this extends —
@@ -263,26 +197,6 @@ export interface ConversationStore extends ConversationReads {
 	close(): void;
 }
 
-function toConversation(r: Row): Conversation {
-	return {
-		id: r.id,
-		chatId: r.chat_id,
-		threadId: r.thread_id,
-		title: r.title,
-		titleImplicit: r.title_implicit !== 0,
-		model: r.model,
-		thinking: r.thinking,
-		voice: r.voice !== 0,
-		memoryExcluded: r.memory_excluded !== 0,
-		persona: r.persona === "guest" ? "guest" : "personal",
-		archivedAt: r.archived_at,
-		pinnedAt: r.pinned_at,
-		projectId: r.project_id,
-		epoch: r.epoch,
-		createdAt: r.created_at,
-	};
-}
-
 export function openStore(dbPath: string): ConversationStore {
 	const db = new Database(dbPath);
 	db.run("PRAGMA journal_mode = WAL");
@@ -302,17 +216,11 @@ export function openStore(dbPath: string): ConversationStore {
 	const memoryQueue = new MemoryQueue(db);
 	const memoryContexts = new MemoryContexts(db);
 	const memoryDestinations = new MemoryDestinations(db);
+	const queries = prepareConversationQueries(db);
 	const {
-		qCompaction,
-		qCompactions,
-		qInsertCompaction,
 		qGet,
 		qInsertConv,
 		qDmRoll,
-		qDmOrdinalCandidates,
-		qDmRollHighwater,
-		qUpsertRoll,
-		qSelectPrevious,
 		qLastActivity,
 		qHistory,
 		qHistoryCausal,
@@ -320,54 +228,18 @@ export function openStore(dbPath: string): ConversationStore {
 		qLastEventSeq,
 		qLastUserSeq,
 		qLastReplyAnchor,
-		qNextSeq,
 		qEligibleSeqs,
-		qIneligibleFolded,
-		qInsertEvent,
-		qAllEvents,
-		qEventsThrough,
-		qContextsFor,
-		qInsertContext,
-		qContextsThrough,
 		qProjections,
-		qAllProjections,
 		qInsertProjection,
-		qProjectionsThrough,
 		qEpoch,
 		qSearch,
 		qContext,
 		qListApp,
 		qProjectConvs,
 		qLastAppEvent,
-		qDeleteEvents,
-		qDeleteCompactions,
-		qDeleteContexts,
-		qDeleteWindows,
-		qDeleteClaudeSessions,
-		qDeleteConv,
-		qRewindEvents,
-		qRewindCompactions,
-		qRewindContexts,
-		qRewindProjections,
-		qRewindRatings,
-		qRaiseSeqHighwater,
-	} = prepareConversationQueries(db);
+	} = queries;
 
-	function previousDmRow(chatId: number): Row | null {
-		if (!privateChatIdSchema.safeParse(chatId).success) return null;
-		const roll = qDmRoll.get(chatId);
-		if (!roll) return null;
-		const current = qGet.get(roll.current_id);
-		if (!current || current.previous_dm_id === null) return null;
-		const currentOrdinal = rollingDmOrdinal(current, chatId);
-		if (currentOrdinal === null) return null;
-		const previous = qGet.get(current.previous_dm_id);
-		if (!previous || previous.id === current.id) return null;
-		const previousOrdinal = rollingDmOrdinal(previous, chatId);
-		// Every back step must decrease the creation ordinal, including
-		// branch source links. A corrupt forward link can otherwise cycle.
-		return previousOrdinal !== null && previousOrdinal < currentOrdinal ? previous : null;
-	}
+	const rolling = makeConversationRolling(db, queries, toConversation);
 
 	const { applyPatch, readSettings, initializeSettings, bump } = makeConversationSettings(
 		db,
@@ -375,37 +247,23 @@ export function openStore(dbPath: string): ConversationStore {
 		qEpoch,
 	);
 
-	function getCompaction(id: string): Compaction | null {
-		const row = qCompaction.get(id);
-		return row
-			? {
-					boundarySeq: row.boundary_seq,
-					summary: row.summary,
-					summaryEligible: row.summary_eligible !== 0,
-					tokensBefore: row.tokens_before,
-					model: row.model,
-					createdAt: row.created_at,
-					tailEvents: row.tail_events,
-				}
-			: null;
-	}
+	const compaction = makeConversationCompaction(queries);
 
-	function listCompactions(id: string): CompactionMark[] {
-		return qCompactions.all(id).map((row) => ({
-			boundarySeq: row.boundary_seq,
-			summary: row.summary,
-			tokensBefore: row.tokens_before,
-			tailEvents: row.tail_events,
-			model: row.model,
-			createdAt: row.created_at,
-		}));
-	}
+	const fork = makeConversationFork(db, queries, applyPatch, toConversation);
 
 	const historyView = makeConversationHistory(
 		db,
 		{ qHistory, qHistoryCausal, qLastByRole, qProjections, qInsertProjection, qSearch, qContext },
-		getCompaction,
+		compaction.getCompaction,
 	);
+
+	const transcript = makeConversationTranscript(db, queries, {
+		memoryQueue,
+		bump,
+		messageEvent: historyView.messageEvent,
+	});
+
+	const deletion = makeConversationDelete(db, queries, memoryQueue, coordinationAnchors);
 
 	return {
 		db,
@@ -414,28 +272,7 @@ export function openStore(dbPath: string): ConversationStore {
 		memoryDestinations,
 		...historyView,
 
-		getCompaction,
-
-		listCompactions,
-
-		setCompaction(id, compaction) {
-			// Derived text feeds memory-bound builders only when every event
-			// the pointer folds (causal position ≤ boundary — the key
-			// modelEntries cuts on) was eligible; a prior summary's span sits
-			// below the new boundary, so one count covers repeated
-			// compactions.
-			const foldedIneligible = qIneligibleFolded.get(id, compaction.boundarySeq)?.n ?? 0;
-			qInsertCompaction.run(
-				id,
-				compaction.boundarySeq,
-				compaction.summary,
-				foldedIneligible === 0 ? 1 : 0,
-				compaction.tokensBefore,
-				compaction.model,
-				compaction.createdAt,
-				compaction.tailEvents ?? null,
-			);
-		},
+		...compaction,
 
 		resolve(addr, defaultCwd, defaults) {
 			return db.transaction(() => {
@@ -478,67 +315,7 @@ export function openStore(dbPath: string): ConversationStore {
 				.map((r) => r.id);
 		},
 
-		currentDm(chatId) {
-			const roll = qDmRoll.get(chatId);
-			if (!roll) return null;
-			const row = qGet.get(roll.current_id);
-			return row ? toConversation(row) : null;
-		},
-
-		rollDm(chatId, defaultCwd) {
-			privateChatIdSchema.parse(chatId);
-			return db.transaction(() => {
-				const roll = qDmRoll.get(chatId);
-				const highwater = qDmRollHighwater.get(chatId);
-				let n = Math.max(roll?.n ?? 0, highwater?.n ?? 0) + 1;
-				if (!roll) {
-					// The lane pointer was severed (its current row deleted)
-					// and the stored n went with it — recover the mark from
-					// extant rows and the delete tombstones too:
-					// dm_roll_highwater only knows what post-upgrade writes
-					// told it, and a re-minted ordinal would collide with
-					// outstanding epoch tokens and silently reconnect a
-					// demoted lane.
-					for (const { id: candidate } of qDmOrdinalCandidates.all(chatId, String(chatId))) {
-						const ordinal = rollingDmOrdinal(
-							{ id: candidate, chat_id: chatId, thread_id: null },
-							chatId,
-						);
-						if (ordinal !== null && ordinal + 1 > n) n = ordinal + 1;
-					}
-				}
-				const id = formatAddress({ kind: "rolling", chatId, ordinal: n });
-				const now = new Date().toISOString();
-				const source = roll ? qGet.get(roll.current_id) : null;
-				qInsertConv.run(id, chatId, null, defaultCwd, now);
-				db.run("UPDATE conversations SET previous_dm_id = ? WHERE id = ?", [
-					source && rollingDmOrdinal(source, chatId) !== null ? source.id : null,
-					id,
-				]);
-				qUpsertRoll.run(chatId, id, n, now);
-				db.run(
-					"INSERT INTO dm_roll_highwater (chat_id, n) VALUES (?, ?) ON CONFLICT(chat_id) DO UPDATE SET n = excluded.n",
-					[chatId, n],
-				);
-				const created = qGet.get(id);
-				if (!created) throw new Error(`conversation ${id} insert failed`);
-				return toConversation(created);
-			})();
-		},
-
-		previousDm(chatId) {
-			const row = previousDmRow(chatId);
-			return row ? toConversation(row) : null;
-		},
-
-		backDm(chatId) {
-			return db.transaction(() => {
-				const row = previousDmRow(chatId);
-				if (!row) return null;
-				qSelectPrevious.run(row.id, new Date().toISOString(), chatId);
-				return toConversation(row);
-			})();
-		},
+		...rolling,
 
 		lastActivityAt(id) {
 			const conv = qGet.get(id);
@@ -564,167 +341,9 @@ export function openStore(dbPath: string): ConversationStore {
 			return readSettings(id, defaults);
 		},
 
-		forkToApp(fromId, appId, defaultCwd, title, defaults, opts) {
-			return db.transaction(() => {
-				const id = formatAddress(appAddress(appId));
-				const through = opts?.throughSeq;
-				qInsertConv.run(id, 0, null, defaultCwd, new Date().toISOString());
-				// The memory opt-out is copied state — an excluded DM's text
-				// stays unsearchable and unretained in the fork too.
-				applyPatch(id, {
-					...(title === null ? {} : { title }),
-					titleImplicit: title === null ? true : (opts?.titleImplicit ?? true),
-					memoryExcluded: qGet.get(fromId)?.memory_excluded === 1,
-					...(defaults === undefined ? {} : modelSettingsSchema.parse(defaults)),
-				});
-				if (opts?.projectId !== undefined && opts.projectId !== null) {
-					const bound = db.run("UPDATE conversations SET project_id = ? WHERE id = ?", [
-						opts.projectId,
-						id,
-					]);
-					if (bound.changes !== 1) throw new Error(`conversation ${id} project bind failed`);
-				}
-				// The FTS triggers fire on these inserts — correct: the app
-				// pool's search should see the copied exchange.
-				const events =
-					through === undefined ? qAllEvents.all(fromId) : qEventsThrough.all(fromId, through);
-				for (const e of events) {
-					qInsertEvent.run(
-						id,
-						e.seq,
-						e.role,
-						e.data,
-						e.anchor_seq,
-						e.created_at,
-						e.memory_eligible,
-					);
-				}
-				// Only the latest pointer copies — it alone steers the model
-				// view — and its eligibility with it: the fork's memory-bound
-				// view must match the source's. A branch drops a pointer whose
-				// boundary lies past its cut: the summary would describe events
-				// the branch does not hold. Equality keeps it — the pointer
-				// folds the inclusive prefix (causal position ≤ boundary),
-				// which is exactly what the branch holds at that cut.
-				const compaction = qCompaction.get(fromId);
-				if (compaction !== null && (through === undefined || compaction.boundary_seq <= through)) {
-					qInsertCompaction.run(
-						id,
-						compaction.boundary_seq,
-						compaction.summary,
-						compaction.summary_eligible,
-						compaction.tokens_before,
-						compaction.model,
-						compaction.created_at,
-						compaction.tail_events,
-					);
-				}
-				for (const c of through === undefined
-					? qContextsFor.all(fromId)
-					: qContextsThrough.all(fromId, through)) {
-					qInsertContext.run(id, c.anchor_seq, c.content, c.source_ids, c.created_at);
-				}
-				// Committed projections ride along — the fork's model view
-				// replays the same markers, and the events they overlay came
-				// through the copy above untouched. One rewrite: the marker's
-				// recovery address names the source id, so point it at the
-				// fork or recovery would read another conversation's events
-				// (refused for an excluded fork) and die with the source.
-				const projections =
-					through === undefined
-						? qAllProjections.all(fromId)
-						: qProjectionsThrough.all(fromId, through);
-				for (const p of projections) {
-					qInsertProjection.run(
-						id,
-						p.seq,
-						p.tool_call_id,
-						retargetPruningMarker(p.replacement, p.seq, p.tool_call_id, fromId, id),
-						p.route_key,
-						p.settings_hash,
-						p.created_at,
-					);
-				}
-				const created = qGet.get(id);
-				if (!created) throw new Error(`conversation ${id} insert failed`);
-				return toConversation(created);
-			})();
-		},
+		...fork,
 
-		editUserMessage(id, messageId, message) {
-			let unarchived = false;
-			const edit = db.transaction((): MessageEdit | null => {
-				const found = historyView.messageEvent(id, messageId);
-				if (found === null || found.role !== "user") return null;
-				const conv = qGet.get(id);
-				if (!conv) throw new Error(`conversation ${id} not found`);
-				const cut = found.seq;
-				// Spend every seq this conversation ever wrote before the
-				// delete: a rating or journal row addressed past the cut must
-				// never re-bind to the event the edit appends.
-				qRaiseSeqHighwater.run(id);
-				// The projection sweep reads the events it matches — it runs
-				// before the event delete empties them.
-				const projections = Number(qRewindProjections.run(id, cut).changes);
-				const events = Number(qRewindEvents.run(id, cut).changes);
-				const compactions = Number(qRewindCompactions.run(id, cut).changes);
-				const contexts = Number(qRewindContexts.run(id, cut).changes);
-				const ratings = Number(qRewindRatings.run(id, cut).changes);
-				const seq = (qNextSeq.get(id)?.n ?? 0) + 1;
-				stampArrival(id, message, new Date());
-				qInsertEvent.run(
-					id,
-					seq,
-					message.role,
-					JSON.stringify({ v: 1, message }),
-					null,
-					new Date().toISOString(),
-					conv.memory_excluded === 0 ? 1 : 0,
-				);
-				// The rewind retires every pre-edit admission's authority: a
-				// claimed-but-unlinked wake (crash/backoff window) carries a
-				// history_seq the delete just killed, and reconcile resubmits
-				// such claims only while the claim epoch still matches — the
-				// bump fails them closed, never resubmitting a dead seq.
-				// Pending wakes are untouched: their delivery is still owed
-				// and lands at the new tail under the new epoch; linked wakes
-				// keep their run-chain settlement (the edit route abandons
-				// interrupted runs the cut orphans).
-				bump(id);
-				// The captured outbound prompt is verbatim pre-edit content —
-				// the window view must not serve it after the rewind. Same
-				// sweep deleteConversation runs; the next turn's capture
-				// rewrites the row. The native session records go too: the
-				// SDK transcript still holds the retracted content.
-				qDeleteWindows.run(id);
-				qDeleteClaudeSessions.run(id);
-				if (
-					conv.archived_at !== null &&
-					db.run("UPDATE conversations SET archived_at = NULL WHERE id = ?", [id]).changes > 0
-				) {
-					unarchived = true;
-				}
-				return { seq, cutSeq: cut, events, compactions, contexts, projections, ratings };
-			})();
-			if (edit === null) return null;
-			// Queued retention follows the events out. The purge waits for
-			// the commit — cancelling first and then rolling back would
-			// strand rows forever — and an already-retained memory is out of
-			// scope: the service owns it, this store can only stop new work.
-			try {
-				const purged = memoryQueue.cancelAnchoredFrom(id, edit.cutSeq);
-				if (purged > 0) {
-					log.info("retention purged with edited tail", {
-						conversation: id,
-						documents: purged,
-					});
-				}
-			} catch (err) {
-				log.warn("retention purge failed during message edit", err, { conversation: id });
-			}
-			if (unarchived) log.info("conversation unarchived on activity", { conversation: id });
-			return edit;
-		},
+		...transcript,
 
 		setMeta(id, patch) {
 			applyPatch(id, patch);
@@ -769,76 +388,6 @@ export function openStore(dbPath: string): ConversationStore {
 				applyPatch(id, patch);
 				return bump(id);
 			})();
-		},
-
-		append(id, messages, opts) {
-			let operation: string | undefined;
-			let unarchived = false;
-			const seqs = db.transaction(() => {
-				const start = qNextSeq.get(id)?.n ?? 0;
-				const now = new Date().toISOString();
-				// Eligibility is stamped at admission, from the live exclusion
-				// flag — the one moment the answer is knowable. Everything
-				// later (including a /memory on) reads this stamp, never the
-				// flag: history is not rewritten and exclusion is not retroactive.
-				const conv = qGet.get(id);
-				if (!conv) throw new Error(`conversation ${id} not found`);
-				const eligible = conv.memory_excluded === 0 && opts?.exclude !== true ? 1 : 0;
-				// Activity resurrects an archived app conversation — an
-				// event (delegation notice, operator send) returns it to the
-				// rail rather than accumulating replies unseen.
-				if (
-					conv.archived_at !== null &&
-					db.run("UPDATE conversations SET archived_at = NULL WHERE id = ?", [id]).changes > 0
-				) {
-					unarchived = true;
-				}
-				for (const [i, m] of messages.entries()) {
-					stampArrival(id, m, new Date(now));
-					qInsertEvent.run(
-						id,
-						start + i + 1,
-						m.role,
-						JSON.stringify({ v: 1, message: m }),
-						opts?.anchorSeq ?? null,
-						now,
-						eligible,
-					);
-				}
-				// The retention gate rides the same transaction as the stamp: an
-				// exclusion committed anywhere before this append drops the
-				// enqueue here even when the caller computed its option earlier.
-				if (opts?.memory && eligible === 1) {
-					if (
-						opts.memory.document.conversationId !== id ||
-						!messages.some(
-							(message) =>
-								message.role === "assistant" &&
-								opts.memory!.document.sourceIds.includes(message.id),
-						)
-					) {
-						throw new Error("Memory retention must accompany its completed assistant event");
-					}
-					operation = memoryQueue.enqueue(opts.memory.target, opts.memory.document);
-				}
-				return messages.map((_, i) => start + i + 1);
-			})();
-			if (operation)
-				log.info("memory queued", {
-					conversation: id,
-					operation,
-					document: opts?.memory?.document.id,
-				});
-			if (opts?.memory && operation === undefined) {
-				log.info("memory retention dropped — conversation excluded at write", {
-					conversation: id,
-					document: opts.memory.document.id,
-				});
-			}
-			if (unarchived) {
-				log.info("conversation unarchived on activity", { conversation: id });
-			}
-			return seqs;
 		},
 
 		lastUserSeq(id) {
@@ -914,87 +463,7 @@ export function openStore(dbPath: string): ConversationStore {
 			return qProjectConvs.all(projectId).map((r) => r.id);
 		},
 
-		deleteRefusal(id) {
-			const anchors = coordinationAnchors(db, id);
-			return anchors.length > 0 ? deleteRefusalText(id, anchors) : null;
-		},
-
-		deleteConversation(id) {
-			const swept = db.transaction((): { wakes: number; workEvents: number } => {
-				// A coordination surface must not outlive the responsibility
-				// that stands on it: the handover loop and wake delivery
-				// would both dangle. Terminal responsibilities keep their
-				// records — the conversation stays too. Refuse with names,
-				// not the bare FK error the row delete would raise.
-				const anchors = coordinationAnchors(db, id);
-				if (anchors.length > 0) {
-					throw new DeleteRefused(deleteRefusalText(id, anchors));
-				}
-				// Sever the rolling navigation chain first — successors'
-				// previous_dm_id would FK-fail the row delete (a demoted
-				// lane's persona reset is the one caller that deletes a
-				// rolled conversation; /back must not reach it anyway).
-				db.run("UPDATE conversations SET previous_dm_id = NULL WHERE previous_dm_id = ?", [id]);
-				// Preserve the lane's rolling ordinal high-water before
-				// dropping the FK-enforced dm_rolls row, so a demoted lane
-				// re-mints a fresh id instead of colliding with (or reusing)
-				// the deleted conversation.
-				db.run(
-					`INSERT INTO dm_roll_highwater (chat_id, n)
-					SELECT chat_id, n FROM dm_rolls WHERE current_id = ?
-					ON CONFLICT(chat_id) DO UPDATE SET
-						n = MAX(dm_roll_highwater.n, excluded.n)`,
-					[id],
-				);
-				// The lane pointer is NOT NULL — dropping the deleted row's
-				// dm_rolls entry is the sever; the high-water survives in
-				// dm_roll_highwater and rollDm re-mints the lane (the reset
-				// flow calls it immediately).
-				db.run("DELETE FROM dm_rolls WHERE current_id = ?", [id]);
-				// Record the final epoch before the row goes — a recreated id
-				// must not collide with a token this generation issued.
-				const gone = qGet.get(id);
-				if (gone !== null) {
-					db.run(
-						`INSERT INTO conversation_epoch_hwm (conversation_id, epoch) VALUES (?, ?)
-						 ON CONFLICT(conversation_id) DO UPDATE SET epoch = MAX(epoch, excluded.epoch)`,
-						[gone.id, gone.epoch],
-					);
-				}
-				// Wake rows are this conversation's delivery bookkeeping —
-				// they ride the delete, in the same transaction.
-				const counts = sweepConversationWakes(db, id);
-				qDeleteEvents.run(id);
-				qDeleteCompactions.run(id);
-				qDeleteContexts.run(id);
-				// The captured window has no FK — it rides the sweep so a
-				// re-minted id never inherits the last generation's prompt.
-				// Same for the native session records (#418).
-				qDeleteWindows.run(id);
-				qDeleteClaudeSessions.run(id);
-				qDeleteConv.run(id);
-				return counts;
-			})();
-			if (swept.wakes > 0) {
-				log.info("wake rows swept with conversation", {
-					conversation: id,
-					wakes: swept.wakes,
-					workEvents: swept.workEvents,
-				});
-			}
-			// The purge waits for the commit: queued retention rides the
-			// append transaction only, so cancelling before the delete and
-			// then rolling back would strand those rows forever. A purge
-			// failure is still a warn — a corrupt payload must not bar the
-			// delete that already landed.
-			try {
-				memoryQueue.cancelConversation(id);
-			} catch (err) {
-				log.warn("retention purge failed during conversation delete", err, {
-					conversation: id,
-				});
-			}
-		},
+		...deletion,
 
 		close() {
 			db.close();

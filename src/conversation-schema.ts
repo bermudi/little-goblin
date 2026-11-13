@@ -8,9 +8,11 @@
 import type { Database } from "bun:sqlite";
 import { isPrivateChatId, rollingDmOrdinal } from "./conversation-address.ts";
 import { CAUSAL_KEY_SQL, type Row } from "./conversation-queries.ts";
+import { ensureClaudeSessionsSchema } from "./claude-sessions.ts";
 import { log } from "./log.ts";
 import { ensureNotesSchema } from "./notes.ts";
 import { ensureProjectsSchema } from "./projects.ts";
+import { ensureRatingsSchema } from "./reply-ratings.ts";
 import { ensureResponsibilitiesSchema } from "./responsibility-schema.ts";
 import { ensureWakeSchema } from "./wake-store.ts";
 import { ensureWindowSchema } from "./window-capture.ts";
@@ -226,54 +228,13 @@ export function ensureConversationSchema(db: Database): void {
 				created_at TEXT NOT NULL,
 				PRIMARY KEY (conversation_id, seq, tool_call_id)
 			)`);
-	// The 👍/👎 tap record: reply metadata, never an event — nothing here
-	// feeds the model view, FTS, or memory. Append-only; a vote change is
-	// a new row, reads are latest-wins. No conversation FK: a deleted
-	// conversation's rows stay traceable by chat/message ids.
-	db.run(`
-			CREATE TABLE IF NOT EXISTS reply_ratings (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				channel TEXT NOT NULL DEFAULT 'telegram',
-				conversation_id TEXT NOT NULL,
-				anchor_seq INTEGER,
-				chat_id INTEGER NOT NULL,
-				message_id INTEGER NOT NULL,
-				event_seq INTEGER,
-				rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
-				created_at TEXT NOT NULL
-			)`);
-	const ratingCols = new Set(
-		db
-			.query<{ name: string }, []>("PRAGMA table_info(reply_ratings)")
-			.all()
-			.map((c) => c.name),
-	);
-	if (!ratingCols.has("channel")) {
-		db.run("ALTER TABLE reply_ratings ADD COLUMN channel TEXT NOT NULL DEFAULT 'telegram'");
-	}
-	if (!ratingCols.has("event_seq")) {
-		db.run("ALTER TABLE reply_ratings ADD COLUMN event_seq INTEGER");
-	}
-	db.run(
-		"CREATE INDEX IF NOT EXISTS reply_ratings_msg ON reply_ratings(channel, chat_id, message_id)",
-	);
-	db.run(
-		"CREATE INDEX IF NOT EXISTS reply_ratings_event ON reply_ratings(channel, conversation_id, event_seq)",
-	);
-	// #418: one native Claude SDK session per (conversation, model ref).
-	// The claude-code engine resumes it each turn; the record advances
-	// only on a landed reply (src/claude-sessions.ts owns access).
-	db.run(`
-			CREATE TABLE IF NOT EXISTS claude_sessions (
-				conversation_id TEXT NOT NULL,
-				model_ref TEXT NOT NULL,
-				session_id TEXT NOT NULL,
-				head_uuid TEXT NOT NULL,
-				seen_seq INTEGER NOT NULL,
-				reply_seq INTEGER,
-				updated_at INTEGER NOT NULL,
-				PRIMARY KEY (conversation_id, model_ref)
-			)`);
+	// The 👍/👎 tap record's DDL lives with its owner module
+	// (reply-ratings.ts); ensured here so the rewind sweep's delete and
+	// the ratings reads always find the table on this handle.
+	ensureRatingsSchema(db);
+	// #418: the native Claude SDK session table lives with its owner
+	// module (claude-sessions.ts).
+	ensureClaudeSessionsSchema(db);
 	// Web Push subscriptions are endpoint-scoped operator devices. The
 	// endpoint and its keys are send credentials, so callers/log lines use
 	// endpoint_hash; only the sender boundary reads the raw row.

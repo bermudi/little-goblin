@@ -16,26 +16,26 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { serveAppDist } from "./http/app-dist.ts";
-import { openStore } from "./conversation.ts";
-import { openDelegations } from "./delegations.ts";
-import { openOutbox } from "./mail-outbox.ts";
-import { openPrograms } from "./programs.ts";
-import { openSandboxes } from "./sandboxes.ts";
-import { openGuestStore } from "./tg/guest.ts";
-import { openTelegramInbox } from "./tg/inbox.ts";
-import { openPings } from "./tg/pings.ts";
-import { openCacheObservation } from "./cache-observation.ts";
-import { openTurnJournal } from "./turn-journal.ts";
+import { serveAppDist } from "../http/app-dist.ts";
+import { openStore } from "../conversation.ts";
+import { openDelegations } from "../delegations.ts";
+import { openOutbox } from "../mail-outbox.ts";
+import { openPrograms } from "../programs.ts";
+import { openSandboxes } from "../sandboxes.ts";
+import { openGuestStore } from "../tg/guest.ts";
+import { openTelegramInbox } from "../tg/inbox.ts";
+import { openPings } from "../tg/pings.ts";
+import { openCacheObservation } from "../cache-observation.ts";
+import { openTurnJournal } from "../turn-journal.ts";
+import { checkAppAssets } from "./app-assets.ts";
+import { testRatio } from "./repo.ts";
+import { runHealth } from "./mod.ts";
 import {
-	checkAppAssets,
 	healthReportSchema,
 	healthResultSchema,
-	runHealth,
-	testRatio,
 	type HealthReport,
-} from "./health.ts";
-import { waitUntil } from "./testkit.ts";
+} from "./shared.ts";
+import { waitUntil } from "../testkit.ts";
 
 const roots: string[] = [];
 const savedPath = process.env.PATH;
@@ -515,7 +515,7 @@ describe("read-only WAL-aware SQL worker", () => {
 	// but malformed or wrongly-shaped expected-table list fails the probe
 	// (open-or-query) instead of silently degrading to a skipped check.
 	describe("worker argv contract (real worker process)", () => {
-		const WORKER = join(import.meta.dir, "health-sqlite.ts");
+		const WORKER = join(import.meta.dir, "..", "health-sqlite.ts");
 		const probe = (
 			...args: string[]
 		): { code: number; report: Record<string, unknown>; raw: string } => {
@@ -1113,7 +1113,7 @@ describe("memory unit drift vs deploy/memory", () => {
 	// temp checkout proves the actual goblin-memory-api.container round-trips
 	// through marker-region normalization. Installed copies land under the
 	// mocked OS home, never the real one.
-	const repoUnits = join(import.meta.dir, "..", "deploy", "memory");
+	const repoUnits = join(import.meta.dir, "..", "..", "deploy", "memory");
 	const unitNames = () =>
 		readdirSync(repoUnits).filter((name) =>
 			/\.(?:container|network|volume|pod|service|timer)$/.test(name),

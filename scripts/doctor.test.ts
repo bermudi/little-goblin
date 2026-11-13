@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { healthReportSchema } from "../src/health.ts";
+import { healthReportSchema } from "../src/health/shared.ts";
 
 test("workspace launcher resolves owning checkout and preserves explicit home/CLI arguments", () => {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-doctor-launcher-"));

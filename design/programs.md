@@ -314,6 +314,14 @@ Rulings:
   goblin's move, even after a steer. A report that can never file (row
   gone, invalid) is logged and the notice still wakes. Herdr panes have no such tool path: goblin reports for them.
 
+  Linked lead delegations additionally carry code-observed GitHub evidence
+  (design/delegation.md → PR readiness). Their report keeps the worker
+  claim separate from observed readiness; pending CI is `waiting`, missing
+  or negative evidence is `blocked`, passing facts are `ready`. All remain
+  worker reports for Goblin to assess, never permission to merge. Repeated
+  observations do not wake a model; a changed readiness version files one
+  new report and notice, including a regression to earlier facts.
+
   Borrowed from dsh-superagent (deepseek-ai/dsh-superagent-prototype,
   docs/001 and 003): the Report vocabulary incl. `dropped`, the
   first-match stage table labelled by whom it waits for, the

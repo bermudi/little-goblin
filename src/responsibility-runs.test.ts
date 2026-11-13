@@ -20,6 +20,7 @@ import type { Delegation } from "./delegations.ts";
 import { responsibilityStage } from "./responsibility-stage.ts";
 import type { SubagentRun } from "./subagent-runs.ts";
 import { tmpDir, useHome } from "./testkit.ts";
+import { prReadinessFixture } from "./test-helpers/pr-readiness.ts";
 
 setLogFile(null);
 
@@ -206,6 +207,12 @@ const delegation = (over: Partial<Delegation> = {}): Delegation => ({
 	id: 9,
 	name: "fix it",
 	harness: "codex",
+	role: "default",
+	issue: null,
+	readiness: null,
+	readinessNotifiedKey: null,
+	readinessVersion: 0,
+	readinessPendingVerdict: null,
 	cwd: "/w",
 	task: "t",
 	chatId: 0,
@@ -227,6 +234,37 @@ const delegation = (over: Partial<Delegation> = {}): Delegation => ({
 });
 
 describe("delegation reports", () => {
+	test("observed readiness is sourced evidence, not the lead's claim; retries are idempotent", () => {
+		const { resps, id } = rig();
+		const d = delegation({ responsibilityId: id, responsibilityRevision: 1, role: "lead", readinessVersion: 1 });
+		const pending = prReadinessFixture();
+		fileDelegationReport(resps, d, "done", "Ready to merge!", pending);
+		fileDelegationReport(resps, d, "done", "Ready to merge!", pending);
+		expect(resps.reportsFor(id)).toHaveLength(1);
+		const first = resps.reportsFor(id)[0]!;
+		expect(first.state).toBe("waiting");
+		expect(first.reason).toStartWith("Not ready: CI is pending");
+		expect(first.evidence).toHaveLength(4);
+		expect(first.evidence[2]).toMatchObject({
+			item: "Verifier verdict", ref: pending.result.verifier!.source,
+			checked: expect.stringContaining(pending.result.head.sha),
+		});
+		fileDelegationReport(resps, { ...d, readinessVersion: 2 }, "done", "Ready!", prReadinessFixture("green"));
+		fileDelegationReport(resps, { ...d, readinessVersion: 3 }, "done", "Still ready!", pending);
+		expect(resps.reportsFor(id).map((r) => r.state)).toEqual(["waiting", "ready", "waiting"]);
+		expect(resps.get(id)?.status).toBe("active");
+	});
+
+	test("stale verification blocks even when the lead claims done and CI is green", () => {
+		const observation = prReadinessFixture("green");
+		observation.result.verifier!.sha = "b".repeat(40);
+		observation.result.ready = false;
+		observation.result.reasons = ["Verifier verdict is for an older or different SHA"];
+		expect(delegationReport(delegation(), "done", "Everything passed", observation)).toMatchObject({
+			state: "blocked", reason: expect.stringContaining("older or different SHA"),
+		});
+	});
+
 	test("each verdict maps to the agent's claim; a blocked agent asks no question", () => {
 		expect(delegationReport(delegation(), "done", "patched")).toEqual({
 			state: "ready",
@@ -240,6 +278,24 @@ describe("delegation reports", () => {
 			state: "failed",
 			reason: "delegation #9 fix it failed: gone",
 		});
+		expect(delegationReport(delegation(), "stopped", "interrupted")).toEqual({
+			state: "blocked",
+			reason: "delegation #9 fix it stopped by the operator: interrupted",
+		});
+	});
+
+	test("a stopped lead stays blocked even when its PR readiness facts pass", () => {
+		const { resps, id } = rig();
+		const d = delegation({
+			responsibilityId: id, responsibilityRevision: 1, role: "lead", readinessVersion: 1,
+		});
+		fileDelegationReport(resps, d, "stopped", "operator stopped it", prReadinessFixture("green"));
+		const [report] = resps.reportsFor(id);
+		expect(report).toMatchObject({
+			state: "blocked", reason: expect.stringContaining("operator stopped it"),
+		});
+		expect(report?.evidence).toHaveLength(4);
+		expect(responsibilityStage(resps.get(id)!, report ?? null, []).waitsFor).toBe("goblin");
 	});
 
 	test("an unlinked delegation states nothing", () => {

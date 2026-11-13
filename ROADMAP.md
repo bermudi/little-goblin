@@ -73,8 +73,12 @@ Issue builds now run through one lead delegation per issue (2026-11-09,
 design/delegation.md → An issue build is one lead delegation). The pilot:
 the operator hands over one real issue; goblin briefs a lead, and the
 issue ends merged with a verifier verdict on the PR, without the operator
-relaying between agents. Until code checks readiness, goblin checks the
-PR, verdict and CI by hand per the `proxy-operator` skill. Not yet piloted.
+relaying between agents. Code now observes the closing PR, SHA-bound
+verifier verdict and CI for responsibility-linked leads with explicit issue
+identity (#406, design/delegation.md → PR readiness). Unchanged CI polls
+do not wake a model; notes and operator-facing judgment still do. Existing
+leads without that identity are not retroactively adopted. The full issue
+pilot remains unverified.
 
 ## 1. Make Follow-Through Deliberate
 

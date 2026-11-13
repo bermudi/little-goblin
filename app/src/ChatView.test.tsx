@@ -9,15 +9,8 @@ import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
 import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 import { MessageParts } from "./chat/MessageParts.tsx";
 import { editedParts, FoldMark, unlandedMeta } from "./chat/MetaLine.tsx";
-import {
-	appendQuote,
-	ChatView,
-	Composer,
-	ContextGauge,
-	contextCount,
-	mergeTranscript,
-	quoteSpeaker,
-} from "./ChatView.tsx";
+import { appendQuote, quoteSpeaker } from "./chat/QuoteFab.tsx";
+import { ChatView, Composer, ContextGauge, contextCount, mergeTranscript } from "./ChatView.tsx";
 
 // Static markup — guards the render contract, not React behavior.
 

@@ -18,7 +18,9 @@ Base questions (every journey):
 When a bug is found in use, ask "which question would have caught this?" If
 none would, add one here.
 
-   fresh install today — do all pinned external artifacts still exist?
+Catch-questions:
+1. H1 — Does the journey's default configuration still work end to end on a
+   fresh install today? Do all pinned external artifacts still exist?
 2. H2 — When a step is interrupted intentionally (restart, stop), is the
    unfinished work findable, explainable, and resumable afterwards?
 3. M1 — If the operator follows the shipped example verbatim but their real

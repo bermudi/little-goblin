@@ -12,6 +12,8 @@ import { log } from "../log.ts";
 import { isNotModifiedError, isPremiumGateError } from "./delivery-errors.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { rateCallbackData } from "./rate-button.ts";
+import { rememberReply } from "./reply-memory.ts";
+import { SPEAK_CALLBACK } from "./speak-button.ts";
 
 const EDIT_INTERVAL_MS = 1_000;
 const TYPING_INTERVAL_MS = 4_000;
@@ -32,13 +34,10 @@ export function resetMessageEffectsGateForTests(): void {
 
 const MAX_DRAIN_ITERATIONS = 25;
 const MAX_STAGNANT = 3;
-const RECENT_REPLY_LIMIT = 256;
 const UNCERTAIN_NOTICE = "⚠ Delivery uncertain—check Telegram before retrying.";
 const TRUNCATED_NOTICE =
 	"⚠ Reply truncated — part of this reply didn't send. Ask me to repeat it if needed.";
-export const SPEAK_CALLBACK = "speak_reply";
 
-const recentReplies = new Map<string, string>();
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export interface DeliveryVoiceDeps {
@@ -53,10 +52,6 @@ export interface DeliveryRatingDeps {
 export interface RichSinkOpts {
 	enabled?: boolean;
 	reasoning?: boolean;
-}
-
-function replyKey(chatId: number, messageId: number): string {
-	return `${chatId}:${messageId}`;
 }
 
 function forcedLine(done: TurnDone): string | null {
@@ -79,19 +74,6 @@ function forcedNotice(done: TurnDone): string | null {
 		done.kind === "completed" && done.fallback !== undefined ? fallbackNotice(done.fallback) : null,
 	].filter((l): l is string => l !== null);
 	return lines.length > 0 ? lines.join("\n") : null;
-}
-
-export function rememberReply(chatId: number, messageId: number, text: string): void {
-	recentReplies.set(replyKey(chatId, messageId), text);
-	while (recentReplies.size > RECENT_REPLY_LIMIT) {
-		const oldest = recentReplies.keys().next().value;
-		if (oldest === undefined) break;
-		recentReplies.delete(oldest);
-	}
-}
-
-export function recentReplyText(chatId: number, messageId: number): string | null {
-	return recentReplies.get(replyKey(chatId, messageId)) ?? null;
 }
 
 interface Chunk {

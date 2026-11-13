@@ -2,8 +2,11 @@ import { InputFile, type Api } from "grammy";
 import type { TtsConfig } from "../config-schema.ts";
 import { speakable } from "../agent/tts.ts";
 import { log } from "../log.ts";
-import { recentReplyText } from "./delivery.ts";
+import { recentReplyText } from "./reply-memory.ts";
 import { withTimeout } from "./deadline.ts";
+
+// Callback-data id of the 🔊 button the delivery sink attaches to voice-capable replies.
+export const SPEAK_CALLBACK = "speak_reply";
 
 export interface SpeakQuery {
 	id: string;

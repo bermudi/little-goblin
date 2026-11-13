@@ -13,12 +13,12 @@ import {
 	type RetentionSource,
 	retentionSourceFrom,
 } from "../memory/mod.ts";
-import {
-	type CompletedTurn,
-	type PriorTurnContext,
-	Reviewer,
-	type ToolCallDigest,
-} from "../reviewer.ts";
+import type {
+	CompletedTurn,
+	PriorTurnContext,
+	ToolCallDigest,
+} from "../reviewer-evidence.ts";
+import { Reviewer } from "../reviewer.ts";
 import type { ForcedKind } from "./state.ts";
 import { type DisplaySink, emitChunk, type LiveChunks, type WireMember } from "./stream.ts";
 

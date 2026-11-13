@@ -13,7 +13,7 @@ import { log } from "./log.ts";
 import { ensureNotesSchema } from "./notes.ts";
 import { ensureProjectsSchema } from "./projects.ts";
 import { ensureRatingsSchema } from "./reply-ratings.ts";
-import { ensureResponsibilitiesSchema } from "./responsibilities.ts";
+import { ensureResponsibilitiesSchema } from "./responsibility-schema.ts";
 import { ensureWakeSchema } from "./wake-store.ts";
 import { ensureWindowSchema } from "./window-capture.ts";
 

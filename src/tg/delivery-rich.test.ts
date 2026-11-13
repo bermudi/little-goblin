@@ -7,7 +7,8 @@ import { parseConfig } from "../config.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
-import { makeDeliverySink, resetMessageEffectsGateForTests } from "./delivery.ts";
+import { makeDeliverySink } from "./delivery.ts";
+import { resetMessageEffectsGateForTests } from "./delivery-text.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 

@@ -15,17 +15,15 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { OperatorAgent } from "../../herdr.ts";
 import { log } from "../../log.ts";
-import type {
-	Attachment,
-	AttachmentTarget,
-	Responsibility,
-	ResponsibilityStore,
-} from "../../responsibilities.ts";
+import type { ResponsibilityStore } from "../../responsibilities.ts";
 import {
 	ReconciliationConflict,
 	StaleAttachmentError,
 	understandingSchema,
-} from "../../responsibilities.ts";
+	type Attachment,
+	type AttachmentTarget,
+	type Responsibility,
+} from "../../responsibility-types.ts";
 import { cursorFromAgent } from "../../responsibility-observer.ts";
 import { followupCommitmentSchema } from "../../responsibility-followup.ts";
 import { reportInputSchema } from "../../responsibility-reports.ts";

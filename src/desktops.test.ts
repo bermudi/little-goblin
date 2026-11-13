@@ -14,16 +14,13 @@ import { desktopsConfigSchema, type DesktopsConfig } from "./config-schema.ts";
 import { makePodman, type PodmanExecOpts } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
 import {
-	CUA_TOOLS,
 	DesktopError,
 	containerNameForDesktop,
 	makeDesktops,
-	openDesktops,
-	type CuaTool,
-	type DesktopRow,
 	type Desktops,
-	type LeaseHolder,
 } from "./desktops.ts";
+import { openDesktops, type DesktopRow, type LeaseHolder } from "./desktops-store.ts";
+import { CUA_TOOLS, type CuaTool } from "./desktops-cua.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 
 const NETWORK = "test-desknet";

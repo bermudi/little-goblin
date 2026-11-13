@@ -12,7 +12,8 @@ import {
 import type { Conversation } from "../conversation-read.ts";
 import { setLogFile } from "../log.ts";
 import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory/mod.ts";
-import type { CompletedTurn, PriorTurnContext, ReviewerDeps } from "../reviewer.ts";
+import type { CompletedTurn, PriorTurnContext } from "../reviewer-evidence.ts";
+import type { ReviewerDeps } from "../reviewer.ts";
 import { Reviewer } from "../reviewer.ts";
 import { compactionSummaryId } from "../tags.ts";
 import { scriptedModel, textResult } from "../testkit/fake-model.ts";

@@ -9,7 +9,7 @@ import { log } from "./log.ts";
 import { type ResumeSeed, type Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { messageText } from "./memory/mod.ts";
-import { summarize, toolOk, type ToolCallDigest } from "./reviewer.ts";
+import { summarize, toolOk, type ToolCallDigest } from "./reviewer-evidence.ts";
 import { SKILL_PART } from "./skill-part.ts";
 import { canAuthorizeRetry } from "./turn/retry-guard.ts";
 import type { LoopTurnState } from "./turn/state.ts";

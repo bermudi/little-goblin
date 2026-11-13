@@ -13,7 +13,8 @@ import type { TurnDone, TurnSink } from "../turn/sink.ts";
 import type { UIMessage } from "ai";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
-import { isMessageGoneError, isNotModifiedError, makeDeliverySink } from "./delivery.ts";
+import { isMessageGoneError, isNotModifiedError } from "./delivery-errors.ts";
+import { makeDeliverySink } from "./delivery.ts";
 import { sendRefusal } from "./refusals.ts";
 
 export interface GuestStore {

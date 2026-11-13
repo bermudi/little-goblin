@@ -124,7 +124,7 @@ These are the ways text gets into a turn. Ordered by reach.
 4. **Mail** — Gmail arrivals matching a program's filter fire a turn.
 5. **Program cron** — a 5-field cron fires the program's charter.
 6. **Delegated harnesses** — a spawned coding agent can write a report that
-   wakes the runtime (`src/delegation-lifecycle.ts`).
+   wakes the runtime (`src/delegation-notices.ts`).
 
 Entries 3–6 all convert to the same thing: `runtime.submit` of a user message
 into a pinned conversation. None of them grants new authority; what the

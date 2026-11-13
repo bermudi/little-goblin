@@ -8,6 +8,7 @@
 - **PR readiness:** code-observed evidence that a lead's issue has a closing PR, a passing verifier comment for its current head SHA, and green CI for that SHA. It is not permission to merge.
 - **Delegation default:** the role → harness tie in `delegation.defaults`. The `delegate` tool uses it when a call names no harness. Settings → Delegation edits it.
 - **Ask-first harness:** a delegation harness with `askFirst: true`. The `delegate` tool tells goblin to ask the operator before each use. Settings → Delegation edits it.
+- **Delegation family:** the five modules that implement delegations: `delegation-lifecycle.ts` (contracts + boot wiring), `delegation-paths.ts` (target/report seam), `delegation-notices.ts` (notice bodies + delivery), `delegation-actions.ts` (the six verbs), and `delegation-watcher.ts` (the scan lifecycle). Imports flow one way: watcher → actions → notices → paths.
 - **Herdr:** the terminal multiplexer where harnesses run.
 - **Desk:** the operator's own Herdr session, `default`. The `herdr` tool reaches it.
 - **Subagent:** a durable run on Goblin's own Pi Durable runtime. It has two kinds, worker and computer.

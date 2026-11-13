@@ -22,7 +22,8 @@ import {
 	type Delegation,
 	type DelegationsStore,
 } from "./delegations.ts";
-import { startDelegationLifecycle, type DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
+import { startDelegationLifecycle } from "./delegation-watcher.ts";
+import type { DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
 import { HerdrError, makeHerdr, type AgentInfo, type Herdr } from "./herdr.ts";
 import type { DelegationTargetDeps } from "./delegation-lifecycle.ts";
 import { setLogFile } from "./log.ts";

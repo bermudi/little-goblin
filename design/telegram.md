@@ -73,7 +73,13 @@ apply next turn without interrupting the current answer.
   likewise stops voice, no text fallback. Flood control: a 429's
   `retry_after` is waited out (bounded retries, 20s cumulative cap) with
   +0–250ms jitter per wait so simultaneous callers don't re-collide in
-  lockstep, then the 429 propagates.
+  lockstep, then the 429 propagates. Plain-path chunking packs at
+  3,800 chars under the 4,096 cap — the seam is the last paragraph
+  break (else newline) in the window's back half, an early break
+  never trades a full bubble for a stub; a seam inside a fenced code
+  block closes the fence at the chunk's end and reopens it with the
+  same info string on the next chunk, so a split block stays
+  monospaced on both sides.
 - **Reply ratings**: 👍/👎 and the 🔊 ride a clean-completed reply's last
   bubble; errors, fenced, voice-mode, and guest replies get none. The
   callback is only the Telegram adapter over the shared record-only
@@ -103,6 +109,10 @@ apply next turn without interrupting the current answer.
   a turn never switches medium mid-flight. The record keeps the text, so
   toggling off loses nothing and "what did you say verbatim" stays
   answerable; with transcription, a voice-mode topic is ears-in-ears-out.
+  A failed transcription keeps the attachment (the model sees the file)
+  and tells the operator — a one-line `⚠️ Couldn't transcribe this voice
+  note: <reason>` in the lane, mirroring the app chip that surfaces the
+  same stored error.
 - **Mini Apps**: Telegram requires HTTPS and the *client device* fetches the
   page, so the door is config (`publicUrl`) — NAT-first by construction
   (`tailscale serve`/`funnel`, or any cert'd reverse proxy). **One client,

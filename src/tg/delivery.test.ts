@@ -346,8 +346,63 @@ describe("delivery", () => {
 		sink.onToolCall("t", { path: "\u{1f600}" });
 		for (let i = 0; i < 4; i++) sink.onToolCall("t", { path: "p" });
 		await sink.onDone({ kind: "completed" });
-		expect(msgs[1]!.startsWith("\u{1f600}")).toBe(true);
+		// The seam snaps to the paragraph break — the pair lands whole
+		// inside the second window rather than split on the cap.
+		expect(msgs[0]).toBe(`${"a".repeat(3791)}\n\n`);
+		expect(msgs[1]!.startsWith("—\n⚙ t \u{1f600}")).toBe(true);
 		expect(msgs.join("")).toBe("a".repeat(3791) + "\n\n—\n⚙ t \u{1f600}" + "\n⚙ t p".repeat(4));
+	});
+
+	test("a reply splits on the last paragraph break under the cap, not the cap itself", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		// A paragraph break just under the cap is the seam — the second
+		// bubble opens on fresh text, never mid-paragraph.
+		sink.onTextDelta("a".repeat(3790) + "\n\n" + "b".repeat(200));
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toEqual(["a".repeat(3790) + "\n\n", "b".repeat(200)]);
+	});
+
+	test("a code fence split across the cap is closed and reopened with its info string", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		const fence = "```ts\n";
+		const code = "c".repeat(CHUNK);
+		sink.onTextDelta(fence + code + "\n```");
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toHaveLength(2);
+		// Chunk one carries the opener plus its boundary close; chunk two
+		// reopens with the same info string and the real close stays put.
+		expect(msgs[0]).toBe(fence + "c".repeat(CHUNK - fence.length) + "\n```");
+		expect(msgs[1]).toBe("```ts\n" + "c".repeat(fence.length) + "\n```");
+		// Concatenated minus the injected close/open pair, the code is whole.
+		const codeAfterReopen = msgs[1]!.slice("```ts\n".length);
+		expect(codeAfterReopen.endsWith("\n```")).toBe(true);
+	});
+
+	test("a fence still open at the reply's end is closed on the last chunk only", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		sink.onTextDelta("```\n" + "c".repeat(CHUNK + 100));
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toHaveLength(2);
+		expect(msgs[0]!.endsWith("\n```")).toBe(true);
+		// The model's own fence never arrived — the trailing close the
+		// window adds is what keeps the tail monospaced.
+		expect(msgs[1]!.startsWith("```\n")).toBe(true);
+		expect(msgs[1]!.endsWith("\n```")).toBe(true);
+	});
+
+	test("a fence closed inside a window is not carried past it", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		const body = "```\n" + "c".repeat(100) + "\n```\n" + "t".repeat(CHUNK);
+		sink.onTextDelta(body);
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toHaveLength(2);
+		// No opener leaked into chunk two — the fence ended in chunk one.
+		expect(msgs[1]!.startsWith("t")).toBe(true);
+		expect(msgs.join("")).toBe(body);
 	});
 
 	test("a failed final edit is retried by the drain, not declared done", async () => {
@@ -919,7 +974,9 @@ describe("delivery", () => {
 		await sleep(0);
 		sink.onTextDelta(" queued");
 		await sink.onDone({ kind: "fenced" });
-		expect(msgs).toEqual(["visible\n\n—\n⏹ superseded"]);
+		// The stamp flushes the pending delta — the queued text rides the
+		// superseded edit instead of vanishing.
+		expect(msgs).toEqual(["visible queued\n\n—\n⏹ superseded"]);
 		expect(reactions).toEqual([]);
 	});
 
@@ -946,7 +1003,9 @@ describe("delivery", () => {
 		sink.onTextDelta("x".repeat(CHUNK)); // unsent tail
 		live = false;
 		await sink.onDone({ kind: "fenced" });
-		expect(msgs).toEqual(["partial\n\n—\n⏹ superseded"]);
+		// Pending deltas flush into the stamp; the still-unsent tail
+		// stays unsent — only the window's own text rides the edit.
+		expect(msgs).toEqual([`${"partial stale"}${"x".repeat(CHUNK - 13)}\n\n—\n⏹ superseded`]);
 		expect(reactions).toEqual([]);
 	});
 

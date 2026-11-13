@@ -33,7 +33,7 @@ describe("runCompactJob memory flush gate", () => {
 		const r = rig();
 		try {
 			r.store.setMeta(r.conv.id, { memoryExcluded: true });
-			await runCompactJob(r.conv, "threshold", undefined, r.deps);
+			await runCompactJob(r.conv, "threshold", undefined, undefined, r.deps);
 			expect(r.asked).toEqual([{ excluded: true }]);
 		} finally {
 			r.store.close();
@@ -43,7 +43,7 @@ describe("runCompactJob memory flush gate", () => {
 	test("an overflow fold never asks for a flush", async () => {
 		const r = rig();
 		try {
-			await runCompactJob(r.conv, "overflow", undefined, r.deps);
+			await runCompactJob(r.conv, "overflow", undefined, undefined, r.deps);
 			expect(r.asked).toEqual([]);
 		} finally {
 			r.store.close();
@@ -99,14 +99,14 @@ describe("runCompactJob native session compaction (#418)", () => {
 			const deps = depsFor(store, async (c, ref) => {
 				calls.push(`${c.id}:${ref}`);
 			});
-			const outcome = await runCompactJob(conv, "manual", undefined, deps);
+			const outcome = await runCompactJob(conv, "manual", undefined, undefined, deps);
 			expect(outcome.kind).toBe("compacted");
 			expect(calls).toEqual([`${conv.id}:claude/claude-sonnet-4-5`]);
 
 			// Nothing to fold → the native session is left alone too.
 			const empty = store.resolve({ kind: "dm", chatId: 2 }, "/w");
 			calls.length = 0;
-			const noop = await runCompactJob(empty, "manual", undefined, deps);
+			const noop = await runCompactJob(empty, "manual", undefined, undefined, deps);
 			expect(noop.kind).not.toBe("compacted");
 			expect(calls).toEqual([]);
 		} finally {
@@ -120,7 +120,7 @@ describe("runCompactJob native session compaction (#418)", () => {
 			const deps = depsFor(store, async () => {
 				throw new Error("native session exploded");
 			});
-			const outcome = await runCompactJob(conv, "manual", undefined, deps);
+			const outcome = await runCompactJob(conv, "manual", undefined, undefined, deps);
 			expect(outcome.kind).toBe("compacted");
 		} finally {
 			store.close();

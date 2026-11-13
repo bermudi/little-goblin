@@ -19,7 +19,7 @@ import {
 	REASONING_BLOCK_OVERHEAD,
 	RICH_LIMIT,
 	SALUTE_EFFECT_ID,
-	windowEnd,
+	chunkWindows,
 } from "./delivery-text.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { rateCallbackData } from "./rate-button.ts";
@@ -181,6 +181,9 @@ export function makeDeliverySink(
 	let reasoningSentAt = 0;
 	let lastDraftBody = "";
 	let lastDraftSentAt = 0;
+	// Set only by a draft push that actually reached Telegram — the
+	// superseded stamp is a no-op unless the draft is a live surface.
+	let draftLanded = false;
 
 	function enqueue(fn: () => Promise<void>): void {
 		chain = chain.then(() =>
@@ -558,6 +561,7 @@ export function makeDeliverySink(
 						api.sendRichMessageDraft(conv.chatId, answerDraftId, { markdown: body }),
 						method,
 					);
+					draftLanded = true;
 				}
 			} catch (err) {
 				if (isNotModifiedError(err)) return;
@@ -599,15 +603,12 @@ export function makeDeliverySink(
 				return;
 			}
 		}
-		const needed = Math.ceil(body.length / CHUNK_LIMIT);
-		while (chunks.length < needed) chunks.push({ id: -1, shown: "" });
-		let start = 0;
+		const wins = chunkWindows(body);
+		while (chunks.length < wins.length) chunks.push({ id: -1, shown: "" });
 		for (let idx = 0; idx < chunks.length; idx++) {
 			const c = chunks[idx]!;
 			if (c.id === -2) break;
-			const isLast = idx === chunks.length - 1;
-			const end = isLast ? body.length : windowEnd(body, start);
-			const desired = body.slice(start, end);
+			const desired = wins[idx] ?? "";
 			const out = desired === "" ? "…" : desired;
 			if (c.id === -1) {
 				if (desired === "") break;
@@ -676,17 +677,43 @@ export function makeDeliverySink(
 					c.shown = out;
 				});
 			}
-			start = end;
 		}
 		lastEdit = Date.now();
 	}
 
 	async function stampSuperseded(): Promise<void> {
 		await chain;
-		const last = [...chunks].reverse().find((c) => c.id > 0);
-		if (!last) return;
-		const mid = last.id;
-		const marked = `${last.shown}${STATUS_TAIL_MARK}⏹ superseded`;
+		if (richMode) {
+			// A rich reply has no editable bubble — the draft is the only
+			// visible surface, so the stamp goes on the draft itself,
+			// carrying whatever deltas were still unflushed. No draft was
+			// ever pushed → nothing visible → nothing to stamp.
+			const body = rendered();
+			if (body === "" || !draftLanded) return;
+			const marked = `${body}${STATUS_TAIL_MARK}⏹ superseded`;
+			enqueue(async () => {
+				try {
+					await withTimeout(
+						api.sendRichMessageDraft(conv.chatId, answerDraftId, { markdown: marked }),
+						"sendRichMessageDraft",
+					);
+					log.debug("delivery superseded marker on draft", { conversation: conv.id });
+				} catch (err) {
+					if (isNotModifiedError(err)) return;
+					richFailure(err, "sendRichMessageDraft");
+				}
+			});
+			await chain;
+			return;
+		}
+		const idx = chunks.findLastIndex((c) => c.id > 0);
+		if (idx === -1) return;
+		const mid = chunks[idx]!.id;
+		// The stamp lands on the window's full current text — deltas
+		// queued behind the flush interval ride the stamp edit instead
+		// of vanishing.
+		const shown = chunkWindows(rendered())[idx] ?? chunks[idx]!.shown;
+		const marked = `${shown}${STATUS_TAIL_MARK}⏹ superseded`;
 		enqueue(async () => {
 			try {
 				await withTimeout(api.editMessageText(conv.chatId, mid, marked), "editMessageText");
@@ -704,16 +731,13 @@ export function makeDeliverySink(
 	}
 
 	function pendingCount(): number {
-		const body = rendered();
+		const wins = chunkWindows(rendered());
 		let n = 0;
-		let start = 0;
 		for (let idx = 0; idx < chunks.length; idx++) {
 			const c = chunks[idx]!;
-			const end = idx === chunks.length - 1 ? body.length : windowEnd(body, start);
-			const desired = body.slice(start, end);
+			const desired = wins[idx] ?? "";
 			const out = desired === "" ? "…" : desired;
 			if (c.id === -1 ? desired !== "" : c.shown !== out) n++;
-			start = end;
 		}
 		return n;
 	}
@@ -875,11 +899,8 @@ export function makeDeliverySink(
 						conversation: conv.id,
 					});
 					const fallback = text || "speech synthesis failed";
-					let at = 0;
 					let failed: unknown;
-					while (at < fallback.length) {
-						const end = windowEnd(fallback, at);
-						const chunk = fallback.slice(at, end);
+					for (const chunk of chunkWindows(fallback)) {
 						enqueue(async () => {
 							if (!mayDeliver()) return;
 							try {
@@ -896,7 +917,6 @@ export function makeDeliverySink(
 								throw error;
 							}
 						});
-						at = end;
 					}
 					await chain;
 					if (uncertain) {

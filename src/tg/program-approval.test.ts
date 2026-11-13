@@ -159,7 +159,10 @@ describe("program approval posts", () => {
 			expect(h.sends.length).toBeGreaterThan(1);
 			const full = h.sends.map((s) => s.text).join("");
 			expect(full).toContain("x".repeat(5000));
-			expect(full).toContain('cron "0 9 * * 1"');
+			// Words + zone up front, the raw expression beside it — same
+			// shape the app card uses.
+			expect(full).toContain("Mondays 09:00");
+			expect(full).toContain("(0 9 * * 1; fires at most 60m late)");
 			expect(full).toContain("webhook");
 			expect(full).toContain('mail filter "from:bank"');
 			expect(full).toContain("at most 60m late");
@@ -196,7 +199,8 @@ describe("program approval posts", () => {
 			await h.approval.requestApproval(proposal);
 			const text = h.sends.map((s) => s.text).join("");
 			expect(text).toContain("new charter");
-			expect(text).toContain('cron "0 9 * * *"');
+			expect(text).toContain("Daily 09:00");
+			expect(text).toContain("(0 9 * * *; no lateness limit)");
 			expect(text).not.toContain("old charter");
 			// The unstaled card carries no drift warning.
 			expect(text).not.toContain("changed since this proposal");
@@ -225,7 +229,7 @@ describe("program approval posts", () => {
 			const repost = h.sends.map((s) => s.text).join("");
 			// The card advertises the staged base (09:00), never today's row,
 			// and names the stale refusal the tap would now get.
-			expect(repost).toContain('cron "0 9 * * *"');
+			expect(repost).toContain("Daily 09:00");
 			expect(repost).not.toContain("0 10 * * *");
 			expect(repost).toContain("changed since this proposal");
 			expect(repost).toContain("new charter");

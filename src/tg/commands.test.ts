@@ -84,6 +84,20 @@ describe("commands", () => {
 		store.close();
 	});
 
+	test("/compact <focus> passes the focus to the compactor", async () => {
+		const focuses: Array<string | undefined> = [];
+		const { store, conv, deps } = setup({
+			compact: async (_c, focus) => {
+				focuses.push(focus);
+				return { kind: "noop", reason: "nothing worth compacting" };
+			},
+		});
+		expect(handleCommand(deps, conv, "/compact keep the deploy notes")).toBe(true);
+		await tick();
+		expect(focuses).toEqual(["keep the deploy notes"]);
+		store.close();
+	});
+
 	test("/compact with nothing to do says so; a failure surfaces", async () => {
 		const { store, conv, sent, deps } = setup({
 			compact: async () => ({ kind: "noop", reason: "nothing worth compacting" }),

@@ -390,9 +390,9 @@ export class Runtime {
 	}
 
 	// Queue compaction behind the running turn so its response is not orphaned.
-	compact(conv: Conversation): Promise<CompactionOutcome> {
+	compact(conv: Conversation, focus?: string): Promise<CompactionOutcome> {
 		return new Promise<CompactionOutcome>((resolve, reject) => {
-			this.lanes.enqueueCompact({ conv, resolve, reject });
+			this.lanes.enqueueCompact({ conv, focus, resolve, reject });
 			this.lanes.startDraining(conv.id, () => this.drain(conv.id));
 		});
 	}
@@ -401,8 +401,9 @@ export class Runtime {
 		conv: Conversation,
 		reason: "threshold" | "manual" | "overflow" | "preempt",
 		activeFloor?: number,
+		focus?: string,
 	): Promise<CompactionOutcome> {
-		return runCompactJob(conv, reason, activeFloor, {
+		return runCompactJob(conv, reason, activeFloor, focus, {
 			store: this.deps.store,
 			compaction: this.deps.compaction,
 			captureConversation: this.deps.captureConversation,
@@ -536,7 +537,7 @@ export class Runtime {
 				const job = this.lanes.nextCompact(convId);
 				if (job !== undefined) {
 					try {
-						job.resolve(await this.doCompact(job.conv, "manual"));
+						job.resolve(await this.doCompact(job.conv, "manual", undefined, job.focus));
 					} catch (err) {
 						job.reject(err);
 					}

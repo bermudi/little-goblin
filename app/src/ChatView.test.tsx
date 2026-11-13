@@ -190,6 +190,27 @@ describe("MessageParts", () => {
 		expect(html).not.toContain("note-chip");
 	});
 
+	test("an audio attachment with a transcription error shows the failure on its chip", () => {
+		const html = renderToStaticMarkup(
+			<MessageParts
+				parts={[
+					{
+						type: "data-attachment",
+						data: {
+							path: "attachments/voice.ogg",
+							mediaType: "audio/ogg",
+							filename: "voice.ogg",
+							size: 64,
+							speech: true,
+							transcriptionError: "no secret named whisper",
+						},
+					} as UIMessage["parts"][number],
+				]}
+			/>,
+		);
+		expect(html).toContain("couldn&#x27;t transcribe: no secret named whisper");
+	});
+
 	test("an optimistic note attachment with only an id still renders its chip", () => {
 		// The Composer sends {id} + picked title before the server's
 		// expansion lands — the bubble must never render empty.

@@ -122,7 +122,10 @@ Rulings:
 - **Recurrence is cron, evaluated in the server's local timezone**
   (operator = admin; `date` via bash agrees): an invalid expression is
   rejected before a row exists, and there are no interval-plus-prose
-  hybrids — prose recurrence is where heartbeat bugs came from.
+  hybrids — prose recurrence is where heartbeat bugs came from. Every
+  surface that shows a schedule — the app's program view, both approval
+  cards, the Telegram card's `triggers:` line — renders the words plus
+  the server zone's short label, the raw expression beside it.
 - **A program belongs to the conversation where it was created** — the
   tool pins the chat/topic from the live conversation (the model never
   handles chat ids); replies land there, and a fire is delivered like

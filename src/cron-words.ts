@@ -65,3 +65,19 @@ export function cronWords(cron: string): string | null {
 	}
 	return null;
 }
+
+/** Short zone label ("CST") for an IANA name; falls back to the name itself. */
+export function tzAbbrev(timeZone: string): string {
+	try {
+		const part = new Intl.DateTimeFormat("en-US", {
+			hour: "2-digit",
+			timeZone,
+			timeZoneName: "short",
+		})
+			.formatToParts()
+			.find((p) => p.type === "timeZoneName");
+		return part?.value ?? timeZone;
+	} catch {
+		return timeZone;
+	}
+}

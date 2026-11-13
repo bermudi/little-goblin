@@ -364,6 +364,10 @@ export async function runCompaction(
 		// may save durable facts from the span to notes before it folds.
 		// The caller owns the gate; a failure warns and the fold goes on.
 		flush?: Flush;
+		// Manual-only operator focus (/compact <focus>, app focus body):
+		// repeated in every chunk prompt so it outlives the carried
+		// summary's shrinking budget share.
+		focus?: string;
 	},
 	signal: AbortSignal,
 ): Promise<CompactionOutcome> {
@@ -472,7 +476,11 @@ export async function runCompaction(
 		const prompt =
 			(carried !== null && carriedHeader !== null
 				? `${carriedHeader}\n${carried}\n\n---\n\n`
-				: "") + texts.join("\n\n");
+				: "") +
+			(opts.focus !== undefined
+				? `[operator asked this compaction to emphasize: ${opts.focus}]\n\n`
+				: "") +
+			texts.join("\n\n");
 		// One summary call down the sticky lane: a call failure advances to
 		// the next candidate; exhausting the list propagates.
 		const call = async (callPrompt: string): Promise<string> => {

@@ -510,6 +510,57 @@ describe("app conversations", () => {
 		}
 	});
 
+	test("compact with a focus body feeds the summarizer prompt", async () => {
+		const prompts: string[] = [];
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			compaction: {
+				modelRef: () => "m",
+				contextWindow: () => null,
+				summarize: async (_c, _s, prompt) => {
+					prompts.push(prompt);
+					return foldSummary("folded", prompt);
+				},
+			},
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const big = "past ".repeat(25000);
+			for (let i = 0; i < 4; i++) {
+				store.append("app/chat-01", [
+					{ id: `u${i}`, role: "user", parts: [{ type: "text", text: `${big} ${i}` }] },
+				]);
+				store.append("app/chat-01", [
+					{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: "done" }] },
+				]);
+			}
+			const res = await call("/api/app/conversations/chat-01/compact", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ focus: "keep the deploy notes" }),
+			});
+			expect(res.status).toBe(200);
+			expect(
+				prompts.some((p) =>
+					p.includes("[operator asked this compaction to emphasize: keep the deploy notes]"),
+				),
+			).toBe(true);
+			// A malformed body refuses at the boundary — 422, no fold.
+			const bad = await call("/api/app/conversations/chat-01/compact", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ focus: 42 }),
+			});
+			expect(bad.status).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("stop on an idle or unknown conversation stays honest", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });
 		try {

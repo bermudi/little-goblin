@@ -62,16 +62,68 @@ export function forcedNotice(done: TurnDone): string | null {
 const isHighSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff;
 const isLowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
 
-export function windowEnd(body: string, start: number): number {
-	const end = start + CHUNK_LIMIT;
-	if (
-		end < body.length &&
-		isHighSurrogate(body.charCodeAt(end - 1)) &&
-		isLowSurrogate(body.charCodeAt(end))
-	) {
-		return end - 1;
+export interface FenceState {
+	// The full fence run ("```" or "~~~~"), so a reopen uses the same
+	// marker and a closer needs at least the opener's length.
+	marker: string;
+	info: string;
+}
+
+const FENCE_LINE = /^[ \t]*(`{3,}|~{3,})(.*)$/;
+
+// The fence state after `text`: a fence line opens when none is open and
+// closes when it starts with the open fence's marker character run.
+export function fenceStateAfter(text: string, initial: FenceState | null = null): FenceState | null {
+	let fence = initial;
+	for (const line of text.split("\n")) {
+		const m = FENCE_LINE.exec(line);
+		if (m === null) continue;
+		if (fence === null) fence = { marker: m[1]!, info: m[2]!.trim() };
+		else if (m[1]!.startsWith(fence.marker)) fence = null;
 	}
-	return end;
+	return fence;
+}
+
+// The plain path's chunks: boundaries snap to the last paragraph break
+// (then the last newline) inside CHUNK_LIMIT, and a boundary landing
+// mid-fence closes the fence at the chunk's end and reopens it — same
+// info string — at the next chunk's start, so a split code block stays
+// fenced on both sides.
+export function chunkWindows(body: string): string[] {
+	const windows: string[] = [];
+	let start = 0;
+	let fence: FenceState | null = null;
+	while (start < body.length) {
+		let end = Math.min(start + CHUNK_LIMIT, body.length);
+		if (end < body.length) {
+			// A break only counts as a seam in the window's back half —
+			// anything earlier trades a nearly-full bubble for a stub
+			// (an early newline like a fence's own opener would otherwise
+			// win every window inside one long code block).
+			const floor = start + CHUNK_LIMIT / 2;
+			const para = body.lastIndexOf("\n\n", end);
+			if (para > floor) {
+				end = para + 2;
+			} else {
+				const nl = body.lastIndexOf("\n", end);
+				if (nl > floor) end = nl + 1;
+			}
+			if (
+				end < body.length &&
+				isHighSurrogate(body.charCodeAt(end - 1)) &&
+				isLowSurrogate(body.charCodeAt(end))
+			) {
+				end -= 1;
+			}
+		}
+		const raw = body.slice(start, end);
+		const text =
+			(fence !== null ? `${fence.marker}${fence.info === "" ? "" : fence.info}\n` : "") + raw;
+		fence = fenceStateAfter(raw, fence);
+		windows.push(fence !== null ? `${text}\n${fence.marker}` : text);
+		start = end;
+	}
+	return windows;
 }
 
 // Rich rendering and the salute effect are DM-only in v1 (design/telegram.md

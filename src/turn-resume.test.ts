@@ -42,6 +42,7 @@ import {
 } from "./testkit.ts";
 import { CodexLanguageModel } from "./agent/codex/model.ts";
 import { openTurnJournal, RESOLVED_RETRY_NOTE, type TurnJournal } from "./turn-journal.ts";
+import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
 import { makeResumeOps, makeResumeSinks } from "./turn-resume.ts";
 
 setLogFile(null);
@@ -2803,6 +2804,180 @@ describe("turn resume", () => {
 		expect(journal.get("run-src")!.status).toBe("interrupted");
 		expect(ops.abandon(conv.id, "run-src")).toEqual({ kind: "ok" });
 		expect(journal.get("run-src")!.status).toBe("abandoned");
+		await runtime.shutdown();
+		store.close();
+	});
+});
+
+// #471 — a graceful shutdown is a crash for the journal: the fenced
+// turn's row stays 'running', the next open's reclassify owns the stamp
+// and the progress record, and the run joins every interrupted rail
+// (listing, boot notice, resume). An operator /stop keeps the fenced
+// rail untouched.
+describe("a shutdown fence is a crash for the journal (#471)", () => {
+	// Step 1 completes a probe call; step 2's provider stream opens then
+	// holds — the fence lands mid-run with journaled progress behind it.
+	function progressThenHold(): {
+		attempts: StreamAttempt[];
+		entered: Promise<void>;
+		release(): void;
+	} {
+		const entered = deferred<void>();
+		const gate = deferred<void>();
+		return {
+			entered: entered.promise,
+			release: () => gate.resolve(),
+			attempts: [
+				[
+					{ type: "stream-start", warnings: [] },
+					{ type: "text-start", id: "t1" },
+					{ type: "text-delta", id: "t1", delta: "step one" },
+					{ type: "text-end", id: "t1" },
+					toolCallPart("call-1", "probe", JSON.stringify({ q: 1 })),
+					finishPart("tool-calls"),
+				],
+				{
+					drive: async ({ enqueue, close }) => {
+						enqueue({ type: "stream-start", warnings: [] });
+						entered.resolve();
+						await gate.promise;
+						close();
+					},
+				},
+			],
+		};
+	}
+
+	const makeProbeTools = (executed: string[]) => () => ({
+		probe: tool({
+			inputSchema: z.object({ q: z.number() }),
+			execute: async (args: { q: number }) => {
+				executed.push("probe");
+				return { ok: true, q: args.q };
+			},
+		}),
+	});
+
+	const eventText = (m: UIMessage): string =>
+		m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("");
+
+	test("shutdown mid-turn leaves the row 'running'; the next open interrupts it and resume accepts it", async () => {
+		const held = progressThenHold();
+		const executed: string[] = [];
+		const makeTools = makeProbeTools(executed);
+		const { store, conv, journal, runtime } = setup({
+			attempts: held.attempts,
+			makeTools,
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "do work" }]), sink);
+		await held.entered;
+		expect(executed).toEqual(["probe"]);
+
+		const shutdown = runtime.shutdown();
+		held.release();
+		// The user-facing fence is unchanged — the restart wording stays.
+		expect(await sink.done).toEqual({ kind: "fenced", shutdown: true });
+		await shutdown;
+
+		// Nothing was stamped or recorded — the row is still 'running'.
+		const rows = store.db
+			.query<{ run_id: string; status: string }, []>(
+				"SELECT run_id, status FROM turn_runs",
+			)
+			.all();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]!.status).toBe("running");
+		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user"]);
+
+		// The next open — a restart — reclassifies it and records the
+		// completed step in the same transaction.
+		const journal2 = openTurnJournal(store.db, {
+			onInterrupted: (run, calls) => appendInterruptedProgress(store, run, calls),
+		});
+		const runId = rows[0]!.run_id;
+		expect(journal2.interruptedAtOpen.map((r) => r.runId)).toEqual([runId]);
+		expect(journal2.get(runId)!.status).toBe("interrupted");
+		const history = store.history(conv.id);
+		expect(history.map((m) => m.role)).toEqual(["user", "system"]);
+		const meta = history[1]!.metadata as { unlanded?: { kind?: string; runId?: string } };
+		expect(meta.unlanded?.kind).toBe("interrupted");
+		expect(meta.unlanded?.runId).toBe(runId);
+		expect(eventText(history[1]!)).toContain("was interrupted");
+		expect(eventText(history[1]!)).toContain('completed: {"ok":true,"q":1}');
+
+		// A second open records nothing again — the record lands once.
+		const journal3 = openTurnJournal(store.db, {
+			onInterrupted: (run, calls) => appendInterruptedProgress(store, run, calls),
+		});
+		expect(journal3.interruptedAtOpen).toEqual([]);
+		expect(store.history(conv.id)).toHaveLength(2);
+
+		// The restarted runtime lists it and resumes it.
+		const edge2 = scriptedModel([textParts("resumed answer")]);
+		const runtime2 = new Runtime({
+			engines: [aiSdkEngine],
+			store,
+			turnJournal: journal2,
+			buildStep: () => ({ model: edge2.model, system: "test" }),
+			makeTools,
+		});
+		const sink2 = new RecordingSink();
+		const ops2 = makeResumeOps({
+			store,
+			journal: journal2,
+			runtime: runtime2,
+			captureConversation: (c) => c,
+			makeTools,
+			sinkFor: () => sink2,
+			sinkHooks: () => ({ voice: false, recording: false, file: false }),
+		});
+		expect(ops2.interrupted(conv.id).map((v) => v.run.runId)).toEqual([runId]);
+		expect(ops2.resume(conv.id, runId).kind).toBe("resumed");
+		expect(await sink2.done).toEqual({ kind: "completed" });
+		await waitUntil(() => !runtime2.busy(conv.id), "resumed lane drains");
+		expect(journal2.get(runId)!.status).toBe("resumed");
+		expect(executed).toEqual(["probe"]); // never re-executed
+		await runtime2.shutdown();
+		store.close();
+	});
+
+	test("/stop mid-turn stays 'fenced': progress lands once and the crash rail never claims it", async () => {
+		const held = progressThenHold();
+		const executed: string[] = [];
+		const { store, conv, journal, runtime } = setup({
+			attempts: held.attempts,
+			makeTools: makeProbeTools(executed),
+		});
+		const sink = new RecordingSink();
+		runtime.submit(conv, userMessage([{ type: "text", text: "do work" }]), sink);
+		await held.entered;
+		runtime.stop(conv.id);
+		held.release();
+		expect(await sink.done).toEqual({ kind: "fenced" });
+		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+
+		const rows = store.db
+			.query<{ run_id: string; status: string }, []>(
+				"SELECT run_id, status FROM turn_runs",
+			)
+			.all();
+		expect(rows).toHaveLength(1);
+		expect(rows[0]!.status).toBe("fenced");
+		const history = store.history(conv.id);
+		expect(history.map((m) => m.role)).toEqual(["user", "system"]);
+		const meta = history[1]!.metadata as { unlanded?: { kind?: string } };
+		expect(meta.unlanded?.kind).toBe("aborted");
+		expect(journal.interrupted()).toEqual([]);
+
+		// A reopen — a restart — neither claims the fenced row nor
+		// records it a second time.
+		const journal2 = openTurnJournal(store.db, {
+			onInterrupted: (run, calls) => appendInterruptedProgress(store, run, calls),
+		});
+		expect(journal2.interruptedAtOpen).toEqual([]);
+		expect(journal2.get(rows[0]!.run_id)!.status).toBe("fenced");
+		expect(store.history(conv.id)).toHaveLength(2);
 		await runtime.shutdown();
 		store.close();
 	});

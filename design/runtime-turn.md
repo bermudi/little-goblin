@@ -108,10 +108,18 @@ real Runtime.
 
 `src/turn-journal.ts` is the crash journal. The run row lands before any
 tool side effect can execute; a dispatched call without a result is the
-ambiguous state — the side effect may or may not have happened. A
-graceful shutdown fences its live rows first, so a row still running at
-open means the process died mid-turn: open reclassifies it
-`interrupted`, and boot sends one terse notice per run (counts by state,
+ambiguous state — the side effect may or may not have happened. For the
+journal a graceful shutdown IS a crash (#471): a shutdown-fenced turn
+leaves its row `running` and records nothing — the next open
+reclassifies it `interrupted` exactly like process death, so the boot
+notice, `/interrupted` and `/resume` all reach it (openclaw drains
+active turns and re-dispatches them, `docs/gateway/restart-recovery.md`;
+hermes marks sessions `resume_pending` and auto-continues,
+`gateway-session-lifecycle.md` — borrowed as mechanism only: a restart
+must not silently strand an unanswered request). `fenced` is now
+operator/epoch fences only — `/stop`, settings changes, deploy-era
+authority loss outside shutdown. Boot sends one terse notice per run
+(counts by state,
 never the partial itself). Nothing replays automatically — boot is
 notice-only, and an `interrupted` turn resumes ONLY by explicit operator
 decision into a FRESH admission (new epoch, not a continuation of the
@@ -249,14 +257,18 @@ the view. The operator sees it too.
 
 - **The error rail** (2026-11-05): a terminal failure appends the event
   before the run's terminal stamp, with the failure message.
-- **The fenced rail** (2026-11-08, #195): a graceful fence — `/stop`, a
-  settings change, shutdown, deploy restart, a fence landing during
+- **The fenced rail** (2026-11-08, #195; narrowed 2026-11-13, #471): an
+  operator/epoch fence — `/stop`, a
+  settings change, a fence landing during
   overflow recovery — appends the same event labeled ended-aborted,
   before the `fenced` stamp. The write happens DESPITE the lost epoch:
   it is the sanctioned post-fence state write (the ⏹ superseded display
   stamp's precedent), recording what already ran, never continuing the
-  turn. A shutdown names itself; a stop names the stop.
-- **The interrupted rail** (2026-11-08, #195): process death. At journal
+  turn. A shutdown fence no longer rides this rail: it leaves the row
+  `running` and appends nothing, so the next open's interrupted rail
+  owns both the stamp and the record.
+- **The interrupted rail** (2026-11-08, #195): process death — kill,
+  crash, or a graceful shutdown mid-turn (#471). At journal
   open, each row reclassified `interrupted` gets its event appended
   INSIDE the reclassify transaction (one SQLite handle — the append
   joins it): the two commit atomically, a failure rolls both back and

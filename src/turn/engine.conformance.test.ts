@@ -31,6 +31,7 @@ import {
 } from "../testkit.ts";
 import type { ModelStep } from "../turn/engine.ts";
 import { openTurnJournal, type TurnJournal } from "../turn-journal.ts";
+import { appendInterruptedProgress } from "./unlanded-progress.ts";
 import { aiSdkEngine } from "./ai-sdk-engine.ts";
 import { isClaudeStep, pickEngine } from "./engine.ts";
 
@@ -493,19 +494,44 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 		},
 	},
 	{
-		name: "shutdown mid-run fences with the shutdown stamp",
+		name: "shutdown mid-run leaves the row 'running' — the next open interrupts it (#471)",
 		async run(rig) {
-			const held = rig.scriptHeldRun();
-			const sink = submit(rig, "hold still");
+			const held = rig.scriptProgressThenHold();
+			const sink = submit(rig, "work then hold");
 			await held.entered;
-			await waitForWireContent(sink);
 			// Not awaited yet — the turn must be released first.
 			const shutdown = rig.runtime.shutdown();
 			held.release();
 			expect(await sink.done).toEqual({ kind: "fenced", shutdown: true });
 			await shutdown;
-			// The record still lands on the shutdown rail.
-			expect(roles(rig)).toEqual(["user", "system"]);
+			// For the journal a graceful shutdown IS a crash: the fence
+			// stamps nothing and records nothing — the row stays 'running'.
+			expect(roles(rig)).toEqual(["user"]);
+			const rows = rig.store.db
+				.query<{ run_id: string; status: string }, []>(
+					"SELECT run_id, status FROM turn_runs",
+				)
+				.all();
+			expect(rows).toHaveLength(1);
+			expect(rows[0]!.status).toBe("running");
+			// The next open's reclassify owns both the 'interrupted' stamp
+			// and the progress record — one system event, exactly once.
+			const reopened = openTurnJournal(rig.store.db, {
+				onInterrupted: (run, calls) => appendInterruptedProgress(rig.store, run, calls),
+			});
+			expect(reopened.interruptedAtOpen.map((r) => r.runId)).toEqual([rows[0]!.run_id]);
+			const history = rig.store.history(rig.conv.id);
+			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
+			const event = textOf(history[1]!);
+			expect(event).toContain("was interrupted");
+			expect(event).toContain("echo");
+			expect(event).toContain('completed: "echo:first"');
+			expect(event).toContain("FENCED-STEP1-TEXT");
+			const again = openTurnJournal(rig.store.db, {
+				onInterrupted: (run, calls) => appendInterruptedProgress(rig.store, run, calls),
+			});
+			expect(again.interruptedAtOpen).toEqual([]);
+			expect(rig.store.history(rig.conv.id)).toHaveLength(2);
 		},
 	},
 	{

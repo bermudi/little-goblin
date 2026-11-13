@@ -159,8 +159,11 @@ flushing unsent content — and drains the intake buffer into history, all
 under a bounded budget. A crash mid-turn leaves the same shape minus the
 flush: the user message is in history, the next turn answers it. The turn
 journal (design/runtime-turn.md → The turn journal) makes the distinction
-durable: a graceful shutdown stamps its runs `fenced`; a row still `running`
-at open means the process died, is reclassified `interrupted`, and is
+durable: for the journal a graceful shutdown IS a crash (#471) — a
+shutdown-fenced run keeps its `running` row and records nothing itself,
+so the next open reclassifies it `interrupted` like any process death.
+`fenced` now means operator/epoch fences only (`/stop`, a settings
+change). A row reclassified `interrupted` is
 surfaced to the operator as a boot notice — counts and facts, never a
 replay. Whatever the rail — fenced, failed, or killed — the turn's
 completed steps (assistant text, tool calls + results) reach history as

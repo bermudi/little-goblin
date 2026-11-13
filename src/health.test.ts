@@ -28,7 +28,8 @@ import { openPings } from "./tg/pings.ts";
 import { openCacheObservation } from "./cache-observation.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 import { checkAppAssets } from "./health/app-assets.ts";
-import { runHealth, testRatio } from "./health.ts";
+import { testRatio } from "./health/repo.ts";
+import { runHealth } from "./health.ts";
 import {
 	healthReportSchema,
 	healthResultSchema,

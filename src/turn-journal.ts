@@ -2,8 +2,10 @@ import type { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { withoutReasoningCipher } from "./agent/codex/replay-state.ts";
+import { parseEvent } from "./conversation-events.ts";
 import { log } from "./log.ts";
 import { stableStringify } from "./loop-detect.ts";
+import { isMachineryText } from "./tags.ts";
 
 export type JournalStatus =
 	| "running"
@@ -174,6 +176,15 @@ export interface TurnJournal {
 	// conversation filter lives in SQL, not a JS scan of every run.
 	interruptedFor(conversationId: string): TurnRun[];
 	readonly interruptedAtOpen: readonly TurnRun[];
+	// #481 — per-conversation count of user events the dead process
+	// accepted but never admitted to a turn: seq above every run's owned
+	// floor (anchor and source seqs stand in for legacy NULL ownership)
+	// AND above the last assistant reply (an answered input is not
+	// stranded even if its run's ownership never journaled). Machinery
+	// speech and generated resume markers are not operator input.
+	// Snapshotted at open like interruptedAtOpen — post-open submissions
+	// belong to the live runtime, not the crash.
+	readonly strandedAtOpen: ReadonlyMap<string, number>;
 	get(runId: string): TurnRun | null;
 	// The newest run admitted as this row's resume continuation — null
 	// when none exists. A 'resumed' row's successor insert committed in
@@ -674,6 +685,44 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 	};
 	const interruptedAtOpen =
 		opts.onInterrupted === undefined ? reclassify() : db.transaction(reclassify)();
+	// Stranded-input candidates: user events above every run's owned
+	// floor and above the last assistant reply of their conversation.
+	// json_each over a NULL owned_input_seqs yields zero rows, so legacy
+	// rows contribute only their anchor/source seqs.
+	const qStranded = db.query<{ conversation_id: string; seq: number; data: string }, []>(
+		`SELECT e.conversation_id, e.seq, e.data FROM events e
+		 WHERE e.role = 'user'
+		   AND e.seq > COALESCE((
+				SELECT MAX(x) FROM (
+					SELECT je.value AS x FROM turn_runs r
+						JOIN json_each(r.owned_input_seqs) je
+					 WHERE r.conversation_id = e.conversation_id
+					UNION ALL
+					SELECT anchor_seq FROM turn_runs
+					 WHERE conversation_id = e.conversation_id AND anchor_seq IS NOT NULL
+					UNION ALL
+					SELECT source_input_seq FROM turn_runs
+					 WHERE conversation_id = e.conversation_id AND source_input_seq IS NOT NULL
+				)), 0)
+		   AND e.seq > COALESCE((
+				SELECT MAX(seq) FROM events a
+				 WHERE a.conversation_id = e.conversation_id AND a.role = 'assistant'), 0)`,
+	);
+	const resumeMarker = z.object({ goblinResume: z.object({ sourceRunId: z.string() }) });
+	const strandedAtOpen = ((): ReadonlyMap<string, number> => {
+		const counts = new Map<string, number>();
+		for (const row of qStranded.all()) {
+			const message = parseEvent(row.conversation_id, row.seq, "user", row.data);
+			// A corrupt row decodes to a placeholder — it was never a
+			// readable message, so nothing answerable was stranded.
+			if (message === null) continue;
+			const text = message.parts.map((p) => (p.type === "text" ? p.text : "")).join("");
+			if (isMachineryText(text)) continue;
+			if (resumeMarker.safeParse(message.metadata).success) continue;
+			counts.set(row.conversation_id, (counts.get(row.conversation_id) ?? 0) + 1);
+		}
+		return counts;
+	})();
 	// Inherited evidence copies are namespaced by their ORIGIN run, never
 	// carried under the raw provider id. The primary key (run_id,
 	// tool_call_id) spans both the inherited copies and this attempt's
@@ -948,6 +997,7 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 			return qInterruptedFor.all(conversationId).map(decodeRun);
 		},
 		interruptedAtOpen,
+		strandedAtOpen,
 		get(runId) {
 			const raw = qGet.get(runId);
 			return raw === null ? null : decodeRun(raw);

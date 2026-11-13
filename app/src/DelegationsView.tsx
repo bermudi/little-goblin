@@ -2,8 +2,9 @@
 // work first with what it waits for and a direct action, finished work as
 // a paged table, a long brief only in the opened detail.
 import { type CSSProperties, useState } from "react";
-import { listDelegations } from "./api.ts";
-import { ts, useLoad } from "./opsShared.tsx";
+import { listDelegations, stopDelegation } from "./api.ts";
+import { useConfirm } from "./confirm.tsx";
+import { describe, ts, useLoad } from "./opsShared.tsx";
 import type { OperatorDelegationItem } from "../../src/http/operator-wire.ts";
 
 const PAGE = 15;
@@ -42,18 +43,65 @@ function waitsFor(d: OperatorDelegationItem): string {
 	return "Working. It reports when it needs you or finishes.";
 }
 
+// The operator's stop (#414): goblin records it as theirs and does not
+// relaunch. A 409 means herdr could not close the agent — shown as is.
+function StopButton({
+	d,
+	token,
+	onStopped,
+}: {
+	d: OperatorDelegationItem;
+	token: string | null;
+	onStopped: (name: string, notes: string[]) => void;
+}) {
+	const confirm = useConfirm();
+	const [busy, setBusy] = useState(false);
+	const [err, setErr] = useState<string | null>(null);
+	const run = async () => {
+		const ok = await confirm.ask({
+			message: `Stop ${d.name}? Its agent is ended and its workspace closed.`,
+			confirmLabel: "Stop",
+			danger: true,
+		});
+		if (!ok) return;
+		setBusy(true);
+		setErr(null);
+		try {
+			const res = await stopDelegation(token, d.id);
+			onStopped(d.name, res.notes);
+		} catch (e) {
+			setErr(describe(e));
+		} finally {
+			setBusy(false);
+		}
+	};
+	return (
+		<>
+			<button type="button" className="ghost danger" disabled={busy} onClick={() => void run()}>
+				{busy ? "Stopping…" : "Stop"}
+			</button>
+			{err !== null && <span className="error">{err}</span>}
+			{confirm.view}
+		</>
+	);
+}
+
 function Pill({ status }: { status: Status }) {
 	return <span className={`pill st-${status}`}>{STATUS_LABEL[status]}</span>;
 }
 
 function Current({
 	d,
+	token,
 	onOpen,
 	onConversation,
+	onStopped,
 }: {
 	d: OperatorDelegationItem;
+	token: string | null;
 	onOpen: (id: number) => void;
 	onConversation: ((id: string) => void) | null;
+	onStopped: (name: string, notes: string[]) => void;
 }) {
 	const conv = d.appConversation;
 	return (
@@ -76,6 +124,7 @@ function Current({
 				<button type="button" className="ghost" onClick={() => onOpen(d.id)}>
 					Details
 				</button>
+				<StopButton d={d} token={token} onStopped={onStopped} />
 			</div>
 		</li>
 	);
@@ -83,12 +132,16 @@ function Current({
 
 function Detail({
 	d,
+	token,
 	onBack,
 	onConversation,
+	onStopped,
 }: {
 	d: OperatorDelegationItem;
+	token: string | null;
 	onBack: () => void;
 	onConversation: ((id: string) => void) | null;
+	onStopped: (name: string, notes: string[]) => void;
 }) {
 	const conv = d.appConversation;
 	return (
@@ -101,11 +154,14 @@ function Detail({
 			<h2 className="ops-h2 deleg-title">
 				{d.name} <Pill status={d.status} />
 			</h2>
-			{conv !== null && onConversation !== null && (
+			{((conv !== null && onConversation !== null) || isCurrent(d.status)) && (
 				<div className="deleg-now-actions">
-					<button type="button" className="ghost" onClick={() => onConversation(conv)}>
-						Open conversation
-					</button>
+					{conv !== null && onConversation !== null && (
+						<button type="button" className="ghost" onClick={() => onConversation(conv)}>
+							Open conversation
+						</button>
+					)}
+					{isCurrent(d.status) && <StopButton d={d} token={token} onStopped={onStopped} />}
 				</div>
 			)}
 			<dl className="deleg-facts">
@@ -139,9 +195,17 @@ export function DelegationsView({
 	token: string | null;
 	onOpenConversation?: ((id: string) => void) | undefined;
 }) {
-	const { data, err } = useLoad(() => listDelegations(token));
+	const { data, err, reload } = useLoad(() => listDelegations(token));
 	const [openId, setOpenId] = useState<number | null>(null);
 	const [shown, setShown] = useState(PAGE);
+	// Stop warnings outlive the row's move to Earlier: "stopped" with notes
+	// can mean the agent may still run somewhere.
+	const [warn, setWarn] = useState<{ name: string; notes: string[] } | null>(null);
+	const onStopped = (name: string, notes: string[]) => {
+		setWarn(notes.length > 0 ? { name, notes } : null);
+		setOpenId(null);
+		reload();
+	};
 	if (err !== null)
 		return (
 			<div className="ops">
@@ -157,7 +221,15 @@ export function DelegationsView({
 	const onConv = onOpenConversation ?? null;
 	const opened = openId === null ? undefined : data.delegations.find((d) => d.id === openId);
 	if (opened !== undefined) {
-		return <Detail d={opened} onBack={() => setOpenId(null)} onConversation={onConv} />;
+		return (
+			<Detail
+				d={opened}
+				token={token}
+				onBack={() => setOpenId(null)}
+				onConversation={onConv}
+				onStopped={onStopped}
+			/>
+		);
 	}
 
 	const newest = (a: OperatorDelegationItem, b: OperatorDelegationItem) =>
@@ -171,6 +243,16 @@ export function DelegationsView({
 	return (
 		<div className="ops">
 			<h2 className="ops-h2">Delegations ({data.delegations.length})</h2>
+			{warn !== null && (
+				<div className="error deleg-stop-warn" role="alert">
+					<p>Stopped {warn.name}, with warnings:</p>
+					<ul>
+						{warn.notes.map((n) => (
+							<li key={n}>{n}</li>
+						))}
+					</ul>
+				</div>
+			)}
 			{data.delegations.length === 0 && <p className="empty">No delegations.</p>}
 			{data.delegations.length > 0 && (
 				<div className="sumstrip">
@@ -199,7 +281,14 @@ export function DelegationsView({
 					{current.length > 0 && (
 						<ul className="deleg-now-list">
 							{current.map((d) => (
-								<Current key={d.id} d={d} onOpen={setOpenId} onConversation={onConv} />
+								<Current
+									key={d.id}
+									d={d}
+									token={token}
+									onOpen={setOpenId}
+									onConversation={onConv}
+									onStopped={onStopped}
+								/>
 							))}
 						</ul>
 					)}

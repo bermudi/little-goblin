@@ -1389,6 +1389,13 @@ same-origin). The frame CSP grew `media-src data: blob:` so a generated
 document can embed or build media — still no network, still an opaque
 origin.
 
+The reader header offers copy for decoded markdown, HTML source and plain
+text, including empty files. It uses the shared copied/failed feedback,
+scoped to the active document: following a link or going back resets it,
+and a late clipboard result cannot label another document as copied.
+Loading, failed reads, media, PDFs, binaries and text over the 4 MiB
+decode cap have no copy control.
+
 App-channel only, like `ui`: the tool mounts on app turns, the routes sit
 behind app auth, and Telegram/guests get neither.
 

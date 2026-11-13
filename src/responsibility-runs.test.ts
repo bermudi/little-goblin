@@ -278,6 +278,24 @@ describe("delegation reports", () => {
 			state: "failed",
 			reason: "delegation #9 fix it failed: gone",
 		});
+		expect(delegationReport(delegation(), "stopped", "interrupted")).toEqual({
+			state: "blocked",
+			reason: "delegation #9 fix it stopped by the operator: interrupted",
+		});
+	});
+
+	test("a stopped lead stays blocked even when its PR readiness facts pass", () => {
+		const { resps, id } = rig();
+		const d = delegation({
+			responsibilityId: id, responsibilityRevision: 1, role: "lead", readinessVersion: 1,
+		});
+		fileDelegationReport(resps, d, "stopped", "operator stopped it", prReadinessFixture("green"));
+		const [report] = resps.reportsFor(id);
+		expect(report).toMatchObject({
+			state: "blocked", reason: expect.stringContaining("operator stopped it"),
+		});
+		expect(report?.evidence).toHaveLength(4);
+		expect(responsibilityStage(resps.get(id)!, report ?? null, []).waitsFor).toBe("goblin");
 	});
 
 	test("an unlinked delegation states nothing", () => {

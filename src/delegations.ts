@@ -14,7 +14,7 @@ export type DelegationStatus =
 	| "done"
 	| "failed"
 	| "stopped";
-export type DelegationVerdict = "done" | "needs input" | "failed";
+export type DelegationVerdict = "done" | "needs input" | "failed" | "stopped";
 
 export interface Delegation {
 	id: number;
@@ -128,7 +128,7 @@ const delegationSchema = z.object({
 	readiness_json: z.string().nullable(),
 	readiness_notified_key: z.string().nullable(),
 	readiness_version: z.number().int().nonnegative(),
-	readiness_pending_verdict: z.enum(["done", "needs input", "failed"]).nullable(),
+	readiness_pending_verdict: z.enum(["done", "needs input", "failed", "stopped"]).nullable(),
 	cwd: z.string(),
 	task: z.string(),
 	chat_id: z.number(),

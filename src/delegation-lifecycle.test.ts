@@ -276,6 +276,70 @@ describe("lead PR readiness watcher", () => {
 		} finally { await lifecycle.stopTicker(); h.store.close(); }
 	});
 
+	test("an outside stop retries its saved readiness after restart, then stops monitoring", async () => {
+		const h = harness();
+		const d = issueLead(h);
+		let reads = 0;
+		const observation = prReadinessFixture("green");
+		h.deps.readiness = async () => { reads++; return observation; };
+		h.deps.wake = () => false;
+		const first = startDelegationLifecycle(h.deps, 3_600_000);
+		await first.tick();
+		await first.stopTicker();
+		expect(h.store.get(d.id)).toMatchObject({
+			status: "running", readiness: observation, readinessPendingVerdict: "stopped",
+		});
+		h.store.close();
+		const reopened = openDelegations(h.dbPath);
+		const wakes: string[] = [];
+		const second = startDelegationLifecycle({
+			...h.deps, delegations: reopened,
+			wake: (_address, text) => { wakes.push(text); return true; },
+		}, 3_600_000);
+		try {
+			await second.tick();
+			expect(reads).toBe(1);
+			expect(wakes).toHaveLength(1);
+			expect(wakes[0]).toContain("operator's stop");
+			expect(wakes[0]).toContain("don't relaunch");
+			expect(reopened.get(d.id)).toMatchObject({
+				status: "stopped", readiness: observation, readinessPendingVerdict: null,
+			});
+			ageReadiness({ store: reopened }, d.id);
+			await second.tick();
+			expect(reads).toBe(1);
+			expect(wakes).toHaveLength(1);
+		} finally { await second.stopTicker(); reopened.close(); }
+	});
+
+	test("an app stop on a lead keeps its readiness evidence without reviving the watcher", async () => {
+		const h = harness();
+		const d = issueLead(h);
+		h.agents.set(d.agentName, agent(d.agentName, "working", 1));
+		let reads = 0;
+		h.deps.readiness = async () => { reads++; return prReadinessFixture("green"); };
+		const verdicts: string[] = [];
+		h.deps.settled = (_row, verdict) => { verdicts.push(verdict); };
+		const lifecycle = startDelegationLifecycle(h.deps, 3_600_000);
+		try {
+			await lifecycle.tick();
+			const out = await lifecycle.stopByOperator(d.id);
+			expect(out.kind).toBe("stopped");
+			expect(out.kind === "stopped" ? out.notes : []).toEqual([]);
+			expect(h.wakes).toHaveLength(1);
+			expect(h.wakes[0]).toContain("the operator stopped it from the app");
+			expect(h.wakes[0]).toContain("PR readiness facts pass");
+			expect(verdicts).toEqual(["stopped"]);
+			expect(h.store.get(d.id)).toMatchObject({
+				status: "stopped", readinessPendingVerdict: null,
+			});
+			ageReadiness(h, d.id);
+			await lifecycle.tick();
+			expect(reads).toBe(1);
+			expect(h.wakes).toHaveLength(1);
+		} finally { await lifecycle.stopTicker(); h.store.close(); }
+	});
+
 	test("a correction or pause during the remote read suppresses the late wake", async () => {
 		const h = harness();
 		const d = issueLead(h);
@@ -1015,17 +1079,64 @@ describe("delegation watcher", () => {
 		expect(h.store.get(d.id)!.status).toBe("running");
 	});
 
-	test("agent gone → failed, notice carries the pane tail", async () => {
+	// #414: goblin never ends an agent without marking the row first, so a
+	// vanished agent is the operator's stop — never a failure to repair.
+	test("agent gone → stopped as the operator's stop, notice carries the pane tail", async () => {
 		const h = harness();
 		const d = runningRow(h, "died", 1);
 		h.screens.set(`pane:${d.paneId}`, "codex exited: oom");
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
 		w.stopTicker();
-		expect(h.store.get(d.id)!.status).toBe("failed");
+		expect(h.store.get(d.id)!.status).toBe("stopped");
 		expect(h.wakes).toHaveLength(1);
-		expect(h.wakes[0]).toContain(`[delegation: #${d.id} died · failed]`);
+		expect(h.wakes[0]).toContain(`[delegation: #${d.id} died · stopped]`);
+		expect(h.wakes[0]).toContain("operator's stop");
+		expect(h.wakes[0]).toContain("don't relaunch");
 		expect(h.wakes[0]).toContain("codex exited: oom");
+	});
+
+	test("an operator stop from the app stops the row and tells its conversation", async () => {
+		const h = harness();
+		const d = runningRow(h, "busy", 1);
+		h.agents.set(d.agentName, agent(d.agentName, "working", 1));
+		const w = startDelegationLifecycle(h.deps);
+		const out = await w.stopByOperator(d.id);
+		await w.stopTicker();
+		expect(out.kind).toBe("stopped");
+		expect(h.store.get(d.id)!.status).toBe("stopped");
+		expect(h.wakes).toHaveLength(1);
+		expect(h.wakes[0]).toContain(`[delegation: #${d.id} busy · stopped]`);
+		expect(h.wakes[0]).toContain("the operator stopped it from the app");
+	});
+
+	test("an operator stop with an unreadable report still tells its conversation", async () => {
+		const h = harness();
+		const d = runningRow(h, "bad report", 1);
+		h.agents.set(d.agentName, agent(d.agentName, "working", 1));
+		writeFileSync(h.delegationsDir, "not a directory");
+		const settled: string[] = [];
+		h.deps.settled = (_d, verdict) => settled.push(verdict);
+		const w = startDelegationLifecycle(h.deps);
+		const out = await w.stopByOperator(d.id);
+		await w.stopTicker();
+		expect(out.kind).toBe("stopped");
+		expect(h.store.get(d.id)!.status).toBe("stopped");
+		expect(h.wakes).toHaveLength(1);
+		expect(h.wakes[0]).toContain(`[delegation: #${d.id} bad report · stopped]`);
+		expect(h.wakes[0]).toContain("report unreadable");
+		expect(settled).toEqual(["stopped"]);
+	});
+
+	test("an operator stop on a finished row is cleanup — no notice", async () => {
+		const h = harness();
+		const d = runningRow(h, "finished", 1);
+		h.store.setStatus(d.id, "done");
+		const w = startDelegationLifecycle(h.deps);
+		const out = await w.stopByOperator(d.id);
+		await w.stopTicker();
+		expect(out.kind).toBe("stopped");
+		expect(h.wakes).toHaveLength(0);
 	});
 
 	test("the report file beats the screen and caps at 16 KiB", async () => {

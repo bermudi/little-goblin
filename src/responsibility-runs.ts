@@ -113,6 +113,8 @@ export function delegationReport(
 			return { state: "blocked", reason: clip(`${tag} needs input: ${body}`) };
 		case "failed":
 			return { state: "failed", reason: clip(`${tag} failed: ${body}`) };
+		case "stopped":
+			return { state: "blocked", reason: clip(`${tag} stopped by the operator: ${body}`) };
 	}
 }
 

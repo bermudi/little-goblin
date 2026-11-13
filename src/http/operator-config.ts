@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { modelCatalogFor } from "../agent/models-dev.ts";
-import { clampThinkingFor } from "../agent/thinking.ts";
+import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
 import {
 	authDefaults,
 	type CapabilityName,
@@ -33,9 +33,19 @@ import type {
 	SubagentsWire,
 } from "./operator-wire.ts";
 
-// Settings: the config door, ChatGPT sign-in and auth records.
+// Settings: the config door, ChatGPT sign-in, auth records, and the
+// model picker's thinking-levels helper.
 export async function configRoute(r: OperatorRequest): Promise<Response | null> {
-	const { deps, actor, who, req, tail } = r;
+	const { deps, actor, who, req, tail, url } = r;
+
+	if (tail === "thinking-levels") {
+		const levels = thinkingLevelsFor(
+			url.searchParams.get("kind") ?? "",
+			url.searchParams.get("model") ?? "",
+			url.searchParams.get("base") ?? undefined,
+		);
+		return json({ levels });
+	}
 
 	if (tail === "config") {
 		if (req.method === "GET") {

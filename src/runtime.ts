@@ -33,6 +33,7 @@ import {
 } from "./memory/mod.ts";
 import type { PriorTurnContext } from "./reviewer.ts";
 import { Reviewer } from "./reviewer.ts";
+import { LaneRegistry, type QueuedTurn, type ResumeSeed } from "./runtime-lanes.ts";
 import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { type CompactionSeam, runCompactJob } from "./turn/compact-job.ts";
@@ -157,81 +158,9 @@ export class FencedError extends Error {
 	}
 }
 
-// An operator-resume admission's seed (turn-resume.ts builds it): the
-// interrupted run's carry-over minus the dead attempt's live wire and
-// recall, both re-derived at the fresh admission. `resumedFrom` links the
-// new run row to the source and arms the fence's recovery guard.
-export type ResumeSeed = Omit<TurnRecovery, "live" | "memory" | "overflowed">;
-
-interface QueuedTurn {
-	// The durable event seq of the appended message — captured from the
-	// append (or the persisting caller) so steering ownership never has to
-	// match client message ids, which are neither unique nor trusted.
-	seq: number;
-	// Already appended to history; a live predecessor may fold it into its
-	// next model call.
-	message: UIMessage;
-	sink: TurnSink;
-	// Prevents a throwing sink from receiving a second terminal notification.
-	// Drain's last-ditch handler can therefore safely settle the whole lane.
-	doneSent: boolean;
-	// A throwing stream sink is detached without killing the turn; remaining
-	// sinks receive future chunks.
-	streamFailed?: boolean;
-	// Present only on a claim head — a seeded turn answers for the
-	// interrupted run it continues; claimed as a member its recovery
-	// would silently drop, so the claim boundary stops before it.
-	resumeSeed?: ResumeSeed | undefined;
-	release?: (() => void) | undefined;
-}
-
-// Compaction jobs run between turns so the preceding exchange is whole.
-// A submit arriving during the job waits for the next drain pass.
-interface QueuedCompact {
-	conv: Conversation;
-	resolve: (outcome: CompactionOutcome) => void;
-	reject: (err: unknown) => void;
-}
-
-interface Lane {
-	pending: QueuedTurn[];
-	compacts: QueuedCompact[];
-	running: boolean;
-	controller: AbortController | null;
-	// Dedicated cancellation for an in-flight compaction summary. It is
-	// registered before the first await so /stop cannot miss a pending build.
-	compactController: AbortController | null;
-	// Shutdown awaits the drain so terminal sink flushes finish.
-	draining: Promise<void> | null;
-	live: LiveChunks | null;
-	admitted: Map<string, QueuedTurn[]>;
-	// The turn currently holding the lane: set by drain around runTurn,
-	// resolved once that runTurn has returned (history writes and terminal
-	// sink notifications included, the crash guard either way). /stop hands
-	// it out as `active` — the wait-for-the-record seam. A turn submitted
-	// after the stop replaces it, so an old waiter never follows the new turn.
-	activeTurn: Promise<void> | null;
-}
-
-// A streaming submit stays queued behind a headless turn so it can lead its
-// own attempt. A streaming head may claim all pending work; a headless head
-// claims only the leading non-streaming run. A resume seed leads only its own
-// claim — joining another turn as a member would drop its recovery.
-// `headLeads` distinguishes the two claim contexts: the drain's claim
-// promotes pending[0] to head (its seed rides along), while wire/steer
-// claims take members only — a seed at index 0 must stop them too.
-function claimableCount(pending: QueuedTurn[], headStreams: boolean, headLeads: boolean): number {
-	const start = headLeads ? 1 : 0;
-	const seeded = pending.findIndex((t, i) => i >= start && t.resumeSeed !== undefined);
-	const limit = seeded === -1 ? pending.length : seeded;
-	if (headStreams) return limit;
-	const first = pending.findIndex((t, i) => i >= start && t.sink.onStreamChunk !== undefined);
-	return first === -1 ? limit : Math.min(limit, first);
-}
-
-function claimPending(lane: Lane, headStreams: boolean, headLeads = true): QueuedTurn[] {
-	return lane.pending.splice(0, claimableCount(lane.pending, headStreams, headLeads));
-}
+// runtime-lanes.ts re-export — the resume seed is turn-resume.ts's contract
+// with the runtime's public surface.
+export type { ResumeSeed } from "./runtime-lanes.ts";
 
 // Terminal outcomes have settled their sinks; resumes carry recovery and
 // membership into the next attempt. Membership is data on the decision,
@@ -241,7 +170,7 @@ type AttemptOutcome =
 	| { kind: "resume"; recovery: TurnRecovery; turns: QueuedTurn[] };
 
 export class Runtime {
-	private lanes = new Map<string, Lane>();
+	private lanes = new LaneRegistry();
 	// Closed runtimes record submits but never run them.
 	private closed = false;
 	// The runtime supplies ordering and the prior-turn chain, not gate
@@ -280,8 +209,7 @@ export class Runtime {
 	// Guest mode checks this before submitting so a second summon cannot steer
 	// an existing turn.
 	hasActiveTurn(conversationId: string): boolean {
-		const lane = this.lanes.get(conversationId);
-		return lane !== undefined && (lane.running || lane.pending.length > 0);
+		return this.lanes.hasActiveTurn(conversationId);
 	}
 
 	// Persist immediately; the return value distinguishes lane admission from
@@ -335,12 +263,7 @@ export class Runtime {
 	// durable event: a different admitted event reusing the same client
 	// id must not stand in for the seq the caller actually means.
 	isAdmitted(conversationId: string, messageId: string, eventSeq?: number): boolean {
-		return (
-			this.lanes
-				.get(conversationId)
-				?.admitted.get(messageId)
-				?.some((t) => !t.doneSent && (eventSeq === undefined || t.seq === eventSeq)) ?? false
-		);
+		return this.lanes.isAdmitted(conversationId, messageId, eventSeq);
 	}
 
 	private admit(
@@ -354,20 +277,8 @@ export class Runtime {
 			void this.notifyDone({ seq, message, sink, doneSent: false }, { kind: "fenced" });
 			return false;
 		}
-		const lane = this.lane(conv.id);
-		const turn: QueuedTurn = { seq, message, sink, doneSent: false, resumeSeed: seed };
-		turn.release = () => {
-			const holders = lane.admitted.get(message.id);
-			if (holders === undefined) return;
-			const index = holders.indexOf(turn);
-			if (index !== -1) holders.splice(index, 1);
-			if (holders.length === 0) lane.admitted.delete(message.id);
-		};
-		lane.pending.push(turn);
-		const holders = lane.admitted.get(message.id);
-		if (holders === undefined) lane.admitted.set(message.id, [turn]);
-		else holders.push(turn);
-		if (!lane.running) lane.draining = this.drain(conv.id);
+		this.lanes.enqueue(conv.id, { seq, message, sink, doneSent: false, resumeSeed: seed });
+		this.lanes.startDraining(conv.id, () => this.drain(conv.id));
 		return true;
 	}
 
@@ -383,16 +294,13 @@ export class Runtime {
 	// a retry into steering input, and resume admission refuses on it so
 	// the visibility it measured cannot move before the resumed turn runs.
 	busy(convId: string): boolean {
-		const lane = this.lanes.get(convId);
-		return (
-			lane !== undefined && (lane.running || lane.pending.length > 0 || lane.compacts.length > 0)
-		);
+		return this.lanes.busy(convId);
 	}
 
 	// Every conversation busy() would report — the release script's idle
 	// wait reads this through the loopback /api/runtime/busy endpoint.
 	busyConversations(): string[] {
-		return [...this.lanes.keys()].filter((convId) => this.busy(convId));
+		return this.lanes.busyConversations();
 	}
 
 	// Replay the existing wire and subscribe atomically; the replay/live union is
@@ -403,8 +311,8 @@ export class Runtime {
 		onChunk: (chunk: UIMessageChunk) => void,
 		onEnd: (done: TurnDone) => void,
 	): UIMessageChunk[] | null {
-		const live = this.lanes.get(convId)?.live;
-		if (live === undefined || live === null || live.ended) return null;
+		const live = this.lanes.liveOf(convId);
+		if (live === null || live.ended) return null;
 		live.subscribers.add({ onChunk, onEnd });
 		return [...live.chunks];
 	}
@@ -418,11 +326,11 @@ export class Runtime {
 			log.info("reviewer shutdown fenced", { reviewsCancelled });
 		}
 		const drains: Promise<void>[] = [];
-		for (const [convId, lane] of this.lanes) {
+		for (const convId of this.lanes.conversationIds()) {
 			// Await dropped sinks so shutdown does not cut off their final flush.
 			drains.push(this.stop(convId).settled);
-			if (lane.draining) drains.push(lane.draining);
 		}
+		drains.push(...this.lanes.drainingPromises());
 		await Promise.all(drains);
 	}
 
@@ -457,47 +365,34 @@ export class Runtime {
 				`cannot cancel conversation ${convId}: committed epoch ${epoch} no longer matches`,
 			);
 		}
-		const lane = this.lanes.get(convId);
-		const stopped =
-			lane !== undefined &&
-			(lane.pending.length > 0 ||
-				lane.compacts.length > 0 ||
-				lane.controller !== null ||
-				lane.compactController !== null);
+		const dropped = this.lanes.dropAll(convId);
 		const notifies: Promise<void>[] = [];
-		if (lane) {
-			const dropped = lane.pending.splice(0);
-			const droppedCompacts = lane.compacts.splice(0);
-			lane.controller?.abort();
-			lane.compactController?.abort();
-			for (const t of dropped) {
-				notifies.push(this.notifyDone(t, { kind: "fenced" }));
-			}
-			for (const c of droppedCompacts) {
-				c.resolve({ kind: "noop", reason: "stopped" });
-			}
+		for (const t of dropped.turns) {
+			notifies.push(this.notifyDone(t, { kind: "fenced" }));
+		}
+		for (const c of dropped.compacts) {
+			c.resolve({ kind: "noop", reason: "stopped" });
 		}
 		const reviewsCancelled = this.reviewer ? this.reviewer.cancelReviews(convId) : 0;
-		if (stopped) {
+		if (dropped.stopped) {
 			log.info("turn stopped", { conversation: convId, epoch, reviewsCancelled });
 		} else {
 			log.debug("stop — nothing was running", { conversation: convId, epoch, reviewsCancelled });
 		}
 		return {
-			stopped,
+			stopped: dropped.stopped,
 			settled: Promise.all(notifies).then(() => undefined),
 			reviewsCancelled,
 			// Captured here — the turn running at call time, not any submitted later.
-			active: lane?.activeTurn ?? Promise.resolve(),
+			active: this.lanes.activeTurn(convId) ?? Promise.resolve(),
 		};
 	}
 
 	// Queue compaction behind the running turn so its response is not orphaned.
 	compact(conv: Conversation): Promise<CompactionOutcome> {
-		const lane = this.lane(conv.id);
 		return new Promise<CompactionOutcome>((resolve, reject) => {
-			lane.compacts.push({ conv, resolve, reject });
-			if (!lane.running) lane.draining = this.drain(conv.id);
+			this.lanes.enqueueCompact({ conv, resolve, reject });
+			this.lanes.startDraining(conv.id, () => this.drain(conv.id));
 		});
 	}
 
@@ -513,51 +408,11 @@ export class Runtime {
 			modelFallbacks: this.deps.modelFallbacks,
 			budgets: compactionBudgets,
 			checkAuthority: (convId, epoch) => this.checkAuthority(convId, epoch),
-			foldCeiling: (convId, floor) => this.foldCeiling(convId, floor),
-			holdController: (controller) => {
-				this.lane(conv.id).compactController = controller;
-			},
-			releaseController: (controller) => {
-				const lane = this.lanes.get(conv.id);
-				if (lane !== undefined && lane.compactController === controller) {
-					lane.compactController = null;
-				}
-			},
+			foldCeiling: (convId, floor) => this.lanes.pendingFloor(convId, floor),
+			holdController: (controller) => this.lanes.holdCompactController(conv.id, controller),
+			releaseController: (controller) =>
+				this.lanes.releaseCompactController(conv.id, controller),
 		});
-	}
-
-	private lane(convId: string): Lane {
-		let l = this.lanes.get(convId);
-		if (!l) {
-			l = {
-				pending: [],
-				compacts: [],
-				running: false,
-				controller: null,
-				compactController: null,
-				draining: null,
-				live: null,
-				admitted: new Map(),
-				activeTurn: null,
-			};
-			this.lanes.set(convId, l);
-		}
-		return l;
-	}
-
-	// Where completed history ends for a fold: the lowest seq whose reply
-	// has not landed. While a turn runs, that is its earliest member — every
-	// event at or after it is that exchange or input queued behind it. On an
-	// idle lane it is the first still-queued input (its reply comes only
-	// with its own turn). Events at or after the ceiling must never be
-	// folded: their reply would anchor at or below the boundary and drop
-	// out of the model view, unseen by the summary that replaced it.
-	private foldCeiling(convId: string, activeFloor?: number): number | null {
-		let ceiling = activeFloor ?? null;
-		for (const t of this.lanes.get(convId)?.pending ?? []) {
-			if (ceiling === null || t.seq < ceiling) ceiling = t.seq;
-		}
-		return ceiling;
 	}
 
 	// A fence landing while the runtime is closed is a shutdown — stamp the
@@ -596,7 +451,7 @@ export class Runtime {
 	): QueuedTurn[] {
 		return claimMembers(
 			convId,
-			() => claimPending(this.lane(convId), sink.onStreamChunk !== undefined, false),
+			() => this.lanes.claim(convId, sink.onStreamChunk !== undefined, false),
 			live,
 			members,
 		);
@@ -621,15 +476,13 @@ export class Runtime {
 	}
 
 	private async drain(convId: string): Promise<void> {
-		const lane = this.lane(convId);
-		if (lane.running) return;
-		lane.running = true;
+		if (!this.lanes.beginDrain(convId)) return;
 		try {
 			for (;;) {
 				// Coalesce the claimable queue into one conversational beat; a
 				// left-behind streaming item starts the next pass. The head sink's
 				// delivery mode determines the claim boundary.
-				const turns = claimPending(lane, lane.pending[0]?.sink.onStreamChunk !== undefined);
+				const turns = this.lanes.claim(convId, this.lanes.headStreams(convId));
 				if (turns.length > 0) {
 					if (turns.length > 1) {
 						log.info("queued submits coalesced", {
@@ -652,7 +505,7 @@ export class Runtime {
 					const activeTurn = new Promise<void>((resolve) => {
 						settleActiveTurn = resolve;
 					});
-					lane.activeTurn = activeTurn;
+					this.lanes.setActiveTurn(convId, activeTurn);
 					try {
 						try {
 							await this.runTurn(convId, turns);
@@ -664,22 +517,22 @@ export class Runtime {
 								kind: "error",
 								message: err instanceof Error ? err.message : String(err),
 							};
-							// End before a successor can replace lane.live, or attached
-							// subscribers would hang without a terminal event.
-							const crashed = this.lanes.get(convId)?.live;
-							if (crashed != null) endLive(crashed, done, convId);
+							// End before a successor can replace the live wire, or
+							// attached subscribers would hang without a terminal event.
+							const crashed = this.lanes.liveOf(convId);
+							if (crashed !== null) endLive(crashed, done, convId);
 							for (const t of turns) await this.notifyDone(t, done);
 						}
 						// A finished turn must not make /stop report live work.
-						this.lane(convId).controller = null;
+						this.lanes.registerController(convId, null);
 					} finally {
 						settleActiveTurn();
-						lane.activeTurn = null;
+						this.lanes.setActiveTurn(convId, null);
 					}
 					continue;
 				}
 				// Run queued compaction only between whole turns.
-				const job = lane.compacts.shift();
+				const job = this.lanes.nextCompact(convId);
 				if (job !== undefined) {
 					try {
 						job.resolve(await this.doCompact(job.conv, "manual"));
@@ -691,20 +544,7 @@ export class Runtime {
 				return;
 			}
 		} finally {
-			lane.running = false;
-			lane.controller = null;
-			lane.draining = null;
-			// Fail closed if a path leaves attached streams without an outcome.
-			// Hanging an attach request is worse than sending an explicit error.
-			if (lane.live !== null && !lane.live.ended) {
-				log.error("live chunk log never ended — closing attach streams", undefined, {
-					conversation: convId,
-				});
-				endLive(lane.live, { kind: "error", message: "turn ended without an outcome" }, convId);
-			}
-			lane.live = null;
-			// Do not retain idle lanes for the process lifetime.
-			if (lane.pending.length === 0 && lane.compacts.length === 0) this.lanes.delete(convId);
+			this.lanes.endDrain(convId);
 		}
 	}
 
@@ -811,7 +651,7 @@ export class Runtime {
 					getConversation: () => store.get(convId),
 					captureConversation: this.deps.captureConversation,
 					claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
-					pendingSeqs: () => new Set(this.lane(convId).pending.map((t) => t.seq)),
+					pendingSeqs: () => this.lanes.pendingSeqs(convId),
 					// Read after claimQueued — it can add members to `turns`.
 					ownedInputSeqs: () => new Set(turns.map((t) => t.seq)),
 					modelEntries: () => store.modelEntries(convId),
@@ -862,8 +702,8 @@ export class Runtime {
 			ownedInputExcluded,
 		);
 		const controller = new AbortController();
-		this.lane(convId).controller = controller;
-		this.lanes.get(convId)!.live = live;
+		this.lanes.registerController(convId, controller);
+		this.lanes.registerLive(convId, live);
 
 		// The active exchange starts at the earliest member seq: this turn's
 		// stored user events (replies still in flight) and, above them, every
@@ -1075,8 +915,8 @@ export class Runtime {
 				messages: merged,
 				tools,
 				view: viewCtx,
-				claimSteers: () => claimPending(this.lane(convId), sink.onStreamChunk !== undefined, false),
-				unrequeueSteers: (steered) => this.lane(convId).pending.unshift(...steered),
+				claimSteers: () => this.lanes.claim(convId, sink.onStreamChunk !== undefined, false),
+				unrequeueSteers: (steered) => this.lanes.unrequeue(convId, steered),
 				settle: (m, done) => void this.notifyDone(m, done),
 				steerMarkSeed: snapshot.steerMarkSeed,
 				ownedInputSeqs: [...ownedInputSeqs],
@@ -1119,7 +959,7 @@ export class Runtime {
 										// Completed history only — inputs queued behind
 										// this request must not push the boundary onto
 										// the running exchange.
-										beforeSeq: this.foldCeiling(convId, activeFloor),
+										beforeSeq: this.lanes.pendingFloor(convId, activeFloor),
 									}) !== null;
 								if (!foldable) {
 									log.info("compaction pre-empt stood down — arm fired but nothing foldable", {
@@ -1272,10 +1112,7 @@ export class Runtime {
 			this.checkAuthority(convId, epoch);
 			// Clear the turn controller before retention/review/compaction so /stop
 			// reports no generating turn; compaction has its own controller.
-			{
-				const lane = this.lanes.get(convId);
-				if (lane !== undefined && lane.controller === controller) lane.controller = null;
-			}
+			this.lanes.releaseController(convId, controller);
 			// Review receives the completed exchange and prior-turn chain off-lane.
 			submitTurnReview({
 				convId,

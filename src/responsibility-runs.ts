@@ -11,7 +11,7 @@ import type { ResponsibilityStore } from "./responsibilities.ts";
 import { reportInputSchema, type ReportInput } from "./responsibility-reports.ts";
 import type { Delegation, DelegationVerdict } from "./delegations.ts";
 import type { SubagentRun } from "./subagent-runs.ts";
-import { readinessSummary, type PrReadiness } from "./pr-readiness.ts";
+import { READINESS_OBSERVE_MS, readinessSummary, type PrReadiness } from "./pr-readiness.ts";
 
 const MAX_REASON = 4000;
 const clipTo = (s: string, max: number): string =>
@@ -94,7 +94,16 @@ export function delegationReport(
 			state: verdict === "failed" ? "failed" : verdict !== "done" ? "blocked"
 				: r.kind === "checked" && r.ready ? "ready" : pending ? "waiting" : "blocked",
 			reason: clip(`${readinessSummary(readiness)}\n${tag} ${verdict}: ${body}`),
-			...(verdict === "done" && pending ? { resumeWhen: "Code observes a change in GitHub readiness" } : {}),
+			// Pending readiness resumes at the next observation window: the
+			// code poller re-reads GitHub, not the model, and a resumeWhen
+			// that isn't a time refuses.
+			...(verdict === "done" && pending
+				? {
+						resumeWhen: new Date(
+							Date.parse(readiness.observedAt) + 2 * READINESS_OBSERVE_MS,
+						).toISOString(),
+					}
+				: {}),
 			evidence: [
 				{ item: "Closing PR", ref: readiness.source, checked: r.kind === "checked" ? r.pr : readinessSummary(readiness) },
 				...(r.kind !== "checked" ? [] : [

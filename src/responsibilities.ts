@@ -82,7 +82,9 @@ export interface ResponsibilityStore {
 	setStatus(id: string, status: ResponsibilityStatus, opts?: { reason?: string }): void;
 	/** Append a structured report. `done` refuses unless evidence covers
 	 *  every completionEvidence entry; `done`/`dropped` close the
-	 *  responsibility in the same transaction. */
+	 *  responsibility in the same transaction. A `waiting` report's
+	 *  resumeWhen schedules the next review at the stated time — a
+	 *  resumeWhen that does not parse to a time refuses. */
 	report(
 		id: string,
 		input: ReportInput,
@@ -90,7 +92,7 @@ export interface ResponsibilityStore {
 		opts?: { sourceKey?: string; revision?: number | null },
 	):
 		| { report: ResponsibilityReport; responsibility: Responsibility; duplicate: boolean }
-		| { refused: "closed" | "evidence-missing"; missing?: string[] };
+		| { refused: "closed" | "evidence-missing" | "waiting-time"; missing?: string[] };
 	latestReport(id: string): ResponsibilityReport | null;
 	reportsFor(id: string): ResponsibilityReport[];
 	/** A correction — the durable operator event that bumps revision. */
@@ -428,7 +430,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			const input = reportInputSchema.parse(rawInput);
 			let result:
 				| { report: ResponsibilityReport; responsibility: Responsibility; duplicate: boolean }
-				| { refused: "closed" | "evidence-missing"; missing?: string[] }
+				| { refused: "closed" | "evidence-missing" | "waiting-time"; missing?: string[] }
 				| undefined;
 			db.transaction(() => {
 				const current = requireResp(id);
@@ -441,6 +443,15 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				}
 				if (!OPEN_STATUSES.has(current.status)) {
 					result = { refused: "closed" };
+					return;
+				}
+				// resumeWhen schedules the review, so it must state a time —
+				// a condition that isn't a time needs a planned commitment.
+				if (
+					input.state === "waiting" &&
+					Number.isNaN(Date.parse(input.resumeWhen ?? ""))
+				) {
+					result = { refused: "waiting-time" };
 					return;
 				}
 				if (input.state === "done") {
@@ -482,6 +493,16 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				if (TERMINAL_REPORTS.has(input.state)) {
 					qRespStatus.run("completed", ts, ts, id);
 					qPlan.run(JSON.stringify(silenceFollowup(new Date(ts))), ts, id);
+				} else if (input.state === "waiting" && input.resumeWhen !== undefined) {
+					// Waiting parks at the stated time: the resumeWhen is the
+					// next review, not the hourly silence bound.
+					const plan: ResponsibilityFollowup = {
+						token: randomUUID(),
+						kind: "commitment",
+						dueAt: new Date(input.resumeWhen).toISOString(),
+						reason: input.reason.slice(0, 2000),
+					};
+					qPlan.run(JSON.stringify(plan), ts, id);
 				} else if (
 					// The silence held while the operator owned the move; leaving
 					// that stage starts a fresh bound instead of firing the

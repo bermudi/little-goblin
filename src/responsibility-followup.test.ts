@@ -272,6 +272,34 @@ describe("deliberate responsibility follow-up", () => {
 		expect(r.events()).toHaveLength(1);
 	});
 
+	test("a waiting report's resumeWhen schedules the review at the stated time", () => {
+		const r = rig();
+		const due = new Date(Date.parse(r.resp.createdAt) + 30 * 60_000).toISOString();
+		const result = r.resps.report(
+			r.id,
+			{ state: "waiting", reason: "the nightly build", resumeWhen: due },
+			"goblin",
+		);
+		expect("report" in result && result.report.state).toBe("waiting");
+		const plan = r.resps.get(r.id)!.followup;
+		expect(plan).toMatchObject({ kind: "commitment", dueAt: due });
+		r.tick(due);
+		expect(r.events()).toHaveLength(1);
+		expect(r.events()[0]!.text).toContain(`Review due ${due}`);
+	});
+
+	test("a waiting report whose resumeWhen is not a time is refused, keeping the old plan", () => {
+		const r = rig();
+		const result = r.resps.report(
+			r.id,
+			{ state: "waiting", reason: "the deploy window", resumeWhen: "when the deploy lands" },
+			"goblin",
+		);
+		expect(result).toEqual({ refused: "waiting-time" });
+		expect(r.resps.reportsFor(r.id)).toHaveLength(0);
+		expect(r.resps.get(r.id)!.followup).toEqual(r.resp.followup);
+	});
+
 	test("leaving the operator's stage re-arms the backstop instead of firing it stale", () => {
 		const r = rig();
 		r.resps.report(r.id, { state: "ready", reason: "at the checkpoint" }, "goblin");
@@ -536,5 +564,32 @@ describe("deliberate responsibility follow-up", () => {
 		).toMatchObject({ report: { state: "done", reporter: "goblin" }, stage: { stage: "closed" } });
 		expect(r.resps.get(r.id)!.status).toBe("completed");
 		expect(r.svc.armedStatus(r.id).armed).toBe(false);
+	});
+	test("the coordination tool steers a non-time resumeWhen toward a time or a planned commitment", async () => {
+		const r = rig();
+		const tool = responsibilityTool({
+			resps: r.resps,
+			service: r.svc,
+			projectId: r.resp.projectId,
+			coordinationConversationId: r.conv.id,
+			handoverKey: "tool",
+			listFor: async () => [],
+		});
+		if (tool.execute === undefined) throw new Error("missing execute");
+		const options = { toolCallId: "report", messages: [], context: {} };
+		expect(
+			await tool.execute(
+				{
+					action: "report",
+					report: {
+						state: "waiting",
+						reason: "the deploy window",
+						resumeWhen: "when the deploy lands",
+					},
+				},
+				options,
+			),
+		).toMatchObject({ error: expect.stringContaining("action=followup") });
+		expect(r.resps.reportsFor(r.id)).toHaveLength(0);
 	});
 });

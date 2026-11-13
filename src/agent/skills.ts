@@ -132,8 +132,8 @@ export function loadCatalog(root: string): SkillCatalog {
 
 	const entries: SkillEntry[] = [];
 	const skipped: SkippedSkill[] = [];
-	const skip = (dir: string, path: string, reason: string) => {
-		skipped.push({ dir, reason });
+	const skip = (name: string, path: string, reason: string) => {
+		skipped.push({ dir: name, reason });
 		log.warn("skill skipped", { path, reason });
 	};
 

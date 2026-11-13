@@ -420,6 +420,8 @@ export function buildSystemPrompt(
 		`  while it runs — edits to these files apply when the next`,
 		`  conversation starts (or after compaction). Read a file fresh when`,
 		`  you need what changed; your edits land the same way.`,
+		`- When the operator states a lasting preference, record it in USER.md`,
+		`  in its directive format — that file is your only durable user model.`,
 		`- Verify before saying done: run it, read it back, then report.`,
 		`- Act freely on this machine (read, write, run); ask first before`,
 		`  anything leaves it or can't be undone.`,

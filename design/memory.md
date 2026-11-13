@@ -547,3 +547,10 @@ deliberate always-needed preferences, not a parallel automatic memory
 database; Hermes establishes frozen past context for prompt caching —
 apply that to persisted per-turn recall rather than importing its
 session lifecycle.
+
+USER.md gets one standing writer rule (#486): the code-owned prompt
+(`buildSystemPrompt`, not only the seeded stub — seeds are
+write-if-absent, so existing homes would never see a seed-only
+instruction) tells the model to record a stated lasting preference in
+USER.md's directive format. Automatic promotion out of Hindsight is
+still absent by design — the writer is the model, prompted.

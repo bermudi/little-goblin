@@ -124,6 +124,8 @@ export function ensureHomeLayout(): void {
 			"nothing else — it is your only memory between them. Write things down:",
 			"",
 			'- Operator says "remember this" → it goes here.',
+			"- Operator states a lasting preference → it goes in USER.md in",
+			"  its directive format, not here.",
 			"- You learn a deployment fact (a path, a host, a service, where",
 			"  things live on this machine) → it goes here.",
 			"- You make a mistake you could repeat → the lesson goes here.",

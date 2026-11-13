@@ -1,5 +1,4 @@
 import {
-	useCallback,
 	useEffect,
 	useMemo,
 	useRef,
@@ -16,17 +15,19 @@ import {
 	patchConversationConfig,
 	patchConversationMemory,
 	toggleFavorite,
-	uploadAttachment,
 } from "../api.ts";
 import { loadComposerDraft, saveComposerDraft } from "../composerDraft.ts";
 import { ModelPicker } from "../ModelPicker.tsx";
 import { SkillPickerSheet } from "../SkillPickerSheet.tsx";
 import { bytes } from "../opsShared.tsx";
-import { usePhoneWidth } from "../usePhoneWidth.ts";
 import { FileIcon, parseAttachmentRef } from "./MessageParts.tsx";
 import { ContextGauge } from "./ContextGauge.tsx";
 import { NotePicker } from "./NotePicker.tsx";
 import { appendQuote, type QuoteSpeaker } from "./QuoteFab.tsx";
+import { useAttachments } from "./useAttachments.ts";
+import { skillRefEquals, useSkillNoteStaging } from "./useSkillNoteStaging.ts";
+import { useSubmit } from "./useSubmit.ts";
+import { useKeyboard } from "./useKeyboard.ts";
 import type { AttachmentRef } from "../../../src/agent/attachments.ts";
 import type {
 	AppConfigView,
@@ -71,15 +72,6 @@ export interface StagedSkill {
 	name: string;
 	ref: { name: string } | { url: string; path: string };
 }
-
-// Staging dedups by reference, never display name — a catalog skill
-// and a fetched copy that named itself the same are distinct skills,
-// and two temp refs pin different sources. Catalog refs equal by
-// name; temp refs by url and path together.
-const skillRefEquals = (a: StagedSkill["ref"], b: StagedSkill["ref"]): boolean =>
-	"name" in a
-		? "name" in b && a.name === b.name
-		: "url" in b && a.url === b.url && a.path === b.path;
 
 // Always present — on an empty conversation too. The draft is local;
 // staged attachments arrive from above so they outlive this instance.
@@ -187,27 +179,60 @@ export function Composer({
 			);
 		}
 	}, [draft, draftScope]);
-	const sendingRef = useRef(false);
-	const [sendError, setSendError] = useState<string | null>(null);
-	const editedAfterSend = useRef(false);
-	const [notePickerOpen, setNotePickerOpen] = useState(false);
-	const [skillPickerOpen, setSkillPickerOpen] = useState(false);
-	// Outside-press dismissal — the popover and its opener are both
-	// exempt, or pointerdown on the opener would close it before its
-	// own click could toggle.
-	const notePickRef = useRef<HTMLDivElement | null>(null);
-	const noteBtnRef = useRef<HTMLButtonElement | null>(null);
+	// Existing chats own their settings. The empty start screen edits only
+	// the app's new-chat defaults; neither path changes Telegram.
+	const [cfg, setCfg] = useState<AppConfigView | null>(null);
+	const [configError, setConfigError] = useState<string | null>(null);
+	const [configSaving, setConfigSaving] = useState(false);
+	const [modelMenuOpen, setModelMenuOpen] = useState(false);
+	const [modelSheetOpen, setModelSheetOpen] = useState(false);
+	const modelKnobRef = useRef<HTMLSpanElement | null>(null);
+	const modelBtnRef = useRef<HTMLButtonElement | null>(null);
 	useEffect(() => {
-		if (!notePickerOpen) return;
+		let live = true;
+		setCfg(null);
+		setConfigError(null);
+		setModelMenuOpen(false);
+		setModelSheetOpen(false);
+		const load =
+			conversationId === undefined
+				? getConfig(token)
+				: getConversationConfig(token, conversationId);
+		load.then(
+			(c) => live && setCfg(c),
+			(err: unknown) => live && setConfigError(String(err)),
+		);
+		return () => {
+			live = false;
+		};
+	}, [token, conversationId]);
+	const setKnob = (patch: { model?: string; thinking?: string }) => {
+		setConfigSaving(true);
+		setConfigError(null);
+		const save =
+			conversationId === undefined
+				? patchConfig(token, patch)
+				: patchConversationConfig(token, conversationId, patch);
+		void save
+			.then(
+				(c) => setCfg(c),
+				(err: unknown) => setConfigError(String(err)),
+			)
+			.finally(() => setConfigSaving(false));
+	};
+
+	// Dismiss the model menu on any outside press or Escape — mirrors
+	// the context gauge's popover; Escape hands focus back to the knob.
+	useEffect(() => {
+		if (!modelMenuOpen) return;
 		const onPointer = (e: Event) => {
-			const t = e.target as Node | null;
-			if (notePickRef.current?.contains(t) === true || noteBtnRef.current?.contains(t) === true)
-				return;
-			setNotePickerOpen(false);
+			if (modelKnobRef.current?.contains(e.target as Node | null) === true) return;
+			setModelMenuOpen(false);
 		};
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key !== "Escape") return;
-			setNotePickerOpen(false);
+			setModelMenuOpen(false);
+			modelBtnRef.current?.focus();
 		};
 		document.addEventListener("pointerdown", onPointer, true);
 		document.addEventListener("keydown", onKey, true);
@@ -215,11 +240,74 @@ export function Composer({
 			document.removeEventListener("pointerdown", onPointer, true);
 			document.removeEventListener("keydown", onKey, true);
 		};
-	}, [notePickerOpen]);
-	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	}, [modelMenuOpen]);
+
+	// ref → catalog display name; the fallbacks are the ref's last path
+	// segment, then the ref itself for single-segment ids.
+	const modelNames = useMemo(() => {
+		const names = new Map<string, string>();
+		for (const group of cfg?.catalog ?? [])
+			for (const m of group.models)
+				if (m.name != null) names.set(`${group.provider}/${m.id}`, m.name);
+		return names;
+	}, [cfg?.catalog]);
+	const friendly = (ref: string) => modelNames.get(ref) ?? ref.split("/").pop() ?? ref;
+
+	// The star writes immediately — one POST, the response's list is
+	// truth. A failure surfaces like every other knob error.
+	const starModel = (ref: string, on: boolean) => {
+		void toggleFavorite(token, ref, on).then(
+			(res) => setCfg((c) => (c === null ? c : { ...c, favorites: res.favorites })),
+			(err: unknown) => setConfigError(String(err)),
+		);
+	};
+
+	const [memory, setMemory] = useState<AppConversationMemoryView | null>(null);
+	const [memorySaving, setMemorySaving] = useState(false);
+	const [memoryError, setMemoryError] = useState<string | null>(null);
 	useEffect(() => {
-		if ((focusSignal ?? 0) > 0) textareaRef.current?.focus();
-	}, [focusSignal]);
+		let live = true;
+		setMemory(null);
+		setMemoryError(null);
+		if (conversationId === undefined) return;
+		void getConversationMemory(token, conversationId).then(
+			(view) => live && setMemory(view),
+			(err: unknown) => live && setMemoryError(String(err)),
+		);
+		return () => {
+			live = false;
+		};
+	}, [token, conversationId]);
+	const toggleMemory = () => {
+		if (conversationId === undefined || memory === null) return;
+		setMemorySaving(true);
+		setMemoryError(null);
+		void patchConversationMemory(token, conversationId, !memory.memoryExcluded)
+			.then(
+				(view) => setMemory(view),
+				(err: unknown) => setMemoryError(String(err)),
+			)
+			.finally(() => setMemorySaving(false));
+	};
+
+	const { send, sendError, editedAfterSend, dropEntry } = useSubmit({
+		busy,
+		onStop,
+		configSaving,
+		draftScope,
+		draft,
+		setDraft,
+		staged,
+		setStaged,
+		stagedNotes,
+		setStagedNotes,
+		stagedSkills,
+		setStagedSkills,
+		onSend,
+	});
+	const { notePickerOpen, setNotePickerOpen, skillPickerOpen, setSkillPickerOpen, notePickRef, noteBtnRef, pickNote, stageSkill } =
+		useSkillNoteStaging({ setStagedNotes, setStagedSkills });
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	useEffect(() => {
 		if (quote == null || quote.n === 0) return;
 		editedAfterSend.current = true;
@@ -293,412 +381,15 @@ export function Composer({
 			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
 		}
 	}, [draftRestore]);
-	// An entry leaves the staged list (sent or removed) — its preview
-	// URL goes with it. A composer unmount revokes nothing: staged
-	// entries outlive any one composer, and an undropped thumb dies
-	// with the document itself.
-	const dropEntry = (e: StagedUpload) => {
-		if (e.thumb !== undefined) URL.revokeObjectURL(e.thumb);
-	};
-	const fileInput = useRef<HTMLInputElement>(null);
-	// The mic's failure mode is silent by browser default (a denied
-	// permission throws) — surface it like every other composer failure.
-	const [micError, setMicError] = useState<"denied" | "unavailable" | null>(null);
-
-	// Existing chats own their settings. The empty start screen edits only
-	// the app's new-chat defaults; neither path changes Telegram.
-	const [cfg, setCfg] = useState<AppConfigView | null>(null);
-	const [configError, setConfigError] = useState<string | null>(null);
-	const [configSaving, setConfigSaving] = useState(false);
-	const [modelMenuOpen, setModelMenuOpen] = useState(false);
-	const [modelSheetOpen, setModelSheetOpen] = useState(false);
-	const modelKnobRef = useRef<HTMLSpanElement | null>(null);
-	const modelBtnRef = useRef<HTMLButtonElement | null>(null);
-	useEffect(() => {
-		let live = true;
-		setCfg(null);
-		setConfigError(null);
-		setModelMenuOpen(false);
-		setModelSheetOpen(false);
-		const load =
-			conversationId === undefined
-				? getConfig(token)
-				: getConversationConfig(token, conversationId);
-		load.then(
-			(c) => live && setCfg(c),
-			(err: unknown) => live && setConfigError(String(err)),
-		);
-		return () => {
-			live = false;
-		};
-	}, [token, conversationId]);
-	const setKnob = (patch: { model?: string; thinking?: string }) => {
-		setConfigSaving(true);
-		setConfigError(null);
-		const save =
-			conversationId === undefined
-				? patchConfig(token, patch)
-				: patchConversationConfig(token, conversationId, patch);
-		void save
-			.then(
-				(c) => setCfg(c),
-				(err: unknown) => setConfigError(String(err)),
-			)
-			.finally(() => setConfigSaving(false));
-	};
-
-	// Dismiss the model menu on any outside press or Escape — mirrors
-	// the context gauge's popover; Escape hands focus back to the knob.
-	useEffect(() => {
-		if (!modelMenuOpen) return;
-		const onPointer = (e: Event) => {
-			if (modelKnobRef.current?.contains(e.target as Node | null) === true) return;
-			setModelMenuOpen(false);
-		};
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key !== "Escape") return;
-			setModelMenuOpen(false);
-			modelBtnRef.current?.focus();
-		};
-		document.addEventListener("pointerdown", onPointer, true);
-		document.addEventListener("keydown", onKey, true);
-		return () => {
-			document.removeEventListener("pointerdown", onPointer, true);
-			document.removeEventListener("keydown", onKey, true);
-		};
-	}, [modelMenuOpen]);
-
-	// Focus stealing (`stealFocus`, the thread view): on mount, at every
-	// busy → idle settle, and when the window comes back to the
-	// foreground — the moments the next keystroke is a reply — the
-	// composer claims focus, so typing never needs a click first. "When
-	// it can": never against a surface holding focus for its own typing
-	// (matched by tag/contenteditable — bare DOM classes like
-	// HTMLElement don't exist in bun's test runtime), never while a
-	// composer popover is open — the picker flags here cover the states
-	// living in this component (they ride a ref so the window-focus
-	// listener's closure stays fresh without re-subscribing); the
-	// `.composer-pick` DOM check covers popovers whose state lives
-	// elsewhere, the context gauge's — never under any dialog, and
-	// never on phone widths, where focus() pops the on-screen keyboard
-	// over a thread the operator just opened to read. The refocus claim
-	// skips the busy check deliberately: coming back to a streaming
-	// turn to steer it is still typing into the box.
-	const stealGuard = useRef({ pickers: false });
-	stealGuard.current.pickers =
-		notePickerOpen || skillPickerOpen || modelMenuOpen || modelSheetOpen;
-	const phone = usePhoneWidth();
-	const claimFocus = () => {
-		// activeElement is an HTMLElement in practice; the cast only
-		// reaches isContentEditable, which Element lacks.
-		const el = document.activeElement as HTMLElement | null;
-		if (el != null && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable))
-			return;
-		if (stealGuard.current.pickers) return;
-		if (document.querySelector(".composer-pick") !== null) return;
-		if (document.querySelector('[role="dialog"]') !== null) return;
-		textareaRef.current?.focus();
-	};
-	useEffect(() => {
-		if (!stealFocus || phone || busy) return;
-		claimFocus();
-	}, [stealFocus, phone, busy]);
-	useEffect(() => {
-		if (!stealFocus || phone) return;
-		const onWinFocus = () => claimFocus();
-		window.addEventListener("focus", onWinFocus);
-		return () => window.removeEventListener("focus", onWinFocus);
-	}, [stealFocus, phone]);
-
-	// ref → catalog display name; the fallbacks are the ref's last path
-	// segment, then the ref itself for single-segment ids.
-	const modelNames = useMemo(() => {
-		const names = new Map<string, string>();
-		for (const group of cfg?.catalog ?? [])
-			for (const m of group.models)
-				if (m.name != null) names.set(`${group.provider}/${m.id}`, m.name);
-		return names;
-	}, [cfg?.catalog]);
-	const friendly = (ref: string) => modelNames.get(ref) ?? ref.split("/").pop() ?? ref;
-
-	// The star writes immediately — one POST, the response's list is
-	// truth. A failure surfaces like every other knob error.
-	const starModel = (ref: string, on: boolean) => {
-		void toggleFavorite(token, ref, on).then(
-			(res) => setCfg((c) => (c === null ? c : { ...c, favorites: res.favorites })),
-			(err: unknown) => setConfigError(String(err)),
-		);
-	};
-
-	const [memory, setMemory] = useState<AppConversationMemoryView | null>(null);
-	const [memorySaving, setMemorySaving] = useState(false);
-	const [memoryError, setMemoryError] = useState<string | null>(null);
-	useEffect(() => {
-		let live = true;
-		setMemory(null);
-		setMemoryError(null);
-		if (conversationId === undefined) return;
-		void getConversationMemory(token, conversationId).then(
-			(view) => live && setMemory(view),
-			(err: unknown) => live && setMemoryError(String(err)),
-		);
-		return () => {
-			live = false;
-		};
-	}, [token, conversationId]);
-	const toggleMemory = () => {
-		if (conversationId === undefined || memory === null) return;
-		setMemorySaving(true);
-		setMemoryError(null);
-		void patchConversationMemory(token, conversationId, !memory.memoryExcluded)
-			.then(
-				(view) => setMemory(view),
-				(err: unknown) => setMemoryError(String(err)),
-			)
-			.finally(() => setMemorySaving(false));
-	};
-
-	// Voice notes: hold-to-record is MediaRecorder + upload; the server
-	// transcribes speech:true attachments at intake. Release sends —
-	// the same shape Telegram voice notes take in this channel.
-	const [recording, setRecording] = useState(false);
-	const [recSec, setRecSec] = useState(0);
-	const recorder = useRef<MediaRecorder | null>(null);
-	const recCancel = useRef(false);
-	useEffect(() => {
-		if (!recording) return;
-		const t = setInterval(() => setRecSec(Math.floor((Date.now() - recStart.current) / 1000)), 250);
-		return () => clearInterval(t);
-	}, [recording]);
-	const recStart = useRef(0);
-	// Leaving the view mid-recording must tear the capture down: the
-	// composer's stop affordances unmount with it, so the unmount itself
-	// stops the recorder — its onstop then releases the tracks and, with
-	// recCancel set, skips the send. recDead covers the getUserMedia
-	// window: a permission grant landing after unmount releases the
-	// fresh tracks immediately instead of opening a mic nobody owns.
-	const recDead = useRef(false);
-	useEffect(() => {
-		recDead.current = false;
-		return () => {
-			recDead.current = true;
-			recCancel.current = true;
-			const r = recorder.current;
-			recorder.current = null;
-			if (r !== null && r.state !== "inactive") r.stop();
-		};
-	}, []);
-	// The recorder's onstop runs after render — read the live busy flag
-	// through a ref, not the prop captured when recording started.
-	const busyRef = useRef(busy);
-	busyRef.current = busy;
-	const micSupported =
-		typeof navigator !== "undefined" &&
-		navigator.mediaDevices !== undefined &&
-		typeof MediaRecorder !== "undefined";
-	const startRecording = async () => {
-		if (recording || !micSupported) return;
-		setMicError(null);
-		try {
-			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-			if (recDead.current) {
-				// Unmounted while the permission prompt was up — release the
-				// device we just received; nobody is recording into it.
-				for (const t of stream.getTracks()) t.stop();
-				return;
-			}
-			const mime = ["audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/mp4"].find((m) =>
-				MediaRecorder.isTypeSupported(m),
-			);
-			const r = new MediaRecorder(stream, mime === undefined ? undefined : { mimeType: mime });
-			const chunks: Blob[] = [];
-			r.ondataavailable = (e) => {
-				if (e.data.size > 0) chunks.push(e.data);
-			};
-			r.onstop = () => {
-				for (const t of stream.getTracks()) t.stop();
-				recorder.current = null;
-				setRecording(false);
-				if (recCancel.current || chunks.length === 0) return;
-				const type = r.mimeType || "audio/webm";
-				const ext = type.includes("ogg") ? "ogg" : type.includes("mp4") ? "m4a" : "webm";
-				const file = new File(chunks, `voice-note.${ext}`, { type });
-				void (async () => {
-					try {
-						const { ref } = await uploadAttachment(token, file);
-						// Release-sends, but not mid-turn — a second send while a
-						// turn streams is the fork send()'s busy gate exists to
-						// prevent. Stage the ref instead: the chip shows it, the
-						// next send carries it with speech intact.
-						if (busyRef.current) {
-							setStaged((p) => [...p, { key: crypto.randomUUID(), ref, speech: true }]);
-						} else {
-							// A declined send (failed lazy create) re-stages the
-							// note — the upload already landed server-side.
-							void Promise.resolve(
-								onSend([{ type: "data-attachment", data: { ...ref, speech: true } }]),
-							).then((accepted) => {
-								if (accepted === false)
-									// Cancellation can restore this ref before onSend settles.
-									setStaged((p) =>
-										p.some((e) => e.ref.path === ref.path)
-											? p
-											: [...p, { key: crypto.randomUUID(), ref, speech: true }],
-									);
-							});
-						}
-					} catch {
-						setStaged((p) => [
-							...p,
-							{
-								key: crypto.randomUUID(),
-								ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
-								failed: true,
-							},
-						]);
-					}
-				})();
-			};
-			recCancel.current = false;
-			recStart.current = Date.now();
-			setRecSec(0);
-			r.start(250);
-			recorder.current = r;
-			setRecording(true);
-		} catch (err) {
-			// Permission denied or no device — say so; every other composer
-			// failure surfaces, and a button that silently does nothing
-			// reads as broken.
-			setMicError(
-				err instanceof Error && err.name === "NotAllowedError" ? "denied" : "unavailable",
-			);
-		}
-	};
-	const stopRecording = (cancel: boolean) => {
-		recCancel.current = cancel;
-		recorder.current?.stop();
-	};
-
-	const pickFile = useCallback(
-		async (file: File) => {
-			const key = crypto.randomUUID();
-			const thumb = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
-			setStaged((p) => [
-				...p,
-				{
-					key,
-					ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
-					uploading: true,
-					...(thumb !== undefined ? { thumb } : {}),
-				},
-			]);
-			try {
-				const { ref } = await uploadAttachment(token, file);
-				setStaged((p) =>
-					p.map((e) =>
-						e.key === key ? { key, ref, ...(e.thumb === undefined ? {} : { thumb: e.thumb }) } : e,
-					),
-				);
-			} catch {
-				setStaged((p) =>
-					p.map((e) => (e.key === key ? { ...e, uploading: false, failed: true } : e)),
-				);
-			}
-		},
-		[token, setStaged],
-	);
-
-	// Drop target: the whole window. Unhandled file drops trigger the
-	// browser default — navigating the PWA to the file and losing the
-	// page — so preventDefault runs even when nothing gets staged.
-	// Non-file drags keep their native handling.
-	useEffect(() => {
-		const isFile = (e: DragEvent) => e.dataTransfer?.types.includes("Files") === true;
-		const over = (e: DragEvent) => {
-			if (isFile(e)) e.preventDefault();
-		};
-		const drop = (e: DragEvent) => {
-			if (!isFile(e)) return;
-			e.preventDefault();
-			for (const f of Array.from(e.dataTransfer?.files ?? [])) void pickFile(f);
-		};
-		window.addEventListener("dragover", over);
-		window.addEventListener("drop", drop);
-		return () => {
-			window.removeEventListener("dragover", over);
-			window.removeEventListener("drop", drop);
-		};
-	}, [pickFile]);
-
-	const send = () => {
-		// A send while a turn runs steers it (onSend drops the stale
-		// reader first) — but without a stop path there is no steer
-		// lane, so a lazy create still refuses mid-flight: a second
-		// send must not fork a second conversation.
-		if ((busy && onStop === undefined) || configSaving || sendingRef.current) return;
-		const text = draft.trim();
-		const ready = staged.filter((e) => e.uploading !== true && e.failed !== true);
-		if (text === "" && ready.length === 0 && stagedNotes.length === 0 && stagedSkills.length === 0)
-			return;
-		const parts: UIMessage["parts"] = [];
-		if (text !== "") parts.push({ type: "text", text });
-		for (const e of ready)
-			parts.push({
-				type: "data-attachment",
-				data: e.speech === true ? { ...e.ref, speech: true } : e.ref,
-			} as UIMessage["parts"][number]);
-		// Intake expands the id into the authoritative snapshot; the
-		// title rides along only so the just-sent chip isn't bare.
-		for (const n of stagedNotes)
-			parts.push({
-				type: "data-note",
-				data: { id: n.id, title: n.title },
-			} as UIMessage["parts"][number]);
-		// Explicit invocations ride their own part; the server injects
-		// the body into the owning turn.
-		for (const s of stagedSkills)
-			parts.push({ type: "data-skill", data: s.ref } as UIMessage["parts"][number]);
-		// Clear only once the send is accepted — a compose wiped before
-		// a lazy-create failure leaves nothing to resend (blob URLs are
-		// unrecoverable). Typing that lands mid-flight survives: only
-		// the sent prefix comes off.
-		sendingRef.current = true;
-		setSendError(null);
-		void Promise.resolve()
-			.then(() => onSend(parts) ?? true)
-			.then((accepted) => {
-				if (accepted === false) return;
-				// The accept continuation can outlive this composer — a lazy
-				// create swaps the view before it runs, and an unmounted
-				// composer's persist effect never fires. Write the post-send
-				// remainder to storage directly, against the stored text.
-				try {
-					const stored = loadComposerDraft(draftScope) ?? "";
-					saveComposerDraft(
-						draftScope,
-						stored === draft ? "" : stored.startsWith(draft) ? stored.slice(draft.length) : stored,
-					);
-				} catch {
-					// Unreadable records stay put, and a mounted composer's
-					// effect still reports its own save failures.
-				}
-				setDraft((d) => (d === draft ? "" : d.startsWith(draft) ? d.slice(draft.length) : d));
-				// Entries that weren't sent — uploads still in flight, failed
-				// chips — stay staged. Clearing them would drop files the
-				// operator still sees in the composer.
-				for (const e of ready) dropEntry(e);
-				setStaged((p) => p.filter((e) => !ready.includes(e)));
-				setStagedNotes((p) => p.filter((n) => !stagedNotes.includes(n)));
-				setStagedSkills((p) => p.filter((s) => !stagedSkills.includes(s)));
-			})
-			.catch((err: unknown) => {
-				setSendError(`Could not send: ${err instanceof Error ? err.message : String(err)}`);
-			})
-			.finally(() => {
-				sendingRef.current = false;
-			});
-	};
-
+	const { fileInput, micError, micSupported, recording, recSec, startRecording, stopRecording, pickFile } =
+		useAttachments({ token, busy, onSend, setStaged });
+	useKeyboard({
+		textareaRef,
+		focusSignal,
+		stealFocus,
+		busy,
+		pickersOpen: notePickerOpen || skillPickerOpen || modelMenuOpen || modelSheetOpen,
+	});
 	return (
 		<form
 			className={recording ? "composer recording" : "composer"}
@@ -1164,13 +855,7 @@ export function Composer({
 				<NotePicker
 					pickRef={notePickRef}
 					token={token}
-					onPick={(n) =>
-						setStagedNotes((p) =>
-							p.some((e) => e.id === n.id)
-								? p
-								: [...p, { key: crypto.randomUUID(), id: n.id, title: n.title }],
-						)
-					}
+					onPick={pickNote}
 					onClose={() => setNotePickerOpen(false)}
 				/>
 			)}
@@ -1178,13 +863,7 @@ export function Composer({
 				<SkillPickerSheet
 					token={token}
 					onClose={() => setSkillPickerOpen(false)}
-					onStage={(picked) =>
-						setStagedSkills((p) =>
-							p.some((e) => skillRefEquals(e.ref, picked.ref))
-								? p
-								: [...p, { key: crypto.randomUUID(), name: picked.name, ref: picked.ref }],
-						)
-					}
+					onStage={stageSkill}
 				/>
 			)}
 		</form>

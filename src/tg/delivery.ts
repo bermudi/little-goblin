@@ -2,14 +2,25 @@ import { GrammyError, HttpError, InputFile, type Api } from "grammy";
 import { MAX_SEND_BYTES } from "../agent/tools/send.ts";
 import { stat } from "node:fs/promises";
 import type { Conversation } from "../conversation.ts";
-import { channelOf, parseAddress } from "../conversation-address.ts";
+import { channelOf } from "../conversation-address.ts";
 import type { TurnDone, TurnSink } from "../turn/sink.ts";
 import { sniffImage } from "../agent/tools/read.ts";
 import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
-import { fallbackNotice } from "../agent/model-fallback.ts";
 import { speechContent, STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { isNotModifiedError, isPremiumGateError } from "./delivery-errors.ts";
+import {
+	CHUNK_LIMIT,
+	disableMessageEffects,
+	forcedNotice,
+	isPrivateDmAddress,
+	messageEffectsUsable,
+	nextDraftId,
+	REASONING_BLOCK_OVERHEAD,
+	RICH_LIMIT,
+	SALUTE_EFFECT_ID,
+	windowEnd,
+} from "./delivery-text.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { rateCallbackData } from "./rate-button.ts";
 import { rememberReply } from "./reply-memory.ts";
@@ -18,20 +29,6 @@ import { SPEAK_CALLBACK } from "./speak-button.ts";
 const EDIT_INTERVAL_MS = 1_000;
 const TYPING_INTERVAL_MS = 4_000;
 const DRAFT_TTL_MS = 20_000;
-const CHUNK_LIMIT = 3800;
-const RICH_LIMIT = 32_000;
-const REASONING_BLOCK_OVERHEAD =
-	"<details><summary>Thinking</summary>\n<pre></pre>\n</details>\n\n".length + 1;
-// Draft ids must be non-zero; updates under one id animate.
-let nextDraftId = 1;
-
-const SALUTE_EFFECT_ID = "4913930782671635058";
-let messageEffectsUsable = true;
-
-export function resetMessageEffectsGateForTests(): void {
-	messageEffectsUsable = true;
-}
-
 const MAX_DRAIN_ITERATIONS = 25;
 const MAX_STAGNANT = 3;
 const UNCERTAIN_NOTICE = "⚠ Delivery uncertain—check Telegram before retrying.";
@@ -54,62 +51,12 @@ export interface RichSinkOpts {
 	reasoning?: boolean;
 }
 
-function forcedLine(done: TurnDone): string | null {
-	if (done.kind !== "completed" || done.forced === undefined) return null;
-	switch (done.forced) {
-		case "repeat":
-			return "⚠ loop detector — answer forced";
-		case "watchdog":
-			return "⚠ loop watchdog — answer forced";
-		case "context":
-			return "⚠ context nearly full — answer forced";
-	}
-}
-
-// The status tail a completed reply carries: a forced landing, and a
-// fallback that served (design/model.md → Model fallback list).
-function forcedNotice(done: TurnDone): string | null {
-	const lines = [
-		forcedLine(done),
-		done.kind === "completed" && done.fallback !== undefined ? fallbackNotice(done.fallback) : null,
-	].filter((l): l is string => l !== null);
-	return lines.length > 0 ? lines.join("\n") : null;
-}
-
 interface Chunk {
 	id: number;
 	shown: string;
 }
 
-// A split surrogate pair is a lone surrogate Telegram may reject or mangle.
-const isHighSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff;
-const isLowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
-
-function windowEnd(body: string, start: number): number {
-	const end = start + CHUNK_LIMIT;
-	if (
-		end < body.length &&
-		isHighSurrogate(body.charCodeAt(end - 1)) &&
-		isLowSurrogate(body.charCodeAt(end))
-	) {
-		return end - 1;
-	}
-	return end;
-}
-
 export type DeliveryApi = Api;
-
-// Rich rendering and the salute effect are DM-only in v1 (design/telegram.md
-// → Formatted replies & draft streaming: "DMs only"). The `dm:` id prefix is
-// not the DM discriminant — a topic-less group's standing lane is addressed
-// `dm:<chatId>` too, with a negative chat id (mod.ts conversationAddress).
-// Parse the address and require a private chat: kind dm/rolling, chatId > 0.
-function isPrivateDmAddress(id: string): boolean {
-	const parsed = parseAddress(id);
-	if (parsed === null) return false;
-	if (parsed.kind !== "dm" && parsed.kind !== "rolling") return false;
-	return parsed.chatId > 0;
-}
 
 export interface DeliverySinkOptions {
 	replyTo?: number;
@@ -225,8 +172,8 @@ export function makeDeliverySink(
 	let sinkDone = false;
 
 	const richOpts = rich;
-	const answerDraftId = nextDraftId++;
-	const reasonDraftId = nextDraftId++;
+	const answerDraftId = nextDraftId();
+	const reasonDraftId = nextDraftId();
 	let richMode = richOpts?.enabled === true && isPrivateDmAddress(conv.id) && !voice?.voiceMode;
 	const reasoningOn = richOpts?.reasoning === true && conv.persona !== "guest";
 	let reasoningText = "";
@@ -1000,7 +947,7 @@ export function makeDeliverySink(
 							...(replyTo !== undefined ? { reply_parameters: { message_id: replyTo } } : {}),
 						};
 						const effect =
-							done.kind === "completed" && isPrivateDmAddress(conv.id) && messageEffectsUsable
+							done.kind === "completed" && isPrivateDmAddress(conv.id) && messageEffectsUsable()
 								? { message_effect_id: SALUTE_EFFECT_ID }
 								: {};
 						const keyboard = done.kind === "completed" ? buildKeyboard() : null;
@@ -1022,7 +969,7 @@ export function makeDeliverySink(
 								);
 							} catch (err) {
 								if (effect.message_effect_id === undefined || !isPremiumGateError(err)) throw err;
-								messageEffectsUsable = false;
+								disableMessageEffects();
 								log.info("message effect rejected — premium gate; dropped for this process", {
 									conversation: conv.id,
 									chat: conv.chatId,

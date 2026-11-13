@@ -10,14 +10,14 @@ import type {
 	ThinkingLevel,
 	TranscriptionEntry,
 	transcriptionKinds,
-} from "../../src/config.ts";
+} from "../../src/config-schema.ts";
 import type {
 	ConfigPostBody,
 	ConfigResponse,
 	SubagentsWire,
 } from "../../src/http/operator-wire.ts";
 
-// Mirrors src/config.ts's capabilityNames — the server module isn't
+// Mirrors src/config-schema.ts's capabilityNames — the server module isn't
 // bundle-safe, so the client keeps its own copy (a test pins parity).
 export const CAPABILITY_NAMES: readonly CapabilityName[] = [
 	"memory",

@@ -9,7 +9,7 @@ import { basename, join } from "node:path";
 import { goblinHome } from "./goblin-home.ts";
 
 // The configured auth.jsonl — duplicated nowhere: paths.auth() in
-// config.ts delegates here, and the install gate reads the same path
+// home-layout.ts delegates here, and the install gate reads the same path
 // without pulling in the config module's json5/zod chain.
 export function authFile(): string {
 	return join(goblinHome(), "auth.jsonl");

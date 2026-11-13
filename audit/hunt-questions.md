@@ -1,5 +1,8 @@
 # Hunt questions
 
+For hunter agents, not the operator. Hunters answer these themselves, with
+evidence. The operator only reads the findings.
+
 Ask every question of every journey, in every hunt. Each question was
 written from one real finding, but it is generic on purpose: it is not a
 search area. Hunters get journeys and these questions, never past bugs.

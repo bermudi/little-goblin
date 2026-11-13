@@ -14,7 +14,9 @@ const CHANNEL_NEUTRAL = [
 	"src/http/app-approvals.ts",
 	"src/http/app-conversations.ts",
 	"src/http/app-programs.ts",
+	"src/http/app-search.ts",
 	"src/http/app-shared.ts",
+	"src/http/app-turns.ts",
 ] as const;
 
 describe("channel dependency boundary", () => {

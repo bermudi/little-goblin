@@ -383,7 +383,14 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   ECONNRESET). Two surfaces, two bounds, one log line per retry
   (attempt, error, delay):
   - **Mid-stream** — an error part on the provider stream (codex
-    surfaces a socket reset there). `driveStream`'s `onError` grants
+    surfaces a socket reset there), or the same drop arriving as a
+    stream read failure: the openai-compatible lane surfaces a
+    mid-SSE socket reset as a reader throw, not an error part, so
+    `filterErrorStream` converts a transient-classified reader throw
+    into the error-part surface (tag it, drop the attempt's buffered
+    tool parts, enqueue `error`, close) — a plain stream error would
+    bypass `onError` and kill the turn after one POST (#488).
+    `driveStream`'s `onError` grants
     the SDK's one callback-requested retry per model step
     (`streamRetries: 0` keeps retries callback-directed) when the
     transient classifier owns the error (`isTransientTurnFailure` —

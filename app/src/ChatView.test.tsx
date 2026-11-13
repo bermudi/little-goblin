@@ -8,17 +8,15 @@ import type { AppCompactionMark, AppInterruptedList, AppRunCall } from "../../sr
 import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
 import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 import { MessageParts } from "./chat/MessageParts.tsx";
+import { editedParts, FoldMark, unlandedMeta } from "./chat/MetaLine.tsx";
 import {
 	appendQuote,
 	ChatView,
 	Composer,
 	ContextGauge,
 	contextCount,
-	editedParts,
-	FoldMark,
 	mergeTranscript,
 	quoteSpeaker,
-	unlandedMeta,
 } from "./ChatView.tsx";
 
 // Static markup — guards the render contract, not React behavior.

@@ -25,8 +25,8 @@ import {
 	type PriorTurnContext,
 	type ToolCallDigest,
 } from "./reviewer-evidence.ts";
+import { buildGateState } from "./reviewer-gate.ts";
 import {
-	buildGateState,
 	confineTools,
 	Reviewer,
 	reviewTools,

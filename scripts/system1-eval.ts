@@ -21,7 +21,7 @@ import {
 	type ToolCallDigest,
 	toolOk,
 } from "../src/reviewer-evidence.ts";
-import { buildGateState, GATE_QUESTIONS } from "../src/reviewer.ts";
+import { buildGateState, GATE_QUESTIONS } from "../src/reviewer-gate.ts";
 import { checkState, FOLLOW_UP_QUESTIONS, FRESH_BELOW } from "../src/rolling.ts";
 import {
 	DEFAULT_MODEL,

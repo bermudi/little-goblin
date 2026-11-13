@@ -326,7 +326,14 @@ Memory page and shows its `RetryCard`. **Your decisions** show program, mail
 and skill proposals as the Programs/Skills page cards (`ProgramApprovalCard`,
 `MailApprovalCard`, `ProposalCard`) with their diff already open and the
 buttons on the card; each has an "If you wait:" line. **Needs you** holds the
-rest (interrupted runs, delegations, responsibilities) with a plain Open.
+rest (interrupted runs, delegations, responsibilities) with a plain Open,
+plus two read-only memory projections (#483): an open outage row is
+"Memory can't reach its service" (queued count mirrors the Telegram
+outage notice's "queued locally, nothing lost") and a failed last recall
+is "Memory can't recall". Both are the same durable states the Telegram
+notices ride (the `memory_outage` row, the `memory_recall_state` flag)
+and clear on their own when the service is healthy — projections, not
+notices, so memory.md's two-notice rule still bounds pushes.
 **Work in progress** is the responsibility feed; notifications are one line at
 the foot. "Drop them" still cannot be undone ("Save them now" is design only).
 

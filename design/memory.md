@@ -161,7 +161,11 @@ floors are enforced server-side and re-checked client-side.
    exchange's conversation (2026-09-24). One per document's first
    `blocked` transition (2026-09-25), naming `/memory retry` and
    `/memory dismiss` — blocked is not an outage: the service answered.
-   No other Telegram notification, including per retry. Retry mints a
+   No other Telegram notification, including per retry. The app's
+   Attention feed projects the same durable states read-only — an open
+   outage row is "can't reach its service", a failed last recall is
+   "can't recall" — and they clear when health returns; projections,
+   not notices (#483). Retry mints a
    fresh operation id — Hindsight holds the old op terminally failed
    server-side, so replaying it reads a dead op; dismiss keeps the row
    for audit. The mini app's Memories tab renders status read-only and

@@ -526,6 +526,8 @@ export interface AppAttentionItem {
 		| "program-approval"
 		| "mail-approval"
 		| "memory-blocked"
+		| "memory-outage"
+		| "memory-recall"
 		| "skill-proposal"
 		| "interrupted-run"
 		| "delegation-input"

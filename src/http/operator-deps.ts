@@ -3,6 +3,7 @@ import type { DelegationLifecycle } from "../delegation-lifecycle.ts";
 import type { DelegationsStore } from "../delegations.ts";
 import type { HindsightClient } from "../memory/hindsight.ts";
 import type { MemoryContexts } from "../memory/mod.ts";
+import type { MemoryOutage } from "../memory/outage.ts";
 import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory/queue.ts";
 import type { ProgramsStore } from "../programs.ts";
 import type { SkillAction, SkillDecision } from "../skill-decisions.ts";
@@ -21,6 +22,8 @@ export interface OperatorDeps {
 		blockedDetail(): BlockedRetention[];
 		lastRecallOk(): boolean | null;
 		lastRecallAt(): string | null;
+		/** The retain-side outage episode, while one is open. */
+		outage?(): MemoryOutage | null;
 		client?: HindsightClient;
 		clientForTarget?: (target: string) => HindsightClient | null;
 		contexts?: MemoryContexts;

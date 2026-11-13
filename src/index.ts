@@ -447,19 +447,22 @@ async function boot() {
 
 	// The retention worker boots before the channel — outage and blocked
 	// notices deliver through bot.api (one per episode / per document).
-	const memoryWorker = memoryClient
-		? startMemoryWorker(store.memoryQueue, memoryClient, {
-				outage: {
-					tracker: new OutageTracker(store.db),
-					notify: (conversationId, sinceMs, queued) =>
-						sendMemoryOutageNotice(attach.api(), conversationId, sinceMs, queued),
-				},
-				blocked: {
-					notify: (conversationId, error, attempts) =>
-						sendMemoryBlockedNotice(attach.api(), conversationId, error, attempts),
-				},
-			})
-		: null;
+	// The one tracker also feeds the app Attention projection.
+	const outageTracker = memoryClient === null ? null : new OutageTracker(store.db);
+	const memoryWorker =
+		memoryClient !== null && outageTracker !== null
+			? startMemoryWorker(store.memoryQueue, memoryClient, {
+					outage: {
+						tracker: outageTracker,
+						notify: (conversationId, sinceMs, queued) =>
+							sendMemoryOutageNotice(attach.api(), conversationId, sinceMs, queued),
+					},
+					blocked: {
+						notify: (conversationId, error, attempts) =>
+							sendMemoryBlockedNotice(attach.api(), conversationId, error, attempts),
+					},
+				})
+			: null;
 
 	// Save notices read the live api at call time — absent while detached.
 	const { gate: system1Gate, reviewer: skillReviewer } = wireReviewer({
@@ -704,6 +707,7 @@ async function boot() {
 	const operatorSeams = makeOperatorSeams({
 		store,
 		memory,
+		...(outageTracker === null ? {} : { memoryOutage: outageTracker }),
 		programs,
 		delegations,
 		skillSources,

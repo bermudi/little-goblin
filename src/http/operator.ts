@@ -4,6 +4,7 @@ import { type ConversationStore, prepareAppSettingsForConfig } from "../conversa
 import { flatLine } from "../conversation-events.ts";
 import type { DelegationsStore } from "../delegations.ts";
 import type { MemoryWiring } from "../memory/mod.ts";
+import type { OutageTracker } from "../memory/outage.ts";
 import type { ProgramsStore } from "../programs.ts";
 import { resolveSkillProposal, type SkillAction } from "../skill-decisions.ts";
 import type { SkillSources } from "../skill-provenance.ts";
@@ -18,6 +19,9 @@ import { statusRoute } from "./operator-status.ts";
 export interface OperatorSeamsDeps {
 	store: ConversationStore;
 	memory: MemoryWiring;
+	/** The worker's tracker — read-only here; the outage row is the
+	 *  state the Telegram outage notice fires from. */
+	memoryOutage?: Pick<OutageTracker, "current">;
 	programs: ProgramsStore;
 	delegations: DelegationsStore | null;
 	skillSources: SkillSources;
@@ -37,7 +41,7 @@ export interface OperatorSeamsDeps {
 export function makeOperatorSeams(
 	deps: OperatorSeamsDeps,
 ): Omit<OperatorDeps, "configRef" | "onConfigWritten"> {
-	const { store, memory, programs, delegations, skillSources, auth, paths } = deps;
+	const { store, memory, memoryOutage, programs, delegations, skillSources, auth, paths } = deps;
 	const surfaces = memory.surfaces;
 	const bootConfig = memory.config;
 	return {
@@ -47,6 +51,9 @@ export function makeOperatorSeams(
 			? {
 					memory: {
 						...surfaces,
+						...(memoryOutage === undefined
+							? {}
+							: { outage: () => memoryOutage.current() }),
 						...(bootConfig
 							? {
 									target: {

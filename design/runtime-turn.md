@@ -441,7 +441,12 @@ turn-structure change.
   voice/file/synthesis hooks, `TurnSink`/`TurnDone` at `turn/sink.ts`)
   and **tool authority** (`turn/tool-authority.ts` — run row before any
   tool side effect, ownership begin, recovery guard, fence; the
-  `makeTools` contract is its `TurnToolMaker`). Since #195 (2026-11-08)
+  `makeTools` contract is its `TurnToolMaker`). Since #477 the fence
+  also carries the steer gate: a runtime-injected claimable-pending
+  read — armed only for an engine whose model-call boundary claims
+  steers — skips an unlaunched call with a synthetic replayed result
+  when input waits; the claim itself still belongs to `prepareStep`.
+  Since #195 (2026-11-08)
   that seam also owns step-end persistence: `saveStep` is the ONE home
   for the run row's step checkpoints — both engines route their
   step-end and steer-fold writes through it, never the journal

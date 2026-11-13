@@ -19,6 +19,11 @@ import { replayKey, type TurnJournal } from "../turn-journal.ts";
 // journal can no longer describe. The first fault aborts the attempt
 // and fences every later dispatch; the attempt's catch reports it as
 // a turn error, never 'fenced'.
+//
+// #477's steer skip: the exact result text an unlaunched call answers
+// with — fixed wording the model can key on.
+const STEER_SKIPPED = "skipped: the user sent new input; re-issue if still needed";
+
 export function fenceTools(opts: {
 	tools: ToolSet;
 	convId: string;
@@ -29,6 +34,9 @@ export function fenceTools(opts: {
 	guard?: RetryGuard | undefined;
 	journalFault?: { current: unknown };
 	onJournalFault?: () => void;
+	// #477: a parked steer skips launches it precedes — the runtime arms
+	// this only for an engine whose model-call boundary claims steers.
+	steerWaiting?: (() => boolean) | undefined;
 }): ToolSet {
 	const { tools, convId, journal, checkAuthority, runId, guard, journalFault, onJournalFault } =
 		opts;
@@ -52,6 +60,24 @@ export function fenceTools(opts: {
 		if (execute === undefined) throw new Error(`tool ${name} has no execute`);
 		checkAuthority();
 		if (journalFault?.current !== undefined) throw journalFault.current;
+		// #477: a steer parked on the lane claims into the next model
+		// call — skipping an unstarted call keeps its effects from
+		// landing ahead of input the model has not seen. A call already
+		// past this line finishes normally; the claim itself stays at
+		// the model-call boundary. Journaled replayed like the recovery
+		// fence's refusal: the model's record, never an execution.
+		if (opts.steerWaiting?.() === true) {
+			const value = { error: STEER_SKIPPED };
+			if (journal !== undefined && runId !== undefined) {
+				note(() => journal.noteToolResult(runId, options.toolCallId, value, { replayed: true }));
+			}
+			log.info("tool call skipped — steer waiting", {
+				conversation: convId,
+				tool: name,
+				toolCallId: options.toolCallId,
+			});
+			return value;
+		}
 		if (journal !== undefined && runId !== undefined) {
 			// Recovery fence: a signature that collides with the
 			// interrupted attempt's own history is evidence, never an

@@ -785,6 +785,12 @@ export class Runtime {
 			const accepts: { current: AcceptsMedia } = {
 				current: { modalities: new Set(["text"]), carries: () => false },
 			};
+			// #477's gate arms only once buildStep names the engine: the
+			// streamText engine folds steers at its prepareStep boundary,
+			// so a parked steer skips unlaunched calls; a claude-code
+			// attempt never claims mid-turn — the steer leads the
+			// successor turn and this stays false.
+			const steerGate = { armed: false };
 			const auth = openToolAuthority({
 				conv,
 				convId,
@@ -811,12 +817,18 @@ export class Runtime {
 				onJournalFault: () => controller.abort(),
 				runOwnership: this.deps.runOwnership,
 				checkAuthority: () => this.checkAuthority(convId, epoch),
+				// Same source prepareStep's claim reads — a peek, never a
+				// splice; the claim still belongs to the model call.
+				steerWaiting: () =>
+					steerGate.armed &&
+					this.lanes.claimablePending(convId, sink.onStreamChunk !== undefined),
 			});
 			// The const is what closures below capture — the mutable slot
 			// above only bridges the pre-authority failure paths.
 			authority = auth;
 			const tools = auth.tools;
 			const step = await this.deps.buildStep(conv, tools);
+			steerGate.armed = !isClaudeStep(step);
 			this.checkAuthority(convId, epoch);
 			accepts.current = {
 				modalities: step.inputModalities ?? new Set(["text"]),

@@ -106,6 +106,16 @@ Conversation ─────── (channel address) → durable event history
     see the reply.
   - Input arriving after the final model call has no boundary left to
     steer into — it queues into an immediate successor turn.
+  - A steer parked mid-step also gates tool launches (#477): each fenced
+    tool's launch re-reads the lane's claimable input, and a waiting
+    steer skips the unstarted call with the fixed synthetic result
+    `skipped: the user sent new input; re-issue if still needed`
+    (journaled replayed — the model's record, never an execution), so a
+    side effect cannot land ahead of input the model has not seen.
+    Calls already running finish normally, and the claim itself still
+    belongs to the next model call. streamText engine only — a
+    claude-code turn never claims mid-turn, so its launches run and the
+    steer leads the successor turn.
   - A submit that cannot be prepared for the model errors its own delivery
     and is never re-queued (requeue would fail every successor turn's
     admission conversion identically — a poison pill); its message stays in

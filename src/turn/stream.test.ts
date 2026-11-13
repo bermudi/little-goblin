@@ -1433,3 +1433,72 @@ describe("driveStream", () => {
 		expect(deadOutcome.window).toBeNull();
 	});
 });
+
+describe("wire-tail checkpoint", () => {
+	const delta = (text: string): LanguageModelV4StreamPart => ({
+		type: "text-delta",
+		id: "t1",
+		delta: text,
+	});
+	const usage = {
+		inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+		outputTokens: { total: 1, text: undefined, reasoning: undefined },
+	};
+	const script = (deltas: string[]): LanguageModelV4StreamPart[] => [
+		{ type: "stream-start", warnings: [] },
+		{ type: "text-start", id: "t1" },
+		...deltas.map(delta),
+		{ type: "text-end", id: "t1" },
+		{
+			type: "finish",
+			finishReason: { unified: "stop", raw: undefined },
+			usage,
+		},
+	];
+	const tailTexts = (patch: { partial?: unknown }): string[] => {
+		if (!Array.isArray(patch.partial)) return [];
+		return patch.partial
+			.filter((m): m is { content: { type: string; text: string }[] } =>
+				Array.isArray((m as { content?: unknown }).content),
+			)
+			.flatMap((m) => m.content)
+			.filter((p) => p.type === "text")
+			.map((p) => p.text);
+	};
+
+	test("a mid-step text stream checkpoints its tail at most once a second", async () => {
+		const checkpoints: { partial?: unknown; loopState?: unknown }[] = [];
+		const r = rig([script(["hel", "lo ", "world"])], {
+			saveStep: (p) => checkpoints.push(p),
+		});
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		// Three deltas inside the one-second window coalesce to a single
+		// tail write — the checkpoint carries what was on the wire then.
+		const tails = checkpoints.filter(
+			(c) => c.partial !== undefined && c.loopState === undefined,
+		);
+		expect(tails).toHaveLength(1);
+		expect(tailTexts(tails[0]!)).toEqual(["hel"]);
+	});
+
+	test("deltas past the one-second window checkpoint again with the grown tail", async () => {
+		const realNow = Date.now;
+		let t = realNow();
+		Date.now = () => (t += 1_001);
+		try {
+			const checkpoints: { partial?: unknown; loopState?: unknown }[] = [];
+			const r = rig([script(["hel", "lo ", "world"])], {
+				saveStep: (p) => checkpoints.push(p),
+			});
+			const outcome = await driveStream(r.deps);
+			expect(outcome.kind).toBe("ok");
+			const tails = checkpoints.filter(
+				(c) => c.partial !== undefined && c.loopState === undefined,
+			);
+			expect(tails.map(tailTexts)).toEqual([["hel"], ["hello "], ["hello world"]]);
+		} finally {
+			Date.now = realNow;
+		}
+	});
+});

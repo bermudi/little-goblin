@@ -28,6 +28,8 @@ function program(over: Partial<OperatorProgramItem>): OperatorProgramItem {
 		createdAt: "2026-10-01T00:00:00Z",
 		lastRun: "2026-11-07T07:00:00Z",
 		nextRun: "2026-11-08T07:00:00Z",
+		lastSkippedAt: null,
+		lastSkipReason: null,
 		...over,
 	};
 }
@@ -172,4 +174,24 @@ test("schedule and run times share the server's zone (#187)", async () => {
 	expect(row?.textContent).toContain("Daily 07:00 UTC");
 	expect(row?.querySelector('[data-label="Next run"]')?.textContent).toContain("07:00");
 	expect(row?.querySelector('[data-label="Last run"]')?.textContent).toContain("07:00");
+});
+
+test("a skipped occurrence shows its stamp in the detail view", async () => {
+	fakeServer(
+		[
+			program({
+				lastSkippedAt: "2026-11-07T09:30:00Z",
+				lastSkipReason: "beyond lateness grace",
+			}),
+		],
+		{ programs: [], mail: [] },
+		"UTC",
+	);
+	root = createRoot(container);
+	await act(async () => root?.render(<ProgramsView token={null} now={NOW} />));
+	await act(
+		async () => (container.querySelector(".dtable .dt-row") as HTMLElement).click(),
+	);
+	expect(container.textContent).toContain("last skip");
+	expect(container.textContent).toContain("beyond lateness grace");
 });

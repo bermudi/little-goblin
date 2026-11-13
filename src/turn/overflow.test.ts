@@ -405,3 +405,39 @@ describe("recoverFromOverflow", () => {
 		expect(await recoverFromOverflow(h.deps)).toEqual({ kind: "fenced" });
 	});
 });
+
+describe("transport failure classification", () => {
+	test("transport-shaped failures compose the drop line and keep the code", () => {
+		expect(terminalFailureMessage(new Error("read ECONNRESET"), false)).toBe(
+			"The model connection dropped (ECONNRESET). Nothing was lost — send again or /resume.",
+		);
+		const viaFetch = new TypeError("fetch failed", {
+			cause: Object.assign(new Error("socket closed"), { code: "ECONNRESET" }),
+		});
+		expect(terminalFailureMessage(viaFetch, false)).toBe(
+			"The model connection dropped (ECONNRESET). Nothing was lost — send again or /resume.",
+		);
+		expect(
+			terminalFailureMessage(new Error("Failed to process successful response"), false),
+		).toBe(
+			"The model connection dropped (Failed to process successful response). Nothing was lost — send again or /resume.",
+		);
+		// A transport-shaped message on the cause classifies the wrapper.
+		expect(
+			terminalFailureMessage(
+				new Error("model stream failed", { cause: new Error("socket hang up") }),
+				false,
+			),
+		).toContain("socket");
+		// Undici transport codes classify; arbitrary codes never do.
+		expect(
+			terminalFailureMessage(
+				Object.assign(new Error("died"), { code: "UND_ERR_SOCKET" }),
+				false,
+			),
+		).toContain("UND_ERR_SOCKET");
+		expect(
+			terminalFailureMessage(Object.assign(new Error("boom"), { code: "rate_limit" }), false),
+		).toBe("boom");
+	});
+});

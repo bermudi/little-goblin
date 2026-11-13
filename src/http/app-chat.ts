@@ -216,7 +216,9 @@ export async function handleChatRoute(
 		}
 		const push = deps.push;
 		const notifyDisconnected =
-			push === undefined ? undefined : (done: TurnDone) => push.notifyDone(conv, done);
+			push === undefined
+				? undefined
+				: (done: TurnDone) => push.notifyDone(conv, done, "foreground");
 
 		if (parsed.data.retry === true) {
 			if (runtime.busy(convId)) {

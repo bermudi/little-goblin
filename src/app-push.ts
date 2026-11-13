@@ -95,7 +95,11 @@ export interface AppPush {
 		userAgent: string | null,
 	): Promise<{ endpointHash: string }>;
 	unregister(endpoint: string): boolean;
-	notifyDone(conv: Conversation, done: TurnDone): Promise<void>;
+	notifyDone(
+		conv: Conversation,
+		done: TurnDone,
+		origin?: "foreground" | "background",
+	): Promise<void>;
 	/** True when at least one subscribed device has this reminder. */
 	notifyReminder(reminder: OperatorReminder): Promise<boolean>;
 }
@@ -196,17 +200,32 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 		return key;
 	}
 
-	async function notifyDone(conv: Conversation, done: TurnDone): Promise<void> {
+	// #493-L26 — the body names the submit origin: an interactive
+	// submission whose wire died is the operator's own reply arriving
+	// late, not a background job reporting in.
+	async function notifyDone(
+		conv: Conversation,
+		done: TurnDone,
+		origin: "foreground" | "background" = "background",
+	): Promise<void> {
 		if (done.kind === "fenced") return;
 		const appId = appIdOf(conv.id);
 		if (appId === null || deps.store.get(conv.id) === null) return;
 		const key = notificationKey(conv, done);
 		if (key === null) return;
+		const body =
+			origin === "foreground"
+				? done.kind === "completed"
+					? "Your reply is ready"
+					: "Your reply failed"
+				: done.kind === "completed"
+					? "A background turn finished"
+					: "A background turn failed";
 		await ring(
 			key,
 			{
 				title: "goblin",
-				body: done.kind === "completed" ? "A background turn finished" : "A background turn failed",
+				body,
 				url: `/app/c/${appId}`,
 			},
 			{ ttl: 3600, fields: { conversation: conv.id, outcome: done.kind } },

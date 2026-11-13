@@ -31,7 +31,7 @@ import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
 import { estimateHistoryChars, measurePrompt, type PromptSegments } from "./itemize.ts";
 import { stepModelRef } from "./model-ref.ts";
-import { PreemptSignal } from "./overflow.ts";
+import { PreemptSignal, transportFailureText } from "./overflow.ts";
 import type { SkillWatch } from "./skill-attribution.ts";
 import type { ForcedKind, LoopTurnState, TurnState } from "./state.ts";
 import {
@@ -356,6 +356,14 @@ export async function driveStream<M extends WireMember>(
 	// stream settles — declared here for the same TDZ reason.
 	let preemptInfo: { arm: "pressure"; step: number } | null = null;
 	const partialMessages: ModelMessage[] = [];
+	// #493-L10 — a death mid-step must not lose text already on the
+	// wire: the in-flight step's streamed text rides the checkpoint as
+	// one extra assistant message, throttled to at most one write per
+	// second so a long stream costs a write per second, not per token.
+	// Reset at each step end — the completed step's messages already
+	// carry its text.
+	let streamedTail = "";
+	let lastTailCheckpointMs = 0;
 	let steerMark = deps.steerMarkSeed;
 	const ownedInputSeqs = new Set<number>(deps.ownedInputSeqs);
 	// The finish metadata part is written after the final step, so the
@@ -639,6 +647,7 @@ export async function driveStream<M extends WireMember>(
 			for (const m of step.response.messages) {
 				if (m.role === "assistant") partialMessages.push(m);
 			}
+			streamedTail = "";
 			deps.saveStep({
 				loopState: state.snapshot(),
 				filterRetryUsed,
@@ -760,9 +769,8 @@ export async function driveStream<M extends WireMember>(
 		onError: (error) =>
 			isContentFilter(error)
 				? "Provider blocked this request again after one retry."
-				: error instanceof Error
-					? error.message
-					: String(error),
+				: (transportFailureText(error) ??
+					(error instanceof Error ? error.message : String(error))),
 		onFinish: ({ responseMessage: rm, isAborted, outcome }) => {
 			if (isAborted) return;
 			if (outcome.status === "failed") {
@@ -828,6 +836,22 @@ export async function driveStream<M extends WireMember>(
 					lastTextPartId = chunk.id;
 					seenText = true;
 					head.onTextDelta(chunk.delta);
+					streamedTail += chunk.delta;
+					{
+						const nowMs = Date.now();
+						if (nowMs - lastTailCheckpointMs >= 1_000) {
+							lastTailCheckpointMs = nowMs;
+							deps.saveStep({
+								partial: [
+									...partialMessages,
+									{
+										role: "assistant",
+										content: [{ type: "text", text: streamedTail }],
+									},
+								],
+							});
+						}
+					}
 					break;
 				case "reasoning-delta":
 					head.onReasoningDelta(chunk.delta);

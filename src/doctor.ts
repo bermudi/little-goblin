@@ -2,7 +2,8 @@ import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { z } from "zod";
 import { goblinHome } from "./config.ts";
-import { healthReportSchema, runHealth, type HealthReport } from "./health.ts";
+import { runHealth } from "./health.ts";
+import { healthReportSchema, type HealthReport } from "./health/shared.ts";
 import { setLogStream } from "./log.ts";
 import { boundedRun, killProc, spawnProc } from "./proc.ts";
 

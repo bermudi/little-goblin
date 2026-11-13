@@ -17,7 +17,7 @@ import {
 	parseDoctorArgs,
 	reportExitCode,
 } from "./doctor.ts";
-import type { HealthReport } from "./health.ts";
+import type { HealthReport } from "./health/shared.ts";
 import { bashTool } from "./agent/tools/bash.ts";
 import { waitUntil } from "./testkit.ts";
 

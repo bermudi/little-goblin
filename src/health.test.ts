@@ -29,12 +29,14 @@ import { openCacheObservation } from "./cache-observation.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 import {
 	checkAppAssets,
-	healthReportSchema,
-	healthResultSchema,
 	runHealth,
 	testRatio,
-	type HealthReport,
 } from "./health.ts";
+import {
+	healthReportSchema,
+	healthResultSchema,
+	type HealthReport,
+} from "./health/shared.ts";
 import { waitUntil } from "./testkit.ts";
 
 const roots: string[] = [];

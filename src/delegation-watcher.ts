@@ -32,6 +32,11 @@ const TICK_MS = 15_000;
 // A fresh prompt can report idle before working; give the harness time to advance
 // its seq before calling it stuck on a startup dialog.
 const STALL_MS = 90_000;
+// Symmetric backstop for a `working` report that never progresses: openclaw
+// finalizes stale subagent runs after 2 h, and herdr exposes no
+// output-activity signal, so a long healthy task is indistinguishable from a
+// frozen one before that (#489).
+const PROGRESS_STALL_MS = 2 * 3_600_000;
 // A report mtime can lag Date.now(); headroom prevents a same-tick report
 // from being mistaken for the previous run.
 const REPORT_SKEW_MS = 200;
@@ -67,6 +72,9 @@ export function startDelegationLifecycle(
 	// `starting` rows are owned by an in-flight launch; only the first scan
 	// can instead interpret one as a launch interrupted by process death.
 	let firstScan = true;
+	// Watcher memory only: each running row's last observed seq and when it
+	// last moved. No column — a restart re-seeds from the row itself.
+	const lastProgress = new Map<number, { seq: number; sinceMs: number }>();
 	const scan = (): Promise<void> => {
 		if (current !== null) return current;
 		if (stopped) return Promise.resolve();
@@ -86,17 +94,25 @@ export function startDelegationLifecycle(
 					}
 				}
 			}
-			for (const d of deps.delegations.active()) {
+			const active = deps.delegations.active();
+			for (const d of active) {
 				// Isolate row failures while logging them; one bad row must not stop the scan
 				// or hide the other delegations' verdicts.
 				try {
-					await check(deps, d);
+					await check(deps, d, lastProgress);
 				} catch (err) {
 					log.error("delegation check failed", err, {
 						delegation: d.id,
 						name: d.name,
 					});
 				}
+				// The stall clock only runs on `running` — any leave (this
+				// scan's verdict or a tool-side write) retires the entry.
+				if (d.status !== "running") lastProgress.delete(d.id);
+			}
+			const watched = new Set(active.map((d) => d.id));
+			for (const id of lastProgress.keys()) {
+				if (!watched.has(id)) lastProgress.delete(id);
 			}
 			for (const d of deps.delegations.list()) {
 				if (d.status !== "done" || !isIssueLead(d)) continue;
@@ -284,7 +300,11 @@ function freshReportFor(deps: DelegationLifecycleDeps, d: Delegation): boolean {
 	}
 }
 
-async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void> {
+async function check(
+	deps: DelegationLifecycleDeps,
+	d: Delegation,
+	lastProgress: Map<number, { seq: number; sinceMs: number }>,
+): Promise<void> {
 	let info: AgentInfo | null;
 	try {
 		info = await herdrFor(deps, d.target).get(d.agentName);
@@ -412,6 +432,42 @@ async function check(deps: DelegationLifecycleDeps, d: Delegation): Promise<void
 				extra: "(agent never started working — likely stuck on a startup dialog)",
 			});
 			if (landed) transition(deps, d, "needs_input", info.state_change_seq);
+		}
+		return;
+	}
+
+	// Still running past every verdict. A frozen worker reports `working`
+	// forever — seq stagnation is the only observable (#489).
+	const now = Date.now();
+	let progress = lastProgress.get(d.id);
+	if (progress === undefined || progress.seq !== info.state_change_seq) {
+		progress = {
+			seq: info.state_change_seq,
+			// A seq still at the baseline provably never moved since the
+			// prompt; anything else moved at an unknown time — count from now.
+			sinceMs:
+				progress === undefined && info.state_change_seq === d.baselineSeq
+					? Date.parse(d.promptedAt)
+					: now,
+		};
+		lastProgress.set(d.id, progress);
+	}
+	const stalledMs = now - progress.sinceMs;
+	if (
+		(info.agent_status === "working" || info.agent_status === "unknown") &&
+		stalledMs > PROGRESS_STALL_MS
+	) {
+		const landed = await notify(deps, d, "needs input", {
+			extra: `(no status change for ${Math.floor(stalledMs / 3_600_000)} h — the agent may be frozen; check its pane)`,
+		});
+		if (landed) {
+			log.info("delegation progress stall", {
+				delegation: d.id,
+				name: d.name,
+				seq: info.state_change_seq,
+				stalledMs,
+			});
+			transition(deps, d, "needs_input", info.state_change_seq);
 		}
 	}
 }

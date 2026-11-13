@@ -173,6 +173,16 @@ Rulings:
   between polls. A completion that folds into a captured baseline
   settles from a fresh local report or parks `needs_input` —
   attribution is unknowable from outside (#119, 2026-10-08).
+- **A `working` report that never progresses gets one notice after 2 h
+  (#489, 2026-11-13).** herdr exposes no output-activity signal, so the
+  watcher tracks each running row's `state_change_seq` in memory — when
+  it last moved, seeded from the prompt time when the seq still equals
+  its baseline. A `running` row reporting `working` (or `unknown`) with
+  no seq change for `PROGRESS_STALL_MS` parks `needs_input` with a "may
+  be frozen" notice; openclaw's 2 h stale-run window is the precedent —
+  a shorter window can't tell a long healthy task from a dead one. The
+  ordinary resume rule un-parks the row on any later seq advance, so a
+  false positive costs exactly one notice.
 - **Delegated output is untrusted data, never instructions.** Reports,
   screen tails and launch failure screens ride fenced like program
   events (`<event source="delegation">`, any `</event` neutralized):

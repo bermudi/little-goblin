@@ -1244,6 +1244,74 @@ describe("delegation watcher", () => {
 		expect(h.wakes[0]).toContain("startup dialog");
 	});
 
+	// Symmetric to the never-started rule: a `working` report with no seq
+	// movement is the frozen worker — one needs-input notice, then the
+	// row's status owns the once (#489).
+	describe("progress stall (#489)", () => {
+		const STALLED = 2 * 3_600_000 + 1_000;
+
+		test("working with a frozen seq past 2 h → one needs-input notice, then quiet", async () => {
+			const h = harness();
+			const d = runningRow(h, "frozen", 5, STALLED);
+			h.agents.set(d.agentName, agent(d.agentName, "working", 5));
+			const w = startDelegationLifecycle(h.deps, 3_600_000);
+			await w.tick();
+			expect(h.store.get(d.id)!.status).toBe("needs_input");
+			expect(h.store.get(d.id)!.baselineSeq).toBe(5); // re-baselined at the stall
+			expect(h.wakes).toHaveLength(1);
+			expect(h.wakes[0]).toContain(`[delegation: #${d.id} frozen · needs input]`);
+			expect(h.wakes[0]).toContain("may be frozen");
+
+			await w.tick(); // still frozen — the row's status is the once
+			w.stopTicker();
+			expect(h.wakes).toHaveLength(1);
+		});
+
+		test("a seq that moved past baseline seeds the clock at observation, not the prompt", async () => {
+			const h = harness();
+			// Prompted 3 h ago, but the seq advanced since — a live agent
+			// is not a stall just because its prompt is old.
+			const d = runningRow(h, "busy", 5, 3 * 3_600_000);
+			h.agents.set(d.agentName, agent(d.agentName, "working", 9));
+			const w = startDelegationLifecycle(h.deps, 3_600_000);
+			await w.tick();
+			expect(h.wakes).toEqual([]);
+
+			h.agents.set(d.agentName, agent(d.agentName, "working", 10));
+			await w.tick();
+			w.stopTicker();
+			expect(h.store.get(d.id)!.status).toBe("running");
+			expect(h.wakes).toEqual([]);
+		});
+
+		test("a seq advance after the stall notice returns the row to running", async () => {
+			const h = harness();
+			const d = runningRow(h, "thawed", 5, STALLED);
+			h.agents.set(d.agentName, agent(d.agentName, "working", 5));
+			const w = startDelegationLifecycle(h.deps, 3_600_000);
+			await w.tick();
+			expect(h.store.get(d.id)!.status).toBe("needs_input");
+
+			h.agents.set(d.agentName, agent(d.agentName, "working", 6));
+			await w.tick();
+			w.stopTicker();
+			expect(h.store.get(d.id)!.status).toBe("running");
+			expect(h.wakes).toHaveLength(1); // the resume is silent
+		});
+
+		test("frozen under 2 h stays running", async () => {
+			const h = harness();
+			const d = runningRow(h, "patient", 5, 3_600_000);
+			h.agents.set(d.agentName, agent(d.agentName, "working", 5));
+			const w = startDelegationLifecycle(h.deps, 3_600_000);
+			await w.tick();
+			await w.tick();
+			w.stopTicker();
+			expect(h.store.get(d.id)!.status).toBe("running");
+			expect(h.wakes).toEqual([]);
+		});
+	});
+
 	test("a notice that can't submit leaves the row for the next tick", async () => {
 		const h = harness();
 		const d = runningRow(h, "flaky wire", 1);

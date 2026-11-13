@@ -47,3 +47,5 @@
 - **Fold:** one compaction: older messages become a summary, a recent tail stays verbatim. The full history stays on disk.
 - **Fold mark:** the pill in the app transcript that shows where a fold ran and expands to its summary.
 - **Code-made parts:** the sections of a fold summary that code writes, never a model: verbatim operator messages and the identifier index. Later folds carry them forward untouched.
+- **Intake:** the path a Telegram update takes from the access gate to the coalescing buffer — redelivery dedupe, command gates, media extraction, and the durable inbox journal. `src/tg/intake.ts`; design/telegram.md → Telegram intake & delivery.
+- **Flush:** what happens when the coalescing window closes — rolling-dm routing and navigation archives, then durable admission of the batch. `src/tg/flush.ts`; a sibling of Intake joined only by bot assembly.

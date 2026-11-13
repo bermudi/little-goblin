@@ -16,7 +16,8 @@ import { openStore } from "../conversation.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import type { Runtime } from "../runtime.ts";
 
-import { createBot, type BotDeps, type RunningBot } from "./mod.ts";
+import { createBot, type RunningBot } from "./bot.ts";
+import type { BotDeps } from "./deps.ts";
 import { tmpDb } from "../testkit.ts";
 
 // parseConfig rather than a hand-copied literal — the schema owns the shape.

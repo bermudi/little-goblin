@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
-import { openStore, type Conversation, type ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import { openStore, type ConversationStore } from "../conversation.ts";
 import { guestAddress } from "../conversation-address.ts";
 import type { ConfigRef } from "../config.ts";
 import type { Config } from "../config-schema.ts";

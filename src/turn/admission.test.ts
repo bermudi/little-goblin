@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { admitTurn, type AdmittedMember, type AdmissionDeps, type LiveWire } from "./admission.ts";
 import { buildModelView } from "./view.ts";
 

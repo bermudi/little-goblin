@@ -1,7 +1,7 @@
 import { GrammyError, HttpError, InputFile, type Api } from "grammy";
 import { MAX_SEND_BYTES } from "../agent/tools/send.ts";
 import { stat } from "node:fs/promises";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { channelOf, parseAddress } from "../conversation-address.ts";
 import type { TurnDone, TurnSink } from "../turn/sink.ts";
 import { sniffImage } from "../agent/tools/read.ts";

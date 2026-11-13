@@ -10,7 +10,8 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { goblinHome } from "./goblin-home.ts";
 import { ensureDir, paths } from "./home-layout.ts";
-import type { Conversation, ConversationStore } from "./conversation.ts";
+import type { Conversation } from "./conversation-read.ts";
+import type { ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import type { MemoryQueue } from "./memory/queue.ts";
 

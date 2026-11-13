@@ -38,7 +38,7 @@ import {
 } from "./herdr.ts";
 import type { ConfigRef } from "./config.ts";
 import type { DelegationConfig } from "./config-schema.ts";
-import type { Conversation } from "./conversation.ts";
+import type { Conversation } from "./conversation-read.ts";
 import type { DelegateToolDeps, DelegationPin } from "./agent/tools/delegate.ts";
 import { claudeFreshTrustJson, codexTrustSection, seedHarnessTrust } from "./harness-trust.ts";
 import { delegationNoticeTag } from "./tags.ts";

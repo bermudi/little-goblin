@@ -5,11 +5,60 @@
 // settings) stays on ConversationStore in conversation.ts.
 
 import type { UIMessage } from "ai";
-import type { Conversation } from "./conversation.ts";
 import type { Compaction, CompactionMark } from "./conversation-events.ts";
 import type { HistoryContextRow, HistoryHit } from "./conversation-history.ts";
+import type { Row } from "./conversation-queries.ts";
 import type { MemoryEligibility } from "./memory/mod.ts";
 import type { ModelSettings } from "./conversation-settings.ts";
+
+export interface Conversation {
+	id: string;
+	// Real only on dm:/topic: — app rows store 0/NULL (legacy NOT NULL
+	// columns). channelOf(id) is the routing check, never these.
+	chatId: number;
+	threadId: number | null;
+	title: string | null;
+	// Telegram placeholder name — the bot owes it a real one. Cleared by
+	// explicit rename or a successful auto-title.
+	titleImplicit: boolean;
+	// Durable per-conversation selection on app rows only; telegram ignores
+	// these columns for its one shared config selection.
+	model: string | null;
+	thinking: string | null;
+	voice: boolean;
+	memoryExcluded: boolean; // operator opt-out: this topic sends/recalls no memory
+	persona: "personal" | "guest"; // prompt class + sandbox tool filter (Guest mode)
+	// Hidden from the app rail, still answerable; any appended event clears it.
+	archivedAt: string | null;
+	// Floats above the app rail's activity order; survives activity,
+	// cleared by archive.
+	pinnedAt: string | null;
+	// Bound once at creation; app conversations only — every other row
+	// stays null forever.
+	projectId: string | null;
+	epoch: number;
+	createdAt: string;
+}
+
+export function toConversation(r: Row): Conversation {
+	return {
+		id: r.id,
+		chatId: r.chat_id,
+		threadId: r.thread_id,
+		title: r.title,
+		titleImplicit: r.title_implicit !== 0,
+		model: r.model,
+		thinking: r.thinking,
+		voice: r.voice !== 0,
+		memoryExcluded: r.memory_excluded !== 0,
+		persona: r.persona === "guest" ? "guest" : "personal",
+		archivedAt: r.archived_at,
+		pinnedAt: r.pinned_at,
+		projectId: r.project_id,
+		epoch: r.epoch,
+		createdAt: r.created_at,
+	};
+}
 
 // The app channel's own pool, most recently active first.
 export interface AppConversationSummary {

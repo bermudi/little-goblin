@@ -10,7 +10,7 @@
 
 import { type UIMessage } from "ai";
 import type { CompactionOutcome } from "./agent/compaction.ts";
-import type { Conversation } from "./conversation.ts";
+import type { Conversation } from "./conversation-read.ts";
 import { log } from "./log.ts";
 import type { TurnRecovery } from "./turn/overflow.ts";
 import type { TurnSink } from "./turn/sink.ts";

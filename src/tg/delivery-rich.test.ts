@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
 import { parseConfig } from "../config.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { makeDeliverySink, resetMessageEffectsGateForTests } from "./delivery.ts";

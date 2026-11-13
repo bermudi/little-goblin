@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { foldSummary } from "../testkit/fake-summary.ts";
 import { openTestStore } from "../testkit.ts";
 import { type CompactJobDeps, type CompactionSeam, runCompactJob } from "./compact-job.ts";

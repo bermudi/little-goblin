@@ -13,7 +13,8 @@ import {
 	type VapidKeys,
 } from "web-push";
 import type { AuthStore } from "./auth.ts";
-import type { Conversation, ConversationStore } from "./conversation.ts";
+import type { Conversation } from "./conversation-read.ts";
+import type { ConversationStore } from "./conversation.ts";
 import { appIdOf } from "./conversation-address.ts";
 import { log } from "./log.ts";
 import { type OperatorReminder, REMINDER_EVERY_MS, reminderText } from "./reminders/index.ts";

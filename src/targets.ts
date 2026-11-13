@@ -3,7 +3,7 @@
 // rolling DM pins dm:<chat>, never one concrete row); an app target is
 // the conversation id it replies into.
 
-import type { Conversation } from "./conversation.ts";
+import type { Conversation } from "./conversation-read.ts";
 import { appIdOf, channelOf, formatAddress, parseAddress } from "./conversation-address.ts";
 
 export type ConversationTarget = string;

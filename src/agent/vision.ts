@@ -15,7 +15,7 @@ import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import type { ConfigRef } from "../config.ts";
 import { type Config, splitModelRef } from "../config-schema.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { log } from "../log.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
 import { modelCallMaxRetries } from "./onemin.ts";

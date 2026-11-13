@@ -673,7 +673,10 @@ function notifyEditMissed(env: IntakeEnv, msg: Message): void {
 		env.api.sendMessage(
 			msg.chat.id,
 			"Edit not applied — I already read the original. Send it again to change it.",
-			addr.kind === "topic" ? { message_thread_id: addr.threadId } : {},
+			{
+				reply_parameters: { message_id: msg.message_id },
+				...(addr.kind === "topic" ? { message_thread_id: addr.threadId } : {}),
+			},
 		),
 		"sendMessage (post-commit edit notice)",
 	)

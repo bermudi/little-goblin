@@ -364,7 +364,11 @@ interface RouterHarness {
 	bellConvs: string[];
 }
 
-type SendOpts = { disable_notification?: boolean; message_thread_id?: number };
+type SendOpts = {
+	disable_notification?: boolean;
+	message_thread_id?: number;
+	reply_parameters?: { message_id: number };
+};
 
 function routerHarness(config: Config = baseConfig): RouterHarness {
 	const store = openStore(tmpDb("goblin-intake-"));
@@ -1936,7 +1940,7 @@ describe("handleEditedMessage", () => {
 				method: "sendMessage",
 				text: "Edit not applied — I already read the original. Send it again to change it.",
 				chat: 2,
-				opts: {},
+				opts: { reply_parameters: { message_id: 44 } },
 			},
 		]);
 		h.store.close();

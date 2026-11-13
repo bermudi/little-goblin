@@ -58,6 +58,19 @@ interface Chunk {
 
 export type DeliveryApi = Api;
 
+// One typing ping — intake's ack on the first buffered update of a lane
+// (the delivery sink's interval owns liveness once the turn starts).
+export function pingTypingOnce(api: Api, chatId: number, threadId: number | null): void {
+	withTimeout(
+		api.sendChatAction(chatId, "typing", {
+			...(threadId !== null ? { message_thread_id: threadId } : {}),
+		}),
+		"sendChatAction",
+	).catch((err: unknown) => {
+		log.debug("typing ping failed", { error: String(err) });
+	});
+}
+
 export interface DeliverySinkOptions {
 	replyTo?: number;
 	editIntervalMs?: number;
@@ -197,14 +210,7 @@ export function makeDeliverySink(
 	}
 	sendTyping();
 	function pingTyping(): void {
-		withTimeout(
-			api.sendChatAction(conv.chatId, "typing", {
-				...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-			}),
-			"sendChatAction",
-		).catch((err: unknown) => {
-			log.debug("typing ping failed", { error: String(err) });
-		});
+		pingTypingOnce(api, conv.chatId, conv.threadId);
 	}
 	function repingTyping(): void {
 		if (sinkDone || recordings.size > 0 || !mayDeliver()) return;

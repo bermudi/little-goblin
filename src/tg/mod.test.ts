@@ -860,6 +860,64 @@ describe("handleMessage", () => {
 		expect(h.pushed).toHaveLength(1);
 		expect(h.pushed[0]!.parts).toEqual([{ type: "text", text: "/notacommand" }]);
 	});
+
+	test("the first buffered update of a lane pings typing once per buffer", async () => {
+		const h = routerHarness();
+		let bucketIsNew = true;
+		h.env.buffer = {
+			push: () => {
+				const first = bucketIsNew;
+				bucketIsNew = false;
+				return first;
+			},
+		} as unknown as IntakeEnv["buffer"];
+		const actions: { chat: unknown; thread?: number }[] = [];
+		const orig = h.env.api.sendChatAction;
+		h.env.api.sendChatAction = ((
+			chat: unknown,
+			_action: string,
+			opts?: { message_thread_id?: number },
+		) => {
+			actions.push({
+				chat,
+				...(opts?.message_thread_id !== undefined
+					? { thread: opts.message_thread_id }
+					: {}),
+			});
+			return orig(chat as number, _action as never, opts as never);
+		}) as never;
+		const dmMsg = (id: number) =>
+			tgMsg({
+				message_id: id,
+				chat: { id: 1, type: "private" },
+				from: { id: 1, is_bot: false, first_name: "op" },
+				text: "hi",
+			});
+		handleTestMessage(h.env, dmMsg(10));
+		await h.env.intake.get("dm:1");
+		expect(actions).toEqual([{ chat: 1 }]);
+		// Same buffer — the burst keeps coalescing, no re-ping.
+		handleTestMessage(h.env, dmMsg(11));
+		await h.env.intake.get("dm:1");
+		expect(actions).toHaveLength(1);
+		// A flushed buffer starts a new bucket — the ack fires again,
+		// scoped to the topic the message was typed in.
+		bucketIsNew = true;
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 12,
+				chat: { id: -100, type: "supergroup" },
+				from: { id: 1, is_bot: false, first_name: "op" },
+				message_thread_id: 5,
+				is_topic_message: true,
+				text: "topic hi",
+			}),
+		);
+		await h.env.intake.get("topic:-100:5");
+		expect(actions).toEqual([{ chat: 1 }, { chat: -100, thread: 5 }]);
+		h.store.close();
+	});
 });
 
 // /voice /memory /forget /compact are refused by sender at the

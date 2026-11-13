@@ -19,21 +19,24 @@ export class CoalescingBuffer<T> {
 		private maxWaitMs: number = windowMs * 4,
 	) {}
 
-	push(key: string, item: T): void {
+	// Returns true when this item started a new bucket — the intake ack
+	// (one typing ping per buffer) keys off the empty → non-empty edge.
+	push(key: string, item: T): boolean {
 		const existing = this.buckets.get(key);
 		if (existing) {
 			clearTimeout(existing.timer);
 			existing.items.push(item);
 			existing.timer = setTimeout(() => this.fire(key), this.windowMs);
-		} else {
-			this.buckets.set(key, {
-				items: [item],
-				timer: setTimeout(() => this.fire(key), this.windowMs),
-				maxTimer: setTimeout(() => this.fireMax(key), this.maxWaitMs),
-				firstAt: Date.now(),
-				attempts: 0,
-			});
+			return false;
 		}
+		this.buckets.set(key, {
+			items: [item],
+			timer: setTimeout(() => this.fire(key), this.windowMs),
+			maxTimer: setTimeout(() => this.fireMax(key), this.maxWaitMs),
+			firstAt: Date.now(),
+			attempts: 0,
+		});
+		return true;
 	}
 
 	amend(key: string, match: (item: T) => boolean, update: (item: T) => void): boolean {

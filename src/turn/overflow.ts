@@ -5,7 +5,7 @@ import { isContextOverflow } from "../agent/provider-errors.ts";
 import type { Conversation } from "../conversation.ts";
 import { log } from "../log.ts";
 import type { RecallContext } from "../memory/mod.ts";
-import type { ToolCallDigest } from "../reviewer.ts";
+import type { ToolCallDigest } from "../reviewer-evidence.ts";
 import type { LoopTurnState } from "./state.ts";
 import type { LiveChunks, StreamOutcome } from "./stream.ts";
 

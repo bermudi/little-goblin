@@ -111,7 +111,13 @@ apply next turn without interrupting the current answer.
   Failures warn + a short chat message, never a turn failure; the tap
   answers immediately (callbacks expire in seconds). The boot ffmpeg/libopus
   probe failing takes TTS down for the run (boot warning; install ffmpeg,
-  restart). No button in voice mode.
+  restart). No button in voice mode. The 🔊 resolves the full reply
+  durably (ruling 2026-11-13): at finalize every landed bubble's message id
+  is recorded against its reply event (`telegram_deliveries`, one row per
+  chunk, all pointing at the same seq), so a tap speaks the whole reply
+  across restarts, evictions, and split replies. A lookup miss — history
+  predating the table or a rewound reply event — reads the tapped bubble
+  and notes in-thread that only that part could be read.
 - **Files**: `send_file` names, it does not send — "Telegram send is
   delivery, not a tool": sends ride the same chain and fencing, so a
   `/stop`'d turn can't emit one. Magic bytes decide, never the extension;

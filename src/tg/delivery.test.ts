@@ -9,7 +9,6 @@ import { TelegramTimeoutError } from "./deadline.ts";
 import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
 import { isMessageGoneError, isNotModifiedError } from "./delivery-errors.ts";
 import { makeDeliverySink, parsedTextLength } from "./delivery.ts";
-import { recentReplyText } from "./reply-memory.ts";
 import { SPEAK_CALLBACK } from "./speak-button.ts";
 
 const CHUNK = 3800;
@@ -705,21 +704,32 @@ describe("delivery", () => {
 		expect(empties[0]).toMatchObject({ level: "warn", conversation: "dm:1", chat: 1 });
 	});
 
-	test("configured text delivery stamps a speak button and remembers the whole reply", async () => {
+	test("configured text delivery stamps a speak button and records every landed bubble", async () => {
 		const { api, markups } = fakeApi({});
+		const recorded: Array<{ conv: string; messageId: number; seq: number }> = [];
 		const sink = makeDeliverySink(api, conv, {
 			editIntervalMs: 0,
 			voice: {
 				voiceMode: false,
 				synthesize: async () => [],
 			},
+			deliveries: {
+				lastEntry: () => ({ seq: 42, message: { id: "r1", role: "assistant", parts: [] } }),
+				recordDelivery: (convId, messageId, seq) =>
+					recorded.push({ conv: convId, messageId, seq }),
+			},
 		});
-		sink.onTextDelta("whole reply");
+		sink.onTextDelta("a".repeat(CHUNK) + "tail");
 		await sink.onDone({ kind: "completed" });
 		expect(markups).toEqual([
 			{ reply_markup: { inline_keyboard: [[{ text: "🔊", callback_data: SPEAK_CALLBACK }]] } },
 		]);
-		expect(recentReplyText(1, 1)).toBe("whole reply");
+		// Both chunks of the split reply bind to the one reply event —
+		// a tap on either resolves the full text.
+		expect(recorded).toEqual([
+			{ conv: "dm:1", messageId: 1, seq: 42 },
+			{ conv: "dm:1", messageId: 2, seq: 42 },
+		]);
 	});
 
 	test("a completed reply stamps the rating row — payload carries conv + anchor", async () => {

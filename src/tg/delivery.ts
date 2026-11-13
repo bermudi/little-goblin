@@ -1,7 +1,7 @@
 import { GrammyError, HttpError, InputFile, type Api } from "grammy";
 import { MAX_SEND_BYTES } from "../agent/tools/send.ts";
 import { stat } from "node:fs/promises";
-import type { Conversation } from "../conversation-read.ts";
+import type { Conversation, ConversationReads } from "../conversation-read.ts";
 import { channelOf } from "../conversation-address.ts";
 import type { TurnDone, TurnSink } from "../turn/sink.ts";
 import { sniffImage } from "../agent/tools/read.ts";
@@ -28,7 +28,6 @@ import {
 } from "./delivery-text.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { rateCallbackData } from "./rate-button.ts";
-import { rememberReply } from "./reply-memory.ts";
 import { SPEAK_CALLBACK } from "./speak-button.ts";
 
 const EDIT_INTERVAL_MS = 1_000;
@@ -125,6 +124,14 @@ export function pingTypingOnce(api: Api, chatId: number, threadId: number | null
 	});
 }
 
+// Durable bubble→reply binding for the 🔊 button: each landed message
+// id is recorded against the turn's reply event so the tap resolves
+// the full text across restarts and chunk boundaries.
+export interface DeliveryRecording {
+	lastEntry: ConversationReads["lastEntry"];
+	recordDelivery(conversationId: string, messageId: number, seq: number): void;
+}
+
 export interface DeliverySinkOptions {
 	replyTo?: number;
 	editIntervalMs?: number;
@@ -132,6 +139,7 @@ export interface DeliverySinkOptions {
 	typingIntervalMs?: number;
 	maxDrainIterations?: number;
 	rating?: DeliveryRatingDeps;
+	deliveries?: DeliveryRecording;
 	rich?: RichSinkOpts;
 	mediaGroupWindowMs?: number;
 	draftTtlMs?: number;
@@ -147,6 +155,7 @@ export function makeDeliverySink(
 		typingIntervalMs = TYPING_INTERVAL_MS,
 		maxDrainIterations = MAX_DRAIN_ITERATIONS,
 		rating,
+		deliveries,
 		rich,
 		mediaGroupWindowMs = 400,
 		draftTtlMs = DRAFT_TTL_MS,
@@ -901,6 +910,22 @@ export function makeDeliverySink(
 		}
 	}
 
+	// Every landed chunk binds to the turn's reply event, so a 🔊 tap on
+	// any bubble of a split reply resolves the whole text durably.
+	function recordDeliveries(): void {
+		if (deliveries === undefined) return;
+		const seq = deliveries.lastEntry(conv.id, "assistant")?.seq ?? null;
+		if (seq === null) {
+			log.warn("completed reply has no assistant event — deliveries unrecorded", {
+				conversation: conv.id,
+			});
+			return;
+		}
+		for (const c of chunks) {
+			if (c.id > 0) deliveries.recordDelivery(conv.id, c.id, seq);
+		}
+	}
+
 	async function stampSuperseded(): Promise<void> {
 		await chain;
 		if (richMode) {
@@ -1273,7 +1298,11 @@ export function makeDeliverySink(
 								reasoning: md !== body,
 							});
 							if (done.kind === "completed") {
-								if (voice) rememberReply(conv.chatId, sent.message_id, text);
+								if (voice && deliveries !== undefined) {
+									const seq = deliveries.lastEntry(conv.id, "assistant")?.seq ?? null;
+									if (seq !== null)
+										deliveries.recordDelivery(conv.id, sent.message_id, seq);
+								}
 								if (mayDeliver()) {
 									await withTimeout(
 										api.setMessageReaction(conv.chatId, sent.message_id, [
@@ -1358,6 +1387,7 @@ export function makeDeliverySink(
 				});
 			}
 			if (unsent > 0) await notifyTruncated(unsent);
+			if (done.kind === "completed" && voice) recordDeliveries();
 			if (unsent === 0) {
 				const landed = chunks.filter((c) => c.id > 0).length;
 				if (landed > 0) {
@@ -1376,7 +1406,6 @@ export function makeDeliverySink(
 					const mid = last.id;
 					enqueue(async () => {
 						if (!mayDeliver()) return;
-						if (voice) rememberReply(conv.chatId, mid, text);
 						await withTimeout(
 							api.setMessageReaction(conv.chatId, mid, [{ type: "emoji", emoji: "🫡" }]),
 							"setMessageReaction",

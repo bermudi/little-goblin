@@ -109,6 +109,10 @@ export interface ConversationReads {
 	// handle onto an append-only seq. Null when this conversation never
 	// stored that id (a client id, a deleted event, another chat).
 	messageEvent(id: string, messageId: string): { seq: number; role: string } | null;
+	// The full text of the reply that produced one delivered Telegram
+	// message — the 🔊 button's durable lookup across restarts. Null
+	// when no delivery row maps the message or its reply event is gone.
+	deliveredReplyText(chatId: number, messageId: number): string | null;
 	// The causal view (anchored responses sort right after their user
 	// event) as messages; historyEntries adds seqs (recall blocks need
 	// positions); historyDetail adds anchors (compaction's cut rule) and

@@ -2307,3 +2307,52 @@ describe("event projections", () => {
 		store.close();
 	});
 });
+
+describe("telegram_deliveries", () => {
+	const asst = (text: string): UIMessage => ({
+		id: "a1",
+		role: "assistant",
+		parts: [{ type: "text", text }],
+	});
+
+	test("a recorded bubble resolves the reply text across a reopen", () => {
+		const path = tmpDb("goblin-test-");
+		const store = openStore(path);
+		const conv = store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");
+		store.append(conv.id, [msg("hi")]);
+		const [replySeq] = store.append(conv.id, [asst("the full answer")]);
+		// A split reply's bubbles all point at the one reply event.
+		store.recordDelivery(conv.id, 11, replySeq!);
+		store.recordDelivery(conv.id, 12, replySeq!);
+		store.close();
+
+		const reopened = openStore(path);
+		expect(reopened.deliveredReplyText(-100, 11)).toBe("the full answer");
+		expect(reopened.deliveredReplyText(-100, 12)).toBe("the full answer");
+		reopened.close();
+	});
+
+	test("a miss is null — unknown message, unknown chat", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const conv = store.resolve({ kind: "dm", chatId: 42 }, "/w");
+		store.append(conv.id, [msg("hi")]);
+		const [replySeq] = store.append(conv.id, [asst("answer")]);
+		store.recordDelivery(conv.id, 5, replySeq!);
+		expect(store.deliveredReplyText(42, 5)).toBe("answer");
+		expect(store.deliveredReplyText(42, 6)).toBeNull();
+		expect(store.deliveredReplyText(43, 5)).toBeNull();
+		store.close();
+	});
+
+	test("a rewound reply event leaves the delivery row orphaned — miss, not stale text", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const conv = store.resolve({ kind: "dm", chatId: 42 }, "/w");
+		const [userSeq] = store.append(conv.id, [msg("hi")]);
+		const [replySeq] = store.append(conv.id, [asst("answer")]);
+		store.recordDelivery(conv.id, 5, replySeq!);
+		// Editing the user message rewinds the reply event with it.
+		store.editUserMessage(conv.id, "m1", { ...msg("hi again"), id: "m1b" });
+		expect(store.deliveredReplyText(42, 5)).toBeNull();
+		store.close();
+	});
+});

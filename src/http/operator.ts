@@ -1,112 +1,39 @@
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { modelCatalogFor } from "../agent/models-dev.ts";
-import { fetchSkill, SkillFetchError, stampVerdict } from "../agent/skill-fetch.ts";
-import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
+import { thinkingLevelsFor } from "../agent/thinking.ts";
 import { appendAuthRecord, type WritableAuthStore } from "../auth.ts";
-import {
-	authDefaults,
-	type CapabilityName,
-	type Config,
-	ConfigValidationError,
-	capabilityNames,
-	type DelegationConfig,
-	fetchKinds,
-	loadConfig,
-	parseConfig,
-	paths,
-	providerKinds,
-	searchKinds,
-	type SubagentsConfig,
-	thinkingLevels,
-	transcriptionDefaults,
-	transcriptionKinds,
-	ttsCloudDefaults,
-	writeConfig,
-} from "../config.ts";
+import { type Config, paths } from "../config.ts";
 import { type ConversationStore, prepareAppSettingsForConfig } from "../conversation.ts";
 import { flatLine } from "../conversation-events.ts";
 import type { DelegationLifecycle } from "../delegation-lifecycle.ts";
 import type { Delegation, DelegationsStore } from "../delegations.ts";
-import { checkInjection } from "../injection.ts";
 import { log } from "../log.ts";
-import { type ForgetSource, forgetDocument } from "../memory/forget.ts";
-import {
-	type HindsightClient,
-	HindsightError,
-	identifier,
-	type MemoryDocPage,
-	type MemoryDocSummary,
-	type MemoryFact,
-} from "../memory/hindsight.ts";
-import { type MemoryContexts, type MemoryWiring, memoryStatus } from "../memory/mod.ts";
+import type { HindsightClient } from "../memory/hindsight.ts";
+import type { MemoryContexts, MemoryWiring } from "../memory/mod.ts";
 import type { BlockedRetention, MemoryQueue, MemoryQueueCounts } from "../memory/queue.ts";
-import { conversationOfDocId, splitSaves } from "../memory/saves.ts";
 import type { Program, ProgramsStore } from "../programs.ts";
-import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "../services.ts";
 import { resolveSkillProposal, type SkillAction, type SkillDecision } from "../skill-decisions.ts";
-import {
-	liveStateOf,
-	type SkillSourceRow,
-	SkillSources,
-	skillDiskPresence,
-	skillNameSchema,
-} from "../skill-provenance.ts";
+import type { SkillSourceRow, SkillSources } from "../skill-provenance.ts";
 import {
 	AttachmentTooLargeError,
 	identityFiles,
 	listAttachments,
-	listSkills,
 	readAttachmentBytes,
-	readSkillFile,
 	tailLog,
 } from "../stateview.ts";
 import type { System1Client } from "../system1.ts";
+import { configRoute } from "./operator-config.ts";
+import { fail, json, methodNotAllowed, NO_STORE, SEGMENT_SCHEMA } from "./operator-http.ts";
+import { memoryRoute, memoryStatusResponse } from "./operator-memory.ts";
+import { skillsRoute } from "./operator-skills.ts";
 import type {
-	CapabilityState,
 	ChatGptStatus,
-	ConfigPostBody,
-	ConfigResponse,
-	MemoriesListResponse,
-	MemoryBlockedResponse,
-	MemoryDocDetailResponse,
-	MemoryDocListItem,
-	MemoryFactItem,
-	MemoryForgetResponse,
-	MemoryForgetThreadResponse,
-	MemorySavesResponse,
-	MemoryStatusResponse,
 	OperatorDelegationItem,
 	OperatorDelegationStopResponse,
 	OperatorDelegationsResponse,
 	OperatorProgramItem,
 	OperatorProgramsResponse,
 	OperatorStatusResponse,
-	SecretStoreResponse,
-	SkillDecideResponse,
-	SkillForgetResponse,
-	SkillPreviewResponse,
-	SubagentsWire,
-	ThreadSkillItem,
-	ThreadSkillsResponse,
 } from "./operator-wire.ts";
-
-const NO_STORE = { "cache-control": "no-store" };
-
-const SEGMENT_SCHEMA = z
-	.string()
-	.min(1)
-	.max(255)
-	.regex(/^[^/\\\x00-\x1f\x7f]+$/u)
-	.refine((v) => v !== "." && v !== "..");
-const REL_PATH_SCHEMA = z
-	.string()
-	.min(1)
-	.max(4096)
-	.refine((v) => v.split("/").every((part) => SEGMENT_SCHEMA.safeParse(part).success), {
-		error: "invalid relative path",
-	});
 
 const ATTACHMENT_SERVE_CAP = 32 * 1024 * 1024;
 
@@ -182,7 +109,12 @@ export interface OperatorSeamsDeps {
 	skillSources: SkillSources;
 	skillFetch?: OperatorDeps["skillFetch"];
 	auth: WritableAuthStore;
-	paths: { auth(): string; skills(): string; skillsProposed(): string; workspace(): string };
+	paths: {
+		auth(): string;
+		skills(): string;
+		skillsProposed(): string;
+		workspace(): string;
+	};
 	version: string;
 	startedAt: string;
 	restartHints(): string[];
@@ -215,14 +147,20 @@ export function makeOperatorSeams(
 						conversationTitle: (id: string) => {
 							const conv = store.get(id);
 							if (conv === null) return null;
-							return { title: conv.title === null ? null : flatLine(conv.title) || null };
+							return {
+								title: conv.title === null ? null : flatLine(conv.title) || null,
+							};
 						},
 					},
 				}
 			: {}),
 		programs,
 		delegations,
-		service: { version: deps.version, startedAt: deps.startedAt, restartHints: deps.restartHints },
+		service: {
+			version: deps.version,
+			startedAt: deps.startedAt,
+			restartHints: deps.restartHints,
+		},
 		authNames: () => auth.names(),
 		secrets: {
 			has: (name: string) => auth.has(name),
@@ -257,537 +195,201 @@ export function makeOperatorSeams(
 	};
 }
 
-function configTag(config: Config): string {
-	return `"${createHash("sha256").update(JSON.stringify(config)).digest("hex")}"`;
+// One operator request, as every area route sees it.
+export interface OperatorRequest {
+	deps: OperatorDeps;
+	actor: OperatorActor;
+	who: { userId?: number };
+	req: Request;
+	tail: string;
+	url: URL;
 }
 
-let configSaveQueue: Promise<unknown> = Promise.resolve();
-
-const CONFIG_POST_KEYS = {
-	providers: true,
-	model: true,
-	titleModel: true,
-	favorites: true,
-	pickerModels: true,
-	customModels: true,
-	modelFallbacks: true,
-	thinking: true,
-	tts: true,
-	transcription: true,
-	vision: true,
-	image: true,
-	search: true,
-	fetch: true,
-	operators: true,
-	allowedUsers: true,
-	delegation: true,
-	subagents: true,
-	telegram: true,
-	publicUrl: true,
-	http: true,
-	memory: true,
-	logLevel: true,
-	capabilities: true,
-} as const satisfies Record<keyof ConfigPostBody, true>;
-
-const CONFIG_POST_TELEGRAM_KEYS = {
-	enabled: true,
-	apiRoot: true,
-	dmGapMinutes: true,
-	model: true,
-	thinking: true,
-	richReplies: true,
-	showReasoning: true,
-} as const satisfies Record<keyof ConfigPostBody["telegram"], true>;
-
-const configPostBodySchema = z
-	.object(
-		Object.fromEntries(
-			(Object.keys(CONFIG_POST_KEYS) as (keyof ConfigPostBody)[]).map((k) => [
-				k,
-				k === "capabilities"
-					? z.partialRecord(z.enum(capabilityNames), z.boolean()).optional()
-					: k === "telegram"
-						? z
-								.object(
-									Object.fromEntries(
-										(
-											Object.keys(CONFIG_POST_TELEGRAM_KEYS) as (keyof ConfigPostBody["telegram"])[]
-										).map((tk) => [tk, z.unknown().optional()]),
-									),
-								)
-								.strict()
-								.optional()
-						: z.unknown().optional(),
-			]),
-		),
-	)
-	.strict();
-
-const capabilitiesPostSchema = z.partialRecord(z.enum(capabilityNames), z.boolean());
-
-// The subagents wire arm — the settings editor's face of the block. The
-// config schema stays the gate for urls and thinking rungs; this only
-// pins the shape the merge reads.
-const subagentModelPostSchema = z
-	.object({
-		auth: z.string().min(1),
-		id: z.string().min(1),
-		baseUrl: z.url(),
-		thinking: z.enum(thinkingLevels),
-	})
-	.strict();
-const subagentsPostSchema = z
-	.object({
-		worker: subagentModelPostSchema.nullable(),
-		computer: subagentModelPostSchema.nullable(),
-		desktopImage: z.string().min(1),
-	})
-	.strict();
-
-// Active block, else the parked one — a parked block still prefills the
-// editor and its restoration stash.
-function subagentsWire(config: Config): SubagentsWire | null {
-	const s = config.subagents ?? config.parked?.subagents;
-	if (s === undefined) return null;
-	const arm = (t: SubagentsConfig["worker"]): SubagentsWire["worker"] =>
-		t === undefined
-			? null
-			: {
-					auth: t.model.auth,
-					id: t.model.id,
-					baseUrl: t.model.baseUrl,
-					thinking: t.model.thinking,
-				};
-	return { worker: arm(s.worker), computer: arm(s.computer), desktopImage: s.desktops.image };
-}
-
-function capabilityState(config: Config, k: CapabilityName): CapabilityState {
-	if (config[k] !== undefined) return { state: "on", hint: null };
-	if (config.parked?.[k] !== undefined || capabilityDefaults[k] !== undefined)
-		return { state: "off", hint: null };
-	return { state: "needs-setup", hint: capabilityHints[k] };
-}
-
-function capabilityStates(config: Config): Record<CapabilityName, CapabilityState> {
-	return Object.fromEntries(capabilityNames.map((k) => [k, capabilityState(config, k)])) as Record<
-		CapabilityName,
-		CapabilityState
-	>;
-}
-
-function unknownConfigKeys(body: object): string[] {
-	const parsed = configPostBodySchema.safeParse(body);
-	if (parsed.success) return [];
-	const unknown: string[] = [];
-	for (const issue of parsed.error.issues) {
-		if (issue.code !== "unrecognized_keys" || !("keys" in issue)) continue;
-		const prefix = issue.path.length > 0 ? `${issue.path.join(".")}.` : "";
-		for (const k of issue.keys) unknown.push(`${prefix}${k}`);
-	}
-	return unknown;
-}
-
-async function saveConfig(
+export async function handleOperatorRoute(
 	deps: OperatorDeps,
 	actor: OperatorActor,
 	req: Request,
-	body: object,
-): Promise<Response> {
-	const who = actor.via === "mini-app" ? { userId: actor.userId } : {};
-	let wrote = false;
-	try {
-		const base = loadConfig() ?? deps.configRef.current;
-		const expected = req.headers.get("if-match");
-		if (!expected) {
-			log.warn(`${actor.via} config save refused — missing version`, who);
-			return Response.json(
-				{ error: "load settings before saving" },
-				{ status: 428, headers: NO_STORE },
-			);
-		}
-		if (expected !== configTag(base)) {
-			log.warn(`${actor.via} config save refused — stale version`, who);
-			return Response.json(
-				{ error: "settings changed since this page loaded — reopen settings before saving" },
-				{ status: 409, headers: NO_STORE },
-			);
-		}
-		const normalized = parseConfig(base);
-		// Capability flips apply to the normalized disk config BEFORE the
-		// body merge — a body block for the same key then still wins.
-		const parked: Partial<Record<CapabilityName, unknown>> = { ...(normalized.parked ?? {}) };
-		const candidate: Record<string, unknown> = { ...normalized };
-		const caps = capabilitiesPostSchema.parse(
-			(body as { capabilities?: unknown }).capabilities ?? {},
-		);
-		for (const [k, on] of Object.entries(caps) as [CapabilityName, boolean][]) {
-			if (!on) {
-				if (candidate[k] !== undefined) {
-					parked[k] = candidate[k];
-					delete candidate[k];
-				}
-				continue;
-			}
-			if (candidate[k] !== undefined) continue;
-			// First-time setup may arrive with the enable switch. The body
-			// merge below wins over parked/default blocks; validate that
-			// supplied value with the WHOLE resulting config before writing
-			// (it may also introduce the model's provider).
-			const supplied = (body as Record<string, unknown>)[k];
-			if (supplied !== undefined && supplied !== "") continue;
-			if (parked[k] !== undefined) {
-				candidate[k] = parked[k];
-				delete parked[k];
-				continue;
-			}
-			const dflt = capabilityDefaults[k];
-			if (dflt !== undefined) {
-				candidate[k] = dflt;
-				continue;
-			}
-			log.warn(`${actor.via} config save refused — capability needs setup`, {
-				...who,
-				capability: k,
-			});
-			return Response.json(
-				{ error: `cannot enable ${k}: ${capabilityHints[k]}` },
-				{ status: 422, headers: NO_STORE },
-			);
-		}
-		for (const [k, v] of Object.entries(body)) {
-			if (k === "capabilities") continue;
-			if (k === "telegram" && typeof v === "object" && v !== null && !Array.isArray(v)) {
-				candidate.telegram = { ...normalized.telegram, ...v };
-				continue;
-			}
-			// Machine targets are host-bound and file-only — the settings
-			// editor sends harnesses/defaults, and this merge keeps the
-			// file's own copy: the active block's, else the parked one a
-			// re-enable leaves behind.
-			if (k === "delegation" && typeof v === "object" && v !== null && !Array.isArray(v)) {
-				const machines =
-					normalized.delegation?.machines ??
-					(parked.delegation as DelegationConfig | undefined)?.machines;
-				candidate.delegation = {
-					...(machines === undefined ? {} : { machines }),
-					...v,
-				};
-				// An edited block supersedes a parked copy — leaving it
-				// would resurrect the old value on the next off/on flip.
-				delete parked.delegation;
-				continue;
-			}
-			// maxRuns and the desktop pool limits are file-only — the
-			// editor sends models and the image; this merge keeps the
-			// file's own tuning: the active block's, else the parked one.
-			if (k === "subagents" && typeof v === "object" && v !== null && !Array.isArray(v)) {
-				const w = subagentsPostSchema.parse(v);
-				if (w.worker === null && w.computer === null) {
-					log.warn(`${actor.via} config save refused — subagents with no model type`, who);
-					return Response.json(
-						{ error: "pick a model for the worker or computer use" },
-						{ status: 422, headers: NO_STORE },
-					);
-				}
-				const prev = normalized.subagents ?? (parked.subagents as SubagentsConfig | undefined);
-				const model = (m: NonNullable<(typeof w)["worker"]>) => ({
-					model: { ...m, api: "openai-completions" as const },
-				});
-				candidate.subagents = {
-					...(prev === undefined ? {} : { maxRuns: prev.maxRuns }),
-					...(w.worker === null ? {} : { worker: model(w.worker) }),
-					...(w.computer === null ? {} : { computer: model(w.computer) }),
-					desktops:
-						prev === undefined
-							? { image: w.desktopImage }
-							: { ...prev.desktops, image: w.desktopImage },
-				};
-				// Like delegation: an edited block supersedes a parked copy.
-				delete parked.subagents;
-				continue;
-			}
-			// "" on a parkable block keeps its contents — off, not deleted.
-			if (v === "" && (capabilityNames as readonly string[]).includes(k)) {
-				if (candidate[k] !== undefined) parked[k as CapabilityName] = candidate[k];
-				delete candidate[k];
-				continue;
-			}
-			candidate[k] = v;
-			if ((capabilityNames as readonly string[]).includes(k)) delete parked[k as CapabilityName];
-		}
-		candidate.parked = Object.keys(parked).length > 0 ? parked : undefined;
-		const merged = parseConfig(candidate);
-		// A stored level the model can't express is a lie — write the
-		// rung the wire clamp would land on, on both channels.
-		merged.thinking = clampThinkingFor(merged.providers, merged.model, merged.thinking);
-		// A disabled channel's saved pin is dormant state — leave model and
-		// thinking untouched until it is re-enabled.
-		if (merged.telegram.enabled) {
-			merged.telegram.thinking = clampThinkingFor(
-				merged.providers,
-				merged.telegram.model ?? merged.model,
-				merged.telegram.thinking ?? merged.thinking,
-			);
-		}
-		if (actor.via === "mini-app" && !merged.operators.includes(actor.userId)) {
-			return Response.json(
-				{ error: `config would remove your own telegram user id (${actor.userId})` },
-				{ status: 422, headers: NO_STORE },
-			);
-		}
-		deps.beforeConfigWritten?.(normalized, merged);
-		writeConfig(merged);
-		wrote = true;
-		const fresh = loadConfig();
-		if (fresh) deps.configRef.current = fresh;
-		deps.onConfigWritten();
-		log.info(`config written via ${actor.via}`, {
-			...who,
-			appModel: merged.model,
-			appThinking: merged.thinking,
-			telegramModel: merged.telegram.model,
-			telegramThinking: merged.telegram.thinking,
-		});
-		return Response.json(
-			{ ok: true },
-			{
-				headers: { ...NO_STORE, etag: configTag(fresh ?? merged) },
-			},
-		);
-	} catch (err) {
-		if (err instanceof ConfigValidationError) {
-			return Response.json({ error: err.message }, { status: 422, headers: NO_STORE });
-		}
-		if (!(err instanceof z.ZodError)) {
-			log.error(`${actor.via} config save failed`, err, { ...who, wrote });
-			return Response.json(
-				{
-					error: wrote
-						? "settings were saved but could not be applied — check the service log"
-						: "settings could not be written — check the service log",
-				},
-				{ status: 500, headers: NO_STORE },
-			);
-		}
-		const msg = z.prettifyError(err);
-		return Response.json({ error: msg }, { status: 422, headers: NO_STORE });
-	}
-}
-
-// Values never log; errors name the record only.
-const secretPostBody = z
-	.object({
-		name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/),
-		value: z.string().trim().min(1).max(4096),
-	})
-	.strict();
-
-function memoryGate(deps: OperatorDeps): NonNullable<OperatorDeps["memory"]> | string {
-	const configured = deps.configRef.current.memory;
-	const targetChanged =
-		configured &&
-		deps.memory?.target &&
-		(configured.baseUrl !== deps.memory.target.baseUrl ||
-			configured.bankId !== deps.memory.target.bankId);
-	if (!deps.memory || !configured || targetChanged) {
-		return targetChanged
-			? "memory destination changed — restart to apply"
-			: "memory is not configured";
-	}
-	return deps.memory;
-}
-
-function browseGate(
-	deps: OperatorDeps,
-): { mem: NonNullable<OperatorDeps["memory"]>; client: HindsightClient } | string {
-	const mem = memoryGate(deps);
-	if (typeof mem === "string") return mem;
-	if (!mem.client) return "memory browsing is not wired";
-	return { mem, client: mem.client };
-}
-
-function forgetGate(deps: OperatorDeps):
-	| {
-			mem: NonNullable<OperatorDeps["memory"]>;
-			client: HindsightClient;
-			source: ForgetSource;
-	  }
-	| string {
-	const mem = memoryGate(deps);
-	if (typeof mem === "string") return mem;
-	if (!mem.client || !mem.contexts || !mem.queue || !mem.withWorkerPaused) {
-		return "memory forgetting is not wired";
-	}
-	return {
-		mem,
-		client: mem.client,
-		source: {
-			client: mem.client,
-			...(mem.clientForTarget ? { clientForTarget: mem.clientForTarget } : {}),
-			contexts: mem.contexts,
-			queue: mem.queue,
-			withWorkerPaused: mem.withWorkerPaused,
-		},
+	tail: string,
+	url: URL,
+): Promise<Response | null> {
+	const r: OperatorRequest = {
+		deps,
+		actor,
+		who: actor.via === "mini-app" ? { userId: actor.userId } : {},
+		req,
+		tail,
+		url,
 	};
-}
-
-function memoryUpstreamError(err: unknown, what: string): Response {
-	if (err instanceof HindsightError) {
-		log.warn(what, { kind: err.kind, status: err.status });
-		return Response.json(
-			{ error: "memory unavailable — try again later" },
-			{ status: 503, headers: NO_STORE },
-		);
-	}
-	log.error(what, err);
-	return Response.json(
-		{ error: "memory request failed — check the service log" },
-		{ status: 500, headers: NO_STORE },
+	return (
+		(await configRoute(r)) ??
+		(await memoryRoute(r)) ??
+		(await skillsRoute(r)) ??
+		(await serviceRoute(r))
 	);
 }
 
-// What the page shows for a conversation: its name, else why it has none.
-// Without the lookup seam the raw id stays — the pre-#163 behaviour.
-export function conversationName(
-	mem: NonNullable<OperatorDeps["memory"]>,
-	id: string | null,
-): string | null {
-	if (id === null) return null;
-	if (mem.conversationTitle === undefined) return id;
-	const found = mem.conversationTitle(id);
-	if (found === null) return "Deleted conversation";
-	return found.title ?? "Untitled conversation";
-}
-
-function memoryStatusResponse(deps: OperatorDeps): MemoryStatusResponse {
-	const gate = memoryGate(deps);
-	if (typeof gate === "string") {
-		return {
-			state: "disabled",
-			detail: gate,
-			deleting: 0,
-			completed: 0,
-			blocked: 0,
-			dismissed: 0,
-			queued: 0,
-			lastRecallAt: null,
-			lastRecallOk: null,
-			topicNote: null,
-			blockedDetail: [],
-			lastSaveAt: null,
-			blockedConversations: [],
-			blockedCauses: [],
-			retry: null,
-		};
+// Thinking levels, programs, delegations, status, attachments, identity, log.
+async function serviceRoute({
+	deps,
+	actor,
+	who,
+	req,
+	tail,
+	url,
+}: OperatorRequest): Promise<Response | null> {
+	if (tail === "thinking-levels") {
+		const levels = thinkingLevelsFor(
+			url.searchParams.get("kind") ?? "",
+			url.searchParams.get("model") ?? "",
+			url.searchParams.get("base") ?? undefined,
+		);
+		return json({ levels });
 	}
-	const mem = gate;
-	const counts = mem.counts();
-	const lastRecallAt = mem.lastRecallAt();
-	const lastRecallOk = mem.lastRecallOk();
-	const status = memoryStatus({
-		enabled: true,
-		counts,
-		deletingAll: mem.deletingAll(),
-		lastRecallOk,
-		lastRecallAt,
-		blockedDetail: mem.blockedDetail(),
-	});
-	const target = mem.client?.target;
-	const queue = mem.queue;
-	const summary =
-		queue !== undefined && target !== undefined && counts.blocked > 0
-			? queue.blockedSummary(target)
-			: null;
-	const retry = queue !== undefined && target !== undefined ? queue.retryProgress(target) : null;
-	const lastSave = queue !== undefined && target !== undefined ? queue.lastSaveAt(target) : null;
-	return {
-		state: status.state,
-		detail: status.detail,
-		deleting: status.deleting,
-		completed: counts.completed,
-		blocked: counts.blocked,
-		dismissed: counts.dismissed,
-		queued: status.pending,
-		lastRecallAt,
-		lastRecallOk,
-		topicNote: null,
-		blockedDetail: status.blockedDetail.map((b) => ({
-			document: b.document,
-			error: b.error,
-			attempts: b.attempts,
-			conversationId: b.conversationId,
-			conversationName: conversationName(mem, b.conversationId),
-		})),
-		lastSaveAt: lastSave === null ? null : new Date(lastSave).toISOString(),
-		blockedConversations: (summary?.byConversation ?? []).map((g) => ({
-			conversationId: g.conversationId,
-			name: conversationName(mem, g.conversationId),
-			count: g.count,
-		})),
-		blockedCauses: (summary?.byCause ?? []).map(({ error, count }) => ({ error, count })),
-		retry:
-			retry === null
-				? null
-				: {
-						startedAt: new Date(retry.startedAt).toISOString(),
-						done: retry.done,
-						queued: retry.queued,
-						failed: retry.failed,
-						conversations: retry.conversations.map((c) => ({
-							...c,
-							name: conversationName(mem, c.conversationId),
-						})),
-					},
-	};
+
+	if (tail === "programs") {
+		if (req.method !== "GET") return methodNotAllowed();
+		if (!deps.programs) {
+			return fail("programs are not wired", 503);
+		}
+		const body: OperatorProgramsResponse = {
+			programs: deps.programs.list().map(programItem),
+			serverTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+		};
+		return json(body);
+	}
+
+	if (tail === "delegations") {
+		if (req.method !== "GET") return methodNotAllowed();
+		if (!deps.delegations) {
+			return fail("delegation is not configured", 503);
+		}
+		const rows = deps.delegations.list();
+		const body: OperatorDelegationsResponse = {
+			delegations: rows.map(delegationItem),
+		};
+		return json(body);
+	}
+
+	const stopMatch = /^delegations\/(\d{1,9})\/stop$/.exec(tail);
+	if (stopMatch !== null) {
+		if (req.method !== "POST") return methodNotAllowed();
+		if (!deps.stopDelegation) {
+			return fail("delegation is not configured", 503);
+		}
+		const id = Number(stopMatch[1]);
+		log.info(`delegation stop via ${actor.via}`, { ...who, delegation: id });
+		const out = await deps.stopDelegation(id);
+		if (out.kind === "no row") {
+			return fail("no such delegation", 404);
+		}
+		const body: OperatorDelegationStopResponse = {
+			outcome: out.kind,
+			delegation: delegationItem(out.delegation),
+			notes: out.notes,
+		};
+		return Response.json(body, {
+			status: out.kind === "stopped" ? 200 : 409,
+			headers: NO_STORE,
+		});
+	}
+
+	if (tail === "status") {
+		if (req.method !== "GET") return methodNotAllowed();
+		const svc = deps.service;
+		if (!svc) {
+			return fail("status is not wired", 503);
+		}
+		const programs = deps.programs?.list();
+		const delegations = deps.delegations?.list();
+		const active = deps.delegations?.active();
+		const body: OperatorStatusResponse = {
+			version: svc.version,
+			startedAt: svc.startedAt,
+			uptimeSec: Math.max(0, Math.floor((Date.now() - Date.parse(svc.startedAt)) / 1000)),
+			restartHints: svc.restartHints(),
+			memory: memoryStatusResponse(deps),
+			programs: programs
+				? {
+						total: programs.length,
+						enabled: programs.filter((p) => p.enabled).length,
+					}
+				: null,
+			delegations:
+				delegations !== undefined && active !== undefined
+					? { total: delegations.length, active: active.length }
+					: null,
+		};
+		return json(body);
+	}
+
+	if (tail === "attachments") {
+		if (req.method !== "GET") return methodNotAllowed();
+		const body = listAttachments(paths.attachments());
+		return json(body);
+	}
+
+	if (tail === "attachments/file") {
+		if (req.method !== "GET") return methodNotAllowed();
+		const name = SEGMENT_SCHEMA.safeParse(url.searchParams.get("name") ?? "");
+		if (!name.success || name.data.startsWith(".")) return fail("bad name", 400);
+		let served: ReturnType<typeof readAttachmentBytes>;
+		try {
+			served = readAttachmentBytes(paths.attachments(), name.data, ATTACHMENT_SERVE_CAP);
+		} catch (e) {
+			if (e instanceof AttachmentTooLargeError) {
+				return fail("attachment too large", 413);
+			}
+			throw e;
+		}
+		if (served === null) return fail("not found", 404);
+		const inline = /^(image|audio|video)\//.test(served.contentType);
+		return new Response(served.bytes, {
+			headers: {
+				...NO_STORE,
+				"content-type": served.contentType,
+				"x-content-type-options": "nosniff",
+				"content-security-policy": "sandbox",
+				...(inline ? {} : { "content-disposition": "attachment" }),
+			},
+		});
+	}
+
+	if (tail === "identity") {
+		if (req.method !== "GET") return methodNotAllowed();
+		const body = identityFiles(paths.workspace());
+		return json(body);
+	}
+
+	if (tail === "log") {
+		if (req.method !== "GET") return methodNotAllowed();
+		const limitRaw = url.searchParams.get("limit");
+		const limit =
+			limitRaw === null
+				? { success: true as const, data: 200 }
+				: z.coerce.number().int().min(1).max(1000).safeParse(limitRaw);
+		if (!limit.success) return fail("bad limit", 400);
+		const levelRaw = url.searchParams.get("level");
+		const level =
+			levelRaw === null || levelRaw === ""
+				? { success: true as const, data: null }
+				: z.enum(["debug", "info", "warn", "error"]).safeParse(levelRaw);
+		if (!level.success) return fail("bad level", 400);
+		const qRaw = url.searchParams.get("q");
+		const q =
+			qRaw === null || qRaw === ""
+				? { success: true as const, data: null }
+				: z.string().max(300).safeParse(qRaw);
+		if (!q.success) return fail("bad q", 400);
+		const body = tailLog(paths.logFile(), {
+			limit: limit.data,
+			level: level.data,
+			q: q.data,
+		});
+		return json(body);
+	}
+
+	return null;
 }
-
-function memoryDocListItem(
-	source: MemoryDocSummary,
-	mem: NonNullable<OperatorDeps["memory"]>,
-): MemoryDocListItem {
-	const conversationId =
-		source.document_metadata?.conversation_id ?? conversationOfDocId(source.id);
-	return {
-		id: source.id,
-		createdAt: source.created_at ?? null,
-		updatedAt: source.updated_at ?? null,
-		textLength: source.text_length ?? 0,
-		factCount: source.memory_unit_count ?? 0,
-		conversationId,
-		conversationName: conversationName(mem, conversationId),
-	};
-}
-
-function memoryFactItem(source: MemoryFact): MemoryFactItem {
-	return {
-		id: source.id,
-		text: source.text,
-		factType: source.fact_type ?? null,
-		state: source.state ?? null,
-		occurredStart: source.occurred_start ?? null,
-		occurredEnd: source.occurred_end ?? null,
-		mentionedAt: source.mentioned_at ?? null,
-		entities: source.entities ?? null,
-	};
-}
-
-const browseQuerySchema = z
-	.object({
-		q: z.string().min(1).max(256).optional(),
-		conversation: z.string().min(1).max(256).optional(),
-		limit: z.coerce.number().int().min(1).max(100).default(25),
-		offset: z.coerce.number().int().min(0).default(0),
-	})
-	.refine((v) => !(v.q !== undefined && v.conversation !== undefined), {
-		message: "q and conversation are mutually exclusive",
-	});
-
-// `error` scopes the action to one cause (an attention card); absent
-// means every blocked exchange (the Memory page).
-const memoryBlockedBody = z
-	.object({ action: z.enum(["retry", "dismiss"]), error: z.string().nullable().optional() })
-	.strict();
 
 function programItem(program: Program): OperatorProgramItem {
 	return {
@@ -824,991 +426,4 @@ function delegationItem(row: Delegation): OperatorDelegationItem {
 		promptedAt: row.promptedAt,
 		finishedAt: row.finishedAt,
 	};
-}
-
-export async function handleOperatorRoute(
-	deps: OperatorDeps,
-	actor: OperatorActor,
-	req: Request,
-	tail: string,
-	url: URL,
-): Promise<Response | null> {
-	const who = actor.via === "mini-app" ? { userId: actor.userId } : {};
-
-	if (tail === "thinking-levels") {
-		const levels = thinkingLevelsFor(
-			url.searchParams.get("kind") ?? "",
-			url.searchParams.get("model") ?? "",
-			url.searchParams.get("base") ?? undefined,
-		);
-		return Response.json({ levels }, { headers: NO_STORE });
-	}
-
-	if (tail === "config") {
-		if (req.method === "GET") {
-			const config = loadConfig() ?? deps.configRef.current;
-			const body: ConfigResponse = {
-				config,
-				providerKinds,
-				searchKinds,
-				fetchKinds,
-				transcriptionKinds,
-				transcriptionDefaults,
-				ttsDefaults: ttsCloudDefaults,
-				authDefaults,
-				authNames: [...(deps.authNames?.() ?? [])].sort(),
-				authCommandNames: (deps.authNames?.() ?? [])
-					.filter((n) => deps.secrets?.isCommand(n) ?? false)
-					.sort(),
-				// Cached only: the settings door never waits on models.dev.
-				modelCatalog: modelCatalogFor(config),
-				capabilities: capabilityStates(config),
-				subagents: subagentsWire(config),
-				serviceNames,
-				providerPresets,
-			};
-			return Response.json(body, {
-				headers: { ...NO_STORE, etag: configTag(config) },
-			});
-		}
-		if (req.method === "POST") {
-			let body: unknown;
-			try {
-				body = await req.json();
-			} catch {
-				return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
-			}
-			if (typeof body !== "object" || body === null || Array.isArray(body)) {
-				return Response.json(
-					{ error: "expected a json object" },
-					{ status: 400, headers: NO_STORE },
-				);
-			}
-			const unknownKeys = unknownConfigKeys(body);
-			if (unknownKeys.length > 0) {
-				log.warn(`${actor.via} config save refused — unknown keys`, {
-					...who,
-					keys: unknownKeys,
-				});
-				return Response.json(
-					{ error: `unknown config keys: ${unknownKeys.join(", ")}` },
-					{ status: 400, headers: NO_STORE },
-				);
-			}
-			const attempt = configSaveQueue.then(() => saveConfig(deps, actor, req, body));
-			configSaveQueue = attempt.catch((err: unknown) => {
-				log.error("config save queue attempt failed", err, who);
-			});
-			return attempt;
-		}
-		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-	}
-
-	if (
-		tail === "accounts/chatgpt" ||
-		tail === "accounts/chatgpt/login" ||
-		tail === "accounts/chatgpt/logout"
-	) {
-		const chatgpt = deps.chatgpt;
-		if (chatgpt === undefined) {
-			return Response.json(
-				{ error: "chatgpt sign-in is not wired" },
-				{ status: 503, headers: NO_STORE },
-			);
-		}
-		if (tail === "accounts/chatgpt") {
-			if (req.method !== "GET") {
-				return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-			}
-			return Response.json(chatgpt.status(), { headers: NO_STORE });
-		}
-		if (tail === "accounts/chatgpt/login") {
-			if (req.method === "DELETE") {
-				return Response.json(chatgpt.cancel(), { headers: NO_STORE });
-			}
-			if (req.method !== "POST") {
-				return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-			}
-			if (chatgpt.status().pinned) {
-				return Response.json(
-					{
-						error:
-							"a codex provider pins authFile in goblin.json5 — remove it to sign in from Settings",
-					},
-					{ status: 409, headers: NO_STORE },
-				);
-			}
-			return Response.json(await chatgpt.start(), { headers: NO_STORE });
-		}
-		if (req.method !== "POST") {
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		}
-		return Response.json(chatgpt.signOut(), { headers: NO_STORE });
-	}
-
-	if (tail === "secrets") {
-		if (req.method !== "POST") {
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		}
-		const secrets = deps.secrets;
-		if (secrets === undefined) {
-			return Response.json(
-				{ error: "the auth store is not wired" },
-				{ status: 503, headers: NO_STORE },
-			);
-		}
-		let raw: unknown;
-		try {
-			raw = await req.json();
-		} catch {
-			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
-		}
-		const parsed = secretPostBody.safeParse(raw);
-		if (!parsed.success) {
-			return Response.json(
-				{ error: z.prettifyError(parsed.error) },
-				{ status: 422, headers: NO_STORE },
-			);
-		}
-		const { name, value } = parsed.data;
-		if (value.startsWith("!")) {
-			return Response.json(
-				{
-					error:
-						'values starting with "!" resolve as shell commands — command records stay hand-edited',
-				},
-				{ status: 422, headers: NO_STORE },
-			);
-		}
-		if (secrets.isCommand(name)) {
-			return Response.json(
-				{
-					error: `"${name}" resolves through a command record — it stays hand-managed; pick another name`,
-				},
-				{ status: 409, headers: NO_STORE },
-			);
-		}
-		const replaced = secrets.has(name);
-		try {
-			secrets.store(name, value);
-		} catch (err) {
-			log.error(`${actor.via} secret store failed`, err, { ...who, name });
-			return Response.json(
-				{ error: "the secret could not be written — check the service log" },
-				{ status: 500, headers: NO_STORE },
-			);
-		}
-		log.info(`auth record stored via ${actor.via}`, { ...who, name, replaced });
-		const stored: SecretStoreResponse = { ok: true, name, replaced };
-		return Response.json(stored, { headers: NO_STORE });
-	}
-
-	if (tail === "memory/status") {
-		const view = memoryStatusResponse(deps);
-		log.debug("memory status served", {
-			...who,
-			via: actor.via,
-			state: view.state,
-			queued: view.queued,
-			blocked: view.blocked,
-		});
-		return Response.json(view, { headers: NO_STORE });
-	}
-
-	if (tail === "memory/blocked") {
-		if (req.method !== "POST") {
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		}
-		const gate = memoryGate(deps);
-		if (typeof gate === "string" || gate.queue === undefined || gate.client === undefined) {
-			return Response.json(
-				{ error: typeof gate === "string" ? gate : "memory queue is not wired" },
-				{ status: 503, headers: NO_STORE },
-			);
-		}
-		let raw: unknown;
-		try {
-			raw = await req.json();
-		} catch {
-			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
-		}
-		const parsed = memoryBlockedBody.safeParse(raw);
-		if (!parsed.success) {
-			return Response.json(
-				{ error: z.prettifyError(parsed.error) },
-				{ status: 422, headers: NO_STORE },
-			);
-		}
-		const scope = parsed.data.error === undefined ? undefined : { error: parsed.data.error };
-		const affected =
-			parsed.data.action === "retry"
-				? gate.queue.retryBlocked(gate.client.target, scope)
-				: gate.queue.dismissBlocked(gate.client.target, scope);
-		log.info(
-			`memory blocked retentions ${parsed.data.action === "retry" ? "requeued" : "dismissed"} via ${actor.via}`,
-			{ ...who, affected, scoped: scope !== undefined, cause: scope?.error ?? null },
-		);
-		const body: MemoryBlockedResponse = { ok: true, action: parsed.data.action, affected };
-		return Response.json(body, { headers: NO_STORE });
-	}
-
-	if (tail === "memory/saves") {
-		if (req.method !== "GET")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		const gate = browseGate(deps);
-		if (typeof gate === "string") {
-			return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
-		}
-		const parsed = z
-			.object({
-				q: z.string().min(1).max(256).optional(),
-				limit: z.coerce.number().int().min(1).max(100).default(20),
-				offset: z.coerce.number().int().min(0).default(0),
-			})
-			.safeParse({
-				...(url.searchParams.has("q") ? { q: url.searchParams.get("q") ?? undefined } : {}),
-				limit: url.searchParams.get("limit") ?? undefined,
-				offset: url.searchParams.get("offset") ?? undefined,
-			});
-		if (!parsed.success) {
-			return Response.json(
-				{ error: z.prettifyError(parsed.error) },
-				{ status: 422, headers: NO_STORE },
-			);
-		}
-		try {
-			const { q, limit, offset } = parsed.data;
-			// Hindsight filters only by id substring, so splitting kept from
-			// nothing-kept (and matching conversation names) means scanning
-			// the whole exchange set, then paging here.
-			const rows: { doc: MemoryDocSummary; conversationId: string | null; name: string | null }[] =
-				[];
-			for (let scanOffset = 0; ; ) {
-				const batch = await gate.client.listDocuments({
-					q: "exchange/",
-					limit: 100,
-					offset: scanOffset,
-				});
-				for (const doc of batch.items) {
-					const conversationId =
-						doc.document_metadata?.conversation_id ?? conversationOfDocId(doc.id);
-					rows.push({ doc, conversationId, name: conversationName(gate.mem, conversationId) });
-				}
-				scanOffset += batch.items.length;
-				if (scanOffset >= batch.total) break;
-				if (batch.items.length === 0) throw new HindsightError("protocol");
-			}
-			const split = splitSaves(rows, q);
-			const body: MemorySavesResponse = {
-				kept: {
-					items: split.kept
-						.slice(offset, offset + limit)
-						.map((r) => memoryDocListItem(r.doc, gate.mem)),
-					total: split.kept.length,
-					limit,
-					offset,
-				},
-				nothingKept: split.nothingKept,
-			};
-			log.debug("memory saves served", {
-				...who,
-				via: actor.via,
-				q: q ?? null,
-				scanned: rows.length,
-				kept: body.kept.total,
-				nothingKept: body.nothingKept.total,
-				offset,
-			});
-			return Response.json(body, { headers: NO_STORE });
-		} catch (err) {
-			return memoryUpstreamError(err, "memory saves failed");
-		}
-	}
-
-	if (tail === "memory/documents") {
-		if (req.method !== "GET")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		const gate = browseGate(deps);
-		if (typeof gate === "string") {
-			return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
-		}
-		const parsed = browseQuerySchema.safeParse({
-			...(url.searchParams.has("q") ? { q: url.searchParams.get("q") ?? undefined } : {}),
-			...(url.searchParams.has("conversation")
-				? { conversation: url.searchParams.get("conversation") ?? undefined }
-				: {}),
-			limit: url.searchParams.get("limit") ?? undefined,
-			offset: url.searchParams.get("offset") ?? undefined,
-		});
-		if (!parsed.success) {
-			return Response.json(
-				{ error: z.prettifyError(parsed.error) },
-				{ status: 422, headers: NO_STORE },
-			);
-		}
-		try {
-			const { conversation, q, limit, offset } = parsed.data;
-			let page: MemoryDocPage<MemoryDocSummary>;
-			if (conversation !== undefined) {
-				const prefix = `exchange/${conversation}/`;
-				const items: MemoryDocSummary[] = [];
-				let total = 0;
-				for (let scanOffset = 0; ; ) {
-					const batch = await gate.client.listDocuments({
-						q: "exchange/",
-						limit: 100,
-						offset: scanOffset,
-					});
-					for (const item of batch.items) {
-						if (!item.id.startsWith(prefix) || item.id.slice(prefix.length).split("/").length !== 2)
-							continue;
-						if (total >= offset && items.length < limit) items.push(item);
-						total++;
-					}
-					scanOffset += batch.items.length;
-					if (scanOffset >= batch.total) break;
-					if (batch.items.length === 0) throw new HindsightError("protocol");
-				}
-				page = { items, total, limit, offset };
-			} else {
-				page = await gate.client.listDocuments({
-					...(q !== undefined ? { q } : {}),
-					limit,
-					offset,
-				});
-			}
-			const body: MemoriesListResponse = {
-				items: page.items.map((d) => memoryDocListItem(d, gate.mem)),
-				total: page.total,
-				limit: page.limit,
-				offset: page.offset,
-			};
-			log.debug("memory browse served", {
-				...who,
-				via: actor.via,
-				q: q ?? null,
-				conversation: parsed.data.conversation ?? null,
-				total: body.total,
-				offset: body.offset,
-				returned: body.items.length,
-			});
-			return Response.json(body, { headers: NO_STORE });
-		} catch (err) {
-			return memoryUpstreamError(err, "memory browse failed");
-		}
-	}
-
-	if (tail.startsWith("memory/documents/")) {
-		const rawId = tail.slice("memory/documents/".length);
-		let decoded: string | undefined;
-		try {
-			decoded = decodeURIComponent(rawId);
-		} catch {
-			decoded = undefined;
-		}
-		const parsedId = decoded === undefined ? undefined : identifier.safeParse(decoded);
-		if (!parsedId || !parsedId.success) {
-			return Response.json({ error: "no such document" }, { status: 404, headers: NO_STORE });
-		}
-		const id = parsedId.data;
-		if (req.method === "GET") {
-			const gate = browseGate(deps);
-			if (typeof gate === "string") {
-				return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
-			}
-			const started = Date.now();
-			try {
-				const [doc, facts] = await Promise.all([
-					gate.client.getDocument(id),
-					gate.client.listMemories({ documentId: id, limit: 200, offset: 0 }),
-				]);
-				if (doc === null) {
-					return Response.json({ error: "no such document" }, { status: 404, headers: NO_STORE });
-				}
-				const body: MemoryDocDetailResponse = {
-					document: memoryDocListItem(
-						{
-							id: doc.id,
-							created_at: doc.created_at,
-							updated_at: doc.updated_at,
-							text_length: doc.original_text === null ? 0 : doc.original_text.length,
-							memory_unit_count: doc.memory_unit_count,
-						},
-						gate.mem,
-					),
-					originalText: doc.original_text,
-					facts: facts.items.map(memoryFactItem),
-					factsTotal: facts.total,
-				};
-				log.debug("memory document served", {
-					...who,
-					via: actor.via,
-					document: id,
-					facts: facts.total,
-					ms: Date.now() - started,
-				});
-				return Response.json(body, { headers: NO_STORE });
-			} catch (err) {
-				return memoryUpstreamError(err, "memory document failed");
-			}
-		}
-		if (req.method === "DELETE") {
-			const gate = forgetGate(deps);
-			if (typeof gate === "string") {
-				return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
-			}
-			const started = Date.now();
-			try {
-				const result = await forgetDocument(gate.source, id, {
-					channel: actor.via === "mini-app" ? "mini-app" : "app",
-				});
-				if (result.outcome === "busy") {
-					log.warn(`memory forget via ${actor.via} refused`, {
-						...who,
-						document: id,
-						unsettled: result.unsettled,
-						ms: Date.now() - started,
-					});
-					return Response.json(
-						{
-							error: "memory for that document is still processing remotely — retry in a minute",
-						},
-						{ status: 409, headers: NO_STORE },
-					);
-				}
-				if (result.outcome === "foreign-bank") {
-					log.warn(`memory forget via ${actor.via} refused — previous bank not addressable`, {
-						...who,
-						document: id,
-						target: result.target,
-						ms: Date.now() - started,
-					});
-					return Response.json(
-						{
-							error:
-								"that document has memory work bound to a previous memory bank that can't be reached — nothing was changed; point memory back at that bank (restart) and retry",
-						},
-						{ status: 409, headers: NO_STORE },
-					);
-				}
-				log.info(`memory forget via ${actor.via}`, {
-					...who,
-					document: id,
-					cancelled: result.cancelled,
-					redacted: result.redacted,
-					ms: Date.now() - started,
-				});
-				const body: MemoryForgetResponse = {
-					ok: true,
-					cancelled: result.cancelled,
-					redacted: result.redacted,
-				};
-				return Response.json(body, { headers: NO_STORE });
-			} catch (err) {
-				return memoryUpstreamError(err, "memory forget failed");
-			}
-		}
-		return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-	}
-
-	if (tail === "memory/forget-thread") {
-		if (req.method !== "POST")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		const gate = forgetGate(deps);
-		if (typeof gate === "string") {
-			return Response.json({ error: gate }, { status: 503, headers: NO_STORE });
-		}
-		let raw: unknown;
-		try {
-			raw = await req.json();
-		} catch {
-			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
-		}
-		const parsed = z.object({ conversation: z.string().min(1).max(256) }).safeParse(raw);
-		if (!parsed.success)
-			return Response.json(
-				{ error: z.prettifyError(parsed.error) },
-				{ status: 422, headers: NO_STORE },
-			);
-		const conversation = parsed.data.conversation;
-		const started = Date.now();
-		try {
-			// Same conversation scan as the GET route: q='exchange/' pages,
-			// prefix match plus exactly two more id segments, limit-100
-			// batches walked to the upstream total.
-			const prefix = `exchange/${conversation}/`;
-			const ids: string[] = [];
-			for (let scanOffset = 0; ; ) {
-				const batch = await gate.client.listDocuments({
-					q: "exchange/",
-					limit: 100,
-					offset: scanOffset,
-				});
-				for (const item of batch.items) {
-					if (!item.id.startsWith(prefix) || item.id.slice(prefix.length).split("/").length !== 2)
-						continue;
-					ids.push(item.id);
-				}
-				scanOffset += batch.items.length;
-				if (scanOffset >= batch.total) break;
-				if (batch.items.length === 0) throw new HindsightError("protocol");
-			}
-			// Per document the SAME heavyweight forget the single-doc
-			// DELETE runs (suppress, park, remote delete, redact); one
-			// failure never stops the rest of the thread.
-			const failed: MemoryForgetThreadResponse["failed"] = [];
-			let forgotten = 0;
-			for (const id of ids) {
-				try {
-					const result = await forgetDocument(gate.source, id, {
-						channel: actor.via === "mini-app" ? "mini-app" : "app",
-					});
-					if (result.outcome === "busy") {
-						log.warn(`memory forget via ${actor.via} refused`, {
-							...who,
-							document: id,
-							unsettled: result.unsettled,
-							ms: Date.now() - started,
-						});
-						failed.push({
-							id,
-							error: "memory for that document is still processing remotely — retry in a minute",
-						});
-						continue;
-					}
-					if (result.outcome === "foreign-bank") {
-						log.warn(`memory forget via ${actor.via} refused — previous bank not addressable`, {
-							...who,
-							document: id,
-							target: result.target,
-							ms: Date.now() - started,
-						});
-						failed.push({
-							id,
-							error:
-								"that document has memory work bound to a previous memory bank that can't be reached — nothing was changed; point memory back at that bank (restart) and retry",
-						});
-						continue;
-					}
-					forgotten++;
-				} catch (err) {
-					if (err instanceof HindsightError) {
-						log.warn("memory forget failed", {
-							...who,
-							document: id,
-							kind: err.kind,
-							status: err.status,
-						});
-						failed.push({ id, error: "memory unavailable — try again later" });
-					} else {
-						log.error("memory forget failed", err, { ...who, document: id });
-						failed.push({ id, error: "memory request failed — check the service log" });
-					}
-				}
-			}
-			log.info(`memory thread forget via ${actor.via}`, {
-				...who,
-				conversation,
-				forgotten,
-				failed: failed.length,
-				ms: Date.now() - started,
-			});
-			const body: MemoryForgetThreadResponse = {
-				ok: true,
-				forgotten,
-				failed,
-				remaining: failed.length,
-			};
-			return Response.json(body, { headers: NO_STORE });
-		} catch (err) {
-			return memoryUpstreamError(err, "memory forget failed");
-		}
-	}
-
-	if (tail === "programs") {
-		if (req.method !== "GET")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		if (!deps.programs) {
-			return Response.json({ error: "programs are not wired" }, { status: 503, headers: NO_STORE });
-		}
-		const body: OperatorProgramsResponse = {
-			programs: deps.programs.list().map(programItem),
-			serverTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-		};
-		return Response.json(body, { headers: NO_STORE });
-	}
-
-	if (tail === "delegations") {
-		if (req.method !== "GET")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		if (!deps.delegations) {
-			return Response.json(
-				{ error: "delegation is not configured" },
-				{ status: 503, headers: NO_STORE },
-			);
-		}
-		const rows = deps.delegations.list();
-		const body: OperatorDelegationsResponse = { delegations: rows.map(delegationItem) };
-		return Response.json(body, { headers: NO_STORE });
-	}
-
-	const stopMatch = /^delegations\/(\d{1,9})\/stop$/.exec(tail);
-	if (stopMatch !== null) {
-		if (req.method !== "POST")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		if (!deps.stopDelegation) {
-			return Response.json(
-				{ error: "delegation is not configured" },
-				{ status: 503, headers: NO_STORE },
-			);
-		}
-		const id = Number(stopMatch[1]);
-		log.info(`delegation stop via ${actor.via}`, { ...who, delegation: id });
-		const out = await deps.stopDelegation(id);
-		if (out.kind === "no row") {
-			return Response.json({ error: "no such delegation" }, { status: 404, headers: NO_STORE });
-		}
-		const body: OperatorDelegationStopResponse = {
-			outcome: out.kind,
-			delegation: delegationItem(out.delegation),
-			notes: out.notes,
-		};
-		return Response.json(body, { status: out.kind === "stopped" ? 200 : 409, headers: NO_STORE });
-	}
-
-	if (tail === "status") {
-		if (req.method !== "GET")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		const svc = deps.service;
-		if (!svc) {
-			return Response.json({ error: "status is not wired" }, { status: 503, headers: NO_STORE });
-		}
-		const programs = deps.programs?.list();
-		const delegations = deps.delegations?.list();
-		const active = deps.delegations?.active();
-		const body: OperatorStatusResponse = {
-			version: svc.version,
-			startedAt: svc.startedAt,
-			uptimeSec: Math.max(0, Math.floor((Date.now() - Date.parse(svc.startedAt)) / 1000)),
-			restartHints: svc.restartHints(),
-			memory: memoryStatusResponse(deps),
-			programs: programs
-				? { total: programs.length, enabled: programs.filter((p) => p.enabled).length }
-				: null,
-			delegations:
-				delegations !== undefined && active !== undefined
-					? { total: delegations.length, active: active.length }
-					: null,
-		};
-		return Response.json(body, { headers: NO_STORE });
-	}
-
-	if (tail === "skills") {
-		if (req.method !== "GET")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		const body = listSkills(paths.skills(), paths.skillsProposed());
-		return Response.json(body, { headers: NO_STORE });
-	}
-
-	if (tail === "skills/from") {
-		if (req.method !== "GET")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		if (deps.skillSources === undefined)
-			return Response.json(
-				{ error: "skill provenance unavailable" },
-				{ status: 503, headers: NO_STORE },
-			);
-		const conversation = z
-			.string()
-			.min(1)
-			.max(256)
-			.safeParse(url.searchParams.get("conversation") ?? "");
-		if (!conversation.success)
-			return Response.json(
-				{ error: "expected conversation (1-256 chars)" },
-				{ status: 422, headers: NO_STORE },
-			);
-		const sources = deps.skillSources;
-		const rows = sources.forConversation(conversation.data);
-		const items: ThreadSkillItem[] = rows.map((row) => {
-			const presence = skillDiskPresence(sources.skillsDir, sources.proposedDir, row.skill);
-			return {
-				skill: row.skill,
-				state: liveStateOf(presence),
-				pending: presence.proposed,
-				kind: row.kind,
-				firstAt: row.firstAt,
-				lastAt: row.lastAt,
-			};
-		});
-		log.debug("thread skills served", {
-			...who,
-			via: actor.via,
-			conversation: conversation.data,
-			returned: items.length,
-		});
-		const body: ThreadSkillsResponse = { items };
-		return Response.json(body, { headers: NO_STORE });
-	}
-
-	if (tail === "skills/forget-thread") {
-		if (req.method !== "POST")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		if (deps.skillSources === undefined)
-			return Response.json(
-				{ error: "skill provenance unavailable" },
-				{ status: 503, headers: NO_STORE },
-			);
-		let raw: unknown;
-		try {
-			raw = await req.json();
-		} catch {
-			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
-		}
-		const parsed = z.object({ conversation: z.string().min(1).max(256) }).safeParse(raw);
-		if (!parsed.success)
-			return Response.json(
-				{ error: z.prettifyError(parsed.error) },
-				{ status: 422, headers: NO_STORE },
-			);
-		const removed = deps.skillSources.forgetConversation(parsed.data.conversation);
-		log.info(`thread skill provenance forgotten via ${actor.via}`, {
-			...who,
-			conversation: parsed.data.conversation,
-			removed,
-		});
-		const body: SkillForgetResponse = { ok: true, removed };
-		return Response.json(body, { headers: NO_STORE });
-	}
-
-	if (tail === "skills/file") {
-		if (req.method !== "GET")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		const origin = z
-			.union([z.literal("skills"), z.literal("proposed")])
-			.safeParse(url.searchParams.get("origin") ?? "skills");
-		if (!origin.success)
-			return Response.json({ error: "bad origin" }, { status: 400, headers: NO_STORE });
-		const name = SEGMENT_SCHEMA.safeParse(url.searchParams.get("name") ?? "");
-		if (!name.success)
-			return Response.json({ error: "bad name" }, { status: 400, headers: NO_STORE });
-		const rel = REL_PATH_SCHEMA.safeParse(url.searchParams.get("path") ?? "SKILL.md");
-		if (!rel.success)
-			return Response.json({ error: "bad path" }, { status: 400, headers: NO_STORE });
-		const file = readSkillFile(
-			paths.skills(),
-			paths.skillsProposed(),
-			origin.data,
-			name.data,
-			rel.data,
-		);
-		if (file === null)
-			return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
-		return Response.json(file, { headers: NO_STORE });
-	}
-
-	if (tail === "skills/preview") {
-		if (req.method !== "POST")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		const preview = deps.skillFetch;
-		if (preview === undefined)
-			return Response.json(
-				{ error: "temp skills unavailable — the System One gate is not wired" },
-				{ status: 503, headers: NO_STORE },
-			);
-		let raw: unknown;
-		try {
-			raw = await req.json();
-		} catch {
-			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
-		}
-		const parsed = z
-			.object({ url: z.string().url().startsWith("https://").max(2048) })
-			.safeParse(raw);
-		if (!parsed.success)
-			return Response.json(
-				{ error: z.prettifyError(parsed.error) },
-				{ status: 422, headers: NO_STORE },
-			);
-		try {
-			const fetched = await fetchSkill(parsed.data.url, {
-				...(preview.fetchImpl !== undefined ? { fetchImpl: preview.fetchImpl } : {}),
-				...(preview.cacheRoot !== undefined ? { cacheRoot: preview.cacheRoot } : {}),
-			});
-			// Identical cached bytes keep their first verdict — a
-			// re-preview shows what injection will inject, and no second
-			// score can move an outstanding confirm's advisory.
-			let verdict: SkillPreviewResponse["verdict"];
-			if (fetched.descriptor.previewed) {
-				verdict = fetched.descriptor.verdict;
-			} else {
-				// Score exactly the bytes the part will pin: read back
-				// from the published copy, never an in-memory
-				// intermediate, and no head-cut sampling.
-				const body = readFileSync(fetched.path, "utf8");
-				const scored = await checkInjection(preview.gate, body, {
-					maxChars: body.length,
-				});
-				verdict = stampVerdict(
-					preview.cacheRoot ?? paths.skillcache(),
-					fetched.digest,
-					scored,
-				).verdict;
-			}
-			const responseBody: SkillPreviewResponse = {
-				name: fetched.descriptor.name,
-				description: fetched.descriptor.description,
-				sourceUrl: fetched.descriptor.sourceUrl,
-				path: fetched.path,
-				dir: fetched.dir,
-				digest: fetched.digest,
-				bodyBytes: fetched.bodyBytes,
-				fileCount: fetched.fileCount,
-				dirBytes: fetched.dirBytes,
-				cached: fetched.cached,
-				verdict,
-			};
-			log.info("skill preview served", {
-				...who,
-				via: actor.via,
-				url: parsed.data.url,
-				name: fetched.descriptor.name,
-				verdict: verdict.status,
-				cached: fetched.cached,
-			});
-			return Response.json(responseBody, { headers: NO_STORE });
-		} catch (err) {
-			if (err instanceof SkillFetchError) {
-				const status = err.status === "oversized" ? 413 : err.status === "unreachable" ? 502 : 422;
-				return Response.json({ error: err.message }, { status, headers: NO_STORE });
-			}
-			throw err;
-		}
-	}
-
-	if (tail === "skills/decide") {
-		if (req.method !== "POST")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		const decisions = deps.skillDecisions;
-		if (decisions === undefined)
-			return Response.json(
-				{ error: "skill decisions unavailable" },
-				{ status: 503, headers: NO_STORE },
-			);
-		let raw: unknown;
-		try {
-			raw = await req.json();
-		} catch {
-			return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
-		}
-		const parsed = z
-			.object({
-				name: skillNameSchema,
-				action: z.enum(["install", "discard"]),
-			})
-			.safeParse(raw);
-		if (!parsed.success)
-			return Response.json(
-				{ error: z.prettifyError(parsed.error) },
-				{ status: 422, headers: NO_STORE },
-			);
-		const outcome = decisions.decide(parsed.data.name, parsed.data.action);
-		if (!outcome.ok) {
-			return Response.json(
-				{ error: outcome.reason === "gone" ? "proposal not found" : outcome.reason },
-				{ status: outcome.reason === "gone" ? 404 : 409, headers: NO_STORE },
-			);
-		}
-		log.info("skill proposal decided via operator door", {
-			...who,
-			via: actor.via,
-			skill: parsed.data.name,
-			action: outcome.action,
-			...(outcome.action === "install" ? { replaced: outcome.replaced } : {}),
-		});
-		const body: SkillDecideResponse = {
-			ok: true,
-			skill: parsed.data.name,
-			action: outcome.action,
-			replaced: outcome.action === "install" ? outcome.replaced : false,
-			state: outcome.action === "install" ? "installed" : "gone",
-		};
-		return Response.json(body, { headers: NO_STORE });
-	}
-
-	if (tail === "attachments") {
-		if (req.method !== "GET")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		const body = listAttachments(paths.attachments());
-		return Response.json(body, { headers: NO_STORE });
-	}
-
-	if (tail === "attachments/file") {
-		if (req.method !== "GET")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		const name = SEGMENT_SCHEMA.safeParse(url.searchParams.get("name") ?? "");
-		if (!name.success || name.data.startsWith("."))
-			return Response.json({ error: "bad name" }, { status: 400, headers: NO_STORE });
-		let served: ReturnType<typeof readAttachmentBytes>;
-		try {
-			served = readAttachmentBytes(paths.attachments(), name.data, ATTACHMENT_SERVE_CAP);
-		} catch (e) {
-			if (e instanceof AttachmentTooLargeError) {
-				return Response.json({ error: "attachment too large" }, { status: 413, headers: NO_STORE });
-			}
-			throw e;
-		}
-		if (served === null)
-			return Response.json({ error: "not found" }, { status: 404, headers: NO_STORE });
-		const inline = /^(image|audio|video)\//.test(served.contentType);
-		return new Response(served.bytes, {
-			headers: {
-				...NO_STORE,
-				"content-type": served.contentType,
-				"x-content-type-options": "nosniff",
-				"content-security-policy": "sandbox",
-				...(inline ? {} : { "content-disposition": "attachment" }),
-			},
-		});
-	}
-
-	if (tail === "identity") {
-		if (req.method !== "GET")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		const body = identityFiles(paths.workspace());
-		return Response.json(body, { headers: NO_STORE });
-	}
-
-	if (tail === "log") {
-		if (req.method !== "GET")
-			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
-		const limitRaw = url.searchParams.get("limit");
-		const limit =
-			limitRaw === null
-				? { success: true as const, data: 200 }
-				: z.coerce.number().int().min(1).max(1000).safeParse(limitRaw);
-		if (!limit.success)
-			return Response.json({ error: "bad limit" }, { status: 400, headers: NO_STORE });
-		const levelRaw = url.searchParams.get("level");
-		const level =
-			levelRaw === null || levelRaw === ""
-				? { success: true as const, data: null }
-				: z.enum(["debug", "info", "warn", "error"]).safeParse(levelRaw);
-		if (!level.success)
-			return Response.json({ error: "bad level" }, { status: 400, headers: NO_STORE });
-		const qRaw = url.searchParams.get("q");
-		const q =
-			qRaw === null || qRaw === ""
-				? { success: true as const, data: null }
-				: z.string().max(300).safeParse(qRaw);
-		if (!q.success) return Response.json({ error: "bad q" }, { status: 400, headers: NO_STORE });
-		const body = tailLog(paths.logFile(), {
-			limit: limit.data,
-			level: level.data,
-			q: q.data,
-		});
-		return Response.json(body, { headers: NO_STORE });
-	}
-
-	return null;
 }

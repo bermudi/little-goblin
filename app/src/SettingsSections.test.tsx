@@ -2,15 +2,15 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { parseConfig } from "../../src/config.ts";
 import {
 	authDefaults,
 	fetchKinds,
-	parseConfig,
 	searchKinds,
 	transcriptionDefaults,
 	transcriptionKinds,
 	ttsCloudDefaults,
-} from "../../src/config.ts";
+} from "../../src/config-schema.ts";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import { SettingsView } from "./SettingsView.tsx";
 import { KeyStatus } from "./settingsKit.tsx";

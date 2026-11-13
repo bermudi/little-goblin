@@ -3,7 +3,8 @@
 // change is a warn + restart, never a hot-apply. One comparison serves
 // the config-write log warns and the status card's restart hints.
 
-import type { Config, ConfigRef } from "./config.ts";
+import type { ConfigRef } from "./config.ts";
+import type { Config } from "./config-schema.ts";
 import { log, setLogLevel } from "./log.ts";
 
 export interface BootPins {

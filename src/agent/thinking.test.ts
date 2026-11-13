@@ -13,7 +13,7 @@
 // deepseek-r1-0528.
 
 import { describe, expect, test } from "bun:test";
-import type { Config } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { _primeOpenRouterCatalog, type OpenRouterRoute } from "./models-dev.ts";
 import {
 	clampThinkingFor,

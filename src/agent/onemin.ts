@@ -23,7 +23,7 @@
 //   (DESIGN.md → "the log must reconstruct what the process did")
 //   goes blind.
 
-import { splitModelRef, type Config } from "../config.ts";
+import { splitModelRef, type Config } from "../config-schema.ts";
 
 /** The docs page the relay truths here are pinned to. */
 export const ONEMIN_DOCS_URL = "https://docs.1min.ai/docs/api/openai-compatible";

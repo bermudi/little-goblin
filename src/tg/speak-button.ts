@@ -1,5 +1,5 @@
 import { InputFile, type Api } from "grammy";
-import type { TtsConfig } from "../config.ts";
+import type { TtsConfig } from "../config-schema.ts";
 import { speakable } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { recentReplyText } from "./delivery.ts";

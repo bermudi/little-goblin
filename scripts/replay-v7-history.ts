@@ -11,7 +11,7 @@ import { convertToModelMessages, safeValidateUIMessages } from "ai";
 import { cpSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { paths } from "../src/config.ts";
+import { paths } from "../src/home-layout.ts";
 import { openStore } from "../src/conversation.ts";
 import { boundedRun, spawnProc } from "../src/proc.ts";
 

@@ -4,7 +4,8 @@
 // conservatively (text-only / unknown), never fatally.
 
 import { z } from "zod";
-import { type Config, paths } from "../config.ts";
+import type { Config } from "../config-schema.ts";
+import { paths } from "../home-layout.ts";
 import { createCachedCatalog, type CachedCatalog } from "./catalog-fetch.ts";
 import { codexModelOptions } from "./codex/models.ts";
 

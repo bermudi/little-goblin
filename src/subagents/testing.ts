@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { Harness } from "@earendil-works/pi-durable";
-import type { SubagentsConfig } from "../config.ts";
+import type { SubagentsConfig } from "../config-schema.ts";
 import type { DesktopAction, DesktopRow, Desktops, LeaseHolder } from "../desktops.ts";
 import { DesktopError, DesktopLeaseError } from "../desktops.ts";
 import { setLogFile, setLogWriter } from "../log.ts";

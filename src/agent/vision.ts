@@ -13,7 +13,8 @@
 import { type LanguageModel, type ModelMessage, streamText } from "ai";
 import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
-import { type Config, type ConfigRef, splitModelRef } from "../config.ts";
+import type { ConfigRef } from "../config.ts";
+import { type Config, splitModelRef } from "../config-schema.ts";
 import type { Conversation } from "../conversation.ts";
 import { log } from "../log.ts";
 import { inputModalitiesCached } from "./models-dev.ts";

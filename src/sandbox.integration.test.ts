@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { sandboxConfigSchema } from "./config.ts";
+import { sandboxConfigSchema } from "./config-schema.ts";
 import { makePodman } from "./podman.ts";
 import { containerNameFor, makeSandboxes, openSandboxes } from "./sandboxes.ts";
 import { sandboxTool } from "./agent/tools/sandbox.ts";

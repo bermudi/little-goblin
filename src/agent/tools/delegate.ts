@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import type { Delegation } from "../../delegations.ts";
-import type { DelegationConfig } from "../../config.ts";
+import type { DelegationConfig } from "../../config-schema.ts";
 import type {
 	AnswerOutcome,
 	DelegationLifecycle,

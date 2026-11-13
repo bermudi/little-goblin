@@ -11,7 +11,9 @@
 import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
-import { type Config, loadConfig, parseConfig, paths, writeConfig } from "../../config.ts";
+import { loadConfig, parseConfig, writeConfig } from "../../config.ts";
+import type { Config } from "../../config-schema.ts";
+import { paths } from "../../home-layout.ts";
 import { durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
 import { OAUTH_CLIENT_ID, resolveCodexAuthFile, type FetchLike } from "./auth.ts";

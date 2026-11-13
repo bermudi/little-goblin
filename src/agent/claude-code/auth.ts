@@ -7,7 +7,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AuthStore } from "../../auth.ts";
-import { paths } from "../../config.ts";
+import { paths } from "../../home-layout.ts";
 import { log } from "../../log.ts";
 
 export interface ClaudeChildEnv {

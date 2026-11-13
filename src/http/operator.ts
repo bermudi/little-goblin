@@ -5,17 +5,14 @@ import { modelCatalogFor } from "../agent/models-dev.ts";
 import { fetchSkill, SkillFetchError, stampVerdict } from "../agent/skill-fetch.ts";
 import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
 import { appendAuthRecord, type WritableAuthStore } from "../auth.ts";
+import { ConfigValidationError, loadConfig, parseConfig, writeConfig } from "../config.ts";
 import {
 	authDefaults,
 	type CapabilityName,
 	type Config,
-	ConfigValidationError,
 	capabilityNames,
 	type DelegationConfig,
 	fetchKinds,
-	loadConfig,
-	parseConfig,
-	paths,
 	providerKinds,
 	searchKinds,
 	type SubagentsConfig,
@@ -23,8 +20,8 @@ import {
 	transcriptionDefaults,
 	transcriptionKinds,
 	ttsCloudDefaults,
-	writeConfig,
-} from "../config.ts";
+} from "../config-schema.ts";
+import { paths } from "../home-layout.ts";
 import { type ConversationStore, prepareAppSettingsForConfig } from "../conversation.ts";
 import { flatLine } from "../conversation-events.ts";
 import type { DelegationLifecycle } from "../delegation-lifecycle.ts";

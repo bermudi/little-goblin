@@ -8,7 +8,8 @@ import { describe, expect, test } from "bun:test";
 import { type ModelMessage, type ToolSet, tool, type UIMessageChunk } from "ai";
 import { z } from "zod";
 import type { AuthStore } from "../../auth.ts";
-import type { Config, ConfigRef } from "../../config.ts";
+import type { ConfigRef } from "../../config.ts";
+import type { Config } from "../../config-schema.ts";
 import { type FakeStep, fakeClaude } from "../../testkit/fake-claude.ts";
 import { TurnState } from "../../turn/state.ts";
 import {

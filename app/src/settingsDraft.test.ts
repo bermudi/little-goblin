@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { parseConfig } from "../../src/config.ts";
 import {
 	authDefaults,
 	type Config,
 	delegationConfigSchema,
 	memoryConfigSchema,
-	parseConfig,
-} from "../../src/config.ts";
+} from "../../src/config-schema.ts";
 import {
 	bodyFromDraft,
 	capabilityFlags,

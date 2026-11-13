@@ -9,7 +9,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import type { AuthStore } from "../auth.ts";
-import type { SubagentsConfig } from "../config.ts";
+import type { SubagentsConfig } from "../config-schema.ts";
 import { DesktopLeaseError, type Desktops } from "../desktops.ts";
 import { log } from "../log.ts";
 import type { Sandboxes } from "../sandboxes.ts";

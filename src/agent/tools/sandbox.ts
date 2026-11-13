@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { z } from "zod";
 import { readImport, resolveExport, writeExportBytes } from "../../box-files.ts";
-import { imageRefSchema } from "../../config.ts";
+import { imageRefSchema } from "../../config-schema.ts";
 import { PodmanError } from "../../podman.ts";
 import { SandboxError, type Sandboxes } from "../../sandboxes.ts";
 import { truncateTail } from "./truncate.ts";

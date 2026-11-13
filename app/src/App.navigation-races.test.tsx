@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
+import { parseConfig } from "../../src/config.ts";
 import {
 	authDefaults,
-	parseConfig,
 	transcriptionDefaults,
 	transcriptionKinds,
-} from "../../src/config.ts";
+} from "../../src/config-schema.ts";
 import type {
 	AppConversationList,
 	AppNote,

@@ -1,7 +1,8 @@
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
 import { openCacheObservation } from "../cache-observation.ts";
-import { type Config, type ConfigRef } from "../config.ts";
+import type { ConfigRef } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import { openNotes } from "../notes.ts";
 import { observedModel } from "../agent/providers.ts";

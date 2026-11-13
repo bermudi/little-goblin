@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { _primeModelsDevForTest, _resetModelsDevForTest } from "../agent/models-dev.ts";
-import { type Config, loadConfig, memoryConfigSchema, parseConfig } from "../config.ts";
+import { loadConfig, parseConfig } from "../config.ts";
+import { type Config, memoryConfigSchema } from "../config-schema.ts";
 import type { FetchLike } from "../agent/codex/auth.ts";
 import {
 	createChatGptLogin,

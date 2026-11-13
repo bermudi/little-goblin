@@ -8,7 +8,7 @@ import type { DeliveryApi } from "./tg/delivery.ts";
 import { sendFileTool } from "./agent/tools/send.ts";
 import { openStore, type Conversation } from "./conversation.ts";
 import { appAddress } from "./conversation-address.ts";
-import type { Config } from "./config.ts";
+import type { Config } from "./config-schema.ts";
 import { Runtime } from "./runtime.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";

@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { subagentsConfigSchema } from "../config.ts";
+import { subagentsConfigSchema } from "../config-schema.ts";
 import type { DesktopRow, Desktops } from "../desktops.ts";
 import { setLogFile } from "../log.ts";
 import type { Sandboxes } from "../sandboxes.ts";

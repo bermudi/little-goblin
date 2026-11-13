@@ -5,8 +5,8 @@
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { clampThinkingFor } from "./agent/thinking.ts";
-import type { Config, ThinkingLevel } from "./config.ts";
-import { thinkingLevels } from "./config.ts";
+import type { Config, ThinkingLevel } from "./config-schema.ts";
+import { thinkingLevels } from "./config-schema.ts";
 import { channelOf } from "./conversation-address.ts";
 import type { ConversationQueries } from "./conversation-queries.ts";
 import { log } from "./log.ts";

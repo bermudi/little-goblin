@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { Config } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { System1Error, type System1Client } from "../system1.ts";
 import { verdictLine } from "../injection.ts";
 import { startHttp } from "./mod.ts";

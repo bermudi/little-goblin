@@ -9,7 +9,7 @@ import {
 } from "./agent/providers.ts";
 import { fenceUntrusted } from "./agent/tools/web.ts";
 import type { CacheObservation } from "./cache-observation.ts";
-import type { Config } from "./config.ts";
+import type { Config } from "./config-schema.ts";
 import { captureConversationSettings, type ConversationStore } from "./conversation.ts";
 import { projectionKey } from "./conversation-events.ts";
 import { log } from "./log.ts";

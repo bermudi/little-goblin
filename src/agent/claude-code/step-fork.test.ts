@@ -4,7 +4,8 @@
 // an unbound engine fails loud, never silently degrades.
 
 import { describe, expect, test } from "bun:test";
-import type { Config, ConfigRef } from "../../config.ts";
+import type { ConfigRef } from "../../config.ts";
+import type { Config } from "../../config-schema.ts";
 import { openStore } from "../../conversation.ts";
 import { openNotes } from "../../notes.ts";
 import { openProjects } from "../../projects.ts";

@@ -27,7 +27,7 @@ import { loadCatalog } from "../agent/skills.ts";
 import { checkInjection } from "../injection.ts";
 import type { System1Client } from "../system1.ts";
 import { log } from "../log.ts";
-import { paths } from "../config.ts";
+import { paths } from "../home-layout.ts";
 import { SKILL_PART, type CachedSkillDescriptor, type SkillRef } from "../skill-part.ts";
 import { fetchSkill, stampVerdict, SkillFetchError } from "../agent/skill-fetch.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";

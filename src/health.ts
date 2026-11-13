@@ -26,7 +26,8 @@ import {
 	cacheContractFresh,
 	type CacheContract,
 } from "./agent/cache-contracts.ts";
-import { authReferences, parseConfigValue, type Config } from "./config.ts";
+import { authReferences, parseConfigValue } from "./config.ts";
+import type { Config } from "./config-schema.ts";
 import { boundedRun, killProc, spawnProc, type ProcessGroupMode } from "./proc.ts";
 import { sqliteProbeSchema } from "./health-sqlite.ts";
 import { summarize, tally } from "./test-ratio.ts";

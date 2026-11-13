@@ -15,15 +15,16 @@ import { join } from "node:path";
 import JSON5 from "json5";
 import {
 	authReferences,
-	type Config,
-	ensureHomeLayout,
-	fetchEntrySchema,
-	fetchKinds,
 	loadConfig,
 	missingAuthNames,
 	observeConfigWrites,
 	parseConfig,
-	paths,
+	writeConfig,
+} from "./config.ts";
+import {
+	type Config,
+	fetchEntrySchema,
+	fetchKinds,
 	providerKinds,
 	providerSchema,
 	searchEntrySchema,
@@ -32,8 +33,8 @@ import {
 	transcriptionDefaults,
 	transcriptionKinds,
 	transcriptionSchema,
-	writeConfig,
-} from "./config.ts";
+} from "./config-schema.ts";
+import { ensureHomeLayout, paths } from "./home-layout.ts";
 import { log, setLogFile } from "./log.ts";
 import { useHome } from "./testkit.ts";
 

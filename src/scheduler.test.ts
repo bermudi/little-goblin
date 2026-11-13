@@ -17,7 +17,7 @@ import { openResponsibilities } from "./responsibilities.ts";
 import { openWakeStore, type DevelopmentInput } from "./wake-store.ts";
 import type { MailHit } from "./mail.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
-import type { Config } from "./config.ts";
+import type { Config } from "./config-schema.ts";
 import {
 	fireMail,
 	fireScheduled,

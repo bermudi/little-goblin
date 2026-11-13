@@ -12,7 +12,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { goblinHome, paths } from "../src/config.ts";
+import { goblinHome } from "../src/goblin-home.ts";
+import { paths } from "../src/home-layout.ts";
 import { openStore } from "../src/conversation.ts";
 import { skillNameSchema, SkillSources } from "../src/skill-provenance.ts";
 

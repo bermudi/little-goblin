@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { boundedRun, spawnProc, type BoundedProc } from "../../proc.ts";
-import { paths } from "../../config.ts";
+import { paths } from "../../home-layout.ts";
 import { log } from "../../log.ts";
 import { truncatedFooter, trySpill, windowText } from "./truncate.ts";
 

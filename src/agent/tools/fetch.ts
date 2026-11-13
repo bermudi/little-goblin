@@ -9,8 +9,8 @@ import type { JSONValue, LanguageModelV4ToolResultOutput } from "@ai-sdk/provide
 import { parseHTML } from "linkedom";
 import type { AuthStore } from "../../auth.ts";
 import { acceptsMedia, INLINE_ITEM_MAX_BYTES, type AcceptsMedia } from "../attachments.ts";
-import type { Config, FetchConfig } from "../../config.ts";
-import { paths } from "../../config.ts";
+import type { Config, FetchConfig } from "../../config-schema.ts";
+import { paths } from "../../home-layout.ts";
 import { durableWriteBytes, durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
 import { truncatedFooter, windowText } from "./truncate.ts";

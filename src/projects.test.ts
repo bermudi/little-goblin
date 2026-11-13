@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { paths } from "./config.ts";
+import { paths } from "./home-layout.ts";
 import { type ConversationStore, openStore } from "./conversation.ts";
 import { appAddress } from "./conversation-address.ts";
 import {

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tool } from "ai";
 import { z } from "zod";
 import { buildSystemPrompt, PROMPT_SECTIONS } from "../agent/prompt.ts";
-import { paths } from "../config.ts";
+import { paths } from "../home-layout.ts";
 import type { ModelMessage } from "ai";
 import { useHome } from "../testkit.ts";
 import { measurePrompt, splitSystemPrompt } from "./itemize.ts";

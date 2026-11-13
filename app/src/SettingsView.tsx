@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ThinkingLevel } from "../../src/config.ts";
+import type { ThinkingLevel } from "../../src/config-schema.ts";
 import type {
 	ConfigResponse,
 	OperatorStatusResponse,

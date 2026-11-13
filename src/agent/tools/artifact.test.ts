@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { useHome } from "../../testkit.ts";
-import { paths } from "../../config.ts";
+import { paths } from "../../home-layout.ts";
 import { artifactTool } from "./artifact.ts";
 
 let home: string;

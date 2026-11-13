@@ -7,7 +7,7 @@
 // in the cache-contracts registry.
 
 import { describe, expect, test } from "bun:test";
-import type { Config } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { isOneMinHost, isOneMinRoute, modelCallMaxRetries } from "./onemin.ts";
 
 const providers: Config["providers"] = {

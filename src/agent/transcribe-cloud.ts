@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
-import type { TranscriptionConfig } from "../config.ts";
+import type { TranscriptionConfig } from "../config-schema.ts";
 import { log } from "../log.ts";
 import { boundedRun, spawnProc } from "../proc.ts";
 import { readTextCapped } from "./tools/web.ts";

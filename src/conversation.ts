@@ -3,7 +3,7 @@
 import { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
 import { z } from "zod";
-import { type Config, splitModelRef } from "./config.ts";
+import { type Config, splitModelRef } from "./config-schema.ts";
 import { log } from "./log.ts";
 import { stampArrival } from "./message-context.ts";
 import { MemoryDestinations } from "./memory/destinations.ts";

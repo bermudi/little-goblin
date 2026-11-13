@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api } from "grammy";
-import { type Config, memoryConfigSchema } from "../config.ts";
+import { type Config, memoryConfigSchema } from "../config-schema.ts";
 import { HindsightClient } from "../memory/hindsight.ts";
 import { tmpDb, useHome } from "../testkit.ts";
 import { COMMANDS, type CommandMemoryDeps, DM_COMMANDS } from "./commands.ts";

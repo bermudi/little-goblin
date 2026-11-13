@@ -16,7 +16,7 @@ import {
 } from "ai";
 import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
-import { splitModelRef, type Config, type ThinkingLevel } from "../config.ts";
+import { splitModelRef, type Config, type ThinkingLevel } from "../config-schema.ts";
 import { log } from "../log.ts";
 import { awaitRetryDelay, RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
 import type { MediaPosition } from "./attachments.ts";

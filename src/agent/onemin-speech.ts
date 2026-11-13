@@ -45,7 +45,7 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
-import type { TranscriptionConfig, TtsConfig } from "../config.ts";
+import type { TranscriptionConfig, TtsConfig } from "../config-schema.ts";
 import { log } from "../log.ts";
 import { readBytesCapped, readTextCapped } from "./tools/web.ts";
 import { parseBody, renderError } from "./transcribe-cloud.ts";

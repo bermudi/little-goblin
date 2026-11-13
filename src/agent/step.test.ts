@@ -9,7 +9,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { loadAuth } from "../auth.ts";
 import { openCacheObservation } from "../cache-observation.ts";
-import { type Config, memoryConfigSchema } from "../config.ts";
+import { type Config, memoryConfigSchema } from "../config-schema.ts";
 import { captureConversationSettings } from "../conversation.ts";
 import { _resetModelsDevForTest } from "./models-dev.ts";
 import { openNotes } from "../notes.ts";

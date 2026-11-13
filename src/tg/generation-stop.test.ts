@@ -10,7 +10,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { Update } from "grammy/types";
 import type { AuthStore } from "../auth.ts";
-import { parseConfig, type Config, type ConfigRef } from "../config.ts";
+import { parseConfig, type ConfigRef } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { openStore } from "../conversation.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import type { Runtime } from "../runtime.ts";

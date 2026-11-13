@@ -20,7 +20,7 @@ import { openProjects } from "./projects.ts";
 import { openResponsibilities } from "./responsibilities.ts";
 import type { Runtime } from "./runtime.ts";
 import type { TurnSink } from "./turn/sink.ts";
-import type { Config } from "./config.ts";
+import type { Config } from "./config-schema.ts";
 
 let dirs: string[] = [];
 let watchers: MailWatcher[] = [];

@@ -3,13 +3,8 @@ import { randomUUID } from "node:crypto";
 import { readdirSync, rmSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 import { z } from "zod";
-import {
-	paths,
-	ensureDir,
-	desktopsConfigSchema,
-	imageRefSchema,
-	type DesktopsConfig,
-} from "./config.ts";
+import { desktopsConfigSchema, imageRefSchema, type DesktopsConfig } from "./config-schema.ts";
+import { paths, ensureDir } from "./home-layout.ts";
 import { durableWriteBytes } from "./durable.ts";
 import { log } from "./log.ts";
 import type { ContainerInspect, Podman } from "./podman.ts";

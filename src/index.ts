@@ -19,17 +19,10 @@ import { openAppPush } from "./app-push.ts";
 import { appendAuthRecord, loadAuth } from "./auth.ts";
 import { openCacheObservation } from "./cache-observation.ts";
 import { openCachePruning } from "./cache-pruning.ts";
-import {
-	type Config,
-	type ConfigRef,
-	ensureHomeLayout,
-	goblinHome,
-	loadConfig,
-	missingAuthNames,
-	observeConfigWrites,
-	paths,
-	type TtsConfig,
-} from "./config.ts";
+import { type ConfigRef, loadConfig, missingAuthNames, observeConfigWrites } from "./config.ts";
+import type { Config, TtsConfig } from "./config-schema.ts";
+import { goblinHome } from "./goblin-home.ts";
+import { ensureHomeLayout, paths } from "./home-layout.ts";
 import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins.ts";
 import { captureConversationSettings, openStore } from "./conversation.ts";
 import {

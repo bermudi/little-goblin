@@ -13,7 +13,8 @@ import { type ClaudeEngineConfig, driveClaude } from "./agent/claude-code/engine
 import type { ClaudeEngine, ClaudeStep } from "./agent/claude-code/mod.ts";
 import { createToolBridge, type ToolBridge } from "./agent/claude-code/tools.ts";
 import type { AuthStore } from "./auth.ts";
-import type { Config, ConfigRef } from "./config.ts";
+import type { ConfigRef } from "./config.ts";
+import type { Config } from "./config-schema.ts";
 import { openStore } from "./conversation.ts";
 import { Runtime, userMessage } from "./runtime.ts";
 import type { ModelStep } from "./turn/engine.ts";

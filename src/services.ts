@@ -3,7 +3,7 @@
 // provider presets. Pure data: no vendor imports, nothing reads the
 // network or disk.
 
-import { authDefaults, type CapabilityName, type ProviderConfig } from "./config.ts";
+import { authDefaults, type CapabilityName, type ProviderConfig } from "./config-schema.ts";
 
 export const serviceNames: Record<string, string> = {
 	brave: "Brave Search",

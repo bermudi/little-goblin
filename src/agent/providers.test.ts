@@ -12,7 +12,7 @@ import { APICallError, generateText, streamText, wrapLanguageModel } from "ai";
 import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
 import { openCacheObservation } from "../cache-observation.ts";
-import type { Config } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { setLogFile } from "../log.ts";
 import { generateModel, scriptedModel, textParts } from "../testkit/fake-model.ts";
 import { tmpDir } from "../testkit.ts";

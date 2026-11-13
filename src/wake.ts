@@ -4,7 +4,7 @@
 import type { Conversation, ConversationStore } from "./conversation.ts";
 import { channelOf } from "./conversation-address.ts";
 import type { ConversationAddress } from "./conversation-address.ts";
-import { paths } from "./config.ts";
+import { paths } from "./home-layout.ts";
 import { userMessage, type Runtime } from "./runtime.ts";
 import type { TurnSink } from "./turn/sink.ts";
 import { isRollingChat, routeDm, type RollDeps } from "./rolling.ts";

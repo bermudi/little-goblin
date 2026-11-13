@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthStore } from "../../auth.ts";
-import type { Config } from "../../config.ts";
+import type { Config } from "../../config-schema.ts";
 import { setLogFile } from "../../log.ts";
 import { extractors, fetchTool } from "./fetch.ts";
 

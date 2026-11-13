@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { exportBytes, readImport } from "../../box-files.ts";
-import { imageRefSchema } from "../../config.ts";
+import { imageRefSchema } from "../../config-schema.ts";
 import { DesktopError, type DesktopRow, type Desktops, type LeaseHolder } from "../../desktops.ts";
 import { PodmanError } from "../../podman.ts";
 import { DESKTOP_TOOL_DESCRIPTION } from "../../subagent-prompts.ts";

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AuthStore } from "../auth.ts";
-import type { Config, ConfigRef } from "../config.ts";
+import type { ConfigRef } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { generateImages } from "./image.ts";
 
 const auth: AuthStore = {

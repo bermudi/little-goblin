@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import * as fsPromises from "node:fs/promises";
 import { join } from "node:path";
 import type { File as TgFile } from "grammy/types";
-import { paths } from "../config.ts";
+import { paths } from "../home-layout.ts";
 import {
 	mediaFromMessage,
 	mediaParts,

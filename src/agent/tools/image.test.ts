@@ -3,8 +3,9 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthStore } from "../../auth.ts";
-import type { Config, ConfigRef } from "../../config.ts";
-import { paths } from "../../config.ts";
+import type { ConfigRef } from "../../config.ts";
+import type { Config } from "../../config-schema.ts";
+import { paths } from "../../home-layout.ts";
 import { imageTool, type ImageToolDeps } from "./image.ts";
 import { DeliveryUncertainError, type OutgoingFile } from "./send.ts";
 

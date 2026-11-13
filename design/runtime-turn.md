@@ -414,7 +414,8 @@ turn-structure change.
   it.
 - **Turn-module boundary.** No `turn/` module sees a `Lane`; steering
   rides a runtime-injected queue function and persistence a
-  runtime-injected append — queue policy never leaves `runtime.ts`. The
+  runtime-injected append — queue policy never leaves the runtime's lane
+  modules (`runtime.ts`, `runtime-lanes.ts`). The
   tool fence (`turn/tool-fence.ts`) rides the same boundary: an injected
   authority check and journal, never the Runtime. So does the compaction
   job (`turn/compact-job.ts`): injected store, authority, fold ceiling,
@@ -436,6 +437,18 @@ turn-structure change.
   like a fenced tool's write. The returned authority carries the run id
   and the ownership-begun fact as fields the runtime reads — no
   write-back callbacks into `runtime.ts`.
+- **The lane registry is its own module** (2026-11-12, #436):
+  `src/runtime-lanes.ts` owns the per-conversation lane map — pending
+  turns, queued compactions, the controller and live-wire slots, the
+  admission index — behind a narrow synchronous registry API
+  (`enqueue`, `claim`, `unrequeue`, `registerController`,
+  `registerLive`, `pendingFloor`); `runtime.ts` keeps the policy the
+  registry serves: intake admission, the drain loop, the attempt
+  loop, cancellation. `Lane` is private to the registry, so the
+  boundary rule above is now structural — no `turn/` module can see a
+  `Lane` or touch queue policy; steering still rides a
+  runtime-injected queue function, persistence a runtime-injected
+  append.
 
 ## The two text projections (#84 / #111)
 

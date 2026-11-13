@@ -49,7 +49,7 @@ import { makeResponsibilityObserver } from "./responsibility-observer.ts";
 import { fileDelegationReport, fileRunReport } from "./responsibility-runs.ts";
 import { makeGithubReadiness } from "./github.ts";
 import { makeResponsibilityService } from "./responsibility-service.ts";
-import { wireReviewer } from "./reviewer.ts";
+import { wireReviewer } from "./reviewer-wiring.ts";
 import { Runtime } from "./runtime.ts";
 import { makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
 import { fireMail, fireWebhook, startScheduler } from "./scheduler.ts";

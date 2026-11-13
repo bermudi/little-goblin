@@ -17,7 +17,8 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { log } from "./log.ts";
 import { HerdrError, type OperatorAgent } from "./herdr.ts";
-import type { Attachment, ResponsibilityStore } from "./responsibilities.ts";
+import type { ResponsibilityStore } from "./responsibilities.ts";
+import type { Attachment } from "./responsibility-types.ts";
 import { type AuthorityStamp, authorityStamp } from "./responsibility-authority.ts";
 import type { WakeStore } from "./wake-store.ts";
 

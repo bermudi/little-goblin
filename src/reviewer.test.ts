@@ -18,19 +18,16 @@ import { System1Error } from "./system1.ts";
 import { SkillSources } from "./skill-provenance.ts";
 import { setLogFile } from "./log.ts";
 import {
-	buildGateState,
-	confineTools,
-	Reviewer,
-	reviewTools,
-	stagingRoot,
 	summarize,
 	toolOk,
 	type CompletedTurn,
 	type EvidenceLimits,
 	type PriorTurnContext,
-	type ReviewerDeps,
 	type ToolCallDigest,
-} from "./reviewer.ts";
+} from "./reviewer-evidence.ts";
+import { buildGateState } from "./reviewer-gate.ts";
+import { confineTools, reviewTools, stagingRoot } from "./reviewer-staging.ts";
+import { Reviewer, type ReviewerDeps } from "./reviewer.ts";
 import { tmpDir, waitUntil } from "./testkit.ts";
 
 afterEach(() => {

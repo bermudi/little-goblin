@@ -16,7 +16,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DesktopError, type DesktopRow, type Desktops, type LeaseHolder } from "../../desktops.ts";
+import { DesktopError, type Desktops } from "../../desktops.ts";
+import { type DesktopRow, type LeaseHolder } from "../../desktops-store.ts";
 import { desktopInputSchema, desktopTool, type DesktopToolDeps } from "./desktop.ts";
 
 const CONV = "dm:test";

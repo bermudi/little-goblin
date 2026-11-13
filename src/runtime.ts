@@ -31,7 +31,7 @@ import {
 	type RecallContext,
 	recallMemory,
 } from "./memory/mod.ts";
-import type { PriorTurnContext } from "./reviewer.ts";
+import type { PriorTurnContext } from "./reviewer-evidence.ts";
 import { Reviewer } from "./reviewer.ts";
 import { LaneRegistry, type QueuedTurn, type ResumeSeed } from "./runtime-lanes.ts";
 import type { System1Client } from "./system1.ts";

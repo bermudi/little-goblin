@@ -16,7 +16,6 @@ import { CoalescingBuffer } from "./buffer.ts";
 import { COMMANDS, DM_COMMANDS } from "./commands.ts";
 import { withTimeout } from "./deadline.ts";
 import { initializeBot } from "./init.ts";
-import { SPEAK_CALLBACK } from "./delivery.ts";
 import { floodWaitTransformer } from "./flood-wait.ts";
 import { registerGenerationStop } from "./generation-stop.ts";
 import {
@@ -35,7 +34,7 @@ import {
 	skillCommandDeps,
 	TEMP_SKILL_CALLBACK_RE,
 } from "./skill-command.ts";
-import { handleSpeakButton } from "./speak-button.ts";
+import { handleSpeakButton, SPEAK_CALLBACK } from "./speak-button.ts";
 import { openTelegramInbox } from "./inbox.ts";
 import { openPings } from "./pings.ts";
 import { accessGate } from "./access-gate.ts";

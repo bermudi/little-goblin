@@ -11,14 +11,14 @@ import { log } from "../log.ts";
 import type { OperatorAgent } from "../herdr.ts";
 import { feedForProject, feedOpen, type FeedDeps } from "../responsibility-feed.ts";
 import { cursorFromAgent } from "../responsibility-observer.ts";
+import type { ResponsibilityStore } from "../responsibilities.ts";
 import {
 	ReconciliationConflict,
 	StaleAttachmentError,
 	understandingSchema,
 	type Attachment,
 	type AttachmentTarget,
-	type ResponsibilityStore,
-} from "../responsibilities.ts";
+} from "../responsibility-types.ts";
 import type { ResponsibilityService } from "../responsibility-service.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import type { AppResponsibilityFeed } from "./app-wire.ts";

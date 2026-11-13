@@ -9,14 +9,17 @@ You never touch the machinery. Everything happens in chat.
 
 ## Using skills
 
-Just ask. The bot sees the list of installed skills on every reply and reads
-the instructions when one matches:
+Just ask. The bot sees the list of installed skills in its system prompt and reads
+the instructions when one matches. The list is part of the prompt snapshot:
+it changes at the next new conversation or DM roll, compaction, or spin-off,
+not on the next message (see [Usage](usage.md#the-bots-identity-files)).
+A skill's own files are read when used, so edits to them are live next turn.
 
 - *"install the mq skill"* — the bot fetches it (from your skills repo, a
-  link, or a file you send it) into its catalog. Live on the next message.
+  link, or a file you send it) into its catalog. Listed from the next prompt snapshot.
 - *"update the pdf skill to handle tables"* — it edits the files. Live next
   turn.
-- *"remove the mq skill"* — it deletes the folder. Gone next turn.
+- *"remove the mq skill"* — it deletes the folder. Unlisted from the next prompt snapshot.
 
 If a skill's instructions mention scripts or helper files, the bot runs them
 with its shell. If a skill is broken, the bot says so in chat (broken ones

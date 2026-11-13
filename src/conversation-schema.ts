@@ -8,6 +8,7 @@
 import type { Database } from "bun:sqlite";
 import { isPrivateChatId, rollingDmOrdinal } from "./conversation-address.ts";
 import { CAUSAL_KEY_SQL, type Row } from "./conversation-queries.ts";
+import { ensureClaudeSessionsSchema } from "./claude-sessions.ts";
 import { log } from "./log.ts";
 import { ensureNotesSchema } from "./notes.ts";
 import { ensureProjectsSchema } from "./projects.ts";
@@ -231,20 +232,9 @@ export function ensureConversationSchema(db: Database): void {
 	// (reply-ratings.ts); ensured here so the rewind sweep's delete and
 	// the ratings reads always find the table on this handle.
 	ensureRatingsSchema(db);
-	// #418: one native Claude SDK session per (conversation, model ref).
-	// The claude-code engine resumes it each turn; the record advances
-	// only on a landed reply (src/claude-sessions.ts owns access).
-	db.run(`
-			CREATE TABLE IF NOT EXISTS claude_sessions (
-				conversation_id TEXT NOT NULL,
-				model_ref TEXT NOT NULL,
-				session_id TEXT NOT NULL,
-				head_uuid TEXT NOT NULL,
-				seen_seq INTEGER NOT NULL,
-				reply_seq INTEGER,
-				updated_at INTEGER NOT NULL,
-				PRIMARY KEY (conversation_id, model_ref)
-			)`);
+	// #418: the native Claude SDK session table lives with its owner
+	// module (claude-sessions.ts).
+	ensureClaudeSessionsSchema(db);
 	// Web Push subscriptions are endpoint-scoped operator devices. The
 	// endpoint and its keys are send credentials, so callers/log lines use
 	// endpoint_hash; only the sender boundary reads the raw row.

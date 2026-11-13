@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { AppCompactionMark, AppInterruptedList, AppRunCall } from "../../src/http/app-wire.ts";
 import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
 import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
+import { MessageParts } from "./chat/MessageParts.tsx";
 import {
 	appendQuote,
 	ChatView,
@@ -15,7 +16,6 @@ import {
 	contextCount,
 	editedParts,
 	FoldMark,
-	MessageParts,
 	mergeTranscript,
 	quoteSpeaker,
 	unlandedMeta,

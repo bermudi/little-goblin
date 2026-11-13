@@ -7,7 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
 import type { Artifact } from "../../src/agent/tools/artifact-schema.ts";
-import { MessageParts } from "./ChatView.tsx";
+import { MessageParts } from "./chat/MessageParts.tsx";
 import { ArtifactCard, DocViewerProvider } from "./docview.tsx";
 import { Markdown, inline } from "./markdown.tsx";
 import { PathChip } from "./tools/bits.tsx";

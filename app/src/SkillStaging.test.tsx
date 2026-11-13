@@ -8,7 +8,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Window } from "happy-dom";
 import type { UIMessage } from "ai";
-import { Composer, MessageParts, type StagedSkill, type StagedUpload } from "./ChatView.tsx";
+import { Composer, type StagedSkill, type StagedUpload } from "./ChatView.tsx";
+import { MessageParts } from "./chat/MessageParts.tsx";
 import { SkillPickerSheet } from "./SkillPickerSheet.tsx";
 import type { SkillPreviewResponse } from "../../src/http/operator-wire.ts";
 

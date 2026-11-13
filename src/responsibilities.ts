@@ -84,7 +84,7 @@ export interface ResponsibilityStore {
 	 *  every completionEvidence entry; `done`/`dropped` close the
 	 *  responsibility in the same transaction. A `waiting` report's
 	 *  resumeWhen schedules the next review at the stated time — a
-	 *  resumeWhen that does not parse to a time refuses. */
+	 *  resumeWhen that is not a future ISO-8601 instant refuses. */
 	report(
 		id: string,
 		input: ReportInput,
@@ -229,6 +229,18 @@ export function coordinationAnchors(
 		)
 		.all(conversationId)
 		.map((r) => ({ responsibilityId: r.responsibility_id, status: r.status }));
+}
+
+// A waiting report's resumeWhen schedules a concrete review, so the
+// value must pin an instant — ISO-8601 with date, time and zone — and
+// point forward. Date.parse alone is too loose (Bun accepts "2" and
+// "Nov 5") and says nothing about the past.
+const RESUME_TIME_RE =
+	/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+function isResumeTime(resumeWhen: string | undefined): boolean {
+	if (resumeWhen === undefined || !RESUME_TIME_RE.test(resumeWhen)) return false;
+	const ms = Date.parse(resumeWhen);
+	return !Number.isNaN(ms) && ms > Date.now();
 }
 
 export function openResponsibilities(db: Database): ResponsibilityStore {
@@ -445,11 +457,12 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					result = { refused: "closed" };
 					return;
 				}
-				// resumeWhen schedules the review, so it must state a time —
-				// a condition that isn't a time needs a planned commitment.
+				// resumeWhen schedules the review, so it must state a future
+				// instant — a condition that isn't a time needs a planned
+				// commitment instead.
 				if (
 					input.state === "waiting" &&
-					Number.isNaN(Date.parse(input.resumeWhen ?? ""))
+					!isResumeTime(input.resumeWhen)
 				) {
 					result = { refused: "waiting-time" };
 					return;

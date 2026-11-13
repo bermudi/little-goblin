@@ -300,6 +300,23 @@ describe("deliberate responsibility follow-up", () => {
 		expect(r.resps.get(r.id)!.followup).toEqual(r.resp.followup);
 	});
 
+	test.each([
+		["2", "a bare number Bun's Date.parse would take"],
+		["tomorrow", "a bare weekday word"],
+		["Nov 5", "a month name without a year"],
+		["2030-01-01T12:00:00", "a datetime with no zone"],
+		["2001-01-01T00:00:00Z", "a valid ISO instant in the past"],
+	])("a waiting report refuses resumeWhen %s — %s", (resumeWhen) => {
+		const r = rig();
+		const result = r.resps.report(
+			r.id,
+			{ state: "waiting", reason: "the gate", resumeWhen },
+			"goblin",
+		);
+		expect(result).toEqual({ refused: "waiting-time" });
+		expect(r.resps.reportsFor(r.id)).toHaveLength(0);
+	});
+
 	test("leaving the operator's stage re-arms the backstop instead of firing it stale", () => {
 		const r = rig();
 		r.resps.report(r.id, { state: "ready", reason: "at the checkpoint" }, "goblin");

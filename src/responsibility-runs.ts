@@ -96,11 +96,12 @@ export function delegationReport(
 			reason: clip(`${readinessSummary(readiness)}\n${tag} ${verdict}: ${body}`),
 			// Pending readiness resumes at the next observation window: the
 			// code poller re-reads GitHub, not the model, and a resumeWhen
-			// that isn't a time refuses.
+			// must be a future time — a stale observedAt is clamped to now.
 			...(verdict === "done" && pending
 				? {
 						resumeWhen: new Date(
-							Date.parse(readiness.observedAt) + 2 * READINESS_OBSERVE_MS,
+							Math.max(Date.now(), Date.parse(readiness.observedAt)) +
+								2 * READINESS_OBSERVE_MS,
 						).toISOString(),
 					}
 				: {}),

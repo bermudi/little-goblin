@@ -15,16 +15,15 @@ import { randomUUID } from "node:crypto";
 import type { ConversationStore } from "./conversation.ts";
 import { HerdrRefusal, OPERATOR_SESSION, type OperatorHerdr } from "./herdr.ts";
 import { log } from "./log.ts";
+import { armedView, type ResponsibilityStore } from "./responsibilities.ts";
 import {
 	ReconciliationConflict,
-	armedView,
 	type Attachment,
 	type AttachmentTarget,
 	type PromptOperation,
 	type Responsibility,
-	type ResponsibilityStore,
 	type Understanding,
-} from "./responsibilities.ts";
+} from "./responsibility-types.ts";
 import type { WakeStore } from "./wake-store.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
 import { isFollowupProgram } from "./responsibility-followup.ts";

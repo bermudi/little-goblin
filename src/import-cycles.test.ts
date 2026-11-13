@@ -134,6 +134,7 @@ const ALLOWED_CYCLES: readonly string[][] = [
 		"src/responsibilities.ts",
 		"src/responsibility-followup.ts",
 		"src/responsibility-stage.ts",
+		"src/responsibility-types.ts",
 		"src/targets.ts",
 		"src/turn/itemize.ts",
 		"src/window-capture.ts",

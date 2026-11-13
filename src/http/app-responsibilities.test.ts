@@ -9,11 +9,8 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { OperatorAgent } from "../herdr.ts";
 import { openPrograms } from "../programs.ts";
-import {
-	openResponsibilities,
-	type AttachmentTarget,
-	type ResponsibilityStore,
-} from "../responsibilities.ts";
+import { openResponsibilities, type ResponsibilityStore } from "../responsibilities.ts";
+import type { AttachmentTarget } from "../responsibility-types.ts";
 import { makeResponsibilityService } from "../responsibility-service.ts";
 import { openWakeStore } from "../wake-store.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";

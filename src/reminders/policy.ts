@@ -4,7 +4,7 @@
 // the latest report's age, so nothing here needs its own stored state,
 // and a report or correction that changes the stage ends the series.
 
-import type { PromptOperation, Responsibility } from "../responsibilities.ts";
+import type { PromptOperation, Responsibility } from "../responsibility-types.ts";
 import type { ResponsibilityReport } from "../responsibility-reports.ts";
 import { responsibilityStage, type StageName } from "../responsibility-stage.ts";
 

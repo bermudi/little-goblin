@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { paths } from "../../config.ts";
+import { paths } from "../../home-layout.ts";
 import { durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
 

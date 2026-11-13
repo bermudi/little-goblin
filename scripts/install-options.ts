@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { parseAuthFile, parsePassKeysGet, passKeysCommandExecutable } from "../src/auth.ts";
-import { authReferences, parseConfigFile, paths } from "../src/config.ts";
+import { authReferences, parseConfigFile } from "../src/config.ts";
+import { paths } from "../src/home-layout.ts";
 
 try {
 	const config = parseConfigFile(readFileSync(paths.config(), "utf8"));

@@ -9,7 +9,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
-import { parseConfig, type Config, type ConfigRef } from "../config.ts";
+import { parseConfig, type ConfigRef } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { openStore } from "../conversation.ts";
 import type { Runtime } from "../runtime.ts";
 

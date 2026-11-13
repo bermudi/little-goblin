@@ -3,7 +3,7 @@
 // routes in operator-skills.ts).
 
 import { z } from "zod";
-import { paths } from "../config.ts";
+import { paths } from "../home-layout.ts";
 import {
 	AttachmentTooLargeError,
 	identityFiles,

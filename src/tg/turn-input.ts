@@ -6,7 +6,8 @@
 // behavior — a /skill turn is indistinguishable from a typed one.
 
 import type { Api } from "grammy";
-import type { ConfigRef, TtsConfig } from "../config.ts";
+import type { ConfigRef } from "../config.ts";
+import type { TtsConfig } from "../config-schema.ts";
 import type { Conversation } from "../conversation.ts";
 import type { ConversationReads } from "../conversation-read.ts";
 import { channelOf } from "../conversation-address.ts";

@@ -9,7 +9,7 @@
 
 import { readFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
-import { paths } from "../config.ts";
+import { paths } from "../home-layout.ts";
 import { log } from "../log.ts";
 import {
 	catalogSkillBodyText,

@@ -3,7 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type AuthStore, loadAuthFile } from "../auth.ts";
-import { desktopsConfigSchema, subagentsConfigSchema } from "../config.ts";
+import { desktopsConfigSchema, subagentsConfigSchema } from "../config-schema.ts";
 import { containerNameForDesktop, type Desktops, makeDesktops, openDesktops } from "../desktops.ts";
 import { setLogFile } from "../log.ts";
 import { makePodman, type Podman } from "../podman.ts";

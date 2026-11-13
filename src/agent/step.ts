@@ -4,7 +4,8 @@
 import { generateText, isStepCount } from "ai";
 import type { RuntimeDeps } from "../runtime.ts";
 
-import { splitModelRef, type ConfigRef, type ThinkingLevel } from "../config.ts";
+import type { ConfigRef } from "../config.ts";
+import { splitModelRef, type ThinkingLevel } from "../config-schema.ts";
 import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";

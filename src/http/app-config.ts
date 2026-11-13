@@ -1,12 +1,7 @@
 import { z } from "zod";
 import { clampThinkingFor } from "../agent/thinking.ts";
-import {
-	ConfigValidationError,
-	loadConfig,
-	parseConfig,
-	splitModelRef,
-	writeConfig,
-} from "../config.ts";
+import { ConfigValidationError, loadConfig, parseConfig, writeConfig } from "../config.ts";
+import { splitModelRef } from "../config-schema.ts";
 import { prepareAppSettingsForConfig } from "../conversation.ts";
 import { log } from "../log.ts";
 import {

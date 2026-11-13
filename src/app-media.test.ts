@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { UIMessage, UIMessageChunk } from "ai";
 import { ATTACHMENT_PART, type AttachmentRef } from "./agent/attachments.ts";
 import { appMediaSink } from "./app-media.ts";
-import { paths } from "./config.ts";
+import { paths } from "./home-layout.ts";
 import { FencedError } from "./runtime.ts";
 
 import { useHome } from "./testkit.ts";

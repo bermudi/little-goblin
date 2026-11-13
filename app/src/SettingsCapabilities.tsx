@@ -3,7 +3,7 @@
 // form are disabled with the server's hint.
 
 import { Fragment, useId } from "react";
-import type { CapabilityName, ThinkingLevel } from "../../src/config.ts";
+import type { CapabilityName, ThinkingLevel } from "../../src/config-schema.ts";
 import {
 	emptySubagentsDraft,
 	type SubagentModelDraft,

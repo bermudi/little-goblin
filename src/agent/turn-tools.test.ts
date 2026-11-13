@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Config } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import type { AuthStore } from "../auth.ts";
 import { openStore, type Conversation, type ConversationStore } from "../conversation.ts";
 import type { DelegationLifecycle } from "../delegation-lifecycle.ts";

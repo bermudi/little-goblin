@@ -1,5 +1,5 @@
 import { appendAuthRecord, type WritableAuthStore } from "../auth.ts";
-import type { Config } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { type ConversationStore, prepareAppSettingsForConfig } from "../conversation.ts";
 import { flatLine } from "../conversation-events.ts";
 import type { DelegationsStore } from "../delegations.ts";

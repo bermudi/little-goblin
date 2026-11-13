@@ -7,7 +7,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSy
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { type Config, loadConfig, parseConfig, paths, writeConfig } from "../../config.ts";
+import { loadConfig, parseConfig, writeConfig } from "../../config.ts";
+import type { Config } from "../../config-schema.ts";
+import { paths } from "../../home-layout.ts";
 import { deferred, useHome, waitUntil } from "../../testkit.ts";
 import { codexCredentials, resolveCodexAuthFile, type FetchLike } from "./auth.ts";
 import { createChatGptLogin, ensureCodexProvider } from "./login.ts";

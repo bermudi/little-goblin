@@ -11,7 +11,7 @@ import {
 	type CodemodeTool,
 } from "@earendil-works/pi-codemode";
 import { policyOf } from "../tool-policy.ts";
-import { paths } from "../../config.ts";
+import { paths } from "../../home-layout.ts";
 import { log } from "../../log.ts";
 import { summarize } from "../../reviewer.ts";
 import { encodeScriptWorkerCode, SCRIPT_WORKER_URL } from "./script-worker.ts";

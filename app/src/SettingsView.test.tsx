@@ -2,14 +2,14 @@ import { afterEach, beforeEach, expect, test, describe } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
+import { parseConfig } from "../../src/config.ts";
 import {
 	authDefaults,
-	parseConfig,
 	transcriptionDefaults,
 	transcriptionKinds,
 	fetchKinds,
 	searchKinds,
-} from "../../src/config.ts";
+} from "../../src/config-schema.ts";
 import { SettingsView } from "./SettingsView.tsx";
 import type { ConfigPostBody, ProviderModelCatalog } from "../../src/http/operator-wire.ts";
 

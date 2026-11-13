@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import type { AuthStore } from "../../auth.ts";
-import type { Config } from "../../config.ts";
+import type { Config } from "../../config-schema.ts";
 import { TOOL_NAMES } from "../tool-policy.ts";
 import { withScript } from "./script.ts";
 import { HindsightClient } from "../../memory/hindsight.ts";

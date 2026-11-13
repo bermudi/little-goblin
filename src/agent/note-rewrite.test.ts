@@ -7,7 +7,8 @@ import { generateModel } from "../testkit/fake-model.ts";
 import { APICallError } from "@ai-sdk/provider";
 import type { LanguageModelV4CallOptions, LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import type { AuthStore } from "../auth.ts";
-import type { Config, ConfigRef } from "../config.ts";
+import type { ConfigRef } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { generateNoteRewrite, NOTE_REWRITE_INSTRUCTIONS } from "./note-rewrite.ts";
 

@@ -19,7 +19,7 @@ import {
 	writeSync,
 } from "node:fs";
 import { invokesPassCliDirectly, parseAuthRecords, type AuthRecord } from "./auth-parse.ts";
-import { paths } from "./config.ts";
+import { paths } from "./home-layout.ts";
 import { log } from "./log.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
 

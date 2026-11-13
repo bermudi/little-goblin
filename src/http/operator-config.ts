@@ -2,25 +2,8 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { modelCatalogFor } from "../agent/models-dev.ts";
 import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
-import {
-	authDefaults,
-	type CapabilityName,
-	type Config,
-	ConfigValidationError,
-	capabilityNames,
-	type DelegationConfig,
-	fetchKinds,
-	loadConfig,
-	parseConfig,
-	providerKinds,
-	type SubagentsConfig,
-	searchKinds,
-	thinkingLevels,
-	transcriptionDefaults,
-	transcriptionKinds,
-	ttsCloudDefaults,
-	writeConfig,
-} from "../config.ts";
+import { authDefaults, type CapabilityName, type Config, capabilityNames, type DelegationConfig, fetchKinds, providerKinds, type SubagentsConfig, searchKinds, thinkingLevels, transcriptionDefaults, transcriptionKinds, ttsCloudDefaults } from "../config-schema.ts";
+import { ConfigValidationError, loadConfig, parseConfig, writeConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "../services.ts";
 import type { OperatorRequest } from "./operator-deps.ts";

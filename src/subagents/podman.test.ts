@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
-import { subagentsConfigSchema } from "../config.ts";
+import { subagentsConfigSchema } from "../config-schema.ts";
 import type { DesktopRow, Desktops } from "../desktops.ts";
 import { setLogFile } from "../log.ts";
 import { makePodman, type Podman } from "../podman.ts";

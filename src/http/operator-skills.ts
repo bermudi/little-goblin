@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { fetchSkill, SkillFetchError, stampVerdict } from "../agent/skill-fetch.ts";
-import { paths } from "../config.ts";
+import { paths } from "../home-layout.ts";
 import { checkInjection } from "../injection.ts";
 import { log } from "../log.ts";
 import { liveStateOf, skillDiskPresence, skillNameSchema } from "../skill-provenance.ts";

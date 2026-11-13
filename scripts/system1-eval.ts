@@ -11,7 +11,8 @@
 import { Database } from "bun:sqlite";
 import { appendFileSync } from "node:fs";
 import { loadAuth } from "../src/auth.ts";
-import { loadConfig, paths } from "../src/config.ts";
+import { loadConfig } from "../src/config.ts";
+import { paths } from "../src/home-layout.ts";
 import { DEFAULT_INJECTION_THRESHOLDS, INJECTION_QUESTIONS } from "../src/injection.ts";
 import { setLogLevel } from "../src/log.ts";
 import { LOOP_QUESTIONS, loopState } from "../src/loop-watchdog.ts";

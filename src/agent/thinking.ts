@@ -26,7 +26,7 @@
 //   provider to disable something it cannot disable.
 
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
-import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "../config.ts";
+import { splitModelRef, thinkingLevels, type Config, type ThinkingLevel } from "../config-schema.ts";
 import { isOneMinHost } from "./onemin.ts";
 import { openrouterRoute, type OpenRouterRoute } from "./models-dev.ts";
 

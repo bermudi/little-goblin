@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { attachmentPart } from "../agent/attachments.ts";
-import { memoryConfigSchema } from "../config.ts";
+import { memoryConfigSchema } from "../config-schema.ts";
 import { summaryMessage } from "../conversation-events.ts";
 import { log } from "../log.ts";
 import { compactionSummaryId } from "../tags.ts";

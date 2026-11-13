@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import type { Api } from "grammy";
-import { type ConfigRef } from "../config.ts";
+import type { ConfigRef } from "../config.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
 import { forgetDocument } from "../memory/forget.ts";

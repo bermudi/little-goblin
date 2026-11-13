@@ -4,7 +4,7 @@
 
 import { useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { CapabilityName, ThinkingLevel, transcriptionKinds } from "../../src/config.ts";
+import type { CapabilityName, ThinkingLevel, transcriptionKinds } from "../../src/config-schema.ts";
 import type {
 	ConfigResponse,
 	OperatorStatusResponse,

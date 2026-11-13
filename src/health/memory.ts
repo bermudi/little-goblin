@@ -2,7 +2,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import type { Config } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { http } from "./http.ts";
 import {
 	capacity,

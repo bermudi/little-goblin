@@ -1,4 +1,4 @@
-import type { Config } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { command, errno, ProbeError, result, type HealthResult, type ProbeContext } from "./shared.ts";
 
 // The configured sandbox block's engine readiness: podman must answer

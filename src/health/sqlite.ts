@@ -1,6 +1,6 @@
 import { statSync } from "node:fs";
 import { join } from "node:path";
-import type { Config } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { sqliteProbeSchema } from "../health-sqlite.ts";
 import {
 	command,

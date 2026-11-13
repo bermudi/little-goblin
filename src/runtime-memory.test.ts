@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tool, type UIMessage } from "ai";
 import { z } from "zod";
 import { appMediaSink, composeTurnSinks } from "./app-media.ts";
-import { memoryConfigSchema } from "./config.ts";
+import { memoryConfigSchema } from "./config-schema.ts";
 import { openStore } from "./conversation.ts";
 import { HindsightClient } from "./memory/hindsight.ts";
 import { Runtime, userMessage } from "./runtime.ts";

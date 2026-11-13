@@ -11,7 +11,7 @@ import type {
 	transcriptionDefaults,
 	transcriptionKinds,
 	ttsCloudDefaults,
-} from "../config.ts";
+} from "../config-schema.ts";
 import type { ProviderModelCatalog } from "./app-wire.ts";
 
 // Shared with the app wire — defined there (app-wire is the leaf both

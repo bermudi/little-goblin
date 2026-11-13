@@ -8,7 +8,7 @@
 
 import { relative, resolve, sep } from "node:path";
 import { z } from "zod";
-import { paths } from "./config.ts";
+import { paths } from "./home-layout.ts";
 import { NAME_RE as SKILL_NAME_RE } from "./agent/skills.ts";
 
 export { SKILL_NAME_RE };

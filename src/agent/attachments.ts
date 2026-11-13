@@ -6,7 +6,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { UIMessage } from "ai";
 import { z } from "zod";
-import { paths } from "../config.ts";
+import { paths } from "../home-layout.ts";
 import { log } from "../log.ts";
 
 // Cap each inline item because data URLs inflate payloads. A shared turn budget

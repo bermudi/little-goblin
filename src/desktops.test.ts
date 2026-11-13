@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, posix } from "node:path";
-import { desktopsConfigSchema, type DesktopsConfig } from "./config.ts";
+import { desktopsConfigSchema, type DesktopsConfig } from "./config-schema.ts";
 import { makePodman, type PodmanExecOpts } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
 import {

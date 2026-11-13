@@ -9,7 +9,7 @@
 import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
 import type { ConfigRef } from "../config.ts";
-import { splitModelRef } from "../config.ts";
+import { splitModelRef } from "../config-schema.ts";
 import { log } from "../log.ts";
 import { sniffImageBytes } from "./sniff.ts";
 import { readBytesCapped, readTextCapped } from "./tools/web.ts";

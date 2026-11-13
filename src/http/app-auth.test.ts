@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Config } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 
 describe("app channel browser-origin gate (trust mode, #75)", () => {

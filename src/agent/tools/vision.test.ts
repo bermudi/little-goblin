@@ -6,7 +6,8 @@ import type { LanguageModel } from "ai";
 import { generateResultParts, scriptedModel } from "../../testkit/fake-model.ts";
 import type { LanguageModelV4CallOptions } from "@ai-sdk/provider";
 import { setLogFile } from "../../log.ts";
-import type { Config, ConfigRef } from "../../config.ts";
+import type { ConfigRef } from "../../config.ts";
+import type { Config } from "../../config-schema.ts";
 import { visionTool, type VisionToolDeps } from "./vision.ts";
 
 const dirs: string[] = [];

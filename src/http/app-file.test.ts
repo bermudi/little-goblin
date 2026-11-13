@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { paths } from "../config.ts";
+import { paths } from "../home-layout.ts";
 import { tmpDir } from "../testkit.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 

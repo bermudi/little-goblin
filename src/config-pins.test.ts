@@ -8,7 +8,8 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Config, type ConfigRef, loadConfig } from "./config.ts";
+import { type ConfigRef, loadConfig } from "./config.ts";
+import type { Config } from "./config-schema.ts";
 import {
 	type BootPins,
 	bootPinnedDiffs,

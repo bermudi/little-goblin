@@ -10,7 +10,7 @@ import { Database } from "bun:sqlite";
 import { z } from "zod";
 import { log } from "./log.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
-import { sandboxConfigSchema, type SandboxConfig } from "./config.ts";
+import { sandboxConfigSchema, type SandboxConfig } from "./config-schema.ts";
 import type { ContainerInspect, Podman } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
 import { makeContainerLifecycle } from "./sandbox-lifecycle.ts";

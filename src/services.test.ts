@@ -2,7 +2,7 @@
 // config schemas so a renamed auth default or provider kind drifts red.
 
 import { describe, expect, test } from "bun:test";
-import { authDefaults, capabilityNames, providerSchema, reviewerConfigSchema } from "./config.ts";
+import { authDefaults, capabilityNames, providerSchema, reviewerConfigSchema } from "./config-schema.ts";
 import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "./services.ts";
 
 describe("service catalog", () => {

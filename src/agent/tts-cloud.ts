@@ -8,7 +8,7 @@
 
 import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
-import type { TtsConfig } from "../config.ts";
+import type { TtsConfig } from "../config-schema.ts";
 import { log } from "../log.ts";
 import { readBytesCapped, readTextCapped } from "./tools/web.ts";
 import { renderError } from "./transcribe-cloud.ts";

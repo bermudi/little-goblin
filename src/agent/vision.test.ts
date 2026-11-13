@@ -14,7 +14,8 @@ import type {
 } from "@ai-sdk/provider";
 import { setLogFile } from "../log.ts";
 import { generateResultParts, scriptedModel, type StreamAttempt } from "../testkit/fake-model.ts";
-import type { Config, ConfigRef } from "../config.ts";
+import type { ConfigRef } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import {
 	_resetVisionThreadsForTest,
 	askVision,

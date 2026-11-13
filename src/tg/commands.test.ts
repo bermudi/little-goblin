@@ -1,7 +1,7 @@
 import { describe, expect, jest, spyOn, test } from "bun:test";
 import { join } from "node:path";
 import type { Api } from "grammy";
-import { type Config, memoryConfigSchema } from "../config.ts";
+import { type Config, memoryConfigSchema } from "../config-schema.ts";
 import { openStore } from "../conversation.ts";
 import { log } from "../log.ts";
 import { HindsightClient } from "../memory/hindsight.ts";

@@ -20,7 +20,7 @@ import {
 	type CachePruningPolicy,
 	type CachePruningProfile,
 } from "./cache-pruning-policy.ts";
-import type { Config } from "./config.ts";
+import type { Config } from "./config-schema.ts";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { scriptedModel, textParts } from "./testkit/fake-model.ts";

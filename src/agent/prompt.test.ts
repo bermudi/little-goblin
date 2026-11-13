@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { paths } from "../config.ts";
+import { paths } from "../home-layout.ts";
 import { setLogFile } from "../log.ts";
 import { openStore, type Conversation } from "../conversation.ts";
 import { _resetPromptSourcesForTest, buildSystemPrompt, systemPromptFor } from "./prompt.ts";

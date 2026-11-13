@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { goblinHome } from "./config.ts";
+import { goblinHome } from "./goblin-home.ts";
 import { runHealth } from "./health/mod.ts";
 import { healthReportSchema, type HealthReport } from "./health/shared.ts";
 import { setLogStream } from "./log.ts";

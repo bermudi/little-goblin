@@ -15,7 +15,7 @@
 
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { paths } from "../../config.ts";
+import { paths } from "../../home-layout.ts";
 import { createCachedCatalog, type CachedCatalog } from "../catalog-fetch.ts";
 import type { ModelOption } from "../models-dev.ts";
 import { codexCredentials, resolveCodexAuthFile } from "./auth.ts";

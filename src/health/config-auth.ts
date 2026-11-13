@@ -12,7 +12,8 @@ import {
 	cacheContractFresh,
 	type CacheContract,
 } from "../agent/cache-contracts.ts";
-import { authReferences, parseConfigValue, type Config } from "../config.ts";
+import { authReferences, parseConfigValue } from "../config.ts";
+import { type Config } from "../config-schema.ts";
 import { failure, ProbeError, readBounded, result, type HealthResult } from "./shared.ts";
 
 export function configCheck(home: string): { finding: HealthResult; config?: Config } {

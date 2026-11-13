@@ -1,5 +1,5 @@
-import type { Config } from "../config.ts";
-import { splitModelRef } from "../config.ts";
+import type { Config } from "../config-schema.ts";
+import { splitModelRef } from "../config-schema.ts";
 
 export const CACHE_CONTRACT_REVIEW_MS = 30 * 24 * 60 * 60 * 1_000;
 export const CACHE_CONTRACT_REVIEWED_AT = "2026-10-15T00:00:00.000Z";

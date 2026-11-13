@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { paths } from "../config.ts";
+import { paths } from "../home-layout.ts";
 import { log } from "../log.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import { channelOf } from "../conversation-address.ts";

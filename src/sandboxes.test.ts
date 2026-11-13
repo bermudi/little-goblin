@@ -4,7 +4,7 @@
 // idle-reap sweep. No real podman runs here.
 
 import { describe, expect, test } from "bun:test";
-import { sandboxConfigSchema, type SandboxConfig } from "./config.ts";
+import { sandboxConfigSchema, type SandboxConfig } from "./config-schema.ts";
 import { makePodman, type Podman, type PodmanExecOpts } from "./podman.ts";
 import { boundedRun, spawnProc, type BoundedProc, type BoundedProcBytes } from "./proc.ts";
 import { setLogFile, setLogWriter } from "./log.ts";

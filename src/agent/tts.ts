@@ -1,7 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import WebSocket, { type RawData } from "ws";
 import type { AuthStore } from "../auth.ts";
-import type { ConfigRef, TtsConfig } from "../config.ts";
+import type { ConfigRef } from "../config.ts";
+import type { TtsConfig } from "../config-schema.ts";
 import { log } from "../log.ts";
 import { boundedRunBinary, spawnProc } from "../proc.ts";
 import { oneminSpeech } from "./onemin-speech.ts";

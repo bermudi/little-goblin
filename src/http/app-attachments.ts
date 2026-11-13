@@ -6,7 +6,7 @@ import {
 	persistAttachment,
 } from "../agent/attachments.ts";
 import { normalizeRecordedAudio } from "../agent/recording.ts";
-import { paths } from "../config.ts";
+import { paths } from "../home-layout.ts";
 import { log } from "../log.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
 import type { AppAttachmentResponse } from "./app-wire.ts";

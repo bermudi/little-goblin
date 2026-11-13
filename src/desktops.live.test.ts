@@ -18,7 +18,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { desktopsConfigSchema } from "./config.ts";
+import { desktopsConfigSchema } from "./config-schema.ts";
 import { setLogFile } from "./log.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
 import { makePodman, type Podman } from "./podman.ts";

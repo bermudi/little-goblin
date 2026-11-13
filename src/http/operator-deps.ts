@@ -1,4 +1,4 @@
-import type { Config } from "../config.ts";
+import type { Config } from "../config-schema.ts";
 import type { DelegationLifecycle } from "../delegation-lifecycle.ts";
 import type { DelegationsStore } from "../delegations.ts";
 import type { HindsightClient } from "../memory/hindsight.ts";

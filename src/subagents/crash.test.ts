@@ -7,7 +7,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels, InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { subagentsConfigSchema } from "../config.ts";
+import { subagentsConfigSchema } from "../config-schema.ts";
 import type { DesktopRow, Desktops } from "../desktops.ts";
 import { setLogFile } from "../log.ts";
 import type { Sandboxes } from "../sandboxes.ts";

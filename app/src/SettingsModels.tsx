@@ -2,7 +2,7 @@
 // membership list (toggle = offered in the pickers, star = pinned
 // first, arrows = order within the pinned/unpinned segments).
 import { useState } from "react";
-import type { ThinkingLevel } from "../../src/config.ts";
+import type { ThinkingLevel } from "../../src/config-schema.ts";
 import { displayLevel, type SettingsDraft } from "./settingsDraft.ts";
 import { Row, SectionHead, Seg, type SettingsCtx, Switch } from "./settingsKit.tsx";
 

@@ -9,7 +9,7 @@
 // facts only, never file contents — to stderr and exits 1.
 import { readFileSync } from "node:fs";
 import JSON5 from "json5";
-import { paths } from "../src/config.ts";
+import { paths } from "../src/home-layout.ts";
 
 export type McpConfigCheck = { ok: true } | { ok: false; reason: string };
 

@@ -1,7 +1,7 @@
 import type { Model } from "@earendil-works/pi-ai";
 import { ZAI_MODELS } from "@earendil-works/pi-ai/providers/zai.models";
 import { z } from "zod";
-import type { SubagentsConfig } from "../config.ts";
+import type { SubagentsConfig } from "../config-schema.ts";
 import type { SubagentKind } from "../subagent-runs.ts";
 import { SubagentError } from "./errors.ts";
 

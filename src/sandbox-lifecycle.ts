@@ -7,7 +7,7 @@
 import { log } from "./log.ts";
 import type { ContainerInspect, Podman } from "./podman.ts";
 import { SandboxError } from "./sandboxes.ts";
-import type { SandboxConfig } from "./config.ts";
+import type { SandboxConfig } from "./config-schema.ts";
 
 export interface ContainerLifecycleDeps {
 	podman: Podman;

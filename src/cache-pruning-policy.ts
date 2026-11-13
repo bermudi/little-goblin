@@ -1,5 +1,5 @@
 // Policy schemas for persisted tool-result pruning — dependency-free on
-// purpose: config.ts imports this for the cachePruning block, and a
+// purpose: config-schema.ts imports this for the cachePruning block, and a
 // heavier import here (the marker builder lives in cache-pruning.ts)
 // would cycle through web.ts's config read.
 

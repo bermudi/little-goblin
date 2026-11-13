@@ -1,7 +1,8 @@
 import type { Api } from "grammy";
 import { appMediaSink, composeTurnSinks } from "../app-media.ts";
 import type { Conversation, ConversationStore } from "../conversation.ts";
-import type { ConfigRef, TtsConfig } from "../config.ts";
+import type { ConfigRef } from "../config.ts";
+import type { TtsConfig } from "../config-schema.ts";
 import type { System1Client } from "../system1.ts";
 import type { Runtime } from "../runtime.ts";
 import type { TurnSink } from "../turn/sink.ts";

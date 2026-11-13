@@ -1,7 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import type { AuthStore } from "../../auth.ts";
-import type { Config } from "../../config.ts";
+import type { Config } from "../../config-schema.ts";
 import { log } from "../../log.ts";
 import {
 	clampChars,

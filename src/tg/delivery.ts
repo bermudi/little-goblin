@@ -861,15 +861,59 @@ export function makeDeliverySink(
 		}
 	}
 
+	let droppedAcked = false;
+	// A fenced turn whose sink never landed a bubble would otherwise
+	// vanish silently — one ack, threaded to the dropped message, tells
+	// the sender their input survived the stop and stays in history.
+	async function ackDropped(): Promise<void> {
+		if (
+			droppedAcked ||
+			!cancelled ||
+			replyTo === undefined ||
+			chunks.some((c) => c.id > 0)
+		)
+			return;
+		droppedAcked = true;
+		try {
+			const sent = await withTimeout(
+				api.sendMessage(
+					conv.chatId,
+					"⏹ Stopped before I answered — your message is kept in history.",
+					{
+						...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+						reply_parameters: { message_id: replyTo },
+					},
+				),
+				"sendMessage",
+			);
+			log.info("sent drop acknowledgement", {
+				conversation: conv.id,
+				message: sent.message_id,
+				reply: replyTo,
+			});
+		} catch (err) {
+			if (err instanceof TelegramTimeoutError) {
+				markUncertain(err, "sendMessage drop-ack");
+				await notifyUncertain();
+				return;
+			}
+			log.warn("drop acknowledgement failed", err, { conversation: conv.id });
+		}
+	}
+
 	async function stampSuperseded(): Promise<void> {
 		await chain;
 		if (richMode) {
 			// A rich reply has no editable bubble — the draft is the only
 			// visible surface, so the stamp goes on the draft itself,
 			// carrying whatever deltas were still unflushed. No draft was
-			// ever pushed → nothing visible → nothing to stamp.
+			// ever pushed → nothing visible → nothing to stamp — but a
+			// fenced drop still gets its ack.
 			const body = rendered();
-			if (body === "" || !draftLanded) return;
+			if (body === "" || !draftLanded) {
+				await ackDropped();
+				return;
+			}
 			const marked = `${body}${STATUS_TAIL_MARK}⏹ superseded`;
 			enqueue(async () => {
 				try {
@@ -886,8 +930,12 @@ export function makeDeliverySink(
 			await chain;
 			return;
 		}
-		// Nothing landed → nothing shown to preserve: no stamp, no tail.
-		if (!chunks.some((c) => c.id > 0)) return;
+		// Nothing landed → nothing shown to preserve: acknowledge the
+		// fenced drop, no stamp, no tail.
+		if (!chunks.some((c) => c.id > 0)) {
+			await ackDropped();
+			return;
+		}
 		// Pending deltas still land — shown text is never edited back.
 		// The tail goes out as its own window(s); the stamp marks the
 		// last bubble.
@@ -1012,7 +1060,10 @@ export function makeDeliverySink(
 				return;
 			}
 			if (voice?.voiceMode) {
-				if (done.kind === "fenced") return;
+				if (done.kind === "fenced") {
+					await ackDropped();
+					return;
+				}
 				if (done.kind === "error") {
 					enqueue(async () => {
 						if (!mayDeliver()) return;

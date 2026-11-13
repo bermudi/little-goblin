@@ -52,8 +52,8 @@ import { SKILL_CALLBACK_RE, startSkillApproval } from "./skill-approval.ts";
 import {
 	handleSkillCommand,
 	handleTempSkillCallback,
+	skillCommandDeps,
 	TEMP_SKILL_CALLBACK_RE,
-	type SkillCommandDeps,
 } from "./skill-command.ts";
 import { handleSpeakButton } from "./speak-button.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
@@ -784,20 +784,6 @@ function archiveNavigatedInput(
 }
 
 export { SHARED_CHAT_NOTE, sharedChatPart } from "./turn-input.ts";
-
-// One wiring for every /skill door — the command and the temp-skill
-// callback tap. Delivery is the same conversation-configured sink
-// ordinary intake turns get.
-function skillCommandDeps(deps: BotDeps, api: Api): SkillCommandDeps {
-	const gate = deps.followUpGate?.();
-	return {
-		api,
-		store: deps.store,
-		runtime: deps.runtime,
-		delivery: (target) => makeConversationDeliverySink(api, target, deps),
-		...(gate !== undefined ? { gate } : {}),
-	};
-}
 
 function admitBatch(
 	env: FlushEnv,

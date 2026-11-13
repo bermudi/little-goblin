@@ -33,7 +33,8 @@ import { fetchSkill, stampVerdict, SkillFetchError } from "../agent/skill-fetch.
 import type { Conversation, ConversationStore } from "../conversation.ts";
 import { userMessage, type Runtime } from "../runtime.ts";
 import type { TurnSink } from "../turn/sink.ts";
-import { sharedChatPart } from "./turn-input.ts";
+import type { BotDeps } from "./deps.ts";
+import { makeConversationDeliverySink, sharedChatPart } from "./turn-input.ts";
 import { withTimeout } from "./deadline.ts";
 
 const LISTING_CAP = 40;
@@ -60,6 +61,20 @@ export interface SkillCommandDeps {
 	fetchImpl?: typeof fetch;
 	cacheRoot?: string;
 	now?: () => Date;
+}
+
+// One wiring for every /skill door — the command and the temp-skill
+// callback tap. Delivery is the same conversation-configured sink
+// ordinary intake turns get.
+export function skillCommandDeps(deps: BotDeps, api: Api): SkillCommandDeps {
+	const gate = deps.followUpGate?.();
+	return {
+		api,
+		store: deps.store,
+		runtime: deps.runtime,
+		delivery: (target) => makeConversationDeliverySink(api, target, deps),
+		...(gate !== undefined ? { gate } : {}),
+	};
 }
 
 interface PendingTemp {

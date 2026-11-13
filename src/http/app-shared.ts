@@ -4,6 +4,7 @@ import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
 import type { SpeechFile } from "../agent/transcribe.ts";
 import type { AuthStore } from "../auth.ts";
 import { type Config, type ConfigRef, splitModelRef, thinkingLevels } from "../config.ts";
+import { appIdSchema } from "../conversation-address.ts";
 import type { ConversationStore } from "../conversation.ts";
 import type { ModelSettings } from "../conversation-settings.ts";
 import type { NoteStore } from "../notes.ts";
@@ -24,6 +25,41 @@ export function jsonBodyRefusal(req: Request): Response | null {
 	const mediaType = (req.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase();
 	if (mediaType === "application/json") return null;
 	return Response.json({ error: "expected application/json" }, { status: 415, headers: NO_STORE });
+}
+
+/** A JSON body parsed against `schema`, or the refusal response for it. */
+export async function parsedJson<T>(req: Request, schema: z.ZodType<T>): Promise<T | Response> {
+	const refusedJson = jsonBodyRefusal(req);
+	if (refusedJson !== null) return refusedJson;
+	let json: unknown;
+	try {
+		json = await req.json();
+	} catch {
+		return Response.json({ error: "bad json" }, { status: 400, headers: NO_STORE });
+	}
+	const parsed = schema.safeParse(json);
+	if (!parsed.success) {
+		return Response.json(
+			{ error: z.prettifyError(parsed.error) },
+			{ status: 422, headers: NO_STORE },
+		);
+	}
+	return parsed.data;
+}
+
+/** A conversation id path segment — decoded and checked, or its 404. */
+export function conversationFromSegment(segment: string): { id: string } | Response {
+	let decoded: string;
+	try {
+		decoded = decodeURIComponent(segment);
+	} catch {
+		decoded = "";
+	}
+	const parsed = appIdSchema.safeParse(decoded);
+	if (!parsed.success) {
+		return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+	}
+	return { id: `app/${parsed.data}` };
 }
 
 export interface AppChannelDeps {

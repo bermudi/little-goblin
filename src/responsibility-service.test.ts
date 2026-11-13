@@ -10,12 +10,8 @@ import { join } from "node:path";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { openProjects } from "./projects.ts";
-import {
-	openResponsibilities,
-	type AttachmentTarget,
-	type ResponsibilityStore,
-	type Understanding,
-} from "./responsibilities.ts";
+import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
+import type { AttachmentTarget, Understanding } from "./responsibility-types.ts";
 import { makeManagedSendEdge, makeResponsibilityService } from "./responsibility-service.ts";
 import {
 	HerdrRefusal,

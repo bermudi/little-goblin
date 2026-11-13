@@ -9,15 +9,14 @@ import { join } from "node:path";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { openProjects, type ProjectStore } from "./projects.ts";
+import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import {
-	openResponsibilities,
 	ReconciliationConflict,
 	StaleAttachmentError,
 	type AttachmentTarget,
 	type Responsibility,
-	type ResponsibilityStore,
 	type Understanding,
-} from "./responsibilities.ts";
+} from "./responsibility-types.ts";
 import { tmpDir, useHome } from "./testkit.ts";
 
 setLogFile(null);

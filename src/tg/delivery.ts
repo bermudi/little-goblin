@@ -9,6 +9,7 @@ import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.t
 import { fallbackNotice } from "../agent/model-fallback.ts";
 import { speechContent, STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
+import { isNotModifiedError, isPremiumGateError } from "./delivery-errors.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { rateCallbackData } from "./rate-button.ts";
 
@@ -29,15 +30,6 @@ export function resetMessageEffectsGateForTests(): void {
 	messageEffectsUsable = true;
 }
 
-function isPremiumGateError(err: unknown): boolean {
-	const haystacks: unknown[] = [err];
-	if (typeof err === "object" && err !== null) {
-		const rec = err as Record<string, unknown>;
-		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
-		haystacks.push(rec.description, rec.message);
-	}
-	return haystacks.some((h) => typeof h === "string" && h.includes("PREMIUM_ACCOUNT_REQUIRED"));
-}
 const MAX_DRAIN_ITERATIONS = 25;
 const MAX_STAGNANT = 3;
 const RECENT_REPLY_LIMIT = 256;
@@ -48,32 +40,6 @@ export const SPEAK_CALLBACK = "speak_reply";
 
 const recentReplies = new Map<string, string>();
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-export function isNotModifiedError(err: unknown): boolean {
-	const haystacks: unknown[] = [err];
-	if (typeof err === "object" && err !== null) {
-		const rec = err as Record<string, unknown>;
-		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
-		haystacks.push(rec.description, rec.message);
-	}
-	return haystacks.some(
-		(h) => typeof h === "string" && h.toLowerCase().includes("message is not modified"),
-	);
-}
-
-export function isMessageGoneError(err: unknown): boolean {
-	const haystacks: unknown[] = [err];
-	if (typeof err === "object" && err !== null) {
-		const rec = err as Record<string, unknown>;
-		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
-		haystacks.push(rec.description, rec.message);
-	}
-	return haystacks.some(
-		(h) =>
-			typeof h === "string" &&
-			(h.includes("message to edit not found") || h.includes("message not found")),
-	);
-}
 
 export interface DeliveryVoiceDeps {
 	synthesize(text: string): Promise<Uint8Array[]>;

@@ -2077,7 +2077,33 @@ describe("rolling dm", () => {
 		await h.env.intake.get("dm:7");
 		expect(h.pushed[0]!.parts[0]).toEqual({
 			type: "text",
-			text: '[replying to: "selected words"]',
+			text: '[replying to selected excerpt: "selected words"]',
+		});
+		h.store.close();
+	});
+
+	test("a sender-selected quote injects the excerpt, marked as one — not the whole parent", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 41,
+				chat: { id: 7, type: "private" },
+				text: "this part",
+				reply_to_message: { message_id: 39, text: "first para\n\nsecond para\n\nthird para" },
+				quote: { text: "second para", position: 12, is_manual: true },
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({
+			type: "text",
+			text: '[replying to selected excerpt: "second para"]',
+		});
+		expect(h.pushed[0]!.parts[1]).toEqual({ type: "text", text: "this part" });
+		expect(h.env.inbox.pending()[0]?.payload.quoted).toEqual({
+			messageId: 39,
+			text: "second para",
+			excerpt: true,
 		});
 		h.store.close();
 	});

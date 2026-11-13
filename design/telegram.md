@@ -177,11 +177,14 @@ fresh start a "no, the earlier thing" away.
 mid-turn bursts steer. (2) swipe-reply (`reply_to_message`) joins the
 current conversation, no check, carrying the replied-to text as a quoted
 part — a reply from an older conversation must still say what "this" is.
-A reply whose target lives in another chat arrives as `external_reply`
-with no `reply_to_message`; it gets the same quoted part — the
-sender-selected `quote.text` when present, else a placeholder naming the
-origin (`@user`, hidden-user name, `chat "title"`, `channel "title"`)
-and the media kind — never silently dropped (2026-11-13).
+When the sender selected a substring (`msg.quote`), the part carries
+that excerpt marked `selected excerpt`, never the whole parent
+(2026-11-13). A reply whose target lives in another chat arrives as
+`external_reply` with no `reply_to_message`; it gets the same quoted
+part — the sender-selected `quote.text` when present, else a
+placeholder naming the origin (`@user`, hidden-user name, `chat
+"title"`, `channel "title"`) and the media kind — never silently
+dropped (2026-11-13).
 (3) past the gap: with an assistant reply on record, the follow-up check decides (follow-up →
 current, new subject → fresh); with none, join. (4) no current conversation
 → fresh, no check. A fresh conversation starts empty; memory and

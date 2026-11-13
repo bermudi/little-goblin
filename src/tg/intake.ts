@@ -118,7 +118,9 @@ export interface BufferedItem {
 	chatId: number;
 	parts: UIMessage["parts"];
 	replyTo: number | undefined;
-	quoted?: { messageId: number; text: string };
+	quoted?:
+		| { messageId: number; text: string; excerpt?: boolean | undefined }
+		| undefined;
 	textIndex: number;
 	hasText: boolean;
 }
@@ -440,13 +442,21 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 			: quotedReply !== undefined
 				? {
 						messageId: quotedReply.message_id,
-						text: quotedReply.text ?? quotedReply.caption ?? "",
+						// A sender-selected quote is the excerpt they pointed
+						// at — preferring the parent's whole text would inject
+						// context they never referenced (#475).
+						...(msg.quote?.text !== undefined
+							? { text: msg.quote.text, excerpt: true as const }
+							: { text: quotedReply.text ?? quotedReply.caption ?? "" }),
 					}
 				: msg.external_reply !== undefined
 					? {
 							messageId: msg.external_reply.message_id ?? -1,
-							text:
-								msg.quote?.text ?? `[${describeExternalReply(msg.external_reply)}]`,
+							...(msg.quote?.text !== undefined
+								? { text: msg.quote.text, excerpt: true as const }
+								: {
+										text: `[${describeExternalReply(msg.external_reply)}]`,
+									}),
 						}
 					: undefined;
 	const payload: InboxPayload = {
@@ -481,7 +491,10 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 	return enqueueIntake(env.intake, convId, async () => {
 		const parts: UIMessage["parts"] = [];
 		if (quoted !== undefined && quoted.text !== "") {
-			parts.push({ type: "text", text: `[replying to: "${quoted.text.slice(0, 2_000)}"]` });
+			parts.push({
+				type: "text",
+				text: `[replying to${quoted.excerpt === true ? " selected excerpt" : ""}: "${quoted.text.slice(0, 2_000)}"]`,
+			});
 		}
 		const textIndex = parts.length;
 		const hasText = text !== "";

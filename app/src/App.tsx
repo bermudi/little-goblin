@@ -30,12 +30,8 @@ import {
 	telegramDoor,
 } from "./api.ts";
 import { ChatView } from "./ChatView.tsx";
-import {
-	Composer,
-	type StagedNote,
-	type StagedSkill,
-	type StagedUpload,
-} from "./chat/Composer.tsx";
+import { Composer } from "./chat/Composer.tsx";
+import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
 import { DelegationsView } from "./DelegationsView.tsx";
 import { LogView } from "./LogView.tsx";

@@ -6,7 +6,7 @@
 import { useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { UIMessage } from "ai";
 import { loadComposerDraft, saveComposerDraft } from "../composerDraft.ts";
-import type { StagedNote, StagedSkill, StagedUpload } from "./Composer.tsx";
+import type { StagedNote, StagedSkill, StagedUpload } from "./staged.ts";
 
 export function useSubmit({
 	busy,

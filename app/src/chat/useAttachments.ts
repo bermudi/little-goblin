@@ -12,7 +12,7 @@ import {
 } from "react";
 import type { UIMessage } from "ai";
 import { uploadAttachment } from "../api.ts";
-import type { StagedUpload } from "./Composer.tsx";
+import type { StagedUpload } from "./staged.ts";
 
 export function useAttachments({
 	token,

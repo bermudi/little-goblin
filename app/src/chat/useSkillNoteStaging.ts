@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { AppNoteSummary } from "../../../src/http/app-wire.ts";
-import type { StagedNote, StagedSkill } from "./Composer.tsx";
+import type { StagedNote, StagedSkill } from "./staged.ts";
 
 // Staging dedups by reference, never display name — a catalog skill
 // and a fetched copy that named itself the same are distinct skills,

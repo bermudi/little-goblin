@@ -27,12 +27,8 @@ import { DocViewerProvider } from "./docview.tsx";
 import { InterruptedTurns } from "./InterruptedTurns.tsx";
 import { MessageParts } from "./chat/MessageParts.tsx";
 import { QuoteFab, type QuoteSpeaker } from "./chat/QuoteFab.tsx";
-import {
-	Composer,
-	type StagedNote,
-	type StagedSkill,
-	type StagedUpload,
-} from "./chat/Composer.tsx";
+import { Composer } from "./chat/Composer.tsx";
+import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import {
 	ActionBar,
 	editedParts,

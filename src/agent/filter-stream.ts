@@ -6,7 +6,11 @@
 import type { LanguageModelV4StreamPart, LanguageModelV4StreamResult } from "@ai-sdk/provider";
 import { wrapLanguageModel, type LanguageModel } from "ai";
 import { log } from "../log.ts";
-import { isContentFilter, ProviderContentFilterError } from "./provider-errors.ts";
+import {
+	isContentFilter,
+	isTransientTurnFailure,
+	ProviderContentFilterError,
+} from "./provider-errors.ts";
 
 // Errors that reached the wire as provider stream error parts — the one
 // surface streamText's onError-retry machinery can re-dispatch (a
@@ -103,8 +107,26 @@ export function filterErrorStream(model: LanguageModel, conversation: string): L
 							} catch (error) {
 								if (cancelled) return;
 								if (!isContentFilter(error)) {
-									controller.error(error);
-									return;
+									// A mid-stream drop the lane reports as a reader
+									// throw (openai-compatible, #488) joins the
+									// error-part path so streamText's step retry sees
+									// it; a throw the transient classifier doesn't own
+									// stays fatal.
+									if (!isTransientTurnFailure(error)) {
+										controller.error(error);
+										return;
+									}
+									if (typeof error === "object" && error !== null) {
+										streamSurfaceErrors.add(error);
+									}
+									log.warn(
+										"transient stream read failure — surfacing as a stream error part",
+										error,
+										{
+											conversation,
+											model: `${model.provider}/${model.modelId}`,
+										},
+									);
 								}
 								buffered.length = 0;
 								controller.enqueue({ type: "error", error });

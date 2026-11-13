@@ -29,13 +29,13 @@ import {
 	suggestConversationTitle,
 	telegramDoor,
 } from "./api.ts";
+import { ChatView } from "./ChatView.tsx";
 import {
-	ChatView,
 	Composer,
 	type StagedNote,
 	type StagedSkill,
 	type StagedUpload,
-} from "./ChatView.tsx";
+} from "./chat/Composer.tsx";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
 import { DelegationsView } from "./DelegationsView.tsx";
 import { LogView } from "./LogView.tsx";

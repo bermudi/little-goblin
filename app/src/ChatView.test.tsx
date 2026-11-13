@@ -11,7 +11,8 @@ import { MessageParts } from "./chat/MessageParts.tsx";
 import { editedParts, FoldMark, unlandedMeta } from "./chat/MetaLine.tsx";
 import { appendQuote, quoteSpeaker } from "./chat/QuoteFab.tsx";
 import { ContextGauge, contextCount } from "./chat/ContextGauge.tsx";
-import { ChatView, Composer, mergeTranscript } from "./ChatView.tsx";
+import { Composer } from "./chat/Composer.tsx";
+import { ChatView, mergeTranscript } from "./ChatView.tsx";
 
 // Static markup — guards the render contract, not React behavior.
 

@@ -7,13 +7,10 @@ import type { Conversation } from "../conversation.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
-import {
-	isMessageGoneError,
-	isNotModifiedError,
-	makeDeliverySink,
-	recentReplyText,
-	SPEAK_CALLBACK,
-} from "./delivery.ts";
+import { isMessageGoneError, isNotModifiedError } from "./delivery-errors.ts";
+import { makeDeliverySink } from "./delivery.ts";
+import { recentReplyText } from "./reply-memory.ts";
+import { SPEAK_CALLBACK } from "./speak-button.ts";
 
 const CHUNK = 3800;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

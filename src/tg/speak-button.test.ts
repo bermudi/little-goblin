@@ -5,7 +5,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { fakeApi, type RecordedCall } from "../testkit/fake-api.ts";
-import { rememberReply } from "./delivery.ts";
+import { rememberReply } from "./reply-memory.ts";
 import { handleSpeakButton, type SpeakQuery } from "./speak-button.ts";
 
 const TTS = { kind: "edge", voice: "en-US-AriaNeural" } as const;

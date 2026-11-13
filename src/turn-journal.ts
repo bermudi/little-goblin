@@ -82,6 +82,11 @@ export interface TurnRun {
 	// progress event over a reply that is history. NULL on pre-column
 	// rows reads false — those runs genuinely never recorded it.
 	replyLanded: boolean;
+	// The landed reply's event seq — recorded in the same stamp so boot
+	// recovery can re-deliver the exact message. NULL on pre-column rows:
+	// the reply exists but cannot be identified, so they fall back to the
+	// interrupted notice.
+	replySeq: number | null;
 	createdAt: string;
 	resumedFrom: string | null;
 	calls: {
@@ -161,8 +166,17 @@ export interface TurnJournal {
 	noteResumeRequest(runId: string, eventSeq: number): void;
 	// The attempt's durable reply committed — written inside the reply's
 	// own append transaction so a kill in the delivery window can never
-	// leave a reply behind a run row that still claims none.
-	noteReplyLanded(runId: string): void;
+	// leave a reply behind a run row that still claims none. replySeq is
+	// that append's first seq — the reply's durable address.
+	noteReplyLanded(runId: string, replySeq: number | null): void;
+	// Interrupted runs whose reply landed but was never delivered — the
+	// boot re-delivery set (#482). Covers rows interrupted at this open
+	// AND older rows a previous re-delivery attempt left pending.
+	landedPendingReplies(): TurnRun[];
+	// One-time claim on a pending delivery: flips delivery to 'delivered'
+	// only while still 'pending' — true when THIS caller won the claim,
+	// so two recovery passes can never both mark (or both send).
+	markReplyDelivered(runId: string): boolean;
 	finishRun(
 		runId: string,
 		status: "fenced" | "completed" | "error",
@@ -222,6 +236,7 @@ const runRowSchema = z.object({
 	resume_request_seqs: z.string().nullable(),
 	filter_retry_used: z.number(),
 	reply_landed: z.number().nullable(),
+	reply_seq: z.number().int().positive().nullable(),
 	created_at: z.string(),
 	resumed_from: z.string().nullable(),
 	calls_planned: z.number(),
@@ -418,6 +433,7 @@ function decodeRun(raw: unknown): TurnRun {
 		resumeRequestSeqsUnreadable: resumeRequests === "malformed",
 		filterRetryUsed: r.filter_retry_used !== 0,
 		replyLanded: r.reply_landed === 1,
+		replySeq: r.reply_seq,
 		createdAt: r.created_at,
 		resumedFrom: r.resumed_from,
 		calls: {
@@ -532,6 +548,11 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 	if (!runCols.has("reply_landed")) {
 		db.exec("ALTER TABLE turn_runs ADD COLUMN reply_landed INTEGER");
 	}
+	// Same additive rule: a pre-column landed reply has no recorded seq,
+	// so NULL means "landed but unaddressable" — never backfilled.
+	if (!runCols.has("reply_seq")) {
+		db.exec("ALTER TABLE turn_runs ADD COLUMN reply_seq INTEGER");
+	}
 	const callCols = new Set(
 		(db.query("PRAGMA table_info(turn_tool_calls)").all() as { name: string }[]).map((c) => c.name),
 	);
@@ -572,7 +593,15 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 	const qNoteResume = db.query(
 		"UPDATE turn_runs SET resume_request_seqs = ? WHERE run_id = ? AND status = 'interrupted'",
 	);
-	const qReplyLanded = db.query("UPDATE turn_runs SET reply_landed = 1 WHERE run_id = ?");
+	const qReplyLanded = db.query(
+		"UPDATE turn_runs SET reply_landed = 1, reply_seq = ? WHERE run_id = ?",
+	);
+	const qLandedPending = db.query(
+		`${RUN_SELECT} WHERE r.status = 'interrupted' AND r.reply_landed = 1 AND r.delivery = 'pending' ORDER BY r.started_ms, r.run_id`,
+	);
+	const qMarkDelivered = db.query(
+		"UPDATE turn_runs SET delivery = 'delivered' WHERE run_id = ? AND delivery = 'pending'",
+	);
 	// The chunk seam (planned) and the fence seam (dispatch/result) ride different SDK pipelines — either can commit first, so every write upserts; the only invariant held is that terminal states never move.
 	const qInput = db.query(`INSERT INTO turn_tool_calls
 		(run_id, tool_call_id, name, args, args_hash, state, retry_consumed)
@@ -920,8 +949,14 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 		finishRun(runId, status, delivery) {
 			qFinish.run(status, delivery, Date.now(), runId);
 		},
-		noteReplyLanded(runId) {
-			qReplyLanded.run(runId);
+		noteReplyLanded(runId, replySeq) {
+			qReplyLanded.run(replySeq, runId);
+		},
+		landedPendingReplies() {
+			return qLandedPending.all().map(decodeRun);
+		},
+		markReplyDelivered(runId) {
+			return qMarkDelivered.run(runId).changes > 0;
 		},
 		resolveCall(runId, callId, decision, note) {
 			const row = qCallState.get(runId, callId);

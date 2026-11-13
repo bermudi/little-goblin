@@ -193,6 +193,18 @@ conversation — machinery speech and generated resume markers are not
 operator input — and reported once per conversation
 ("N message(s) you sent before the restart weren't answered"), notice
 only, same no-replay rule.
+One exception: a crash inside the delivery window leaves a run
+`interrupted` + `reply_landed=1` + delivery `pending` — its reply is
+already durable history, so boot owes the channel that text, not a
+notice (#482). The journal records the reply's event seq in the same
+stamp; at Telegram attach the reply re-sends to the conversation's own
+chat chunked like the delivery sink, then a conditional
+`delivery='delivered'` claim settles it (send-first, claim-second —
+at-least-once, so a mid-boot crash may duplicate, never lose). A
+failed send stays pending for the next boot; a pre-column row has no
+recorded seq and keeps its interrupted notice instead; an app lane
+settles without a send because its history IS the channel. Delivered
+rows drop out of the boot notices.
 Resuming an interrupted turn is a separate explicit decision riding the
 journaled rows, not a boot behavior.
 

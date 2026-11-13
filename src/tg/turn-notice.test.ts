@@ -9,7 +9,11 @@ import { setLogFile } from "../log.ts";
 import { programFireTag } from "../tags.ts";
 import { deferred, tmpDb, tmpDir, waitUntil } from "../testkit.ts";
 import { openTurnJournal, type TurnJournal } from "../turn-journal.ts";
-import { sendInterruptedTurnNotices, sendStrandedInputNotices } from "./turn-notice.ts";
+import {
+	redeliverLandedReplies,
+	sendInterruptedTurnNotices,
+	sendStrandedInputNotices,
+} from "./turn-notice.ts";
 
 setLogFile(null);
 
@@ -21,6 +25,9 @@ type Seed = {
 	convId: string;
 	calls?: ("planned" | "dispatched" | "completed")[];
 	owned?: number[];
+	// Present (even null) = noteReplyLanded ran before the crash — the
+	// reply seq, or null to hand-craft a pre-column landed row.
+	landed?: number | null;
 };
 
 function crashBed(setup: (store: ConversationStore) => { seeds: Seed[] }): {
@@ -51,6 +58,7 @@ function crashBed(setup: (store: ConversationStore) => { seeds: Seed[] }): {
 			journal.noteToolDispatch(s.runId, callId, "probe", { i });
 			if (state === "completed") journal.noteToolResult(s.runId, callId, { ok: true });
 		});
+		if (s.landed !== undefined) journal.noteReplyLanded(s.runId, s.landed);
 	}
 	first.close();
 	const store = openStore(dbPath);
@@ -59,13 +67,14 @@ function crashBed(setup: (store: ConversationStore) => { seeds: Seed[] }): {
 
 type Send = { chat: number; text: string; settle: ReturnType<typeof deferred<unknown>> };
 
-function fakeApi(opts?: { throwOnChat?: number }) {
+function fakeApi(opts?: { throwOnChat?: number; autoResolve?: boolean }) {
 	const sends: Send[] = [];
 	const api = {
 		sendMessage: (chat: number, text: string) => {
 			const settle = deferred<unknown>();
 			sends.push({ chat, text, settle });
 			if (opts?.throwOnChat === chat) throw new Error("sync send failure");
+			if (opts?.autoResolve === true) settle.resolve({ ok: true });
 			return settle.promise;
 		},
 	} as unknown as Api;
@@ -398,5 +407,124 @@ describe("stranded input notices", () => {
 		} finally {
 			setLogFile(null);
 		}
+	});
+});
+
+describe("landed reply re-delivery", () => {
+	test("re-delivers the landed reply to its own chat, marks it delivered, and skips its notice", async () => {
+		const { store, journal } = crashBed((store) => {
+			const dm = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+			const app = store.resolve(appAddress("ops-app"), "/w");
+			const legacy = store.resolve({ kind: "dm", chatId: 9 }, "/w");
+			store.append(dm.id, [
+				{ id: "u1", role: "user", parts: [{ type: "text", text: "q" }] },
+			]);
+			const [replySeq] = store.append(dm.id, [
+				{
+					id: "a1",
+					role: "assistant",
+					parts: [{ type: "text", text: "the reply that never sent" }],
+				},
+			]);
+			store.append(app.id, [
+				{ id: "a2", role: "assistant", parts: [{ type: "text", text: "app reply" }] },
+			]);
+			return {
+				seeds: [
+					{ runId: "aaaabbbb-dm", convId: dm.id, landed: replySeq! },
+					{ runId: "ccccdddd-app", convId: app.id, landed: 1 },
+					{ runId: "eeeeffff-legacy", convId: legacy.id, landed: null },
+					{ runId: "99990000-plain", convId: dm.id },
+				],
+			};
+		});
+
+		expect(
+			journal
+				.landedPendingReplies()
+				.map((r) => r.runId)
+				.sort(),
+		).toEqual(["aaaabbbb-dm", "ccccdddd-app", "eeeeffff-legacy"]);
+
+		const { api, sends } = fakeApi({ autoResolve: true });
+		const delivered = await redeliverLandedReplies(
+			api,
+			journal.landedPendingReplies(),
+			store,
+			journal,
+		);
+		expect(delivered).toEqual(new Set(["aaaabbbb-dm", "ccccdddd-app"]));
+
+		// The dm reply went to the conversation's own chat, exactly once —
+		// not to operators, not duplicated.
+		expect(sends).toHaveLength(1);
+		expect(sends[0]!.chat).toBe(1);
+		expect(sends[0]!.text).toBe("the reply that never sent");
+		sends[0]!.settle.resolve({ ok: true });
+		expect(journal.get("aaaabbbb-dm")!.delivery).toBe("delivered");
+		expect(journal.get("ccccdddd-app")!.delivery).toBe("delivered");
+		expect(journal.get("eeeeffff-legacy")!.delivery).toBe("pending");
+
+		// Notices go only to rows still owed one: the delivered rows are
+		// out, the legacy and plain interrupted rows stay in.
+		sendInterruptedTurnNotices(
+			api,
+			journal.interruptedAtOpen.filter((r) => !delivered.has(r.runId)),
+			OPERATORS,
+			() => undefined,
+		);
+		const notices = sends.filter((s) => s.text.includes("interrupted turn"));
+		expect(notices).toHaveLength(4);
+		expect(notices.some((s) => s.text.includes("aaaabbbb"))).toBe(false);
+		expect(notices.some((s) => s.text.includes("ccccdddd"))).toBe(false);
+		expect(notices.filter((s) => s.text.includes("eeeeffff"))).toHaveLength(2);
+		expect(notices.filter((s) => s.text.includes("99990000"))).toHaveLength(2);
+
+		// A second pass sends nothing and marks nothing — delivered rows
+		// dropped out of the pending set.
+		expect(
+			await redeliverLandedReplies(api, journal.landedPendingReplies(), store, journal),
+		).toEqual(new Set());
+		expect(journal.landedPendingReplies().map((r) => r.runId)).toEqual([
+			"eeeeffff-legacy",
+		]);
+		for (const s of sends) s.settle.resolve({ ok: true });
+		await Promise.allSettled(sends.map((s) => s.settle.promise));
+		store.close();
+	});
+
+	test("a failed re-delivery stays pending and keeps its interrupted notice", async () => {
+		const { store, journal } = crashBed((store) => {
+			const dm = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+			const [replySeq] = store.append(dm.id, [
+				{
+					id: "a1",
+					role: "assistant",
+					parts: [{ type: "text", text: "undelivered reply" }],
+				},
+			]);
+			return { seeds: [{ runId: "aaaabbbb-dm", convId: dm.id, landed: replySeq! }] };
+		});
+
+		const { api, sends } = fakeApi();
+		const pending = redeliverLandedReplies(
+			api,
+			journal.landedPendingReplies(),
+			store,
+			journal,
+		);
+		sends[0]!.settle.reject(new Error("telegram down"));
+		expect(await pending).toEqual(new Set());
+		expect(journal.get("aaaabbbb-dm")!.delivery).toBe("pending");
+
+		sendInterruptedTurnNotices(api, journal.interruptedAtOpen, OPERATORS, () => undefined);
+		expect(
+			sends.filter((s) => s.text.includes("interrupted turn aaaabbbb")),
+		).toHaveLength(2);
+		for (const s of sends) {
+			if (s.text.includes("interrupted turn")) s.settle.resolve({ ok: true });
+		}
+		await Promise.allSettled(sends.map((s) => s.settle.promise));
+		store.close();
 	});
 });

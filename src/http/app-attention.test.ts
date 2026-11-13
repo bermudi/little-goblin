@@ -84,6 +84,7 @@ function interruptedRun(conversationId: string): { run: TurnRun; calls: TurnTool
 			resumeRequestSeqsUnreadable: false,
 			filterRetryUsed: false,
 			replyLanded: false,
+			replySeq: null,
 			createdAt: "2026-10-21T00:02:00.000Z",
 			resumedFrom: null,
 			calls: { planned: 0, dispatched: 1, completed: 0, failed: 0, resolved: 0 },

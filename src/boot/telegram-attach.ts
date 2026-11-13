@@ -43,7 +43,11 @@ import {
 	startBot,
 } from "../tg/mod.ts";
 import { postProgramApproval, startTelegramProgramApproval } from "../tg/program-approval.ts";
-import { sendInterruptedTurnNotices, sendStrandedInputNotices } from "../tg/turn-notice.ts";
+import {
+	redeliverLandedReplies,
+	sendInterruptedTurnNotices,
+	sendStrandedInputNotices,
+} from "../tg/turn-notice.ts";
 import type { WakeApi } from "../tg/wake.ts";
 import type { TurnJournal } from "../turn-journal.ts";
 import type { ResumeOps } from "../turn-resume.ts";
@@ -273,11 +277,22 @@ export function openTelegramAttach(deps: TelegramAttachDeps): TelegramAttach {
 						// Rows reclassified 'interrupted' at open get one DM per
 						// operator — terse facts, never a replay. Sent only after a
 						// successful attach; the skip/failure logs above stand alone.
+						// A row whose reply landed owes the channel that text (#482):
+						// re-deliver first, then notice only the runs still owed a
+						// notice.
 						if (!interruptedNoticesSent) {
 							interruptedNoticesSent = true;
+							const delivered = await redeliverLandedReplies(
+								running.bot.api,
+								startDeps.journal.landedPendingReplies(),
+								startDeps.store,
+								startDeps.journal,
+							);
 							sendInterruptedTurnNotices(
 								running.bot.api,
-								startDeps.journal.interruptedAtOpen,
+								startDeps.journal.interruptedAtOpen.filter(
+									(r) => !delivered.has(r.runId),
+								),
 								configRef.current.operators,
 								(id) => startDeps.store.get(id)?.title ?? undefined,
 							);

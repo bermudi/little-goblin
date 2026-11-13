@@ -1072,7 +1072,7 @@ export class Runtime {
 					store.db.transaction(() => {
 						const seqs = store.append(convId, messages, opts);
 						landedReplySeq = seqs[0] ?? null;
-						journaled(() => journal?.noteReplyLanded(auth.runId));
+						journaled(() => journal?.noteReplyLanded(auth.runId, landedReplySeq));
 						return seqs;
 					})(),
 				memory: this.deps.memory,

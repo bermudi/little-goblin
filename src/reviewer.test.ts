@@ -26,13 +26,8 @@ import {
 	type ToolCallDigest,
 } from "./reviewer-evidence.ts";
 import { buildGateState } from "./reviewer-gate.ts";
-import {
-	confineTools,
-	Reviewer,
-	reviewTools,
-	stagingRoot,
-	type ReviewerDeps,
-} from "./reviewer.ts";
+import { confineTools, reviewTools, stagingRoot } from "./reviewer-staging.ts";
+import { Reviewer, type ReviewerDeps } from "./reviewer.ts";
 import { tmpDir, waitUntil } from "./testkit.ts";
 
 afterEach(() => {

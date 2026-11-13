@@ -22,7 +22,7 @@ import { useHome } from "../testkit.ts";
 import { handleAppApi, resolveAppAuth, type AppChannelDeps } from "./app-channel.ts";
 import { APP_TOKEN_NAME, APP_TOKEN_VALUE, setup } from "./app-testing.ts";
 import { startHttp } from "./mod.ts";
-import type { OperatorDeps } from "./operator.ts";
+import type { OperatorDeps } from "./operator-deps.ts";
 import type {
 	ChatGptStatus,
 	ConfigResponse,

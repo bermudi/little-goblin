@@ -9,7 +9,7 @@ import type { ConfigRef } from "../config.ts";
 import { log } from "../log.ts";
 import { cacheRouteFor, observedModel, resolveModel } from "./providers.ts";
 import { modelCallMaxRetries } from "./onemin.ts";
-import { thinkingOptions } from "./thinking.ts";
+import { outputTokensFor, thinkingOptions } from "./thinking.ts";
 
 // Bot API topic-name cap.
 const MAX_TITLE_CHARS = 128;
@@ -23,6 +23,7 @@ export async function generateTopicTitle(
 	providerOptions?: ProviderOptions,
 	maxRetries?: number,
 	avoid?: string,
+	maxOutputTokens?: number,
 ): Promise<string | null> {
 	const input = firstText.slice(0, MAX_INPUT_CHARS);
 	// A re-title (avoid set) names the whole chat, not its opening, and
@@ -39,6 +40,7 @@ export async function generateTopicTitle(
 		prompt: input,
 		...(providerOptions ? { providerOptions } : {}),
 		...(maxRetries !== undefined ? { maxRetries } : {}),
+		...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 	});
 	const title = sanitizeTitle(result.text);
 	// A throwaway call is still a cost line — log usage with the cache
@@ -68,27 +70,41 @@ export function sanitizeTitle(raw: string): string | null {
 	return [...title].slice(0, MAX_TITLE_CHARS).join("");
 }
 
-// Absent titleModel answers null. boot() builds it once for the
-// spin-off pin deps.
+// The dedicated titleModel wins; unset, the conversation's own model
+// writes the title under a tight output cap — a title is a few words,
+// not a turn-sized budget.
+const TITLE_ANSWER_TOKENS = 256;
+
+// No titleModel and no fallback ref answers null. boot() builds it once
+// for the spin-off pin deps.
 export function makeTitleFor(deps: {
 	configRef: ConfigRef;
 	auth: AuthStore;
 	observation: CacheObservation;
-}): (text: string, avoid?: string) => Promise<string | null> {
-	return async (text, avoid) => {
+}): (
+	text: string,
+	opts?: { avoid?: string; model?: string },
+) => Promise<string | null> {
+	return async (text, opts) => {
 		const cfg = deps.configRef.current;
-		if (!cfg.titleModel) return null;
-		const model = await resolveModel(cfg, deps.auth, cfg.titleModel);
+		const ref = cfg.titleModel ?? opts?.model;
+		if (ref === undefined) return null;
+		const model = await resolveModel(cfg, deps.auth, ref);
 		return generateTopicTitle(
 			observedModel(model, {
 				purpose: "topic-title",
 				observation: deps.observation,
-				route: cacheRouteFor(cfg, cfg.titleModel),
+				route: cacheRouteFor(cfg, ref),
 			}),
 			text,
-			thinkingOptions(cfg, cfg.titleModel, "off"),
-			modelCallMaxRetries(cfg, cfg.titleModel),
-			avoid,
+			thinkingOptions(cfg, ref, "off"),
+			modelCallMaxRetries(cfg, ref),
+			opts?.avoid,
+			// The configured titleModel is the operator's small-model pick
+			// — cap only the conversation-model fallback, which wasn't.
+			cfg.titleModel === undefined
+				? outputTokensFor(cfg, ref, "off", TITLE_ANSWER_TOKENS)
+				: undefined,
 		);
 	};
 }

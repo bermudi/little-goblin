@@ -38,6 +38,12 @@ rides a message part, not a tool. Still out: a skill tool, per-skill
 tool scoping, fingerprints, immutable skill snapshots, additional
 catalog roots (host, project), per-conversation selection.
 
+The catalog is capped at 128 entries — a self-authored catalog bigger
+than that is already a bug. The prompt section renders the truncation
+like the malformed count (`(catalog capped at 128 of N entries — see
+goblin.log)`) so the model knows its list is partial, not silently
+short.
+
 ## Skill invocation (ruling 2026-10-21, operator ask)
 
 The prompt-mediated path is probabilistic — the model can skip the

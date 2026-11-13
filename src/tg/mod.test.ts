@@ -1469,10 +1469,10 @@ describe("flushConversation", () => {
 		expect([...h.env.titleAttempts]).toContain(conv.id);
 	});
 
-	test("no titleModel configured — titling never fires, the turn still submits", async () => {
+	test("no titleModel configured — titling falls back to the conversation's model", async () => {
 		const { h, conv, submitted, titleCalls } = topicHarness(baseConfig);
 		flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hello" }], replyTo: 1 }]);
-		expect(titleCalls).toEqual([]);
+		expect(titleCalls).toEqual(["hello"]);
 		expect(submitted).toHaveLength(1);
 		await submitted[0]!.sink.onDone({ kind: "completed" });
 	});

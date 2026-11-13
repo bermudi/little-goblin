@@ -15,7 +15,8 @@ No `/new`, no `/resume` — that job belongs to Telegram:
 - **No topics?** A chat without topics is one standing conversation.
 
 A topic Telegram created with a placeholder name ("New Chat") gets
-auto-titled from your first message — if `titleModel` is configured. Rename
+auto-titled from your first message — by `titleModel` when configured,
+otherwise by the conversation's own model under a tight output cap. Rename
 it yourself at any point and your name always wins; the bot won't overwrite
 an explicit rename.
 

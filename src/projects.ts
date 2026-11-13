@@ -294,19 +294,36 @@ export function openProjects(
 			// shared → off is a privacy act: every project conversation
 			// gets the memoryExcluded flag write (no epoch bump — a live
 			// turn finishes, retention refused at the land-time gate),
-			// and queued retention is purged like /memory off.
-			// off → shared touches nothing existing: re-enabling a
-			// conversation stays a per-conversation choice.
+			// and queued retention is purged like /memory off. The write
+			// is marked so the re-open knows it was the gate's, not the
+			// operator's.
 			if (patch.memory === "off" && current.memory === "shared") {
 				let conversations = 0;
 				let cancelled = 0;
 				for (const convId of store.listProjectConversationIds(id)) {
 					if (store.get(convId)?.memoryExcluded !== false) continue;
-					store.setMeta(convId, { memoryExcluded: true });
+					store.setMeta(convId, { memoryExcluded: true, memoryExcludedByProject: true });
 					conversations++;
 					cancelled += deps?.memoryQueue?.cancelConversation(convId) ?? 0;
 				}
 				log.info("project memory off propagated", { project: id, conversations, cancelled });
+			}
+			// off → shared recomputes the effective flag: the gate's own
+			// stamps lift, while an exclusion the operator wrote (no
+			// marker) survives the re-open as their choice.
+			if (patch.memory === "shared" && current.memory === "off") {
+				let lifted = 0;
+				for (const convId of store.listProjectConversationIds(id)) {
+					if (store.get(convId)?.memoryExcludedByProject !== true) continue;
+					store.setMeta(convId, {
+						memoryExcluded: false,
+						memoryExcludedByProject: false,
+					});
+					lifted++;
+				}
+				if (lifted > 0) {
+					log.info("project memory shared recomputed", { project: id, lifted });
+				}
 			}
 			const updated = get(id);
 			if (updated === null) throw new Error(`project ${id} update failed`);

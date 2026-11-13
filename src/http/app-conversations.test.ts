@@ -2368,8 +2368,8 @@ describe("app conversation branch", () => {
 		const seen: { text: string; avoid: string | undefined }[] = [];
 		const { http, call, store } = setup({
 			token: APP_TOKEN_NAME,
-			titleFor: async (text, avoid) => {
-				seen.push({ text, avoid });
+			titleFor: async (text, opts) => {
+				seen.push({ text, avoid: opts?.avoid });
 				return "Fresh Name";
 			},
 		});

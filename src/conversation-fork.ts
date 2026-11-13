@@ -70,11 +70,17 @@ export function makeConversationFork<TConversation>(
 			const through = opts?.throughSeq;
 			qInsertConv.run(id, 0, null, defaultCwd, new Date().toISOString());
 			// The memory opt-out is copied state — an excluded DM's text
-			// stays unsearchable and unretained in the fork too.
+			// stays unsearchable and unretained in the fork too. A
+			// gate-written exclusion keeps its marker so the fork lifts
+			// with the same project re-open the source would.
+			const source = qGet.get(fromId);
 			applyPatch(id, {
 				...(title === null ? {} : { title }),
 				titleImplicit: title === null ? true : (opts?.titleImplicit ?? true),
-				memoryExcluded: qGet.get(fromId)?.memory_excluded === 1,
+				memoryExcluded: source?.memory_excluded === 1,
+				...(source?.memory_excluded_by_project === 1
+					? { memoryExcludedByProject: true }
+					: {}),
 				...(defaults === undefined ? {} : modelSettingsSchema.parse(defaults)),
 			});
 			if (opts?.projectId !== undefined && opts.projectId !== null) {

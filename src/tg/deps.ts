@@ -22,7 +22,9 @@ export interface BotDeps {
 	auth: AuthStore;
 	store: ConversationStore;
 	runtime: Runtime;
-	titleFor(text: string): Promise<string | null>;
+	// avoid names the current title on a re-title; model is the
+	// conversation's ref, used when titleModel is unset.
+	titleFor(text: string, opts?: { avoid?: string; model?: string }): Promise<string | null>;
 	transcribe(file: SpeechFile): Promise<string | null>;
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
 	memory?: CommandMemoryDeps;

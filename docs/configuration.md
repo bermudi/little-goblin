@@ -204,8 +204,8 @@ who served (`via zai/glm-5.3 — codex/gpt-6.1-terra: quota exhausted` in
 Telegram, the meta line in the app). Empty (the default) means no
 fallback. Edit it under Settings → Models → Fallbacks.
 `titleModel` names
-a small cheap model used to auto-title new topics; leave it unset and topics
-keep Telegram's placeholder name.
+a small cheap model used to auto-title new topics; leave it unset and the
+conversation's own model writes the title under a tight output cap.
 
 ### Thinking
 

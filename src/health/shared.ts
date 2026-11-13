@@ -72,6 +72,8 @@ const manualHints: Readonly<Record<string, string>> = {
 		"Informational: trim redundant tests or fold them into invariant-level ones (DESIGN.md → Test posture); never a gate.",
 	"cache.contracts":
 		"Run the bounded public-doc check `bun scripts/check-cache-contracts.ts` — it verifies the pinned source fragments only and never changes policy; empirical lifetime policies wait on model_cache_calls telemetry.",
+	provider:
+		"Provision the named credential record or codex auth file, or fix the model ref; doctor never resolves credentials or refreshes catalogs — refresh through ordinary authorized use.",
 };
 
 export function result(

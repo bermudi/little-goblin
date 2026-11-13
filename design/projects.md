@@ -62,8 +62,11 @@ retain to and recall from the one Hindsight bank like every other
 conversation. `off` is a privacy act: switching a project to `off`
 propagates the `memoryExcluded` flag write (no epoch bump — a live turn
 finishes, retention refused at the gate, same as `/memory off`) to all
-its conversations; switching back to `shared` applies to new conversations
-only — re-enabling an existing chat stays a per-conversation choice.
+its conversations, marked `memory_excluded_by_project` so the gate's own
+stamps stay distinguishable from operator choices. Switching back to
+`shared` recomputes the effective flag: the gate's stamps lift, while an
+exclusion the operator wrote (or confirmed under the gate) survives —
+re-enabling an existing chat still belongs to them, not to the switch.
 Project-only banks are out — they would multiply the bank lifecycle, forget
 protocol, and destination history (design/memory.md) for one operator.
 

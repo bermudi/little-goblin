@@ -15,7 +15,8 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { paths } from "../home-layout.ts";
 import { serveAppDist } from "../http/app-dist.ts";
 import { openStore } from "../conversation.ts";
 import { openDelegations } from "../delegations.ts";
@@ -199,6 +200,95 @@ describe("diagnostic boundary and phases", () => {
 		const report = await runHealth(f.options);
 		expect(finding(report, "config").status).toBe("pass");
 	});
+});
+
+describe("provider readiness", () => {
+	const orConfig = {
+		providers: { openrouter: { kind: "openrouter", auth: "openrouter" } },
+		model: "openrouter/acme/paid-1",
+		operators: [1],
+	};
+	function seedOpenRouter(routes: Record<string, unknown>) {
+		const cache = paths.openrouterModelsCache();
+		mkdirSync(dirname(cache), { recursive: true });
+		writeFileSync(cache, JSON.stringify(routes));
+	}
+	function seedAuth(home: string, names: string[]) {
+		writeFileSync(
+			join(home, "auth.jsonl"),
+			names.map((n) => JSON.stringify({ name: n, value: "x" })).join("\n"),
+			{ mode: 0o600 },
+		);
+	}
+
+	test("codex provider without an auth file fails — presence only, no resolution", async () => {
+		const f = fixture(); // fake codex provider, fake/model
+		const report = await runHealth(f.options);
+		const r = finding(report, "provider.fake");
+		expect(r.status).toBe("fail");
+		expect(r.detail).toContain("no codex auth file");
+		expect(r.next).toBeString();
+	});
+
+	test("auth present + cached route containing the model passes", async () => {
+		const f = fixture();
+		writeFileSync(join(f.home, "goblin.json5"), JSON.stringify(orConfig));
+		seedAuth(f.home, ["openrouter"]);
+		seedOpenRouter({ "acme/paid-1": { params: [], reasoning: null } });
+		const report = await runHealth(f.options);
+		expect(finding(report, "provider.openrouter").status).toBe("pass");
+	});
+
+	test("model missing from the cached route list fails", async () => {
+		const f = fixture();
+		writeFileSync(join(f.home, "goblin.json5"), JSON.stringify(orConfig));
+		seedAuth(f.home, ["openrouter"]);
+		seedOpenRouter({ "acme/other": { params: [], reasoning: null } });
+		const report = await runHealth(f.options);
+		const r = finding(report, "provider.openrouter");
+		expect(r.status).toBe("fail");
+		expect(r.detail).toContain("not in cached catalog");
+	});
+
+	test("a missing auth record fails; a cold catalog warns unverified", async () => {
+		const f = fixture();
+		writeFileSync(join(f.home, "goblin.json5"), JSON.stringify(orConfig));
+		seedAuth(f.home, ["telegram"]);
+		const missing = await runHealth(f.options);
+		const r1 = finding(missing, "provider.openrouter");
+		expect(r1.status).toBe("fail");
+		expect(r1.detail).toContain('auth record "openrouter" missing');
+		// Record present but no route cache — resolvability unverified, not green.
+		seedAuth(f.home, ["openrouter"]);
+		rmSync(paths.openrouterModelsCache(), { force: true });
+		const cold = await runHealth(f.options);
+		const r2 = finding(cold, "provider.openrouter");
+		expect(r2.status).toBe("warn");
+		expect(r2.detail).toContain("uncached");
+	});
+
+	test("a provider with no model refs skips; absent config skips too", async () => {
+		const f = fixture();
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({
+				providers: {
+					fake: { kind: "codex" },
+					idle: { kind: "openrouter", auth: "openrouter" },
+				},
+				model: "fake/model",
+				operators: [1],
+			}),
+		);
+		const report = await runHealth(f.options);
+		expect(finding(report, "provider.idle").status).toBe("skip");
+		writeFileSync(join(f.home, "goblin.json5"), "{ invalid json5 !!!");
+		const broken = await runHealth(f.options);
+		expect(finding(broken, "provider.readiness").status).toBe("skip");
+	});
+});
+
+describe("diagnostic boundary and phases (continued)", () => {
 	test("auth strict poison scan covers live records, mode and missing effective references; never executes refs", async () => {
 		const f = fixture(),
 			marker = join(f.root, "executed");

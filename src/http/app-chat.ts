@@ -418,8 +418,13 @@ export async function handleChatRoute(
 				.join("\n")
 				.trim();
 			if (firstText !== "") {
+				const cfg = deps.configRef.current;
+				const model = store.readAppSettings(convId, {
+					model: cfg.model,
+					thinking: cfg.thinking,
+				}).model;
 				void deps
-					.titleFor(firstText)
+					.titleFor(firstText, { model })
 					.then((title) => {
 						if (title === null || title === "") return;
 						const fresh = store.get(convId);

@@ -145,10 +145,11 @@ export function cacheContracts(config: Config | undefined, home: string): Health
 export function authCheck(
 	home: string,
 	config?: Config,
-): { findings: HealthResult[]; profiles: Map<string, Set<string>> } {
+): { findings: HealthResult[]; profiles: Map<string, Set<string>>; names: Set<string> } {
 	const start = performance.now(),
 		scope = `caller-home:${home}`,
-		profiles = new Map<string, Set<string>>();
+		profiles = new Map<string, Set<string>>(),
+		names = new Set<string>();
 	try {
 		const raw = readBounded(join(home, "auth.jsonl"));
 		if ((raw.mode & 0o077) !== 0) throw new ProbeError("insecure-mode:clear-group-world-bits");
@@ -164,6 +165,7 @@ export function authCheck(
 		// un-poisons an earlier same-name pass-cli record, so raw-record
 		// scanning would fail a live-clean file.
 		const effective = new Map(records.map((r) => [r.name, r]));
+		for (const name of effective.keys()) names.add(name);
 		const poisoned = [...effective.values()].find(
 			(r) => r.value.startsWith("!") && invokesPassCliDirectly(r.value.slice(1)),
 		);
@@ -201,6 +203,7 @@ export function authCheck(
 		}
 		return {
 			profiles,
+			names,
 			findings: [
 				result(
 					"auth.metadata",
@@ -225,6 +228,7 @@ export function authCheck(
 	} catch (error) {
 		return {
 			profiles,
+			names,
 			findings: [
 				failure("auth.metadata", scope, error, start, "Inspect auth.jsonl"),
 				result("auth.coverage", scope, "skip", "Blocked by auth.metadata; no auth values resolved"),

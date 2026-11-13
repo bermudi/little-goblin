@@ -72,11 +72,11 @@ function parseConfigText(raw: string): unknown {
 // callers that separate syntax errors from schema errors (the doctor
 // probe reports JSON5 location per its own category contract).
 export function parseConfigFile(raw: string, warnRetired = false): Config {
-	return parseConfigValue(parseConfigText(raw), warnRetired);
+	return parseConfigValue(parseConfigText(raw), warnRetired, raw);
 }
 
-export function parseConfigValue(raw: unknown, warnRetired = false): Config {
-	return parseConfig(stripRetiredDelegationKeys(raw, warnRetired));
+export function parseConfigValue(raw: unknown, warnRetired = false, sourceText?: string): Config {
+	return parseConfig(stripRetiredDelegationKeys(raw, warnRetired), sourceText);
 }
 
 // ENOENT → null; every other failure propagates with the path attached.
@@ -107,9 +107,24 @@ export class ConfigValidationError extends Error {
 	}
 }
 
+// The line a key name occupies in the file — a locator, never the name:
+// an unrecognized key can carry an operator's private identifier or a
+// pasted secret, so errors report positions only. Repeated names report
+// every candidate line rather than guessing.
+function unrecognizedKeyLines(sourceText: string, key: string): number[] {
+	const re = new RegExp(
+		`^\\s*(?:"${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"|${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})\\s*:`,
+	);
+	const lines: number[] = [];
+	sourceText.split("\n").forEach((line, i) => {
+		if (re.test(line)) lines.push(i + 1);
+	});
+	return lines;
+}
+
 // Unknown keys anywhere in the object are rejected, not stripped: a typo
 // must fail loudly at load rather than disappear on the next save.
-export function parseConfig(raw: unknown): Config {
+export function parseConfig(raw: unknown, sourceText?: string): Config {
 	const result = configSchema.safeParse(raw);
 	if (!result.success) {
 		// Nested record keys and issue messages may contain input. Report only
@@ -118,6 +133,14 @@ export function parseConfig(raw: unknown): Config {
 			const field = issue.path[0];
 			const safeField =
 				typeof field === "string" && Object.hasOwn(configSchema.in.shape, field) ? field : "config";
+			if (issue.code === "unrecognized_keys" && sourceText !== undefined && "keys" in issue) {
+				const lines = [
+					...new Set(issue.keys.flatMap((k) => unrecognizedKeyLines(sourceText, k))),
+				].sort((a, b) => a - b);
+				if (lines.length > 0) {
+					return `${safeField}: unrecognized_keys at ${lines.length === 1 ? "line" : "lines"} ${lines.join(", ")}`;
+				}
+			}
 			return `${safeField}: ${issue.code}`;
 		});
 		throw new ConfigValidationError(`${paths.config()}: invalid config — ${details.join("; ")}`);

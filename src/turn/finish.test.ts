@@ -45,6 +45,7 @@ const conv = (epoch = 1, id = "dm:1"): Conversation => ({
 	thinking: null,
 	voice: false,
 	memoryExcluded: false,
+	memoryExcludedByProject: false,
 	projectId: null,
 	persona: "personal",
 	archivedAt: null,

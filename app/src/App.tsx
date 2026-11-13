@@ -26,13 +26,9 @@ import {
 	searchConversations,
 	telegramDoor,
 } from "./api.ts";
-import {
-	ChatView,
-	Composer,
-	type StagedNote,
-	type StagedSkill,
-	type StagedUpload,
-} from "./ChatView.tsx";
+import { ChatView } from "./ChatView.tsx";
+import { Composer } from "./chat/Composer.tsx";
+import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
 import { ConversationRow, flatLine, flatTitle, relTime } from "./ConversationList.tsx";
 import { DelegationsView } from "./DelegationsView.tsx";

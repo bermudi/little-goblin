@@ -11,7 +11,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
 import type { ToolUIPart, UIMessage } from "ai";
 import fixture from "../../../src/agent/tools/testdata/ui-all-elements.json" with { type: "json" };
-import { MessageParts } from "../ChatView.tsx";
+import { MessageParts } from "../chat/MessageParts.tsx";
 import { UiPart } from "./UiPart.tsx";
 
 function uiPart(p: Record<string, unknown>): ToolUIPart {

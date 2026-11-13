@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Window } from "happy-dom";
-import { ContextGauge, contextCount, contextLabel } from "./ChatView.tsx";
-import type { AppContextView } from "../../src/http/app-wire.ts";
+import { ContextGauge, contextCount, contextLabel } from "./ContextGauge.tsx";
+import type { AppContextView } from "../../../src/http/app-wire.ts";
 
 const view = (patch: Partial<AppContextView>): AppContextView => ({
 	model: "test/m",

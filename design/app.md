@@ -393,7 +393,7 @@ button knows which message bubble the selection lives in, so the quote
 lands attributed: an annotation line above the blockquote —
 `[quoting Goblin's earlier reply]` for assistant text, `[quoting the
 operator's earlier message]` for the operator's own — with the wording
-pinned in `quoteSourceNote` (app/src/ChatView.tsx). The annotation is
+pinned in `quoteSourceNote` (app/src/chat/QuoteFab.tsx). The annotation is
 draft prose, not metadata: it rides the sent message so both readers
 see the source — Goblin in chat recognizes its own earlier words, and
 memory extraction stops saving a quoted block as the operator's

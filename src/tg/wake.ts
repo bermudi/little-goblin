@@ -32,6 +32,10 @@ export interface WakeBase {
 	push?: Pick<AppPush, "notifyDone">;
 }
 
+/** The Telegram api seam as the wake path names it — grammy stays behind
+ *  this module; boot wiring and index never import the vendor. */
+export type WakeApi = WakeBase["api"];
+
 // Resolve live gap settings for rolling DMs and provide a bell sink for app turns.
 export function makeWakeDeps(base: WakeBase): WakeDeps {
 	const bell: BellDeps | null =

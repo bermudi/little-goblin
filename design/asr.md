@@ -107,7 +107,9 @@ audio never leaves the box.
 - **Artifacts** (x86_64 linux): engine `needle` (1.5 MB) and
   `whistle.cact` (16.9 MB) from `huggingface.co/Cactus-Compute/needle3` and
   `/whistle`, auto-fetched on first use, digest-pinned: digest mismatch =
-  fail loud, never run different weights silently. `engine:`/`weights:`
+  fail loud, never run different weights silently. URLs pin upstream
+  commits, never branch refs — `main` was rewritten, then the engine
+  binary deleted under it (#470, 2026-11). `engine:`/`weights:`
   config bypasses the fetch entirely (managed installs, other platforms).
 - **Speed, measured** (g7, i7-8750H): 11 s note → 1.37 s wall including
   model load, ~8× realtime at 16 kHz mono (48 kHz stereo transcodes slowly —

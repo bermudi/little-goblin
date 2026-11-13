@@ -2,14 +2,11 @@ import { Bot, type Api } from "grammy";
 import { z } from "zod";
 import type { MenuButton, Message } from "grammy/types";
 import type { UIMessage } from "ai";
-import type { AuthStore } from "../auth.ts";
-import type { ConfigRef } from "../config.ts";
-import type { Config, TtsConfig } from "../config-schema.ts";
+import type { Config } from "../config-schema.ts";
 import { paths } from "../home-layout.ts";
-import type { Conversation, ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation.ts";
 import { formatAddress, channelOf } from "../conversation-address.ts";
 import type { ConversationAddress } from "../conversation-address.ts";
-import type { System1Client } from "../system1.ts";
 import {
 	isRollingChat,
 	projectRollText,
@@ -46,8 +43,8 @@ import {
 	refusalDue,
 	routeMemberGuestMessage,
 } from "./guest.ts";
-import { MAIL_CALLBACK_RE, type TelegramMailApproval } from "./mail-approval.ts";
-import { PROGRAM_CALLBACK_RE, type TelegramProgramApproval } from "./program-approval.ts";
+import { MAIL_CALLBACK_RE } from "./mail-approval.ts";
+import { PROGRAM_CALLBACK_RE } from "./program-approval.ts";
 import { sendRollMarker } from "./notify.ts";
 import { registerRateButton } from "./rate-button.ts";
 import { openRatings } from "../reply-ratings.ts";
@@ -68,12 +65,16 @@ import {
 	type InboxPayload,
 } from "./inbox.ts";
 import { openPings, type PingStore } from "./pings.ts";
-import { refusalDispatcher, sendRefusal } from "./refusals.ts";
+import { sendRefusal } from "./refusals.ts";
 import { maybeRenameTopic, titleMetaFromService } from "./titles.ts";
 import { navigateDm } from "./navigation.ts";
 import { makeConversationDeliverySink, sharedChatPart } from "./turn-input.ts";
+import { accessGate } from "./access-gate.ts";
+import { AUTH_TELEGRAM_TOKEN, type BotDeps } from "./deps.ts";
 
-export const AUTH_TELEGRAM_TOKEN = "telegram";
+export { accessGate, AUTH_TELEGRAM_TOKEN };
+export type { BotDeps };
+
 const QUIET_WINDOW_MS = 500;
 const COALESCE_MAX_WAIT_MS = 10_000;
 const ATTACHMENT_FAILED_PREFIX = "[attachment failed to download:";
@@ -121,21 +122,6 @@ export class InboxRecordError extends Error {
 	}
 }
 
-export interface BotDeps {
-	configRef: ConfigRef;
-	auth: AuthStore;
-	store: ConversationStore;
-	runtime: Runtime;
-	titleFor(text: string): Promise<string | null>;
-	transcribe(file: SpeechFile): Promise<string | null>;
-	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
-	memory?: CommandMemoryDeps;
-	mail?: () => TelegramMailApproval | undefined;
-	programApproval?: () => TelegramProgramApproval | undefined;
-	followUpGate?: () => Pick<System1Client, "decide"> | undefined;
-	resumeOps?: () => ResumeOps | undefined;
-}
-
 export interface RunningBot {
 	bot: Bot;
 	drainIntake(): Promise<void>;
@@ -145,59 +131,6 @@ export interface RunningBot {
 	startPolling(onError: (err: unknown) => void): void;
 	/** Resolves when grammY's polling loop and its middleware have finished. */
 	waitForPolling(): Promise<void>;
-}
-
-export function accessGate(configRef: { current: Config }, opts?: { refusalTimeoutMs?: number }) {
-	const dispatch =
-		opts?.refusalTimeoutMs === undefined ? sendRefusal : refusalDispatcher(opts.refusalTimeoutMs);
-	return async (
-		ctx: {
-			from?: { id: number } | undefined;
-			chat?: { id: number; type: string } | undefined;
-			update?: { callback_query?: { id: string } | undefined };
-			api: Api;
-		},
-		next: () => Promise<void>,
-	): Promise<void> => {
-		if (!ctx.from) {
-			log.debug("rejected update with no sender");
-			return;
-		}
-		const cfg = configRef.current;
-		const id = ctx.from.id;
-		if (cfg.operators.includes(id)) {
-			await next();
-			return;
-		}
-		// A non-operator's callback tap lands here (ctx.chat is the message's chat);
-		// it must be answered or the tap's spinner runs until Telegram expires it.
-		if (ctx.update !== undefined && "callback_query" in ctx.update) {
-			const q = ctx.update.callback_query;
-			log.info("callback tap refused — not operator", { userId: id, chat: ctx.chat?.id });
-			if (q !== undefined) {
-				await withTimeout(
-					ctx.api.answerCallbackQuery(q.id, { text: "operator only" }),
-					"answerCallbackQuery",
-				)
-					.then(() => undefined)
-					.catch((err: unknown) => log.debug("answerCallbackQuery failed", { error: String(err) }));
-			}
-			return;
-		}
-		if (ctx.chat?.type === "private") {
-			if (cfg.guest === undefined || !cfg.allowedUsers.includes(id)) {
-				log.info("dm refused — not an operator", {
-					userId: id,
-					guest: cfg.guest !== undefined,
-				});
-				if (refusalDue(id)) dispatch(ctx.api, id, id, GUEST_REFUSAL);
-				return;
-			}
-			await next();
-			return;
-		}
-		log.info("group message dropped — not operator", { userId: id, chat: ctx.chat?.id });
-	};
 }
 
 export interface IntakeEnv {

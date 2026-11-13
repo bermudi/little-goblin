@@ -65,7 +65,7 @@ allowed to act.
 The operator's Telegram account is the root of authority. A message from an
 `operators` id is a request from the operator, no matter which topic it
 lands in — the gate is per-user, not per-chat
-(`src/tg/mod.ts` `accessGate`). Only operators reach ordinary intake; an
+(`src/tg/access-gate.ts` `accessGate`). Only operators reach ordinary intake; an
 `allowedUsers` id gets the sandbox class (guest persona, search-only
 tools, no memory, no app), and anyone else gets one refusal line per
 summons (`design/telegram.md` → Roles and permissions). This is why

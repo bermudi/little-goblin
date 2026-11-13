@@ -26,7 +26,7 @@ import {
 	routeMemberGuestMessage,
 	summonMessage,
 } from "./guest.ts";
-import { sharedChatPart } from "./mod.ts";
+import { sharedChatPart } from "./turn-input.ts";
 import { log } from "../log.ts";
 import { tmpDb } from "../testkit.ts";
 

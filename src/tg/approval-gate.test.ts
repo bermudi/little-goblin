@@ -14,7 +14,8 @@ import type { Config } from "../config-schema.ts";
 import { openStore } from "../conversation.ts";
 import type { Runtime } from "../runtime.ts";
 
-import { createBot, type BotDeps, type RunningBot } from "./mod.ts";
+import { createBot, type RunningBot } from "./bot.ts";
+import type { BotDeps } from "./deps.ts";
 
 function testConfig(apiRoot: string): Config {
 	return parseConfig({

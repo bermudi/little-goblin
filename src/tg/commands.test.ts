@@ -1,4 +1,5 @@
 import { describe, expect, jest, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api } from "grammy";
 import { type Config, memoryConfigSchema } from "../config-schema.ts";
@@ -11,7 +12,7 @@ import type { Runtime } from "../runtime.ts";
 import { tmpDb, waitUntil } from "../testkit.ts";
 import type { TurnRun, TurnToolCall } from "../turn-journal.ts";
 import type { ResumeOps } from "../turn-resume.ts";
-import { type CommandDeps, handleCommand } from "./commands.ts";
+import { COMMAND_RE, type CommandDeps, handleCommand } from "./commands.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 
 const config: Config = {
@@ -1352,5 +1353,31 @@ describe("recovery commands", () => {
 			"turn resume is not wired",
 		]);
 		store.close();
+	});
+});
+
+// #340 drift guard: every command COMMAND_RE recognizes must be handled
+// exactly once — by handleCommand's switch below, or by the
+// interceptions handleMessage (src/tg/intake.ts) runs before it: /new
+// and /back (dm navigation) and /skill (async door, ruling 2026-10-21;
+// folding it into the switch is #462). A listed command with neither
+// is silently treated as ordinary text; a switch case nothing lists is
+// dead. Both drift directions fail here.
+describe("command surface drift (#340)", () => {
+	test("recognized commands are exactly the switch cases plus the documented interceptions", () => {
+		const source = readFileSync(join(import.meta.dir, "commands.ts"), "utf8");
+		const switchCases = [...source.matchAll(/case "(\/\w+)":/g)].map((m) => m[1]!);
+		const alternation = COMMAND_RE.source.match(/^\^\\\/\(([^)]+)\)/)?.[1] ?? "";
+		expect(alternation).not.toBe("");
+		const recognized = alternation.split("|").map((name) => `/${name}`);
+		const intercepted = ["/new", "/back", "/skill"];
+		expect([...switchCases].sort()).toEqual(
+			[...recognized].filter((cmd) => !intercepted.includes(cmd)).sort(),
+		);
+		// And each case actually handles its command — a label is not a handler.
+		const { deps, conv } = setup();
+		for (const cmd of switchCases) {
+			expect(handleCommand(deps, conv, cmd)).toBe(true);
+		}
 	});
 });

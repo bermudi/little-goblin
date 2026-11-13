@@ -26,7 +26,8 @@ import { goblinHome } from "./goblin-home.ts";
 import { ensureHomeLayout, paths } from "./home-layout.ts";
 import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins.ts";
 import { captureConversationSettings, openStore } from "./conversation.ts";
-import { delegationWake, startDelegationLifecycle, wireDelegation } from "./delegation-lifecycle.ts";
+import { delegationWake, wireDelegation } from "./delegation-lifecycle.ts";
+import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import { makeDesktops } from "./desktops.ts";
 import { openDesktops } from "./desktops-store.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
@@ -109,7 +110,7 @@ async function boot() {
 	// Shared ref: the mini app swaps this in place on save; everything
 	// reads .current at point of use.
 	const configRef: ConfigRef = { current: config, ttsDown: false };
-	// The Telegram client reads apiRoot once, at process start (tg/mod.ts).
+	// The Telegram client reads apiRoot once, at process start (tg/bot.ts).
 	// A later save writes the file but not the live client, so it is hinted.
 	const apiRootBoot = config.telegram.apiRoot;
 	const auth = loadAuth();

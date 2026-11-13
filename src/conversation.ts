@@ -18,18 +18,13 @@ import {
 	privateChatIdSchema,
 	rollingDmOrdinal,
 } from "./conversation-address.ts";
-import {
-	type Compaction,
-	type CompactionMark,
-	type CompactionWrite,
-	flatLine,
-	parseEvent,
-} from "./conversation-events.ts";
+import { type CompactionWrite, flatLine, parseEvent } from "./conversation-events.ts";
 import {
 	type HistoryContextRow,
 	type HistoryHit,
 	makeConversationHistory,
 } from "./conversation-history.ts";
+import { makeConversationCompaction } from "./conversation-compaction.ts";
 import { prepareConversationQueries, type Row } from "./conversation-queries.ts";
 import { ensureConversationSchema } from "./conversation-schema.ts";
 import {
@@ -257,9 +252,9 @@ export function openStore(dbPath: string): ConversationStore {
 	const memoryQueue = new MemoryQueue(db);
 	const memoryContexts = new MemoryContexts(db);
 	const memoryDestinations = new MemoryDestinations(db);
+	const queries = prepareConversationQueries(db);
 	const {
 		qCompaction,
-		qCompactions,
 		qInsertCompaction,
 		qGet,
 		qInsertConv,
@@ -277,7 +272,6 @@ export function openStore(dbPath: string): ConversationStore {
 		qLastReplyAnchor,
 		qNextSeq,
 		qEligibleSeqs,
-		qIneligibleFolded,
 		qInsertEvent,
 		qAllEvents,
 		qEventsThrough,
@@ -306,7 +300,7 @@ export function openStore(dbPath: string): ConversationStore {
 		qRewindProjections,
 		qRewindRatings,
 		qRaiseSeqHighwater,
-	} = prepareConversationQueries(db);
+	} = queries;
 
 	function previousDmRow(chatId: number): Row | null {
 		if (!privateChatIdSchema.safeParse(chatId).success) return null;
@@ -330,36 +324,12 @@ export function openStore(dbPath: string): ConversationStore {
 		qEpoch,
 	);
 
-	function getCompaction(id: string): Compaction | null {
-		const row = qCompaction.get(id);
-		return row
-			? {
-					boundarySeq: row.boundary_seq,
-					summary: row.summary,
-					summaryEligible: row.summary_eligible !== 0,
-					tokensBefore: row.tokens_before,
-					model: row.model,
-					createdAt: row.created_at,
-					tailEvents: row.tail_events,
-				}
-			: null;
-	}
-
-	function listCompactions(id: string): CompactionMark[] {
-		return qCompactions.all(id).map((row) => ({
-			boundarySeq: row.boundary_seq,
-			summary: row.summary,
-			tokensBefore: row.tokens_before,
-			tailEvents: row.tail_events,
-			model: row.model,
-			createdAt: row.created_at,
-		}));
-	}
+	const compaction = makeConversationCompaction(queries);
 
 	const historyView = makeConversationHistory(
 		db,
 		{ qHistory, qHistoryCausal, qLastByRole, qProjections, qInsertProjection, qSearch, qContext },
-		getCompaction,
+		compaction.getCompaction,
 	);
 
 	return {
@@ -369,28 +339,7 @@ export function openStore(dbPath: string): ConversationStore {
 		memoryDestinations,
 		...historyView,
 
-		getCompaction,
-
-		listCompactions,
-
-		setCompaction(id, compaction) {
-			// Derived text feeds memory-bound builders only when every event
-			// the pointer folds (causal position ≤ boundary — the key
-			// modelEntries cuts on) was eligible; a prior summary's span sits
-			// below the new boundary, so one count covers repeated
-			// compactions.
-			const foldedIneligible = qIneligibleFolded.get(id, compaction.boundarySeq)?.n ?? 0;
-			qInsertCompaction.run(
-				id,
-				compaction.boundarySeq,
-				compaction.summary,
-				foldedIneligible === 0 ? 1 : 0,
-				compaction.tokensBefore,
-				compaction.model,
-				compaction.createdAt,
-				compaction.tailEvents ?? null,
-			);
-		},
+		...compaction,
 
 		resolve(addr, defaultCwd, defaults) {
 			return db.transaction(() => {

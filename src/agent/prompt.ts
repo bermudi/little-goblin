@@ -440,7 +440,7 @@ export function buildSystemPrompt(
 	}
 	if (agents) sources.push("AGENTS.md");
 	if (user) sources.push("USER.md");
-	if (catalog.entries.length > 0 || catalog.skipped > 0 || proposals.entries.length > 0)
+	if (catalog.entries.length > 0 || catalog.skipped.length > 0 || proposals.entries.length > 0)
 		sources.push("skills");
 
 	return { text, sources };

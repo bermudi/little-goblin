@@ -24,7 +24,10 @@ const frontmatterSchema = z.object({
 	description: z.string().min(1).max(1024),
 	license: z.string().optional(),
 	compatibility: z.string().min(1).max(500).optional(),
-	metadata: z.record(z.string(), z.string()).optional(),
+	// Spec-legal values run deeper than strings — openclaw skills carry a
+	// nested object under `metadata`, hermes skills lists. Nothing reads
+	// them here, so values stay unknown and pass through.
+	metadata: z.record(z.string(), z.unknown()).optional(),
 	// Spec-experimental; nothing here enforces per-skill tool scope, but
 	// the spec form is a LIST ("allowed-tools:\n  - Bash(...)") — a bare
 	// string schema rejected the spec's own shape and silently dropped
@@ -52,10 +55,20 @@ export interface SkillEntry {
 	manualOnly?: boolean;
 }
 
+export interface SkippedSkill {
+	/**
+	 * Directory basename — the only reliable name when the frontmatter
+	 * itself is broken.
+	 */
+	dir: string;
+	/** One line — zod issue path+message or a structural reason; never file content. */
+	reason: string;
+}
+
 export interface SkillCatalog {
 	entries: SkillEntry[];
 	/** Entries skipped as malformed — each already log.warn'ed. */
-	skipped: number;
+	skipped: SkippedSkill[];
 	/** Basename of the scanned root — the leaf dir that entries and the section prose share. */
 	root: string;
 }
@@ -90,7 +103,13 @@ export function parseSkill(head: string): { fm: Frontmatter } | { err: string } 
 	}
 	const parsed = frontmatterSchema.safeParse(raw);
 	if (!parsed.success) {
-		return { err: z.prettifyError(parsed.error) };
+		// One line per skill — the log field and the prompt section both
+		// carry this string, so issues flatten to "path: message".
+		return {
+			err: parsed.error.issues
+				.map((i) => (i.path.length === 0 ? i.message : `${i.path.join(".")}: ${i.message}`))
+				.join("; "),
+		};
 	}
 	const fm = parsed.data;
 	if (!NAME_RE.test(fm.name)) {
@@ -107,14 +126,14 @@ export function loadCatalog(root: string): SkillCatalog {
 	} catch (err) {
 		// No catalog dir is an empty catalog, not an error.
 		if ((err as NodeJS.ErrnoException).code === "ENOENT")
-			return { entries: [], skipped: 0, root: leaf };
+			return { entries: [], skipped: [], root: leaf };
 		throw err;
 	}
 
 	const entries: SkillEntry[] = [];
-	let skipped = 0;
-	const skip = (path: string, reason: string) => {
-		skipped++;
+	const skipped: SkippedSkill[] = [];
+	const skip = (name: string, path: string, reason: string) => {
+		skipped.push({ dir: name, reason });
 		log.warn("skill skipped", { path, reason });
 	};
 
@@ -126,7 +145,7 @@ export function loadCatalog(root: string): SkillCatalog {
 			// target; a broken link throws and is skipped below.
 			stats = statSync(dir);
 		} catch (err) {
-			skip(dir, `cannot stat: ${(err as Error).message}`);
+			skip(dirent.name, dir, `cannot stat: ${(err as Error).message}`);
 			continue;
 		}
 		// Loose files in the root are not skills — ignored silently.
@@ -140,6 +159,7 @@ export function loadCatalog(root: string): SkillCatalog {
 			// A malformed or unreadable entry warns and skips — only the
 			// catalog root read (above) may kill the load.
 			skip(
+				dirent.name,
 				dir,
 				(err as NodeJS.ErrnoException).code === "ENOENT"
 					? "no SKILL.md"
@@ -149,14 +169,18 @@ export function loadCatalog(root: string): SkillCatalog {
 		}
 		const parsed = parseSkill(head);
 		if ("err" in parsed) {
-			skip(file, parsed.err);
+			skip(dirent.name, file, parsed.err);
 			continue;
 		}
 		const fm = parsed.fm;
 		// Spec: name must match the parent directory name — for a linked
 		// skill that's the link's name, which is what the catalog shows.
 		if (fm.name !== dirent.name) {
-			skip(file, `name "${fm.name}" does not match directory "${dirent.name}"`);
+			skip(
+				dirent.name,
+				file,
+				`name "${fm.name}" does not match directory "${dirent.name}"`,
+			);
 			continue;
 		}
 		// Manual-only stays in the catalog (the picker and explicit
@@ -223,10 +247,13 @@ export function formatSkillsSection(
 			lines.push(`- ${e.name} — ${e.description}${req} (${path})`);
 		}
 	}
-	if (catalog.skipped > 0) {
+	if (catalog.skipped.length > 0) {
 		lines.push(
-			`(${catalog.skipped} ${catalog.skipped === 1 ? "entry" : "entries"} skipped as malformed — see goblin.log)`,
+			`(${catalog.skipped.length} ${catalog.skipped.length === 1 ? "entry" : "entries"} skipped as malformed — see goblin.log)`,
 		);
+		for (const s of catalog.skipped) {
+			lines.push(`- ${s.dir} — ${s.reason}`);
+		}
 	}
 	if (proposals !== undefined && proposals.entries.length > 0) {
 		// The prose must resolve from the conversation's cwd too — under a

@@ -20,7 +20,12 @@ import { openWireStep } from "./boot/delivery.ts";
 import { openTelegramAttach } from "./boot/telegram-attach.ts";
 import { openCacheObservation } from "./cache-observation.ts";
 import { openCachePruning } from "./cache-pruning.ts";
-import { type ConfigRef, loadConfig, missingAuthNames } from "./config.ts";
+import {
+	type ConfigRef,
+	loadConfig,
+	missingAuthNames,
+	warnOnExampleOperator,
+} from "./config.ts";
 import type { Config } from "./config-schema.ts";
 import { goblinHome } from "./goblin-home.ts";
 import { ensureHomeLayout, paths } from "./home-layout.ts";
@@ -106,6 +111,7 @@ async function boot() {
 		process.exit(1);
 	}
 	setLogLevel(config.logLevel);
+	warnOnExampleOperator(config);
 
 	// Shared ref: the mini app swaps this in place on save; everything
 	// reads .current at point of use.

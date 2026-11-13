@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import { authCheck, cacheContracts, configCheck } from "./config-auth.ts";
+import { authCheck, cacheContracts, configCheck, operatorIds } from "./config-auth.ts";
 import { installation } from "./installation.ts";
 import { snapshots } from "./keys.ts";
 import { memory } from "./memory.ts";
@@ -28,6 +28,7 @@ export async function runHealth(options: {
 	const auth = authCheck(home, config.config);
 	const local = [
 		config.finding,
+		operatorIds(config.config, home),
 		cacheContracts(config.config, home),
 		...auth.findings,
 		...workspace(home, options.phase),

@@ -228,7 +228,11 @@ The unit of trust is the person, not the chat. Two config lists: `operators`
 (min 1 while `telegram.enabled`; may be empty when the channel is off) and
 `allowedUsers` (may be empty). Everyone else is a stranger,
 never served: **every summons gets one short refusal line and nothing else**
-— no turn, no conversation, no state, no meter — on every summons surface
+— no turn, no conversation, no state, no meter — on every summons surface.
+The line names the sender's own numeric Telegram id so a misplaced
+operators/allowedUsers entry is self-diagnosing, and the shipped example
+id `123456789` is flagged by a boot warning and doctor's
+`config.operators` check (2026-11-13)
 (bot DM, member-chat @mention or reply-to-goblin, guest surface — settled
 into the placeholder). Ambient non-operator group chatter is not a summons —
 dropped, no reply.

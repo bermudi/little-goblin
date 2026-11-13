@@ -202,3 +202,18 @@ export function authReferences(config: Config): Set<string> {
 export function missingAuthNames(config: Config, has: (name: string) => boolean): string[] {
 	return [...authReferences(config)].filter((name) => !has(name)).sort();
 }
+
+// The placeholder operator id shipped in goblin.json5.example. A config
+// that still holds it almost certainly never replaced the example — the
+// access gate then refuses the real owner. Boot and doctor name it; the
+// schema still accepts it (a real id could in principle collide, so the
+// refusal stays the only hard gate).
+export const EXAMPLE_OPERATOR_ID = 123456789;
+
+export function warnOnExampleOperator(config: Config): void {
+	if (!config.operators.includes(EXAMPLE_OPERATOR_ID)) return;
+	log.warn(
+		"operators still holds the shipped example Telegram id — the bot will refuse its own owner; set your real id in Settings → operators",
+		{ exampleId: EXAMPLE_OPERATOR_ID },
+	);
+}

@@ -46,6 +46,12 @@ export function openGuestStore(db: Database): GuestStore {
 
 export const GUEST_REFUSAL = "🚫 I only talk to my operator and approved users.";
 
+// Telling the refused sender their own numeric id makes a misplaced
+// operators/allowedUsers entry self-diagnosing (#472).
+export function guestRefusalText(fromId: number): string {
+	return `${GUEST_REFUSAL} Your Telegram id is ${fromId}.`;
+}
+
 const REFUSAL_LATCH_MS = 10 * 60_000;
 const refusalLatch = new Map<number, number>();
 
@@ -435,8 +441,13 @@ export async function handleGuestUpdate(
 		env.configRef.current.allowedUsers,
 	);
 	if (verdict.kind === "refused") {
-		log.info("guest summons refused", { chat: chatId, from: from.id, update: updateId });
-		await answerGuestArticle(env.api, guestQueryId, "goblin", GUEST_REFUSAL);
+		log.info("guest summons refused", {
+			chat: chatId,
+			from: from.id,
+			update: updateId,
+			reason: "stranger",
+		});
+		await answerGuestArticle(env.api, guestQueryId, "goblin", guestRefusalText(from.id));
 		return;
 	}
 	const sandbox = verdict.kind === "sandbox";
@@ -546,9 +557,10 @@ export async function routeMemberGuestMessage(
 			from: from.id,
 			update: updateId,
 			surface: "member",
+			reason: "stranger",
 		});
 		if (refusalDue(chatId))
-			sendRefusal(env.api, from.id, chatId, GUEST_REFUSAL, msg.message_thread_id);
+			sendRefusal(env.api, from.id, chatId, guestRefusalText(from.id), msg.message_thread_id);
 		return true;
 	}
 

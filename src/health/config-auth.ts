@@ -12,7 +12,7 @@ import {
 	cacheContractFresh,
 	type CacheContract,
 } from "../agent/cache-contracts.ts";
-import { authReferences, parseConfigValue } from "../config.ts";
+import { authReferences, EXAMPLE_OPERATOR_ID, parseConfigValue } from "../config.ts";
 import { type Config } from "../config-schema.ts";
 import { failure, ProbeError, readBounded, result, type HealthResult } from "./shared.ts";
 
@@ -52,6 +52,22 @@ export function configCheck(home: string): { finding: HealthResult; config?: Con
 	} catch (error) {
 		return { finding: failure("config", scope, error, start, "Read/validate goblin.json5") };
 	}
+}
+export function operatorIds(config: Config | undefined, home: string): HealthResult {
+	const start = performance.now(),
+		scope = `caller-home:${home}`;
+	if (config === undefined) {
+		return result("config.operators", scope, "skip", "Blocked by config", start);
+	}
+	return result(
+		"config.operators",
+		scope,
+		config.operators.includes(EXAMPLE_OPERATOR_ID) ? "warn" : "pass",
+		config.operators.includes(EXAMPLE_OPERATOR_ID)
+			? "operators still holds the shipped example Telegram id — set your real id in Settings → operators"
+			: "no shipped example operator id in operators",
+		start,
+	);
 }
 export function cacheContracts(config: Config | undefined, home: string): HealthResult {
 	const start = performance.now(),

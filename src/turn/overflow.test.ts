@@ -153,12 +153,12 @@ function harness(
 }
 
 describe("compactTriggerTokens — design/compaction.md → Triggers", () => {
-	test("the lower of half the window and the 128k cap; unknown window fires at the cap", () => {
-		expect(compactTriggerTokens(1_000_000)).toBe(128_000);
+	test("the lower of half the window and the 256k cap; unknown window fires at the cap", () => {
+		expect(compactTriggerTokens(1_000_000)).toBe(256_000);
 		expect(compactTriggerTokens(200_000)).toBe(100_000);
 		expect(compactTriggerTokens(64_000)).toBe(32_000);
-		expect(compactTriggerTokens(undefined)).toBe(128_000);
-		expect(compactTriggerTokens(null)).toBe(128_000);
+		expect(compactTriggerTokens(undefined)).toBe(256_000);
+		expect(compactTriggerTokens(null)).toBe(256_000);
 	});
 });
 
@@ -167,15 +167,15 @@ describe("preemptArm", () => {
 		expect(preemptArm({ projectedInputTokens: null, contextWindow: 200_000 })).toBeNull();
 		expect(preemptArm({ projectedInputTokens: 99_999, contextWindow: 200_000 })).toBeNull();
 		expect(preemptArm({ projectedInputTokens: 100_000, contextWindow: 200_000 })).toBe("pressure");
-		expect(preemptArm({ projectedInputTokens: 128_000, contextWindow: 1_000_000 })).toBe(
+		expect(preemptArm({ projectedInputTokens: 256_000, contextWindow: 1_000_000 })).toBe(
 			"pressure",
 		);
-		expect(preemptArm({ projectedInputTokens: 127_999, contextWindow: 1_000_000 })).toBeNull();
+		expect(preemptArm({ projectedInputTokens: 255_999, contextWindow: 1_000_000 })).toBeNull();
 		// An unknown window fires at the cap alone.
-		expect(preemptArm({ projectedInputTokens: 128_000, contextWindow: undefined })).toBe(
+		expect(preemptArm({ projectedInputTokens: 256_000, contextWindow: undefined })).toBe(
 			"pressure",
 		);
-		expect(preemptArm({ projectedInputTokens: 127_999, contextWindow: undefined })).toBeNull();
+		expect(preemptArm({ projectedInputTokens: 255_999, contextWindow: undefined })).toBeNull();
 	});
 });
 

@@ -977,6 +977,68 @@ describe("config save", () => {
 		expect(loadConfig()?.parked?.delegation).toBeUndefined();
 	});
 
+	test("a posted delegation.machines cannot replace the file's own targets", async () => {
+		const d: OperatorDeps = {
+			configRef: {
+				current: parseConfig({
+					providers: { test: { kind: "codex" } },
+					model: "test/m",
+					operators: [7],
+					allowedUsers: [],
+					delegation: {
+						harnesses: { pi: { kind: "pi" } },
+						machines: { g7: { machine: "g7", root: "~/build" } },
+						defaults: { default: "pi" },
+					},
+				}),
+			},
+			onConfigWritten: () => {},
+		};
+		const res = await postConfig(d, {
+			delegation: {
+				harnesses: { codex: { kind: "codex" } },
+				machines: { evil: { machine: "evil", root: "~/evil" } },
+				defaults: { default: "codex" },
+			},
+		});
+		expect(res?.status).toBe(200);
+		expect(loadConfig()?.delegation).toEqual({
+			harnesses: { codex: { kind: "codex" } },
+			machines: { g7: { machine: "g7", root: "~/build" } },
+			defaults: { default: "codex" },
+		});
+	});
+
+	test("a posted delegation.machines is dropped when the file has none", async () => {
+		const d: OperatorDeps = {
+			configRef: {
+				current: parseConfig({
+					providers: { test: { kind: "codex" } },
+					model: "test/m",
+					operators: [7],
+					allowedUsers: [],
+					delegation: {
+						harnesses: { pi: { kind: "pi" } },
+						defaults: { default: "pi" },
+					},
+				}),
+			},
+			onConfigWritten: () => {},
+		};
+		const res = await postConfig(d, {
+			delegation: {
+				harnesses: { pi: { kind: "pi" } },
+				machines: { evil: { machine: "evil", root: "~/evil" } },
+				defaults: { default: "pi" },
+			},
+		});
+		expect(res?.status).toBe(200);
+		expect(loadConfig()?.delegation).toEqual({
+			harnesses: { pi: { kind: "pi" } },
+			defaults: { default: "pi" },
+		});
+	});
+
 	const WORKER_WIRE = {
 		auth: "zai",
 		id: "glm-5.3",

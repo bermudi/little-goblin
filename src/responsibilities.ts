@@ -82,7 +82,9 @@ export interface ResponsibilityStore {
 	setStatus(id: string, status: ResponsibilityStatus, opts?: { reason?: string }): void;
 	/** Append a structured report. `done` refuses unless evidence covers
 	 *  every completionEvidence entry; `done`/`dropped` close the
-	 *  responsibility in the same transaction. */
+	 *  responsibility in the same transaction. A `waiting` report's
+	 *  resumeWhen schedules the next review at the stated time — a
+	 *  resumeWhen that is not a future ISO-8601 instant refuses. */
 	report(
 		id: string,
 		input: ReportInput,
@@ -90,7 +92,7 @@ export interface ResponsibilityStore {
 		opts?: { sourceKey?: string; revision?: number | null },
 	):
 		| { report: ResponsibilityReport; responsibility: Responsibility; duplicate: boolean }
-		| { refused: "closed" | "evidence-missing"; missing?: string[] };
+		| { refused: "closed" | "evidence-missing" | "waiting-time"; missing?: string[] };
 	latestReport(id: string): ResponsibilityReport | null;
 	reportsFor(id: string): ResponsibilityReport[];
 	/** A correction — the durable operator event that bumps revision. */
@@ -227,6 +229,18 @@ export function coordinationAnchors(
 		)
 		.all(conversationId)
 		.map((r) => ({ responsibilityId: r.responsibility_id, status: r.status }));
+}
+
+// A waiting report's resumeWhen schedules a concrete review, so the
+// value must pin an instant — ISO-8601 with date, time and zone — and
+// point forward. Date.parse alone is too loose (Bun accepts "2" and
+// "Nov 5") and says nothing about the past.
+const RESUME_TIME_RE =
+	/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/;
+function isResumeTime(resumeWhen: string | undefined): boolean {
+	if (resumeWhen === undefined || !RESUME_TIME_RE.test(resumeWhen)) return false;
+	const ms = Date.parse(resumeWhen);
+	return !Number.isNaN(ms) && ms > Date.now();
 }
 
 export function openResponsibilities(db: Database): ResponsibilityStore {
@@ -428,7 +442,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			const input = reportInputSchema.parse(rawInput);
 			let result:
 				| { report: ResponsibilityReport; responsibility: Responsibility; duplicate: boolean }
-				| { refused: "closed" | "evidence-missing"; missing?: string[] }
+				| { refused: "closed" | "evidence-missing" | "waiting-time"; missing?: string[] }
 				| undefined;
 			db.transaction(() => {
 				const current = requireResp(id);
@@ -441,6 +455,16 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				}
 				if (!OPEN_STATUSES.has(current.status)) {
 					result = { refused: "closed" };
+					return;
+				}
+				// resumeWhen schedules the review, so it must state a future
+				// instant — a condition that isn't a time needs a planned
+				// commitment instead.
+				if (
+					input.state === "waiting" &&
+					!isResumeTime(input.resumeWhen)
+				) {
+					result = { refused: "waiting-time" };
 					return;
 				}
 				if (input.state === "done") {
@@ -482,6 +506,16 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				if (TERMINAL_REPORTS.has(input.state)) {
 					qRespStatus.run("completed", ts, ts, id);
 					qPlan.run(JSON.stringify(silenceFollowup(new Date(ts))), ts, id);
+				} else if (input.state === "waiting" && input.resumeWhen !== undefined) {
+					// Waiting parks at the stated time: the resumeWhen is the
+					// next review, not the hourly silence bound.
+					const plan: ResponsibilityFollowup = {
+						token: randomUUID(),
+						kind: "commitment",
+						dueAt: new Date(input.resumeWhen).toISOString(),
+						reason: input.reason.slice(0, 2000),
+					};
+					qPlan.run(JSON.stringify(plan), ts, id);
 				} else if (
 					// The silence held while the operator owned the move; leaving
 					// that stage starts a fresh bound instead of firing the

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { log } from "./log.ts";
 import type { Delegation, DelegationStatus } from "./delegations.ts";
 import type { AgentInfo } from "./herdr.ts";
-import { readinessKey, type GithubIssue } from "./pr-readiness.ts";
+import { READINESS_OBSERVE_MS, readinessKey, type GithubIssue } from "./pr-readiness.ts";
 import type { DelegationLifecycle, DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
 import {
 	answer,
@@ -178,7 +178,11 @@ async function checkReadiness(
 		return;
 	}
 	if (d.readiness?.result.kind === "no-pr" && d.readiness.result.issueClosed) return;
-	if (d.readiness !== null && Date.now() - Date.parse(d.readiness.observedAt) < 60_000) return;
+	if (
+		d.readiness !== null &&
+		Date.now() - Date.parse(d.readiness.observedAt) < READINESS_OBSERVE_MS
+	)
+		return;
 	const readiness = await observeReadiness(deps, d.issue);
 	// Corrections, pause/cancel, send and stop may land during the remote read.
 	if (deps.watchResponsibility?.(d.responsibilityId, d.responsibilityRevision) === false) return;

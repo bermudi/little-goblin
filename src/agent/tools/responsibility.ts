@@ -431,7 +431,9 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 							error:
 								result.refused === "closed"
 									? `responsibility ${resp.status} — resume it before reporting`
-									: `done refused — no evidence item covers: ${result.missing!.map((m) => JSON.stringify(m)).join(", ")}. Check each, then report done again; report ready or blocked if one cannot be verified.`,
+									: result.refused === "waiting-time"
+										? "waiting refused — resumeWhen must state a time (e.g. 2026-11-15T09:00Z); for a condition that is not a time, plan the next review with action=followup {dueAt, reason} instead"
+										: `done refused — no evidence item covers: ${result.missing!.map((m) => JSON.stringify(m)).join(", ")}. Check each, then report done again; report ready or blocked if one cannot be verified.`,
 						};
 					}
 					if (result.responsibility.status !== resp.status) {

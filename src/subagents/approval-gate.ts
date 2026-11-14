@@ -338,7 +338,10 @@ function declaredApprovalResult(
 // The Harness's truncation remark (pi-durable tool.js `truncated()`): the
 // gate materializes `output` in the effective result, so the Harness's own
 // copy never fires for a gated call — the wrapper emits it instead, into
-// both the returned and the persisted result.
+// both the returned and the persisted result. The counts are the producer's
+// `skipped` sums only: the OutputBuffer can drop more, and the tool api
+// exposes no dropped totals (retainedOutput() is {text, truncated}), so the
+// remark states a lower bound.
 function truncatedDiagnostic(
 	droppedBytes: number,
 	droppedLines: number,
@@ -347,7 +350,7 @@ function truncatedDiagnostic(
 	return {
 		severity: "warn",
 		code: "truncated",
-		message: `Output truncated to its ${retain === "head" ? "beginning" : "end"}: ${droppedLines} lines, ${droppedBytes} bytes dropped`,
+		message: `Output truncated to its ${retain === "head" ? "beginning" : "end"}: at least ${droppedLines} lines, ${droppedBytes} bytes dropped`,
 	};
 }
 

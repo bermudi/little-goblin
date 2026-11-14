@@ -262,7 +262,7 @@ describe("crash-approval lease", () => {
 		const truncation: ToolDiagnostic = {
 			severity: "warn",
 			code: "truncated",
-			message: "Output truncated to its end: 1 lines, 10 bytes dropped",
+			message: "Output truncated to its end: at least 1 lines, 10 bytes dropped",
 		};
 		expect(result.diagnostics).toContainEqual(truncation);
 		expect(committed.at(-1)?.state).toBe("done");

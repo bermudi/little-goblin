@@ -185,7 +185,7 @@ test("a skipped occurrence shows its stamp in the detail view", async () => {
 				lastSkipReason: "beyond lateness grace",
 			}),
 		],
-		{ programs: [], mail: [] },
+		{ programs: [], mail: [], serverTimeZone: "UTC" },
 		"UTC",
 	);
 	root = createRoot(container);

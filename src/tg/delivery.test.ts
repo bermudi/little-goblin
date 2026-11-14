@@ -1667,6 +1667,21 @@ describe("telegram HTML", () => {
 		);
 	});
 
+	test("a tool call while a fence is open adds no stray marker", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		sink.onTextDelta("Here is the code:\n```\nlet a = 1;");
+		sink.onToolCall("bash", { command: "ls -la" });
+		await sink.onDone({ kind: "completed" });
+		const last = msgs[msgs.length - 1]!;
+		// The code block closes in HTML before the status line, the
+		// status shows verbatim, and no fence marker leaks after it.
+		expect(last).toContain("<pre>");
+		expect(last.indexOf("</pre>")).toBeLessThan(last.indexOf("⚙ bash ls -la"));
+		expect(last).toContain("⚙ bash ls -la");
+		expect(last).not.toContain("```");
+	});
+
 	test("a code-heavy window sends HTML — parsed text is what Telegram caps", async () => {
 		const { api, msgs, calls } = fakeApi({});
 		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });

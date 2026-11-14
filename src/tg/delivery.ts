@@ -687,20 +687,23 @@ export function makeDeliverySink(
 			if (c !== undefined && end < c.end) end = c.end;
 			const raw = body.slice(start, end);
 			const reopen = fence !== null ? fenceReopen(fence) : "";
-			fence = fenceStateAfter(raw, fence);
+			// Fence state tracks model text only — the status tail can
+			// hold anything (a command arg starting with ``` must not
+			// open or close a fence).
+			fence = fenceStateAfter(raw.slice(0, Math.max(0, statusStart - start)), fence);
 			const close = fence !== null ? `\n${fence.marker}` : "";
 			const markdown = `${reopen}${raw}${close}`;
 			let html: string;
 			if (statusStart >= end) {
 				html = renderTelegramHtml(markdown);
 			} else if (statusStart <= start) {
-				html = escapeHtml(markdown);
+				html = escapeHtml(raw);
 			} else {
 				const k = statusStart - start;
+				// The head render closes any open fence in HTML itself;
+				// the status is escaped raw, and no marker lands after it.
 				html =
-					renderTelegramHtml(`${reopen}${raw.slice(0, k)}`) +
-					escapeHtml(raw.slice(k)) +
-					close;
+					renderTelegramHtml(`${reopen}${raw.slice(0, k)}`) + escapeHtml(raw.slice(k));
 			}
 			wins.push({ markdown, html, end });
 			start = end;

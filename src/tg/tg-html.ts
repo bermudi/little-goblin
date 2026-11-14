@@ -8,12 +8,14 @@
 // Chunking is chunkWindows' job (delivery-text.ts): it closes a fence
 // at a window's end and reopens it with the same info string on the
 // next, so every window rendered here is self-contained — no state
-// crosses the boundary.
+// crosses the boundary. The fence-opener rule is shared with the
+// chunker through the fenceOpen import — one grammar, one regex.
 
-const FENCE_OPEN = /^[ \t]*(`{3,}|~{3,})(.*)$/;
+import { fenceOpen } from "./delivery-text.ts";
+
 const LANG = /^[A-Za-z0-9_+.-]+/;
 
-function escapeHtml(text: string): string {
+export function escapeHtml(text: string): string {
 	return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
@@ -28,6 +30,31 @@ function findClosing(s: string, delim: string, from: number): number {
 	while (at !== -1) {
 		if (at > from && !/\s/.test(s[at - 1]!)) return at;
 		at = s.indexOf(delim, at + 1);
+	}
+	return -1;
+}
+
+// A single-char delimiter (*, _) can't close inside a longer run —
+// the `*` of "**" is part of a different token.
+function findClosingSingle(s: string, ch: string, from: number): number {
+	let at = s.indexOf(ch, from);
+	while (at !== -1) {
+		if (at > from && s[at - 1] !== ch && s[at + 1] !== ch && !/\s/.test(s[at - 1]!)) return at;
+		at = s.indexOf(ch, at + 1);
+	}
+	return -1;
+}
+
+// The ')' that balances the '(' opening a link destination —
+// CommonMark allows balanced parens in the URL.
+function balancedParen(s: string, from: number): number {
+	let depth = 1;
+	for (let k = from; k < s.length; k++) {
+		if (s[k] === "(") depth++;
+		else if (s[k] === ")") {
+			depth--;
+			if (depth === 0) return k;
+		}
 	}
 	return -1;
 }
@@ -50,6 +77,19 @@ function renderInline(s: string): string {
 			}
 			out += "`".repeat(run);
 			i += run;
+			continue;
+		}
+		if (c === "*" && s[i + 1] === "*" && s[i + 2] === "*") {
+			if (s[i + 3] !== undefined && !/\s/.test(s[i + 3]!)) {
+				const close = findClosing(s, "***", i + 3);
+				if (close !== -1) {
+					out += `<b><i>${renderInline(s.slice(i + 3, close))}</i></b>`;
+					i = close + 3;
+					continue;
+				}
+			}
+			out += "***";
+			i += 3;
 			continue;
 		}
 		if (c === "*" && s[i + 1] === "*") {
@@ -80,7 +120,7 @@ function renderInline(s: string): string {
 		}
 		if (c === "*") {
 			if (s[i + 1] !== undefined && !/\s/.test(s[i + 1]!)) {
-				const close = findClosing(s, "*", i + 1);
+				const close = findClosingSingle(s, "*", i + 1);
 				if (close !== -1) {
 					out += `<i>${renderInline(s.slice(i + 1, close))}</i>`;
 					i = close + 1;
@@ -93,7 +133,7 @@ function renderInline(s: string): string {
 		}
 		if (c === "_") {
 			if (!isWord(s[i - 1]) && s[i + 1] !== undefined && !/\s/.test(s[i + 1]!)) {
-				const close = s.indexOf("_", i + 1);
+				const close = findClosingSingle(s, "_", i + 1);
 				if (close !== -1 && !isWord(s[close + 1])) {
 					out += `<i>${renderInline(s.slice(i + 1, close))}</i>`;
 					i = close + 1;
@@ -117,18 +157,21 @@ function renderInline(s: string): string {
 			i += 2;
 			continue;
 		}
-		// [text](url) and ![alt](url) — a link the URL refuses stays literal.
+		// [text](url) and ![alt](url) — the first ']' ends the label,
+		// so earlier brackets stay literal; a balanced-paren URL keeps
+		// its inner parens; a link the URL refuses stays literal.
 		if (c === "[" || (c === "!" && s[i + 1] === "[")) {
 			const img = c === "!";
 			const open = img ? i + 1 : i;
-			const closeText = s.indexOf("](", open + 1);
-			if (closeText !== -1) {
-				const closeParen = s.indexOf(")", closeText + 2);
+			const closeText = s.indexOf("]", open + 1);
+			if (closeText !== -1 && s[closeText + 1] === "(") {
+				const closeParen = balancedParen(s, closeText + 2);
 				if (closeParen !== -1) {
 					const url = s.slice(closeText + 2, closeParen).trim();
 					if (url !== "" && !/[\s<>"']/.test(url)) {
 						const label = s.slice(open + 1, closeText);
-						out += `<a href="${escapeAttr(url)}">${renderInline(img && label === "" ? "image" : label)}</a>`;
+						const shown = label === "" ? (img ? "image" : url) : label;
+						out += `<a href="${escapeAttr(url)}">${renderInline(shown)}</a>`;
 						i = closeParen + 1;
 						continue;
 					}
@@ -169,20 +212,20 @@ export function renderTelegramHtml(src: string): string {
 	};
 	for (const line of src.split("\n")) {
 		if (fence !== null) {
-			const m = FENCE_OPEN.exec(line);
-			if (m !== null && m[1]!.startsWith(fence.marker)) {
+			const open = fenceOpen(line);
+			// A closer is a bare marker run — same char, at least the
+			// opener's length, no info — anything else is code content.
+			if (open !== null && open.info === "" && open.marker.startsWith(fence.marker)) {
 				closePre();
 			} else {
 				pre!.push(escapeHtml(line));
 			}
 			continue;
 		}
-		const m = FENCE_OPEN.exec(line);
-		if (m !== null) {
+		const open = fenceOpen(line);
+		if (open !== null) {
 			closeQuote();
-			// Same fence semantics as fenceStateAfter in delivery-text:
-			// the closer's run must be at least the opener's length.
-			fence = { marker: m[1]!, info: m[2]!.trim() };
+			fence = open;
 			pre = [];
 			continue;
 		}

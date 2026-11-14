@@ -9,7 +9,7 @@ import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.t
 import { speechContent, STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { isNotModifiedError, isParseEntitiesError, isPremiumGateError } from "./delivery-errors.ts";
-import { renderTelegramHtml } from "./tg-html.ts";
+import { escapeHtml, renderTelegramHtml } from "./tg-html.ts";
 import {
 	CHUNK_LIMIT,
 	disableMessageEffects,
@@ -675,6 +675,10 @@ export function makeDeliverySink(
 	// the next window. Each window renders to HTML independently.
 	function windowTexts(body: string): (WindowText & { end: number })[] {
 		const wins: (WindowText & { end: number })[] = [];
+		// Everything at/after `text` is the tool-status tail — raw
+		// command text, not model markdown. It is HTML-escaped, never
+		// markdown-rendered, or a glob like "*.ts" becomes italics.
+		const statusStart = text.length;
 		let start = 0;
 		let fence: FenceState | null = null;
 		while (start < body.length) {
@@ -682,10 +686,23 @@ export function makeDeliverySink(
 			let end = windowEnd(body, start);
 			if (c !== undefined && end < c.end) end = c.end;
 			const raw = body.slice(start, end);
-			const text = (fence !== null ? fenceReopen(fence) : "") + raw;
+			const reopen = fence !== null ? fenceReopen(fence) : "";
 			fence = fenceStateAfter(raw, fence);
-			const markdown = fence !== null ? `${text}\n${fence.marker}` : text;
-			wins.push({ markdown, html: renderTelegramHtml(markdown), end });
+			const close = fence !== null ? `\n${fence.marker}` : "";
+			const markdown = `${reopen}${raw}${close}`;
+			let html: string;
+			if (statusStart >= end) {
+				html = renderTelegramHtml(markdown);
+			} else if (statusStart <= start) {
+				html = escapeHtml(markdown);
+			} else {
+				const k = statusStart - start;
+				html =
+					renderTelegramHtml(`${reopen}${raw.slice(0, k)}`) +
+					escapeHtml(raw.slice(k)) +
+					close;
+			}
+			wins.push({ markdown, html, end });
 			start = end;
 		}
 		return wins;

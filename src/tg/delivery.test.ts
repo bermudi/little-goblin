@@ -8,7 +8,7 @@ import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
 import { isMessageGoneError, isNotModifiedError } from "./delivery-errors.ts";
-import { makeDeliverySink } from "./delivery.ts";
+import { makeDeliverySink, parsedTextLength } from "./delivery.ts";
 import { recentReplyText } from "./reply-memory.ts";
 import { SPEAK_CALLBACK } from "./speak-button.ts";
 
@@ -421,7 +421,10 @@ describe("delivery", () => {
 			"para one.\n\n```npm install -g little-goblin``` installs it.\n\n" + "p".repeat(4200);
 		sink.onTextDelta(body);
 		await sink.onDone({ kind: "completed" });
-		expect(msgs.join("")).toBe(body);
+		// The line renders as an inline code span — the command survives
+		// and nothing after it turns into a code block.
+		expect(msgs.join("")).toContain("<code>npm install -g little-goblin</code> installs it.");
+		expect(msgs.join("")).not.toContain("<pre>");
 		for (const m of msgs) expect(m.length).toBeLessThanOrEqual(4096);
 	});
 
@@ -433,9 +436,9 @@ describe("delivery", () => {
 		const body = "```" + "i".repeat(300) + "\n" + "c".repeat(CHUNK * 2);
 		sink.onTextDelta(body);
 		await sink.onDone({ kind: "completed" });
-		for (const m of msgs) expect(m.length).toBeLessThanOrEqual(4096);
-		expect(msgs[1]!.startsWith("```\n")).toBe(true);
-		expect(msgs[2]!.startsWith("```\n")).toBe(true);
+		for (const m of msgs) expect(parsedTextLength(m)).toBeLessThanOrEqual(4096);
+		expect(msgs[1]!.startsWith("<pre>")).toBe(true);
+		expect(msgs[2]!.startsWith("<pre>")).toBe(true);
 	});
 
 	test("a fence lands the unflushed tail instead of retracting shown text", async () => {
@@ -1651,15 +1654,38 @@ describe("telegram HTML", () => {
 		expect(calls.every((c) => c.parseMode === "HTML")).toBe(true);
 	});
 
-	test("html that overshoots the message cap falls back to the raw window", async () => {
+	test("markup over 4096 still sends as HTML — the cap is the parsed text", async () => {
 		const { api, msgs, calls } = fakeApi({});
 		const sink = makeDeliverySink(api, topic, { editIntervalMs: 0 });
-		// Every < escapes to &lt; — the rendered window is far over 4096.
+		// Every < escapes to &lt; — the markup is far over 4096 but the
+		// text Telegram counts after entity parsing is the 3800 chars.
 		sink.onTextDelta("<".repeat(CHUNK));
 		await sink.onDone({ kind: "completed" });
-		expect(msgs).toEqual(["<".repeat(CHUNK)]);
-		expect(calls.filter((c) => c.kind === "send").every((c) => c.parseMode === undefined)).toBe(
+		expect(msgs).toEqual(["&lt;".repeat(CHUNK)]);
+		expect(calls.filter((c) => c.kind === "send").every((c) => c.parseMode === "HTML")).toBe(
 			true,
 		);
+	});
+
+	test("a code-heavy window sends HTML — parsed text is what Telegram caps", async () => {
+		const { api, msgs, calls } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		sink.onTextDelta("```html\n" + "<div><span>a & b</span></div>\n".repeat(110) + "```");
+		await sink.onDone({ kind: "completed" });
+		expect(msgs.join("")).toContain("&lt;div&gt;");
+		expect(calls.filter((c) => c.kind === "send").every((c) => c.parseMode === "HTML")).toBe(
+			true,
+		);
+	});
+
+	test("a tool-status line is escaped raw text, never markdown", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		sink.onTextDelta("working");
+		sink.onToolCall("bash", { command: 'find . -name "*.ts" -o -name "*.tsx"' });
+		await sink.onDone({ kind: "completed" });
+		// The command shows verbatim — no italics eat the glob stars.
+		expect(msgs.join("")).toContain('⚙ bash find . -name "*.ts" -o -name "*.tsx"');
+		expect(msgs.join("")).not.toContain("<i>");
 	});
 });

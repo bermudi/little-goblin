@@ -43,6 +43,48 @@ describe("renderTelegramHtml", () => {
 		);
 	});
 
+	test("an inline ```code``` line is a span, not a fence opener", () => {
+		// One opener rule shared with chunkWindows: a backtick fence's
+		// info string may not contain backticks, so this line is an
+		// inline code span and the next line stays prose.
+		expect(renderTelegramHtml("Run this:\n```npm install```\nThen restart.")).toBe(
+			"Run this:\n<code>npm install</code>\nThen restart.",
+		);
+	});
+
+	test("link destinations keep balanced parentheses", () => {
+		expect(
+			renderTelegramHtml(
+				"see [Rust](https://en.wikipedia.org/wiki/Rust_(programming_language)) now",
+			),
+		).toBe(
+			'see <a href="https://en.wikipedia.org/wiki/Rust_(programming_language)">Rust</a> now',
+		);
+	});
+
+	test("a link with empty text renders the URL as its text", () => {
+		expect(renderTelegramHtml("[](https://example.com)")).toBe(
+			'<a href="https://example.com">https://example.com</a>',
+		);
+	});
+
+	test("an earlier bracket doesn't get swallowed into a link's label", () => {
+		expect(
+			renderTelegramHtml("As shown in [1] and [the docs](https://example.com/docs)."),
+		).toBe(
+			'As shown in [1] and <a href="https://example.com/docs">the docs</a>.',
+		);
+	});
+
+	test("nested emphasis: ***x*** is bold-italic, *a **b** c* is italic with bold", () => {
+		expect(renderTelegramHtml("***very important***")).toBe(
+			"<b><i>very important</i></b>",
+		);
+		expect(renderTelegramHtml("*italic with **bold** inside*")).toBe(
+			"<i>italic with <b>bold</b> inside</i>",
+		);
+	});
+
 	test("unmatched markers stay literal — never invented entities", () => {
 		expect(renderTelegramHtml("snake_case_var and **open")).toBe(
 			"snake_case_var and **open",

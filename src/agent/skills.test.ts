@@ -268,6 +268,13 @@ describe("loadCatalog", () => {
 		const catalog = loadCatalog(root);
 		expect(catalog.entries).toHaveLength(128);
 		expect(catalog.entries[127]!.name).toBe("s127");
+		expect(catalog.capped).toBe(130);
+	});
+
+	test("an uncapped catalog carries no cap note", () => {
+		const root = useRoot();
+		writeSkill(root, "mq", "name: mq\ndescription: jq for Markdown");
+		expect(loadCatalog(root).capped).toBeUndefined();
 	});
 });
 
@@ -363,6 +370,19 @@ describe("formatSkillsSection", () => {
 			root: "skills",
 		}).join("\n");
 		expect(text).toContain("- mq — jq for Markdown [Requires the mq CLI] (skills/mq/SKILL.md)");
+	});
+
+	test("a capped catalog names its truncation like the malformed count", () => {
+		const text = formatSkillsSection({
+			entries: [
+				{ name: "a", description: "d", path: "skills/a/SKILL.md" },
+				{ name: "b", description: "d", path: "skills/b/SKILL.md" },
+			],
+			skipped: [],
+			root: "skills",
+			capped: 140,
+		}).join("\n");
+		expect(text).toContain("(catalog capped at 2 of 140 entries — see goblin.log)");
 	});
 
 	test("the skip count and per-entry reasons render for the agent to surface", () => {

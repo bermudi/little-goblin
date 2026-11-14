@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { authCheck, cacheContracts, configCheck, operatorIds } from "./config-auth.ts";
+import { providerReadiness } from "./providers.ts";
 import { installation } from "./installation.ts";
 import { snapshots } from "./keys.ts";
 import { memory } from "./memory.ts";
@@ -32,6 +33,7 @@ export async function runHealth(options: {
 		operatorIds(config.config, home),
 		cacheContracts(config.config, home),
 		...auth.findings,
+		...providerReadiness(config.config, auth.names),
 		...workspace(home, options.phase),
 		...observer(home, options.phase),
 		capacity(home, "storage.home", `caller-home:${home}`),

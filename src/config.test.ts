@@ -832,9 +832,30 @@ describe("goblin.json5", () => {
 		const p = join(dir, "goblin.json5");
 		const text = `${JSON.stringify({ ...valid, experimental: { notInSchema: true } }, null, 2)}\n`;
 		writeFileSync(p, text);
-		expect(() => loadConfig()).toThrow("config: unrecognized_keys");
-		expect(() => writeConfig({ ...valid, thinking: "high" })).toThrow("config: unrecognized_keys");
+		const line = text.split("\n").findIndex((l) => l.includes('"experimental"')) + 1;
+		// The report locates the key by line, never by name — a stray key
+		// can carry a private identifier.
+		expect(() => loadConfig()).toThrow(`config: unrecognized_keys at line ${line}`);
+		expect(() => writeConfig({ ...valid, thinking: "high" })).toThrow(
+			`config: unrecognized_keys at line ${line}`,
+		);
 		expect(readFileSync(p, "utf8")).toBe(text);
+	});
+
+	test("unknown field reports name no key text, only its line", () => {
+		useHome("goblin-cfg-");
+		const key = "typoSecretField";
+		const text = `${JSON.stringify({ ...valid, [key]: true }, null, 2)}\n`;
+		writeFileSync(paths.config(), text);
+		const line = text.split("\n").findIndex((l) => l.includes(`"${key}"`)) + 1;
+		let message = "";
+		try {
+			loadConfig();
+		} catch (err) {
+			message = (err as Error).message;
+		}
+		expect(message).toContain(`unrecognized_keys at line ${line}`);
+		expect(message).not.toContain(key);
 	});
 
 	test("unknown fields inside a block are rejected too", () => {
@@ -844,8 +865,10 @@ describe("goblin.json5", () => {
 		];
 		for (const [name, value] of cases) {
 			useHome("goblin-cfg-");
-			writeFileSync(paths.config(), JSON.stringify({ ...valid, [name]: value }));
-			expect(() => loadConfig()).toThrow(`${name}: unrecognized_keys`);
+			const text = JSON.stringify({ ...valid, [name]: value }, null, 2);
+			writeFileSync(paths.config(), text);
+			const line = text.split("\n").findIndex((l) => l.includes('"typo"') || l.includes('"extra"')) + 1;
+			expect(() => loadConfig()).toThrow(`${name}: unrecognized_keys at line ${line}`);
 		}
 	});
 

@@ -88,6 +88,16 @@ snapshots warn rather than expire; future timestamps warn for clock skew.
 OAuth, generic auth commands and upstream validity are not verified by
 metadata availability.
 
+Provider readiness is presence and cached-catalog resolution only: per
+configured provider, `provider.<name>` reports whether its credential
+record exists (an auth.jsonl name, or the codex auth file the provider
+would read — existence, never contents) and whether each configured
+model ref resolves in a cached catalog (models.dev, openrouter, or the
+codex account list). A cold catalog is "unverified", never a refresh;
+a provider no model ref uses skips. No credential is resolved, no
+catalog refreshed, no provider constructed and no call made — the
+finding names what is missing, not whether upstream will answer.
+
 Relay-file presence alone is not association: validate the configured API
 against the running local installation and allowlisted provider/base
 URL/model fields before probing its relay. Unsupported or remote

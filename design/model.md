@@ -61,7 +61,10 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   retry and compaction. Summaries use the conversation's model and thinking
   (and its fallback list, see "Model fallback list" below);
   reviewer fallback uses the conversation's model; explicit reviewer and
-  title models stay independent.
+  title models stay independent. With no `titleModel` configured, titling
+  falls back to the conversation's own model — the same model-ref the
+  turn resolved — under a tight output cap (a title is a few words, not
+  a turn-sized budget), never a model the operator didn't pick.
 - **Thinking (ruling 2026-10-21).** `off|minimal|low|medium|high|xhigh|max` is
   an operator vocabulary, not a provider contract. Every model has one
   **profile** — the rungs it supports, what `off` means on it, and the wire

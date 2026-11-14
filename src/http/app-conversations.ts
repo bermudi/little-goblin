@@ -322,10 +322,10 @@ export async function handleConversationsRoute(
 					if (existing === null && project !== null) {
 						store.bindProject(row.id, project.id);
 					}
-					if (
-						existing === null &&
-						(project?.memory === "off" || parsed.data.memoryExcluded === true)
-					) {
+					if (existing === null && project?.memory === "off") {
+						// The gate's stamp, marked so a re-open recomputes it.
+						store.setMeta(row.id, { memoryExcluded: true, memoryExcludedByProject: true });
+					} else if (existing === null && parsed.data.memoryExcluded === true) {
 						store.setMeta(row.id, { memoryExcluded: true });
 					}
 					if (parsed.data.title !== undefined) {
@@ -416,10 +416,18 @@ export async function handleConversationsRoute(
 			);
 		}
 		let cancelled = 0;
-		if (parsed.data.memoryExcluded !== conv.memoryExcluded) {
+		if (
+			parsed.data.memoryExcluded !== conv.memoryExcluded ||
+			(parsed.data.memoryExcluded && conv.memoryExcludedByProject)
+		) {
 			// A flag write, not a settings change: no epoch bump — a running
 			// turn finishes, its retention refused at the land-time gate.
-			store.setMeta(convId.id, { memoryExcluded: parsed.data.memoryExcluded });
+			// An operator decision also retires any project-gate stamp —
+			// confirming an already-stamped exclusion adopts it as theirs.
+			store.setMeta(convId.id, {
+				memoryExcluded: parsed.data.memoryExcluded,
+				memoryExcludedByProject: false,
+			});
 			if (parsed.data.memoryExcluded) {
 				cancelled = store.memoryQueue.cancelConversation(convId.id);
 			}
@@ -938,7 +946,14 @@ export async function handleConversationsRoute(
 		}
 		try {
 			const current = flatLine(conv.title ?? "");
-			const title = await deps.titleFor(input, current === "" ? undefined : current);
+			const settings = store.readAppSettings(convId.id, {
+				model: deps.configRef.current.model,
+				thinking: deps.configRef.current.thinking,
+			});
+			const title = await deps.titleFor(input, {
+				...(current === "" ? {} : { avoid: current }),
+				model: settings.model,
+			});
 			if (title === null || title === "") {
 				log.warn("app suggest-title empty", { conversation: convId.id, inputChars: input.length });
 				return Response.json(

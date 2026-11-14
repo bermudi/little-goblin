@@ -48,22 +48,19 @@ export function flushConversation(
 		admitAppBatch(env, conv, convId, items, parts);
 		return;
 	}
-	if (
-		conv.threadId !== null &&
-		conv.titleImplicit &&
-		deps.configRef.current.titleModel !== undefined &&
-		!env.titleAttempts.has(conv.id)
-	) {
+	if (conv.threadId !== null && conv.titleImplicit && !env.titleAttempts.has(conv.id)) {
 		const text = parts
 			.map((p) => (p.type === "text" && !p.text.startsWith(ATTACHMENT_FAILED_PREFIX) ? p.text : ""))
 			.join("\n")
 			.trim();
 		if (text !== "") {
+			const cfg = deps.configRef.current;
 			env.titleAttempts.add(conv.id);
 			void maybeRenameTopic(
 				{ api: env.api, store: deps.store, titleFor: deps.titleFor },
 				conv,
 				text,
+				conv.model ?? cfg.telegram.model ?? cfg.model,
 			).catch((err: unknown) => {
 				log.error("topic titling failed", err, { conversation: conv.id });
 			});

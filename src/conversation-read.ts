@@ -31,6 +31,9 @@ export interface Conversation {
 	thinking: string | null;
 	voice: boolean;
 	memoryExcluded: boolean; // operator opt-out: this topic sends/recalls no memory
+	// True only while a project's gate wrote the exclusion — the re-open
+	// recompute clears it, an operator's own flag never carries it.
+	memoryExcludedByProject: boolean;
 	persona: "personal" | "guest"; // prompt class + sandbox tool filter (Guest mode)
 	// Hidden from the app rail, still answerable; any appended event clears it.
 	archivedAt: string | null;
@@ -55,6 +58,7 @@ export function toConversation(r: Row): Conversation {
 		thinking: r.thinking,
 		voice: r.voice !== 0,
 		memoryExcluded: r.memory_excluded !== 0,
+		memoryExcludedByProject: r.memory_excluded_by_project !== 0,
 		persona: r.persona === "guest" ? "guest" : "personal",
 		archivedAt: r.archived_at,
 		pinnedAt: r.pinned_at,

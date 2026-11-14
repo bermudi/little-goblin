@@ -15,7 +15,7 @@ import { isRollingChat, projectRollText } from "./rolling.ts";
 export interface SpinOffDeps {
 	store: ConversationStore;
 	/** Shared title model; null means no title should be set. */
-	titleFor(text: string): Promise<string | null>;
+	titleFor(text: string, opts?: { avoid?: string; model?: string }): Promise<string | null>;
 	/** Deep-link host, read at launch; unset means no link. */
 	publicUrl(): string | undefined;
 	/** App settings snapshot, not the source conversation's settings. */
@@ -82,7 +82,10 @@ async function retitle(deps: SpinOffDeps, conversationId: string): Promise<void>
 		const lastUser = deps.store.lastEntry(conversationId, "user")?.message;
 		const text = lastUser === undefined ? "" : projectRollText(lastUser.parts);
 		if (text === "") return;
-		const title = await deps.titleFor(text);
+		const defaults = deps.appDefaults?.();
+		const title = await deps.titleFor(text, {
+			...(defaults === undefined ? {} : { model: defaults.model }),
+		});
 		if (title === null || title === "") return;
 		// An explicit rename made while title generation was in flight wins.
 		const row = deps.store.get(conversationId);

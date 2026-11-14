@@ -138,6 +138,13 @@ export function codexModelOptions(authFile?: string): ModelOption[] {
 	return (models ?? []).map((m) => ({ id: m.id, name: m.name, releaseDate: null }));
 }
 
+// Disk/memory only, no refresh kick — the doctor's read: a cold cache
+// is "unverified", never a fetch it has no authority to run.
+export function codexModelsCached(authFile?: string): CodexModel[] | null {
+	const cat = catalogFor(resolveCodexAuthFile(authFile).path);
+	return cat.current() ?? cat.readDisk();
+}
+
 // The account's own context window for a codex slug — the step
 // builder's replacement for the models.dev borrow (models.dev has no
 // codex key; a borrowed window guesses from another provider's row).

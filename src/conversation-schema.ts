@@ -71,6 +71,13 @@ export function ensureConversationSchema(db: Database): void {
 	if (!convCols.has("memory_excluded")) {
 		db.run("ALTER TABLE conversations ADD COLUMN memory_excluded INTEGER NOT NULL DEFAULT 0");
 	}
+	// Which exclusions a project's gate wrote — the re-open path clears
+	// exactly those and leaves the operator's own flag untouched.
+	if (!convCols.has("memory_excluded_by_project")) {
+		db.run(
+			"ALTER TABLE conversations ADD COLUMN memory_excluded_by_project INTEGER NOT NULL DEFAULT 0",
+		);
+	}
 	if (!convCols.has("persona")) {
 		db.run("ALTER TABLE conversations ADD COLUMN persona TEXT NOT NULL DEFAULT 'personal'");
 	}

@@ -71,6 +71,9 @@ export interface SkillCatalog {
 	skipped: SkippedSkill[];
 	/** Basename of the scanned root — the leaf dir that entries and the section prose share. */
 	root: string;
+	/** Total valid entries scanned when the catalog hit MAX_ENTRIES —
+	 *  the prompt section names the truncation like the malformed count. */
+	capped?: number;
 }
 
 // Bounded read of the file head — enough for frontmatter, never the body.
@@ -197,15 +200,17 @@ export function loadCatalog(root: string): SkillCatalog {
 	}
 
 	entries.sort((a, b) => a.name.localeCompare(b.name));
+	let capped: number | undefined;
 	if (entries.length > MAX_ENTRIES) {
 		log.warn("skill catalog capped", {
 			root,
 			total: entries.length,
 			kept: MAX_ENTRIES,
 		});
+		capped = entries.length;
 		entries.length = MAX_ENTRIES;
 	}
-	return { entries, skipped, root: leaf };
+	return { entries, skipped, root: leaf, ...(capped !== undefined ? { capped } : {}) };
 }
 
 // The prompt section renders even when empty — it's also the notice
@@ -248,6 +253,11 @@ export function formatSkillsSection(
 			const path = linkBase === undefined ? e.path : join(linkBase, e.path);
 			lines.push(`- ${e.name} — ${e.description}${req} (${path})`);
 		}
+	}
+	if (catalog.capped !== undefined) {
+		lines.push(
+			`(catalog capped at ${catalog.entries.length} of ${catalog.capped} entries — see goblin.log)`,
+		);
 	}
 	if (catalog.skipped.length > 0) {
 		lines.push(

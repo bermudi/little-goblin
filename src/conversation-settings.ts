@@ -27,6 +27,9 @@ export interface ConversationMetaPatch {
 	thinking?: string | null;
 	voice?: boolean;
 	memoryExcluded?: boolean;
+	// Written with memoryExcluded by the project gate only — never an
+	// operator write (those clear it instead).
+	memoryExcludedByProject?: boolean;
 	persona?: "personal" | "guest";
 	archived?: boolean;
 	pinned?: boolean;
@@ -74,6 +77,10 @@ export function makeConversationSettings(
 		if (patch.memoryExcluded !== undefined) {
 			sets.push("memory_excluded = ?");
 			vals.push(patch.memoryExcluded ? 1 : 0);
+		}
+		if (patch.memoryExcludedByProject !== undefined) {
+			sets.push("memory_excluded_by_project = ?");
+			vals.push(patch.memoryExcludedByProject ? 1 : 0);
 		}
 		if (patch.persona !== undefined) {
 			sets.push("persona = ?");

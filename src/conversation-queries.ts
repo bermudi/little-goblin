@@ -15,6 +15,9 @@ export interface Row {
 	thinking: string | null;
 	voice: number;
 	memory_excluded: number;
+	// Set only when a project's memory gate stamped memory_excluded — an
+	// operator's own exclusion carries 0 and survives the gate re-opening.
+	memory_excluded_by_project: number;
 	// "guest" = the sandbox persona: no private files in, nothing about
 	// the operator out. Frozen at creation.
 	persona: string;

@@ -8,7 +8,8 @@ import { sniffImage } from "../agent/tools/read.ts";
 import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
 import { speechContent, STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
-import { isNotModifiedError, isPremiumGateError } from "./delivery-errors.ts";
+import { isNotModifiedError, isParseEntitiesError, isPremiumGateError } from "./delivery-errors.ts";
+import { escapeHtml, renderTelegramHtml } from "./tg-html.ts";
 import {
 	CHUNK_LIMIT,
 	disableMessageEffects,
@@ -36,10 +37,48 @@ const DRAFT_TTL_MS = 20_000;
 const MAX_DRAIN_ITERATIONS = 25;
 const MAX_STAGNANT = 3;
 const UNCERTAIN_NOTICE = "⚠ Delivery uncertain—check Telegram before retrying.";
+// Telegram's sendMessage text cap — a rendered window that overshoots
+// it sends its raw markdown instead.
+const TG_MESSAGE_LIMIT = 4096;
 const TRUNCATED_NOTICE =
 	"⚠ Reply truncated — part of this reply didn't send. Ask me to repeat it if needed.";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+interface WindowText {
+	markdown: string;
+	html: string;
+}
+
+// A window rendered for display: self-contained markdown (chunkWindows
+// already closes/reopens a split fence) plus its Telegram HTML.
+function renderWindow(markdown: string): WindowText {
+	return { markdown, html: renderTelegramHtml(markdown) };
+}
+
+// The parsed-text length of a rendered window — tags removed, entities
+// decoded. Telegram's 4096 cap applies after entity parsing, so a code-
+// heavy window full of <, >, & still counts by what the reader sees.
+export function parsedTextLength(html: string): number {
+	const text = html
+		.replace(/<[^>]+>/g, "")
+		.replace(/&lt;/g, "<")
+		.replace(/&gt;/g, ">")
+		.replace(/&quot;/g, '"')
+		.replace(/&#39;/g, "'")
+		.replace(/&amp;/g, "&");
+	return text.length;
+}
+
+// What one chunk should display right now: HTML unless its parsed text
+// overshoots Telegram's cap or it was already rejected — then the raw
+// window.
+function desiredText(c: Chunk, w: WindowText): { text: string; formatted: boolean } {
+	if (!c.plain && parsedTextLength(w.html) <= TG_MESSAGE_LIMIT) {
+		return { text: w.html === "" ? "…" : w.html, formatted: true };
+	}
+	return { text: w.markdown === "" ? "…" : w.markdown, formatted: false };
+}
 
 export interface DeliveryVoiceDeps {
 	synthesize(text: string): Promise<Uint8Array[]>;
@@ -57,7 +96,12 @@ export interface RichSinkOpts {
 
 interface Chunk {
 	id: number;
+	// The literal text last sent or successfully edited — HTML when
+	// shownFormatted, raw markdown otherwise.
 	shown: string;
+	shownFormatted: boolean;
+	// Telegram already rejected this chunk's HTML — it sends raw only.
+	plain: boolean;
 	// Body offset this chunk's window covered at last materialization —
 	// the floor a recomputed window end may never cross back under.
 	end: number;
@@ -628,9 +672,13 @@ export function makeDeliverySink(
 	// already covered, so a seam that surfaces only once the body
 	// crosses the cap (a paragraph break behind shown text) never
 	// edits already-shown text away; the pending tail simply becomes
-	// the next window.
-	function windowTexts(body: string): { text: string; end: number }[] {
-		const wins: { text: string; end: number }[] = [];
+	// the next window. Each window renders to HTML independently.
+	function windowTexts(body: string): (WindowText & { end: number })[] {
+		const wins: (WindowText & { end: number })[] = [];
+		// Everything at/after `text` is the tool-status tail — raw
+		// command text, not model markdown. It is HTML-escaped, never
+		// markdown-rendered, or a glob like "*.ts" becomes italics.
+		const statusStart = text.length;
 		let start = 0;
 		let fence: FenceState | null = null;
 		while (start < body.length) {
@@ -638,9 +686,26 @@ export function makeDeliverySink(
 			let end = windowEnd(body, start);
 			if (c !== undefined && end < c.end) end = c.end;
 			const raw = body.slice(start, end);
-			const text = (fence !== null ? fenceReopen(fence) : "") + raw;
-			fence = fenceStateAfter(raw, fence);
-			wins.push({ text: fence !== null ? `${text}\n${fence.marker}` : text, end });
+			const reopen = fence !== null ? fenceReopen(fence) : "";
+			// Fence state tracks model text only — the status tail can
+			// hold anything (a command arg starting with ``` must not
+			// open or close a fence).
+			fence = fenceStateAfter(raw.slice(0, Math.max(0, statusStart - start)), fence);
+			const close = fence !== null ? `\n${fence.marker}` : "";
+			const markdown = `${reopen}${raw}${close}`;
+			let html: string;
+			if (statusStart >= end) {
+				html = renderTelegramHtml(markdown);
+			} else if (statusStart <= start) {
+				html = escapeHtml(raw);
+			} else {
+				const k = statusStart - start;
+				// The head render closes any open fence in HTML itself;
+				// the status is escaped raw, and no marker lands after it.
+				html =
+					renderTelegramHtml(`${reopen}${raw.slice(0, k)}`) + escapeHtml(raw.slice(k));
+			}
+			wins.push({ markdown, html, end });
 			start = end;
 		}
 		return wins;
@@ -653,7 +718,14 @@ export function makeDeliverySink(
 	function materialize(body: string, force: boolean): void {
 		const wins = windowTexts(body);
 		while (chunks.length < wins.length)
-			chunks.push({ id: -1, shown: "", end: 0, queued: null });
+			chunks.push({
+				id: -1,
+				shown: "",
+				shownFormatted: false,
+				plain: false,
+				end: 0,
+				queued: null,
+			});
 		for (let idx = 0; idx < chunks.length; idx++) {
 			const c = chunks[idx]!;
 			if (c.id === -2) {
@@ -662,27 +734,43 @@ export function makeDeliverySink(
 			}
 			const w = wins[idx];
 			if (w !== undefined) c.end = w.end;
-			const desired = w?.text ?? "";
-			const out = desired === "" ? "…" : desired;
+			const wm = w ?? { markdown: "", html: "", end: 0 };
+			const d = desiredText(c, wm);
 			if (c.id === -1) {
-				if (desired === "") continue;
+				if (wm.markdown === "") continue;
 				c.id = -2;
-				c.shown = out;
+				c.shown = d.text;
+				c.shownFormatted = d.formatted;
+				const fallback = wm.markdown === "" ? "…" : wm.markdown;
+				const send = (text: string, formatted: boolean) =>
+					withTimeout(
+						api.sendMessage(conv.chatId, text, {
+							...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+							...(formatted ? { parse_mode: "HTML" as const } : {}),
+							...(idx === 0 && replyTo !== undefined
+								? { reply_parameters: { message_id: replyTo } }
+								: {}),
+						}),
+						"sendMessage",
+					);
 				enqueue(async () => {
 					if (uncertain || (!force && !mayDeliver())) {
 						c.id = -1;
 						return;
 					}
 					try {
-						const sent = await withTimeout(
-							api.sendMessage(conv.chatId, out, {
-								...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-								...(idx === 0 && replyTo !== undefined
-									? { reply_parameters: { message_id: replyTo } }
-									: {}),
-							}),
-							"sendMessage",
-						);
+						let sent;
+						try {
+							sent = await send(d.text, d.formatted);
+						} catch (err) {
+							// A 400 entity rejection is definite — nothing landed,
+							// so the chunk retries once raw and stays plain.
+							if (!d.formatted || !isParseEntitiesError(err)) throw err;
+							c.plain = true;
+							sent = await send(fallback, false);
+							c.shown = fallback;
+							c.shownFormatted = false;
+						}
 						c.id = sent.message_id;
 						log.debug("delivered", {
 							conversation: conv.id,
@@ -712,8 +800,11 @@ export function makeDeliverySink(
 				if (!force) break;
 				continue;
 			}
-			if (c.shown !== out && c.queued !== out) {
+			if (c.shown !== d.text && c.queued !== d.text) {
 				const mid = c.id;
+				const out = d.text;
+				const formatted = d.formatted;
+				const fallback = wm.markdown === "" ? "…" : wm.markdown;
 				c.queued = out;
 				const clearQueued = () => {
 					if (c.queued === out) c.queued = null;
@@ -724,7 +815,31 @@ export function makeDeliverySink(
 						return;
 					}
 					try {
-						await withTimeout(api.editMessageText(conv.chatId, mid, out), "editMessageText");
+						try {
+							await withTimeout(
+								api.editMessageText(
+									conv.chatId,
+									mid,
+									out,
+									formatted ? { parse_mode: "HTML" as const } : {},
+								),
+								"editMessageText",
+							);
+						} catch (err) {
+							// Same definite-400 fallback as the send path.
+							if (formatted && isParseEntitiesError(err)) {
+								c.plain = true;
+								await withTimeout(
+									api.editMessageText(conv.chatId, mid, fallback),
+									"editMessageText",
+								);
+								c.shown = fallback;
+								c.shownFormatted = false;
+								clearQueued();
+								return;
+							}
+							throw err;
+						}
 					} catch (err) {
 						clearQueued();
 						if (isNotModifiedError(err)) {
@@ -733,11 +848,13 @@ export function makeDeliverySink(
 								message: mid,
 							});
 							c.shown = out;
+							c.shownFormatted = formatted;
 							return;
 						}
 						throw err;
 					}
 					c.shown = out;
+					c.shownFormatted = formatted;
 					clearQueued();
 				});
 			}
@@ -778,11 +895,29 @@ export function makeDeliverySink(
 		await chain;
 		const idx = chunks.findLastIndex((c) => c.id > 0);
 		if (idx === -1) return;
-		const mid = chunks[idx]!.id;
-		const marked = `${chunks[idx]!.shown}${STATUS_TAIL_MARK}⏹ superseded`;
+		const c = chunks[idx]!;
+		const mid = c.id;
+		// The stamp marks the last bubble as it stands — shown text is
+		// never edited back. A mark that pushes the parsed text past
+		// Telegram's cap falls back to the raw window.
+		let marked = `${c.shown}${STATUS_TAIL_MARK}⏹ superseded`;
+		let formatted = c.shownFormatted;
+		if (formatted && parsedTextLength(marked) > TG_MESSAGE_LIMIT) {
+			const wm = windowTexts(rendered())[idx] ?? { markdown: c.shown, html: "" };
+			marked = `${wm.markdown}${STATUS_TAIL_MARK}⏹ superseded`;
+			formatted = false;
+		}
 		enqueue(async () => {
 			try {
-				await withTimeout(api.editMessageText(conv.chatId, mid, marked), "editMessageText");
+				await withTimeout(
+					api.editMessageText(
+						conv.chatId,
+						mid,
+						marked,
+						formatted ? { parse_mode: "HTML" as const } : {},
+					),
+					"editMessageText",
+				);
 				log.debug("delivery superseded marker", { conversation: conv.id, message: mid });
 			} catch (err) {
 				if (isNotModifiedError(err)) return;
@@ -801,9 +936,8 @@ export function makeDeliverySink(
 		let n = 0;
 		for (let idx = 0; idx < chunks.length; idx++) {
 			const c = chunks[idx]!;
-			const desired = wins[idx]?.text ?? "";
-			const out = desired === "" ? "…" : desired;
-			if (c.id === -1 ? desired !== "" : c.shown !== out) n++;
+			const w = wins[idx] ?? { markdown: "", html: "", end: 0 };
+			if (c.id === -1 ? w.markdown !== "" : c.shown !== desiredText(c, w).text) n++;
 		}
 		return n;
 	}
@@ -966,16 +1100,30 @@ export function makeDeliverySink(
 					});
 					const fallback = text || "speech synthesis failed";
 					let failed: unknown;
-					for (const chunk of chunkWindows(fallback)) {
+					for (const w of chunkWindows(fallback).map(renderWindow)) {
+						const md = w.markdown;
+						const formatted = w.html !== "" && w.html.length <= TG_MESSAGE_LIMIT;
+						const out = formatted ? w.html : md === "" ? "…" : md;
 						enqueue(async () => {
 							if (!mayDeliver()) return;
 							try {
-								await withTimeout(
-									api.sendMessage(conv.chatId, chunk, {
-										...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-									}),
-									"sendMessage",
-								);
+								try {
+									await withTimeout(
+										api.sendMessage(conv.chatId, out, {
+											...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+											...(formatted ? { parse_mode: "HTML" as const } : {}),
+										}),
+										"sendMessage",
+									);
+								} catch (err) {
+									if (!formatted || !isParseEntitiesError(err)) throw err;
+									await withTimeout(
+										api.sendMessage(conv.chatId, md === "" ? "…" : md, {
+											...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+										}),
+										"sendMessage",
+									);
+								}
 							} catch (error) {
 								if (error instanceof TelegramTimeoutError)
 									markUncertain(error, "sendMessage fallback");

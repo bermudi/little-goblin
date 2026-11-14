@@ -104,10 +104,10 @@ describe("createToolBridge", () => {
 		const r1 = await p1;
 		expect(r1).toEqual({ output: "out:one", error: null });
 		expect(r2).toEqual({ output: "out:two", error: null });
-		// Adopt with yet another key order — only a canonical match pairs
-		// each stream frame with its own call's output.
-		expect(b.adoptResult("gated", { alpha: "one", beta: 1 })?.output).toBe("out:one");
-		expect(b.adoptResult("gated", { alpha: "two", beta: 2 })?.output).toBe("out:two");
+		// Adopt with the stream frame's non-schema key order — only a
+		// canonical match pairs each frame with its own call's output.
+		expect(b.adoptResult("gated", { beta: 1, alpha: "one" })?.output).toBe("out:one");
+		expect(b.adoptResult("gated", { beta: 2, alpha: "two" })?.output).toBe("out:two");
 	});
 
 	test("identical parallel inputs adopt in dispatch order", async () => {

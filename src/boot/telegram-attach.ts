@@ -43,7 +43,7 @@ import {
 	startBot,
 } from "../tg/mod.ts";
 import { postProgramApproval, startTelegramProgramApproval } from "../tg/program-approval.ts";
-import { sendInterruptedTurnNotices } from "../tg/turn-notice.ts";
+import { sendInterruptedTurnNotices, sendStrandedInputNotices } from "../tg/turn-notice.ts";
 import type { WakeApi } from "../tg/wake.ts";
 import type { TurnJournal } from "../turn-journal.ts";
 import type { ResumeOps } from "../turn-resume.ts";
@@ -278,6 +278,12 @@ export function openTelegramAttach(deps: TelegramAttachDeps): TelegramAttach {
 							sendInterruptedTurnNotices(
 								running.bot.api,
 								startDeps.journal.interruptedAtOpen,
+								configRef.current.operators,
+								(id) => startDeps.store.get(id)?.title ?? undefined,
+							);
+							sendStrandedInputNotices(
+								running.bot.api,
+								startDeps.journal.strandedAtOpen,
 								configRef.current.operators,
 								(id) => startDeps.store.get(id)?.title ?? undefined,
 							);

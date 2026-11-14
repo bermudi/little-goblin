@@ -46,3 +46,44 @@ export function sendInterruptedTurnNotices(
 		}),
 	);
 }
+
+// #481 — accepted user input the dead process fenced before any turn
+// admitted it: one line per conversation, separate from the per-run
+// interrupted notices (those describe turns that DID run). Notice
+// only — resume/reply remains the operator's move.
+export function sendStrandedInputNotices(
+	api: Api,
+	counts: ReadonlyMap<string, number>,
+	operators: readonly number[],
+	titleFor: (conversationId: string) => string | undefined,
+): void {
+	void Promise.allSettled(
+		[...counts.entries()].flatMap(([conversationId, n]) => {
+			const how = conversationId.startsWith(APP_ID_PREFIX)
+				? "open that conversation in the app to continue"
+				: "send /resume or reply to continue";
+			const text =
+				`${titleFor(conversationId) ?? conversationId}: ` +
+				`${n} message(s) you sent before the restart weren't answered — ${how}`;
+			return operators.map(async (chat) => {
+				try {
+					await withTimeout(
+						api.sendMessage(chat, text),
+						"sendMessage (stranded input notice)",
+					);
+					log.info("stranded input notice sent", {
+						conversation: conversationId,
+						chat,
+						stranded: n,
+					});
+				} catch (err) {
+					log.error("stranded input notice send failed", err, {
+						conversation: conversationId,
+						chat,
+						stranded: n,
+					});
+				}
+			});
+		}),
+	);
+}

@@ -2,12 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api } from "grammy";
+import type { UIMessage } from "ai";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import { appAddress } from "../conversation-address.ts";
 import { setLogFile } from "../log.ts";
+import { programFireTag } from "../tags.ts";
 import { deferred, tmpDb, tmpDir, waitUntil } from "../testkit.ts";
 import { openTurnJournal, type TurnJournal } from "../turn-journal.ts";
-import { sendInterruptedTurnNotices } from "./turn-notice.ts";
+import { sendInterruptedTurnNotices, sendStrandedInputNotices } from "./turn-notice.ts";
 
 setLogFile(null);
 
@@ -18,6 +20,7 @@ type Seed = {
 	runId: string;
 	convId: string;
 	calls?: ("planned" | "dispatched" | "completed")[];
+	owned?: number[];
 };
 
 function crashBed(setup: (store: ConversationStore) => { seeds: Seed[] }): {
@@ -39,6 +42,7 @@ function crashBed(setup: (store: ConversationStore) => { seeds: Seed[] }): {
 			convSnapshot: {},
 			toolNames: ["probe"],
 			startedAt: STARTED,
+			...(s.owned === undefined ? {} : { ownedInputSeqs: s.owned }),
 		});
 		(s.calls ?? []).forEach((state, i) => {
 			const callId = `call-${i}`;
@@ -297,6 +301,99 @@ describe("interrupted turn notices", () => {
 			expect(failed(lines)[0]!.chat).toBe(222);
 			expect(failed(lines)[0]!.run).toBe("cafef00d-run");
 			expect(String(failed(lines)[0]!.error)).toContain("sync send failure");
+			store.close();
+		} finally {
+			setLogFile(null);
+		}
+	});
+});
+
+describe("stranded input notices", () => {
+	test("counts only user events no run admitted and no reply answered; one line per conversation", async () => {
+		const dir = tmpDir("goblin-tn-log-");
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		try {
+			const { store, journal } = crashBed((store) => {
+				const dm = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+				store.setMeta(dm.id, { title: "ops room" });
+				const other = store.resolve({ kind: "dm", chatId: 2 }, "/w");
+				const quiet = store.resolve({ kind: "dm", chatId: 3 }, "/w");
+				const app = store.resolve(appAddress("ops-app"), "/w");
+				const user = (text: string, metadata?: UIMessage["metadata"]): UIMessage => ({
+					id: crypto.randomUUID(),
+					role: "user",
+					parts: [{ type: "text", text }],
+					...(metadata === undefined ? {} : { metadata }),
+				});
+				// Answered input an interrupted run owned — not stranded.
+				const [asked] = store.append(dm.id, [user("earlier question")]);
+				store.append(dm.id, [
+					{ id: "a1", role: "assistant", parts: [{ type: "text", text: "answer" }] },
+				]);
+				// Fenced input: landed after the run's owned floor.
+				store.append(dm.id, [user("did this land?")]);
+				// Machinery speech and a generated resume marker never count.
+				store.append(dm.id, [user(`${programFireTag("nightly", "cron")}\ncharter`)]);
+				store.append(dm.id, [
+					user("resume please", { goblinResume: { sourceRunId: "aaaabbbb-dm" } }),
+				]);
+				store.append(other.id, [user("one"), user("two")]);
+				// A user event an assistant reply already answered.
+				store.append(quiet.id, [user("q")]);
+				store.append(quiet.id, [
+					{ id: "a2", role: "assistant", parts: [{ type: "text", text: "a" }] },
+				]);
+				store.append(app.id, [user("app input")]);
+				return { seeds: [{ runId: "aaaabbbb-dm", convId: dm.id, owned: [asked!] }] };
+			});
+
+			expect(journal.strandedAtOpen.get("dm:1")).toBe(1);
+			expect(journal.strandedAtOpen.get("dm:2")).toBe(2);
+			expect(journal.strandedAtOpen.has("dm:3")).toBe(false);
+			expect(journal.strandedAtOpen.get("app/ops-app")).toBe(1);
+			// Post-open input belongs to the live runtime — the snapshot
+			// never picks it up.
+			store.append("dm:1", [
+				{ id: "b1", role: "user", parts: [{ type: "text", text: "new input after boot" }] },
+			]);
+			expect(journal.strandedAtOpen.get("dm:1")).toBe(1);
+
+			const { api, sends } = fakeApi();
+			const ret = sendStrandedInputNotices(
+				api,
+				journal.strandedAtOpen,
+				OPERATORS,
+				(id) => store.get(id)?.title ?? undefined,
+			);
+			expect(ret).toBeUndefined();
+			expect(sends).toHaveLength(6);
+			for (const chat of OPERATORS) {
+				expect(sends.filter((s) => s.chat === chat)).toHaveLength(3);
+			}
+			const dm1 = sends.find((s) => s.text.startsWith("ops room:"))!;
+			expect(dm1.text).toBe(
+				"ops room: 1 message(s) you sent before the restart " +
+					"weren't answered — send /resume or reply to continue",
+			);
+			const dm2 = sends.find((s) => s.text.startsWith("dm:2:"))!;
+			expect(dm2.text).toBe(
+				"dm:2: 2 message(s) you sent before the restart " +
+					"weren't answered — send /resume or reply to continue",
+			);
+			const appSend = sends.find((s) => s.text.startsWith("app/ops-app:"))!;
+			expect(appSend.text).toContain(
+				"1 message(s) you sent before the restart weren't answered",
+			);
+			expect(appSend.text).toContain("open that conversation in the app to continue");
+
+			for (const s of sends) s.settle.resolve({ ok: true });
+			const strandedSent = (lines: Line[]) =>
+				lines.filter((l) => l.msg === "stranded input notice sent");
+			await waitUntil(
+				() => strandedSent(logLines(logPath)).length === 6,
+				"all stranded sends logged",
+			);
 			store.close();
 		} finally {
 			setLogFile(null);

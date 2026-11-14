@@ -1094,6 +1094,7 @@ describe("recovery commands", () => {
 		resumeRequestSeqsUnreadable: false,
 		filterRetryUsed: false,
 		replyLanded: false,
+		replySeq: null,
 		createdAt: "2026-10-11T00:00:00.000Z",
 		resumedFrom: null,
 		calls: { planned: 1, dispatched: 1, completed: 2, failed: 0, resolved: 0 },

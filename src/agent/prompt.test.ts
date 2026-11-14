@@ -430,7 +430,17 @@ describe("project prompts", () => {
 			expect(text).toContain(`in ${paths.workspace()} are your`);
 			expect(text).toContain(`(${join(paths.workspace(), "skills", "mq", "SKILL.md")})`);
 			expect(text).not.toContain("(skills/mq/SKILL.md)");
-			expect(text).toContain(`write ${join(paths.workspace(), "skills", "<name>", "SKILL.md")}`);
+			// The self-write invitation is gone — writes only when asked.
+			expect(text).not.toContain(
+				`write ${join(paths.workspace(), "skills", "<name>", "SKILL.md")}`,
+			);
+			expect(text).toContain(
+				"or edit skills only when the operator asks — never create or rewrite",
+			);
+			expect(text).toContain("An asked-for write goes to");
+			expect(text).toContain(
+				`${join(paths.workspace(), "skills", "<name>", "SKILL.md")}, then`,
+			);
 			expect(text).toContain(
 				`skills-ref validate '${join(paths.workspace(), "skills", "<name>")}'`,
 			);

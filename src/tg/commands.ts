@@ -63,11 +63,15 @@ function clockHM(iso: string): string {
 	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function reply(deps: CommandDeps, conv: Conversation, text: string): void {
-	withTimeout(
+function send(deps: CommandDeps, conv: Conversation, text: string) {
+	return withTimeout(
 		deps.api.sendMessage(conv.chatId, text, target(conv)),
 		"sendMessage (command reply)",
-	).catch((err: unknown) => {
+	);
+}
+
+function reply(deps: CommandDeps, conv: Conversation, text: string): void {
+	send(deps, conv, text).catch((err: unknown) => {
 		log.warn("command reply failed", err);
 	});
 }
@@ -75,11 +79,12 @@ function reply(deps: CommandDeps, conv: Conversation, text: string): void {
 const REPLY_CHUNK_LIMIT = 4000;
 
 function replyLines(deps: CommandDeps, conv: Conversation, lines: string[]): void {
+	const chunks: string[] = [];
 	let batch: string[] = [];
 	let len = 0;
 	const flush = (): void => {
 		if (batch.length === 0) return;
-		reply(deps, conv, batch.join("\n"));
+		chunks.push(batch.join("\n"));
 		batch = [];
 		len = 0;
 	};
@@ -90,6 +95,21 @@ function replyLines(deps: CommandDeps, conv: Conversation, lines: string[]): voi
 		len += capped.length + 1;
 	}
 	flush();
+	// Chunks send strictly in order — a later chunk without its
+	// predecessor is misleading, so one failure ends the call's sends.
+	void (async () => {
+		for (const [i, chunk] of chunks.entries()) {
+			try {
+				await send(deps, conv, chunk);
+			} catch (err) {
+				log.warn("command reply failed", err, {
+					conversation: conv.id,
+					dropped: chunks.length - i - 1,
+				});
+				return;
+			}
+		}
+	})();
 }
 
 const forgetListingsByDb = new WeakMap<Database, ForgetListings>();

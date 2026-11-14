@@ -1270,6 +1270,82 @@ describe("recovery commands", () => {
 		store.close();
 	});
 
+	// The oversized-listing fixture, shared by the chunk-ordering pair
+	// below: 60 runs is several REPLY_CHUNK_LIMIT chunks.
+	const bigRuns = () =>
+		Array.from({ length: 60 }, (_, i) => {
+			const runId = `${String(i).padStart(8, "0")}-2345-6789-0000-000000000000`;
+			return {
+				run: { ...run, runId },
+				calls: Array.from({ length: 3 }, (_, j) => ({
+					...call,
+					toolCallId: `call-${i}-${j}`,
+					args: { q: `detail-${i}-${j}-${"x".repeat(90)}` },
+				})),
+			};
+		});
+
+	test("/resume chunks send strictly in order — a held first send blocks the rest", async () => {
+		const runs = bigRuns();
+		const { store, conv, deps } = setup({
+			resumeOps: () => fakeOps({ interrupted: () => runs }),
+		});
+		const texts: string[] = [];
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		deps.api.sendMessage = (async (_chat: number, text: string) => {
+			const n = texts.push(text);
+			if (n === 1) await gate;
+			return { message_id: n };
+		}) as unknown as Api["sendMessage"];
+		expect(handleCommand(deps, conv, "/resume")).toBe(true);
+		await tick();
+		// Only chunk 1's send is in flight — chunk 2 must not start
+		// before it settles.
+		expect(texts).toHaveLength(1);
+		release();
+		await waitUntil(
+			() => texts.join("\n").includes("/resume 00000059 · /abandon 00000059"),
+			"all chunks land",
+		);
+		expect(texts.length).toBeGreaterThan(1);
+		// Every run's listing lands in listing order across the chunks.
+		const joined = texts.join("\n");
+		const positions = runs.map((_, i) =>
+			joined.indexOf(`interrupted run ${String(i).padStart(8, "0")}`),
+		);
+		expect(positions.every((p) => p >= 0)).toBe(true);
+		expect(positions).toEqual([...positions].sort((a, b) => a - b));
+		store.close();
+	});
+
+	test("/resume sends no later chunk after a failed send", async () => {
+		const { store, conv, deps } = setup({
+			resumeOps: () => fakeOps({ interrupted: () => bigRuns() }),
+		});
+		const texts: string[] = [];
+		deps.api.sendMessage = (async (_chat: number, text: string) => {
+			const n = texts.push(text);
+			if (n === 1) throw new Error("bot api wedged");
+			return { message_id: n };
+		}) as unknown as Api["sendMessage"];
+		const warn = spyOn(log, "warn");
+		try {
+			expect(handleCommand(deps, conv, "/resume")).toBe(true);
+			await waitUntil(
+				() => warn.mock.calls.some(([msg]) => msg === "command reply failed"),
+				"failure logged",
+			);
+			await tick();
+			expect(texts).toHaveLength(1);
+		} finally {
+			warn.mockRestore();
+		}
+		store.close();
+	});
+
 	test("/resume <id> admits the fresh turn and reports the blocked list", async () => {
 		const { store, conv, sent, deps } = setup({
 			resumeOps: () =>

@@ -126,6 +126,10 @@ function AppShell() {
 	const [notes, setNotes] = useState<AppNoteSummary[] | null>(null);
 	const [notesTruncated, setNotesTruncated] = useState(false);
 	const [attentionCount, setAttentionCount] = useState(0);
+	// A failed feed load must not read as "no notes" / "nothing needs
+	// attention" — these mark the miss while the last good rows stay.
+	const [notesError, setNotesError] = useState(false);
+	const [attentionError, setAttentionError] = useState(false);
 	const [creatingNote, setCreatingNote] = useState(false);
 	const creatingNoteRef = useRef(false);
 	// A pending rail create may navigate only while its original route
@@ -360,10 +364,12 @@ function AppShell() {
 			if (plistR.status === "rejected") throw plistR.reason;
 			setConversations(listR.value.conversations);
 			setProjects(plistR.value.projects);
+			setNotesError(nlistR.status === "rejected");
 			if (nlistR.status === "fulfilled") {
 				setNotes(nlistR.value.notes);
 				setNotesTruncated(nlistR.value.truncated);
 			}
+			setAttentionError(attnR.status === "rejected");
 			if (attnR.status === "fulfilled") setAttentionCount(attnR.value.items.length);
 			setListError(null);
 			setRowError(null);
@@ -1071,9 +1077,11 @@ function AppShell() {
 	);
 
 	// The attention glyph's dot doubles in the accessible name — the
-	// count is information, not decoration.
-	const attentionLabel =
-		attentionCount > 0
+	// count is information, not decoration. A failed load names the
+	// miss instead of standing silent.
+	const attentionLabel = attentionError
+		? "Couldn't load attention"
+		: attentionCount > 0
 			? `Attention — ${attentionCount === 1 ? "1 item needs" : `${attentionCount} items need`} you`
 			: "Attention";
 	const plusGlyph = (
@@ -1149,8 +1157,11 @@ function AppShell() {
 								onClick={() => openPage(g.key)}
 							>
 								{g.svg}
-								{g.key === "attention" && attentionCount > 0 && (
-									<span className="dot" aria-hidden="true" />
+								{g.key === "attention" && (attentionCount > 0 || attentionError) && (
+									<span
+										className={attentionError ? "dot attention-dot-error" : "dot"}
+										aria-hidden="true"
+									/>
 								)}
 							</button>
 						))}
@@ -1242,6 +1253,9 @@ function AppShell() {
 												{plusGlyph} New project
 											</button>
 										</div>
+									)}
+									{pane === "notes" && notesError && (
+										<p className="error">Couldn't load notes.</p>
 									)}
 									{pane === "notes" && notes !== null && (
 										<>

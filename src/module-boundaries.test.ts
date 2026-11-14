@@ -8,7 +8,7 @@
 //     is the sanctioned cycle-breaker.
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 
 const SRC = import.meta.dir;
 
@@ -21,6 +21,19 @@ const RUNTIME_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*)["']\.\.\/runtime\.ts["']/
 const SIBLING_MOD_IMPORT =
 	/(?:\bimport\b|\bexport\b)(?!\s*type\b)[^;]*from\s*["']\.\/mod\.ts["']|\bimport\s*\(\s*["']\.\/mod\.ts["']\s*\)/;
 
+// Every import form that carries a specifier: `from "…"` (static
+// import/export, `import type` included), dynamic `import("…")`, and
+// bare side-effect `import "…"`.
+const FROM_SPEC = /\bfrom\s*["']([^"']+)["']/g;
+const DYNAMIC_SPEC = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
+const BARE_SPEC = /\bimport\s*["']([^"']+)["']/g;
+
+function specifiers(source: string): string[] {
+	return [FROM_SPEC, DYNAMIC_SPEC, BARE_SPEC].flatMap((re) =>
+		[...source.matchAll(re)].map((m) => m[1]!),
+	);
+}
+
 // testkit's fake-api.ts builds the Api stub — not production code.
 const GRAMMY_EXEMPT_DIRS = new Set(["tg", "testkit"]);
 
@@ -28,6 +41,10 @@ const GRAMMY_EXEMPT_DIRS = new Set(["tg", "testkit"]);
 // surface) is known only inside src/agent/claude-code/ — the same rule
 // shape as the pi packages under src/subagents/.
 const CLAUDE_SDK_DIR = "agent/claude-code";
+
+// The feature folders (DESIGN.md → Module map, ruling 2026-11-08,
+// #201): each folder's index.ts is its only public import.
+const FEATURE_FOLDERS = new Set(["reminders"]);
 
 // Test-only edges: shared rigs that build the family's real entry to
 // fake at it, and the crash/podman tests' spawned child/driver processes.
@@ -103,6 +120,27 @@ describe("module boundaries", () => {
 				const file = join(dir, entry.name);
 				if (SIBLING_EXEMPT.has(rel(file))) continue;
 				if (SIBLING_MOD_IMPORT.test(readFileSync(file, "utf8"))) offenders.push(rel(file));
+			}
+		}
+		expect(offenders).toEqual([]);
+	});
+
+	test("feature folders are imported only through their index.ts", () => {
+		const offenders: string[] = [];
+		for (const file of walk(SRC)) {
+			// Inside the feature folder itself — its own modules and tests.
+			if (FEATURE_FOLDERS.has(rel(file).split("/")[0]!)) continue;
+			for (const spec of specifiers(readFileSync(file, "utf8"))) {
+				if (!spec.startsWith(".")) continue;
+				const resolved = resolve(dirname(file), spec);
+				for (const feature of FEATURE_FOLDERS) {
+					const within = relative(join(SRC, feature), resolved);
+					// Outside the feature, the folder itself (which resolves to
+					// its index.ts), or the public index — allowed.
+					if (within.startsWith("..") || within === "" || within === "index.ts")
+						continue;
+					offenders.push(`${rel(file)} -> ${spec}`);
+				}
 			}
 		}
 		expect(offenders).toEqual([]);

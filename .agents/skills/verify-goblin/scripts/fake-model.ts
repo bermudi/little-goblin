@@ -3,7 +3,9 @@
 // exercises goblin's real provider path without a paid model or a real key.
 // It replies "verify-reply: <the last user message>". A message containing
 // "[slow]" streams one word every 400ms (time to press Stop); "[fail]"
-// streams a few words, then breaks the connection.
+// streams a few words, then breaks the connection; "[hold]" opens the
+// stream and never sends a chunk — a silent provider, for held-turn UI
+// states (e.g. the first turn's Stop button, issue #412).
 
 import { writeFileSync } from "node:fs";
 import { z } from "zod";
@@ -62,6 +64,12 @@ const server = Bun.serve({
 		const headers = { "content-type": "text/event-stream" };
 		const slow = reply.includes("[slow]");
 		const fail = reply.includes("[fail]");
+		const hold = reply.includes("[hold]");
+		if (hold) {
+			// Headers sent, wire open, nothing ever comes — the request stays
+			// pending until the client gives up (Stop) or the process dies.
+			return new Response(new ReadableStream<Uint8Array>({ start() {} }), { headers });
+		}
 		if (!slow && !fail) {
 			const stream = [
 				chunk({ role: "assistant", content: reply }, null),

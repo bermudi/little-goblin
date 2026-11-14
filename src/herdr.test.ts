@@ -391,6 +391,13 @@ describe("herdr adapter — prompt delivery", () => {
 		await makeHerdr({ session: "goblin" }, f.run, 1000, noSleep).prompt("g1-test", "task");
 		expect(verbs(f.calls)).toEqual(["agent get", "agent prompt"]);
 	});
+
+	test("a leading-dash task text rides after --, never parsed as a flag", async () => {
+		const f = opRunner([agent("idle", 3), sent, agent("working", 4)]);
+		await makeHerdr({ session: "goblin" }, f.run, 1000, noSleep).prompt("g1-test", "--help me");
+		expect(prompts(f.calls)).toHaveLength(1);
+		expect(prompts(f.calls)[0]!.slice(-3)).toEqual(["--", "g1-test", "--help me"]);
+	});
 });
 
 describe("operator herdr adapter", () => {

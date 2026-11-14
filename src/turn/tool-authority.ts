@@ -72,6 +72,10 @@ export interface ToolAuthorityDeps {
 	onJournalFault(): void;
 	runOwnership?: RunOwnershipHooks | undefined;
 	checkAuthority(): void;
+	// #477: the tool-launch steer gate — the runtime wires the lane's
+	// claimable-pending read here, armed only by an engine whose
+	// model-call boundary claims steers.
+	steerWaiting?: (() => boolean) | undefined;
 }
 
 export interface ToolAuthority {
@@ -175,6 +179,7 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 			guard: recoveryGuard,
 			journalFault: deps.journalFault,
 			onJournalFault: deps.onJournalFault,
+			steerWaiting: deps.steerWaiting,
 		});
 		const saveStep = (patch: TurnCheckpointPatch): void => {
 			deps.journaled(() => journal?.checkpoint(newRunId, patch));

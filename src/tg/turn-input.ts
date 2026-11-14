@@ -8,8 +8,8 @@
 import type { Api } from "grammy";
 import type { ConfigRef } from "../config.ts";
 import type { TtsConfig } from "../config-schema.ts";
-import type { Conversation } from "../conversation-read.ts";
-import type { ConversationReads } from "../conversation-read.ts";
+import type { Conversation, ConversationReads } from "../conversation-read.ts";
+import type { ConversationStore } from "../conversation.ts";
 import { channelOf } from "../conversation-address.ts";
 import { makeDeliverySink } from "./delivery.ts";
 import type { TurnSink } from "../turn/sink.ts";
@@ -31,7 +31,8 @@ export function sharedChatPart(
 // import back into mod.ts.
 export interface ConversationSinkDeps {
 	configRef: ConfigRef;
-	store: Pick<ConversationReads, "lastReplyAnchor">;
+	store: Pick<ConversationReads, "lastReplyAnchor" | "lastEntry"> &
+		Pick<ConversationStore, "recordDelivery">;
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
 }
 
@@ -57,6 +58,7 @@ export function makeConversationDeliverySink(
 				}
 			: {}),
 		rating: deps.store,
+		deliveries: deps.store,
 		rich: {
 			enabled: deps.configRef.current.telegram.richReplies,
 			reasoning: deps.configRef.current.telegram.showReasoning,

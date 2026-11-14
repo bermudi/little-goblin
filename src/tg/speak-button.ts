@@ -1,8 +1,8 @@
 import { InputFile, type Api } from "grammy";
 import type { TtsConfig } from "../config-schema.ts";
+import type { ConversationReads } from "../conversation-read.ts";
 import { speakable } from "../agent/tts.ts";
 import { log } from "../log.ts";
-import { recentReplyText } from "./reply-memory.ts";
 import { withTimeout } from "./deadline.ts";
 
 // Callback-data id of the 🔊 button the delivery sink attaches to voice-capable replies.
@@ -24,6 +24,9 @@ export interface SpeakButtonDeps {
 	api: Api;
 	tts: TtsConfig | undefined;
 	synthesize(text: string, config: TtsConfig): Promise<Uint8Array[]>;
+	// Durable bubble→reply lookup — the delivery sink records each
+	// landed message id against its reply event at finalize.
+	store: Pick<ConversationReads, "deliveredReplyText">;
 }
 
 export async function handleSpeakButton(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
@@ -65,10 +68,10 @@ async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 	}
 	inFlight.add(key);
 	try {
-		const full = recentReplyText(message.chat.id, message.message_id);
+		const full = deps.store.deliveredReplyText(message.chat.id, message.message_id);
 		const tapped = "text" in message ? (message.text ?? "") : "";
 		if (full === null) {
-			log.warn("voice button reply cache miss", {
+			log.warn("voice button reply lookup miss", {
 				chat: message.chat.id,
 				message: message.message_id,
 			});
@@ -97,6 +100,20 @@ async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 				await withTimeout(
 					deps.api.sendVoice(message.chat.id, new InputFile(chunk, "speech.ogg"), { ...thread }),
 					"sendVoice",
+				);
+			}
+			// The bubble was read but the full reply wasn't reachable —
+			// say so where the tap happened, same thread.
+			if (full === null) {
+				await withTimeout(
+					deps.api.sendMessage(
+						message.chat.id,
+						"Only this part could be read — the full reply is no longer available.",
+						{ ...thread },
+					),
+					"sendMessage",
+				).catch((err: unknown) =>
+					log.debug("partial-reply notice failed", { error: String(err) }),
 				);
 			}
 			log.info("voice button delivered", {

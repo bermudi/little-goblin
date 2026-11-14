@@ -150,6 +150,7 @@ export async function createBot(
 			api: bot.api,
 			tts: deps.configRef.ttsDown ? undefined : deps.configRef.current.tts || undefined,
 			synthesize: deps.synthesize,
+			store: deps.store,
 		});
 	});
 

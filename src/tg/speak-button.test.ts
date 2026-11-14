@@ -5,10 +5,17 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { fakeApi, type RecordedCall } from "../testkit/fake-api.ts";
-import { rememberReply } from "./reply-memory.ts";
-import { handleSpeakButton, type SpeakQuery } from "./speak-button.ts";
+import { handleSpeakButton, type SpeakQuery, type SpeakButtonDeps } from "./speak-button.ts";
 
 const TTS = { kind: "edge", voice: "en-US-AriaNeural" } as const;
+
+// The durable lookup the real store provides; tests pre-populate the
+// map to stand in for recorded deliveries.
+function storeFor(replies: Record<string, string> = {}): SpeakButtonDeps["store"] {
+	return {
+		deliveredReplyText: (chatId, messageId) => replies[`${chatId}:${messageId}`] ?? null,
+	};
+}
 
 function query(chatId: number, messageId: number, text = "tapped bubble text"): SpeakQuery {
 	return {
@@ -45,6 +52,7 @@ describe("speak button", () => {
 		const p = handleSpeakButton(query(chatId, 1), {
 			api: fake.api,
 			tts: TTS,
+			store: storeFor(),
 			synthesize: async () => {
 				synthesized++;
 				await gate;
@@ -72,6 +80,7 @@ describe("speak button", () => {
 		const deps = {
 			api: fake.api,
 			tts: TTS,
+			store: storeFor(),
 			synthesize: async () => {
 				synthesized++;
 				await gate;
@@ -95,6 +104,7 @@ describe("speak button", () => {
 		await handleSpeakButton(query(chatId, 2), {
 			api: fake.api,
 			tts: TTS,
+			store: storeFor(),
 			synthesize: async () => {
 				throw new Error("edge is down");
 			},
@@ -104,33 +114,49 @@ describe("speak button", () => {
 		expect(notice?.args[1]).toBe("⚠ speech failed — check the log");
 	});
 
-	test("reads the cached whole reply over the tapped bubble", async () => {
+	test("reads the durably recorded whole reply over the tapped bubble", async () => {
 		const fake = fakeApi();
 		let spoken = "";
-		rememberReply(chatId, 3, "the whole reply, cached");
 		await handleSpeakButton(query(chatId, 3, "just the bubble"), {
 			api: fake.api,
 			tts: TTS,
+			store: storeFor({ [`${chatId}:3`]: "the whole reply, recorded" }),
 			synthesize: async (text) => {
 				spoken = text;
 				return [];
 			},
 		});
-		expect(spoken).toBe("the whole reply, cached");
+		expect(spoken).toBe("the whole reply, recorded");
 	});
 
-	test("cache miss falls back to the tapped bubble", async () => {
+	test("a lookup miss speaks the tapped bubble and says the rest is gone", async () => {
 		const fake = fakeApi();
 		let spoken = "";
 		await handleSpeakButton(query(chatId, 4, "just the bubble"), {
 			api: fake.api,
 			tts: TTS,
+			store: storeFor(),
 			synthesize: async (text) => {
 				spoken = text;
 				return [];
 			},
 		});
 		expect(spoken).toBe("just the bubble");
+		const notice = fake.calls.find((c) => c.method === "sendMessage");
+		expect(notice?.args[1]).toBe(
+			"Only this part could be read — the full reply is no longer available.",
+		);
+	});
+
+	test("a resolved reply sends no partial-read notice", async () => {
+		const fake = fakeApi();
+		await handleSpeakButton(query(chatId, 8, "bubble"), {
+			api: fake.api,
+			tts: TTS,
+			store: storeFor({ [`${chatId}:8`]: "the whole reply" }),
+			synthesize: async () => [],
+		});
+		expect(fake.calls.filter((c) => c.method === "sendMessage")).toHaveLength(0);
 	});
 
 	test("a completed rendering clears the in-flight guard — a later tap runs again", async () => {
@@ -139,6 +165,7 @@ describe("speak button", () => {
 		const deps = {
 			api: fake.api,
 			tts: TTS,
+			store: storeFor(),
 			synthesize: async () => {
 				synthesized++;
 				return [];
@@ -158,6 +185,7 @@ describe("speak button", () => {
 		await handleSpeakButton(query(chatId, 5), {
 			api: fake.api,
 			tts: undefined,
+			store: storeFor(),
 			synthesize: async () => {
 				synthesized++;
 				return [];

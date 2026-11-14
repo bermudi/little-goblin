@@ -185,6 +185,10 @@ export interface ConversationStore extends ConversationReads {
 	// The one write to project_id — creation only. A row already bound
 	// to a different project refuses; rebinding the same id is a no-op.
 	bindProject(id: string, projectId: string): void;
+	// Bind a landed Telegram message id to the reply event it carries —
+	// the 🔊 button's durable handle. Recorded at turn finalize, one row
+	// per delivered chunk, all pointing at the same reply seq.
+	recordDelivery(id: string, messageId: number, seq: number): void;
 	// The refusal deleteConversation would raise right now, as the message
 	// the caller should show — null when the delete would proceed.
 	// Advisory, not a fence: an anchor minted after this answer (a live
@@ -410,6 +414,35 @@ export function openStore(dbPath: string): ConversationStore {
 
 		lastReplyAnchor(id) {
 			return qLastReplyAnchor.get(id)?.anchor_seq ?? null;
+		},
+
+		recordDelivery(id, messageId, seq) {
+			db.run(
+				"INSERT OR REPLACE INTO telegram_deliveries (conversation_id, message_id, seq, created_at) VALUES (?, ?, ?, ?)",
+				[id, messageId, seq, new Date().toISOString()],
+			);
+		},
+
+		deliveredReplyText(chatId, messageId) {
+			const row = db
+				.query<
+					{ conversation_id: string; seq: number; role: string; data: string },
+					[number, number]
+				>(
+					`SELECT td.conversation_id, td.seq, e.role, e.data
+					 FROM telegram_deliveries td
+					 JOIN conversations c ON c.id = td.conversation_id
+					 JOIN events e ON e.conversation_id = td.conversation_id AND e.seq = td.seq
+					 WHERE c.chat_id = ? AND td.message_id = ?`,
+				)
+				.get(chatId, messageId);
+			if (!row) return null;
+			const message = parseEvent(row.conversation_id, row.seq, row.role, row.data);
+			if (message === null) return null;
+			// A textless reply is a miss too — "" would read as "nothing
+			// speakable" instead of falling back to the tapped bubble.
+			const text = messageText(message);
+			return text === "" ? null : text;
 		},
 
 		memoryEligibility(id) {

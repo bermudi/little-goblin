@@ -267,6 +267,19 @@ export function ensureConversationSchema(db: Database): void {
 				sent_at TEXT NOT NULL,
 				PRIMARY KEY (notification_key, endpoint_hash)
 			)`);
+	// One delivered Telegram bubble → the reply event it renders. The
+	// 🔊 button resolves the full reply text by chat+message id across
+	// restarts; every chunk of a split reply maps to the same seq.
+	// Conversation delete cascades; an event rewind leaves the row
+	// orphaned and the lookup misses (the reply is gone either way).
+	db.run(`
+			CREATE TABLE IF NOT EXISTS telegram_deliveries (
+				conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+				message_id INTEGER NOT NULL,
+				seq INTEGER NOT NULL,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (conversation_id, message_id)
+			)`);
 	// One current rolling DM per private chat; n only grows, so a
 	// reverted db still mints fresh ids.
 	db.run(`

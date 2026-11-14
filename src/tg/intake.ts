@@ -22,7 +22,7 @@ import { CoalescingBuffer } from "./buffer.ts";
 import { COMMAND_RE, handleCommand, parseCommand } from "./commands.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import type { BotDeps } from "./deps.ts";
-import { ensurePersonaClass, GUEST_REFUSAL, refusalDue } from "./guest.ts";
+import { ensurePersonaClass, guestRefusalText, refusalDue } from "./guest.ts";
 import { sendRollMarker } from "./notify.ts";
 import { handleSkillCommand, skillCommandDeps } from "./skill-command.ts";
 import { mediaFromMessage, mediaParts, saveAttachment, unhandledMediaKind } from "./media.ts";
@@ -269,7 +269,10 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 				const cmd = command.command;
 				const cls = dmClass(deps.configRef.current, addr.chatId);
 				if (cls === null) {
-					log.info("stranger refused — bot dm command", { userId: addr.chatId });
+					log.info("stranger refused — bot dm command", {
+						userId: addr.chatId,
+						reason: "stranger",
+					});
 					refuseStranger(env.api, addr.chatId);
 					return;
 				}
@@ -608,5 +611,6 @@ export function dmClass(cfg: Config, chatId: number): "personal" | "guest" | nul
 
 export function refuseStranger(api: Api, chatId: number): void {
 	if (!refusalDue(chatId)) return;
-	sendRefusal(api, chatId, chatId, GUEST_REFUSAL);
+	// A stranger's DM chat id IS the sender's Telegram user id.
+	sendRefusal(api, chatId, chatId, guestRefusalText(chatId));
 }

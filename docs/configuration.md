@@ -446,7 +446,9 @@ http: { port: 8787 },
   DM `@userinfobot` to find yours. At least one is required while
   Telegram is enabled; the list may be empty only when `telegram.enabled`
   is `false`. Checked on every message, so mini-app edits take effect
-  immediately.
+  immediately. Leaving the shipped `123456789` placeholder warns at boot
+  and in `bun run doctor` (`config.operators`); a refused DM answer names
+  the sender's own id, so a wrong entry shows itself in the chat.
 - `allowedUsers` — people you name. Sandboxed: a guest persona with
   search-only tools, no memory, no app. Their DM is a standing chat; in
   groups they @mention you. Everyone else gets one refusal line per

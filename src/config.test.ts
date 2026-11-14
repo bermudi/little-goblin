@@ -19,6 +19,7 @@ import {
 	missingAuthNames,
 	observeConfigWrites,
 	parseConfig,
+	warnOnExampleOperator,
 	writeConfig,
 } from "./config.ts";
 import {
@@ -1311,6 +1312,25 @@ describe("authReferences", () => {
 		const has = (n: string) => n === "telegram" || n === "zai";
 		expect(missingAuthNames(c, has)).toEqual(["mimo"]);
 		expect(missingAuthNames(c, () => true)).toEqual([]);
+	});
+
+	test("warnOnExampleOperator warns only while the shipped placeholder id is configured", () => {
+		const lines: string[] = [];
+		const out = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+			lines.push(String(chunk));
+			return true;
+		});
+		try {
+			const example = parseConfig({ ...ocBase, operators: [123456789] });
+			warnOnExampleOperator(example);
+			warnOnExampleOperator(parseConfig(ocBase));
+		} finally {
+			out.mockRestore();
+		}
+		const emitted = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+		expect(emitted).toHaveLength(1);
+		expect(emitted[0]!.level).toBe("warn");
+		expect(String(emitted[0]!.msg)).toContain("Settings → operators");
 	});
 });
 

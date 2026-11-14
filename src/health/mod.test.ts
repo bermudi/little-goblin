@@ -169,6 +169,24 @@ describe("diagnostic boundary and phases", () => {
 		);
 		expect(JSON.stringify(await runHealth(f.options))).not.toContain(secret);
 	});
+	test("the shipped example operator id warns; a real list passes; a broken config skips", async () => {
+		const f = fixture();
+		writeFileSync(
+			join(f.home, "goblin.json5"),
+			JSON.stringify({ ...f.config, operators: [123456789] }),
+		);
+		let report = await runHealth(f.options);
+		const warned = finding(report, "config.operators");
+		expect(warned.status).toBe("warn");
+		expect(warned.detail).toContain("Settings → operators");
+		expect(JSON.stringify(report)).not.toContain(secret);
+		writeFileSync(join(f.home, "goblin.json5"), JSON.stringify(f.config));
+		report = await runHealth(f.options);
+		expect(finding(report, "config.operators").status).toBe("pass");
+		writeFileSync(join(f.home, "goblin.json5"), "{ not json5");
+		report = await runHealth(f.options);
+		expect(finding(report, "config.operators").status).toBe("skip");
+	});
 	test("retired delegation keys don't fail the config check — the disk load strips them", async () => {
 		const f = fixture();
 		writeFileSync(

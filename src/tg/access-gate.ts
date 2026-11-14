@@ -7,7 +7,7 @@ import type { Api } from "grammy";
 import type { Config } from "../config-schema.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
-import { GUEST_REFUSAL, refusalDue } from "./guest.ts";
+import { guestRefusalText, refusalDue } from "./guest.ts";
 import { refusalDispatcher, sendRefusal } from "./refusals.ts";
 
 export function accessGate(configRef: { current: Config }, opts?: { refusalTimeoutMs?: number }) {
@@ -51,9 +51,9 @@ export function accessGate(configRef: { current: Config }, opts?: { refusalTimeo
 			if (cfg.guest === undefined || !cfg.allowedUsers.includes(id)) {
 				log.info("dm refused — not an operator", {
 					userId: id,
-					guest: cfg.guest !== undefined,
+					reason: cfg.guest === undefined ? "guest-disabled" : "not-an-allowed-user",
 				});
-				if (refusalDue(id)) dispatch(ctx.api, id, id, GUEST_REFUSAL);
+				if (refusalDue(id)) dispatch(ctx.api, id, id, guestRefusalText(id));
 				return;
 			}
 			await next();

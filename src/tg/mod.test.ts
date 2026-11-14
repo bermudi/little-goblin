@@ -6,7 +6,7 @@ import { type Config, memoryConfigSchema } from "../config-schema.ts";
 import { HindsightClient } from "../memory/hindsight.ts";
 import { tmpDb, useHome } from "../testkit.ts";
 import { COMMANDS, type CommandMemoryDeps, DM_COMMANDS } from "./commands.ts";
-import { GUEST_REFUSAL, resetRefusalLatchForTests } from "./guest.ts";
+import { guestRefusalText, resetRefusalLatchForTests } from "./guest.ts";
 import { accessGate } from "./access-gate.ts";
 import { applyCommands, applyMenuButton } from "./bot.ts";
 import { conversationAddress } from "./intake.ts";
@@ -58,7 +58,7 @@ describe("accessGate", () => {
 			const send = spyOn(api, "sendMessage");
 			await gate(dm(9), next);
 			expect(reached).toBe(2);
-			expect(send).toHaveBeenCalledWith(9, GUEST_REFUSAL, {}, expect.any(AbortSignal));
+			expect(send).toHaveBeenCalledWith(9, guestRefusalText(9), {}, expect.any(AbortSignal));
 			await gate({ api } as never, next);
 			expect(reached).toBe(2);
 			// Config is re-read per message.
@@ -112,7 +112,7 @@ describe("accessGate", () => {
 			configRef.current = { ...baseConfig };
 			await gate(dm(2), next);
 			expect(reached).toBe(1);
-			expect(send).toHaveBeenCalledWith(2, GUEST_REFUSAL, {}, expect.any(AbortSignal));
+			expect(send).toHaveBeenCalledWith(2, guestRefusalText(2), {}, expect.any(AbortSignal));
 			await gate(dm(1), next);
 			expect(reached).toBe(2);
 			configRef.current = { ...baseConfig, guest: { outputChars: 3500 } };
@@ -526,7 +526,7 @@ describe("handleMessage", () => {
 		expect(submitted).toEqual([]);
 		expect(h.store.currentDm(2)).toBeNull();
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
-			GUEST_REFUSAL,
+			guestRefusalText(2),
 		]);
 		// Tombstoned, not pending — boot replay doesn't retry the drop.
 		expect(h.env.inbox.pending().filter((e) => e.payload.conversationId === "dm:2")).toEqual([]);
@@ -618,9 +618,9 @@ describe("handleMessage", () => {
 		release();
 		await flushing;
 		expect(submits).toBe(0);
-		expect(h.apiCalls.some((c) => c.method === "sendMessage" && c.text === GUEST_REFUSAL)).toBe(
-			true,
-		);
+		expect(
+			h.apiCalls.some((c) => c.method === "sendMessage" && c.text === guestRefusalText(2)),
+		).toBe(true);
 		expect(h.env.inbox.pending().filter((e) => e.payload.conversationId === "dm:2")).toEqual([]);
 		h.store.close();
 	});
@@ -638,7 +638,7 @@ describe("handleMessage", () => {
 		expect(h.stopped).toEqual([]);
 		expect(h.pushed).toEqual([]);
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
-			GUEST_REFUSAL,
+			guestRefusalText(9),
 		]);
 		h.store.close();
 	});

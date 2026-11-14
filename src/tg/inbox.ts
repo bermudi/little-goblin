@@ -29,6 +29,10 @@ const payloadSchema = z.strictObject({
 	media: mediaSchema.nullable(),
 	mediaError: z.string().nullable(),
 	quoted: z.strictObject({ messageId: idSchema, text: z.string() }).optional(),
+	// Source topic for the intake typing ack — the destination
+	// conversation may differ (ping rerouting), the ping belongs where
+	// the user typed.
+	threadId: idSchema.nullable().optional(),
 });
 
 export interface InboxPayload {
@@ -39,6 +43,7 @@ export interface InboxPayload {
 	media: IncomingMedia | null;
 	mediaError: string | null;
 	quoted?: { messageId: number; text: string } | undefined;
+	threadId?: number | null | undefined;
 }
 export interface InboxEntry {
 	updateId: number;

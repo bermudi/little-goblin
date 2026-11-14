@@ -61,7 +61,11 @@ apply next turn without interrupting the current answer.
   window **500ms** (ruling 2026-09-25; measured on a live 7-chunk paste:
   worst inter-chunk gap 167ms ≈ one public-API long-poll RTT ~185ms — 3×
   the observed worst); 200–300ms is safe only LAN-side (self-hosted
-  bot-api). The half-run rule holds: a committed turn doesn't rerun after a
+  bot-api). The first update that fills a lane's buffer (empty →
+  non-empty) pings `sendChatAction typing` once at intake — the buffer's
+  empty→non-empty edge, so a held burst still shows liveness while it
+  coalesces (2026-11-13); the delivery sink's interval owns liveness from
+  admission. The half-run rule holds: a committed turn doesn't rerun after a
   model crash — protecting future updates, not input lost before the
   journal existed. A duplicate never makes a second turn; an
   `edited_message` is not a second message (ruling 2026-10-13): while the

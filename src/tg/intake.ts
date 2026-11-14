@@ -25,6 +25,7 @@ import type { BotDeps } from "./deps.ts";
 import { ensurePersonaClass, guestRefusalText, refusalDue } from "./guest.ts";
 import { sendRollMarker } from "./notify.ts";
 import { handleSkillCommand, skillCommandDeps } from "./skill-command.ts";
+import { pingTypingOnce } from "./delivery.ts";
 import { mediaFromMessage, mediaParts, saveAttachment, unhandledMediaKind } from "./media.ts";
 import {
 	openTelegramInbox,
@@ -389,6 +390,7 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 		conversationId: pingedConv ?? lane,
 		chatId: msg.chat.id,
 		messageId: msg.message_id,
+		...(addr.kind === "topic" ? { threadId: addr.threadId } : {}),
 		text,
 		media,
 		mediaError: mediaError === null ? null : String(mediaError),
@@ -489,7 +491,7 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 			}
 		}
 
-		env.buffer.push(convId, {
+		const first = env.buffer.push(convId, {
 			updateId,
 			parts,
 			chatId: payload.chatId,
@@ -498,6 +500,7 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 			textIndex,
 			hasText,
 		});
+		if (first) pingTypingOnce(env.api, payload.chatId, payload.threadId ?? null);
 	});
 }
 

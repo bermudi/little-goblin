@@ -659,6 +659,7 @@ function fireResponsibility(
 						generation: a.generation,
 						target: a.target,
 						health: a.health,
+						unreachableSince: a.unreachableSince,
 					})),
 				),
 			),

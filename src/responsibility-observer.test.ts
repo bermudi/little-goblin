@@ -229,12 +229,58 @@ describe("responsibility observer", () => {
 		r.store.close();
 	});
 
-	test("an unreachable target leaves every attachment untouched", async () => {
+	test("a single unreachable poll stays invisible — no health change, no events", async () => {
 		const r = rig();
 		r.failing = true;
 		await r.observe();
-		expect(r.resps.getAttachment(r.attId)!.health).toBe("attached");
+		const att = r.resps.getAttachment(r.attId)!;
+		expect(att.health).toBe("attached");
+		expect(att.unreachableSince).toBeNull();
 		expect(r.eventsFor()).toHaveLength(0);
+		r.store.close();
+	});
+
+	test("three consecutive unreachable polls declare the outage; the next success clears it", async () => {
+		const at = new Date("2030-01-01T12:00:00.000Z");
+		const r = rig(undefined, () => at);
+		r.failing = true;
+		await r.observe();
+		expect(r.resps.getAttachment(r.attId)!.unreachableSince).toBeNull();
+		await r.observe();
+		expect(r.resps.getAttachment(r.attId)!.unreachableSince).toBeNull();
+		// The third failure declares — since is the FIRST failure's time,
+		// the outage start; health is unchanged (last sighted occupancy).
+		await r.observe();
+		const att = r.resps.getAttachment(r.attId)!;
+		expect(att.health).toBe("attached");
+		expect(att.unreachableSince).toBe("2030-01-01T12:00:00.000Z");
+		expect(r.eventsFor()).toHaveLength(0);
+		// Keep failing past the threshold — the declared start holds.
+		at.setTime(at.getTime() + 60_000);
+		await r.observe();
+		expect(r.resps.getAttachment(r.attId)!.unreachableSince).toBe(
+			"2030-01-01T12:00:00.000Z",
+		);
+		// A successful reconcile clears it; cursor diffing resumes normally.
+		r.failing = false;
+		await r.observe();
+		const recovered = r.resps.getAttachment(r.attId)!;
+		expect(recovered.health).toBe("attached");
+		expect(recovered.unreachableSince).toBeNull();
+		r.store.close();
+	});
+
+	test("a successful poll between failures restarts the count", async () => {
+		const r = rig();
+		r.failing = true;
+		await r.observe();
+		await r.observe();
+		r.failing = false;
+		await r.observe();
+		r.failing = true;
+		await r.observe();
+		await r.observe();
+		expect(r.resps.getAttachment(r.attId)!.unreachableSince).toBeNull();
 		r.store.close();
 	});
 

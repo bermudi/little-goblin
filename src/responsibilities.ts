@@ -119,6 +119,11 @@ export interface ResponsibilityStore {
 	attachmentsFor(responsibilityId: string): Attachment[];
 	getAttachment(attachmentId: number): Attachment | null;
 	setHealth(attachmentId: number, health: AttachmentHealth): void;
+	/** One failed poll of the attachment's target — bumps the durable
+	 *  consecutive count and pins the outage start; returns the count. */
+	markUnreachable(attachmentId: number, at: string): number;
+	/** A successful reconcile clears the outage bookkeeping. */
+	clearUnreachable(attachmentId: number): void;
 	updateCursor(attachmentId: number, cursor: unknown): void;
 	/** Detach marks the row; nothing about the Herdr workspace is touched. */
 	detach(attachmentId: number): void;
@@ -306,10 +311,19 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 	const qAttHealth = db.prepare("UPDATE attachments SET health = ? WHERE attachment_id = ?");
 	const qAttCursor = db.prepare("UPDATE attachments SET cursor_json = ? WHERE attachment_id = ?");
 	const qAttDetach = db.prepare(
-		"UPDATE attachments SET health = 'detached', detached_at = ? WHERE attachment_id = ?",
+		"UPDATE attachments SET health = 'detached', detached_at = ?, unreachable_count = 0, unreachable_since = NULL WHERE attachment_id = ?",
 	);
 	const qAttReattach = db.prepare(
-		`UPDATE attachments SET generation = generation + 1, server = ?, session = ?, agent_name = ?, pane_id = ?, terminal_id = ?, agent_session = ?, kind = ?, cwd = ?, baseline_json = ?, health = 'attached', cursor_json = ?, detached_at = NULL WHERE attachment_id = ?`,
+		`UPDATE attachments SET generation = generation + 1, server = ?, session = ?, agent_name = ?, pane_id = ?, terminal_id = ?, agent_session = ?, kind = ?, cwd = ?, baseline_json = ?, health = 'attached', cursor_json = ?, detached_at = NULL, unreachable_count = 0, unreachable_since = NULL WHERE attachment_id = ?`,
+	);
+	// The outage start pins on the first failure; the count drives the
+	// declaration threshold surfaces share through toAttachment.
+	const qAttUnreachable = db.query<{ unreachable_count: number }, [string, number]>(
+		`UPDATE attachments SET unreachable_count = unreachable_count + 1,
+			unreachable_since = COALESCE(unreachable_since, ?) WHERE attachment_id = ? RETURNING unreachable_count`,
+	);
+	const qAttUnreachClear = db.prepare(
+		"UPDATE attachments SET unreachable_count = 0, unreachable_since = NULL WHERE attachment_id = ? AND unreachable_since IS NOT NULL",
 	);
 	const qInsertOp = db.prepare(
 		`INSERT INTO prompt_operations (operation_id, responsibility_id, attachment_id, attachment_generation, responsibility_revision, dispatch_server, dispatch_session, dispatch_terminal_id, dispatch_agent_session, dispatch_kind, brief, state, journal_run_id, tool_call_id, created_at)
@@ -691,6 +705,12 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		setHealth(attachmentId, health) {
 			qAttHealth.run(health, attachmentId);
 			log.info("attachment health", { attachment: attachmentId, health });
+		},
+		markUnreachable(attachmentId, at) {
+			return qAttUnreachable.get(at, attachmentId)!.unreachable_count;
+		},
+		clearUnreachable(attachmentId) {
+			qAttUnreachClear.run(attachmentId);
 		},
 		updateCursor(attachmentId, cursor) {
 			qAttCursor.run(JSON.stringify(cursor ?? null), attachmentId);

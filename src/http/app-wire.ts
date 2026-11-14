@@ -558,6 +558,7 @@ export interface AppAttentionItem {
 		| "skill-proposal"
 		| "interrupted-run"
 		| "delegation-input"
+		| "observation-unreachable"
 		| "responsibility";
 	title: string;
 	detail: string;
@@ -703,6 +704,9 @@ export interface AppResponsibilityAttachment {
 	target: AppAttachmentTarget;
 	baseline: unknown;
 	health: "attached" | "missing" | "identity_changed" | "detached";
+	/** Outage start once observation polling has failed UNREACHABLE_POLLS
+	 *  times in a row, else null. */
+	unreachableSince: string | null;
 	cursor: unknown;
 	createdAt: string;
 	detachedAt: string | null;

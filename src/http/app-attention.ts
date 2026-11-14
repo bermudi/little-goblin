@@ -217,13 +217,25 @@ export async function handleAttentionRoute(
 		}
 	}
 
-	// Open work whose derived stage waits on the operator. A pause is
-	// the operator's own choice, not a request for attention.
+	// Open work whose derived stage waits on the operator, or whose
+	// observation is down. A pause is the operator's own choice, not a
+	// request for attention.
 	const resps = deps.responsibilities?.resps;
 	if (resps === undefined) {
 		unavailable.push("responsibilities");
 	} else {
 		for (const resp of resps.open()) {
+			for (const att of resps.attachmentsFor(resp.responsibilityId)) {
+				if (att.unreachableSince === null) continue;
+				items.push({
+					id: `observation-unreachable:${att.attachmentId}`,
+					kind: "observation-unreachable",
+					title: `Can't observe ${att.target.agentName}`,
+					detail: `Polling ${att.target.server}/${att.target.session} has failed since ${att.unreachableSince} — last seen ${att.health}; the agent may still be running`,
+					createdAt: att.unreachableSince,
+					target: { kind: "conversation", conversationId: resp.coordinationConversationId },
+				});
+			}
 			const latest = resps.latestReport(resp.responsibilityId);
 			const stage = responsibilityStage(resp, latest, resps.operationsFor(resp.responsibilityId));
 			if (stage.waitsFor !== "operator" || stage.stage === "paused") continue;

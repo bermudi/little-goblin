@@ -29,6 +29,7 @@ const KIND_LABEL = {
 	"skill-proposal": "skill",
 	"interrupted-run": "recovery",
 	"delegation-input": "delegation",
+	"observation-unreachable": "work",
 	responsibility: "work",
 } as const satisfies Record<AppAttentionItem["kind"], string>;
 

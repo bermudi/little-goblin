@@ -6,9 +6,13 @@ import { openStore } from "../conversation.ts";
 import { HindsightClient } from "../memory/hindsight.ts";
 import { OutageTracker } from "../memory/outage.ts";
 import type { OutboxEntry } from "../mail-outbox.ts";
+import { openPrograms } from "../programs.ts";
 import type { ProgramProposal } from "../program-proposals.ts";
+import { openResponsibilities } from "../responsibilities.ts";
+import { makeResponsibilityService } from "../responsibility-service.ts";
 import type { TurnRun, TurnToolCall } from "../turn-journal.ts";
 import type { ResumeOps } from "../turn-resume.ts";
+import { openWakeStore } from "../wake-store.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 import type { AppAttentionResponse } from "./app-wire.ts";
 
@@ -326,6 +330,98 @@ describe("app attention", () => {
 		} finally {
 			http.stop();
 			memStore.close();
+		}
+	});
+
+	test("a declared observation outage raises one item and clears with it", async () => {
+		let resps!: import("../responsibilities.ts").ResponsibilityStore;
+		const { http, call, store, projects } = setup({
+			token: APP_TOKEN_NAME,
+			responsibilities: (ctx) => {
+				resps = openResponsibilities(ctx.store.db);
+				const wakes = openWakeStore(ctx.store.db);
+				const programs = openPrograms(join(ctx.home, "programs.sqlite"));
+				return {
+					feed: { db: ctx.store.db, resps, programs },
+					resps,
+					service: makeResponsibilityService({
+						db: ctx.store.db,
+						resps,
+						wakes,
+						programs,
+						conversations: ctx.store,
+						pump: () => {},
+					}),
+					listAgents: () => Promise.resolve([]),
+				};
+			},
+		});
+		try {
+			const project = projects.create({ name: "rig" });
+			const conv = store.resolve(
+				{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
+				project.dir,
+			);
+			const { responsibility } = resps.create({
+				projectId: project.id,
+				coordinationConversationId: conv.id,
+				handoverKey: "h1",
+				understanding: {
+					outcome: "o",
+					situation: "s",
+					nextAction: "n",
+					checkpoints: [],
+					completionEvidence: [],
+				},
+			});
+			const att = resps.attach({
+				responsibilityId: responsibility.responsibilityId,
+				target: {
+					server: "local",
+					session: "op",
+					agentName: "worker-1",
+					paneId: "pane-7",
+					terminalId: "term-9",
+					agentSession: "sess-abc",
+					kind: "pi",
+					cwd: "/w",
+				},
+				baseline: {},
+				cursor: {},
+			});
+
+			// Below the threshold nothing surfaces.
+			resps.markUnreachable(att.attachmentId, "2030-01-01T11:00:00.000Z");
+			resps.markUnreachable(att.attachmentId, "2030-01-01T11:01:00.000Z");
+			let res = await call("/api/app/attention");
+			let body = (await res.json()) as AppAttentionResponse;
+			expect(body.items.filter((i) => i.kind === "observation-unreachable")).toEqual([]);
+
+			// The third consecutive failure declares; the item names the
+			// outage start and the responsibility's conversation.
+			resps.markUnreachable(att.attachmentId, "2030-01-01T11:02:00.000Z");
+			res = await call("/api/app/attention");
+			body = (await res.json()) as AppAttentionResponse;
+			expect(
+				body.items
+					.filter((i) => i.kind === "observation-unreachable")
+					.map((i) => [i.id, i.title, i.createdAt, i.target]),
+			).toEqual([
+				[
+					`observation-unreachable:${att.attachmentId}`,
+					"Can't observe worker-1",
+					"2030-01-01T11:00:00.000Z",
+					{ kind: "conversation", conversationId: conv.id },
+				],
+			]);
+
+			// A successful reconcile clears the durable state and the card.
+			resps.clearUnreachable(att.attachmentId);
+			res = await call("/api/app/attention");
+			body = (await res.json()) as AppAttentionResponse;
+			expect(body.items.filter((i) => i.kind === "observation-unreachable")).toEqual([]);
+		} finally {
+			http.stop();
 		}
 	});
 

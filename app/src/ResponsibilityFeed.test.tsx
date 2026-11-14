@@ -87,6 +87,7 @@ function feed(paused: boolean, detached: boolean): AppFeedItem {
 				},
 				baseline: {},
 				health: detached ? "detached" : "attached",
+				unreachableSince: null,
 				cursor: {},
 				createdAt: at,
 				detachedAt: detached ? at : null,
@@ -128,6 +129,25 @@ test("the next review shows its purpose, not just the Program clock", async () =
 });
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+test("a declared outage names the start time on the attachment", async () => {
+	const item = feed(false, false);
+	item.attachments = item.attachments.map((a) => ({
+		...a,
+		unreachableSince: "2030-01-01T12:00:00.000Z",
+	}));
+	globalThis.fetch = Object.assign(() => Promise.resolve(Response.json({ items: [item] })), {
+		preconnect: realFetch.preconnect,
+	});
+	root = createRoot(container);
+	await act(async () => root?.render(<ResponsibilityFeed token={null} projectId={null} />));
+	// The row pill names the outage start in HH:MM; the detail card too.
+	const pill = container.querySelector(".resp-agents");
+	expect(pill?.textContent).toContain("worker (unreachable since ");
+	expect(container.querySelector(".resp-att-health")?.textContent).toContain(
+		"unreachable since ",
+	);
+});
 
 test("a failed refresh keeps the rows and says so — monitoring never silently stops", async () => {
 	const item = feed(false, false);

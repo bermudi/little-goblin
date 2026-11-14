@@ -164,7 +164,11 @@ boundary that already sent is frozen (a later seam may not pull it back),
 the unsent tail goes out as its own window(s), and the stamp marks the last
 bubble. A rich-mode draft — the only visible surface a rich reply has —
 takes the same stamp. Nothing new is sent when no bubble ever landed, and
-fenced chunks are not retried.
+fenced chunks are not retried. A fenced lane that never produced a visible
+bubble is the other post-fence exception: the sink sends one acknowledgement
+threaded to the dropped user message — "⏹ Stopped before I answered — your
+message is kept in history." — so a `/stop` never silently swallows queued
+input. A lane with no triggering message (a program turn) stays silent.
 
 Shutdown rides the same rule. SIGINT/SIGTERM closes the runtime (submits
 still land in history but never run), fences every live lane — each sink

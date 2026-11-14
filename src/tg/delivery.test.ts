@@ -49,6 +49,9 @@ function fakeApi(opts: {
 	// Every send/edit in order, with the parse_mode Telegram was given.
 	const calls: Array<{ kind: "send" | "edit"; id?: number; text: string; parseMode?: string }> =
 		[];
+	// Options handed to each sendMessage, in order — threads, reply
+	// parameters, parse modes all land here.
+	const sendOptions: unknown[] = [];
 	const api = {
 		sendChatAction: async (_chat: number, action: string) => {
 			actions.push(action);
@@ -62,6 +65,7 @@ function fakeApi(opts: {
 					error_code: 400,
 				});
 			calls.push({ kind: "send", text, ...(o?.parse_mode ? { parseMode: o.parse_mode } : {}) });
+			sendOptions.push(o);
 			msgs.push(text);
 			return { message_id: msgs.length };
 		},
@@ -91,7 +95,7 @@ function fakeApi(opts: {
 			return true;
 		},
 	} as unknown as Api;
-	return { api, msgs, voices, actions, reactions, markups, calls };
+	return { api, msgs, voices, actions, reactions, markups, calls, sendOptions };
 }
 
 describe("delivery", () => {
@@ -1702,5 +1706,33 @@ describe("telegram HTML", () => {
 		// The command shows verbatim — no italics eat the glob stars.
 		expect(msgs.join("")).toContain('⚙ bash find . -name "*.ts" -o -name "*.tsx"');
 		expect(msgs.join("")).not.toContain("<i>");
+	});
+});
+
+describe("drop acknowledgement", () => {
+	test("a fenced turn that never streamed sends one ack replying to the user's message", async () => {
+		const { api, msgs, sendOptions } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, replyTo: 42 });
+		await sink.onDone({ kind: "fenced" });
+		expect(msgs).toEqual([
+			"⏹ Stopped before I answered — your message is kept in history.",
+		]);
+		expect(sendOptions).toEqual([{ reply_parameters: { message_id: 42 } }]);
+	});
+
+	test("a fenced turn that did stream keeps the superseded stamp — no extra ack", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, replyTo: 42 });
+		sink.onTextDelta("partial");
+		await sleep(0);
+		await sink.onDone({ kind: "fenced" });
+		expect(msgs).toEqual(["partial\n\n—\n⏹ superseded"]);
+	});
+
+	test("a fenced turn with no triggering message stays silent", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		await sink.onDone({ kind: "fenced" });
+		expect(msgs).toEqual([]);
 	});
 });

@@ -64,6 +64,8 @@ function programView(program: Program): AppProgramView {
 		target: program.target,
 		lastRun: program.lastRun,
 		nextRun: program.nextRun,
+		lastSkippedAt: program.lastSkippedAt,
+		lastSkipReason: program.lastSkipReason,
 	};
 }
 

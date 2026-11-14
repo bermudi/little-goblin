@@ -2,9 +2,19 @@
 // instead of silently changing what reaches memory.
 
 // Opens a program fire's machinery speech; the prefix is what
-// isMachineryText matches on.
-export function programFireTag(name: string, trigger: string): string {
-	return `[program: ${name} · trigger: ${trigger}]`;
+// isMachineryText matches on. #493-L18 — the occurrence names the
+// schedule occurrence a late catch-up stands in for (absent on
+// non-schedule triggers), and a coalesced count >1 says how many
+// missed occurrences this one fire covers.
+export function programFireTag(
+	name: string,
+	trigger: string,
+	opts?: { occurrence?: Date | undefined; missed?: number | undefined },
+): string {
+	const extra =
+		(opts?.occurrence !== undefined ? ` · occurrence: ${opts.occurrence.toISOString()}` : "") +
+		(opts !== undefined && (opts.missed ?? 0) > 1 ? ` · coalesced: ${opts.missed}` : "");
+	return `[program: ${name} · trigger: ${trigger}${extra}]`;
 }
 
 // Opens a delegation notice, same machinery-speech prefix rule; extra

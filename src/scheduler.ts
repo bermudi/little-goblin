@@ -19,7 +19,7 @@ import { authorityStamp } from "./responsibility-authority.ts";
 import { responsibilityStage } from "./responsibility-stage.ts";
 import { isFollowupProgram } from "./responsibility-followup.ts";
 import type { DevelopmentInput } from "./wake-store.ts";
-import { latestFireAtOrBefore, type Program, type ProgramsStore } from "./programs.ts";
+import { latestFireAtOrBefore, missedCount, type Program, type ProgramsStore } from "./programs.ts";
 import type { Runtime } from "./runtime.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { fenceUntrusted } from "./agent/tools/web.ts";
@@ -272,6 +272,9 @@ export function fireScheduled(
 	const graceMinutes = program.maxLatenessMinutes;
 	if (graceMinutes !== null && lateMs > graceMinutes * 60_000) {
 		const nextRun = deps.programs.advancePastDue(program.id, now);
+		// The skip must be inspectable without log access — the row
+		// carries its own last-skip stamp (#493-L19).
+		deps.programs.markSkipped(program.id, now, "beyond lateness grace");
 		log.warn("program skipped — beyond lateness grace", {
 			program: program.id,
 			name: program.name,
@@ -510,7 +513,16 @@ function fireProgram(
 	// An event payload is untrusted input by construction: it rides into
 	// the turn fenced, with any "</event" in it neutralized so a payload
 	// can't close its own fence early.
-	const text = `${programFireTag(program.name, trigger)}\n${program.charter}${eventText(trigger, event)}`;
+	// The tag names the occurrence a catch-up stands in for, and the
+	// coalesced count when the fire covers more than one (#493-L18).
+	const missed =
+		trigger === "schedule" &&
+		scheduledFor !== undefined &&
+		program.cron !== null &&
+		program.nextRun !== null
+			? missedCount(program.cron, new Date(program.nextRun), scheduledFor)
+			: 0;
+	const text = `${programFireTag(program.name, trigger, { occurrence: scheduledFor, missed })}\n${program.charter}${eventText(trigger, event)}`;
 	// wake() builds the delivery sink itself; a decorator rides in on a
 	// runtime shim whose submit wraps the sink before the real runtime
 	// sees it — every other member delegates through the prototype.
@@ -612,6 +624,13 @@ function fireResponsibility(
 		}
 	}
 	const occurrence = (scheduledFor ?? now).toISOString();
+	const missed =
+		trigger === "schedule" &&
+		scheduledFor !== undefined &&
+		program.cron !== null &&
+		program.nextRun !== null
+			? missedCount(program.cron, new Date(program.nextRun), scheduledFor)
+			: 0;
 	// Rehydrate the responsibility's current state into the trigger
 	// text — the wake turn sees the live understanding and attachment
 	// health, not the acceptance-time snapshot in old history.
@@ -624,7 +643,7 @@ function fireResponsibility(
 		conversationId: resp.coordinationConversationId,
 		kind: trigger === "schedule" ? "scheduled-checkin" : `program-${trigger}`,
 		text:
-			`Program ${program.id}: ${program.name}\n${programFireTag(program.name, trigger)}\n${program.charter}${eventText(trigger, event)}\n\n` +
+			`Program ${program.id}: ${program.name}\n${programFireTag(program.name, trigger, { occurrence: scheduledFor ?? now, missed })}\n${program.charter}${eventText(trigger, event)}\n\n` +
 			`Current responsibility ${resp.responsibilityId} (rev ${resp.revision}):\n` +
 			`${JSON.stringify(resp.understanding)}\n\n` +
 			(followup === null

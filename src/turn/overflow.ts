@@ -166,8 +166,47 @@ export function overflowHoldable(
 const STILL_FULL =
 	"context window still full after compacting — the latest message or tool output is too big for this model";
 
+// #493-L25 — transport-shaped failures read as the wire's own jargon
+// ("Failed to process successful response") while the real cause hides
+// in logs. Name the drop, name the code when one exists, and keep the
+// recovery one plain sentence — the raw error still logs upstream.
+const TRANSPORT_MARKERS = /econnreset|econnrefused|etimedout|epipe|eai_again|enotfound|fetch failed|socket|failed to process successful response|network|connection (?:reset|closed|dropped|terminated)/i;
+const TRANSPORT_CODES =
+	/^(ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EPIPE|EAI_AGAIN|ENOTFOUND|EHOSTUNREACH|EHOSTDOWN|ENETUNREACH|ENETRESET|UND_ERR_)/;
+
+function transportCodeIn(err: unknown, depth: number): string | null {
+	if (depth > 3 || err === null || typeof err !== "object") return null;
+	const code = (err as { code?: unknown }).code;
+	if (typeof code === "string" && TRANSPORT_CODES.test(code)) return code;
+	return transportCodeIn((err as { cause?: unknown }).cause, depth + 1);
+}
+
+// The transport code to show, or null when the error doesn't look like
+// a connection drop. A transport errno wins; a transport-shaped message
+// on the error or its causes is the fallback so the line never invents
+// a code. Non-transport codes (API error bodies) never classify.
+export function transportFailureCode(err: unknown): string | null {
+	const code = transportCodeIn(err, 0);
+	if (code !== null) return code;
+	for (let e: unknown = err, depth = 0; depth <= 3; depth++) {
+		const message = e instanceof Error ? e.message : e == null ? "" : String(e);
+		const match = TRANSPORT_MARKERS.exec(message);
+		if (match !== null) return match[0];
+		e = e instanceof Error ? e.cause : undefined;
+	}
+	return null;
+}
+
+export function transportFailureText(err: unknown): string | null {
+	const code = transportFailureCode(err);
+	if (code === null) return null;
+	return `The model connection dropped (${code}). Nothing was lost — send again or /resume.`;
+}
+
 export function terminalFailureMessage(err: unknown, resumed: boolean): string {
 	if (resumed && isContextOverflow(err)) return STILL_FULL;
+	const transport = transportFailureText(err);
+	if (transport !== null) return transport;
 	return err instanceof Error ? err.message : String(err);
 }
 

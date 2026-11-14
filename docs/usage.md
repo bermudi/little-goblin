@@ -42,7 +42,10 @@ to a different bot is ignored rather than fed to the model.
 
 - **Fire off several messages in a row** — they merge into one reply. The bot
   waits ~500 ms after each message before starting, so a burst reads as
-  one thought.
+  one thought. Messages sent while a reply runs also fold into that reply —
+  except on the Claude Code engine, which has no mid-run injection seam:
+  a steered message there is answered as its own turn right after, in the
+  same order, never merged.
 - While it works you see "typing…", plus status lines (`⚙ bash …`) as it
   uses tools.
 - Finished replies get a 🫡 reaction on the last message — the end marker —

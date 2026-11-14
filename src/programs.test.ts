@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { setLogFile, setLogWriter } from "./log.ts";
 import {
 	latestFireAtOrBefore,
+	missedCount,
 	nextFire,
 	openPrograms,
 	ProgramRuleError,
@@ -919,4 +920,15 @@ describe("dm cutover re-pin (Rolling DM)", () => {
 		expect(s.rePinDmTopics()).toBe(0);
 		s.close();
 	});
+});
+
+test("missedCount counts occurrences in [firstMissed, through] inclusive", () => {
+	const cron = "*/30 * * * *";
+	const firstMissed = nextFire(cron, new Date("2026-09-20T07:05:00")); // 07:30
+	// 07:30..10:00 every half hour = 6 occurrences.
+	expect(missedCount(cron, firstMissed, new Date("2026-09-20T10:00:00"))).toBe(6);
+	expect(missedCount(cron, firstMissed, firstMissed)).toBe(1);
+	// A weekdays cron missed across a work week coalesces five fires.
+	const mon = nextFire("0 9 * * 1-5", new Date("2026-09-19T12:00:00"));
+	expect(missedCount("0 9 * * 1-5", mon, new Date("2026-09-25T09:00:00"))).toBe(5);
 });

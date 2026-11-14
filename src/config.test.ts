@@ -975,6 +975,8 @@ describe("ensureHomeLayout", () => {
 		expect(agents).toContain("Your operating notes");
 		// The growth rule must be inside the file — that's the mechanism.
 		expect(agents).toContain("Write things down");
+		// Preferences route to USER.md — next to the "remember this" trigger.
+		expect(agents).toContain("lasting preference → it goes in USER.md");
 		const user = readFileSync(join(dir, "workspace", "USER.md"), "utf8");
 		expect(user).toContain("Your model of the operator");
 		expect(user).toContain("status: active");

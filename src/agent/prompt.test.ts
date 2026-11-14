@@ -328,6 +328,19 @@ describe("workspace file injection", () => {
 			delete process.env.GOBLIN_HOME;
 		}
 	});
+	test("the standing USER.md preference instruction is code-owned, not seed-only", () => {
+		const home = useHome("goblin-prompt-");
+		process.env.GOBLIN_HOME = home;
+		try {
+			// No workspace files at all: the instruction must reach homes
+			// seeded before it existed.
+			const { text } = buildSystemPrompt(conv, tools);
+			expect(text).toContain("record it in USER.md");
+			expect(text).toContain("directive format");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
 	// A guest persona build touches no operator file — SOUL, USER,
 	// skills, none of it.
 	test("a guest persona prompt reads nothing private", () => {

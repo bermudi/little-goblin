@@ -39,7 +39,7 @@ export interface CommandDeps {
 export function parseCommand(
 	text: string,
 	botUsername: string,
-): { command: string; arg: string; forThisBot: boolean } | null {
+): { command: string; arg: string; forThisBot: boolean; addressed: boolean } | null {
 	const trimmed = text.trim();
 	const match = /^\/(\w+)(?:@(\w+))?(?:\s|$)/.exec(trimmed);
 	if (!match) return null;
@@ -47,6 +47,7 @@ export function parseCommand(
 		command: `/${match[1]!}`,
 		arg: trimmed.slice(match[0].length).trim(),
 		forThisBot: match[2] === undefined || match[2].toLowerCase() === botUsername.toLowerCase(),
+		addressed: match[2] !== undefined,
 	};
 }
 

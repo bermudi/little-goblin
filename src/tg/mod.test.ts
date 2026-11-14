@@ -859,15 +859,22 @@ describe("handleMessage", () => {
 		h.store.close();
 	});
 
-	test("an unmatched /word falls through to a normal message", async () => {
+	test("an unmatched /word is refused, never a normal message", async () => {
 		const h = routerHarness();
 		handleTestMessage(
 			h.env,
 			tgMsg({ message_id: 4, chat: { id: 1, type: "private" }, text: "/notacommand" }),
 		);
-		await h.env.intake.get("dm:1");
-		expect(h.pushed).toHaveLength(1);
-		expect(h.pushed[0]!.parts).toEqual([{ type: "text", text: "/notacommand" }]);
+		expect(h.apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				text: "Unknown command /notacommand. Try /help.",
+				chat: 1,
+				opts: { disable_notification: true },
+			},
+		]);
+		expect(h.pushed).toEqual([]);
+		expect(h.env.inbox.pending()).toEqual([]);
 	});
 
 	test("the first buffered update of a lane pings typing once per buffer", async () => {
@@ -2105,6 +2112,87 @@ describe("rolling dm", () => {
 			text: "second para",
 			excerpt: true,
 		});
+		h.store.close();
+	});
+
+	test("an unknown slash command is answered, never admitted", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({ message_id: 50, chat: { id: 7, type: "private" }, text: "/frobnicate now" }),
+		);
+		expect(h.apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				text: "Unknown command /frobnicate. Try /help.",
+				chat: 7,
+				opts: { disable_notification: true },
+			},
+		]);
+		expect(h.env.inbox.pending()).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		h.store.close();
+	});
+
+	test("/model points at the app settings picker", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({ message_id: 51, chat: { id: 7, type: "private" }, text: "/model" }),
+		);
+		expect(h.apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				text: "The model picker lives in the app — Settings → model.",
+				chat: 7,
+				opts: { disable_notification: true },
+			},
+		]);
+		expect(h.env.inbox.pending()).toEqual([]);
+		h.store.close();
+	});
+
+	test("in a topic, only commands addressed to this bot get the correction", async () => {
+		const h = routerHarness();
+		const group = { id: -5, type: "supergroup" };
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 52,
+				chat: group,
+				message_thread_id: 9,
+				is_topic_message: true,
+				text: "/wat@goblin",
+			}),
+		);
+		expect(h.apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				text: "Unknown command /wat. Try /help.",
+				chat: -5,
+				opts: { disable_notification: true, message_thread_id: 9 },
+			},
+		]);
+		// Another bot's command, and a bare /cmd that may be another
+		// bot's, stay silent and never reach the inbox.
+		for (const [id, text] of [
+			[53, "/wat@otherbot"],
+			[54, "/wat"],
+		] as const) {
+			handleTestMessage(
+				h.env,
+				tgMsg({
+					message_id: id,
+					chat: group,
+					message_thread_id: 9,
+					is_topic_message: true,
+					text,
+				}),
+			);
+		}
+		expect(h.apiCalls).toHaveLength(1);
+		expect(h.env.inbox.pending()).toEqual([]);
+		expect(h.pushed).toEqual([]);
 		h.store.close();
 	});
 

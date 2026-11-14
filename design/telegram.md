@@ -227,7 +227,11 @@ Commands bypass slow media intake; pending input is durably assigned to the
 outgoing conversation as history-only — it never starts a turn — and
 archived input can't roll the pin. A persistence failure stops
 acknowledgement, not silent loss; a command addressed to another bot routes
-nothing.
+nothing. Slash-shaped text that matches no known command is never admitted
+as chat text: in private, or when addressed `/cmd@<thisbot>` in a group,
+it earns `Unknown command /x. Try /help.` — `/model` instead points to the
+app (Settings → model, where the picker lives); a bare `/cmd` in a group
+is dropped silently, since it may be another bot's (2026-11-13).
 
 **DM topics are retired.** Old DM-topic conversations stay in the store —
 readable, searchable — never routed to again; any DM message resolves to the

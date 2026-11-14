@@ -294,6 +294,27 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 		}
 		return;
 	}
+	if (command !== null && !COMMAND_RE.test(text)) {
+		// Slash-shaped text matching no known command gets a correction in
+		// private or when addressed to this bot, and never reaches the
+		// inbox as chat text (#487). A bare /cmd in a group is not ours to
+		// answer — it may be another bot's — so it is dropped silently.
+		if (msg.chat.type === "private" || command.addressed) {
+			log.info("unknown command refused", {
+				command: command.command,
+				userId: msg.from?.id ?? null,
+				chat: msg.chat.id,
+			});
+			replyNavigation(
+				env,
+				msg,
+				command.command === "/model"
+					? "The model picker lives in the app — Settings → model."
+					: `Unknown command ${command.command}. Try /help.`,
+			);
+		}
+		return;
+	}
 	const conv = rolling ? null : deps.store.resolve(addr, paths.workspace());
 	const topicMeta = conv !== null ? titleMetaFromService(msg) : null;
 	if (topicMeta && conv !== null) {

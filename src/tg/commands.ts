@@ -95,8 +95,9 @@ function replyLines(deps: CommandDeps, conv: Conversation, lines: string[]): voi
 		len += capped.length + 1;
 	}
 	flush();
-	// Chunks send strictly in order — a later chunk without its
-	// predecessor is misleading, so one failure ends the call's sends.
+	// Chunks send strictly in order. A failed chunk is logged and the
+	// rest still go out: a timeout is ambiguous (the chunk may have
+	// landed), and dropping the tail would lose most of the reply.
 	void (async () => {
 		for (const [i, chunk] of chunks.entries()) {
 			try {
@@ -104,9 +105,9 @@ function replyLines(deps: CommandDeps, conv: Conversation, lines: string[]): voi
 			} catch (err) {
 				log.warn("command reply failed", err, {
 					conversation: conv.id,
-					dropped: chunks.length - i - 1,
+					chunk: i + 1,
+					of: chunks.length,
 				});
-				return;
 			}
 		}
 	})();

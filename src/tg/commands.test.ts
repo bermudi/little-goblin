@@ -1321,7 +1321,7 @@ describe("recovery commands", () => {
 		store.close();
 	});
 
-	test("/resume sends no later chunk after a failed send", async () => {
+	test("/resume keeps sending later chunks, in order, after a failed send", async () => {
 		const { store, conv, deps } = setup({
 			resumeOps: () => fakeOps({ interrupted: () => bigRuns() }),
 		});
@@ -1338,8 +1338,13 @@ describe("recovery commands", () => {
 				() => warn.mock.calls.some(([msg]) => msg === "command reply failed"),
 				"failure logged",
 			);
-			await tick();
-			expect(texts).toHaveLength(1);
+			await waitUntil(
+				() => texts.join("\n").includes("/resume 00000059 · /abandon 00000059"),
+				"remaining chunks land",
+			);
+			expect(texts.length).toBeGreaterThan(2);
+			const failed = warn.mock.calls.find(([msg]) => msg === "command reply failed");
+			expect(failed?.[2]).toMatchObject({ chunk: 1, of: texts.length });
 		} finally {
 			warn.mockRestore();
 		}

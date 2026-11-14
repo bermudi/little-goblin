@@ -4,11 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type {
+	ToolDiagnostic,
 	ToolExecutionApi,
 	ToolExecutionResult,
 	ToolRegistration,
 } from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
+import type { ShellOutputSkip } from "@earendil-works/pi-durable/env";
 import { openSubagentRuns, type SubagentRuns } from "../subagent-runs.ts";
 import { SubagentError } from "./errors.ts";
 import { makeApprovalGate, type ApprovalGateDeps } from "./approval-gate.ts";
@@ -33,12 +35,14 @@ type LeaseRow = {
 function fakeApi(seed: LeaseRow | undefined, ids?: { conversationId?: number; taskId?: number }) {
 	const committed: LeaseRow[] = [];
 	const output: string[] = [];
+	const skips: (ShellOutputSkip | undefined)[] = [];
 	const api = {
 		taskId: ids?.taskId ?? 1,
 		conversationId: ids?.conversationId ?? 1,
 		callId: "call-1",
-		output(chunk: string | Uint8Array) {
+		output(chunk: string | Uint8Array, skipped?: ShellOutputSkip) {
 			output.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
+			skips.push(skipped);
 		},
 		diagnostic() {},
 		async details() {},
@@ -60,7 +64,7 @@ function fakeApi(seed: LeaseRow | undefined, ids?: { conversationId?: number; ta
 			return result;
 		},
 	} as unknown as ToolExecutionApi;
-	return { api, committed, output };
+	return { api, committed, output, skips };
 }
 
 function rig(api: ToolExecutionApi, row?: { piConversationId?: string; stopRequested?: boolean }) {
@@ -109,16 +113,20 @@ function rig(api: ToolExecutionApi, row?: { piConversationId?: string; stopReque
 	return { runs, live, calls, gate };
 }
 
-function fakeTool(inner?: (args: unknown) => Promise<ToolExecutionResult>): ToolRegistration & {
+function fakeTool(
+	inner?: (args: unknown, api: ToolExecutionApi) => Promise<ToolExecutionResult>,
+	outputLimits?: { retain: "head" | "tail" },
+): ToolRegistration & {
 	executions: number;
 } {
 	const tool = {
 		name: "side_effect_tool",
 		executions: 0,
-		execute: async () => {
+		...(outputLimits === undefined ? {} : { outputLimits }),
+		execute: async (_args: never, api: ToolExecutionApi) => {
 			tool.executions += 1;
 			return (
-				(await inner?.({})) ?? {
+				(await inner?.({}, api)) ?? {
 					output: [{ type: "text" as const, text: "observed" }],
 				}
 			);
@@ -235,6 +243,48 @@ describe("crash-approval lease", () => {
 		expect(result.control?.terminate).toBe(true);
 		expect(result.isError).toBe(true);
 		expect(base.executions).toBe(0);
+	});
+
+	test("streamed output forwards its skipped count and the persisted result carries the truncation", async () => {
+		const { api, committed, output, skips } = fakeApi(undefined);
+		const { gate } = rig(api);
+		const base = fakeTool(
+			async (_args, toolApi) => {
+				toolApi.output("tail", { bytes: 10, newlines: 1, endsWithNewline: true });
+				return {};
+			},
+			{ retain: "tail" },
+		);
+		const tool = gate.withGate(base);
+		const result = await tool.execute({} as never, api, BACKGROUND_CONTEXT);
+		expect(output).toEqual(["tail"]);
+		expect(skips).toEqual([{ bytes: 10, newlines: 1, endsWithNewline: true }]);
+		const truncation: ToolDiagnostic = {
+			severity: "warn",
+			code: "truncated",
+			message: "Output truncated to its end: at least 1 lines, 10 bytes dropped",
+		};
+		expect(result.diagnostics).toContainEqual(truncation);
+		expect(committed.at(-1)?.state).toBe("done");
+		expect(committed.at(-1)?.result).toMatchObject({
+			output: [{ type: "text", text: "tail" }],
+			diagnostics: [truncation],
+		});
+	});
+
+	test("streamed output without a skipped count earns no truncation remark", async () => {
+		const { api, committed, skips } = fakeApi(undefined);
+		const { gate } = rig(api);
+		const base = fakeTool(async (_args, toolApi) => {
+			toolApi.output("all");
+			return {};
+		});
+		const tool = gate.withGate(base);
+		const result = await tool.execute({} as never, api, BACKGROUND_CONTEXT);
+		expect(skips).toEqual([undefined]);
+		expect((result.diagnostics ?? []).some((d) => d.code === "truncated")).toBe(false);
+		const persisted = committed.at(-1)?.result as ToolExecutionResult;
+		expect((persisted.diagnostics ?? []).some((d) => d.code === "truncated")).toBe(false);
 	});
 
 	test("the park refuses a run that is already stopping", async () => {

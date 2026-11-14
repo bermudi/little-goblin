@@ -335,6 +335,25 @@ function declaredApprovalResult(
 	} satisfies ToolExecutionResult;
 }
 
+// The Harness's truncation remark (pi-durable tool.js `truncated()`): the
+// gate materializes `output` in the effective result, so the Harness's own
+// copy never fires for a gated call — the wrapper emits it instead, into
+// both the returned and the persisted result. The counts are the producer's
+// `skipped` sums only: the OutputBuffer can drop more, and the tool api
+// exposes no dropped totals (retainedOutput() is {text, truncated}), so the
+// remark states a lower bound.
+function truncatedDiagnostic(
+	droppedBytes: number,
+	droppedLines: number,
+	retain: "head" | "tail",
+): ToolDiagnostic {
+	return {
+		severity: "warn",
+		code: "truncated",
+		message: `Output truncated to its ${retain === "head" ? "beginning" : "end"}: at least ${droppedLines} lines, ${droppedBytes} bytes dropped`,
+	};
+}
+
 function withApprovalGate<T extends ToolRegistration>(
 	tool: T,
 	host: ApprovalHost,
@@ -438,14 +457,20 @@ function withApprovalGate<T extends ToolRegistration>(
 			const capturedOutput: string[] = [];
 			const capturedDiagnostics: ToolDiagnostic[] = [];
 			let capturedDetails: JsonValue | undefined;
+			let skippedBytes = 0;
+			let skippedLines = 0;
 			const decoder = new TextDecoder();
 			const observed: ToolExecutionApi = {
 				...api,
-				output(chunk) {
+				output(chunk, skipped) {
 					capturedOutput.push(
 						typeof chunk === "string" ? chunk : decoder.decode(chunk, { stream: true }),
 					);
-					api.output(chunk);
+					if (skipped !== undefined) {
+						skippedBytes += skipped.bytes;
+						skippedLines += skipped.newlines;
+					}
+					api.output(chunk, skipped);
 				},
 				diagnostic(d) {
 					capturedDiagnostics.push(d);
@@ -469,7 +494,21 @@ function withApprovalGate<T extends ToolRegistration>(
 				...(result.details === undefined && capturedDetails !== undefined
 					? { details: capturedDetails }
 					: {}),
-				diagnostics: [...capturedDiagnostics, ...(result.diagnostics ?? [])],
+				diagnostics: [
+					...capturedDiagnostics,
+					...(result.diagnostics ?? []),
+					// The vendor counts skipped output only on the retained path —
+					// an explicit result.output discards it and earns no remark.
+					...(result.output === undefined && skippedBytes > 0
+						? [
+								truncatedDiagnostic(
+									skippedBytes,
+									skippedLines,
+									tool.outputLimits?.retain ?? "head",
+								),
+							]
+						: []),
+				],
 			};
 			await commitApprovalLease(api, approvalDoneRow(asJson(effective)), context);
 			return effective;

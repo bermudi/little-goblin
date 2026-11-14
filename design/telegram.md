@@ -78,8 +78,15 @@ apply next turn without interrupting the current answer.
   break (else newline) in the window's back half, an early break
   never trades a full bubble for a stub; a seam inside a fenced code
   block closes the fence at the chunk's end and reopens it with the
-  same info string on the next chunk, so a split block stays
-  monospaced on both sides.
+  same info string on the next chunk (bounded: past 64 chars the
+  reopen is the bare marker), so a split block stays monospaced on
+  both sides. A sent window's boundary is frozen — a seam that
+  surfaces only once the body crosses the cap never retracts shown
+  text; the pending tail becomes the next window instead. The
+  opener rule is CommonMark's (shared with the HTML renderer): a
+  backtick fence whose info string contains a backtick is an
+  inline code span, not an opener, and a closer is a bare marker
+  run, never one with trailing text.
 - **Reply ratings**: 👍/👎 and the 🔊 ride a clean-completed reply's last
   bubble; errors, fenced, voice-mode, and guest replies get none. The
   callback is only the Telegram adapter over the shared record-only

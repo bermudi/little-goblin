@@ -11,6 +11,7 @@ import type { ProgramDraft } from "../program-proposals.ts";
 import { hookTokenHash } from "../program-hook.ts";
 import { startProgramApproval, type ProgramApproval } from "../program-approval.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
+import { tzAbbrev } from "../cron-words.ts";
 import { telegramAddressOf } from "../targets.ts";
 import { tmpDb } from "../testkit.ts";
 import { fakeApi, type FakeApi } from "../testkit/fake-api.ts";
@@ -204,6 +205,29 @@ describe("program approval posts", () => {
 			expect(text).not.toContain("old charter");
 			// The unstaled card carries no drift warning.
 			expect(text).not.toContain("changed since this proposal");
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	test("a cron shape words can't cover still carries the server zone", async () => {
+		const h = harness();
+		try {
+			const program = h.programs.create(
+				{ name: "p", charter: "c", cron: "*/5 9-17 * * 1-5", address: ADDRESS },
+				NOW,
+			);
+			const proposal = h.programs.proposals.proposeUpdate(
+				program.id,
+				{ charter: "new charter" },
+				ADDRESS,
+			);
+			await h.approval.requestApproval(proposal);
+			const text = h.sends.map((s) => s.text).join("");
+			// No words for this shape — the raw expression stays, with
+			// the zone the scheduler evaluates in beside it.
+			const zone = tzAbbrev(Intl.DateTimeFormat().resolvedOptions().timeZone);
+			expect(text).toContain(`cron "*/5 9-17 * * 1-5" ${zone} (no lateness limit)`);
 		} finally {
 			h.cleanup();
 		}

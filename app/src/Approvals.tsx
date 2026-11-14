@@ -233,7 +233,9 @@ export function ProgramApprovalCard({
 			<p className="error">The target program is gone; approval will refuse.</p>
 		) : (
 			<>
-				{proposal.changes !== null && <ProgramChanges changes={proposal.changes} />}
+				{proposal.changes !== null && (
+					<ProgramChanges changes={proposal.changes} serverTimeZone={serverTimeZone} />
+				)}
 				{proposal.changes !== null ? (
 					<details className="approval-full">
 						<summary>Full program after approval</summary>
@@ -325,12 +327,17 @@ function ProgramCandidateView({
 
 function Schedule({ cron, serverTimeZone = "" }: { cron: string; serverTimeZone?: string }) {
 	const words = cronWords(cron);
+	const zone =
+		serverTimeZone === "" ? null : <span className="cron-tz">{tzAbbrev(serverTimeZone)}</span>;
 	return words === null ? (
-		<>{cron}</>
+		<>
+			{cron}
+			{zone !== null && <> {zone}</>}
+		</>
 	) : (
 		<>
-			{words} {serverTimeZone !== "" && <span className="cron-tz">{tzAbbrev(serverTimeZone)}</span>}{" "}
-			<span className="cron-raw">({cron})</span>
+			{words}
+			{zone !== null && <> {zone}</>} <span className="cron-raw">({cron})</span>
 		</>
 	);
 }

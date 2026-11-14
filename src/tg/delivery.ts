@@ -20,6 +20,10 @@ import {
 	RICH_LIMIT,
 	SALUTE_EFFECT_ID,
 	chunkWindows,
+	fenceReopen,
+	fenceStateAfter,
+	type FenceState,
+	windowEnd,
 } from "./delivery-text.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { rateCallbackData } from "./rate-button.ts";
@@ -54,6 +58,12 @@ export interface RichSinkOpts {
 interface Chunk {
 	id: number;
 	shown: string;
+	// Body offset this chunk's window covered at last materialization —
+	// the floor a recomputed window end may never cross back under.
+	end: number;
+	// The text of the edit already queued but not yet applied — dedupes
+	// repeated flushes so an unchanged desired isn't edited twice.
+	queued: string | null;
 }
 
 export type DeliveryApi = Api;
@@ -603,19 +613,57 @@ export function makeDeliverySink(
 				return;
 			}
 		}
-		const wins = chunkWindows(body);
-		while (chunks.length < wins.length) chunks.push({ id: -1, shown: "" });
+		materialize(body, false);
+		lastEdit = Date.now();
+	}
+
+	// The text each window should currently show — incremental: a
+	// chunk's window end is clamped to at least the body offset it
+	// already covered, so a seam that surfaces only once the body
+	// crosses the cap (a paragraph break behind shown text) never
+	// edits already-shown text away; the pending tail simply becomes
+	// the next window.
+	function windowTexts(body: string): { text: string; end: number }[] {
+		const wins: { text: string; end: number }[] = [];
+		let start = 0;
+		let fence: FenceState | null = null;
+		while (start < body.length) {
+			const c = chunks[wins.length];
+			let end = windowEnd(body, start);
+			if (c !== undefined && end < c.end) end = c.end;
+			const raw = body.slice(start, end);
+			const text = (fence !== null ? fenceReopen(fence) : "") + raw;
+			fence = fenceStateAfter(raw, fence);
+			wins.push({ text: fence !== null ? `${text}\n${fence.marker}` : text, end });
+			start = end;
+		}
+		return wins;
+	}
+
+	// Push the windows to Telegram: send/edit whatever doesn't match.
+	// `force` rides over a cancelled or superseded turn — never over an
+	// uncertain send — so the superseded stamp can land the pending
+	// tail before it marks. Without it one new send goes out per call.
+	function materialize(body: string, force: boolean): void {
+		const wins = windowTexts(body);
+		while (chunks.length < wins.length)
+			chunks.push({ id: -1, shown: "", end: 0, queued: null });
 		for (let idx = 0; idx < chunks.length; idx++) {
 			const c = chunks[idx]!;
-			if (c.id === -2) break;
-			const desired = wins[idx] ?? "";
+			if (c.id === -2) {
+				if (!force) break;
+				continue;
+			}
+			const w = wins[idx];
+			if (w !== undefined) c.end = w.end;
+			const desired = w?.text ?? "";
 			const out = desired === "" ? "…" : desired;
 			if (c.id === -1) {
-				if (desired === "") break;
+				if (desired === "") continue;
 				c.id = -2;
 				c.shown = out;
 				enqueue(async () => {
-					if (!mayDeliver()) {
+					if (uncertain || (!force && !mayDeliver())) {
 						c.id = -1;
 						return;
 					}
@@ -655,15 +703,24 @@ export function makeDeliverySink(
 						throw err;
 					}
 				});
-				break;
+				if (!force) break;
+				continue;
 			}
-			if (c.shown !== out) {
+			if (c.shown !== out && c.queued !== out) {
 				const mid = c.id;
+				c.queued = out;
+				const clearQueued = () => {
+					if (c.queued === out) c.queued = null;
+				};
 				enqueue(async () => {
-					if (!mayDeliver()) return;
+					if (uncertain || (!force && !mayDeliver())) {
+						clearQueued();
+						return;
+					}
 					try {
 						await withTimeout(api.editMessageText(conv.chatId, mid, out), "editMessageText");
 					} catch (err) {
+						clearQueued();
 						if (isNotModifiedError(err)) {
 							log.debug("edit no-op — message already current", {
 								conversation: conv.id,
@@ -675,10 +732,10 @@ export function makeDeliverySink(
 						throw err;
 					}
 					c.shown = out;
+					clearQueued();
 				});
 			}
 		}
-		lastEdit = Date.now();
 	}
 
 	async function stampSuperseded(): Promise<void> {
@@ -706,14 +763,17 @@ export function makeDeliverySink(
 			await chain;
 			return;
 		}
+		// Nothing landed → nothing shown to preserve: no stamp, no tail.
+		if (!chunks.some((c) => c.id > 0)) return;
+		// Pending deltas still land — shown text is never edited back.
+		// The tail goes out as its own window(s); the stamp marks the
+		// last bubble.
+		materialize(rendered(), true);
+		await chain;
 		const idx = chunks.findLastIndex((c) => c.id > 0);
 		if (idx === -1) return;
 		const mid = chunks[idx]!.id;
-		// The stamp lands on the window's full current text — deltas
-		// queued behind the flush interval ride the stamp edit instead
-		// of vanishing.
-		const shown = chunkWindows(rendered())[idx] ?? chunks[idx]!.shown;
-		const marked = `${shown}${STATUS_TAIL_MARK}⏹ superseded`;
+		const marked = `${chunks[idx]!.shown}${STATUS_TAIL_MARK}⏹ superseded`;
 		enqueue(async () => {
 			try {
 				await withTimeout(api.editMessageText(conv.chatId, mid, marked), "editMessageText");
@@ -731,11 +791,11 @@ export function makeDeliverySink(
 	}
 
 	function pendingCount(): number {
-		const wins = chunkWindows(rendered());
+		const wins = windowTexts(rendered());
 		let n = 0;
 		for (let idx = 0; idx < chunks.length; idx++) {
 			const c = chunks[idx]!;
-			const desired = wins[idx] ?? "";
+			const desired = wins[idx]?.text ?? "";
 			const out = desired === "" ? "…" : desired;
 			if (c.id === -1 ? desired !== "" : c.shown !== out) n++;
 		}

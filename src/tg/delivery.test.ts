@@ -393,6 +393,52 @@ describe("delivery", () => {
 		expect(msgs[1]!.endsWith("\n```")).toBe(true);
 	});
 
+	test("an inline ```code``` span at line start is not a fence opener", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		// CommonMark: a backtick fence's info string may not contain
+		// backticks — this line is an inline code span, so no fence is
+		// open and nothing is injected at the seams.
+		const body =
+			"para one.\n\n```npm install -g little-goblin``` installs it.\n\n" + "p".repeat(4200);
+		sink.onTextDelta(body);
+		await sink.onDone({ kind: "completed" });
+		expect(msgs.join("")).toBe(body);
+		for (const m of msgs) expect(m.length).toBeLessThanOrEqual(4096);
+	});
+
+	test("a fence with a huge info string reopens with the bare marker", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		// The injected reopen is bounded: past 64 chars the info is
+		// dropped so every window stays under Telegram's 4096.
+		const body = "```" + "i".repeat(300) + "\n" + "c".repeat(CHUNK * 2);
+		sink.onTextDelta(body);
+		await sink.onDone({ kind: "completed" });
+		for (const m of msgs) expect(m.length).toBeLessThanOrEqual(4096);
+		expect(msgs[1]!.startsWith("```\n")).toBe(true);
+		expect(msgs[2]!.startsWith("```\n")).toBe(true);
+	});
+
+	test("a fence lands the unflushed tail instead of retracting shown text", async () => {
+		const { api, msgs } = fakeApi({});
+		// Huge interval: only the first delta flushes (lastEdit starts
+		// cold) — the bubble shows 3700 chars, the +200 tail is pending.
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 3_600_000 });
+		sink.onTextDelta("a".repeat(2500) + "\n\n" + "b".repeat(1198));
+		await sleep(0);
+		expect(msgs).toEqual(["a".repeat(2500) + "\n\n" + "b".repeat(1198)]);
+		// The +200 tail crosses the cap — a fresh chunk pass would snap
+		// the window back to the paragraph break at 2500, retracting
+		// 1198 shown chars. Shown text wins: the tail is its own window.
+		sink.onTextDelta("c".repeat(200));
+		await sink.onDone({ kind: "fenced" });
+		expect(msgs).toEqual([
+			"a".repeat(2500) + "\n\n" + "b".repeat(1198),
+			`${"c".repeat(200)}\n\n—\n⏹ superseded`,
+		]);
+	});
+
 	test("a fence closed inside a window is not carried past it", async () => {
 		const { api, msgs } = fakeApi({});
 		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
@@ -992,7 +1038,7 @@ describe("delivery", () => {
 		expect(reactions).toEqual([]);
 	});
 
-	test("fencing drops queued edits and tail sends but stamps the visible partial", async () => {
+	test("fencing lands the pending tail as its own bubble and stamps the last one", async () => {
 		const { api, msgs, reactions } = fakeApi({});
 		let live = true;
 		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
@@ -1000,12 +1046,15 @@ describe("delivery", () => {
 		sink.onTextDelta("partial");
 		await sleep(0); // first bubble is visible
 		sink.onTextDelta(" stale"); // edit queued, not yet executed
-		sink.onTextDelta("x".repeat(CHUNK)); // unsent tail
+		sink.onTextDelta("x".repeat(CHUNK)); // tail a window boundary away
 		live = false;
 		await sink.onDone({ kind: "fenced" });
-		// Pending deltas flush into the stamp; the still-unsent tail
-		// stays unsent — only the window's own text rides the edit.
-		expect(msgs).toEqual([`${"partial stale"}${"x".repeat(CHUNK - 13)}\n\n—\n⏹ superseded`]);
+		// Shown text is never edited back — the pending tail goes out as
+		// its own window and the stamp marks the last bubble.
+		expect(msgs).toEqual([
+			`${"partial stale"}${"x".repeat(CHUNK - 13)}`,
+			`${"x".repeat(13)}\n\n—\n⏹ superseded`,
+		]);
 		expect(reactions).toEqual([]);
 	});
 
@@ -1022,7 +1071,9 @@ describe("delivery", () => {
 		sink.setAuthorityCheck?.(() => live);
 		sink.onTextDelta("a".repeat(CHUNK * 2));
 		await sink.onDone({ kind: "completed" });
-		expect(msgs).toEqual(["a".repeat(CHUNK) + "\n\n—\n⏹ superseded"]);
+		// The unsent second window still lands — the stamp marks the
+		// last bubble, not the one that went out before authority fell.
+		expect(msgs).toEqual(["a".repeat(CHUNK), `a{"x"}`.length === 0 ? "" : "a".repeat(CHUNK) + "\n\n—\n⏹ superseded"]);
 		expect(reactions).toEqual([]);
 	});
 

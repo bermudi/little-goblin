@@ -71,17 +71,67 @@ export interface FenceState {
 
 const FENCE_LINE = /^[ \t]*(`{3,}|~{3,})(.*)$/;
 
+// The one fence-opener rule (delivery.ts renders share it through this
+// export): a line whose backtick-fence info string contains a backtick
+// is an inline code span, not an opener — "```npm install```" must
+// never turn the lines after it into code.
+export function fenceOpen(line: string): FenceState | null {
+	const m = FENCE_LINE.exec(line);
+	if (m === null) return null;
+	const marker = m[1]!;
+	const info = m[2]!.trim();
+	if (marker.startsWith("`") && info.includes("`")) return null;
+	return { marker, info };
+}
+
 // The fence state after `text`: a fence line opens when none is open and
-// closes when it starts with the open fence's marker character run.
+// closes when it is a bare closer — same marker char, a run at least as
+// long as the opener's, and no info string (a closer with trailing text
+// is code content, not a close).
 export function fenceStateAfter(text: string, initial: FenceState | null = null): FenceState | null {
 	let fence = initial;
 	for (const line of text.split("\n")) {
-		const m = FENCE_LINE.exec(line);
-		if (m === null) continue;
-		if (fence === null) fence = { marker: m[1]!, info: m[2]!.trim() };
-		else if (m[1]!.startsWith(fence.marker)) fence = null;
+		const open = fenceOpen(line);
+		if (open === null) continue;
+		if (fence === null) fence = open;
+		else if (open.info === "" && open.marker.startsWith(fence.marker)) fence = null;
 	}
 	return fence;
+}
+
+// The injected opener for a fence split across a window boundary: the
+// opener's marker plus its info string, but bounded — past 64 chars the
+// info is decoration that costs bubble budget against the 4096 cap.
+const REOPEN_LIMIT = 64;
+export function fenceReopen(fence: FenceState): string {
+	const head = `${fence.marker}${fence.info}`;
+	return `${head.length > REOPEN_LIMIT ? fence.marker : head}\n`;
+}
+
+// Where one window ends: CHUNK_LIMIT unless a break gives a cleaner
+// seam, and never mid-surrogate-pair. A break only counts in the
+// window's back half — anything earlier trades a nearly-full bubble for
+// a stub (an early newline like a fence's own opener would otherwise
+// win every window inside one long code block).
+export function windowEnd(body: string, start: number): number {
+	let end = Math.min(start + CHUNK_LIMIT, body.length);
+	if (end >= body.length) return end;
+	const floor = start + CHUNK_LIMIT / 2;
+	const para = body.lastIndexOf("\n\n", end);
+	if (para > floor) {
+		end = para + 2;
+	} else {
+		const nl = body.lastIndexOf("\n", end);
+		if (nl > floor) end = nl + 1;
+	}
+	if (
+		end < body.length &&
+		isHighSurrogate(body.charCodeAt(end - 1)) &&
+		isLowSurrogate(body.charCodeAt(end))
+	) {
+		end -= 1;
+	}
+	return end;
 }
 
 // The plain path's chunks: boundaries snap to the last paragraph break
@@ -94,31 +144,9 @@ export function chunkWindows(body: string): string[] {
 	let start = 0;
 	let fence: FenceState | null = null;
 	while (start < body.length) {
-		let end = Math.min(start + CHUNK_LIMIT, body.length);
-		if (end < body.length) {
-			// A break only counts as a seam in the window's back half —
-			// anything earlier trades a nearly-full bubble for a stub
-			// (an early newline like a fence's own opener would otherwise
-			// win every window inside one long code block).
-			const floor = start + CHUNK_LIMIT / 2;
-			const para = body.lastIndexOf("\n\n", end);
-			if (para > floor) {
-				end = para + 2;
-			} else {
-				const nl = body.lastIndexOf("\n", end);
-				if (nl > floor) end = nl + 1;
-			}
-			if (
-				end < body.length &&
-				isHighSurrogate(body.charCodeAt(end - 1)) &&
-				isLowSurrogate(body.charCodeAt(end))
-			) {
-				end -= 1;
-			}
-		}
+		const end = windowEnd(body, start);
 		const raw = body.slice(start, end);
-		const text =
-			(fence !== null ? `${fence.marker}${fence.info === "" ? "" : fence.info}\n` : "") + raw;
+		const text = (fence !== null ? fenceReopen(fence) : "") + raw;
 		fence = fenceStateAfter(raw, fence);
 		windows.push(fence !== null ? `${text}\n${fence.marker}` : text);
 		start = end;

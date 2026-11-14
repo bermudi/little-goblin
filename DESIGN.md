@@ -148,11 +148,13 @@ and re-checks authority around every await. Fenced turns abort quietly
 and log it. No machines, no drain sets — one counter and one function.
 Delivery checks authority when each queued Telegram action executes, not only
 when it is queued. The sole post-fence exception is a cancellation edit: an
-already-visible partial reply may be stamped `⏹ superseded`; the stamp edit
-carries that window's full current text, so deltas queued behind the flush
-interval ride it instead of vanishing. A rich-mode draft — the only visible
-surface a rich reply has — takes the same stamp. Unsent chunks never become
-new bubbles on cancellation, and fenced chunks are not retried.
+already-visible partial reply may be stamped `⏹ superseded`. Before the
+stamp, pending deltas still land — shown text is never edited back: a window
+boundary that already sent is frozen (a later seam may not pull it back),
+the unsent tail goes out as its own window(s), and the stamp marks the last
+bubble. A rich-mode draft — the only visible surface a rich reply has —
+takes the same stamp. Nothing new is sent when no bubble ever landed, and
+fenced chunks are not retried.
 
 Shutdown rides the same rule. SIGINT/SIGTERM closes the runtime (submits
 still land in history but never run), fences every live lane — each sink

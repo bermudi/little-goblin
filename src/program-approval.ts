@@ -276,7 +276,7 @@ function triggerLine(t: ProgramCandidate): string {
 		parts.push(
 			words !== null
 				? `${words} ${zone} (${t.cron}; ${late})`
-				: `cron "${t.cron}" (${late})`,
+				: `cron "${t.cron}" ${zone} (${late})`,
 		);
 	}
 	if (t.hook) parts.push("webhook");

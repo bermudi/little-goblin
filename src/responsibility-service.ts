@@ -586,5 +586,14 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 			}
 		},
 	};
+	// A `sent` row at construction is a crashed dispatch: the
+	// in-flight set above is process-local and empty at boot, so no
+	// settlement is ever coming for it. Mark it uncertain — the stage
+	// derivation surfaces delivery-uncertain at once and the
+	// reconcile path can close it (issue #211).
+	const crashed = resps.markCrashedSendsUncertain();
+	if (crashed.length > 0) {
+		log.warn("crashed sends marked uncertain at boot", { operations: crashed });
+	}
 	return svc;
 }

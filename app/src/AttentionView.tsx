@@ -24,6 +24,8 @@ const KIND_LABEL = {
 	"program-approval": "program",
 	"mail-approval": "mail",
 	"memory-blocked": "memory",
+	"memory-outage": "memory",
+	"memory-recall": "memory",
 	"skill-proposal": "skill",
 	"interrupted-run": "recovery",
 	"delegation-input": "delegation",

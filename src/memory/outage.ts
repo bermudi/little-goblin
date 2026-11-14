@@ -21,6 +21,19 @@ export interface OutageNotice {
 	episode: number;
 }
 
+/** The ongoing episode as a read-only projection: present from the first
+ *  transport failure until a save succeeds again. */
+export interface MemoryOutage {
+	/** ms epoch of the episode's first failure. */
+	startedAt: number;
+	/** ms epoch of the most recent failure. */
+	lastFailureAt: number;
+	/** Conversation that owned the first failure — the notice's address. */
+	conversationId: string;
+	/** The Telegram notice for this episode already went out. */
+	notified: boolean;
+}
+
 export class OutageTracker {
 	constructor(
 		private readonly db: Database,
@@ -84,6 +97,17 @@ export class OutageTracker {
 		if (!row) return;
 		this.db.run("DELETE FROM memory_outage WHERE id = 1");
 		log.info("memory outage cleared", { sinceMs: this.clock() - row.started_at });
+	}
+
+	current(): MemoryOutage | null {
+		const row = this.row();
+		if (row === null) return null;
+		return {
+			startedAt: row.started_at,
+			lastFailureAt: row.last_failure,
+			conversationId: row.conversation,
+			notified: row.notified === 1,
+		};
 	}
 
 	private row(): OutageRow | null {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore } from "../conversation.ts";
 import { HindsightClient } from "../memory/hindsight.ts";
+import { OutageTracker } from "../memory/outage.ts";
 import type { OutboxEntry } from "../mail-outbox.ts";
 import type { ProgramProposal } from "../program-proposals.ts";
 import type { TurnRun, TurnToolCall } from "../turn-journal.ts";
@@ -258,6 +259,70 @@ describe("app attention", () => {
 					["interrupted-run:run-1", { kind: "conversation", conversationId: "app/chat-01" }],
 				]),
 			);
+		} finally {
+			http.stop();
+			memStore.close();
+		}
+	});
+
+	test("a recall outage and an undrained queue project until healthy", async () => {
+		const dirs = mkdtempSync(join(tmpdir(), "goblin-attention-"));
+		const memStore = openStore(join(dirs, "memory.sqlite"));
+		const memClient = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+		const tracker = new OutageTracker(memStore.db);
+		// One exchange sits in the retain queue and the service is
+		// unreachable — the same durable state the Telegram outage
+		// notice reads.
+		memStore.memoryQueue.enqueue(memClient.target, {
+			id: "exchange/app/chat-01/1/a",
+			content: "Operator: hi\nGoblin: hello",
+			timestamp: "2026-10-01T00:00:00.000Z",
+			conversationId: "app/chat-01",
+			sourceIds: ["u1", "a1"],
+		});
+		tracker.recordFailure("app/chat-01");
+		let recallOk: boolean | null = false;
+		const { http, call } = setup({
+			token: APP_TOKEN_NAME,
+			operator: {
+				memory: {
+					counts: () => memStore.memoryQueue.counts(memClient.target),
+					deletingAll: () => 0,
+					blockedDetail: () => [],
+					queue: memStore.memoryQueue,
+					client: memClient,
+					lastRecallOk: () => recallOk,
+					lastRecallAt: () => "2026-10-21T01:00:00.000Z",
+					outage: () => tracker.current(),
+				},
+			},
+		});
+		try {
+			const res = await call("/api/app/attention");
+			expect(res.status).toBe(200);
+			const body = (await res.json()) as AppAttentionResponse;
+			const outage = body.items.find((i) => i.kind === "memory-outage");
+			expect(outage?.title).toBe("Memory can't reach its service");
+			expect(outage?.detail).toContain("1 exchange queued locally");
+			expect(outage?.target).toEqual({ kind: "page", page: "memory" });
+			expect(outage?.createdAt).toBe(
+				new Date(tracker.current()?.startedAt ?? 0).toISOString(),
+			);
+			const recall = body.items.find((i) => i.kind === "memory-recall");
+			expect(recall?.title).toBe("Memory can't recall");
+			expect(recall?.target).toEqual({ kind: "page", page: "memory" });
+			expect(recall?.createdAt).toBe("2026-10-21T01:00:00.000Z");
+
+			// Healthy again — a save lands, a recall succeeds; both clear.
+			tracker.recordSuccess();
+			recallOk = true;
+			const res2 = await call("/api/app/attention");
+			const body2 = (await res2.json()) as AppAttentionResponse;
+			expect(
+				body2.items.filter(
+					(i) => i.kind === "memory-outage" || i.kind === "memory-recall",
+				),
+			).toEqual([]);
 		} finally {
 			http.stop();
 			memStore.close();

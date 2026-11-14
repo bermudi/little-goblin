@@ -346,8 +346,109 @@ describe("delivery", () => {
 		sink.onToolCall("t", { path: "\u{1f600}" });
 		for (let i = 0; i < 4; i++) sink.onToolCall("t", { path: "p" });
 		await sink.onDone({ kind: "completed" });
-		expect(msgs[1]!.startsWith("\u{1f600}")).toBe(true);
+		// The seam snaps to the paragraph break — the pair lands whole
+		// inside the second window rather than split on the cap.
+		expect(msgs[0]).toBe(`${"a".repeat(3791)}\n\n`);
+		expect(msgs[1]!.startsWith("—\n⚙ t \u{1f600}")).toBe(true);
 		expect(msgs.join("")).toBe("a".repeat(3791) + "\n\n—\n⚙ t \u{1f600}" + "\n⚙ t p".repeat(4));
+	});
+
+	test("a reply splits on the last paragraph break under the cap, not the cap itself", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		// A paragraph break just under the cap is the seam — the second
+		// bubble opens on fresh text, never mid-paragraph.
+		sink.onTextDelta("a".repeat(3790) + "\n\n" + "b".repeat(200));
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toEqual(["a".repeat(3790) + "\n\n", "b".repeat(200)]);
+	});
+
+	test("a code fence split across the cap is closed and reopened with its info string", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		const fence = "```ts\n";
+		const code = "c".repeat(CHUNK);
+		sink.onTextDelta(fence + code + "\n```");
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toHaveLength(2);
+		// Chunk one carries the opener plus its boundary close; chunk two
+		// reopens with the same info string and the real close stays put.
+		expect(msgs[0]).toBe(fence + "c".repeat(CHUNK - fence.length) + "\n```");
+		expect(msgs[1]).toBe("```ts\n" + "c".repeat(fence.length) + "\n```");
+		// Concatenated minus the injected close/open pair, the code is whole.
+		const codeAfterReopen = msgs[1]!.slice("```ts\n".length);
+		expect(codeAfterReopen.endsWith("\n```")).toBe(true);
+	});
+
+	test("a fence still open at the reply's end is closed on the last chunk only", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		sink.onTextDelta("```\n" + "c".repeat(CHUNK + 100));
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toHaveLength(2);
+		expect(msgs[0]!.endsWith("\n```")).toBe(true);
+		// The model's own fence never arrived — the trailing close the
+		// window adds is what keeps the tail monospaced.
+		expect(msgs[1]!.startsWith("```\n")).toBe(true);
+		expect(msgs[1]!.endsWith("\n```")).toBe(true);
+	});
+
+	test("an inline ```code``` span at line start is not a fence opener", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		// CommonMark: a backtick fence's info string may not contain
+		// backticks — this line is an inline code span, so no fence is
+		// open and nothing is injected at the seams.
+		const body =
+			"para one.\n\n```npm install -g little-goblin``` installs it.\n\n" + "p".repeat(4200);
+		sink.onTextDelta(body);
+		await sink.onDone({ kind: "completed" });
+		expect(msgs.join("")).toBe(body);
+		for (const m of msgs) expect(m.length).toBeLessThanOrEqual(4096);
+	});
+
+	test("a fence with a huge info string reopens with the bare marker", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		// The injected reopen is bounded: past 64 chars the info is
+		// dropped so every window stays under Telegram's 4096.
+		const body = "```" + "i".repeat(300) + "\n" + "c".repeat(CHUNK * 2);
+		sink.onTextDelta(body);
+		await sink.onDone({ kind: "completed" });
+		for (const m of msgs) expect(m.length).toBeLessThanOrEqual(4096);
+		expect(msgs[1]!.startsWith("```\n")).toBe(true);
+		expect(msgs[2]!.startsWith("```\n")).toBe(true);
+	});
+
+	test("a fence lands the unflushed tail instead of retracting shown text", async () => {
+		const { api, msgs } = fakeApi({});
+		// Huge interval: only the first delta flushes (lastEdit starts
+		// cold) — the bubble shows 3700 chars, the +200 tail is pending.
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 3_600_000 });
+		sink.onTextDelta("a".repeat(2500) + "\n\n" + "b".repeat(1198));
+		await sleep(0);
+		expect(msgs).toEqual(["a".repeat(2500) + "\n\n" + "b".repeat(1198)]);
+		// The +200 tail crosses the cap — a fresh chunk pass would snap
+		// the window back to the paragraph break at 2500, retracting
+		// 1198 shown chars. Shown text wins: the tail is its own window.
+		sink.onTextDelta("c".repeat(200));
+		await sink.onDone({ kind: "fenced" });
+		expect(msgs).toEqual([
+			"a".repeat(2500) + "\n\n" + "b".repeat(1198),
+			`${"c".repeat(200)}\n\n—\n⏹ superseded`,
+		]);
+	});
+
+	test("a fence closed inside a window is not carried past it", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		const body = "```\n" + "c".repeat(100) + "\n```\n" + "t".repeat(CHUNK);
+		sink.onTextDelta(body);
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toHaveLength(2);
+		// No opener leaked into chunk two — the fence ended in chunk one.
+		expect(msgs[1]!.startsWith("t")).toBe(true);
+		expect(msgs.join("")).toBe(body);
 	});
 
 	test("a failed final edit is retried by the drain, not declared done", async () => {
@@ -919,7 +1020,9 @@ describe("delivery", () => {
 		await sleep(0);
 		sink.onTextDelta(" queued");
 		await sink.onDone({ kind: "fenced" });
-		expect(msgs).toEqual(["visible\n\n—\n⏹ superseded"]);
+		// The stamp flushes the pending delta — the queued text rides the
+		// superseded edit instead of vanishing.
+		expect(msgs).toEqual(["visible queued\n\n—\n⏹ superseded"]);
 		expect(reactions).toEqual([]);
 	});
 
@@ -935,7 +1038,7 @@ describe("delivery", () => {
 		expect(reactions).toEqual([]);
 	});
 
-	test("fencing drops queued edits and tail sends but stamps the visible partial", async () => {
+	test("fencing lands the pending tail as its own bubble and stamps the last one", async () => {
 		const { api, msgs, reactions } = fakeApi({});
 		let live = true;
 		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
@@ -943,10 +1046,15 @@ describe("delivery", () => {
 		sink.onTextDelta("partial");
 		await sleep(0); // first bubble is visible
 		sink.onTextDelta(" stale"); // edit queued, not yet executed
-		sink.onTextDelta("x".repeat(CHUNK)); // unsent tail
+		sink.onTextDelta("x".repeat(CHUNK)); // tail a window boundary away
 		live = false;
 		await sink.onDone({ kind: "fenced" });
-		expect(msgs).toEqual(["partial\n\n—\n⏹ superseded"]);
+		// Shown text is never edited back — the pending tail goes out as
+		// its own window and the stamp marks the last bubble.
+		expect(msgs).toEqual([
+			`${"partial stale"}${"x".repeat(CHUNK - 13)}`,
+			`${"x".repeat(13)}\n\n—\n⏹ superseded`,
+		]);
 		expect(reactions).toEqual([]);
 	});
 
@@ -963,7 +1071,9 @@ describe("delivery", () => {
 		sink.setAuthorityCheck?.(() => live);
 		sink.onTextDelta("a".repeat(CHUNK * 2));
 		await sink.onDone({ kind: "completed" });
-		expect(msgs).toEqual(["a".repeat(CHUNK) + "\n\n—\n⏹ superseded"]);
+		// The unsent second window still lands — the stamp marks the
+		// last bubble, not the one that went out before authority fell.
+		expect(msgs).toEqual(["a".repeat(CHUNK), `a{"x"}`.length === 0 ? "" : "a".repeat(CHUNK) + "\n\n—\n⏹ superseded"]);
 		expect(reactions).toEqual([]);
 	});
 

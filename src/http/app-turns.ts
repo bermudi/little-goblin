@@ -10,6 +10,7 @@ import {
 	conversationFromSegment,
 	jsonBodyRefusal,
 	NO_STORE,
+	parsedJson,
 } from "./app-shared.ts";
 import type {
 	AppCompactResponse,
@@ -27,6 +28,12 @@ const decideBody = z.object({
 	decision: z.enum(["record-result", "authorize-retry", "skip"]),
 	note: z.string().max(4000).optional(),
 });
+
+const compactBody = z
+	.object({
+		focus: z.string().min(1).max(2000).optional(),
+	})
+	.strict();
 
 // The /stop response waits this long for the stopped turn to settle
 // (its unlanded-progress record lands in history before runTurn
@@ -246,8 +253,16 @@ export async function handleTurnsRoute(
 		if (conv === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
+		// The body is optional — the one-tap UI posts bare; a focus rides
+		// as {"focus": "…"} when the surface offers it.
+		let focus: string | undefined;
+		if ((req.headers.get("content-type") ?? "").includes("application/json")) {
+			const parsed = await parsedJson(req, compactBody);
+			if (parsed instanceof Response) return parsed;
+			focus = parsed.focus;
+		}
 		try {
-			const outcome = await runtime.compact(conv);
+			const outcome = await runtime.compact(conv, focus);
 			const body: AppCompactResponse =
 				outcome.kind === "compacted"
 					? {

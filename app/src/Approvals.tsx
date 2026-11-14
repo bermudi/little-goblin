@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react";
-import { cronWords } from "../../src/cron-words.ts";
+import { cronWords, tzAbbrev } from "../../src/cron-words.ts";
 import type {
 	AppApprovalDecisionResponse,
 	AppApprovalsResponse,
@@ -99,6 +99,7 @@ export function ApprovalsPanel({
 					proposal={proposal}
 					onDone={onDone}
 					layout="page"
+					serverTimeZone={approvals.data?.serverTimeZone ?? ""}
 				/>
 			))}
 			{mail.map((draft) => (
@@ -174,12 +175,14 @@ export function ProgramApprovalCard({
 	onDone,
 	layout,
 	children,
+	serverTimeZone = "",
 }: {
 	token: string | null;
 	proposal: AppProgramProposal;
 	onDone(): Promise<void>;
 	layout?: "page";
 	children?: ReactNode;
+	serverTimeZone?: string;
 }) {
 	const decision = useDecision(onDone);
 	const candidate = proposal.candidate;
@@ -230,7 +233,9 @@ export function ProgramApprovalCard({
 			<p className="error">The target program is gone; approval will refuse.</p>
 		) : (
 			<>
-				{proposal.changes !== null && <ProgramChanges changes={proposal.changes} />}
+				{proposal.changes !== null && (
+					<ProgramChanges changes={proposal.changes} serverTimeZone={serverTimeZone} />
+				)}
 				{proposal.changes !== null ? (
 					<details className="approval-full">
 						<summary>Full program after approval</summary>
@@ -254,7 +259,7 @@ export function ProgramApprovalCard({
 								{proposal.kind === "create" ? "New program" : `Update to “${candidate.name}”`}
 							</span>
 							<span>pinned to {proposal.target}</span>
-							<CandidateFacts candidate={candidate} />
+							<CandidateFacts candidate={candidate} serverTimeZone={serverTimeZone} />
 						</div>
 					)}
 				</div>
@@ -278,6 +283,8 @@ export function ProgramApprovalCard({
 
 type Candidate = NonNullable<AppProgramProposal["candidate"]>;
 
+type ZoneProps = { serverTimeZone?: string };
+
 function CandidateBody({ candidate }: { candidate: Candidate }) {
 	return (
 		<div className="op-item-body">
@@ -287,12 +294,12 @@ function CandidateBody({ candidate }: { candidate: Candidate }) {
 	);
 }
 
-function CandidateFacts({ candidate }: { candidate: Candidate }) {
+function CandidateFacts({ candidate, serverTimeZone = "" }: { candidate: Candidate } & ZoneProps) {
 	return (
 		<>
 			{candidate.cron !== null && (
 				<span>
-					<Schedule cron={candidate.cron} />
+					<Schedule cron={candidate.cron} serverTimeZone={serverTimeZone} />
 				</span>
 			)}
 			{candidate.maxLatenessMinutes !== null && (
@@ -304,31 +311,45 @@ function CandidateFacts({ candidate }: { candidate: Candidate }) {
 	);
 }
 
-function ProgramCandidateView({ candidate }: { candidate: Candidate }) {
+function ProgramCandidateView({
+	candidate,
+	serverTimeZone = "",
+}: { candidate: Candidate } & ZoneProps) {
 	return (
 		<>
 			<CandidateBody candidate={candidate} />
 			<div className="approval-facts">
-				<CandidateFacts candidate={candidate} />
+				<CandidateFacts candidate={candidate} serverTimeZone={serverTimeZone} />
 			</div>
 		</>
 	);
 }
 
-function Schedule({ cron }: { cron: string }) {
+function Schedule({ cron, serverTimeZone = "" }: { cron: string; serverTimeZone?: string }) {
 	const words = cronWords(cron);
+	const zone =
+		serverTimeZone === "" ? null : <span className="cron-tz">{tzAbbrev(serverTimeZone)}</span>;
 	return words === null ? (
-		<>{cron}</>
+		<>
+			{cron}
+			{zone !== null && <> {zone}</>}
+		</>
 	) : (
 		<>
-			{words} <span className="cron-raw">({cron})</span>
+			{words}
+			{zone !== null && <> {zone}</>} <span className="cron-raw">({cron})</span>
 		</>
 	);
 }
 
 /** Old → new for a single-line field; a schedule reads in words, cron beside it. */
-function ChangeValues({ change }: { change: AppProgramChange }) {
-	const show = (v: string) => (change.field === "cron" && v !== "none" ? <Schedule cron={v} /> : v);
+function ChangeValues({ change, serverTimeZone = "" }: { change: AppProgramChange } & ZoneProps) {
+	const show = (v: string) =>
+		change.field === "cron" && v !== "none" ? (
+			<Schedule cron={v} serverTimeZone={serverTimeZone} />
+		) : (
+			v
+		);
 	return (
 		<div className="approval-change-values">
 			<span className="old">{show(change.before)}</span>
@@ -338,7 +359,7 @@ function ChangeValues({ change }: { change: AppProgramChange }) {
 	);
 }
 
-function ProgramChanges({ changes }: { changes: AppProgramChange[] }) {
+function ProgramChanges({ changes, serverTimeZone = "" }: { changes: AppProgramChange[] } & ZoneProps) {
 	if (changes.length === 0) {
 		return <p className="cap">No fields change — the update matches the running program.</p>;
 	}
@@ -349,7 +370,7 @@ function ProgramChanges({ changes }: { changes: AppProgramChange[] }) {
 				<div key={change.field} className="approval-change">
 					<div className="approval-change-label">{change.label}</div>
 					{change.lines === null ? (
-						<ChangeValues change={change} />
+						<ChangeValues change={change} serverTimeZone={serverTimeZone} />
 					) : (
 						<DiffView lines={change.lines} />
 					)}

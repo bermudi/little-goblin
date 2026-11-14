@@ -62,6 +62,7 @@ export async function runCompactJob(
 	conv: Conversation,
 	reason: "threshold" | "manual" | "overflow" | "preempt",
 	activeFloor: number | undefined,
+	focus: string | undefined,
 	deps: CompactJobDeps,
 ): Promise<CompactionOutcome> {
 	if (reason === "manual") {
@@ -118,6 +119,7 @@ export async function runCompactJob(
 				tailTokenBudget: tail,
 				inputTokenBudget,
 				reason,
+				...(focus !== undefined ? { focus } : {}),
 				// Evaluated at history-read time: work may have queued while
 				// the contextWindow lookup awaited.
 				beforeSeq: () => deps.foldCeiling(conv.id, activeFloor),

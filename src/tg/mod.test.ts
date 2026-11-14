@@ -729,6 +729,15 @@ describe("handleMessage", () => {
 		expect(data.transcriptionError).toBe(`auth.jsonl: no secret named "mimo"`);
 		expect(data.speech).toBe(true);
 		expect(data.transcript).toBeUndefined();
+		// The operator hears about it too — a one-line note names the
+		// failure rather than leaving the voice note silently untranscribed.
+		expect(
+			h.apiCalls.some(
+				(c) =>
+					c.method === "sendMessage" &&
+					c.text === `⚠️ Couldn't transcribe this voice note: auth.jsonl: no secret named "mimo"`,
+			),
+		).toBe(true);
 		h.store.close();
 	});
 

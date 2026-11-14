@@ -128,6 +128,7 @@ test("the list is a table; opening a row replaces it with the detail and a back 
 					sentId: null,
 				},
 			],
+			serverTimeZone: "UTC",
 		},
 	);
 	root = createRoot(container);
@@ -164,7 +165,7 @@ test("schedule and run times share the server's zone (#187)", async () => {
 	// A cron at 07:00 server time with the server on UTC: the words, the zone
 	// label and the run columns must all say the same clock — before the fix
 	// the runs rendered in the browser's zone and disagreed by hours.
-	fakeServer([program({})], { programs: [], mail: [] }, "UTC");
+	fakeServer([program({})], { programs: [], mail: [], serverTimeZone: "UTC" }, "UTC");
 	root = createRoot(container);
 	await act(async () => root?.render(<ProgramsView token={null} now={NOW} />));
 

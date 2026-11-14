@@ -503,6 +503,8 @@ export interface AppMailDraft {
 export interface AppApprovalsResponse {
 	programs: AppProgramProposal[];
 	mail: AppMailDraft[];
+	/** IANA zone the scheduler evaluates crons in — cards show it. */
+	serverTimeZone: string;
 }
 
 export type AppAttentionPage = "programs" | "memory" | "skills" | "delegations";

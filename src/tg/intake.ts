@@ -13,7 +13,7 @@ import type { UIMessage } from "ai";
 import type { Config } from "../config-schema.ts";
 import { paths } from "../home-layout.ts";
 import type { Conversation } from "../conversation-read.ts";
-import { formatAddress } from "../conversation-address.ts";
+import { formatAddress, parseAddress } from "../conversation-address.ts";
 import type { ConversationAddress } from "../conversation-address.ts";
 import { isRollingChat, routeDm, type RollDeps } from "../rolling.ts";
 import { log } from "../log.ts";
@@ -453,6 +453,27 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 							file: media.fileName,
 						});
 						transcriptionError = (err instanceof Error ? err.message : String(err)).slice(0, 500);
+						// The attachment still lands for the model — this note
+						// tells the operator the audio wasn't heard, like the
+						// app's chip surfacing the same error.
+						const noteAddr = parseAddress(convId);
+						void withTimeout(
+							env.api.sendMessage(
+								payload.chatId,
+								`⚠️ Couldn't transcribe this voice note: ${transcriptionError.slice(0, 200)}`,
+								{
+									disable_notification: true,
+									...(noteAddr?.kind === "topic"
+										? { message_thread_id: noteAddr.threadId }
+										: {}),
+								},
+							),
+							"sendMessage (transcription note)",
+						)
+							.then(() => undefined)
+							.catch((noteErr: unknown) => {
+								log.warn("transcription note failed", noteErr, { chat: payload.chatId });
+							});
 					}
 				}
 				parts.push(...mediaParts(media, saved, transcript, transcriptionError));

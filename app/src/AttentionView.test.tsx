@@ -79,7 +79,7 @@ async function mount(onPage: (p: string) => void = () => {}) {
 }
 
 const noSkills: SkillsResponse = { skills: [], proposed: [] } as unknown as SkillsResponse;
-const noApprovals: AppApprovalsResponse = { programs: [], mail: [] };
+const noApprovals: AppApprovalsResponse = { programs: [], mail: [], serverTimeZone: "UTC" };
 
 function feedItem(): AppFeedItem {
 	const at = "2026-10-19T00:00:00Z";
@@ -265,6 +265,7 @@ test("a program approval shows its changes open and approves from the card", asy
 				},
 			],
 			mail: [],
+			serverTimeZone: "UTC",
 		} satisfies AppApprovalsResponse,
 		"/api/app/approvals/program/7": { status: "activated", message: "ok" },
 	});

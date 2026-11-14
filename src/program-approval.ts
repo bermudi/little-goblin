@@ -4,6 +4,7 @@
 // to decide. The hook URL is returned to the authenticated surface
 // that requested approval — it never enters model context or history.
 
+import { cronWords, tzAbbrev } from "./cron-words.ts";
 import { hookTokenHash, hookUrl, newHookToken } from "./program-hook.ts";
 import { log } from "./log.ts";
 import {
@@ -264,8 +265,18 @@ export function proposalText(
 function triggerLine(t: ProgramCandidate): string {
 	const parts: string[] = [];
 	if (t.cron !== null) {
+		// Words + the zone the scheduler evaluates in, like the app —
+		// the raw expression stays beside it for the uncovered shapes.
+		const words = cronWords(t.cron);
+		const zone = tzAbbrev(Intl.DateTimeFormat().resolvedOptions().timeZone);
+		const late =
+			t.maxLatenessMinutes !== null
+				? `fires at most ${t.maxLatenessMinutes}m late`
+				: "no lateness limit";
 		parts.push(
-			`cron "${t.cron}"${t.maxLatenessMinutes !== null ? ` (fires at most ${t.maxLatenessMinutes}m late)` : " (no lateness limit)"}`,
+			words !== null
+				? `${words} ${zone} (${t.cron}; ${late})`
+				: `cron "${t.cron}" ${zone} (${late})`,
 		);
 	}
 	if (t.hook) parts.push("webhook");

@@ -424,6 +424,25 @@ describe("rich delivery", () => {
 		}
 	});
 
+	test("a fenced rich turn stamps its live draft — pending deltas ride the stamp", async () => {
+		const { api, drafts, richSends, msgs } = fakeApi();
+		let live = true;
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			rich: { enabled: true },
+		});
+		sink.setAuthorityCheck!(() => live);
+		sink.onTextDelta("partial");
+		await sleep(0); // draft pushed
+		sink.onTextDelta(" stale tail");
+		live = false;
+		await sink.onDone({ kind: "fenced" });
+		const last = drafts.filter((d) => d.kind === "rich").at(-1);
+		expect(last?.markdown).toBe("partial stale tail\n\n—\n⏹ superseded");
+		expect(richSends).toEqual([]);
+		expect(msgs).toEqual([]);
+	});
+
 	test("a fenced rich turn sends nothing", async () => {
 		const done = silenceLogs();
 		try {

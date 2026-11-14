@@ -142,7 +142,7 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 		case "/compact": {
 			void (async () => {
 				try {
-					const outcome = await deps.runtime.compact(conv);
+					const outcome = await deps.runtime.compact(conv, arg === "" ? undefined : arg);
 					if (outcome.kind === "noop") {
 						reply(deps, conv, `nothing to compact — ${outcome.reason}`);
 						return;

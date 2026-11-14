@@ -56,7 +56,10 @@ a first call that overflows rides the overflow rail.
 
 Manual `/compact` stays a forced fold: no trigger, window possibly unknown.
 `minSpanTokens` stays: a fold that buys nothing still spends a call and
-moves the cache boundary.
+moves the cache boundary. `/compact <focus>` and the app route's `{"focus":
+"…"}` body carry an operator focus into every summarizer chunk prompt —
+a bracketed line ahead of the span text — so a manual fold can be steered
+without touching the fixed system prompt.
 
 ## Budgets
 

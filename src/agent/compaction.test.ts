@@ -256,6 +256,26 @@ describe("runCompaction", () => {
 		});
 	});
 
+	test("an operator focus rides the summarizer prompt", async () => {
+		const { store } = fakeStore(sample());
+		const prompts: string[] = [];
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async (_s, prompt) => {
+				prompts.push(prompt);
+				return foldSummary("folded", prompt);
+			},
+			{ tailTokenBudget: 1, inputTokenBudget: 32_000, focus: "keep the deploy notes" },
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		expect(prompts.every((p) => p.includes("[operator asked this compaction to emphasize: keep the deploy notes]"))).toBe(
+			true,
+		);
+	});
+
 	test("beforeSeq keeps the active exchange and queued input out of the fold", async () => {
 		// P1 regression (review 2026-10-25): the fold must summarize
 		// completed history only. A running turn's user event and an input

@@ -433,24 +433,35 @@ describe("responsibility observer", () => {
 		r.store.close();
 	});
 
-	// Older Herdr servers omit state_change_seq — the adapter reports
-	// null and the cursor carries no sequence to name the stint with.
-	// The transition count must take over, or the durable UNIQUE source
-	// key swallows every stint after the first.
-	test("blocked transitions stay distinct without state_change_seq", async () => {
+	// Live sightings always carry state_change_seq now — the adapter
+	// fails loud without it. But cursors persisted by older builds can
+	// still hold a null seq, and the transition count must keep naming
+	// stints there, or the durable UNIQUE source key swallows every
+	// stint after the first.
+	test("blocked transitions stay distinct on a cursor persisted without seq", async () => {
 		const r = rig();
-		const blocked = agent({ agent_status: "blocked", state_change_seq: null });
-		r.agents = [blocked];
+		r.resps.updateCursor(r.attId, {
+			seq: null,
+			completionSeq: null,
+			status: "working",
+			agentSession: "sess-abc",
+			terminalId: "term-9",
+			name: "worker-1",
+			missing: false,
+			epoch: 0,
+			blockedTransitions: 0,
+		});
+		r.agents = [agent({ agent_status: "blocked", state_change_seq: 3 })];
 		await r.observe();
-		r.agents = [agent({ agent_status: "idle", state_change_seq: null })];
+		r.agents = [agent({ agent_status: "idle", state_change_seq: 4 })];
 		await r.observe();
-		r.agents = [blocked];
+		r.agents = [agent({ agent_status: "blocked", state_change_seq: 5 })];
 		await r.observe();
 		const ev = r.eventsFor();
 		expect(ev.map((e) => e.kind)).toEqual(["blocked-candidate", "blocked-candidate"]);
 		expect(new Set(ev.map((e) => e.sourceKey)).size).toBe(2);
 		// Staying blocked is still not a development.
-		r.agents = [blocked];
+		r.agents = [agent({ agent_status: "blocked", state_change_seq: 6 })];
 		await r.observe();
 		expect(r.eventsFor()).toHaveLength(2);
 		// The count rides the durable cursor for the next stint.

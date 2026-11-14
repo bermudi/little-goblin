@@ -152,6 +152,26 @@ describe("herdr adapter", () => {
 		expect(info).not.toHaveProperty("terminal_id");
 	});
 
+	test("an agent record without state_change_seq fails loud: the server is too old", async () => {
+		const f = fakeRunner([ok({ result: { agent: { ...AGENT, state_change_seq: undefined } } })]);
+		const h = makeHerdr({ session: "goblin" }, f.run);
+		try {
+			await h.get("g1-test");
+			expect.unreachable();
+		} catch (err) {
+			// JSON.stringify drops the undefined key — the wire omits the field.
+			expect((err as Error).message).toContain("state_change_seq");
+			expect((err as Error).message).toContain("the herdr server is too old");
+		}
+	});
+
+	test("an agent record without completion_seq parses — absent means no completed work", async () => {
+		const f = fakeRunner([ok({ result: { agent: AGENT } })]);
+		const h = makeHerdr({ session: "goblin" }, f.run);
+		const info = await h.get("g1-test");
+		expect(info?.completion_seq).toBeUndefined();
+	});
+
 	test("get maps agent_not_found to null, other codes still throw", async () => {
 		const f = fakeRunner([
 			fail("agent_not_found", "agent target ghost not found"),
@@ -422,6 +442,29 @@ describe("operator herdr adapter", () => {
 		expect(await h.list()).toEqual([]);
 		expect(f.calls).toHaveLength(1);
 		expect(verbOf(f.calls[0]!.args)).toBe("agent list");
+	});
+
+	test("an operator record without state_change_seq fails loud: the server is too old", async () => {
+		const f = opRunner([
+			opOk({ result: { agents: [{ ...OP_AGENT, state_change_seq: undefined }] } }),
+		]);
+		const h = makeOperatorHerdr(f.run);
+		try {
+			await h.list();
+			expect.unreachable();
+		} catch (err) {
+			// JSON.stringify drops the undefined key — the wire omits the field.
+			expect((err as Error).message).toContain("state_change_seq");
+			expect((err as Error).message).toContain("the herdr server is too old");
+		}
+	});
+
+	test("an operator record without completion_seq parses to null — no completed work", async () => {
+		const f = opRunner([opOk({ result: { agents: [OP_AGENT] } }), ...TOPOLOGY]);
+		const h = makeOperatorHerdr(f.run);
+		const listed = await h.list();
+		expect(listed[0]!.state_change_seq).toBe(1);
+		expect(listed[0]!.completion_seq).toBeNull();
 	});
 
 	test("list joins labels across workspaces; unnamed agents omit name", async () => {

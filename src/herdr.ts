@@ -320,7 +320,8 @@ export function makeHerdr(
 			// Only an idle agent can be sitting on a draft; a working one
 			// queues the input itself.
 			const before = await self.get(name);
-			await call("agent prompt", name, ["agent", "prompt", name, text], (stdout) =>
+			// `--` keeps a leading-dash task text a literal positional.
+			await call("agent prompt", name, ["agent", "prompt", "--", name, text], (stdout) =>
 				envelopeSchema.parse(parseJson("agent prompt", stdout)),
 			);
 			if (before === null || before.agent_status !== "idle") return;

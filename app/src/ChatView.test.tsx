@@ -1429,6 +1429,94 @@ describe("ChatView send accepted", () => {
 	});
 });
 
+describe("ChatView seed send (issue #412)", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+	const sseHeaders = {
+		"content-type": "text/event-stream",
+		"x-vercel-ai-ui-message-stream": "v1",
+	};
+
+	test("a held first turn shows Stop; clicking it fires the same stop request", async () => {
+		// The seed send races the mount-time resume probe: the GET
+		// /stream resolves 204 after the seed's POST already set
+		// "submitted", and the SDK's null-reconnect path flips status
+		// back to "ready" — no Stop, no in-flight shimmer, for the whole
+		// (held) turn. The turn's wire opens but never produces.
+		const liveStream = new ReadableStream<Uint8Array>({ start() {} });
+		const chatPosts: { conversationId?: string; message?: UIMessage }[] = [];
+		const stopCalls: string[] = [];
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+				if (url === "/api/app/chat") {
+					chatPosts.push(JSON.parse(String(init?.body)));
+					return new Response(liveStream, { headers: sseHeaders });
+				}
+				if (url.endsWith("/stop")) {
+					stopCalls.push(`${init?.method ?? "GET"} ${url}`);
+					return jsonResponse({ stopped: true, settled: true });
+				}
+				return jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				});
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-03"
+					title={null}
+					seed={[{ type: "text", text: "first!" }]}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		for (let i = 0; i < 100 && chatPosts.length === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		// The seed went out as the conversation's first send.
+		expect(chatPosts).toHaveLength(1);
+		expect(chatPosts[0]?.conversationId).toBe("app/chat-03");
+		expect(chatPosts[0]?.message?.parts).toEqual([{ type: "text", text: "first!" }]);
+		// The turn is running and the wire is silent — Stop must show.
+		expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
+		// Stop on the first turn is the same stop the later turns use.
+		await act(async () => {
+			(dom.container.querySelector(".stop-btn") as HTMLElement).click();
+		});
+		for (let i = 0; i < 100 && stopCalls.length === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		expect(stopCalls).toEqual(["POST /api/app/conversations/chat-03/stop"]);
+	});
+});
+
 describe("ChatView edit and branch", () => {
 	const dom = mountDom();
 

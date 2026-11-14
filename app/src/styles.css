@@ -291,6 +291,45 @@ p code,
 	margin: 0;
 }
 
+/* ---------- render-error boundary (ErrorBoundary.tsx, #281) ----------
+   The root boundary's fallback — a full-viewport takeover like the
+   gate, with the error message honest and a reload one click away. */
+.error-boundary {
+	height: 100%;
+	display: grid;
+	place-content: center;
+	justify-items: center;
+	gap: 1rem;
+	padding: 2rem;
+}
+.error-boundary p {
+	margin: 0;
+	font-size: 15px;
+	font-weight: 500;
+	color: var(--app-fg);
+}
+.error-boundary pre {
+	margin: 0;
+	max-width: min(42rem, 100%);
+	white-space: pre-wrap;
+	word-break: break-word;
+	text-align: left;
+	font-family: var(--font-mono);
+	font-size: 12px;
+	color: var(--app-danger);
+	border: 1px solid color-mix(in oklab, var(--app-danger) 40%, transparent);
+	border-radius: 8px;
+	padding: 0.6rem 0.8rem;
+}
+.error-boundary button {
+	background: var(--app-fg);
+	color: var(--app-bg);
+	border-radius: 8px;
+	padding: 0.55rem 1.1rem;
+	font-weight: 500;
+	font-size: 13px;
+}
+
 /* ---------- shell ---------- */
 
 .shell {

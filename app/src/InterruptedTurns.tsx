@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AppDecideRequest, AppInterruptedRun, AppRunCall } from "../../src/http/app-wire.ts";
-import { ApiError, decideRunCall, listInterruptedRuns, resumeRun } from "./api.ts";
+import type {
+	AppDecideRequest,
+	AppInterruptedRun,
+	AppResumeRestore,
+	AppRunCall,
+} from "../../src/http/app-wire.ts";
+import {
+	ApiError,
+	decideRunCall,
+	listInterruptedRuns,
+	patchConversationConfig,
+	resumeRun,
+} from "./api.ts";
 
 const STATE_LABEL: Record<AppRunCall["state"], string> = {
 	planned: "planned",
@@ -33,6 +44,18 @@ function errText(err: unknown, fallback: string): string {
 	return err instanceof Error ? err.message : fallback;
 }
 
+// A drift refusal's `restore` field — both halves must be present:
+// a half-pair can't pass the drift gate, so no offer is better.
+function restorePair(data: unknown): { model: string; thinking: string } | null {
+	if (typeof data !== "object" || data === null) return null;
+	const restore = (data as { restore?: AppResumeRestore }).restore;
+	if (typeof restore !== "object" || restore === null) return null;
+	const { model, thinking } = restore;
+	return typeof model === "string" && typeof thinking === "string"
+		? { model, thinking }
+		: null;
+}
+
 export function InterruptedTurns({
 	token,
 	conversationId,
@@ -48,6 +71,11 @@ export function InterruptedTurns({
 	const [loadError, setLoadError] = useState<string | null>(null);
 	const [actionError, setActionError] = useState<string | null>(null);
 	const [resumeWarning, setResumeWarning] = useState<string | null>(null);
+	const [restoreOffer, setRestoreOffer] = useState<{
+		runId: string;
+		model: string;
+		thinking: string;
+	} | null>(null);
 	const [pending, setPending] = useState<string | null>(null);
 	const [notes, setNotes] = useState<Record<string, string>>({});
 	const context = useRef(0);
@@ -80,6 +108,7 @@ export function InterruptedTurns({
 		setLoadError(null);
 		setActionError(null);
 		setResumeWarning(null);
+		setRestoreOffer(null);
 		void refresh();
 		return () => {
 			context.current += 1;
@@ -130,6 +159,39 @@ export function InterruptedTurns({
 		}
 	};
 
+	// A refused resume surfaces the reason — and, on selection drift,
+	// the recorded pair for a one-tap restore.
+	const resumeRefusal = async (runId: string, err: unknown, ctx: number) => {
+		if (ctx !== context.current) return;
+		if (err instanceof ApiError && err.status === 409) {
+			await refresh();
+		}
+		if (ctx !== context.current) return;
+		if (err instanceof ApiError && err.status === 422) {
+			const restore = restorePair(err.data);
+			if (restore !== null) setRestoreOffer({ runId, ...restore });
+		}
+		setActionError(errText(err, "resume failed"));
+	};
+
+	// The resume POST landed: drop the run locally and hand the stream
+	// back to the chat view. Shared by the direct and restore paths.
+	const admitResumed = async (runId: string, ctx: number) => {
+		if (ctx !== context.current) return;
+		acknowledged.current.add(runId);
+		setRestoreOffer(null);
+		setRuns((prev) => (prev === null ? prev : prev.filter((r) => r.runId !== runId)));
+		try {
+			await onResumed();
+		} catch (err) {
+			if (ctx === context.current) {
+				setResumeWarning(
+					`Resume was accepted and the turn is running — reconnecting to it failed: ${errText(err, "unknown error")}. Reload the conversation to follow it.`,
+				);
+			}
+		}
+	};
+
 	const resume = async (runId: string) => {
 		if (busy || inFlight.current) return;
 		const ctx = context.current;
@@ -137,32 +199,46 @@ export function InterruptedTurns({
 		setPending(`resume:${runId}`);
 		setActionError(null);
 		setResumeWarning(null);
+		setRestoreOffer(null);
 		try {
 			try {
 				await resumeRun(token, conversationId, runId);
 			} catch (err) {
-				if (ctx === context.current) {
-					if (err instanceof ApiError && err.status === 409) {
-						await refresh();
-					}
-					if (ctx === context.current) {
-						setActionError(errText(err, "resume failed"));
-					}
-				}
+				await resumeRefusal(runId, err, ctx);
 				return;
 			}
-			if (ctx !== context.current) return;
-			acknowledged.current.add(runId);
-			setRuns((prev) => (prev === null ? prev : prev.filter((r) => r.runId !== runId)));
-			try {
-				await onResumed();
-			} catch (err) {
-				if (ctx === context.current) {
-					setResumeWarning(
-						`Resume was accepted and the turn is running — reconnecting to it failed: ${errText(err, "unknown error")}. Reload the conversation to follow it.`,
-					);
-				}
+			await admitResumed(runId, ctx);
+		} finally {
+			if (ctx === context.current) {
+				inFlight.current = false;
+				setPending(null);
 			}
+		}
+	};
+
+	// One tap: write the recorded pair back, then retry the resume —
+	// the drift gate passes on the second attempt.
+	const restoreAndResume = async () => {
+		const offer = restoreOffer;
+		if (offer === null || busy || inFlight.current) return;
+		const ctx = context.current;
+		inFlight.current = true;
+		setPending(`restore:${offer.runId}`);
+		setActionError(null);
+		setResumeWarning(null);
+		setRestoreOffer(null);
+		try {
+			try {
+				await patchConversationConfig(token, conversationId, {
+					model: offer.model,
+					thinking: offer.thinking,
+				});
+				await resumeRun(token, conversationId, offer.runId);
+			} catch (err) {
+				await resumeRefusal(offer.runId, err, ctx);
+				return;
+			}
+			await admitResumed(offer.runId, ctx);
 		} finally {
 			if (ctx === context.current) {
 				inFlight.current = false;
@@ -291,6 +367,17 @@ export function InterruptedTurns({
 						>
 							Resume turn
 						</button>
+						{restoreOffer?.runId === run.runId && (
+							<div className="interrupted-actions">
+								<button
+									type="button"
+									disabled={busy || pending !== null}
+									onClick={() => void restoreAndResume()}
+								>
+									Restore {restoreOffer.model} / {restoreOffer.thinking} and resume
+								</button>
+							</div>
+						)}
 						{undecided.length > 0 && (
 							<p className="interrupted-help">
 								Resume stays locked until every uncertain call has a decision. Record result asserts

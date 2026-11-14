@@ -245,6 +245,22 @@ export interface AppConfigPatch {
 	thinking?: string;
 }
 
+export interface AppConfigPatchResponse extends AppConfigView {
+	/** A turn is running — it keeps the model pair it admitted on; the
+	 *  stored pair binds the next turn. Absent when the lane is idle. */
+	appliesFrom?: "next-turn";
+	/** The asked-for level clamped onto the destination model's ladder —
+	 *  from = requested/effective, to = applied. Absent otherwise. */
+	thinkingClamped?: { from: string; to: string };
+}
+
+/** The model pair a resume refusal recorded — the pair the run's
+ *  snapshot was admitted on, offered back for a one-tap restore. */
+export interface AppResumeRestore {
+	model: string | null;
+	thinking: string | null;
+}
+
 export interface AppConversationMemoryView {
 	memoryExcluded: boolean;
 	projectMemory: "shared" | "off" | null;

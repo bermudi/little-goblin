@@ -203,7 +203,12 @@ export async function handleTurnsRoute(
 			reason: outcome.reason,
 		});
 		return Response.json(
-			{ error: outcome.reason },
+			{
+				error: outcome.reason,
+				// Drift refusals carry the recorded pair — the client offers
+				// a one-tap restore before the operator retries.
+				...(outcome.restore === undefined ? {} : { restore: outcome.restore }),
+			},
 			{ status: refusalStatus(outcome.code), headers: NO_STORE },
 		);
 	}

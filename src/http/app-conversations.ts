@@ -29,6 +29,7 @@ import {
 import type {
 	AppSuggestTitleResponse,
 	AppCompactionMark,
+	AppConfigPatchResponse,
 	AppContextSegment,
 	AppContextView,
 	AppQuota,
@@ -447,6 +448,9 @@ export async function handleConversationsRoute(
 		if (req.method !== "GET" && req.method !== "PATCH") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
+		// PATCH-only response fields — gathered in the PATCH branch, joined
+		// onto the shared config view at the end.
+		let patchExtras: Pick<AppConfigPatchResponse, "appliesFrom" | "thinkingClamped"> = {};
 		if (req.method === "PATCH") {
 			const refusedJson = jsonBodyRefusal(req);
 			if (refusedJson !== null) return refusedJson;
@@ -482,10 +486,11 @@ export async function handleConversationsRoute(
 			const stored = store.readAppSettings(convId.id, cfg);
 			// A stored level the target model can't express is a lie — the
 			// write persists what the wire clamp would send instead.
+			const askedThinking = parsed.data.thinking ?? stored.thinking;
 			const thinking = clampThinkingFor(
 				cfg.providers,
 				parsed.data.model ?? stored.model,
-				parsed.data.thinking ?? stored.thinking,
+				askedThinking,
 			);
 			store.setMeta(convId.id, {
 				...(parsed.data.model !== undefined ? { model: parsed.data.model } : {}),
@@ -497,10 +502,21 @@ export async function handleConversationsRoute(
 				...(parsed.data.thinking !== thinking ? { thinkingApplied: thinking } : {}),
 				applies: "next turn",
 			});
+			patchExtras = {
+				// A running turn keeps the pair it admitted on — say so in
+				// the response, not only in the log.
+				...(runtime.busy(convId.id) ? { appliesFrom: "next-turn" as const } : {}),
+				...(askedThinking !== thinking
+					? { thinkingClamped: { from: askedThinking, to: thinking } }
+					: {}),
+			};
 		}
 		const cfg = deps.configRef.current;
 		const settings = store.initializeAppSettings(convId.id, cfg);
-		return Response.json(configView(cfg, settings), { headers: NO_STORE });
+		return Response.json(
+			{ ...configView(cfg, settings), ...patchExtras } satisfies AppConfigPatchResponse,
+			{ headers: NO_STORE },
+		);
 	}
 
 	const contextMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/context$/);

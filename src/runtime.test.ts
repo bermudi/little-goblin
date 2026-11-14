@@ -4,7 +4,12 @@ import { execSync } from "node:child_process";
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { APICallError, type LanguageModelV4StreamPart } from "@ai-sdk/provider";
+import {
+	APICallError,
+	type LanguageModelV4,
+	type LanguageModelV4CallOptions,
+	type LanguageModelV4StreamPart,
+} from "@ai-sdk/provider";
 import { type LanguageModel, type ToolSet, tool, type UIMessage, type UIMessageChunk } from "ai";
 import { z } from "zod";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
@@ -4316,6 +4321,86 @@ describe("turn journal", () => {
 			expect(calls.find((c) => c.toolCallId === "call-1")?.state).toBe("completed");
 			expect(calls.find((c) => c.toolCallId === "call-1")?.result).toBe('{"ok":true}');
 		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
+	});
+
+	test("a journal checkpoint write that throws aborts the turn — the next model step is born dead", async () => {
+		const dir = tmpDir("goblin-rt-log-");
+		const logFile = join(dir, "goblin.log");
+		const store = openStore(tmpDb("goblin-rt-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const real = openTurnJournal(store.db);
+		// The step-end checkpoint is this turn's first journal checkpoint —
+		// the throw must abort the attempt inside the SDK's onStepEnd, whose
+		// notify() would otherwise swallow the rethrow and let the loop run
+		// on a stale recovery checkpoint.
+		const journal: TurnJournal = {
+			...real,
+			checkpoint() {
+				throw new Error("injected journal checkpoint failure");
+			},
+		};
+		const edge = scriptedEdge([
+			[toolCallPart("call-1", "probe", "{}"), finishPart("tool-calls")],
+			textParts("SENTINEL-SHOULD-NOT-STREAM"),
+		]);
+		// The SDK's step loop dispatches the next doStream unconditionally —
+		// abort is the only stop, so the signal's state AT dispatch is what a
+		// provider sees: born dead means fetch aborts before the wire.
+		const abortedAtDispatch: boolean[] = [];
+		const scripted = edge.model as unknown as LanguageModelV4;
+		const model = {
+			...scripted,
+			doStream(options: LanguageModelV4CallOptions) {
+				abortedAtDispatch.push(options.abortSignal?.aborted === true);
+				return scripted.doStream(options);
+			},
+		} as unknown as LanguageModel;
+		let executions = 0;
+		const runtime = new Runtime({
+			engines: [aiSdkEngine],
+			store,
+			turnJournal: journal,
+			buildStep: () => ({ model, system: "test" }),
+			makeTools: () => ({
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						executions++;
+						return { ok: true };
+					},
+				}),
+			}),
+		});
+		setLogFile(logFile);
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
+			const done = await sink.done;
+			expect(done.kind).toBe("error");
+			if (done.kind === "error") {
+				expect(done.message).toContain("injected journal checkpoint failure");
+			}
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			// The fault surfaced at step one's end — step two's request was
+			// dispatched with the signal already tripped, and no reply landed.
+			expect(edge.streamCalls).toHaveLength(2);
+			expect(abortedAtDispatch).toEqual([false, true]);
+			expect(executions).toBe(1);
+			expect(store.history(conv.id).map((m) => m.role)).not.toContain("assistant");
+			const ids = store.db.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs").all();
+			expect(ids).toHaveLength(1);
+			const run = journal.get(ids[0]!.run_id)!;
+			expect(run.status).toBe("error");
+			expect(run.delivery).toBe("failed");
+			const calls = journal.callsFor(run.runId);
+			expect(calls.find((c) => c.toolCallId === "call-1")?.state).toBe("completed");
+			// The checkpoint fault is named at the seam, not deduced downstream.
+			expect(readFileSync(logFile, "utf8")).toContain("journal checkpoint failed");
+		} finally {
+			setLogFile(null);
 			await runtime.shutdown();
 			store.close();
 		}

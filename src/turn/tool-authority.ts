@@ -89,7 +89,9 @@ export interface ToolAuthority {
 	/** #195 — step-end persistence's one home. Both engines route their
 	 *  step-end checkpoints and steer-fold ownership writes through here,
 	 *  never the journal directly, so a checkpoint throw classifies as a
-	 *  journal fault exactly like a fenced tool's write: the turn dies as
+	 *  journal fault exactly like a fenced tool's write — and aborts the
+	 *  attempt at once (#207): the SDK swallows a step-end callback's
+	 *  throw, so the seam fires onJournalFault itself. The turn dies as
 	 *  an error and never advances the fallback walk. */
 	saveStep(patch: TurnCheckpointPatch): void;
 }
@@ -182,7 +184,18 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 			steerWaiting: deps.steerWaiting,
 		});
 		const saveStep = (patch: TurnCheckpointPatch): void => {
-			deps.journaled(() => journal?.checkpoint(newRunId, patch));
+			try {
+				deps.journaled(() => journal?.checkpoint(newRunId, patch));
+			} catch (err) {
+				// Step-end callers are SDK callbacks whose throws get
+				// swallowed — the rethrow alone cannot stop the turn. The
+				// fault aborts the attempt here, same as a fenced tool's
+				// journal write, instead of letting the loop run more
+				// model steps on a stale recovery checkpoint.
+				log.error("journal checkpoint failed", err, { conversation: convId, run: newRunId });
+				deps.onJournalFault();
+				throw err;
+			}
 		};
 		return { tools, runId: newRunId, ownershipBegun: begunOwnership, saveStep };
 	} catch (err) {

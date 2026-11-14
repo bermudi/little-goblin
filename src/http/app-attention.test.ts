@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore } from "../conversation.ts";
@@ -122,6 +122,11 @@ describe("app attention", () => {
 		writeFileSync(join(dirs, "skills", "radar", "SKILL.md"), "old\n");
 		mkdirSync(join(dirs, "skills-proposed", "radar"), { recursive: true });
 		writeFileSync(join(dirs, "skills-proposed", "radar", "SKILL.md"), "new\n");
+		// The route sorts proposals by SKILL.md mtime — pin radar older than watcher so the asserted order never rides the id tiebreak (#441).
+		const proposedAt = new Date("2026-10-20T00:00:00.000Z");
+		utimesSync(join(dirs, "skills-proposed", "radar", "SKILL.md"), proposedAt, proposedAt);
+		const proposedLater = new Date("2026-10-20T00:00:01.000Z");
+		utimesSync(join(proposed, "SKILL.md"), proposedLater, proposedLater);
 		const memStore = openStore(join(dirs, "memory.sqlite"));
 		const memClient = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
 		const block = (id: string, conversationId: string, error: string, timestamp: string) => {

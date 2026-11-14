@@ -6,7 +6,11 @@
 
 import type { UIMessage } from "ai";
 import type { Compaction, CompactionMark } from "./conversation-events.ts";
-import type { HistoryContextRow, HistoryHit } from "./conversation-history.ts";
+import type {
+	HistoryContextRow,
+	HistoryHit,
+	HistorySlimEntry,
+} from "./conversation-history.ts";
 import type { Row } from "./conversation-queries.ts";
 import type { MemoryEligibility } from "./memory/mod.ts";
 import type { ModelSettings } from "./conversation-settings.ts";
@@ -113,6 +117,21 @@ export interface ConversationReads {
 		createdAt: string;
 		message: UIMessage;
 	}[];
+	// The transcript's causal skeleton without payloads — the paged
+	// reader's index: windowing, fold marks and rateable-winner picks
+	// all need the full order but none of the message data.
+	historySlim(id: string): HistorySlimEntry[];
+	// Payloads for one served window, causal-ordered like historyDetail —
+	// the paged reader's second step after the skeleton picks the seqs.
+	historyData(id: string, seqs: readonly number[]): {
+		seq: number;
+		anchorSeq: number | null;
+		createdAt: string;
+		message: UIMessage;
+	}[];
+	// Stored message ids for a seq set — joins rateable winner seqs to
+	// envelope ids without parsing every row's payload.
+	messageIdsForSeqs(id: string, seqs: readonly number[]): Map<number, string>;
 	// The causal-last event of one role (same key historyDetail sorts
 	// on), read as a single row — for boolean/last-message callers that
 	// would otherwise materialize the whole history. Null = none.

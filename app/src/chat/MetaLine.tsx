@@ -384,7 +384,10 @@ export function UserActions({
 }: {
 	message: UIMessage;
 	disabled: boolean;
-	onEdit: () => void;
+	// Undefined hides the edit affordance — paged-in history is
+	// read-only: a rewind's view reconciliation covers only the live
+	// window, not the pages above it.
+	onEdit?: (() => void) | undefined;
 }) {
 	const text = messageText(message);
 	const { copied, failed, copy } = useCopy();
@@ -399,9 +402,11 @@ export function UserActions({
 			>
 				{copied ? "✓ copied" : failed ? "✗ copy failed" : "copy"}
 			</button>
-			<button type="button" onClick={onEdit} aria-label="Edit message" disabled={disabled}>
-				edit
-			</button>
+			{onEdit !== undefined && (
+				<button type="button" onClick={onEdit} aria-label="Edit message" disabled={disabled}>
+					edit
+				</button>
+			)}
 		</div>
 	);
 }

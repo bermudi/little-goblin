@@ -10,8 +10,9 @@
 // Id namespaces: the SDK's tool() handler receives no tool_use id (its
 // `extra` is opaque), so the bridge mints journal ids that only its own
 // results queue uses. The engine pairs stream-frame tool_use ids with
-// queued results (FIFO, exact (name, input) match preferred) to emit
-// exact goblin outputs on the wire. The two namespaces never mix.
+// queued results (earliest-dispatched completed record, exact canonical
+// (name, input) match preferred) to emit exact goblin outputs on the
+// wire. The two namespaces never mix.
 
 import { randomUUID } from "node:crypto";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
@@ -20,6 +21,7 @@ import type { ToolSet } from "ai";
 import { asSchema } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
+import { stableStringify } from "../../loop-detect.ts";
 
 export const MCP_SERVER_NAME = "goblin";
 
@@ -28,6 +30,13 @@ export interface BridgeResult {
 	input: unknown;
 	output: unknown;
 	error: string | null;
+}
+
+// A reserved queue slot: pushed when the handler is dispatched, filled
+// when it completes. Only done records are adoptable — parallel calls
+// of one tool then pair by dispatch order, never completion order.
+interface QueuedResult extends BridgeResult {
+	done: boolean;
 }
 
 export interface BridgeInvokeResult {
@@ -40,7 +49,7 @@ export interface ToolBridge {
 	server(): unknown;
 	/** The allowedTools form covering every bridged tool. */
 	allowedTools(): string[];
-	/** FIFO result adoption: the best unconsumed result for this tool call. */
+	/** Result adoption: the best unconsumed completed result for this tool call. */
 	adoptResult(name: string, input: unknown): BridgeResult | null;
 	/** Every bridged tool name — the surface the model actually sees. */
 	toolNames(): string[];
@@ -135,13 +144,14 @@ export interface ToolBridgeDeps {
 
 export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 	const { convId, tools, signal } = deps;
-	const results: BridgeResult[] = [];
+	const results: QueuedResult[] = [];
+	type McpResponse = {
+		content: Array<{ type: "text"; text: string }>;
+		isError?: boolean;
+	};
 	const handlers = new Map<
 		string,
-		(input: Record<string, unknown>) => Promise<{
-			content: Array<{ type: "text"; text: string }>;
-			isError?: boolean;
-		}>
+		(input: Record<string, unknown>) => Promise<{ response: McpResponse; record: QueuedResult }>
 	>();
 	const names: string[] = [];
 	const bridgeId = randomUUID().slice(0, 8);
@@ -156,10 +166,14 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 			name,
 			async (
 				input: Record<string, unknown>,
-			): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> => {
+			): Promise<{ response: McpResponse; record: QueuedResult }> => {
 				// Monotonic per bridge, plus a random bridge prefix so ids stay
 				// unique across turns (the bridge is rebuilt every turn).
 				const callId = `claude-${bridgeId}-${++callSeq}`;
+				// Reserve this call's queue slot before the first await so
+				// array order is dispatch order, not completion order.
+				const record: QueuedResult = { name, input, output: null, error: null, done: false };
+				results.push(record);
 				// Parsed input or a loud tool error — the model sees the
 				// issues and can re-ask, like the API lane's tool errors.
 				// Schema.validate is safeParse-shaped ({success, value|error}).
@@ -179,8 +193,12 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 							arg: JSON.stringify(input ?? null).slice(0, 200),
 							error: errorText.slice(0, 300),
 						});
-						results.push({ name, input, output: null, error: errorText });
-						return { content: [{ type: "text", text: errorText }], isError: true };
+						record.error = errorText;
+						record.done = true;
+						return {
+							response: { content: [{ type: "text", text: errorText }], isError: true },
+							record,
+						};
 					}
 					args = parsed.value;
 				}
@@ -191,20 +209,25 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 						messages: [] as never,
 						context: {} as never,
 					});
-					results.push({ name, input: args, output, error: null });
+					record.output = output;
+					record.done = true;
 					if (t.toModelOutput === undefined) {
-						return { content: [{ type: "text", text: resultText(output) }] };
+						return { response: { content: [{ type: "text", text: resultText(output) }] }, record };
 					}
 					const shaped = await t.toModelOutput({
 						output,
 						toolCallId: callId,
 						input: args as never,
 					});
-					return callToolResult(shaped);
+					return { response: callToolResult(shaped), record };
 				} catch (err) {
 					const errorText = err instanceof Error ? err.message : String(err);
-					results.push({ name, input: args, output: null, error: errorText });
-					return { content: [{ type: "text", text: errorText }], isError: true };
+					record.error = errorText;
+					record.done = true;
+					return {
+						response: { content: [{ type: "text", text: errorText }], isError: true },
+						record,
+					};
 				}
 			},
 		);
@@ -216,7 +239,10 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 		const description = typeof t.description === "string" ? t.description : name;
 		const shape = rawShapeFor(asSchema(t.inputSchema).jsonSchema);
 		definitions.push(
-			sdkTool(name, description, shape ?? { args: z.unknown().optional() }, handler),
+			sdkTool(name, description, shape ?? { args: z.unknown().optional() }, async (input) => {
+				const { response } = await handler(input);
+				return response;
+			}),
 		);
 	}
 
@@ -235,21 +261,27 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 			if (handler === undefined) {
 				return { output: null, error: `no bridged tool named ${name}` };
 			}
-			const r = await handler(input as Record<string, unknown>);
-			const queued = results[results.length - 1];
-			if (r.isError === true) {
-				return { output: null, error: queued?.error ?? r.content[0]?.text ?? "tool failed" };
+			const { response, record } = await handler(input as Record<string, unknown>);
+			if (response.isError === true) {
+				return {
+					output: null,
+					error: record.error ?? response.content[0]?.text ?? "tool failed",
+				};
 			}
-			return { output: queued?.output ?? null, error: null };
+			return { output: record.output, error: null };
 		},
 		adoptResult: (name, input) => {
-			// Prefer an exact (name, input) match — identical parallel calls
-			// fall through to FIFO order, which is the CLI's dispatch order.
-			const inputJson = JSON.stringify(input ?? null);
+			// Only completed records are adoptable (the CLI reports a tool
+			// result only after the handler returned). Prefer an exact
+			// (name, input) match — canonicalized, since the stream frame's
+			// raw input and the record's may differ in key order; identical
+			// parallel calls fall through to the earliest-dispatched record.
+			const inputJson = stableStringify(input ?? null);
 			const exact = results.findIndex(
-				(r) => r.name === name && JSON.stringify(r.input ?? null) === inputJson,
+				(r) => r.done && r.name === name && stableStringify(r.input ?? null) === inputJson,
 			);
-			const idx = exact >= 0 ? exact : results.findIndex((r) => r.name === name);
+			const idx =
+				exact >= 0 ? exact : results.findIndex((r) => r.done && r.name === name);
 			if (idx < 0) return null;
 			return results.splice(idx, 1)[0] ?? null;
 		},

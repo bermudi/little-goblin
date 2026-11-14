@@ -80,6 +80,63 @@ describe("createToolBridge", () => {
 		expect(r.output).toBe("loose:[object Object]");
 	});
 
+	test("parallel same-name calls adopt by their own input, not completion order", async () => {
+		const gates: Array<() => void> = [];
+		const gated: ToolSet = {
+			gated: tool({
+				description: "gated",
+				inputSchema: z.object({ alpha: z.string(), beta: z.number() }),
+				execute: async ({ alpha }) => {
+					await new Promise<void>((resolve) => gates.push(resolve));
+					return `out:${alpha}`;
+				},
+			}),
+		};
+		const b = createToolBridge({ convId: "c", tools: gated });
+		// Raw key order differs from the schema's (beta before alpha).
+		const p1 = b.invoke("gated", { beta: 1, alpha: "one" });
+		const p2 = b.invoke("gated", { beta: 2, alpha: "two" });
+		while (gates.length < 2) await new Promise((r) => setTimeout(r, 0));
+		// Call 2 completes first.
+		gates[1]?.();
+		const r2 = await p2;
+		gates[0]?.();
+		const r1 = await p1;
+		expect(r1).toEqual({ output: "out:one", error: null });
+		expect(r2).toEqual({ output: "out:two", error: null });
+		// Adopt with yet another key order — only a canonical match pairs
+		// each stream frame with its own call's output.
+		expect(b.adoptResult("gated", { alpha: "one", beta: 1 })?.output).toBe("out:one");
+		expect(b.adoptResult("gated", { alpha: "two", beta: 2 })?.output).toBe("out:two");
+	});
+
+	test("identical parallel inputs adopt in dispatch order", async () => {
+		const gates: Array<() => void> = [];
+		let seq = 0;
+		const gated: ToolSet = {
+			gated: tool({
+				description: "gated",
+				inputSchema: z.object({ tag: z.string() }),
+				execute: async () => {
+					const mine = ++seq;
+					await new Promise<void>((resolve) => gates.push(resolve));
+					return `out:${mine}`;
+				},
+			}),
+		};
+		const b = createToolBridge({ convId: "c", tools: gated });
+		const p1 = b.invoke("gated", { tag: "same" });
+		const p2 = b.invoke("gated", { tag: "same" });
+		while (gates.length < 2) await new Promise((r) => setTimeout(r, 0));
+		// Reverse completion order; dispatch order still rules adoption.
+		gates[1]?.();
+		await p2;
+		gates[0]?.();
+		await p1;
+		expect(b.adoptResult("gated", { tag: "same" })?.output).toBe("out:1");
+		expect(b.adoptResult("gated", { tag: "same" })?.output).toBe("out:2");
+	});
+
 	test("adoptResult prefers the exact (name, input) match, FIFO otherwise", async () => {
 		const b = createToolBridge({ convId: "c", tools: tools() });
 		await b.invoke("echo", { message: "first" });

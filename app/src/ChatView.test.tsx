@@ -1515,6 +1515,182 @@ describe("ChatView seed send (issue #412)", () => {
 		}
 		expect(stopCalls).toEqual(["POST /api/app/conversations/chat-03/stop"]);
 	});
+
+	test("a black-holed stream probe does not park the seed — POST sent, Stop shows", async () => {
+		// Regression shape (verified against the latch-only fix): a
+		// seeded mount whose GET /stream never answers must still send.
+		// A seeded mount is a conversation created moments ago — nothing
+		// can be live — so its probe never reaches the network at all.
+		const liveStream = new ReadableStream<Uint8Array>({ start() {} });
+		const chatPosts: { conversationId?: string; message?: UIMessage }[] = [];
+		let streamGets = 0;
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+				if (url.endsWith("/stream")) {
+					streamGets += 1;
+					// The black hole: headers never arrive.
+					return new Promise<Response>(() => {});
+				}
+				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+				if (url === "/api/app/chat") {
+					chatPosts.push(JSON.parse(String(init?.body)));
+					return new Response(liveStream, { headers: sseHeaders });
+				}
+				return jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				});
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-03"
+					title={null}
+					seed={[{ type: "text", text: "first!" }]}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		for (let i = 0; i < 100 && chatPosts.length === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				});
+		}
+		// The seed POST went out despite the probe's socket going nowhere.
+		expect(chatPosts).toHaveLength(1);
+		expect(chatPosts[0]?.message?.parts).toEqual([{ type: "text", text: "first!" }]);
+		// The turn is running on a silent wire — Stop shows.
+		expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
+		// And the probe never asked the network at all.
+		expect(streamGets).toBe(0);
+	});
+
+	test("a seeded mount makes no GET to /stream — even one that would answer", async () => {
+		const liveStream = new ReadableStream<Uint8Array>({ start() {} });
+		let chatPosts = 0;
+		let streamGets = 0;
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+				if (url.endsWith("/stream")) {
+					streamGets += 1;
+					return new Response(null, { status: 204 });
+				}
+				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+				if (url === "/api/app/chat") {
+					chatPosts += 1;
+					return new Response(liveStream, { headers: sseHeaders });
+				}
+				return jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				});
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-04"
+					title={null}
+					seed={[{ type: "text", text: "first!" }]}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		for (let i = 0; i < 100 && chatPosts === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				});
+		}
+		// The seed sent — the mount had its one send — and never probed.
+		expect(chatPosts).toBe(1);
+		expect(streamGets).toBe(0);
+	});
+
+	test("a non-seeded mount still probes /stream", async () => {
+		let streamGets = 0;
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, _init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+				if (url.endsWith("/stream")) {
+					streamGets += 1;
+					return new Response(null, { status: 204 });
+				}
+				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+				return jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				});
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-05"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		// The reload/reconnect window still asks the server on mount.
+		for (let i = 0; i < 100 && streamGets === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				});
+		}
+		expect(streamGets).toBe(1);
+	});
 });
 
 describe("ChatView edit and branch", () => {

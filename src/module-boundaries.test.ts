@@ -28,7 +28,7 @@ const SIBLING_MOD_IMPORT =
 // comments allowed — and bare side-effect `import "…"`.
 const FROM_SPEC = /\bfrom\s*["']([^"']+)["']/g;
 const DYNAMIC_SPEC =
-	/\bimport\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*["`]([^"`$]+)["`]\s*\)/g;
+	/\bimport\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*["'`]([^"'`$]+)["'`]\s*\)/g;
 const BARE_SPEC = /\bimport\s*["']([^"']+)["']/g;
 
 function specifiers(source: string): string[] {
@@ -69,10 +69,8 @@ const SIBLING_EXEMPT = new Set([
 function walk(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
 		const path = join(dir, entry.name);
-		if (entry.isDirectory()) {
-			// Dependencies and build output are not part of the tree.
-			if (entry.name !== "node_modules" && entry.name !== "dist") walk(path, out);
-		} else if (/\.(ts|tsx)$/.test(entry.name)) out.push(path);
+		if (entry.isDirectory()) walk(path, out);
+		else if (/\.(ts|tsx)$/.test(entry.name)) out.push(path);
 	}
 	return out;
 }

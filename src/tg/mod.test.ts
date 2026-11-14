@@ -2027,6 +2027,61 @@ describe("rolling dm", () => {
 		h.store.close();
 	});
 
+	test("a reply to a message in another chat is quoted context, never dropped", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 42,
+				chat: { id: 7, type: "private" },
+				text: "and this?",
+				external_reply: {
+					origin: {
+						type: "channel",
+						date: 1_700_000_000,
+						chat: { id: -100, type: "channel", title: "Announce" },
+						message_id: 900,
+					},
+					message_id: 900,
+					photo: [{ file_id: "f", file_unique_id: "u", width: 1, height: 1 }],
+				},
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({
+			type: "text",
+			text: '[replying to: "[external reply to a photo from channel "Announce"]"]',
+		});
+		expect(h.pushed[0]!.parts[1]).toEqual({ type: "text", text: "and this?" });
+		h.store.close();
+	});
+
+	test("a sender-selected quote on an external reply carries the excerpt", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 43,
+				chat: { id: 7, type: "private" },
+				text: "on that bit",
+				external_reply: {
+					origin: {
+						type: "user",
+						date: 1_700_000_000,
+						sender_user: { id: 3, is_bot: false, first_name: "Ann", username: "ann" },
+					},
+				},
+				quote: { text: "selected words", position: 4, is_manual: true },
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({
+			type: "text",
+			text: '[replying to: "selected words"]',
+		});
+		h.store.close();
+	});
+
 	test("a reply target that is the topic root is thread plumbing, not a reply", async () => {
 		// dmGapMinutes 0 puts every flush past the gap; chat 7 is
 		// allowed but not an operator → the guest lane.

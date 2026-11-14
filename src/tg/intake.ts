@@ -8,7 +8,7 @@
 
 import { z } from "zod";
 import type { Api } from "grammy";
-import type { Message } from "grammy/types";
+import type { ExternalReplyInfo, Message, MessageOrigin } from "grammy/types";
 import type { UIMessage } from "ai";
 import type { Config } from "../config-schema.ts";
 import { paths } from "../home-layout.ts";
@@ -52,6 +52,50 @@ const OPERATOR_ONLY_COMMANDS = new Set([
 	"/abandon",
 	"/skill",
 ]);
+
+function externalOriginLabel(origin: MessageOrigin): string {
+	switch (origin.type) {
+		case "user": {
+			const u = origin.sender_user;
+			return u.username !== undefined ? `@${u.username}` : u.first_name;
+		}
+		case "hidden_user":
+			return origin.sender_user_name;
+		case "chat":
+			return `chat "${origin.sender_chat.title ?? String(origin.sender_chat.id)}"`;
+		case "channel":
+			return `channel "${origin.chat.title ?? String(origin.chat.id)}"`;
+	}
+}
+
+const EXTERNAL_MEDIA_KINDS: [keyof ExternalReplyInfo, string][] = [
+	["photo", "a photo"],
+	["live_photo", "a live photo"],
+	["video", "a video"],
+	["video_note", "a video note"],
+	["animation", "an animation"],
+	["audio", "an audio file"],
+	["voice", "a voice message"],
+	["document", "a document"],
+	["sticker", "a sticker"],
+	["story", "a story"],
+	["paid_media", "paid media"],
+	["contact", "a contact"],
+	["dice", "a dice roll"],
+	["game", "a game"],
+	["giveaway", "a giveaway"],
+	["giveaway_winners", "a giveaway result"],
+	["invoice", "an invoice"],
+	["location", "a location"],
+	["venue", "a venue"],
+	["poll", "a poll"],
+	["checklist", "a checklist"],
+];
+
+function describeExternalReply(ext: ExternalReplyInfo): string {
+	const kind = EXTERNAL_MEDIA_KINDS.find(([key]) => ext[key] !== undefined)?.[1] ?? "a message";
+	return `external reply to ${kind} from ${externalOriginLabel(ext.origin)}`;
+}
 
 // `message_thread_id` also rides on non-forum comment threads (is_topic_message unset) — those stay bare-chat.
 export function conversationAddress(msg: {
@@ -386,6 +430,25 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 					const hit = env.pings.lookup(msg.chat.id, quotedReply.message_id);
 					return hit !== null && deps.store.get(hit) !== null ? hit : null;
 				})();
+	// A reply whose target lives in another chat arrives as external_reply
+	// with no reply_to_message. It is still quoted context — quote.text when
+	// the sender selected one, else a placeholder naming origin + media kind
+	// so the reply is never silently dropped (#476).
+	const quoted =
+		pingedConv !== null
+			? undefined
+			: quotedReply !== undefined
+				? {
+						messageId: quotedReply.message_id,
+						text: quotedReply.text ?? quotedReply.caption ?? "",
+					}
+				: msg.external_reply !== undefined
+					? {
+							messageId: msg.external_reply.message_id ?? -1,
+							text:
+								msg.quote?.text ?? `[${describeExternalReply(msg.external_reply)}]`,
+						}
+					: undefined;
 	const payload: InboxPayload = {
 		conversationId: pingedConv ?? lane,
 		chatId: msg.chat.id,
@@ -394,14 +457,7 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 		text,
 		media,
 		mediaError: mediaError === null ? null : String(mediaError),
-		...(quotedReply === undefined || pingedConv !== null
-			? {}
-			: {
-					quoted: {
-						messageId: quotedReply.message_id,
-						text: quotedReply.text ?? quotedReply.caption ?? "",
-					},
-				}),
+		...(quoted !== undefined ? { quoted } : {}),
 	};
 	try {
 		if (!env.inbox.record(updateId, payload)) return;

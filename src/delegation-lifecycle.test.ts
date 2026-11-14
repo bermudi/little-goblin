@@ -736,6 +736,26 @@ describe("delegation watcher", () => {
 			expect(h.wakes[0]).toContain("# finished fast");
 		});
 
+		test("a fresh report ending in a question at capture parks needs_input, not done", async () => {
+			const h = harness();
+			const d = pendingRow(h, "polite finisher", 120_000);
+			mkdirSync(join(h.delegationsDir, String(d.id)), { recursive: true });
+			writeFileSync(
+				join(h.delegationsDir, String(d.id), "report.md"),
+				"# almost\n\nOne thing left — merge the fix branch too?\n",
+			);
+			h.agents.set(d.agentName, { ...agent(d.agentName, "idle", 9), completion_seq: 9 });
+			const owner = startDelegationLifecycle(h.deps, 3_600_000);
+			await owner.tick();
+			owner.stopTicker();
+			const row = h.store.get(d.id)!;
+			expect(row.status).toBe("needs_input");
+			expect(row.baselineSeq).toBe(9);
+			expect(h.wakes).toHaveLength(1);
+			expect(h.wakes[0]).toContain("needs input");
+			expect(h.wakes[0]).toContain("ends in a question");
+		});
+
 		test("a local done agent with no report parks too — done alone never advances", async () => {
 			const h = harness();
 			const d = pendingRow(h, "screen only", 120_000);
@@ -887,6 +907,40 @@ describe("delegation watcher", () => {
 		w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("done");
 		expect(h.wakes[0]).toContain(`[delegation: #${d.id} fast finisher · done]`);
+	});
+
+	test("an idle completion whose report ends in a question parks needs_input (#493-L27)", async () => {
+		const h = harness();
+		const d = runningRow(h, "asking finisher", 3, 1_000);
+		h.agents.set(d.agentName, agent(d.agentName, "idle", 4));
+		mkdirSync(join(h.delegationsDir, String(d.id)), { recursive: true });
+		writeFileSync(
+			join(h.delegationsDir, String(d.id), "report.md"),
+			"# progress\n\nThe migration script ran clean.\n\nWant me to apply it to the other two databases?\n\n",
+		);
+		const w = startDelegationLifecycle(h.deps);
+		await w.tick();
+		w.stopTicker();
+		const row = h.store.get(d.id)!;
+		expect(row.status).toBe("needs_input");
+		expect(h.wakes).toHaveLength(1);
+		expect(h.wakes[0]).toContain(`[delegation: #${d.id} asking finisher · needs input]`);
+		expect(h.wakes[0]).toContain("ends in a question");
+	});
+
+	test("a report ending in a statement still settles done — blank tail lines don't count", async () => {
+		const h = harness();
+		const d = runningRow(h, "sure finisher", 3, 1_000);
+		h.agents.set(d.agentName, agent(d.agentName, "idle", 4));
+		mkdirSync(join(h.delegationsDir, String(d.id)), { recursive: true });
+		writeFileSync(
+			join(h.delegationsDir, String(d.id), "report.md"),
+			"# done\n\nApplied everywhere.\n\n\n",
+		);
+		const w = startDelegationLifecycle(h.deps);
+		await w.tick();
+		w.stopTicker();
+		expect(h.store.get(d.id)!.status).toBe("done");
 	});
 
 	test("a follow-up inside the skew window ignores the previous report but accepts an immediate new one", async () => {

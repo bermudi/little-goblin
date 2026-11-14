@@ -476,6 +476,22 @@ export async function answer(
 	if (d.status === "stopped") return { kind: "refused", id, why: "stopped" };
 	if (d.status === "starting") return { kind: "refused", id, why: "starting" };
 	if (!d.agentName) return { kind: "refused", id, why: "never launched" };
+	// A keypress only reaches a dialog that owns the pane; typing one into
+	// a working or idle agent corrupts its draft. Preflight the live
+	// status — only a blocked agent takes keys (#493-L28).
+	let agentStatus: string | null;
+	try {
+		agentStatus = (await herdrFor(deps, d.target).get(d.agentName))?.agent_status ?? null;
+	} catch (err) {
+		log.error("delegation answer preflight failed", err, {
+			delegation: d.id,
+			name: d.name,
+		});
+		return { kind: "key failed", id, error: err instanceof Error ? err.message : String(err) };
+	}
+	if (agentStatus !== "blocked") {
+		return { kind: "refused", id, why: agentStatus === null ? "agent gone" : "not blocked" };
+	}
 	try {
 		await herdrFor(deps, d.target).sendKey(d.agentName, key);
 	} catch (err) {

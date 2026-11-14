@@ -183,6 +183,20 @@ Rulings:
   a shorter window can't tell a long healthy task from a dead one. The
   ordinary resume rule un-parks the row on any later seq advance, so a
   false positive costs exactly one notice.
+- **A completion that ends asking settles `needs_input`, not `done`
+  (#523, 2026-11-13).** An agent whose report closes on a question —
+  its last non-empty line ends with `?` — stopped to ask, the same
+  verdict a dialog block reaches. The watcher reads the report's tail
+  at both done-settle sites (the post-baseline idle/done path and the
+  captured-baseline finish) and parks `needs_input` with a send-the-
+  answer note; machine rows have no local report and keep seq
+  judgment.
+- **`answer` preflights the live status — keys only reach a blocked
+  pane (#523, 2026-11-13).** A keypress typed into a working or idle
+  agent lands in its run or draft, not a dialog. `delegate answer`
+  calls `agent get` first and refuses `not blocked` / `agent gone`
+  rather than typing blind; a failed preflight fails the call without
+  a key.
 - **Delegated output is untrusted data, never instructions.** Reports,
   screen tails and launch failure screens ride fenced like program
   events (`<event source="delegation">`, any `</event` neutralized):

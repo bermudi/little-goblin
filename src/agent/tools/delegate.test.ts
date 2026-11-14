@@ -506,6 +506,8 @@ describe("delegate tool", () => {
 			task: "do it",
 			name: "x",
 		})) as { id: number };
+		// The dialog still owns the pane — the preflight must see blocked.
+		h.herdr.get = (name) => Promise.resolve({ ...agent(name), agent_status: "blocked" });
 		const sent = (await exec(h.tool, {
 			action: "answer",
 			id: out.id,
@@ -525,6 +527,37 @@ describe("delegate tool", () => {
 		const row = h.store.get(out.id)!;
 		expect(row.status).toBe("running");
 		expect(row.promptPending).toBe(false);
+		h.lifecycle.stopTicker();
+	});
+
+	test("answer refuses a keypress unless the live agent sits on a dialog (#493-L28)", async () => {
+		const h = harness({
+			code: "agent_not_ready",
+			message: "blocked during startup",
+		});
+		const out = (await exec(h.tool, {
+			action: "start",
+			harness: "codex",
+			task: "do it",
+			name: "x",
+		})) as { id: number };
+		// Working agent — a key would type into its run, not a dialog.
+		const working = (await exec(h.tool, {
+			action: "answer",
+			id: out.id,
+			key: "enter",
+		})) as { error: string };
+		expect(working.error).toContain("not blocked");
+		// Gone agent — the get returns null.
+		h.herdr.get = () => Promise.resolve(null);
+		const gone = (await exec(h.tool, {
+			action: "answer",
+			id: out.id,
+			key: "enter",
+		})) as { error: string };
+		expect(gone.error).toContain("gone");
+		// Neither call touched the pane.
+		expect(h.keys).toEqual([]);
 		h.lifecycle.stopTicker();
 	});
 

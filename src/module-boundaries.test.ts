@@ -11,6 +11,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 const SRC = import.meta.dir;
+const ROOT = resolve(SRC, "..");
 
 const GRAMMY_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*)["']grammy(?:\/[^"']*)?["']/;
 const PI_IMPORT =
@@ -22,10 +23,12 @@ const SIBLING_MOD_IMPORT =
 	/(?:\bimport\b|\bexport\b)(?!\s*type\b)[^;]*from\s*["']\.\/mod\.ts["']|\bimport\s*\(\s*["']\.\/mod\.ts["']\s*\)/;
 
 // Every import form that carries a specifier: `from "…"` (static
-// import/export, `import type` included), dynamic `import("…")`, and
-// bare side-effect `import "…"`.
+// import/export, `import type` included), dynamic `import("…")` —
+// quoted or backticked, without `${` interpolation, leading /* … */
+// comments allowed — and bare side-effect `import "…"`.
 const FROM_SPEC = /\bfrom\s*["']([^"']+)["']/g;
-const DYNAMIC_SPEC = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
+const DYNAMIC_SPEC =
+	/\bimport\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*["`]([^"`$]+)["`]\s*\)/g;
 const BARE_SPEC = /\bimport\s*["']([^"']+)["']/g;
 
 function specifiers(source: string): string[] {
@@ -46,6 +49,14 @@ const CLAUDE_SDK_DIR = "agent/claude-code";
 // #201): each folder's index.ts is its only public import.
 const FEATURE_FOLDERS = new Set(["reminders"]);
 
+// The trees the feature-folder rule scans: the server, the app client,
+// and the repo scripts — the roots import-cycles walks, plus scripts/.
+const FEATURE_SCAN_ROOTS = [
+	SRC,
+	join(ROOT, "app", "src"),
+	join(ROOT, "scripts"),
+];
+
 // Test-only edges: shared rigs that build the family's real entry to
 // fake at it, and the crash/podman tests' spawned child/driver processes.
 const SIBLING_EXEMPT = new Set([
@@ -58,14 +69,22 @@ const SIBLING_EXEMPT = new Set([
 function walk(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
 		const path = join(dir, entry.name);
-		if (entry.isDirectory()) walk(path, out);
-		else if (entry.name.endsWith(".ts")) out.push(path);
+		if (entry.isDirectory()) {
+			// Dependencies and build output are not part of the tree.
+			if (entry.name !== "node_modules" && entry.name !== "dist") walk(path, out);
+		} else if (/\.(ts|tsx)$/.test(entry.name)) out.push(path);
 	}
 	return out;
 }
 
 function rel(file: string): string {
 	return file.slice(SRC.length + 1);
+}
+
+// src files report relative to src/ like every other rule here; files
+// from the other scan roots report repo-root-relative paths.
+function label(file: string): string {
+	return file.startsWith(SRC) ? rel(file) : file.slice(ROOT.length + 1);
 }
 
 describe("module boundaries", () => {
@@ -127,19 +146,24 @@ describe("module boundaries", () => {
 
 	test("feature folders are imported only through their index.ts", () => {
 		const offenders: string[] = [];
-		for (const file of walk(SRC)) {
+		for (const file of FEATURE_SCAN_ROOTS.flatMap((root) => walk(root))) {
 			// Inside the feature folder itself — its own modules and tests.
-			if (FEATURE_FOLDERS.has(rel(file).split("/")[0]!)) continue;
+			if (file.startsWith(SRC) && FEATURE_FOLDERS.has(rel(file).split("/")[0]!))
+				continue;
 			for (const spec of specifiers(readFileSync(file, "utf8"))) {
 				if (!spec.startsWith(".")) continue;
 				const resolved = resolve(dirname(file), spec);
 				for (const feature of FEATURE_FOLDERS) {
 					const within = relative(join(SRC, feature), resolved);
 					// Outside the feature, the folder itself (which resolves to
-					// its index.ts), or the public index — allowed.
-					if (within.startsWith("..") || within === "" || within === "index.ts")
+					// its index), or any spelling of the public index — allowed.
+					if (
+						within.startsWith("..") ||
+						within === "" ||
+						/^index(\.ts|\.js)?$/.test(within)
+					)
 						continue;
-					offenders.push(`${rel(file)} -> ${spec}`);
+					offenders.push(`${label(file)} -> ${spec}`);
 				}
 			}
 		}

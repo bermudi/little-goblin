@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { App } from "./App.tsx";
+import { ErrorBoundary } from "./ErrorBoundary.tsx";
 import { telegramDoor } from "./api.ts";
 import { installTelegramFallback } from "./telegram.ts";
 import { installTooltips } from "./tooltip.ts";
@@ -20,7 +21,11 @@ async function boot(): Promise<void> {
 	installTooltips(document);
 	const root = document.getElementById("root");
 	if (root === null) throw new Error("no #root");
-	createRoot(root).render(<App />);
+	createRoot(root).render(
+		<ErrorBoundary>
+			<App />
+		</ErrorBoundary>,
+	);
 
 	// Installability + offline shell — the worker precaches the static
 	// app shell per build; data stays live-only (see public/sw.js).

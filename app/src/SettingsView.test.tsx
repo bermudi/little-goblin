@@ -981,8 +981,9 @@ describe("quiet harbor regressions", () => {
 		test("an engine the server's ttsDefaults lacks renders fallbacks instead of crashing", async () => {
 			// Rollout skew: a freshly built client offers kinds an old
 			// server's ttsDefaults does not answer for. Picking one must
-			// degrade to the caption fallbacks — there is no error
-			// boundary, so a thrown render blanks the whole tree.
+			// degrade to the caption fallbacks — and even where a throw
+			// slips through, the root ErrorBoundary (main.tsx) keeps the
+			// app from blanking entirely.
 			settingsResponse = {
 				...SETTINGS_BODY,
 				ttsDefaults: {
@@ -1027,6 +1028,106 @@ describe("quiet harbor regressions", () => {
 				(r) => r.querySelector(".rlabel")?.textContent === "Key",
 			);
 			expect(keyRow?.textContent).toContain("Key missing");
+		});
+
+		test("a skew tts kind picked on Voice survives opening Accounts (#281)", async () => {
+			// The Accounts tab's key list bare-indexed
+			// ttsDefaults[draft.tts.kind] — one tab over from the Voice
+			// fix, so picking a skew kind on Voice and opening Accounts
+			// threw mid-render and blanked the tree.
+			settingsResponse = {
+				...SETTINGS_BODY,
+				ttsDefaults: {
+					openrouter: { model: "fish/s2", auth: "openrouter" },
+					logfare: { model: "aura-2-en", auth: "logfare" },
+					mimo: { model: "mimo-tts", auth: "mimo" },
+				},
+			};
+			await mount();
+			await act(async () => {
+				[...container.querySelectorAll("button.idx")]
+					.find((b) => b.textContent?.includes("Voice"))
+					?.dispatchEvent(
+						new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+					);
+			});
+			const ttsOn = container.querySelector('button[aria-label="text to speech"]');
+			expect(ttsOn).not.toBeNull();
+			await act(async () => {
+				ttsOn?.dispatchEvent(
+					new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+			});
+			const kind = container.querySelector<HTMLSelectElement>('select[aria-label="tts kind"]');
+			expect(kind).not.toBeNull();
+			await act(async () => {
+				if (kind === null) return;
+				kind.value = "onemin";
+				kind.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+			});
+			// The crash site: Accounts reads the picked kind's default key.
+			// With the skew fallback the tab renders — and the unknown kind
+			// contributes no key row, so the empty-keys caption shows.
+			await act(async () => {
+				[...container.querySelectorAll("button.snav")]
+					.find((b) => b.textContent?.includes("Accounts"))
+					?.dispatchEvent(
+						new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+					);
+			});
+			expect(container.textContent).toContain("Model services");
+			expect(container.textContent).toContain(
+				"Keys for search and voice services appear here once you use them.",
+			);
+		});
+
+		test("a skew tr kind picked on Voice survives opening Accounts (#281)", async () => {
+			// Same cross-tab skew as the ttsDefaults test above,
+			// transcription side: the kind list still offers onemin, but an
+			// old server's trDefaults answers nothing for it — Accounts'
+			// key list reads the picked kind's default mid-render.
+			settingsResponse = {
+				...SETTINGS_BODY,
+				transcriptionDefaults: trDefaultsNoOnemin,
+			};
+			await mount();
+			await act(async () => {
+				[...container.querySelectorAll("button.idx")]
+					.find((b) => b.textContent?.includes("Voice"))
+					?.dispatchEvent(
+						new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+					);
+			});
+			const trOn = container.querySelector('button[aria-label="speech to text"]');
+			expect(trOn).not.toBeNull();
+			await act(async () => {
+				trOn?.dispatchEvent(
+					new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+			});
+			const kind = container.querySelector<HTMLSelectElement>(
+				'select[aria-label="transcription kind"]',
+			);
+			expect(kind).not.toBeNull();
+			await act(async () => {
+				if (kind === null) return;
+				kind.value = "onemin";
+				kind.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+			});
+			// The crash site: Accounts reads the picked kind's default key.
+			// With the skew fallback the tab renders — and the unknown kind
+			// contributes no key row, so the empty-keys caption shows.
+			await act(async () => {
+				[...container.querySelectorAll("button.snav")]
+					.find((b) => b.textContent?.includes("Accounts"))
+					?.dispatchEvent(
+						new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+					);
+			});
+			expect(container.textContent).toContain("Model services");
+			expect(container.textContent).toContain(
+				"Keys for search and voice services appear here once you use them.",
+			);
 		});
 
 		test("an engine the server's trDefaults lacks renders fallbacks instead of crashing", async () => {

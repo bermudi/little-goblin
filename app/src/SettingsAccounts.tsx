@@ -195,9 +195,13 @@ function serviceKeys(ctx: SettingsCtx): { name: string; label: string; users: st
 		});
 	chain(draft.search, SEARCH_META, "Search");
 	chain(draft.fetch, FETCH_META, "Page reading");
+	// Skew guard (#281): the defaults ride the settings response, and
+	// an old server predating a kind this client offers answers without
+	// the key — degrade to no default name rather than throw mid-render
+	// (same rule as SettingsVoice's kind rows).
 	if (draft.tts !== null && draft.tts.kind !== "edge") {
 		add(
-			draft.tts.auth.trim() || kinds.ttsDefaults[draft.tts.kind].auth,
+			draft.tts.auth.trim() || (kinds.ttsDefaults[draft.tts.kind]?.auth ?? ""),
 			displayName(serviceNames, draft.tts.kind),
 			"Speaking",
 		);
@@ -207,7 +211,7 @@ function serviceKeys(ctx: SettingsCtx): { name: string; label: string; users: st
 		for (const e of tr)
 			if (e.kind !== "whistle")
 				add(
-					e.auth.trim() || kinds.trDefaults[e.kind].auth,
+					e.auth.trim() || (kinds.trDefaults[e.kind]?.auth ?? ""),
 					displayName(serviceNames, e.kind),
 					"Transcription",
 				);

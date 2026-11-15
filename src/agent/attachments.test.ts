@@ -352,7 +352,7 @@ describe("materializeAttachments", () => {
 	});
 });
 
-test("capable model + incapable pipe = path reference — two gates, both must pass", async () => {
+test("documents stay a path reference even when model and pipe accept them", async () => {
 	const dir = tmpDir("goblin-att-");
 	const f = join(dir, "doc.pdf");
 	writeFileSync(f, "pdfbytes");
@@ -362,22 +362,18 @@ test("capable model + incapable pipe = path reference — two gates, both must p
 			role: "user",
 			parts: [
 				attachmentPart({ path: f, mediaType: "application/pdf", filename: "doc.pdf", size: 8 }),
+				attachmentPart({ path: f, mediaType: "text/plain", filename: "a.txt", size: 8 }),
 			],
 		},
 	];
-	// Catalog truth (pdf modality) without pipe truth (carriesMedia)
-	// once meant a thrown turn mid-request — openai-compatible rejected
-	// non-image file parts the catalog said the model could take.
-	const blocked = await materializeAttachments(
+	const out = await materializeAttachments(
 		history,
-		new Set(["text", "pdf"]),
+		new Set(["text", "pdf", "file"]),
 		1024,
-		() => false,
+		() => true,
 	);
-	expect(blocked[0]!.parts[0]!.type).toBe("text");
-	expect((blocked[0]!.parts[0] as { text: string }).text).toContain(f);
-
-	const open = await materializeAttachments(history, new Set(["text", "pdf"]), 1024, () => true);
-	expect(open[0]!.parts[0]!.type).toBe("file");
-	expect((open[0]!.parts[0] as { mediaType: string }).mediaType).toBe("application/pdf");
+	for (const part of out[0]!.parts) {
+		expect(part.type).toBe("text");
+		expect((part as { text: string }).text).toContain(f);
+	}
 });

@@ -180,9 +180,15 @@ function planPart(
 	maxItemBytes: number,
 	carries: (mediaType: string, position: MediaPosition) => boolean,
 ): { decision: "inline" } | { decision: "fallback"; reason: "modality" | "size" } {
+	// Documents (PDF, text, archives…) stay a path: inlined, their bytes ride
+	// every later request; the model reads only what it needs with tools.
+	const top = ref.mediaType.split("/", 1)[0];
+	if (top !== "image" && top !== "audio" && top !== "video") {
+		return { decision: "fallback", reason: "modality" };
+	}
 	// Never inline non-speech audio: use its transcript as text when present,
 	// otherwise keep a path reference.
-	if (ref.mediaType.startsWith("audio/") && ref.speech !== true) {
+	if (top === "audio" && ref.speech !== true) {
 		return { decision: "fallback", reason: "modality" };
 	}
 	// Both model capability and provider transport must pass; otherwise retain a

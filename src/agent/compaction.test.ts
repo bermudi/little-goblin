@@ -186,9 +186,12 @@ describe("chooseBoundary", () => {
 		expect(chooseBoundary(sample(), { tailTokenBudget: 1, previousBoundary: 4 })).toBeNull();
 	});
 
-	test("an interleaved burst is atomic — the cut coarsens, never splits", () => {
+	test("an interleaved burst with a single-part reply stays whole — the split needs a step edge", () => {
 		// u_b arrived mid-turn; a_a anchors to u_a — no seq between them is
-		// a valid cut, so the whole burst is kept.
+		// a valid whole-event cut, so the whole burst is kept. The #403
+		// split could halve the reply, but only at a step-start edge; a
+		// single-part reply has none, so the retired never-split rule still
+		// holds for it.
 		const burst = [
 			ev(1, "user", "first question".repeat(200)),
 			ev(2, "user", "queued follow-up".repeat(200)),
@@ -214,6 +217,118 @@ describe("chooseBoundary", () => {
 			ev(5, "user", "pending question"),
 		];
 		expect(chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: 2 })).toBeNull();
+	});
+
+	// #403 — split turns. Sizes are chosen so whole-event cuts can never
+	// bring the tail under budget and a step-edge cut can.
+	const splitTail = (): CompactionEvent[] => [
+		ev(1, "user", "research the deploy"),
+		stepReplyEvent(2, 1, [
+			{ text: "x".repeat(40_000) },
+			{ text: "y".repeat(10_000) },
+			{ text: "z".repeat(4_000) },
+		]),
+	];
+
+	test("a turn bigger than the tail splits at a step edge — the prefix folds, the suffix stays", () => {
+		// The whole exchange (~13.5k tokens) is over the 5k tail; the
+		// suffix from the second step-start (~3.5k) fits. The boundary is
+		// the trigger's own causal position, and the split names the reply
+		// with the smallest fitting step-start index.
+		expect(chooseBoundary(splitTail(), { tailTokenBudget: 5_000, previousBoundary: null })).toEqual({
+			boundarySeq: 1,
+			split: { seq: 2, part: 2 },
+		});
+	});
+
+	test("a single-step oversized turn does not split — today's behaviour stands", () => {
+		// The only step-start is part 0, and a cut there folds nothing.
+		// Alone with its trigger the span below it is too small to be
+		// worth a fold: a noop, exactly as before.
+		const detail = [
+			ev(1, "user", "research the deploy"),
+			stepReplyEvent(2, 1, [{ text: "x".repeat(60_000) }]),
+		];
+		expect(chooseBoundary(detail, { tailTokenBudget: 5_000, previousBoundary: null })).toBeNull();
+		// With completed history before it, the old rule applies: fold up
+		// to the trigger, keep the giant reply whole in the tail.
+		const withPast = [
+			ev(1, "user", "old question".repeat(400)),
+			ev(2, "assistant", "old answer".repeat(400), 1),
+			ev(3, "user", "research it"),
+			stepReplyEvent(4, 3, [{ text: "x".repeat(60_000) }]),
+		];
+		expect(chooseBoundary(withPast, { tailTokenBudget: 5_000, previousBoundary: null })).toEqual({
+			boundarySeq: 2,
+			split: null,
+		});
+	});
+
+	test("beforeSeq keeps the running turn out of the split — completed history only", () => {
+		const detail = [
+			...splitTail(),
+			ev(3, "user", "second task"),
+			stepReplyEvent(4, 3, [
+				{ text: "x".repeat(40_000) },
+				{ text: "y".repeat(10_000) },
+				{ text: "z".repeat(4_000) },
+			]),
+		];
+		// Unconstrained: the newest oversized exchange is the split target.
+		expect(chooseBoundary(detail, { tailTokenBudget: 5_000, previousBoundary: null })).toEqual({
+			boundarySeq: 3,
+			split: { seq: 4, part: 2 },
+		});
+		// The ceiling folds completed history only: the running exchange
+		// never folds, whole or split — the split lands on the older one.
+		expect(
+			chooseBoundary(detail, { tailTokenBudget: 5_000, previousBoundary: null, beforeSeq: 3 }),
+		).toEqual({ boundarySeq: 1, split: { seq: 2, part: 2 } });
+	});
+
+	test("re-compaction after a split moves forward — a larger part, then past the event", () => {
+		const detail = [
+			ev(1, "user", "research the deploy"),
+			stepReplyEvent(2, 1, [
+				{ text: "x".repeat(40_000) },
+				{ text: "y".repeat(10_000) },
+				{ text: "z".repeat(4_000) },
+				{ text: "w".repeat(2_000) },
+			]),
+		];
+		// Step edges are parts 2, 4, 6. Fresh split: the suffix from 2
+		// (~4k tokens with three steps) fits the 5k tail.
+		expect(chooseBoundary(detail, { tailTokenBudget: 5_000, previousBoundary: null })).toEqual({
+			boundarySeq: 1,
+			split: { seq: 2, part: 2 },
+		});
+		// Against the previous split row, the same boundary only counts
+		// when the part advances.
+		expect(
+			chooseBoundary(detail, {
+				tailTokenBudget: 5_000,
+				previousBoundary: 1,
+				previousSplit: { seq: 2, part: 2 },
+			}),
+		).toEqual({ boundarySeq: 1, split: { seq: 2, part: 4 } });
+		// At the last edge nothing new can fold — stand down.
+		expect(
+			chooseBoundary(detail, {
+				tailTokenBudget: 5_000,
+				previousBoundary: 1,
+				previousSplit: { seq: 2, part: 6 },
+			}),
+		).toBeNull();
+		// With a later exchange to keep as the tail, the re-compaction
+		// folds PAST the split event instead — whole events again.
+		const withTail = [...detail, ev(3, "user", "and now?"), ev(4, "assistant", "done", 3)];
+		expect(
+			chooseBoundary(withTail, {
+				tailTokenBudget: 5_000,
+				previousBoundary: 1,
+				previousSplit: { seq: 2, part: 4 },
+			}),
+		).toEqual({ boundarySeq: 2, split: null });
 	});
 });
 
@@ -599,6 +714,35 @@ function toolEvent(
 	return event;
 }
 
+// One assistant reply with one part group per step — the shape
+// finish.ts stores for a multi-step tool turn: step-start bookkeeping,
+// optional reasoning, an optional tool call (call and result are one
+// part in the SDK's shape), then the step's text.
+function stepReplyEvent(
+	seq: number,
+	anchorSeq: number,
+	steps: { text: string; reasoning?: string; tool?: { id: string; command: string } }[],
+): CompactionEvent {
+	const parts: UIMessage["parts"] = [];
+	for (const step of steps) {
+		parts.push({ type: "step-start" });
+		if (step.reasoning !== undefined) {
+			parts.push({ type: "reasoning", text: step.reasoning });
+		}
+		if (step.tool !== undefined) {
+			parts.push({
+				type: "tool-bash",
+				toolCallId: step.tool.id,
+				state: "output-available",
+				input: { command: step.tool.command },
+				output: "ok",
+			} as UIMessage["parts"][number]);
+		}
+		parts.push({ type: "text", text: step.text });
+	}
+	return { seq, anchorSeq, message: { id: `m${seq}`, role: "assistant", parts } };
+}
+
 function toolHistory(): CompactionEvent[] {
 	return [
 		ev(1, "user", "run the deploy check".repeat(100)),
@@ -615,7 +759,7 @@ function toolHistory(): CompactionEvent[] {
 }
 
 describe("tool-call atomicity across the cut", () => {
-	test("every cut is an event edge — a tool-bearing message is never bisected", () => {
+	test("whole-event cuts stay on event edges — a split only ever lands on a step edge", () => {
 		const detail = toolHistory();
 		const seqs = new Set(detail.map((e) => e.seq));
 		for (const budget of [1, 5, 20, 100, 1_000, 100_000]) {
@@ -624,7 +768,48 @@ describe("tool-call atomicity across the cut", () => {
 				previousBoundary: null,
 			});
 			if (choice === null) continue;
+			// toolHistory's replies carry no step-start parts, so every cut
+			// over them is a whole-event cut on an event edge.
+			expect(choice.split, `budget ${budget}`).toBeNull();
 			expect(seqs.has(choice.boundarySeq), `budget ${budget}`).toBe(true);
+		}
+	});
+
+	test("a split never lands inside a step — reasoning stays ahead of its tool call", () => {
+		// A budget of 1 cannot fit any suffix; the split then keeps the
+		// LAST step-start so the final step stays verbatim — and even that
+		// degenerate cut sits on a step edge, never between a reasoning
+		// item and the tool call that follows it.
+		const detail = [
+			ev(1, "user", "run the deploy check".repeat(200)),
+			stepReplyEvent(2, 1, [
+				{
+					text: "checking",
+					reasoning: "plan the check",
+					tool: { id: "t1", command: "bun run typecheck" },
+				},
+				{
+					text: "checking services",
+					reasoning: "now services",
+					tool: { id: "t2", command: "systemctl --user status goblin" },
+				},
+			]),
+		];
+		const choice = chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null });
+		expect(choice).toEqual({ boundarySeq: 1, split: { seq: 2, part: 4 } });
+		const parts = detail[1]!.message.parts;
+		// The cut lands ON a step-start part — index 4, the second step's
+		// edge; parts 1-3 (step one) fold together, parts 4-7 (step two)
+		// stay together.
+		expect((parts[4] as { type: string }).type).toBe("step-start");
+		// Every reasoning part in the kept suffix still has its tool call
+		// after it, inside the same suffix.
+		for (const [i, p] of parts.entries()) {
+			if (i < 4 || (p as { type: string }).type !== "reasoning") continue;
+			expect(
+				parts.slice(i + 1).some((q) => (q as { type: string }).type === "tool-bash"),
+				`reasoning at ${i} keeps its tool in the suffix`,
+			).toBe(true);
 		}
 	});
 
@@ -654,6 +839,74 @@ describe("tool-call atomicity across the cut", () => {
 			expect(span).toContain(command);
 			expect(span).toContain(result);
 		}
+	});
+});
+
+describe("runCompaction — split turns", () => {
+	// One multi-step turn alone over the tail budget: parts are
+	// [ss, x·40k, ss, y·10k, ss, z·4k]; the split keeps [2, end) verbatim.
+	const splitDetail = (): CompactionEvent[] => [
+		ev(1, "user", "research the deploy"),
+		stepReplyEvent(2, 1, [
+			{ text: "x".repeat(40_000) },
+			{ text: "y".repeat(10_000) },
+			{ text: "z".repeat(4_000) },
+		]),
+	];
+
+	test("the summary carries a Turn Context checkpoint of the split turn's prefix", async () => {
+		const { store, writes } = fakeStore(splitDetail());
+		const prompts: string[] = [];
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async (_system, prompt) => {
+				prompts.push(prompt);
+				// Fake at the edge: the turn-prefix call is recognizable by
+				// its instruction and answers with a fixed checkpoint.
+				return prompt.includes("checkpoint of the user's request")
+					? "THE TURN PREFIX CHECKPOINT"
+					: foldSummary("the folded history", prompt);
+			},
+			{ tailTokenBudget: 5_000, inputTokenBudget: 32_000 },
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		// Two calls: the folded span (the trigger), then the prefix.
+		expect(prompts).toHaveLength(2);
+		expect(prompts[0]).toContain("research the deploy");
+		// The prefix call sees the trigger again plus the folded steps —
+		// and never the kept suffix.
+		expect(prompts[1]).toContain("research the deploy");
+		expect(prompts[1]).toContain("x".repeat(200));
+		expect(prompts[1]).not.toContain("y".repeat(200));
+		expect(prompts[1]).not.toContain("z".repeat(200));
+		if (outcome.kind !== "compacted") return;
+		expect(outcome.summary).toContain("**Turn Context (split turn):**");
+		expect(outcome.summary).toContain("THE TURN PREFIX CHECKPOINT");
+		expect(writes[0]).toMatchObject({ boundarySeq: 1, split: { seq: 2, part: 2 } });
+		// The split event is partially kept — it counts as tail, and the
+		// fully folded span is the trigger alone.
+		expect(writes[0]).toMatchObject({ tailEvents: 1 });
+	});
+
+	test("a fresh conversation whose one multi-step tool turn exceeds the tail now folds", async () => {
+		// The design/compaction.md stage-1 regression pin: this exact shape
+		// used to be a noop — no whole-event cut could fold anything.
+		const { store, writes } = fakeStore(splitDetail());
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async (_s, prompt) => foldSummary("folded", prompt),
+			{ tailTokenBudget: 5_000, inputTokenBudget: 32_000 },
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		if (outcome.kind !== "compacted") return;
+		expect(outcome.boundarySeq).toBe(1);
+		expect(writes[0]).toMatchObject({ split: { seq: 2, part: 2 } });
 	});
 });
 

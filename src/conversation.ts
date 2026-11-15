@@ -203,7 +203,6 @@ export interface ConversationStore extends ConversationReads {
 
 export function openStore(dbPath: string): ConversationStore {
 	const db = new Database(dbPath);
-	db.run("PRAGMA journal_mode = WAL");
 	// Telegram acks after the inbox insert: WAL/NORMAL survives a crash,
 	// but host power loss could discard an acked commit — FULL syncs
 	// before we return.
@@ -215,6 +214,9 @@ export function openStore(dbPath: string): ConversationStore {
 	// file, so a nested cross-connection write (a bug) must still surface
 	// within seconds, not wedge the event loop.
 	db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+	// After busy_timeout: switching to WAL needs a lock a concurrent reader
+	// can hold, and without a handler the open fails on the spot (#558).
+	db.run("PRAGMA journal_mode = WAL");
 	db.run("PRAGMA foreign_keys = ON");
 	ensureConversationSchema(db);
 	const memoryQueue = new MemoryQueue(db);

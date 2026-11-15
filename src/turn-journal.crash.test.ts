@@ -46,10 +46,15 @@ afterAll(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-async function until(fn: () => boolean, what: string, ms = 30_000): Promise<void> {
+// A child that died before the signal can never send it: fail with its
+// exit code (stderr is inherited) instead of waiting out the deadline.
+async function until(child: Subprocess, fn: () => boolean, what: string, ms = 30_000): Promise<void> {
 	const deadline = Date.now() + ms;
 	while (Date.now() < deadline) {
 		if (fn()) return;
+		if (child.exitCode !== null) {
+			throw new Error(`child exited ${child.exitCode} before: ${what}`);
+		}
 		await Bun.sleep(40);
 	}
 	throw new Error(`timed out waiting for: ${what}`);
@@ -119,7 +124,7 @@ async function killAndReopenRecorded(child: Subprocess, dbPath: string) {
 describe("turn journal — a real killed process", () => {
 	test("kill after dispatch, before the result: call stays 'dispatched'", async () => {
 		const { child, dbPath, marker } = spawn("hang-in-tool", "dispatched");
-		await until(() => existsSync(marker), "tool dispatched in child");
+		await until(child, () => existsSync(marker), "tool dispatched in child");
 		const { store, journal } = await killAndReopen(child, dbPath);
 		try {
 			const runs = journal.interrupted();
@@ -144,7 +149,7 @@ describe("turn journal — a real killed process", () => {
 		const { child, dbPath, marker } = spawn("plan-only", "planned");
 		const probe = new Database(dbPath);
 		try {
-			await until(() => probeCallState(probe).includes("planned"), "planned row in child");
+			await until(child, () => probeCallState(probe).includes("planned"), "planned row in child");
 		} finally {
 			probe.close();
 		}
@@ -168,7 +173,7 @@ describe("turn journal — a real killed process", () => {
 		const { child, dbPath } = spawn("complete-then-stall", "completed");
 		const probe = new Database(dbPath);
 		try {
-			await until(() => probeCallState(probe).includes("completed"), "completed row in child");
+			await until(child, () => probeCallState(probe).includes("completed"), "completed row in child");
 		} finally {
 			probe.close();
 		}
@@ -191,7 +196,7 @@ describe("turn journal — a real killed process", () => {
 		const { child, dbPath } = spawn("complete-then-stall", "progress-recorded");
 		const probe = new Database(dbPath);
 		try {
-			await until(() => probeCallState(probe).includes("completed"), "completed row in child");
+			await until(child, () => probeCallState(probe).includes("completed"), "completed row in child");
 		} finally {
 			probe.close();
 		}
@@ -225,7 +230,7 @@ describe("turn journal — a real killed process", () => {
 
 	test("a kill inside terminal delivery appends no 'no reply' event — the reply is the record", async () => {
 		const { child, dbPath, marker } = spawn("reply-stall", "reply-stall");
-		await until(() => existsSync(marker), "child stalled inside onDone");
+		await until(child, () => existsSync(marker), "child stalled inside onDone");
 		const { store, journal } = await killAndReopenRecorded(child, dbPath);
 		try {
 			const runs = journal.interrupted();
@@ -248,7 +253,7 @@ describe("turn journal — a real killed process", () => {
 		// and the continuation opens its own row before stalling.
 		const probe = new Database(dbPath);
 		try {
-			await until(() => {
+			await until(child, () => {
 				const statuses = probeRunStatuses(probe);
 				return statuses.includes("error") && statuses.includes("running");
 			}, "overflowed attempt terminal, continuation running");

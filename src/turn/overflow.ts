@@ -10,12 +10,12 @@ import type { LoopTurnState } from "./state.ts";
 import type { LiveChunks, StreamOutcome } from "./stream.ts";
 
 // design/compaction.md → Triggers: the one fold trigger — the lower of
-// 50% of the catalog window and an absolute 128k cap. Every call
+// 50% of the catalog window and an absolute 256k cap (Hermes's cap, operator ruling #547). Every call
 // re-sends the whole context, so the cap bounds the per-call input bill
 // on a 1M window. The same threshold drives the step-boundary pre-empt,
 // the end-of-turn backstop, and the app's compaction gauge.
 export const COMPACT_TRIGGER_RATIO = 0.5;
-export const COMPACT_TRIGGER_CAP_TOKENS = 128_000;
+export const COMPACT_TRIGGER_CAP_TOKENS = 256_000;
 
 // The trigger in tokens for a catalog window; an unknown window fires
 // at the cap alone.

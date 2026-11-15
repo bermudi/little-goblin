@@ -38,11 +38,13 @@ ground with evidence behind them. Git history has the old text.
 A fold fires at the **lower** of:
 
 - **50%** of the catalog window (Hermes's default ratio), and
-- **128,000 tokens** absolute (Hermes caps at 256k for quality; goblin
-  caps lower for cost: every call re-sends the whole context, so a fold
-  bounds the per-call input bill on expensive models).
+- **256,000 tokens** absolute (Hermes's cap, kept for quality; every
+  call re-sends the whole context, so the cap also bounds the per-call
+  input bill on a 1M window). An earlier 128k cap was an agent's pick,
+  never the operator's ruling (#547); changing the cap needs measured
+  cost numbers, not a guess.
 
-So a 1M window folds at 128k; a 200k window at 100k; a 64k window at 32k.
+So a 1M window folds at 256k; a 200k window at 100k; a 64k window at 32k.
 The previous 75% pressure arm and the 120k span-fidelity arm are retired.
 Both values are named constants in `src/turn/overflow.ts` (the
 pre-emption arm needs them there without an import cycle).
@@ -327,7 +329,7 @@ the headings and code-made parts. No migration: old rows render as before
 
 ## Staging
 
-1. **Triggers, tail, cut.** 50%/128k trigger, 20k tail,
+1. **Triggers, tail, cut.** 50%/256k trigger, 20k tail,
    pi's cut over causal order with split turns, overflow contract.
 2. **Summary contents.** Required headings, quality audit, identifier
    index, verbatim user messages, gated memory flush.

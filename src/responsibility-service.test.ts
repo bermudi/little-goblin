@@ -842,6 +842,7 @@ describe("real adapter preflight failures", () => {
 		tab_id: "w1:t1",
 		terminal_id: "term-9",
 		agent_session: { value: "sess-1" },
+		state_change_seq: 7,
 	};
 
 	const prepRig = () => {
@@ -1030,6 +1031,7 @@ describe("beforeSend at the real wire surface", () => {
 			tab_id: "w1:t1",
 			terminal_id: "term-9",
 			agent_session: { value: "sess-1" },
+			state_change_seq: 7,
 		};
 		const wire = (body: unknown): HerdrRunResult => ({
 			code: 0,
@@ -1565,6 +1567,7 @@ describe("managed prompt authority after Herdr preflight", () => {
 				tab_id: "w1:t1",
 				terminal_id: att.target.terminalId,
 				agent_session: { value: att.target.agentSession },
+				state_change_seq: 7,
 			};
 			const wire = (body: unknown): HerdrRunResult => ({
 				code: 0,

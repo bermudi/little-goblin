@@ -1851,9 +1851,9 @@ describe("context overflow recovery", () => {
 			tools: {
 				probe: tool({
 					inputSchema: z.object({}),
-					// ~130k estimated tokens — past the 128k trigger cap on a
+					// ~260k estimated tokens — past the 256k trigger cap on a
 					// 1M window (50% would be ~524k).
-					execute: async () => "x".repeat(520_000),
+					execute: async () => "x".repeat(1_040_000),
 				}),
 			},
 			deps: {

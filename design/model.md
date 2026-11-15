@@ -228,7 +228,7 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   the crossing retries under the new settings. Ruling 2026-10-25
   ([compaction](compaction.md) → Timing): the normal fold is now a
   **step-boundary pre-emption** — the trigger (the projected upcoming
-  request ≥ the lower of 50% of the window and 128k) is checked at the
+  request ≥ the lower of 50% of the window and 256k) is checked at the
   `prepareStep` seam before every model call, gate-checked for foldable
   stored history, and when it fires it
   stops the next dispatch, folds mid-turn, and resumes the

@@ -1,3 +1,4 @@
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { describe, expect, test } from "bun:test";
 import {
 	chmodSync,
@@ -12,7 +13,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import type { Context } from "@earendil-works/chord/context";
 import { CompactionTask, type ConversationId, Harness } from "@earendil-works/pi-durable";
 import type { LanguageModel } from "ai";
 import { openStore } from "../conversation.ts";
@@ -311,7 +311,7 @@ describe("subagents owner", () => {
 			expect(r.runs.get(a.id)?.status).toBe("running");
 			expect(r.desktops.held.has("d1")).toBe(true);
 			expect(r.wakes).toHaveLength(0);
-			await captured!.waitForIdle({} as Context);
+			await captured!.waitForIdle(BACKGROUND_CONTEXT);
 			// Input-matched so the first generation's abort-raced fetch (input =
 			// the task text) cannot eat the reply scripted for the recovery
 			// round (input = the [goblin] nudge) — the #441 flake.
@@ -1827,7 +1827,7 @@ describe("subagents owner", () => {
 						background: true,
 					},
 				);
-			}, {} as Context);
+			}, BACKGROUND_CONTEXT);
 			const resume = h.resume.bind(h);
 			h.resume = () => {
 				resumes++;
@@ -1853,7 +1853,7 @@ describe("subagents owner", () => {
 			const o2 = await open(r2);
 			await expect(o2.resume()).rejects.toThrow("boot abort failed");
 			expect(resumes).toBe(0);
-			const state = await captured!.inspect({} as Context);
+			const state = await captured!.inspect(BACKGROUND_CONTEXT);
 			expect(state.scheduling).toBe("paused");
 			expect(state.tasks.length).toBeGreaterThan(0);
 			expect(state.tasks.some((task) => task.record.kind === "pi.compaction")).toBe(true);
@@ -3388,7 +3388,7 @@ describe("compaction through the owner", () => {
 					).length === 3,
 				"background compaction and generation requests in flight",
 			);
-			const before = await captured!.inspect({} as Context);
+			const before = await captured!.inspect(BACKGROUND_CONTEXT);
 			expect(
 				before.tasks.some((task) => task.record.kind === "pi.compaction" && task.record.background),
 			).toBe(true);
@@ -3398,7 +3398,7 @@ describe("compaction through the owner", () => {
 			);
 			for (let i = 0; i < 10; i++) await o.scan();
 			expect(r.runs.get(a.id)?.status).toBe("failed");
-			const after = await captured!.inspect({} as Context);
+			const after = await captured!.inspect(BACKGROUND_CONTEXT);
 			expect(after.tasks).toHaveLength(0);
 			await until(() => !r.desktops.held.has("d1"), "desktop released after cancellation");
 			fault.submitArmed = false;

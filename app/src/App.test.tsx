@@ -4811,6 +4811,8 @@ describe("notes and attention load failures surface (issue #213)", () => {
 					return Promise.resolve(jsonResponse({ error: "attention endpoint down" }, 500));
 				return Promise.resolve(jsonResponse({ items: attentionRows, unavailable: [] }));
 			}
+			if (url === "/api/app/push")
+				return Promise.resolve(jsonResponse({ configured: false, subscriptions: [] }));
 			if (url === "/api/app/conversations" && method === "GET") {
 				return Promise.resolve(jsonResponse({ conversations: [convRow] }));
 			}
@@ -4898,6 +4900,17 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		expect(bell).not.toBeNull();
 		expect(bell?.getAttribute("title")).toBe("Couldn't load attention");
 		expect(bell?.querySelector(".dot.attention-dot-error")).not.toBeNull();
+	});
+
+	test("a healthy load on the Attention page clears the glyph's error", async () => {
+		attnFail = true;
+		await mount();
+		expect(glyph("Couldn't load attention")).not.toBeNull();
+
+		attnFail = false;
+		await click(glyph("Couldn't load attention"));
+		expect(container.querySelector(".attention-dot-error")).toBeNull();
+		expect(glyph("Couldn't load attention")).toBeNull();
 	});
 
 	test("a later successful refresh clears both feed errors", async () => {

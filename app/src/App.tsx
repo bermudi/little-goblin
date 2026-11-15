@@ -388,7 +388,9 @@ function AppShell() {
 	// While the Attention page is mounted its own load is the freshest
 	// snapshot — let it drive the dot so page and glyph can't disagree.
 	const onAttentionItems = useCallback((items: AppAttentionItem[] | null) => {
-		if (items !== null) setAttentionCount(items.length);
+		if (items === null) return;
+		setAttentionCount(items.length);
+		setAttentionError(false);
 	}, []);
 
 	// A /app/c/<id> load selects that conversation once the list

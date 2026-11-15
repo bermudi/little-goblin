@@ -190,6 +190,12 @@ every other name or error preserve). Legacy `goblin-*` dirs and
 foreign scratch are never touched. Crash/interrupt leftovers of tracked
 fixture roots self-heal on the next run.
 
+A runaway turn loop in a test eats RAM until the kernel OOMs the box
+(2026-11-15: an `ai` bump silenced the loop detector; two full runs
+crashed g7). To run a suspect test here, cap it:
+`systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0
+timeout 120 bun test <file> -t <name>`. Full-suite runs go to CI.
+
 Test scratch lives in RAM: `src/test-tmpdir.ts`, which preloads first,
 points `TMPDIR` at `/dev/shm` unless `TMPDIR` is already set or tmpfs has
 less than 2 GB free. g7's `/tmp` is disk-backed since 2026-11-02, and

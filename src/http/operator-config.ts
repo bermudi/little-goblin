@@ -362,9 +362,16 @@ async function saveConfig(
 				const machines =
 					normalized.delegation?.machines ??
 					(parked.delegation as DelegationConfig | undefined)?.machines;
+				const { machines: submitted, ...rest } = v;
+				if (submitted !== undefined) {
+					log.warn(
+						`${actor.via} config save — ignored submitted delegation.machines (file-only)`,
+						who,
+					);
+				}
 				candidate.delegation = {
+					...rest,
 					...(machines === undefined ? {} : { machines }),
-					...v,
 				};
 				// An edited block supersedes a parked copy — leaving it
 				// would resurrect the old value on the next off/on flip.

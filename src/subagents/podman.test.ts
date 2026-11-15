@@ -1,8 +1,9 @@
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
 import { subagentsConfigSchema } from "../config-schema.ts";
 import type { Desktops } from "../desktops.ts";
@@ -308,7 +309,7 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 
 	test("env conformance in a real container", async () => {
 		const env = makeSandboxEnv(sandboxes!, join(cwd, "transfer2"), CONV);
-		const CTX = {} as Context;
+		const CTX = BACKGROUND_CONTEXT;
 		for (const name of ["a|b.txt", "with space.txt", "line\nbreak.txt"]) {
 			const w = await env.writeFile(`weird/${name}`, "x", CTX);
 			if (!w.ok) throw new Error(`write ${JSON.stringify(name)}: ${w.error.message}`);

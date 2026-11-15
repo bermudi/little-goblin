@@ -1047,18 +1047,28 @@ describe("driveStream", () => {
 	});
 
 	test("a decided cut issues the tools-off landing: nudge tail, toolChoice none, exactly one step", async () => {
-		const probe = probeTool();
-		// Step 1 at 900/1000 of the window decides the cut; step 2 defies
-		// toolChoice none (tool-calls finish) — stopWhen still ends the
-		// loop after the one forced step.
-		const r = rig([toolCallStep("c1", 900), toolCallStep("c2", 900)]);
+		// Step 1 at 900/1000 of the window decides the cut; step 2 obeys.
+		const r = rig([toolCallStep("c1", 900), textReply("wrapped up")]);
 		r.deps.step = { ...r.deps.step, contextWindow: 1000 };
-		r.deps.tools = { probe };
+		r.deps.tools = { probe: probeTool() };
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
 		expect(r.prompts).toHaveLength(2);
 		expect(r.prompts[1]).toContain("context window is nearly full");
 		expect(r.toolChoices[1]).toContain("none");
+	});
+
+	test("a model that calls a tool on the tools-off landing fails the turn loudly", async () => {
+		// ai >= 7.0.149 enforces toolChoice none (vercel/ai #23843): a
+		// defiant provider is an error, not a silent success.
+		const r = rig([toolCallStep("c1", 900), toolCallStep("c2", 900)]);
+		r.deps.step = { ...r.deps.step, contextWindow: 1000 };
+		r.deps.tools = { probe: probeTool() };
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("failed");
+		if (outcome.kind !== "failed") return;
+		expect(outcome.errorText).toContain("tool choice was none");
+		expect(r.prompts).toHaveLength(2);
 	});
 
 	test("a fence mid-stream rejects the drive — the authority check is per chunk", async () => {

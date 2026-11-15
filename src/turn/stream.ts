@@ -877,13 +877,8 @@ export async function driveStream<M extends WireMember>(
 					break;
 				case "tool-input-error":
 					if (providerExecutedIds.has(chunk.toolCallId)) break;
-					// tool-output-error carries only the id — the ledger keeps
-					// name+input so the detector hashes a rejection under a
-					// stable id instead of a random call id and never trips.
 					noteToolInputRejected(
-						events,
-						{ convId },
-						chunk.toolCallId,
+						eventsDeps,
 						chunk.toolName,
 						chunk.input,
 						chunk.errorText,

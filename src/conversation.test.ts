@@ -977,7 +977,7 @@ describe("forkToApp (branch)", () => {
 		settingsHash: "b".repeat(64),
 	});
 
-	test("a branch whose cut is before the split event copies the pointer with the split dropped", () => {
+	test("a branch whose cut is before the split event still serves the suffix", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const src = app(store, "branch-src");
 		store.append(src.id, [user("q1", "the task")]); // 1
@@ -990,17 +990,29 @@ describe("forkToApp (branch)", () => {
 			createdAt: "2026-01-01T00:00:00Z",
 			split: { seq: 2, part: 1 },
 		});
-		// A full copy keeps the split: the branch holds the whole event.
-		const spun = store.forkToApp(src.id, "branch-split-full", "/w", "full");
-		expect(store.getCompaction(spun.id)?.split).toEqual({ seq: 2, part: 1 });
-		// A branch cut at the trigger keeps the pointer's folded prefix but
-		// cannot half-hold the split event's suffix — the split drops and
-		// the branch's view is the summary alone (#403).
+		// The event copy is causal, so cutting at the trigger still copies
+		// the reply — its causal key IS the trigger's seq. The branch holds
+		// both the summary and the event whose suffix that summary keeps
+		// visible, so the pointer copies with the split intact: dropping it
+		// would store a reply the branch's model never sees (#403).
 		const branch = store.forkToApp(src.id, "branch-split-cut", "/w", null, undefined, {
 			throughSeq: 1,
 		});
-		expect(store.getCompaction(branch.id)).toMatchObject({ boundarySeq: 1, split: null });
-		expect(store.modelEntries(branch.id).map((e) => e.message.id)).toEqual(["compact-1"]);
+		expect(store.getCompaction(branch.id)).toMatchObject({
+			boundarySeq: 1,
+			split: { seq: 2, part: 1 },
+		});
+		// The branch view is the source view, id-stamped for the branch:
+		// the summary (same folded prefix) then the same sliced suffix.
+		const srcView = store.modelEntries(src.id);
+		const branchView = store.modelEntries(branch.id);
+		expect(branchView.map((e) => e.message.id)).toEqual(srcView.map((e) => e.message.id));
+		expect(branchView[0]!.message.parts[0]).toMatchObject({ type: "text" });
+		expect((branchView[0]!.message.parts[0] as { text: string }).text).toContain("split era");
+		expect(branchView[1]!.message.parts).toEqual(srcView[1]!.message.parts);
+		// A full copy keeps the split too — same pointer, same view.
+		const spun = store.forkToApp(src.id, "branch-split-full", "/w", "full");
+		expect(store.getCompaction(spun.id)?.split).toEqual({ seq: 2, part: 1 });
 		store.close();
 	});
 

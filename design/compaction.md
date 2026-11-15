@@ -99,12 +99,18 @@ between a tool call and its result.
   tool call; app media never carries the split name. A single-step
   reply, no forward progress over the previous row (a re-split must
   advance `part`; a later tail folds past the event instead), or a
-  span under the floor falls back to today's whole-event result. The
+  span under the floor falls back to today's whole-event result.
+  Content a previous row already folded is never re-sent: a re-split's
+  prefix slice is parts `[previous part, part)`, its whole-event span
+  is empty — legal, the history summary is the previous row's model
+  text unchanged — and a fold that moves past the split event carries
+  that event sliced to its unfolded suffix. The
   prefix gets its own summarizer call — pi's
   `TURN_PREFIX_SUMMARIZATION_PROMPT` adapted — merged as a
-  `**Turn Context (split turn):**` section. Forks copy the pointer with
-  the split dropped when the split event lies past the branch cut; the
-  rewind sweep retires rows whose split event is rewound. The previous
+  `**Turn Context (split turn):**` section. Forks copy the pointer
+  whole, split included — the event copy is causal, so the split event
+  rides along whenever the row does; the rewind sweep retires rows
+  whose split event is rewound. The previous
   rule (never cut inside an exchange; let a huge exchange stay whole) is
   retired — it left a 130k tool output unfoldable.
 - **Goblin-only constraint: causal order.** The model view sorts each reply

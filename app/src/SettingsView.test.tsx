@@ -1081,6 +1081,55 @@ describe("quiet harbor regressions", () => {
 			);
 		});
 
+		test("a skew tr kind picked on Voice survives opening Accounts (#281)", async () => {
+			// Same cross-tab skew as the ttsDefaults test above,
+			// transcription side: the kind list still offers onemin, but an
+			// old server's trDefaults answers nothing for it — Accounts'
+			// key list reads the picked kind's default mid-render.
+			settingsResponse = {
+				...SETTINGS_BODY,
+				transcriptionDefaults: trDefaultsNoOnemin,
+			};
+			await mount();
+			await act(async () => {
+				[...container.querySelectorAll("button.idx")]
+					.find((b) => b.textContent?.includes("Voice"))
+					?.dispatchEvent(
+						new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+					);
+			});
+			const trOn = container.querySelector('button[aria-label="speech to text"]');
+			expect(trOn).not.toBeNull();
+			await act(async () => {
+				trOn?.dispatchEvent(
+					new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+			});
+			const kind = container.querySelector<HTMLSelectElement>(
+				'select[aria-label="transcription kind"]',
+			);
+			expect(kind).not.toBeNull();
+			await act(async () => {
+				if (kind === null) return;
+				kind.value = "onemin";
+				kind.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+			});
+			// The crash site: Accounts reads the picked kind's default key.
+			// With the skew fallback the tab renders — and the unknown kind
+			// contributes no key row, so the empty-keys caption shows.
+			await act(async () => {
+				[...container.querySelectorAll("button.snav")]
+					.find((b) => b.textContent?.includes("Accounts"))
+					?.dispatchEvent(
+						new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+					);
+			});
+			expect(container.textContent).toContain("Model services");
+			expect(container.textContent).toContain(
+				"Keys for search and voice services appear here once you use them.",
+			);
+		});
+
 		test("an engine the server's trDefaults lacks renders fallbacks instead of crashing", async () => {
 			// Same skew class as the ttsDefaults test above, transcription
 			// side: the kind list still offers onemin, but an old server's

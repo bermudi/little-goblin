@@ -207,6 +207,19 @@ export function ensureConversationSchema(db: Database): void {
 	if (!compactCols.has("tail_events")) {
 		db.run("ALTER TABLE compactions ADD COLUMN tail_events INTEGER");
 	}
+	// #403 split turns: the second pointer. A row that halves one event
+	// names it — split_seq is the half-folded event, split_part the part
+	// index where the kept suffix starts (a step-start edge, never inside
+	// a step). Both NULL on ordinary rows; both set on split rows. The
+	// boundary keeps its meaning for every existing classifier (causal
+	// key ≤ boundary_seq is folded) — the split event is the one recorded
+	// exception: parts [0, part) fold, [part, end) stay verbatim.
+	if (!compactCols.has("split_seq")) {
+		db.run("ALTER TABLE compactions ADD COLUMN split_seq INTEGER");
+	}
+	if (!compactCols.has("split_part")) {
+		db.run("ALTER TABLE compactions ADD COLUMN split_part INTEGER");
+	}
 	// Frozen system prompts: the bytes a conversation started with, served
 	// verbatim — file edits load at conversation boundaries, never
 	// mid-run, so a live prefix cache is never rewritten.

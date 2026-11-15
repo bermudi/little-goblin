@@ -228,6 +228,7 @@ export function openStore(dbPath: string): ConversationStore {
 		qLastActivity,
 		qHistory,
 		qHistoryCausal,
+		qEventBySeq,
 		qHistorySlim,
 		qHistoryData,
 		qMessageIds,
@@ -263,6 +264,7 @@ export function openStore(dbPath: string): ConversationStore {
 		{
 			qHistory,
 			qHistoryCausal,
+			qEventBySeq,
 			qHistorySlim,
 			qHistoryData,
 			qMessageIds,

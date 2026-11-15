@@ -830,6 +830,58 @@ describe("app conversations", () => {
 		}
 	});
 
+	test("a split turn's fold mark counts the split event as the first kept message", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "fold-403" }),
+			});
+			const msg = (id: string, text: string, role: "user" | "assistant" = "user") => ({
+				id,
+				role,
+				parts: [{ type: "text" as const, text }],
+			});
+			store.append("app/fold-403", [msg("t1", "the task")]); // 1
+			store.append("app/fold-403", [msg("r1", "the split reply", "assistant")], {
+				anchorSeq: 1,
+			}); // 2
+			store.append("app/fold-403", [msg("t2", "later")]); // 3
+			store.append("app/fold-403", [msg("r2", "later answer", "assistant")], { anchorSeq: 3 }); // 4
+			store.setCompaction("app/fold-403", {
+				boundarySeq: 1,
+				summary: "split era",
+				tokensBefore: 120_000,
+				model: "test/model",
+				createdAt: "2026-11-10T14:00:00.000Z",
+				tailEvents: 2,
+				split: { seq: 2, part: 1 },
+			});
+			const res = await call("/api/app/conversations/fold-403/messages");
+			expect(res.status).toBe(200);
+			const list = (await res.json()) as {
+				messages: { id: string }[];
+				compactions: {
+					boundarySeq: number;
+					firstKeptIndex: number;
+					eventsCompacted: number;
+				}[];
+			};
+			expect(list.compactions).toHaveLength(1);
+			const mark = list.compactions[0]!;
+			// The split event is both folded and kept: firstKeptIndex points
+			// at it (the model still sees its suffix), and eventsCompacted
+			// counts only the fully folded trigger.
+			expect(mark.boundarySeq).toBe(1);
+			expect(mark.firstKeptIndex).toBe(1);
+			expect(list.messages[mark.firstKeptIndex]!.id).toBe("r1");
+			expect(mark.eventsCompacted).toBe(1);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("each fold mark places by its own fold time", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {

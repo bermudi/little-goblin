@@ -802,6 +802,15 @@ export async function handleConversationsRoute(
 		for (const mark of store.listCompactions(convId.id)) {
 			let upto = prevUpto;
 			while (upto < causal.length && causal[upto]! <= mark.boundarySeq) upto++;
+			// #403 split turns: the split event is both folded and kept —
+			// its prefix folded, its suffix the model's first kept message.
+			// Point firstKeptIndex at it and stop counting it as compacted;
+			// it is the last causal ≤ boundary, so this only ever steps back
+			// onto it.
+			if (mark.split !== null) {
+				const splitIdx = slim.findIndex((s) => s.seq === mark.split!.seq);
+				if (splitIdx >= 0 && splitIdx < upto) upto = splitIdx;
+			}
 			const foldMs = Date.parse(mark.createdAt);
 			let afterIndex = -1;
 			for (let i = 0; i < createdMs.length; i++) {

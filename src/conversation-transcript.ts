@@ -79,7 +79,7 @@ export function makeConversationTranscript(
 			// before the event delete empties them.
 			const projections = Number(qRewindProjections.run(id, cut).changes);
 			const events = Number(qRewindEvents.run(id, cut).changes);
-			const compactions = Number(qRewindCompactions.run(id, cut).changes);
+			const compactions = Number(qRewindCompactions.run(id, cut, cut).changes);
 			const contexts = Number(qRewindContexts.run(id, cut).changes);
 			const ratings = Number(qRewindRatings.run(id, cut).changes);
 			const seq = (qNextSeq.get(id)?.n ?? 0) + 1;

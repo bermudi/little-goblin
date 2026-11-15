@@ -6,6 +6,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
+import { log } from "./log.ts";
 import {
 	type Compaction,
 	corruptPlaceholder,
@@ -50,6 +51,7 @@ export function makeConversationHistory(
 		ConversationQueries,
 		| "qHistory"
 		| "qHistoryCausal"
+		| "qEventBySeq"
 		| "qHistorySlim"
 		| "qHistoryData"
 		| "qMessageIds"
@@ -64,6 +66,7 @@ export function makeConversationHistory(
 	const {
 		qHistory,
 		qHistoryCausal,
+		qEventBySeq,
 		qHistorySlim,
 		qHistoryData,
 		qMessageIds,
@@ -227,6 +230,35 @@ export function makeConversationHistory(
 			compaction === null
 				? historyDetail(id)
 				: detailFromRows(id, qHistoryCausal.all(id, compaction.boundarySeq));
+		// #403 split turns: the causal cut above drops the one event the
+		// pointer half-folds (its causal key sits AT the boundary) — its
+		// kept suffix is fetched by seq and spliced back at its causal
+		// position, right after the summary, ahead of every event the SQL
+		// kept (their causal keys are strictly greater). The slice keeps
+		// the event's own id and metadata; read-time minting over the
+		// immutable row is deterministic, so the view is byte-stable
+		// across reopens like the summary's.
+		if (compaction !== null && compaction.split !== null) {
+			const split = compaction.split;
+			const row = qEventBySeq.get(id, split.seq);
+			if (row === null) {
+				log.warn("split event missing from history — suffix not served", {
+					conversation: id,
+					seq: split.seq,
+					part: split.part,
+					boundary: compaction.boundarySeq,
+				});
+			} else {
+				const message =
+					parseEvent(id, row.seq, row.role, row.data) ?? corruptPlaceholder(row.seq, row.role);
+				detail.unshift({
+					seq: row.seq,
+					anchorSeq: row.anchor_seq,
+					createdAt: row.created_at,
+					message: { ...message, parts: message.parts.slice(split.part) },
+				});
+			}
+		}
 		const entries = detail.map((e) => ({ seq: e.seq, message: e.message }));
 		// Committed pruning projections overlay the model-facing view
 		// only — parseEvent returns fresh objects, so mutating them

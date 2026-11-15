@@ -46,11 +46,50 @@ interface SeenRequest {
 	raw: Record<string, unknown>;
 }
 
+/** The request body shape the fake model's wire (chat-completions) carries. */
+type FakeRequestBody = {
+	messages?: { role: string; content: unknown }[];
+	tools?: { function?: { name?: string } }[];
+};
+
+// A queued reply with `match` waits at the queue head until a request's
+// last user/tool message contains it; any other request gets the
+// unscripted default and leaves the queue untouched. Issue #441: an
+// abort-raced first-generation fetch (input = the task text) must not
+// eat the reply scripted for the recovery round (input = the [goblin]
+// nudge). Matcher-less replies serve any request, FIFO unchanged.
+interface QueuedReply {
+	reply: FakeReply;
+	match?: string;
+}
+
+function lastInputText(body: FakeRequestBody): string {
+	const messages = body.messages ?? [];
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i]!;
+		if (m.role === "user" || m.role === "tool") {
+			return typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+		}
+	}
+	return "";
+}
+
+// Serves the queue head only if it carries no matcher or the request
+// satisfies it; otherwise the queue stays put (empty-queue behaviour).
+function takeQueuedReply(queue: QueuedReply[], body: FakeRequestBody): FakeReply | null {
+	const head = queue[0];
+	if (head === undefined) return null;
+	if (head.match !== undefined && !lastInputText(body).includes(head.match)) return null;
+	queue.shift();
+	return head.reply;
+}
+
 export interface FakeModel {
 	port: number;
 	url: string;
 	seen: SeenRequest[];
-	push(reply: FakeReply): void;
+	/** `match` reserves the reply for a request whose last user/tool message contains it. */
+	push(reply: FakeReply, match?: string): void;
 	close(): void;
 	onRequest?: (body: unknown) => FakeReply | null;
 }
@@ -136,16 +175,13 @@ function chunkFor(reply: FakeReply, i: number): object[] {
 }
 
 export function startFakeModel(): FakeModel {
-	const defaultQueue: FakeReply[] = [];
+	const defaultQueue: QueuedReply[] = [];
 	const seen: SeenRequest[] = [];
 	const server = Bun.serve({
 		port: 0,
 		hostname: "127.0.0.1",
 		async fetch(req) {
-			const body = (await req.json()) as {
-				messages?: { role: string; content: unknown }[];
-				tools?: { function?: { name?: string } }[];
-			};
+			const body = (await req.json()) as FakeRequestBody;
 			seen.push({
 				tools: (body.tools ?? []).map((t) => t.function?.name ?? "?"),
 				messages: body.messages,
@@ -153,9 +189,8 @@ export function startFakeModel(): FakeModel {
 			});
 			const reply: FakeReply =
 				model.onRequest?.(body) ??
-				(defaultQueue.length > 0
-					? defaultQueue.shift()!
-					: { kind: "text", text: "unscripted reply" });
+				takeQueuedReply(defaultQueue, body) ??
+				{ kind: "text", text: "unscripted reply" };
 			if (reply.kind === "fail") {
 				return new Response(reply.body, { status: reply.status });
 			}
@@ -199,8 +234,8 @@ export function startFakeModel(): FakeModel {
 		port,
 		url: `http://127.0.0.1:${port}`,
 		seen,
-		push(reply) {
-			defaultQueue.push(reply);
+		push(reply: FakeReply, match?: string) {
+			defaultQueue.push(match === undefined ? { reply } : { reply, match });
 		},
 		close() {
 			void server.stop(true);

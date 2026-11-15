@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { _primeOpenRouterCatalog } from "./agent/models-dev.ts";
+import { runCompaction } from "./agent/compaction.ts";
+import { foldSummary } from "./testkit/fake-summary.ts";
 import { pruningReplacement } from "./cache-pruning.ts";
 import { appAddress, appIdOf, channelOf, formatAddress, parseAddress } from "./conversation-address.ts";
 import type { ParsedAddress } from "./conversation-address.ts";
@@ -361,6 +363,156 @@ describe("history payload envelope", () => {
 });
 
 describe("compaction pointers", () => {
+	test("a split pointer round-trips through the store", () => {
+		const path = tmpDb("goblin-test-");
+		const store = openStore(path);
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("one")]);
+		store.setCompaction(c.id, {
+			boundarySeq: 1,
+			summary: "split era",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+			split: { seq: 2, part: 2 },
+		});
+		store.close();
+		const reopened = openStore(path);
+		expect(reopened.getCompaction(c.id)?.split).toEqual({ seq: 2, part: 2 });
+		expect(reopened.listCompactions(c.id)[0]?.split).toEqual({ seq: 2, part: 2 });
+		// A row written without a split reads back null — the ordinary
+		// shape keeps its meaning.
+		reopened.setCompaction(c.id, {
+			boundarySeq: 3,
+			summary: "whole-event era",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-02T00:00:00Z",
+		});
+		expect(reopened.getCompaction(c.id)?.split).toBeNull();
+		reopened.close();
+	});
+
+	test("modelEntries serves the split event's suffix after the summary, byte-stable across a reopen", () => {
+		const path = tmpDb("goblin-test-");
+		const store = openStore(path);
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("research the deploy")]); // 1
+		const reply: UIMessage = {
+			id: "r1",
+			role: "assistant",
+			metadata: { model: "zai/glm-5.3" },
+			parts: [
+				{ type: "step-start" },
+			{ type: "text", text: "step one" },
+			{ type: "step-start" },
+			{ type: "text", text: "step two" },
+			{ type: "text", text: "step three" },
+		],
+		};
+		store.append(c.id, [reply], { anchorSeq: 1 }); // 2
+		store.append(c.id, [msg("next question")]); // 3
+		store.setCompaction(c.id, {
+			boundarySeq: 1,
+			summary: "split era",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+			split: { seq: 2, part: 2 },
+		});
+		const before = store.modelEntries(c.id);
+		// The causal cut drops the split event (its causal key sits at the
+		// boundary); the spliced suffix puts it right after the summary,
+		// ahead of everything newer.
+		expect(before.map((e) => e.seq)).toEqual([1, 2, 3]);
+		expect(before[0]!.message.id).toBe("compact-1");
+		// Same id and metadata as the stored event; parts sliced to
+		// [part, end).
+		expect(before[1]!.message.id).toBe("r1");
+		expect(before[1]!.message.metadata).toEqual({ model: "zai/glm-5.3" });
+		expect(before[1]!.message.role).toBe("assistant");
+		expect(
+				before[1]!.message.parts.map((p) => (p as { text?: string }).text ?? null),
+		).toEqual([null, "step two", "step three"]);
+		store.close();
+		const reopened = openStore(path);
+		expect(reopened.modelEntries(c.id)).toEqual(before);
+		reopened.close();
+	});
+
+	test("a second fold re-splits the same event — no re-sent content, the view advances", async () => {
+		// PR #555 F1/F2, end to end on the real store: fold the oversized
+		// turn twice. The second fold moves the split part; its only spend
+		// is the turn-prefix call over the delta, and the model view
+		// serves the suffix from the NEW part afterwards.
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("research the deploy")]); // 1
+		const reply: UIMessage = {
+			id: "r1",
+			role: "assistant",
+			parts: [
+				{ type: "step-start" },
+				{ type: "text", text: "x".repeat(40_000) },
+				{ type: "step-start" },
+				{ type: "text", text: "y".repeat(10_000) },
+				{ type: "step-start" },
+				{ type: "text", text: "z".repeat(4_000) },
+				{ type: "step-start" },
+				{ type: "text", text: "w".repeat(2_000) },
+			],
+		};
+		store.append(c.id, [reply], { anchorSeq: 1 }); // 2
+		const promptsByFold: string[][] = [];
+		const summarize = async (_system: string, prompt: string) => {
+			promptsByFold.at(-1)!.push(prompt);
+			return prompt.includes("checkpoint of the user's request")
+				? "DELTA CHECKPOINT"
+				: foldSummary("the folded history", prompt);
+		};
+		const fold = () => {
+			promptsByFold.push([]);
+			return runCompaction(c.id, store, ["m"], summarize, {
+				tailTokenBudget: 5_000,
+				inputTokenBudget: 100_000,
+			}, new AbortController().signal);
+		};
+		const first = await fold();
+		expect(first.kind).toBe("compacted");
+		expect(store.getCompaction(c.id)?.split).toEqual({ seq: 2, part: 2 });
+		const second = await fold();
+		expect(second.kind).toBe("compacted");
+		expect(store.getCompaction(c.id)?.split).toEqual({ seq: 2, part: 4 });
+		// Fold two made ONE call — the delta turn-prefix. Step 1 (already
+		// folded) and steps 3-4 (kept suffix) never re-enter.
+		expect(promptsByFold[1]!).toHaveLength(1);
+		expect(promptsByFold[1]![0]).toContain("y".repeat(200));
+		expect(promptsByFold[1]![0]).not.toContain("x".repeat(200));
+		expect(promptsByFold[1]![0]).not.toContain("z".repeat(200));
+		if (second.kind !== "compacted") return;
+		expect(second.summary).toContain("the folded history");
+		expect(second.summary).toContain("DELTA CHECKPOINT");
+		// The view serves summary → the suffix from the NEW part: steps
+		// 3-4 only.
+		const view = store.modelEntries(c.id);
+		expect(view.map((e) => e.seq)).toEqual([1, 2]);
+		expect(view[0]!.message.id).toBe("compact-1");
+		expect(
+				view[1]!.message.parts.map((p) => (p as { text?: string }).text ?? null),
+		).toEqual([null, "z".repeat(4_000), null, "w".repeat(2_000)]);
+		// A third fold advances once more — to the last step edge — and
+		// the view follows; a fourth stands down, nothing new to fold.
+		const third = await fold();
+		expect(third.kind).toBe("compacted");
+		expect(store.getCompaction(c.id)?.split).toEqual({ seq: 2, part: 6 });
+		expect(
+			store.modelEntries(c.id)[1]!.message.parts.map((p) => (p as { text?: string }).text ?? null),
+		).toEqual([null, "w".repeat(2_000)]);
+		const fourth = await fold();
+		expect(fourth.kind).toBe("noop");
+		store.close();
+	});
+
 	test("getCompaction returns the latest row; modelEntries is summary + tail", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -432,12 +584,14 @@ describe("compaction pointers", () => {
 				tailEvents: 2,
 				model: "m",
 				createdAt: "2026-01-01T00:00:00Z",
+				split: null,
 			},
 			{
 				boundarySeq: 2,
 				summary: "second era",
 				tokensBefore: 200,
 				tailEvents: null,
+				split: null,
 				model: "m",
 				createdAt: "2026-01-02T00:00:00Z",
 			},
@@ -823,6 +977,45 @@ describe("forkToApp (branch)", () => {
 		settingsHash: "b".repeat(64),
 	});
 
+	test("a branch whose cut is before the split event still serves the suffix", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const src = app(store, "branch-src");
+		store.append(src.id, [user("q1", "the task")]); // 1
+		store.append(src.id, [asst("a1", "the split reply")], { anchorSeq: 1 }); // 2
+		store.setCompaction(src.id, {
+			boundarySeq: 1,
+			summary: "split era",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+			split: { seq: 2, part: 1 },
+		});
+		// The event copy is causal, so cutting at the trigger still copies
+		// the reply — its causal key IS the trigger's seq. The branch holds
+		// both the summary and the event whose suffix that summary keeps
+		// visible, so the pointer copies with the split intact: dropping it
+		// would store a reply the branch's model never sees (#403).
+		const branch = store.forkToApp(src.id, "branch-split-cut", "/w", null, undefined, {
+			throughSeq: 1,
+		});
+		expect(store.getCompaction(branch.id)).toMatchObject({
+			boundarySeq: 1,
+			split: { seq: 2, part: 1 },
+		});
+		// The branch view is the source view, id-stamped for the branch:
+		// the summary (same folded prefix) then the same sliced suffix.
+		const srcView = store.modelEntries(src.id);
+		const branchView = store.modelEntries(branch.id);
+		expect(branchView.map((e) => e.message.id)).toEqual(srcView.map((e) => e.message.id));
+		expect(branchView[0]!.message.parts[0]).toMatchObject({ type: "text" });
+		expect((branchView[0]!.message.parts[0] as { text: string }).text).toContain("split era");
+		expect(branchView[1]!.message.parts).toEqual(srcView[1]!.message.parts);
+		// A full copy keeps the split too — same pointer, same view.
+		const spun = store.forkToApp(src.id, "branch-split-full", "/w", "full");
+		expect(store.getCompaction(spun.id)?.split).toEqual({ seq: 2, part: 1 });
+		store.close();
+	});
+
 	test("copies only the causal prefix, with its compaction/contexts/projections — source untouched", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const src = app(store, "branch-src");
@@ -998,6 +1191,29 @@ describe("editUserMessage (rewind)", () => {
 		replacement,
 		routeKey: "a".repeat(64),
 		settingsHash: "b".repeat(64),
+	});
+
+	test("the rewind sweep drops a split pointer whose split event is rewound", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = app(store, "rewind-split");
+		store.append(c.id, [user("q1", "the task")]); // 1 — trigger
+		store.append(c.id, [user("s1", "a steer mid-turn")]); // 2
+		store.append(c.id, [asst("a1", "the split reply")], { anchorSeq: 1 }); // 3
+		store.setCompaction(c.id, {
+			boundarySeq: 1,
+			summary: "split era",
+			tokensBefore: 10,
+			model: "m",
+			createdAt: "2026-01-01T00:00:00Z",
+			split: { seq: 3, part: 1 },
+		});
+		// Editing the steer cuts at seq 2: the boundary (1) survives the
+		// whole-event rule, but the split event (3) is at/after the cut —
+		// the pointer must not outlive the event it halves.
+		const edit = store.editUserMessage(c.id, "s1", user("s1b", "rewritten steer"));
+		expect(edit).toMatchObject({ cutSeq: 2, compactions: 1 });
+		expect(store.getCompaction(c.id)).toBeNull();
+		store.close();
 	});
 
 	test("drops the event and its causal tail, sweeps dependents, and never reuses a seq", () => {

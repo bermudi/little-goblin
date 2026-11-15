@@ -111,7 +111,11 @@ export function makeConversationFork<TConversation>(
 			// boundary lies past its cut: the summary would describe events
 			// the branch does not hold. Equality keeps it — the pointer
 			// folds the inclusive prefix (causal position ≤ boundary),
-			// which is exactly what the branch holds at that cut.
+			// which is exactly what the branch holds at that cut. The split
+			// columns copy with the row (#403): the event copy is causal,
+			// so whenever boundary_seq ≤ through the split event is copied
+			// too — its causal key is ≤ the boundary — and the branch's
+			// view serves the same sliced suffix as the source's.
 			const compaction = qCompaction.get(fromId);
 			if (compaction !== null && (through === undefined || compaction.boundary_seq <= through)) {
 				qInsertCompaction.run(
@@ -123,6 +127,8 @@ export function makeConversationFork<TConversation>(
 					compaction.model,
 					compaction.created_at,
 					compaction.tail_events,
+					compaction.split_seq,
+					compaction.split_part,
 				);
 			}
 			for (const c of through === undefined

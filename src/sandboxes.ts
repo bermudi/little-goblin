@@ -69,8 +69,8 @@ function toRow(row: unknown): SandboxRow {
 
 export function openSandboxes(dbPath: string): SandboxStore {
 	const db = new Database(dbPath);
-	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`CREATE TABLE IF NOT EXISTS sandboxes (
 		conversation_id TEXT PRIMARY KEY,
 		container TEXT NOT NULL,

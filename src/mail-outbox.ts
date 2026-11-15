@@ -145,8 +145,8 @@ function rowToEntry(row: unknown): OutboxEntry {
 
 export function openOutbox(dbPath: string): OutboxStore {
 	const db = new Database(dbPath);
-	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`CREATE TABLE IF NOT EXISTS mail_outbox (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		to_json TEXT NOT NULL,

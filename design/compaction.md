@@ -24,8 +24,8 @@ earlier deviations from pi were reasoning without measurement. The ruling:
 default. A goblin difference must name a goblin-only constraint or a measured
 result, in this file. "It seemed better" is not a reason.
 
-**Status:** Staging 1's trigger and 20k tail are built (#399); its
-split-turn cut is not (#403). Stage 3's fold marks are built (#401);
+**Status:** Staging 1 is built: trigger and 20k tail (#399), split-turn
+ cut (#403). Stage 3's fold marks are built (#401);
 stage 2's headings, audit, identifier index and verbatim user messages are
 built (#400, `src/agent/compaction-summary.ts`); its memory flush is not
 (#405). Superseded and removed
@@ -85,23 +85,44 @@ handling in `packages/coding-agent/src/core/compaction/compaction.ts`). Walk
 back from the newest entry until the tail budget is spent; cut there; never
 between a tool call and its result.
 
-- **Split turns.** When one turn alone is larger than the tail, pi cuts
-  inside it: the turn's first part gets its own short summary
-  (`turnPrefixMessages`), the rest stays verbatim. Goblin copies this. The
-  previous rule (never cut inside an exchange; let a huge exchange stay
-  whole) is retired — it left a 130k tool output unfoldable.
+- **Split turns (two pointers, #403).** When one turn alone is larger
+  than the tail, the walk cannot fold it whole, so a second pointer
+  halves it: `boundary_seq` moves to the exchange's trigger causal
+  position (the trigger, app media beside it, and everything earlier
+  fold whole; every classifier keyed on "causal key ≤ boundary_seq is
+  folded" keeps its meaning), and `split_seq`/`split_part` name the one
+  exception — the reply event, whose parts `[0, part)` fold into the
+  summary and `[part, end)` stay verbatim in the tail (`modelEntries`
+  splices the sliced suffix back right after the summary). Valid cut
+  positions are **step-start part indices only, index > 0** — never
+  inside a step, so a codex reasoning item keeps replaying ahead of its
+  tool call; app media never carries the split name. A single-step
+  reply, no forward progress over the previous row (a re-split must
+  advance `part`; a later tail folds past the event instead), or a
+  span under the floor falls back to today's whole-event result. The
+  prefix gets its own summarizer call — pi's
+  `TURN_PREFIX_SUMMARIZATION_PROMPT` adapted — merged as a
+  `**Turn Context (split turn):**` section. Forks copy the pointer with
+  the split dropped when the split event lies past the branch cut; the
+  rewind sweep retires rows whose split event is rewound. The previous
+  rule (never cut inside an exchange; let a huge exchange stay whole) is
+  retired — it left a 130k tool output unfoldable.
 - **Goblin-only constraint: causal order.** The model view sorts each reply
   next to its question (`anchorSeq ?? seq`), not by storage seq. pi's log
   order *is* its model order; ours is not. So the cut runs over the
   causal-ordered list `modelEntries` produces, and the boundary is recorded
   as a position in that order. This is the only adaptation.
 - **Goblin-only constraint: completed history.** The `beforeSeq` ceiling
-  below stays in front of the cut. It came from a real P1 bug (2026-10-26):
-  a running exchange must never be folded.
-- **Unverified:** that pi's algorithm over causal order needs no further
-  change. Branch 1 confirms against pi's code and the existing
-  `chooseBoundary` tests before deleting `exchangeComplete`. If it fails,
-  the fallback is Hermes's rule: the tail may go over budget; no split.
+  below stays in front of the cut, whole or split. It came from a real P1
+  bug (2026-10-26): a running exchange must never be folded.
+- **Resolved (2026-11-15, #403):** pi's algorithm over causal order needed
+  one more goblin-only adaptation — pi's cut walks per-message entries, so
+  its split lands on an entry edge; goblin's turn is one stored event, so
+  the split cuts on step-start part edges inside it. `exchangeComplete`
+  stays: the whole-exchange walk still picks every ordinary boundary, and
+  the split only fires when that walk's tail still holds one exchange
+  that alone exceeds the budget. The Hermes no-split fallback was not
+  needed.
 
 ### Completed-history ceiling (kept)
 
@@ -180,7 +201,7 @@ Implementation rulings (2026-10-25):
   the window — still fails honestly through the overflow rail (a real 400,
   not a projection). Regression pin 2026-10-25 (a fresh conversation whose
   130k-token tool output crosses the trigger completes untouched) is
-  revisited in stage 1: with split turns that output becomes foldable.
+  settled by #403: with split turns that output folds at a step edge.
 - **A context landing that issues at the same boundary retracts** — the
   pre-empt supersedes the tools-off ending (`TurnState.retractContextLanding`);
   the resume starts unforced with tools on. A repeat/watchdog cut never
@@ -330,7 +351,8 @@ the headings and code-made parts. No migration: old rows render as before
 ## Staging
 
 1. **Triggers, tail, cut.** 50%/256k trigger, 20k tail,
-   pi's cut over causal order with split turns, overflow contract.
+   pi's cut over causal order with split turns (built: #399 triggers and
+   tail, #403 the split pointer), overflow contract.
 2. **Summary contents.** Required headings, quality audit, identifier
    index, verbatim user messages, gated memory flush.
 3. **Fold marks.** Pill at fold time.

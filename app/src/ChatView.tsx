@@ -279,6 +279,27 @@ function Chat({
 	// below useChat — the reconnect's answer resolves after a network
 	// round-trip, so it can never beat that effect's assignment.
 	const idleReconnect = useRef<() => void>(() => {});
+	// The mount-time resume probe (`resume: true` above) answers "nothing
+	// live" with a status writeback: the SDK's Chat sets status back to
+	// "ready" with no notion that a submit may have started while the GET
+	// was in flight. The seed send is the one send that can race that
+	// probe — its "submitted" gets clobbered and a wire that never
+	// produces a chunk never re-raises it: no Stop, no pending shimmer,
+	// for the whole first turn. The latch orders the seed after the
+	// probe's round-trip, so both sends ride the same status mechanism.
+	//
+	// A seeded mount skips the network probe entirely — a conversation
+	// created moments ago cannot have a live turn, and a probe that
+	// depends on the network can park the seed forever (a black-holed
+	// stream GET → no POST, nothing stored; a reload loses the text).
+	// Captured at mount because the seed prop is cleared by onSeeded
+	// long before the transport ever reads this.
+	const seededMount = useRef(seed !== null && seed.length > 0);
+	const resumeProbe = useRef<{ probed: boolean; settled: boolean; waiting: (() => void)[] }>({
+		probed: false,
+		settled: false,
+		waiting: [],
+	});
 	// Same latest-ref shape as idleReconnect: the host's callback is an
 	// inline closure, so it must not enter the transport's useMemo deps —
 	// a new transport identity would re-seat useChat on every host render.
@@ -402,13 +423,41 @@ function Chat({
 				return stream;
 			},
 			reconnectToStream: async (options) => {
-				const stream = await base.reconnectToStream(options);
-				// null is the server's 204 — nothing is live, and the runtime
-				// persists each reply before it retires the wire, so durable
-				// history is already final. The mount-time snapshot may be
-				// older than that; the view reconciles.
-				if (stream === null) idleReconnect.current();
-				return stream;
+				// The first reconnect of a seeded mount never reaches the
+				// network (see seededMount above): it answers the SDK's "nothing
+				// live" (null) on the spot — no base call, and no idle
+				// reconcile either, because a conversation created moments ago
+				// has nothing to reconcile. Every later reconnect (visibility
+				// resumes) probes the server as today.
+				const seededProbe = seededMount.current && !resumeProbe.current.probed;
+				resumeProbe.current.probed = true;
+				try {
+					if (seededProbe) return null;
+					const stream = await base.reconnectToStream(options);
+					// null is the server's 204 — nothing is live, and the runtime
+					// persists each reply before it retires the wire, so durable
+					// history is already final. The mount-time snapshot may be
+					// older than that; the view reconciles.
+					if (stream === null) idleReconnect.current();
+					return stream;
+				} finally {
+					// Probe round-trip over (network answer, or the seeded skip —
+					// the SDK still runs its ready writeback on a null answer).
+					// Release a waiting seed on the next MACROTASK: the SDK's
+					// continuation after `await reconnectToStream` — the
+					// unconditional setStatus("ready"/"error") writeback — runs
+					// in the microtask cascade before any macrotask, so the
+					// seed's "submitted" lands strictly after it. First settle
+					// wins; later reconnects (visibility resumes) have nothing
+					// waiting.
+					setTimeout(() => {
+						const probe = resumeProbe.current;
+						if (probe.settled) return;
+						probe.settled = true;
+						for (const release of probe.waiting) release();
+						probe.waiting.length = 0;
+					}, 0);
+				}
 			},
 		};
 	}, [token, conversationId]);
@@ -582,14 +631,21 @@ function Chat({
 
 	// A seed arrives once (empty-state send → conversation created → this
 	// view mounts with it). The ref guards re-runs; onSeeded clears the
-	// parking slot so a remount can never re-deliver it.
+	// parking slot so a remount can never re-deliver it. The send itself
+	// waits out the mount resume probe — see resumeProbe above — then
+	// rides the same sendMessage path a later send does.
 	const seeded = useRef(false);
 	useEffect(() => {
 		if (seeded.current || seed === null || seed.length === 0) return;
 		seeded.current = true;
 		pinned.current = true;
 		onSeeded();
-		void sendMessage({ parts: seed });
+		const send = () => {
+			void sendMessage({ parts: seed });
+		};
+		const probe = resumeProbe.current;
+		if (probe.settled) send();
+		else probe.waiting.push(send);
 	}, [seed, sendMessage, onSeeded]);
 
 	// The retry affordance belongs to the newest answer — anything older

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { UIMessage } from "ai";
 import type { Conversation } from "../conversation-read.ts";
 import { foldSummary } from "../testkit/fake-summary.ts";
 import { openTestStore } from "../testkit.ts";
@@ -122,6 +123,58 @@ describe("runCompactJob native session compaction (#418)", () => {
 			});
 			const outcome = await runCompactJob(conv, "manual", undefined, undefined, deps);
 			expect(outcome.kind).toBe("compacted");
+		} finally {
+			store.close();
+		}
+	});
+});
+
+// PR #555 F1: after a split row, the overflow rail's halved tail moves the
+// split part — that re-split must land, not throw "compaction produced no
+// summary" and kill the turn ("context window full and compacting failed").
+describe("runCompactJob overflow after a split row (#403)", () => {
+	const reply = (): UIMessage => ({
+		id: "r1",
+		role: "assistant",
+		parts: [
+			{ type: "step-start" },
+			{ type: "text", text: "x".repeat(160_000) },
+			{ type: "step-start" },
+			{ type: "text", text: "y".repeat(40_000) },
+			{ type: "step-start" },
+			{ type: "text", text: "z".repeat(20_000) },
+			{ type: "step-start" },
+			{ type: "text", text: "w".repeat(16_000) },
+		],
+	});
+
+	test("the halved tail re-splits the same event and returns compacted", async () => {
+		const { store } = openTestStore("goblin-compact-job-");
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const deps = (tail: number): CompactJobDeps => ({
+			store,
+			compaction: {
+				modelRef: () => "m",
+				contextWindow: () => null,
+				summarize: async (_c, _system, prompt) => foldSummary("fold", prompt),
+			},
+			budgets: () => ({ tailTokenBudget: tail, inputTokenBudget: 100_000 }),
+			checkAuthority: () => {},
+			foldCeiling: () => null,
+			holdController: () => {},
+			releaseController: () => {},
+		});
+		try {
+			store.append(conv.id, [{ id: "q1", role: "user", parts: [{ type: "text", text: "run it" }] }]);
+			store.append(conv.id, [reply()], { anchorSeq: 1 });
+			const first = await runCompactJob(conv, "threshold", undefined, undefined, deps(20_000));
+			expect(first.kind).toBe("compacted");
+			expect(store.getCompaction(conv.id)?.split).toEqual({ seq: 2, part: 2 });
+			// Overflow halves the tail to 10k: the fold re-splits the same
+			// event one step further instead of erroring the recovery.
+			const overflow = await runCompactJob(conv, "overflow", undefined, undefined, deps(20_000));
+			expect(overflow.kind).toBe("compacted");
+			expect(store.getCompaction(conv.id)?.split).toEqual({ seq: 2, part: 4 });
 		} finally {
 			store.close();
 		}

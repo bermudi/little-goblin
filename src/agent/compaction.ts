@@ -257,8 +257,9 @@ function splitBoundary(
 	// The guards every cut passes. The boundary must advance past the
 	// previous row (the equal case is the re-split handled above); the
 	// folded span — events through the trigger plus the folded prefix —
-	// clears the floor, counting the whole prefix including parts a
-	// previous split already folded.
+	// clears the floor. A re-split's floor counts only the delta parts
+	// [previous part, part): content the previous row already folded is
+	// not this fold's span.
 	if (opts.previousBoundary !== null && trigger.seq <= opts.previousBoundary && !resplit) {
 		return null;
 	}
@@ -268,10 +269,13 @@ function splitBoundary(
 			: detail.findIndex((e) => e.seq === opts.previousBoundary) + 1;
 	const replyIndex = detail.findIndex((e) => e.seq === reply.seq);
 	let spanTokens = 0;
-	for (let j = spanStart; j < replyIndex; j++) {
-		spanTokens += estimateMessageTokens(detail[j]!.message);
+	if (!resplit) {
+		for (let j = spanStart; j < replyIndex; j++) {
+			spanTokens += estimateMessageTokens(detail[j]!.message);
+		}
 	}
-	for (let p = 0; p < part; p++) spanTokens += estimatePartTokens(parts[p]!);
+	const prefixStart = resplit ? opts.previousSplit!.part : 0;
+	for (let p = prefixStart; p < part; p++) spanTokens += estimatePartTokens(parts[p]!);
 	if (spanTokens < (opts.minSpanTokens ?? 500)) return null;
 	return { boundarySeq: trigger.seq, split: { seq: reply.seq, part } };
 }
@@ -557,17 +561,43 @@ export async function runCompaction(
 	// The span is the delta since the previous boundary — folded events
 	// never re-enter the prompt, so calls stay bounded by one compaction
 	// interval, not total history. The previous summary rides the first
-	// call instead.
+	// call instead. #403: a previous split row already folded its event's
+	// prefix, so (a) re-splitting the same event folds no whole events at
+	// all — even the media siblings between trigger and reply are inside
+	// the previous row's span — and the delta is the prefix parts
+	// [previous part, part); and (b) a fold that moves PAST the split
+	// event carries it sliced to its unfolded suffix, never whole.
 	const spanStart = (previous ? detail.findIndex((e) => e.seq === previous.boundarySeq) : -1) + 1;
-	const span = detail.slice(spanStart, split === null ? boundaryIndex + 1 : splitIndex);
-	// The split event's folded prefix as its own message-shaped slice — it
+	const prevSplit = previous?.split ?? null;
+	const resplit = split !== null && prevSplit !== null && prevSplit.seq === split.seq;
+	let span = resplit
+		? []
+		: detail.slice(spanStart, split === null ? boundaryIndex + 1 : splitIndex);
+	if (!resplit && prevSplit !== null) {
+		const idx = span.findIndex((e) => e.seq === prevSplit.seq);
+		if (idx >= 0) {
+			const whole = span[idx]!;
+			span = span.map((e, i) =>
+				i === idx
+					? {
+							...e,
+							message: { ...whole.message, parts: whole.message.parts.slice(prevSplit.part) },
+						}
+					: e,
+			);
+		}
+	}
+	// The split turn's folded prefix as its own message-shaped slice — it
 	// rides the flush, the identifier index, and the turn-prefix summary.
+	// A re-split's slice is the delta only: parts a previous row already
+	// folded are never re-sent.
+	const prefixStart = resplit && prevSplit !== null ? prevSplit.part : 0;
 	const prefixMessage: UIMessage | null =
 		split === null || splitIndex < 0
 			? null
 			: {
 					...detail[splitIndex]!.message,
-					parts: detail[splitIndex]!.message.parts.slice(0, split.part),
+					parts: detail[splitIndex]!.message.parts.slice(prefixStart, split.part),
 				};
 	const tokensBefore =
 		span.reduce((sum, e) => sum + estimateMessageTokens(e.message), 0) +
@@ -750,9 +780,17 @@ export async function runCompaction(
 		carriedHeader = "[running summary of the earlier part of this span — fold it in]";
 		summary = out;
 	}
-	if (summary === null || servedBy === null) {
-		// Unreachable — chooseBoundary only returns a boundary with a
-		// non-empty span; fail loud, never write a blank pointer.
+	// #403 re-split: an empty whole-event span is legal — the delta is the
+	// split prefix alone, so the history summary is the previous row's
+	// model text, unchanged, and the fold's only spend is the
+	// turn-prefix call below.
+	if (span.length === 0 && prefixMessage !== null && carried !== null) {
+		summary = carried;
+	}
+	if (summary === null) {
+		// Neither whole events nor a split prefix to summarize — a shape
+		// chooseBoundary never returns; fail loud, never write a blank
+		// pointer.
 		throw new Error("compaction produced no summary");
 	}
 	// #403 split turns, like pi: a second summarizer call checkpoints the
@@ -783,6 +821,11 @@ export async function runCompaction(
 			summaryChars: prefixOut.length,
 		});
 		summary = `${summary}\n\n---\n\n**Turn Context (split turn):**\n\n${prefixOut}`;
+	}
+	if (servedBy === null) {
+		// Every summary-producing path above makes at least one call
+		// (a chunk or the turn prefix); reaching here with none is a bug.
+		throw new Error("compaction produced no summary");
 	}
 	// Code-made parts, never through a model: they cannot be paraphrased
 	// away by this fold or any later one.

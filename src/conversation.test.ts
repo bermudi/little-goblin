@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { _primeOpenRouterCatalog } from "./agent/models-dev.ts";
+import { runCompaction } from "./agent/compaction.ts";
+import { foldSummary } from "./testkit/fake-summary.ts";
 import { pruningReplacement } from "./cache-pruning.ts";
 import { appAddress, appIdOf, channelOf, formatAddress, parseAddress } from "./conversation-address.ts";
 import type { ParsedAddress } from "./conversation-address.ts";
@@ -436,6 +438,79 @@ describe("compaction pointers", () => {
 		const reopened = openStore(path);
 		expect(reopened.modelEntries(c.id)).toEqual(before);
 		reopened.close();
+	});
+
+	test("a second fold re-splits the same event — no re-sent content, the view advances", async () => {
+		// PR #555 F1/F2, end to end on the real store: fold the oversized
+		// turn twice. The second fold moves the split part; its only spend
+		// is the turn-prefix call over the delta, and the model view
+		// serves the suffix from the NEW part afterwards.
+		const store = openStore(tmpDb("goblin-test-"));
+		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(c.id, [msg("research the deploy")]); // 1
+		const reply: UIMessage = {
+			id: "r1",
+			role: "assistant",
+			parts: [
+				{ type: "step-start" },
+				{ type: "text", text: "x".repeat(40_000) },
+				{ type: "step-start" },
+				{ type: "text", text: "y".repeat(10_000) },
+				{ type: "step-start" },
+				{ type: "text", text: "z".repeat(4_000) },
+				{ type: "step-start" },
+				{ type: "text", text: "w".repeat(2_000) },
+			],
+		};
+		store.append(c.id, [reply], { anchorSeq: 1 }); // 2
+		const promptsByFold: string[][] = [];
+		const summarize = async (_system: string, prompt: string) => {
+			promptsByFold.at(-1)!.push(prompt);
+			return prompt.includes("checkpoint of the user's request")
+				? "DELTA CHECKPOINT"
+				: foldSummary("the folded history", prompt);
+		};
+		const fold = () => {
+			promptsByFold.push([]);
+			return runCompaction(c.id, store, ["m"], summarize, {
+				tailTokenBudget: 5_000,
+				inputTokenBudget: 100_000,
+			}, new AbortController().signal);
+		};
+		const first = await fold();
+		expect(first.kind).toBe("compacted");
+		expect(store.getCompaction(c.id)?.split).toEqual({ seq: 2, part: 2 });
+		const second = await fold();
+		expect(second.kind).toBe("compacted");
+		expect(store.getCompaction(c.id)?.split).toEqual({ seq: 2, part: 4 });
+		// Fold two made ONE call — the delta turn-prefix. Step 1 (already
+		// folded) and steps 3-4 (kept suffix) never re-enter.
+		expect(promptsByFold[1]!).toHaveLength(1);
+		expect(promptsByFold[1]![0]).toContain("y".repeat(200));
+		expect(promptsByFold[1]![0]).not.toContain("x".repeat(200));
+		expect(promptsByFold[1]![0]).not.toContain("z".repeat(200));
+		if (second.kind !== "compacted") return;
+		expect(second.summary).toContain("the folded history");
+		expect(second.summary).toContain("DELTA CHECKPOINT");
+		// The view serves summary → the suffix from the NEW part: steps
+		// 3-4 only.
+		const view = store.modelEntries(c.id);
+		expect(view.map((e) => e.seq)).toEqual([1, 2]);
+		expect(view[0]!.message.id).toBe("compact-1");
+		expect(
+				view[1]!.message.parts.map((p) => (p as { text?: string }).text ?? null),
+		).toEqual([null, "z".repeat(4_000), null, "w".repeat(2_000)]);
+		// A third fold advances once more — to the last step edge — and
+		// the view follows; a fourth stands down, nothing new to fold.
+		const third = await fold();
+		expect(third.kind).toBe("compacted");
+		expect(store.getCompaction(c.id)?.split).toEqual({ seq: 2, part: 6 });
+		expect(
+			store.modelEntries(c.id)[1]!.message.parts.map((p) => (p as { text?: string }).text ?? null),
+		).toEqual([null, "w".repeat(2_000)]);
+		const fourth = await fold();
+		expect(fourth.kind).toBe("noop");
+		store.close();
 	});
 
 	test("getCompaction returns the latest row; modelEntries is summary + tail", () => {

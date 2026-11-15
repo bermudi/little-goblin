@@ -908,6 +908,99 @@ describe("runCompaction — split turns", () => {
 		expect(outcome.boundarySeq).toBe(1);
 		expect(writes[0]).toMatchObject({ split: { seq: 2, part: 2 } });
 	});
+
+	test("a re-split of the same event folds only the delta — one call, no re-sent steps", async () => {
+		// PR #555 F1/F2: the second fold of the same oversized reply. The
+		// whole-event span is empty (the boundary does not move) — that is
+		// legal, and the only spend is the turn-prefix call over the delta
+		// parts [previous part, part). Content the previous row already
+		// folded (step 1) and the kept suffix (steps 3-4) never reach the
+		// summarizer.
+		const detail = [
+			ev(1, "user", "research the deploy"),
+			stepReplyEvent(2, 1, [
+				{ text: "x".repeat(40_000) },
+				{ text: "y".repeat(10_000) },
+				{ text: "z".repeat(4_000) },
+				{ text: "w".repeat(2_000) },
+			]),
+		];
+		const { store, writes } = fakeStore(detail, {
+			boundarySeq: 1,
+			summary: "era one",
+			split: { seq: 2, part: 2 },
+		});
+		const prompts: string[] = [];
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async (_s, prompt) => {
+				prompts.push(prompt);
+				return prompt.includes("checkpoint of the user's request")
+					? "DELTA CHECKPOINT"
+					: foldSummary("refold", prompt);
+			},
+			{ tailTokenBudget: 5_000, inputTokenBudget: 32_000 },
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		expect(writes[0]).toMatchObject({ boundarySeq: 1, split: { seq: 2, part: 4 } });
+		// No whole events folded — the prefix call is the only call.
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]).toContain("y".repeat(200));
+		expect(prompts[0]).not.toContain("x".repeat(200));
+		expect(prompts[0]).not.toContain("z".repeat(200));
+		if (outcome.kind !== "compacted") return;
+		// The history section is the previous row's summary, unchanged.
+		expect(outcome.summary).toContain("era one");
+		expect(outcome.summary).toContain("**Turn Context (split turn):**");
+		expect(outcome.summary).toContain("DELTA CHECKPOINT");
+	});
+
+	test("a later fold past the split event re-sends only its unfolded suffix", async () => {
+		// PR #555 F2: once a later tail lets the fold move PAST the split
+		// event, the span carries that event sliced from the previous
+		// row's part — its already-folded prefix never re-enters a summary.
+		const detail = [
+			ev(1, "user", "research the deploy"),
+			stepReplyEvent(2, 1, [
+				{ text: "x".repeat(40_000) },
+				{ text: "y".repeat(10_000) },
+				{ text: "z".repeat(4_000) },
+			]),
+			ev(3, "user", "and now?"),
+			ev(4, "assistant", "done", 3),
+		];
+		const { store, writes } = fakeStore(detail, {
+			boundarySeq: 1,
+			summary: "era one",
+			split: { seq: 2, part: 2 },
+		});
+		const prompts: string[] = [];
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async (_s, prompt) => {
+				prompts.push(prompt);
+				return foldSummary("refold", prompt);
+			},
+			{ tailTokenBudget: 5_000, inputTokenBudget: 32_000 },
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		expect(writes[0]).toMatchObject({ boundarySeq: 2, split: null });
+		// One chunk over the delta: the split event sliced from part 2 —
+		// steps 2-3 yes, step 1 (already folded) and the trigger (already
+		// folded) never.
+		expect(prompts).toHaveLength(1);
+		expect(prompts[0]).toContain("era one");
+		expect(prompts[0]).toContain("y".repeat(200));
+		expect(prompts[0]).toContain("z".repeat(200));
+		expect(prompts[0]).not.toContain("x".repeat(200));
+		expect(prompts[0]).not.toContain("research the deploy");
+	});
 });
 
 describe("opaque reasoning state", () => {

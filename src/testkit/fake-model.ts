@@ -24,8 +24,9 @@ export type StreamAttempt =
 	| LanguageModelV4StreamPart[]
 	// doStream rejects — a provider-side rejection
 	| Error
-	// the stream errors on read
-	| { readError: Error }
+	// the stream errors on read — after `parts` (default none) were
+	// delivered, modelling a mid-stream socket reset
+	| { readError: Error; parts?: LanguageModelV4StreamPart[] }
 	// enqueues parts (default none), stays open; reader.cancel rejects
 	| { cancelError: Error; parts?: LanguageModelV4StreamPart[] }
 	// paced pushes — delayMs before each part in `pace` (all parts when
@@ -183,10 +184,16 @@ export function scriptedModel(
 				};
 			}
 			if ("readError" in attempt) {
+				// Pull-sequenced: controller.error() clears the queue, so
+				// enqueue-then-error in start would drop the parts before
+				// any read. One part per pull, then the throw.
+				const pending = [...(attempt.parts ?? [])];
 				return {
 					stream: new ReadableStream<LanguageModelV4StreamPart>({
-						start(controller) {
-							controller.error(attempt.readError);
+						pull(controller) {
+							const part = pending.shift();
+							if (part === undefined) controller.error(attempt.readError);
+							else controller.enqueue(part);
 						},
 					}),
 				};

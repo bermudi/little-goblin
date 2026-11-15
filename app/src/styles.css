@@ -661,6 +661,10 @@ p code,
 	border-radius: 50%;
 	background: var(--app-accent);
 }
+/* A failed attention load keeps the dot up, in the error colour. */
+.g .dot.attention-dot-error {
+	background: var(--app-danger);
+}
 .g-new {
 	color: var(--app-fg);
 }
@@ -1007,6 +1011,13 @@ header h1 {
 .chat .error {
 	margin: 0 1rem;
 }
+.composer-note {
+	color: var(--app-fg-muted);
+	padding: 0.4rem 1rem;
+}
+.chat .composer-note {
+	margin: 0 1rem;
+}
 .empty {
 	color: var(--app-fg-muted);
 }
@@ -1052,6 +1063,20 @@ header h1 {
 }
 .transcript-inner > .empty {
 	text-align: center;
+}
+/* Paged history's top affordance — the transcript's own quiet button,
+   centered over the column. */
+.load-older {
+	align-self: center;
+	margin-bottom: 0.75rem;
+	font-size: 0.85em;
+	opacity: 0.75;
+}
+.load-older:hover:not(:disabled) {
+	opacity: 1;
+}
+.load-older:disabled {
+	cursor: default;
 }
 
 /* ---------- conversation outline ---------- */

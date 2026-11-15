@@ -506,6 +506,80 @@ describe("InterruptedTurns", () => {
 		);
 	});
 
+	test("a drift refusal offers one-tap restore — the pair PATCH precedes the retry", async () => {
+		let patched: unknown = null;
+		let resumes = 0;
+		onRequest = async (req) => {
+			const path = new URL(req.url).pathname;
+			if (path.endsWith("/interrupted"))
+				return json({ runs: [run("run-deadbeef", [call("c1", "resolved-skip")])] });
+			if (path.endsWith("/config") && req.method === "PATCH") {
+				patched = (await req.json()) as { model?: string; thinking?: string };
+				return json({
+					model: "old/provider",
+					thinking: "low",
+					favorites: [],
+					pickerModels: null,
+					thinkingLevels: [],
+					catalog: [],
+				});
+			}
+			if (path.endsWith("/resume")) {
+				resumes += 1;
+				return resumes === 1
+					? json(
+							{
+								error: "model changed old/provider → prov/new since the interruption — not resumed",
+								restore: { model: "old/provider", thinking: "low" },
+							},
+							422,
+						)
+					: json({ resumed: true, runId: "run-deadbeef" });
+			}
+			return json({ error: "unhandled" }, 500);
+		};
+		let onResumedCalls = 0;
+		await render({
+			onResumed: async () => {
+				onResumedCalls++;
+			},
+		});
+		await click(button("Resume turn")!);
+		await flush();
+		expect(dom.container.textContent).toContain("model changed old/provider");
+		expect(resumes).toBe(1);
+		// The refusal's recorded pair surfaces as the offer.
+		const restoreBtn = button("Restore old/provider / low and resume");
+		expect(restoreBtn).toBeDefined();
+		await click(restoreBtn!);
+		await flush();
+		// PATCH writes the recorded pair back before the resume retry.
+		expect(patched).toEqual({ model: "old/provider", thinking: "low" });
+		expect(resumes).toBe(2);
+		expect(onResumedCalls).toBe(1);
+		expect(dom.container.querySelector(".interrupted-run")).toBeNull();
+	});
+
+	test("a refusal without a restore pair shows only the reason", async () => {
+		onRequest = (req) => {
+			const path = new URL(req.url).pathname;
+			if (path.endsWith("/interrupted"))
+				return json({ runs: [run("run-deadbeef", [call("c1", "resolved-skip")])] });
+			if (path.endsWith("/resume"))
+				return json({ error: "the recorded tool surface is unreadable — not resumed" }, 422);
+			return json({ error: "unhandled" }, 500);
+		};
+		await render();
+		await click(button("Resume turn")!);
+		await flush();
+		expect(dom.container.textContent).toContain("tool surface is unreadable");
+		expect(
+			[...dom.container.querySelectorAll("button")].find((b) =>
+				b.textContent?.startsWith("Restore "),
+			),
+		).toBeUndefined();
+	});
+
 	test("busy disables the decision controls and resume", async () => {
 		onRequest = (req) => {
 			const path = new URL(req.url).pathname;

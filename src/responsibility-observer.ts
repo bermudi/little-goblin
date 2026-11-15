@@ -17,13 +17,20 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { log } from "./log.ts";
 import { HerdrError, type OperatorAgent } from "./herdr.ts";
-import type { Attachment, ResponsibilityStore } from "./responsibilities.ts";
+import type { ResponsibilityStore } from "./responsibilities.ts";
+import { UNREACHABLE_POLLS, type Attachment } from "./responsibility-types.ts";
 import { type AuthorityStamp, authorityStamp } from "./responsibility-authority.ts";
 import type { WakeStore } from "./wake-store.ts";
 
 const observedCursorSchema = z.object({
-	/** Last observed state_change_seq — the poll sequence key. */
+	/** Last observed state_change_seq — the poll sequence key. Nullable
+	 *  only on cursors persisted by older builds against seq-less
+	 *  servers; the adapter now fails loud without it, so live
+	 *  sightings always carry it. */
 	seq: z.number().int().nonnegative().nullable(),
+	/** Last observed completion_seq — null while the agent's idle
+	 *  transition has not completed work (the server omits the field,
+	 *  never sends null). */
 	completionSeq: z.number().int().nonnegative().nullable(),
 	status: z.string(),
 	agentSession: z.string().nullable(),
@@ -35,7 +42,8 @@ const observedCursorSchema = z.object({
 	epoch: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
 	/** Transitions into blocked observed this generation. Names the
 	 *  blocked stint in its source key, so two genuine transitions stay
-	 *  distinct even when the server reports no state_change_seq. */
+	 *  distinct even without a usable baseline seq (a cursor persisted
+	 *  by an older build) or across a reset a poll missed. */
 	blockedTransitions: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).default(0),
 });
 export type ObservedCursor = z.infer<typeof observedCursorSchema>;
@@ -67,20 +75,28 @@ function matchOf(att: Attachment, agents: OperatorAgent[]): OperatorAgent | null
 	return agents.find((a) => a.pane_id === att.target.paneId) ?? null;
 }
 
-function cursorFrom(a: OperatorAgent | null, prev: ObservedCursor | null): ObservedCursor {
-	if (a === null) {
-		return {
-			epoch: prev?.epoch ?? 0,
-			blockedTransitions: prev?.blockedTransitions ?? 0,
-			seq: prev?.seq ?? null,
-			completionSeq: prev?.completionSeq ?? null,
-			status: "missing",
-			agentSession: prev?.agentSession ?? null,
-			terminalId: prev?.terminalId ?? null,
-			name: prev?.name ?? null,
-			missing: true,
-		};
-	}
+/** A cursor written from a live sighting — the sequence is always
+ *  present: the adapter fails loud against servers that omit it, so
+ *  a null seq survives only in rows persisted by older builds. */
+type LiveCursor = ObservedCursor & { seq: number };
+
+/** The cursor carried while the agent is missing from its listing —
+ *  the previous observation rides forward unchanged. */
+function missingFrom(prev: ObservedCursor | null): ObservedCursor {
+	return {
+		epoch: prev?.epoch ?? 0,
+		blockedTransitions: prev?.blockedTransitions ?? 0,
+		seq: prev?.seq ?? null,
+		completionSeq: prev?.completionSeq ?? null,
+		status: "missing",
+		agentSession: prev?.agentSession ?? null,
+		terminalId: prev?.terminalId ?? null,
+		name: prev?.name ?? null,
+		missing: true,
+	};
+}
+
+function liveFrom(a: OperatorAgent, prev: ObservedCursor | null): LiveCursor {
 	return {
 		epoch: prev?.epoch ?? 0,
 		blockedTransitions: prev?.blockedTransitions ?? 0,
@@ -98,8 +114,8 @@ function cursorFrom(a: OperatorAgent | null, prev: ObservedCursor | null): Obser
  *  reference a new attachment (or a reattach's new generation) starts
  *  from. The tool path and the app route share this so their bindings
  *  seed identical state. */
-export function cursorFromAgent(a: OperatorAgent): ObservedCursor {
-	return cursorFrom(a, null);
+export function cursorFromAgent(a: OperatorAgent): LiveCursor {
+	return liveFrom(a, null);
 }
 
 // Agent-controlled metadata (names, statuses, session ids) rides into
@@ -133,6 +149,15 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		health: "attached" | "missing" | "identity_changed" | null,
 		dev: { sourceKey: string; kind: string; text: string; facts: unknown } | null,
 	): void {
+		// A reconcile only runs on a successful listing — whatever the
+		// outcome, observation is available again and any outage closes.
+		if (att.unreachableSince !== null)
+			log.info("responsibility observation restored", {
+				attachment: att.attachmentId,
+				agent: att.target.agentName,
+				since: att.unreachableSince,
+			});
+		resps.clearUnreachable(att.attachmentId);
 		// Joins reconcile's transaction, including its lifecycle checks.
 		resps.updateCursor(att.attachmentId, cursor);
 		if (health !== null) resps.setHealth(att.attachmentId, health);
@@ -206,7 +231,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 				// the next cycle's transitions must not collide with — and
 				// dedupe against — this cycle's durable events.
 				bumpEpoch();
-				const cur = cursorFrom(null, prev);
+				const cur = missingFrom(prev);
 				cur.epoch = epoch;
 				commit(att, conversationId, authority, cur, "missing", {
 					sourceKey: key("missing", prev?.seq ?? "na"),
@@ -220,13 +245,15 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 					facts: { attachmentId: att.attachmentId, generation: g },
 				});
 			} else {
-				commit(att, conversationId, authority, cursorFrom(null, prev), null, null);
+				commit(att, conversationId, authority, missingFrom(prev), null, null);
 			}
 			return;
 		}
 
-		const cur = cursorFrom(found, prev);
-		const reset = prev !== null && prev.seq !== null && cur.seq !== null && cur.seq < prev.seq;
+		const cur = liveFrom(found, prev);
+		// cur.seq always carries the adapter's required sequence; prev.seq
+		// is null only on cursors persisted by older builds.
+		const reset = prev !== null && prev.seq !== null && cur.seq < prev.seq;
 		if (reset) {
 			bumpEpoch();
 			cur.epoch = epoch;
@@ -263,7 +290,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		// Recovered availability after a disappearance.
 		if (prev?.missing === true) {
 			commit(att, conversationId, authority, cur, "attached", {
-				sourceKey: key("recovered", cur.seq ?? "na"),
+				sourceKey: key("recovered", cur.seq),
 				kind: "agent-recovered",
 				text: `The attached Herdr agent is listed again on its target.\n${fencedObservation({
 					event: "agent-recovered",
@@ -281,7 +308,7 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 		// collision with a development from before the reset.
 		if (reset) {
 			commit(att, conversationId, authority, cur, null, {
-				sourceKey: key("cursor-reset", cur.seq ?? "na"),
+				sourceKey: key("cursor-reset", cur.seq),
 				kind: "cursor-reset",
 				text: `The attached agent's observation sequence regressed — its target's server may have reset.\n${fencedObservation(
 					{
@@ -332,10 +359,11 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 			return;
 		}
 		// Blocked/input-needed is a development only on transition. The
-		// transition count names the stint in the key — `state_change_seq`
-		// is optional on the wire (older servers omit it), so `blocked:na`
-		// would recur per stint and the durable UNIQUE source key would
-		// silently dedupe every genuine transition after the first.
+		// transition count names the stint in the key — keying by
+		// state_change_seq alone would collide when the cursor has no
+		// baseline seq (a row persisted by an older build) or a reset a
+		// poll missed reused the number, and the durable UNIQUE source key
+		// would silently dedupe every genuine transition after the first.
 		if (cur.status === "blocked" && prev?.status !== "blocked") {
 			cur.blockedTransitions += 1;
 			commit(att, conversationId, authority, cur, null, {
@@ -407,6 +435,34 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 							attachments: group.atts.map((a) => a.attachmentId),
 							error: err.message,
 						});
+						// Consecutive failures declare the outage on the
+						// durable row so surfaces can say since when — the
+						// observer instance is not guaranteed to persist.
+						const at = deps.now?.() ?? new Date();
+						db.transaction(() => {
+							const declared: Attachment[] = [];
+							for (const snapshot of group.atts) {
+								const att = resps.getAttachment(snapshot.attachmentId);
+								if (
+									att === null ||
+									att.generation !== snapshot.generation ||
+									!SIGHTED.has(att.health)
+								)
+									continue;
+								const count = resps.markUnreachable(
+									att.attachmentId,
+									at.toISOString(),
+								);
+								if (count === UNREACHABLE_POLLS) declared.push(att);
+							}
+							if (declared.length > 0)
+								log.warn("responsibility observation declared unreachable", {
+									server: group.server,
+									session: group.session,
+									attachments: declared.map((a) => a.attachmentId),
+									since: at.toISOString(),
+								});
+						}).immediate();
 						continue;
 					}
 					// Malformed output and unexpected errors rethrow after

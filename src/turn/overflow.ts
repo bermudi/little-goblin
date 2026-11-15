@@ -2,20 +2,20 @@ import type { UIMessage } from "ai";
 import type { CompactionOutcome } from "../agent/compaction.ts";
 import type { FallbackTrail } from "../agent/model-fallback.ts";
 import { isContextOverflow } from "../agent/provider-errors.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { log } from "../log.ts";
 import type { RecallContext } from "../memory/mod.ts";
-import type { ToolCallDigest } from "../reviewer.ts";
+import type { ToolCallDigest } from "../reviewer-evidence.ts";
 import type { LoopTurnState } from "./state.ts";
 import type { LiveChunks, StreamOutcome } from "./stream.ts";
 
 // design/compaction.md → Triggers: the one fold trigger — the lower of
-// 50% of the catalog window and an absolute 128k cap. Every call
+// 50% of the catalog window and an absolute 256k cap (Hermes's cap, operator ruling #547). Every call
 // re-sends the whole context, so the cap bounds the per-call input bill
 // on a 1M window. The same threshold drives the step-boundary pre-empt,
 // the end-of-turn backstop, and the app's compaction gauge.
 export const COMPACT_TRIGGER_RATIO = 0.5;
-export const COMPACT_TRIGGER_CAP_TOKENS = 128_000;
+export const COMPACT_TRIGGER_CAP_TOKENS = 256_000;
 
 // The trigger in tokens for a catalog window; an unknown window fires
 // at the cap alone.
@@ -166,8 +166,47 @@ export function overflowHoldable(
 const STILL_FULL =
 	"context window still full after compacting — the latest message or tool output is too big for this model";
 
+// #493-L25 — transport-shaped failures read as the wire's own jargon
+// ("Failed to process successful response") while the real cause hides
+// in logs. Name the drop, name the code when one exists, and keep the
+// recovery one plain sentence — the raw error still logs upstream.
+const TRANSPORT_MARKERS = /econnreset|econnrefused|etimedout|epipe|eai_again|enotfound|fetch failed|socket|failed to process successful response|network|connection (?:reset|closed|dropped|terminated)/i;
+const TRANSPORT_CODES =
+	/^(ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EPIPE|EAI_AGAIN|ENOTFOUND|EHOSTUNREACH|EHOSTDOWN|ENETUNREACH|ENETRESET|UND_ERR_)/;
+
+function transportCodeIn(err: unknown, depth: number): string | null {
+	if (depth > 3 || err === null || typeof err !== "object") return null;
+	const code = (err as { code?: unknown }).code;
+	if (typeof code === "string" && TRANSPORT_CODES.test(code)) return code;
+	return transportCodeIn((err as { cause?: unknown }).cause, depth + 1);
+}
+
+// The transport code to show, or null when the error doesn't look like
+// a connection drop. A transport errno wins; a transport-shaped message
+// on the error or its causes is the fallback so the line never invents
+// a code. Non-transport codes (API error bodies) never classify.
+export function transportFailureCode(err: unknown): string | null {
+	const code = transportCodeIn(err, 0);
+	if (code !== null) return code;
+	for (let e: unknown = err, depth = 0; depth <= 3; depth++) {
+		const message = e instanceof Error ? e.message : e == null ? "" : String(e);
+		const match = TRANSPORT_MARKERS.exec(message);
+		if (match !== null) return match[0];
+		e = e instanceof Error ? e.cause : undefined;
+	}
+	return null;
+}
+
+export function transportFailureText(err: unknown): string | null {
+	const code = transportFailureCode(err);
+	if (code === null) return null;
+	return `The model connection dropped (${code}). Nothing was lost — send again or /resume.`;
+}
+
 export function terminalFailureMessage(err: unknown, resumed: boolean): string {
 	if (resumed && isContextOverflow(err)) return STILL_FULL;
+	const transport = transportFailureText(err);
+	if (transport !== null) return transport;
 	return err instanceof Error ? err.message : String(err);
 }
 

@@ -326,7 +326,18 @@ Memory page and shows its `RetryCard`. **Your decisions** show program, mail
 and skill proposals as the Programs/Skills page cards (`ProgramApprovalCard`,
 `MailApprovalCard`, `ProposalCard`) with their diff already open and the
 buttons on the card; each has an "If you wait:" line. **Needs you** holds the
-rest (interrupted runs, delegations, responsibilities) with a plain Open.
+rest (interrupted runs, delegations, responsibilities) with a plain Open,
+plus two read-only memory projections (#483): an open outage row is
+"Memory can't reach its service" (queued count mirrors the Telegram
+outage notice's "queued locally, nothing lost") and a failed last recall
+is "Memory can't recall". Both are the same durable states the Telegram
+notices ride (the `memory_outage` row, the `memory_recall_state` flag)
+and clear on their own when the service is healthy — projections, not
+notices, so memory.md's two-notice rule still bounds pushes.
+A declared observation outage is a card of its own
+(`observation-unreachable`, #491): "Can't observe \<agent\>" names the
+target and the outage start, and disappears on the next successful poll —
+there is nothing to decide, only something to notice.
 **Work in progress** is the responsibility feed; notifications are one line at
 the foot. "Drop them" still cannot be undone ("Save them now" is design only).
 
@@ -524,6 +535,17 @@ Changes apply at the next admitted turn, not the next model step — no epoch
 bump, abort, or interrupted answer. Running turns keep their captured
 settings, queued successors use the latest, manual compaction resolves at
 its lane job; a model change legitimately makes the next turn's cache cold.
+
+**Switch feedback rides the wire, not just the log (ruling 2026-11-13, #529).**
+The config PATCH response adds `appliesFrom: "next-turn"` whenever a turn is
+running on that conversation, and `thinkingClamped: {from, to}` whenever the
+stored level moved onto the destination ladder; the composer renders each as a
+one-line note — the same fields on the app-defaults PATCH carry the clamp.
+A resume refused on selection drift answers `{error, restore: {model,
+thinking}}` — the pair the run's snapshot was admitted on — and the
+interrupted-turn card offers it as a one-tap restore: PATCH the pair back,
+then retry the resume. A half-pair (`model` or `thinking` null) produces no
+offer, since a partial write can never pass the drift gate.
 
 **The memory toggle follows the same rule (ruling 2026-10-29).** A flag
 write, never `applySettings`: no epoch bump — a running turn finishes and
@@ -982,6 +1004,42 @@ the last event in each contiguous unanchored assistant run. `/messages`
 returns that list with the ratings, and POSTing any other id is refused.
 The action bar refreshes the list after reconnect reconciliation and turn
 finish, so a newly committed reply gets controls without a manual reload.
+
+## Paged history (ruling 2026-11-13, #492)
+
+`GET /messages` mapped the entire durable history with no bound — the
+payload, the response and the rendered DOM all grew forever (the migration
+audit flagged exactly this). It now serves the newest 200-message window
+plus `start` (the window's absolute causal index) and `olderCursor`;
+`?before=<cursor>` serves the next page up. No virtualization.
+
+**Skeleton first, payloads for the window.** `historySlim` reads the whole
+transcript's causal skeleton (seq, anchor, role, created_at — never
+`data`): windowing, fold-mark placement and rateable-winner picks all need
+the full order but none of the payloads. `historyData` then fetches
+`data` only for the served window's seqs, so a big history never parses
+what it won't serve.
+
+**The cursor is a causal position,** `<key>:<seq>` naming the first entry
+of the page just served; `?before` returns the window that ends right
+before it. A mid-order anchored arrival sorts before or after that point
+on its own merits — it can never skip a row or serve one twice the way an
+index cursor would under inserts.
+
+**Marks and ratings stay transcript-wide.** Fold-mark `afterIndex` /
+`firstKeptIndex` are absolute — the client subtracts its loaded base and
+holds marks below the loaded range until their page arrives.
+`rateableMessageIds` and `ratings` cover the whole transcript on every
+page: a later turn can demote a winner inside a page the client already
+holds, so replace-not-union keeps the seam honest.
+
+**The client keeps pages out of `useChat`.** Paged-in messages form a
+durable-only prefix above the live window — `mergeTranscript` would park
+them after the newest page, so they never enter the merge at all. They
+are read-only: edit stays on the live window because a rewind's view
+reconciliation doesn't cover loaded pages; copy, branch and rating work
+anywhere. Loading a page shifts scrollTop by the added height so the view
+doesn't jump.
 
 ## Interrupted turn recovery (ruling 2026-10-17)
 
@@ -1442,6 +1500,19 @@ section: same file.
   mid-listing wins whole instead of being overwritten. An observer
   cursor refresh alone is not a binding change and never conflicts;
   callers without a snapshot keep the unconditional behavior.
+- **Observation unavailability is declared, not inferred (ruling
+  2026-11-13, #491).** A target whose list call fails keeps every
+  attachment's health (outage ≠ disappearance); the poll records a
+  durable consecutive count plus the first failure's time on each row.
+  The third consecutive failure declares the outage — `unreachableSince`
+  projects from the row only at the threshold — and the feed pill reads
+  `<name> (unreachable since HH:MM)`, an `observation-unreachable`
+  Attention item opens the responsibility's conversation, and doctor's
+  `observer.unreachable` warns while declared. The next successful
+  reconcile clears count and declaration before its ordinary cursor
+  commit; a success between failures restarts the count. Detach and
+  reattach both reset the bookkeeping — deliberate binding changes are
+  not outages.
 - **Responsibility-destination programs are durable enqueues.** If the
   `recordDevelopment` write throws, `fireScheduled` does not `markRan` —
   the occurrence stays due and the next scan retries the same source

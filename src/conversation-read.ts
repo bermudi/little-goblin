@@ -5,11 +5,68 @@
 // settings) stays on ConversationStore in conversation.ts.
 
 import type { UIMessage } from "ai";
-import type { Conversation } from "./conversation.ts";
 import type { Compaction, CompactionMark } from "./conversation-events.ts";
-import type { HistoryContextRow, HistoryHit } from "./conversation-history.ts";
+import type {
+	HistoryContextRow,
+	HistoryHit,
+	HistorySlimEntry,
+} from "./conversation-history.ts";
+import type { Row } from "./conversation-queries.ts";
 import type { MemoryEligibility } from "./memory/mod.ts";
 import type { ModelSettings } from "./conversation-settings.ts";
+
+export interface Conversation {
+	id: string;
+	// Real only on dm:/topic: — app rows store 0/NULL (legacy NOT NULL
+	// columns). channelOf(id) is the routing check, never these.
+	chatId: number;
+	threadId: number | null;
+	title: string | null;
+	// Telegram placeholder name — the bot owes it a real one. Cleared by
+	// explicit rename or a successful auto-title.
+	titleImplicit: boolean;
+	// Durable per-conversation selection on app rows only; telegram ignores
+	// these columns for its one shared config selection.
+	model: string | null;
+	thinking: string | null;
+	voice: boolean;
+	memoryExcluded: boolean; // operator opt-out: this topic sends/recalls no memory
+	// True only while a project's gate wrote the exclusion — the re-open
+	// recompute clears it, an operator's own flag never carries it.
+	memoryExcludedByProject: boolean;
+	persona: "personal" | "guest"; // prompt class + sandbox tool filter (Guest mode)
+	// Hidden from the app rail, still answerable; any appended event clears it.
+	archivedAt: string | null;
+	// Floats above the app rail's activity order; survives activity,
+	// cleared by archive.
+	pinnedAt: string | null;
+	// Bound once at creation; app conversations only — every other row
+	// stays null forever.
+	projectId: string | null;
+	epoch: number;
+	createdAt: string;
+}
+
+export function toConversation(r: Row): Conversation {
+	return {
+		id: r.id,
+		chatId: r.chat_id,
+		threadId: r.thread_id,
+		title: r.title,
+		titleImplicit: r.title_implicit !== 0,
+		model: r.model,
+		thinking: r.thinking,
+		voice: r.voice !== 0,
+		memoryExcluded: r.memory_excluded !== 0,
+		memoryExcludedByProject: r.memory_excluded_by_project !== 0,
+		persona: r.persona === "guest" ? "guest" : "personal",
+		archivedAt: r.archived_at,
+		pinnedAt: r.pinned_at,
+		projectId: r.project_id,
+		epoch: r.epoch,
+		createdAt: r.created_at,
+	};
+}
 
 // The app channel's own pool, most recently active first.
 export interface AppConversationSummary {
@@ -52,6 +109,10 @@ export interface ConversationReads {
 	// handle onto an append-only seq. Null when this conversation never
 	// stored that id (a client id, a deleted event, another chat).
 	messageEvent(id: string, messageId: string): { seq: number; role: string } | null;
+	// The full text of the reply that produced one delivered Telegram
+	// message — the 🔊 button's durable lookup across restarts. Null
+	// when no delivery row maps the message or its reply event is gone.
+	deliveredReplyText(chatId: number, messageId: number): string | null;
 	// The causal view (anchored responses sort right after their user
 	// event) as messages; historyEntries adds seqs (recall blocks need
 	// positions); historyDetail adds anchors (compaction's cut rule) and
@@ -64,6 +125,21 @@ export interface ConversationReads {
 		createdAt: string;
 		message: UIMessage;
 	}[];
+	// The transcript's causal skeleton without payloads — the paged
+	// reader's index: windowing, fold marks and rateable-winner picks
+	// all need the full order but none of the message data.
+	historySlim(id: string): HistorySlimEntry[];
+	// Payloads for one served window, causal-ordered like historyDetail —
+	// the paged reader's second step after the skeleton picks the seqs.
+	historyData(id: string, seqs: readonly number[]): {
+		seq: number;
+		anchorSeq: number | null;
+		createdAt: string;
+		message: UIMessage;
+	}[];
+	// Stored message ids for a seq set — joins rateable winner seqs to
+	// envelope ids without parsing every row's payload.
+	messageIdsForSeqs(id: string, seqs: readonly number[]): Map<number, string>;
 	// The causal-last event of one role (same key historyDetail sorts
 	// on), read as a single row — for boolean/last-message callers that
 	// would otherwise materialize the whole history. Null = none.

@@ -1851,9 +1851,9 @@ describe("context overflow recovery", () => {
 			tools: {
 				probe: tool({
 					inputSchema: z.object({}),
-					// ~130k estimated tokens — past the 128k trigger cap on a
+					// ~260k estimated tokens — past the 256k trigger cap on a
 					// 1M window (50% would be ~524k).
-					execute: async () => "x".repeat(520_000),
+					execute: async () => "x".repeat(1_040_000),
 				}),
 			},
 			deps: {
@@ -3149,6 +3149,70 @@ describe("steering", () => {
 		const detail = r.store.historyDetail(r.conv.id);
 		expect(detail.map((d) => d.message.role)).toEqual(["user", "user", "assistant"]);
 		expect(detail[2]!.anchorSeq).toBe(detail[1]!.seq);
+		r.store.close();
+	});
+
+	test("a steer parked mid-step skips unlaunched tool calls — the next model call sees it", async () => {
+		// #477: the model plans calls on stale input while a newer message
+		// waits on the lane. The launch boundary skips what has not run —
+		// a call already executing finishes normally. The steer lands
+		// while call 2's own model call is still streaming — after its
+		// prepareStep ran, before its calls dispatch.
+		const callTwoStreaming = deferred<void>();
+		const emitCallTwo = deferred<void>();
+		const toolStarted = deferred<void>();
+		const toolRelease = deferred<void>();
+		const ran: string[] = [];
+		const s = scripted(
+			[
+				[
+					{ type: "stream-start", warnings: [] },
+					toolCallPart("c1", "probe"),
+					finishPart("tool-calls"),
+				],
+				{
+					drive: async (ctx) => {
+						ctx.enqueue({ type: "stream-start", warnings: [] });
+						callTwoStreaming.resolve();
+						await emitCallTwo.promise; // the steer parks on the lane here
+						ctx.enqueue(toolCallPart("c2", "probe"));
+						ctx.enqueue(finishPart("tool-calls"));
+						ctx.close();
+					},
+				},
+			],
+			{ extra: textParts("adjusted") },
+		);
+		const r = rig({
+			model: s.model,
+			tools: {
+				probe: tool({
+					inputSchema: z.object({}),
+					execute: async (_in, opts) => {
+						ran.push(opts.toolCallId);
+						toolStarted.resolve();
+						await toolRelease.promise;
+						return { ok: true };
+					},
+				}),
+			},
+		});
+		const s1 = submit(r, "start this");
+		await toolStarted.promise; // c1's execute entered — past the launch boundary
+		toolRelease.resolve(); // c1 finishes; model call 2 opens
+		await callTwoStreaming.promise;
+		const s2 = submit(r, "actually pivot"); // parks on the lane mid-step
+		emitCallTwo.resolve();
+		expect(await s1.done).toEqual({ kind: "completed" });
+		expect(await s2.done).toEqual({ kind: "completed" });
+		// c1 ran to completion; c2 never launched.
+		expect(ran).toEqual(["c1"]);
+		// The next model call claimed the steer and carries c2's synthetic
+		// skip result — the model answers the new input, not stale plans.
+		expect(s.prompts).toHaveLength(3);
+		expect(s.prompts[2]).toContain("actually pivot");
+		expect(s.prompts[2]).toContain("skipped: the user sent new input");
+		await drain(r);
 		r.store.close();
 	});
 

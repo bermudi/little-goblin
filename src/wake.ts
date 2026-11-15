@@ -1,7 +1,8 @@
 // Wakes use ordinary turn submission so queued and live turns share ordering
 // and epoch fencing. A constructed sink must be released if submission throws.
 
-import type { Conversation, ConversationStore } from "./conversation.ts";
+import type { Conversation } from "./conversation-read.ts";
+import type { ConversationStore } from "./conversation.ts";
 import { channelOf } from "./conversation-address.ts";
 import type { ConversationAddress } from "./conversation-address.ts";
 import { paths } from "./home-layout.ts";

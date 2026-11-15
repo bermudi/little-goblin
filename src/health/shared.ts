@@ -68,10 +68,14 @@ const manualHints: Readonly<Record<string, string>> = {
 		"Reconcile installed memory units with deploy/memory via the runbook (docs/memory.md → Operator setup / Manual path) — the stack is never auto-deployed and installed Quadlets are operator-editable; doctor never copies, reloads or restarts.",
 	sandbox:
 		"Inspect the podman engine and the configured image locally; images are pulled only with operator approval.",
+	observer:
+		"Inspect the named Herdr target locally — a recovered poll clears the declaration on its own; reattach is deliberate.",
 	"repo.test-ratio":
 		"Informational: trim redundant tests or fold them into invariant-level ones (DESIGN.md → Test posture); never a gate.",
 	"cache.contracts":
 		"Run the bounded public-doc check `bun scripts/check-cache-contracts.ts` — it verifies the pinned source fragments only and never changes policy; empirical lifetime policies wait on model_cache_calls telemetry.",
+	provider:
+		"Provision the named credential record or codex auth file, or fix the model ref; doctor never resolves credentials or refreshes catalogs — refresh through ordinary authorized use.",
 };
 
 export function result(

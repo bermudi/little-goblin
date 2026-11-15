@@ -204,8 +204,8 @@ who served (`via zai/glm-5.3 — codex/gpt-6.1-terra: quota exhausted` in
 Telegram, the meta line in the app). Empty (the default) means no
 fallback. Edit it under Settings → Models → Fallbacks.
 `titleModel` names
-a small cheap model used to auto-title new topics; leave it unset and topics
-keep Telegram's placeholder name.
+a small cheap model used to auto-title new topics; leave it unset and the
+conversation's own model writes the title under a tight output cap.
 
 ### Thinking
 
@@ -446,7 +446,9 @@ http: { port: 8787 },
   DM `@userinfobot` to find yours. At least one is required while
   Telegram is enabled; the list may be empty only when `telegram.enabled`
   is `false`. Checked on every message, so mini-app edits take effect
-  immediately.
+  immediately. Leaving the shipped `123456789` placeholder warns at boot
+  and in `bun run doctor` (`config.operators`); a refused DM answer names
+  the sender's own id, so a wrong entry shows itself in the chat.
 - `allowedUsers` — people you name. Sandboxed: a guest persona with
   search-only tools, no memory, no app. Their DM is a standing chat; in
   groups they @mention you. Everyone else gets one refusal line per

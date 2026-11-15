@@ -73,3 +73,20 @@ describe("subagentNoticeTag", () => {
 		expect(isMachineryText(subagentNoticeTag(3, "worker", "done"))).toBe(true);
 	});
 });
+
+test("a schedule fire's tag names its occurrence and a coalesced count over one", () => {
+	const at = new Date("2026-09-20T10:00:00.000Z");
+	expect(programFireTag("morning brief", "schedule", { occurrence: at })).toBe(
+		"[program: morning brief · trigger: schedule · occurrence: 2026-09-20T10:00:00.000Z]",
+	);
+	expect(programFireTag("morning brief", "schedule", { occurrence: at, missed: 5 })).toBe(
+		"[program: morning brief · trigger: schedule · occurrence: 2026-09-20T10:00:00.000Z · coalesced: 5]",
+	);
+	// One missed occurrence is ordinary lateness — no coalesce suffix.
+	expect(programFireTag("x", "schedule", { occurrence: at, missed: 1 })).toBe(
+		"[program: x · trigger: schedule · occurrence: 2026-09-20T10:00:00.000Z]",
+	);
+	expect(
+		isMachineryText(programFireTag("x", "schedule", { occurrence: at, missed: 9 })),
+	).toBe(true);
+});

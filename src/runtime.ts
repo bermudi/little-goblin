@@ -21,7 +21,8 @@ import {
 	quotaExhausted,
 } from "./agent/provider-errors.ts";
 import { resolveSkillRef } from "./agent/skill-inject.ts";
-import type { Conversation, ConversationStore } from "./conversation.ts";
+import type { Conversation } from "./conversation-read.ts";
+import type { ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import {
 	activeExchangeExcluded,
@@ -31,7 +32,7 @@ import {
 	type RecallContext,
 	recallMemory,
 } from "./memory/mod.ts";
-import type { PriorTurnContext } from "./reviewer.ts";
+import type { PriorTurnContext } from "./reviewer-evidence.ts";
 import { Reviewer } from "./reviewer.ts";
 import { LaneRegistry, type QueuedTurn, type ResumeSeed } from "./runtime-lanes.ts";
 import type { System1Client } from "./system1.ts";
@@ -389,9 +390,9 @@ export class Runtime {
 	}
 
 	// Queue compaction behind the running turn so its response is not orphaned.
-	compact(conv: Conversation): Promise<CompactionOutcome> {
+	compact(conv: Conversation, focus?: string): Promise<CompactionOutcome> {
 		return new Promise<CompactionOutcome>((resolve, reject) => {
-			this.lanes.enqueueCompact({ conv, resolve, reject });
+			this.lanes.enqueueCompact({ conv, focus, resolve, reject });
 			this.lanes.startDraining(conv.id, () => this.drain(conv.id));
 		});
 	}
@@ -400,8 +401,9 @@ export class Runtime {
 		conv: Conversation,
 		reason: "threshold" | "manual" | "overflow" | "preempt",
 		activeFloor?: number,
+		focus?: string,
 	): Promise<CompactionOutcome> {
-		return runCompactJob(conv, reason, activeFloor, {
+		return runCompactJob(conv, reason, activeFloor, focus, {
 			store: this.deps.store,
 			compaction: this.deps.compaction,
 			captureConversation: this.deps.captureConversation,
@@ -535,7 +537,7 @@ export class Runtime {
 				const job = this.lanes.nextCompact(convId);
 				if (job !== undefined) {
 					try {
-						job.resolve(await this.doCompact(job.conv, "manual"));
+						job.resolve(await this.doCompact(job.conv, "manual", undefined, job.focus));
 					} catch (err) {
 						job.reject(err);
 					}
@@ -720,7 +722,8 @@ export class Runtime {
 		};
 		// The crash journal's per-attempt row — turn/run-record.ts owns its
 		// lifecycle; the attempt's finally guard is the backstop that a
-		// begun row never escapes still 'running'.
+		// begun row never escapes still 'running' except a deliberate
+		// shutdown leave (#471).
 		const journal = this.deps.turnJournal;
 		// An operator-resume admission carries the interrupted run it
 		// continues — every attempt of this turn links its run row to it
@@ -749,7 +752,8 @@ export class Runtime {
 			// reads it through this getter — never a write-back callback.
 			runId: () => authority?.runId ?? null,
 		});
-		const { journalFault, journaled, stampRun, recordUnlandedProgress, fallback } = record;
+		const { journalFault, journaled, stampRun, leaveRunning, recordUnlandedProgress, fallback } =
+			record;
 		// The aborted outcome's cause: a shutdown fence must read as a
 		// restart, not an operator stop. Other fences have several sources
 		// (stop, settings change, correction, navigation roll) — the wording
@@ -782,6 +786,12 @@ export class Runtime {
 			const accepts: { current: AcceptsMedia } = {
 				current: { modalities: new Set(["text"]), carries: () => false },
 			};
+			// #477's gate arms only once buildStep names the engine: the
+			// streamText engine folds steers at its prepareStep boundary,
+			// so a parked steer skips unlaunched calls; a claude-code
+			// attempt never claims mid-turn — the steer leads the
+			// successor turn and this stays false.
+			const steerGate = { armed: false };
 			const auth = openToolAuthority({
 				conv,
 				convId,
@@ -808,12 +818,18 @@ export class Runtime {
 				onJournalFault: () => controller.abort(),
 				runOwnership: this.deps.runOwnership,
 				checkAuthority: () => this.checkAuthority(convId, epoch),
+				// Same source prepareStep's claim reads — a peek, never a
+				// splice; the claim still belongs to the model call.
+				steerWaiting: () =>
+					steerGate.armed &&
+					this.lanes.claimablePending(convId, sink.onStreamChunk !== undefined),
 			});
 			// The const is what closures below capture — the mutable slot
 			// above only bridges the pre-authority failure paths.
 			authority = auth;
 			const tools = auth.tools;
 			const step = await this.deps.buildStep(conv, tools);
+			steerGate.armed = !isClaudeStep(step);
 			this.checkAuthority(convId, epoch);
 			accepts.current = {
 				modalities: step.inputModalities ?? new Set(["text"]),
@@ -956,6 +972,7 @@ export class Runtime {
 									chooseBoundary(store.historyDetail(convId), {
 										tailTokenBudget,
 										previousBoundary: previousFold?.boundarySeq ?? null,
+										previousSplit: previousFold?.split ?? null,
 										// Completed history only — inputs queued behind
 										// this request must not push the boundary onto
 										// the running exchange.
@@ -1056,7 +1073,7 @@ export class Runtime {
 					store.db.transaction(() => {
 						const seqs = store.append(convId, messages, opts);
 						landedReplySeq = seqs[0] ?? null;
-						journaled(() => journal?.noteReplyLanded(auth.runId));
+						journaled(() => journal?.noteReplyLanded(auth.runId, landedReplySeq));
 						return seqs;
 					})(),
 				memory: this.deps.memory,
@@ -1185,13 +1202,22 @@ export class Runtime {
 				controller.abort();
 				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
 				announcePreRunFailure(err);
-				// What already ran stays transcript — the sanctioned post-fence
-				// state write, before the stamp wake settling reads.
-				recordUnlandedProgress(
-					{ kind: "aborted", cause: fencedCause() },
-					await replyFromWire(live.chunks),
-				);
-				stampRun("fenced", "undelivered");
+				if (this.closed) {
+					// #471 — a shutdown fence is a crash for the journal: the row
+					// stays 'running' and nothing is recorded here. The next open
+					// reclassifies it 'interrupted' and records its unlanded
+					// progress in the same transaction, so the boot notice,
+					// /interrupted and /resume all reach it.
+					leaveRunning();
+				} else {
+					// What already ran stays transcript — the sanctioned post-fence
+					// state write, before the stamp wake settling reads.
+					recordUnlandedProgress(
+						{ kind: "aborted", cause: fencedCause() },
+						await replyFromWire(live.chunks),
+					);
+					stampRun("fenced", "undelivered");
+				}
 				await notifyAll({ kind: "fenced" });
 			} else if (err instanceof ContextOverflowError) {
 				// Recover once: compact the failed attempt and resume with its partial
@@ -1243,19 +1269,25 @@ export class Runtime {
 						{ kind: "failed", failure: outcome.message },
 						await replyFromWire(live.chunks),
 					);
-				} else if (outcome.kind === "fenced") {
+				} else if (outcome.kind === "fenced" && !this.closed) {
 					// A fence landing during recovery is still a fence: the
-					// attempt's completed work stays transcript.
+					// attempt's completed work stays transcript. A shutdown
+					// fence skips the record — the next open's interrupted
+					// rail owns it (#471).
 					recordUnlandedProgress(
 						{ kind: "aborted", cause: fencedCause() },
 						await replyFromWire(live.chunks),
 					);
 				}
 				announcePreRunFailure(err);
-				stampRun(
-					outcome.kind === "fenced" ? "fenced" : "error",
-					outcome.kind === "fenced" ? "undelivered" : "failed",
-				);
+				if (outcome.kind === "fenced" && this.closed) {
+					leaveRunning();
+				} else {
+					stampRun(
+						outcome.kind === "fenced" ? "fenced" : "error",
+						outcome.kind === "fenced" ? "undelivered" : "failed",
+					);
+				}
 				await notifyAll(
 					outcome.kind === "fenced"
 						? { kind: "fenced" }
@@ -1377,8 +1409,10 @@ export class Runtime {
 		} finally {
 			// Whatever escaped the catch above — a throw inside recovery
 			// or notifyAll — must not leave a begun row 'running': rows
-			// left 'running' mean process death, and only the journal
-			// gets to say that.
+			// left 'running' mean process death (a graceful shutdown
+			// included, #471), and only the journal gets to say that. The
+			// shutdown fence's leaveRunning seals the record first, so
+			// this guard stays a no-op on the one deliberate escape.
 			stampRun("error", "failed");
 		}
 		return { kind: "done" };

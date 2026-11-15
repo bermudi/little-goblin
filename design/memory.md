@@ -161,7 +161,11 @@ floors are enforced server-side and re-checked client-side.
    exchange's conversation (2026-09-24). One per document's first
    `blocked` transition (2026-09-25), naming `/memory retry` and
    `/memory dismiss` — blocked is not an outage: the service answered.
-   No other Telegram notification, including per retry. Retry mints a
+   No other Telegram notification, including per retry. The app's
+   Attention feed projects the same durable states read-only — an open
+   outage row is "can't reach its service", a failed last recall is
+   "can't recall" — and they clear when health returns; projections,
+   not notices (#483). Retry mints a
    fresh operation id — Hindsight holds the old op terminally failed
    server-side, so replaying it reads a dead op; dismiss keeps the row
    for audit. The mini app's Memories tab renders status read-only and
@@ -547,3 +551,10 @@ deliberate always-needed preferences, not a parallel automatic memory
 database; Hermes establishes frozen past context for prompt caching —
 apply that to persisted per-turn recall rather than importing its
 session lifecycle.
+
+USER.md gets one standing writer rule (#486): the code-owned prompt
+(`buildSystemPrompt`, not only the seeded stub — seeds are
+write-if-absent, so existing homes would never see a seed-only
+instruction) tells the model to record a stated lasting preference in
+USER.md's directive format. Automatic promotion out of Hindsight is
+still absent by design — the writer is the model, prompted.

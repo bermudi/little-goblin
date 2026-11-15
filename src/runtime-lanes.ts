@@ -10,7 +10,7 @@
 
 import { type UIMessage } from "ai";
 import type { CompactionOutcome } from "./agent/compaction.ts";
-import type { Conversation } from "./conversation.ts";
+import type { Conversation } from "./conversation-read.ts";
 import { log } from "./log.ts";
 import type { TurnRecovery } from "./turn/overflow.ts";
 import type { TurnSink } from "./turn/sink.ts";
@@ -48,6 +48,8 @@ export interface QueuedTurn {
 // A submit arriving during the job waits for the next drain pass.
 export interface QueuedCompact {
 	conv: Conversation;
+	/** Optional operator focus for the summarizer (/compact <focus>, app focus body). */
+	focus?: string | undefined;
 	resolve: (outcome: CompactionOutcome) => void;
 	reject: (err: unknown) => void;
 }
@@ -90,6 +92,14 @@ function claimableCount(pending: QueuedTurn[], headStreams: boolean, headLeads: 
 
 function claimPending(lane: Lane, headStreams: boolean, headLeads = true): QueuedTurn[] {
 	return lane.pending.splice(0, claimableCount(lane.pending, headStreams, headLeads));
+}
+
+// A read-only `claim` probe — same headStreams source filter, nothing
+// spliced. The tool fence's steer gate (#477) asks whether the next
+// model call would fold waiting input; consumption still belongs to
+// the model-call boundary alone.
+function hasClaimable(lane: Lane, headStreams: boolean): boolean {
+	return claimableCount(lane.pending, headStreams, false) > 0;
 }
 
 export class LaneRegistry {
@@ -181,6 +191,13 @@ export class LaneRegistry {
 	// Splice the claimable prefix off the pending queue (claimableCount).
 	claim(convId: string, headStreams: boolean, headLeads = true): QueuedTurn[] {
 		return claimPending(this.lane(convId), headStreams, headLeads);
+	}
+
+	// Whether the next member claim would take anything — the tool
+	// fence's steer gate (#477). A missing lane means nothing waits.
+	claimablePending(convId: string, headStreams: boolean): boolean {
+		const lane = this.lanes.get(convId);
+		return lane !== undefined && hasClaimable(lane, headStreams);
 	}
 
 	// Return unconverted steers to the queue head — they lead the next pass.

@@ -71,7 +71,45 @@ const recordOf = (r: RatingRow): ReplyRatingRecord => ({
 	createdAt: r.created_at,
 });
 
-// The table is created by openStore, which owns the schema.
+// The 👍/👎 tap record: reply metadata, never an event — nothing here
+// feeds the model view, FTS, or memory. Append-only; a vote change is
+// a new row, reads are latest-wins. No conversation FK: a deleted
+// conversation's rows stay traceable by chat/message ids.
+// ensureConversationSchema calls this so the table exists on every
+// handle (the rewind sweep in conversation-queries deletes from it).
+export function ensureRatingsSchema(db: Database): void {
+	db.run(`
+			CREATE TABLE IF NOT EXISTS reply_ratings (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				channel TEXT NOT NULL DEFAULT 'telegram',
+				conversation_id TEXT NOT NULL,
+				anchor_seq INTEGER,
+				chat_id INTEGER NOT NULL,
+				message_id INTEGER NOT NULL,
+				event_seq INTEGER,
+				rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
+				created_at TEXT NOT NULL
+			)`);
+	const ratingCols = new Set(
+		db
+			.query<{ name: string }, []>("PRAGMA table_info(reply_ratings)")
+			.all()
+			.map((c) => c.name),
+	);
+	if (!ratingCols.has("channel")) {
+		db.run("ALTER TABLE reply_ratings ADD COLUMN channel TEXT NOT NULL DEFAULT 'telegram'");
+	}
+	if (!ratingCols.has("event_seq")) {
+		db.run("ALTER TABLE reply_ratings ADD COLUMN event_seq INTEGER");
+	}
+	db.run(
+		"CREATE INDEX IF NOT EXISTS reply_ratings_msg ON reply_ratings(channel, chat_id, message_id)",
+	);
+	db.run(
+		"CREATE INDEX IF NOT EXISTS reply_ratings_event ON reply_ratings(channel, conversation_id, event_seq)",
+	);
+}
+
 export function openRatings(db: Database): ReplyRatings {
 	const qRecord = db.query(
 		"INSERT INTO reply_ratings (channel, conversation_id, anchor_seq, chat_id, message_id, event_seq, rating, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

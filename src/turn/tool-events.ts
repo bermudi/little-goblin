@@ -9,7 +9,7 @@
 import { z } from "zod";
 import { policyOf } from "../agent/tool-policy.ts";
 import { log } from "../log.ts";
-import { summarize, toolOk, type EvidenceLimits, type ToolCallDigest } from "../reviewer.ts";
+import { summarize, toolOk, type EvidenceLimits, type ToolCallDigest } from "../reviewer-evidence.ts";
 import { attributedSkills, type SkillWatch } from "./skill-attribution.ts";
 
 const scriptOutputSchema = z.object({

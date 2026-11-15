@@ -6,14 +6,11 @@ import { type Config, memoryConfigSchema } from "../config-schema.ts";
 import { HindsightClient } from "../memory/hindsight.ts";
 import { tmpDb, useHome } from "../testkit.ts";
 import { COMMANDS, type CommandMemoryDeps, DM_COMMANDS } from "./commands.ts";
-import { GUEST_REFUSAL, resetRefusalLatchForTests } from "./guest.ts";
-import {
-	accessGate,
-	applyCommands,
-	applyMenuButton,
-	conversationAddress,
-	SHARED_CHAT_NOTE,
-} from "./mod.ts";
+import { guestRefusalText, resetRefusalLatchForTests } from "./guest.ts";
+import { accessGate } from "./access-gate.ts";
+import { applyCommands, applyMenuButton } from "./bot.ts";
+import { conversationAddress } from "./intake.ts";
+import { SHARED_CHAT_NOTE } from "./turn-input.ts";
 
 const baseConfig: Config = {
 	providers: {
@@ -61,7 +58,7 @@ describe("accessGate", () => {
 			const send = spyOn(api, "sendMessage");
 			await gate(dm(9), next);
 			expect(reached).toBe(2);
-			expect(send).toHaveBeenCalledWith(9, GUEST_REFUSAL, {}, expect.any(AbortSignal));
+			expect(send).toHaveBeenCalledWith(9, guestRefusalText(9), {}, expect.any(AbortSignal));
 			await gate({ api } as never, next);
 			expect(reached).toBe(2);
 			// Config is re-read per message.
@@ -115,7 +112,7 @@ describe("accessGate", () => {
 			configRef.current = { ...baseConfig };
 			await gate(dm(2), next);
 			expect(reached).toBe(1);
-			expect(send).toHaveBeenCalledWith(2, GUEST_REFUSAL, {}, expect.any(AbortSignal));
+			expect(send).toHaveBeenCalledWith(2, guestRefusalText(2), {}, expect.any(AbortSignal));
 			await gate(dm(1), next);
 			expect(reached).toBe(2);
 			configRef.current = { ...baseConfig, guest: { outputChars: 3500 } };
@@ -329,16 +326,16 @@ import type { TurnSink } from "../turn/sink.ts";
 import { CoalescingBuffer } from "./buffer.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { type InboxPayload, openTelegramInbox } from "./inbox.ts";
+import { flushConversation } from "./flush.ts";
 import {
 	type BufferedItem,
-	flushConversation,
 	handleEditedMessage,
 	handleMessage,
 	handleMessageDurably,
 	InboxRecordError,
 	type IntakeEnv,
 	replayInbox,
-} from "./mod.ts";
+} from "./intake.ts";
 import { openPings, type PingStore } from "./pings.ts";
 
 function tgMsg(p: Record<string, unknown>): Message {
@@ -367,7 +364,11 @@ interface RouterHarness {
 	bellConvs: string[];
 }
 
-type SendOpts = { disable_notification?: boolean; message_thread_id?: number };
+type SendOpts = {
+	disable_notification?: boolean;
+	message_thread_id?: number;
+	reply_parameters?: { message_id: number };
+};
 
 function routerHarness(config: Config = baseConfig): RouterHarness {
 	const store = openStore(tmpDb("goblin-intake-"));
@@ -529,7 +530,7 @@ describe("handleMessage", () => {
 		expect(submitted).toEqual([]);
 		expect(h.store.currentDm(2)).toBeNull();
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
-			GUEST_REFUSAL,
+			guestRefusalText(2),
 		]);
 		// Tombstoned, not pending — boot replay doesn't retry the drop.
 		expect(h.env.inbox.pending().filter((e) => e.payload.conversationId === "dm:2")).toEqual([]);
@@ -621,9 +622,9 @@ describe("handleMessage", () => {
 		release();
 		await flushing;
 		expect(submits).toBe(0);
-		expect(h.apiCalls.some((c) => c.method === "sendMessage" && c.text === GUEST_REFUSAL)).toBe(
-			true,
-		);
+		expect(
+			h.apiCalls.some((c) => c.method === "sendMessage" && c.text === guestRefusalText(2)),
+		).toBe(true);
 		expect(h.env.inbox.pending().filter((e) => e.payload.conversationId === "dm:2")).toEqual([]);
 		h.store.close();
 	});
@@ -641,7 +642,7 @@ describe("handleMessage", () => {
 		expect(h.stopped).toEqual([]);
 		expect(h.pushed).toEqual([]);
 		expect(h.apiCalls.filter((c) => c.method === "sendMessage").map((c) => c.text)).toEqual([
-			GUEST_REFUSAL,
+			guestRefusalText(9),
 		]);
 		h.store.close();
 	});
@@ -732,6 +733,15 @@ describe("handleMessage", () => {
 		expect(data.transcriptionError).toBe(`auth.jsonl: no secret named "mimo"`);
 		expect(data.speech).toBe(true);
 		expect(data.transcript).toBeUndefined();
+		// The operator hears about it too — a one-line note names the
+		// failure rather than leaving the voice note silently untranscribed.
+		expect(
+			h.apiCalls.some(
+				(c) =>
+					c.method === "sendMessage" &&
+					c.text === `⚠️ Couldn't transcribe this voice note: auth.jsonl: no secret named "mimo"`,
+			),
+		).toBe(true);
 		h.store.close();
 	});
 
@@ -853,15 +863,80 @@ describe("handleMessage", () => {
 		h.store.close();
 	});
 
-	test("an unmatched /word falls through to a normal message", async () => {
+	test("an unmatched /word is refused, never a normal message", async () => {
 		const h = routerHarness();
 		handleTestMessage(
 			h.env,
 			tgMsg({ message_id: 4, chat: { id: 1, type: "private" }, text: "/notacommand" }),
 		);
+		expect(h.apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				text: "Unknown command /notacommand. Try /help.",
+				chat: 1,
+				opts: { disable_notification: true },
+			},
+		]);
+		expect(h.pushed).toEqual([]);
+		expect(h.env.inbox.pending()).toEqual([]);
+	});
+
+	test("the first buffered update of a lane pings typing once per buffer", async () => {
+		const h = routerHarness();
+		let bucketIsNew = true;
+		h.env.buffer = {
+			push: () => {
+				const first = bucketIsNew;
+				bucketIsNew = false;
+				return first;
+			},
+		} as unknown as IntakeEnv["buffer"];
+		const actions: { chat: unknown; thread?: number }[] = [];
+		const orig = h.env.api.sendChatAction;
+		h.env.api.sendChatAction = ((
+			chat: unknown,
+			_action: string,
+			opts?: { message_thread_id?: number },
+		) => {
+			actions.push({
+				chat,
+				...(opts?.message_thread_id !== undefined
+					? { thread: opts.message_thread_id }
+					: {}),
+			});
+			return orig(chat as number, _action as never, opts as never);
+		}) as never;
+		const dmMsg = (id: number) =>
+			tgMsg({
+				message_id: id,
+				chat: { id: 1, type: "private" },
+				from: { id: 1, is_bot: false, first_name: "op" },
+				text: "hi",
+			});
+		handleTestMessage(h.env, dmMsg(10));
 		await h.env.intake.get("dm:1");
-		expect(h.pushed).toHaveLength(1);
-		expect(h.pushed[0]!.parts).toEqual([{ type: "text", text: "/notacommand" }]);
+		expect(actions).toEqual([{ chat: 1 }]);
+		// Same buffer — the burst keeps coalescing, no re-ping.
+		handleTestMessage(h.env, dmMsg(11));
+		await h.env.intake.get("dm:1");
+		expect(actions).toHaveLength(1);
+		// A flushed buffer starts a new bucket — the ack fires again,
+		// scoped to the topic the message was typed in.
+		bucketIsNew = true;
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 12,
+				chat: { id: -100, type: "supergroup" },
+				from: { id: 1, is_bot: false, first_name: "op" },
+				message_thread_id: 5,
+				is_topic_message: true,
+				text: "topic hi",
+			}),
+		);
+		await h.env.intake.get("topic:-100:5");
+		expect(actions).toEqual([{ chat: 1 }, { chat: -100, thread: 5 }]);
+		h.store.close();
 	});
 });
 
@@ -1405,10 +1480,10 @@ describe("flushConversation", () => {
 		expect([...h.env.titleAttempts]).toContain(conv.id);
 	});
 
-	test("no titleModel configured — titling never fires, the turn still submits", async () => {
+	test("no titleModel configured — titling falls back to the conversation's model", async () => {
 		const { h, conv, submitted, titleCalls } = topicHarness(baseConfig);
 		flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hello" }], replyTo: 1 }]);
-		expect(titleCalls).toEqual([]);
+		expect(titleCalls).toEqual(["hello"]);
 		expect(submitted).toHaveLength(1);
 		await submitted[0]!.sink.onDone({ kind: "completed" });
 	});
@@ -1858,8 +1933,16 @@ describe("handleEditedMessage", () => {
 			tgMsg({ message_id: 44, chat: { id: 2, type: "private" }, text: "hello" }),
 		);
 		// A tombstone replay never reads — the landed turn keeps its
-		// history.
+		// history — but the edit is acked in-channel, not silently dropped.
 		expect(h.env.inbox.pending()).toEqual([]);
+		expect(h.apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				text: "Edit not applied — I already read the original. Send it again to change it.",
+				chat: 2,
+				opts: { reply_parameters: { message_id: 44 } },
+			},
+		]);
 		h.store.close();
 	});
 
@@ -1960,6 +2043,253 @@ describe("rolling dm", () => {
 		await h.env.intake.get("dm:7");
 		expect(h.pushed[0]!.parts[0]).toEqual({ type: "text", text: '[replying to: "come back?"]' });
 		expect(h.pushed[0]!.parts[1]).toEqual({ type: "text", text: "yep" });
+		h.store.close();
+	});
+
+	test("a reply to a message in another chat is quoted context, never dropped", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 42,
+				chat: { id: 7, type: "private" },
+				text: "and this?",
+				external_reply: {
+					origin: {
+						type: "channel",
+						date: 1_700_000_000,
+						chat: { id: -100, type: "channel", title: "Announce" },
+						message_id: 900,
+					},
+					message_id: 900,
+					photo: [{ file_id: "f", file_unique_id: "u", width: 1, height: 1 }],
+				},
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({
+			type: "text",
+			text: '[replying to: "[external reply to a photo from channel "Announce"]"]',
+		});
+		expect(h.pushed[0]!.parts[1]).toEqual({ type: "text", text: "and this?" });
+		h.store.close();
+	});
+
+	test("a sender-selected quote on an external reply carries the excerpt", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 43,
+				chat: { id: 7, type: "private" },
+				text: "on that bit",
+				external_reply: {
+					origin: {
+						type: "user",
+						date: 1_700_000_000,
+						sender_user: { id: 3, is_bot: false, first_name: "Ann", username: "ann" },
+					},
+				},
+				quote: { text: "selected words", position: 4, is_manual: true },
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({
+			type: "text",
+			text: '[replying to selected excerpt: "selected words"]',
+		});
+		h.store.close();
+	});
+
+	test("a sender-selected quote injects the excerpt, marked as one — not the whole parent", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 41,
+				chat: { id: 7, type: "private" },
+				text: "this part",
+				reply_to_message: { message_id: 39, text: "first para\n\nsecond para\n\nthird para" },
+				quote: { text: "second para", position: 12, is_manual: true },
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({
+			type: "text",
+			text: '[replying to selected excerpt: "second para"]',
+		});
+		expect(h.pushed[0]!.parts[1]).toEqual({ type: "text", text: "this part" });
+		expect(h.env.inbox.pending()[0]?.payload.quoted).toEqual({
+			messageId: 39,
+			text: "second para",
+			excerpt: true,
+		});
+		h.store.close();
+	});
+
+	test("an unknown slash command is answered, never admitted", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({ message_id: 50, chat: { id: 7, type: "private" }, text: "/frobnicate now" }),
+		);
+		expect(h.apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				text: "Unknown command /frobnicate. Try /help.",
+				chat: 7,
+				opts: { disable_notification: true },
+			},
+		]);
+		expect(h.env.inbox.pending()).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		h.store.close();
+	});
+
+	test("/model points at the app settings picker", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({ message_id: 51, chat: { id: 7, type: "private" }, text: "/model" }),
+		);
+		expect(h.apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				text: "The model picker lives in the app — Settings → model.",
+				chat: 7,
+				opts: { disable_notification: true },
+			},
+		]);
+		expect(h.env.inbox.pending()).toEqual([]);
+		h.store.close();
+	});
+
+	test("in a topic, only commands addressed to this bot get the correction", async () => {
+		const h = routerHarness();
+		const group = { id: -5, type: "supergroup" };
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 52,
+				chat: group,
+				message_thread_id: 9,
+				is_topic_message: true,
+				text: "/wat@goblin",
+			}),
+		);
+		expect(h.apiCalls).toEqual([
+			{
+				method: "sendMessage",
+				text: "Unknown command /wat. Try /help.",
+				chat: -5,
+				opts: { disable_notification: true, message_thread_id: 9 },
+			},
+		]);
+		// Another bot's command, and a bare /cmd that may be another
+		// bot's, stay silent and never reach the inbox.
+		for (const [id, text] of [
+			[53, "/wat@otherbot"],
+			[54, "/wat"],
+		] as const) {
+			handleTestMessage(
+				h.env,
+				tgMsg({
+					message_id: id,
+					chat: group,
+					message_thread_id: 9,
+					is_topic_message: true,
+					text,
+				}),
+			);
+		}
+		expect(h.apiCalls).toHaveLength(1);
+		expect(h.env.inbox.pending()).toEqual([]);
+		expect(h.pushed).toEqual([]);
+		h.store.close();
+	});
+
+	test("a reply to a media-only message marks the reply by media kind", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 41,
+				chat: { id: 7, type: "private" },
+				text: "what is this?",
+				reply_to_message: {
+					message_id: 39,
+					photo: [{ file_id: "f", file_unique_id: "u", width: 1, height: 1 }],
+				},
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({
+			type: "text",
+			text: "[replying to a photo message]",
+		});
+		expect(h.pushed[0]!.parts[1]).toEqual({ type: "text", text: "what is this?" });
+		h.store.close();
+	});
+
+	test("a reply to a plain textless message still marks the reply", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 42,
+				chat: { id: 7, type: "private" },
+				text: "hm",
+				reply_to_message: { message_id: 39 },
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({ type: "text", text: "[replying to a message]" });
+		h.store.close();
+	});
+
+	test("quoted context keeps 8000 chars and marks what it cut", async () => {
+		const h = routerHarness();
+		const long = "x".repeat(8_100);
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 43,
+				chat: { id: 7, type: "private" },
+				text: "yep",
+				reply_to_message: { message_id: 39, text: long },
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({
+			type: "text",
+			text: `[replying to: "${"x".repeat(8_000)}…[truncated 100 chars]"]`,
+		});
+		// The durable row keeps the full text — only the model view is bound.
+		expect(h.env.inbox.pending()[0]?.payload.quoted?.text).toBe(long);
+		h.store.close();
+	});
+
+	test("a forwarded message leads with its origin", async () => {
+		const h = routerHarness();
+		handleTestMessage(
+			h.env,
+			tgMsg({
+				message_id: 44,
+				chat: { id: 7, type: "private" },
+				text: "look at this",
+				forward_origin: {
+					type: "channel",
+					date: 1_700_000_000,
+					chat: { id: -100, type: "channel", title: "Announce" },
+					message_id: 900,
+				},
+			}),
+		);
+		await h.env.intake.get("dm:7");
+		expect(h.pushed[0]!.parts[0]).toEqual({
+			type: "text",
+			text: "[Forwarded from Announce at 2023-11-14T22:13:20.000Z]\nlook at this",
+		});
 		h.store.close();
 	});
 

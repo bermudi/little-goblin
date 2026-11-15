@@ -1,5 +1,7 @@
 # Bug-hunt prompt pack — goblin v2
 
+> Superseded for new hunts by [hunt-questions.md](hunt-questions.md): hunt by journey, not by area.
+
 One self-contained prompt per area of the tree. Paste a single block into a
 fresh session opened at the repo root; that session reads the area's spec and
 code and reports findings — it does not fix anything. Run at most 4 hunts

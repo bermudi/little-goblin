@@ -3,7 +3,7 @@
 // cannot see — calls that all differ but stop producing anything new.
 
 import type { System1Question } from "./system1.ts";
-import type { ToolCallDigest } from "./reviewer.ts";
+import type { ToolCallDigest } from "./reviewer-evidence.ts";
 
 export const LOOP_QUESTIONS: Record<string, System1Question> = {
 	stuck: {

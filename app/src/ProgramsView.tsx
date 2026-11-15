@@ -271,6 +271,12 @@ function ProgramDetail({
 					v={program.lastRun === null ? "never" : ts(program.lastRun, timeZone)}
 				/>
 				<KV k="next run" v={ts(program.nextRun, timeZone)} />
+				{program.lastSkippedAt !== null && (
+					<KV
+						k="last skip"
+						v={`${ts(program.lastSkippedAt, timeZone)} — ${program.lastSkipReason ?? "skipped"}`}
+					/>
+				)}
 				{program.hasHook && <KV k="hook" v="attached" mono />}
 				{program.mailFilter !== null && <KV k="mail filter" v={program.mailFilter} mono />}
 				<KV k="pinned to" v={program.target} mono />

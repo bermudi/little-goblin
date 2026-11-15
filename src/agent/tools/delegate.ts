@@ -156,7 +156,11 @@ function renderAnswer(out: AnswerOutcome): Record<string, unknown> {
 						? `delegation ${out.id} is stopped — its workspace is closed`
 						: out.why === "starting"
 							? `delegation ${out.id} is still launching — try again in a moment`
-							: `delegation ${out.id} never launched an agent`,
+							: out.why === "not blocked"
+								? `delegation ${out.id}'s agent is not blocked on a dialog — keys only reach a blocked pane; use action 'send' to follow up`
+								: out.why === "agent gone"
+									? `delegation ${out.id}'s agent is gone — check its pane or stop the delegation`
+									: `delegation ${out.id} never launched an agent`,
 			};
 		case "key failed":
 			return { error: out.error };

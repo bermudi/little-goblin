@@ -216,7 +216,9 @@ export async function handleChatRoute(
 		}
 		const push = deps.push;
 		const notifyDisconnected =
-			push === undefined ? undefined : (done: TurnDone) => push.notifyDone(conv, done);
+			push === undefined
+				? undefined
+				: (done: TurnDone) => push.notifyDone(conv, done, "foreground");
 
 		if (parsed.data.retry === true) {
 			if (runtime.busy(convId)) {
@@ -416,8 +418,13 @@ export async function handleChatRoute(
 				.join("\n")
 				.trim();
 			if (firstText !== "") {
+				const cfg = deps.configRef.current;
+				const model = store.readAppSettings(convId, {
+					model: cfg.model,
+					thinking: cfg.thinking,
+				}).model;
 				void deps
-					.titleFor(firstText)
+					.titleFor(firstText, { model })
 					.then((title) => {
 						if (title === null || title === "") return;
 						const fresh = store.get(convId);

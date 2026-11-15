@@ -1,5 +1,5 @@
 // Rows survive goblin restarts in the shared WAL file while the herdr
-// unit keeps the panes alive; the watcher lives in delegation-lifecycle.ts.
+// unit keeps the panes alive; the watcher lives in delegation-watcher.ts.
 
 import { Database } from "bun:sqlite";
 import { z } from "zod";

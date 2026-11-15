@@ -1,7 +1,8 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { subagentsConfigSchema } from "../config-schema.ts";
-import type { DesktopRow, Desktops } from "../desktops.ts";
+import type { Desktops } from "../desktops.ts";
+import type { DesktopRow } from "../desktops-store.ts";
 import { setLogFile } from "../log.ts";
 import { makePodman } from "../podman.ts";
 import { makeSandboxes, openSandboxes } from "../sandboxes.ts";

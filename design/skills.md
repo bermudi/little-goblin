@@ -38,6 +38,12 @@ rides a message part, not a tool. Still out: a skill tool, per-skill
 tool scoping, fingerprints, immutable skill snapshots, additional
 catalog roots (host, project), per-conversation selection.
 
+The catalog is capped at 128 entries — a self-authored catalog bigger
+than that is already a bug. The prompt section renders the truncation
+like the malformed count (`(catalog capped at 128 of N entries — see
+goblin.log)`) so the model knows its list is partial, not silently
+short.
+
 ## Skill invocation (ruling 2026-10-21, operator ask)
 
 The prompt-mediated path is probabilistic — the model can skip the
@@ -271,7 +277,10 @@ job (tune it, don't duplicate it).
   operator's hands for installs. The `## skills` section lists pending
   proposals too, so an approve request works in any conversation. Manual
   installs are unchanged: the operator asking in chat IS the approval —
-  the ruling covers only the unattended path.
+  the ruling covers only the unattended path. The section header says
+  so outright (#485): write or edit only when the operator asks, never
+  on the model's own initiative — self-initiated lessons are the
+  reviewer's job when configured, not a direct catalog write.
 - **A proposal shows what it changes (ruling 2026-11-07, issue #162).**
   The operator cannot judge an update from the new bytes alone. The
   Skills read (`listSkills`) attaches a `diff` to every parked proposal,

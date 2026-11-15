@@ -3,17 +3,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
-import {
-	isMessageGoneError,
-	isNotModifiedError,
-	makeDeliverySink,
-	recentReplyText,
-	SPEAK_CALLBACK,
-} from "./delivery.ts";
+import { isMessageGoneError, isNotModifiedError } from "./delivery-errors.ts";
+import { makeDeliverySink, parsedTextLength } from "./delivery.ts";
+import { SPEAK_CALLBACK } from "./speak-button.ts";
 
 const CHUNK = 3800;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -28,6 +24,7 @@ const conv: Conversation = {
 	thinking: null,
 	voice: false,
 	memoryExcluded: false,
+	memoryExcludedByProject: false,
 	projectId: null,
 	persona: "personal",
 	archivedAt: null,
@@ -36,25 +33,47 @@ const conv: Conversation = {
 	createdAt: "",
 };
 
-// gate.current holds sends while set.
-function fakeApi(opts: { gate?: { current: Promise<void> | null }; failSends?: boolean }) {
+// gate.current holds sends while set. rejectEntities makes Telegram
+// throw a definite 400 parse error for every HTML send/edit.
+function fakeApi(opts: {
+	gate?: { current: Promise<void> | null };
+	failSends?: boolean;
+	rejectEntities?: boolean;
+}) {
 	const msgs: string[] = [];
 	const voices: number[] = [];
 	const actions: string[] = [];
 	const reactions: Array<{ chat: number; id: number; emoji: string }> = [];
 	const markups: unknown[] = [];
+	// Every send/edit in order, with the parse_mode Telegram was given.
+	const calls: Array<{ kind: "send" | "edit"; id?: number; text: string; parseMode?: string }> =
+		[];
+	// Options handed to each sendMessage, in order — threads, reply
+	// parameters, parse modes all land here.
+	const sendOptions: unknown[] = [];
 	const api = {
 		sendChatAction: async (_chat: number, action: string) => {
 			actions.push(action);
 			return true;
 		},
-		sendMessage: async (_chat: number, text: string) => {
+		sendMessage: async (_chat: number, text: string, o?: { parse_mode?: string }) => {
 			if (opts.gate?.current) await opts.gate.current;
 			if (opts.failSends) throw new Error("sendMessage failed");
+			if (opts.rejectEntities && o?.parse_mode === "HTML")
+				throw Object.assign(new Error("Bad Request: can't parse entities"), {
+					error_code: 400,
+				});
+			calls.push({ kind: "send", text, ...(o?.parse_mode ? { parseMode: o.parse_mode } : {}) });
+			sendOptions.push(o);
 			msgs.push(text);
 			return { message_id: msgs.length };
 		},
-		editMessageText: async (_chat: number, id: number, text: string) => {
+		editMessageText: async (_chat: number, id: number, text: string, o?: { parse_mode?: string }) => {
+			if (opts.rejectEntities && o?.parse_mode === "HTML")
+				throw Object.assign(new Error("Bad Request: can't parse entities"), {
+					error_code: 400,
+				});
+			calls.push({ kind: "edit", id, text, ...(o?.parse_mode ? { parseMode: o.parse_mode } : {}) });
 			msgs[id - 1] = text;
 			return true;
 		},
@@ -75,7 +94,7 @@ function fakeApi(opts: { gate?: { current: Promise<void> | null }; failSends?: b
 			return true;
 		},
 	} as unknown as Api;
-	return { api, msgs, voices, actions, reactions, markups };
+	return { api, msgs, voices, actions, reactions, markups, calls, sendOptions };
 }
 
 describe("delivery", () => {
@@ -349,8 +368,111 @@ describe("delivery", () => {
 		sink.onToolCall("t", { path: "\u{1f600}" });
 		for (let i = 0; i < 4; i++) sink.onToolCall("t", { path: "p" });
 		await sink.onDone({ kind: "completed" });
-		expect(msgs[1]!.startsWith("\u{1f600}")).toBe(true);
+		// The seam snaps to the paragraph break — the pair lands whole
+		// inside the second window rather than split on the cap.
+		expect(msgs[0]).toBe(`${"a".repeat(3791)}\n\n`);
+		expect(msgs[1]!.startsWith("—\n⚙ t \u{1f600}")).toBe(true);
 		expect(msgs.join("")).toBe("a".repeat(3791) + "\n\n—\n⚙ t \u{1f600}" + "\n⚙ t p".repeat(4));
+	});
+
+	test("a reply splits on the last paragraph break under the cap, not the cap itself", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		// A paragraph break just under the cap is the seam — the second
+		// bubble opens on fresh text, never mid-paragraph.
+		sink.onTextDelta("a".repeat(3790) + "\n\n" + "b".repeat(200));
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toEqual(["a".repeat(3790) + "\n\n", "b".repeat(200)]);
+	});
+
+	test("a code fence split across the cap is closed and reopened with its info string", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		const fence = "```ts\n";
+		const code = "c".repeat(CHUNK);
+		sink.onTextDelta(fence + code + "\n```");
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toHaveLength(2);
+		// The window boundary closes the fence and reopens it with the
+		// same info string — each window's HTML is one whole <pre>.
+		expect(msgs[0]).toBe(
+			`<pre><code class="language-ts">${"c".repeat(CHUNK - fence.length)}</code></pre>`,
+		);
+		expect(msgs[1]).toBe(`<pre><code class="language-ts">${"c".repeat(fence.length)}</code></pre>`);
+	});
+
+	test("a fence still open at the reply's end is closed on the last chunk only", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		sink.onTextDelta("```\n" + "c".repeat(CHUNK + 100));
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toHaveLength(2);
+		expect(msgs[0]!.endsWith("</pre>")).toBe(true);
+		// The model's own fence never arrived — the trailing close the
+		// window adds is what keeps the tail monospaced.
+		expect(msgs[1]!.startsWith("<pre>")).toBe(true);
+		expect(msgs[1]!.endsWith("</pre>")).toBe(true);
+	});
+
+	test("an inline ```code``` span at line start is not a fence opener", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		// CommonMark: a backtick fence's info string may not contain
+		// backticks — this line is an inline code span, so no fence is
+		// open and nothing is injected at the seams.
+		const body =
+			"para one.\n\n```npm install -g little-goblin``` installs it.\n\n" + "p".repeat(4200);
+		sink.onTextDelta(body);
+		await sink.onDone({ kind: "completed" });
+		// The line renders as an inline code span — the command survives
+		// and nothing after it turns into a code block.
+		expect(msgs.join("")).toContain("<code>npm install -g little-goblin</code> installs it.");
+		expect(msgs.join("")).not.toContain("<pre>");
+		for (const m of msgs) expect(m.length).toBeLessThanOrEqual(4096);
+	});
+
+	test("a fence with a huge info string reopens with the bare marker", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		// The injected reopen is bounded: past 64 chars the info is
+		// dropped so every window stays under Telegram's 4096.
+		const body = "```" + "i".repeat(300) + "\n" + "c".repeat(CHUNK * 2);
+		sink.onTextDelta(body);
+		await sink.onDone({ kind: "completed" });
+		for (const m of msgs) expect(parsedTextLength(m)).toBeLessThanOrEqual(4096);
+		expect(msgs[1]!.startsWith("<pre>")).toBe(true);
+		expect(msgs[2]!.startsWith("<pre>")).toBe(true);
+	});
+
+	test("a fence lands the unflushed tail instead of retracting shown text", async () => {
+		const { api, msgs } = fakeApi({});
+		// Huge interval: only the first delta flushes (lastEdit starts
+		// cold) — the bubble shows 3700 chars, the +200 tail is pending.
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 3_600_000 });
+		sink.onTextDelta("a".repeat(2500) + "\n\n" + "b".repeat(1198));
+		await sleep(0);
+		expect(msgs).toEqual(["a".repeat(2500) + "\n\n" + "b".repeat(1198)]);
+		// The +200 tail crosses the cap — a fresh chunk pass would snap
+		// the window back to the paragraph break at 2500, retracting
+		// 1198 shown chars. Shown text wins: the tail is its own window.
+		sink.onTextDelta("c".repeat(200));
+		await sink.onDone({ kind: "fenced" });
+		expect(msgs).toEqual([
+			"a".repeat(2500) + "\n\n" + "b".repeat(1198),
+			`${"c".repeat(200)}\n\n—\n⏹ superseded`,
+		]);
+	});
+
+	test("a fence closed inside a window is not carried past it", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		const body = "```\n" + "c".repeat(100) + "\n```\n" + "t".repeat(CHUNK);
+		sink.onTextDelta(body);
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toHaveLength(2);
+		expect(msgs[0]).toBe(`<pre>${"c".repeat(100)}</pre>\n${"t".repeat(CHUNK - 109)}`);
+		// No opener leaked into chunk two — the fence ended in chunk one.
+		expect(msgs[1]).toBe("t".repeat(109));
 	});
 
 	test("a failed final edit is retried by the drain, not declared done", async () => {
@@ -582,21 +704,32 @@ describe("delivery", () => {
 		expect(empties[0]).toMatchObject({ level: "warn", conversation: "dm:1", chat: 1 });
 	});
 
-	test("configured text delivery stamps a speak button and remembers the whole reply", async () => {
+	test("configured text delivery stamps a speak button and records every landed bubble", async () => {
 		const { api, markups } = fakeApi({});
+		const recorded: Array<{ conv: string; messageId: number; seq: number }> = [];
 		const sink = makeDeliverySink(api, conv, {
 			editIntervalMs: 0,
 			voice: {
 				voiceMode: false,
 				synthesize: async () => [],
 			},
+			deliveries: {
+				lastEntry: () => ({ seq: 42, message: { id: "r1", role: "assistant", parts: [] } }),
+				recordDelivery: (convId, messageId, seq) =>
+					recorded.push({ conv: convId, messageId, seq }),
+			},
 		});
-		sink.onTextDelta("whole reply");
+		sink.onTextDelta("a".repeat(CHUNK) + "tail");
 		await sink.onDone({ kind: "completed" });
 		expect(markups).toEqual([
 			{ reply_markup: { inline_keyboard: [[{ text: "🔊", callback_data: SPEAK_CALLBACK }]] } },
 		]);
-		expect(recentReplyText(1, 1)).toBe("whole reply");
+		// Both chunks of the split reply bind to the one reply event —
+		// a tap on either resolves the full text.
+		expect(recorded).toEqual([
+			{ conv: "dm:1", messageId: 1, seq: 42 },
+			{ conv: "dm:1", messageId: 2, seq: 42 },
+		]);
 	});
 
 	test("a completed reply stamps the rating row — payload carries conv + anchor", async () => {
@@ -922,7 +1055,9 @@ describe("delivery", () => {
 		await sleep(0);
 		sink.onTextDelta(" queued");
 		await sink.onDone({ kind: "fenced" });
-		expect(msgs).toEqual(["visible\n\n—\n⏹ superseded"]);
+		// The stamp flushes the pending delta — the queued text rides the
+		// superseded edit instead of vanishing.
+		expect(msgs).toEqual(["visible queued\n\n—\n⏹ superseded"]);
 		expect(reactions).toEqual([]);
 	});
 
@@ -938,7 +1073,7 @@ describe("delivery", () => {
 		expect(reactions).toEqual([]);
 	});
 
-	test("fencing drops queued edits and tail sends but stamps the visible partial", async () => {
+	test("fencing lands the pending tail as its own bubble and stamps the last one", async () => {
 		const { api, msgs, reactions } = fakeApi({});
 		let live = true;
 		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
@@ -946,10 +1081,15 @@ describe("delivery", () => {
 		sink.onTextDelta("partial");
 		await sleep(0); // first bubble is visible
 		sink.onTextDelta(" stale"); // edit queued, not yet executed
-		sink.onTextDelta("x".repeat(CHUNK)); // unsent tail
+		sink.onTextDelta("x".repeat(CHUNK)); // tail a window boundary away
 		live = false;
 		await sink.onDone({ kind: "fenced" });
-		expect(msgs).toEqual(["partial\n\n—\n⏹ superseded"]);
+		// Shown text is never edited back — the pending tail goes out as
+		// its own window and the stamp marks the last bubble.
+		expect(msgs).toEqual([
+			`${"partial stale"}${"x".repeat(CHUNK - 13)}`,
+			`${"x".repeat(13)}\n\n—\n⏹ superseded`,
+		]);
 		expect(reactions).toEqual([]);
 	});
 
@@ -966,7 +1106,9 @@ describe("delivery", () => {
 		sink.setAuthorityCheck?.(() => live);
 		sink.onTextDelta("a".repeat(CHUNK * 2));
 		await sink.onDone({ kind: "completed" });
-		expect(msgs).toEqual(["a".repeat(CHUNK) + "\n\n—\n⏹ superseded"]);
+		// The unsent second window still lands — the stamp marks the
+		// last bubble, not the one that went out before authority fell.
+		expect(msgs).toEqual(["a".repeat(CHUNK), `a{"x"}`.length === 0 ? "" : "a".repeat(CHUNK) + "\n\n—\n⏹ superseded"]);
 		expect(reactions).toEqual([]);
 	});
 
@@ -1477,5 +1619,130 @@ describe("forced-completion stamp", () => {
 		await sink.onDone({ kind: "completed", forced: "repeat" });
 		expect(voices).toEqual([1]);
 		expect(msgs).toEqual(["⚠ loop detector — answer forced"]);
+	});
+});
+
+describe("telegram HTML", () => {
+	// A topic conversation — the plain path must render the same in
+	// groups and topics as it does in DMs.
+	const topic: Conversation = { ...conv, id: "topic:-100:7", chatId: -100, threadId: 7 };
+
+	test("group replies render markdown as Telegram HTML", async () => {
+		const { api, msgs, calls } = fakeApi({});
+		const sink = makeDeliverySink(api, topic, { editIntervalMs: 0 });
+		sink.onTextDelta("**bold** and `x<y` [link](https://e.example)");
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toEqual([
+			'<b>bold</b> and <code>x&lt;y</code> <a href="https://e.example">link</a>',
+		]);
+		expect(calls).toEqual([
+			{
+				kind: "send",
+				text: '<b>bold</b> and <code>x&lt;y</code> <a href="https://e.example">link</a>',
+				parseMode: "HTML",
+			},
+		]);
+	});
+
+	test("a rejected HTML send retries the chunk raw and stays raw", async () => {
+		const { api, msgs, calls } = fakeApi({ rejectEntities: true });
+		const sink = makeDeliverySink(api, topic, { editIntervalMs: 0 });
+		sink.onTextDelta("**kept literal**");
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toEqual(["**kept literal**"]);
+		const sends = calls.filter((c) => c.kind === "send");
+		expect(sends).toHaveLength(1);
+		expect(sends[0]!.parseMode).toBeUndefined();
+	});
+
+	test("a code fence split across chunks stays monospace on both sides", async () => {
+		const { api, msgs, calls } = fakeApi({});
+		const sink = makeDeliverySink(api, topic, { editIntervalMs: 0 });
+		sink.onTextDelta(`\`\`\`js\n${"x".repeat(CHUNK)}\nafter\n\`\`\``);
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toHaveLength(2);
+		expect(msgs[0]!.endsWith("</pre>")).toBe(true);
+		expect(msgs[0]!).toContain('<code class="language-js">');
+		expect(msgs[1]!.startsWith("<pre><code class=\"language-js\">")).toBe(true);
+		expect(msgs[1]!).toContain("after");
+		expect(calls.every((c) => c.parseMode === "HTML")).toBe(true);
+	});
+
+	test("markup over 4096 still sends as HTML — the cap is the parsed text", async () => {
+		const { api, msgs, calls } = fakeApi({});
+		const sink = makeDeliverySink(api, topic, { editIntervalMs: 0 });
+		// Every < escapes to &lt; — the markup is far over 4096 but the
+		// text Telegram counts after entity parsing is the 3800 chars.
+		sink.onTextDelta("<".repeat(CHUNK));
+		await sink.onDone({ kind: "completed" });
+		expect(msgs).toEqual(["&lt;".repeat(CHUNK)]);
+		expect(calls.filter((c) => c.kind === "send").every((c) => c.parseMode === "HTML")).toBe(
+			true,
+		);
+	});
+
+	test("a tool call while a fence is open adds no stray marker", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		sink.onTextDelta("Here is the code:\n```\nlet a = 1;");
+		sink.onToolCall("bash", { command: "ls -la" });
+		await sink.onDone({ kind: "completed" });
+		const last = msgs[msgs.length - 1]!;
+		// The code block closes in HTML before the status line, the
+		// status shows verbatim, and no fence marker leaks after it.
+		expect(last).toContain("<pre>");
+		expect(last.indexOf("</pre>")).toBeLessThan(last.indexOf("⚙ bash ls -la"));
+		expect(last).toContain("⚙ bash ls -la");
+		expect(last).not.toContain("```");
+	});
+
+	test("a code-heavy window sends HTML — parsed text is what Telegram caps", async () => {
+		const { api, msgs, calls } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		sink.onTextDelta("```html\n" + "<div><span>a & b</span></div>\n".repeat(110) + "```");
+		await sink.onDone({ kind: "completed" });
+		expect(msgs.join("")).toContain("&lt;div&gt;");
+		expect(calls.filter((c) => c.kind === "send").every((c) => c.parseMode === "HTML")).toBe(
+			true,
+		);
+	});
+
+	test("a tool-status line is escaped raw text, never markdown", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		sink.onTextDelta("working");
+		sink.onToolCall("bash", { command: 'find . -name "*.ts" -o -name "*.tsx"' });
+		await sink.onDone({ kind: "completed" });
+		// The command shows verbatim — no italics eat the glob stars.
+		expect(msgs.join("")).toContain('⚙ bash find . -name "*.ts" -o -name "*.tsx"');
+		expect(msgs.join("")).not.toContain("<i>");
+	});
+});
+
+describe("drop acknowledgement", () => {
+	test("a fenced turn that never streamed sends one ack replying to the user's message", async () => {
+		const { api, msgs, sendOptions } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, replyTo: 42 });
+		await sink.onDone({ kind: "fenced" });
+		expect(msgs).toEqual([
+			"⏹ Stopped before I answered — your message is kept in history.",
+		]);
+		expect(sendOptions).toEqual([{ reply_parameters: { message_id: 42 } }]);
+	});
+
+	test("a fenced turn that did stream keeps the superseded stamp — no extra ack", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0, replyTo: 42 });
+		sink.onTextDelta("partial");
+		await sleep(0);
+		await sink.onDone({ kind: "fenced" });
+		expect(msgs).toEqual(["partial\n\n—\n⏹ superseded"]);
+	});
+
+	test("a fenced turn with no triggering message stays silent", async () => {
+		const { api, msgs } = fakeApi({});
+		const sink = makeDeliverySink(api, conv, { editIntervalMs: 0 });
+		await sink.onDone({ kind: "fenced" });
+		expect(msgs).toEqual([]);
 	});
 });

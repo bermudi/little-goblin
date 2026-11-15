@@ -6,6 +6,7 @@
 
 import type { Database } from "bun:sqlite";
 import type { UIMessage } from "ai";
+import { log } from "./log.ts";
 import {
 	type Compaction,
 	corruptPlaceholder,
@@ -14,6 +15,7 @@ import {
 	summaryMessage,
 	toFtsQuery,
 } from "./conversation-events.ts";
+import { corruptRowId } from "./tags.ts";
 import type { ConversationQueries } from "./conversation-queries.ts";
 import { messageText } from "./memory/mod.ts";
 
@@ -34,12 +36,25 @@ export interface HistoryContextRow {
 	createdAt: string;
 }
 
+// The causal skeleton of one event: everything windowing, fold-mark
+// placement and rateable-winner detection needs, without the payload.
+export interface HistorySlimEntry {
+	seq: number;
+	anchorSeq: number | null;
+	role: string;
+	createdAt: string;
+}
+
 export function makeConversationHistory(
 	db: Database,
 	queries: Pick<
 		ConversationQueries,
 		| "qHistory"
 		| "qHistoryCausal"
+		| "qEventBySeq"
+		| "qHistorySlim"
+		| "qHistoryData"
+		| "qMessageIds"
 		| "qLastByRole"
 		| "qProjections"
 		| "qInsertProjection"
@@ -51,6 +66,10 @@ export function makeConversationHistory(
 	const {
 		qHistory,
 		qHistoryCausal,
+		qEventBySeq,
+		qHistorySlim,
+		qHistoryData,
+		qMessageIds,
 		qLastByRole,
 		qProjections,
 		qInsertProjection,
@@ -131,16 +150,10 @@ export function makeConversationHistory(
 		created_at: string;
 	};
 
-	function detailFromRows(id: string, raw: RawRow[]) {
-		const rows = raw.map((r) => ({
-			seq: r.seq,
-			anchorSeq: r.anchor_seq,
-			createdAt: r.created_at,
-			message: parseEvent(id, r.seq, r.role, r.data) ?? corruptPlaceholder(r.seq, r.role),
-		}));
-		// Arrival order stays on disk; this sorts each anchored response
-		// right after its user event. Key = anchor ?? seq, tiebreak = seq
-		// — an anchor always precedes its own seq.
+	// Arrival order stays on disk; the causal sort puts each anchored
+	// response right after its user event. Key = anchor ?? seq,
+	// tiebreak = seq — an anchor always precedes its own seq.
+	function causalOrder<T extends { seq: number; anchorSeq: number | null }>(rows: T[]): T[] {
 		rows.sort((a, b) => {
 			const ka = a.anchorSeq ?? a.seq;
 			const kb = b.anchorSeq ?? b.seq;
@@ -149,8 +162,50 @@ export function makeConversationHistory(
 		return rows;
 	}
 
+	function detailFromRows(id: string, raw: RawRow[]) {
+		return causalOrder(
+			raw.map((r) => ({
+				seq: r.seq,
+				anchorSeq: r.anchor_seq,
+				createdAt: r.created_at,
+				message: parseEvent(id, r.seq, r.role, r.data) ?? corruptPlaceholder(r.seq, r.role),
+			})),
+		);
+	}
+
 	function historyDetail(id: string) {
 		return detailFromRows(id, qHistory.all(id));
+	}
+
+	// The whole transcript's causal skeleton — the paged reader's index.
+	// No payloads cross the wire on this read.
+	function historySlim(id: string): HistorySlimEntry[] {
+		return causalOrder(
+			qHistorySlim.all(id).map((r) => ({
+				seq: r.seq,
+				anchorSeq: r.anchor_seq,
+				role: r.role,
+				createdAt: r.created_at,
+			})),
+		);
+	}
+
+	// Payloads for one served window, causal-ordered like historyDetail.
+	function historyData(id: string, seqs: readonly number[]) {
+		if (seqs.length === 0) return [];
+		return detailFromRows(id, qHistoryData.all(id, JSON.stringify(seqs)));
+	}
+
+	// Stored message ids for a seq set — corrupt rows name themselves
+	// like corruptPlaceholder so the rating seam sees the same id either
+	// way.
+	function messageIdsForSeqs(id: string, seqs: readonly number[]): Map<number, string> {
+		if (seqs.length === 0) return new Map();
+		return new Map(
+			qMessageIds
+				.all(id, JSON.stringify(seqs))
+				.map((r) => [r.seq, r.mid ?? corruptRowId(r.seq)]),
+		);
 	}
 
 	// One-row reader for "what is the last <role> message?" callers —
@@ -175,6 +230,35 @@ export function makeConversationHistory(
 			compaction === null
 				? historyDetail(id)
 				: detailFromRows(id, qHistoryCausal.all(id, compaction.boundarySeq));
+		// #403 split turns: the causal cut above drops the one event the
+		// pointer half-folds (its causal key sits AT the boundary) — its
+		// kept suffix is fetched by seq and spliced back at its causal
+		// position, right after the summary, ahead of every event the SQL
+		// kept (their causal keys are strictly greater). The slice keeps
+		// the event's own id and metadata; read-time minting over the
+		// immutable row is deterministic, so the view is byte-stable
+		// across reopens like the summary's.
+		if (compaction !== null && compaction.split !== null) {
+			const split = compaction.split;
+			const row = qEventBySeq.get(id, split.seq);
+			if (row === null) {
+				log.warn("split event missing from history — suffix not served", {
+					conversation: id,
+					seq: split.seq,
+					part: split.part,
+					boundary: compaction.boundarySeq,
+				});
+			} else {
+				const message =
+					parseEvent(id, row.seq, row.role, row.data) ?? corruptPlaceholder(row.seq, row.role);
+				detail.unshift({
+					seq: row.seq,
+					anchorSeq: row.anchor_seq,
+					createdAt: row.created_at,
+					message: { ...message, parts: message.parts.slice(split.part) },
+				});
+			}
+		}
 		const entries = detail.map((e) => ({ seq: e.seq, message: e.message }));
 		// Committed pruning projections overlay the model-facing view
 		// only — parseEvent returns fresh objects, so mutating them
@@ -251,6 +335,9 @@ export function makeConversationHistory(
 		history,
 		historyEntries,
 		historyDetail,
+		historySlim,
+		historyData,
+		messageIdsForSeqs,
 		lastEntry,
 		modelEntries,
 		eventProjections,

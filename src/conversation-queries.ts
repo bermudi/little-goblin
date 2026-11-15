@@ -15,6 +15,9 @@ export interface Row {
 	thinking: string | null;
 	voice: number;
 	memory_excluded: number;
+	// Set only when a project's memory gate stamped memory_excluded — an
+	// operator's own exclusion carries 0 and survives the gate re-opening.
+	memory_excluded_by_project: number;
 	// "guest" = the sandbox persona: no private files in, nothing about
 	// the operator out. Frozen at creation.
 	persona: string;
@@ -72,10 +75,12 @@ export function prepareConversationQueries(db: Database) {
 			model: string;
 			created_at: string;
 			tail_events: number | null;
+			split_seq: number | null;
+			split_part: number | null;
 		},
 		[string]
 	>(
-		"SELECT boundary_seq, summary, summary_eligible, tokens_before, model, created_at, tail_events FROM compactions WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
+		"SELECT boundary_seq, summary, summary_eligible, tokens_before, model, created_at, tail_events, split_seq, split_part FROM compactions WHERE conversation_id = ? ORDER BY id DESC LIMIT 1",
 	);
 	// Every pointer, oldest first — the transcript's fold marks.
 	const qCompactions = db.query<
@@ -86,13 +91,15 @@ export function prepareConversationQueries(db: Database) {
 			tail_events: number | null;
 			model: string;
 			created_at: string;
+			split_seq: number | null;
+			split_part: number | null;
 		},
 		[string]
 	>(
-		"SELECT boundary_seq, summary, tokens_before, tail_events, model, created_at FROM compactions WHERE conversation_id = ? ORDER BY id",
+		"SELECT boundary_seq, summary, tokens_before, tail_events, model, created_at, split_seq, split_part FROM compactions WHERE conversation_id = ? ORDER BY id",
 	);
 	const qInsertCompaction = db.query(
-		"INSERT INTO compactions (conversation_id, boundary_seq, summary, summary_eligible, tokens_before, model, created_at, tail_events) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO compactions (conversation_id, boundary_seq, summary, summary_eligible, tokens_before, model, created_at, tail_events, split_seq, split_part) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 	);
 	const qGet = db.query<Row, [string]>("SELECT * FROM conversations WHERE id = ?");
 	const qInsertConv = db.query(
@@ -139,6 +146,34 @@ export function prepareConversationQueries(db: Database) {
 		{ seq: number; anchor_seq: number | null; role: string; data: string; created_at: string },
 		[string, number]
 	>(HISTORY_CAUSAL_SQL);
+	// The one event a split pointer half-folds (#403): its causal key sits
+	// at the boundary, so the causal cut above drops it — the kept suffix
+	// is fetched by seq and spliced back in at read time.
+	const qEventBySeq = db.query<
+		{ seq: number; anchor_seq: number | null; role: string; data: string; created_at: string },
+		[string, number]
+	>("SELECT seq, anchor_seq, role, data, created_at FROM events WHERE conversation_id = ? AND seq = ?");
+	// The transcript's skeleton without message payloads: windowing,
+	// fold-mark positions and rateable-winner detection all read this —
+	// the app's paged history must never parse data for unserved rows.
+	const qHistorySlim = db.query<
+		{ seq: number; anchor_seq: number | null; role: string; created_at: string },
+		[string]
+	>("SELECT seq, anchor_seq, role, created_at FROM events WHERE conversation_id = ? ORDER BY seq");
+	// Full rows for one served window; the seq list rides a json_each
+	// parameter so one prepared statement serves every window size.
+	const qHistoryData = db.query<
+		{ seq: number; anchor_seq: number | null; role: string; data: string; created_at: string },
+		[string, string]
+	>(
+		"SELECT seq, anchor_seq, role, data, created_at FROM events WHERE conversation_id = ? AND seq IN (SELECT value FROM json_each(?))",
+	);
+	// Message ids for a seq set — the rating seam joins durable seqs to
+	// the envelope's message.id without parsing every row. Corrupt rows
+	// surface NULL; the caller names them like corruptPlaceholder does.
+	const qMessageIds = db.query<{ seq: number; mid: string | null }, [string, string]>(
+		"SELECT seq, json_extract(data, '$.message.id') AS mid FROM events WHERE conversation_id = ? AND seq IN (SELECT value FROM json_each(?))",
+	);
 	const qLastByRole = db.query<
 		{ seq: number; anchor_seq: number | null; role: string; data: string },
 		[string, string]
@@ -327,7 +362,11 @@ export function prepareConversationQueries(db: Database) {
 	// projection delete reads events and must run before the event delete.
 	const qRewindEvents = db.query(REWIND_EVENTS_SQL);
 	const qRewindCompactions = db.query(
-		"DELETE FROM compactions WHERE conversation_id = ? AND boundary_seq >= ?",
+		// The split pointer retires with the event it halves: a row whose
+		// split event is rewound must never survive to slice a missing row
+		// (#403). boundary_seq alone would keep it — the split event's seq
+		// sits above the boundary.
+		"DELETE FROM compactions WHERE conversation_id = ? AND (boundary_seq >= ? OR split_seq >= ?)",
 	);
 	const qRewindContexts = db.query(
 		"DELETE FROM memory_contexts WHERE conversation_id = ? AND anchor_seq >= ?",
@@ -360,6 +399,10 @@ export function prepareConversationQueries(db: Database) {
 		qLastActivity,
 		qHistory,
 		qHistoryCausal,
+		qEventBySeq,
+		qHistorySlim,
+		qHistoryData,
+		qMessageIds,
 		qLastByRole,
 		qLastEventSeq,
 		qLastUserSeq,

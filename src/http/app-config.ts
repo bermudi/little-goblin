@@ -11,6 +11,7 @@ import {
 	jsonBodyRefusal,
 	NO_STORE,
 } from "./app-shared.ts";
+import type { AppConfigPatchResponse } from "./app-wire.ts";
 
 const favoriteToggleBody = z
 	.object({
@@ -52,11 +53,8 @@ export async function handleConfigRoute(
 				const merged = parseConfig({ ...base, ...parsed.data });
 				// A stored level the model can't express is a lie — write the
 				// rung the wire clamp would land on, on both channels.
-				merged.thinking = clampThinkingFor(
-					merged.providers,
-					merged.model,
-					parsed.data.thinking ?? base.thinking,
-				);
+				const askedThinking = parsed.data.thinking ?? base.thinking;
+				merged.thinking = clampThinkingFor(merged.providers, merged.model, askedThinking);
 				// A disabled channel's saved pin is dormant state — leave
 				// model and thinking untouched until it is re-enabled.
 				if (merged.telegram.enabled) {
@@ -75,7 +73,13 @@ export async function handleConfigRoute(
 					model: parsed.data.model,
 					thinking: parsed.data.thinking,
 				});
-				return Response.json(configView(fresh ?? merged), { headers: NO_STORE });
+				const body: AppConfigPatchResponse = {
+					...configView(fresh ?? merged),
+					...(askedThinking !== merged.thinking
+						? { thinkingClamped: { from: askedThinking, to: merged.thinking } }
+						: {}),
+				};
+				return Response.json(body, { headers: NO_STORE });
 			} catch (err) {
 				if (err instanceof ConfigValidationError) {
 					return Response.json({ error: err.message }, { status: 422, headers: NO_STORE });

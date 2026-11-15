@@ -27,7 +27,7 @@ describe("loadCatalog", () => {
 	test("missing dir is an empty catalog that still names its root", () => {
 		expect(loadCatalog(join(useRoot(), "nope"))).toEqual({
 			entries: [],
-			skipped: 0,
+			skipped: [],
 			root: "nope",
 		});
 	});
@@ -39,7 +39,7 @@ describe("loadCatalog", () => {
 		expect(catalog.entries).toEqual([
 			{ name: "mq", description: "jq for Markdown", path: join("skills", "mq", "SKILL.md") },
 		]);
-		expect(catalog.skipped).toBe(0);
+		expect(catalog.skipped).toHaveLength(0);
 		expect(catalog.root).toBe("skills");
 	});
 
@@ -67,11 +67,11 @@ describe("loadCatalog", () => {
 			"name: browser\ndescription: drive Chrome\nallowed-tools:\n  - Bash(agent-browser:*)",
 		);
 		const catalog = loadCatalog(root);
-		expect(catalog.skipped).toBe(0);
+		expect(catalog.skipped).toHaveLength(0);
 		expect(catalog.entries[0]!.name).toBe("browser");
 		// The bare-string form stays accepted too.
 		writeSkill(root, "mq", 'name: mq\ndescription: d\nallowed-tools: "Bash(mq:*)"');
-		expect(loadCatalog(root).skipped).toBe(0);
+		expect(loadCatalog(root).skipped).toHaveLength(0);
 	});
 
 	test("a directory without SKILL.md is skipped; loose files are ignored", () => {
@@ -80,7 +80,7 @@ describe("loadCatalog", () => {
 		writeFileSync(join(root, "README.md"), "not a skill");
 		const catalog = loadCatalog(root);
 		expect(catalog.entries).toEqual([]);
-		expect(catalog.skipped).toBe(1); // only the SKILL.md-less dir counts
+		expect(catalog.skipped).toHaveLength(1); // only the SKILL.md-less dir counts
 	});
 
 	test("a symlinked directory resolves; a broken link is skipped", () => {
@@ -93,7 +93,7 @@ describe("loadCatalog", () => {
 		symlinkSync(join(root, "gone"), join(root, "dangling"));
 		const catalog = loadCatalog(root);
 		expect(catalog.entries.map((e) => e.name)).toEqual(["mq"]);
-		expect(catalog.skipped).toBe(1);
+		expect(catalog.skipped).toHaveLength(1);
 	});
 
 	test("frontmatter name must equal the directory name", () => {
@@ -101,7 +101,7 @@ describe("loadCatalog", () => {
 		writeSkill(root, "link-name", "name: other-name\ndescription: d");
 		const catalog = loadCatalog(root);
 		expect(catalog.entries).toEqual([]);
-		expect(catalog.skipped).toBe(1);
+		expect(catalog.skipped).toHaveLength(1);
 	});
 
 	test("spec-invalid names are skipped", () => {
@@ -117,7 +117,7 @@ describe("loadCatalog", () => {
 		}
 		const catalog = loadCatalog(root);
 		expect(catalog.entries).toEqual([]);
-		expect(catalog.skipped).toBe(5);
+		expect(catalog.skipped).toHaveLength(5);
 	});
 
 	test("missing or oversized description is skipped", () => {
@@ -126,7 +126,7 @@ describe("loadCatalog", () => {
 		writeSkill(root, "bigdesc", `name: bigdesc\ndescription: ${"d".repeat(1025)}`);
 		const catalog = loadCatalog(root);
 		expect(catalog.entries).toEqual([]);
-		expect(catalog.skipped).toBe(2);
+		expect(catalog.skipped).toHaveLength(2);
 	});
 
 	test("disable-model-invocation rides the catalog but not the prompt section", () => {
@@ -137,7 +137,7 @@ describe("loadCatalog", () => {
 		expect(catalog.entries.map((e) => e.name)).toEqual(["auto", "manual"]);
 		expect(catalog.entries.find((e) => e.name === "manual")?.manualOnly).toBe(true);
 		expect(catalog.entries.find((e) => e.name === "auto")?.manualOnly).toBeUndefined();
-		expect(catalog.skipped).toBe(0);
+		expect(catalog.skipped).toHaveLength(0);
 		// The prompt section never learns a manual-only name.
 		const lines = formatSkillsSection(catalog).join("\n");
 		expect(lines).toContain("- auto — d");
@@ -168,7 +168,7 @@ describe("loadCatalog", () => {
 		);
 		const catalog = loadCatalog(root);
 		expect(catalog.entries).toEqual([]);
-		expect(catalog.skipped).toBe(2);
+		expect(catalog.skipped).toHaveLength(2);
 	});
 
 	test("missing, unterminated, or invalid frontmatter is skipped", () => {
@@ -181,7 +181,82 @@ describe("loadCatalog", () => {
 		writeFileSync(join(root, "badyaml", "SKILL.md"), "---\n: : :\n---\n");
 		const catalog = loadCatalog(root);
 		expect(catalog.entries).toEqual([]);
-		expect(catalog.skipped).toBe(3);
+		expect(catalog.skipped).toHaveLength(3);
+	});
+
+	// Regression (#484): the spec's `metadata` map is open — openclaw
+	// carries a nested object, hermes carries lists under `hermes:`.
+	// Frontmatter shapes below copy the real ecosystem files.
+	test("an openclaw-shaped skill with nested-object metadata joins the catalog", () => {
+		const root = useRoot();
+		writeSkill(
+			root,
+			"1password",
+			[
+				'name: 1password',
+				'description: "Set up and use 1Password CLI for sign-in and reading secrets."',
+				"homepage: https://developer.1password.com/docs/cli/get-started/",
+				"metadata:",
+				"  {",
+				'    "openclaw":',
+				"      {",
+				'        "emoji": "🔐",',
+				'        "requires": { "bins": ["op"] },',
+				'        "install":',
+				"          [",
+				"            {",
+				'              "id": "brew",',
+				'              "kind": "brew",',
+				'              "formula": "1password-cli",',
+				'              "bins": ["op"],',
+				'              "label": "Install 1Password CLI (brew)",',
+				"            },",
+				"          ],",
+				"      },",
+				"  }",
+			].join("\n"),
+		);
+		const catalog = loadCatalog(root);
+		expect(catalog.skipped).toHaveLength(0);
+		expect(catalog.entries.map((e) => e.name)).toEqual(["1password"]);
+		expect(formatSkillsSection(catalog).join("\n")).toContain("- 1password —");
+	});
+
+	test("a hermes-shaped skill with list-valued metadata joins the catalog", () => {
+		const root = useRoot();
+		writeSkill(
+			root,
+			"agent-merge-conflict-arbiter",
+			[
+				"name: agent-merge-conflict-arbiter",
+				'description: "Neutral arbiter for merge conflicts between two agents."',
+				"version: 1.0.0",
+				"author: Hermes Agent",
+				"license: MIT",
+				"platforms: [linux, macos, windows]",
+				"metadata:",
+				"  hermes:",
+				"    tags: [Multi-Agent, Git, Merge-Conflict, Kanban, Arbitration]",
+				"    related_skills: [hermes-agent]",
+			].join("\n"),
+		);
+		const catalog = loadCatalog(root);
+		expect(catalog.skipped).toHaveLength(0);
+		expect(catalog.entries.map((e) => e.name)).toEqual(["agent-merge-conflict-arbiter"]);
+	});
+
+	test("a malformed skill's dir and reason name it in the prompt section", () => {
+		const root = useRoot();
+		writeSkill(root, "noname", "description: no name field");
+		const catalog = loadCatalog(root);
+		expect(catalog.skipped).toEqual([
+			{ dir: "noname", reason: "name: Invalid input: expected string, received undefined" },
+		]);
+		const lines = formatSkillsSection(catalog).join("\n");
+		expect(lines).toContain("(1 entry skipped as malformed");
+		expect(lines).toContain(
+			"- noname — name: Invalid input: expected string, received undefined",
+		);
 	});
 
 	test("the catalog caps at 128 entries", () => {
@@ -193,25 +268,34 @@ describe("loadCatalog", () => {
 		const catalog = loadCatalog(root);
 		expect(catalog.entries).toHaveLength(128);
 		expect(catalog.entries[127]!.name).toBe("s127");
+		expect(catalog.capped).toBe(130);
+	});
+
+	test("an uncapped catalog carries no cap note", () => {
+		const root = useRoot();
+		writeSkill(root, "mq", "name: mq\ndescription: jq for Markdown");
+		expect(loadCatalog(root).capped).toBeUndefined();
 	});
 });
 
 describe("formatSkillsSection", () => {
 	test("an empty catalog still renders the capability notice", () => {
-		const text = formatSkillsSection({ entries: [], skipped: 0, root: "skills" }).join("\n");
+		const text = formatSkillsSection({ entries: [], skipped: [], root: "skills" }).join("\n");
 		expect(text).toContain("## skills");
 		expect(text).toContain("(none yet)");
 	});
 
 	test("the default header is byte-for-byte the shipped text", () => {
-		expect(formatSkillsSection({ entries: [], skipped: 0, root: "skills" })).toEqual([
+		expect(formatSkillsSection({ entries: [], skipped: [], root: "skills" })).toEqual([
 			"## skills",
 			"",
 			"Skills are directories under `skills/` — each a SKILL.md (frontmatter:",
 			"name, description) with instructions plus any scripts/files it needs.",
-			"When a request matches one, read_file its SKILL.md and follow it. This",
-			"catalog is yours: write skills/<name>/SKILL.md when you learn a",
-			"repeatable task, then `skills-ref validate ./skills/<name>` via bash.",
+			"When a request matches one, read_file its SKILL.md and follow it. Write",
+			"or edit skills only when the operator asks — never create or rewrite",
+			"one on your own initiative: if the skill reviewer is configured, lessons",
+			"become drafts for review. An asked-for write goes to",
+			"skills/<name>/SKILL.md, then `skills-ref validate ./skills/<name>` via bash.",
 			"Edits load when the next conversation starts.",
 			"",
 			"(none yet)",
@@ -223,7 +307,7 @@ describe("formatSkillsSection", () => {
 			formatSkillsSection(
 				{
 					entries: [{ name: "mq", description: "jq for Markdown", path: "skills/mq/SKILL.md" }],
-					skipped: 0,
+					skipped: [],
 					root: "skills",
 				},
 				undefined,
@@ -234,9 +318,11 @@ describe("formatSkillsSection", () => {
 			"",
 			"Skills are directories under `/global/workspace/skills/` — each a SKILL.md (frontmatter:",
 			"name, description) with instructions plus any scripts/files it needs.",
-			"When a request matches one, read_file its SKILL.md and follow it. This",
-			"catalog is yours: write /global/workspace/skills/<name>/SKILL.md when you learn a",
-			"repeatable task, then `skills-ref validate '/global/workspace/skills/<name>'` via bash.",
+			"When a request matches one, read_file its SKILL.md and follow it. Write",
+			"or edit skills only when the operator asks — never create or rewrite",
+			"one on your own initiative: if the skill reviewer is configured, lessons",
+			"become drafts for review. An asked-for write goes to",
+			"/global/workspace/skills/<name>/SKILL.md, then `skills-ref validate '/global/workspace/skills/<name>'` via bash.",
 			"Edits load when the next conversation starts.",
 			"",
 			"- mq — jq for Markdown (/global/workspace/skills/mq/SKILL.md)",
@@ -248,7 +334,7 @@ describe("formatSkillsSection", () => {
 			formatSkillsSection(
 				{
 					entries: [{ name: "mq", description: "jq for Markdown", path: "skills/mq/SKILL.md" }],
-					skipped: 0,
+					skipped: [],
 					root: "skills",
 				},
 				undefined,
@@ -259,9 +345,11 @@ describe("formatSkillsSection", () => {
 			"",
 			"Skills are directories under `/tmp/operator's workspace/skills/` — each a SKILL.md (frontmatter:",
 			"name, description) with instructions plus any scripts/files it needs.",
-			"When a request matches one, read_file its SKILL.md and follow it. This",
-			"catalog is yours: write /tmp/operator's workspace/skills/<name>/SKILL.md when you learn a",
-			"repeatable task, then `skills-ref validate '/tmp/operator'\\''s workspace/skills/<name>'` via bash.",
+			"When a request matches one, read_file its SKILL.md and follow it. Write",
+			"or edit skills only when the operator asks — never create or rewrite",
+			"one on your own initiative: if the skill reviewer is configured, lessons",
+			"become drafts for review. An asked-for write goes to",
+			"/tmp/operator's workspace/skills/<name>/SKILL.md, then `skills-ref validate '/tmp/operator'\\''s workspace/skills/<name>'` via bash.",
 			"Edits load when the next conversation starts.",
 			"",
 			"- mq — jq for Markdown (/tmp/operator's workspace/skills/mq/SKILL.md)",
@@ -278,29 +366,57 @@ describe("formatSkillsSection", () => {
 					path: "skills/mq/SKILL.md",
 				},
 			],
-			skipped: 0,
+			skipped: [],
 			root: "skills",
 		}).join("\n");
 		expect(text).toContain("- mq — jq for Markdown [Requires the mq CLI] (skills/mq/SKILL.md)");
 	});
 
-	test("the skip count is noted for the agent to surface", () => {
-		const one = formatSkillsSection({ entries: [], skipped: 1, root: "skills" }).join("\n");
+	test("a capped catalog names its truncation like the malformed count", () => {
+		const text = formatSkillsSection({
+			entries: [
+				{ name: "a", description: "d", path: "skills/a/SKILL.md" },
+				{ name: "b", description: "d", path: "skills/b/SKILL.md" },
+			],
+			skipped: [],
+			root: "skills",
+			capped: 140,
+		}).join("\n");
+		expect(text).toContain("(catalog capped at 2 of 140 entries — see goblin.log)");
+	});
+
+	test("the skip count and per-entry reasons render for the agent to surface", () => {
+		const one = formatSkillsSection({
+			entries: [],
+			skipped: [{ dir: "bad", reason: "name: Invalid input" }],
+			root: "skills",
+		}).join("\n");
 		expect(one).toContain("(1 entry skipped as malformed");
-		const many = formatSkillsSection({ entries: [], skipped: 3, root: "skills" }).join("\n");
+		expect(one).toContain("- bad — name: Invalid input");
+		const many = formatSkillsSection({
+			entries: [],
+			skipped: [
+				{ dir: "a", reason: "no SKILL.md" },
+				{ dir: "b", reason: "unterminated frontmatter" },
+				{ dir: "c", reason: "description: Invalid input" },
+			],
+			root: "skills",
+		}).join("\n");
 		expect(many).toContain("(3 entries skipped as malformed");
+		expect(many).toContain("- a — no SKILL.md");
+		expect(many).toContain("- c — description: Invalid input");
 	});
 
 	test("pending proposals render when present — and only then", () => {
 		const none = formatSkillsSection(
-			{ entries: [], skipped: 0, root: "skills" },
-			{ entries: [], skipped: 0, root: "skills-proposed" },
+			{ entries: [], skipped: [], root: "skills" },
+			{ entries: [], skipped: [], root: "skills-proposed" },
 		).join("\n");
 		expect(none).not.toContain("Pending proposals");
-		const absent = formatSkillsSection({ entries: [], skipped: 0, root: "skills" }).join("\n");
+		const absent = formatSkillsSection({ entries: [], skipped: [], root: "skills" }).join("\n");
 		expect(absent).not.toContain("Pending proposals");
 		const withProposal = formatSkillsSection(
-			{ entries: [], skipped: 0, root: "skills" },
+			{ entries: [], skipped: [], root: "skills" },
 			{
 				entries: [
 					{
@@ -309,7 +425,7 @@ describe("formatSkillsSection", () => {
 						path: "skills-proposed/pdf-tables/SKILL.md",
 					},
 				],
-				skipped: 0,
+				skipped: [],
 				root: "skills-proposed",
 			},
 		).join("\n");
@@ -330,7 +446,7 @@ describe("formatSkillsSection", () => {
 		const proposals = loadCatalog(join(dir, "drafts"));
 		const text = formatSkillsSection(catalog, proposals).join("\n");
 		expect(text).toContain("Skills are directories under `my-catalog/`");
-		expect(text).toContain("catalog is yours: write my-catalog/<name>/SKILL.md");
+		expect(text).toContain("write goes to\nmy-catalog/<name>/SKILL.md");
 		expect(text).toContain("`skills-ref validate ./my-catalog/<name>` via bash");
 		expect(text).toContain("- mq — jq for Markdown (my-catalog/mq/SKILL.md)");
 		expect(text).toContain("reviewer drafts under `drafts/`");
@@ -351,6 +467,6 @@ describe("formatSkillsSection", () => {
 		);
 		const catalog = loadCatalog(root);
 		expect(catalog.entries).toEqual([]);
-		expect(catalog.skipped).toBe(1);
+		expect(catalog.skipped).toHaveLength(1);
 	});
 });

@@ -237,3 +237,23 @@ describe("app push owner", () => {
 		expect(calls).toEqual([]);
 	});
 });
+
+test("a foreground-orphaned reply pushes 'Your reply is ready'", async () => {
+	const calls: { body: Record<string, unknown> }[] = [];
+	const { store, push } = fixture({
+		send: (_subscription, payload) => {
+			calls.push({ body: JSON.parse(payload) as Record<string, unknown> });
+			return Promise.resolve(OK);
+		},
+	});
+	const conv = seedReply(store);
+	await push.register(SUBSCRIPTION, null);
+
+	await push.notifyDone(conv, { kind: "completed" }, "foreground");
+	expect(calls).toHaveLength(1);
+	expect(calls[0]!.body).toMatchObject({
+		title: "goblin",
+		body: "Your reply is ready",
+		url: "/app/c/push-room",
+	});
+});

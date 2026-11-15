@@ -1,14 +1,33 @@
-import { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import { readdirSync, rmSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
-import { z } from "zod";
 import { desktopsConfigSchema, imageRefSchema, type DesktopsConfig } from "./config-schema.ts";
 import { paths, ensureDir } from "./home-layout.ts";
 import { durableWriteBytes } from "./durable.ts";
 import { log } from "./log.ts";
 import type { ContainerInspect, Podman } from "./podman.ts";
-import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
+import {
+	LEASE_TTL_MS,
+	holderId,
+	holderLabel,
+	leaseHeldBy,
+	leaseLive,
+	rowHolderLabel,
+	type DesktopRow,
+	type DesktopStore,
+	type LeaseHolder,
+} from "./desktops-store.ts";
+import {
+	CUA_TOOLS,
+	DESKTOP_USER,
+	EXEC_OPTS,
+	FOREGROUND_TOOLS,
+	SESSION_ENV,
+	SESSION_SOCKET,
+	launchUrlOk,
+	listWindowsSchema,
+	type DesktopAction,
+} from "./desktops-cua.ts";
 
 // Mapped to {error} tool results — model/operator-actionable failures.
 export class DesktopError extends Error {
@@ -20,286 +39,17 @@ export class DesktopError extends Error {
 
 export class DesktopLeaseError extends DesktopError {}
 
-export type LeaseHolder =
-	| { kind: "run"; id: string }
-	| { kind: "conversation"; id: string }
-	| { kind: "operator" };
-
-// cua-driver 0.34.1's input tools minus the ones bypassing goblin's
-// gates: launch_app/kill_app route around the launch whitelist and
-// refusal logging, browser_* drives an unwired CDP channel, raw
-// mouse_*/move_cursor/parallel_mouse_drag are covered by click/drag.
-export type CuaTool =
-	| "click"
-	| "double_click"
-	| "right_click"
-	| "press_key"
-	| "hotkey"
-	| "type_text"
-	| "scroll"
-	| "drag"
-	| "set_value"
-	| "bring_to_front"
-	| "invoke_menu"
-	| "set_window_frame";
-
-// Must stay literal against the CuaTool union — growing one without
-// the other is a type error. act is the enforcement point: a boundary
-// cast to CuaTool proves nothing at runtime.
-export const CUA_TOOLS: ReadonlySet<string> = new Set<CuaTool>([
-	"click",
-	"double_click",
-	"right_click",
-	"press_key",
-	"hotkey",
-	"type_text",
-	"scroll",
-	"drag",
-	"set_value",
-	"bring_to_front",
-	"invoke_menu",
-	"set_window_frame",
-]);
-
-export type DesktopAction =
-	| { kind: "launch"; app: "chromium"; url?: string }
-	| { kind: "cua"; tool: CuaTool; args: Record<string, unknown> };
-
-const listWindowsSchema = z.object({
-	windows: z
-		.array(z.object({ pid: z.number(), app_name: z.string(), z_index: z.number() }))
-		.optional(),
-});
-
-export interface DesktopRow {
-	name: string;
-	container: string;
-	image: string;
-	/** The row is intent, podman is truth. */
-	network: boolean;
-	reserved: boolean;
-	leaseKind: "run" | "conversation" | "operator" | null;
-	leaseId: string | null;
-	leaseExpiresAt: number | null;
-	/** The newest minted observation; an action consumes it. */
-	lastObsId: string | null;
-	lastObsUsed: boolean;
-	/** sha256 of the observation frame — PNG bytes for screenshots,
-	 *  the cua screenshot (or state JSON) for inspect. */
-	lastObsHash: string | null;
-	/** The identical-action-on-unchanged-screen refusal state. */
-	lastActSig: string | null;
-	lastActFrameHash: string | null;
-	/** podman State.StartedAt the recorded observation was minted on;
-	 *  null = unknown (the next reconcile records it). Optional because
-	 *  unknown is a real state for row literals built outside this
-	 *  module. */
-	bootGen?: string | null;
-	shotSeq: number;
-	createdAt: number;
-	lastUsedAt: number;
-}
-
-export interface DesktopStore {
-	get(name: string): DesktopRow | null;
-	list(): DesktopRow[];
-	put(row: DesktopRow): void;
-	delete(name: string): void;
-	staleBefore(cutoffMs: number, excludeName: string): DesktopRow[];
-	close(): void;
-}
-
-const rowSchema = z.object({
-	name: z.string(),
-	container: z.string(),
-	image: z.string(),
-	network: z.number(),
-	reserved: z.number(),
-	lease_kind: z.enum(["run", "conversation", "operator"]).nullable(),
-	lease_id: z.string().nullable(),
-	lease_expires_at: z.number().nullable(),
-	last_obs_id: z.string().nullable(),
-	last_obs_used: z.number(),
-	last_obs_hash: z.string().nullable(),
-	last_act_sig: z.string().nullable(),
-	last_act_frame_hash: z.string().nullable(),
-	boot_gen: z.string().nullable(),
-	shot_seq: z.number(),
-	created_at: z.number(),
-	last_used_at: z.number(),
-});
-
-function toRow(row: unknown): DesktopRow {
-	const r = rowSchema.parse(row);
-	return {
-		name: r.name,
-		container: r.container,
-		image: r.image,
-		network: r.network !== 0,
-		reserved: r.reserved !== 0,
-		leaseKind: r.lease_kind,
-		leaseId: r.lease_id,
-		leaseExpiresAt: r.lease_expires_at,
-		lastObsId: r.last_obs_id,
-		lastObsUsed: r.last_obs_used !== 0,
-		lastObsHash: r.last_obs_hash,
-		lastActSig: r.last_act_sig,
-		lastActFrameHash: r.last_act_frame_hash,
-		bootGen: r.boot_gen,
-		shotSeq: r.shot_seq,
-		createdAt: r.created_at,
-		lastUsedAt: r.last_used_at,
-	};
-}
-
-export function openDesktops(dbPath: string): DesktopStore {
-	const db = new Database(dbPath);
-	db.exec("PRAGMA journal_mode = WAL");
-	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
-	db.exec(`CREATE TABLE IF NOT EXISTS desktops (
-		name TEXT PRIMARY KEY,
-		container TEXT NOT NULL,
-		image TEXT NOT NULL,
-		network INTEGER NOT NULL,
-		reserved INTEGER NOT NULL DEFAULT 0,
-		lease_kind TEXT,
-		lease_id TEXT,
-		lease_expires_at INTEGER,
-		last_obs_id TEXT,
-		last_obs_used INTEGER NOT NULL DEFAULT 0,
-		last_obs_hash TEXT,
-		last_act_sig TEXT,
-		last_act_frame_hash TEXT,
-		boot_gen TEXT,
-		shot_seq INTEGER NOT NULL DEFAULT 0,
-		created_at INTEGER NOT NULL,
-		last_used_at INTEGER NOT NULL
-	)`);
-	// NULL reads as unknown generation — the first reconcile
-	// invalidates any recorded observation (fail-closed).
-	const cols = new Set(
-		db
-			.query<{ name: string }, []>("PRAGMA table_info(desktops)")
-			.all()
-			.map((c) => c.name),
-	);
-	if (!cols.has("boot_gen")) db.run("ALTER TABLE desktops ADD COLUMN boot_gen TEXT");
-	const qGet = db.query("SELECT * FROM desktops WHERE name = ?");
-	const qList = db.query("SELECT * FROM desktops ORDER BY name");
-	const qPut = db.query(
-		`INSERT INTO desktops (name, container, image, network, reserved,
-			lease_kind, lease_id, lease_expires_at,
-			last_obs_id, last_obs_used, last_obs_hash,
-			last_act_sig, last_act_frame_hash, boot_gen, shot_seq,
-			created_at, last_used_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(name) DO UPDATE SET
-			container = excluded.container, image = excluded.image,
-			network = excluded.network, reserved = excluded.reserved,
-			lease_kind = excluded.lease_kind, lease_id = excluded.lease_id,
-			lease_expires_at = excluded.lease_expires_at,
-			last_obs_id = excluded.last_obs_id,
-			last_obs_used = excluded.last_obs_used,
-			last_obs_hash = excluded.last_obs_hash,
-			last_act_sig = excluded.last_act_sig,
-			last_act_frame_hash = excluded.last_act_frame_hash,
-			boot_gen = excluded.boot_gen,
-			shot_seq = excluded.shot_seq,
-			created_at = excluded.created_at,
-			last_used_at = excluded.last_used_at`,
-	);
-	const qDelete = db.query("DELETE FROM desktops WHERE name = ?");
-	const qStale = db.query("SELECT * FROM desktops WHERE last_used_at < ? AND name != ?");
-	return {
-		get: (name) => {
-			const row = qGet.get(name);
-			return row === null ? null : toRow(row);
-		},
-		list: () => qList.all().map(toRow),
-		put: (row) =>
-			void qPut.run(
-				row.name,
-				row.container,
-				row.image,
-				row.network ? 1 : 0,
-				row.reserved ? 1 : 0,
-				row.leaseKind,
-				row.leaseId,
-				row.leaseExpiresAt,
-				row.lastObsId,
-				row.lastObsUsed ? 1 : 0,
-				row.lastObsHash,
-				row.lastActSig,
-				row.lastActFrameHash,
-				row.bootGen ?? null,
-				row.shotSeq,
-				row.createdAt,
-				row.lastUsedAt,
-			),
-		delete: (name) => void qDelete.run(name),
-		staleBefore: (cutoffMs, exclude) => qStale.all(cutoffMs, exclude).map(toRow),
-		close: () => db.close(),
-	};
-}
-
 const DEFAULT_CONFIG = desktopsConfigSchema.parse({});
 
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
-const LEASE_TTL_MS = 10 * 60_000;
-const DESKTOP_USER = "desk";
 // Root-owned 0755 stage dir — desk reads/traverses but cannot write,
 // rename, or plant links inside.
 const IMPORT_STAGE_DIR = "/run/goblin-import";
-const SESSION_SOCKET = "/run/desk/cua.sock";
-// Must mirror the env goblin-launch pins in the image — nothing here
-// may derive from container-writable state.
-const SESSION_ENV = {
-	HOME: "/home/desk",
-	DISPLAY: ":99",
-	DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/desk/bus",
-	XDG_RUNTIME_DIR: "/home/desk/.runtime",
-} as const;
-const EXEC_OPTS = { timeoutMs: 60_000, maxOutput: 4 * 1024 * 1024 } as const;
 const EXPORT_MAX_BYTES = 100 * 1024 * 1024;
 const EXPORT_TIMEOUT_MS = 120_000;
 
-// Chromium refuses background-injected input when its renderer isn't
-// the focused surface. AT-SPI tools (invoke_menu, set_window_frame,
-// bring_to_front) take no delivery_mode; set_value is AT-SPI
-// SetValue, not injected input.
-const FOREGROUND_TOOLS: ReadonlySet<string> = new Set([
-	"click",
-	"double_click",
-	"right_click",
-	"press_key",
-	"hotkey",
-	"type_text",
-	"scroll",
-	"drag",
-]);
-
 export function containerNameForDesktop(name: string): string {
 	return `goblin-desk-${name}`;
-}
-
-function holderId(holder: LeaseHolder): string | null {
-	return holder.kind === "operator" ? null : holder.id;
-}
-
-function holderLabel(holder: LeaseHolder): string {
-	return holder.kind === "operator" ? "operator" : `${holder.kind} ${holder.id}`;
-}
-
-function rowHolderLabel(row: DesktopRow): string {
-	return row.leaseKind === "operator" ? "operator" : `${row.leaseKind} ${row.leaseId ?? ""}`;
-}
-
-function leaseLive(row: DesktopRow, now: number): boolean {
-	return row.leaseKind !== null && row.leaseExpiresAt !== null && row.leaseExpiresAt > now;
-}
-
-function leaseHeldBy(row: DesktopRow, holder: LeaseHolder, now: number): boolean {
-	return leaseLive(row, now) && row.leaseKind === holder.kind && row.leaseId === holderId(holder);
 }
 
 // Every refusal logs with its reason — the same message the model
@@ -318,14 +68,6 @@ function refuse(
 		...(holder === undefined ? {} : { holder: holderLabel(holder) }),
 	});
 	return new DesktopError(reason, cause === undefined ? undefined : { cause });
-}
-
-// Model-controlled strings land on Chromium's argv — a bare `--flag`
-// becomes a browser switch. Real URLs (no whitespace/control chars)
-// or exactly about:blank.
-const LAUNCH_URL_RE = /^(?:https?|file):\/\/[^\s\x00-\x1f\x7f]+$/;
-function launchUrlOk(url: string): boolean {
-	return url === "about:blank" || LAUNCH_URL_RE.test(url);
 }
 
 // Key-order-canonical — the identical-action check ignores caller

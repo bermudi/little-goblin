@@ -352,6 +352,8 @@ export interface OperatorProgramItem {
 	createdAt: string;
 	lastRun: string | null;
 	nextRun: string | null;
+	lastSkippedAt: string | null;
+	lastSkipReason: string | null;
 }
 
 export interface OperatorProgramsResponse {

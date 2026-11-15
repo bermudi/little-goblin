@@ -1,5 +1,6 @@
 import type { Api } from "grammy";
-import type { Conversation, ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import type { ConversationStore } from "../conversation.ts";
 import type { ConversationMetaPatch } from "../conversation-settings.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
@@ -7,7 +8,7 @@ import { withTimeout } from "./deadline.ts";
 export interface TitleDeps {
 	api: Pick<Api, "editForumTopic">;
 	store: ConversationStore;
-	titleFor(text: string): Promise<string | null>;
+	titleFor(text: string, opts?: { avoid?: string; model?: string }): Promise<string | null>;
 }
 
 export function titleMetaFromService(msg: {
@@ -29,9 +30,10 @@ export async function maybeRenameTopic(
 	deps: TitleDeps,
 	conv: Conversation,
 	firstText: string,
+	model: string,
 ): Promise<void> {
 	log.info("titling topic", { conversation: conv.id });
-	const title = await withTimeout(deps.titleFor(firstText), "titleFor");
+	const title = await withTimeout(deps.titleFor(firstText, { model }), "titleFor");
 	if (title === null) {
 		log.info("topic titling produced no name — placeholder stays", {
 			conversation: conv.id,

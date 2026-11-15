@@ -15,11 +15,8 @@ import { join } from "node:path";
 import { stepCountIs, streamText } from "ai";
 import { openStore } from "../../conversation.ts";
 import { openDelegations, type DelegationsStore } from "../../delegations.ts";
-import {
-	startDelegationLifecycle,
-	type DelegationLifecycle,
-	type DelegationTargetDeps,
-} from "../../delegation-lifecycle.ts";
+import { startDelegationLifecycle } from "../../delegation-watcher.ts";
+import type { DelegationLifecycle, DelegationTargetDeps } from "../../delegation-lifecycle.ts";
 import type { AgentInfo, Herdr } from "../../herdr.ts";
 import { openProjects } from "../../projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "../../responsibilities.ts";

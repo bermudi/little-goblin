@@ -7,7 +7,7 @@ import { z } from "zod";
 import { setLogFile } from "../../log.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config-schema.ts";
-import type { Conversation } from "../../conversation.ts";
+import type { Conversation } from "../../conversation-read.ts";
 import { filterGuestTools } from "../../tg/guest.ts";
 import { bashTool } from "./bash.ts";
 import { fetchTool } from "./fetch.ts";

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { tzAbbrev } from "../../src/cron-words.ts";
 import type { AppProgramProposal } from "../../src/http/app-wire.ts";
 import { ApprovalsPanel, useApprovals } from "./Approvals.tsx";
 
@@ -215,13 +216,20 @@ test("an update card shows old → new per changed field and a line diff for ins
 			},
 		],
 	};
-	globalThis.fetch = Object.assign(async () => Response.json({ programs: [update], mail: [] }), {
-		preconnect: realFetch.preconnect,
-	});
+	const timeZone = "America/Mexico_City";
+	globalThis.fetch = Object.assign(
+		async () => Response.json({ programs: [update], mail: [], serverTimeZone: timeZone }),
+		{ preconnect: realFetch.preconnect },
+	);
 	root = createRoot(container);
 	await act(async () => root?.render(<Page />));
 	const text = container.querySelector(".approval-changes")?.textContent ?? "";
-	expect(text).toContain("ScheduleDaily 09:00 (0 9 * * *) → Daily 07:00 (0 7 * * *)");
+	// The old → new cron line carries the server's zone on both sides —
+	// the same surface the facts row renders.
+	const zone = tzAbbrev(timeZone);
+	expect(text).toContain(
+		`ScheduleDaily 09:00 ${zone} (0 9 * * *) → Daily 07:00 ${zone} (0 7 * * *)`,
+	);
 	expect(container.querySelector(".diff .diff-line.add")?.textContent).toBe("+c");
 	expect(container.querySelector(".approval-full")).not.toBeNull();
 });

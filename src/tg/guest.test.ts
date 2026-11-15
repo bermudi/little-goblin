@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
-import { openStore, type Conversation, type ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import { openStore, type ConversationStore } from "../conversation.ts";
 import { guestAddress } from "../conversation-address.ts";
 import type { ConfigRef } from "../config.ts";
 import type { Config } from "../config-schema.ts";
@@ -18,6 +19,7 @@ import {
 	filterGuestTools,
 	GuestSink,
 	GUEST_REFUSAL,
+	guestRefusalText,
 	resetRefusalLatchForTests,
 	handleGuestUpdate,
 	mentionsBot,
@@ -25,7 +27,7 @@ import {
 	routeMemberGuestMessage,
 	summonMessage,
 } from "./guest.ts";
-import { sharedChatPart } from "./mod.ts";
+import { sharedChatPart } from "./turn-input.ts";
 import { log } from "../log.ts";
 import { tmpDb } from "../testkit.ts";
 
@@ -52,6 +54,11 @@ describe("classifySummon", () => {
 	});
 	test("a stranger is refused — the refusal line, never a turn", () => {
 		expect(classifySummon(9, [7], [8])).toEqual({ kind: "refused" });
+	});
+	test("the refusal line names the sender's own Telegram id", () => {
+		expect(guestRefusalText(9)).toBe(
+			`${GUEST_REFUSAL} Your Telegram id is 9.`,
+		);
 	});
 });
 
@@ -629,7 +636,7 @@ describe("handleGuestUpdate", () => {
 		const { env, submitted, api } = makeEnv();
 		await handleGuestUpdate(env, guestMsg({ guest_query_id: "q2" }), 2);
 		expect(submitted.length).toBe(0);
-		expect(api.answers).toEqual([GUEST_REFUSAL]);
+		expect(api.answers).toEqual([guestRefusalText(9)]);
 	});
 	test("an allowed user's summons is a sandbox turn — no open state, no budget", async () => {
 		const { env, submitted } = makeEnv();
@@ -933,7 +940,7 @@ describe("routeMemberGuestMessage", () => {
 		expect(await routeMemberGuestMessage(env, memberMsg({}), 23)).toBe(true);
 		expect(submitted.length).toBe(0);
 		expect(api.sends).toHaveLength(1);
-		expect(api.sends[0]?.text).toBe(GUEST_REFUSAL);
+		expect(api.sends[0]?.text).toBe(guestRefusalText(9));
 	});
 
 	test("repeat stranger mentions in one window send one refusal", async () => {
@@ -942,7 +949,7 @@ describe("routeMemberGuestMessage", () => {
 		expect(await routeMemberGuestMessage(env, memberMsg({}), 25)).toBe(true);
 		expect(submitted.length).toBe(0);
 		expect(api.sends).toHaveLength(1);
-		expect(api.sends[0]?.text).toBe(GUEST_REFUSAL);
+		expect(api.sends[0]?.text).toBe(guestRefusalText(9));
 		// A different stranger chat is not latched by the first.
 		expect(
 			await routeMemberGuestMessage(
@@ -991,7 +998,7 @@ describe("routeMemberGuestMessage", () => {
 		await routeMemberGuestMessage(env, memberMsg({ message_thread_id: 123 }), 303);
 		expect(api.sends).toHaveLength(1);
 		expect(api.sends[0]?.options?.message_thread_id).toBe(123);
-		expect(api.sends[0]?.text).toBe(GUEST_REFUSAL);
+		expect(api.sends[0]?.text).toBe(guestRefusalText(9));
 	});
 });
 

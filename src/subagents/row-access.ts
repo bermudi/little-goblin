@@ -1,7 +1,7 @@
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, SubmissionId, ToolExecutionApi } from "@earendil-works/pi-durable";
-import type { LeaseHolder } from "../desktops.ts";
+import type { LeaseHolder } from "../desktops-store.ts";
 import type { SubagentRun, SubagentRuns } from "../subagent-runs.ts";
 import { SubagentError } from "./errors.ts";
 import { RunDoc, type RunOutcome, type RunOutcomeBody } from "./run-doc.ts";

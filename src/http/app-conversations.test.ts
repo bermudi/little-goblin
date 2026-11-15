@@ -62,11 +62,86 @@ describe("app conversations", () => {
 			expect(
 				(await messages.json()) as {
 					messages: unknown[];
+					start: number;
+					olderCursor: string | null;
 					ratings: unknown[];
 					rateableMessageIds: unknown[];
 					compactions: unknown[];
 				},
-			).toEqual({ messages: [], ratings: [], rateableMessageIds: [], compactions: [] });
+			).toEqual({
+				messages: [],
+				start: 0,
+				olderCursor: null,
+				ratings: [],
+				rateableMessageIds: [],
+				compactions: [],
+			});
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("history pages newest-first — the cursor reaches every one of 500 events", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "paged-01" }),
+			});
+			// 250 real-shaped turns: each reply anchors to its user event,
+			// so causal order exercises the anchor key, not just seq.
+			const ids: string[] = [];
+			for (let i = 0; i < 250; i++) {
+				const userSeq = 2 * i + 1;
+				const u = `u${i}`;
+				const a = `a${i}`;
+				store.append("app/paged-01", [
+					{ id: u, role: "user", parts: [{ type: "text", text: `q${i}` }] },
+				]);
+				store.append(
+					"app/paged-01",
+					[{ id: a, role: "assistant", parts: [{ type: "text", text: `r${i}` }] }],
+					{ anchorSeq: userSeq },
+				);
+				ids.push(u, a);
+			}
+
+			type Page = {
+				messages: { id: string }[];
+				start: number;
+				olderCursor: string | null;
+				rateableMessageIds: string[];
+				compactions: unknown[];
+			};
+			const seen: string[] = [];
+			let cursor: string | null = null;
+			let first: Page | null = null;
+			for (let page = 0; ; page++) {
+				const res = await call(
+					`/api/app/conversations/paged-01/messages${cursor === null ? "" : `?before=${cursor}`}`,
+				);
+				expect(res.status).toBe(200);
+				const body = (await res.json()) as Page;
+				if (first === null) first = body;
+				expect(body.start).toBe(Math.max(0, 500 - (page + 1) * 200));
+				expect(body.messages).toHaveLength(page < 2 ? 200 : 100);
+				// Slices chain with no gap or overlap.
+				expect(body.messages.map((m) => m.id)).toEqual(
+					ids.slice(body.start, body.start + body.messages.length),
+				);
+				seen.unshift(...body.messages.map((m) => m.id));
+				cursor = body.olderCursor;
+				if (cursor === null) break;
+			}
+			expect(seen).toEqual(ids);
+			// The rating seam stays transcript-wide across pages: every
+			// reply's winner id is in the set, on every page.
+			expect(first!.rateableMessageIds).toEqual(ids.filter((_, i) => i % 2 === 1));
+
+			expect(
+				(await call("/api/app/conversations/paged-01/messages?before=garbage")).status,
+			).toBe(400);
 		} finally {
 			http.stop();
 		}
@@ -510,6 +585,57 @@ describe("app conversations", () => {
 		}
 	});
 
+	test("compact with a focus body feeds the summarizer prompt", async () => {
+		const prompts: string[] = [];
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			compaction: {
+				modelRef: () => "m",
+				contextWindow: () => null,
+				summarize: async (_c, _s, prompt) => {
+					prompts.push(prompt);
+					return foldSummary("folded", prompt);
+				},
+			},
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const big = "past ".repeat(25000);
+			for (let i = 0; i < 4; i++) {
+				store.append("app/chat-01", [
+					{ id: `u${i}`, role: "user", parts: [{ type: "text", text: `${big} ${i}` }] },
+				]);
+				store.append("app/chat-01", [
+					{ id: `a${i}`, role: "assistant", parts: [{ type: "text", text: "done" }] },
+				]);
+			}
+			const res = await call("/api/app/conversations/chat-01/compact", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ focus: "keep the deploy notes" }),
+			});
+			expect(res.status).toBe(200);
+			expect(
+				prompts.some((p) =>
+					p.includes("[operator asked this compaction to emphasize: keep the deploy notes]"),
+				),
+			).toBe(true);
+			// A malformed body refuses at the boundary — 422, no fold.
+			const bad = await call("/api/app/conversations/chat-01/compact", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ focus: 42 }),
+			});
+			expect(bad.status).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("stop on an idle or unknown conversation stays honest", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });
 		try {
@@ -699,6 +825,58 @@ describe("app conversations", () => {
 			// where the old cut-position rule put it.
 			expect(mark.afterIndex).toBe(48);
 			expect(list.messages[mark.afterIndex]!.id).toBe("e49");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a split turn's fold mark counts the split event as the first kept message", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "fold-403" }),
+			});
+			const msg = (id: string, text: string, role: "user" | "assistant" = "user") => ({
+				id,
+				role,
+				parts: [{ type: "text" as const, text }],
+			});
+			store.append("app/fold-403", [msg("t1", "the task")]); // 1
+			store.append("app/fold-403", [msg("r1", "the split reply", "assistant")], {
+				anchorSeq: 1,
+			}); // 2
+			store.append("app/fold-403", [msg("t2", "later")]); // 3
+			store.append("app/fold-403", [msg("r2", "later answer", "assistant")], { anchorSeq: 3 }); // 4
+			store.setCompaction("app/fold-403", {
+				boundarySeq: 1,
+				summary: "split era",
+				tokensBefore: 120_000,
+				model: "test/model",
+				createdAt: "2026-11-10T14:00:00.000Z",
+				tailEvents: 2,
+				split: { seq: 2, part: 1 },
+			});
+			const res = await call("/api/app/conversations/fold-403/messages");
+			expect(res.status).toBe(200);
+			const list = (await res.json()) as {
+				messages: { id: string }[];
+				compactions: {
+					boundarySeq: number;
+					firstKeptIndex: number;
+					eventsCompacted: number;
+				}[];
+			};
+			expect(list.compactions).toHaveLength(1);
+			const mark = list.compactions[0]!;
+			// The split event is both folded and kept: firstKeptIndex points
+			// at it (the model still sees its suffix), and eventsCompacted
+			// counts only the fully folded trigger.
+			expect(mark.boundarySeq).toBe(1);
+			expect(mark.firstKeptIndex).toBe(1);
+			expect(list.messages[mark.firstKeptIndex]!.id).toBe("r1");
+			expect(mark.eventsCompacted).toBe(1);
 		} finally {
 			http.stop();
 		}
@@ -1278,8 +1456,10 @@ test("conversation config writes persist a level the model can express — never
 			body: JSON.stringify({ id: "clamp-01" }),
 		});
 		const a = "/api/app/conversations/clamp-01/config";
-		// xhigh is real on zai/m — it persists verbatim.
-		expect((await patch(a, { model: "zai/m", thinking: "xhigh" })).status).toBe(200);
+		// xhigh is real on zai/m — it persists verbatim, no clamp note.
+		const verbatim = await patch(a, { model: "zai/m", thinking: "xhigh" });
+		expect(verbatim.status).toBe(200);
+		expect(((await verbatim.json()) as { thinkingClamped?: unknown }).thinkingClamped).toBeUndefined();
 		expect(store.get("app/clamp-01")).toMatchObject({ model: "zai/m", thinking: "xhigh" });
 		// Switching only the model re-clamps the staged level — glm-5.3 has
 		// no xhigh, so the row lands on the rung the wire would send.
@@ -1292,13 +1472,71 @@ test("conversation config writes persist a level the model can express — never
 		expect(await switched.json()).toMatchObject({
 			thinking: "max",
 			thinkingLevels: ["low", "high", "max"],
+			// The clamp says what the operator asked for and what landed —
+			// the composer renders it as a one-line note.
+			thinkingClamped: { from: "xhigh", to: "max" },
 		});
 		// An explicit unexpressible level clamps the same way, and "off"
 		// lands on the forced-thinking floor.
-		expect((await patch(a, { thinking: "xhigh" })).status).toBe(200);
+		const again = await patch(a, { thinking: "xhigh" });
+		expect(again.status).toBe(200);
+		expect(((await again.json()) as { thinkingClamped?: unknown }).thinkingClamped).toEqual({
+			from: "xhigh",
+			to: "max",
+		});
 		expect(store.get("app/clamp-01")).toMatchObject({ thinking: "max" });
-		expect((await patch(a, { thinking: "off" })).status).toBe(200);
+		const off = await patch(a, { thinking: "off" });
+		expect(off.status).toBe(200);
+		expect(((await off.json()) as { thinkingClamped?: unknown }).thinkingClamped).toEqual({
+			from: "off",
+			to: "low",
+		});
 		expect(store.get("app/clamp-01")).toMatchObject({ thinking: "low" });
+	} finally {
+		http.stop();
+	}
+});
+
+test("a config PATCH during a turn says the switch applies from the next turn", async () => {
+	const { http, call, runtime } = setup({
+		token: APP_TOKEN_NAME,
+		deltas: ["a", "b", "c", "d", "e"],
+		delayMs: 50,
+	});
+	try {
+		await call("/api/app/conversations", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ id: "busy-01" }),
+		});
+		const chat = await call("/api/app/chat", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				conversationId: "app/busy-01",
+				message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+			}),
+		});
+		expect(chat.status).toBe(200);
+		await waitUntil(() => runtime.busy("app/busy-01"), "turn running");
+		const switched = await call("/api/app/conversations/busy-01/config", {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: "zai/glm-5.3" }),
+		});
+		expect(switched.status).toBe(200);
+		// The running turn keeps the pair it admitted on — the response
+		// carries the acknowledgement, not just the log line.
+		expect(((await switched.json()) as { appliesFrom?: string }).appliesFrom).toBe("next-turn");
+		await chat.text();
+		await waitUntil(() => !runtime.busy("app/busy-01"), "turn settled");
+		const idle = await call("/api/app/conversations/busy-01/config", {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ thinking: "low" }),
+		});
+		expect(idle.status).toBe(200);
+		expect(((await idle.json()) as { appliesFrom?: string }).appliesFrom).toBeUndefined();
 	} finally {
 		http.stop();
 	}
@@ -1728,7 +1966,10 @@ describe("app channel interrupted-run routes", () => {
 		journal: ReturnType<typeof openTurnJournal>,
 		convId: string,
 		runId: string,
-		opts: { anchorSeq?: number | null } = {},
+		opts: {
+			anchorSeq?: number | null;
+			snapshot?: { model: string | null; thinking: string | null };
+		} = {},
 	) {
 		const conv = store.get(convId)!;
 		journal.beginRun({
@@ -1737,7 +1978,7 @@ describe("app channel interrupted-run routes", () => {
 			epoch: conv.epoch,
 			anchorSeq: opts.anchorSeq ?? null,
 			steerMark: null,
-			convSnapshot: { model: conv.model, thinking: conv.thinking },
+			convSnapshot: opts.snapshot ?? { model: conv.model, thinking: conv.thinking },
 			toolNames: ["probe"],
 			startedAt: "2026-10-11T00:00:00.000Z",
 		});
@@ -1939,6 +2180,31 @@ describe("app channel interrupted-run routes", () => {
 			const refused = (await resumed.json()) as { error: string };
 			expect(refused.error).toContain("tool surface is unreadable");
 			expect(wired.journal.get("run-bad")!.status).toBe("interrupted");
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("a model-drift refusal carries the recorded pair for a one-tap restore", async () => {
+		const { http, call, store, wired } = setupWithResume();
+		try {
+			const convId = await makeConv(call);
+			interruptedRun(store, wired.journal, convId, "run-drift", {
+				snapshot: { model: "old/provider", thinking: "low" },
+			});
+			const resumed = await call("/api/app/conversations/chat-01/runs/run-drift/resume", {
+				method: "POST",
+			});
+			expect(resumed.status).toBe(422);
+			const refused = (await resumed.json()) as {
+				error: string;
+				restore?: { model: string | null; thinking: string | null };
+			};
+			expect(refused.error).toContain("model changed old/provider");
+			// The recorded pair rides the refusal — the client offers to
+			// write it back, then retries the resume.
+			expect(refused.restore).toEqual({ model: "old/provider", thinking: "low" });
+			expect(wired.journal.get("run-drift")!.status).toBe("interrupted");
 		} finally {
 			http.stop();
 		}
@@ -2154,8 +2420,8 @@ describe("app conversation branch", () => {
 		const seen: { text: string; avoid: string | undefined }[] = [];
 		const { http, call, store } = setup({
 			token: APP_TOKEN_NAME,
-			titleFor: async (text, avoid) => {
-				seen.push({ text, avoid });
+			titleFor: async (text, opts) => {
+				seen.push({ text, avoid: opts?.avoid });
 				return "Fresh Name";
 			},
 		});

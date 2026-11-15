@@ -3,7 +3,8 @@ import type { UIMessage } from "ai";
 import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
 import type { MemoryConfig } from "../config-schema.ts";
-import type { Conversation, ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import type { ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
 import { isMachineryText, memoryBlockId } from "../tags.ts";
 import {

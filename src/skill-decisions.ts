@@ -9,7 +9,7 @@ import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSy
 import { join } from "node:path";
 import type { UIMessage } from "ai";
 import { log } from "./log.ts";
-import { stagingRoot } from "./reviewer.ts";
+import { stagingRoot } from "./reviewer-staging.ts";
 import type { SkillSourceRow } from "./skill-provenance.ts";
 
 export type SkillAction = "install" | "discard";

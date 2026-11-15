@@ -106,6 +106,16 @@ Conversation ─────── (channel address) → durable event history
     see the reply.
   - Input arriving after the final model call has no boundary left to
     steer into — it queues into an immediate successor turn.
+  - A steer parked mid-step also gates tool launches (#477): each fenced
+    tool's launch re-reads the lane's claimable input, and a waiting
+    steer skips the unstarted call with the fixed synthetic result
+    `skipped: the user sent new input; re-issue if still needed`
+    (journaled replayed — the model's record, never an execution), so a
+    side effect cannot land ahead of input the model has not seen.
+    Calls already running finish normally, and the claim itself still
+    belongs to the next model call. streamText engine only — a
+    claude-code turn never claims mid-turn, so its launches run and the
+    steer leads the successor turn.
   - A submit that cannot be prepared for the model errors its own delivery
     and is never re-queued (requeue would fail every successor turn's
     admission conversion identically — a poison pill); its message stays in
@@ -148,9 +158,17 @@ and re-checks authority around every await. Fenced turns abort quietly
 and log it. No machines, no drain sets — one counter and one function.
 Delivery checks authority when each queued Telegram action executes, not only
 when it is queued. The sole post-fence exception is a cancellation edit: an
-already-visible partial reply may be stamped `⏹ superseded` using only its
-displayed text. Unsent chunks never become new bubbles on cancellation, and
-fenced chunks are not retried.
+already-visible partial reply may be stamped `⏹ superseded`. Before the
+stamp, pending deltas still land — shown text is never edited back: a window
+boundary that already sent is frozen (a later seam may not pull it back),
+the unsent tail goes out as its own window(s), and the stamp marks the last
+bubble. A rich-mode draft — the only visible surface a rich reply has —
+takes the same stamp. Nothing new is sent when no bubble ever landed, and
+fenced chunks are not retried. A fenced lane that never produced a visible
+bubble is the other post-fence exception: the sink sends one acknowledgement
+threaded to the dropped user message — "⏹ Stopped before I answered — your
+message is kept in history." — so a `/stop` never silently swallows queued
+input. A lane with no triggering message (a program turn) stays silent.
 
 Shutdown rides the same rule. SIGINT/SIGTERM closes the runtime (submits
 still land in history but never run), fences every live lane — each sink
@@ -159,8 +177,11 @@ flushing unsent content — and drains the intake buffer into history, all
 under a bounded budget. A crash mid-turn leaves the same shape minus the
 flush: the user message is in history, the next turn answers it. The turn
 journal (design/runtime-turn.md → The turn journal) makes the distinction
-durable: a graceful shutdown stamps its runs `fenced`; a row still `running`
-at open means the process died, is reclassified `interrupted`, and is
+durable: for the journal a graceful shutdown IS a crash (#471) — a
+shutdown-fenced run keeps its `running` row and records nothing itself,
+so the next open reclassifies it `interrupted` like any process death.
+`fenced` now means operator/epoch fences only (`/stop`, a settings
+change). A row reclassified `interrupted` is
 surfaced to the operator as a boot notice — counts and facts, never a
 replay. Whatever the rail — fenced, failed, or killed — the turn's
 completed steps (assistant text, tool calls + results) reach history as
@@ -168,6 +189,26 @@ one ended-aborted system event (design/runtime-turn.md → Unlanded-turn
 progress); the work that happened is transcript. Boot never
 auto-retries a half-run turn — tool calls aren't
 idempotent, and an unanswered tail can't be told apart from `/stop`.
+Accepted input the dead process fenced before admission rides the same
+boot notice (#481): at journal open, user events above every run's
+owned floor (anchor/source seqs stand in for legacy NULL ownership)
+and above the conversation's last assistant reply are counted per
+conversation — machinery speech and generated resume markers are not
+operator input — and reported once per conversation
+("N message(s) you sent before the restart weren't answered"), notice
+only, same no-replay rule.
+One exception: a crash inside the delivery window leaves a run
+`interrupted` + `reply_landed=1` + delivery `pending` — its reply is
+already durable history, so boot owes the channel that text, not a
+notice (#482). The journal records the reply's event seq in the same
+stamp; at Telegram attach the reply re-sends to the conversation's own
+chat chunked like the delivery sink, then a conditional
+`delivery='delivered'` claim settles it (send-first, claim-second —
+at-least-once, so a mid-boot crash may duplicate, never lose). A
+failed send stays pending for the next boot; a pre-column row has no
+recorded seq and keeps its interrupted notice instead; an app lane
+settles without a send because its history IS the channel. Delivered
+rows drop out of the boot notices.
 Resuming an interrupted turn is a separate explicit decision riding the
 journaled rows, not a boot behavior.
 

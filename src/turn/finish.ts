@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FinishReason, LanguageModelUsage, ToolSet, UIMessage } from "ai";
 import type { FallbackNote } from "../agent/model-fallback.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { log } from "../log.ts";
 import type { MemoryDocument } from "../memory/hindsight.ts";
 import {
@@ -13,12 +13,12 @@ import {
 	type RetentionSource,
 	retentionSourceFrom,
 } from "../memory/mod.ts";
-import {
-	type CompletedTurn,
-	type PriorTurnContext,
-	Reviewer,
-	type ToolCallDigest,
-} from "../reviewer.ts";
+import type {
+	CompletedTurn,
+	PriorTurnContext,
+	ToolCallDigest,
+} from "../reviewer-evidence.ts";
+import { Reviewer } from "../reviewer.ts";
 import type { ForcedKind } from "./state.ts";
 import { type DisplaySink, emitChunk, type LiveChunks, type WireMember } from "./stream.ts";
 

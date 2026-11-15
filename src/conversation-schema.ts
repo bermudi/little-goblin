@@ -8,10 +8,12 @@
 import type { Database } from "bun:sqlite";
 import { isPrivateChatId, rollingDmOrdinal } from "./conversation-address.ts";
 import { CAUSAL_KEY_SQL, type Row } from "./conversation-queries.ts";
+import { ensureClaudeSessionsSchema } from "./claude-sessions.ts";
 import { log } from "./log.ts";
 import { ensureNotesSchema } from "./notes.ts";
 import { ensureProjectsSchema } from "./projects.ts";
-import { ensureResponsibilitiesSchema } from "./responsibilities.ts";
+import { ensureRatingsSchema } from "./reply-ratings.ts";
+import { ensureResponsibilitiesSchema } from "./responsibility-schema.ts";
 import { ensureWakeSchema } from "./wake-store.ts";
 import { ensureWindowSchema } from "./window-capture.ts";
 
@@ -68,6 +70,13 @@ export function ensureConversationSchema(db: Database): void {
 	}
 	if (!convCols.has("memory_excluded")) {
 		db.run("ALTER TABLE conversations ADD COLUMN memory_excluded INTEGER NOT NULL DEFAULT 0");
+	}
+	// Which exclusions a project's gate wrote — the re-open path clears
+	// exactly those and leaves the operator's own flag untouched.
+	if (!convCols.has("memory_excluded_by_project")) {
+		db.run(
+			"ALTER TABLE conversations ADD COLUMN memory_excluded_by_project INTEGER NOT NULL DEFAULT 0",
+		);
 	}
 	if (!convCols.has("persona")) {
 		db.run("ALTER TABLE conversations ADD COLUMN persona TEXT NOT NULL DEFAULT 'personal'");
@@ -198,6 +207,19 @@ export function ensureConversationSchema(db: Database): void {
 	if (!compactCols.has("tail_events")) {
 		db.run("ALTER TABLE compactions ADD COLUMN tail_events INTEGER");
 	}
+	// #403 split turns: the second pointer. A row that halves one event
+	// names it — split_seq is the half-folded event, split_part the part
+	// index where the kept suffix starts (a step-start edge, never inside
+	// a step). Both NULL on ordinary rows; both set on split rows. The
+	// boundary keeps its meaning for every existing classifier (causal
+	// key ≤ boundary_seq is folded) — the split event is the one recorded
+	// exception: parts [0, part) fold, [part, end) stay verbatim.
+	if (!compactCols.has("split_seq")) {
+		db.run("ALTER TABLE compactions ADD COLUMN split_seq INTEGER");
+	}
+	if (!compactCols.has("split_part")) {
+		db.run("ALTER TABLE compactions ADD COLUMN split_part INTEGER");
+	}
 	// Frozen system prompts: the bytes a conversation started with, served
 	// verbatim — file edits load at conversation boundaries, never
 	// mid-run, so a live prefix cache is never rewritten.
@@ -226,54 +248,13 @@ export function ensureConversationSchema(db: Database): void {
 				created_at TEXT NOT NULL,
 				PRIMARY KEY (conversation_id, seq, tool_call_id)
 			)`);
-	// The 👍/👎 tap record: reply metadata, never an event — nothing here
-	// feeds the model view, FTS, or memory. Append-only; a vote change is
-	// a new row, reads are latest-wins. No conversation FK: a deleted
-	// conversation's rows stay traceable by chat/message ids.
-	db.run(`
-			CREATE TABLE IF NOT EXISTS reply_ratings (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				channel TEXT NOT NULL DEFAULT 'telegram',
-				conversation_id TEXT NOT NULL,
-				anchor_seq INTEGER,
-				chat_id INTEGER NOT NULL,
-				message_id INTEGER NOT NULL,
-				event_seq INTEGER,
-				rating TEXT NOT NULL CHECK (rating IN ('up', 'down')),
-				created_at TEXT NOT NULL
-			)`);
-	const ratingCols = new Set(
-		db
-			.query<{ name: string }, []>("PRAGMA table_info(reply_ratings)")
-			.all()
-			.map((c) => c.name),
-	);
-	if (!ratingCols.has("channel")) {
-		db.run("ALTER TABLE reply_ratings ADD COLUMN channel TEXT NOT NULL DEFAULT 'telegram'");
-	}
-	if (!ratingCols.has("event_seq")) {
-		db.run("ALTER TABLE reply_ratings ADD COLUMN event_seq INTEGER");
-	}
-	db.run(
-		"CREATE INDEX IF NOT EXISTS reply_ratings_msg ON reply_ratings(channel, chat_id, message_id)",
-	);
-	db.run(
-		"CREATE INDEX IF NOT EXISTS reply_ratings_event ON reply_ratings(channel, conversation_id, event_seq)",
-	);
-	// #418: one native Claude SDK session per (conversation, model ref).
-	// The claude-code engine resumes it each turn; the record advances
-	// only on a landed reply (src/claude-sessions.ts owns access).
-	db.run(`
-			CREATE TABLE IF NOT EXISTS claude_sessions (
-				conversation_id TEXT NOT NULL,
-				model_ref TEXT NOT NULL,
-				session_id TEXT NOT NULL,
-				head_uuid TEXT NOT NULL,
-				seen_seq INTEGER NOT NULL,
-				reply_seq INTEGER,
-				updated_at INTEGER NOT NULL,
-				PRIMARY KEY (conversation_id, model_ref)
-			)`);
+	// The 👍/👎 tap record's DDL lives with its owner module
+	// (reply-ratings.ts); ensured here so the rewind sweep's delete and
+	// the ratings reads always find the table on this handle.
+	ensureRatingsSchema(db);
+	// #418: the native Claude SDK session table lives with its owner
+	// module (claude-sessions.ts).
+	ensureClaudeSessionsSchema(db);
 	// Web Push subscriptions are endpoint-scoped operator devices. The
 	// endpoint and its keys are send credentials, so callers/log lines use
 	// endpoint_hash; only the sender boundary reads the raw row.
@@ -298,6 +279,19 @@ export function ensureConversationSchema(db: Database): void {
 				endpoint_hash TEXT NOT NULL REFERENCES app_push_subscriptions(endpoint_hash) ON DELETE CASCADE,
 				sent_at TEXT NOT NULL,
 				PRIMARY KEY (notification_key, endpoint_hash)
+			)`);
+	// One delivered Telegram bubble → the reply event it renders. The
+	// 🔊 button resolves the full reply text by chat+message id across
+	// restarts; every chunk of a split reply maps to the same seq.
+	// Conversation delete cascades; an event rewind leaves the row
+	// orphaned and the lookup misses (the reply is gone either way).
+	db.run(`
+			CREATE TABLE IF NOT EXISTS telegram_deliveries (
+				conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+				message_id INTEGER NOT NULL,
+				seq INTEGER NOT NULL,
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (conversation_id, message_id)
 			)`);
 	// One current rolling DM per private chat; n only grows, so a
 	// reverted db still mints fresh ids.

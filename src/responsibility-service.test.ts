@@ -10,12 +10,8 @@ import { join } from "node:path";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { openProjects } from "./projects.ts";
-import {
-	openResponsibilities,
-	type AttachmentTarget,
-	type ResponsibilityStore,
-	type Understanding,
-} from "./responsibilities.ts";
+import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
+import type { AttachmentTarget, Understanding } from "./responsibility-types.ts";
 import { makeManagedSendEdge, makeResponsibilityService } from "./responsibility-service.ts";
 import {
 	HerdrRefusal,
@@ -845,6 +841,7 @@ describe("real adapter preflight failures", () => {
 		tab_id: "w1:t1",
 		terminal_id: "term-9",
 		agent_session: { value: "sess-1" },
+		state_change_seq: 7,
 	};
 
 	const prepRig = () => {
@@ -1033,6 +1030,7 @@ describe("beforeSend at the real wire surface", () => {
 			tab_id: "w1:t1",
 			terminal_id: "term-9",
 			agent_session: { value: "sess-1" },
+			state_change_seq: 7,
 		};
 		const wire = (body: unknown): HerdrRunResult => ({
 			code: 0,
@@ -1432,6 +1430,7 @@ describe("managed prompt authority after Herdr preflight", () => {
 				tab_id: "w1:t1",
 				terminal_id: att.target.terminalId,
 				agent_session: { value: att.target.agentSession },
+				state_change_seq: 7,
 			};
 			const wire = (body: unknown): HerdrRunResult => ({
 				code: 0,

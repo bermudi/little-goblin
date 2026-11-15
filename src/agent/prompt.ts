@@ -11,7 +11,8 @@ import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { paths } from "../home-layout.ts";
 import { log } from "../log.ts";
-import type { Conversation, ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import type { ConversationStore } from "../conversation.ts";
 import { channelOf } from "../conversation-address.ts";
 import { flatLine } from "../conversation-events.ts";
 import type { Project } from "../projects.ts";
@@ -419,6 +420,8 @@ export function buildSystemPrompt(
 		`  while it runs — edits to these files apply when the next`,
 		`  conversation starts (or after compaction). Read a file fresh when`,
 		`  you need what changed; your edits land the same way.`,
+		`- When the operator states a lasting preference, record it in USER.md`,
+		`  in its directive format — that file is your only durable user model.`,
 		`- Verify before saying done: run it, read it back, then report.`,
 		`- Act freely on this machine (read, write, run); ask first before`,
 		`  anything leaves it or can't be undone.`,
@@ -439,7 +442,7 @@ export function buildSystemPrompt(
 	}
 	if (agents) sources.push("AGENTS.md");
 	if (user) sources.push("USER.md");
-	if (catalog.entries.length > 0 || catalog.skipped > 0 || proposals.entries.length > 0)
+	if (catalog.entries.length > 0 || catalog.skipped.length > 0 || proposals.entries.length > 0)
 		sources.push("skills");
 
 	return { text, sources };

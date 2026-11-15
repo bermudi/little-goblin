@@ -76,7 +76,10 @@ export interface AppChannelDeps {
 	// The context-window view's read handle (window-capture.ts); absent
 	// = the window route answers 503.
 	windowCapture?: ReturnType<typeof import("../window-capture.ts").openWindowCapture>;
-	titleFor?: (text: string, avoid?: string) => Promise<string | null>;
+	titleFor?: (
+		text: string,
+		opts?: { avoid?: string; model?: string },
+	) => Promise<string | null>;
 	rewriteNote?: (
 		noteId: string,
 		input: AppNoteRewriteRequest,

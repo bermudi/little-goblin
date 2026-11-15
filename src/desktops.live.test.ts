@@ -26,9 +26,9 @@ import {
 	DesktopError,
 	containerNameForDesktop,
 	makeDesktops,
-	openDesktops,
 	type Desktops,
 } from "./desktops.ts";
+import { openDesktops } from "./desktops-store.ts";
 
 const LIVE = process.env.GOBLIN_DESKTOP_LIVE === "1";
 

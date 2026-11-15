@@ -11,7 +11,8 @@
 // they are the authority.
 
 import { z } from "zod";
-import type { Attachment, Responsibility, ResponsibilityStore } from "./responsibilities.ts";
+import type { ResponsibilityStore } from "./responsibilities.ts";
+import type { Attachment, Responsibility } from "./responsibility-types.ts";
 
 export const authorityStampSchema = z.strictObject({
 	status: z.string(),

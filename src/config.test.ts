@@ -19,6 +19,7 @@ import {
 	missingAuthNames,
 	observeConfigWrites,
 	parseConfig,
+	warnOnExampleOperator,
 	writeConfig,
 } from "./config.ts";
 import {
@@ -831,9 +832,30 @@ describe("goblin.json5", () => {
 		const p = join(dir, "goblin.json5");
 		const text = `${JSON.stringify({ ...valid, experimental: { notInSchema: true } }, null, 2)}\n`;
 		writeFileSync(p, text);
-		expect(() => loadConfig()).toThrow("config: unrecognized_keys");
-		expect(() => writeConfig({ ...valid, thinking: "high" })).toThrow("config: unrecognized_keys");
+		const line = text.split("\n").findIndex((l) => l.includes('"experimental"')) + 1;
+		// The report locates the key by line, never by name — a stray key
+		// can carry a private identifier.
+		expect(() => loadConfig()).toThrow(`config: unrecognized_keys at line ${line}`);
+		expect(() => writeConfig({ ...valid, thinking: "high" })).toThrow(
+			`config: unrecognized_keys at line ${line}`,
+		);
 		expect(readFileSync(p, "utf8")).toBe(text);
+	});
+
+	test("unknown field reports name no key text, only its line", () => {
+		useHome("goblin-cfg-");
+		const key = "typoSecretField";
+		const text = `${JSON.stringify({ ...valid, [key]: true }, null, 2)}\n`;
+		writeFileSync(paths.config(), text);
+		const line = text.split("\n").findIndex((l) => l.includes(`"${key}"`)) + 1;
+		let message = "";
+		try {
+			loadConfig();
+		} catch (err) {
+			message = (err as Error).message;
+		}
+		expect(message).toContain(`unrecognized_keys at line ${line}`);
+		expect(message).not.toContain(key);
 	});
 
 	test("unknown fields inside a block are rejected too", () => {
@@ -843,8 +865,10 @@ describe("goblin.json5", () => {
 		];
 		for (const [name, value] of cases) {
 			useHome("goblin-cfg-");
-			writeFileSync(paths.config(), JSON.stringify({ ...valid, [name]: value }));
-			expect(() => loadConfig()).toThrow(`${name}: unrecognized_keys`);
+			const text = JSON.stringify({ ...valid, [name]: value }, null, 2);
+			writeFileSync(paths.config(), text);
+			const line = text.split("\n").findIndex((l) => l.includes('"typo"') || l.includes('"extra"')) + 1;
+			expect(() => loadConfig()).toThrow(`${name}: unrecognized_keys at line ${line}`);
 		}
 	});
 
@@ -974,6 +998,8 @@ describe("ensureHomeLayout", () => {
 		expect(agents).toContain("Your operating notes");
 		// The growth rule must be inside the file — that's the mechanism.
 		expect(agents).toContain("Write things down");
+		// Preferences route to USER.md — next to the "remember this" trigger.
+		expect(agents).toContain("lasting preference → it goes in USER.md");
 		const user = readFileSync(join(dir, "workspace", "USER.md"), "utf8");
 		expect(user).toContain("Your model of the operator");
 		expect(user).toContain("status: active");
@@ -1311,6 +1337,25 @@ describe("authReferences", () => {
 		const has = (n: string) => n === "telegram" || n === "zai";
 		expect(missingAuthNames(c, has)).toEqual(["mimo"]);
 		expect(missingAuthNames(c, () => true)).toEqual([]);
+	});
+
+	test("warnOnExampleOperator warns only while the shipped placeholder id is configured", () => {
+		const lines: string[] = [];
+		const out = spyOn(process.stdout, "write").mockImplementation((chunk) => {
+			lines.push(String(chunk));
+			return true;
+		});
+		try {
+			const example = parseConfig({ ...ocBase, operators: [123456789] });
+			warnOnExampleOperator(example);
+			warnOnExampleOperator(parseConfig(ocBase));
+		} finally {
+			out.mockRestore();
+		}
+		const emitted = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+		expect(emitted).toHaveLength(1);
+		expect(emitted[0]!.level).toBe("warn");
+		expect(String(emitted[0]!.msg)).toContain("Settings → operators");
 	});
 });
 

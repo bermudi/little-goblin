@@ -16,7 +16,7 @@ import {
 	type SkillCommandDeps,
 	type TempSkillQuery,
 } from "./skill-command.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 
 let homes: string[] = [];
 afterEach(() => {
@@ -100,7 +100,11 @@ function baseDeps(h: Harness, gate: boolean): SkillCommandDeps {
 		delivery: (target) =>
 			makeConversationDeliverySink(fake.api, target, {
 				configRef: { current: h.cfg, ttsDown: false },
-				store: { lastReplyAnchor: () => null },
+				store: {
+					lastReplyAnchor: () => null,
+					lastEntry: () => null,
+					recordDelivery: () => {},
+				},
 				synthesize: (text) => {
 					h.synthesized.push(text);
 					return Promise.resolve([new Uint8Array([1, 2, 3])]);

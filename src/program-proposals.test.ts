@@ -470,6 +470,8 @@ describe("program proposals — update", () => {
 			createdAt: NOW.toISOString(),
 			lastRun: null,
 			nextRun: null,
+			lastSkippedAt: null,
+			lastSkipReason: null,
 		};
 		let current = target;
 		const deps: ProgramProposalsDeps = {

@@ -55,6 +55,10 @@ export const prReadinessSchema = z.object({
 export type PrReadiness = z.infer<typeof prReadinessSchema>;
 export type CheckedPr = Extract<PrReadiness["result"], { kind: "checked" }>;
 
+/** How old an observation must be before the watcher re-reads GitHub:
+ *  the remote read is the expensive edge, not the 15s scan. */
+export const READINESS_OBSERVE_MS = 60_000;
+
 /** Time is evidence, not a change: repeated observations must not wake a model. */
 export function readinessKey(readiness: PrReadiness): string {
 	const { observedAt: _, ...facts } = readiness;

@@ -65,7 +65,7 @@ allowed to act.
 The operator's Telegram account is the root of authority. A message from an
 `operators` id is a request from the operator, no matter which topic it
 lands in — the gate is per-user, not per-chat
-(`src/tg/mod.ts` `accessGate`). Only operators reach ordinary intake; an
+(`src/tg/access-gate.ts` `accessGate`). Only operators reach ordinary intake; an
 `allowedUsers` id gets the sandbox class (guest persona, search-only
 tools, no memory, no app), and anyone else gets one refusal line per
 summons (`design/telegram.md` → Roles and permissions). This is why
@@ -124,7 +124,7 @@ These are the ways text gets into a turn. Ordered by reach.
 4. **Mail** — Gmail arrivals matching a program's filter fire a turn.
 5. **Program cron** — a 5-field cron fires the program's charter.
 6. **Delegated harnesses** — a spawned coding agent can write a report that
-   wakes the runtime (`src/delegation-lifecycle.ts`).
+   wakes the runtime (`src/delegation-notices.ts`).
 
 Entries 3–6 all convert to the same thing: `runtime.submit` of a user message
 into a pinned conversation. None of them grants new authority; what the

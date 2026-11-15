@@ -1,78 +1,79 @@
 import { GrammyError, HttpError, InputFile, type Api } from "grammy";
-import { MAX_SEND_BYTES } from "../agent/tools/send.ts";
-import { stat } from "node:fs/promises";
-import type { Conversation } from "../conversation.ts";
-import { channelOf, parseAddress } from "../conversation-address.ts";
+import type { Conversation, ConversationReads } from "../conversation-read.ts";
+import { channelOf } from "../conversation-address.ts";
 import type { TurnDone, TurnSink } from "../turn/sink.ts";
-import { sniffImage } from "../agent/tools/read.ts";
-import { DeliveryUncertainError, type OutgoingFile } from "../agent/tools/send.ts";
-import { fallbackNotice } from "../agent/model-fallback.ts";
 import { speechContent, STATUS_TAIL_MARK } from "../agent/tts.ts";
 import { log } from "../log.ts";
+import { isNotModifiedError, isParseEntitiesError, isPremiumGateError } from "./delivery-errors.ts";
+import { makeFileDelivery } from "./delivery-files.ts";
+import { escapeHtml, renderTelegramHtml } from "./tg-html.ts";
+import {
+	CHUNK_LIMIT,
+	disableMessageEffects,
+	forcedNotice,
+	isPrivateDmAddress,
+	messageEffectsUsable,
+	nextDraftId,
+	REASONING_BLOCK_OVERHEAD,
+	RICH_LIMIT,
+	SALUTE_EFFECT_ID,
+	chunkWindows,
+	fenceReopen,
+	fenceStateAfter,
+	type FenceState,
+	windowEnd,
+} from "./delivery-text.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import { rateCallbackData } from "./rate-button.ts";
+import { SPEAK_CALLBACK } from "./speak-button.ts";
 
 const EDIT_INTERVAL_MS = 1_000;
 const TYPING_INTERVAL_MS = 4_000;
 const DRAFT_TTL_MS = 20_000;
-const CHUNK_LIMIT = 3800;
-const RICH_LIMIT = 32_000;
-const REASONING_BLOCK_OVERHEAD =
-	"<details><summary>Thinking</summary>\n<pre></pre>\n</details>\n\n".length + 1;
-// Draft ids must be non-zero; updates under one id animate.
-let nextDraftId = 1;
-
-const SALUTE_EFFECT_ID = "4913930782671635058";
-let messageEffectsUsable = true;
-
-export function resetMessageEffectsGateForTests(): void {
-	messageEffectsUsable = true;
-}
-
-function isPremiumGateError(err: unknown): boolean {
-	const haystacks: unknown[] = [err];
-	if (typeof err === "object" && err !== null) {
-		const rec = err as Record<string, unknown>;
-		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
-		haystacks.push(rec.description, rec.message);
-	}
-	return haystacks.some((h) => typeof h === "string" && h.includes("PREMIUM_ACCOUNT_REQUIRED"));
-}
 const MAX_DRAIN_ITERATIONS = 25;
 const MAX_STAGNANT = 3;
-const RECENT_REPLY_LIMIT = 256;
 const UNCERTAIN_NOTICE = "⚠ Delivery uncertain—check Telegram before retrying.";
+// Telegram's sendMessage text cap — a rendered window that overshoots
+// it sends its raw markdown instead.
+const TG_MESSAGE_LIMIT = 4096;
 const TRUNCATED_NOTICE =
 	"⚠ Reply truncated — part of this reply didn't send. Ask me to repeat it if needed.";
-export const SPEAK_CALLBACK = "speak_reply";
 
-const recentReplies = new Map<string, string>();
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-export function isNotModifiedError(err: unknown): boolean {
-	const haystacks: unknown[] = [err];
-	if (typeof err === "object" && err !== null) {
-		const rec = err as Record<string, unknown>;
-		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
-		haystacks.push(rec.description, rec.message);
-	}
-	return haystacks.some(
-		(h) => typeof h === "string" && h.toLowerCase().includes("message is not modified"),
-	);
+interface WindowText {
+	markdown: string;
+	html: string;
 }
 
-export function isMessageGoneError(err: unknown): boolean {
-	const haystacks: unknown[] = [err];
-	if (typeof err === "object" && err !== null) {
-		const rec = err as Record<string, unknown>;
-		if (rec.error_code !== undefined && rec.error_code !== 400) return false;
-		haystacks.push(rec.description, rec.message);
+// A window rendered for display: self-contained markdown (chunkWindows
+// already closes/reopens a split fence) plus its Telegram HTML.
+function renderWindow(markdown: string): WindowText {
+	return { markdown, html: renderTelegramHtml(markdown) };
+}
+
+// The parsed-text length of a rendered window — tags removed, entities
+// decoded. Telegram's 4096 cap applies after entity parsing, so a code-
+// heavy window full of <, >, & still counts by what the reader sees.
+export function parsedTextLength(html: string): number {
+	const text = html
+		.replace(/<[^>]+>/g, "")
+		.replace(/&lt;/g, "<")
+		.replace(/&gt;/g, ">")
+		.replace(/&quot;/g, '"')
+		.replace(/&#39;/g, "'")
+		.replace(/&amp;/g, "&");
+	return text.length;
+}
+
+// What one chunk should display right now: HTML unless its parsed text
+// overshoots Telegram's cap or it was already rejected — then the raw
+// window.
+function desiredText(c: Chunk, w: WindowText): { text: string; formatted: boolean } {
+	if (!c.plain && parsedTextLength(w.html) <= TG_MESSAGE_LIMIT) {
+		return { text: w.html === "" ? "…" : w.html, formatted: true };
 	}
-	return haystacks.some(
-		(h) =>
-			typeof h === "string" &&
-			(h.includes("message to edit not found") || h.includes("message not found")),
-	);
+	return { text: w.markdown === "" ? "…" : w.markdown, formatted: false };
 }
 
 export interface DeliveryVoiceDeps {
@@ -89,78 +90,43 @@ export interface RichSinkOpts {
 	reasoning?: boolean;
 }
 
-function replyKey(chatId: number, messageId: number): string {
-	return `${chatId}:${messageId}`;
-}
-
-function forcedLine(done: TurnDone): string | null {
-	if (done.kind !== "completed" || done.forced === undefined) return null;
-	switch (done.forced) {
-		case "repeat":
-			return "⚠ loop detector — answer forced";
-		case "watchdog":
-			return "⚠ loop watchdog — answer forced";
-		case "context":
-			return "⚠ context nearly full — answer forced";
-	}
-}
-
-// The status tail a completed reply carries: a forced landing, and a
-// fallback that served (design/model.md → Model fallback list).
-function forcedNotice(done: TurnDone): string | null {
-	const lines = [
-		forcedLine(done),
-		done.kind === "completed" && done.fallback !== undefined ? fallbackNotice(done.fallback) : null,
-	].filter((l): l is string => l !== null);
-	return lines.length > 0 ? lines.join("\n") : null;
-}
-
-export function rememberReply(chatId: number, messageId: number, text: string): void {
-	recentReplies.set(replyKey(chatId, messageId), text);
-	while (recentReplies.size > RECENT_REPLY_LIMIT) {
-		const oldest = recentReplies.keys().next().value;
-		if (oldest === undefined) break;
-		recentReplies.delete(oldest);
-	}
-}
-
-export function recentReplyText(chatId: number, messageId: number): string | null {
-	return recentReplies.get(replyKey(chatId, messageId)) ?? null;
-}
-
 interface Chunk {
 	id: number;
+	// The literal text last sent or successfully edited — HTML when
+	// shownFormatted, raw markdown otherwise.
 	shown: string;
-}
-
-// A split surrogate pair is a lone surrogate Telegram may reject or mangle.
-const isHighSurrogate = (c: number) => c >= 0xd800 && c <= 0xdbff;
-const isLowSurrogate = (c: number) => c >= 0xdc00 && c <= 0xdfff;
-
-function windowEnd(body: string, start: number): number {
-	const end = start + CHUNK_LIMIT;
-	if (
-		end < body.length &&
-		isHighSurrogate(body.charCodeAt(end - 1)) &&
-		isLowSurrogate(body.charCodeAt(end))
-	) {
-		return end - 1;
-	}
-	return end;
+	shownFormatted: boolean;
+	// Telegram already rejected this chunk's HTML — it sends raw only.
+	plain: boolean;
+	// Body offset this chunk's window covered at last materialization —
+	// the floor a recomputed window end may never cross back under.
+	end: number;
+	// The text of the edit already queued but not yet applied — dedupes
+	// repeated flushes so an unchanged desired isn't edited twice.
+	queued: string | null;
 }
 
 export type DeliveryApi = Api;
 
-// Rich rendering and the salute effect are DM-only in v1 (design/telegram.md
-// → Formatted replies & draft streaming: "DMs only"). The `dm:` id prefix is
-// not the DM discriminant — a topic-less group's standing lane is addressed
-// `dm:<chatId>` too, with a negative chat id (mod.ts conversationAddress).
-// Parse the address and require a private chat: kind dm/rolling, chatId > 0.
-function isPrivateDmAddress(id: string): boolean {
-	const parsed = parseAddress(id);
-	if (parsed === null) return false;
-	if (parsed.kind !== "dm" && parsed.kind !== "rolling") return false;
-	return parsed.chatId > 0;
+// One typing ping — intake's ack on the first buffered update of a lane
+// (the delivery sink's interval owns liveness once the turn starts).
+export function pingTypingOnce(api: Api, chatId: number, threadId: number | null): void {
+	withTimeout(
+		api.sendChatAction(chatId, "typing", {
+			...(threadId !== null ? { message_thread_id: threadId } : {}),
+		}),
+		"sendChatAction",
+	).catch((err: unknown) => {
+		log.debug("typing ping failed", { error: String(err) });
+	});
+}
+
+// Durable bubble→reply binding for the 🔊 button: each landed message
+// id is recorded against the turn's reply event so the tap resolves
+// the full text across restarts and chunk boundaries.
+export interface DeliveryRecording {
+	lastEntry: ConversationReads["lastEntry"];
+	recordDelivery(conversationId: string, messageId: number, seq: number): void;
 }
 
 export interface DeliverySinkOptions {
@@ -170,6 +136,7 @@ export interface DeliverySinkOptions {
 	typingIntervalMs?: number;
 	maxDrainIterations?: number;
 	rating?: DeliveryRatingDeps;
+	deliveries?: DeliveryRecording;
 	rich?: RichSinkOpts;
 	mediaGroupWindowMs?: number;
 	draftTtlMs?: number;
@@ -185,6 +152,7 @@ export function makeDeliverySink(
 		typingIntervalMs = TYPING_INTERVAL_MS,
 		maxDrainIterations = MAX_DRAIN_ITERATIONS,
 		rating,
+		deliveries,
 		rich,
 		mediaGroupWindowMs = 400,
 		draftTtlMs = DRAFT_TTL_MS,
@@ -277,8 +245,8 @@ export function makeDeliverySink(
 	let sinkDone = false;
 
 	const richOpts = rich;
-	const answerDraftId = nextDraftId++;
-	const reasonDraftId = nextDraftId++;
+	const answerDraftId = nextDraftId();
+	const reasonDraftId = nextDraftId();
 	let richMode = richOpts?.enabled === true && isPrivateDmAddress(conv.id) && !voice?.voiceMode;
 	const reasoningOn = richOpts?.reasoning === true && conv.persona !== "guest";
 	let reasoningText = "";
@@ -286,6 +254,9 @@ export function makeDeliverySink(
 	let reasoningSentAt = 0;
 	let lastDraftBody = "";
 	let lastDraftSentAt = 0;
+	// Set only by a draft push that actually reached Telegram — the
+	// superseded stamp is a no-op unless the draft is a live surface.
+	let draftLanded = false;
 
 	function enqueue(fn: () => Promise<void>): void {
 		chain = chain.then(() =>
@@ -302,14 +273,7 @@ export function makeDeliverySink(
 	}
 	sendTyping();
 	function pingTyping(): void {
-		withTimeout(
-			api.sendChatAction(conv.chatId, "typing", {
-				...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-			}),
-			"sendChatAction",
-		).catch((err: unknown) => {
-			log.debug("typing ping failed", { error: String(err) });
-		});
+		pingTypingOnce(api, conv.chatId, conv.threadId);
 	}
 	function repingTyping(): void {
 		if (sinkDone || recordings.size > 0 || !mayDeliver()) return;
@@ -375,239 +339,22 @@ export function makeDeliverySink(
 		}
 	}
 
-	interface QueuedPhoto {
-		file: OutgoingFile;
-		bytes: number;
-		error?: unknown;
-	}
-	let photoQueue: QueuedPhoto[] = [];
-	let photoBatchWait: Promise<void> | null = null;
-	let photoBatchResolve: (() => void) | null = null;
-	let photoKick: ReturnType<typeof setTimeout> | null = null;
-
-	function flushPhotoBatch(): void {
-		if (photoBatchResolve === null) return;
-		if (photoKick !== null) {
-			clearTimeout(photoKick);
-			photoKick = null;
-		}
-		const batch = photoQueue;
-		photoQueue = [];
-		const resolve = photoBatchResolve;
-		photoBatchResolve = null;
-		photoBatchWait = null;
-		enqueue(async () => {
-			try {
-				await sendPhotoBatch(batch);
-			} finally {
-				resolve();
-			}
-		});
-	}
-
-	function joinPhotoBatch(q: QueuedPhoto): Promise<void> {
-		photoQueue.push(q);
-		if (photoBatchWait === null) {
-			photoBatchWait = new Promise<void>((resolve) => {
-				photoBatchResolve = resolve;
-			});
-			photoKick = setTimeout(flushPhotoBatch, mediaGroupWindowMs);
-		}
-		return photoBatchWait;
-	}
-
-	async function sendPhotoSolo(
-		q: QueuedPhoto,
-		thread: { message_thread_id?: number },
-	): Promise<void> {
-		if (q.bytes > MAX_SEND_BYTES)
-			throw new Error(`file too large: ${q.file.path} (${q.bytes} bytes, max ${MAX_SEND_BYTES})`);
-		if (!mayDeliver()) return;
-		try {
-			const sent = await withTimeout(
-				api.sendPhoto(conv.chatId, new InputFile(q.file.path, q.file.filename), {
-					...thread,
-					...(q.file.caption !== undefined ? { caption: q.file.caption } : {}),
-				}),
-				"sendPhoto",
-			);
-			log.debug("file delivered", {
-				conversation: conv.id,
-				message: sent.message_id,
-				path: q.file.path,
-				bytes: q.bytes,
-				kind: "photo",
-				...(conv.threadId !== null ? { thread: conv.threadId } : {}),
-			});
-			repingTyping();
-		} catch (err) {
-			if (err instanceof TelegramTimeoutError) {
-				markUncertain(err, "sendPhoto");
-				throw new DeliveryUncertainError(err);
-			}
-			throw err;
-		}
-	}
-
-	async function sendPhotoBatch(batch: QueuedPhoto[]): Promise<void> {
-		if (uncertain) {
-			for (const q of batch) {
-				q.error = new Error("not sent — delivery stopped after an uncertain timeout");
-			}
-			return;
-		}
-		if (!mayDeliver()) return;
-		const thread = conv.threadId !== null ? { message_thread_id: conv.threadId } : {};
-		const sendable: QueuedPhoto[] = [];
-		for (const q of batch) {
-			try {
-				q.bytes = (await stat(q.file.path)).size;
-				sendable.push(q);
-			} catch {
-				q.error = new Error(`file unreadable: ${q.file.path}`);
-			}
-		}
-		const delivered = new Set<QueuedPhoto>();
-		const markUnsent = (): void => {
-			if (!uncertain) return;
-			for (const q of sendable) {
-				if (!delivered.has(q) && q.error === undefined) {
-					q.error = new Error("not sent — delivery stopped after an uncertain timeout");
-				}
-			}
-		};
-		let fallback: QueuedPhoto[] | null = null;
-		for (let at = 0; at < sendable.length; at += 10) {
-			if (!mayDeliver()) {
-				markUnsent();
-				return;
-			}
-			const group = sendable.slice(at, at + 10);
-			if (group.length === 1) {
-				try {
-					await sendPhotoSolo(group[0]!, thread);
-					delivered.add(group[0]!);
-				} catch (err) {
-					if (err instanceof DeliveryUncertainError) {
-						for (const q of sendable) if (!delivered.has(q)) q.error = err;
-						return;
-					}
-					group[0]!.error = err;
-					delivered.add(group[0]!);
-				}
-				continue;
-			}
-			const media = group.map((q) => ({
-				type: "photo" as const,
-				media: new InputFile(q.file.path, q.file.filename),
-				...(q.file.caption !== undefined ? { caption: q.file.caption } : {}),
-			}));
-			try {
-				const sent = await withTimeout(
-					api.sendMediaGroup(conv.chatId, media, thread),
-					"sendMediaGroup",
-				);
-				for (const q of group) delivered.add(q);
-				log.debug("media group delivered", {
-					conversation: conv.id,
-					messages: sent.length,
-					files: group.length,
-					...(conv.threadId !== null ? { thread: conv.threadId } : {}),
-				});
-				repingTyping();
-			} catch (err) {
-				if (err instanceof TelegramTimeoutError) {
-					markUncertain(err, "sendMediaGroup");
-					const wrapped = new DeliveryUncertainError(err);
-					for (const q of sendable) if (!delivered.has(q)) q.error = wrapped;
-					return;
-				}
-				log.warn("media group failed — falling back to solo sends", err, {
-					conversation: conv.id,
-					chat: conv.chatId,
-					files: sendable.length - delivered.size,
-				});
-				fallback = sendable.filter((q) => !delivered.has(q));
-				break;
-			}
-		}
-		if (fallback === null) return;
-		for (const q of fallback) {
-			if (!mayDeliver()) {
-				markUnsent();
-				return;
-			}
-			try {
-				await sendPhotoSolo(q, thread);
-			} catch (err) {
-				q.error = err;
-				if (err instanceof DeliveryUncertainError) {
-					for (const rest of fallback) if (rest.error === undefined) rest.error = err;
-					return;
-				}
-			}
-		}
-	}
-
-	async function sendFile(file: OutgoingFile): Promise<void> {
-		if (!authoritative()) return;
-		const sniff = sniffImage(file.path);
-		const photo = !file.asFile && sniff !== null && sniff.mediaType !== "image/gif";
-		if (photo) {
-			const q: QueuedPhoto = { file, bytes: 0 };
-			const wait = joinPhotoBatch(q);
-			await wait;
-			if (q.error !== undefined) throw q.error;
-			return;
-		}
-		const st = await stat(file.path).catch((err: unknown) => {
-			throw new Error(`file unreadable: ${file.path} (${String(err)})`);
-		});
-		return sendDocumentSolo(file, st.size);
-	}
-
-	async function sendDocumentSolo(file: OutgoingFile, bytes: number): Promise<void> {
-		if (bytes > MAX_SEND_BYTES)
-			throw new Error(`file too large: ${file.path} (${bytes} bytes, max ${MAX_SEND_BYTES})`);
-		let failure: { err: unknown } | undefined;
-		enqueue(async () => {
-			if (uncertain) {
-				failure = {
-					err: new Error("not sent — delivery stopped after an uncertain timeout"),
-				};
-				return;
-			}
-			if (!mayDeliver()) return;
-			const extra = {
-				...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-				...(file.caption !== undefined ? { caption: file.caption } : {}),
-			};
-			try {
-				const sent = await withTimeout(
-					api.sendDocument(conv.chatId, new InputFile(file.path, file.filename), extra),
-					"sendDocument",
-				);
-				log.debug("file delivered", {
-					conversation: conv.id,
-					message: sent.message_id,
-					path: file.path,
-					bytes,
-					kind: "document",
-					...(conv.threadId !== null ? { thread: conv.threadId } : {}),
-				});
-				repingTyping();
-			} catch (err) {
-				if (err instanceof TelegramTimeoutError) {
-					markUncertain(err, "sendDocument");
-					err = new DeliveryUncertainError(err);
-				}
-				failure = { err };
-				throw err;
-			}
-		});
-		await chain;
-		if (failure !== undefined) throw failure.err;
-	}
+	// Files/albums (photo batches, documents) live in delivery-files.ts,
+	// fed live views of this sink's mutable state — never snapshots.
+	const { sendFile, flushPhotoBatch } = makeFileDelivery(
+		{
+			api,
+			conv,
+			enqueue,
+			settled: () => chain,
+			mayDeliver,
+			uncertain: () => uncertain,
+			markUncertain,
+			noteLanded: repingTyping,
+			authoritative: () => authoritative(),
+		},
+		{ mediaGroupWindowMs },
+	);
 
 	function rendered(): string {
 		const status =
@@ -663,6 +410,7 @@ export function makeDeliverySink(
 						api.sendRichMessageDraft(conv.chatId, answerDraftId, { markdown: body }),
 						method,
 					);
+					draftLanded = true;
 				}
 			} catch (err) {
 				if (isNotModifiedError(err)) return;
@@ -704,35 +452,114 @@ export function makeDeliverySink(
 				return;
 			}
 		}
-		const needed = Math.ceil(body.length / CHUNK_LIMIT);
-		while (chunks.length < needed) chunks.push({ id: -1, shown: "" });
+		materialize(body, false);
+		lastEdit = Date.now();
+	}
+
+	// The text each window should currently show — incremental: a
+	// chunk's window end is clamped to at least the body offset it
+	// already covered, so a seam that surfaces only once the body
+	// crosses the cap (a paragraph break behind shown text) never
+	// edits already-shown text away; the pending tail simply becomes
+	// the next window. Each window renders to HTML independently.
+	function windowTexts(body: string): (WindowText & { end: number })[] {
+		const wins: (WindowText & { end: number })[] = [];
+		// Everything at/after `text` is the tool-status tail — raw
+		// command text, not model markdown. It is HTML-escaped, never
+		// markdown-rendered, or a glob like "*.ts" becomes italics.
+		const statusStart = text.length;
 		let start = 0;
+		let fence: FenceState | null = null;
+		while (start < body.length) {
+			const c = chunks[wins.length];
+			let end = windowEnd(body, start);
+			if (c !== undefined && end < c.end) end = c.end;
+			const raw = body.slice(start, end);
+			const reopen = fence !== null ? fenceReopen(fence) : "";
+			// Fence state tracks model text only — the status tail can
+			// hold anything (a command arg starting with ``` must not
+			// open or close a fence).
+			fence = fenceStateAfter(raw.slice(0, Math.max(0, statusStart - start)), fence);
+			const close = fence !== null ? `\n${fence.marker}` : "";
+			const markdown = `${reopen}${raw}${close}`;
+			let html: string;
+			if (statusStart >= end) {
+				html = renderTelegramHtml(markdown);
+			} else if (statusStart <= start) {
+				html = escapeHtml(raw);
+			} else {
+				const k = statusStart - start;
+				// The head render closes any open fence in HTML itself;
+				// the status is escaped raw, and no marker lands after it.
+				html =
+					renderTelegramHtml(`${reopen}${raw.slice(0, k)}`) + escapeHtml(raw.slice(k));
+			}
+			wins.push({ markdown, html, end });
+			start = end;
+		}
+		return wins;
+	}
+
+	// Push the windows to Telegram: send/edit whatever doesn't match.
+	// `force` rides over a cancelled or superseded turn — never over an
+	// uncertain send — so the superseded stamp can land the pending
+	// tail before it marks. Without it one new send goes out per call.
+	function materialize(body: string, force: boolean): void {
+		const wins = windowTexts(body);
+		while (chunks.length < wins.length)
+			chunks.push({
+				id: -1,
+				shown: "",
+				shownFormatted: false,
+				plain: false,
+				end: 0,
+				queued: null,
+			});
 		for (let idx = 0; idx < chunks.length; idx++) {
 			const c = chunks[idx]!;
-			if (c.id === -2) break;
-			const isLast = idx === chunks.length - 1;
-			const end = isLast ? body.length : windowEnd(body, start);
-			const desired = body.slice(start, end);
-			const out = desired === "" ? "…" : desired;
+			if (c.id === -2) {
+				if (!force) break;
+				continue;
+			}
+			const w = wins[idx];
+			if (w !== undefined) c.end = w.end;
+			const wm = w ?? { markdown: "", html: "", end: 0 };
+			const d = desiredText(c, wm);
 			if (c.id === -1) {
-				if (desired === "") break;
+				if (wm.markdown === "") continue;
 				c.id = -2;
-				c.shown = out;
+				c.shown = d.text;
+				c.shownFormatted = d.formatted;
+				const fallback = wm.markdown === "" ? "…" : wm.markdown;
+				const send = (text: string, formatted: boolean) =>
+					withTimeout(
+						api.sendMessage(conv.chatId, text, {
+							...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+							...(formatted ? { parse_mode: "HTML" as const } : {}),
+							...(idx === 0 && replyTo !== undefined
+								? { reply_parameters: { message_id: replyTo } }
+								: {}),
+						}),
+						"sendMessage",
+					);
 				enqueue(async () => {
-					if (!mayDeliver()) {
+					if (uncertain || (!force && !mayDeliver())) {
 						c.id = -1;
 						return;
 					}
 					try {
-						const sent = await withTimeout(
-							api.sendMessage(conv.chatId, out, {
-								...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-								...(idx === 0 && replyTo !== undefined
-									? { reply_parameters: { message_id: replyTo } }
-									: {}),
-							}),
-							"sendMessage",
-						);
+						let sent;
+						try {
+							sent = await send(d.text, d.formatted);
+						} catch (err) {
+							// A 400 entity rejection is definite — nothing landed,
+							// so the chunk retries once raw and stays plain.
+							if (!d.formatted || !isParseEntitiesError(err)) throw err;
+							c.plain = true;
+							sent = await send(fallback, false);
+							c.shown = fallback;
+							c.shownFormatted = false;
+						}
 						c.id = sent.message_id;
 						log.debug("delivered", {
 							conversation: conv.id,
@@ -759,42 +586,191 @@ export function makeDeliverySink(
 						throw err;
 					}
 				});
-				break;
+				if (!force) break;
+				continue;
 			}
-			if (c.shown !== out) {
+			if (c.shown !== d.text && c.queued !== d.text) {
 				const mid = c.id;
+				const out = d.text;
+				const formatted = d.formatted;
+				const fallback = wm.markdown === "" ? "…" : wm.markdown;
+				c.queued = out;
+				const clearQueued = () => {
+					if (c.queued === out) c.queued = null;
+				};
 				enqueue(async () => {
-					if (!mayDeliver()) return;
+					if (uncertain || (!force && !mayDeliver())) {
+						clearQueued();
+						return;
+					}
 					try {
-						await withTimeout(api.editMessageText(conv.chatId, mid, out), "editMessageText");
+						try {
+							await withTimeout(
+								api.editMessageText(
+									conv.chatId,
+									mid,
+									out,
+									formatted ? { parse_mode: "HTML" as const } : {},
+								),
+								"editMessageText",
+							);
+						} catch (err) {
+							// Same definite-400 fallback as the send path.
+							if (formatted && isParseEntitiesError(err)) {
+								c.plain = true;
+								await withTimeout(
+									api.editMessageText(conv.chatId, mid, fallback),
+									"editMessageText",
+								);
+								c.shown = fallback;
+								c.shownFormatted = false;
+								clearQueued();
+								return;
+							}
+							throw err;
+						}
 					} catch (err) {
+						clearQueued();
 						if (isNotModifiedError(err)) {
 							log.debug("edit no-op — message already current", {
 								conversation: conv.id,
 								message: mid,
 							});
 							c.shown = out;
+							c.shownFormatted = formatted;
 							return;
 						}
 						throw err;
 					}
 					c.shown = out;
+					c.shownFormatted = formatted;
+					clearQueued();
 				});
 			}
-			start = end;
 		}
-		lastEdit = Date.now();
+	}
+
+	let droppedAcked = false;
+	// A fenced turn whose sink never landed a bubble would otherwise
+	// vanish silently — one ack, threaded to the dropped message, tells
+	// the sender their input survived the stop and stays in history.
+	async function ackDropped(): Promise<void> {
+		if (
+			droppedAcked ||
+			!cancelled ||
+			replyTo === undefined ||
+			chunks.some((c) => c.id > 0)
+		)
+			return;
+		droppedAcked = true;
+		try {
+			const sent = await withTimeout(
+				api.sendMessage(
+					conv.chatId,
+					"⏹ Stopped before I answered — your message is kept in history.",
+					{
+						...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+						reply_parameters: { message_id: replyTo },
+					},
+				),
+				"sendMessage",
+			);
+			log.info("sent drop acknowledgement", {
+				conversation: conv.id,
+				message: sent.message_id,
+				reply: replyTo,
+			});
+		} catch (err) {
+			if (err instanceof TelegramTimeoutError) {
+				markUncertain(err, "sendMessage drop-ack");
+				await notifyUncertain();
+				return;
+			}
+			log.warn("drop acknowledgement failed", err, { conversation: conv.id });
+		}
+	}
+
+	// Every landed chunk binds to the turn's reply event, so a 🔊 tap on
+	// any bubble of a split reply resolves the whole text durably.
+	function recordDeliveries(): void {
+		if (deliveries === undefined) return;
+		const seq = deliveries.lastEntry(conv.id, "assistant")?.seq ?? null;
+		if (seq === null) {
+			log.warn("completed reply has no assistant event — deliveries unrecorded", {
+				conversation: conv.id,
+			});
+			return;
+		}
+		for (const c of chunks) {
+			if (c.id > 0) deliveries.recordDelivery(conv.id, c.id, seq);
+		}
 	}
 
 	async function stampSuperseded(): Promise<void> {
 		await chain;
-		const last = [...chunks].reverse().find((c) => c.id > 0);
-		if (!last) return;
-		const mid = last.id;
-		const marked = `${last.shown}${STATUS_TAIL_MARK}⏹ superseded`;
+		if (richMode) {
+			// A rich reply has no editable bubble — the draft is the only
+			// visible surface, so the stamp goes on the draft itself,
+			// carrying whatever deltas were still unflushed. No draft was
+			// ever pushed → nothing visible → nothing to stamp — but a
+			// fenced drop still gets its ack.
+			const body = rendered();
+			if (body === "" || !draftLanded) {
+				await ackDropped();
+				return;
+			}
+			const marked = `${body}${STATUS_TAIL_MARK}⏹ superseded`;
+			enqueue(async () => {
+				try {
+					await withTimeout(
+						api.sendRichMessageDraft(conv.chatId, answerDraftId, { markdown: marked }),
+						"sendRichMessageDraft",
+					);
+					log.debug("delivery superseded marker on draft", { conversation: conv.id });
+				} catch (err) {
+					if (isNotModifiedError(err)) return;
+					richFailure(err, "sendRichMessageDraft");
+				}
+			});
+			await chain;
+			return;
+		}
+		// Nothing landed → nothing shown to preserve: acknowledge the
+		// fenced drop, no stamp, no tail.
+		if (!chunks.some((c) => c.id > 0)) {
+			await ackDropped();
+			return;
+		}
+		// Pending deltas still land — shown text is never edited back.
+		// The tail goes out as its own window(s); the stamp marks the
+		// last bubble.
+		materialize(rendered(), true);
+		await chain;
+		const idx = chunks.findLastIndex((c) => c.id > 0);
+		if (idx === -1) return;
+		const c = chunks[idx]!;
+		const mid = c.id;
+		// The stamp marks the last bubble as it stands — shown text is
+		// never edited back. A mark that pushes the parsed text past
+		// Telegram's cap falls back to the raw window.
+		let marked = `${c.shown}${STATUS_TAIL_MARK}⏹ superseded`;
+		let formatted = c.shownFormatted;
+		if (formatted && parsedTextLength(marked) > TG_MESSAGE_LIMIT) {
+			const wm = windowTexts(rendered())[idx] ?? { markdown: c.shown, html: "" };
+			marked = `${wm.markdown}${STATUS_TAIL_MARK}⏹ superseded`;
+			formatted = false;
+		}
 		enqueue(async () => {
 			try {
-				await withTimeout(api.editMessageText(conv.chatId, mid, marked), "editMessageText");
+				await withTimeout(
+					api.editMessageText(
+						conv.chatId,
+						mid,
+						marked,
+						formatted ? { parse_mode: "HTML" as const } : {},
+					),
+					"editMessageText",
+				);
 				log.debug("delivery superseded marker", { conversation: conv.id, message: mid });
 			} catch (err) {
 				if (isNotModifiedError(err)) return;
@@ -809,16 +785,12 @@ export function makeDeliverySink(
 	}
 
 	function pendingCount(): number {
-		const body = rendered();
+		const wins = windowTexts(rendered());
 		let n = 0;
-		let start = 0;
 		for (let idx = 0; idx < chunks.length; idx++) {
 			const c = chunks[idx]!;
-			const end = idx === chunks.length - 1 ? body.length : windowEnd(body, start);
-			const desired = body.slice(start, end);
-			const out = desired === "" ? "…" : desired;
-			if (c.id === -1 ? desired !== "" : c.shown !== out) n++;
-			start = end;
+			const w = wins[idx] ?? { markdown: "", html: "", end: 0 };
+			if (c.id === -1 ? w.markdown !== "" : c.shown !== desiredText(c, w).text) n++;
 		}
 		return n;
 	}
@@ -893,7 +865,10 @@ export function makeDeliverySink(
 				return;
 			}
 			if (voice?.voiceMode) {
-				if (done.kind === "fenced") return;
+				if (done.kind === "fenced") {
+					await ackDropped();
+					return;
+				}
 				if (done.kind === "error") {
 					enqueue(async () => {
 						if (!mayDeliver()) return;
@@ -980,20 +955,31 @@ export function makeDeliverySink(
 						conversation: conv.id,
 					});
 					const fallback = text || "speech synthesis failed";
-					let at = 0;
 					let failed: unknown;
-					while (at < fallback.length) {
-						const end = windowEnd(fallback, at);
-						const chunk = fallback.slice(at, end);
+					for (const w of chunkWindows(fallback).map(renderWindow)) {
+						const md = w.markdown;
+						const formatted = w.html !== "" && w.html.length <= TG_MESSAGE_LIMIT;
+						const out = formatted ? w.html : md === "" ? "…" : md;
 						enqueue(async () => {
 							if (!mayDeliver()) return;
 							try {
-								await withTimeout(
-									api.sendMessage(conv.chatId, chunk, {
-										...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
-									}),
-									"sendMessage",
-								);
+								try {
+									await withTimeout(
+										api.sendMessage(conv.chatId, out, {
+											...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+											...(formatted ? { parse_mode: "HTML" as const } : {}),
+										}),
+										"sendMessage",
+									);
+								} catch (err) {
+									if (!formatted || !isParseEntitiesError(err)) throw err;
+									await withTimeout(
+										api.sendMessage(conv.chatId, md === "" ? "…" : md, {
+											...(conv.threadId !== null ? { message_thread_id: conv.threadId } : {}),
+										}),
+										"sendMessage",
+									);
+								}
 							} catch (error) {
 								if (error instanceof TelegramTimeoutError)
 									markUncertain(error, "sendMessage fallback");
@@ -1001,7 +987,6 @@ export function makeDeliverySink(
 								throw error;
 							}
 						});
-						at = end;
 					}
 					await chain;
 					if (uncertain) {
@@ -1052,7 +1037,7 @@ export function makeDeliverySink(
 							...(replyTo !== undefined ? { reply_parameters: { message_id: replyTo } } : {}),
 						};
 						const effect =
-							done.kind === "completed" && isPrivateDmAddress(conv.id) && messageEffectsUsable
+							done.kind === "completed" && isPrivateDmAddress(conv.id) && messageEffectsUsable()
 								? { message_effect_id: SALUTE_EFFECT_ID }
 								: {};
 						const keyboard = done.kind === "completed" ? buildKeyboard() : null;
@@ -1074,7 +1059,7 @@ export function makeDeliverySink(
 								);
 							} catch (err) {
 								if (effect.message_effect_id === undefined || !isPremiumGateError(err)) throw err;
-								messageEffectsUsable = false;
+								disableMessageEffects();
 								log.info("message effect rejected — premium gate; dropped for this process", {
 									conversation: conv.id,
 									chat: conv.chatId,
@@ -1093,7 +1078,11 @@ export function makeDeliverySink(
 								reasoning: md !== body,
 							});
 							if (done.kind === "completed") {
-								if (voice) rememberReply(conv.chatId, sent.message_id, text);
+								if (voice && deliveries !== undefined) {
+									const seq = deliveries.lastEntry(conv.id, "assistant")?.seq ?? null;
+									if (seq !== null)
+										deliveries.recordDelivery(conv.id, sent.message_id, seq);
+								}
 								if (mayDeliver()) {
 									await withTimeout(
 										api.setMessageReaction(conv.chatId, sent.message_id, [
@@ -1178,6 +1167,7 @@ export function makeDeliverySink(
 				});
 			}
 			if (unsent > 0) await notifyTruncated(unsent);
+			if (done.kind === "completed" && voice) recordDeliveries();
 			if (unsent === 0) {
 				const landed = chunks.filter((c) => c.id > 0).length;
 				if (landed > 0) {
@@ -1196,7 +1186,6 @@ export function makeDeliverySink(
 					const mid = last.id;
 					enqueue(async () => {
 						if (!mayDeliver()) return;
-						if (voice) rememberReply(conv.chatId, mid, text);
 						await withTimeout(
 							api.setMessageReaction(conv.chatId, mid, [{ type: "emoji", emoji: "🫡" }]),
 							"setMessageReaction",

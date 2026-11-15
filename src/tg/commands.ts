@@ -1,7 +1,8 @@
 import type { Database } from "bun:sqlite";
 import type { Api } from "grammy";
 import type { ConfigRef } from "../config.ts";
-import type { Conversation, ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import type { ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
 import { forgetDocument } from "../memory/forget.ts";
 import { HindsightClient, HindsightError } from "../memory/hindsight.ts";
@@ -38,7 +39,7 @@ export interface CommandDeps {
 export function parseCommand(
 	text: string,
 	botUsername: string,
-): { command: string; arg: string; forThisBot: boolean } | null {
+): { command: string; arg: string; forThisBot: boolean; addressed: boolean } | null {
 	const trimmed = text.trim();
 	const match = /^\/(\w+)(?:@(\w+))?(?:\s|$)/.exec(trimmed);
 	if (!match) return null;
@@ -46,6 +47,7 @@ export function parseCommand(
 		command: `/${match[1]!}`,
 		arg: trimmed.slice(match[0].length).trim(),
 		forThisBot: match[2] === undefined || match[2].toLowerCase() === botUsername.toLowerCase(),
+		addressed: match[2] !== undefined,
 	};
 }
 
@@ -61,11 +63,15 @@ function clockHM(iso: string): string {
 	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function reply(deps: CommandDeps, conv: Conversation, text: string): void {
-	withTimeout(
+function send(deps: CommandDeps, conv: Conversation, text: string) {
+	return withTimeout(
 		deps.api.sendMessage(conv.chatId, text, target(conv)),
 		"sendMessage (command reply)",
-	).catch((err: unknown) => {
+	);
+}
+
+function reply(deps: CommandDeps, conv: Conversation, text: string): void {
+	send(deps, conv, text).catch((err: unknown) => {
 		log.warn("command reply failed", err);
 	});
 }
@@ -73,11 +79,12 @@ function reply(deps: CommandDeps, conv: Conversation, text: string): void {
 const REPLY_CHUNK_LIMIT = 4000;
 
 function replyLines(deps: CommandDeps, conv: Conversation, lines: string[]): void {
+	const chunks: string[] = [];
 	let batch: string[] = [];
 	let len = 0;
 	const flush = (): void => {
 		if (batch.length === 0) return;
-		reply(deps, conv, batch.join("\n"));
+		chunks.push(batch.join("\n"));
 		batch = [];
 		len = 0;
 	};
@@ -88,6 +95,22 @@ function replyLines(deps: CommandDeps, conv: Conversation, lines: string[]): voi
 		len += capped.length + 1;
 	}
 	flush();
+	// Chunks send strictly in order. A failed chunk is logged and the
+	// rest still go out: a timeout is ambiguous (the chunk may have
+	// landed), and dropping the tail would lose most of the reply.
+	void (async () => {
+		for (const [i, chunk] of chunks.entries()) {
+			try {
+				await send(deps, conv, chunk);
+			} catch (err) {
+				log.warn("command reply failed", err, {
+					conversation: conv.id,
+					chunk: i + 1,
+					of: chunks.length,
+				});
+			}
+		}
+	})();
 }
 
 const forgetListingsByDb = new WeakMap<Database, ForgetListings>();
@@ -141,7 +164,7 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 		case "/compact": {
 			void (async () => {
 				try {
-					const outcome = await deps.runtime.compact(conv);
+					const outcome = await deps.runtime.compact(conv, arg === "" ? undefined : arg);
 					if (outcome.kind === "noop") {
 						reply(deps, conv, `nothing to compact — ${outcome.reason}`);
 						return;

@@ -12,7 +12,7 @@ import {
 	cacheContractFresh,
 	type CacheContract,
 } from "../agent/cache-contracts.ts";
-import { authReferences, parseConfigValue } from "../config.ts";
+import { authReferences, EXAMPLE_OPERATOR_ID, parseConfigValue } from "../config.ts";
 import { type Config } from "../config-schema.ts";
 import { failure, ProbeError, readBounded, result, type HealthResult } from "./shared.ts";
 
@@ -52,6 +52,22 @@ export function configCheck(home: string): { finding: HealthResult; config?: Con
 	} catch (error) {
 		return { finding: failure("config", scope, error, start, "Read/validate goblin.json5") };
 	}
+}
+export function operatorIds(config: Config | undefined, home: string): HealthResult {
+	const start = performance.now(),
+		scope = `caller-home:${home}`;
+	if (config === undefined) {
+		return result("config.operators", scope, "skip", "Blocked by config", start);
+	}
+	return result(
+		"config.operators",
+		scope,
+		config.operators.includes(EXAMPLE_OPERATOR_ID) ? "warn" : "pass",
+		config.operators.includes(EXAMPLE_OPERATOR_ID)
+			? "operators still holds the shipped example Telegram id — set your real id in Settings → operators"
+			: "no shipped example operator id in operators",
+		start,
+	);
 }
 export function cacheContracts(config: Config | undefined, home: string): HealthResult {
 	const start = performance.now(),
@@ -129,10 +145,11 @@ export function cacheContracts(config: Config | undefined, home: string): Health
 export function authCheck(
 	home: string,
 	config?: Config,
-): { findings: HealthResult[]; profiles: Map<string, Set<string>> } {
+): { findings: HealthResult[]; profiles: Map<string, Set<string>>; names: Set<string> } {
 	const start = performance.now(),
 		scope = `caller-home:${home}`,
-		profiles = new Map<string, Set<string>>();
+		profiles = new Map<string, Set<string>>(),
+		names = new Set<string>();
 	try {
 		const raw = readBounded(join(home, "auth.jsonl"));
 		if ((raw.mode & 0o077) !== 0) throw new ProbeError("insecure-mode:clear-group-world-bits");
@@ -148,6 +165,7 @@ export function authCheck(
 		// un-poisons an earlier same-name pass-cli record, so raw-record
 		// scanning would fail a live-clean file.
 		const effective = new Map(records.map((r) => [r.name, r]));
+		for (const name of effective.keys()) names.add(name);
 		const poisoned = [...effective.values()].find(
 			(r) => r.value.startsWith("!") && invokesPassCliDirectly(r.value.slice(1)),
 		);
@@ -185,6 +203,7 @@ export function authCheck(
 		}
 		return {
 			profiles,
+			names,
 			findings: [
 				result(
 					"auth.metadata",
@@ -209,6 +228,7 @@ export function authCheck(
 	} catch (error) {
 		return {
 			profiles,
+			names,
 			findings: [
 				failure("auth.metadata", scope, error, start, "Inspect auth.jsonl"),
 				result("auth.coverage", scope, "skip", "Blocked by auth.metadata; no auth values resolved"),

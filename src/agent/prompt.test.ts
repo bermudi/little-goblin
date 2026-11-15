@@ -7,7 +7,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { join } from "node:path";
 import { paths } from "../home-layout.ts";
 import { setLogFile } from "../log.ts";
-import { openStore, type Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import { openStore } from "../conversation.ts";
 import { _resetPromptSourcesForTest, buildSystemPrompt, systemPromptFor } from "./prompt.ts";
 import { useHome } from "../testkit.ts";
 
@@ -21,6 +22,7 @@ const conv: Conversation = {
 	thinking: null,
 	voice: false,
 	memoryExcluded: false,
+	memoryExcludedByProject: false,
 	projectId: null,
 	persona: "personal",
 	archivedAt: null,
@@ -327,6 +329,19 @@ describe("workspace file injection", () => {
 			delete process.env.GOBLIN_HOME;
 		}
 	});
+	test("the standing USER.md preference instruction is code-owned, not seed-only", () => {
+		const home = useHome("goblin-prompt-");
+		process.env.GOBLIN_HOME = home;
+		try {
+			// No workspace files at all: the instruction must reach homes
+			// seeded before it existed.
+			const { text } = buildSystemPrompt(conv, tools);
+			expect(text).toContain("record it in USER.md");
+			expect(text).toContain("directive format");
+		} finally {
+			delete process.env.GOBLIN_HOME;
+		}
+	});
 	// A guest persona build touches no operator file — SOUL, USER,
 	// skills, none of it.
 	test("a guest persona prompt reads nothing private", () => {
@@ -429,7 +444,17 @@ describe("project prompts", () => {
 			expect(text).toContain(`in ${paths.workspace()} are your`);
 			expect(text).toContain(`(${join(paths.workspace(), "skills", "mq", "SKILL.md")})`);
 			expect(text).not.toContain("(skills/mq/SKILL.md)");
-			expect(text).toContain(`write ${join(paths.workspace(), "skills", "<name>", "SKILL.md")}`);
+			// The self-write invitation is gone — writes only when asked.
+			expect(text).not.toContain(
+				`write ${join(paths.workspace(), "skills", "<name>", "SKILL.md")}`,
+			);
+			expect(text).toContain(
+				"or edit skills only when the operator asks — never create or rewrite",
+			);
+			expect(text).toContain("An asked-for write goes to");
+			expect(text).toContain(
+				`${join(paths.workspace(), "skills", "<name>", "SKILL.md")}, then`,
+			);
 			expect(text).toContain(
 				`skills-ref validate '${join(paths.workspace(), "skills", "<name>")}'`,
 			);

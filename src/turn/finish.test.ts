@@ -9,10 +9,11 @@ import {
 	type UIMessage,
 	type UIMessageChunk,
 } from "ai";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { setLogFile } from "../log.ts";
 import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory/mod.ts";
-import type { CompletedTurn, PriorTurnContext, ReviewerDeps } from "../reviewer.ts";
+import type { CompletedTurn, PriorTurnContext } from "../reviewer-evidence.ts";
+import type { ReviewerDeps } from "../reviewer.ts";
 import { Reviewer } from "../reviewer.ts";
 import { compactionSummaryId } from "../tags.ts";
 import { scriptedModel, textResult } from "../testkit/fake-model.ts";
@@ -44,6 +45,7 @@ const conv = (epoch = 1, id = "dm:1"): Conversation => ({
 	thinking: null,
 	voice: false,
 	memoryExcluded: false,
+	memoryExcludedByProject: false,
 	projectId: null,
 	persona: "personal",
 	archivedAt: null,

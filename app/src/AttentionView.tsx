@@ -24,9 +24,12 @@ const KIND_LABEL = {
 	"program-approval": "program",
 	"mail-approval": "mail",
 	"memory-blocked": "memory",
+	"memory-outage": "memory",
+	"memory-recall": "memory",
 	"skill-proposal": "skill",
 	"interrupted-run": "recovery",
 	"delegation-input": "delegation",
+	"observation-unreachable": "work",
 	responsibility: "work",
 } as const satisfies Record<AppAttentionItem["kind"], string>;
 
@@ -302,7 +305,13 @@ export function AttentionView({
 			if (proposal === undefined)
 				return approvals.loading ? <p className="empty">Loading…</p> : null;
 			return (
-				<ProgramApprovalCard token={token} proposal={proposal} onDone={reloadAll} layout="page">
+				<ProgramApprovalCard
+					token={token}
+					proposal={proposal}
+					onDone={reloadAll}
+					layout="page"
+					serverTimeZone={approvals.data?.serverTimeZone ?? ""}
+				>
 					<IfYouWait>
 						{proposal.kind === "create"
 							? "the program does not exist yet, so nothing runs."

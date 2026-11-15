@@ -27,6 +27,15 @@ function fmt(at: string | null): string {
 	return Number.isNaN(d.getTime()) ? at : d.toLocaleString();
 }
 
+// The unreachable pill names the outage start in HH:MM — the health
+// label below it stays the last sighted occupancy.
+function hhmm(at: string): string {
+	const d = new Date(at);
+	return Number.isNaN(d.getTime())
+		? at
+		: d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
 function age(at: string | null): string {
 	if (at === null) return "no activity";
 	const ms = Date.now() - Date.parse(at);
@@ -131,7 +140,11 @@ function AttachmentRow({
 	return (
 		<div className="resp-att">
 			<span className="resp-att-name">{t.agentName}</span>
-			<span className="resp-att-health">{HEALTH[att.health] ?? att.health}</span>
+			<span className="resp-att-health">
+				{att.unreachableSince !== null
+					? `unreachable since ${hhmm(att.unreachableSince)}`
+					: (HEALTH[att.health] ?? att.health)}
+			</span>
 			<span className="resp-att-meta">
 				{t.kind ?? "?"} · gen {att.generation}
 				{t.terminalId !== null ? ` · ${t.terminalId}` : ""}
@@ -253,7 +266,11 @@ function FeedRow({
 					<span className="resp-agents">
 						{item.attachments
 							.filter((a) => a.health !== "detached")
-							.map((a) => `${a.target.agentName} (${HEALTH[a.health] ?? a.health})`)
+							.map((a) =>
+								a.unreachableSince !== null
+									? `${a.target.agentName} (unreachable since ${hhmm(a.unreachableSince)})`
+									: `${a.target.agentName} (${HEALTH[a.health] ?? a.health})`,
+							)
 							.join(", ")}
 					</span>
 					<span className="resp-fresh">{age(item.lastActivityAt)}</span>

@@ -1,7 +1,8 @@
 // Manual DM selection. All durable effects share the store transaction;
 // Telegram delivery and slow intake deliberately live outside this module.
 import { z } from "zod";
-import type { Conversation, ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import type { ConversationStore } from "../conversation.ts";
 import { formatAddress, parseAddress } from "../conversation-address.ts";
 import { log } from "../log.ts";
 import type { Runtime } from "../runtime.ts";

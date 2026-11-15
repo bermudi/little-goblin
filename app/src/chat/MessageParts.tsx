@@ -239,6 +239,11 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 				{ref.speech === true && ref.transcript !== undefined && (
 					<span className="attachment-transcript">“{ref.transcript}”</span>
 				)}
+				{ref.transcriptionError !== undefined && (
+					<span className="attachment-transcript error">
+						couldn't transcribe: {ref.transcriptionError}
+					</span>
+				)}
 			</span>
 		);
 	}
@@ -277,6 +282,11 @@ function AttachmentChip({ data, token }: { data: unknown; token: string | null }
 			{dlError !== null && <span className="msg-err">Download failed: {dlError}</span>}
 			{ref.speech === true && ref.transcript !== undefined && (
 				<span className="attachment-transcript">“{ref.transcript}”</span>
+			)}
+			{ref.transcriptionError !== undefined && (
+				<span className="attachment-transcript error">
+					couldn't transcribe: {ref.transcriptionError}
+				</span>
 			)}
 		</span>
 	);

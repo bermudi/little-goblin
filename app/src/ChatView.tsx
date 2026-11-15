@@ -1,6 +1,7 @@
 import {
 	Fragment,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -155,6 +156,8 @@ export function ChatView({
 }) {
 	const [initial, setInitial] = useState<{
 		messages: UIMessage[];
+		start: number;
+		olderCursor: string | null;
 		ratings: AppRatedReply[];
 		rateableMessageIds: string[];
 		compactions: AppCompactionMark[];
@@ -167,6 +170,8 @@ export function ChatView({
 				live &&
 				setInitial({
 					messages: r.messages,
+					start: r.start ?? 0,
+					olderCursor: r.olderCursor ?? null,
 					ratings: r.ratings,
 					rateableMessageIds: r.rateableMessageIds,
 					compactions: r.compactions ?? [],
@@ -186,6 +191,8 @@ export function ChatView({
 			title={title}
 			token={token}
 			initial={initial.messages}
+			initialStart={initial.start}
+			initialOlderCursor={initial.olderCursor}
 			initialRatings={initial.ratings}
 			initialRateableIds={initial.rateableMessageIds}
 			initialCompactions={initial.compactions}
@@ -211,6 +218,8 @@ function Chat({
 	conversationId,
 	title,
 	initial,
+	initialStart,
+	initialOlderCursor,
 	initialRatings,
 	initialRateableIds,
 	initialCompactions,
@@ -232,6 +241,11 @@ function Chat({
 	conversationId: string;
 	title: string | null;
 	initial: UIMessage[];
+	// Absolute causal index of initial[0] — fold-mark indexes and the
+	// paging cursor are transcript-absolute; the loaded base drops as
+	// older pages prepend.
+	initialStart: number;
+	initialOlderCursor: string | null;
 	initialRatings: AppRatedReply[];
 	initialRateableIds: string[];
 	initialCompactions: AppCompactionMark[];
@@ -265,6 +279,27 @@ function Chat({
 	// below useChat — the reconnect's answer resolves after a network
 	// round-trip, so it can never beat that effect's assignment.
 	const idleReconnect = useRef<() => void>(() => {});
+	// The mount-time resume probe (`resume: true` above) answers "nothing
+	// live" with a status writeback: the SDK's Chat sets status back to
+	// "ready" with no notion that a submit may have started while the GET
+	// was in flight. The seed send is the one send that can race that
+	// probe — its "submitted" gets clobbered and a wire that never
+	// produces a chunk never re-raises it: no Stop, no pending shimmer,
+	// for the whole first turn. The latch orders the seed after the
+	// probe's round-trip, so both sends ride the same status mechanism.
+	//
+	// A seeded mount skips the network probe entirely — a conversation
+	// created moments ago cannot have a live turn, and a probe that
+	// depends on the network can park the seed forever (a black-holed
+	// stream GET → no POST, nothing stored; a reload loses the text).
+	// Captured at mount because the seed prop is cleared by onSeeded
+	// long before the transport ever reads this.
+	const seededMount = useRef(seed !== null && seed.length > 0);
+	const resumeProbe = useRef<{ probed: boolean; settled: boolean; waiting: (() => void)[] }>({
+		probed: false,
+		settled: false,
+		waiting: [],
+	});
 	// Same latest-ref shape as idleReconnect: the host's callback is an
 	// inline closure, so it must not enter the transport's useMemo deps —
 	// a new transport identity would re-seat useChat on every host render.
@@ -282,6 +317,46 @@ function Chat({
 	// ran, after the last message that existed then. Replaced wholesale
 	// on every history read; a rewind's deleted marks must not linger.
 	const [marks, setMarks] = useState<AppCompactionMark[]>(initialCompactions);
+	// History older than the live window, paged in from the top. It is
+	// durable-only — mergeTranscript never reconciles it, so it stays a
+	// separate prefix rather than riding useChat's array (the merge
+	// would park it after the newest page). `loadedStart` tracks the
+	// absolute index of the oldest loaded entry for mark mapping.
+	const [older, setOlder] = useState<UIMessage[]>([]);
+	const [loadedStart, setLoadedStart] = useState(initialStart);
+	const [olderCursor, setOlderCursor] = useState<string | null>(initialOlderCursor);
+	const [olderLoading, setOlderLoading] = useState(false);
+	const [olderError, setOlderError] = useState<string | null>(null);
+	const loadOlder = () => {
+		if (olderCursor === null || olderLoading) return;
+		setOlderLoading(true);
+		setOlderError(null);
+		anchorScroll.current = scrollRef.current?.scrollHeight ?? null;
+		void getMessages(token, conversationId, olderCursor).then(
+			(r) => {
+				setOlder((current) => {
+					const held = new Set(current.map((m) => m.id));
+					return [...r.messages.filter((m) => !held.has(m.id)), ...current];
+				});
+				setLoadedStart(r.start);
+				setOlderCursor(r.olderCursor);
+				setMarks(r.compactions ?? []);
+				applyRatingSnapshot(r.ratings, r.rateableMessageIds);
+			},
+			(err: unknown) =>
+				setOlderError(err instanceof Error ? err.message : "history failed to load"),
+		).finally(() => setOlderLoading(false));
+	};
+	// Prepending a page must not jump the view: the scrollTop rides down
+	// by the height the new rows added.
+	const anchorScroll = useRef<number | null>(null);
+	useLayoutEffect(() => {
+		const el = scrollRef.current;
+		if (el !== null && anchorScroll.current !== null) {
+			el.scrollTop += el.scrollHeight - anchorScroll.current;
+			anchorScroll.current = null;
+		}
+	}, [older.length]);
 	// Rewriting a prompt is a rewind: everything from that message onward
 	// is dropped on the server before the edited text becomes the next
 	// turn. The backup exists only for an edit that fails while the
@@ -348,13 +423,41 @@ function Chat({
 				return stream;
 			},
 			reconnectToStream: async (options) => {
-				const stream = await base.reconnectToStream(options);
-				// null is the server's 204 — nothing is live, and the runtime
-				// persists each reply before it retires the wire, so durable
-				// history is already final. The mount-time snapshot may be
-				// older than that; the view reconciles.
-				if (stream === null) idleReconnect.current();
-				return stream;
+				// The first reconnect of a seeded mount never reaches the
+				// network (see seededMount above): it answers the SDK's "nothing
+				// live" (null) on the spot — no base call, and no idle
+				// reconcile either, because a conversation created moments ago
+				// has nothing to reconcile. Every later reconnect (visibility
+				// resumes) probes the server as today.
+				const seededProbe = seededMount.current && !resumeProbe.current.probed;
+				resumeProbe.current.probed = true;
+				try {
+					if (seededProbe) return null;
+					const stream = await base.reconnectToStream(options);
+					// null is the server's 204 — nothing is live, and the runtime
+					// persists each reply before it retires the wire, so durable
+					// history is already final. The mount-time snapshot may be
+					// older than that; the view reconciles.
+					if (stream === null) idleReconnect.current();
+					return stream;
+				} finally {
+					// Probe round-trip over (network answer, or the seeded skip —
+					// the SDK still runs its ready writeback on a null answer).
+					// Release a waiting seed on the next MACROTASK: the SDK's
+					// continuation after `await reconnectToStream` — the
+					// unconditional setStatus("ready"/"error") writeback — runs
+					// in the microtask cascade before any macrotask, so the
+					// seed's "submitted" lands strictly after it. First settle
+					// wins; later reconnects (visibility resumes) have nothing
+					// waiting.
+					setTimeout(() => {
+						const probe = resumeProbe.current;
+						if (probe.settled) return;
+						probe.settled = true;
+						for (const release of probe.waiting) release();
+						probe.waiting.length = 0;
+					}, 0);
+				}
 			},
 		};
 	}, [token, conversationId]);
@@ -528,20 +631,44 @@ function Chat({
 
 	// A seed arrives once (empty-state send → conversation created → this
 	// view mounts with it). The ref guards re-runs; onSeeded clears the
-	// parking slot so a remount can never re-deliver it.
+	// parking slot so a remount can never re-deliver it. The send itself
+	// waits out the mount resume probe — see resumeProbe above — then
+	// rides the same sendMessage path a later send does.
 	const seeded = useRef(false);
 	useEffect(() => {
 		if (seeded.current || seed === null || seed.length === 0) return;
 		seeded.current = true;
 		pinned.current = true;
 		onSeeded();
-		void sendMessage({ parts: seed });
+		const send = () => {
+			void sendMessage({ parts: seed });
+		};
+		const probe = resumeProbe.current;
+		if (probe.settled) send();
+		else probe.waiting.push(send);
 	}, [seed, sendMessage, onSeeded]);
 
 	// The retry affordance belongs to the newest answer — anything older
 	// gets copy/read only.
 	const lastAssistantId = [...messages].reverse().find((m) => m.role === "assistant")?.id;
 
+	// The rendered transcript: paged-in durable prefix, then the live
+	// window (newest durable page plus any optimistic tail). Fold-mark
+	// indexes are transcript-absolute — subtracting loadedStart maps
+	// them onto displayed; marks deeper than the loaded range hold
+	// until their page arrives.
+	const displayed = useMemo(() => [...older, ...messages], [older, messages]);
+	const viewMarks = useMemo(
+		() =>
+			marks
+				.map((mark) => ({
+					...mark,
+					afterIndex: mark.afterIndex - loadedStart,
+					firstKeptIndex: mark.firstKeptIndex - loadedStart,
+				}))
+				.filter((mark) => mark.afterIndex >= -1),
+		[marks, loadedStart],
+	);
 	// Fold marks interleave by display index — the pill sits where the
 	// fold ran, after the last message that existed then; afterIndex -1
 	// is a fold older than every message, rendered at the top. The
@@ -550,7 +677,7 @@ function Chat({
 	// a list.
 	const marksByIndex = new Map<number, AppCompactionMark[]>();
 	const topMarks: AppCompactionMark[] = [];
-	for (const mark of marks) {
+	for (const mark of viewMarks) {
 		if (mark.afterIndex < 0) {
 			topMarks.push(mark);
 			continue;
@@ -559,7 +686,7 @@ function Chat({
 		list.push(mark);
 		marksByIndex.set(mark.afterIndex, list);
 	}
-	const liveMark = marks[marks.length - 1];
+	const liveMark = viewMarks[viewMarks.length - 1];
 
 	const beginEdit = (m: UIMessage) => {
 		if (busy) return;
@@ -621,7 +748,7 @@ function Chat({
 				/>
 				{/* The outline is a hover rail — a pointer affordance, so it does
 				    not exist in a phone DOM at all. */}
-				{phone ? null : <Outline messages={messages} scrollRef={scrollRef} />}
+				{phone ? null : <Outline messages={displayed} scrollRef={scrollRef} />}
 				<div
 					className="transcript"
 					ref={scrollRef}
@@ -631,16 +758,31 @@ function Chat({
 					}}
 				>
 					<div className="transcript-inner">
-						{messages.length === 0 && <p className="empty">Say something.</p>}
+						{displayed.length === 0 && <p className="empty">Say something.</p>}
+						{olderCursor !== null && (
+							<button
+								type="button"
+								className="load-older"
+								onClick={loadOlder}
+								disabled={olderLoading}
+							>
+								{olderLoading ? "Loading…" : "Load older"}
+							</button>
+						)}
+						{olderError !== null && (
+							<div className="error" role="alert">
+								Older messages failed to load: {olderError}
+							</div>
+						)}
 						{topMarks.map((mark, i) => (
 							<FoldMark
 								key={`top-${i}`}
 								mark={mark}
 								live={mark === liveMark}
-								keptStart={foldStartExcerpt(mark, messages)}
+								keptStart={foldStartExcerpt(mark, displayed)}
 							/>
 						))}
-						{messages.map((m, i) => {
+						{displayed.map((m, i) => {
 							let el: ReactNode;
 							if (m.role === "user") {
 								const isEditing = editing !== null && editing.id === m.id;
@@ -681,7 +823,11 @@ function Chat({
 													onOpenNote={onOpenNote}
 													clipFences
 												/>
-												<UserActions message={m} disabled={busy} onEdit={() => beginEdit(m)} />
+												<UserActions
+													message={m}
+													disabled={busy}
+													onEdit={i >= older.length ? () => beginEdit(m) : undefined}
+												/>
 											</>
 										)}
 									</div>
@@ -695,7 +841,7 @@ function Chat({
 												parts={m.parts}
 												token={token}
 												noteProjectId={noteProjectId}
-												messages={messages}
+												messages={displayed}
 												onOpenNote={onOpenNote}
 											/>
 										</div>
@@ -722,7 +868,7 @@ function Chat({
 												parts={m.parts}
 												token={token}
 												noteProjectId={noteProjectId}
-												messages={messages}
+												messages={displayed}
 												onOpenNote={onOpenNote}
 											/>
 										</details>
@@ -734,7 +880,7 @@ function Chat({
 													parts={unlanded.reply}
 													token={token}
 													noteProjectId={noteProjectId}
-													messages={messages}
+													messages={displayed}
 													onOpenNote={onOpenNote}
 													ended
 												/>
@@ -756,7 +902,7 @@ function Chat({
 											noteProjectId={noteProjectId}
 											busy={busy}
 											streaming={status === "streaming" && m.id === lastAssistantId}
-											messages={messages}
+											messages={displayed}
 											onOpenNote={onOpenNote}
 											onNotesChanged={onTurnDone}
 											onAction={(text) => void submit({ text })}
@@ -792,7 +938,7 @@ function Chat({
 											key={`${mark.boundarySeq}-${mark.createdAt}-${j}`}
 											mark={mark}
 											live={mark === liveMark}
-											keptStart={foldStartExcerpt(mark, messages)}
+											keptStart={foldStartExcerpt(mark, displayed)}
 										/>
 									))}
 								</Fragment>

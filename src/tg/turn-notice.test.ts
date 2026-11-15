@@ -2,12 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api } from "grammy";
+import type { UIMessage } from "ai";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import { appAddress } from "../conversation-address.ts";
 import { setLogFile } from "../log.ts";
+import { programFireTag } from "../tags.ts";
 import { deferred, tmpDb, tmpDir, waitUntil } from "../testkit.ts";
 import { openTurnJournal, type TurnJournal } from "../turn-journal.ts";
-import { sendInterruptedTurnNotices } from "./turn-notice.ts";
+import {
+	redeliverLandedReplies,
+	sendInterruptedTurnNotices,
+	sendStrandedInputNotices,
+} from "./turn-notice.ts";
 
 setLogFile(null);
 
@@ -18,6 +24,10 @@ type Seed = {
 	runId: string;
 	convId: string;
 	calls?: ("planned" | "dispatched" | "completed")[];
+	owned?: number[];
+	// Present (even null) = noteReplyLanded ran before the crash — the
+	// reply seq, or null to hand-craft a pre-column landed row.
+	landed?: number | null;
 };
 
 function crashBed(setup: (store: ConversationStore) => { seeds: Seed[] }): {
@@ -39,6 +49,7 @@ function crashBed(setup: (store: ConversationStore) => { seeds: Seed[] }): {
 			convSnapshot: {},
 			toolNames: ["probe"],
 			startedAt: STARTED,
+			...(s.owned === undefined ? {} : { ownedInputSeqs: s.owned }),
 		});
 		(s.calls ?? []).forEach((state, i) => {
 			const callId = `call-${i}`;
@@ -47,6 +58,7 @@ function crashBed(setup: (store: ConversationStore) => { seeds: Seed[] }): {
 			journal.noteToolDispatch(s.runId, callId, "probe", { i });
 			if (state === "completed") journal.noteToolResult(s.runId, callId, { ok: true });
 		});
+		if (s.landed !== undefined) journal.noteReplyLanded(s.runId, s.landed);
 	}
 	first.close();
 	const store = openStore(dbPath);
@@ -55,13 +67,14 @@ function crashBed(setup: (store: ConversationStore) => { seeds: Seed[] }): {
 
 type Send = { chat: number; text: string; settle: ReturnType<typeof deferred<unknown>> };
 
-function fakeApi(opts?: { throwOnChat?: number }) {
+function fakeApi(opts?: { throwOnChat?: number; autoResolve?: boolean }) {
 	const sends: Send[] = [];
 	const api = {
 		sendMessage: (chat: number, text: string) => {
 			const settle = deferred<unknown>();
 			sends.push({ chat, text, settle });
 			if (opts?.throwOnChat === chat) throw new Error("sync send failure");
+			if (opts?.autoResolve === true) settle.resolve({ ok: true });
 			return settle.promise;
 		},
 	} as unknown as Api;
@@ -301,5 +314,217 @@ describe("interrupted turn notices", () => {
 		} finally {
 			setLogFile(null);
 		}
+	});
+});
+
+describe("stranded input notices", () => {
+	test("counts only user events no run admitted and no reply answered; one line per conversation", async () => {
+		const dir = tmpDir("goblin-tn-log-");
+		const logPath = join(dir, "goblin.log");
+		setLogFile(logPath);
+		try {
+			const { store, journal } = crashBed((store) => {
+				const dm = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+				store.setMeta(dm.id, { title: "ops room" });
+				const other = store.resolve({ kind: "dm", chatId: 2 }, "/w");
+				const quiet = store.resolve({ kind: "dm", chatId: 3 }, "/w");
+				const app = store.resolve(appAddress("ops-app"), "/w");
+				const user = (text: string, metadata?: UIMessage["metadata"]): UIMessage => ({
+					id: crypto.randomUUID(),
+					role: "user",
+					parts: [{ type: "text", text }],
+					...(metadata === undefined ? {} : { metadata }),
+				});
+				// Answered input an interrupted run owned — not stranded.
+				const [asked] = store.append(dm.id, [user("earlier question")]);
+				store.append(dm.id, [
+					{ id: "a1", role: "assistant", parts: [{ type: "text", text: "answer" }] },
+				]);
+				// Fenced input: landed after the run's owned floor.
+				store.append(dm.id, [user("did this land?")]);
+				// Machinery speech and a generated resume marker never count.
+				store.append(dm.id, [user(`${programFireTag("nightly", "cron")}\ncharter`)]);
+				store.append(dm.id, [
+					user("resume please", { goblinResume: { sourceRunId: "aaaabbbb-dm" } }),
+				]);
+				store.append(other.id, [user("one"), user("two")]);
+				// A user event an assistant reply already answered.
+				store.append(quiet.id, [user("q")]);
+				store.append(quiet.id, [
+					{ id: "a2", role: "assistant", parts: [{ type: "text", text: "a" }] },
+				]);
+				store.append(app.id, [user("app input")]);
+				return { seeds: [{ runId: "aaaabbbb-dm", convId: dm.id, owned: [asked!] }] };
+			});
+
+			expect(journal.strandedAtOpen.get("dm:1")).toBe(1);
+			expect(journal.strandedAtOpen.get("dm:2")).toBe(2);
+			expect(journal.strandedAtOpen.has("dm:3")).toBe(false);
+			expect(journal.strandedAtOpen.get("app/ops-app")).toBe(1);
+			// Post-open input belongs to the live runtime — the snapshot
+			// never picks it up.
+			store.append("dm:1", [
+				{ id: "b1", role: "user", parts: [{ type: "text", text: "new input after boot" }] },
+			]);
+			expect(journal.strandedAtOpen.get("dm:1")).toBe(1);
+
+			const { api, sends } = fakeApi();
+			const ret = sendStrandedInputNotices(
+				api,
+				journal.strandedAtOpen,
+				OPERATORS,
+				(id) => store.get(id)?.title ?? undefined,
+			);
+			expect(ret).toBeUndefined();
+			expect(sends).toHaveLength(6);
+			for (const chat of OPERATORS) {
+				expect(sends.filter((s) => s.chat === chat)).toHaveLength(3);
+			}
+			const dm1 = sends.find((s) => s.text.startsWith("ops room:"))!;
+			expect(dm1.text).toBe(
+				"ops room: 1 message(s) you sent before the restart " +
+					"weren't answered — send /resume or reply to continue",
+			);
+			const dm2 = sends.find((s) => s.text.startsWith("dm:2:"))!;
+			expect(dm2.text).toBe(
+				"dm:2: 2 message(s) you sent before the restart " +
+					"weren't answered — send /resume or reply to continue",
+			);
+			const appSend = sends.find((s) => s.text.startsWith("app/ops-app:"))!;
+			expect(appSend.text).toContain(
+				"1 message(s) you sent before the restart weren't answered",
+			);
+			expect(appSend.text).toContain("open that conversation in the app to continue");
+
+			for (const s of sends) s.settle.resolve({ ok: true });
+			const strandedSent = (lines: Line[]) =>
+				lines.filter((l) => l.msg === "stranded input notice sent");
+			await waitUntil(
+				() => strandedSent(logLines(logPath)).length === 6,
+				"all stranded sends logged",
+			);
+			store.close();
+		} finally {
+			setLogFile(null);
+		}
+	});
+});
+
+describe("landed reply re-delivery", () => {
+	test("re-delivers the landed reply to its own chat, marks it delivered, and skips its notice", async () => {
+		const { store, journal } = crashBed((store) => {
+			const dm = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+			const app = store.resolve(appAddress("ops-app"), "/w");
+			const legacy = store.resolve({ kind: "dm", chatId: 9 }, "/w");
+			store.append(dm.id, [
+				{ id: "u1", role: "user", parts: [{ type: "text", text: "q" }] },
+			]);
+			const [replySeq] = store.append(dm.id, [
+				{
+					id: "a1",
+					role: "assistant",
+					parts: [{ type: "text", text: "the reply that never sent" }],
+				},
+			]);
+			store.append(app.id, [
+				{ id: "a2", role: "assistant", parts: [{ type: "text", text: "app reply" }] },
+			]);
+			return {
+				seeds: [
+					{ runId: "aaaabbbb-dm", convId: dm.id, landed: replySeq! },
+					{ runId: "ccccdddd-app", convId: app.id, landed: 1 },
+					{ runId: "eeeeffff-legacy", convId: legacy.id, landed: null },
+					{ runId: "99990000-plain", convId: dm.id },
+				],
+			};
+		});
+
+		expect(
+			journal
+				.landedPendingReplies()
+				.map((r) => r.runId)
+				.sort(),
+		).toEqual(["aaaabbbb-dm", "ccccdddd-app", "eeeeffff-legacy"]);
+
+		const { api, sends } = fakeApi({ autoResolve: true });
+		const delivered = await redeliverLandedReplies(
+			api,
+			journal.landedPendingReplies(),
+			store,
+			journal,
+		);
+		expect(delivered).toEqual(new Set(["aaaabbbb-dm", "ccccdddd-app"]));
+
+		// The dm reply went to the conversation's own chat, exactly once —
+		// not to operators, not duplicated.
+		expect(sends).toHaveLength(1);
+		expect(sends[0]!.chat).toBe(1);
+		expect(sends[0]!.text).toBe("the reply that never sent");
+		sends[0]!.settle.resolve({ ok: true });
+		expect(journal.get("aaaabbbb-dm")!.delivery).toBe("delivered");
+		expect(journal.get("ccccdddd-app")!.delivery).toBe("delivered");
+		expect(journal.get("eeeeffff-legacy")!.delivery).toBe("pending");
+
+		// Notices go only to rows still owed one: the delivered rows are
+		// out, the legacy and plain interrupted rows stay in.
+		sendInterruptedTurnNotices(
+			api,
+			journal.interruptedAtOpen.filter((r) => !delivered.has(r.runId)),
+			OPERATORS,
+			() => undefined,
+		);
+		const notices = sends.filter((s) => s.text.includes("interrupted turn"));
+		expect(notices).toHaveLength(4);
+		expect(notices.some((s) => s.text.includes("aaaabbbb"))).toBe(false);
+		expect(notices.some((s) => s.text.includes("ccccdddd"))).toBe(false);
+		expect(notices.filter((s) => s.text.includes("eeeeffff"))).toHaveLength(2);
+		expect(notices.filter((s) => s.text.includes("99990000"))).toHaveLength(2);
+
+		// A second pass sends nothing and marks nothing — delivered rows
+		// dropped out of the pending set.
+		expect(
+			await redeliverLandedReplies(api, journal.landedPendingReplies(), store, journal),
+		).toEqual(new Set());
+		expect(journal.landedPendingReplies().map((r) => r.runId)).toEqual([
+			"eeeeffff-legacy",
+		]);
+		for (const s of sends) s.settle.resolve({ ok: true });
+		await Promise.allSettled(sends.map((s) => s.settle.promise));
+		store.close();
+	});
+
+	test("a failed re-delivery stays pending and keeps its interrupted notice", async () => {
+		const { store, journal } = crashBed((store) => {
+			const dm = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+			const [replySeq] = store.append(dm.id, [
+				{
+					id: "a1",
+					role: "assistant",
+					parts: [{ type: "text", text: "undelivered reply" }],
+				},
+			]);
+			return { seeds: [{ runId: "aaaabbbb-dm", convId: dm.id, landed: replySeq! }] };
+		});
+
+		const { api, sends } = fakeApi();
+		const pending = redeliverLandedReplies(
+			api,
+			journal.landedPendingReplies(),
+			store,
+			journal,
+		);
+		sends[0]!.settle.reject(new Error("telegram down"));
+		expect(await pending).toEqual(new Set());
+		expect(journal.get("aaaabbbb-dm")!.delivery).toBe("pending");
+
+		sendInterruptedTurnNotices(api, journal.interruptedAtOpen, OPERATORS, () => undefined);
+		expect(
+			sends.filter((s) => s.text.includes("interrupted turn aaaabbbb")),
+		).toHaveLength(2);
+		for (const s of sends) {
+			if (s.text.includes("interrupted turn")) s.settle.resolve({ ok: true });
+		}
+		await Promise.allSettled(sends.map((s) => s.settle.promise));
+		store.close();
 	});
 });

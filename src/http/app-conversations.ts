@@ -8,7 +8,8 @@ import { listCalls } from "../cache-observation.ts";
 import { ConfigValidationError, parseConfig } from "../config.ts";
 import { splitModelRef } from "../config-schema.ts";
 import { paths } from "../home-layout.ts";
-import { type ConversationStore, DeleteRefused } from "../conversation.ts";
+import { DeleteRefused } from "../conversation-delete.ts";
+import type { ConversationStore } from "../conversation.ts";
 import { appAddress, appIdSchema } from "../conversation-address.ts";
 import { flatLine } from "../conversation-events.ts";
 import { log } from "../log.ts";
@@ -28,6 +29,7 @@ import {
 import type {
 	AppSuggestTitleResponse,
 	AppCompactionMark,
+	AppConfigPatchResponse,
 	AppContextSegment,
 	AppContextView,
 	AppQuota,
@@ -167,18 +169,19 @@ const replyRatingBody = z.object({
 	rating: z.enum(["up", "down"]),
 });
 
-type HistoryDetailEntry = ReturnType<ConversationStore["historyDetail"]>[number];
+type HistorySlimEntry = ReturnType<ConversationStore["historySlim"]>[number];
 
 // Telegram puts the vote row on a turn's final bubble. App turns can
 // commit several assistant events for one user anchor (media records,
 // then the prose reply), so the rateable event is the last assistant
-// event for each anchor — not every assistant row.
-function rateableAssistantEntries(detail: HistoryDetailEntry[]): Map<string, HistoryDetailEntry> {
-	const lastByAnchor = new Map<number | string, HistoryDetailEntry>();
+// event for each anchor — not every assistant row. Runs over the
+// skeleton: anchor, role and seq decide winners — no payload reads.
+function rateableSeqs(slim: HistorySlimEntry[]): number[] {
+	const lastByAnchor = new Map<number | string, HistorySlimEntry>();
 	let unanchoredRun = 0;
 	let inUnanchoredRun = false;
-	for (const entry of detail) {
-		if (entry.message.role !== "assistant") {
+	for (const entry of slim) {
+		if (entry.role !== "assistant") {
 			inUnanchoredRun = false;
 			continue;
 		}
@@ -191,22 +194,30 @@ function rateableAssistantEntries(detail: HistoryDetailEntry[]): Map<string, His
 		lastByAnchor.set(`unanchored:${unanchoredRun}`, entry);
 		inUnanchoredRun = true;
 	}
-	return new Map([...lastByAnchor.values()].map((entry) => [entry.message.id, entry]));
+	return [...lastByAnchor.values()].map((entry) => entry.seq);
+}
+
+// The rating seam's authority: winner seq → stored message id, for the
+// whole transcript — the set survives paging because a later turn can
+// demote a winner inside a page the client already holds.
+function rateableIds(
+	store: ConversationStore,
+	conversationId: string,
+	slim: HistorySlimEntry[],
+): Map<number, string> {
+	return store.messageIdsForSeqs(conversationId, rateableSeqs(slim));
 }
 
 function ratedReplies(
 	store: ConversationStore,
 	conversationId: string,
-	rateable: Map<string, HistoryDetailEntry>,
+	seqToMessageId: Map<number, string>,
 ): AppRatedReply[] {
-	const assistantBySeq = new Map(
-		[...rateable.values()].map((entry) => [entry.seq, entry.message.id] as const),
-	);
 	return openRatings(store.db)
 		.listApp(conversationId)
 		.flatMap((record) => {
 			if (record.eventSeq === null) return [];
-			const messageId = assistantBySeq.get(record.eventSeq);
+			const messageId = seqToMessageId.get(record.eventSeq);
 			return messageId === undefined
 				? []
 				: [
@@ -226,6 +237,10 @@ function ratedReplies(
 // for naming. Total stays under the titler's own input cap.
 const TITLE_DIGEST_RECENT = 3;
 const TITLE_DIGEST_PART_CHARS = 500;
+
+// /messages serves the newest window plus an olderCursor instead of
+// the whole transcript — history stays bounded however big it grows.
+const MESSAGES_PAGE = 200;
 export function titleDigest(history: readonly UIMessage[]): string {
 	const users = history
 		.filter((m) => m.role === "user")
@@ -307,10 +322,10 @@ export async function handleConversationsRoute(
 					if (existing === null && project !== null) {
 						store.bindProject(row.id, project.id);
 					}
-					if (
-						existing === null &&
-						(project?.memory === "off" || parsed.data.memoryExcluded === true)
-					) {
+					if (existing === null && project?.memory === "off") {
+						// The gate's stamp, marked so a re-open recomputes it.
+						store.setMeta(row.id, { memoryExcluded: true, memoryExcludedByProject: true });
+					} else if (existing === null && parsed.data.memoryExcluded === true) {
 						store.setMeta(row.id, { memoryExcluded: true });
 					}
 					if (parsed.data.title !== undefined) {
@@ -401,10 +416,18 @@ export async function handleConversationsRoute(
 			);
 		}
 		let cancelled = 0;
-		if (parsed.data.memoryExcluded !== conv.memoryExcluded) {
+		if (
+			parsed.data.memoryExcluded !== conv.memoryExcluded ||
+			(parsed.data.memoryExcluded && conv.memoryExcludedByProject)
+		) {
 			// A flag write, not a settings change: no epoch bump — a running
 			// turn finishes, its retention refused at the land-time gate.
-			store.setMeta(convId.id, { memoryExcluded: parsed.data.memoryExcluded });
+			// An operator decision also retires any project-gate stamp —
+			// confirming an already-stamped exclusion adopts it as theirs.
+			store.setMeta(convId.id, {
+				memoryExcluded: parsed.data.memoryExcluded,
+				memoryExcludedByProject: false,
+			});
 			if (parsed.data.memoryExcluded) {
 				cancelled = store.memoryQueue.cancelConversation(convId.id);
 			}
@@ -433,6 +456,9 @@ export async function handleConversationsRoute(
 		if (req.method !== "GET" && req.method !== "PATCH") {
 			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
 		}
+		// PATCH-only response fields — gathered in the PATCH branch, joined
+		// onto the shared config view at the end.
+		let patchExtras: Pick<AppConfigPatchResponse, "appliesFrom" | "thinkingClamped"> = {};
 		if (req.method === "PATCH") {
 			const refusedJson = jsonBodyRefusal(req);
 			if (refusedJson !== null) return refusedJson;
@@ -468,10 +494,11 @@ export async function handleConversationsRoute(
 			const stored = store.readAppSettings(convId.id, cfg);
 			// A stored level the target model can't express is a lie — the
 			// write persists what the wire clamp would send instead.
+			const askedThinking = parsed.data.thinking ?? stored.thinking;
 			const thinking = clampThinkingFor(
 				cfg.providers,
 				parsed.data.model ?? stored.model,
-				parsed.data.thinking ?? stored.thinking,
+				askedThinking,
 			);
 			store.setMeta(convId.id, {
 				...(parsed.data.model !== undefined ? { model: parsed.data.model } : {}),
@@ -483,10 +510,21 @@ export async function handleConversationsRoute(
 				...(parsed.data.thinking !== thinking ? { thinkingApplied: thinking } : {}),
 				applies: "next turn",
 			});
+			patchExtras = {
+				// A running turn keeps the pair it admitted on — say so in
+				// the response, not only in the log.
+				...(runtime.busy(convId.id) ? { appliesFrom: "next-turn" as const } : {}),
+				...(askedThinking !== thinking
+					? { thinkingClamped: { from: askedThinking, to: thinking } }
+					: {}),
+			};
 		}
 		const cfg = deps.configRef.current;
 		const settings = store.initializeAppSettings(convId.id, cfg);
-		return Response.json(configView(cfg, settings), { headers: NO_STORE });
+		return Response.json(
+			{ ...configView(cfg, settings), ...patchExtras } satisfies AppConfigPatchResponse,
+			{ headers: NO_STORE },
+		);
 	}
 
 	const contextMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/context$/);
@@ -666,12 +704,13 @@ export async function handleConversationsRoute(
 		if (store.get(convId.id) === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		const detail = store.historyDetail(convId.id);
-		const rateable = rateableAssistantEntries(detail);
+		const slim = store.historySlim(convId.id);
+		const bySeq = new Map(slim.map((entry) => [entry.seq, entry]));
+		const seqToId = rateableIds(store, convId.id, slim);
 		const ratings = openRatings(store.db);
 		if (req.method === "GET") {
 			const body: AppReplyRatingList = {
-				ratings: ratedReplies(store, convId.id, rateable),
+				ratings: ratedReplies(store, convId.id, seqToId),
 			};
 			return Response.json(body, { headers: NO_STORE });
 		}
@@ -680,7 +719,8 @@ export async function handleConversationsRoute(
 		}
 		const body = await parsedJson(req, replyRatingBody);
 		if (body instanceof Response) return body;
-		const entry = rateable.get(body.messageId);
+		const seq = new Map([...seqToId].map(([s, mid]) => [mid, s])).get(body.messageId);
+		const entry = seq === undefined ? undefined : bySeq.get(seq);
 		if (entry === undefined) {
 			return Response.json(
 				{ error: "no such assistant reply" },
@@ -695,7 +735,7 @@ export async function handleConversationsRoute(
 		});
 		const record = ratings.latestEvent(convId.id, entry.seq)!;
 		const rating: AppRatedReply = {
-			messageId: entry.message.id,
+			messageId: body.messageId,
 			eventSeq: entry.seq,
 			anchorSeq: record.anchorSeq,
 			rating: record.rating,
@@ -720,22 +760,57 @@ export async function handleConversationsRoute(
 		if (store.get(convId.id) === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		const detail = store.historyDetail(convId.id);
-		const rateable = rateableAssistantEntries(detail);
+		const slim = store.historySlim(convId.id);
+		// The window cut rides the skeleton's causal order: ?before=k:s
+		// serves the page that ENDS right before the entry the cursor
+		// names, so a mid-order anchored arrival can never skip or
+		// double-serve a row.
+		let end = slim.length;
+		const before = new URL(req.url).searchParams.get("before");
+		if (before !== null) {
+			const m = /^(\d+):(\d+)$/.exec(before);
+			if (m === null) {
+				return Response.json({ error: "bad cursor" }, { status: 400, headers: NO_STORE });
+			}
+			const ck = Number(m[1]);
+			const cs = Number(m[2]);
+			// First entry at or after the cursor — the cursor's own index
+			// while it stands, its insertion point after a rewind.
+			const i = slim.findIndex((e) => {
+				const k = e.anchorSeq ?? e.seq;
+				return k > ck || (k === ck && e.seq >= cs);
+			});
+			end = i === -1 ? slim.length : i;
+		}
+		const start = Math.max(0, end - MESSAGES_PAGE);
+		const entries = store.historyData(
+			convId.id,
+			slim.slice(start, end).map((e) => e.seq),
+		);
 		// Fold marks render where the fold RAN (design/compaction.md →
 		// "Fold marks in the app"): afterIndex is the last message whose
 		// created_at is at or before the compaction row's — not the cut.
 		// eventsCompacted still counts the folded span: consecutive
 		// boundaries over the causal order, matching runCompaction's
 		// slice. firstKeptIndex is the cut's far side — the first message
-		// the model still sees verbatim.
-		const causal = detail.map((entry) => entry.anchorSeq ?? entry.seq);
-		const createdMs = detail.map((entry) => Date.parse(entry.createdAt));
+		// the model still sees verbatim. All indexes are
+		// transcript-absolute — the client subtracts its loaded base.
+		const causal = slim.map((entry) => entry.anchorSeq ?? entry.seq);
+		const createdMs = slim.map((entry) => Date.parse(entry.createdAt));
 		const compactions: AppCompactionMark[] = [];
 		let prevUpto = 0;
 		for (const mark of store.listCompactions(convId.id)) {
 			let upto = prevUpto;
 			while (upto < causal.length && causal[upto]! <= mark.boundarySeq) upto++;
+			// #403 split turns: the split event is both folded and kept —
+			// its prefix folded, its suffix the model's first kept message.
+			// Point firstKeptIndex at it and stop counting it as compacted;
+			// it is the last causal ≤ boundary, so this only ever steps back
+			// onto it.
+			if (mark.split !== null) {
+				const splitIdx = slim.findIndex((s) => s.seq === mark.split!.seq);
+				if (splitIdx >= 0 && splitIdx < upto) upto = splitIdx;
+			}
 			const foldMs = Date.parse(mark.createdAt);
 			let afterIndex = -1;
 			for (let i = 0; i < createdMs.length; i++) {
@@ -754,10 +829,15 @@ export async function handleConversationsRoute(
 			});
 			prevUpto = upto;
 		}
+		const seqToId = rateableIds(store, convId.id, slim);
 		const body: AppMessageList = {
-			messages: detail.map((entry) => entry.message),
-			ratings: ratedReplies(store, convId.id, rateable),
-			rateableMessageIds: [...rateable.keys()],
+			messages: entries.map((entry) => entry.message),
+			start,
+			// The next page ends right before this window's first entry.
+			olderCursor:
+				start > 0 ? `${causal[start]}:${slim[start]!.seq}` : null,
+			ratings: ratedReplies(store, convId.id, seqToId),
+			rateableMessageIds: [...seqToId.values()],
 			compactions,
 		};
 		log.debug("app history served", { conversation: convId.id, messages: body.messages.length });
@@ -875,7 +955,14 @@ export async function handleConversationsRoute(
 		}
 		try {
 			const current = flatLine(conv.title ?? "");
-			const title = await deps.titleFor(input, current === "" ? undefined : current);
+			const settings = store.readAppSettings(convId.id, {
+				model: deps.configRef.current.model,
+				thinking: deps.configRef.current.thinking,
+			});
+			const title = await deps.titleFor(input, {
+				...(current === "" ? {} : { avoid: current }),
+				model: settings.model,
+			});
 			if (title === null || title === "") {
 				log.warn("app suggest-title empty", { conversation: convId.id, inputChars: input.length });
 				return Response.json(

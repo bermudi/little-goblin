@@ -1,4 +1,5 @@
 import { describe, expect, jest, spyOn, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api } from "grammy";
 import { type Config, memoryConfigSchema } from "../config-schema.ts";
@@ -11,7 +12,7 @@ import type { Runtime } from "../runtime.ts";
 import { tmpDb, waitUntil } from "../testkit.ts";
 import type { TurnRun, TurnToolCall } from "../turn-journal.ts";
 import type { ResumeOps } from "../turn-resume.ts";
-import { type CommandDeps, handleCommand } from "./commands.ts";
+import { COMMAND_RE, type CommandDeps, handleCommand } from "./commands.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 
 const config: Config = {
@@ -80,6 +81,20 @@ describe("commands", () => {
 		expect(compactCalls).toEqual([conv.id]);
 		expect(sent[0]).toContain("compacted 42 messages");
 		expect(sent[0]).toContain("kept the last 6");
+		store.close();
+	});
+
+	test("/compact <focus> passes the focus to the compactor", async () => {
+		const focuses: Array<string | undefined> = [];
+		const { store, conv, deps } = setup({
+			compact: async (_c, focus) => {
+				focuses.push(focus);
+				return { kind: "noop", reason: "nothing worth compacting" };
+			},
+		});
+		expect(handleCommand(deps, conv, "/compact keep the deploy notes")).toBe(true);
+		await tick();
+		expect(focuses).toEqual(["keep the deploy notes"]);
 		store.close();
 	});
 
@@ -1079,6 +1094,7 @@ describe("recovery commands", () => {
 		resumeRequestSeqsUnreadable: false,
 		filterRetryUsed: false,
 		replyLanded: false,
+		replySeq: null,
 		createdAt: "2026-10-11T00:00:00.000Z",
 		resumedFrom: null,
 		calls: { planned: 1, dispatched: 1, completed: 2, failed: 0, resolved: 0 },
@@ -1254,6 +1270,87 @@ describe("recovery commands", () => {
 		store.close();
 	});
 
+	// The oversized-listing fixture, shared by the chunk-ordering pair
+	// below: 60 runs is several REPLY_CHUNK_LIMIT chunks.
+	const bigRuns = () =>
+		Array.from({ length: 60 }, (_, i) => {
+			const runId = `${String(i).padStart(8, "0")}-2345-6789-0000-000000000000`;
+			return {
+				run: { ...run, runId },
+				calls: Array.from({ length: 3 }, (_, j) => ({
+					...call,
+					toolCallId: `call-${i}-${j}`,
+					args: { q: `detail-${i}-${j}-${"x".repeat(90)}` },
+				})),
+			};
+		});
+
+	test("/resume chunks send strictly in order — a held first send blocks the rest", async () => {
+		const runs = bigRuns();
+		const { store, conv, deps } = setup({
+			resumeOps: () => fakeOps({ interrupted: () => runs }),
+		});
+		const texts: string[] = [];
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		deps.api.sendMessage = (async (_chat: number, text: string) => {
+			const n = texts.push(text);
+			if (n === 1) await gate;
+			return { message_id: n };
+		}) as unknown as Api["sendMessage"];
+		expect(handleCommand(deps, conv, "/resume")).toBe(true);
+		await tick();
+		// Only chunk 1's send is in flight — chunk 2 must not start
+		// before it settles.
+		expect(texts).toHaveLength(1);
+		release();
+		await waitUntil(
+			() => texts.join("\n").includes("/resume 00000059 · /abandon 00000059"),
+			"all chunks land",
+		);
+		expect(texts.length).toBeGreaterThan(1);
+		// Every run's listing lands in listing order across the chunks.
+		const joined = texts.join("\n");
+		const positions = runs.map((_, i) =>
+			joined.indexOf(`interrupted run ${String(i).padStart(8, "0")}`),
+		);
+		expect(positions.every((p) => p >= 0)).toBe(true);
+		expect(positions).toEqual([...positions].sort((a, b) => a - b));
+		store.close();
+	});
+
+	test("/resume keeps sending later chunks, in order, after a failed send", async () => {
+		const { store, conv, deps } = setup({
+			resumeOps: () => fakeOps({ interrupted: () => bigRuns() }),
+		});
+		const texts: string[] = [];
+		deps.api.sendMessage = (async (_chat: number, text: string) => {
+			const n = texts.push(text);
+			if (n === 1) throw new Error("bot api wedged");
+			return { message_id: n };
+		}) as unknown as Api["sendMessage"];
+		const warn = spyOn(log, "warn");
+		try {
+			expect(handleCommand(deps, conv, "/resume")).toBe(true);
+			await waitUntil(
+				() => warn.mock.calls.some(([msg]) => msg === "command reply failed"),
+				"failure logged",
+			);
+			await waitUntil(
+				() => texts.join("\n").includes("/resume 00000059 · /abandon 00000059"),
+				"remaining chunks land",
+			);
+			expect(texts.length).toBeGreaterThan(2);
+			const failed = warn.mock.calls.find(([msg]) => msg === "command reply failed");
+			expect(failed?.[2]).toMatchObject({ chunk: 1, of: texts.length });
+		} finally {
+			warn.mockRestore();
+		}
+		store.close();
+	});
+
 	test("/resume <id> admits the fresh turn and reports the blocked list", async () => {
 		const { store, conv, sent, deps } = setup({
 			resumeOps: () =>
@@ -1352,5 +1449,31 @@ describe("recovery commands", () => {
 			"turn resume is not wired",
 		]);
 		store.close();
+	});
+});
+
+// #340 drift guard: every command COMMAND_RE recognizes must be handled
+// exactly once — by handleCommand's switch below, or by the
+// interceptions handleMessage (src/tg/intake.ts) runs before it: /new
+// and /back (dm navigation) and /skill (async door, ruling 2026-10-21;
+// folding it into the switch is #462). A listed command with neither
+// is silently treated as ordinary text; a switch case nothing lists is
+// dead. Both drift directions fail here.
+describe("command surface drift (#340)", () => {
+	test("recognized commands are exactly the switch cases plus the documented interceptions", () => {
+		const source = readFileSync(join(import.meta.dir, "commands.ts"), "utf8");
+		const switchCases = [...source.matchAll(/case "(\/\w+)":/g)].map((m) => m[1]!);
+		const alternation = COMMAND_RE.source.match(/^\^\\\/\(([^)]+)\)/)?.[1] ?? "";
+		expect(alternation).not.toBe("");
+		const recognized = alternation.split("|").map((name) => `/${name}`);
+		const intercepted = ["/new", "/back", "/skill"];
+		expect([...switchCases].sort()).toEqual(
+			[...recognized].filter((cmd) => !intercepted.includes(cmd)).sort(),
+		);
+		// And each case actually handles its command — a label is not a handler.
+		const { deps, conv } = setup();
+		for (const cmd of switchCases) {
+			expect(handleCommand(deps, conv, cmd)).toBe(true);
+		}
 	});
 });

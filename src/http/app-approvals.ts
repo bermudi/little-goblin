@@ -67,6 +67,7 @@ export async function handleApprovalsRoute(
 				decidedBy: row.decidedBy,
 				sentId: row.sentId,
 			})),
+			serverTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
 		};
 		return Response.json(body, { headers: NO_STORE });
 	}

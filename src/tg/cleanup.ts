@@ -1,5 +1,5 @@
 import { log } from "../log.ts";
-import type { RunningBot } from "./mod.ts";
+import type { RunningBot } from "./bot.ts";
 
 // One cleanup per owned bot, even when shutdown races a failed attach.
 // Both operations are attempted; a failure means it is unsafe to retry attach.

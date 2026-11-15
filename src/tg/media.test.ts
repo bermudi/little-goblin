@@ -61,6 +61,14 @@ describe("mediaFromMessage", () => {
 		expect(m!.fileName).toBe("animation-u9.mp4");
 	});
 
+	test("a video sticker is saved as webm, not webp", () => {
+		const m = mediaFromMessage({
+			sticker: { file_id: "s", file_unique_id: "u7", is_video: true },
+		});
+		expect(m!.fileName).toBe("sticker-u7.webm");
+		expect(m!.mimeType).toBe("video/webm");
+	});
+
 	test("a photo picks the largest size", () => {
 		const m = mediaFromMessage({
 			photo: [

@@ -47,6 +47,7 @@ describe("maybeRenameTopic", () => {
 			{ api: fakeApi(calls), store, titleFor: () => Promise.resolve("Math questions") },
 			conv,
 			"2+5?",
+			"prov/model",
 		);
 
 		expect(calls).toEqual([{ chatId: 42, threadId: 7, other: { name: "Math questions" } }]);
@@ -69,7 +70,7 @@ describe("maybeRenameTopic", () => {
 			return Promise.resolve("Math questions");
 		};
 
-		await maybeRenameTopic({ api: fakeApi(calls), store, titleFor }, conv, "2+5?");
+		await maybeRenameTopic({ api: fakeApi(calls), store, titleFor }, conv, "2+5?", "prov/model");
 
 		expect(calls).toEqual([]);
 		expect(store.get(conv.id)!.title).toBe("mine");
@@ -88,7 +89,12 @@ describe("maybeRenameTopic", () => {
 				return true;
 			},
 		} as Api;
-		await maybeRenameTopic({ api, store, titleFor: async () => "generated" }, conv, "question");
+		await maybeRenameTopic(
+			{ api, store, titleFor: async () => "generated" },
+			conv,
+			"question",
+			"prov/model",
+		);
 		expect(names).toEqual(["generated", "mine"]);
 		expect(store.get(conv.id)?.title).toBe("mine");
 		store.close();
@@ -104,6 +110,7 @@ describe("maybeRenameTopic", () => {
 			{ api: fakeApi(calls), store, titleFor: () => Promise.resolve(null) },
 			conv,
 			"2+5?",
+			"prov/model",
 		);
 
 		expect(calls).toEqual([]);

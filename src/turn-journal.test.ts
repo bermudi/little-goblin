@@ -267,7 +267,7 @@ describe("turn journal", () => {
 		journal.noteToolResult(runId, "call-1", { ok: true });
 		// The reply and its landed fact commit together — a kill in the
 		// delivery window leaves a durable reply behind the 'running' row.
-		journal.noteReplyLanded(runId);
+		journal.noteReplyLanded(runId, 1);
 		store.append(conv.id, [
 			{ id: "a1", role: "assistant", parts: [{ type: "text", text: "the landed reply" }] },
 		]);

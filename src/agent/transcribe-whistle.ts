@@ -44,8 +44,8 @@ export interface WhistleDeps extends EngineDeps {
 	digests?: { engine: string; weights: string };
 }
 
-// sha256 of artifacts probed 2026-10-09. A mismatch is supply-chain
-// drift — never run different weights.
+// sha256 of artifacts probed 2026-10-09, re-verified 2026-11-13. A
+// mismatch is supply-chain drift — never run different weights.
 const PINNED_DIGESTS = {
 	engine: "f38dc4b0345d66b4e385734ad0f12af43ac6e2cfa1752d0795af5c137200c8e4",
 	weights: "b6e02f048568ac5d01a2042556c658061e699acbc0aa2a1439f52f3d461dffeb",
@@ -60,9 +60,11 @@ function artifactUrls(arch: string, platform: string): { engine: string; weights
 			`whistle: no verified prebuilt engine for ${platform}-${arch} — set transcription.engine and transcription.weights to local paths (design/asr.md → Whistle)`,
 		);
 	}
+	// Pin by commit, never a branch — upstream rewrote and then deleted
+	// the file under `main`.
 	return {
-		engine: "https://huggingface.co/Cactus-Compute/needle3/resolve/main/linux-x86_64/needle",
-		weights: "https://huggingface.co/Cactus-Compute/whistle/resolve/main/whistle.cact",
+		engine: "https://huggingface.co/Cactus-Compute/needle3/resolve/2ae11323dc000f5e70c49f7403efa6af12ba9e67/linux-x86_64/needle",
+		weights: "https://huggingface.co/Cactus-Compute/whistle/resolve/ad73f1468dd5203791e0cc81d31544c553563645/whistle.cact",
 	};
 }
 

@@ -122,7 +122,10 @@ Rulings:
 - **Recurrence is cron, evaluated in the server's local timezone**
   (operator = admin; `date` via bash agrees): an invalid expression is
   rejected before a row exists, and there are no interval-plus-prose
-  hybrids — prose recurrence is where heartbeat bugs came from.
+  hybrids — prose recurrence is where heartbeat bugs came from. Every
+  surface that shows a schedule — the app's program view, both approval
+  cards, the Telegram card's `triggers:` line — renders the words plus
+  the server zone's short label, the raw expression beside it.
 - **A program belongs to the conversation where it was created** — the
   tool pins the chat/topic from the live conversation (the model never
   handles chat ids); replies land there, and a fire is delivered like
@@ -238,7 +241,13 @@ Rulings:
   the responsibility's wake/run history establishes actual model work.
 
   Corrections, changed lifecycle status, and deliberate reattachment
-  invalidate the old review and establish a fresh silence backstop.
+  invalidate the old review and establish a fresh silence backstop. A
+  `waiting` report's `resumeWhen` is a stronger claim — the reporter
+  names when the external condition changes — so it plans the next
+  review at that stated time with commitment semantics; a `waiting`
+  report whose `resumeWhen` does not parse to a time is refused with a
+  steer to `action=followup`, which is the path for a condition that
+  has no time.
   Paused, completed, and cancelled work gets no timed inference;
   resumption never resurrects the old promise. While the derived stage
   (below) waits on the operator, the silence backstop is held — not
@@ -265,7 +274,8 @@ Rulings:
   writes them). `responsibility_reports` is append-only:
   `progress | waiting | ready | blocked | failed | done | dropped`, a
   reason, an optional single `question` for the operator, a
-  `resumeWhen` (required for `waiting`, an external condition), evidence
+  `resumeWhen` (required for `waiting`, an external condition — must
+  parse to a time, which becomes the next review), evidence
   items `{item, ref, checked}`, the revision it was stated against, and
   the reporter — `goblin` (the coordinating turn's assessment of the
   Herdr observations), `worker` (reserved for pi-durable runs, which

@@ -587,6 +587,13 @@ describe("scheduler", () => {
 			scheduledFor: new Date("2026-09-20T10:00:00").toISOString(),
 			lateMs: 5 * 60_000,
 		});
+		// The fire tag names the latest missed occurrence and how many
+		// scheduled fires it stands in for (07:30..10:00 every 30m = 6).
+		const tag = (h.submitted[0]!.parts as { type: string; text?: string }[])
+			.map((p) => p.text)
+			.find((t) => t?.startsWith("[program:"));
+		expect(tag).toContain("occurrence: 2026-09-20T10:00:00.000Z");
+		expect(tag).toContain("coalesced: 6");
 		await closeSinks(h);
 	});
 
@@ -618,6 +625,9 @@ describe("scheduler", () => {
 		expect(after.lastRun).toBeNull();
 		expect(new Date(after.nextRun!).getTime()).toBeGreaterThan(scanAt.getTime());
 		expect(h.deps.programs.due(scanAt)).toEqual([]);
+		// The skip is stamped on the row so the Programs page can show it.
+		expect(after.lastSkippedAt).toBe(scanAt.toISOString());
+		expect(after.lastSkipReason).toBe("beyond lateness grace");
 		const skipped = captured
 			.map((line) => JSON.parse(line) as Record<string, unknown>)
 			.filter((line) => line.msg === "program skipped — beyond lateness grace");
@@ -1024,9 +1034,11 @@ describe("scheduler", () => {
 		startScheduler(h.deps).stop(); // the boot scan fires
 		expect(h.submitted).toHaveLength(1);
 		expect(h.submitted[0]!.conv).toBe("topic:-100:7");
-		expect(h.submitted[0]!.parts).toEqual([
-			{ type: "text", text: "[program: morning brief · trigger: schedule]\nbrief me on the day" },
-		]);
+		const parts = h.submitted[0]!.parts as { type: string; text: string }[];
+		expect(parts).toHaveLength(1);
+		expect(parts[0]!.text).toMatch(
+			/^\[program: morning brief · trigger: schedule · occurrence: \S+( · coalesced: \d+)?\]\nbrief me on the day$/,
+		);
 		// Marked ran — not due again this minute.
 		expect(h.deps.programs.due(new Date()).map((j) => j.id)).not.toContain(job.id);
 		await closeSinks(h);
@@ -1634,7 +1646,7 @@ describe("schedule fire retry ladder", () => {
 			await waitUntil(() => h.submitted.length >= 2, "retry submits");
 			expect(h.submitted).toHaveLength(2);
 			expect((h.submitted[1]!.parts[0]! as { text: string }).text).toContain(
-				"[program: ladder · trigger: schedule]",
+				"[program: ladder · trigger: schedule",
 			);
 			// markRan ran exactly once — at the original fire.
 			expect(h.deps.programs.get(program.id)!.lastRun).toBe(lastRunAfterFire);

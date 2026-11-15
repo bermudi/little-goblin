@@ -190,6 +190,27 @@ describe("MessageParts", () => {
 		expect(html).not.toContain("note-chip");
 	});
 
+	test("an audio attachment with a transcription error shows the failure on its chip", () => {
+		const html = renderToStaticMarkup(
+			<MessageParts
+				parts={[
+					{
+						type: "data-attachment",
+						data: {
+							path: "attachments/voice.ogg",
+							mediaType: "audio/ogg",
+							filename: "voice.ogg",
+							size: 64,
+							speech: true,
+							transcriptionError: "no secret named whisper",
+						},
+					} as UIMessage["parts"][number],
+				]}
+			/>,
+		);
+		expect(html).toContain("couldn&#x27;t transcribe: no secret named whisper");
+	});
+
 	test("an optimistic note attachment with only an id still renders its chip", () => {
 		// The Composer sends {id} + picked title before the server's
 		// expansion lands — the bubble must never render empty.
@@ -1408,6 +1429,270 @@ describe("ChatView send accepted", () => {
 	});
 });
 
+describe("ChatView seed send (issue #412)", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+	const sseHeaders = {
+		"content-type": "text/event-stream",
+		"x-vercel-ai-ui-message-stream": "v1",
+	};
+
+	test("a held first turn shows Stop; clicking it fires the same stop request", async () => {
+		// The seed send races the mount-time resume probe: the GET
+		// /stream resolves 204 after the seed's POST already set
+		// "submitted", and the SDK's null-reconnect path flips status
+		// back to "ready" — no Stop, no in-flight shimmer, for the whole
+		// (held) turn. The turn's wire opens but never produces.
+		const liveStream = new ReadableStream<Uint8Array>({ start() {} });
+		const chatPosts: { conversationId?: string; message?: UIMessage }[] = [];
+		const stopCalls: string[] = [];
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+				if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+				if (url === "/api/app/chat") {
+					chatPosts.push(JSON.parse(String(init?.body)));
+					return new Response(liveStream, { headers: sseHeaders });
+				}
+				if (url.endsWith("/stop")) {
+					stopCalls.push(`${init?.method ?? "GET"} ${url}`);
+					return jsonResponse({ stopped: true, settled: true });
+				}
+				return jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				});
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-03"
+					title={null}
+					seed={[{ type: "text", text: "first!" }]}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		for (let i = 0; i < 100 && chatPosts.length === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		// The seed went out as the conversation's first send.
+		expect(chatPosts).toHaveLength(1);
+		expect(chatPosts[0]?.conversationId).toBe("app/chat-03");
+		expect(chatPosts[0]?.message?.parts).toEqual([{ type: "text", text: "first!" }]);
+		// The turn is running and the wire is silent — Stop must show.
+		expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
+		// Stop on the first turn is the same stop the later turns use.
+		await act(async () => {
+			(dom.container.querySelector(".stop-btn") as HTMLElement).click();
+		});
+		for (let i = 0; i < 100 && stopCalls.length === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+		expect(stopCalls).toEqual(["POST /api/app/conversations/chat-03/stop"]);
+	});
+
+	test("a black-holed stream probe does not park the seed — POST sent, Stop shows", async () => {
+		// Regression shape (verified against the latch-only fix): a
+		// seeded mount whose GET /stream never answers must still send.
+		// A seeded mount is a conversation created moments ago — nothing
+		// can be live — so its probe never reaches the network at all.
+		const liveStream = new ReadableStream<Uint8Array>({ start() {} });
+		const chatPosts: { conversationId?: string; message?: UIMessage }[] = [];
+		let streamGets = 0;
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+				if (url.endsWith("/stream")) {
+					streamGets += 1;
+					// The black hole: headers never arrive.
+					return new Promise<Response>(() => {});
+				}
+				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+				if (url === "/api/app/chat") {
+					chatPosts.push(JSON.parse(String(init?.body)));
+					return new Response(liveStream, { headers: sseHeaders });
+				}
+				return jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				});
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-03"
+					title={null}
+					seed={[{ type: "text", text: "first!" }]}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		for (let i = 0; i < 100 && chatPosts.length === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				});
+		}
+		// The seed POST went out despite the probe's socket going nowhere.
+		expect(chatPosts).toHaveLength(1);
+		expect(chatPosts[0]?.message?.parts).toEqual([{ type: "text", text: "first!" }]);
+		// The turn is running on a silent wire — Stop shows.
+		expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
+		// And the probe never asked the network at all.
+		expect(streamGets).toBe(0);
+	});
+
+	test("a seeded mount makes no GET to /stream — even one that would answer", async () => {
+		const liveStream = new ReadableStream<Uint8Array>({ start() {} });
+		let chatPosts = 0;
+		let streamGets = 0;
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+				if (url.endsWith("/stream")) {
+					streamGets += 1;
+					return new Response(null, { status: 204 });
+				}
+				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+				if (url === "/api/app/chat") {
+					chatPosts += 1;
+					return new Response(liveStream, { headers: sseHeaders });
+				}
+				return jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				});
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-04"
+					title={null}
+					seed={[{ type: "text", text: "first!" }]}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		for (let i = 0; i < 100 && chatPosts === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				});
+		}
+		// The seed sent — the mount had its one send — and never probed.
+		expect(chatPosts).toBe(1);
+		expect(streamGets).toBe(0);
+	});
+
+	test("a non-seeded mount still probes /stream", async () => {
+		let streamGets = 0;
+		globalThis.fetch = Object.assign(
+			async (input: RequestInfo | URL, _init?: RequestInit) => {
+				const url =
+					typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (url.endsWith("/messages"))
+					return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+				if (url.endsWith("/stream")) {
+					streamGets += 1;
+					return new Response(null, { status: 204 });
+				}
+				if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+				return jsonResponse({
+					model: "prov/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				});
+			},
+			{ preconnect: dom.realFetch.preconnect },
+		);
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/chat-05"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+		// The reload/reconnect window still asks the server on mount.
+		for (let i = 0; i < 100 && streamGets === 0; i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+				});
+		}
+		expect(streamGets).toBe(1);
+	});
+});
+
 describe("ChatView edit and branch", () => {
 	const dom = mountDom();
 
@@ -1944,6 +2229,147 @@ describe("ChatView edit and branch", () => {
 		await settle(() => dom.container.querySelector(".msg-err") !== null);
 		expect(dom.container.querySelector(".msg-err")?.textContent).toBe("a turn is running");
 		expect(opened).toBe(0);
+	});
+});
+
+describe("ChatView paged history", () => {
+	const dom = mountDom();
+
+	const jsonResponse = (body: unknown, status = 200): Response =>
+		new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+	const msg = (id: string, role: "user" | "assistant", text: string): UIMessage => ({
+		id,
+		role,
+		parts: [{ type: "text", text }],
+	});
+	const configFallback = () => ({
+		model: "prov/model",
+		thinking: "off",
+		favorites: [],
+		catalog: [],
+		thinkingLevels: ["off"],
+	});
+	const settle = async (check: () => boolean) => {
+		for (let i = 0; i < 100 && !check(); i++) {
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 15));
+			});
+		}
+	};
+	const mountChat = async () => {
+		dom.root = createRoot(dom.container);
+		await act(async () =>
+			dom.root?.render(
+				<ChatView
+					token={null}
+					conversationId="app/paged-01"
+					title={null}
+					seed={null}
+					staged={[]}
+					setStaged={() => {}}
+					stagedNotes={[]}
+					setStagedNotes={() => {}}
+					stagedSkills={[]}
+					setStagedSkills={() => {}}
+					onSeeded={() => {}}
+					onTurnDone={() => {}}
+				/>,
+			),
+		);
+	};
+	const msgTexts = () =>
+		[...dom.container.querySelectorAll(".msg")].map((el) => el.textContent ?? "");
+
+	test("Load older prepends the previous page — the fold mark maps to the transcript", async () => {
+		const mark = {
+			boundarySeq: 2,
+			afterIndex: 1,
+			firstKeptIndex: 0,
+			eventsCompacted: 2,
+			tailEvents: null,
+			tokensBefore: 1200,
+			summary: "the early exchange",
+			model: "prov/model",
+			createdAt: "2026-01-01T00:00:00Z",
+		};
+		globalThis.fetch = (async (input: RequestInfo | URL) => {
+			const url =
+				typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes("/messages?before=")) {
+				return jsonResponse({
+					messages: [msg("u1", "user", "first question"), msg("a1", "assistant", "first answer")],
+					start: 0,
+					olderCursor: null,
+					ratings: [],
+					rateableMessageIds: ["a1", "a2"],
+					compactions: [mark],
+				});
+			}
+			if (url.endsWith("/messages")) {
+				return jsonResponse({
+					messages: [msg("u2", "user", "second question"), msg("a2", "assistant", "second answer")],
+					start: 2,
+					olderCursor: "2:3",
+					ratings: [],
+					rateableMessageIds: ["a1", "a2"],
+					compactions: [mark],
+				});
+			}
+			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+			if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+			return jsonResponse(configFallback());
+		}) as typeof fetch;
+
+		await mountChat();
+		await settle(() => dom.container.querySelector(".load-older") !== null);
+		// The fold ran before the loaded window — its pill parks at the top.
+		expect(dom.container.querySelector(".fold-mark")).not.toBeNull();
+		expect(msgTexts().join(" ")).toContain("second question");
+		expect(msgTexts().join(" ")).not.toContain("first question");
+
+		const btn = dom.container.querySelector<HTMLButtonElement>(".load-older")!;
+		await act(async () => {
+			btn.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+		});
+		await settle(() => msgTexts().join(" ").includes("first answer"));
+		expect(msgTexts()).toEqual([
+			expect.stringContaining("first question"),
+			expect.stringContaining("first answer"),
+			expect.stringContaining("second question"),
+			expect.stringContaining("second answer"),
+		]);
+		// The mark's absolute index now lands inside the loaded span —
+		// the pill sits after the first answer, before the second question.
+		const order = [...dom.container.querySelectorAll(".transcript-inner > *")].map((el) =>
+			el.classList.contains("fold-mark") ? "mark" : el.classList.contains("msg") ? "msg" : "?",
+		);
+		expect(order).toEqual(["msg", "msg", "mark", "msg", "msg"]);
+		// No cursor left — the control is gone.
+		expect(dom.container.querySelector(".load-older")).toBeNull();
+	});
+
+	test("a single page never shows the control", async () => {
+		globalThis.fetch = (async (input: RequestInfo | URL) => {
+			const url =
+				typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (url.endsWith("/messages")) {
+				return jsonResponse({
+					messages: [msg("u1", "user", "only question")],
+					start: 0,
+					olderCursor: null,
+					ratings: [],
+					rateableMessageIds: [],
+					compactions: [],
+				});
+			}
+			if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+			if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
+			return jsonResponse(configFallback());
+		}) as typeof fetch;
+
+		await mountChat();
+		await settle(() => msgTexts().join(" ").includes("only question"));
+		expect(dom.container.querySelector(".load-older")).toBeNull();
 	});
 });
 
@@ -2911,6 +3337,33 @@ describe("composer model knob (happy-dom)", () => {
 		await click(popItem("Fav A"));
 		expect(configPatches).toEqual([{ model: "prov/fav-a" }]);
 		expect(dom.container.querySelector(".model-pop")).toBeNull();
+		// A plain PATCH response carries no note.
+		expect(dom.container.querySelector(".composer-note")).toBeNull();
+	});
+
+	test("a clamped or running-turn PATCH response surfaces as a one-line note", async () => {
+		await mount();
+		// After mount, the PATCH responder reports both notes at once:
+		// the thinking clamp and the applies-from-next-turn ack.
+		globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url =
+				typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url.endsWith("/config") && (method === "PATCH" || method === "POST")) {
+				return jsonResponse({
+					...CFG,
+					model: "prov/fav-a",
+					thinkingClamped: { from: "xhigh", to: "max" },
+					appliesFrom: "next-turn",
+				});
+			}
+			return jsonResponse({ ...CFG });
+		}) as typeof fetch;
+		await click(knob());
+		await click(popItem("Fav A"));
+		const note = dom.container.querySelector(".composer-note");
+		expect(note?.textContent).toContain("thinking clamped xhigh → max");
+		expect(note?.textContent).toContain("applies from the next turn");
 	});
 
 	test("All models… opens the picker sheet; a pick writes the knob", async () => {

@@ -61,19 +61,38 @@ apply next turn without interrupting the current answer.
   window **500ms** (ruling 2026-09-25; measured on a live 7-chunk paste:
   worst inter-chunk gap 167ms ≈ one public-API long-poll RTT ~185ms — 3×
   the observed worst); 200–300ms is safe only LAN-side (self-hosted
-  bot-api). The half-run rule holds: a committed turn doesn't rerun after a
+  bot-api). The first update that fills a lane's buffer (empty →
+  non-empty) pings `sendChatAction typing` once at intake — the buffer's
+  empty→non-empty edge, so a held burst still shows liveness while it
+  coalesces (2026-11-13); the delivery sink's interval owns liveness from
+  admission. The half-run rule holds: a committed turn doesn't rerun after a
   model crash — protecting future updates, not input lost before the
   journal existed. A duplicate never makes a second turn; an
   `edited_message` is not a second message (ruling 2026-10-13): while the
   original coalesces the edit amends buffered text in place, after commit
-  it's ack-and-log. A `file_unique_id` swap is a different message.
+  it's ack-and-log — acked in-channel with `Edit not applied — I already
+  read the original. Send it again to change it.` (2026-11-13). A
+  `file_unique_id` swap is a different message.
 - **Delivery**: a sendMessage timeout is ambiguous — the request may still
   land — **never resend**: stop the turn and best-effort send a "delivery
   uncertain" notice (fencing suppresses retries); a sendVoice timeout
   likewise stops voice, no text fallback. Flood control: a 429's
   `retry_after` is waited out (bounded retries, 20s cumulative cap) with
   +0–250ms jitter per wait so simultaneous callers don't re-collide in
-  lockstep, then the 429 propagates.
+  lockstep, then the 429 propagates. Plain-path chunking packs at
+  3,800 chars under the 4,096 cap — the seam is the last paragraph
+  break (else newline) in the window's back half, an early break
+  never trades a full bubble for a stub; a seam inside a fenced code
+  block closes the fence at the chunk's end and reopens it with the
+  same info string on the next chunk (bounded: past 64 chars the
+  reopen is the bare marker), so a split block stays monospaced on
+  both sides. A sent window's boundary is frozen — a seam that
+  surfaces only once the body crosses the cap never retracts shown
+  text; the pending tail becomes the next window instead. The
+  opener rule is CommonMark's (shared with the HTML renderer): a
+  backtick fence whose info string contains a backtick is an
+  inline code span, not an opener, and a closer is a bare marker
+  run, never one with trailing text.
 - **Reply ratings**: 👍/👎 and the 🔊 ride a clean-completed reply's last
   bubble; errors, fenced, voice-mode, and guest replies get none. The
   callback is only the Telegram adapter over the shared record-only
@@ -92,7 +111,13 @@ apply next turn without interrupting the current answer.
   Failures warn + a short chat message, never a turn failure; the tap
   answers immediately (callbacks expire in seconds). The boot ffmpeg/libopus
   probe failing takes TTS down for the run (boot warning; install ffmpeg,
-  restart). No button in voice mode.
+  restart). No button in voice mode. The 🔊 resolves the full reply
+  durably (ruling 2026-11-13): at finalize every landed bubble's message id
+  is recorded against its reply event (`telegram_deliveries`, one row per
+  chunk, all pointing at the same seq), so a tap speaks the whole reply
+  across restarts, evictions, and split replies. A lookup miss — history
+  predating the table or a rewound reply event — reads the tapped bubble
+  and notes in-thread that only that part could be read.
 - **Files**: `send_file` names, it does not send — "Telegram send is
   delivery, not a tool": sends ride the same chain and fencing, so a
   `/stop`'d turn can't emit one. Magic bytes decide, never the extension;
@@ -103,6 +128,10 @@ apply next turn without interrupting the current answer.
   a turn never switches medium mid-flight. The record keeps the text, so
   toggling off loses nothing and "what did you say verbatim" stays
   answerable; with transcription, a voice-mode topic is ears-in-ears-out.
+  A failed transcription keeps the attachment (the model sees the file)
+  and tells the operator — a one-line `⚠️ Couldn't transcribe this voice
+  note: <reason>` in the lane, mirroring the app chip that surfaces the
+  same stored error.
 - **Mini Apps**: Telegram requires HTTPS and the *client device* fetches the
   page, so the door is config (`publicUrl`) — NAT-first by construction
   (`tailscale serve`/`funnel`, or any cert'd reverse proxy). **One client,
@@ -156,6 +185,21 @@ fresh start a "no, the earlier thing" away.
 mid-turn bursts steer. (2) swipe-reply (`reply_to_message`) joins the
 current conversation, no check, carrying the replied-to text as a quoted
 part — a reply from an older conversation must still say what "this" is.
+When the sender selected a substring (`msg.quote`), the part carries
+that excerpt marked `selected excerpt`, never the whole parent
+(2026-11-13). A reply whose target lives in another chat arrives as
+`external_reply` with no `reply_to_message`; it gets the same quoted
+part — the sender-selected `quote.text` when present, else a
+placeholder naming the origin (`@user`, hidden-user name, `chat
+"title"`, `channel "title"`) and the media kind — never silently
+dropped (2026-11-13).
+The quoted part is bound to 8000 chars in the model's view — the durable
+row keeps the full text — and a cut is marked `…[truncated N chars]`; a
+reply to a textless message renders `[replying to a <media kind>
+message]` (`[replying to a message]` when there is none) so the marker
+is never absent (2026-11-13). A `forward_origin` on the incoming message
+prefixes its text with `[Forwarded from <name> at <ISO date>]` — the
+model sees provenance, not unattributed words.
 (3) past the gap: with an assistant reply on record, the follow-up check decides (follow-up →
 current, new subject → fresh); with none, join. (4) no current conversation
 → fresh, no check. A fresh conversation starts empty; memory and
@@ -198,7 +242,11 @@ Commands bypass slow media intake; pending input is durably assigned to the
 outgoing conversation as history-only — it never starts a turn — and
 archived input can't roll the pin. A persistence failure stops
 acknowledgement, not silent loss; a command addressed to another bot routes
-nothing.
+nothing. Slash-shaped text that matches no known command is never admitted
+as chat text: in private, or when addressed `/cmd@<thisbot>` in a group,
+it earns `Unknown command /x. Try /help.` — `/model` instead points to the
+app (Settings → model, where the picker lives); a bare `/cmd` in a group
+is dropped silently, since it may be another bot's (2026-11-13).
 
 **DM topics are retired.** Old DM-topic conversations stay in the store —
 readable, searchable — never routed to again; any DM message resolves to the
@@ -228,7 +276,11 @@ The unit of trust is the person, not the chat. Two config lists: `operators`
 (min 1 while `telegram.enabled`; may be empty when the channel is off) and
 `allowedUsers` (may be empty). Everyone else is a stranger,
 never served: **every summons gets one short refusal line and nothing else**
-— no turn, no conversation, no state, no meter — on every summons surface
+— no turn, no conversation, no state, no meter — on every summons surface.
+The line names the sender's own numeric Telegram id so a misplaced
+operators/allowedUsers entry is self-diagnosing, and the shipped example
+id `123456789` is flagged by a boot warning and doctor's
+`config.operators` check (2026-11-13)
 (bot DM, member-chat @mention or reply-to-goblin, guest surface — settled
 into the placeholder). Ambient non-operator group chatter is not a summons —
 dropped, no reply.
@@ -359,9 +411,17 @@ finalizing send carries `reply_markup` (ruling 2026-10-13): the rating row
 goes out on the `sendRichMessage`, not a follow-up `editMessageReplyMarkup`
 racing "bubble up" against "buttons on".
 
-**DMs only in v1.** Group and topic conversations keep the current
-edit-streaming sink untouched; group rich rendering and reply-threading are
-unprobed.
+**Rich stays DM-only; the plain sink renders HTML everywhere (ruling
+2026-11-13).** Draft streaming and `sendRichMessage` remain DM-lane
+primitives — group rich rendering and reply-threading stay unprobed. But
+the plain edit-streaming sink no longer ships literal markdown in groups
+and topics: each chunk window renders the model's markdown to Telegram
+HTML (`parse_mode: "HTML"`; `src/tg/tg-html.ts`), with a split code fence
+closed and reopened at the window boundary so both halves stay monospace.
+A window whose render overshoots the 4096-char cap sends raw text, and a
+definite 400 `can't parse entities` rejection retries that chunk once
+unformatted — it stays raw for the rest of the turn; any other send
+failure keeps the existing uncertainty handling.
 
 **Guest answers edit into rich (ruling 2026-10-13).** `editMessageText`'s
 `text_or_rich_message` accepts an `InputRichMessage` (`{markdown}`) with

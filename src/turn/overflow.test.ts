@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import {
 	ContextOverflowError,
 	compactTriggerTokens,
@@ -27,6 +27,7 @@ const conv = (epoch: number, id = "dm:1"): Conversation => ({
 	thinking: null,
 	voice: false,
 	memoryExcluded: false,
+	memoryExcludedByProject: false,
 	projectId: null,
 	persona: "personal",
 	archivedAt: null,
@@ -152,12 +153,12 @@ function harness(
 }
 
 describe("compactTriggerTokens — design/compaction.md → Triggers", () => {
-	test("the lower of half the window and the 128k cap; unknown window fires at the cap", () => {
-		expect(compactTriggerTokens(1_000_000)).toBe(128_000);
+	test("the lower of half the window and the 256k cap; unknown window fires at the cap", () => {
+		expect(compactTriggerTokens(1_000_000)).toBe(256_000);
 		expect(compactTriggerTokens(200_000)).toBe(100_000);
 		expect(compactTriggerTokens(64_000)).toBe(32_000);
-		expect(compactTriggerTokens(undefined)).toBe(128_000);
-		expect(compactTriggerTokens(null)).toBe(128_000);
+		expect(compactTriggerTokens(undefined)).toBe(256_000);
+		expect(compactTriggerTokens(null)).toBe(256_000);
 	});
 });
 
@@ -166,15 +167,15 @@ describe("preemptArm", () => {
 		expect(preemptArm({ projectedInputTokens: null, contextWindow: 200_000 })).toBeNull();
 		expect(preemptArm({ projectedInputTokens: 99_999, contextWindow: 200_000 })).toBeNull();
 		expect(preemptArm({ projectedInputTokens: 100_000, contextWindow: 200_000 })).toBe("pressure");
-		expect(preemptArm({ projectedInputTokens: 128_000, contextWindow: 1_000_000 })).toBe(
+		expect(preemptArm({ projectedInputTokens: 256_000, contextWindow: 1_000_000 })).toBe(
 			"pressure",
 		);
-		expect(preemptArm({ projectedInputTokens: 127_999, contextWindow: 1_000_000 })).toBeNull();
+		expect(preemptArm({ projectedInputTokens: 255_999, contextWindow: 1_000_000 })).toBeNull();
 		// An unknown window fires at the cap alone.
-		expect(preemptArm({ projectedInputTokens: 128_000, contextWindow: undefined })).toBe(
+		expect(preemptArm({ projectedInputTokens: 256_000, contextWindow: undefined })).toBe(
 			"pressure",
 		);
-		expect(preemptArm({ projectedInputTokens: 127_999, contextWindow: undefined })).toBeNull();
+		expect(preemptArm({ projectedInputTokens: 255_999, contextWindow: undefined })).toBeNull();
 	});
 });
 
@@ -403,5 +404,41 @@ describe("recoverFromOverflow", () => {
 			},
 		});
 		expect(await recoverFromOverflow(h.deps)).toEqual({ kind: "fenced" });
+	});
+});
+
+describe("transport failure classification", () => {
+	test("transport-shaped failures compose the drop line and keep the code", () => {
+		expect(terminalFailureMessage(new Error("read ECONNRESET"), false)).toBe(
+			"The model connection dropped (ECONNRESET). Nothing was lost — send again or /resume.",
+		);
+		const viaFetch = new TypeError("fetch failed", {
+			cause: Object.assign(new Error("socket closed"), { code: "ECONNRESET" }),
+		});
+		expect(terminalFailureMessage(viaFetch, false)).toBe(
+			"The model connection dropped (ECONNRESET). Nothing was lost — send again or /resume.",
+		);
+		expect(
+			terminalFailureMessage(new Error("Failed to process successful response"), false),
+		).toBe(
+			"The model connection dropped (Failed to process successful response). Nothing was lost — send again or /resume.",
+		);
+		// A transport-shaped message on the cause classifies the wrapper.
+		expect(
+			terminalFailureMessage(
+				new Error("model stream failed", { cause: new Error("socket hang up") }),
+				false,
+			),
+		).toContain("socket");
+		// Undici transport codes classify; arbitrary codes never do.
+		expect(
+			terminalFailureMessage(
+				Object.assign(new Error("died"), { code: "UND_ERR_SOCKET" }),
+				false,
+			),
+		).toContain("UND_ERR_SOCKET");
+		expect(
+			terminalFailureMessage(Object.assign(new Error("boom"), { code: "rate_limit" }), false),
+		).toBe("boom");
 	});
 });

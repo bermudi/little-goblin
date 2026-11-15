@@ -2,13 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { JSONValue } from "@ai-sdk/provider";
 import type { ProviderMetadata, ToolSet, UIMessage } from "ai";
 import { z } from "zod";
-import type { Conversation, ConversationStore } from "./conversation.ts";
+import type { Conversation } from "./conversation-read.ts";
+import type { ConversationStore } from "./conversation.ts";
 import { channelOf } from "./conversation-address.ts";
 import { log } from "./log.ts";
 import { type ResumeSeed, type Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { messageText } from "./memory/mod.ts";
-import { summarize, toolOk, type ToolCallDigest } from "./reviewer.ts";
+import { summarize, toolOk, type ToolCallDigest } from "./reviewer-evidence.ts";
 import { SKILL_PART } from "./skill-part.ts";
 import { canAuthorizeRetry } from "./turn/retry-guard.ts";
 import type { LoopTurnState } from "./turn/state.ts";
@@ -28,7 +29,14 @@ export type ResumeRefusalCode = "not-found" | "conflict" | "invalid" | "unavaila
 export type ResumeOutcome =
 	| { kind: "resumed"; runId: string }
 	| { kind: "needs-decisions"; runId: string; calls: TurnToolCall[]; numbered: TurnToolCall[] }
-	| { kind: "refused"; code: ResumeRefusalCode; reason: string };
+	| {
+			kind: "refused";
+			code: ResumeRefusalCode;
+			reason: string;
+			/** The recorded model pair — set on selection drift so the
+			 *  client can offer a one-tap restore before retrying. */
+			restore?: { model: string | null; thinking: string | null };
+	  };
 
 export type DecideOutcome =
 	| { kind: "ok" }
@@ -121,8 +129,12 @@ function findRun(journal: TurnJournal, convId: string, ref: string): RunRef {
 	return { kind: "found", run: matches[0]! };
 }
 
-function refused(code: ResumeRefusalCode, reason: string) {
-	return { kind: "refused" as const, code, reason };
+function refused(
+	code: ResumeRefusalCode,
+	reason: string,
+	restore?: { model: string | null; thinking: string | null },
+) {
+	return { kind: "refused" as const, code, reason, ...(restore === undefined ? {} : { restore }) };
 }
 
 export function numberedCalls(calls: TurnToolCall[]): TurnToolCall[] {
@@ -641,7 +653,13 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				drift.push(`thinking changed ${snap.data.thinking} → ${captured.thinking}`);
 			}
 			if (drift.length > 0) {
-				return refused("invalid", `${drift.join("; ")} since the interruption — not resumed`);
+				return refused(
+					"invalid",
+					`${drift.join("; ")} since the interruption — not resumed`,
+					// The pair the snapshot was admitted on — a restore PATCH
+					// writes it back so the retry passes the drift gate.
+					{ model: recordedSelection, thinking: snap.data.thinking },
+				);
 			}
 			const servedByFallback =
 				snap.data.configuredModel !== undefined &&

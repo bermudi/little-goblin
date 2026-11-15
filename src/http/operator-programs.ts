@@ -83,6 +83,8 @@ function programItem(program: Program): OperatorProgramItem {
 		createdAt: program.createdAt,
 		lastRun: program.lastRun,
 		nextRun: program.nextRun,
+		lastSkippedAt: program.lastSkippedAt,
+		lastSkipReason: program.lastSkipReason,
 	};
 }
 

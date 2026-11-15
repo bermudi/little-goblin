@@ -200,6 +200,7 @@ describe("project store", () => {
 		withQueue.patch(project.id, { memory: "off" });
 		const after = store.get(inProject.id)!;
 		expect(after.memoryExcluded).toBe(true);
+		expect(after.memoryExcludedByProject).toBe(true);
 		expect(after.epoch).toBe(epochBefore);
 		expect(cancelled).toEqual([inProject.id]);
 		// Unbound conversations must stay untouched.
@@ -207,11 +208,46 @@ describe("project store", () => {
 		expect(afterOutside.memoryExcluded).toBe(false);
 		expect(afterOutside.epoch).toBe(epochOutsideBefore);
 
-		// off → shared restores nothing, bumps nothing.
+		// off → shared lifts only the gate's own stamps, bumps nothing.
 		withQueue.patch(project.id, { memory: "shared" });
 		const restored = store.get(inProject.id)!;
-		expect(restored.memoryExcluded).toBe(true);
+		expect(restored.memoryExcluded).toBe(false);
+		expect(restored.memoryExcludedByProject).toBe(false);
 		expect(restored.epoch).toBe(epochBefore);
+		store.close();
+	});
+
+	test("memory shared recompute keeps the operator's own exclusions", () => {
+		const { store, projects } = fixture();
+		const project = projects.create({ name: "vault" });
+		const byOperator = store.resolve(appAddress("op"), "/w");
+		store.bindProject(byOperator.id, project.id);
+		store.applySettings(byOperator.id, { memoryExcluded: true });
+		const byGate = store.resolve(appAddress("gate"), "/w");
+		store.bindProject(byGate.id, project.id);
+
+		projects.patch(project.id, { memory: "off" });
+		// The operator's prior exclusion is untouched — no gate marker.
+		expect(store.get(byOperator.id)!.memoryExcludedByProject).toBe(false);
+		expect(store.get(byGate.id)!.memoryExcludedByProject).toBe(true);
+
+		projects.patch(project.id, { memory: "shared" });
+		expect(store.get(byOperator.id)!.memoryExcluded).toBe(true);
+		expect(store.get(byGate.id)!.memoryExcluded).toBe(false);
+		store.close();
+	});
+
+	test("an operator's memory-off inside an off project survives the re-open", () => {
+		const { store, projects } = fixture();
+		const project = projects.create({ name: "vault" });
+		const conv = store.resolve(appAddress("inside"), "/w");
+		store.bindProject(conv.id, project.id);
+		projects.patch(project.id, { memory: "off" });
+		// Operator confirms the exclusion while the gate is off — it is
+		// theirs now, not the gate's.
+		store.setMeta(conv.id, { memoryExcluded: true, memoryExcludedByProject: false });
+		projects.patch(project.id, { memory: "shared" });
+		expect(store.get(conv.id)!.memoryExcluded).toBe(true);
 		store.close();
 	});
 

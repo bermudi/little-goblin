@@ -5,13 +5,8 @@
 // the wake join — never inferred from the event alone.
 
 import type { Database } from "bun:sqlite";
-import type {
-	Attachment,
-	PromptOperation,
-	Responsibility,
-	ResponsibilityStore,
-} from "./responsibilities.ts";
-import { armedView } from "./responsibilities.ts";
+import { armedView, type ResponsibilityStore } from "./responsibilities.ts";
+import type { Attachment, PromptOperation, Responsibility } from "./responsibility-types.ts";
 import { latestFireAtOrBefore, nextFire, type ProgramsStore } from "./programs.ts";
 import { type ResponsibilityReport, toReport } from "./responsibility-reports.ts";
 import { responsibilityStage, type ResponsibilityStage } from "./responsibility-stage.ts";

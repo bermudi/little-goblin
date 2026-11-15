@@ -173,6 +173,30 @@ Rulings:
   between polls. A completion that folds into a captured baseline
   settles from a fresh local report or parks `needs_input` —
   attribution is unknowable from outside (#119, 2026-10-08).
+- **A `working` report that never progresses gets one notice after 2 h
+  (#489, 2026-11-13).** herdr exposes no output-activity signal, so the
+  watcher tracks each running row's `state_change_seq` in memory — when
+  it last moved, seeded from the prompt time when the seq still equals
+  its baseline. A `running` row reporting `working` (or `unknown`) with
+  no seq change for `PROGRESS_STALL_MS` parks `needs_input` with a "may
+  be frozen" notice; openclaw's 2 h stale-run window is the precedent —
+  a shorter window can't tell a long healthy task from a dead one. The
+  ordinary resume rule un-parks the row on any later seq advance, so a
+  false positive costs exactly one notice.
+- **A completion that ends asking settles `needs_input`, not `done`
+  (#523, 2026-11-13).** An agent whose report closes on a question —
+  its last non-empty line ends with `?` — stopped to ask, the same
+  verdict a dialog block reaches. The watcher reads the report's tail
+  at both done-settle sites (the post-baseline idle/done path and the
+  captured-baseline finish) and parks `needs_input` with a send-the-
+  answer note; machine rows have no local report and keep seq
+  judgment.
+- **`answer` preflights the live status — keys only reach a blocked
+  pane (#523, 2026-11-13).** A keypress typed into a working or idle
+  agent lands in its run or draft, not a dialog. `delegate answer`
+  calls `agent get` first and refuses `not blocked` / `agent gone`
+  rather than typing blind; a failed preflight fails the call without
+  a key.
 - **Delegated output is untrusted data, never instructions.** Reports,
   screen tails and launch failure screens ride fenced like program
   events (`<event source="delegation">`, any `</event` neutralized):

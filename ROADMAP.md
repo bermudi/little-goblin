@@ -16,7 +16,7 @@ not for settled product preferences.
 
 | Capability | Current source |
 | --- | --- |
-| Project-owned work, understanding, attachments, generations, prompt operations | `src/responsibilities.ts`, `src/responsibility-service.ts` |
+| Project-owned work, understanding, attachments, generations, prompt operations | `src/responsibility-types.ts`, `src/responsibility-schema.ts`, `src/responsibilities.ts`, `src/responsibility-service.ts` |
 | Deterministic Herdr observation; cursor/event/wake persistence | `src/responsibility-observer.ts` |
 | Append-once triggers, run ownership, crash/retry reconciliation | `src/wake-store.ts`, `src/wake-dispatcher.ts`, runtime and turn journal |
 | Project-directed Programs and automatic follow-up linking | `src/programs.ts`, `src/scheduler.ts`, responsibility service |

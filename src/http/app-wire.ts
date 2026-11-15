@@ -96,21 +96,30 @@ export type AppReplyRating = "up" | "down";
 
 export interface AppMessageList {
 	messages: UIMessage[];
+	/** Absolute causal index of `messages[0]` in the full transcript —
+	 *  mark indexes and the paging cursor are transcript-absolute, so
+	 *  subtract `start` to address this page's array. */
+	start: number;
+	/** Set while entries older than `start` remain — feed back as
+	 *  `?before=` for the next page up. */
+	olderCursor: string | null;
 	ratings: AppRatedReply[];
 	rateableMessageIds: string[];
 	/** Fold pointers as transcript marks, oldest first — each renders a
-	 *  pill after `messages[afterIndex]` (-1 = before the first). */
+	 *  pill after the message at `afterIndex` (-1 = before the first).
+	 *  Indexes are transcript-absolute: `afterIndex - start` addresses
+	 *  this page's array. */
 	compactions: AppCompactionMark[];
 }
 
 export interface AppCompactionMark {
 	boundarySeq: number;
-	/** Index into `messages` the pill renders after: the last message
+	/** Transcript-absolute index the pill renders after: the last message
 	 *  that existed when the fold ran (its created_at ≤ the row's) —
 	 *  where the fold ran, not at the cut. -1 = before every message. */
 	afterIndex: number;
-	/** Index into `messages` of the first message the model still sees
-	 *  verbatim after this fold — the causal cut's far side. */
+	/** Transcript-absolute index of the first message the model still
+	 *  sees verbatim after this fold — the causal cut's far side. */
 	firstKeptIndex: number;
 	eventsCompacted: number;
 	/** Fold-time tail size; null on rows written before it was recorded. */
@@ -234,6 +243,22 @@ export interface AppFavoritesResponse {
 export interface AppConfigPatch {
 	model?: string;
 	thinking?: string;
+}
+
+export interface AppConfigPatchResponse extends AppConfigView {
+	/** A turn is running — it keeps the model pair it admitted on; the
+	 *  stored pair binds the next turn. Absent when the lane is idle. */
+	appliesFrom?: "next-turn";
+	/** The asked-for level clamped onto the destination model's ladder —
+	 *  from = requested/effective, to = applied. Absent otherwise. */
+	thinkingClamped?: { from: string; to: string };
+}
+
+/** The model pair a resume refusal recorded — the pair the run's
+ *  snapshot was admitted on, offered back for a one-tap restore. */
+export interface AppResumeRestore {
+	model: string | null;
+	thinking: string | null;
 }
 
 export interface AppConversationMemoryView {
@@ -503,6 +528,8 @@ export interface AppMailDraft {
 export interface AppApprovalsResponse {
 	programs: AppProgramProposal[];
 	mail: AppMailDraft[];
+	/** IANA zone the scheduler evaluates crons in — cards show it. */
+	serverTimeZone: string;
 }
 
 export type AppAttentionPage = "programs" | "memory" | "skills" | "delegations";
@@ -526,9 +553,12 @@ export interface AppAttentionItem {
 		| "program-approval"
 		| "mail-approval"
 		| "memory-blocked"
+		| "memory-outage"
+		| "memory-recall"
 		| "skill-proposal"
 		| "interrupted-run"
 		| "delegation-input"
+		| "observation-unreachable"
 		| "responsibility";
 	title: string;
 	detail: string;
@@ -576,6 +606,8 @@ export interface AppProgramView {
 	target: string;
 	lastRun: string | null;
 	nextRun: string | null;
+	lastSkippedAt: string | null;
+	lastSkipReason: string | null;
 }
 
 export interface AppProgramMutationResponse {
@@ -672,6 +704,9 @@ export interface AppResponsibilityAttachment {
 	target: AppAttachmentTarget;
 	baseline: unknown;
 	health: "attached" | "missing" | "identity_changed" | "detached";
+	/** Outage start once observation polling has failed UNREACHABLE_POLLS
+	 *  times in a row, else null. */
+	unreachableSince: string | null;
 	cursor: unknown;
 	createdAt: string;
 	detachedAt: string | null;

@@ -61,7 +61,10 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   retry and compaction. Summaries use the conversation's model and thinking
   (and its fallback list, see "Model fallback list" below);
   reviewer fallback uses the conversation's model; explicit reviewer and
-  title models stay independent.
+  title models stay independent. With no `titleModel` configured, titling
+  falls back to the conversation's own model — the same model-ref the
+  turn resolved — under a tight output cap (a title is a few words, not
+  a turn-sized budget), never a model the operator didn't pick.
 - **Thinking (ruling 2026-10-21).** `off|minimal|low|medium|high|xhigh|max` is
   an operator vocabulary, not a provider contract. Every model has one
   **profile** — the rungs it supports, what `off` means on it, and the wire
@@ -225,7 +228,7 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   the crossing retries under the new settings. Ruling 2026-10-25
   ([compaction](compaction.md) → Timing): the normal fold is now a
   **step-boundary pre-emption** — the trigger (the projected upcoming
-  request ≥ the lower of 50% of the window and 128k) is checked at the
+  request ≥ the lower of 50% of the window and 256k) is checked at the
   `prepareStep` seam before every model call, gate-checked for foldable
   stored history, and when it fires it
   stops the next dispatch, folds mid-turn, and resumes the
@@ -383,7 +386,14 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   ECONNRESET). Two surfaces, two bounds, one log line per retry
   (attempt, error, delay):
   - **Mid-stream** — an error part on the provider stream (codex
-    surfaces a socket reset there). `driveStream`'s `onError` grants
+    surfaces a socket reset there), or the same drop arriving as a
+    stream read failure: the openai-compatible lane surfaces a
+    mid-SSE socket reset as a reader throw, not an error part, so
+    `filterErrorStream` converts a transient-classified reader throw
+    into the error-part surface (tag it, drop the attempt's buffered
+    tool parts, enqueue `error`, close) — a plain stream error would
+    bypass `onError` and kill the turn after one POST (#488).
+    `driveStream`'s `onError` grants
     the SDK's one callback-requested retry per model step
     (`streamRetries: 0` keeps retries callback-directed) when the
     transient classifier owns the error (`isTransientTurnFailure` —

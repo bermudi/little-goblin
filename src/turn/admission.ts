@@ -1,5 +1,5 @@
 import type { UIMessage, UIMessageChunk } from "ai";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { log } from "../log.ts";
 
 export interface AdmittedMember {

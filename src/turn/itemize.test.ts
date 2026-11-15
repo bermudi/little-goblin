@@ -19,6 +19,7 @@ const conv = {
 	thinking: null,
 	voice: false,
 	memoryExcluded: false,
+	memoryExcludedByProject: false,
 	projectId: null,
 	persona: "personal" as const,
 	archivedAt: null,

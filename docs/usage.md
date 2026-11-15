@@ -15,7 +15,8 @@ No `/new`, no `/resume` — that job belongs to Telegram:
 - **No topics?** A chat without topics is one standing conversation.
 
 A topic Telegram created with a placeholder name ("New Chat") gets
-auto-titled from your first message — if `titleModel` is configured. Rename
+auto-titled from your first message — by `titleModel` when configured,
+otherwise by the conversation's own model under a tight output cap. Rename
 it yourself at any point and your name always wins; the bot won't overwrite
 an explicit rename.
 
@@ -30,7 +31,7 @@ current settings — never a mix.
 |---|---|
 | `/voice` | Toggles voice-note replies for this topic. Speech is on by default; it needs `ffmpeg` and can be turned off with `tts: ""`. |
 | `/stop` | Interrupts the running reply and drops anything queued behind it. |
-| `/compact` | Compacts this topic's older history into a summary right now — the same thing the bot does automatically once a turn crosses the compaction trigger (the lower of half the model's context window and 128,000 tokens). Recent messages stay; nothing is deleted. |
+| `/compact` | Compacts this topic's older history into a summary right now — the same thing the bot does automatically once a turn crosses the compaction trigger (the lower of half the model's context window and 256,000 tokens). Recent messages stay; nothing is deleted. |
 | `/memory` | With no argument: memory status (health, queue, last recall, blocked rows) and whether this topic is included. `/memory on`·`off` set per-topic inclusion; `/memory retry`·`dismiss` handle blocked retention. [Memory](memory.md) has the full picture. |
 | `/forget` | Deletes remembered content: `/forget <query>` lists matching sources, `/forget delete <n>` removes one for good — irreversible, and suppressed from future retention. |
 | `/start` | A canned hello (Telegram sends it when a chat first opens). Nothing more. |
@@ -42,7 +43,10 @@ to a different bot is ignored rather than fed to the model.
 
 - **Fire off several messages in a row** — they merge into one reply. The bot
   waits ~500 ms after each message before starting, so a burst reads as
-  one thought.
+  one thought. Messages sent while a reply runs also fold into that reply —
+  except on the Claude Code engine, which has no mid-run injection seam:
+  a steered message there is answered as its own turn right after, in the
+  same order, never merged.
 - While it works you see "typing…", plus status lines (`⚙ bash …`) as it
   uses tools.
 - Finished replies get a 🫡 reaction on the last message — the end marker —
@@ -169,15 +173,20 @@ URL — see [Security](security.md#the-app-channels-auth).
 
 ## The bot's identity files
 
-- `workspace/SOUL.md` — who the bot is. Edit it (by hand or by telling the
-  bot) and the change is live on the next message.
+- `workspace/SOUL.md` — who the bot is. Edit it by hand or by telling the
+  bot. The change reaches the system prompt at the next **prompt snapshot
+  boundary**: a new conversation or DM roll, compaction, or spin-off. It
+  does not reach the next message of the same conversation. App
+  conversations never roll, so for them it lands at the next compaction.
+  No restart is needed.
 - `workspace/AGENTS.md` — the bot's operating notes, owned by the bot
-  itself (it starts as a stub the bot is expected to grow). Same deal:
-  edits apply next turn.
+  itself (it starts as a stub the bot is expected to grow). Same rule:
+  edits apply at the next prompt snapshot boundary.
 - `workspace/USER.md` — the bot's model of *you*: stable preferences as
   directives, each with an observation date. When you change your mind,
   the bot marks the old entry superseded instead of stacking a
-  contradiction. Same deal: edits apply next turn.
+  contradiction. Same rule: edits apply at the next prompt snapshot
+  boundary.
 - `workspace/skills/` — repeatable tasks the bot has learned; see
   [Skills](skills.md).
 - `workspace/skills-proposed/` — skill drafts the bot saved on its own,

@@ -10,11 +10,8 @@ import { join } from "node:path";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { openProjects, type ProjectStore } from "./projects.ts";
-import {
-	openResponsibilities,
-	type ResponsibilityStore,
-	type Understanding,
-} from "./responsibilities.ts";
+import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
+import type { Understanding } from "./responsibility-types.ts";
 import {
 	FEED_EVENT_WINDOW,
 	FEED_POST_WINDOW,

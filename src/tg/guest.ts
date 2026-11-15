@@ -5,14 +5,16 @@ import type { Message } from "grammy/types";
 import type { Api } from "grammy";
 import type { ConfigRef } from "../config.ts";
 import { paths } from "../home-layout.ts";
-import type { Conversation, ConversationStore } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
+import type { ConversationStore } from "../conversation.ts";
 import { channelOf, guestAddress, parseAddress } from "../conversation-address.ts";
 import type { Runtime } from "../runtime.ts";
 import type { TurnDone, TurnSink } from "../turn/sink.ts";
 import type { UIMessage } from "ai";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
-import { isMessageGoneError, isNotModifiedError, makeDeliverySink } from "./delivery.ts";
+import { isMessageGoneError, isNotModifiedError } from "./delivery-errors.ts";
+import { makeDeliverySink } from "./delivery.ts";
 import { sendRefusal } from "./refusals.ts";
 
 export interface GuestStore {
@@ -43,6 +45,12 @@ export function openGuestStore(db: Database): GuestStore {
 }
 
 export const GUEST_REFUSAL = "🚫 I only talk to my operator and approved users.";
+
+// Telling the refused sender their own numeric id makes a misplaced
+// operators/allowedUsers entry self-diagnosing (#472).
+export function guestRefusalText(fromId: number): string {
+	return `${GUEST_REFUSAL} Your Telegram id is ${fromId}.`;
+}
 
 const REFUSAL_LATCH_MS = 10 * 60_000;
 const refusalLatch = new Map<number, number>();
@@ -433,8 +441,13 @@ export async function handleGuestUpdate(
 		env.configRef.current.allowedUsers,
 	);
 	if (verdict.kind === "refused") {
-		log.info("guest summons refused", { chat: chatId, from: from.id, update: updateId });
-		await answerGuestArticle(env.api, guestQueryId, "goblin", GUEST_REFUSAL);
+		log.info("guest summons refused", {
+			chat: chatId,
+			from: from.id,
+			update: updateId,
+			reason: "stranger",
+		});
+		await answerGuestArticle(env.api, guestQueryId, "goblin", guestRefusalText(from.id));
 		return;
 	}
 	const sandbox = verdict.kind === "sandbox";
@@ -544,9 +557,10 @@ export async function routeMemberGuestMessage(
 			from: from.id,
 			update: updateId,
 			surface: "member",
+			reason: "stranger",
 		});
 		if (refusalDue(chatId))
-			sendRefusal(env.api, from.id, chatId, GUEST_REFUSAL, msg.message_thread_id);
+			sendRefusal(env.api, from.id, chatId, guestRefusalText(from.id), msg.message_thread_id);
 		return true;
 	}
 

@@ -16,7 +16,11 @@ import { ATTACHMENT_PART } from "../agent/attachments.ts";
 import { isTransientTurnFailure } from "../agent/provider-errors.ts";
 import { log } from "../log.ts";
 import { LOOP_DETECT_WARN } from "../loop-detect.ts";
-import { scriptedModel as scriptedEdge } from "../testkit/fake-model.ts";
+import {
+	scriptedModel as scriptedEdge,
+	type StreamAttempt,
+	toolCallPart,
+} from "../testkit/fake-model.ts";
 import {
 	ContextOverflowError,
 	failureFromStream,
@@ -68,7 +72,7 @@ test("a failed attach subscriber is logged and detached without losing the share
 	}
 });
 
-function scriptedModel(scripts: Array<LanguageModelV4StreamPart[] | Error>) {
+function scriptedModel(scripts: StreamAttempt[]) {
 	const prompts: string[] = [];
 	const toolChoices: string[] = [];
 	const edge = scriptedEdge(scripts, { extra: textReply("ok") });
@@ -466,6 +470,113 @@ describe("driveStream — transient transport step retries (#191)", () => {
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("failed");
 		expect(failing.prompts).toHaveLength(1);
+	});
+});
+
+describe("driveStream — transient reader throws (#488)", () => {
+	// The openai-compatible lane surfaces a mid-SSE socket reset as a
+	// stream read failure, not an error part — filterErrorStream must
+	// convert a transient-classified throw to the error-part surface or
+	// the onError grantor never fires: one POST and the turn dies.
+	const resetThrow = () =>
+		new TypeError("fetch failed", {
+			cause: new Error("read ECONNRESET: The socket connection was closed unexpectedly"),
+		});
+
+	test("a mid-stream reader throw retries the failed step — the turn completes, tools run once", async () => {
+		const warning = spyOn(log, "warn").mockImplementation(() => {});
+		try {
+			let executions = 0;
+			const probe = tool({
+				inputSchema: z.object({}),
+				execute: async () => {
+					executions++;
+					return "probe-result-7f3a";
+				},
+			});
+			// The dying attempt streamed text and a tool call before the
+			// reset — the filter's buffered tool part must drop with the
+			// attempt so no tool runs twice.
+			const failing = scriptedModel([
+				toolCallStep("c1", 10),
+				{
+					readError: resetThrow(),
+					parts: [
+						{ type: "stream-start", warnings: [] },
+						{ type: "text-start", id: "t1" },
+						{ type: "text-delta", id: "t1", delta: "partial " },
+						toolCallPart("c2", "probe"),
+					],
+				},
+				textReply("recovered"),
+			]);
+			const r = rig([], {
+				step: { model: failing.model, system: "test", transientRetryDelayMs: 0 },
+			});
+			r.deps.tools = { probe };
+			const outcome = await driveStream(r.deps);
+			expect(outcome.kind).toBe("ok");
+			// Tool step, the failed attempt, its one retry — the retried
+			// step POSTed exactly twice with the identical request.
+			expect(failing.prompts).toHaveLength(3);
+			expect(failing.prompts[1]).toBe(failing.prompts[2]);
+			// The re-dispatch carried the earlier step's tool result forward.
+			expect(failing.prompts[2]).toContain("probe-result-7f3a");
+			expect(executions).toBe(1);
+			expect(r.head.calls).toEqual([{ tool: "probe", input: {} }]);
+			expect(r.head.text.replace(/\s+/g, "").trim()).toBe("partialrecovered");
+			// The conversion logged one line; the error never hit the wire.
+			expect(
+				warning.mock.calls.some(([msg]) =>
+					msg.includes("surfacing as a stream error part"),
+				),
+			).toBe(true);
+			expect(r.live.chunks.map((c) => c.type)).not.toContain("error");
+		} finally {
+			warning.mockRestore();
+		}
+	});
+
+	test("a non-transient reader throw still fails the turn after one call", async () => {
+		const failing = scriptedModel([
+			{
+				readError: new Error("bad request shape"),
+				parts: [
+					{ type: "stream-start", warnings: [] },
+					{ type: "text-start", id: "t1" },
+					{ type: "text-delta", id: "t1", delta: "partial " },
+				],
+			},
+			textReply("never"),
+		]);
+		const r = rig([], { step: { model: failing.model, system: "test", transientRetryDelayMs: 0 } });
+		// Not converted: a stream error the classifier doesn't own keeps
+		// the fatal rail — the pipeline error propagates, no re-dispatch.
+		await expect(driveStream(r.deps)).rejects.toThrow("bad request shape");
+		expect(failing.prompts).toHaveLength(1);
+	});
+
+	test("two consecutive reader throws in one step exhaust the budget — the turn fails", async () => {
+		const failing = scriptedModel([
+			{
+				readError: resetThrow(),
+				parts: [
+					{ type: "stream-start", warnings: [] },
+					{ type: "text-start", id: "t1" },
+					{ type: "text-delta", id: "t1", delta: "a " },
+				],
+			},
+			{ readError: resetThrow() },
+			textReply("never"),
+		]);
+		const r = rig([], { step: { model: failing.model, system: "test", transientRetryDelayMs: 0 } });
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("failed");
+		if (outcome.kind !== "failed") return;
+		expect(failing.prompts).toHaveLength(2);
+		expect(outcome.errorText).toContain("fetch failed");
+		// The scheduler stamp survives: the failure is still transient-class.
+		expect(isTransientTurnFailure(outcome.rawError)).toBe(true);
 	});
 });
 
@@ -1320,5 +1431,74 @@ describe("driveStream", () => {
 		if (deadOutcome.kind === "ok") return;
 		expect(deadOutcome.steps).toBe(0);
 		expect(deadOutcome.window).toBeNull();
+	});
+});
+
+describe("wire-tail checkpoint", () => {
+	const delta = (text: string): LanguageModelV4StreamPart => ({
+		type: "text-delta",
+		id: "t1",
+		delta: text,
+	});
+	const usage = {
+		inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
+		outputTokens: { total: 1, text: undefined, reasoning: undefined },
+	};
+	const script = (deltas: string[]): LanguageModelV4StreamPart[] => [
+		{ type: "stream-start", warnings: [] },
+		{ type: "text-start", id: "t1" },
+		...deltas.map(delta),
+		{ type: "text-end", id: "t1" },
+		{
+			type: "finish",
+			finishReason: { unified: "stop", raw: undefined },
+			usage,
+		},
+	];
+	const tailTexts = (patch: { partial?: unknown }): string[] => {
+		if (!Array.isArray(patch.partial)) return [];
+		return patch.partial
+			.filter((m): m is { content: { type: string; text: string }[] } =>
+				Array.isArray((m as { content?: unknown }).content),
+			)
+			.flatMap((m) => m.content)
+			.filter((p) => p.type === "text")
+			.map((p) => p.text);
+	};
+
+	test("a mid-step text stream checkpoints its tail at most once a second", async () => {
+		const checkpoints: { partial?: unknown; loopState?: unknown }[] = [];
+		const r = rig([script(["hel", "lo ", "world"])], {
+			saveStep: (p) => checkpoints.push(p),
+		});
+		const outcome = await driveStream(r.deps);
+		expect(outcome.kind).toBe("ok");
+		// Three deltas inside the one-second window coalesce to a single
+		// tail write — the checkpoint carries what was on the wire then.
+		const tails = checkpoints.filter(
+			(c) => c.partial !== undefined && c.loopState === undefined,
+		);
+		expect(tails).toHaveLength(1);
+		expect(tailTexts(tails[0]!)).toEqual(["hel"]);
+	});
+
+	test("deltas past the one-second window checkpoint again with the grown tail", async () => {
+		const realNow = Date.now;
+		let t = realNow();
+		Date.now = () => (t += 1_001);
+		try {
+			const checkpoints: { partial?: unknown; loopState?: unknown }[] = [];
+			const r = rig([script(["hel", "lo ", "world"])], {
+				saveStep: (p) => checkpoints.push(p),
+			});
+			const outcome = await driveStream(r.deps);
+			expect(outcome.kind).toBe("ok");
+			const tails = checkpoints.filter(
+				(c) => c.partial !== undefined && c.loopState === undefined,
+			);
+			expect(tails.map(tailTexts)).toEqual([["hel"], ["hello "], ["hello world"]]);
+		} finally {
+			Date.now = realNow;
+		}
 	});
 });

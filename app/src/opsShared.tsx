@@ -22,21 +22,7 @@ export function ts(iso: string | null, timeZone?: string): string {
 			});
 }
 
-/** Short zone label ("CST") for an IANA name; falls back to the name itself. */
-export function tzAbbrev(timeZone: string): string {
-	try {
-		const part = new Intl.DateTimeFormat("en-US", {
-			hour: "2-digit",
-			timeZone,
-			timeZoneName: "short",
-		})
-			.formatToParts()
-			.find((p) => p.type === "timeZoneName");
-		return part?.value ?? timeZone;
-	} catch {
-		return timeZone;
-	}
-}
+export { tzAbbrev } from "../../src/cron-words.ts";
 
 export function uptime(sec: number): string {
 	if (sec < 60) return `${sec}s`;

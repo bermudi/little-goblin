@@ -23,13 +23,9 @@ import {
 	createWriteTool,
 } from "@earendil-works/pi-durable/tools";
 import { z } from "zod";
-import {
-	CUA_TOOLS,
-	type CuaTool,
-	DesktopLeaseError,
-	type Desktops,
-	type LeaseHolder,
-} from "../desktops.ts";
+import { DesktopLeaseError, type Desktops } from "../desktops.ts";
+import { type LeaseHolder } from "../desktops-store.ts";
+import { CUA_TOOLS, type CuaTool } from "../desktops-cua.ts";
 import { log } from "../log.ts";
 import {
 	ASK_OPERATOR_TOOL_DESCRIPTION,

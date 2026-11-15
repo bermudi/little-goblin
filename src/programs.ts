@@ -70,6 +70,10 @@ export interface Program {
 	createdAt: string;
 	lastRun: string | null;
 	nextRun: string | null;
+	// #493-L19 — the most recent skipped occurrence: when it was decided
+	// and why. NULL until the first skip; a later fire does not clear it.
+	lastSkippedAt: string | null;
+	lastSkipReason: string | null;
 }
 
 /** A program rule violation the model can act on — the trigger
@@ -142,6 +146,8 @@ export interface ProgramsStore {
 	markRan(id: number, now: Date): void;
 	/** Advance a stale schedule without recording a run that never fired. */
 	advancePastDue(id: number, now: Date): string | null;
+	/** Stamp the latest skipped occurrence — decision time and reason. */
+	markSkipped(id: number, at: Date, reason: string): void;
 	/** Stamp a hook-fired run — last_run only, next_run untouched. */
 	markFired(id: number, now: Date): void;
 	/** Set or clear the webhook token hash. Clearing the last trigger
@@ -213,6 +219,19 @@ export function nextFire(cron: string, from: Date): Date {
 // across a fall-back boundary (it starts producing the repeat the
 // pure-forward sequence never yields).
 const MAX_CATCHUP_STEPS = 10_000;
+
+// Occurrences in [firstMissed, through] inclusive — the coalesced count
+// a catch-up fire reports. Bounded like the catch-up scan itself.
+export function missedCount(cron: string, firstMissed: Date, through: Date): number {
+	let n = 0;
+	for (let at = firstMissed; at.getTime() <= through.getTime() && n < MAX_CATCHUP_STEPS; ) {
+		n++;
+		const next = parseCron(cron, at).next().toDate();
+		if (next.getTime() <= at.getTime()) break;
+		at = next;
+	}
+	return n;
+}
 
 export function latestFireAtOrBefore(cron: string, firstMissed: Date, through: Date): Date {
 	if (firstMissed.getTime() > through.getTime()) {
@@ -327,6 +346,8 @@ const programSchema = z.object({
 	created_at: z.string(),
 	last_run: z.string().nullable(),
 	next_run: z.string().nullable(),
+	last_skipped_at: z.string().nullable().default(null),
+	last_skip_reason: z.string().nullable().default(null),
 });
 
 // The two timer-driven scans decode row by row: one row the schema
@@ -374,6 +395,8 @@ function rowToProgram(row: unknown): Program {
 		createdAt: parsed.created_at,
 		lastRun: parsed.last_run,
 		nextRun: parsed.next_run,
+		lastSkippedAt: parsed.last_skipped_at,
+		lastSkipReason: parsed.last_skip_reason,
 	};
 }
 
@@ -446,6 +469,10 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			// the exact legacy name convention.
 			db.exec("ALTER TABLE programs ADD COLUMN kind TEXT NOT NULL DEFAULT 'custom'");
 		}
+		if (!progCols.has("last_skipped_at")) {
+			db.exec("ALTER TABLE programs ADD COLUMN last_skipped_at TEXT");
+			db.exec("ALTER TABLE programs ADD COLUMN last_skip_reason TEXT");
+		}
 		const jobsTable = db
 			.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'jobs'")
 			.get();
@@ -479,6 +506,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 	const qMark = db.query("UPDATE programs SET last_run = ?, next_run = ? WHERE id = ?");
 	const qAdvance = db.query("UPDATE programs SET next_run = ? WHERE id = ?");
 	const qFired = db.query("UPDATE programs SET last_run = ? WHERE id = ?");
+	const qSkipped = db.query(
+		"UPDATE programs SET last_skipped_at = ?, last_skip_reason = ? WHERE id = ?",
+	);
 	const qHook = db.query("UPDATE programs SET hook_hash = ? WHERE id = ?");
 	const qMailFilter = db.query(
 		"UPDATE programs SET mail_filter = ?, mail_history_id = ?, mail_revision = mail_revision + ? WHERE id = ?",
@@ -681,6 +711,9 @@ export function openPrograms(dbPath: string): ProgramsStore {
 		},
 		markFired(id, now) {
 			qFired.run(now.toISOString(), id);
+		},
+		markSkipped(id, at, reason) {
+			qSkipped.run(at.toISOString(), reason, id);
 		},
 		setHook(id, hash) {
 			const row = qGet.get(id);

@@ -88,6 +88,16 @@ snapshots warn rather than expire; future timestamps warn for clock skew.
 OAuth, generic auth commands and upstream validity are not verified by
 metadata availability.
 
+Provider readiness is presence and cached-catalog resolution only: per
+configured provider, `provider.<name>` reports whether its credential
+record exists (an auth.jsonl name, or the codex auth file the provider
+would read — existence, never contents) and whether each configured
+model ref resolves in a cached catalog (models.dev, openrouter, or the
+codex account list). A cold catalog is "unverified", never a refresh;
+a provider no model ref uses skips. No credential is resolved, no
+catalog refreshed, no provider constructed and no call made — the
+finding names what is missing, not whether upstream will answer.
+
 Relay-file presence alone is not association: validate the configured API
 against the running local installation and allowlisted provider/base
 URL/model fields before probing its relay. Unsupported or remote
@@ -124,6 +134,15 @@ drift — never a corruption or store-loss claim without evidence. The
 expected-table list is a validated argv contract of its own: a
 present-but-malformed list fails the worker rather than silently checking
 nothing, and only an absent list skips the check.
+
+`observer.unreachable` (#491) reads only the durable declaration: the
+responsibility observer records consecutive list failures on each
+attachment row and exposes the outage start once the threshold holds
+(design/app.md → Observation unavailability). Doctor reports those
+declared rows as one warning naming agent, target and start; it never
+probes a Herdr target itself, and a recovered poll clears the row on its
+own — the hint points at inspecting the named target, not at resetting
+anything. A store that predates the columns skips rather than fails.
 
 `repo.test-ratio` is informational repo health, scoped to the diagnostic
 checkout: it reuses `src/test-ratio.ts` (the measurement behind

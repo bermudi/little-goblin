@@ -20,14 +20,21 @@ import { openWireStep } from "./boot/delivery.ts";
 import { openTelegramAttach } from "./boot/telegram-attach.ts";
 import { openCacheObservation } from "./cache-observation.ts";
 import { openCachePruning } from "./cache-pruning.ts";
-import { type ConfigRef, loadConfig, missingAuthNames } from "./config.ts";
+import {
+	type ConfigRef,
+	loadConfig,
+	missingAuthNames,
+	warnOnExampleOperator,
+} from "./config.ts";
 import type { Config } from "./config-schema.ts";
 import { goblinHome } from "./goblin-home.ts";
 import { ensureHomeLayout, paths } from "./home-layout.ts";
 import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins.ts";
 import { captureConversationSettings, openStore } from "./conversation.ts";
-import { delegationWake, startDelegationLifecycle, wireDelegation } from "./delegation-lifecycle.ts";
-import { makeDesktops, openDesktops } from "./desktops.ts";
+import { delegationWake, wireDelegation } from "./delegation-lifecycle.ts";
+import { startDelegationLifecycle } from "./delegation-watcher.ts";
+import { makeDesktops } from "./desktops.ts";
+import { openDesktops } from "./desktops-store.ts";
 import { handleAppApi, resolveAppAuth } from "./http/app-channel.ts";
 import { startHttp } from "./http/mod.ts";
 import { makeOperatorSeams } from "./http/operator.ts";
@@ -49,7 +56,7 @@ import { makeResponsibilityObserver } from "./responsibility-observer.ts";
 import { fileDelegationReport, fileRunReport } from "./responsibility-runs.ts";
 import { makeGithubReadiness } from "./github.ts";
 import { makeResponsibilityService } from "./responsibility-service.ts";
-import { wireReviewer } from "./reviewer.ts";
+import { wireReviewer } from "./reviewer-wiring.ts";
 import { Runtime } from "./runtime.ts";
 import { makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
 import { fireMail, fireWebhook, startScheduler } from "./scheduler.ts";
@@ -104,11 +111,12 @@ async function boot() {
 		process.exit(1);
 	}
 	setLogLevel(config.logLevel);
+	warnOnExampleOperator(config);
 
 	// Shared ref: the mini app swaps this in place on save; everything
 	// reads .current at point of use.
 	const configRef: ConfigRef = { current: config, ttsDown: false };
-	// The Telegram client reads apiRoot once, at process start (tg/mod.ts).
+	// The Telegram client reads apiRoot once, at process start (tg/bot.ts).
 	// A later save writes the file but not the live client, so it is hinted.
 	const apiRootBoot = config.telegram.apiRoot;
 	const auth = loadAuth();
@@ -142,9 +150,10 @@ async function boot() {
 	const windowCapture = openWindowCapture(store.db);
 	// The crash journal shares the store's handle like the tg inbox.
 	// Its open reclassifies rows left 'running' — a graceful shutdown
-	// fences first, so 'running' at open means the process died mid-turn
-	// — and records each such run's unlanded progress in history inside
-	// the same transaction (#195): the work that already happened stays
+	// leaves its fenced rows 'running' on purpose (#471), so 'running'
+	// at open means the turn died with the process — and records each
+	// such run's unlanded progress in history inside the same
+	// transaction (#195): the work that already happened stays
 	// transcript even though the process never got to say so.
 	const turnJournal = openTurnJournal(store.db, {
 		onInterrupted: (run, calls) => appendInterruptedProgress(store, run, calls),
@@ -444,19 +453,22 @@ async function boot() {
 
 	// The retention worker boots before the channel — outage and blocked
 	// notices deliver through bot.api (one per episode / per document).
-	const memoryWorker = memoryClient
-		? startMemoryWorker(store.memoryQueue, memoryClient, {
-				outage: {
-					tracker: new OutageTracker(store.db),
-					notify: (conversationId, sinceMs, queued) =>
-						sendMemoryOutageNotice(attach.api(), conversationId, sinceMs, queued),
-				},
-				blocked: {
-					notify: (conversationId, error, attempts) =>
-						sendMemoryBlockedNotice(attach.api(), conversationId, error, attempts),
-				},
-			})
-		: null;
+	// The one tracker also feeds the app Attention projection.
+	const outageTracker = memoryClient === null ? null : new OutageTracker(store.db);
+	const memoryWorker =
+		memoryClient !== null && outageTracker !== null
+			? startMemoryWorker(store.memoryQueue, memoryClient, {
+					outage: {
+						tracker: outageTracker,
+						notify: (conversationId, sinceMs, queued) =>
+							sendMemoryOutageNotice(attach.api(), conversationId, sinceMs, queued),
+					},
+					blocked: {
+						notify: (conversationId, error, attempts) =>
+							sendMemoryBlockedNotice(attach.api(), conversationId, error, attempts),
+					},
+				})
+			: null;
 
 	// Save notices read the live api at call time — absent while detached.
 	const { gate: system1Gate, reviewer: skillReviewer } = wireReviewer({
@@ -701,6 +713,7 @@ async function boot() {
 	const operatorSeams = makeOperatorSeams({
 		store,
 		memory,
+		...(outageTracker === null ? {} : { memoryOutage: outageTracker }),
 		programs,
 		delegations,
 		skillSources,

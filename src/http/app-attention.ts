@@ -107,6 +107,38 @@ export async function handleAttentionRoute(
 	if (memory === undefined) {
 		unavailable.push("memory");
 	} else {
+		// The same durable states the Telegram notices ride: an open
+		// outage row means the retain queue cannot drain; a failed last
+		// recall means turns proceed without memory. Read-only — each
+		// clears on its own when the service is healthy again.
+		const outage = memory.outage?.() ?? null;
+		if (outage !== null) {
+			const counts = memory.counts();
+			const queued = counts.pending + counts.submitted;
+			items.push(
+				pageItem({
+					id: "memory-outage",
+					kind: "memory-outage",
+					title: "Memory can't reach its service",
+					detail: `${queued} exchange${queued === 1 ? "" : "s"} queued locally, nothing lost — saves keep retrying on their own.`,
+					createdAt: new Date(outage.startedAt).toISOString(),
+					page: "memory",
+				}),
+			);
+		}
+		if (memory.lastRecallOk() === false) {
+			items.push(
+				pageItem({
+					id: "memory-recall",
+					kind: "memory-recall",
+					title: "Memory can't recall",
+					detail:
+						"The last recall failed — turns run without long-term memory until one succeeds.",
+					createdAt: memory.lastRecallAt(),
+					page: "memory",
+				}),
+			);
+		}
 		const { queue, client } = memory;
 		if (queue !== undefined && client !== undefined) {
 			// One card per cause, not per exchange: the operator decides
@@ -185,13 +217,25 @@ export async function handleAttentionRoute(
 		}
 	}
 
-	// Open work whose derived stage waits on the operator. A pause is
-	// the operator's own choice, not a request for attention.
+	// Open work whose derived stage waits on the operator, or whose
+	// observation is down. A pause is the operator's own choice, not a
+	// request for attention.
 	const resps = deps.responsibilities?.resps;
 	if (resps === undefined) {
 		unavailable.push("responsibilities");
 	} else {
 		for (const resp of resps.open()) {
+			for (const att of resps.attachmentsFor(resp.responsibilityId)) {
+				if (att.unreachableSince === null) continue;
+				items.push({
+					id: `observation-unreachable:${att.attachmentId}`,
+					kind: "observation-unreachable",
+					title: `Can't observe ${att.target.agentName}`,
+					detail: `Polling ${att.target.server}/${att.target.session} has failed since ${att.unreachableSince} — last seen ${att.health}; the agent may still be running`,
+					createdAt: att.unreachableSince,
+					target: { kind: "conversation", conversationId: resp.coordinationConversationId },
+				});
+			}
 			const latest = resps.latestReport(resp.responsibilityId);
 			const stage = responsibilityStage(resp, latest, resps.operationsFor(resp.responsibilityId));
 			if (stage.waitsFor !== "operator" || stage.stage === "paused") continue;

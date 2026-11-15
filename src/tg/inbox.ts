@@ -28,7 +28,22 @@ const payloadSchema = z.strictObject({
 	text: z.string(),
 	media: mediaSchema.nullable(),
 	mediaError: z.string().nullable(),
-	quoted: z.strictObject({ messageId: idSchema, text: z.string() }).optional(),
+	quoted: z
+		.strictObject({
+			messageId: idSchema,
+			text: z.string(),
+			// Set when text is the sender-selected quote excerpt
+			// (msg.quote), not the whole replied-to message.
+			excerpt: z.boolean().optional(),
+			// Media noun of the reply target when text is empty — the
+			// model still needs a reply marker (#493-L8).
+			mediaKind: z.string().optional(),
+		})
+		.optional(),
+	// Source topic for the intake typing ack — the destination
+	// conversation may differ (ping rerouting), the ping belongs where
+	// the user typed.
+	threadId: idSchema.nullable().optional(),
 });
 
 export interface InboxPayload {
@@ -38,7 +53,15 @@ export interface InboxPayload {
 	text: string;
 	media: IncomingMedia | null;
 	mediaError: string | null;
-	quoted?: { messageId: number; text: string } | undefined;
+	quoted?:
+		| {
+				messageId: number;
+				text: string;
+				excerpt?: boolean | undefined;
+				mediaKind?: string | undefined;
+			}
+		| undefined;
+	threadId?: number | null | undefined;
 }
 export interface InboxEntry {
 	updateId: number;

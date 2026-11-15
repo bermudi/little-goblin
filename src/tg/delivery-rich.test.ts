@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Api } from "grammy";
 import { parseConfig } from "../config.ts";
-import type { Conversation } from "../conversation.ts";
+import type { Conversation } from "../conversation-read.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
-import { makeDeliverySink, resetMessageEffectsGateForTests } from "./delivery.ts";
+import { makeDeliverySink } from "./delivery.ts";
+import { resetMessageEffectsGateForTests } from "./delivery-text.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -21,6 +22,7 @@ const conv: Conversation = {
 	thinking: null,
 	voice: false,
 	memoryExcluded: false,
+	memoryExcludedByProject: false,
 	projectId: null,
 	persona: "personal",
 	archivedAt: null,
@@ -421,6 +423,25 @@ describe("rich delivery", () => {
 		} finally {
 			done();
 		}
+	});
+
+	test("a fenced rich turn stamps its live draft — pending deltas ride the stamp", async () => {
+		const { api, drafts, richSends, msgs } = fakeApi();
+		let live = true;
+		const sink = makeDeliverySink(api, conv, {
+			editIntervalMs: 0,
+			rich: { enabled: true },
+		});
+		sink.setAuthorityCheck!(() => live);
+		sink.onTextDelta("partial");
+		await sleep(0); // draft pushed
+		sink.onTextDelta(" stale tail");
+		live = false;
+		await sink.onDone({ kind: "fenced" });
+		const last = drafts.filter((d) => d.kind === "rich").at(-1);
+		expect(last?.markdown).toBe("partial stale tail\n\n—\n⏹ superseded");
+		expect(richSends).toEqual([]);
+		expect(msgs).toEqual([]);
 	});
 
 	test("a fenced rich turn sends nothing", async () => {

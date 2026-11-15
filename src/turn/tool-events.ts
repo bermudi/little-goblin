@@ -82,24 +82,23 @@ export function noteToolInput(
 }
 
 // A tool call's arguments were rejected before execution (schema
-// repair found nothing) — no name list entry, but the by-id map must
-// carry name+input or the detector hashes each rejection under a random
-// call id and never trips.
+// repair found nothing). This is the call's terminal event: since ai
+// 7.0.173 the SDK drops the tool-output-error that used to follow it,
+// so the detector is fed here or a model retrying the same invalid args
+// loops forever.
 export function noteToolInputRejected(
-	state: ToolEventState,
-	deps: { convId: string },
-	toolCallId: string,
+	deps: Pick<ToolOutputDeps, "convId" | "onCompleted">,
 	toolName: string,
 	input: unknown,
 	errorText: string,
 ): void {
-	state.callById.set(toolCallId, { tool: toolName, input });
 	log.warn("tool call rejected", {
 		conversation: deps.convId,
 		tool: toolName,
 		arg: JSON.stringify(input ?? null).slice(0, 200),
 		error: errorText.slice(0, 300),
 	});
+	deps.onCompleted(toolName, input, errorText, true);
 }
 
 export interface ToolOutputDeps {

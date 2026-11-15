@@ -263,8 +263,7 @@ Consequences:
 
 Sanctioned one-time rewrites, each visible as a request-hash move in the log:
 a model switch — or a catalog refresh that changes a model's listed
-modalities — recomputes attachment representations once (and re-renders
-stored PDF fetch refs through the same modalities-and-pipe gate); a fenced or
+modalities — recomputes attachment representations once; a fenced or
 failed turn leaves its user message unanswered, and the successor turn's
 burst-merge (Causal view) rewrites that boundary (a fenced, failed, or
 process-interrupted turn with recorded progress also leaves a system

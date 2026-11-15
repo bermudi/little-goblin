@@ -3,7 +3,6 @@
 
 import { randomUUID } from "node:crypto";
 import { type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
-import type { AcceptsMedia } from "./agent/attachments.ts";
 import type { ClaudeStep } from "./agent/claude-code/mod.ts";
 import type { ClaudeSessionStore } from "./claude-sessions.ts";
 import { type CompactionOutcome, chooseBoundary } from "./agent/compaction.ts";
@@ -781,11 +780,6 @@ export class Runtime {
 			// link + the tool fence + step-end persistence's one home,
 			// saveStep (turn/tool-authority.ts).
 			const delivery = sinkDelivery(sink, () => this.checkAuthority(convId, epoch));
-			// Until buildStep resolves, media capability must conservatively reject
-			// inlining.
-			const accepts: { current: AcceptsMedia } = {
-				current: { modalities: new Set(["text"]), carries: () => false },
-			};
 			// #477's gate arms only once buildStep names the engine: the
 			// streamText engine folds steers at its prepareStep boundary,
 			// so a parked steer skips unlaunched calls; a claude-code
@@ -798,7 +792,6 @@ export class Runtime {
 				epoch,
 				makeTools: this.deps.makeTools,
 				delivery,
-				accepts,
 				sourceMessageId: () => turns[turns.length - 1]!.message.id,
 				record: {
 					anchorSeq,
@@ -831,11 +824,6 @@ export class Runtime {
 			const step = await this.deps.buildStep(conv, tools);
 			steerGate.armed = !isClaudeStep(step);
 			this.checkAuthority(convId, epoch);
-			accepts.current = {
-				modalities: step.inputModalities ?? new Set(["text"]),
-				carries: step.carries ?? (() => true),
-			};
-			this.checkAuthority(convId, epoch);
 			// Steered messages use the same fixed capability gates as the initial
 			// view, preserving the stable prompt prefix. Only the appended tail
 			// changes when a steer is folded in.
@@ -844,7 +832,7 @@ export class Runtime {
 				modelRef: stepModelRef(step),
 				tools,
 				modalities: step.inputModalities,
-				carries: accepts.current.carries,
+				carries: step.carries ?? (() => true),
 				keepProviderExecuted: !isClaudeStep(step) && step.keepProviderExecuted === true,
 				skillRef: resolveSkillRef,
 			};

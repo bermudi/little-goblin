@@ -1,8 +1,9 @@
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { OutputBuffer } from "@earendil-works/chord/output";
 import { setLogFile } from "../log.ts";
 import { makeSandboxEnv } from "./env.ts";
@@ -42,7 +43,7 @@ function stageShellExit(sb: MemSandbox, rc: number, spillText: string | Uint8Arr
 }
 
 describe("worker shell wall", () => {
-	const CTX = {} as Context;
+	const CTX = BACKGROUND_CONTEXT;
 
 	test.each(["waiting", "copied"] as const)(
 		"a worker write cancelled while %s forwards cancellation and removes both stages",
@@ -219,7 +220,7 @@ describe("worker shell wall", () => {
 });
 
 describe("sandbox env contract (fake guest fs)", () => {
-	const CTX = {} as Context;
+	const CTX = BACKGROUND_CONTEXT;
 	const must = <T>(r: { ok: true; value: T } | { ok: false; error: { message: string } }): T => {
 		if (!r.ok) throw new Error(r.error.message);
 		return r.value;

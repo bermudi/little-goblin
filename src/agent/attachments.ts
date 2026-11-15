@@ -131,21 +131,12 @@ export function isStoredAttachmentPath(path: string): boolean {
 // files, while Responses and OpenRouter preserve them.
 export type MediaPosition = "user" | "tool-result";
 
-// Built once per turn from model modalities and provider transport support.
-// Reusing it for attachments and fetched PDFs keeps materialization deterministic.
-export interface AcceptsMedia {
-	modalities: ReadonlySet<string>;
-	carries: (mediaType: string, position: MediaPosition) => boolean;
-}
-
-// Media needs its own modality; other files use `file`, with PDFs also
-// accepted through the `pdf` capability.
+// Only media can inline, each behind its own modality. Documents (PDF, text,
+// archives…) never do: their bytes would ride every later request, and a
+// tool read takes only the part the model needs.
 export function acceptsMedia(modalities: ReadonlySet<string>, mediaType: string): boolean {
 	const top = mediaType.split("/", 1)[0];
-	if (top === "image") return modalities.has("image");
-	if (top === "audio") return modalities.has("audio");
-	if (top === "video") return modalities.has("video");
-	return modalities.has("file") || (mediaType === "application/pdf" && modalities.has("pdf"));
+	return (top === "image" || top === "audio" || top === "video") && modalities.has(top);
 }
 
 // Preserve an intake speech transcript when the model cannot consume the file.

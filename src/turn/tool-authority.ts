@@ -7,7 +7,6 @@
 
 import { randomUUID } from "node:crypto";
 import type { ToolSet } from "ai";
-import type { AcceptsMedia } from "../agent/attachments.ts";
 import type { OutgoingFile } from "../agent/tools/send.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { log } from "../log.ts";
@@ -24,9 +23,6 @@ export type TurnToolMaker = (
 	deliverVoice?: (audio: Uint8Array) => Promise<void>,
 	recording?: () => () => void,
 	deliverFile?: (file: OutgoingFile) => Promise<void>,
-	// Filled after buildStep so fetch can render stored PDF references with
-	// this turn's media capabilities.
-	accepts?: { current: AcceptsMedia },
 	context?: {
 		runId: string;
 		sourceMessageId(): string;
@@ -58,9 +54,6 @@ export interface ToolAuthorityDeps {
 	epoch: number;
 	makeTools: TurnToolMaker;
 	delivery: SinkDelivery;
-	// Until buildStep resolves, media capability must conservatively reject
-	// inlining.
-	accepts: { current: AcceptsMedia };
 	sourceMessageId(): string;
 	record: ToolAuthorityRecord;
 	journal: TurnJournal | undefined;
@@ -110,7 +103,6 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 		deps.delivery.deliverVoice,
 		deps.delivery.recording,
 		deps.delivery.deliverFile,
-		deps.accepts,
 		{
 			runId: newRunId,
 			sourceMessageId: deps.sourceMessageId,

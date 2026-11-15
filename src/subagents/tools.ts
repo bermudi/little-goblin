@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
-import type { Context } from "@earendil-works/chord";
-import { type MutableModels, Type } from "@earendil-works/pi-ai";
+import type { Context } from "@earendil-works/chord/context";
+import { type MutableModels } from "@earendil-works/pi-ai";
+import { arr, map, num, obj, opt, str, unknown } from "@earendil-works/pi-schema";
 import {
 	createRegistry,
 	defineExtension,
@@ -174,21 +175,21 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		} as T;
 	}
 
-	const finishParams = Type.Object({
-		result: Type.String({
+	const finishParams = obj({
+		result: str({
 			description: SUBAGENT_PARAMETER_DESCRIPTIONS.result,
 			minLength: 1,
 			maxLength: MAX_RESULT_CHARS,
 		}),
-		files: Type.Optional(
-			Type.Array(Type.String({ pattern: "^/" }), {
+		files: opt(
+			arr(str({ pattern: "^/" }), {
 				description: SUBAGENT_PARAMETER_DESCRIPTIONS.files,
 				maxItems: MAX_INPUT_FILES,
 			}),
 		),
 	});
-	const askParams = Type.Object({
-		question: Type.String({
+	const askParams = obj({
+		question: str({
 			description: SUBAGENT_PARAMETER_DESCRIPTIONS.question,
 			minLength: 1,
 			maxLength: MAX_MESSAGE_CHARS,
@@ -251,7 +252,7 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		defineTool({
 			name: "screenshot",
 			description: COMPUTER_TOOL_DESCRIPTIONS.screenshot,
-			parameters: Type.Object({}),
+			parameters: obj({}),
 			replay: "safe",
 			execute: async (_args, api) => {
 				const row = requireRow(api);
@@ -274,9 +275,9 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		defineTool({
 			name: "inspect",
 			description: COMPUTER_TOOL_DESCRIPTIONS.inspect,
-			parameters: Type.Object({
-				pid: Type.Optional(Type.Number()),
-				window_id: Type.Optional(Type.Number()),
+			parameters: obj({
+				pid: opt(num()),
+				window_id: opt(num()),
 			}),
 			replay: "safe",
 			execute: async (args, api) => {
@@ -316,10 +317,10 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		defineTool({
 			name: "act",
 			description: COMPUTER_TOOL_DESCRIPTIONS.act,
-			parameters: Type.Object({
-				observation_id: Type.String(),
-				tool: Type.String({ description: SUBAGENT_PARAMETER_DESCRIPTIONS.cuaTool }),
-				args: Type.Record(Type.String(), Type.Unknown()),
+			parameters: obj({
+				observation_id: str(),
+				tool: str({ description: SUBAGENT_PARAMETER_DESCRIPTIONS.cuaTool }),
+				args: map(unknown()),
 			}),
 			execute: async (args, api) => {
 				const row = requireRow(api);
@@ -347,9 +348,9 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 		defineTool({
 			name: "launch",
 			description: COMPUTER_TOOL_DESCRIPTIONS.launch,
-			parameters: Type.Object({
-				observation_id: Type.String(),
-				url: Type.Optional(Type.String()),
+			parameters: obj({
+				observation_id: str(),
+				url: opt(str()),
 			}),
 			execute: async (args, api) => {
 				const row = requireRow(api);
@@ -597,8 +598,8 @@ export async function buildHarness(args: HarnessDeps): Promise<HarnessBundle> {
 			// onReport is non-fatal (extension failures that did not fail
 			// the calling operation) — the real close edge is mod.ts's
 			// subscribeClose, never this hook.
-			onReport: (error) => {
-				log.error("subagent harness report", error);
+			onReport: (report) => {
+				log.error("subagent harness report", report.error, { kind: report.kind });
 			},
 		},
 		ctx,

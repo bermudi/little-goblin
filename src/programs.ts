@@ -402,8 +402,8 @@ function rowToProgram(row: unknown): Program {
 
 export function openPrograms(dbPath: string): ProgramsStore {
 	const db = new Database(dbPath);
-	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+	db.exec("PRAGMA journal_mode = WAL");
 	// Check, create, and purge in one transaction: a failed copy (or a
 	// crash) must not leave a half-purged database that prevents retry.
 	// The copy runs only when the programs table is being created — an

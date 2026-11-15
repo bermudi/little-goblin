@@ -81,9 +81,9 @@ export function setup(
 			system: "test",
 		}),
 		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
-		makeTools: (conv, deliverVoice, recording, deliverFile, accepts) => {
+		makeTools: (conv, deliverVoice, recording, deliverFile) => {
 			opts.workdirs?.push(projectWorkdir(projects, conv));
-			return opts.makeTools?.(conv, deliverVoice, recording, deliverFile, accepts) ?? {};
+			return opts.makeTools?.(conv, deliverVoice, recording, deliverFile) ?? {};
 		},
 	});
 	const auth: Pick<AuthStore, "resolve"> = {

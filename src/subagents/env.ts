@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { mkdirSync, rmSync } from "node:fs";
 import { basename, join, posix } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type {
 	BinaryReader,
 	DirReader,
@@ -16,7 +16,7 @@ import type {
 	ShellOutputInfo,
 	TextLine,
 	TextLineReader,
-	WatchChange,
+	FileChange,
 	WatchTarget,
 } from "@earendil-works/pi-durable/env";
 import {
@@ -532,7 +532,7 @@ export class SandboxEnv implements ExecutionEnv {
 	}
 	async watch(
 		targets: readonly WatchTarget[],
-		onChange: (change: WatchChange) => void,
+		onChange: (change: FileChange) => void,
 		context: Context,
 	): Promise<Result<FileWatcher, FileError>> {
 		if (context.abortSignal?.aborted) return aborted();
@@ -556,7 +556,7 @@ export class SandboxEnv implements ExecutionEnv {
 		}
 		let closed = false;
 		let running: Promise<void> | null = null;
-		const emit = (change: WatchChange): void => {
+		const emit = (change: FileChange): void => {
 			if (closed || context.abortSignal?.aborted === true) return;
 			try {
 				onChange(change);
@@ -570,7 +570,7 @@ export class SandboxEnv implements ExecutionEnv {
 				const snap = await this.targetSnapshot(plan.abs, plan.recursive, plan.exclude, context);
 				if (closed) return;
 				if (!snap.ok) {
-					if (plan.state !== null) emit({ overflow: true });
+					if (plan.state !== null) emit({ kind: "overflow" });
 					else plan.owed = true;
 					plan.state = null;
 					continue;
@@ -579,13 +579,13 @@ export class SandboxEnv implements ExecutionEnv {
 					plan.state = snap.value;
 					if (plan.owed) {
 						plan.owed = false;
-						emit({ overflow: true });
+						emit({ kind: "overflow" });
 					}
 					continue;
 				}
 				if (plan.state !== snap.value) {
 					plan.state = snap.value;
-					emit({ paths: [plan.abs] });
+					emit({ kind: "paths", paths: [plan.abs] });
 				}
 			}
 		};
@@ -601,7 +601,7 @@ export class SandboxEnv implements ExecutionEnv {
 		}, WATCH_POLL_MS);
 		return ok<FileWatcher, FileError>({
 			mode: "polling",
-			close: async () => {
+			stop: async () => {
 				closed = true;
 				clearInterval(timer);
 				await running;

@@ -223,8 +223,8 @@ const DELEGATIONS_COLUMNS = `
 
 export function openDelegations(dbPath: string): DelegationsStore {
 	const db = new Database(dbPath);
-	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`CREATE TABLE IF NOT EXISTS delegations (${DELEGATIONS_COLUMNS})`);
 	// Rows predating the app-conversation pin — additive column, no
 	// rebuild. NULL = Telegram-pinned like always.

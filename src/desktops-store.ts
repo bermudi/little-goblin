@@ -93,8 +93,8 @@ function toRow(row: unknown): DesktopRow {
 
 export function openDesktops(dbPath: string): DesktopStore {
 	const db = new Database(dbPath);
-	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`CREATE TABLE IF NOT EXISTS desktops (
 		name TEXT PRIMARY KEY,
 		container TEXT NOT NULL,

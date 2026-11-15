@@ -183,9 +183,11 @@ interface ViewEntryShape {
 
 async function transcriptText(harness: Harness): Promise<string> {
 	const root = await harness.root(ctx);
-	const view = await root.viewState(ctx);
-	const value = (view as unknown as { value?: { entries?: ViewEntryShape[] } }).value;
-	return (value?.entries ?? [])
+	// viewState is gone (pi 1.5): the structural view is a watch; a
+	// one-shot read takes its current value and stops it.
+	const watch = await root.watch(ctx);
+	const value = watch.value as unknown as { entries?: ViewEntryShape[] };
+	const text = (value?.entries ?? [])
 		.map((entry) =>
 			(entry.model ?? [])
 				.map((message) => {
@@ -197,6 +199,8 @@ async function transcriptText(harness: Harness): Promise<string> {
 				.join(" "),
 		)
 		.join("\n");
+	await watch.stop();
+	return text;
 }
 
 async function killChild(child: Subprocess): Promise<void> {

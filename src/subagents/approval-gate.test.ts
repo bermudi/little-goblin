@@ -9,7 +9,7 @@ import type {
 	ToolExecutionResult,
 	ToolRegistration,
 } from "@earendil-works/pi-durable";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { ShellOutputSkip } from "@earendil-works/pi-durable/env";
 import { openSubagentRuns, type SubagentRuns } from "../subagent-runs.ts";
 import { SubagentError } from "./errors.ts";

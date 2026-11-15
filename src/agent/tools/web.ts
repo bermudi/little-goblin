@@ -1,12 +1,10 @@
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config-schema.ts";
 import { log } from "../../log.ts";
-import type { AcceptsMedia } from "../attachments.ts";
 
 export interface WebToolDeps {
 	configRef: { current: Config };
 	auth: AuthStore;
-	accepts?: { current: AcceptsMedia };
 }
 
 export interface SearchHit {

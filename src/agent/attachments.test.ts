@@ -11,16 +11,15 @@ import {
 import { tmpDir } from "../testkit.ts";
 
 describe("acceptsMedia", () => {
-	test("media types map to their own modality; documents need file or pdf", () => {
+	test("media types map to their own modality; documents never inline", () => {
 		expect(acceptsMedia(new Set(["text", "image"]), "image/webp")).toBe(true);
 		expect(acceptsMedia(new Set(["text"]), "image/jpeg")).toBe(false);
 		expect(acceptsMedia(new Set(["audio"]), "audio/ogg")).toBe(true);
 		expect(acceptsMedia(new Set(["video"]), "video/mp4")).toBe(true);
-		// a generic "file" modality covers documents, not images
-		expect(acceptsMedia(new Set(["file"]), "application/pdf")).toBe(true);
+		expect(acceptsMedia(new Set(["file"]), "application/pdf")).toBe(false);
 		expect(acceptsMedia(new Set(["file"]), "image/png")).toBe(false);
-		expect(acceptsMedia(new Set(["pdf"]), "application/pdf")).toBe(true);
-		expect(acceptsMedia(new Set(["pdf"]), "application/zip")).toBe(false);
+		expect(acceptsMedia(new Set(["pdf"]), "application/pdf")).toBe(false);
+		expect(acceptsMedia(new Set(["file"]), "text/plain")).toBe(false);
 	});
 });
 

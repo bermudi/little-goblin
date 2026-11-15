@@ -61,24 +61,15 @@ not a native tool. MCP stays out, with its return conditions on record
   outside it — fetch's `Source:` line, search's fallback note, the
   `[TRUNCATED …]` recovery footer (which marks the saved overflow file
   untrusted too).
-- **PDFs ride as documents, not text** (the reason goblin moved to the
-  AI SDK, landed 2026-09-28): a fetched PDF is saved content-addressed
-  (URL + bytes) because the ref is replayed into every later request — a
-  refetch with new bytes writes a new file; URL-keying would silently
-  rewrite history's request bytes (the text-overflow cache may be
-  URL-keyed only because its file is a recovery aid, never replayed).
-  Per turn the tool renders a native `file` part when this turn's model
-  takes PDFs (catalog) *and* the pipe can carry them at tool-result
-  position (`carriesMedia`, position-aware; see `design/model.md` →
-  Capabilities), a trusted-framing path reference otherwise — a pure
-  function of ref + bytes + this turn's model: identical request bytes
-  under the same model (cache-stable), one recompute on a model switch.
-  The framing marks the bytes untrusted — the fence's binary twin;
-  nothing inside a PDF can displace it. Probe-verified (2026-09-27):
-  z.ai's OpenAI Responses endpoint (`/api/v1`) parses `input_file`
-  inside `function_call_output` — the chat-family door that carries
-  tool-result documents — which is why the `zai` provider is the
-  `responses` kind.
+- **PDFs ride as a path, never inline** (operator, 2026-11-15; replaces
+  the 2026-09-28 native-document rendering): a fetched PDF is saved
+  content-addressed (URL + bytes) — a refetch with new bytes writes a new
+  file, so a replayed ref never changes meaning. The tool result is the
+  source URL plus the saved path; the model reads it with bash
+  (`pdftotext`) or hands it over with `send_file`. A file part would ride
+  every later request in the history; a tool read takes only what the
+  model needs. The rendering no longer depends on the model, so a model
+  switch does not change it.
 - **No silent dead ends** (hermes' `web_extract`, adopted): an unsupported
   type, an oversized body, or a JS-shell page refuses with its named
   recovery (browser skill for JS shells; bash otherwise); overflow reads

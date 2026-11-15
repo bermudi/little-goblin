@@ -131,21 +131,12 @@ export function isStoredAttachmentPath(path: string): boolean {
 // files, while Responses and OpenRouter preserve them.
 export type MediaPosition = "user" | "tool-result";
 
-// Built once per turn from model modalities and provider transport support.
-// Reusing it for attachments and fetched PDFs keeps materialization deterministic.
-export interface AcceptsMedia {
-	modalities: ReadonlySet<string>;
-	carries: (mediaType: string, position: MediaPosition) => boolean;
-}
-
-// Media needs its own modality; other files use `file`, with PDFs also
-// accepted through the `pdf` capability.
+// Only media can inline, each behind its own modality. Documents (PDF, text,
+// archives…) never do: their bytes would ride every later request, and a
+// tool read takes only the part the model needs.
 export function acceptsMedia(modalities: ReadonlySet<string>, mediaType: string): boolean {
 	const top = mediaType.split("/", 1)[0];
-	if (top === "image") return modalities.has("image");
-	if (top === "audio") return modalities.has("audio");
-	if (top === "video") return modalities.has("video");
-	return modalities.has("file") || (mediaType === "application/pdf" && modalities.has("pdf"));
+	return (top === "image" || top === "audio" || top === "video") && modalities.has(top);
 }
 
 // Preserve an intake speech transcript when the model cannot consume the file.
@@ -180,15 +171,9 @@ function planPart(
 	maxItemBytes: number,
 	carries: (mediaType: string, position: MediaPosition) => boolean,
 ): { decision: "inline" } | { decision: "fallback"; reason: "modality" | "size" } {
-	// Documents (PDF, text, archives…) stay a path: inlined, their bytes ride
-	// every later request; the model reads only what it needs with tools.
-	const top = ref.mediaType.split("/", 1)[0];
-	if (top !== "image" && top !== "audio" && top !== "video") {
-		return { decision: "fallback", reason: "modality" };
-	}
 	// Never inline non-speech audio: use its transcript as text when present,
 	// otherwise keep a path reference.
-	if (top === "audio" && ref.speech !== true) {
+	if (ref.mediaType.startsWith("audio/") && ref.speech !== true) {
 		return { decision: "fallback", reason: "modality" };
 	}
 	// Both model capability and provider transport must pass; otherwise retain a

@@ -71,9 +71,11 @@ export interface CompactionStore {
 // A cut after detail[i] is exchange-complete when nothing later anchors
 // at or before it — no response is orphaned from its user message. The
 // model view cuts on the same key, `(anchorSeq ?? seq) > boundarySeq` —
-// keep them in sync. Consequence: an interleaved burst (operator
-// messages arriving mid-turn) is atomic; the cut coarsens to whole
-// bursts rather than splitting them.
+// keep them in sync. Consequence for whole-event cuts: an interleaved
+// burst (operator messages arriving mid-turn) coarsens to whole bursts
+// rather than splitting them. The #403 split is the one sanctioned
+// exception — it halves the burst's own reply at a step edge, never the
+// user events.
 function exchangeComplete(detail: CompactionEvent[], boundaryIndex: number): boolean {
 	const boundary = detail[boundaryIndex]!.seq;
 	for (let j = boundaryIndex + 1; j < detail.length; j++) {

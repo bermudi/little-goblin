@@ -24,6 +24,7 @@ import { openPrograms, type ProgramsStore } from "./programs.ts";
 import { Database } from "bun:sqlite";
 import { deferred, tmpDir, useHome, waitUntil } from "./testkit.ts";
 import { feedForProject } from "./responsibility-feed.ts";
+import { responsibilityStage } from "./responsibility-stage.ts";
 import { openWakeStore, type WakeStore } from "./wake-store.ts";
 import { responsibilityTool } from "./agent/tools/responsibility.ts";
 import { FencedError } from "./runtime.ts";
@@ -841,6 +842,7 @@ describe("real adapter preflight failures", () => {
 		tab_id: "w1:t1",
 		terminal_id: "term-9",
 		agent_session: { value: "sess-1" },
+		state_change_seq: 7,
 	};
 
 	const prepRig = () => {
@@ -1029,6 +1031,7 @@ describe("beforeSend at the real wire surface", () => {
 			tab_id: "w1:t1",
 			terminal_id: "term-9",
 			agent_session: { value: "sess-1" },
+			state_change_seq: 7,
 		};
 		const wire = (body: unknown): HerdrRunResult => ({
 			code: 0,
@@ -1401,6 +1404,142 @@ describe("atomic dispatch claim", () => {
 	});
 });
 
+describe("boot sweep: crashed sends read uncertain", () => {
+	// Simulate the crash window: the claim wrote `sent`, then the
+	// process died before any settlement — no dispatch edge ever runs.
+	const crashedRig = () => {
+		const r = rig();
+		const resp = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "crash-boot",
+			understanding: understanding(),
+			attachments: [{ target: target(), baseline: {} }],
+		}).responsibility;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		const claim = r.resps.claimForSend(prepared.operation.operationId);
+		if (!("operation" in claim)) throw new Error("expected claim");
+		return { r, resp, att, op: claim.operation };
+	};
+
+	// The reopened process over the same db file.
+	const reboot = (dbPath: string) => {
+		const store2 = openStore(dbPath);
+		const resps2 = openResponsibilities(store2.db);
+		const svc2 = makeResponsibilityService({
+			db: store2.db,
+			resps: resps2,
+			wakes: openWakeStore(store2.db),
+			conversations: store2,
+			pump: () => {},
+		});
+		return { store2, resps2, svc2 };
+	};
+
+	test("a crashed sent row reads delivery-uncertain at the next boot", () => {
+		const { r, resp, op } = crashedRig();
+		const { store2, resps2 } = reboot(r.dbPath);
+		try {
+			const reopened = resps2.getOperation(op.operationId)!;
+			expect(reopened.state).toBe("uncertain");
+			// The one stage derivation the feed pill, Attention and the
+			// scheduler's silence hold all read.
+			const after = resps2.get(resp.responsibilityId)!;
+			const stage = responsibilityStage(
+				after,
+				resps2.latestReport(after.responsibilityId),
+				resps2.operationsFor(after.responsibilityId),
+			);
+			expect(stage).toEqual({
+				waitsFor: "goblin",
+				stage: "delivery-uncertain",
+				reason: `send ${op.operationId} delivery unconfirmed — inspect and reconcile`,
+			});
+		} finally {
+			store2.close();
+			r.store.close();
+		}
+	});
+
+	test("the boot sweep touches only sent rows — prepared and acknowledged keep their state", async () => {
+		const r = rig();
+		const resp = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "crash-boot-mixed",
+			understanding: understanding(),
+			attachments: [{ target: target(), baseline: {} }],
+		}).responsibility;
+		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
+		const settle = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "settle me",
+		});
+		if (!("operation" in settle)) throw new Error("expected prepared");
+		const leave = r.resps.prepareOperation({
+			responsibilityId: resp.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "leave me",
+		});
+		if (!("operation" in leave)) throw new Error("expected prepared");
+		const out = await r.svc.dispatch(settle.operation.operationId, async () => ({}));
+		expect(out).toEqual({ sent: true });
+		const { store2, resps2 } = reboot(r.dbPath);
+		try {
+			expect(resps2.getOperation(settle.operation.operationId)!.state).toBe("acknowledged");
+			expect(resps2.getOperation(leave.operation.operationId)!.state).toBe("prepared");
+		} finally {
+			store2.close();
+			r.store.close();
+		}
+	});
+
+	test("after the boot mark the reconcile path settles the operation — a new prepare proceeds", () => {
+		const { r, resp, att, op } = crashedRig();
+		const store2 = openStore(r.dbPath);
+		const resps2 = openResponsibilities(store2.db);
+		try {
+			// The fence the issue names: the crashed row blocks a new send.
+			const fenced = resps2.prepareOperation({
+				responsibilityId: resp.responsibilityId,
+				attachmentId: att.attachmentId,
+				brief: "next",
+			});
+			expect(fenced).toMatchObject({ refused: "delivery-uncertain" });
+		} finally {
+			store2.close();
+		}
+		const rebooted = reboot(r.dbPath);
+		try {
+			const reconciled = rebooted.svc2.reconcile(
+				op.operationId,
+				"not_delivered",
+				"pane shows no prompt",
+			);
+			if (!("operation" in reconciled)) throw new Error("expected reconciled");
+			expect(reconciled.operation.state).toBe("refused");
+			// The fence is clear: a fresh prepare on the same attachment no
+			// longer refuses.
+			const next = rebooted.resps2.prepareOperation({
+				responsibilityId: resp.responsibilityId,
+				attachmentId: att.attachmentId,
+				brief: "next",
+			});
+			expect("operation" in next).toBe(true);
+		} finally {
+			rebooted.store2.close();
+			r.store.close();
+		}
+	});
+});
+
 describe("managed prompt authority after Herdr preflight", () => {
 	test.each(["cancel", "revise", "fence"] as const)(
 		"%s during delayed agent get prevents prompt submission",
@@ -1428,6 +1567,7 @@ describe("managed prompt authority after Herdr preflight", () => {
 				tab_id: "w1:t1",
 				terminal_id: att.target.terminalId,
 				agent_session: { value: att.target.agentSession },
+				state_change_seq: 7,
 			};
 			const wire = (body: unknown): HerdrRunResult => ({
 				code: 0,

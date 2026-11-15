@@ -159,6 +159,12 @@ export interface ResponsibilityStore {
 	}): { operation: PromptOperation } | { refused: SendRefusal; unresolved?: PromptOperation };
 	getOperation(operationId: string): PromptOperation | null;
 	operationsFor(responsibilityId: string): PromptOperation[];
+	/** Boot sweep: every operation still `sent` belongs to a dead
+	 *  process — the dispatch in-flight set is process-local and empty
+	 *  at construction, so nobody owes these rows a settlement. Moves
+	 *  each through the ordinary sent → uncertain transition and
+	 *  returns the ids moved. */
+	markCrashedSendsUncertain(): string[];
 	/** Re-check right before dispatch — the race the refusal names. */
 	validateForSend(
 		operationId: string,
@@ -332,6 +338,10 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 	const qOp = db.query<OpRow, [string]>("SELECT * FROM prompt_operations WHERE operation_id = ?");
 	const qOpsFor = db.query<OpRow, [string]>(
 		"SELECT * FROM prompt_operations WHERE responsibility_id = ? ORDER BY created_at",
+	);
+	// The boot crash sweep — a `sent` row no live dispatch owns.
+	const qSentOpIds = db.query<{ operation_id: string }, []>(
+		"SELECT operation_id FROM prompt_operations WHERE state = 'sent' ORDER BY created_at",
 	);
 	// The unresolved-delivery guard: an operation that reached the wire
 	// (sent) or lost its outcome (uncertain) blocks every new send to
@@ -855,6 +865,18 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		},
 		operationsFor: (responsibilityId) =>
 			qOpsFor.all(responsibilityId).map((r) => toOperation(opRowSchema.parse(r))),
+		markCrashedSendsUncertain() {
+			const ids: string[] = [];
+			db.transaction(() => {
+				for (const row of qSentOpIds.all()) {
+					// The ordinary transition, not a private write: the log
+					// line and the state-machine guard both apply.
+					store.transitionOperation(row.operation_id, "uncertain", { from: "sent" });
+					ids.push(row.operation_id);
+				}
+			}).immediate();
+			return ids;
+		},
 
 		validateForSend(operationId, expectedState = "prepared") {
 			const row = qOp.get(operationId);

@@ -4726,6 +4726,237 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 	});
 });
 
+// The notes and attention feeds ride the same refresh() as the
+// conversation list, but their failures must not read as "no notes,
+// nothing needs attention" — both feeds mark the miss and keep their
+// last good rows (issue #213).
+describe("notes and attention load failures surface (issue #213)", () => {
+	let win: Window;
+	let container: HTMLElement;
+	let root: Root | null = null;
+	let installed: string[] = [];
+	// Feed control: the endpoint 500s while its flag is up.
+	let notesFail: boolean;
+	let attnFail: boolean;
+	let notesRows: AppNoteSummary[];
+	let attentionRows: AppAttentionItem[];
+	const realFetch = globalThis.fetch;
+
+	const installGlobal = (name: string, value: unknown) => {
+		Reflect.set(globalThis, name, value);
+		installed.push(name);
+	};
+
+	const convRow = {
+		id: "app/fixture",
+		title: "fixture chat",
+		preview: "fixture preview",
+		createdAt: "2026-11-08T00:00:00.000Z",
+		updatedAt: "2026-11-09T00:00:00.000Z",
+		archivedAt: null,
+		pinnedAt: null,
+		projectId: null,
+	};
+	const noteRow: AppNoteSummary = {
+		id: "n-shopping",
+		projectId: null,
+		title: "shopping list",
+		rev: 1,
+		stateRev: 1,
+		pinnedAt: null,
+		archivedAt: null,
+		updatedAt: "2026-11-09T00:00:00.000Z",
+		preview: "eggs",
+	};
+	const attnRow: AppAttentionItem = {
+		id: "interrupted-run:r1",
+		kind: "interrupted-run",
+		title: "Interrupted turn — fixture chat",
+		detail: "2 recorded calls — resume or abandon",
+		createdAt: "2026-11-05T00:00:00.000Z",
+		target: { kind: "conversation", conversationId: "app/fixture" },
+	};
+
+	beforeEach(() => {
+		win = new Window();
+		const div = win.document.createElement("div");
+		win.document.body.appendChild(div);
+		container = div as unknown as HTMLElement;
+		installed = [];
+		notesFail = false;
+		attnFail = false;
+		notesRows = [];
+		attentionRows = [];
+		installGlobal("window", win);
+		installGlobal("document", win.document);
+		installGlobal("navigator", win.navigator);
+		installGlobal("localStorage", win.localStorage);
+		installGlobal("sessionStorage", win.sessionStorage);
+		installGlobal("Event", win.Event);
+		installGlobal("CustomEvent", win.CustomEvent);
+		installGlobal("getComputedStyle", win.getComputedStyle);
+		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			if (url === "/api/app/projects") {
+				return Promise.resolve(jsonResponse({ projects: [] }));
+			}
+			if (url === "/api/app/notes") {
+				if (notesFail) return Promise.resolve(jsonResponse({ error: "notes endpoint down" }, 500));
+				return Promise.resolve(jsonResponse({ notes: notesRows, truncated: false }));
+			}
+			if (url === "/api/app/attention") {
+				if (attnFail)
+					return Promise.resolve(jsonResponse({ error: "attention endpoint down" }, 500));
+				return Promise.resolve(jsonResponse({ items: attentionRows, unavailable: [] }));
+			}
+			if (url === "/api/app/push")
+				return Promise.resolve(jsonResponse({ configured: false, subscriptions: [] }));
+			if (url === "/api/app/conversations" && method === "GET") {
+				return Promise.resolve(jsonResponse({ conversations: [convRow] }));
+			}
+			if (url === "/api/app/conversations/fixture" && method === "PATCH") {
+				return Promise.resolve(jsonResponse({ pinned: true }));
+			}
+			if (url.endsWith("/messages"))
+				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
+			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
+			return Promise.resolve(
+				jsonResponse({
+					model: "fixture/model",
+					thinking: "off",
+					favorites: [],
+					catalog: [],
+					thinkingLevels: ["off"],
+				}),
+			);
+		}) as typeof fetch;
+	});
+
+	afterEach(async () => {
+		if (root !== null) {
+			await act(async () => {
+				root?.unmount();
+			});
+			root = null;
+		}
+		await win.happyDOM.close();
+		globalThis.fetch = realFetch;
+		Reflect.deleteProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT");
+		for (const name of installed) Reflect.deleteProperty(globalThis, name);
+		installed = [];
+	});
+
+	const settle = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 30));
+		});
+	};
+
+	const click = async (el: Element | null | undefined) => {
+		await act(async () => {
+			el?.dispatchEvent(
+				new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+			);
+		});
+		await settle();
+	};
+
+	const glyph = (label: string) => container.querySelector(`button[aria-label="${label}"]`);
+
+	const mount = async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await settle();
+	};
+
+	// The pin action on the fixture row rides a PATCH whose success
+	// callback runs the next refresh() — the test-owned refresh trigger.
+	const pinButton = () =>
+		[...container.querySelectorAll(".conv")]
+			.find((r) => r.querySelector(".conv-title")?.textContent === "fixture chat")
+			?.querySelector('.conv-actions button[aria-label="Pin"]') ?? null;
+
+	test("a failing notes load marks the pane, not a silent empty state", async () => {
+		notesFail = true;
+		await mount();
+		await click(glyph("Notes"));
+		const err = container.querySelector(".panes p.error");
+		expect(err).not.toBeNull();
+		expect(err?.textContent).toBe("Couldn't load notes.");
+		// No notes ever loaded: the pane must not fake the empty state
+		// next to the error, nor lose the error behind the null gate.
+		expect(container.textContent).not.toContain("No notes yet.");
+		expect(container.querySelector(".panes button.new")).toBeNull();
+	});
+
+	test("a failing attention load paints the error dot and names the miss", async () => {
+		attnFail = true;
+		await mount();
+		const bell = glyph("Couldn't load attention");
+		expect(bell).not.toBeNull();
+		expect(bell?.getAttribute("title")).toBe("Couldn't load attention");
+		expect(bell?.querySelector(".dot.attention-dot-error")).not.toBeNull();
+	});
+
+	test("a healthy load on the Attention page clears the glyph's error", async () => {
+		attnFail = true;
+		await mount();
+		expect(glyph("Couldn't load attention")).not.toBeNull();
+
+		attnFail = false;
+		await click(glyph("Couldn't load attention"));
+		expect(container.querySelector(".attention-dot-error")).toBeNull();
+		expect(glyph("Couldn't load attention")).toBeNull();
+	});
+
+	test("a later successful refresh clears both feed errors", async () => {
+		notesFail = true;
+		attnFail = true;
+		await mount();
+		await click(glyph("Notes"));
+		expect(container.querySelector(".panes p.error")?.textContent).toBe("Couldn't load notes.");
+		expect(glyph("Couldn't load attention")).not.toBeNull();
+
+		notesFail = false;
+		attnFail = false;
+		// Back to the chats pane — the notes pane replaced the rows the
+		// pin trigger lives in — pin, then return to the notes pane.
+		await click(glyph("Chats"));
+		await click(pinButton());
+		await click(glyph("Notes"));
+		expect(container.querySelector(".panes p.error")).toBeNull();
+		expect(container.textContent).toContain("No notes yet.");
+		expect(container.querySelector(".panes button.new")).not.toBeNull();
+		expect(glyph("Attention")).not.toBeNull();
+		expect(container.querySelector(".attention-dot-error")).toBeNull();
+	});
+
+	test("a failed feed load keeps the last good rows beside the error", async () => {
+		notesRows = [noteRow];
+		attentionRows = [attnRow];
+		await mount();
+		await click(glyph("Notes"));
+		expect(container.textContent).toContain("shopping list");
+		const healthy = glyph("Attention — 1 item needs you");
+		expect(healthy?.querySelector(".dot")).not.toBeNull();
+		expect(healthy?.querySelector(".attention-dot-error")).toBeNull();
+
+		notesFail = true;
+		attnFail = true;
+		await click(glyph("Chats"));
+		await click(pinButton());
+		await click(glyph("Notes"));
+		expect(container.querySelector(".panes p.error")?.textContent).toBe("Couldn't load notes.");
+		// The stale-but-good rows stay under the error, not cleared.
+		expect(container.textContent).toContain("shopping list");
+		expect(glyph("Couldn't load attention")?.querySelector(".dot.attention-dot-error")).not.toBeNull();
+	});
+});
+
 // The chat width selector — a header control on the chat page whose
 // choice flips the shell column and survives a remount (per-device
 // localStorage, chatWidth.ts).

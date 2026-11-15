@@ -107,6 +107,7 @@ describe("the model view", () => {
 				boundarySeq: 2,
 				summary: "earlier days",
 				summaryEligible: true,
+				split: null,
 				tokensBefore: 0,
 				model: "m",
 				createdAt: "",

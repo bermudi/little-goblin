@@ -37,7 +37,13 @@ function TrFallbackCard({
 	onPatch: (p: Partial<TrEntryDraft>) => void;
 }) {
 	const { kinds, token, authNames, authCommandNames, serviceNames, rememberAuthName } = ctx;
-	const def = entry.kind === "whistle" ? { model: "", auth: "" } : kinds.trDefaults[entry.kind];
+	// Rollout skew — an old server's trDefaults answers no defaults
+	// for a kind this client offers. Degrade like the whistle arm;
+	// never throw here.
+	const def =
+		entry.kind === "whistle"
+			? { model: "", auth: "" }
+			: (kinds.trDefaults[entry.kind] ?? { model: "", auth: "" });
 	const effective = entry.auth.trim() || def.auth;
 	return (
 		<>
@@ -383,7 +389,10 @@ export function SettingsVoice({ ctx }: { ctx: SettingsCtx }) {
 								<Row label="Key">
 									<KeyStatus
 										token={token}
-										name={tr.auth.trim() || kinds.trDefaults[tr.kind].auth}
+										// Same skew degrade as the fallback cards and the
+										// TTS rows above — blank means the key row's
+										// missing state, not a thrown render.
+										name={tr.auth.trim() || (kinds.trDefaults[tr.kind]?.auth ?? "")}
 										commandNames={authCommandNames}
 										authNames={authNames}
 										onStored={(n) => {

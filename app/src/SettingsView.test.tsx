@@ -825,6 +825,13 @@ describe("quiet harbor regressions", () => {
 		modelCatalog: [],
 	};
 
+	// Skew fixture: trDefaults as an old server answers it — defaults for
+	// every transcription kind except onemin (the kind list still offers
+	// it, so the client can pick or load config naming it).
+	const trDefaultsNoOnemin = Object.fromEntries(
+		Object.entries(transcriptionDefaults).filter(([k]) => k !== "onemin"),
+	);
+
 	const json = (body: unknown, init: { status?: number; etag?: string } = {}): Response =>
 		new Response(JSON.stringify(body), {
 			status: init.status ?? 200,
@@ -974,8 +981,9 @@ describe("quiet harbor regressions", () => {
 		test("an engine the server's ttsDefaults lacks renders fallbacks instead of crashing", async () => {
 			// Rollout skew: a freshly built client offers kinds an old
 			// server's ttsDefaults does not answer for. Picking one must
-			// degrade to the caption fallbacks — there is no error
-			// boundary, so a thrown render blanks the whole tree.
+			// degrade to the caption fallbacks — and even where a throw
+			// slips through, the root ErrorBoundary (main.tsx) keeps the
+			// app from blanking entirely.
 			settingsResponse = {
 				...SETTINGS_BODY,
 				ttsDefaults: {
@@ -1020,6 +1028,185 @@ describe("quiet harbor regressions", () => {
 				(r) => r.querySelector(".rlabel")?.textContent === "Key",
 			);
 			expect(keyRow?.textContent).toContain("Key missing");
+		});
+
+		test("a skew tts kind picked on Voice survives opening Accounts (#281)", async () => {
+			// The Accounts tab's key list bare-indexed
+			// ttsDefaults[draft.tts.kind] — one tab over from the Voice
+			// fix, so picking a skew kind on Voice and opening Accounts
+			// threw mid-render and blanked the tree.
+			settingsResponse = {
+				...SETTINGS_BODY,
+				ttsDefaults: {
+					openrouter: { model: "fish/s2", auth: "openrouter" },
+					logfare: { model: "aura-2-en", auth: "logfare" },
+					mimo: { model: "mimo-tts", auth: "mimo" },
+				},
+			};
+			await mount();
+			await act(async () => {
+				[...container.querySelectorAll("button.idx")]
+					.find((b) => b.textContent?.includes("Voice"))
+					?.dispatchEvent(
+						new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+					);
+			});
+			const ttsOn = container.querySelector('button[aria-label="text to speech"]');
+			expect(ttsOn).not.toBeNull();
+			await act(async () => {
+				ttsOn?.dispatchEvent(
+					new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+			});
+			const kind = container.querySelector<HTMLSelectElement>('select[aria-label="tts kind"]');
+			expect(kind).not.toBeNull();
+			await act(async () => {
+				if (kind === null) return;
+				kind.value = "onemin";
+				kind.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+			});
+			// The crash site: Accounts reads the picked kind's default key.
+			// With the skew fallback the tab renders — and the unknown kind
+			// contributes no key row, so the empty-keys caption shows.
+			await act(async () => {
+				[...container.querySelectorAll("button.snav")]
+					.find((b) => b.textContent?.includes("Accounts"))
+					?.dispatchEvent(
+						new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+					);
+			});
+			expect(container.textContent).toContain("Model services");
+			expect(container.textContent).toContain(
+				"Keys for search and voice services appear here once you use them.",
+			);
+		});
+
+		test("a skew tr kind picked on Voice survives opening Accounts (#281)", async () => {
+			// Same cross-tab skew as the ttsDefaults test above,
+			// transcription side: the kind list still offers onemin, but an
+			// old server's trDefaults answers nothing for it — Accounts'
+			// key list reads the picked kind's default mid-render.
+			settingsResponse = {
+				...SETTINGS_BODY,
+				transcriptionDefaults: trDefaultsNoOnemin,
+			};
+			await mount();
+			await act(async () => {
+				[...container.querySelectorAll("button.idx")]
+					.find((b) => b.textContent?.includes("Voice"))
+					?.dispatchEvent(
+						new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+					);
+			});
+			const trOn = container.querySelector('button[aria-label="speech to text"]');
+			expect(trOn).not.toBeNull();
+			await act(async () => {
+				trOn?.dispatchEvent(
+					new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+			});
+			const kind = container.querySelector<HTMLSelectElement>(
+				'select[aria-label="transcription kind"]',
+			);
+			expect(kind).not.toBeNull();
+			await act(async () => {
+				if (kind === null) return;
+				kind.value = "onemin";
+				kind.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+			});
+			// The crash site: Accounts reads the picked kind's default key.
+			// With the skew fallback the tab renders — and the unknown kind
+			// contributes no key row, so the empty-keys caption shows.
+			await act(async () => {
+				[...container.querySelectorAll("button.snav")]
+					.find((b) => b.textContent?.includes("Accounts"))
+					?.dispatchEvent(
+						new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+					);
+			});
+			expect(container.textContent).toContain("Model services");
+			expect(container.textContent).toContain(
+				"Keys for search and voice services appear here once you use them.",
+			);
+		});
+
+		test("an engine the server's trDefaults lacks renders fallbacks instead of crashing", async () => {
+			// Same skew class as the ttsDefaults test above, transcription
+			// side: the kind list still offers onemin, but an old server's
+			// defaults record answers nothing for it. Picking it must degrade
+			// — there is no error boundary, so a thrown render blanks the
+			// whole tree.
+			settingsResponse = {
+				...SETTINGS_BODY,
+				transcriptionDefaults: trDefaultsNoOnemin,
+			};
+			await mount();
+			await act(async () => {
+				[...container.querySelectorAll("button.idx")]
+					.find((b) => b.textContent?.includes("Voice"))
+					?.dispatchEvent(
+						new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+					);
+			});
+			const trOn = container.querySelector('button[aria-label="speech to text"]');
+			expect(trOn).not.toBeNull();
+			await act(async () => {
+				trOn?.dispatchEvent(
+					new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+				);
+			});
+			const kind = container.querySelector<HTMLSelectElement>('select[aria-label="transcription kind"]');
+			expect(kind).not.toBeNull();
+			await act(async () => {
+				if (kind === null) return;
+				kind.value = "onemin";
+				kind.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
+			});
+			// The tree is alive: the engine took, the caption stays honest,
+			// and the key row's KeyStatus carries the empty default name
+			// into its missing state instead of throwing.
+			const kindNow = container.querySelector<HTMLSelectElement>(
+				'select[aria-label="transcription kind"]',
+			);
+			expect(kindNow).not.toBeNull();
+			expect(kindNow?.value).toBe("onemin");
+			expect(container.textContent).toContain("Blank uses the kind's default.");
+			const keyRow = [...(kindNow?.closest(".card")?.querySelectorAll(".row") ?? [])].find(
+				(r) => r.querySelector(".rlabel")?.textContent === "Key",
+			);
+			expect(keyRow?.textContent).toContain("Key missing");
+		});
+
+		test("a fallback entry whose kind the server's trDefaults lacks renders", async () => {
+			// Config written before a downgrade can name a kind the (now
+			// older) server's trDefaults lacks — the fallback card must
+			// render with blank defaults, not throw.
+			settingsResponse = {
+				...SETTINGS_BODY,
+				transcriptionDefaults: trDefaultsNoOnemin,
+				config: {
+					...SETTINGS_BODY.config,
+					transcription: { kind: "whistle", fallbacks: [{ kind: "onemin" }] },
+				},
+			};
+			await mount();
+			await act(async () => {
+				[...container.querySelectorAll("button.idx")]
+					.find((b) => b.textContent?.includes("Voice"))
+					?.dispatchEvent(
+						new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event,
+					);
+			});
+			const cards = [...container.querySelectorAll(".chain-card")];
+			expect(cards).toHaveLength(1);
+			const card = cards[0];
+			// No server default exists for this kind: blank model
+			// placeholder, and the key row's KeyStatus shows the missing
+			// state instead of throwing on the absent default record.
+			const model = card?.querySelector<HTMLInputElement>('input[aria-label="fallback 1 model"]');
+			expect(model).not.toBeNull();
+			expect(model?.placeholder).toBe("");
+			expect(card?.textContent).toContain("Key missing");
 		});
 
 		test("a failed write isn't re-fired by the debounce on identical state", async () => {

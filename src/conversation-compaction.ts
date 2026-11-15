@@ -3,8 +3,24 @@
 // Pure move from conversation.ts — openStore spreads these onto the
 // store; getCompaction also feeds makeConversationHistory.
 
-import type { Compaction, CompactionMark, CompactionWrite } from "./conversation-events.ts";
+import type {
+	Compaction,
+	CompactionMark,
+	CompactionSplit,
+	CompactionWrite,
+} from "./conversation-events.ts";
 import type { ConversationQueries } from "./conversation-queries.ts";
+
+// Split columns travel as one pointer: both set or both null — a lone
+// split_seq/split_part is not a state a row can hold.
+function splitOf(row: {
+	split_seq: number | null;
+	split_part: number | null;
+}): CompactionSplit | null {
+	return row.split_seq !== null && row.split_part !== null
+		? { seq: row.split_seq, part: row.split_part }
+		: null;
+}
 
 export function makeConversationCompaction(
 	queries: Pick<
@@ -25,6 +41,7 @@ export function makeConversationCompaction(
 					model: row.model,
 					createdAt: row.created_at,
 					tailEvents: row.tail_events,
+					split: splitOf(row),
 				}
 			: null;
 	}
@@ -37,6 +54,7 @@ export function makeConversationCompaction(
 			tailEvents: row.tail_events,
 			model: row.model,
 			createdAt: row.created_at,
+			split: splitOf(row),
 		}));
 	}
 
@@ -47,6 +65,7 @@ export function makeConversationCompaction(
 		// below the new boundary, so one count covers repeated
 		// compactions.
 		const foldedIneligible = qIneligibleFolded.get(id, compaction.boundarySeq)?.n ?? 0;
+		const split = compaction.split ?? null;
 		qInsertCompaction.run(
 			id,
 			compaction.boundarySeq,
@@ -56,6 +75,8 @@ export function makeConversationCompaction(
 			compaction.model,
 			compaction.createdAt,
 			compaction.tailEvents ?? null,
+			split === null ? null : split.seq,
+			split === null ? null : split.part,
 		);
 	}
 

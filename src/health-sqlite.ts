@@ -51,6 +51,8 @@ const required = {
 		"tokens_before",
 		"model",
 		"created_at",
+		"split_seq",
+		"split_part",
 	],
 	prompt_snapshots: ["conversation_id", "text", "sources", "built_at"],
 	reply_ratings: [

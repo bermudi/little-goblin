@@ -312,9 +312,22 @@ describe("subagents owner", () => {
 			expect(r.desktops.held.has("d1")).toBe(true);
 			expect(r.wakes).toHaveLength(0);
 			await captured!.waitForIdle({} as Context);
-			r.model.push({ kind: "tools", calls: [{ name: "finish", args: { result: "recovered" } }] });
+			// Input-matched so the first generation's abort-raced fetch (input =
+			// the task text) cannot eat the reply scripted for the recovery
+			// round (input = the [goblin] nudge) — the #441 flake.
+			r.model.push(
+				{ kind: "tools", calls: [{ name: "finish", args: { result: "recovered" } }] },
+				"[goblin]",
+			);
 			await o.scan();
-			await until(() => r.runs.get(a.id)?.status === "done", "recovered run finishes");
+			await until(
+				() => {
+					const status = r.runs.get(a.id)?.status;
+					return status === "done" || status === "failed";
+				},
+				"recovered run settles",
+			);
+			expect(r.runs.get(a.id)?.status).toBe("done");
 			expect(r.runs.get(a.id)?.result).toBe("recovered");
 			expect(JSON.stringify(r.model.seen)).not.toContain("refused steer");
 		} finally {

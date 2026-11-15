@@ -661,6 +661,10 @@ p code,
 	border-radius: 50%;
 	background: var(--app-accent);
 }
+/* A failed attention load keeps the dot up, in the error colour. */
+.g .dot.attention-dot-error {
+	background: var(--app-danger);
+}
 .g-new {
 	color: var(--app-fg);
 }

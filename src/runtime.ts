@@ -972,6 +972,7 @@ export class Runtime {
 									chooseBoundary(store.historyDetail(convId), {
 										tailTokenBudget,
 										previousBoundary: previousFold?.boundarySeq ?? null,
+										previousSplit: previousFold?.split ?? null,
 										// Completed history only — inputs queued behind
 										// this request must not push the boundary onto
 										// the running exchange.

@@ -3,6 +3,7 @@
 
 import type { UIMessage } from "ai";
 import { log } from "../log.ts";
+import type { CompactionSplit } from "../conversation-events.ts";
 import { withoutReasoningCipher } from "./codex/replay-state.ts";
 import { exhaustedMessage, type FallbackMiss, failureClass, missReason } from "./model-fallback.ts";
 import {
@@ -33,6 +34,14 @@ export function estimateMessageTokens(message: UIMessage): number {
 	return estimateTokens(JSON.stringify(withoutReasoningCipher(message)));
 }
 
+// Part-level twin of estimateMessageTokens (#403): the same formula —
+// serialized size /4 with the codex cipher stripped — so the split walk
+// counts a reply's parts exactly as whole-event estimates counted the
+// message they belong to.
+export function estimatePartTokens(part: UIMessage["parts"][number]): number {
+	return estimateTokens(JSON.stringify(withoutReasoningCipher(part)));
+}
+
 export interface CompactionEvent {
 	seq: number;
 	anchorSeq: number | null;
@@ -41,7 +50,7 @@ export interface CompactionEvent {
 
 export interface CompactionStore {
 	historyDetail(id: string): CompactionEvent[];
-	getCompaction(id: string): { boundarySeq: number; summary: string } | null;
+	getCompaction(id: string): { boundarySeq: number; summary: string; split: CompactionSplit | null } | null;
 	setCompaction(
 		id: string,
 		compaction: {
@@ -53,6 +62,8 @@ export interface CompactionStore {
 			// Events left unfolded at fold time — the mark's "kept the
 			// last N" is recorded, never recomputed.
 			tailEvents: number;
+			// #403: set when this row halves one event (see splitBoundary).
+			split?: CompactionSplit | null;
 		},
 	): void;
 }
@@ -85,15 +96,41 @@ function exchangeComplete(detail: CompactionEvent[], boundaryIndex: number): boo
 // and can push the boundary ONTO the running exchange — the reply then
 // lands anchored at or below the boundary and modelEntries cuts it from
 // every later request, unseen by the summary that replaced its context.
+// The chosen cut: the boundary plus, for a split turn, the second
+// pointer naming the one half-folded event (#403).
+export interface BoundaryChoice {
+	boundarySeq: number;
+	split: CompactionSplit | null;
+}
+
+export interface ChooseBoundaryOpts {
+	tailTokenBudget: number;
+	previousBoundary: number | null;
+	// The previous row's split pointer when it was a split row: a
+	// re-compaction at the same boundary must move the part forward.
+	previousSplit?: CompactionSplit | null;
+	minSpanTokens?: number;
+	beforeSeq?: number | null;
+}
+
+// Keep a tail whose estimated tokens fit the budget, extending backward
+// exchange-by-exchange. Returns the boundary (the last compacted event's
+// seq) plus an optional split pointer, or null when nothing is worth
+// compacting — a span must exist beyond the previous boundary and carry
+// ≥ minSpanTokens (compacting a few messages into a summary buys nothing).
+//
+// beforeSeq is an exclusive ceiling marking where completed history ends:
+// events at or after it belong to an exchange whose reply has not landed
+// (a running turn's stored user event, or inputs queued behind it) and are
+// never foldable — whole or split. Without the ceiling such events inflate
+// the tail walk and can push the boundary ONTO the running exchange — the
+// reply then lands anchored at or below the boundary and modelEntries cuts
+// it from every later request, unseen by the summary that replaced its
+// context.
 export function chooseBoundary(
 	detail: CompactionEvent[],
-	opts: {
-		tailTokenBudget: number;
-		previousBoundary: number | null;
-		minSpanTokens?: number;
-		beforeSeq?: number | null;
-	},
-): number | null {
+	opts: ChooseBoundaryOpts,
+): BoundaryChoice | null {
 	if (opts.beforeSeq !== null && opts.beforeSeq !== undefined) {
 		detail = detail.filter((e) => e.seq < opts.beforeSeq!);
 	}
@@ -123,8 +160,118 @@ export function chooseBoundary(
 		tailTokens += estimateMessageTokens(detail[boundaryIndex]!.message);
 	}
 	const cut = cutAt(detail, i - 1, opts);
-	if (cut !== null || fitStart === null || tailTokens <= opts.tailTokenBudget) return cut;
-	return cutAt(detail, fitStart - 1, opts);
+	// The #399 fallback: retry the cut at the last fitting position. Its
+	// tail fits the budget by construction, so the head exchange cannot
+	// need splitting when this fires.
+	const fallback =
+		cut === null && fitStart !== null && tailTokens > opts.tailTokenBudget
+			? cutAt(detail, fitStart - 1, opts)
+			: null;
+	// #403: whole-exchange cuts leave one oversized turn riding verbatim
+	// in the tail no matter where the boundary lands — it can never fold.
+	// When the tail's head exchange alone exceeds the budget, split it:
+	// fold through its trigger, half-fold its reply at a step edge.
+	if (fallback === null) {
+		const split = splitBoundary(detail, i, opts);
+		if (split !== null) return split;
+	}
+	const base = cut !== null ? cut : fallback;
+	return base === null ? null : { boundarySeq: base, split: null };
+}
+
+// The #403 split candidate. headStart is the walk's break position — the
+// trigger of the tail's head exchange. boundary_seq becomes the trigger's
+// own causal position (the trigger, any app media anchored beside it, and
+// everything earlier fold whole); the exchange's reply event is cut at a
+// step-start edge — parts [0, part) fold into the summary, [part, end)
+// stay verbatim in the tail. Cuts sit only on step edges, never inside a
+// step, so a codex reasoning item keeps replaying ahead of its tool call.
+// No valid edge, no oversized exchange, or no forward progress over the
+// previous row → null, and the caller keeps today's whole-event result.
+function splitBoundary(
+	detail: CompactionEvent[],
+	headStart: number,
+	opts: ChooseBoundaryOpts,
+): BoundaryChoice | null {
+	const trigger = detail[headStart]!;
+	// Only an unanchored user event heads an exchange; anything else is a
+	// loose end (a trailing unanswered question, malformed order) — leave
+	// it whole.
+	if (trigger.message.role !== "user" || trigger.anchorSeq !== null) return null;
+	// Exchange members: everything anchored to the trigger. Mid-turn
+	// steers are their own user events (unanchored) and stay in the tail.
+	let end = headStart;
+	while (end + 1 < detail.length && detail[end + 1]!.anchorSeq === trigger.seq) end++;
+	let exchangeTokens = 0;
+	for (let j = headStart; j <= end; j++) {
+		exchangeTokens += estimateMessageTokens(detail[j]!.message);
+	}
+	if (exchangeTokens <= opts.tailTokenBudget) return null;
+	// The reply to split: the exchange's anchored assistant event that is
+	// not app media (app media folds whole with the trigger); most parts
+	// wins if several could claim the name.
+	let reply: CompactionEvent | null = null;
+	let replyParts = -1;
+	for (let j = headStart + 1; j <= end; j++) {
+		const e = detail[j]!;
+		if (e.message.role !== "assistant") continue;
+		if (e.message.parts[0]?.type === "data-attachment") continue;
+		if (e.message.parts.length > replyParts) {
+			reply = e;
+			replyParts = e.message.parts.length;
+		}
+	}
+	if (reply === null) return null;
+	const parts = reply.message.parts;
+	const stepStarts: number[] = [];
+	for (let p = 1; p < parts.length; p++) {
+		if ((parts[p] as { type: string }).type === "step-start") stepStarts.push(p);
+	}
+	if (stepStarts.length === 0) return null;
+	// The suffix must fit beside everything kept after it — steers and
+	// later exchanges — measured with the same part-level estimate.
+	let newerTokens = 0;
+	for (let j = end + 1; j < detail.length; j++) {
+		newerTokens += estimateMessageTokens(detail[j]!.message);
+	}
+	const suffixTokens = (part: number): number => {
+		let tokens = 0;
+		for (let p = part; p < parts.length; p++) tokens += estimatePartTokens(parts[p]!);
+		return tokens;
+	};
+	// Forward progress: a re-split of the same event must fold strictly
+	// more than the previous row did — a larger part index.
+	const resplit =
+		opts.previousBoundary === trigger.seq && opts.previousSplit?.seq === reply.seq;
+	const candidates = resplit ? stepStarts.filter((p) => p > opts.previousSplit!.part) : stepStarts;
+	if (candidates.length === 0) return null;
+	// Smallest edge whose suffix fits — the least prefix folded that
+	// brings the tail under budget. If even the last step's suffix is
+	// over, keep the last step-start anyway: maximum folding while the
+	// final step stays verbatim.
+	const part =
+		candidates.find((p) => suffixTokens(p) + newerTokens <= opts.tailTokenBudget) ??
+		candidates[candidates.length - 1]!;
+	// The guards every cut passes. The boundary must advance past the
+	// previous row (the equal case is the re-split handled above); the
+	// folded span — events through the trigger plus the folded prefix —
+	// clears the floor, counting the whole prefix including parts a
+	// previous split already folded.
+	if (opts.previousBoundary !== null && trigger.seq <= opts.previousBoundary && !resplit) {
+		return null;
+	}
+	const spanStart =
+		opts.previousBoundary === null
+			? 0
+			: detail.findIndex((e) => e.seq === opts.previousBoundary) + 1;
+	const replyIndex = detail.findIndex((e) => e.seq === reply.seq);
+	let spanTokens = 0;
+	for (let j = spanStart; j < replyIndex; j++) {
+		spanTokens += estimateMessageTokens(detail[j]!.message);
+	}
+	for (let p = 0; p < part; p++) spanTokens += estimatePartTokens(parts[p]!);
+	if (spanTokens < (opts.minSpanTokens ?? 500)) return null;
+	return { boundarySeq: trigger.seq, split: { seq: reply.seq, part } };
 }
 
 function cutAt(
@@ -377,13 +524,15 @@ export async function runCompaction(
 	const boundary = chooseBoundary(detail, {
 		tailTokenBudget: opts.tailTokenBudget,
 		previousBoundary: previous?.boundarySeq ?? null,
+		previousSplit: previous?.split ?? null,
 		beforeSeq: opts.beforeSeq?.() ?? null,
 	});
 	if (boundary === null) {
 		log.info("compaction skipped", { conversation: id, reason: "nothing worth compacting" });
 		return { kind: "noop", reason: "nothing worth compacting" };
 	}
-	const boundaryIndex = detail.findIndex((e) => e.seq === boundary);
+	const { boundarySeq, split } = boundary;
+	const boundaryIndex = detail.findIndex((e) => e.seq === boundarySeq);
 	if (boundaryIndex < 0) {
 		log.info("compaction skipped", {
 			conversation: id,
@@ -391,17 +540,42 @@ export async function runCompaction(
 		});
 		return { kind: "noop", reason: "boundary vanished — history changed mid-compaction" };
 	}
+	// With a split, the folded span runs past the boundary event to the
+	// split event itself: the trigger, any app media anchored beside it,
+	// and everything earlier fold whole; the split event's prefix folds
+	// separately (the turn-prefix call below).
+	const splitIndex = split === null ? -1 : detail.findIndex((e) => e.seq === split.seq);
+	if (split !== null && (splitIndex < 0 || splitIndex <= boundaryIndex)) {
+		log.info("compaction skipped", {
+			conversation: id,
+			reason: "split event vanished — history changed mid-compaction",
+		});
+		return { kind: "noop", reason: "split event vanished — history changed mid-compaction" };
+	}
 	// The span is the delta since the previous boundary — folded events
 	// never re-enter the prompt, so calls stay bounded by one compaction
 	// interval, not total history. The previous summary rides the first
 	// call instead.
 	const spanStart = (previous ? detail.findIndex((e) => e.seq === previous.boundarySeq) : -1) + 1;
-	const span = detail.slice(spanStart, boundaryIndex + 1);
-	const tokensBefore = span.reduce((sum, e) => sum + estimateMessageTokens(e.message), 0);
+	const span = detail.slice(spanStart, split === null ? boundaryIndex + 1 : splitIndex);
+	// The split event's folded prefix as its own message-shaped slice — it
+	// rides the flush, the identifier index, and the turn-prefix summary.
+	const prefixMessage: UIMessage | null =
+		split === null || splitIndex < 0
+			? null
+			: {
+					...detail[splitIndex]!.message,
+					parts: detail[splitIndex]!.message.parts.slice(0, split.part),
+				};
+	const tokensBefore =
+		span.reduce((sum, e) => sum + estimateMessageTokens(e.message), 0) +
+		(prefixMessage === null ? 0 : estimateMessageTokens(prefixMessage));
 	const reason = opts.reason ?? "threshold";
 	log.info("compaction summarizing", {
 		conversation: id,
-		boundary,
+		boundary: boundarySeq,
+		splitSeq: split === null ? null : split.seq,
+		splitPart: split === null ? null : split.part,
 		events: span.length,
 		estimatedTokens: tokensBefore,
 		reason,
@@ -409,7 +583,18 @@ export async function runCompaction(
 	const callTimeoutMs = opts.callTimeoutMs ?? SUMMARY_CALL_TIMEOUT_MS;
 	if (opts.flush !== undefined) {
 		opts.assertAuthority?.();
-		await runFlush(id, opts.flush, span, opts.inputTokenBudget, signal, callTimeoutMs);
+		// A split turn's folded prefix rides the flush too — its facts
+		// fold exactly like the whole events' do.
+		await runFlush(
+			id,
+			opts.flush,
+			prefixMessage === null
+				? span
+				: [...span, { seq: split!.seq, anchorSeq: boundarySeq, message: prefixMessage }],
+			opts.inputTokenBudget,
+			signal,
+			callTimeoutMs,
+		);
 	}
 	const systemTokens = estimateTokens(SUMMARY_SYSTEM);
 	const carriedParsed = previous !== null ? parseSummary(previous.summary) : null;
@@ -426,6 +611,54 @@ export async function runCompaction(
 	let lane = 0;
 	const misses: FallbackMiss[] = [];
 	let servedBy: string | null = null;
+	// One summary call down the sticky lane: a call failure advances to
+	// the next candidate; exhausting the list propagates. Shared by the
+	// chunk walk and the split turn's prefix call (#403) — one lane,
+	// one set of timeouts, abort and authority checks.
+	const call = async (callPrompt: string, chunk: number): Promise<string> => {
+		let raw: string | undefined;
+		while (raw === undefined) {
+			const model = models[lane]!;
+			try {
+				raw = await attemptSummary(summarize, callPrompt, model, signal, callTimeoutMs, chunk);
+				servedBy = model;
+			} catch (err) {
+				if (signal.aborted) throw err;
+				misses.push({
+					ref: model,
+					reason: missReason(err),
+					transient: isTransientTurnFailure(err),
+				});
+				const next = models[lane + 1];
+				if (next === undefined) {
+					if (misses.length === 1) throw err;
+					throw new Error(exhaustedMessage(misses), { cause: err });
+				}
+				log.warn("model fallback", {
+					conversation: id,
+					purpose: "compaction",
+					chunk,
+					from: model,
+					to: next,
+					failureClass: failureClass(err),
+					attempt: misses.length,
+					error: err instanceof Error ? err.message : String(err),
+				});
+				lane++;
+				// Authority before spend — the next candidate is new spend.
+				opts.assertAuthority?.();
+			}
+		}
+		// Providers may resolve successfully even after an abort — the
+		// pointer must never commit a summary minted under revoked
+		// authority. Same for settings fences.
+		signal.throwIfAborted();
+		opts.assertAuthority?.();
+		const out = raw.trim();
+		if (out === "") throw new Error(`summarizer returned an empty summary (chunk ${chunk})`);
+		return out;
+		};
+
 	for (let i = 0; i < span.length; ) {
 		// Authority before spend — a fenced compaction must not keep
 		// paying the summarizer for a pointer it may no longer write.
@@ -481,52 +714,7 @@ export async function runCompaction(
 				? `[operator asked this compaction to emphasize: ${opts.focus}]\n\n`
 				: "") +
 			texts.join("\n\n");
-		// One summary call down the sticky lane: a call failure advances to
-		// the next candidate; exhausting the list propagates.
-		const call = async (callPrompt: string): Promise<string> => {
-			let raw: string | undefined;
-			while (raw === undefined) {
-				const model = models[lane]!;
-				try {
-					raw = await attemptSummary(summarize, callPrompt, model, signal, callTimeoutMs, chunks);
-					servedBy = model;
-				} catch (err) {
-					if (signal.aborted) throw err;
-					misses.push({
-						ref: model,
-						reason: missReason(err),
-						transient: isTransientTurnFailure(err),
-					});
-					const next = models[lane + 1];
-					if (next === undefined) {
-						if (misses.length === 1) throw err;
-						throw new Error(exhaustedMessage(misses), { cause: err });
-					}
-					log.warn("model fallback", {
-						conversation: id,
-						purpose: "compaction",
-						chunk: chunks,
-						from: model,
-						to: next,
-						failureClass: failureClass(err),
-						attempt: misses.length,
-						error: err instanceof Error ? err.message : String(err),
-					});
-					lane++;
-					// Authority before spend — the next candidate is new spend.
-					opts.assertAuthority?.();
-				}
-			}
-			// Providers may resolve successfully even after an abort — the
-			// pointer must never commit a summary minted under revoked
-			// authority. Same for settings fences.
-			signal.throwIfAborted();
-			opts.assertAuthority?.();
-			const out = raw.trim();
-			if (out === "") throw new Error(`summarizer returned an empty summary (chunk ${chunks})`);
-			return out;
-		};
-		let out = await call(prompt);
+		let out = await call(prompt, chunks);
 		// The quality audit: a deficient summary retries with a corrective
 		// instruction; still failing, the fold writes nothing.
 		for (let attempt = 0; ; attempt++) {
@@ -546,6 +734,7 @@ export async function runCompaction(
 			opts.assertAuthority?.();
 			out = await call(
 				`${prompt}\n\n---\n\n[your previous summary]\n${out}\n\n${correctiveInstruction(reasons, latestAsk)}`,
+				chunks,
 			);
 		}
 		log.info("compaction chunk summarized", {
@@ -564,6 +753,35 @@ export async function runCompaction(
 		// non-empty span; fail loud, never write a blank pointer.
 		throw new Error("compaction produced no summary");
 	}
+	// #403 split turns, like pi: a second summarizer call checkpoints the
+	// split turn's own prefix — the trigger's request plus the reply's
+	// folded steps (adapted from pi's TURN_PREFIX_SUMMARIZATION_PROMPT,
+	// packages/coding-agent/src/core/compaction/compaction.ts) — and the
+	// checkpoint is appended to the history summary. Without it the kept
+	// suffix continues mid-turn with no frame for what came before it.
+	if (split !== null && prefixMessage !== null) {
+		opts.assertAuthority?.();
+		const triggerEvent = detail[boundaryIndex]!;
+		const prefixPrompt =
+			`${serializeSpan([
+				triggerEvent,
+				{ seq: split.seq, anchorSeq: boundarySeq, message: prefixMessage },
+			])}\n\n---\n\n` +
+			"The messages above are the beginning of one long turn that compaction split; the turn's later messages follow this summary verbatim and do not need to be reconstructed.\n\n" +
+			"Create a concise checkpoint of the user's request and the progress shown above, in the operator's dominant language. This checkpoint will be placed before the later messages so the turn can continue with the necessary context.\n\n" +
+			"## Original Request\n[What did the user ask for?]\n\n" +
+			"## Progress So Far\n- [Key decisions and work completed in these messages]\n\n" +
+			"## Context Needed to Continue\n- [Information from these messages needed to understand the later work]\n\n" +
+			"Only summarize information explicitly present above. Do not infer or recreate later messages.";
+		const prefixOut = await call(prefixPrompt, chunks + 1);
+		log.info("compaction turn-prefix summarized", {
+			conversation: id,
+			seq: split.seq,
+			part: split.part,
+			summaryChars: prefixOut.length,
+		});
+		summary = `${summary}\n\n---\n\n**Turn Context (split turn):**\n\n${prefixOut}`;
+	}
 	// Code-made parts, never through a model: they cannot be paraphrased
 	// away by this fold or any later one.
 	summary = composeSummary(
@@ -571,7 +789,20 @@ export async function runCompaction(
 		mergeCodeMade(
 			{
 				quotes: span.flatMap((e) => operatorText(e.message) ?? []).reverse(),
-				identifiers: extractIdentifiers(span.map(serializeEvent)),
+				// The split prefix's identifiers ride along too — its content
+				// folded exactly like the span's whole events.
+				identifiers: extractIdentifiers([
+					...span.map(serializeEvent),
+					...(prefixMessage === null
+						? []
+						: [
+								serializeEvent({
+									seq: split!.seq,
+									anchorSeq: boundarySeq,
+									message: prefixMessage,
+								}),
+							]),
+				]),
 			},
 			carriedParsed?.parts ?? { quotes: [], identifiers: [] },
 		),
@@ -588,16 +819,19 @@ export async function runCompaction(
 	}
 	const tailEvents = detail.length - spanStart - span.length;
 	store.setCompaction(id, {
-		boundarySeq: boundary,
+		boundarySeq,
 		summary,
 		tokensBefore,
 		model: servedBy,
 		createdAt: new Date().toISOString(),
 		tailEvents,
+		split,
 	});
 	log.info("history compacted", {
 		conversation: id,
-		boundary,
+		boundary: boundarySeq,
+		splitSeq: split === null ? null : split.seq,
+		splitPart: split === null ? null : split.part,
 		eventsCompacted: span.length,
 		tailEvents,
 		estimatedTokensBefore: tokensBefore,
@@ -609,7 +843,7 @@ export async function runCompaction(
 	});
 	return {
 		kind: "compacted",
-		boundarySeq: boundary,
+		boundarySeq,
 		eventsCompacted: span.length,
 		tokensBefore,
 		tailEvents,

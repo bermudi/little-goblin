@@ -1,6 +1,7 @@
 import { foldSummary } from "../testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import type { UIMessage } from "ai";
+import type { CompactionSplit } from "../conversation-events.ts";
 import {
 	chooseBoundary,
 	estimateTokens,
@@ -54,7 +55,10 @@ describe("chooseBoundary", () => {
 			ev(5, "user", "follow up"),
 			ev(6, "assistant", "short", 5),
 		];
-		expect(chooseBoundary(detail, { tailTokenBudget: 30_000, previousBoundary: 2 })).toBe(4);
+		expect(chooseBoundary(detail, { tailTokenBudget: 30_000, previousBoundary: 2 })).toEqual({
+			boundarySeq: 4,
+			split: null,
+		});
 	});
 
 	test("attachment summaries retain the stored path rather than saying unnamed", () => {
@@ -133,7 +137,8 @@ describe("chooseBoundary", () => {
 	test("the cut lands at a completed exchange — no anchored response is orphaned", () => {
 		// Boundary = the assistant closing the second exchange; one earlier
 		// would strand a2 from u2 while u3/a3 stay whole.
-		const boundary = chooseBoundary(sample(), { tailTokenBudget: 1, previousBoundary: null });
+		const choice = chooseBoundary(sample(), { tailTokenBudget: 1, previousBoundary: null });
+		const boundary = choice?.boundarySeq ?? null;
 		expect(boundary).toBe(4);
 	});
 
@@ -145,8 +150,8 @@ describe("chooseBoundary", () => {
 
 	test("a trailing unanswered user message is never compacted", () => {
 		const detail = [...sample(), ev(7, "user", "pending question".repeat(200))];
-		const boundary = chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null });
-		expect(boundary).toBe(6);
+		const choice = chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null });
+		expect(choice?.boundarySeq ?? null).toBe(6);
 	});
 
 	test("beforeSeq keeps the active exchange out of the fold — queued input, running request", () => {
@@ -161,11 +166,11 @@ describe("chooseBoundary", () => {
 		const detail = [...sample(), live, queued];
 		// Unconstrained: the queued bulk pushes the boundary onto the live
 		// exchange's user event.
-		expect(chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null })).toBe(7);
+		expect(chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null })?.boundarySeq ?? null).toBe(7);
 		// Constrained: the fold stops below the active exchange — the live
 		// request and the queued input both stay in the tail.
 		expect(
-			chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null, beforeSeq: 7 }),
+			chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null, beforeSeq: 7 })?.boundarySeq ?? null,
 		).toBe(4);
 		// Nothing completed left to fold stands down entirely.
 		expect(
@@ -173,7 +178,7 @@ describe("chooseBoundary", () => {
 		).toBeNull();
 		// A null ceiling is the unconstrained walk — unchanged semantics.
 		expect(
-			chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null, beforeSeq: null }),
+			chooseBoundary(detail, { tailTokenBudget: 1, previousBoundary: null, beforeSeq: null })?.boundarySeq ?? null,
 		).toBe(7);
 	});
 
@@ -214,12 +219,15 @@ describe("chooseBoundary", () => {
 
 function fakeStore(
 	detail: CompactionEvent[],
-	previous: { boundarySeq: number; summary: string } | null = null,
+	previous:
+		| { boundarySeq: number; summary: string; split?: CompactionSplit | null }
+		| null = null,
 ) {
 	const writes: Parameters<CompactionStore["setCompaction"]>[1][] = [];
 	const store: CompactionStore = {
 		historyDetail: () => detail,
-		getCompaction: () => previous,
+		getCompaction: () =>
+			previous === null ? null : { ...previous, split: previous.split ?? null },
 		setCompaction: (_id, compaction) => {
 			writes.push(compaction);
 		},
@@ -611,12 +619,12 @@ describe("tool-call atomicity across the cut", () => {
 		const detail = toolHistory();
 		const seqs = new Set(detail.map((e) => e.seq));
 		for (const budget of [1, 5, 20, 100, 1_000, 100_000]) {
-			const boundary = chooseBoundary(detail, {
+			const choice = chooseBoundary(detail, {
 				tailTokenBudget: budget,
 				previousBoundary: null,
 			});
-			if (boundary === null) continue;
-			expect(seqs.has(boundary), `budget ${budget}`).toBe(true);
+			if (choice === null) continue;
+			expect(seqs.has(choice.boundarySeq), `budget ${budget}`).toBe(true);
 		}
 	});
 
@@ -683,7 +691,7 @@ describe("opaque reasoning state", () => {
 	test("the cut and the span estimate are invariant to cipher size", async () => {
 		const small = ciphered("");
 		const huge = ciphered("x".repeat(60_000));
-		expect(chooseBoundary(huge, { tailTokenBudget: 1, previousBoundary: null })).toBe(
+		expect(chooseBoundary(huge, { tailTokenBudget: 1, previousBoundary: null })).toEqual(
 			chooseBoundary(small, { tailTokenBudget: 1, previousBoundary: null }),
 		);
 		const summarize = async (_s: string, prompt: string) => foldSummary("folded", prompt);

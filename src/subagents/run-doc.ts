@@ -19,5 +19,8 @@ export const RunDoc = defineDoc<RunDocState>({
 	scope: "conversation",
 	history: "latest",
 	fork: "current",
+	// Deltas only: the state is a few small fields, never appended to,
+	// so a stored base would not be smaller than the change itself.
+	checkpointWhen: () => false,
 	initial: () => ({ runId: null, inputRev: 0, outcome: null }),
 });

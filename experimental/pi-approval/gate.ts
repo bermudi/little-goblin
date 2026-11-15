@@ -19,7 +19,8 @@
 // operator's decision, and a completed-but-unsettled result all survive
 // further crashes with exactly the durability the transcript has.
 
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import {
 	defineDoc,
 	defineTool,
@@ -97,6 +98,8 @@ const LeaseDoc = defineDoc<LeaseRow>({
 	kind: "goblin.experimental.approval-lease",
 	version: 1,
 	scope: "task",
+	// Deltas only: the row is four small fields, replaced whole.
+	checkpointWhen: () => false,
 	initial: () => ({ state: "absent", attempts: null, decision: null, result: null }),
 });
 

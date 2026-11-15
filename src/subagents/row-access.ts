@@ -1,4 +1,4 @@
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, SubmissionId, ToolExecutionApi } from "@earendil-works/pi-durable";
 import type { LeaseHolder } from "../desktops-store.ts";

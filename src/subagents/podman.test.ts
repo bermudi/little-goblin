@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { registerEnvConformance } from "@earendil-works/pi-durable/testing";
 import { subagentsConfigSchema } from "../config-schema.ts";
 import type { Desktops } from "../desktops.ts";

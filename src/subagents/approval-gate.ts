@@ -1,4 +1,5 @@
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { awaitWithContext } from "@earendil-works/chord/context";
 import {
 	defineDoc,
@@ -66,6 +67,8 @@ export const approvalLeaseDoc = defineDoc<ApprovalLeaseRow>({
 	kind: "goblin.subagent-approval-lease",
 	version: 1,
 	scope: "task",
+	// Deltas only: the row is four small fields, replaced whole.
+	checkpointWhen: () => false,
 	initial: () => ({ state: "absent", attempts: null, decision: null, result: null }),
 });
 

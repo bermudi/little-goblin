@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Submission } from "@earendil-works/pi-durable";
 import { exportNamedBytes } from "../box-files.ts";

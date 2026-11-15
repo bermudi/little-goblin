@@ -12,7 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { CompactionTask, type ConversationId, Harness } from "@earendil-works/pi-durable";
 import type { LanguageModel } from "ai";
 import { openStore } from "../conversation.ts";

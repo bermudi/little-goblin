@@ -8,7 +8,7 @@ import type {
 	ToolExecutionResult,
 	ToolRegistration,
 } from "@earendil-works/pi-durable";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { openSubagentRuns, type SubagentRuns } from "../subagent-runs.ts";
 import { SubagentError } from "./errors.ts";
 import { makeApprovalGate, type ApprovalGateDeps } from "./approval-gate.ts";

@@ -11,8 +11,8 @@ import {
 	createModels,
 	createProvider,
 	InMemoryCredentialStore,
-	Type,
 } from "@earendil-works/pi-ai";
+import { obj, str } from "@earendil-works/pi-schema";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import {
 	createRegistry,
@@ -69,7 +69,7 @@ export function makeActTool(hang: boolean, markerPath: string): ToolRegistration
 	return defineTool({
 		name: "act",
 		description: "Perform the one side effect",
-		parameters: Type.Object({ target: Type.String() }),
+		parameters: obj({ target: str() }),
 		// Raw trim: pi-durable's default. An interrupted dispatch never
 		// re-executes — the harness reports `interrupted` and the run
 		// continues without any operator. (The gate trim overrides this.)

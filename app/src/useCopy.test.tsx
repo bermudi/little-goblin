@@ -112,7 +112,7 @@ describe("useCopy", () => {
 				</>,
 			),
 		);
-		const buttons = [...container.querySelectorAll("button")];
+		const buttons = [...container.querySelectorAll<HTMLButtonElement>("button.codeblock-copy")];
 		expect(buttons).toHaveLength(2);
 		for (const copyButton of buttons) {
 			await act(async () => copyButton.click());

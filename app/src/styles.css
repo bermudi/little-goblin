@@ -1762,6 +1762,68 @@ h6.md-h {
 	background: var(--app-hover);
 	color: var(--app-fg);
 }
+.codeblock-title {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	color: var(--app-fg-muted);
+	min-width: 0;
+}
+.codeblock-tools {
+	display: inline-flex;
+	gap: 0.1rem;
+}
+.codeblock-btn {
+	display: inline-grid;
+	place-items: center;
+	width: 1.5rem;
+	height: 1.5rem;
+	padding: 0;
+	border-radius: 6px;
+	color: var(--app-fg-muted);
+	opacity: 0.6;
+	transition: background-color 100ms, opacity 100ms;
+}
+.codeblock:hover .codeblock-btn,
+.codeblock-btn:focus-visible,
+.codeblock-btn[aria-pressed="true"],
+.codeblock-btn.done {
+	opacity: 1;
+}
+.codeblock-btn:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.codeblock-btn[aria-pressed="true"] {
+	color: var(--app-fg);
+}
+.codeblock-btn svg {
+	animation: codeblock-pop 160ms ease-out;
+}
+@keyframes codeblock-pop {
+	from {
+		transform: scale(0.6);
+		opacity: 0;
+	}
+}
+.codeblock-copy-err {
+	margin-left: 0.25rem;
+	font-size: 11px;
+}
+.codeblock-btn:has(.codeblock-copy-err) {
+	width: auto;
+	padding: 0 0.4rem;
+	display: inline-flex;
+}
+.codeblock pre.wrap {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+@media (prefers-reduced-motion: reduce) {
+	.codeblock-btn svg {
+		animation: none;
+	}
+}
 .codeblock pre {
 	margin: 0;
 	padding: 0 1rem var(--codeblock-pad-b);

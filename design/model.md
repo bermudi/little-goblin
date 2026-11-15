@@ -433,7 +433,11 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   per-item inline cap; otherwise a reference. Two gates because catalog and
   pipe disagree: models.dev listed glm-5.3-flash PDFs while
   `@ai-sdk/openai-compatible` < v3 threw `UnsupportedFunctionalityError` on
-  any non-image file part. One carve-out: audio inlines only when the ref is
+  any non-image file part. Documents (PDF, text, anything not
+  image/audio/video) never inline, whatever the model accepts: their bytes
+  would ride every later request in the history, and a tool read takes
+  only the part the model needs (operator, 2026-11-15). One carve-out:
+  audio inlines only when the ref is
   marked `speech` — a voice or video note; an mp3's bytes in every request
   is the most expensive way to not listen to it. Only disk failure (file
   gone) degrades an item that would have inlined, with a warn.

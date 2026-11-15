@@ -5087,7 +5087,7 @@ describe("tool context", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ model: fakeModel(["ok"]), system: "test" }),
-			makeTools: (_c, _v, _r, _f, _a, context) => {
+			makeTools: (_c, _v, _r, _f, context) => {
 				seen.push({ runId: context!.runId, source: context!.sourceMessageId() });
 				return {};
 			},
@@ -5119,7 +5119,7 @@ describe("tool context", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
-			makeTools: (_c, _v, _r, _f, _a, context) => {
+			makeTools: (_c, _v, _r, _f, context) => {
 				contexts.push(context!);
 				return {
 					probe: tool({

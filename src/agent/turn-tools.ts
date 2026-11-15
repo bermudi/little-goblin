@@ -109,7 +109,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		sandboxes,
 		filterGuests,
 	} = deps;
-	return (conv, deliverVoice, recording, deliverFile, accepts, context) => {
+	return (conv, deliverVoice, recording, deliverFile, context) => {
 		const epoch = conv.epoch;
 		// Late-bound seams — resolved per call, never at factory time.
 		const mail = deps.mail();
@@ -214,9 +214,8 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 						noteRecall: memory.noteRecall,
 					}
 				: undefined,
-			// fetch is local (always on), search behind its config block;
-			// the accepts ref rides for PDF rendering.
-			web: { configRef, auth, ...(accepts ? { accepts } : {}) },
+			// fetch is local (always on), search behind its config block.
+			web: { configRef, auth },
 			// Codex conversations swap local search for the hosted
 			// web_search unless the provider parks it off.
 			hostedSearch: (() => {

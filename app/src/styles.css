@@ -5208,6 +5208,55 @@ select.ui-input option {
 	}
 }
 
+/* ---------- live chat state (t3code mechanisms, goblin styling) ----------
+   Blocks arriving in a streaming message fade in once; history never
+   animates because the class only exists while the message streams. */
+.msg.assistant.streaming > * {
+	animation: stream-in 600ms ease-out both;
+}
+@keyframes stream-in {
+	from {
+		opacity: 0;
+		transform: translateY(2px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+.reasoning-fold > summary {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	min-width: 0;
+}
+.reasoning-fold > summary::before {
+	margin-right: 0;
+}
+.reasoning-ic {
+	flex: none;
+	color: var(--app-fg-subtle);
+}
+.reasoning-label {
+	flex: none;
+}
+/* The newest thought line rides the summary while thinking. */
+.reasoning-preview {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-weight: 400;
+	color: var(--app-fg-subtle);
+}
+.reasoning-fold[open] .reasoning-preview {
+	display: none;
+}
+.working {
+	flex: none;
+}
+
 /* ---------- undo toast (design/app.md → Undo) ----------
    One at a time, top-centre under the page header on desktop (the
    composer owns the bottom edge); on phones it rides above the thumb bar. */

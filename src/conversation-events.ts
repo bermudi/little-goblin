@@ -14,6 +14,15 @@ export function projectionKey(seq: number, toolCallId: string): string {
 	return JSON.stringify([seq, toolCallId]);
 }
 
+// The compaction split pointer (#403): the one event a pointer may
+// half-fold. seq names the event (an assistant reply whose causal key
+// sits at the boundary); part is the part index where the kept suffix
+// starts. Both fields are set together or not at all.
+export interface CompactionSplit {
+	seq: number;
+	part: number;
+}
+
 // Rows append forever; the latest per conversation is the active boundary.
 // summaryEligible is store-stamped, never caller input — derived text may
 // reach memory-bound builders only when every folded event was eligible.
@@ -28,11 +37,17 @@ export interface Compaction {
 	// edit can drop tail events while the pointer survives). Null on
 	// rows written before the column existed.
 	tailEvents: number | null;
+	// Null on every row that folds whole events only (#403 split turns).
+	split: CompactionSplit | null;
 }
 
 // What a caller writes — summaryEligible is store-computed, never input.
-export type CompactionWrite = Omit<Compaction, "summaryEligible" | "tailEvents"> & {
+export type CompactionWrite = Omit<
+	Compaction,
+	"summaryEligible" | "tailEvents" | "split"
+> & {
 	tailEvents?: number;
+	split?: CompactionSplit | null;
 };
 
 // A pointer as the transcript's fold mark — no eligibility internals;
@@ -44,6 +59,7 @@ export interface CompactionMark {
 	tailEvents: number | null;
 	model: string;
 	createdAt: string;
+	split: CompactionSplit | null;
 }
 
 // Disk state is a boundary: validated on read, loosely (the runtime's

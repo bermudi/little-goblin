@@ -111,9 +111,14 @@ export function makeConversationFork<TConversation>(
 			// boundary lies past its cut: the summary would describe events
 			// the branch does not hold. Equality keeps it — the pointer
 			// folds the inclusive prefix (causal position ≤ boundary),
-			// which is exactly what the branch holds at that cut.
+			// which is exactly what the branch holds at that cut. A split
+			// pointer whose split event lies past the cut copies with the
+			// split dropped (#403): the branch cannot half-hold an event,
+			// so the pointer folds the whole prefix instead.
 			const compaction = qCompaction.get(fromId);
 			if (compaction !== null && (through === undefined || compaction.boundary_seq <= through)) {
+				const dropSplit =
+					through !== undefined && compaction.split_seq !== null && compaction.split_seq > through;
 				qInsertCompaction.run(
 					id,
 					compaction.boundary_seq,
@@ -123,6 +128,8 @@ export function makeConversationFork<TConversation>(
 					compaction.model,
 					compaction.created_at,
 					compaction.tail_events,
+					dropSplit ? null : compaction.split_seq,
+					dropSplit ? null : compaction.split_part,
 				);
 			}
 			for (const c of through === undefined

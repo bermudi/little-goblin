@@ -2,7 +2,19 @@
 // conformance: anything unrecognized stays literal text.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Code, Copy, Terminal, TextWrap, X } from "lucide-react";
+import {
+	Check,
+	Code,
+	Copy,
+	Info,
+	Lightbulb,
+	MessageSquareWarning,
+	OctagonAlert,
+	Terminal,
+	TextWrap,
+	TriangleAlert,
+	X,
+} from "lucide-react";
 import { useCopy } from "./useCopy.ts";
 import { appendNote, createNote, listNotes } from "./api.ts";
 import type { AppNoteSummary } from "../../src/http/app-wire.ts";
@@ -240,6 +252,17 @@ function CodeBlock({
 		</div>
 	);
 }
+
+// GitHub alert blockquotes: `> [!NOTE]` on the quote's first line.
+const ALERTS = {
+	note: { label: "Note", Icon: Info },
+	tip: { label: "Tip", Icon: Lightbulb },
+	important: { label: "Important", Icon: MessageSquareWarning },
+	warning: { label: "Warning", Icon: TriangleAlert },
+	caution: { label: "Caution", Icon: OctagonAlert },
+} as const;
+type AlertKind = keyof typeof ALERTS;
+const ALERT_HEAD = /^\[!(note|tip|important|warning|caution)\]\s*$/i;
 
 // Ordered markers keep their number only to decide the <ol> — items
 // render their own position.
@@ -733,10 +756,31 @@ export function Markdown({
 				quote.push(lines[i]!.replace(/^\s*>\s?/, ""));
 				i++;
 			}
+			const alert = ALERT_HEAD.exec(quote[0] ?? "");
+			const kind = alert === null ? null : (alert[1]!.toLowerCase() as AlertKind);
+			const body = kind === null ? quote : quote.slice(1);
+			const head =
+				kind === null ? null : (
+					<div className="md-alert-title">
+						{(() => {
+							const { Icon, label } = ALERTS[kind];
+							return (
+								<>
+									<Icon size={14} strokeWidth={1.75} aria-hidden />
+									{label}
+								</>
+							);
+						})()}
+					</div>
+				);
 			blocks.push(
-				<blockquote key={key++} className="md-quote">
+				<blockquote
+					key={key++}
+					className={kind === null ? "md-quote" : `md-quote md-alert md-alert-${kind}`}
+				>
+					{head}
 					<Markdown
-						text={quote.join("\n")}
+						text={body.join("\n")}
 						token={token}
 						noteProjectId={noteProjectId}
 						onOpenNote={onOpenNote}

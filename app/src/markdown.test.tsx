@@ -23,6 +23,17 @@ describe("Markdown", () => {
 		expect(html).toContain('class="md-hr"');
 	});
 
+	test("a GitHub alert quote renders titled, a plain quote stays plain", () => {
+		const html = renderToStaticMarkup(
+			<Markdown text={"> [!WARNING]\n> mind the gap\n\n> [!nope]\n> just a quote"} />,
+		);
+		expect(html).toContain('class="md-quote md-alert md-alert-warning"');
+		expect(html).toContain("Warning</div>");
+		expect(html).toContain("mind the gap");
+		expect(html).not.toContain("[!WARNING]");
+		expect(html).toContain("[!nope]");
+	});
+
 	test("bullets, ordered items, and checkboxes nest by indent", () => {
 		const html = renderToStaticMarkup(
 			<Markdown text={"- one\n  - nested\n- [x] done\n- [ ] todo\n\n1. first\n2. second"} />,

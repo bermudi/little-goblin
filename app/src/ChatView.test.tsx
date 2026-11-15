@@ -4560,3 +4560,83 @@ describe("composer focus stealing", () => {
     expect(document.activeElement).not.toBe(composerTa());
   });
 });
+
+describe("user message runs", () => {
+  const dom = mountDom();
+
+  test("consecutive user turns group and a long one folds", async () => {
+    // happy-dom has no layout: stand in a height only for the long fold.
+    const real = Object.getOwnPropertyDescriptor(dom.win.HTMLElement.prototype, "scrollHeight");
+    Object.defineProperty(dom.win.HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get(this: { classList: DOMTokenList; textContent: string | null }) {
+        return this.classList.contains("user-fold") && (this.textContent ?? "").length > 100 ? 999 : 0;
+      },
+    });
+    const json = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        headers: { "content-type": "application/json" },
+      });
+    const long = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n");
+    globalThis.fetch = (async (request: RequestInfo | URL) => {
+      const url =
+        typeof request === "string"
+          ? request
+          : request instanceof URL
+            ? request.href
+            : request.url;
+      if (url.endsWith("/messages"))
+        return json({
+          ratings: [],
+          rateableMessageIds: [],
+          messages: [
+            { id: "u1", role: "user", parts: [{ type: "text", text: "short" }] },
+            { id: "u2", role: "user", parts: [{ type: "text", text: long }] },
+            { id: "a1", role: "assistant", parts: [{ type: "text", text: "ok" }] },
+          ],
+        });
+      if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+      if (url.endsWith("/interrupted")) return json({ runs: [] });
+      return json({
+        model: "prov/model",
+        thinking: "off",
+        favorites: [],
+        catalog: [],
+        thinkingLevels: ["off"],
+      });
+    }) as typeof fetch;
+    dom.root = createRoot(dom.container);
+    await act(async () => {
+      dom.root?.render(
+        <ChatView
+          token={null}
+          conversationId="app/runs-01"
+          title={null}
+          seed={null}
+          staged={[]}
+          setStaged={() => {}}
+          stagedNotes={[]}
+          setStagedNotes={() => {}}
+          stagedSkills={[]}
+          setStagedSkills={() => {}}
+          onSeeded={() => {}}
+          onTurnDone={() => {}}
+        />,
+      );
+    });
+    await act(async () => {});
+    const users = [...dom.container.querySelectorAll(".msg.user")];
+    expect(users.map((u) => u.className)).toEqual([
+      "msg user before-user",
+      "msg user after-user",
+    ]);
+    expect(users[0]!.querySelector(".user-fold-toggle")).toBeNull();
+    const toggle = users[1]!.querySelector<HTMLButtonElement>(".user-fold-toggle")!;
+    expect(users[1]!.querySelector(".user-fold.folded")).not.toBeNull();
+    expect(toggle.textContent).toBe("Show more");
+    await act(async () => toggle.click());
+    expect(users[1]!.querySelector(".user-fold.folded")).toBeNull();
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    if (real !== undefined) Object.defineProperty(dom.win.HTMLElement.prototype, "scrollHeight", real);
+  });
+});

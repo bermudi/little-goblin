@@ -201,7 +201,7 @@ code {
 	font-size: 0.85em;
 }
 p code,
-.msg.user code {
+.msg.user :not(pre) > code {
 	background: var(--app-hover);
 	border-radius: 6px;
 	padding: 0.15rem 0.3rem;
@@ -1253,6 +1253,29 @@ header h1 {
 	border-radius: 16px;
 	padding: 0.4rem 0.8rem;
 }
+/* Consecutive user turns read as one run: the joined corners tighten. */
+.msg.user.before-user {
+	border-bottom-right-radius: 6px;
+	margin-bottom: 0.25rem;
+}
+.msg.user.after-user {
+	border-top-right-radius: 6px;
+}
+.user-fold.folded {
+	max-height: 12lh;
+	overflow: hidden;
+}
+.user-fold.clipped {
+	mask-image: linear-gradient(to bottom, #000 70%, transparent);
+}
+.user-fold-toggle {
+	font-size: 12px;
+	color: var(--app-fg-muted);
+	padding: 0.1rem 0;
+}
+.user-fold-toggle:hover {
+	color: var(--app-fg);
+}
 .msg.user p {
 	margin: 0.4em 0;
 }
@@ -1375,6 +1398,25 @@ h6.md-h {
 	padding-left: 0.8rem;
 	margin: 0.55em 0;
 	color: var(--app-fg-muted);
+}
+/* GitHub alerts reuse goblin's two signal colours: accent informs,
+   danger warns. */
+.md-alert {
+	--alert: var(--app-accent);
+	border-left-color: var(--alert);
+	color: var(--app-fg);
+}
+.md-alert-warning,
+.md-alert-caution {
+	--alert: var(--app-danger);
+}
+.md-alert-title {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	font-weight: 500;
+	color: var(--alert);
+	margin: 0.2em 0;
 }
 .md-quote p {
 	margin: 0.4em 0;

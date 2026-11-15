@@ -836,8 +836,13 @@ function Chat({
               let el: ReactNode;
               if (m.role === "user") {
                 const isEditing = editing !== null && editing.id === m.id;
+                const prevUser = displayed[i - 1]?.role === "user";
+                const nextUser = displayed[i + 1]?.role === "user";
                 el = (
-                  <div className="msg user" data-outline-anchor={m.id}>
+                  <div
+                    className={`msg user${prevUser ? " after-user" : ""}${nextUser ? " before-user" : ""}`}
+                    data-outline-anchor={m.id}
+                  >
                     {isEditing ? (
                       <div className="msg-edit">
                         <textarea
@@ -872,13 +877,15 @@ function Chat({
                       </div>
                     ) : (
                       <>
-                        <MessageParts
-                          parts={m.parts}
-                          token={token}
-                          noteProjectId={noteProjectId}
-                          onOpenNote={onOpenNote}
-                          clipFences
-                        />
+                        <UserFold>
+                          <MessageParts
+                            parts={m.parts}
+                            token={token}
+                            noteProjectId={noteProjectId}
+                            onOpenNote={onOpenNote}
+                            clipFences
+                          />
+                        </UserFold>
                         <UserActions
                           message={m}
                           disabled={busy}
@@ -1069,5 +1076,41 @@ function Chat({
         {confirm.view}
       </div>
     </DocViewerProvider>
+  );
+}
+
+// A long user message folds to a preview so a paste doesn't own the
+// transcript; the full text stays in the DOM for select and find. The
+// fold is decided from rendered height (the CSS cap), not source lines:
+// soft-wrapped lines join into one paragraph.
+function UserFold({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (el === null || open) return;
+    const measure = () => setOverflows(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    const ro = new window.ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open]);
+  return (
+    <>
+      <div ref={box} className={open ? "user-fold" : overflows ? "user-fold folded clipped" : "user-fold folded"}>
+        {children}
+      </div>
+      {(open || overflows) && (
+        <button
+          type="button"
+          className="user-fold-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((o) => !o)}
+        >
+          {open ? "Show less" : "Show more"}
+        </button>
+      )}
+    </>
   );
 }

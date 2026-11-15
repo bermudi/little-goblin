@@ -11,8 +11,12 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
-// A `now = Date.now()` default parameter is the seam, not a read.
-const CLOCK_RE = /(?<!(?:^|[(,])\s*now(?:\??\s*:\s*number)?\s*=\s*)\bDate\.now\(\)|\bnew Date\(\s*\)/gm;
+// A `now = Date.now()` default parameter is the seam, not a read — exempt
+// only in a parameter list: `(`, `,` or line start before the `now`, and the
+// call followed by `,` or `)`. Counted = NOT(seam before AND seam after).
+// `new Date` counts with or without parens, but not `new Date(args)`.
+const CLOCK_RE =
+	/\bnew\s+Date(?:\s*\(\s*\)|(?!\s*[\w.(]))|(?<!(?:^|[(,])\s*now(?:\??\s*:\s*number)?\s*=\s*)\bDate\.now\s*\(\s*\)|\bDate\.now\s*\(\s*\)(?!\s*[,)])/gm;
 
 function walk(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -75,6 +79,19 @@ describe("clock guard", () => {
 		expect(clockReadGrowth(new Map([["app/src/AttentionView.tsx", 2]]), { "app/src/AttentionView.tsx": 1 })).toEqual([
 			"app/src/AttentionView.tsx: 2 direct clock reads, frozen at 1",
 		]);
+	});
+
+	test("counts every real read, exempts only the parameter seam", () => {
+		const reads = (src: string) => [...src.matchAll(CLOCK_RE)].length;
+		// F1: a statement assignment, not a parameter default.
+		expect(reads("let now = 0;\nexport function tick() {\n\tnow = Date.now();\n\treturn now;\n}")).toBe(1);
+		expect(reads("new Date;")).toBe(1); // F2: no parens still constructs
+		expect(reads("Date.now ();")).toBe(1); // F3: space before the call
+		expect(reads("new  Date();")).toBe(1); // F4: extra space after new
+		expect(reads("function f(now = Date.now()) {}")).toBe(0);
+		expect(reads("(a, now: number = Date.now()) => now")).toBe(0);
+		expect(reads("function f(\n  a: string,\n  now = Date.now(),\n) {}")).toBe(0);
+		expect(reads("new Date(123)")).toBe(0); // a call with an argument
 	});
 });
 

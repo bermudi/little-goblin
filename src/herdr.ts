@@ -92,17 +92,32 @@ export class HerdrError extends Error {
 
 // Extra fields herdr adds (focused, terminal ids, revision, …) are
 // stripped.
+//
+// state_change_seq is required on both agent schemas: the fork has
+// always reported it on every agent record, and a server that omits
+// it is too old to observe safely — resets never bump the epoch and
+// completions dedupe away (#327) — so its records fail loud here
+// instead of losing events quietly.
+const STATE_CHANGE_SEQ_MISSING =
+	"state_change_seq is missing: the herdr server is too old (sequence numbers required)";
+const stateChangeSeq = z
+	.number({
+		error: (issue) =>
+			issue.input === undefined ? STATE_CHANGE_SEQ_MISSING : undefined,
+	})
+	.int();
+
 const agentSchema = z.object({
 	agent: z.string(), // the kind herdr launched (codex, pi, …)
 	agent_status: z.string(), // idle | working | blocked | done | unknown
 	name: z.string(),
 	pane_id: z.string(),
 	workspace_id: z.string(),
-	state_change_seq: z.number().int(),
+	state_change_seq: stateChangeSeq,
 	/** Set on an idle transition that is completed work — startup and
 	 *  session changes do not set it; matches that transition's
-	 *  state_change_seq. Optional: older servers omit it and done
-	 *  detection falls back to the seq-advance rule. */
+	 *  state_change_seq. Absent means no completed work yet: the current
+	 *  server omits the field rather than reporting null. */
 	completion_seq: z.number().int().optional(),
 	cwd: z.string(),
 	interactive_ready: z.boolean().optional(),
@@ -452,7 +467,7 @@ const operatorAgentSchema = z.object({
 	workspace_id: z.string(),
 	tab_id: z.string(),
 	terminal_title: z.string().optional(),
-	state_change_seq: z.number().int().optional(),
+	state_change_seq: stateChangeSeq,
 	cwd: z.string().optional(),
 	// Take-over identity/observation fields — pinned live (see
 	// herdr.live.test.ts → dispatch identity): terminal_id survives a
@@ -461,6 +476,9 @@ const operatorAgentSchema = z.object({
 	// policy input for attachments, not a silent pane+kind fallback.
 	terminal_id: z.string().optional(),
 	agent_session: z.object({ value: z.string() }).optional(),
+	/** Same contract as the delegation schema's completion_seq: present
+	 *  only when the idle transition completed work — absent means no
+	 *  completed work yet (the server omits it, never sends null). */
 	completion_seq: z.number().int().optional(),
 	revision: z.number().int().optional(),
 });
@@ -503,7 +521,9 @@ export interface OperatorAgent {
 	/** Harness session reference — changes on replacement; null when
 	 *  the server doesn't report it. */
 	agent_session: string | null;
-	state_change_seq: number | null;
+	state_change_seq: number;
+	/** Null when the agent has no completed work — the server omits
+	 *  completion_seq rather than reporting null. */
 	completion_seq: number | null;
 	revision: number | null;
 }
@@ -591,7 +611,7 @@ export function makeOperatorHerdr(run: HerdrRunner = defaultRunner): OperatorHer
 			tab_label: topo.tabs.get(agent.tab_id) ?? null,
 			terminal_id: agent.terminal_id ?? null,
 			agent_session: agent.agent_session?.value ?? null,
-			state_change_seq: agent.state_change_seq ?? null,
+			state_change_seq: agent.state_change_seq,
 			completion_seq: agent.completion_seq ?? null,
 			revision: agent.revision ?? null,
 		};

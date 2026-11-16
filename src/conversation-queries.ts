@@ -27,6 +27,10 @@ export interface Row {
 	archived_at: string | null;
 	pinned_at: string | null;
 	project_id: string | null;
+	// Native subagents: the origin conversation (NULL after its delete)
+	// and the agent-type mark — non-null agent_type = child conversation.
+	parent_conversation_id: string | null;
+	agent_type: string | null;
 }
 
 // The causal key the events_causal index is keyed on (the DDL lives in
@@ -324,14 +328,26 @@ export function prepareConversationQueries(db: Database) {
 			archived_at: string | null;
 			pinned_at: string | null;
 			project_id: string | null;
+			parent_conversation_id: string | null;
 		},
 		[]
 	>(
-		`SELECT id, title, created_at, archived_at, pinned_at, project_id FROM conversations
+		`SELECT id, title, created_at, archived_at, pinned_at, project_id, parent_conversation_id FROM conversations
 			WHERE id LIKE 'app/%' ORDER BY created_at, rowid`,
 	);
 	const qProjectConvs = db.query<{ id: string }, [string]>(
 		"SELECT id FROM conversations WHERE project_id = ? ORDER BY created_at, rowid",
+	);
+	// A native-subagent child (design/agents.md → agent): an app row born
+	// with its parent link, agent-type mark, and memory off — a child's
+	// exchanges are never operator exchanges. Same epoch high-water rule
+	// as qInsertConv.
+	const qInsertAgentConv = db.query(
+		`INSERT INTO conversations (id, chat_id, thread_id, title, cwd, created_at, epoch,
+			 parent_conversation_id, agent_type, memory_excluded)
+			VALUES (?, 0, NULL, NULL, ?, ?,
+				COALESCE((SELECT epoch + 1 FROM conversation_epoch_hwm WHERE conversation_id = ?1), 0),
+				?, ?, 1)`,
 	);
 	// Freshness and preview source; the rowid rides along as activity
 	// order — created_at ties within a millisecond can't order two writes.
@@ -391,6 +407,7 @@ export function prepareConversationQueries(db: Database) {
 		qInsertCompaction,
 		qGet,
 		qInsertConv,
+		qInsertAgentConv,
 		qDmRoll,
 		qDmOrdinalCandidates,
 		qDmRollHighwater,

@@ -1,6 +1,7 @@
 // Durability = WAL + transactions, not the tree's tmp/fsync/rename convention.
 
 import { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import type { Message } from "./message.ts";
 import { z } from "zod";
 import { type Config, splitModelRef } from "./config-schema.ts";
@@ -9,6 +10,7 @@ import type { MemoryDocument } from "./memory/hindsight.ts";
 import { MemoryContexts, type MemoryEligibility, messageText } from "./memory/mod.ts";
 import { MemoryQueue } from "./memory/queue.ts";
 import { channelOf, type ConversationAddress, formatAddress } from "./conversation-address.ts";
+import { paths } from "./home-layout.ts";
 import { type CompactionWrite, flatLine, parseEvent } from "./conversation-events.ts";
 import {
 	type HistoryContextRow,
@@ -138,11 +140,16 @@ export interface ConversationStore extends ConversationReads {
 	// commit (an already-retained memory is not recalled here).
 	editUserMessage(id: string, messageId: string, message: Message): MessageEdit | null;
 	// Initialize missing app settings once, no reset, no epoch fence;
-	// missing/non-app ids throw.
-	initializeAppSettings(
-		id: string,
-		defaults: ModelSettings & { providers?: Config["providers"] },
-	): ModelSettings;
+		// missing/non-app ids throw.
+		initializeAppSettings(
+			id: string,
+			defaults: ModelSettings & { providers?: Config["providers"] },
+		): ModelSettings;
+	// Mint a native-subagent child conversation (design/agents.md →
+	// agent): a fresh app row carrying its parent link and agent-type
+	// mark, memory off from birth. One transaction; a minted-id collision
+	// throws. The caller owns the registry row and the log line.
+	resolveAgentChild(parent: Conversation, agentType: string, defaults: ModelSettings): Conversation;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
 	// Settings changes and cancellation bump the epoch; in-flight turns
 	// fence on it. A recreated address must advance past its deleted row.
@@ -226,6 +233,7 @@ export function openStore(dbPath: string): ConversationStore {
 	const {
 		qGet,
 		qInsertConv,
+		qInsertAgentConv,
 		qDmRoll,
 		qLastActivity,
 		qHistory,
@@ -359,6 +367,18 @@ export function openStore(dbPath: string): ConversationStore {
 			return db.transaction(() => initializeSettings(id, defaults))();
 		},
 
+		resolveAgentChild(parent, agentType, defaults) {
+			return db.transaction(() => {
+				const appId = `agent-${randomUUID()}`;
+				const id = formatAddress({ kind: "app", appId, chatId: 0, threadId: 0 });
+				qInsertAgentConv.run(id, paths.workspace(), new Date().toISOString(), parent.id, agentType);
+				initializeSettings(id, defaults);
+				const created = qGet.get(id);
+				if (!created) throw new Error(`agent child ${id} insert failed`);
+				return toConversation(created);
+			})();
+		},
+
 		readAppSettings(id, defaults) {
 			return readSettings(id, defaults);
 		},
@@ -481,6 +501,7 @@ export function openStore(dbPath: string): ConversationStore {
 					archivedAt: r.archived_at,
 					pinnedAt: r.pinned_at,
 					projectId: r.project_id,
+					parentId: r.parent_conversation_id,
 					activity: last?.id ?? 0,
 				});
 			}

@@ -29,6 +29,8 @@ const conv = (epoch: number, id = "dm:1"): Conversation => ({
 	memoryExcluded: false,
 	memoryExcludedByProject: false,
 	projectId: null,
+	parentId: null,
+	agentType: null,
 	persona: "personal",
 	archivedAt: null,
 	pinnedAt: null,

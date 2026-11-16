@@ -336,6 +336,17 @@ export const subagentsConfigSchema = z
 	.strict();
 export type SubagentsConfig = z.infer<typeof subagentsConfigSchema>;
 
+// Native subagents (design/agents.md → `agent`): the cap is the only
+// knob — a child rides goblin's own providers through the parent's
+// turn, so there is nothing else to configure. Absent block = defaults.
+export const agentsConfigSchema = z
+	.object({
+		// Running children across ALL conversations; above it spawn queues.
+		maxRunning: z.number().int().min(1).default(3),
+	})
+	.strict();
+export type AgentsConfig = z.infer<typeof agentsConfigSchema>;
+
 // Gmail — absent = no mail tool or watcher. clientId is a public
 // identifier, not a secret; the client secret and SEND token live in
 // auth.jsonl; reads ride gws's auth — the send credential never reaches the model.
@@ -802,6 +813,9 @@ export const configSchema = z
 			.optional(),
 		// Subagents & computer use — hand-edited only, like delegation.
 		subagents: subagentsConfigSchema.optional(),
+		// Native subagents — live-read per turn; the agent tool itself
+		// mounts regardless (it needs no provider of its own).
+		agents: agentsConfigSchema.optional(),
 		// Persisted tool-result pruning — hand-edited only, like
 		// delegation. Profiles pin route/settings hashes; docs/operations.md
 		// covers the review loop.

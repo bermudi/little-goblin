@@ -511,8 +511,10 @@ a finished-looking chat whose next send steered a ghost turn (#43).
   still doesn't live-update; promote when "app open while turns happen"
   becomes a daily pattern — the server machinery is ready. Until then it
   stays Spin-off's "live refresh out of scope".
-- **The composer steers (2026-10-16).** Send never locks mid-turn — it
-  posts beside Stop and the lane steers or queues exactly like Telegram;
+- **The composer steers (2026-10-16; action revised 2026-11-16).** One
+  composer action shows Stop during a turn when the composer is empty,
+  and Send when it contains text or staged items. Send never locks
+  mid-turn and the lane steers or queues exactly like Telegram;
   the client drops its reader first (locally, never `/stop`), so the new
   join replay is the only writer and lands on the same assistant message
   id — a handoff, not a forked transcript. An aborted reader doesn't ring

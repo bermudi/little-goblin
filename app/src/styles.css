@@ -2468,12 +2468,6 @@ button.pathchip:hover svg {
 .stop-btn:hover {
 	background: var(--app-gray-600);
 }
-/* Mid-turn the pair shares the corner: stop takes the auto margin,
-   send hugs it — a second auto margin would split the free space. */
-.stop-btn + .send-btn {
-	margin-left: 0.35rem;
-}
-
 /* Model/thinking knobs — flat selects that read as labels until hovered. */
 .knob select {
 	appearance: none;

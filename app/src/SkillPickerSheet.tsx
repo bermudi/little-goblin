@@ -3,9 +3,13 @@
 // manual-only included — plus a from-link flow. A link previews
 // server-side (fetch + System One score) and the card's yes/no decides:
 // stage it, or drop it. Nothing is fetched into a send the card didn't
-// approve.
-import { useEffect, useState } from "react";
+// approve. The catalog list rides @ui-sdk/react's `command` primitive
+// (arrow-key highlight, Enter-to-run, listbox ARIA) with `filter={false}`
+// because the rows are pre-filtered here; the from-link form below it
+// stays plain.
+import { useEffect, useRef, useState } from "react";
 import type { SkillPreviewResponse, SkillsResponse } from "../../src/http/operator-wire.ts";
+import { Command, CommandInput, CommandItem, CommandList } from "@ui-sdk/react/command";
 import { listSkills, previewSkill } from "./api.ts";
 import { bytes, describe } from "./opsShared.tsx";
 
@@ -37,6 +41,8 @@ export function SkillPickerSheet({
 	const [preview, setPreview] = useState<SkillPreviewResponse | null>(null);
 	const [previewing, setPreviewing] = useState(false);
 	const [previewErr, setPreviewErr] = useState<string | null>(null);
+	// The row the command last highlighted, or null — Enter runs it.
+	const highlighted = useRef<string | null>(null);
 
 	useEffect(() => {
 		let live = true;
@@ -79,6 +85,10 @@ export function SkillPickerSheet({
 		onStage(picked);
 		onClose();
 	};
+	const stageByName = (name: string) => {
+		const c = (catalog ?? []).find((x) => x.name === name);
+		if (c !== undefined) stage({ name: c.name, ref: { name: c.name } });
+	};
 
 	return (
 		<div className="msheet" role="dialog" aria-label="Invoke a skill">
@@ -91,39 +101,55 @@ export function SkillPickerSheet({
 			<div className="msheet-body ops">
 				{/* The sheet mounts inside the composer's <form> — a bare
 					Enter here is an implicit submission and would send the
-					draft out from under the picker. */}
-				<input
-					type="search"
-					value={query}
-					placeholder="Filter skills"
-					aria-label="Filter skills"
-					onChange={(e) => setQuery(e.target.value)}
-					onKeyDown={(e) => {
-						if (e.key === "Enter") e.preventDefault();
+					draft out from under the picker. The picker owns the
+					key before the command sees it: Enter stages the
+					highlighted skill (never the form), and the filter
+					input is the only input in play — the from-link input
+					below keeps its own Enter. tagName, not instanceof:
+					happy-dom realms have their own element classes. */}
+				<Command
+					className="skill-picker-command"
+					query={query}
+					onQueryChange={setQuery}
+					filter={false}
+					onValueChange={(value) => {
+						highlighted.current = value;
 					}}
-				/>
-				{loadErr !== null && (
-					<p className="error" role="alert">
-						{loadErr}
-					</p>
-				)}
-				{catalog !== null && rows.length === 0 && <p className="empty">No matching skills.</p>}
-				{rows.map((c) => (
-					<button
-						key={c.name}
-						type="button"
-						className="skill-picker-row"
-						title={`Invoke ${c.name} — its SKILL.md (${bytes(c.bodyBytes)}) rides the next turn`}
-						onClick={() => stage({ name: c.name, ref: { name: c.name } })}
-					>
-						<span className="skill-picker-main">
-							<strong>{c.name}</strong>
-							{c.manualOnly && <span className="chip">manual-only</span>}
-							<span className="skill-picker-sub">{c.description}</span>
-						</span>
-						<span className="skill-picker-side">{bytes(c.bodyBytes)}</span>
-					</button>
-				))}
+					onAction={(name) => stageByName(name)}
+					onKeyDownCapture={(e) => {
+						if (e.key !== "Enter" || (e.target as HTMLElement | null)?.tagName !== "INPUT")
+							return;
+						e.preventDefault();
+						e.stopPropagation();
+						if (query.trim() !== "" && highlighted.current !== null)
+							stageByName(highlighted.current);
+					}}
+				>
+					<CommandInput placeholder="Filter skills" aria-label="Filter skills" />
+					{loadErr !== null && (
+						<p className="error" role="alert">
+							{loadErr}
+						</p>
+					)}
+					{catalog !== null && rows.length === 0 && <p className="empty">No matching skills.</p>}
+					<CommandList>
+						{rows.map((c) => (
+							<CommandItem
+								key={c.name}
+								value={c.name}
+								className="skill-picker-row"
+								title={`Invoke ${c.name} — its SKILL.md (${bytes(c.bodyBytes)}) rides the next turn`}
+							>
+								<span className="skill-picker-main">
+									<strong>{c.name}</strong>
+									{c.manualOnly && <span className="chip">manual-only</span>}
+									<span className="skill-picker-sub">{c.description}</span>
+								</span>
+								<span className="skill-picker-side">{bytes(c.bodyBytes)}</span>
+							</CommandItem>
+						))}
+					</CommandList>
+				</Command>
 				<div className="skill-from-link">
 					<strong>From a GitHub URL — try without installing</strong>
 					<div className="link-row">

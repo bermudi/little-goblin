@@ -93,6 +93,9 @@ describe("Composer skill staging", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		// The command primitive's typeahead walks item text through the DOM
+		// global NodeFilter; browsers have it, bare bun:test doesn't.
+		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
 		// The draft-restore effect parks the cursor on the next frame.
 		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
@@ -199,7 +202,7 @@ describe("Composer skill staging", () => {
 		await act(async () => {});
 		expect(container.textContent).toContain("herdr");
 		expect(container.textContent).toContain("manual-only");
-		const row = Array.from(container.querySelectorAll("button")).find((b) =>
+		const row = Array.from(container.querySelectorAll("button, [role=option]")).find((b) =>
 			b.textContent?.includes("herdr"),
 		);
 		expect(row).not.toBeNull();
@@ -250,7 +253,7 @@ describe("Composer skill staging", () => {
 			);
 		});
 		await act(async () => {});
-		const row = Array.from(container.querySelectorAll("button")).find((b) =>
+		const row = Array.from(container.querySelectorAll("button, [role=option]")).find((b) =>
 			b.textContent?.includes("herdr"),
 		)!;
 		await act(async () => {
@@ -276,7 +279,7 @@ describe("Composer skill staging", () => {
 			);
 		});
 		await act(async () => {});
-		const row = Array.from(container.querySelectorAll("button")).find((b) =>
+		const row = Array.from(container.querySelectorAll("button, [role=option]")).find((b) =>
 			b.textContent?.includes("herdr"),
 		)!;
 		await act(async () => {
@@ -472,7 +475,7 @@ describe("Composer skill staging", () => {
 				click(buttonByLabel("Invoke a skill")!);
 			});
 			await act(async () => {});
-			const row = Array.from(container.querySelectorAll("button")).find((b) =>
+			const row = Array.from(container.querySelectorAll("button, [role=option]")).find((b) =>
 				b.textContent?.includes(name),
 			)!;
 			await act(async () => {

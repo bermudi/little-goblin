@@ -3548,7 +3548,7 @@ button.pathchip:hover svg {
 .log-controls input:hover,
 .log-controls select:hover,
 .note-filters input[type="search"]:hover,
-.note-pick input[type="search"]:hover,
+.note-pick input:hover,
 .note-rewrite-field textarea:hover,
 .rail-search:hover,
 .gate input:hover {
@@ -3576,7 +3576,7 @@ button.pathchip:hover svg {
 .log-controls input:focus,
 .log-controls select:focus,
 .note-filters input[type="search"]:focus,
-.note-pick input[type="search"]:focus,
+.note-pick input:focus,
 .note-rewrite-field textarea:focus,
 .rail-search:focus,
 .gate input:focus,
@@ -3681,7 +3681,7 @@ button.pathchip:hover svg {
 .program-editor input,
 .program-editor textarea,
 .note-filters input[type="search"],
-.note-pick input[type="search"],
+.note-pick input,
 .note-rewrite-field textarea {
 	background-color: var(--app-control-bg);
 }
@@ -3984,6 +3984,11 @@ button.pathchip:hover svg {
 	padding: 0.5rem 0.6rem;
 }
 .mrow:hover {
+	background: var(--app-hover);
+}
+/* The command primitive's keyboard highlight — the row the arrows are
+   on. Same fill as hover so touch and keyboard read alike. */
+.msheet .mline[data-highlighted] .mrow {
 	background: var(--app-hover);
 }
 .mrow.sel {
@@ -5677,7 +5682,14 @@ select.ui-input option {
 	background: var(--app-gray-100);
 	padding: 0.5rem;
 }
-.note-pick input[type="search"] {
+/* The command primitive's root, standing between the picker and its
+   field/list so the picker's own column spacing survives the wrapper. */
+.note-pick-command {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+.note-pick input {
 	font: inherit;
 	font-size: 12px;
 	background-color: var(--app-control-bg);
@@ -5687,14 +5699,14 @@ select.ui-input option {
 	padding: 0.35rem 0.55rem;
 	outline: none;
 }
-.note-pick ul {
+.note-pick-list {
 	list-style: none;
 	margin: 0;
 	padding: 0;
 	max-height: 12rem;
 	overflow-y: auto;
 }
-.note-pick li button {
+.note-pick-list button {
 	display: block;
 	width: 100%;
 	text-align: left;
@@ -5702,10 +5714,10 @@ select.ui-input option {
 	padding: 0.3rem 0.45rem;
 	border-radius: 6px;
 }
-.note-pick li button:hover {
+.note-pick-list button:hover,
+.note-pick-list [data-highlighted] button {
 	background: var(--app-hover);
 }
-.note-pick li.empty,
 .note-pick .empty {
 	font-size: 12px;
 	color: var(--app-fg-muted);
@@ -7179,7 +7191,8 @@ button.link:hover {
 	background: none;
 	cursor: pointer;
 }
-.skill-picker-row:hover {
+.skill-picker-row:hover,
+.skill-picker-row[data-highlighted] {
 	background: var(--hover, rgba(127, 127, 127, 0.12));
 }
 .skill-picker-main {

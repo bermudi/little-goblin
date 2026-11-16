@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { Command, CommandInput, CommandItem, CommandList } from "@ui-sdk/react/command";
 import { listNotes } from "../api.ts";
 import type { AppNoteSummary } from "../../../src/http/app-wire.ts";
 
 // The composer's note picker — a search over the whole notes pool
-// (project "all"), debounced like the rail's.
+// (project "all"), debounced like the rail's. The list mechanics
+// (arrow-key highlight, Enter-to-run, listbox ARIA) come from
+// @ui-sdk/react's `command` primitive, with `filter={false}` because the
+// wire narrows the rows; the debounce, the truncation notice, and the
+// picker-local keys stay here.
 export function NotePicker({
 	token,
 	onPick,
@@ -21,6 +26,8 @@ export function NotePicker({
 	// read as complete (same contract as the notes index).
 	const [truncated, setTruncated] = useState(false);
 	const [failed, setFailed] = useState(false);
+	// The row the command last highlighted, or null — Enter runs it.
+	const highlighted = useRef<string | null>(null);
 	const seq = useRef(0);
 	useEffect(() => {
 		const n = ++seq.current;
@@ -40,54 +47,73 @@ export function NotePicker({
 		}, 200);
 		return () => clearTimeout(t);
 	}, [query, token]);
+	const byId = new Map((notes ?? []).map((n) => [n.id, n]));
+	const runHighlighted = () => {
+		if (query.trim() === "" || highlighted.current === null) return;
+		const n = byId.get(highlighted.current);
+		if (n !== undefined) {
+			onPick(n);
+			onClose();
+		}
+	};
 	return (
 		<div className="note-pick composer-pick" ref={pickRef}>
-			<input
-				type="search"
-				placeholder="Search notes"
-				aria-label="Search notes"
-				value={query}
-				autoFocus
-				onChange={(e) => setQuery(e.target.value)}
-				onKeyDown={(e) => {
+			<Command
+				className="note-pick-command"
+				query={query}
+				onQueryChange={setQuery}
+				filter={false}
+				onValueChange={(value) => {
+					highlighted.current = value;
+				}}
+				onAction={(id) => {
+					const n = byId.get(id);
+					if (n !== undefined) {
+						onPick(n);
+						onClose();
+					}
+				}}
+				onKeyDownCapture={(e) => {
 					// The input lives inside the composer form — an
-					// unguarded Enter would implicitly submit the draft.
-					// Both keys stay picker-local.
+					// unguarded Enter would implicitly submit the draft,
+					// so the picker owns both keys before the command sees
+					// them (its Enter runs rows, its Escape clears the
+					// query; here Enter picks the highlighted note and
+					// Escape closes). tagName, not instanceof: happy-dom
+					// realms have their own element classes.
+					if ((e.target as HTMLElement | null)?.tagName !== "INPUT") return;
 					if (e.key === "Enter") {
 						e.preventDefault();
 						e.stopPropagation();
+						runHighlighted();
 					} else if (e.key === "Escape") {
 						e.preventDefault();
 						e.stopPropagation();
 						onClose();
 					}
 				}}
-			/>
-			{failed && <p className="error">Couldn't list notes.</p>}
-			<ul>
-				{(notes ?? []).map((n) => (
-					<li key={n.id}>
-						<button
-							type="button"
-							onClick={() => {
-								onPick(n);
-								onClose();
-							}}
-						>
-							{n.title}
-							{n.projectId !== null && <span className="note-proj"> · project</span>}
-						</button>
-					</li>
-				))}
+			>
+				<CommandInput placeholder="Search notes" aria-label="Search notes" autoFocus />
+				{failed && <p className="error">Couldn't list notes.</p>}
+				<CommandList className="note-pick-list">
+					{(notes ?? []).map((n) => (
+						<CommandItem key={n.id} value={n.id}>
+							<button type="button">
+								{n.title}
+								{n.projectId !== null && <span className="note-proj"> · project</span>}
+							</button>
+						</CommandItem>
+					))}
+				</CommandList>
 				{notes !== null && notes.length === 0 && (
-					<li className="empty">{query === "" ? "No notes yet." : "No matches."}</li>
+					<p className="empty">{query === "" ? "No notes yet." : "No matches."}</p>
 				)}
-			</ul>
-			{truncated && notes !== null && notes.length > 0 && (
-				<p className="empty" role="status">
-					Showing the first {notes.length} matching notes — narrow the search to find the rest.
-				</p>
-			)}
+				{truncated && notes !== null && notes.length > 0 && (
+					<p className="empty" role="status">
+						Showing the first {notes.length} matching notes — narrow the search to find the rest.
+					</p>
+				)}
+			</Command>
 		</div>
 	);
 }

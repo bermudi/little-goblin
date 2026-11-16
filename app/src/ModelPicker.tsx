@@ -54,10 +54,12 @@ export function ModelPicker({
 }) {
 	const [query, setQuery] = useState("");
 	const [scope, setScope] = useState("");
-	// The row the library last highlighted, or null — Enter runs it on
-	// its own. Tracked so the typed path below only takes over when no
-	// row would run.
-	const highlighted = useRef<string | null>(null);
+	// The row the operator last moved the highlight to (arrows, pointer),
+	// or null. Only user moves fire onValueChange — auto-highlights land
+	// silently — so a fresh query's Enter keeps running the typed path's
+	// exact resolution, and Enter after an arrow runs the row the
+	// operator chose.
+	const arrowed = useRef<string | null>(null);
 	// ?? null: an older backend's config view lacks the key — read as
 	// never curated, not an empty sheet.
 	const curatedList = pickerModels ?? null;
@@ -226,26 +228,31 @@ export function ModelPicker({
 				<Command
 					className="msheet-command"
 					query={query}
-					onQueryChange={setQuery}
+					onQueryChange={(q) => {
+						setQuery(q);
+						// Typing re-filters: the operator's arrow choice is
+						// spent, and Enter falls back to the typed path.
+						arrowed.current = null;
+					}}
 					filter={(item, search) => {
 						const needle = search.trim().toLowerCase();
 						return hit(item.value === OFF ? "" : item.value, needle);
 					}}
 					onValueChange={(value) => {
-						highlighted.current = value;
+						arrowed.current = value;
 					}}
 					onAction={(value) => onPick(value === OFF ? "" : value)}
 					onKeyDownCapture={(e) => {
 						// Only the search field's Enter: the scope select and
-						// the row buttons keep their own. With a highlighted
-						// row the command runs it; with none, the typed path
-						// takes over — and an empty query picks nothing, so
-						// the highlighted first row cannot run by itself.
-						// (tagName, not instanceof: happy-dom realms have
-						// their own element classes.)
+						// the row buttons keep their own. Enter after an
+						// arrow runs the row the operator chose; otherwise
+						// the typed path takes over — and an empty query
+						// picks nothing, so the highlighted first row cannot
+						// run by itself. (tagName, not instanceof: happy-dom
+						// realms have their own element classes.)
 						if (e.key !== "Enter" || (e.target as HTMLElement | null)?.tagName !== "INPUT")
 							return;
-						if (query.trim() !== "" && highlighted.current !== null) return;
+						if (query.trim() !== "" && arrowed.current !== null) return;
 						e.preventDefault();
 						e.stopPropagation();
 						onEnter();

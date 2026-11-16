@@ -38,6 +38,7 @@ import { LaneRegistry, type QueuedTurn } from "./runtime-lanes.ts";
 import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { type CompactionSeam, runCompactJob } from "./turn/compact-job.ts";
+import { makePrefixSummarizer } from "./turn/prefix-summary.ts";
 import { sinkDelivery } from "./turn/delivery.ts";
 import { isClaudeStep, type ModelStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
@@ -370,6 +371,25 @@ export class Runtime {
 			budgets: compactionBudgets,
 			checkAuthority: (convId, epoch) => this.checkAuthority(convId, epoch),
 			foldCeiling: (convId, floor) => this.lanes.pendingFloor(convId, floor),
+			makePrefix: async (target, modelRef, signal) => {
+				const seam = this.deps.compaction;
+				if (seam?.prefixStep === undefined) return null;
+				const prefixStep = await seam.prefixStep(target, modelRef);
+				if (prefixStep === null) return null;
+				const tools = this.deps.makeTools(target);
+				return makePrefixSummarizer({
+					conv: target,
+					step: prefixStep,
+					store: this.deps.store,
+					tools,
+					...(this.deps.memory !== undefined ? { memory: this.deps.memory } : {}),
+					foldCeiling: () => this.lanes.pendingFloor(target.id, activeFloor),
+					assertAuthority: () => {
+						signal.throwIfAborted();
+						this.checkAuthority(target.id, target.epoch);
+					},
+				});
+			},
 			holdController: (controller) => this.lanes.holdCompactController(conv.id, controller),
 			releaseController: (controller) =>
 				this.lanes.releaseCompactController(conv.id, controller),

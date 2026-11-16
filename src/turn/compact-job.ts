@@ -1,9 +1,11 @@
 // A queued compaction job: window lookup, budgets, the summary walk, and the prompt-snapshot rebuild — the runtime injects store, authority, and lane cancellation.
 
 import { type CompactionOutcome, type Flush, runCompaction } from "../agent/compaction.ts";
+import type { PrefixSummarizer } from "../agent/compaction.ts";
 import { candidateRefs } from "../agent/model-fallback.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
+import type { PrefixStep } from "../agent/step.ts";
 import { log } from "../log.ts";
 
 // Optional compaction summarizes on the conversation's model, then walks
@@ -28,12 +30,12 @@ export interface CompactionSeam {
 	// design/compaction.md → Memory flush. Null when this conversation must
 	// not flush (memory configured, memory-excluded, no tool-capable engine).
 	flush?(conv: Conversation, modelRef: string): Flush | null;
+	prefixStep?(conv: Conversation, modelRef: string): Promise<PrefixStep | null>;
 	// #418: the recorded native Claude session compacts itself alongside
 	// the goblin fold. Runs only when the fold actually compacts; a
 	// failure is logged and never fails the job.
 	nativeCompact?(conv: Conversation, modelRef: string, signal: AbortSignal): Promise<unknown>;
 }
-
 export interface CompactJobDeps {
 	store: ConversationStore;
 	compaction?: CompactionSeam | undefined;
@@ -45,6 +47,7 @@ export interface CompactJobDeps {
 	checkAuthority(convId: string, epoch: number): void;
 	// Where completed history ends for a fold, evaluated at history-read time.
 	foldCeiling(convId: string, activeFloor?: number): number | null;
+	makePrefix?(conv: Conversation, modelRef: string, signal: AbortSignal): Promise<PrefixSummarizer | null>;
 	// Lane-owned cancellation: registered before the first await so /stop
 	// can cancel a pending contextWindow lookup; released only while still
 	// the registered controller.
@@ -120,6 +123,7 @@ export async function runCompactJob(
 				inputTokenBudget,
 				reason,
 				...(focus !== undefined ? { focus } : {}),
+				...(deps.makePrefix !== undefined ? { prefix: () => deps.makePrefix!(conv, modelRef, controller.signal) } : {}),
 				// Evaluated at history-read time: work may have queued while
 				// the contextWindow lookup awaited.
 				beforeSeq: () => deps.foldCeiling(conv.id, activeFloor),

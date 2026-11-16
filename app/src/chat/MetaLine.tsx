@@ -183,7 +183,7 @@ export function foldStartExcerpt(mark: AppCompactionMark, messages: UIMessage[])
 // Compact stat formatting — "1.2k", "340", "4.2s".
 const kfmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
 
-export function MetaLine({ meta, now }: { meta: TurnMetadata; now: number }) {
+export function MetaLine({ meta, now }: { meta: TurnMetadata; now?: number | undefined }) {
 	const bits: string[] = [meta.model];
 	// A fallback served: name who didn't and why, so the operator can fix
 	// the primary (search's served_by line, applied to models).

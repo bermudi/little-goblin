@@ -1088,11 +1088,13 @@ export async function driveClaude<M extends WireMember>(
 	// shape messageMetadata writes for the API lane.
 	const finishReason = finishReasonOf(run.lastStopReason, run.sawToolUse);
 	const segments = measurePrompt(step.system, deps.tools, [...sentMessages, ...steeredMessages]);
+	const durationMs = Date.now() - deps.turnStartMs;
 	const metadata = {
 		model: label,
 		finishReason,
-		durationMs: Date.now() - deps.turnStartMs,
-		createdAt: new Date().toISOString(),
+		durationMs,
+		// Same instant as durationMs — the live reply's age stamp.
+		createdAt: new Date(deps.turnStartMs + durationMs).toISOString(),
 		...(run.firstTokenMs !== null ? { ttftMs: run.firstTokenMs } : {}),
 		usage: {
 			input: run.totalInput,

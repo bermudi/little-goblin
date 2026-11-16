@@ -782,11 +782,15 @@ export async function driveStream<M extends WireMember>(
 			}
 			if (part.type !== "finish") return undefined;
 			const forcedKind = state.forcedCompletion();
+			const durationMs = Date.now() - deps.turnStartMs;
 			return {
 				model: modelLabel,
 				finishReason: part.finishReason,
-				durationMs: Date.now() - deps.turnStartMs,
-				createdAt: new Date().toISOString(),
+				durationMs,
+				// The finish instant, same clock read as durationMs — the
+				// transcript's "how old is this reply" before history
+				// serves the row's own stamp.
+				createdAt: new Date(deps.turnStartMs + durationMs).toISOString(),
 				...(firstTokenMs !== null ? { ttftMs: firstTokenMs } : {}),
 				...(forcedKind !== null ? { forcedCompletion: forcedKind } : {}),
 				usage: {

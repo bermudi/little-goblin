@@ -37,7 +37,7 @@ import {
   unlandedMeta,
   UserActions,
 } from "./chat/MetaLine.tsx";
-import { Age, messageCreatedAt, useNow } from "./chat/messageAge.tsx";
+import { Age, messageCreatedAt } from "./chat/messageAge.tsx";
 import type { AttachmentRef } from "../../src/agent/attachments.ts";
 import type {
   AppCompactionMark,
@@ -654,9 +654,6 @@ function Chat({
   // output only while the operator is already at the tail.
   const pinned = useRef(true);
   const busy = status === "submitted" || status === "streaming";
-  // One clock for every "N minutes ago" in the transcript — ages tick
-  // over on this interval, absolute stamps ignore it.
-  const nowMs = useNow();
 
   // A mid-turn send steers or queues. Drop this client's reader first:
   // the new POST's stream replays the wire from sentence one onto the
@@ -958,7 +955,7 @@ function Chat({
                           {at !== null && (
                             <>
                               {" · "}
-                              <Age at={at} now={nowMs} />
+                              <Age at={at} />
                             </>
                           )}
                         </div>
@@ -1010,7 +1007,7 @@ function Chat({
                       branchPending={branchPending === m.id}
                       branchError={branchErrors[m.id] ?? null}
                     />
-                    {meta !== null && <MetaLine meta={meta} now={nowMs} />}
+                    {meta !== null && <MetaLine meta={meta} />}
                   </div>
                 );
               }

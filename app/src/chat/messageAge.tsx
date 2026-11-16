@@ -1,18 +1,18 @@
 // "How old is this" for transcript messages: the age label format, a
-// <time> renderer, the shared tick that keeps relative labels fresh,
-// and the reader for the served append stamp.
+// <time> renderer, and the reader for the served append stamp.
 //
 // Format (operator ask, issue #630): under a minute "just now"; under an
 // hour "N minutes ago"; same-day-older "17:39"; past 24h adds the date
-// (and the year once it isn't this year's).
+// (and the year once it isn't this year's). `now` comes from the caller
+// through the ageLabel seam default, like the app's other age displays —
+// labels refresh on the next render, they don't tick.
 
-import { useEffect, useState } from "react";
 import type { UIMessage } from "ai";
 
 const hhmm = (d: Date) =>
 	`${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 
-export function ageLabel(at: string, now: number): string {
+export function ageLabel(at: string, now = Date.now()): string {
 	const ms = Date.parse(at);
 	if (Number.isNaN(ms)) return "";
 	const diff = now - ms;
@@ -44,20 +44,10 @@ export function messageCreatedAt(m: UIMessage): string | null {
 	return typeof at === "string" ? at : null;
 }
 
-// One clock for the whole transcript — relative labels age on a 30s
-// tick instead of going stale between renders.
-export function useNow(stepMs = 30_000): number {
-	const [now, setNow] = useState(() => Date.now());
-	useEffect(() => {
-		const t = setInterval(() => setNow(Date.now()), stepMs);
-		return () => clearInterval(t);
-	}, [stepMs]);
-	return now;
-}
-
 // <time> with the full instant on hover — the label compresses, the
-// exact stamp stays one gesture away.
-export function Age({ at, now }: { at: string; now: number }) {
+// exact stamp stays one gesture away. `now` is optional: left out it
+// falls to ageLabel's seam — the live clock at render.
+export function Age({ at, now }: { at: string; now?: number | undefined }) {
 	const ms = Date.parse(at);
 	return (
 		<time dateTime={at} title={Number.isNaN(ms) ? undefined : new Date(ms).toLocaleString()}>

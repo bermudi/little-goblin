@@ -190,11 +190,13 @@ progress); the work that happened is transcript. Boot never
 auto-retries a half-run turn — tool calls aren't
 idempotent, and an unanswered tail can't be told apart from `/stop`.
 Accepted input the dead process fenced before admission rides the same
-boot notice (#481): at journal open, user events above every run's
-owned floor (anchor/source seqs stand in for legacy NULL ownership)
-and above the conversation's last assistant reply are counted per
-conversation — machinery speech and generated resume markers are not
-operator input — and reported once per conversation
+boot notice (#481): at journal open, user events created since the
+previous journal open — `journal_opens` bounds the dead process's
+lifetime, and a first-ever open counts nothing (#577) — above every
+run's owned floor (anchor/source seqs stand in for legacy NULL
+ownership) and above the conversation's last assistant reply are
+counted per conversation — machinery speech and generated resume
+markers are not operator input — and reported once per conversation
 ("N message(s) you sent before the restart weren't answered"), notice
 only, same no-replay rule.
 One exception: a crash inside the delivery window leaves a run

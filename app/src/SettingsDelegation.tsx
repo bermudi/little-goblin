@@ -132,7 +132,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 											id={`del-provider-${i}`}
 											className="mono"
 											aria-label={`provider for ${h.name || "new agent"}`}
-											value={providerNames.includes(h.provider) ? h.provider : ""}
+											value={h.provider}
 											onChange={(e) => setHarness(i, { provider: e.target.value })}
 										>
 											<option value="">— pick —</option>

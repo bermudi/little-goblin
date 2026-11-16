@@ -11,7 +11,7 @@
 //  6. Escapes and node_modules paths hide what a specifier resolves to.
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 const SRC = import.meta.dir;
 const ROOT = resolve(SRC, "..");
@@ -180,7 +180,24 @@ function repoPath(file: string): string {
 	return relative(ROOT, file);
 }
 
+// The t3 CLI wire is one adapter's contract: spawning the CLI (or
+// pinning its argv) outside src/t3.ts means a second wire owner.
+const T3_SPAWN = /(?:spawnProc|Bun\.spawn|execSync|exec)\((?:[^)]*["'])t3["']/;
+
 describe("module boundaries", () => {
+	test("the t3 CLI is spawned only by src/t3.ts", () => {
+		const offenders = walk(ROOT)
+			// Dependency trees and tool caches are not goblin's code.
+			.filter((file) => !file.split(sep).includes("node_modules"))
+			.map(repoPath)
+			// The scan covers app/ and scripts/ too — one wire owner means
+			// one everywhere. The live drift check owns its own probes.
+			.filter((name) => name !== "src/t3.ts" && name !== "src/t3.live.test.ts")
+			.filter((name) => !name.endsWith(".test.ts"))
+			.filter((name) => T3_SPAWN.test(readFileSync(join(ROOT, name), "utf8")));
+		expect(offenders).toEqual([]);
+	});
+
 	test("grammy is imported only under src/tg", () => {
 		const offenders = walk(SRC)
 			.filter(

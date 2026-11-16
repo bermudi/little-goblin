@@ -216,7 +216,7 @@ export interface TurnJournal {
 	// One-time claim on a boot notice: flips delivered_at only while
 	// still NULL — true when THIS caller won the claim, so two sends
 	// can never both mark (or both re-send on a later boot).
-	markBootNoticeDelivered(id: number): boolean;
+	markBootNoticeDelivered(id: number, now?: number): boolean;
 	get(runId: string): TurnRun | null;
 	// The newest run admitted as this row's resume continuation — null
 	// when none exists. A 'resumed' row's successor insert committed in
@@ -1152,8 +1152,8 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 			}
 			return pending;
 		},
-		markBootNoticeDelivered(id) {
-			return qClaimNotice.run(new Date().toISOString(), id).changes > 0;
+		markBootNoticeDelivered(id, now = Date.now()) {
+			return qClaimNotice.run(new Date(now).toISOString(), id).changes > 0;
 		},
 		get(runId) {
 			const raw = qGet.get(runId);

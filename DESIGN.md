@@ -396,7 +396,8 @@ where it returned): proactive monitoring, self-waking and memory nudges; a
 native browser tool; a native MCP client; raw in-process OAuth; ACP;
 onboarding wizard; a state-migration framework (additive memory schema
 changes are in scope); in-process embeddings; a third channel; backend
-registries; generic agents, recursion and timeout-revive; a second harness
+registries; agent recursion (agents are depth 1, design/agents.md) and
+timeout-revive; a second harness
 for projects; self-grading skill machinery; conversation-lifecycle commands;
 full multi-user. The named `allowedUsers` slice stands fenced: sandboxed
 turns + standing sandbox DMs, guest persona + `search` only, memory-excluded,

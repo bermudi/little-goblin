@@ -3,6 +3,10 @@
 Part of the goblin design spec. The core — domain model, authority rule,
 cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
+> **Superseded by [design/agents.md](agents.md) (2026-11-16).** This file
+> describes the Pi Durable code still in the tree until its removal step.
+> New work follows agents.md.
+
 ## Subagents & computer use (ruling 2026-10-11)
 
 Operator ask: "computer use" — eyes and hands on a desktop — without

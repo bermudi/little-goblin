@@ -1,7 +1,7 @@
 # Glossary
 
 - **Responsibility:** what Goblin owes the operator, as a durable record. It is separate from who does the work.
-- **Delegation:** one external coding agent that Goblin starts with the `delegate` tool. It runs in a Herdr terminal.
+- **Delegation:** one run of an external coding harness that Goblin starts with the `delegate` tool, only when the operator asks for that harness. It runs in a Herdr terminal today and moves to a T3 Code thread (design/agents.md).
 - **Harness:** a coding agent program that a delegation runs, such as codex or pi.
 - **Role:** the kind of work a delegation serves (build, review, or any operator-coined label). `default` is the role a call with none uses.
 - **Lead:** the delegation accountable for one issue build, including its implementation, review, and verification.
@@ -10,8 +10,10 @@
 - **Ask-first harness:** a delegation harness with `askFirst: true`. The `delegate` tool tells goblin to ask the operator before each use. Settings → Delegation edits it.
 - **Delegation family:** the five modules that implement delegations: `delegation-lifecycle.ts` (contracts + boot wiring), `delegation-paths.ts` (target/report seam), `delegation-notices.ts` (notice bodies + delivery), `delegation-actions.ts` (the six verbs), and `delegation-watcher.ts` (the scan lifecycle). Imports flow one way: watcher → actions → notices → paths.
 - **Herdr:** the terminal multiplexer where harnesses run.
-- **Desk:** the operator's own Herdr session, `default`. The `herdr` tool reaches it.
-- **Subagent:** a durable run on Goblin's own Pi Durable runtime. It has two kinds, worker and computer.
+- **Desk:** the operator's own Herdr session, `default`. The `herdr` tool reaches it. Retired: the operator works in T3 Code now (design/agents.md).
+- **Subagent:** a child conversation that Goblin starts with the `agent` tool. It runs on Goblin's own runtime, with an agent type's prompt, model and tools (design/agents.md). The older Pi Durable runs (kinds worker and computer) stay until their removal step.
+- **Agent type:** a markdown file in `$GOBLIN_HOME/agents/` that sets a subagent's description, model, tools and system prompt. `general` is built in.
+- **Child conversation:** a conversation with a parent. A subagent runs in one; its final reply goes back to the parent as a notice.
 - **Worker:** a subagent that does standalone work in a conversation's sandbox.
 - **Computer:** a subagent that does screen work on a named desktop.
 - **Settlement:** the point where a delegation or subagent run stops and states a result: done, needs input, or failed.

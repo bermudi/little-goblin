@@ -3,6 +3,11 @@
 Part of the goblin design spec. The core — domain model, authority rule,
 cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
+> **Transport and routing superseded by [design/agents.md](agents.md)
+> (2026-11-16):** `delegate` runs only when the operator asks for a
+> harness, and it moves from Herdr to T3 Code. The Herdr rulings below
+> describe the code still in the tree until its removal step.
+
 ## Delegation (other harnesses, via herdr)
 
 On demand (2026-09-26): goblin hands work to other coding harnesses

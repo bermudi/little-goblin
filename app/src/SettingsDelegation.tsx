@@ -128,23 +128,24 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 										<label className="flabel" htmlFor={`del-provider-${i}`}>
 											Provider
 										</label>
-										<select
+										{/* Free text with suggestions: the t3 provider
+										 * instance id need not match any goblin provider
+										 * name, so a select would lock fresh installs
+										 * out of ids this goblin doesn't know. */}
+										<input
 											id={`del-provider-${i}`}
 											className="mono"
 											aria-label={`provider for ${h.name || "new agent"}`}
+											list="del-provider-names"
 											value={h.provider}
+											placeholder="codex"
 											onChange={(e) => setHarness(i, { provider: e.target.value })}
-										>
-											<option value="">— pick —</option>
+										/>
+										<datalist id="del-provider-names">
 											{providerNames.map((n) => (
-												<option key={n} value={n}>
-													{n}
-												</option>
+												<option key={n} value={n} />
 											))}
-											{h.provider !== "" && !providerNames.includes(h.provider) && (
-												<option value={h.provider}>{h.provider} (unlisted)</option>
-											)}
-										</select>
+										</datalist>
 										<div className="cap">A configured T3 provider instance.</div>
 									</div>
 									<Field

@@ -36,6 +36,9 @@
 - **RRF:** reciprocal rank fusion. A model-free way to merge ranked lists; also the pinned reranker choice for the memory service.
 - **System One:** Goblin's yes/no check layer. A decision model returns a probability for a question about the current state.
 - **Decision model:** a model that answers typed questions with scores and does not write text.
+- **Curator:** the deterministic pass that marks provenance-backed skills stale and archives unused ones into `workspace/skills-archive/`. It never deletes. `design/skills.md` → Self-authoring, /learn, curator.
+- **Proposed skill:** a complete, validated skill draft parked in `workspace/skills-proposed/`. It installs only on the operator's yes.
+- **Temp skill:** a fetched, one-turn skill copy from a GitHub URL. It is injection-scored, never installed, and never a catalog entry.
 - **Cycle guard:** `src/import-cycles.test.ts`. It freezes today's import cycles as clusters and fails on any cycle that grew past or appeared outside them; clusters are pruned by hand as cycles are untangled.
 - **Feature folder:** a feature that lives as one directory under `src/` with a single public `index.ts` and its own tables. `src/reminders/` is the first.
 - **Parked block:** a capability's config kept under `config.parked` while the capability is off. Re-enabling restores it.

@@ -337,6 +337,13 @@ Two independently shippable tracks, not blockers for the earlier pilot:
   retention, migration, and controls. Separate projects must not bleed into
   shared recall. Expose incoming sources at the useful conversation/reply
   boundary without pretending the existing latest-window view is a full trace.
+- Skills as procedural memory (operator decision 2026-11-16, #626): the
+  agent saves what it learns as skills itself — new skills proposed for
+  the operator's yes, extensions to installed skills direct; `/learn`
+  authors a skill from a request or the conversation; a config-gated
+  curator archives unused provenance-backed skills (never deletes).
+  Mechanisms borrowed from hermes-agent; ruling: `design/skills.md` →
+  Self-authoring, /learn, curator.
 
 Acceptance: a corrected interpretation changes subsequent behavior with visible
 provenance; project isolation holds across recall and retention; memory-off

@@ -34,12 +34,20 @@ export function subagentNoticeTag(id: number, kind: string, status: string): str
 	return `[subagent: #${id} ${kind} · ${status.replaceAll("_", " ")}]`;
 }
 
+// Opens a native-subagent settlement notice (design/agents.md →
+// agent): the child's type and settlement status. The engine's notice
+// text (agent-children.ts) must keep this exact prefix.
+export function agentNoticeTag(type: string, status: string): string {
+	return `[agent: ${type} · ${status}]`;
+}
+
 // Whether a user-role text is machinery speech, not operator memory.
 export function isMachineryText(text: string): boolean {
 	return (
 		text.startsWith("[program: ") ||
 		text.startsWith("[delegation: ") ||
-		text.startsWith("[subagent: ")
+		text.startsWith("[subagent: ") ||
+		text.startsWith("[agent: ")
 	);
 }
 

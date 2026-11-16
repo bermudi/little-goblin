@@ -257,13 +257,18 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 			commit(att, conversationId, authority, cur, null, null);
 			return;
 		}
+		// A run the cursor has not seen. Status alone misses a run that
+		// starts and ends between two polls (completed → completed), so
+		// the run id is the monotonic signal. Older cursors without one
+		// fall back to status transitions.
+		const newRun = prev.latestRunId !== null && cur.latestRunId !== prev.latestRunId;
 		// Waiting-for-input is a development only on transition. The
 		// transition count names the stint in the key — keying by
 		// itemCount alone would collide when the cursor has no baseline
 		// (a row persisted by an older build), and the durable UNIQUE
 		// source key would silently dedupe every genuine transition
 		// after the first.
-		if (t3Waiting(cur.status) && !t3Waiting(prev.status)) {
+		if (t3Waiting(cur.status) && (newRun || !t3Waiting(prev.status))) {
 			cur.waitingTransitions += 1;
 			commit(att, conversationId, authority, cur, null, {
 				sourceKey: key("waiting", `t${cur.waitingTransitions}`),
@@ -280,9 +285,10 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 			return;
 		}
 		// A run that ended since the last sighting — completed, failed,
-		// or cut short. One wake per transition into terminal; goblin
+		// or cut short, including one that began after the last
+		// sighting. One wake per ended run; goblin
 		// assesses the thread's latest messages next.
-		if (terminal(cur.status) && !terminal(prev.status)) {
+		if (terminal(cur.status) && (newRun || !terminal(prev.status))) {
 			commit(att, conversationId, authority, cur, null, {
 				sourceKey: key("ended", cur.latestRunId),
 				kind: "done-candidate",

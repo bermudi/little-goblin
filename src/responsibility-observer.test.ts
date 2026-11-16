@@ -173,6 +173,28 @@ describe("responsibility observer", () => {
 		r.store.close();
 	});
 
+	test("a run that starts and ends between two polls is still a done-candidate", async () => {
+		const r = rig();
+		r.sighting = shown(shownThread({ status: "completed", latestRunId: "run:1", itemCount: 4 }));
+		await r.observe();
+		expect(r.eventsFor().map((e) => e.kind)).toEqual(["done-candidate"]);
+		// run:2 ran and completed inside the poll gap: completed → completed.
+		r.sighting = shown(shownThread({ status: "completed", latestRunId: "run:2", itemCount: 7 }));
+		await r.observe();
+		expect(r.eventsFor().map((e) => e.kind)).toEqual(["done-candidate", "done-candidate"]);
+		r.store.close();
+	});
+
+	test("a new run that is waiting when first seen is a development, even after a waiting stint", async () => {
+		const r = rig();
+		r.sighting = shown(shownThread({ status: "waiting", latestRunId: "run:1" }));
+		await r.observe();
+		r.sighting = shown(shownThread({ status: "waiting", latestRunId: "run:2", itemCount: 9 }));
+		await r.observe();
+		expect(r.eventsFor().map((e) => e.kind)).toEqual(["blocked-candidate", "blocked-candidate"]);
+		r.store.close();
+	});
+
 	test("stable work commits cursor only — no events, no model spend", async () => {
 		const r = rig();
 		const plan = r.resps.get(r.respId)!.followup;

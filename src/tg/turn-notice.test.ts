@@ -7,7 +7,7 @@ import { openStore, type ConversationStore } from "../conversation.ts";
 import { appAddress } from "../conversation-address.ts";
 import { setLogFile } from "../log.ts";
 import { programFireTag } from "../tags.ts";
-import { deferred, tmpDb, tmpDir, waitUntil } from "../testkit.ts";
+import { deferred, sleep, tmpDb, tmpDir, waitUntil } from "../testkit.ts";
 import { openTurnJournal, type TurnJournal } from "../turn-journal.ts";
 import {
 	redeliverLandedReplies,
@@ -318,43 +318,73 @@ describe("interrupted turn notices", () => {
 });
 
 describe("stranded input notices", () => {
+	const user = (text: string, metadata?: UIMessage["metadata"]): UIMessage => ({
+		id: crypto.randomUUID(),
+		role: "user",
+		parts: [{ type: "text", text }],
+		...(metadata === undefined ? {} : { metadata }),
+	});
+	const assistant = (text: string): UIMessage => ({
+		id: crypto.randomUUID(),
+		role: "assistant",
+		parts: [{ type: "text", text }],
+	});
+
+	// The strand scope is the dead process's lifetime: input appended
+	// between two journal opens was accepted by the process that just
+	// died. `mid` plays that lifetime — appends and run seeds — on the
+	// first store; the returned journal is the restart's open.
+	function lifetimeBed(mid: (store: ConversationStore, journal: TurnJournal) => void): {
+		store: ConversationStore;
+		journal: TurnJournal;
+		dbPath: string;
+	} {
+		const dbPath = tmpDb("goblin-tn-");
+		const first = openStore(dbPath);
+		const firstJournal = openTurnJournal(first.db);
+		mid(first, firstJournal);
+		first.close();
+		const store = openStore(dbPath);
+		return { store, journal: openTurnJournal(store.db), dbPath };
+	}
+
 	test("counts only user events no run admitted and no reply answered; one line per conversation", async () => {
 		const dir = tmpDir("goblin-tn-log-");
 		const logPath = join(dir, "goblin.log");
 		setLogFile(logPath);
 		try {
-			const { store, journal } = crashBed((store) => {
-				const dm = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-				store.setMeta(dm.id, { title: "ops room" });
-				const other = store.resolve({ kind: "dm", chatId: 2 }, "/w");
-				const quiet = store.resolve({ kind: "dm", chatId: 3 }, "/w");
-				const app = store.resolve(appAddress("ops-app"), "/w");
-				const user = (text: string, metadata?: UIMessage["metadata"]): UIMessage => ({
-					id: crypto.randomUUID(),
-					role: "user",
-					parts: [{ type: "text", text }],
-					...(metadata === undefined ? {} : { metadata }),
-				});
+			const { store, journal } = lifetimeBed((s, j) => {
+				const dm = s.resolve({ kind: "dm", chatId: 1 }, "/w");
+				s.setMeta(dm.id, { title: "ops room" });
+				const other = s.resolve({ kind: "dm", chatId: 2 }, "/w");
+				const quiet = s.resolve({ kind: "dm", chatId: 3 }, "/w");
+				const app = s.resolve(appAddress("ops-app"), "/w");
 				// Answered input an interrupted run owned — not stranded.
-				const [asked] = store.append(dm.id, [user("earlier question")]);
-				store.append(dm.id, [
-					{ id: "a1", role: "assistant", parts: [{ type: "text", text: "answer" }] },
-				]);
+				const [asked] = s.append(dm.id, [user("earlier question")]);
+				s.append(dm.id, [assistant("answer")]);
 				// Fenced input: landed after the run's owned floor.
-				store.append(dm.id, [user("did this land?")]);
+				s.append(dm.id, [user("did this land?")]);
 				// Machinery speech and a generated resume marker never count.
-				store.append(dm.id, [user(`${programFireTag("nightly", "cron")}\ncharter`)]);
-				store.append(dm.id, [
+				s.append(dm.id, [user(`${programFireTag("nightly", "cron")}\ncharter`)]);
+				s.append(dm.id, [
 					user("resume please", { goblinResume: { sourceRunId: "aaaabbbb-dm" } }),
 				]);
-				store.append(other.id, [user("one"), user("two")]);
+				s.append(other.id, [user("one"), user("two")]);
 				// A user event an assistant reply already answered.
-				store.append(quiet.id, [user("q")]);
-				store.append(quiet.id, [
-					{ id: "a2", role: "assistant", parts: [{ type: "text", text: "a" }] },
-				]);
-				store.append(app.id, [user("app input")]);
-				return { seeds: [{ runId: "aaaabbbb-dm", convId: dm.id, owned: [asked!] }] };
+				s.append(quiet.id, [user("q")]);
+				s.append(quiet.id, [assistant("a")]);
+				s.append(app.id, [user("app input")]);
+				j.beginRun({
+					runId: "aaaabbbb-dm",
+					conversationId: dm.id,
+					epoch: 1,
+					anchorSeq: null,
+					steerMark: null,
+					convSnapshot: {},
+					toolNames: ["probe"],
+					startedAt: STARTED,
+					ownedInputSeqs: [asked!],
+				});
 			});
 
 			expect(journal.strandedAtOpen.get("dm:1")).toBe(1);
@@ -363,9 +393,7 @@ describe("stranded input notices", () => {
 			expect(journal.strandedAtOpen.get("app/ops-app")).toBe(1);
 			// Post-open input belongs to the live runtime — the snapshot
 			// never picks it up.
-			store.append("dm:1", [
-				{ id: "b1", role: "user", parts: [{ type: "text", text: "new input after boot" }] },
-			]);
+			store.append("dm:1", [user("new input after boot")]);
 			expect(journal.strandedAtOpen.get("dm:1")).toBe(1);
 
 			const { api, sends } = fakeApi();
@@ -407,6 +435,75 @@ describe("stranded input notices", () => {
 		} finally {
 			setLogFile(null);
 		}
+	});
+
+	test("input created before the previous open is not flagged — it predates the dead process", () => {
+		const dbPath = tmpDb("goblin-tn-");
+		const first = openStore(dbPath);
+		first.resolve({ kind: "dm", chatId: 1 }, "/w");
+		first.append("dm:1", [user("pre-journal input")]);
+		// Pre-journal input reads as history from before the turn
+		// journal: stamp it strictly before this store's first open.
+		first.db.run("UPDATE events SET created_at = '2020-01-01T00:00:00.000Z'");
+		openTurnJournal(first.db);
+		first.close();
+		const store = openStore(dbPath);
+		const journal = openTurnJournal(store.db);
+		expect(journal.strandedAtOpen.size).toBe(0);
+		store.close();
+	});
+
+	test("input accepted between two opens, unanswered and above the floor, is flagged", () => {
+		const { store, journal } = lifetimeBed((s, j) => {
+			s.resolve({ kind: "dm", chatId: 1 }, "/w");
+			const [answered] = s.append("dm:1", [user("answered before")]);
+			s.append("dm:1", [assistant("reply")]);
+			s.append("dm:1", [user("accepted, never admitted")]);
+			j.beginRun({
+				runId: "run-owned",
+				conversationId: "dm:1",
+				epoch: 1,
+				anchorSeq: null,
+				steerMark: null,
+				convSnapshot: {},
+				toolNames: ["probe"],
+				startedAt: STARTED,
+				ownedInputSeqs: [answered!],
+			});
+		});
+		expect(journal.strandedAtOpen.get("dm:1")).toBe(1);
+		store.close();
+	});
+
+	test("the first open of a store flags nothing — no previous lifetime is known", () => {
+		const store = openStore(tmpDb("goblin-tn-"));
+		store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append("dm:1", [user("unanswered old input")]);
+		store.db.run("UPDATE events SET created_at = '2020-01-01T00:00:00.000Z'");
+		const journal = openTurnJournal(store.db);
+		expect(journal.strandedAtOpen.size).toBe(0);
+		store.close();
+	});
+
+	test("a third open does not re-flag input the second already counted", async () => {
+		const dbPath = tmpDb("goblin-tn-");
+		const first = openStore(dbPath);
+		first.resolve({ kind: "dm", chatId: 1 }, "/w");
+		openTurnJournal(first.db);
+		first.append("dm:1", [user("accepted by the first process")]);
+		// The restart lands in a later tick so the input's created_at is
+		// strictly before the second open's — the same-ms edge would
+		// otherwise read as inside the second process's lifetime.
+		await sleep(5);
+		first.close();
+		const second = openStore(dbPath);
+		const journal2 = openTurnJournal(second.db);
+		expect(journal2.strandedAtOpen.get("dm:1")).toBe(1);
+		second.close();
+		const third = openStore(dbPath);
+		const journal3 = openTurnJournal(third.db);
+		expect(journal3.strandedAtOpen.size).toBe(0);
+		third.close();
 	});
 });
 

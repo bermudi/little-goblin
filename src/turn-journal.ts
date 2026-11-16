@@ -191,13 +191,15 @@ export interface TurnJournal {
 	interruptedFor(conversationId: string): TurnRun[];
 	readonly interruptedAtOpen: readonly TurnRun[];
 	// #481 — per-conversation count of user events the dead process
-	// accepted but never admitted to a turn: seq above every run's owned
-	// floor (anchor and source seqs stand in for legacy NULL ownership)
-	// AND above the last assistant reply (an answered input is not
-	// stranded even if its run's ownership never journaled). Machinery
-	// speech and generated resume markers are not operator input.
-	// Snapshotted at open like interruptedAtOpen — post-open submissions
-	// belong to the live runtime, not the crash.
+	// accepted but never admitted to a turn: created since the previous
+	// journal open (journal_opens bounds the dead process's lifetime —
+	// a first-ever open flags nothing, #577) AND seq above every run's
+	// owned floor (anchor and source seqs stand in for legacy NULL
+	// ownership) AND above the last assistant reply (an answered input
+	// is not stranded even if its run's ownership never journaled).
+	// Machinery speech and generated resume markers are not operator
+	// input. Snapshotted at open like interruptedAtOpen — post-open
+	// submissions belong to the live runtime, not the crash.
 	readonly strandedAtOpen: ReadonlyMap<string, number>;
 	get(runId: string): TurnRun | null;
 	// The newest run admitted as this row's resume continuation — null
@@ -525,6 +527,12 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 		resolved_ms INTEGER,
 		PRIMARY KEY (run_id, tool_call_id)
 	)`);
+	// One row per open — the previous row's opened_at bounds the dead
+	// process's lifetime for the stranded-input count (#577).
+	db.run(`CREATE TABLE IF NOT EXISTS journal_opens (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		opened_at TEXT NOT NULL
+	)`);
 	const runCols = new Set(
 		(db.query("PRAGMA table_info(turn_runs)").all() as { name: string }[]).map((c) => c.name),
 	);
@@ -698,9 +706,12 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 	>(
 		"UPDATE turn_runs SET status = 'interrupted', finished_ms = ? WHERE status = 'running' RETURNING run_id, conversation_id, started_ms",
 	);
+	// One clock read per open: the reclassify stamp and this open's
+	// journal_opens row share it.
+	const openMs = Date.now();
 	const reclassify = (): TurnRun[] => {
 		const interrupted: TurnRun[] = [];
-		for (const r of qStale.all(Date.now())) {
+		for (const r of qStale.all(openMs)) {
 			log.warn("interrupted turn found", {
 				run: r.run_id,
 				conversation: r.conversation_id,
@@ -717,10 +728,14 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 	// Stranded-input candidates: user events above every run's owned
 	// floor and above the last assistant reply of their conversation.
 	// json_each over a NULL owned_input_seqs yields zero rows, so legacy
-	// rows contribute only their anchor/source seqs.
-	const qStranded = db.query<{ conversation_id: string; seq: number; data: string }, []>(
+	// rows contribute only their anchor/source seqs. The created_at
+	// bound scopes the count to the dead process's lifetime (#577):
+	// only input it could have accepted is stranded — pre-journal
+	// history and input an earlier restart already settled stay out.
+	const qStranded = db.query<{ conversation_id: string; seq: number; data: string }, [string]>(
 		`SELECT e.conversation_id, e.seq, e.data FROM events e
 		 WHERE e.role = 'user'
+		   AND e.created_at >= ?
 		   AND e.seq > COALESCE((
 				SELECT MAX(x) FROM (
 					SELECT je.value AS x FROM turn_runs r
@@ -737,10 +752,19 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 				SELECT MAX(seq) FROM events a
 				 WHERE a.conversation_id = e.conversation_id AND a.role = 'assistant'), 0)`,
 	);
+	const qPrevOpen = db.query<{ opened_at: string }, []>(
+		"SELECT opened_at FROM journal_opens ORDER BY id DESC LIMIT 1",
+	);
+	const qRecordOpen = db.query("INSERT INTO journal_opens (opened_at) VALUES (?)");
 	const resumeMarker = z.object({ goblinResume: z.object({ sourceRunId: z.string() }) });
+	// A first-ever open knows no prior process lifetime — nothing is
+	// provably stranded, so the map stays empty rather than counting
+	// all of history.
+	const prevOpen = qPrevOpen.get()?.opened_at ?? null;
 	const strandedAtOpen = ((): ReadonlyMap<string, number> => {
 		const counts = new Map<string, number>();
-		for (const row of qStranded.all()) {
+		if (prevOpen === null) return counts;
+		for (const row of qStranded.all(prevOpen)) {
 			const message = parseEvent(row.conversation_id, row.seq, "user", row.data);
 			// A corrupt row decodes to a placeholder — it was never a
 			// readable message, so nothing answerable was stranded.
@@ -752,6 +776,13 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 		}
 		return counts;
 	})();
+	const openedAt = new Date(openMs).toISOString();
+	qRecordOpen.run(openedAt);
+	log.info("turn journal opened", {
+		openedAt,
+		previousOpen: prevOpen,
+		strandedConversations: strandedAtOpen.size,
+	});
 	// Inherited evidence copies are namespaced by their ORIGIN run, never
 	// carried under the raw provider id. The primary key (run_id,
 	// tool_call_id) spans both the inherited copies and this attempt's

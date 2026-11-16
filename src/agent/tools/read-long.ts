@@ -97,13 +97,11 @@ async function readParts(
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
-/** Text means strict UTF-8 with no NUL, and not a PDF — an ASCII-only
- *  PDF decodes cleanly but is page syntax, not the document's words.
- *  The spec (and poppler) put the header anywhere in the first 1 KB;
- *  the version digits keep prose that names the magic readable. */
+/** Text means strict UTF-8 with no NUL — a bytes rule, not a format
+ *  guess (operator, 2026-11-16). Real PDFs and office files carry binary
+ *  streams and fail it; a rare ASCII-only PDF reads as its syntax. */
 function asText(bytes: Buffer): string | null {
 	if (bytes.includes(0)) return null;
-	if (/%PDF-\d\.\d/.test(bytes.subarray(0, 1024).toString("latin1"))) return null;
 	try {
 		return utf8.decode(bytes);
 	} catch {

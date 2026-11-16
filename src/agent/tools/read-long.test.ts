@@ -85,13 +85,9 @@ describe("read_long", () => {
 
 	test("non-text files are refused before any model call", async () => {
 		const dir = tmpDir("goblin-read-long-");
-		const pdf = "%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n(Revenue was 56.) Tj\n%%EOF\n";
-		writeFileSync(join(dir, "ascii.pdf"), pdf);
-		writeFileSync(join(dir, "bom.pdf"), `\uFEFF${pdf}`);
-		writeFileSync(join(dir, "junk.pdf"), `junk line before header\n${pdf}`);
 		writeFileSync(join(dir, "bad-utf8.bin"), Buffer.from([0x66, 0xff, 0xfe, 0xfd, 0x80]));
 		writeFileSync(join(dir, "nul.bin"), Buffer.from([0x41, 0x00, 0x42]));
-		writeFileSync(join(dir, "mentions.txt"), "Every file starts with the %PDF- magic, then objects.");
+		writeFileSync(join(dir, "unicode.txt"), "\uFEFFcafé — 数据 🚀");
 		let called = 0;
 		const tool = readLongTool(dir, {
 			conversation: "c1",
@@ -100,13 +96,12 @@ describe("read_long", () => {
 				return "";
 			},
 		});
-		for (const path of ["ascii.pdf", "bom.pdf", "junk.pdf", "bad-utf8.bin", "nul.bin"]) {
+		for (const path of ["bad-utf8.bin", "nul.bin"]) {
 			const out = await tool.execute!({ path, question: "what?" }, opts);
 			expect(out).toMatchObject({ error: expect.stringContaining("not a UTF-8 text file") });
 		}
 		expect(called).toBe(0);
-		// Prose that names the magic is still text.
-		const out = await tool.execute!({ path: "mentions.txt", question: "what?" }, opts);
+		const out = await tool.execute!({ path: "unicode.txt", question: "what?" }, opts);
 		expect(out).not.toHaveProperty("error");
 		expect(called).toBe(1);
 	});

@@ -184,12 +184,12 @@ failure is a tool error and the operator asks again.
   2026-11-15), through the same side-call lane as the compaction
   summary (`CompleteText` in `step.ts`), so claude-code conversations
   use their subscription too.
-- **Input:** a path to a text file: strict UTF-8, no NUL, and not a
-  PDF (`%PDF-<digit>.<digit>` in the first 1 KB, where the spec puts
-  the header; a header further in is text by the spec and `file`; an ASCII-only
-  PDF decodes cleanly but is page syntax). Anything
+- **Input:** a path to a text file: strict UTF-8 with no NUL. Anything
   else is refused before a model call, with a hint to convert first
-  (`pdftotext`, `pandoc`).
+  (`pdftotext`, `pandoc`). This is a bytes rule, not a format guess
+  (operator, 2026-11-16, after three verifier rounds found new edges in
+  a PDF-header check): real PDFs and office files carry binary streams
+  and fail it; a rare ASCII-only PDF reaches the helper as its syntax.
 - **Split:** a file over `CHUNK_CHARS` (150k chars, about 40k tokens)
   is cut at paragraph or line breaks; up to 4 parts of one file are in
   flight at once, and each part's answer comes back labelled. The first

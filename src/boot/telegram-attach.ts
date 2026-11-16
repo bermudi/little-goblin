@@ -9,7 +9,10 @@
 // - Ownership ≠ routability: telegramRunning survives detach; shutdown
 //   still drains a detached channel's intake.
 // - Interrupted-turn DMs are once per boot — the retry loop can re-run
-//   the post-attach steps, but operators get one copy.
+//   the post-attach steps, but operators get one copy. An undelivered
+//   notice stays owed in the boot_notices outbox (#579): a boot that
+//   dies before attach, or whose every send fails, hands the row to
+//   the next boot instead of dropping it.
 // - Replay before polling — the offset must not advance past journaled
 //   input — then a detach-on-end poll contract: a terminated long poll
 //   degrades the channel, never the boot.
@@ -278,29 +281,32 @@ export function openTelegramAttach(deps: TelegramAttachDeps): TelegramAttach {
 						// operator — terse facts, never a replay. Sent only after a
 						// successful attach; the skip/failure logs above stand alone.
 						// A row whose reply landed owes the channel that text (#482):
-						// re-deliver first, then notice only the runs still owed a
-						// notice.
+						// re-deliver first; the notice pass drops such runs by
+						// reading the row's delivery. Both notices ride the durable
+						// outbox (#579): rows a dead boot never delivered — this
+						// boot's crashes included — send here and claim on landing.
 						if (!interruptedNoticesSent) {
 							interruptedNoticesSent = true;
-							const delivered = await redeliverLandedReplies(
+							await redeliverLandedReplies(
 								running.bot.api,
 								startDeps.journal.landedPendingReplies(),
 								startDeps.store,
 								startDeps.journal,
 							);
+							const pending = startDeps.journal.pendingBootNotices();
 							sendInterruptedTurnNotices(
 								running.bot.api,
-								startDeps.journal.interruptedAtOpen.filter(
-									(r) => !delivered.has(r.runId),
-								),
+								pending.interrupted,
 								configRef.current.operators,
 								(id) => startDeps.store.get(id)?.title ?? undefined,
+								startDeps.journal,
 							);
 							sendStrandedInputNotices(
 								running.bot.api,
-								startDeps.journal.strandedAtOpen,
+								pending.stranded,
 								configRef.current.operators,
 								(id) => startDeps.store.get(id)?.title ?? undefined,
+								startDeps.journal,
 							);
 						}
 						if (!canAttachTelegram()) {

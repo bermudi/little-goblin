@@ -120,7 +120,18 @@ must not silently strand an unanswered request). `fenced` is now
 operator/epoch fences only — `/stop`, settings changes, deploy-era
 authority loss outside shutdown. Boot sends one terse notice per run
 (counts by state,
-never the partial itself). Nothing replays automatically — boot is
+never the partial itself). The notice is a durable debt, not an
+open-time snapshot (#579, ruling 2026-11-15): open consumes its crash
+windows into `boot_notices` rows — interrupted rows inside the
+reclassify transaction, stranded counts with the `journal_opens` row —
+and a row claims only after a Telegram send lands (any one operator).
+A boot that dies before the attach, or whose every send fails, hands
+the row to the next boot instead of dropping it; a send that landed
+with a claim that could not commit re-sends at-least-once. Because a
+row can outlive its advice, the sender drops and claims without
+sending when the run left `interrupted` (resumed/abandoned) or its
+landed reply was already re-delivered (#482). Nothing replays
+automatically — boot is
 notice-only, and an `interrupted` turn resumes ONLY by explicit operator
 decision into a FRESH admission (new epoch, not a continuation of the
 dead attempt). Each attempt gets its own run row; the continuation's row

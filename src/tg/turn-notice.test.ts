@@ -20,6 +20,13 @@ setLogFile(null);
 const OPERATORS = [111, 222];
 const STARTED = "2026-10-11T00:00:00.000Z";
 
+// The outbox views the old at-open snapshots served: pending interrupted
+// notices stand in for interruptedAtOpen, the stranded map for
+// strandedAtOpen.
+const pendingInterrupted = (j: TurnJournal) => j.pendingBootNotices().interrupted;
+const pendingStranded = (j: TurnJournal) =>
+	new Map(j.pendingBootNotices().stranded.map((n) => [n.conversationId, n.count] as const));
+
 type Seed = {
 	runId: string;
 	convId: string;
@@ -119,7 +126,7 @@ describe("interrupted turn notices", () => {
 					],
 				};
 			});
-			expect(journal.interruptedAtOpen.map((r) => r.runId).sort()).toEqual([
+			expect(pendingInterrupted(journal).map((n) => n.run.runId).sort()).toEqual([
 				"aaaabbbb-dm",
 				"ccccdddd-app",
 			]);
@@ -128,9 +135,10 @@ describe("interrupted turn notices", () => {
 			let bootContinued = false;
 			const ret = sendInterruptedTurnNotices(
 				api,
-				journal.interruptedAtOpen,
+				pendingInterrupted(journal),
 				OPERATORS,
 				(id) => store.get(id)?.title ?? undefined,
+				journal,
 			);
 			bootContinued = true;
 
@@ -196,30 +204,58 @@ describe("interrupted turn notices", () => {
 			expect(bad.conversation).toBe(sends[1]!.text.includes("aaaabbbb") ? "dm:1" : "app/ops-app");
 			expect(String(bad.error)).toContain("api down");
 			expect(sent(lines).some((l) => l.run === bad.run && l.chat === bad.chat)).toBe(false);
+
+			// Each run reached at least one operator — both notices claim,
+			// even though one recipient of the first run failed.
+			await waitUntil(() => pendingInterrupted(journal).length === 0, "both notices claimed");
 			store.close();
 		} finally {
 			setLogFile(null);
 		}
 	});
 
-	test("a later open's empty snapshot resends nothing; only its own crashes notify", async () => {
+	test("an undelivered notice survives its boot — only a landed send consumes it (#579)", async () => {
 		const { store, journal, dbPath } = crashBed((store) => {
 			const dm = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 			return { seeds: [{ runId: "eeeeffff-old", convId: dm.id }] };
 		});
 		const { api, sends } = fakeApi();
-		sendInterruptedTurnNotices(api, journal.interruptedAtOpen, OPERATORS, () => undefined);
-		expect(sends).toHaveLength(2);
-		store.close();
 
+		// Boot 1 dies before the Telegram attach: the notice was never
+		// even attempted. The next open still owes it.
+		store.close();
 		const second = openStore(dbPath);
 		const journal2 = openTurnJournal(second.db);
-		expect(journal2.interruptedAtOpen).toEqual([]);
+		expect(pendingInterrupted(journal2).map((n) => n.run.runId)).toEqual(["eeeeffff-old"]);
 		expect(journal2.interrupted().map((r) => r.runId)).toEqual(["eeeeffff-old"]);
-		sendInterruptedTurnNotices(api, journal2.interruptedAtOpen, OPERATORS, () => undefined);
-		expect(sends).toHaveLength(2);
 
-		journal2.beginRun({
+		// Boot 2 attaches but every send fails — the row stays owed.
+		sendInterruptedTurnNotices(api, pendingInterrupted(journal2), OPERATORS, () => undefined, journal2);
+		expect(sends).toHaveLength(2);
+		for (const s of sends) s.settle.reject(new Error("api down"));
+		await Promise.allSettled(sends.map((s) => s.settle.promise));
+		expect(pendingInterrupted(journal2).map((n) => n.run.runId)).toEqual(["eeeeffff-old"]);
+		second.close();
+
+		// Boot 3 attaches and the send lands — the debt clears, and no
+		// later open resurrects it.
+		const third = openStore(dbPath);
+		const journal3 = openTurnJournal(third.db);
+		const sends3 = fakeApi();
+		sendInterruptedTurnNotices(
+			sends3.api,
+			pendingInterrupted(journal3),
+			OPERATORS,
+			() => undefined,
+			journal3,
+		);
+		expect(sends3.sends).toHaveLength(2);
+		sends3.sends[0]!.settle.resolve({ ok: true });
+		sends3.sends[1]!.settle.resolve({ ok: true });
+		await waitUntil(() => pendingInterrupted(journal3).length === 0, "notice claimed on landing");
+
+		// A fresh crash adds its own notice; the delivered one stays gone.
+		journal3.beginRun({
 			runId: "99990000-new",
 			conversationId: "dm:1",
 			epoch: 1,
@@ -229,24 +265,32 @@ describe("interrupted turn notices", () => {
 			toolNames: ["probe"],
 			startedAt: STARTED,
 		});
-		second.close();
-
-		const third = openStore(dbPath);
-		const journal3 = openTurnJournal(third.db);
-		sendInterruptedTurnNotices(api, journal3.interruptedAtOpen, OPERATORS, () => undefined);
-		expect(sends).toHaveLength(4);
-		const fresh = sends.slice(2);
-		expect(fresh.every((s) => s.text.includes("interrupted turn 99990000"))).toBe(true);
-		expect(fresh.map((s) => s.chat).sort()).toEqual([...OPERATORS].sort());
+		third.close();
+		const fourth = openStore(dbPath);
+		const journal4 = openTurnJournal(fourth.db);
+		expect(pendingInterrupted(journal4).map((n) => n.run.runId)).toEqual(["99990000-new"]);
 		expect(
-			journal3
+			journal4
 				.interrupted()
 				.map((r) => r.runId)
 				.sort(),
 		).toEqual(["99990000-new", "eeeeffff-old"]);
-		for (const s of sends) s.settle.resolve({ ok: true });
-		await Promise.all(sends.map((s) => s.settle.promise));
-		third.close();
+		fourth.close();
+	});
+
+	test("a notice whose run left 'interrupted' before delivery is claimed without sending", () => {
+		const { store, journal } = crashBed((store) => {
+			const dm = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+			return { seeds: [{ runId: "resumable-run", convId: dm.id }] };
+		});
+		// The durable outbox can outlive its advice: the operator resumed
+		// the run through the app while Telegram was still attaching.
+		journal.markRun("resumable-run", "abandoned");
+		const { api, sends } = fakeApi();
+		sendInterruptedTurnNotices(api, pendingInterrupted(journal), OPERATORS, () => undefined, journal);
+		expect(sends).toHaveLength(0);
+		expect(pendingInterrupted(journal)).toHaveLength(0);
+		store.close();
 	});
 
 	test("all sends failing logs one failure per recipient and no success", async () => {
@@ -259,7 +303,7 @@ describe("interrupted turn notices", () => {
 				return { seeds: [{ runId: "deadbeef-run", convId: dm.id }] };
 			});
 			const { api, sends } = fakeApi();
-			sendInterruptedTurnNotices(api, journal.interruptedAtOpen, OPERATORS, () => undefined);
+			sendInterruptedTurnNotices(api, pendingInterrupted(journal), OPERATORS, () => undefined, journal);
 			expect(sends).toHaveLength(2);
 			for (const s of sends) s.settle.reject(new Error("all down"));
 			await waitUntil(() => failed(logLines(logPath)).length === 2, "both failed sends logged");
@@ -276,6 +320,8 @@ describe("interrupted turn notices", () => {
 				expect(l.conversation).toBe("dm:1");
 				expect(String(l.error)).toContain("all down");
 			}
+			// No send landed — the notice stays owed for the next boot.
+			expect(pendingInterrupted(journal).map((n) => n.run.runId)).toEqual(["deadbeef-run"]);
 			store.close();
 		} finally {
 			setLogFile(null);
@@ -292,7 +338,7 @@ describe("interrupted turn notices", () => {
 				return { seeds: [{ runId: "cafef00d-run", convId: dm.id }] };
 			});
 			const { api, sends } = fakeApi({ throwOnChat: 222 });
-			sendInterruptedTurnNotices(api, journal.interruptedAtOpen, OPERATORS, () => undefined);
+			sendInterruptedTurnNotices(api, pendingInterrupted(journal), OPERATORS, () => undefined, journal);
 			expect(sends).toHaveLength(2);
 			for (const s of sends) {
 				if (s.chat === 222) continue;
@@ -310,6 +356,9 @@ describe("interrupted turn notices", () => {
 			expect(failed(lines)[0]!.chat).toBe(222);
 			expect(failed(lines)[0]!.run).toBe("cafef00d-run");
 			expect(String(failed(lines)[0]!.error)).toContain("sync send failure");
+			// One operator got it — the notice claims despite the other's
+			// synchronous throw.
+			await waitUntil(() => pendingInterrupted(journal).length === 0, "notice claimed");
 			store.close();
 		} finally {
 			setLogFile(null);
@@ -387,21 +436,22 @@ describe("stranded input notices", () => {
 				});
 			});
 
-			expect(journal.strandedAtOpen.get("dm:1")).toBe(1);
-			expect(journal.strandedAtOpen.get("dm:2")).toBe(2);
-			expect(journal.strandedAtOpen.has("dm:3")).toBe(false);
-			expect(journal.strandedAtOpen.get("app/ops-app")).toBe(1);
-			// Post-open input belongs to the live runtime — the snapshot
-			// never picks it up.
+			expect(pendingStranded(journal).get("dm:1")).toBe(1);
+			expect(pendingStranded(journal).get("dm:2")).toBe(2);
+			expect(pendingStranded(journal).has("dm:3")).toBe(false);
+			expect(pendingStranded(journal).get("app/ops-app")).toBe(1);
+			// Post-open input belongs to the live runtime — the outbox row
+			// fixed at open never picks it up.
 			store.append("dm:1", [user("new input after boot")]);
-			expect(journal.strandedAtOpen.get("dm:1")).toBe(1);
+			expect(pendingStranded(journal).get("dm:1")).toBe(1);
 
 			const { api, sends } = fakeApi();
 			const ret = sendStrandedInputNotices(
 				api,
-				journal.strandedAtOpen,
+				journal.pendingBootNotices().stranded,
 				OPERATORS,
 				(id) => store.get(id)?.title ?? undefined,
+				journal,
 			);
 			expect(ret).toBeUndefined();
 			expect(sends).toHaveLength(6);
@@ -431,6 +481,11 @@ describe("stranded input notices", () => {
 				() => strandedSent(logLines(logPath)).length === 6,
 				"all stranded sends logged",
 			);
+			// Every conversation reached an operator — all three notices claim.
+			await waitUntil(
+				() => journal.pendingBootNotices().stranded.length === 0,
+				"stranded notices claimed on landing",
+			);
 			store.close();
 		} finally {
 			setLogFile(null);
@@ -449,7 +504,7 @@ describe("stranded input notices", () => {
 		first.close();
 		const store = openStore(dbPath);
 		const journal = openTurnJournal(store.db);
-		expect(journal.strandedAtOpen.size).toBe(0);
+		expect(pendingStranded(journal).size).toBe(0);
 		store.close();
 	});
 
@@ -471,7 +526,7 @@ describe("stranded input notices", () => {
 				ownedInputSeqs: [answered!],
 			});
 		});
-		expect(journal.strandedAtOpen.get("dm:1")).toBe(1);
+		expect(pendingStranded(journal).get("dm:1")).toBe(1);
 		store.close();
 	});
 
@@ -481,11 +536,11 @@ describe("stranded input notices", () => {
 		store.append("dm:1", [user("unanswered old input")]);
 		store.db.run("UPDATE events SET created_at = '2020-01-01T00:00:00.000Z'");
 		const journal = openTurnJournal(store.db);
-		expect(journal.strandedAtOpen.size).toBe(0);
+		expect(pendingStranded(journal).size).toBe(0);
 		store.close();
 	});
 
-	test("a third open does not re-flag input the second already counted", async () => {
+	test("a third open adds no second row — the debt is one row until delivered", async () => {
 		const dbPath = tmpDb("goblin-tn-");
 		const first = openStore(dbPath);
 		first.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -498,11 +553,16 @@ describe("stranded input notices", () => {
 		first.close();
 		const second = openStore(dbPath);
 		const journal2 = openTurnJournal(second.db);
-		expect(journal2.strandedAtOpen.get("dm:1")).toBe(1);
+		expect(pendingStranded(journal2).get("dm:1")).toBe(1);
 		second.close();
+		// The second boot's notice never sent (say it died before the
+		// attach): the third open must not count the window again — one
+		// owed row, not two.
 		const third = openStore(dbPath);
 		const journal3 = openTurnJournal(third.db);
-		expect(journal3.strandedAtOpen.size).toBe(0);
+		expect(journal3.pendingBootNotices().stranded).toEqual([
+			{ id: expect.any(Number), conversationId: "dm:1", count: 1 },
+		]);
 		third.close();
 	});
 });
@@ -562,13 +622,15 @@ describe("landed reply re-delivery", () => {
 		expect(journal.get("ccccdddd-app")!.delivery).toBe("delivered");
 		expect(journal.get("eeeeffff-legacy")!.delivery).toBe("pending");
 
-		// Notices go only to rows still owed one: the delivered rows are
-		// out, the legacy and plain interrupted rows stay in.
+		// Notices go only to rows still owed one: the sender drops and
+		// claims the re-delivered rows by reading their delivery state,
+		// the legacy and plain interrupted rows get their DMs.
 		sendInterruptedTurnNotices(
 			api,
-			journal.interruptedAtOpen.filter((r) => !delivered.has(r.runId)),
+			journal.pendingBootNotices().interrupted,
 			OPERATORS,
 			() => undefined,
+			journal,
 		);
 		const notices = sends.filter((s) => s.text.includes("interrupted turn"));
 		expect(notices).toHaveLength(4);
@@ -576,6 +638,10 @@ describe("landed reply re-delivery", () => {
 		expect(notices.some((s) => s.text.includes("ccccdddd"))).toBe(false);
 		expect(notices.filter((s) => s.text.includes("eeeeffff"))).toHaveLength(2);
 		expect(notices.filter((s) => s.text.includes("99990000"))).toHaveLength(2);
+		await waitUntil(
+			() => journal.pendingBootNotices().interrupted.length === 0,
+			"every interrupted notice sent or dropped",
+		);
 
 		// A second pass sends nothing and marks nothing — delivered rows
 		// dropped out of the pending set.
@@ -614,13 +680,23 @@ describe("landed reply re-delivery", () => {
 		expect(await pending).toEqual(new Set());
 		expect(journal.get("aaaabbbb-dm")!.delivery).toBe("pending");
 
-		sendInterruptedTurnNotices(api, journal.interruptedAtOpen, OPERATORS, () => undefined);
+		sendInterruptedTurnNotices(
+			api,
+			journal.pendingBootNotices().interrupted,
+			OPERATORS,
+			() => undefined,
+			journal,
+		);
 		expect(
 			sends.filter((s) => s.text.includes("interrupted turn aaaabbbb")),
 		).toHaveLength(2);
 		for (const s of sends) {
 			if (s.text.includes("interrupted turn")) s.settle.resolve({ ok: true });
 		}
+		await waitUntil(
+			() => journal.pendingBootNotices().interrupted.length === 0,
+			"notice claimed after landing",
+		);
 		await Promise.allSettled(sends.map((s) => s.settle.promise));
 		store.close();
 	});

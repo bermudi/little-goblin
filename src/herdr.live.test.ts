@@ -190,7 +190,7 @@ describe.skipIf(!LIVE)("herdr live drift (GOBLIN_HERDR_LIVE=1)", () => {
 		expect(JSON.parse(r.stderr).error.code).toBe("agent_not_found");
 	}, 15_000);
 
-	// ---- operator adapter (the `herdr` tool's backend) ----
+	// ---- operator adapter (responsibility observer and managed send) ----
 	//
 	// makeOperatorHerdr pins --session default; this runner rewrites it
 	// to the throwaway session — the only seam the adapter leaves open.

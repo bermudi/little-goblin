@@ -249,7 +249,7 @@ export function makeStepBuilder(
 			modelRef: (conv) => conv.model!,
 			prefixStep: async (conv, modelRef) => {
 				const cfg = configRef.current;
-				const { provider, modelId } = splitModelRef(modelRef);
+				const { provider } = splitModelRef(modelRef);
 				const p = cfg.providers[provider];
 				if (p?.kind === "claude-code") return null;
 				const snapshot = store.promptSnapshot(conv.id);

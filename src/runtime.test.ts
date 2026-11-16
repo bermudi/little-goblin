@@ -14,6 +14,11 @@ import type { LanguageModel } from "ai";
 import { defineTool, type Tools } from "./tool.ts";
 import type { Message, MessageChunk } from "./message.ts";
 import { z } from "zod";
+import type { AuthStore } from "./auth.ts";
+import { openCacheObservation } from "./cache-observation.ts";
+import type { Config } from "./config-schema.ts";
+import { openNotes } from "./notes.ts";
+import { openProjects } from "./projects.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { systemPromptFor } from "./agent/prompt.ts";
 import { toolNames } from "./agent/tools/mod.ts";
@@ -56,6 +61,9 @@ import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
 import { openWindowCapture } from "./window-capture.ts";
+import { makeStepBuilder } from "./agent/step.ts";
+import { _resetModelsDevForTest } from "./agent/models-dev.ts";
+import { prefixInstruction } from "./agent/compaction.ts";
 
 type Store = ReturnType<typeof openStore>;
 type Conv = ReturnType<Store["resolve"]>;
@@ -4016,6 +4024,252 @@ describe("loop landings", () => {
 		expect(requests.at(-1)!.prompt).toContain("context window is nearly full");
 		expect(s1.text).toBe("the wrapped answer");
 		store.close();
+	});
+});
+
+describe("prefix compaction request identity", () => {
+	test("F — the real step builder and runtime replay turn two's request prefix without executing tools", async () => {
+		_resetModelsDevForTest();
+		const home = useHome("goblin-prefix-runtime-");
+		const catalogPath = join(home, "state/models.dev.json");
+		mkdirSync(join(home, "state"), { recursive: true });
+		writeFileSync(
+			catalogPath,
+			JSON.stringify({
+				fake: {
+					models: {
+						"model-one": {
+							modalities: { input: ["text"] },
+							limit: { context: 100_000 },
+						},
+					},
+				},
+			}),
+		);
+		const originalFetch = globalThis.fetch;
+		const captured: Record<string, unknown>[] = [];
+		let executions = 0;
+		let providerCalls = 0;
+		const validSummary =
+			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nsecond request\n## Exact identifiers";
+		const encoder = new TextEncoder();
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			const url = String(input);
+			if (url.startsWith("https://models.dev/")) {
+				return new Response(
+					JSON.stringify({
+						fake: {
+							models: {
+								"model-one": {
+									modalities: { input: ["text"] },
+									limit: { context: 100_000 },
+								},
+							},
+						},
+					}),
+					{ headers: { "content-type": "application/json" } },
+				);
+			}
+			if (!url.includes("/chat/completions")) return originalFetch(input, init);
+			if (typeof init?.body !== "string") throw new Error("fake provider received no JSON body");
+			const parsed: unknown = JSON.parse(init.body);
+			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+				throw new Error("fake provider body was not an object");
+			}
+			const body = parsed as Record<string, unknown>;
+			captured.push(body);
+			providerCalls++;
+			const containsPrefixInstruction = init.body.includes("[goblin compaction request");
+			const content =
+				providerCalls === 1
+					? "first assistant reply ".repeat(6_500)
+					: containsPrefixInstruction
+						? validSummary
+						: providerCalls === 2
+							? "turn-two assistant reply"
+							: validSummary;
+			if (body.stream !== true) {
+				return new Response(
+					JSON.stringify({
+						id: `chatcmpl-complete-${providerCalls}`,
+						object: "chat.completion",
+						created: 1,
+						model: "model-one",
+						choices: [
+							{
+								index: 0,
+								message: { role: "assistant", content },
+								finish_reason: "stop",
+							},
+						],
+						usage: {
+							prompt_tokens: 100,
+							completion_tokens: 10,
+							total_tokens: 110,
+						},
+					}),
+					{ headers: { "content-type": "application/json" } },
+				);
+			}
+			const id = `chatcmpl-test-${providerCalls}`;
+			const events = [
+				{
+					id,
+					object: "chat.completion.chunk",
+					created: 1,
+					model: "model-one",
+					choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }],
+				},
+				{
+					id,
+					object: "chat.completion.chunk",
+					created: 1,
+					model: "model-one",
+					choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+				},
+			];
+			const stream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+					controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+					controller.close();
+				},
+			});
+			return new Response(stream, {
+				headers: { "content-type": "text/event-stream; charset=utf-8" },
+			});
+		}) as typeof fetch;
+
+		const store = openStore(tmpDb("goblin-prefix-runtime-"));
+		const cfg: Config = {
+			providers: {
+				fake: { kind: "openai-compatible", baseUrl: "https://fake.provider/v1", auth: "test-key" },
+			},
+			model: "fake/model-one",
+			tts: false,
+			favorites: [],
+			modelFallbacks: [],
+			thinking: "medium",
+			operators: [1],
+			allowedUsers: [1],
+			telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
+			http: { port: 8787 },
+			logLevel: "info",
+		};
+		const projects = openProjects(store);
+		const auth: AuthStore = {
+			resolve: async (name) => {
+				if (name !== "test-key") throw new Error(`unexpected auth name: ${name}`);
+				return "test-key";
+			},
+			has: (name) => name === "test-key",
+			names: () => ["test-key"],
+		};
+		const builder = makeStepBuilder({
+			configRef: { current: cfg, ttsDown: false },
+			auth,
+			store,
+			projects,
+			notes: openNotes(store, { projects }),
+			observation: openCacheObservation(store.db),
+		});
+		const turnSteps: ModelStep[] = [];
+		const prefixSteps: import("./agent/step.ts").PrefixStep[] = [];
+		const buildStep: RuntimeDeps["buildStep"] = async (conv, tools) => {
+			const step = await builder.buildStep(conv, tools);
+			if ("engine" in step) throw new Error("fake API provider unexpectedly built a Claude step");
+			turnSteps.push(step);
+			return step;
+		};
+		const compaction = {
+			...builder.compaction!,
+			prefixStep: async (conv: Conv, modelRef: string) => {
+				const step = await builder.compaction!.prefixStep!(conv, modelRef);
+				if (step !== null) prefixSteps.push(step);
+				return step;
+			},
+		};
+		const conv = captureConversationSettings(
+			store,
+			store.resolve({ kind: "dm", chatId: 1 }, "/w"),
+			cfg,
+		);
+		const tools = {
+			probe: defineTool({
+				description: "A no-op probe used to verify compaction only sends tool definitions.",
+				input: z.object({}),
+				execute: async () => {
+					executions++;
+					return "executed";
+				},
+			}),
+		};
+		const runtime = new Runtime({
+			engines: [aiSdkEngine],
+			store,
+			buildStep,
+			compaction,
+			makeTools: () => tools,
+			captureConversation: (target) => captureConversationSettings(store, target, cfg),
+		});
+		const r = { store, conv, runtime };
+		try {
+			const first = submit(r, "first request");
+			expect(await first.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const second = submit(r, "second request");
+			expect(await second.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect(providerCalls).toBe(2);
+			const folded = await runtime.compact(conv);
+			expect(folded.kind).toBe("compacted");
+			expect(providerCalls).toBe(4); // flush, then one prefix summary call
+			expect(turnSteps).toHaveLength(2);
+			expect(prefixSteps).toHaveLength(1);
+			expect(prefixSteps[0]!.system).toBe(turnSteps[1]!.system);
+			expect(prefixSteps[0]!.providerOptions).toEqual(turnSteps[1]!.providerOptions);
+
+			const turnTwo = captured[1]!;
+			const compactionRequest = captured.find((body) =>
+				JSON.stringify(body).includes("[goblin compaction request"),
+			);
+			expect(compactionRequest).toBeDefined();
+			const turnMessages = turnTwo.messages;
+			const compactMessages = compactionRequest!.messages;
+			expect(Array.isArray(turnMessages)).toBe(true);
+			expect(Array.isArray(compactMessages)).toBe(true);
+			if (!Array.isArray(turnMessages) || !Array.isArray(compactMessages)) {
+				throw new Error("fake provider captured malformed messages");
+			}
+			expect(compactMessages.slice(0, turnMessages.length)).toEqual(turnMessages);
+			const appended = compactMessages.slice(turnMessages.length);
+			expect(appended).toHaveLength(2);
+			expect(appended[0]).toMatchObject({ role: "assistant", content: "turn-two assistant reply" });
+			expect(appended[1]).toMatchObject({
+				role: "user",
+				content: prefixInstruction({
+					keptExcerpt: "second request",
+					hasPreviousSummary: false,
+				}),
+			});
+			expect(compactionRequest!.tools).toEqual(turnTwo.tools);
+			expect(compactionRequest!.reasoning_effort).toEqual(turnTwo.reasoning_effort);
+			const systemOf = (messages: unknown[]): unknown =>
+				messages.find(
+					(message) =>
+						typeof message === "object" &&
+						message !== null &&
+						"role" in message &&
+						message.role === "system",
+				);
+			expect(systemOf(compactMessages)).toEqual(systemOf(turnMessages));
+			expect(executions).toBe(0);
+		} finally {
+			await runtime.shutdown();
+			store.close();
+			globalThis.fetch = originalFetch;
+			_resetModelsDevForTest();
+		}
 	});
 });
 

@@ -662,6 +662,23 @@ export async function runCompaction(
 	});
 	const callTimeoutMs = opts.callTimeoutMs ?? SUMMARY_CALL_TIMEOUT_MS;
 	let servedBy: string | null = null;
+	let summary: string | null = null;
+	let prefixSucceeded = false;
+	if (opts.flush !== undefined) {
+		opts.assertAuthority?.();
+		// A split turn's folded prefix rides the flush too — its facts
+		// fold exactly like the whole events' do.
+		await runFlush(
+			id,
+			opts.flush,
+			prefixMessage === null
+				? span
+				: [...span, { seq: split!.seq, anchorSeq: boundarySeq, message: prefixMessage }],
+			opts.inputTokenBudget,
+			signal,
+			callTimeoutMs,
+		);
+	}
 	const modeReason: "overflow" | "no-prefix" | "fallback-candidate" | "empty-span" | "prefix-failed" | null =
 		reason === "overflow" ? "overflow" : opts.prefix === undefined ? "no-prefix" :
 			span.length === 0 ? "empty-span" : null;
@@ -692,8 +709,6 @@ export async function runCompaction(
 			else if (models[0] !== prefixSummarizer.modelRef) selectedModeReason = "fallback-candidate";
 		}
 	}
-	let summary: string | null = null;
-	let prefixSucceeded = false;
 	if (selectedModeReason === null && prefixSummarizer !== null) {
 		try {
 			opts.assertAuthority?.();
@@ -703,6 +718,7 @@ export async function runCompaction(
 			const keptParts = split === null
 				? keptEvents.flatMap((e) => e.message.parts)
 				: detail[splitIndex]!.message.parts.slice(split.part);
+			// The first kept event may carry no text, so search the kept parts in order.
 			const keptExcerpt = keptParts.find((p) => p.type === "text");
 			const excerpt = keptExcerpt?.type === "text"
 				? keptExcerpt.text.replace(/\s+/g, " ").trim().slice(0, 200)
@@ -733,8 +749,6 @@ export async function runCompaction(
 			log.info("compaction summary mode", { conversation: id, mode: "prefix", reason: null });
 		} catch (err) {
 			if (signal.aborted) throw err;
-			// A fence is not a summarizer failure: never spend the text lane
-			// after authority has been revoked.
 			opts.assertAuthority?.();
 			selectedModeReason = "prefix-failed";
 			log.warn("compaction prefix summary failed — falling back to text mode", {
@@ -744,21 +758,6 @@ export async function runCompaction(
 		}
 	}
 	if (summary === null) log.info("compaction summary mode", { conversation: id, mode: "text", reason: selectedModeReason });
-	if (opts.flush !== undefined) {
-		opts.assertAuthority?.();
-		// A split turn's folded prefix rides the flush too — its facts
-		// fold exactly like the whole events' do.
-		await runFlush(
-			id,
-			opts.flush,
-			prefixMessage === null
-				? span
-				: [...span, { seq: split!.seq, anchorSeq: boundarySeq, message: prefixMessage }],
-			opts.inputTokenBudget,
-			signal,
-			callTimeoutMs,
-		);
-	}
 	const systemTokens = estimateTokens(SUMMARY_SYSTEM);
 	const carriedParsed = previous !== null ? parseSummary(previous.summary) : null;
 	let carried = carriedParsed?.modelText ?? null;

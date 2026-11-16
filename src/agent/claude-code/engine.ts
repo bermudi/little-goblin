@@ -31,14 +31,16 @@ import type { LanguageModelV4Usage } from "@ai-sdk/provider";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import type {
 	AssistantContent,
-	FinishReason,
-	LanguageModelUsage,
 	ModelMessage,
 	ToolContent,
 	ToolSet,
-	UIMessage,
-	UIMessageChunk,
 } from "ai";
+import type {
+	FinishReason,
+	Message,
+	MessageChunk,
+	Usage,
+} from "../../message.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { CacheObservation } from "../../cache-observation.ts";
 import type { ClaudeSessionStore } from "../../claude-sessions.ts";
@@ -263,7 +265,7 @@ function v4Usage(usage: ClaudeUsage | null): LanguageModelV4Usage | undefined {
 // One tool part per call, evolved in place: input-available →
 // output-available/output-error, matching how the client reducer folds
 // the same chunks into a single part.
-function evolveToolPart(run: RunState, toolCallId: string, part: UIMessage["parts"][number]): void {
+function evolveToolPart(run: RunState, toolCallId: string, part: Message["parts"][number]): void {
 	const idx = run.parts.findIndex((p) => "toolCallId" in p && p.toolCallId === toolCallId);
 	if (idx >= 0) run.parts[idx] = part;
 	else run.parts.push(part);
@@ -295,7 +297,7 @@ function bareToolName(name: string): string {
 
 interface RunState {
 	// wire + journal reconstruction
-	parts: UIMessage["parts"];
+	parts: Message["parts"];
 	partialMessages: ModelMessage[];
 	// ledger
 	events: ToolEventState;
@@ -371,7 +373,7 @@ export async function driveClaude<M extends WireMember>(
 	};
 
 	let holdForRecovery = false;
-	const emit = (chunk: UIMessageChunk): void => {
+	const emit = (chunk: MessageChunk): void => {
 		// Overflow recovery withholds its error chunk and successors, not
 		// prior partial output — the same rule the API lane applies.
 		if (holdForRecovery) return;
@@ -1023,7 +1025,7 @@ export async function driveClaude<M extends WireMember>(
 		holdForRecovery = true;
 	}
 
-	const usageTotals: LanguageModelUsage | null =
+	const usageTotals: Usage | null =
 		run.totalInput === null && run.totalOutput === null
 			? null
 			: {
@@ -1106,7 +1108,7 @@ export async function driveClaude<M extends WireMember>(
 			: {}),
 	};
 	emit({ type: "finish", finishReason, messageMetadata: metadata });
-	const responseMessage: UIMessage | null =
+	const responseMessage: Message | null =
 		run.parts.length > 0 ? { id: messageId, role: "assistant", parts: run.parts, metadata } : null;
 
 	return {
@@ -1135,7 +1137,7 @@ export async function driveClaude<M extends WireMember>(
 function wireFromBlock(
 	run: RunState,
 	eventsDeps: Parameters<typeof noteToolOutput>[1],
-	emit: (chunk: UIMessageChunk) => void,
+	emit: (chunk: MessageChunk) => void,
 	head: {
 		onTextDelta(delta: string): void;
 		onReasoningDelta(delta: string): void;

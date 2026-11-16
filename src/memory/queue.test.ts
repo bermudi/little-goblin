@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { type ConversationStore, openStore } from "../conversation.ts";
 import { HindsightClient, type MemoryDocument } from "./hindsight.ts";
 import { MemoryQueueWorker } from "./queue.ts";
@@ -51,7 +51,7 @@ test("screened queue payloads are revalidated before persistence", () => {
 	).toThrow();
 	expect(store.memoryQueue.counts(target).pending).toBe(0);
 });
-const reply: UIMessage = {
+const reply: Message = {
 	id: "assistant-1",
 	role: "assistant",
 	parts: [{ type: "text", text: "Understood." }],

@@ -3,7 +3,7 @@
 // code-made parts the model never touches — verbatim operator messages
 // and an identifier index — so a later fold cannot paraphrase them away.
 
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { isMachineryText } from "../tags.ts";
 
 export const REQUIRED_HEADINGS = [
@@ -32,7 +32,7 @@ When a previous summary is present, re-distill it with the new messages and drop
 
 // A real operator message: user role, not a resume request, not
 // machinery speech (program fires, delegation and subagent notices).
-export function operatorText(message: UIMessage): string | null {
+export function operatorText(message: Message): string | null {
 	if (message.role !== "user") return null;
 	const meta = message.metadata;
 	if (typeof meta === "object" && meta !== null && "goblinResume" in meta) return null;

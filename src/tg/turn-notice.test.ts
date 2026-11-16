@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api } from "grammy";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import { appAddress } from "../conversation-address.ts";
 import { setLogFile } from "../log.ts";
@@ -367,13 +367,13 @@ describe("interrupted turn notices", () => {
 });
 
 describe("stranded input notices", () => {
-	const user = (text: string, metadata?: UIMessage["metadata"]): UIMessage => ({
+	const user = (text: string, metadata?: Message["metadata"]): Message => ({
 		id: crypto.randomUUID(),
 		role: "user",
 		parts: [{ type: "text", text }],
 		...(metadata === undefined ? {} : { metadata }),
 	});
-	const assistant = (text: string): UIMessage => ({
+	const assistant = (text: string): Message => ({
 		id: crypto.randomUUID(),
 		role: "assistant",
 		parts: [{ type: "text", text }],

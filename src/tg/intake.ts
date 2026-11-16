@@ -9,7 +9,7 @@
 import { z } from "zod";
 import type { Api } from "grammy";
 import type { ExternalReplyInfo, Message, MessageOrigin } from "grammy/types";
-import type { UIMessage } from "ai";
+import type { Message as GoblinMessage } from "../message.ts";
 import type { Config } from "../config-schema.ts";
 import { paths } from "../home-layout.ts";
 import type { Conversation } from "../conversation-read.ts";
@@ -141,7 +141,7 @@ export function conversationAddress(msg: {
 export interface BufferedItem {
 	updateId: number;
 	chatId: number;
-	parts: UIMessage["parts"];
+	parts: GoblinMessage["parts"];
 	replyTo: number | undefined;
 	quoted?:
 		| {
@@ -557,7 +557,7 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 	const { conversationId: convId, text, media, mediaError, messageId, quoted } = payload;
 	const { deps } = env;
 	return enqueueIntake(env.intake, convId, async () => {
-		const parts: UIMessage["parts"] = [];
+		const parts: GoblinMessage["parts"] = [];
 		if (quoted !== undefined) {
 			parts.push({
 				type: "text",

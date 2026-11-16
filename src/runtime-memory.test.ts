@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tool, type UIMessage } from "ai";
+import { tool } from "ai";
+import type { Message } from "./message.ts";
 import { z } from "zod";
 import { appMediaSink, composeTurnSinks } from "./app-media.ts";
 import { memoryConfigSchema } from "./config-schema.ts";

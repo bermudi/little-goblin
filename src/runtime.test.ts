@@ -10,7 +10,8 @@ import {
 	type LanguageModelV4CallOptions,
 	type LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
-import { type LanguageModel, type ToolSet, tool, type UIMessage, type UIMessageChunk } from "ai";
+import { type LanguageModel, type ToolSet, tool } from "ai";
+import type { Message, MessageChunk } from "./message.ts";
 import { z } from "zod";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { systemPromptFor } from "./agent/prompt.ts";
@@ -150,7 +151,7 @@ describe("skill body ownership across turns", () => {
 				id: skill.id,
 				role: "user",
 				parts: [{ type: "text", text: "just text" }],
-			} as unknown as UIMessage;
+			} as unknown as Message;
 			r.runtime.submit(r.conv, ordinary, new HeadlessSink());
 			await drain(r);
 			const secondSeq = r.store.lastUserSeq(r.conv.id)!;
@@ -201,19 +202,19 @@ describe("skill body ownership across turns", () => {
 		try {
 			// A historical invocation — the SAME app id as the steer will
 			// carry, but a different durable seq.
-			const historical: UIMessage = {
+			const historical: Message = {
 				id: "reused",
 				role: "user",
 				parts: [
 					{ type: "data-skill", data: { name: "rtdemo" } },
 					{ type: "text", text: "old invoke" },
 				],
-			} as UIMessage;
+			} as Message;
 			r.store.append(r.conv.id, [historical]);
 			const historicalSeq = r.store.lastUserSeq(r.conv.id)!;
 			r.store.append(
 				r.conv.id,
-				[{ id: "a0", role: "assistant", parts: [{ type: "text", text: "prior" }] } as UIMessage],
+				[{ id: "a0", role: "assistant", parts: [{ type: "text", text: "prior" }] } as Message],
 				{ anchorSeq: historicalSeq },
 			);
 			const head = new RecordingSink();
@@ -230,7 +231,7 @@ describe("skill body ownership across turns", () => {
 						{ type: "data-skill", data: { name: "rtdemo" } },
 						{ type: "text", text: "steered invoke" },
 					],
-				} as UIMessage,
+				} as Message,
 				steer,
 			);
 			const steerSeq = r.store.lastUserSeq(r.conv.id)!;
@@ -1023,7 +1024,7 @@ describe("turn authority", () => {
 		// A slow onDone gates the fenced unwind: the terminal fan-out awaits
 		// it before runTurn returns, and `active` resolves only then.
 		const gate = deferred<void>();
-		const chunks: UIMessageChunk[] = [];
+		const chunks: MessageChunk[] = [];
 		const sink: TurnSink = {
 			onTextDelta() {},
 			onReasoningDelta() {},
@@ -2237,7 +2238,7 @@ describe("cache stability", () => {
 		writeFileSync(b, "pngdata-b");
 		const { model, prompts } = recordingModel(["ok"], 5);
 		const r = rig({ model, step: { inputModalities: new Set(["text", "image"]) } });
-		const att = (f: string, name: string, size: number): UIMessage["parts"][number] => ({
+		const att = (f: string, name: string, size: number): Message["parts"][number] => ({
 			type: "data-attachment" as const,
 			data: { path: f, mediaType: "image/png", filename: name, size },
 		});
@@ -2822,7 +2823,7 @@ describe("cache stability", () => {
 						output: "ORIGINAL_TOOL_OUTPUT",
 					},
 				],
-			} as unknown as UIMessage,
+			} as unknown as Message,
 		]);
 		const { model, prompts } = recordingModel(["ok"], 5);
 		const calls: string[] = [];
@@ -3237,7 +3238,7 @@ describe("steering", () => {
 			).toBeNull();
 			submit(r, "go", s1);
 			await s1.firstToolCall; // step 1 (the tool call) is on the wire, tool gated
-			const seen: UIMessageChunk[] = [];
+			const seen: MessageChunk[] = [];
 			const endedRef: { done: TurnDone | null } = { done: null };
 			const replay = r.runtime.subscribeLiveChunks(
 				r.conv.id,
@@ -3347,7 +3348,7 @@ describe("steering", () => {
 						data: { path: fifo, mediaType: "image/png", filename: "photo.png", size: 7 },
 					},
 				],
-			} as UIMessage,
+			} as Message,
 			s2,
 		);
 		gate.resolve(); // tool resolves → prepareStep splices the photo → readFile parks on the FIFO
@@ -3401,7 +3402,7 @@ describe("steering", () => {
 					{ type: "text", text: "read this" },
 					{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
 				],
-			} as UIMessage,
+			} as Message,
 			s2,
 		);
 		gate.resolve();
@@ -3432,9 +3433,9 @@ describe("steering", () => {
 		const gate = deferred<void>();
 		const s = gatedToolModel("never reaches the client");
 		const r = steeringSetup(s.model, gate.promise, new Set(["text", "image"]));
-		const joinerChunks: UIMessageChunk[] = [];
+		const joinerChunks: MessageChunk[] = [];
 		class JoiningSink extends RecordingSink {
-			override onStreamChunk(c: UIMessageChunk) {
+			override onStreamChunk(c: MessageChunk) {
 				joinerChunks.push(c);
 			}
 		}
@@ -3455,7 +3456,7 @@ describe("steering", () => {
 						data: { path: fifo, mediaType: "image/png", filename: "photo.png", size: 7 },
 					},
 				],
-			} as UIMessage,
+			} as Message,
 			joiner,
 		);
 		gate.resolve();
@@ -3590,7 +3591,7 @@ describe("streaming lane boundary", () => {
 				id: "same-id",
 				role: "user",
 				parts: [{ type: "text", text: "background beat" }],
-			} as UIMessage,
+			} as Message,
 			background,
 		);
 		r.runtime.submit(
@@ -3599,7 +3600,7 @@ describe("streaming lane boundary", () => {
 				id: "same-id",
 				role: "user",
 				parts: [{ type: "text", text: "client owns me" }],
-			} as UIMessage,
+			} as Message,
 			client,
 		);
 		gate.resolve();
@@ -3977,7 +3978,7 @@ describe("loop landings", () => {
 					{ type: "text", text: "read this" },
 					{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
 				],
-			} as UIMessage,
+			} as Message,
 			s2,
 		);
 		releaseTool();
@@ -4459,11 +4460,11 @@ describe("turn journal", () => {
 });
 
 describe("unlanded-turn progress — error rail", () => {
-	function systemEvents(store: ReturnType<typeof openStore>, convId: string): UIMessage[] {
+	function systemEvents(store: ReturnType<typeof openStore>, convId: string): Message[] {
 		return store.history(convId).filter((m) => m.role === "system");
 	}
 
-	function eventText(m: UIMessage): string {
+	function eventText(m: Message): string {
 		const part = m.parts[0];
 		return part !== undefined && part.type === "text" ? part.text : "";
 	}
@@ -4481,7 +4482,7 @@ describe("unlanded-turn progress — error rail", () => {
 		const real = openTurnJournal(store.db);
 		// Ordering proof: whatever system events exist when finishRun fires
 		// were appended before the stamp wake settling reads.
-		let systemAtFinish: UIMessage[] = [];
+		let systemAtFinish: Message[] = [];
 		const journal: TurnJournal = {
 			...real,
 			finishRun(runId, status, delivery) {

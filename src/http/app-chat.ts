@@ -1,5 +1,6 @@
 import { join } from "node:path";
-import { UI_MESSAGE_STREAM_HEADERS, type UIMessage } from "ai";
+import { UI_MESSAGE_STREAM_HEADERS } from "ai";
+import type { Message } from "../message.ts";
 import { z } from "zod";
 import {
 	ATTACHMENT_PART,
@@ -374,7 +375,7 @@ export async function handleChatRoute(
 					});
 				}
 			}
-			const edited = store.editUserMessage(convId, editId, message as UIMessage);
+			const edited = store.editUserMessage(convId, editId, message as Message);
 			if (edited === null) {
 				return Response.json({ error: "no such user message" }, { status: 404, headers: NO_STORE });
 			}
@@ -397,7 +398,7 @@ export async function handleChatRoute(
 				notifyDisconnected,
 			);
 			try {
-				runtime.submitPersisted(conv, message as UIMessage, stream.sink, edited.seq);
+				runtime.submitPersisted(conv, message as Message, stream.sink, edited.seq);
 			} catch (err) {
 				log.error("app edit submit failed", err, { conversation: convId, message: editId });
 				stream.dispose();
@@ -450,7 +451,7 @@ export async function handleChatRoute(
 			notifyDisconnected,
 		);
 		try {
-			runtime.submit(conv, message as UIMessage, sink);
+			runtime.submit(conv, message as Message, sink);
 		} catch (err) {
 			log.error("app submit failed", err, { conversation: convId, message: message.id });
 			dispose();

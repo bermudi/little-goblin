@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import type { Conversation } from "../conversation-read.ts";
 import {
 	ContextOverflowError,
@@ -47,13 +47,13 @@ const loop: LoopTurnState = {
 	forcedKind: null,
 };
 
-const partialWith = (...parts: UIMessage["parts"]): UIMessage => ({
+const partialWith = (...parts: Message["parts"]): Message => ({
 	id: "a1",
 	role: "assistant",
 	parts,
 });
 
-const failureOf = (partial: UIMessage | null): ContextOverflowError =>
+const failureOf = (partial: Message | null): ContextOverflowError =>
 	new ContextOverflowError(
 		partial,
 		true,
@@ -72,7 +72,7 @@ const failureOf = (partial: UIMessage | null): ContextOverflowError =>
 		loop,
 	);
 
-const preemptOf = (partial: UIMessage | null): PreemptCompactError =>
+const preemptOf = (partial: Message | null): PreemptCompactError =>
 	new PreemptCompactError(
 		partial,
 		true,

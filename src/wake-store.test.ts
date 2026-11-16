@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 import type { JournalStatus } from "./turn-journal.ts";
@@ -25,7 +25,7 @@ function setup() {
 	return { dir, store, conv, other, wakes };
 }
 
-const trigger = (id: string, text: string): UIMessage => ({
+const trigger = (id: string, text: string): Message => ({
 	id,
 	role: "user",
 	parts: [{ type: "text", text }],

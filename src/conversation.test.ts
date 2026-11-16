@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { _primeOpenRouterCatalog } from "./agent/models-dev.ts";
 import { runCompaction } from "./agent/compaction.ts";
 import { foldSummary } from "./testkit/fake-summary.ts";
@@ -27,7 +27,7 @@ import { tmpDb } from "./testkit.ts";
 import { openWakeStore } from "./wake-store.ts";
 import { openWindowCapture } from "./window-capture.ts";
 
-const msg = (text: string): UIMessage => ({
+const msg = (text: string): Message => ({
 	id: "m1",
 	role: "user",
 	parts: [{ type: "text", text }],
@@ -84,7 +84,7 @@ describe("conversation store", () => {
 	test("history interleaves an anchored response after its user event", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 42 }, "/w");
-		const asst = (text: string): UIMessage => ({
+		const asst = (text: string): Message => ({
 			id: `a-${text}`,
 			role: "assistant",
 			parts: [{ type: "text", text }],
@@ -312,7 +312,7 @@ describe("history payload envelope", () => {
 		const raw = new Database(path)
 			.query<{ data: string }, []>("SELECT data FROM events")
 			.all()[0]!.data;
-		const parsed = JSON.parse(raw) as { v?: number; message?: UIMessage };
+		const parsed = JSON.parse(raw) as { v?: number; message?: Message };
 		expect(parsed.v).toBe(1);
 		expect(parsed.message!.parts[0]).toMatchObject({ type: "text", text: "one" });
 	});
@@ -398,7 +398,7 @@ describe("compaction pointers", () => {
 		const store = openStore(path);
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("research the deploy")]); // 1
-		const reply: UIMessage = {
+		const reply: Message = {
 			id: "r1",
 			role: "assistant",
 			metadata: { model: "zai/glm-5.3" },
@@ -448,7 +448,7 @@ describe("compaction pointers", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		store.append(c.id, [msg("research the deploy")]); // 1
-		const reply: UIMessage = {
+		const reply: Message = {
 			id: "r1",
 			role: "assistant",
 			parts: [
@@ -850,7 +850,7 @@ describe("memory eligibility", () => {
 });
 
 describe("forkToApp (Spin-off)", () => {
-	const asst = (text: string): UIMessage => ({
+	const asst = (text: string): Message => ({
 		id: `a-${text}`,
 		role: "assistant",
 		parts: [{ type: "text", text }],
@@ -957,12 +957,12 @@ describe("forkToApp (Spin-off)", () => {
 });
 
 describe("forkToApp (branch)", () => {
-	const user = (id: string, text: string): UIMessage => ({
+	const user = (id: string, text: string): Message => ({
 		id,
 		role: "user",
 		parts: [{ type: "text", text }],
 	});
-	const asst = (id: string, text: string): UIMessage => ({
+	const asst = (id: string, text: string): Message => ({
 		id,
 		role: "assistant",
 		parts: [{ type: "text", text }],
@@ -1173,12 +1173,12 @@ describe("forkToApp (branch)", () => {
 });
 
 describe("editUserMessage (rewind)", () => {
-	const user = (id: string, text: string): UIMessage => ({
+	const user = (id: string, text: string): Message => ({
 		id,
 		role: "user",
 		parts: [{ type: "text", text }],
 	});
-	const asst = (id: string, text: string): UIMessage => ({
+	const asst = (id: string, text: string): Message => ({
 		id,
 		role: "assistant",
 		parts: [{ type: "text", text }],
@@ -1465,7 +1465,7 @@ describe("editUserMessage (rewind)", () => {
 });
 
 describe("chat search", () => {
-	const asst = (id: string, text: string): UIMessage => ({
+	const asst = (id: string, text: string): Message => ({
 		id,
 		role: "assistant",
 		parts: [{ type: "text", text }],
@@ -1503,7 +1503,7 @@ describe("chat search", () => {
 					{
 						type: "tool-zebracakesecret",
 						input: "zebracakesecret payload",
-					} as unknown as UIMessage["parts"][number],
+					} as unknown as Message["parts"][number],
 				],
 			},
 		]);
@@ -2349,7 +2349,7 @@ test("app resolve commits creation and its initial settings atomically and never
 });
 
 describe("event projections", () => {
-	const toolEvent = (toolCallId: string, output: string): UIMessage =>
+	const toolEvent = (toolCallId: string, output: string): Message =>
 		({
 			id: `a-${toolCallId}`,
 			role: "assistant",
@@ -2362,7 +2362,7 @@ describe("event projections", () => {
 					output,
 				},
 			],
-		}) as unknown as UIMessage;
+		}) as unknown as Message;
 	const row = (seq: number, toolCallId: string, replacement: string) => ({
 		seq,
 		toolCallId,
@@ -2370,7 +2370,7 @@ describe("event projections", () => {
 		routeKey: "a".repeat(64),
 		settingsHash: "b".repeat(64),
 	});
-	const output = (m: UIMessage | undefined): unknown =>
+	const output = (m: Message | undefined): unknown =>
 		(m?.parts[0] as { output?: unknown } | undefined)?.output;
 
 	test("modelEntries overlays a committed projection; every other reader serves the original", () => {
@@ -2525,7 +2525,7 @@ describe("event projections", () => {
 });
 
 describe("telegram_deliveries", () => {
-	const asst = (text: string): UIMessage => ({
+	const asst = (text: string): Message => ({
 		id: "a1",
 		role: "assistant",
 		parts: [{ type: "text", text }],

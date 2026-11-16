@@ -15,7 +15,8 @@ import { mkdtempSync, readdirSync, rmdirSync, rmSync, statSync, type Dirent } fr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import type { LanguageModel, UIMessageChunk } from "ai";
+import type { LanguageModel } from "ai";
+import type { MessageChunk } from "./message.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 
@@ -305,7 +306,7 @@ export function recordingModel(
 export class RecordingSink implements TurnSink {
 	text = "";
 	chunkTypes: string[] = [];
-	chunks: UIMessageChunk[] = [];
+	chunks: MessageChunk[] = [];
 	toolCalls: string[] = [];
 	done: Promise<TurnDone>;
 	admitted: Promise<void>;
@@ -343,7 +344,7 @@ export class RecordingSink implements TurnSink {
 		this.toolCalls.push(toolName);
 		this.markFirstToolCall(toolName);
 	}
-	onStreamChunk(chunk: UIMessageChunk) {
+	onStreamChunk(chunk: MessageChunk) {
 		this.chunkTypes.push(chunk.type);
 		this.chunks.push(chunk);
 	}

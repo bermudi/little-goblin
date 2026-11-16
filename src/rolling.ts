@@ -1,4 +1,4 @@
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { paths } from "./home-layout.ts";
 import type { Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
@@ -128,7 +128,7 @@ function elapsedMs(deps: RollDeps, conv: Conversation): number {
 }
 
 // Head-cut — the state carries the shape of the exchange, not a transcript.
-export function projectRollText(parts: readonly UIMessage["parts"][number][]): string {
+export function projectRollText(parts: readonly Message["parts"][number][]): string {
 	const out: string[] = [];
 	for (const part of parts) {
 		if (part.type === "text") {
@@ -154,7 +154,7 @@ export function projectRollText(parts: readonly UIMessage["parts"][number][]): s
 
 // A missing side is the rare all-assistant or unrenderable edge — it
 // still reads "".
-export function checkState(history: UIMessage[], gapMinutes: number, burstText: string): string {
+export function checkState(history: Message[], gapMinutes: number, burstText: string): string {
 	let user = "";
 	let assistant = "";
 	for (let i = history.length - 1; i >= 0 && (user === "" || assistant === ""); i--) {

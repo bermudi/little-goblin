@@ -6,7 +6,8 @@
 // recovery hold).
 
 import { describe, expect, test } from "bun:test";
-import { type ModelMessage, type ToolSet, tool, type UIMessageChunk } from "ai";
+import { type ModelMessage, type ToolSet, tool } from "ai";
+import type { MessageChunk } from "../../message.ts";
 import { z } from "zod";
 import type { AuthStore } from "../../auth.ts";
 import type { ConfigRef } from "../../config.ts";
@@ -55,11 +56,11 @@ const fakeConfigRef = (providers: Config["providers"] = {}): ConfigRef => ({
 });
 
 interface RecMember extends WireMember {
-	chunks: UIMessageChunk[];
+	chunks: MessageChunk[];
 }
 
 function member(): RecMember {
-	const chunks: UIMessageChunk[] = [];
+	const chunks: MessageChunk[] = [];
 	return {
 		seq: 1,
 		message: { id: "u-1", role: "user", parts: [{ type: "text", text: "do the thing" }] },
@@ -205,7 +206,7 @@ async function run(
 	return { outcome, fake, bridge: bridgeRef.current, ...r, journal, rec };
 }
 
-const types = (chunks: UIMessageChunk[]): string[] => chunks.map((c) => c.type);
+const types = (chunks: MessageChunk[]): string[] => chunks.map((c) => c.type);
 
 describe("driveClaude — wire and outcome parity", () => {
 	test("uses final message_delta output usage", async () => {
@@ -335,7 +336,7 @@ describe("driveClaude — wire and outcome parity", () => {
 
 describe("driveClaude — steers fold mid-turn (#582)", () => {
 	function steerMember(): RecMember {
-		const chunks: UIMessageChunk[] = [];
+		const chunks: MessageChunk[] = [];
 		return {
 			seq: 7,
 			message: {

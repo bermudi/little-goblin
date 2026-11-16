@@ -55,7 +55,8 @@ surface conflicts with the direction rather than silently overriding it.
   the herdr, podman, gws and GitHub wire contracts live in `src/{herdr,podman,
   mail-gws,github}.ts`. Domain modules see the adapter's types, never the
   vendor's — `module-boundaries.test.ts` enforces the importable cases.
-  (The Vercel AI SDK is the platform, not a boundary.)
+  (The Vercel AI SDK is the platform, but goblin owns its data shapes:
+  `src/message.ts` — DESIGN.md → Module map, #581.)
 
 ## Design inspiration
 

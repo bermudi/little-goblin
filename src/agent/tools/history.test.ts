@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { UIMessage } from "ai";
+import type { Message } from "../../message.ts";
 import { openStore, type ConversationStore } from "../../conversation.ts";
 import { z } from "zod";
 import { excerpt, historyInputSchema, historySearchTool } from "./history.ts";
@@ -17,7 +17,7 @@ const deps = (store: ConversationStore, excluded = false, conversationId = "self
 	isExcluded: () => excluded,
 });
 
-const msg = (text: string): UIMessage => ({
+const msg = (text: string): Message => ({
 	id: "m1",
 	role: "user",
 	parts: [{ type: "text", text }],
@@ -165,7 +165,7 @@ describe("history_search tool", () => {
 						output: page,
 					},
 				],
-			} as UIMessage,
+			} as Message,
 		]);
 		const out = (await exec(historySearchTool(deps(store, false, c.id)), {
 			action: "context",
@@ -202,7 +202,7 @@ describe("history_search tool", () => {
 					output: "total 0",
 				},
 			],
-		} as unknown as UIMessage;
+		} as unknown as Message;
 		store.append(c.id, [msg("run ls"), asst]);
 		const out = (await exec(historySearchTool(deps(store, false, c.id)), {
 			action: "context",
@@ -234,7 +234,7 @@ describe("history_search tool", () => {
 						output: payload,
 					},
 				],
-			} as unknown as UIMessage,
+			} as unknown as Message,
 		]);
 		const tool = historySearchTool(deps(store, false, c.id));
 		const page1 = (await exec(tool, {

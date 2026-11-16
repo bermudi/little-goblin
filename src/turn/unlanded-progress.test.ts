@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { UIMessage, UIMessageChunk } from "ai";
+import type { Message, MessageChunk } from "../message.ts";
 import type { ToolCallState, TurnToolCall } from "../turn-journal.ts";
 import {
 	renderUnlandedTurnProgress,
@@ -28,7 +28,7 @@ function call(state: ToolCallState, over: Partial<TurnToolCall> = {}): TurnToolC
 	};
 }
 
-const wireReply = (id: string, text: string): UIMessage => ({
+const wireReply = (id: string, text: string): Message => ({
 	id,
 	role: "assistant",
 	parts: [{ type: "text", text }],
@@ -248,11 +248,11 @@ describe("unlanded-turn progress rendering", () => {
 });
 
 describe("replyFromWire", () => {
-	const textChunks = (id: string, pieces: string[]): UIMessageChunk[] => [
+	const textChunks = (id: string, pieces: string[]): MessageChunk[] => [
 		{ type: "start", messageId: id },
 		{ type: "start-step" },
 		{ type: "text-start", id: "t1" },
-		...pieces.map((delta): UIMessageChunk => ({ type: "text-delta", id: "t1", delta })),
+		...pieces.map((delta): MessageChunk => ({ type: "text-delta", id: "t1", delta })),
 	];
 
 	test("text chunks (no finish) replay into the streamed assistant message", async () => {

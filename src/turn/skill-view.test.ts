@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ModelMessage, UIMessage } from "ai";
+import type { ModelMessage } from "ai";
+import type { Message } from "../message.ts";
 import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
 import { buildModelView, convertSteeredMessage, type ViewContext } from "./view.ts";
 
@@ -12,13 +13,13 @@ afterEach(() => {
 	dirs = [];
 });
 
-const user = (id: string, text: string): UIMessage => ({
+const user = (id: string, text: string): Message => ({
 	id,
 	role: "user",
 	parts: [{ type: "text", text }],
 });
 
-const skillMsg = (id: string, data: unknown, text = "do it"): UIMessage =>
+const skillMsg = (id: string, data: unknown, text = "do it"): Message =>
 	({
 		id,
 		role: "user",
@@ -26,7 +27,7 @@ const skillMsg = (id: string, data: unknown, text = "do it"): UIMessage =>
 			{ type: SKILL_PART, data },
 			{ type: "text", text },
 		],
-	}) as unknown as UIMessage;
+	}) as unknown as Message;
 
 const texts = (view: ModelMessage[]): string[] =>
 	view.flatMap((m) =>
@@ -35,7 +36,7 @@ const texts = (view: ModelMessage[]): string[] =>
 			: m.content.map((p) => (p as { text: string }).text),
 	);
 
-const entries = (msgs: UIMessage[]) => msgs.map((m, i) => ({ seq: i + 1, message: m }));
+const entries = (msgs: Message[]) => msgs.map((m, i) => ({ seq: i + 1, message: m }));
 
 describe("skill part data schema", () => {
 	test("catalog names follow the spec rule — 64 chars accepted, longer refused", () => {
@@ -269,7 +270,7 @@ describe("skill invocation in the model view", () => {
 				{ type: SKILL_PART, data: { name: "planted" } },
 				{ type: "text", text: "reply" },
 			],
-		} as unknown as UIMessage;
+		} as unknown as Message;
 		const view = await buildModelView(ctx, {
 			entries: entries([assistantWithSkill]),
 			prior: [],

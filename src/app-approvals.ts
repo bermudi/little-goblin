@@ -4,7 +4,7 @@
 // through the shared owners — this module never decides.
 
 import { randomUUID } from "node:crypto";
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import type { ConversationStore } from "./conversation.ts";
 import type { MailApprovalLane } from "./mail-approval.ts";
 import type { OutboxEntry } from "./mail-outbox.ts";
@@ -19,15 +19,15 @@ export interface ApprovalPartData {
 	id: number;
 }
 
-function approvalMessage(kind: ApprovalPartKind, id: number): UIMessage {
+function approvalMessage(kind: ApprovalPartKind, id: number): Message {
 	return {
 		id: randomUUID(),
 		role: "system",
 		parts: [{ type: APPROVAL_PART, data: { kind, id } }],
-	} as UIMessage;
+	} as Message;
 }
 
-function noticeMessage(text: string): UIMessage {
+function noticeMessage(text: string): Message {
 	return {
 		id: randomUUID(),
 		role: "system",
@@ -49,7 +49,7 @@ export function presentProgramApproval(
 export function makeAppMailLane(
 	store: Pick<ConversationStore, "append" | "get">,
 ): MailApprovalLane {
-	const append = (row: OutboxEntry, message: UIMessage): void => {
+	const append = (row: OutboxEntry, message: Message): void => {
 		const conversationId = appConversationOf(row.target);
 		if (conversationId === null || store.get(conversationId) === null) {
 			throw new Error(`mail draft ${row.id} is not addressed to an app conversation`);

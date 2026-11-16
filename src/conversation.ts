@@ -1,7 +1,7 @@
 // Durability = WAL + transactions, not the tree's tmp/fsync/rename convention.
 
 import { Database } from "bun:sqlite";
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { z } from "zod";
 import { type Config, splitModelRef } from "./config-schema.ts";
 import { MemoryDestinations } from "./memory/destinations.ts";
@@ -136,7 +136,7 @@ export interface ConversationStore extends ConversationReads {
 	// conversation; the caller fences live work and owns the log line.
 	// Queued retention for the dropped tail is cancelled after the
 	// commit (an already-retained memory is not recalled here).
-	editUserMessage(id: string, messageId: string, message: UIMessage): MessageEdit | null;
+	editUserMessage(id: string, messageId: string, message: Message): MessageEdit | null;
 	// Initialize missing app settings once, no reset, no epoch fence;
 	// missing/non-app ids throw.
 	initializeAppSettings(
@@ -159,7 +159,7 @@ export interface ConversationStore extends ConversationReads {
 	// event that triggered its turn.
 	append(
 		id: string,
-		messages: UIMessage[],
+		messages: Message[],
 		opts?: {
 			anchorSeq?: number | null;
 			memory?: { target: string; document: MemoryDocument };

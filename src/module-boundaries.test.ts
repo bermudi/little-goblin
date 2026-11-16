@@ -6,6 +6,8 @@
 //     server to the harness, so every import form counts.
 //  4. No non-test sibling imports its own dir's mod.ts; `import type`
 //     is the sanctioned cycle-breaker.
+//  5. No message-shape imports, re-exports, or inline `ai` type references
+//     outside the SDK drift-test allowlist.
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -30,6 +32,22 @@ const FROM_SPEC = /\bfrom\s*["']([^"']+)["']/g;
 const DYNAMIC_SPEC =
 	/\bimport\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*["'`]([^"'`$]+)["'`]\s*\)/g;
 const BARE_SPEC = /\bimport\s*["']([^"']+)["']/g;
+const AI_MESSAGE_SHAPE_NAMES =
+	"(?:UIMessage|UIMessageChunk|UIMessagePart|ToolUIPart|DynamicToolUIPart|LanguageModelUsage|FinishReason|ProviderMetadata)";
+const AI_MESSAGE_SHAPE_IMPORT = new RegExp(
+	"\\b(?:import|export)\\s+(?:type\\s+)?[^;]*\\b" +
+		AI_MESSAGE_SHAPE_NAMES +
+		"\\b[^;]*\\bfrom\\s*['\"]ai['\"]",
+	"s",
+);
+const AI_MESSAGE_SHAPE_DYNAMIC_REFERENCE = new RegExp(
+	"\\bimport\\s*\\(\\s*['\"]ai['\"]\\s*\\)\\s*(?:\\.\\s*" +
+		AI_MESSAGE_SHAPE_NAMES +
+		"\\b|\\[\\s*['\"]" +
+		AI_MESSAGE_SHAPE_NAMES +
+		"['\"]\\s*\\])",
+);
+const AI_MESSAGE_SHAPE_ALLOWLIST = new Set(["src/message.test.ts"]);
 
 function specifiers(source: string): string[] {
 	return [FROM_SPEC, DYNAMIC_SPEC, BARE_SPEC].flatMap((re) =>
@@ -125,6 +143,20 @@ describe("module boundaries", () => {
 	test("http/mod.ts stays runtime-free", () => {
 		const source = readFileSync(join(SRC, "http", "mod.ts"), "utf8");
 		expect(RUNTIME_IMPORT.test(source)).toBe(false);
+	});
+
+	test("message shapes are not imported, re-exported, or referenced inline from ai", () => {
+		const offenders = walk(SRC)
+			.filter((file) => !AI_MESSAGE_SHAPE_ALLOWLIST.has(`src/${rel(file)}`))
+			.filter((file) => {
+				const source = readFileSync(file, "utf8");
+				return (
+					AI_MESSAGE_SHAPE_IMPORT.test(source) ||
+					AI_MESSAGE_SHAPE_DYNAMIC_REFERENCE.test(source)
+				);
+			})
+			.map((file) => `src/${rel(file)}`);
+		expect(offenders).toEqual([]);
 	});
 
 	test("no non-test sibling imports its own directory's mod.ts", () => {

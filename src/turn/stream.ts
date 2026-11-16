@@ -2,17 +2,19 @@ import { randomUUID } from "node:crypto";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import {
 	type CallWarning,
-	type FinishReason,
 	isLoopFinished,
 	type LanguageModel,
-	type LanguageModelUsage,
 	type ModelMessage,
 	streamText,
 	type ToolSet,
 	toUIMessageStream,
-	type UIMessage,
-	type UIMessageChunk,
 } from "ai";
+import type {
+	FinishReason,
+	Message,
+	MessageChunk,
+	Usage,
+} from "../message.ts";
 import { quotaFromMetadata } from "../agent/codex/receipts.ts";
 import { filterErrorStream, streamSurfaceErrors } from "../agent/filter-stream.ts";
 import {
@@ -76,12 +78,12 @@ export type WireEnd =
 	| { kind: "error"; message: string };
 
 export interface LiveSubscriber {
-	onChunk(chunk: UIMessageChunk): void;
+	onChunk(chunk: MessageChunk): void;
 	onEnd(done: WireEnd): void;
 }
 
 export interface LiveChunks {
-	chunks: UIMessageChunk[];
+	chunks: MessageChunk[];
 	subscribers: Set<LiveSubscriber>;
 	ended: boolean;
 }
@@ -133,7 +135,7 @@ export function emitChunk(
 	convId: string,
 	members: WireMember[],
 	live: LiveChunks,
-	chunk: UIMessageChunk,
+	chunk: MessageChunk,
 ): void {
 	for (const m of members) {
 		if (m.streamFailed === true) continue;
@@ -342,7 +344,7 @@ export interface StreamDeps<M extends WireMember> {
 	ownedInputSeqs: number[];
 	onOwnedInputs?(seqs: readonly number[]): void;
 	sourceInputSeq?(): number | null;
-	partial: UIMessage | null;
+	partial: Message | null;
 	seenText: boolean;
 	toolCalls: string[];
 	digest: { id: string; entry: ToolCallDigest }[];
@@ -384,8 +386,8 @@ export interface StreamDeps<M extends WireMember> {
 export type StreamOutcome =
 	| {
 			kind: "ok";
-			responseMessage: UIMessage | null;
-			usage: LanguageModelUsage | null;
+			responseMessage: Message | null;
+			usage: Usage | null;
 			finishReason: FinishReason | null;
 			lastStepInputTokens: number | null;
 			toolCalls: string[];
@@ -413,7 +415,7 @@ export type StreamOutcome =
 			// error: the recovery rail is the same, the compact reason and the
 			// operator-facing story are not.
 			preempt?: { arm: "pressure"; step: number };
-			partial: UIMessage | null;
+			partial: Message | null;
 			seenText: boolean;
 			toolCalls: string[];
 			digestRing: { id: string; entry: ToolCallDigest }[];
@@ -735,8 +737,8 @@ export async function driveStream<M extends WireMember>(
 			});
 		});
 
-	let responseMessage: UIMessage | null = null;
-	let partialResponse: UIMessage | null = null;
+	let responseMessage: Message | null = null;
+	let partialResponse: Message | null = null;
 	const evidence = deps.evidence;
 	const events = openToolEvents({ toolCalls: deps.toolCalls, digest: deps.digest });
 	const eventsDeps = {
@@ -758,7 +760,7 @@ export async function driveStream<M extends WireMember>(
 	// Declared before the factory call — messageMetadata is invoked while
 	// parts flow, so the capture must exist by then.
 	let firstTokenMs: number | null = null;
-	const uiStream = toUIMessageStream<ToolSet, UIMessage>({
+	const uiStream = toUIMessageStream<ToolSet, Message>({
 		stream: result.stream,
 		sendReasoning: true,
 		...(deps.partial ? { originalMessages: [deps.partial] } : {}),
@@ -988,7 +990,7 @@ export async function driveStream<M extends WireMember>(
 			holdForRecovery,
 			...(errorHeld ? { errorHeld: true } : {}),
 			...(preemptInfo !== null ? { preempt: preemptInfo } : {}),
-			partial: partialResponse as UIMessage | null,
+			partial: partialResponse as Message | null,
 			seenText,
 			toolCalls,
 			digestRing,
@@ -1015,7 +1017,7 @@ export async function driveStream<M extends WireMember>(
 	deps.assertAuthority();
 	return {
 		kind: "ok",
-		responseMessage: responseMessage as UIMessage | null,
+		responseMessage: responseMessage as Message | null,
 		usage,
 		finishReason,
 		lastStepInputTokens,

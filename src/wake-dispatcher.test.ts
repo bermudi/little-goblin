@@ -8,7 +8,8 @@
 import { foldSummary } from "./testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { APICallError } from "@ai-sdk/provider";
-import { type LanguageModel, tool, type ToolSet, type UIMessage } from "ai";
+import { type LanguageModel, tool, type ToolSet } from "ai";
+import type { Message } from "./message.ts";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
@@ -118,7 +119,7 @@ function claimedOnly(r: Rig, key: string, text = "the one line") {
 		origin: "observer",
 	});
 	const claimed = r.wakes.commit(rec.wakeId, (t) => {
-		const message: UIMessage = { id: t.id, role: "user", parts: [{ type: "text", text: t.text }] };
+		const message: Message = { id: t.id, role: "user", parts: [{ type: "text", text: t.text }] };
 		r.store.append(r.conv.id, [message]);
 	});
 	return claimed;

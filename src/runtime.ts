@@ -2,7 +2,8 @@
 // terminal callbacks so every sink is settled.
 
 import { randomUUID } from "node:crypto";
-import { type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
+import { type ToolSet } from "ai";
+import type { Message, MessageChunk } from "./message.ts";
 import type { ClaudeStep } from "./agent/claude-code/mod.ts";
 import type { ClaudeSessionStore } from "./claude-sessions.ts";
 import { type CompactionOutcome, chooseBoundary } from "./agent/compaction.ts";
@@ -215,7 +216,7 @@ export class Runtime {
 	// Persist immediately; the return value distinguishes lane admission from
 	// history-only recording after shutdown. The message is durable even when
 	// no turn can be admitted.
-	submit(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
+	submit(conv: Conversation, message: Message, sink: TurnSink): boolean {
 		const seqs = this.deps.store.append(conv.id, [message]);
 		return this.admit(conv, message, sink, seqs[0]!);
 	}
@@ -224,7 +225,7 @@ export class Runtime {
 	// duplicate a recovered turn. `seq` is that persisted event's seq — the
 	// persisting caller watched the append, so the queue never has to guess
 	// it from a client message id.
-	submitPersisted(conv: Conversation, message: UIMessage, sink: TurnSink, seq: number): boolean {
+	submitPersisted(conv: Conversation, message: Message, sink: TurnSink, seq: number): boolean {
 		return this.admit(conv, message, sink, seq);
 	}
 
@@ -235,7 +236,7 @@ export class Runtime {
 	// next resume would read as foreign input. The seed restores what the
 	// interrupted attempt produced. Same lane and authority rules as
 	// submitPersisted.
-	resume(conv: Conversation, message: UIMessage, sink: TurnSink, seed: ResumeSeed): boolean {
+	resume(conv: Conversation, message: Message, sink: TurnSink, seed: ResumeSeed): boolean {
 		const journal = this.deps.turnJournal;
 		const eligible = this.deps.store.memoryEligibility(conv.id).eligibleSeqs;
 		const exclude =
@@ -268,7 +269,7 @@ export class Runtime {
 
 	private admit(
 		conv: Conversation,
-		message: UIMessage,
+		message: Message,
 		sink: TurnSink,
 		seq: number,
 		seed?: ResumeSeed,
@@ -308,9 +309,9 @@ export class Runtime {
 	// member sink. Null means the caller should fall back to history.
 	subscribeLiveChunks(
 		convId: string,
-		onChunk: (chunk: UIMessageChunk) => void,
+		onChunk: (chunk: MessageChunk) => void,
 		onEnd: (done: TurnDone) => void,
-	): UIMessageChunk[] | null {
+	): MessageChunk[] | null {
 		const live = this.lanes.liveOf(convId);
 		if (live === null || live.ended) return null;
 		live.subscribers.add({ onChunk, onEnd });
@@ -461,7 +462,7 @@ export class Runtime {
 	private async recallMemory(
 		conv: Conversation,
 		anchorSeq: number | null,
-		history: UIMessage[],
+		history: Message[],
 		signal: AbortSignal,
 		epoch: number,
 	): Promise<{ prior: RecallContext[]; current: RecallContext | null }> {
@@ -1435,6 +1436,6 @@ export class Runtime {
 	}
 }
 
-export function userMessage(parts: UIMessage["parts"]): UIMessage {
+export function userMessage(parts: Message["parts"]): Message {
 	return { id: randomUUID(), role: "user", parts };
 }

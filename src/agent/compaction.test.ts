@@ -1,6 +1,6 @@
 import { foldSummary } from "../testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import type { CompactionSplit } from "../conversation-events.ts";
 import {
 	chooseBoundary,
@@ -82,7 +82,7 @@ describe("chooseBoundary", () => {
 			state: "output-available",
 			input: { command: "pwd" },
 			output: "/workspace",
-		} as UIMessage["parts"][number]);
+		} as Message["parts"][number]);
 		const text = serializeSpan([event]);
 		expect(text).toContain("pwd");
 		expect(text).toContain("/workspace");
@@ -709,7 +709,7 @@ function toolEvent(
 			state: "output-available",
 			input: c.input,
 			output: c.output,
-		} as UIMessage["parts"][number]);
+		} as Message["parts"][number]);
 	}
 	return event;
 }
@@ -723,7 +723,7 @@ function stepReplyEvent(
 	anchorSeq: number,
 	steps: { text: string; reasoning?: string; tool?: { id: string; command: string } }[],
 ): CompactionEvent {
-	const parts: UIMessage["parts"] = [];
+	const parts: Message["parts"] = [];
 	for (const step of steps) {
 		parts.push({ type: "step-start" });
 		if (step.reasoning !== undefined) {
@@ -736,7 +736,7 @@ function stepReplyEvent(
 				state: "output-available",
 				input: { command: step.tool.command },
 				output: "ok",
-			} as UIMessage["parts"][number]);
+			} as Message["parts"][number]);
 		}
 		parts.push({ type: "text", text: step.text });
 	}

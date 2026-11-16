@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { JSONValue } from "@ai-sdk/provider";
-import type { ProviderMetadata, ToolSet, UIMessage } from "ai";
+import type { ToolSet } from "ai";
+import type { Message, ProviderMetadata } from "./message.ts";
 import { z } from "zod";
 import type { Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
@@ -207,7 +208,7 @@ function checkpointMeta(providerOptions: unknown): ProviderMetadata | undefined 
 function seedCallPart(
 	c: TurnToolCall,
 	callProviderMetadata?: ProviderMetadata,
-): UIMessage["parts"][number] | null {
+): Message["parts"][number] | null {
 	if (c.name === "") return null;
 	const meta =
 		callProviderMetadata === undefined ? {} : { callProviderMetadata };
@@ -219,7 +220,7 @@ function seedCallPart(
 			input: c.args,
 			output: recordedOutput(c),
 			...meta,
-		} as UIMessage["parts"][number];
+		} as Message["parts"][number];
 	}
 	if (c.state === "failed") {
 		// A recorded failure is historical evidence too — the model sees
@@ -231,7 +232,7 @@ function seedCallPart(
 			input: c.args,
 			errorText: c.error ?? "failed",
 			...meta,
-		} as UIMessage["parts"][number];
+		} as Message["parts"][number];
 	}
 	if (c.state === "resolved-retry" || c.state === "resolved-skip") {
 		let note: string;
@@ -261,7 +262,7 @@ function seedCallPart(
 			input: c.args,
 			output: c.resolutionNote === null ? note : `${note} — ${c.resolutionNote}`,
 			...meta,
-		} as UIMessage["parts"][number];
+		} as Message["parts"][number];
 	}
 	return null;
 }
@@ -274,16 +275,16 @@ function seedCallPart(
 // step's reasoning and text on SDK conversion. Journal rows the
 // checkpoint never reached (a crash between completion and checkpoint)
 // append once at the end.
-function seedPartial(run: TurnRun, calls: TurnToolCall[]): UIMessage | null {
+function seedPartial(run: TurnRun, calls: TurnToolCall[]): Message | null {
 	const byCallId = new Map(calls.map((c) => [c.toolCallId, c]));
 	const emitted = new Set<string>();
-	const parts: UIMessage["parts"] = [];
+	const parts: Message["parts"] = [];
 	if (Array.isArray(run.partial)) {
 		for (const m of run.partial) {
 			const msg = checkpointMessageSchema.safeParse(m);
 			if (!msg.success || msg.data.role !== "assistant") continue;
 			const content = msg.data.content;
-			const block: UIMessage["parts"] = [];
+			const block: Message["parts"] = [];
 			if (typeof content === "string") {
 				if (content !== "") block.push({ type: "text", text: content });
 			} else {
@@ -398,12 +399,12 @@ const resumeMetaSchema = z.object({
 	goblinResume: z.object({ sourceRunId: z.string() }),
 });
 
-function resumeEventSource(message: UIMessage): string | null {
+function resumeEventSource(message: Message): string | null {
 	const meta = resumeMetaSchema.safeParse(message.metadata);
 	return meta.success ? meta.data.goblinResume.sourceRunId : null;
 }
 
-type DetailEntry = { seq: number; anchorSeq: number | null; message: UIMessage };
+type DetailEntry = { seq: number; anchorSeq: number | null; message: Message };
 
 function isOwnResumeRequest(e: DetailEntry, run: TurnRun): boolean {
 	return (
@@ -744,7 +745,7 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 			// A folded event's whole content is revived; a visible event
 			// contributes only its skill-invocation refs (stale.owned
 			// starts past the anchor — the two never overlap).
-			const revive = (e: DetailEntry): { parts: UIMessage["parts"]; folded: boolean } =>
+			const revive = (e: DetailEntry): { parts: Message["parts"]; folded: boolean } =>
 				viewSeqs.has(e.seq)
 					? {
 							parts: e.message.parts.filter((p) => p.type === SKILL_PART),
@@ -785,7 +786,7 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				: steeringCopied
 					? "; consumed steering follows"
 					: "";
-			const parts: UIMessage["parts"] = [
+			const parts: Message["parts"] = [
 				{
 					type: "text",
 					text: `[operator resumed interrupted run ${run.runId}${follows}]`,
@@ -798,7 +799,7 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 					"the trigger message and the journaled progress are both gone — nothing to resume",
 				);
 			}
-			const resumeMessage: UIMessage = {
+			const resumeMessage: Message = {
 				...userMessage(parts),
 				metadata: { goblinResume: { sourceRunId: run.runId } },
 			};

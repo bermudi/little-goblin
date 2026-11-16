@@ -316,7 +316,7 @@ describe("applyMenuButton", () => {
 	});
 });
 
-import type { UIMessage } from "ai";
+import type { Message as GoblinMessage } from "../message.ts";
 import type { Message } from "grammy/types";
 import type { AuthStore } from "../auth.ts";
 import { type ConversationStore, openStore } from "../conversation.ts";
@@ -353,7 +353,7 @@ interface RouterHarness {
 	env: IntakeEnv;
 	pushed: Array<{
 		conv: string;
-		parts: UIMessage["parts"];
+		parts: GoblinMessage["parts"];
 		replyTo: number | undefined;
 		updateId: number;
 	}>;
@@ -405,7 +405,7 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 	const buffer = {
 		push: (
 			conv: string,
-			item: { parts: UIMessage["parts"]; replyTo: number | undefined; updateId: number },
+			item: { parts: GoblinMessage["parts"]; replyTo: number | undefined; updateId: number },
 		) => {
 			pushed.push({ conv, parts: item.parts, replyTo: item.replyTo, updateId: item.updateId });
 		},
@@ -458,7 +458,7 @@ function flushTest(
 	env: IntakeEnv,
 	convId: string,
 	items: Array<{
-		parts: UIMessage["parts"];
+		parts: GoblinMessage["parts"];
 		replyTo?: number;
 		chatId?: number;
 		quoted?: { messageId: number; text: string };
@@ -1418,7 +1418,7 @@ describe("flushConversation", () => {
 		const conv = h.store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");
 		h.store.setMeta(conv.id, { title: "New Chat", titleImplicit: true });
 		const titleCalls: string[] = [];
-		const submitted: Array<{ conv: string; parts: UIMessage["parts"]; sink: TurnSink }> = [];
+		const submitted: Array<{ conv: string; parts: GoblinMessage["parts"]; sink: TurnSink }> = [];
 		h.env.deps = {
 			...h.env.deps,
 			titleFor: (text: string) => {
@@ -1646,7 +1646,7 @@ describe("durable intake", () => {
 		await h.env.intake.get("dm:1");
 		// Simulate a restart after journaling but before flush — buffered
 		// parts are lost; replay uses only the normalized SQLite payload.
-		const submitted: UIMessage[][] = [];
+		const submitted: GoblinMessage[][] = [];
 		h.env.deps.runtime = {
 			submitPersisted: (conv: { id: string }, _m: unknown, sink: TurnSink) => {
 				submitted.push(h.store.history(conv.id));
@@ -1839,7 +1839,7 @@ describe("handleEditedMessage", () => {
 			media: over.media ?? null,
 			mediaError: null,
 		});
-		const parts: UIMessage["parts"] = over.text === "" ? [] : [{ type: "text", text: over.text }];
+		const parts: GoblinMessage["parts"] = over.text === "" ? [] : [{ type: "text", text: over.text }];
 		buffer.push(over.lane, {
 			updateId: over.updateId,
 			parts,

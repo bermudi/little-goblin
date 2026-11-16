@@ -4,7 +4,7 @@
 
 import type { FallbackNote } from "../agent/model-fallback.ts";
 import type { OutgoingFile } from "../agent/tools/send.ts";
-import type { UIMessageChunk } from "ai";
+import type { MessageChunk } from "../message.ts";
 import type { ForcedKind } from "./state.ts";
 
 export type TurnDone =
@@ -26,7 +26,7 @@ export interface TurnSink {
 	// The head receives emitted UIMessage chunks after authority checks. Overflow
 	// recovery withholds its error chunk and successors, not prior partial output;
 	// terminal status reaches sinks through onDone.
-	onStreamChunk?(chunk: UIMessageChunk): void;
+	onStreamChunk?(chunk: MessageChunk): void;
 	onVoiceNote?(audio: Uint8Array): Promise<void>;
 	// The sink owns file delivery, so it remains on the serialized,
 	// authority-fenced delivery path. Both sides of its await re-check

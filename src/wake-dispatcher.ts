@@ -17,7 +17,7 @@
 // ran — and while even that terminal write refuses, a process-local
 // fence holds resubmission and each pump retries the closure.
 
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import type { Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
@@ -170,7 +170,7 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 
 	// The durable row when it exists: it carries the arrival stamp, and a
 	// steered trigger must render the bytes later requests replay.
-	function triggerOf(rec: WakeRecord): UIMessage {
+	function triggerOf(rec: WakeRecord): Message {
 		const stored = store.history(rec.conversationId).find((m) => m.id === rec.messageId);
 		if (stored !== undefined) return stored;
 		return { id: rec.messageId, role: "user", parts: [{ type: "text", text: rec.text }] };

@@ -3,7 +3,7 @@
 // envelope degrades to a placeholder, never a throw — one malformed
 // row must not kill every future turn.
 
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { z } from "zod";
 import { log } from "./log.ts";
 import { compactionSummaryId, corruptRowId } from "./tags.ts";
@@ -76,7 +76,7 @@ const roleSchema = z.enum(["system", "user", "assistant"]);
 
 // The placeholder keeps the row's position (seq/anchor preserved) — a
 // note where a message was, not a parse error.
-export function corruptPlaceholder(seq: number, role: string): UIMessage {
+export function corruptPlaceholder(seq: number, role: string): Message {
 	const parsed = roleSchema.safeParse(role);
 	return {
 		id: corruptRowId(seq),
@@ -90,7 +90,7 @@ export function corruptPlaceholder(seq: number, role: string): UIMessage {
 	};
 }
 
-// Rows are versioned envelopes {"v":1,"message":…} — the SDK owns part
+// Rows are versioned envelopes {"v":1,"message":…} — goblin owns part
 // shapes, so each row stamps the format that wrote it. Reads are
 // envelope-only; straggler bare rows wrap once at open.
 function envelopeOf(raw: unknown): unknown {
@@ -112,7 +112,7 @@ function envelopeOf(raw: unknown): unknown {
 // conversation's id and the boundary seq, pageable with history_search.
 // Read-time minting must be deterministic per conversation — byte-stable
 // across turns for prefix-cache stability.
-export function summaryMessage(compaction: Compaction, conversationId: string): UIMessage {
+export function summaryMessage(compaction: Compaction, conversationId: string): Message {
 	return {
 		id: compactionSummaryId(compaction.boundarySeq),
 		role: "user",
@@ -158,7 +158,7 @@ export function parseEvent(
 	seq: number,
 	role: string,
 	data: string,
-): UIMessage | null {
+): Message | null {
 	let raw: unknown;
 	try {
 		raw = JSON.parse(data);
@@ -177,5 +177,5 @@ export function parseEvent(
 		});
 		return null;
 	}
-	return parsed.data as UIMessage;
+	return parsed.data as Message;
 }

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeliveryApi } from "./tg/delivery.ts";
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { openStore } from "./conversation.ts";
 import { appAddress } from "./conversation-address.ts";
 import type { ConversationStore } from "./conversation.ts";
@@ -75,7 +75,7 @@ function inZone<T>(zone: string, fn: () => T): T {
 
 interface Harness {
 	deps: SchedulerDeps;
-	submitted: Array<{ conv: string; parts: UIMessage["parts"]; sink: TurnSink }>;
+	submitted: Array<{ conv: string; parts: Message["parts"]; sink: TurnSink }>;
 	apiCalls: Array<{ method: string; text?: string }>;
 	store: ConversationStore;
 }
@@ -102,7 +102,7 @@ function harness(): Harness {
 	} as unknown as DeliveryApi;
 	const runtime = {
 		accepting: () => true,
-		submit: (conv: { id: string }, message: UIMessage, sink: TurnSink) => {
+		submit: (conv: { id: string }, message: Message, sink: TurnSink) => {
 			submitted.push({ conv: conv.id, parts: message.parts, sink });
 			return true;
 		},
@@ -1168,7 +1168,7 @@ describe("scheduler", () => {
 		let calls = 0;
 		h.deps.runtime = {
 			accepting: () => true,
-			submit: (_c: { id: string }, _m: UIMessage, sink: TurnSink) => {
+			submit: (_c: { id: string }, _m: Message, sink: TurnSink) => {
 				calls++;
 				if (calls === 1) {
 					void sink.onDone({ kind: "completed" });

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { sendFileTool } from "../agent/tools/send.ts";
 import { speakTool } from "../agent/tools/speak.ts";
 import { setLogFile } from "../log.ts";
@@ -253,7 +253,7 @@ describe("app chat", () => {
 
 			const reopened = (await (
 				await call("/api/app/conversations/chat-media/messages")
-			).json()) as { messages: UIMessage[] };
+			).json()) as { messages: Message[] };
 			const refs = reopened.messages.flatMap((m) =>
 				m.parts
 					.filter((p) => p.type === "data-attachment")

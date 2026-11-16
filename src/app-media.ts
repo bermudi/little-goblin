@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, stat, unlink, writeFile } from "node:fs/promises";
-import type { UIMessage, UIMessageChunk } from "ai";
+import type { Message, MessageChunk } from "./message.ts";
 import {
 	attachmentPart,
 	type AttachmentRef,
@@ -14,7 +14,7 @@ import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { attachmentContentType } from "./stateview.ts";
 
 export interface AppMediaDeps {
-	append(messages: UIMessage[], opts: { anchorSeq?: number | null; exclude?: boolean }): void;
+	append(messages: Message[], opts: { anchorSeq?: number | null; exclude?: boolean }): void;
 }
 
 export function composeTurnSinks(...sinks: TurnSink[]): TurnSink {
@@ -100,7 +100,7 @@ async function outgoingAttachment(
 export function appMediaSink(
 	convId: string,
 	media: AppMediaDeps,
-	emit?: (chunk: UIMessageChunk) => void,
+	emit?: (chunk: MessageChunk) => void,
 	onDone?: (done: TurnDone) => void | Promise<void>,
 ): TurnSink {
 	let authorized: (() => boolean) | null = null;
@@ -144,7 +144,7 @@ export function appMediaSink(
 			}
 			throw err;
 		}
-		emit?.({ type: "data-attachment", data: ref } as UIMessageChunk);
+		emit?.({ type: "data-attachment", data: ref } as MessageChunk);
 		log.info("app media delivered", {
 			conversation: convId,
 			filename: ref.filename,

@@ -1,5 +1,5 @@
 import type { Api } from "grammy";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { log } from "../log.ts";
 import {
 	appendSkillResolution,
@@ -68,7 +68,7 @@ export interface SkillApprovalQuery {
 
 export interface SkillApprovalDeps {
 	api: Api;
-	store: { append(id: string, messages: UIMessage[]): void };
+	store: { append(id: string, messages: Message[]): void };
 	workspaceDir: string;
 	skillsDir: string;
 	proposedDir: string;

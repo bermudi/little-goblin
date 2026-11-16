@@ -6,9 +6,8 @@ import {
 	type LanguageModel,
 	readUIMessageStream,
 	type ToolSet,
-	type UIMessage,
-	type UIMessageChunk,
 } from "ai";
+import type { Message, MessageChunk } from "../message.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { setLogFile } from "../log.ts";
 import type { MemoryEligibility, MemoryTurnDeps, RetentionSource } from "../memory/mod.ts";
@@ -54,7 +53,7 @@ const conv = (epoch = 1, id = "dm:1"): Conversation => ({
 	createdAt: "2026-01-01T00:00:00Z",
 });
 
-const msg = (id: string, role: "user" | "assistant", ...parts: UIMessage["parts"]): UIMessage =>
+const msg = (id: string, role: "user" | "assistant", ...parts: Message["parts"]): Message =>
 	parts.length === 0 ? { id, role, parts: [] } : { id, role, parts };
 
 const text = (t: string) => ({ type: "text", text: t }) as const;
@@ -83,16 +82,16 @@ const logLines = (root: string): Record<string, unknown>[] =>
 
 interface LandHarness {
 	landed: ReturnType<typeof landAttempt>;
-	appended: { messages: UIMessage[]; opts: Parameters<LandDeps["append"]>[1] }[];
+	appended: { messages: Message[]; opts: Parameters<LandDeps["append"]>[1] }[];
 	deltas: string[];
-	wire: UIMessageChunk[];
+	wire: MessageChunk[];
 	live: LiveChunks;
 }
 
 function land(over: Partial<LandDeps> = {}): LandHarness {
 	const appended: LandHarness["appended"] = [];
 	const deltas: string[] = [];
-	const wire: UIMessageChunk[] = [];
+	const wire: MessageChunk[] = [];
 	const live = over.live ?? openLive();
 	const deps: LandDeps = {
 		convId: "dm:1",
@@ -221,7 +220,7 @@ describe("landAttempt", () => {
 		test("synthetic text reaches members, live replay and attach subscribers before completion", async () => {
 			const live = openLive();
 			live.chunks.push({ type: "start", messageId: "a2" }, { type: "finish" });
-			const attached: UIMessageChunk[] = [];
+			const attached: MessageChunk[] = [];
 			const ends: WireEnd[] = [];
 			live.subscribers.add({
 				onChunk: (c) => attached.push(c),
@@ -245,13 +244,13 @@ describe("landAttempt", () => {
 			endLive(live, h.landed.done, "app/t");
 			endLive(live, h.landed.done, "app/t");
 			expect(ends).toEqual([h.landed.done]);
-			const stream = new ReadableStream<UIMessageChunk>({
+			const stream = new ReadableStream<MessageChunk>({
 				start(controller) {
 					for (const chunk of live.chunks) controller.enqueue(chunk);
 					controller.close();
 				},
 			});
-			let replay: UIMessage | undefined;
+			let replay: Message | undefined;
 			for await (const message of readUIMessageStream({ stream, terminateOnError: true })) {
 				replay = message;
 			}
@@ -271,8 +270,8 @@ describe("landAttempt", () => {
 					},
 				},
 			};
-			const healthy: UIMessageChunk[] = [];
-			const attached: UIMessageChunk[] = [];
+			const healthy: MessageChunk[] = [];
+			const attached: MessageChunk[] = [];
 			const ends: WireEnd[] = [];
 			live.subscribers.add({
 				onChunk() {
@@ -301,7 +300,7 @@ describe("landAttempt", () => {
 		});
 
 		test("a throwing display hook still fails fast rather than reporting a completed landing", () => {
-			const appended: UIMessage[] = [];
+			const appended: Message[] = [];
 			expect(() =>
 				land({
 					forcedKind: "context",

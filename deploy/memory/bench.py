@@ -174,24 +174,28 @@ def replace_mission_block(blocks: list[dict], candidate: str) -> str:
 
 
 def extraction_facts(text: str) -> tuple[bool, list[object]]:
+	"""The response schema's `facts` array; any other shape is a parse failure."""
 	try:
 		parsed = json.loads(text)
 	except (json.JSONDecodeError, TypeError):
 		return False, []
-	if isinstance(parsed, list):
-		return True, parsed
-	if isinstance(parsed, dict):
-		for value in parsed.values():
-			if isinstance(value, list):
-				return True, value
-		return True, [parsed]
-	return True, [{}]
+	if isinstance(parsed, dict) and isinstance(parsed.get("facts"), list):
+		return True, parsed["facts"]
+	return False, []
+
+
+FACT_TEXT_FIELDS = ("what", "when", "where", "who", "why")
 
 
 def fact_text(fact: object) -> str:
+	"""Every free-text field of one fact, plus its entities, lowercased."""
 	if not isinstance(fact, dict):
 		return ""
-	return " ".join(str(fact.get(key, "")) for key in ("what", "when", "who", "why")).lower()
+	parts = [str(fact.get(key, "")) for key in FACT_TEXT_FIELDS]
+	entities = fact.get("entities")
+	if isinstance(entities, list):
+		parts.extend(str(entity) for entity in entities)
+	return " ".join(parts).lower()
 
 
 def score_case(case: dict, output: str) -> dict:

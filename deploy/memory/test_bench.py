@@ -152,6 +152,19 @@ class ExtractBenchTests(unittest.TestCase):
 			with self.subTest(text=text), self.assertRaises(ValueError):
 				bench.replace_mission_block(blocks, "NEW")
 
+	def test_where_and_entities_are_scored(self) -> None:
+		fact = {"what": "dentist moved", "when": "", "where": "Coyoacán", "who": "", "why": "", "entities": ["AM 412"]}
+		self.assertTrue(bench.score_case({"keep": [["coyoac"], ["am 412"]]}, output(fact))["passed"])
+		self.assertFalse(bench.score_case({"forbid": ["coyoac"]}, output(fact))["passed"])
+
+	def test_response_without_facts_array_is_parse_failure(self) -> None:
+		for text in ('{"error": []}', "[]", '{"facts": "none"}'):
+			with self.subTest(text=text):
+				scored = bench.score_case({"expect_empty": True}, text)
+				self.assertFalse(scored["parse_ok"])
+				self.assertFalse(scored["passed"])
+				self.assertFalse(scored["empty_correct"])
+
 	def test_event_date_is_replaced(self) -> None:
 		result = bench.replace_event_date(
 			"Earlier\nEvent Date: old\nLater",

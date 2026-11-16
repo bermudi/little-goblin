@@ -6,10 +6,10 @@
 //     server to the harness, so every import form counts.
 //  4. No non-test sibling imports its own dir's mod.ts; `import type`
 //     is the sanctioned cycle-breaker.
-//  5. No message-shape imports, re-exports, or inline `ai` type references
-//     outside the SDK drift-test allowlist.
+//  5. Message shapes come from goblin, not AI SDK packages; block named
+//     imports/re-exports, namespace imports, star exports, and inline types.
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 const SRC = import.meta.dir;
@@ -32,22 +32,42 @@ const FROM_SPEC = /\bfrom\s*["']([^"']+)["']/g;
 const DYNAMIC_SPEC =
 	/\bimport\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*["'`]([^"'`$]+)["'`]\s*\)/g;
 const BARE_SPEC = /\bimport\s*["']([^"']+)["']/g;
-const AI_MESSAGE_SHAPE_NAMES =
+const AI_SDK_MESSAGE_SHAPE_NAMES =
 	"(?:UIMessage|UIMessageChunk|UIMessagePart|ToolUIPart|DynamicToolUIPart|LanguageModelUsage|FinishReason|ProviderMetadata)";
-const AI_MESSAGE_SHAPE_IMPORT = new RegExp(
-	"\\b(?:import|export)\\s+(?:type\\s+)?[^;]*\\b" +
-		AI_MESSAGE_SHAPE_NAMES +
-		"\\b[^;]*\\bfrom\\s*['\"]ai['\"]",
+const AI_SDK_FENCED_SPECIFIER = "(?:ai(?:/[^'\"]*)?|@ai-sdk/[^'\"]+)";
+const AI_SDK_NAMED_SHAPE_IMPORT_EXPORT = new RegExp(
+	"\\b(?:import|export)\\s*(?:type\\s*)?\\{[^}]*\\b" +
+		AI_SDK_MESSAGE_SHAPE_NAMES +
+		"\\b[^}]*\\}\\s*from\\s*['\"]" +
+		AI_SDK_FENCED_SPECIFIER +
+		"['\"]",
 	"s",
 );
-const AI_MESSAGE_SHAPE_DYNAMIC_REFERENCE = new RegExp(
-	"\\bimport\\s*\\(\\s*['\"]ai['\"]\\s*\\)\\s*(?:\\.\\s*" +
-		AI_MESSAGE_SHAPE_NAMES +
+const AI_SDK_NAMESPACE_IMPORT = new RegExp(
+	"\\bimport\\s*(?:type\\s*)?\\*\\s*as\\s*[A-Za-z_$][\\w$]*\\s*from\\s*['\"]" +
+		AI_SDK_FENCED_SPECIFIER +
+		"['\"]",
+);
+const AI_SDK_STAR_EXPORT = new RegExp(
+	"\\bexport\\s*\\*\\s*(?:as\\s*[A-Za-z_$][\\w$]*\\s*)?from\\s*['\"]" +
+		AI_SDK_FENCED_SPECIFIER +
+		"['\"]",
+);
+const AI_SDK_INLINE_MESSAGE_TYPE = new RegExp(
+	"\\bimport\\s*\\(\\s*['\"]" +
+		AI_SDK_FENCED_SPECIFIER +
+		"['\"]\\s*\\)\\s*(?:\\.\\s*" +
+		AI_SDK_MESSAGE_SHAPE_NAMES +
 		"\\b|\\[\\s*['\"]" +
-		AI_MESSAGE_SHAPE_NAMES +
+		AI_SDK_MESSAGE_SHAPE_NAMES +
 		"['\"]\\s*\\])",
 );
-const AI_MESSAGE_SHAPE_ALLOWLIST = new Set(["src/message.test.ts"]);
+const AI_SDK_MESSAGE_SHAPE_ALLOWLIST = new Set(["src/message.test.ts"]);
+const AI_SDK_SCAN_ROOTS = [
+	SRC,
+	join(ROOT, "scripts"),
+	join(ROOT, "experimental"),
+];
 
 function specifiers(source: string): string[] {
 	return [FROM_SPEC, DYNAMIC_SPEC, BARE_SPEC].flatMap((re) =>
@@ -103,6 +123,14 @@ function label(file: string): string {
 	return file.startsWith(SRC) ? rel(file) : file.slice(ROOT.length + 1);
 }
 
+function repoPath(file: string): string {
+	return relative(ROOT, file);
+}
+
+function stripComments(source: string): string {
+	return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+}
+
 describe("module boundaries", () => {
 	test("grammy is imported only under src/tg", () => {
 		const offenders = walk(SRC)
@@ -145,17 +173,21 @@ describe("module boundaries", () => {
 		expect(RUNTIME_IMPORT.test(source)).toBe(false);
 	});
 
-	test("message shapes are not imported, re-exported, or referenced inline from ai", () => {
-		const offenders = walk(SRC)
-			.filter((file) => !AI_MESSAGE_SHAPE_ALLOWLIST.has(`src/${rel(file)}`))
+	test("message shapes are not imported, re-exported, or referenced from AI SDK packages", () => {
+		const offenders = AI_SDK_SCAN_ROOTS
+			.filter(existsSync)
+			.flatMap((root) => walk(root))
+			.filter((file) => !AI_SDK_MESSAGE_SHAPE_ALLOWLIST.has(repoPath(file)))
 			.filter((file) => {
-				const source = readFileSync(file, "utf8");
+				const source = stripComments(readFileSync(file, "utf8"));
 				return (
-					AI_MESSAGE_SHAPE_IMPORT.test(source) ||
-					AI_MESSAGE_SHAPE_DYNAMIC_REFERENCE.test(source)
+					AI_SDK_NAMED_SHAPE_IMPORT_EXPORT.test(source) ||
+					AI_SDK_NAMESPACE_IMPORT.test(source) ||
+					AI_SDK_STAR_EXPORT.test(source) ||
+					AI_SDK_INLINE_MESSAGE_TYPE.test(source)
 				);
 			})
-			.map((file) => `src/${rel(file)}`);
+			.map(repoPath);
 		expect(offenders).toEqual([]);
 	});
 

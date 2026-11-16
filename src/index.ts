@@ -32,6 +32,7 @@ import { ensureHomeLayout, paths } from "./home-layout.ts";
 import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins.ts";
 import { captureConversationSettings, openStore } from "./conversation.ts";
 import { delegationWake, wireDelegation } from "./delegation-lifecycle.ts";
+import { makeOperatorHerdr } from "./herdr.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import { makeDesktops } from "./desktops.ts";
 import { openDesktops } from "./desktops-store.ts";
@@ -168,7 +169,6 @@ async function boot() {
 	let responsibilitySvc: {
 		resps: ReturnType<typeof openResponsibilities>;
 		service: ReturnType<typeof import("./responsibility-service.ts").makeResponsibilityService>;
-		listFor: () => ReturnType<typeof operatorHerdr.list>;
 	} | null = null;
 	// Inert without a hand-edited cachePruning block.
 	const cachePruning = openCachePruning({
@@ -222,24 +222,22 @@ async function boot() {
 	// completeBoot() fills it once the delegation lifecycle and the
 	// retention worker exist.
 	const wire = openWireStep();
-	// Delegation is boot-fixed like memory — the session is systemd's, not
-	// ours. The fixtures (store, herdr adapters, targets) and the per-turn
-	// dep gate live in delegation-lifecycle.ts; late()/launchPinDeps bind
-	// after this point, so both reach it as call-time getters.
+	// Delegation is boot-fixed like memory — the store, the t3 adapter
+	// and the config snapshot are one object, so a live config read can
+	// only hide the delegate tool next turn, never launch on a harness
+	// the boot snapshot lacks (spinoff.ts owns the pin).
 	const delegationBoot = config.delegation;
-	const {
-		delegations,
-		herdr,
-		operatorHerdr,
-		targets: delegationTargets,
-		delegateDeps,
-	} = wireDelegation({
+	const { delegations, t3, delegateDeps } = wireDelegation({
 		config: delegationBoot,
 		configRef,
 		dbPath: paths.db,
 		lifecycle: () => wire.late().delegationLifecycle(),
 		pin: (conv, name) => launchPin(launchPinDeps, conv, name),
 	});
+	// The operator's own `default` herdr session — the herdr tool's
+	// adapter now, not a delegation transport (#607 moved that to T3
+	// Code; #608 owns the remaining herdr surface).
+	const operatorHerdr = makeOperatorHerdr();
 
 	// Voice replies and transcription die at runtime without ffmpeg —
 	// the probe, the wav-profile gate, and the ttsDown flag live in
@@ -321,6 +319,7 @@ async function boot() {
 		transcribe: transcribeFile,
 		delegateDeps,
 		operatorHerdr,
+		t3,
 		mail: () => mailApproval,
 		programApproval: () => programApproval,
 		visionDepsFor,
@@ -533,7 +532,6 @@ async function boot() {
 	responsibilitySvc = {
 		resps: responsibilities,
 		service: responsibilityService,
-		listFor: () => operatorHerdr.list(),
 	};
 	// Boot sweep: every open responsibility re-verifies its follow-up
 	// Program — a restart (or a deleted program row) re-links here,
@@ -552,7 +550,7 @@ async function boot() {
 		resps: responsibilities,
 		wakes: wakeStore,
 		pump: () => delivery.dispatcher.pump(),
-		list: () => operatorHerdr.list(),
+		show: (threadId) => t3.showThread(threadId, 1),
 	});
 	const OBSERVE_MS = 60_000;
 	const observerTicker = setInterval(() => {
@@ -567,13 +565,10 @@ async function boot() {
 	// closures read delivery/bell live, so a telegram attach mid-run is
 	// visible without a rewire. The wire step lands before any turn.
 	const delegationLifecycle =
-		delegations !== null && herdr !== null
+		delegations !== null
 			? startDelegationLifecycle({
 					delegations,
-					herdr,
-					targets: delegationTargets,
-					delegationsDir: paths.delegations(),
-					homeDir: homedir(),
+					t3,
 					...delegationWake(delivery.wakeDeps),
 					settled: (d, verdict, body, readiness) => fileDelegationReport(responsibilities, d, verdict, body, readiness),
 					responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
@@ -745,7 +740,7 @@ async function boot() {
 					feed: { db: store.db, resps: responsibilities, programs },
 					resps: responsibilities,
 					service: responsibilityService,
-					listAgents: () => operatorHerdr.list(),
+					listThreads: (project) => t3.listThreads(project),
 				},
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,

@@ -368,7 +368,8 @@ export interface OperatorDelegationItem {
 	name: string;
 	harness: string;
 	status: "starting" | "running" | "needs_input" | "done" | "failed" | "stopped";
-	target: string | null;
+	thread: string | null;
+	link: string | null;
 	task: string;
 	cwd: string;
 	appConversation: string | null;
@@ -383,9 +384,10 @@ export interface OperatorDelegationsResponse {
 	delegations: OperatorDelegationItem[];
 }
 
-/** stopped = the row is stopped; still-running = herdr could not close it. */
+/** stopped = the row is settled as stopped; unavailable = t3 has no stop
+ *  verb for a live thread (the operator ends it in T3 Code). */
 export interface OperatorDelegationStopResponse {
-	outcome: "stopped" | "still running";
+	outcome: "stopped" | "unavailable";
 	delegation: OperatorDelegationItem;
 	notes: string[];
 }

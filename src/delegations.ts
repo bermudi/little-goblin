@@ -1,5 +1,6 @@
-// Rows survive goblin restarts in the shared WAL file while the herdr
-// unit keeps the panes alive; the watcher lives in delegation-watcher.ts.
+// Rows survive goblin restarts in the shared WAL file while the T3
+// Code server keeps the threads alive; the watcher lives in
+// delegation-watcher.ts.
 
 import { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -34,17 +35,14 @@ export interface Delegation {
 	// Pinned app conversation instead — a spin-off wakes its own
 	// background turn; chat_id/thread_id are the 0/NULL fillers then.
 	appConversation: string | null;
-	agentName: string;
-	workspaceId: string;
-	paneId: string;
+	// The T3 Code thread this delegation runs on — null while starting
+	// and on pre-t3 rows (herdr leftovers; never observed again).
+	t3Thread: string | null;
+	// The thread's app link, as the start/send/show calls reported it.
+	t3Link: string | null;
+	// The run our last start/send created — completion attribution.
+	t3Run: string | null;
 	status: DelegationStatus;
-	// herdr target label (config `delegation.machines` key) — null =
-	// goblin's own local session; every herdr call resolves its adapter
-	// through this.
-	target: string | null;
-	// state_change_seq observed right after the last prompt — null while
-	// pending: the post-prompt read failed and the watcher captures the
-	// current seq before applying any verdict.
 	baselineSeq: number | null;
 	promptedAt: string;
 	// The task text was never delivered — the launch parked on a startup
@@ -68,36 +66,24 @@ export interface CreateDelegation {
 	task: string;
 	address: { chatId: number; threadId: number | null };
 	appConversation?: string;
-	target?: string | null;
 	responsibilityId?: string | null;
 	responsibilityRevision?: number | null;
 }
 
 export interface DelegationsStore {
-	// Inserts status "starting" with empty launch ids — the row goes
-	// running via markRunning only once the prompt has landed.
+	// Inserts status "starting" with no thread bound — the row goes
+	// running via markRunning once `t3 thread start` answered.
 	create(input: CreateDelegation, now?: Date): Delegation;
-	bindLaunch(
+	// Binds the started T3 thread. Null return means a `stop` won the
+	// race while the thread was starting.
+	bindThread(
 		id: number,
-		launch: { agentName: string; workspaceId: string; paneId: string },
+		bind: { t3Thread: string; t3Link: string | null; t3Run: string },
 	): Delegation | null;
-	// A null baseline records the pending posture: the post-prompt read
-	// failed and the watcher captures on its next scan. Null return means
-	// a `stop` won the race while herdr was launching.
-	markRunning(id: number, baselineSeq: number | null, promptedAt: Date): Delegation | null;
-	// needs_input + prompt_pending + the park-time seq baseline,
-	// atomically — the watcher owes the prompt only on an advance past
-	// that point. Null = the park-time read failed; the next scan
-	// captures before delivering anything.
-	markParked(id: number, baselineSeq: number | null): void;
-	// Record the seq the scan finally observes, under the same CAS as
-	// every watcher write — a send/stop that landed mid-get wins and its
-	// own baseline stands. False means superseded.
-	captureBaseline(
-		id: number,
-		expect: { status: DelegationStatus; promptedAt: string },
-		seq: number,
-	): boolean;
+	// The send landed: new run attribution, fresh prompt clock, back to
+	// running — one statement, so the run and its link never split.
+	// Null = a stop won the race while the send was in flight.
+	markRunning(id: number, run: string, link: string | null, promptedAt: Date): Delegation | null;
 	// Compare-and-set: apply the transition only if the row is still
 	// exactly what the scan read — a tool-side send/stop that landed
 	// mid-notice wins and is never overwritten.
@@ -105,7 +91,6 @@ export interface DelegationsStore {
 		id: number,
 		expect: { status: DelegationStatus; promptedAt: string },
 		to: DelegationStatus,
-		baseline?: number,
 		now?: Date,
 	): boolean;
 	setStatus(id: number, status: DelegationStatus, now?: Date): void;
@@ -134,11 +119,10 @@ const delegationSchema = z.object({
 	chat_id: z.number(),
 	thread_id: z.number().nullable(),
 	app_conversation: z.string().nullable(),
-	agent_name: z.string(),
-	workspace_id: z.string(),
-	pane_id: z.string(),
+	t3_thread: z.string().nullable(),
+	t3_link: z.string().nullable(),
+	t3_run: z.string().nullable(),
 	status: z.enum(["starting", "running", "needs_input", "done", "failed", "stopped"]),
-	target: z.string().nullable(),
 	baseline_seq: z.number().nullable(),
 	prompted_at: z.string(),
 	prompt_pending: z.number(),
@@ -167,11 +151,10 @@ function rowToDelegation(row: unknown): Delegation {
 		chatId: r.chat_id,
 		threadId: r.thread_id,
 		appConversation: r.app_conversation,
-		agentName: r.agent_name,
-		workspaceId: r.workspace_id,
-		paneId: r.pane_id,
+		t3Thread: r.t3_thread,
+		t3Link: r.t3_link,
+		t3Run: r.t3_run,
 		status: r.status,
-		target: r.target,
 		baselineSeq: r.baseline_seq,
 		promptedAt: r.prompted_at,
 		promptPending: r.prompt_pending === 1,
@@ -180,15 +163,6 @@ function rowToDelegation(row: unknown): Delegation {
 		createdAt: r.created_at,
 		finishedAt: r.finished_at,
 	};
-}
-
-// `g<id>-<slug>` in herdr's agent-name charset ([a-z][a-z0-9_-]{0,31}).
-export function agentNameFor(id: number, name: string): string {
-	const slug = name
-		.toLowerCase()
-		.replace(/[^a-z0-9_-]+/g, "-")
-		.replace(/^-+|-+$/g, "");
-	return `g${id}-${slug || "delegation"}`.slice(0, 32);
 }
 
 // One column list for the fresh-table CREATE and the NOT NULL → nullable
@@ -201,11 +175,7 @@ const DELEGATIONS_COLUMNS = `
 		task TEXT NOT NULL,
 		chat_id INTEGER NOT NULL,
 		thread_id INTEGER,
-		agent_name TEXT NOT NULL,
-		workspace_id TEXT NOT NULL,
-		pane_id TEXT NOT NULL,
 		status TEXT NOT NULL,
-		target TEXT,
 		baseline_seq INTEGER,
 		prompted_at TEXT NOT NULL,
 		created_at TEXT NOT NULL,
@@ -219,21 +189,32 @@ const DELEGATIONS_COLUMNS = `
 		readiness_json TEXT,
 		readiness_notified_key TEXT,
 		readiness_version INTEGER NOT NULL DEFAULT 0,
-		readiness_pending_verdict TEXT`;
+		readiness_pending_verdict TEXT,
+		t3_thread TEXT,
+		t3_link TEXT,
+		t3_run TEXT,
+		agent_name TEXT NOT NULL DEFAULT '',
+		workspace_id TEXT NOT NULL DEFAULT '',
+		pane_id TEXT NOT NULL DEFAULT ''`;
 
 export function openDelegations(dbPath: string): DelegationsStore {
 	const db = new Database(dbPath);
 	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`CREATE TABLE IF NOT EXISTS delegations (${DELEGATIONS_COLUMNS})`);
-	// Rows predating the app-conversation pin — additive column, no
-	// rebuild. NULL = Telegram-pinned like always.
+	// Additive migrations, oldest first. The t3 columns predate nothing
+	// on a fresh table (they are in the CREATE) and join herdr-era
+	// tables here; the herdr launch columns (agent_name, workspace_id,
+	// pane_id) stay NOT NULL DEFAULT '' for those old rows — new rows
+	// never fill them.
 	const cols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(delegations)")
 			.all()
 			.map((c) => c.name),
 	);
+	// Rows predating the app-conversation pin — additive column, no
+	// rebuild. NULL = Telegram-pinned like always.
 	if (!cols.has("app_conversation")) {
 		db.exec("ALTER TABLE delegations ADD COLUMN app_conversation TEXT");
 	}
@@ -241,10 +222,6 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	// when a first-run dialog blocked the send. 0 = delivered.
 	if (!cols.has("prompt_pending")) {
 		db.exec("ALTER TABLE delegations ADD COLUMN prompt_pending INTEGER NOT NULL DEFAULT 0");
-	}
-	// Predates machine targets: NULL = own local session.
-	if (!cols.has("target")) {
-		db.exec("ALTER TABLE delegations ADD COLUMN target TEXT");
 	}
 	// Predates responsibility links: NULL = not linked.
 	if (!cols.has("responsibility_id")) {
@@ -259,6 +236,10 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	}
 	if (!cols.has("readiness_version"))
 		db.exec("ALTER TABLE delegations ADD COLUMN readiness_version INTEGER NOT NULL DEFAULT 0");
+	// The t3 transport (#607): the thread replaces the herdr agent.
+	for (const column of ["t3_thread", "t3_link", "t3_run"]) {
+		if (!cols.has(column)) db.exec(`ALTER TABLE delegations ADD COLUMN ${column} TEXT`);
+	}
 	// Predates the baseline-pending posture: baseline_seq was NOT NULL, so
 	// a failed post-prompt read had to record some pre-prompt number — a
 	// stale comparison the next poll could turn into a spurious done. NULL
@@ -273,8 +254,8 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		try {
 			db.exec(`CREATE TABLE delegations_migrated (${DELEGATIONS_COLUMNS})`);
 			db.exec(`INSERT INTO delegations_migrated
-				(id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict)
-				SELECT id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict
+				(id, name, harness, cwd, task, chat_id, thread_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict, t3_thread, t3_link, t3_run, agent_name, workspace_id, pane_id)
+				SELECT id, name, harness, cwd, task, chat_id, thread_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict, t3_thread, t3_link, t3_run, agent_name, workspace_id, pane_id
 				FROM delegations`);
 			db.exec("DROP TABLE delegations");
 			db.exec("ALTER TABLE delegations_migrated RENAME TO delegations");
@@ -284,6 +265,26 @@ export function openDelegations(dbPath: string): DelegationsStore {
 			throw err;
 		}
 	}
+	// Herdr-era rows with no t3 thread are never observed again; if any
+	// is still awaiting a verdict, settle it now so the operator hears
+	// once instead of a watcher that can never decide.
+	const qLegacy = db.prepare(
+		"UPDATE delegations SET status = 'failed', finished_at = ? WHERE id = ?",
+	);
+	for (const row of db
+		.query(
+			"SELECT id, name, agent_name FROM delegations WHERE t3_thread IS NULL AND status IN ('starting','running','needs_input')",
+		)
+		.all()) {
+		const r = z.object({ id: z.number(), name: z.string(), agent_name: z.string() }).parse(row);
+		qLegacy.run(new Date().toISOString(), r.id);
+		log.warn("legacy herdr delegation settled failed — transport moved to T3 Code", {
+			delegation: r.id,
+			name: r.name,
+			agent: r.agent_name,
+			note: "the herdr agent may still run host-side; check it in herdr or stop it by hand",
+		});
+	}
 
 	const qGet = db.query("SELECT * FROM delegations WHERE id = ?");
 	const qList = db.query("SELECT * FROM delegations ORDER BY id");
@@ -292,26 +293,16 @@ export function openDelegations(dbPath: string): DelegationsStore {
 	);
 	const qStarting = db.query("SELECT * FROM delegations WHERE status = 'starting' ORDER BY id");
 	const qInsert = db.query(`INSERT INTO delegations
-		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, target, baseline_seq, prompted_at, created_at, finished_at, app_conversation, responsibility_id, responsibility_revision, role, issue_json)
-		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', ?, 0, ?, ?, NULL, ?, ?, ?, ?, ?)`);
+		(name, harness, cwd, task, chat_id, thread_id, status, prompted_at, created_at, finished_at, app_conversation, responsibility_id, responsibility_revision, role, issue_json, agent_name, workspace_id, pane_id)
+		VALUES (?, ?, ?, ?, ?, ?, 'starting', ?, ?, NULL, ?, ?, ?, ?, ?, '', '', '')`);
 	const qBind = db.query(
-		"UPDATE delegations SET agent_name = ?, workspace_id = ?, pane_id = ? WHERE id = ?",
+		"UPDATE delegations SET t3_thread = ?, t3_link = ?, t3_run = ? WHERE id = ?",
 	);
 	const qRunning = db.query(
-		"UPDATE delegations SET baseline_seq = ?, prompted_at = ?, status = 'running', finished_at = NULL, prompt_pending = 0, readiness_json = NULL, readiness_notified_key = NULL, readiness_pending_verdict = NULL WHERE id = ? AND status != 'stopped'",
-	);
-	const qParked = db.query(
-		"UPDATE delegations SET status = 'needs_input', prompt_pending = 1, baseline_seq = ? WHERE id = ? AND status != 'stopped'",
-	);
-	// Same CAS shape as qTransition, baseline only — plus the pending
-	// guard (baseline_seq IS NULL), so a send that landed mid-get in the
-	// same millisecond still keeps its own baseline.
-	const qCaptureBaseline = db.query(
-		"UPDATE delegations SET baseline_seq = ? WHERE id = ? AND status = ? AND prompted_at = ? AND baseline_seq IS NULL",
+		"UPDATE delegations SET t3_run = ?, t3_link = COALESCE(?, t3_link), prompted_at = ?, status = 'running', finished_at = NULL, readiness_json = NULL, readiness_notified_key = NULL, readiness_pending_verdict = NULL WHERE id = ? AND status != 'stopped'",
 	);
 	const qTransition = db.query(
-		`UPDATE delegations SET status = ?, finished_at = ?,
-			baseline_seq = COALESCE(?, baseline_seq)
+		`UPDATE delegations SET status = ?, finished_at = ?
 		WHERE id = ? AND status = ? AND prompted_at = ?`,
 	);
 	const qStatus = db.query("UPDATE delegations SET status = ?, finished_at = ? WHERE id = ?");
@@ -331,7 +322,6 @@ export function openDelegations(dbPath: string): DelegationsStore {
 				task,
 				address,
 				appConversation,
-				target,
 				responsibilityId,
 				responsibilityRevision,
 			},
@@ -345,7 +335,6 @@ export function openDelegations(dbPath: string): DelegationsStore {
 				task,
 				address.chatId,
 				address.threadId,
-				target ?? null,
 				ts,
 				ts,
 				appConversation ?? null,
@@ -356,30 +345,22 @@ export function openDelegations(dbPath: string): DelegationsStore {
 			);
 			return rowToDelegation(qGet.get(Number(res.lastInsertRowid)));
 		},
-		bindLaunch(id, launch) {
-			qBind.run(launch.agentName, launch.workspaceId, launch.paneId, id);
+		bindThread(id, bind) {
+			qBind.run(bind.t3Thread, bind.t3Link, bind.t3Run, id);
 			const row = qGet.get(id);
 			return row === null ? null : rowToDelegation(row);
 		},
-		markRunning(id, baselineSeq, promptedAt) {
-			qRunning.run(baselineSeq, promptedAt.toISOString(), id);
+		markRunning(id, run, link, promptedAt) {
+			qRunning.run(run, link, promptedAt.toISOString(), id);
 			const row = qGet.get(id);
 			if (row === null) return null;
 			const d = rowToDelegation(row);
 			return d.status === "running" ? d : null;
 		},
-		markParked(id, baselineSeq) {
-			qParked.run(baselineSeq, id);
-		},
-		captureBaseline(id, expect, seq) {
-			const res = qCaptureBaseline.run(seq, id, expect.status, expect.promptedAt);
-			return res.changes > 0;
-		},
-		transitionIf(id, expect, to, baseline, now = new Date()) {
+		transitionIf(id, expect, to, now = new Date()) {
 			const res = qTransition.run(
 				to,
 				TERMINAL.has(to) ? now.toISOString() : null,
-				baseline ?? null,
 				id,
 				expect.status,
 				expect.promptedAt,

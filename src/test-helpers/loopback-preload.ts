@@ -30,7 +30,9 @@ globalThis.fetch = ((input: Request | URL | string, init?: RequestInit) => {
 	if (!isLoopback(url)) {
 		try {
 			appendFileSync(LOG, `${new Date().toISOString()} BLOCKED ${url.href}\n`);
-		} catch {}
+		} catch {
+			// The probe log is a debugging aid; the rejection below is the signal.
+		}
 		return Promise.reject(new Error(`boot probe: non-loopback fetch blocked: ${url.href}`));
 	}
 	return orig(input, init);

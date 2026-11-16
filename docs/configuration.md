@@ -438,7 +438,7 @@ http: { port: 8787 },
   boot needs no `telegram` auth record, constructs no bot, starts no
   polling, and answers the Telegram Mini-App door with `503`; `/app` and
   `/api/app/*` stay live. Telegram-targeted wakes, notices, mail drafts,
-  and interrupted-turn resumes report the channel as unavailable instead
+  and interrupted-turn notices report the channel as unavailable instead
   of running without a delivery door. Boot-pinned: a Settings save writes
   the switch and the restart hint applies it.
 - `operators` — your Telegram user id(s): you, plus any of your own

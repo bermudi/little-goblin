@@ -1,0 +1,73 @@
+# Skills
+
+## Sub-features
+
+Browse installed skills and pending proposals in the Skills page. Explicitly
+invoke a catalog skill from the chat composer; the selected skill body is
+injected into that turn and the invocation is stored on the user message.
+
+## How to get to it (user POV)
+
+- **Browse:** sidebar → Skills. Proposed skills appear before installed ones.
+- **Invoke:** Chat composer → **Invoke a skill** → select a catalog entry →
+  send a message.
+
+Skills are directories under `workspace/skills/` with a `SKILL.md` file.
+Goblin's seed includes built-in skills; the following small fixture gives a
+stable row to select on a throwaway instance:
+
+```sh
+mkdir -p "$HOME_DIR/workspace/skills/verify-example"
+cat > "$HOME_DIR/workspace/skills/verify-example/SKILL.md" <<'EOF'
+---
+name: verify-example
+description: A throwaway skill for verifying catalog invocation.
+---
+
+# Verify example
+
+When invoked, include the marker `verify-skill-body-loaded` in your response.
+EOF
+```
+
+## Driving it with agent-browser
+
+Set `URL` to the instance URL printed by `bun run try` (it already ends in `/app/`):
+
+```sh
+agent-browser --session verify-skills open "${URL}skills"
+agent-browser --session verify-skills wait --text 'verify-example'
+agent-browser --session verify-skills find role button click --name 'New conversation'
+agent-browser --session verify-skills fill '[aria-label="Message draft"]' 'Use the skill for this turn.'
+agent-browser --session verify-skills find role button click --name 'Invoke a skill'
+agent-browser --session verify-skills find text 'verify-example' click
+agent-browser --session verify-skills find role button click --name 'Send'
+agent-browser --session verify-skills wait --text 'verify-reply: Use the skill for this turn.'
+```
+
+The fake reply will not follow the skill's instruction. Prove the invocation
+instead from the durable user event and the log:
+
+```sh
+sqlite3 -readonly "$HOME_DIR/state/goblin.sqlite" \
+  "select seq, json_extract(p.value,'$.data.name') as skill
+   from events, json_each(json_extract(events.data,'$.message.parts')) p
+   where role='user' and json_extract(p.value,'$.type')='data-skill';"
+rg '"msg":"skill body injected"' "$HOME_DIR/state/goblin.log"
+```
+
+Expected: a user event part with `type` `data-skill` and `data.name`
+`verify-example`; a `skill body injected` log line with the same skill name.
+The assistant transcript includes the `[skill: verify-example]` marker.
+
+## Gotchas
+
+The Skills page displays the installed catalog and proposals; it is not a
+skill editor. This feature means Agent Skills (`SKILL.md` directories), not
+the app's **Skills** test-map or generic agent capabilities.
+
+The fixture is throwaway state, not a repository or production skill. The
+fake model lets you prove the picker, stored part, and body injection, but
+cannot prove that a real model follows the skill. Temporary GitHub skills
+use a separate preview-and-confirm flow and need a reachable public GitHub
+URL plus the System One gate; this map covers an installed catalog skill.

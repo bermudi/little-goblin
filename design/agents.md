@@ -58,7 +58,8 @@ model catalog**.
   or a tool that talks to a channel (`send`, `speak`, `ui`, `mail`).
 - **Memory.** No recall and no retention: a child's exchanges are not
   operator exchanges.
-- **Result.** The child's final reply is the result. Settlement sends a
+- **Result.** The child's final reply is the result. A child settles as
+  done, needs input (a type with `ask_operator`) or failed. Settlement sends a
   notice that wakes the parent through the existing notice path. The
   result arrives fenced: it is the child's claim, which goblin checks
   before it reports.
@@ -190,6 +191,39 @@ The operator no longer works in Herdr; they work in T3 Code
 The `herdr` tool (the operator's `default` session) is removed. Nothing
 replaces it: the operator's desk is T3 Code now.
 
+## Computer use: a `computer` agent type (operator, 2026-11-16)
+
+Computer use moves onto `agent`. It is a built-in agent type,
+`computer`, whose tools are the desktop tools. The desktop pool stays as
+it is (design/subagents.md → Desktops: a managed pool; `desktops*.ts`,
+cua-driver): it has no Pi Durable code in it.
+
+- **Tools:** `inspect` (the AT-SPI element tree as text), `act` (cua
+  input, bound to an observation id), `launch`, `screenshot`, and
+  `ask_operator` (needs input). They are goblin tools in zod, ported from
+  `src/subagents/tools.ts`.
+- **Lease:** `spawn` claims the named desktop with the child
+  conversation as the lease holder (`LeaseHolder` kind `conversation`).
+  Settlement releases it. Needs input releases it so the operator can
+  act, as before.
+- **Crash rule:** goblin's own rule. An `act` cut by a crash is
+  reported, not replayed. Binding input to the latest observation (a
+  stale or restarted frame's id is refused) stays in `desktops.ts`.
+  The crash-approval gate (`approval-gate.ts`) is not ported.
+- **Text first.** `inspect` + `act` by element need no images and work
+  on any model. That ships first.
+- **Screenshots second.** A frame in a tool result needs an image
+  variant of `ToolOutput` (today text or json, `src/tool.ts`). This
+  changes the ruling "no image bytes in results" (design/tools.md) for
+  the providers whose pipe carries images, each one probe-verified:
+  the AI SDK `image-data` tool-output part, and an MCP `image` content
+  block on the claude-code bridge (`src/agent/claude-code/tools.ts`,
+  text only today). A provider that cannot carry it gets no screenshot
+  tool. Old frames become text stubs through the pruning marker, so
+  they do not stay in every later request.
+- **Model:** the operator chooses it in the type file. It must accept
+  images before the screenshot tool mounts for it.
+
 ## Removal order
 
 Each step keeps a working path (DIRECTION.md: do not retire useful
@@ -197,18 +231,17 @@ access before there is a working replacement).
 
 1. Remove the `herdr` tool. The operator does not use the desk any more.
 2. Build `agent`: child conversations, agent types and the parent link.
-3. Build the `src/t3.ts` adapter. Move `delegate` and responsibility
+3. Build the `computer` agent type, text first.
+4. Add image tool results and the `screenshot` tool.
+5. Build the `src/t3.ts` adapter. Move `delegate` and responsibility
    attach/observe onto it, and prove one delegation end to end.
-4. Delete the Herdr code: `src/herdr.ts`, its live check,
+6. Delete the Herdr code: `src/herdr.ts`, its live check,
    `harness-trust.ts` and the unit.
-5. Delete the `subagent` tool, `src/subagents/`, the `subagent_runs`
-   table and the pi-durable, pi-ai and chord dependencies.
+7. Delete the `subagent` tool, `src/subagents/`, the `subagent_runs`
+   table and the pi-durable, pi-ai and chord dependencies. Needs step 3.
 
 ## Open
 
-- **Computer use.** Desktops (`desktops*.ts`, cua-driver) run only as
-  Pi Durable `computer` runs. Choose one: a `computer` agent type whose
-  tools are the desktop tools, or drop computer use with step 5.
 - **Machine targets.** `t3 thread start` has no environment flag. Linked
   environments (`t3 environment`) may cover remote hosts, but this is
   unverified. Decide whether delegation to another machine is still

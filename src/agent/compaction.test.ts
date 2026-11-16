@@ -1,5 +1,7 @@
 import { foldSummary } from "../testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Message } from "../message.ts";
 import type { CompactionSplit } from "../conversation-events.ts";
 import {
@@ -7,10 +9,13 @@ import {
 	estimateTokens,
 	runCompaction,
 	serializeSpan,
+	prefixInstruction,
 	type CompactionEvent,
 	type CompactionStore,
 } from "./compaction.ts";
 import { attachmentPart } from "./attachments.ts";
+import { setLogFile } from "../log.ts";
+import { useHome } from "../testkit.ts";
 
 const signal = () => new AbortController().signal;
 
@@ -349,6 +354,218 @@ function fakeStore(
 	};
 	return { store, writes };
 }
+
+const validPrefixSummary = (tag: string, ask = "and now"): string =>
+	`${tag}\n## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\n${ask}\n## Exact identifiers`;
+
+describe("runCompaction prefix summary", () => {
+	test("A — threshold fold stores prefix text, skips the text summarizer, and logs prefix mode", async () => {
+		const home = useHome("goblin-compaction-prefix-a-");
+		const logPath = join(home, "state/goblin.log");
+		setLogFile(logPath);
+		try {
+			const { store, writes } = fakeStore(sample());
+			let textCalls = 0;
+			const order: string[] = [];
+			const outcome = await runCompaction(
+				"dm:1",
+				store,
+				["m"],
+				async () => {
+					textCalls++;
+					return validPrefixSummary("TEXT");
+				},
+				{
+					tailTokenBudget: 1,
+					inputTokenBudget: 32_000,
+					flush: async () => {
+						order.push("flush");
+						return { noteCalls: 0 };
+					},
+					prefix: async () => {
+						order.push("prefix");
+						return {
+							modelRef: "m",
+							call: async () => validPrefixSummary("PREFIX-STORED", "do a thing".repeat(200)),
+						};
+					},
+				},
+				signal(),
+			);
+			expect(outcome.kind).toBe("compacted");
+			if (outcome.kind === "compacted") expect(outcome.summary).toContain("PREFIX-STORED");
+			expect(textCalls).toBe(0);
+			expect(order).toEqual(["flush", "prefix"]);
+			expect(writes).toHaveLength(1);
+			expect(readFileSync(logPath, "utf8")).toContain('"msg":"compaction summary mode","conversation":"dm:1","mode":"prefix","reason":null');
+		} finally {
+			setLogFile(null);
+		}
+	});
+
+	test("B — overflow does not build a prefix summarizer and uses the text walk", async () => {
+		const { store } = fakeStore(sample());
+		let prefixFactories = 0;
+		let textCalls = 0;
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async (_system, prompt) => {
+				textCalls++;
+				return foldSummary("TEXT-FALLBACK", prompt);
+			},
+			{
+				tailTokenBudget: 1,
+				inputTokenBudget: 32_000,
+				reason: "overflow",
+				prefix: async () => {
+					prefixFactories++;
+					return { modelRef: "m", call: async () => validPrefixSummary("PREFIX") };
+				},
+			},
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		expect(prefixFactories).toBe(0);
+		expect(textCalls).toBeGreaterThan(0);
+	});
+
+	test("C — prefix call failure falls back to text mode and logs prefix-failed", async () => {
+		const home = useHome("goblin-compaction-prefix-c-");
+		const logPath = join(home, "state/goblin.log");
+		setLogFile(logPath);
+		try {
+			const { store } = fakeStore(sample());
+			const outcome = await runCompaction(
+				"dm:1",
+				store,
+				["m"],
+				async (_system, prompt) => foldSummary("TEXT-FALLBACK", prompt),
+				{
+					tailTokenBudget: 1,
+					inputTokenBudget: 32_000,
+					prefix: async () => ({
+						modelRef: "m",
+						call: async () => {
+							throw new Error("prefix provider failed");
+						},
+					}),
+				},
+				signal(),
+			);
+			expect(outcome.kind).toBe("compacted");
+			const logText = readFileSync(logPath, "utf8");
+			expect(logText).toContain('"msg":"compaction prefix summary failed — falling back to text mode"');
+			expect(logText).toContain('"mode":"text","reason":"prefix-failed"');
+		} finally {
+			setLogFile(null);
+		}
+	});
+
+	test("D — prefix audit retry appends assistant and corrective user turns; abort never falls back", async () => {
+		const { store } = fakeStore(sample());
+		const calls: Array<readonly { role: "user" | "assistant"; text: string }[]> = [];
+		let textCalls = 0;
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async () => {
+				textCalls++;
+				return validPrefixSummary("TEXT");
+			},
+			{
+				tailTokenBudget: 1,
+				inputTokenBudget: 32_000,
+				prefix: async () => ({
+					modelRef: "m",
+					call: async (turns) => {
+						calls.push(turns);
+						return calls.length === 1
+							? "rejected summary"
+							: validPrefixSummary("AUDITED", "do a thing".repeat(200));
+					},
+				}),
+			},
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		expect(calls).toHaveLength(2);
+		expect(calls[1]).toHaveLength(3);
+		expect(calls[1]![0]).toMatchObject({ role: "user" });
+		expect(calls[1]![0]!.text).toBe(
+			prefixInstruction({ keptExcerpt: "and now".repeat(200).slice(0, 200), hasPreviousSummary: false }),
+		);
+		expect(calls[1]![1]).toEqual({ role: "assistant", text: "rejected summary" });
+		expect(calls[1]![2]!.role).toBe("user");
+		expect(calls[1]![2]!.text).toContain("previous summary failed");
+		expect(textCalls).toBe(0);
+
+		const { store: abortStore } = fakeStore(sample());
+		const controller = new AbortController();
+		let fallbackCalls = 0;
+		await expect(
+			runCompaction(
+				"dm:1",
+				abortStore,
+				["m"],
+				async () => {
+					fallbackCalls++;
+					return validPrefixSummary("TEXT");
+				},
+				{
+					tailTokenBudget: 1,
+					inputTokenBudget: 32_000,
+					prefix: async () => ({
+						modelRef: "m",
+						call: async (_turns, callSignal) => {
+							controller.abort(new Error("stopped"));
+							return new Promise<string>((_, reject) =>
+								callSignal.addEventListener("abort", () => reject(callSignal.reason), { once: true }),
+							);
+						},
+					}),
+				},
+				controller.signal,
+			),
+		).rejects.toThrow("stopped");
+		expect(fallbackCalls).toBe(0);
+	});
+
+	test("E — a non-primary prefix model selects text mode with fallback-candidate", async () => {
+		const home = useHome("goblin-compaction-prefix-e-");
+		const logPath = join(home, "state/goblin.log");
+		setLogFile(logPath);
+		try {
+			const { store } = fakeStore(sample());
+			let prefixCalls = 0;
+			const outcome = await runCompaction(
+				"dm:1",
+				store,
+				["primary", "backup"],
+				async (_system, prompt) => foldSummary("TEXT", prompt),
+				{
+					tailTokenBudget: 1,
+					inputTokenBudget: 32_000,
+					prefix: async () => ({
+						modelRef: "backup",
+						call: async () => {
+							prefixCalls++;
+							return validPrefixSummary("PREFIX");
+						},
+					}),
+				},
+				signal(),
+			);
+			expect(outcome.kind).toBe("compacted");
+			expect(prefixCalls).toBe(0);
+			expect(readFileSync(logPath, "utf8")).toContain('"mode":"text","reason":"fallback-candidate"');
+		} finally {
+			setLogFile(null);
+		}
+	});
+});
 
 describe("runCompaction", () => {
 	test("summarizes the span, folds the previous summary, writes the pointer", async () => {

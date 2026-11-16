@@ -1327,11 +1327,9 @@ describe("ChatView mid-turn steer", () => {
         await new Promise((resolve) => setTimeout(resolve, 15));
       });
     }
-    // Stop and Send share the composer — Send waits for content.
+    // The action switches from Stop to Send when a steer is composed.
     expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
-    const sendBtn = dom.container.querySelector<HTMLButtonElement>(".send-btn");
-    expect(sendBtn).not.toBeNull();
-    expect(sendBtn?.disabled).toBe(true);
+    expect(dom.container.querySelector(".send-btn")).toBeNull();
     const ta = dom.container.querySelector("form.composer textarea")!;
     await act(async () => {
       // Focus + keyup too — React's text-input fallback needs it in
@@ -1351,7 +1349,8 @@ describe("ChatView mid-turn steer", () => {
         }) as unknown as Event,
       );
     });
-    expect(sendBtn?.disabled).toBe(false);
+    expect(dom.container.querySelector(".stop-btn")).toBeNull();
+    expect(dom.container.querySelector<HTMLButtonElement>(".send-btn")?.disabled).toBe(false);
     await act(async () => {
       dom.container
         .querySelector("form.composer")!

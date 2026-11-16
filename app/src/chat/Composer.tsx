@@ -790,7 +790,8 @@ export function Composer({
 					model={cfg?.model}
 					onCompacted={onCompacted}
 				/>
-				{busy && onStop !== undefined && (
+				{busy && onStop !== undefined && draft.trim() === "" &&
+				staged.length === 0 && stagedNotes.length === 0 && stagedSkills.length === 0 ? (
 					// Stop means stop: ask the runtime to abort the turn, then
 					// let go of this client's stream. History keeps what was written.
 					<button type="button" className="stop-btn" aria-label="Stop" onClick={onStop}>
@@ -798,7 +799,7 @@ export function Composer({
 							<rect x="7" y="7" width="10" height="10" rx="2" />
 						</svg>
 					</button>
-				)}
+				) : (
 				<button
 					type="submit"
 					className="send-btn"
@@ -822,6 +823,7 @@ export function Composer({
 						/>
 					</svg>
 				</button>
+				)}
 			</div>
 			{sendError !== null && (
 				<p className="error" role="alert">
@@ -851,4 +853,3 @@ export function Composer({
 		</form>
 	);
 }
-

@@ -5718,6 +5718,16 @@ select.ui-input option {
 .note-pick-list [data-highlighted] button {
 	background: var(--app-hover);
 }
+/* The command-driven note picker matches the skill sheet: flat rows,
+   a left tick on the arrowed row only. The model quick menu shares
+   .note-pick-list but runs no command — it keeps the hover fill. */
+.note-pick-command .note-pick-list button:hover,
+.note-pick-command .note-pick-list [data-highlighted] button {
+	background: none;
+}
+.note-pick-command .note-pick-list [data-highlighted] button {
+	box-shadow: inset 2px 0 0 var(--app-fg-muted);
+}
 .note-pick .empty {
 	font-size: 12px;
 	color: var(--app-fg-muted);

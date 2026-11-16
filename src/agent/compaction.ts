@@ -749,6 +749,8 @@ export async function runCompaction(
 			log.info("compaction summary mode", { conversation: id, mode: "prefix", reason: null });
 		} catch (err) {
 			if (signal.aborted) throw err;
+			// A fence is not a summarizer failure: never spend the text lane
+			// after authority has been revoked.
 			opts.assertAuthority?.();
 			selectedModeReason = "prefix-failed";
 			log.warn("compaction prefix summary failed — falling back to text mode", {

@@ -39,7 +39,7 @@ function usage(u: FakeUsageInput = {}): ClaudeUsage {
 }
 
 export type FakeStep =
-	| { kind: "stream-text"; text: string; usage?: FakeUsageInput }
+	| { kind: "stream-text"; text: string; usage?: FakeUsageInput; deltaUsage?: FakeUsageInput }
 	| { kind: "text"; text: string; usage?: FakeUsageInput }
 	| { kind: "reasoning"; text: string; usage?: FakeUsageInput }
 	| {
@@ -72,7 +72,7 @@ export type FakeStep =
 	/** The CLI acks every drained, unacked steer (a `folded` frame). */
 	| { kind: "ack" }
 	/** A mid-script success result — the CLI turn ends, a follow-up may run. */
-	| { kind: "result" };
+	| { kind: "result"; usage?: FakeUsageInput };
 
 export interface FakeClaudeHandle {
 	query: ClaudeQuery;
@@ -114,17 +114,27 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 			cache_creation_input_tokens: null,
 		};
 		let turns = 0;
-		const accumulate = (u: ClaudeUsage | undefined): void => {
+		const accumulate = (u: Partial<ClaudeUsage> | undefined): void => {
 			if (u === undefined) return;
 			resultUsage.input_tokens = (resultUsage.input_tokens ?? 0) + (u.input_tokens ?? 0);
 			resultUsage.output_tokens = (resultUsage.output_tokens ?? 0) + (u.output_tokens ?? 0);
 		};
+		const deltaUsage = (u: FakeUsageInput | undefined): Partial<ClaudeUsage> | null =>
+			u === undefined
+				? null
+				: {
+						...(u.inputTokens !== undefined ? { input_tokens: u.inputTokens } : {}),
+						...(u.outputTokens !== undefined ? { output_tokens: u.outputTokens } : {}),
+						...(u.cacheRead !== undefined ? { cache_read_input_tokens: u.cacheRead } : {}),
+						...(u.cacheWrite !== undefined ? { cache_creation_input_tokens: u.cacheWrite } : {}),
+					};
 		for (const step of steps) {
 			turns += 1;
 			switch (step.kind) {
 				case "stream-text": {
 					const u = usage(step.usage);
-					accumulate(u);
+					const delta = deltaUsage(step.deltaUsage);
+					accumulate(delta ?? u);
 					yield {
 						type: "stream",
 						event: { type: "message_start", message: { model: "fake", usage: u } },
@@ -159,7 +169,7 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 						event: {
 							type: "message_delta",
 							delta: { stop_reason: "end_turn" },
-							usage: null,
+							usage: delta,
 						},
 					};
 					yield { type: "stream", event: { type: "message_stop" } };
@@ -284,9 +294,11 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 						numTurns: turns,
 						durationMs: 5,
 						totalCostUsd: 0,
-						usage: resultUsage,
+						usage: step.usage === undefined ? resultUsage : usage(step.usage),
 						modelUsage: null,
 					};
+					resultUsage.input_tokens = 0;
+					resultUsage.output_tokens = 0;
 					break;
 				}
 			}

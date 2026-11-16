@@ -21,8 +21,10 @@
 //   is ignored here).
 //
 // Unverified until the live drift check (live.test.ts): real event
-// stream shapes, usage splits, rate-limit/overflow surface. The pinned
-// types in translate.ts are the contract; red drift check means re-pin.
+// stream shapes, usage splits, rate-limit/overflow surface. Output usage
+// comes from each call's final message_delta; result usage cross-checks
+// the segment and logs mismatches. The pinned types in translate.ts are
+// the contract; red drift check means re-pin.
 
 import { randomUUID } from "node:crypto";
 import type { LanguageModelV4Usage } from "@ai-sdk/provider";
@@ -223,6 +225,24 @@ export function echoContentText(content: unknown): string {
 	return JSON.stringify(content) ?? "";
 }
 
+// Later usage wins field by field; null/undefined never erase a count.
+function overlayUsage(
+	base: Partial<ClaudeUsage> | null,
+	patch: Partial<ClaudeUsage>,
+): Partial<ClaudeUsage> {
+	const out: Partial<ClaudeUsage> = { ...base };
+	for (const key of [
+		"input_tokens",
+		"output_tokens",
+		"cache_read_input_tokens",
+		"cache_creation_input_tokens",
+	] as const) {
+		const value = patch[key];
+		if (value !== null && value !== undefined) out[key] = value;
+	}
+	return out;
+}
+
 function v4Usage(usage: ClaudeUsage | null): LanguageModelV4Usage | undefined {
 	if (usage === null) return undefined;
 	return {
@@ -288,6 +308,7 @@ interface RunState {
 	totalCacheWrite: number | null;
 	lastInput: number | null;
 	lastCacheRead: number | null;
+	deltaUsage: Partial<ClaudeUsage> | null;
 	// First model-produced content this turn — the finish stamp reads it
 	// for the TTFT field. Streamed deltas, a tool_use block opening, and
 	// an unstreamed complete message all count; null until one lands.
@@ -327,6 +348,7 @@ export async function driveClaude<M extends WireMember>(
 		totalCacheWrite: null,
 		lastInput: null,
 		lastCacheRead: null,
+		deltaUsage: null,
 		firstTokenMs: null,
 		stepCount: 0,
 		sawToolUse: false,
@@ -391,6 +413,7 @@ export async function driveClaude<M extends WireMember>(
 	let callId: string | null = null;
 	let obs: ReturnType<CacheObservation["begin"]> | undefined;
 	let callOpen = false;
+	let segmentOutput = 0;
 
 	const beginCall = (): void => {
 		// Context landing feeds the detector state even though this engine
@@ -449,13 +472,24 @@ export async function driveClaude<M extends WireMember>(
 		run.stepCount += 1;
 		run.pendingCall = false;
 		callOpen = false;
-		const usage = message.usage;
+		const usage: ClaudeUsage | null =
+			run.deltaUsage === null
+				? message.usage
+				: {
+						input_tokens: null,
+						output_tokens: null,
+						cache_read_input_tokens: null,
+						cache_creation_input_tokens: null,
+						...overlayUsage(message.usage, run.deltaUsage),
+					};
+		run.deltaUsage = null;
 		const input = billedInput(usage);
 		run.lastInput = input;
 		run.lastCacheRead = usage?.cache_read_input_tokens ?? null;
 		if (input !== null) run.totalInput = (run.totalInput ?? 0) + input;
 		if (usage !== null) {
 			run.totalOutput = (run.totalOutput ?? 0) + (usage.output_tokens ?? 0);
+			if (usage.output_tokens !== null) segmentOutput += usage.output_tokens;
 			run.totalCacheRead = (run.totalCacheRead ?? 0) + (usage.cache_read_input_tokens ?? 0);
 			run.totalCacheWrite = (run.totalCacheWrite ?? 0) + (usage.cache_creation_input_tokens ?? 0);
 		}
@@ -577,6 +611,7 @@ export async function driveClaude<M extends WireMember>(
 			}
 			case "message_delta":
 				if (ev.delta?.stop_reason) run.lastStopReason = ev.delta.stop_reason;
+				if (ev.usage !== null) run.deltaUsage = overlayUsage(run.deltaUsage, ev.usage);
 				return;
 			case "message_stop":
 				return;
@@ -773,6 +808,8 @@ export async function driveClaude<M extends WireMember>(
 		run.totalCacheWrite = null;
 		run.lastInput = null;
 		run.lastCacheRead = null;
+		run.deltaUsage = null;
+		segmentOutput = 0;
 		run.firstTokenMs = null;
 		run.stepCount = 0;
 		run.sawToolUse = false;
@@ -894,6 +931,14 @@ export async function driveClaude<M extends WireMember>(
 						// unacked steer is the one exception: the CLI answers it
 						// in a follow-up turn of this same query.
 						flushAssistant();
+						if (ev.usage?.output_tokens != null && ev.usage.output_tokens !== segmentOutput) {
+							log.warn("claude usage mismatch", {
+								conversation: convId,
+								resultOutput: ev.usage.output_tokens,
+								stepOutput: segmentOutput,
+							});
+						}
+						segmentOutput = 0;
 						resultFrame = ev;
 						if (unacked.size > 0 && !ev.isError && followUps < MAX_STEER_FOLLOW_UPS) {
 							followUps += 1;

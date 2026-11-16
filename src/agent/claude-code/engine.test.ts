@@ -11,7 +11,7 @@ import { z } from "zod";
 import type { AuthStore } from "../../auth.ts";
 import type { ConfigRef } from "../../config.ts";
 import type { Config } from "../../config-schema.ts";
-import { type FakeStep, fakeClaude } from "../../testkit/fake-claude.ts";
+import { type FakeStep, type FakeUsageInput, fakeClaude } from "../../testkit/fake-claude.ts";
 import { TurnState } from "../../turn/state.ts";
 import {
 	type MemberSettlement,
@@ -208,6 +208,39 @@ async function run(
 const types = (chunks: UIMessageChunk[]): string[] => chunks.map((c) => c.type);
 
 describe("driveClaude — wire and outcome parity", () => {
+	test("uses final message_delta output usage", async () => {
+		const { outcome, members } = await run([
+			{
+				kind: "stream-text",
+				text: "hello",
+				usage: { outputTokens: 8 },
+				deltaUsage: { outputTokens: 36 },
+			},
+		]);
+		if (outcome.kind !== "ok") throw new Error(`expected ok, got ${outcome.kind}`);
+		const finish = members[0]!.chunks.findLast((c) => c.type === "finish");
+		expect(finish?.type).toBe("finish");
+		if (finish?.type === "finish") {
+			const metadata = finish.messageMetadata as { usage?: { output?: number } };
+			expect(metadata.usage?.output).toBe(36);
+		}
+		expect(outcome.usage?.outputTokens).toBe(36);
+	});
+
+	test("result usage mismatch does not replace final per-call usage", async () => {
+		const { outcome } = await run([
+			{
+				kind: "stream-text",
+				text: "hello",
+				usage: { outputTokens: 8 },
+				deltaUsage: { outputTokens: 36 },
+			},
+			{ kind: "result", usage: { outputTokens: 50 } },
+		]);
+		if (outcome.kind !== "ok") throw new Error(`expected ok, got ${outcome.kind}`);
+		expect(outcome.usage?.outputTokens).toBe(36);
+	});
+
 	test("streamed text lands in both sinks with the canonical part lifecycle", async () => {
 		const { outcome, members, live } = await run([
 			{ kind: "stream-text", text: "hello world", usage: { inputTokens: 10, outputTokens: 5 } },
@@ -326,15 +359,18 @@ describe("driveClaude — steers fold mid-turn (#582)", () => {
 		};
 	}
 
-	const toolThen = (rest: FakeStep[]) => (getBridge: () => ToolBridge | null): FakeStep[] => [
-		{
-			kind: "tool",
-			name: "echo",
-			input: { message: "hi" },
-			run: () => getBridge()!.invoke("echo", { message: "hi" }),
-		},
-		...rest,
-	];
+	const toolThen =
+		(rest: FakeStep[], usage?: FakeUsageInput) =>
+		(getBridge: () => ToolBridge | null): FakeStep[] => [
+			{
+				kind: "tool",
+				name: "echo",
+				input: { message: "hi" },
+				...(usage !== undefined ? { usage } : {}),
+				run: () => getBridge()!.invoke("echo", { message: "hi" }),
+			},
+			...rest,
+		];
 
 	test("a steer waiting when a tool settles goes to the CLI and joins the turn", async () => {
 		const steer = steerMember();
@@ -364,11 +400,21 @@ describe("driveClaude — steers fold mid-turn (#582)", () => {
 		const steer = steerMember();
 		const { outcome } = await run(
 			toolThen([
-				{ kind: "text", text: "echoed" },
+				{
+					kind: "stream-text",
+					text: "echoed",
+					usage: { outputTokens: 30 },
+					deltaUsage: { outputTokens: 45 },
+				},
 				{ kind: "result" },
 				{ kind: "ack" },
-				{ kind: "text", text: "and bananas" },
-			]),
+				{
+					kind: "stream-text",
+					text: "and bananas",
+					usage: { outputTokens: 11 },
+					deltaUsage: { outputTokens: 17 },
+				},
+			], { outputTokens: 0 }),
 			{ tools: echoTools(), claimSteers: claimOnce(steer) },
 		);
 		if (outcome.kind !== "ok") throw new Error(`expected ok, got ${outcome.kind}`);
@@ -376,6 +422,7 @@ describe("driveClaude — steers fold mid-turn (#582)", () => {
 			.filter((p) => p.type === "text")
 			.map((p) => (p as { text: string }).text);
 		expect(texts).toEqual(["echoed", "and bananas"]);
+		expect(outcome.usage?.outputTokens).toBe(62);
 	});
 
 	test("a CLI that never acks cannot hold the turn open", async () => {

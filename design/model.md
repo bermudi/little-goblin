@@ -565,7 +565,9 @@ decisions and their why:
   record (next turn starts fresh from the folded view) and never fails
   the goblin fold. Reviewer, titles,
   and vision stay on AI SDK models (they are goblin's own calls, not
-  the operator's conversation).
+  the operator's conversation). Per-call output usage comes from the
+  stream's final `message_delta`; result-frame usage is a cross-check
+  that logs a mismatch.
 - **Pinned, not assumed.** The SDK's event shapes are pinned as
   structural types (translate.ts) behind an injectable `ClaudeQuery`
   seam — the fake query (testkit/fake-claude.ts) drives the engine

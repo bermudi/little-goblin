@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readdirSync, rmSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
 import { desktopsConfigSchema, imageRefSchema, type DesktopsConfig } from "./config-schema.ts";
 import { paths, ensureDir } from "./home-layout.ts";
@@ -28,6 +27,7 @@ import {
 	listWindowsSchema,
 	type DesktopAction,
 } from "./desktops-cua.ts";
+import { makeReaper } from "./desktops-reap.ts";
 
 // Mapped to {error} tool results — model/operator-actionable failures.
 export class DesktopError extends Error {
@@ -41,7 +41,6 @@ export class DesktopLeaseError extends DesktopError {}
 
 const DEFAULT_CONFIG = desktopsConfigSchema.parse({});
 
-const NAME_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
 // Root-owned 0755 stage dir — desk reads/traverses but cannot write,
 // rename, or plant links inside.
 const IMPORT_STAGE_DIR = "/run/goblin-import";
@@ -443,123 +442,6 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		throw refuse(name, "ensure", `no desktop named ${name} — allocate it first`);
 	}
 
-	// Pruned on the one path every call rides. Destroy intentionally
-	// freezes the trail for post-mortem.
-	const SHOTS_RETENTION = 200;
-
-	function pruneShots(name: string): void {
-		const dir = join(shotsRoot, name, "shots");
-		let names: string[];
-		try {
-			names = readdirSync(dir);
-		} catch (err) {
-			if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-			throw err;
-		}
-		const over = names.length - SHOTS_RETENTION;
-		if (over <= 0) return;
-		const byAge: Array<{ file: string; mtime: number }> = [];
-		for (const file of names) {
-			try {
-				byAge.push({ file, mtime: statSync(join(dir, file)).mtimeMs });
-			} catch (err) {
-				if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
-				throw err;
-			}
-		}
-		byAge.sort((a, b) => a.mtime - b.mtime);
-		for (const { file } of byAge.slice(0, over)) {
-			// Best-effort — a failed unlink must not fail the call
-			// riding this prune; the log line says so.
-			try {
-				rmSync(join(dir, file));
-			} catch (err) {
-				if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
-				log.warn("desktop shot prune failed", err, { desktop: name, file });
-			}
-		}
-		log.info("desktop shots pruned", { desktop: name, removed: over, kept: SHOTS_RETENTION });
-	}
-
-	// Re-read inside the victim's lane — a claim, observation, or pin
-	// landing between the stale listing and the rm must win the race.
-	// Same label guard as destroy/adopt: never touch a container the
-	// labels don't claim.
-	async function reapLocked(name: string, cutoff: number): Promise<void> {
-		const fresh = store.get(name);
-		if (
-			fresh === null ||
-			fresh.lastUsedAt >= cutoff ||
-			fresh.reserved ||
-			leaseLive(fresh, Date.now())
-		) {
-			return;
-		}
-		const ins = await podman.inspect(fresh.container);
-		if (ins.state !== "missing") requireOurs(name, ins);
-		await podman.rm(fresh.container);
-		store.delete(name);
-		pruneShots(name);
-		log.info("desktop reaped", { desktop: name, container: fresh.container });
-	}
-
-	// Reaps ride one detached chain — the listing is synchronous in
-	// the caller (its desktop exempt); reaping B never blocks acting
-	// on A. Candidates coalesce into one set, single-flight.
-	const reapQueue = new Map<string, number>();
-	let reapTail: Promise<void> = Promise.resolve();
-	let reapQueued = false;
-	function enqueueReap(name: string, cutoff: number): void {
-		reapQueue.set(name, cutoff);
-		if (reapQueued) return;
-		reapQueued = true;
-		const run = reapTail.then(async () => {
-			// Cleared at run start — arrivals during the run schedule
-			// the follow-up instead of being dropped.
-			reapQueued = false;
-			while (reapQueue.size > 0) {
-				const batch = [...reapQueue];
-				reapQueue.clear();
-				for (const [victim, cutoff] of batch) {
-					try {
-						await lane(victim, () => reapLocked(victim, cutoff));
-					} catch (err) {
-						// Keep the row — the next call retries.
-						log.warn("desktop reap failed — row kept", err, {
-							desktop: victim,
-							container: containerNameForDesktop(victim),
-						});
-					}
-				}
-			}
-		});
-		run.catch((err) => {
-			log.warn("desktop reap chain failed", err, { desktop: name });
-		});
-		reapTail = run.then(
-			() => undefined,
-			() => undefined,
-		);
-	}
-
-	// Top of every entry point: the name check must precede pruneShots
-	// — an unvalidated "../" name would prune outside shotsRoot.
-	// Synchronous, so no call blocks behind another desktop's lane.
-	function sweepOnce(name: string, op: string): void {
-		if (!NAME_RE.test(name)) {
-			throw refuse(
-				name,
-				op,
-				`invalid desktop name ${JSON.stringify(name)} — must match ${NAME_RE.source}`,
-			);
-		}
-		pruneShots(name);
-		const idle = cfg().idleHours;
-		if (idle === 0) return;
-		const cutoff = Date.now() - idle * 3_600_000;
-		for (const row of store.staleBefore(cutoff, name)) enqueueReap(row.name, cutoff);
-	}
-
 	// Lifecycle ops are single-flight per desktop — row
 	// read-modify-writes stay inside the lane.
 	const lanes = new Map<string, Promise<void>>();
@@ -581,6 +463,18 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 		lanes.set(name, tail);
 		return run;
 	}
+
+	const { pruneShots, reapLocked, sweepOnce } = makeReaper({
+		store,
+		podman,
+		cfg,
+		shotsRoot,
+		lane,
+		requireOurs,
+		refuse,
+		containerNameForDesktop,
+		namePattern: /^[a-z0-9][a-z0-9-]{0,30}$/,
+	});
 
 	// cua-driver tokens are session-scoped — every call carries the
 	// desktop name as its session.

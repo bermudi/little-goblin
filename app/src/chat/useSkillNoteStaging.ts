@@ -4,7 +4,7 @@
 
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { AppNoteSummary } from "../../../src/http/app-wire.ts";
-import type { StagedNote, StagedSkill } from "./staged.ts";
+import { stagedKey, type StagedNote, type StagedSkill } from "./staged.ts";
 
 // Staging dedups by reference, never display name — a catalog skill
 // and a fetched copy that named itself the same are distinct skills,
@@ -55,14 +55,14 @@ export function useSkillNoteStaging({
 		setStagedNotes((p) =>
 			p.some((e) => e.id === n.id)
 				? p
-				: [...p, { key: crypto.randomUUID(), id: n.id, title: n.title }],
+				: [...p, { key: stagedKey(), id: n.id, title: n.title }],
 		);
 
 	const stageSkill = (picked: { name: string; ref: StagedSkill["ref"] }) =>
 		setStagedSkills((p) =>
 			p.some((e) => skillRefEquals(e.ref, picked.ref))
 				? p
-				: [...p, { key: crypto.randomUUID(), name: picked.name, ref: picked.ref }],
+				: [...p, { key: stagedKey(), name: picked.name, ref: picked.ref }],
 		);
 
 	return {

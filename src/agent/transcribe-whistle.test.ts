@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { whistleEngine, type WhistleDeps } from "./transcribe-whistle.ts";
 import { tmpDir } from "../testkit.ts";
@@ -146,6 +146,131 @@ describe("whistle artifact auto-fetch", () => {
 	// Fake digests let fixtures serve a few bytes instead of the real
 	// 18 MB artifacts.
 	const fakeDigest = (data: string): string => Bun.CryptoHasher.hash("sha256", data, "hex");
+
+	test("a cached artifact with the pinned bytes is reused without fetching", async () => {
+		const dir = tmpDir("goblin-whistle-");
+		const cache = join(dir, "cache");
+		mkdirSync(cache);
+		const engineBytes = readFileSync(stubEngine(dir, "ok"), "utf8");
+		writeFileSync(join(cache, "needle"), engineBytes, { mode: 0o755 });
+		writeFileSync(join(cache, "whistle.cact"), "weights-bytes");
+		let fetches = 0;
+		const engine = whistleEngine(
+			{},
+			{
+				cacheDir: cache,
+				arch: "x64",
+				platform: "linux",
+				digests: {
+					engine: fakeDigest(engineBytes),
+					weights: fakeDigest("weights-bytes"),
+				},
+				fetchFn: (async () => {
+					fetches++;
+					throw new Error("fetch must not be called for valid cached artifacts");
+				}) as unknown as typeof fetch,
+			},
+		);
+		expect((await engine.transcribe(audioFile(dir))).text).toBe("hola goblin");
+		expect(fetches).toBe(0);
+	});
+
+	test("a cached weights file changed after transcription fails the next check", async () => {
+		const dir = tmpDir("goblin-whistle-");
+		const cache = join(dir, "cache");
+		const engineBytes = readFileSync(stubEngine(dir, "ok"), "utf8");
+		const deps: WhistleDeps = {
+			cacheDir: cache,
+			arch: "x64",
+			platform: "linux",
+			digests: {
+				engine: fakeDigest(engineBytes),
+				weights: fakeDigest("weights-bytes"),
+			},
+			fetchFn: (async (url: string | URL | Request) =>
+				new Response(String(url).endsWith("/needle") ? engineBytes : "weights-bytes")) as unknown as typeof fetch,
+		};
+		const engine = whistleEngine({}, deps);
+		expect((await engine.transcribe(audioFile(dir))).text).toBe("hola goblin");
+		writeFileSync(join(cache, "whistle.cact"), "-appended", { flag: "a" });
+		await expect(engine.transcribe(audioFile(dir))).rejects.toThrow("digest mismatch");
+	});
+
+	test("a cached engine file changed after transcription fails the next check", async () => {
+		const dir = tmpDir("goblin-whistle-");
+		const cache = join(dir, "cache");
+		const engineBytes = readFileSync(stubEngine(dir, "ok"), "utf8");
+		const deps: WhistleDeps = {
+			cacheDir: cache,
+			arch: "x64",
+			platform: "linux",
+			digests: {
+				engine: fakeDigest(engineBytes),
+				weights: fakeDigest("weights-bytes"),
+			},
+			fetchFn: (async (url: string | URL | Request) =>
+				new Response(String(url).endsWith("/needle") ? engineBytes : "weights-bytes")) as unknown as typeof fetch,
+		};
+		const engine = whistleEngine({}, deps);
+		expect((await engine.transcribe(audioFile(dir))).text).toBe("hola goblin");
+		writeFileSync(join(cache, "needle"), "\n-appended", { flag: "a" });
+		await expect(engine.transcribe(audioFile(dir))).rejects.toThrow("digest mismatch");
+	});
+
+	test("a tampered cached artifact fails digest verification without fetching", async () => {
+		const dir = tmpDir("goblin-whistle-");
+		const cache = join(dir, "cache");
+		mkdirSync(cache);
+		writeFileSync(join(cache, "needle"), "overwritten-engine", { mode: 0o755 });
+		let fetches = 0;
+		const engine = whistleEngine(
+			{},
+			{
+				cacheDir: cache,
+				arch: "x64",
+				platform: "linux",
+				digests: {
+					engine: fakeDigest("engine-bytes"),
+					weights: fakeDigest("weights-bytes"),
+				},
+				fetchFn: (async () => {
+					fetches++;
+					throw new Error("fetch must not be called for a mismatched cached artifact");
+				}) as unknown as typeof fetch,
+			},
+		);
+		await expect(engine.transcribe(audioFile(dir))).rejects.toThrow(
+			/digest mismatch.*needle.*wanted .*got .*trash the cached file to re-fetch.*local paths/,
+		);
+		expect(fetches).toBe(0);
+	});
+
+	test("a cached artifact with appended bytes fails digest verification without fetching", async () => {
+		const dir = tmpDir("goblin-whistle-");
+		const cache = join(dir, "cache");
+		mkdirSync(cache);
+		writeFileSync(join(cache, "needle"), "engine-bytes", { mode: 0o755 });
+		writeFileSync(join(cache, "needle"), "-appended", { flag: "a" });
+		let fetches = 0;
+		const engine = whistleEngine(
+			{},
+			{
+				cacheDir: cache,
+				arch: "x64",
+				platform: "linux",
+				digests: {
+					engine: fakeDigest("engine-bytes"),
+					weights: fakeDigest("weights-bytes"),
+				},
+				fetchFn: (async () => {
+					fetches++;
+					throw new Error("fetch must not be called for a mismatched cached artifact");
+				}) as unknown as typeof fetch,
+			},
+		);
+		await expect(engine.transcribe(audioFile(dir))).rejects.toThrow("digest mismatch");
+		expect(fetches).toBe(0);
+	});
 
 	test("fetches each artifact once into the cache, then reuses", async () => {
 		const dir = tmpDir("goblin-whistle-");

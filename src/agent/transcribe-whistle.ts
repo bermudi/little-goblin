@@ -8,7 +8,7 @@
 // managed installs.
 
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -68,8 +68,8 @@ function artifactUrls(arch: string, platform: string): { engine: string; weights
 	};
 }
 
-// One fetch per process per artifact set — concurrent transcriptions
-// share the in-flight promise.
+// Concurrent transcriptions share an in-flight fetch. Settled entries are
+// removed so each transcription checks the cached artifact bytes again.
 const artifactMemo = new Map<string, Promise<{ engine: string; weights: string }>>();
 
 function ensureArtifacts(
@@ -109,9 +109,13 @@ function ensureArtifacts(
 			),
 		};
 	})();
-	// A failed fetch must not poison the memo — the next call retries.
-	p.catch(() => artifactMemo.delete(key));
 	artifactMemo.set(key, p);
+	// The memo dedupes concurrent work only. Once settled, a later
+	// transcription must validate the current bytes at both cache paths.
+	const clearMemo = (): void => {
+		if (artifactMemo.get(key) === p) artifactMemo.delete(key);
+	};
+	void p.then(clearMemo, clearMemo);
 	return p;
 }
 
@@ -129,7 +133,17 @@ async function artifact(
 			throw new Error(`whistle: configured artifact not found: ${override}`);
 		return override;
 	}
-	if (existsSync(dest)) return dest;
+	if (existsSync(dest)) {
+		const cached = readFileSync(dest);
+		const got = createHash("sha256").update(cached).digest("hex");
+		if (got !== sha256) {
+			throw new Error(
+				`whistle: digest mismatch for ${dest} (wanted ${sha256.slice(0, 16)}…, got ${got.slice(0, 16)}…) — trash the cached file to re-fetch, or set transcription.engine/transcription.weights to local paths`,
+			);
+		}
+		log.debug("whistle artifact cached ok", { dest, bytes: cached.byteLength });
+		return dest;
+	}
 
 	const fetchFn = deps.fetchFn ?? fetch;
 	log.info("whistle artifact fetching", { url, dest });

@@ -786,6 +786,7 @@ export async function driveStream<M extends WireMember>(
 				model: modelLabel,
 				finishReason: part.finishReason,
 				durationMs: Date.now() - deps.turnStartMs,
+				createdAt: new Date().toISOString(),
 				...(firstTokenMs !== null ? { ttftMs: firstTokenMs } : {}),
 				...(forcedKind !== null ? { forcedCompletion: forcedKind } : {}),
 				usage: {

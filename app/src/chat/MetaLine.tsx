@@ -3,6 +3,7 @@
 
 import type { UIMessage } from "ai";
 import { Markdown } from "../markdown.tsx";
+import { Age } from "./messageAge.tsx";
 import { SpeechPlayer, useSpeech } from "../speech.tsx";
 import { useCopy } from "../useCopy.ts";
 import type {
@@ -87,6 +88,9 @@ export function turnMeta(m: UIMessage): TurnMetadata | null {
 		model: o.model,
 		finishReason: typeof o.finishReason === "string" ? o.finishReason : "",
 		durationMs: o.durationMs,
+		// The turn's append stamp: the finish stamp writes it live, the
+		// history serve backfills it for pre-stamp rows.
+		...(typeof o.createdAt === "string" ? { createdAt: o.createdAt } : {}),
 		...(ttftMs !== null ? { ttftMs } : {}),
 		forcedCompletion:
 			o.forcedCompletion === "repeat" ||
@@ -179,7 +183,7 @@ export function foldStartExcerpt(mark: AppCompactionMark, messages: UIMessage[])
 // Compact stat formatting — "1.2k", "340", "4.2s".
 const kfmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`);
 
-export function MetaLine({ meta }: { meta: TurnMetadata }) {
+export function MetaLine({ meta, now }: { meta: TurnMetadata; now: number }) {
 	const bits: string[] = [meta.model];
 	// A fallback served: name who didn't and why, so the operator can fix
 	// the primary (search's served_by line, applied to models).
@@ -211,7 +215,17 @@ export function MetaLine({ meta }: { meta: TurnMetadata }) {
 		bits.push(`${tps >= 100 ? Math.round(tps) : tps.toFixed(1)} tok/s`);
 	}
 	if (meta.ttftMs !== undefined) bits.push(`TTFT ${(meta.ttftMs / 1000).toFixed(1)}s`);
-	return <div className="msg-meta">{bits.join(" · ")}</div>;
+	return (
+		<div className="msg-meta">
+			{bits.join(" · ")}
+			{meta.createdAt !== undefined && (
+				<>
+					{" · "}
+					<Age at={meta.createdAt} now={now} />
+				</>
+			)}
+		</div>
+	);
 }
 
 // A fold pointer rendered into the transcript: the pill sits where the

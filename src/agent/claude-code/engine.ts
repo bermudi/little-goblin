@@ -1092,6 +1092,7 @@ export async function driveClaude<M extends WireMember>(
 		model: label,
 		finishReason,
 		durationMs: Date.now() - deps.turnStartMs,
+		createdAt: new Date().toISOString(),
 		...(run.firstTokenMs !== null ? { ttftMs: run.firstTokenMs } : {}),
 		usage: {
 			input: run.totalInput,

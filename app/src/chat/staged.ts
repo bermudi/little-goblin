@@ -5,6 +5,15 @@
 
 import type { AttachmentRef } from "../../../src/agent/attachments.ts";
 
+// Client keys for staged chips. crypto.randomUUID exists only in
+// secure contexts — on a plain-HTTP hostname it is missing entirely —
+// so the key comes from getRandomValues, which works everywhere.
+export function stagedKey(): string {
+	const b = new Uint8Array(16);
+	crypto.getRandomValues(b);
+	return Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+}
+
 // One staged attachment. Entries carry a client key — pasted images
 // all arrive named "image.png", so filename can't pick which staging
 // row an upload resolves. `speech` marks a voice note staged while a

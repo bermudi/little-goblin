@@ -1535,3 +1535,19 @@ renders it as a chip on the user message, like attachments and notes.
 Drafts stay text-only — staged skills are references, not prose
 (Composer drafts, above). The listing endpoint's response gains the
 picker's catalog view; the operator Skills page is unchanged.
+
+**Picker presentation (ruling 2026-11-16).** A picker takes one of two
+shapes, chosen by size and steps, never by taste:
+
+- Small quick pick anchored to its trigger → `.composer-pick`
+  popover floating over the composer (note picker, model quick
+  menu). The thread stays visible and nothing reflows.
+- Big or multi-step task → `.veil > .msheet` bottom sheet over the
+  whole app — dim veil, tap-outside closes, centered card above
+  721px (model sheet, the settings sheets, this skill sheet).
+
+The skill sheet is the second kind. It had mounted bare inside the
+composer `<form>` — the model sheet's chrome without its veil, so the
+form grew by the sheet's height and pushed the layout around; it moved
+onto the veil pattern 2026-11-16. List behavior inside either shape is
+always the command primitive (issues #585, #592).

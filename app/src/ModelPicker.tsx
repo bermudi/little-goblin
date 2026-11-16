@@ -9,8 +9,8 @@
 // listbox/combobox ARIA wiring — come from @ui-sdk/react's `command`
 // primitive (vercel-labs/ui), mounted open inside this sheet. What
 // stays here is the domain: pinning, curation, the provider scope,
-// stars, and the typed path's exact resolution.
-import { useRef, useState } from "react";
+// stars, and the custom-ref `Use "…"` row.
+import { useState } from "react";
 import {
 	Command,
 	CommandEmpty,
@@ -54,24 +54,13 @@ export function ModelPicker({
 }) {
 	const [query, setQuery] = useState("");
 	const [scope, setScope] = useState("");
-	// The row the operator last moved the highlight to (arrows, pointer),
-	// or null. Only user moves fire onValueChange — auto-highlights land
-	// silently — so a fresh query's Enter keeps running the typed path's
-	// exact resolution, and Enter after an arrow runs the row the
-	// operator chose.
-	const arrowed = useRef<string | null>(null);
 	// ?? null: an older backend's config view lacks the key — read as
 	// never curated, not an empty sheet.
 	const curatedList = pickerModels ?? null;
 	const q = query.trim().toLowerCase();
 	const meta = new Map<string, ModelOption>();
-	const canonical = new Map<string, string>();
 	for (const group of catalog)
-		for (const model of group.models) {
-			const ref = `${group.provider}/${model.id}`;
-			meta.set(ref, model);
-			canonical.set(ref.toLowerCase(), ref);
-		}
+		for (const model of group.models) meta.set(`${group.provider}/${model.id}`, model);
 	const favSet = new Set(favorites.map((f) => f.toLowerCase()));
 	const isFav = (ref: string) => ref !== "" && favSet.has(ref.toLowerCase());
 	// Search spans the full ref and the catalog's friendly name, so
@@ -139,18 +128,28 @@ export function ModelPicker({
 				: typedProvider === undefined
 					? null
 					: `${typedProvider}/${raw}`;
-	const known = (ref: string) =>
-		canonical.has(ref.toLowerCase()) ||
-		favorites.some((f) => f.toLowerCase() === ref.toLowerCase());
 	const curatedMode = curatedList !== null;
 	const hasResults =
 		favs.length > 0 ||
 		showCurrent ||
 		(curatedMode ? curatedRest.length > 0 : groups.length > 0);
+	// A typed ref always has a row: when nothing rendered matches it —
+	// a custom ref, or a canonical one curation hid — it gets the
+	// `Use "…"` row instead of an Enter that could only miss.
+	const rowRefs = new Set(
+		[
+			...favs,
+			...(showCurrent ? [current] : []),
+			...curatedRest,
+			// The catalog groups only render outside curated mode — a
+			// canonical ref curation hides still needs its Use row.
+			...(curatedMode ? [] : groups.flatMap((g) => g.models.map((m) => m.ref))),
+		].map((r) => r.toLowerCase()),
+	);
 	const showCustom =
 		customRef !== null &&
-		!known(customRef) &&
 		customRef !== current &&
+		!rowRefs.has(customRef.toLowerCase()) &&
 		(!hasResults || customRef.includes("/"));
 	// One row: the option is the item; the mrow button inside keeps the
 	// row's own click target (the command runs it either way) and the
@@ -196,26 +195,6 @@ export function ModelPicker({
 			</CommandItem>
 		);
 	};
-	// Enter with no highlighted row runs the typed path: exact
-	// resolution ignores visibility — a catalog hit resolves to its
-	// catalog spelling, a favorite to its stored spelling — so typing
-	// reaches a hidden model (or a hidden favorite's exact ref) even
-	// when curation keeps it off every row. A fully typed provider/model
-	// ref beats a catalog row that only contains it as a substring.
-	const onEnter = () => {
-		if (raw === "") return;
-		const exact =
-			canonical.get(raw.toLowerCase()) ??
-			favorites.find((f) => f.toLowerCase() === raw.toLowerCase());
-		const pick =
-			exact ??
-			(showCustom && raw.includes("/") ? customRef : undefined) ??
-			favs[0] ??
-			(showCurrent ? current : undefined) ??
-			(curatedMode ? curatedRest[0] : groups[0]?.models[0]?.ref) ??
-			(showCustom ? customRef : null);
-		if (pick !== null) onPick(pick);
-	};
 	return (
 		<div className="veil on" onClick={onClose}>
 			<div className="msheet" role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()}>
@@ -228,34 +207,25 @@ export function ModelPicker({
 				<Command
 					className="msheet-command"
 					query={query}
-					onQueryChange={(q) => {
-						setQuery(q);
-						// Typing re-filters: the operator's arrow choice is
-						// spent, and Enter falls back to the typed path.
-						arrowed.current = null;
-					}}
+					onQueryChange={setQuery}
 					filter={(item, search) => {
 						const needle = search.trim().toLowerCase();
 						return hit(item.value === OFF ? "" : item.value, needle);
 					}}
-					onValueChange={(value) => {
-						arrowed.current = value;
-					}}
 					onAction={(value) => onPick(value === OFF ? "" : value)}
 					onKeyDownCapture={(e) => {
-						// Only the search field's Enter: the scope select and
-						// the row buttons keep their own. Enter after an
-						// arrow runs the row the operator chose; otherwise
-						// the typed path takes over — and an empty query
-						// picks nothing, so the highlighted first row cannot
-						// run by itself. (tagName, not instanceof: happy-dom
-						// realms have their own element classes.)
+						// The pickers' keep-ruling, here too: Enter on an
+						// empty filter picks nothing — the highlighted
+						// first row cannot run by itself. With a query the
+						// command's own Enter runs the highlighted row.
+						// (tagName, not instanceof: happy-dom realms have
+						// their own element classes.)
 						if (e.key !== "Enter" || (e.target as HTMLElement | null)?.tagName !== "INPUT")
 							return;
-						if (query.trim() !== "" && arrowed.current !== null) return;
-						e.preventDefault();
-						e.stopPropagation();
-						onEnter();
+						if (query.trim() === "") {
+							e.preventDefault();
+							e.stopPropagation();
+						}
 					}}
 				>
 					<div className="msheet-filter">

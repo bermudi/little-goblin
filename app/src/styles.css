@@ -3548,7 +3548,7 @@ button.pathchip:hover svg {
 .log-controls input:hover,
 .log-controls select:hover,
 .note-filters input[type="search"]:hover,
-.note-pick input[type="search"]:hover,
+.note-pick input:hover,
 .note-rewrite-field textarea:hover,
 .rail-search:hover,
 .gate input:hover {
@@ -3576,7 +3576,7 @@ button.pathchip:hover svg {
 .log-controls input:focus,
 .log-controls select:focus,
 .note-filters input[type="search"]:focus,
-.note-pick input[type="search"]:focus,
+.note-pick input:focus,
 .note-rewrite-field textarea:focus,
 .rail-search:focus,
 .gate input:focus,
@@ -3681,7 +3681,7 @@ button.pathchip:hover svg {
 .program-editor input,
 .program-editor textarea,
 .note-filters input[type="search"],
-.note-pick input[type="search"],
+.note-pick input,
 .note-rewrite-field textarea {
 	background-color: var(--app-control-bg);
 }
@@ -3986,6 +3986,11 @@ button.pathchip:hover svg {
 .mrow:hover {
 	background: var(--app-hover);
 }
+/* The command primitive's keyboard highlight — the row the arrows are
+   on. Same fill as hover so touch and keyboard read alike. */
+.msheet .mline[data-highlighted] .mrow {
+	background: var(--app-hover);
+}
 .mrow.sel {
 	background: var(--app-active);
 }
@@ -4049,12 +4054,10 @@ button.pathchip:hover svg {
 	font-size: 14px;
 	line-height: 1;
 	padding: 0.35rem 0.45rem;
-	border-radius: 6px;
 	color: var(--app-fg-subtle);
 }
 .mstar:hover {
 	color: var(--app-warning);
-	background: var(--app-hover);
 }
 .mstar.on {
 	color: var(--app-warning);
@@ -5677,7 +5680,14 @@ select.ui-input option {
 	background: var(--app-gray-100);
 	padding: 0.5rem;
 }
-.note-pick input[type="search"] {
+/* The command primitive's root, standing between the picker and its
+   field/list so the picker's own column spacing survives the wrapper. */
+.note-pick-command {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+.note-pick input {
 	font: inherit;
 	font-size: 12px;
 	background-color: var(--app-control-bg);
@@ -5687,14 +5697,14 @@ select.ui-input option {
 	padding: 0.35rem 0.55rem;
 	outline: none;
 }
-.note-pick ul {
+.note-pick-list {
 	list-style: none;
 	margin: 0;
 	padding: 0;
 	max-height: 12rem;
 	overflow-y: auto;
 }
-.note-pick li button {
+.note-pick-list button {
 	display: block;
 	width: 100%;
 	text-align: left;
@@ -5702,10 +5712,20 @@ select.ui-input option {
 	padding: 0.3rem 0.45rem;
 	border-radius: 6px;
 }
-.note-pick li button:hover {
+.note-pick-list button:hover,
+.note-pick-list [data-highlighted] button {
 	background: var(--app-hover);
 }
-.note-pick li.empty,
+/* The command-driven note picker matches the skill sheet: flat rows,
+   a left tick on the arrowed row only. The model quick menu shares
+   .note-pick-list but runs no command — it keeps the hover fill. */
+.note-pick-command .note-pick-list button:hover,
+.note-pick-command .note-pick-list [data-highlighted] button {
+	background: none;
+}
+.note-pick-command .note-pick-list [data-highlighted] button {
+	box-shadow: inset 2px 0 0 var(--app-fg-muted);
+}
 .note-pick .empty {
 	font-size: 12px;
 	color: var(--app-fg-muted);
@@ -7165,7 +7185,11 @@ button.link:hover {
 }
 
 /* Skill picker sheet (ruling 2026-10-21): catalog rows + the
-   from-link preview card. Reuses the msheet chrome. */
+   from-link preview card. Reuses the whole msheet chrome — head,
+   filter row, scrolling body — with the from-link form pinned as a
+   footer under the command so it never scrolls away. Rows speak the
+   model sheet's language: rounded hover fill, no hairlines, mono
+   metadata on the side. */
 .skill-picker-row {
 	display: flex;
 	justify-content: space-between;
@@ -7173,14 +7197,16 @@ button.link:hover {
 	gap: 0.75rem;
 	width: 100%;
 	text-align: left;
-	padding: 0.45rem 0.5rem;
+	padding: 0.45rem 0.6rem;
 	border: 0;
-	border-bottom: 1px solid var(--line, #ddd);
+	border-radius: 8px;
 	background: none;
 	cursor: pointer;
 }
-.skill-picker-row:hover {
-	background: var(--hover, rgba(127, 127, 127, 0.12));
+/* No hover fill — the rows stay flat. The command's arrow/auto
+   highlight keeps only a left tick so Enter's target stays visible. */
+.skill-picker-row[data-highlighted] {
+	box-shadow: inset 2px 0 0 var(--app-fg-muted);
 }
 .skill-picker-main {
 	display: flex;
@@ -7188,23 +7214,40 @@ button.link:hover {
 	gap: 0.15rem;
 	min-width: 0;
 }
+.skill-picker-name {
+	display: flex;
+	align-items: baseline;
+	gap: 0.45rem;
+	min-width: 0;
+}
+.skill-picker-name strong {
+	font-size: 12.5px;
+}
 .skill-picker-sub {
-	color: var(--dim, #777);
-	font-size: 0.85em;
+	color: var(--app-fg-muted);
+	font-size: 12px;
+	line-height: 1.45;
 	overflow-wrap: anywhere;
 }
 .skill-picker-side {
-	color: var(--dim, #777);
-	font-size: 0.85em;
+	flex: none;
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--app-fg-muted);
 	white-space: nowrap;
 }
 .skill-from-link {
+	flex: none;
 	display: flex;
 	flex-direction: column;
-	gap: 0.4rem;
-	margin-top: 0.75rem;
-	padding-top: 0.75rem;
-	border-top: 1px solid var(--line, #ddd);
+	gap: 0.45rem;
+	padding: 0.7rem 0.9rem 0.8rem;
+	border-top: 1px solid var(--app-divider);
+}
+.skill-from-link > strong {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--app-fg-subtle);
 }
 .skill-from-link .link-row {
 	display: flex;
@@ -7218,8 +7261,8 @@ button.link:hover {
 	display: flex;
 	flex-direction: column;
 	gap: 0.3rem;
-	padding: 0.5rem;
-	border: 1px solid var(--line, #ddd);
+	padding: 0.6rem;
+	border: 1px solid var(--app-divider);
 	border-radius: 8px;
 }
 

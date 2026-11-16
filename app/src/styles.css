@@ -6162,9 +6162,13 @@ button.link:hover {
 .note-fmt-group {
 	display: inline-flex;
 	gap: 0.1rem;
-	padding-left: 0.3rem;
+}
+.note-fmt-sep {
+	width: 1px;
+	align-self: stretch;
 	margin-left: 0.2rem;
-	border-left: 1px solid var(--app-divider);
+	margin-right: 0.3rem;
+	background: var(--app-divider);
 }
 .note-fmt-btn {
 	width: 2rem;
@@ -6181,11 +6185,12 @@ button.link:hover {
 	border-radius: 6px;
 	cursor: pointer;
 }
-.note-fmt-btn:hover:not(:disabled) {
+.note-fmt-btn:hover:not(:disabled):not([aria-disabled="true"]) {
 	background: var(--app-hover);
 	color: var(--app-fg);
 }
-.note-fmt-btn.on {
+.note-fmt-btn.on,
+.note-fmt-btn[data-pressed] {
 	color: var(--app-accent);
 	background: color-mix(in oklab, var(--app-accent) 16%, transparent);
 	border-color: color-mix(in oklab, var(--app-accent) 40%, transparent);
@@ -6195,7 +6200,8 @@ button.link:hover {
 	outline: 2px solid var(--app-focus);
 	outline-offset: 1px;
 }
-.note-fmt-btn:disabled {
+.note-fmt-btn:disabled,
+.note-fmt-btn[aria-disabled="true"] {
 	opacity: 0.35;
 	cursor: default;
 }

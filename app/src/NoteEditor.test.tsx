@@ -160,6 +160,10 @@ beforeEach(() => {
 		"Range",
 		"Node",
 		"HTMLElement",
+		"HTMLFieldSetElement",
+		"HTMLInputElement",
+		"HTMLTextAreaElement",
+		"KeyboardEvent",
 		"HTMLUnknownElement",
 		"getComputedStyle",
 		"requestAnimationFrame",
@@ -1849,6 +1853,7 @@ describe("formatting toolbar", () => {
 		const ref = await mount("hello world", DELAY);
 		await notice();
 		await select(ref, 1, 6);
+		expect(container.querySelector('[role="toolbar"][aria-label="Formatting"]')).not.toBeNull();
 		expect(tool("strong").getAttribute("aria-pressed")).toBe("false");
 		await act(async () => tool("strong").click());
 		expect(tool("strong").getAttribute("aria-pressed")).toBe("true");
@@ -1856,6 +1861,24 @@ describe("formatting toolbar", () => {
 		await settle();
 		expect(patches.at(-1)!.body.body).toBe("**hello** world\n");
 		expect(tool("undo").disabled).toBe(false);
+	});
+
+	test("toolbar buttons share one tab stop and arrow keys move focus", async () => {
+		root = createRoot(container);
+		await mount("hello world", DELAY);
+		await notice();
+		const strong = tool("strong");
+		const emphasis = tool("emphasis");
+
+		strong.focus();
+		expect(document.activeElement?.getAttribute("data-tool")).toBe("strong");
+		await act(async () => {
+			strong.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }) as unknown as Event,
+			);
+		});
+
+		expect(document.activeElement?.getAttribute("data-tool")).toBe("emphasis");
 	});
 
 	test("Text style → Paragraph turns a heading back into text", async () => {

@@ -134,5 +134,89 @@ class Fixtures(unittest.TestCase):
 			self.assertGreater(len(assertion), 20)
 
 
+def output(*facts: dict) -> str:
+	return json.dumps({"facts": list(facts)})
+
+
+class ExtractBenchTests(unittest.TestCase):
+	def test_mission_swap_replaces_exact_value(self) -> None:
+		blocks = [
+			{"text": "FOCUS OLD end ", "field": "retain_mission", "value": "OLD"},
+			{"text": "Content: OLD", "field": ""},
+		]
+		self.assertEqual(bench.replace_mission_block(blocks, "NEW"), "FOCUS NEW end Content: OLD")
+
+	def test_mission_swap_requires_exactly_one_value(self) -> None:
+		for text in ("no match", "OLD then OLD"):
+			blocks = [{"text": text, "field": "retain_mission", "value": "OLD"}]
+			with self.subTest(text=text), self.assertRaises(ValueError):
+				bench.replace_mission_block(blocks, "NEW")
+
+	def test_where_and_entities_are_scored(self) -> None:
+		fact = {"what": "dentist moved", "when": "", "where": "Coyoacán", "who": "", "why": "", "entities": ["AM 412"]}
+		self.assertTrue(bench.score_case({"keep": [["coyoac"], ["am 412"]]}, output(fact))["passed"])
+		self.assertFalse(bench.score_case({"forbid": ["coyoac"]}, output(fact))["passed"])
+
+	def test_response_without_facts_array_is_parse_failure(self) -> None:
+		for text in ('{"error": []}', "[]", '{"facts": "none"}'):
+			with self.subTest(text=text):
+				scored = bench.score_case({"expect_empty": True}, text)
+				self.assertFalse(scored["parse_ok"])
+				self.assertFalse(scored["passed"])
+				self.assertFalse(scored["empty_correct"])
+
+	def test_event_date_is_replaced(self) -> None:
+		result = bench.replace_event_date(
+			"Earlier\nEvent Date: old\nLater",
+			"2026-11-16T10:00:00+00:00",
+		)
+		self.assertEqual(result, "Earlier\nEvent Date: Monday, November 16, 2026 (2026-11-16T10:00:00+00:00)\nLater")
+
+	def test_all_keep_groups_hit_passes(self) -> None:
+		case = {"keep": [["digest"], ["voice"]]}
+		scored = bench.score_case(case, output({"what": "voice note", "when": "", "who": "digest", "why": ""}))
+		self.assertTrue(scored["passed"])
+		self.assertEqual((scored["keep_hits"], scored["keep_total"]), (2, 2))
+
+	def test_missed_keep_group_fails_with_recall(self) -> None:
+		scored = bench.score_case(
+			{"keep": [["digest"], ["voice"]]},
+			output({"what": "voice note", "when": "", "who": "", "why": ""}),
+		)
+		self.assertFalse(scored["passed"])
+		self.assertEqual((scored["keep_hits"], scored["keep_total"]), (1, 2))
+
+	def test_forbid_hit_fails(self) -> None:
+		scored = bench.score_case(
+			{"forbid": ["71\\s*%"]},
+			output({"what": "Disk at 71%", "when": "", "who": "", "why": ""}),
+		)
+		self.assertFalse(scored["passed"])
+		self.assertEqual(scored["forbid_violations"], 1)
+
+	def test_expect_empty(self) -> None:
+		case = {"expect_empty": True}
+		self.assertTrue(bench.score_case(case, output())["passed"])
+		nonempty = bench.score_case(case, output({"what": "hello"}))
+		self.assertFalse(nonempty["passed"])
+		self.assertFalse(nonempty["empty_correct"])
+
+	def test_unparsable_output_fails(self) -> None:
+		scored = bench.score_case({"keep": [["x"]]}, "not json")
+		self.assertFalse(scored["passed"])
+		self.assertFalse(scored["parse_ok"])
+
+	def test_missing_cost_makes_total_unavailable_and_counted(self) -> None:
+		self.assertEqual(bench.total_cost([{"cost": 0.01}, {"cost": None}]), (None, 1))
+
+	def test_extraction_fixture_cases_are_labeled(self) -> None:
+		fixture = json.loads((Path(bench.FIXTURES) / "extract_cases.json").read_text())
+		self.assertIn("_about", fixture)
+		for case_id, case in fixture["cases"].items():
+			with self.subTest(case=case_id):
+				self.assertTrue(case.get("text"))
+				self.assertTrue(case.get("keep") or case.get("forbid") or case.get("expect_empty"))
+
+
 if __name__ == "__main__":
 	unittest.main()

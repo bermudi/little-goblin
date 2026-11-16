@@ -1,6 +1,6 @@
-"""Benchmark the memory stack's two latency/quality surfaces without mutating it.
+"""Benchmark the memory stack's latency/quality surfaces without mutating it.
 
-Two subcommands, both read-only against the live service:
+Subcommands, all read-only against the live service:
 
   llm     — the retain (fact extraction) LLM leg. Renders the EXACT prompts and
             response schema the bank would send (via prompts/preview), then
@@ -15,15 +15,18 @@ Two subcommands, both read-only against the live service:
             retrieval quality (hit@k / MRR) of a candidate model against the
             deployed one over the live bank and a gold-query fixture.
 
-Spending: `llm` calls the paid extraction LLM and `recall` the embedding
-provider. Both print a plan with an upfront cost estimate and require --yes.
+  extract — score retain-mission fact extraction against labeled cases,
+            comparing mission and model combinations without a judge call.
+
+Spending: `llm` and `extract` call the paid extraction LLM; `recall` calls
+the embedding provider. They print a plan and require --yes.
 Credentials come from the same lane the container uses: run under
 `pass-keys run goblin-dev --` (the shared OPENROUTER_API_KEY enters the
 environment), or the bench resolves the provider's auth.jsonl `!` record
 in-process. hindsight.env no longer carries secrets — it is read for
 provider/model/base-URL structure only, never for key values.
 
-Run: pass-keys run goblin-dev -- uv run deploy/memory/bench.py <llm|recall> [flags]
+Run: pass-keys run goblin-dev -- uv run deploy/memory/bench.py <llm|recall|extract> [flags]
 """
 from __future__ import annotations
 
@@ -34,6 +37,7 @@ import re
 import statistics
 import sys
 import time
+from datetime import datetime
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -130,6 +134,97 @@ def render_retain_prompts(api: str, bank: str) -> RenderedPrompts:
 	system = "".join(b["text"] for b in messages[0]["blocks"])
 	user = "".join(b["text"] for b in messages[1]["blocks"])
 	return RenderedPrompts(system=system, user=user, response_schema=body["response_schema"])
+
+
+def preview_retain(api: str, bank: str) -> tuple[RenderedPrompts, str, list[dict]]:
+	"""Return rendered prompts and the live retain mission from preview blocks."""
+	body = post_json(f"{api}/v1/default/banks/{bank}/prompts/preview", {"operation": "retain"})
+	messages = body["messages"]
+	system = "".join(b["text"] for b in messages[0]["blocks"])
+	blocks = messages[1]["blocks"]
+	missions = [b for b in blocks if b.get("field") == "retain_mission"]
+	if len(missions) != 1 or not isinstance(missions[0].get("value"), str):
+		fail("retain prompt preview must contain exactly one retain_mission user block")
+	user = "".join(b["text"] for b in blocks)
+	return RenderedPrompts(system, user, body["response_schema"]), missions[0]["value"], blocks
+
+
+def replace_event_date(user: str, timestamp: str) -> str:
+	date = datetime.fromisoformat(timestamp)
+	formatted = f"Event Date: {date.strftime('%A, %B')} {date.day}, {date.year} ({date.isoformat()})"
+	result, count = re.subn(r"^Event Date: .*?$", formatted, user, count=1, flags=re.MULTILINE)
+	if count != 1:
+		raise ValueError("retain prompt must contain exactly one Event Date line")
+	return result
+
+
+def replace_mission_block(blocks: list[dict], candidate: str) -> str:
+	missions = [block for block in blocks if block.get("field") == "retain_mission"]
+	if len(missions) != 1 or not isinstance(missions[0].get("value"), str):
+		raise ValueError("retain prompt must contain exactly one retain_mission user block")
+	block = missions[0]
+	block_text = block["text"]
+	value = block["value"]
+	if block_text.count(value) != 1:
+		raise ValueError("retain_mission value must occur exactly once in its rendered block")
+	return "".join(
+		block["text"].replace(value, candidate, 1) if block is missions[0] else block["text"]
+		for block in blocks
+	)
+
+
+def extraction_facts(text: str) -> tuple[bool, list[object]]:
+	"""The response schema's `facts` array; any other shape is a parse failure."""
+	try:
+		parsed = json.loads(text)
+	except (json.JSONDecodeError, TypeError):
+		return False, []
+	if isinstance(parsed, dict) and isinstance(parsed.get("facts"), list):
+		return True, parsed["facts"]
+	return False, []
+
+
+FACT_TEXT_FIELDS = ("what", "when", "where", "who", "why")
+
+
+def fact_text(fact: object) -> str:
+	"""Every free-text field of one fact, plus its entities, lowercased."""
+	if not isinstance(fact, dict):
+		return ""
+	parts = [str(fact.get(key, "")) for key in FACT_TEXT_FIELDS]
+	entities = fact.get("entities")
+	if isinstance(entities, list):
+		parts.extend(str(entity) for entity in entities)
+	return " ".join(parts).lower()
+
+
+def score_case(case: dict, output: str) -> dict:
+	parse_ok, facts = extraction_facts(output)
+	texts = [fact_text(fact) for fact in facts]
+	groups = case.get("keep", [])
+	hits = [any(re.search(pattern, text, re.IGNORECASE) for text in texts for pattern in group)
+	        for group in groups]
+	violations = sum(
+		1 for text in texts for pattern in case.get("forbid", [])
+		if re.search(pattern, text, re.IGNORECASE)
+	)
+	empty_correct = bool(case.get("expect_empty")) and parse_ok and not facts
+	passed = parse_ok and all(hits) and violations == 0 and (
+		not case.get("expect_empty") or not facts
+	)
+	return {
+		"passed": passed, "parse_ok": parse_ok, "facts": len(facts),
+		"keep_hits": sum(hits), "keep_total": len(groups),
+		"forbid_violations": violations, "expect_empty": bool(case.get("expect_empty")),
+		"empty_correct": empty_correct,
+	}
+
+
+def total_cost(records: list[dict]) -> tuple[float | None, int]:
+	missing = sum(record.get("cost") is None for record in records)
+	if missing:
+		return None, missing
+	return sum(float(record["cost"]) for record in records), 0
 
 
 def strip_language_rule(system: str) -> str:
@@ -422,6 +517,110 @@ def summarize(records: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Labeled extraction benchmark
+# ---------------------------------------------------------------------------
+
+def parse_mission_arg(value: str) -> tuple[str, str]:
+	name, separator, path = value.partition("=")
+	if not separator or not name or not path:
+		fail("--mission must be NAME=PATH")
+	return name, path
+
+
+def cmd_extract(args: argparse.Namespace) -> None:
+	env = load_env(Path(args.env))
+	model_default = env.get("HINDSIGHT_API_LLM_MODEL")
+	if not model_default:
+		fail("HINDSIGHT_API_LLM_MODEL missing from hindsight.env")
+	provider = env.get("HINDSIGHT_API_LLM_PROVIDER", "openrouter")
+	base_url = env.get("HINDSIGHT_API_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+	prompts, live_mission, mission_blocks = preview_retain(args.api, args.bank)
+
+	missions = [("current", live_mission, mission_blocks)]
+	for name, path in args.mission:
+		candidate = Path(path).read_text().rstrip()
+		missions.append((name, candidate, mission_blocks))
+	models = args.model or [model_default]
+	fixture = json.loads((FIXTURES / "extract_cases.json").read_text())
+	cases = fixture["cases"]
+	case_ids = args.case or list(cases)
+	unknown = [case_id for case_id in case_ids if case_id not in cases]
+	if unknown:
+		fail(f"unknown case id(s): {', '.join(unknown)}")
+	calls = len(missions) * len(models) * len(case_ids) * args.reps
+	print(f"plan: {len(missions)} missions x {len(models)} models x {len(case_ids)} cases x {args.reps} reps = {calls} LLM calls")
+	print("missions: " + ", ".join(name for name, _, _ in missions))
+	print("models: " + ", ".join(models))
+	print("cases: " + ", ".join(case_ids))
+	print("cost: reported from provider usage.cost; no judge calls")
+	if not args.yes:
+		print("\n--yes not given: no calls made. Re-run with --yes to spend.")
+		return
+
+	api_key = bench_key(provider, "HINDSIGHT_API_LLM_API_KEY")
+	records: list[dict] = []
+	for mission_name, candidate, blocks in missions:
+		user = replace_mission_block(blocks, candidate)
+		for model in models:
+			for case_id in case_ids:
+				case = cases[case_id]
+				user_text = substitute_document(user, case["text"], fixture.get("context", ""))
+				user_text = replace_event_date(user_text, fixture["timestamp"])
+				run_prompts = RenderedPrompts(prompts.system, user_text, prompts.response_schema)
+				for rep in range(args.reps):
+					out = call_llm(base_url, api_key, model, run_prompts, Cell("extract", 0.1, None, None),
+					               {"usage": {"include": True}})
+					body = out["body"]
+					text = (body.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+					score = score_case(case, text)
+					usage = body.get("usage") or {}
+					cost = usage.get("cost")
+					record = {
+						"mission": mission_name, "model": model, "case": case_id, "rep": rep + 1,
+						"wall_ms": out["wall_ms"], "cost": float(cost) if cost is not None else None,
+						**score, "output": text,
+					}
+					records.append(record)
+					print(f"{mission_name} {model} {case_id} rep={rep + 1}: "
+					      f"{'PASS' if score['passed'] else 'FAIL'} {out['wall_ms']:.0f}ms "
+					      f"cost={cost if cost is not None else 'n/a'}")
+
+	print("\nmission / model                         cases   keep recall  forbid  empty  parse  p50 ms  cost USD")
+	for mission_name, _, _ in missions:
+		for model in models:
+			rows = [r for r in records if r["mission"] == mission_name and r["model"] == model]
+			passed = sum(r["passed"] for r in rows)
+			keep_hit = sum(r["keep_hits"] for r in rows)
+			keep_total = sum(r["keep_total"] for r in rows)
+			violations = sum(r["forbid_violations"] for r in rows)
+			empty_rows = [r for r in rows if r["expect_empty"]]
+			empty_ok = sum(r["empty_correct"] for r in empty_rows)
+			parse_fails = sum(not r["parse_ok"] for r in rows)
+			walls = sorted(r["wall_ms"] for r in rows)
+			cost, missing = total_cost(rows)
+			cost_text = "n/a" if cost is None else f"${cost:.6f}"
+			if missing:
+				cost_text += f" ({missing} missing)"
+			label = f"{mission_name} / {model}"
+			print(f"{label:<40} {passed}/{len(rows):<5} {keep_hit}/{keep_total:<8} "
+			      f"{violations:<7} {empty_ok}/{len(empty_rows):<5} {parse_fails:<6} "
+			      f"{walls[len(walls) // 2]:.0f}      {cost_text}")
+
+	columns = [(m, model) for m, _, _ in missions for model in models]
+	print("\ncase".ljust(28) + "".join(f"{m}/{model}".ljust(24) for m, model in columns))
+	for case_id in case_ids:
+		row = case_id.ljust(28)
+		for mission_name, model in columns:
+			matches = [r for r in records if r["case"] == case_id and r["mission"] == mission_name and r["model"] == model]
+			result = "PASS" if all(r["passed"] for r in matches) else "FAIL"
+			row += f"{result} ({sum(r['passed'] for r in matches)}/{len(matches)})".ljust(24)
+		print(row)
+	if args.out:
+		Path(args.out).write_text("".join(json.dumps(record) + "\n" for record in records))
+		print(f"raw records: {args.out}")
+
+
+# ---------------------------------------------------------------------------
 # Recall leg
 # ---------------------------------------------------------------------------
 
@@ -572,6 +771,18 @@ def main() -> None:
 	recall.add_argument("--embed-reps", type=int, default=8)
 	recall.add_argument("--yes", action="store_true", help="actually spend (embedding calls)")
 	recall.set_defaults(func=cmd_recall)
+
+	extract = sub.add_parser("extract", help="score retain extraction against labeled cases")
+	extract.add_argument("--api", default=DEFAULT_API)
+	extract.add_argument("--bank", default="goblin")
+	extract.add_argument("--env", default=str(Path.home() / ".config/goblin-memory/hindsight.env"))
+	extract.add_argument("--mission", action="append", type=parse_mission_arg, default=[], metavar="NAME=PATH")
+	extract.add_argument("--model", action="append", default=[], metavar="ID")
+	extract.add_argument("--reps", type=int, default=1)
+	extract.add_argument("--case", action="append", default=[], metavar="ID")
+	extract.add_argument("--out", default=None, help="JSONL path for raw records")
+	extract.add_argument("--yes", action="store_true", help="actually spend (LLM calls)")
+	extract.set_defaults(func=cmd_extract)
 
 	args = parser.parse_args()
 	args.func(args)

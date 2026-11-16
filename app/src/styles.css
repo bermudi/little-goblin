@@ -4101,6 +4101,15 @@ button.pathchip:hover svg {
 	margin-left: auto;
 	white-space: nowrap;
 }
+.card > .pk-list {
+	max-height: min(24rem, 50dvh);
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 0;
+}
+.pk-list > * {
+	padding: 0.6rem 0.75rem;
+}
 .pk-add {
 	display: flex;
 	justify-content: flex-end;

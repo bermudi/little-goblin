@@ -159,6 +159,7 @@ beforeEach(() => {
 		"MutationObserver",
 		"Range",
 		"Node",
+		"NodeFilter",
 		"HTMLElement",
 		"HTMLFieldSetElement",
 		"HTMLInputElement",
@@ -1863,15 +1864,41 @@ describe("formatting toolbar", () => {
 		expect(tool("undo").disabled).toBe(false);
 	});
 
-	test("toolbar buttons share one tab stop and arrow keys move focus", async () => {
+	test("text style and formatting controls share one tab stop and arrow navigation", async () => {
 		root = createRoot(container);
-		await mount("hello world", DELAY);
+		const ref = await mount("hello world", DELAY);
 		await notice();
+		const textStyle = container.querySelector<HTMLButtonElement>('[aria-label="Text style"]')!;
 		const strong = tool("strong");
 		const emphasis = tool("emphasis");
+		expect(container.querySelector('[role="toolbar"]')?.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
 
-		strong.focus();
+		textStyle.focus();
+		expect(document.activeElement?.getAttribute("aria-label")).toBe("Text style");
+		await act(async () => {
+			textStyle.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }) as unknown as Event,
+			);
+		});
+		await tick(0);
 		expect(document.activeElement?.getAttribute("data-tool")).toBe("strong");
+		expect(textStyle.textContent).toContain("Paragraph");
+
+		await select(ref, 1, 6);
+		await notice();
+		strong.focus();
+		await act(async () => {
+			strong.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: " ", bubbles: true }) as unknown as Event,
+			);
+			strong.click();
+		});
+		await notice();
+		expect(tool("strong").getAttribute("aria-pressed")).toBe("true");
+		expect(document.activeElement?.getAttribute("data-tool")).toBe("strong");
+		await settle();
+		expect(patches.at(-1)!.body.body).toBe("**hello** world\n");
+
 		await act(async () => {
 			strong.dispatchEvent(
 				new win.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }) as unknown as Event,
@@ -1886,12 +1913,14 @@ describe("formatting toolbar", () => {
 		const ref = await mount("# Title", DELAY);
 		await notice();
 		await select(ref, 2, 2);
-		const sel = container.querySelector<HTMLSelectElement>(".note-fmt-block")!;
-		expect(sel.value).toBe("h1");
-		await act(async () => {
-			sel.value = "paragraph";
-			sel.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
-		});
+		const sel = container.querySelector<HTMLButtonElement>('[aria-label="Text style"]')!;
+		expect(sel.textContent).toContain("Heading 1");
+		await act(async () => sel.click());
+		await tick(0);
+		const paragraph = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]')).find((item) =>
+			item.textContent?.includes("Paragraph"),
+		)!;
+		await act(async () => paragraph.click());
 		await notice();
 		await settle();
 		expect(patches.at(-1)!.body.body).toBe("Title\n");

@@ -300,7 +300,6 @@ export function runFormat(ed: Editor, a: FormatAction): void {
 				commands.call(redoCommand.key);
 				break;
 		}
-		view.focus();
 	});
 }
 

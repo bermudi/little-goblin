@@ -4,6 +4,14 @@
 // pressed state follows the selection; every tooltip names its shortcut.
 
 import { useEffect, useRef, useState, Fragment, type ReactNode } from "react";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectItemIndicator,
+	SelectTrigger,
+	SelectValue,
+} from "@ui-sdk/react/select";
 import { Toggle } from "@ui-sdk/react/toggle";
 import { Toolbar, ToolbarButton, ToolbarGroup, ToolbarSeparator } from "@ui-sdk/react/toolbar";
 import type { BlockKind, FormatAction, FormatState } from "./noteFormat.ts";
@@ -179,29 +187,42 @@ export default function NoteToolbar({
 	return (
 		<div className="note-fmt">
 			<Toolbar className="note-fmt-row" aria-label="Formatting" disabled={disabled}>
-				<select
-					className="note-fmt-block"
-					aria-label="Text style"
-					title="Text style — pick Paragraph to turn a heading back into plain text"
+				<Select
 					value={currentBlock}
-					disabled={disabled}
-					onChange={(e) => {
-						const b = BLOCKS.find((x) => x.value === e.target.value);
+					onValueChange={(value) => {
+						const b = BLOCKS.find((x) => x.value === value);
 						if (b) onAction(b.action);
 					}}
+					disabled={disabled}
 				>
-					{BLOCKS.map((b) => (
-						<option key={b.value} value={b.value}>
-							{b.label}
-						</option>
-					))}
-					{fmt.block === "code" && <option value="code" disabled>Code block</option>}
-					{fmt.block === "h4" || fmt.block === "h5" || fmt.block === "h6" ? (
-						<option value={fmt.block} disabled>
-							Heading {fmt.block.slice(1)}
-						</option>
-					) : null}
-				</select>
+					<ToolbarButton
+						render={<SelectTrigger />}
+						className="note-fmt-block"
+						aria-label="Text style"
+						title="Text style — pick Paragraph to turn a heading back into plain text"
+					>
+						<SelectValue />
+						{icon(<path d="m4 6 4 4 4-4" />)}
+					</ToolbarButton>
+					<SelectContent className="note-fmt-menu">
+						{BLOCKS.map((b) => (
+							<SelectItem key={b.value} value={b.value} className="note-fmt-option">
+								{b.label}
+								<SelectItemIndicator>✓</SelectItemIndicator>
+							</SelectItem>
+						))}
+						{fmt.block === "code" && (
+							<SelectItem value="code" disabled className="note-fmt-option">
+								Code block
+							</SelectItem>
+						)}
+						{fmt.block === "h4" || fmt.block === "h5" || fmt.block === "h6" ? (
+							<SelectItem value={fmt.block} disabled className="note-fmt-option">
+								Heading {fmt.block.slice(1)}
+							</SelectItem>
+						) : null}
+					</SelectContent>
+				</Select>
 				{GROUPS.map(({ name, tools }, gi) => (
 					<Fragment key={name}>
 						{gi > 0 && <ToolbarSeparator className="note-fmt-sep" />}

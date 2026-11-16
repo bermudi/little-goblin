@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ToolSet } from "ai";
+import type { Tools } from "../tool.ts";
 import type { FinishReason, Message, Usage } from "../message.ts";
 import type { FallbackNote } from "../agent/model-fallback.ts";
 import type { Conversation } from "../conversation-read.ts";
@@ -265,7 +265,7 @@ export interface ReviewDeps {
 	reply: Message | null;
 	toolCalls: string[];
 	digestRing: { id: string; entry: ToolCallDigest }[];
-	tools?: ToolSet;
+	tools?: Tools;
 }
 
 export function submitTurnReview(deps: ReviewDeps): void {
@@ -293,7 +293,8 @@ export function submitTurnReview(deps: ReviewDeps): void {
 			return Object.keys(tools)
 				.sort()
 				.map((name) => {
-					const d = tools[name]!.description;
+					const tool = tools[name]!;
+					const d = "hosted" in tool ? undefined : tool.description;
 					return { name, description: (typeof d === "string" ? d : "").slice(0, 200) };
 				});
 		})(),

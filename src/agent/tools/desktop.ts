@@ -1,8 +1,8 @@
-import { tool } from "ai";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { exportBytes, readImport } from "../../box-files.ts";
 import { imageRefSchema } from "../../config-schema.ts";
 import { DesktopError, type Desktops } from "../../desktops.ts";
@@ -141,9 +141,9 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 	const selfHolder = (): LeaseHolder => ({ kind: "conversation", id: deps.conversation });
 	const targetHolderOf = (h: "conversation" | "operator"): LeaseHolder =>
 		h === "operator" ? { kind: "operator" } : selfHolder();
-	return tool({
+	return defineTool({
 		description: DESKTOP_TOOL_DESCRIPTION,
-		inputSchema: desktopInputSchema,
+		input: desktopInputSchema,
 		execute: async (raw, { abortSignal }) => {
 			const parsed = actionSchema.safeParse(raw);
 			if (!parsed.success) {

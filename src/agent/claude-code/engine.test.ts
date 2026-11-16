@@ -6,9 +6,10 @@
 // recovery hold).
 
 import { describe, expect, test } from "bun:test";
-import { type ModelMessage, type ToolSet, tool } from "ai";
+import type { ModelMessage } from "ai";
 import type { MessageChunk } from "../../message.ts";
 import { z } from "zod";
+import { defineTool, type Tools } from "../../tool.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { ConfigRef } from "../../config.ts";
 import type { Config } from "../../config-schema.ts";
@@ -86,16 +87,16 @@ function headSink() {
 	};
 }
 
-function echoTools(): ToolSet {
+function echoTools(): Tools {
 	return {
-		echo: tool({
+		echo: defineTool({
 			description: "echo the message",
-			inputSchema: z.object({ message: z.string() }),
+			input: z.object({ message: z.string() }),
 			execute: async ({ message }) => `echo:${message}`,
 		}),
-		failing: tool({
+		failing: defineTool({
 			description: "always fails",
-			inputSchema: z.object({}),
+			input: z.object({}),
 			execute: async (): Promise<string> => {
 				throw new Error("boom-from-tool");
 			},
@@ -195,7 +196,7 @@ async function run(
 			configRef: fakeConfigRef({ claude: { kind: "claude-code", auth: "claude-code" } }),
 			configDir: "/tmp",
 			...engine,
-			bridgeFactory: (d: { convId: string; tools: ToolSet }) => {
+			bridgeFactory: (d: { convId: string; tools: Tools }) => {
 				const real = createToolBridge(d);
 				bridgeRef.current = real;
 				return real;

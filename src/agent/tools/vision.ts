@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { statSync } from "node:fs";
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { ConfigRef } from "../../config.ts";
 import { log } from "../../log.ts";
@@ -35,11 +35,11 @@ export const visionInputSchema = z.object({
 });
 
 export function visionTool(cwd: string, deps: VisionToolDeps) {
-	return tool({
+	return defineTool({
 		description:
 			"Ask a vision model a specific question about an image file and get a text answer. This is the only way to see an image's content — read_file cannot show images. " +
 			"Ask targeted questions ('what error does the dialog show?', 'which element is highlighted?'), and pass followUp=true to continue the previous thread about the same image.",
-		inputSchema: visionInputSchema,
+		input: visionInputSchema,
 		execute: async ({ path, prompt, followUp }, options) => {
 			if (!prompt.trim()) {
 				return {

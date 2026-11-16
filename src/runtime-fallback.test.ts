@@ -7,7 +7,8 @@
 import { foldSummary } from "./testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { APICallError } from "@ai-sdk/provider";
-import { type LanguageModel, type ToolSet, tool } from "ai";
+import type { LanguageModel } from "ai";
+import { defineTool, type Tools } from "./tool.ts";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
@@ -51,7 +52,7 @@ function rig(opts: {
 	model: string;
 	fallbacks: string[];
 	models: Record<string, ReturnType<typeof scriptedModel>>;
-	tools?: ToolSet;
+	tools?: Tools;
 	wrapJournal?: (journal: TurnJournal) => TurnJournal;
 	compaction?: RuntimeDeps["compaction"];
 }) {
@@ -156,10 +157,10 @@ describe("model fallback list", () => {
 
 	test("a failure after a tool ran never falls back — never mid-loop", async () => {
 		const ran: string[] = [];
-		const tools: ToolSet = {
-			note: tool({
+		const tools: Tools = {
+			note: defineTool({
 				description: "note",
-				inputSchema: z.object({}),
+				input: z.object({}),
 				execute: async () => {
 					ran.push("note");
 					return "noted";

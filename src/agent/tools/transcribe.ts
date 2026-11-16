@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { basename } from "node:path";
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { log } from "../../log.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { resolvePath, unicodeTwin } from "./paths.ts";
@@ -16,10 +16,10 @@ export function transcribeTool(
 	cwd: string,
 	transcribe: (file: SpeechFile) => Promise<string | null>,
 ) {
-	return tool({
+	return defineTool({
 		description:
 			"Transcribe an audio or video file to text — for media that didn't arrive as a voice note (attachments show up as [attachment: path — audio/…] references). Long files are segmented automatically.",
-		inputSchema: transcribeInputSchema,
+		input: transcribeInputSchema,
 		execute: async ({ path }) => {
 			const abs = resolvePath(cwd, path);
 			const target = unicodeTwin(abs) ?? abs;

@@ -1,7 +1,7 @@
 import { statSync } from "node:fs";
 import { basename } from "node:path";
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { log } from "../../log.ts";
 import { resolvePath, unicodeTwin } from "./paths.ts";
 
@@ -38,10 +38,10 @@ export const sendFileInputSchema = z.object({
 });
 
 export function sendFileTool(cwd: string, deliver: (file: OutgoingFile) => Promise<void>) {
-	return tool({
+	return defineTool({
 		description:
 			"Send a file from the workspace to the operator. Channels show image previews when they support them, otherwise they attach the document. Use this whenever the operator should receive a file — never paste file bytes into chat.",
-		inputSchema: sendFileInputSchema,
+		input: sendFileInputSchema,
 		execute: async ({ path, caption, as_file }) => {
 			const abs = resolvePath(cwd, path);
 			const target = unicodeTwin(abs) ?? abs;

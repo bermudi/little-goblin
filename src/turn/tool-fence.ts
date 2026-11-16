@@ -1,7 +1,6 @@
 // Tool authority fencing and the crash journal's dispatch/result/error writes — one pipeline for every tool execute.
 
-import type { ToolExecutionOptions } from "@ai-sdk/provider-utils";
-import type { ToolSet } from "ai";
+import { isHosted, type ToolCallContext, type Tools } from "../tool.ts";
 import { bindScriptDispatch, type ToolDispatch } from "../agent/tools/script.ts";
 import { log } from "../log.ts";
 import { classifyRetry, type RetryGuard } from "./retry-guard.ts";
@@ -25,7 +24,7 @@ import { replayKey, type TurnJournal } from "../turn-journal.ts";
 const STEER_SKIPPED = "skipped: the user sent new input; re-issue if still needed";
 
 export function fenceTools(opts: {
-	tools: ToolSet;
+	tools: Tools;
 	convId: string;
 	epoch: number;
 	journal: TurnJournal | undefined;
@@ -37,7 +36,7 @@ export function fenceTools(opts: {
 	// #477: a parked steer skips launches it precedes — the runtime arms
 	// this only for an engine whose model-call boundary claims steers.
 	steerWaiting?: (() => boolean) | undefined;
-}): ToolSet {
+}): Tools {
 	const { tools, convId, journal, checkAuthority, runId, guard, journalFault, onJournalFault } =
 		opts;
 	const note = (write: () => void): void => {
@@ -56,7 +55,7 @@ export function fenceTools(opts: {
 	// never mutated — the returned set holds copies routed through here.
 	const dispatch: ToolDispatch = (name, input, options) => {
 		const raw = tools[name];
-		const execute = raw?.execute?.bind(raw);
+		const execute = raw === undefined || isHosted(raw) ? undefined : raw.execute.bind(raw);
 		if (execute === undefined) throw new Error(`tool ${name} has no execute`);
 		checkAuthority();
 		if (journalFault?.current !== undefined) throw journalFault.current;
@@ -135,14 +134,14 @@ export function fenceTools(opts: {
 		}
 		return result;
 	};
-	const out: ToolSet = {};
+	const out: Tools = {};
 	for (const [name, t] of Object.entries(tools)) {
 		out[name] =
-			t.execute === undefined
+			isHosted(t)
 				? t
 				: {
 						...t,
-						execute: (input: unknown, options: ToolExecutionOptions<unknown>) =>
+						execute: (input: unknown, options: ToolCallContext) =>
 							dispatch(name, input, options),
 					};
 	}

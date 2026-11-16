@@ -6,7 +6,7 @@
 // engines' step checkpoints pass through.
 
 import { randomUUID } from "node:crypto";
-import type { ToolSet } from "ai";
+import type { Tools } from "../tool.ts";
 import type { OutgoingFile } from "../agent/tools/send.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { log } from "../log.ts";
@@ -28,7 +28,7 @@ export type TurnToolMaker = (
 		sourceMessageId(): string;
 		sourceInputSeq(): number | null;
 	},
-) => ToolSet;
+) => Tools;
 
 // Everything the run row's creation records about the attempt.
 export interface ToolAuthorityRecord {
@@ -70,7 +70,7 @@ export interface ToolAuthorityDeps {
 }
 
 export interface ToolAuthority {
-	tools: ToolSet;
+	tools: Tools;
 	runId: string;
 	/** True once the ownership begin hook has linked the members — the
 	 *  pre-run failure announcement stops announcing past this point. The

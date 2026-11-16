@@ -7,7 +7,7 @@
 // (#582) staying out of the next delta.
 
 import { describe, expect, test } from "bun:test";
-import { type ToolSet, tool } from "ai";
+import { defineTool, type Tools } from "./tool.ts";
 import { z } from "zod";
 import { openClaudeSessions } from "./claude-sessions.ts";
 import { type ClaudeEngineConfig, driveClaude } from "./agent/claude-code/engine.ts";
@@ -178,10 +178,10 @@ describe("claude native sessions (#418)", () => {
 		};
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
-		const tools: ToolSet = {
-			wait: tool({
+		const tools: Tools = {
+			wait: defineTool({
 				description: "waits until released",
-				inputSchema: z.object({}),
+				input: z.object({}),
 				execute: async () => {
 					entered.resolve();
 					await release.promise;

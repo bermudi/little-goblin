@@ -351,7 +351,17 @@ shape is compared: an `ai` bump that changes one fails typecheck there,
 and the fix is a deliberate decision (adopt, or convert at the edge), not
 silent drift in saved conversations. `module-boundaries.test.ts` fences
 those type names out of `ai` everywhere else. SDK *functions* still run on
-these types directly. Tool definitions (#595), the engine contract's model
+these types directly.
+
+**Goblin owns its tool definitions** (#595). Tools are `defineTool`s in
+`src/tool.ts`: description, zod input, `execute(input, { toolCallId,
+abortSignal })`, optional text/json `toModelOutput`. A provider-executed
+capability is a `HostedTool` marker (`codex.web_search`), executed by no
+goblin code. Each engine converts at its own edge: `src/turn/ai-sdk-tools.ts`
+builds the `ToolSet` only where an SDK function takes one; the Claude Code
+bridge reads goblin tools directly and skips hosted ones. Readers get the
+model-facing schema from `inputJsonSchema`, and `src/tool.test.ts` holds it
+equal to the SDK's for every mounted tool. The engine contract's model
 objects (#596) and a full `ai` import fence (#597) follow the same
 direction. SDK-specific features stay inside the AI SDK engine; there is
 no lowest-common-denominator layer. The app's `useChat` stream protocol

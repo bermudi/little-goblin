@@ -21,7 +21,7 @@ import { expect, test } from "bun:test";
 import { stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
-import { codexWebSearch } from "../tools/mod.ts";
+import { codexWebSearch } from "../../turn/ai-sdk-tools.ts";
 import { CodexLanguageModel } from "./model.ts";
 import { quotaFromMetadata } from "./receipts.ts";
 import { resolveCodexAuthFile } from "./auth.ts";

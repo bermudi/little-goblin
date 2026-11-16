@@ -14,7 +14,7 @@ import { z } from "zod";
 import { openStore } from "../../conversation.ts";
 import { tmpDb, tmpDir } from "../../testkit.ts";
 import { readFileSync } from "node:fs";
-import { codexWebSearch } from "../tools/mod.ts";
+import { codexWebSearch } from "../../turn/ai-sdk-tools.ts";
 import { CodexLanguageModel } from "./model.ts";
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");

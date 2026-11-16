@@ -1,16 +1,16 @@
-import { tool } from "ai";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
 import { resolvePath, unicodeTwin, writeThroughTarget } from "./paths.ts";
 
 export const writeFileTool = (cwd: string) =>
-	tool({
+	defineTool({
 		description:
 			"Write a file, replacing it entirely. Durable write (tmp + fsync + rename); parent directories are created. Leaf symlinks are followed to the file they manage.",
-		inputSchema: z.object({
+		input: z.object({
 			path: z.string().describe("File path, relative to the working directory or absolute"),
 			content: z.string(),
 		}),

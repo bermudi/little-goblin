@@ -20,8 +20,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
-import type { ToolSet } from "ai";
-import type { ToolExecutionOptions } from "@ai-sdk/provider-utils";
+import { isHosted, type ToolCallContext, type Tools } from "./tool.ts";
 import { editFileTool } from "./agent/tools/edit.ts";
 import { readFileTool } from "./agent/tools/read.ts";
 import { writeFileTool } from "./agent/tools/write.ts";
@@ -72,13 +71,14 @@ export function cleanupStaging(workspaceDir: string): void {
 // not-yet-existing tail can't introduce a symlink). TOCTOU on the
 // operator's own tree is out of scope; in staging the tree is a fresh
 // copy the review is the only writer of.
-export function confineTools(tools: ToolSet, root: string): ToolSet {
+export function confineTools(tools: Tools, root: string): Tools {
 	const resolved = resolve(root);
 	const realRoot = realpathSync(resolved);
 	for (const t of Object.values(tools)) {
+		if (isHosted(t)) continue;
 		const execute = t.execute?.bind(t);
 		if (execute === undefined) continue;
-		t.execute = (input: unknown, options: ToolExecutionOptions<unknown>) => {
+		t.execute = (input: unknown, options: ToolCallContext) => {
 			const path = (input as { path?: unknown } | null)?.path;
 			if (typeof path !== "string" || escapesRoot(resolved, realRoot, path)) {
 				const shown = typeof path === "string" ? path.slice(0, 200) : "(missing)";
@@ -122,7 +122,7 @@ function realUnder(realRoot: string, abs: string): boolean {
 // write tools actually wrote — the review's attribution set, for changed
 // detection and the log lines. Recorded from each tool's *result* path:
 // a refused or failed write reports no path and records nothing.
-export function reviewTools(skillsDir: string, written?: Set<string>): ToolSet {
+export function reviewTools(skillsDir: string, written?: Set<string>): Tools {
 	const tools = confineTools(
 		{
 			read_file: readFileTool(skillsDir),
@@ -135,10 +135,10 @@ export function reviewTools(skillsDir: string, written?: Set<string>): ToolSet {
 	const root = resolve(skillsDir);
 	for (const name of ["write_file", "edit_file"] as const) {
 		const t = tools[name];
-		if (t === undefined) continue;
+		if (t === undefined || isHosted(t)) continue;
 		const execute = t.execute?.bind(t);
 		if (execute === undefined) continue;
-		t.execute = async (input: unknown, options: ToolExecutionOptions<unknown>) => {
+		t.execute = async (input: unknown, options: ToolCallContext) => {
 			const result = await execute(input as never, options);
 			const path = (result as { path?: unknown } | null | undefined)?.path;
 			if (typeof path === "string") {

@@ -16,6 +16,7 @@ import type {
 	Usage,
 } from "../message.ts";
 import { quotaFromMetadata } from "../agent/codex/receipts.ts";
+import { toToolSet } from "./ai-sdk-tools.ts";
 import { filterErrorStream, streamSurfaceErrors } from "../agent/filter-stream.ts";
 import {
 	isContentFilter,
@@ -28,6 +29,7 @@ import type { AppLiveContext, AppQuota } from "../http/app-wire.ts";
 import { log } from "../log.ts";
 import { awaitRetryDelay, RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
 import type { EvidenceLimits, ToolCallDigest } from "../reviewer-evidence.ts";
+import type { Tools } from "../tool.ts";
 import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
@@ -224,6 +226,7 @@ export async function foldSteers<M extends WireMember>(
 	deps: SteerFoldDeps<M>,
 	ledger: SteerLedger,
 	step: number,
+	sdkTools: ToolSet = toToolSet(deps.view.tools),
 ): Promise<{ injected: ModelMessage[] } | null> {
 	const { convId, live, members } = deps;
 	const steered = deps.claimSteers();
@@ -241,7 +244,7 @@ export async function foldSteers<M extends WireMember>(
 	let admittedCount = 0;
 	for (const t of steered) {
 		try {
-			const converted = await convertSteeredMessage(deps.view, t.message);
+			const converted = await convertSteeredMessage(deps.view, t.message, sdkTools);
 			if (!deps.holdsAuthority()) {
 				deps.settle(t, { kind: "fenced" });
 				continue;
@@ -328,7 +331,7 @@ export interface StreamDeps<M extends WireMember> {
 	holdsAuthority(): boolean;
 	step: StreamStep;
 	messages: ModelMessage[];
-	tools: ToolSet;
+	tools: Tools;
 	view: ViewContext;
 	claimSteers(): M[];
 	unrequeueSteers(steered: M[]): void;
@@ -433,6 +436,7 @@ export async function driveStream<M extends WireMember>(
 	deps: StreamDeps<M>,
 ): Promise<StreamOutcome> {
 	const { convId, epoch, head, members, live, state } = deps;
+	const sdkTools = toToolSet(deps.tools);
 	const modelLabel = stepModelRef(deps.step);
 	let lastStepInputTokens: number | null = null;
 	let lastStepCacheRead: number | null = null;
@@ -524,10 +528,10 @@ export async function driveStream<M extends WireMember>(
 		}
 	};
 	const result = streamText({
+		tools: sdkTools,
 		model: filterErrorStream(deps.step.model, convId),
 		instructions: deps.step.system,
 		messages: deps.messages,
-		tools: deps.tools,
 		// Rule-based repairs only (JSON5 slips, stringified args) — a call
 		// no rule fixes still surfaces as a tool error, never a re-ask.
 		repairToolCall: makeToolCallRepair(convId),
@@ -564,7 +568,7 @@ export async function driveStream<M extends WireMember>(
 				.drainWarnings()
 				.map((content): ModelMessage => ({ role: "user", content }));
 			const nudge: ModelMessage[] = cut !== null ? [{ role: "user", content: CUT_NUDGE[cut] }] : [];
-			const folded = await foldSteers(deps, steers, stepNumber);
+			const folded = await foldSteers(deps, steers, stepNumber, sdkTools);
 			if (folded === null) return undefined;
 			const { injected } = folded;
 			if (injected.length === 0) {

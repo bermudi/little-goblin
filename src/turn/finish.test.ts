@@ -5,8 +5,9 @@ import { join } from "node:path";
 import {
 	type LanguageModel,
 	readUIMessageStream,
-	type ToolSet,
 } from "ai";
+import { defineTool, type Tools } from "../tool.ts";
+import { z } from "zod";
 import type { Message, MessageChunk } from "../message.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { setLogFile } from "../log.ts";
@@ -973,10 +974,22 @@ describe("submitTurnReview", () => {
 			toolCalls: [],
 			digestRing: [],
 			tools: {
-				zeta: { description: "z".repeat(400) },
-				bash: { description: "run a shell command" },
-				mute: {},
-			} as unknown as ToolSet,
+				zeta: defineTool({
+					description: "z".repeat(400),
+					input: z.object({}),
+					execute: () => "",
+				}),
+				bash: defineTool({
+					description: "run a shell command",
+					input: z.object({}),
+					execute: () => "",
+				}),
+				mute: defineTool({
+					description: "",
+					input: z.object({}),
+					execute: () => "",
+				}),
+			} satisfies Tools,
 		});
 		await tick();
 		expect(seen).toHaveLength(1);

@@ -1,5 +1,5 @@
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config-schema.ts";
 import { log } from "../../log.ts";
@@ -344,10 +344,10 @@ export function withFallbackNote(result: string, outcome: ChainOutcome): string 
 }
 
 export const searchTool = (deps: WebToolDeps) =>
-	tool({
+	defineTool({
 		description:
 			'Search the web. Returns numbered results (title, URL, snippet) — fetch a result\'s URL for full content. Express recency in the query itself ("today", "this week", "March 2026"); there are no other knobs.',
-		inputSchema: z.object({
+		input: z.object({
 			query: z.string().min(1).max(400),
 			count: z.number().int().min(1).max(10).default(5),
 		}),

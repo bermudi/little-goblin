@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { makeTools } from "./mod.ts";
 import { reportFields, uiTool } from "./ui.ts";
+import { inputJsonSchema } from "../../tool.ts";
 import { normalizeUiInput, uiInputSchema } from "./ui-schema.ts";
 
 const testdata = (name: string): unknown =>
@@ -77,14 +78,14 @@ describe("uiInputSchema", () => {
 
 describe("wire JSON schema", () => {
 	test("the tool schema carries no $ref/$defs/propertyNames", () => {
-		const wire = JSON.stringify(asSchema(uiTool().inputSchema).jsonSchema);
+		const wire = JSON.stringify(inputJsonSchema(uiTool()));
 		for (const banned of ['"$ref"', '"$defs"', '"propertyNames"']) {
 			expect(wire).not.toContain(banned);
 		}
 	});
 
 	test("property order is title, root, elements — root streams first", () => {
-		const schema = asSchema(uiTool().inputSchema).jsonSchema as {
+		const schema = inputJsonSchema(uiTool()) as {
 			properties: Record<string, unknown>;
 		};
 		expect(Object.keys(schema.properties)).toEqual(["title", "root", "elements"]);

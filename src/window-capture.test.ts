@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { tool, type ToolSet } from "ai";
+import { defineTool, type Tools } from "./tool.ts";
 import { z } from "zod";
 import { listCalls, openCacheObservation, type CacheCallInput } from "./cache-observation.ts";
 import { openStore } from "./conversation.ts";
@@ -251,14 +251,14 @@ describe("recall-version fencing", () => {
 });
 
 describe("serializeToolDefs", () => {
-	const sampleTool = tool({
+	const sampleTool = defineTool({
 		description: "Read a file",
-		inputSchema: z.object({ path: z.string() }),
+		input: z.object({ path: z.string() }),
 		execute: async () => "contents",
 	});
 
 	test("carries name, description and the JSON schema", () => {
-		const tools: ToolSet = { read_file: sampleTool };
+		const tools: Tools = { read_file: sampleTool };
 		const [def] = serializeToolDefs(tools);
 		expect(def!.name).toBe("read_file");
 		expect(def!.description).toBe("Read a file");
@@ -267,11 +267,11 @@ describe("serializeToolDefs", () => {
 		expect(parameters.properties).toHaveProperty("path");
 	});
 
-	test("a missing description reads as null", () => {
-		const bare = tool({ inputSchema: z.object({}), execute: async () => "ok" });
-		const tools: ToolSet = { bash: bare };
+	test("includes the declared description", () => {
+		const bare = defineTool({ description: "test tool", input: z.object({}), execute: async () => "ok" });
+		const tools: Tools = { bash: bare };
 		const [def] = serializeToolDefs(tools);
-		expect(def!.description).toBeNull();
+		expect(def!.description).toBe("test tool");
 	});
 });
 

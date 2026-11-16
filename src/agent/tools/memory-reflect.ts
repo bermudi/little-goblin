@@ -1,5 +1,5 @@
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { log } from "../../log.ts";
 import { HindsightClient, HindsightError, type MemoryReflection } from "../../memory/hindsight.ts";
 import { BUDGET_ORDER } from "../../memory/policy.ts";
@@ -76,13 +76,13 @@ function renderReflection(result: MemoryReflection, maxTokens: number) {
 }
 
 export const memoryReflectTool = (deps: MemoryReflectDeps) =>
-	tool({
+	defineTool({
 		description:
 			"Investigate patterns or changes across past conversations using the configured memory service. " +
 			"Returns a synthesis with supporting evidence; Goblin owns the final answer. " +
 			"Use memory_search for individual facts, memory_reflect for cross-session synthesis. " +
 			"Costs additional model calls and may take longer. Include relevant current context in the question.",
-		inputSchema: z.object({
+		input: z.object({
 			query: z.string().min(1).max(8000).describe("Question and relevant current context"),
 			maxTokens: z.number().int().min(1).max(8192).optional().describe("Maximum synthesis tokens"),
 			budget: z.enum(["low", "mid", "high"]).optional().describe("Investigation effort"),

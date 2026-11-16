@@ -10,7 +10,8 @@ import {
 	type LanguageModelV4CallOptions,
 	type LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
-import { type LanguageModel, tool } from "ai";
+import type { LanguageModel } from "ai";
+import { defineTool } from "../tool.ts";
 import type { Message, MessageChunk } from "../message.ts";
 import { z } from "zod";
 import { ATTACHMENT_PART } from "../agent/attachments.ts";
@@ -175,8 +176,9 @@ function headSink() {
 }
 
 function probeTool() {
-	return tool({
-		inputSchema: z.object({}),
+	return defineTool({
+		description: "test tool",
+		input: z.object({}),
 		execute: async () => "probe-result-7f3a",
 	});
 }
@@ -488,8 +490,9 @@ describe("driveStream — transient reader throws (#488)", () => {
 		const warning = spyOn(log, "warn").mockImplementation(() => {});
 		try {
 			let executions = 0;
-			const probe = tool({
-				inputSchema: z.object({}),
+			const probe = defineTool({
+				description: "test tool",
+				input: z.object({}),
 				execute: async () => {
 					executions++;
 					return "probe-result-7f3a";
@@ -1174,8 +1177,9 @@ describe("driveStream", () => {
 			...Array.from({ length: LOOP_DETECT_WARN }, (_, i) => oneRejection(i)),
 			textReply("gave up asking"),
 		];
-		const badProbe = tool({
-			inputSchema: z.object({ want: z.string() }),
+		const badProbe = defineTool({
+			description: "test tool",
+			input: z.object({ want: z.string() }),
 			execute: async () => "unreachable — schema rejects first",
 		});
 		const warnSpy = spyOn(log, "warn").mockImplementation(() => {});
@@ -1213,8 +1217,9 @@ describe("driveStream", () => {
 	});
 
 	test("a script output's call record expands into script.<tool> digest entries and tool calls", async () => {
-		const script = tool({
-			inputSchema: z.object({ code: z.string() }),
+		const script = defineTool({
+			description: "test tool",
+			input: z.object({ code: z.string() }),
 			execute: async () => ({
 				text: "Script completed in 0.1s · 2 tool calls\ndigest",
 				calls: [
@@ -1263,8 +1268,9 @@ describe("driveStream", () => {
 	test("a completed write into the skills catalog records provenance for the turn's conversation", async () => {
 		const ws = mkdtempSync(join(tmpdir(), "goblin-skillwatch-"));
 		const recorded: Array<{ conversationId: string; skill: string }> = [];
-		const writeFile = tool({
-			inputSchema: z.object({ path: z.string(), content: z.string() }),
+		const writeFile = defineTool({
+			description: "test tool",
+			input: z.object({ path: z.string(), content: z.string() }),
 			execute: async () => ({ path: join(ws, "skills", "foo", "SKILL.md"), bytes: 3 }),
 		});
 		const writeStep: LanguageModelV4StreamPart[] = [
@@ -1305,8 +1311,9 @@ describe("driveStream", () => {
 	test("a write outside the catalog records nothing", async () => {
 		const ws = mkdtempSync(join(tmpdir(), "goblin-skillwatch-"));
 		const recorded: unknown[][] = [];
-		const writeFile = tool({
-			inputSchema: z.object({ path: z.string(), content: z.string() }),
+		const writeFile = defineTool({
+			description: "test tool",
+			input: z.object({ path: z.string(), content: z.string() }),
 			execute: async () => ({ path: join(ws, "notes", "x.md"), bytes: 3 }),
 		});
 		const writeStep: LanguageModelV4StreamPart[] = [
@@ -1347,8 +1354,9 @@ describe("driveStream", () => {
 	test("a script's nested write into the catalog records provenance — the seam adc003fd pinned", async () => {
 		const ws = mkdtempSync(join(tmpdir(), "goblin-skillwatch-"));
 		const recorded: Array<{ conversationId: string; skill: string }> = [];
-		const script = tool({
-			inputSchema: z.object({ code: z.string() }),
+		const script = defineTool({
+			description: "test tool",
+			input: z.object({ code: z.string() }),
 			execute: async () => ({
 				text: "done",
 				calls: [

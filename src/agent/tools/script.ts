@@ -1,9 +1,7 @@
 import { readdirSync, rmSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { tool, type ToolExecutionOptions, type ToolSet } from "ai";
 import { z } from "zod";
-import type { LanguageModelV4ToolResultOutput } from "@ai-sdk/provider";
-import { safeValidateTypes } from "@ai-sdk/provider-utils";
+import { defineTool, isHosted, type ToolCallContext, type ToolOutput, type Tools } from "../../tool.ts";
 import {
 	CodemodeSandbox,
 	type CodemodeErrorKind,
@@ -33,7 +31,7 @@ const TAINT_NOTE =
 export type ToolDispatch = (
 	name: string,
 	input: unknown,
-	options: ToolExecutionOptions<unknown>,
+	options: ToolCallContext,
 ) => PromiseLike<unknown> | unknown;
 
 interface DispatchRef {
@@ -45,7 +43,7 @@ interface DispatchRef {
 // there is no fallback to the raw tool's execute.
 const dispatchRefs = new WeakMap<object, DispatchRef>();
 
-export function bindScriptDispatch(tools: ToolSet, dispatch: ToolDispatch): void {
+export function bindScriptDispatch(tools: Tools, dispatch: ToolDispatch): void {
 	const script = tools.script;
 	if (script === undefined) return;
 	const ref = dispatchRefs.get(script);
@@ -146,14 +144,14 @@ function sweepScriptCache(keepPath: string): void {
 	}
 }
 
-const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps, ref: DispatchRef) =>
-	tool({
+const scriptTool = (tools: Tools, callable: string[], deps: ScriptDeps, ref: DispatchRef) =>
+	defineTool({
 		description: scriptDescription(callable, deps.maxCalls),
-		inputSchema: z.object({
+		input: z.object({
 			code: z.string(),
 			timeout_ms: z.number().int().positive().optional(),
 		}),
-		toModelOutput: ({ output }): LanguageModelV4ToolResultOutput => {
+		toModelOutput: ({ output }): ToolOutput => {
 			const o = output as ScriptOutput | undefined | null;
 			return { type: "text", value: o?.text ?? JSON.stringify(o ?? null) };
 		},
@@ -234,17 +232,14 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps, ref: D
 					// Schemas come from the tool set; execution only ever goes
 					// through the bound dispatch.
 					const target = tools[name];
-					if (target === undefined || target.execute === undefined) {
+					if (target === undefined || isHosted(target)) {
 						throw new Error(`tool ${name} has no execute`);
 					}
 					const dispatch = ref.current;
 					if (dispatch === undefined) {
 						throw new Error(`script dispatch is not bound — refusing to run ${name} unfenced`);
 					}
-					const checked = await safeValidateTypes({
-						value: args,
-						schema: target.inputSchema,
-					});
+					const checked = await target.input.safeParseAsync(args);
 					if (!checked.success) {
 						const msg = `invalid arguments for ${name}: ${checked.error.message}`;
 						noteFail(msg);
@@ -259,7 +254,7 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps, ref: D
 					let result: unknown;
 					try {
 						if (policyOf(name).output === "untrusted") tainted = true;
-						result = await dispatch(name, checked.value, {
+						result = await dispatch(name, checked.data, {
 							...parentOptions,
 							toolCallId: `${parentId}/${callNo}`,
 							abortSignal: AbortSignal.any(
@@ -393,12 +388,12 @@ const scriptTool = (tools: ToolSet, callable: string[], deps: ScriptDeps, ref: D
 		},
 	});
 
-export function withScript(tools: ToolSet, deps: ScriptDeps): ToolSet {
+export function withScript(tools: Tools, deps: ScriptDeps): Tools {
 	const callable = Object.keys(tools).filter((name) => policyOf(name).scriptable);
 	const ref: DispatchRef = { current: undefined };
 	const script = scriptTool(tools, callable, deps, ref);
 	dispatchRefs.set(script, ref);
-	const out: ToolSet = {};
+	const out: Tools = {};
 	for (const [name, t] of Object.entries(tools)) {
 		if (name === "ui") out.script = script;
 		out[name] = t;

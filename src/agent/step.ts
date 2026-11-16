@@ -21,6 +21,7 @@ import { cacheRouteFor, carriesMedia, observedModel, resolveModel } from "./prov
 import { codexSessionId } from "./codex/session.ts";
 import { thinkingOptions } from "./thinking.ts";
 import { noteTool } from "./tools/note.ts";
+import { toToolSet } from "../turn/ai-sdk-tools.ts";
 import { toolNames } from "./tools/mod.ts";
 import { log } from "../log.ts";
 import type { ClaudeEngine } from "./claude-code/mod.ts";
@@ -267,14 +268,14 @@ export function makeStepBuilder(
 						...(await compactCall(conv, modelRef, "compaction-flush")),
 						instructions: FLUSH_SYSTEM,
 						prompt: spanText,
-						tools: {
+						tools: toToolSet({
 							note: noteTool({
 								notes,
 								projects,
 								conversation: conv.id,
 								projectId: conv.projectId,
 							}),
-						},
+						}),
 						stopWhen: isStepCount(FLUSH_MAX_STEPS),
 						abortSignal: signal,
 					});

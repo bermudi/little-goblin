@@ -13,6 +13,17 @@
 
 import { fenceOpen } from "./delivery-text.ts";
 
+export interface WindowText {
+	markdown: string;
+	html: string;
+}
+
+// A window rendered for display: self-contained markdown (chunkWindows
+// already closes/reopens a split fence) plus its Telegram HTML.
+export function renderWindow(markdown: string): WindowText {
+	return { markdown, html: renderTelegramHtml(markdown) };
+}
+
 const LANG = /^[A-Za-z0-9_+.-]+/;
 
 export function escapeHtml(text: string): string {

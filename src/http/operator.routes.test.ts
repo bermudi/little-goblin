@@ -1013,8 +1013,10 @@ describe("config save", () => {
 			delegation: { harnesses: { pi: { kind: "pi" } } },
 		});
 		expect(herdr?.status).toBe(422);
-		// The file's own block is untouched by both refusals.
-		expect(loadConfig()?.delegation).toEqual({
+		// Nothing was written by either refusal — the incumbent block
+		// (which lived in configRef, not on disk) is untouched.
+		expect(loadConfig()).toBeNull();
+		expect(d.configRef.current.delegation).toEqual({
 			harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
 			defaults: { default: "pi" },
 		});

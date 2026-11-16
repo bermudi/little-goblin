@@ -1483,7 +1483,10 @@ const invalidInputs: unknown[] = [
 	{ ...valid, providers: { [sentinel]: { kind: sentinel, auth: sentinel } } },
 	{ ...valid, thinking: sentinel },
 	{ ...valid, publicUrl: `http://${sentinel}:credential@example.org` },
-	{ ...valid, delegation: { machines: { [sentinel]: { root: sentinel } } } },
+	// A sentinel record key inside delegation — the retirement paths
+	// (machines, herdr shapes) warn on disk load and so cannot ride here:
+	// the child-process probe below demands an empty stdout.
+	{ ...valid, delegation: { harnesses: { [sentinel]: { provider: sentinel } } } },
 	{ ...valid, telegram: { model: sentinel } },
 	[sentinel],
 ];

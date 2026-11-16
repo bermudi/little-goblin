@@ -310,14 +310,16 @@ async function check(
 	}
 
 	if (t3Working(status)) {
+		const now = Date.now();
 		// The run is in flight. A needs_input row that works again was
-		// answered (in T3 or by our own send) — back to running.
+		// answered (in T3 or by our own send) — back to running, with the
+		// stall clock restarted: the answer proves liveness, and the row's
+		// promptedAt only refreshes when goblin itself sent.
 		if (d.status === "needs_input" && transition(deps, d, "running")) {
-			lastProgress.delete(d.id);
+			lastProgress.set(d.id, { updatedAt: t.updatedAt, sinceMs: now });
 		}
 		// A working thread that never progresses gets one notice after 2 h:
 		// updatedAt is the only activity signal (#489).
-		const now = Date.now();
 		let progress = lastProgress.get(d.id);
 		if (progress === undefined || progress.updatedAt !== t.updatedAt) {
 			progress = {

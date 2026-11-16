@@ -1057,13 +1057,14 @@ is offered only on the Archive page (the rail offers archive, the archive
 offers delete) and is undoable for a few seconds — see Undo below.
 
 Conversation rows remain ordinary list items with a thread link and a
-separate action-menu trigger. The link keeps native link behavior,
-including modifier-click; the menu uses ui-sdk menu keyboard behavior
-(Enter/Space/arrow keys to open, arrows to move, Escape to close). Keep
-the list as a list, not a listbox: rows contain both links and actions,
-not one selectable option. The menu trigger groups Pin/Unpin, Rename,
-Archive/Unarchive and (on archived rows) Delete, reducing each row from
-several action tab stops to one. Rename stays inline.
+separate action-menu trigger. The links use ui-sdk roving focus: Up/Down
+move between rows, Home/End jump to the first/last, and Tab enters at one
+link and leaves the group; focus movement does not activate a link.
+Links keep native behavior, including modifier-click. Keep the list as a
+list, not a listbox: rows contain both links and actions, not one
+selectable option. The menu trigger groups Pin/Unpin, Rename,
+Archive/Unarchive and (on archived rows) Delete; menu keys open, move
+between actions and close it. Rename stays inline.
 
 Archiving never fences a live turn (unlike DELETE's `runtime.stop`) — the
 turn finishes into history either way. And **any appended event

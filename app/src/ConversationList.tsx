@@ -1,8 +1,16 @@
+"use client";
+
+import { createParts } from "@ui-sdk/react/primitive";
 import { useEffect, useRef, useState } from "react";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 import { patchConversation, suggestConversationTitle } from "./api.ts";
 import { PinGlyph } from "./glyphs.tsx";
+import { conversationNavigationPrimitive } from "./conversationNavigation.ts";
+
+const navigationParts = createParts(conversationNavigationPrimitive, { root: "ul", link: "a" });
+export const ConversationNav = navigationParts.Root;
+export const ConversationNavLink = navigationParts.Link;
 
 // The Open WebUI chat-list relative-time format.
 export function relTime(iso: string): string {
@@ -206,7 +214,8 @@ export function ConversationRow({
 		.join(" ");
 	return (
 		<div className={rowClass}>
-			<a
+			<ConversationNavLink
+				id={conv.id}
 				className="conv-main"
 				href={`/app/c/${conv.id.slice("app/".length)}`}
 				onClick={(e) => {
@@ -223,7 +232,7 @@ export function ConversationRow({
 					<span className="conv-time">{relTime(conv.updatedAt)}</span>
 				</span>
 				{hasPreviewLine && <span className="conv-preview">{preview}</span>}
-			</a>
+			</ConversationNavLink>
 			<Menu
 				onAction={(action) => {
 					switch (action) {

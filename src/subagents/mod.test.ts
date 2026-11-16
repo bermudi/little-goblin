@@ -3060,7 +3060,9 @@ describe("subagents crash approval", () => {
 			if (s === "stopped" || s === "failed") return true;
 			try {
 				await o2.scan();
-			} catch {}
+			} catch {
+				// The injected write failure can surface from scan(); keep polling for the status.
+			}
 			return false;
 		}, "the fenced run settles");
 		const settled = r2.runs.get(rowId)!;

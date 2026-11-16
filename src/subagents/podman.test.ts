@@ -515,7 +515,9 @@ describe.skipIf(!LIVE)("subagent real-env gate (GOBLIN_SUBAGENTS_PODMAN_LIVE=1)"
 			store2?.close();
 			try {
 				if (await probeExists(CONTAINER)) await podman!.rm(CONTAINER);
-			} catch {}
+			} catch (err) {
+				sweepFailures.push(`container rm ${CONTAINER}: ${String(err)}`);
+			}
 			const net = await boundedRun(spawnProc(["podman", "network", "rm", NETWORK]), {
 				timeoutMs: 30_000,
 				maxOutput: 1 << 20,

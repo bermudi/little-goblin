@@ -39,6 +39,13 @@ export function appSseWriter(
 			});
 		}
 	};
+	// `closed` is already true when the client cancelled or an enqueue
+	// failed; the controller is then closed or errored and close() throws.
+	const close = () => {
+		if (closed) return;
+		closed = true;
+		controller.close();
+	};
 	const body = new ReadableStream<Uint8Array>({
 		start(c) {
 			controller = c;
@@ -82,20 +89,14 @@ export function appSseWriter(
 				);
 			}
 			push("data: [DONE]\n\n");
-			closed = true;
-			try {
-				controller.close();
-			} catch {}
+			close();
 		},
 		wireDied() {
 			return wireDied;
 		},
 		dispose() {
 			stopBeat();
-			closed = true;
-			try {
-				controller.close();
-			} catch {}
+			close();
 		},
 	};
 }

@@ -267,6 +267,19 @@ function AttachmentChip({
 }) {
   const ref = parseAttachmentRef(data);
   if (ref === null) return null;
+  return <AttachmentRefChip attachment={ref} token={token} />;
+}
+
+// Split from AttachmentChip so the hooks below never sit after an
+// early return: a part whose data starts parsing would change the
+// hook count between renders.
+function AttachmentRefChip({
+  attachment: ref,
+  token,
+}: {
+  attachment: AttachmentRef;
+  token: string | null;
+}) {
   const isImage = ref.mediaType.startsWith("image/");
   const isAudio = ref.mediaType.startsWith("audio/");
   const path = ref.path;

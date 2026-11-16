@@ -12,5 +12,6 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - run: bun run lint
       - run: bun test
       - run: python3 -m unittest discover -s deploy/memory -t deploy/memory

@@ -7195,9 +7195,10 @@ button.link:hover {
 	background: none;
 	cursor: pointer;
 }
-.skill-picker-row:hover,
+/* No hover fill — the rows stay flat. The command's arrow/auto
+   highlight keeps only a left tick so Enter's target stays visible. */
 .skill-picker-row[data-highlighted] {
-	background: var(--app-hover);
+	box-shadow: inset 2px 0 0 var(--app-fg-muted);
 }
 .skill-picker-main {
 	display: flex;

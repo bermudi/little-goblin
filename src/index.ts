@@ -65,7 +65,6 @@ import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { openSubagentRuns } from "./subagent-runs.ts";
 import { openSubagentsGuarded, type Subagents } from "./subagents/mod.ts";
 import { telegramAddressOf } from "./targets.ts";
-import { withTimeout } from "./tg/deadline.ts";
 import { filterGuestTools } from "./tg/guest.ts";
 import { sendMailNotice } from "./tg/mail-approval.ts";
 import { applyMenuButton } from "./tg/mod.ts";
@@ -78,7 +77,6 @@ import { postProgramApproval } from "./tg/program-approval.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
 import { openTurnJournal } from "./turn-journal.ts";
-import { makeResumeOps, makeResumeSinks, type ResumeOps } from "./turn-resume.ts";
 import { wakeConversation } from "./wake.ts";
 import { openWakeStore } from "./wake-store.ts";
 import { openWindowCapture } from "./window-capture.ts";
@@ -290,12 +288,10 @@ async function boot() {
 	const speak = makeSpeaker({ configRef, auth });
 
 	// The one tool factory — the runtime builds the live set per turn
-	// through it, and the resume contract check (turn-resume.ts)
-	// rebuilds the surface through the same closure so the drift
-	// comparison reads the set the resumed attempt would actually get.
-	// The mount policy (which slots exist per channel/config/boot pin)
-	// lives in turn-tools.ts; boot binds the seams and the late-bound
-	// getters (subagents/mail/desktop bind past Runtime construction).
+	// through it. The mount policy (which slots exist per
+	// channel/config/boot pin) lives in turn-tools.ts; boot binds the
+	// seams and the late-bound getters (subagents/mail/desktop bind past
+	// Runtime construction).
 	const telegramEnabled = config.telegram.enabled;
 	// The Telegram attach state machine — src/boot/telegram-attach.ts owns
 	// the channel's slots, the operator-DM lane (sendPrivate), and the
@@ -398,11 +394,6 @@ async function boot() {
 		record: (conversationId, skill) => skillSources.record(conversationId, skill, "turn"),
 	});
 
-	// The explicit-resume surface (turn-resume.ts) is built below — it
-	// needs the bot for its operator notices — but both doors resolve the
-	// seam lazily, so the binding must exist before the awaits that let
-	// traffic in. `undefined` in that window answers "not wired".
-	let resumeOps: ResumeOps | undefined;
 	// The bot attaches in the init task kicked after HTTP and the
 	// scheduler stand — everything below boots on tg === null and binds
 	// to the live seams when getMe lands.
@@ -512,36 +503,6 @@ async function boot() {
 		programs,
 		responsibilities,
 		telegramApi: () => attach.api(),
-	});
-
-	// The explicit-resume surface (turn-resume.ts): /resume /decide
-	// /abandon on Telegram, the app runs/* routes on the app channel.
-	// Sinks mirror the wake path — an app lane's resumed turn pings the
-	// operators through the bell; a telegram lane's delivers into its
-	// own topic and DMs each operator the terminal outcome, since a
-	// resumed turn is headless and nobody is watching a stream.
-	resumeOps = makeResumeOps({
-		store,
-		journal: turnJournal,
-		runtime,
-		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
-		makeTools: makeTurnTools,
-		...makeResumeSinks({
-			wake: delivery.wakeDeps,
-			operators: () => configRef.current.operators,
-			...(telegramEnabled
-				? {
-						sendDm: (chat: number, text: string) => {
-							const api = attach.api();
-							if (api === null) throw new Error("telegram channel is unavailable");
-							return withTimeout(
-								api.sendMessage(chat, text),
-								"sendMessage (resumed turn notice)",
-							);
-						},
-					}
-				: {}),
-		}),
 	});
 
 	// Project-owned responsibilities — the store the handover service
@@ -770,7 +731,6 @@ async function boot() {
 				// Same seams the mini-app door reads — app-channel mounts
 				// them under /api/app/* with the bearer/trust gate.
 				operator: operatorSeams,
-				resumeOps: () => resumeOps,
 				// Both doors reach the same durable CAS owners; this route
 				// supplies the authenticated app actor, never transport authority.
 				...(programApproval !== undefined && mailApproval !== undefined
@@ -856,7 +816,6 @@ async function boot() {
 			transcribe: transcribeFile,
 			memory: memorySurfaces,
 			gate: system1Gate,
-			resumeOps: () => resumeOps,
 			mailApproval: () => mailApproval,
 			programApproval: () => programApproval,
 			programs,

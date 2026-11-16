@@ -153,12 +153,13 @@ the model view under a `compact-<boundarySeq>` id — a legibility label, never
 a classification key. Client message ids are neither unique nor trusted (the
 app intake stores them verbatim), and a client message whose chosen id starts
 with `compact-` is an ordinary client message everywhere: memory recall,
-retention eligibility, recall-block anchoring, and the resume visible set.
+retention eligibility, recall-block anchoring, and the continuation visible
+set.
 Every reader recognizes the summary as the entry whose **seq equals the live
 compaction boundary** — a seq the store assigns and the client cannot forge.
 `MemoryEligibility` carries that seq (`summarySeq`) beside the span's
 eligibility stamp, so the memory-bound projection, the exchange-boundary walk,
-and `withMemoryBlocks` all classify by seq; operator resume reads the boundary
+and `withMemoryBlocks` all classify by seq; a continuation reads the boundary
 from the store the same way.
 
 ## Timing: pre-empt at the step boundary
@@ -180,8 +181,7 @@ normal path.
   that cap is absolute.
 - **The end-of-turn fold is retired as the normal path.** The serial-lane
   queue and `/compact` keep their semantics (`Runtime.busy` still counts a
-  queued or in-flight compaction, and a resume offered while the lane holds
-  work still refuses).
+  queued or in-flight compaction).
 
 Implementation rulings (2026-10-25):
 
@@ -261,7 +261,7 @@ never passed through a model:
    newest first, within budget. Cannot be paraphrased.
 2. **Verbatim user messages.** Every real operator message in the folded
    span, quoted exactly, newest first, within budget. Program prompts,
-   system notes and resume requests are not "real". Standing instructions
+   system notes and legacy resume markers are not "real". Standing instructions
    ("don't drop Herbert") are what must never decay.
 3. **Recovery pointer.** The existing marker line: conversation id,
    boundary seq, `history_search action="context"`. The tool already

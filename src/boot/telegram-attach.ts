@@ -53,7 +53,6 @@ import {
 } from "../tg/turn-notice.ts";
 import type { WakeApi } from "../tg/wake.ts";
 import type { TurnJournal } from "../turn-journal.ts";
-import type { ResumeOps } from "../turn-resume.ts";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Attach retries back off toward the cap — the observed boot miss is a
@@ -81,7 +80,6 @@ export interface TelegramAttachStart {
 	/** Memory command surfaces — absent when the memory block is off. */
 	memory: MemorySurfaces | null;
 	gate: System1Client | null;
-	resumeOps(): ResumeOps | undefined;
 	mailApproval(): MailApproval | undefined;
 	programApproval(): ProgramApproval | undefined;
 	programs: ProgramsStore;
@@ -265,7 +263,6 @@ export function openTelegramAttach(deps: TelegramAttachDeps): TelegramAttach {
 								mail: () => telegramMailApproval,
 								programApproval: () => telegramProgramApproval,
 								followUpGate: () => startDeps.gate ?? undefined,
-								resumeOps: startDeps.resumeOps,
 							},
 							canAttachTelegram,
 						);

@@ -37,13 +37,7 @@ export interface TurnRecovery {
 	startedAt: number;
 	live: LiveChunks;
 	filterRetryUsed: boolean;
-	resumedFrom?: string | undefined;
 	predecessorRun?: string | undefined;
-	// The operator's real request for the loop watchdog's progress check —
-	// set only by operator-resume, whose head event is a generated
-	// provenance marker rather than the ask. Absent, the attempt falls
-	// back to the head message's text (every other head IS the request).
-	operatorRequest?: string | undefined;
 	overflowed?: boolean | undefined;
 	recallVersion?: number | null | undefined;
 	sourceInputSeq?: number | null | undefined;
@@ -54,7 +48,7 @@ export interface TurnRecovery {
 	// Set once the turn has a fallback history (design/model.md → Model
 	// fallback list): `conversation.model` is then the serving candidate,
 	// `configured` the operator's selection, `tried` the candidates that
-	// failed before it. Carried through overflow recovery and resume.
+	// failed before it. Carried through overflow recovery.
 	fallback?: FallbackTrail | undefined;
 }
 
@@ -200,11 +194,11 @@ export function transportFailureCode(err: unknown): string | null {
 export function transportFailureText(err: unknown): string | null {
 	const code = transportFailureCode(err);
 	if (code === null) return null;
-	return `The model connection dropped (${code}). Nothing was lost — send again or /resume.`;
+	return `The model connection dropped (${code}). Nothing was lost — send again.`;
 }
 
-export function terminalFailureMessage(err: unknown, resumed: boolean): string {
-	if (resumed && isContextOverflow(err)) return STILL_FULL;
+export function terminalFailureMessage(err: unknown, continued: boolean): string {
+	if (continued && isContextOverflow(err)) return STILL_FULL;
 	const transport = transportFailureText(err);
 	if (transport !== null) return transport;
 	return err instanceof Error ? err.message : String(err);
@@ -224,11 +218,7 @@ export interface OverflowDeps<M> {
 	startedAt: number;
 	live: LiveChunks;
 	filterRetryUsed: boolean;
-	resumedFrom?: string | undefined;
 	failedRunId?: string | undefined;
-	// Carried forward so an operator-resumed turn that overflows keeps
-	// the real request on its continuation attempt.
-	operatorRequest?: string | undefined;
 	recallVersion?: number | null | undefined;
 	sourceInputSeq?: number | null | undefined;
 	members: M[];
@@ -332,9 +322,7 @@ export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<Ove
 			startedAt: deps.startedAt,
 			live: deps.live,
 			filterRetryUsed: deps.filterRetryUsed,
-			resumedFrom: deps.resumedFrom,
 			predecessorRun: deps.failedRunId,
-			operatorRequest: deps.operatorRequest,
 			overflowed: true,
 			recallVersion: deps.recallVersion,
 			sourceInputSeq: deps.sourceInputSeq,

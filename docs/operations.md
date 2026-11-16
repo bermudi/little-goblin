@@ -76,58 +76,19 @@ half-run tool calls would be worse than asking again.
 ## Interrupted turns
 
 A crash mid-turn leaves the run `interrupted` in the turn journal. Boot
-sends one notice per interrupted run; `/resume` in the conversation lists
-them (the app's interrupted-turns panel shows the same rows where they
-died). Nothing replays or re-runs on its own — every step below is an
-explicit operator decision.
+sends one notice per interrupted run, and the turn's progress lands in
+history as a system event (the "interrupted rail") — tool calls that ran
+are recorded as evidence, never replayed. That is the whole story: there
+is no `/resume`, no decide/skip workflow, and nothing re-runs on its own.
 
-`/resume` prints each run's **ambiguous** calls numbered — a `dispatched`
-call means the side effect may or may not have landed — then its **known**
-calls (completed/failed/recorded outcomes) under `known:`:
-
-- **Ambiguous calls** decide by ordinal or id:
-  `/decide <run> <n|callId> record-result|authorize-retry|skip [note]`.
-  `record-result` asserts an outcome you already know happened;
-  `authorize-retry` permits one more execution on resume; `skip` declines
-  it — a re-ask reads your refusal, never the effect. Resume stays locked
-  until every dispatched call has a decision.
-- **Known calls** never hold ordinals — the `known:` lines print the
-  ready-made `/decide <run> <callId-prefix> authorize-retry` command that
-  grants one deliberate re-run. The recorded outcome stays visible as
-  evidence; granting a known call cannot shift the ambiguous numbering,
-  while a call that was decided while ambiguous keeps the ordinal it
-  already had.
-- **A grant is one-shot.** The next matching call consumes it durably — a
-  second identical call meets a labeled `[turn-journal conflict]`, and a
-  new execution needs a new `/decide`. If a granted re-execution crashes
-  mid-flight it lands as a fresh ambiguous dispatch on the successor —
-  the new dispatch, not the old grant, owns the next decision.
-- **A labeled conflict is the safe default.** On a resumed or continued
-  turn, any call colliding with a recorded execution is refused with the
-  historical call ids — the old result is evidence, never the answer.
-  Safe reads (`read_file`, `history_search`, `memory_search`) observe
-  fresh state and run again on their own; a `skip` never expires.
-- **Grants are preauthorization, not a retry button.** The fence has no
-  in-band override — to re-run an effect deliberately, decide the
-  historical call id *before* the resume that will consume it
-  (`/decide <run> <id> authorize-retry`, then `/resume <run>`). The
-  alternative is a fresh turn: an ordinary turn carries no recovery
-  guard, so asking for the action again just runs it.
-- **Legacy migrated grants are inert.** Rows that predate the grant
-  tracking columns read consumed and fail closed — they can neither
-  execute nor take a new decision. Decide the call fresh on the
-  interrupted run, or re-ask in a new turn.
-- **`/resume` refuses input the dead run never owned.** A durable user
-  message after the run's trigger that it never consumed — steering it
-  crashed before folding in, or anything sent after it died — blocks
-  the resume with a labeled conflict. Continue from the current
-  conversation as a new request, or `/abandon <run>` the run.
-- **A successful resume appends a new source-linked user event.** It
-  carries a provenance prefix — `[operator resumed interrupted run
-  …]` — plus the original request verbatim when the model view no
-  longer carries it (e.g. after compaction). It shows in history and
-  the app as its own message, re-feeds the model, and anchors the new
-  reply; the original event is never re-appended or duplicated.
+To continue, send a new message in that conversation — it starts an
+ordinary fresh turn. Tool effects from the dead turn may already have
+happened, so check current state before asking for the same action again;
+a repeated effectful call collides with the recorded execution only inside
+a continuation (overflow/fallback), where the recovery guard refuses it
+with a labeled `[turn-journal conflict]` naming the historical call ids.
+Safe reads (`read_file`, `history_search`, `memory_search`) just observe
+fresh state.
 
 ## Diagnostics and first-start acceptance
 

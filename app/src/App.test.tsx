@@ -4530,10 +4530,10 @@ describe("app projects surface", () => {
 		// One item at boot: the refresh() count paints the dot.
 		attentionItems = [
 			{
-				id: "interrupted-run:r1",
-				kind: "interrupted-run",
-				title: "Interrupted turn — fixture chat",
-				detail: "2 recorded calls — resume or abandon",
+				id: "delegation-input:3",
+				kind: "delegation-input",
+				title: "Delegation needs input — worker",
+				detail: "finish the report",
 				createdAt: "2026-11-05T00:00:00.000Z",
 				target: { kind: "conversation", conversationId: "app/fixture" },
 			},
@@ -4769,10 +4769,10 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		preview: "eggs",
 	};
 	const attnRow: AppAttentionItem = {
-		id: "interrupted-run:r1",
-		kind: "interrupted-run",
-		title: "Interrupted turn — fixture chat",
-		detail: "2 recorded calls — resume or abandon",
+		id: "delegation-input:3",
+		kind: "delegation-input",
+		title: "Delegation needs input — worker",
+		detail: "finish the report",
 		createdAt: "2026-11-05T00:00:00.000Z",
 		target: { kind: "conversation", conversationId: "app/fixture" },
 	};

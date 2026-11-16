@@ -51,6 +51,7 @@ import {
 } from "./testkit.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import type { ModelStep } from "./turn/engine.ts";
+import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
 import { openWindowCapture } from "./window-capture.ts";
@@ -5075,6 +5076,64 @@ describe("unlanded-turn progress — error rail", () => {
 		} finally {
 			await r.runtime.shutdown();
 			store.close();
+		}
+	});
+
+	test("process death leaves only the interrupted rail — a new message runs a normal turn carrying it (#594)", async () => {
+		const dbPath = tmpDb("goblin-rt-fp-crash-");
+		const store = openStore(dbPath);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(conv.id, [
+			{ id: "u1", role: "user", parts: [{ type: "text", text: "the killed ask" }] } as Message,
+		]);
+		const journal = openTurnJournal(store.db);
+		journal.beginRun({
+			runId: "run-dead",
+			conversationId: conv.id,
+			epoch: 1,
+			anchorSeq: null,
+			steerMark: null,
+			convSnapshot: {},
+			toolNames: ["probe"],
+			startedAt: new Date().toISOString(),
+		});
+		journal.noteToolInput("run-dead", "call-1", "probe", {});
+		journal.noteToolDispatch("run-dead", "call-1", "probe", {});
+		store.close(); // the process dies with the run still 'running'
+
+		// Boot: the journal open reclassifies and records the rail event —
+		// the only durable trace the dead turn leaves.
+		const reopened = openStore(dbPath);
+		const journal2 = openTurnJournal(reopened.db, {
+			onInterrupted: (run, calls) => appendInterruptedProgress(reopened, run, calls),
+		});
+		expect(journal2.get("run-dead")!.status).toBe("interrupted");
+		expect(systemEvents(reopened, conv.id)).toHaveLength(1);
+
+		const edge = scriptedEdge([textParts("back alive")]);
+		const runtime = new Runtime({
+			engines: [aiSdkEngine],
+			store: reopened,
+			turnJournal: journal2,
+			buildStep: () => ({ model: edge.model, system: "test" }),
+			makeTools: () => ({}),
+		});
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "carry on" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			expect(sink.text).toBe("back alive");
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			// The new turn is an ordinary run: its model request carries the
+			// interrupted record as history, and nothing resumed the dead one.
+			const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+			expect(prompt).toContain("was interrupted");
+			expect(prompt).toContain("carry on");
+			expect(journal2.get("run-dead")!.status).toBe("interrupted");
+			expect(journal2.successorOf("run-dead")).toBeNull();
+		} finally {
+			await runtime.shutdown();
+			reopened.close();
 		}
 	});
 });

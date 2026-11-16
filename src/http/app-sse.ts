@@ -83,7 +83,7 @@ export function appSseWriter(
 							done.kind === "error"
 								? done.message
 								: done.shutdown
-									? 'turn stopped: goblin restarted (deploy or service restart). Send "continue" to resume.'
+									? 'turn stopped: goblin restarted (deploy or service restart). Send a new message to continue.'
 									: "turn stopped before finishing",
 					})}\n\n`,
 				);

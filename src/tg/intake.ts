@@ -56,9 +56,6 @@ const OPERATOR_ONLY_COMMANDS = new Set([
 	"/memory",
 	"/forget",
 	"/compact",
-	"/resume",
-	"/decide",
-	"/abandon",
 	"/skill",
 ]);
 
@@ -425,7 +422,6 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 						runtime: deps.runtime,
 						botUsername: env.botUsername,
 						...(deps.memory ? { memory: deps.memory } : {}),
-						...(deps.resumeOps ? { resumeOps: deps.resumeOps } : {}),
 					},
 					target,
 					text,

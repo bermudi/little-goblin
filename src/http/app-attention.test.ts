@@ -10,8 +10,6 @@ import { openPrograms } from "../programs.ts";
 import type { ProgramProposal } from "../program-proposals.ts";
 import { openResponsibilities } from "../responsibilities.ts";
 import { makeResponsibilityService } from "../responsibility-service.ts";
-import type { TurnRun, TurnToolCall } from "../turn-journal.ts";
-import type { ResumeOps } from "../turn-resume.ts";
 import { openWakeStore } from "../wake-store.ts";
 import { APP_TOKEN_NAME, setup } from "./app-testing.ts";
 import type { AppAttentionResponse } from "./app-wire.ts";
@@ -59,57 +57,6 @@ const draft: OutboxEntry = {
 	decidedBy: null,
 	sentId: null,
 };
-
-function interruptedRun(conversationId: string): { run: TurnRun; calls: TurnToolCall[] } {
-	return {
-		run: {
-			runId: "run-1",
-			conversationId,
-			epoch: 0,
-			anchorSeq: null,
-			steerMark: null,
-			convSnapshot: null,
-			toolNames: [],
-			startedMs: 1,
-			finishedMs: null,
-			status: "interrupted",
-			delivery: "pending",
-			partial: null,
-			loopState: null,
-			ownedInputSeqs: null,
-			admissionExchangeExcluded: false,
-			sourceInputSeq: null,
-			ownedInputSeqsUnreadable: false,
-			resumeRequestSeqs: null,
-			resumeRequestSeqsUnreadable: false,
-			filterRetryUsed: false,
-			replyLanded: false,
-			replySeq: null,
-			createdAt: "2026-10-21T00:02:00.000Z",
-			resumedFrom: null,
-			calls: { planned: 0, dispatched: 1, completed: 0, failed: 0, resolved: 0 },
-		},
-		calls: [
-			{
-				runId: "run-1",
-				toolCallId: "call-1",
-				name: "send_file",
-				args: {},
-				argsHash: "h",
-				state: "dispatched",
-				replayed: false,
-				retryConsumed: false,
-				retryFromKnown: false,
-				result: null,
-				error: null,
-				beganMs: null,
-				settledMs: null,
-				resolutionNote: null,
-				resolvedMs: null,
-			},
-		],
-	};
-}
 
 describe("app attention", () => {
 	test("projects the durable owners and names unwired seams", async () => {
@@ -159,14 +106,6 @@ describe("app attention", () => {
 					decide: async () => ({ kind: "gone" }),
 				},
 			},
-			resumeOps: () =>
-				({
-					interrupted: (convId: string) =>
-						convId === "app/chat-01" ? [interruptedRun(convId)] : [],
-					resume: () => ({ kind: "refused", code: "not-found", reason: "no" }),
-					decide: () => ({ kind: "refused", code: "not-found", reason: "no" }),
-					abandon: () => ({ kind: "refused", code: "not-found", reason: "no" }),
-				}) satisfies ResumeOps,
 			operator: {
 				memory: {
 					counts: () => ({
@@ -266,7 +205,6 @@ describe("app attention", () => {
 					["skill-proposal:radar", { kind: "page", page: "skills" }],
 					["skill-proposal:watcher", { kind: "page", page: "skills" }],
 					["delegation-input:3", { kind: "conversation", conversationId: "app/chat-01" }],
-					["interrupted-run:run-1", { kind: "conversation", conversationId: "app/chat-01" }],
 				]),
 			);
 		} finally {
@@ -444,7 +382,6 @@ describe("app attention", () => {
 				"skills",
 				"delegations",
 				"responsibilities",
-				"recovery",
 			]);
 		} finally {
 			http.stop();

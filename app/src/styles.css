@@ -3967,6 +3967,14 @@ button.pathchip:hover svg {
 	display: flex;
 	flex-direction: column;
 }
+/* The command primitive's root, standing between .msheet and the filter
+   row + body so the sheet's own column layout survives the wrapper. */
+.msheet-command {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	flex: 1;
+}
 .mrow {
 	display: flex;
 	align-items: center;

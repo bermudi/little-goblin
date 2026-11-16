@@ -39,6 +39,11 @@ describe("ModelPicker", () => {
 		install("window", win);
 		install("document", win.document);
 		install("navigator", win.navigator);
+		// The command primitive walks item text (NodeFilter) and reveals
+		// the highlighted row (getComputedStyle); browsers have both,
+		// bare bun:test doesn't.
+		install("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
+		install("getComputedStyle", win.getComputedStyle);
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 	});
 

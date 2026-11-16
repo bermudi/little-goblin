@@ -4,8 +4,28 @@
 // whole catalog grouped by provider — with a search that also accepts a
 // typed provider/model-id. A row chooses the model; the star on every
 // model row toggles the favorite without picking it.
-import { Fragment, useState } from "react";
+//
+// The list mechanics — filtering, arrow-key highlight, Enter, and the
+// listbox/combobox ARIA wiring — come from @ui-sdk/react's `command`
+// primitive (vercel-labs/ui), mounted open inside this sheet. What
+// stays here is the domain: pinning, curation, the provider scope,
+// stars, and the typed path's exact resolution.
+import { useRef, useState } from "react";
+import {
+	Command,
+	CommandEmpty,
+	CommandGroup,
+	CommandGroupLabel,
+	CommandInput,
+	CommandItem,
+	CommandList,
+} from "@ui-sdk/react/command";
 import type { ModelOption, ProviderModelCatalog } from "../../src/http/app-wire.ts";
+
+// The Off row's item value. Item values double as model refs, and every
+// pickable ref carries a provider slash, so this spelling is one no ref
+// can produce.
+const OFF = "\u0000off";
 
 export function ModelPicker({
 	title,
@@ -34,6 +54,10 @@ export function ModelPicker({
 }) {
 	const [query, setQuery] = useState("");
 	const [scope, setScope] = useState("");
+	// The row the library last highlighted, or null — Enter runs it on
+	// its own. Tracked so the typed path below only takes over when no
+	// row would run.
+	const highlighted = useRef<string | null>(null);
 	// ?? null: an older backend's config view lacks the key — read as
 	// never curated, not an empty sheet.
 	const curatedList = pickerModels ?? null;
@@ -49,11 +73,12 @@ export function ModelPicker({
 	const favSet = new Set(favorites.map((f) => f.toLowerCase()));
 	const isFav = (ref: string) => ref !== "" && favSet.has(ref.toLowerCase());
 	// Search spans the full ref and the catalog's friendly name, so
-	// "glm-5.3" and "GLM" both land on the same row.
-	const hit = (ref: string) => {
-		if (q === "") return true;
+	// "glm-5.3" and "GLM" both land on the same row. Feeds both the
+	// command's `filter` and the pre-render row lists below.
+	const hit = (ref: string, needle: string = q) => {
+		if (needle === "") return true;
 		const name = meta.get(ref)?.name?.toLowerCase() ?? "";
-		return ref.toLowerCase().includes(q) || name.includes(q);
+		return ref.toLowerCase().includes(needle) || name.includes(needle);
 	};
 	// The provider scope filters every model row — favorites and current
 	// included — or "codex" reads as broken: its catalog can be empty
@@ -125,12 +150,15 @@ export function ModelPicker({
 		!known(customRef) &&
 		customRef !== current &&
 		(!hasResults || customRef.includes("/"));
+	// One row: the option is the item; the mrow button inside keeps the
+	// row's own click target (the command runs it either way) and the
+	// star stays beside it, its own click never reaching the item.
 	const row = (ref: string, label?: string) => {
 		const model = meta.get(ref);
 		const primary = label ?? model?.name ?? ref;
 		return (
-			<div className="mline" key={ref}>
-				<button type="button" className={ref === current ? "mrow sel" : "mrow"} onClick={() => onPick(ref)}>
+			<CommandItem key={ref} value={ref === "" ? OFF : ref} className="mline">
+				<button type="button" className={ref === current ? "mrow sel" : "mrow"}>
 					<span className="mcell">
 						<span className={ref === "" ? "off-label" : "mname"}>{primary}</span>
 						{model?.name != null && (
@@ -146,29 +174,37 @@ export function ModelPicker({
 						type="button"
 						className={isFav(ref) ? "mstar on" : "mstar"}
 						aria-label={isFav(ref) ? `unfavorite ${ref}` : `favorite ${ref}`}
-						onClick={(e) => {
-							e.stopPropagation();
-							onToggleFavorite(ref, !isFav(ref));
+						ref={(el) => {
+							if (el === null) return;
+							// The command's row press is a native click listener on
+							// the option, so a React onClick here would fire too
+							// late to stop it. The star stops its own click natively
+							// and toggles there.
+							const onStarClick = (e: MouseEvent) => {
+								e.stopPropagation();
+								onToggleFavorite(ref, !isFav(ref));
+							};
+							el.addEventListener("click", onStarClick);
+							return () => el.removeEventListener("click", onStarClick);
 						}}
 					>
 						{isFav(ref) ? "★" : "☆"}
 					</button>
 				)}
-			</div>
+			</CommandItem>
 		);
 	};
-	const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-		if (e.key !== "Enter" || raw === "") return;
-		e.preventDefault();
-		// Exact resolution ignores visibility: a catalog hit resolves to
-		// its catalog spelling, a favorite to its stored spelling — so the
-		// typed path reaches a hidden model (or a hidden favorite's exact
-		// ref) even when curation keeps it off every row.
+	// Enter with no highlighted row runs the typed path: exact
+	// resolution ignores visibility — a catalog hit resolves to its
+	// catalog spelling, a favorite to its stored spelling — so typing
+	// reaches a hidden model (or a hidden favorite's exact ref) even
+	// when curation keeps it off every row. A fully typed provider/model
+	// ref beats a catalog row that only contains it as a substring.
+	const onEnter = () => {
+		if (raw === "") return;
 		const exact =
 			canonical.get(raw.toLowerCase()) ??
 			favorites.find((f) => f.toLowerCase() === raw.toLowerCase());
-		// A fully typed provider/model ref beats a catalog row that only
-		// contains it as a substring — Enter saves what was typed.
 		const pick =
 			exact ??
 			(showCustom && raw.includes("/") ? customRef : undefined) ??
@@ -187,76 +223,108 @@ export function ModelPicker({
 						×
 					</button>
 				</header>
-				<div className="msheet-filter">
-					<input
-						className="mono"
-						value={query}
-						onChange={(e) => setQuery(e.target.value)}
-						onKeyDown={onKeyDown}
-						placeholder="Search models or type provider/model-id"
-						autoComplete="off"
-						spellCheck={false}
-						autoCapitalize="off"
-						aria-label="Search models"
-					/>
-					{provNames.length > 0 && (
-						<select
-							aria-label="Model provider"
-							value={scope}
-							onChange={(e) => setScope(e.target.value)}
-						>
-							<option value="">All providers</option>
-							{provNames.map((n) => (
-								<option key={n} value={n}>
-									{n}
-								</option>
-							))}
-						</select>
-					)}
-				</div>
-				<div className="msheet-body">
-					{allowOff && row("", "Off")}
-					{favs.length > 0 && (
-						<>
-							<div className="mgroup">Favorites</div>
-							{favs.map((f) => row(f))}
-						</>
-					)}
-					{showCurrent && (
-						<>
-							<div className="mgroup">Current</div>
-							{row(current)}
-						</>
-					)}
-					{showCustom && customRef !== null && (
-						<>
-							<div className="mgroup">Not in the catalog</div>
-							<div className="mline">
-								<button type="button" className="mrow" onClick={() => onPick(customRef)}>
-									<span className="mcell">
-										<span className="mname">Use “{customRef}”</span>
-									</span>
-								</button>
-							</div>
-						</>
-					)}
-				{curatedMode ? (
-					curatedRest.length > 0 && (
-						<>
-							{favs.length > 0 && <div className="mgroup">Models</div>}
-							{curatedRest.map((ref) => row(ref))}
-						</>
-					)
-				) : (
-					groups.map((group) => (
-						<Fragment key={group.provider}>
-							<div className="mgroup">{group.provider} models</div>
-							{group.models.map((model) => row(model.ref))}
-						</Fragment>
-					))
-				)}
-					{q !== "" && !hasResults && !showCustom && <div className="mempty">No models match.</div>}
-				</div>
+				<Command
+					className="msheet-command"
+					query={query}
+					onQueryChange={setQuery}
+					filter={(item, search) => {
+						const needle = search.trim().toLowerCase();
+						return hit(item.value === OFF ? "" : item.value, needle);
+					}}
+					onValueChange={(value) => {
+						highlighted.current = value;
+					}}
+					onAction={(value) => onPick(value === OFF ? "" : value)}
+					onKeyDownCapture={(e) => {
+						// Only the search field's Enter: the scope select and
+						// the row buttons keep their own. With a highlighted
+						// row the command runs it; with none, the typed path
+						// takes over — and an empty query picks nothing, so
+						// the highlighted first row cannot run by itself.
+						// (tagName, not instanceof: happy-dom realms have
+						// their own element classes.)
+						if (e.key !== "Enter" || (e.target as HTMLElement | null)?.tagName !== "INPUT")
+							return;
+						if (query.trim() !== "" && highlighted.current !== null) return;
+						e.preventDefault();
+						e.stopPropagation();
+						onEnter();
+					}}
+				>
+					<div className="msheet-filter">
+						<CommandInput
+							className="mono"
+							placeholder="Search models or type provider/model-id"
+							autoComplete="off"
+							spellCheck={false}
+							autoCapitalize="off"
+							aria-label="Search models"
+						/>
+						{provNames.length > 0 && (
+							<select
+								aria-label="Model provider"
+								value={scope}
+								onChange={(e) => setScope(e.target.value)}
+							>
+								<option value="">All providers</option>
+								{provNames.map((n) => (
+									<option key={n} value={n}>
+										{n}
+									</option>
+								))}
+							</select>
+						)}
+					</div>
+					<div className="msheet-body">
+						{q !== "" && <CommandEmpty className="mempty">No models match.</CommandEmpty>}
+						<CommandList>
+							{allowOff && row("", "Off")}
+							{favs.length > 0 && (
+								<CommandGroup>
+									<CommandGroupLabel className="mgroup">Favorites</CommandGroupLabel>
+									{favs.map((f) => row(f))}
+								</CommandGroup>
+							)}
+							{showCurrent && (
+								<CommandGroup>
+									<CommandGroupLabel className="mgroup">Current</CommandGroupLabel>
+									{row(current)}
+								</CommandGroup>
+							)}
+							{showCustom && customRef !== null && (
+								<CommandGroup>
+									<CommandGroupLabel className="mgroup">Not in the catalog</CommandGroupLabel>
+									<CommandItem value={customRef} className="mline">
+										<button type="button" className="mrow">
+											<span className="mcell">
+												<span className="mname">Use “{customRef}”</span>
+											</span>
+										</button>
+									</CommandItem>
+								</CommandGroup>
+							)}
+							{curatedMode ? (
+								curatedRest.length > 0 && (
+									<CommandGroup>
+										{favs.length > 0 && (
+											<CommandGroupLabel className="mgroup">Models</CommandGroupLabel>
+										)}
+										{curatedRest.map((ref) => row(ref))}
+									</CommandGroup>
+								)
+							) : (
+								groups.map((group) => (
+									<CommandGroup key={group.provider}>
+										<CommandGroupLabel className="mgroup">
+											{group.provider} models
+										</CommandGroupLabel>
+										{group.models.map((model) => row(model.ref))}
+									</CommandGroup>
+								))
+							)}
+						</CommandList>
+					</div>
+				</Command>
 			</div>
 		</div>
 	);

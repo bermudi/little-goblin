@@ -706,9 +706,12 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 	>(
 		"UPDATE turn_runs SET status = 'interrupted', finished_ms = ? WHERE status = 'running' RETURNING run_id, conversation_id, started_ms",
 	);
+	// One clock read per open: the reclassify stamp and this open's
+	// journal_opens row share it.
+	const openMs = Date.now();
 	const reclassify = (): TurnRun[] => {
 		const interrupted: TurnRun[] = [];
-		for (const r of qStale.all(Date.now())) {
+		for (const r of qStale.all(openMs)) {
 			log.warn("interrupted turn found", {
 				run: r.run_id,
 				conversation: r.conversation_id,
@@ -773,7 +776,7 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 		}
 		return counts;
 	})();
-	const openedAt = new Date().toISOString();
+	const openedAt = new Date(openMs).toISOString();
 	qRecordOpen.run(openedAt);
 	log.info("turn journal opened", {
 		openedAt,

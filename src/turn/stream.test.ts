@@ -10,7 +10,8 @@ import {
 	type LanguageModelV4CallOptions,
 	type LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
-import { type LanguageModel, tool, type UIMessage, type UIMessageChunk } from "ai";
+import { type LanguageModel, tool } from "ai";
+import type { Message, MessageChunk } from "../message.ts";
 import { z } from "zod";
 import { ATTACHMENT_PART } from "../agent/attachments.ts";
 import { isTransientTurnFailure } from "../agent/provider-errors.ts";
@@ -57,9 +58,9 @@ test("a failed attach subscriber is logged and detached without losing the share
 			},
 			onEnd() {},
 		});
-		const received: UIMessageChunk[] = [];
+		const received: MessageChunk[] = [];
 		live.subscribers.add({ onChunk: (chunk) => received.push(chunk), onEnd() {} });
-		const chunk: UIMessageChunk = { type: "text-start", id: "synthetic" };
+		const chunk: MessageChunk = { type: "text-start", id: "synthetic" };
 		emitChunk("app/test", [], live, chunk);
 		expect(live.subscribers.size).toBe(1);
 		expect(live.chunks).toEqual([chunk]);
@@ -146,11 +147,11 @@ const filterWarning =
 // by hand so incidental members never collide with crafted entries.
 let memberSeq = 100;
 interface RecMember extends WireMember {
-	chunks: UIMessageChunk[];
+	chunks: MessageChunk[];
 }
 
 function member(text: string, streaming = true, seq = memberSeq++): RecMember {
-	const chunks: UIMessageChunk[] = [];
+	const chunks: MessageChunk[] = [];
 	return {
 		seq,
 		message: { id: `u-${text}`, role: "user", parts: [{ type: "text", text }] },
@@ -255,7 +256,7 @@ describe("membership seam", () => {
 		// during that recovery window — the resume claim goes through
 		// the seam.
 		const live = openLive();
-		const before: UIMessageChunk[] = [
+		const before: MessageChunk[] = [
 			{ type: "start", messageId: "m1" },
 			{ type: "tool-input-available", toolCallId: "c1", toolName: "probe", input: {} },
 		];
@@ -585,7 +586,7 @@ describe("driveStream", () => {
 		const r = rig([textReply("the answer")]);
 		const head = member("head");
 		r.members.push(head);
-		const subChunks: UIMessageChunk[] = [];
+		const subChunks: MessageChunk[] = [];
 		r.live.subscribers.add({ onChunk: (c) => subChunks.push(c), onEnd: () => {} });
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
@@ -850,7 +851,7 @@ describe("driveStream", () => {
 				{ type: "text", text: "read this" },
 				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
 			],
-		} as UIMessage;
+		} as Message;
 		r.queue.push(poison);
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
@@ -885,7 +886,7 @@ describe("driveStream", () => {
 				{ type: "text", text: "read this" },
 				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
 			],
-		} as UIMessage;
+		} as Message;
 		r.queue.push(ok, poison);
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
@@ -935,7 +936,7 @@ describe("driveStream", () => {
 					data: { path: fifo, mediaType: "image/png", filename: "photo.png", size: 7 },
 				},
 			],
-		} as UIMessage;
+		} as Message;
 		r.queue.push(steer);
 		const driving = driveStream(r.deps);
 		await new Promise((res) => setTimeout(res, 20)); // conversion parked on the FIFO

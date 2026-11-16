@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import {
 	decideSkillProposal,
 	proposalFingerprint,
@@ -84,7 +84,7 @@ describe("resolveSkillProposal", () => {
 		const appended: { conversation: string; text: string }[] = [];
 		return {
 			appended,
-			append(id: string, messages: UIMessage[]) {
+			append(id: string, messages: Message[]) {
 				appended.push({
 					conversation: id,
 					text: (messages[0]!.parts[0] as { text: string }).text,

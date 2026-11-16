@@ -3,7 +3,8 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LanguageModelV4Usage } from "@ai-sdk/provider";
-import { streamText, tool, type UIMessage } from "ai";
+import { streamText, tool } from "ai";
+import type { Message } from "./message.ts";
 import { z } from "zod";
 import {
 	cacheRouteFor,
@@ -92,13 +93,13 @@ function policyFor(
 	});
 }
 
-const userMsg = (text: string, id = randomUUID()): UIMessage => ({
+const userMsg = (text: string, id = randomUUID()): Message => ({
 	id,
 	role: "user",
 	parts: [{ type: "text", text }],
 });
 
-const toolMsg = (toolCallId: string, output: string): UIMessage =>
+const toolMsg = (toolCallId: string, output: string): Message =>
 	({
 		id: `a-${toolCallId}`,
 		role: "assistant",
@@ -111,9 +112,9 @@ const toolMsg = (toolCallId: string, output: string): UIMessage =>
 				output,
 			},
 		],
-	}) as unknown as UIMessage;
+	}) as unknown as Message;
 
-const toolOutput = (message: UIMessage | undefined): unknown =>
+const toolOutput = (message: Message | undefined): unknown =>
 	(message?.parts[0] as { output?: unknown } | undefined)?.output;
 
 function usage(input: number, cacheRead: number | undefined): LanguageModelV4Usage {

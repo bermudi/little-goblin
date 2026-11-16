@@ -1,4 +1,4 @@
-import type { UIMessageChunk } from "ai";
+import type { MessageChunk } from "../message.ts";
 import { appMediaSink, composeTurnSinks, type AppMediaDeps } from "../app-media.ts";
 import { log } from "../log.ts";
 import type { TurnDone, TurnSink } from "../turn/sink.ts";
@@ -10,7 +10,7 @@ export function appSseWriter(
 	heartbeatMs: number = SSE_HEARTBEAT_MS,
 ): {
 	body: ReadableStream<Uint8Array>;
-	write(chunk: UIMessageChunk): void;
+	write(chunk: MessageChunk): void;
 	finish(done: TurnDone): void;
 	wireDied(): boolean;
 	dispose(): void;

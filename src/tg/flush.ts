@@ -5,7 +5,7 @@
 // of intake.ts — it sees only FlushEnv, the strictly-smaller slice of
 // IntakeEnv; only bot.ts imports both.
 
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { paths } from "../home-layout.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { channelOf } from "../conversation-address.ts";
@@ -200,7 +200,7 @@ function admitBatch(
 	conv: Conversation,
 	laneKey: string,
 	items: BufferedItem[],
-	parts: UIMessage["parts"],
+	parts: Message["parts"],
 ): void {
 	const { deps } = env;
 	const audience = sharedChatPart(conv.id, conv.chatId);
@@ -271,7 +271,7 @@ function admitAppBatch(
 	conv: Conversation,
 	laneKey: string,
 	items: BufferedItem[],
-	parts: UIMessage["parts"],
+	parts: Message["parts"],
 ): void {
 	const { deps } = env;
 	const message = userMessage(parts);

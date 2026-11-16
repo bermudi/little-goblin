@@ -5,7 +5,7 @@
 // stored rows; only modelEntries rewrites, and only in memory.
 
 import type { Database } from "bun:sqlite";
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { log } from "./log.ts";
 import {
 	type Compaction,
@@ -32,7 +32,7 @@ export interface HistoryContextRow {
 	seq: number;
 	role: string;
 	// The parsed stored event — tool calls included.
-	message: UIMessage;
+	message: Message;
 	createdAt: string;
 }
 

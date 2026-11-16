@@ -3,7 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { attachmentPart } from "../agent/attachments.ts";
 import { memoryConfigSchema } from "../config-schema.ts";
 import { summaryMessage } from "../conversation-events.ts";
@@ -45,12 +45,12 @@ function memdb(): Database {
 	return db;
 }
 
-const user = (id: string, text: string): UIMessage => ({
+const user = (id: string, text: string): Message => ({
 	id,
 	role: "user",
 	parts: [{ type: "text", text }],
 });
-const asst = (id: string, text: string): UIMessage => ({
+const asst = (id: string, text: string): Message => ({
 	id,
 	role: "assistant",
 	parts: [{ type: "text", text }],
@@ -109,7 +109,7 @@ describe("recall formatting", () => {
 
 describe("exchange boundaries", () => {
 	test("media and compaction do not close the exchange; completed replies do", () => {
-		const media: UIMessage = {
+		const media: Message = {
 			id: "media-123",
 			role: "assistant",
 			parts: [
@@ -317,7 +317,7 @@ describe("retention documents", () => {
 });
 
 describe("attachment transcripts in retention text", () => {
-	const voiceNote: UIMessage = {
+	const voiceNote: Message = {
 		id: "u9",
 		role: "user",
 		parts: [
@@ -351,7 +351,7 @@ describe("attachment transcripts in retention text", () => {
 	});
 
 	test("transcript-less attachments stay out — no text, no speech", () => {
-		const photo: UIMessage = {
+		const photo: Message = {
 			id: "u10",
 			role: "user",
 			parts: [
@@ -404,7 +404,7 @@ describe("recall persistence", () => {
 });
 
 describe("cache-stable materialization", () => {
-	const entries = (msgs: UIMessage[]) => msgs.map((m, i) => ({ seq: i + 1, message: m }));
+	const entries = (msgs: Message[]) => msgs.map((m, i) => ({ seq: i + 1, message: m }));
 
 	test("no blocks, no change — disabled memory is byte-identical", () => {
 		const h = [user("u1", "hi"), asst("a1", "hello")];
@@ -466,7 +466,7 @@ describe("cache-stable materialization", () => {
 });
 
 describe("memory-bound projection", () => {
-	const entries = (msgs: UIMessage[]) => msgs.map((m, i) => ({ seq: i + 1, message: m }));
+	const entries = (msgs: Message[]) => msgs.map((m, i) => ({ seq: i + 1, message: m }));
 
 	test("drops ineligible events, keeps eligible ones (#85)", () => {
 		const view = entries([

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { System1Client, System1Error, FALLBACK_MODEL, type System1Question } from "./system1.ts";
@@ -53,7 +53,7 @@ function harness(opts?: {
 
 const anHourHence = () => new Date(Date.now() + 3_600_000);
 
-const msg = (role: "user" | "assistant", text: string): UIMessage => ({
+const msg = (role: "user" | "assistant", text: string): Message => ({
 	id: `${role}-${text}`,
 	role,
 	parts: [{ type: "text", text }],

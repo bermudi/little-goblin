@@ -6,8 +6,11 @@
 //     server to the harness, so every import form counts.
 //  4. No non-test sibling imports its own dir's mod.ts; `import type`
 //     is the sanctioned cycle-breaker.
+//  5. Message shapes come from goblin, not AI SDK packages; block named
+//     imports/re-exports, namespace imports, star exports, and inline types.
+//  6. Escapes and node_modules paths hide what a specifier resolves to.
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
 const SRC = import.meta.dir;
@@ -30,6 +33,94 @@ const FROM_SPEC = /\bfrom\s*["']([^"']+)["']/g;
 const DYNAMIC_SPEC =
 	/\bimport\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*["'`]([^"'`$]+)["'`]\s*\)/g;
 const BARE_SPEC = /\bimport\s*["']([^"']+)["']/g;
+const AI_SDK_MESSAGE_SHAPE_NAMES =
+	"(?:UIMessage|UIMessageChunk|UIMessagePart|ToolUIPart|DynamicToolUIPart|LanguageModelUsage|FinishReason|ProviderMetadata)";
+const AI_SDK_FENCED_SPECIFIER = "(?:ai(?:/[^'\"]*)?|@ai-sdk/[^'\"]+)";
+const AI_SDK_SEPARATOR = "(?:\\s|/\\*[\\s\\S]*?\\*/)*";
+const AI_SDK_NAMED_SHAPE_IMPORT_EXPORT = new RegExp(
+	"(?:^|;)" +
+		AI_SDK_SEPARATOR +
+		"\\b(?:import|export)\\b" +
+		AI_SDK_SEPARATOR +
+		"(?:\\btype\\b" +
+		AI_SDK_SEPARATOR +
+		")?\\{[^}]*\\b" +
+		AI_SDK_MESSAGE_SHAPE_NAMES +
+		"\\b[^}]*\\}" +
+		AI_SDK_SEPARATOR +
+		"\\bfrom\\b" +
+		AI_SDK_SEPARATOR +
+		"['\"]" +
+		AI_SDK_FENCED_SPECIFIER +
+		"['\"]",
+	"ms",
+);
+const AI_SDK_NAMESPACE_IMPORT = new RegExp(
+	"(?:^|;)" +
+		AI_SDK_SEPARATOR +
+		"\\bimport\\b" +
+		AI_SDK_SEPARATOR +
+		"(?:\\btype\\b" +
+		AI_SDK_SEPARATOR +
+		")?\\*" +
+		AI_SDK_SEPARATOR +
+		"\\bas\\b" +
+		AI_SDK_SEPARATOR +
+		"[A-Za-z_$][\\w$]*" +
+		AI_SDK_SEPARATOR +
+		"\\bfrom\\b" +
+		AI_SDK_SEPARATOR +
+		"['\"]" +
+		AI_SDK_FENCED_SPECIFIER +
+		"['\"]",
+	"m",
+);
+const AI_SDK_STAR_EXPORT = new RegExp(
+	"(?:^|;)" +
+		AI_SDK_SEPARATOR +
+		"\\bexport\\b" +
+		AI_SDK_SEPARATOR +
+		"\\*" +
+		AI_SDK_SEPARATOR +
+		"(?:\\bas\\b" +
+		AI_SDK_SEPARATOR +
+		"[A-Za-z_$][\\w$]*" +
+		AI_SDK_SEPARATOR +
+		")?\\bfrom\\b" +
+		AI_SDK_SEPARATOR +
+		"['\"]" +
+		AI_SDK_FENCED_SPECIFIER +
+		"['\"]",
+	"m",
+);
+const AI_SDK_INLINE_MESSAGE_TYPE = new RegExp(
+	"\\bimport\\b" +
+		AI_SDK_SEPARATOR +
+		"\\(" +
+		AI_SDK_SEPARATOR +
+		"['\"]" +
+		AI_SDK_FENCED_SPECIFIER +
+		"['\"]" +
+		AI_SDK_SEPARATOR +
+		"\\)" +
+		AI_SDK_SEPARATOR +
+		"(?:\\." +
+		AI_SDK_SEPARATOR +
+		AI_SDK_MESSAGE_SHAPE_NAMES +
+		"\\b|\\[" +
+		AI_SDK_SEPARATOR +
+		"['\"]" +
+		AI_SDK_MESSAGE_SHAPE_NAMES +
+		"['\"]" +
+		AI_SDK_SEPARATOR +
+		"\\])",
+);
+const AI_SDK_MESSAGE_SHAPE_ALLOWLIST = new Set(["src/message.test.ts"]);
+const AI_SDK_SCAN_ROOTS = [
+	SRC,
+	join(ROOT, "scripts"),
+	join(ROOT, "experimental"),
+];
 
 function specifiers(source: string): string[] {
 	return [FROM_SPEC, DYNAMIC_SPEC, BARE_SPEC].flatMap((re) =>
@@ -85,6 +176,10 @@ function label(file: string): string {
 	return file.startsWith(SRC) ? rel(file) : file.slice(ROOT.length + 1);
 }
 
+function repoPath(file: string): string {
+	return relative(ROOT, file);
+}
+
 describe("module boundaries", () => {
 	test("grammy is imported only under src/tg", () => {
 		const offenders = walk(SRC)
@@ -125,6 +220,39 @@ describe("module boundaries", () => {
 	test("http/mod.ts stays runtime-free", () => {
 		const source = readFileSync(join(SRC, "http", "mod.ts"), "utf8");
 		expect(RUNTIME_IMPORT.test(source)).toBe(false);
+	});
+
+	test("message shapes are not imported, re-exported, or referenced from AI SDK packages", () => {
+		const offenders = AI_SDK_SCAN_ROOTS
+			.filter(existsSync)
+			.flatMap((root) => walk(root))
+			.filter((file) => !AI_SDK_MESSAGE_SHAPE_ALLOWLIST.has(repoPath(file)))
+			.filter((file) => {
+				const source = readFileSync(file, "utf8");
+				return (
+					AI_SDK_NAMED_SHAPE_IMPORT_EXPORT.test(source) ||
+					AI_SDK_NAMESPACE_IMPORT.test(source) ||
+					AI_SDK_STAR_EXPORT.test(source) ||
+					AI_SDK_INLINE_MESSAGE_TYPE.test(source)
+				);
+			})
+			.map(repoPath);
+		expect(offenders).toEqual([]);
+	});
+
+	test("import specifiers are plain package or path names", () => {
+		const offenders = AI_SDK_SCAN_ROOTS
+			.filter(existsSync)
+			.flatMap((root) => walk(root))
+			.flatMap((file) =>
+				specifiers(readFileSync(file, "utf8"))
+					.filter(
+						(specifier) =>
+							specifier.includes("node_modules") || specifier.includes("\\"),
+					)
+					.map((specifier) => `${repoPath(file)} -> ${specifier}`),
+			);
+		expect(offenders).toEqual([]);
 	});
 
 	test("no non-test sibling imports its own directory's mod.ts", () => {

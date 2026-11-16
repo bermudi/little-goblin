@@ -4,7 +4,7 @@
 // the history view and the epoch bump arrive as deps.
 
 import type { Database } from "bun:sqlite";
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { log } from "./log.ts";
 import { stampArrival } from "./message-context.ts";
 import type { MemoryDocument } from "./memory/hindsight.ts";
@@ -63,7 +63,7 @@ export function makeConversationTranscript(
 	} = queries;
 	const { memoryQueue, bump, messageEvent } = deps;
 
-	function editUserMessage(id: string, messageId: string, message: UIMessage): MessageEdit | null {
+	function editUserMessage(id: string, messageId: string, message: Message): MessageEdit | null {
 		let unarchived = false;
 		const edit = db.transaction((): MessageEdit | null => {
 			const found = messageEvent(id, messageId);
@@ -140,7 +140,7 @@ export function makeConversationTranscript(
 
 	function append(
 		id: string,
-		messages: UIMessage[],
+		messages: Message[],
 		opts?: {
 			anchorSeq?: number | null;
 			memory?: { target: string; document: MemoryDocument };

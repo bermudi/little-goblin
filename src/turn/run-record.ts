@@ -1,6 +1,6 @@
 // The attempt's journal run row — fault box, terminal stamp, unlanded-progress record — plus the model-fallback config the attempt serves; the run id, store, and ownership hooks stay injected.
 
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import {
 	candidateRefs,
 	type FallbackMiss,
@@ -55,7 +55,7 @@ export interface RunRecord {
 	leaveRunning(): void;
 	// `reply` is the wire-streamed partial (replyFromWire) — it donates
 	// the event's id and rides its metadata; null when nothing streamed.
-	recordUnlandedProgress(outcome: UnlandedOutcome, reply: UIMessage | null): void;
+	recordUnlandedProgress(outcome: UnlandedOutcome, reply: Message | null): void;
 	// The reply landed durably — a failure past it must not also record a
 	// progress event (the final reply is the record).
 	markReplyLanded(): void;
@@ -154,7 +154,7 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 	// write, like the ⏹ superseded display stamp). An append failure
 	// never changes the outcome.
 	let replyLanded = false;
-	const recordUnlandedProgress = (outcome: UnlandedOutcome, reply: UIMessage | null): void => {
+	const recordUnlandedProgress = (outcome: UnlandedOutcome, reply: Message | null): void => {
 		const id = deps.runId();
 		if (journal === undefined || id === null || runStamped || replyLanded) return;
 		if (outcome.kind === "failed" && store.get(convId)?.epoch !== epoch) return;

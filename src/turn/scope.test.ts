@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { ModelMessage, UIMessage } from "ai";
+import type { ModelMessage } from "ai";
+import type { Message } from "../message.ts";
 import { estimateHistoryChars, MEDIA_ESTIMATE_CHARS } from "./itemize.ts";
 import { buildModelView, type ViewContext } from "./view.ts";
 
@@ -16,7 +17,7 @@ describe("media cost in pre-emption estimate", () => {
 });
 
 describe("provider-executed parts", () => {
-	const history: UIMessage = {
+	const history: Message = {
 		id: "a1",
 		role: "assistant",
 		parts: [

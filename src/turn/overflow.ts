@@ -1,4 +1,4 @@
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import type { CompactionOutcome } from "../agent/compaction.ts";
 import type { FallbackTrail } from "../agent/model-fallback.ts";
 import { isContextOverflow } from "../agent/provider-errors.ts";
@@ -28,7 +28,7 @@ export function compactTriggerTokens(contextWindow: number | undefined | null): 
 
 export interface TurnRecovery {
 	conversation: Conversation;
-	partial: UIMessage | null;
+	partial: Message | null;
 	memory?: { prior: RecallContext[]; current: RecallContext | null } | undefined;
 	seenText: boolean;
 	toolCalls: string[];
@@ -60,7 +60,7 @@ export interface TurnRecovery {
 
 export class ContextOverflowError extends Error {
 	constructor(
-		readonly partial: UIMessage | null,
+		readonly partial: Message | null,
 		readonly seenText: boolean,
 		readonly toolCalls: string[],
 		readonly digest: { id: string; entry: ToolCallDigest }[],
@@ -94,7 +94,7 @@ export class PreemptSignal extends Error {
 // The arm and step number ride along so the recovery log names what fired.
 export class PreemptCompactError extends ContextOverflowError {
 	constructor(
-		partial: UIMessage | null,
+		partial: Message | null,
 		seenText: boolean,
 		toolCalls: string[],
 		digest: { id: string; entry: ToolCallDigest }[],
@@ -343,6 +343,6 @@ export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<Ove
 	};
 }
 
-function hasContent(m: UIMessage | null): m is UIMessage {
+function hasContent(m: Message | null): m is Message {
 	return m !== null && m.parts.some((p) => p.type !== "step-start");
 }

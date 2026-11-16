@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { SKILL_PART } from "../skill-part.ts";
 import { fakeApi, type FakeApi } from "../testkit/fake-api.ts";
 import { deferred, openTestStore, useHome } from "../testkit.ts";
@@ -63,8 +63,8 @@ const baseConfig = (tts: Config["tts"] = false): Config =>
 
 interface Harness {
 	api: FakeApi;
-	appended: UIMessage[];
-	submitted: UIMessage[];
+	appended: Message[];
+	submitted: Message[];
 	sinks: TurnSink[];
 	gateDecisions: Array<Record<string, number>>;
 	synthesized: string[];
@@ -82,14 +82,14 @@ function baseDeps(h: Harness, gate: boolean): SkillCommandDeps {
 	const d: SkillCommandDeps = {
 		api: fake.api as unknown as SkillCommandDeps["api"],
 		store: {
-			append: (_id: string, messages: UIMessage[]) => {
+			append: (_id: string, messages: Message[]) => {
 				h.appended.push(...messages);
 				return messages.map((_, i) => h.appended.length - messages.length + i + 1);
 			},
 			get: () => h.conv,
 		} as never,
 		runtime: {
-			submitPersisted: (_conv: unknown, message: UIMessage, sink: TurnSink) => {
+			submitPersisted: (_conv: unknown, message: Message, sink: TurnSink) => {
 				h.submitted.push(message);
 				h.sinks.push(sink);
 				return true;

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { UIMessage, UIMessageChunk } from "ai";
+import type { Message, MessageChunk } from "./message.ts";
 import { ATTACHMENT_PART, type AttachmentRef } from "./agent/attachments.ts";
 import { appMediaSink } from "./app-media.ts";
 import { paths } from "./home-layout.ts";
@@ -11,8 +11,8 @@ import { useHome } from "./testkit.ts";
 
 function fixture() {
 	const home = useHome("goblin-media-");
-	const appended: { messages: UIMessage[]; anchorSeq: number | null | undefined }[] = [];
-	const emitted: UIMessageChunk[] = [];
+	const appended: { messages: Message[]; anchorSeq: number | null | undefined }[] = [];
+	const emitted: MessageChunk[] = [];
 	const sink = appMediaSink(
 		"app/media",
 		{
@@ -25,7 +25,7 @@ function fixture() {
 	return { home, sink, appended, emitted };
 }
 
-function attachmentOf(message: UIMessage | undefined): AttachmentRef {
+function attachmentOf(message: Message | undefined): AttachmentRef {
 	const part = message?.parts[0] as { type: string; data: AttachmentRef } | undefined;
 	expect(part?.type).toBe(ATTACHMENT_PART);
 	return part!.data;
@@ -50,7 +50,7 @@ describe("app media sink", () => {
 		expect(ref.mediaType).toMatch(/^text\/plain/);
 		expect(readFileSync(ref.path, "utf8")).toBe("file-bytes");
 		expect((message.parts[1] as { type: string; text: string }).text).toBe("keepsake");
-		expect(emitted).toEqual([{ type: ATTACHMENT_PART, data: ref } as UIMessageChunk]);
+		expect(emitted).toEqual([{ type: ATTACHMENT_PART, data: ref } as MessageChunk]);
 	});
 
 	test("a voice note persists as playable audio", async () => {
@@ -64,7 +64,7 @@ describe("app media sink", () => {
 		expect(ref.mediaType).toBe("audio/ogg");
 		expect(ref.size).toBe(3);
 		expect([...readFileSync(ref.path)]).toEqual([1, 2, 3]);
-		expect(emitted).toEqual([{ type: ATTACHMENT_PART, data: ref } as UIMessageChunk]);
+		expect(emitted).toEqual([{ type: ATTACHMENT_PART, data: ref } as MessageChunk]);
 	});
 
 	test("a file already in the managed store is referenced, not copied", async () => {

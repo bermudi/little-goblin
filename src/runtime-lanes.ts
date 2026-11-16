@@ -8,7 +8,7 @@
 // turn/ module ever sees it (design/runtime-turn.md → Turn-module
 // boundary).
 
-import { type UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import type { CompactionOutcome } from "./agent/compaction.ts";
 import type { Conversation } from "./conversation-read.ts";
 import { log } from "./log.ts";
@@ -29,7 +29,7 @@ export interface QueuedTurn {
 	seq: number;
 	// Already appended to history; a live predecessor may fold it into its
 	// next model call.
-	message: UIMessage;
+	message: Message;
 	sink: TurnSink;
 	// Prevents a throwing sink from receiving a second terminal notification.
 	// Drain's last-ditch handler can therefore safely settle the whole lane.

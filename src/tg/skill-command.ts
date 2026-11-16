@@ -22,7 +22,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Api } from "grammy";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { loadCatalog } from "../agent/skills.ts";
 import { checkInjection } from "../injection.ts";
 import type { System1Client } from "../system1.ts";
@@ -208,9 +208,9 @@ function submitSkillTurn(
 	text: string,
 ): boolean {
 	const audience = sharedChatPart(target.id, target.chatId);
-	const parts: UIMessage["parts"] = [
+	const parts: Message["parts"] = [
 		...(audience === null ? [] : [audience]),
-		{ type: SKILL_PART, data: ref } as UIMessage["parts"][number],
+		{ type: SKILL_PART, data: ref } as Message["parts"][number],
 	];
 	if (text !== "") parts.push({ type: "text", text });
 	const message = userMessage(parts);

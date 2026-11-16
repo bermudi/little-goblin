@@ -6,7 +6,8 @@
 // is appended, the journal's open when an interrupted run's is.
 
 import { randomUUID } from "node:crypto";
-import { readUIMessageStream, type UIMessage, type UIMessageChunk } from "ai";
+import { readUIMessageStream } from "ai";
+import type { Message, MessageChunk } from "../message.ts";
 import { z } from "zod";
 import type { ConversationStore } from "../conversation.ts";
 import type { UnlandedTurnMetadata } from "../http/app-wire.ts";
@@ -113,7 +114,7 @@ export interface UnlandedTurnProgressInput {
 	// death) or the log never opened an assistant message — a start-only
 	// reply still counts: its id is what lets the client retire the empty
 	// card it showed.
-	reply: UIMessage | null;
+	reply: Message | null;
 }
 
 export interface UnlandedTurnProgress {
@@ -136,7 +137,7 @@ function leadLine(runId: string, outcome: UnlandedOutcome): string {
 
 // The reply's text parts when at least one is non-empty, else "" — the
 // journal partial then supplies the body text as before.
-function replyText(reply: UIMessage | null): string {
+function replyText(reply: Message | null): string {
 	if (reply === null) return "";
 	const parts = reply.parts.flatMap((p) => (p.type === "text" ? [p.text] : []));
 	return parts.some((t) => t.trim() !== "") ? parts.join("\n") : "";
@@ -201,12 +202,12 @@ function renderCallHead(call: TurnToolCall): string {
 export interface UnlandedProgressEventMeta {
 	kind: UnlandedOutcome["kind"];
 	runId: string;
-	reply: UIMessage | null;
+	reply: Message | null;
 }
 
 /** The system event that carries a rendered unlanded-turn record. The
  *  streamed reply donates its id and rides `metadata` for display. */
-export function unlandedProgressEvent(text: string, meta: UnlandedProgressEventMeta): UIMessage {
+export function unlandedProgressEvent(text: string, meta: UnlandedProgressEventMeta): Message {
 	const metadata = {
 		unlanded: {
 			kind: meta.kind,
@@ -230,10 +231,10 @@ export function unlandedProgressEvent(text: string, meta: UnlandedProgressEventM
 // client replace the empty optimistic card it showed. Null when the log
 // is empty, never opened a message, or the opened message has no id —
 // never a throw; this record must not change the turn's outcome.
-export async function replyFromWire(chunks: readonly UIMessageChunk[]): Promise<UIMessage | null> {
+export async function replyFromWire(chunks: readonly MessageChunk[]): Promise<Message | null> {
 	try {
 		if (chunks.length === 0) return null;
-		const stream = new ReadableStream<UIMessageChunk>({
+		const stream = new ReadableStream<MessageChunk>({
 			start(controller) {
 				for (const chunk of chunks) {
 					if (chunk.type === "error") continue;
@@ -242,7 +243,7 @@ export async function replyFromWire(chunks: readonly UIMessageChunk[]): Promise<
 				controller.close();
 			},
 		});
-		let last: UIMessage | null = null;
+		let last: Message | null = null;
 		for await (const message of readUIMessageStream({ stream })) {
 			last = message;
 		}

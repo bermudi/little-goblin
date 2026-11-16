@@ -1,5 +1,5 @@
 import { type Database } from "bun:sqlite";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
 import type { MemoryConfig } from "../config-schema.ts";
@@ -54,7 +54,7 @@ export function buildDestinationClient(
 
 // ---------- text extraction ----------
 
-export function messageText(message: UIMessage): string {
+export function messageText(message: Message): string {
 	const out: string[] = [];
 	for (const part of message.parts) {
 		if (typeof part !== "object" || part === null) continue;
@@ -103,15 +103,15 @@ export interface MemoryEligibility {
 }
 
 export function memoryBoundEntries(
-	entries: { seq: number; message: UIMessage }[],
+	entries: { seq: number; message: Message }[],
 	elig: MemoryEligibility,
-): { seq: number; message: UIMessage }[] {
+): { seq: number; message: Message }[] {
 	return entries.filter((e) =>
 		e.seq === elig.summarySeq ? elig.summaryEligible : elig.eligibleSeqs.has(e.seq),
 	);
 }
 
-export function buildRecallQuery(history: UIMessage[]): string {
+export function buildRecallQuery(history: Message[]): string {
 	const texts: { role: string; text: string }[] = [];
 	for (const m of history) {
 		if (m.role !== "user" && m.role !== "assistant") continue;
@@ -211,7 +211,7 @@ export interface MemoryTurnDeps {
 export async function recallMemory(options: {
 	conv: Conversation;
 	anchorSeq: number | null;
-	history: UIMessage[];
+	history: Message[];
 	signal: AbortSignal;
 	assertAuthority(): void;
 	// The live exclusion flag — the conv snapshot is stale after the
@@ -336,7 +336,7 @@ export function buildRetentionDocument(options: {
 	anchorSeq: number;
 	userTexts: string[];
 	userIds: string[];
-	assistant: UIMessage;
+	assistant: Message;
 	priorContext: string;
 	timestamp: string;
 }): MemoryDocument | null {
@@ -386,7 +386,7 @@ export interface RetentionSource {
 // both the server-generated ID and attachment part to recognize legacy rows.
 // The summary is excluded by its boundary seq, never its id (#206).
 function isExchangeBoundary(
-	entry: { seq: number; message: UIMessage },
+	entry: { seq: number; message: Message },
 	summarySeq: number | null,
 ): boolean {
 	return (
@@ -400,7 +400,7 @@ function isExchangeBoundary(
 }
 
 export function activeExchangeExcluded(
-	entries: { seq: number; message: UIMessage }[],
+	entries: { seq: number; message: Message }[],
 	elig: MemoryEligibility,
 ): boolean {
 	let boundary = -1;
@@ -413,7 +413,7 @@ export function activeExchangeExcluded(
 }
 
 export function retentionSourceFrom(
-	entries: { seq: number; message: UIMessage }[],
+	entries: { seq: number; message: Message }[],
 	elig: MemoryEligibility,
 ): RetentionSource {
 	let lastAsstIndex = -1;
@@ -599,21 +599,21 @@ export class MemoryContexts {
 }
 
 export function withMemoryBlocks(
-	entries: { seq: number; message: UIMessage }[],
+	entries: { seq: number; message: Message }[],
 	contexts: RecallContext[],
 	current: RecallContext | null,
 	// The summary's boundary seq — the one user entry that never gets a
 	// block of its own (and whose borrowed seq must not inherit the
 	// boundary event's block). By seq, not id: ids are client-chosen (#206).
 	summarySeq: number | null,
-): UIMessage[] {
+): Message[] {
 	const byAnchor = new Map<number, RecallContext>();
 	for (const c of contexts) {
 		if (!byAnchor.has(c.anchorSeq)) byAnchor.set(c.anchorSeq, c);
 	}
 	if (current) byAnchor.set(current.anchorSeq, current);
 	if (byAnchor.size === 0) return entries.map((e) => e.message);
-	const out: UIMessage[] = [];
+	const out: Message[] = [];
 	for (const e of entries) {
 		if (e.message.role === "user" && e.seq !== summarySeq) {
 			const block = byAnchor.get(e.seq);

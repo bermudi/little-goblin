@@ -338,6 +338,21 @@ grammy). `src/reminders/` is the pilot. Import cycles are frozen by
 growth or anything new fails the guard, and pruned clusters shrink the
 list by hand.
 
+**Goblin owns its data shapes** (ruling 2026-11-16, #581; reverses "the
+AI SDK is the platform, not a boundary" for data). Persisted messages and
+parts, stream chunks, usage and finish reason are goblin types in
+`src/message.ts`, written as structural copies of the AI SDK's shapes so
+nothing on disk changed. `src/message.test.ts` is the only place the SDK
+shape is compared: an `ai` bump that changes one fails typecheck there,
+and the fix is a deliberate decision (adopt, or convert at the edge), not
+silent drift in saved conversations. `module-boundaries.test.ts` fences
+those type names out of `ai` everywhere else. SDK *functions* still run on
+these types directly. Tool definitions (#595), the engine contract's model
+objects (#596) and a full `ai` import fence (#597) follow the same
+direction. SDK-specific features stay inside the AI SDK engine; there is
+no lowest-common-denominator layer. The app's `useChat` stream protocol
+stays an SDK wire format until an engine can't meet it.
+
 ## Non-goals (v1 — return only on demand)
 
 The list below is a record, not a law. The law, applied to any capability:

@@ -1,7 +1,7 @@
 // Compaction: history is unbounded on disk, bounded in the window by
 // pointer relocation.
 
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { log } from "../log.ts";
 import type { CompactionSplit } from "../conversation-events.ts";
 import { withoutReasoningCipher } from "./codex/replay-state.ts";
@@ -30,7 +30,7 @@ export function estimateTokens(text: string): number {
 // visible content, so its bulk must not count toward the fold decision
 // (a cipher-heavy turn would otherwise compact in a storm of its own
 // state). Every other byte counts exactly as before.
-export function estimateMessageTokens(message: UIMessage): number {
+export function estimateMessageTokens(message: Message): number {
 	return estimateTokens(JSON.stringify(withoutReasoningCipher(message)));
 }
 
@@ -38,14 +38,14 @@ export function estimateMessageTokens(message: UIMessage): number {
 // serialized size /4 with the codex cipher stripped — so the split walk
 // counts a reply's parts exactly as whole-event estimates counted the
 // message they belong to.
-export function estimatePartTokens(part: UIMessage["parts"][number]): number {
+export function estimatePartTokens(part: Message["parts"][number]): number {
 	return estimateTokens(JSON.stringify(withoutReasoningCipher(part)));
 }
 
 export interface CompactionEvent {
 	seq: number;
 	anchorSeq: number | null;
-	message: UIMessage;
+	message: Message;
 }
 
 export interface CompactionStore {
@@ -308,7 +308,7 @@ function cutAt(
 
 // Shared with history_search's context action — reading back a folded
 // span must return the tool evidence the fold took.
-export function renderEventText(message: UIMessage): string {
+export function renderEventText(message: Message): string {
 	const parts: string[] = [];
 	const brief = (value: unknown): string => {
 		if (value === undefined) return "(not recorded)";
@@ -592,7 +592,7 @@ export async function runCompaction(
 	// A re-split's slice is the delta only: parts a previous row already
 	// folded are never re-sent.
 	const prefixStart = resplit && prevSplit !== null ? prevSplit.part : 0;
-	const prefixMessage: UIMessage | null =
+	const prefixMessage: Message | null =
 		split === null || splitIndex < 0
 			? null
 			: {
@@ -895,4 +895,3 @@ export async function runCompaction(
 		summary,
 	};
 }
-

@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { appendAuthRecord, loadAuthFile } from "../auth.ts";
 import { loadConfig, parseConfig } from "../config.ts";
 import { openStore } from "../conversation.ts";
@@ -493,7 +493,7 @@ describe("skills/decide route", () => {
 								},
 							],
 							store: {
-								append: (id: string, messages: UIMessage[]) => {
+								append: (id: string, messages: Message[]) => {
 									appended.push({
 										conversation: id,
 										text: (messages[0]!.parts[0] as { text: string }).text,

@@ -1,7 +1,7 @@
 import { constants } from "node:fs";
 import { copyFile } from "node:fs/promises";
 import type { File as TgFile } from "grammy/types";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { z } from "zod";
 import { attachmentPart, persistAttachment, type SavedAttachment } from "../agent/attachments.ts";
 
@@ -244,7 +244,7 @@ export function mediaParts(
 	saved: SavedAttachment,
 	transcript?: string,
 	transcriptionError?: string,
-): UIMessage["parts"] {
+): Message["parts"] {
 	return [
 		attachmentPart({
 			path: saved.path,

@@ -2,7 +2,7 @@
 // (lib DOM) typechecks every file they transitively pull — DOM's
 // ReadableStream is not async-iterable, so nothing deeper may enter.
 
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import type { AppConversationSummary } from "../conversation-read.ts";
 import type { AttachmentRef } from "../agent/attachments.ts";
 import type { DiffLine } from "../line-diff.ts";
@@ -95,7 +95,7 @@ export interface AppNoteRewriteResponse {
 export type AppReplyRating = "up" | "down";
 
 export interface AppMessageList {
-	messages: UIMessage[];
+	messages: Message[];
 	/** Absolute causal index of `messages[0]` in the full transcript —
 	 *  mark indexes and the paging cursor are transcript-absolute, so
 	 *  subtract `start` to address this page's array. */
@@ -148,7 +148,7 @@ export interface AppReplyRatingResponse {
 
 export interface AppChatRequest {
 	conversationId: string;
-	message: UIMessage;
+	message: Message;
 }
 
 export interface AppAttachmentResponse {
@@ -169,7 +169,7 @@ export interface UnlandedTurnMetadata {
 		kind: "failed" | "aborted" | "interrupted";
 		runId: string;
 		// The reply as the wire streamed it, for display. Absent when no wire log exists or nothing was streamed.
-		reply?: UIMessage["parts"];
+		reply?: Message["parts"];
 	};
 }
 

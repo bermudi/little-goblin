@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { admitTurn, type AdmittedMember, type AdmissionDeps, type LiveWire } from "./admission.ts";
 import { buildModelView } from "./view.ts";
@@ -23,7 +23,7 @@ const conv = (epoch: number, id = "dm:1"): Conversation => ({
 	createdAt: "2026-01-01T00:00:00Z",
 });
 
-const msg = (id: string, role: "user" | "assistant" | "system" = "user"): UIMessage => ({
+const msg = (id: string, role: "user" | "assistant" | "system" = "user"): Message => ({
 	id,
 	role,
 	parts: [{ type: "text", text: `t-${id}` }],
@@ -34,7 +34,7 @@ function baseDeps(
 		conversation?: Conversation | null;
 		pendingSeqs?: Set<number>;
 		ownedSeqs?: Set<number>;
-		entries?: { seq: number; message: UIMessage }[];
+		entries?: { seq: number; message: Message }[];
 	} = {},
 ): {
 	deps: AdmissionDeps;
@@ -77,7 +77,7 @@ function baseDeps(
 
 describe("admitTurn", () => {
 	test("historical skills stay context, while only current coalesced inputs are owned", async () => {
-		const historical: UIMessage = {
+		const historical: Message = {
 			id: "reused",
 			role: "user",
 			parts: [{ type: "data-skill", data: { name: "demo" } }],

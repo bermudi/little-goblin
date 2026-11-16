@@ -9,7 +9,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { APICallError } from "@ai-sdk/provider";
-import type { LanguageModel, UIMessage } from "ai";
+import type { LanguageModel } from "ai";
+import type { Message } from "./message.ts";
 import { tool } from "ai";
 import { z } from "zod";
 import type { Conversation } from "./conversation-read.ts";
@@ -176,7 +177,7 @@ function appendUserMsg(
 	store: ConversationStore,
 	conv: Conversation,
 	text: string,
-): { seq: number; message: UIMessage } {
+): { seq: number; message: Message } {
 	const message = userMessage([{ type: "text", text }]);
 	store.append(conv.id, [message]);
 	return { seq: store.lastUserSeq(conv.id)!, message };
@@ -1116,7 +1117,7 @@ describe("turn resume", () => {
 	test("a client compact-prefixed steer stays visible — revived once, not twice", async () => {
 		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
 		const trigger = appendUserMsg(store, conv, "ORIGINAL-ASK");
-		const steer: UIMessage = {
+		const steer: Message = {
 			id: "compact-99",
 			role: "user",
 			parts: [{ type: "text", text: "STEERED-INPUT" }],
@@ -1324,12 +1325,12 @@ describe("turn resume", () => {
 		store.append(conv.id, [
 			userMessage([
 				{ type: "text", text: "older ask" },
-				{ type: SKILL_PART, data: { name: "other" } } as UIMessage["parts"][number],
+				{ type: SKILL_PART, data: { name: "other" } } as Message["parts"][number],
 			]),
 		]);
 		const trigger = userMessage([
 			{ type: "text", text: "ORIGINAL-ASK" },
-			{ type: SKILL_PART, data: { name: "demo" } } as UIMessage["parts"][number],
+			{ type: SKILL_PART, data: { name: "demo" } } as Message["parts"][number],
 		]);
 		store.append(conv.id, [trigger]);
 		const anchorSeq = store.lastUserSeq(conv.id)!;
@@ -1367,7 +1368,7 @@ describe("turn resume", () => {
 		const trigger = appendUserMsg(store, conv, "ORIGINAL-ASK");
 		const steer = userMessage([
 			{ type: "text", text: "STEERED-TEXT" },
-			{ type: SKILL_PART, data: { name: "demo" } } as UIMessage["parts"][number],
+			{ type: SKILL_PART, data: { name: "demo" } } as Message["parts"][number],
 		]);
 		store.append(conv.id, [steer]);
 		const steerSeq = store.lastUserSeq(conv.id)!;
@@ -1405,12 +1406,12 @@ describe("turn resume", () => {
 		store.append(conv.id, [
 			userMessage([
 				{ type: "text", text: "older ask" },
-				{ type: SKILL_PART, data: { name: "other" } } as UIMessage["parts"][number],
+				{ type: SKILL_PART, data: { name: "other" } } as Message["parts"][number],
 			]),
 		]);
 		const first = userMessage([
 			{ type: "text", text: "FIRST-COALESCED-TEXT" },
-			{ type: SKILL_PART, data: { name: "demo" } } as UIMessage["parts"][number],
+			{ type: SKILL_PART, data: { name: "demo" } } as Message["parts"][number],
 		]);
 		store.append(conv.id, [first]);
 		const firstSeq = store.lastUserSeq(conv.id)!;
@@ -1444,7 +1445,7 @@ describe("turn resume", () => {
 		const { store, conv, journal, ops, runtime, edge, sink } = setup({});
 		const trigger = userMessage([
 			{ type: "text", text: "ORIGINAL-ASK" },
-			{ type: SKILL_PART, data: { name: "demo" } } as UIMessage["parts"][number],
+			{ type: SKILL_PART, data: { name: "demo" } } as Message["parts"][number],
 		]);
 		store.append(conv.id, [trigger]);
 		const anchorSeq = store.lastUserSeq(conv.id)!;
@@ -1974,7 +1975,7 @@ describe("turn resume", () => {
 				{ type: "text", text: "read this" },
 				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
 			],
-		} as UIMessage;
+		} as Message;
 		const steerSink = new RecordingSink();
 		const poisonSink = new RecordingSink();
 		runtime.submit(conv, steerGood, steerSink);
@@ -2861,7 +2862,7 @@ describe("a shutdown fence is a crash for the journal (#471)", () => {
 		}),
 	});
 
-	const eventText = (m: UIMessage): string =>
+	const eventText = (m: Message): string =>
 		m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("");
 
 	test("shutdown mid-turn leaves the row 'running'; the next open interrupts it and resume accepts it", async () => {

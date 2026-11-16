@@ -123,6 +123,24 @@ export interface TurnToolCall {
 	resolvedMs: number | null;
 }
 
+// #579 — one DM the boot owes the operator for a crash found at open.
+// The row is written when the window is consumed (reclassify, stranded
+// count) and claimed only when a send lands, so a boot that dies before
+// the Telegram attach hands the debt to the next one.
+export interface InterruptedBootNotice {
+	id: number;
+	run: TurnRun;
+}
+export interface StrandedBootNotice {
+	id: number;
+	conversationId: string;
+	count: number;
+}
+export interface PendingBootNotices {
+	interrupted: InterruptedBootNotice[];
+	stranded: StrandedBootNotice[];
+}
+
 export interface TurnJournal {
 	beginRun(input: {
 		runId: string;
@@ -189,18 +207,16 @@ export interface TurnJournal {
 	// Interrupted runs of one conversation, oldest first — the
 	// conversation filter lives in SQL, not a JS scan of every run.
 	interruptedFor(conversationId: string): TurnRun[];
-	readonly interruptedAtOpen: readonly TurnRun[];
-	// #481 — per-conversation count of user events the dead process
-	// accepted but never admitted to a turn: created since the previous
-	// journal open (journal_opens bounds the dead process's lifetime —
-	// a first-ever open flags nothing, #577) AND seq above every run's
-	// owned floor (anchor and source seqs stand in for legacy NULL
-	// ownership) AND above the last assistant reply (an answered input
-	// is not stranded even if its run's ownership never journaled).
-	// Machinery speech and generated resume markers are not operator
-	// input. Snapshotted at open like interruptedAtOpen — post-open
-	// submissions belong to the live runtime, not the crash.
-	readonly strandedAtOpen: ReadonlyMap<string, number>;
+	// #579 — the boot-notice outbox. Open consumes the crash windows
+	// into pending boot_notices rows; the notices stay owed across
+	// boots until a send lands (see markBootNoticeDelivered). The
+	// interrupted runs resolve at read time — a row whose run left
+	// 'interrupted' is the sender's to drop, not the reader's.
+	pendingBootNotices(): PendingBootNotices;
+	// One-time claim on a boot notice: flips delivered_at only while
+	// still NULL — true when THIS caller won the claim, so two sends
+	// can never both mark (or both re-send on a later boot).
+	markBootNoticeDelivered(id: number, now?: number): boolean;
 	get(runId: string): TurnRun | null;
 	// The newest run admitted as this row's resume continuation — null
 	// when none exists. A 'resumed' row's successor insert committed in
@@ -533,6 +549,19 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		opened_at TEXT NOT NULL
 	)`);
+	// #579 — the boot-notice outbox. A row is owed from the moment its
+	// crash window is consumed at open until a Telegram send lands;
+	// delivered_at NULL marks the debt. The conversation cascade keeps
+	// rows from outliving the conversation they would name.
+	db.run(`CREATE TABLE IF NOT EXISTS boot_notices (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		kind TEXT NOT NULL,
+		run_id TEXT,
+		conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+		stranded_count INTEGER,
+		created_at TEXT NOT NULL,
+		delivered_at TEXT
+	)`);
 	const runCols = new Set(
 		(db.query("PRAGMA table_info(turn_runs)").all() as { name: string }[]).map((c) => c.name),
 	);
@@ -699,18 +728,21 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 	// (design/runtime-turn.md → Unlanded-turn progress): a crash between
 	// the two must neither lose the record nor duplicate it, so a hook
 	// throw rolls the reclassify back and fails the open loud; the next
-	// boot retries both.
+	// boot retries both. The boot-notice row rides the same transaction
+	// (#579): a reclassified run without its owed notice cannot exist.
 	const qStale = db.query<
 		{ run_id: string; conversation_id: string; started_ms: number },
 		[number]
 	>(
 		"UPDATE turn_runs SET status = 'interrupted', finished_ms = ? WHERE status = 'running' RETURNING run_id, conversation_id, started_ms",
 	);
+	const qNoticeInterrupted = db.query(
+		"INSERT INTO boot_notices (kind, run_id, conversation_id, created_at) VALUES ('interrupted', ?, ?, ?)",
+	);
 	// One clock read per open: the reclassify stamp and this open's
 	// journal_opens row share it.
 	const openMs = Date.now();
-	const reclassify = (): TurnRun[] => {
-		const interrupted: TurnRun[] = [];
+	const reclassify = (): void => {
 		for (const r of qStale.all(openMs)) {
 			log.warn("interrupted turn found", {
 				run: r.run_id,
@@ -719,19 +751,25 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 			});
 			const run = decodeRun(qGet.get(r.run_id));
 			opts.onInterrupted?.(run, qCalls.all(run.runId).map(decodeCall));
-			interrupted.push(run);
+			qNoticeInterrupted.run(r.run_id, r.conversation_id, new Date(openMs).toISOString());
 		}
-		return interrupted;
 	};
-	const interruptedAtOpen =
-		opts.onInterrupted === undefined ? reclassify() : db.transaction(reclassify)();
-	// Stranded-input candidates: user events above every run's owned
-	// floor and above the last assistant reply of their conversation.
-	// json_each over a NULL owned_input_seqs yields zero rows, so legacy
-	// rows contribute only their anchor/source seqs. The created_at
-	// bound scopes the count to the dead process's lifetime (#577):
-	// only input it could have accepted is stranded — pre-journal
-	// history and input an earlier restart already settled stay out.
+	if (opts.onInterrupted === undefined) reclassify();
+	else db.transaction(reclassify)();
+	// Stranded-input candidates (#481): user events the dead process
+	// accepted but never admitted to a turn — above every run's owned
+	// floor (anchor and source seqs stand in for legacy NULL ownership)
+	// and above the last assistant reply (an answered input is not
+	// stranded even if its run's ownership never journaled). json_each
+	// over a NULL owned_input_seqs yields zero rows, so legacy rows
+	// contribute only their anchor/source seqs. The created_at bound
+	// scopes the count to the dead process's lifetime (#577): created
+	// since the previous journal open — only input it could have
+	// accepted is stranded, pre-journal history and input an earlier
+	// restart already settled stay out. Machinery speech and generated
+	// resume markers are filtered below; post-open submissions belong
+	// to the live runtime — the count is fixed at open and lands in
+	// boot_notices, never recomputed.
 	const qStranded = db.query<{ conversation_id: string; seq: number; data: string }, [string]>(
 		`SELECT e.conversation_id, e.seq, e.data FROM events e
 		 WHERE e.role = 'user'
@@ -756,6 +794,22 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 		"SELECT opened_at FROM journal_opens ORDER BY id DESC LIMIT 1",
 	);
 	const qRecordOpen = db.query("INSERT INTO journal_opens (opened_at) VALUES (?)");
+	const qNoticeStranded = db.query(
+		"INSERT INTO boot_notices (kind, conversation_id, stranded_count, created_at) VALUES ('stranded', ?, ?, ?)",
+	);
+	const qPendingNotices = db.query<
+		{
+			id: number;
+			kind: "interrupted" | "stranded";
+			run_id: string | null;
+			conversation_id: string;
+			stranded_count: number | null;
+		},
+		[]
+	>("SELECT id, kind, run_id, conversation_id, stranded_count FROM boot_notices WHERE delivered_at IS NULL ORDER BY id");
+	const qClaimNotice = db.query(
+		"UPDATE boot_notices SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL",
+	);
 	const resumeMarker = z.object({ goblinResume: z.object({ sourceRunId: z.string() }) });
 	// A first-ever open knows no prior process lifetime — nothing is
 	// provably stranded, so the map stays empty rather than counting
@@ -777,7 +831,16 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 		return counts;
 	})();
 	const openedAt = new Date(openMs).toISOString();
-	qRecordOpen.run(openedAt);
+	// The stranded notice rows and this open's journal_opens row commit
+	// together (#579): the window is never consumed without the notice
+	// it owes. A crash before the transaction leaves both unwritten —
+	// the next open re-derives the same window.
+	db.transaction(() => {
+		for (const [conversationId, count] of strandedAtOpen) {
+			qNoticeStranded.run(conversationId, count, openedAt);
+		}
+		qRecordOpen.run(openedAt);
+	})();
 	log.info("turn journal opened", {
 		openedAt,
 		previousOpen: prevOpen,
@@ -1062,8 +1125,36 @@ export function openTurnJournal(db: Database, opts: OpenTurnJournalOpts = {}): T
 		interruptedFor(conversationId) {
 			return qInterruptedFor.all(conversationId).map(decodeRun);
 		},
-		interruptedAtOpen,
-		strandedAtOpen,
+		pendingBootNotices() {
+			const pending: PendingBootNotices = { interrupted: [], stranded: [] };
+			for (const row of qPendingNotices.all()) {
+				if (row.kind === "stranded") {
+					pending.stranded.push({
+						id: row.id,
+						conversationId: row.conversation_id,
+						count: row.stranded_count ?? 0,
+					});
+					continue;
+				}
+				// The run row cannot predecease its notice (the conversation
+				// cascade removes both) — a missing row is corruption, so it
+				// stays loud and pending rather than silently dropping.
+				const run = row.run_id === null ? null : qGet.get(row.run_id);
+				if (run === null) {
+					log.warn("boot notice run row unreadable — left pending", undefined, {
+						notice: row.id,
+						run: row.run_id,
+						conversation: row.conversation_id,
+					});
+					continue;
+				}
+				pending.interrupted.push({ id: row.id, run: decodeRun(run) });
+			}
+			return pending;
+		},
+		markBootNoticeDelivered(id, now = Date.now()) {
+			return qClaimNotice.run(new Date(now).toISOString(), id).changes > 0;
+		},
 		get(runId) {
 			const raw = qGet.get(runId);
 			return raw === null ? null : decodeRun(raw);

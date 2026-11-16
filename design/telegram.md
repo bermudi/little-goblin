@@ -17,7 +17,11 @@ When `true`, the channel attaches *deferred*: boot builds the runtime,
 mail/program owners, wake/resume seams, HTTP, the scheduler and the mail
 watcher on `tg = null` first, then runs the init task — token resolve,
 `getMe` (30s deadline), seam attach, interrupted-run notices, inbox
-replay, polling. At the `getMe` deadline, the init signal is aborted and
+replay, polling. The notices ride the durable `boot_notices` outbox
+(#579): every attach sends the rows still pending — this boot's crashes
+plus any a dead boot never delivered — and claims a row only after a
+send lands, so retries across boots never drop a debt and never
+double-send a landed one. At the `getMe` deadline, the init signal is aborted and
 initialization is joined before any retry: grammY can retry transport errors,
 so abandoning the promise would leave a competing initialization alive.
 Attach *retries with backoff* (5s → 15s → 30s → 60s →

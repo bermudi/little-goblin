@@ -519,7 +519,9 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			const reopened = openTurnJournal(rig.store.db, {
 				onInterrupted: (run, calls) => appendInterruptedProgress(rig.store, run, calls),
 			});
-			expect(reopened.interruptedAtOpen.map((r) => r.runId)).toEqual([rows[0]!.run_id]);
+			expect(reopened.pendingBootNotices().interrupted.map((n) => n.run.runId)).toEqual([
+				rows[0]!.run_id,
+			]);
 			const history = rig.store.history(rig.conv.id);
 			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
 			const event = textOf(history[1]!);
@@ -530,7 +532,9 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			const again = openTurnJournal(rig.store.db, {
 				onInterrupted: (run, calls) => appendInterruptedProgress(rig.store, run, calls),
 			});
-			expect(again.interruptedAtOpen).toEqual([]);
+			expect(
+				again.pendingBootNotices().interrupted.map((n) => n.run.runId),
+			).toEqual([rows[0]!.run_id]);
 			expect(rig.store.history(rig.conv.id)).toHaveLength(2);
 		},
 	},

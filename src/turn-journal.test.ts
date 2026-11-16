@@ -120,7 +120,7 @@ describe("turn journal", () => {
 		const store = openStore(dbPath);
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
-		expect(journal.interruptedAtOpen).toEqual([]);
+		expect(journal.pendingBootNotices().interrupted).toEqual([]);
 		const live = begunRun(journal, conv.id, "run-live");
 		const done = begunRun(journal, conv.id, "run-done");
 		const fenced = begunRun(journal, conv.id, "run-fenced");
@@ -148,8 +148,8 @@ describe("turn journal", () => {
 			resolved: 0,
 		});
 
-		expect(journal2.interruptedAtOpen).toHaveLength(1);
-		const snap = journal2.interruptedAtOpen[0]!;
+		expect(journal2.pendingBootNotices().interrupted).toHaveLength(1);
+		const snap = journal2.pendingBootNotices().interrupted[0]!.run;
 		expect(snap.runId).toBe(live);
 		expect(snap.status).toBe("interrupted");
 		expect(snap.finishedMs).not.toBeNull();
@@ -162,12 +162,12 @@ describe("turn journal", () => {
 		});
 
 		begunRun(journal2, conv.id, "run-late");
-		expect(journal2.interruptedAtOpen).toHaveLength(1);
+		expect(journal2.pendingBootNotices().interrupted).toHaveLength(1);
 		journal2.finishRun("run-late", "completed", "delivered");
 		reopened.close();
 	});
 
-	test("the at-open snapshot fires once — later opens see only their own crashes", () => {
+	test("an undelivered notice outlives opens; a new crash adds its own row (#579)", () => {
 		const dbPath = tmpDb("goblin-tj-");
 		const store = openStore(dbPath);
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -177,12 +177,18 @@ describe("turn journal", () => {
 
 		const reopened = openStore(dbPath);
 		const journal2 = openTurnJournal(reopened.db);
-		expect(journal2.interruptedAtOpen.map((r) => r.runId)).toEqual(["run-old"]);
+		expect(journal2.pendingBootNotices().interrupted.map((n) => n.run.runId)).toEqual([
+			"run-old",
+		]);
 		reopened.close();
 
+		// No send ever landed — the debt survives the reopen untouched,
+		// and the reclassify does not fire twice (no second row).
 		const third = openStore(dbPath);
 		const journal3 = openTurnJournal(third.db);
-		expect(journal3.interruptedAtOpen).toEqual([]);
+		expect(journal3.pendingBootNotices().interrupted.map((n) => n.run.runId)).toEqual([
+			"run-old",
+		]);
 		expect(journal3.interrupted().map((r) => r.runId)).toEqual(["run-old"]);
 
 		begunRun(journal3, conv.id, "run-new");
@@ -190,14 +196,47 @@ describe("turn journal", () => {
 
 		const fourth = openStore(dbPath);
 		const journal4 = openTurnJournal(fourth.db);
-		expect(journal4.interruptedAtOpen.map((r) => r.runId)).toEqual(["run-new"]);
-		expect(
-			journal4
-				.interrupted()
-				.map((r) => r.runId)
-				.sort(),
-		).toEqual(["run-new", "run-old"]);
+		expect(journal4.pendingBootNotices().interrupted.map((n) => n.run.runId)).toEqual([
+			"run-old",
+			"run-new",
+		]);
+
+		// Delivery claims exactly its row; the other debt stands.
+		const claimed = journal4
+			.pendingBootNotices()
+			.interrupted.find((n) => n.run.runId === "run-old")!;
+		expect(journal4.markBootNoticeDelivered(claimed.id)).toBe(true);
+		expect(journal4.markBootNoticeDelivered(claimed.id)).toBe(false);
+		expect(journal4.pendingBootNotices().interrupted.map((n) => n.run.runId)).toEqual([
+			"run-new",
+		]);
 		fourth.close();
+	});
+
+	test("stranded counts land as durable notice rows owed to a later boot", () => {
+		const dbPath = tmpDb("goblin-tj-");
+		const store = openStore(dbPath);
+		const dm = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		openTurnJournal(store.db);
+		// The dead process accepted input it never answered.
+		store.append(dm.id, [
+			{ id: "u1", role: "user", parts: [{ type: "text", text: "stranded q" }] },
+		]);
+		store.close();
+
+		const second = openStore(dbPath);
+		const journal2 = openTurnJournal(second.db);
+		expect(journal2.pendingBootNotices().stranded).toEqual([
+			{ id: expect.any(Number), conversationId: dm.id, count: 1 },
+		]);
+		expect(journal2.pendingBootNotices().interrupted).toEqual([]);
+		// The row is a debt, not a snapshot: it reads the same on every
+		// open until a send claims it.
+		expect(journal2.markBootNoticeDelivered(journal2.pendingBootNotices().stranded[0]!.id)).toBe(
+			true,
+		);
+		expect(journal2.pendingBootNotices().stranded).toEqual([]);
+		second.close();
 	});
 
 	test("the open hook appends interrupted progress atomically with the reclassify (#195)", () => {
@@ -251,7 +290,9 @@ describe("turn journal", () => {
 		const journal3 = openTurnJournal(third.db, {
 			onInterrupted: (run, calls) => appendInterruptedProgress(third, run, calls),
 		});
-		expect(journal3.interruptedAtOpen).toEqual([]);
+		expect(journal3.pendingBootNotices().interrupted.map((n) => n.run.runId)).toEqual([
+			runId,
+		]);
 		expect(third.history(conv.id)).toHaveLength(1);
 		third.close();
 	});
@@ -1231,7 +1272,7 @@ describe("turn journal", () => {
 				.map((r) => r.runId)
 				.sort(),
 		).toEqual(ids);
-		expect(j2.interruptedAtOpen.map((r) => r.runId).sort()).toEqual(ids);
+		expect(j2.pendingBootNotices().interrupted.map((n) => n.run.runId).sort()).toEqual(ids);
 		expect(j2.get("run-bad")!.toolNames).toBeNull();
 		expect(j2.get("run-good")!.toolNames).toEqual(["probe", "bash"]);
 		reopened.close();

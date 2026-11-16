@@ -2899,7 +2899,7 @@ describe("a shutdown fence is a crash for the journal (#471)", () => {
 			onInterrupted: (run, calls) => appendInterruptedProgress(store, run, calls),
 		});
 		const runId = rows[0]!.run_id;
-		expect(journal2.interruptedAtOpen.map((r) => r.runId)).toEqual([runId]);
+		expect(journal2.pendingBootNotices().interrupted.map((n) => n.run.runId)).toEqual([runId]);
 		expect(journal2.get(runId)!.status).toBe("interrupted");
 		const history = store.history(conv.id);
 		expect(history.map((m) => m.role)).toEqual(["user", "system"]);
@@ -2909,11 +2909,12 @@ describe("a shutdown fence is a crash for the journal (#471)", () => {
 		expect(eventText(history[1]!)).toContain("was interrupted");
 		expect(eventText(history[1]!)).toContain('completed: {"ok":true,"q":1}');
 
-		// A second open records nothing again — the record lands once.
+		// A second open records nothing again — the record lands once; the
+		// undelivered notice row is the same one debt, not a second row.
 		const journal3 = openTurnJournal(store.db, {
 			onInterrupted: (run, calls) => appendInterruptedProgress(store, run, calls),
 		});
-		expect(journal3.interruptedAtOpen).toEqual([]);
+		expect(journal3.pendingBootNotices().interrupted.map((n) => n.run.runId)).toEqual([runId]);
 		expect(store.history(conv.id)).toHaveLength(2);
 
 		// The restarted runtime lists it and resumes it.
@@ -2978,7 +2979,7 @@ describe("a shutdown fence is a crash for the journal (#471)", () => {
 		const journal2 = openTurnJournal(store.db, {
 			onInterrupted: (run, calls) => appendInterruptedProgress(store, run, calls),
 		});
-		expect(journal2.interruptedAtOpen).toEqual([]);
+		expect(journal2.pendingBootNotices().interrupted).toEqual([]);
 		expect(journal2.get(rows[0]!.run_id)!.status).toBe("fenced");
 		expect(store.history(conv.id)).toHaveLength(2);
 		await runtime.shutdown();

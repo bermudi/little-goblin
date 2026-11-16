@@ -302,6 +302,9 @@ function mountDom() {
     install("Event", dom.win.Event);
     install("CustomEvent", dom.win.CustomEvent);
     install("getComputedStyle", dom.win.getComputedStyle);
+    // The command primitive's typeahead walks item text through the DOM
+    // global NodeFilter; browsers have it, bare bun:test doesn't.
+    install("NodeFilter", (dom.win as unknown as { NodeFilter: unknown }).NodeFilter);
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
   });
 

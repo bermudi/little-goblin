@@ -7177,16 +7177,11 @@ button.link:hover {
 }
 
 /* Skill picker sheet (ruling 2026-10-21): catalog rows + the
-   from-link preview card. Reuses the msheet chrome. The catalog list
-   rides the command primitive (PR #593), whose root stands between
-   .msheet-body and the filter + rows — a flex column so the filter
-   input stretches like it did as a direct body child. Rows read the
-   app's own theme vars: --line/--dim/--hover were never defined, so
-   every fallback here was a fixed light-theme color. */
-.skill-picker-command {
-	display: flex;
-	flex-direction: column;
-}
+   from-link preview card. Reuses the whole msheet chrome — head,
+   filter row, scrolling body — with the from-link form pinned as a
+   footer under the command so it never scrolls away. Rows speak the
+   model sheet's language: rounded hover fill, no hairlines, mono
+   metadata on the side. */
 .skill-picker-row {
 	display: flex;
 	justify-content: space-between;
@@ -7194,9 +7189,9 @@ button.link:hover {
 	gap: 0.75rem;
 	width: 100%;
 	text-align: left;
-	padding: 0.45rem 0.5rem;
+	padding: 0.45rem 0.6rem;
 	border: 0;
-	border-bottom: 1px solid var(--app-divider);
+	border-radius: 8px;
 	background: none;
 	cursor: pointer;
 }
@@ -7210,23 +7205,40 @@ button.link:hover {
 	gap: 0.15rem;
 	min-width: 0;
 }
+.skill-picker-name {
+	display: flex;
+	align-items: baseline;
+	gap: 0.45rem;
+	min-width: 0;
+}
+.skill-picker-name strong {
+	font-size: 12.5px;
+}
 .skill-picker-sub {
 	color: var(--app-fg-muted);
-	font-size: 0.85em;
+	font-size: 12px;
+	line-height: 1.45;
 	overflow-wrap: anywhere;
 }
 .skill-picker-side {
+	flex: none;
+	font-family: var(--font-mono);
+	font-size: 10.5px;
 	color: var(--app-fg-muted);
-	font-size: 0.85em;
 	white-space: nowrap;
 }
 .skill-from-link {
+	flex: none;
 	display: flex;
 	flex-direction: column;
-	gap: 0.4rem;
-	margin-top: 0.75rem;
-	padding-top: 0.75rem;
+	gap: 0.45rem;
+	padding: 0.7rem 0.9rem 0.8rem;
 	border-top: 1px solid var(--app-divider);
+}
+.skill-from-link > strong {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--app-fg-subtle);
 }
 .skill-from-link .link-row {
 	display: flex;
@@ -7240,7 +7252,7 @@ button.link:hover {
 	display: flex;
 	flex-direction: column;
 	gap: 0.3rem;
-	padding: 0.5rem;
+	padding: 0.6rem;
 	border: 1px solid var(--app-divider);
 	border-radius: 8px;
 }

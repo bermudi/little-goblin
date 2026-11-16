@@ -211,7 +211,7 @@ describe("Composer skill staging", () => {
 		});
 		// The chip replaced the sheet.
 		expect(container.textContent).toContain("Skill · herdr");
-		expect(container.textContent).not.toContain("Invoke a skill\nClose");
+		expect(container.querySelector("[role=dialog]")).toBeNull();
 		// Type and send — React's value tracker needs the native setter.
 		const textarea = q("textarea");
 		expect(textarea).not.toBeNull();

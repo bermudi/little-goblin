@@ -26,8 +26,6 @@ export function NotePicker({
 	// read as complete (same contract as the notes index).
 	const [truncated, setTruncated] = useState(false);
 	const [failed, setFailed] = useState(false);
-	// The row the command last highlighted, or null — Enter runs it.
-	const highlighted = useRef<string | null>(null);
 	const seq = useRef(0);
 	useEffect(() => {
 		const n = ++seq.current;
@@ -48,14 +46,6 @@ export function NotePicker({
 		return () => clearTimeout(t);
 	}, [query, token]);
 	const byId = new Map((notes ?? []).map((n) => [n.id, n]));
-	const runHighlighted = () => {
-		if (query.trim() === "" || highlighted.current === null) return;
-		const n = byId.get(highlighted.current);
-		if (n !== undefined) {
-			onPick(n);
-			onClose();
-		}
-	};
 	return (
 		<div className="note-pick composer-pick" ref={pickRef}>
 			<Command
@@ -63,9 +53,6 @@ export function NotePicker({
 				query={query}
 				onQueryChange={setQuery}
 				filter={false}
-				onValueChange={(value) => {
-					highlighted.current = value;
-				}}
 				onAction={(id) => {
 					const n = byId.get(id);
 					if (n !== undefined) {
@@ -79,13 +66,23 @@ export function NotePicker({
 					// so the picker owns both keys before the command sees
 					// them (its Enter runs rows, its Escape clears the
 					// query; here Enter picks the highlighted note and
-					// Escape closes). tagName, not instanceof: happy-dom
-					// realms have their own element classes.
+					// Escape closes). The highlighted row is read from the
+					// DOM: the command places auto-highlights silently, so
+					// onValueChange alone misses them. tagName, not
+					// instanceof: happy-dom realms have their own classes.
 					if ((e.target as HTMLElement | null)?.tagName !== "INPUT") return;
 					if (e.key === "Enter") {
 						e.preventDefault();
 						e.stopPropagation();
-						runHighlighted();
+						if (query.trim() === "") return;
+						const id =
+							(e.currentTarget as HTMLElement).querySelector("[data-highlighted]")
+								?.getAttribute("data-value") ?? null;
+						const n = id !== null ? byId.get(id) : undefined;
+						if (n !== undefined) {
+							onPick(n);
+							onClose();
+						}
 					} else if (e.key === "Escape") {
 						e.preventDefault();
 						e.stopPropagation();
@@ -97,7 +94,7 @@ export function NotePicker({
 				{failed && <p className="error">Couldn't list notes.</p>}
 				<CommandList className="note-pick-list">
 					{(notes ?? []).map((n) => (
-						<CommandItem key={n.id} value={n.id}>
+						<CommandItem key={n.id} value={n.id} data-value={n.id}>
 							<button type="button">
 								{n.title}
 								{n.projectId !== null && <span className="note-proj"> · project</span>}

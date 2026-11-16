@@ -7,7 +7,7 @@
 // (arrow-key highlight, Enter-to-run, listbox ARIA) with `filter={false}`
 // because the rows are pre-filtered here; the from-link form below it
 // stays plain.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { SkillPreviewResponse, SkillsResponse } from "../../src/http/operator-wire.ts";
 import { Command, CommandInput, CommandItem, CommandList } from "@ui-sdk/react/command";
 import { listSkills, previewSkill } from "./api.ts";
@@ -41,8 +41,6 @@ export function SkillPickerSheet({
 	const [preview, setPreview] = useState<SkillPreviewResponse | null>(null);
 	const [previewing, setPreviewing] = useState(false);
 	const [previewErr, setPreviewErr] = useState<string | null>(null);
-	// The row the command last highlighted, or null — Enter runs it.
-	const highlighted = useRef<string | null>(null);
 
 	useEffect(() => {
 		let live = true;
@@ -112,17 +110,20 @@ export function SkillPickerSheet({
 					query={query}
 					onQueryChange={setQuery}
 					filter={false}
-					onValueChange={(value) => {
-						highlighted.current = value;
-					}}
 					onAction={(name) => stageByName(name)}
 					onKeyDownCapture={(e) => {
 						if (e.key !== "Enter" || (e.target as HTMLElement | null)?.tagName !== "INPUT")
 							return;
 						e.preventDefault();
 						e.stopPropagation();
-						if (query.trim() !== "" && highlighted.current !== null)
-							stageByName(highlighted.current);
+						// The highlighted row is read from the DOM: the
+						// command places auto-highlights silently, so
+						// onValueChange alone misses them.
+						if (query.trim() === "") return;
+						const name =
+							(e.currentTarget as HTMLElement).querySelector("[data-highlighted]")
+								?.getAttribute("data-value") ?? null;
+						if (name !== null) stageByName(name);
 					}}
 				>
 					<CommandInput placeholder="Filter skills" aria-label="Filter skills" />
@@ -137,6 +138,7 @@ export function SkillPickerSheet({
 							<CommandItem
 								key={c.name}
 								value={c.name}
+								data-value={c.name}
 								className="skill-picker-row"
 								title={`Invoke ${c.name} — its SKILL.md (${bytes(c.bodyBytes)}) rides the next turn`}
 							>

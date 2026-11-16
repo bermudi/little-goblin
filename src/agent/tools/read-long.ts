@@ -98,10 +98,11 @@ async function readParts(
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 /** Text means strict UTF-8 with no NUL, and not a PDF — an ASCII-only
- *  PDF decodes cleanly but is page syntax, not the document's words. */
+ *  PDF decodes cleanly but is page syntax, not the document's words.
+ *  Readers (poppler) find the header anywhere in the first 1 KB. */
 function asText(bytes: Buffer): string | null {
 	if (bytes.includes(0)) return null;
-	if (bytes.subarray(0, 5).toString("latin1") === "%PDF-") return null;
+	if (bytes.subarray(0, 1024).includes("%PDF-")) return null;
 	try {
 		return utf8.decode(bytes);
 	} catch {

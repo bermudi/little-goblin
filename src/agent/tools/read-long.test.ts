@@ -87,6 +87,8 @@ describe("read_long", () => {
 		const dir = tmpDir("goblin-read-long-");
 		const pdf = "%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n(Revenue was 56.) Tj\n%%EOF\n";
 		writeFileSync(join(dir, "ascii.pdf"), pdf);
+		writeFileSync(join(dir, "bom.pdf"), `\uFEFF${pdf}`);
+		writeFileSync(join(dir, "junk.pdf"), `junk line before header\n${pdf}`);
 		writeFileSync(join(dir, "bad-utf8.bin"), Buffer.from([0x66, 0xff, 0xfe, 0xfd, 0x80]));
 		writeFileSync(join(dir, "nul.bin"), Buffer.from([0x41, 0x00, 0x42]));
 		let called = 0;
@@ -97,7 +99,7 @@ describe("read_long", () => {
 				return "";
 			},
 		});
-		for (const path of ["ascii.pdf", "bad-utf8.bin", "nul.bin"]) {
+		for (const path of ["ascii.pdf", "bom.pdf", "junk.pdf", "bad-utf8.bin", "nul.bin"]) {
 			const out = await tool.execute!({ path, question: "what?" }, opts);
 			expect(out).toMatchObject({ error: expect.stringContaining("not a UTF-8 text file") });
 		}

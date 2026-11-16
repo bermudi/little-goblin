@@ -729,7 +729,7 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 			},
 		};
 	}
-	test("a dead delegation host warns unconfigured and fails once delegation is configured", async () => {
+	test("a dead herdr session warns regardless of delegation — delegation rides T3 Code now", async () => {
 		const f = fixture();
 		f.script(
 			"systemctl",
@@ -739,16 +739,18 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 		const plain = await runHealth({ ...f.options, phase: "installed" });
 		expect(finding(plain, "service.goblin").status).toBe("pass");
 		expect(finding(plain, "service.goblin-herdr").status).toBe("warn");
-		expect(finding(plain, "service.goblin-herdr").detail).toContain("no delegation block");
+		expect(finding(plain, "service.goblin-herdr").detail).toContain("delegation is unaffected");
+		// A configured delegation block no longer moves the tier: the
+		// transport is the t3 CLI, not this unit (#607; #608 deletes it).
 		writeFileSync(
 			join(f.home, "goblin.json5"),
 			JSON.stringify({
 				...f.config,
-				delegation: { harnesses: { devin: { kind: "devin" } } },
+				delegation: { harnesses: { devin: { provider: "devin", model: "d-1" } } },
 			}),
 		);
 		const delegated = await runHealth({ ...f.options, phase: "installed" });
-		expect(finding(delegated, "service.goblin-herdr").status).toBe("fail");
+		expect(finding(delegated, "service.goblin-herdr").status).toBe("warn");
 		expect(JSON.stringify(delegated)).not.toContain(secret);
 	});
 	test("missing boot-created subsystem tables warn by name; a full boot schema passes", async () => {
@@ -782,7 +784,10 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 		// Config-gated tables join the expectation with their config block.
 		writeFileSync(
 			join(f.home, "goblin.json5"),
-			JSON.stringify({ ...f.config, delegation: { harnesses: { devin: { kind: "devin" } } } }),
+			JSON.stringify({
+				...f.config,
+				delegation: { harnesses: { devin: { provider: "devin", model: "d-1" } } },
+			}),
 		);
 		const gated = finding(
 			await runHealth({ ...f.options, phase: "installed" }),

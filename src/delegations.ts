@@ -197,7 +197,7 @@ const DELEGATIONS_COLUMNS = `
 		workspace_id TEXT NOT NULL DEFAULT '',
 		pane_id TEXT NOT NULL DEFAULT ''`;
 
-export function openDelegations(dbPath: string): DelegationsStore {
+export function openDelegations(dbPath: string, settledAt = new Date()): DelegationsStore {
 	const db = new Database(dbPath);
 	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	db.exec("PRAGMA journal_mode = WAL");
@@ -277,7 +277,7 @@ export function openDelegations(dbPath: string): DelegationsStore {
 		)
 		.all()) {
 		const r = z.object({ id: z.number(), name: z.string(), agent_name: z.string() }).parse(row);
-		qLegacy.run(new Date().toISOString(), r.id);
+		qLegacy.run(settledAt.toISOString(), r.id);
 		log.warn("legacy herdr delegation settled failed — transport moved to T3 Code", {
 			delegation: r.id,
 			name: r.name,

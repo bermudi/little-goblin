@@ -185,17 +185,17 @@ function makeCaller(runner: T3Runner) {
 		parse: (stdout: string) => T,
 		opts?: T3CallOpts,
 	): Promise<T> {
-		const t0 = Date.now();
+		const t0 = performance.now();
 		if (opts?.signal?.aborted) throw abortError(opts.signal);
 		let r: T3RunResult;
 		try {
 			r = await runner(args, opts);
 		} catch (err) {
-			log.error("t3 call runner failed", err, { verb, target, ms: Date.now() - t0 });
+			log.error("t3 call runner failed", err, { verb, target, ms: performance.now() - t0 });
 			throw err;
 		}
 		if (opts?.signal?.aborted) throw abortError(opts.signal);
-		const ms = Date.now() - t0;
+		const ms = performance.now() - t0;
 		if (r.code !== 0) {
 			const text = r.stderr.trim();
 			const code = THREAD_GONE_RE.test(text) ? "thread_not_found" : `exit_${r.code}`;

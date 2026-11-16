@@ -55,10 +55,11 @@ export function ModelPicker({
 	const [query, setQuery] = useState("");
 	const [scope, setScope] = useState("");
 	// The row the operator last moved the highlight to (arrows, pointer),
-	// or null. Only user moves fire onValueChange — auto-highlights land
-	// silently — so a fresh query's Enter keeps running the typed path's
-	// exact resolution, and Enter after an arrow runs the row the
-	// operator chose.
+	// or null. In a real browser every keystroke's auto-highlight also
+	// fires onValueChange (reason "input-change"), so only the operator's
+	// own moves may claim it — that keeps a fresh query's Enter on the
+	// typed path's exact resolution while Enter after an arrow runs the
+	// row the operator chose.
 	const arrowed = useRef<string | null>(null);
 	// ?? null: an older backend's config view lacks the key — read as
 	// never curated, not an empty sheet.
@@ -196,7 +197,7 @@ export function ModelPicker({
 			</CommandItem>
 		);
 	};
-	// Enter with no highlighted row runs the typed path: exact
+	// Enter with no operator-chosen row runs the typed path: exact
 	// resolution ignores visibility — a catalog hit resolves to its
 	// catalog spelling, a favorite to its stored spelling — so typing
 	// reaches a hidden model (or a hidden favorite's exact ref) even
@@ -238,8 +239,11 @@ export function ModelPicker({
 						const needle = search.trim().toLowerCase();
 						return hit(item.value === OFF ? "" : item.value, needle);
 					}}
-					onValueChange={(value) => {
-						arrowed.current = value;
+					onValueChange={(value, details) => {
+						arrowed.current =
+							details.reason === "list-navigation" || details.reason === "item-hover"
+								? value
+								: null;
 					}}
 					onAction={(value) => onPick(value === OFF ? "" : value)}
 					onKeyDownCapture={(e) => {

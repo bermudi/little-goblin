@@ -91,6 +91,7 @@ describe("read_long", () => {
 		writeFileSync(join(dir, "junk.pdf"), `junk line before header\n${pdf}`);
 		writeFileSync(join(dir, "bad-utf8.bin"), Buffer.from([0x66, 0xff, 0xfe, 0xfd, 0x80]));
 		writeFileSync(join(dir, "nul.bin"), Buffer.from([0x41, 0x00, 0x42]));
+		writeFileSync(join(dir, "mentions.txt"), "Every file starts with the %PDF- magic, then objects.");
 		let called = 0;
 		const tool = readLongTool(dir, {
 			conversation: "c1",
@@ -104,6 +105,10 @@ describe("read_long", () => {
 			expect(out).toMatchObject({ error: expect.stringContaining("not a UTF-8 text file") });
 		}
 		expect(called).toBe(0);
+		// Prose that names the magic is still text.
+		const out = await tool.execute!({ path: "mentions.txt", question: "what?" }, opts);
+		expect(out).not.toHaveProperty("error");
+		expect(called).toBe(1);
 	});
 
 	test("a failed part stops dispatch and the tool returns only after in-flight parts settle", async () => {

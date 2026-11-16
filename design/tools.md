@@ -185,7 +185,8 @@ failure is a tool error and the operator asks again.
   summary (`CompleteText` in `step.ts`), so claude-code conversations
   use their subscription too.
 - **Input:** a path to a text file: strict UTF-8, no NUL, and not a
-  PDF (`%PDF-` in the first 1 KB, as poppler reads it; an ASCII-only
+  PDF (`%PDF-<digit>.<digit>` in the first 1 KB, where the spec puts
+  the header; a header further in is text by the spec and `file`; an ASCII-only
   PDF decodes cleanly but is page syntax). Anything
   else is refused before a model call, with a hint to convert first
   (`pdftotext`, `pandoc`).

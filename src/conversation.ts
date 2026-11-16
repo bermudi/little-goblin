@@ -149,7 +149,14 @@ export interface ConversationStore extends ConversationReads {
 	// agent): a fresh app row carrying its parent link and agent-type
 	// mark, memory off from birth. One transaction; a minted-id collision
 	// throws. The caller owns the registry row and the log line.
-	resolveAgentChild(parent: Conversation, agentType: string, defaults: ModelSettings): Conversation;
+	// createdAt comes from the caller (clock-reads.test.ts): the store
+	// reads no wall clock on this path.
+	resolveAgentChild(
+		parent: Conversation,
+		agentType: string,
+		defaults: ModelSettings,
+		createdAt: string,
+	): Conversation;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
 	// Settings changes and cancellation bump the epoch; in-flight turns
 	// fence on it. A recreated address must advance past its deleted row.
@@ -367,11 +374,11 @@ export function openStore(dbPath: string): ConversationStore {
 			return db.transaction(() => initializeSettings(id, defaults))();
 		},
 
-		resolveAgentChild(parent, agentType, defaults) {
+		resolveAgentChild(parent, agentType, defaults, createdAt) {
 			return db.transaction(() => {
 				const appId = `agent-${randomUUID()}`;
 				const id = formatAddress({ kind: "app", appId, chatId: 0, threadId: 0 });
-				qInsertAgentConv.run(id, paths.workspace(), new Date().toISOString(), parent.id, agentType);
+				qInsertAgentConv.run(id, paths.workspace(), createdAt, parent.id, agentType);
 				initializeSettings(id, defaults);
 				const created = qGet.get(id);
 				if (!created) throw new Error(`agent child ${id} insert failed`);

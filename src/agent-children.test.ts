@@ -99,6 +99,7 @@ function rig(opts: { maxRunning?: number } = {}): Rig {
 		},
 		bell: () => quiet,
 		maxRunning: () => opts.maxRunning ?? 3,
+		now: () => new Date("2026-11-16T00:00:00.000Z"),
 	});
 	return { store, parent, runtime, engine, recorded, queue };
 }
@@ -254,6 +255,7 @@ describe("agent children engine", () => {
 			},
 			bell: () => quiet,
 			maxRunning: () => 1,
+			now: () => new Date("2026-11-16T00:00:00.000Z"),
 		});
 		after.recoverAtBoot();
 		expect(after.get(cut.child.conversationId)!.status).toBe("failed");

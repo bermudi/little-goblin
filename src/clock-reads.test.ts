@@ -151,7 +151,9 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/http/mod.ts": 4,
 	"src/http/operator-memory.ts": 8,
 	"src/http/operator-status.ts": 1,
-	"src/index.ts": 1,
+	// 2 since #604: the composition root injects real time into the
+	// agent-children engine (its own clock seam).
+	"src/index.ts": 2,
 	"src/injection.ts": 3,
 	"src/log.ts": 4,
 	"src/mail-approval.ts": 3,

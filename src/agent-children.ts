@@ -117,6 +117,9 @@ export interface AgentChildrenDeps {
 	bell(conv: Conversation): TurnSink;
 	/** Live-read from the agents config block (absent = 3). */
 	maxRunning(): number;
+	/** Clock seam (clock-reads.test.ts): the engine reads no wall clock
+	 * itself — index.ts injects real time, tests freeze it. */
+	now(): Date;
 }
 
 export interface SpawnInput {
@@ -164,7 +167,7 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 	// it can matter — CASCADE (child delete) and SET NULL (parent link)
 	// then ride the conversations row delete themselves.
 	ensureAgentChildrenSchema(store.db);
-	const nowIso = () => new Date().toISOString();
+	const nowIso = () => deps.now().toISOString();
 
 	const qGet = store.db.query<z.infer<typeof rowSchema>, [string]>(
 		"SELECT * FROM agent_children WHERE conversation_id = ?",
@@ -400,12 +403,17 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 					`cannot spawn agent child from ${input.parent.id}: no model selection (the parent turn captured none)`,
 				);
 			}
-			const child = store.resolveAgentChild(input.parent, input.type.name, {
-				model,
-				// The config default (config-schema preferences) is what a
-				// null-thinking parent gets at its own model calls.
-				thinking: (input.parent.thinking as ThinkingLevel | null) ?? "medium",
-			});
+			const child = store.resolveAgentChild(
+				input.parent,
+				input.type.name,
+				{
+					model,
+					// The config default (config-schema preferences) is what a
+					// null-thinking parent gets at its own model calls.
+					thinking: (input.parent.thinking as ThinkingLevel | null) ?? "medium",
+				},
+				nowIso(),
+			);
 			qInsert.run(
 				child.id,
 				input.parent.id,

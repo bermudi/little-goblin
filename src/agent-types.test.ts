@@ -80,7 +80,7 @@ describe("agent child system prompt", () => {
 		const home = useHome("goblin-agent-prompt-");
 		const store = openStore(tmpDb("goblin-agent-prompt-"));
 		const parent = store.resolve({ kind: "dm", chatId: 1 }, join(home, "w"));
-		const child = store.resolveAgentChild(parent, "general", { model: "a/b", thinking: "low" });
+		const child = store.resolveAgentChild(parent, "general", { model: "a/b", thinking: "low" }, "2026-11-16T00:00:00.000Z");
 		const first = agentChildSystemPrompt(store, child, "/absent-dir");
 		expect(first.text).toBe(GENERAL_AGENT_TYPE.systemPrompt);
 		expect(first.sources).toEqual(["agent-type:general"]);
@@ -102,7 +102,7 @@ describe("agent child system prompt", () => {
 		const home = useHome("goblin-agent-prompt-");
 		const store = openStore(tmpDb("goblin-agent-prompt-"));
 		const parent = store.resolve({ kind: "dm", chatId: 1 }, join(home, "w"));
-		const child = store.resolveAgentChild(parent, "gone", { model: "a/b", thinking: "low" });
+		const child = store.resolveAgentChild(parent, "gone", { model: "a/b", thinking: "low" }, "2026-11-16T00:00:00.000Z");
 		expect(() => agentChildSystemPrompt(store, child, "/absent-dir")).toThrow(
 			/\/absent-dir\/gone\.md/,
 		);

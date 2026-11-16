@@ -522,6 +522,7 @@ async function boot() {
 		record: (input) => delivery.dispatcher.record(input),
 		bell: (conv) => delivery.wakeDeps.bell(conv),
 		maxRunning: () => configRef.current.agents?.maxRunning ?? 3,
+		now: () => new Date(),
 	});
 	agentChildren.recoverAtBoot();
 	agentChildrenEngine = agentChildren;

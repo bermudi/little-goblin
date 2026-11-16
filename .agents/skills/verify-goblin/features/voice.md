@@ -7,8 +7,9 @@ local `whistle` engine, and keep the transcript on the durable message.
 
 ## How to get to it (user POV)
 
-In Chat, hold **Record a voice note** and release to send. To test an audio
-file instead, use **Attach**, then send the staged audio. The throwaway seed
+In Chat, hold **Record a voice note** and release to send. **Attach** is not a
+substitute: it sends a plain attachment, without `speech: true`, so nothing is
+transcribed. To test an audio file, use the curl journey below. The throwaway seed
 has transcription off, so enable it first with the settings request below.
 
 ## Driving it with curl

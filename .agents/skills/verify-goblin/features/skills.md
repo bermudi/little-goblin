@@ -32,10 +32,10 @@ EOF
 
 ## Driving it with agent-browser
 
-Set `URL` to the instance URL printed by `bun run try`:
+Set `URL` to the instance URL printed by `bun run try` (it already ends in `/app/`):
 
 ```sh
-agent-browser --session verify-skills open "$URL/app/skills"
+agent-browser --session verify-skills open "${URL}skills"
 agent-browser --session verify-skills wait --text 'verify-example'
 agent-browser --session verify-skills find role button click --name 'New conversation'
 agent-browser --session verify-skills fill '[aria-label="Message draft"]' 'Use the skill for this turn.'

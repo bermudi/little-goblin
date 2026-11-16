@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { UI_MESSAGE_STREAM_HEADERS } from "ai";
+import { buildLearnPrompt } from "../learn.ts";
 import type { Message } from "../message.ts";
 import { z } from "zod";
 import {
@@ -257,6 +258,24 @@ export async function handleChatRoute(
 		}
 
 		const message = parsed.data.message!;
+
+		// /learn, the app door: a leading "/learn" text part rewrites to
+		// the builder output — the same prompt the Telegram command
+		// submits (design/skills.md → Self-authoring, /learn, curator).
+		// One boundary rewrite, logged; everything downstream is an
+		// ordinary text turn.
+		for (const part of message.parts) {
+			if (part.type !== "text" || typeof part.text !== "string") continue;
+			const m = /^\/learn(?:@\S+)?(?:\s+([\s\S]*))?$/.exec(part.text.trim());
+			if (m === null) continue;
+			const rest = m[1] ?? "";
+			part.text = buildLearnPrompt(rest);
+			log.info("app /learn intercept", {
+				conversation: convId,
+				fromConversation: rest.trim() === "",
+			});
+			break;
+		}
 
 		// Validate the edit target before any transcript/attachment prep —
 		// a refused edit must not pay for transcription it will discard.

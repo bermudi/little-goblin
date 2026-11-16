@@ -25,6 +25,7 @@ import type { BotDeps } from "./deps.ts";
 import { ensurePersonaClass, guestRefusalText, refusalDue } from "./guest.ts";
 import { sendRollMarker } from "./notify.ts";
 import { handleSkillCommand, skillCommandDeps } from "./skill-command.ts";
+import { handleLearnCommand } from "./learn-command.ts";
 import { pingTypingOnce } from "./delivery.ts";
 import {
 	mediaFromMessage,
@@ -57,6 +58,7 @@ const OPERATOR_ONLY_COMMANDS = new Set([
 	"/forget",
 	"/compact",
 	"/skill",
+	"/learn",
 ]);
 
 function externalOriginLabel(origin: MessageOrigin): string {
@@ -393,12 +395,16 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 					() => deps.store.rollDm(addr.chatId, paths.workspace()),
 				);
 			}
-			if (command.command === "/skill") {
-				// Submitting door (ruling 2026-10-21) — async fetch/scoring
-				// off the sync intake path; it owns its replies.
+			if (command.command === "/skill" || command.command === "/learn") {
+				// Submitting doors (ruling 2026-10-21; /learn 2026-11-16) —
+				// async work off the sync intake path; each owns its replies.
 				const skillDeps = skillCommandDeps(deps, env.api);
-				void handleSkillCommand(skillDeps, target, text).catch((err: unknown) => {
-					log.error("/skill failed", err, { conversation: target?.id ?? lane });
+				const run =
+					command.command === "/skill"
+						? handleSkillCommand(skillDeps, target, text)
+						: handleLearnCommand(skillDeps, target, text);
+				void run.catch((err: unknown) => {
+					log.error(`${command.command} failed`, err, { conversation: target?.id ?? lane });
 					withTimeout(
 						env.api.sendMessage(
 							target?.chatId ?? msg.chat.id,
@@ -407,9 +413,9 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 								? {}
 								: { message_thread_id: target.threadId },
 						),
-						"sendMessage (/skill failure)",
+						`sendMessage (${command.command} failure)`,
 					).catch((e: unknown) => {
-						log.warn("/skill failure reply failed", e);
+						log.warn(`${command.command} failure reply failed`, e);
 					});
 				});
 				handled = true;

@@ -199,8 +199,38 @@ function catalogLines(): string[] {
 
 // Returns whether the runtime admitted the turn — submitPersisted
 // fences instead of throwing on shutdown, and the caller must not
-// report an invocation nothing will run. The message is durable
-// either way.
+// report an action nothing will run. The message is durable either
+// way. Exported for /learn: the same durable admission path every
+// command-submitted turn uses; the caller logs its own success line.
+export function submitCommandTurn(
+	deps: SkillCommandDeps,
+	target: Conversation,
+	parts: Message["parts"],
+	label: string,
+	logFields: Record<string, unknown> = {},
+): boolean {
+	const message = userMessage(parts);
+	const seq = deps.store.append(target.id, [message])[0]!;
+	const sink = deps.delivery(target);
+	try {
+		if (!deps.runtime.submitPersisted(target, message, sink, seq)) {
+			log.info(`${label} fenced at admission — runtime closed`, {
+				conversation: target.id,
+				...logFields,
+			});
+			return false;
+		}
+		return true;
+	} catch (err) {
+		log.error(`${label} submit failed`, err, { conversation: target.id, ...logFields });
+		void sink.onDone({
+			kind: "error",
+			message: err instanceof Error ? err.message : String(err),
+		});
+		return false;
+	}
+}
+
 function submitSkillTurn(
 	deps: SkillCommandDeps,
 	target: Conversation,
@@ -213,30 +243,10 @@ function submitSkillTurn(
 		{ type: SKILL_PART, data: ref } as Message["parts"][number],
 	];
 	if (text !== "") parts.push({ type: "text", text });
-	const message = userMessage(parts);
-	const seq = deps.store.append(target.id, [message])[0]!;
-	const sink = deps.delivery(target);
-	try {
-		if (!deps.runtime.submitPersisted(target, message, sink, seq)) {
-			log.info("skill turn fenced at admission — runtime closed", {
-				conversation: target.id,
-				temp: "url" in ref,
-			});
-			return false;
-		}
-		log.info("skill invoked via /skill", {
-			conversation: target.id,
-			temp: "url" in ref,
-		});
-		return true;
-	} catch (err) {
-		log.error("skill turn submit failed", err, { conversation: target.id });
-		void sink.onDone({
-			kind: "error",
-			message: err instanceof Error ? err.message : String(err),
-		});
-		return false;
-	}
+	const fields = { temp: "url" in ref };
+	const submitted = submitCommandTurn(deps, target, parts, "skill turn", fields);
+	if (submitted) log.info("skill invoked via /skill", { conversation: target.id, ...fields });
+	return submitted;
 }
 
 // The epoch probe every async boundary funnels through — synchronous

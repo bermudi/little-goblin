@@ -68,8 +68,8 @@ function artifactUrls(arch: string, platform: string): { engine: string; weights
 	};
 }
 
-// One fetch per process per artifact set — concurrent transcriptions
-// share the in-flight promise.
+// Concurrent transcriptions share an in-flight fetch. Settled entries are
+// removed so each transcription checks the cached artifact bytes again.
 const artifactMemo = new Map<string, Promise<{ engine: string; weights: string }>>();
 
 function ensureArtifacts(
@@ -109,9 +109,13 @@ function ensureArtifacts(
 			),
 		};
 	})();
-	// A failed fetch must not poison the memo — the next call retries.
-	p.catch(() => artifactMemo.delete(key));
 	artifactMemo.set(key, p);
+	// The memo dedupes concurrent work only. Once settled, a later
+	// transcription must validate the current bytes at both cache paths.
+	const clearMemo = (): void => {
+		if (artifactMemo.get(key) === p) artifactMemo.delete(key);
+	};
+	void p.then(clearMemo, clearMemo);
 	return p;
 }
 
@@ -137,7 +141,7 @@ async function artifact(
 				`whistle: digest mismatch for ${dest} (wanted ${sha256.slice(0, 16)}…, got ${got.slice(0, 16)}…) — trash the cached file to re-fetch, or set transcription.engine/transcription.weights to local paths`,
 			);
 		}
-		log.info("whistle artifact cached ok", { dest, bytes: cached.byteLength });
+		log.debug("whistle artifact cached ok", { dest, bytes: cached.byteLength });
 		return dest;
 	}
 

@@ -155,7 +155,7 @@ export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
 	// "goblin" is the local unit's --session — the default target, never a config knob.
 	const herdr = delegationBoot ? makeHerdr({ session: "goblin" }) : null;
 	// The operator's own `default` session needs no delegation config —
-	// the herdr tool mounts for every personal conversation.
+	// the responsibility observer and managed send use it regardless.
 	const operatorHerdr = makeOperatorHerdr();
 	const targets = new Map<string, DelegationTargetDeps>();
 	if (delegationBoot && herdr !== null) {

@@ -74,6 +74,10 @@ describe("main branch regressions", () => {
 			["window", win],
 			["document", win.document],
 			["navigator", win.navigator],
+			["getComputedStyle", win.getComputedStyle],
+			// The command primitive's typeahead walks item text through the DOM
+			// global NodeFilter; browsers have it, bare bun:test doesn't.
+			["NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter],
 			["IS_REACT_ACT_ENVIRONMENT", true],
 		] as const) {
 			globals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
@@ -873,6 +877,9 @@ describe("quiet harbor regressions", () => {
 			installGlobal("Event", win.Event);
 			installGlobal("CustomEvent", win.CustomEvent);
 			installGlobal("getComputedStyle", win.getComputedStyle);
+			// The command primitive's typeahead walks item text through the DOM
+			// global NodeFilter; browsers have it, bare bun:test doesn't.
+			installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
 			Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 			posts = [];
 			postScript = [];

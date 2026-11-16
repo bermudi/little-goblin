@@ -4054,12 +4054,10 @@ button.pathchip:hover svg {
 	font-size: 14px;
 	line-height: 1;
 	padding: 0.35rem 0.45rem;
-	border-radius: 6px;
 	color: var(--app-fg-subtle);
 }
 .mstar:hover {
 	color: var(--app-warning);
-	background: var(--app-hover);
 }
 .mstar.on {
 	color: var(--app-warning);

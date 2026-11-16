@@ -252,7 +252,12 @@ its largest, so it was the most expensive uncached call goblin made.
   snapshot, the turn's tool definitions, the same model view (stored
   memory blocks, pruning projection, summary entry) over completed
   history — then **one appended user message** with the compaction
-  instruction. The provider sees a prefix it already cached. Tool
+  instruction. Tool definitions are the exact set the conversation's last turn
+  mounted (the runtime keeps it in memory per conversation and epoch):
+  the set depends on the turn's delivery seams (`send_file`, `speak`), so
+  rebuilding it from config alone changes the cached head (PR #614
+  verifier finding). No record — a restart since the last turn, or a
+  newer epoch — means text mode. The provider sees a prefix it already cached. Tool
   definitions are sent but never executed; tool choice is left as the turn
   leaves it, because a changed tool choice voids Anthropic's message cache.
   A reply with no text is a failed attempt.

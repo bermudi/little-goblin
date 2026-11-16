@@ -7177,7 +7177,16 @@ button.link:hover {
 }
 
 /* Skill picker sheet (ruling 2026-10-21): catalog rows + the
-   from-link preview card. Reuses the msheet chrome. */
+   from-link preview card. Reuses the msheet chrome. The catalog list
+   rides the command primitive (PR #593), whose root stands between
+   .msheet-body and the filter + rows — a flex column so the filter
+   input stretches like it did as a direct body child. Rows read the
+   app's own theme vars: --line/--dim/--hover were never defined, so
+   every fallback here was a fixed light-theme color. */
+.skill-picker-command {
+	display: flex;
+	flex-direction: column;
+}
 .skill-picker-row {
 	display: flex;
 	justify-content: space-between;
@@ -7187,13 +7196,13 @@ button.link:hover {
 	text-align: left;
 	padding: 0.45rem 0.5rem;
 	border: 0;
-	border-bottom: 1px solid var(--line, #ddd);
+	border-bottom: 1px solid var(--app-divider);
 	background: none;
 	cursor: pointer;
 }
 .skill-picker-row:hover,
 .skill-picker-row[data-highlighted] {
-	background: var(--hover, rgba(127, 127, 127, 0.12));
+	background: var(--app-hover);
 }
 .skill-picker-main {
 	display: flex;
@@ -7202,12 +7211,12 @@ button.link:hover {
 	min-width: 0;
 }
 .skill-picker-sub {
-	color: var(--dim, #777);
+	color: var(--app-fg-muted);
 	font-size: 0.85em;
 	overflow-wrap: anywhere;
 }
 .skill-picker-side {
-	color: var(--dim, #777);
+	color: var(--app-fg-muted);
 	font-size: 0.85em;
 	white-space: nowrap;
 }
@@ -7217,7 +7226,7 @@ button.link:hover {
 	gap: 0.4rem;
 	margin-top: 0.75rem;
 	padding-top: 0.75rem;
-	border-top: 1px solid var(--line, #ddd);
+	border-top: 1px solid var(--app-divider);
 }
 .skill-from-link .link-row {
 	display: flex;
@@ -7232,7 +7241,7 @@ button.link:hover {
 	flex-direction: column;
 	gap: 0.3rem;
 	padding: 0.5rem;
-	border: 1px solid var(--line, #ddd);
+	border: 1px solid var(--app-divider);
 	border-radius: 8px;
 }
 

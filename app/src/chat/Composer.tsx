@@ -674,7 +674,12 @@ export function Composer({
 							</button>
 							{modelMenuOpen && (
 								<div className="note-pick composer-pick model-pop" role="menu">
-									<ul>
+									{/* The model quick menu is a plain ul, not the command
+										primitive — but it shares the note picker's list
+										rules (no bullets, capped scroll, row buttons),
+										which the widening renamed from `.note-pick ul` to
+										this class. */}
+									<ul className="note-pick-list">
 										{(() => {
 											// Curated membership gates the quick menu: stars
 											// first (favorites order), then the enabled rest

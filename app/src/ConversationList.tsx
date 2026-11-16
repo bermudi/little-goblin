@@ -1,15 +1,8 @@
 import { useEffect, useRef, useState } from "react";
+import { Menu, MenuContent, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 import { patchConversation, suggestConversationTitle } from "./api.ts";
-import {
-	ArchiveGlyph,
-	PencilGlyph,
-	PinActionGlyph,
-	PinGlyph,
-	TrashGlyph,
-	UnarchiveGlyph,
-	UnpinGlyph,
-} from "./glyphs.tsx";
+import { PinGlyph } from "./glyphs.tsx";
 
 // The Open WebUI chat-list relative-time format.
 export function relTime(iso: string): string {
@@ -53,8 +46,7 @@ export function flatTitle(title: string | null): string | null {
 
 // Archive and delete both skip the confirm: each raises an Undo toast
 // instead (delete is held back for that window — see the App's
-// deleteConversationHeld). Hover actions overlay the preview line so the
-// title never trades width for them.
+// deleteConversationHeld).
 export function ConversationRow({
 	conv,
 	current,
@@ -139,18 +131,16 @@ export function ConversationRow({
 				if (editSession.current === session) setSuggesting(false);
 			});
 	};
-	const toggleArchived = () => {
-		void patchConversation(token, conv.id, { archived: !archived }).then(
+	const toggleArchived = () =>
+		patchConversation(token, conv.id, { archived: !archived }).then(
 			() => onToggleArchived(conv.id, !archived),
 			failed(archived ? "unarchive" : "archive"),
 		);
-	};
-	const togglePinned = () => {
-		void patchConversation(token, conv.id, { pinned: !pinned }).then(
+	const togglePinned = () =>
+		patchConversation(token, conv.id, { pinned: !pinned }).then(
 			() => onTogglePinned(conv.id, !pinned),
 			failed(pinned ? "unpin" : "pin"),
 		);
-	};
 	const startRename = () => {
 		editSession.current += 1;
 		setSuggesting(false);
@@ -210,8 +200,6 @@ export function ConversationRow({
 			</div>
 		);
 	}
-	// A one-line row needs the head text out of the hover icons' way
-	// (styles.css).
 	const hasPreviewLine = title !== null && preview !== "";
 	const rowClass = ["conv", conv.id === current ? "current" : null, hasPreviewLine ? null : "bare"]
 		.filter((c): c is string => c !== null)
@@ -236,38 +224,46 @@ export function ConversationRow({
 				</span>
 				{hasPreviewLine && <span className="conv-preview">{preview}</span>}
 			</a>
-			<span className="conv-actions">
-				{archived ? (
-					<>
-						<button type="button" onClick={startRename} title="Rename" aria-label="Rename">
-							<PencilGlyph />
-						</button>
-						<button type="button" onClick={toggleArchived} title="Unarchive" aria-label="Unarchive">
-							<UnarchiveGlyph />
-						</button>
-						<button type="button" onClick={remove} title="Delete" aria-label="Delete">
-							<TrashGlyph />
-						</button>
-					</>
-				) : (
-					<>
-						<button
-							type="button"
-							onClick={togglePinned}
-							title={pinned ? "Unpin" : "Pin"}
-							aria-label={pinned ? "Unpin" : "Pin"}
-						>
-							{pinned ? <UnpinGlyph /> : <PinActionGlyph />}
-						</button>
-						<button type="button" onClick={startRename} title="Rename" aria-label="Rename">
-							<PencilGlyph />
-						</button>
-						<button type="button" onClick={toggleArchived} title="Archive" aria-label="Archive">
-							<ArchiveGlyph />
-						</button>
-					</>
-				)}
-			</span>
+			<Menu
+				onAction={(action) => {
+					switch (action) {
+						case "pin":
+							return togglePinned();
+						case "rename":
+							startRename();
+							return;
+						case "archive":
+							return toggleArchived();
+						case "delete":
+							remove();
+							return;
+					}
+				}}
+			>
+				<MenuTrigger
+					className="conv-menu-trigger"
+					aria-label={`Actions for ${title ?? (preview || "new conversation")}`}
+					title="Conversation actions"
+				>
+					<span aria-hidden="true">⋯</span>
+				</MenuTrigger>
+				<MenuContent className="conv-menu">
+					{!archived && (
+						<MenuItem value="pin">{pinned ? "Unpin" : "Pin"}</MenuItem>
+					)}
+					<MenuItem value="rename">Rename</MenuItem>
+					{archived ? (
+						<>
+							<MenuItem value="archive">Unarchive</MenuItem>
+							<MenuItem value="delete" destructive>
+								Delete
+							</MenuItem>
+						</>
+					) : (
+						<MenuItem value="archive">Archive</MenuItem>
+					)}
+				</MenuContent>
+			</Menu>
 		</div>
 	);
 }

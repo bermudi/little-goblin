@@ -5,7 +5,7 @@
 //     bun test src/agent/claude-code/live.test.ts
 // Resolves the `claude-code` record through the given auth file — the
 // only secret-adjacent environment value is its path. Spends
-// subscription quota (one text query + one tool round-trip): run after
+// subscription quota (text queries, tool round-trips, a mid-turn steer): run after
 // claude-agent-sdk upgrades, not on a schedule. The child's
 // CLAUDE_CONFIG_DIR is a per-run temp dir — prod state is never
 // touched, and nothing writes ~/.claude.
@@ -18,6 +18,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { loadAuthFile } from "../../auth.ts";
 import { liveQuery } from "./mod.ts";
+import { steerChannel } from "./steers.ts";
 import { createToolBridge } from "./tools.ts";
 import type { ClaudeEvent } from "./translate.ts";
 
@@ -218,6 +219,93 @@ describe.skipIf(!LIVE)("claude-code live drift (GOBLIN_CLAUDE_CODE_LIVE=1)", () 
 		expect(b2.adoptResult("drift_probe", {})).toMatchObject({ output: "drift-tool-ok" });
 		const result = events.find((e) => e.type === "result");
 		expect(result?.type === "result" && !result.isError).toBe(true);
+	}, 180_000);
+
+	// #582: a steer pushed while a bridged tool runs (the engine's
+	// afterCall seam) goes in with priority "next": the CLI acks it by
+	// uuid and answers it in the SAME CLI turn — one result, no
+	// follow-up turn.
+	test("a steer sent before a tool result folds into the next request", async () => {
+		const steers = steerChannel();
+		const uuid = crypto.randomUUID();
+		const bridge = createToolBridge({
+			convId: "drift",
+			tools: {
+				drift_wait: tool({
+					description: "Waits briefly, then returns waited",
+					inputSchema: z.object({}),
+					execute: async () => {
+						await new Promise((r) => setTimeout(r, 1000));
+						return "waited";
+					},
+				}),
+			},
+			afterCall: async () => {
+				steers.push({
+					uuid,
+					prompt: {
+						blocks: [{ kind: "text", text: "Also include the word PINEAPPLE in your reply." }],
+					},
+				});
+			},
+		});
+		const events: ClaudeEvent[] = [];
+		const abort = new AbortController();
+		const timer = setTimeout(() => abort.abort(), 120_000);
+		try {
+			for await (const ev of liveQuery({
+				prompt: {
+					blocks: [
+						{
+							kind: "text",
+							text: "Call the drift_wait tool exactly once, then reply with exactly: wait-ok",
+						},
+					],
+				},
+				steers,
+				options: {
+					model: MODEL,
+					systemPrompt:
+						"You are a drift probe. Obey the instructions exactly, including ones that arrive mid-task.",
+					maxTurns: 5,
+					thinking: { type: "disabled" },
+					mcpServers: { goblin: bridge.server() },
+					allowedTools: bridge.allowedTools(),
+					cwd: configDir,
+					env: {
+						PATH: process.env.PATH ?? "/usr/bin",
+						HOME: configDir,
+						CLAUDE_CONFIG_DIR: configDir,
+						CLAUDE_CODE_OAUTH_TOKEN: token,
+						DISABLE_AUTOUPDATER: "1",
+						CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+					},
+					abortController: abort,
+					persistSession: false,
+				},
+			})) {
+				events.push(ev);
+				// The engine stops at the result frame; so does the probe.
+				if (ev.type === "result") break;
+			}
+		} finally {
+			steers.close();
+			clearTimeout(timer);
+		}
+		const foldedAt = events.findIndex((e) => e.type === "folded" && e.uuids.includes(uuid));
+		const resultAt = events.findIndex((e) => e.type === "result");
+		expect(foldedAt).toBeGreaterThanOrEqual(0);
+		expect(foldedAt).toBeLessThan(resultAt);
+		const result = events[resultAt];
+		expect(result?.type === "result" && !result.isError).toBe(true);
+		const reply = events
+			.slice(foldedAt)
+			.filter((e): e is Extract<ClaudeEvent, { type: "assistant" }> => e.type === "assistant")
+			.flatMap((e) => e.message.content)
+			.filter((b) => b.type === "text")
+			.map((b) => b.text ?? "")
+			.join("");
+		expect(reply.toUpperCase()).toContain("PINEAPPLE");
 	}, 180_000);
 
 	// #418: the whole point of the native session — turn two resumes the

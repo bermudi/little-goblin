@@ -5,8 +5,13 @@
 // journal rows, and telemetry lines as the streamText path so both
 // channel sinks, replay/attach, and crash-resume stay engine-neutral.
 //
-// v1 rulings (design/model.md → claude-code):
-// - Steered messages defer to the next turn — no mid-run folding.
+// Rulings (design/model.md → claude-code):
+// - Steers fold mid-turn (#582). The query's input stays open; after
+//   each tool call settles — before the CLI has its result, so before
+//   its next model request — the shared fold claims waiting steers and
+//   pushes them with priority "next". The CLI acks each by uuid
+//   (`folded` events). A steer that arrives while the model writes its
+//   final reply waits for the successor turn, as on the API lane.
 // - No forced toolChoice cuts and no step budget. The loop
 //   detector still journals its state (context landings, completed
 //   calls) for resume parity, but this engine cannot cut.
@@ -42,6 +47,8 @@ import { measurePrompt } from "../../turn/itemize.ts";
 import { stepModelRef } from "../../turn/model-ref.ts";
 import {
 	emitChunk,
+	foldSteers,
+	openSteerLedger,
 	type StreamDeps,
 	type StreamOutcome,
 	type WireMember,
@@ -65,7 +72,8 @@ import {
 } from "../providers.ts";
 import { claudeChildEnv } from "./auth.ts";
 import type { ClaudeStep } from "./mod.ts";
-import { promptText, safeJson, serializePrompt } from "./prompt.ts";
+import { promptText, safeJson, serializePrompt, serializeSteer } from "./prompt.ts";
+import { steerChannel } from "./steers.ts";
 import { createToolBridge, MCP_SERVER_NAME } from "./tools.ts";
 import type {
 	ClaudeContentBlock,
@@ -75,6 +83,7 @@ import type {
 	ClaudeStreamEvent,
 	ClaudeToolResultBlock,
 	ClaudeUsage,
+	SteerChannel,
 } from "./translate.ts";
 
 // The array arm of AssistantContent (the union also allows a bare
@@ -248,6 +257,13 @@ function modelOutput(output: unknown): ToolResultOutput {
 		return { type: "text", value: safeJson(output) };
 	}
 }
+
+// A result that arrives while a pushed steer is still unacked means the
+// CLI will answer it in a follow-up CLI turn (probed live 2026-11-15:
+// a message queued after the final request opens a new turn). The
+// engine reads on through at most this many follow-ups — a CLI that
+// never acks must not hold the turn open.
+const MAX_STEER_FOLLOW_UPS = 2;
 
 // The CLI names MCP tools mcp__<server>__<tool>; goblin knows bare names.
 function bareToolName(name: string): string {
@@ -692,9 +708,43 @@ export async function driveClaude<M extends WireMember>(
 		abortController.abort();
 	};
 
+	// --- steers: the open query input and the shared fold ---
+	const steers = openSteerLedger(deps);
+	const steeredMessages: ModelMessage[] = [];
+	// Pushed to the CLI, not yet acked by a `folded` event.
+	const unacked = new Set<string>();
+	let channel: SteerChannel | null = null;
+	const foldIntoQuery = async (): Promise<void> => {
+		if (channel === null) return;
+		const folded = await foldSteers(deps, steers, run.stepCount);
+		if (folded === null || folded.injected.length === 0) return;
+		// The fold awaited conversion; the attempt may have ended since.
+		if (channel === null) {
+			log.warn("claude steer folded after the query input closed — not sent", {
+				conversation: convId,
+				messages: folded.injected.length,
+			});
+			return;
+		}
+		const uuid = randomUUID();
+		unacked.add(uuid);
+		steeredMessages.push(...folded.injected);
+		channel.push({ uuid, prompt: serializeSteer(folded.injected) });
+		log.info("claude steer sent", {
+			conversation: convId,
+			steer: uuid,
+			messages: folded.injected.length,
+		});
+	};
+
 	const childEnv = await claudeChildEnv(engine.auth, step.auth, engine.configDir);
 	const makeBridge = engine.bridgeFactory ?? createToolBridge;
-	const bridge = makeBridge({ convId, tools: deps.tools, signal: deps.signal });
+	const bridge = makeBridge({
+		convId,
+		tools: deps.tools,
+		signal: deps.signal,
+		afterCall: foldIntoQuery,
+	});
 
 	const messageId = randomUUID();
 	emit({ type: "start", messageId });
@@ -738,6 +788,8 @@ export async function driveClaude<M extends WireMember>(
 		curMessage = null;
 		curParts = [];
 		curBlockOffset = 0;
+		steeredMessages.length = 0;
+		unacked.clear();
 		callId = null;
 		obs = undefined;
 		callOpen = false;
@@ -758,11 +810,14 @@ export async function driveClaude<M extends WireMember>(
 		resultFrame = null;
 		streamError = null;
 		rawError = null;
+		let followUps = 0;
+		channel = steerChannel();
 
 		deps.signal.addEventListener("abort", onAbort, { once: true });
 		try {
 			outer: for await (const ev of engine.query({
 				prompt: serializePrompt(sentMessages),
+				steers: channel,
 				options: {
 					model: step.modelId,
 					systemPrompt: step.system,
@@ -825,12 +880,30 @@ export async function driveClaude<M extends WireMember>(
 					case "user":
 						handleUserEcho(ev.content);
 						break;
+					case "folded":
+						for (const uuid of ev.uuids) {
+							if (unacked.delete(uuid)) {
+								log.info("claude steer folded", { conversation: convId, steer: uuid });
+							}
+						}
+						break;
 					case "result":
 						// The result frame is the turn-complete signal — stop
 						// there (the vendor generator's return() cleans up the
-						// child), never waiting on post-result chatter.
+						// child), never waiting on post-result chatter. An
+						// unacked steer is the one exception: the CLI answers it
+						// in a follow-up turn of this same query.
 						flushAssistant();
 						resultFrame = ev;
+						if (unacked.size > 0 && !ev.isError && followUps < MAX_STEER_FOLLOW_UPS) {
+							followUps += 1;
+							log.warn("claude result before steer fold — reading the follow-up turn", {
+								conversation: convId,
+								unacked: unacked.size,
+								followUp: followUps,
+							});
+							break;
+						}
 						break outer;
 				}
 			}
@@ -851,6 +924,15 @@ export async function driveClaude<M extends WireMember>(
 						: String(err);
 		} finally {
 			deps.signal.removeEventListener("abort", onAbort);
+			const input = channel;
+			channel = null;
+			input.close();
+			if (unacked.size > 0) {
+				log.warn("claude steers never acked — answered only if the reply covered them", {
+					conversation: convId,
+					unacked: unacked.size,
+				});
+			}
 		}
 
 		// The result frame carries terminal truth even when the iterator
@@ -915,12 +997,13 @@ export async function driveClaude<M extends WireMember>(
 	// a prompt a call never completed is not a window anything saw.
 	const windowCapture = (): WindowCapture | null => {
 		if (run.stepCount === 0) return null;
+		const messages = [...sentMessages, ...steeredMessages];
 		return {
 			v: 1,
 			system: step.system,
 			tools: toolDefs,
-			messages: sentMessages,
-			segments: measurePrompt(step.system, deps.tools, sentMessages),
+			messages,
+			segments: measurePrompt(step.system, deps.tools, messages),
 		};
 	};
 
@@ -945,7 +1028,7 @@ export async function driveClaude<M extends WireMember>(
 			toolCalls: run.events.toolCalls,
 			digestRing: run.events.digestRing,
 			loop: state.snapshot(),
-			steerMark: deps.steerMarkSeed,
+			steerMark: steers.mark,
 			filterRetryUsed: deps.filterRetryUsed,
 			window: windowCapture(),
 			model: label,
@@ -956,7 +1039,7 @@ export async function driveClaude<M extends WireMember>(
 	// The reply message the durable lane lands: metadata in the same
 	// shape messageMetadata writes for the API lane.
 	const finishReason = finishReasonOf(run.lastStopReason, run.sawToolUse);
-	const segments = measurePrompt(step.system, deps.tools, sentMessages);
+	const segments = measurePrompt(step.system, deps.tools, [...sentMessages, ...steeredMessages]);
 	const metadata = {
 		model: label,
 		finishReason,
@@ -989,7 +1072,7 @@ export async function driveClaude<M extends WireMember>(
 		lastStepInputTokens: run.lastInput,
 		toolCalls: run.events.toolCalls,
 		digestRing: run.events.digestRing,
-		steerMark: deps.steerMarkSeed,
+		steerMark: steers.mark,
 		window: windowCapture(),
 		model: label,
 		steps: run.stepCount,

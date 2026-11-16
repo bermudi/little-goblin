@@ -144,6 +144,18 @@ export interface ClaudeResultEvent {
 	uuid?: string;
 }
 
+/**
+ * The CLI consumed these streamed user messages (the frame's
+ * `user_message_uuids`, pinned live 2026-11-15 on CLI 2.1.311: the
+ * requesting status, stream, assistant and result frames of the turn
+ * that folded a `priority: "next"` message all carry it). The adapter
+ * emits this ahead of the frame that carried the list.
+ */
+export interface ClaudeFoldedEvent {
+	type: "folded";
+	uuids: string[];
+}
+
 /** The frames the engine consumes; every other SDK frame type is ignored. */
 export type ClaudeEvent =
 	| ClaudeInitEvent
@@ -151,13 +163,21 @@ export type ClaudeEvent =
 	| ClaudeAssistantEvent
 	| ClaudeUserEvent
 	| ClaudeCompactBoundaryEvent
-	| ClaudeResultEvent;
+	| ClaudeResultEvent
+	| ClaudeFoldedEvent;
 
 // ---------- the injectable query seam ----------
 
 export interface ClaudeQueryCall {
 	/** The full assembled view, serialized (media rides as blocks). */
 	prompt: PromptContent;
+	/**
+	 * Turn queries only: steers folded mid-turn, sent with priority
+	 * "next" (the CLI adds them to its next model call). Present = the
+	 * input stays open until the channel closes; absent = input ends
+	 * after the prompt (one-shot compaction queries).
+	 */
+	steers?: SteerChannel | undefined;
 	options: ClaudeQueryOptions;
 }
 
@@ -199,3 +219,17 @@ export interface ClaudeQueryOptions {
 }
 
 export type ClaudeQuery = (call: ClaudeQueryCall) => AsyncIterable<ClaudeEvent>;
+
+/** One steer handed to the CLI; `uuid` is the ack key the CLI echoes. */
+export interface ClaudeSteer {
+	uuid: string;
+	prompt: PromptContent;
+}
+
+/** steers.ts builds it; the adapter iterates it, the fake drains it. */
+export interface SteerChannel extends AsyncIterable<ClaudeSteer> {
+	push(steer: ClaudeSteer): void;
+	/** Everything pushed and not yet read, removed from the channel. */
+	drain(): ClaudeSteer[];
+	close(): void;
+}

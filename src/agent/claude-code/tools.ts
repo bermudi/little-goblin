@@ -140,19 +140,26 @@ export interface ToolBridgeDeps {
 	tools: ToolSet;
 	/** The turn's abort signal, forwarded to every tool execute. */
 	signal?: AbortSignal | undefined;
+	/**
+	 * Runs after each call settles, before its result goes back to the
+	 * CLI. The CLI cannot send its next model request until it has the
+	 * result, so a steer pushed here always joins that request — the
+	 * engine's steer fold rides this.
+	 */
+	afterCall?: (() => Promise<void>) | undefined;
 }
 
 export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
-	const { convId, tools, signal } = deps;
+	const { convId, tools, signal, afterCall } = deps;
 	const results: QueuedResult[] = [];
 	type McpResponse = {
 		content: Array<{ type: "text"; text: string }>;
 		isError?: boolean;
 	};
-	const handlers = new Map<
-		string,
-		(input: Record<string, unknown>) => Promise<{ response: McpResponse; record: QueuedResult }>
-	>();
+	type Handler = (
+		input: Record<string, unknown>,
+	) => Promise<{ response: McpResponse; record: QueuedResult }>;
+	const handlers = new Map<string, Handler>();
 	const names: string[] = [];
 	const bridgeId = randomUUID().slice(0, 8);
 	let callSeq = 0;
@@ -162,66 +169,33 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 		if (execute === undefined) continue;
 		const schema = asSchema(t.inputSchema);
 		names.push(name);
-		handlers.set(
-			name,
-			async (
-				input: Record<string, unknown>,
-			): Promise<{ response: McpResponse; record: QueuedResult }> => {
-				// Monotonic per bridge, plus a random bridge prefix so ids stay
-				// unique across turns (the bridge is rebuilt every turn).
-				const callId = `claude-${bridgeId}-${++callSeq}`;
-				// Reserve this call's queue slot before the first await so
-				// array order is dispatch order, not completion order.
-				const record: QueuedResult = { name, input, output: null, error: null, done: false };
-				results.push(record);
-				// Parsed input or a loud tool error — the model sees the
-				// issues and can re-ask, like the API lane's tool errors.
-				// Schema.validate is safeParse-shaped ({success, value|error}).
-				let args: unknown;
-				if (schema.validate === undefined) {
-					// A schema with no validator (raw jsonSchema pass-
-					// through): the CLI validated the zod properties we
-					// derived; execute's own guards are the backstop.
-					args = input;
-				} else {
-					const parsed = await schema.validate(input);
-					if (!parsed.success) {
-						const errorText = `invalid arguments for ${name}: ${issueText(parsed.error)}`;
-						log.warn("tool call rejected", {
-							conversation: convId,
-							tool: name,
-							arg: JSON.stringify(input ?? null).slice(0, 200),
-							error: errorText.slice(0, 300),
-						});
-						record.error = errorText;
-						record.done = true;
-						return {
-							response: { content: [{ type: "text", text: errorText }], isError: true },
-							record,
-						};
-					}
-					args = parsed.value;
-				}
-				try {
-					const output = await execute(args as never, {
-						toolCallId: callId,
-						...(signal !== undefined ? { abortSignal: signal } : {}),
-						messages: [] as never,
-						context: {} as never,
+		const settle: Handler = async (input) => {
+			// Monotonic per bridge, plus a random bridge prefix so ids stay
+			// unique across turns (the bridge is rebuilt every turn).
+			const callId = `claude-${bridgeId}-${++callSeq}`;
+			// Reserve this call's queue slot before the first await so
+			// array order is dispatch order, not completion order.
+			const record: QueuedResult = { name, input, output: null, error: null, done: false };
+			results.push(record);
+			// Parsed input or a loud tool error — the model sees the
+			// issues and can re-ask, like the API lane's tool errors.
+			// Schema.validate is safeParse-shaped ({success, value|error}).
+			let args: unknown;
+			if (schema.validate === undefined) {
+				// A schema with no validator (raw jsonSchema pass-
+				// through): the CLI validated the zod properties we
+				// derived; execute's own guards are the backstop.
+				args = input;
+			} else {
+				const parsed = await schema.validate(input);
+				if (!parsed.success) {
+					const errorText = `invalid arguments for ${name}: ${issueText(parsed.error)}`;
+					log.warn("tool call rejected", {
+						conversation: convId,
+						tool: name,
+						arg: JSON.stringify(input ?? null).slice(0, 200),
+						error: errorText.slice(0, 300),
 					});
-					record.output = output;
-					record.done = true;
-					if (t.toModelOutput === undefined) {
-						return { response: { content: [{ type: "text", text: resultText(output) }] }, record };
-					}
-					const shaped = await t.toModelOutput({
-						output,
-						toolCallId: callId,
-						input: args as never,
-					});
-					return { response: callToolResult(shaped), record };
-				} catch (err) {
-					const errorText = err instanceof Error ? err.message : String(err);
 					record.error = errorText;
 					record.done = true;
 					return {
@@ -229,8 +203,41 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 						record,
 					};
 				}
-			},
-		);
+				args = parsed.value;
+			}
+			try {
+				const output = await execute(args as never, {
+					toolCallId: callId,
+					...(signal !== undefined ? { abortSignal: signal } : {}),
+					messages: [] as never,
+					context: {} as never,
+				});
+				record.output = output;
+				record.done = true;
+				if (t.toModelOutput === undefined) {
+					return { response: { content: [{ type: "text", text: resultText(output) }] }, record };
+				}
+				const shaped = await t.toModelOutput({
+					output,
+					toolCallId: callId,
+					input: args as never,
+				});
+				return { response: callToolResult(shaped), record };
+			} catch (err) {
+				const errorText = err instanceof Error ? err.message : String(err);
+				record.error = errorText;
+				record.done = true;
+				return {
+					response: { content: [{ type: "text", text: errorText }], isError: true },
+					record,
+				};
+			}
+		};
+		handlers.set(name, async (input) => {
+			const settled = await settle(input);
+			await afterCall?.();
+			return settled;
+		});
 	}
 	const definitions: Array<ReturnType<typeof sdkTool>> = [];
 	for (const [name, t] of Object.entries(tools)) {

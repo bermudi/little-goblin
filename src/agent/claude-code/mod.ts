@@ -3,7 +3,7 @@
 // (module-boundaries.test.ts); everything the engine needs from the
 // vendor is adapted into the pinned shapes of translate.ts here.
 
-import { randomUUID } from "node:crypto";
+import { randomUUID, type UUID } from "node:crypto";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { query as vendorQuery } from "@anthropic-ai/claude-agent-sdk";
 import { log } from "../../log.ts";
@@ -24,6 +24,7 @@ import type {
 	ClaudeQueryCall,
 	ClaudeToolResultBlock,
 	PromptContent,
+	SteerChannel,
 } from "./translate.ts";
 
 // ---------- the step the runtime builds for a claude-code model ----------
@@ -49,14 +50,18 @@ export interface ClaudeStep {
 
 // ---------- the vendor adapter ----------
 
-// PromptContent → the vendor's input: ONE user message yielded on an
-// async iterable (the only prompt form that carries media blocks),
-// then input closes. The CLI reads the message, runs its loop, and
-// pulls again post-turn to find the iterator done.
+// PromptContent → the vendor's input: the prompt as ONE user message on
+// an async iterable (the only prompt form that carries media blocks).
+// A turn query keeps the iterable open: each folded steer follows as
+// another user message with priority "next" — the CLI adds it to its
+// next model call (probed live 2026-11-15: "now" aborts the running
+// tools instead, "later" waits for a new CLI turn). Without a steer
+// channel input closes after the prompt; the CLI reads the message,
+// runs its loop, and pulls again post-turn to find the iterator done.
 type VendorBlock = Extract<SDKUserMessage["message"]["content"], unknown[]>[number];
 
-function vendorPrompt(prompt: PromptContent): AsyncIterable<SDKUserMessage> {
-	const content: VendorBlock[] = prompt.blocks.map((block): VendorBlock => {
+function vendorBlocks(prompt: PromptContent): VendorBlock[] {
+	return prompt.blocks.map((block): VendorBlock => {
 		switch (block.kind) {
 			case "text":
 				return { type: "text", text: block.text };
@@ -83,9 +88,40 @@ function vendorPrompt(prompt: PromptContent): AsyncIterable<SDKUserMessage> {
 				};
 		}
 	});
+}
+
+function vendorPrompt(
+	prompt: PromptContent,
+	steers: SteerChannel | undefined,
+): AsyncIterable<SDKUserMessage> {
 	return (async function* (): AsyncIterable<SDKUserMessage> {
-		yield { type: "user", message: { role: "user", content }, parent_tool_use_id: null };
+		yield {
+			type: "user",
+			message: { role: "user", content: vendorBlocks(prompt) },
+			parent_tool_use_id: null,
+		};
+		if (steers === undefined) return;
+		for await (const steer of steers) {
+			yield {
+				type: "user",
+				message: { role: "user", content: vendorBlocks(steer.prompt) },
+				parent_tool_use_id: null,
+				priority: "next",
+				// The engine mints these with randomUUID().
+				uuid: steer.uuid as UUID,
+			};
+		}
 	})();
+}
+
+// The CLI's ack for streamed user messages: `user_message_uuids` rides
+// the folding turn's frames (documented on stream and assistant frames,
+// observed on the requesting status and result frames too).
+export function foldedUuids(msg: SDKMessage): string[] | null {
+	const raw: unknown = (msg as { user_message_uuids?: unknown }).user_message_uuids;
+	if (!Array.isArray(raw)) return null;
+	const uuids = raw.filter((u): u is string => typeof u === "string");
+	return uuids.length > 0 ? uuids : null;
 }
 
 // SDKMessage → the pinned ClaudeEvent union. Frames this engine does
@@ -180,9 +216,9 @@ export function pinEvent(msg: SDKMessage): ClaudeEvent | null {
 // session persistence — the engine's own ToolSet through the MCP
 // bridge is the whole tool surface).
 export function liveQuery(call: ClaudeQueryCall): AsyncIterable<ClaudeEvent> {
-	const { prompt, options } = call;
+	const { prompt, steers, options } = call;
 	const vendor = vendorQuery({
-		prompt: vendorPrompt(prompt),
+		prompt: vendorPrompt(prompt, steers),
 		options: {
 			model: options.model,
 			systemPrompt: options.systemPrompt,
@@ -217,6 +253,8 @@ export function liveQuery(call: ClaudeQueryCall): AsyncIterable<ClaudeEvent> {
 	});
 	return (async function* (): AsyncIterable<ClaudeEvent> {
 		for await (const msg of vendor) {
+			const uuids = foldedUuids(msg);
+			if (uuids !== null) yield { type: "folded", uuids };
 			const pinned = pinEvent(msg);
 			if (pinned !== null) yield pinned;
 		}

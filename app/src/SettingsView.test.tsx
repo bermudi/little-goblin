@@ -552,7 +552,7 @@ describe("main branch regressions", () => {
 		expect(savedBodies.at(-1)?.model).toBe("main/new-model");
 	});
 
-	test("Enter on a fully typed ref picks it over a catalog row that only contains it", async () => {
+	test("a fully typed ref rides the Use row over a catalog row that only contains it", async () => {
 		settings = parseConfig({ ...SETTINGS, favorites: ["main/glm-5.3"] });
 		modelCatalog = [
 			{
@@ -567,16 +567,14 @@ describe("main branch regressions", () => {
 		const input = sheet.querySelector('input[aria-label="Search models"]')!;
 		await typeInto(input, "main/glm-5");
 		// main/glm-5.3 leads the favorites and the catalog on a substring
-		// hit — Enter must save the ref as typed, not the longer match.
-		await act(async () => {
-			input.dispatchEvent(
-				new win.KeyboardEvent("keydown", {
-					bubbles: true,
-					key: "Enter",
-				}) as unknown as Event,
-			);
-		});
-		await waitFor(() => savedBodies.length > 0, "the Enter pick to save");
+		// hit — the typed ref gets its own row, and pressing it saves the
+		// ref as typed, not the longer match.
+		const use = [...sheet.querySelectorAll("button.mrow")].find((b) =>
+			b.textContent?.includes("Use “main/glm-5”"),
+		);
+		expect(use).toBeTruthy();
+		await click(use);
+		await waitFor(() => savedBodies.length > 0, "the Use-row pick to save");
 		expect(savedBodies.at(-1)?.model).toBe("main/glm-5");
 	});
 

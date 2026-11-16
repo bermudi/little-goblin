@@ -4091,8 +4091,8 @@ describe("composer model knob (happy-dom)", () => {
     expect(groups).toEqual(["Favorites", "Current", "Models"]);
     expect(sheet.textContent).toContain("Other Model");
     expect(sheet.textContent).not.toContain("Fav A");
-    // The typed path still reaches the hidden model: Enter on the full
-    // ref picks it — no row ever lists it.
+    // The hidden model stays reachable by typing: the full ref gets a
+    // Use row — press it and it's picked, though no row lists it.
     const input = sheet.querySelector<HTMLInputElement>(
       'input[aria-label="Search models"]',
     )!;
@@ -4112,14 +4112,11 @@ describe("composer model knob (happy-dom)", () => {
         }) as unknown as Event,
       );
     });
-    await act(async () => {
-      input.dispatchEvent(
-        new dom.win.KeyboardEvent("keydown", {
-          key: "Enter",
-          bubbles: true,
-        }) as unknown as Event,
-      );
-    });
+    const use = [...sheet.querySelectorAll("button.mrow")].find((b) =>
+      b.textContent?.includes("Use “prov/fav-a”"),
+    );
+    expect(use).toBeTruthy();
+    await click(use);
     expect(configPatches).toEqual([{ model: "prov/fav-a" }]);
     expect(dom.container.querySelector(".msheet")).toBeNull();
   });

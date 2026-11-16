@@ -175,14 +175,15 @@ describe("ModelPicker", () => {
 		expect(rowRefs()).toEqual(["prov/a", "prov/b"]);
 	});
 
-	test("an empty curated list leaves the current ref and the typed path", async () => {
+	test("an empty curated list leaves the current ref and a Use row for typed refs", async () => {
 		const picked: string[] = [];
 		await mount({ pickerModels: [], onPick: (ref) => picked.push(ref) });
 		expect(rowRefs()).toEqual(["prov/a"]);
-		// The typed path survives Disable all: Enter on a full ref picks it
-		// even though nothing is enabled. The type gesture is the repo's
-		// standard one — prototype value setter, then input+keyup (the
-		// keyup is what flushes React's change plugin under happy-dom).
+		// The Use row survives Disable all: a typed ref that renders no
+		// row gets one of its own, and pressing it picks the ref as
+		// typed. The type gesture is the repo's standard one —
+		// prototype value setter, then input+keyup (the keyup is what
+		// flushes React's change plugin under happy-dom).
 		const input = container.querySelector<HTMLInputElement>(
 			'input[aria-label="Search models"]',
 		);
@@ -198,15 +199,15 @@ describe("ModelPicker", () => {
 				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
 			);
 		});
-		await act(async () => {
-			input!.dispatchEvent(
-				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
-			);
-		});
+		const use = [...container.querySelectorAll("button.mrow")].find((b) =>
+			b.textContent?.includes("Use “other/z”"),
+		);
+		expect(use).toBeTruthy();
+		await click(use);
 		expect(picked).toEqual(["other/z"]);
 	});
 
-	test("a hidden custom favorite resolves on exact Enter, independent of visibility", async () => {
+	test("a hidden custom favorite stays pickable through the Use row", async () => {
 		const picked: string[] = [];
 		await mount({
 			favorites: ["prov/custom"],
@@ -215,8 +216,7 @@ describe("ModelPicker", () => {
 		});
 		// Nothing lists it: not in the catalog, hidden by curation.
 		expect(rowRefs()).toEqual(["prov/a"]);
-		// The typed path still resolves the stored favorite exactly —
-		// Enter beats any substring hit.
+		// Typing its full ref gives it a row of its own.
 		const input = container.querySelector<HTMLInputElement>(
 			'input[aria-label="Search models"]',
 		);
@@ -231,11 +231,11 @@ describe("ModelPicker", () => {
 				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
 			);
 		});
-		await act(async () => {
-			input!.dispatchEvent(
-				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as Event,
-			);
-		});
+		const use = [...container.querySelectorAll("button.mrow")].find((b) =>
+			b.textContent?.includes("Use “prov/custom”"),
+		);
+		expect(use).toBeTruthy();
+		await click(use);
 		expect(picked).toEqual(["prov/custom"]);
 	});
 

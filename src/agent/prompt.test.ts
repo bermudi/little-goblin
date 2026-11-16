@@ -444,16 +444,18 @@ describe("project prompts", () => {
 			expect(text).toContain(`in ${paths.workspace()} are your`);
 			expect(text).toContain(`(${join(paths.workspace(), "skills", "mq", "SKILL.md")})`);
 			expect(text).not.toContain("(skills/mq/SKILL.md)");
-			// The self-write invitation is gone — writes only when asked.
-			expect(text).not.toContain(
-				`write ${join(paths.workspace(), "skills", "<name>", "SKILL.md")}`,
+			// Self-authoring (2026-11-16): edits fold into installed skills
+			// absolutely; a new skill drafts into the proposed root, never
+			// straight into the catalog.
+			expect(text).toContain(
+				`edit ${join(paths.workspace(), "skills", "<name>", "SKILL.md")} directly`,
+			);
+			expect(text).toContain("Save what you learn");
+			expect(text).toContain(
+				`drafts under ${join(paths.workspace(), "skills-proposed", "<name>", "SKILL.md")}`,
 			);
 			expect(text).toContain(
-				"or edit skills only when the operator asks — never create or rewrite",
-			);
-			expect(text).toContain("An asked-for write goes to");
-			expect(text).toContain(
-				`${join(paths.workspace(), "skills", "<name>", "SKILL.md")}, then`,
+				`never straight into ${join(paths.workspace(), "skills")}/`,
 			);
 			expect(text).toContain(
 				`skills-ref validate '${join(paths.workspace(), "skills", "<name>")}'`,

@@ -50,16 +50,16 @@ function elapsed(ms: number): string {
   const s = Math.floor(ms / 1000);
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 }
-function WorkingFor() {
+function WorkingFor({ now = Date.now }: { now?: () => number }) {
   const ref = useRef<HTMLSpanElement>(null);
   useEffect(() => {
-    const start = Date.now();
+    const start = now();
     const id = setInterval(() => {
       if (ref.current !== null)
-        ref.current.textContent = elapsed(Date.now() - start);
+        ref.current.textContent = elapsed(now() - start);
     }, 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [now]);
   return (
     <span className="working shimmer">
       Working for <span ref={ref}>0s</span>

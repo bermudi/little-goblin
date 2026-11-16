@@ -12,7 +12,7 @@ import {
 } from "react";
 import type { UIMessage } from "ai";
 import { uploadAttachment } from "../api.ts";
-import type { StagedUpload } from "./staged.ts";
+import { stagedKey, type StagedUpload } from "./staged.ts";
 
 export function useAttachments({
 	token,
@@ -103,7 +103,7 @@ export function useAttachments({
 						// prevent. Stage the ref instead: the chip shows it, the
 						// next send carries it with speech intact.
 						if (busyRef.current) {
-							setStaged((p) => [...p, { key: crypto.randomUUID(), ref, speech: true }]);
+							setStaged((p) => [...p, { key: stagedKey(), ref, speech: true }]);
 						} else {
 							// A declined send (failed lazy create) re-stages the
 							// note — the upload already landed server-side.
@@ -115,7 +115,7 @@ export function useAttachments({
 									setStaged((p) =>
 										p.some((e) => e.ref.path === ref.path)
 											? p
-											: [...p, { key: crypto.randomUUID(), ref, speech: true }],
+											: [...p, { key: stagedKey(), ref, speech: true }],
 									);
 							});
 						}
@@ -123,7 +123,7 @@ export function useAttachments({
 						setStaged((p) => [
 							...p,
 							{
-								key: crypto.randomUUID(),
+								key: stagedKey(),
 								ref: { path: "", mediaType: file.type, filename: file.name, size: file.size },
 								failed: true,
 							},
@@ -153,7 +153,7 @@ export function useAttachments({
 
 	const pickFile = useCallback(
 		async (file: File) => {
-			const key = crypto.randomUUID();
+			const key = stagedKey();
 			const thumb = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined;
 			setStaged((p) => [
 				...p,

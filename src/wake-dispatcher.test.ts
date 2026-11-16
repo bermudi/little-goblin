@@ -553,7 +553,7 @@ describe("wake dispatcher", () => {
 		r2.store.close();
 	});
 
-	test("a resume retargets the wake to the successor run; settle follows the chain", async () => {
+	test("a continuation retargets the wake to the successor run; settle follows the chain", async () => {
 		const r = rig();
 		const claimed = claimedOnly(r, "poll:1");
 		// r1 dies mid-turn: begin a run row, link the wake, then reopen
@@ -572,8 +572,8 @@ describe("wake dispatcher", () => {
 		r.wakes.linkRun(claimed.wakeId, "r1");
 		const journal2 = openTurnJournal(r.store.db);
 		expect(journal2.get("r1")?.status).toBe("interrupted");
-		// The resume admission: successor row + source consumption in one
-		// transaction, then the runtime's begin hook retargets the wake.
+		// A continuation admitted from the dead attempt: the begin hook
+		// retargets the wake through inheritFrom.
 		journal2.beginRun({
 			runId: "r2",
 			conversationId: r.conv.id,
@@ -583,17 +583,16 @@ describe("wake dispatcher", () => {
 			convSnapshot: { model: null, thinking: null },
 			toolNames: [],
 			startedAt: new Date().toISOString(),
-			resumedFrom: "r1",
+			inheritFrom: ["r1"],
 		});
 		r.dispatcher.hooks.begin({
 			runId: "r2",
 			conversationId: r.conv.id,
 			memberSeqs: [claimed.historySeq!],
-			resumedFrom: "r1",
+			inheritFrom: ["r1"],
 		});
 		expect(wake(r, claimed.wakeId).runId).toBe("r2");
-		// The successor completes — the wake still linked through r1's
-		// consumption settles on the chain's end.
+		// The successor completes — the wake settles.
 		journal2.finishRun("r2", "completed", "delivered");
 		r.dispatcher.pump();
 		expect(wake(r, claimed.wakeId).state).toBe("settled");

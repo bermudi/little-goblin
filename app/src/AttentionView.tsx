@@ -27,7 +27,6 @@ const KIND_LABEL = {
 	"memory-outage": "memory",
 	"memory-recall": "memory",
 	"skill-proposal": "skill",
-	"interrupted-run": "recovery",
 	"delegation-input": "delegation",
 	"observation-unreachable": "work",
 	responsibility: "work",

@@ -47,9 +47,9 @@ export function sendInterruptedTurnNotices(
 ): void {
 	for (const { id, run } of notices) {
 		// The outbox is durable, so a row can outlive its advice: a run
-		// the operator already resumed or abandoned, or one whose landed
-		// reply was re-delivered (#482 — the text, not a notice, is the
-		// debt), owes no DM. Claim the row without sending.
+		// that finished after the crash (or whose landed reply was
+		// re-delivered — #482 — the text, not a notice, is the debt),
+		// owes no DM. Claim the row without sending.
 		if (run.status !== "interrupted" || (run.replyLanded && run.delivery === "delivered")) {
 			if (claims.markBootNoticeDelivered(id)) {
 				log.info("interrupted turn notice dropped — no longer owed", {
@@ -61,19 +61,13 @@ export function sendInterruptedTurnNotices(
 			}
 			continue;
 		}
-		// The notice lands in the operator DM, but /resume resolves against
-		// the conversation the command arrives in — say where to send it.
-		// App lanes are unreachable from Telegram; only the app surfaces
-		// them (its /interrupted route).
-		const resumeHow = run.conversationId.startsWith(APP_ID_PREFIX)
-			? "open that conversation in the app to resume it — Telegram /resume can't reach app lanes."
-			: `resume explicitly with /resume ${run.runId.slice(0, 8)} sent in that conversation, not in this DM.`;
 		const text =
 			`interrupted turn ${run.runId.slice(0, 8)} — ` +
 			`${titleFor(run.conversationId) ?? run.conversationId}, started ${new Date(run.startedMs).toISOString()}: ` +
 			`${run.calls.completed} completed, ${run.calls.dispatched} dispatched (ambiguous), ` +
-			`${run.calls.resolved} decided, ${run.calls.planned} planned tool call(s). ` +
-			`The turn was not replayed — ${resumeHow}`;
+			`${run.calls.resolved} resolved, ${run.calls.planned} planned tool call(s). ` +
+			`The process stopped mid-turn and the turn was not replayed — send a message in that ` +
+			`conversation to continue; tool effects may already have happened, check before retrying.`;
 		void settleNotice(
 			operators.map((chat) =>
 				(async () => {
@@ -106,7 +100,7 @@ export function sendInterruptedTurnNotices(
 // #481 — accepted user input the dead process fenced before any turn
 // admitted it: one line per conversation, separate from the per-run
 // interrupted notices (those describe turns that DID run). Notice
-// only — resume/reply remains the operator's move.
+// only — a new message remains the operator's move.
 export function sendStrandedInputNotices(
 	api: Api,
 	notices: readonly StrandedBootNotice[],
@@ -117,7 +111,7 @@ export function sendStrandedInputNotices(
 	for (const { id, conversationId, count } of notices) {
 		const how = conversationId.startsWith(APP_ID_PREFIX)
 			? "open that conversation in the app to continue"
-			: "send /resume or reply to continue";
+			: "send a message in that conversation to continue";
 		const text =
 			`${titleFor(conversationId) ?? conversationId}: ` +
 			`${count} message(s) you sent before the restart weren't answered — ${how}`;

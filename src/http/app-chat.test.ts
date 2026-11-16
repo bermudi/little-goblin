@@ -49,6 +49,49 @@ describe("app chat", () => {
 		}
 	});
 
+	test("a failed mid-stream turn reports an error finish reason", async () => {
+		const model = scriptedModel([
+			[
+				{ type: "stream-start", warnings: [] },
+				{ type: "text-start", id: "t1" },
+				{ type: "text-delta", id: "t1", delta: "partial" },
+				{ type: "text-end", id: "t1" },
+				{ type: "error", error: new Error("invalid response chunk") },
+				finishPart("stop"),
+			],
+		]).model;
+		const { http, call } = setup({ token: APP_TOKEN_NAME, model });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "failed-stream" }),
+			});
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/failed-stream",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			expect(res.status).toBe(200);
+			const chunks = (await res.text())
+				.split("\n\n")
+				.filter((frame) => frame.startsWith("data: ") && !frame.includes("[DONE]"))
+				.map((frame) => JSON.parse(frame.slice("data: ".length)) as Record<string, unknown>);
+			const errorIndex = chunks.findIndex((chunk) => chunk.type === "error");
+			const finishIndex = chunks.findIndex((chunk) => chunk.type === "finish");
+			expect(errorIndex).toBeGreaterThanOrEqual(0);
+			expect(finishIndex).toBeGreaterThan(errorIndex);
+			const finish = chunks[finishIndex]!;
+			expect(finish.finishReason).toBe("error");
+			expect(finish.messageMetadata).toMatchObject({ finishReason: "error" });
+		} finally {
+			http.stop();
+		}
+	});
+
 	// #206: the compact- prefix is a server label, but the id is the
 	// client's to choose — intake must accept it and store it verbatim;
 	// downstream classification keys on the store-assigned seq, not the id.

@@ -710,6 +710,7 @@ export async function driveStream<M extends WireMember>(
 	let seenText = deps.seenText;
 	let pendingStep = false;
 	let streamError: string | null = null;
+	let sawErrorPart = false;
 	let errorHeld = false;
 	// First model-produced content this turn — the finish stamp reads it
 	// for the TTFT field. Text/reasoning deltas and tool input count;
@@ -797,6 +798,7 @@ export async function driveStream<M extends WireMember>(
 		for await (const chunk of uiStream) {
 			deps.assertAuthority();
 			if (chunk.type === "error") {
+				sawErrorPart = true;
 				const overflow = isContextOverflow(chunk.errorText) || isContextOverflow(rawError);
 				if (overflow && deps.overflowRecoverable) {
 					holdForRecovery = true;
@@ -816,7 +818,18 @@ export async function driveStream<M extends WireMember>(
 			) {
 				errorHeld = true;
 			} else if (!holdForRecovery) {
-				emitChunk(convId, members, live, chunk);
+				if (chunk.type === "finish" && sawErrorPart) {
+					const metadata = chunk.messageMetadata;
+					emitChunk(convId, members, live, {
+						...chunk,
+						finishReason: "error",
+						...(typeof metadata === "object" && metadata !== null
+							? { messageMetadata: { ...metadata, finishReason: "error" } }
+							: {}),
+					});
+				} else {
+					emitChunk(convId, members, live, chunk);
+				}
 			}
 			// The SDK emits start-step before an error part, so an error-only step must leave modelCalls at 0. Fail closed on anything else — modelCalls gates the retry ladder, so an unrecognized chunk type spends the call, never permits a retry.
 			if (pendingStep && chunk.type !== "error") {

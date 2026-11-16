@@ -15,6 +15,7 @@ import { type AgentType } from "./agent-types.ts";
 import { log } from "./log.ts";
 import { messageText } from "./memory/mod.ts";
 import { userMessage, type Runtime } from "./runtime.ts";
+import { agentNoticeTag } from "./tags.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import type { DevelopmentInput } from "./wake-store.ts";
 
@@ -220,7 +221,7 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 				? "(no reply text)"
 				: fencedResult(capResult(result));
 		return [
-			`[agent: ${child.type} · ${status}]`,
+			agentNoticeTag(child.type, status),
 			"",
 			`Child conversation: ${child.conversationId}`,
 			"",

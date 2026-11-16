@@ -8,6 +8,7 @@
 //     is the sanctioned cycle-breaker.
 //  5. Message shapes come from goblin, not AI SDK packages; block named
 //     imports/re-exports, namespace imports, star exports, and inline types.
+//  6. Escapes and node_modules paths hide what a specifier resolves to.
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -35,32 +36,84 @@ const BARE_SPEC = /\bimport\s*["']([^"']+)["']/g;
 const AI_SDK_MESSAGE_SHAPE_NAMES =
 	"(?:UIMessage|UIMessageChunk|UIMessagePart|ToolUIPart|DynamicToolUIPart|LanguageModelUsage|FinishReason|ProviderMetadata)";
 const AI_SDK_FENCED_SPECIFIER = "(?:ai(?:/[^'\"]*)?|@ai-sdk/[^'\"]+)";
+const AI_SDK_SEPARATOR = "(?:\\s|/\\*[\\s\\S]*?\\*/)*";
 const AI_SDK_NAMED_SHAPE_IMPORT_EXPORT = new RegExp(
-	"\\b(?:import|export)\\s*(?:type\\s*)?\\{[^}]*\\b" +
+	"(?:^|;)" +
+		AI_SDK_SEPARATOR +
+		"\\b(?:import|export)\\b" +
+		AI_SDK_SEPARATOR +
+		"(?:\\btype\\b" +
+		AI_SDK_SEPARATOR +
+		")?\\{[^}]*\\b" +
 		AI_SDK_MESSAGE_SHAPE_NAMES +
-		"\\b[^}]*\\}\\s*from\\s*['\"]" +
+		"\\b[^}]*\\}" +
+		AI_SDK_SEPARATOR +
+		"\\bfrom\\b" +
+		AI_SDK_SEPARATOR +
+		"['\"]" +
 		AI_SDK_FENCED_SPECIFIER +
 		"['\"]",
-	"s",
+	"ms",
 );
 const AI_SDK_NAMESPACE_IMPORT = new RegExp(
-	"\\bimport\\s*(?:type\\s*)?\\*\\s*as\\s*[A-Za-z_$][\\w$]*\\s*from\\s*['\"]" +
+	"(?:^|;)" +
+		AI_SDK_SEPARATOR +
+		"\\bimport\\b" +
+		AI_SDK_SEPARATOR +
+		"(?:\\btype\\b" +
+		AI_SDK_SEPARATOR +
+		")?\\*" +
+		AI_SDK_SEPARATOR +
+		"\\bas\\b" +
+		AI_SDK_SEPARATOR +
+		"[A-Za-z_$][\\w$]*" +
+		AI_SDK_SEPARATOR +
+		"\\bfrom\\b" +
+		AI_SDK_SEPARATOR +
+		"['\"]" +
 		AI_SDK_FENCED_SPECIFIER +
 		"['\"]",
+	"m",
 );
 const AI_SDK_STAR_EXPORT = new RegExp(
-	"\\bexport\\s*\\*\\s*(?:as\\s*[A-Za-z_$][\\w$]*\\s*)?from\\s*['\"]" +
+	"(?:^|;)" +
+		AI_SDK_SEPARATOR +
+		"\\bexport\\b" +
+		AI_SDK_SEPARATOR +
+		"\\*" +
+		AI_SDK_SEPARATOR +
+		"(?:\\bas\\b" +
+		AI_SDK_SEPARATOR +
+		"[A-Za-z_$][\\w$]*" +
+		AI_SDK_SEPARATOR +
+		")?\\bfrom\\b" +
+		AI_SDK_SEPARATOR +
+		"['\"]" +
 		AI_SDK_FENCED_SPECIFIER +
 		"['\"]",
+	"m",
 );
 const AI_SDK_INLINE_MESSAGE_TYPE = new RegExp(
-	"\\bimport\\s*\\(\\s*['\"]" +
+	"\\bimport\\b" +
+		AI_SDK_SEPARATOR +
+		"\\(" +
+		AI_SDK_SEPARATOR +
+		"['\"]" +
 		AI_SDK_FENCED_SPECIFIER +
-		"['\"]\\s*\\)\\s*(?:\\.\\s*" +
+		"['\"]" +
+		AI_SDK_SEPARATOR +
+		"\\)" +
+		AI_SDK_SEPARATOR +
+		"(?:\\." +
+		AI_SDK_SEPARATOR +
 		AI_SDK_MESSAGE_SHAPE_NAMES +
-		"\\b|\\[\\s*['\"]" +
+		"\\b|\\[" +
+		AI_SDK_SEPARATOR +
+		"['\"]" +
 		AI_SDK_MESSAGE_SHAPE_NAMES +
-		"['\"]\\s*\\])",
+		"['\"]" +
+		AI_SDK_SEPARATOR +
+		"\\])",
 );
 const AI_SDK_MESSAGE_SHAPE_ALLOWLIST = new Set(["src/message.test.ts"]);
 const AI_SDK_SCAN_ROOTS = [
@@ -127,10 +180,6 @@ function repoPath(file: string): string {
 	return relative(ROOT, file);
 }
 
-function stripComments(source: string): string {
-	return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
-}
-
 describe("module boundaries", () => {
 	test("grammy is imported only under src/tg", () => {
 		const offenders = walk(SRC)
@@ -179,7 +228,7 @@ describe("module boundaries", () => {
 			.flatMap((root) => walk(root))
 			.filter((file) => !AI_SDK_MESSAGE_SHAPE_ALLOWLIST.has(repoPath(file)))
 			.filter((file) => {
-				const source = stripComments(readFileSync(file, "utf8"));
+				const source = readFileSync(file, "utf8");
 				return (
 					AI_SDK_NAMED_SHAPE_IMPORT_EXPORT.test(source) ||
 					AI_SDK_NAMESPACE_IMPORT.test(source) ||
@@ -188,6 +237,21 @@ describe("module boundaries", () => {
 				);
 			})
 			.map(repoPath);
+		expect(offenders).toEqual([]);
+	});
+
+	test("import specifiers are plain package or path names", () => {
+		const offenders = AI_SDK_SCAN_ROOTS
+			.filter(existsSync)
+			.flatMap((root) => walk(root))
+			.flatMap((file) =>
+				specifiers(readFileSync(file, "utf8"))
+					.filter(
+						(specifier) =>
+							specifier.includes("node_modules") || specifier.includes("\\"),
+					)
+					.map((specifier) => `${repoPath(file)} -> ${specifier}`),
+			);
 		expect(offenders).toEqual([]);
 	});
 

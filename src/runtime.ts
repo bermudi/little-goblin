@@ -169,6 +169,7 @@ type AttemptOutcome =
 
 export class Runtime {
 	private lanes = new LaneRegistry();
+	private readonly lastTurnTools = new Map<string, { epoch: number; tools: Tools }>();
 	// Closed runtimes record submits but never run them.
 	private closed = false;
 	// The runtime supplies ordering and the prior-turn chain, not gate
@@ -374,14 +375,15 @@ export class Runtime {
 			makePrefix: async (target, modelRef, signal) => {
 				const seam = this.deps.compaction;
 				if (seam?.prefixStep === undefined) return null;
+				const lastTurn = this.lastTurnTools.get(target.id);
+				if (lastTurn === undefined || lastTurn.epoch !== target.epoch) return null;
 				const prefixStep = await seam.prefixStep(target, modelRef);
 				if (prefixStep === null) return null;
-				const tools = this.deps.makeTools(target);
 				return makePrefixSummarizer({
 					conv: target,
 					step: prefixStep,
 					store: this.deps.store,
-					tools,
+					tools: lastTurn.tools,
 					...(this.deps.memory !== undefined ? { memory: this.deps.memory } : {}),
 					foldCeiling: () => this.lanes.pendingFloor(target.id, activeFloor),
 					assertAuthority: () => {
@@ -791,6 +793,7 @@ export class Runtime {
 			// above only bridges the pre-authority failure paths.
 			authority = auth;
 			const tools = auth.tools;
+			this.lastTurnTools.set(convId, { epoch, tools });
 			const step = await this.deps.buildStep(conv, tools);
 			steerGate.armed = !isClaudeStep(step);
 			this.checkAuthority(convId, epoch);

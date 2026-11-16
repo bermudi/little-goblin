@@ -5,8 +5,8 @@ import type { PrefixSummarizer } from "../agent/compaction.ts";
 import { candidateRefs } from "../agent/model-fallback.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
-import type { PrefixStep } from "../agent/step.ts";
 import { log } from "../log.ts";
+import type { PrefixStep } from "./prefix-summary.ts";
 
 // Optional compaction summarizes on the conversation's model, then walks
 // `modelFallbacks` (runCompaction owns the walk; `summarize` runs one

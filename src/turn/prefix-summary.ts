@@ -1,4 +1,6 @@
-import { generateText, type ModelMessage, type ToolSet } from "ai";
+import { generateText, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
+import type { ProviderOptions } from "@ai-sdk/provider-utils";
+import type { MediaPosition } from "../agent/attachments.ts";
 import type { PrefixSummarizer } from "../agent/compaction.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
@@ -6,8 +8,18 @@ import type { MemoryTurnDeps } from "../memory/mod.ts";
 import { toToolSet } from "./ai-sdk-tools.ts";
 import { buildModelView, type ViewContext } from "./view.ts";
 import type { Tools } from "../tool.ts";
-import type { PrefixStep } from "../agent/step.ts";
 import { resolveSkillRef } from "../agent/skill-inject.ts";
+
+export interface PrefixStep {
+	modelRef: string;
+	model: LanguageModel;
+	system: string;
+	providerOptions?: ProviderOptions;
+	maxRetries?: number;
+	inputModalities: Set<string> | undefined;
+	carries(mediaType: string, position: MediaPosition): boolean;
+	keepProviderExecuted: boolean;
+}
 
 export function makePrefixSummarizer(input: {
 	conv: Conversation;

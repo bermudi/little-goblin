@@ -23,6 +23,7 @@ import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { systemPromptFor } from "./agent/prompt.ts";
 import { toolNames } from "./agent/tools/mod.ts";
 import { readFileTool } from "./agent/tools/read.ts";
+import { sendFileTool } from "./agent/tools/send.ts";
 import { withScript } from "./agent/tools/script.ts";
 import { parseConfig } from "./config.ts";
 import { memoryConfigSchema } from "./config-schema.ts";
@@ -4051,7 +4052,7 @@ describe("prefix compaction request identity", () => {
 		let executions = 0;
 		let providerCalls = 0;
 		const validSummary =
-			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nsecond request\n## Exact identifiers";
+			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nfirst request; restart prior; second request\n## Exact identifiers";
 		const encoder = new TextEncoder();
 		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
 			const url = String(input);
@@ -4083,6 +4084,10 @@ describe("prefix compaction request identity", () => {
 			const content =
 				providerCalls === 1
 					? "first assistant reply ".repeat(6_500)
+					: providerCalls === 5
+						? "restart prior assistant reply ".repeat(1_000)
+						: providerCalls === 6
+							? "restart large assistant reply ".repeat(6_500)
 					: containsPrefixInstruction
 						? validSummary
 						: providerCalls === 2
@@ -4174,7 +4179,7 @@ describe("prefix compaction request identity", () => {
 			observation: openCacheObservation(store.db),
 		});
 		const turnSteps: ModelStep[] = [];
-		const prefixSteps: import("./agent/step.ts").PrefixStep[] = [];
+		const prefixSteps: import("./turn/prefix-summary.ts").PrefixStep[] = [];
 		const buildStep: RuntimeDeps["buildStep"] = async (conv, tools) => {
 			const step = await builder.buildStep(conv, tools);
 			if ("engine" in step) throw new Error("fake API provider unexpectedly built a Claude step");
@@ -4209,15 +4214,26 @@ describe("prefix compaction request identity", () => {
 			store,
 			buildStep,
 			compaction,
-			makeTools: () => tools,
+			makeTools: (_target, _voice, _recording, deliverFile) => ({
+				...tools,
+				...(deliverFile !== undefined ? { send_file: sendFileTool("/w", deliverFile) } : {}),
+			}),
 			captureConversation: (target) => captureConversationSettings(store, target, cfg),
 		});
 		const r = { store, conv, runtime };
+		let restartedRuntime: Runtime | null = null;
+		const submitWithFileDelivery = (text: string) => {
+			const sink = Object.assign(new RecordingSink(), {
+				onFile: async (_file: import("./agent/tools/send.ts").OutgoingFile) => {},
+			});
+			runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
+			return sink;
+		};
 		try {
-			const first = submit(r, "first request");
+			const first = submitWithFileDelivery("first request");
 			expect(await first.done).toEqual({ kind: "completed" });
 			await drain(r);
-			const second = submit(r, "second request");
+			const second = submitWithFileDelivery("second request");
 			expect(await second.done).toEqual({ kind: "completed" });
 			await drain(r);
 			expect(providerCalls).toBe(2);
@@ -4253,6 +4269,10 @@ describe("prefix compaction request identity", () => {
 				}),
 			});
 			expect(compactionRequest!.tools).toEqual(turnTwo.tools);
+			expect((turnTwo.tools as { function?: { name?: string } }[]).map((tool) => tool.function?.name))
+				.toContain("send_file");
+			expect((compactionRequest!.tools as { function?: { name?: string } }[]).map((tool) => tool.function?.name))
+				.toContain("send_file");
 			expect(compactionRequest!.reasoning_effort).toEqual(turnTwo.reasoning_effort);
 			const systemOf = (messages: unknown[]): unknown =>
 				messages.find(
@@ -4264,7 +4284,45 @@ describe("prefix compaction request identity", () => {
 				);
 			expect(systemOf(compactMessages)).toEqual(systemOf(turnMessages));
 			expect(executions).toBe(0);
+
+			const restartConv = captureConversationSettings(
+				store,
+				store.resolve({ kind: "dm", chatId: 2 }, "/w"),
+				cfg,
+			);
+			const prior = new RecordingSink();
+			runtime.submit(restartConv, userMessage([{ type: "text", text: "restart prior" }]), prior);
+			expect(await prior.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(restartConv.id), "seed prior conversation turn");
+			const large = new RecordingSink();
+			runtime.submit(restartConv, userMessage([{ type: "text", text: "restart large seed" }]), large);
+			expect(await large.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(restartConv.id), "seed large conversation turn");
+
+			restartedRuntime = new Runtime({
+				engines: [aiSdkEngine],
+				store,
+				buildStep,
+				compaction,
+				makeTools: (_target, _voice, _recording, deliverFile) => ({
+					...tools,
+					...(deliverFile !== undefined ? { send_file: sendFileTool("/w", deliverFile) } : {}),
+				}),
+				captureConversation: (target) => captureConversationSettings(store, target, cfg),
+			});
+			setLogFile(join(home, "state/goblin.log"));
+			try {
+				const afterRestart = await restartedRuntime.compact(restartConv);
+				expect(afterRestart.kind).toBe("compacted");
+			} finally {
+				setLogFile(null);
+			}
+			expect(providerCalls).toBe(8);
+			expect(readFileSync(join(home, "state/goblin.log"), "utf8")).toContain(
+				'"mode":"text","reason":"no-prefix"',
+			);
 		} finally {
+			if (restartedRuntime !== null) await restartedRuntime.shutdown();
 			await runtime.shutdown();
 			store.close();
 			globalThis.fetch = originalFetch;

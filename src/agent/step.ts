@@ -3,8 +3,6 @@
 
 import { generateText, isStepCount } from "ai";
 import type { RuntimeDeps } from "../runtime.ts";
-import type { LanguageModel } from "ai";
-import type { ProviderOptions } from "@ai-sdk/provider-utils";
 
 import type { ConfigRef } from "../config.ts";
 import { splitModelRef, type ThinkingLevel } from "../config-schema.ts";
@@ -27,17 +25,7 @@ import { toolNames } from "./tools/mod.ts";
 import { log } from "../log.ts";
 import type { ClaudeEngine } from "./claude-code/mod.ts";
 import type { MediaPosition } from "./attachments.ts";
-
-export interface PrefixStep {
-	modelRef: string;
-	model: LanguageModel;
-	system: string;
-	providerOptions?: ProviderOptions;
-	maxRetries?: number;
-	inputModalities: Set<string> | undefined;
-	carries(mediaType: string, position: MediaPosition): boolean;
-	keepProviderExecuted: boolean;
-}
+import type { PrefixStep } from "../turn/prefix-summary.ts";
 
 // A flush reads notes before it edits them: list, read, then a few writes.
 const FLUSH_MAX_STEPS = 8;

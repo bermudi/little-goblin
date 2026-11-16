@@ -65,17 +65,48 @@ function promptFor(question: string, text: string, part: number, total: number):
 	}\n\n<document>\n${text}\n</document>`;
 }
 
-async function mapLimited<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>) {
-	const out = new Array<R>(items.length);
+/** The first failure stops dispatch and aborts the parts in flight; it
+ *  returns only once every started part has settled, so no helper call
+ *  outlives the tool call. */
+async function readParts(
+	parts: string[],
+	turn: AbortSignal | undefined,
+	read: (text: string, i: number, signal: AbortSignal) => Promise<string>,
+): Promise<string[]> {
+	const stop = new AbortController();
+	const signal = turn ? AbortSignal.any([turn, stop.signal]) : stop.signal;
+	const out = new Array<string>(parts.length);
 	let next = 0;
+	const failures: unknown[] = [];
 	const worker = async () => {
-		while (next < items.length) {
+		while (!signal.aborted && next < parts.length) {
 			const i = next++;
-			out[i] = await fn(items[i]!, i);
+			try {
+				out[i] = await read(parts[i]!, i, signal);
+			} catch (error) {
+				failures.push(error);
+				stop.abort(error);
+			}
 		}
 	};
-	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+	await Promise.all(Array.from({ length: Math.min(PART_CONCURRENCY, parts.length) }, worker));
+	if (failures.length > 0) throw failures[0];
+	signal.throwIfAborted();
 	return out;
+}
+
+const utf8 = new TextDecoder("utf-8", { fatal: true });
+
+/** Text means strict UTF-8 with no NUL, and not a PDF — an ASCII-only
+ *  PDF decodes cleanly but is page syntax, not the document's words. */
+function asText(bytes: Buffer): string | null {
+	if (bytes.includes(0)) return null;
+	if (bytes.subarray(0, 5).toString("latin1") === "%PDF-") return null;
+	try {
+		return utf8.decode(bytes);
+	} catch {
+		return null;
+	}
 }
 
 export function readLongTool(cwd: string, deps: ReadLongToolDeps) {
@@ -107,15 +138,14 @@ export function readLongTool(cwd: string, deps: ReadLongToolDeps) {
 					error: `file too large: ${path} (${size} bytes, max ${MAX_FILE_BYTES}) — split it with bash first`,
 				};
 			}
-			const bytes = await readFile(target);
-			if (bytes.includes(0)) {
+			const text = asText(await readFile(target));
+			if (text === null) {
 				return {
-					error: `not a text file: ${path} — convert it with bash first (e.g. pdftotext, pandoc)`,
+					error: `not a UTF-8 text file: ${path} — convert it with bash first (e.g. pdftotext in.pdf out.txt, pandoc)`,
 				};
 			}
-			const parts = splitText(bytes.toString("utf8"), CHUNK_CHARS);
-			const signal = options.abortSignal ?? new AbortController().signal;
-			const started = Date.now();
+			const parts = splitText(text, CHUNK_CHARS);
+			const started = performance.now();
 			log.info("read_long start", {
 				conversation: deps.conversation,
 				path: target,
@@ -124,15 +154,15 @@ export function readLongTool(cwd: string, deps: ReadLongToolDeps) {
 				question: question.slice(0, 120),
 			});
 			try {
-				const answers = await mapLimited(parts, PART_CONCURRENCY, (text, i) =>
-					deps.complete(READ_LONG_SYSTEM, promptFor(question, text, i + 1, parts.length), signal),
+				const answers = await readParts(parts, options.abortSignal, (part, i, signal) =>
+					deps.complete(READ_LONG_SYSTEM, promptFor(question, part, i + 1, parts.length), signal),
 				);
 				log.info("read_long done", {
 					conversation: deps.conversation,
 					path: target,
 					parts: parts.length,
 					chars: answers.reduce((n, a) => n + a.length, 0),
-					durationMs: Date.now() - started,
+					durationMs: Math.round(performance.now() - started),
 				});
 				const body =
 					answers.length === 1
@@ -152,7 +182,7 @@ export function readLongTool(cwd: string, deps: ReadLongToolDeps) {
 					conversation: deps.conversation,
 					path: target,
 					parts: parts.length,
-					durationMs: Date.now() - started,
+					durationMs: Math.round(performance.now() - started),
 				});
 				return { error: `read_long failed: ${String(err)}` };
 			}

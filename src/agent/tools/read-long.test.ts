@@ -83,19 +83,65 @@ describe("read_long", () => {
 		expect(splitText(body, CHUNK_CHARS).join("")).toBe(body);
 	});
 
-	test("a binary file is refused before any model call", async () => {
+	test("non-text files are refused before any model call", async () => {
 		const dir = tmpDir("goblin-read-long-");
-		writeFileSync(join(dir, "doc.pdf"), Buffer.from([0x25, 0x50, 0x44, 0x46, 0x00, 0x01]));
-		let called = false;
+		const pdf = "%PDF-1.4\n1 0 obj << /Type /Catalog >> endobj\n(Revenue was 56.) Tj\n%%EOF\n";
+		writeFileSync(join(dir, "ascii.pdf"), pdf);
+		writeFileSync(join(dir, "bad-utf8.bin"), Buffer.from([0x66, 0xff, 0xfe, 0xfd, 0x80]));
+		writeFileSync(join(dir, "nul.bin"), Buffer.from([0x41, 0x00, 0x42]));
+		let called = 0;
 		const tool = readLongTool(dir, {
 			conversation: "c1",
 			complete: async () => {
-				called = true;
+				called++;
 				return "";
 			},
 		});
-		const out = await tool.execute!({ path: "doc.pdf", question: "what?" }, opts);
-		expect(out).toMatchObject({ error: expect.stringContaining("not a text file") });
-		expect(called).toBe(false);
+		for (const path of ["ascii.pdf", "bad-utf8.bin", "nul.bin"]) {
+			const out = await tool.execute!({ path, question: "what?" }, opts);
+			expect(out).toMatchObject({ error: expect.stringContaining("not a UTF-8 text file") });
+		}
+		expect(called).toBe(0);
+	});
+
+	test("a failed part stops dispatch and the tool returns only after in-flight parts settle", async () => {
+		const dir = tmpDir("goblin-read-long-");
+		// Eight parts; four start at once.
+		writeFileSync(join(dir, "big.txt"), "x".repeat(CHUNK_CHARS * 8));
+		const started: number[] = [];
+		let settled = 0;
+		let abortedInFlight = 0;
+		const tool = readLongTool(dir, {
+			conversation: "c1",
+			complete: async (_system, prompt, signal) => {
+				const part = Number(/part (\d+) of/.exec(prompt)![1]);
+				started.push(part);
+				try {
+					if (part === 1) throw new Error("SYNTHETIC_PART_ONE_FAILURE");
+					await new Promise<void>((resolve, reject) => {
+						const timer = setTimeout(resolve, 5_000);
+						signal.addEventListener("abort", () => {
+							clearTimeout(timer);
+							abortedInFlight++;
+							reject(signal.reason);
+						});
+					});
+					return "late";
+				} finally {
+					settled++;
+				}
+			},
+		});
+		const out = await tool.execute!(
+			{ path: "big.txt", question: "what?" },
+			{ ...opts, abortSignal: new AbortController().signal },
+		);
+		expect(out).toMatchObject({ error: expect.stringContaining("SYNTHETIC_PART_ONE_FAILURE") });
+		expect(started.sort()).toEqual([1, 2, 3, 4]);
+		expect(abortedInFlight).toBe(3);
+		expect(settled).toBe(4);
+		// Nothing dispatches after the tool returned.
+		await new Promise((r) => setTimeout(r, 50));
+		expect(started).toHaveLength(4);
 	});
 });

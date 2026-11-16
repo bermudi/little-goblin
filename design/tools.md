@@ -184,11 +184,16 @@ failure is a tool error and the operator asks again.
   2026-11-15), through the same side-call lane as the compaction
   summary (`CompleteText` in `step.ts`), so claude-code conversations
   use their subscription too.
-- **Input:** a path to a text file. Binary files (any NUL byte) are
-  refused with a hint to convert first (`pdftotext`, `pandoc`).
+- **Input:** a path to a text file: strict UTF-8, no NUL, and not a
+  PDF (an ASCII-only PDF decodes cleanly but is page syntax). Anything
+  else is refused before a model call, with a hint to convert first
+  (`pdftotext`, `pandoc`).
 - **Split:** a file over `CHUNK_CHARS` (150k chars, about 40k tokens)
   is cut at paragraph or line breaks; up to 4 parts of one file are in
-  flight at once, and each part's answer comes back labelled.
+  flight at once, and each part's answer comes back labelled. The first
+  failed part stops dispatch and aborts the parts in flight; the tool
+  returns only after every started part settles, so no helper call
+  outlives the turn.
 - **No follow-ups** in v1: each call starts clean.
 - Output is fenced untrusted (it is a reading of file content); guest
   channels lose it like the other provider-calling tools.

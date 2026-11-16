@@ -1,5 +1,5 @@
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { subagentNotice, subagentToolDescription } from "../../subagent-prompts.ts";
 import {
 	approvalDecisionInputSchema,
@@ -138,9 +138,9 @@ function fenced(row: SubagentRun): string {
 
 export const subagentTool = (deps: SubagentToolDeps) => {
 	const linkable = deps.checkResponsibility !== undefined;
-	return tool({
+	return defineTool({
 		description: subagentToolDescription(linkable),
-		inputSchema: (linkable
+		input: (linkable
 			? subagentInputSchema
 			: unlinkableSubagentInputSchema) as typeof subagentInputSchema,
 		execute: async (raw, { toolCallId }) => {

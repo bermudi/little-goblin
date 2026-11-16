@@ -33,7 +33,6 @@ import type {
 	AssistantContent,
 	ModelMessage,
 	ToolContent,
-	ToolSet,
 } from "ai";
 import type {
 	FinishReason,
@@ -48,6 +47,7 @@ import type { ConfigRef } from "../../config.ts";
 import type { AppLiveContext } from "../../http/app-wire.ts";
 import { log } from "../../log.ts";
 import { measurePrompt } from "../../turn/itemize.ts";
+import { toToolSet } from "../../turn/ai-sdk-tools.ts";
 import { stepModelRef } from "../../turn/model-ref.ts";
 import {
 	emitChunk,
@@ -747,13 +747,14 @@ export async function driveClaude<M extends WireMember>(
 
 	// --- steers: the open query input and the shared fold ---
 	const steers = openSteerLedger(deps);
+	const sdkTools = toToolSet(deps.tools);
 	const steeredMessages: ModelMessage[] = [];
 	// Pushed to the CLI, not yet acked by a `folded` event.
 	const unacked = new Set<string>();
 	let channel: SteerChannel | null = null;
 	const foldIntoQuery = async (): Promise<void> => {
 		if (channel === null) return;
-		const folded = await foldSteers(deps, steers, run.stepCount);
+		const folded = await foldSteers(deps, steers, run.stepCount, sdkTools);
 		if (folded === null || folded.injected.length === 0) return;
 		// The fold awaited conversion; the attempt may have ended since.
 		if (channel === null) {

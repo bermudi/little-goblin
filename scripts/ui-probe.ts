@@ -21,7 +21,6 @@ import { join } from "node:path";
 import {
 	APICallError,
 	InvalidToolInputError,
-	asSchema,
 	generateText,
 	stepCountIs,
 	wrapLanguageModel,
@@ -33,6 +32,8 @@ import type { LanguageModelV4 } from "@ai-sdk/provider";
 import JSON5 from "json5";
 import { resolveModel } from "../src/agent/providers.ts";
 import { uiTool } from "../src/agent/tools/ui.ts";
+import { inputJsonSchema } from "../src/tool.ts";
+import { toToolSet } from "../src/turn/ai-sdk-tools.ts";
 import { normalizeUiInput, uiInputSchema } from "../src/agent/tools/ui-schema.ts";
 import { loadAuth } from "../src/auth.ts";
 import { loadConfig } from "../src/config.ts";
@@ -228,7 +229,7 @@ function summary(perPrompt: Map<string, Stats>, totals: Stats) {
 // or the schema rejects) + normalizeUiInput + uiInputSchema — no model
 // calls. Same row shape, same summary.
 if (rescore.length > 0) {
-	const wireSchema = asSchema(uiTool().inputSchema).jsonSchema;
+	const wireSchema = inputJsonSchema(uiTool());
 	const repairBase = makeToolCallRepair?.("ui-probe/rescore");
 	for (const file of rescore) {
 		const { readFileSync } = await import("node:fs");
@@ -408,7 +409,7 @@ for (const modelRef of models) {
 					try {
 						const result = await generateText({
 							model: wrapped,
-							tools: { ui: uiTool() },
+							tools: toToolSet({ ui: uiTool() }),
 							toolChoice: choice,
 							prompt: prompt.text,
 							stopWhen: stepCountIs(1),

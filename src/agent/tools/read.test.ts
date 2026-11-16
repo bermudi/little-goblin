@@ -15,7 +15,7 @@ import { safeValidateTypes } from "@ai-sdk/provider-utils";
 import { readFileTool, readTextFile, sniffImage, MAX_FILE_BYTES } from "./read.ts";
 import { tmpDir } from "../../testkit.ts";
 
-const opts = { toolCallId: "t1", messages: [], context: {} };
+const opts = { toolCallId: "t1" };
 
 describe("read_file", () => {
 	test("reads a file with line numbers", async () => {
@@ -47,13 +47,13 @@ describe("read_file", () => {
 		for (const limit of [0, -1]) {
 			const res = await safeValidateTypes({
 				value: { path: "f.txt", limit },
-				schema: t.inputSchema,
+				schema: t.input,
 			});
 			expect(res.success).toBe(false);
 		}
 		const ok = await safeValidateTypes({
 			value: { path: "f.txt", limit: 1 },
-			schema: t.inputSchema,
+			schema: t.input,
 		});
 		expect(ok.success).toBe(true);
 	});

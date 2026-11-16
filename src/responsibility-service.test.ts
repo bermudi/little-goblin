@@ -1233,7 +1233,7 @@ describe("status tool arm truth", () => {
 		if (t.execute === undefined) throw new Error("missing execute");
 		const out = (await t.execute(
 			{ action: "status" },
-			{ toolCallId: "status-arm", messages: [], context: {} },
+			{ toolCallId: "status-arm" },
 		)) as { responsibilities: string };
 		const text = out.responsibilities;
 		return JSON.parse(text.slice("<herdr>\n".length, text.indexOf("\n</herdr>"))) as Record<
@@ -1612,7 +1612,7 @@ describe("managed prompt authority after Herdr preflight", () => {
 					attachment: att.attachmentId,
 					brief: "new brief",
 				},
-				{ toolCallId: "delayed-send", messages: [], context: {}, abortSignal: abort.signal },
+				{ toolCallId: "delayed-send", abortSignal: abort.signal },
 			);
 			await waitUntil(() => calls.includes("agent get"), "Herdr preflight entered");
 			if (change === "cancel") abort.abort();

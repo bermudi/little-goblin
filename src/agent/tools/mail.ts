@@ -1,5 +1,5 @@
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 
 const addressSchema = z.email().max(320);
 
@@ -50,10 +50,10 @@ export const mailInputSchema = z
 	});
 
 export const mailTool = (deps: MailToolDeps) =>
-	tool({
+	defineTool({
 		description:
 			"Draft a mail for the operator to send. Send never sends directly: it queues a draft the operator approves on the originating approval surface — the result tells you it is awaiting approval, and you wait for the operator instead of announcing a sent mail. To read mail, use bash with the goblin-mail wrapper ($GOBLIN_HOME/goblin-mail search|read — see the gws skill): its reads are injection-checked and fenced.",
-		inputSchema: mailInputSchema,
+		input: mailInputSchema,
 		execute: async (raw) => {
 			const input = sendSchema.parse(raw);
 			return deps.requestDraft({

@@ -1,6 +1,7 @@
 // Prompt names must reflect every combination of optional dependencies.
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
+import { inputJsonSchema, isHosted } from "../../tool.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config-schema.ts";
 import { TOOL_NAMES } from "../tool-policy.ts";
@@ -61,9 +62,11 @@ describe("toolNames ↔ makeTools", () => {
 				},
 			});
 			const run = async (name: string) => {
-				const execute = tools[name]?.execute;
-				if (!execute) throw new Error("Expected executable tool");
-				return execute({ query: "x" }, { toolCallId: name, messages: [], context: {} });
+				const definition = tools[name];
+				if (definition === undefined || isHosted(definition)) {
+					throw new Error("Expected executable tool");
+				}
+				return definition.execute({ query: "x" }, { toolCallId: name });
 			};
 			await run("memory_search");
 			expect(outcomes).toEqual([true]);
@@ -239,14 +242,7 @@ describe("toolNames ↔ makeTools", () => {
 			expect(mounted, `${name} must be mounted by this fixture`).toContain(name);
 		}
 		for (const [name, t] of Object.entries(tools)) {
-			const schema = (t as unknown as { inputSchema?: unknown }).inputSchema;
-			expect(schema, `${name} exposes an input schema`).toBeDefined();
-			// ui's input is a jsonSchema() wrapper carrying the wire form
-			// directly (its root stays a zod-converted object); the rest
-			// are zod and convert here.
-			const wire: { type?: unknown } =
-				(schema as { jsonSchema?: { type?: unknown } }).jsonSchema ??
-				z.toJSONSchema(schema as z.ZodType);
+			const wire = inputJsonSchema(t);
 			expect(wire.type, `${name} wire schema must be an object, got ${wire.type}`).toBe("object");
 		}
 	});

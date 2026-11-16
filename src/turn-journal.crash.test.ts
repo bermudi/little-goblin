@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import { tool } from "ai";
+import { defineTool } from "./tool.ts";
 import type { Subprocess } from "bun";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
@@ -275,8 +275,9 @@ describe("turn journal — a real killed process", () => {
 
 			const executed: string[] = [];
 			const makeTools = () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executed.push("re-executed");
 						return { ok: true };

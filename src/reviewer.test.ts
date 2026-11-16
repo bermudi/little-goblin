@@ -10,12 +10,14 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { LanguageModel, ToolSet } from "ai";
+import type { LanguageModel } from "ai";
 import type { LanguageModelV4GenerateResult } from "@ai-sdk/provider";
 import { scriptedModel } from "./testkit/fake-model.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { System1Error } from "./system1.ts";
 import { SkillSources } from "./skill-provenance.ts";
+import { defineTool } from "./tool.ts";
+import { z } from "zod";
 import { setLogFile } from "./log.ts";
 import {
 	summarize,
@@ -2008,10 +2010,16 @@ describe("reviewer confinement", () => {
 
 	test("confineTools leaves tool-less entries alone", () => {
 		const tools = confineTools(
-			{ plain: { description: "no execute" } } as unknown as ToolSet,
+			{
+				plain: defineTool({
+					description: "plain",
+					input: z.object({}),
+					execute: () => "ok",
+				}),
+			},
 			"/root",
 		);
-		expect(tools as unknown).toEqual({ plain: { description: "no execute" } });
+		expect(tools.plain).toMatchObject({ description: "plain" });
 	});
 });
 

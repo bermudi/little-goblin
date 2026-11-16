@@ -1,4 +1,6 @@
 import { convertToModelMessages, type ModelMessage, type ToolSet } from "ai";
+import { toToolSet } from "./ai-sdk-tools.ts";
+import type { Tools } from "../tool.ts";
 import type { Message } from "../message.ts";
 import {
 	INLINE_ITEM_MAX_BYTES,
@@ -27,7 +29,7 @@ export interface ViewContext {
 	 * matches it (#417).
 	 */
 	modelRef: string;
-	tools: ToolSet;
+	tools: Tools;
 	modalities: Set<string> | undefined;
 	carries: (mediaType: string, position: MediaPosition) => boolean;
 	/**
@@ -213,6 +215,7 @@ export async function buildModelView(
 		assertAuthority(): void;
 	},
 ): Promise<ModelMessage[]> {
+	const sdkTools = toToolSet(ctx.tools);
 	const view = withMemoryBlocks(
 		options.entries,
 		options.prior,
@@ -280,7 +283,7 @@ export async function buildModelView(
 		try {
 			messages.push(
 				...(await convertToModelMessages([originScoped], {
-					tools: ctx.tools,
+					tools: sdkTools,
 					ignoreIncompleteToolCalls: true,
 				})),
 			);
@@ -292,7 +295,7 @@ export async function buildModelView(
 			});
 			messages.push(
 				...(await convertToModelMessages([unconvertiblePlaceholder(originScoped)], {
-					tools: ctx.tools,
+					tools: sdkTools,
 					ignoreIncompleteToolCalls: true,
 				})),
 			);
@@ -378,6 +381,7 @@ function injectedBodies(ctx: ViewContext, invocations: SkillInvocation[]): Model
 export async function convertSteeredMessage(
 	ctx: ViewContext,
 	message: Message,
+	sdkTools: ToolSet = toToolSet(ctx.tools),
 ): Promise<ModelMessage[]> {
 	const materialized = await materializeAttachments(
 		[message],
@@ -392,7 +396,7 @@ export async function convertSteeredMessage(
 			...(await convertToModelMessages(
 				[contextPartAsText(ctx, notePartsAsText(ctx, skillMarked))],
 				{
-					tools: ctx.tools,
+					tools: sdkTools,
 					ignoreIncompleteToolCalls: true,
 				},
 			)),

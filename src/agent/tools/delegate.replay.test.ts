@@ -25,6 +25,7 @@ import { responsibilityStage } from "../../responsibility-stage.ts";
 import { recordedModel, StaleRecordingError } from "../../testkit/model-replay.ts";
 import { tmpDir, useHome } from "../../testkit.ts";
 import { delegateTool } from "./delegate.ts";
+import { toToolSet } from "../../turn/ai-sdk-tools.ts";
 
 const RERECORD = "GOBLIN_MODEL_RECORD=1 bun test src/agent/tools/delegate.replay.test.ts";
 const RECORD = process.env.GOBLIN_MODEL_RECORD === "1";
@@ -178,7 +179,7 @@ async function turn(
 		model: await replayModel(cassette, substitute),
 		system,
 		prompt,
-		tools: { delegate: r.tool },
+		tools: toToolSet({ delegate: r.tool }),
 		stopWhen: stepCountIs(1),
 		providerOptions: { codex: { reasoningEffort: "none" } },
 		maxRetries: 0,

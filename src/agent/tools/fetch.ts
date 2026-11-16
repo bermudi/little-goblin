@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { tool } from "ai";
 import { z } from "zod";
 import { Readability } from "@mozilla/readability";
-import type { JSONValue, LanguageModelV4ToolResultOutput } from "@ai-sdk/provider";
 import { parseHTML } from "linkedom";
+import { defineTool, type ToolOutput } from "../../tool.ts";
+import type { JSONValue } from "../../message.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { Config, FetchConfig } from "../../config-schema.ts";
 import { paths } from "../../home-layout.ts";
@@ -371,14 +371,14 @@ export async function runFetchChain(
 export { extractors };
 
 export const fetchTool = (deps: WebToolDeps) =>
-	tool({
+	defineTool({
 		description:
 			"Fetch one URL and return readable text (head+tail window of ~15k chars by default; overflow is saved to disk and the footer names the read_file call to page through). Handles HTML, text-ish payloads, and PDFs — a PDF is saved and answered with its saved-file path. JavaScript-heavy sites that render nothing should go through the browser skill instead.",
-		inputSchema: z.object({
+		input: z.object({
 			url: z.string().regex(/^https?:\/\//, "url must be http(s)"),
 			maxChars: z.number().int().min(2000).max(50_000).optional(),
 		}),
-		toModelOutput: async ({ output }): Promise<LanguageModelV4ToolResultOutput> => {
+		toModelOutput: async ({ output }): Promise<ToolOutput> => {
 			const o = output as FetchOutput | undefined | null;
 			if (typeof o === "string") return { type: "text", value: o };
 			if (o === undefined || o === null || !("pdf" in o) || o.pdf === undefined) {

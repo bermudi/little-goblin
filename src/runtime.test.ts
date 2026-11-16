@@ -10,7 +10,8 @@ import {
 	type LanguageModelV4CallOptions,
 	type LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
-import { type LanguageModel, type ToolSet, tool } from "ai";
+import type { LanguageModel } from "ai";
+import { defineTool, type Tools } from "./tool.ts";
 import type { Message, MessageChunk } from "./message.ts";
 import { z } from "zod";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
@@ -71,7 +72,7 @@ function rig(
 		delayMs?: number;
 		step?: Partial<Omit<ModelStep, "model">>;
 		buildStep?: RuntimeDeps["buildStep"];
-		tools?: ToolSet;
+		tools?: Tools;
 		makeTools?: RuntimeDeps["makeTools"];
 		deps?: Partial<
 			Pick<
@@ -181,9 +182,9 @@ describe("skill body ownership across turns", () => {
 		);
 		const entered = deferred<void>();
 		const release = deferred<void>();
-		const probe = tool({
+		const probe = defineTool({
 			description: "probe",
-			inputSchema: z.object({}),
+			input: z.object({}),
 			execute: async () => {
 				entered.resolve();
 				await release.promise;
@@ -265,9 +266,9 @@ describe("skill body ownership across turns", () => {
 	test("a folded steer becomes the durable source; a still-queued input never does", async () => {
 		const entered = deferred<void>();
 		const release = deferred<void>();
-		const gate = tool({
+		const gate = defineTool({
 			description: "held",
-			inputSchema: z.object({}),
+			input: z.object({}),
 			execute: async () => {
 				entered.resolve();
 				await release.promise;
@@ -514,8 +515,9 @@ describe("provider-filter retry", () => {
 			model: s.model,
 			addr: appAddress("filter-retry"),
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: () => {
 						executions++;
 						return { result: "already completed" };
@@ -550,8 +552,9 @@ describe("provider-filter retry", () => {
 		const r = rig({
 			model: s.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: () => {
 						executions++;
 						return { ok: true };
@@ -576,7 +579,7 @@ describe("provider-filter retry", () => {
 		]);
 		const r = rig({
 			model: s.model,
-			tools: { probe: tool({ inputSchema: z.object({}), execute: () => "done" }) },
+			tools: { probe: defineTool({ description: "test tool", input: z.object({}), execute: () => "done" }) },
 		});
 		const sink = submit(r, "test");
 		expect(await sink.done).toEqual({
@@ -621,8 +624,9 @@ describe("provider-filter retry", () => {
 			const r = rig({
 				model: s.model,
 				tools: {
-					probe: tool({
-						inputSchema: z.object({}),
+					probe: defineTool({
+						description: "test tool",
+						input: z.object({}),
 						execute: () => {
 							executions++;
 							return "done";
@@ -790,8 +794,9 @@ describe("transient transport retry (#191)", () => {
 			model: s.model,
 			step: { transientRetryDelayMs: 0 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: () => {
 						executions++;
 						return "done";
@@ -824,8 +829,9 @@ describe("transient transport retry (#191)", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model: s.model, system: "test", transientRetryDelayMs: 0 }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => "done",
 				}),
 			}),
@@ -1164,8 +1170,9 @@ describe("turn authority", () => {
 		const r = rig({
 			model: edge.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executed = true;
 						return { ok: true };
@@ -1184,17 +1191,19 @@ describe("turn authority", () => {
 
 	test("a nested script call under stale authority never executes — fence copies, same pipeline", async () => {
 		const ran: string[] = [];
-		const raw: ToolSet = {
-			bash: tool({
-				inputSchema: z.object({}),
+		const raw: Tools = {
+			bash: defineTool({
+				description: "test tool",
+				input: z.object({}),
 				execute: async () => {
 					ran.push("bash");
 					r.store.bumpEpoch(r.conv.id); // authority moves mid-script
 					return { ok: true };
 				},
 			}),
-			read_file: tool({
-				inputSchema: z.object({}),
+			read_file: defineTool({
+				description: "test tool",
+				input: z.object({}),
 				execute: async () => {
 					ran.push("read_file");
 					return { ok: true };
@@ -1350,8 +1359,9 @@ describe("turn authority", () => {
 		const r = rig({
 			model: edge.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executed = true;
 						return { ok: true };
@@ -1554,8 +1564,9 @@ describe("context overflow recovery", () => {
 			model: s.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						return "probe-result-7f3a";
@@ -1623,8 +1634,9 @@ describe("context overflow recovery", () => {
 			model: s.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						return "probe-result-7f3a";
@@ -1690,8 +1702,9 @@ describe("context overflow recovery", () => {
 			model: s.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						// A large streaming input lands between steps: durable in
 						// history (it alone dwarfs the 250-token tail budget) but
@@ -1855,8 +1868,9 @@ describe("context overflow recovery", () => {
 			model: s.model,
 			step: { contextWindow: 1_048_576 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					// ~260k estimated tokens — past the 256k trigger cap on a
 					// 1M window (50% would be ~524k).
 					execute: async () => "x".repeat(1_040_000),
@@ -1902,8 +1916,9 @@ describe("context overflow recovery", () => {
 			model: s.model,
 			step: { contextWindow: 8_000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						return "y".repeat(30_000);
@@ -1956,8 +1971,9 @@ describe("context overflow recovery", () => {
 			model: s.model,
 			step: { contextWindow: 8_000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						return "y".repeat(30_000);
@@ -2339,9 +2355,9 @@ describe("cache stability", () => {
 			model: edge.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				boom: tool({
+				boom: defineTool({
 					description: "always throws",
-					inputSchema: z.object({}),
+					input: z.object({}),
 					execute: async (): Promise<string> => {
 						throw new Error("kapow");
 					},
@@ -2706,8 +2722,9 @@ describe("cache stability", () => {
 				system: systemPromptFor(store, c, toolNames(toolset)).text,
 			}),
 			makeTools: () => ({
-				memory_search: tool({
-					inputSchema: z.object({ q: z.string() }),
+				memory_search: defineTool({
+					description: "test tool",
+					input: z.object({ q: z.string() }),
 					execute: async () => "no memory",
 				}),
 			}),
@@ -2988,8 +3005,9 @@ describe("skill reviewer hook", () => {
 		const r = rig({
 			model: s.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						await gate.promise;
@@ -3036,8 +3054,9 @@ describe("skill reviewer hook", () => {
 		const r = rig({
 			model: s.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						await gate.promise;
@@ -3103,8 +3122,9 @@ function steeringSetup(model: LanguageModel, gate?: Promise<void>, modalities?: 
 		model,
 		step: modalities ? { inputModalities: modalities } : {},
 		tools: {
-			probe: tool({
-				inputSchema: z.object({}),
+			probe: defineTool({
+				description: "test tool",
+				input: z.object({}),
 				execute: async () => {
 					if (gate) await gate;
 					return { ok: true };
@@ -3192,8 +3212,9 @@ describe("steering", () => {
 		const r = rig({
 			model: s.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async (_in, opts) => {
 						ran.push(opts.toolCallId);
 						toolStarted.resolve();
@@ -3681,8 +3702,9 @@ describe("loop landings", () => {
 			addr: appAddress("loop"),
 			step: opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {},
 			tools: {
-				probe: tool({
-					inputSchema: z.looseObject({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.looseObject({}),
 					execute: async () => {
 						executions++;
 						return opts.executeAsync ? opts.executeAsync() : (opts.execute?.() ?? "ok");
@@ -3759,8 +3781,9 @@ describe("loop landings", () => {
 			model,
 			addr: appAddress("loop"),
 			tools: {
-				probe: tool({
-					inputSchema: z.object({ q: z.string() }),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({ q: z.string() }),
 					execute: async () => {
 						executions++;
 						return "never runs";
@@ -4188,8 +4211,9 @@ describe("turn journal", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true, out: "done" }),
 				}),
 			}),
@@ -4282,8 +4306,9 @@ describe("turn journal", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						return { ok: true };
@@ -4366,8 +4391,9 @@ describe("turn journal", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model, system: "test" }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						return { ok: true };
@@ -4500,8 +4526,9 @@ describe("unlanded-turn progress — error rail", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true }),
 				}),
 			}),
@@ -4557,8 +4584,9 @@ describe("unlanded-turn progress — error rail", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true }),
 				}),
 			}),
@@ -4613,8 +4641,9 @@ describe("unlanded-turn progress — error rail", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true }),
 				}),
 			}),
@@ -4892,8 +4921,9 @@ describe("unlanded-turn progress — error rail", () => {
 			model: s.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true }),
 				}),
 			},
@@ -4968,8 +4998,9 @@ describe("unlanded-turn progress — error rail", () => {
 			model: s.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true }),
 				}),
 			},
@@ -5041,8 +5072,9 @@ describe("unlanded-turn progress — error rail", () => {
 			model: s.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true }),
 				}),
 			},
@@ -5123,8 +5155,9 @@ describe("tool context", () => {
 			makeTools: (_c, _v, _r, _f, context) => {
 				contexts.push(context!);
 				return {
-					probe: tool({
-						inputSchema: z.object({}),
+					probe: defineTool({
+						description: "test tool",
+						input: z.object({}),
 						execute: async () => {
 							entered.resolve();
 							await gate.promise;

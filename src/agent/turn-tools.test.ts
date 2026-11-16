@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Config } from "../config-schema.ts";
+import { isHosted } from "../tool.ts";
 import type { AuthStore } from "../auth.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
@@ -898,6 +899,7 @@ describe("delegate description subagent routing", () => {
 	) => {
 		const tool = rigTools(config, subagents, subagentsBoot)(conv)["delegate"];
 		if (tool === undefined) throw new Error("delegate tool not mounted");
+		if (isHosted(tool)) return "hosted";
 		return tool.description;
 	};
 

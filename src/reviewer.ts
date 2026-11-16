@@ -26,6 +26,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { generateText, isStepCount, type LanguageModel } from "ai";
+import { toToolSet } from "./turn/ai-sdk-tools.ts";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import { loadCatalog } from "./agent/skills.ts";
 import type { ConversationStore } from "./conversation.ts";
@@ -545,7 +546,7 @@ async function runStagedReview(
 				model,
 				instructions: REVIEW_SYSTEM,
 				prompt: reviewPrompt(turn, prior, catalogLines),
-				tools: reviewTools(stagedSkills, written),
+				tools: toToolSet(reviewTools(stagedSkills, written)),
 				stopWhen: isStepCount(REVIEW_MAX_STEPS),
 				...(reviewMaxRetries !== undefined ? { maxRetries: reviewMaxRetries } : {}),
 				...(reviewProviderOptions !== undefined ? { providerOptions: reviewProviderOptions } : {}),

@@ -1,6 +1,4 @@
-import type { ToolSet } from "ai";
-import { createProviderDefinedToolFactory } from "@ai-sdk/provider-utils";
-import { z } from "zod";
+import type { Tools } from "../../tool.ts";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { type ArtifactToolDeps, artifactTool } from "./artifact.ts";
@@ -72,7 +70,7 @@ export type {
 	VisionToolDeps,
 };
 
-export function toolNames(tools: ToolSet): string[] {
+export function toolNames(tools: Tools): string[] {
 	return Object.keys(tools);
 }
 
@@ -106,18 +104,7 @@ export interface MakeToolsOptions {
 // The codex provider tool — args travel as the wire tool's
 // configuration (external_web_access), never a model-chosen input.
 // Exported for tests/live checks — the adapter's own provider tool id.
-export const codexWebSearch = createProviderDefinedToolFactory<
-	Record<string, unknown>,
-	{ externalWebAccess: boolean }
->({
-	id: "codex.web_search",
-	// Loose, not strict: the input IS the wire action (type/query/url/
-	// sources) and replays verbatim — a stripping schema would store `{}`
-	// and the backend rejects a replayed action without its type.
-	inputSchema: z.looseObject({}),
-});
-
-export function makeTools(options: MakeToolsOptions): ToolSet {
+export function makeTools(options: MakeToolsOptions): Tools {
 	const {
 		cwd,
 		voice,
@@ -175,9 +162,10 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		...(web ? { fetch: fetchTool(web) } : {}),
 		...(hostedSearch !== undefined
 			? {
-					web_search: codexWebSearch({
-						externalWebAccess: hostedSearch.externalWebAccess,
-					}),
+					web_search: {
+						hosted: "codex.web_search",
+						args: { externalWebAccess: hostedSearch.externalWebAccess },
+					},
 				}
 			: web?.configRef.current.search
 				? { search: searchTool(web) }

@@ -5,7 +5,7 @@ import { SubagentError, type Subagents } from "../../subagents/mod.ts";
 import { type SubagentToolDeps, subagentInputSchema, subagentTool } from "./subagent.ts";
 
 const CONV = "dm:test";
-const opts = { toolCallId: "call-1", messages: [], context: {} };
+const opts = { toolCallId: "call-1" };
 
 function fakeRun(over: Partial<SubagentRun> = {}): SubagentRun {
 	return {
@@ -91,7 +91,7 @@ describe("subagent responsibility link", () => {
 		const project = rig({}, undefined, () => null);
 		const elsewhere = rig({});
 		const props = (t: typeof project) =>
-			Object.keys((z.toJSONSchema(t.inputSchema as z.ZodType) as { properties: object }).properties);
+			Object.keys((z.toJSONSchema(t.input as z.ZodType) as { properties: object }).properties);
 		expect(props(project)).toContain("responsibility");
 		expect(project.description).toContain("responsibility:<id>");
 		expect(props(elsewhere)).not.toContain("responsibility");

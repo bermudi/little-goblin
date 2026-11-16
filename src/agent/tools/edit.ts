@@ -1,15 +1,15 @@
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { durableWriteFile } from "../../durable.ts";
 import { log } from "../../log.ts";
 import { resolvePath, unicodeTwin, writeThroughTarget } from "./paths.ts";
 import { readTextFile } from "./read.ts";
 
 export const editFileTool = (cwd: string) =>
-	tool({
+	defineTool({
 		description:
 			"Replace exact text in a file. old_string must match uniquely unless replace_all is set. Leaf symlinks are followed to the file they manage.",
-		inputSchema: z.object({
+		input: z.object({
 			path: z.string().describe("File path, relative to the working directory or absolute"),
 			old_string: z.string().min(1),
 			new_string: z.string(),

@@ -14,8 +14,8 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { loadAuthFile } from "../../auth.ts";
 import { liveQuery } from "./mod.ts";
 import { steerChannel } from "./steers.ts";
@@ -139,9 +139,9 @@ describe.skipIf(!LIVE)("claude-code live drift (GOBLIN_CLAUDE_CODE_LIVE=1)", () 
 		const bridge = createToolBridge({
 			convId: "drift",
 			tools: {
-				drift_probe: tool({
+				drift_probe: defineTool({
 					description: "Returns the fixed string drift-tool-ok",
-					inputSchema: z.object({}),
+					input: z.object({}),
 					execute: async () => "drift-tool-ok",
 				}),
 			},
@@ -150,9 +150,9 @@ describe.skipIf(!LIVE)("claude-code live drift (GOBLIN_CLAUDE_CODE_LIVE=1)", () 
 		const wrapped = {
 			convId: "drift",
 			tools: {
-				drift_probe: tool({
+				drift_probe: defineTool({
 					description: "Returns the fixed string drift-tool-ok",
-					inputSchema: z.object({}),
+					input: z.object({}),
 					execute: async () => {
 						executed = true;
 						return "drift-tool-ok";
@@ -231,9 +231,9 @@ describe.skipIf(!LIVE)("claude-code live drift (GOBLIN_CLAUDE_CODE_LIVE=1)", () 
 		const bridge = createToolBridge({
 			convId: "drift",
 			tools: {
-				drift_wait: tool({
+				drift_wait: defineTool({
 					description: "Waits briefly, then returns waited",
-					inputSchema: z.object({}),
+					input: z.object({}),
 					execute: async () => {
 						await new Promise((r) => setTimeout(r, 1000));
 						return "waited";

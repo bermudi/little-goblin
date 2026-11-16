@@ -8,9 +8,8 @@
 
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
-import { tool } from "ai";
-import type { LanguageModelV4ToolResultOutput } from "@ai-sdk/provider";
 import { z } from "zod";
+import { defineTool, type ToolOutput } from "../../tool.ts";
 import { persistAttachment } from "../attachments.ts";
 import { readWorkspaceFile, WORKSPACE_READ_MAX_BYTES } from "../../box-files.ts";
 import { log } from "../../log.ts";
@@ -36,10 +35,10 @@ const inputSchema = z.object({
 });
 
 export const artifactTool = (deps: ArtifactToolDeps) =>
-	tool({
+	defineTool({
 		description: `Publish a file as a durable artifact card in the goblin app — markdown, self-contained HTML, images, audio and video open in the app's reader; other file types become downloads. The card is an immutable snapshot: editing or deleting the source afterwards does not rewrite it, and the file's bytes never enter your context. Use it when the operator should read, play, or keep generated work — a document, a report, a demo — not for files that only matter to you. source.target "workspace" resolves the path inside this conversation's working directory; "sandbox" reads a regular file straight out of the container, like sandbox export without landing it in the workspace first.`,
-		inputSchema,
-		toModelOutput: ({ output }): LanguageModelV4ToolResultOutput => {
+		input: inputSchema,
+		toModelOutput: ({ output }): ToolOutput => {
 			const a = artifactOf(output);
 			if (a !== null) {
 				return {

@@ -7,7 +7,7 @@
 // observable results — sink done values, stored history, journal rows.
 
 import { describe, expect, test } from "bun:test";
-import { type ToolSet, tool } from "ai";
+import { defineTool, type Tools } from "../tool.ts";
 import type { Message } from "../message.ts";
 import { z } from "zod";
 import { type ClaudeEngineConfig, driveClaude } from "../agent/claude-code/engine.ts";
@@ -73,10 +73,10 @@ interface EngineRig {
 	scriptRecordedReply(text: string): { prompts(): string[] };
 }
 
-const echoTools = (): ToolSet => ({
-	echo: tool({
+const echoTools = (): Tools => ({
+	echo: defineTool({
 		description: "echo the message",
-		inputSchema: z.object({ message: z.string() }),
+		input: z.object({ message: z.string() }),
 		execute: async ({ message }) => `echo:${message}`,
 	}),
 });

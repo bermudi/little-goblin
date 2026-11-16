@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { APICallError } from "@ai-sdk/provider";
 import type { LanguageModel } from "ai";
 import type { Message } from "./message.ts";
-import { tool } from "ai";
+import { defineTool } from "./tool.ts";
 import { z } from "zod";
 import type { Conversation } from "./conversation-read.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
@@ -52,7 +52,7 @@ function setup(opts: {
 	attempts?: StreamAttempt[];
 	model?: LanguageModel;
 	// The surface check reads these names against the recorded surface.
-	tools?: Record<string, ReturnType<typeof tool>>;
+	tools?: Record<string, ReturnType<typeof defineTool>>;
 	// Fault-injection tests break writes on the runtime's own db, not a
 	// side store.
 	wrapJournal?: (journal: TurnJournal) => TurnJournal;
@@ -75,8 +75,9 @@ function setup(opts: {
 	const makeTools =
 		opts.makeTools ??
 		(() => ({
-			probe: tool({
-				inputSchema: z.object({ q: z.number() }),
+			probe: defineTool({
+				description: "test tool",
+				input: z.object({ q: z.number() }),
 				execute: async (args: { q: number }) => {
 					executed.push({ name: "probe", args });
 					return { ok: true, q: args.q };
@@ -751,13 +752,14 @@ describe("turn resume", () => {
 				textParts("ok"),
 			],
 			tools: {
-				bigwrite: tool({
-					inputSchema: z.object({ content: z.string() }),
+				bigwrite: defineTool({
+					description: "test tool",
+					input: z.object({ content: z.string() }),
 					execute: async (args: { content: string }) => {
 						executed.push({ name: "bigwrite", args });
 						return { ok: true };
 					},
-				}) as unknown as ReturnType<typeof tool>,
+				}),
 			},
 		});
 		const anchorSeq = appendUser(store, conv, "write the file");
@@ -884,8 +886,9 @@ describe("turn resume", () => {
 				calls++;
 				if (calls === 2) throw new Error("tool factory exploded");
 				return {
-					probe: tool({
-						inputSchema: z.object({ q: z.number() }),
+					probe: defineTool({
+						description: "test tool",
+						input: z.object({ q: z.number() }),
 						execute: async (args: { q: number }) => ({ ok: true, q: args.q }),
 					}),
 				};
@@ -1953,8 +1956,9 @@ describe("turn resume", () => {
 				textParts("answer"),
 			],
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({ q: z.number() }),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({ q: z.number() }),
 					execute: async (args: { q: number }) => {
 						entered.resolve();
 						await toolGate.promise;
@@ -2013,8 +2017,9 @@ describe("turn resume", () => {
 					// admission accepted, successor never begun.
 					if (calls === 3) throw new Error("tool factory exploded");
 					return {
-						probe: tool({
-							inputSchema: z.object({ q: z.number() }),
+						probe: defineTool({
+							description: "test tool",
+							input: z.object({ q: z.number() }),
 							execute: async (args: { q: number }) => ({ ok: true, q: args.q }),
 						}),
 					};
@@ -2127,15 +2132,17 @@ describe("turn resume", () => {
 				textParts("done"),
 			],
 			makeTools: () => ({
-				read_file: tool({
-					inputSchema: z.object({ path: z.string() }),
+				read_file: defineTool({
+					description: "test tool",
+					input: z.object({ path: z.string() }),
 					execute: async (args: { path: string }) => {
 						reads.push(args.path);
 						return readFileSync(args.path, "utf8");
 					},
 				}),
-				probe: tool({
-					inputSchema: z.object({ q: z.number() }),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({ q: z.number() }),
 					execute: async () => ({ ok: true }),
 				}),
 			}),
@@ -2414,8 +2421,9 @@ describe("turn resume", () => {
 			makeTools: (conv) =>
 				withScript(
 					{
-						write_file: tool({
-							inputSchema: z.object({ path: z.string(), content: z.string() }),
+						write_file: defineTool({
+							description: "test tool",
+							input: z.object({ path: z.string(), content: z.string() }),
 							execute: async (args: { path: string; content: string }) => {
 								writes.push(args.path);
 								writeFileSync(args.path, args.content);
@@ -2792,8 +2800,9 @@ describe("turn resume", () => {
 				calls++;
 				if (calls === 2) throw new Error("tool factory exploded");
 				return {
-					probe: tool({
-						inputSchema: z.object({ q: z.number() }),
+					probe: defineTool({
+						description: "test tool",
+						input: z.object({ q: z.number() }),
 						execute: async (args: { q: number }) => ({ ok: true, q: args.q }),
 					}),
 				};
@@ -2853,8 +2862,9 @@ describe("a shutdown fence is a crash for the journal (#471)", () => {
 	}
 
 	const makeProbeTools = (executed: string[]) => () => ({
-		probe: tool({
-			inputSchema: z.object({ q: z.number() }),
+		probe: defineTool({
+			description: "test tool",
+			input: z.object({ q: z.number() }),
 			execute: async (args: { q: number }) => {
 				executed.push("probe");
 				return { ok: true, q: args.q };
@@ -3087,14 +3097,15 @@ describe("resume durable source identity", () => {
 	test("a steer folded mid-resume moves the source to its own durable seq", async () => {
 		const entered = deferred<void>();
 		const release = deferred<void>();
-		const gate = tool({
-			inputSchema: z.object({ q: z.number() }),
+		const gate = defineTool({
+			description: "test tool",
+			input: z.object({ q: z.number() }),
 			execute: async () => {
 				entered.resolve();
 				await release.promise;
 				return "done";
 			},
-		}) as unknown as ReturnType<typeof tool>;
+		});
 		const { store, conv, journal, ops, runtime } = setup({
 			attempts: [
 				[toolCallPart("g1", "gate", '{"q":1}'), finishPart("tool-calls")],

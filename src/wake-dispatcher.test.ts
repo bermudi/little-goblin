@@ -8,7 +8,8 @@
 import { foldSummary } from "./testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { APICallError } from "@ai-sdk/provider";
-import { type LanguageModel, tool, type ToolSet } from "ai";
+import type { LanguageModel } from "ai";
+import { defineTool, type Tools } from "./tool.ts";
 import type { Message } from "./message.ts";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
@@ -48,7 +49,7 @@ interface Rig {
 function rig(
 	opts: {
 		model?: LanguageModel;
-		tools?: ToolSet;
+		tools?: Tools;
 		makeTools?: RuntimeDeps["makeTools"];
 		store?: Store;
 		buildStep?: RuntimeDeps["buildStep"];
@@ -445,8 +446,9 @@ describe("wake dispatcher", () => {
 		const r = rig({
 			model: edge.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						await gate.promise;
 						return { ok: true };
@@ -491,8 +493,9 @@ describe("wake dispatcher", () => {
 		const r = rig({
 			model: edge.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						await gate.promise;
 						return { ok: true };

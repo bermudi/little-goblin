@@ -1,8 +1,8 @@
-// The bridge: goblin's fenced ToolSet → SDK MCP tool registrations.
+// The bridge: goblin's fenced Tools → SDK MCP tool registrations.
 //
 // Execution topology: createSdkMcpServer handlers run IN THIS PROCESS —
-// the child CLI only orchestrates model calls. The ToolSet the runtime
-// hands the engine is already wrapped by Runtime.fenceTools (authority
+// the child CLI only orchestrates model calls. The Goblin Tools the runtime
+// hands the engine are already wrapped by Runtime.fenceTools (authority
 // re-check, journal dispatch/result/error rows), so the bridge adds no
 // fencing and no journaling of its own; it validates arguments with the
 // tool's own schema, executes, and returns goblin-shaped results.
@@ -15,13 +15,11 @@
 // wire. The two namespaces never mix.
 
 import { randomUUID } from "node:crypto";
-import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import { createSdkMcpServer, tool as sdkTool } from "@anthropic-ai/claude-agent-sdk";
-import type { ToolSet } from "ai";
-import { asSchema } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
 import { stableStringify } from "../../loop-detect.ts";
+import { inputJsonSchema, isHosted, type Tools, type ToolOutput } from "../../tool.ts";
 
 export const MCP_SERVER_NAME = "goblin";
 
@@ -99,9 +97,8 @@ function issueText(err: unknown): string {
 }
 
 // The model-facing result for goblin's toModelOutput contract: text
-// rides as text, json serializes, denial/error carry their marker — the
-// same mapping the AI SDK performs for the API lane.
-function callToolResult(output: ToolResultOutput): {
+// rides as text; json serializes to text for the MCP response.
+function callToolResult(output: ToolOutput): {
 	content: Array<{ type: "text"; text: string }>;
 	isError?: boolean;
 } {
@@ -110,20 +107,6 @@ function callToolResult(output: ToolResultOutput): {
 			return { content: [{ type: "text", text: output.value }] };
 		case "json":
 			return { content: [{ type: "text", text: JSON.stringify(output.value) }] };
-		case "execution-denied":
-			return {
-				content: [
-					{
-						type: "text",
-						text: `[execution denied${"reason" in output && output.reason ? `: ${output.reason}` : ""}]`,
-					},
-				],
-				isError: true,
-			};
-		case "error-text":
-			return { content: [{ type: "text", text: output.value }], isError: true };
-		default:
-			return { content: [{ type: "text", text: JSON.stringify(output) }] };
 	}
 }
 
@@ -137,7 +120,7 @@ function resultText(output: unknown): string {
 
 export interface ToolBridgeDeps {
 	convId: string;
-	tools: ToolSet;
+	tools: Tools;
 	/** The turn's abort signal, forwarded to every tool execute. */
 	signal?: AbortSignal | undefined;
 	/**
@@ -165,9 +148,8 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 	let callSeq = 0;
 
 	for (const [name, t] of Object.entries(tools)) {
-		const execute = t.execute;
-		if (execute === undefined) continue;
-		const schema = asSchema(t.inputSchema);
+		if (isHosted(t)) continue;
+		const schema = t.input;
 		names.push(name);
 		const settle: Handler = async (input) => {
 			// Monotonic per bridge, plus a random bridge prefix so ids stay
@@ -179,38 +161,29 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 			results.push(record);
 			// Parsed input or a loud tool error — the model sees the
 			// issues and can re-ask, like the API lane's tool errors.
-			// Schema.validate is safeParse-shaped ({success, value|error}).
+			// Validate against the Goblin Zod input schema.
 			let args: unknown;
-			if (schema.validate === undefined) {
-				// A schema with no validator (raw jsonSchema pass-
-				// through): the CLI validated the zod properties we
-				// derived; execute's own guards are the backstop.
-				args = input;
-			} else {
-				const parsed = await schema.validate(input);
-				if (!parsed.success) {
-					const errorText = `invalid arguments for ${name}: ${issueText(parsed.error)}`;
-					log.warn("tool call rejected", {
-						conversation: convId,
-						tool: name,
-						arg: JSON.stringify(input ?? null).slice(0, 200),
-						error: errorText.slice(0, 300),
-					});
-					record.error = errorText;
-					record.done = true;
-					return {
-						response: { content: [{ type: "text", text: errorText }], isError: true },
-						record,
-					};
-				}
-				args = parsed.value;
+			const parsed = schema.safeParse(input);
+			if (!parsed.success) {
+				const errorText = `invalid arguments for ${name}: ${issueText(parsed.error)}`;
+				log.warn("tool call rejected", {
+					conversation: convId,
+					tool: name,
+					arg: JSON.stringify(input ?? null).slice(0, 200),
+					error: errorText.slice(0, 300),
+				});
+				record.error = errorText;
+				record.done = true;
+				return {
+					response: { content: [{ type: "text", text: errorText }], isError: true },
+					record,
+				};
 			}
+			args = parsed.data;
 			try {
-				const output = await execute(args as never, {
+				const output = await t.execute(args, {
 					toolCallId: callId,
 					...(signal !== undefined ? { abortSignal: signal } : {}),
-					messages: [] as never,
-					context: {} as never,
 				});
 				record.output = output;
 				record.done = true;
@@ -220,7 +193,7 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 				const shaped = await t.toModelOutput({
 					output,
 					toolCallId: callId,
-					input: args as never,
+					input: args,
 				});
 				return { response: callToolResult(shaped), record };
 			} catch (err) {
@@ -241,10 +214,11 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 	}
 	const definitions: Array<ReturnType<typeof sdkTool>> = [];
 	for (const [name, t] of Object.entries(tools)) {
+		if (isHosted(t)) continue;
 		const handler = handlers.get(name);
 		if (handler === undefined) continue;
-		const description = typeof t.description === "string" ? t.description : name;
-		const shape = rawShapeFor(asSchema(t.inputSchema).jsonSchema);
+		const description = t.description;
+		const shape = rawShapeFor(inputJsonSchema(t));
 		definitions.push(
 			sdkTool(name, description, shape ?? { args: z.unknown().optional() }, async (input) => {
 				const { response } = await handler(input);

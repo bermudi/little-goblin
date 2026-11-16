@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { JSONValue } from "@ai-sdk/provider";
-import type { ToolSet } from "ai";
+import type { Tools } from "./tool.ts";
 import type { Message, ProviderMetadata } from "./message.ts";
 import { z } from "zod";
 import type { Conversation } from "./conversation-read.ts";
@@ -676,7 +676,7 @@ export function makeResumeOps(deps: ResumeDeps): ResumeOps {
 				captured = { ...captured, model: snap.data.model };
 			}
 			const hooks = deps.sinkHooks(conv);
-			let tools: ToolSet;
+			let tools: Tools;
 			try {
 				tools = deps.makeTools(
 					captured,

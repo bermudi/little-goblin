@@ -1,7 +1,7 @@
 import { foldSummary } from "../testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { tool } from "ai";
+import { defineTool } from "../tool.ts";
 import { z } from "zod";
 import {
 	_primeModelsDevForTest,
@@ -1949,8 +1949,9 @@ describe("app channel interrupted-run routes", () => {
 			runtime,
 			captureConversation: (c) => c,
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({ q: z.number() }),
+				probe: defineTool({
+					description: "test tool",
+			input: z.object({ q: z.number() }),
 					execute: async () => ({ ok: true }),
 				}),
 			}),

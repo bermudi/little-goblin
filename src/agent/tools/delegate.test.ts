@@ -1011,7 +1011,7 @@ describe("delegate responsibility link", () => {
 		const elsewhere = delegateTool({ ...h.deps, checkResponsibility: undefined });
 		const props = (t: typeof project) =>
 			Object.keys(
-				(z.toJSONSchema(t.inputSchema as z.ZodType) as { properties: object }).properties,
+				(z.toJSONSchema(t.input as z.ZodType) as { properties: object }).properties,
 			);
 		expect(props(project)).toContain("responsibility");
 		expect(project.description).toContain("responsibility:<id>");

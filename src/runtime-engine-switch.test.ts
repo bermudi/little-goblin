@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { type LanguageModelV4CallOptions } from "@ai-sdk/provider";
-import { type ToolSet, tool } from "ai";
+import { defineTool, type Tools } from "./tool.ts";
 import { z } from "zod";
 import { type ClaudeEngineConfig, driveClaude } from "./agent/claude-code/engine.ts";
 import type { ClaudeEngine, ClaudeStep } from "./agent/claude-code/mod.ts";
@@ -56,10 +56,10 @@ describe("one conversation across turn engines", () => {
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 
 		const echoed: string[] = [];
-		const tools: ToolSet = {
-			echo: tool({
+		const tools: Tools = {
+			echo: defineTool({
 				description: "echo the message",
-				inputSchema: z.object({ message: z.string() }),
+				input: z.object({ message: z.string() }),
 				execute: async ({ message }) => {
 					echoed.push(message);
 					return `echo:${message}`;

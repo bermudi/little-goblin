@@ -2,7 +2,7 @@
 // terminal callbacks so every sink is settled.
 
 import { randomUUID } from "node:crypto";
-import { type ToolSet } from "ai";
+import type { Tools } from "./tool.ts";
 import type { Message, MessageChunk } from "./message.ts";
 import type { ClaudeStep } from "./agent/claude-code/mod.ts";
 import type { ClaudeSessionStore } from "./claude-sessions.ts";
@@ -103,7 +103,7 @@ export interface RuntimeDeps {
 	// the turn runs on whichever engine accepts the step (turn/engine.ts).
 	buildStep(
 		conv: Conversation,
-		tools: ToolSet,
+		tools: Tools,
 	): ModelStep | ClaudeStep | Promise<ModelStep | ClaudeStep>;
 	// The turn engines, tried in order (turn/engine.ts pickEngine):
 	// index.ts binds [claude-code, ai-sdk]. A step no engine accepts

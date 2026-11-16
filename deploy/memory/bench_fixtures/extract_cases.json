@@ -1,0 +1,70 @@
+{
+	"_about": "Labeled extraction cases for `bench.py extract` (#159). Synthetic, public. Each case targets one clause of the retain mission. keep: every group must be matched by some fact (a group is a list of case-insensitive regex alternatives). forbid: no fact may match any pattern. expect_empty: the case passes only with zero facts.",
+	"context": "Telegram exchange. Operator and Goblin speakers are labelled. Assistant suggestions are not operator decisions.",
+	"timestamp": "2026-11-16T10:00:00+00:00",
+	"cases": {
+		"small-talk": {
+			"clause": "no greetings or small talk",
+			"text": "Operator: morning!\nGoblin: Good morning! How's it going?\nOperator: good good, coffee kicking in\nGoblin: Nice. Let me know when you need anything.",
+			"expect_empty": true
+		},
+		"single-reply-complaint": {
+			"clause": "no complaints about a single reply",
+			"text": "Operator: that last answer was way too long\nGoblin: Sorry, I'll keep it shorter.\nOperator: ok",
+			"expect_empty": true
+		},
+		"emotion-alone": {
+			"clause": "no emotional reactions on their own",
+			"text": "Operator: ugh, I'm so tired today\nGoblin: That sounds rough. Want me to hold the reminders until later?\nOperator: nah it's fine",
+			"expect_empty": true
+		},
+		"tool-output": {
+			"clause": "no tool output",
+			"text": "Operator: what's the disk usage on the box?\nGoblin: [tool df -h] /dev/nvme0n1p2 916G 612G 258G 71% /\nGoblin: Root is at 71%, 258G free.\nOperator: thanks",
+			"forbid": ["71\\s*%", "258\\s*G", "nvme0n1p2", "916\\s*G"]
+		},
+		"assistant-analysis": {
+			"clause": "assistant analysis and admissions are not stored",
+			"text": "Operator: why did the backup fail last night\nGoblin: I think the NAS mount dropped around 02:00, and honestly I missed the earlier warning in the log — my mistake.\nOperator: ok, just rerun it",
+			"keep": [["backup"]],
+			"forbid": ["missed", "mistake", "mount dropped", "02:00"]
+		},
+		"quoted-assistant": {
+			"clause": "assistant text the operator quotes back is not the operator's statement",
+			"text": "Operator: you said earlier \"Lisbon is the best city for remote work\" — where did that come from?\nGoblin: That was my own generalisation, not something you told me.\nOperator: right, drop it",
+			"forbid": ["lisbon.{0,40}(best|remote)", "(best|remote).{0,40}lisbon"]
+		},
+		"preference": {
+			"clause": "keep preferences",
+			"text": "Operator: from now on send me the weekly digest as a voice note, not text\nGoblin: Got it — voice note for the weekly digest.",
+			"keep": [["digest"], ["voice"]]
+		},
+		"decision-commitment": {
+			"clause": "keep decisions and commitments",
+			"text": "Operator: I've decided to drop the Hetzner box at the end of December and move everything to the home server\nGoblin: Noted. Want a migration checklist?\nOperator: yes, by Friday",
+			"keep": [["hetzner"], ["december"], ["home server"]]
+		},
+		"event-details": {
+			"clause": "keep concrete event details: names, numbers, dates",
+			"text": "Operator: my sister Marta's flight lands at Benito Juárez on 3 December at 18:40, AM 412\nGoblin: Want a reminder an hour before?\nOperator: yes",
+			"keep": [["marta"], ["am\\s*412"], ["3 december|december 3|12-03|dec(ember)?\\.? 3"], ["18:40|6:40"]]
+		},
+		"followed-event": {
+			"clause": "keep details of events the operator follows",
+			"text": "Operator: the Artemis III launch slipped again, now targeting September 2027 according to NASA\nGoblin: Want me to track updates?\nOperator: yeah ping me if it moves",
+			"keep": [["artemis"], ["september 2027|2027-09"]]
+		},
+		"non-english": {
+			"clause": "extract in English, keep proper nouns verbatim",
+			"text": "Operator: el dentista en Coyoacán me cambió la cita al martes 25 de noviembre a las 11\nGoblin: Anotado: martes 25 de noviembre, 11:00, Coyoacán.",
+			"keep": [["dentist"], ["coyoacán|coyoacan"], ["november|2026-11-25"]],
+			"forbid": ["dentista", "cita", "noviembre", "martes"]
+		},
+		"mixed-noise": {
+			"clause": "keep the fact, drop the noise around it",
+			"text": "Operator: haha nice one\nGoblin: Thanks!\nOperator: btw I started learning Rust, aiming to port the CLI by March\nGoblin: Great choice. I'll find a few resources.",
+			"keep": [["rust"], ["march"]],
+			"forbid": ["haha", "nice one", "thanks"]
+		}
+	}
+}

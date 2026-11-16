@@ -544,6 +544,17 @@ values are never printed.
   simulated by applying upstream's own prompt transformation). Paid calls;
   prints the plan first and requires `--yes`. Raw records go to `--out`
   JSONL. `--full` adds the remaining cross-product cells.
+- `uv run deploy/memory/bench.py extract` — scores retain extraction
+  against labeled synthetic cases (`bench_fixtures/extract_cases.json`, one
+  per clause of the retain mission) and compares missions × models. The
+  live mission is `current`; add candidates with `--mission NAME=PATH`,
+  replace the model list with repeatable `--model ID`, filter with `--case
+  ID`, repeat with `--reps N`, keep raw records with `--out PATH`. A case
+  passes when the output parses, every `keep` group matches some fact, no
+  `forbid` pattern matches, and `expect_empty` cases yield no facts.
+  Deterministic scoring, no judge calls; cost is OpenRouter's reported
+  `usage.cost`. Prints the plan; paid calls need `--yes` (a 12-case run on
+  the deployed model costs well under a cent).
 - `uv run deploy/memory/bench.py recall` — embedding-model latency race
   (deployed OpenRouter model vs the local Ollama candidate) plus a
   retrieval-quality A/B (hit@k / MRR over `bench_fixtures/gold_queries.json`

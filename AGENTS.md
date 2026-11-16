@@ -34,6 +34,12 @@ surface conflicts with the direction rather than silently overriding it.
   `telegram-webapp.d.ts` out of the server program — its `Window`
   declaration changes how linkedom's `parseHTML` resolves in
   `agent/tools/fetch.ts`.
+- **`ui-sdk` skill: repo rules win.** `.agents/skills/ui-sdk` is vendored
+  from vercel-labs/ui (`skills-lock.json`; refresh with `bunx skills
+  update ui-sdk`, don't hand-edit). Where it disagrees with this repo:
+  `bun run typecheck`, not `npx tsc`; `design/app.md` focus rulings beat
+  library defaults; skip its agent-ready step and agent test until the
+  operator rules on the agent bridge.
 - **Fail loud.** `ENOENT` means null. Everything else propagates with context.
   Never swallow an exception.
 - **Durable writes.** Whole-file state: tmp + `fsync` + `renameSync`,

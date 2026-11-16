@@ -3,11 +3,11 @@
 // history exactly once) plus submitPersisted (admit-only, never
 // re-append). Ownership is the journal run's: the runtime's
 // runOwnership hooks link a claimed wake to the run that takes its
-// trigger message — initial claims, resume queue claims, mid-run
-// steer joins — or retarget it off a run the attempt continues
-// (explicit resume) or inherits (overflow). Settlement reads the
-// journal's terminal stamp, never a submit/onDone callback: a lost
-// callback or a dead process leaves the truth intact for reconcile.
+// trigger message — initial claims, mid-run steer joins — or retarget
+// it off a run the attempt inherits from (overflow/fallback). Settlement
+// reads the journal's terminal stamp, never a submit/onDone callback: a
+// lost callback or a dead process leaves the truth intact for
+// reconcile.
 // Every hook and pump is internally total — this module observes and
 // recovers turns; it never fails one. The one durable exception is the
 // wake's bookkeeping, never the turn: a wake whose ownership link
@@ -78,11 +78,13 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 	const now = () => deps.now?.() ?? Date.now();
 	const nowIso = () => new Date(now()).toISOString();
 
-	// The journal answer reconcile() needs — following the resume chain
-	// to the live end: a 'resumed' row consumed its wake forward to the
-	// newest successor admitted from it. Settlement reads the chain's
-	// end, so a wake stranded on a consumed source still resolves; a
-	// cycle or a missing link is the corruption it reports.
+	// The journal answer reconcile() needs — following the legacy resume
+	// chain (#594 removed the writer; pre-change 'resumed' rows still
+	// link forward) to the live end: a 'resumed' row consumed its wake
+	// forward to the newest successor admitted from it. Settlement
+	// reads the chain's end, so a wake stranded on a consumed source
+	// still resolves; a cycle or a missing link is the corruption it
+	// reports.
 	function runStatus(runId: string): JournalStatus | null {
 		const seen = new Set<string>();
 		let cur: string | null = runId;
@@ -120,7 +122,8 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 
 	// The live end of the wake's resume chain — null when the link row
 	// itself is gone (reconcile already classified that wake failed;
-	// a null here only declines the retarget).
+	// a null here only declines the retarget). Only legacy 'resumed'
+	// rows form a chain.
 	function chainEnd(runId: string): string | null {
 		const seen = new Set<string>();
 		let cur: string | null = runId;
@@ -351,8 +354,8 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 				);
 			}
 			// Keep run_id at the live end of its resume chain: forRun and
-			// the begin hook's retarget stay meaningful for the next
-			// resume admission.
+			// the begin hook's retarget stay meaningful for legacy
+			// 'resumed' rows.
 			for (const rec of plan.preserved) {
 				guard("retarget", () => {
 					if (rec.runId === null) return;
@@ -395,8 +398,7 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 		hooks: {
 			begin(e) {
 				guard("run begin", () => {
-					for (const from of [e.resumedFrom, ...(e.inheritFrom ?? [])]) {
-						if (from === undefined) continue;
+					for (const from of e.inheritFrom ?? []) {
 						for (const w of wakes.forRun(from)) {
 							if (w.state !== "claimed") continue;
 							guard("retarget", () => wakes.retargetRun(w.wakeId, from, e.runId));

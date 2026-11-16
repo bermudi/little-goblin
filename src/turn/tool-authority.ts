@@ -40,8 +40,6 @@ export interface ToolAuthorityRecord {
 	memberSeqs: number[];
 	/** The newest owned input's event seq, read at begin time. */
 	sourceInputSeq(): number | null;
-	/** An operator-resume source, when this attempt continues one. */
-	resumedFrom?: string | undefined;
 	/** An overflow/fallback predecessor whose calls this row inherits. */
 	predecessorRun?: string | undefined;
 	/** The operator's configured selection when a fallback serves. */
@@ -92,9 +90,8 @@ export interface ToolAuthority {
 export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 	const { conv, convId, epoch, journal, record } = deps;
 	// The run row lands before the SDK's loop can reach a tool: after this
-	// line every dispatch is journaled under runId. Creation, evidence
-	// inheritance (an operator-resume source and any overflow-failed
-	// predecessor), and the source's consumption are one journal
+	// line every dispatch is journaled under runId. Creation and evidence
+	// inheritance (any overflow-failed predecessor) are one journal
 	// transaction — a crash between them must never leave a successor that
 	// re-executes recorded side effects.
 	const newRunId = randomUUID();
@@ -119,8 +116,7 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 			convSnapshot: {
 				model: conv.model,
 				thinking: conv.thinking,
-				// The operator's selection when a fallback serves — the resume
-				// drift check compares this; resume runs on `model`.
+				// The operator's selection when a fallback serves.
 				...(record.fallbackConfigured !== conv.model
 					? { configuredModel: record.fallbackConfigured }
 					: {}),
@@ -130,7 +126,6 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 			ownedInputSeqs: [...record.ownedInputSeqs],
 			admissionExchangeExcluded: record.admissionExchangeExcluded,
 			sourceInputSeq: record.sourceInputSeq(),
-			resumedFrom: record.resumedFrom,
 			inheritFrom: record.predecessorRun === undefined ? undefined : [record.predecessorRun],
 		}),
 	);
@@ -147,7 +142,6 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 				runId: newRunId,
 				conversationId: convId,
 				memberSeqs: record.memberSeqs,
-				...(record.resumedFrom !== undefined ? { resumedFrom: record.resumedFrom } : {}),
 				...(record.predecessorRun !== undefined
 					? { inheritFrom: [record.predecessorRun] }
 					: {}),
@@ -155,10 +149,9 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 		}
 		const begunOwnership = journal !== undefined;
 		// The recovery guard reads the fresh row once, after inheritance: it
-		// already carries the source's decisions and every predecessor
-		// attempt's recorded executions. Calls this attempt then makes never
-		// join the set — same-run intentional repetition is a live-turn
-		// matter, not recovery's.
+		// already carries every predecessor attempt's recorded executions.
+		// Calls this attempt then makes never join the set — same-run
+		// intentional repetition is a live-turn matter, not recovery's.
 		const recoveryGuard =
 			journal === undefined
 				? undefined

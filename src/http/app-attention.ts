@@ -1,7 +1,6 @@
 // Read-only attention projection over the durable owners. Items point at
 // the surface that can resolve them; this module records no second state.
 
-import type { AppConversationSummary } from "../conversation-read.ts";
 import { responsibilityStage } from "../responsibility-stage.ts";
 import { listProposedSkills } from "../stateview.ts";
 import { conversationName } from "./operator-memory.ts";
@@ -38,14 +37,6 @@ function pageItem(
 ): AppAttentionItem {
 	const { page, ...rest } = item;
 	return { ...rest, target: { kind: "page", page } };
-}
-
-function conversationTitle(conv: AppConversationSummary): string {
-	return conv.title ?? conv.id;
-}
-
-function callsNeedingDecisions(calls: { state: string }[]): number {
-	return calls.filter((c) => c.state === "dispatched").length;
 }
 
 export async function handleAttentionRoute(
@@ -247,28 +238,6 @@ export async function handleAttentionRoute(
 				createdAt: latest?.createdAt ?? resp.updatedAt,
 				target: { kind: "conversation", conversationId: resp.coordinationConversationId },
 			});
-		}
-	}
-
-	const resumeOps = deps.resumeOps?.();
-	if (resumeOps === undefined) {
-		unavailable.push("recovery");
-	} else {
-		for (const conv of deps.store.listAppConversations()) {
-			for (const view of resumeOps.interrupted(conv.id)) {
-				const undecided = callsNeedingDecisions(view.calls);
-				items.push({
-					id: `interrupted-run:${view.run.runId}`,
-					kind: "interrupted-run",
-					title: `Interrupted turn — ${conversationTitle(conv)}`,
-					detail:
-						undecided === 0
-							? `${view.calls.length} recorded calls — resume or abandon`
-							: `${undecided} of ${view.calls.length} calls need decisions`,
-					createdAt: view.run.createdAt,
-					target: { kind: "conversation", conversationId: conv.id },
-				});
-			}
 		}
 	}
 

@@ -353,28 +353,6 @@ export async function handleChatRoute(
 					{ status: 409, headers: NO_STORE },
 				);
 			}
-			// An interrupted run whose request the edit drops can never be
-			// resumed coherently — the transcript it anchored to is gone.
-			// Runs anchored before the cut survive: their events do.
-			const resume = deps.resumeOps?.();
-			if (resume !== undefined) {
-				for (const run of resume.interrupted(convId)) {
-					const anchor = run.run.anchorSeq;
-					if (anchor !== null && anchor < editTarget.seq) continue;
-					const outcome = resume.abandon(convId, run.run.runId);
-					if (outcome.kind !== "ok") {
-						return Response.json(
-							{ error: `interrupted run blocks the edit: ${outcome.reason}` },
-							{ status: 409, headers: NO_STORE },
-						);
-					}
-					log.info("interrupted run abandoned by edit", {
-						conversation: convId,
-						run: run.run.runId,
-						anchor,
-					});
-				}
-			}
 			const edited = store.editUserMessage(convId, editId, message as Message);
 			if (edited === null) {
 				return Response.json({ error: "no such user message" }, { status: 404, headers: NO_STORE });

@@ -161,10 +161,10 @@ const REASONING_PART_TYPES: ReadonlySet<string> = new Set(["reasoning", "reasoni
 // #417: reasoning replays only to the model that wrote it. The landed
 // reply's metadata.model is the producing ref; foreign or unstamped
 // assistant reasoning drops — fail-closed, since an unverifiable origin
-// is the leak this guards. The resume partial is exempt: a resumed or
-// overflow turn never switches models (turn-resume.ts), so its
-// reasoning belongs to this target by construction. Every other part
-// keeps its order.
+// is the leak this guards. The recovery partial is exempt: an overflow
+// or fallback continuation never switches models, so its reasoning
+// belongs to this target by construction. Every other part keeps its
+// order.
 function dropForeignReasoning(
 	ctx: ViewContext,
 	m: Message,
@@ -268,7 +268,7 @@ export async function buildModelView(
 		}
 		const unfinished = incompleteToolCallIds(originScoped);
 		if (unfinished.length > 0 && m.id === partialId) {
-			log.info("resume partial ends on an unfinished tool call — dropped from the model view", {
+			log.info("recovery partial ends on an unfinished tool call — dropped from the model view", {
 				conversation: ctx.convId,
 				message: m.id,
 				toolCalls: unfinished,

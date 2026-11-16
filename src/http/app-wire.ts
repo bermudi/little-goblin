@@ -254,13 +254,6 @@ export interface AppConfigPatchResponse extends AppConfigView {
 	thinkingClamped?: { from: string; to: string };
 }
 
-/** The model pair a resume refusal recorded — the pair the run's
- *  snapshot was admitted on, offered back for a one-tap restore. */
-export interface AppResumeRestore {
-	model: string | null;
-	thinking: string | null;
-}
-
 export interface AppConversationMemoryView {
 	memoryExcluded: boolean;
 	projectMemory: "shared" | "off" | null;
@@ -417,63 +410,6 @@ export interface AppWindowView {
 	calls: AppWindowCall[];
 }
 
-export interface AppRunCall {
-	toolCallId: string;
-	name: string;
-	args: unknown;
-	state:
-		| "planned"
-		| "dispatched"
-		| "completed"
-		| "failed"
-		| "resolved-done"
-		| "resolved-retry"
-		| "resolved-skip";
-	result: string | null;
-	error: string | null;
-	resolutionNote: string | null;
-	resolvedMs: number | null;
-	/** Server-derived: this call may take authorize-retry (a dispatched
-	 *  ambiguity or a known completed/failed/resolved-done execution). */
-	canAuthorizeRetry: boolean;
-}
-
-export interface AppInterruptedRun {
-	runId: string;
-	resumedFrom: string | null;
-	startedMs: number;
-	finishedMs: number | null;
-	calls: {
-		planned: number;
-		dispatched: number;
-		completed: number;
-		failed: number;
-		resolved: number;
-	};
-	toolCalls: AppRunCall[];
-}
-export interface AppInterruptedList {
-	runs: AppInterruptedRun[];
-}
-
-export interface AppDecideRequest {
-	callId: string;
-	decision: "record-result" | "authorize-retry" | "skip";
-	note?: string;
-}
-export interface AppDecideResponse {
-	ok: true;
-}
-
-export interface AppResumeResponse {
-	resumed: true;
-	runId: string;
-}
-export interface AppResumeBlocked {
-	error: string;
-	calls: AppRunCall[];
-}
-
 export interface AppProgramCandidate {
 	name: string;
 	charter: string;
@@ -556,7 +492,6 @@ export interface AppAttentionItem {
 		| "memory-outage"
 		| "memory-recall"
 		| "skill-proposal"
-		| "interrupted-run"
 		| "delegation-input"
 		| "observation-unreachable"
 		| "responsibility";

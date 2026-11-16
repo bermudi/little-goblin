@@ -293,10 +293,10 @@ test("other items keep an Open action", async () => {
 		"/api/app/attention": {
 			items: [
 				{
-					id: "interrupted-run:r1",
-					kind: "interrupted-run",
-					title: "Interrupted turn — Primary",
-					detail: "2 recorded calls — resume or abandon",
+					id: "delegation-input:3",
+					kind: "delegation-input",
+					title: "Delegation needs input — worker",
+					detail: "finish the report",
 					createdAt: "2026-11-05T00:00:00.000Z",
 					target: { kind: "conversation", conversationId: "app/chat-01" },
 				},

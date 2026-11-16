@@ -226,7 +226,7 @@ describe("failureFromStream", () => {
 });
 
 describe("overflowHoldable — the one-recovery budget", () => {
-	test("a recovery the rail produced has spent the budget; an operator seed has not", () => {
+	test("a recovery the rail produced has spent the budget; a fresh turn has not", () => {
 		expect(overflowHoldable(undefined, true)).toBe(true);
 		const recovery: TurnRecovery = {
 			conversation: conv(3),
@@ -242,8 +242,7 @@ describe("overflowHoldable — the one-recovery budget", () => {
 			overflowed: true,
 		};
 		expect(overflowHoldable(recovery, true)).toBe(false);
-		const seed: TurnRecovery = { ...recovery, overflowed: undefined, resumedFrom: "src" };
-		expect(overflowHoldable(seed, true)).toBe(true);
+		expect(overflowHoldable({ ...recovery, overflowed: undefined }, true)).toBe(true);
 		expect(overflowHoldable(undefined, false)).toBe(false);
 	});
 });
@@ -410,18 +409,18 @@ describe("recoverFromOverflow", () => {
 describe("transport failure classification", () => {
 	test("transport-shaped failures compose the drop line and keep the code", () => {
 		expect(terminalFailureMessage(new Error("read ECONNRESET"), false)).toBe(
-			"The model connection dropped (ECONNRESET). Nothing was lost — send again or /resume.",
+			"The model connection dropped (ECONNRESET). Nothing was lost — send again.",
 		);
 		const viaFetch = new TypeError("fetch failed", {
 			cause: Object.assign(new Error("socket closed"), { code: "ECONNRESET" }),
 		});
 		expect(terminalFailureMessage(viaFetch, false)).toBe(
-			"The model connection dropped (ECONNRESET). Nothing was lost — send again or /resume.",
+			"The model connection dropped (ECONNRESET). Nothing was lost — send again.",
 		);
 		expect(
 			terminalFailureMessage(new Error("Failed to process successful response"), false),
 		).toBe(
-			"The model connection dropped (Failed to process successful response). Nothing was lost — send again or /resume.",
+			"The model connection dropped (Failed to process successful response). Nothing was lost — send again.",
 		);
 		// A transport-shaped message on the cause classifies the wrapper.
 		expect(

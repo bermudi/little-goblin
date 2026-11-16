@@ -21,7 +21,6 @@ import { useConfirm } from "./confirm.tsx";
 import { Outline } from "./Outline.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { DocViewerProvider } from "./docview.tsx";
-import { InterruptedTurns } from "./InterruptedTurns.tsx";
 import { MessageParts } from "./chat/MessageParts.tsx";
 import { QuoteFab, type QuoteSpeaker } from "./chat/QuoteFab.tsx";
 import { Composer } from "./chat/Composer.tsx";
@@ -1021,16 +1020,6 @@ function Chat({
             {error !== undefined && (
               <div className="error">The turn failed: {error.message}</div>
             )}
-            <InterruptedTurns
-              key={conversationId}
-              token={token}
-              conversationId={conversationId}
-              busy={busy}
-              onResumed={async () => {
-                onTurnDone();
-                await resumeStream();
-              }}
-            />
           </div>
         </div>
         {stopError !== null && (

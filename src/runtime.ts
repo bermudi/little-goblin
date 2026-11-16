@@ -34,7 +34,7 @@ import {
 } from "./memory/mod.ts";
 import type { PriorTurnContext } from "./reviewer-evidence.ts";
 import { Reviewer } from "./reviewer.ts";
-import { LaneRegistry, type QueuedTurn, type ResumeSeed } from "./runtime-lanes.ts";
+import { LaneRegistry, type QueuedTurn } from "./runtime-lanes.ts";
 import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { type CompactionSeam, runCompactJob } from "./turn/compact-job.ts";
@@ -159,13 +159,9 @@ export class FencedError extends Error {
 	}
 }
 
-// runtime-lanes.ts re-export — the resume seed is turn-resume.ts's contract
-// with the runtime's public surface.
-export type { ResumeSeed } from "./runtime-lanes.ts";
-
-// Terminal outcomes have settled their sinks; resumes carry recovery and
-// membership into the next attempt. Membership is data on the decision,
-// not a closure over a queue that may have changed.
+// Terminal outcomes have settled their sinks; continuations carry
+// recovery and membership into the next attempt. Membership is data on
+// the decision, not a closure over a queue that may have changed.
 type AttemptOutcome =
 	| { kind: "done" }
 	| { kind: "resume"; recovery: TurnRecovery; turns: QueuedTurn[] };
@@ -229,36 +225,6 @@ export class Runtime {
 		return this.admit(conv, message, sink, seq);
 	}
 
-	// Admission for an operator-resumed turn — turn-resume.ts owns the
-	// validation and builds the source-linked resume event. Registering the
-	// event on the source run and appending it to history are one
-	// transaction: a partial write must not leave an unregistered event the
-	// next resume would read as foreign input. The seed restores what the
-	// interrupted attempt produced. Same lane and authority rules as
-	// submitPersisted.
-	resume(conv: Conversation, message: Message, sink: TurnSink, seed: ResumeSeed): boolean {
-		const journal = this.deps.turnJournal;
-		const eligible = this.deps.store.memoryEligibility(conv.id).eligibleSeqs;
-		const exclude =
-			seed.admissionExchangeExcluded === true ||
-			(seed.ownedInputSeqs ?? []).some((seq) => !eligible.has(seq));
-		let seq: number;
-		if (journal !== undefined && seed.resumedFrom !== undefined) {
-			seq = this.deps.store.db.transaction(() => {
-				// The registry names the seq this append actually wrote —
-				// inferring it (e.g. lastUserSeq) would silently register an
-				// unrelated event if the message's shape ever changed.
-				const seqs = this.deps.store.append(conv.id, [message], { exclude });
-				journal.noteResumeRequest(seed.resumedFrom!, seqs[0]!);
-				return seqs[0]!;
-			})();
-		} else {
-			const seqs = this.deps.store.append(conv.id, [message], { exclude });
-			seq = seqs[0]!;
-		}
-		return this.admit(conv, message, sink, seq, seed);
-	}
-
 	// A live admission by client-visible id — loose matching for
 	// callers that only carry the id. `eventSeq` tightens it to one
 	// durable event: a different admitted event reusing the same client
@@ -267,18 +233,12 @@ export class Runtime {
 		return this.lanes.isAdmitted(conversationId, messageId, eventSeq);
 	}
 
-	private admit(
-		conv: Conversation,
-		message: Message,
-		sink: TurnSink,
-		seq: number,
-		seed?: ResumeSeed,
-	): boolean {
+	private admit(conv: Conversation, message: Message, sink: TurnSink, seq: number): boolean {
 		if (this.closed) {
 			void this.notifyDone({ seq, message, sink, doneSent: false }, { kind: "fenced" });
 			return false;
 		}
-		this.lanes.enqueue(conv.id, { seq, message, sink, doneSent: false, resumeSeed: seed });
+		this.lanes.enqueue(conv.id, { seq, message, sink, doneSent: false });
 		this.lanes.startDraining(conv.id, () => this.drain(conv.id));
 		return true;
 	}
@@ -292,8 +252,7 @@ export class Runtime {
 	// Busy is the lane holding any work — a claimed or queued turn, or a
 	// queued/in-flight compaction. Compaction counts because it rewrites
 	// the model view between turns: app retries use this to avoid turning
-	// a retry into steering input, and resume admission refuses on it so
-	// the visibility it measured cannot move before the resumed turn runs.
+	// a retry into steering input.
 	busy(convId: string): boolean {
 		return this.lanes.busy(convId);
 	}
@@ -555,12 +514,11 @@ export class Runtime {
 	// while late subscribers retain one continuous stream.
 	private async runTurn(convId: string, turns: QueuedTurn[]): Promise<void> {
 		const live = openLive();
-		// An operator-resume seed enters the same recovery slot an
-		// overflow decision fills — the attempt loop consumes it
-		// identically. The wire is always the fresh log: the dead turn's
-		// went away with the process.
-		const seed = turns[0]?.resumeSeed;
-		let recovery: TurnRecovery | undefined = seed === undefined ? undefined : { ...seed, live };
+		// An overflow/fallback continuation enters the same recovery slot
+		// its decision fills — the attempt loop consumes it identically.
+		// The wire is always the fresh log: the failed attempt's went away
+		// with its row.
+		let recovery: TurnRecovery | undefined;
 		let members = turns;
 		for (;;) {
 			const outcome = await this.runAttempt(convId, members, recovery, live);
@@ -606,10 +564,7 @@ export class Runtime {
 			{
 				convId,
 				watchdog: this.loopWatchdog,
-				// An operator-resume head is the generated provenance marker —
-				// the seed carries the run's real request for the watchdog;
-				// every other head message is itself the request.
-				request: recovery?.operatorRequest ?? messageText(turns[0]!.message),
+				request: messageText(turns[0]!.message),
 			},
 			recovery?.loop,
 		);
@@ -679,8 +634,9 @@ export class Runtime {
 		}
 		const { snapshot } = admitted;
 		const { conv, epoch, entries, anchorSeq, turnStartMs } = snapshot;
-		// Resume members join `turns` before admission so all paths settle them.
-		// An admission failure must not strand a member claimed during recovery.
+		// Continuation inputs join `turns` before admission so all paths
+		// settle them. An admission failure must not strand a member
+		// claimed during recovery.
 		const ownedInputSeqs = new Set([
 			...snapshot.ownedInputSeqs,
 			...(recovery?.ownedInputSeqs ?? []),
@@ -725,15 +681,9 @@ export class Runtime {
 		// begun row never escapes still 'running' except a deliberate
 		// shutdown leave (#471).
 		const journal = this.deps.turnJournal;
-		// An operator-resume admission carries the interrupted run it
-		// continues — every attempt of this turn links its run row to it
-		// and inherits its calls as evidence: a re-asked effect conflicts
-		// unless an operator grant names it.
-		const sourceRunId = recovery?.resumedFrom;
 		const sourceInputSeq = (): number | null => {
 			let max: number | null = null;
-			for (const [i, t] of turns.entries()) {
-				if (i === 0 && sourceRunId !== undefined) continue;
+			for (const t of turns) {
 				if (max === null || t.seq > max) max = t.seq;
 			}
 			return max ?? recovery?.sourceInputSeq ?? null;
@@ -802,7 +752,6 @@ export class Runtime {
 					admissionExchangeExcluded,
 					memberSeqs: turns.map((t) => t.seq),
 					sourceInputSeq,
-					resumedFrom: sourceRunId,
 					predecessorRun: recovery?.predecessorRun,
 					fallbackConfigured: fallback.configured,
 				},
@@ -840,7 +789,7 @@ export class Runtime {
 			// #418: a recorded native session sees only the seq delta —
 			// entries past seen_seq, minus the reply the session itself
 			// produced (it already holds that natively). Entries with no
-			// seq — recall inserts, the resume partial — belong to this
+			// seq — recall inserts, the recovery partial — belong to this
 			// turn and ride along inside the view.
 			const claudeRec =
 				isClaudeStep(step) && this.deps.claudeSessions !== undefined
@@ -1014,7 +963,7 @@ export class Runtime {
 				}
 			}
 			if (outcome.kind === "failed") {
-				// Carry the filter retry budget into a possible resume.
+				// Carry the filter retry budget into a possible continuation.
 				filterRetryUsed = outcome.filterRetryUsed;
 				errorHeld = outcome.errorHeld === true;
 				throw failureFromStream(outcome);
@@ -1223,8 +1172,8 @@ export class Runtime {
 					// #471 — a shutdown fence is a crash for the journal: the row
 					// stays 'running' and nothing is recorded here. The next open
 					// reclassifies it 'interrupted' and records its unlanded
-					// progress in the same transaction, so the boot notice,
-					// /interrupted and /resume all reach it.
+					// progress in the same transaction — the boot notice and
+					// the history record both reach it (#594).
 					leaveRunning();
 				} else {
 					// What already ran stays transcript — the sanctioned post-fence
@@ -1250,9 +1199,7 @@ export class Runtime {
 					startedAt: turnStartMs,
 					live,
 					filterRetryUsed,
-					resumedFrom: sourceRunId,
 					failedRunId: authority?.runId,
-					operatorRequest: recovery?.operatorRequest,
 					recallVersion,
 					sourceInputSeq: sourceInputSeq(),
 					members: turns,
@@ -1390,8 +1337,8 @@ export class Runtime {
 						turns,
 					};
 				}
-				// Only a fresh attempt's failure ends the walk; an overflow
-				// continuation or resume failing reports its own error.
+				// Only a fresh attempt's failure ends the walk; a
+				// continuation failing reports its own error.
 				const misses = fallback.fresh ? [...fallback.misses, miss] : [miss];
 				log.error("turn failed", err, {
 					conversation: convId,

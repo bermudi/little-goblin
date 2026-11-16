@@ -541,11 +541,6 @@ The config PATCH response adds `appliesFrom: "next-turn"` whenever a turn is
 running on that conversation, and `thinkingClamped: {from, to}` whenever the
 stored level moved onto the destination ladder; the composer renders each as a
 one-line note — the same fields on the app-defaults PATCH carry the clamp.
-A resume refused on selection drift answers `{error, restore: {model,
-thinking}}` — the pair the run's snapshot was admitted on — and the
-interrupted-turn card offers it as a one-tap restore: PATCH the pair back,
-then retry the resume. A half-pair (`model` or `thinking` null) produces no
-offer, since a partial write can never pass the drift gate.
 
 **The memory toggle follows the same rule (ruling 2026-10-29).** A flag
 write, never `applySettings`: no epoch bump — a running turn finishes and
@@ -947,8 +942,8 @@ there is no reconstruction path, so none can drift.
   preparation and write the record only when it still matches — a
   turn in flight across the boundary is fenced, never served back a
   projection of forgotten evidence. An overflow continuation reuses
-  its failed attempt's version, matching the memory it carried; an
-  operator resume reads the current one.
+  its failed attempt's version, matching the memory it carried; a
+  continuation reads the current one.
 
 **Surface.** `GET /api/app/conversations/<id>/window` (read-only, same
 bearer/trust gate as every `/api/app/*` route; the window is
@@ -1041,28 +1036,15 @@ reconciliation doesn't cover loaded pages; copy, branch and rating work
 anywhere. Loading a page shifts scrollTop by the added height so the view
 doesn't jump.
 
-## Interrupted turn recovery (ruling 2026-10-17)
+## Interrupted turns (ruling 2026-11-16, #594)
 
 A crash leaves a turn `interrupted` in the journal (design/runtime-turn.md →
-The turn journal); the app surfaces those runs where they died. Contract,
-mirroring the Telegram `/decide` / `/resume` surface:
-
-- **Decisions are explicit.** Each `dispatched` call shows its tool name, a
-  bounded args preview, and three buttons — Record result (asserts an
-  outcome the operator already knows; it becomes the journaled outcome the
-  resumed attempt sees as evidence), Authorize retry (re-executes; effects
-  may repeat), Skip (never runs; a re-ask reads the refusal) — plus an
-  optional note. Settled calls show their recorded outcome and one more
-  button — Authorize another execution — granting a single deliberate
-  re-run of a known effect by call id; granted or skipped calls render
-  read-only.
-- **Resume is gated server-side.** Disabled while any call is `dispatched`;
-  a refusal names the undecided calls and the client refetches rather than
-  trusting its copy; success admits a FRESH run — the client drops the
-  acknowledged source and reconnects, the attach endpoint's idle path
-  reconciling by message id.
-- **No optimistic mutation.** Nothing is decided before the server's ack;
-  errors show the server's reason verbatim.
+The turn journal). There is no recovery surface: no card, no decide/resume
+routes, no `/resume`. The interrupted run's history record — the rail's
+system event — and the boot notice are the whole story; the operator
+continues by sending a new message, which starts an ordinary fresh turn.
+Legacy `interrupted`/`resumed`/`abandoned` rows still decode and render as
+history; nothing acts on them.
 
 ## Archiving (ruling 2026-10-09)
 

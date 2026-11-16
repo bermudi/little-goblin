@@ -182,13 +182,12 @@ const turnJournal =
 					callId: string,
 					name: string,
 					args: unknown,
-					opts?: { retryCallId?: string },
 				) {
 					if (name === "declared") {
 						journal.noteToolInput(runId, callId, name, args);
 						holdUntilKilled();
 					}
-					journal.noteToolDispatch(runId, callId, name, args, opts);
+					journal.noteToolDispatch(runId, callId, name, args);
 				},
 			}
 		: journal;

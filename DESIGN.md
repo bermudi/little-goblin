@@ -128,8 +128,10 @@ Conversation ─────── (channel address) → durable event history
 **Topics are the UX — in the group.** In the bot DM, quiet gaps draw the
 boundaries (Rolling DM), with explicit `/new` and `/back` overrides
 (operator ruling, 2026-10-05); neither command applies to group topics.
-`/resume` is not DM/topic navigation: it resumes only interrupted turns from
-[the turn journal](design/runtime-turn.md#the-turn-journal). Durable work
+There is no `/resume`: a turn killed by process death is never replayed —
+the operator continues by sending a new message
+([the turn journal](design/runtime-turn.md#the-turn-journal), ruling
+2026-11-16 #594). Durable work
 moves to the app (Spin-off). In the group, a forum topic is a conversation:
 create a topic to start one, post in an old topic to resume it; the bot may
 also create topics itself (`createForumTopic`); a chat without topics is one
@@ -195,7 +197,7 @@ previous journal open — `journal_opens` bounds the dead process's
 lifetime, and a first-ever open counts nothing (#577) — above every
 run's owned floor (anchor/source seqs stand in for legacy NULL
 ownership) and above the conversation's last assistant reply are
-counted per conversation — machinery speech and generated resume
+counted per conversation — machinery speech and legacy resume
 markers are not operator input — and reported once per conversation
 ("N message(s) you sent before the restart weren't answered"), notice
 only, same no-replay rule.
@@ -211,8 +213,10 @@ failed send stays pending for the next boot; a pre-column row has no
 recorded seq and keeps its interrupted notice instead; an app lane
 settles without a send because its history IS the channel. Delivered
 rows drop out of the boot notices.
-Resuming an interrupted turn is a separate explicit decision riding the
-journaled rows, not a boot behavior.
+There is no operator resume of an interrupted turn (#594, pi's behavior):
+the dead run stays `interrupted` forever, its history record and boot
+notice are the whole story, and the next operator message starts an
+ordinary fresh turn.
 
 ## Cache stability
 

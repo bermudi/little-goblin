@@ -319,7 +319,7 @@ describe("reasoning origin (#417)", () => {
 		expect(texts(view)).toContain("the answer");
 	});
 
-	test("the resume partial keeps its reasoning — a resumed turn never switches models", async () => {
+	test("the recovery partial keeps its reasoning — a continuation never switches models", async () => {
 		const partial = asstReasoning("p", undefined, "partial thinking");
 		const view = await build(entries([user("u1", "q")]), [], null, partial);
 		expect(JSON.stringify(view)).toContain("partial thinking");
@@ -424,7 +424,7 @@ describe("unfinished tool calls", () => {
 			.map((l) => JSON.parse(l) as Record<string, unknown>);
 	const historyDropMsg = "unfinished tool call in durable history — dropped from the model view";
 	const partialDropMsg =
-		"resume partial ends on an unfinished tool call — dropped from the model view";
+		"recovery partial ends on an unfinished tool call — dropped from the model view";
 
 	test("a durable history call without its result is dropped and logged as a warning", async () => {
 		const target = capture();
@@ -453,7 +453,7 @@ describe("unfinished tool calls", () => {
 		expect(entry).toMatchObject({ level: "warn", message: "a1", toolCalls: ["t1"] });
 	});
 
-	test("the resume partial's dangling call drops at info — a crash mid-call is legitimate", async () => {
+	test("the recovery partial's dangling call drops at info — a crash mid-call is legitimate", async () => {
 		const target = capture();
 		const partial = {
 			id: "p",

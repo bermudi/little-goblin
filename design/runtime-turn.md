@@ -111,12 +111,12 @@ tool side effect can execute; a dispatched call without a result is the
 ambiguous state — the side effect may or may not have happened. For the
 journal a graceful shutdown IS a crash (#471): a shutdown-fenced turn
 leaves its row `running` and records nothing — the next open
-reclassifies it `interrupted` exactly like process death, so the boot
-notice, `/interrupted` and `/resume` all reach it (openclaw drains
-active turns and re-dispatches them, `docs/gateway/restart-recovery.md`;
-hermes marks sessions `resume_pending` and auto-continues,
-`gateway-session-lifecycle.md` — borrowed as mechanism only: a restart
-must not silently strand an unanswered request). `fenced` is now
+reclassifies it `interrupted` exactly like process death (openclaw
+drains active turns and re-dispatches them,
+`docs/gateway/restart-recovery.md`; hermes marks sessions
+`resume_pending` and auto-continues, `gateway-session-lifecycle.md` —
+borrowed as mechanism only: a restart must not silently strand an
+unanswered request). `fenced` is now
 operator/epoch fences only — `/stop`, settings changes, deploy-era
 authority loss outside shutdown. Boot sends one terse notice per run
 (counts by state,
@@ -129,85 +129,72 @@ A boot that dies before the attach, or whose every send fails, hands
 the row to the next boot instead of dropping it; a send that landed
 with a claim that could not commit re-sends at-least-once. Because a
 row can outlive its advice, the sender drops and claims without
-sending when the run left `interrupted` (resumed/abandoned) or its
+sending when the run left `interrupted` (a legacy `resumed`/`abandoned`
+stamp) or its
 landed reply was already re-delivered (#482). Nothing replays
 automatically — boot is
-notice-only, and an `interrupted` turn resumes ONLY by explicit operator
-decision into a FRESH admission (new epoch, not a continuation of the
-dead attempt). Each attempt gets its own run row; the continuation's row
-INHERITS the failed attempt's settled calls (as a fresh admission
-inherits its source's), so a crash of the continuation still resumes
-with every side effect the logical turn already recorded. Evidence
+notice-only, and there is no operator resume at all (ruling
+2026-11-16, #594): a turn killed by process death leaves only its
+history record — the interrupted rail's system event — plus the boot
+notice, and the operator continues by sending a new message, which
+starts an ordinary fresh turn. Each attempt gets its own run row; a
+continuation's row (overflow, fallback) INHERITS the failed attempt's
+settled calls (as a fresh admission
+inherits its source's), so a crash of the continuation still records
+every side effect the logical turn already ran. Evidence
 handoff is one transaction — successor creation, call inheritance,
 source consumption — so no crash window exists where the successor
 re-executes recorded effects. A fence-refused call journals as a
 synthetic `replayed` result — proof of what the model saw, never a
 second execution.
 
+**Ruling 2026-11-16 (#594): pi's behavior — no operator resume.** A
+killed turn is history, not a work item. pi persists messages as they
+land (`pi-mono/packages/coding-agent/src/core/agent-session.ts`,
+message-granular persistence) and its request transform answers a
+missing tool result rather than replaying the call
+(`pi-mono/packages/ai/src/api/transform-messages.ts`); goblin's
+equivalent record is the interrupted rail's system event — written
+inside the reclassify transaction at journal open — which the next
+turn's model view carries as evidence, closing with "steps that ran
+are never replayed". The deleted machinery — the app's interrupted-run
+card and routes, `/resume`, `/decide`, `/abandon`, per-call
+record/retry/skip decisions, resume seeds, `resume_request_seqs`,
+retry grants — has no replacement. Legacy rows decode and stay inert;
+columns written before the change (`resumed_from`,
+`resume_request_seqs`, `retry_consumed`, `resolution_note`,
+`resolved_ms`, `origin_run`, `replayed`) remain for reads only.
+Internal continuation — the overflow fold-resume and fallback — is
+unchanged; "resume" there names the technical continuation, never an
+operator action.
+
 **Historical evidence is not automatic tool replay** (ruling
-2026-10-19). A resumed/continued attempt builds a recovery guard once
+2026-10-19; grants removed 2026-11-16, #594). A continued attempt
+builds a recovery guard once
 from its inherited calls: a new tool invocation colliding with a
-recorded EXECUTION (completed, failed, resolved-done, resolved-retry —
-planned intent and synthetic replayed rows never count) gets a labeled
+recorded EXECUTION (completed, failed, and the legacy `resolved-done`/
+`resolved-retry` states — planned intent and synthetic replayed rows
+never count) gets a labeled
 conflict naming the historical call ids, not the stale result and not a
 silent re-run. Fresh-observation reads (`read_file`, `history_search`,
-`memory_search`) execute afresh unless an explicit skip names them;
-everything else is conservative. A `resolved-retry` grant is a FIFO of
-source call ids, each consumed exactly once — the grant's
-`retry_consumed` CAS flips inside the same transaction as the new
-dispatch write, so a fault can never book an execution without spending
-the grant, and a crashed-after-consume ambiguity stays owned by the new
-dispatched row. Legacy rows migrate `retry_consumed = 1` — a
-pre-migration grant is denied rather than guessed.
+`memory_search`) execute afresh; a legacy `resolved-skip` still refuses
+the re-ask with the operator's recorded decline, and everything else is
+conservative. The pre-#594 `resolved-retry` grant is gone with its
+writer: a legacy grant row now reads as one more recorded execution —
+a conflict, never a permit — and `retry_consumed` is write-dead (legacy
+rows keep `retry_consumed = 1`: a pre-migration grant is denied rather
+than guessed).
 
 Stored `args` is a **preview**, never the identity: oversized JSON is
 cut to a bounded total, so no consumer can ever receive an oversized
 body, while the replay hash uses the FULL canonical input — truncation
-never collides two calls or weakens a replay match. Resume refuses a
-stored document that fails to decode (bad JSON or wrong shape) instead
-of defaulting to something that bypasses its contract; the conversation
-snapshot and loop state get the same tolerance — raw text kept, readable
-refusal at resume.
+never collides two calls or weakens a replay match. A stored document
+that fails to decode (bad JSON or wrong shape) fails loud at the
+boundary instead of defaulting to something that bypasses its
+contract; the conversation snapshot and loop state get the same
+tolerance — raw text kept, readable refusal.
 
-Resume refuses on undecided dispatched calls (each needs an explicit
-operator decision, never an automatic one), on drift from the run's
-recorded model/thinking, and on a source that is not `interrupted`. The
-resumed attempt's fence then refuses re-asked recorded executions with
-a labeled conflict (the recorded output stays evidence in the seeded
-partial, never the answer); planned calls, same-signature safe reads,
-and calls holding an UNCONSUMED operator retry grant execute — the
-grant is spent by the dispatch that runs under it; a skipped call's
-re-ask gets the operator's decline, never the side effect. The model
-sees only what the journal says happened. A headless resumed turn
-notifies operators on terminal `onDone`.
-
-**Operator resume is a new source-linked exchange, not a retroactive
-attach** (ruling 2026-10-19). `/resume` admits a fresh attempt whose
-input is a NEW durable user event — a provenance prefix plus the
-original anchor's and the owned post-anchor inputs' parts verbatim,
-but only for events the model view no longer carries — never the
-original event re-appended. An event still in the view reaches the
-model through its own entry; re-copying it would double the text in
-the prompt and in the retention document. One exception: a skill
-invocation's durable record is the reference alone — the body rides
-only the owning turn's view — so references from ALL journal-owned
-invocation messages are re-carried into the resume event for the new
-run to own and inject, including pre-anchor coalesced inputs, not
-merely the visible anchor; ordinary parts of a visible event stay
-visibility-filtered, and the prefix names folded request/steering
-only when those parts were actually copied. Visibility is measured at
-ops-admission, so the lane must hold still for the measurement to
-stay true: `Runtime.busy` counts queued and in-flight compactions as
-busy, and a resume offered while the lane holds work refuses — a
-queued or in-flight summary would otherwise rewrite the view between
-measurement and the resumed turn's own admission, silently dropping
-an anchor that read visible. The event rides the
-admission anchor, so the recovered instruction survives compaction
-and the reply anchors to the resume event itself; the prefix change
-is tail-only. The seed also carries the original request's text for
-the loop watchdog — the generated marker names provenance, not the
-task, and the watchdog judges progress against the ask. Ownership is
-journaled as durable event seqs — never
+**Owned input is journaled as durable event seqs** — never
 message ids, which are app-controlled and carry no uniqueness
 guarantee: `owned_input_seqs` records the admitted user seqs plus
 every successfully folded steer (one checkpoint write with the steer
@@ -222,37 +209,19 @@ registry) — never a `lastUserSeq` rediscovery — and the attempt owns
 only the seqs its members carry: historical user entries stay in the
 model view as context but are never owned, so an owning-turn-only
 payload (a skill body) resolves for owned seqs alone (2026-10-21).
-`resume_request_seqs` on the
-interrupted source names the generated
-events that are this run's own — the same store transaction as the
-event append, which returns the real seq it wrote (never a
-lastUserSeq inference), and whose registry UPDATE verifies it landed
-— a partial or skipped write can never leave an unregistered event
-reading as foreign. Stale-check reads the durable record
-(`historyDetail`), never the compaction-filtered view, and refuses a
-user event past the run's anchor that the run never owned — whether
-it arrived mid-turn (a steer never folded) or after the
-interruption; an anchorless run refuses any unowned input as such.
-Only an event BOTH registered on the source AND carrying matching
-`goblinResume` metadata is exempt — metadata alone is
-client-controlled and never exempts, and a different event reusing
-an owned or registered id stays foreign. A modern row whose
-ownership omits its own anchor is inconsistent and refuses readable.
-Legacy NULL ownership fails closed to anchor-only (anchorless runs
-with no durable users stay resumable); a malformed column — either
-`owned_input_seqs` or `resume_request_seqs` — is a readable refusal,
-never a silent policy change.
+The interrupted rail's anchor and the stranded-input count read the
+same record. `resume_request_seqs` and the `goblinResume` metadata
+marker survive as legacy decode only — nothing writes them post-#594;
+the stranded count still excludes marker-carrying rows it finds.
 
 `source_input_seq` is the durable handover identity: the newest owned
 input's event seq, persisted at begin and at the same steer checkpoint
 as `owned_input_seqs` so a folded steer genuinely moves who the turn
-answers for (a still-queued input is never a member and never wins).
-An operator-resume seed carries the source run's own journaled value —
-the generated resume marker is never a source — and a legacy row
-without it falls back to the max seq staleness validated (anchor or
-latest owned input), except a legacy already-resumed row, which keeps
-NULL: a handover on missing durable identity refuses rather than key
-on a client message id.
+answers for (a still-queued input is never a member and never wins). A
+continuation carries the predecessor's journaled value, and a legacy
+row without it falls back to the max seq the admission anchored on; a
+handover on missing durable identity refuses rather than key on a
+client message id.
 
 ## Unlanded-turn progress
 
@@ -285,10 +254,8 @@ the view. The operator sees it too.
   joins it): the two commit atomically, a failure rolls both back and
   fails the open loud, and the next boot retries both — the record can
   be neither lost nor duplicated. Only rows newly reclassified at that
-  open; historical interrupted rows keep their resume-only semantics.
-  Resuming a run whose progress was recorded keeps the verbatim seed —
-  the event is bounded evidence overlap, accepted (evidence, not
-  instructions).
+  open; historical interrupted rows stay inert (#594 — nothing resumes
+  them).
 
 - **One record, and it is the reply the operator watched** (ruling
   2026-11-09, #408; start-only identity 2026-11-10). On the error and
@@ -322,8 +289,8 @@ the view. The operator sees it too.
   sinks only).
 - **Outcome labels are the journal's, never upgraded.** A dispatched call
   with no recorded result renders as outcome unknown. The event is evidence,
-  not proof of exactly-once execution, and it does not retire the journal,
-  replay decisions, retry grants, or resume.
+  not proof of exactly-once execution, and it does not retire the journal
+  or the continuation recovery guard.
 - **No duplicate.** Nothing is appended when the reply landed, when the
   interrupted rail has no progress to report (no call, no text, and no
   wire reply — process death before any output stays silent, as
@@ -337,8 +304,8 @@ the view. The operator sees it too.
   is unreadable) attempt no event — the journal row remains the
   evidence.
 - **Steps that ran are never replayed.** The event is a record, not a
-  rerun: boot stays notice-only, resume keeps its recovery guard, and the
-  event closes with exactly that instruction.
+  rerun: boot stays notice-only, no operator resume exists (#594), and
+  the event closes with exactly that instruction.
 - **Anchored to the attempt's consumed input.** The event's `anchorSeq` is the
   latest input the attempt consumed (folded steers included, merely queued
   inputs never) — the value a completed reply would anchor to — so editing a

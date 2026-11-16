@@ -180,8 +180,8 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   The model view drops assistant `reasoning`/`reasoning-file` parts
   unless the message's `metadata.model` equals the attempt's serving
   ref — the same `stepModelRef` value stamped on the landed reply.
-  Missing or foreign origin fails closed; the resume partial is exempt
-  (a resumed turn never switches models). Codex `replayScope` still
+  Missing or foreign origin fails closed; the recovery partial is exempt
+  (a continuation never switches models). Codex `replayScope` still
   applies on top, narrower still (model+account). Prior art: pi-ai
   `transformMessages` (pi-mono/packages/ai/src/api/transform-messages.ts).
 - **Codex session affinity & receipts.** Cache affinity rides a derived
@@ -327,12 +327,12 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
     conversation that goes AI-SDK turn with tool call → claude-code turn
     → AI-SDK turn lands before mixing ships. No test covered a
     mid-conversation engine switch as of 2026-11-02.
-  - **Run row and resume.** The row records the ref it ran on and the
-    conversation's configured ref. Resume continues on the recorded ref:
-    a resumed turn never switches models. The drift check compares
-    configured refs (an operator re-selection still refuses). A recorded
-    ref whose provider has since been removed is not refused at resume;
-    the resumed turn fails loud at step build instead.
+  - **Run row and continuation.** The row records the ref it ran on and the
+    conversation's configured ref. A continuation (overflow, fallback)
+    continues on the recorded ref: it never switches models. The drift
+    check compares configured refs. A recorded
+    ref whose provider has since been removed is not refused at continuation;
+    the continued turn fails loud at step build instead.
   - **Compaction.** The summarizer walks the same list (its call is
     single, tools-off and non-streamed, so any throw is zero effect).
     This amends "the summarizer is the conversation's own model": it is

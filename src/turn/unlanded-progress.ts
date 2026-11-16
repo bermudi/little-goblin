@@ -259,8 +259,8 @@ export async function replyFromWire(chunks: readonly MessageChunk[]): Promise<Me
 // The process-death rail: at journal open, a row still 'running' is
 // reclassified 'interrupted' and its progress lands in history in the
 // same transaction (turn-journal.ts calls this inside it). Only rows
-// newly reclassified at this open — historical interrupted rows keep
-// their resume-only semantics.
+// newly reclassified at this open — historical interrupted rows stay
+// inert history (#594: nothing resumes them).
 export function appendInterruptedProgress(
 	store: ConversationStore,
 	run: TurnRun,

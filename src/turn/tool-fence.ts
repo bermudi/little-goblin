@@ -78,11 +78,10 @@ export function fenceTools(opts: {
 			return value;
 		}
 		if (journal !== undefined && runId !== undefined) {
-			// Recovery fence: a signature that collides with the
-			// interrupted attempt's own history is evidence, never an
-			// answer. An operator's grant CAS-consumes in the same
-			// transaction as the dispatch; a refusal journals as a
-			// synthetic replayed result — it never reads as execution.
+			// Recovery fence: a signature that collides with the earlier
+			// attempt's own history is evidence, never an answer. A
+			// refusal journals as a synthetic replayed result — it never
+			// reads as execution.
 			const verdict = classifyRetry(name, guard?.get(replayKey(name, input)));
 			if (verdict.kind === "refuse") {
 				const value = { error: verdict.error };
@@ -98,18 +97,7 @@ export function fenceTools(opts: {
 				});
 				return value;
 			}
-			note(() =>
-				journal.noteToolDispatch(
-					runId,
-					options.toolCallId,
-					name,
-					input,
-					verdict.kind === "execute-grant" ? { retryCallId: verdict.grant.toolCallId } : undefined,
-				),
-			);
-			if (verdict.kind === "execute-grant") {
-				verdict.grant.retryConsumed = true;
-			}
+			note(() => journal.noteToolDispatch(runId, options.toolCallId, name, input));
 		}
 		let result: ReturnType<typeof execute>;
 		try {

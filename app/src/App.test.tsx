@@ -3081,7 +3081,9 @@ describe("app projects surface", () => {
 		);
 		await settleSlow();
 		await click(
-			[...card!.querySelectorAll(".note-pick li button")].find((b) => b.textContent === "Shopping"),
+			[...card!.querySelectorAll(".note-pick [role=option] button")].find(
+				(b) => b.textContent === "Shopping",
+			),
 		);
 		await settle();
 		const append = posts.find((p) => p.url === "/api/app/notes/n-shopping/append");
@@ -3113,7 +3115,7 @@ describe("app projects surface", () => {
 		);
 		await settleSlow();
 		await click(
-			[...card!.querySelectorAll(".note-pick li button")].find(
+			[...card!.querySelectorAll(".note-pick [role=option] button")].find(
 				(b) => b.textContent === "New note “Ideas”",
 			),
 		);

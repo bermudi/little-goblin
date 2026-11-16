@@ -154,6 +154,7 @@ export function SkillPickerSheet({
 							className="mono"
 							placeholder="Filter skills"
 							aria-label="Filter skills"
+							autoFocus
 							autoComplete="off"
 							spellCheck={false}
 						/>

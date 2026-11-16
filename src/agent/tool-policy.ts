@@ -58,6 +58,7 @@ export const TOOL_NAMES = [
 	"speak",
 	"transcribe",
 	"vision",
+	"read_long",
 	"generate_image",
 	"program",
 	"delegate",
@@ -90,6 +91,9 @@ export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
 	speak: P({ guestChannel: false }),
 	transcribe: P({ scriptable: true }),
 	vision: P({}),
+	// Calls a model on untrusted text — guests lose it like the other
+	// provider-calling tools.
+	read_long: P({ output: "untrusted", guestChannel: false }),
 	generate_image: P({ guestChannel: false }),
 	program: P({ guestChannel: false }),
 	delegate: P({ guestChannel: false }),

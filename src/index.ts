@@ -328,6 +328,7 @@ async function boot() {
 		mail: () => mailApproval,
 		programApproval: () => programApproval,
 		visionDepsFor,
+		complete: () => complete,
 		sandboxes,
 		subagents: () => subagents,
 		desktops: () => desktops,
@@ -349,7 +350,7 @@ async function boot() {
 		sessions: claudeSessions,
 	});
 
-	const stepBuilder = makeStepBuilder({
+	const { complete, ...stepBuilder } = makeStepBuilder({
 		configRef,
 		auth,
 		store,

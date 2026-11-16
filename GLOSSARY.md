@@ -14,6 +14,7 @@
 - **Subagent:** a durable run on Goblin's own Pi Durable runtime. It has two kinds, worker and computer.
 - **Worker:** a subagent that does standalone work in a conversation's sandbox.
 - **Computer:** a subagent that does screen work on a named desktop.
+- **Helper:** one tool-less model call that `read_long` makes inside a turn. It reads one file (or one part of it) and answers one question. It is not durable and cannot act.
 - **Settlement:** the point where a delegation or subagent run stops and states a result: done, needs input, or failed.
 - **Worker report:** one settlement filed on a responsibility. It is the agent's claim, and Goblin still checks it.
 - **Notice:** the machine message that gives a settlement to Goblin and wakes the conversation.

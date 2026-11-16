@@ -41,9 +41,10 @@ test("descriptors reproduce the former name lists", () => {
 			"speak",
 			"send_file",
 			"generate_image",
+			"read_long",
 		].sort(),
 	);
-	expect(names((p) => p.output === "untrusted")).toEqual(["fetch", "search", "web_search"]);
+	expect(names((p) => p.output === "untrusted")).toEqual(["fetch", "read_long", "search", "web_search"]);
 	expect(names((p) => p.writesFiles)).toEqual(["edit_file", "script", "write_file"]);
 	expect(names((p) => p.composes)).toEqual(["script"]);
 });

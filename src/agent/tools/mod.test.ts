@@ -190,6 +190,7 @@ describe("toolNames ↔ makeTools", () => {
 			history: {} as unknown as HistorySearchDeps,
 			// Mounted so the wire-schema invariant covers vision too.
 			vision: {} as unknown as VisionToolDeps,
+			readLong: { conversation: "dm:1", complete: async () => "" },
 			// Same for the subagents pair — the invariant only covers the
 			// tools the call actually mounts.
 			subagent: {

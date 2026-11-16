@@ -2,6 +2,19 @@
 // conformance: anything unrecognized stays literal text.
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+	Check,
+	Code,
+	Copy,
+	Info,
+	Lightbulb,
+	MessageSquareWarning,
+	OctagonAlert,
+	Terminal,
+	TextWrap,
+	TriangleAlert,
+	X,
+} from "lucide-react";
 import { useCopy } from "./useCopy.ts";
 import { appendNote, createNote, listNotes } from "./api.ts";
 import type { AppNoteSummary } from "../../src/http/app-wire.ts";
@@ -148,7 +161,10 @@ function CodeBlock({
 }) {
 	const { copied, failed, copy } = useCopy();
 	const [open, setOpen] = useState(false);
+	const [wrap, setWrap] = useState(false);
 	const lines = code.split("\n").length;
+	const shell = /^(?:bash|sh|zsh|shell|console|status)$/.test(lang.split(/\s/, 1)[0] ?? "");
+	const LangIcon = shell ? Terminal : Code;
 	const clipped = clip === true && lines > CLIP_MIN;
 	// highlight() throws on a grammar bug or unregistered language —
 	// hljs escapes markup in its output, so the value is safe HTML.
@@ -166,16 +182,41 @@ function CodeBlock({
 	return (
 		<div className="codeblock">
 			<div className="codeblock-head">
-				<span className="codeblock-lang">{lang === "" ? "text" : lang}</span>
-				<button
-					type="button"
-					className="codeblock-copy"
-					aria-label={failed ? "Copy failed" : undefined}
-					aria-live="polite"
-					onClick={() => copy(code)}
-				>
-					{copied ? "✓" : failed ? "copy failed" : "copy"}
-				</button>
+				<span className="codeblock-title">
+					<LangIcon size={12} strokeWidth={1.75} aria-hidden />
+					<span className="codeblock-lang">{lang === "" ? "text" : lang}</span>
+				</span>
+				<span className="codeblock-tools">
+					<button
+						type="button"
+						className="codeblock-btn"
+						aria-label={wrap ? "Don't wrap lines" : "Wrap lines"}
+						aria-pressed={wrap}
+						title={wrap ? "Don't wrap lines" : "Wrap lines"}
+						onClick={() => setWrap((w) => !w)}
+					>
+						<TextWrap size={13} strokeWidth={1.75} aria-hidden />
+					</button>
+					<button
+						type="button"
+						className={`codeblock-btn codeblock-copy${copied ? " done" : ""}`}
+						aria-label={copied ? "Copied" : failed ? "Copy failed" : "Copy code"}
+						title={copied ? "Copied" : failed ? "Copy failed" : "Copy code"}
+						aria-live="polite"
+						onClick={() => copy(code)}
+					>
+						{copied ? (
+							<Check key="ok" size={13} strokeWidth={2} aria-hidden />
+						) : failed ? (
+							<>
+								<X key="no" size={13} strokeWidth={2} aria-hidden />
+								<span className="codeblock-copy-err">copy failed</span>
+							</>
+						) : (
+							<Copy key="cp" size={13} strokeWidth={1.75} aria-hidden />
+						)}
+					</button>
+				</span>
 			</div>
 			<div className="codeblock-body">
 				{/* The cap is a visual clip, not a cut — the pre always holds the
@@ -183,7 +224,7 @@ function CodeBlock({
 				    against the pre's own line-height and --codeblock-pad-b its
 				    bottom padding, so styles.css keeps owning both metrics. */}
 				<pre
-					className={clipped && !open ? "clip" : undefined}
+					className={[clipped && !open ? "clip" : "", wrap ? "wrap" : ""].join(" ").trim() || undefined}
 					style={
 						clipped && !open
 							? { maxHeight: `calc(${CLIP_LINES}lh + var(--codeblock-pad-b))` }
@@ -211,6 +252,17 @@ function CodeBlock({
 		</div>
 	);
 }
+
+// GitHub alert blockquotes: `> [!NOTE]` on the quote's first line.
+const ALERTS = {
+	note: { label: "Note", Icon: Info },
+	tip: { label: "Tip", Icon: Lightbulb },
+	important: { label: "Important", Icon: MessageSquareWarning },
+	warning: { label: "Warning", Icon: TriangleAlert },
+	caution: { label: "Caution", Icon: OctagonAlert },
+} as const;
+type AlertKind = keyof typeof ALERTS;
+const ALERT_HEAD = /^\[!(note|tip|important|warning|caution)\]\s*$/i;
 
 // Ordered markers keep their number only to decide the <ol> — items
 // render their own position.
@@ -704,10 +756,31 @@ export function Markdown({
 				quote.push(lines[i]!.replace(/^\s*>\s?/, ""));
 				i++;
 			}
+			const alert = ALERT_HEAD.exec(quote[0] ?? "");
+			const kind = alert === null ? null : (alert[1]!.toLowerCase() as AlertKind);
+			const body = kind === null ? quote : quote.slice(1);
+			const head =
+				kind === null ? null : (
+					<div className="md-alert-title">
+						{(() => {
+							const { Icon, label } = ALERTS[kind];
+							return (
+								<>
+									<Icon size={14} strokeWidth={1.75} aria-hidden />
+									{label}
+								</>
+							);
+						})()}
+					</div>
+				);
 			blocks.push(
-				<blockquote key={key++} className="md-quote">
+				<blockquote
+					key={key++}
+					className={kind === null ? "md-quote" : `md-quote md-alert md-alert-${kind}`}
+				>
+					{head}
 					<Markdown
-						text={quote.join("\n")}
+						text={body.join("\n")}
 						token={token}
 						noteProjectId={noteProjectId}
 						onOpenNote={onOpenNote}

@@ -19,33 +19,37 @@ import { searchView } from "./search.tsx";
 import { writeView } from "./write.tsx";
 
 const VIEWS: Record<string, ToolView> = {
-	search: searchView,
-	fetch: fetchView,
-	bash: bashView,
-	read_file: readView,
-	edit_file: editView,
-	write_file: writeView,
-	script: scriptView,
-	artifact: artifactView,
+  search: searchView,
+  fetch: fetchView,
+  bash: bashView,
+  read_file: readView,
+  edit_file: editView,
+  write_file: writeView,
+  script: scriptView,
+  artifact: artifactView,
 };
 
 // input-available means the args finished streaming and the call is
 // executing; approval-responded is pending execution the same way.
-const RUNNING = new Set(["input-streaming", "input-available", "approval-responded"]);
+const RUNNING = new Set([
+  "input-streaming",
+  "input-available",
+  "approval-responded",
+]);
 const WAITING = new Set(["approval-requested"]);
 
 export function partRunning(part: ToolUIPart | DynamicToolUIPart): boolean {
-	return RUNNING.has(part.state);
+  return RUNNING.has(part.state);
 }
 
 export function partFailed(part: ToolUIPart | DynamicToolUIPart): boolean {
-	return part.state === "output-error" || part.state === "output-denied";
+  return part.state === "output-error" || part.state === "output-denied";
 }
 
 interface PartFace {
-	face: Face;
-	open: boolean;
-	stateLabel: string | null;
+  face: Face;
+  open: boolean;
+  stateLabel: string | null;
 }
 
 // The part → face mapping, shared by the row renderer and the Worked
@@ -54,83 +58,91 @@ interface PartFace {
 // (the unlanded record) — a streaming state can never progress there,
 // so it draws settled with "no result recorded" instead of the
 // running shimmer.
-function faceFor(part: ToolUIPart | DynamicToolUIPart, ended?: boolean): PartFace {
-	const name = getToolName(part);
-	const view = VIEWS[name] ?? genericView;
-	switch (part.state) {
-		case "output-available":
-			return {
-				face: view.done(part.input, part.output) ?? genericView.done(part.input, part.output)!,
-				open: false,
-				stateLabel: null,
-			};
-		case "output-error": {
-			const text = part.errorText ?? "tool failed";
-			return {
-				face: {
-					summary: joinSummary(view.inputHint(part.input), `failed — ${firstLine(text, 96)}`),
-					detail: (
-						<div className="tool-body">
-							<ErrBox text={text} />
-						</div>
-					),
-					failed: true,
-				},
-				open: true,
-				stateLabel: null,
-			};
-		}
-		case "output-denied":
-			return {
-				face: {
-					summary: joinSummary(view.inputHint(part.input), "refused"),
-					detail: (
-						<div className="tool-body">
-							<span className="tool-meta">the call was refused</span>
-						</div>
-					),
-					failed: true,
-				},
-				open: true,
-				stateLabel: null,
-			};
-		default: {
-			// input-streaming / input-available / approval-requested and any
-			// future state: the expanded row shows the args received so far —
-			// running keeps the shimmer under them, waiting stands alone —
-			// never a blank. An ended message's stuck states stand alone too:
-			// the turn is over, so the args are the record, not a live call.
-			const running = !ended && RUNNING.has(part.state);
-			const stranded = !running && ended && RUNNING.has(part.state);
-			return {
-				face: {
-					summary: view.inputHint(part.input) ?? "",
-					detail: running ? (
-						<Skeleton>
-							{part.input !== undefined && (
-								<>
-									<span className="tool-meta">input</span>
-									<Clip text={shortJson(part.input)} />
-								</>
-							)}
-						</Skeleton>
-					) : (
-						<div className="tool-body">
-							<Clip text={shortJson(part.input)} />
-						</div>
-					),
-				},
-				open: running,
-				stateLabel: running
-					? "running"
-					: stranded
-						? "no result recorded"
-						: WAITING.has(part.state)
-							? "waiting"
-							: part.state,
-			};
-		}
-	}
+function faceFor(
+  part: ToolUIPart | DynamicToolUIPart,
+  ended?: boolean,
+): PartFace {
+  const name = getToolName(part);
+  const view = VIEWS[name] ?? genericView;
+  switch (part.state) {
+    case "output-available":
+      return {
+        face:
+          view.done(part.input, part.output) ??
+          genericView.done(part.input, part.output)!,
+        open: false,
+        stateLabel: null,
+      };
+    case "output-error": {
+      const text = part.errorText ?? "tool failed";
+      return {
+        face: {
+          summary: joinSummary(
+            view.inputHint(part.input),
+            `failed — ${firstLine(text, 96)}`,
+          ),
+          detail: (
+            <div className="tool-body">
+              <ErrBox text={text} />
+            </div>
+          ),
+          failed: true,
+        },
+        open: true,
+        stateLabel: null,
+      };
+    }
+    case "output-denied":
+      return {
+        face: {
+          summary: joinSummary(view.inputHint(part.input), "refused"),
+          detail: (
+            <div className="tool-body">
+              <span className="tool-meta">the call was refused</span>
+            </div>
+          ),
+          failed: true,
+        },
+        open: true,
+        stateLabel: null,
+      };
+    default: {
+      // input-streaming / input-available / approval-requested and any
+      // future state: the expanded row shows the args received so far —
+      // running keeps the shimmer under them, waiting stands alone —
+      // never a blank. An ended message's stuck states stand alone too:
+      // the turn is over, so the args are the record, not a live call.
+      const running = !ended && RUNNING.has(part.state);
+      const stranded = !running && ended && RUNNING.has(part.state);
+      return {
+        face: {
+          summary: view.inputHint(part.input) ?? "",
+          detail: running ? (
+            <Skeleton>
+              {part.input !== undefined && (
+                <>
+                  <span className="tool-meta">input</span>
+                  <Clip text={shortJson(part.input)} />
+                </>
+              )}
+            </Skeleton>
+          ) : (
+            <div className="tool-body">
+              <Clip text={shortJson(part.input)} />
+            </div>
+          ),
+        },
+        open: running,
+        stateLabel: running
+          ? "running"
+          : stranded
+            ? "no result recorded"
+            : WAITING.has(part.state)
+              ? "waiting"
+              : part.state,
+      };
+    }
+  }
 }
 
 // The collapsed-Worked fragment for one part — "search «q» · 5
@@ -138,35 +150,75 @@ function faceFor(part: ToolUIPart | DynamicToolUIPart, ended?: boolean): PartFac
 // The name glues to the input hint with a space; the face summary's own
 // "·" separates the outcome.
 export function partSummaryLine(part: ToolUIPart | DynamicToolUIPart): string {
-	const summary = faceFor(part).face.summary;
-	return summary === "" ? getToolName(part) : `${getToolName(part)} ${summary}`;
+  const summary = faceFor(part).face.summary;
+  return summary === "" ? getToolName(part) : `${getToolName(part)} ${summary}`;
 }
 
 export function ToolRun({
-	part,
-	ended,
+  part,
+  ended,
 }: {
-	part: ToolUIPart | DynamicToolUIPart;
-	ended?: boolean;
+  part: ToolUIPart | DynamicToolUIPart;
+  ended?: boolean;
 }) {
-	const name = getToolName(part);
-	const view = VIEWS[name] ?? genericView;
-	const { face, open, stateLabel } = faceFor(part, ended);
-	return (
-		<li>
-			<details className="tool-run" open={open}>
-				<summary>
-					<span className="tool-ic">{view.icon}</span>
-					<span className="tool-name">{name}</span>
-					{face.summary !== "" && (
-						<span className={face.failed === true ? "tool-sum err" : "tool-sum"}>
-							{face.summary}
-						</span>
-					)}
-					{stateLabel !== null && <span className={`tool-state ${stateLabel}`}>{stateLabel}</span>}
-				</summary>
-				{face.detail}
-			</details>
-		</li>
-	);
+  const name = getToolName(part);
+  const view = VIEWS[name] ?? genericView;
+  const { face, open, stateLabel } = faceFor(part, ended);
+  return (
+    <li>
+      <details className="tool-run" open={open}>
+        <summary>
+          <span className="tool-ic">{view.icon}</span>
+          <span className="tool-name">{name}</span>
+          {face.summary !== "" && (
+            <span
+              className={face.failed === true ? "tool-sum err" : "tool-sum"}
+            >
+              {face.summary}
+            </span>
+          )}
+          {stateLabel !== null && (
+            <span className={`tool-state ${stateLabel}`}>{stateLabel}</span>
+          )}
+        </summary>
+        {face.detail}
+      </details>
+    </li>
+  );
+}
+
+// The collapsed Worked line for a run of calls, t3code-style: one call
+// keeps its detailed one-liner; several group into a sentence by kind —
+// "Read 3 files, ran 2 commands". Order follows first appearance.
+const VERBS: Record<string, [string, string]> = {
+  read_file: ["read", "file"],
+  edit_file: ["edited", "file"],
+  write_file: ["wrote", "file"],
+  bash: ["ran", "command"],
+  search: ["ran", "search"],
+  fetch: ["fetched", "page"],
+  script: ["ran", "script"],
+  artifact: ["published", "artifact"],
+};
+function plural(n: number, noun: string): string {
+  if (n === 1) return `1 ${noun}`;
+  return `${n} ${noun.endsWith("h") ? `${noun}es` : `${noun}s`}`;
+}
+export function activitySummary(
+  parts: readonly (ToolUIPart | DynamicToolUIPart)[],
+): string {
+  if (parts.length === 1) return partSummaryLine(parts[0]!);
+  const counts = new Map<string, number>();
+  for (const p of parts) {
+    const name = getToolName(p);
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  const phrases = [...counts].map(([name, n]) => {
+    const verb = VERBS[name];
+    return verb === undefined
+      ? `called ${name}${n > 1 ? ` ×${n}` : ""}`
+      : `${verb[0]} ${plural(n, verb[1])}`;
+  });
+  const s = phrases.join(", ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }

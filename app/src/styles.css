@@ -201,7 +201,7 @@ code {
 	font-size: 0.85em;
 }
 p code,
-.msg.user code {
+.msg.user :not(pre) > code {
 	background: var(--app-hover);
 	border-radius: 6px;
 	padding: 0.15rem 0.3rem;
@@ -1253,6 +1253,29 @@ header h1 {
 	border-radius: 16px;
 	padding: 0.4rem 0.8rem;
 }
+/* Consecutive user turns read as one run: the joined corners tighten. */
+.msg.user.before-user {
+	border-bottom-right-radius: 6px;
+	margin-bottom: 0.25rem;
+}
+.msg.user.after-user {
+	border-top-right-radius: 6px;
+}
+.user-fold.folded {
+	max-height: 12lh;
+	overflow: hidden;
+}
+.user-fold.clipped {
+	mask-image: linear-gradient(to bottom, #000 70%, transparent);
+}
+.user-fold-toggle {
+	font-size: 12px;
+	color: var(--app-fg-muted);
+	padding: 0.1rem 0;
+}
+.user-fold-toggle:hover {
+	color: var(--app-fg);
+}
 .msg.user p {
 	margin: 0.4em 0;
 }
@@ -1375,6 +1398,25 @@ h6.md-h {
 	padding-left: 0.8rem;
 	margin: 0.55em 0;
 	color: var(--app-fg-muted);
+}
+/* GitHub alerts reuse goblin's two signal colours: accent informs,
+   danger warns. */
+.md-alert {
+	--alert: var(--app-accent);
+	border-left-color: var(--alert);
+	color: var(--app-fg);
+}
+.md-alert-warning,
+.md-alert-caution {
+	--alert: var(--app-danger);
+}
+.md-alert-title {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	font-weight: 500;
+	color: var(--alert);
+	margin: 0.2em 0;
 }
 .md-quote p {
 	margin: 0.4em 0;
@@ -1761,6 +1803,68 @@ h6.md-h {
 .codeblock-copy:hover {
 	background: var(--app-hover);
 	color: var(--app-fg);
+}
+.codeblock-title {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.35rem;
+	color: var(--app-fg-muted);
+	min-width: 0;
+}
+.codeblock-tools {
+	display: inline-flex;
+	gap: 0.1rem;
+}
+.codeblock-btn {
+	display: inline-grid;
+	place-items: center;
+	width: 1.5rem;
+	height: 1.5rem;
+	padding: 0;
+	border-radius: 6px;
+	color: var(--app-fg-muted);
+	opacity: 0.6;
+	transition: background-color 100ms, opacity 100ms;
+}
+.codeblock:hover .codeblock-btn,
+.codeblock-btn:focus-visible,
+.codeblock-btn[aria-pressed="true"],
+.codeblock-btn.done {
+	opacity: 1;
+}
+.codeblock-btn:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.codeblock-btn[aria-pressed="true"] {
+	color: var(--app-fg);
+}
+.codeblock-btn svg {
+	animation: codeblock-pop 160ms ease-out;
+}
+@keyframes codeblock-pop {
+	from {
+		transform: scale(0.6);
+		opacity: 0;
+	}
+}
+.codeblock-copy-err {
+	margin-left: 0.25rem;
+	font-size: 11px;
+}
+.codeblock-btn:has(.codeblock-copy-err) {
+	width: auto;
+	padding: 0 0.4rem;
+	display: inline-flex;
+}
+.codeblock pre.wrap {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+}
+@media (prefers-reduced-motion: reduce) {
+	.codeblock-btn svg {
+		animation: none;
+	}
 }
 .codeblock pre {
 	margin: 0;
@@ -5206,6 +5310,55 @@ select.ui-input option {
 		transition: none !important;
 		animation: none !important;
 	}
+}
+
+/* ---------- live chat state (t3code mechanisms, goblin styling) ----------
+   Blocks arriving in a streaming message fade in once; history never
+   animates because the class only exists while the message streams. */
+.msg.assistant.streaming > * {
+	animation: stream-in 600ms ease-out both;
+}
+@keyframes stream-in {
+	from {
+		opacity: 0;
+		transform: translateY(2px);
+	}
+	to {
+		opacity: 1;
+		transform: none;
+	}
+}
+.reasoning-fold > summary {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	min-width: 0;
+}
+.reasoning-fold > summary::before {
+	margin-right: 0;
+}
+.reasoning-ic {
+	flex: none;
+	color: var(--app-fg-subtle);
+}
+.reasoning-label {
+	flex: none;
+}
+/* The newest thought line rides the summary while thinking. */
+.reasoning-preview {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-weight: 400;
+	color: var(--app-fg-subtle);
+}
+.reasoning-fold[open] .reasoning-preview {
+	display: none;
+}
+.working {
+	flex: none;
 }
 
 /* ---------- undo toast (design/app.md → Undo) ----------

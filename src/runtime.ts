@@ -782,9 +782,9 @@ export class Runtime {
 			const delivery = sinkDelivery(sink, () => this.checkAuthority(convId, epoch));
 			// #477's gate arms only once buildStep names the engine: the
 			// streamText engine folds steers at its prepareStep boundary,
-			// so a parked steer skips unlaunched calls; a claude-code
-			// attempt never claims mid-turn — the steer leads the
-			// successor turn and this stays false.
+			// so a parked steer skips unlaunched calls. A claude-code
+			// attempt folds when a tool call settles (#582) and keeps
+			// the gate off: the CLI, not goblin, dispatches its calls.
 			const steerGate = { armed: false };
 			const auth = openToolAuthority({
 				conv,
@@ -851,6 +851,9 @@ export class Runtime {
 					: entries.filter((e) => e.seq > claudeRec.seenSeq && e.seq !== claudeRec.replySeq);
 			const sentSeqMax =
 				viewEntries.length === 0 ? null : Math.max(...viewEntries.map((e) => e.seq));
+			// Steers the attempt folded mid-turn (#582) — the native
+			// session holds them, so the record's watermark may cover them.
+			const foldedSeqs = new Set<number>();
 			const viewOptions = {
 				entries: viewEntries,
 				prior: memory.prior,
@@ -925,7 +928,10 @@ export class Runtime {
 				steerMarkSeed: snapshot.steerMarkSeed,
 				ownedInputSeqs: [...ownedInputSeqs],
 				onOwnedInputs: (seqs) => {
-					for (const seq of seqs) ownedInputSeqs.add(seq);
+					for (const seq of seqs) {
+						ownedInputSeqs.add(seq);
+						foldedSeqs.add(seq);
+					}
 				},
 				sourceInputSeq,
 				partial: recovery?.partial ?? null,
@@ -1079,6 +1085,28 @@ export class Runtime {
 				landedReplySeq !== null
 			) {
 				const headUuid = outcome.claudeSession.headUuid;
+				let seenSeq = sentSeqMax ?? claudeRec?.seenSeq ?? 0;
+				if (foldedSeqs.size > 0) {
+					// Advance past the folded steers only when every entry
+					// up to the last one was sent: a message still queued
+					// between them must reach the next turn's delta. A held
+					// watermark re-sends the steers instead — a duplicate,
+					// never a loss.
+					const top = Math.max(...foldedSeqs);
+					const unsent = store
+						.modelEntries(convId)
+						.filter((e) => e.seq > seenSeq && e.seq <= top && !foldedSeqs.has(e.seq))
+						.map((e) => e.seq);
+					if (unsent.length === 0) seenSeq = top;
+					else {
+						log.info("claude session watermark held below folded steers", {
+							conversation: convId,
+							seenSeq,
+							folded: [...foldedSeqs],
+							unsent,
+						});
+					}
+				}
 				if (headUuid !== "") {
 					try {
 						this.deps.claudeSessions?.put({
@@ -1086,7 +1114,7 @@ export class Runtime {
 							modelRef: step.label,
 							sessionId: outcome.claudeSession.sessionId,
 							headUuid,
-							seenSeq: sentSeqMax ?? claudeRec?.seenSeq ?? 0,
+							seenSeq,
 							replySeq: landedReplySeq,
 						});
 					} catch (err) {

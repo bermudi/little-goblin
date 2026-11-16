@@ -323,7 +323,7 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
     claude-code engine replays the whole view each turn with no SDK
     session. Codex hosted parts drop off non-codex views. A fallback
     that lands on claude-code inherits that engine's v1 rulings (steers
-    defer to the next turn). **Gate:** a runtime test of one
+    fold at tool settle, #582). **Gate:** a runtime test of one
     conversation that goes AI-SDK turn with tool call → claude-code turn
     → AI-SDK turn lands before mixing ships. No test covered a
     mid-conversation engine switch as of 2026-11-02.
@@ -536,9 +536,18 @@ decisions and their why:
   goblin's process env never sees the token. `CLAUDE_CONFIG_DIR` pins
   all child state under `$GOBLIN_HOME/state/claude-code/` — nothing
   touches `~/.claude`. The updater and nonessential traffic are off.
-- **v1 rulings.** Steered messages defer to the next turn (the CLI's
-  loop offers no mid-run injection seam — folding would mean a second
-  query; queued steers lead the successor turn as usual). No forced
+- **v1 rulings.** Steers fold mid-turn (#582). The turn query's input
+  stays open; after each bridged tool call settles, and before the CLI
+  gets its result, the engine claims steers and sends them as user
+  messages with `priority: "next"` and a fresh uuid. The CLI adds them
+  to its next model call and acks the uuid in `user_message_uuids`
+  (probed live 2026-11-15, CLI 2.1.311: `now` aborts running tools,
+  `later` waits for a new CLI turn). A result that arrives before the
+  ack means the CLI starts a new turn for the steer; the engine reads
+  at most 2 such follow-ups. A turn with no tool call never claims:
+  its steers lead the successor turn as before. The session watermark
+  (#418) moves past a folded steer only when no unsent entry sits
+  below it. The #477 steer gate stays off for this engine. No forced
   toolChoice cuts: the loop detector and watchdog still journal their
   state but cannot cut this engine; there is no `maxTurns` cap either — the
   no-step-budget ruling below applies to this engine too. Rate-limit and
@@ -556,7 +565,9 @@ decisions and their why:
   record (next turn starts fresh from the folded view) and never fails
   the goblin fold. Reviewer, titles,
   and vision stay on AI SDK models (they are goblin's own calls, not
-  the operator's conversation).
+  the operator's conversation). Per-call output usage comes from the
+  stream's final `message_delta`; result-frame usage is a cross-check
+  that logs a mismatch.
 - **Pinned, not assumed.** The SDK's event shapes are pinned as
   structural types (translate.ts) behind an injectable `ClaudeQuery`
   seam — the fake query (testkit/fake-claude.ts) drives the engine

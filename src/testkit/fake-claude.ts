@@ -5,7 +5,10 @@
 // real CLI emits (translate.ts shapes — no vendor import, boundary-safe).
 // Tool steps run a caller-supplied closure (the engine test wires the
 // real bridge's invoke) and echo its outcome, exercising the full
-// tool_use → bridge execution → tool_result adoption path.
+// tool_use → bridge execution → tool_result adoption path. Steers the
+// engine pushes during a tool step are drained right after it; `ack`
+// and `result` steps script how the CLI answers them (live behaviour:
+// design/model.md → claude-code).
 
 import type {
 	ClaudeAssistantEvent,
@@ -14,6 +17,7 @@ import type {
 	ClaudeQuery,
 	ClaudeQueryCall,
 	ClaudeResultEvent,
+	ClaudeSteer,
 	ClaudeStreamEvent,
 	ClaudeUsage,
 } from "../agent/claude-code/translate.ts";
@@ -35,7 +39,7 @@ function usage(u: FakeUsageInput = {}): ClaudeUsage {
 }
 
 export type FakeStep =
-	| { kind: "stream-text"; text: string; usage?: FakeUsageInput }
+	| { kind: "stream-text"; text: string; usage?: FakeUsageInput; deltaUsage?: FakeUsageInput }
 	| { kind: "text"; text: string; usage?: FakeUsageInput }
 	| { kind: "reasoning"; text: string; usage?: FakeUsageInput }
 	| {
@@ -64,7 +68,11 @@ export type FakeStep =
 			onEnter?: () => void;
 			until: Promise<void>;
 	  }
-	| { kind: "raw"; events: ClaudeEvent[] };
+	| { kind: "raw"; events: ClaudeEvent[] }
+	/** The CLI acks every drained, unacked steer (a `folded` frame). */
+	| { kind: "ack" }
+	/** A mid-script success result — the CLI turn ends, a follow-up may run. */
+	| { kind: "result"; usage?: FakeUsageInput };
 
 export interface FakeClaudeHandle {
 	query: ClaudeQuery;
@@ -72,6 +80,8 @@ export interface FakeClaudeHandle {
 	calls: ClaudeQueryCall[];
 	/** Every assistant-frame uuid emitted, in order — the #418 head anchors. */
 	assistantUuids: string[];
+	/** Every steer the engine pushed, in order, drained after tool steps. */
+	steers: ClaudeSteer[];
 	/** Script for the NEXT uncalled turn (tests usually script one). */
 	script(steps: FakeStep[]): void;
 	/** Per-call scripts consumed in order — resume-failure retries need two. */
@@ -84,6 +94,7 @@ const nextId = (p: string): string => `${p}-fake-${(blockSeq += 1)}`;
 export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 	const calls: ClaudeQueryCall[] = [];
 	const assistantUuids: string[] = [];
+	const steers: ClaudeSteer[] = [];
 	let nextScript: FakeStep[] | null = initial.length > 0 ? initial : null;
 	let scriptQueue: FakeStep[][] = [];
 	const noteUuid = (uuid: string): string => {
@@ -91,7 +102,11 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 		return uuid;
 	};
 
-	const stepEvents = async function* (steps: FakeStep[]): AsyncGenerator<ClaudeEvent> {
+	const stepEvents = async function* (
+		steps: FakeStep[],
+		call: ClaudeQueryCall,
+	): AsyncGenerator<ClaudeEvent> {
+		let unacked: string[] = [];
 		const resultUsage: ClaudeUsage = {
 			input_tokens: 0,
 			output_tokens: 0,
@@ -99,17 +114,27 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 			cache_creation_input_tokens: null,
 		};
 		let turns = 0;
-		const accumulate = (u: ClaudeUsage | undefined): void => {
+		const accumulate = (u: Partial<ClaudeUsage> | undefined): void => {
 			if (u === undefined) return;
 			resultUsage.input_tokens = (resultUsage.input_tokens ?? 0) + (u.input_tokens ?? 0);
 			resultUsage.output_tokens = (resultUsage.output_tokens ?? 0) + (u.output_tokens ?? 0);
 		};
+		const deltaUsage = (u: FakeUsageInput | undefined): Partial<ClaudeUsage> | null =>
+			u === undefined
+				? null
+				: {
+						...(u.inputTokens !== undefined ? { input_tokens: u.inputTokens } : {}),
+						...(u.outputTokens !== undefined ? { output_tokens: u.outputTokens } : {}),
+						...(u.cacheRead !== undefined ? { cache_read_input_tokens: u.cacheRead } : {}),
+						...(u.cacheWrite !== undefined ? { cache_creation_input_tokens: u.cacheWrite } : {}),
+					};
 		for (const step of steps) {
 			turns += 1;
 			switch (step.kind) {
 				case "stream-text": {
 					const u = usage(step.usage);
-					accumulate(u);
+					const delta = deltaUsage(step.deltaUsage);
+					accumulate(delta ?? u);
 					yield {
 						type: "stream",
 						event: { type: "message_start", message: { model: "fake", usage: u } },
@@ -144,7 +169,7 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 						event: {
 							type: "message_delta",
 							delta: { stop_reason: "end_turn" },
-							usage: null,
+							usage: delta,
 						},
 					};
 					yield { type: "stream", event: { type: "message_stop" } };
@@ -212,6 +237,9 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 							ran = { output: null, error: err instanceof Error ? err.message : String(err) };
 						}
 					}
+					const pushed = call.steers?.drain() ?? [];
+					steers.push(...pushed);
+					unacked.push(...pushed.map((steer) => steer.uuid));
 					const content =
 						ran !== null ? (ran.error ?? "ok") : (step.content ?? "[cli rendered result]");
 					yield {
@@ -252,6 +280,27 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 					yield* step.events;
 					break;
 				}
+				case "ack": {
+					if (unacked.length > 0) yield { type: "folded", uuids: unacked };
+					unacked = [];
+					break;
+				}
+				case "result": {
+					yield {
+						type: "result",
+						subtype: "success",
+						isError: false,
+						result: "done",
+						numTurns: turns,
+						durationMs: 5,
+						totalCostUsd: 0,
+						usage: step.usage === undefined ? resultUsage : usage(step.usage),
+						modelUsage: null,
+					};
+					resultUsage.input_tokens = 0;
+					resultUsage.output_tokens = 0;
+					break;
+				}
 			}
 		}
 		const result: ClaudeResultEvent = {
@@ -273,13 +322,14 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 		const steps =
 			scriptQueue.length > 0 ? scriptQueue.shift()! : (nextScript ?? []);
 		nextScript = null;
-		return stepEvents(steps);
+		return stepEvents(steps, call);
 	};
 
 	return {
 		query,
 		calls,
 		assistantUuids,
+		steers,
 		script: (steps) => {
 			nextScript = steps;
 		},

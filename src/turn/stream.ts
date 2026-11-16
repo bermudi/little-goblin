@@ -181,6 +181,117 @@ export function joinMember<M extends WireMember>(
 	replayWire(convId, member, live);
 }
 
+// ---------- the steer fold ----------
+
+/** One attempt's steer ledger: the steer mark and its owned input seqs. */
+export interface SteerLedger {
+	mark: number;
+	owned: Set<number>;
+}
+
+export function openSteerLedger(deps: {
+	steerMarkSeed: number;
+	ownedInputSeqs: number[];
+}): SteerLedger {
+	return { mark: deps.steerMarkSeed, owned: new Set(deps.ownedInputSeqs) };
+}
+
+type SteerFoldDeps<M extends WireMember> = Pick<
+	StreamDeps<M>,
+	| "convId"
+	| "live"
+	| "members"
+	| "view"
+	| "holdsAuthority"
+	| "claimSteers"
+	| "unrequeueSteers"
+	| "settle"
+	| "noteRunMembers"
+	| "onOwnedInputs"
+	| "saveStep"
+	| "sourceInputSeq"
+>;
+
+/**
+ * Both engines' model-call boundary: claim the waiting steers, convert
+ * them, join the ones that converted as members, and persist ownership
+ * with the mark. null = authority lost (the claim went back to the
+ * queue); otherwise the converted messages, empty when none joined.
+ */
+export async function foldSteers<M extends WireMember>(
+	deps: SteerFoldDeps<M>,
+	ledger: SteerLedger,
+	step: number,
+): Promise<{ injected: ModelMessage[] } | null> {
+	const { convId, live, members } = deps;
+	const steered = deps.claimSteers();
+	if (steered.length === 0) return { injected: [] };
+	if (!deps.holdsAuthority()) {
+		deps.unrequeueSteers(steered);
+		return null;
+	}
+	const injected: ModelMessage[] = [];
+	// Claimed by event seq, never by message id — ids are
+	// client-controlled and may repeat, so an id match could claim a
+	// steer that failed conversion as owned input. The wake link's
+	// identity is the same seq set.
+	const claimedSeqs = new Set<number>();
+	let admittedCount = 0;
+	for (const t of steered) {
+		try {
+			const converted = await convertSteeredMessage(deps.view, t.message);
+			if (!deps.holdsAuthority()) {
+				deps.settle(t, { kind: "fenced" });
+				continue;
+			}
+			injected.push(...converted);
+			joinMember(convId, live, members, t);
+			claimedSeqs.add(t.seq);
+			admittedCount++;
+		} catch (err) {
+			if (!deps.holdsAuthority()) {
+				deps.settle(t, { kind: "fenced" });
+				continue;
+			}
+			log.warn("steer conversion failed — submit errored, message degrades in later views", err, {
+				conversation: convId,
+				message: t.message.id,
+			});
+			deps.settle(t, {
+				kind: "error",
+				message: `that message could not be prepared for the model: ${err instanceof Error ? err.message : String(err)}`,
+			});
+		}
+	}
+	// Joined members are this run's input now — the wake link
+	// lands before the request does, so a completion can't settle
+	// a delivery it never owned.
+	if (claimedSeqs.size > 0) deps.noteRunMembers?.([...claimedSeqs]);
+	if (injected.length === 0) return { injected };
+	// Ownership and the mark persist together — a crash after the
+	// fold must still name these steered inputs the attempt's own.
+	// Each seq came through conversion with its event, so only the
+	// steers this attempt actually folded are recorded as owned.
+	// Ownership is the member's own durable seq, never a rediscovery
+	// through app-controlled message ids.
+	for (const seq of claimedSeqs) {
+		if (seq > ledger.mark) ledger.mark = seq;
+		ledger.owned.add(seq);
+	}
+	deps.onOwnedInputs?.([...claimedSeqs]);
+	deps.saveStep({
+		ownedInputSeqs: [...ledger.owned],
+		steerMark: ledger.mark,
+		sourceInputSeq: deps.sourceInputSeq?.(),
+	});
+	log.info("steered into turn", {
+		conversation: convId,
+		submits: admittedCount,
+		step,
+	});
+	return { injected };
+}
+
 // ---------- the driver ----------
 
 export interface DisplaySink {
@@ -364,8 +475,7 @@ export async function driveStream<M extends WireMember>(
 	// carry its text.
 	let streamedTail = "";
 	let lastTailCheckpointMs = 0;
-	let steerMark = deps.steerMarkSeed;
-	const ownedInputSeqs = new Set<number>(deps.ownedInputSeqs);
+	const steers = openSteerLedger(deps);
 	// The finish metadata part is written after the final step, so the
 	// last prepareStep capture is that step's outbound prompt — the
 	// window the gauge itemizes.
@@ -452,58 +562,9 @@ export async function driveStream<M extends WireMember>(
 				.drainWarnings()
 				.map((content): ModelMessage => ({ role: "user", content }));
 			const nudge: ModelMessage[] = cut !== null ? [{ role: "user", content: CUT_NUDGE[cut] }] : [];
-			const steered = deps.claimSteers();
-			if (steered.length === 0) {
-				if (forced || warnMsgs.length > 0) {
-					const outbound = [...stepMessages, ...warnMsgs, ...nudge];
-					notePrompt(outbound, stepNumber);
-					return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
-				}
-				notePrompt(stepMessages, stepNumber);
-				return undefined;
-			}
-			if (!deps.holdsAuthority()) {
-				deps.unrequeueSteers(steered);
-				return undefined;
-			}
-			const injected: ModelMessage[] = [];
-			// Claimed by event seq, never by message id — ids are
-			// client-controlled and may repeat, so an id match could claim a
-			// steer that failed conversion as owned input. The wake link's
-			// identity is the same seq set.
-			const claimedSeqs = new Set<number>();
-			let admittedCount = 0;
-			for (const t of steered) {
-				try {
-					const converted = await convertSteeredMessage(deps.view, t.message);
-					if (!deps.holdsAuthority()) {
-						deps.settle(t, { kind: "fenced" });
-						continue;
-					}
-					injected.push(...converted);
-					joinMember(convId, live, members, t);
-					claimedSeqs.add(t.seq);
-					admittedCount++;
-				} catch (err) {
-					if (!deps.holdsAuthority()) {
-						deps.settle(t, { kind: "fenced" });
-						continue;
-					}
-					log.warn(
-						"steer conversion failed — submit errored, message degrades in later views",
-						err,
-						{ conversation: convId, message: t.message.id },
-					);
-					deps.settle(t, {
-						kind: "error",
-						message: `that message could not be prepared for the model: ${err instanceof Error ? err.message : String(err)}`,
-					});
-				}
-			}
-			// Joined members are this run's input now — the wake link
-			// lands before the request does, so a completion can't settle
-			// a delivery it never owned.
-			if (claimedSeqs.size > 0) deps.noteRunMembers?.([...claimedSeqs]);
+			const folded = await foldSteers(deps, steers, stepNumber);
+			if (folded === null) return undefined;
+			const { injected } = folded;
 			if (injected.length === 0) {
 				if (forced || warnMsgs.length > 0) {
 					const outbound = [...stepMessages, ...warnMsgs, ...nudge];
@@ -513,27 +574,6 @@ export async function driveStream<M extends WireMember>(
 				notePrompt(stepMessages, stepNumber);
 				return undefined;
 			}
-			// Ownership and the mark persist together — a crash after the
-			// fold must still name these steered inputs the attempt's own.
-			// Each seq came through conversion with its event, so only the
-			// steers this attempt actually folded are recorded as owned.
-			// Ownership is the member's own durable seq, never a rediscovery
-			// through app-controlled message ids.
-			for (const seq of claimedSeqs) {
-				if (seq > steerMark) steerMark = seq;
-				ownedInputSeqs.add(seq);
-			}
-			deps.onOwnedInputs?.([...claimedSeqs]);
-			deps.saveStep({
-				ownedInputSeqs: [...ownedInputSeqs],
-				steerMark,
-				sourceInputSeq: deps.sourceInputSeq?.(),
-			});
-			log.info("steered into turn", {
-				conversation: convId,
-				submits: admittedCount,
-				step: stepNumber,
-			});
 			const outbound = [...stepMessages, ...warnMsgs, ...injected, ...nudge];
 			notePrompt(outbound, stepNumber);
 			return {
@@ -953,7 +993,7 @@ export async function driveStream<M extends WireMember>(
 			toolCalls,
 			digestRing,
 			loop: state.snapshot(),
-			steerMark,
+			steerMark: steers.mark,
 			filterRetryUsed,
 			window: windowCapture(),
 			model: modelLabel,
@@ -981,7 +1021,7 @@ export async function driveStream<M extends WireMember>(
 		lastStepInputTokens,
 		toolCalls,
 		digestRing,
-		steerMark,
+		steerMark: steers.mark,
 		window: windowCapture(),
 		model: modelLabel,
 		steps: stepCount,

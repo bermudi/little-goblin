@@ -197,3 +197,11 @@ export function promptText(prompt: PromptContent): string {
 		.map((b) => (b.kind === "text" ? b.text : `[${b.kind}: ${b.mediaType}]`))
 		.join("\n\n");
 }
+
+// A steer folded mid-turn: the same transcript rendering, no trailer —
+// the CLI's own session already holds everything before it.
+export function serializeSteer(messages: readonly ModelMessage[]): PromptContent {
+	const blocks: PromptContent["blocks"] = [];
+	for (const msg of messages) messageBlocks(msg, blocks);
+	return { blocks };
+}

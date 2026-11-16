@@ -172,7 +172,6 @@ export function SkillPickerSheet({
 									value={c.name}
 									data-value={c.name}
 									className="skill-picker-row"
-									title={`Invoke ${c.name} — its SKILL.md (${bytes(c.bodyBytes)}) rides the next turn`}
 								>
 									<span className="skill-picker-main">
 										<span className="skill-picker-name">

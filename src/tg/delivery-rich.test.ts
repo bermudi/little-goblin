@@ -7,7 +7,7 @@ import { parseConfig } from "../config.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
-import { makeDeliverySink } from "./delivery.ts";
+import { makeDeliverySink, type DeliveryApi, type DeliverySinkOptions } from "./delivery.ts";
 import { resetMessageEffectsGateForTests } from "./delivery-text.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -628,4 +628,47 @@ describe("rich delivery", () => {
 			done();
 		}
 	});
+});
+
+// Regression (PR #573 verify): an ignored reasoning delta must not run the
+// sink's flush, or it eats the edit interval and delays the first answer.
+describe("ignored reasoning delta", () => {
+	const cases: Array<{ name: string; id: string; persona: Conversation["persona"]; rich: DeliverySinkOptions["rich"] }> = [
+		{ name: "plain DM", id: "dm:1", persona: conv.persona, rich: { enabled: false } },
+		{ name: "group", id: "topic:-100:7", persona: conv.persona, rich: { enabled: true, reasoning: true } },
+		{ name: "rich DM, reasoning off", id: "dm:1", persona: conv.persona, rich: { enabled: true, reasoning: false } },
+		{ name: "guest rich DM", id: "dm:1", persona: "guest", rich: { enabled: true, reasoning: true } },
+	];
+	for (const c of cases) {
+		test(`does not delay the first answer: ${c.name}`, async () => {
+			const messages: string[] = [];
+			const api = {
+				sendChatAction: async () => true,
+				editMessageText: async () => true,
+				sendMessageDraft: async () => true,
+				sendRichMessageDraft: async (_chat: number, _draft: number, body: { markdown?: string }) => {
+					if (body.markdown !== undefined) messages.push(body.markdown);
+					return true;
+				},
+				sendMessage: async (_chat: number, body: string) => {
+					messages.push(body);
+					return { message_id: messages.length };
+				},
+			} as unknown as DeliveryApi;
+			const group = c.id !== "dm:1";
+			const sink = makeDeliverySink(
+				api,
+				{ ...conv, id: c.id, chatId: group ? -100 : 1, threadId: group ? 7 : null, persona: c.persona },
+				{ ...(c.rich === undefined ? {} : { rich: c.rich }), editIntervalMs: 60_000, typingIntervalMs: 60_000 },
+			);
+			try {
+				sink.onReasoningDelta("ignored reasoning");
+				sink.onTextDelta("hello");
+				await Bun.sleep(0);
+				expect(messages).toContain("hello");
+			} finally {
+				await sink.onDone({ kind: "fenced" });
+			}
+		});
+	}
 });

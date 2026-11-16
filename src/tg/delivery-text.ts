@@ -9,6 +9,8 @@ import { parseAddress } from "../conversation-address.ts";
 import type { TurnDone } from "../turn/sink.ts";
 
 export const CHUNK_LIMIT = 3800;
+export const TG_MESSAGE_LIMIT = 4096;
+export const TYPING_INTERVAL_MS = 4_000;
 export const RICH_LIMIT = 32_000;
 export const REASONING_BLOCK_OVERHEAD =
 	"<details><summary>Thinking</summary>\n<pre></pre>\n</details>\n\n".length + 1;

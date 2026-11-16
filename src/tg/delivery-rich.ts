@@ -40,7 +40,8 @@ export function makeRichDelivery(
 ): {
 	pushDrafts(body: string): void;
 	refreshRichDrafts(): void;
-	onReasoningDelta(delta: string): void;
+	/** False when reasoning is ignored, so the sink must not flush. */
+	onReasoningDelta(delta: string): boolean;
 	finalize(done: TurnDone): Promise<boolean>;
 	stampSuperseded(): Promise<boolean>;
 } {
@@ -65,9 +66,10 @@ export function makeRichDelivery(
 		throw err;
 	}
 
-	function onReasoningDelta(delta: string): void {
-		if (!ctx.richMode() || !reasoningOn) return;
+	function onReasoningDelta(delta: string): boolean {
+		if (!ctx.richMode() || !reasoningOn) return false;
 		reasoningText += delta;
+		return true;
 	}
 
 	function refreshRichDrafts(): void {

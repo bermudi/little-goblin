@@ -689,7 +689,7 @@ export function makeDeliverySink(
 			if (!voice?.voiceMode) maybeFlush();
 		},
 		onReasoningDelta(delta) {
-			richDelivery.onReasoningDelta(delta);
+			if (!richDelivery.onReasoningDelta(delta)) return;
 			if (!voice?.voiceMode) maybeFlush();
 		},
 		onToolCall(toolName, input) {

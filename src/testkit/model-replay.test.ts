@@ -294,6 +294,41 @@ describe("recordedModel", () => {
 		expect(existsSync(path)).toBe(false);
 	});
 
+	test("record cancels an inner stream when an error part aborts capture", async () => {
+		let cancellations = 0;
+		const failingInner: LanguageModelV4 = {
+			specificationVersion: "v4",
+			provider: "fake",
+			modelId: "inner-failing",
+			supportedUrls: {},
+			async doGenerate(): Promise<never> {
+				throw new Error("unimplemented doGenerate");
+			},
+			async doStream() {
+				return {
+					stream: new ReadableStream<LanguageModelV4StreamPart>({
+						start(controller) {
+							controller.enqueue({ type: "error", error: new Error("provider exploded") });
+						},
+						pull() {
+							return new Promise<void>(() => {});
+						},
+						cancel() {
+							cancellations++;
+						},
+					}),
+				};
+			},
+		};
+		const model = recordedModel({
+			path: join(tmpDir(), "errored-open.json"),
+			rerecord: RERECORD,
+			record: failingInner,
+		});
+		await expect(model.doStream(baseOptions())).rejects.toThrow("inner stream emitted an error part");
+		expect(cancellations).toBe(1);
+	});
+
 	test("record rejects when the inner stream ends without a finish part", async () => {
 		const path = join(tmpDir(), "unfinished.json");
 		const parts: LanguageModelV4StreamPart[] = [

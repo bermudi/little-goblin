@@ -346,6 +346,69 @@ describe("CodexLanguageModel — request shape", () => {
 		);
 		await expect(model.doGenerate({ prompt: [] })).rejects.toThrow("before a terminal response");
 	});
+
+	test("sseEvents releases its body reader when [DONE] ends iteration early", async () => {
+		const path = authDir({ access_token: jwt(FUTURE) });
+		let cancellations = 0;
+		const model = new CodexLanguageModel(
+			"gpt-6-astra",
+			path,
+			async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+						},
+						pull() {
+							return new Promise<void>(() => {});
+						},
+						cancel() {
+							cancellations++;
+						},
+					}),
+				),
+		);
+		const result = await model.doStream({ prompt: [] });
+		const reader = result.stream.getReader();
+		for (;;) {
+			const { done } = await reader.read();
+			if (done) break;
+		}
+		reader.releaseLock();
+		expect(cancellations).toBe(1);
+	});
+
+	test("doGenerate releases its stream reader when an error part throws", async () => {
+		const path = authDir({ access_token: jwt(FUTURE) });
+		let cancellations = 0;
+		const model = new CodexLanguageModel(
+			"gpt-6-astra",
+			path,
+			async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(
+								new TextEncoder().encode(
+									`data: ${JSON.stringify({
+										type: "response.failed",
+										response: { error: { message: "upstream failed" } },
+									})}\n\n`,
+								),
+							);
+						},
+						pull() {
+							return new Promise<void>(() => {});
+						},
+						cancel() {
+							cancellations++;
+						},
+					}),
+				),
+		);
+		await expect(model.doGenerate({ prompt: [] })).rejects.toThrow("codex stream response.failed");
+		expect(cancellations).toBe(1);
+	});
 });
 
 // ---------- reasoning retention ----------

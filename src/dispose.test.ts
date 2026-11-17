@@ -12,6 +12,16 @@ const MKDTEMP_ALLOWLIST = new Map([
 	["agent/tools/", "excluded: another branch owns agent tools"],
 ]);
 
+const GET_READER_ALLOWLIST = new Map([
+	["proc.ts", "function-scoped, try/finally releases on every exit"],
+	["agent/filter-stream.ts", "stream-lifetime owner: the wrapper's cancel releases it"],
+	["agent/providers.ts", "stream-lifetime owner: the wrapper's cancel releases it"],
+	["http/check.ts", "function-scoped, try/finally releases on every exit"],
+	["health/http.ts", "function-scoped, try/finally releases on every exit"],
+	["agent/tools/", "deferred until #657 lands"],
+	["agent/transcribe-whistle.ts", "deferred until #657 lands: its readCapped moves to agent/tools/web.ts"],
+]);
+
 function walk(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
 		const path = join(dir, entry.name);
@@ -111,4 +121,22 @@ describe("disposable resources", () => {
 			);
 		expect(offenders, "own temp dirs with `await using tempDir()` (src/dispose.ts) or add a reason to MKDTEMP_ALLOWLIST").toEqual([]);
 	});
+
+	test("bare getReader calls are owned or explicitly explained", () => {
+		const offenders = walk(import.meta.dir)
+			.filter((file) => file !== join(import.meta.dir, "dispose.ts"))
+			.map((file) => file.slice(import.meta.dir.length + 1))
+			.filter((name) => /getReader\s*\(/.test(readFileSync(join(import.meta.dir, name), "utf8")))
+			.filter(
+				(name) =>
+					![...GET_READER_ALLOWLIST.keys()].some(
+						(entry) => entry.endsWith("/") ? name.startsWith(entry) : name === entry,
+					),
+			);
+		expect(
+			offenders,
+			"own stream readers with `await using ownedReader()` (src/dispose.ts) or add a reason to GET_READER_ALLOWLIST",
+		).toEqual([]);
+	});
+
 });

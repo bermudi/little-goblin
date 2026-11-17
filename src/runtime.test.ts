@@ -1578,6 +1578,37 @@ describe("context overflow recovery", () => {
 		r.store.close();
 	});
 
+	test("the resumed call's context note drops the pre-overflow usage figure", async () => {
+		const s = scripted([textParts("first", 400), overflowError(), textParts("the answer")], {
+			extra: textParts("ok"),
+		});
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async (_conv, _system, prompt) => foldSummary("the folded era", prompt),
+				},
+			},
+		});
+		try {
+			seedExchanges(r.store, r.conv.id);
+			await submit(r, "first request").done;
+			expect(await submit(r, "live question").done).toEqual({ kind: "completed" });
+			await drain(r);
+			// The overflowed attempt carried the stored figure; the resume
+			// reads a compacted view that figure no longer describes.
+			expect(s.prompts[1]).toContain("tokens used (40%)]");
+			expect(s.prompts[2]).toContain("the folded era");
+			expect(s.prompts[2]).toContain("[context: 1k token window]");
+			expect(s.prompts[2]).not.toContain("tokens used");
+		} finally {
+			r.store.close();
+		}
+	});
+
 	test("a mid-turn overflow resumes without re-running tools — one merged reply", async () => {
 		const s = scripted(
 			[

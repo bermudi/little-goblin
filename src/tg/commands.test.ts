@@ -1069,10 +1069,11 @@ describe("forget delete against in-flight retention", () => {
 // #340 drift guard: every command COMMAND_RE recognizes must be handled
 // exactly once — by handleCommand's switch below, or by the
 // interceptions handleMessage (src/tg/intake.ts) runs before it: /new
-// and /back (dm navigation) and /skill (async door, ruling 2026-10-21;
-// folding it into the switch is #462). A listed command with neither
-// is silently treated as ordinary text; a switch case nothing lists is
-// dead. Both drift directions fail here.
+// and /back (dm navigation), /skill /learn /curator (async doors,
+// rulings 2026-10-21 and 2026-11-16; folding them into the switch is
+// #462). A listed command with neither is silently treated as ordinary
+// text; a switch case nothing lists is dead. Both drift directions fail
+// here.
 describe("command surface drift (#340)", () => {
 	test("recognized commands are exactly the switch cases plus the documented interceptions", () => {
 		const source = readFileSync(join(import.meta.dir, "commands.ts"), "utf8");
@@ -1080,7 +1081,7 @@ describe("command surface drift (#340)", () => {
 		const alternation = COMMAND_RE.source.match(/^\^\\\/\(([^)]+)\)/)?.[1] ?? "";
 		expect(alternation).not.toBe("");
 		const recognized = alternation.split("|").map((name) => `/${name}`);
-		const intercepted = ["/new", "/back", "/skill"];
+		const intercepted = ["/new", "/back", "/skill", "/learn", "/curator"];
 		expect([...switchCases].sort()).toEqual(
 			[...recognized].filter((cmd) => !intercepted.includes(cmd)).sort(),
 		);

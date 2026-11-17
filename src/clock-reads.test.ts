@@ -133,9 +133,7 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/conversation.ts": 3,
 	"src/delegation-actions.ts": 2,
 	"src/delegation-notices.ts": 1,
-	// 7: the needs_input resume re-seeds the stall clock from the
-	// observation that proved liveness (#607 t3 transport).
-	"src/delegation-watcher.ts": 7,
+	"src/delegation-watcher.ts": 2,
 	// 4: openDelegations settles legacy pre-T3 rows at a `now = new Date()`
 	// seam — same pattern as the other three (#607 t3 transport).
 	"src/delegations.ts": 4,
@@ -149,13 +147,19 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/http/app-sse.ts": 3,
 	"src/http/app-turns.ts": 2,
 	"src/http/auth.ts": 2,
+	// The submit/boot doors take one-shot event timestamps for the
+	// usage sidecar (age math reads the passed-in now — skill-curator
+	// has no direct read): app-chat's chat door, index's boot pass +
+	// read-watch + the two patch seams, skill-command's /skill door.
+	"src/http/app-chat.ts": 1,
 	"src/http/check.ts": 3,
 	"src/http/mod.ts": 4,
 	"src/http/operator-memory.ts": 8,
 	"src/http/operator-status.ts": 1,
 	// 2 since #604: the composition root injects real time into the
-	// agent-children engine (its own clock seam).
-	"src/index.ts": 2,
+	// agent-children engine (its own clock seam). #626's usage-sidecar
+	// one-shot timestamps add the rest — see the block comment above.
+	"src/index.ts": 6,
 	"src/injection.ts": 3,
 	"src/log.ts": 4,
 	"src/mail-approval.ts": 3,
@@ -201,8 +205,8 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/tg/guest.ts": 3,
 	"src/tg/inbox.ts": 1,
 	"src/tg/pings.ts": 1,
-	"src/tg/skill-command.ts": 2,
-	"src/turn-journal.ts": 10,
+	"src/tg/skill-command.ts": 3,
+	"src/turn-journal.ts": 5,
 	"src/turn/finish.ts": 1,
 	"src/turn/stream.ts": 3,
 	"src/wake-dispatcher.ts": 1,

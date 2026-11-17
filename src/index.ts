@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 import pkg from "../package.json";
 import { createClaudeEngine } from "./agent/claude-code/mod.ts";
@@ -63,6 +64,14 @@ import { Runtime } from "./runtime.ts";
 import { makeSandboxes, openSandboxes, warnIfStranded } from "./sandboxes.ts";
 import { fireMail, fireWebhook, startScheduler } from "./scheduler.ts";
 import { SkillSources } from "./skill-provenance.ts";
+import { curatorConfig, passDue, runCuratorPass } from "./skill-curator.ts";
+import {
+	noteSkillPatch,
+	noteSkillUse,
+	readSkillUsage,
+	writeSkillUsage,
+} from "./skill-usage.ts";
+import { skillUnderPath } from "./turn/skill-attribution.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
 import { telegramAddressOf } from "./targets.ts";
 import { filterGuestTools } from "./tg/guest.ts";
@@ -181,6 +190,32 @@ async function boot() {
 	// One table: the reviewer and the turn stream record, the operator
 	// doors read.
 	const skillSources = new SkillSources(store.db);
+	// The deterministic curator pass — boot and turn completion, gated
+	// on the sidecar's lastCuratorRun (design/skills.md → Self-authoring,
+	// /learn, curator). Config reads live: no restart-pinning. The
+	// sidecar write is one-process (this boot); a pass throw logs.
+	const curatorPass = (): void => {
+		const cfg = curatorConfig(configRef.current.curator);
+		if (cfg === undefined) return; // absent block = off
+		const now = new Date();
+		const usagePath = paths.skillUsage();
+		const file = readSkillUsage(usagePath);
+		if (!passDue(file, now)) return;
+		const { file: next, counters } = runCuratorPass(file, skillSources.managedNames(), cfg, now);
+		writeSkillUsage(usagePath, next);
+		log.info("curator pass", {
+			...counters,
+			staleDays: cfg.staleDays,
+			archiveDays: cfg.archiveDays,
+		});
+	};
+	try {
+		curatorPass();
+	} catch (err) {
+		// Boot must survive a dirty sidecar or a busy filesystem — the
+		// next turn completion retries.
+		log.warn("boot curator pass failed — retried after the next settled turn", err, {});
+	}
 	for (const conv of store.listAppConversations()) store.initializeAppSettings(conv.id, config);
 	const programs = openPrograms(paths.db());
 	programs.rePinDmTopics();
@@ -315,6 +350,14 @@ async function boot() {
 		responsibility: () => responsibilitySvc,
 		agents: () => agentChildrenEngine,
 		filterGuests: filterGuestTools,
+		// read_file of a catalog SKILL.md is a use — the curator's clock
+		// (design/skills.md → Self-authoring, /learn, curator). Only the
+		// SKILL.md itself counts: support files ride the body's use.
+		noteSkillRead: (abs) => {
+			const name = skillUnderPath([paths.skills()], abs);
+			if (name === null || abs !== join(paths.skills(), name, "SKILL.md")) return;
+			noteSkillUse(paths.skillUsage(), name, new Date());
+		},
 	});
 
 	// The claude-code engine: bound whenever a claude-code provider is
@@ -360,6 +403,9 @@ async function boot() {
 		recordWindow: windowCapture.record,
 		windowVersion: windowCapture.version,
 		claudeSessions,
+		// The curator pass gate: boot and every settled turn, off the
+		// reply path. Its own interval check makes it a no-op until due.
+		onTurnSettled: curatorPass,
 		...stepBuilder,
 		makeTools: makeTurnTools,
 		...(memory.turnDeps ? { memory: memory.turnDeps } : {}),
@@ -376,10 +422,15 @@ async function boot() {
 
 	// Turn-write attribution is independent of the reviewer — a manual
 	// skill authored mid-thread is provenance even when reviews are off.
+	// The same seam bumps the usage sidecar's patch counter (a draft
+	// write counts too — the name's engagement is real either way).
 	runtime.setSkillWatch({
 		skillsDir: paths.skills(),
 		proposedDir: paths.skillsProposed(),
-		record: (conversationId, skill) => skillSources.record(conversationId, skill, "turn"),
+		record: (conversationId, skill) => {
+			skillSources.record(conversationId, skill, "turn");
+			noteSkillPatch(paths.skillUsage(), skill, new Date());
+		},
 	});
 
 	// The bot attaches in the init task kicked after HTTP and the
@@ -459,8 +510,13 @@ async function boot() {
 		notify: (conversationId, skills) =>
 			sendSkillProposedNotice(attach.api(), conversationId, skills, paths.skillsProposed()),
 		recordSources: (conversationId, reviewId, skills) => {
-			for (const skill of skills)
+			// The patch bump rides the provenance record — a reviewer draft
+			// write is real engagement with the name (design/skills.md →
+			// Self-authoring, /learn, curator).
+			for (const skill of skills) {
 				skillSources.record(conversationId, skill, "reviewer", undefined, reviewId);
+				noteSkillPatch(paths.skillUsage(), skill, new Date());
+			}
 		},
 	});
 	if (system1Gate !== null) {
@@ -796,6 +852,7 @@ async function boot() {
 			mailLanes,
 			rewireWake: delivery.rewireWake,
 			tick: () => scheduler.tick(),
+			skillSources,
 		});
 	}
 

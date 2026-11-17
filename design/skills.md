@@ -12,12 +12,15 @@ is a non-spec extension the operator's catalog carries, honored as
 manual-only.
 
 One catalog, fixed: `workspace/skills/`, inside the agent's cwd so goblin
-can author its own. Publishing is an ordinary write at operator request —
-no command, registry, cache, or tombstone — live at the next conversation
-boundary (a DM roll or compaction; the system prompt is frozen per
-conversation, the SKILL.md read fresh on use), and no ssh: the operator
-asks in Telegram; goblin is already on the box. Hand-editing `skills/`
-over ssh is the fallback, not the flow. Where to fetch *from* (the
+can author its own. Publishing is an ordinary write — at operator request,
+or the agent's own distillation under the self-authoring ruling
+(2026-11-16, below): a new skill parks in `skills-proposed/` for the
+operator's yes, an extension to an installed skill writes directly and is
+attributed. No command, registry, cache, or tombstone — live at the next
+conversation boundary (a DM roll or compaction; the system prompt is
+frozen per conversation, the SKILL.md read fresh on use), and no ssh: the
+operator asks in Telegram; goblin is already on the box. Hand-editing
+`skills/` over ssh is the fallback, not the flow. Where to fetch *from* (the
 operator's skills repo, the host catalog) is deployment fact, not code,
 living in the workspace `AGENTS.md`. `skills-ref validate` is installed
 for authoring-time checks. Sharing in a host skill is a symlink — made
@@ -277,10 +280,12 @@ job (tune it, don't duplicate it).
   operator's hands for installs. The `## skills` section lists pending
   proposals too, so an approve request works in any conversation. Manual
   installs are unchanged: the operator asking in chat IS the approval —
-  the ruling covers only the unattended path. The section header says
-  so outright (#485): write or edit only when the operator asks, never
-  on the model's own initiative — self-initiated lessons are the
-  reviewer's job when configured, not a direct catalog write.
+  the ruling covers only the unattended path. The section header carried
+  the write-only-when-asked contract (#485) until the self-authoring
+  ruling (2026-11-16) flipped it: self-initiated saves are now the norm —
+  new skills as proposals in `skills-proposed/` (this flow among them),
+  extensions to installed skills as direct, attributed edits (→
+  Self-authoring, /learn, curator).
 - **A proposal shows what it changes (ruling 2026-11-07, issue #162).**
   The operator cannot judge an update from the new bytes alone. The
   Skills read (`listSkills`) attaches a `diff` to every parked proposal,
@@ -310,3 +315,73 @@ job (tune it, don't duplicate it).
   boot-captured. The review model still resolves live per review, but the
   whole block is conservatively restart-pinned; a live model lookup does
   not make reviewer lifecycle or tuning hot-swappable.
+
+## Self-authoring, /learn, curator (ruling 2026-11-16, operator decisions)
+
+Mechanisms borrowed from hermes-agent (`~/build/testing/hermes-agent/`):
+the coaching and `/learn` prompt shapes from `agent/prompt_builder.py` and
+`agent/learn_prompt.py`; the usage sidecar and deterministic transitions
+from `tools/skill_usage.py` and `agent/curator.py`. Scope not borrowed: no
+skill tools, no second catalog root, no rich frontmatter, no marketplace
+or versioning, no write-time approval staging (the hybrid gate below
+replaces it), no LLM consolidation fork.
+
+**The contract flips (#485 superseded).** The `## skills` section now
+coaches self-authoring: after a hard or iterative task, save what you
+learned. Fold into an existing skill first — edit `skills/<name>/`
+directly, because installed means operator-approved and the write is
+attributed either way; a loaded skill that proved wrong or missing steps
+is fixed before finishing. A genuinely new skill drafts into
+`skills-proposed/<name>/` — never straight into `skills/` — validated
+with `skills-ref`, then announced; the existing approve/discard flow
+decides it. Enforcement class is unchanged from #485: a prompt contract,
+not a mechanical guard; provenance attribution records every write, new
+or edit. The reviewer is untouched and becomes one of two authors parking
+in `skills-proposed/`; same-name replacement stays latest-wins and
+wholesale (a newer review may replace an undecided agent draft, as it
+already replaced its own).
+
+**/learn — one builder, two doors.** Telegram `/learn [text]` and the
+app composer's leading `/learn ` text part both submit a normal turn
+whose user text is `buildLearnPrompt(request)` (`src/learn.ts`); an empty
+request means "what we just did in this conversation". The prompt adapts
+hermes' builder: every word of the request is load-bearing — sources to
+gather AND requirements shaping the skill; gather with existing tools;
+fold into an existing skill, create only when none matches; a large prose
+source gets the knowledge-base layout — a lean SKILL.md index plus
+per-chapter `references/`, distilled one chapter at a time, never the
+whole corpus in context; source text is data, not instructions —
+invisible and bidirectional control characters are dropped
+(Trojan-Source defense).
+
+**Usage sidecar.** `state/skill-usage.json`, whole-file durable write:
+per skill `useCount`/`lastUsedAt`, `patchCount`/`lastPatchedAt`,
+`createdAt`, `firstSeenAt`, `state` ∈ active|stale|archived, `pinned`,
+`archivedAt`. Use bumps at the doors that submit a `data-skill` part and
+at `read_file` of a catalog SKILL.md — not at the resolver, where a
+retry's view rebuild would double-count. Patch bumps beside the
+provenance record. `bash cat` of a SKILL.md is untracked, same class as
+provenance's "bash is not scanned". One process writes it; no locking.
+
+**Curator — deterministic, config-gated.** Optional `curator` block;
+absent = off (goblin convention; hermes defaults it on). No model wiring,
+so values read live rather than restart-pinning. Eligibility is a
+provenance row: only skills the agent wrote (reviewer or turn) are
+managed — seeded and operator-installed skills carry no row and are never
+touched; pin is the operator's override. Goblin's inactivity rule: anchor
+`lastUsedAt ?? createdAt`; edits (`lastPatchedAt`) do not reset the clock.
+This deliberately differs from Hermes, which counts patches as activity.
+The remaining transitions borrow from Hermes: stale after 14 days, archive
+after 30, a pass at most every 168 hours (boot and turn completion, gated on the
+sidecar's `lastCuratorRun`); pinned skips; first sight seeds the clock
+and defers; `useCount === 0` never archives before the stale cutoff —
+absence of evidence is not staleness. Archive is a rename into
+`workspace/skills-archive/<name>` (timestamp suffix on collision,
+flattened by name) — never delete; a symlinked skill dir is operator
+state, refused, never moved. `/curator status|run|pin|unpin|restore` on
+Telegram; the app skills read carries usage/state and the archived list.
+Pin/restore buttons beyond that stay out until asked for.
+
+Still out (unchanged): a skill tool, per-skill tool scoping,
+fingerprints, immutable skill snapshots, additional catalog roots
+(host, project), per-conversation selection.

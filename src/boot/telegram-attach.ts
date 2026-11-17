@@ -34,6 +34,7 @@ import type { MemorySurfaces } from "../memory/mod.ts";
 import type { ProgramsStore } from "../programs.ts";
 import type { ProgramApproval } from "../program-approval.ts";
 import type { Runtime } from "../runtime.ts";
+import type { SkillSources } from "../skill-provenance.ts";
 import type { System1Client } from "../system1.ts";
 import { makeBotCleanup } from "../tg/cleanup.ts";
 import { withTimeout } from "../tg/deadline.ts";
@@ -89,6 +90,9 @@ export interface TelegramAttachStart {
 	rewireWake(api: WakeApi): void;
 	/** scheduler.tick() — catch up occurrences held while unattached. */
 	tick(): void;
+	/** The /curator door's provenance read — managed names for status and
+	 *  pin. Absent = the command answers unavailable. */
+	skillSources?: Pick<SkillSources, "managedNames">;
 }
 
 export interface TelegramAttach {
@@ -263,6 +267,9 @@ export function openTelegramAttach(deps: TelegramAttachDeps): TelegramAttach {
 								mail: () => telegramMailApproval,
 								programApproval: () => telegramProgramApproval,
 								followUpGate: () => startDeps.gate ?? undefined,
+								...(startDeps.skillSources !== undefined
+									? { skillSources: startDeps.skillSources }
+									: {}),
 							},
 							canAttachTelegram,
 						);

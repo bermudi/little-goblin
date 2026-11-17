@@ -423,6 +423,7 @@ export interface SkillDecideResponse {
 export type { DiffLine } from "../line-diff.ts";
 export type { SkillDiff, SkillFileDiff } from "../skill-diff.ts";
 export type {
+	ArchivedSkillItem,
 	AttachmentsResponse,
 	IdentityFile,
 	IdentityResponse,
@@ -433,4 +434,5 @@ export type {
 	ProposedSkillItem,
 	SkillFileResponse,
 	SkillsResponse,
+	SkillUsageRow,
 } from "../stateview.ts";

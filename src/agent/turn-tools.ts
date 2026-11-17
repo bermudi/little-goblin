@@ -96,6 +96,10 @@ export interface TurnToolsDeps {
 	// tg/guest.ts owns the exclusion policy — injected so tools never
 	// imports back into tg/.
 	filterGuests<T extends Record<string, unknown>>(conv: Conversation, tools: T): T;
+	/** Successful read_file resolved paths — the skill-usage watch
+	 *  (design/skills.md → Self-authoring, /learn, curator). Absent in
+	 *  tests. */
+	noteSkillRead?(abs: string): void;
 }
 
 // The screenshot tool mounts only when BOTH gates pass (issue #606):
@@ -168,6 +172,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			conv.agentType !== null ? (deps.agents()?.desktopFor(conv.id) ?? null) : null;
 		const tools = makeTools({
 			cwd: workdir,
+			...(deps.noteSkillRead !== undefined ? { onRead: deps.noteSkillRead } : {}),
 			voice:
 				tts && !configRef.ttsDown && deliverVoice
 					? {

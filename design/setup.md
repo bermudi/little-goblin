@@ -167,7 +167,7 @@ these boundaries; it does not silently install them.
 | Speech | `ffmpeg` in service PATH. Whistle's digest-pinned engine/weights download on first use — platform, network, exec and cache permitting; cloud kinds need `ffmpeg` over the upload cap. |
 | Pass refs | `pass-keys`, scoped agent/grants, both profile snapshots when using the shipped warmer/MCP lane, an available unlocked persistent wallet, commands in service PATH. Provision and warm are explicit operator actions, never diagnostics. |
 | Memory | An existing endpoint or the separately approved installer. Local stack: rootless Podman, user units, subuid/subgid; local embeddings add Ollama/model/relay. Environment-dump commands are never health checks. |
-| Delegation | herdr plus the operator-configured harnesses on each target. No live pane probes or agent launches during diagnostics. |
+| Delegation | T3 Code plus the operator-configured harness providers on this machine. No live thread probes or agent launches during diagnostics. |
 | Browser | Separate `agent-browser`/Chromium install; the seeded skill documents recovery. The installer supplies no executable. |
 | Mail / Workspace | gws install and scoped login, send refs, optional System One refs. MCP needs its pinned local executable, isolated config and snapshot. |
 | Remote access | Loopback HTTP is not a public HTTPS door. Reverse proxy/tailnet and `publicUrl` are operator-owned. Trust mode merely warns; public exposure requires bearer auth by policy, not enforced `publicUrl` detection. |

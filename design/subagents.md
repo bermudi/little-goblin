@@ -15,8 +15,9 @@ replacing goblin or making the conversation wait on clicks. Classified
 purposes — **computer use** over a **desktop pool**, **worker** runs in
 the conversation's sandbox.
 
-**Routing (operator ruling).** Project work goes through herdr — his
-agents, his repos (design/delegation.md). Standalone long or code-heavy
+**Routing (operator ruling).** Project work goes through `delegate` —
+the operator's named harnesses on T3 Code (design/agents.md,
+design/delegation.md). Standalone long or code-heavy
 work goes to a worker subagent; anything needing a screen to a computer
 subagent. Goblin's own turn stays for chat and short work.
 

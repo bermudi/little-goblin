@@ -61,9 +61,10 @@ surface conflicts with the direction rather than silently overriding it.
   programs) before committing.
 - **Each external contract is known by one adapter.** Only `src/tg/`
   knows grammy; only `src/subagents/` knows pi-durable/pi-ai/chord;
-  the herdr, podman, gws and GitHub wire contracts live in `src/{herdr,podman,
-  mail-gws,github}.ts`. Domain modules see the adapter's types, never the
-  vendor's — `module-boundaries.test.ts` enforces the importable cases.
+  the podman, gws, GitHub and T3 Code wire contracts live in
+  `src/{podman,mail-gws,github,t3}.ts`. Domain modules see the adapter's
+  types, never the vendor's — `module-boundaries.test.ts` enforces the
+  importable cases.
   (The Vercel AI SDK is the platform, but goblin owns its data shapes:
   `src/message.ts` — DESIGN.md → Module map, #581.)
 
@@ -110,16 +111,13 @@ lists on our non-goals list. Cite what you took in the design docs.
   Local embeddings). Tailscale down or ollama down = the memory API
   can't embed or boot. Changing the embedding model with a non-empty
   bank is a re-index, not an env edit.
-- `goblin-herdr.service` owns the `goblin` herdr session where delegated
-  harnesses run. Verifying the herdr wire contract is the code's job,
-  not an agent's: run the gated drift check (`GOBLIN_HERDR_LIVE=1
-  bun test src/herdr.live.test.ts`) after herdr upgrades — red means
-  re-pin fixtures in one throwaway-session probe, then fix the adapter.
-  Any manual probing is authoring-only and goes to a throwaway named
-  session (`herdr --session goblin-probe server`), never `default` or
-  `goblin`. Panes run bermudi's interactive zsh: aliases (codex, devin)
-  already add no-approval flags, and repeating them in harness args is
-  fatal.
+- Delegation and handover run on T3 Code threads (`src/t3.ts`); the
+  operator watches them there. Verifying the t3 wire contract is the
+  code's job, not an agent's: run the gated drift check
+  (`GOBLIN_T3_LIVE=1 bun test src/t3.live.test.ts`) after t3 upgrades —
+  red means re-pin fixtures in one throwaway-project probe, then fix
+  the adapter. The check never starts or sends in the operator's real
+  projects; its safety rules live in the file header.
 
 ## Keys
 
@@ -174,8 +172,8 @@ on purpose, and the error prints the command to re-record. Only a person or
 agent re-records; CI never calls a model. Recordings are public: use test
 prompts with nothing private.
 
-Live drift checks for unowned boundaries (herdr, gws, harness-trust,
-podman) are env-gated — `GOBLIN_<NAME>_LIVE=1 bun test
+Live drift checks for unowned boundaries (t3, gws, podman) are
+env-gated — `GOBLIN_<NAME>_LIVE=1 bun test
 src/<module>.live.test.ts` — and run after any upstream upgrade; red
 means the interface moved: re-pin with one probe, fix the adapter.
 Each check's store/probe safety rules live in its header and its

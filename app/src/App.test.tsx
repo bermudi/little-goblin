@@ -314,6 +314,11 @@ describe("rail row actions and the pinned pool", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLElement", win.HTMLElement);
+		installGlobal("Element", win.Element);
+		installGlobal("MutationObserver", win.MutationObserver);
+		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+		installGlobal("cancelAnimationFrame", win.cancelAnimationFrame.bind(win));
 		// The command primitive's typeahead walks item text through the DOM
 		// global NodeFilter; browsers have it, bare bun:test doesn't.
 		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
@@ -398,15 +403,28 @@ describe("rail row actions and the pinned pool", () => {
 	const domOrder = (): (string | null)[] =>
 		[...container.querySelectorAll(".conv-title")].map((t) => t.textContent);
 
-	const rowActions = (title: string): string[] => {
+	const rowActions = async (title: string): Promise<string[]> => {
 		const found = [...container.querySelectorAll(".conv")].find(
 			(r) => r.querySelector(".conv-title")?.textContent === title,
 		);
 		if (found === undefined) return [];
-		// Icon-only buttons — the accessible name is the contract.
-		return [...found.querySelectorAll(".conv-actions button")].map(
-			(b) => b.getAttribute("aria-label") ?? "",
+		await click(found.querySelector(".conv-menu-trigger"));
+		const actions = [...container.querySelectorAll('[role="menuitem"]')].map(
+			(item) => item.textContent ?? "",
 		);
+		await act(async () => {
+			container.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event,
+			);
+		});
+		return actions;
+	};
+	const clickRowAction = async (title: string, action: string) => {
+		const found = [...container.querySelectorAll(".conv")].find(
+			(r) => r.querySelector(".conv-title")?.textContent === title,
+		);
+		await click(found?.querySelector(".conv-menu-trigger"));
+		await click([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === action));
 	};
 
 	test("a pinned row floats above the activity order, marked and unpin-able", async () => {
@@ -419,33 +437,25 @@ describe("rail row actions and the pinned pool", () => {
 		expect(domOrder()).toEqual(["pinned chat", "fresh chat"]);
 		expect(container.querySelector(".conv-pin")).not.toBeNull();
 
-		// Labeled buttons per row, label reflecting the state.
-		expect(rowActions("pinned chat")).toEqual(["Unpin", "Rename", "Archive"]);
-		expect(rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
+		// The menu action reflects each row's current state.
+		expect(await rowActions("pinned chat")).toEqual(["Unpin", "Rename", "Archive"]);
+		expect(await rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
 
 		// The pin PATCH pulls it into the pinned group, keeping its
 		// activity lead inside the group.
-		await click(
-			[...container.querySelectorAll(".conv")]
-				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
-				?.querySelector(".conv-actions button"),
-		);
+		await clickRowAction("fresh chat", "Pin");
 		expect(patches).toEqual([{ id: "fresh", body: { pinned: true } }]);
 		expect(domOrder()).toEqual(["fresh chat", "pinned chat"]);
-		expect(rowActions("fresh chat")).toEqual(["Unpin", "Rename", "Archive"]);
+		expect(await rowActions("fresh chat")).toEqual(["Unpin", "Rename", "Archive"]);
 
 		// Unpin drops it below the remaining pin.
-		await click(
-			[...container.querySelectorAll(".conv")]
-				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
-				?.querySelector(".conv-actions button"),
-		);
+		await clickRowAction("fresh chat", "Unpin");
 		expect(patches).toEqual([
 			{ id: "fresh", body: { pinned: true } },
 			{ id: "fresh", body: { pinned: false } },
 		]);
 		expect(domOrder()).toEqual(["pinned chat", "fresh chat"]);
-		expect(rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
+		expect(await rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
 	});
 
 	test("archive shelves the row; the rail links to the Archive page, which offers unarchive and delete", async () => {
@@ -456,21 +466,13 @@ describe("rail row actions and the pinned pool", () => {
 		await settle();
 
 		// Delete is unreachable from the rail — the archive page only.
-		expect(
-			[...container.querySelectorAll(".conv-actions button")].some(
-				(b) => b.getAttribute("aria-label") === "Delete",
-			),
-		).toBe(false);
+		expect(await rowActions("fresh chat")).not.toContain("Delete");
 
-		await click(
-			[...container.querySelectorAll(".conv")]
-				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
-				?.querySelectorAll(".conv-actions button")[2],
-		);
+		await clickRowAction("fresh chat", "Archive");
 		expect(patches).toEqual([{ id: "fresh", body: { archived: true } }]);
 		// Only the fresh row shelves — the pinned row stays.
-		expect(rowActions("fresh chat")).toEqual([]);
-		expect(rowActions("pinned chat")).toEqual(["Unpin", "Rename", "Archive"]);
+		expect(await rowActions("fresh chat")).toEqual([]);
+		expect(await rowActions("pinned chat")).toEqual(["Unpin", "Rename", "Archive"]);
 		const link = container.querySelector(".rail-archived");
 		expect(link?.textContent).toBe("Archived 1");
 
@@ -502,11 +504,7 @@ describe("rail row actions and the pinned pool", () => {
 		});
 		await settle();
 		for (const title of ["fresh chat", "pinned chat"]) {
-			await click(
-				[...container.querySelectorAll(".conv")]
-					.find((r) => r.querySelector(".conv-title")?.textContent === title)
-					?.querySelector('button[aria-label="Archive"]'),
-			);
+			await clickRowAction(title, "Archive");
 		}
 		await click(container.querySelector(".rail-archived"));
 		const names = () =>
@@ -535,13 +533,9 @@ describe("rail row actions and the pinned pool", () => {
 			root?.render(<App />);
 		});
 		await settle();
-		await click(
-			[...container.querySelectorAll(".conv")]
-				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
-				?.querySelectorAll(".conv-actions button")[2],
-		);
+		await clickRowAction("fresh chat", "Archive");
 		expect(container.querySelector(".undo-toast")?.textContent).toContain('Archived "fresh chat"');
-		expect(rowActions("fresh chat")).toEqual([]);
+		expect(await rowActions("fresh chat")).toEqual([]);
 
 		await click(container.querySelector(".undo-action"));
 		expect(container.querySelector(".undo-toast")).toBeNull();
@@ -549,7 +543,7 @@ describe("rail row actions and the pinned pool", () => {
 			{ id: "fresh", body: { archived: true } },
 			{ id: "fresh", body: { archived: false } },
 		]);
-		expect(rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
+		expect(await rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
 	});
 
 	test("a failed row mutation surfaces an alert naming the action and the row", async () => {
@@ -560,11 +554,7 @@ describe("rail row actions and the pinned pool", () => {
 		});
 		await settle();
 
-		await click(
-			[...container.querySelectorAll(".conv")]
-				.find((r) => r.querySelector(".conv-title")?.textContent === "fresh chat")
-				?.querySelector(".conv-actions button"),
-		);
+		await clickRowAction("fresh chat", "Pin");
 		const alert = container.querySelector('p.error[role="alert"]');
 		expect(alert?.textContent).toContain('Couldn\'t pin "fresh chat"');
 		expect(alert?.textContent).toContain("db is locked");
@@ -607,6 +597,11 @@ describe("rename editor with the AI button", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLElement", win.HTMLElement);
+		installGlobal("Element", win.Element);
+		installGlobal("MutationObserver", win.MutationObserver);
+		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+		installGlobal("cancelAnimationFrame", win.cancelAnimationFrame.bind(win));
 		// The command primitive's typeahead walks item text through the DOM
 		// global NodeFilter; browsers have it, bare bun:test doesn't.
 		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
@@ -692,12 +687,8 @@ describe("rename editor with the AI button", () => {
 			root?.render(<App />);
 		});
 		await settle();
-		const rename = container.querySelector<HTMLButtonElement>(
-			'.conv-actions button[aria-label="Rename"]',
-		);
-		await act(async () => {
-			rename?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
-		});
+		await clickEl(container.querySelector(".conv-menu-trigger"));
+		await clickEl([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === "Rename") ?? null);
 		await settle();
 		expect(input()).not.toBeNull();
 	};
@@ -787,10 +778,8 @@ describe("rename editor with the AI button", () => {
 		await keydown(input(), "Escape");
 		expect(input()).toBeNull();
 
-		const rename = container.querySelector<HTMLButtonElement>(
-			'.conv-actions button[aria-label="Rename"]',
-		);
-		await clickEl(rename);
+		await clickEl(container.querySelector(".conv-menu-trigger"));
+		await clickEl([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === "Rename") ?? null);
 		expect(input()!.value).toBe("solo chat");
 		await focusEl(aiButton());
 		// Reopened editor is not stuck busy while the stale request is pending.
@@ -912,6 +901,10 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		// The restore effect parks the cursor via rAF — must ride the
 		// happy-dom realm like the rest of the DOM globals here.
 		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+		installGlobal("cancelAnimationFrame", win.cancelAnimationFrame.bind(win));
+		installGlobal("HTMLElement", win.HTMLElement);
+		installGlobal("Element", win.Element);
+		installGlobal("MutationObserver", win.MutationObserver);
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -1202,14 +1195,16 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(win.location.pathname).toBe("/app/c/fixture");
 	};
 	// Archive is a rail row action; Delete lives on the Archive page.
-	const clickRowAction = (action: "Archive" | "Delete") =>
-		click(
-			action === "Archive"
-				? container.querySelector('.conv-actions button[aria-label="Archive"]')
-				: [...container.querySelectorAll(".archive-table button")].find(
-						(b) => b.textContent === "Delete",
-					),
-		);
+	const clickRowAction = async (action: "Archive" | "Delete") => {
+		if (action === "Archive") {
+			await click(container.querySelector(".conv-menu-trigger"));
+			await click([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === "Archive"));
+		} else {
+			await click(
+				[...container.querySelectorAll(".archive-table button")].find((b) => b.textContent === "Delete"),
+			);
+		}
+	};
 	// Delete is held back for the undo window; closing the toast makes it
 	// final, so the helper does that to reach the settled state.
 	const removeFixture = async (action: "Archive" | "Delete") => {
@@ -4824,6 +4819,11 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLElement", win.HTMLElement);
+		installGlobal("Element", win.Element);
+		installGlobal("MutationObserver", win.MutationObserver);
+		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+		installGlobal("cancelAnimationFrame", win.cancelAnimationFrame.bind(win));
 		// The command primitive's typeahead walks item text through the DOM
 		// global NodeFilter; browsers have it, bare bun:test doesn't.
 		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
@@ -4907,10 +4907,10 @@ describe("notes and attention load failures surface (issue #213)", () => {
 
 	// The pin action on the fixture row rides a PATCH whose success
 	// callback runs the next refresh() — the test-owned refresh trigger.
-	const pinButton = () =>
-		[...container.querySelectorAll(".conv")]
-			.find((r) => r.querySelector(".conv-title")?.textContent === "fixture chat")
-			?.querySelector('.conv-actions button[aria-label="Pin"]') ?? null;
+	const clickPin = async () => {
+		await click(container.querySelector(".conv-menu-trigger"));
+		await click([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === "Pin"));
+	};
 
 	test("a failing notes load marks the pane, not a silent empty state", async () => {
 		notesFail = true;
@@ -4958,7 +4958,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		// Back to the chats pane — the notes pane replaced the rows the
 		// pin trigger lives in — pin, then return to the notes pane.
 		await click(glyph("Chats"));
-		await click(pinButton());
+		await clickPin();
 		await click(glyph("Notes"));
 		expect(container.querySelector(".panes p.error")).toBeNull();
 		expect(container.textContent).toContain("No notes yet.");
@@ -4980,7 +4980,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		notesFail = true;
 		attnFail = true;
 		await click(glyph("Chats"));
-		await click(pinButton());
+		await clickPin();
 		await click(glyph("Notes"));
 		expect(container.querySelector(".panes p.error")?.textContent).toBe("Couldn't load notes.");
 		// The stale-but-good rows stay under the error, not cleared.

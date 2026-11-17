@@ -26,7 +26,13 @@ describe("agent types", () => {
 	});
 
 	test("the computer type carries the desktop tools and ask_operator", () => {
-		expect(COMPUTER_AGENT_TYPE.tools).toEqual(["inspect", "act", "launch", "ask_operator"]);
+		expect(COMPUTER_AGENT_TYPE.tools).toEqual([
+			"inspect",
+			"act",
+			"launch",
+			"screenshot",
+			"ask_operator",
+		]);
 		expect(COMPUTER_AGENT_TYPE.systemPrompt).toContain("observation_id");
 		expect(COMPUTER_AGENT_TYPE.systemPrompt).toContain("ask_operator");
 	});

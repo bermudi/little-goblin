@@ -4,6 +4,16 @@
 // interrupted-act rule (a failure is reported once, never retried).
 
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const ONE_PIXEL_PNG = Uint8Array.from(
+	atob(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+	),
+	(c) => c.charCodeAt(0),
+);
 import { DesktopError, type Desktops } from "../../desktops.ts";
 import type { DesktopRow } from "../../desktops-store.ts";
 import type { LeaseHolder } from "../../desktops-store.ts";
@@ -159,6 +169,110 @@ describe("computer tools", () => {
 		expect(seen).toEqual(["act"]);
 		// claim ran once around the single act attempt.
 		expect(calls.map((c) => c.method)).toEqual(["claim"]);
+	});
+
+	test("screenshot is absent unless the dep opts in — the capability gate decides", () => {
+		const { desktops } = stubDesktops();
+		expect(computerTools(deps(desktops)).screenshot).toBeUndefined();
+		expect(
+			computerTools({ ...deps(desktops), screenshots: true }).screenshot,
+		).toBeDefined();
+	});
+
+	test("screenshot stores a small descriptor and toModelOutput rehydrates the frame", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-shot-"));
+		const pngPath = join(dir, "frame.png");
+		const png = ONE_PIXEL_PNG;
+		writeFileSync(pngPath, png);
+		const { desktops, calls } = stubDesktops({
+			screenshot: async () => ({
+				id: "obs-shot-1",
+				path: pngPath,
+				bytes: png,
+				note: "network off",
+			}),
+		});
+		const tool = computerTools({ ...deps(desktops), screenshots: true })
+			.screenshot as Tool;
+		if (isHosted(tool)) throw new Error("hosted?");
+		const stored = (await tool.execute({}, { toolCallId: "t1" })) as string;
+		// The lease claim wraps the capture; the overridden screenshot
+		// stub isn't call-recorded, so the descriptor proves it ran.
+		expect(calls.map((c) => c.method)).toEqual(["claim"]);
+		// The durable output is a descriptor string — no image bytes.
+		const descriptor = JSON.parse(stored) as Record<string, unknown>;
+		expect(descriptor).toMatchObject({
+			v: 1,
+			observation_id: "obs-shot-1",
+			path: pngPath,
+			bytes: png.byteLength,
+			note: "network off",
+		});
+		const model = (await tool.toModelOutput!({
+			output: stored,
+			toolCallId: "t1",
+			input: {},
+		})) as { type: string; value: Array<Record<string, unknown>> };
+		expect(model.type).toBe("content");
+		const image = model.value.find((p) => p["type"] === "image") as {
+			mediaType: string;
+			data: Uint8Array;
+		};
+		expect(image.mediaType).toBe("image/png");
+		expect([...image.data]).toEqual([...png]);
+		const caption = model.value.find((p) => p["type"] === "text") as { text: string };
+		expect(caption.text).toContain("obs-shot-1");
+	});
+
+	test("toModelOutput passes a stub marker or error through as text — never a stale frame", async () => {
+		const { desktops } = stubDesktops({
+			screenshot: async () => ({ id: "o", path: "/nonexistent/x.png", bytes: new Uint8Array(0) }),
+		});
+		const tool = computerTools({ ...deps(desktops), screenshots: true })
+			.screenshot as Tool;
+		if (isHosted(tool)) throw new Error("hosted?");
+		const marker =
+			"<pruned-frame>\n[Screenshot frame omitted — superseded by a newer frame]\n</pruned-frame>";
+		const out = (await tool.toModelOutput!({
+			output: marker,
+			toolCallId: "t1",
+			input: {},
+		})) as { type: string; value: string };
+		expect(out.type).toBe("text");
+		expect(out.value).toBe(marker);
+		// A descriptor whose PNG is gone degrades to text, not a broken part.
+		const gone = JSON.stringify({ v: 1, observation_id: "o", path: "/nonexistent/x.png", bytes: 0 });
+		const out2 = (await tool.toModelOutput!({
+			output: gone,
+			toolCallId: "t1",
+			input: {},
+		})) as { type: string; value: string };
+		expect(out2.type).toBe("text");
+		expect(out2.value).toContain("unavailable");
+	});
+
+	test("a corrupt frame file degrades to text, so the child can still take a fresh one", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-shot-"));
+		const { desktops } = stubDesktops({});
+		const tool = computerTools({ ...deps(desktops), screenshots: true })
+			.screenshot as Tool;
+		if (isHosted(tool)) throw new Error("hosted?");
+		const cases: Array<[string, Uint8Array]> = [
+			["truncated", ONE_PIXEL_PNG.slice(0, 40)],
+			["not a png", new Uint8Array(ONE_PIXEL_PNG.byteLength).fill(7)],
+		];
+		for (const [name, bytes] of cases) {
+			const path = join(dir, `${name}.png`);
+			writeFileSync(path, bytes);
+			const descriptor = JSON.stringify({ v: 1, observation_id: "o", path, bytes: ONE_PIXEL_PNG.byteLength });
+			const out = (await tool.toModelOutput!({
+				output: descriptor,
+				toolCallId: "t1",
+				input: {},
+			})) as { type: string; value: string };
+			expect(out.type).toBe("text");
+			expect(out.value).toContain("not a complete PNG");
+		}
 	});
 });
 

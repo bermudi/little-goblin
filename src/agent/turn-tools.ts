@@ -36,6 +36,8 @@ import {
 } from "./tools/mod.ts";
 import { withAgent } from "./tools/agent.ts";
 import { agentChildToolNames } from "./tools/computer.ts";
+import { inputModalitiesCached } from "./models-dev.ts";
+import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
 import type { T3 } from "../t3.ts";
 import type { ResponsibilityStore } from "../responsibilities.ts";
@@ -94,6 +96,24 @@ export interface TurnToolsDeps {
 	// tg/guest.ts owns the exclusion policy — injected so tools never
 	// imports back into tg/.
 	filterGuests<T extends Record<string, unknown>>(conv: Conversation, tools: T): T;
+}
+
+// The screenshot tool mounts only when BOTH gates pass (issue #606):
+// the child's model lists image input (models.dev catalog — a cold
+// catalog answers null and the tool stays absent until the next turn
+// warms it) and the provider pipe carries image tool results
+// (carriesMedia's tool-result position — openai-compatible stringifies
+// them away, codex is text-only there). Either failing means the tool
+// simply does not exist for this child. Exported for tests.
+export function screenshotCapable(conv: Conversation, cfg: Config): boolean {
+	if (conv.model === null) return false;
+	const { provider, modelId } = splitModelRef(conv.model);
+	const p = cfg.providers[provider];
+	if (p === undefined) return false;
+	const baseUrl = "baseUrl" in p ? p.baseUrl : undefined;
+	if (!carriesMedia(p.kind, "image/png", "tool-result", baseUrl)) return false;
+	const modalities = inputModalitiesCached(provider, modelId);
+	return modalities !== null && modalities.has("image");
 }
 
 export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
@@ -287,7 +307,12 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			// inherited set.
 			computer:
 				conv.agentType !== null && desktops !== null && childDesktop !== null
-					? { conversation: conv.id, desktop: childDesktop, desktops }
+					? {
+							conversation: conv.id,
+							desktop: childDesktop,
+							desktops,
+							screenshots: screenshotCapable(conv, configRef.current),
+						}
 					: undefined,
 			askOperator:
 				conv.agentType !== null

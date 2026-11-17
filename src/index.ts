@@ -20,6 +20,7 @@ import { openWireStep } from "./boot/delivery.ts";
 import { openTelegramAttach } from "./boot/telegram-attach.ts";
 import { openCacheObservation } from "./cache-observation.ts";
 import { openCachePruning } from "./cache-pruning.ts";
+import { sweepScreenshotFrames } from "./frame-stubs.ts";
 import {
 	type ConfigRef,
 	loadConfig,
@@ -352,6 +353,9 @@ async function boot() {
 		modelFallbacks: () => configRef.current.modelFallbacks,
 		pruneBetweenTurns: (convId) => {
 			cachePruning.pruneConversation(convId);
+			// Unconditional media hygiene (issue #606) — old screenshot
+			// frames stub to text regardless of cache-pruning config.
+			sweepScreenshotFrames(store, convId);
 		},
 		recordWindow: windowCapture.record,
 		windowVersion: windowCapture.version,

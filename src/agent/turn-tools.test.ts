@@ -24,7 +24,11 @@ import { openWakeStore } from "../wake-store.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
 import { deferred, HeadlessSink, tmpDir, useHome, waitUntil } from "../testkit.ts";
 import { makeWakeDispatcher, type WakeDispatcher } from "../wake-dispatcher.ts";
-import { makeTurnTools } from "./turn-tools.ts";
+import { makeTurnTools, screenshotCapable } from "./turn-tools.ts";
+import {
+	_primeModelsDevForTest,
+	_resetModelsDevForTest,
+} from "./models-dev.ts";
 import { policyOf } from "./tool-policy.ts";
 
 setLogFile(null);
@@ -950,7 +954,9 @@ describe("computer child mount", () => {
 
 	const rigTools = (engine: AgentChildren | null, desktops: Desktops | null) =>
 		makeTurnTools({
-			configRef: { current: {} as Config, ttsDown: false },
+			// providers:{} — the model's provider is unconfigured, so the
+			// screenshot capability gate fails closed (issue #606).
+			configRef: { current: { providers: {} } as Config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
 			store: {} as unknown as ConversationStore,
 			projects: {} as unknown as ProjectStore,
@@ -972,8 +978,12 @@ describe("computer child mount", () => {
 
 	const computerEngine = (desktop: string | null) =>
 		({
+			// The real computer type's allowlist now names screenshot;
+			// the capability gate — not the allowlist — decides mounting.
 			allowlistFor: (id: string) =>
-				id === "app/agent-2" ? ["inspect", "act", "launch", "ask_operator"] : null,
+				id === "app/agent-2"
+					? ["inspect", "act", "launch", "screenshot", "ask_operator"]
+					: null,
 			desktopFor: (id: string) => (id === "app/agent-2" ? desktop : null),
 		}) as unknown as AgentChildren;
 
@@ -983,6 +993,9 @@ describe("computer child mount", () => {
 		for (const name of ["inspect", "act", "launch", "ask_operator"]) {
 			expect(names).toContain(name);
 		}
+		// Allowlisted but gate-blocked: no configured provider carries
+		// image tool results for this model, so screenshot stays absent.
+		expect(names).not.toContain("screenshot");
 		for (const banned of ["agent", "delegate", "desktop", "subagent", "speak", "ui"]) {
 			expect(names).not.toContain(banned);
 		}
@@ -1005,5 +1018,54 @@ describe("computer child mount", () => {
 		}
 		// ask_operator is not desktop-bound — it still mounts.
 		expect(names).toContain("ask_operator");
+	});
+});
+
+describe("screenshotCapable — issue #606 mount gate", () => {
+	// The tool mounts only when the model takes image input AND the
+	// provider pipe carries image tool results. Either failure means the
+	// tool is absent, never erroring. The catalog and config share the
+	// provider names the model refs use.
+	const conv = (model: string | null) => ({ model }) as Conversation;
+	const cfg = {
+		providers: {
+			or: { kind: "openrouter", auth: "x" },
+			oai: { kind: "openai-compatible", baseUrl: "https://x.test", auth: "x" },
+			cx: { kind: "codex" },
+			cc: { kind: "claude-code", auth: "x" },
+		},
+	} as unknown as Config;
+	const models = (input: string[]) => ({ modalities: { input } });
+	const primeAll = () =>
+		_primeModelsDevForTest({
+			or: { models: { seer: models(["text", "image"]), blind: models(["text"]) } },
+			oai: { models: { seer: models(["text", "image"]) } },
+			cx: { models: { seer: models(["text", "image"]) } },
+			cc: { models: { seer: models(["text", "image"]) } },
+		});
+
+	test("image model + image-capable pipe mounts; every other combo does not", () => {
+		try {
+			primeAll();
+			expect(screenshotCapable(conv("or/seer"), cfg)).toBe(true);
+			expect(screenshotCapable(conv("cc/seer"), cfg)).toBe(true);
+			// openai-compatible stringifies tool results — never.
+			expect(screenshotCapable(conv("oai/seer"), cfg)).toBe(false);
+			// codex tool results are text-only — never.
+			expect(screenshotCapable(conv("cx/seer"), cfg)).toBe(false);
+			// Text-only model — never, even on a carrying pipe.
+			expect(screenshotCapable(conv("or/blind"), cfg)).toBe(false);
+			// No model, unknown provider, unknown model — never.
+			expect(screenshotCapable(conv(null), cfg)).toBe(false);
+			expect(screenshotCapable(conv("ghost/seer"), cfg)).toBe(false);
+			expect(screenshotCapable(conv("or/ghost"), cfg)).toBe(false);
+		} finally {
+			_resetModelsDevForTest();
+		}
+	});
+
+	test("a cold catalog is conservative: the tool stays absent", () => {
+		_resetModelsDevForTest();
+		expect(screenshotCapable(conv("or/seer"), cfg)).toBe(false);
 	});
 });

@@ -46,6 +46,47 @@ describe("toToolSet", () => {
 		).toEqual({ type: "text", value: "shaped" });
 	});
 
+	test("content outputs translate to SDK file parts; text/json pass through", async () => {
+		const png = new Uint8Array([1, 2, 3]);
+		const tools = toToolSet({
+			frame: defineTool({
+				description: "frame",
+				input: z.object({}),
+				execute: () => "x",
+				toModelOutput: () => ({
+					type: "content",
+					value: [
+						{ type: "text", text: "caption" },
+						{ type: "image", mediaType: "image/png", data: png },
+					],
+				}),
+			}),
+			plain: defineTool({
+				description: "plain",
+				input: z.object({}),
+				execute: () => "x",
+				toModelOutput: () => ({ type: "json", value: { a: 1 } }),
+			}),
+		});
+		const frameOut = tools.frame?.toModelOutput;
+		if (frameOut === undefined) throw new Error("missing mapper");
+		const shaped = (await Reflect.apply(frameOut, undefined, [
+			{ output: "x", toolCallId: "c", input: {} },
+		])) as { type: string; value: Array<Record<string, unknown>> };
+		expect(shaped.type).toBe("content");
+		expect(shaped.value[0]).toEqual({ type: "text", text: "caption" });
+		expect(shaped.value[1]).toEqual({
+			type: "file",
+			mediaType: "image/png",
+			data: { type: "data", data: png },
+		});
+		const plainOut = tools.plain?.toModelOutput;
+		if (plainOut === undefined) throw new Error("missing mapper");
+		expect(
+			await Reflect.apply(plainOut, undefined, [{ output: "x", toolCallId: "c", input: {} }]),
+		).toEqual({ type: "json", value: { a: 1 } });
+	});
+
 	test("maps hosted codex search to the provider-defined tool", () => {
 		const tools = toToolSet({
 			web_search: {

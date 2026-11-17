@@ -1190,6 +1190,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				archivedAt: archived ? "2026-10-10T00:00:00Z" : null,
 				pinnedAt: null,
 				projectId: null,
+				parentId: null,
 			},
 		];
 	};
@@ -2242,6 +2243,7 @@ describe("app projects surface", () => {
 		archivedAt: null,
 		pinnedAt: null,
 		projectId: null,
+		parentId: null,
 		...over,
 	});
 
@@ -4728,6 +4730,7 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 							archivedAt: null,
 							pinnedAt: null,
 							projectId: null,
+							parentId: null,
 						},
 					],
 				}),
@@ -4781,6 +4784,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		archivedAt: null,
 		pinnedAt: null,
 		projectId: null,
+		parentId: null,
 	};
 	const noteRow: AppNoteSummary = {
 		id: "n-shopping",

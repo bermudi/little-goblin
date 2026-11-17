@@ -10,6 +10,8 @@ import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
+import { agentChildSystemPrompt } from "../agent-types.ts";
+import { paths } from "../home-layout.ts";
 import type { NoteStore } from "../notes.ts";
 import type { ProjectStore } from "../projects.ts";
 import { codexContextWindow } from "./codex/models.ts";
@@ -171,13 +173,19 @@ export function makeStepBuilder(
 				carriesMedia(kind, mediaType, position, pipeBase);
 			const level = conv.thinking as ThinkingLevel;
 			const project = conv.projectId === null ? null : projects.get(conv.projectId);
-			const prompt = systemPromptFor(
-				store,
-				conv,
-				toolNames(tools),
-				project,
-				project === null ? undefined : notes.index(project.id),
-			);
+			// A native-subagent child's prompt is its agent type's body,
+			// frozen through the same snapshot seam as every conversation
+			// (agent-types.ts); everything else builds the goblin prompt.
+			const prompt =
+				conv.agentType !== null
+					? agentChildSystemPrompt(store, conv, paths.agentTypes())
+					: systemPromptFor(
+							store,
+							conv,
+							toolNames(tools),
+							project,
+							project === null ? undefined : notes.index(project.id),
+						);
 			log.info("model step", {
 				conversation: conv.id,
 				model: modelRef,

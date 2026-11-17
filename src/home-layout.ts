@@ -37,6 +37,10 @@ export const paths = {
 	agents: () => join(goblinHome(), "workspace", "AGENTS.md"),
 	user: () => join(goblinHome(), "workspace", "USER.md"),
 	skills: () => join(goblinHome(), "workspace", "skills"),
+	// Native-subagent agent types (design/agents.md → Agent types): one
+	// markdown file per type, read at turn start. Not the workspace
+	// AGENTS.md — that is paths.agents() above.
+	agentTypes: () => join(goblinHome(), "agents"),
 	// The skill reviewer's parking area: validated auto-saves wait here
 	// for the operator's yes — never in the catalog itself.
 	skillsProposed: () => join(goblinHome(), "workspace", "skills-proposed"),

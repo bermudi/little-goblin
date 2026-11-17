@@ -9,7 +9,6 @@ import type { Conversation } from "../conversation-read.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import type { Desktops } from "../desktops.ts";
 import type { DelegationLifecycle } from "../delegation-lifecycle.ts";
-import type { OperatorHerdr } from "../herdr.ts";
 import type { T3, T3Thread } from "../t3.ts";
 import { setLogFile } from "../log.ts";
 import type { MailApproval } from "../mail-approval.ts";
@@ -162,7 +161,6 @@ describe("turn-tools responsibility composition", () => {
 			memory: null,
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
-			operatorHerdr: {} as unknown as OperatorHerdr,
 			t3: fakeT3(() => agents).t3,
 			mail: () => ({}) as Pick<MailApproval, "requestDraft">,
 			programApproval: () => undefined,
@@ -308,7 +306,6 @@ describe("turn-tools managed send linkage", () => {
 			memory: null,
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
-			operatorHerdr: {} as unknown as OperatorHerdr,
 			t3: t3edge.t3,
 			mail: () => ({}) as Pick<MailApproval, "requestDraft">,
 			programApproval: () => undefined,
@@ -403,7 +400,6 @@ describe("responsibility epoch authority", () => {
 				memory: null,
 				transcribe: async () => null,
 				delegateDeps: () => undefined,
-				operatorHerdr: {} as unknown as OperatorHerdr,
 				t3: edge3.t3,
 				mail: () => ({}) as Pick<MailApproval, "requestDraft">,
 				programApproval: () => undefined,
@@ -543,7 +539,6 @@ describe("operator correction authority", () => {
 			memory: null,
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
-			operatorHerdr: {} as unknown as OperatorHerdr,
 			t3: t3fake.t3,
 			mail: () => ({}) as Pick<MailApproval, "requestDraft">,
 			programApproval: () => undefined,
@@ -735,7 +730,6 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 		memory: null,
 		transcribe: async () => null,
 		delegateDeps: () => undefined,
-		operatorHerdr: {} as unknown as OperatorHerdr,
 		t3: t3fake.t3,
 		mail: () => ({}) as Pick<MailApproval, "requestDraft">,
 		programApproval: () => undefined,
@@ -847,7 +841,6 @@ describe("hosted web_search mount", () => {
 			memory: null,
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
-			operatorHerdr: {} as unknown as OperatorHerdr,
 			t3: fakeT3(() => []).t3,
 			mail: () => ({}) as never,
 			programApproval: () => undefined,
@@ -913,7 +906,6 @@ describe("delegate description subagent routing", () => {
 				pin: () => ({ address: { chatId: 1, threadId: null } }),
 				workspaceDir: "/w",
 			}),
-			operatorHerdr: {} as unknown as OperatorHerdr,
 			t3: fakeT3(() => []).t3,
 			mail: () => ({}) as never,
 			programApproval: () => undefined,
@@ -980,7 +972,6 @@ describe("agent tool mount", () => {
 			memory: null,
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
-			operatorHerdr: {} as unknown as OperatorHerdr,
 			t3: {} as unknown as T3,
 			mail: () => ({}) as never,
 			programApproval: () => undefined,
@@ -1053,7 +1044,6 @@ describe("computer child mount", () => {
 			memory: null,
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
-			operatorHerdr: {} as unknown as OperatorHerdr,
 			t3: {} as unknown as T3,
 			mail: () => ({}) as never,
 			programApproval: () => undefined,

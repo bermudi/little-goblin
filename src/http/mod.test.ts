@@ -1232,8 +1232,8 @@ describe("thread forget tails", () => {
 		const home = process.env.GOBLIN_HOME!;
 		const store = openStore(join(home, "goblin.sqlite"));
 		const sources = new SkillSources(store.db);
-		sources.record("app/1", "herdr", "reviewer");
-		sources.record("dm:1", "herdr", "reviewer");
+		sources.record("app/1", "demo", "reviewer");
+		sources.record("dm:1", "demo", "reviewer");
 		const deleted: string[] = [];
 		const client = stubClient();
 		client.listDocuments = (o) =>

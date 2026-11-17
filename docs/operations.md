@@ -270,8 +270,8 @@ restarted: `--status` reads `/proc/<pid>/cwd` and prints `(restart pending)`.
 
 Skill seeds vs. live skills: `deploy/skills/<name>/SKILL.md` is the
 source of truth for the seeded copy; `ensureHomeLayout` installs it on
-first boot. A skill that *advertises a backend tool* (e.g. herdr v2.2,
-which assumes the `herdr` tool exists) must NOT be synced into the live
+first boot. A skill that *advertises a backend tool* the release does
+not ship must NOT be synced into the live
 workspace ahead of the release that ships the tool. After the approved
 `bun scripts/release.ts` rollout verifies the new backend, explicitly
 sync the changed seed to its installed workspace copy as part of that
@@ -542,7 +542,7 @@ The check resolves the `claude-code` record through the given auth
 file (path only in the environment, never a token) and runs one real
 text-only query plus one tool round-trip through the bridge. Red means
 the pinned interface moved: run one probe session, re-pin the shapes,
-fix the adapter — the same rule as the herdr and gws checks. It spends
+fix the adapter — the same rule as the t3 and gws checks. It spends
 subscription quota; run it after upgrades, not on a schedule.
 
 ## Subagent drift checks

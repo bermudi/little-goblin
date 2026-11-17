@@ -227,8 +227,8 @@ async function check(
 	// settles these; if one slipped through, say it once and stop watching.
 	if (d.t3Thread === null) {
 		const landed = await notify(deps, d, "failed", {
-			extra: "(a pre-T3 delegation the new transport cannot observe)",
-			body: "(this row predates the T3 Code transport; its herdr agent, if any, is unobserved)",
+			extra: "(a pre-T3 delegation the current transport cannot observe)",
+			body: "(this row predates the T3 Code transport; its old agent, if any, is unobserved)",
 		});
 		if (landed) transition(deps, d, "failed");
 		return;
@@ -248,7 +248,7 @@ async function check(
 	}
 	if (shown === null) {
 		// The thread vanished from T3 Code — deleted or gone with a server
-		// reset. Like herdr's outside stop: the operator decides what
+		// reset. An outside stop: the operator decides what
 		// happens next, and goblin never revives it unasked.
 		const landed = await notify(deps, d, "stopped", {
 			extra: OUTSIDE_STOP_NOTE,
@@ -261,7 +261,7 @@ async function check(
 	const status = t.status;
 
 	// A cut-short run (interrupted/cancelled/rolled_back) is someone's
-	// explicit stop — the same verdict herdr's outside stop reached.
+	// explicit stop — the outside-stop verdict.
 	if (t3CutShort(status)) {
 		const landed = await notify(deps, d, "stopped", {
 			extra: OUTSIDE_STOP_NOTE,

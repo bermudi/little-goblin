@@ -196,7 +196,7 @@ of part tiles — Service, Memory, Programs, Delegations — each with a state
 pill, one plain line (what is wrong and what to do) and an "Open …" link to
 the page that fixes it. Programs and Delegations only report counts, so their
 pill says "no signal", never a guessed "ok". A note says model providers,
-Telegram, keys and the herdr host are not in the status API and points to
+Telegram and keys are not in the status API and points to
 `bun run doctor`; no new probes. The old label/value cards live on in a
 collapsed "Raw details" block. Memory "off" is neutral, not a problem.
 
@@ -239,12 +239,15 @@ retrying" / "Save failed" / "Conflict"). Versions is a popover anchored to its
 button (so it opens where the press was on a long note), closing on outside
 press or Escape; under 40rem it spans the toolbar row.
 
-**Note editor controls (ruling 2026-11-07, #173).** The top of the writing
-surface is a formatting row (`.note-fmt`, `NoteToolbar.tsx`): a "Text style"
-select (Paragraph, Heading 1–3 — Paragraph is how a heading, typed or
-chosen, turns back into plain text), then bold, italic, strikethrough,
-inline code, link | bulleted, numbered, task list, quote, code block,
-rule | undo, redo. Buttons never take focus from the editor; the ones that
+**Note editor controls (ruling 2026-11-07, #173; interaction amended
+2026-11-16, #623).** The top of the writing surface is a formatting row
+(`.note-fmt`, `NoteToolbar.tsx`), built with ui-sdk's Toolbar: one Tab stop
+and arrow-key movement across controls. The toolbar follows library focus
+behavior; clicking a control preserves the editor's selection so formatting
+still applies to the selected text. It has a "Text style" select (Paragraph,
+Heading 1–3 — Paragraph is how a heading, typed or chosen, turns back into
+plain text), then bold, italic, strikethrough, inline code, link | bulleted,
+numbered, task list, quote, code block, rule | undo, redo. The controls that
 apply to the selection show `aria-pressed` (accent fill), and the select
 shows the current block. Each tooltip names its shortcut (Ctrl/⌘ per
 platform) — the keys are Milkdown's own, plus Ctrl/⌘+K for Link, which opens
@@ -1055,6 +1058,16 @@ conversation keeps everything (history, FTS hits, settings, pings,
 `/app/c/<id>` links) — the stamp is list visibility, nothing more. Delete
 is offered only on the Archive page (the rail offers archive, the archive
 offers delete) and is undoable for a few seconds — see Undo below.
+
+Conversation rows remain ordinary list items with a thread link and a
+separate action-menu trigger. The links use ui-sdk roving focus: Up/Down
+move between rows, Home/End jump to the first/last, and Tab enters at one
+link and leaves the group; focus movement does not activate a link.
+Links keep native behavior, including modifier-click. Keep the list as a
+list, not a listbox: rows contain both links and actions, not one
+selectable option. The menu trigger groups Pin/Unpin, Rename,
+Archive/Unarchive and (on archived rows) Delete; menu keys open, move
+between actions and close it. Rename stays inline.
 
 Archiving never fences a live turn (unlike DELETE's `runtime.stop`) — the
 turn finishes into history either way. And **any appended event

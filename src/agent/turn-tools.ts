@@ -38,7 +38,6 @@ import {
 import { withAgent } from "./tools/agent.ts";
 import { agentChildToolNames } from "./tools/computer.ts";
 import { withScript } from "./tools/script.ts";
-import type { OperatorHerdr } from "../herdr.ts";
 import type { T3 } from "../t3.ts";
 import type { ResponsibilityStore } from "../responsibilities.ts";
 import { makeManagedSendEdge, type ResponsibilityService } from "../responsibility-service.ts";
@@ -67,9 +66,6 @@ export interface TurnToolsDeps {
 		conv: Conversation,
 		workdir: string,
 	): Omit<DelegateToolDeps, "mountedSubagents"> | undefined;
-	// The operator's own `default` session — guest surfaces lose it in
-	// filterGuests.
-	operatorHerdr: OperatorHerdr;
 	// Only the approval gate's request closure — the send credential
 	// lives behind the taps.
 	mail(): Pick<MailApproval, "requestDraft"> | undefined;
@@ -116,7 +112,6 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		memory,
 		transcribe,
 		delegateDeps,
-		operatorHerdr,
 		visionDepsFor,
 		sandboxes,
 		filterGuests,

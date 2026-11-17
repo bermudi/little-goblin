@@ -136,7 +136,7 @@ const FROZEN: Readonly<Record<string, number>> = {
 	// 7: the needs_input resume re-seeds the stall clock from the
 	// observation that proved liveness (#607 t3 transport).
 	"src/delegation-watcher.ts": 7,
-	// 4: openDelegations settles legacy herdr rows at a `now = new Date()`
+	// 4: openDelegations settles legacy pre-T3 rows at a `now = new Date()`
 	// seam — same pattern as the other three (#607 t3 transport).
 	"src/delegations.ts": 4,
 	"src/desktops-reap.ts": 2,
@@ -146,7 +146,6 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/github.ts": 3,
 	"src/health/config-auth.ts": 1,
 	"src/health/mod.ts": 1,
-	"src/herdr.ts": 3,
 	"src/http/app-sse.ts": 3,
 	"src/http/app-turns.ts": 2,
 	"src/http/auth.ts": 2,

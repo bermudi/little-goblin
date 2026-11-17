@@ -3,7 +3,7 @@
 // the same verbs the coordination tool exposes, direct from the app.
 // A correction is a durable operator event that steers the next wake;
 // pause/cancel disarm follow-through by status, never by hiding rows.
-// Detach/reattach only change the binding — the Herdr workspace is
+// Detach/reattach only change the binding — the T3 thread is
 // never touched (adoption grants no cleanup ownership).
 
 import { z } from "zod";

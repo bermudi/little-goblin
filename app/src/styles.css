@@ -397,7 +397,7 @@ p code,
 	gap: 1px;
 }
 .rail .conv {
-	position: relative; /* anchors the action overlay onto the preview line */
+	position: relative;
 	display: flex;
 	align-items: flex-start;
 	width: 100%;
@@ -410,84 +410,70 @@ p code,
 .rail .conv.current {
 	background: var(--app-active);
 }
-/* The row hit area is an anchor so the browser owns modifier-click
-   behavior; it must not pick up the link color/underline. */
+/* The link owns navigation and modifier-click behavior. */
 .conv-main {
 	flex: 1;
 	min-width: 0;
 	text-align: left;
-	padding: 0.4rem 0.6rem;
+	padding: 0.4rem 2.8rem 0.4rem 0.6rem;
 	color: inherit;
 	text-decoration: none;
 }
-/* The hover icons share the preview line, so the text itself fades out
-   just before their zone — a mask on the text, not a backdrop on the
-   icons — and the rest of the line stays full-contrast. Untitled rows
-   (.bare) fade their head line the same way; it's the only line they
-   have. Touch screens never hover, so there the current row keeps its
-   actions showing over the faded line. */
-.conv {
-	--conv-fade: linear-gradient(
-		to right,
-		black calc(100% - 5.6rem),
-		transparent calc(100% - 4.6rem)
-	);
-}
-.conv-actions {
+.conv-menu-trigger {
 	position: absolute;
-	right: 0.3rem;
-	bottom: 0.25rem;
-	display: inline-flex;
-	align-items: center;
-	gap: 0.1rem;
-	padding: 0 0.3rem;
-	opacity: 0;
-	pointer-events: none;
-	transition: opacity 160ms ease;
-}
-.conv:hover .conv-actions,
-.conv-actions:focus-within {
-	opacity: 1;
-	pointer-events: auto;
-}
-.conv:hover .conv-preview {
-	-webkit-mask-image: var(--conv-fade);
-	mask-image: var(--conv-fade);
-}
-.conv.bare:hover .conv-head {
-	-webkit-mask-image: var(--conv-fade);
-	mask-image: var(--conv-fade);
-}
-@media (hover: none) {
-	.conv.current .conv-actions {
-		opacity: 1;
-		pointer-events: auto;
-	}
-	.conv.current .conv-preview {
-		-webkit-mask-image: var(--conv-fade);
-		mask-image: var(--conv-fade);
-	}
-	.conv.bare.current .conv-head {
-		-webkit-mask-image: var(--conv-fade);
-		mask-image: var(--conv-fade);
-	}
-}
-.conv-actions button {
+	right: 0.35rem;
+	bottom: 0.3rem;
 	width: 1.4rem;
 	height: 1.4rem;
 	padding: 0;
-	justify-content: center;
 	border-radius: 6px;
 	color: var(--app-fg-muted);
-	display: inline-flex;
+	font-size: 1.2rem;
+	line-height: 1;
+	justify-content: center;
 	align-items: center;
 }
-.conv-actions button:hover {
+.conv:hover .conv-menu-trigger,
+.conv-menu-trigger:focus-visible,
+.conv-menu-trigger[data-open] {
+	opacity: 1;
+	pointer-events: auto;
+}
+.conv-menu-trigger:hover {
 	background: var(--app-active);
 	color: var(--app-fg);
 }
-.conv-actions svg {
-	display: block;
+.conv-menu-trigger {
+	opacity: 0;
+	pointer-events: none;
+	display: inline-flex;
+}
+.conv-menu {
+	z-index: 80;
+	min-width: 9rem;
+	padding: 0.25rem;
+	border: 1px solid var(--app-control-border);
+	border-radius: 8px;
+	background: var(--app-gray-100);
+	color: var(--app-fg);
+	box-shadow: 0 6px 24px rgb(0 0 0 / 0.25);
+}
+.conv-menu [role="menuitem"] {
+	padding: 0.4rem 0.55rem;
+	border-radius: 5px;
+	font-size: 12.5px;
+	cursor: default;
+}
+.conv-menu [role="menuitem"]:focus,
+.conv-menu [role="menuitem"][data-highlighted] {
+	background: var(--app-hover);
+	outline: none;
+}
+@media (hover: none) {
+	.conv-menu-trigger {
+		opacity: 1;
+		pointer-events: auto;
+	}
 }
 .conv-pin {
 	flex: none;
@@ -5289,7 +5275,7 @@ select.ui-input option {
 		min-width: 2.25rem;
 		min-height: 2.25rem;
 	}
-	.conv-actions button {
+	.conv-menu-trigger {
 		min-width: 1.85rem;
 		min-height: 1.85rem;
 	}
@@ -6171,9 +6157,13 @@ button.link:hover {
 .note-fmt-group {
 	display: inline-flex;
 	gap: 0.1rem;
-	padding-left: 0.3rem;
+}
+.note-fmt-sep {
+	width: 1px;
+	align-self: stretch;
 	margin-left: 0.2rem;
-	border-left: 1px solid var(--app-divider);
+	margin-right: 0.3rem;
+	background: var(--app-divider);
 }
 .note-fmt-btn {
 	width: 2rem;
@@ -6190,11 +6180,12 @@ button.link:hover {
 	border-radius: 6px;
 	cursor: pointer;
 }
-.note-fmt-btn:hover:not(:disabled) {
+.note-fmt-btn:hover:not(:disabled):not([aria-disabled="true"]) {
 	background: var(--app-hover);
 	color: var(--app-fg);
 }
-.note-fmt-btn.on {
+.note-fmt-btn.on,
+.note-fmt-btn[data-pressed] {
 	color: var(--app-accent);
 	background: color-mix(in oklab, var(--app-accent) 16%, transparent);
 	border-color: color-mix(in oklab, var(--app-accent) 40%, transparent);
@@ -6204,24 +6195,51 @@ button.link:hover {
 	outline: 2px solid var(--app-focus);
 	outline-offset: 1px;
 }
-.note-fmt-btn:disabled {
+.note-fmt-btn:disabled,
+.note-fmt-btn[aria-disabled="true"] {
 	opacity: 0.35;
 	cursor: default;
 }
 .note-fmt-block {
-	appearance: none;
 	height: 2rem;
+	min-width: 7.5rem;
 	font: inherit;
 	font-size: 12.5px;
 	color: var(--app-fg);
 	background-color: var(--app-control-bg);
-	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E");
-	background-repeat: no-repeat;
-	background-position: right 0.5rem center;
 	border: 1px solid var(--app-control-border);
 	border-radius: 6px;
-	padding: 0 1.6rem 0 0.55rem;
+	padding: 0 0.55rem;
 	margin-right: 0.15rem;
+	display: inline-flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+	cursor: pointer;
+}
+.note-fmt-menu {
+	min-width: 10rem;
+	padding: 0.25rem;
+	background: var(--app-bg);
+	border: 1px solid var(--app-control-border);
+	border-radius: 6px;
+	box-shadow: 0 10px 30px color-mix(in oklab, var(--app-fg) 22%, transparent);
+}
+.note-fmt-option {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	padding: 0.4rem 0.55rem;
+	border-radius: 4px;
+	cursor: pointer;
+}
+.note-fmt-option[data-highlighted] {
+	background: var(--app-hover);
+}
+.note-fmt-option[aria-disabled="true"] {
+	opacity: 0.45;
+	cursor: default;
 }
 .note-fmt-link {
 	display: flex;

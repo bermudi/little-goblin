@@ -13,10 +13,10 @@ describe("skill attribution (exact paths only)", () => {
 	test("write_file/edit_file outputs under the catalog attribute their skill dir", () => {
 		expect(
 			attributedSkills(watch, "write_file", {
-				path: join(ROOT, "skills/herdr/SKILL.md"),
+				path: join(ROOT, "skills/demo/SKILL.md"),
 				bytes: 10,
 			}),
-		).toEqual(["herdr"]);
+		).toEqual(["demo"]);
 		expect(
 			attributedSkills(watch, "edit_file", {
 				path: join(ROOT, "skills-proposed/open-source-check/SKILL.md"),

@@ -1,9 +1,9 @@
 // Project-owned durable work — the records the handover loop stands
 // on. A responsibility is not an agent run, a conversation, or a
 // Program: it survives all three changing underneath it. Attachments
-// bind explicitly selected Herdr agents to it by stable identity
-// (terminal_id + agent_session when Herdr exposes one — never pane +
-// kind alone, which a same-kind replacement inherits). Generations
+// bind explicitly selected T3 Code threads to it by stable identity
+// (the thread id — there is no same-thread replacement to inherit).
+// Generations
 // fence reattachment: an operation prepared under generation N dies
 // against generation N+1 before it can dispatch. Managed prompt
 // operations carry their own durable identity — an acknowledged op
@@ -121,7 +121,7 @@ export interface ResponsibilityStore {
 	/** A successful reconcile clears the outage bookkeeping. */
 	clearUnreachable(attachmentId: number): void;
 	updateCursor(attachmentId: number, cursor: unknown): void;
-	/** Detach marks the row; nothing about the Herdr workspace is touched. */
+	/** Detach marks the row; nothing about the T3 thread is touched. */
 	detach(attachmentId: number): void;
 	/** Deliberate reattachment: bumps generation so prepared operations
 	 *  under the old generation refuse before dispatch. The supplied

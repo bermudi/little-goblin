@@ -50,7 +50,7 @@ Proof: the savebar says `Saved.`, the block appears in
 - Turning delegation off parks the block under `parked.delegation`;
   turning it back on writes it to the top level again. An edited block
   must leave no `parked.delegation` behind.
-- Machine targets are gone. An old herdr-shaped block (`kind`, `args`,
+- Machine targets are gone. An old-shape block (`kind`, `args`,
   `machines`) logs a warning naming the rewrite and boots without
   `delegate`.
 - Nothing here proves a launch. `delegate` needs a running T3 Code

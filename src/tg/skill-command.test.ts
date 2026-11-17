@@ -131,10 +131,10 @@ function baseDeps(h: Harness, gate: boolean): SkillCommandDeps {
 
 function harness(opts?: { gate?: boolean; cfg?: Config }): Harness {
 	const home = newHome();
-	mkdirSync(join(home, "workspace", "skills", "herdr"), { recursive: true });
+	mkdirSync(join(home, "workspace", "skills", "demo"), { recursive: true });
 	writeFileSync(
-		join(home, "workspace", "skills", "herdr", "SKILL.md"),
-		"---\nname: herdr\ndescription: drive herdr panes\n---\npane body",
+		join(home, "workspace", "skills", "demo", "SKILL.md"),
+		"---\nname: demo\ndescription: drive demo panes\n---\npane body",
 	);
 	const h: Harness = {
 		api: null as never,
@@ -179,16 +179,16 @@ describe("/skill", () => {
 		);
 		await handleSkillCommand(harnessDeps(h), conv(), "/skill");
 		const text = sent(h);
-		expect(text).toContain("herdr — drive herdr panes");
+		expect(text).toContain("demo — drive demo panes");
 		expect(text).toContain("secret (manual-only)");
 	});
 
 	test("name submits the turn with a data-skill part plus held text", async () => {
 		const h = harness();
-		await handleSkillCommand(harnessDeps(h), conv(), "/skill herdr check the panes");
+		await handleSkillCommand(harnessDeps(h), conv(), "/skill demo check the panes");
 		const parts = h.submitted[0]!.parts as Array<{ type: string; data?: unknown; text?: string }>;
 		expect(parts[0]!.type).toBe(SKILL_PART);
-		expect(parts[0]!.data).toEqual({ name: "herdr" });
+		expect(parts[0]!.data).toEqual({ name: "demo" });
 		expect(parts[1]!.text).toBe("check the panes");
 	});
 
@@ -203,7 +203,7 @@ describe("/skill", () => {
 		const h = harness();
 		const d = harnessDeps(h);
 		d.runtime = { submitPersisted: () => false } as never;
-		await handleSkillCommand(d, conv(), "/skill herdr");
+		await handleSkillCommand(d, conv(), "/skill demo");
 		expect(h.appended).toHaveLength(1);
 		expect(sent(h)).toContain("not invoked");
 	});
@@ -211,12 +211,12 @@ describe("/skill", () => {
 	test("a group-target invocation prepends the shared-chat note; a DM does not", async () => {
 		const h = harness();
 		const topic = conv("tg:-100:7", -100);
-		await handleSkillCommand(harnessDeps(h), topic, "/skill herdr");
+		await handleSkillCommand(harnessDeps(h), topic, "/skill demo");
 		const groupParts = h.appended[0]!.parts as Array<{ type: string; text?: string }>;
 		expect(groupParts[0]!.type).toBe("text");
 		expect(groupParts[0]!.text).toBe(SHARED_CHAT_NOTE);
 		expect(groupParts[1]!.type).toBe(SKILL_PART);
-		await handleSkillCommand(harnessDeps(h), conv(), "/skill herdr");
+		await handleSkillCommand(harnessDeps(h), conv(), "/skill demo");
 		const dmParts = h.appended[1]!.parts as Array<{ type: string; text?: string }>;
 		expect(dmParts[0]!.type).toBe(SKILL_PART);
 	});
@@ -271,7 +271,7 @@ describe("/skill delivery sink", () => {
 		const h = harness({ cfg: baseConfig({ kind: "edge", voice: "en-US-Ava" }) });
 		const talking = conv("dm:1", 1);
 		talking.voice = true;
-		await handleSkillCommand(harnessDeps(h), talking, "/skill herdr");
+		await handleSkillCommand(harnessDeps(h), talking, "/skill demo");
 		expect(h.sinks).toHaveLength(1);
 		h.sinks[0]!.onTextDelta("speaking to you");
 		await h.sinks[0]!.onDone({ kind: "completed" });
@@ -284,7 +284,7 @@ describe("/skill delivery sink", () => {
 			cfg: baseConfig(),
 		});
 		h.cfg = { ...h.cfg, telegram: { ...h.cfg.telegram, richReplies: true, showReasoning: true } };
-		await handleSkillCommand(harnessDeps(h), conv("dm:1", 1), "/skill herdr");
+		await handleSkillCommand(harnessDeps(h), conv("dm:1", 1), "/skill demo");
 		h.sinks[0]!.onReasoningDelta("thinking it through");
 		h.sinks[0]!.onTextDelta("a rich answer");
 		await h.sinks[0]!.onDone({ kind: "completed" });
@@ -294,7 +294,7 @@ describe("/skill delivery sink", () => {
 
 	test("a plain conversation answers by text, never voice", async () => {
 		const h = harness();
-		await handleSkillCommand(harnessDeps(h), conv("dm:1", 1), "/skill herdr");
+		await handleSkillCommand(harnessDeps(h), conv("dm:1", 1), "/skill demo");
 		h.sinks[0]!.onTextDelta("a plain answer");
 		await h.sinks[0]!.onDone({ kind: "completed" });
 		expect(h.synthesized).toHaveLength(0);

@@ -22,12 +22,12 @@ describe("skill chip rendering", () => {
 		const html = renderToStaticMarkup(
 			<MessageParts
 				parts={[
-					{ type: "data-skill", data: { name: "herdr" } } as unknown as UIMessage["parts"][number],
+					{ type: "data-skill", data: { name: "demo" } } as unknown as UIMessage["parts"][number],
 				]}
 			/>,
 		);
 		expect(html).toContain("note-chip");
-		expect(html).toContain("Skill · herdr");
+		expect(html).toContain("Skill · demo");
 		expect(html).not.toContain("Temp skill");
 	});
 
@@ -118,8 +118,8 @@ describe("Composer skill staging", () => {
 						proposed: [],
 						catalog: [
 							{
-								name: "herdr",
-								description: "drive herdr panes",
+								name: "demo",
+								description: "drive demo panes",
 								manualOnly: false,
 								bodyBytes: 900,
 							},
@@ -200,17 +200,17 @@ describe("Composer skill staging", () => {
 		});
 		// The sheet lists the catalog, manual-only marked.
 		await act(async () => {});
-		expect(container.textContent).toContain("herdr");
+		expect(container.textContent).toContain("demo");
 		expect(container.textContent).toContain("manual-only");
 		const row = Array.from(container.querySelectorAll("button, [role=option]")).find((b) =>
-			b.textContent?.includes("herdr"),
+			b.textContent?.includes("demo"),
 		);
 		expect(row).not.toBeNull();
 		await act(async () => {
 			row!.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
 		});
 		// The chip replaced the sheet.
-		expect(container.textContent).toContain("Skill · herdr");
+		expect(container.textContent).toContain("Skill · demo");
 		expect(container.querySelector("[role=dialog]")).toBeNull();
 		// Type and send — React's value tracker needs the native setter.
 		const textarea = q("textarea");
@@ -236,10 +236,10 @@ describe("Composer skill staging", () => {
 		const types = sent[0]!.map((p) => p.type);
 		expect(types).toContain("data-skill");
 		const skillPart = sent[0]!.find((p) => p.type === "data-skill") as { data: unknown };
-		expect(skillPart.data).toEqual({ name: "herdr" });
+		expect(skillPart.data).toEqual({ name: "demo" });
 		expect(types[0]).toBe("text");
 		// The chip cleared on acceptance.
-		expect(container.textContent).not.toContain("Skill · herdr");
+		expect(container.textContent).not.toContain("Skill · demo");
 	});
 
 	test("a send with only a staged skill goes through with no text", async () => {
@@ -254,7 +254,7 @@ describe("Composer skill staging", () => {
 		});
 		await act(async () => {});
 		const row = Array.from(container.querySelectorAll("button, [role=option]")).find((b) =>
-			b.textContent?.includes("herdr"),
+			b.textContent?.includes("demo"),
 		)!;
 		await act(async () => {
 			row.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
@@ -280,12 +280,12 @@ describe("Composer skill staging", () => {
 		});
 		await act(async () => {});
 		const row = Array.from(container.querySelectorAll("button, [role=option]")).find((b) =>
-			b.textContent?.includes("herdr"),
+			b.textContent?.includes("demo"),
 		)!;
 		await act(async () => {
 			row.dispatchEvent(new win.Event("click", { bubbles: true }) as unknown as Event);
 		});
-		expect(container.textContent).toContain("Skill · herdr");
+		expect(container.textContent).toContain("Skill · demo");
 		const sendBtn = container.querySelector<HTMLButtonElement>('button[aria-label="Send"]');
 		expect(sendBtn).not.toBeNull();
 		expect(sendBtn!.disabled).toBe(false);
@@ -294,8 +294,8 @@ describe("Composer skill staging", () => {
 		});
 		expect(sent).toHaveLength(1);
 		expect(sent[0]!.map((p) => p.type)).toEqual(["data-skill"]);
-		expect((sent[0]![0] as { data: unknown }).data).toEqual({ name: "herdr" });
-		expect(container.textContent).not.toContain("Skill · herdr");
+		expect((sent[0]![0] as { data: unknown }).data).toEqual({ name: "demo" });
+		expect(container.textContent).not.toContain("Skill · demo");
 	});
 
 	test("Enter in the picker filter does not submit the enclosing composer form", async () => {
@@ -326,14 +326,14 @@ describe("Composer skill staging", () => {
 			el.focus();
 			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(
 				el,
-				"herd",
+				"dem",
 			);
 			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
 			el.dispatchEvent(
 				new win.KeyboardEvent("keyup", { bubbles: true, key: "d" }) as unknown as Event,
 			);
 		});
-		expect(container.textContent).toContain("herdr");
+		expect(container.textContent).toContain("demo");
 		expect(container.textContent).not.toContain("shh");
 		const enter = new win.KeyboardEvent("keydown", {
 			key: "Enter",
@@ -374,18 +374,18 @@ describe("Composer skill staging", () => {
 			root?.render(
 				<ComposerHarness
 					initialSkills={[
-						{ key: "k1", name: "herdr", ref: { name: "herdr" } },
+						{ key: "k1", name: "demo", ref: { name: "demo" } },
 						{ key: "k2", name: "claude-api", ref: tempRef },
 					]}
 				/>,
 			);
 		});
-		expect(chipNames()).toEqual(["Skill · herdr", "Temp skill · claude-api"]);
+		expect(chipNames()).toEqual(["Skill · demo", "Temp skill · claude-api"]);
 
 		// The accepted send clears both chips.
 		await sendClick();
 		expect(sent).toHaveLength(1);
-		expect(skillParts(sent[0]!)).toEqual([{ name: "herdr" }, tempRef]);
+		expect(skillParts(sent[0]!)).toEqual([{ name: "demo" }, tempRef]);
 		expect(chipNames()).toEqual([]);
 
 		// The cancelled send's parts come back as a draft restore —
@@ -393,13 +393,13 @@ describe("Composer skill staging", () => {
 		await act(async () => {
 			root?.render(<ComposerHarness draftRestore={{ parts: sent[0]! }} />);
 		});
-		expect(chipNames()).toEqual(["Skill · herdr", "Temp skill · claude-api"]);
+		expect(chipNames()).toEqual(["Skill · demo", "Temp skill · claude-api"]);
 
 		// And the refs resend verbatim — a skill-only send still goes.
 		await sendClick();
 		expect(sent).toHaveLength(2);
 		expect(sent[1]!.map((p) => p.type)).toEqual(["data-skill", "data-skill"]);
-		expect(skillParts(sent[1]!)).toEqual([{ name: "herdr" }, tempRef]);
+		expect(skillParts(sent[1]!)).toEqual([{ name: "demo" }, tempRef]);
 		expect(chipNames()).toEqual([]);
 	});
 
@@ -446,8 +446,8 @@ describe("Composer skill staging", () => {
 
 	test("the picker stages same-name refs by reference — catalog, temp urls, and cache paths stay distinct", async () => {
 		const previewFor = (url: string, path: string): SkillPreviewResponse => ({
-			name: "herdr",
-			description: "a fetched copy of herdr",
+			name: "demo",
+			description: "a fetched copy of demo",
 			sourceUrl: url,
 			path,
 			dir: path.slice(0, path.lastIndexOf("/")),
@@ -458,17 +458,17 @@ describe("Composer skill staging", () => {
 			cached: false,
 			verdict: { status: "clean", injection: 0, severity: 0 },
 		});
-		const u1 = "https://github.com/o/r/tree/main/skills/herdr";
-		const u2 = "https://github.com/x/y/tree/main/skills/herdr";
+		const u1 = "https://github.com/o/r/tree/main/skills/demo";
+		const u2 = "https://github.com/x/y/tree/main/skills/demo";
 		// u1 previews the same pin twice; u2 re-pins to a new cache copy
 		// on its second preview.
 		previewResponses.set(u1, [
-			previewFor(u1, "/cache/a/herdr/SKILL.md"),
-			previewFor(u1, "/cache/a/herdr/SKILL.md"),
+			previewFor(u1, "/cache/a/demo/SKILL.md"),
+			previewFor(u1, "/cache/a/demo/SKILL.md"),
 		]);
 		previewResponses.set(u2, [
-			previewFor(u2, "/cache/b/herdr/SKILL.md"),
-			previewFor(u2, "/cache/c/herdr/SKILL.md"),
+			previewFor(u2, "/cache/b/demo/SKILL.md"),
+			previewFor(u2, "/cache/c/demo/SKILL.md"),
 		]);
 		const stageCatalogRow = async (name: string) => {
 			await act(async () => {
@@ -514,8 +514,8 @@ describe("Composer skill staging", () => {
 			root?.render(<ComposerHarness />);
 		});
 		// The identical catalog ref twice stages once.
-		await stageCatalogRow("herdr");
-		await stageCatalogRow("herdr");
+		await stageCatalogRow("demo");
+		await stageCatalogRow("demo");
 		// A temp copy that named itself the same is a different ref —
 		// and the same preview staged again is still just one entry.
 		await stageTemp(u1);
@@ -525,17 +525,17 @@ describe("Composer skill staging", () => {
 		await stageTemp(u2);
 		await stageTemp(u2);
 		expect(chipNames()).toEqual([
-			"Skill · herdr",
-			"Temp skill · herdr",
-			"Temp skill · herdr",
-			"Temp skill · herdr",
+			"Skill · demo",
+			"Temp skill · demo",
+			"Temp skill · demo",
+			"Temp skill · demo",
 		]);
 		await sendClick();
 		expect(skillParts(sent[0]!)).toEqual([
-			{ name: "herdr" },
-			{ url: u1, path: "/cache/a/herdr/SKILL.md" },
-			{ url: u2, path: "/cache/b/herdr/SKILL.md" },
-			{ url: u2, path: "/cache/c/herdr/SKILL.md" },
+			{ name: "demo" },
+			{ url: u1, path: "/cache/a/demo/SKILL.md" },
+			{ url: u2, path: "/cache/b/demo/SKILL.md" },
+			{ url: u2, path: "/cache/c/demo/SKILL.md" },
 		]);
 	});
 });

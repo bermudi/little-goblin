@@ -480,7 +480,7 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 					done({ responsibility: resp.responsibilityId, status, outcome: "ok" });
 					return {
 						responsibility: deps.resps.get(resp.responsibilityId),
-						note: "lifecycle is durable record-keeping only — no Herdr workspace was touched",
+						note: "lifecycle is durable record-keeping only — no worker thread was touched",
 					};
 				}
 				case "send": {

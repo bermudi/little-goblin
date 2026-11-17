@@ -244,7 +244,7 @@ describe("ThreadSourcesSheet", () => {
 					json({
 						items: [
 							{
-								skill: "herdr",
+								skill: "demo",
 								state: "installed",
 								pending: !decided,
 								kind: "reviewer",
@@ -257,7 +257,7 @@ describe("ThreadSourcesSheet", () => {
 			if (url.pathname === "/api/app/skills/decide") {
 				decided = true;
 				return Promise.resolve(
-					json({ ok: true, skill: "herdr", action: "discard", replaced: false, state: "gone" }),
+					json({ ok: true, skill: "demo", action: "discard", replaced: false, state: "gone" }),
 				);
 			}
 			if (url.pathname === "/api/app/memory/documents")
@@ -268,7 +268,7 @@ describe("ThreadSourcesSheet", () => {
 		mount();
 		await flush();
 		const row = [...container.querySelectorAll(".skill-row")].find((r) =>
-			r.textContent?.includes("herdr"),
+			r.textContent?.includes("demo"),
 		)!;
 		// Live state stays "installed"; the pending proposal surfaces as
 		// its own chip plus the decide buttons, labeled as an update so

@@ -256,21 +256,10 @@ export const sandboxConfigSchema = z
 	.strict();
 export type SandboxConfig = z.infer<typeof sandboxConfigSchema>;
 
-// Subagents & computer use — absent block = no tools, no harness opened;
-// an absent type = that type is off. Models are configured per type,
-// never guessed; api is the one transport pi-ai speaks to z.ai's
-// Coding Plan endpoint.
-const subagentModelSchema = z
-	.object({
-		auth: z.string().min(1),
-		id: z.string().min(1),
-		baseUrl: z.url(),
-		api: z.literal("openai-completions"),
-		thinking: z.enum(thinkingLevels),
-	})
-	.strict();
-
-// The managed desktop pool: idleHours 0 = never reap (like sandboxes).
+// The managed desktop pool (design/agents.md → Computer use) —
+// hand-edited only. Serves the parent's `desktop` tool and the
+// `computer` agent type's children. Absent block = no pool.
+// idleHours 0 = never reap (like sandboxes).
 export const desktopsConfigSchema = z
 	.object({
 		image: imageRefSchema.default("localhost/goblin-desktop:1"),
@@ -282,16 +271,6 @@ export const desktopsConfigSchema = z
 	})
 	.strict();
 export type DesktopsConfig = z.infer<typeof desktopsConfigSchema>;
-
-export const subagentsConfigSchema = z
-	.object({
-		maxRuns: z.number().int().min(1).default(3),
-		worker: z.object({ model: subagentModelSchema }).strict().optional(),
-		computer: z.object({ model: subagentModelSchema }).strict().optional(),
-		desktops: desktopsConfigSchema.prefault({}),
-	})
-	.strict();
-export type SubagentsConfig = z.infer<typeof subagentsConfigSchema>;
 
 // Native subagents (design/agents.md → `agent`): the cap is the only
 // knob — a child rides goblin's own providers through the parent's
@@ -768,8 +747,8 @@ export const configSchema = z
 			.union([sandboxConfigSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
-		// Subagents & computer use — hand-edited only, like delegation.
-		subagents: subagentsConfigSchema.optional(),
+		// The managed desktop pool — hand-edited only, like delegation.
+		desktops: desktopsConfigSchema.optional(),
 		// Native subagents — live-read per turn; the agent tool itself
 		// mounts regardless (it needs no provider of its own).
 		agents: agentsConfigSchema.optional(),
@@ -800,7 +779,6 @@ export const configSchema = z
 				vision: visionConfigSchema.optional(),
 				image: imageConfigSchema.optional(),
 				sandbox: sandboxConfigSchema.optional(),
-				subagents: subagentsConfigSchema.optional(),
 				scripting: scriptingConfigSchema.optional(),
 				delegation: delegationConfigSchema.optional(),
 				guest: guestConfigSchema.optional(),
@@ -891,7 +869,6 @@ export const capabilityNames = [
 	"vision",
 	"image",
 	"sandbox",
-	"subagents",
 	"scripting",
 	"delegation",
 	"guest",

@@ -312,7 +312,7 @@ export function buildSystemPrompt(
 					`  named — it runs as a T3 Code thread he watches there, and`,
 					`  every result notice carries the thread link. Use it only`,
 					`  when he asked for that harness; work you decide to hand`,
-					`  off goes to a subagent or you do it yourself. Results`,
+					`  off goes to the agent tool or you do it yourself. Results`,
 					`  arrive as [delegation: #id …] messages in the conversation`,
 					`  they were born in — a private-chat delegation moves into`,
 					`  its own app conversation and pings Telegram from there.`,

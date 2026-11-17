@@ -113,7 +113,6 @@ function harness(startError?: { message: string }): Harness {
 				: h.pinOverride(name);
 		},
 		workspaceDir,
-		mountedSubagents: { worker: false, computer: false },
 	};
 	const h: Harness = {
 		tool: delegateTool(deps),
@@ -285,24 +284,6 @@ describe("delegate tool", () => {
 		const flagged = delegateTool(h.deps).description;
 		expect(flagged).toContain("Ask-first harnesses (claude)");
 		expect(flagged).toContain("ask the operator before each use");
-	});
-
-	test("the description names only the subagent tools this turn mounts", () => {
-		const h = harness();
-		const description = (mountedSubagents: { worker: boolean; computer: boolean }) =>
-			delegateTool({ ...h.deps, mountedSubagents }).description;
-		const neither = description({ worker: false, computer: false });
-		expect(neither).not.toContain("worker subagent");
-		expect(neither).not.toContain("computer subagent");
-		const workerOnly = description({ worker: true, computer: false });
-		expect(workerOnly).toContain("worker subagent");
-		expect(workerOnly).not.toContain("computer subagent");
-		const computerOnly = description({ worker: false, computer: true });
-		expect(computerOnly).toContain("computer subagent");
-		expect(computerOnly).not.toContain("worker subagent");
-		expect(description({ worker: true, computer: true })).toContain(
-			"Standalone long or code-heavy work belongs with a worker subagent, and screen work with a computer subagent.",
-		);
 	});
 
 	test("a bad cwd is rejected before any t3 call", async () => {

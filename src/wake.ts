@@ -32,27 +32,14 @@ export interface WakeAddress {
 
 // One owner for the app/telegram sink route: app conversations always
 // take the bell; telegram and guest conversations take delivery when the
-// channel is attached. What happens with no delivery is the caller's
-// policy — "bell" falls back to the bell (durable wakes), "refuse"
-// returns null (subagent and resume wakes must not land headless).
+// channel is attached, else fall back to the bell (durable wakes).
 export function sinkFor(
 	deps: Pick<WakeDeps, "bell" | "delivery">,
 	conv: Conversation,
-	onDetached: "bell",
-): TurnSink;
-export function sinkFor(
-	deps: Pick<WakeDeps, "bell" | "delivery">,
-	conv: Conversation,
-	onDetached: "refuse",
-): TurnSink | null;
-export function sinkFor(
-	deps: Pick<WakeDeps, "bell" | "delivery">,
-	conv: Conversation,
-	onDetached: "bell" | "refuse",
-): TurnSink | null {
+): TurnSink {
 	if (channelOf(conv.id) === "app") return deps.bell(conv);
 	if (deps.delivery !== undefined) return deps.delivery(conv);
-	return onDetached === "bell" ? deps.bell(conv) : null;
+	return deps.bell(conv);
 }
 
 // A rejected or failed submit returns false so delegation notices can retry.
@@ -141,40 +128,4 @@ export function wakeTarget(deps: WakeDeps, target: ConversationTarget, text: str
 	if (appConversation !== null) return wakeApp(deps, appConversation, text);
 	log.error("program wake dropped — invalid target", { target });
 	return false;
-}
-
-// Subagent notices route to the EXACT stored origin row — never a rolled
-// DM, never a new conversation. App origins ring the bell; telegram and
-// guest origins deliver to the row's recorded chat/thread. A deleted
-// origin is the intentional drop; a rejected submit returns false so the
-// owner retries on scan.
-export function wakeConversation(deps: WakeDeps, conversationId: string, text: string): boolean {
-	if (!deps.runtime.accepting()) return false;
-	const conv = deps.store.get(conversationId);
-	if (conv === null) {
-		log.warn("subagent notice dropped — origin conversation deleted", {
-			conversation: conversationId,
-		});
-		return true;
-	}
-	const sink = sinkFor(deps, conv, "refuse");
-	if (sink === null) {
-		log.warn("subagent wake refused — telegram channel disabled", { conversation: conv.id });
-		return false;
-	}
-	try {
-		const admitted = deps.runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
-		if (!admitted) {
-			log.warn("subagent wake history only — runtime closed", { conversation: conv.id });
-			return false;
-		}
-	} catch (err) {
-		void sink.onDone({
-			kind: "error",
-			message: err instanceof Error ? err.message : String(err),
-		});
-		log.error("subagent wake submit failed", err, { conversation: conv.id });
-		return false;
-	}
-	return true;
 }

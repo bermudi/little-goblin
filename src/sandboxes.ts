@@ -155,14 +155,6 @@ export interface SandboxesDeps {
 	/** Test seams — prod leaves both at their defaults. */
 	containerPrefix?: string;
 	networkName?: string;
-	/** A live subagent run lease (queued/running/needs_input) or null —
-	 *  read inside lifecycle ops: reset refuses while held, the reaper
-	 *  skips. */
-	runLease?(conversationId: string): { id: number; status: string } | null;
-	/** Destructive lifecycle events a worker run must learn about —
-	 *  recreate (prior state gone) and restart-after-killed-exec.
-	 *  Synchronous; the composition persists it onto the run row. */
-	onLifecycle?(conversationId: string, note: string): void;
 }
 
 export interface SandboxExecOutcome {
@@ -306,7 +298,6 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				store.touch(conv, now);
 				const note =
 					"sandbox was stopped (e.g. host reboot) — restarted it; files and network state restored, but any background processes have died";
-				deps.onLifecycle?.(conv, note);
 				log.info("sandbox restarted", { conversation: conv, container: name });
 				return {
 					container: name,
@@ -325,7 +316,6 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			await createContainer(name, row.image, row.network, conv, undefined, signal);
 			store.touch(conv, now);
 			const note = "sandbox container was gone — recreated fresh; its previous contents are lost";
-			deps.onLifecycle?.(conv, note);
 			log.info("sandbox recreated", { conversation: conv, container: name });
 			return {
 				container: name,
@@ -356,7 +346,6 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		restartEpochs.set(conv, restartEpochOf(conv) + 1);
 		const row = store.get(conv);
 		await applyNetwork(name, row?.network ?? false, conv);
-		deps.onLifecycle?.(conv, note);
 		log.info("sandbox restarted after killed exec", {
 			conversation: conv,
 			container: name,
@@ -368,13 +357,12 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		if (idle === 0) return;
 		const cutoff = Date.now() - idle * 3_600_000;
 		for (const row of store.staleBefore(cutoff, conv)) {
-			// The idle/lease verdict is re-read inside the target's lane
-			// immediately before removal — a touch or fresh lease
-			// landing between listing and rm must win the race.
+			// The idle verdict is re-read inside the target's lane
+			// immediately before removal — a touch landing between
+			// listing and rm must win the race.
 			await lane(row.conversationId, async () => {
 				const fresh = store.get(row.conversationId);
 				if (fresh === null || fresh.lastUsedAt >= cutoff) return;
-				if (deps.runLease?.(row.conversationId) != null) return;
 				try {
 					// The rm runs under the row's owner — the boundary
 					// line must name who it was for.
@@ -441,13 +429,6 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 		signal?.throwIfAborted();
 	}
 
-	// A run lease announces itself on every non-destructive result.
-	function leaseNote(conv: string): string | undefined {
-		const lease = deps.runLease?.(conv);
-		return lease === null || lease === undefined
-			? undefined
-			: `run #${lease.id} holds this sandbox`;
-	}
 	function mergeNote(a: string | undefined, b: string | undefined): string | undefined {
 		if (a === undefined) return b;
 		if (b === undefined) return a;
@@ -507,7 +488,6 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			});
 			note = mergeNote(note, recovery);
 		}
-		note = mergeNote(note, leaseNote(conv));
 		store.touch(conv, Date.now());
 		return { result: r, ...(note !== undefined ? { note } : {}) };
 	}
@@ -535,7 +515,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			opts?.abortSignal?.throwIfAborted();
 			await podman.cp(ready.container, hostPath, containerPath, conv);
 			store.touch(conv, Date.now());
-			const note = mergeNote(ready.note, leaseNote(conv));
+			const note = ready.note;
 			return { ...(note !== undefined ? { note } : {}) };
 		},
 
@@ -586,7 +566,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				);
 			}
 			store.touch(conv, Date.now());
-			const note = mergeNote(ready.note, leaseNote(conv));
+			const note = ready.note;
 			return { data: r.stdout, ...(note !== undefined ? { note } : {}) };
 		},
 
@@ -610,7 +590,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				});
 				return ready;
 			});
-			const note = mergeNote(out.note, leaseNote(conv));
+			const note = out.note;
 			return { ...(note !== undefined ? { note } : {}) };
 		},
 
@@ -621,14 +601,6 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			return await lane(conv, async () => {
 				store.touch(conv, Date.now());
 				opts?.abortSignal?.throwIfAborted();
-				// Inside the lane so a racing act can't resurrect a stale
-				// row — a live run would lose its state under reset.
-				const lease = deps.runLease?.(conv);
-				if (lease != null) {
-					throw new SandboxError(
-						`sandbox reset refused — run #${lease.id} (${lease.status}) holds this sandbox; stop it first`,
-					);
-				}
 				const name = nameFor(conv);
 				const target = image ?? cfg().image;
 				// The image gate runs before the rm: a bad ref must fail
@@ -644,12 +616,6 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 				// incumbent survives.
 				const prepared = await prepareContainer(target, conv, opts?.abortSignal);
 				opts?.abortSignal?.throwIfAborted();
-				const currentLease = deps.runLease?.(conv);
-				if (currentLease != null) {
-					throw new SandboxError(
-						`sandbox reset refused — run #${currentLease.id} (${currentLease.status}) holds this sandbox; stop it first`,
-					);
-				}
 				if (ins.state !== "missing") {
 					await podman.rm(name, conv);
 					bumpGeneration(conv);

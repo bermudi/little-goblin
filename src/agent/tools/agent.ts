@@ -12,7 +12,7 @@ import type { Conversation } from "../../conversation-read.ts";
 import { defineTool, type Tool, type Tools } from "../../tool.ts";
 
 // What a child never gets, whatever its type file says or the parent
-// has: the spawners (agent, delegate, subagent — depth is 1), the
+// has: the spawners (agent, delegate — depth is 1), the
 // channel tools (speak, send_file, ui, mail, artifact — a child has no
 // operator channel), and the memory surfaces (memory_search,
 // memory_reflect, note — a child recalls nothing and leaves nothing;
@@ -20,7 +20,6 @@ import { defineTool, type Tool, type Tools } from "../../tool.ts";
 export const CHILD_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
 	"agent",
 	"delegate",
-	"subagent",
 	"speak",
 	"send_file",
 	"ui",
@@ -87,7 +86,7 @@ const actionSchema = z.discriminatedUnion("action", [
 ]);
 
 // The flat shape the SDK streams args into, refined against the union
-// — same pattern as the subagent tool.
+// — same pattern as the delegate tool.
 const inputFields = z.object({
 	action: z.enum(["spawn", "list", "read", "send", "stop"]),
 	type: spawnSchema.shape.type,

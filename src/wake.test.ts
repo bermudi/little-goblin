@@ -17,7 +17,7 @@ import type { RollDeps } from "./rolling.ts";
 import { delegationWake } from "./delegation-lifecycle.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "./testkit/fake-model.ts";
 import { useHome, waitUntil } from "./testkit.ts";
-import { sinkFor, wake, wakeApp, wakeConversation, wakeTarget, type WakeDeps } from "./wake.ts";
+import { sinkFor, wake, wakeApp, wakeTarget, type WakeDeps } from "./wake.ts";
 
 const nullSink: TurnSink = {
 	onTextDelta: () => {},
@@ -224,8 +224,6 @@ test("no Telegram delivery refuses Telegram targets while app targets keep the b
 	delete deps.delivery;
 	delete deps.markRoll;
 	expect(wakeTarget(deps, "dm:7", "scheduled job ran")).toBe(false);
-	const dm = store.resolve({ kind: "dm", chatId: 7 }, "/w");
-	expect(wakeConversation(deps, dm.id, "subagent notice")).toBe(false);
 	const app = store.resolve(appAddress("chat-01"), "/w");
 	expect(wakeTarget(deps, app.id, "scheduled job ran")).toBe(true);
 	expect(submitted).toEqual([app.id]);
@@ -304,94 +302,6 @@ test("a background app turn persists generated media without an SSE stream", asy
 	store.close();
 });
 
-// ---------- wakeConversation ----------
-
-test("wakeConversation hits the exact stored DM row — never rolls, never creates", () => {
-	const { deps, store, submitted, sends } = harness(0); // gap 0 — a rolling path would roll
-	store.rollDm(7, "/w"); // dm:7:1 is current
-	const landed = wakeConversation(deps, "dm:7:1", "subagent notice");
-	expect(landed).toBe(true);
-	expect(submitted).toEqual(["dm:7:1"]);
-	expect(store.currentDm(7)?.id).toBe("dm:7:1"); // no dm:7:2 was rolled
-	expect(sends).toEqual([]); // no roll marker
-	store.close();
-});
-
-test("wakeConversation to an app origin uses the bell sink", () => {
-	const { deps, store, submitted, sinks } = harness(45);
-	const app = store.forkToApp(store.resolve({ kind: "dm", chatId: 1 }, "/w").id, "x1", "/w", "job");
-	const landed = wakeConversation(deps, app.id, "subagent notice");
-	expect(landed).toBe(true);
-	expect(submitted).toEqual([app.id]);
-	expect(sinks).toHaveLength(1); // bell, not delivery
-	store.close();
-});
-
-test("wakeConversation to a guest origin delivers on the stored row", () => {
-	const { deps, store, submitted, sinks } = harness(45);
-	const conv = store.resolve({ kind: "guest", chatId: 5, userId: 9 }, "/w");
-	const landed = wakeConversation(deps, conv.id, "subagent notice");
-	expect(landed).toBe(true);
-	expect(submitted).toEqual([conv.id]);
-	expect(sinks).toEqual([]); // delivery sink, not the app bell
-	store.close();
-});
-
-test("a deleted origin is the intentional drop — true, no submit, no rolling DM", () => {
-	const { deps, store, submitted } = harness(0);
-	store.rollDm(7, "/w");
-	const landed = wakeConversation(deps, "dm:7:99", "subagent notice");
-	expect(landed).toBe(true);
-	expect(submitted).toEqual([]);
-	expect(store.currentDm(7)?.id).toBe("dm:7:1"); // untouched
-	store.close();
-});
-
-test("a refused submit returns false so the owner retries on scan", () => {
-	const { deps, store } = harness(45);
-	const conv = store.resolve({ kind: "dm", chatId: 3 }, "/w");
-	(deps.runtime as { submit: unknown }).submit = () => false;
-	expect(wakeConversation(deps, conv.id, "subagent notice")).toBe(false);
-	store.close();
-});
-
-test.each(["app", "dm"] as const)(
-	"a shutdown %s origin keeps the notice retryable without persisting it",
-	async (channel) => {
-		const { deps, store, submitted, sinks } = harness(45);
-		const conv =
-			channel === "app"
-				? store.resolve(appAddress("closed"), "/w")
-				: store.resolve({ kind: "dm", chatId: 3 }, "/w");
-		const runtime = new Runtime({
-			engines: [aiSdkEngine],
-			store,
-			buildStep: () => {
-				throw new Error("closed runtime ran a turn");
-			},
-			makeTools: () => ({}),
-		});
-		await runtime.shutdown();
-		deps.runtime = runtime;
-		expect(wakeConversation(deps, conv.id, "retry after restart")).toBe(false);
-		if (channel === "app") expect(wakeApp(deps, conv.id, "retry after restart")).toBe(false);
-		expect(store.history(conv.id)).toEqual([]);
-		expect(submitted).toEqual([]);
-		expect(sinks).toEqual([]);
-		store.close();
-	},
-);
-
-test("a throwing submit is released and returns false", () => {
-	const { deps, store } = harness(45);
-	const conv = store.resolve({ kind: "dm", chatId: 4 }, "/w");
-	(deps.runtime as { submit: unknown }).submit = () => {
-		throw new Error("runtime gone");
-	};
-	expect(wakeConversation(deps, conv.id, "subagent notice")).toBe(false);
-	store.close();
-});
-
 // ---------- sinkFor ----------
 
 function sinkStub(withDelivery: boolean): {
@@ -418,38 +328,26 @@ function sinkStub(withDelivery: boolean): {
 	return { deps, bellSink, deliverySink };
 }
 
-test("sinkFor routes app conversations to the bell in both modes", () => {
+test("sinkFor routes app conversations to the bell", () => {
 	const app = { id: "app/chat-01" } as unknown as Conversation;
 	const withDelivery = sinkStub(true);
-	expect(sinkFor(withDelivery.deps, app, "bell")).toBe(withDelivery.bellSink);
-	expect(sinkFor(withDelivery.deps, app, "refuse")).toBe(withDelivery.bellSink);
+	expect(sinkFor(withDelivery.deps, app)).toBe(withDelivery.bellSink);
 	const withoutDelivery = sinkStub(false);
-	expect(sinkFor(withoutDelivery.deps, app, "bell")).toBe(withoutDelivery.bellSink);
-	expect(sinkFor(withoutDelivery.deps, app, "refuse")).toBe(withoutDelivery.bellSink);
+	expect(sinkFor(withoutDelivery.deps, app)).toBe(withoutDelivery.bellSink);
 });
 
 test("sinkFor routes telegram and guest to delivery when attached", () => {
 	const { deps, deliverySink } = sinkStub(true);
 	const telegram = { id: "dm:7" } as unknown as Conversation;
 	const guest = { id: "guest:5:9" } as unknown as Conversation;
-	expect(sinkFor(deps, telegram, "bell")).toBe(deliverySink);
-	expect(sinkFor(deps, telegram, "refuse")).toBe(deliverySink);
-	expect(sinkFor(deps, guest, "bell")).toBe(deliverySink);
-	expect(sinkFor(deps, guest, "refuse")).toBe(deliverySink);
+	expect(sinkFor(deps, telegram)).toBe(deliverySink);
+	expect(sinkFor(deps, guest)).toBe(deliverySink);
 });
 
-test("sinkFor falls back to the bell for detached telegram/guest when onDetached is bell", () => {
+test("sinkFor falls back to the bell for detached telegram/guest", () => {
 	const { deps, bellSink } = sinkStub(false);
 	const telegram = { id: "dm:7" } as unknown as Conversation;
 	const guest = { id: "guest:5:9" } as unknown as Conversation;
-	expect(sinkFor(deps, telegram, "bell")).toBe(bellSink);
-	expect(sinkFor(deps, guest, "bell")).toBe(bellSink);
-});
-
-test("sinkFor refuses detached telegram/guest when onDetached is refuse", () => {
-	const { deps } = sinkStub(false);
-	const telegram = { id: "dm:7" } as unknown as Conversation;
-	const guest = { id: "guest:5:9" } as unknown as Conversation;
-	expect(sinkFor(deps, telegram, "refuse")).toBeNull();
-	expect(sinkFor(deps, guest, "refuse")).toBeNull();
+	expect(sinkFor(deps, telegram)).toBe(bellSink);
+	expect(sinkFor(deps, guest)).toBe(bellSink);
 });

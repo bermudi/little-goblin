@@ -666,13 +666,13 @@ as read-only text (System, the memory card).
   A sign-in action returning pending starts status polling immediately;
   completion reloads clean settings so the new provider is visible.
 - **Off parks, never deletes.** Switching off memory, transcription,
-  vision, image, sandbox, subagents, scripting, delegation, guest or
+  vision, image, sandbox, scripting, delegation, guest or
   reviewer moves the block under `parked`; on restores it whole, file-only
   fields included. Runtime consumers and `authReferences` never read
   `parked`. A block with no parked copy and no safe default reports
   `needs-setup` with its hint; a bare switch cannot invent config. A save
   may supply the block together with its enable switch (including a
-  first-time vision, image, transcription or subagents setup). Supplied blocks win
+  first-time vision, image or transcription setup). Supplied blocks win
   over parked copies and defaults; the whole resulting config, including
   provider changes in that save, must validate before anything is written.
   The editor hydrates its restoration stash from parked content on load;
@@ -1234,7 +1234,7 @@ learned that is worth the operator's eyes), `draft` (a produced artifact
 for review, usually `ready`) or `change` (a meaningful change made in the
 world). Purpose is independent of state, so the stage table never reads
 it. `artifacts` (title and ref) link what the post produced. A finished
-pi-durable run's exported files become its artifacts. Only an
+delegation's exported files become its artifacts. Only an
 `http(s)` ref renders as a link; a path renders as text, so no
 model-supplied ref can become a `javascript:` URL. Findings and drafts
 are reports rather than a second table, which keeps review, revision

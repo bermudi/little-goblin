@@ -28,12 +28,6 @@ export function delegationNoticeTag(
 	return `[delegation: #${id} ${name} · ${verdict}]${extra ? ` ${extra}` : ""}`;
 }
 
-// Opens a subagent notice, same machinery-speech prefix rule and the
-// same "#id subject · verdict" shape as a delegation notice.
-export function subagentNoticeTag(id: number, kind: string, status: string): string {
-	return `[subagent: #${id} ${kind} · ${status.replaceAll("_", " ")}]`;
-}
-
 // Opens a native-subagent settlement notice (design/agents.md →
 // agent): the child's type and settlement status. The engine's notice
 // text (agent-children.ts) must keep this exact prefix.
@@ -42,6 +36,8 @@ export function agentNoticeTag(type: string, status: string): string {
 }
 
 // Whether a user-role text is machinery speech, not operator memory.
+// "[subagent: " stays for history: rows written by the removed Pi
+// Durable runtime still sit in old conversations.
 export function isMachineryText(text: string): boolean {
 	return (
 		text.startsWith("[program: ") ||

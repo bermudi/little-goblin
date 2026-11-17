@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	transcribeAudio,
@@ -205,6 +206,28 @@ describe("transcribeAudio", () => {
 		// the provider error must reach the caller.
 		await expect(transcribeAudio(engine, file(src), { maxBytes: 1 })).rejects.toThrow(
 			"whisper is down",
+		);
+	});
+
+	test("a failed segment removes its scratch directory", async () => {
+		if (Bun.which("ffmpeg") === null) return;
+		const inputDir = tmpDir("goblin-tr-input-");
+		const src = join(inputDir, "long.ogg");
+		genAudio(src, 5);
+		const before = readdirSync(tmpdir()).filter((name) => name.startsWith("goblin-tr-")).length;
+		const engine: SpeechEngine = {
+			id: "test/failing",
+			limits: { maxBytes: 25 * 1024 * 1024, maxSeconds: 15 * 60 },
+			prep: { container: "keep" },
+			transcribe: async () => {
+				throw new Error("segment failed");
+			},
+		};
+		await expect(transcribeAudio(engine, file(src), { maxBytes: 1 })).rejects.toThrow(
+			"segment failed",
+		);
+		expect(readdirSync(tmpdir()).filter((name) => name.startsWith("goblin-tr-")).length).toBe(
+			before,
 		);
 	});
 

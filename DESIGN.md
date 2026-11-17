@@ -330,6 +330,12 @@ Flat modules, one job each, tests colocated; the tree itself is the map,
 before it may live here. Inside a module, state clusters by lifetime live in
 their own units — never one scope of closures.
 
+Function-scoped resources — temp dirs, stream readers — are owned with
+`await using` and the `src/dispose.ts` helpers, so cancel, throw and early
+return release them; module-lifetime owners keep `stop()`/`close()`.
+`src/dispose.test.ts` fails a bare `mkdtemp` outside its allowlist (ruling
+2026-11-17, #447).
+
 A **feature** whose pieces span channels and stores may instead live as a
 feature folder (ruling 2026-11-08, #201): one directory under `src/`, a
 single public `index.ts` as the only import outside callers ever name,

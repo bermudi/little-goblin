@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { whistleEngine, type WhistleDeps } from "./transcribe-whistle.ts";
 import { tmpDir } from "../testkit.ts";
@@ -102,12 +111,20 @@ describe("whistleEngine", () => {
 
 	test("engine failure: exit 1's stderr reaches the caller", async () => {
 		const dir = tmpDir("goblin-whistle-");
+		const before = readdirSync(tmpdir()).filter((name) => name.startsWith("goblin-kw-")).length;
 		const engine = whistleEngine(
-			{ engine: stubEngine(dir, "fail"), weights: weightsStub(dir) },
+			{
+				engine: stubEngine(dir, "fail"),
+				weights: weightsStub(dir),
+				keywords: ["goblin"],
+			},
 			offlineDeps("", ""),
 		);
 		await expect(engine.transcribe(audioFile(dir))).rejects.toThrow(
 			"whistle: engine exited 1 — audio limit is 30 s",
+		);
+		expect(readdirSync(tmpdir()).filter((name) => name.startsWith("goblin-kw-")).length).toBe(
+			before,
 		);
 	});
 

@@ -8,13 +8,13 @@
 // managed installs.
 
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { paths } from "../home-layout.ts";
 import { log } from "../log.ts";
+import { tempDir } from "../dispose.ts";
 import { boundedRun, spawnProc } from "../proc.ts";
 import { durableWriteBytes } from "../durable.ts";
 import type { EngineDeps, EngineTranscript, SpeechEngine } from "./transcribe.ts";
@@ -215,54 +215,50 @@ export function whistleEngine(cfg: WhistleCfg, deps: WhistleDeps = {}): SpeechEn
 			// calls.
 			const argv = [engine, "--model", weights, "--audio", file.path];
 			if (cfg.language !== undefined) argv.push("--audio-language", cfg.language);
-			let kwDir: string | undefined;
-			try {
-				if (cfg.keywords !== undefined && cfg.keywords.length > 0) {
-					// Inside the try so a failed write still removes the
-					// mkdtemp dir.
-					kwDir = mkdtempSync(join(tmpdir(), "goblin-kw-"));
-					const kwFile = join(kwDir, "keywords.txt");
-					await writeFile(kwFile, `${cfg.keywords.join("\n")}\n`);
-					argv.push("--audio-keywords", kwFile);
-				}
-				const r = await boundedRun(spawnProc(argv), {
-					timeoutMs: WHISTLE_TIMEOUT_MS,
-					maxOutput: 1024 * 1024,
-				});
-				if (r.timedOut) {
-					throw new Error(`whistle: engine timed out after ${WHISTLE_TIMEOUT_MS}ms`);
-				}
-				if (r.exitCode !== 0) {
-					throw new Error(
-						`whistle: engine exited ${r.exitCode ?? "unreaped"} — ${r.stderr.trim().slice(0, 300)}`,
-					);
-				}
-				let json: unknown;
-				try {
-					json = JSON.parse(r.stdout.trim());
-				} catch {
-					throw new Error(`whistle: engine stdout is not JSON — ${r.stdout.trim().slice(0, 300)}`);
-				}
-				const parsed = engineOutput.safeParse(json);
-				if (!parsed.success) {
-					throw new Error(`whistle: unexpected engine output — ${r.stdout.trim().slice(0, 300)}`);
-				}
-				if (parsed.data.decode_tps !== undefined || parsed.data.ttft_ms !== undefined) {
-					log.debug("whistle engine pass", {
-						ttftMs: parsed.data.ttft_ms,
-						decodeTps: parsed.data.decode_tps,
-						file: file.filename,
-					});
-				}
-				return {
-					text: parsed.data.text,
-					...(parsed.data.language ? { language: parsed.data.language } : {}),
-				};
-			} finally {
-				if (kwDir !== undefined) {
-					rmSync(kwDir, { recursive: true, force: true });
-				}
+			const keywords = cfg.keywords;
+			await using kwOwner =
+				keywords !== undefined && keywords.length > 0
+					? await tempDir("goblin-kw-")
+					: null;
+			const kwDir = kwOwner?.path;
+			if (kwDir !== undefined && keywords !== undefined) {
+				const kwFile = join(kwDir, "keywords.txt");
+				await writeFile(kwFile, `${keywords.join("\n")}\n`);
+				argv.push("--audio-keywords", kwFile);
 			}
+			const r = await boundedRun(spawnProc(argv), {
+				timeoutMs: WHISTLE_TIMEOUT_MS,
+				maxOutput: 1024 * 1024,
+			});
+			if (r.timedOut) {
+				throw new Error(`whistle: engine timed out after ${WHISTLE_TIMEOUT_MS}ms`);
+			}
+			if (r.exitCode !== 0) {
+				throw new Error(
+					`whistle: engine exited ${r.exitCode ?? "unreaped"} — ${r.stderr.trim().slice(0, 300)}`,
+				);
+			}
+			let json: unknown;
+			try {
+				json = JSON.parse(r.stdout.trim());
+			} catch {
+				throw new Error(`whistle: engine stdout is not JSON — ${r.stdout.trim().slice(0, 300)}`);
+			}
+			const parsed = engineOutput.safeParse(json);
+			if (!parsed.success) {
+				throw new Error(`whistle: unexpected engine output — ${r.stdout.trim().slice(0, 300)}`);
+			}
+			if (parsed.data.decode_tps !== undefined || parsed.data.ttft_ms !== undefined) {
+				log.debug("whistle engine pass", {
+					ttftMs: parsed.data.ttft_ms,
+					decodeTps: parsed.data.decode_tps,
+					file: file.filename,
+				});
+			}
+			return {
+				text: parsed.data.text,
+				...(parsed.data.language ? { language: parsed.data.language } : {}),
+			};
 		},
 	};
 }

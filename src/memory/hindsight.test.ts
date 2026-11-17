@@ -323,6 +323,33 @@ describe("Hindsight HTTP boundary", () => {
 		}
 	});
 
+	test("an oversized response cancels its source reader", async () => {
+		const originalFetch = globalThis.fetch;
+		let cancellations = 0;
+		let sent = false;
+		globalThis.fetch = (async () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					pull(controller) {
+						if (!sent) {
+							sent = true;
+							controller.enqueue(new Uint8Array(1_048_577));
+						}
+					},
+					cancel() {
+						cancellations++;
+					},
+				}),
+		)) as unknown as typeof fetch;
+		try {
+			const client = new HindsightClient({ baseUrl: "http://127.0.0.1", bankId: "g" });
+			await expect(client.recall("query")).rejects.toMatchObject({ kind: "too_large" });
+			expect(cancellations).toBe(1);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
 	test("deadline includes a stalled response body", async () => {
 		const baseUrl = fake(
 			() =>

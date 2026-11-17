@@ -32,6 +32,7 @@ import {
 import { basename, join } from "node:path";
 import { z } from "zod";
 import { log } from "../log.ts";
+import { ownedReader } from "../dispose.ts";
 import { boundedRun } from "../proc.ts";
 import { durableWriteBytes, durableWriteFile } from "../durable.ts";
 import { NAME_RE as SKILL_NAME_RE, parseSkill, readHead } from "./skills.ts";
@@ -786,11 +787,12 @@ async function sizeCapped(
 ): Promise<Uint8Array> {
 	const body = response.body;
 	if (body === null) return new Uint8Array(0);
-	const reader = body.getReader();
+	await using owner = ownedReader(body);
+	const { reader } = owner;
 	// A plain ReadableStream ignores fetch's signal — the abort listener
 	// cancels the reader directly so a stalled body still settles the
-	// pending read. Cancel cleanup is never awaited: a slow or failed
-	// cancel is logged, never allowed to replace the typed deadline.
+	// pending read. This cancellation stays fire-and-forget; the owner
+	// disposes the reader when this scope ends.
 	const onAbort = () => {
 		void reader.cancel(signal.reason).catch((err: unknown) => {
 			log.warn("skill download body cancel failed", { error: stringify(err) });
@@ -820,11 +822,6 @@ async function sizeCapped(
 		}
 	} finally {
 		signal.removeEventListener("abort", onAbort);
-		// Any early exit leaves buffered bytes behind — release them.
-		void reader.cancel().catch((err: unknown) => {
-			log.warn("skill download body cancel failed", { error: stringify(err) });
-		});
-		reader.releaseLock();
 	}
 	const out = new Uint8Array(total);
 	let at = 0;

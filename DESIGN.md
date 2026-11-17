@@ -218,6 +218,22 @@ the dead run stays `interrupted` forever, its history record and boot
 notice are the whole story, and the next operator message starts an
 ordinary fresh turn.
 
+**Effects and their records (#448).** A step with an external effect (a
+send, a submit) orders it claim → effect → settle: a durable claim commits
+before the effect starts, and the settle record commits after the effect
+returns. A crash can land in either gap. There is no shared helper; each
+workflow states what boot does with the gap, and its crash-point test pins
+that:
+
+- Mail outbox — `src/mail-approval.crash.test.ts`: a send accepted by Gmail
+  remains `sending` and is not re-sent by boot.
+- Responsibility sends — `src/responsibility-service.crash.test.ts`: a
+  crashed claimed send becomes `uncertain` and is not re-sent.
+- Wake dispatch — `src/wake-dispatcher.crash.test.ts`: boot retries submit
+  once, leaves the wake `claimed`, and does not append the trigger again.
+- Boot/turn notices — `src/tg/turn-notice.crash.test.ts`: a notice whose
+  send landed before its delivery mark is sent again at boot (at-least-once).
+
 ## Cache stability
 
 Provider prompt caching is a pricing and latency feature goblin is designed

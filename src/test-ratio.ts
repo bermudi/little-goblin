@@ -1,11 +1,16 @@
-// Test-to-source line ratio — pure measurement shared by `scripts/test-ratio.ts`
-// (report) and doctor's repo-health check. A signal, not a gate (DESIGN.md →
-// Test posture). Scope: `git ls-files src/`, .ts/.tsx. Test side = *.test.ts(x)
-// (live drift checks included) plus test-support modules (testkit.ts,
-// testing.ts, *-testing.ts, src/test-helpers/**): they exist only for tests.
-// Everything else is production.
+// Test-to-source line ratio — the measurement shared by `scripts/test-ratio.ts`
+// (report), doctor's repo-health check, and the `src/suite-size.test.ts` gate.
+// Scope: `git ls-files src/`, .ts/.tsx. Test side = *.test.ts(x) (live drift
+// checks included) plus test-support modules (testkit.ts, testing.ts,
+// *-testing.ts, src/test-helpers/**): they exist only for tests. Everything
+// else is production.
 
-import { dirname } from "node:path";
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+// Lower it when the ratio drops; never raise it without the operator's OK (AGENTS.md → Tests, #651).
+export const RATIO_CEILING = 1.33;
 
 export const isTest = (f: string): boolean =>
 	/\.test\.tsx?$/.test(f) || f.startsWith("src/test-helpers/") || /(?:^|\/|-)(?:testkit|testing)\.ts$/.test(f);
@@ -45,4 +50,18 @@ export function summarize(byDir: Map<string, Tally>, top = 8): RatioSummary {
 		.sort((a, b) => b.excess - a.excess)
 		.slice(0, top);
 	return { prod, test, ratio: prod === 0 ? 0 : test / prod, excess };
+}
+
+export function measureRatio(cwd: string): RatioSummary {
+	const paths = execFileSync("git", ["-C", cwd, "ls-files", "src/"], { encoding: "utf8" })
+		.split("\n")
+		.filter((path) => /\.tsx?$/.test(path));
+	return summarize(
+		tally(
+			paths.map((path) => ({
+				path,
+				lines: readFileSync(join(cwd, path), "utf8").split("\n").length - 1,
+			})),
+		),
+	);
 }

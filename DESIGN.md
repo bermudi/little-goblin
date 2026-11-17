@@ -410,7 +410,8 @@ v1 died of test-to-code ratio. **Tests guard boundaries and invariants, not
 implementations:** worth a test — authority fencing, durable write semantics,
 intake coalescing, auth command resolution; not worth one — that a function
 calls its collaborator with the right arguments. Fakes at the two external
-edges (model provider, Telegram API); no mock.module pyramids; the suite
-stays smaller than `src/` — bigger is a smell to fix, not a badge.
-`bun scripts/test-ratio.ts` prints the measured ratio and the worst
-directories (report-only, never a gate; test-support modules count as tests).
+edges (model provider, Telegram API); no mock.module pyramids; the suite may
+not outgrow `src/` further; `src/suite-size.test.ts` fails when the
+`src/test-ratio.ts` ratio rises above `RATIO_CEILING`, which only moves down
+(operator, 2026-11-17, #651). `bun scripts/test-ratio.ts` prints the ratio and
+the worst directories (test-support modules count as tests).

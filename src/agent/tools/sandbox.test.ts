@@ -103,6 +103,13 @@ function rig(
 }
 
 describe("sandboxInputSchema", () => {
+	test("bad action arguments return the friendly error shape", async () => {
+		const t = rig(workspace(), { cpIn: [], catFile: [] });
+		await expect(
+			(t as unknown as { execute: (i: unknown, o: unknown) => Promise<unknown> }).execute({}, opts),
+		).resolves.toMatchObject({ error: expect.stringContaining("invalid arguments —") });
+	});
+
 	test("accepts every action's valid shape", () => {
 		const valid = [
 			{ action: "exec", command: "ls" },

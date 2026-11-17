@@ -20,15 +20,19 @@ function renderReflection(result: MemoryReflection, maxTokens: number) {
 	const maxChars = Math.max(1024, maxTokens * 8);
 	const synthesisOmitted = JSON.stringify(screened).length > Math.floor(maxChars / 2);
 	const synthesis = synthesisOmitted ? "" : screened;
-	const envelope = {
+	const output = {
 		notice,
 		synthesis,
 		synthesisOmitted,
 		grounded: false,
-		evidence: { memories: [], mentalModels: [], directives: [] },
+		evidence: {
+			memories: [] as typeof result.based_on.memories,
+			mentalModels: [] as typeof result.based_on.mental_models,
+			directives: [] as typeof result.based_on.directives,
+		},
 		omittedEvidence: 1000,
 	};
-	let remaining = maxChars - JSON.stringify(envelope).length - 64;
+	let remaining = maxChars - JSON.stringify(output).length - 64;
 	let omitted = 0;
 	const select = <T>(items: T[], render: (item: T) => T): T[] => {
 		const out: T[] = [];
@@ -44,7 +48,7 @@ function renderReflection(result: MemoryReflection, maxTokens: number) {
 		}
 		return out;
 	};
-	const sources = {
+	output.evidence = {
 		memories: select(result.based_on.memories, (fact) => ({
 			...fact,
 			text: screenMemoryText(fact.text, "reflect-evidence"),
@@ -65,14 +69,9 @@ function renderReflection(result: MemoryReflection, maxTokens: number) {
 			content: screenMemoryText(directive.content, "reflect-directive"),
 		})),
 	};
-	return {
-		notice,
-		synthesis,
-		synthesisOmitted,
-		grounded: sources.memories.length > 0 || sources.mentalModels.length > 0,
-		evidence: sources,
-		omittedEvidence: omitted,
-	};
+	output.grounded = output.evidence.memories.length > 0 || output.evidence.mentalModels.length > 0;
+	output.omittedEvidence = omitted;
+	return output;
 }
 
 export const memoryReflectTool = (deps: MemoryReflectDeps) =>

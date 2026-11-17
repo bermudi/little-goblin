@@ -138,6 +138,12 @@ const exec = (t: ReturnType<typeof delegateTool>, input: unknown) =>
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("delegate tool", () => {
+	test("bad action arguments return the friendly error shape", async () => {
+		expect(await exec(harness().tool, {})).toMatchObject({
+			error: expect.stringContaining("invalid arguments —"),
+		});
+	});
+
 	test("a linked lead needs explicit issue identity, which survives launch", async () => {
 		const h = harness();
 		try {
@@ -146,7 +152,9 @@ describe("delegate tool", () => {
 			const input = { action: "start", harness: "codex", role: "lead", task: "build issue",
 				responsibility: "r1", issue: { repository: "owner/repo", number: 7 } };
 			expect(delegateInputSchema.safeParse({ ...input, issue: undefined }).success).toBe(false);
-			await expect(exec(tool, { ...input, issue: undefined })).rejects.toThrow("explicit GitHub issue");
+			expect(await exec(tool, { ...input, issue: undefined })).toMatchObject({
+				error: expect.stringContaining("invalid arguments —"),
+			});
 			expect(h.pinned).toHaveLength(0);
 			expect(delegateInputSchema.safeParse({ ...input, issue: { repository: "../repo/path", number: 7 } }).success).toBe(false);
 			expect(delegateInputSchema.safeParse({ ...input, role: "review" }).success).toBe(false);

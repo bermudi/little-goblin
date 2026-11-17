@@ -122,6 +122,12 @@ const understanding = {
 };
 
 describe("responsibility tool", () => {
+	test("bad action arguments return the friendly error shape", async () => {
+		expect(await rig().execute({})).toMatchObject({
+			error: expect.stringContaining("invalid arguments —"),
+		});
+	});
+
 	test("accept binds the selected thread and records the handover once", async () => {
 		const r = rig();
 		const out = await r.execute({
@@ -678,14 +684,14 @@ describe("reconcile action", () => {
 			evidence: "x",
 		});
 		expect(String(missing.error)).toContain("not found");
-		await expect(
-			r.execute({
+		expect(
+			await r.execute({
 				action: "reconcile",
 				operation: op.operationId,
 				delivery: "delivered",
 				evidence: "   ",
 			}),
-		).rejects.toThrow();
+		).toMatchObject({ error: expect.stringContaining("invalid arguments —") });
 		r.store.close();
 	});
 

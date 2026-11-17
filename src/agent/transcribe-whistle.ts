@@ -18,6 +18,7 @@ import { log } from "../log.ts";
 import { boundedRun, spawnProc } from "../proc.ts";
 import { durableWriteBytes } from "../durable.ts";
 import type { EngineDeps, EngineTranscript, SpeechEngine } from "./transcribe.ts";
+import { readCapped } from "./tools/web.ts";
 
 // The engine's hard per-pass ceiling — 28 s leaves margin (measured on
 // this binary).
@@ -158,7 +159,9 @@ async function artifact(
 	if (declared !== null && Number(declared) > ARTIFACT_CAP) {
 		throw new Error(`whistle: artifact ${url} declares ${declared} bytes — not the pinned file`);
 	}
-	const data = await readCapped(res, ARTIFACT_CAP);
+	const { tooLarge, bytes: data } = await readCapped(res.body, ARTIFACT_CAP);
+	if (tooLarge)
+		throw new Error(`whistle: artifact download over ${ARTIFACT_CAP} bytes — not the pinned file`);
 	const got = createHash("sha256").update(data).digest("hex");
 	if (got !== sha256) {
 		throw new Error(
@@ -170,24 +173,6 @@ async function artifact(
 	chmodSync(dest, mode);
 	log.info("whistle artifact fetched", { dest, bytes: data.byteLength });
 	return dest;
-}
-
-async function readCapped(res: Response, cap: number): Promise<Uint8Array> {
-	if (res.body === null) return new Uint8Array(await res.arrayBuffer());
-	const reader = res.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		if (total + value.byteLength > cap) {
-			await reader.cancel(new Error("over cap"));
-			throw new Error(`whistle: artifact download over ${cap} bytes — not the pinned file`);
-		}
-		chunks.push(value);
-		total += value.byteLength;
-	}
-	return Buffer.concat(chunks);
 }
 
 // needle stdout: one JSON line. Silence is {"text":"","language":""}.

@@ -29,6 +29,33 @@ const BODY_HEAD = 300;
 const ERROR_BODY_CAP = 64 * 1024;
 const JSON_CAP = 8 * 1024 * 1024;
 
+export async function readCapped(
+	body: ReadableStream<Uint8Array> | null,
+	cap: number,
+): Promise<{ tooLarge: boolean; bytes: Uint8Array; seen: number }> {
+	if (body === null) return { tooLarge: false, bytes: new Uint8Array(), seen: 0 };
+	const reader = body.getReader();
+	const chunks: Uint8Array[] = [];
+	let seen = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done || !value) break;
+		chunks.push(value);
+		seen += value.byteLength;
+		if (seen > cap) {
+			await reader.cancel();
+			break;
+		}
+	}
+	const bytes = new Uint8Array(seen);
+	let at = 0;
+	for (const chunk of chunks) {
+		bytes.set(chunk, at);
+		at += chunk.byteLength;
+	}
+	return { tooLarge: seen > cap, bytes, seen };
+}
+
 export async function fetchOk(
 	provider: string,
 	url: string,
@@ -74,43 +101,11 @@ export function resMeta(res: Response, bytes = 0): HttpMeta {
 	};
 }
 
-export async function readBytesCapped(
-	res: Response,
-	cap: number,
-): Promise<{ tooLarge: boolean; bytes: Uint8Array }> {
-	if (res.body === null) {
-		const bytes = new Uint8Array(await res.arrayBuffer());
-		return { tooLarge: bytes.byteLength > cap, bytes };
-	}
-	const reader = res.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let seen = 0;
-	let tooLarge = false;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done || !value) break;
-		chunks.push(value);
-		seen += value.byteLength;
-		if (seen > cap) {
-			tooLarge = true;
-			await reader.cancel();
-			break;
-		}
-	}
-	const bytes = new Uint8Array(seen);
-	let at = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, at);
-		at += chunk.byteLength;
-	}
-	return { tooLarge, bytes };
-}
-
 export async function readTextCapped(
 	res: Response,
 	cap: number,
 ): Promise<{ tooLarge: boolean; text: string }> {
-	const { tooLarge, bytes } = await readBytesCapped(res, cap);
+	const { tooLarge, bytes } = await readCapped(res.body, cap);
 	return { tooLarge, text: new TextDecoder("utf-8", { fatal: false }).decode(bytes) };
 }
 
@@ -132,6 +127,27 @@ export async function readJson(
 		throw new ProviderError(provider, `non-JSON response — ${(err as Error).message}`);
 	}
 	return { data, bytes: Buffer.byteLength(text) };
+}
+
+export async function postJson(
+	provider: string,
+	url: string,
+	headers: Record<string, string>,
+	body: unknown,
+	timeoutMs: number,
+): Promise<{ data: unknown; status: number; meta: HttpMeta }> {
+	const res = await fetchOk(
+		provider,
+		url,
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json", ...headers },
+			body: JSON.stringify(body),
+		},
+		timeoutMs,
+	);
+	const { data, bytes } = await readJson(provider, res);
+	return { data, status: res.status, meta: resMeta(res, bytes) };
 }
 
 export function clampChars(text: string, max: number): string {

@@ -16,6 +16,8 @@ import {
 	clampChars,
 	fetchOk,
 	fenceUntrusted,
+	postJson,
+	readCapped,
 	readJson,
 	resMeta,
 	str,
@@ -61,26 +63,6 @@ interface Rejected {
 
 // ---------- providers ----------
 
-async function postJson(
-	provider: string,
-	url: string,
-	headers: Record<string, string>,
-	body: unknown,
-): Promise<{ data: unknown; meta: HttpMeta }> {
-	const res = await fetchOk(
-		provider,
-		url,
-		{
-			method: "POST",
-			headers: { "Content-Type": "application/json", ...headers },
-			body: JSON.stringify(body),
-		},
-		TIMEOUT_MS,
-	);
-	const { data, bytes } = await readJson(provider, res);
-	return { data, meta: resMeta(res, bytes) };
-}
-
 const extractors: Record<
 	Exclude<FetchKind, "local">,
 	(url: string, key: string | undefined, baseUrl?: string) => Promise<Extracted>
@@ -95,6 +77,7 @@ const extractors: Record<
 				// parallel v1: full content rides advanced_settings, not the top level.
 				advanced_settings: { full_content: true },
 			},
+			TIMEOUT_MS,
 		);
 		const body = data as { results?: unknown[]; errors?: unknown[]; warnings?: unknown };
 		if (Array.isArray(body.warnings) && body.warnings.length > 0) {
@@ -124,6 +107,7 @@ const extractors: Record<
 				urls: [url],
 				include_images: false,
 			},
+			TIMEOUT_MS,
 		);
 		const body = data as { results?: unknown[]; failed_results?: unknown[] };
 		const row = (body.results ?? [])[0] as Record<string, unknown> | undefined;
@@ -142,6 +126,7 @@ const extractors: Record<
 				url,
 				formats: ["markdown"],
 			},
+			TIMEOUT_MS,
 		);
 		const body = data as { success?: boolean; error?: string; data?: Record<string, unknown> };
 		if (body.success === false || !body.data) {
@@ -169,35 +154,7 @@ const extractors: Record<
 
 const TEXTUAL = /^(text\/|application\/(json|xml|x-yaml|yaml|javascript|toml))/;
 
-async function readBodyCapped(
-	res: Response,
-	cap: number,
-): Promise<{ tooLarge: false; bytes: Uint8Array } | { tooLarge: true; seen: number }> {
-	if (res.body === null) {
-		return { tooLarge: false, bytes: new Uint8Array(await res.arrayBuffer()) };
-	}
-	const reader = res.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let seen = 0;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done || !value) break;
-		chunks.push(value);
-		seen += value.byteLength;
-		if (seen > cap) {
-			await reader.cancel();
-			return { tooLarge: true, seen };
-		}
-	}
-	const bytes = new Uint8Array(seen);
-	let at = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, at);
-		at += chunk.byteLength;
-	}
-	return { tooLarge: false, bytes };
-}
-
+// baseUrl is a test seam for pointing vendors at a local fake; production passes none.
 async function localExtract(url: string, baseUrl?: string): Promise<Extracted | Rejected> {
 	const target = baseUrl ?? url;
 	const res = await fetchOk(
@@ -222,7 +179,7 @@ async function localExtract(url: string, baseUrl?: string): Promise<Extracted | 
 			meta: resMeta(res, length),
 		};
 	}
-	const body = await readBodyCapped(res, DOWNLOAD_CAP);
+	const body = await readCapped(res.body, DOWNLOAD_CAP);
 	if (body.tooLarge) {
 		return {
 			error: `page exceeds the 8 MiB download cap — use bash + curl`,

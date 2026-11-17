@@ -205,7 +205,7 @@ export const noteTool = (deps: NoteToolDeps) =>
 							"agent",
 							{
 								conversation: deps.conversation,
-								...(input.rev !== undefined ? { expectedRev: input.rev } : {}),
+								expectedRev: input.rev,
 							},
 						);
 						return { note: noteView(note, deps.projects) };

@@ -10,7 +10,7 @@ import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
 import type { TtsConfig } from "../config-schema.ts";
 import { log } from "../log.ts";
-import { readBytesCapped, readTextCapped } from "./tools/web.ts";
+import { readCapped, readTextCapped } from "./tools/web.ts";
 import { renderError } from "./transcribe-cloud.ts";
 import type { ChunkSynthesizer } from "./tts.ts";
 
@@ -95,7 +95,7 @@ function openaiShapeSpeech(
 			const { text: body } = await readTextCapped(res, ERROR_BODY_CAP);
 			throw renderError(kind, res.status, body);
 		}
-		const { tooLarge, bytes } = await readBytesCapped(res, RESPONSE_CAP);
+		const { tooLarge, bytes } = await readCapped(res.body, RESPONSE_CAP);
 		if (tooLarge) throw new Error(`${kind}: response over ${RESPONSE_CAP} bytes`);
 		if (bytes.byteLength === 0) throw new Error(`${kind}: empty audio response`);
 		// X-Generation-Id is the billed-generation handle OpenRouter

@@ -2,12 +2,13 @@ import type { Tools } from "../../tool.ts";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { type ArtifactToolDeps, artifactTool } from "./artifact.ts";
+import { type AskOperatorToolDeps, askOperatorTool } from "./ask-operator.ts";
 import { bashTool } from "./bash.ts";
+import { type ComputerToolDeps, computerTools } from "./computer.ts";
 import { type DelegateToolDeps, delegateTool } from "./delegate.ts";
 import { type DesktopToolDeps, desktopTool } from "./desktop.ts";
 import { editFileTool } from "./edit.ts";
 import { fetchTool } from "./fetch.ts";
-import { type HerdrToolDeps, herdrTool } from "./herdr.ts";
 import { type HistorySearchDeps, historySearchTool } from "./history.ts";
 import { type ImageToolDeps, imageTool } from "./image.ts";
 import type { MailToolDeps } from "./mail.ts";
@@ -23,7 +24,6 @@ import { type SandboxToolDeps, sandboxTool } from "./sandbox.ts";
 import { searchTool } from "./search.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
 import { speakTool } from "./speak.ts";
-import { type SubagentToolDeps, subagentTool } from "./subagent.ts";
 import { transcribeTool } from "./transcribe.ts";
 import { uiTool } from "./ui.ts";
 import { type VisionToolDeps, visionTool } from "./vision.ts";
@@ -57,16 +57,16 @@ export interface TranscribeToolDeps {
 
 export type {
 	ArtifactToolDeps,
+	AskOperatorToolDeps,
+	ComputerToolDeps,
 	DelegateToolDeps,
 	DesktopToolDeps,
-	HerdrToolDeps,
 	HistorySearchDeps,
 	ImageToolDeps,
 	MailToolDeps,
 	NoteToolDeps,
 	ResponsibilityToolDeps,
 	SandboxToolDeps,
-	SubagentToolDeps,
 	VisionToolDeps,
 };
 
@@ -84,15 +84,19 @@ export interface MakeToolsOptions {
 	web?: WebToolDeps | undefined;
 	transcribe?: TranscribeToolDeps | undefined;
 	delegate?: DelegateToolDeps | undefined;
-	herdr?: HerdrToolDeps | undefined;
 	mail?: MailToolDeps | undefined;
 	history?: HistorySearchDeps | undefined;
 	note?: NoteToolDeps | undefined;
 	vision?: VisionToolDeps | undefined;
 	image?: ImageToolDeps | undefined;
 	sandbox?: SandboxToolDeps | undefined;
-	subagent?: SubagentToolDeps | undefined;
 	desktop?: DesktopToolDeps | undefined;
+	// Agent-type children only (design/agents.md → Computer use): the
+	// desktop tools and ask_operator mount for a child conversation and
+	// reach the model only through its spawn-time allowlist — a parent
+	// turn never carries them.
+	computer?: ComputerToolDeps | undefined;
+	askOperator?: AskOperatorToolDeps | undefined;
 	// Project conversations only — the handover/coordination surface.
 	responsibility?: ResponsibilityToolDeps | undefined;
 	ui?: boolean | undefined;
@@ -120,15 +124,15 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		hostedSearch,
 		transcribe,
 		delegate,
-		herdr,
 		mail,
 		history,
 		note,
 		vision,
 		image,
 		sandbox,
-		subagent,
 		desktop,
+		computer,
+		askOperator,
 		responsibility,
 		ui,
 		onRead,
@@ -146,7 +150,6 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		...(image ? { generate_image: imageTool(image) } : {}),
 		...(program ? { program: programTool(program) } : {}),
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),
-		...(herdr ? { herdr: herdrTool(herdr) } : {}),
 		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
 		...(artifact ? { artifact: artifactTool(artifact) } : {}),
@@ -178,8 +181,9 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		...(history ? { history_search: historySearchTool(history) } : {}),
 		...(note ? { note: noteTool(note) } : {}),
 		...(sandbox ? { sandbox: sandboxTool(sandbox) } : {}),
-		...(subagent ? { subagent: subagentTool(subagent) } : {}),
 		...(desktop ? { desktop: desktopTool(desktop) } : {}),
+		...(computer ? computerTools(computer) : {}),
+		...(askOperator ? { ask_operator: askOperatorTool(askOperator) } : {}),
 		// The responsibility tool mounts for project-bound turns only —
 		// the caller decides; nothing here reaches for conv state.
 		...(responsibility ? { responsibility: responsibilityTool(responsibility) } : {}),

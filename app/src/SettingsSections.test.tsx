@@ -39,7 +39,6 @@ const CAPS = (over: Record<string, { state: string; hint: string | null }> = {})
 			"vision",
 			"image",
 			"sandbox",
-			"subagents",
 			"scripting",
 			"delegation",
 			"guest",
@@ -465,13 +464,13 @@ describe("Web", () => {
 });
 
 describe("Delegation", () => {
-	test("role selects and harness args edit the delegation body", async () => {
+	test("role selects and harness models edit the delegation body", async () => {
 		settings = parseConfig({
 			...BASE,
 			delegation: {
 				harnesses: {
-					pi: { kind: "pi" },
-					"pi-review": { kind: "pi", args: ["--model", "sol"] },
+					pi: { provider: "codex", model: "gpt-6-luna" },
+					"pi-review": { provider: "claude", model: "claude-haiku-5-5" },
 				},
 				defaults: { default: "pi", review: "pi-review" },
 			},
@@ -489,7 +488,10 @@ describe("Delegation", () => {
 		});
 		await waitFor(() => savedBodies.length > 0, "delegation save");
 		expect(savedBodies.at(-1)?.delegation).toMatchObject({
-			harnesses: { pi: { kind: "pi" }, "pi-review": { kind: "pi", args: ["--model", "sol"] } },
+			harnesses: {
+				pi: { provider: "codex", model: "gpt-6-luna" },
+				"pi-review": { provider: "claude", model: "claude-haiku-5-5" },
+			},
 			defaults: { default: "pi", review: "pi" },
 		});
 	});
@@ -498,7 +500,7 @@ describe("Delegation", () => {
 		settings = parseConfig({
 			...BASE,
 			delegation: {
-				harnesses: { pi: { kind: "pi" } },
+				harnesses: { pi: { provider: "codex", model: "gpt-6-luna" } },
 				defaults: { default: "pi" },
 			},
 		});
@@ -507,7 +509,7 @@ describe("Delegation", () => {
 		await click(container.querySelector('[aria-label="ask first for pi"]'));
 		await waitFor(() => savedBodies.length > 0, "ask-first save");
 		expect(savedBodies.at(-1)?.delegation).toMatchObject({
-			harnesses: { pi: { kind: "pi", askFirst: true } },
+			harnesses: { pi: { provider: "codex", model: "gpt-6-luna", askFirst: true } },
 		});
 	});
 
@@ -524,7 +526,7 @@ describe("Delegation", () => {
 		settings = parseConfig({
 			...BASE,
 			delegation: {
-				harnesses: { pi: { kind: "pi" } },
+				harnesses: { pi: { provider: "codex", model: "gpt-6-luna" } },
 				defaults: { default: "pi" },
 			},
 		});
@@ -546,25 +548,16 @@ describe("Delegation", () => {
 	for (const off of delegationSwitches) {
 		for (const on of delegationSwitches) {
 			test(`${off.section} off → save → reload → ${on.section} on restores delegation`, async () => {
+				// pi-review rides BASE's `main` provider so the restored
+				// select shows it as picked, not unlisted.
 				const delegation = {
 					harnesses: {
-						pi: { kind: "pi" },
-						"pi-review": {
-							kind: "pi",
-							args: ["--model", "fixture/review", "--verbose"],
-							askFirst: true,
-						},
+						pi: { provider: "codex", model: "gpt-6-luna" },
+						"pi-review": { provider: "main", model: "fixture/review", askFirst: true },
 					},
-					defaults: { default: "pi", review: "pi-review", overflow: "remote" },
+					defaults: { default: "pi", review: "pi-review" },
 				};
-				const machines = {
-					testbox: {
-						machine: "testbox",
-						root: "~/build",
-						harnesses: { remote: { kind: "pi" } },
-					},
-				};
-				settings = parseConfig({ ...BASE, delegation: { ...delegation, machines } });
+				settings = parseConfig({ ...BASE, delegation });
 				caps = CAPS({ delegation: { state: "on", hint: null } });
 				await mountSettings();
 				await openSection(off.section);
@@ -587,7 +580,7 @@ describe("Delegation", () => {
 				root = null;
 				settings = parseConfig({
 					...BASE,
-					parked: { delegation: { ...delegation, machines } },
+					parked: { delegation },
 				});
 				caps = CAPS();
 				await mountSettings();
@@ -616,8 +609,6 @@ describe("Delegation", () => {
 					"restored delegation save acknowledgement",
 				);
 				expect(savedBodies[1]?.capabilities).toEqual({ delegation: true });
-				// Machine config is file-only, but its harness remains a valid
-				// role pick. The page must not serialize machines into the POST.
 				expect(savedBodies[1]?.delegation).toEqual(delegation);
 
 				await click(container.querySelector(".ops-back button"));
@@ -633,9 +624,10 @@ describe("Delegation", () => {
 					container.querySelector('[aria-label="delegation"]')?.getAttribute("aria-pressed"),
 				).toBe("true");
 				expect(container.querySelectorAll(".del-harness")).toHaveLength(2);
-				expect(container.querySelector<HTMLTextAreaElement>("#del-args-1")?.value).toBe(
-					"--model\nfixture/review\n--verbose",
-				);
+				expect(
+					container.querySelector<HTMLSelectElement>('[aria-label="provider for pi-review"]')
+						?.value,
+				).toBe("main");
 				expect(
 					container
 						.querySelector('[aria-label="ask first for pi-review"]')
@@ -647,9 +639,6 @@ describe("Delegation", () => {
 							?.value,
 					).toBe(harness);
 				}
-				expect(container.querySelector('option[value="remote"]')?.textContent).toBe(
-					"remote (machine)",
-				);
 			});
 		}
 	}
@@ -659,8 +648,8 @@ describe("Delegation", () => {
 			...BASE,
 			delegation: {
 				harnesses: {
-					pi: { kind: "pi" },
-					"pi-review": { kind: "pi" },
+					pi: { provider: "codex", model: "gpt-6-luna" },
+					"pi-review": { provider: "claude", model: "claude-haiku-5-5" },
 				},
 				defaults: { review: "pi" },
 			},
@@ -679,7 +668,10 @@ describe("Delegation", () => {
 		});
 		await waitFor(() => savedBodies.length > 0, "delegation save");
 		expect(savedBodies.at(-1)?.delegation).toEqual({
-			harnesses: { pi: { kind: "pi" }, "pi-review": { kind: "pi" } },
+			harnesses: {
+				pi: { provider: "codex", model: "gpt-6-luna" },
+				"pi-review": { provider: "claude", model: "claude-haiku-5-5" },
+			},
 			defaults: { review: "pi-review" },
 		});
 	});
@@ -688,7 +680,7 @@ describe("Delegation", () => {
 		settings = parseConfig({
 			...BASE,
 			delegation: {
-				harnesses: { pi: { kind: "pi" } },
+				harnesses: { pi: { provider: "codex", model: "gpt-6-luna" } },
 				defaults: { default: "pi" },
 			},
 		});
@@ -706,7 +698,7 @@ describe("Delegation", () => {
 		});
 		await waitFor(() => savedBodies.length > 0, "delegation save");
 		expect(savedBodies.at(-1)?.delegation).toEqual({
-			harnesses: { pi: { kind: "pi" } },
+			harnesses: { pi: { provider: "codex", model: "gpt-6-luna" } },
 		});
 	});
 });
@@ -720,13 +712,13 @@ describe("Voice", () => {
 		await mountSettings();
 		await openSection("Voice");
 		const input = container.querySelector('input[aria-label="add keyword"]')!;
-		await typeInto(input, "herdr");
+		await typeInto(input, "demo");
 		await click(
 			[...input.closest(".card")!.querySelectorAll("button")].find((b) => b.textContent === "Add"),
 		);
 		await waitFor(() => savedBodies.length > 0, "keywords save");
 		const tr = savedBodies.at(-1)?.transcription;
-		expect(typeof tr === "object" ? tr.keywords : null).toEqual(["goblin", "herdr"]);
+		expect(typeof tr === "object" ? tr.keywords : null).toEqual(["goblin", "demo"]);
 	});
 
 	test("no secret-name inputs in transcription or speaking", async () => {
@@ -761,55 +753,6 @@ describe("Capabilities + memory", () => {
 		) as HTMLButtonElement;
 		expect(sw.disabled).toBe(true);
 		expect(container.textContent).toContain("add a coding agent in Settings → Delegation");
-	});
-
-	test("needs-setup subagents can be set up in place and saved", async () => {
-		caps = CAPS({
-			subagents: { state: "needs-setup", hint: "pick a model for the worker or computer use" },
-		});
-		await mountSettings();
-		await openSection("Capabilities");
-		const sw = container.querySelector(
-			'[aria-label="Subagents & computer use"]',
-		) as HTMLButtonElement;
-		expect(sw.disabled).toBe(false);
-		expect(container.textContent).toContain("pick a model for the worker or computer use");
-		await click(sw);
-		// Neither type is on yet — the form says so.
-		expect(container.textContent).toContain("Pick at least one.");
-		// Code worker on → prefilled fields and the sandbox note (sandbox
-		// is off in this fixture).
-		await click(container.querySelector('[aria-label="Code worker"]'));
-		expect(container.textContent).toContain("The code worker also needs Sandboxed shell.");
-		const value = (v: string) =>
-			[...container.querySelectorAll("input")].some((i) => (i as HTMLInputElement).value === v);
-		expect(value("glm-5.3")).toBe(true);
-		expect(value("https://api.z.ai/api/coding/paas/v4")).toBe(true);
-		const thinking = container.querySelector(
-			'select[aria-label="thinking for the code worker"]',
-		) as HTMLSelectElement;
-		expect(thinking.value).toBe("high");
-		// A saved key from the fixture's authNames list.
-		const key = container.querySelector('select[aria-label="key for the code worker"]');
-		await act(async () => {
-			Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, "value")!.set!.call(
-				key,
-				"fixture",
-			);
-			key!.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
-		});
-		await waitFor(() => savedBodies.length > 0, "subagents save");
-		expect(savedBodies.at(-1)?.capabilities).toEqual({ subagents: true });
-		expect(savedBodies.at(-1)?.subagents).toEqual({
-			worker: {
-				auth: "fixture",
-				id: "glm-5.3",
-				baseUrl: "https://api.z.ai/api/coding/paas/v4",
-				thinking: "high",
-			},
-			computer: null,
-			desktopImage: "localhost/goblin-desktop:1",
-		});
 	});
 
 	test("chatgpt pending → signed-in reloads the settings GET when clean", async () => {

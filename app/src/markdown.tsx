@@ -15,6 +15,7 @@ import {
 	TriangleAlert,
 	X,
 } from "lucide-react";
+import { Command, CommandInput, CommandItem, CommandList } from "@ui-sdk/react/command";
 import { useCopy } from "./useCopy.ts";
 import { appendNote, createNote, listNotes } from "./api.ts";
 import type { AppNoteSummary } from "../../src/http/app-wire.ts";
@@ -579,33 +580,48 @@ function NoteAppendCard({
 				</p>
 			) : open ? (
 				<div className="note-pick">
-					<input
-						type="search"
-						placeholder="Search notes"
-						value={query}
-						autoFocus
-						onChange={(e) => setQuery(e.target.value)}
-					/>
-					{listFailed && <p className="error">Couldn't list notes.</p>}
-					<ul>
-						{(notes ?? []).map((n) => (
-							<li key={n.id}>
-								<button type="button" disabled={status === "busy"} onClick={() => append(n.id)}>
-									{n.title}
+					<Command
+						className="note-pick-command"
+						query={query}
+						onQueryChange={setQuery}
+						filter={false}
+						onAction={(value) => {
+							if (value === "new") create();
+							else append(value);
+						}}
+						onKeyDownCapture={(e) => {
+							// The pickers' idiom, kept here: Enter on an empty
+							// filter picks nothing — a bare Enter must not
+							// append to the auto-highlighted top note. With a
+							// query the command's own Enter runs the row.
+							if ((e.target as HTMLElement | null)?.tagName !== "INPUT") return;
+							if (e.key === "Enter" && query.trim() === "") {
+								e.preventDefault();
+								e.stopPropagation();
+							}
+						}}
+					>
+						<CommandInput placeholder="Search notes" aria-label="Search notes" autoFocus />
+						{listFailed && <p className="error">Couldn't list notes.</p>}
+						<CommandList className="note-pick-list">
+							{(notes ?? []).map((n) => (
+								<CommandItem key={n.id} value={n.id} disabled={status === "busy"}>
+									<button type="button">{n.title}</button>
+								</CommandItem>
+							))}
+							<CommandItem value="new" disabled={status === "busy"}>
+								<button type="button">
+									{title === null ? "New note" : `New note “${title}”`}
 								</button>
-							</li>
-						))}
-						<li>
-							<button type="button" disabled={status === "busy"} onClick={create}>
-								{title === null ? "New note" : `New note “${title}”`}
-							</button>
-						</li>
-					</ul>
-					{truncated && notes !== null && notes.length > 0 && (
-						<p className="empty" role="status">
-							Showing the first {notes.length} matching notes — narrow the search to find the rest.
-						</p>
-					)}
+							</CommandItem>
+						</CommandList>
+						{truncated && notes !== null && notes.length > 0 && (
+							<p className="empty" role="status">
+								Showing the first {notes.length} matching notes — narrow the search to find the
+								rest.
+							</p>
+						)}
+					</Command>
 				</div>
 			) : (
 				<button

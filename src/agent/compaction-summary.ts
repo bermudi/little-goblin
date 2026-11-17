@@ -32,7 +32,7 @@ When a previous summary is present, re-distill it with the new messages and drop
 
 // A real operator message: user role, not a legacy resume request
 // (#594 removed the writer; old rows still carry the marker), not
-// machinery speech (program fires, delegation and subagent notices).
+// machinery speech (program fires, delegation and agent notices).
 export function operatorText(message: Message): string | null {
 	if (message.role !== "user") return null;
 	const meta = message.metadata;

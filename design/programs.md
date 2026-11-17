@@ -278,8 +278,8 @@ Rulings:
   parse to a time, which becomes the next review), evidence
   items `{item, ref, checked}`, the revision it was stated against, and
   the reporter — `goblin` (the coordinating turn's assessment of the
-  Herdr observations), `worker` (reserved for pi-durable runs, which
-  already end through tools), or `migration`. A worker's claim and
+  T3 thread observations), `worker` (a linked delegation's own claim,
+  filed on settlement), or `migration`. A worker's claim and
   goblin's assessment stay distinguishable at the data level.
 
   `responsibility-stage.ts` is the one derivation, first match wins:
@@ -303,26 +303,27 @@ Rulings:
   `ready` waits for review only when the task has a checkpoint; verified
   `done` closes on its own.
 
-  **Worker reports (2026-11-02):** a pi-durable run is linked to a
-  responsibility only explicitly — `subagent start responsibility:<id>`,
-  admitted when the id is open in the conversation's own project; no
-  matching by topic or by "the project's only open one". The link lives
-  on the run row. Each settlement of a linked run files one `worker`
-  report before its notice wakes the conversation (`SubagentsDeps.settled`,
-  inside the notice retry: a failed write leaves the notice pending and
-  the next scan files it): `finish` → `ready` with the result,
-  `ask_operator` → `blocked` with the question verbatim, a crash
-  resolution hold → `blocked` without one (goblin decides those),
-  failure → `failed`; a stop states nothing. The key
-  `subagent:<run>:<inputRev>:<status>` dedupes retried notices while a
-  new input's settlement is a new report. Stage: a question goes to the
-  operator whoever asked; any other current worker report is goblin's
-  move (`assess`) — a worker's `ready` never closes or reaches the
+  **Worker reports:** a delegation is linked to a responsibility only
+  explicitly — `delegate start responsibility:<id>`, admitted when the
+  id is open in the conversation's own project; no matching by topic
+  or by "the project's only open one". The link lives on the delegation
+  row. Each settlement of a linked delegation files one `worker`
+  report before its notice wakes the conversation
+  (`fileDelegationReport`, inside the notice retry: a failed write
+  leaves the notice pending and the next scan files it): `done` →
+  `ready`, `needs input` → `blocked` (a delegation has no structured
+  question, so it waits for goblin to read and relay), `failed` →
+  `failed`, `stopped` → `blocked`; the key
+  `delegation:<id>:<promptedAt>:<baselineSeq>:<verdict>` dedupes
+  retried notices while a follow-up or later dialog is a new report.
+  Stage: a question goes to the operator whoever asked; any other
+  current worker report is goblin's move (`assess`) — a worker's
+  `ready` never closes or reaches the
   operator as review until goblin reports on it. A worker cannot report
-  `done`. A run's reports carry the revision stamped when it was
+  `done`. A delegation's reports carry the revision stamped when it was
   linked, so a correction since then overtakes the claim and it becomes
   goblin's move, even after a steer. A report that can never file (row
-  gone, invalid) is logged and the notice still wakes. Herdr panes have no such tool path: goblin reports for them.
+  gone, invalid) is logged and the notice still wakes.
 
   Linked lead delegations additionally carry code-observed GitHub evidence
   (design/delegation.md → PR readiness). Their report keeps the worker

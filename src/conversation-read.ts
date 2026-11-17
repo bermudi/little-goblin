@@ -43,6 +43,11 @@ export interface Conversation {
 	// Bound once at creation; app conversations only — every other row
 	// stays null forever.
 	projectId: string | null;
+	// Native subagents (design/agents.md → agent): non-null agentType
+	// marks a child conversation spawned by the `agent` tool; parentId
+	// names its origin (null after the parent's delete).
+	parentId: string | null;
+	agentType: string | null;
 	epoch: number;
 	createdAt: string;
 }
@@ -63,6 +68,8 @@ export function toConversation(r: Row): Conversation {
 		archivedAt: r.archived_at,
 		pinnedAt: r.pinned_at,
 		projectId: r.project_id,
+		parentId: r.parent_conversation_id,
+		agentType: r.agent_type,
 		epoch: r.epoch,
 		createdAt: r.created_at,
 	};
@@ -85,6 +92,9 @@ export interface AppConversationSummary {
 	// Null = an unscoped chat on the main rail; set = the row lives under
 	// its project's page.
 	projectId: string | null;
+	// Native subagents: non-null = a child conversation; the app can list
+	// it under its parent. Null after the parent's delete.
+	parentId: string | null;
 }
 
 export interface ConversationReads {

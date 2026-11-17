@@ -73,6 +73,23 @@ goblin that is not answering, has nothing to wait for and proceeds.
 - **No release is ever deleted by tooling.** Retention is the operator's
   `trash`. A rollout prints what it replaced; `--status` lists what is kept.
 
+## Config across releases (2026-11-16)
+
+The config is per-home, not per-release. Before every flip, `release.ts`
+snapshots the outgoing release's `goblin.json5`, then restores the target
+release's snapshot when one exists. This matters because a `.strict()` old
+schema rejects a newer config shape; #645 exposed this when the T3 port
+changed `delegation.harnesses` from `{kind,args}` to `{provider,model}`.
+
+When a snapshot differs, the current settings are kept in
+`goblin.json5.rollback-from-<rev>` before the snapshot is restored. This file
+is not deleted: it preserves edits made since that release last ran. A
+release built before snapshot support has no snapshot. In that case, restore
+the config by hand from the backups the operator keeps in `~/goblin/`.
+
+`release.ts` therefore has one added right: it writes `goblin.json5` in the
+unit's home, and only as part of a flip. It does not otherwise edit config.
+
 ## Why this replaces the in-place deploy
 
 The server is TypeScript run in place, so the live artifact used to be a

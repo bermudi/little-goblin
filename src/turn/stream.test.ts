@@ -38,6 +38,7 @@ import {
 	joinMember,
 	type MemberSettlement,
 	openLive,
+	stubSupersededFrames,
 	type StreamDeps,
 	type WireMember,
 } from "./stream.ts";
@@ -669,10 +670,15 @@ describe("driveStream", () => {
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
 		if (outcome.kind !== "ok") return;
-		const md = outcome.responseMessage?.metadata as { ttftMs?: number };
+		const md = outcome.responseMessage?.metadata as { ttftMs?: number; createdAt?: string };
 		expect(typeof md.ttftMs).toBe("number");
 		expect(md.ttftMs!).toBeGreaterThanOrEqual(0);
 		expect(md.ttftMs!).toBeLessThan(10_000);
+		// The finish instant rides as createdAt — the transcript's "how
+		// old is this reply" before history serves the row's own stamp.
+		expect(typeof md.createdAt).toBe("string");
+		expect(Date.parse(md.createdAt!)).toBeGreaterThanOrEqual(r.deps.turnStartMs);
+		expect(Date.parse(md.createdAt!)).toBeLessThanOrEqual(Date.now());
 	});
 
 	test("a step that never streams content leaves ttft unstamped", async () => {
@@ -1519,5 +1525,68 @@ describe("wire-tail checkpoint", () => {
 		} finally {
 			Date.now = realNow;
 		}
+	});
+});
+
+describe("stubSupersededFrames — issue #606 within-turn frame stubbing", () => {
+	const frameResult = (id: string) => ({
+		role: "tool" as const,
+		content: [
+			{
+				type: "tool-result" as const,
+				toolCallId: id,
+				toolName: "screenshot",
+				output: {
+					type: "content" as const,
+					value: [
+						{ type: "text" as const, text: `frame ${id}` },
+						{
+							type: "file" as const,
+							mediaType: "image/png",
+							data: { type: "data" as const, data: new Uint8Array(1000) },
+						},
+					],
+				},
+			},
+		],
+	});
+
+	test("with two frames, the older becomes a text stub; the newest keeps its image", () => {
+		const messages = [
+			{ role: "user" as const, content: "drive" },
+			frameResult("c1"),
+			frameResult("c2"),
+		];
+		const out = stubSupersededFrames(messages);
+		expect(out).not.toBe(messages);
+		const c1 = out[1] as { content: Array<{ output?: { type?: string; value?: unknown } }> };
+		const c2 = out[2] as { content: Array<{ output?: { type?: string; value?: unknown } }> };
+		expect(c1.content[0]!.output!.type).toBe("text");
+		expect(String(c1.content[0]!.output!.value)).toContain("frame c1");
+		expect(String(c1.content[0]!.output!.value)).toContain("superseded");
+		expect(c2.content[0]!.output!.type).toBe("content");
+	});
+
+	test("a single frame, text-only results, and string content stay untouched", () => {
+		const one = [frameResult("c1")];
+		expect(stubSupersededFrames(one)).toBe(one);
+		const textOnly = [
+			{
+				role: "tool" as const,
+				content: [
+					{
+						type: "tool-result" as const,
+						toolCallId: "c1",
+						toolName: "inspect",
+						output: { type: "text" as const, value: "state" },
+					},
+				],
+			},
+			{
+				role: "tool" as const,
+				content: "plain string result",
+			},
+		] as never[];
+		expect(stubSupersededFrames(textOnly as never)).toBe(textOnly);
 	});
 });

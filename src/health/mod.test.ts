@@ -128,7 +128,6 @@ describe("diagnostic boundary and phases", () => {
 			"sqlite",
 			"sqlite.subsystems",
 			"service.goblin",
-			"service.goblin-herdr",
 			"sandbox.engine",
 			"app.assets",
 			"workspace.workspace",
@@ -729,28 +728,6 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 			},
 		};
 	}
-	test("a dead delegation host warns unconfigured and fails once delegation is configured", async () => {
-		const f = fixture();
-		f.script(
-			"systemctl",
-			`if [ "$3" = "goblin-herdr.service" ]; then printf 'LoadState=loaded\\nActiveState=failed\\nSubState=failed\\n';
-			else printf 'LoadState=loaded\\nActiveState=active\\nSubState=running\\nWorkingDirectory=${f.checkout}\\n'; fi`,
-		);
-		const plain = await runHealth({ ...f.options, phase: "installed" });
-		expect(finding(plain, "service.goblin").status).toBe("pass");
-		expect(finding(plain, "service.goblin-herdr").status).toBe("warn");
-		expect(finding(plain, "service.goblin-herdr").detail).toContain("no delegation block");
-		writeFileSync(
-			join(f.home, "goblin.json5"),
-			JSON.stringify({
-				...f.config,
-				delegation: { harnesses: { devin: { kind: "devin" } } },
-			}),
-		);
-		const delegated = await runHealth({ ...f.options, phase: "installed" });
-		expect(finding(delegated, "service.goblin-herdr").status).toBe("fail");
-		expect(JSON.stringify(delegated)).not.toContain(secret);
-	});
 	test("missing boot-created subsystem tables warn by name; a full boot schema passes", async () => {
 		const f = fixture();
 		installLayout(f.home);
@@ -782,7 +759,10 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 		// Config-gated tables join the expectation with their config block.
 		writeFileSync(
 			join(f.home, "goblin.json5"),
-			JSON.stringify({ ...f.config, delegation: { harnesses: { devin: { kind: "devin" } } } }),
+			JSON.stringify({
+				...f.config,
+				delegation: { harnesses: { devin: { provider: "devin", model: "d-1" } } },
+			}),
 		);
 		const gated = finding(
 			await runHealth({ ...f.options, phase: "installed" }),

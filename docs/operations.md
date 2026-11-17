@@ -250,6 +250,29 @@ have all passed — so a deploy-initiated restart is distinguishable from a
 spontaneous one, and a rollout that started but never finished is visible as
 a `restarting` line with no `accepted` after it.
 
+### Post-deploy proof (new surfaces)
+
+After a deploy that changes these surfaces, and before cleaning up the old
+Herdr units, run each check against the live app. Keep the relevant
+`goblin.log` lines as evidence:
+
+1. **Native `agent`:** In the app, ask Goblin to complete a small task that
+   requires a child agent. See the child result in chat and a `tool call`
+   line with `"tool":"agent"` in `goblin.log`.
+2. **Screenshot round trip:** Ask for a screenshot in the app. See the image
+   delivered in chat and an `app media delivered` line in `goblin.log`.
+   Telegram alternative: expect a `file delivered` line (debug level).
+3. **`delegate`:** Ask Goblin to delegate a trivial task to a cheap configured
+   harness. See the T3 thread link in chat, the thread in T3 Code, and the
+   completion notice back in chat. Check the `tool call` line with
+   `"tool":"delegate"` and the related `t3 call` lines in `goblin.log`.
+4. **Handover:** In a project conversation, use the responsibility tool's
+   `accept` action and select at least one T3 thread. This creates the
+   responsibility and binds the selected thread(s); no existing
+   responsibility is needed. See the T3 thread and its report come back in
+   chat. Check the `responsibility tool` line with `"action":"accept"` and
+   the related `t3 call` lines in `goblin.log`.
+
 The gate is `bun run typecheck` inside the release; the full suite gates
 merges via `.github/workflows/ci.yml`, not deploys. After the restart it
 requires 75 s startup acceptance (`scripts/check-startup.ts --watch`, the
@@ -270,8 +293,8 @@ restarted: `--status` reads `/proc/<pid>/cwd` and prints `(restart pending)`.
 
 Skill seeds vs. live skills: `deploy/skills/<name>/SKILL.md` is the
 source of truth for the seeded copy; `ensureHomeLayout` installs it on
-first boot. A skill that *advertises a backend tool* (e.g. herdr v2.2,
-which assumes the `herdr` tool exists) must NOT be synced into the live
+first boot. A skill that *advertises a backend tool* the release does
+not ship must NOT be synced into the live
 workspace ahead of the release that ships the tool. After the approved
 `bun scripts/release.ts` rollout verifies the new backend, explicitly
 sync the changed seed to its installed workspace copy as part of that
@@ -506,8 +529,9 @@ sqlite3 ~/goblin/state/goblin.sqlite \
 
 ## Desktop image
 
-The `desktop`/`computer`-subagent pool (design/subagents.md) runs
-`goblin-desk-*` containers from `localhost/goblin-desktop:1`. Goblin
+The desktop pool (design/agents.md → The desktop pool) runs
+`goblin-desk-*` containers from `localhost/goblin-desktop:1`, enabled by
+a top-level `desktops` config block. Goblin
 never builds or pulls images — a missing image errors with the build
 line. Build from the repo root:
 
@@ -542,35 +566,8 @@ The check resolves the `claude-code` record through the given auth
 file (path only in the environment, never a token) and runs one real
 text-only query plus one tool round-trip through the bridge. Red means
 the pinned interface moved: run one probe session, re-pin the shapes,
-fix the adapter — the same rule as the herdr and gws checks. It spends
+fix the adapter — the same rule as the t3 and gws checks. It spends
 subscription quota; run it after upgrades, not on a schedule.
-
-## Subagent drift checks
-
-Three env-gated checks cover the subagent stack (design/subagents.md):
-
-```sh
-# real harness + local fake model in a real cached-alpine sandbox —
-# local only, no external calls:
-GOBLIN_SUBAGENTS_PODMAN_LIVE=1 bun test src/subagents/podman.test.ts
-
-# real harness + real z.ai (worker glm-5.3, computer glm-5.3-flash):
-GOBLIN_SUBAGENTS_LIVE=1 GOBLIN_SUBAGENTS_AUTH_FILE=<path-to-auth.jsonl> \
-  bun test src/subagents/live.test.ts
-```
-
-The live check resolves the `zai` credential through the auth file —
-the only secret-adjacent environment value is its path; never put a
-key in the environment. Every probe container and network carries a
-per-run token, is preflighted before creation, and only resources it
-created are removed. Logs, screenshots and a REPORT.md are preserved
-under `/tmp/goblin-subdrift-<token>/`; the podman gate writes
-`/tmp/goblin-subenv-evidence-<token>/`. `src/subagents/crash.test.ts`
-needs no gate — it runs in `bun test` and proves the crash-approval
-path: a SIGKILL mid-dispatch of a side-effecting call parks the run
-`needs_input` on reopen, and each `decide` verdict (authorize-retry,
-record-result, abandon) plus the kill-while-parked and
-result-committed windows behave as designed.
 
 ## Backups
 

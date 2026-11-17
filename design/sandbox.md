@@ -38,7 +38,7 @@ cgroup v2 with cpu/memory/pids delegated):
   wall — never widened: never `--privileged`, never `--env-host` (the
   container env is the image's, so no daemon env or secret reaches it),
   never the podman socket. *Desktops* append `SYS_CHROOT` so Chromium can
-  run its own sandbox (design/subagents.md); sandboxes get exactly the
+  run its own sandbox (design/agents.md → The desktop pool); sandboxes get exactly the
   five.
 - **Filesystem: nothing shared.** No bind mounts, no volumes, no
   workspace exposure — bind mounts were rejected on measurement (idmapped

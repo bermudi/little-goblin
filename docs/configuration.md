@@ -312,7 +312,15 @@ explicit config — no provider is ever injected you didn't write.
 `fetch` selects the extraction provider behind the `fetch` tool — kinds
 `local` (default when unset: direct HTTP + readability, no key), `jina`,
 `tavily`, `firecrawl`, `parallel`, with the same list rule (`local` may
-appear in the chain). Search and fetch are chosen independently, so a
+appear in the chain). Unlike search, a fetch result with almost no text
+(under 200 chars: a JavaScript shell, or a site that blocks that
+provider's crawler) also advances the chain, because the next provider
+may still get the page. When no entry gets the page and at least one
+came back thin, the tool answers `empty-extraction` with the
+browser-skill hint; when every entry failed outright, it fails with each
+provider's error. `parallel`
+counts an empty full content as a failure: it never hands back its
+excerpts as the page. Search and fetch are chosen independently, so a
 search-only key like Brave's free tier pairs with a full-extraction
 provider.
 
@@ -353,76 +361,61 @@ resource caps; disk is not capped (reaping bounds it).
 ### Delegation
 
 Off when unset. With a `delegation` block, the bot gets a `delegate`
-tool: it hands work to another coding harness running in the operator's
-herdr session (Codex, Claude, pi, devin, opencode, …). Settings →
-Delegation edits the harness list and the role defaults; the block is
-boot-pinned, so a change applies after an approved restart.
+tool: it hands work to another coding harness as a T3 Code thread
+(Codex, Claude, pi, devin, opencode, …) that the operator watches in
+T3 Code. Settings → Delegation edits the harness list and the role
+defaults; the block is boot-pinned, so a change applies after an
+approved restart.
 
 ```json5
 delegation: {
   harnesses: {
-    pi: { kind: "pi", args: ["--model", "zai/glm-5.3"] },
-    "pi-review": { kind: "pi", args: ["--model", "gpt-6.1-sol"] },
-    claude: { kind: "claude", askFirst: true },
+    pi: { provider: "pi", model: "<model-slug>" },
+    "pi-review": { provider: "pi", model: "<review-model-slug>" },
+    claude: { provider: "claudeAgent", model: "<model-slug>", askFirst: true },
   },
   // Role → harness name. `default` is what a call with no role uses;
   // a named role with no entry also falls back to `default`.
   defaults: { default: "pi", build: "pi", review: "pi-review" },
-  // machines: other hosts that run their own harnesses.
 },
 ```
 
-Each harness is a herdr agent kind plus native CLI args — full-auto flags
-and model choice live in `args`, and goblin never invents either. A
-default naming an undeclared harness is a config error. An explicit
-harness in a `delegate` call always wins over a role. `askFirst: true`
-on a harness (local or machine-side) makes goblin ask you before each
-use — the delegate tool carries it as a prompt rule, editable in
+Each harness is a T3 provider instance plus model slug — goblin never
+invents either, and the names must match what `t3` offers on this
+machine. A default naming an undeclared harness is a config error. An
+explicit harness in a `delegate` call always wins over a role.
+`askFirst: true` on a harness makes goblin ask you before each use —
+the delegate tool carries it as a prompt rule, editable in
 Settings → Delegation; choosing the harness itself stays goblin's call.
 
-opencode: keep the full TUI (`args: ["--auto"]`). `opencode mini` takes
-`--model` but rejects `--auto`, and herdr never reports it `working` or
-`done`, so a delegation to it would never settle (probe, 2026-11-09).
+### Desktops
 
-### Subagents
-
-Off when unset. With a `subagents` block, the bot gets `subagent` and
-`desktop` tools: a code worker and a computer-use agent, each with its
-own model. Settings → Capabilities edits both models and the desktop
-image; the block is boot-pinned, so a change applies after an approved
-restart.
+Off when unset. A `desktops` block enables the desktop pool: the
+`desktop` tool (allocate, claim, screenshot, file import/export,
+network toggle) for goblin's own turns, and the `computer` agent type —
+a child conversation that drives a named desktop through `inspect`,
+`act`, `launch`, `screenshot` and `ask_operator` (design/agents.md →
+Computer use). The block is boot-pinned, so a change applies after an
+approved restart. Hand-edited only — Settings does not expose it.
 
 ```json5
-subagents: {
-  maxRuns: 3,
-  worker: {
-    model: {
-      auth: "zai", // auth.jsonl record name
-      id: "glm-5.3",
-      baseUrl: "https://api.z.ai/api/coding/paas/v4",
-      api: "openai-completions",
-      thinking: "high",
-    },
-  },
-  // computer: { model: { auth: "zai", id: "glm-5.3-flash",
-  //   baseUrl: "https://api.z.ai/api/coding/paas/v4",
-  //   api: "openai-completions", thinking: "low" } },
-  desktops: {
-    image: "localhost/goblin-desktop:1",
-    max: 3, idleHours: 24, memory: "3g", cpus: 2, pids: 1024,
-  },
+desktops: {
+  image: "localhost/goblin-desktop:1",
+  max: 3, idleHours: 24, memory: "3g", cpus: 2, pids: 1024,
 },
 ```
 
-An absent type = that type is off; a block with neither is a config
-error. The models above are the operator ruling (design/subagents.md →
-Models): both on z.ai's Coding Plan URL, and `glm-5.3-flash` cannot
-disable thinking — `low` is its minimum. The worker runs its code
-through the sandbox, so it also needs a `sandbox` block (Settings notes
-this while Sandboxed shell is off). The desktop image must already be
-built on this machine; goblin never pulls it. `maxRuns` and the other
-`desktops` fields are hand-edited only — Settings preserves them when
-saving.
+The desktop image must already be built on this machine; goblin never
+pulls it (docs/operations.md → Desktop image).
+
+### Retired: `subagents`
+
+The `subagents` config block is gone — native `agent` children replaced
+it (issue #609). A config that still carries `subagents` (top level or
+under `parked`) fails boot with a loud error naming the replacement:
+the `agent` tool and its agent types, the `computer` type for desktops.
+Delete the block; the desktop pool moved to the top-level `desktops`
+block above.
 
 ### Telegram
 

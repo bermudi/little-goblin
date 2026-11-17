@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { defineTool, type Tools } from "../../tool.ts";
-import { createToolBridge } from "./tools.ts";
+import { callToolResult, createToolBridge } from "./tools.ts";
 
 function tools(): Tools {
 	return {
@@ -169,5 +169,24 @@ describe("createToolBridge", () => {
 		const b = createToolBridge({ convId: "c", tools: {} });
 		const r = await b.invoke("ghost", {});
 		expect(r.error).toContain("no bridged tool named ghost");
+	});
+});
+
+describe("callToolResult", () => {
+	test("content outputs emit an MCP image block beside the text", () => {
+		const png = new Uint8Array([137, 80, 78, 71]);
+		const out = callToolResult({
+			type: "content",
+			value: [
+				{ type: "text", text: "frame caption" },
+				{ type: "image", mediaType: "image/png", data: png },
+			],
+		});
+		expect(out.content).toHaveLength(2);
+		expect(out.content[0]).toEqual({ type: "text", text: "frame caption" });
+		const image = out.content[1] as { type: string; data: string; mimeType: string };
+		expect(image.type).toBe("image");
+		expect(image.mimeType).toBe("image/png");
+		expect(Buffer.from(image.data, "base64")).toEqual(Buffer.from(png));
 	});
 });

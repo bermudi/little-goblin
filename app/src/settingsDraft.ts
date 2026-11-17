@@ -11,11 +11,7 @@ import type {
 	TranscriptionEntry,
 	transcriptionKinds,
 } from "../../src/config-schema.ts";
-import type {
-	ConfigPostBody,
-	ConfigResponse,
-	SubagentsWire,
-} from "../../src/http/operator-wire.ts";
+import type { ConfigPostBody, ConfigResponse } from "../../src/http/operator-wire.ts";
 
 // Mirrors src/config-schema.ts's capabilityNames — the server module isn't
 // bundle-safe, so the client keeps its own copy (a test pins parity).
@@ -25,7 +21,6 @@ export const CAPABILITY_NAMES: readonly CapabilityName[] = [
 	"vision",
 	"image",
 	"sandbox",
-	"subagents",
 	"scripting",
 	"delegation",
 	"guest",
@@ -91,13 +86,15 @@ export interface ChainEntry {
 	auth: string;
 }
 
-// The delegation editor's two tables. Args stay one-per-line text so an
-// argument with a space survives the round trip; the row order is the
-// saved order (matters only for legibility — the map is keyed).
+// The delegation editor's two tables — each harness names the T3
+// provider instance and model its thread runs on, plus optional model
+// options; the row order is the saved order (matters only for legibility —
+// the map is keyed).
 export interface HarnessDraft {
 	name: string;
-	kind: string;
-	args: string;
+	provider: string;
+	model: string;
+	options: string;
 	askFirst: boolean;
 }
 export interface DelegationRoleDraft {
@@ -107,71 +104,8 @@ export interface DelegationRoleDraft {
 export interface DelegationDraft {
 	harnesses: HarnessDraft[];
 	roles: DelegationRoleDraft[];
-	// Harness names declared under delegation.machines.* — file-only,
-	// kept so a role default may name them like the server allows.
-	machineHarnesses: string[];
 }
 
-// One subagent type's model — the wire's editable fields (api is
-// server-set; maxRuns and the desktop pool limits are file-only).
-export interface SubagentModelDraft {
-	auth: string;
-	id: string;
-	baseUrl: string;
-	thinking: ThinkingLevel;
-}
-export interface SubagentsDraft {
-	worker: SubagentModelDraft | null;
-	computer: SubagentModelDraft | null;
-	desktopImage: string;
-}
-
-// First-time prefills — the operator ruling on models (design/
-// subagents.md → Models): both types on z.ai's Coding Plan URL; the
-// flash model cannot disable thinking, so "low" is its floor.
-export const SUBAGENT_DEFAULTS = {
-	baseUrl: "https://api.z.ai/api/coding/paas/v4",
-	desktopImage: "localhost/goblin-desktop:1",
-	worker: { id: "glm-5.3", thinking: "high" as ThinkingLevel },
-	computer: { id: "glm-5.3-flash", thinking: "low" as ThinkingLevel },
-};
-
-// The row's on-flip content: no type picked yet — each type toggle
-// materializes its own prefilled model from SUBAGENT_DEFAULTS, so a
-// first-time setup never silently enables a type the operator didn't.
-export function emptySubagentsDraft(): SubagentsDraft {
-	return { worker: null, computer: null, desktopImage: SUBAGENT_DEFAULTS.desktopImage };
-}
-
-export function subagentsDraftFromWire(w: SubagentsWire): SubagentsDraft {
-	const arm = (m: SubagentsWire["worker"]): SubagentsDraft["worker"] =>
-		m === null ? null : { auth: m.auth, id: m.id, baseUrl: m.baseUrl, thinking: m.thinking };
-	return { worker: arm(w.worker), computer: arm(w.computer), desktopImage: w.desktopImage };
-}
-
-// The save arm — unlike the other parkable blocks this one omits rather
-// than parks with "": the config schema has no "" arm for subagents, and
-// on/off moves through the `capabilities` diff alone.
-export function subagentsBody(s: SubagentsDraft): SubagentsWire {
-	const model = (m: SubagentModelDraft): SubagentsWire["worker"] => ({
-		auth: m.auth.trim(),
-		id: m.id.trim(),
-		baseUrl: m.baseUrl.trim(),
-		thinking: m.thinking,
-	});
-	return {
-		worker: s.worker === null ? null : model(s.worker),
-		computer: s.computer === null ? null : model(s.computer),
-		desktopImage: s.desktopImage.trim(),
-	};
-}
-
-/** One argument per line; blank lines are not arguments. */
-export const argsToList = (text: string): string[] =>
-	text
-		.split("\n")
-		.map((a) => a.trim())
-		.filter((a) => a !== "");
 /** Numeric-ish fields stay strings while editing. */
 export interface ProvDraft {
 	id: number;
@@ -429,7 +363,6 @@ export interface SettingsDraft {
 	logLevel: "debug" | "info" | "warn" | "error";
 	memory: MemDraft | null;
 	delegation: DelegationDraft | null;
-	subagents: SubagentsDraft | null;
 }
 
 export const EMPTY_DRAFT: SettingsDraft = {
@@ -461,7 +394,6 @@ export const EMPTY_DRAFT: SettingsDraft = {
 	logLevel: "info",
 	memory: null,
 	delegation: null,
-	subagents: null,
 };
 
 // All-off flag map — EMPTY_DRAFT's baseline.
@@ -476,20 +408,15 @@ let provSeq = 0;
 
 // Optional blocks arrive as their config arm or absent; draft nulls are
 // "off". `caps` is the GET's capability states — absent (tests) infers
-// on/off from the config's own blocks. `subagents` is the GET's wire
-// block (it may carry parked content, so the on/off call is caps'/the
-// config's, never the wire's).
+// on/off from the config's own blocks.
 export function draftFromConfig(
 	c: Config,
 	caps?: ConfigResponse["capabilities"],
-	subagents?: SubagentsWire | null,
 ): { draft: SettingsDraft; providers: ProvDraft[] } {
 	const widen = (e: { kind: string; auth?: string | undefined }): ChainEntry => ({
 		kind: e.kind,
 		auth: e.auth ?? "",
 	});
-	const subagentsOn =
-		caps !== undefined ? caps.subagents.state === "on" : c.subagents !== undefined;
 	const draft: SettingsDraft = {
 		model: c.model || "",
 		titleModel: c.titleModel || "",
@@ -563,8 +490,12 @@ export function draftFromConfig(
 			? {
 					harnesses: Object.entries(c.delegation.harnesses).map(([name, h]) => ({
 						name,
-						kind: h.kind,
-						args: (h.args ?? []).join("\n"),
+						provider: h.provider,
+						model: h.model,
+						options: Object.entries(h.options ?? {})
+							.sort(([a], [b]) => a.localeCompare(b))
+							.map(([id, value]) => `${id}=${String(value)}`)
+							.join(" "),
 						askFirst: h.askFirst === true,
 					})),
 					roles: Object.entries(c.delegation.defaults ?? {})
@@ -572,12 +503,8 @@ export function draftFromConfig(
 						.sort((a, b) =>
 							a.role === "default" ? -1 : b.role === "default" ? 1 : a.role.localeCompare(b.role),
 						),
-					machineHarnesses: Object.values(c.delegation.machines ?? {}).flatMap((m) =>
-						Object.keys(m.harnesses ?? {}),
-					),
 				}
 			: null,
-		subagents: subagentsOn && subagents != null ? subagentsDraftFromWire(subagents) : null,
 	};
 	// Union arms differ (openrouter has no baseUrl, codex uses authFile,
 	// claude-code is auth-only); widen once — absent fields read as
@@ -657,8 +584,24 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 			return "Coding agent names use lowercase letters, digits, _ or - (16 max).";
 		if (new Set(names).size !== names.length) return "Duplicate coding agent name.";
 		if (names.length === 0) return "Delegation is on — add at least one coding agent.";
-		if (draft.delegation.harnesses.some((h) => !h.kind.trim()))
-			return "Every coding agent needs a herdr kind.";
+		if (draft.delegation.harnesses.some((h) => !h.provider.trim()))
+			return "Every coding agent needs a provider.";
+		if (draft.delegation.harnesses.some((h) => !h.model.trim()))
+			return "Every coding agent needs a model.";
+		for (const h of draft.delegation.harnesses) {
+			const optionsText = h.options.trim();
+			if (!optionsText) continue;
+			const seen = new Set<string>();
+			for (const token of optionsText.split(/\s+/)) {
+				const equals = token.indexOf("=");
+				const id = equals < 0 ? "" : token.slice(0, equals);
+				const value = equals < 0 ? "" : token.slice(equals + 1);
+				if (!id || !value || seen.has(id)) {
+					return `Model options must be id=value pairs (agent ${h.name}).`;
+				}
+				seen.add(id);
+			}
+		}
 		const roleRe = /^[a-z][a-z0-9_-]{0,15}$/;
 		// A row with no agent is an absent mapping — the body builder
 		// drops it, and "none" is how an existing default gets cleared.
@@ -667,34 +610,10 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 		if (roles.some((r) => !roleRe.test(r)))
 			return "Role names use lowercase letters, digits, _ or - (16 max).";
 		if (new Set(roles).size !== roles.length) return "Duplicate delegation role.";
-		// Defaults may name a machine-side harness — the server schema
-		// accepts them and the file-only target gates the actual launch.
-		const known = [...names, ...draft.delegation.machineHarnesses];
 		for (const r of named) {
-			const target = r.harness.trim();
-			if (!known.includes(target)) return `Role "${r.role}" names an unlisted coding agent.`;
+			if (!names.includes(r.harness.trim()))
+				return `Role "${r.role}" names an unlisted coding agent.`;
 		}
-	}
-	// A subagents draft exists only while its switch is on — an
-	// incomplete one holds the autosave instead of surfacing the
-	// server's neither-type 422 in the savebar.
-	if (draft.subagents) {
-		const { worker, computer, desktopImage } = draft.subagents;
-		if (worker === null && computer === null)
-			return "Pick a code worker or computer use for subagents.";
-		// Either type needs the same three fields, in the form's order;
-		// the wording names the type ("The code worker" vs "Computer use").
-		const model = (m: SubagentModelDraft, key: string, named: string): string | null => {
-			if (!m.auth.trim()) return `Pick a key for ${key}.`;
-			if (!m.id.trim()) return `${named} needs a model.`;
-			if (!m.baseUrl.trim()) return `${named} needs a base url.`;
-			return null;
-		};
-		const w = worker !== null ? model(worker, "the code worker", "The code worker") : null;
-		if (w !== null) return w;
-		const c = computer !== null ? model(computer, "computer use", "Computer use") : null;
-		if (c !== null) return c;
-		if (computer !== null && !desktopImage.trim()) return "Computer use needs a desktop image.";
 	}
 	const port = Number(draft.port);
 	if (!Number.isInteger(port) || port < 0 || port > 65535)
@@ -858,17 +777,29 @@ export function bodyFromDraft(
 		})) as ConfigPostBody["memory"],
 		delegation: capEmit("delegation", draft.delegation, (d) => ({
 			harnesses: Object.fromEntries(
-				d.harnesses.map((h) => {
-					const args = argsToList(h.args);
-					return [
-						h.name.trim(),
-						{
-							kind: h.kind.trim(),
-							...(args.length > 0 ? { args } : {}),
-							...(h.askFirst ? { askFirst: true } : {}),
-						},
-					];
-				}),
+				d.harnesses.map((h) => [
+					h.name.trim(),
+					{
+						provider: h.provider.trim(),
+						model: h.model.trim(),
+						...(h.options.trim()
+							? {
+									options: Object.fromEntries(
+										h.options.trim().split(/\s+/).map((token) => {
+											const equals = token.indexOf("=");
+											const id = token.slice(0, equals);
+											const value = token.slice(equals + 1);
+											return [
+												id,
+												value === "true" ? true : value === "false" ? false : value,
+											];
+										}),
+									),
+								}
+							: {}),
+						...(h.askFirst ? { askFirst: true } : {}),
+					},
+				]),
 			),
 			...(() => {
 				const defaults = Object.fromEntries(
@@ -879,7 +810,6 @@ export function bodyFromDraft(
 				return Object.keys(defaults).length > 0 ? { defaults } : {};
 			})(),
 		})) as ConfigPostBody["delegation"],
-		subagents: draft.subagents === null ? undefined : subagentsBody(draft.subagents),
 		logLevel: draft.logLevel,
 		...(capabilities !== undefined && Object.keys(capabilities).length > 0 ? { capabilities } : {}),
 	};

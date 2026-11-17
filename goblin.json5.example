@@ -220,50 +220,25 @@
   // <provider>/<model> chat ref.
   // system1: { auth: "openrouter" },
 
-  // --- Delegation (other coding harnesses, via herdr) ---
-  // Unset = no delegate tool. Harnesses run in goblin's OWN LOCAL
-  // herdr session (the goblin-herdr systemd unit's --session goblin
-  // — the name lives in the unit, not here), each in its own
-  // workspace. Results come back to the topic as a
-  // `[delegation: …]` message. `kind` is a herdr agent kind
-  // (herdr agent → kind list); `args` are native CLI args —
-  // full-auto flags and model choice live here.
-  // `machines` adds other targets for work that belongs on another
-  // host: `machine` names a herdr saved-machine profile (the ssh
-  // target and pinned remote session live in herdr:
-  // `herdr machine add <host> --remote-session goblin`), `session`
-  // alone is another local session, `root` resolves that target's
-  // relative cwds and reports (absolute or ~/…), and optional
-  // `harnesses` declares what runs there — harness availability is
-  // a property of the host. delegate start takes `on: <label>`;
-  // omitted = own local session. First-run trust dialogs are seeded
-  // silently on every host (locally at launch, remotely through the
-  // delegation's own pane); a gate that still appears parks
-  // `needs_input` — relay it and press the operator's key via
-  // `delegate answer`.
-  // Panes run your interactive shell, so aliases apply — never repeat a
-  // flag an alias already adds (the codex alias's bypass flag, devin's
-  // --permission-mode): a duplicate makes the harness refuse to start.
+  // --- Delegation (other coding harnesses, via T3 Code) ---
+  // Unset = no delegate tool. Each harness is a T3 provider instance
+  // plus model slug; `delegate start` runs it as a T3 Code thread in
+  // the project cwd, and the result comes back to the topic as a
+  // `[delegation: …]` message carrying the thread link — the operator
+  // watches the run in T3 Code. Runs on this machine only.
   // `defaults` maps a work role to a harness name; `delegate` uses it
   // when a call names no harness. Role `default` is the fallback when a
   // call names no role. `askFirst: true` on a harness makes goblin ask
   // you before each use — a prompt rule the delegate description
   // carries, not a launch gate; choosing the harness stays goblin's
-  // call. Editable in Settings → Delegation (restart to
-  // apply); machine targets stay file-only here.
+  // call. Editable in Settings → Delegation (restart to apply).
   // delegation: {
   //   harnesses: {
-  //     codex: { kind: "codex" }, // the shell alias carries the bypass flag
-  //     pi: { kind: "pi", args: ["--model", "<provider>/<model>"] },
-  //     "pi-review": { kind: "pi", args: ["--model", "<provider>/<review-model>"] },
-  //     claude: { kind: "claude", askFirst: true }, // spends a subscription — ask first
+  //     codex: { provider: "codex", model: "<model-slug>" },
+  //     "pi-review": { provider: "pi", model: "<review-model-slug>" },
+  //     claude: { provider: "claudeAgent", model: "<model-slug>", askFirst: true }, // spends a subscription — ask first
   //   },
-  //   defaults: { default: "pi", build: "pi", review: "pi-review" },
-  //   machines: {
-  //     // lithium: { session: "goblin" },
-  //     // g7: { machine: "g7", root: "~/build",
-  //     //       harnesses: { devin: { kind: "devin" } } },
-  //   },
+  //   defaults: { default: "codex", build: "codex", review: "pi-review" },
   // },
 
   // --- Gmail ---

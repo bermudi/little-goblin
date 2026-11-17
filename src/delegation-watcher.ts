@@ -1,45 +1,24 @@
-// Notices land before watcher transitions; every write is CAS against the
-// scanned row so an in-flight send/stop wins. `starting` rows are boot
+// Notices land before watcher transitions; every write is CAS against
+// the scanned row so an in-flight send wins. `starting` rows are boot
 // recovery: they transition in finally even if their notice fails.
+// T3 Code has no completion push — this poll is the drift-checked
+// `thread show` contract (design/agents.md → delegate).
 
-import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { log } from "./log.ts";
-import type { Delegation, DelegationStatus } from "./delegations.ts";
-import type { AgentInfo } from "./herdr.ts";
+import type { Delegation } from "./delegations.ts";
+import { t3CutShort, t3Waiting, t3Working } from "./t3.ts";
 import { READINESS_OBSERVE_MS, readinessKey, type GithubIssue } from "./pr-readiness.ts";
 import type { DelegationLifecycle, DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
-import {
-	answer,
-	launch,
-	OUTSIDE_STOP_NOTE,
-	read,
-	send,
-	stop,
-	stopByOperator,
-} from "./delegation-actions.ts";
+import { launch, OUTSIDE_STOP_NOTE, read, send, stop, stopByOperator } from "./delegation-actions.ts";
 import { notify, observeReadiness } from "./delegation-notices.ts";
-import {
-	closeWorkspaceQuietly,
-	herdrFor,
-	isIssueLead,
-	machineRootFor,
-	reportNote,
-	reportPathFor,
-} from "./delegation-paths.ts";
+import { isIssueLead } from "./delegation-paths.ts";
 
 const TICK_MS = 15_000;
-// A fresh prompt can report idle before working; give the harness time to advance
-// its seq before calling it stuck on a startup dialog.
-const STALL_MS = 90_000;
-// Symmetric backstop for a `working` report that never progresses: openclaw
-// finalizes stale subagent runs after 2 h, and herdr exposes no
-// output-activity signal, so a long healthy task is indistinguishable from a
-// frozen one before that (#489).
+// Symmetric backstop for a `working` thread that never progresses: the
+// show record's updatedAt is the only activity signal, so a long
+// healthy task is indistinguishable from a frozen one before the 2 h
+// openclaw precedent (#489).
 const PROGRESS_STALL_MS = 2 * 3_600_000;
-// A report mtime can lag Date.now(); headroom prevents a same-tick report
-// from being mistaken for the previous run.
-const REPORT_SKEW_MS = 200;
 
 const activeWatchers = new WeakSet<object>();
 
@@ -56,7 +35,7 @@ export function startDelegationLifecycle(
 	let current: Promise<void> | null = null;
 	// Stop joins these before the store closes: an op running past close
 	// strands its row in its pre-op state, which boot recovery misreads —
-	// a live agent's row would still say `starting`.
+	// a live thread's row would still say `starting`.
 	const inFlight = new Set<Promise<unknown>>();
 	const tracked = <T>(p: Promise<T>): Promise<T> => {
 		inFlight.add(p);
@@ -72,9 +51,10 @@ export function startDelegationLifecycle(
 	// `starting` rows are owned by an in-flight launch; only the first scan
 	// can instead interpret one as a launch interrupted by process death.
 	let firstScan = true;
-	// Watcher memory only: each running row's last observed seq and when it
-	// last moved. No column — a restart re-seeds from the row itself.
-	const lastProgress = new Map<number, { seq: number; sinceMs: number }>();
+	// Watcher memory only: each running row's last observed updatedAt and
+	// when it last moved. No column — a restart re-seeds from the row
+	// itself.
+	const lastProgress = new Map<number, { updatedAt: string; sinceMs: number }>();
 	const scan = (): Promise<void> => {
 		if (current !== null) return current;
 		if (stopped) return Promise.resolve();
@@ -135,16 +115,9 @@ export function startDelegationLifecycle(
 	return {
 		launch: (input) => tracked(launch(deps, input)),
 		send: (id, text) => tracked(send(deps, id, text)),
-		answer: (id, key) => tracked(answer(deps, id, key)),
 		stop: (id) => tracked(stop(deps, id)),
 		stopByOperator: (id) => tracked(stopByOperator(deps, id)),
-		read: (id, lines) => tracked(read(deps, id, lines)),
-		reportPath: (id) => {
-			const d = deps.delegations.get(id);
-			return d === null
-				? join(deps.delegationsDir, String(id), "report.md")
-				: reportPathFor(deps, d);
-		},
+		read: (id, messages) => tracked(read(deps, id, messages)),
 		list: () => deps.delegations.list(),
 		tick: scan,
 		stopTicker: () => {
@@ -195,20 +168,18 @@ async function checkReadiness(
 	await notify(deps, d, "done", { readiness });
 }
 
-// Watcher writes CAS against the scanned row; a concurrent send/stop wins and
+// Watcher writes CAS against the scanned row; a concurrent send wins and
 // is never overwritten. A successful transition updates the local snapshot for
 // same-scan fall-through.
 function transition(
 	deps: DelegationLifecycleDeps,
 	d: Delegation,
-	to: DelegationStatus,
-	baseline?: number,
+	to: Delegation["status"],
 ): boolean {
 	const applied = deps.delegations.transitionIf(
 		d.id,
 		{ status: d.status, promptedAt: d.promptedAt },
 		to,
-		baseline,
 	);
 	if (!applied) {
 		log.info("delegation transition superseded", {
@@ -229,297 +200,159 @@ function transition(
 	return true;
 }
 
-// A starting row has no later scan to retry its notice — close the workspace,
-// attempt the notice, transition in finally (a concurrent stop CAS wins). This
-// deliberately differs from notice-before-transition: waiting on the notice
-// would leave the row invisible to every later scan.
+// A starting row has no later scan to retry its notice — attempt the
+// notice, transition in finally (a concurrent stop CAS wins). The T3
+// thread, when one was bound before the death, keeps running: the
+// notice names it so the operator can take over in T3 Code.
 async function recoverStart(deps: DelegationLifecycleDeps, d: Delegation): Promise<void> {
-	if (d.workspaceId) {
-		await closeWorkspaceQuietly(deps, d.id, d.workspaceId, d.target);
-	}
 	try {
 		await notify(deps, d, "failed", {
 			extra: "(goblin restarted while starting it)",
-			agentGone: d.agentName === "",
+			body:
+				d.t3Thread === null
+					? "(no T3 thread was bound yet — nothing started)"
+					: `(the T3 thread ${d.t3Thread} may have started without goblin watching; take over there or let it finish)`,
 		});
 	} finally {
 		transition(deps, d, "failed");
 	}
 }
 
-// Deliver an owed prompt after the dialog advances seq. A rejected prompt
-// re-baselines for retry rather than spamming every tick. A stop after
-// delivery can win the state CAS but cannot retract the sent prompt.
-async function deliverPendingPrompt(
-	deps: DelegationLifecycleDeps,
-	d: Delegation,
-	info: AgentInfo,
-): Promise<void> {
-	const promptedAt = new Date();
-	try {
-		await herdrFor(deps, d.target).prompt(d.agentName, d.task + reportNote(deps, d));
-	} catch (err) {
-		log.warn("delegation pending prompt rejected", err, {
-			delegation: d.id,
-			name: d.name,
-		});
-		transition(deps, d, "needs_input", info.state_change_seq);
-		return;
-	}
-	// Never use the pre-prompt seq; a failed read leaves the next scan to capture
-	// instead of making the park's first idle glance a false completion.
-	let seq: number | null = null;
-	try {
-		seq = (await herdrFor(deps, d.target).get(d.agentName))?.state_change_seq ?? null;
-	} catch (err) {
-		log.warn("delegation post-prompt baseline read failed — watcher will capture", err, {
-			delegation: d.id,
-		});
-	}
-	if (deps.delegations.markRunning(d.id, seq, promptedAt) === null) {
-		log.info("delegation stopped while delivering pending prompt", {
-			delegation: d.id,
-			name: d.name,
-		});
-		return;
-	}
-	log.info("delegation task delivered after dialog", {
-		delegation: d.id,
-		name: d.name,
-	});
-}
-
-// A report whose last words are a question is not a finished answer — the
-// agent stopped to ask, so the run settles needs_input like a dialog block
-// would (#493-L27). Only the file tail is read; a long report costs one
-// bounded read. Machine rows have no local report and keep seq judgment.
-const QUESTION_TAIL_BYTES = 8 * 1024;
-function reportEndsInQuestion(deps: DelegationLifecycleDeps, d: Delegation): boolean {
-	if (machineRootFor(deps, d.target) !== null) return false;
-	let fd: number | null = null;
-	try {
-		const path = reportPathFor(deps, d);
-		// A non-regular report path means no report — the notice path
-		// falls back to the screen tail the same way.
-		if (!statSync(path).isFile()) return false;
-		fd = openSync(path, "r");
-		const size = fstatSync(fd).size;
-		const tail = Buffer.alloc(Math.min(size, QUESTION_TAIL_BYTES));
-		const got = readSync(fd, tail, 0, tail.length, Math.max(0, size - tail.length));
-		const lines = tail.subarray(0, got).toString("utf8").split("\n");
-		for (let i = lines.length - 1; i >= 0; i--) {
-			const line = lines[i]!.trim();
-			if (line.length > 0) return line.endsWith("?");
-		}
-		return false;
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-		return false;
-	} finally {
-		if (fd !== null) closeSync(fd);
-	}
-}
-
-// Freshness is attributed by the local report's mtime — send archives the old
-// report first so a previous run cannot complete the new one. Machine rows have
-// no local report and rely on seq.
-function freshReportFor(deps: DelegationLifecycleDeps, d: Delegation): boolean {
-	if (machineRootFor(deps, d.target) !== null) return false;
-	try {
-		// Filesystem clocks can lag Date.now() — headroom keeps a report written
-		// during the prompt fresh.
-		return statSync(reportPathFor(deps, d)).mtimeMs >= Date.parse(d.promptedAt) - REPORT_SKEW_MS;
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-		return false;
-	}
-}
-
 async function check(
 	deps: DelegationLifecycleDeps,
 	d: Delegation,
-	lastProgress: Map<number, { seq: number; sinceMs: number }>,
+	lastProgress: Map<number, { updatedAt: string; sinceMs: number }>,
 ): Promise<void> {
-	let info: AgentInfo | null;
+	// Pre-t3 leftover (no thread bound): the store's open sweep already
+	// settles these; if one slipped through, say it once and stop watching.
+	if (d.t3Thread === null) {
+		const landed = await notify(deps, d, "failed", {
+			extra: "(a pre-T3 delegation the current transport cannot observe)",
+			body: "(this row predates the T3 Code transport; its old agent, if any, is unobserved)",
+		});
+		if (landed) transition(deps, d, "failed");
+		return;
+	}
+	let shown;
 	try {
-		info = await herdrFor(deps, d.target).get(d.agentName);
+		shown = await deps.t3.showThread(d.t3Thread, 1);
 	} catch (err) {
-		// Cannot observe is not agent gone — an unreachable machine may still
-		// be running, so leave its row watched rather than marking failed.
+		// Cannot observe is not thread gone — the server may be down while
+		// the thread runs, so leave the row watched rather than settling.
 		log.error("delegation check unreachable", err, {
 			delegation: d.id,
 			name: d.name,
-			target: d.target ?? "local",
+			thread: d.t3Thread,
 		});
 		return;
 	}
-	if (info === null) {
-		// Goblin never ends its own agents without marking the row first, so a
-		// vanished agent was stopped from outside (#414). A crash looks the
-		// same; either way the operator decides what happens next.
-		// A gone agent may leave useful exit text in the surviving pane, so the fallback
-		// read still accompanies the failed notice.
+	if (shown === null) {
+		// The thread vanished from T3 Code — deleted or gone with a server
+		// reset. An outside stop: the operator decides what
+		// happens next, and goblin never revives it unasked.
 		const landed = await notify(deps, d, "stopped", {
 			extra: OUTSIDE_STOP_NOTE,
-			agentGone: true,
+			body: "(the T3 thread no longer exists)",
+		});
+		if (landed) transition(deps, d, "stopped");
+		return;
+	}
+	const t = shown.thread;
+	const status = t.status;
+
+	// A cut-short run (interrupted/cancelled/rolled_back) is someone's
+	// explicit stop — the outside-stop verdict.
+	if (t3CutShort(status)) {
+		const landed = await notify(deps, d, "stopped", {
+			extra: OUTSIDE_STOP_NOTE,
+			body: `(the thread's last run ended "${status}")`,
 		});
 		if (landed) transition(deps, d, "stopped");
 		return;
 	}
 
-	if (d.baselineSeq === null) {
-		// Pending baseline: never compare against a pre-prompt seq — capture the
-		// seq under the same CAS as other writes and let the next scan judge it.
-		// A completion already folded into the captured seq can never advance
-		// past itself: settle it now from a fresh report, or park when
-		// attribution is unknown.
-		const capture = (): boolean => {
-			if (
-				deps.delegations.captureBaseline(
-					d.id,
-					{ status: d.status, promptedAt: d.promptedAt },
-					info.state_change_seq,
-				)
-			) {
-				d.baselineSeq = info.state_change_seq;
-				log.info("delegation baseline captured", {
+	if (t3Waiting(status)) {
+		// The run waits for an answer (the --wait exit-2 condition). The
+		// operator answers in T3 Code or goblin relays with action 'send'.
+		if (d.status === "needs_input") return;
+		const landed = await notify(deps, d, "needs input", {
+			extra:
+				"(the harness is waiting for an answer — relay the operator's reply with action 'send', or they can answer in T3 Code)",
+		});
+		if (landed) transition(deps, d, "needs_input");
+		return;
+	}
+
+	if (status === "completed" || status === "idle" || status === "failed") {
+		// A queued message (pendingRequestCount) may still owe our run:
+		// only a clear latest-run attribution settles the row.
+		const oursIsLatest = t.latestRunId === d.t3Run;
+		const pending = (t.pendingRequestCount ?? 0) > 0;
+		if (!oursIsLatest && pending) return;
+		if (status === "failed") {
+			const landed = await notify(deps, d, "failed");
+			if (landed) transition(deps, d, "failed");
+			return;
+		}
+		// Our run's reply may have scrolled out of the message window when
+		// the thread moved on — the notice still lands with the thread link.
+		const movedOn = !oursIsLatest && t.latestRunId !== null && t.latestRunId !== undefined;
+		const landed = await notify(deps, d, "done", {
+			...(movedOn
+				? {
+						extra:
+							"(the thread has later activity beyond goblin's run — the excerpt may be from a newer turn; read the thread)",
+					}
+				: {}),
+		});
+		if (landed) transition(deps, d, "done");
+		return;
+	}
+
+	if (t3Working(status)) {
+		const now = Date.now();
+		// The run is in flight. A needs_input row that works again was
+		// answered (in T3 or by our own send) — back to running, with the
+		// stall clock restarted: the answer proves liveness, and the row's
+		// promptedAt only refreshes when goblin itself sent.
+		if (d.status === "needs_input" && transition(deps, d, "running")) {
+			lastProgress.set(d.id, { updatedAt: t.updatedAt, sinceMs: now });
+		}
+		// A working thread that never progresses gets one notice after 2 h:
+		// updatedAt is the only activity signal (#489).
+		let progress = lastProgress.get(d.id);
+		if (progress === undefined || progress.updatedAt !== t.updatedAt) {
+			progress = {
+				updatedAt: t.updatedAt,
+				sinceMs:
+					progress === undefined ? Date.parse(d.promptedAt) : now,
+			};
+			lastProgress.set(d.id, progress);
+		}
+		const stalledMs = now - progress.sinceMs;
+		if (stalledMs > PROGRESS_STALL_MS) {
+			const landed = await notify(deps, d, "needs input", {
+				extra: `(no thread activity for ${Math.floor(stalledMs / 3_600_000)} h — the run may be frozen; check it in T3 Code)`,
+			});
+			if (landed) {
+				log.info("delegation progress stall", {
 					delegation: d.id,
 					name: d.name,
-					seq: info.state_change_seq,
+					updatedAt: t.updatedAt,
+					stalledMs,
 				});
-				return true;
+				transition(deps, d, "needs_input");
 			}
-			log.info("delegation baseline capture superseded", {
-				delegation: d.id,
-				name: d.name,
-			});
-			return false;
-		};
-		if (d.status === "needs_input" && d.promptPending && info.agent_status !== "blocked") {
-			// Capture must win before attempting the owed prompt; a later stop can still race delivery.
-			if (capture()) await deliverPendingPrompt(deps, d, info);
-			return;
-		}
-		// A done/completion_seq folded into the capture cannot beat its baseline:
-		// a fresh report attributes it to this run, otherwise park at
-		// needs_input. Notify before capture so a failed notice leaves the
-		// pending posture and retries, instead of stranding a finished agent
-		// behind its baseline; the screen tail carries the truth.
-		const finished =
-			info.agent_status === "done" ||
-			(info.agent_status === "idle" && info.completion_seq !== undefined);
-		if (finished) {
-			if (freshReportFor(deps, d) && reportEndsInQuestion(deps, d)) {
-				const landed = await notify(deps, d, "needs input", {
-					extra:
-						"(its report ends in a question — the agent is waiting on an answer; send one with action 'send' or attach)",
-				});
-				if (landed && capture()) transition(deps, d, "needs_input", info.state_change_seq);
-			} else if (freshReportFor(deps, d)) {
-				const landed = await notify(deps, d, "done");
-				if (landed && capture()) transition(deps, d, "done");
-			} else {
-				const landed = await notify(deps, d, "needs input", {
-					extra:
-						"(finished before the baseline was captured — this completion can't be attributed to the prompted run; check the result, then follow up or stop)",
-				});
-				if (landed && capture()) transition(deps, d, "needs_input", info.state_change_seq);
-			}
-			return;
-		}
-		capture();
-		return;
-	}
-
-	if (d.status === "needs_input") {
-		// Seq advance, not a transient status, detects work done through an
-		// attached session — an operator can finish between polls without ever
-		// showing working.
-		if (info.state_change_seq <= d.baselineSeq) return;
-		// A cleared startup dialog owes the task prompt. Re-baseline a rejected
-		// prompt so navigation does not resend every tick; only this path sends
-		// owed prompts.
-		if (d.promptPending) {
-			await deliverPendingPrompt(deps, d, info);
-			return;
-		}
-		// Apply running rules in this tick; a failed CAS means a tool write won.
-		if (!transition(deps, d, "running")) return;
-	}
-
-	if (info.agent_status === "blocked") {
-		const landed = await notify(deps, d, "needs input");
-		// The re-baseline on a block is part of the same CAS; only post-block seq changes
-		// can resume the row.
-		if (landed) transition(deps, d, "needs_input", info.state_change_seq);
-		return;
-	}
-	if (info.agent_status === "idle" || info.agent_status === "done") {
-		// A fresh local report can complete work folded into the baseline; old
-		// reports are archived on send so reuse never reads stale output.
-		// Machine rows use seq — their remote report cannot be checked here.
-		const freshReport = freshReportFor(deps, d);
-		// completion_seq marks completed work (catching finishes between polls);
-		// servers without it fall back to the state_change_seq comparison. A
-		// startup idle with neither signal stays in flight until the stall rule.
-		const doneSeq = info.completion_seq ?? info.state_change_seq;
-		if (doneSeq > d.baselineSeq || freshReport) {
-			// A completion whose report asks a question parks for the
-			// answer instead of settling done — same verdict a dialog
-			// block would reach (#493-L27).
-			if (reportEndsInQuestion(deps, d)) {
-				const landed = await notify(deps, d, "needs input", {
-					extra:
-						"(its report ends in a question — the agent is waiting on an answer; send one with action 'send' or attach)",
-				});
-				if (landed) transition(deps, d, "needs_input", info.state_change_seq);
-			} else {
-				const landed = await notify(deps, d, "done");
-				if (landed) transition(deps, d, "done");
-			}
-			return;
-		}
-		if (info.agent_status === "idle" && Date.now() - Date.parse(d.promptedAt) > STALL_MS) {
-			const landed = await notify(deps, d, "needs input", {
-				extra: "(agent never started working — likely stuck on a startup dialog)",
-			});
-			if (landed) transition(deps, d, "needs_input", info.state_change_seq);
 		}
 		return;
 	}
 
-	// Still running past every verdict. A frozen worker reports `working`
-	// forever — seq stagnation is the only observable (#489).
-	const now = Date.now();
-	let progress = lastProgress.get(d.id);
-	if (progress === undefined || progress.seq !== info.state_change_seq) {
-		progress = {
-			seq: info.state_change_seq,
-			// A seq still at the baseline provably never moved since the
-			// prompt; anything else moved at an unknown time — count from now.
-			sinceMs:
-				progress === undefined && info.state_change_seq === d.baselineSeq
-					? Date.parse(d.promptedAt)
-					: now,
-		};
-		lastProgress.set(d.id, progress);
-	}
-	const stalledMs = now - progress.sinceMs;
-	if (
-		(info.agent_status === "working" || info.agent_status === "unknown") &&
-		stalledMs > PROGRESS_STALL_MS
-	) {
-		const landed = await notify(deps, d, "needs input", {
-			extra: `(no status change for ${Math.floor(stalledMs / 3_600_000)} h — the agent may be frozen; check its pane)`,
-		});
-		if (landed) {
-			log.info("delegation progress stall", {
-				delegation: d.id,
-				name: d.name,
-				seq: info.state_change_seq,
-				stalledMs,
-			});
-			transition(deps, d, "needs_input", info.state_change_seq);
-		}
-	}
+	// An unrecognized status: never guess a verdict. Loud, and the row
+	// stays watched for the next scan (or a human).
+	log.error("delegation check saw unknown thread status", undefined, {
+		delegation: d.id,
+		name: d.name,
+		thread: d.t3Thread,
+		status,
+	});
 }

@@ -1,7 +1,8 @@
 //  1. grammy — only src/tg knows it; checked statically because a
 //     type-only import leaks invisibly.
-//  2. pi-durable/pi-ai/chord — only src/subagents/. Deliberately not
-//     pi-codemode: the script tool's QuickJS VM lives outside the rule.
+//  2. The Pi Durable stack (pi-durable/pi-ai/chord/pi-schema) is gone
+//     with issue #609 — no import of it may come back. Deliberately not
+//     pi-codemode: the script tool's QuickJS VM is a live dependency.
 //  3. src/http/mod.ts stays runtime-free — naming ../runtime.ts ties the
 //     server to the harness, so every import form counts.
 //  4. No non-test sibling imports its own dir's mod.ts; `import type`
@@ -11,14 +12,14 @@
 //  6. Escapes and node_modules paths hide what a specifier resolves to.
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 const SRC = import.meta.dir;
 const ROOT = resolve(SRC, "..");
 
 const GRAMMY_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*)["']grammy(?:\/[^"']*)?["']/;
 const PI_IMPORT =
-	/(?:\bfrom\s*|\bimport\s*\(\s*)["']@earendil-works\/(?:pi-durable|pi-ai|chord)(?:\/[^"']*)?["']/;
+	/(?:\bfrom\s*|\bimport\s*\(\s*)["']@earendil-works\/(?:pi-durable|pi-ai|chord|pi-schema)(?:\/[^"']*)?["']/;
 const CLAUDE_SDK_IMPORT =
 	/(?:\bfrom\s*|\bimport\s*\(\s*)["']@anthropic-ai\/claude-agent-sdk(?:\/[^"']*)?["']/;
 const RUNTIME_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*)["']\.\.\/runtime\.ts["']/;
@@ -132,8 +133,7 @@ function specifiers(source: string): string[] {
 const GRAMMY_EXEMPT_DIRS = new Set(["tg", "testkit"]);
 
 // The claude engine's vendor boundary: the SDK (and its bundled CLI
-// surface) is known only inside src/agent/claude-code/ — the same rule
-// shape as the pi packages under src/subagents/.
+// surface) is known only inside src/agent/claude-code/.
 const CLAUDE_SDK_DIR = "agent/claude-code";
 
 // The feature folders (DESIGN.md → Module map, ruling 2026-11-08,
@@ -149,13 +149,8 @@ const FEATURE_SCAN_ROOTS = [
 ];
 
 // Test-only edges: shared rigs that build the family's real entry to
-// fake at it, and the crash/podman tests' spawned child/driver processes.
-const SIBLING_EXEMPT = new Set([
-	"http/app-testing.ts",
-	"subagents/crash-child.ts",
-	"subagents/kill.driver.ts",
-	"subagents/testing.ts",
-]);
+// fake at it.
+const SIBLING_EXEMPT = new Set(["http/app-testing.ts"]);
 
 function walk(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -180,7 +175,24 @@ function repoPath(file: string): string {
 	return relative(ROOT, file);
 }
 
+// The t3 CLI wire is one adapter's contract: spawning the CLI (or
+// pinning its argv) outside src/t3.ts means a second wire owner.
+const T3_SPAWN = /(?:spawnProc|Bun\.spawn|execSync|exec)\((?:[^)]*["'])t3["']/;
+
 describe("module boundaries", () => {
+	test("the t3 CLI is spawned only by src/t3.ts", () => {
+		const offenders = walk(ROOT)
+			// Dependency trees and tool caches are not goblin's code.
+			.filter((file) => !file.split(sep).includes("node_modules"))
+			.map(repoPath)
+			// The scan covers app/ and scripts/ too — one wire owner means
+			// one everywhere. The live drift check owns its own probes.
+			.filter((name) => name !== "src/t3.ts" && name !== "src/t3.live.test.ts")
+			.filter((name) => !name.endsWith(".test.ts"))
+			.filter((name) => T3_SPAWN.test(readFileSync(join(ROOT, name), "utf8")));
+		expect(offenders).toEqual([]);
+	});
+
 	test("grammy is imported only under src/tg", () => {
 		const offenders = walk(SRC)
 			.filter(
@@ -195,13 +207,13 @@ describe("module boundaries", () => {
 		expect(offenders).toEqual([]);
 	});
 
-	test("pi-durable, pi-ai and chord are imported only under src/subagents", () => {
-		const offenders = walk(SRC)
-			.filter((file) => !rel(file).split("/").includes("subagents"))
+	test("the Pi Durable stack is never imported", () => {
+		const offenders = AI_SDK_SCAN_ROOTS.filter(existsSync)
+			.flatMap((root) => walk(root))
 			// This file carries the patterns; it names no package as an import.
-			.filter((file) => rel(file) !== "module-boundaries.test.ts")
+			.filter((file) => repoPath(file) !== "src/module-boundaries.test.ts")
 			.filter((file) => PI_IMPORT.test(readFileSync(file, "utf8")))
-			.map(rel);
+			.map(repoPath);
 		expect(offenders).toEqual([]);
 	});
 

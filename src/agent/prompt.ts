@@ -308,27 +308,17 @@ export function buildSystemPrompt(
 			: []),
 		...(tools.includes("delegate")
 			? [
-					`- delegate hands work to external coding agents — they run in`,
-					`  your own herdr session named \`goblin\` (he watches via`,
-					`  \`herdr session attach goblin\`; you drive it through this`,
-					`  tool, never the raw CLI — the herdr skill has the`,
-					`  topology). Use it for work in his repos, over long bash`,
-					`  sessions; standalone work goes to a worker subagent. Results`,
+					`- delegate hands work to an external coding harness the operator`,
+					`  named — it runs as a T3 Code thread he watches there, and`,
+					`  every result notice carries the thread link. Use it only`,
+					`  when he asked for that harness; work you decide to hand`,
+					`  off goes to the agent tool or you do it yourself. Results`,
 					`  arrive as [delegation: #id …] messages in the conversation`,
 					`  they were born in — a private-chat delegation moves into`,
 					`  its own app conversation and pings Telegram from there.`,
-					`  An agent parked on a dialog is needs_input: relay the`,
-					`  question to him verbatim and send his choice back —`,
-					`  'answer' for a keypress, 'send' for text.`,
-				]
-			: []),
-		...(tools.includes("herdr")
-			? [
-					`- herdr reaches the operator's session \`default\`, only when he asks.`,
-					`  Use it to list/read agents or prompt an explicit pane ID with an`,
-					`  expected agent kind; never use raw herdr bash commands for this.`,
-					`  These are his panes, not your delegations. If the target is`,
-					`  ambiguous, ask him rather than choosing by kind and cwd.`,
+					`  A run waiting for an answer is needs_input: relay the`,
+					`  question to him verbatim and send his reply back with`,
+					`  'send' — there is no 'answer' verb and no dialog to press.`,
 				]
 			: []),
 		...(tools.includes("mail")

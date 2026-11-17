@@ -159,7 +159,12 @@ beforeEach(() => {
 		"MutationObserver",
 		"Range",
 		"Node",
+		"NodeFilter",
 		"HTMLElement",
+		"HTMLFieldSetElement",
+		"HTMLInputElement",
+		"HTMLTextAreaElement",
+		"KeyboardEvent",
 		"HTMLUnknownElement",
 		"getComputedStyle",
 		"requestAnimationFrame",
@@ -1849,6 +1854,7 @@ describe("formatting toolbar", () => {
 		const ref = await mount("hello world", DELAY);
 		await notice();
 		await select(ref, 1, 6);
+		expect(container.querySelector('[role="toolbar"][aria-label="Formatting"]')).not.toBeNull();
 		expect(tool("strong").getAttribute("aria-pressed")).toBe("false");
 		await act(async () => tool("strong").click());
 		expect(tool("strong").getAttribute("aria-pressed")).toBe("true");
@@ -1858,19 +1864,83 @@ describe("formatting toolbar", () => {
 		expect(tool("undo").disabled).toBe(false);
 	});
 
+	test("text style and formatting controls share one tab stop and arrow navigation", async () => {
+		root = createRoot(container);
+		const ref = await mount("hello world", DELAY);
+		await notice();
+		const textStyle = container.querySelector<HTMLButtonElement>('[aria-label="Text style"]')!;
+		const strong = tool("strong");
+		const emphasis = tool("emphasis");
+		expect(container.querySelector('[role="toolbar"]')?.querySelectorAll('[tabindex="0"]')).toHaveLength(1);
+
+		textStyle.focus();
+		expect(document.activeElement?.getAttribute("aria-label")).toBe("Text style");
+		await act(async () => {
+			textStyle.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }) as unknown as Event,
+			);
+		});
+		await tick(0);
+		expect(document.activeElement?.getAttribute("data-tool")).toBe("strong");
+		expect(textStyle.textContent).toContain("Paragraph");
+
+		await select(ref, 1, 6);
+		await notice();
+		strong.focus();
+		await act(async () => {
+			strong.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: " ", bubbles: true }) as unknown as Event,
+			);
+			strong.click();
+		});
+		await notice();
+		expect(tool("strong").getAttribute("aria-pressed")).toBe("true");
+		expect(document.activeElement?.getAttribute("data-tool")).toBe("strong");
+		await settle();
+		expect(patches.at(-1)!.body.body).toBe("**hello** world\n");
+
+		await act(async () => {
+			strong.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }) as unknown as Event,
+			);
+		});
+
+		expect(document.activeElement?.getAttribute("data-tool")).toBe("emphasis");
+	});
+
 	test("Text style → Paragraph turns a heading back into text", async () => {
 		root = createRoot(container);
 		const ref = await mount("# Title", DELAY);
 		await notice();
 		await select(ref, 2, 2);
-		const sel = container.querySelector<HTMLSelectElement>(".note-fmt-block")!;
-		expect(sel.value).toBe("h1");
-		await act(async () => {
-			sel.value = "paragraph";
-			sel.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
-		});
+		const sel = container.querySelector<HTMLButtonElement>('[aria-label="Text style"]')!;
+		expect(sel.textContent).toContain("Heading 1");
+		await act(async () => sel.click());
+		await tick(0);
+		const paragraph = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]')).find((item) =>
+			item.textContent?.includes("Paragraph"),
+		)!;
+		await act(async () => paragraph.click());
 		await notice();
 		await settle();
 		expect(patches.at(-1)!.body.body).toBe("Title\n");
+	});
+
+	test("applying a link returns focus to the note", async () => {
+		root = createRoot(container);
+		const ref = await mount("[hello](https://example.com) world", DELAY);
+		await notice();
+		await select(ref, 2, 2);
+		await notice();
+		await act(async () => tool("link").click());
+		const input = container.querySelector<HTMLInputElement>('[aria-label="Link address"]')!;
+		expect(document.activeElement).toBe(input);
+		expect(input.value).toBe("https://example.com");
+		expect(container.querySelector<HTMLButtonElement>('.note-fmt-link button[type="submit"]')!.disabled).toBe(false);
+		await act(async () => {
+			input.form!.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event);
+		});
+		expect(document.activeElement?.classList.contains("ProseMirror")).toBe(true);
+		expect(container.querySelector('.note-fmt-link')).toBeNull();
 	});
 });

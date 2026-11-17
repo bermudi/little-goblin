@@ -33,12 +33,11 @@ const config =
 	'{providers:{fixture:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"fixture"}},model:"fixture/model",operators:[1],tts:""';
 test("setup options inspect config and auth shapes without executing credentials or emitting config logs", () => {
 	const result = inspect(
-		`${config},delegation:{harnesses:{fixture:{kind:"fixture"}},maxRunning:2}}`,
+		`${config},delegation:{harnesses:{fixture:{provider:"fixture",model:"fixture/model"}}}}`,
 		'{"name":"fixture","value":"!pass-keys get goblin-dev FIXTURE"}',
 	);
 	expect(result.status).toBe(0);
 	expect(JSON.parse(result.stdout) as unknown).toEqual({
-		delegation: true,
 		keys: true,
 		port: 8787,
 		profiles: ["goblin-dev"],
@@ -52,7 +51,6 @@ test("a non-default Pass profile is accepted and reported as a warm target", () 
 	);
 	expect(result.status).toBe(0);
 	expect(JSON.parse(result.stdout) as unknown).toEqual({
-		delegation: false,
 		keys: true,
 		port: 8787,
 		profiles: ["other"],
@@ -71,7 +69,6 @@ test("warm targets are config-referenced records only: deduped, sorted, stale ex
 	);
 	expect(result.status).toBe(0);
 	expect(JSON.parse(result.stdout) as unknown).toEqual({
-		delegation: false,
 		keys: true,
 		port: 8787,
 		profiles: ["alpha", "beta"],
@@ -103,7 +100,6 @@ test("configured port zero is preserved for invocation-specific bound port disco
 	const result = inspect(`${config},http:{port:0}}`);
 	expect(result.status).toBe(0);
 	expect(JSON.parse(result.stdout) as unknown).toEqual({
-		delegation: false,
 		keys: false,
 		port: 0,
 		profiles: [],
@@ -116,7 +112,6 @@ test("an unrelated pass-keys substring stays unverified and never executes a cre
 	);
 	expect(result.status).toBe(0);
 	expect(JSON.parse(result.stdout) as unknown).toEqual({
-		delegation: false,
 		keys: false,
 		port: 8787,
 		profiles: [],
@@ -140,7 +135,6 @@ test("a same-name record replaced by a later pass record warms only the live pro
 	);
 	expect(result.status).toBe(0);
 	expect(JSON.parse(result.stdout) as unknown).toEqual({
-		delegation: false,
 		keys: true,
 		port: 8787,
 		profiles: ["current"],
@@ -158,7 +152,6 @@ test("an earlier malformed pass record shadowed by a valid one never throws", ()
 	);
 	expect(result.status).toBe(0);
 	expect(JSON.parse(result.stdout) as unknown).toEqual({
-		delegation: false,
 		keys: true,
 		port: 8787,
 		profiles: ["goblin-dev"],
@@ -176,7 +169,6 @@ test("a pass record shadowed by a plain value retires its warm profile and the k
 	);
 	expect(result.status).toBe(0);
 	expect(JSON.parse(result.stdout) as unknown).toEqual({
-		delegation: false,
 		keys: false,
 		port: 8787,
 		profiles: [],
@@ -191,7 +183,6 @@ test("multi-directory direct Pass path recognizes any provisioned profile withou
 	);
 	expect(result.status).toBe(0);
 	expect(JSON.parse(result.stdout) as unknown).toEqual({
-		delegation: false,
 		keys: true,
 		port: 8787,
 		profiles: ["goblin-main"],
@@ -208,7 +199,6 @@ test("an overridden record warms only its replacement's profile — last wins, l
 	);
 	expect(result.status).toBe(0);
 	expect(JSON.parse(result.stdout) as unknown).toEqual({
-		delegation: false,
 		keys: true,
 		port: 8787,
 		profiles: ["current"],
@@ -225,7 +215,6 @@ test("an overridden unsupported record does not reject the scan its replacement 
 	);
 	expect(result.status).toBe(0);
 	expect(JSON.parse(result.stdout) as unknown).toEqual({
-		delegation: false,
 		keys: true,
 		port: 8787,
 		profiles: ["current"],

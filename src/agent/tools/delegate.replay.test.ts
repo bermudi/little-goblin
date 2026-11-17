@@ -16,8 +16,8 @@ import { stepCountIs, streamText } from "ai";
 import { openStore } from "../../conversation.ts";
 import { openDelegations, type DelegationsStore } from "../../delegations.ts";
 import { startDelegationLifecycle } from "../../delegation-watcher.ts";
-import type { DelegationLifecycle, DelegationTargetDeps } from "../../delegation-lifecycle.ts";
-import type { AgentInfo, Herdr } from "../../herdr.ts";
+import type { DelegationLifecycle } from "../../delegation-lifecycle.ts";
+import type { T3, T3Thread } from "../../t3.ts";
 import { openProjects } from "../../projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "../../responsibilities.ts";
 import { fileDelegationReport } from "../../responsibility-runs.ts";
@@ -59,7 +59,7 @@ interface Rig {
 	resps: ResponsibilityStore;
 	responsibilityId: string;
 	wakes: string[];
-	setAgent(agentStatus: string, seq: number): void;
+	setThread(status: string): void;
 }
 
 const lifecycles: DelegationLifecycle[] = [];
@@ -95,59 +95,65 @@ function rig(): Rig {
 	const workspaceDir = join(dir, "workspace");
 	mkdirSync(join(workspaceDir, "app"), { recursive: true });
 
-	let agentStatus = "working";
-	let seq = 7;
-	const agent = (name: string): AgentInfo => ({
-		agent: "codex",
-		agent_status: agentStatus,
-		name,
-		pane_id: "w1:p1",
-		workspace_id: "w1",
-		state_change_seq: seq,
-		cwd: "/w",
+	// The one thread this rig's delegations run on: it starts running,
+	// and setThread flips what the watcher's next scan attributes.
+	const LINK = "https://t3.example/t/t-1";
+	const RUN = "run:1";
+	let threadStatus = "running";
+	const thread = (): T3Thread => ({
+		threadId: "t-1",
+		projectId: "proj-1",
+		title: "work",
+		link: LINK,
+		status: threadStatus,
+		latestRunId: RUN,
+		itemCount: 2,
+		pendingRequestCount: 0,
+		createdAt: "2026-11-16T10:00:00.000Z",
+		updatedAt: "2026-11-16T10:05:00.000Z",
 	});
-	const herdr: Herdr = {
-		createWorkspace: () => Promise.resolve({ workspaceId: "w1", paneId: "w1:p1", cwd: "/w" }),
-		startAgent: (name) => Promise.resolve(agent(name)),
-		get: (name) => Promise.resolve(agent(name)),
-		prompt: () => Promise.resolve(),
-		sendKey: () => Promise.resolve(),
-		readAgent: () => Promise.resolve("patched and tested"),
-		readPane: () => Promise.resolve("pane screen"),
-		interrupt: () => Promise.resolve(),
-		closeWorkspace: () => Promise.resolve(),
-		paneRun: () => Promise.resolve(),
-		paneWaitOutput: () => Promise.resolve(),
+	const t3: T3 = {
+		startThread: async () => ({ threadId: "t-1", projectId: "proj-1", runId: RUN }),
+		sendThread: async (id) => ({
+			threadId: id,
+			link: LINK,
+			messageId: "m-1",
+			runId: "run:2",
+			status: "queued",
+			delivery: "queued",
+		}),
+		showThread: async (id) => ({
+			thread: thread(),
+			messages: [{ role: "assistant", runId: RUN, text: "patched and tested" }],
+		}),
+		listThreads: () => Promise.reject(new Error("not used here")),
 	};
 	const wakes: string[] = [];
-	const targets = new Map<string, DelegationTargetDeps>();
-	const lifecycle = startDelegationLifecycle(
-		{
-			delegations: store,
-			herdr,
-			targets,
-			delegationsDir: join(dir, "delegations"),
-			homeDir: home,
-			wake: (_address, text) => {
-				wakes.push(text);
-				return true;
-			},
-			wakeApp: (_conversationId, text) => {
-				wakes.push(text);
-				return true;
-			},
-			settled: (d, verdict, body) => fileDelegationReport(resps, d, verdict, body),
-			responsibilityRevision: (id) => resps.get(id)?.revision ?? null,
+	const lifecycle = startDelegationLifecycle({
+		delegations: store,
+		t3,
+		wake: (_address, text) => {
+			wakes.push(text);
+			return true;
 		},
-		3_600_000,
-	);
+		wakeApp: (_conversationId, text) => {
+			wakes.push(text);
+			return true;
+		},
+		settled: (d, verdict, body) => fileDelegationReport(resps, d, verdict, body),
+		responsibilityRevision: (id) => resps.get(id)?.revision ?? null,
+	});
 	lifecycles.push(lifecycle);
 	const tool = delegateTool({
 		lifecycle,
-		config: { harnesses: { codex: { kind: "codex" }, pi: { kind: "pi" } } },
+		config: {
+			harnesses: {
+				codex: { provider: "codex", model: "gpt-6-luna" },
+				pi: { provider: "openrouter", model: "minimax/minimax-m3.1-flash" },
+			},
+		},
 		pin: () => ({ address: { chatId: -100, threadId: 7 } }),
 		workspaceDir,
-		mountedSubagents: { worker: true, computer: true },
 		checkResponsibility: (id) =>
 			resps.get(id) === null ? `responsibility ${id} not found in this project` : null,
 	});
@@ -158,9 +164,8 @@ function rig(): Rig {
 		resps,
 		responsibilityId: responsibility.responsibilityId,
 		wakes,
-		setAgent(status, s) {
-			agentStatus = status;
-			seq = s;
+		setThread(status) {
+			threadStatus = status;
 		},
 	};
 }
@@ -228,7 +233,7 @@ describe("delegate replay", () => {
 		expect(row.cwd.endsWith("/app")).toBe(true);
 		expect(row.responsibilityId).toBeNull();
 
-		r.setAgent("idle", 8);
+		r.setThread("idle");
 		await r.lifecycle.tick();
 		expect(r.store.get(row.id)!.status).toBe("done");
 		expect(r.wakes).toHaveLength(1);
@@ -263,7 +268,7 @@ describe("delegate replay", () => {
 		expect(row.responsibilityId).toBe(r.responsibilityId);
 		expect(row.responsibilityRevision).toBe(revision);
 
-		r.setAgent("idle", 8);
+		r.setThread("idle");
 		await r.lifecycle.tick();
 		expect(r.store.get(row.id)!.status).toBe("done");
 		expect(r.wakes).toHaveLength(1);

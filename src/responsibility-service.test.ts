@@ -2,7 +2,9 @@
 // acceptance (responsibility + attachments + durable handover event),
 // idempotent on the handover key, and dispatch through the named
 // gates — nothing sends stale, nothing sends twice, nothing sends
-// without a bindable identity.
+// without a bindable identity. The send edge addresses the bound T3
+// thread: a CLI failure precedes submission (refused, nothing sent);
+// only our own kill of the CLI is uncertain delivery.
 
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
@@ -12,14 +14,12 @@ import { setLogFile } from "./log.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import type { AttachmentTarget, Understanding } from "./responsibility-types.ts";
-import { makeManagedSendEdge, makeResponsibilityService } from "./responsibility-service.ts";
 import {
-	HerdrRefusal,
-	makeOperatorHerdr,
-	type HerdrRunResult,
-	type HerdrRunner,
-	type OperatorAgent,
-} from "./herdr.ts";
+	ManagedSendRefusal,
+	makeManagedSendEdge,
+	makeResponsibilityService,
+} from "./responsibility-service.ts";
+import { T3Error, type T3SendResult } from "./t3.ts";
 import { openPrograms, type ProgramsStore } from "./programs.ts";
 import { Database } from "bun:sqlite";
 import { deferred, tmpDir, useHome, waitUntil } from "./testkit.ts";
@@ -27,7 +27,6 @@ import { feedForProject } from "./responsibility-feed.ts";
 import { responsibilityStage } from "./responsibility-stage.ts";
 import { openWakeStore, type WakeStore } from "./wake-store.ts";
 import { responsibilityTool } from "./agent/tools/responsibility.ts";
-import { FencedError } from "./runtime.ts";
 
 
 setLogFile(null);
@@ -89,35 +88,25 @@ const understanding = (): Understanding => ({
 });
 
 const target = (over: Partial<AttachmentTarget> = {}): AttachmentTarget => ({
-	server: "local",
-	session: "default",
-	agentName: "worker-1",
-	paneId: "pane-7",
-	terminalId: "term-9",
-	agentSession: "sess-abc",
-	kind: "pi",
-	cwd: "/w",
+	server: "t3",
+	session: "proj-1",
+	agentName: "mcp:t1",
+	paneId: null,
+	terminalId: null,
+	agentSession: "mcp:t1",
+	kind: null,
+	cwd: null,
 	...over,
 });
 
-// The post-wait agent record prompt returns — default is the bound
-// session; override agent_session to simulate a mid-dispatch swap.
-const reported = (over: Partial<OperatorAgent> = {}): OperatorAgent => ({
-	pane_id: "pane-7",
-	workspace_id: "ws-1",
-	tab_id: "tab-1",
-	agent: "pi",
-	agent_status: "working",
-	name: "worker-1",
-	cwd: "/w",
-	terminal_title: null,
-	workspace_label: null,
-	tab_label: null,
-	terminal_id: "term-9",
-	agent_session: "sess-abc",
-	state_change_seq: 4,
-	completion_seq: null,
-	revision: 7,
+// The wire record `thread send` returns on success.
+const sentResult = (over: Partial<T3SendResult> = {}): T3SendResult => ({
+	threadId: "mcp:t1",
+	link: "https://t3/t1",
+	messageId: "msg:1",
+	runId: "run:9",
+	status: "queued",
+	delivery: "queued",
 	...over,
 });
 
@@ -143,7 +132,7 @@ describe("responsibility service", () => {
 		expect(followup!.cron).not.toBeNull();
 		const atts = r.resps.attachmentsFor(responsibility.responsibilityId);
 		expect(atts).toHaveLength(1);
-		expect(atts[0]!.target.agentSession).toBe("sess-abc");
+		expect(atts[0]!.target.agentSession).toBe("mcp:t1");
 		const events = r.store.db
 			.query("SELECT kind, responsibility_id AS rid FROM work_events")
 			.all() as { kind: string; rid: string }[];
@@ -297,7 +286,7 @@ describe("responsibility service", () => {
 		r.store.close();
 	});
 
-	test("the wired edge sends when the post-send session matches the bound one", async () => {
+	test("the wired edge sends the brief to the bound thread id", async () => {
 		const r = rig();
 		const { responsibility } = r.svc.accept({
 			projectId: r.projectId,
@@ -313,21 +302,23 @@ describe("responsibility service", () => {
 			brief: "ship it",
 		});
 		if (!("operation" in prepared)) throw new Error("expected prepared");
-		const calls: { pane: string; expect: string; text: string }[] = [];
+		const calls: { thread: string; text: string }[] = [];
 		const edge = makeManagedSendEdge({
-			prompt: async (pane, expect_, text) => {
-				calls.push({ pane, expect: expect_, text });
-				return reported({ agent_session: "sess-abc" });
+			sendThread: async (thread, text) => {
+				calls.push({ thread, text });
+				return sentResult();
 			},
 		});
 		const out = await r.svc.dispatch(prepared.operation.operationId, edge);
 		expect(out).toEqual({ sent: true });
-		expect(calls).toEqual([{ pane: "pane-7", expect: "pi", text: "ship it" }]);
-		expect(r.resps.getOperation(prepared.operation.operationId)!.state).toBe("acknowledged");
+		expect(calls).toEqual([{ thread: "mcp:t1", text: "ship it" }]);
+		const op = r.resps.getOperation(prepared.operation.operationId)!;
+		expect(op.state).toBe("acknowledged");
+		expect(op.outcome).toEqual({ threadId: "mcp:t1", runId: "run:9", link: "https://t3/t1" });
 		r.store.close();
 	});
 
-	test("a post-send session change lands uncertain — logged, terminal, never resent", async () => {
+	test("our own kill of the CLI lands uncertain — logged, terminal, never resent", async () => {
 		const r = rig();
 		const { responsibility } = r.svc.accept({
 			projectId: r.projectId,
@@ -345,9 +336,9 @@ describe("responsibility service", () => {
 		if (!("operation" in prepared)) throw new Error("expected prepared");
 		let calls = 0;
 		const edge = makeManagedSendEdge({
-			prompt: async () => {
+			sendThread: async () => {
 				calls += 1;
-				return reported({ agent_session: "sess-NEW" });
+				throw new T3Error("thread send", "exit_-1", "t3 timed out after 45000ms");
 			},
 		});
 		const out = await r.svc.dispatch(prepared.operation.operationId, edge);
@@ -362,40 +353,55 @@ describe("responsibility service", () => {
 		r.store.close();
 	});
 
-	test("an edge refusal is a named refusal — nothing was sent", async () => {
+	test("a thread-gone CLI error refuses the op by name — nothing sent, a fresh op sends on recovery", async () => {
 		const r = rig();
 		const { responsibility } = r.svc.accept({
 			projectId: r.projectId,
 			coordinationConversationId: r.convId,
 			handoverKey: "h1",
 			understanding: understanding(),
-			attachments: [{ target: target({ kind: null }), baseline: {} }],
+			attachments: [{ target: target(), baseline: {} }],
 		});
 		const att = r.resps.attachmentsFor(responsibility.responsibilityId)[0]!;
 		const prepared = r.resps.prepareOperation({
 			responsibilityId: responsibility.responsibilityId,
 			attachmentId: att.attachmentId,
-			brief: "b",
+			brief: "first brief",
 		});
 		if (!("operation" in prepared)) throw new Error("expected prepared");
-		let calls = 0;
+		let gone = true;
+		const calls: string[] = [];
 		const edge = makeManagedSendEdge({
-			prompt: async () => {
-				calls += 1;
-				return reported({});
+			sendThread: async (_thread, text) => {
+				calls.push(text);
+				if (gone) throw new T3Error("thread send", "thread_not_found", "Thread mcp:t1 was not found.");
+				return sentResult();
 			},
 		});
-		// kind null → the edge refuses before prompt is ever invoked.
 		const out = await r.svc.dispatch(prepared.operation.operationId, edge);
-		expect(calls).toBe(0);
-		expect(out).toEqual({ refused: "kind_mismatch" });
+		// The CLI failed before submission — a named refusal, never
+		// uncertain, and no bytes reached the thread.
+		expect(out).toEqual({ refused: "thread-gone" });
 		const op = r.resps.getOperation(prepared.operation.operationId)!;
 		expect(op.state).toBe("refused");
-		expect(op.refusal).toBe("kind_mismatch");
+		expect(op.refusal).toBe("thread-gone");
+		expect(calls).toEqual(["first brief"]);
+		// A refused op fences nothing: the next prepare succeeds and,
+		// once the thread is back, the fresh op dispatches.
+		const retry = r.resps.prepareOperation({
+			responsibilityId: responsibility.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "fresh brief",
+		});
+		if (!("operation" in retry)) throw new Error("expected prepared after refusal");
+		gone = false;
+		const sent = await r.svc.dispatch(retry.operation.operationId, edge);
+		expect(sent).toEqual({ sent: true });
+		expect(r.resps.getOperation(retry.operation.operationId)!.state).toBe("acknowledged");
 		r.store.close();
 	});
 
-	test("a prompt refusal from Herdr refuses the op by name", async () => {
+	test("a generic CLI failure refuses send-failed — never uncertain", async () => {
 		const r = rig();
 		const { responsibility } = r.svc.accept({
 			projectId: r.projectId,
@@ -412,15 +418,15 @@ describe("responsibility service", () => {
 		});
 		if (!("operation" in prepared)) throw new Error("expected prepared");
 		const edge = makeManagedSendEdge({
-			prompt: async () => {
-				throw new HerdrRefusal("agent_not_found", "pane hosts no agent");
+			sendThread: async () => {
+				throw new T3Error("thread send", "exit_1", "usage error");
 			},
 		});
 		const out = await r.svc.dispatch(prepared.operation.operationId, edge);
-		expect(out).toEqual({ refused: "agent_not_found" });
+		expect(out).toEqual({ refused: "send-failed" });
 		const op = r.resps.getOperation(prepared.operation.operationId)!;
 		expect(op.state).toBe("refused");
-		expect(op.refusal).toBe("agent_not_found");
+		expect(op.refusal).toBe("send-failed");
 		r.store.close();
 	});
 
@@ -691,21 +697,7 @@ describe("dispatch pre-send revalidation", () => {
 			coordinationConversationId: r.convId,
 			handoverKey: "k1",
 			understanding: understanding(),
-			attachments: [
-				{
-					target: {
-						server: "local",
-						session: "default",
-						agentName: "w1:p1",
-						paneId: "w1:p1",
-						terminalId: "term-9",
-						agentSession: "sess-1",
-						kind: "pi",
-						cwd: "/w",
-					},
-					baseline: {},
-				},
-			],
+			attachments: [{ target: target(), baseline: {} }],
 		}).responsibility;
 		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
 		const prepared = r.resps.prepareOperation({
@@ -748,186 +740,58 @@ describe("dispatch pre-send revalidation", () => {
 	test("an edge refusal lands under its own name, not already-terminal", async () => {
 		const { r, op } = prepRig();
 		const out = await r.svc.dispatch(op.operationId, (async () => {
-			throw new HerdrRefusal("identity_mismatch", "swapped");
+			throw new ManagedSendRefusal("thread-gone", "thread vanished");
 		}) as never);
-		expect(out).toEqual({ refused: "identity_mismatch" });
-		expect(r.resps.getOperation(op.operationId)!.refusal).toBe("identity_mismatch");
+		expect(out).toEqual({ refused: "thread-gone" });
+		expect(r.resps.getOperation(op.operationId)!.refusal).toBe("thread-gone");
 		r.store.close();
 	});
 });
 
 describe("managed send edge", () => {
-	const target = (over: Record<string, unknown> = {}) =>
-		({
-			server: "local",
-			session: "default",
-			agentName: "w1:p1",
-			paneId: "w1:p1",
-			terminalId: "term-9",
-			agentSession: "sess-1",
-			kind: "pi",
-			cwd: "/w",
-			...over,
-		}) as unknown as AttachmentTarget;
-	const reported = (over: Partial<OperatorAgent> = {}): OperatorAgent => ({
-		pane_id: "w1:p1",
-		workspace_id: "w1",
-		tab_id: "t1",
-		agent: "pi",
-		agent_status: "working",
-		cwd: "/w",
-		terminal_title: null,
-		workspace_label: null,
-		tab_label: null,
-		terminal_id: "term-9",
-		agent_session: "sess-1",
-		state_change_seq: 2,
-		completion_seq: null,
-		revision: 1,
-		...over,
-	});
-
-	test("the bound identity and beforeSend reach the prompt guard", async () => {
-		const calls: unknown[] = [];
+	test("sends the brief to the bound thread id and returns the post-send record", async () => {
+		const calls: { thread: string; text: string }[] = [];
 		const edge = makeManagedSendEdge({
-			prompt: async (_p, _k, _t, _s, guard) => {
-				calls.push(guard);
-				guard?.beforeSend?.();
-				return reported();
+			sendThread: async (thread, text) => {
+				calls.push({ thread, text });
+				return sentResult();
 			},
 		});
-		const out = await edge("brief", target(), () => calls.push("beforeSend"));
-		expect(out).toEqual({ reportedAgentSession: "sess-1" });
-		expect(calls).toEqual([
-			{
-				identity: { terminalId: "term-9", agentSession: "sess-1" },
-				beforeSend: expect.any(Function),
-			},
-			"beforeSend",
-		]);
+		const before: string[] = [];
+		const out = await edge("brief", target(), () => before.push("beforeSend"));
+		expect(out).toEqual({ threadId: "mcp:t1", runId: "run:9", link: "https://t3/t1" });
+		expect(calls).toEqual([{ thread: "mcp:t1", text: "brief" }]);
+		expect(before).toEqual(["beforeSend"]);
 	});
 
-	test("absent bound session refuses; post-send session or terminal swap is uncertain", async () => {
-		const edge = makeManagedSendEdge({ prompt: async () => reported() });
-		await expect(edge("b", target({ agentSession: null }))).rejects.toMatchObject({
+	test("a non-t3 target, an aborted turn, and a failing recheck refuse before the CLI is ever reached", async () => {
+		let calls = 0;
+		const edge = makeManagedSendEdge({
+			sendThread: async () => {
+				calls += 1;
+				return sentResult();
+			},
+		});
+		// A legacy attachment from another transport must never be
+		// dispatched through t3.
+		await expect(edge("b", target({ server: "local" }))).rejects.toMatchObject({
 			code: "identity-unenforceable",
 		});
-		const swap = makeManagedSendEdge({ prompt: async () => reported({ agent_session: "sess-2" }) });
-		await expect(swap("b", target())).rejects.toThrow(/post-send identity mismatch/);
-		const missing = makeManagedSendEdge({ prompt: async () => reported({ agent_session: null }) });
-		await expect(missing("b", target())).rejects.toThrow(/post-send identity mismatch/);
-		const termSwap = makeManagedSendEdge({
-			prompt: async () => reported({ terminal_id: "term-X" }),
+		// An aborted turn never submits.
+		const abort = new AbortController();
+		abort.abort();
+		await expect(edge("b", target(), undefined, abort.signal)).rejects.toMatchObject({
+			code: "fenced",
 		});
-		await expect(termSwap("b", target())).rejects.toThrow(/post-send identity mismatch/);
+		// The dispatch recheck runs immediately before submission — its
+		// refusal means nothing left this host.
+		await expect(
+			edge("b", target(), () => {
+				throw new Error("stale revision");
+			}),
+		).rejects.toMatchObject({ code: "fenced" });
+		expect(calls).toBe(0);
 	});
-});
-
-describe("real adapter preflight failures", () => {
-	const wire = (body: unknown): HerdrRunResult => ({
-		code: 0,
-		stdout: JSON.stringify(body),
-		stderr: "",
-	});
-	const wireFail = (code: string, message: string): HerdrRunResult => ({
-		code: 1,
-		stdout: "",
-		stderr: JSON.stringify({ error: { code, message }, id: "cli:x" }),
-	});
-	const AGENT = {
-		agent: "pi",
-		agent_status: "working",
-		pane_id: "w1:p1",
-		workspace_id: "w1",
-		tab_id: "w1:t1",
-		terminal_id: "term-9",
-		agent_session: { value: "sess-1" },
-		state_change_seq: 7,
-	};
-
-	const prepRig = () => {
-		const r = rig();
-		const resp = r.svc.accept({
-			projectId: r.projectId,
-			coordinationConversationId: r.convId,
-			handoverKey: "k1",
-			understanding: understanding(),
-			attachments: [
-				{
-					target: {
-						server: "local",
-						session: "default",
-						agentName: "w1:p1",
-						paneId: "w1:p1",
-						terminalId: "term-9",
-						agentSession: "sess-1",
-						kind: "pi",
-						cwd: "/w",
-					},
-					baseline: {},
-				},
-			],
-		}).responsibility;
-		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
-		return { r, resp, att };
-	};
-
-	test.each(["workspace list", "tab list", "agent get"] as const)(
-		"a %s failure refuses the op — nothing dispatched, and a fresh op sends when the edge recovers",
-		async (failAt) => {
-			const { r, resp, att } = prepRig();
-			let broken = true;
-			const calls: string[] = [];
-			const run: HerdrRunner = async (args) => {
-				const verb = args.slice(2, 4).join(" ");
-				calls.push(verb);
-				if (verb === "workspace list") {
-					if (broken && failAt === "workspace list")
-						return wireFail("server_gone", "socket refused");
-					return wire({ result: { workspaces: [{ workspace_id: "w1", label: "m" }] } });
-				}
-				if (verb === "tab list") {
-					if (broken && failAt === "tab list") return wireFail("server_gone", "socket refused");
-					return wire({
-						result: { tabs: [{ tab_id: "w1:t1", workspace_id: "w1", label: "t" }] },
-					});
-				}
-				if (verb === "agent get") {
-					if (broken && failAt === "agent get") return wireFail("server_gone", "socket refused");
-					return wire({ result: { agent: AGENT } });
-				}
-				if (verb === "agent prompt") return wire({ result: { agent: AGENT } });
-				throw new Error(`unexpected herdr call: ${verb}`);
-			};
-			const edge = makeManagedSendEdge(makeOperatorHerdr(run));
-			const prepared = r.resps.prepareOperation({
-				responsibilityId: resp.responsibilityId,
-				attachmentId: att.attachmentId,
-				brief: "first brief",
-			});
-			if (!("operation" in prepared)) throw new Error("expected prepared");
-			const out = await r.svc.dispatch(prepared.operation.operationId, edge);
-			// Pre-dispatch failure is a named refusal — the op is refused,
-			// never uncertain, and no bytes reached a pane.
-			expect(out).toEqual({ refused: "preflight-failed" });
-			expect(r.resps.getOperation(prepared.operation.operationId)!.state).toBe("refused");
-			expect(calls).not.toContain("agent prompt");
-			// A refused op fences nothing: the next prepare succeeds and,
-			// once the edge recovers, the fresh op dispatches.
-			const retry = r.resps.prepareOperation({
-				responsibilityId: resp.responsibilityId,
-				attachmentId: att.attachmentId,
-				brief: "fresh brief",
-			});
-			if (!("operation" in retry)) throw new Error("expected prepared after refusal");
-			broken = false;
-			const sent = await r.svc.dispatch(retry.operation.operationId, edge);
-			expect(sent).toEqual({ sent: true });
-			expect(calls).toContain("agent prompt");
-			expect(r.resps.getOperation(retry.operation.operationId)!.state).toBe("acknowledged");
-			r.store.close();
-		},
-	);
 });
 
 describe("ensureFollowup enable semantics", () => {
@@ -983,79 +847,6 @@ describe("ensureFollowup enable semantics", () => {
 		const program = r.svc.ensureFollowup(resp.responsibilityId)!;
 		expect(program.id).not.toBe(foreign.id);
 		expect(program.responsibilityId).toBe(resp.responsibilityId);
-		r.store.close();
-	});
-});
-
-describe("beforeSend at the real wire surface", () => {
-	test("a correction landing during agent-get preflight refuses before any send", async () => {
-		const r = rig();
-		const resp = r.svc.accept({
-			projectId: r.projectId,
-			coordinationConversationId: r.convId,
-			handoverKey: "k1",
-			understanding: understanding(),
-			attachments: [
-				{
-					target: {
-						server: "local",
-						session: "default",
-						agentName: "w1:p1",
-						paneId: "w1:p1",
-						terminalId: "term-9",
-						agentSession: "sess-1",
-						kind: "pi",
-						cwd: "/w",
-					},
-					baseline: {},
-				},
-			],
-		}).responsibility;
-		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
-		const prepared = r.resps.prepareOperation({
-			responsibilityId: resp.responsibilityId,
-			attachmentId: att.attachmentId,
-			brief: "b",
-		});
-		if (!("operation" in prepared)) throw new Error("expected prepared");
-		const calls: string[] = [];
-		let releaseGet!: () => void;
-		const gate = new Promise<void>((res) => {
-			releaseGet = res;
-		});
-		const agent = {
-			agent: "pi",
-			agent_status: "working",
-			pane_id: "w1:p1",
-			workspace_id: "w1",
-			tab_id: "w1:t1",
-			terminal_id: "term-9",
-			agent_session: { value: "sess-1" },
-			state_change_seq: 7,
-		};
-		const wire = (body: unknown): HerdrRunResult => ({
-			code: 0,
-			stdout: JSON.stringify(body),
-			stderr: "",
-		});
-		const run = async (args: string[]): Promise<HerdrRunResult> => {
-			const verb = args.slice(2, 4).join(" ");
-			calls.push(verb);
-			if (verb === "workspace list") return wire({ result: { workspaces: [] } });
-			if (verb === "agent get") {
-				await gate;
-				return wire({ result: { agent } });
-			}
-			if (verb === "agent prompt") return wire({ result: { agent } });
-			throw new Error(`unexpected herdr call: ${verb}`);
-		};
-		const edge = makeManagedSendEdge(makeOperatorHerdr(run));
-		const dispatch = r.svc.dispatch(prepared.operation.operationId, edge);
-		await waitUntil(() => calls.includes("agent get"), "agent get in flight");
-		r.svc.correct(resp.responsibilityId, { text: "stop — direction changed" });
-		releaseGet();
-		await expect(dispatch).resolves.toEqual({ refused: "stale-revision" });
-		expect(calls).not.toContain("agent prompt");
 		r.store.close();
 	});
 });
@@ -1236,7 +1027,7 @@ describe("status tool arm truth", () => {
 			{ toolCallId: "status-arm" },
 		)) as { responsibilities: string };
 		const text = out.responsibilities;
-		return JSON.parse(text.slice("<herdr>\n".length, text.indexOf("\n</herdr>"))) as Record<
+		return JSON.parse(text.slice("<t3>\n".length, text.indexOf("\n</t3>"))) as Record<
 			string,
 			unknown
 		>[];
@@ -1280,21 +1071,7 @@ describe("atomic dispatch claim", () => {
 			coordinationConversationId: r.convId,
 			handoverKey: "k1",
 			understanding: understanding(),
-			attachments: [
-				{
-					target: {
-						server: "local",
-						session: "default",
-						agentName: "w1:p1",
-						paneId: "w1:p1",
-						terminalId: "term-9",
-						agentSession: "sess-1",
-						kind: "pi",
-						cwd: "/w",
-					},
-					baseline: {},
-				},
-			],
+			attachments: [{ target: target(), baseline: {} }],
 		}).responsibility;
 		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
 		const prepared = r.resps.prepareOperation({
@@ -1540,100 +1317,6 @@ describe("boot sweep: crashed sends read uncertain", () => {
 	});
 });
 
-describe("managed prompt authority after Herdr preflight", () => {
-	test.each(["cancel", "revise", "fence"] as const)(
-		"%s during delayed agent get prevents prompt submission",
-		async (change) => {
-			const r = rig();
-			const resp = r.svc.accept({
-				projectId: r.projectId,
-				coordinationConversationId: r.convId,
-				handoverKey: "delayed-send",
-				understanding: understanding(),
-				attachments: [{ target: target(), baseline: {} }],
-			}).responsibility;
-			const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
-			const calls: string[] = [];
-			const signals: (AbortSignal | undefined)[] = [];
-			let release!: () => void;
-			const gate = new Promise<void>((resolve) => {
-				release = resolve;
-			});
-			const record = {
-				agent: "pi",
-				agent_status: "working",
-				pane_id: att.target.paneId,
-				workspace_id: "w1",
-				tab_id: "w1:t1",
-				terminal_id: att.target.terminalId,
-				agent_session: { value: att.target.agentSession },
-				state_change_seq: 7,
-			};
-			const wire = (body: unknown): HerdrRunResult => ({
-				code: 0,
-				stdout: JSON.stringify(body),
-				stderr: "",
-			});
-			const run: HerdrRunner = async (args, opts) => {
-				const verb = args.slice(2, 4).join(" ");
-				calls.push(verb);
-				signals.push(opts?.signal);
-				if (verb === "workspace list") return wire({ result: { workspaces: [] } });
-				if (verb === "agent get") {
-					// Deliberately ignore abort here: a successful preflight
-					// must still not grant a fenced turn permission to send.
-					await gate;
-					return wire({ result: { agent: record } });
-				}
-				if (verb === "agent prompt") return wire({ result: { agent: record } });
-				throw new Error(`unexpected Herdr verb: ${verb}`);
-			};
-			const tool = responsibilityTool({
-				resps: r.resps,
-				service: r.svc,
-				projectId: r.projectId,
-				coordinationConversationId: r.convId,
-				handoverKey: "delayed-send",
-				listFor: async () => [],
-				guardedSend: makeManagedSendEdge(makeOperatorHerdr(run)),
-				// The epoch fence the runtime wires in production — flipped
-				// mid-preflight for the "fence" case below.
-				assertAuthority: () => {
-					if (fenced) throw new FencedError(r.convId);
-				},
-			});
-			if (tool.execute === undefined) throw new Error("missing execute");
-			const abort = new AbortController();
-			let fenced = false;
-			const pending = tool.execute(
-				{
-					action: "send",
-					responsibility: resp.responsibilityId,
-					attachment: att.attachmentId,
-					brief: "new brief",
-				},
-				{ toolCallId: "delayed-send", abortSignal: abort.signal },
-			);
-			await waitUntil(() => calls.includes("agent get"), "Herdr preflight entered");
-			if (change === "cancel") abort.abort();
-			else if (change === "revise") r.resps.revise(resp.responsibilityId, understanding());
-			else fenced = true;
-			release();
-			await pending;
-			expect(calls).toEqual(["workspace list", "agent get"]);
-			expect(signals).toEqual([abort.signal, abort.signal]);
-			const op = r.resps.operationsFor(resp.responsibilityId)[0]!;
-			// Every change lands pre-send: nothing reached the PTY, so the
-			// operation refuses — never 'uncertain', which would fence the
-			// attachment on a delivery that never happened.
-			expect(op.state).toBe("refused");
-			if (change === "revise") expect(op.refusal).toBe("stale-revision");
-			else expect(op.refusal).toBe("fenced");
-			r.store.close();
-		},
-	);
-});
-
 describe("operation reconciliation at the service edge", () => {
 	const sentRig = async (r: Rig) => {
 		const resp = r.svc.accept({
@@ -1641,21 +1324,7 @@ describe("operation reconciliation at the service edge", () => {
 			coordinationConversationId: r.convId,
 			handoverKey: "k1",
 			understanding: understanding(),
-			attachments: [
-				{
-					target: {
-						server: "local",
-						session: "default",
-						agentName: "w1:p1",
-						paneId: "w1:p1",
-						terminalId: "term-9",
-						agentSession: "sess-1",
-						kind: "pi",
-						cwd: "/w",
-					},
-					baseline: {},
-				},
-			],
+			attachments: [{ target: target(), baseline: {} }],
 		}).responsibility;
 		const att = r.resps.attachmentsFor(resp.responsibilityId)[0]!;
 		const prepared = r.resps.prepareOperation({

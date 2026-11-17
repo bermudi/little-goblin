@@ -70,7 +70,7 @@ export interface DeliveryDeps {
 export interface Delivery {
 	/** One wakeDeps OBJECT identity for the process: the telegram init
 	 *  task mutates it in place on attach/detach so the scheduler,
-	 *  delegation lifecycle, subagent wake and resume sinks all read the
+	 *  delegation lifecycle and resume sinks all read the
 	 *  same delivery surface at call time. Never spread it — a spread
 	 *  snapshots delivery/bell before the telegram attach ever lands. */
 	wakeDeps: WakeDeps;
@@ -87,8 +87,7 @@ export interface Delivery {
 export interface WireStep {
 	late(): LateBoot;
 	/** The one fill point — after the delegation lifecycle and the
-	 *  retention worker exist, and before openSubagentsGuarded or the
-	 *  deferred telegram task can wake through wakeDeps. */
+	 *  retention worker exist, and before any wake can ride wakeDeps. */
 	completeBoot(lifecycle: DelegationLifecycle | null, worker: MemoryWorker | null): void;
 	/** The Runtime's runOwnership hooks — the dispatcher behind them is
 	 *  built by wire(); each hook no-ops until then, exactly like the
@@ -159,7 +158,7 @@ export function openWireStep(): WireStep {
 				wakes: deps.wakes,
 				journal: deps.journal,
 				runtime: deps.runtime,
-				sinkFor: (conv) => sinkFor(wakeDeps, conv, "bell"),
+				sinkFor: (conv) => sinkFor(wakeDeps, conv),
 				recheck: makeAuthorityRecheck(deps.responsibilities),
 			});
 			dispatcher = built;

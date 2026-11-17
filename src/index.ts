@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+
 import pkg from "../package.json";
 import { createClaudeEngine } from "./agent/claude-code/mod.ts";
 import { openClaudeSessions } from "./claude-sessions.ts";
@@ -20,6 +21,7 @@ import { openWireStep } from "./boot/delivery.ts";
 import { openTelegramAttach } from "./boot/telegram-attach.ts";
 import { openCacheObservation } from "./cache-observation.ts";
 import { openCachePruning } from "./cache-pruning.ts";
+import { sweepScreenshotFrames } from "./frame-stubs.ts";
 import {
 	type ConfigRef,
 	loadConfig,
@@ -50,10 +52,11 @@ import { makePodman } from "./podman.ts";
 import { type ProgramApproval, startProgramApproval } from "./program-approval.ts";
 import { startProgramOps } from "./program-ops.ts";
 import { openPrograms } from "./programs.ts";
+import { startAgentChildren, type AgentChildren } from "./agent-children.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import { makeResponsibilityObserver } from "./responsibility-observer.ts";
-import { fileDelegationReport, fileRunReport } from "./responsibility-runs.ts";
+import { fileDelegationReport } from "./responsibility-runs.ts";
 import { makeGithubReadiness } from "./github.ts";
 import { makeResponsibilityService } from "./responsibility-service.ts";
 import { wireReviewer } from "./reviewer-wiring.ts";
@@ -70,8 +73,6 @@ import {
 } from "./skill-usage.ts";
 import { skillUnderPath } from "./turn/skill-attribution.ts";
 import { launchPin, type SpinOffDeps } from "./spinoff.ts";
-import { openSubagentRuns } from "./subagent-runs.ts";
-import { openSubagentsGuarded, type Subagents } from "./subagents/mod.ts";
 import { telegramAddressOf } from "./targets.ts";
 import { filterGuestTools } from "./tg/guest.ts";
 import { sendMailNotice } from "./tg/mail-approval.ts";
@@ -85,7 +86,6 @@ import { postProgramApproval } from "./tg/program-approval.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
 import { openTurnJournal } from "./turn-journal.ts";
-import { wakeConversation } from "./wake.ts";
 import { openWakeStore } from "./wake-store.ts";
 import { openWindowCapture } from "./window-capture.ts";
 
@@ -176,8 +176,11 @@ async function boot() {
 	let responsibilitySvc: {
 		resps: ReturnType<typeof openResponsibilities>;
 		service: ReturnType<typeof import("./responsibility-service.ts").makeResponsibilityService>;
-		listFor: () => ReturnType<typeof operatorHerdr.list>;
 	} | null = null;
+	// Same seam for the native-subagent engine: it needs the wake
+	// dispatcher, which exists only past the delivery wire — after
+	// makeTurnTools. Until then no turn can run children.
+	let agentChildrenEngine: AgentChildren | null = null;
 	// Inert without a hand-edited cachePruning block.
 	const cachePruning = openCachePruning({
 		store,
@@ -222,9 +225,6 @@ async function boot() {
 	// One Podman adapter serves sandbox and desktop rows — both drivers
 	// reconcile against the same store of truth.
 	const podman = makePodman();
-	// The routing table is additive and unconditional: sandboxes read
-	// worker leases from it whether or not the subagents block exists.
-	const subagentRuns = openSubagentRuns(paths.db());
 	// The sandbox lifecycle owner exists whether or not the block is
 	// configured — the tool gate is the per-turn config read, and the
 	// store is an additive table. Config is read live: resource limits
@@ -234,12 +234,6 @@ async function boot() {
 		podman,
 		store: sandboxStore,
 		config: () => configRef.current.sandbox,
-		// A live worker run pins its sandbox: the reaper skips it and
-		// reset refuses while a lease stands.
-		runLease: (conv) => subagentRuns.workerLease(conv),
-		// Destructive sandbox lifecycle (recreate/restart) reaches the
-		// worker on its next tool result — persisted until carried.
-		onLifecycle: (conv, note) => subagentRuns.noteLifecycle(conv, note),
 	});
 	// A block absent at boot or removed by a write strands the tracked
 	// containers — warn only: a boot sweep would kill experiments; the
@@ -256,25 +250,18 @@ async function boot() {
 	// completeBoot() fills it once the delegation lifecycle and the
 	// retention worker exist.
 	const wire = openWireStep();
-	// Delegation is boot-fixed like memory — the session is systemd's, not
-	// ours. The fixtures (store, herdr adapters, targets) and the per-turn
-	// dep gate live in delegation-lifecycle.ts; late()/launchPinDeps bind
-	// after this point, so both reach it as call-time getters.
+	// Delegation is boot-fixed like memory — the store, the t3 adapter
+	// and the config snapshot are one object, so a live config read can
+	// only hide the delegate tool next turn, never launch on a harness
+	// the boot snapshot lacks (spinoff.ts owns the pin).
 	const delegationBoot = config.delegation;
-	const {
-		delegations,
-		herdr,
-		operatorHerdr,
-		targets: delegationTargets,
-		delegateDeps,
-	} = wireDelegation({
+	const { delegations, t3, delegateDeps } = wireDelegation({
 		config: delegationBoot,
 		configRef,
 		dbPath: paths.db,
 		lifecycle: () => wire.late().delegationLifecycle(),
 		pin: (conv, name) => launchPin(launchPinDeps, conv, name),
 	});
-
 	// Voice replies and transcription die at runtime without ffmpeg —
 	// the probe, the wav-profile gate, and the ttsDown flag live in
 	// transcribe.ts (checkBootMedia).
@@ -324,7 +311,7 @@ async function boot() {
 	// The one tool factory — the runtime builds the live set per turn
 	// through it. The mount policy (which slots exist per
 	// channel/config/boot pin) lives in turn-tools.ts; boot binds the
-	// seams and the late-bound getters (subagents/mail/desktop bind past
+	// seams and the late-bound getters (mail/desktop/agents bind past
 	// Runtime construction).
 	const telegramEnabled = config.telegram.enabled;
 	// The Telegram attach state machine — src/boot/telegram-attach.ts owns
@@ -354,15 +341,14 @@ async function boot() {
 				: null,
 		transcribe: transcribeFile,
 		delegateDeps,
-		operatorHerdr,
+		t3,
 		mail: () => mailApproval,
 		programApproval: () => programApproval,
 		visionDepsFor,
 		sandboxes,
-		subagents: () => subagents,
 		desktops: () => desktops,
-		subagentsBoot: () => subagentsBoot,
 		responsibility: () => responsibilitySvc,
+		agents: () => agentChildrenEngine,
 		filterGuests: filterGuestTools,
 		// read_file of a catalog SKILL.md is a use — the curator's clock
 		// (design/skills.md → Self-authoring, /learn, curator). Only the
@@ -410,6 +396,9 @@ async function boot() {
 		modelFallbacks: () => configRef.current.modelFallbacks,
 		pruneBetweenTurns: (convId) => {
 			cachePruning.pruneConversation(convId);
+			// Unconditional media hygiene (issue #606) — old screenshot
+			// frames stub to text regardless of cache-pruning config.
+			sweepScreenshotFrames(store, convId);
 		},
 		recordWindow: windowCapture.record,
 		windowVersion: windowCapture.version,
@@ -560,6 +549,38 @@ async function boot() {
 		telegramApi: () => attach.api(),
 	});
 
+	// The desktop pool constructs empty-handed: no allocation or
+	// reaping happens at boot, rows reconcile on use. It exists before
+	// the agent-children engine — a computer child's settlement
+	// releases its leases through it, boot recovery included. Boot-frozen
+	// like delegation: pool limits are one snapshot.
+	const desktopsBoot = config.desktops;
+	const desktops =
+		desktopsBoot !== undefined
+			? makeDesktops({
+					podman,
+					store: openDesktops(paths.db()),
+					config: () => desktopsBoot,
+				})
+			: null;
+
+	// Native subagents (design/agents.md → agent): the child engine
+	// rides the shared runtime and settles through the dispatcher's
+	// record seam — both exist only here, past the wire. Boot recovery
+	// runs before any new traffic: a child cut by the restart settles
+	// failed and its parent's wake is durable.
+	const agentChildren = startAgentChildren({
+		store,
+		runtime,
+		record: (input) => delivery.dispatcher.record(input),
+		bell: (conv) => delivery.wakeDeps.bell(conv),
+		maxRunning: () => configRef.current.agents?.maxRunning ?? 3,
+		now: () => new Date(),
+		desktops: () => desktops,
+	});
+	agentChildren.recoverAtBoot();
+	agentChildrenEngine = agentChildren;
+
 	// Project-owned responsibilities — the store the handover service
 	// writes, and the deterministic observer that turns attachment
 	// snapshots into deduped durable developments. The observer's list
@@ -588,7 +609,6 @@ async function boot() {
 	responsibilitySvc = {
 		resps: responsibilities,
 		service: responsibilityService,
-		listFor: () => operatorHerdr.list(),
 	};
 	// Boot sweep: every open responsibility re-verifies its follow-up
 	// Program — a restart (or a deleted program row) re-links here,
@@ -607,7 +627,7 @@ async function boot() {
 		resps: responsibilities,
 		wakes: wakeStore,
 		pump: () => delivery.dispatcher.pump(),
-		list: () => operatorHerdr.list(),
+		show: (threadId) => t3.showThread(threadId, 1),
 	});
 	const OBSERVE_MS = 60_000;
 	const observerTicker = setInterval(() => {
@@ -622,13 +642,10 @@ async function boot() {
 	// closures read delivery/bell live, so a telegram attach mid-run is
 	// visible without a rewire. The wire step lands before any turn.
 	const delegationLifecycle =
-		delegations !== null && herdr !== null
+		delegations !== null
 			? startDelegationLifecycle({
 					delegations,
-					herdr,
-					targets: delegationTargets,
-					delegationsDir: paths.delegations(),
-					homeDir: homedir(),
+					t3,
 					...delegationWake(delivery.wakeDeps),
 					settled: (d, verdict, body, readiness) => fileDelegationReport(responsibilities, d, verdict, body, readiness),
 					responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
@@ -641,53 +658,11 @@ async function boot() {
 			: null;
 	wire.completeBoot(delegationLifecycle, memoryWorker);
 
-	// The subagent owner is boot-frozen like delegation: its config
-	// (models, pool limits, auth refs) is one snapshot. Construction —
-	// including crash recovery over Pi Durable's storage — runs only
-	// after the late-boot bindings land: a settle during open may wake
-	// through wakeDeps immediately. Desktops construct empty-handed:
-	// no allocation or reaping happens at boot, rows reconcile on use.
-	const subagentsBoot = config.subagents;
-	const desktops =
-		subagentsBoot !== undefined
-			? makeDesktops({
-					podman,
-					store: openDesktops(paths.db()),
-					// Boot-frozen like the owner's block — a live read would
-					// make the restart warning a lie.
-					config: () => subagentsBoot?.desktops,
-				})
-			: null;
-	// The owner open is fail-open — a poisoned auth record or a resume
-	// refusal disables the feature rather than crash-looping the
-	// service (openSubagentsGuarded owns that policy; the close join
-	// rides the same budget as the shutdown drain).
-	let subagents: Subagents | null = null;
-	if (subagentsBoot !== undefined && desktops !== null) {
-		subagents = await openSubagentsGuarded(
-			{
-				config: subagentsBoot,
-				runs: subagentRuns,
-				auth,
-				sandboxes,
-				desktops,
-				storagePath: join(paths.state(), "subagents.sqlite"),
-				transferRoot: join(paths.state(), "subagent-transfer"),
-				wake: (conv, text) => wakeConversation(delivery.wakeDeps, conv, text),
-				// A linked run's settlement lands as a worker report before
-				// its notice wakes the conversation (responsibility-runs.ts).
-				settled: (row) => fileRunReport(responsibilities, row),
-				responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
-			},
-			SHUTDOWN_DRAIN_MS,
-		);
-	}
-
 	// App auth mode resolves once at boot: appToken set → bearer, unset →
 	// trust (the tailnet is the lock); a mid-run flip needs a restart.
 	const appTokenName = resolveAppAuth(config.appToken);
 	// Boot-pinned blocks: memory binds queue rows to the endpoint+bank hash,
-	// delegation/subagents freeze adapters and pool limits at boot,
+	// delegation/desktops freeze adapters and pool limits at boot,
 	// http.port binds the Bun.serve listener, and reviewer wiring is
 	// boot-bound — a mid-run change is a warn + restart.
 	const bootPins: BootPins = {
@@ -696,7 +671,7 @@ async function boot() {
 		telegramEnabled,
 		apiRoot: apiRootBoot,
 		delegation: delegationBoot,
-		subagents: subagentsBoot,
+		desktops: desktopsBoot,
 		http: config.http,
 		reviewer: config.reviewer,
 	};
@@ -800,7 +775,7 @@ async function boot() {
 					feed: { db: store.db, resps: responsibilities, programs },
 					resps: responsibilities,
 					service: responsibilityService,
-					listAgents: () => operatorHerdr.list(),
+					listThreads: (project) => t3.listThreads(project),
 				},
 				// Same intake seam as the tg lane — speech uploads transcribe before submit.
 				transcribe: transcribeFile,
@@ -906,8 +881,6 @@ async function boot() {
 		programApproval,
 		stopTelegramProgramApproval: attach.stopProgramApproval,
 		memoryWorker,
-		subagentRuns,
-		subagents,
 		desktops,
 	};
 }
@@ -937,8 +910,6 @@ const {
 	programApproval,
 	stopTelegramProgramApproval,
 	memoryWorker,
-	subagentRuns,
-	subagents,
 } = booted;
 
 let shuttingDown = false;
@@ -955,8 +926,8 @@ async function shutdown(signal: string): Promise<void> {
 	// Wake retries stop too — open wakes ride to the next boot's pump.
 	stopWakeTicker();
 	stopObserverTicker();
-	// Join any in-flight scan before closing the store; running agents
-	// belong to herdr and resume on next boot.
+	// Join any in-flight scan before closing the store; running threads
+	// belong to the T3 Code server and resume on next boot.
 	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();
 	// The mail watcher stops polling and joins an in-flight scan — a late
 	// fire must not land in a closed runtime; cursors and drafts persist.
@@ -982,13 +953,6 @@ async function shutdown(signal: string): Promise<void> {
 	// Close the runtime first — intake that lands during the drain still
 	// reaches history but never starts a turn.
 	const drained = runtime.shutdown();
-	// Pause only: pending subagent runs persist for the next boot — the
-	// harness close seals admission, it never aborts work.
-	const subagentsClosed = subagents
-		? subagents.close().catch((err: unknown) => {
-				log.warn("subagents close failed", err);
-			})
-		: Promise.resolve();
 	const settled = Promise.allSettled([
 		scheduler.joinReminders(),
 		stopping,
@@ -999,7 +963,6 @@ async function shutdown(signal: string): Promise<void> {
 		programJoins,
 		telegramProgramJoins,
 		retention,
-		subagentsClosed,
 	]);
 	const finished = await Promise.race([
 		settled.then(() => true),
@@ -1017,13 +980,6 @@ async function shutdown(signal: string): Promise<void> {
 		}
 	}
 	http.stop();
-	// Runs outlive the process: the table closes only when the owner
-	// joined inside the drain budget — a timed-out close leaves the
-	// store open rather than let a lingering settle write a closed
-	// handle (the process exits anyway).
-	if (finished) {
-		subagentRuns.close();
-	}
 	store.close();
 	programs.close();
 	outbox.close();

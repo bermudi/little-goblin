@@ -141,11 +141,10 @@ describe("app attention", () => {
 							chatId: 0,
 							threadId: null,
 							appConversation: "app/chat-01",
-							agentName: "agent",
-							workspaceId: "workspace",
-							paneId: "pane",
+							t3Thread: "t3-thread-1",
+							t3Link: "https://t3.example/thread-1",
+							t3Run: "run-1",
 							status: "needs_input" as const,
-							target: null,
 							baselineSeq: null,
 							promptedAt: "2026-10-21T00:03:00.000Z",
 							promptPending: false,
@@ -299,7 +298,7 @@ describe("app attention", () => {
 						conversations: ctx.store,
 						pump: () => {},
 					}),
-					listAgents: () => Promise.resolve([]),
+					listThreads: () => Promise.resolve([]),
 				};
 			},
 		});

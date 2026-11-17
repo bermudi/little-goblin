@@ -30,7 +30,13 @@ import { ChatView } from "./ChatView.tsx";
 import { Composer } from "./chat/Composer.tsx";
 import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
-import { ConversationRow, flatLine, flatTitle, relTime } from "./ConversationList.tsx";
+import {
+	ConversationNav,
+	ConversationRow,
+	flatLine,
+	flatTitle,
+	relTime,
+} from "./ConversationList.tsx";
 import { DelegationsView } from "./DelegationsView.tsx";
 import { G, LIST_GLYPHS, OPS_GLYPHS, PinGlyph, type ListPane } from "./glyphs.tsx";
 import { LogView } from "./LogView.tsx";
@@ -1222,7 +1228,7 @@ function AppShell() {
 								<div className="panes">
 									{pane === "chats" && (
 										<>
-											<ul>{rail.map(renderRow)}</ul>
+											<ConversationNav loop={false}>{rail.map(renderRow)}</ConversationNav>
 											{archivedRows}
 											{conversations !== null && rail.length === 0 && archived.length === 0 && (
 												<p className="empty">Nothing here yet — start a conversation.</p>
@@ -1566,7 +1572,7 @@ function AppShell() {
 						{searchBody}
 						{hits === null && (
 							<>
-								<ul>{rail.map(renderRow)}</ul>
+								<ConversationNav loop={false}>{rail.map(renderRow)}</ConversationNav>
 								{archivedRows}
 								{listError !== null && <p className="error">Couldn't refresh the list.</p>}
 								{rowError !== null && (

@@ -1,6 +1,7 @@
 import { type CSSProperties, type ReactNode, useEffect, useRef, useState } from "react";
 import type { AppConversationList, AppNoteSummary, AppProject } from "../../src/http/app-wire.ts";
 import { ApiError, createNote, createProject, listNotes, patchProject } from "./api.ts";
+import { ConversationNav } from "./ConversationList.tsx";
 import { useConfirm } from "./confirm.tsx";
 import { relTime } from "./memoryShared.tsx";
 import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
@@ -674,7 +675,9 @@ export function ProjectView({
 					<details className="tuning">
 						<summary>Archived chats ({archivedChats.length})</summary>
 						<div className="inner">
-							<ul className="convlist">{archivedChats.map((c) => renderRow(c))}</ul>
+							<ConversationNav className="convlist" loop={false}>
+								{archivedChats.map((c) => renderRow(c))}
+							</ConversationNav>
 						</div>
 					</details>
 				)}

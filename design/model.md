@@ -191,8 +191,9 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   session was given. `x-codex-turn-state` is captured once per model
   instance (first non-empty response header wins, echoed on every later
   request the instance makes) — one instance is one turn attempt, so
-  it never crosses turns. Compaction's summarizer marks itself
-  `x-openai-subagent: compact`. Rate-limit receipts land on the finish
+  it never crosses turns. Compaction's text-mode summarizer marks itself
+  `x-openai-subagent: compact`; prefix mode sends the turn's own headers
+  ([compaction](compaction.md) → Cache reuse). Rate-limit receipts land on the finish
   part's `providerMetadata.codex` (the `codex.rate_limits` SSE event
   overrides the header snapshot) and the `response-metadata` part; the
   turn keeps the newest non-null quota into `TurnMetadata` and the

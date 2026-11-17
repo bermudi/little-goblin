@@ -4,16 +4,15 @@
 // duplicate handover never doubles attachments or initial actions.
 // dispatch() drives a managed prompt operation through its named
 // gates: validate → send edge → transition. The production send edge
-// (makeManagedSendEdge) is the accepted-risk path: Herdr's own
-// preflight binds pane + kind, and the returned post-send identity is
-// compared to the bound agent_session — a mid-dispatch swap lands as
-// 'uncertain', loudly logged, never a resend. A timeout/IO error after
-// dispatch is 'uncertain' for the same reason.
+// (makeManagedSendEdge) addresses the bound T3 thread: the id is the
+// identity (no same-pane replacement exists), CLI failures precede
+// submission (nothing sent → refusal), and only our own kill of the
+// CLI lands 'uncertain' — evidence to reconcile, never a resend.
 
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { ConversationStore } from "./conversation.ts";
-import { HerdrRefusal, OPERATOR_SESSION, type OperatorHerdr } from "./herdr.ts";
+import { T3Error, type T3 } from "./t3.ts";
 import { log } from "./log.ts";
 import { armedView, type ResponsibilityStore } from "./responsibilities.ts";
 import {
@@ -70,6 +69,18 @@ export type ManagedSend = (
 	signal?: AbortSignal,
 ) => Promise<unknown>;
 
+/** A refusal decided BEFORE anything reached the thread — the identity
+ *  checks or a CLI failure that preceded submission. Distinct from a
+ *  thrown T3Error, which leaves delivery uncertain. */
+export class ManagedSendRefusal extends Error {
+	readonly code: string;
+	constructor(code: string, message: string) {
+		super(message);
+		this.name = "ManagedSendRefusal";
+		this.code = code;
+	}
+}
+
 export interface ResponsibilityService {
 	accept(input: HandoverInput): { responsibility: Responsibility; created: boolean };
 	correct(
@@ -113,24 +124,25 @@ function followupCharter(resp: Responsibility): string {
 	);
 }
 
-// The managed send edge, built on the real adapter. prompt's own
-// preflight refuses a missing/mismatched occupant (nothing sent); the
-// agent record it returns is the post-wait identity — comparing it to
-// the bound session is the observability the accepted-risk ruling
-// asked for. A mismatch throws: dispatch lands the op 'uncertain',
-// which is honest — the bytes may have crossed to a replacement and an
-// automatic resend would only double the exposure.
-export function makeManagedSendEdge(herdr: Pick<OperatorHerdr, "prompt">): ManagedSend {
+// The managed send edge, built on the t3 adapter. A thread id is a
+// stable identity — `thread send` addresses it directly, a busy
+// thread queues the message, and the CLI's exit-1 errors happen
+// before anything is submitted (nothing sent → refusal). The one
+// uncertain class is our own kill (timeout/output cap): the submit
+// may have crossed, so it rethrows and lands 'uncertain' — evidence
+// to reconcile, never permission to resend.
+export function makeManagedSendEdge(t3: Pick<T3, "sendThread">): ManagedSend {
 	// Anything thrown before the send is a refusal: nothing has reached
-	// the PTY, so the operation must not land 'uncertain' and fence the
-	// attachment on a delivery that never happened. A HerdrRefusal
-	// (stale revision, identity checks) passes through with its code.
+	// the thread, so the operation must not land 'uncertain' and fence
+	// the attachment on a delivery that never happened. A
+	// ManagedSendRefusal (stale revision, identity checks) passes
+	// through with its code.
 	const preSend = (run: () => void): void => {
 		try {
 			run();
 		} catch (err) {
-			if (err instanceof HerdrRefusal) throw err;
-			throw new HerdrRefusal(
+			if (err instanceof ManagedSendRefusal) throw err;
+			throw new ManagedSendRefusal(
 				"fenced",
 				`send fenced before dispatch: ${err instanceof Error ? err.message : String(err)}`,
 			);
@@ -138,61 +150,31 @@ export function makeManagedSendEdge(herdr: Pick<OperatorHerdr, "prompt">): Manag
 	};
 	return async (brief, target, beforeSend, signal) => {
 		preSend(() => signal?.throwIfAborted());
-		// The adapter is the operator session on the local server — a
-		// target outside that scope would misroute, so it refuses.
-		if (target.server !== "local" || target.session !== OPERATOR_SESSION) {
-			throw new HerdrRefusal(
+		// The edge covers t3 threads only — a target from another
+		// transport (a legacy attachment) misroutes, so it refuses.
+		if (target.server !== "t3") {
+			throw new ManagedSendRefusal(
 				"identity-unenforceable",
-				`attachment targets ${target.server}/${target.session} — the send edge covers local/${OPERATOR_SESSION} only`,
+				`attachment targets ${target.server}/${target.session} — the send edge covers t3 threads only`,
 			);
 		}
-		if (target.kind === null) {
-			throw new HerdrRefusal("kind_mismatch", "attachment has no agent kind to verify at dispatch");
+		const thread = target.agentSession ?? target.agentName;
+		preSend(() => beforeSend?.());
+		try {
+			const sent = await t3.sendThread(thread, brief, {
+				...(signal !== undefined ? { signal } : {}),
+			});
+			return { threadId: sent.threadId, runId: sent.runId, link: sent.link };
+		} catch (err) {
+			if (err instanceof T3Error) {
+				if (err.code === "exit_-1") throw err; // our kill: delivery uncertain
+				throw new ManagedSendRefusal(
+					err.code === "thread_not_found" ? "thread-gone" : "send-failed",
+					err.message,
+				);
+			}
+			throw err;
 		}
-		if (target.agentSession === null) {
-			throw new HerdrRefusal(
-				"identity-unenforceable",
-				"attachment has no harness session identity to bind",
-			);
-		}
-		const reported = await herdr.prompt(
-			target.paneId ?? target.agentName,
-			target.kind,
-			brief,
-			signal,
-			{
-				identity: { terminalId: target.terminalId, agentSession: target.agentSession },
-				beforeSend: () => {
-					// Preflight awaits Herdr; a stopped turn must not regain
-					// authority just because that read eventually succeeded.
-					preSend(() => {
-						signal?.throwIfAborted();
-						beforeSend?.();
-					});
-				},
-			},
-		);
-		if (
-			reported.agent_session !== target.agentSession ||
-			(target.terminalId !== null && reported.terminal_id !== target.terminalId)
-		) {
-			log.error(
-				"managed send crossed an identity change — prompt may have landed on a replacement",
-				undefined,
-				{
-					pane: reported.pane_id,
-					bound: { terminalId: target.terminalId, agentSession: target.agentSession },
-					reported: {
-						terminalId: reported.terminal_id,
-						agentSession: reported.agent_session,
-					},
-				},
-			);
-			throw new Error(
-				`post-send identity mismatch: bound ${target.agentSession}, pane reported ${reported.agent_session}`,
-			);
-		}
-		return { reportedAgentSession: reported.agent_session };
 	};
 }
 
@@ -468,14 +450,15 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 			}
 			const att = resps.getAttachment(op.attachmentId);
 			if (att === null) return { refused: "attachment-detached" };
-			// agent_session is the replacement detector — without it the
-			// send edge cannot bind identity, and check-then-send is a race.
-			if (att.target.agentSession === null) {
+			// agent_session carries the thread id — without it the send
+			// edge has no address, and a legacy attachment (no thread)
+			// must never be dispatched through t3.
+			if (att.target.agentSession === null || att.target.server !== "t3") {
 				resps.transitionOperation(operationId, "refused", {
 					refusal: "identity-unenforceable",
 					from: "prepared",
 				});
-				log.warn("managed send refused: no harness session identity to bind", {
+				log.warn("managed send refused: no T3 thread identity to bind", {
 					operation: operationId,
 					attachment: att.attachmentId,
 				});
@@ -506,7 +489,7 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 				const recheck = () => {
 					const again = resps.validateForSend(operationId, "sent");
 					if ("refused" in again) {
-						throw new HerdrRefusal(again.refused, `send aborted at the wire: ${again.refused}`);
+						throw new ManagedSendRefusal(again.refused, `send aborted at the wire: ${again.refused}`);
 					}
 				};
 				try {
@@ -526,7 +509,7 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 					return disposition("delivery-uncertain");
 				} catch (err) {
 					// A refusal is a pre-send verdict — nothing left this host.
-					if (err instanceof HerdrRefusal) {
+					if (err instanceof ManagedSendRefusal) {
 						resps.transitionOperation(operationId, "refused", {
 							refusal: err.code,
 							from: "sent",

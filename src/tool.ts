@@ -6,9 +6,19 @@ export interface ToolCallContext {
 	abortSignal?: AbortSignal;
 }
 
+// A model-facing content part for outputs that carry more than one
+// modality (design/tools.md → Tool results). `image` holds raw bytes —
+// transient only: it exists between toModelOutput and the provider
+// conversion, never in stored events (the stored output is the tool's
+// own execute() result).
+export type ToolOutputContent =
+	| { type: "text"; text: string }
+	| { type: "image"; mediaType: string; data: Uint8Array };
+
 export type ToolOutput =
 	| { type: "text"; value: string }
-	| { type: "json"; value: JSONValue };
+	| { type: "json"; value: JSONValue }
+	| { type: "content"; value: ToolOutputContent[] };
 
 export interface FunctionTool<I, O> {
 	description: string;

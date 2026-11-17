@@ -14,8 +14,6 @@ import {
 	emptyTranscription,
 	type ProvDraft,
 	type SettingsDraft,
-	type SubagentModelDraft,
-	type SubagentsDraft,
 	switchProviderKind,
 	switchTranscriptionKind,
 	switchTtsKind,
@@ -96,35 +94,37 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 	logLevel: "info",
 	memory: null,
 	delegation: null,
-	subagents: null,
 	...over,
 });
 
 describe("draftFromConfig", () => {
-	test("a delegation block round-trips harnesses, args and role defaults", () => {
+	test("a delegation block round-trips harnesses and role defaults", () => {
 		const c = baseConfig();
 		c.delegation = delegationConfigSchema.parse({
 			harnesses: {
-				pi: { kind: "pi", args: ["--model", "zai/glm-5.3"] },
-				"pi-review": { kind: "pi", args: ["--model", "sol"] },
+				pi: { provider: "codex", model: "gpt-6-luna" },
+				"pi-review": { provider: "codex", model: "gpt-6.1-terra" },
 			},
-			machines: { g7: { machine: "g7", root: "~/build" } },
 			defaults: { default: "pi", review: "pi-review" },
 		});
 		const { draft: d } = draftFromConfig(c);
 		expect(d.delegation?.harnesses).toEqual([
-			{ name: "pi", kind: "pi", args: "--model\nzai/glm-5.3", askFirst: false },
-			{ name: "pi-review", kind: "pi", args: "--model\nsol", askFirst: false },
+			{ name: "pi", provider: "codex", model: "gpt-6-luna", options: "", askFirst: false },
+			{ name: "pi-review", provider: "codex", model: "gpt-6.1-terra", options: "", askFirst: false },
 		]);
 		// The fallback role sorts first.
 		expect(d.delegation?.roles).toEqual([
 			{ role: "default", harness: "pi" },
 			{ role: "review", harness: "pi-review" },
 		]);
-		expect(bodyFromDraft(d, draftFromConfig(c).providers, authDefaults).delegation).toEqual({
+		expect(
+			delegationConfigSchema.parse(
+				bodyFromDraft(d, draftFromConfig(c).providers, authDefaults).delegation,
+			),
+		).toEqual({
 			harnesses: {
-				pi: { kind: "pi", args: ["--model", "zai/glm-5.3"] },
-				"pi-review": { kind: "pi", args: ["--model", "sol"] },
+				pi: { provider: "codex", model: "gpt-6-luna" },
+				"pi-review": { provider: "codex", model: "gpt-6.1-terra" },
 			},
 			defaults: { default: "pi", review: "pi-review" },
 		});
@@ -133,32 +133,61 @@ describe("draftFromConfig", () => {
 	test("askFirst round-trips; unflagged harnesses emit no key", () => {
 		const c = baseConfig();
 		c.delegation = delegationConfigSchema.parse({
-			harnesses: { claude: { kind: "claude", askFirst: true }, pi: { kind: "pi" } },
+			harnesses: {
+				claude: { provider: "claude", model: "claude-haiku-5-5", askFirst: true },
+				pi: { provider: "codex", model: "gpt-6-luna" },
+			},
 		});
 		const { draft: d, providers } = draftFromConfig(c);
 		expect(d.delegation?.harnesses).toEqual([
-			{ name: "claude", kind: "claude", args: "", askFirst: true },
-			{ name: "pi", kind: "pi", args: "", askFirst: false },
+			{ name: "claude", provider: "claude", model: "claude-haiku-5-5", options: "", askFirst: true },
+			{ name: "pi", provider: "codex", model: "gpt-6-luna", options: "", askFirst: false },
 		]);
-		const del = bodyFromDraft(d, providers, authDefaults).delegation;
+		const del = delegationConfigSchema.parse(bodyFromDraft(d, providers, authDefaults).delegation);
 		expect(del).toEqual({
 			harnesses: {
-				claude: { kind: "claude", askFirst: true },
-				pi: { kind: "pi" },
+				claude: { provider: "claude", model: "claude-haiku-5-5", askFirst: true },
+				pi: { provider: "codex", model: "gpt-6-luna" },
 			},
 		});
-		if (typeof del === "object") {
-			expect("askFirst" in del.harnesses["claude"]!).toBe(true);
-			expect("askFirst" in del.harnesses["pi"]!).toBe(false);
+		expect("askFirst" in del.harnesses["claude"]!).toBe(true);
+		expect("askFirst" in del.harnesses["pi"]!).toBe(false);
+	});
+
+	test("model options round-trip and empty options are omitted", () => {
+		const c = baseConfig();
+		c.delegation = delegationConfigSchema.parse({
+			harnesses: {
+				pi: { provider: "codex", model: "gpt-6-luna", options: { thinking: "high", fastMode: false } },
+			},
+		});
+		const { draft: d, providers } = draftFromConfig(c);
+		expect(d.delegation?.harnesses[0]?.options).toBe("fastMode=false thinking=high");
+		expect(
+			delegationConfigSchema.parse(bodyFromDraft(d, providers, authDefaults).delegation),
+		).toEqual(c.delegation);
+		d.delegation!.harnesses[0]!.options = "";
+		const empty = delegationConfigSchema.parse(bodyFromDraft(d, providers, authDefaults).delegation);
+		expect("options" in empty.harnesses.pi!).toBe(false);
+	});
+
+	test("model options require unique id=value pairs", () => {
+		const { draft: d } = draftFromConfig(baseConfig());
+		d.delegation = {
+			harnesses: [{ name: "pi", provider: "codex", model: "gpt-6-luna", options: "", askFirst: false }],
+			roles: [],
+		};
+		for (const value of ["effort", "=x", "effort=low effort=high"]) {
+			d.delegation.harnesses[0]!.options = value;
+			expect(validateDraft(d, [prov()])).toBe("Model options must be id=value pairs (agent pi).");
 		}
 	});
 
 	test("delegation validation catches unnamed, duplicate and dangling entries", () => {
 		const { draft: d } = draftFromConfig(baseConfig());
 		d.delegation = {
-			harnesses: [{ name: "pi", kind: "pi", args: "", askFirst: false }],
+			harnesses: [{ name: "pi", provider: "codex", model: "gpt-6-luna", options: "", askFirst: false }],
 			roles: [{ role: "default", harness: "pi" }],
-			machineHarnesses: [],
 		};
 		expect(validateDraft(d, [prov()])).toBeNull();
 		d.delegation.roles = [{ role: "default", harness: "ghost" }];
@@ -169,41 +198,27 @@ describe("draftFromConfig", () => {
 		];
 		expect(validateDraft(d, [prov()])).toContain("Duplicate delegation role");
 		d.delegation.roles = [{ role: "default", harness: "pi" }];
-		d.delegation.harnesses = [{ name: "Pi", kind: "pi", args: "", askFirst: false }];
+		d.delegation.harnesses = [
+			{ name: "Pi", provider: "codex", model: "gpt-6-luna", options: "", askFirst: false },
+		];
 		expect(validateDraft(d, [prov()])).toContain("lowercase letters");
-	});
-
-	test("a role default may name a harness declared only under a machine target", () => {
-		const c = baseConfig();
-		c.delegation = delegationConfigSchema.parse({
-			harnesses: { pi: { kind: "pi" } },
-			machines: { g7: { machine: "g7", harnesses: { devin: { kind: "devin" } } } },
-			defaults: { review: "devin" },
-		});
-		const { draft: d, providers } = draftFromConfig(c);
-		expect(d.delegation?.machineHarnesses).toEqual(["devin"]);
-		// The server schema accepts machine-side names — an unchanged
-		// save must not be blocked as "unlisted".
-		expect(validateDraft(d, providers)).toBeNull();
-		expect(bodyFromDraft(d, providers, authDefaults).delegation).toMatchObject({
-			defaults: { review: "devin" },
-		});
 	});
 
 	test("a role row with no agent is an absent mapping, not an error", () => {
 		const { draft: d, providers } = draftFromConfig(baseConfig());
 		d.delegation = {
-			harnesses: [{ name: "pi", kind: "pi", args: "", askFirst: false }],
+			harnesses: [{ name: "pi", provider: "codex", model: "gpt-6-luna", options: "", askFirst: false }],
 			// The always-visible default row, picked at "none".
 			roles: [
 				{ role: "default", harness: "" },
 				{ role: "review", harness: "pi" },
 			],
-			machineHarnesses: [],
 		};
 		expect(validateDraft(d, providers)).toBeNull();
-		expect(bodyFromDraft(d, providers, authDefaults).delegation).toEqual({
-			harnesses: { pi: { kind: "pi" } },
+		expect(
+			delegationConfigSchema.parse(bodyFromDraft(d, providers, authDefaults).delegation),
+		).toEqual({
+			harnesses: { pi: { provider: "codex", model: "gpt-6-luna" } },
 			defaults: { review: "pi" },
 		});
 	});
@@ -373,76 +388,6 @@ describe("validateDraft", () => {
 		expect(body.telegram).not.toHaveProperty("model");
 	});
 
-	// A subagents draft exists only while the switch is on — an
-	// incomplete one holds the autosave instead of surfacing the
-	// server's neither-type 422 in the savebar.
-	const WORKER_MODEL: SubagentModelDraft = {
-		auth: "fixture",
-		id: "glm-5.3",
-		baseUrl: "https://api.z.ai/api/coding/paas/v4",
-		thinking: "high",
-	};
-	const COMPUTER_MODEL: SubagentModelDraft = {
-		auth: "fixture",
-		id: "glm-5.3-flash",
-		baseUrl: "https://api.z.ai/api/coding/paas/v4",
-		thinking: "low",
-	};
-	const subDraft = (over: Partial<SubagentsDraft> = {}): SubagentsDraft => ({
-		worker: WORKER_MODEL,
-		computer: null,
-		desktopImage: "localhost/goblin-desktop:1",
-		...over,
-	});
-
-	test("an incomplete subagents draft holds the autosave with its reason", () => {
-		// The switch just flipped on — no type picked yet.
-		expect(validateDraft(draft({ subagents: subDraft({ worker: null }) }), [prov()])).toBe(
-			"Pick a code worker or computer use for subagents.",
-		);
-		for (const [patch, reason] of [
-			[{ auth: " " }, "Pick a key for the code worker."],
-			[{ id: "" }, "The code worker needs a model."],
-			[{ baseUrl: "" }, "The code worker needs a base url."],
-		] as const) {
-			expect(
-				validateDraft(draft({ subagents: subDraft({ worker: { ...WORKER_MODEL, ...patch } }) }), [
-					prov(),
-				]),
-			).toBe(reason);
-		}
-		for (const [patch, reason] of [
-			[{ auth: "" }, "Pick a key for computer use."],
-			[{ id: " " }, "Computer use needs a model."],
-			[{ baseUrl: "" }, "Computer use needs a base url."],
-		] as const) {
-			expect(
-				validateDraft(
-					draft({
-						subagents: subDraft({ worker: null, computer: { ...COMPUTER_MODEL, ...patch } }),
-					}),
-					[prov()],
-				),
-			).toBe(reason);
-		}
-		expect(
-			validateDraft(
-				draft({
-					subagents: subDraft({ worker: null, computer: COMPUTER_MODEL, desktopImage: "" }),
-				}),
-				[prov()],
-			),
-		).toBe("Computer use needs a desktop image.");
-	});
-
-	test("complete subagents drafts validate — worker-only and computer-only", () => {
-		expect(validateDraft(draft({ subagents: subDraft() }), [prov()])).toBeNull();
-		expect(
-			validateDraft(draft({ subagents: subDraft({ worker: null, computer: COMPUTER_MODEL }) }), [
-				prov(),
-			]),
-		).toBeNull();
-	});
 });
 
 describe("bodyFromDraft", () => {

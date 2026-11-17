@@ -14,9 +14,10 @@ export type ResponsibilityStatus = "active" | "paused" | "completed" | "cancelle
 
 export type AttachmentHealth = "attached" | "missing" | "identity_changed" | "detached";
 
-/** Consecutive failed polls of one Herdr target before its attachments
- *  surface as unreachable — observation availability, not agent state:
- *  health keeps its last sighted value while polling is down. */
+/** Consecutive failed polls of one attached thread before its
+ *  attachments surface as unreachable — observation availability, not
+ *  thread state: health keeps its last sighted value while polling is
+ *  down. */
 export const UNREACHABLE_POLLS = 3;
 
 export type OperationState =
@@ -57,7 +58,7 @@ export interface Responsibility {
 }
 
 export interface AttachmentTarget {
-	/** Herdr target grouping: the server/session the operator session lives under. */
+	/** Transport grouping: "t3" today; session is the T3 project id. */
 	server: string;
 	session: string;
 	agentName: string;

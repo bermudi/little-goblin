@@ -1049,9 +1049,9 @@ describe("operator-only command gate", () => {
 		try {
 			for (const [i, text] of [
 				"/skill",
-				"/skill herdr",
+				"/skill demo",
 				"/skill https://github.com/o/r/tree/main/skills/x",
-				"/skill@goblin herdr",
+				"/skill@goblin demo",
 			].entries()) {
 				handleMessage(h.env, guestMsg(text, 70 + i), 70 + i);
 				// The refusal latch coalesces while a send is pending — let
@@ -1157,10 +1157,10 @@ describe("operator-only command gate", () => {
 
 	test("an operator's /skill in a shared topic turns with the audience note and real delivery", async () => {
 		const home = useHome("goblin-skillgate-");
-		mkdirSync(join(home, "workspace/skills/herdr"), { recursive: true });
+		mkdirSync(join(home, "workspace/skills/demo"), { recursive: true });
 		writeFileSync(
-			join(home, "workspace/skills/herdr/SKILL.md"),
-			"---\nname: herdr\ndescription: d\n---\nbody",
+			join(home, "workspace/skills/demo/SKILL.md"),
+			"---\nname: demo\ndescription: d\n---\nbody",
 		);
 		const h = routerHarness();
 		const submitted: Array<{ conv: string; sink: TurnSink }> = [];
@@ -1174,7 +1174,7 @@ describe("operator-only command gate", () => {
 				message_id: 80,
 				chat: { id: -100, type: "supergroup" },
 				from: { id: 1, is_bot: false, first_name: "op" },
-				text: "/skill herdr",
+				text: "/skill demo",
 				message_thread_id: 7,
 				is_topic_message: true,
 			}),

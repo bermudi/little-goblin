@@ -105,6 +105,18 @@ describe("carriesMedia — what the pipe can deliver, per position", () => {
 		expect(carriesMedia("mystery", "image/jpeg", "tool-result")).toBe(false);
 		expect(carriesMedia("mystery", "application/pdf")).toBe(false);
 	});
+
+	test("claude-code carries the four Anthropic image types in tool results via MCP image blocks", () => {
+		// The bridge emits MCP image content for image-bearing tool
+		// outputs (claude-code/tools.ts callToolResult). PDFs have no MCP
+		// image form — text only there.
+		for (const t of ["image/gif", "image/jpeg", "image/png", "image/webp"]) {
+			expect(carriesMedia("claude-code", t, "user")).toBe(true);
+			expect(carriesMedia("claude-code", t, "tool-result")).toBe(true);
+		}
+		expect(carriesMedia("claude-code", "application/pdf", "tool-result")).toBe(false);
+		expect(carriesMedia("claude-code", "image/svg+xml", "tool-result")).toBe(false);
+	});
 });
 
 describe("carriesMedia — 1min's relay is text-only", () => {

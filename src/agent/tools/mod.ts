@@ -19,7 +19,6 @@ import { memoryReflectTool } from "./memory-reflect.ts";
 import { type NoteToolDeps, noteTool } from "./note.ts";
 import { type ProgramToolDeps, programTool } from "./program.ts";
 import { readFileTool } from "./read.ts";
-import { type ReadLongToolDeps, readLongTool } from "./read-long.ts";
 import { type ResponsibilityToolDeps, responsibilityTool } from "./responsibility.ts";
 import { type SandboxToolDeps, sandboxTool } from "./sandbox.ts";
 import { searchTool } from "./search.ts";
@@ -66,7 +65,6 @@ export type {
 	ImageToolDeps,
 	MailToolDeps,
 	NoteToolDeps,
-	ReadLongToolDeps,
 	ResponsibilityToolDeps,
 	SandboxToolDeps,
 	VisionToolDeps,
@@ -90,7 +88,6 @@ export interface MakeToolsOptions {
 	history?: HistorySearchDeps | undefined;
 	note?: NoteToolDeps | undefined;
 	vision?: VisionToolDeps | undefined;
-	readLong?: ReadLongToolDeps | undefined;
 	image?: ImageToolDeps | undefined;
 	sandbox?: SandboxToolDeps | undefined;
 	desktop?: DesktopToolDeps | undefined;
@@ -131,7 +128,6 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		history,
 		note,
 		vision,
-		readLong,
 		image,
 		sandbox,
 		desktop,
@@ -151,7 +147,6 @@ export function makeTools(options: MakeToolsOptions): Tools {
 			: {}),
 		...(transcribe ? { transcribe: transcribeTool(cwd, transcribe.transcribe) } : {}),
 		...(vision ? { vision: visionTool(cwd, vision) } : {}),
-		...(readLong ? { read_long: readLongTool(cwd, readLong) } : {}),
 		...(image ? { generate_image: imageTool(image) } : {}),
 		...(program ? { program: programTool(program) } : {}),
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),

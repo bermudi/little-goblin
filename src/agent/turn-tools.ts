@@ -26,7 +26,6 @@ import type { Desktops } from "../desktops.ts";
 import type { MailApproval } from "../mail-approval.ts";
 import type { ProgramApproval } from "../program-approval.ts";
 import { targetOf } from "../targets.ts";
-import type { CompleteText } from "./step.ts";
 import { synthesizeSpeech } from "./tts.ts";
 import type { HindsightClient } from "../memory/hindsight.ts";
 import {
@@ -77,8 +76,6 @@ export interface TurnToolsDeps {
 	// proposal rather than losing it.
 	programApproval(): Pick<ProgramApproval, "requestApproval"> | undefined;
 	visionDepsFor(conv: Conversation): VisionToolDeps | undefined;
-	// Late-bound: the step builder is built after the tool factory.
-	complete(): CompleteText;
 	sandboxes: Sandboxes;
 	// Late-bound: the desktop pool binds past Runtime's construction —
 	// the getter preserves the closure's call-time read.
@@ -281,15 +278,6 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			note: { notes, projects, conversation: conv.id, projectId: conv.projectId },
 			// Threads are process-global; a model change drops them on the next call.
 			vision: visionDepsFor(conv),
-			// The helper runs on the conversation's own model and thinking.
-			readLong:
-				conv.model === null
-					? undefined
-					: {
-							conversation: conv.id,
-							complete: (system, prompt, signal) =>
-								deps.complete()(conv, conv.model!, "read_long", system, prompt, signal),
-						},
 			// Live-read like vision — mounts generate_image; Telegram
 			// delivers each image inline, other channels save + report paths.
 			image:

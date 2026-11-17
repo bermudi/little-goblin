@@ -109,6 +109,11 @@ stop  {id}
 - `background: false` makes the tool call wait for the result. Parallel
   `spawn` calls in one step fan out. Stopping the parent's turn stops
   its waiting children.
+- This is the in-turn reader for documents too long for the parent's
+  context. `read_long` (#583, a tool-less helper call per 150k-char
+  part) was removed in #666: it was written against the old async-only
+  subagents, duplicated this verb once #638 landed, and added an
+  unbounded spend path. Don't add a second in-turn reader.
 
 ### Limits
 

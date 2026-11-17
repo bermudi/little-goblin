@@ -1298,8 +1298,11 @@ describe("thread forget tails", () => {
 			skillSources: {
 				forgetConversation: (conversationId: string) => sources.forgetConversation(conversationId),
 				forConversation: (conversationId: string) => sources.forConversation(conversationId),
+				managedNames: () => sources.managedNames(),
 				skillsDir: join(home, "workspace/skills"),
 				proposedDir: join(home, "workspace/skills-proposed"),
+				usagePath: join(home, "state/skill-usage.json"),
+				archiveDir: join(home, "workspace/skills-archive"),
 			},
 		});
 		const initData = makeInitData({

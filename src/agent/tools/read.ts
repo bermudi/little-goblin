@@ -155,7 +155,15 @@ function clampLine(line: string): string {
 	);
 }
 
-export const readFileTool = (cwd: string, visionAvailable = false) =>
+export const readFileTool = (
+	cwd: string,
+	visionAvailable = false,
+	/** Fires with the resolved absolute path on every successful read —
+	 *  the skill-usage watch (design/skills.md → Self-authoring, /learn,
+	 *  curator) keys the curator's clock on read_file of a catalog
+	 *  SKILL.md. Absent everywhere except the wired runtime. */
+	onRead?: (abs: string) => void,
+) =>
 	defineTool({
 		description:
 			"Read a file's contents with line numbers. offset is 1-based; a negative offset reads the tail (-5 = last 5 lines); limit caps lines returned. " +
@@ -196,6 +204,7 @@ export const readFileTool = (cwd: string, visionAvailable = false) =>
 				}
 				return read;
 			}
+			onRead?.(abs);
 			if (read.text.length === 0) {
 				return { content: "[file is empty — 0 bytes]", lines: 0, shown: 0 };
 			}

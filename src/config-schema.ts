@@ -5,6 +5,7 @@ import { z } from "zod";
 import { cachePruningSchema } from "./cache-pruning-policy.ts";
 import { hindsightConnectionSchema, minScoresSchema } from "./memory/hindsight.ts";
 import { MEMORY_DEFAULTS } from "./memory/policy.ts";
+import { curatorBlockSchema } from "./skill-curator.ts";
 
 // The auth.jsonl record a keyed kind uses when the config omits auth —
 // the kind's own record name, materialized into the file on the next
@@ -809,6 +810,10 @@ export const configSchema = z
 		guest: guestConfigSchema.optional(),
 		reviewer: reviewerConfigSchema.optional(),
 		system1: system1ConfigSchema.optional(),
+		// The deterministic skill curator — hand-edited only, live-read
+		// at pass time so day counts apply without a restart (design/
+		// skills.md → Self-authoring, /learn, curator). Absent = off.
+		curator: curatorBlockSchema.optional(),
 		// Live-read per turn like vision; "" clears (hand-edited only — the
 		// mini app round-trips it through the merge untouched).
 		scripting: z

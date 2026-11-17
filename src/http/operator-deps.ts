@@ -51,8 +51,11 @@ export interface OperatorDeps {
 	skillSources?: {
 		forConversation(conversationId: string): SkillSourceRow[];
 		forgetConversation(conversationId: string): number;
+		managedNames(): Set<string>;
 		skillsDir: string;
 		proposedDir: string;
+		usagePath: string;
+		archiveDir: string;
 	};
 	skillDecisions?: {
 		decide(skill: string, action: SkillAction): SkillDecision;

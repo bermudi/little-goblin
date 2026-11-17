@@ -67,6 +67,41 @@ deployment fact, not code — it lives in `workspace/AGENTS.md`, the bot's
 operating notes, so the bot knows where to look when you say "install X".
 Tell the bot your sources once and it remembers.
 
+The bot also writes skills itself. After a hard or iterative task it
+saves what it learned: an existing skill gets folded ("update the pdf
+skill…" by chat works the same), and a genuinely new one drafts into
+`workspace/skills-proposed/` — never straight into the catalog — and
+waits for your approve/discard like any proposal. `/learn` is the
+explicit door: `/learn <what just happened, in your words>` (bare
+`/learn` in Telegram means "what we just did in this conversation")
+has the bot author a skill from the conversation itself.
+
+## The curator
+
+An optional `curator` block in the config turns on the catalog's usage
+clock. Without it nothing ages; with it:
+
+```json5
+// goblin.json5
+{
+	curator: { staleDays: 14, archiveDays: 30 }, // the defaults
+}
+```
+
+The bot tracks when each skill it wrote was last used or patched.
+Skills you installed yourself are never touched — only the bot's own
+authoring is managed, and only in these moves: after `staleDays` quiet
+it's marked stale (a note in the list, nothing more), after
+`archiveDays` quiet the folder moves to `workspace/skills-archive/` —
+never deleted, so nothing is lost and a restore is one command. A pass
+runs at most weekly (at boot and after settled turns); pinned skills
+skip everything.
+
+`/curator` on Telegram drives it: `status` shows every skill's clock,
+`run` forces a pass, `pin`/`unpin <name>` is your keep override, and
+`restore <name>` brings the newest archived copy back. The app's
+Skills page shows the same counts per skill plus the archived names.
+
 ## Automatic proposals
 
 This runs only with the optional `reviewer` block in the config —
@@ -86,7 +121,7 @@ you can approve from any chat, not just the one where the draft landed.
   don't slow down unrelated chats.
 - The catalog caps at 128 skills. If you somehow get there, that's a bug
   worth mentioning to the bot.
-- There is deliberately no skills UI, no versioning. A skill is files
+- There is deliberately no versioning and no marketplace. A skill is files
   in a folder; installing it is writing those files — you asking in
   chat is the approval. The one exception runs the other way: drafts
   the bot saves on its own always wait for your yes before they join

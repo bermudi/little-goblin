@@ -29,6 +29,7 @@ import type { System1Client } from "../system1.ts";
 import { log } from "../log.ts";
 import { paths } from "../home-layout.ts";
 import { SKILL_PART, type CachedSkillDescriptor, type SkillRef } from "../skill-part.ts";
+import { noteSkillUse } from "../skill-usage.ts";
 import { fetchSkill, stampVerdict, SkillFetchError } from "../agent/skill-fetch.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
@@ -245,7 +246,18 @@ function submitSkillTurn(
 	if (text !== "") parts.push({ type: "text", text });
 	const fields = { temp: "url" in ref };
 	const submitted = submitCommandTurn(deps, target, parts, "skill turn", fields);
-	if (submitted) log.info("skill invoked via /skill", { conversation: target.id, ...fields });
+	if (submitted) {
+		log.info("skill invoked via /skill", { conversation: target.id, ...fields });
+		// A catalog invocation is a use — the curator's clock. Temp
+		// skills never enter the catalog, so they carry no record.
+		if ("name" in ref) {
+			try {
+				noteSkillUse(paths.skillUsage(), ref.name, (deps.now ?? (() => new Date()))());
+			} catch (err) {
+				log.warn("skill use bump failed — invocation stands", err, { skill: ref.name });
+			}
+		}
+	}
 	return submitted;
 }
 

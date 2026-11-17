@@ -150,6 +150,10 @@ export interface RuntimeDeps {
 	// ref). Absent = every claude turn runs the pre-#418 full-prompt
 	// path and nothing is persisted.
 	claudeSessions?: ClaudeSessionStore | undefined;
+	// After a completed turn, off the reply path — the curator pass
+	// gate (interval, config) lives in the callback. A throw is logged
+	// and swallowed: curation never fails a turn.
+	onTurnSettled?: () => void;
 }
 
 export class FencedError extends Error {
@@ -1139,6 +1143,17 @@ export class Runtime {
 						);
 					}
 				}
+			}
+			// Off the reply path, post-compaction: the deterministic
+			// curator pass when its interval elapsed (gated inside the
+			// hook). A throw is logged and swallowed — curation never
+			// fails a turn.
+			try {
+				this.deps.onTurnSettled?.();
+			} catch (err) {
+				log.warn("post-turn curator pass failed — turn already delivered", err, {
+					conversation: convId,
+				});
 			}
 		} catch (err) {
 			// The crash journal is the only record of what the turn's

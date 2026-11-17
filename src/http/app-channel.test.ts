@@ -723,8 +723,11 @@ describe("app operator surface", () => {
 					skillSources: {
 						forConversation: (id: string) => sources.forConversation(id),
 						forgetConversation: (id: string) => sources.forgetConversation(id),
+						managedNames: () => sources.managedNames(),
 						skillsDir,
 						proposedDir,
+						usagePath: join(home, "state", "skill-usage.json"),
+						archiveDir: join(home, "workspace", "skills-archive"),
 					},
 				},
 			});
@@ -817,8 +820,11 @@ describe("app operator surface", () => {
 		operator.skillSources = {
 			forgetConversation: (id: string) => sources.forgetConversation(id),
 			forConversation: (id: string) => sources.forConversation(id),
+			managedNames: () => sources.managedNames(),
 			skillsDir: join(home, "workspace", "skills"),
 			proposedDir: join(home, "workspace", "skills-proposed"),
+			usagePath: join(home, "state", "skill-usage.json"),
+			archiveDir: join(home, "workspace", "skills-archive"),
 		};
 		try {
 			const post = (path: string) =>

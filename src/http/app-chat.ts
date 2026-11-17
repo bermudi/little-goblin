@@ -14,6 +14,8 @@ import { log } from "../log.ts";
 import { NOTE_PART, type Note } from "../notes.ts";
 import type { TurnDone } from "../turn/sink.ts";
 import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
+import { noteSkillUse } from "../skill-usage.ts";
+import { paths } from "../home-layout.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
 import { appStreamSink } from "./app-sse.ts";
 import type { AppTtsResponse } from "./app-wire.ts";
@@ -117,6 +119,27 @@ const chatBody = z
 	});
 
 const ttsBody = z.object({ text: z.string().min(1).max(40_000) });
+
+/** Bump the usage sidecar for every catalog skill part an admitted
+ *  submit carries (the curator's clock — design/skills.md →
+ *  Self-authoring, /learn, curator). Retry and edit resubmit the same
+ *  durable part and are real re-invocations. A bump failure never
+ *  fails the turn: the invocation stands, the clock misses one tick. */
+function bumpSkillUsage(convId: string, parts: readonly { type: string; data?: unknown }[]): void {
+	for (const part of parts) {
+		if (part.type !== SKILL_PART) continue;
+		const ref = skillPartDataSchema.safeParse(part.data);
+		if (!ref.success || !("name" in ref.data)) continue;
+		try {
+			noteSkillUse(paths.skillUsage(), ref.data.name, new Date());
+		} catch (err) {
+			log.warn("skill use bump failed — invocation stands", err, {
+				skill: ref.data.name,
+				conversation: convId,
+			});
+		}
+	}
+}
 
 export async function handleChatRoute(
 	req: Request,
@@ -251,6 +274,7 @@ export async function handleChatRoute(
 					{ status: 500, headers: NO_STORE },
 				);
 			}
+			bumpSkillUsage(convId, lastUser.message.parts);
 			log.info("app stream start", { conversation: convId, retry: true });
 			return new Response(body, {
 				headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },
@@ -404,6 +428,7 @@ export async function handleChatRoute(
 					{ status: 500, headers: NO_STORE },
 				);
 			}
+			bumpSkillUsage(convId, message.parts);
 			log.info("app stream start", { conversation: convId, edit: true });
 			return new Response(stream.body, {
 				headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },
@@ -457,6 +482,7 @@ export async function handleChatRoute(
 				{ status: 500, headers: NO_STORE },
 			);
 		}
+		bumpSkillUsage(convId, message.parts);
 		log.info("app stream start", { conversation: convId });
 		return new Response(body, {
 			headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },

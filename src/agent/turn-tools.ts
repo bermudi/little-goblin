@@ -90,6 +90,10 @@ export interface TurnToolsDeps {
 	// tg/guest.ts owns the exclusion policy — injected so tools never
 	// imports back into tg/.
 	filterGuests<T extends Record<string, unknown>>(conv: Conversation, tools: T): T;
+	/** Successful read_file resolved paths — the skill-usage watch
+	 *  (design/skills.md → Self-authoring, /learn, curator). Absent in
+	 *  tests. */
+	noteSkillRead?(abs: string): void;
 }
 
 export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
@@ -148,6 +152,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		const delegate = delegateDeps(conv, workdir);
 		const tools = makeTools({
 			cwd: workdir,
+			...(deps.noteSkillRead !== undefined ? { onRead: deps.noteSkillRead } : {}),
 			voice:
 				tts && !configRef.ttsDown && deliverVoice
 					? {

@@ -160,8 +160,11 @@ describe("app attention", () => {
 				skillSources: {
 					forConversation: () => [],
 					forgetConversation: () => 0,
+					managedNames: () => new Set(),
 					skillsDir: join(dirs, "skills"),
 					proposedDir: join(dirs, "skills-proposed"),
+					usagePath: join(dirs, "skill-usage.json"),
+					archiveDir: join(dirs, "skills-archive"),
 				},
 			},
 		});

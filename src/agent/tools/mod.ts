@@ -99,6 +99,10 @@ export interface MakeToolsOptions {
 	// Codex conversations mount the backend's hosted web_search instead of
 	// the local search tool — the mode only decides external_web_access.
 	hostedSearch?: { externalWebAccess: boolean } | undefined;
+	/** Fires with the resolved absolute path on every successful
+	 *  read_file — the skill-usage watch (read_file of a catalog SKILL.md
+	 *  is a use; design/skills.md → Self-authoring, /learn, curator). */
+	onRead?: (abs: string) => void;
 }
 
 // The codex provider tool — args travel as the wire tool's
@@ -127,9 +131,10 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		desktop,
 		responsibility,
 		ui,
+		onRead,
 	} = options;
 	return {
-		read_file: readFileTool(cwd, vision !== undefined),
+		read_file: readFileTool(cwd, vision !== undefined, onRead),
 		write_file: writeFileTool(cwd),
 		edit_file: editFileTool(cwd),
 		bash: bashTool(cwd),

@@ -9,6 +9,7 @@ import type { ConfigRef } from "../config.ts";
 import type { TtsConfig } from "../config-schema.ts";
 import type { ConversationStore } from "../conversation.ts";
 import type { Runtime } from "../runtime.ts";
+import type { SkillSources } from "../skill-provenance.ts";
 import type { System1Client } from "../system1.ts";
 import type { CommandMemoryDeps } from "./commands.ts";
 import type { TelegramMailApproval } from "./mail-approval.ts";
@@ -30,4 +31,7 @@ export interface BotDeps {
 	mail?: () => TelegramMailApproval | undefined;
 	programApproval?: () => TelegramProgramApproval | undefined;
 	followUpGate?: () => Pick<System1Client, "decide"> | undefined;
+	// The /curator door's provenance read — managed names. Absent when
+	// tests build BotDeps slim: /curator then answers unavailable.
+	skillSources?: Pick<SkillSources, "managedNames">;
 }

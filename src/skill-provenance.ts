@@ -125,6 +125,16 @@ export class SkillSources {
 			.changes;
 	}
 
+	// Distinct skills with at least one provenance row — the
+	// curator's managed set. Only agent-authored names enter this;
+	// operator installs and seeded skills carry no row.
+	managedNames(): Set<string> {
+		const rows = this.db.query<{ skill: string }, []>(
+			`SELECT DISTINCT skill FROM skill_sources ORDER BY skill`,
+		).all();
+		return new Set(rows.map((r) => r.skill));
+	}
+
 	// Rows for one skill, newest write first — the decide doors' lookup
 	// for the conversation that learned it (the resolution event lands
 	// there). Raw rows; liveness joins at the route.

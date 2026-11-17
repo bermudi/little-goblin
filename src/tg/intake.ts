@@ -26,6 +26,7 @@ import { ensurePersonaClass, guestRefusalText, refusalDue } from "./guest.ts";
 import { sendRollMarker } from "./notify.ts";
 import { handleSkillCommand, skillCommandDeps } from "./skill-command.ts";
 import { handleLearnCommand } from "./learn-command.ts";
+import { handleCuratorCommand } from "./curator-command.ts";
 import { pingTypingOnce } from "./delivery.ts";
 import {
 	mediaFromMessage,
@@ -59,6 +60,7 @@ const OPERATOR_ONLY_COMMANDS = new Set([
 	"/compact",
 	"/skill",
 	"/learn",
+	"/curator",
 ]);
 
 function externalOriginLabel(origin: MessageOrigin): string {
@@ -417,6 +419,38 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 					).catch((e: unknown) => {
 						log.warn(`${command.command} failure reply failed`, e);
 					});
+				});
+				handled = true;
+			} else if (command.command === "/curator") {
+				// The curator door — replies only, never submits a turn.
+				// Absent skillSources (slim test deps) answers unavailable.
+				const run =
+					deps.skillSources === undefined
+						? Promise.reject(new Error("curator unavailable — provenance store not wired"))
+						: handleCuratorCommand(
+								{
+									api: env.api,
+									configRef: deps.configRef,
+									skillSources: deps.skillSources,
+									chatId: target?.chatId ?? msg.chat.id,
+									threadId: target?.threadId ?? null,
+								},
+								text,
+							);
+				void run.catch((err: unknown) => {
+					log.error("/curator failed", err, { conversation: target?.id ?? lane });
+					withTimeout(
+						env.api.sendMessage(
+							target?.chatId ?? msg.chat.id,
+							`command failed: ${err instanceof Error ? err.message : String(err)}`,
+							target == null || target.threadId === null
+								? {}
+								: { message_thread_id: target.threadId },
+							),
+							"sendMessage (/curator failure)",
+						).catch((e: unknown) => {
+						log.warn("/curator failure reply failed", e);
+						});
 				});
 				handled = true;
 			} else {

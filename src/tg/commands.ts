@@ -403,6 +403,7 @@ export const COMMANDS = [
 	{ command: "memory", description: "memory status, retry or dismiss blocked retention" },
 	{ command: "forget", description: "list or delete memorized sources" },
 	{ command: "skill", description: "invoke a skill by name, or fetch one from a GitHub URL" },
+	{ command: "curator", description: "skill usage clock: status, run, pin, unpin, restore" },
 	{ command: "stop", description: "fence the running turn" },
 	{ command: "compact", description: "summarize older history to free context" },
 ] as const;

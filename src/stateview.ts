@@ -21,6 +21,7 @@ import {
 import { join, sep } from "node:path";
 import { loadCatalog, parseSkill, readHead } from "./agent/skills.ts";
 import { LEVELS, type LogLevel } from "./log.ts";
+import { readSkillUsage } from "./skill-usage.ts";
 import { diffSkill, type SkillDiff } from "./skill-diff.ts";
 
 // ---------- skills ----------
@@ -48,6 +49,32 @@ export interface SkillsResponse {
 	proposed: ProposedSkillItem[];
 	/** The invocation picker's view: valid catalog entries, manual-only included. */
 	catalog: PickerSkillItem[];
+	/** The curator's clock — the usage sidecar joined on the catalog
+	 *  rows plus managed-but-unrecorded names (curator-command.ts's
+	 *  status view minus the anchor math). Absent when the sidecar
+	 *  write path is not wired (tests). */
+	usage?: SkillUsageRow[];
+	/** The newest archived copy per name — the /curator restore menu. */
+	archived?: ArchivedSkillItem[];
+}
+
+/** One sidecar row as the app shows it (state and counts; the pass's
+ *  day math lives server-side, /curator status renders it). */
+export interface SkillUsageRow {
+	skill: string;
+	state: "active" | "stale" | "archived";
+	pinned: boolean;
+	useCount: number;
+	patchCount: number;
+	lastUsedAt: string | null;
+	lastPatchedAt: string | null;
+}
+
+/** One archived skill — the newest timestamp-suffixed copy per name. */
+export interface ArchivedSkillItem {
+	skill: string;
+	/** The archived dir's name under workspace/skills-archive/. */
+	dir: string;
 }
 
 // One picker row (ruling 2026-10-21): what an explicit invocation needs
@@ -238,6 +265,66 @@ export function listSkills(skillsDir: string, proposedDir: string): SkillsRespon
 		proposed: listProposedSkills(skillsDir, proposedDir),
 		catalog: listPickerSkills(skillsDir),
 	};
+}
+
+/** The curator's read on the catalog — usage rows and the archived
+ *  list, joined onto the listing the app already had. ENOENT on the
+ *  sidecar or archive renders empty: curation telemetry is optional
+ *  surface, not a listing failure. */
+export function listSkillsWithUsage(
+	skillsDir: string,
+	proposedDir: string,
+	archiveDir: string,
+	usagePath: string,
+	managed: ReadonlySet<string>,
+): SkillsResponse {
+	const base = listSkills(skillsDir, proposedDir);
+	const file = readSkillUsage(usagePath);
+	const names = new Set<string>([...managed, ...Object.keys(file.skills)]);
+	const usage: SkillUsageRow[] = [];
+	for (const skill of names) {
+		const rec = file.skills[skill];
+		if (rec === undefined) continue;
+		usage.push({
+			skill,
+			state: rec.state,
+			pinned: rec.pinned,
+			useCount: rec.useCount,
+			patchCount: rec.patchCount,
+			lastUsedAt: rec.lastUsedAt,
+			lastPatchedAt: rec.lastPatchedAt,
+		});
+	}
+	usage.sort((a, b) => a.skill.localeCompare(b.skill));
+	const archived = listArchivedSkills(archiveDir);
+	return {
+		...base,
+		...(usage.length > 0 ? { usage } : {}),
+		...(archived.length > 0 ? { archived } : {}),
+	};
+}
+
+/** The newest archived copy per name — bare name wins over a stamp
+ *  suffix, newest stamp wins among stamps. Pass the archive dir; the
+ *  route owns paths. ENOENT renders empty. */
+export function listArchivedSkills(archiveDir: string): ArchivedSkillItem[] {
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(archiveDir, { withFileTypes: true });
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw e;
+	}
+	const byName = new Map<string, ArchivedSkillItem>();
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue;
+		const stampIdx = entry.name.indexOf(".");
+		const skill = stampIdx === -1 ? entry.name : entry.name.slice(0, stampIdx);
+		const prev = byName.get(skill);
+		// Newest wins: the stamp is lexicographically sortable ISO.
+		if (prev === undefined || entry.name > prev.dir) byName.set(skill, { skill, dir: entry.name });
+	}
+	return [...byName.values()].sort((a, b) => a.skill.localeCompare(b.skill));
 }
 
 // The containment check every read funnels through, enforced in

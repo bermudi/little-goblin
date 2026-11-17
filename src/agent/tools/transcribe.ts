@@ -11,6 +11,31 @@ import { truncatedFooter, trySpill, windowText } from "./truncate.ts";
 // Same budget as bash and fetch: a multi-hour file is hundreds of
 // thousands of chars, and all of it used to land in context (#668).
 const TRANSCRIPT_BUDGET = 15_000;
+const TRANSCRIPT_LINE_CHARS = 500;
+
+export function wrapTranscript(text: string): string {
+	return text
+		.split("\n")
+		.flatMap((line) => {
+			const wrapped: string[] = [];
+			let remaining = Array.from(line);
+			while (remaining.length > TRANSCRIPT_LINE_CHARS) {
+				let breakAt = -1;
+				for (let i = TRANSCRIPT_LINE_CHARS - 1; i >= 0; i--) {
+					if (/\s/u.test(remaining[i]!)) {
+						breakAt = i;
+						break;
+					}
+				}
+				const cut = breakAt < 0 ? TRANSCRIPT_LINE_CHARS : breakAt;
+				wrapped.push(remaining.slice(0, cut).join(""));
+				remaining = remaining.slice(breakAt < 0 ? cut : breakAt + 1);
+			}
+			wrapped.push(remaining.join(""));
+			return wrapped;
+		})
+		.join("\n");
+}
 
 export const transcribeInputSchema = z.object({
 	path: z
@@ -54,7 +79,9 @@ export function transcribeTool(
 					return { error: "no transcript produced — the audio may contain no speech" };
 				}
 				if (text.length <= TRANSCRIPT_BUDGET) return { transcript: text };
-				const file = trySpill(paths.transcriptcache(), text);
+				// read_file pages by line and clamps at 2,000 chars; Whistle
+				// output is one line, so wrap the spill for reliable paging.
+				const file = trySpill(paths.transcriptcache(), wrapTranscript(text));
 				log.info("transcript spilled", { path: target, file, chars: text.length });
 				return {
 					transcript:

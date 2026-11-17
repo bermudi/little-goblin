@@ -16,7 +16,7 @@ import { defineTool, type Tool, type Tools } from "../../tool.ts";
 // channel tools (speak, send_file, ui, mail, artifact — a child has no
 // operator channel), and the memory surfaces (memory_search,
 // memory_reflect, note — a child recalls nothing and leaves nothing;
-// program/herdr/desktop are the operator's own machinery).
+// program/desktop are the operator's own machinery).
 export const CHILD_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
 	"agent",
 	"delegate",
@@ -30,7 +30,6 @@ export const CHILD_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
 	"memory_reflect",
 	"note",
 	"program",
-	"herdr",
 	"desktop",
 ]);
 

@@ -72,7 +72,6 @@ describe("child tool allowlist", () => {
 			"memory_reflect",
 			"note",
 			"program",
-			"herdr",
 			"desktop",
 			"delegate",
 			"subagent",

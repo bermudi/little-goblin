@@ -14,7 +14,7 @@ export interface BootPins {
 	telegramEnabled: boolean;
 	apiRoot: Config["telegram"]["apiRoot"];
 	delegation: Config["delegation"];
-	subagents: Config["subagents"];
+	desktops: Config["desktops"];
 	// Bun.serve binds the port once at boot — a mid-run edit rewrites the
 	// file and applies nothing, so it warns like the other pins.
 	http: Config["http"];
@@ -31,7 +31,7 @@ export function bootPinnedDiffs(pins: BootPins, cur: Config): string[] {
 	if (cur.telegram.enabled !== pins.telegramEnabled) diffs.push("telegram.enabled");
 	if (cur.telegram.apiRoot !== pins.apiRoot) diffs.push("telegram.apiRoot");
 	if (!eq(cur.delegation, pins.delegation)) diffs.push("delegation");
-	if (!eq(cur.subagents, pins.subagents)) diffs.push("subagents");
+	if (!eq(cur.desktops, pins.desktops)) diffs.push("desktops");
 	if (!eq(cur.http, pins.http)) diffs.push("http");
 	if (!eq(cur.reviewer, pins.reviewer)) diffs.push("reviewer");
 	return diffs;
@@ -42,7 +42,7 @@ export function bootPinnedDiffs(pins: BootPins, cur: Config): string[] {
 const PIN_LABEL: Record<string, string> = {
 	memory: "memory config",
 	delegation: "delegation config",
-	subagents: "subagents config",
+	desktops: "desktops config",
 	http: "http config",
 	reviewer: "reviewer config",
 };
@@ -104,7 +104,7 @@ export function wireConfigWrite(deps: ConfigWriteDeps): ConfigWrite {
 			if (sandboxInSet && !sandboxNow) deps.warnStrandedSandboxes();
 			sandboxInSet = sandboxNow;
 			// Memory is a boot-time snapshot (queue rows bind to the
-			// endpoint+bank hash); delegation and subagents are boot-frozen
+			// endpoint+bank hash); delegation and desktops are boot-frozen
 			// adapters and pool limits. Reviewer wiring (including presence,
 			// gate thresholds and evidence limits) is also boot-bound — a
 			// save never creates, replaces or removes the running reviewer.

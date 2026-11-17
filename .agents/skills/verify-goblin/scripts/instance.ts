@@ -158,7 +158,7 @@ function seedHome(home: string, fakePort: number): void {
 	// computer-agent verification) — the pool is lazy, nothing boots
 	// until a desktop is claimed.
 	if (process.env.GOBLIN_TRY_DESKTOPS === "1") {
-		config.subagents = { desktops: {} };
+		config.desktops = {};
 	}
 	// GOBLIN_TRY_MODEL=<provider>/<model> swaps the fake model for a real
 	// one (issue #606's screenshot E2E needs an image-capable sanctioned

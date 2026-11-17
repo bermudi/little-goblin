@@ -50,7 +50,6 @@ describe("main branch regressions", () => {
 			"vision",
 			"image",
 			"sandbox",
-			"subagents",
 			"scripting",
 			"delegation",
 			"guest",

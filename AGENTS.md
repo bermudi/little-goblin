@@ -60,9 +60,10 @@ surface conflicts with the direction rather than silently overriding it.
   `foo.test.ts`). `bun test` to run, `bun run typecheck` (both tsc
   programs) before committing.
 - **Each external contract is known by one adapter.** Only `src/tg/`
-  knows grammy; only `src/subagents/` knows pi-durable/pi-ai/chord;
-  the podman, gws, GitHub and T3 Code wire contracts live in
-  `src/{podman,mail-gws,github,t3}.ts`. Domain modules see the adapter's
+  knows grammy; the podman, gws, GitHub, T3 Code, cua-driver and
+  Anthropic Agent SDK wire contracts live in
+  `src/{podman,mail-gws,github,t3,desktops,agent/claude-code}`. Domain
+  modules see the adapter's
   types, never the vendor's — `module-boundaries.test.ts` enforces the
   importable cases.
   (The Vercel AI SDK is the platform, but goblin owns its data shapes:
@@ -181,8 +182,8 @@ design-doc ruling (delegation.md, mail.md, sandbox.md).
 
 Fixture hygiene: bun runs all files of one invocation in a single
 process and scopes a module-level `afterEach` to the first-importing
-file — `bunfig.toml`'s `[test]` preload of `src/testkit.ts` and
-`src/subagents/testing.ts` makes their cleanup hooks global (without
+file — `bunfig.toml`'s `[test]` preload of `src/testkit.ts`
+makes its cleanup hooks global (without
 it, full-suite runs leaked ~86k mkdtemp dirs until /tmp hit ENOSPC,
 2026-10-22). Run `bun test` from the repo root so the preload loads;
 new fixture helpers must not rely on their own module-level hooks.

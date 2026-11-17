@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { modelCatalogFor } from "../agent/models-dev.ts";
 import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
-import { authDefaults, type CapabilityName, type Config, capabilityNames, fetchKinds, providerKinds, type SubagentsConfig, searchKinds, thinkingLevels, transcriptionDefaults, transcriptionKinds, ttsCloudDefaults } from "../config-schema.ts";
+import { authDefaults, type CapabilityName, type Config, capabilityNames, fetchKinds, providerKinds, searchKinds, transcriptionDefaults, transcriptionKinds, ttsCloudDefaults } from "../config-schema.ts";
 import { ConfigValidationError, loadConfig, parseConfig, writeConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "../services.ts";
@@ -13,7 +13,6 @@ import type {
 	ConfigPostBody,
 	ConfigResponse,
 	SecretStoreResponse,
-	SubagentsWire,
 } from "./operator-wire.ts";
 
 // Settings: the config door, ChatGPT sign-in, auth records, and the
@@ -49,7 +48,6 @@ export async function configRoute(r: OperatorRequest): Promise<Response | null> 
 				// Cached only: the settings door never waits on models.dev.
 				modelCatalog: modelCatalogFor(config),
 				capabilities: capabilityStates(config),
-				subagents: subagentsWire(config),
 				serviceNames,
 				providerPresets,
 			};
@@ -176,7 +174,6 @@ const CONFIG_POST_KEYS = {
 	operators: true,
 	allowedUsers: true,
 	delegation: true,
-	subagents: true,
 	telegram: true,
 	publicUrl: true,
 	http: true,
@@ -220,46 +217,6 @@ const configPostBodySchema = z
 		),
 	)
 	.strict();
-
-// The subagents wire arm — the settings editor's face of the block. The
-// config schema stays the gate for urls and thinking rungs; this only
-// pins the shape the merge reads.
-const subagentModelPostSchema = z
-	.object({
-		auth: z.string().min(1),
-		id: z.string().min(1),
-		baseUrl: z.url(),
-		thinking: z.enum(thinkingLevels),
-	})
-	.strict();
-const subagentsPostSchema = z
-	.object({
-		worker: subagentModelPostSchema.nullable(),
-		computer: subagentModelPostSchema.nullable(),
-		desktopImage: z.string().min(1),
-	})
-	.strict();
-
-// Active block, else the parked one — a parked block still prefills the
-// editor and its restoration stash.
-function subagentsWire(config: Config): SubagentsWire | null {
-	const s = config.subagents ?? config.parked?.subagents;
-	if (s === undefined) return null;
-	const arm = (t: SubagentsConfig["worker"]): SubagentsWire["worker"] =>
-		t === undefined
-			? null
-			: {
-					auth: t.model.auth,
-					id: t.model.id,
-					baseUrl: t.model.baseUrl,
-					thinking: t.model.thinking,
-				};
-	return {
-		worker: arm(s.worker),
-		computer: arm(s.computer),
-		desktopImage: s.desktops.image,
-	};
-}
 
 function capabilityState(config: Config, k: CapabilityName): CapabilityState {
 	if (config[k] !== undefined) return { state: "on", hint: null };
@@ -352,32 +309,6 @@ async function saveConfig(
 			const isBlock = typeof v === "object" && v !== null && !Array.isArray(v);
 			if (k === "telegram" && isBlock) {
 				candidate.telegram = { ...normalized.telegram, ...v };
-				continue;
-			}
-			// maxRuns and the desktop pool limits are file-only — the
-			// editor sends models and the image; this merge keeps the
-			// file's own tuning: the active block's, else the parked one.
-			if (k === "subagents" && isBlock) {
-				const w = subagentsPostSchema.parse(v);
-				if (w.worker === null && w.computer === null) {
-					log.warn(`${actor.via} config save refused — subagents with no model type`, who);
-					return fail("pick a model for the worker or computer use", 422);
-				}
-				const prev = normalized.subagents ?? (parked.subagents as SubagentsConfig | undefined);
-				const model = (m: NonNullable<(typeof w)["worker"]>) => ({
-					model: { ...m, api: "openai-completions" as const },
-				});
-				candidate.subagents = {
-					...(prev === undefined ? {} : { maxRuns: prev.maxRuns }),
-					...(w.worker === null ? {} : { worker: model(w.worker) }),
-					...(w.computer === null ? {} : { computer: model(w.computer) }),
-					desktops:
-						prev === undefined
-							? { image: w.desktopImage }
-							: { ...prev.desktops, image: w.desktopImage },
-				};
-				// Like delegation: an edited block supersedes a parked copy.
-				delete parked.subagents;
 				continue;
 			}
 			// "" on a parkable block keeps its contents — off, not deleted.

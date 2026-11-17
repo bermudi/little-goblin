@@ -254,7 +254,7 @@ describe("isTransientTurnFailure", () => {
 	});
 
 	test("z.ai balance exhaustion (429 code 1113) is quota, not transient", () => {
-		// The phrase "Insufficient balance" is observed (design/subagents.md);
+		// The phrase "Insufficient balance" is observed (design/memory.md);
 		// the exact JSON envelope below is unverified.
 		const err = new APICallError({
 			message: "Insufficient balance",

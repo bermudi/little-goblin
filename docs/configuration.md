@@ -380,45 +380,34 @@ explicit harness in a `delegate` call always wins over a role.
 the delegate tool carries it as a prompt rule, editable in
 Settings → Delegation; choosing the harness itself stays goblin's call.
 
-### Subagents
+### Desktops
 
-Off when unset. With a `subagents` block, the bot gets `subagent` and
-`desktop` tools: a code worker and a computer-use agent, each with its
-own model. Settings → Capabilities edits both models and the desktop
-image; the block is boot-pinned, so a change applies after an approved
-restart.
+Off when unset. A `desktops` block enables the desktop pool: the
+`desktop` tool (allocate, claim, screenshot, file import/export,
+network toggle) for goblin's own turns, and the `computer` agent type —
+a child conversation that drives a named desktop through `inspect`,
+`act`, `launch`, `screenshot` and `ask_operator` (design/agents.md →
+Computer use). The block is boot-pinned, so a change applies after an
+approved restart. Hand-edited only — Settings does not expose it.
 
 ```json5
-subagents: {
-  maxRuns: 3,
-  worker: {
-    model: {
-      auth: "zai", // auth.jsonl record name
-      id: "glm-5.3",
-      baseUrl: "https://api.z.ai/api/coding/paas/v4",
-      api: "openai-completions",
-      thinking: "high",
-    },
-  },
-  // computer: { model: { auth: "zai", id: "glm-5.3-flash",
-  //   baseUrl: "https://api.z.ai/api/coding/paas/v4",
-  //   api: "openai-completions", thinking: "low" } },
-  desktops: {
-    image: "localhost/goblin-desktop:1",
-    max: 3, idleHours: 24, memory: "3g", cpus: 2, pids: 1024,
-  },
+desktops: {
+  image: "localhost/goblin-desktop:1",
+  max: 3, idleHours: 24, memory: "3g", cpus: 2, pids: 1024,
 },
 ```
 
-An absent type = that type is off; a block with neither is a config
-error. The models above are the operator ruling (design/subagents.md →
-Models): both on z.ai's Coding Plan URL, and `glm-5.3-flash` cannot
-disable thinking — `low` is its minimum. The worker runs its code
-through the sandbox, so it also needs a `sandbox` block (Settings notes
-this while Sandboxed shell is off). The desktop image must already be
-built on this machine; goblin never pulls it. `maxRuns` and the other
-`desktops` fields are hand-edited only — Settings preserves them when
-saving.
+The desktop image must already be built on this machine; goblin never
+pulls it (docs/operations.md → Desktop image).
+
+### Retired: `subagents`
+
+The `subagents` config block is gone — native `agent` children replaced
+it (issue #609). A config that still carries `subagents` (top level or
+under `parked`) fails boot with a loud error naming the replacement:
+the `agent` tool and its agent types, the `computer` type for desktops.
+Delete the block; the desktop pool moved to the top-level `desktops`
+block above.
 
 ### Telegram
 

@@ -37,7 +37,7 @@ function pinsFor(c: Config): BootPins {
 		telegramEnabled: c.telegram.enabled,
 		apiRoot: c.telegram.apiRoot,
 		delegation: c.delegation,
-		subagents: c.subagents,
+		desktops: c.desktops,
 		http: c.http,
 		reviewer: c.reviewer,
 	};
@@ -81,7 +81,7 @@ describe("bootPinnedDiffs", () => {
 		["telegram.enabled", `telegram:{enabled:false}`, "telegram.enabled"],
 		["apiRoot", `telegram:{apiRoot:"http://127.0.0.1:9"}`, "telegram.apiRoot"],
 		["delegation", `delegation:{harnesses:{a:{provider:"x",model:"m"}}}`, "delegation"],
-		["subagents", `subagents:{maxRuns:2}`, "subagents"],
+		["desktops", `desktops:{max:5}`, "desktops"],
 		["http", `http:{port:9999}`, "http"],
 		["reviewer", `reviewer:{auth:"openrouter"}`, "reviewer"],
 	])("a %s change reports its key", (_label, extra, key) => {
@@ -105,9 +105,9 @@ describe("bootPinnedDiffs", () => {
 	test("multiple diffs report in pin order, not diff order", () => {
 		const boot = loadExtra("");
 		const cur = loadExtra(
-			`subagents:{maxRuns:2},appToken:"other",memory:{baseUrl:"http://127.0.0.1:8888",bankId:"b"}`,
+			`desktops:{max:5},appToken:"other",memory:{baseUrl:"http://127.0.0.1:8888",bankId:"b"}`,
 		);
-		expect(bootPinnedDiffs(pinsFor(boot), cur)).toEqual(["memory", "appToken", "subagents"]);
+		expect(bootPinnedDiffs(pinsFor(boot), cur)).toEqual(["memory", "appToken", "desktops"]);
 	});
 });
 

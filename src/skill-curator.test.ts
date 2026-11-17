@@ -228,15 +228,15 @@ describe("curator surfaces", () => {
 	test("pin persists; unknown skills refuse; unpin works", () => {
 		const { usagePath, sources } = home();
 		sources.record("app/1", "known", "turn");
-		expect(setSkillPinned(usagePath, "unknown", true, sources.managedNames())).toBe(false);
-		expect(setSkillPinned(usagePath, "known", true, sources.managedNames())).toBe(true);
+		expect(setSkillPinned(usagePath, "unknown", true, sources.managedNames(), new Date())).toBe(false);
+		expect(setSkillPinned(usagePath, "known", true, sources.managedNames(), new Date())).toBe(true);
 		expect(readSkillUsage(usagePath).skills["known"]?.pinned).toBe(true);
 		// A recorded-but-unmanaged skill can pin too (telemetry row).
 		const file = readSkillUsage(usagePath);
 		file.skills["recorded"] = freshUsageRecord(new Date());
 		writeSkillUsage(usagePath, file);
-		expect(setSkillPinned(usagePath, "recorded", true, sources.managedNames())).toBe(true);
-		expect(setSkillPinned(usagePath, "known", false, sources.managedNames())).toBe(true);
+		expect(setSkillPinned(usagePath, "recorded", true, sources.managedNames(), new Date())).toBe(true);
+		expect(setSkillPinned(usagePath, "known", false, sources.managedNames(), new Date())).toBe(true);
 		expect(readSkillUsage(usagePath).skills["known"]?.pinned).toBe(false);
 	});
 

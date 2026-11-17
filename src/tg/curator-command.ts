@@ -32,8 +32,8 @@ export interface CuratorCommandDeps {
 	skillSources: Pick<SkillSources, "managedNames">;
 	chatId: number;
 	threadId: number | null;
-	/** Test seam — the clock. */
-	now?: () => Date;
+	/** Test seam — the clock in Date.now millis, called per use. */
+	now?: () => number;
 }
 
 const USAGE = [
@@ -45,8 +45,11 @@ const USAGE = [
 	"restore <name> — move the newest archived copy back",
 ].join("\n");
 
-// The command is synchronous-fs by design: one small sidecar, one tiny
-// archive dir, bounded by the catalog's own naming rule.
+// Test seam — the exempt clock-read shape: a `now` parameter default
+// reading the clock (src/clock-reads.test.ts).
+function clock(now = Date.now()): Date {
+	return new Date(now);
+}
 export async function handleCuratorCommand(
 	deps: CuratorCommandDeps,
 	text: string,
@@ -62,8 +65,8 @@ export async function handleCuratorCommand(
 		).then(() => {});
 
 	const cfg = curatorConfig(deps.configRef.current.curator);
+	const now = (): Date => clock(deps.now?.());
 	if (sub === "status") {
-		const now = deps.now ?? (() => new Date());
 		const file = readSkillUsage(paths.skillUsage());
 		const rows = curatorStatusRows(file, deps.skillSources.managedNames(), now());
 		const body =
@@ -83,13 +86,13 @@ export async function handleCuratorCommand(
 			await reply("curator is off — add a `curator` block to goblin.json5 first.");
 			return true;
 		}
-		const now = (deps.now ?? (() => new Date()))();
+		const passNow = now();
 		const usagePath = paths.skillUsage();
 		const { file: next, counters } = runCuratorPass(
 			readSkillUsage(usagePath),
 			deps.skillSources.managedNames(),
 			cfg,
-			now,
+			passNow,
 		);
 		writeSkillUsage(usagePath, next);
 		log.info("curator run via /curator", { ...counters });
@@ -110,6 +113,7 @@ export async function handleCuratorCommand(
 			parsed.data,
 			sub === "pin",
 			deps.skillSources.managedNames(),
+			now(),
 		);
 		log.info("curator pin via /curator", { skill: parsed.data, pinned: sub === "pin", ok });
 		await reply(ok ? `${parsed.data} ${sub === "pin" ? "pinned" : "unpinned"}.` : `no record for ${parsed.data} — invoke it or author it first.`);

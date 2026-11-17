@@ -216,11 +216,12 @@ export function setSkillPinned(
 	skill: string,
 	pinned: boolean,
 	managed: ManagedNames,
+	now: Date,
 ): boolean {
 	const file = readSkillUsage(usagePath);
 	const prev = file.skills[skill];
 	if (prev === undefined && !managed.has(skill)) return false;
-	file.skills[skill] = { ...(prev ?? freshUsageRecord(new Date())), pinned };
+	file.skills[skill] = { ...(prev ?? freshUsageRecord(now)), pinned };
 	writeSkillUsage(usagePath, file);
 	return true;
 }

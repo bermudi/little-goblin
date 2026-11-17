@@ -288,6 +288,12 @@ export interface TurnMetadata {
 	model: string;
 	finishReason: string;
 	durationMs: number;
+	/** Turn-finish instant (ISO) — how the transcript answers "how old
+	 *  is this reply" live. History serves the same key on every
+	 *  message from the event row's append stamp, so pre-stamp turns
+	 *  and non-reply events carry it too. Absent on pre-stamp stored
+	 *  metadata. */
+	createdAt?: string;
 	/** Turn start → the model's first streamed content token (text,
 	 * reasoning, or tool input), same base as durationMs. Absent when
 	 * nothing streamed and on pre-stamp history. */

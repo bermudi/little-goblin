@@ -37,6 +37,7 @@ import {
   unlandedMeta,
   UserActions,
 } from "./chat/MetaLine.tsx";
+import { Age, messageCreatedAt } from "./chat/messageAge.tsx";
 import type { AttachmentRef } from "../../src/agent/attachments.ts";
 import type {
   AppCompactionMark,
@@ -938,6 +939,7 @@ function Chat({
                     </details>
                   );
                   if (unlanded.reply !== null) {
+                    const at = messageCreatedAt(m);
                     el = (
                       <div className="msg assistant unlanded">
                         <MessageParts
@@ -948,7 +950,15 @@ function Chat({
                           onOpenNote={onOpenNote}
                           ended
                         />
-                        <div className="msg-meta">{label}</div>
+                        <div className="msg-meta">
+                          {label}
+                          {at !== null && (
+                            <>
+                              {" · "}
+                              <Age at={at} />
+                            </>
+                          )}
+                        </div>
                         {note}
                       </div>
                     );

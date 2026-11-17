@@ -600,13 +600,13 @@ describe("guest composition (index.ts's order: filter → withScript → refilte
 	});
 });
 
-test("herdr is not in the script's callable set", () => {
-	expect(policyOf("herdr").scriptable).toBe(false);
+test("delegate is not in the script's callable set", () => {
+	expect(policyOf("delegate").scriptable).toBe(false);
 	const tools = composed({
-		herdr: counter(() => "unreachable"),
+		delegate: counter(() => "unreachable"),
 		bash: counter(() => "x"),
 	});
-	expect(descriptionOf(tools)).not.toContain("tools.herdr");
+	expect(descriptionOf(tools)).not.toContain("tools.delegate");
 });
 
 describe("nested presentations", () => {

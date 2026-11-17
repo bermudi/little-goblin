@@ -24,7 +24,7 @@ import { FileIcon, parseAttachmentRef } from "./MessageParts.tsx";
 import { ContextGauge } from "./ContextGauge.tsx";
 import { NotePicker } from "./NotePicker.tsx";
 import { appendQuote, type QuoteSpeaker } from "./QuoteFab.tsx";
-import type { StagedNote, StagedSkill, StagedUpload } from "./staged.ts";
+import { stagedKey, type StagedNote, type StagedSkill, type StagedUpload } from "./staged.ts";
 import { useAttachments } from "./useAttachments.ts";
 import { skillRefEquals, useSkillNoteStaging } from "./useSkillNoteStaging.ts";
 import { useSubmit } from "./useSubmit.ts";
@@ -314,20 +314,20 @@ export function Composer({
 				const data = parseAttachmentRef(p.data);
 				if (data === null) continue; // malformed persisted blob — never restaged
 				uploads.push({
-					key: crypto.randomUUID(),
+					key: stagedKey(),
 					ref: data,
 					...(data.speech === true ? { speech: true } : {}),
 				});
 			} else if (p.type === "data-note") {
 				const data = p.data as { id: string; title: string };
-				notes.push({ key: crypto.randomUUID(), id: data.id, title: data.title });
+				notes.push({ key: stagedKey(), id: data.id, title: data.title });
 			} else if (p.type === "data-skill") {
 				// The ref rides verbatim for the resend — the chip's display
 				// name derives like SkillChip's: the catalog name, or the
 				// staged <digest>/<name>/SKILL.md layout's parent directory.
 				const data = p.data as StagedSkill["ref"];
 				skills.push({
-					key: crypto.randomUUID(),
+					key: stagedKey(),
 					name:
 						"name" in data ? data.name : (data.path.split("/").filter(Boolean).at(-2) ?? "unknown"),
 					ref: data,
@@ -674,7 +674,12 @@ export function Composer({
 							</button>
 							{modelMenuOpen && (
 								<div className="note-pick composer-pick model-pop" role="menu">
-									<ul>
+									{/* The model quick menu is a plain ul, not the command
+										primitive — but it shares the note picker's list
+										rules (no bullets, capped scroll, row buttons),
+										which the widening renamed from `.note-pick ul` to
+										this class. */}
+									<ul className="note-pick-list">
 										{(() => {
 											// Curated membership gates the quick menu: stars
 											// first (favorites order), then the enabled rest
@@ -790,7 +795,8 @@ export function Composer({
 					model={cfg?.model}
 					onCompacted={onCompacted}
 				/>
-				{busy && onStop !== undefined && (
+				{busy && onStop !== undefined && draft.trim() === "" &&
+				staged.length === 0 && stagedNotes.length === 0 && stagedSkills.length === 0 ? (
 					// Stop means stop: ask the runtime to abort the turn, then
 					// let go of this client's stream. History keeps what was written.
 					<button type="button" className="stop-btn" aria-label="Stop" onClick={onStop}>
@@ -798,7 +804,7 @@ export function Composer({
 							<rect x="7" y="7" width="10" height="10" rx="2" />
 						</svg>
 					</button>
-				)}
+				) : (
 				<button
 					type="submit"
 					className="send-btn"
@@ -822,6 +828,7 @@ export function Composer({
 						/>
 					</svg>
 				</button>
+				)}
 			</div>
 			{sendError !== null && (
 				<p className="error" role="alert">
@@ -851,4 +858,3 @@ export function Composer({
 		</form>
 	);
 }
-

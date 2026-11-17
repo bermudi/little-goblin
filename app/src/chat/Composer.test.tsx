@@ -131,10 +131,14 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 		onSend,
 		draftRestore = null,
 		draftScope = "test",
+		busy = false,
+		onStop,
 	}: {
 		onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
 		draftRestore?: { parts: UIMessage["parts"] } | null;
 		draftScope?: string;
+		busy?: boolean;
+		onStop?: () => void;
 	}) {
 		const [staged, setStaged] = useState<StagedUpload[]>([]);
 		const [stagedNotes, setStagedNotes] = useState<StagedNote[]>([]);
@@ -143,7 +147,8 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 			<Composer
 				token={null}
 				draftScope={draftScope}
-				busy={false}
+				busy={busy}
+				{...(onStop === undefined ? {} : { onStop })}
 				staged={staged}
 				setStaged={setStaged}
 				stagedNotes={stagedNotes}
@@ -212,6 +217,44 @@ describe("Composer staged uploads (same filename, issue #78)", () => {
 	};
 	const textareaValue = () =>
 		container.querySelector<HTMLTextAreaElement>("form.composer textarea")?.value ?? null;
+
+	test("one action switches between stop and send as the draft changes", async () => {
+		let stops = 0;
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ComposerHarness busy onStop={() => stops++} onSend={(parts) => { sent.push(parts); }} />);
+		});
+		expect(container.querySelectorAll(".stop-btn, .send-btn")).toHaveLength(1);
+		await act(async () => (container.querySelector<HTMLButtonElement>(".stop-btn")?.click()));
+		expect(stops).toBe(1);
+		await type("  ");
+		expect(container.querySelector(".stop-btn")).not.toBeNull();
+		await type("steer");
+		expect(container.querySelector(".stop-btn")).toBeNull();
+		expect(container.querySelector<HTMLButtonElement>(".send-btn")?.disabled).toBe(false);
+		await submit();
+		expect(sent).toEqual([[{ type: "text", text: "steer" }]]);
+		expect(container.querySelector(".stop-btn")).not.toBeNull();
+		await type("changed my mind");
+		await type("");
+		expect(container.querySelector(".stop-btn")).not.toBeNull();
+		expect(container.querySelector(".send-btn")).toBeNull();
+	});
+
+	test("an attachment replaces stop with send, including while uploading", async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<ComposerHarness busy onStop={() => {}} onSend={(parts) => { sent.push(parts); }} />);
+		});
+		await stage(["image"]);
+		expect(container.querySelector(".stop-btn")).toBeNull();
+		expect(container.querySelector<HTMLButtonElement>(".send-btn")?.disabled).toBe(true);
+		await act(async () => uploads[0]?.settle.ok(refFor("attachments/test")));
+		expect(container.querySelector<HTMLButtonElement>(".send-btn")?.disabled).toBe(false);
+		await submit();
+		expect(sent).toEqual([[{ type: "data-attachment", data: refFor("attachments/test") }]]);
+		expect(container.querySelector(".stop-btn")).not.toBeNull();
+	});
 
 	test.each([false, true])(
 		"a declined voice send stages one resendable chip (restored while pending: %s)",

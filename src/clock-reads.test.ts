@@ -116,7 +116,6 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/agent/onemin-speech.ts": 2,
 	"src/agent/skill-fetch.ts": 4,
 	"src/agent/tools/fetch.ts": 7,
-	"src/agent/tools/herdr.ts": 2,
 	"src/agent/tools/history.ts": 2,
 	"src/agent/tools/responsibility.ts": 3,
 	"src/agent/tools/script.ts": 3,

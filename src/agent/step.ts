@@ -14,7 +14,6 @@ import { agentChildSystemPrompt } from "../agent-types.ts";
 import { paths } from "../home-layout.ts";
 import type { NoteStore } from "../notes.ts";
 import type { ProjectStore } from "../projects.ts";
-import type { MediaPosition } from "./attachments.ts";
 import { codexContextWindow } from "./codex/models.ts";
 import { contextLimit, contextLimitDetailed, inputModalities } from "./models-dev.ts";
 import { modelCallMaxRetries } from "./onemin.ts";
@@ -27,6 +26,8 @@ import { toToolSet } from "../turn/ai-sdk-tools.ts";
 import { toolNames } from "./tools/mod.ts";
 import { log } from "../log.ts";
 import type { ClaudeEngine } from "./claude-code/mod.ts";
+import type { MediaPosition } from "./attachments.ts";
+import type { PrefixStep } from "../turn/prefix-summary.ts";
 
 // A flush reads notes before it edits them: list, read, then a few writes.
 const FLUSH_MAX_STEPS = 8;
@@ -55,6 +56,29 @@ export function makeStepBuilder(
 	deps: StepBuilderDeps,
 ): Pick<RuntimeDeps, "buildStep" | "compaction"> {
 	const { configRef, auth, store, projects, notes, observation } = deps;
+	// Both a turn and a cache-prefix summary use this one API-lane
+	// construction, so model setup cannot drift between their requests.
+	const apiLane = async (conv: Conversation, modelRef: string) => {
+		const cfg = configRef.current;
+		const { provider, modelId } = splitModelRef(modelRef);
+		const p = cfg.providers[provider];
+		const pipeBase = p !== undefined && "baseUrl" in p ? p.baseUrl : undefined;
+		const [model, modalities] = await Promise.all([
+			resolveModel(cfg, auth, modelRef, { sessionId: codexSessionId(conv.id) }),
+			inputModalities(provider, modelId),
+		]);
+		const providerOptions = thinkingOptions(cfg, modelRef, conv.thinking as ThinkingLevel);
+		const maxRetries = modelCallMaxRetries(cfg, modelRef);
+		return {
+			model,
+			modalities,
+			carries: (mediaType: string, position: MediaPosition) =>
+				carriesMedia(p?.kind ?? "", mediaType, position, pipeBase),
+			keepProviderExecuted: p?.kind === "codex",
+			...(providerOptions ? { providerOptions } : {}),
+			...(maxRetries !== undefined ? { maxRetries } : {}),
+		};
+	};
 	// The provider side of one compaction-lane call: model, thinking, and
 	// the retry rule, shared by the summary and the flush.
 	const compactCall = async (
@@ -196,34 +220,53 @@ export function makeStepBuilder(
 				};
 			}
 			// Auth "!command" and the catalog fetch may both be slow — run in parallel.
-			const [model, modalities, contextWindow] = await Promise.all([
-				resolveModel(cfg, auth, modelRef, { sessionId: codexSessionId(conv.id) }),
-				inputModalities(provider, modelId),
+			const [lane, contextWindow] = await Promise.all([
+				apiLane(conv, modelRef),
 				contextWindowFor(),
 			]);
-			const providerOptions = thinkingOptions(cfg, modelRef, level);
-			// 1min bills every attempt — its chat calls carry no SDK retry
-			// budget.
-			const maxRetries = modelCallMaxRetries(cfg, modelRef);
 			return {
 				// Observed at the model boundary — tool-loop continuations included.
-				model: observedModel(model, {
+				model: observedModel(lane.model, {
 					conversation: conv.id,
 					observation,
 					route: cacheRouteFor(cfg, modelRef),
 				}),
 				system: prompt.text,
 				label: modelRef,
-				inputModalities: modalities,
-				carries,
-				keepProviderExecuted: kind === "codex",
+				inputModalities: lane.modalities,
+				carries: lane.carries,
+				keepProviderExecuted: lane.keepProviderExecuted,
 				...(contextWindow !== null ? { contextWindow } : {}),
-				...(providerOptions ? { providerOptions } : {}),
-				...(maxRetries !== undefined ? { maxRetries } : {}),
+				...("providerOptions" in lane ? { providerOptions: lane.providerOptions } : {}),
+				...("maxRetries" in lane ? { maxRetries: lane.maxRetries } : {}),
 			};
 		},
 		compaction: {
 			modelRef: (conv) => conv.model!,
+			prefixStep: async (conv, modelRef) => {
+				const cfg = configRef.current;
+				const { provider } = splitModelRef(modelRef);
+				const p = cfg.providers[provider];
+				if (p?.kind === "claude-code") return null;
+				const snapshot = store.promptSnapshot(conv.id);
+				if (snapshot === null) return null;
+				const lane = await apiLane(conv, modelRef);
+				return {
+					modelRef,
+					model: observedModel(lane.model, {
+						conversation: conv.id,
+						observation,
+						route: cacheRouteFor(cfg, modelRef),
+						purpose: "compaction",
+					}),
+					system: snapshot.text,
+					inputModalities: lane.modalities,
+					carries: lane.carries,
+					keepProviderExecuted: lane.keepProviderExecuted,
+					...("providerOptions" in lane ? { providerOptions: lane.providerOptions } : {}),
+					...("maxRetries" in lane ? { maxRetries: lane.maxRetries } : {}),
+				};
+			},
 			// Metadata only — a catalog read. Resolving auth or building the
 			// prompt here would let a compaction pass mint a snapshot; the
 			// frozen prompt belongs to buildStep alone. Codex reads its own

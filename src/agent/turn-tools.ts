@@ -243,9 +243,6 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							mountedSubagents: { worker: workerEnabled, computer: computerEnabled },
 							checkResponsibility,
 						},
-			// Unconditional — guests are filtered below and script's
-			// allowlist excludes it.
-			herdr: { herdr: operatorHerdr },
 			// Only the approval gate's request closure — the send credential lives behind the taps.
 			mail:
 				(channel === "app" || channel === "telegram") && configRef.current.mail !== undefined

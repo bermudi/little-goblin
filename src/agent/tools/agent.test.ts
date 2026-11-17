@@ -132,6 +132,15 @@ describe("agent tool", () => {
 		expect(result).toMatchObject({ error: expect.stringContaining("known: general") });
 	});
 
+	test("spawn refuses a desktop for a type that cannot drive one, before any claim", async () => {
+		// stubEngine's spawn throws if reached: the refusal claims nothing.
+		const result = await agentTool(deps(stubEngine())).execute(
+			{ action: "spawn", task: "x", desktop: "desk1" },
+			{ toolCallId: "t1" },
+		);
+		expect(result).toMatchObject({ error: expect.stringContaining("cannot take a desktop") });
+	});
+
 	test("spawn background:false waits for the settlement and returns it", async () => {
 		const settlement: Settlement = { child: child("done"), result: "THE REPLY" };
 		const engine = stubEngine({

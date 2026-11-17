@@ -205,6 +205,13 @@ export const agentTool = (deps: AgentToolDeps) =>
 							error: `agent type "computer" needs a desktop name (the desktop tool lists them)`,
 						};
 					}
+					// Only a computer child can drive a desktop; a claim for any
+					// other type would hold the lease with nothing to use it.
+					if (type.name !== COMPUTER_AGENT_TYPE.name && input.desktop !== undefined) {
+						return {
+							error: `agent type "${name}" cannot take a desktop — only "computer" drives one`,
+						};
+					}
 					const { child, queued, spawnError } = await engine.spawn({
 						parent: deps.conversation,
 						type,

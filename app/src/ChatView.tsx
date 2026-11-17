@@ -91,17 +91,28 @@ export function mergeTranscript(
   // Everything the view holds is durable — the store's causal order
   // wins outright, arrivals or not. A steered message sorts before the
   // reply that folded it in, which the optimistic tail-append gets
-  // backwards; identical order keeps the live reference untouched.
+  // backwards.
   if (current.every((m) => historyIds.has(m.id))) {
     // Same id AND role — a stopped turn's streamed assistant partial and
     // its durable system record share an id; the durable role wins so
-    // the local partial is replaced, not kept beside the record.
+    // the local partial is replaced, not kept beside the record. Same
+    // order still takes history's content: a reader dropped mid-reply
+    // (the mid-turn send handoff) leaves a partial the store has
+    // finished (#658); unchanged messages keep their reference.
     const sameOrder =
       current.length === history.length &&
       current.every(
         (m, i) => m.id === history[i]!.id && m.role === history[i]!.role,
       );
-    return sameOrder ? current : history;
+    if (!sameOrder) return history;
+    const merged = current.map((message, i) =>
+      JSON.stringify(message) === JSON.stringify(history[i])
+        ? message
+        : history[i]!,
+    );
+    return merged.every((message, i) => message === current[i])
+      ? current
+      : merged;
   }
   const arrivals = history.filter((m) => !currentIds.has(m.id));
   // Nothing new durably — the view stands (a shrunk history is an

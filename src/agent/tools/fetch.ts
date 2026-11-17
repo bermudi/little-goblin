@@ -154,12 +154,10 @@ const extractors: Record<
 
 const TEXTUAL = /^(text\/|application\/(json|xml|x-yaml|yaml|javascript|toml))/;
 
-// baseUrl is a test seam for pointing vendors at a local fake; production passes none.
-async function localExtract(url: string, baseUrl?: string): Promise<Extracted | Rejected> {
-	const target = baseUrl ?? url;
+async function localExtract(url: string): Promise<Extracted | Rejected> {
 	const res = await fetchOk(
 		"local",
-		target,
+		url,
 		{
 			headers: {
 				Accept:

@@ -363,8 +363,9 @@ bridge reads goblin tools directly and skips hosted ones. Readers get the
 model-facing schema from `inputJsonSchema`, and `src/tool.test.ts` holds it
 equal to the SDK's for every mounted tool. `module-boundaries.test.ts`
 fences every `ai`/`@ai-sdk/*` import to an explicit allowlist that only
-shrinks (#597); the engine contract's model objects (#596) follow the same
-direction. SDK-specific features stay inside the AI SDK engine; there is
+shrinks (#597). The neutral engine contract (`src/turn/engine.ts`) is off
+that list: the AI SDK step type lives in `src/turn/ai-sdk-step.ts` (#596),
+and model resolution stays in `src/agent/step.ts`. SDK-specific features stay inside the AI SDK engine; there is
 no lowest-common-denominator layer. The app's `useChat` stream protocol
 stays an SDK wire format until an engine can't meet it.
 

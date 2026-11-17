@@ -179,21 +179,11 @@ describe("toolNames ↔ makeTools", () => {
 				lifecycle: {},
 				pin: () => ({ address: { chatId: 0, threadId: null } }),
 				workspaceDir: "/tmp",
-				mountedSubagents: { worker: false, computer: false },
 			} as unknown as DelegateToolDeps,
 			mail: {} as unknown as MailToolDeps,
 			history: {} as unknown as HistorySearchDeps,
 			// Mounted so the wire-schema invariant covers vision too.
 			vision: {} as unknown as VisionToolDeps,
-			// Same for the subagents pair — the invariant only covers the
-			// tools the call actually mounts.
-			subagent: {
-				conversation: "dm:1",
-				workspace: "/tmp",
-				subagents: {} as never,
-				workerEnabled: true,
-				computerEnabled: true,
-			},
 			desktop: {
 				conversation: "dm:1",
 				workspace: "/tmp",
@@ -239,22 +229,14 @@ describe("toolNames ↔ makeTools", () => {
 		}
 	});
 
-	test("subagent/desktop mount only with their deps, ordered before ui", () => {
+	test("desktop mounts only with its deps, ordered before ui", () => {
 		const without = toolNames(makeTools({ cwd: "/tmp", ui: true }));
-		expect(without).not.toContain("subagent");
 		expect(without).not.toContain("desktop");
 		expect(without).toContain("ui");
 
 		const withBoth = toolNames(
 			makeTools({
 				cwd: "/tmp",
-				subagent: {
-					conversation: "dm:1",
-					workspace: "/tmp",
-					subagents: {} as never,
-					workerEnabled: true,
-					computerEnabled: true,
-				},
 				desktop: {
 					conversation: "dm:1",
 					workspace: "/tmp",
@@ -263,7 +245,6 @@ describe("toolNames ↔ makeTools", () => {
 				ui: true,
 			}),
 		);
-		expect(withBoth.indexOf("subagent")).toBeLessThan(withBoth.indexOf("ui"));
 		expect(withBoth.indexOf("desktop")).toBeLessThan(withBoth.indexOf("ui"));
 		expect(withBoth.at(-1)).toBe("ui");
 	});

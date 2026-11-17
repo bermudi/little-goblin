@@ -27,8 +27,6 @@ export interface DelegateToolDeps {
 	config: DelegationConfig;
 	pin(name: string): DelegationPin;
 	workspaceDir: string;
-	/** Which subagent types this turn mounts — the description routes work only to tools the model has. */
-	mountedSubagents: { worker: boolean; computer: boolean };
 	/** Project-bound turns only: refuses a responsibility outside this
 	 *  project or already closed; null admits the link. */
 	checkResponsibility?: ((id: string) => string | null) | undefined;
@@ -221,14 +219,6 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 			? "No delegation defaults are configured: name a harness explicitly."
 			: `With no harness named, the call uses its role's default (role omitted = \`default\`, which is ${defaults.default === undefined ? "unset — name a role or a harness" : `\`${defaults.default}\``}). Configured roles: ${roles.map(([role, name]) => `${role} → ${name}`).join(", ")}. An explicit harness always wins over a role.`) +
 		(linkable ? " A responsibility-linked lead requires issue:{repository:'owner/repo',number:N}. Code observes its closing PR, current head, verifier Checked-SHA and CI; do not spend model turns polling GitHub. PASS+NOTES still needs judgment, and readiness never authorizes a merge." : "");
-	const mounted = deps.mountedSubagents;
-	const subagentRoute = mounted.worker
-		? mounted.computer
-			? " Standalone long or code-heavy work belongs with a worker subagent, and screen work with a computer subagent."
-			: " Standalone long or code-heavy work belongs with a worker subagent."
-		: mounted.computer
-			? " Screen work belongs with a computer subagent."
-			: "";
 	// askFirst harnesses become a prompt rule in the description: the
 	// model asks, execute stays ungated.
 	const askFirst = [...new Set(Object.entries(deps.config.harnesses)
@@ -239,7 +229,7 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 			? ""
 			: ` Ask-first harnesses (${askFirst.join(", ")}): ask the operator before each use, and start one only on their explicit yes for that task.`;
 	return defineTool({
-		description: `Run a named external coding harness (a T3 Code thread) — ONLY when the operator asked for that harness by name ("have codex do X", "run the issue-build lead"), or a standing instruction of theirs names one. Never choose this tool on your own judgment: work you decide to hand off goes to a subagent or you do it yourself.${subagentRoute} The run happens in T3 Code as its own thread; the operator watches it there, and every notice carries the thread link. Harnesses (each names a T3 provider and model; goblin never picks one): ${Object.entries(deps.config.harnesses).map(([n, h]) => `${n} (${h.provider}/${h.model})`).join(", ")}.${staffingLine} ${roleLine} Actions — start {harness?, role?, task, cwd?, name?${linkable ? ", responsibility?" : ""}}; list {}; read {id, messages?}; send {id, text} (follow-ups and the operator's answers to a waiting run — a busy thread queues it, nothing is interrupted); stop {id} (unavailable for live runs: t3 has no stop verb — say so honestly; the operator ends runs in T3 Code). There is no 'answer' action: T3 threads have no dialogs, a waiting run takes 'send'. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input', relay the question to the operator and send back their answer with 'send' — never answer on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.${linkable ? " In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself." : ""}`,
+		description: `Run a named external coding harness (a T3 Code thread) — ONLY when the operator asked for that harness by name ("have codex do X", "run the issue-build lead"), or a standing instruction of theirs names one. Never choose this tool on your own judgment: work you decide to hand off goes to the agent tool or you do it yourself. The run happens in T3 Code as its own thread; the operator watches it there, and every notice carries the thread link. Harnesses (each names a T3 provider and model; goblin never picks one): ${Object.entries(deps.config.harnesses).map(([n, h]) => `${n} (${h.provider}/${h.model})`).join(", ")}.${staffingLine} ${roleLine} Actions — start {harness?, role?, task, cwd?, name?${linkable ? ", responsibility?" : ""}}; list {}; read {id, messages?}; send {id, text} (follow-ups and the operator's answers to a waiting run — a busy thread queues it, nothing is interrupted); stop {id} (unavailable for live runs: t3 has no stop verb — say so honestly; the operator ends runs in T3 Code). There is no 'answer' action: T3 threads have no dialogs, a waiting run takes 'send'. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input', relay the question to the operator and send back their answer with 'send' — never answer on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.${linkable ? " In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself." : ""}`,
 		input: (linkable
 			? delegateInputSchema
 			: unlinkableDelegateInputSchema) as typeof delegateInputSchema,

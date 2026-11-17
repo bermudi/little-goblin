@@ -154,7 +154,6 @@ function rig(): Rig {
 		},
 		pin: () => ({ address: { chatId: -100, threadId: 7 } }),
 		workspaceDir,
-		mountedSubagents: { worker: true, computer: true },
 		checkResponsibility: (id) =>
 			resps.get(id) === null ? `responsibility ${id} not found in this project` : null,
 	});

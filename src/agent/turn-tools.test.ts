@@ -3,12 +3,10 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentChildren } from "../agent-children.ts";
 import type { Config } from "../config-schema.ts";
-import { isHosted } from "../tool.ts";
 import type { AuthStore } from "../auth.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import type { Desktops } from "../desktops.ts";
-import type { DelegationLifecycle } from "../delegation-lifecycle.ts";
 import type { T3, T3Thread } from "../t3.ts";
 import { setLogFile } from "../log.ts";
 import type { MailApproval } from "../mail-approval.ts";
@@ -22,7 +20,6 @@ import { Runtime, userMessage } from "../runtime.ts";
 import { aiSdkEngine } from "../turn/ai-sdk-engine.ts";
 import { openTurnJournal } from "../turn-journal.ts";
 import type { Sandboxes } from "../sandboxes.ts";
-import type { Subagents } from "../subagents/mod.ts";
 import { openWakeStore } from "../wake-store.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
 import { deferred, HeadlessSink, tmpDir, useHome, waitUntil } from "../testkit.ts";
@@ -166,9 +163,7 @@ describe("turn-tools responsibility composition", () => {
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
-			subagents: () => null,
 			desktops: () => null,
-			subagentsBoot: () => undefined,
 			agents: () => null,
 			responsibility: () => ({ resps, service }),
 			filterGuests: (_conv, tools) => tools,
@@ -311,9 +306,7 @@ describe("turn-tools managed send linkage", () => {
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
-			subagents: () => null,
 			desktops: () => null,
-			subagentsBoot: () => undefined,
 			agents: () => null,
 			responsibility: () => ({ resps, service }),
 			filterGuests: (_conv, tools) => tools,
@@ -405,9 +398,7 @@ describe("responsibility epoch authority", () => {
 				programApproval: () => undefined,
 				visionDepsFor: () => undefined,
 				sandboxes: {} as unknown as Sandboxes,
-				subagents: () => null,
 				desktops: () => null,
-				subagentsBoot: () => undefined,
 				agents: () => null,
 				responsibility: () => ({ resps, service }),
 				filterGuests: (_conv, tools) => tools,
@@ -544,9 +535,7 @@ describe("operator correction authority", () => {
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
-			subagents: () => null,
 			desktops: () => null,
-			subagentsBoot: () => undefined,
 			agents: () => null,
 			responsibility: () => ({ resps, service }),
 			filterGuests: (_conv, tools) => tools,
@@ -735,9 +724,7 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 		programApproval: () => undefined,
 		visionDepsFor: () => undefined,
 		sandboxes: {} as unknown as Sandboxes,
-		subagents: () => null,
 		desktops: () => null,
-		subagentsBoot: () => undefined,
 		agents: () => null,
 		responsibility: () => ({ resps, service, listFor: async () => [AGENT] }),
 		filterGuests: (_conv, tools) => tools,
@@ -846,9 +833,7 @@ describe("hosted web_search mount", () => {
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
-			subagents: () => null,
 			desktops: () => null,
-			subagentsBoot: () => undefined,
 			agents: () => null,
 			responsibility: () => null,
 			filterGuests: (_c, t) => t,
@@ -874,74 +859,6 @@ describe("hosted web_search mount", () => {
 	test("guests keep web_search exactly like local search", () => {
 		expect(policyOf("web_search").guestSandbox).toBe(true);
 		expect(policyOf("search").guestSandbox).toBe(true);
-	});
-});
-
-describe("delegate description subagent routing", () => {
-	const conv = {
-		id: "dm:1",
-		model: null,
-		projectId: null,
-		persona: "operator",
-		agentType: null,
-	} as unknown as Conversation;
-
-	const rigTools = (
-		config: Config,
-		subagents: Subagents | null,
-		subagentsBoot: Config["subagents"],
-	) =>
-		makeTurnTools({
-			configRef: { current: config, ttsDown: false },
-			auth: {} as unknown as AuthStore,
-			store: {} as unknown as ConversationStore,
-			projects: {} as unknown as ProjectStore,
-			notes: {} as unknown as NoteStore,
-			programs: {} as unknown as ProgramsStore,
-			memory: null,
-			transcribe: async () => null,
-			delegateDeps: () => ({
-				lifecycle: {} as unknown as DelegationLifecycle,
-				config: { harnesses: { codex: { provider: "codex", model: "gpt-6-luna" } } },
-				pin: () => ({ address: { chatId: 1, threadId: null } }),
-				workspaceDir: "/w",
-			}),
-			t3: fakeT3(() => []).t3,
-			mail: () => ({}) as never,
-			programApproval: () => undefined,
-			visionDepsFor: () => undefined,
-			sandboxes: {} as unknown as Sandboxes,
-			subagents: () => subagents,
-			desktops: () => null,
-			subagentsBoot: () => subagentsBoot,
-			agents: () => null,
-			responsibility: () => null,
-			filterGuests: (_c, t) => t,
-		});
-
-	const delegateDescription = (
-		config: Config,
-		subagents: Subagents | null,
-		subagentsBoot: Config["subagents"],
-	) => {
-		const tool = rigTools(config, subagents, subagentsBoot)(conv)["delegate"];
-		if (tool === undefined) throw new Error("delegate tool not mounted");
-		if (isHosted(tool)) return "hosted";
-		return tool.description;
-	};
-
-	test("no subagents config: the delegate description routes no subagent work", () => {
-		expect(delegateDescription({} as Config, null, undefined)).not.toContain(
-			"belongs with a worker subagent",
-		);
-	});
-
-	test("mounted subagent types appear in the delegate description", () => {
-		const subagentsOn = { worker: {}, computer: {} } as unknown as Config["subagents"];
-		const config = { subagents: subagentsOn, sandbox: {} } as unknown as Config;
-		expect(delegateDescription(config, {} as unknown as Subagents, subagentsOn)).toContain(
-			"Standalone long or code-heavy work belongs with a worker subagent, and screen work with a computer subagent.",
-		);
 	});
 });
 
@@ -977,9 +894,7 @@ describe("agent tool mount", () => {
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
-			subagents: () => null,
 			desktops: () => null,
-			subagentsBoot: () => undefined,
 			agents: () => engine,
 			responsibility: () => null,
 			filterGuests: (_c, t) => t,
@@ -1049,9 +964,7 @@ describe("computer child mount", () => {
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
-			subagents: () => null,
 			desktops: () => desktops,
-			subagentsBoot: () => undefined,
 			agents: () => engine,
 			responsibility: () => null,
 			filterGuests: (_c, t) => t,

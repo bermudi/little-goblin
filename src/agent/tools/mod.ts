@@ -24,7 +24,6 @@ import { type SandboxToolDeps, sandboxTool } from "./sandbox.ts";
 import { searchTool } from "./search.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
 import { speakTool } from "./speak.ts";
-import { type SubagentToolDeps, subagentTool } from "./subagent.ts";
 import { transcribeTool } from "./transcribe.ts";
 import { uiTool } from "./ui.ts";
 import { type VisionToolDeps, visionTool } from "./vision.ts";
@@ -68,7 +67,6 @@ export type {
 	NoteToolDeps,
 	ResponsibilityToolDeps,
 	SandboxToolDeps,
-	SubagentToolDeps,
 	VisionToolDeps,
 };
 
@@ -92,7 +90,6 @@ export interface MakeToolsOptions {
 	vision?: VisionToolDeps | undefined;
 	image?: ImageToolDeps | undefined;
 	sandbox?: SandboxToolDeps | undefined;
-	subagent?: SubagentToolDeps | undefined;
 	desktop?: DesktopToolDeps | undefined;
 	// Agent-type children only (design/agents.md → Computer use): the
 	// desktop tools and ask_operator mount for a child conversation and
@@ -129,7 +126,6 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		vision,
 		image,
 		sandbox,
-		subagent,
 		desktop,
 		computer,
 		askOperator,
@@ -180,7 +176,6 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		...(history ? { history_search: historySearchTool(history) } : {}),
 		...(note ? { note: noteTool(note) } : {}),
 		...(sandbox ? { sandbox: sandboxTool(sandbox) } : {}),
-		...(subagent ? { subagent: subagentTool(subagent) } : {}),
 		...(desktop ? { desktop: desktopTool(desktop) } : {}),
 		...(computer ? computerTools(computer) : {}),
 		...(askOperator ? { ask_operator: askOperatorTool(askOperator) } : {}),

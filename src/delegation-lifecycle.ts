@@ -115,7 +115,7 @@ export interface DelegationWiring {
 	delegateDeps(
 		conv: Conversation,
 		workdir: string,
-	): Omit<DelegateToolDeps, "mountedSubagents"> | undefined;
+	): DelegateToolDeps | undefined;
 }
 
 export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
@@ -125,7 +125,7 @@ export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
 	const delegateDeps = (
 		conv: Conversation,
 		workdir: string,
-	): Omit<DelegateToolDeps, "mountedSubagents"> | undefined => {
+	): DelegateToolDeps | undefined => {
 		if (
 			delegationBoot === undefined ||
 			deps.configRef.current.delegation === undefined ||

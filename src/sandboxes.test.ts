@@ -280,14 +280,7 @@ function fakeEngine(opts?: {
 	};
 }
 
-function rig(
-	engine: ReturnType<typeof fakeEngine>,
-	config?: Partial<SandboxConfig>,
-	extra?: {
-		runLease?: (conversationId: string) => { id: number; status: string } | null;
-		onLifecycle?: (conversationId: string, note: string) => void;
-	},
-) {
+function rig(engine: ReturnType<typeof fakeEngine>, config?: Partial<SandboxConfig>) {
 	const store = openSandboxes(tmpDb("goblin-sbx-"));
 	const sandboxes = makeSandboxes({
 		podman: engine.podman,
@@ -295,8 +288,6 @@ function rig(
 		config: () => ({ ...sandboxConfigSchema.parse({}), ...config }),
 		containerPrefix: PREFIX,
 		networkName: NETWORK,
-		...(extra?.runLease !== undefined ? { runLease: extra.runLease } : {}),
-		...(extra?.onLifecycle !== undefined ? { onLifecycle: extra.onLifecycle } : {}),
 	});
 	return { store, sandboxes };
 }
@@ -911,78 +902,12 @@ describe("catFile regular-file contract", () => {
 	});
 });
 
-describe("run leases pin the sandbox", () => {
-	test("reset refuses while a run lease is live", async () => {
-		const conv = "dm:20";
-		const name = containerNameFor(conv, PREFIX);
-		const engine = fakeEngine({ containers: [{ name }] });
-		const { sandboxes, store } = rig(engine, undefined, {
-			runLease: (c) => (c === conv ? { id: 4, status: "running" } : null),
-		});
-		store.put({
-			conversationId: conv,
-			container: name,
-			image: IMAGE,
-			network: false,
-			createdAt: 1,
-			lastUsedAt: 1,
-		});
-		await expect(sandboxes.reset(conv)).rejects.toThrow(/run #4/);
-		expect(engine.containers.has(name)).toBe(true);
-		// The lease is only claimed by live statuses — done frees it.
-		const { sandboxes: freed } = rig(engine, undefined, {
-			runLease: () => null,
-		});
-		await freed.reset(conv);
-	});
-
-	test("the sweep skips a leased sandbox even past idleHours", async () => {
-		const staleConv = "dm:leased";
-		const staleName = containerNameFor(staleConv, PREFIX);
-		const engine = fakeEngine({ containers: [{ name: staleName }] });
-		const { sandboxes, store } = rig(
-			engine,
-			{ idleHours: 1 },
-			{
-				runLease: (c) => (c === staleConv ? { id: 9, status: "needs_input" } : null),
-			},
-		);
-		const old = Date.now() - 2 * 3_600_000;
-		store.put({
-			conversationId: staleConv,
-			container: staleName,
-			image: IMAGE,
-			network: false,
-			createdAt: old,
-			lastUsedAt: old,
-		});
-		await sandboxes.exec("dm:caller2", "true", execOpts);
-		expect(engine.containers.has(staleName)).toBe(true);
-		expect(store.get(staleConv)).not.toBeNull();
-	});
-
-	test("a live lease announces itself on exec results", async () => {
-		const conv = "dm:21";
-		const engine = fakeEngine();
-		const { sandboxes } = rig(engine, undefined, {
-			runLease: (c) => (c === conv ? { id: 2, status: "running" } : null),
-		});
-		const out = await sandboxes.exec(conv, "true", execOpts);
-		expect(out.note).toContain("run #2 holds this sandbox");
-	});
-});
-
-describe("onLifecycle", () => {
+describe("lifecycle notes reach the caller", () => {
 	test("recreate after a missing container reports the note", async () => {
 		const conv = "dm:30";
 		const name = containerNameFor(conv, PREFIX);
-		const notes: string[] = [];
 		const engine = fakeEngine();
-		const { sandboxes, store } = rig(engine, undefined, {
-			onLifecycle: (c, note) => {
-				if (c === conv) notes.push(note);
-			},
-		});
+		const { sandboxes, store } = rig(engine);
 		store.put({
 			conversationId: conv,
 			container: name,
@@ -993,20 +918,13 @@ describe("onLifecycle", () => {
 		});
 		const out = await sandboxes.exec(conv, "true", execOpts);
 		expect(out.note).toContain("previous contents are lost");
-		expect(notes).toHaveLength(1);
-		expect(notes[0]).toContain("previous contents are lost");
 	});
 
 	test("a killed exec's restart reports the note", async () => {
 		const conv = "dm:31";
 		const name = containerNameFor(conv, PREFIX);
-		const notes: string[] = [];
 		const engine = fakeEngine({ containers: [{ name }] });
-		const { sandboxes, store } = rig(engine, undefined, {
-			onLifecycle: (c, note) => {
-				if (c === conv) notes.push(note);
-			},
-		});
+		const { sandboxes, store } = rig(engine);
 		store.put({
 			conversationId: conv,
 			container: name,
@@ -1034,7 +952,6 @@ describe("onLifecycle", () => {
 		});
 		expect(timedOut.note).toContain("was aborted");
 		expect(timedOut.note).toContain("restarted");
-		expect(notes.some((n) => n.includes("restarted"))).toBe(true);
 	});
 });
 
@@ -1042,16 +959,12 @@ describe("output-capped execs restart the sandbox", () => {
 	// A stream-cap kill is not a deadline: the container restarts (the
 	// in-container command may outlive its client), the note names the
 	// cap, and the filesystem survives.
-	function rigCapped(notes: string[]) {
+	function rigCapped() {
 		const conv = "dm:60";
 		const name = containerNameFor(conv, PREFIX);
 		const engine = fakeEngine({ containers: [{ name }] });
 		engine.containers.get(name)!.files.set("/work/keep.txt", new TextEncoder().encode("k"));
-		const { sandboxes, store } = rig(engine, undefined, {
-			onLifecycle: (c, note) => {
-				if (c === conv) notes.push(note);
-			},
-		});
+		const { sandboxes, store } = rig(engine);
 		return { engine, sandboxes, store, conv, name };
 	}
 
@@ -1059,19 +972,16 @@ describe("output-capped execs restart the sandbox", () => {
 		engine: ReturnType<typeof fakeEngine>,
 		name: string,
 		note: string | undefined,
-		notes: string[],
 	) {
 		expect(note).toContain("output cap");
 		expect(note).not.toContain("deadline");
 		expect(engine.calls.some((a) => a[0] === "restart")).toBe(true);
 		// Files and the row survive the restart — only processes died.
 		expect(engine.containers.get(name)!.files.has("/work/keep.txt")).toBe(true);
-		expect(notes.some((n) => n.includes("output cap"))).toBe(true);
 	}
 
 	test("text exec", async () => {
-		const notes: string[] = [];
-		const { engine, sandboxes, conv, name } = rigCapped(notes);
+		const { engine, sandboxes, conv, name } = rigCapped();
 		engine.flags.execResult = {
 			stdout: "x".repeat(70_000),
 			stderr: "",
@@ -1082,12 +992,11 @@ describe("output-capped execs restart the sandbox", () => {
 			outputCapped: true,
 		};
 		const out = await sandboxes.exec(conv, "seq 1 500000", execOpts);
-		expectRestarted(engine, name, out.note, notes);
+		expectRestarted(engine, name, out.note);
 	});
 
 	test("argv exec", async () => {
-		const notes: string[] = [];
-		const { engine, sandboxes, conv, name } = rigCapped(notes);
+		const { engine, sandboxes, conv, name } = rigCapped();
 		engine.flags.execResult = {
 			stdout: "",
 			stderr: "flooded",
@@ -1098,12 +1007,11 @@ describe("output-capped execs restart the sandbox", () => {
 			outputCapped: true,
 		};
 		const out = await sandboxes.execArgv(conv, ["seq", "1", "500000"], execOpts);
-		expectRestarted(engine, name, out.note, notes);
+		expectRestarted(engine, name, out.note);
 	});
 
 	test("binary argv exec", async () => {
-		const notes: string[] = [];
-		const { engine, sandboxes, conv, name } = rigCapped(notes);
+		const { engine, sandboxes, conv, name } = rigCapped();
 		engine.flags.execBytesResult = {
 			stdout: new Uint8Array(70_000),
 			stderr: "",
@@ -1114,7 +1022,7 @@ describe("output-capped execs restart the sandbox", () => {
 			outputCapped: true,
 		};
 		const out = await sandboxes.execBytesArgv(conv, ["cat", "big.bin"], execOpts);
-		expectRestarted(engine, name, out.note, notes);
+		expectRestarted(engine, name, out.note);
 	});
 });
 
@@ -1188,24 +1096,6 @@ describe("aborted lifecycle calls never start a mutation", () => {
 		).rejects.toThrow();
 		expect(container.running).toBe(true);
 		expect(container.networks.size).toBe(0);
-	});
-
-	test("reset rechecks a lease acquired during replacement preflight", async () => {
-		const conv = "dm:lease-preflight";
-		const name = containerNameFor(conv, PREFIX);
-		const engine = fakeEngine({ containers: [{ name }] });
-		let leased = false;
-		const { sandboxes } = rig(engine, undefined, {
-			runLease: () => (leased ? { id: 9, status: "queued" } : null),
-		});
-		const gate = hold(engine.podman, "imageExists");
-		const pending = sandboxes.reset(conv);
-		await until(gate.entered);
-		leased = true;
-		gate.release();
-		await expect(pending).rejects.toThrow(/run #9/);
-		expect(engine.calls.some((args) => args[0] === "rm")).toBe(false);
-		expect(engine.containers.has(name)).toBe(true);
 	});
 
 	test("reset aborted inside a deferred preflight never rms or recreates", async () => {
@@ -1334,8 +1224,7 @@ describe("all exec variants share recovery and cancellation fences", () => {
 	for (const variant of variants) {
 		test(`${variant}: a killed call cannot restart a reset replacement`, async () => {
 			const engine = fakeEngine();
-			const notes: string[] = [];
-			const { sandboxes } = rig(engine, undefined, { onLifecycle: (_c, n) => notes.push(n) });
+			const { sandboxes } = rig(engine);
 			const stopped = {
 				stderr: "",
 				exitCode: null,
@@ -1356,13 +1245,11 @@ describe("all exec variants share recovery and cancellation fences", () => {
 			expect(out.note).toContain("replaced meanwhile");
 			expect(out.note).toContain("files are gone");
 			expect(engine.calls.some((a) => a[0] === "restart")).toBe(false);
-			expect(notes).toEqual([]);
 		});
 
-		test(`${variant}: killed siblings share one restart and lifecycle notification`, async () => {
+		test(`${variant}: killed siblings share one restart`, async () => {
 			const engine = fakeEngine();
-			const notes: string[] = [];
-			const { sandboxes } = rig(engine, undefined, { onLifecycle: (_c, n) => notes.push(n) });
+			const { sandboxes } = rig(engine);
 			const releases: Array<() => void> = [];
 			const wait = () => new Promise<void>((resolve) => releases.push(resolve));
 			const stopped = {
@@ -1392,7 +1279,6 @@ describe("all exec variants share recovery and cancellation fences", () => {
 			const out = await sibling;
 			expect(out.note).toContain("sibling command already restarted");
 			expect(engine.calls.filter((a) => a[0] === "restart")).toHaveLength(1);
-			expect(notes).toHaveLength(1);
 		});
 
 		test(`${variant}: a late abort after normal completion never restarts`, async () => {

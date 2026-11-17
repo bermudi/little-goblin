@@ -2,7 +2,7 @@
 // factory owns which fields exist per conversation — channel gates
 // (Telegram-bound tools don't register on app turns), live-config reads
 // (search, transcription, sandbox, image hide or show next turn), and
-// boot-frozen blocks (subagent/desktop mount only while the boot
+// boot-frozen blocks (the desktop pool mounts only while the boot
 // snapshot said so). The resume contract check rebuilds the surface
 // through this same function so the drift comparison reads the set the
 // resumed attempt would actually get.
@@ -23,7 +23,6 @@ import { projectWorkdir, type ProjectStore } from "../projects.ts";
 import type { ProgramsStore } from "../programs.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 import type { Desktops } from "../desktops.ts";
-import type { Subagents } from "../subagents/mod.ts";
 import type { MailApproval } from "../mail-approval.ts";
 import type { ProgramApproval } from "../program-approval.ts";
 import { targetOf } from "../targets.ts";
@@ -55,7 +54,7 @@ export interface TurnToolsDeps {
 	// construction. Absent when Telegram is disabled.
 	sendPrivate?(text: string): Promise<void>;
 	// Boot snapshot pair — a live config read can only hide the memory
-	// tools, never swap the endpoint mid-run (same freeze as subagents).
+	// tools, never swap the endpoint mid-run (same freeze as delegation).
 	memory: {
 		client: HindsightClient;
 		config: NonNullable<Config["memory"]>;
@@ -65,7 +64,7 @@ export interface TurnToolsDeps {
 	delegateDeps(
 		conv: Conversation,
 		workdir: string,
-	): Omit<DelegateToolDeps, "mountedSubagents"> | undefined;
+	): DelegateToolDeps | undefined;
 	// Only the approval gate's request closure — the send credential
 	// lives behind the taps.
 	mail(): Pick<MailApproval, "requestDraft"> | undefined;
@@ -76,22 +75,19 @@ export interface TurnToolsDeps {
 	programApproval(): Pick<ProgramApproval, "requestApproval"> | undefined;
 	visionDepsFor(conv: Conversation): VisionToolDeps | undefined;
 	sandboxes: Sandboxes;
-	// Late-bound: the subagent owner awaits past Runtime's construction,
-	// and the boot snapshot/desktops/mail gate bind after it too — the
-	// getters preserve the closure's call-time reads.
-	subagents(): Subagents | null;
+	// Late-bound: the desktop pool binds past Runtime's construction —
+	// the getter preserves the closure's call-time read.
 	desktops(): Desktops | null;
-	subagentsBoot(): Config["subagents"];
 	// The t3 adapter — one boot-frozen instance for the handover seams
 	// (thread discovery and managed sends).
 	t3: T3;
-	// Late-bound like subagents — the responsibility service is built
+	// Late-bound — the responsibility service is built
 	// after Runtime's construction. null = the tool never mounts.
 	responsibility(): {
 		resps: ResponsibilityStore;
 		service: ResponsibilityService;
 	} | null;
-	// Late-bound like subagents — the agent-children engine needs the
+	// Late-bound — the agent-children engine needs the
 	// wake dispatcher, which is built after Runtime. null = the agent
 	// tool never mounts and child conversations cannot run.
 	agents(): AgentChildren | null;
@@ -123,17 +119,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		const projectId = conv.projectId;
 		// Late-bound seams — resolved per call, never at factory time.
 		const mail = deps.mail();
-		const subagents = deps.subagents();
 		const desktops = deps.desktops();
-		const subagentsBoot = deps.subagentsBoot();
-		// One mount decision feeds the subagent tool and the delegate
-		// description's routing sentence — both name only mounted types.
-		const subagentMounted = subagents !== null && configRef.current.subagents !== undefined;
-		const workerEnabled =
-			subagentMounted &&
-			subagentsBoot?.worker !== undefined &&
-			configRef.current.sandbox !== undefined;
-		const computerEnabled = subagentMounted && subagentsBoot?.computer !== undefined;
 		const responsibilitySvc = deps.responsibility();
 		// One gate for every executor that can link work to what goblin owes.
 		const checkResponsibility =
@@ -246,7 +232,6 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 					? undefined
 					: {
 							...delegate,
-							mountedSubagents: { worker: workerEnabled, computer: computerEnabled },
 							checkResponsibility,
 						},
 			// Only the approval gate's request closure — the send credential lives behind the taps.
@@ -289,20 +274,10 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							sandboxes,
 						}
 					: undefined,
-			// The subagents block is boot-frozen — a live config read
-			// can only hide the tools, never swap models mid-run.
-			subagent: subagentMounted
-				? {
-						conversation: conv.id,
-						workspace: workdir,
-						subagents,
-						workerEnabled,
-						computerEnabled,
-						checkResponsibility,
-					}
-				: undefined,
+			// The desktop pool is boot-frozen — the pool exists or the
+			// tool doesn't, whatever a mid-run save says.
 			desktop:
-				subagents !== null && desktops !== null && configRef.current.subagents !== undefined
+				desktops !== null
 					? { conversation: conv.id, workspace: workdir, desktops }
 					: undefined,
 			// Agent-type children only (design/agents.md → Computer use):

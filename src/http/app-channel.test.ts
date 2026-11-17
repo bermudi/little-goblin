@@ -1092,10 +1092,6 @@ describe("app operator surface — capability parking", () => {
 			// off = a default exists; needs-setup = neither block nor parked copy
 			expect(first.capabilities.sandbox.state).toBe("off");
 			expect(first.capabilities.reviewer.state).toBe("off");
-			expect(first.capabilities.subagents.state).toBe("needs-setup");
-			expect(first.capabilities.subagents.hint).toContain(
-				"pick a model for the worker or computer use",
-			);
 			expect(first.capabilities.delegation.state).toBe("needs-setup");
 			expect(first.capabilities.transcription.hint).toBe("pick an engine/model");
 			expect(first.capabilities.memory.hint).toBeNull();
@@ -1139,10 +1135,10 @@ describe("app operator surface — capability parking", () => {
 			expect(configRef.current.reviewer?.auth).toBe("openrouter");
 
 			// true with nothing parked and no default → 422 + hint.
-			const needsSetup = await post({ capabilities: { subagents: true } });
+			const needsSetup = await post({ capabilities: { delegation: true } });
 			expect(needsSetup.status).toBe(422);
 			expect(((await needsSetup.json()) as { error: string }).error).toContain(
-				"pick a model for the worker or computer use",
+				"add a coding agent",
 			);
 			const noInstaller = await post({ capabilities: { image: true } });
 			expect(noInstaller.status).toBe(422);
@@ -1169,7 +1165,6 @@ describe("app operator surface — capability parking", () => {
 			const bogus = await post({ capabilities: { bogus: true } });
 			expect(bogus.status).toBe(400);
 			expect(((await bogus.json()) as { error: string }).error).toContain("capabilities.bogus");
-			expect(configRef.current.subagents).toBeUndefined();
 		} finally {
 			http.stop();
 		}

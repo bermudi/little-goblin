@@ -1,5 +1,5 @@
 // The workspace file boundary, shared by the native sandbox/desktop
-// tools and subagent run inboxes: imports' realpath must stay inside
+// tools: imports' realpath must stay inside
 // the workspace; exports land on a workspace-relative path whose
 // ancestors and leaf can't aim the write outside.
 

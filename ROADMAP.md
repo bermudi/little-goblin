@@ -342,12 +342,14 @@ Acceptance: a corrected interpretation changes subsequent behavior with visible
 provenance; project isolation holds across recall and retention; memory-off
 does not disable explicit work state or follow-through.
 
-## Longer Horizon: Native Work Through Pi-Durable
+## Longer Horizon: Native Work Through Pi-Durable — superseded (#609)
 
-Grow roles, assignments, histories, budgets, and execution workflows from real
-repeated work. Responsibility remains independent of any harness. Move suitable
-heavy execution into Goblin-native workers as capabilities and inference access
-allow; keep the delegate bridge (T3 Code threads) useful until replacement is actually demonstrated.
+The Pi Durable runtime this section planned around is removed; native
+`agent` children and `delegate` on T3 Code cover the same ground. Grow
+roles, assignments, histories, budgets, and execution workflows from real
+repeated work. Responsibility remains independent of any harness. Keep
+the delegate bridge (T3 Code threads) useful; do not retire capable
+coding harnesses merely to make the architecture look finished.
 
 Do not build the entire managed workforce before proving the next outcome.
 Do not confuse "native" with cheaper subscription economics or retire capable

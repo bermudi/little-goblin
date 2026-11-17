@@ -77,7 +77,6 @@ describe("child tool allowlist", () => {
 			"program",
 			"desktop",
 			"delegate",
-			"subagent",
 		];
 		expect(childToolAllowlist(parentTools)).toEqual(["read_file", "bash"]);
 		expect(childToolAllowlist(parentTools, ["bash"])).toEqual(["bash"]);

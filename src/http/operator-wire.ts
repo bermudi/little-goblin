@@ -33,23 +33,6 @@ export interface ProviderPreset {
 	keyHint?: string;
 }
 
-// The editable face of subagents: one model per type (null = that type
-// is off) plus the desktop image. `api` is server-set to
-// "openai-completions"; maxRuns and the other desktops tuning are
-// file-only — the server merge preserves them.
-export interface SubagentModelWire {
-	/** auth.jsonl record name — the key record, never the secret. */
-	auth: string;
-	id: string;
-	baseUrl: string;
-	thinking: ThinkingLevel;
-}
-export interface SubagentsWire {
-	worker: SubagentModelWire | null;
-	computer: SubagentModelWire | null;
-	desktopImage: string;
-}
-
 export interface ConfigResponse {
 	config: Config;
 	providerKinds: readonly string[];
@@ -64,9 +47,6 @@ export interface ConfigResponse {
 	authCommandNames: string[];
 	modelCatalog: ProviderModelCatalog[];
 	capabilities: Record<CapabilityName, CapabilityState>;
-	/** The active block, else the parked one — the editor's prefills and
-	 *  its restoration stash both come from this field. Null = none. */
-	subagents: SubagentsWire | null;
 	serviceNames: Record<string, string>;
 	providerPresets: ProviderPreset[];
 }
@@ -136,10 +116,6 @@ export interface ConfigPostBody {
 				defaults?: Record<string, string>;
 		  }
 		| undefined;
-	// The editable face of the subagents block — the server sets
-	// `api` and preserves the file-only tuning (maxRuns, desktop pool
-	// limits). A block naming neither type is a 422, not a no-tools save.
-	subagents?: "" | SubagentsWire | undefined;
 	telegram: {
 		enabled?: boolean;
 		apiRoot: string;

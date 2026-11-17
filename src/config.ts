@@ -154,9 +154,35 @@ function unrecognizedKeyLines(sourceText: string, key: string): number[] {
 	return lines;
 }
 
+// The Pi Durable runtime is gone (issue #609): a `subagents` block —
+// top-level or parked — fails loud and names its replacement, so an
+// old config can't boot a goblin with no subagent tools and no hint
+// why. Checked before strict validation because the key is no longer
+// in the schema at all.
+function retiredSubagentsKey(raw: unknown): string | null {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+	const rec = raw as Record<string, unknown>;
+	if (Object.hasOwn(rec, "subagents")) return "subagents";
+	const parked = rec.parked;
+	if (
+		typeof parked === "object" &&
+		parked !== null &&
+		!Array.isArray(parked) &&
+		Object.hasOwn(parked, "subagents")
+	)
+		return "parked.subagents";
+	return null;
+}
+
 // Unknown keys anywhere in the object are rejected, not stripped: a typo
 // must fail loudly at load rather than disappear on the next save.
 export function parseConfig(raw: unknown, sourceText?: string): Config {
+	const retired = retiredSubagentsKey(raw);
+	if (retired !== null) {
+		throw new ConfigValidationError(
+			`${paths.config()}: ${retired} was removed — native subagents replaced it: use the agent tool and its agent types (the computer type for desktops); delete the block (design/agents.md)`,
+		);
+	}
 	const result = configSchema.safeParse(raw);
 	if (!result.success) {
 		// Nested record keys and issue messages may contain input. Report only
@@ -243,9 +269,6 @@ export function authReferences(config: Config): Set<string> {
 	if (config.mail) {
 		refs.add(config.mail.clientSecretAuth);
 		refs.add(config.mail.sendAuth);
-	}
-	for (const type of [config.subagents?.worker, config.subagents?.computer]) {
-		if (type !== undefined) refs.add(type.model.auth);
 	}
 	return refs;
 }

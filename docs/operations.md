@@ -506,8 +506,9 @@ sqlite3 ~/goblin/state/goblin.sqlite \
 
 ## Desktop image
 
-The `desktop`/`computer`-subagent pool (design/subagents.md) runs
-`goblin-desk-*` containers from `localhost/goblin-desktop:1`. Goblin
+The desktop pool (design/agents.md → The desktop pool) runs
+`goblin-desk-*` containers from `localhost/goblin-desktop:1`, enabled by
+a top-level `desktops` config block. Goblin
 never builds or pulls images — a missing image errors with the build
 line. Build from the repo root:
 
@@ -544,33 +545,6 @@ text-only query plus one tool round-trip through the bridge. Red means
 the pinned interface moved: run one probe session, re-pin the shapes,
 fix the adapter — the same rule as the t3 and gws checks. It spends
 subscription quota; run it after upgrades, not on a schedule.
-
-## Subagent drift checks
-
-Three env-gated checks cover the subagent stack (design/subagents.md):
-
-```sh
-# real harness + local fake model in a real cached-alpine sandbox —
-# local only, no external calls:
-GOBLIN_SUBAGENTS_PODMAN_LIVE=1 bun test src/subagents/podman.test.ts
-
-# real harness + real z.ai (worker glm-5.3, computer glm-5.3-flash):
-GOBLIN_SUBAGENTS_LIVE=1 GOBLIN_SUBAGENTS_AUTH_FILE=<path-to-auth.jsonl> \
-  bun test src/subagents/live.test.ts
-```
-
-The live check resolves the `zai` credential through the auth file —
-the only secret-adjacent environment value is its path; never put a
-key in the environment. Every probe container and network carries a
-per-run token, is preflighted before creation, and only resources it
-created are removed. Logs, screenshots and a REPORT.md are preserved
-under `/tmp/goblin-subdrift-<token>/`; the podman gate writes
-`/tmp/goblin-subenv-evidence-<token>/`. `src/subagents/crash.test.ts`
-needs no gate — it runs in `bun test` and proves the crash-approval
-path: a SIGKILL mid-dispatch of a side-effecting call parks the run
-`needs_input` on reopen, and each `decide` verdict (authorize-retry,
-record-result, abandon) plus the kill-while-parked and
-result-committed windows behave as designed.
 
 ## Backups
 

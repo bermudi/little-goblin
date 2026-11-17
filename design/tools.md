@@ -102,7 +102,10 @@ kills the process (the runaway guard); the output then says the saved file
 is incomplete. The spill file is a recovery aid,
 never replayed: the result string is fixed when the call returns (Cache
 stability); like webcache, it is never pruned. `sandbox` keeps its tail cut
-for now — container output is a separate surface. Special files (devices,
+for now — container output is a separate surface. `transcribe` follows the same rule
+(#668): a transcript over 15k chars returns as a head+tail window, and
+the full text lands content-addressed in `state/transcriptcache`, never
+pruned. Special files (devices,
 FIFOs, sockets) are refused before any I/O — `read_file` on `/dev/zero` is
 a hang, not a read; `bash` (timeouts + output caps) is the sanctioned
 channel for those.

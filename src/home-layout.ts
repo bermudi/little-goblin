@@ -64,6 +64,7 @@ export const paths = {
 	webcache: () => join(goblinHome(), "state", "webcache"),
 	scriptcache: () => join(goblinHome(), "state", "scriptcache"),
 	bashcache: () => join(goblinHome(), "state", "bashcache"),
+	transcriptcache: () => join(goblinHome(), "state", "transcriptcache"),
 	// Digest-pinned fetched temp skills — cache, not state: deletable,
 	// never a catalog entry.
 	skillcache: () => join(goblinHome(), "state", "skillcache"),

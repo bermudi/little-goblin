@@ -15,6 +15,7 @@
 //     Computed specifiers (`import(expr)`) are out of reach of a static scan;
 //     review catches them.
 import { describe, expect, test } from "bun:test";
+import { parse, type ParserPlugin } from "@babel/parser";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
@@ -168,172 +169,91 @@ function specifiers(source: string): string[] {
 	);
 }
 
-function aiSdkImports(source: string): string[] {
-	type Token = {
-		kind: "identifier" | "string" | "template" | "punctuation";
-		value: string;
-		statementStart: boolean;
-	};
-	const tokens: Token[] = [];
-	let index = 0;
-	let lineHasCode = false;
-
-	while (index < source.length) {
-		const char = source[index]!;
-		const next = source[index + 1];
-		if (char === "\n") {
-			lineHasCode = false;
-			index += 1;
-			continue;
-		}
-		if (/\s/.test(char)) {
-			index += 1;
-			continue;
-		}
-		if (char === "/" && next === "/") {
-			index += 2;
-			while (index < source.length && source[index] !== "\n") index += 1;
-			continue;
-		}
-		if (char === "/" && next === "*") {
-			index += 2;
-			while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) {
-				if (source[index] === "\n") lineHasCode = false;
-				index += 1;
-			}
-			index = Math.min(source.length, index + 2);
-			continue;
-		}
-
-		const statementStart =
-			!lineHasCode ||
-			(tokens.at(-1)?.kind === "punctuation" && tokens.at(-1)?.value === ";");
-		if (char === "'" || char === '"') {
-			const quote = char;
-			index += 1;
-			let value = "";
-			while (index < source.length && source[index] !== quote) {
-				const current = source[index]!;
-				if (current === "\\" && index + 1 < source.length) {
-					value += source[index + 1]!;
-					index += 2;
-					continue;
-				}
-				value += current;
-				index += 1;
-			}
-			if (source[index] === quote) index += 1;
-			tokens.push({ kind: "string", value, statementStart });
-			lineHasCode = true;
-			continue;
-		}
-		if (char === "`") {
-			index += 1;
-			while (index < source.length && source[index] !== "`") {
-				if (source[index] === "\\") {
-					index += Math.min(2, source.length - index);
-					continue;
-				}
-				if (source[index] === "\n") lineHasCode = false;
-				index += 1;
-			}
-			if (source[index] === "`") index += 1;
-			tokens.push({ kind: "template", value: "", statementStart });
-			lineHasCode = true;
-			continue;
-		}
-		if (/[A-Za-z_$]/.test(char)) {
-			const start = index++;
-			while (index < source.length && /[\w$]/.test(source[index]!)) index += 1;
-			tokens.push({
-				kind: "identifier",
-				value: source.slice(start, index),
-				statementStart,
-			});
-			lineHasCode = true;
-			continue;
-		}
-		tokens.push({
-			kind: "punctuation",
-			value: char,
-			statementStart,
-		});
-		lineHasCode = true;
-		index += 1;
+function aiSdkImports(source: string, file = "<self-test>"): string[] {
+	type AstNode = Record<string, unknown> & { type: string };
+	const plugins: ParserPlugin[] = file.endsWith(".tsx")
+		? ["typescript", "jsx"]
+		: ["typescript"];
+	let ast: ReturnType<typeof parse>;
+	try {
+		ast = parse(source, { sourceType: "module", plugins });
+	} catch (error) {
+		throw new Error(
+			`${file}: failed to parse source: ${error instanceof Error ? error.message : String(error)}`,
+		);
 	}
 
 	const imports: string[] = [];
-	for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex += 1) {
-		const token = tokens[tokenIndex]!;
-		if (token.kind !== "identifier") continue;
-
-		if (
-			(token.value === "import" || token.value === "require") &&
-			tokens[tokenIndex + 1]?.value === "(" &&
-			tokens[tokenIndex + 2]?.kind === "string" &&
-			tokens[tokenIndex + 3]?.value === ")"
-		) {
-			const specifier = tokens[tokenIndex + 2]!.value;
-			if (AI_SDK_IMPORT.test(specifier)) imports.push(specifier);
-			continue;
+	const packageSpecifier = (value: unknown): string | undefined => {
+		if (value === null || typeof value !== "object") return undefined;
+		const node = value as Record<string, unknown>;
+		if (node.type === "StringLiteral" && typeof node.value === "string")
+			return node.value;
+		if (node.type !== "TemplateLiteral") return undefined;
+		const expressions = node.expressions;
+		const quasis = node.quasis;
+		if (!Array.isArray(expressions) || expressions.length !== 0) return undefined;
+		if (!Array.isArray(quasis) || quasis.length !== 1) return undefined;
+		const quasi = quasis[0];
+		if (quasi === null || typeof quasi !== "object") return undefined;
+		const quasiValue = (quasi as Record<string, unknown>).value;
+		if (quasiValue === null || typeof quasiValue !== "object") return undefined;
+		const { cooked, raw } = quasiValue as Record<string, unknown>;
+		const specifier =
+			typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : undefined;
+		return specifier;
+	};
+	const appendSpecifier = (value: unknown): void => {
+		const specifier = packageSpecifier(value);
+		if (specifier !== undefined && AI_SDK_IMPORT.test(specifier))
+			imports.push(specifier);
+	};
+	const asNode = (value: unknown): AstNode | undefined => {
+		if (value === null || typeof value !== "object" || !("type" in value))
+			return undefined;
+		const node = value as Record<string, unknown>;
+		return typeof node.type === "string" ? (node as AstNode) : undefined;
+	};
+	const walk = (value: unknown): void => {
+		if (Array.isArray(value)) {
+			for (const item of value) walk(item);
+			return;
 		}
-		if (
-			token.value !== "import" &&
-			token.value !== "export" ||
-			!token.statementStart
-		)
-			continue;
+		const node = asNode(value);
+		if (node === undefined) return;
 
-		let braceDepth = 0;
-		let bracketDepth = 0;
-		let parenDepth = 0;
-		for (let scanIndex = tokenIndex + 1; scanIndex < tokens.length; scanIndex += 1) {
-			const scan = tokens[scanIndex]!;
-			if (
-				scan.value === ";" &&
-				braceDepth === 0 &&
-				bracketDepth === 0 &&
-				parenDepth === 0
-			)
+		switch (node.type) {
+			case "ImportDeclaration":
+			case "ExportNamedDeclaration":
+			case "ExportAllDeclaration":
+				appendSpecifier(node.source);
 				break;
-			if (
-				scanIndex > tokenIndex + 1 &&
-				scan.statementStart &&
-				braceDepth === 0 &&
-				bracketDepth === 0 &&
-				parenDepth === 0 &&
-				["const", "let", "var", "function", "class", "import", "export"].includes(scan.value)
-			)
-				break;
-			if (
-				scan.kind === "identifier" &&
-				scan.value === "from" &&
-				braceDepth === 0 &&
-				bracketDepth === 0 &&
-				parenDepth === 0
-			) {
-				const specifier = tokens[scanIndex + 1];
-				if (specifier?.kind === "string" && AI_SDK_IMPORT.test(specifier.value)) {
-					imports.push(specifier.value);
-				}
+			case "TSImportEqualsDeclaration": {
+				const reference = asNode(node.moduleReference);
+				if (reference?.type === "TSExternalModuleReference")
+					appendSpecifier(reference.expression);
 				break;
 			}
-			if (
-				scanIndex === tokenIndex + 1 &&
-				token.value === "import" &&
-				scan.kind === "string"
-			) {
-				if (AI_SDK_IMPORT.test(scan.value)) imports.push(scan.value);
+			case "TSImportType":
+				appendSpecifier(node.source);
+				break;
+			case "ImportExpression":
+				appendSpecifier(node.source);
+				break;
+			case "CallExpression": {
+				const callee = asNode(node.callee);
+				const args = node.arguments;
+				const firstArgument = Array.isArray(args) ? args[0] : undefined;
+				if (callee?.type === "Import") appendSpecifier(firstArgument);
+				else if (callee?.type === "Identifier" && callee.name === "require")
+					appendSpecifier(firstArgument);
 				break;
 			}
-			if (scan.value === "{") braceDepth += 1;
-			else if (scan.value === "}") braceDepth = Math.max(0, braceDepth - 1);
-			else if (scan.value === "[") bracketDepth += 1;
-			else if (scan.value === "]") bracketDepth = Math.max(0, bracketDepth - 1);
-			else if (scan.value === "(") parenDepth += 1;
-			else if (scan.value === ")") parenDepth = Math.max(0, parenDepth - 1);
 		}
-	}
+
+		for (const child of Object.values(node)) walk(child);
+	};
+	walk(ast);
 	return imports;
 }
 
@@ -399,21 +319,50 @@ describe("module boundaries", () => {
 			aiSdkImports('// from "ai"\n/* import("ai") */\nconst s = \'from "ai"\';'),
 		).toEqual([]);
 		expect(aiSdkImports('import {\n a,\n b\n} from "ai"')).toEqual(["ai"]);
+		expect(aiSdkImports('import { x } from "@ai-sdk/openai"')).toEqual([
+			"@ai-sdk/openai",
+		]);
+		expect(aiSdkImports('import("ai")')).toEqual(["ai"]);
 		expect(aiSdkImports('require("@ai-sdk/google")')).toEqual(["@ai-sdk/google"]);
 		expect(aiSdkImports('import type { X } from "ai";')).toEqual(["ai"]);
 		expect(aiSdkImports('export type { X } from "ai/rsc";')).toEqual(["ai/rsc"]);
 		expect(
 			aiSdkImports(
-				'import { X } from "aim";\nimport { X } from "./ai.ts";\nimport { X } from "@ai-sdkx/y";',
+				'import { X } from "aim";\nimport { Y } from "./ai.ts";\nimport { Z } from "@ai-sdkx/y";',
 			),
 		).toEqual([]);
+	});
+
+	test("AI SDK AST scan covers legal specifier forms", () => {
+		expect(aiSdkImports("const m = import(`ai`);")).toEqual(["ai"]);
+		expect(
+			aiSdkImports('const m = import("ai", { with: { type: "json" } });'),
+		).toEqual(["ai"]);
+		expect(aiSdkImports('if (false) {} import { x } from "ai";')).toEqual([
+			"ai",
+		]);
+		expect(aiSdkImports('export const s = `${await import("ai")}`;')).toEqual([
+			"ai",
+		]);
+		expect(aiSdkImports('import from from "ai";')).toEqual(["ai"]);
+		expect(aiSdkImports('import * as from from "ai";')).toEqual(["ai"]);
+		expect(aiSdkImports('const r = require(("ai"));')).toEqual(["ai"]);
+		expect(aiSdkImports('type T = typeof import("ai");')).toEqual(["ai"]);
+		expect(aiSdkImports('import x = require("ai");')).toEqual(["ai"]);
+	});
+
+	test("AI SDK AST scan ignores regex literals and member calls", () => {
+		expect(aiSdkImports('const re = /import("ai")/;')).toEqual([]);
+		expect(aiSdkImports('loader.require("ai");')).toEqual([]);
 	});
 
 	test("AI SDK packages are imported only by the shrinking allowlist", () => {
 		const imports = AI_SDK_SCAN_ROOTS.filter(existsSync)
 			.flatMap((root) => walk(root))
 			.filter((file) => !file.endsWith(".test.ts"))
-			.filter((file) => aiSdkImports(readFileSync(file, "utf8")).length > 0)
+			.filter(
+				(file) => aiSdkImports(readFileSync(file, "utf8"), repoPath(file)).length > 0,
+			)
 			.map(repoPath);
 		const allowlisted: ReadonlySet<string> = new Set(AI_SDK_IMPORTERS);
 		const offenders = imports.filter((file) => !allowlisted.has(file));
@@ -427,7 +376,7 @@ describe("module boundaries", () => {
 	test("every AI_SDK_IMPORTERS entry still imports an AI SDK package", () => {
 		for (const file of AI_SDK_IMPORTERS) {
 			const source = readFileSync(join(ROOT, file), "utf8");
-			if (aiSdkImports(source).length === 0) {
+			if (aiSdkImports(source, file).length === 0) {
 				throw new Error(`${file} no longer imports an AI SDK package; remove it from AI_SDK_IMPORTERS`);
 			}
 		}

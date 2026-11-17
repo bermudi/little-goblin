@@ -7,7 +7,7 @@ import { buildSystemPrompt, PROMPT_SECTIONS } from "../agent/prompt.ts";
 import { paths } from "../home-layout.ts";
 import type { ModelMessage } from "ai";
 import { useHome } from "../testkit.ts";
-import { measurePrompt, splitSystemPrompt } from "./itemize.ts";
+import { estimateHistoryChars, measurePrompt, splitSystemPrompt } from "./itemize.ts";
 
 const conv = {
 	id: "dm-1",
@@ -232,5 +232,36 @@ describe("measurePrompt", () => {
 		);
 		expect(s.history).toBe(2);
 		expect(s.toolResults).toBe(0);
+	});
+});
+
+describe("content tool outputs", () => {
+	test("file parts charge media cost, never jsonLen of the bytes", () => {
+		const png = new Uint8Array(900_000);
+		const messages: ModelMessage[] = [
+			{
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						toolCallId: "c1",
+						toolName: "screenshot",
+						output: {
+							type: "content",
+							value: [
+								{ type: "text", text: "caption" },
+								{
+									type: "file",
+									mediaType: "image/png",
+									data: { type: "data", data: png },
+								},
+							],
+						},
+					},
+				],
+			},
+		];
+		// estimateHistoryChars: media is a fixed 8000-char cost + caption.
+		expect(estimateHistoryChars(messages)).toBe(8000 + "caption".length);
 	});
 });

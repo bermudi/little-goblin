@@ -116,6 +116,72 @@ export interface WireMember extends AdmittedMember {
 	streamFailed?: boolean;
 }
 
+// Image-bearing tool results (screenshot frames, issue #606) are heavy:
+// once a newer frame exists, older ones become text stubs so their bytes
+// do not ride every later step request. This rewrites only the outbound
+// request view — stored events keep full fidelity, and the between-turn
+// sweep (frame-stubs.ts) commits the durable marker for old frames.
+// Returns the input array untouched when nothing changes. Exported for tests.
+export function stubSupersededFrames(messages: ModelMessage[]): ModelMessage[] {
+	const spots: { mi: number; pi: number }[] = [];
+	messages.forEach((m, mi) => {
+		if (m.role !== "tool" || typeof m.content === "string") return;
+		m.content.forEach((part, pi) => {
+			const p = part as { type?: unknown; output?: unknown };
+			if (p.type !== "tool-result") return;
+			const out = p.output as { type?: unknown; value?: unknown } | null;
+			if (
+				typeof out !== "object" ||
+				out === null ||
+				out.type !== "content" ||
+				!Array.isArray(out.value)
+			)
+				return;
+			const hasImage = out.value.some((v) => {
+				const vp = v as { type?: unknown; mediaType?: unknown };
+				return (
+					vp.type === "file" &&
+					typeof vp.mediaType === "string" &&
+					vp.mediaType.startsWith("image/")
+				);
+			});
+			if (hasImage) spots.push({ mi, pi });
+		});
+	});
+	if (spots.length < 2) return messages;
+	const drop = new Set(spots.slice(0, -1).map((s) => `${s.mi}:${s.pi}`));
+	let changed = false;
+	const next = messages.map((m, mi) => {
+		if (m.role !== "tool" || typeof m.content === "string") return m;
+		let touched = false;
+		const content = m.content.map((part, pi) => {
+			if (!drop.has(`${mi}:${pi}`)) return part;
+			touched = true;
+			const out = (part as { output?: { value?: unknown } }).output;
+			const texts = Array.isArray(out?.value)
+				? out.value
+						.map((v) => v as { type?: unknown; text?: unknown })
+						.filter((v) => v.type === "text")
+						.map((v) => String(v.text ?? ""))
+				: [];
+			return {
+				...(part as Record<string, unknown>),
+				output: {
+					type: "text",
+					value: [
+						...texts,
+						"[frame omitted — a newer screenshot superseded it; call screenshot for a fresh view]",
+					].join("\n"),
+				},
+			};
+		});
+		if (!touched) return m;
+		changed = true;
+		return { ...m, content } as ModelMessage;
+	});
+	return changed ? next : messages;
+}
+
 export type MemberSettlement = { kind: "fenced" } | { kind: "error"; message: string };
 
 function replayWire(convId: string, turn: WireMember, live: LiveWire): void {
@@ -568,19 +634,26 @@ export async function driveStream<M extends WireMember>(
 				.drainWarnings()
 				.map((content): ModelMessage => ({ role: "user", content }));
 			const nudge: ModelMessage[] = cut !== null ? [{ role: "user", content: CUT_NUDGE[cut] }] : [];
+			const base = stubSupersededFrames(stepMessages);
 			const folded = await foldSteers(deps, steers, stepNumber, sdkTools);
-			if (folded === null) return undefined;
+			if (folded === null) {
+				if (base === stepMessages) return undefined;
+				const outbound =
+					forced || warnMsgs.length > 0 ? [...base, ...warnMsgs, ...nudge] : base;
+				notePrompt(outbound, stepNumber);
+				return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
+			}
 			const { injected } = folded;
 			if (injected.length === 0) {
-				if (forced || warnMsgs.length > 0) {
-					const outbound = [...stepMessages, ...warnMsgs, ...nudge];
+				if (forced || warnMsgs.length > 0 || base !== stepMessages) {
+					const outbound = [...base, ...warnMsgs, ...nudge];
 					notePrompt(outbound, stepNumber);
 					return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
 				}
 				notePrompt(stepMessages, stepNumber);
 				return undefined;
 			}
-			const outbound = [...stepMessages, ...warnMsgs, ...injected, ...nudge];
+			const outbound = [...base, ...warnMsgs, ...injected, ...nudge];
 			notePrompt(outbound, stepNumber);
 			return {
 				messages: outbound,

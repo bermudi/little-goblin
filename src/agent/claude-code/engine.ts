@@ -211,14 +211,18 @@ export function resultErrorText(text: string, assistantError: string | undefined
 }
 
 // A tool-result echo's content, when no bridge result is adoptable:
-// string as-is, content blocks joined, anything else serialized.
+// string as-is, content blocks joined, anything else serialized. Image
+// blocks become a placeholder — their base64 payload must never land
+// in a stored output (issue #606).
 export function echoContentText(content: unknown): string {
 	if (typeof content === "string") return content;
 	if (Array.isArray(content)) {
 		return content
 			.map((part) => {
-				if (typeof part === "object" && part !== null && "text" in part) {
-					return String((part as { text?: unknown }).text ?? "");
+				if (typeof part === "object" && part !== null) {
+					const p = part as { type?: unknown; text?: unknown };
+					if (p.type === "image") return "[image]";
+					if ("text" in p) return String(p.text ?? "");
 				}
 				return JSON.stringify(part);
 			})

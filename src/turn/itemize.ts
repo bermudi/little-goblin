@@ -117,6 +117,22 @@ function partChars(
 	if (p.type === "tool-call") return { history: jsonLen(p.input), tool: jsonLen(p.input) };
 	if (p.type === "tool-result") {
 		const out = p.output as { type?: string; value?: unknown } | undefined;
+		// A content output carries file parts (screenshot frames) — charge
+		// them the media cost, never jsonLen: a Uint8Array serializes ~6x
+		// and would read as a six-figure token span.
+		if (
+			out !== null &&
+			typeof out === "object" &&
+			out.type === "content" &&
+			Array.isArray(out.value)
+		) {
+			let n = 0;
+			for (const v of out.value as unknown[]) {
+				const vp = v as { type?: unknown; text?: unknown };
+				n += vp.type === "text" ? (typeof vp.text === "string" ? vp.text.length : 0) : mediaChars(v);
+			}
+			return { history: n, tool: n };
+		}
 		const n =
 			out !== null && typeof out === "object" && (out.type === "text" || out.type === "error-text")
 				? typeof out.value === "string"

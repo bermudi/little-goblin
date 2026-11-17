@@ -97,9 +97,16 @@ function issueText(err: unknown): string {
 }
 
 // The model-facing result for goblin's toModelOutput contract: text
-// rides as text; json serializes to text for the MCP response.
-function callToolResult(output: ToolOutput): {
-	content: Array<{ type: "text"; text: string }>;
+// rides as text; json serializes to text for the MCP response; content
+// maps part-by-part — text stays text, an image becomes an MCP image
+// block (base64 + mimeType) the CLI forwards as an Anthropic image
+// block in the tool_result (issue #606; carriesMedia's tool-result
+// gate is what lets the tool mount at all). Exported for tests.
+export function callToolResult(output: ToolOutput): {
+	content: Array<
+		| { type: "text"; text: string }
+		| { type: "image"; data: string; mimeType: string }
+	>;
 	isError?: boolean;
 } {
 	switch (output.type) {
@@ -107,6 +114,18 @@ function callToolResult(output: ToolOutput): {
 			return { content: [{ type: "text", text: output.value }] };
 		case "json":
 			return { content: [{ type: "text", text: JSON.stringify(output.value) }] };
+		case "content":
+			return {
+				content: output.value.map((part) =>
+					part.type === "text"
+						? { type: "text" as const, text: part.text }
+						: {
+								type: "image" as const,
+								data: Buffer.from(part.data).toString("base64"),
+								mimeType: part.mediaType,
+							},
+				),
+			};
 	}
 }
 
@@ -136,7 +155,10 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 	const { convId, tools, signal, afterCall } = deps;
 	const results: QueuedResult[] = [];
 	type McpResponse = {
-		content: Array<{ type: "text"; text: string }>;
+		content: Array<
+			| { type: "text"; text: string }
+			| { type: "image"; data: string; mimeType: string }
+		>;
 		isError?: boolean;
 	};
 	type Handler = (
@@ -244,9 +266,10 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 			}
 			const { response, record } = await handler(input as Record<string, unknown>);
 			if (response.isError === true) {
+				const firstText = response.content.find((c) => c.type === "text");
 				return {
 					output: null,
-					error: record.error ?? response.content[0]?.text ?? "tool failed",
+					error: record.error ?? (firstText !== undefined ? firstText.text : "tool failed"),
 				};
 			}
 			return { output: record.output, error: null };

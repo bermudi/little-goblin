@@ -1,7 +1,8 @@
 import { createProviderDefinedToolFactory } from "@ai-sdk/provider-utils";
 import { jsonSchema, tool, type ToolSet } from "ai";
+import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import { z } from "zod";
-import { isHosted, type Tool, type Tools } from "../tool.ts";
+import { isHosted, type Tool, type ToolOutput, type Tools } from "../tool.ts";
 
 export const codexWebSearch = createProviderDefinedToolFactory<
 	Record<string, unknown>,
@@ -10,6 +11,26 @@ export const codexWebSearch = createProviderDefinedToolFactory<
 	id: "codex.web_search",
 	inputSchema: z.looseObject({}),
 });
+
+// Goblin's content output → the SDK's ToolResultOutput content shape:
+// text passes through, an image becomes a file part whose data payload
+// is the raw bytes. Providers that cannot carry media in a tool result
+// stringify or drop the file part themselves (design/tools.md).
+function toSdkToolOutput(output: ToolOutput): ToolResultOutput {
+	if (output.type !== "content") return output;
+	return {
+		type: "content",
+		value: output.value.map((part) =>
+			part.type === "text"
+				? { type: "text" as const, text: part.text }
+				: {
+						type: "file" as const,
+						mediaType: part.mediaType,
+						data: { type: "data" as const, data: part.data },
+					},
+		),
+	};
+}
 
 function toSdkTool(definition: Exclude<Tool, { hosted: string }>) {
 	const toModelOutput = definition.toModelOutput;
@@ -34,7 +55,10 @@ function toSdkTool(definition: Exclude<Tool, { hosted: string }>) {
 			});
 		},
 		...(toModelOutput !== undefined
-			? { toModelOutput: (options) => toModelOutput(options) }
+			? {
+					toModelOutput: async (options) =>
+						toSdkToolOutput(await toModelOutput(options)),
+				}
 			: {}),
 	});
 }

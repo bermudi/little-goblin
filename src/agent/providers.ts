@@ -236,15 +236,14 @@ export function carriesMedia(
 			);
 		case "claude-code":
 			// The Messages API takes images/PDFs in user content; the engine
-			// maps view FileParts to prompt content blocks there. Tool results
-			// ride the bridge as text — no media through that position.
-			// Images are limited to the four types the Messages API accepts;
-			// others fall back to the attachment text placeholder.
-			return (
-				position === "user" &&
-				(["image/gif", "image/jpeg", "image/png", "image/webp"].includes(mediaType) ||
-					mediaType === "application/pdf")
-			);
+			// maps view FileParts to prompt content blocks there. Tool
+			// results ride the MCP bridge — image-bearing outputs become MCP
+			// image blocks (claude-code/tools.ts), the same four types the
+			// API accepts; PDFs have no MCP image form and stay text.
+			if (["image/gif", "image/jpeg", "image/png", "image/webp"].includes(mediaType)) {
+				return position === "user" || position === "tool-result";
+			}
+			return position === "user" && mediaType === "application/pdf";
 		default:
 			return position === "user" && mediaType.startsWith("image/");
 	}

@@ -60,7 +60,10 @@ function capped(text: string): string {
 	return `${text.slice(0, keep)}${truncationNote(text.length - keep)}`;
 }
 
-// The AI SDK's ToolResultOutput shapes, rendered to text.
+// The AI SDK's ToolResultOutput shapes, rendered to text. A content
+// output's file parts become placeholders — the claude-code replay
+// path is text-only by construction (the live MCP image block is the
+// only way a frame reaches the model on this engine).
 function outputText(output: unknown): string {
 	if (typeof output === "string") return output;
 	if (typeof output === "object" && output !== null && "type" in output) {
@@ -74,6 +77,16 @@ function outputText(output: unknown): string {
 				return `[execution denied${o.reason ? `: ${o.reason}` : ""}]`;
 			case "error-text":
 				return String(o.value ?? "");
+			case "content": {
+				if (!Array.isArray(o.value)) return "[tool result]";
+				return (o.value as Array<Record<string, unknown>>)
+					.map((part) => {
+						if (part.type === "text") return String(part.text ?? "");
+						const media = typeof part.mediaType === "string" ? part.mediaType : "file";
+						return media.startsWith("image/") ? `[image: ${media}]` : `[file: ${media}]`;
+					})
+					.join("\n");
+			}
 		}
 	}
 	try {

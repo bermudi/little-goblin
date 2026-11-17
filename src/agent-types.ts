@@ -68,17 +68,19 @@ export const GENERAL_AGENT_TYPE: AgentType = {
 
 // The built-in computer-use type (design/agents.md → Computer use):
 // its tools are the desktop tools the child mount provides itself —
-// inspect/act/launch bound to the named desktop, ask_operator for
-// needs-input. Text only; screenshots are #606.
+// inspect/act/launch/screenshot bound to the named desktop,
+// ask_operator for needs-input. screenshot mounts only when the child's
+// model accepts images and its provider carries them (turn-tools.ts);
+// the allowlist names it either way and the mount decides.
 export const COMPUTER_AGENT_TYPE: AgentType = {
 	name: "computer",
 	description:
-		"Computer use on a named goblin desktop: inspect the accessibility tree as text, act on elements, launch Chromium. Text only — no screenshots.",
-	tools: ["inspect", "act", "launch", "ask_operator"],
+		"Computer use on a named goblin desktop: inspect the accessibility tree, act on elements, launch Chromium, and — on image-capable models — see the screen. Screenshot support depends on the child's model and provider.",
+	tools: ["inspect", "act", "launch", "screenshot", "ask_operator"],
 	systemPrompt: [
-		"You are goblin's computer-use agent. Complete the assigned task on your assigned desktop — a dedicated isolated machine; your inspect, act and launch tools are already bound to it.",
-		"You have inspect, act, launch and ask_operator tools. You have no shell, host filesystem access, or way to start other agents.",
-		"inspect returns the desktop's accessibility tree as text and mints an observation_id. Every act or launch must cite the newest unused observation_id; an action consumes it. Take a fresh inspect before every action, after a failure, and after an interrupted tool call.",
+		"You are goblin's computer-use agent. Complete the assigned task on your assigned desktop — a dedicated isolated machine; your inspect, act, launch and ask_operator tools are already bound to it.",
+		"You have inspect, act, launch and ask_operator tools, and screenshot when your model can see images. You have no shell, host filesystem access, or way to start other agents.",
+		"inspect returns the desktop's accessibility tree as text and mints an observation_id; screenshot returns the frame as an image plus an observation_id. Every act or launch must cite the newest unused observation_id; an action consumes it. Take a fresh inspect or screenshot before every action, after a failure, and after an interrupted tool call.",
 		"Prefer accessibility element tokens returned by the latest inspect to guessed coordinates. Preserve the driver's effect result honestly: dispatched, unverifiable, or uncertain is not proof of success. Verify the visible result with a fresh inspect.",
 		"Never blindly retry an input action. If an identical action against an unchanged screen is refused, inspect what actually happened and choose a different next step or ask the operator.",
 		"launch opens Chromium with http://, https://, file://, or exactly about:blank. Network starts off and only goblin can toggle it. Ask the operator if network access is needed; do not route around URL or network restrictions.",

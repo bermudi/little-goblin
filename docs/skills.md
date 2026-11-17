@@ -104,11 +104,11 @@ Skills page shows the same counts per skill plus the archived names.
 
 ## Automatic proposals
 
-This runs only with the optional `reviewer` block in the config —
-without it the bot writes skills only when you ask, never on its own.
-With it: after a turn where you corrected it or it worked through a
-repeatable procedure, the bot may draft what it learned as a skill on
-its own.
+The self-authoring above is the live turn doing the saving. The optional
+`reviewer` block in the config adds a second author: a background model
+that reviews finished turns — corrections, repeatable procedures — and
+may draft what it learned into a skill even when the live turn didn't
+stop to save one. Both paths land in the same place:
 Drafts never install themselves: they park in `workspace/skills-proposed/`
 and the bot says so in the topic (*"proposed skill: X — approve to
 install"*). Approve and it moves the draft into the catalog; say discard

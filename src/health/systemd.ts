@@ -36,14 +36,11 @@ export async function systemdShow(
 	return out;
 }
 
-// goblin-herdr.service hosts the delegated-agent session; goblin.service
-// Wants=/After= it but never gates on it, so a dead unit only degrades
-// the delegate tool — fail-tier only while delegation is configured.
-export async function herdrUnit(
-	scope: string,
-	delegationConfigured: boolean,
-	probe: ProbeContext,
-): Promise<HealthResult> {
+// goblin-herdr.service hosts the operator's herdr session (interactive
+// panes). Delegation stopped riding it with the T3 Code transport
+// (#607) and the unit retires in #608 — a dead unit degrades the panes
+// only, so it warns and never fails.
+export async function herdrUnit(scope: string, probe: ProbeContext): Promise<HealthResult> {
 	const start = performance.now(),
 		id = "service.goblin-herdr";
 	try {
@@ -60,13 +57,11 @@ export async function herdrUnit(
 		return result(
 			id,
 			scope,
-			healthy ? "pass" : delegationConfigured ? "fail" : "warn",
+			healthy ? "pass" : "warn",
 			`${p.LoadState}/${p.ActiveState}/${p.SubState}; ${
 				healthy
-					? "delegation host session up"
-					: delegationConfigured
-						? "delegation host down — configured delegate calls fail"
-						: "delegation host down; no delegation block configured"
+					? "herdr session up (delegation no longer rides it)"
+					: "herdr session down — panes riding it are unreachable; delegation is unaffected"
 			}; pane contents and herdr wire unverified`,
 			start,
 		);
@@ -74,8 +69,8 @@ export async function herdrUnit(
 		return result(
 			id,
 			scope,
-			delegationConfigured ? "fail" : "warn",
-			`Delegation host unit unverified: ${errno(error)}`,
+			"warn",
+			`Herdr unit unverified: ${errno(error)}`,
 			start,
 		);
 	}

@@ -240,9 +240,17 @@ access before there is a working replacement).
 7. Delete the `subagent` tool, `src/subagents/`, the `subagent_runs`
    table and the pi-durable, pi-ai and chord dependencies. Needs step 3.
 
-## Open
+## Machine targets: dropped (2026-11-17)
 
-- **Machine targets.** `t3 thread start` has no environment flag. Linked
-  environments (`t3 environment`) may cover remote hosts, but this is
-  unverified. Decide whether delegation to another machine is still
-  needed.
+Delegation runs on this machine only. `delegation.machines` is gone: an
+old herdr-shaped block logs a warning that names the rewrite and boots
+without `delegate`. Reasons:
+
+- `t3 thread start` (v0.1.9) has no environment flag. Linked
+  environments (`t3 environment`) might reach other hosts, but that is
+  unverified.
+- The live config on g7 has no `machines` block (checked 2026-11-17).
+
+If remote delegation comes back, it goes through T3 Code's own
+environments, in `src/t3.ts`. It does not bring back a goblin-side
+machine registry.

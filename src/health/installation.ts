@@ -15,7 +15,6 @@ export async function installation(
 	checkout: string,
 	phase: HealthReport["phase"],
 	probe: ProbeContext = {},
-	delegationConfigured = false,
 ): Promise<HealthResult[]> {
 	const start = performance.now(),
 		scope = `diagnostic-revision:${checkout}`;
@@ -35,7 +34,7 @@ export async function installation(
 	let finding: HealthResult;
 	// The herdr probe shares the systemctl boundary and the same deadline
 	// budget — run it beside the service probe, not after it.
-	const herdr = herdrUnit(scope, delegationConfigured, probe);
+	const herdr = herdrUnit(scope, probe);
 	try {
 		const properties = await systemdShow(
 			"goblin.service",

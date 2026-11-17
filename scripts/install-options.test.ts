@@ -33,7 +33,7 @@ const config =
 	'{providers:{fixture:{kind:"openai-compatible",baseUrl:"https://fixture.invalid",auth:"fixture"}},model:"fixture/model",operators:[1],tts:""';
 test("setup options inspect config and auth shapes without executing credentials or emitting config logs", () => {
 	const result = inspect(
-		`${config},delegation:{harnesses:{fixture:{kind:"fixture"}},maxRunning:2}}`,
+		`${config},delegation:{harnesses:{fixture:{provider:"fixture",model:"fixture/model"}}}}`,
 		'{"name":"fixture","value":"!pass-keys get goblin-dev FIXTURE"}',
 	);
 	expect(result.status).toBe(0);

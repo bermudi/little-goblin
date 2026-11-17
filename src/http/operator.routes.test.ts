@@ -859,7 +859,7 @@ describe("config save", () => {
 		});
 	});
 
-	test("a delegation save keeps the machine targets the editor cannot edit", async () => {
+	test("a delegation save replaces the whole block — harnesses and defaults alike", async () => {
 		const d: OperatorDeps = {
 			configRef: {
 				current: parseConfig({
@@ -868,8 +868,10 @@ describe("config save", () => {
 					operators: [7],
 					allowedUsers: [],
 					delegation: {
-						harnesses: { pi: { kind: "pi" }, old: { kind: "codex" } },
-						machines: { g7: { machine: "g7", root: "~/build" } },
+						harnesses: {
+							pi: { provider: "t3", model: "glm-5.3" },
+							old: { provider: "t3", model: "gone-model" },
+						},
 						defaults: { default: "pi" },
 					},
 				}),
@@ -878,20 +880,28 @@ describe("config save", () => {
 		};
 		const res = await postConfig(d, {
 			delegation: {
-				harnesses: { pi: { kind: "pi", args: ["--model", "sol"] }, review: { kind: "pi" } },
+				harnesses: {
+					pi: { provider: "t3", model: "glm-5.3-air" },
+					review: { provider: "t3", model: "glm-5.3-flash" },
+				},
 				defaults: { default: "pi", review: "review" },
 			},
 		});
 		expect(res?.status).toBe(200);
 		expect(loadConfig()?.delegation).toEqual({
-			harnesses: { pi: { kind: "pi", args: ["--model", "sol"] }, review: { kind: "pi" } },
-			machines: { g7: { machine: "g7", root: "~/build" } },
+			harnesses: {
+				pi: { provider: "t3", model: "glm-5.3-air" },
+				review: { provider: "t3", model: "glm-5.3-flash" },
+			},
 			defaults: { default: "pi", review: "review" },
 		});
+		// The merge no longer special-cases delegation: a harness the
+		// editor dropped is gone, nothing merges back from the file.
+		expect(loadConfig()?.delegation?.harnesses["old"]).toBeUndefined();
 		// A default naming nothing is rejected before any write.
 		const bad = await postConfig(d, {
 			delegation: {
-				harnesses: { pi: { kind: "pi" } },
+				harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
 				defaults: { default: "pi", build: "ghost" },
 			},
 		});
@@ -907,7 +917,10 @@ describe("config save", () => {
 					model: "test/m",
 					operators: [7],
 					allowedUsers: [],
-					delegation: { harnesses: { pi: { kind: "pi" } }, defaults: { default: "pi" } },
+					delegation: {
+						harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
+						defaults: { default: "pi" },
+					},
 				}),
 			},
 			onConfigWritten: () => {},
@@ -916,25 +929,28 @@ describe("config save", () => {
 		expect((await postConfig(d, { capabilities: { delegation: false } }))?.status).toBe(200);
 		expect(loadConfig()?.delegation).toBeUndefined();
 		expect(loadConfig()?.parked?.delegation).toEqual({
-			harnesses: { pi: { kind: "pi" } },
+			harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
 			defaults: { default: "pi" },
 		});
 		// An edited block supersedes it — the stale copy must not come back.
 		expect(
 			(
 				await postConfig(d, {
-					delegation: { harnesses: { codex: { kind: "codex" } }, defaults: { default: "codex" } },
+					delegation: {
+						harnesses: { codex: { provider: "t3", model: "glm-5.3" } },
+						defaults: { default: "codex" },
+					},
 				})
 			)?.status,
 		).toBe(200);
 		expect(loadConfig()?.delegation).toEqual({
-			harnesses: { codex: { kind: "codex" } },
+			harnesses: { codex: { provider: "t3", model: "glm-5.3" } },
 			defaults: { default: "codex" },
 		});
 		expect(loadConfig()?.parked?.delegation).toBeUndefined();
 	});
 
-	test("re-enabling delegation keeps the machine targets parked with the block", async () => {
+	test("re-enabling delegation without a body block restores the parked copy verbatim", async () => {
 		const d: OperatorDeps = {
 			configRef: {
 				current: parseConfig({
@@ -943,41 +959,29 @@ describe("config save", () => {
 					operators: [7],
 					allowedUsers: [],
 					delegation: {
-						harnesses: { pi: { kind: "pi" } },
-						machines: { g7: { machine: "g7", root: "~/build" } },
+						harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
 						defaults: { default: "pi" },
 					},
 				}),
 			},
 			onConfigWritten: () => {},
 		};
-		// Off parks the whole block — machine targets included.
+		// Off parks the whole block.
 		expect((await postConfig(d, { capabilities: { delegation: false } }))?.status).toBe(200);
-		expect(loadConfig()?.parked?.delegation).toMatchObject({
-			machines: { g7: { machine: "g7", root: "~/build" } },
-		});
-		// The editor's re-enable sends only harnesses and defaults —
-		// machines live in the parked block, not the active one.
-		expect(
-			(
-				await postConfig(d, {
-					capabilities: { delegation: true },
-					delegation: {
-						harnesses: { pi: { kind: "pi" }, codex: { kind: "codex" } },
-						defaults: { default: "pi" },
-					},
-				})
-			)?.status,
-		).toBe(200);
+		expect(loadConfig()?.delegation).toBeUndefined();
+		// A body-less re-enable restores the parked block as-is.
+		expect((await postConfig(d, { capabilities: { delegation: true } }))?.status).toBe(200);
 		expect(loadConfig()?.delegation).toEqual({
-			harnesses: { pi: { kind: "pi" }, codex: { kind: "codex" } },
-			machines: { g7: { machine: "g7", root: "~/build" } },
+			harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
 			defaults: { default: "pi" },
 		});
 		expect(loadConfig()?.parked?.delegation).toBeUndefined();
 	});
 
-	test("a posted delegation.machines cannot replace the file's own targets", async () => {
+	// Retired delegation keys are stripped on DISK load only: the POST
+	// merge validates through parseConfig, so a submitted block carrying
+	// them is refused — never silently rewritten.
+	test("a posted delegation block carrying machines is refused, not merged or stripped", async () => {
 		const d: OperatorDeps = {
 			configRef: {
 				current: parseConfig({
@@ -986,8 +990,7 @@ describe("config save", () => {
 					operators: [7],
 					allowedUsers: [],
 					delegation: {
-						harnesses: { pi: { kind: "pi" } },
-						machines: { g7: { machine: "g7", root: "~/build" } },
+						harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
 						defaults: { default: "pi" },
 					},
 				}),
@@ -996,45 +999,25 @@ describe("config save", () => {
 		};
 		const res = await postConfig(d, {
 			delegation: {
-				harnesses: { codex: { kind: "codex" } },
+				harnesses: { codex: { provider: "t3", model: "glm-5.3" } },
 				machines: { evil: { machine: "evil", root: "~/evil" } },
 				defaults: { default: "codex" },
 			},
 		});
-		expect(res?.status).toBe(200);
-		expect(loadConfig()?.delegation).toEqual({
-			harnesses: { codex: { kind: "codex" } },
-			machines: { g7: { machine: "g7", root: "~/build" } },
-			defaults: { default: "codex" },
+		expect(res?.status).toBe(422);
+		expect(((await res?.json()) as { error: string }).error).toContain(
+			"delegation: unrecognized_keys",
+		);
+		// A herdr-shaped posted block fails the same way — no silent drop.
+		const herdr = await postConfig(d, {
+			delegation: { harnesses: { pi: { kind: "pi" } } },
 		});
-	});
-
-	test("a posted delegation.machines is dropped when the file has none", async () => {
-		const d: OperatorDeps = {
-			configRef: {
-				current: parseConfig({
-					providers: { test: { kind: "codex" } },
-					model: "test/m",
-					operators: [7],
-					allowedUsers: [],
-					delegation: {
-						harnesses: { pi: { kind: "pi" } },
-						defaults: { default: "pi" },
-					},
-				}),
-			},
-			onConfigWritten: () => {},
-		};
-		const res = await postConfig(d, {
-			delegation: {
-				harnesses: { pi: { kind: "pi" } },
-				machines: { evil: { machine: "evil", root: "~/evil" } },
-				defaults: { default: "pi" },
-			},
-		});
-		expect(res?.status).toBe(200);
-		expect(loadConfig()?.delegation).toEqual({
-			harnesses: { pi: { kind: "pi" } },
+		expect(herdr?.status).toBe(422);
+		// Nothing was written by either refusal — the incumbent block
+		// (which lived in configRef, not on disk) is untouched.
+		expect(loadConfig()).toBeNull();
+		expect(d.configRef.current.delegation).toEqual({
+			harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
 			defaults: { default: "pi" },
 		});
 	});

@@ -101,30 +101,33 @@ const draft = (over: Partial<SettingsDraft> = {}): SettingsDraft => ({
 });
 
 describe("draftFromConfig", () => {
-	test("a delegation block round-trips harnesses, args and role defaults", () => {
+	test("a delegation block round-trips harnesses and role defaults", () => {
 		const c = baseConfig();
 		c.delegation = delegationConfigSchema.parse({
 			harnesses: {
-				pi: { kind: "pi", args: ["--model", "zai/glm-5.3"] },
-				"pi-review": { kind: "pi", args: ["--model", "sol"] },
+				pi: { provider: "codex", model: "gpt-6-luna" },
+				"pi-review": { provider: "codex", model: "gpt-6.1-terra" },
 			},
-			machines: { g7: { machine: "g7", root: "~/build" } },
 			defaults: { default: "pi", review: "pi-review" },
 		});
 		const { draft: d } = draftFromConfig(c);
 		expect(d.delegation?.harnesses).toEqual([
-			{ name: "pi", kind: "pi", args: "--model\nzai/glm-5.3", askFirst: false },
-			{ name: "pi-review", kind: "pi", args: "--model\nsol", askFirst: false },
+			{ name: "pi", provider: "codex", model: "gpt-6-luna", askFirst: false },
+			{ name: "pi-review", provider: "codex", model: "gpt-6.1-terra", askFirst: false },
 		]);
 		// The fallback role sorts first.
 		expect(d.delegation?.roles).toEqual([
 			{ role: "default", harness: "pi" },
 			{ role: "review", harness: "pi-review" },
 		]);
-		expect(bodyFromDraft(d, draftFromConfig(c).providers, authDefaults).delegation).toEqual({
+		expect(
+			delegationConfigSchema.parse(
+				bodyFromDraft(d, draftFromConfig(c).providers, authDefaults).delegation,
+			),
+		).toEqual({
 			harnesses: {
-				pi: { kind: "pi", args: ["--model", "zai/glm-5.3"] },
-				"pi-review": { kind: "pi", args: ["--model", "sol"] },
+				pi: { provider: "codex", model: "gpt-6-luna" },
+				"pi-review": { provider: "codex", model: "gpt-6.1-terra" },
 			},
 			defaults: { default: "pi", review: "pi-review" },
 		});
@@ -133,32 +136,32 @@ describe("draftFromConfig", () => {
 	test("askFirst round-trips; unflagged harnesses emit no key", () => {
 		const c = baseConfig();
 		c.delegation = delegationConfigSchema.parse({
-			harnesses: { claude: { kind: "claude", askFirst: true }, pi: { kind: "pi" } },
+			harnesses: {
+				claude: { provider: "claude", model: "claude-haiku-5-5", askFirst: true },
+				pi: { provider: "codex", model: "gpt-6-luna" },
+			},
 		});
 		const { draft: d, providers } = draftFromConfig(c);
 		expect(d.delegation?.harnesses).toEqual([
-			{ name: "claude", kind: "claude", args: "", askFirst: true },
-			{ name: "pi", kind: "pi", args: "", askFirst: false },
+			{ name: "claude", provider: "claude", model: "claude-haiku-5-5", askFirst: true },
+			{ name: "pi", provider: "codex", model: "gpt-6-luna", askFirst: false },
 		]);
-		const del = bodyFromDraft(d, providers, authDefaults).delegation;
+		const del = delegationConfigSchema.parse(bodyFromDraft(d, providers, authDefaults).delegation);
 		expect(del).toEqual({
 			harnesses: {
-				claude: { kind: "claude", askFirst: true },
-				pi: { kind: "pi" },
+				claude: { provider: "claude", model: "claude-haiku-5-5", askFirst: true },
+				pi: { provider: "codex", model: "gpt-6-luna" },
 			},
 		});
-		if (typeof del === "object") {
-			expect("askFirst" in del.harnesses["claude"]!).toBe(true);
-			expect("askFirst" in del.harnesses["pi"]!).toBe(false);
-		}
+		expect("askFirst" in del.harnesses["claude"]!).toBe(true);
+		expect("askFirst" in del.harnesses["pi"]!).toBe(false);
 	});
 
 	test("delegation validation catches unnamed, duplicate and dangling entries", () => {
 		const { draft: d } = draftFromConfig(baseConfig());
 		d.delegation = {
-			harnesses: [{ name: "pi", kind: "pi", args: "", askFirst: false }],
+			harnesses: [{ name: "pi", provider: "codex", model: "gpt-6-luna", askFirst: false }],
 			roles: [{ role: "default", harness: "pi" }],
-			machineHarnesses: [],
 		};
 		expect(validateDraft(d, [prov()])).toBeNull();
 		d.delegation.roles = [{ role: "default", harness: "ghost" }];
@@ -169,41 +172,27 @@ describe("draftFromConfig", () => {
 		];
 		expect(validateDraft(d, [prov()])).toContain("Duplicate delegation role");
 		d.delegation.roles = [{ role: "default", harness: "pi" }];
-		d.delegation.harnesses = [{ name: "Pi", kind: "pi", args: "", askFirst: false }];
+		d.delegation.harnesses = [
+			{ name: "Pi", provider: "codex", model: "gpt-6-luna", askFirst: false },
+		];
 		expect(validateDraft(d, [prov()])).toContain("lowercase letters");
-	});
-
-	test("a role default may name a harness declared only under a machine target", () => {
-		const c = baseConfig();
-		c.delegation = delegationConfigSchema.parse({
-			harnesses: { pi: { kind: "pi" } },
-			machines: { g7: { machine: "g7", harnesses: { devin: { kind: "devin" } } } },
-			defaults: { review: "devin" },
-		});
-		const { draft: d, providers } = draftFromConfig(c);
-		expect(d.delegation?.machineHarnesses).toEqual(["devin"]);
-		// The server schema accepts machine-side names — an unchanged
-		// save must not be blocked as "unlisted".
-		expect(validateDraft(d, providers)).toBeNull();
-		expect(bodyFromDraft(d, providers, authDefaults).delegation).toMatchObject({
-			defaults: { review: "devin" },
-		});
 	});
 
 	test("a role row with no agent is an absent mapping, not an error", () => {
 		const { draft: d, providers } = draftFromConfig(baseConfig());
 		d.delegation = {
-			harnesses: [{ name: "pi", kind: "pi", args: "", askFirst: false }],
+			harnesses: [{ name: "pi", provider: "codex", model: "gpt-6-luna", askFirst: false }],
 			// The always-visible default row, picked at "none".
 			roles: [
 				{ role: "default", harness: "" },
 				{ role: "review", harness: "pi" },
 			],
-			machineHarnesses: [],
 		};
 		expect(validateDraft(d, providers)).toBeNull();
-		expect(bodyFromDraft(d, providers, authDefaults).delegation).toEqual({
-			harnesses: { pi: { kind: "pi" } },
+		expect(
+			delegationConfigSchema.parse(bodyFromDraft(d, providers, authDefaults).delegation),
+		).toEqual({
+			harnesses: { pi: { provider: "codex", model: "gpt-6-luna" } },
 			defaults: { review: "pi" },
 		});
 	});

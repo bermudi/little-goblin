@@ -28,11 +28,16 @@ function configSyntaxError(err: unknown): Error {
 // Retired delegation keys are the one compatibility exception to the
 // unknown-field rule: named here, stripped with a warning on disk load,
 // and gone from the next canonical save. Anything else unknown is a
-// validation error.
+// validation error. The t3 move (issue #607) retired the whole herdr
+// harness shape — an old-shape harnesses map drops the entire
+// delegation block rather than failing boot: goblin comes up without
+// the delegate tool and the operator rewrites the block by hand.
 const RETIRED_DELEGATION_KEYS = {
 	machine: "delegation.machines.<label>.machine (and root for remote paths)",
 	session: "delegation.machines.<label>.session; the own local session is fixed by the service",
 	maxRunning: "no replacement — delegation concurrency is not capped by config",
+	machines:
+		"no replacement — delegation runs on T3 Code now; machine targets have no t3 CLI flag (issue #607)",
 } as const;
 
 function stripRetiredDelegationKeys(raw: unknown, warn: boolean): unknown {
@@ -40,6 +45,33 @@ function stripRetiredDelegationKeys(raw: unknown, warn: boolean): unknown {
 	const delegation = (raw as Record<string, unknown>).delegation;
 	if (typeof delegation !== "object" || delegation === null || Array.isArray(delegation)) {
 		return raw;
+	}
+	// The herdr harness shape: kind/args instead of provider/model. One
+	// stale entry retires the block — a half-migrated table cannot name
+	// a T3 provider for every harness the operator may select. Entries
+	// that are merely malformed in the new shape stay zod's to fail
+	// loud, not this migration's to hide.
+	const harnesses = (delegation as Record<string, unknown>).harnesses;
+	if (
+		typeof harnesses === "object" &&
+		harnesses !== null &&
+		!Array.isArray(harnesses) &&
+		Object.values(harnesses).some(
+			(h) =>
+				typeof h === "object" && h !== null && !Array.isArray(h) && ("kind" in h || "args" in h),
+		)
+	) {
+		if (warn) {
+			log.warn("herdr-shaped delegation harnesses ignored — rewrite for T3 Code", {
+				path: paths.config(),
+				key: "delegation",
+				replacement:
+					"harnesses entries are {provider, model} on T3 Code (t3 thread start --provider --model); the delegation block was dropped",
+			});
+		}
+		const rest = { ...(raw as Record<string, unknown>) };
+		delete rest.delegation;
+		return rest;
 	}
 	let stripped: Record<string, unknown> | null = null;
 	for (const [key, replacement] of Object.entries(RETIRED_DELEGATION_KEYS)) {

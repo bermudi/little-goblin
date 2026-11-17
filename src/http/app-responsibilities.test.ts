@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { OperatorAgent } from "../herdr.ts";
+import type { T3Thread } from "../t3.ts";
 import { openPrograms } from "../programs.ts";
 import { openResponsibilities, type ResponsibilityStore } from "../responsibilities.ts";
 import type { AttachmentTarget } from "../responsibility-types.ts";
@@ -29,7 +29,7 @@ interface Rig {
 
 function depsFor(
 	ctx: { store: ConversationStore; projects: ProjectStore; home: string },
-	opts: { agents?: OperatorAgent[]; listAgents?: () => Promise<OperatorAgent[]> } = {},
+	opts: { threads?: T3Thread[]; listThreads?: (project: string) => Promise<T3Thread[]> } = {},
 ): Rig {
 	const resps = openResponsibilities(ctx.store.db);
 	const wakes = openWakeStore(ctx.store.db);
@@ -45,20 +45,34 @@ function depsFor(
 			conversations: ctx.store,
 			pump: () => {},
 		}),
-		listAgents: opts.listAgents ?? (() => Promise.resolve(opts.agents ?? [])),
+		listThreads: opts.listThreads ?? (() => Promise.resolve(opts.threads ?? [])),
 	};
 	return { resps, programs, store: ctx.store, responsibilities };
 }
 
 const target = (over: Partial<AttachmentTarget> = {}): AttachmentTarget => ({
-	server: "local",
-	session: "op",
-	agentName: "worker-1",
-	paneId: "pane-7",
-	terminalId: "term-9",
-	agentSession: "sess-abc",
-	kind: "pi",
-	cwd: "/w",
+	server: "t3",
+	session: "proj-1",
+	agentName: "mcp:t1",
+	paneId: null,
+	terminalId: null,
+	agentSession: "mcp:t1",
+	kind: null,
+	cwd: null,
+	...over,
+});
+
+const liveThread = (over: Partial<T3Thread> = {}): T3Thread => ({
+	threadId: "mcp:t1",
+	projectId: "proj-1",
+	title: "worker",
+	link: "https://t3/t1",
+	status: "idle",
+	latestRunId: "run:9",
+	itemCount: 9,
+	pendingRequestCount: 0,
+	createdAt: "2026-11-16T00:00:00Z",
+	updatedAt: "2026-11-16T00:00:00Z",
 	...over,
 });
 
@@ -178,29 +192,20 @@ describe("app responsibilities", () => {
 		}
 	});
 
-	test("detach marks the row; reattach binds the current occupant only", async () => {
-		const live: OperatorAgent = {
-			pane_id: "pane-7",
-			workspace_id: "w",
-			tab_id: "t",
-			agent: "pi",
-			agent_status: "idle",
-			name: "worker-1",
-			cwd: "/w",
-			terminal_title: null,
-			workspace_label: null,
-			tab_label: null,
-			terminal_id: "term-9",
-			agent_session: "sess-NEW",
-			state_change_seq: 9,
-			completion_seq: 2,
-			revision: 4,
-		};
+	test("detach marks the row; reattach binds the live thread record", async () => {
+		const live = liveThread({ status: "idle", latestRunId: "run:9", itemCount: 9 });
+		const listCalls: string[] = [];
 		let rig!: Rig;
 		const { http, call, store, projects } = setup({
 			token: APP_TOKEN_NAME,
 			responsibilities: (ctx) => {
-				rig = depsFor(ctx, { agents: [live] });
+				rig = depsFor(ctx, {
+					threads: [live],
+					listThreads: async (project) => {
+						listCalls.push(project);
+						return [live];
+					},
+				});
 				return rig.responsibilities;
 			},
 		});
@@ -230,8 +235,8 @@ describe("app responsibilities", () => {
 				).status,
 			).toBe(200);
 			expect(rig.resps.getAttachment(att.attachmentId)!.health).toBe("detached");
-			// Reattach binds the live session — a new generation, the new
-			// agent_session, never the stale binding revived.
+			// Reattach binds the live record of the bound thread id — the
+			// listing is asked for the attachment's T3 project.
 			const rebound = await call(
 				`/api/app/responsibilities/${responsibility.responsibilityId}/attachments/${att.attachmentId}/reattach`,
 				{ method: "POST" },
@@ -239,18 +244,17 @@ describe("app responsibilities", () => {
 			expect(rebound.status).toBe(200);
 			const body = (await rebound.json()) as { generation: number };
 			expect(body.generation).toBe(att.generation + 1);
-			expect(rig.resps.getAttachment(att.attachmentId)!.target.agentSession).toBe("sess-NEW");
+			expect(listCalls).toEqual(["proj-1"]);
 			// The live snapshot is the new generation's observation cursor —
 			// a null here would make the observer adopt its next poll as
 			// baseline and developments in between would be lost.
 			expect(rig.resps.getAttachment(att.attachmentId)!.cursor).toMatchObject({
-				seq: 9,
-				completionSeq: 2,
 				status: "idle",
-				agentSession: "sess-NEW",
-				terminalId: "term-9",
+				latestRunId: "run:9",
+				itemCount: 9,
 				missing: false,
 				epoch: 0,
+				waitingTransitions: 0,
 			});
 		} finally {
 			http.stop();
@@ -285,63 +289,15 @@ describe("app responsibilities", () => {
 	});
 });
 
-const liveAgent = (over: Partial<OperatorAgent> = {}): OperatorAgent => ({
-	pane_id: "pane-7",
-	workspace_id: "w",
-	tab_id: "t",
-	agent: "pi",
-	agent_status: "idle",
-	name: "worker-1",
-	cwd: "/w",
-	terminal_title: null,
-	workspace_label: null,
-	tab_label: null,
-	terminal_id: "term-CURRENT",
-	agent_session: "sess-CURRENT",
-	state_change_seq: 1,
-	completion_seq: null,
-	revision: 1,
-	...over,
-});
-
 for (const scenario of [
 	{
-		name: "stored pane wins over a reused name",
-		agents: [
-			liveAgent({ pane_id: "pane-OTHER", agent_session: "sess-OTHER" }),
-			liveAgent({ name: "renamed" }),
-		],
-		paneId: "pane-7",
+		name: "a listed thread rebinds its current record",
+		threads: [liveThread({ providerInstanceId: "pi-2", worktreePath: "/w/x" })],
 		status: 200,
 	},
 	{
-		name: "missing pane never falls back to a reused name",
-		agents: [liveAgent({ pane_id: "pane-OTHER" })],
-		paneId: "pane-7",
-		status: 409,
-	},
-	{
-		name: "legacy name must resolve uniquely",
-		agents: [liveAgent(), liveAgent({ pane_id: "pane-OTHER" })],
-		paneId: null,
-		status: 409,
-	},
-	{
-		name: "legacy unique name remains supported",
-		agents: [liveAgent()],
-		paneId: null,
-		status: 200,
-	},
-	{
-		name: "duplicate pane observations are ambiguous",
-		agents: [liveAgent(), liveAgent({ name: "other" })],
-		paneId: "pane-7",
-		status: 409,
-	},
-	{
-		name: "missing terminal identity refuses binding",
-		agents: [liveAgent({ terminal_id: null })],
-		paneId: "pane-7",
+		name: "a thread absent from the project list refuses 409",
+		threads: [],
 		status: 409,
 	},
 ]) {
@@ -350,7 +306,7 @@ for (const scenario of [
 		const { http, call, store, projects } = setup({
 			token: APP_TOKEN_NAME,
 			responsibilities: (ctx) => {
-				rig = depsFor(ctx, { agents: scenario.agents });
+				rig = depsFor(ctx, { threads: scenario.threads });
 				return rig.responsibilities;
 			},
 		});
@@ -368,7 +324,7 @@ for (const scenario of [
 			});
 			const att = rig.resps.attach({
 				responsibilityId: responsibility.responsibilityId,
-				target: target({ paneId: scenario.paneId }),
+				target: target(),
 				baseline: {},
 			});
 			rig.resps.detach(att.attachmentId);
@@ -380,8 +336,9 @@ for (const scenario of [
 			expect(response.status).toBe(scenario.status);
 			const after = rig.resps.getAttachment(att.attachmentId)!;
 			if (scenario.status === 200) {
-				expect(after.target.paneId).toBe("pane-7");
-				expect(after.target.agentSession).toBe("sess-CURRENT");
+				expect(after.target.agentSession).toBe("mcp:t1");
+				expect(after.target.kind).toBe("pi-2");
+				expect(after.target.cwd).toBe("/w/x");
 				expect(after.generation).toBe(before.generation + 1);
 			} else {
 				expect(after).toEqual(before);
@@ -397,13 +354,13 @@ for (const scenario of [
 // listing — a binding that moves in that window (a detach, another
 // reattach, a health write) must refuse 409, never overwrite the win.
 describe("reattach mid-listing races", () => {
-	const gated = (live: OperatorAgent[]) => {
+	const gated = (live: T3Thread[]) => {
 		const started = deferred<void>();
 		const release = deferred<void>();
 		return {
 			started,
 			release,
-			listAgents: async () => {
+			listThreads: async () => {
 				started.resolve();
 				await release.promise;
 				return live;
@@ -412,12 +369,12 @@ describe("reattach mid-listing races", () => {
 	};
 
 	test("a detach landing mid-listing refuses 409 and stays detached", async () => {
-		const gate = gated([liveAgent({ terminal_id: "term-9", agent_session: "sess-NEW" })]);
+		const gate = gated([liveThread()]);
 		let rig!: Rig;
 		const { http, call, store, projects } = setup({
 			token: APP_TOKEN_NAME,
 			responsibilities: (ctx) => {
-				rig = depsFor(ctx, { listAgents: gate.listAgents });
+				rig = depsFor(ctx, { listThreads: gate.listThreads });
 				return rig.responsibilities;
 			},
 		});
@@ -462,12 +419,12 @@ describe("reattach mid-listing races", () => {
 	});
 
 	test("a competing reattach landing first wins; the delayed request 409s", async () => {
-		const gate = gated([liveAgent({ terminal_id: "term-9", agent_session: "sess-NEW" })]);
+		const gate = gated([liveThread()]);
 		let rig!: Rig;
 		const { http, call, store, projects } = setup({
 			token: APP_TOKEN_NAME,
 			responsibilities: (ctx) => {
-				rig = depsFor(ctx, { listAgents: gate.listAgents });
+				rig = depsFor(ctx, { listThreads: gate.listThreads });
 				return rig.responsibilities;
 			},
 		});
@@ -493,15 +450,17 @@ describe("reattach mid-listing races", () => {
 				{ method: "POST" },
 			);
 			await gate.started.promise;
-			const winner = rig.resps.reattach(att.attachmentId, target({ agentSession: "sess-winner" }), {
-				won: true,
-			});
+			const winner = rig.resps.reattach(
+				att.attachmentId,
+				target({ agentName: "mcp:winner", agentSession: "mcp:winner" }),
+				{ won: true },
+			);
 			gate.release.resolve();
 			const res = await pending;
 			expect(res.status).toBe(409);
 			const after = rig.resps.getAttachment(att.attachmentId)!;
 			expect(after.generation).toBe(winner.generation);
-			expect(after.target.agentSession).toBe("sess-winner");
+			expect(after.target.agentSession).toBe("mcp:winner");
 			expect(after.baseline).toEqual({ won: true });
 		} finally {
 			http.stop();
@@ -509,12 +468,12 @@ describe("reattach mid-listing races", () => {
 	});
 
 	test("a health write landing mid-listing refuses 409", async () => {
-		const gate = gated([liveAgent({ terminal_id: "term-9", agent_session: "sess-NEW" })]);
+		const gate = gated([liveThread()]);
 		let rig!: Rig;
 		const { http, call, store, projects } = setup({
 			token: APP_TOKEN_NAME,
 			responsibilities: (ctx) => {
-				rig = depsFor(ctx, { listAgents: gate.listAgents });
+				rig = depsFor(ctx, { listThreads: gate.listThreads });
 				return rig.responsibilities;
 			},
 		});
@@ -553,31 +512,15 @@ describe("reattach mid-listing races", () => {
 	});
 });
 
-test("reattach to the same agent with an unresolved delivery is a 409, not a crash", async () => {
-	// The live agent still reports the bound identity — same dispatch
-	// target — so a generation bump would silently skip reconciliation.
-	const live: OperatorAgent = {
-		pane_id: "pane-7",
-		workspace_id: "w",
-		tab_id: "t",
-		agent: "pi",
-		agent_status: "idle",
-		name: "worker-1",
-		cwd: "/w",
-		terminal_title: null,
-		workspace_label: null,
-		tab_label: null,
-		terminal_id: "term-9",
-		agent_session: "sess-abc",
-		state_change_seq: 9,
-		completion_seq: 2,
-		revision: 4,
-	};
+test("reattach to the same thread with an unresolved delivery is a 409, not a crash", async () => {
+	// The listing still carries the bound thread — same dispatch
+	// identity — so a generation bump would silently skip reconciliation.
+	const live = liveThread({ status: "running", latestRunId: "run:9", itemCount: 9 });
 	let rig!: Rig;
 	const { http, call, store, projects } = setup({
 		token: APP_TOKEN_NAME,
 		responsibilities: (ctx) => {
-			rig = depsFor(ctx, { agents: [live] });
+			rig = depsFor(ctx, { threads: [live] });
 			return rig.responsibilities;
 		},
 	});

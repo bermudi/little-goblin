@@ -80,7 +80,7 @@ describe("bootPinnedDiffs", () => {
 		["appToken", `appToken:"other"`, "appToken"],
 		["telegram.enabled", `telegram:{enabled:false}`, "telegram.enabled"],
 		["apiRoot", `telegram:{apiRoot:"http://127.0.0.1:9"}`, "telegram.apiRoot"],
-		["delegation", `delegation:{harnesses:{a:{kind:"x"}}}`, "delegation"],
+		["delegation", `delegation:{harnesses:{a:{provider:"x",model:"m"}}}`, "delegation"],
 		["subagents", `subagents:{maxRuns:2}`, "subagents"],
 		["http", `http:{port:9999}`, "http"],
 		["reviewer", `reviewer:{auth:"openrouter"}`, "reviewer"],

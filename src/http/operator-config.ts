@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { modelCatalogFor } from "../agent/models-dev.ts";
 import { clampThinkingFor, thinkingLevelsFor } from "../agent/thinking.ts";
-import { authDefaults, type CapabilityName, type Config, capabilityNames, type DelegationConfig, fetchKinds, providerKinds, type SubagentsConfig, searchKinds, thinkingLevels, transcriptionDefaults, transcriptionKinds, ttsCloudDefaults } from "../config-schema.ts";
+import { authDefaults, type CapabilityName, type Config, capabilityNames, fetchKinds, providerKinds, type SubagentsConfig, searchKinds, thinkingLevels, transcriptionDefaults, transcriptionKinds, ttsCloudDefaults } from "../config-schema.ts";
 import { ConfigValidationError, loadConfig, parseConfig, writeConfig } from "../config.ts";
 import { log } from "../log.ts";
 import { capabilityDefaults, capabilityHints, providerPresets, serviceNames } from "../services.ts";
@@ -352,30 +352,6 @@ async function saveConfig(
 			const isBlock = typeof v === "object" && v !== null && !Array.isArray(v);
 			if (k === "telegram" && isBlock) {
 				candidate.telegram = { ...normalized.telegram, ...v };
-				continue;
-			}
-			// Machine targets are host-bound and file-only — the settings
-			// editor sends harnesses/defaults, and this merge keeps the
-			// file's own copy: the active block's, else the parked one a
-			// re-enable leaves behind.
-			if (k === "delegation" && isBlock) {
-				const machines =
-					normalized.delegation?.machines ??
-					(parked.delegation as DelegationConfig | undefined)?.machines;
-				const { machines: submitted, ...rest } = v;
-				if (submitted !== undefined) {
-					log.warn(
-						`${actor.via} config save — ignored submitted delegation.machines (file-only)`,
-						who,
-					);
-				}
-				candidate.delegation = {
-					...rest,
-					...(machines === undefined ? {} : { machines }),
-				};
-				// An edited block supersedes a parked copy — leaving it
-				// would resurrect the old value on the next off/on flip.
-				delete parked.delegation;
 				continue;
 			}
 			// maxRuns and the desktop pool limits are file-only — the

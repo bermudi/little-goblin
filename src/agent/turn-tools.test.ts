@@ -8,7 +8,8 @@ import type { AuthStore } from "../auth.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import type { DelegationLifecycle } from "../delegation-lifecycle.ts";
-import type { OperatorAgent, OperatorHerdr } from "../herdr.ts";
+import type { OperatorHerdr } from "../herdr.ts";
+import type { T3, T3Thread } from "../t3.ts";
 import { setLogFile } from "../log.ts";
 import type { MailApproval } from "../mail-approval.ts";
 import type { NoteStore } from "../notes.ts";
@@ -31,22 +32,69 @@ import { policyOf } from "./tool-policy.ts";
 
 setLogFile(null);
 
-const AGENT: OperatorAgent = {
-	pane_id: "w1:p1",
-	workspace_id: "w1",
-	tab_id: "w1:t1",
-	agent: "pi",
-	agent_status: "idle",
-	name: "worker-1",
-	cwd: "/w",
-	terminal_title: null,
-	workspace_label: null,
-	tab_label: null,
-	terminal_id: "term-9",
-	agent_session: "sess-1",
-	state_change_seq: 1,
-	completion_seq: null,
-	revision: 1,
+/** The rig's t3 adapter: lists `agents`, succeeds sends, records them. */
+function fakeT3(agents: () => T3Thread[]) {
+	const sends: { thread: string; message: string }[] = [];
+	const t3: T3 = {
+		startThread: () => Promise.reject(new Error("not used here")),
+		sendThread: async (thread, message) => {
+			sends.push({ thread, message });
+			return {
+				threadId: thread,
+				link: "https://t3.example/t/sent",
+				messageId: "m-9",
+				runId: "run:2",
+				status: "queued",
+				delivery: "queued",
+			};
+		},
+		showThread: () => Promise.reject(new Error("not used here")),
+		listThreads: async () => agents(),
+	};
+	return { t3, sends };
+}
+
+/** The authority rigs' t3 fake: list/send may gate, sends are counted,
+ *  the tool's abort signal is captured for the epoch assertions. */
+function gatedT3(gates: { list?: () => Promise<void>; send?: () => Promise<void> } = {}) {
+	let count = 0;
+	let signal: AbortSignal | undefined;
+	const t3: T3 = {
+		startThread: () => Promise.reject(new Error("not used here")),
+		async sendThread(thread, _message, opts) {
+			signal = opts?.signal;
+			await gates.send?.();
+			expect(signal?.aborted ?? false).toBe(false);
+			count += 1;
+			return {
+				threadId: thread,
+				link: "https://t3.example/t/sent",
+				messageId: "m-9",
+				runId: "run:2",
+				status: "queued",
+				delivery: "queued",
+			};
+		},
+		showThread: () => Promise.reject(new Error("not used here")),
+		async listThreads() {
+			await gates.list?.();
+			return [AGENT];
+		},
+	};
+	return { t3, count: () => count, signal: () => signal };
+}
+
+const T0 = "2026-11-16T10:00:00.000Z";
+const AGENT: T3Thread = {
+	threadId: "mcp:worker-1",
+	projectId: "proj-1",
+	title: "worker-1",
+	link: "https://t3.example/t/worker-1",
+	status: "idle",
+	latestRunId: "run:1",
+	itemCount: 3,
+	createdAt: T0,
+	updatedAt: T0,
 };
 
 const ACCEPT = JSON.stringify({
@@ -58,17 +106,13 @@ const ACCEPT = JSON.stringify({
 		checkpoints: [],
 		completionEvidence: ["ci green"],
 	},
-	attachments: [{ pane: "w1:p1" }],
+	attachments: [{ thread: AGENT.threadId }],
 });
 
-const AGENT2: OperatorAgent = {
+const AGENT2: T3Thread = {
 	...AGENT,
-	pane_id: "w2:p2",
-	workspace_id: "w2",
-	tab_id: "w2:t2",
-	name: "worker-2",
-	terminal_id: "term-10",
-	agent_session: "sess-2",
+	threadId: "mcp:worker-2",
+	title: "worker-2",
 };
 
 const ACCEPT2 = JSON.stringify({
@@ -80,11 +124,11 @@ const ACCEPT2 = JSON.stringify({
 		checkpoints: [],
 		completionEvidence: ["its ci green"],
 	},
-	attachments: [{ pane: "w2:p2" }],
+	attachments: [{ thread: AGENT2.threadId }],
 });
 
 describe("turn-tools responsibility composition", () => {
-	function rig(attempts: Parameters<typeof scriptedModel>[0], agents: OperatorAgent[] = [AGENT]) {
+	function rig(attempts: Parameters<typeof scriptedModel>[0], agents: T3Thread[] = [AGENT]) {
 		const home = useHome(`goblin-tt-${tmpDir().slice(-6)}-`);
 		mkdirSync(join(home, "state"), { recursive: true });
 		const store = openStore(join(home, "state", "goblin.sqlite"));
@@ -117,7 +161,8 @@ describe("turn-tools responsibility composition", () => {
 			memory: null,
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
-			operatorHerdr: { list: async () => agents } as unknown as OperatorHerdr,
+			operatorHerdr: {} as unknown as OperatorHerdr,
+			t3: fakeT3(() => agents).t3,
 			mail: () => ({}) as Pick<MailApproval, "requestDraft">,
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,
@@ -126,7 +171,7 @@ describe("turn-tools responsibility composition", () => {
 			desktops: () => null,
 			subagentsBoot: () => undefined,
 			agents: () => null,
-			responsibility: () => ({ resps, service, listFor: async () => agents }),
+			responsibility: () => ({ resps, service }),
 			filterGuests: (_conv, tools) => tools,
 		});
 		const edge = scriptedModel(attempts);
@@ -215,12 +260,12 @@ describe("turn-tools responsibility composition", () => {
 		const secondRow = byKey.get(`handover:${conv.id}:seq:${seq2}`)!;
 		expect(firstRow.understanding.outcome).toBe("land the fix");
 		expect(secondRow.understanding.outcome).toBe("land the second fix");
-		expect(resps.attachmentsFor(firstRow.responsibilityId).map((a) => a.target.paneId)).toEqual([
-			"w1:p1",
-		]);
-		expect(resps.attachmentsFor(secondRow.responsibilityId).map((a) => a.target.paneId)).toEqual([
-			"w2:p2",
-		]);
+		expect(
+			resps.attachmentsFor(firstRow.responsibilityId).map((a) => a.target.agentSession),
+		).toEqual([AGENT.threadId]);
+		expect(
+			resps.attachmentsFor(secondRow.responsibilityId).map((a) => a.target.agentSession),
+		).toEqual([AGENT2.threadId]);
 		await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 		store.close();
 	});
@@ -250,10 +295,7 @@ describe("turn-tools managed send linkage", () => {
 			conversations: store,
 			pump: () => {},
 		});
-		const herdr = {
-			list: async () => [AGENT],
-			prompt: async () => ({ ...AGENT, agent_status: "working" }),
-		} as unknown as OperatorHerdr;
+		const t3edge = fakeT3(() => [AGENT]);
 		const toolsFor = makeTurnTools({
 			configRef: { current: {} as Config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
@@ -265,7 +307,8 @@ describe("turn-tools managed send linkage", () => {
 			memory: null,
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
-			operatorHerdr: herdr,
+			operatorHerdr: {} as unknown as OperatorHerdr,
+			t3: t3edge.t3,
 			mail: () => ({}) as Pick<MailApproval, "requestDraft">,
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,
@@ -274,7 +317,7 @@ describe("turn-tools managed send linkage", () => {
 			desktops: () => null,
 			subagentsBoot: () => undefined,
 			agents: () => null,
-			responsibility: () => ({ resps, service, listFor: async () => [AGENT] }),
+			responsibility: () => ({ resps, service }),
 			filterGuests: (_conv, tools) => tools,
 		});
 		const SEND = JSON.stringify({ action: "send", attachment: 1, brief: "follow up" });
@@ -315,7 +358,7 @@ describe("turn-tools managed send linkage", () => {
 
 describe("responsibility epoch authority", () => {
 	test.each(["accept", "send"] as const)(
-		"epoch revocation during %s preflight wins without aborting the tool signal",
+		"epoch revocation while %s is in flight fences the turn without aborting the tool signal",
 		async (action) => {
 			const home = useHome(`goblin-tt-epoch-${tmpDir().slice(-6)}-`);
 			mkdirSync(join(home, "state"), { recursive: true });
@@ -342,21 +385,12 @@ describe("responsibility epoch authority", () => {
 			const gate = new Promise<void>((resolve) => {
 				release = resolve;
 			});
-			let sends = 0;
-			let signal: AbortSignal | undefined;
-			const herdr: OperatorHerdr = {
-				list: async () => [AGENT],
-				read: async () => "",
-				prompt: async (_pane, _kind, _brief, abortSignal, guard) => {
-					signal = abortSignal;
-					entered = true;
-					await gate;
-					expect(abortSignal?.aborted).toBe(false);
-					guard?.beforeSend?.();
-					sends += 1;
-					return { ...AGENT, agent_status: "working" };
-				},
-			};
+			// `accept` resolves its thread targets through the list; `send`
+			// gates on the wire itself.
+			const gate3 = () => (entered = true, gate);
+			const edge3 = gatedT3(
+				action === "accept" ? { list: gate3 } : { send: gate3 },
+			);
 			const toolsFor = makeTurnTools({
 				configRef: { current: {} as Config, ttsDown: false },
 				auth: {} as unknown as AuthStore,
@@ -368,7 +402,8 @@ describe("responsibility epoch authority", () => {
 				memory: null,
 				transcribe: async () => null,
 				delegateDeps: () => undefined,
-				operatorHerdr: herdr,
+				operatorHerdr: {} as unknown as OperatorHerdr,
+				t3: edge3.t3,
 				mail: () => ({}) as Pick<MailApproval, "requestDraft">,
 				programApproval: () => undefined,
 				visionDepsFor: () => undefined,
@@ -377,17 +412,7 @@ describe("responsibility epoch authority", () => {
 				desktops: () => null,
 				subagentsBoot: () => undefined,
 				agents: () => null,
-				responsibility: () => ({
-					resps,
-					service,
-					listFor: async () => {
-						if (action === "accept") {
-							entered = true;
-							await gate;
-						}
-						return [AGENT];
-					},
-				}),
+				responsibility: () => ({ resps, service }),
 				filterGuests: (_conv, tools) => tools,
 			});
 			const edge = scriptedModel([
@@ -416,13 +441,28 @@ describe("responsibility epoch authority", () => {
 			}
 			const sink = new HeadlessSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: action }]), sink);
-			await waitUntil(() => entered, "preflight entered");
+			await waitUntil(() => entered, "in-flight entered");
 			store.bumpEpoch(conv.id);
-			expect(signal?.aborted ?? false).toBe(false);
+			expect(edge3.signal()?.aborted ?? false).toBe(false);
 			release();
 			expect(await sink.done).toEqual({ kind: "fenced" });
-			expect(sends).toBe(0);
-			expect(resps.forProject(project.id)).toHaveLength(action === "accept" ? 0 : 1);
+			if (action === "accept") {
+				// Target discovery was still resolving — nothing was created.
+				expect(edge3.count()).toBe(0);
+				expect(resps.forProject(project.id)).toHaveLength(0);
+			} else {
+				// The t3 edge checks authority synchronously at the wire's
+				// edge, right before the CLI runs — a bump concurrent with
+				// the call itself is past the refusal point. The message
+				// lands (honestly recorded); the turn fences, so the model
+				// never banks the result and the correction wake re-decides.
+				expect(edge3.count()).toBe(1);
+				const [resp] = resps.forProject(project.id);
+				expect(resp).toBeDefined();
+				const ops = resps.operationsFor(resp!.responsibilityId);
+				expect(ops).toHaveLength(1);
+				expect(ops[0]!.state).toBe("acknowledged");
+			}
 			await waitUntil(() => !runtime.busy(conv.id), "fenced lane drains");
 			programs.close();
 			store.close();
@@ -462,14 +502,16 @@ describe("operator correction authority", () => {
 		});
 		const att = resps.attach({
 			responsibilityId: responsibility.responsibilityId,
+			// The t3 shape the accept path binds: the thread id is the
+			// identity, the project is the session.
 			target: {
-				server: "local",
-				session: "default",
-				agentName: "worker-1",
-				paneId: "w1:p1",
-				terminalId: "term-9",
-				agentSession: "sess-1",
-				kind: "pi",
+				server: "t3",
+				session: AGENT.projectId,
+				agentName: AGENT.threadId,
+				paneId: null,
+				terminalId: null,
+				agentSession: AGENT.threadId,
+				kind: AGENT.providerInstanceId ?? "codex",
 				cwd: "/w",
 			},
 			baseline: {},
@@ -477,21 +519,7 @@ describe("operator correction authority", () => {
 		let dispatcher!: WakeDispatcher;
 		let runtime!: Runtime;
 		const settlements: Promise<void>[] = [];
-		let sends = 0;
-		const herdr = {
-			list: async () => [AGENT],
-			prompt: async (
-				_pane: string,
-				_kind: string,
-				_brief: string,
-				_signal?: AbortSignal,
-				guard?: { beforeSend?: () => void },
-			) => {
-				sends += 1;
-				guard?.beforeSend?.();
-				return { ...AGENT, agent_status: "working" };
-			},
-		} as unknown as OperatorHerdr;
+		const t3fake = fakeT3(() => [AGENT]);
 		const service = makeResponsibilityService({
 			db: store.db,
 			resps,
@@ -514,7 +542,8 @@ describe("operator correction authority", () => {
 			memory: null,
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
-			operatorHerdr: herdr,
+			operatorHerdr: {} as unknown as OperatorHerdr,
+			t3: t3fake.t3,
 			mail: () => ({}) as Pick<MailApproval, "requestDraft">,
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,
@@ -523,7 +552,7 @@ describe("operator correction authority", () => {
 			desktops: () => null,
 			subagentsBoot: () => undefined,
 			agents: () => null,
-			responsibility: () => ({ resps, service, listFor: async () => [AGENT] }),
+			responsibility: () => ({ resps, service }),
 			filterGuests: (_conv, tools) => tools,
 		});
 		const STALE_SEND = JSON.stringify({
@@ -594,7 +623,7 @@ describe("operator correction authority", () => {
 		expect(settlements).toHaveLength(1);
 		await expect(Promise.all(settlements)).resolves.toBeDefined();
 		// The stale send never reached the wire — no operation was ever minted.
-		expect(sends).toBe(0);
+		expect(t3fake.sends).toHaveLength(0);
 		expect(resps.operationsFor(responsibility.responsibilityId)).toHaveLength(0);
 
 		// The correction wake is processed by a fresh authoritative turn.
@@ -618,7 +647,7 @@ describe("operator correction authority", () => {
 		const sink2 = new HeadlessSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "now send it" }]), sink2);
 		expect(await sink2.done).toEqual({ kind: "completed" });
-		expect(sends).toBe(1);
+		expect(t3fake.sends).toHaveLength(1);
 		const ops = resps.operationsFor(responsibility.responsibilityId);
 		expect(ops).toHaveLength(1);
 		expect(ops[0]!.state).toBe("acknowledged");
@@ -682,14 +711,7 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 	let dispatcher!: WakeDispatcher;
 	let runtime!: Runtime;
 	const settlements: Promise<void>[] = [];
-	let sends = 0;
-	const herdr = {
-		list: async () => [AGENT],
-		prompt: async () => {
-			sends += 1;
-			return { ...AGENT, agent_status: "working" };
-		},
-	} as unknown as OperatorHerdr;
+	const t3fake = fakeT3(() => [AGENT]);
 	const service = makeResponsibilityService({
 		db: store.db,
 		resps,
@@ -712,7 +734,8 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 		memory: null,
 		transcribe: async () => null,
 		delegateDeps: () => undefined,
-		operatorHerdr: herdr,
+		operatorHerdr: {} as unknown as OperatorHerdr,
+		t3: t3fake.t3,
 		mail: () => ({}) as Pick<MailApproval, "requestDraft">,
 		programApproval: () => undefined,
 		visionDepsFor: () => undefined,
@@ -782,7 +805,7 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 	expect(await sink.done).toEqual({ kind: "fenced" });
 	expect(settlements).toHaveLength(2);
 	await expect(Promise.all(settlements)).resolves.toBeDefined();
-	expect(sends).toBe(0);
+	expect(t3fake.sends).toHaveLength(0);
 	expect(resps.operationsFor(responsibility.responsibilityId)).toHaveLength(0);
 	// The correction wake still lands once, on the coordinator's lane.
 	await waitUntil(
@@ -824,6 +847,7 @@ describe("hosted web_search mount", () => {
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
 			operatorHerdr: {} as unknown as OperatorHerdr,
+			t3: fakeT3(() => []).t3,
 			mail: () => ({}) as never,
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,
@@ -884,11 +908,12 @@ describe("delegate description subagent routing", () => {
 			transcribe: async () => null,
 			delegateDeps: () => ({
 				lifecycle: {} as unknown as DelegationLifecycle,
-				config: { harnesses: { codex: { kind: "codex" } } },
+				config: { harnesses: { codex: { provider: "codex", model: "gpt-6-luna" } } },
 				pin: () => ({ address: { chatId: 1, threadId: null } }),
 				workspaceDir: "/w",
 			}),
 			operatorHerdr: {} as unknown as OperatorHerdr,
+			t3: fakeT3(() => []).t3,
 			mail: () => ({}) as never,
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,
@@ -912,8 +937,10 @@ describe("delegate description subagent routing", () => {
 		return tool.description;
 	};
 
-	test("no subagents config: the delegate description names no subagent", () => {
-		expect(delegateDescription({} as Config, null, undefined)).not.toContain("subagent");
+	test("no subagents config: the delegate description routes no subagent work", () => {
+		expect(delegateDescription({} as Config, null, undefined)).not.toContain(
+			"belongs with a worker subagent",
+		);
 	});
 
 	test("mounted subagent types appear in the delegate description", () => {
@@ -953,6 +980,7 @@ describe("agent tool mount", () => {
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
 			operatorHerdr: {} as unknown as OperatorHerdr,
+			t3: {} as unknown as T3,
 			mail: () => ({}) as never,
 			programApproval: () => undefined,
 			visionDepsFor: () => undefined,

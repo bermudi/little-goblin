@@ -56,7 +56,7 @@ export async function programsRoute(r: OperatorRequest): Promise<Response | null
 		const body: OperatorDelegationStopResponse = {
 			outcome: out.kind,
 			delegation: delegationItem(out.delegation),
-			notes: out.notes,
+			notes: out.kind === "stopped" ? out.notes : [],
 		};
 		return Response.json(body, {
 			status: out.kind === "stopped" ? 200 : 409,
@@ -94,7 +94,8 @@ function delegationItem(row: Delegation): OperatorDelegationItem {
 		name: row.name,
 		harness: row.harness,
 		status: row.status,
-		target: row.target,
+		thread: row.t3Thread,
+		link: row.t3Link,
 		task: row.task,
 		cwd: row.cwd,
 		appConversation: row.appConversation,

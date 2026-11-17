@@ -6,7 +6,7 @@ import { setLogFile } from "../../log.ts";
 import { deferred, tmpDir } from "../../testkit.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "../../testkit/fake-model.ts";
 import { toToolSet } from "../../turn/ai-sdk-tools.ts";
-import { CHUNK_CHARS, readLongTool, splitText } from "./read-long.ts";
+import { CHUNK_CHARS, MAX_PARTS, readLongTool, splitText } from "./read-long.ts";
 
 const opts = { toolCallId: "t1", messages: [], context: {} };
 
@@ -82,6 +82,26 @@ describe("read_long", () => {
 		expect(answer).toContain("## Part 3 of 3");
 		// Splits land on paragraph breaks and lose nothing.
 		expect(splitText(body, CHUNK_CHARS).join("")).toBe(body);
+	});
+
+	test("a file past the part cap is refused before any model call", async () => {
+		const dir = tmpDir("goblin-read-long-");
+		writeFileSync(join(dir, "cap.txt"), "x".repeat(CHUNK_CHARS * MAX_PARTS));
+		writeFileSync(join(dir, "over.txt"), "x".repeat(CHUNK_CHARS * MAX_PARTS + 1));
+		let called = 0;
+		const tool = readLongTool(dir, {
+			conversation: "c1",
+			complete: async () => {
+				called++;
+				return "ok";
+			},
+		});
+		const over = await tool.execute!({ path: "over.txt", question: "what?" }, opts);
+		expect(over).toMatchObject({ error: expect.stringContaining(`max ${MAX_PARTS}`) });
+		expect(called).toBe(0);
+		const cap = await tool.execute!({ path: "cap.txt", question: "what?" }, opts);
+		expect(cap).toMatchObject({ parts: MAX_PARTS });
+		expect(called).toBe(MAX_PARTS);
 	});
 
 	test("non-text files are refused before any model call", async () => {

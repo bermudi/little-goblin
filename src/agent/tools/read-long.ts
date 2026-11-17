@@ -19,6 +19,10 @@ export const CHUNK_CHARS = 150_000;
 // Parts of one file in flight at once — separate read_long calls are
 // parallel on top of this, so keep one file from flooding the provider.
 const PART_CONCURRENCY = 4;
+// The spend bound for one call: at most this many helper calls, so at
+// most MAX_PARTS × CHUNK_CHARS (1.2M chars, ~320k tokens) of input on the
+// active model (#666). Larger files are refused before any model call.
+export const MAX_PARTS = 8;
 
 export const READ_LONG_SYSTEM = [
 	"You read a document, or one part of it, for goblin, a personal agent, and answer its question.",
@@ -116,6 +120,7 @@ export function readLongTool(cwd: string, deps: ReadLongToolDeps) {
 			"Use it for documents too long to read_file into this conversation. " +
 			"Call it several times in one step — one call per file — and the calls run in parallel. " +
 			"A file over the helper's size is split into parts; you get one answer per part. " +
+			`Files over ${MAX_PARTS} parts (~${MAX_PARTS * CHUNK_CHARS} chars) are refused: narrow them first. ` +
 			"Text only: convert PDF or office files to text with bash first (e.g. pdftotext in.pdf out.txt).",
 		input: readLongInputSchema,
 		execute: async ({ path, question }, options) => {
@@ -145,6 +150,21 @@ export function readLongTool(cwd: string, deps: ReadLongToolDeps) {
 				};
 			}
 			const parts = splitText(text, CHUNK_CHARS);
+			if (parts.length > MAX_PARTS) {
+				log.info("read_long refused", {
+					conversation: deps.conversation,
+					path: target,
+					chars: text.length,
+					parts: parts.length,
+					maxParts: MAX_PARTS,
+				});
+				return {
+					error:
+						`too long for one read_long call: ${path} is ${parts.length} parts, max ${MAX_PARTS} ` +
+						`(~${MAX_PARTS * CHUNK_CHARS} chars) — narrow it first (rg, sed -n, a section) ` +
+						"or ask the operator before reading it in pieces",
+				};
+			}
 			const started = performance.now();
 			log.info("read_long start", {
 				conversation: deps.conversation,

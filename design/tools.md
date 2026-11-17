@@ -221,6 +221,10 @@ failure is a tool error and the operator asks again.
   failed part stops dispatch and aborts the parts in flight; the tool
   returns only after every started part settles, so no helper call
   outlives the turn.
+- **Spend bound** (#666): one call reads at most `MAX_PARTS` (8) parts,
+  so at most ~1.2M chars (~320k tokens) of input on the active model.
+  A longer file is refused before any model call, with a hint to narrow
+  it first. The 8 MB `MAX_FILE_BYTES` gate still guards the read itself.
 - **No follow-ups** in v1: each call starts clean.
 - Output is fenced untrusted (it is a reading of file content); guest
   channels lose it like the other provider-calling tools.

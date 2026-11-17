@@ -20,6 +20,7 @@ import { useHome, waitUntil } from "./testkit.ts";
 import { sinkFor, wake, wakeApp, wakeTarget, type WakeDeps } from "./wake.ts";
 
 const nullSink: TurnSink = {
+	delivery: "headless",
 	onTextDelta: () => {},
 	onReasoningDelta: () => {},
 	onToolCall: () => {},
@@ -310,12 +311,14 @@ function sinkStub(withDelivery: boolean): {
 	deliverySink: TurnSink;
 } {
 	const bellSink: TurnSink = {
+		delivery: "headless",
 		onTextDelta: () => {},
 		onReasoningDelta: () => {},
 		onToolCall: () => {},
 		onDone: () => {},
 	};
 	const deliverySink: TurnSink = {
+		delivery: "headless",
 		onTextDelta: () => {},
 		onReasoningDelta: () => {},
 		onToolCall: () => {},

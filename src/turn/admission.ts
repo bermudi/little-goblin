@@ -1,6 +1,7 @@
 import type { Message, MessageChunk } from "../message.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { log } from "../log.ts";
+import type { TurnSink } from "./sink.ts";
 
 export interface AdmittedMember {
 	// The durable event seq of this member's appended message — client
@@ -8,7 +9,7 @@ export interface AdmittedMember {
 	// exclusion decision names the event by seq.
 	seq: number;
 	message: Message;
-	sink: { onStreamChunk?(chunk: MessageChunk): void };
+	sink: TurnSink;
 }
 
 export interface LiveWire {

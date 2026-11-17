@@ -438,7 +438,7 @@ export class Runtime {
 	): QueuedTurn[] {
 		return claimMembers(
 			convId,
-			() => this.lanes.claim(convId, sink.onStreamChunk !== undefined, false),
+			() => this.lanes.claim(convId, sink.delivery === "stream", false),
 			live,
 			members,
 		);
@@ -791,7 +791,7 @@ export class Runtime {
 				// splice; the claim still belongs to the model call.
 				steerWaiting: () =>
 					steerGate.armed &&
-					this.lanes.claimablePending(convId, sink.onStreamChunk !== undefined),
+					this.lanes.claimablePending(convId, sink.delivery === "stream"),
 			});
 			// The const is what closures below capture — the mutable slot
 			// above only bridges the pre-authority failure paths.
@@ -899,7 +899,7 @@ export class Runtime {
 				messages: merged,
 				tools,
 				view: viewCtx,
-				claimSteers: () => this.lanes.claim(convId, sink.onStreamChunk !== undefined, false),
+				claimSteers: () => this.lanes.claim(convId, sink.delivery === "stream", false),
 				unrequeueSteers: (steered) => this.lanes.unrequeue(convId, steered),
 				settle: (m, done) => void this.notifyDone(m, done),
 				steerMarkSeed: snapshot.steerMarkSeed,

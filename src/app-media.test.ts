@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import type { Message, MessageChunk } from "./message.ts";
 import { ATTACHMENT_PART, type AttachmentRef } from "./agent/attachments.ts";
-import { appMediaSink } from "./app-media.ts";
+import { appMediaSink, composeTurnSinks } from "./app-media.ts";
 import { paths } from "./home-layout.ts";
 import { FencedError } from "./runtime.ts";
 
@@ -32,6 +32,43 @@ function attachmentOf(message: Message | undefined): AttachmentRef {
 }
 
 describe("app media sink", () => {
+	test("fan-out declares streaming when any child streams and forwards only there", () => {
+		const chunks: MessageChunk[] = [];
+		const streaming = {
+			delivery: "stream" as const,
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onStreamChunk: (chunk: MessageChunk) => chunks.push(chunk),
+			onDone() {},
+		};
+		const headless = {
+			delivery: "headless" as const,
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onDone() {},
+		};
+		const fanout = composeTurnSinks(streaming, headless);
+		const chunk = { type: "start", messageId: "m1" } as MessageChunk;
+		expect(fanout.delivery).toBe("stream");
+		if (fanout.delivery === "stream") fanout.onStreamChunk(chunk);
+		expect(chunks).toEqual([chunk]);
+	});
+
+	test("headless fan-out has no chunk callback", () => {
+		const headless = () => ({
+			delivery: "headless" as const,
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onDone() {},
+		});
+		const fanout = composeTurnSinks(headless(), headless());
+		expect(fanout.delivery).toBe("headless");
+		expect("onStreamChunk" in fanout).toBe(false);
+	});
+
 	test("send_file persists bytes, anchors the record, and emits the same ref live", async () => {
 		const { home, sink, appended, emitted } = fixture();
 		const source = join(home, "out", "note.txt");

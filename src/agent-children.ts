@@ -410,6 +410,7 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 	// steer joining a running child settles with the turn that consumes it.
 	function childSink(conv: Conversation): TurnSink {
 		const settlement: TurnSink = {
+			delivery: "headless",
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},

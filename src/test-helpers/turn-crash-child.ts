@@ -227,6 +227,7 @@ const runtime = new Runtime({
 		: {}),
 });
 const sink: TurnSink = {
+	delivery: "headless",
 	onTextDelta() {},
 	onReasoningDelta() {},
 	onToolCall() {},

@@ -71,7 +71,7 @@ interface Lane {
 function claimableCount(pending: QueuedTurn[], headStreams: boolean, headLeads: boolean): number {
 	const start = headLeads ? 1 : 0;
 	if (headStreams) return pending.length;
-	const first = pending.findIndex((t, i) => i >= start && t.sink.onStreamChunk !== undefined);
+	const first = pending.findIndex((t, i) => i >= start && t.sink.delivery === "stream");
 	return first === -1 ? pending.length : Math.min(pending.length, first);
 }
 
@@ -170,7 +170,7 @@ export class LaneRegistry {
 	// The pending head's delivery mode — the drain claim's boundary.
 	headStreams(convId: string): boolean {
 		const lane = this.lane(convId);
-		return lane.pending[0]?.sink.onStreamChunk !== undefined;
+		return lane.pending[0]?.sink.delivery === "stream";
 	}
 
 	// Splice the claimable prefix off the pending queue (claimableCount).

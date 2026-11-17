@@ -1007,6 +1007,7 @@ describe("turn authority", () => {
 			}, 40),
 		);
 		submit(r, "two", {
+			delivery: "headless",
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},
@@ -1042,6 +1043,7 @@ describe("turn authority", () => {
 		const gate = deferred<void>();
 		const chunks: MessageChunk[] = [];
 		const sink: TurnSink = {
+			delivery: "stream",
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},
@@ -1462,6 +1464,7 @@ describe("turn authority", () => {
 		const r = rig({ deltas: ["a"], delayMs: 5 });
 		let calls = 0;
 		submit(r, "hi", {
+			delivery: "headless",
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},
@@ -4492,6 +4495,7 @@ test("invalid durable app settings report admission error exactly once without s
 	});
 	try {
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), {
+			delivery: "headless",
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},

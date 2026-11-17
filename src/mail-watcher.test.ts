@@ -144,6 +144,7 @@ function harness(): Harness {
 		roll: { store, runtime, gapMinutes: () => config.telegram.dmGapMinutes },
 		// Fires never take the app path — wired because WakeDeps requires it.
 		bell: () => ({
+			delivery: "headless" as const,
 			onTextDelta: () => {},
 			onReasoningDelta: () => {},
 			onToolCall: () => {},

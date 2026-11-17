@@ -57,12 +57,39 @@ channels exclude it like the other provider-calling tools.
 what they create is pinned to the chat/topic it was born in; the model never
 handles chat ids.
 
-**Tool results are text — except where the pipe verifiably carries
-documents.** openai-compatible stringifies tool-result content and the
-codex Responses shim filters it to text; the exceptions are probe-verified
-(Web access, above): z.ai's Responses endpoint parses `input_file` inside
-`function_call_output`, and OpenRouter's normalizer maps tool-result parts.
-The rule stands: no image bytes in results.
+**Tool results are text by default; media rides only where the pipe
+verifiably carries it** (ruling rewritten 2026-11-17, issue #606 —
+probe-verified per provider kind, `scripts/probe-tool-image*.ts`).
+`ToolOutput` has three variants — text, json, and `content` (text plus
+image parts). Content is the only image-bearing variant, and it is
+model-facing only: the durable stored output stays a small JSON
+descriptor string, so event projections, pruning and window captures
+never see bytes.
+
+Per-pipe evidence for image-bearing tool results (sanctioned models
+only, AGENTS.md → Tests):
+
+| Pipe | Carries? | Evidence |
+|---|---|---|
+| openrouter | yes | Live probe: `minimax/minimax-m3.1-flash` — the post-tool request carried `image_url` `data:image/png;base64,…` inside the tool message and the model named the probe PNG's quadrant colors |
+| claude-code | yes — gif/jpeg/png/webp | Live probe: `claude-haiku-5-5` through the MCP bridge — `callToolResult` emits an MCP `image` block and the model named the quadrant colors; PDFs have no MCP image form and stay text |
+| codex | no | Live probe: `gpt-6-luna` — the post-tool request held zero image-bearing spots; the model saw only the text part |
+| openai-compatible | no | Tool-result content is stringified before it reaches the wire (converter-level; no sanctioned model exists on this kind) |
+| responses | converter says yes | File parts map to `input_image`/`input_file` inside `function_call_output` — the document exception below; no sanctioned model on this kind, so nothing mounts on converter evidence alone |
+
+Documents keep their earlier exception: z.ai's Responses endpoint parses
+`input_file` inside `function_call_output`, and OpenRouter's normalizer
+maps tool-result parts.
+
+The mount rule (design/agents.md → Computer use → Screenshots second):
+a tool that returns frames — `screenshot` on `computer` children —
+registers only when the child's model lists image input (models.dev
+catalog) AND `carriesMedia(kind, image, "tool-result")` holds. A cold
+catalog or a failing gate means the tool is absent, never erroring.
+Staleness is structural: a between-turn sweep commits a pruning-marker
+projection for every frame but the newest, and `prepareStep` stubs
+superseded frames in the outbound request view — image bytes never ride
+every later request, and a pruned or missing PNG degrades to text.
 
 **Bash offloads, never truncates** (ruling 2026-10-14 — Deep Agents'
 "large outputs are offloaded, not truncated"; the spill-and-name rule
@@ -179,12 +206,13 @@ description, and follow-up threads keyed by absolute path + size + mtime —
 a rewritten file starts a clean thread; a vision-model switch drops every
 thread so a new model never "remembers" a predecessor's answers.
 
-- **Why it exists despite the no-image-bytes rule.** The pipe rule makes a
-  disk image invisible to the conversation's model, vision-capable or not —
-  intake materialization covers only media that arrived through a channel.
-  Files the agent produces or meets (a browser-skill screenshot, an
-  ffmpeg-extracted frame, a downloaded image) had one consumer left: the
-  operator's eyes. The vision tool is the second.
+- **Why it exists despite the media-in-results ruling.** The pipe rule
+  makes a disk image invisible to the conversation's model unless a tool
+  puts it there — and only `screenshot` does, for desktop frames on
+  capable pipes (above). Files the agent produces or meets (a
+  browser-skill screenshot, an ffmpeg-extracted frame, a downloaded
+  image) had one consumer left: the operator's eyes. The vision tool is
+  the second.
 - **Registration is per-mode, live-read each turn** (ruling 2026-10-05).
   The block's `mode` field defaults to `"auto"`: the tool joins the set
   only while the conversation's chat model can't consume images — the same
@@ -193,7 +221,8 @@ thread so a new model never "remembers" a predecessor's answers.
   blind agent. `mode: "always"` registers for every conversation, because
   a file on disk is invisible to a vision-capable chat model too — pi's
   read tool could put an image in front of a vision model and goblin's
-  cannot (tool results are text, above).
+  cannot (no tool returns arbitrary disk images; `screenshot` covers
+  desktop frames only, above).
 - **Config**: the model ref is provider-validated in config `superRefine`
   like `model` and `titleModel`, but deliberately not capability-gated at
   load time — input modalities are runtime catalog knowledge, and the

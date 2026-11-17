@@ -210,17 +210,23 @@ cua-driver): it has no Pi Durable code in it.
   The crash-approval gate (`approval-gate.ts`) is not ported.
 - **Text first.** `inspect` + `act` by element need no images and work
   on any model. That ships first.
-- **Screenshots second.** A frame in a tool result needs an image
-  variant of `ToolOutput` (today text or json, `src/tool.ts`). This
-  changes the ruling "no image bytes in results" (design/tools.md) for
-  the providers whose pipe carries images, each one probe-verified:
-  the AI SDK `image-data` tool-output part, and an MCP `image` content
-  block on the claude-code bridge (`src/agent/claude-code/tools.ts`,
-  text only today). A provider that cannot carry it gets no screenshot
-  tool. Old frames become text stubs through the pruning marker, so
-  they do not stay in every later request.
-- **Model:** the operator chooses it in the type file. It must accept
-  images before the screenshot tool mounts for it.
+- **Screenshots second — built (#606).** `ToolOutput` gained a
+  `content` variant (text plus image parts; `src/tool.ts`), probe-verified
+  per pipe — the ruling and evidence table live in design/tools.md:
+  openrouter and the claude-code MCP bridge carry image tool results,
+  codex and openai-compatible do not. A provider that cannot carry it
+  gets no screenshot tool. The tool's durable output is a small JSON
+  descriptor (observation id, PNG path, byte count); `toModelOutput`
+  re-reads the PNG at view time, so stored events, projections and
+  window captures never hold image bytes. Old frames become text stubs:
+  a between-turn sweep (`src/frame-stubs.ts`) commits a pruning-marker
+  projection for every frame but the newest, and `prepareStep` stubs
+  superseded frames in the outbound request view, so a frame does not
+  ride every later request.
+- **Model:** the operator chooses it in the type file. `screenshot`
+  mounts only when the child's model lists image input (models.dev
+  catalog — a cold catalog keeps it absent) AND the provider pipe
+  carries image tool results (`carriesMedia`'s tool-result position).
 
 ## Removal order
 
@@ -230,7 +236,7 @@ access before there is a working replacement).
 1. Remove the `herdr` tool. The operator does not use the desk any more.
 2. Build `agent`: child conversations, agent types and the parent link.
 3. Build the `computer` agent type, text first.
-4. Add image tool results and the `screenshot` tool.
+4. Add image tool results and the `screenshot` tool — **done (#606)**.
 5. Build the `src/t3.ts` adapter. Move `delegate` and responsibility
    attach/observe onto it, and prove one delegation end to end.
 6. Delete the Herdr code — **done (#608)**: `src/herdr.ts`, its live

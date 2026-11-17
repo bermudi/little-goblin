@@ -198,6 +198,9 @@ provably dead (`kill(pid, 0)` → ESRCH; alive, EPERM, symlinks, and
 every other name or error preserve). Legacy `goblin-*` dirs and
 foreign scratch are never touched. Crash/interrupt leftovers of tracked
 fixture roots self-heal on the next run.
+Subprocess fixtures publish PID files with temp + rename and validate
+positive signed 32-bit PIDs before signalling. Reading a PID file
+mid-write led to `kill(0, SIGKILL)`, which killed the test worker (#650).
 
 A runaway turn loop in a test eats RAM until the kernel OOMs the box
 (2026-11-15: an `ai` bump silenced the loop detector; two full runs

@@ -1925,4 +1925,22 @@ describe("formatting toolbar", () => {
 		await settle();
 		expect(patches.at(-1)!.body.body).toBe("Title\n");
 	});
+
+	test("applying a link returns focus to the note", async () => {
+		root = createRoot(container);
+		const ref = await mount("[hello](https://example.com) world", DELAY);
+		await notice();
+		await select(ref, 2, 2);
+		await notice();
+		await act(async () => tool("link").click());
+		const input = container.querySelector<HTMLInputElement>('[aria-label="Link address"]')!;
+		expect(document.activeElement).toBe(input);
+		expect(input.value).toBe("https://example.com");
+		expect(container.querySelector<HTMLButtonElement>('.note-fmt-link button[type="submit"]')!.disabled).toBe(false);
+		await act(async () => {
+			input.form!.dispatchEvent(new win.Event("submit", { bubbles: true, cancelable: true }) as unknown as Event);
+		});
+		expect(document.activeElement?.classList.contains("ProseMirror")).toBe(true);
+		expect(container.querySelector('.note-fmt-link')).toBeNull();
+	});
 });

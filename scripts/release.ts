@@ -190,6 +190,81 @@ export function flipLive(layout: Layout, dir: string): void {
 	fsyncDirectory(dirname(layout.live));
 }
 
+export type FlipKind = "rollout" | "rollback" | "adopt-unit";
+
+function readOptional(path: string): string | null {
+	try {
+		return readFileSync(path, "utf8");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
+	}
+}
+
+/** Keep the unit's per-home config paired with the release that last ran it. */
+export function syncConfigForFlip(
+	ctx: Context,
+	liveRev: string | null,
+	targetRev: string,
+	kind: FlipKind,
+): void {
+	if (ctx.goblinHome === null) {
+		step("WARNING — GOBLIN_HOME unresolved from the unit; config snapshot skipped");
+		return;
+	}
+	const config = join(ctx.goblinHome, "goblin.json5");
+	let current: string | null;
+	try {
+		current = readOptional(config);
+	} catch (error) {
+		throw new DeployError(`read config ${config}: ${String(error)}`);
+	}
+	if (current === null) {
+		step(`WARNING — ${config} is missing; config snapshot skipped`);
+		return;
+	}
+	const configMode = statSync(config).mode & 0o777;
+	const snapshots = join(ctx.layout.root, ".configs");
+	if (liveRev !== null) {
+		try {
+			mkdirSync(snapshots, { recursive: true });
+			durableWriteFile(join(snapshots, `${liveRev}.goblin.json5`), current, configMode);
+		} catch (error) {
+			throw new DeployError(`save config snapshot for ${liveRev}: ${String(error)}`);
+		}
+		step(`config: saved snapshot for ${short(liveRev)}`);
+	}
+	const snapshotPath = join(snapshots, `${targetRev}.goblin.json5`);
+	let snapshot: string | null;
+	try {
+		snapshot = readOptional(snapshotPath);
+	} catch (error) {
+		throw new DeployError(`read config snapshot ${snapshotPath}: ${String(error)}`);
+	}
+	if (snapshot === null) {
+		if (kind === "rollback")
+			step(
+				`WARNING — no config snapshot for ${short(targetRev)} (released before snapshots); if the config shape changed since, restore it by hand — see design/deploy.md → Config across releases`,
+			);
+		return;
+	}
+	if (snapshot === current) {
+		step(`config: unchanged for ${short(targetRev)}`);
+		return;
+	}
+	const backup = `${config}.rollback-from-${short(liveRev ?? targetRev)}`;
+	try {
+		durableWriteFile(backup, current, configMode);
+		durableWriteFile(config, snapshot, configMode);
+	} catch (error) {
+		throw new DeployError(`restore config snapshot ${short(targetRev)}: ${String(error)}`);
+	}
+	step(
+		`config: restored the snapshot ${short(targetRev)} last ran with; previous config kept at ${backup}`,
+	);
+	annotate(join(ctx.goblinHome, "state", "goblin.log"), "restored config for release", targetRev, liveRev);
+}
+
 // ---------------------------------------------------------------------------
 // The unit is the source of truth for where the code lives and which bun runs
 // it. Deploying must not build with one bun and run with another.
@@ -822,9 +897,11 @@ async function rollout(ctx: Context, rev: string, now = false): Promise<void> {
 	await waitForIdleOrWarn(ctx, now);
 	const live = readLive(ctx.layout);
 	step(`flip: ${live === null ? "none" : short(live.rev)} -> ${short(rev)}`);
+	syncConfigForFlip(ctx, live?.rev ?? null, rev, "rollout");
 	flipLive(ctx.layout, dir);
 	await finish(ctx, dir, rev, live?.rev ?? null, "");
 	process.stdout.write(`deployed ${rev}\n`);
+	process.stdout.write("post-deploy proof: docs/operations.md → Post-deploy proof (new surfaces)\n");
 	if (live !== null)
 		process.stdout.write(`rollback: bun scripts/release.ts --rollback ${live.rev}\n`);
 }
@@ -841,6 +918,7 @@ async function rollback(ctx: Context, rev: string, now = false): Promise<void> {
 	await waitForIdleOrWarn(ctx, now);
 	const live = readLive(ctx.layout);
 	step(`flip: ${live === null ? "none" : short(live.rev)} -> ${short(rev)} (rollback)`);
+	syncConfigForFlip(ctx, live?.rev ?? null, rev, "rollback");
 	flipLive(ctx.layout, dir);
 	await finish(ctx, dir, rev, live?.rev ?? null, "");
 	process.stdout.write(`rolled back to ${rev}\n`);
@@ -860,6 +938,8 @@ async function adoptUnit(ctx: Context, rev: string, now = false): Promise<void> 
 	assertUnitWritable(ctx.layout);
 	const dir = await buildRelease(ctx, rev);
 	await waitForIdleOrWarn(ctx, now);
+	const previous = readLive(ctx.layout);
+	syncConfigForFlip(ctx, previous?.rev ?? null, rev, "adopt-unit");
 	flipLive(ctx.layout, dir);
 	const rewritten = rewriteWorkingDirectory(text, ctx.layout.live);
 	durableWriteFile(ctx.layout.unit, rewritten, 0o644);

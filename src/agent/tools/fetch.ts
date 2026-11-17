@@ -96,18 +96,24 @@ const extractors: Record<
 				advanced_settings: { full_content: true },
 			},
 		);
-		const body = data as { results?: unknown[]; errors?: unknown[] };
+		const body = data as { results?: unknown[]; errors?: unknown[]; warnings?: unknown };
+		if (Array.isArray(body.warnings) && body.warnings.length > 0) {
+			log.info("parallel extract warnings", { url, warnings: body.warnings });
+		}
 		const row = (body.results ?? [])[0] as Record<string, unknown> | undefined;
 		if (!row) {
 			const err = (body.errors ?? [])[0] as Record<string, unknown> | undefined;
+			const status = typeof err?.http_status_code === "number" ? ` ${err.http_status_code}` : "";
 			throw new Error(
-				`parallel: extraction failed — ${str(err?.content) || str(err?.error_type) || "no result"}`,
+				`parallel: extraction failed — ${str(err?.content) || str(err?.error_type) || "no result"}${status}`,
 			);
 		}
-		const excerpts = Array.isArray(row.excerpts)
-			? row.excerpts.filter((e): e is string => typeof e === "string")
-			: [];
-		return { title: str(row.title), text: str(row.full_content) || excerpts.join("\n\n"), meta };
+		// A site that blocks Parallel's crawler comes back as a 200 with its
+		// cached stub: empty full_content plus a header excerpt. Excerpts are
+		// never the page, so an empty body is a failure the chain moves past.
+		const text = str(row.full_content);
+		if (!text) throw new Error("parallel: no full content (site may block its crawler)");
+		return { title: str(row.title), text, meta };
 	},
 	tavily: async (url, key, baseUrl) => {
 		const { data, meta } = await postJson(
@@ -259,7 +265,7 @@ async function localExtract(url: string, baseUrl?: string): Promise<Extracted | 
 function extractReadable(
 	url: string,
 	html: string,
-): Omit<Extracted, "meta"> | Omit<Rejected, "meta"> {
+): Omit<Extracted, "meta"> {
 	type ParsedArticle = ReturnType<Readability["parse"]>;
 	let article: ParsedArticle = null;
 	try {
@@ -272,12 +278,6 @@ function extractReadable(
 		article = null;
 	}
 	const text = (article?.textContent ?? "").replace(/\n{3,}/g, "\n\n").trim();
-	if (text.length < MIN_EXTRACT) {
-		return {
-			error: `page rendered almost no extractable text (${text.length} chars) — likely a JavaScript shell; use the browser skill (skills/browser) for this site`,
-			kind: "empty-extraction",
-		};
-	}
 	return { title: article?.title?.trim() ?? "", text };
 }
 
@@ -339,6 +339,7 @@ export async function runFetchChain(
 	url: string,
 ): Promise<FetchChainOutcome> {
 	const failures: FetchFailure[] = [];
+	let thin: { kind: FetchKind; meta: HttpMeta } | null = null;
 	for (const entry of entries) {
 		const kind: FetchKind = entry.kind;
 		const started = Date.now();
@@ -350,6 +351,15 @@ export async function runFetchChain(
 				const authName = "auth" in entry ? entry.auth : undefined;
 				const key = authName ? await auth.resolve(authName) : undefined;
 				extracted = await extractors[kind](url, key);
+			}
+			// Thin text is provider-specific (a JS shell for local, a blocked
+			// crawler for a vendor), so the next provider may still get the page.
+			const chars = thinChars(extracted);
+			if (chars !== null) {
+				failures.push({ kind, error: `${kind}: almost no text (${chars} chars)` });
+				thin = { kind, meta: extracted.meta };
+				log.warn("web fetch thin", { url, kind, chars, ms: Date.now() - started });
+				continue;
 			}
 			return { extracted, servedBy: kind, failures };
 		} catch (err) {
@@ -363,7 +373,26 @@ export async function runFetchChain(
 			});
 		}
 	}
-	throw new Error(`fetch failed — ${failures.map((f) => f.error).join("; ")}`);
+	const summary = failures.map((f) => f.error).join("; ");
+	if (thin !== null) {
+		return {
+			extracted: {
+				error: `no fetch provider got the page text (${summary}) — likely a JavaScript shell or a blocked site; use the browser skill (skills/browser)`,
+				kind: "empty-extraction",
+				meta: thin.meta,
+			},
+			servedBy: thin.kind,
+			failures,
+		};
+	}
+	throw new Error(`fetch failed — ${summary}`);
+}
+
+// Character count when the result is too thin to be the page, else null.
+function thinChars(extracted: Extracted | Rejected): number | null {
+	if ("error" in extracted || extracted.pdf) return null;
+	const chars = extracted.text.trim().length;
+	return chars < MIN_EXTRACT ? chars : null;
 }
 
 // ---------- tool ----------
@@ -432,19 +461,6 @@ export const fetchTool = (deps: WebToolDeps) =>
 					ms: Date.now() - started,
 				});
 				return { pdf: extracted.pdf };
-			}
-			if (extracted.text.trim().length < MIN_EXTRACT) {
-				log.warn("web fetch rejected", {
-					url: input.url,
-					kind,
-					...logMeta(extracted.meta),
-					outcome: "empty-extraction",
-					ms: Date.now() - started,
-				});
-				return {
-					error: `extraction returned almost no text (${extracted.text.trim().length} chars) — likely a JavaScript shell; use the browser skill (skills/browser)`,
-					kind: "empty-extraction",
-				};
 			}
 			const result = shapeResult(input.url, extracted, budget, note);
 			log.info("web fetch", {

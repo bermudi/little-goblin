@@ -264,6 +264,40 @@ describe("fetch tool — providers", () => {
 		expect(text).toBe("A".repeat(400));
 	});
 
+	test("parallel cache stub (empty full_content, header excerpt) is a failure, not the page", async () => {
+		const target = join(home, "state", "goblin.log");
+		setLogFile(target);
+		const base = serve(() =>
+			Response.json({
+				results: [{ title: "CNN", full_content: "", excerpts: ["Menu ".repeat(120)] }],
+				errors: [],
+				warnings: [{ type: "warning", message: "no objective", detail: null }],
+			}),
+		);
+		await expect(extractors.parallel("https://example.com", "k", base)).rejects.toThrow(
+			"parallel: no full content",
+		);
+		const lines = readFileSync(target, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+		expect(lines).toContainEqual(
+			expect.objectContaining({ msg: "parallel extract warnings", url: "https://example.com" }),
+		);
+	});
+
+	test("parallel extraction error carries the site's HTTP status, with or without content", async () => {
+		for (const [content, want] of [
+			[null, "parallel: extraction failed — http_error 451"],
+			["Unavailable For Legal Reasons", "parallel: extraction failed — Unavailable For Legal Reasons 451"],
+		] as const) {
+			const base = serve(() =>
+				Response.json({
+					results: [],
+					errors: [{ url: "https://example.com", error_type: "http_error", http_status_code: 451, content }],
+				}),
+			);
+			await expect(extractors.parallel("https://example.com", "k", base)).rejects.toThrow(want);
+		}
+	});
+
 	test("provider extraction failure is loud, with the vendor's error", async () => {
 		const base = serve(() =>
 			Response.json({
@@ -323,6 +357,60 @@ describe("fetch tool — providers", () => {
 		expect(out).toContain("# The Title");
 		expect(out).toContain("(extracted via local — parallel");
 		expect(out).toContain("auth command failed");
+	});
+});
+
+describe("fetch tool — thin results fall through", () => {
+	const SHELL_HTML = `<!doctype html><html><head><title>App</title></head><body><div id="root"></div></body></html>`;
+
+	// Route the vendor's real API host to a local fake; everything else passes through.
+	function routeVendor(host: string, handler: (req: Request) => Response): () => void {
+		const fake = serve(handler);
+		const prev = globalThis.fetch;
+		globalThis.fetch = Object.assign(
+			(input: string | URL | Request, init?: RequestInit) => {
+				const u = new URL(input instanceof Request ? input.url : input.toString());
+				if (u.host !== host) return prev(input, init);
+				return prev(`${fake}${u.pathname}`, init);
+			},
+			{ preconnect: prev.preconnect },
+		);
+		return () => {
+			globalThis.fetch = prev;
+		};
+	}
+
+	test("a thin local page moves on to the next provider, and the header says so", async () => {
+		const page = serve(() => new Response(SHELL_HTML, { headers: { "content-type": "text/html" } }));
+		const restore = routeVendor("api.parallel.ai", () =>
+			Response.json({ results: [{ title: "Rendered", full_content: "Real article body. ".repeat(30) }], errors: [] }),
+		);
+		try {
+			const tool = fetchTool(depsWith([{ kind: "local" }, { kind: "parallel", auth: "parallel" }]));
+			const out = (await exec(tool, { url: `${page}/app` })) as string;
+			expect(out).toContain("# Rendered");
+			expect(out).toContain("Real article body.");
+			expect(out).toContain("(extracted via parallel — local: almost no text (0 chars))");
+		} finally {
+			restore();
+		}
+	});
+
+	test("thin everywhere: empty-extraction names each provider and points at the browser skill", async () => {
+		const page = serve(() => new Response(SHELL_HTML, { headers: { "content-type": "text/html" } }));
+		const restore = routeVendor("api.parallel.ai", () =>
+			Response.json({ results: [], errors: [{ error_type: "http_error", http_status_code: 451 }] }),
+		);
+		try {
+			const tool = fetchTool(depsWith([{ kind: "local" }, { kind: "parallel", auth: "parallel" }]));
+			const out = (await exec(tool, { url: `${page}/app` })) as { error: string; kind: string };
+			expect(out.kind).toBe("empty-extraction");
+			expect(out.error).toContain("local: almost no text (0 chars)");
+			expect(out.error).toContain("parallel: extraction failed — http_error 451");
+			expect(out.error).toContain("skills/browser");
+		} finally {
+			restore();
+		}
 	});
 });
 

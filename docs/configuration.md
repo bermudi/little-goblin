@@ -312,7 +312,15 @@ explicit config — no provider is ever injected you didn't write.
 `fetch` selects the extraction provider behind the `fetch` tool — kinds
 `local` (default when unset: direct HTTP + readability, no key), `jina`,
 `tavily`, `firecrawl`, `parallel`, with the same list rule (`local` may
-appear in the chain). Search and fetch are chosen independently, so a
+appear in the chain). Unlike search, a fetch result with almost no text
+(under 200 chars: a JavaScript shell, or a site that blocks that
+provider's crawler) also advances the chain, because the next provider
+may still get the page. When no entry gets the page and at least one
+came back thin, the tool answers `empty-extraction` with the
+browser-skill hint; when every entry failed outright, it fails with each
+provider's error. `parallel`
+counts an empty full content as a failure: it never hands back its
+excerpts as the page. Search and fetch are chosen independently, so a
 search-only key like Brave's free tier pairs with a full-extraction
 provider.
 

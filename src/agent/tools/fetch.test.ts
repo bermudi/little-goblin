@@ -283,16 +283,19 @@ describe("fetch tool — providers", () => {
 		);
 	});
 
-	test("parallel extraction error carries the site's HTTP status", async () => {
-		const base = serve(() =>
-			Response.json({
-				results: [],
-				errors: [{ url: "https://example.com", error_type: "http_error", http_status_code: 451, content: null }],
-			}),
-		);
-		await expect(extractors.parallel("https://example.com", "k", base)).rejects.toThrow(
-			"parallel: extraction failed — http_error 451",
-		);
+	test("parallel extraction error carries the site's HTTP status, with or without content", async () => {
+		for (const [content, want] of [
+			[null, "parallel: extraction failed — http_error 451"],
+			["Unavailable For Legal Reasons", "parallel: extraction failed — Unavailable For Legal Reasons 451"],
+		] as const) {
+			const base = serve(() =>
+				Response.json({
+					results: [],
+					errors: [{ url: "https://example.com", error_type: "http_error", http_status_code: 451, content }],
+				}),
+			);
+			await expect(extractors.parallel("https://example.com", "k", base)).rejects.toThrow(want);
+		}
 	});
 
 	test("provider extraction failure is loud, with the vendor's error", async () => {

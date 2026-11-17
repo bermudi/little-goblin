@@ -105,7 +105,7 @@ const extractors: Record<
 			const err = (body.errors ?? [])[0] as Record<string, unknown> | undefined;
 			const status = typeof err?.http_status_code === "number" ? ` ${err.http_status_code}` : "";
 			throw new Error(
-				`parallel: extraction failed — ${str(err?.content) || `${str(err?.error_type) || "no result"}${status}`}`,
+				`parallel: extraction failed — ${str(err?.content) || str(err?.error_type) || "no result"}${status}`,
 			);
 		}
 		// A site that blocks Parallel's crawler comes back as a 200 with its
@@ -377,7 +377,7 @@ export async function runFetchChain(
 	if (thin !== null) {
 		return {
 			extracted: {
-				error: `every fetch provider returned almost no text (${summary}) — likely a JavaScript shell or a blocked site; use the browser skill (skills/browser)`,
+				error: `no fetch provider got the page text (${summary}) — likely a JavaScript shell or a blocked site; use the browser skill (skills/browser)`,
 				kind: "empty-extraction",
 				meta: thin.meta,
 			},

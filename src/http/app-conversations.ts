@@ -830,8 +830,20 @@ export async function handleConversationsRoute(
 			prevUpto = upto;
 		}
 		const seqToId = rateableIds(store, convId.id, slim);
+		// Every served message carries its append stamp as
+		// `metadata.createdAt` — the row's own clock, so pre-stamp turns
+		// and non-reply events (user, system) answer "how old" too. The
+		// store's blob is never rewritten; the key lands at serve time.
 		const body: AppMessageList = {
-			messages: entries.map((entry) => entry.message),
+			messages: entries.map((entry) => ({
+				...entry.message,
+				metadata: {
+					...(typeof entry.message.metadata === "object" && entry.message.metadata !== null
+						? entry.message.metadata
+						: {}),
+					createdAt: entry.createdAt,
+				},
+			})),
 			start,
 			// The next page ends right before this window's first entry.
 			olderCursor:

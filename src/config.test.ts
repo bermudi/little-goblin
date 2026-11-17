@@ -251,12 +251,12 @@ describe("goblin.json5", () => {
 		const logPath = join(dir, "config.log");
 		writeFileSync(
 			join(dir, "goblin.json5"),
-			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7],delegation:{machine:{label:"g7",cwd:"/home/daniel/goblin/delegated"},session:"other",maxRunning:3,harnesses:{pi:{kind:"pi"}}}}`,
+			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7],delegation:{machine:{label:"g7",cwd:"/home/daniel/goblin/delegated"},session:"other",maxRunning:3,machines:{g7:{machine:"g7",root:"~/build"}},harnesses:{pi:{provider:"t3",model:"glm-5.3"}}}}`,
 		);
 		setLogFile(logPath);
 		try {
 			const c = loadConfig()!;
-			expect(c.delegation).toEqual({ harnesses: { pi: { kind: "pi" } } });
+			expect(c.delegation).toEqual({ harnesses: { pi: { provider: "t3", model: "glm-5.3" } } });
 			const warnings = readFileSync(logPath, "utf8")
 				.trim()
 				.split("\n")
@@ -265,14 +265,53 @@ describe("goblin.json5", () => {
 				"delegation.machine",
 				"delegation.session",
 				"delegation.maxRunning",
+				"delegation.machines",
 			]);
 			expect(warnings.every((w) => w.level === "warn")).toBe(true);
 			expect(warnings[0]?.replacement).toContain("delegation.machines.<label>.machine");
 			expect(warnings[1]?.replacement).toContain("delegation.machines.<label>.session");
 			expect(warnings[2]?.replacement).toContain("no replacement");
+			expect(warnings[3]?.replacement).toContain("T3 Code");
 			writeConfig(c);
 			loadConfig();
-			expect(readFileSync(logPath, "utf8").trim().split("\n")).toHaveLength(3);
+			expect(readFileSync(logPath, "utf8").trim().split("\n")).toHaveLength(4);
+		} finally {
+			setLogFile(null);
+		}
+	});
+
+	// The t3 move (#607) retired the whole herdr harness shape: one stale
+	// kind/args entry drops the entire delegation block at disk load —
+	// boot survives without the delegate tool — and says how to rewrite.
+	test("herdr-shaped delegation harnesses drop the whole block at load with a warn", () => {
+		const dir = useHome("goblin-cfg-");
+		const logPath = join(dir, "config.log");
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			Z(
+				`,delegation:{harnesses:{pi:{kind:"pi"},codex:{provider:"t3",model:"glm-5.3"}},defaults:{default:"pi"}}`,
+			),
+		);
+		setLogFile(logPath);
+		try {
+			const c = loadConfig()!;
+			expect(c.delegation).toBeUndefined();
+			const warnings = readFileSync(logPath, "utf8")
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as { level: string; msg: string; key: string; replacement: string });
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toMatchObject({ level: "warn", key: "delegation" });
+			expect(warnings[0]!.msg).toContain("herdr-shaped");
+			expect(warnings[0]!.replacement).toContain("{provider, model}");
+			// Only disk load retires: the same object through parseConfig
+			// (the POST merge's validator) still fails loud.
+			expect(() =>
+				parseConfig({
+					...objBase,
+					delegation: { harnesses: { pi: { kind: "pi" } } },
+				}),
+			).toThrow();
 		} finally {
 			setLogFile(null);
 		}
@@ -615,59 +654,41 @@ describe("goblin.json5", () => {
 			],
 			["goblin", 5000, 2048, "mid", true, { semantic: 0.3 }, 4096, "high", 30_000, {}, 120_000],
 		],
+		// The t3 move (#607): harnesses are {provider, model} entries and
+		// delegation.machines is a retired key — stripped on disk load, so
+		// the rest of the block survives.
 		[
-			"delegation.machines parses a saved-machine target",
+			"delegation harnesses are provider/model entries on T3 Code",
 			Z(
-				`,delegation:{machines:{g7:{machine:"g7",root:"~/build"},bench:{session:"bench",harnesses:{devin:{kind:"devin"}}}},harnesses:{pi:{kind:"pi"}}}`,
+				`,delegation:{harnesses:{codex:{provider:"t3",model:"glm-5.3"},flash:{provider:"t3",model:"glm-5.3-flash",askFirst:true}}}`,
 			),
-			(c) => c.delegation?.machines?.["g7"],
-			{ machine: "g7", root: "~/build" },
+			(c) => c.delegation?.harnesses,
+			{
+				codex: { provider: "t3", model: "glm-5.3" },
+				flash: { provider: "t3", model: "glm-5.3-flash", askFirst: true },
+			},
 		],
 		[
-			"delegation.machines parses a local-session target",
+			"delegation.machines is retired — stripped on load, the block survives",
 			Z(
-				`,delegation:{machines:{g7:{machine:"g7",root:"~/build"},bench:{session:"bench",harnesses:{devin:{kind:"devin"}}}},harnesses:{pi:{kind:"pi"}}}`,
+				`,delegation:{machines:{g7:{machine:"g7",root:"~/build"},bench:{session:"bench",harnesses:{devin:{kind:"devin"}}}},harnesses:{pi:{provider:"t3",model:"glm-5.3"}}}`,
 			),
-			(c) => [
-				c.delegation?.machines?.["bench"]?.session,
-				c.delegation?.machines?.["bench"]?.harnesses?.["devin"]?.kind,
-			],
-			["bench", "devin"],
-		],
-		// Session names ride herdr's session contract, not the harness
-		// charset: dots and case are real (goblin.dev, side-session).
-		[
-			"delegation.machines session names allow dots and case",
-			Z(`,delegation:{machines:{dev:{session:"goblin.dev"}},harnesses:{pi:{kind:"pi"}}}`),
-			(c) => c.delegation?.machines?.["dev"]?.session,
-			"goblin.dev",
+			(c) => c.delegation,
+			{ harnesses: { pi: { provider: "t3", model: "glm-5.3" } } },
 		],
 		[
 			"delegation defaults map roles to configured harnesses",
 			Z(
-				`,delegation:{harnesses:{pi:{kind:"pi"},"pi-review":{kind:"pi",args:["--model","gpt-6.1-sol"]}},defaults:{default:"pi",build:"pi",review:"pi-review"}}`,
+				`,delegation:{harnesses:{pi:{provider:"t3",model:"glm-5.3"},"pi-review":{provider:"t3",model:"glm-5.3-air"}},defaults:{default:"pi",build:"pi",review:"pi-review"}}`,
 			),
 			(c) => c.delegation?.defaults,
 			{ default: "pi", build: "pi", review: "pi-review" },
 		],
 		[
-			"delegation defaults may name a machine-only harness",
-			Z(
-				`,delegation:{harnesses:{pi:{kind:"pi"}},machines:{g7:{machine:"g7",harnesses:{devin:{kind:"devin"}}}},defaults:{review:"devin"}}`,
-			),
-			(c) => c.delegation?.defaults?.["review"],
-			"devin",
-		],
-		[
-			"delegation askFirst parses on local and machine harnesses",
-			Z(
-				`,delegation:{harnesses:{claude:{kind:"claude",askFirst:true}},machines:{g7:{machine:"g7",harnesses:{devin:{kind:"devin",askFirst:true}}}}}`,
-			),
-			(c) => [
-				c.delegation?.harnesses["claude"]?.askFirst,
-				c.delegation?.machines?.["g7"]?.harnesses?.["devin"]?.askFirst,
-			],
-			[true, true],
+			"delegation askFirst parses on harness entries",
+			Z(`,delegation:{harnesses:{claude:{provider:"t3",model:"m",askFirst:true}}}`),
+			(c) => c.delegation?.harnesses["claude"]?.askFirst,
+			true,
 		],
 	];
 	for (const [name, content, pick, expected] of singles) {
@@ -693,42 +714,26 @@ describe("goblin.json5", () => {
 			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"glm-4.6",operators:[7]}`,
 			"model: custom",
 		],
-		// A relative root names nothing on a remote host — reject at parse.
+		// The t3 move (#607): goblin never guesses a model, so a harness
+		// entry missing its model still fails loud — the union (block | "")
+		// reports the miss as invalid_union.
 		[
-			"delegation.machines rejects a relative root",
-			Z(
-				`,delegation:{machines:{g7:{machine:"g7",root:"relative/path"}},harnesses:{pi:{kind:"pi"}}}`,
-			),
-			"delegation: invalid_format",
+			"delegation harnesses reject an entry missing its model",
+			Z(`,delegation:{harnesses:{codex:{provider:"t3"}}}`),
+			"delegation: invalid_union",
 		],
-		// `~user` is shell user-expansion the tool does NOT perform —
-		// accepting it would stat it under the operator's home while the
-		// literal path reaches herdr. Fail loud at this boundary.
-		[
-			"delegation.machines rejects ~user roots",
-			Z(
-				`,delegation:{machines:{g7:{machine:"g7",root:"~other/build"}},harnesses:{pi:{kind:"pi"}}}`,
-			),
-			"delegation: invalid_format",
-		],
-		// machine + session on one target is a contradiction — herdr's
-		// CLI treats --machine and --session as mutually exclusive.
-		[
-			"delegation.machines rejects machine+session targets",
-			Z(`,delegation:{machines:{both:{machine:"g7",session:"goblin"}},harnesses:{pi:{kind:"pi"}}}`),
-			"delegation: custom",
-		],
+		["delegation harnesses reject a blank provider", Z(`,delegation:{harnesses:{codex:{provider:"",model:"m"}}}`), "delegation: too_small"],
 		// A default naming nothing is a silent staffing hole — reject at parse.
 		[
 			"delegation.defaults rejects an unknown harness",
-			Z(`,delegation:{harnesses:{pi:{kind:"pi"}},defaults:{build:"ghost"}}`),
+			Z(`,delegation:{harnesses:{pi:{provider:"t3",model:"m"}},defaults:{build:"ghost"}}`),
 			"delegation: custom",
 		],
 		// askFirst is a boolean flag, not a string knob — the delegation
 		// union (block | "") reports the miss as invalid_union.
 		[
 			"delegation askFirst rejects a non-boolean",
-			Z(`,delegation:{harnesses:{claude:{kind:"claude",askFirst:"yes"}}}`),
+			Z(`,delegation:{harnesses:{claude:{provider:"t3",model:"m",askFirst:"yes"}}}`),
 			"delegation: invalid_union",
 		],
 	];
@@ -1026,11 +1031,11 @@ describe("ensureHomeLayout", () => {
 		expect(passCli).toContain("name: pass-cli");
 		expect(passCli).toContain("compatibility:");
 		// The herdr skill seeds the same way: a rebuilt box must regain
-		// the pane-targeting contract — operator-pointed panes go through
-		// the `herdr` tool, never the raw CLI.
+		// the delegation contract — own delegations go through the
+		// `delegate` tool, never the raw CLI.
 		const herdr = readFileSync(join(dir, "workspace", "skills", "herdr", "SKILL.md"), "utf8");
 		expect(herdr).toContain("name: herdr");
-		expect(herdr).toContain("the `herdr` tool, never the CLI from bash");
+		expect(herdr).toContain("Never run `herdr` from bash for your own delegations");
 	});
 
 	test("existing identity files are never clobbered", () => {
@@ -1478,7 +1483,10 @@ const invalidInputs: unknown[] = [
 	{ ...valid, providers: { [sentinel]: { kind: sentinel, auth: sentinel } } },
 	{ ...valid, thinking: sentinel },
 	{ ...valid, publicUrl: `http://${sentinel}:credential@example.org` },
-	{ ...valid, delegation: { machines: { [sentinel]: { root: sentinel } } } },
+	// A sentinel record key inside delegation — the retirement paths
+	// (machines, herdr shapes) warn on disk load and so cannot ride here:
+	// the child-process probe below demands an empty stdout.
+	{ ...valid, delegation: { harnesses: { [sentinel]: { provider: sentinel } } } },
 	{ ...valid, telegram: { model: sentinel } },
 	[sentinel],
 ];

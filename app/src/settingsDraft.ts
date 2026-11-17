@@ -91,13 +91,13 @@ export interface ChainEntry {
 	auth: string;
 }
 
-// The delegation editor's two tables. Args stay one-per-line text so an
-// argument with a space survives the round trip; the row order is the
+// The delegation editor's two tables — each harness names the T3
+// provider instance and model its thread runs on; the row order is the
 // saved order (matters only for legibility — the map is keyed).
 export interface HarnessDraft {
 	name: string;
-	kind: string;
-	args: string;
+	provider: string;
+	model: string;
 	askFirst: boolean;
 }
 export interface DelegationRoleDraft {
@@ -107,9 +107,6 @@ export interface DelegationRoleDraft {
 export interface DelegationDraft {
 	harnesses: HarnessDraft[];
 	roles: DelegationRoleDraft[];
-	// Harness names declared under delegation.machines.* — file-only,
-	// kept so a role default may name them like the server allows.
-	machineHarnesses: string[];
 }
 
 // One subagent type's model — the wire's editable fields (api is
@@ -166,12 +163,6 @@ export function subagentsBody(s: SubagentsDraft): SubagentsWire {
 	};
 }
 
-/** One argument per line; blank lines are not arguments. */
-export const argsToList = (text: string): string[] =>
-	text
-		.split("\n")
-		.map((a) => a.trim())
-		.filter((a) => a !== "");
 /** Numeric-ish fields stay strings while editing. */
 export interface ProvDraft {
 	id: number;
@@ -563,8 +554,8 @@ export function draftFromConfig(
 			? {
 					harnesses: Object.entries(c.delegation.harnesses).map(([name, h]) => ({
 						name,
-						kind: h.kind,
-						args: (h.args ?? []).join("\n"),
+						provider: h.provider,
+						model: h.model,
 						askFirst: h.askFirst === true,
 					})),
 					roles: Object.entries(c.delegation.defaults ?? {})
@@ -572,9 +563,6 @@ export function draftFromConfig(
 						.sort((a, b) =>
 							a.role === "default" ? -1 : b.role === "default" ? 1 : a.role.localeCompare(b.role),
 						),
-					machineHarnesses: Object.values(c.delegation.machines ?? {}).flatMap((m) =>
-						Object.keys(m.harnesses ?? {}),
-					),
 				}
 			: null,
 		subagents: subagentsOn && subagents != null ? subagentsDraftFromWire(subagents) : null,
@@ -657,8 +645,10 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 			return "Coding agent names use lowercase letters, digits, _ or - (16 max).";
 		if (new Set(names).size !== names.length) return "Duplicate coding agent name.";
 		if (names.length === 0) return "Delegation is on — add at least one coding agent.";
-		if (draft.delegation.harnesses.some((h) => !h.kind.trim()))
-			return "Every coding agent needs a herdr kind.";
+		if (draft.delegation.harnesses.some((h) => !h.provider.trim()))
+			return "Every coding agent needs a provider.";
+		if (draft.delegation.harnesses.some((h) => !h.model.trim()))
+			return "Every coding agent needs a model.";
 		const roleRe = /^[a-z][a-z0-9_-]{0,15}$/;
 		// A row with no agent is an absent mapping — the body builder
 		// drops it, and "none" is how an existing default gets cleared.
@@ -667,12 +657,9 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 		if (roles.some((r) => !roleRe.test(r)))
 			return "Role names use lowercase letters, digits, _ or - (16 max).";
 		if (new Set(roles).size !== roles.length) return "Duplicate delegation role.";
-		// Defaults may name a machine-side harness — the server schema
-		// accepts them and the file-only target gates the actual launch.
-		const known = [...names, ...draft.delegation.machineHarnesses];
 		for (const r of named) {
-			const target = r.harness.trim();
-			if (!known.includes(target)) return `Role "${r.role}" names an unlisted coding agent.`;
+			if (!names.includes(r.harness.trim()))
+				return `Role "${r.role}" names an unlisted coding agent.`;
 		}
 	}
 	// A subagents draft exists only while its switch is on — an
@@ -858,17 +845,14 @@ export function bodyFromDraft(
 		})) as ConfigPostBody["memory"],
 		delegation: capEmit("delegation", draft.delegation, (d) => ({
 			harnesses: Object.fromEntries(
-				d.harnesses.map((h) => {
-					const args = argsToList(h.args);
-					return [
-						h.name.trim(),
-						{
-							kind: h.kind.trim(),
-							...(args.length > 0 ? { args } : {}),
-							...(h.askFirst ? { askFirst: true } : {}),
-						},
-					];
-				}),
+				d.harnesses.map((h) => [
+					h.name.trim(),
+					{
+						provider: h.provider.trim(),
+						model: h.model.trim(),
+						...(h.askFirst ? { askFirst: true } : {}),
+					},
+				]),
 			),
 			...(() => {
 				const defaults = Object.fromEntries(

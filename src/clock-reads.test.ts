@@ -116,7 +116,6 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/agent/onemin-speech.ts": 2,
 	"src/agent/skill-fetch.ts": 4,
 	"src/agent/tools/fetch.ts": 7,
-	"src/agent/tools/herdr.ts": 2,
 	"src/agent/tools/history.ts": 2,
 	"src/agent/tools/responsibility.ts": 3,
 	"src/agent/tools/script.ts": 3,
@@ -134,8 +133,12 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/conversation.ts": 3,
 	"src/delegation-actions.ts": 2,
 	"src/delegation-notices.ts": 1,
-	"src/delegation-watcher.ts": 6,
-	"src/delegations.ts": 3,
+	// 7: the needs_input resume re-seeds the stall clock from the
+	// observation that proved liveness (#607 t3 transport).
+	"src/delegation-watcher.ts": 7,
+	// 4: openDelegations settles legacy herdr rows at a `now = new Date()`
+	// seam — same pattern as the other three (#607 t3 transport).
+	"src/delegations.ts": 4,
 	"src/desktops-reap.ts": 2,
 	"src/desktops-reconcile.ts": 2,
 	"src/desktops.ts": 12,
@@ -151,7 +154,9 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/http/mod.ts": 4,
 	"src/http/operator-memory.ts": 8,
 	"src/http/operator-status.ts": 1,
-	"src/index.ts": 1,
+	// 2 since #604: the composition root injects real time into the
+	// agent-children engine (its own clock seam).
+	"src/index.ts": 2,
 	"src/injection.ts": 3,
 	"src/log.ts": 4,
 	"src/mail-approval.ts": 3,

@@ -669,10 +669,15 @@ describe("driveStream", () => {
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
 		if (outcome.kind !== "ok") return;
-		const md = outcome.responseMessage?.metadata as { ttftMs?: number };
+		const md = outcome.responseMessage?.metadata as { ttftMs?: number; createdAt?: string };
 		expect(typeof md.ttftMs).toBe("number");
 		expect(md.ttftMs!).toBeGreaterThanOrEqual(0);
 		expect(md.ttftMs!).toBeLessThan(10_000);
+		// The finish instant rides as createdAt — the transcript's "how
+		// old is this reply" before history serves the row's own stamp.
+		expect(typeof md.createdAt).toBe("string");
+		expect(Date.parse(md.createdAt!)).toBeGreaterThanOrEqual(r.deps.turnStartMs);
+		expect(Date.parse(md.createdAt!)).toBeLessThanOrEqual(Date.now());
 	});
 
 	test("a step that never streams content leaves ttft unstamped", async () => {

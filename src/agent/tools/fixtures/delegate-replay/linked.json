@@ -1,7 +1,7 @@
 {
   "version": 1,
   "model": "gpt-6-luna",
-  "requestHash": "131223dc2e1c459ef9a44960e1be45302f502c949509a324c2310f1b1fad37bd",
+  "requestHash": "c31c8c4db844e1474718f10997f20916181565812ab9d158e222af31267ac992",
   "parts": [
     {
       "type": "stream-start",
@@ -9,9 +9,9 @@
     },
     {
       "type": "tool-call",
-      "toolCallId": "call_f33dbffcce9a45edb54e90a2091b8dd6",
+      "toolCallId": "call_59fdce50b7f547f7ad97d809d38f3c53",
       "toolName": "delegate",
-      "input": "{\"action\":\"start\",\"harness\":\"codex\",\"task\":\"Fix the failing build for active responsibility r-12. Inspect the repository, identify build failure, implement appropriate fix and run relevant verification. Report changes and test outcomes; do not merge.\",\"cwd\":\"app\",\"responsibility\":\"r-12\",\"name\":\"Fix failing build\"}"
+      "input": "{\"action\":\"start\",\"harness\":\"codex\",\"task\":\"Fix the failing build in this repository. Inspect the build failure, implement the minimal appropriate fix, run relevant verification, and report changed files, cause, and test/build results. Do not merge or push.\",\"cwd\":\"app\",\"name\":\"Fix failing build\",\"responsibility\":\"r-12\"}"
     },
     {
       "type": "finish",

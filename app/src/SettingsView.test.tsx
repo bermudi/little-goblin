@@ -606,6 +606,10 @@ describe("main branch regressions", () => {
 			c.querySelector('input[aria-label="Filter models"]'),
 		);
 		expect(card).toBeTruthy();
+		const list = card?.querySelector('[role="region"][aria-label="Chat picker models"]');
+		expect(list?.getAttribute("tabindex")).toBe("0");
+		expect(list?.querySelectorAll(".pk-row")).toHaveLength(2);
+		expect(list?.querySelector('input[aria-label="Filter models"]')).toBeNull();
 		// Uncurated: the whole catalog enabled, stars floated first.
 		expect(card?.textContent).toContain("2 models · 0 hidden");
 		const names = [...card!.querySelectorAll(".pk-row .fav-name")].map((n) => n.textContent);
@@ -620,6 +624,7 @@ describe("main branch regressions", () => {
 		expect(savedBodies.at(-1)?.pickerModels).toEqual(["main/fav-a"]);
 		expect(savedBodies.at(-1)?.favorites).toEqual(["main/fav-a"]);
 		expect(card?.textContent).toContain("Hidden from picker");
+		expect(list?.textContent).toContain("Hidden from picker");
 		// Disable all empties the membership; the hidden row re-enables.
 		await click(card?.querySelector(".pk-toolbtn"));
 		await waitFor(() => savedBodies.at(-1)?.pickerModels?.length === 0, "the disable-all save");

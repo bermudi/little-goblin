@@ -33,7 +33,6 @@ test("descriptors reproduce the former name lists", () => {
 			"program",
 			"mail",
 			"delegate",
-			"herdr",
 			"memory_search",
 			"memory_reflect",
 			"history_search",

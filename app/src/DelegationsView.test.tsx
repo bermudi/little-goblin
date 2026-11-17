@@ -21,7 +21,8 @@ describe("DelegationsView", () => {
 		name: `job-${id}`,
 		harness: "codex",
 		status,
-		target: null,
+		thread: null,
+		link: null,
 		task: `Line one of ${id}\nLine two of the brief`,
 		cwd: "/work/demo",
 		appConversation: null,
@@ -121,6 +122,34 @@ describe("DelegationsView", () => {
 		expect(calls).toContain("POST /api/app/delegations/3/stop");
 		expect(container.querySelectorAll(".deleg-now").length).toBe(0);
 		expect(container.textContent).toContain("stopped");
+	});
+
+	test("a stop the thread cannot take shows the honest error and keeps the row", async () => {
+		const rows = [
+			item(5, "running", { thread: "t-5", link: "https://t3.example.test/t-5" }),
+		];
+		globalThis.fetch = ((_input: string, init?: RequestInit) => {
+			const post = init?.method === "POST";
+			const body = post
+				? { outcome: "unavailable", delegation: rows[0], notes: [] }
+				: { delegations: rows };
+			return Promise.resolve(
+				new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } }),
+			);
+		}) as unknown as typeof fetch;
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<DelegationsView token={null} />);
+		});
+		const click = async (el: Element | null | undefined) =>
+			act(async () => el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true }) as unknown as Event));
+		await click([...container.querySelectorAll("button")].find((b) => b.textContent === "Stop"));
+		await click(container.querySelector(".confirm-ok"));
+		expect(container.querySelector(".deleg-now .error")?.textContent).toContain(
+			"t3 has no stop verb — end the thread in T3 Code itself.",
+		);
+		// t3 still runs the thread — the row stays under Current.
+		expect(container.querySelectorAll(".deleg-now").length).toBe(1);
 	});
 
 	test("current work leads, old work is a table, brief shows one line", async () => {

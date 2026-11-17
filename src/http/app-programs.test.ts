@@ -72,7 +72,7 @@ function wiredResp() {
 					conversations: ctx.store,
 					pump: () => {},
 				}),
-				listAgents: async () => [],
+				listThreads: async () => [],
 			};
 		},
 	});

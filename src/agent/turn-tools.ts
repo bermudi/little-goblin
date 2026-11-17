@@ -11,9 +11,12 @@ import { FencedError, type RuntimeDeps } from "../runtime.ts";
 
 import type { ConfigRef } from "../config.ts";
 import { splitModelRef, type Config } from "../config-schema.ts";
+import type { AgentChildren } from "../agent-children.ts";
+import { loadAgentTypes } from "../agent-types.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { channelOf } from "../conversation-address.ts";
+import { paths } from "../home-layout.ts";
 import type { AuthStore } from "../auth.ts";
 import type { NoteStore } from "../notes.ts";
 import { projectWorkdir, type ProjectStore } from "../projects.ts";
@@ -32,8 +35,10 @@ import {
 	type TranscribeToolDeps,
 	type VisionToolDeps,
 } from "./tools/mod.ts";
+import { withAgent } from "./tools/agent.ts";
 import { withScript } from "./tools/script.ts";
-import type { OperatorAgent, OperatorHerdr } from "../herdr.ts";
+import type { OperatorHerdr } from "../herdr.ts";
+import type { T3 } from "../t3.ts";
 import type { ResponsibilityStore } from "../responsibilities.ts";
 import { makeManagedSendEdge, type ResponsibilityService } from "../responsibility-service.ts";
 
@@ -80,13 +85,19 @@ export interface TurnToolsDeps {
 	subagents(): Subagents | null;
 	desktops(): Desktops | null;
 	subagentsBoot(): Config["subagents"];
+	// The t3 adapter — one boot-frozen instance for the handover seams
+	// (thread discovery and managed sends).
+	t3: T3;
 	// Late-bound like subagents — the responsibility service is built
 	// after Runtime's construction. null = the tool never mounts.
 	responsibility(): {
 		resps: ResponsibilityStore;
 		service: ResponsibilityService;
-		listFor(): Promise<OperatorAgent[]>;
 	} | null;
+	// Late-bound like subagents — the agent-children engine needs the
+	// wake dispatcher, which is built after Runtime. null = the agent
+	// tool never mounts and child conversations cannot run.
+	agents(): AgentChildren | null;
 	// tg/guest.ts owns the exclusion policy — injected so tools never
 	// imports back into tg/.
 	filterGuests<T extends Record<string, unknown>>(conv: Conversation, tools: T): T;
@@ -111,6 +122,9 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 	} = deps;
 	return (conv, deliverVoice, recording, deliverFile, context) => {
 		const epoch = conv.epoch;
+		// Narrowed once so the handover closures below type-check as
+		// project-bound.
+		const projectId = conv.projectId;
 		// Late-bound seams — resolved per call, never at factory time.
 		const mail = deps.mail();
 		const subagents = deps.subagents();
@@ -235,9 +249,6 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 							mountedSubagents: { worker: workerEnabled, computer: computerEnabled },
 							checkResponsibility,
 						},
-			// Unconditional — guests are filtered below and script's
-			// allowlist excludes it.
-			herdr: { herdr: operatorHerdr },
 			// Only the approval gate's request closure — the send credential lives behind the taps.
 			mail:
 				(channel === "app" || channel === "telegram") && configRef.current.mail !== undefined
@@ -308,11 +319,11 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			// handover loop lives on. The handover key is the project
 			// conversation — one acceptance per coordination conversation.
 			responsibility:
-				conv.projectId !== null && responsibilitySvc !== null
+				projectId !== null && responsibilitySvc !== null
 					? {
 							resps: responsibilitySvc.resps,
 							service: responsibilitySvc.service,
-							projectId: conv.projectId,
+							projectId,
 							coordinationConversationId: conv.id,
 							journalRunId: context?.runId,
 							assertAuthority: () => {
@@ -330,19 +341,62 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 								}
 								return `handover:${conv.id}:seq:${seq}`;
 							},
-							listFor: responsibilitySvc.listFor,
-							// The accepted-risk send edge (responsibility-service):
-							// preflight binds pane + kind; post-send identity is
-							// compared to the bound session — a crossed send lands
-							// as uncertain, loudly logged, never a resend.
-							guardedSend: makeManagedSendEdge(operatorHerdr),
+							// The project's own dir names the T3 project the
+							// handover threads live in; the thread list is
+							// read-only discovery, resolved live per call.
+							listFor: () => {
+								const dir = projects.get(projectId)?.dir;
+								if (dir === undefined) {
+									throw new Error(
+										`project ${projectId} has no dir — cannot list its T3 threads`,
+									);
+								}
+								return deps.t3.listThreads(dir);
+							},
+							// The managed send edge (responsibility-service):
+							// the bound thread id is the identity — CLI
+							// failures refuse (nothing was sent), only the
+							// tool's own kill lands uncertain.
+							guardedSend: makeManagedSendEdge(deps.t3),
 						}
 					: undefined,
 			// App turns only — Telegram and guests render plain text.
 			ui: channelOf(conv.id) === "app",
 		});
+		// Native subagents (design/agents.md → agent). A child
+		// conversation gets its spawn-time allowlist instead of the agent
+		// tool — depth is 1. A parent gets the tool with the types read
+		// at this turn's start: a malformed type file fails the turn
+		// here, loud, naming the file.
+		const agents = deps.agents();
+		let surfaced = tools;
+		if (conv.agentType !== null) {
+			if (agents === null) {
+				throw new Error(
+					`agent child ${conv.id} cannot mount tools — no agent-children engine is wired`,
+				);
+			}
+			const allow = agents.allowlistFor(conv.id);
+			if (allow === null) {
+				throw new Error(
+					`conversation ${conv.id} is marked agent type "${conv.agentType}" but has no registry row — spawn it through the agent tool`,
+				);
+			}
+			const picked: Record<string, (typeof tools)[string]> = {};
+			for (const name of allow) {
+				const tool = tools[name];
+				if (tool !== undefined) picked[name] = tool;
+			}
+			surfaced = picked as typeof tools;
+		} else if (agents !== null) {
+			surfaced = withAgent(tools, {
+				engine: agents,
+				types: loadAgentTypes(paths.agentTypes()),
+				conversation: conv,
+			});
+		}
 		// Guest mode: hard toolset exclusion after assembly.
-		const filtered = filterGuests(conv, tools);
+		const filtered = filterGuests(conv, surfaced);
 		// script composes the filtered set; refiltering keeps it out of the guest persona's allowlist.
 		const scripting = configRef.current.scripting;
 		return scripting

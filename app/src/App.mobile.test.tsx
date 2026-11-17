@@ -79,6 +79,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 				archivedAt: null,
 				pinnedAt: "2026-10-23T00:00:00Z",
 				projectId: null,
+				parentId: null,
 			},
 			{
 				id: "app/second",
@@ -89,6 +90,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 				archivedAt: null,
 				pinnedAt: null,
 				projectId: null,
+				parentId: null,
 			},
 		];
 		installGlobal("window", win);

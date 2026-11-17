@@ -21,6 +21,8 @@ const conv = {
 	memoryExcluded: false,
 	memoryExcludedByProject: false,
 	projectId: null,
+	parentId: null,
+	agentType: null,
 	persona: "personal" as const,
 	archivedAt: null,
 	pinnedAt: null,

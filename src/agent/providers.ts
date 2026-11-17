@@ -458,6 +458,20 @@ export function observedModel(
 			...(error === undefined ? {} : safeErrorFields(error)),
 		});
 	};
+	const cancelProviderAfterStorageFailure = async (
+		call: ReturnType<typeof beginCall>,
+		reader: { cancel(reason?: unknown): Promise<void> },
+		storageError: unknown,
+	): Promise<void> => {
+		try {
+			await reader.cancel(storageError);
+		} catch (cleanupError) {
+			log.warn("provider stream cancellation after storage failure failed", cleanupError, {
+				...baseFields,
+				callId: call.callId,
+			});
+		}
+	};
 	const middleware: LanguageModelMiddleware = {
 		wrapGenerate: async ({ doGenerate, params }) => {
 			const call = beginCall("generate", params);
@@ -492,7 +506,14 @@ export function observedModel(
 							if (cancelled) return;
 							if (done) {
 								if (!settled) {
-									failCall(call, "no-finish");
+									try {
+										failCall(call, "no-finish");
+									} catch (storageError) {
+										await cancelProviderAfterStorageFailure(call, reader, storageError);
+										settled = true;
+										controller.error(storageError);
+										return;
+									}
 									settled = true;
 								}
 								controller.close();
@@ -512,6 +533,7 @@ export function observedModel(
 										});
 									}
 									settled = true;
+									await cancelProviderAfterStorageFailure(call, reader, storageError);
 									controller.error(storageError);
 									return;
 								}
@@ -521,6 +543,7 @@ export function observedModel(
 									failCall(call, "provider-error", value.error);
 								} catch (storageError) {
 									settled = true;
+									await cancelProviderAfterStorageFailure(call, reader, storageError);
 									controller.error(storageError);
 									return;
 								}
@@ -529,11 +552,17 @@ export function observedModel(
 							controller.enqueue(value);
 						} catch (error) {
 							if (cancelled) return;
+							let surfacedError = error;
 							if (!settled) {
-								failCall(call, "read", error);
+								try {
+									failCall(call, "read", error);
+								} catch (storageError) {
+									surfacedError = storageError;
+									await cancelProviderAfterStorageFailure(call, reader, storageError);
+								}
 								settled = true;
 							}
-							controller.error(error);
+							controller.error(surfacedError);
 						}
 					},
 					async cancel(reason) {

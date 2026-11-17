@@ -126,6 +126,35 @@ describe("System1Client", () => {
 		expect((err as System1Error).kind).toBe("transport");
 	});
 
+	test("an oversized response cancels its source reader", async () => {
+		const originalFetch = globalThis.fetch;
+		let cancellations = 0;
+		let sent = false;
+		globalThis.fetch = (async () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					pull(controller) {
+						if (!sent) {
+							sent = true;
+							controller.enqueue(new Uint8Array(1_048_577));
+						}
+					},
+					cancel() {
+						cancellations++;
+					},
+				}),
+		)) as unknown as typeof fetch;
+		try {
+			const client = new System1Client({ auth: async () => "key", fallback: false });
+			await expect(client.decide("s", { correction: question })).rejects.toMatchObject({
+				kind: "protocol",
+			});
+			expect(cancellations).toBe(1);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
 	test("with fallback off, a primary failure throws and never calls the backup", async () => {
 		const models: string[] = [];
 		const baseUrl = served(async (request) => {

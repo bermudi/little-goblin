@@ -16,6 +16,7 @@ import type {
 	LanguageModelV4StreamPart,
 	LanguageModelV4Usage,
 } from "@ai-sdk/provider";
+import { ownedReader } from "../dispose.ts";
 import { z } from "zod";
 
 export class StaleRecordingError extends Error {
@@ -217,7 +218,8 @@ export function recordedModel(opts: {
 			const hash = requestHash(options);
 			if (inner !== undefined) {
 				const { stream } = await inner.doStream(options);
-				const reader = stream.getReader();
+				await using owner = ownedReader(stream);
+				const { reader } = owner;
 				const kept: LanguageModelV4StreamPart[] = [];
 				let sawFinish = false;
 				for (;;) {

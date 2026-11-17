@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { openStore } from "./conversation.ts";
 import {
 	agentChildSystemPrompt,
+	COMPUTER_AGENT_TYPE,
 	GENERAL_AGENT_TYPE,
 	loadAgentTypes,
 } from "./agent-types.ts";
@@ -19,8 +20,15 @@ describe("agent types", () => {
 	test("missing dir is the built-in catalog", () => {
 		useHome("goblin-agent-types-");
 		const types = loadAgentTypes(join(tmpDir("goblin-agent-types-"), "absent"));
-		expect([...types.keys()]).toEqual(["general"]);
+		expect([...types.keys()]).toEqual(["general", "computer"]);
 		expect(types.get("general")).toBe(GENERAL_AGENT_TYPE);
+		expect(types.get("computer")).toBe(COMPUTER_AGENT_TYPE);
+	});
+
+	test("the computer type carries the desktop tools and ask_operator", () => {
+		expect(COMPUTER_AGENT_TYPE.tools).toEqual(["inspect", "act", "launch", "ask_operator"]);
+		expect(COMPUTER_AGENT_TYPE.systemPrompt).toContain("observation_id");
+		expect(COMPUTER_AGENT_TYPE.systemPrompt).toContain("ask_operator");
 	});
 
 	test("operator files load and a general.md replaces the built-in", () => {

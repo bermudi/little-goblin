@@ -36,6 +36,7 @@ import {
 	type VisionToolDeps,
 } from "./tools/mod.ts";
 import { withAgent } from "./tools/agent.ts";
+import { agentChildToolNames } from "./tools/computer.ts";
 import { withScript } from "./tools/script.ts";
 import type { T3 } from "../t3.ts";
 import type { ResponsibilityStore } from "../responsibilities.ts";
@@ -155,6 +156,10 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		// vanished dir throws here and the turn fails at admission.
 		const workdir = projectWorkdir(projects, conv);
 		const delegate = delegateDeps(conv, workdir);
+		// A child conversation's bound desktop (computer type) — the
+		// engine's row is the source; null for parents and other types.
+		const childDesktop =
+			conv.agentType !== null ? (deps.agents()?.desktopFor(conv.id) ?? null) : null;
 		const tools = makeTools({
 			cwd: workdir,
 			voice:
@@ -300,6 +305,27 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 				subagents !== null && desktops !== null && configRef.current.subagents !== undefined
 					? { conversation: conv.id, workspace: workdir, desktops }
 					: undefined,
+			// Agent-type children only (design/agents.md → Computer use):
+			// the desktop tools and ask_operator mount into the pool a
+			// child's allowlist picks from. A parent turn never carries
+			// them — withAgent would capture them into every child's
+			// inherited set.
+			computer:
+				conv.agentType !== null && desktops !== null && childDesktop !== null
+					? { conversation: conv.id, desktop: childDesktop, desktops }
+					: undefined,
+			askOperator:
+				conv.agentType !== null
+					? {
+							recordAsk: (question: string) => {
+								const engine = deps.agents();
+								if (engine === null) {
+									return { error: "no agent-children engine is wired" };
+								}
+								return engine.askOperator(conv.id, question);
+							},
+						}
+					: undefined,
 			// App turns only, like ui — the artifact card is an app surface.
 			// The sandbox source follows the sandbox feature's live gate.
 			artifact:
@@ -388,6 +414,10 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 				engine: agents,
 				types: loadAgentTypes(paths.agentTypes()),
 				conversation: conv,
+				// The names the child mount provides that no parent turn
+				// carries — the computer type's desktop tools plus
+				// ask_operator (agent.ts childToolAllowlist).
+				intrinsicTools: agentChildToolNames(desktops !== null),
 			});
 		}
 		// Guest mode: hard toolset exclusion after assembly.

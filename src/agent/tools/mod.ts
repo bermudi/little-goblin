@@ -2,7 +2,9 @@ import type { Tools } from "../../tool.ts";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { type ArtifactToolDeps, artifactTool } from "./artifact.ts";
+import { type AskOperatorToolDeps, askOperatorTool } from "./ask-operator.ts";
 import { bashTool } from "./bash.ts";
+import { type ComputerToolDeps, computerTools } from "./computer.ts";
 import { type DelegateToolDeps, delegateTool } from "./delegate.ts";
 import { type DesktopToolDeps, desktopTool } from "./desktop.ts";
 import { editFileTool } from "./edit.ts";
@@ -56,6 +58,8 @@ export interface TranscribeToolDeps {
 
 export type {
 	ArtifactToolDeps,
+	AskOperatorToolDeps,
+	ComputerToolDeps,
 	DelegateToolDeps,
 	DesktopToolDeps,
 	HistorySearchDeps,
@@ -90,6 +94,12 @@ export interface MakeToolsOptions {
 	sandbox?: SandboxToolDeps | undefined;
 	subagent?: SubagentToolDeps | undefined;
 	desktop?: DesktopToolDeps | undefined;
+	// Agent-type children only (design/agents.md → Computer use): the
+	// desktop tools and ask_operator mount for a child conversation and
+	// reach the model only through its spawn-time allowlist — a parent
+	// turn never carries them.
+	computer?: ComputerToolDeps | undefined;
+	askOperator?: AskOperatorToolDeps | undefined;
 	// Project conversations only — the handover/coordination surface.
 	responsibility?: ResponsibilityToolDeps | undefined;
 	ui?: boolean | undefined;
@@ -121,6 +131,8 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		sandbox,
 		subagent,
 		desktop,
+		computer,
+		askOperator,
 		responsibility,
 		ui,
 	} = options;
@@ -170,6 +182,8 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		...(sandbox ? { sandbox: sandboxTool(sandbox) } : {}),
 		...(subagent ? { subagent: subagentTool(subagent) } : {}),
 		...(desktop ? { desktop: desktopTool(desktop) } : {}),
+		...(computer ? computerTools(computer) : {}),
+		...(askOperator ? { ask_operator: askOperatorTool(askOperator) } : {}),
 		// The responsibility tool mounts for project-bound turns only —
 		// the caller decides; nothing here reaches for conv state.
 		...(responsibility ? { responsibility: responsibilityTool(responsibility) } : {}),

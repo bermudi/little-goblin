@@ -96,7 +96,7 @@ System prompt for this agent type.
 ### Verbs
 
 ```
-spawn {type?, task, background?}   type defaults to general; background defaults to true
+spawn {type?, task, background?, desktop?}   type defaults to general; background defaults to true; desktop is required for the computer type — spawn claims it for the child
 list  {}
 read  {id}                         status plus the child's latest messages
 send  {id, text}                   steer a running child, or follow up a settled one

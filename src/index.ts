@@ -503,6 +503,22 @@ async function boot() {
 		telegramApi: () => attach.api(),
 	});
 
+	// The desktop pool constructs empty-handed: no allocation or
+	// reaping happens at boot, rows reconcile on use. It exists before
+	// the agent-children engine — a computer child's settlement
+	// releases its leases through it, boot recovery included.
+	const subagentsBoot = config.subagents;
+	const desktops =
+		subagentsBoot !== undefined
+			? makeDesktops({
+					podman,
+					store: openDesktops(paths.db()),
+					// Boot-frozen like the owner's block — a live read would
+					// make the restart warning a lie.
+					config: () => subagentsBoot?.desktops,
+				})
+			: null;
+
 	// Native subagents (design/agents.md → agent): the child engine
 	// rides the shared runtime and settles through the dispatcher's
 	// record seam — both exist only here, past the wire. Boot recovery
@@ -515,6 +531,7 @@ async function boot() {
 		bell: (conv) => delivery.wakeDeps.bell(conv),
 		maxRunning: () => configRef.current.agents?.maxRunning ?? 3,
 		now: () => new Date(),
+		desktops: () => desktops,
 	});
 	agentChildren.recoverAtBoot();
 	agentChildrenEngine = agentChildren;
@@ -600,19 +617,7 @@ async function boot() {
 	// (models, pool limits, auth refs) is one snapshot. Construction —
 	// including crash recovery over Pi Durable's storage — runs only
 	// after the late-boot bindings land: a settle during open may wake
-	// through wakeDeps immediately. Desktops construct empty-handed:
-	// no allocation or reaping happens at boot, rows reconcile on use.
-	const subagentsBoot = config.subagents;
-	const desktops =
-		subagentsBoot !== undefined
-			? makeDesktops({
-					podman,
-					store: openDesktops(paths.db()),
-					// Boot-frozen like the owner's block — a live read would
-					// make the restart warning a lie.
-					config: () => subagentsBoot?.desktops,
-				})
-			: null;
+	// through wakeDeps immediately.
 	// The owner open is fail-open — a poisoned auth record or a resume
 	// refusal disables the feature rather than crash-looping the
 	// service (openSubagentsGuarded owns that policy; the close join

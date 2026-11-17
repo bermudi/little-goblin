@@ -104,6 +104,14 @@ function isolatedEnv(home: string, name: string): Record<string, string> {
 		GOBLIN_HOME: home,
 		GOBLIN_VERIFY_INSTANCE: name,
 		TMPDIR: join(home, "tmp"),
+		// Rootless podman keys its store on XDG_DATA_HOME/HOME — the
+		// throwaway HOME would hide the desktop image. Only the
+		// desktops flag needs the real store; containers it creates are
+		// still named goblin-desk-* and cleaned up by hand.
+		...(process.env.GOBLIN_TRY_DESKTOPS === "1" &&
+		process.env.XDG_DATA_HOME === undefined
+			? { XDG_DATA_HOME: join(homedir(), ".local/share") }
+			: {}),
 	};
 }
 
@@ -111,7 +119,7 @@ function seedHome(home: string, fakePort: number): void {
 	for (const dir of ["user-home", "tmp", "workspace", "state"]) {
 		mkdirSync(join(home, dir), { recursive: true });
 	}
-	const config = {
+	const config: Record<string, unknown> = {
 		providers: {
 			fake: { kind: "openai-compatible", baseUrl: `http://127.0.0.1:${fakePort}/v1`, auth: "fake" },
 		},
@@ -133,6 +141,12 @@ function seedHome(home: string, fakePort: number): void {
 		http: { port: 0 },
 		logLevel: "info",
 	};
+	// GOBLIN_TRY_DESKTOPS=1 seeds the desktop pool (issue #605's
+	// computer-agent verification) — the pool is lazy, nothing boots
+	// until a desktop is claimed.
+	if (process.env.GOBLIN_TRY_DESKTOPS === "1") {
+		config.subagents = { desktops: {} };
+	}
 	writeFileSync(join(home, "goblin.json5"), `${JSON.stringify(config, null, 2)}\n`);
 	writeFileSync(
 		join(home, "auth.jsonl"),

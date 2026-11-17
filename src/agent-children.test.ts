@@ -4,8 +4,10 @@
 // recovery. The model provider is faked; nothing else is.
 
 import { describe, expect, test } from "bun:test";
-import { GENERAL_AGENT_TYPE } from "./agent-types.ts";
+import { COMPUTER_AGENT_TYPE, GENERAL_AGENT_TYPE } from "./agent-types.ts";
 import { startAgentChildren, type AgentChildren, type AgentChild } from "./agent-children.ts";
+import { DesktopError, type Desktops } from "./desktops.ts";
+import { holderId, type DesktopRow, type LeaseHolder } from "./desktops-store.ts";
 import { openStore } from "./conversation.ts";
 import { Runtime } from "./runtime.ts";
 import { tmpDb, useHome, waitUntil } from "./testkit.ts";
@@ -52,6 +54,86 @@ function gated(text: string): { model: ScriptedModel; release: () => void } {
 	};
 }
 
+// A stateful Desktops stub: claim/release/list over an in-memory row
+// map with real lease semantics — the pool's podman half is
+// desktops.test.ts's job. Far-future expiry keeps leaseLive true
+// against the rig's frozen clock.
+function fakeDesktops() {
+	const rows = new Map<string, DesktopRow>();
+	const events: string[] = [];
+	const blank = (name: string): DesktopRow => ({
+		name,
+		container: `c-${name}`,
+		image: "img",
+		network: false,
+		reserved: false,
+		leaseKind: null,
+		leaseId: null,
+		leaseExpiresAt: null,
+		lastObsId: null,
+		lastObsUsed: false,
+		lastObsHash: null,
+		lastActSig: null,
+		lastActFrameHash: null,
+		shotSeq: 0,
+		createdAt: 0,
+		lastUsedAt: 0,
+	});
+	const desktops = {
+		allocate: async () => {
+			throw new Error("unused");
+		},
+		list: () => [...rows.values()],
+		get: (name: string) => rows.get(name) ?? null,
+		claim: async (name: string, holder: LeaseHolder) => {
+			const row = rows.get(name) ?? blank(name);
+			const live = row.leaseKind !== null && (row.leaseExpiresAt ?? 0) > Date.now();
+			const mine =
+				live &&
+				row.leaseKind === holder.kind &&
+				row.leaseId === holderId(holder);
+			if (live && !mine) {
+				throw new DesktopError(`desktop ${name} is controlled by ${row.leaseKind} ${row.leaseId}`);
+			}
+			row.leaseKind = holder.kind;
+			row.leaseId = holderId(holder);
+			row.leaseExpiresAt = 8_640_000_000_000;
+			rows.set(name, row);
+			events.push(`claim ${name} ${holder.kind}:${holderId(holder) ?? ""}`);
+			return row;
+		},
+		release: async (name: string) => {
+			const row = rows.get(name);
+			events.push(`release ${name}`);
+			if (row !== undefined) {
+				row.leaseKind = null;
+				row.leaseId = null;
+				row.leaseExpiresAt = null;
+			}
+		},
+		handoff: async () => undefined,
+		reserve: async () => undefined,
+		setNetwork: async () => undefined,
+		destroy: async () => undefined,
+		screenshot: async () => {
+			throw new Error("unused");
+		},
+		inspect: async () => {
+			throw new Error("unused");
+		},
+		act: async () => {
+			throw new Error("unused");
+		},
+		cpIn: async () => {
+			throw new Error("unused");
+		},
+		catFile: async () => {
+			throw new Error("unused");
+		},
+	} as unknown as Desktops;
+	return { desktops, events, rows };
+}
+
 interface Rig {
 	store: ReturnType<typeof openStore>;
 	parent: ReturnType<ReturnType<typeof openStore>["resolve"]>;
@@ -61,7 +143,7 @@ interface Rig {
 	queue: ScriptedModel[];
 }
 
-function rig(opts: { maxRunning?: number } = {}): Rig {
+function rig(opts: { maxRunning?: number; desktops?: Desktops | null } = {}): Rig {
 	useHome("goblin-agent-children-");
 	const store = openStore(tmpDb("goblin-agent-children-"));
 	// An app conversation — the one kind whose resolve persists settings,
@@ -100,6 +182,7 @@ function rig(opts: { maxRunning?: number } = {}): Rig {
 		bell: () => quiet,
 		maxRunning: () => opts.maxRunning ?? 3,
 		now: () => new Date("2026-11-16T00:00:00.000Z"),
+		...(opts.desktops !== undefined ? { desktops: () => opts.desktops ?? null } : {}),
 	});
 	return { store, parent, runtime, engine, recorded, queue };
 }
@@ -111,7 +194,7 @@ describe("agent children engine", () => {
 	test("spawn runs the child, settles done, wakes the parent with the fenced result", async () => {
 		const r = rig();
 		r.queue.push(scriptedModel([reply("CHILD RESULT")]));
-		const { child, queued } = spawn(r, "do it");
+		const { child, queued } = await spawn(r, "do it");
 		expect(queued).toBe(false);
 		expect(child.status).toBe("running");
 		// The child conversation carries the family marks.
@@ -148,9 +231,9 @@ describe("agent children engine", () => {
 		const first = gated("A DONE");
 		const second = gated("B DONE");
 		r.queue.push(first.model, second.model);
-		const a = spawn(r, "a");
+		const a = await spawn(r, "a");
 		expect(a.child.status).toBe("running");
-		const b = spawn(r, "b");
+		const b = await spawn(r, "b");
 		expect(b.queued).toBe(true);
 		expect(b.child.status).toBe("queued");
 		// Settling A frees the slot; pump starts B without a nudge. B's
@@ -171,8 +254,8 @@ describe("agent children engine", () => {
 		const gate = gated("NEVER SEEN");
 		const queuedModel = scriptedModel([reply("QUEUED RUNS")]);
 		r.queue.push(gate.model, queuedModel);
-		const a = spawn(r, "a");
-		const b = spawn(r, "b");
+		const a = await spawn(r, "a");
+		const b = await spawn(r, "b");
 		expect(childOf(r.engine.stop(b.child.conversationId)).status).toBe("stopped");
 		expect(childOf(r.engine.stop(a.child.conversationId)).status).toBe("stopped");
 		// The foreground waiter resolves from the stop itself.
@@ -190,7 +273,7 @@ describe("agent children engine", () => {
 	test("send to a done child runs a follow-up that settles and wakes again", async () => {
 		const r = rig();
 		r.queue.push(scriptedModel([reply("FIRST")]));
-		const { child } = spawn(r, "one");
+		const { child } = await spawn(r, "one");
 		await r.engine.awaitSettlement(child.conversationId);
 		r.queue.push(scriptedModel([reply("SECOND")]));
 		expect(childOf(r.engine.send(child.conversationId, "go again")).status).toBe("running");
@@ -205,7 +288,7 @@ describe("agent children engine", () => {
 		const r = rig();
 		const gate = gated("STEER TARGET");
 		r.queue.push(gate.model);
-		const { child } = spawn(r, "slow");
+		const { child } = await spawn(r, "slow");
 		expect(childOf(r.engine.send(child.conversationId, "and also this")).status).toBe("running");
 		gate.release();
 		const settlement = await r.engine.awaitSettlement(child.conversationId);
@@ -219,7 +302,7 @@ describe("agent children engine", () => {
 	test("a failed turn settles failed and names the error", async () => {
 		const r = rig();
 		r.queue.push(scriptedModel([new Error("model exploded")]));
-		const { child } = spawn(r, "doomed");
+		const { child } = await spawn(r, "doomed");
 		const settlement = await r.engine.awaitSettlement(child.conversationId);
 		expect(settlement.child.status).toBe("failed");
 		// A failed child's result slot carries the reason.
@@ -234,8 +317,8 @@ describe("agent children engine", () => {
 		const gate = gated("CUT SHORT");
 		const queuedModel = scriptedModel([reply("QUEUED AFTER BOOT")]);
 		r.queue.push(gate.model, queuedModel);
-		const cut = spawn(r, "was running");
-		const waiting = spawn(r, "was queued");
+		const cut = await spawn(r, "was running");
+		const waiting = await spawn(r, "was queued");
 		expect(waiting.queued).toBe(true);
 		// A fresh engine on the same store — the process restarted around
 		// the same rows. The old runtime's lane is abandoned with its gate.
@@ -266,6 +349,108 @@ describe("agent children engine", () => {
 		const settlement = await after.awaitSettlement(waiting.child.conversationId);
 		expect(settlement.child.status).toBe("done");
 		expect(settlement.result).toBe("QUEUED AFTER BOOT");
+		gate.release();
+		await r.runtime.shutdown();
+	});
+
+	test("a computer spawn claims its desktop for the child conversation; settlement releases it", async () => {
+		const fake = fakeDesktops();
+		const r = rig({ desktops: fake.desktops });
+		r.queue.push(scriptedModel([reply("CLICKED IT")]));
+		const { child, spawnError } = await r.engine.spawn({
+			parent: r.parent,
+			type: COMPUTER_AGENT_TYPE,
+			task: "click the button on desk",
+			tools: ["inspect", "act", "launch", "ask_operator"],
+			desktop: "desk",
+		});
+		expect(spawnError).toBeUndefined();
+		// The claim names the child conversation as holder — not the
+		// parent, not a run id.
+		expect(fake.events).toEqual([`claim desk conversation:${child.conversationId}`]);
+		expect(r.engine.desktopFor(child.conversationId)).toBe("desk");
+		expect(r.engine.desktopFor(r.parent.id)).toBeNull();
+		const settlement = await r.engine.awaitSettlement(child.conversationId);
+		expect(settlement.child.status).toBe("done");
+		// Settlement hands the desktop back.
+		expect(fake.events).toEqual([
+			`claim desk conversation:${child.conversationId}`,
+			"release desk",
+		]);
+		expect(fake.rows.get("desk")!.leaseKind).toBeNull();
+	});
+
+	test("a refused desktop claim fails the spawn before the child runs", async () => {
+		const fake = fakeDesktops();
+		// The operator holds the desktop — the child's claim must refuse.
+		await fake.desktops.claim("desk", { kind: "operator" });
+		fake.events.length = 0;
+		const r = rig({ desktops: fake.desktops });
+		const { child, queued, spawnError } = await r.engine.spawn({
+			parent: r.parent,
+			type: COMPUTER_AGENT_TYPE,
+			task: "click the button",
+			tools: ["inspect", "act"],
+			desktop: "desk",
+		});
+		expect(queued).toBe(false);
+		expect(child.status).toBe("failed");
+		expect(spawnError).toContain("controlled by operator");
+		// No turn was submitted — the scripted-model queue stays empty
+		// and nothing settles again.
+		expect(r.recorded).toHaveLength(0);
+		expect(r.engine.get(child.conversationId)!.status).toBe("failed");
+	});
+
+	test("ask_operator parks the child needs-input, releases the desktop, and send resumes it", async () => {
+		const fake = fakeDesktops();
+		const r = rig({ desktops: fake.desktops });
+		const gate = gated("never reached");
+		r.queue.push(gate.model, scriptedModel([reply("DONE AFTER ANSWER")]));
+		const { child } = await r.engine.spawn({
+			parent: r.parent,
+			type: COMPUTER_AGENT_TYPE,
+			task: "pick a button",
+			tools: ["inspect", "act", "ask_operator"],
+			desktop: "desk",
+		});
+		expect(child.status).toBe("running");
+		// The tool's engine call mid-turn records the question.
+		expect(r.engine.askOperator(child.conversationId, "which button should I click?")).toEqual({
+			ok: true,
+		});
+		gate.release();
+		const settlement = await r.engine.awaitSettlement(child.conversationId);
+		// needs-input: the question is the result the parent must answer.
+		expect(settlement.child.status).toBe("needs-input");
+		expect(settlement.result).toBe("which button should I click?");
+		const wake = r.recorded[0]!;
+		expect(wake.text).toContain("[agent: computer · needs-input]");
+		expect(wake.text).toContain("which button should I click?");
+		// Needs input released the desktop for the operator.
+		expect(fake.rows.get("desk")!.leaseKind).toBeNull();
+		// The operator's answer continues the same child.
+		expect(childOf(r.engine.send(child.conversationId, "the red one")).status).toBe("running");
+		const second = await r.engine.awaitSettlement(child.conversationId);
+		expect(second.child.status).toBe("done");
+		expect(second.result).toBe("DONE AFTER ANSWER");
+	});
+
+	test("stop releases the child's desktop lease", async () => {
+		const fake = fakeDesktops();
+		const r = rig({ desktops: fake.desktops });
+		const gate = gated("NEVER");
+		r.queue.push(gate.model);
+		const { child } = await r.engine.spawn({
+			parent: r.parent,
+			type: COMPUTER_AGENT_TYPE,
+			task: "work",
+			tools: ["inspect"],
+			desktop: "desk",
+		});
+		expect(childOf(r.engine.stop(child.conversationId)).status).toBe("stopped");
+		expect(fake.events).toContain("release desk");
+		expect(fake.rows.get("desk")!.leaseKind).toBeNull();
 		gate.release();
 		await r.runtime.shutdown();
 	});

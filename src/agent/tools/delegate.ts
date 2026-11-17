@@ -234,7 +234,16 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 			? delegateInputSchema
 			: unlinkableDelegateInputSchema) as typeof delegateInputSchema,
 		execute: async (raw) => {
-			const input = actionSchema.parse(raw);
+			const parsed = actionSchema.safeParse(raw);
+			if (!parsed.success) {
+				const issue = parsed.error.issues[0];
+				const where =
+					issue !== undefined && issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+				return {
+					error: `invalid arguments — ${where}${issue?.message ?? "does not match any action"}`,
+				};
+			}
+			const input = parsed.data;
 			switch (input.action) {
 				case "start": {
 					// Checked before the pin: a refused link must not spin off.

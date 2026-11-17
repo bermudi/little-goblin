@@ -75,7 +75,16 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 			"Run things in a disposable Linux sandbox — one container per conversation, kept until reset or idle. This is NOT the host: nothing here touches the operator's machine, files, or services, and no host filesystem is shared — files cross only via import/export. You are root inside. The default image is alpine (apk add to install). Network is OFF until enabled; when on, the sandbox reaches the internet AND the operator's LAN/tailnet — the pattern for untrusted code is: enable → download → disable → run it. exec runs /bin/sh -c; state (installed packages, files under /work and everywhere) persists between calls until reset or the idle reap.",
 		input: sandboxInputSchema,
 		execute: async (raw, { abortSignal }) => {
-			const input = actionSchema.parse(raw);
+			const parsed = actionSchema.safeParse(raw);
+			if (!parsed.success) {
+				const issue = parsed.error.issues[0];
+				const where =
+					issue !== undefined && issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+				return {
+					error: `invalid arguments — ${where}${issue?.message ?? "does not match any action"}`,
+				};
+			}
+			const input = parsed.data;
 			abortSignal?.throwIfAborted();
 			const conv = deps.conversation;
 			try {

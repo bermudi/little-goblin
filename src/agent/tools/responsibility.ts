@@ -142,7 +142,16 @@ export const responsibilityTool = (deps: ResponsibilityToolDeps) =>
 			"Coordinate this project's handed-over work — the durable record the operator watches. The workers are T3 Code threads: status lists the project's threads (id, title, status, link — untrusted metadata), and every action addresses one by thread id. Actions: status {}; accept {understanding, attachments:[{thread}…]} — the first coordination grant, binds the explicitly selected threads by their stable id; revise {understanding}; followup {followup:{dueAt, reason}} — replace the next useful review with an ISO timestamp and a concrete purpose, not a status-polling heartbeat (otherwise a one-hour silence backstop applies); attach {attachments:[{thread}]}; detach/reattach {attachment}; pause/resume/cancel {}; report {report:{state, reason, question?, resumeWhen?, evidence?:[{item, ref, checked}], purpose?, artifacts?:[{title, ref}]}} — state the work's state from what you observed: progress (still moving), waiting (on an external condition — resumeWhen required), ready (at a task checkpoint for the operator to review), blocked/failed (the operator must act; say what), done (closes — evidence must cover every completionEvidence item verbatim, each with where it lives and what you actually checked; refused otherwise), dropped (closes — nothing to do, e.g. superseded or not reproducible; evidence required: at least one item saying what you checked). After an operator correction earlier reports no longer hold: report again, re-asking any question it did not answer. Put one concrete question for the operator in question, never only in reason. Reports are the operator's feed posts: purpose labels what one carries — status (default), finding (something learned worth their eyes), draft (a produced artifact for review, usually with ready), change (a meaningful change you made) — and artifacts link what it produced by path or URL. Routine check-ins with nothing new need no report. A worker finishing its turn is not done. Actions, continued: send {attachment, brief} — a tracked managed prompt to the bound thread (a busy thread queues it, nothing is interrupted) that refuses rather than dispatch stale or unidentifiable; reconcile {operation, delivery: delivered|not_delivered, evidence} — record inspected delivery evidence for an ambiguous send; never use reconciliation merely to make a retry possible. Accept only after the operator hands work over. Lifecycle verbs never touch the T3 thread.",
 		input: inputSchema,
 		execute: async (raw, options) => {
-			const input = inputSchema.parse(raw);
+			const parsed = inputSchema.safeParse(raw);
+			if (!parsed.success) {
+				const issue = parsed.error.issues[0];
+				const where =
+					issue !== undefined && issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+				return {
+					error: `invalid arguments — ${where}${issue?.message ?? "does not match any action"}`,
+				};
+			}
+			const input = parsed.data;
 			const checkAuthority = () => {
 				options.abortSignal?.throwIfAborted();
 				deps.assertAuthority?.();

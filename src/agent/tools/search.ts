@@ -7,6 +7,7 @@ import {
 	clampChars,
 	fetchOk,
 	fenceUntrusted,
+	postJson,
 	readJson,
 	readTextCapped,
 	renderHits,
@@ -43,6 +44,7 @@ interface AdapterOpts {
 	query: string;
 	count: number;
 	key?: string | undefined;
+	// Test seam for pointing vendors at a local fake; production passes none.
 	baseUrl?: string | undefined;
 }
 
@@ -59,25 +61,6 @@ async function getJson(
 	headers: Record<string, string>,
 ): Promise<{ data: unknown; status: number }> {
 	const res = await fetchOk(provider, url, { headers }, TIMEOUT_MS);
-	return { ...(await readJson(provider, res)), status: res.status };
-}
-
-async function postJson(
-	provider: string,
-	url: string,
-	headers: Record<string, string>,
-	body: unknown,
-): Promise<{ data: unknown; status: number }> {
-	const res = await fetchOk(
-		provider,
-		url,
-		{
-			method: "POST",
-			headers: { "Content-Type": "application/json", ...headers },
-			body: JSON.stringify(body),
-		},
-		TIMEOUT_MS,
-	);
 	return { ...(await readJson(provider, res)), status: res.status };
 }
 
@@ -109,6 +92,7 @@ const exaSearch: SearchAdapter = async (opts) => {
 		`${opts.baseUrl ?? BASES.exa}/search`,
 		{ "x-api-key": opts.key ?? "" },
 		{ query: opts.query, numResults: opts.count, contents: { highlights: true } },
+		TIMEOUT_MS,
 	);
 	const rows = (data as { results?: unknown[] }).results ?? [];
 	return {
@@ -147,6 +131,7 @@ const tavilySearch: SearchAdapter = async (opts) => {
 			include_raw_content: false,
 			include_images: false,
 		},
+		TIMEOUT_MS,
 	);
 	const rows = (data as { results?: unknown[] }).results ?? [];
 	return { hits: rows.map(toHit("content")), status };
@@ -161,6 +146,7 @@ const firecrawlSearch: SearchAdapter = async (opts) => {
 			query: opts.query,
 			limit: opts.count,
 		},
+		TIMEOUT_MS,
 	);
 	const body = data as { success?: boolean; search?: unknown[]; error?: string };
 	if (body.success === false) {
@@ -179,6 +165,7 @@ const parallelSearch: SearchAdapter = async (opts) => {
 			objective: opts.query,
 			max_results: opts.count,
 		},
+		TIMEOUT_MS,
 	);
 	const rows = (data as { results?: unknown[] }).results ?? [];
 	return {

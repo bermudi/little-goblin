@@ -71,6 +71,12 @@ const grant = (
 };
 
 describe("program tool", () => {
+	test("bad action arguments return the friendly error shape", async () => {
+		expect(await exec(toolFor().tool, {})).toMatchObject({
+			error: expect.stringContaining("invalid arguments —"),
+		});
+	});
+
 	test("provider sees an object schema; missing action arguments still fail validation", () => {
 		const wire = z.toJSONSchema(programInputSchema);
 		expect(wire.type).toBe("object");

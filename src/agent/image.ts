@@ -12,7 +12,7 @@ import type { ConfigRef } from "../config.ts";
 import { splitModelRef } from "../config-schema.ts";
 import { log } from "../log.ts";
 import { sniffImageBytes } from "./sniff.ts";
-import { readBytesCapped, readTextCapped } from "./tools/web.ts";
+import { readCapped, readTextCapped } from "./tools/web.ts";
 import { renderError } from "./transcribe-cloud.ts";
 
 // Flux-scale renders take tens of seconds; a wedged request pins the
@@ -123,7 +123,7 @@ export async function generateImages(
 		const { text } = await readTextCapped(res, ERROR_BODY_CAP);
 		throw renderError("image", res.status, text);
 	}
-	const { tooLarge, bytes: raw } = await readBytesCapped(res, RESPONSE_CAP);
+	const { tooLarge, bytes: raw } = await readCapped(res.body, RESPONSE_CAP);
 	if (tooLarge) throw new Error(`image: response over ${RESPONSE_CAP} bytes`);
 	const text = new TextDecoder().decode(raw);
 	let json: unknown;

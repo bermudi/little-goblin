@@ -334,7 +334,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			// App turns only, like ui — the artifact card is an app surface.
 			// The sandbox source follows the sandbox feature's live gate.
 			artifact:
-				channelOf(conv.id) === "app"
+				channel === "app"
 					? {
 							conversation: conv.id,
 							workspace: workdir,
@@ -387,7 +387,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 						}
 					: undefined,
 			// App turns only — Telegram and guests render plain text.
-			ui: channelOf(conv.id) === "app",
+			ui: channel === "app",
 		});
 		// Native subagents (design/agents.md → agent). A child
 		// conversation gets its spawn-time allowlist instead of the agent

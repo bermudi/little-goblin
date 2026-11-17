@@ -206,4 +206,15 @@ describe("truncateTail", () => {
 		const lines = r.content.split("\n");
 		expect(lines[1]!.startsWith("…")).toBe(true); // mid-line start is marked
 	});
+
+	test("partial first line reports only original input bytes absent from the tail", () => {
+		const text = "old\n123456789";
+		const result = truncateTail(text, 5);
+
+		// Kept input is "56789" (5 bytes). "old\n1234" (8 bytes) is absent.
+		expect(result.droppedBytes).toBe(8);
+		expect(result.content).toBe(
+			"[… 8 bytes of earlier output skipped — showing the tail]\n…56789",
+		);
+	});
 });

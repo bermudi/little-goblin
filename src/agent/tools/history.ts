@@ -91,7 +91,16 @@ export const historySearchTool = (deps: HistorySearchDeps) =>
 			"Context on this conversation's own id always works, including reading back history folded by compaction (the compaction marker names the id and seq).",
 		input: historyInputSchema,
 		execute: async (raw) => {
-			const input = actionSchema.parse(raw);
+			const parsed = actionSchema.safeParse(raw);
+			if (!parsed.success) {
+				const issue = parsed.error.issues[0];
+				const where =
+					issue !== undefined && issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+				return {
+					error: `invalid arguments — ${where}${issue?.message ?? "does not match any action"}`,
+				};
+			}
+			const input = parsed.data;
 			const own = input.action === "context" && input.conversation === deps.conversationId;
 			if (deps.isExcluded() && !own) {
 				return { error: "memory is excluded in this conversation" };

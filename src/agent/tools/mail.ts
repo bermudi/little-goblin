@@ -55,7 +55,16 @@ export const mailTool = (deps: MailToolDeps) =>
 			"Draft a mail for the operator to send. Send never sends directly: it queues a draft the operator approves on the originating approval surface — the result tells you it is awaiting approval, and you wait for the operator instead of announcing a sent mail. To read mail, use bash with the goblin-mail wrapper ($GOBLIN_HOME/goblin-mail search|read — see the gws skill): its reads are injection-checked and fenced.",
 		input: mailInputSchema,
 		execute: async (raw) => {
-			const input = sendSchema.parse(raw);
+			const parsed = sendSchema.safeParse(raw);
+			if (!parsed.success) {
+				const issue = parsed.error.issues[0];
+				const where =
+					issue !== undefined && issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+				return {
+					error: `invalid arguments — ${where}${issue?.message ?? "does not match any action"}`,
+				};
+			}
+			const input = parsed.data;
 			return deps.requestDraft({
 				to: input.to,
 				...(input.cc !== undefined ? { cc: input.cc } : {}),

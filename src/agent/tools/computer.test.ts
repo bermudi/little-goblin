@@ -7,6 +7,13 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+const ONE_PIXEL_PNG = Uint8Array.from(
+	atob(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+	),
+	(c) => c.charCodeAt(0),
+);
 import { DesktopError, type Desktops } from "../../desktops.ts";
 import type { DesktopRow } from "../../desktops-store.ts";
 import type { LeaseHolder } from "../../desktops-store.ts";
@@ -175,7 +182,7 @@ describe("computer tools", () => {
 	test("screenshot stores a small descriptor and toModelOutput rehydrates the frame", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-shot-"));
 		const pngPath = join(dir, "frame.png");
-		const png = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
+		const png = ONE_PIXEL_PNG;
 		writeFileSync(pngPath, png);
 		const { desktops, calls } = stubDesktops({
 			screenshot: async () => ({
@@ -242,6 +249,30 @@ describe("computer tools", () => {
 		})) as { type: string; value: string };
 		expect(out2.type).toBe("text");
 		expect(out2.value).toContain("unavailable");
+	});
+
+	test("a corrupt frame file degrades to text, so the child can still take a fresh one", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-shot-"));
+		const { desktops } = stubDesktops({});
+		const tool = computerTools({ ...deps(desktops), screenshots: true })
+			.screenshot as Tool;
+		if (isHosted(tool)) throw new Error("hosted?");
+		const cases: Array<[string, Uint8Array]> = [
+			["truncated", ONE_PIXEL_PNG.slice(0, 40)],
+			["not a png", new Uint8Array(ONE_PIXEL_PNG.byteLength).fill(7)],
+		];
+		for (const [name, bytes] of cases) {
+			const path = join(dir, `${name}.png`);
+			writeFileSync(path, bytes);
+			const descriptor = JSON.stringify({ v: 1, observation_id: "o", path, bytes: ONE_PIXEL_PNG.byteLength });
+			const out = (await tool.toModelOutput!({
+				output: descriptor,
+				toolCallId: "t1",
+				input: {},
+			})) as { type: string; value: string };
+			expect(out.type).toBe("text");
+			expect(out.value).toContain("not a complete PNG");
+		}
 	});
 });
 

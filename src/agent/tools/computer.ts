@@ -13,6 +13,7 @@ import { DesktopError, type Desktops } from "../../desktops.ts";
 import type { LeaseHolder } from "../../desktops-store.ts";
 import { CUA_TOOLS, type CuaTool } from "../../desktops-cua.ts";
 import { PodmanError } from "../../podman.ts";
+import { log } from "../../log.ts";
 import { defineTool, type Tool, type ToolOutput, type Tools } from "../../tool.ts";
 
 // Same cap the Pi Durable inspect applied to the state JSON.
@@ -216,18 +217,31 @@ function screenshotTool(deps: ComputerToolDeps): Tool {
 				};
 			}
 			const frame: FrameDescriptor = parsed.data;
+			// A frame that is gone or not a whole PNG becomes text, never an
+			// image part: the provider rejects a bad image before any tool
+			// runs, so the child could never take the frame that replaces it.
+			const unavailable = (why: string): ToolOutput => ({
+				type: "text",
+				value:
+					`screenshot frame unavailable — the PNG at ${frame.path} ${why}. ` +
+					`Call screenshot for a fresh frame. observation_id ${frame.observation_id} may be stale.`,
+			});
 			let data: Uint8Array;
 			try {
 				data = new Uint8Array(await readFile(frame.path));
-			} catch {
-				// ENOENT means the frame file is gone (swept or moved) —
-				// report text, never a broken image part.
-				return {
-					type: "text",
-					value:
-						`screenshot frame unavailable — the PNG at ${frame.path} could not be read. ` +
-						`Call screenshot for a fresh frame. observation_id ${frame.observation_id} may be stale.`,
-				};
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+					log.warn("screenshot frame unreadable", err, { path: frame.path });
+				}
+				return unavailable("could not be read");
+			}
+			if (data.byteLength !== frame.bytes || !isWholePng(data)) {
+				log.warn("screenshot frame corrupt", undefined, {
+					path: frame.path,
+					bytes: data.byteLength,
+					expected: frame.bytes,
+				});
+				return unavailable("is not a complete PNG");
 			}
 			return {
 				type: "content",
@@ -244,6 +258,18 @@ function screenshotTool(deps: ComputerToolDeps): Tool {
 			};
 		},
 	});
+}
+
+const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+// The IEND chunk: zero length, type "IEND", fixed CRC.
+const PNG_IEND = [0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130];
+
+function isWholePng(data: Uint8Array): boolean {
+	if (data.byteLength < PNG_SIGNATURE.length + PNG_IEND.length) return false;
+	const tail = data.byteLength - PNG_IEND.length;
+	return (
+		PNG_SIGNATURE.every((b, i) => data[i] === b) && PNG_IEND.every((b, i) => data[tail + i] === b)
+	);
 }
 
 function safeJson(text: string): unknown {

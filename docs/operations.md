@@ -250,6 +250,29 @@ have all passed — so a deploy-initiated restart is distinguishable from a
 spontaneous one, and a rollout that started but never finished is visible as
 a `restarting` line with no `accepted` after it.
 
+### Post-deploy proof (new surfaces)
+
+After a deploy that changes these surfaces, and before cleaning up the old
+Herdr units, run each check against the live app. Keep the relevant
+`goblin.log` lines as evidence:
+
+1. **Native `agent`:** In the app, ask Goblin to complete a small task that
+   requires a child agent. See the child result in chat and a `tool call`
+   line with `"tool":"agent"` in `goblin.log`.
+2. **Screenshot round trip:** Ask for a screenshot in the app. See the image
+   delivered in chat and an `app media delivered` line in `goblin.log`.
+   Telegram alternative: expect a `file delivered` line (debug level).
+3. **`delegate`:** Ask Goblin to delegate a trivial task to a cheap configured
+   harness. See the T3 thread link in chat, the thread in T3 Code, and the
+   completion notice back in chat. Check the `tool call` line with
+   `"tool":"delegate"` and the related `t3 call` lines in `goblin.log`.
+4. **Handover:** In a project conversation, use the responsibility tool's
+   `accept` action and select at least one T3 thread. This creates the
+   responsibility and binds the selected thread(s); no existing
+   responsibility is needed. See the T3 thread and its report come back in
+   chat. Check the `responsibility tool` line with `"action":"accept"` and
+   the related `t3 call` lines in `goblin.log`.
+
 The gate is `bun run typecheck` inside the release; the full suite gates
 merges via `.github/workflows/ci.yml`, not deploys. After the restart it
 requires 75 s startup acceptance (`scripts/check-startup.ts --watch`, the

@@ -7,7 +7,9 @@
 // stream and never sends a chunk — a silent provider, for held-turn UI
 // states (e.g. the first turn's Stop button, issue #412). "[agent <task>]"
 // answers the first call of a turn with an `agent`-tool spawn (issue
-// #604's native-subagent verification).
+// #604's native-subagent verification). "[delegate <harness> <cwd> <task>]"
+// and "[handover]" script the `delegate` start and `responsibility`
+// accept calls (issue #608's T3 Code verification).
 
 import { writeFileSync } from "node:fs";
 import { z } from "zod";
@@ -51,25 +53,11 @@ const server = Bun.serve({
 			return Response.json({ error: { message: "bad request" } }, { status: 400 });
 		const last = parsed.data.messages.filter((message) => message.role === "user").at(-1);
 		const reply = `verify-reply: ${textOf(last?.content)}`;
-		// "[agent <task>]" (issue #604's verification): the FIRST call of
-		// a turn — no tool results yet — answers with one `agent` tool
-		// call that spawns a foreground child on the task. The child's
-		// own turn then lands here with the task as its last user
-		// message and gets the plain echo, so the parent receives
-		// "verify-reply: <task>" as the child's claim.
-		const agentMarker = /\[agent ([^\]]+)\]/.exec(reply);
-		const seenToolResult = parsed.data.messages.some((message) => message.role === "tool");
-		if (agentMarker !== null && !seenToolResult) {
-			const arguments_ = JSON.stringify({
-				action: "spawn",
-				task: agentMarker[1]!.trim(),
-				background: false,
-			});
-			const toolCall = {
-				id: "call-verify-agent",
-				type: "function",
-				function: { name: "agent", arguments: arguments_ },
-			};
+		const toolCallReply = (toolCall: {
+			id: string;
+			type: string;
+			function: { name: string; arguments: string };
+		}): Response => {
 			if (parsed.data.stream !== true) {
 				return Response.json({
 					id: "verify",
@@ -98,7 +86,95 @@ const server = Bun.serve({
 				].join(""),
 				{ headers },
 			);
-		}
+		};
+		// "[agent <task>]" (issue #604's verification): the FIRST call of
+		// a turn — no tool results yet — answers with one `agent` tool
+		// call that spawns a foreground child on the task. The child's
+		// own turn then lands here with the task as its last user
+		// message and gets the plain echo, so the parent receives
+		// "verify-reply: <task>" as the child's claim.
+		const agentMarker = /\[agent ([^\]]+)\]/.exec(reply);
+		const seenToolResult = parsed.data.messages.some((message) => message.role === "tool");
+		// "[delegate <harness> <cwd> <task>]" and "[handover]" (issue #608's
+		// verification): fire on the first call after their user message —
+		// once a tool result follows it the marker is spent and the call
+		// echoes. "[handover]" runs `responsibility accept` binding the
+		// thread id found in the newest tool result (the delegate start's
+		// `thread` field).
+		const lastUserIndex = parsed.data.messages.findLastIndex(
+			(message) => message.role === "user",
+		);
+		const toolAfterLastUser = parsed.data.messages
+			.slice(lastUserIndex + 1)
+			.some((message) => message.role === "tool");
+		const lastUserText = textOf(parsed.data.messages[lastUserIndex]?.content);
+		const scripted = (() => {
+			if (agentMarker !== null && !seenToolResult) {
+				return {
+					id: "call-verify-agent",
+					type: "function",
+					function: {
+						name: "agent",
+						arguments: JSON.stringify({
+							action: "spawn",
+							task: agentMarker[1]!.trim(),
+							background: false,
+						}),
+					},
+				};
+			}
+			if (toolAfterLastUser) return null;
+			const delegateMatch = /\[delegate (\S+) (\S+) ([^\]]+)\]/.exec(lastUserText);
+			if (delegateMatch !== null) {
+				return {
+					id: "call-verify-delegate",
+					type: "function",
+					function: {
+						name: "delegate",
+						arguments: JSON.stringify({
+							action: "start",
+							harness: delegateMatch[1],
+							cwd: delegateMatch[2],
+							task: delegateMatch[3]!.trim(),
+						}),
+					},
+				};
+			}
+			if (lastUserText.includes("[handover]")) {
+				let thread: string | undefined;
+				for (const message of parsed.data.messages) {
+					if (message.role !== "tool") continue;
+					for (const match of textOf(message.content).matchAll(
+						/"thread"\s*:\s*"([^"]+)"/g,
+					)) {
+						const id = match[1];
+						if (id !== undefined) thread = id;
+					}
+				}
+				if (thread !== undefined) {
+					return {
+						id: "call-verify-handover",
+						type: "function",
+						function: {
+							name: "responsibility",
+							arguments: JSON.stringify({
+								action: "accept",
+								understanding: {
+									outcome: "verify handover",
+									situation: "throwaway verification instance",
+									nextAction: "observe the bound thread",
+									checkpoints: [],
+									completionEvidence: [],
+								},
+								attachments: [{ thread }],
+							}),
+						},
+					};
+				}
+			}
+			return null;
+		})();
+		if (scripted !== null) return toolCallReply(scripted);
 		if (parsed.data.stream !== true) {
 			return Response.json({
 				id: "verify",

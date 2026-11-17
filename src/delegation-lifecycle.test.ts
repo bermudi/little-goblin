@@ -238,6 +238,26 @@ describe("launch", () => {
 		}
 	});
 
+	test("start passes configured model options unchanged to T3", async () => {
+		const h = harness();
+		h.f.showFor["t-1"] = shown(threadRec());
+		const l = lifecycleOf(h);
+		const options = { effort: "low", fastMode: false };
+		try {
+			await l.launch({
+				harness: { name: "claude", provider: "claude", model: "claude-opus-5-5", options },
+				task: "fix the bug",
+				cwd: "/repo",
+				name: "fix it",
+				address: { chatId: 1, threadId: null },
+			});
+			expect(h.f.started[0]!.options).toBe(options);
+		} finally {
+			await l.stopTicker();
+			h.store.close();
+		}
+	});
+
 	test("an issue lead's message carries the verifier contract, an ordinary one carries none", async () => {
 		const h = harness();
 		h.f.showFor["t-1"] = shown(threadRec());

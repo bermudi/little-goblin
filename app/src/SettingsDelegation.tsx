@@ -1,7 +1,7 @@
 // Delegation — the coding agents goblin may hand work to and the
 // role → agent defaults the delegate tool uses when a call names no
-// harness. Each agent names the T3 provider instance and model its
-// thread runs on; goblin never picks a model itself.
+// harness. Each agent names the T3 provider instance, model and optional
+// model options its thread runs on; goblin never picks a model itself.
 
 import { useState } from "react";
 import type { DelegationRoleDraft, HarnessDraft } from "./settingsDraft.ts";
@@ -156,6 +156,14 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 										cap="The model slug exactly as T3 names it."
 										onChange={(v) => setHarness(i, { model: v })}
 									/>
+									<Field
+										label="Model options"
+										value={h.options}
+										mono
+										placeholder="effort=low"
+										cap="T3 model options, such as effort=low. Space-separated."
+										onChange={(v) => setHarness(i, { options: v })}
+									/>
 								</div>
 								<Row
 									label="Ask me first"
@@ -178,7 +186,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 										...d,
 										harnesses: [
 										...d.harnesses,
-										{ name: "", provider: "", model: "", askFirst: false },
+										{ name: "", provider: "", model: "", options: "", askFirst: false },
 									],
 									}))
 								}

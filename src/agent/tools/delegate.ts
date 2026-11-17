@@ -292,7 +292,12 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 					let out: LaunchOutcome;
 					try {
 						out = await deps.lifecycle.launch({
-							harness: { name: named, provider: h.provider, model: h.model },
+							harness: {
+								name: named,
+								provider: h.provider,
+								model: h.model,
+								...(h.options === undefined ? {} : { options: h.options }),
+							},
 							role,
 							...(input.issue === undefined ? {} : { issue: input.issue }),
 							task: input.task,

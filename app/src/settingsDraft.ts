@@ -87,12 +87,14 @@ export interface ChainEntry {
 }
 
 // The delegation editor's two tables — each harness names the T3
-// provider instance and model its thread runs on; the row order is the
-// saved order (matters only for legibility — the map is keyed).
+// provider instance and model its thread runs on, plus optional model
+// options; the row order is the saved order (matters only for legibility —
+// the map is keyed).
 export interface HarnessDraft {
 	name: string;
 	provider: string;
 	model: string;
+	options: string;
 	askFirst: boolean;
 }
 export interface DelegationRoleDraft {
@@ -490,6 +492,10 @@ export function draftFromConfig(
 						name,
 						provider: h.provider,
 						model: h.model,
+						options: Object.entries(h.options ?? {})
+							.sort(([a], [b]) => a.localeCompare(b))
+							.map(([id, value]) => `${id}=${String(value)}`)
+							.join(" "),
 						askFirst: h.askFirst === true,
 					})),
 					roles: Object.entries(c.delegation.defaults ?? {})
@@ -582,6 +588,20 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 			return "Every coding agent needs a provider.";
 		if (draft.delegation.harnesses.some((h) => !h.model.trim()))
 			return "Every coding agent needs a model.";
+		for (const h of draft.delegation.harnesses) {
+			const optionsText = h.options.trim();
+			if (!optionsText) continue;
+			const seen = new Set<string>();
+			for (const token of optionsText.split(/\s+/)) {
+				const equals = token.indexOf("=");
+				const id = equals < 0 ? "" : token.slice(0, equals);
+				const value = equals < 0 ? "" : token.slice(equals + 1);
+				if (!id || !value || seen.has(id)) {
+					return `Model options must be id=value pairs (agent ${h.name}).`;
+				}
+				seen.add(id);
+			}
+		}
 		const roleRe = /^[a-z][a-z0-9_-]{0,15}$/;
 		// A row with no agent is an absent mapping — the body builder
 		// drops it, and "none" is how an existing default gets cleared.
@@ -762,6 +782,21 @@ export function bodyFromDraft(
 					{
 						provider: h.provider.trim(),
 						model: h.model.trim(),
+						...(h.options.trim()
+							? {
+									options: Object.fromEntries(
+										h.options.trim().split(/\s+/).map((token) => {
+											const equals = token.indexOf("=");
+											const id = token.slice(0, equals);
+											const value = token.slice(equals + 1);
+											return [
+												id,
+												value === "true" ? true : value === "false" ? false : value,
+											];
+										}),
+									),
+								}
+							: {}),
 						...(h.askFirst ? { askFirst: true } : {}),
 					},
 				]),

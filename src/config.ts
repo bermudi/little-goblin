@@ -66,7 +66,7 @@ function stripRetiredDelegationKeys(raw: unknown, warn: boolean): unknown {
 				path: paths.config(),
 				key: "delegation",
 				replacement:
-					"harnesses entries are {provider, model} on T3 Code (t3 thread start --provider --model); the delegation block was dropped",
+					"harnesses entries are {provider, model, options?} on T3 Code (t3 thread start --provider --model --option); the delegation block was dropped",
 			});
 		}
 		const rest = { ...(raw as Record<string, unknown>) };

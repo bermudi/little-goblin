@@ -65,6 +65,7 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 			message: input.task + leadNote(d),
 			provider: input.harness.provider,
 			model: input.harness.model,
+			...(input.harness.options === undefined ? {} : { options: input.harness.options }),
 			title: input.name,
 		});
 	} catch (err) {
@@ -78,9 +79,11 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 	// The link arrives with show; fetch it once so the tool result and
 	// every later notice can carry it without a call.
 	let link: string | null = null;
+	let runtimeMode: string | undefined;
 	try {
 		const shown = await deps.t3.showThread(started.threadId, 1);
 		link = shown?.thread.link ?? null;
+		runtimeMode = shown?.thread.runtimeMode;
 	} catch (err) {
 		// The thread exists — the link fetch is cosmetic and retries
 		// implicitly through the watcher's own reads.
@@ -100,6 +103,8 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 		harness: input.harness.name,
 		provider: input.harness.provider,
 		model: input.harness.model,
+		...(input.harness.options === undefined ? {} : { options: input.harness.options }),
+		...(runtimeMode === undefined ? {} : { runtimeMode }),
 		thread: started.threadId,
 		cwd: input.cwd,
 		conversation: `${input.address.chatId}/${input.address.threadId ?? "-"}`,

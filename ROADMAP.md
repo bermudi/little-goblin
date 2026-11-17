@@ -41,8 +41,9 @@ Known distinctions at this baseline:
 - Managed sends check identity before and after sending. There is still a
   check/send race, explicitly treated by the implementation as an accepted
   residual risk. A server-side guarded send is not implemented in this path.
-- Production pi-durable worker models remain pinned; alternate-model profiles
-  are a constrained seam, not a free-model delegation product.
+- A subagent (`agent`) runs on the parent's model unless its agent type
+  names one; that `model` field is a constrained seam, not a free-model
+  delegation product.
 - Ratings are record-only, project memory is shared/off, and the context-window
   capture is latest-wins rather than a per-reply incoming-memory history.
 - Coordination conversations are protected from deletion, including for
@@ -295,11 +296,12 @@ remains.
 ## 3. Add Useful Cheap Capacity
 
 Outcome: Goblin can use an explicitly configured free model for a bounded
-lower-stakes assignment through pi-durable, then assess the evidence.
+lower-stakes assignment through an `agent` child, then assess the evidence.
 
 Scope:
 
-- Expose a free-worker capability on the existing durable runtime. Make the
+- Expose a free-worker capability as an agent type that names the model and
+  a narrow `tools` list (design/agents.md → Agent types). Make the
   assignment, model/provider, resource limits, result, and failure visible;
   do not build a throwaway API wrapper or choose providers without the operator.
 - Extend worker tools for the chosen research job, sandboxing less-trusted

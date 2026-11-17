@@ -65,7 +65,14 @@ function member(): RecMember {
 	return {
 		seq: 1,
 		message: { id: "u-1", role: "user", parts: [{ type: "text", text: "do the thing" }] },
-		sink: { onStreamChunk: (c) => chunks.push(c) },
+		sink: {
+			delivery: "stream",
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onStreamChunk: (c) => chunks.push(c),
+			onDone() {},
+		},
 		chunks,
 	};
 }
@@ -345,7 +352,14 @@ describe("driveClaude — steers fold mid-turn (#582)", () => {
 				role: "user",
 				parts: [{ type: "text", text: "also mention bananas" }],
 			},
-			sink: { onStreamChunk: (c) => chunks.push(c) },
+		sink: {
+			delivery: "stream",
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onStreamChunk: (c) => chunks.push(c),
+			onDone() {},
+		},
 			chunks,
 		};
 	}

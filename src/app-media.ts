@@ -18,28 +18,40 @@ export interface AppMediaDeps {
 }
 
 export function composeTurnSinks(...sinks: TurnSink[]): TurnSink {
-	const sink: TurnSink = {
-		onTextDelta(delta) {
+	const core = {
+		onTextDelta(delta: string) {
 			for (const s of sinks) s.onTextDelta(delta);
 		},
-		onReasoningDelta(delta) {
+		onReasoningDelta(delta: string) {
 			for (const s of sinks) s.onReasoningDelta(delta);
 		},
-		onToolCall(toolName, input) {
+		onToolCall(toolName: string, input: unknown) {
 			for (const s of sinks) s.onToolCall(toolName, input);
 		},
-		setAuthorityCheck(check, anchorSeq, memoryExcluded) {
+		setAuthorityCheck(
+			check: () => boolean,
+			anchorSeq?: number | null,
+			memoryExcluded?: () => boolean,
+		) {
 			for (const s of sinks) s.setAuthorityCheck?.(check, anchorSeq, memoryExcluded);
 		},
-		async onDone(done) {
+		async onDone(done: TurnDone) {
 			for (const s of sinks) await s.onDone(done);
 		},
 	};
-	if (sinks.some((s) => s.onStreamChunk !== undefined)) {
-		sink.onStreamChunk = (chunk) => {
-			for (const s of sinks) s.onStreamChunk?.(chunk);
-		};
-	}
+	const delivery = sinks.some((s) => s.delivery === "stream") ? "stream" : "headless";
+	const sink: TurnSink =
+		delivery === "stream"
+			? {
+					...core,
+					delivery,
+					onStreamChunk(chunk) {
+						for (const s of sinks) {
+							if (s.delivery === "stream") s.onStreamChunk(chunk);
+						}
+					},
+				}
+			: { ...core, delivery };
 	if (sinks.some((s) => s.onVoiceNote !== undefined)) {
 		sink.onVoiceNote = async (audio) => {
 			for (const s of sinks) await s.onVoiceNote?.(audio);
@@ -154,6 +166,7 @@ export function appMediaSink(
 		});
 	};
 	return {
+		delivery: "headless",
 		onTextDelta() {},
 		onReasoningDelta() {},
 		onToolCall() {},

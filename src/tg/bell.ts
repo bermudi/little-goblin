@@ -36,6 +36,7 @@ export function makeBellSink(
 ): TurnSink {
 	const appId = appIdOf(conv.id);
 	return {
+		delivery: "headless",
 		onTextDelta(): void {},
 		onReasoningDelta(): void {},
 		onToolCall(): void {},

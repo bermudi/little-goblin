@@ -9,7 +9,7 @@ import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { channelOf, guestAddress, parseAddress } from "../conversation-address.ts";
 import type { Runtime } from "../runtime.ts";
-import type { TurnDone, TurnSink } from "../turn/sink.ts";
+import type { HeadlessSink, TurnDone, TurnSink } from "../turn/sink.ts";
 import type { Message as GoblinMessage } from "../message.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
@@ -142,7 +142,8 @@ function bodyPrefix(text: string, limit: number): string {
 	);
 }
 
-export class GuestSink implements TurnSink {
+export class GuestSink implements HeadlessSink {
+	readonly delivery = "headless";
 	private text = "";
 	private published = "";
 	private fenced = false;

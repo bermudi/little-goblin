@@ -157,7 +157,22 @@ function member(text: string, streaming = true, seq = memberSeq++): RecMember {
 	return {
 		seq,
 		message: { id: `u-${text}`, role: "user", parts: [{ type: "text", text }] },
-		sink: streaming ? { onStreamChunk: (c) => chunks.push(c) } : {},
+		sink: streaming
+			? {
+					delivery: "stream" as const,
+					onTextDelta() {},
+					onReasoningDelta() {},
+					onToolCall() {},
+					onStreamChunk: (c: MessageChunk) => chunks.push(c),
+					onDone() {},
+				}
+			: {
+					delivery: "headless" as const,
+					onTextDelta() {},
+					onReasoningDelta() {},
+					onToolCall() {},
+					onDone() {},
+				},
 		chunks,
 	};
 }
@@ -294,6 +309,7 @@ describe("membership seam", () => {
 			{ type: "text-delta", id: "t1", delta: "a" },
 		);
 		const boom = member("boom");
+		if (boom.sink.delivery !== "stream") throw new Error("expected streaming sink");
 		boom.sink.onStreamChunk = () => {
 			throw new Error("dead client");
 		};
@@ -611,6 +627,7 @@ describe("driveStream", () => {
 		const r = rig([textReply("the answer")]);
 		const healthy = member("healthy");
 		const dead = member("dead");
+		if (dead.sink.delivery !== "stream") throw new Error("expected streaming sink");
 		dead.sink.onStreamChunk = () => {
 			throw new Error("dead client");
 		};

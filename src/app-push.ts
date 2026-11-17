@@ -372,6 +372,7 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 
 export function appPushSink(push: Pick<AppPush, "notifyDone">, conv: Conversation): TurnSink {
 	return {
+		delivery: "headless",
 		onTextDelta() {},
 		onReasoningDelta() {},
 		onToolCall() {},

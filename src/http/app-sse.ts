@@ -112,6 +112,7 @@ export function appStreamSink(
 } {
 	const writer = appSseWriter(convId);
 	const stream: TurnSink = {
+		delivery: "stream",
 		onTextDelta() {},
 		onReasoningDelta() {},
 		onToolCall() {},

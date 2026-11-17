@@ -56,7 +56,14 @@ function rig() {
 		{
 			seq: 1,
 			message: { id: "u-1", role: "user", parts: [{ type: "text", text: "hi" }] },
-			sink: { onStreamChunk: (c) => members[0]!.chunks.push(c) },
+			sink: {
+				delivery: "stream",
+				onTextDelta() {},
+				onReasoningDelta() {},
+				onToolCall() {},
+				onStreamChunk: (c) => members[0]!.chunks.push(c),
+				onDone() {},
+			},
 			chunks: [],
 		},
 	];

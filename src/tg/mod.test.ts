@@ -343,6 +343,7 @@ function tgMsg(p: Record<string, unknown>): Message {
 }
 
 const nullSink: TurnSink = {
+	delivery: "headless",
 	onTextDelta: () => {},
 	onReasoningDelta: () => {},
 	onToolCall: () => {},

@@ -120,7 +120,20 @@ function land(over: Partial<LandDeps> = {}): LandHarness {
 		contextWindow: undefined,
 		forcedKind: null,
 		live,
-		members: [{ seq: 2, message: msg("u2", "user"), sink: { onStreamChunk: (c) => wire.push(c) } }],
+		members: [
+			{
+				seq: 2,
+				message: msg("u2", "user"),
+				sink: {
+					delivery: "stream",
+					onTextDelta() {},
+					onReasoningDelta() {},
+					onToolCall() {},
+					onStreamChunk: (c) => wire.push(c),
+					onDone() {},
+				},
+			},
+		],
 		sink: {
 			onTextDelta: (d) => {
 				deltas.push(d);
@@ -267,10 +280,15 @@ describe("landAttempt", () => {
 				seq: 2,
 				message: msg("u2", "user"),
 				sink: {
+					delivery: "stream",
+					onTextDelta() {},
+					onReasoningDelta() {},
+					onToolCall() {},
 					onStreamChunk() {
 						calls++;
 						throw new Error("disconnected");
 					},
+					onDone() {},
 				},
 			};
 			const healthy: MessageChunk[] = [];
@@ -287,7 +305,18 @@ describe("landAttempt", () => {
 				live,
 				members: [
 					dead,
-					{ seq: 3, message: msg("u3", "user"), sink: { onStreamChunk: (c) => healthy.push(c) } },
+					{
+						seq: 3,
+						message: msg("u3", "user"),
+						sink: {
+							delivery: "stream",
+							onTextDelta() {},
+							onReasoningDelta() {},
+							onToolCall() {},
+							onStreamChunk: (c) => healthy.push(c),
+							onDone() {},
+						},
+					},
 				],
 				forcedKind: "context",
 				responseMessage: msg("a2", "assistant"),

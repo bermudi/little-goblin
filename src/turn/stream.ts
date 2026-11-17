@@ -185,7 +185,7 @@ export function stubSupersededFrames(messages: ModelMessage[]): ModelMessage[] {
 export type MemberSettlement = { kind: "fenced" } | { kind: "error"; message: string };
 
 function replayWire(convId: string, turn: WireMember, live: LiveWire): void {
-	if (turn.sink.onStreamChunk === undefined) return;
+	if (turn.sink.delivery !== "stream") return;
 	for (const c of live.chunks) {
 		try {
 			turn.sink.onStreamChunk(c);
@@ -208,7 +208,7 @@ export function emitChunk(
 	for (const m of members) {
 		if (m.streamFailed === true) continue;
 		try {
-			m.sink.onStreamChunk?.(chunk);
+			if (m.sink.delivery === "stream") m.sink.onStreamChunk(chunk);
 		} catch (err) {
 			m.streamFailed = true;
 			log.warn("sink onStreamChunk failed — stream detached", err, {

@@ -31,6 +31,14 @@ const msg = (id: string, role: "user" | "assistant" | "system" = "user"): Messag
 	parts: [{ type: "text", text: `t-${id}` }],
 });
 
+const headlessSink = {
+	delivery: "headless" as const,
+	onTextDelta() {},
+	onReasoningDelta() {},
+	onToolCall() {},
+	onDone() {},
+};
+
 function baseDeps(
 	over: {
 		conversation?: Conversation | null;
@@ -129,7 +137,9 @@ describe("admitTurn", () => {
 	});
 
 	test("recovery owns newly claimed members, not the historical user context", () => {
-		const members: AdmittedMember[] = [{ seq: 3, message: msg("head"), sink: {} }];
+		const members: AdmittedMember[] = [
+			{ seq: 3, message: msg("head"), sink: headlessSink },
+		];
 		const h = baseDeps({
 			entries: [
 				{ seq: 1, message: msg("old") },
@@ -138,7 +148,7 @@ describe("admitTurn", () => {
 			],
 		});
 		h.deps.claimQueued = () => {
-			const claimed = { seq: 4, message: msg("claimed"), sink: {} };
+			const claimed = { seq: 4, message: msg("claimed"), sink: headlessSink };
 			members.push(claimed);
 			return [claimed];
 		};
@@ -203,7 +213,11 @@ describe("admitTurn", () => {
 			h.captured.push(c);
 			return conv(99);
 		};
-		h.claimed.push({ seq: 9, message: msg("q1"), sink: {} });
+		h.claimed.push({
+			seq: 9,
+			message: msg("q1"),
+			sink: headlessSink,
+		});
 		const recovered = conv(42);
 		const out = admitTurn(h.deps, { conversation: recovered, startedAt: 777 });
 		expect(out.kind).toBe("admitted");

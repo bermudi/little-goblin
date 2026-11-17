@@ -167,6 +167,7 @@ function rig(opts: { maxRunning?: number; desktops?: Desktops | null } = {}): Ri
 	});
 	const recorded: DevelopmentInput[] = [];
 	const quiet: TurnSink = {
+		delivery: "headless",
 		onTextDelta() {},
 		onReasoningDelta() {},
 		onToolCall() {},
@@ -324,6 +325,7 @@ describe("agent children engine", () => {
 		// the same rows. The old runtime's lane is abandoned with its gate.
 		const recorded: DevelopmentInput[] = [];
 		const quiet: TurnSink = {
+			delivery: "headless",
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},

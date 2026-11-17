@@ -5,7 +5,8 @@
 // in aggregate, an estimate per segment (the wire's chat template adds
 // per-message overhead no caller can see).
 
-import { asSchema, type ModelMessage, type ToolSet } from "ai";
+import type { ModelMessage } from "ai";
+import { inputJsonSchema, isHosted, type Tools } from "../tool.ts";
 import { PROMPT_SECTIONS } from "../agent/prompt.ts";
 
 export interface PromptSegments {
@@ -116,6 +117,22 @@ function partChars(
 	if (p.type === "tool-call") return { history: jsonLen(p.input), tool: jsonLen(p.input) };
 	if (p.type === "tool-result") {
 		const out = p.output as { type?: string; value?: unknown } | undefined;
+		// A content output carries file parts (screenshot frames) — charge
+		// them the media cost, never jsonLen: a Uint8Array serializes ~6x
+		// and would read as a six-figure token span.
+		if (
+			out !== null &&
+			typeof out === "object" &&
+			out.type === "content" &&
+			Array.isArray(out.value)
+		) {
+			let n = 0;
+			for (const v of out.value as unknown[]) {
+				const vp = v as { type?: unknown; text?: unknown };
+				n += vp.type === "text" ? (typeof vp.text === "string" ? vp.text.length : 0) : mediaChars(v);
+			}
+			return { history: n, tool: n };
+		}
 		const n =
 			out !== null && typeof out === "object" && (out.type === "text" || out.type === "error-text")
 				? typeof out.value === "string"
@@ -150,14 +167,14 @@ function messageChars(
 // convert once per tool object, reuse thereafter.
 const jsonSchemaByTool = new WeakMap<object, unknown>();
 
-function toolDefsChars(tools: ToolSet): number {
+function toolDefsChars(tools: Tools): number {
 	let total = 0;
 	for (const [name, t] of Object.entries(tools)) {
 		let size = name.length;
-		if (typeof t.description === "string") size += t.description.length;
+		if (!isHosted(t)) size += t.description.length;
 		let js = jsonSchemaByTool.get(t);
 		if (js === undefined) {
-			js = asSchema(t.inputSchema).jsonSchema;
+			js = inputJsonSchema(t);
 			jsonSchemaByTool.set(t, js);
 		}
 		// An async schema converter can't be measured synchronously —
@@ -170,7 +187,7 @@ function toolDefsChars(tools: ToolSet): number {
 
 export function measurePrompt(
 	system: string,
-	tools: ToolSet,
+	tools: Tools,
 	messages: readonly ModelMessage[],
 ): PromptSegments {
 	let history = 0;

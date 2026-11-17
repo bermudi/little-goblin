@@ -3,10 +3,11 @@
 // session has not seen, the record advanced only on a landed reply.
 // Covers: fresh persist+sessionId, resume+resumeSessionAt+delta,
 // cross-engine deltas, failed turns leaving the record untouched,
-// and separate records per Claude model ref.
+// separate records per Claude model ref, and steers folded mid-turn
+// (#582) staying out of the next delta.
 
 import { describe, expect, test } from "bun:test";
-import { type ToolSet, tool } from "ai";
+import { defineTool, type Tools } from "./tool.ts";
 import { z } from "zod";
 import { openClaudeSessions } from "./claude-sessions.ts";
 import { type ClaudeEngineConfig, driveClaude } from "./agent/claude-code/engine.ts";
@@ -17,7 +18,7 @@ import type { ConfigRef } from "./config.ts";
 import type { Config } from "./config-schema.ts";
 import { openStore } from "./conversation.ts";
 import { Runtime, userMessage } from "./runtime.ts";
-import type { ModelStep } from "./turn/engine.ts";
+import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { isClaudeStep } from "./turn/engine.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { fakeClaude } from "./testkit/fake-claude.ts";
@@ -137,6 +138,105 @@ describe("claude native sessions (#418)", () => {
 			expect(rec2!.headUuid).toBe(fake.assistantUuids.at(-1)!);
 			expect(rec2!.headUuid).not.toBe(rec1!.headUuid);
 			expect(rec2!.seenSeq).toBeGreaterThan(rec1!.seenSeq);
+		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
+	});
+
+	test("a steer folded mid-turn joins it and stays in the session — the next delta never resends it (#582)", async () => {
+		useHome("goblin-claude-steer-");
+		const store = openStore(tmpDb("goblin-claude-steer-"));
+		const journal = openTurnJournal(store.db);
+		const sessions = openClaudeSessions(store.db);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+
+		const fake = fakeClaude();
+		const bridgeRef: { current: ToolBridge | null } = { current: null };
+		const engineConfig: ClaudeEngineConfig = {
+			query: fake.query,
+			auth: fakeAuth,
+			configRef: {
+				current: {
+					providers: { claude: { kind: "claude-code", auth: "claude-code" } },
+				} as unknown as Config,
+				ttsDown: false,
+			} satisfies ConfigRef,
+			configDir: tmpDir("goblin-claude-steer-cc-"),
+			bridgeFactory: (d) => {
+				const real = createToolBridge(d);
+				bridgeRef.current = real;
+				return real;
+			},
+		};
+		const claudeEngine: ClaudeEngine = {
+			id: "claude-code",
+			accepts: isClaudeStep,
+			run: (deps) => driveClaude(engineConfig, deps),
+			compact: async () => "unused",
+			nativeCompact: async () => null,
+		};
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const tools: Tools = {
+			wait: defineTool({
+				description: "waits until released",
+				input: z.object({}),
+				execute: async () => {
+					entered.resolve();
+					await release.promise;
+					return "waited";
+				},
+			}),
+		};
+		const runtime = new Runtime({
+			store,
+			engines: [claudeEngine],
+			buildStep: () => claudeStepFor(CLAUDE_REF),
+			makeTools: () => tools,
+			turnJournal: journal,
+			claudeSessions: sessions,
+		});
+
+		try {
+			fake.script([
+				{ kind: "tool", name: "wait", input: {}, run: () => bridgeRef.current!.invoke("wait", {}) },
+				{ kind: "ack" },
+				{ kind: "stream-text", text: "CLAUDE-ONE" },
+			]);
+			const head = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "first ask" }]), head);
+			await entered.promise;
+			const steer = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "mid-turn steer" }]), steer);
+			const steerSeq = store.lastUserSeq(conv.id)!;
+			release.resolve();
+			expect(await head.done).toEqual({ kind: "completed" });
+			expect(await steer.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+
+			// One query answered both: the steer went in mid-turn, no
+			// successor turn ran for it.
+			expect(fake.calls).toHaveLength(1);
+			expect(fake.steers).toHaveLength(1);
+			expect(promptTextOf(fake.steers[0]!)).toContain("mid-turn steer");
+			// The joined steer hears the rest of the reply on its own wire.
+			const steerText = steer.chunks
+				.map((c) => (c.type === "text-delta" ? c.delta : ""))
+				.join("");
+			expect(steerText).toBe("CLAUDE-ONE");
+			const rec1 = sessions.get(conv.id, CLAUDE_REF);
+			expect(rec1!.seenSeq).toBe(steerSeq);
+
+			fake.script([{ kind: "text", text: "CLAUDE-TWO" }]);
+			const next = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "second ask" }]), next);
+			expect(await next.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			const second = fake.calls[1]!;
+			expect(second.options.resume).toBe(rec1!.sessionId);
+			expect(promptTextOf(second)).toContain("second ask");
+			expect(promptTextOf(second)).not.toContain("mid-turn steer");
 		} finally {
 			await runtime.shutdown();
 			store.close();

@@ -8,7 +8,9 @@
 import { foldSummary } from "./testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { APICallError } from "@ai-sdk/provider";
-import { type LanguageModel, tool, type ToolSet, type UIMessage } from "ai";
+import type { LanguageModel } from "ai";
+import { defineTool, type Tools } from "./tool.ts";
+import type { Message } from "./message.ts";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
@@ -47,7 +49,7 @@ interface Rig {
 function rig(
 	opts: {
 		model?: LanguageModel;
-		tools?: ToolSet;
+		tools?: Tools;
 		makeTools?: RuntimeDeps["makeTools"];
 		store?: Store;
 		buildStep?: RuntimeDeps["buildStep"];
@@ -118,7 +120,7 @@ function claimedOnly(r: Rig, key: string, text = "the one line") {
 		origin: "observer",
 	});
 	const claimed = r.wakes.commit(rec.wakeId, (t) => {
-		const message: UIMessage = { id: t.id, role: "user", parts: [{ type: "text", text: t.text }] };
+		const message: Message = { id: t.id, role: "user", parts: [{ type: "text", text: t.text }] };
 		r.store.append(r.conv.id, [message]);
 	});
 	return claimed;
@@ -444,8 +446,9 @@ describe("wake dispatcher", () => {
 		const r = rig({
 			model: edge.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						await gate.promise;
 						return { ok: true };
@@ -490,8 +493,9 @@ describe("wake dispatcher", () => {
 		const r = rig({
 			model: edge.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						await gate.promise;
 						return { ok: true };
@@ -552,7 +556,7 @@ describe("wake dispatcher", () => {
 		r2.store.close();
 	});
 
-	test("a resume retargets the wake to the successor run; settle follows the chain", async () => {
+	test("a continuation retargets the wake to the successor run; settle follows the chain", async () => {
 		const r = rig();
 		const claimed = claimedOnly(r, "poll:1");
 		// r1 dies mid-turn: begin a run row, link the wake, then reopen
@@ -571,8 +575,8 @@ describe("wake dispatcher", () => {
 		r.wakes.linkRun(claimed.wakeId, "r1");
 		const journal2 = openTurnJournal(r.store.db);
 		expect(journal2.get("r1")?.status).toBe("interrupted");
-		// The resume admission: successor row + source consumption in one
-		// transaction, then the runtime's begin hook retargets the wake.
+		// A continuation admitted from the dead attempt: the begin hook
+		// retargets the wake through inheritFrom.
 		journal2.beginRun({
 			runId: "r2",
 			conversationId: r.conv.id,
@@ -582,17 +586,16 @@ describe("wake dispatcher", () => {
 			convSnapshot: { model: null, thinking: null },
 			toolNames: [],
 			startedAt: new Date().toISOString(),
-			resumedFrom: "r1",
+			inheritFrom: ["r1"],
 		});
 		r.dispatcher.hooks.begin({
 			runId: "r2",
 			conversationId: r.conv.id,
 			memberSeqs: [claimed.historySeq!],
-			resumedFrom: "r1",
+			inheritFrom: ["r1"],
 		});
 		expect(wake(r, claimed.wakeId).runId).toBe("r2");
-		// The successor completes — the wake still linked through r1's
-		// consumption settles on the chain's end.
+		// The successor completes — the wake settles.
 		journal2.finishRun("r2", "completed", "delivered");
 		r.dispatcher.pump();
 		expect(wake(r, claimed.wakeId).state).toBe("settled");

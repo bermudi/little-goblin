@@ -27,15 +27,15 @@ function fixture(): { sources: SkillSources; workspace: string } {
 
 test("records and upserts per (skill, conversation)", () => {
 	const { sources } = fixture();
-	sources.record("app/1", "herdr", "reviewer", "2026-10-16T00:00:00.000Z", "r1");
+	sources.record("app/1", "demo", "reviewer", "2026-10-16T00:00:00.000Z", "r1");
 	// Same thread re-proposes: first generation moment stays, kind stays.
-	sources.record("app/1", "herdr", "reviewer", "2026-10-16T02:00:00.000Z", "r2");
+	sources.record("app/1", "demo", "reviewer", "2026-10-16T02:00:00.000Z", "r2");
 	// A turn edit later in the same thread advances last_at and widens kind.
-	sources.record("app/1", "herdr", "turn", "2026-10-16T03:00:00.000Z");
+	sources.record("app/1", "demo", "turn", "2026-10-16T03:00:00.000Z");
 	const rows = sources.forConversation("app/1");
 	expect(rows).toHaveLength(1);
 	expect(rows[0]).toMatchObject({
-		skill: "herdr",
+		skill: "demo",
 		conversationId: "app/1",
 		kind: "turn",
 		reviewId: "r2",
@@ -43,16 +43,16 @@ test("records and upserts per (skill, conversation)", () => {
 		lastAt: "2026-10-16T03:00:00.000Z",
 	});
 	// Another thread generating the same skill is its own row.
-	sources.record("dm:1", "herdr", "reviewer");
+	sources.record("dm:1", "demo", "reviewer");
 	expect(sources.forConversation("dm:1")).toHaveLength(1);
 	expect(sources.forConversation("app/1")).toHaveLength(1);
 });
 
 test("forgetting one conversation's rows leaves other threads intact", () => {
 	const { sources } = fixture();
-	sources.record("app/1", "herdr", "reviewer", "2026-10-16T01:00:00.000Z");
+	sources.record("app/1", "demo", "reviewer", "2026-10-16T01:00:00.000Z");
 	sources.record("app/1", "other-skill", "turn", "2026-10-16T02:00:00.000Z");
-	sources.record("dm:1", "herdr", "reviewer", "2026-10-16T03:00:00.000Z");
+	sources.record("dm:1", "demo", "reviewer", "2026-10-16T03:00:00.000Z");
 	expect(sources.forgetConversation("app/1")).toBe(2);
 	expect(sources.forConversation("app/1")).toEqual([]);
 	expect(sources.forConversation("dm:1")).toHaveLength(1);
@@ -86,12 +86,12 @@ test("backfill rows never rewind live writes — only the earlier first_at survi
 	// A live turn write at 05:00, then the log backfill claims a review
 	// at 03:00 and a rerun replays 03:00: kind and last_at stay live,
 	// first_at keeps the earliest evidence.
-	sources.record("app/1", "herdr", "turn", "2026-10-16T05:00:00.000Z");
-	sources.recordInitial("app/1", "herdr", "2026-10-16T03:00:00.000Z", "r1");
-	sources.recordInitial("app/1", "herdr", "2026-10-16T03:00:00.000Z", "r1");
+	sources.record("app/1", "demo", "turn", "2026-10-16T05:00:00.000Z");
+	sources.recordInitial("app/1", "demo", "2026-10-16T03:00:00.000Z", "r1");
+	sources.recordInitial("app/1", "demo", "2026-10-16T03:00:00.000Z", "r1");
 	expect(sources.forConversation("app/1")).toMatchObject([
 		{
-			skill: "herdr",
+			skill: "demo",
 			kind: "turn",
 			reviewId: null,
 			firstAt: "2026-10-16T03:00:00.000Z",
@@ -107,11 +107,11 @@ for (const hours of [
 	test(`backfill keeps earliest and latest historical proposals in ${hours.join(",")} order`, () => {
 		const { sources } = fixture();
 		for (const hour of [...hours, ...hours]) {
-			sources.recordInitial("app/1", "herdr", `2026-10-16T${hour}:00:00.000Z`, `r-${hour}`);
+			sources.recordInitial("app/1", "demo", `2026-10-16T${hour}:00:00.000Z`, `r-${hour}`);
 		}
 		expect(sources.forConversation("app/1")).toMatchObject([
 			{
-				skill: "herdr",
+				skill: "demo",
 				kind: "reviewer",
 				reviewId: "r-03",
 				firstAt: "2026-10-16T01:00:00.000Z",
@@ -124,8 +124,8 @@ for (const hours of [
 test("backfill does not replace live authorship at an equal timestamp", () => {
 	const { sources } = fixture();
 	const at = "2026-10-16T03:00:00.000Z";
-	sources.record("app/1", "herdr", "turn", at);
-	sources.recordInitial("app/1", "herdr", at, "r-old");
+	sources.record("app/1", "demo", "turn", at);
+	sources.recordInitial("app/1", "demo", at, "r-old");
 	expect(sources.forConversation("app/1")[0]).toMatchObject({
 		kind: "turn",
 		reviewId: null,

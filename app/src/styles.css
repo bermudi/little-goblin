@@ -397,7 +397,7 @@ p code,
 	gap: 1px;
 }
 .rail .conv {
-	position: relative; /* anchors the action overlay onto the preview line */
+	position: relative;
 	display: flex;
 	align-items: flex-start;
 	width: 100%;
@@ -410,84 +410,70 @@ p code,
 .rail .conv.current {
 	background: var(--app-active);
 }
-/* The row hit area is an anchor so the browser owns modifier-click
-   behavior; it must not pick up the link color/underline. */
+/* The link owns navigation and modifier-click behavior. */
 .conv-main {
 	flex: 1;
 	min-width: 0;
 	text-align: left;
-	padding: 0.4rem 0.6rem;
+	padding: 0.4rem 2.8rem 0.4rem 0.6rem;
 	color: inherit;
 	text-decoration: none;
 }
-/* The hover icons share the preview line, so the text itself fades out
-   just before their zone — a mask on the text, not a backdrop on the
-   icons — and the rest of the line stays full-contrast. Untitled rows
-   (.bare) fade their head line the same way; it's the only line they
-   have. Touch screens never hover, so there the current row keeps its
-   actions showing over the faded line. */
-.conv {
-	--conv-fade: linear-gradient(
-		to right,
-		black calc(100% - 5.6rem),
-		transparent calc(100% - 4.6rem)
-	);
-}
-.conv-actions {
+.conv-menu-trigger {
 	position: absolute;
-	right: 0.3rem;
-	bottom: 0.25rem;
-	display: inline-flex;
-	align-items: center;
-	gap: 0.1rem;
-	padding: 0 0.3rem;
-	opacity: 0;
-	pointer-events: none;
-	transition: opacity 160ms ease;
-}
-.conv:hover .conv-actions,
-.conv-actions:focus-within {
-	opacity: 1;
-	pointer-events: auto;
-}
-.conv:hover .conv-preview {
-	-webkit-mask-image: var(--conv-fade);
-	mask-image: var(--conv-fade);
-}
-.conv.bare:hover .conv-head {
-	-webkit-mask-image: var(--conv-fade);
-	mask-image: var(--conv-fade);
-}
-@media (hover: none) {
-	.conv.current .conv-actions {
-		opacity: 1;
-		pointer-events: auto;
-	}
-	.conv.current .conv-preview {
-		-webkit-mask-image: var(--conv-fade);
-		mask-image: var(--conv-fade);
-	}
-	.conv.bare.current .conv-head {
-		-webkit-mask-image: var(--conv-fade);
-		mask-image: var(--conv-fade);
-	}
-}
-.conv-actions button {
+	right: 0.35rem;
+	bottom: 0.3rem;
 	width: 1.4rem;
 	height: 1.4rem;
 	padding: 0;
-	justify-content: center;
 	border-radius: 6px;
 	color: var(--app-fg-muted);
-	display: inline-flex;
+	font-size: 1.2rem;
+	line-height: 1;
+	justify-content: center;
 	align-items: center;
 }
-.conv-actions button:hover {
+.conv:hover .conv-menu-trigger,
+.conv-menu-trigger:focus-visible,
+.conv-menu-trigger[data-open] {
+	opacity: 1;
+	pointer-events: auto;
+}
+.conv-menu-trigger:hover {
 	background: var(--app-active);
 	color: var(--app-fg);
 }
-.conv-actions svg {
-	display: block;
+.conv-menu-trigger {
+	opacity: 0;
+	pointer-events: none;
+	display: inline-flex;
+}
+.conv-menu {
+	z-index: 80;
+	min-width: 9rem;
+	padding: 0.25rem;
+	border: 1px solid var(--app-control-border);
+	border-radius: 8px;
+	background: var(--app-gray-100);
+	color: var(--app-fg);
+	box-shadow: 0 6px 24px rgb(0 0 0 / 0.25);
+}
+.conv-menu [role="menuitem"] {
+	padding: 0.4rem 0.55rem;
+	border-radius: 5px;
+	font-size: 12.5px;
+	cursor: default;
+}
+.conv-menu [role="menuitem"]:focus,
+.conv-menu [role="menuitem"][data-highlighted] {
+	background: var(--app-hover);
+	outline: none;
+}
+@media (hover: none) {
+	.conv-menu-trigger {
+		opacity: 1;
+		pointer-events: auto;
+	}
 }
 .conv-pin {
 	flex: none;
@@ -2468,12 +2454,6 @@ button.pathchip:hover svg {
 .stop-btn:hover {
 	background: var(--app-gray-600);
 }
-/* Mid-turn the pair shares the corner: stop takes the auto margin,
-   send hugs it — a second auto margin would split the free space. */
-.stop-btn + .send-btn {
-	margin-left: 0.35rem;
-}
-
 /* Model/thinking knobs — flat selects that read as labels until hovered. */
 .knob select {
 	appearance: none;
@@ -3548,7 +3528,7 @@ button.pathchip:hover svg {
 .log-controls input:hover,
 .log-controls select:hover,
 .note-filters input[type="search"]:hover,
-.note-pick input[type="search"]:hover,
+.note-pick input:hover,
 .note-rewrite-field textarea:hover,
 .rail-search:hover,
 .gate input:hover {
@@ -3576,7 +3556,7 @@ button.pathchip:hover svg {
 .log-controls input:focus,
 .log-controls select:focus,
 .note-filters input[type="search"]:focus,
-.note-pick input[type="search"]:focus,
+.note-pick input:focus,
 .note-rewrite-field textarea:focus,
 .rail-search:focus,
 .gate input:focus,
@@ -3681,7 +3661,7 @@ button.pathchip:hover svg {
 .program-editor input,
 .program-editor textarea,
 .note-filters input[type="search"],
-.note-pick input[type="search"],
+.note-pick input,
 .note-rewrite-field textarea {
 	background-color: var(--app-control-bg);
 }
@@ -3967,6 +3947,14 @@ button.pathchip:hover svg {
 	display: flex;
 	flex-direction: column;
 }
+/* The command primitive's root, standing between .msheet and the filter
+   row + body so the sheet's own column layout survives the wrapper. */
+.msheet-command {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	flex: 1;
+}
 .mrow {
 	display: flex;
 	align-items: center;
@@ -3976,6 +3964,11 @@ button.pathchip:hover svg {
 	padding: 0.5rem 0.6rem;
 }
 .mrow:hover {
+	background: var(--app-hover);
+}
+/* The command primitive's keyboard highlight — the row the arrows are
+   on. Same fill as hover so touch and keyboard read alike. */
+.msheet .mline[data-highlighted] .mrow {
 	background: var(--app-hover);
 }
 .mrow.sel {
@@ -4041,12 +4034,10 @@ button.pathchip:hover svg {
 	font-size: 14px;
 	line-height: 1;
 	padding: 0.35rem 0.45rem;
-	border-radius: 6px;
 	color: var(--app-fg-subtle);
 }
 .mstar:hover {
 	color: var(--app-warning);
-	background: var(--app-hover);
 }
 .mstar.on {
 	color: var(--app-warning);
@@ -4095,6 +4086,15 @@ button.pathchip:hover svg {
 	color: var(--app-fg-muted);
 	margin-left: auto;
 	white-space: nowrap;
+}
+.card > .pk-list {
+	max-height: min(24rem, 50dvh);
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 0;
+}
+.pk-list > * {
+	padding: 0.6rem 0.75rem;
 }
 .pk-add {
 	display: flex;
@@ -5275,7 +5275,7 @@ select.ui-input option {
 		min-width: 2.25rem;
 		min-height: 2.25rem;
 	}
-	.conv-actions button {
+	.conv-menu-trigger {
 		min-width: 1.85rem;
 		min-height: 1.85rem;
 	}
@@ -5669,7 +5669,14 @@ select.ui-input option {
 	background: var(--app-gray-100);
 	padding: 0.5rem;
 }
-.note-pick input[type="search"] {
+/* The command primitive's root, standing between the picker and its
+   field/list so the picker's own column spacing survives the wrapper. */
+.note-pick-command {
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+.note-pick input {
 	font: inherit;
 	font-size: 12px;
 	background-color: var(--app-control-bg);
@@ -5679,14 +5686,14 @@ select.ui-input option {
 	padding: 0.35rem 0.55rem;
 	outline: none;
 }
-.note-pick ul {
+.note-pick-list {
 	list-style: none;
 	margin: 0;
 	padding: 0;
 	max-height: 12rem;
 	overflow-y: auto;
 }
-.note-pick li button {
+.note-pick-list button {
 	display: block;
 	width: 100%;
 	text-align: left;
@@ -5694,10 +5701,20 @@ select.ui-input option {
 	padding: 0.3rem 0.45rem;
 	border-radius: 6px;
 }
-.note-pick li button:hover {
+.note-pick-list button:hover,
+.note-pick-list [data-highlighted] button {
 	background: var(--app-hover);
 }
-.note-pick li.empty,
+/* The command-driven note picker matches the skill sheet: flat rows,
+   a left tick on the arrowed row only. The model quick menu shares
+   .note-pick-list but runs no command — it keeps the hover fill. */
+.note-pick-command .note-pick-list button:hover,
+.note-pick-command .note-pick-list [data-highlighted] button {
+	background: none;
+}
+.note-pick-command .note-pick-list [data-highlighted] button {
+	box-shadow: inset 2px 0 0 var(--app-fg-muted);
+}
 .note-pick .empty {
 	font-size: 12px;
 	color: var(--app-fg-muted);
@@ -6140,9 +6157,13 @@ button.link:hover {
 .note-fmt-group {
 	display: inline-flex;
 	gap: 0.1rem;
-	padding-left: 0.3rem;
+}
+.note-fmt-sep {
+	width: 1px;
+	align-self: stretch;
 	margin-left: 0.2rem;
-	border-left: 1px solid var(--app-divider);
+	margin-right: 0.3rem;
+	background: var(--app-divider);
 }
 .note-fmt-btn {
 	width: 2rem;
@@ -6159,11 +6180,12 @@ button.link:hover {
 	border-radius: 6px;
 	cursor: pointer;
 }
-.note-fmt-btn:hover:not(:disabled) {
+.note-fmt-btn:hover:not(:disabled):not([aria-disabled="true"]) {
 	background: var(--app-hover);
 	color: var(--app-fg);
 }
-.note-fmt-btn.on {
+.note-fmt-btn.on,
+.note-fmt-btn[data-pressed] {
 	color: var(--app-accent);
 	background: color-mix(in oklab, var(--app-accent) 16%, transparent);
 	border-color: color-mix(in oklab, var(--app-accent) 40%, transparent);
@@ -6173,24 +6195,51 @@ button.link:hover {
 	outline: 2px solid var(--app-focus);
 	outline-offset: 1px;
 }
-.note-fmt-btn:disabled {
+.note-fmt-btn:disabled,
+.note-fmt-btn[aria-disabled="true"] {
 	opacity: 0.35;
 	cursor: default;
 }
 .note-fmt-block {
-	appearance: none;
 	height: 2rem;
+	min-width: 7.5rem;
 	font: inherit;
 	font-size: 12.5px;
 	color: var(--app-fg);
 	background-color: var(--app-control-bg);
-	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none' stroke='%23888' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1l4 4 4-4'/%3E%3C/svg%3E");
-	background-repeat: no-repeat;
-	background-position: right 0.5rem center;
 	border: 1px solid var(--app-control-border);
 	border-radius: 6px;
-	padding: 0 1.6rem 0 0.55rem;
+	padding: 0 0.55rem;
 	margin-right: 0.15rem;
+	display: inline-flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.5rem;
+	cursor: pointer;
+}
+.note-fmt-menu {
+	min-width: 10rem;
+	padding: 0.25rem;
+	background: var(--app-bg);
+	border: 1px solid var(--app-control-border);
+	border-radius: 6px;
+	box-shadow: 0 10px 30px color-mix(in oklab, var(--app-fg) 22%, transparent);
+}
+.note-fmt-option {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	padding: 0.4rem 0.55rem;
+	border-radius: 4px;
+	cursor: pointer;
+}
+.note-fmt-option[data-highlighted] {
+	background: var(--app-hover);
+}
+.note-fmt-option[aria-disabled="true"] {
+	opacity: 0.45;
+	cursor: default;
 }
 .note-fmt-link {
 	display: flex;
@@ -6639,152 +6688,6 @@ button.link:hover {
 	}
 }
 
-.interrupted {
-	margin: 0.5rem 0 1.25rem;
-	padding: 0.75rem 1rem;
-	border: 1px solid var(--app-divider);
-	border-radius: 10px;
-	font-size: 13px;
-}
-.interrupted-title {
-	font-weight: 600;
-	letter-spacing: -0.01em;
-}
-.interrupted-warn {
-	color: var(--app-fg-muted);
-	margin: 0.35rem 0 0.75rem;
-}
-.interrupted .error {
-	padding: 0.4rem 0;
-}
-.interrupted-run {
-	border-top: 1px solid var(--app-divider);
-	padding-top: 0.6rem;
-	margin-top: 0.6rem;
-}
-.interrupted-run-head {
-	display: flex;
-	gap: 0.75rem;
-	align-items: baseline;
-	color: var(--app-fg-muted);
-}
-.interrupted-run-id {
-	font-family: var(--font-mono);
-	font-size: 12px;
-	color: var(--app-fg);
-}
-.interrupted-run-time {
-	font-size: 12px;
-}
-.interrupted-call {
-	margin: 0.6rem 0;
-	padding: 0.5rem 0.65rem;
-	border: 1px solid var(--app-border);
-	border-radius: 8px;
-}
-.interrupted-call-head {
-	display: flex;
-	gap: 0.6rem;
-	align-items: baseline;
-}
-.interrupted-call-state {
-	color: var(--app-fg-muted);
-	font-size: 12px;
-}
-.interrupted-args {
-	margin-top: 0.4rem;
-}
-.interrupted-args summary {
-	cursor: pointer;
-	color: var(--app-fg-muted);
-	font-size: 12px;
-}
-.interrupted-args pre {
-	font-family: var(--font-mono);
-	font-size: 12px;
-	white-space: pre-wrap;
-	word-break: break-word;
-	background: var(--app-gray-50);
-	border-radius: 6px;
-	padding: 0.5rem;
-	margin: 0.3rem 0 0;
-	max-height: 16rem;
-	overflow-y: auto;
-}
-.interrupted-args-note {
-	color: var(--app-fg-subtle);
-	font-size: 11px;
-	margin: 0.3rem 0 0;
-}
-.interrupted-err {
-	color: var(--app-danger);
-	font-size: 12px;
-	margin-top: 0.3rem;
-}
-.interrupted-note {
-	color: var(--app-fg-muted);
-	font-size: 12px;
-	margin-top: 0.3rem;
-}
-.interrupted-decide {
-	margin-top: 0.5rem;
-}
-.interrupted-note-label {
-	display: flex;
-	flex-direction: column;
-	gap: 0.3rem;
-	font-size: 12px;
-	color: var(--app-fg-muted);
-}
-.interrupted-note-label textarea {
-	font: inherit;
-	font-size: 12px;
-	background: transparent;
-	border: 1px solid var(--app-control-border);
-	border-radius: 6px;
-	color: var(--app-fg);
-	padding: 0.4rem 0.55rem;
-	min-height: 2.4rem;
-	resize: vertical;
-	outline: none;
-}
-.interrupted-note-label textarea:focus {
-	border-color: var(--app-focus);
-}
-.interrupted-actions {
-	display: flex;
-	gap: 0.4rem;
-	margin-top: 0.45rem;
-	flex-wrap: wrap;
-}
-.interrupted-actions button,
-.interrupted-resume,
-.interrupted-retry {
-	border: 1px solid var(--app-divider);
-	border-radius: 7px;
-	padding: 0.35rem 0.7rem;
-	font-size: 12px;
-	color: var(--app-fg);
-}
-.interrupted-actions button:hover:not(:disabled),
-.interrupted-resume:hover:not(:disabled),
-.interrupted-retry:hover:not(:disabled) {
-	background: var(--app-hover);
-}
-.interrupted-actions button:disabled,
-.interrupted-resume:disabled {
-	opacity: 0.45;
-}
-.interrupted-resume {
-	margin-top: 0.6rem;
-	font-weight: 500;
-}
-.interrupted-help {
-	color: var(--app-fg-subtle);
-	font-size: 12px;
-	margin: 0.45rem 0 0;
-}
-
 /* ---------- document viewer + artifact cards ---------- */
 
 /* The artifact card — the openable thing a published file leaves in
@@ -7157,7 +7060,11 @@ button.link:hover {
 }
 
 /* Skill picker sheet (ruling 2026-10-21): catalog rows + the
-   from-link preview card. Reuses the msheet chrome. */
+   from-link preview card. Reuses the whole msheet chrome — head,
+   filter row, scrolling body — with the from-link form pinned as a
+   footer under the command so it never scrolls away. Rows speak the
+   model sheet's language: rounded hover fill, no hairlines, mono
+   metadata on the side. */
 .skill-picker-row {
 	display: flex;
 	justify-content: space-between;
@@ -7165,14 +7072,16 @@ button.link:hover {
 	gap: 0.75rem;
 	width: 100%;
 	text-align: left;
-	padding: 0.45rem 0.5rem;
+	padding: 0.45rem 0.6rem;
 	border: 0;
-	border-bottom: 1px solid var(--line, #ddd);
+	border-radius: 8px;
 	background: none;
 	cursor: pointer;
 }
-.skill-picker-row:hover {
-	background: var(--hover, rgba(127, 127, 127, 0.12));
+/* No hover fill — the rows stay flat. The command's arrow/auto
+   highlight keeps only a left tick so Enter's target stays visible. */
+.skill-picker-row[data-highlighted] {
+	box-shadow: inset 2px 0 0 var(--app-fg-muted);
 }
 .skill-picker-main {
 	display: flex;
@@ -7180,23 +7089,40 @@ button.link:hover {
 	gap: 0.15rem;
 	min-width: 0;
 }
+.skill-picker-name {
+	display: flex;
+	align-items: baseline;
+	gap: 0.45rem;
+	min-width: 0;
+}
+.skill-picker-name strong {
+	font-size: 12.5px;
+}
 .skill-picker-sub {
-	color: var(--dim, #777);
-	font-size: 0.85em;
+	color: var(--app-fg-muted);
+	font-size: 12px;
+	line-height: 1.45;
 	overflow-wrap: anywhere;
 }
 .skill-picker-side {
-	color: var(--dim, #777);
-	font-size: 0.85em;
+	flex: none;
+	font-family: var(--font-mono);
+	font-size: 10.5px;
+	color: var(--app-fg-muted);
 	white-space: nowrap;
 }
 .skill-from-link {
+	flex: none;
 	display: flex;
 	flex-direction: column;
-	gap: 0.4rem;
-	margin-top: 0.75rem;
-	padding-top: 0.75rem;
-	border-top: 1px solid var(--line, #ddd);
+	gap: 0.45rem;
+	padding: 0.7rem 0.9rem 0.8rem;
+	border-top: 1px solid var(--app-divider);
+}
+.skill-from-link > strong {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--app-fg-subtle);
 }
 .skill-from-link .link-row {
 	display: flex;
@@ -7210,8 +7136,8 @@ button.link:hover {
 	display: flex;
 	flex-direction: column;
 	gap: 0.3rem;
-	padding: 0.5rem;
-	border: 1px solid var(--line, #ddd);
+	padding: 0.6rem;
+	border: 1px solid var(--app-divider);
 	border-radius: 8px;
 }
 
@@ -7903,13 +7829,6 @@ button.link:hover {
 }
 .settings .card > .ghost {
 	margin: 0.6rem 0.9rem;
-}
-/* The subagents row's inline form: inset to the row's own padding so it
-   belongs to its row, and no card-edge divider above it (the card's
-   sibling divider is suppressed). */
-.settings .sub-form {
-	padding: 0 0.9rem 0.4rem;
-	border-top: 0;
 }
 @media (max-width: 639px) {
 	.settings .row,

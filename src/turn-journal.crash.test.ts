@@ -5,38 +5,14 @@ import { Database } from "bun:sqlite";
 import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import { tool } from "ai";
+import { join } from "node:path";
 import type { Subprocess } from "bun";
-import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
-import { Runtime } from "./runtime.ts";
-import { scriptedModel, textParts } from "./testkit/fake-model.ts";
-import { RecordingSink, waitUntil } from "./testkit.ts";
-import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
 import { openTurnJournal } from "./turn-journal.ts";
-import { makeResumeOps } from "./turn-resume.ts";
 
 setLogFile(null);
-
-const streamStartPart: LanguageModelV4StreamPart = { type: "stream-start", warnings: [] };
-const reaskCallPart: LanguageModelV4StreamPart = {
-	type: "tool-call",
-	toolCallId: "call-reask",
-	toolName: "probe",
-	input: "{}",
-};
-const toolCallsFinish: LanguageModelV4StreamPart = {
-	type: "finish",
-	finishReason: { unified: "tool-calls", raw: undefined },
-	usage: {
-		inputTokens: { total: 1, noCache: undefined, cacheRead: undefined, cacheWrite: undefined },
-		outputTokens: { total: 1, text: undefined, reasoning: undefined },
-	},
-};
 
 const dir = mkdtempSync(join(tmpdir(), "goblin-turn-crash-"));
 const children: Subprocess[] = [];
@@ -247,8 +223,8 @@ describe("turn journal — a real killed process", () => {
 		}
 	}, 60_000);
 
-	test("a killed overflow continuation carries the failed attempt's calls — resume conflicts, never re-executes", async () => {
-		const { child, dbPath, marker } = spawn("overflow-stall", "overflow");
+	test("a killed overflow continuation carries the failed attempt's calls as inert evidence", async () => {
+		const { child, dbPath } = spawn("overflow-stall", "overflow");
 		// Wait for both: the overflowed attempt stamps error/undelivered
 		// and the continuation opens its own row before stalling.
 		const probe = new Database(dbPath);
@@ -273,54 +249,14 @@ describe("turn journal — a real killed process", () => {
 			expect(calls[0]!.state).toBe("completed");
 			expect(calls[0]!.result).toBe('{"ok":true}');
 
-			const executed: string[] = [];
-			const makeTools = () => ({
-				probe: tool({
-					inputSchema: z.object({}),
-					execute: async () => {
-						executed.push("re-executed");
-						return { ok: true };
-					},
-				}),
-			});
-			const edge = scriptedModel([
-				[streamStartPart, reaskCallPart, toolCallsFinish],
-				textParts("the resumed answer"),
-			]);
-			const runtime = new Runtime({
-				engines: [aiSdkEngine],
-				store,
-				turnJournal: journal,
-				buildStep: () => ({ model: edge.model, system: "crash test" }),
-				makeTools,
-			});
-			const sink = new RecordingSink();
-			const ops = makeResumeOps({
-				store,
-				journal,
-				runtime,
-				captureConversation: (c) => c,
-				makeTools,
-				sinkFor: () => sink,
-				sinkHooks: () => ({ voice: false, recording: false, file: false }),
-			});
-			const conv = store.resolve({ kind: "dm", chatId: 1 }, join(dirname(dbPath), "ws"));
-			const outcome = ops.resume(conv.id, continuation.runId);
-			expect(outcome.kind).toBe("resumed");
-			expect(await sink.done).toEqual({ kind: "completed" });
-			await waitUntil(() => !runtime.busy(conv.id), "resumed lane drains");
-			await runtime.shutdown();
-			expect(executed).toEqual([]); // fenced as a conflict, never re-executed
-			const successor = store.db
-				.query<{ run_id: string }, [string]>("SELECT run_id FROM turn_runs WHERE resumed_from = ?")
-				.get(continuation.runId)!.run_id;
-			const successorCalls = journal.callsFor(successor);
-			const reask = successorCalls.find((c) => c.toolCallId === "call-reask")!;
-			expect(reask.state).toBe("completed");
-			expect(reask.replayed).toBe(true);
-			expect(reask.result).toContain("[turn-journal conflict]");
-			expect(reask.result).toContain("call-1");
-			expect(journal.get(continuation.runId)!.status).toBe("resumed");
+			// #594: nothing resumes the dead run — it stays 'interrupted'
+			// forever, its inherited evidence readable but inert.
+			expect(journal.get(continuation.runId)!.status).toBe("interrupted");
+			expect(journal.successorOf(continuation.runId)).toBeNull();
+			const rows = store.db
+				.query<{ run_id: string }, []>("SELECT run_id FROM turn_runs")
+				.all();
+			expect(rows).toHaveLength(2); // the failed attempt + the killed continuation
 		} finally {
 			store.close();
 		}

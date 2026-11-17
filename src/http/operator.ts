@@ -27,10 +27,12 @@ export interface OperatorSeamsDeps {
 	skillSources: SkillSources;
 	skillFetch?: OperatorDeps["skillFetch"];
 	auth: WritableAuthStore;
-	paths: {
+	 paths: {
 		auth(): string;
 		skills(): string;
 		skillsProposed(): string;
+		skillsArchive(): string;
+		skillUsage(): string;
 		workspace(): string;
 	};
 	version: string;
@@ -95,8 +97,11 @@ export function makeOperatorSeams(
 			forConversation: (conversationId: string) => skillSources.forConversation(conversationId),
 			forgetConversation: (conversationId: string) =>
 				skillSources.forgetConversation(conversationId),
+			managedNames: () => skillSources.managedNames(),
 			skillsDir: paths.skills(),
 			proposedDir: paths.skillsProposed(),
+			usagePath: paths.skillUsage(),
+			archiveDir: paths.skillsArchive(),
 		},
 		skillDecisions: {
 			decide: (skill: string, action: SkillAction) =>

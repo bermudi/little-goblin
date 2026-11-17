@@ -105,6 +105,18 @@ describe("carriesMedia — what the pipe can deliver, per position", () => {
 		expect(carriesMedia("mystery", "image/jpeg", "tool-result")).toBe(false);
 		expect(carriesMedia("mystery", "application/pdf")).toBe(false);
 	});
+
+	test("claude-code carries the four Anthropic image types in tool results via MCP image blocks", () => {
+		// The bridge emits MCP image content for image-bearing tool
+		// outputs (claude-code/tools.ts callToolResult). PDFs have no MCP
+		// image form — text only there.
+		for (const t of ["image/gif", "image/jpeg", "image/png", "image/webp"]) {
+			expect(carriesMedia("claude-code", t, "user")).toBe(true);
+			expect(carriesMedia("claude-code", t, "tool-result")).toBe(true);
+		}
+		expect(carriesMedia("claude-code", "application/pdf", "tool-result")).toBe(false);
+		expect(carriesMedia("claude-code", "image/svg+xml", "tool-result")).toBe(false);
+	});
 });
 
 describe("carriesMedia — 1min's relay is text-only", () => {
@@ -422,6 +434,63 @@ describe("observedModel — correlated call receipts", () => {
 		} finally {
 			setLogFile(null);
 			db.close();
+		}
+	});
+
+	test("storage failures cancel a live provider stream and keep the storage error", async () => {
+		for (const scenario of [
+			{
+				name: "finish",
+				status: "completed",
+				part: finish(10, 3),
+				storageError: "SENTINEL-FINISH-STORAGE",
+				cancelError: new Error("provider cancel failed"),
+			},
+			{
+				name: "fail",
+				status: "failed",
+				part: { type: "error", error: new Error("provider failure") } satisfies LanguageModelV4StreamPart,
+				storageError: "SENTINEL-FAIL-STORAGE",
+			},
+		] as const) {
+			const db = new Database(":memory:");
+			const obs = openCacheObservation(db);
+			const logPath = join(tmpDir(), `goblin-${scenario.name}.log`);
+			setLogFile(logPath);
+			let cancellations = 0;
+			try {
+				db.run(`CREATE TEMP TRIGGER fail_storage_write
+					BEFORE UPDATE OF status ON model_cache_calls
+					WHEN NEW.status = '${scenario.status}'
+					BEGIN SELECT RAISE(ABORT, '${scenario.storageError}'); END`);
+				const scripted = scriptedModel([], {
+					extra: {
+						drive({ enqueue }) {
+							enqueue({ type: "stream-start", warnings: [] });
+							enqueue(scenario.part);
+						},
+						cancel() {
+							cancellations++;
+							if ("cancelError" in scenario) throw scenario.cancelError;
+						},
+					},
+				});
+				const wrapped = observedModel(scripted.model, {
+					conversation: "conv-1",
+					observation: obs,
+				}) as LanguageModelV4;
+				const result = await wrapped.doStream(userPrompt("storage failure"));
+				await expect(drain(result.stream)).rejects.toThrow(scenario.storageError);
+				expect(cancellations).toBe(1);
+				if ("cancelError" in scenario) {
+					expect(logLines(logPath).some((line) => line.msg === "provider stream cancellation after storage failure failed")).toBe(
+						true,
+					);
+				}
+			} finally {
+				setLogFile(null);
+				db.close();
+			}
 		}
 	});
 

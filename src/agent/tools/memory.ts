@@ -1,5 +1,5 @@
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { log } from "../../log.ts";
 import { HindsightClient, HindsightError, type RecallMinScores } from "../../memory/hindsight.ts";
 import { renderRecallEvidence } from "../../memory/mod.ts";
@@ -17,12 +17,12 @@ export interface MemorySearchDeps {
 }
 
 export const memorySearchTool = (deps: MemorySearchDeps) =>
-	tool({
+	defineTool({
 		description:
 			"Search long-term memory for past preferences, decisions, commitments, people, and ongoing work. " +
 			"Returns dated evidence with source references — current operator statements outrank anything recalled. " +
 			"Results may be stale; verify before acting on them.",
-		inputSchema: z.object({
+		input: z.object({
 			query: z.string().min(1).max(8000).describe("What to search memory for"),
 			maxTokens: z
 				.number()

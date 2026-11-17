@@ -9,8 +9,8 @@ import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { channelOf, guestAddress, parseAddress } from "../conversation-address.ts";
 import type { Runtime } from "../runtime.ts";
-import type { TurnDone, TurnSink } from "../turn/sink.ts";
-import type { UIMessage } from "ai";
+import type { HeadlessSink, TurnDone, TurnSink } from "../turn/sink.ts";
+import type { Message as GoblinMessage } from "../message.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
 import { isMessageGoneError, isNotModifiedError } from "./delivery-errors.ts";
@@ -122,7 +122,7 @@ function summonParts(msg: Message): { type: "text"; text: string }[] {
 	return parts;
 }
 
-export function summonMessage(msg: Message): UIMessage {
+export function summonMessage(msg: Message): GoblinMessage {
 	return { id: randomUUID(), role: "user", parts: summonParts(msg) };
 }
 
@@ -142,7 +142,8 @@ function bodyPrefix(text: string, limit: number): string {
 	);
 }
 
-export class GuestSink implements TurnSink {
+export class GuestSink implements HeadlessSink {
+	readonly delivery = "headless";
 	private text = "";
 	private published = "";
 	private fenced = false;

@@ -1,5 +1,5 @@
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { log } from "../../log.ts";
 import type { ProgramProposal } from "../../program-proposals.ts";
 import { PROPOSAL_CHARTER_MAX } from "../../program-proposals.ts";
@@ -186,12 +186,21 @@ export const programTool = (deps: ProgramToolDeps) => {
 		const program = deps.programs.get(id);
 		return program !== null && inScope(program) ? program : null;
 	};
-	return tool({
+	return defineTool({
 		description:
 			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears in you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Grant-shaped changes are proposals, never self-grants: 'create', any charter text change, adding a trigger kind (a cron where none existed, a new or changed mail filter, a hook on a program that lacks one) all stage a pending proposal the operator approves on the originating approval surface — the request activates only on their decision. Rescheduling an existing cron, renaming, lateness edits, toggling, deleting, removing a trigger and rotating an existing hook apply directly. 'review' re-posts a pending proposal's approval after a delivery failure. On project turns the tool reaches the programs bound to this project's responsibilities plus the ones pinned to this conversation itself.",
-		inputSchema: programInputSchema,
+		input: programInputSchema,
 		execute: async (raw, options) => {
-			const input = actionSchema.parse(raw);
+			const parsed = actionSchema.safeParse(raw);
+			if (!parsed.success) {
+				const issue = parsed.error.issues[0];
+				const where =
+					issue !== undefined && issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+				return {
+					error: `invalid arguments — ${where}${issue?.message ?? "does not match any action"}`,
+				};
+			}
+			const input = parsed.data;
 			const address =
 				deps.target !== undefined
 					? { target: deps.target }

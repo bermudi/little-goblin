@@ -28,12 +28,10 @@ test("descriptors reproduce the former name lists", () => {
 	expect(names((p) => p.guestSandbox)).toEqual(["search", "web_search"]);
 	expect(names((p) => !p.guestChannel)).toEqual(
 		[
-			"subagent",
 			"desktop",
 			"program",
 			"mail",
 			"delegate",
-			"herdr",
 			"memory_search",
 			"memory_reflect",
 			"history_search",

@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tool } from "ai";
+import { defineTool } from "../tool.ts";
 import { z } from "zod";
 import { buildSystemPrompt, PROMPT_SECTIONS } from "../agent/prompt.ts";
 import { paths } from "../home-layout.ts";
 import type { ModelMessage } from "ai";
 import { useHome } from "../testkit.ts";
-import { measurePrompt, splitSystemPrompt } from "./itemize.ts";
+import { estimateHistoryChars, measurePrompt, splitSystemPrompt } from "./itemize.ts";
 
 const conv = {
 	id: "dm-1",
@@ -21,6 +21,8 @@ const conv = {
 	memoryExcluded: false,
 	memoryExcludedByProject: false,
 	projectId: null,
+	parentId: null,
+	agentType: null,
 	persona: "personal" as const,
 	archivedAt: null,
 	pinnedAt: null,
@@ -114,9 +116,9 @@ describe("splitSystemPrompt", () => {
 });
 
 describe("measurePrompt", () => {
-	const probe = tool({
+	const probe = defineTool({
 		description: "probe things",
-		inputSchema: z.object({ cmd: z.string() }),
+		input: z.object({ cmd: z.string() }),
 		execute: async () => "probe-result",
 	});
 
@@ -198,14 +200,15 @@ describe("measurePrompt", () => {
 
 	test("a tool's JSON schema is converted once per tool object, not per measure", () => {
 		let accesses = 0;
-		const counting = {
+		const counting = defineTool({
 			description: "counting probe",
-			get inputSchema() {
+			get input() {
 				accesses++;
 				return z.object({ cmd: z.string() });
 			},
-		};
-		const tools = { counting } as unknown as Parameters<typeof measurePrompt>[1];
+			execute: () => "unused",
+		});
+		const tools = { counting };
 		const first = measurePrompt("sys", tools, []);
 		const second = measurePrompt("sys", tools, []);
 		expect(second.toolDefs).toBe(first.toolDefs);
@@ -213,8 +216,9 @@ describe("measurePrompt", () => {
 	});
 
 	test("tool schema conversion failures propagate", () => {
-		const invalid = tool({
-			inputSchema: z.object({ date: z.date() }),
+		const invalid = defineTool({
+			description: "test tool",
+			input: z.object({ date: z.date() }),
 			execute: async () => "unused",
 		});
 		expect(() => measurePrompt("sys", { invalid }, [])).toThrow();
@@ -228,5 +232,36 @@ describe("measurePrompt", () => {
 		);
 		expect(s.history).toBe(2);
 		expect(s.toolResults).toBe(0);
+	});
+});
+
+describe("content tool outputs", () => {
+	test("file parts charge media cost, never jsonLen of the bytes", () => {
+		const png = new Uint8Array(900_000);
+		const messages: ModelMessage[] = [
+			{
+				role: "tool",
+				content: [
+					{
+						type: "tool-result",
+						toolCallId: "c1",
+						toolName: "screenshot",
+						output: {
+							type: "content",
+							value: [
+								{ type: "text", text: "caption" },
+								{
+									type: "file",
+									mediaType: "image/png",
+									data: { type: "data", data: png },
+								},
+							],
+						},
+					},
+				],
+			},
+		];
+		// estimateHistoryChars: media is a fixed 8000-char cost + caption.
+		expect(estimateHistoryChars(messages)).toBe(8000 + "caption".length);
 	});
 });

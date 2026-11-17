@@ -4,7 +4,7 @@
 // append, so replay is byte-stable and rows older than this part simply
 // have none. New facts go in the schema and contextText, nothing else.
 
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { z } from "zod";
 import { channelOf } from "./conversation-address.ts";
 
@@ -36,11 +36,11 @@ export function formatArrival(now: Date): string {
 // object rather than re-reading the row, and both must render the same
 // bytes or the next request rewrites its prefix. A part already present
 // (a client echoing an edited message) is replaced: arrival is ours.
-export function stampArrival(conversationId: string, message: UIMessage, now: Date): void {
+export function stampArrival(conversationId: string, message: Message, now: Date): void {
 	if (message.role !== "user") return;
 	const data: ContextPartData = { at: formatArrival(now), surface: channelOf(conversationId) };
 	const rest = message.parts.filter((p) => p.type !== CONTEXT_PART);
-	message.parts = [...rest, { type: CONTEXT_PART, data } as UIMessage["parts"][number]];
+	message.parts = [...rest, { type: CONTEXT_PART, data } as Message["parts"][number]];
 }
 
 export function contextText(data: ContextPartData): string {

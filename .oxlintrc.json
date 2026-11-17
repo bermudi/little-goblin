@@ -1,0 +1,22 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"plugins": ["typescript"],
+	"categories": { "correctness": "off" },
+	"rules": {
+		"typescript/no-explicit-any": "error",
+		"no-console": "error",
+		"no-empty": "error"
+	},
+	"overrides": [
+		{
+			"files": ["app/src/**"],
+			"plugins": ["typescript", "react"],
+			"rules": { "react/rules-of-hooks": "error" }
+		},
+		{
+			"files": ["app/**", "scripts/**", "**/*.test.ts", "**/*.test.tsx", "src/testkit.ts", "src/test-helpers/**"],
+			"rules": { "no-console": "off" }
+		}
+	],
+	"ignorePatterns": ["app/dist/**"]
+}

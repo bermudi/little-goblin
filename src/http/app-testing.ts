@@ -33,7 +33,6 @@ export function setup(
 		titleFor?: AppChannelDeps["titleFor"];
 		operator?: AppChannelDeps["operator"];
 		rewriteNote?: AppChannelDeps["rewriteNote"];
-		resumeOps?: AppChannelDeps["resumeOps"];
 		approvals?: AppChannelDeps["approvals"];
 		programOps?: AppChannelDeps["programOps"];
 		push?: AppChannelDeps["push"];
@@ -129,7 +128,6 @@ export function setup(
 		...(opts.titleFor !== undefined ? { titleFor: opts.titleFor } : {}),
 		...(opts.operator !== undefined ? { operator: opts.operator } : {}),
 		...(opts.rewriteNote !== undefined ? { rewriteNote: opts.rewriteNote } : {}),
-		...(opts.resumeOps !== undefined ? { resumeOps: opts.resumeOps } : {}),
 		...(opts.approvals !== undefined ? { approvals: opts.approvals } : {}),
 		...(opts.programOps !== undefined ? { programOps: opts.programOps } : {}),
 		...(opts.push !== undefined ? { push: opts.push } : {}),

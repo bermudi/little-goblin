@@ -1,5 +1,5 @@
 # goblin desktop image — Xvfb + XFCE + Chromium + cua-driver
-# (design/subagents.md → Eyes and hands). Build is an operator act;
+# (design/agents.md → The desktop pool). Build is an operator act;
 # goblin never builds or pulls this image (the desktops module errors
 # with the build line instead). Build from the repo root:
 #
@@ -25,7 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # cua-driver — official linux-x86_64 release binary, sha256 pinned
 # (verified against the release checksums.txt and the phase-0 probe
-# artifact; design/subagents.md).
+# artifact; design/agents.md).
 ARG CUA_VERSION=0.34.1
 ARG CUA_SHA256=a41fe2bdcbeea4501dc594c074f16b0975728e0cc7b08b90acea8564d48fafee
 RUN curl -fsSL -o /tmp/cua-driver.tgz \

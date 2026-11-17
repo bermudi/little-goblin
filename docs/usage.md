@@ -122,9 +122,9 @@ transcription, allowed users, URLs, providers, log level. Use this editor for
 routine configuration. Supported settings apply live; boot-pinned settings
 still need an approved restart. The Telegram mini app won't let you save a
 config that removes your own Telegram user id. Delegation has its own
-section: the coding agents (name, herdr kind, native args — the model
-lives here) and the role defaults the delegate tool uses when a call
-names no harness. Machine targets, Gmail, and the skill reviewer have no
+section: the coding agents (name, T3 provider and model) and the role
+defaults the delegate tool uses when a call names no harness. Gmail and
+the skill reviewer have no
 controls yet: configure them during bootstrap/recovery, validate with
 Doctor, and use an approved restart. A delegation change is boot-pinned —
 the page says when a restart is needed. Settings preserves validated

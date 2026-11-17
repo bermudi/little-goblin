@@ -10,6 +10,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { log } from "./log.ts";
+import { ownedReader } from "./dispose.ts";
 
 export const DEFAULT_MODEL = "typesafe/jev-1.13";
 export const FALLBACK_MODEL = DEFAULT_MODEL;
@@ -63,19 +64,16 @@ const MAX_RESPONSE_BYTES = 1_048_576;
 
 async function readJson(response: Response): Promise<unknown> {
 	if (!response.body) throw new System1Error("protocol");
-	const reader = response.body.getReader();
+	await using owner = ownedReader(response.body);
+	const { reader } = owner;
 	const chunks: Uint8Array[] = [];
 	let size = 0;
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			size += value.byteLength;
-			if (size > MAX_RESPONSE_BYTES) throw new System1Error("protocol");
-			chunks.push(value);
-		}
-	} finally {
-		reader.releaseLock();
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		size += value.byteLength;
+		if (size > MAX_RESPONSE_BYTES) throw new System1Error("protocol");
+		chunks.push(value);
 	}
 	const text = Buffer.concat(chunks).toString("utf8");
 	try {

@@ -5,7 +5,7 @@ import { paths } from "../home-layout.ts";
 import { checkInjection } from "../injection.ts";
 import { log } from "../log.ts";
 import { liveStateOf, skillDiskPresence, skillNameSchema } from "../skill-provenance.ts";
-import { listSkills, readSkillFile } from "../stateview.ts";
+import { listSkills, listSkillsWithUsage, readSkillFile } from "../stateview.ts";
 import type { OperatorRequest } from "./operator-deps.ts";
 import { fail, json, methodNotAllowed, readBody, SEGMENT_SCHEMA } from "./operator-http.ts";
 import type {
@@ -31,7 +31,20 @@ export async function skillsRoute(r: OperatorRequest): Promise<Response | null> 
 
 	if (tail === "skills") {
 		if (req.method !== "GET") return methodNotAllowed();
-		return json(listSkills(paths.skills(), paths.skillsProposed()));
+		const sources = deps.skillSources;
+		if (sources === undefined) return json(listSkills(paths.skills(), paths.skillsProposed()));
+		// The app skills read carries usage/state and the archived list
+		// (design/skills.md → Self-authoring, /learn, curator). A corrupt
+		// sidecar fails loud here like every state read.
+		return json(
+			listSkillsWithUsage(
+				sources.skillsDir,
+				sources.proposedDir,
+				sources.archiveDir,
+				sources.usagePath,
+				sources.managedNames(),
+			),
+		);
 	}
 
 	if (tail === "skills/from") {

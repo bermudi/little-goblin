@@ -11,7 +11,7 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { openWakeStore } from "./wake-store.ts";
@@ -64,7 +64,7 @@ async function killAndReopen(child: Subprocess, dbPath: string) {
 function appendTrigger(store: ConversationStore, conversationId: string, calls: string[]) {
 	return (t: { id: string; text: string }) => {
 		calls.push(t.id);
-		const message: UIMessage = {
+		const message: Message = {
 			id: t.id,
 			role: "user",
 			parts: [{ type: "text", text: t.text }],

@@ -1,5 +1,5 @@
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import type { ConversationReads } from "../../conversation-read.ts";
 import { log } from "../../log.ts";
 import { renderEventText } from "../compaction.ts";
@@ -83,15 +83,24 @@ export const historyInputSchema = z
 	});
 
 export const historySearchTool = (deps: HistorySearchDeps) =>
-	tool({
+	defineTool({
 		description:
 			'Search goblin\'s own past conversations across every topic ("what did we decide about X?"). ' +
 			"Search returns topic · role · date · snippet lines, each with its conversation id and event seq — " +
 			"page context around a hit with the context action. Topics excluded from memory are never searched. " +
 			"Context on this conversation's own id always works, including reading back history folded by compaction (the compaction marker names the id and seq).",
-		inputSchema: historyInputSchema,
+		input: historyInputSchema,
 		execute: async (raw) => {
-			const input = actionSchema.parse(raw);
+			const parsed = actionSchema.safeParse(raw);
+			if (!parsed.success) {
+				const issue = parsed.error.issues[0];
+				const where =
+					issue !== undefined && issue.path.length > 0 ? `${issue.path.join(".")}: ` : "";
+				return {
+					error: `invalid arguments — ${where}${issue?.message ?? "does not match any action"}`,
+				};
+			}
+			const input = parsed.data;
 			const own = input.action === "context" && input.conversation === deps.conversationId;
 			if (deps.isExcluded() && !own) {
 				return { error: "memory is excluded in this conversation" };

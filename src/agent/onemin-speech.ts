@@ -47,7 +47,7 @@ import { z } from "zod";
 import type { AuthStore } from "../auth.ts";
 import type { TranscriptionConfig, TtsConfig } from "../config-schema.ts";
 import { log } from "../log.ts";
-import { readBytesCapped, readTextCapped } from "./tools/web.ts";
+import { readCapped, readTextCapped } from "./tools/web.ts";
 import { parseBody, renderError } from "./transcribe-cloud.ts";
 import { timeoutMs as voiceLaneTimeout } from "./tts-cloud.ts";
 import type { ChunkSynthesizer } from "./tts.ts";
@@ -297,7 +297,7 @@ export function oneminSpeech(
 				const { text: body } = await readTextCapped(res, ENVELOPE_CAP);
 				throw renderError("onemin", res.status, body);
 			}
-			const { tooLarge, bytes } = await readBytesCapped(res, AUDIO_CAP);
+			const { tooLarge, bytes } = await readCapped(res.body, AUDIO_CAP);
 			if (tooLarge) throw new Error(`onemin: audio response over ${AUDIO_CAP} bytes`);
 			if (bytes.byteLength === 0) throw new Error("onemin: empty audio response");
 			log.debug("onemin speech chunk synthesized", {

@@ -10,8 +10,6 @@ import { type MemoryContexts, type MemoryWorker, memoryStatus } from "../memory/
 import type { MemoryQueue } from "../memory/queue.ts";
 import type { Runtime } from "../runtime.ts";
 
-import { numberedCalls, type ResumeOps } from "../turn-resume.ts";
-import { canAuthorizeRetry } from "../turn/retry-guard.ts";
 import { withTimeout } from "./deadline.ts";
 import { type ForgetItem, ForgetListings, renderNumberedListing } from "./forget-listings.ts";
 
@@ -33,7 +31,6 @@ export interface CommandDeps {
 	runtime: Runtime;
 	botUsername: string;
 	memory?: CommandMemoryDeps;
-	resumeOps?: () => ResumeOps | undefined;
 }
 
 export function parseCommand(
@@ -74,43 +71,6 @@ function reply(deps: CommandDeps, conv: Conversation, text: string): void {
 	send(deps, conv, text).catch((err: unknown) => {
 		log.warn("command reply failed", err);
 	});
-}
-
-const REPLY_CHUNK_LIMIT = 4000;
-
-function replyLines(deps: CommandDeps, conv: Conversation, lines: string[]): void {
-	const chunks: string[] = [];
-	let batch: string[] = [];
-	let len = 0;
-	const flush = (): void => {
-		if (batch.length === 0) return;
-		chunks.push(batch.join("\n"));
-		batch = [];
-		len = 0;
-	};
-	for (const line of lines) {
-		const capped = line.length > REPLY_CHUNK_LIMIT ? line.slice(0, REPLY_CHUNK_LIMIT) : line;
-		if (batch.length > 0 && len + capped.length + 1 > REPLY_CHUNK_LIMIT) flush();
-		batch.push(capped);
-		len += capped.length + 1;
-	}
-	flush();
-	// Chunks send strictly in order. A failed chunk is logged and the
-	// rest still go out: a timeout is ambiguous (the chunk may have
-	// landed), and dropping the tail would lose most of the reply.
-	void (async () => {
-		for (const [i, chunk] of chunks.entries()) {
-			try {
-				await send(deps, conv, chunk);
-			} catch (err) {
-				log.warn("command reply failed", err, {
-					conversation: conv.id,
-					chunk: i + 1,
-					of: chunks.length,
-				});
-			}
-		}
-	})();
 }
 
 const forgetListingsByDb = new WeakMap<Database, ForgetListings>();
@@ -179,124 +139,6 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 					reply(deps, conv, `compact failed: ${err instanceof Error ? err.message : String(err)}`);
 				}
 			})();
-			return true;
-		}
-
-		case "/resume": {
-			const ops = deps.resumeOps?.();
-			if (ops === undefined) {
-				reply(deps, conv, "turn resume is not wired");
-				return true;
-			}
-			if (arg === "") {
-				const runs = ops.interrupted(conv.id);
-				if (runs.length === 0) {
-					reply(deps, conv, "no interrupted turns in this conversation");
-					return true;
-				}
-				const lines: string[] = [];
-				for (const { run, calls } of runs) {
-					const id = run.runId.slice(0, 8);
-					lines.push(
-						`interrupted run ${id} — started ${new Date(run.startedMs).toISOString()}`,
-						`  ${run.calls.completed} completed · ${run.calls.dispatched} ambiguous · ${run.calls.resolved} decided · ${run.calls.planned} planned · ${run.calls.failed} failed`,
-					);
-					const numbered = numberedCalls(calls);
-					for (const [i, c] of numbered.entries()) {
-						const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
-						lines.push(
-							c.state === "dispatched"
-								? `  ${i + 1}. ${c.name} ${args.slice(0, 120)}`
-								: `  ${i + 1}. ${c.name} — ${c.state}`,
-						);
-					}
-					if (numbered.some((c) => c.state === "dispatched")) {
-						lines.push(
-							`  decide first: /decide ${id} <n|callId> record-result|authorize-retry|skip [note]`,
-						);
-					}
-					// Known calls take one decision only — authorize another
-					// execution — and only by explicit call id, never ordinals.
-					const known = calls.filter((c) => c.state !== "dispatched" && canAuthorizeRetry(c));
-					for (const c of known) {
-						const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
-						lines.push(
-							`  known: ${c.name} ${args.slice(0, 80)} — ${c.state}` +
-								`  · re-run: /decide ${id} ${c.toolCallId} authorize-retry`,
-						);
-					}
-					lines.push(`  /resume ${id} · /abandon ${id}`);
-				}
-				replyLines(deps, conv, lines);
-				return true;
-			}
-			const outcome = ops.resume(conv.id, arg);
-			if (outcome.kind === "resumed") {
-				reply(deps, conv, `resumed ${outcome.runId.slice(0, 8)} — running as a fresh turn`);
-				return true;
-			}
-			if (outcome.kind === "needs-decisions") {
-				const id = outcome.runId.slice(0, 8);
-				const lines = [
-					"undecided tool calls block resume:",
-					...outcome.numbered.flatMap((c, i) => {
-						if (c.state !== "dispatched") return [];
-						const args = typeof c.args === "string" ? c.args : JSON.stringify(c.args);
-						return [`  ${i + 1}. ${c.name} ${args.slice(0, 120)} (${c.toolCallId})`];
-					}),
-					`/decide ${id} <n|callId> record-result|authorize-retry|skip [note]`,
-				];
-				replyLines(deps, conv, lines);
-				return true;
-			}
-			reply(deps, conv, outcome.reason);
-			return true;
-		}
-
-		case "/decide": {
-			const ops = deps.resumeOps?.();
-			if (ops === undefined) {
-				reply(deps, conv, "turn resume is not wired");
-				return true;
-			}
-			const m = /^(\S+)\s+(\S+)\s+(record-result|authorize-retry|skip)(?:\s+([\s\S]+))?$/.exec(arg);
-			if (m === null) {
-				reply(
-					deps,
-					conv,
-					"usage: /decide <runId> <call#|callId> record-result|authorize-retry|skip [note]",
-				);
-				return true;
-			}
-			const outcome = ops.decide(
-				conv.id,
-				m[1]!,
-				m[2]!,
-				m[3]! as "record-result" | "authorize-retry" | "skip",
-				m[4],
-			);
-			reply(deps, conv, outcome.kind === "ok" ? `call ${m[2]!} → ${m[3]!}` : outcome.reason);
-			return true;
-		}
-
-		case "/abandon": {
-			const ops = deps.resumeOps?.();
-			if (ops === undefined) {
-				reply(deps, conv, "turn resume is not wired");
-				return true;
-			}
-			if (arg === "") {
-				reply(deps, conv, "usage: /abandon <runId>");
-				return true;
-			}
-			const outcome = ops.abandon(conv.id, arg);
-			reply(
-				deps,
-				conv,
-				outcome.kind === "ok"
-					? `abandoned ${arg.slice(0, 8)} — it will not resume`
-					: outcome.reason,
-			);
 			return true;
 		}
 
@@ -561,11 +403,9 @@ export const COMMANDS = [
 	{ command: "memory", description: "memory status, retry or dismiss blocked retention" },
 	{ command: "forget", description: "list or delete memorized sources" },
 	{ command: "skill", description: "invoke a skill by name, or fetch one from a GitHub URL" },
+	{ command: "curator", description: "skill usage clock: status, run, pin, unpin, restore" },
 	{ command: "stop", description: "fence the running turn" },
 	{ command: "compact", description: "summarize older history to free context" },
-	{ command: "resume", description: "resume an interrupted turn" },
-	{ command: "decide", description: "resolve an interrupted tool call" },
-	{ command: "abandon", description: "drop an interrupted turn" },
 ] as const;
 
 export const DM_COMMANDS = [

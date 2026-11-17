@@ -73,7 +73,7 @@ plumbing underneath. The operator suspects overlapping tools hurt the model's
 performance; this is not measured yet. Judge the tools by what makes sense for
 a capable agent, not by usage, because much of this code is new.
 
-For existing Herdr work: discover and summarize read-only, then coordinate
+For existing harness work (T3 Code threads): discover and summarize read-only, then coordinate
 only after an explicit handover. The intended interaction is to open/create
 a Goblin project, identify the existing work, and say "take over this."
 Goblin reconstructs a correctable understanding instead of presenting a
@@ -109,10 +109,10 @@ execution capacity, not an unlimited background polling service.
 
 - Observe status, deduplicate events, and make routine scheduling decisions
   in code. Spend inference when something needs judgment or useful work.
-- Use capable Herdr coding harnesses through their existing allowances.
-  Herdr is not the free-model pool.
+- Use capable coding harnesses through their existing allowances, when the
+  operator asks for one. Harness runs are not the free-model pool.
 - Delegate suitable lower-stakes research, summarization, comparisons, and
-  lead discovery to free models through pi-durable.
+  lead discovery to free models through native agents.
 - Cheap/free workers are less trusted and use bounded tools and sandboxes.
   Goblin's broad orchestration access can be intentional; this is not a
   blanket approval-gates project.
@@ -126,15 +126,18 @@ goals, not a choice of a particular model, provider, or numeric budget.
 
 ## Execution Direction
 
-Near term, Herdr is the bridge to the capable coding agents already available.
-Pi-durable also supplies sandboxed workers and computer-use execution.
+Goblin has real subagents, like Claude Code's (operator, 2026-11-16): one
+`agent` tool whose children run on Goblin's own runtime and model layer, so
+every inference lane (including the Claude subscription) is available to
+them. External harnesses (codex, opencode, …) run only when the operator asks
+for one, through `delegate`. The operator works in T3 Code, not Herdr; T3 Code
+replaces Herdr as the harness transport and the handover surface
+(design/agents.md).
 
 Long term, Goblin is where work lives: roles, assignments, responsibilities,
-histories, evidence, and follow-through. Pi-durable should grow into the
-standard execution foundation, including heavy work, rather than remain a
-permanent cheap-helper lane. Herdr can eventually leave this workflow when
-native execution and inference economics support it; do not retire useful
-access before there is a working replacement.
+histories, evidence, and follow-through. Native agents grow into the standard
+execution foundation, including heavy work. Do not retire useful access
+before there is a working replacement.
 
 Borrow mechanisms, not whole products: Paperclip's continuing work/team
 management and executable workflows that keep branching and intermediate

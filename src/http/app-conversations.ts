@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { z } from "zod";
 import { contextLimitCached } from "../agent/models-dev.ts";
 import { readWorkspaceFile, workspaceReadStatus } from "../box-files.ts";
@@ -66,7 +66,7 @@ const convPatchBody = z
 		message: "nothing to write",
 	});
 
-function contextUsageOf(m: UIMessage): {
+function contextUsageOf(m: Message): {
 	input: number | null;
 	output: number | null;
 	cacheRead: number | null;
@@ -241,7 +241,7 @@ const TITLE_DIGEST_PART_CHARS = 500;
 // /messages serves the newest window plus an olderCursor instead of
 // the whole transcript — history stays bounded however big it grows.
 const MESSAGES_PAGE = 200;
-export function titleDigest(history: readonly UIMessage[]): string {
+export function titleDigest(history: readonly Message[]): string {
 	const users = history
 		.filter((m) => m.role === "user")
 		.map((m) => projectRollText(m.parts).trim())
@@ -830,8 +830,20 @@ export async function handleConversationsRoute(
 			prevUpto = upto;
 		}
 		const seqToId = rateableIds(store, convId.id, slim);
+		// Every served message carries its append stamp as
+		// `metadata.createdAt` — the row's own clock, so pre-stamp turns
+		// and non-reply events (user, system) answer "how old" too. The
+		// store's blob is never rewritten; the key lands at serve time.
 		const body: AppMessageList = {
-			messages: entries.map((entry) => entry.message),
+			messages: entries.map((entry) => ({
+				...entry.message,
+				metadata: {
+					...(typeof entry.message.metadata === "object" && entry.message.metadata !== null
+						? entry.message.metadata
+						: {}),
+					createdAt: entry.createdAt,
+				},
+			})),
 			start,
 			// The next page ends right before this window's first entry.
 			olderCursor:

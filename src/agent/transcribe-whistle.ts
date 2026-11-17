@@ -8,16 +8,17 @@
 // managed installs.
 
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 import { paths } from "../home-layout.ts";
 import { log } from "../log.ts";
+import { tempDir } from "../dispose.ts";
 import { boundedRun, spawnProc } from "../proc.ts";
 import { durableWriteBytes } from "../durable.ts";
 import type { EngineDeps, EngineTranscript, SpeechEngine } from "./transcribe.ts";
+import { readCapped } from "./tools/web.ts";
 
 // The engine's hard per-pass ceiling — 28 s leaves margin (measured on
 // this binary).
@@ -158,7 +159,9 @@ async function artifact(
 	if (declared !== null && Number(declared) > ARTIFACT_CAP) {
 		throw new Error(`whistle: artifact ${url} declares ${declared} bytes — not the pinned file`);
 	}
-	const data = await readCapped(res, ARTIFACT_CAP);
+	const { tooLarge, bytes: data } = await readCapped(res.body, ARTIFACT_CAP);
+	if (tooLarge)
+		throw new Error(`whistle: artifact download over ${ARTIFACT_CAP} bytes — not the pinned file`);
 	const got = createHash("sha256").update(data).digest("hex");
 	if (got !== sha256) {
 		throw new Error(
@@ -170,24 +173,6 @@ async function artifact(
 	chmodSync(dest, mode);
 	log.info("whistle artifact fetched", { dest, bytes: data.byteLength });
 	return dest;
-}
-
-async function readCapped(res: Response, cap: number): Promise<Uint8Array> {
-	if (res.body === null) return new Uint8Array(await res.arrayBuffer());
-	const reader = res.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let total = 0;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		if (total + value.byteLength > cap) {
-			await reader.cancel(new Error("over cap"));
-			throw new Error(`whistle: artifact download over ${cap} bytes — not the pinned file`);
-		}
-		chunks.push(value);
-		total += value.byteLength;
-	}
-	return Buffer.concat(chunks);
 }
 
 // needle stdout: one JSON line. Silence is {"text":"","language":""}.
@@ -215,54 +200,50 @@ export function whistleEngine(cfg: WhistleCfg, deps: WhistleDeps = {}): SpeechEn
 			// calls.
 			const argv = [engine, "--model", weights, "--audio", file.path];
 			if (cfg.language !== undefined) argv.push("--audio-language", cfg.language);
-			let kwDir: string | undefined;
-			try {
-				if (cfg.keywords !== undefined && cfg.keywords.length > 0) {
-					// Inside the try so a failed write still removes the
-					// mkdtemp dir.
-					kwDir = mkdtempSync(join(tmpdir(), "goblin-kw-"));
-					const kwFile = join(kwDir, "keywords.txt");
-					await writeFile(kwFile, `${cfg.keywords.join("\n")}\n`);
-					argv.push("--audio-keywords", kwFile);
-				}
-				const r = await boundedRun(spawnProc(argv), {
-					timeoutMs: WHISTLE_TIMEOUT_MS,
-					maxOutput: 1024 * 1024,
-				});
-				if (r.timedOut) {
-					throw new Error(`whistle: engine timed out after ${WHISTLE_TIMEOUT_MS}ms`);
-				}
-				if (r.exitCode !== 0) {
-					throw new Error(
-						`whistle: engine exited ${r.exitCode ?? "unreaped"} — ${r.stderr.trim().slice(0, 300)}`,
-					);
-				}
-				let json: unknown;
-				try {
-					json = JSON.parse(r.stdout.trim());
-				} catch {
-					throw new Error(`whistle: engine stdout is not JSON — ${r.stdout.trim().slice(0, 300)}`);
-				}
-				const parsed = engineOutput.safeParse(json);
-				if (!parsed.success) {
-					throw new Error(`whistle: unexpected engine output — ${r.stdout.trim().slice(0, 300)}`);
-				}
-				if (parsed.data.decode_tps !== undefined || parsed.data.ttft_ms !== undefined) {
-					log.debug("whistle engine pass", {
-						ttftMs: parsed.data.ttft_ms,
-						decodeTps: parsed.data.decode_tps,
-						file: file.filename,
-					});
-				}
-				return {
-					text: parsed.data.text,
-					...(parsed.data.language ? { language: parsed.data.language } : {}),
-				};
-			} finally {
-				if (kwDir !== undefined) {
-					rmSync(kwDir, { recursive: true, force: true });
-				}
+			const keywords = cfg.keywords;
+			await using kwOwner =
+				keywords !== undefined && keywords.length > 0
+					? await tempDir("goblin-kw-")
+					: null;
+			const kwDir = kwOwner?.path;
+			if (kwDir !== undefined && keywords !== undefined) {
+				const kwFile = join(kwDir, "keywords.txt");
+				await writeFile(kwFile, `${keywords.join("\n")}\n`);
+				argv.push("--audio-keywords", kwFile);
 			}
+			const r = await boundedRun(spawnProc(argv), {
+				timeoutMs: WHISTLE_TIMEOUT_MS,
+				maxOutput: 1024 * 1024,
+			});
+			if (r.timedOut) {
+				throw new Error(`whistle: engine timed out after ${WHISTLE_TIMEOUT_MS}ms`);
+			}
+			if (r.exitCode !== 0) {
+				throw new Error(
+					`whistle: engine exited ${r.exitCode ?? "unreaped"} — ${r.stderr.trim().slice(0, 300)}`,
+				);
+			}
+			let json: unknown;
+			try {
+				json = JSON.parse(r.stdout.trim());
+			} catch {
+				throw new Error(`whistle: engine stdout is not JSON — ${r.stdout.trim().slice(0, 300)}`);
+			}
+			const parsed = engineOutput.safeParse(json);
+			if (!parsed.success) {
+				throw new Error(`whistle: unexpected engine output — ${r.stdout.trim().slice(0, 300)}`);
+			}
+			if (parsed.data.decode_tps !== undefined || parsed.data.ttft_ms !== undefined) {
+				log.debug("whistle engine pass", {
+					ttftMs: parsed.data.ttft_ms,
+					decodeTps: parsed.data.decode_tps,
+					file: file.filename,
+				});
+			}
+			return {
+				text: parsed.data.text,
+				...(parsed.data.language ? { language: parsed.data.language } : {}),
+			};
 		},
 	};
 }

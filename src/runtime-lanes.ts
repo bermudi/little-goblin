@@ -8,19 +8,12 @@
 // turn/ module ever sees it (design/runtime-turn.md → Turn-module
 // boundary).
 
-import { type UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import type { CompactionOutcome } from "./agent/compaction.ts";
 import type { Conversation } from "./conversation-read.ts";
 import { log } from "./log.ts";
-import type { TurnRecovery } from "./turn/overflow.ts";
 import type { TurnSink } from "./turn/sink.ts";
 import { endLive, type LiveChunks } from "./turn/stream.ts";
-
-// An operator-resume admission's seed (turn-resume.ts builds it): the
-// interrupted run's carry-over minus the dead attempt's live wire and
-// recall, both re-derived at the fresh admission. `resumedFrom` links the
-// new run row to the source and arms the fence's recovery guard.
-export type ResumeSeed = Omit<TurnRecovery, "live" | "memory" | "overflowed">;
 
 export interface QueuedTurn {
 	// The durable event seq of the appended message — captured from the
@@ -29,7 +22,7 @@ export interface QueuedTurn {
 	seq: number;
 	// Already appended to history; a live predecessor may fold it into its
 	// next model call.
-	message: UIMessage;
+	message: Message;
 	sink: TurnSink;
 	// Prevents a throwing sink from receiving a second terminal notification.
 	// Drain's last-ditch handler can therefore safely settle the whole lane.
@@ -37,10 +30,6 @@ export interface QueuedTurn {
 	// A throwing stream sink is detached without killing the turn; remaining
 	// sinks receive future chunks.
 	streamFailed?: boolean;
-	// Present only on a claim head — a seeded turn answers for the
-	// interrupted run it continues; claimed as a member its recovery
-	// would silently drop, so the claim boundary stops before it.
-	resumeSeed?: ResumeSeed | undefined;
 	release?: (() => void) | undefined;
 }
 
@@ -76,18 +65,14 @@ interface Lane {
 
 // A streaming submit stays queued behind a headless turn so it can lead its
 // own attempt. A streaming head may claim all pending work; a headless head
-// claims only the leading non-streaming run. A resume seed leads only its own
-// claim — joining another turn as a member would drop its recovery.
+// claims only the leading non-streaming run.
 // `headLeads` distinguishes the two claim contexts: the drain's claim
-// promotes pending[0] to head (its seed rides along), while wire/steer
-// claims take members only — a seed at index 0 must stop them too.
+// promotes pending[0] to head, while wire/steer claims take members only.
 function claimableCount(pending: QueuedTurn[], headStreams: boolean, headLeads: boolean): number {
 	const start = headLeads ? 1 : 0;
-	const seeded = pending.findIndex((t, i) => i >= start && t.resumeSeed !== undefined);
-	const limit = seeded === -1 ? pending.length : seeded;
-	if (headStreams) return limit;
-	const first = pending.findIndex((t, i) => i >= start && t.sink.onStreamChunk !== undefined);
-	return first === -1 ? limit : Math.min(limit, first);
+	if (headStreams) return pending.length;
+	const first = pending.findIndex((t, i) => i >= start && t.sink.delivery === "stream");
+	return first === -1 ? pending.length : Math.min(pending.length, first);
 }
 
 function claimPending(lane: Lane, headStreams: boolean, headLeads = true): QueuedTurn[] {
@@ -185,7 +170,7 @@ export class LaneRegistry {
 	// The pending head's delivery mode — the drain claim's boundary.
 	headStreams(convId: string): boolean {
 		const lane = this.lane(convId);
-		return lane.pending[0]?.sink.onStreamChunk !== undefined;
+		return lane.pending[0]?.sink.delivery === "stream";
 	}
 
 	// Splice the claimable prefix off the pending queue (claimableCount).

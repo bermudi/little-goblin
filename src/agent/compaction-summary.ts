@@ -3,7 +3,7 @@
 // code-made parts the model never touches — verbatim operator messages
 // and an identifier index — so a later fold cannot paraphrase them away.
 
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { isMachineryText } from "../tags.ts";
 
 export const REQUIRED_HEADINGS = [
@@ -30,9 +30,10 @@ ${REQUIRED_HEADINGS.join("\n")}
 Under ## Decisions: what was decided and done, with rationale. Under ## Open TODOs: unfinished multi-step work and its state. Under ## Constraints/Rules: standing instructions and preferences the operator gave. Under ## Pending user asks: every unresolved operator request — never omit one; record completed requests elsewhere. Under ## Exact identifiers: literal values exactly as seen (IDs, URLs, file paths, ports, hashes, dates, times).
 When a previous summary is present, re-distill it with the new messages and drop stale duplicates. Omit small talk and process chatter. Never invent anything not present in the span.`;
 
-// A real operator message: user role, not a resume request, not
-// machinery speech (program fires, delegation and subagent notices).
-export function operatorText(message: UIMessage): string | null {
+// A real operator message: user role, not a legacy resume request
+// (#594 removed the writer; old rows still carry the marker), not
+// machinery speech (program fires, delegation and agent notices).
+export function operatorText(message: Message): string | null {
 	if (message.role !== "user") return null;
 	const meta = message.metadata;
 	if (typeof meta === "object" && meta !== null && "goblinResume" in meta) return null;

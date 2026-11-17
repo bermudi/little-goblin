@@ -1,7 +1,7 @@
-import { tool } from "ai";
 import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { log } from "../../log.ts";
 import { SNIFF_HEAD, sniffImageBytes, type SniffedImage } from "../sniff.ts";
 import { resolvePath, unicodeTwin } from "./paths.ts";
@@ -155,12 +155,20 @@ function clampLine(line: string): string {
 	);
 }
 
-export const readFileTool = (cwd: string, visionAvailable = false) =>
-	tool({
+export const readFileTool = (
+	cwd: string,
+	visionAvailable = false,
+	/** Fires with the resolved absolute path on every successful read —
+	 *  the skill-usage watch (design/skills.md → Self-authoring, /learn,
+	 *  curator) keys the curator's clock on read_file of a catalog
+	 *  SKILL.md. Absent everywhere except the wired runtime. */
+	onRead?: (abs: string) => void,
+) =>
+	defineTool({
 		description:
 			"Read a file's contents with line numbers. offset is 1-based; a negative offset reads the tail (-5 = last 5 lines); limit caps lines returned. " +
 			`Output is capped at ${MAX_LINES} lines / ${MAX_BYTES / 1024}KB — the cap notice says which offset continues the file.`,
-		inputSchema: z.object({
+		input: z.object({
 			path: z.string().describe("File path, relative to the working directory or absolute"),
 			offset: z
 				.number()
@@ -196,6 +204,7 @@ export const readFileTool = (cwd: string, visionAvailable = false) =>
 				}
 				return read;
 			}
+			onRead?.(abs);
 			if (read.text.length === 0) {
 				return { content: "[file is empty — 0 bytes]", lines: 0, shown: 0 };
 			}

@@ -4,7 +4,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { pinEvent } from "./mod.ts";
+import { foldedUuids, pinEvent } from "./mod.ts";
 
 describe("pinEvent", () => {
 	test("an init system frame projects its identity fields", () => {
@@ -221,5 +221,16 @@ describe("pinEvent", () => {
 		]) {
 			expect(pinEvent(msg as unknown as SDKMessage)).toBeNull();
 		}
+	});
+});
+
+describe("foldedUuids", () => {
+	test("reads the CLI's ack list off any frame", () => {
+		const msg = { type: "result", user_message_uuids: ["a", "b"] } as unknown as SDKMessage;
+		expect(foldedUuids(msg)).toEqual(["a", "b"]);
+	});
+	test("a frame without acks is null", () => {
+		expect(foldedUuids({ type: "result" } as unknown as SDKMessage)).toBeNull();
+		expect(foldedUuids({ type: "result", user_message_uuids: [] } as unknown as SDKMessage)).toBeNull();
 	});
 });

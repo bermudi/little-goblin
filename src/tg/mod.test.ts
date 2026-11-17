@@ -316,7 +316,7 @@ describe("applyMenuButton", () => {
 	});
 });
 
-import type { UIMessage } from "ai";
+import type { Message as GoblinMessage } from "../message.ts";
 import type { Message } from "grammy/types";
 import type { AuthStore } from "../auth.ts";
 import { type ConversationStore, openStore } from "../conversation.ts";
@@ -343,6 +343,7 @@ function tgMsg(p: Record<string, unknown>): Message {
 }
 
 const nullSink: TurnSink = {
+	delivery: "headless",
 	onTextDelta: () => {},
 	onReasoningDelta: () => {},
 	onToolCall: () => {},
@@ -353,7 +354,7 @@ interface RouterHarness {
 	env: IntakeEnv;
 	pushed: Array<{
 		conv: string;
-		parts: UIMessage["parts"];
+		parts: GoblinMessage["parts"];
 		replyTo: number | undefined;
 		updateId: number;
 	}>;
@@ -405,7 +406,7 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 	const buffer = {
 		push: (
 			conv: string,
-			item: { parts: UIMessage["parts"]; replyTo: number | undefined; updateId: number },
+			item: { parts: GoblinMessage["parts"]; replyTo: number | undefined; updateId: number },
 		) => {
 			pushed.push({ conv, parts: item.parts, replyTo: item.replyTo, updateId: item.updateId });
 		},
@@ -458,7 +459,7 @@ function flushTest(
 	env: IntakeEnv,
 	convId: string,
 	items: Array<{
-		parts: UIMessage["parts"];
+		parts: GoblinMessage["parts"];
 		replyTo?: number;
 		chatId?: number;
 		quoted?: { messageId: number; text: string };
@@ -1049,9 +1050,9 @@ describe("operator-only command gate", () => {
 		try {
 			for (const [i, text] of [
 				"/skill",
-				"/skill herdr",
+				"/skill demo",
 				"/skill https://github.com/o/r/tree/main/skills/x",
-				"/skill@goblin herdr",
+				"/skill@goblin demo",
 			].entries()) {
 				handleMessage(h.env, guestMsg(text, 70 + i), 70 + i);
 				// The refusal latch coalesces while a send is pending — let
@@ -1157,10 +1158,10 @@ describe("operator-only command gate", () => {
 
 	test("an operator's /skill in a shared topic turns with the audience note and real delivery", async () => {
 		const home = useHome("goblin-skillgate-");
-		mkdirSync(join(home, "workspace/skills/herdr"), { recursive: true });
+		mkdirSync(join(home, "workspace/skills/demo"), { recursive: true });
 		writeFileSync(
-			join(home, "workspace/skills/herdr/SKILL.md"),
-			"---\nname: herdr\ndescription: d\n---\nbody",
+			join(home, "workspace/skills/demo/SKILL.md"),
+			"---\nname: demo\ndescription: d\n---\nbody",
 		);
 		const h = routerHarness();
 		const submitted: Array<{ conv: string; sink: TurnSink }> = [];
@@ -1174,7 +1175,7 @@ describe("operator-only command gate", () => {
 				message_id: 80,
 				chat: { id: -100, type: "supergroup" },
 				from: { id: 1, is_bot: false, first_name: "op" },
-				text: "/skill herdr",
+				text: "/skill demo",
 				message_thread_id: 7,
 				is_topic_message: true,
 			}),
@@ -1418,7 +1419,7 @@ describe("flushConversation", () => {
 		const conv = h.store.resolve({ kind: "topic", chatId: -100, threadId: 7 }, "/w");
 		h.store.setMeta(conv.id, { title: "New Chat", titleImplicit: true });
 		const titleCalls: string[] = [];
-		const submitted: Array<{ conv: string; parts: UIMessage["parts"]; sink: TurnSink }> = [];
+		const submitted: Array<{ conv: string; parts: GoblinMessage["parts"]; sink: TurnSink }> = [];
 		h.env.deps = {
 			...h.env.deps,
 			titleFor: (text: string) => {
@@ -1646,7 +1647,7 @@ describe("durable intake", () => {
 		await h.env.intake.get("dm:1");
 		// Simulate a restart after journaling but before flush — buffered
 		// parts are lost; replay uses only the normalized SQLite payload.
-		const submitted: UIMessage[][] = [];
+		const submitted: GoblinMessage[][] = [];
 		h.env.deps.runtime = {
 			submitPersisted: (conv: { id: string }, _m: unknown, sink: TurnSink) => {
 				submitted.push(h.store.history(conv.id));
@@ -1839,7 +1840,7 @@ describe("handleEditedMessage", () => {
 			media: over.media ?? null,
 			mediaError: null,
 		});
-		const parts: UIMessage["parts"] = over.text === "" ? [] : [{ type: "text", text: over.text }];
+		const parts: GoblinMessage["parts"] = over.text === "" ? [] : [{ type: "text", text: over.text }];
 		buffer.push(over.lane, {
 			updateId: over.updateId,
 			parts,

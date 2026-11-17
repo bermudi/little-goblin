@@ -9,7 +9,7 @@
 //              append/submit boundary.
 import { writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { openStore } from "../conversation.ts";
 import { setLogFile } from "../log.ts";
 import { openWakeStore } from "../wake-store.ts";
@@ -37,7 +37,7 @@ const rec = wakes.record({
 });
 if (MODE === "committed") {
 	wakes.commit(rec.wakeId, (t) => {
-		const message: UIMessage = {
+		const message: Message = {
 			id: t.id,
 			role: "user",
 			parts: [{ type: "text", text: t.text }],

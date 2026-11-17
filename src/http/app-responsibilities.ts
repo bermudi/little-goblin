@@ -3,14 +3,14 @@
 // the same verbs the coordination tool exposes, direct from the app.
 // A correction is a durable operator event that steers the next wake;
 // pause/cancel disarm follow-through by status, never by hiding rows.
-// Detach/reattach only change the binding — the Herdr workspace is
+// Detach/reattach only change the binding — the T3 thread is
 // never touched (adoption grants no cleanup ownership).
 
 import { z } from "zod";
 import { log } from "../log.ts";
-import type { OperatorAgent } from "../herdr.ts";
+import type { T3Thread } from "../t3.ts";
 import { feedForProject, feedOpen, type FeedDeps } from "../responsibility-feed.ts";
-import { cursorFromAgent } from "../responsibility-observer.ts";
+import { cursorFromThread } from "../responsibility-observer.ts";
 import type { ResponsibilityStore } from "../responsibilities.ts";
 import {
 	ReconciliationConflict,
@@ -28,8 +28,10 @@ export interface AppResponsibilityDeps {
 	resps: ResponsibilityStore;
 	/** Record + pump — the correction lands durable, then wakes. */
 	service: Pick<ResponsibilityService, "ensureFollowup" | "correct">;
-	/** The live operator read reattach binds fresh identity from. */
-	listAgents(): Promise<OperatorAgent[]>;
+	/** The named T3 project's live threads — reattach binds the current
+	 *  record of the bound thread id from this list. The argument is
+	 *  the attachment's bound T3 project id (target.session). */
+	listThreads(project: string): Promise<T3Thread[]>;
 }
 
 const correctBody = z
@@ -170,50 +172,25 @@ export async function handleResponsibilitiesRoute(
 			log.info("attachment detached via app", { attachment: attachmentId });
 			return Response.json({ ok: true }, { headers: NO_STORE });
 		}
-		// Reattach binds the CURRENT occupant — a same-pane replacement
-		// gets a new generation with its new agent_session; never the
-		// old binding revived. The live snapshot is also the new
-		// generation's observation cursor: without it the observer
-		// silently adopts its next poll as baseline and developments in
-		// between are lost.
-		const agents = await respsDeps.listAgents();
-		// A stored pane is the identity selector; its former name may
-		// now belong to another agent. Name lookup is legacy-only.
-		const matches = agents.filter((a) =>
-			att.target.paneId !== null
-				? a.pane_id === att.target.paneId
-				: a.name === att.target.agentName,
-		);
-		if (matches.length !== 1) {
-			log.warn("app attachment reattach refused — target not unique", {
+		// Reattach rebinds the CURRENT record of the bound thread id —
+		// a thread that was detached and has since moved on gets a new
+		// generation with its fresh cursor; never the old binding
+		// revived. The live snapshot is also the new generation's
+		// observation cursor: without it the observer silently adopts
+		// its next poll as baseline and developments in between are
+		// lost.
+		const threads = await respsDeps.listThreads(att.target.session);
+		const threadId = att.target.agentSession ?? att.target.agentName;
+		const live = threads.find((t) => t.threadId === threadId);
+		if (live === undefined) {
+			log.warn("app attachment reattach refused — thread not listed", {
 				attachment: attachmentId,
-				pane: att.target.paneId,
-				agentName: att.target.agentName,
-				matches: matches.length,
+				thread: threadId,
 			});
 			return Response.json(
 				{
 					error:
-						matches.length === 0
-							? "no live agent at the attachment's target — list agents before reattaching"
-							: "ambiguous attachment target — list agents and attach by pane instead",
-				},
-				{ status: 409, headers: NO_STORE },
-			);
-		}
-		const live = matches[0]!;
-		if (live.agent !== att.target.kind || live.terminal_id === null) {
-			log.warn("app attachment reattach refused — identity mismatch", {
-				attachment: attachmentId,
-				pane: live.pane_id,
-				expectedKind: att.target.kind,
-				kind: live.agent,
-				terminalId: live.terminal_id,
-			});
-			return Response.json(
-				{
-					error:
-						"target kind changed or terminal identity missing — list agents before reattaching",
+						"the bound T3 thread is not in the project's thread list — it may be gone; detach instead",
 				},
 				{ status: 409, headers: NO_STORE },
 			);
@@ -221,19 +198,19 @@ export async function handleResponsibilitiesRoute(
 		const target: AttachmentTarget = {
 			server: att.target.server,
 			session: att.target.session,
-			agentName: live.name ?? att.target.agentName,
-			paneId: live.pane_id,
-			terminalId: live.terminal_id,
-			agentSession: live.agent_session,
-			kind: live.agent ?? att.target.kind,
-			cwd: live.cwd,
+			agentName: live.threadId,
+			paneId: null,
+			terminalId: null,
+			agentSession: live.threadId,
+			kind: live.providerInstanceId ?? att.target.kind,
+			cwd: live.worktreePath ?? att.target.cwd,
 		};
 		let rebound: Attachment;
 		try {
 			// `att` is the pre-listing snapshot — the row must not have
 			// moved (detach, another reattach, a health change) while the
-			// live-agent read was in flight.
-			rebound = respsDeps.resps.reattach(attachmentId, target, live, cursorFromAgent(live), att);
+			// live listing was in flight.
+			rebound = respsDeps.resps.reattach(attachmentId, target, live, cursorFromThread({ thread: live, messages: [] }), att);
 		} catch (err) {
 			if (err instanceof StaleAttachmentError) {
 				log.warn("app attachment reattach refused — binding moved mid-listing", {

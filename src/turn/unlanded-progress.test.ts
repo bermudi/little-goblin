@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { UIMessage, UIMessageChunk } from "ai";
+import type { Message, MessageChunk } from "../message.ts";
 import type { ToolCallState, TurnToolCall } from "../turn-journal.ts";
 import {
 	renderUnlandedTurnProgress,
@@ -16,7 +16,6 @@ function call(state: ToolCallState, over: Partial<TurnToolCall> = {}): TurnToolC
 		argsHash: "h",
 		state,
 		replayed: false,
-		retryConsumed: false,
 		retryFromKnown: false,
 		result: null,
 		error: null,
@@ -28,7 +27,7 @@ function call(state: ToolCallState, over: Partial<TurnToolCall> = {}): TurnToolC
 	};
 }
 
-const wireReply = (id: string, text: string): UIMessage => ({
+const wireReply = (id: string, text: string): Message => ({
 	id,
 	role: "assistant",
 	parts: [{ type: "text", text }],
@@ -82,8 +81,7 @@ describe("unlanded-turn progress rendering", () => {
 		const args = { blob: "a".repeat(400) };
 		const calls: TurnToolCall[] = [
 			call("resolved-done", { toolCallId: "rd", name: "dropped-oldest", result: "r".repeat(400) }),
-			call("resolved-retry", { toolCallId: "rr-kept", retryConsumed: false }),
-			call("resolved-retry", { toolCallId: "rr-spent", retryConsumed: true }),
+			call("resolved-retry", { toolCallId: "rr-kept" }),
 			call("planned", { toolCallId: "p" }),
 			call("resolved-skip", { toolCallId: "rs" }),
 			call("completed", { toolCallId: "rp", replayed: true, result: "synthetic" }),
@@ -102,17 +100,15 @@ describe("unlanded-turn progress rendering", () => {
 		});
 		expect(rendered).not.toBeNull();
 		const lines = rendered!.text.split("\n");
-		// Every unknown survives; resolved-retry without retryFromKnown renders
-		// unknown whether or not the grant was spent; planned, skip, and
-		// replayed rows are gone.
-		expect(lines.filter((l) => l.includes("OUTCOME UNKNOWN"))).toHaveLength(2);
-		expect(rendered!.unknown).toBe(2);
-		expect(rendered!.calls).toBe(32);
+		// Every unknown survives; a resolved-retry without retryFromKnown
+		// renders unknown; planned, skip, and replayed rows are gone.
+		expect(lines.filter((l) => l.includes("OUTCOME UNKNOWN"))).toHaveLength(1);
+		expect(rendered!.unknown).toBe(1);
+		expect(rendered!.calls).toBe(31);
 		expect(rendered!.text).toContain("(11 earlier calls omitted)");
 		expect(rendered!.text).toContain("1. probe {} — OUTCOME UNKNOWN");
-		expect(rendered!.text).toContain("2. probe {} — OUTCOME UNKNOWN");
-		expect(rendered!.text).toContain("3. bulk-10");
-		expect(rendered!.text).toContain("32. bulk-39");
+		expect(rendered!.text).toContain("2. bulk-10");
+		expect(rendered!.text).toContain("31. bulk-39");
 		expect(rendered!.text).not.toContain("dropped-oldest");
 		expect(rendered!.text).not.toContain("bulk-9 ");
 
@@ -138,26 +134,24 @@ describe("unlanded-turn progress rendering", () => {
 		);
 	});
 
-	test("resolved-retry keeps a known outcome, spent or not; an ambiguous one stays unknown", () => {
-		for (const retryConsumed of [false, true]) {
-			const render = (over: Partial<TurnToolCall>): string =>
-				renderUnlandedTurnProgress({
-					runId: "r",
-					outcome: { kind: "failed", failure: "f" },
-					calls: [call("resolved-retry", { retryConsumed, ...over })],
-					partial: null,
-					reply: null,
-				})!.text;
-			expect(render({ retryFromKnown: true, result: "the-result" })).toContain(
-				"1. probe {} — completed: the-result",
-			);
-			expect(render({ retryFromKnown: true, error: "the-error" })).toContain(
-				"1. probe {} — failed: the-error",
-			);
-			expect(render({ retryFromKnown: false, result: "ignored" })).toContain(
-				"1. probe {} — OUTCOME UNKNOWN",
-			);
-		}
+	test("resolved-retry keeps a known outcome when granted on a known call; an ambiguous one stays unknown", () => {
+		const render = (over: Partial<TurnToolCall>): string =>
+			renderUnlandedTurnProgress({
+				runId: "r",
+				outcome: { kind: "failed", failure: "f" },
+				calls: [call("resolved-retry", over)],
+				partial: null,
+				reply: null,
+			})!.text;
+		expect(render({ retryFromKnown: true, result: "the-result" })).toContain(
+			"1. probe {} — completed: the-result",
+		);
+		expect(render({ retryFromKnown: true, error: "the-error" })).toContain(
+			"1. probe {} — failed: the-error",
+		);
+		expect(render({ retryFromKnown: false, result: "ignored" })).toContain(
+			"1. probe {} — OUTCOME UNKNOWN",
+		);
 	});
 
 	test("malformed partial (string, wrong shape) contributes no text and never throws", () => {
@@ -248,11 +242,11 @@ describe("unlanded-turn progress rendering", () => {
 });
 
 describe("replyFromWire", () => {
-	const textChunks = (id: string, pieces: string[]): UIMessageChunk[] => [
+	const textChunks = (id: string, pieces: string[]): MessageChunk[] => [
 		{ type: "start", messageId: id },
 		{ type: "start-step" },
 		{ type: "text-start", id: "t1" },
-		...pieces.map((delta): UIMessageChunk => ({ type: "text-delta", id: "t1", delta })),
+		...pieces.map((delta): MessageChunk => ({ type: "text-delta", id: "t1", delta })),
 	];
 
 	test("text chunks (no finish) replay into the streamed assistant message", async () => {

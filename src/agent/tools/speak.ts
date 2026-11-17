@@ -1,6 +1,6 @@
 import { extname } from "node:path";
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { log } from "../../log.ts";
 import { readTextFile } from "./read.ts";
 import { resolvePath } from "./paths.ts";
@@ -33,11 +33,11 @@ export function speakTool(
 	voices?: readonly string[],
 ) {
 	const allowed = voices?.length ? [...new Set(voices)] : null;
-	return tool({
+	return defineTool({
 		description:
 			"Synthesize text or a plain-text/Markdown file and send it as voice notes." +
 			(allowed ? ` Voice (optional, match the text's language): ${allowed.join(", ")}.` : ""),
-		inputSchema: speakInputSchema(voices),
+		input: speakInputSchema(voices),
 		execute: async ({ text, path, voice }) => {
 			let input = text;
 			if (path !== undefined) {

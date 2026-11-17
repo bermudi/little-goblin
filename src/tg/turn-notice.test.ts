@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api } from "grammy";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import { appAddress } from "../conversation-address.ts";
 import { setLogFile } from "../log.ts";
@@ -110,7 +110,7 @@ const failed = (lines: Line[]) =>
 	lines.filter((l) => l.msg === "interrupted turn notice send failed");
 
 describe("interrupted turn notices", () => {
-	test("each at-open run notifies every operator once; text carries title, counts, resume directions", async () => {
+	test("each at-open run notifies every operator once; text carries title and counts", async () => {
 		const dir = tmpDir("goblin-tn-log-");
 		const logPath = join(dir, "goblin.log");
 		setLogFile(logPath);
@@ -152,19 +152,19 @@ describe("interrupted turn notices", () => {
 			const dmSend = sends.find((s) => s.text.includes("interrupted turn aaaabbbb"))!;
 			expect(dmSend.text).toContain("ops room, started 2026-10-11T00:00:00.000Z");
 			expect(dmSend.text).toContain(
-				"1 completed, 1 dispatched (ambiguous), 0 decided, 1 planned tool call(s).",
+				"1 completed, 1 dispatched (ambiguous), 0 resolved, 1 planned tool call(s).",
 			);
 			expect(dmSend.text).toContain(
-				"The turn was not replayed — resume explicitly with /resume aaaabbbb sent in that conversation, not in this DM.",
+				"The process stopped mid-turn and the turn was not replayed — send a message in that conversation to continue; tool effects may already have happened, check before retrying.",
 			);
 
 			const appSend = sends.find((s) => s.text.includes("interrupted turn ccccdddd"))!;
 			expect(appSend.text).toContain("app/ops-app, started 2026-10-11T00:00:00.000Z");
 			expect(appSend.text).toContain(
-				"0 completed, 0 dispatched (ambiguous), 0 decided, 0 planned tool call(s).",
+				"0 completed, 0 dispatched (ambiguous), 0 resolved, 0 planned tool call(s).",
 			);
 			expect(appSend.text).toContain(
-				"The turn was not replayed — open that conversation in the app to resume it — Telegram /resume can't reach app lanes.",
+				"The process stopped mid-turn and the turn was not replayed — send a message in that conversation to continue; tool effects may already have happened, check before retrying.",
 			);
 
 			expect(sent(logLines(logPath))).toHaveLength(0);
@@ -281,11 +281,11 @@ describe("interrupted turn notices", () => {
 	test("a notice whose run left 'interrupted' before delivery is claimed without sending", () => {
 		const { store, journal } = crashBed((store) => {
 			const dm = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-			return { seeds: [{ runId: "resumable-run", convId: dm.id }] };
+			return { seeds: [{ runId: "settled-run", convId: dm.id }] };
 		});
-		// The durable outbox can outlive its advice: the operator resumed
-		// the run through the app while Telegram was still attaching.
-		journal.markRun("resumable-run", "abandoned");
+		// The durable outbox can outlive its advice: the run reached a
+		// terminal state through some later path before the send landed.
+		store.db.run("UPDATE turn_runs SET status = 'abandoned' WHERE run_id = 'settled-run'");
 		const { api, sends } = fakeApi();
 		sendInterruptedTurnNotices(api, pendingInterrupted(journal), OPERATORS, () => undefined, journal);
 		expect(sends).toHaveLength(0);
@@ -367,13 +367,13 @@ describe("interrupted turn notices", () => {
 });
 
 describe("stranded input notices", () => {
-	const user = (text: string, metadata?: UIMessage["metadata"]): UIMessage => ({
+	const user = (text: string, metadata?: Message["metadata"]): Message => ({
 		id: crypto.randomUUID(),
 		role: "user",
 		parts: [{ type: "text", text }],
 		...(metadata === undefined ? {} : { metadata }),
 	});
-	const assistant = (text: string): UIMessage => ({
+	const assistant = (text: string): Message => ({
 		id: crypto.randomUUID(),
 		role: "assistant",
 		parts: [{ type: "text", text }],
@@ -413,7 +413,7 @@ describe("stranded input notices", () => {
 				s.append(dm.id, [assistant("answer")]);
 				// Fenced input: landed after the run's owned floor.
 				s.append(dm.id, [user("did this land?")]);
-				// Machinery speech and a generated resume marker never count.
+				// Machinery speech and a legacy resume marker never count.
 				s.append(dm.id, [user(`${programFireTag("nightly", "cron")}\ncharter`)]);
 				s.append(dm.id, [
 					user("resume please", { goblinResume: { sourceRunId: "aaaabbbb-dm" } }),
@@ -461,12 +461,12 @@ describe("stranded input notices", () => {
 			const dm1 = sends.find((s) => s.text.startsWith("ops room:"))!;
 			expect(dm1.text).toBe(
 				"ops room: 1 message(s) you sent before the restart " +
-					"weren't answered — send /resume or reply to continue",
+					"weren't answered — send a message in that conversation to continue",
 			);
 			const dm2 = sends.find((s) => s.text.startsWith("dm:2:"))!;
 			expect(dm2.text).toBe(
 				"dm:2: 2 message(s) you sent before the restart " +
-					"weren't answered — send /resume or reply to continue",
+					"weren't answered — send a message in that conversation to continue",
 			);
 			const appSend = sends.find((s) => s.text.startsWith("app/ops-app:"))!;
 			expect(appSend.text).toContain(

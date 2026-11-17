@@ -10,12 +10,20 @@ import {
 	type LanguageModelV4CallOptions,
 	type LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
-import { type LanguageModel, type ToolSet, tool, type UIMessage, type UIMessageChunk } from "ai";
+import type { LanguageModel } from "ai";
+import { defineTool, type Tools } from "./tool.ts";
+import type { Message, MessageChunk } from "./message.ts";
 import { z } from "zod";
+import type { AuthStore } from "./auth.ts";
+import { openCacheObservation } from "./cache-observation.ts";
+import type { Config } from "./config-schema.ts";
+import { openNotes } from "./notes.ts";
+import { openProjects } from "./projects.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { systemPromptFor } from "./agent/prompt.ts";
 import { toolNames } from "./agent/tools/mod.ts";
 import { readFileTool } from "./agent/tools/read.ts";
+import { sendFileTool } from "./agent/tools/send.ts";
 import { withScript } from "./agent/tools/script.ts";
 import { parseConfig } from "./config.ts";
 import { memoryConfigSchema } from "./config-schema.ts";
@@ -49,10 +57,14 @@ import {
 	waitUntil,
 } from "./testkit.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
-import type { ModelStep } from "./turn/engine.ts";
+import type { ModelStep } from "./turn/ai-sdk-step.ts";
+import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
 import { openWindowCapture } from "./window-capture.ts";
+import { makeStepBuilder } from "./agent/step.ts";
+import { _resetModelsDevForTest } from "./agent/models-dev.ts";
+import { prefixInstruction } from "./agent/compaction.ts";
 
 type Store = ReturnType<typeof openStore>;
 type Conv = ReturnType<Store["resolve"]>;
@@ -70,7 +82,7 @@ function rig(
 		delayMs?: number;
 		step?: Partial<Omit<ModelStep, "model">>;
 		buildStep?: RuntimeDeps["buildStep"];
-		tools?: ToolSet;
+		tools?: Tools;
 		makeTools?: RuntimeDeps["makeTools"];
 		deps?: Partial<
 			Pick<
@@ -150,7 +162,7 @@ describe("skill body ownership across turns", () => {
 				id: skill.id,
 				role: "user",
 				parts: [{ type: "text", text: "just text" }],
-			} as unknown as UIMessage;
+			} as unknown as Message;
 			r.runtime.submit(r.conv, ordinary, new HeadlessSink());
 			await drain(r);
 			const secondSeq = r.store.lastUserSeq(r.conv.id)!;
@@ -180,9 +192,9 @@ describe("skill body ownership across turns", () => {
 		);
 		const entered = deferred<void>();
 		const release = deferred<void>();
-		const probe = tool({
+		const probe = defineTool({
 			description: "probe",
-			inputSchema: z.object({}),
+			input: z.object({}),
 			execute: async () => {
 				entered.resolve();
 				await release.promise;
@@ -201,19 +213,19 @@ describe("skill body ownership across turns", () => {
 		try {
 			// A historical invocation — the SAME app id as the steer will
 			// carry, but a different durable seq.
-			const historical: UIMessage = {
+			const historical: Message = {
 				id: "reused",
 				role: "user",
 				parts: [
 					{ type: "data-skill", data: { name: "rtdemo" } },
 					{ type: "text", text: "old invoke" },
 				],
-			} as UIMessage;
+			} as Message;
 			r.store.append(r.conv.id, [historical]);
 			const historicalSeq = r.store.lastUserSeq(r.conv.id)!;
 			r.store.append(
 				r.conv.id,
-				[{ id: "a0", role: "assistant", parts: [{ type: "text", text: "prior" }] } as UIMessage],
+				[{ id: "a0", role: "assistant", parts: [{ type: "text", text: "prior" }] } as Message],
 				{ anchorSeq: historicalSeq },
 			);
 			const head = new RecordingSink();
@@ -230,7 +242,7 @@ describe("skill body ownership across turns", () => {
 						{ type: "data-skill", data: { name: "rtdemo" } },
 						{ type: "text", text: "steered invoke" },
 					],
-				} as UIMessage,
+				} as Message,
 				steer,
 			);
 			const steerSeq = r.store.lastUserSeq(r.conv.id)!;
@@ -264,9 +276,9 @@ describe("skill body ownership across turns", () => {
 	test("a folded steer becomes the durable source; a still-queued input never does", async () => {
 		const entered = deferred<void>();
 		const release = deferred<void>();
-		const gate = tool({
+		const gate = defineTool({
 			description: "held",
-			inputSchema: z.object({}),
+			input: z.object({}),
 			execute: async () => {
 				entered.resolve();
 				await release.promise;
@@ -513,8 +525,9 @@ describe("provider-filter retry", () => {
 			model: s.model,
 			addr: appAddress("filter-retry"),
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: () => {
 						executions++;
 						return { result: "already completed" };
@@ -549,8 +562,9 @@ describe("provider-filter retry", () => {
 		const r = rig({
 			model: s.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: () => {
 						executions++;
 						return { ok: true };
@@ -575,7 +589,7 @@ describe("provider-filter retry", () => {
 		]);
 		const r = rig({
 			model: s.model,
-			tools: { probe: tool({ inputSchema: z.object({}), execute: () => "done" }) },
+			tools: { probe: defineTool({ description: "test tool", input: z.object({}), execute: () => "done" }) },
 		});
 		const sink = submit(r, "test");
 		expect(await sink.done).toEqual({
@@ -620,8 +634,9 @@ describe("provider-filter retry", () => {
 			const r = rig({
 				model: s.model,
 				tools: {
-					probe: tool({
-						inputSchema: z.object({}),
+					probe: defineTool({
+						description: "test tool",
+						input: z.object({}),
 						execute: () => {
 							executions++;
 							return "done";
@@ -789,8 +804,9 @@ describe("transient transport retry (#191)", () => {
 			model: s.model,
 			step: { transientRetryDelayMs: 0 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: () => {
 						executions++;
 						return "done";
@@ -823,8 +839,9 @@ describe("transient transport retry (#191)", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model: s.model, system: "test", transientRetryDelayMs: 0 }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => "done",
 				}),
 			}),
@@ -990,6 +1007,7 @@ describe("turn authority", () => {
 			}, 40),
 		);
 		submit(r, "two", {
+			delivery: "headless",
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},
@@ -1023,8 +1041,9 @@ describe("turn authority", () => {
 		// A slow onDone gates the fenced unwind: the terminal fan-out awaits
 		// it before runTurn returns, and `active` resolves only then.
 		const gate = deferred<void>();
-		const chunks: UIMessageChunk[] = [];
+		const chunks: MessageChunk[] = [];
 		const sink: TurnSink = {
+			delivery: "stream",
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},
@@ -1163,8 +1182,9 @@ describe("turn authority", () => {
 		const r = rig({
 			model: edge.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executed = true;
 						return { ok: true };
@@ -1183,17 +1203,19 @@ describe("turn authority", () => {
 
 	test("a nested script call under stale authority never executes — fence copies, same pipeline", async () => {
 		const ran: string[] = [];
-		const raw: ToolSet = {
-			bash: tool({
-				inputSchema: z.object({}),
+		const raw: Tools = {
+			bash: defineTool({
+				description: "test tool",
+				input: z.object({}),
 				execute: async () => {
 					ran.push("bash");
 					r.store.bumpEpoch(r.conv.id); // authority moves mid-script
 					return { ok: true };
 				},
 			}),
-			read_file: tool({
-				inputSchema: z.object({}),
+			read_file: defineTool({
+				description: "test tool",
+				input: z.object({}),
 				execute: async () => {
 					ran.push("read_file");
 					return { ok: true };
@@ -1349,8 +1371,9 @@ describe("turn authority", () => {
 		const r = rig({
 			model: edge.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executed = true;
 						return { ok: true };
@@ -1441,6 +1464,7 @@ describe("turn authority", () => {
 		const r = rig({ deltas: ["a"], delayMs: 5 });
 		let calls = 0;
 		submit(r, "hi", {
+			delivery: "headless",
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},
@@ -1553,8 +1577,9 @@ describe("context overflow recovery", () => {
 			model: s.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						return "probe-result-7f3a";
@@ -1622,8 +1647,9 @@ describe("context overflow recovery", () => {
 			model: s.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						return "probe-result-7f3a";
@@ -1689,8 +1715,9 @@ describe("context overflow recovery", () => {
 			model: s.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						// A large streaming input lands between steps: durable in
 						// history (it alone dwarfs the 250-token tail budget) but
@@ -1854,8 +1881,9 @@ describe("context overflow recovery", () => {
 			model: s.model,
 			step: { contextWindow: 1_048_576 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					// ~260k estimated tokens — past the 256k trigger cap on a
 					// 1M window (50% would be ~524k).
 					execute: async () => "x".repeat(1_040_000),
@@ -1901,8 +1929,9 @@ describe("context overflow recovery", () => {
 			model: s.model,
 			step: { contextWindow: 8_000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						return "y".repeat(30_000);
@@ -1955,8 +1984,9 @@ describe("context overflow recovery", () => {
 			model: s.model,
 			step: { contextWindow: 8_000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						return "y".repeat(30_000);
@@ -2237,7 +2267,7 @@ describe("cache stability", () => {
 		writeFileSync(b, "pngdata-b");
 		const { model, prompts } = recordingModel(["ok"], 5);
 		const r = rig({ model, step: { inputModalities: new Set(["text", "image"]) } });
-		const att = (f: string, name: string, size: number): UIMessage["parts"][number] => ({
+		const att = (f: string, name: string, size: number): Message["parts"][number] => ({
 			type: "data-attachment" as const,
 			data: { path: f, mediaType: "image/png", filename: name, size },
 		});
@@ -2338,9 +2368,9 @@ describe("cache stability", () => {
 			model: edge.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				boom: tool({
+				boom: defineTool({
 					description: "always throws",
-					inputSchema: z.object({}),
+					input: z.object({}),
 					execute: async (): Promise<string> => {
 						throw new Error("kapow");
 					},
@@ -2705,8 +2735,9 @@ describe("cache stability", () => {
 				system: systemPromptFor(store, c, toolNames(toolset)).text,
 			}),
 			makeTools: () => ({
-				memory_search: tool({
-					inputSchema: z.object({ q: z.string() }),
+				memory_search: defineTool({
+					description: "test tool",
+					input: z.object({ q: z.string() }),
 					execute: async () => "no memory",
 				}),
 			}),
@@ -2822,7 +2853,7 @@ describe("cache stability", () => {
 						output: "ORIGINAL_TOOL_OUTPUT",
 					},
 				],
-			} as unknown as UIMessage,
+			} as unknown as Message,
 		]);
 		const { model, prompts } = recordingModel(["ok"], 5);
 		const calls: string[] = [];
@@ -2987,8 +3018,9 @@ describe("skill reviewer hook", () => {
 		const r = rig({
 			model: s.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						await gate.promise;
@@ -3035,8 +3067,9 @@ describe("skill reviewer hook", () => {
 		const r = rig({
 			model: s.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						await gate.promise;
@@ -3102,8 +3135,9 @@ function steeringSetup(model: LanguageModel, gate?: Promise<void>, modalities?: 
 		model,
 		step: modalities ? { inputModalities: modalities } : {},
 		tools: {
-			probe: tool({
-				inputSchema: z.object({}),
+			probe: defineTool({
+				description: "test tool",
+				input: z.object({}),
 				execute: async () => {
 					if (gate) await gate;
 					return { ok: true };
@@ -3191,8 +3225,9 @@ describe("steering", () => {
 		const r = rig({
 			model: s.model,
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async (_in, opts) => {
 						ran.push(opts.toolCallId);
 						toolStarted.resolve();
@@ -3237,7 +3272,7 @@ describe("steering", () => {
 			).toBeNull();
 			submit(r, "go", s1);
 			await s1.firstToolCall; // step 1 (the tool call) is on the wire, tool gated
-			const seen: UIMessageChunk[] = [];
+			const seen: MessageChunk[] = [];
 			const endedRef: { done: TurnDone | null } = { done: null };
 			const replay = r.runtime.subscribeLiveChunks(
 				r.conv.id,
@@ -3347,7 +3382,7 @@ describe("steering", () => {
 						data: { path: fifo, mediaType: "image/png", filename: "photo.png", size: 7 },
 					},
 				],
-			} as UIMessage,
+			} as Message,
 			s2,
 		);
 		gate.resolve(); // tool resolves → prepareStep splices the photo → readFile parks on the FIFO
@@ -3401,7 +3436,7 @@ describe("steering", () => {
 					{ type: "text", text: "read this" },
 					{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
 				],
-			} as UIMessage,
+			} as Message,
 			s2,
 		);
 		gate.resolve();
@@ -3432,9 +3467,9 @@ describe("steering", () => {
 		const gate = deferred<void>();
 		const s = gatedToolModel("never reaches the client");
 		const r = steeringSetup(s.model, gate.promise, new Set(["text", "image"]));
-		const joinerChunks: UIMessageChunk[] = [];
+		const joinerChunks: MessageChunk[] = [];
 		class JoiningSink extends RecordingSink {
-			override onStreamChunk(c: UIMessageChunk) {
+			override onStreamChunk(c: MessageChunk) {
 				joinerChunks.push(c);
 			}
 		}
@@ -3455,7 +3490,7 @@ describe("steering", () => {
 						data: { path: fifo, mediaType: "image/png", filename: "photo.png", size: 7 },
 					},
 				],
-			} as UIMessage,
+			} as Message,
 			joiner,
 		);
 		gate.resolve();
@@ -3590,7 +3625,7 @@ describe("streaming lane boundary", () => {
 				id: "same-id",
 				role: "user",
 				parts: [{ type: "text", text: "background beat" }],
-			} as UIMessage,
+			} as Message,
 			background,
 		);
 		r.runtime.submit(
@@ -3599,7 +3634,7 @@ describe("streaming lane boundary", () => {
 				id: "same-id",
 				role: "user",
 				parts: [{ type: "text", text: "client owns me" }],
-			} as UIMessage,
+			} as Message,
 			client,
 		);
 		gate.resolve();
@@ -3680,8 +3715,9 @@ describe("loop landings", () => {
 			addr: appAddress("loop"),
 			step: opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {},
 			tools: {
-				probe: tool({
-					inputSchema: z.looseObject({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.looseObject({}),
 					execute: async () => {
 						executions++;
 						return opts.executeAsync ? opts.executeAsync() : (opts.execute?.() ?? "ok");
@@ -3758,8 +3794,9 @@ describe("loop landings", () => {
 			model,
 			addr: appAddress("loop"),
 			tools: {
-				probe: tool({
-					inputSchema: z.object({ q: z.string() }),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({ q: z.string() }),
 					execute: async () => {
 						executions++;
 						return "never runs";
@@ -3977,7 +4014,7 @@ describe("loop landings", () => {
 					{ type: "text", text: "read this" },
 					{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
 				],
-			} as UIMessage,
+			} as Message,
 			s2,
 		);
 		releaseTool();
@@ -3991,6 +4028,309 @@ describe("loop landings", () => {
 		expect(requests.at(-1)!.prompt).toContain("context window is nearly full");
 		expect(s1.text).toBe("the wrapped answer");
 		store.close();
+	});
+});
+
+describe("prefix compaction request identity", () => {
+	test("F — the real step builder and runtime replay turn two's request prefix without executing tools", async () => {
+		_resetModelsDevForTest();
+		const home = useHome("goblin-prefix-runtime-");
+		const catalogPath = join(home, "state/models.dev.json");
+		mkdirSync(join(home, "state"), { recursive: true });
+		writeFileSync(
+			catalogPath,
+			JSON.stringify({
+				fake: {
+					models: {
+						"model-one": {
+							modalities: { input: ["text"] },
+							limit: { context: 100_000 },
+						},
+					},
+				},
+			}),
+		);
+		const originalFetch = globalThis.fetch;
+		const captured: Record<string, unknown>[] = [];
+		let executions = 0;
+		let providerCalls = 0;
+		const validSummary =
+			"## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nfirst request; restart prior; second request\n## Exact identifiers";
+		const encoder = new TextEncoder();
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			const url = String(input);
+			if (url.startsWith("https://models.dev/")) {
+				return new Response(
+					JSON.stringify({
+						fake: {
+							models: {
+								"model-one": {
+									modalities: { input: ["text"] },
+									limit: { context: 100_000 },
+								},
+							},
+						},
+					}),
+					{ headers: { "content-type": "application/json" } },
+				);
+			}
+			if (!url.includes("/chat/completions")) return originalFetch(input, init);
+			if (typeof init?.body !== "string") throw new Error("fake provider received no JSON body");
+			const parsed: unknown = JSON.parse(init.body);
+			if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+				throw new Error("fake provider body was not an object");
+			}
+			const body = parsed as Record<string, unknown>;
+			captured.push(body);
+			providerCalls++;
+			const containsPrefixInstruction = init.body.includes("[goblin compaction request");
+			const content =
+				providerCalls === 1
+					? "first assistant reply ".repeat(6_500)
+					: providerCalls === 5
+						? "restart prior assistant reply ".repeat(1_000)
+						: providerCalls === 6
+							? "restart large assistant reply ".repeat(6_500)
+					: containsPrefixInstruction
+						? validSummary
+						: providerCalls === 2
+							? "turn-two assistant reply"
+							: validSummary;
+			if (body.stream !== true) {
+				return new Response(
+					JSON.stringify({
+						id: `chatcmpl-complete-${providerCalls}`,
+						object: "chat.completion",
+						created: 1,
+						model: "model-one",
+						choices: [
+							{
+								index: 0,
+								message: { role: "assistant", content },
+								finish_reason: "stop",
+							},
+						],
+						usage: {
+							prompt_tokens: 100,
+							completion_tokens: 10,
+							total_tokens: 110,
+						},
+					}),
+					{ headers: { "content-type": "application/json" } },
+				);
+			}
+			const id = `chatcmpl-test-${providerCalls}`;
+			const events = [
+				{
+					id,
+					object: "chat.completion.chunk",
+					created: 1,
+					model: "model-one",
+					choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: null }],
+				},
+				{
+					id,
+					object: "chat.completion.chunk",
+					created: 1,
+					model: "model-one",
+					choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+				},
+			];
+			const stream = new ReadableStream<Uint8Array>({
+				start(controller) {
+					for (const event of events) controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+					controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+					controller.close();
+				},
+			});
+			return new Response(stream, {
+				headers: { "content-type": "text/event-stream; charset=utf-8" },
+			});
+		}) as typeof fetch;
+
+		const store = openStore(tmpDb("goblin-prefix-runtime-"));
+		const cfg: Config = {
+			providers: {
+				fake: { kind: "openai-compatible", baseUrl: "https://fake.provider/v1", auth: "test-key" },
+			},
+			model: "fake/model-one",
+			tts: false,
+			favorites: [],
+			modelFallbacks: [],
+			thinking: "medium",
+			operators: [1],
+			allowedUsers: [1],
+			telegram: { enabled: true, dmGapMinutes: 45, richReplies: true, showReasoning: false },
+			http: { port: 8787 },
+			logLevel: "info",
+		};
+		const projects = openProjects(store);
+		const auth: AuthStore = {
+			resolve: async (name) => {
+				if (name !== "test-key") throw new Error(`unexpected auth name: ${name}`);
+				return "test-key";
+			},
+			has: (name) => name === "test-key",
+			names: () => ["test-key"],
+		};
+		const builder = makeStepBuilder({
+			configRef: { current: cfg, ttsDown: false },
+			auth,
+			store,
+			projects,
+			notes: openNotes(store, { projects }),
+			observation: openCacheObservation(store.db),
+		});
+		const turnSteps: ModelStep[] = [];
+		const prefixSteps: import("./turn/prefix-summary.ts").PrefixStep[] = [];
+		const buildStep: RuntimeDeps["buildStep"] = async (conv, tools) => {
+			const step = await builder.buildStep(conv, tools);
+			if ("engine" in step) throw new Error("fake API provider unexpectedly built a Claude step");
+			turnSteps.push(step);
+			return step;
+		};
+		const compaction = {
+			...builder.compaction!,
+			prefixStep: async (conv: Conv, modelRef: string) => {
+				const step = await builder.compaction!.prefixStep!(conv, modelRef);
+				if (step !== null) prefixSteps.push(step);
+				return step;
+			},
+		};
+		const conv = captureConversationSettings(
+			store,
+			store.resolve({ kind: "dm", chatId: 1 }, "/w"),
+			cfg,
+		);
+		const tools = {
+			probe: defineTool({
+				description: "A no-op probe used to verify compaction only sends tool definitions.",
+				input: z.object({}),
+				execute: async () => {
+					executions++;
+					return "executed";
+				},
+			}),
+		};
+		const runtime = new Runtime({
+			engines: [aiSdkEngine],
+			store,
+			buildStep,
+			compaction,
+			makeTools: (_target, _voice, _recording, deliverFile) => ({
+				...tools,
+				...(deliverFile !== undefined ? { send_file: sendFileTool("/w", deliverFile) } : {}),
+			}),
+			captureConversation: (target) => captureConversationSettings(store, target, cfg),
+		});
+		const r = { store, conv, runtime };
+		let restartedRuntime: Runtime | null = null;
+		const submitWithFileDelivery = (text: string) => {
+			const sink = Object.assign(new RecordingSink(), {
+				onFile: async (_file: import("./agent/tools/send.ts").OutgoingFile) => {},
+			});
+			runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
+			return sink;
+		};
+		try {
+			const first = submitWithFileDelivery("first request");
+			expect(await first.done).toEqual({ kind: "completed" });
+			await drain(r);
+			const second = submitWithFileDelivery("second request");
+			expect(await second.done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect(providerCalls).toBe(2);
+			const folded = await runtime.compact(conv);
+			expect(folded.kind).toBe("compacted");
+			expect(providerCalls).toBe(4); // flush, then one prefix summary call
+			expect(turnSteps).toHaveLength(2);
+			expect(prefixSteps).toHaveLength(1);
+			expect(prefixSteps[0]!.system).toBe(turnSteps[1]!.system);
+			expect(prefixSteps[0]!.providerOptions).toEqual(turnSteps[1]!.providerOptions);
+
+			const turnTwo = captured[1]!;
+			const compactionRequest = captured.find((body) =>
+				JSON.stringify(body).includes("[goblin compaction request"),
+			);
+			expect(compactionRequest).toBeDefined();
+			const turnMessages = turnTwo.messages;
+			const compactMessages = compactionRequest!.messages;
+			expect(Array.isArray(turnMessages)).toBe(true);
+			expect(Array.isArray(compactMessages)).toBe(true);
+			if (!Array.isArray(turnMessages) || !Array.isArray(compactMessages)) {
+				throw new Error("fake provider captured malformed messages");
+			}
+			expect(compactMessages.slice(0, turnMessages.length)).toEqual(turnMessages);
+			const appended = compactMessages.slice(turnMessages.length);
+			expect(appended).toHaveLength(2);
+			expect(appended[0]).toMatchObject({ role: "assistant", content: "turn-two assistant reply" });
+			expect(appended[1]).toMatchObject({
+				role: "user",
+				content: prefixInstruction({
+					keptExcerpt: "second request",
+					hasPreviousSummary: false,
+				}),
+			});
+			expect(compactionRequest!.tools).toEqual(turnTwo.tools);
+			expect((turnTwo.tools as { function?: { name?: string } }[]).map((tool) => tool.function?.name))
+				.toContain("send_file");
+			expect((compactionRequest!.tools as { function?: { name?: string } }[]).map((tool) => tool.function?.name))
+				.toContain("send_file");
+			expect(compactionRequest!.reasoning_effort).toEqual(turnTwo.reasoning_effort);
+			const systemOf = (messages: unknown[]): unknown =>
+				messages.find(
+					(message) =>
+						typeof message === "object" &&
+						message !== null &&
+						"role" in message &&
+						message.role === "system",
+				);
+			expect(systemOf(compactMessages)).toEqual(systemOf(turnMessages));
+			expect(executions).toBe(0);
+
+			const restartConv = captureConversationSettings(
+				store,
+				store.resolve({ kind: "dm", chatId: 2 }, "/w"),
+				cfg,
+			);
+			const prior = new RecordingSink();
+			runtime.submit(restartConv, userMessage([{ type: "text", text: "restart prior" }]), prior);
+			expect(await prior.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(restartConv.id), "seed prior conversation turn");
+			const large = new RecordingSink();
+			runtime.submit(restartConv, userMessage([{ type: "text", text: "restart large seed" }]), large);
+			expect(await large.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(restartConv.id), "seed large conversation turn");
+
+			restartedRuntime = new Runtime({
+				engines: [aiSdkEngine],
+				store,
+				buildStep,
+				compaction,
+				makeTools: (_target, _voice, _recording, deliverFile) => ({
+					...tools,
+					...(deliverFile !== undefined ? { send_file: sendFileTool("/w", deliverFile) } : {}),
+				}),
+				captureConversation: (target) => captureConversationSettings(store, target, cfg),
+			});
+			setLogFile(join(home, "state/goblin.log"));
+			try {
+				const afterRestart = await restartedRuntime.compact(restartConv);
+				expect(afterRestart.kind).toBe("compacted");
+			} finally {
+				setLogFile(null);
+			}
+			expect(providerCalls).toBe(8);
+			expect(readFileSync(join(home, "state/goblin.log"), "utf8")).toContain(
+				'"mode":"text","reason":"no-prefix"',
+			);
+		} finally {
+			if (restartedRuntime !== null) await restartedRuntime.shutdown();
+			await runtime.shutdown();
+			store.close();
+			globalThis.fetch = originalFetch;
+			_resetModelsDevForTest();
+		}
 	});
 });
 
@@ -4155,6 +4495,7 @@ test("invalid durable app settings report admission error exactly once without s
 	});
 	try {
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), {
+			delivery: "headless",
 			onTextDelta() {},
 			onReasoningDelta() {},
 			onToolCall() {},
@@ -4187,8 +4528,9 @@ describe("turn journal", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true, out: "done" }),
 				}),
 			}),
@@ -4281,8 +4623,9 @@ describe("turn journal", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						return { ok: true };
@@ -4365,8 +4708,9 @@ describe("turn journal", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model, system: "test" }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						executions++;
 						return { ok: true };
@@ -4459,11 +4803,11 @@ describe("turn journal", () => {
 });
 
 describe("unlanded-turn progress — error rail", () => {
-	function systemEvents(store: ReturnType<typeof openStore>, convId: string): UIMessage[] {
+	function systemEvents(store: ReturnType<typeof openStore>, convId: string): Message[] {
 		return store.history(convId).filter((m) => m.role === "system");
 	}
 
-	function eventText(m: UIMessage): string {
+	function eventText(m: Message): string {
 		const part = m.parts[0];
 		return part !== undefined && part.type === "text" ? part.text : "";
 	}
@@ -4481,7 +4825,7 @@ describe("unlanded-turn progress — error rail", () => {
 		const real = openTurnJournal(store.db);
 		// Ordering proof: whatever system events exist when finishRun fires
 		// were appended before the stamp wake settling reads.
-		let systemAtFinish: UIMessage[] = [];
+		let systemAtFinish: Message[] = [];
 		const journal: TurnJournal = {
 			...real,
 			finishRun(runId, status, delivery) {
@@ -4499,8 +4843,9 @@ describe("unlanded-turn progress — error rail", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true }),
 				}),
 			}),
@@ -4556,8 +4901,9 @@ describe("unlanded-turn progress — error rail", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true }),
 				}),
 			}),
@@ -4612,8 +4958,9 @@ describe("unlanded-turn progress — error rail", () => {
 			turnJournal: journal,
 			buildStep: () => ({ model: edge.model, system: "test" }),
 			makeTools: () => ({
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true }),
 				}),
 			}),
@@ -4891,8 +5238,9 @@ describe("unlanded-turn progress — error rail", () => {
 			model: s.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true }),
 				}),
 			},
@@ -4967,8 +5315,9 @@ describe("unlanded-turn progress — error rail", () => {
 			model: s.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true }),
 				}),
 			},
@@ -5040,8 +5389,9 @@ describe("unlanded-turn progress — error rail", () => {
 			model: s.model,
 			step: { contextWindow: 1000 },
 			tools: {
-				probe: tool({
-					inputSchema: z.object({}),
+				probe: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => ({ ok: true }),
 				}),
 			},
@@ -5074,6 +5424,64 @@ describe("unlanded-turn progress — error rail", () => {
 		} finally {
 			await r.runtime.shutdown();
 			store.close();
+		}
+	});
+
+	test("process death leaves only the interrupted rail — a new message runs a normal turn carrying it (#594)", async () => {
+		const dbPath = tmpDb("goblin-rt-fp-crash-");
+		const store = openStore(dbPath);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		store.append(conv.id, [
+			{ id: "u1", role: "user", parts: [{ type: "text", text: "the killed ask" }] } as Message,
+		]);
+		const journal = openTurnJournal(store.db);
+		journal.beginRun({
+			runId: "run-dead",
+			conversationId: conv.id,
+			epoch: 1,
+			anchorSeq: null,
+			steerMark: null,
+			convSnapshot: {},
+			toolNames: ["probe"],
+			startedAt: new Date().toISOString(),
+		});
+		journal.noteToolInput("run-dead", "call-1", "probe", {});
+		journal.noteToolDispatch("run-dead", "call-1", "probe", {});
+		store.close(); // the process dies with the run still 'running'
+
+		// Boot: the journal open reclassifies and records the rail event —
+		// the only durable trace the dead turn leaves.
+		const reopened = openStore(dbPath);
+		const journal2 = openTurnJournal(reopened.db, {
+			onInterrupted: (run, calls) => appendInterruptedProgress(reopened, run, calls),
+		});
+		expect(journal2.get("run-dead")!.status).toBe("interrupted");
+		expect(systemEvents(reopened, conv.id)).toHaveLength(1);
+
+		const edge = scriptedEdge([textParts("back alive")]);
+		const runtime = new Runtime({
+			engines: [aiSdkEngine],
+			store: reopened,
+			turnJournal: journal2,
+			buildStep: () => ({ model: edge.model, system: "test" }),
+			makeTools: () => ({}),
+		});
+		try {
+			const sink = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "carry on" }]), sink);
+			expect(await sink.done).toEqual({ kind: "completed" });
+			expect(sink.text).toBe("back alive");
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+			// The new turn is an ordinary run: its model request carries the
+			// interrupted record as history, and nothing resumed the dead one.
+			const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+			expect(prompt).toContain("was interrupted");
+			expect(prompt).toContain("carry on");
+			expect(journal2.get("run-dead")!.status).toBe("interrupted");
+			expect(journal2.successorOf("run-dead")).toBeNull();
+		} finally {
+			await runtime.shutdown();
+			reopened.close();
 		}
 	});
 });
@@ -5122,8 +5530,9 @@ describe("tool context", () => {
 			makeTools: (_c, _v, _r, _f, context) => {
 				contexts.push(context!);
 				return {
-					probe: tool({
-						inputSchema: z.object({}),
+					probe: defineTool({
+						description: "test tool",
+						input: z.object({}),
 						execute: async () => {
 							entered.resolve();
 							await gate.promise;

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { FinishReason, LanguageModelUsage, ToolSet, UIMessage } from "ai";
+import type { Tools } from "../tool.ts";
+import type { FinishReason, Message, Usage } from "../message.ts";
 import type { FallbackNote } from "../agent/model-fallback.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { log } from "../log.ts";
@@ -47,10 +48,10 @@ export interface LandDeps {
 	// in `conv` is stale when the operator toggles mid-turn. Exclusion
 	// gates retention here, never by fencing the running turn.
 	memoryExcluded(): boolean;
-	modelEntries(): { seq: number; message: UIMessage }[];
+	modelEntries(): { seq: number; message: Message }[];
 	memoryEligibility(): MemoryEligibility;
 	append(
-		messages: UIMessage[],
+		messages: Message[],
 		opts: {
 			anchorSeq?: number | null;
 			memory?: { target: string; document: MemoryDocument };
@@ -63,9 +64,9 @@ export interface LandDeps {
 	ownedInputSeqs: ReadonlySet<number>;
 	// Frozen admission view, carried across compaction and resume.
 	admissionExchangeExcluded?: boolean;
-	responseMessage: UIMessage | null;
+	responseMessage: Message | null;
 	finishReason: FinishReason | null;
-	usage: LanguageModelUsage | null;
+	usage: Usage | null;
 	lastStepInputTokens: number | null;
 	contextWindow: number | undefined;
 	forcedKind: ForcedKind | null;
@@ -75,7 +76,7 @@ export interface LandDeps {
 }
 
 export interface LandedAttempt {
-	reply: UIMessage | null;
+	reply: Message | null;
 	done: CompletedDone;
 	window: WindowSignal | null;
 	source: RetentionSource;
@@ -189,7 +190,7 @@ export function retentionOpt(
 	memory: MemoryTurnDeps | undefined,
 	anchorSeq: number | null,
 	source: RetentionSource,
-	responseMessage: UIMessage,
+	responseMessage: Message,
 ): { target: string; document: MemoryDocument } | null {
 	if (!memory || anchorSeq === null || memoryExcluded) return null;
 	if (source.program) {
@@ -261,10 +262,10 @@ export interface ReviewDeps {
 	rememberTurn(prior: PriorTurnContext): void;
 	forgetTurn(): void;
 	source: RetentionSource;
-	reply: UIMessage | null;
+	reply: Message | null;
 	toolCalls: string[];
 	digestRing: { id: string; entry: ToolCallDigest }[];
-	tools?: ToolSet;
+	tools?: Tools;
 }
 
 export function submitTurnReview(deps: ReviewDeps): void {
@@ -292,7 +293,8 @@ export function submitTurnReview(deps: ReviewDeps): void {
 			return Object.keys(tools)
 				.sort()
 				.map((name) => {
-					const d = tools[name]!.description;
+					const tool = tools[name]!;
+					const d = "hosted" in tool ? undefined : tool.description;
 					return { name, description: (typeof d === "string" ? d : "").slice(0, 200) };
 				});
 		})(),

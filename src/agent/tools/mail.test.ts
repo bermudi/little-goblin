@@ -22,6 +22,12 @@ const exec = (t: ReturnType<typeof mailTool>, input: unknown) =>
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("mail tool", () => {
+	test("bad action arguments return the friendly error shape", async () => {
+		expect(await exec(toolFor(), {})).toMatchObject({
+			error: expect.stringContaining("invalid arguments —"),
+		});
+	});
+
 	test("provider sees an object schema admitting only the send action", () => {
 		const wire = z.toJSONSchema(mailInputSchema);
 		expect(wire.type).toBe("object");
@@ -121,7 +127,9 @@ describe("mail tool", () => {
 			called = true;
 			return { queued: 1, status: "x" };
 		});
-		await expect(exec(t, { action: "search", q: "x" })).rejects.toThrow();
+		expect(await exec(t, { action: "search", q: "x" })).toMatchObject({
+			error: expect.stringContaining("invalid arguments —"),
+		});
 		expect(called).toBe(false);
 	});
 });

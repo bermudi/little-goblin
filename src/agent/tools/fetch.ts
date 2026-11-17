@@ -1,11 +1,11 @@
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { tool } from "ai";
 import { z } from "zod";
 import { Readability } from "@mozilla/readability";
-import type { JSONValue, LanguageModelV4ToolResultOutput } from "@ai-sdk/provider";
 import { parseHTML } from "linkedom";
+import { defineTool, type ToolOutput } from "../../tool.ts";
+import type { JSONValue } from "../../message.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { Config, FetchConfig } from "../../config-schema.ts";
 import { paths } from "../../home-layout.ts";
@@ -16,6 +16,8 @@ import {
 	clampChars,
 	fetchOk,
 	fenceUntrusted,
+	postJson,
+	readCapped,
 	readJson,
 	resMeta,
 	str,
@@ -61,26 +63,6 @@ interface Rejected {
 
 // ---------- providers ----------
 
-async function postJson(
-	provider: string,
-	url: string,
-	headers: Record<string, string>,
-	body: unknown,
-): Promise<{ data: unknown; meta: HttpMeta }> {
-	const res = await fetchOk(
-		provider,
-		url,
-		{
-			method: "POST",
-			headers: { "Content-Type": "application/json", ...headers },
-			body: JSON.stringify(body),
-		},
-		TIMEOUT_MS,
-	);
-	const { data, bytes } = await readJson(provider, res);
-	return { data, meta: resMeta(res, bytes) };
-}
-
 const extractors: Record<
 	Exclude<FetchKind, "local">,
 	(url: string, key: string | undefined, baseUrl?: string) => Promise<Extracted>
@@ -95,19 +77,26 @@ const extractors: Record<
 				// parallel v1: full content rides advanced_settings, not the top level.
 				advanced_settings: { full_content: true },
 			},
+			TIMEOUT_MS,
 		);
-		const body = data as { results?: unknown[]; errors?: unknown[] };
+		const body = data as { results?: unknown[]; errors?: unknown[]; warnings?: unknown };
+		if (Array.isArray(body.warnings) && body.warnings.length > 0) {
+			log.info("parallel extract warnings", { url, warnings: body.warnings });
+		}
 		const row = (body.results ?? [])[0] as Record<string, unknown> | undefined;
 		if (!row) {
 			const err = (body.errors ?? [])[0] as Record<string, unknown> | undefined;
+			const status = typeof err?.http_status_code === "number" ? ` ${err.http_status_code}` : "";
 			throw new Error(
-				`parallel: extraction failed — ${str(err?.content) || str(err?.error_type) || "no result"}`,
+				`parallel: extraction failed — ${str(err?.content) || str(err?.error_type) || "no result"}${status}`,
 			);
 		}
-		const excerpts = Array.isArray(row.excerpts)
-			? row.excerpts.filter((e): e is string => typeof e === "string")
-			: [];
-		return { title: str(row.title), text: str(row.full_content) || excerpts.join("\n\n"), meta };
+		// A site that blocks Parallel's crawler comes back as a 200 with its
+		// cached stub: empty full_content plus a header excerpt. Excerpts are
+		// never the page, so an empty body is a failure the chain moves past.
+		const text = str(row.full_content);
+		if (!text) throw new Error("parallel: no full content (site may block its crawler)");
+		return { title: str(row.title), text, meta };
 	},
 	tavily: async (url, key, baseUrl) => {
 		const { data, meta } = await postJson(
@@ -118,6 +107,7 @@ const extractors: Record<
 				urls: [url],
 				include_images: false,
 			},
+			TIMEOUT_MS,
 		);
 		const body = data as { results?: unknown[]; failed_results?: unknown[] };
 		const row = (body.results ?? [])[0] as Record<string, unknown> | undefined;
@@ -136,6 +126,7 @@ const extractors: Record<
 				url,
 				formats: ["markdown"],
 			},
+			TIMEOUT_MS,
 		);
 		const body = data as { success?: boolean; error?: string; data?: Record<string, unknown> };
 		if (body.success === false || !body.data) {
@@ -163,40 +154,10 @@ const extractors: Record<
 
 const TEXTUAL = /^(text\/|application\/(json|xml|x-yaml|yaml|javascript|toml))/;
 
-async function readBodyCapped(
-	res: Response,
-	cap: number,
-): Promise<{ tooLarge: false; bytes: Uint8Array } | { tooLarge: true; seen: number }> {
-	if (res.body === null) {
-		return { tooLarge: false, bytes: new Uint8Array(await res.arrayBuffer()) };
-	}
-	const reader = res.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let seen = 0;
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done || !value) break;
-		chunks.push(value);
-		seen += value.byteLength;
-		if (seen > cap) {
-			await reader.cancel();
-			return { tooLarge: true, seen };
-		}
-	}
-	const bytes = new Uint8Array(seen);
-	let at = 0;
-	for (const chunk of chunks) {
-		bytes.set(chunk, at);
-		at += chunk.byteLength;
-	}
-	return { tooLarge: false, bytes };
-}
-
-async function localExtract(url: string, baseUrl?: string): Promise<Extracted | Rejected> {
-	const target = baseUrl ?? url;
+async function localExtract(url: string): Promise<Extracted | Rejected> {
 	const res = await fetchOk(
 		"local",
-		target,
+		url,
 		{
 			headers: {
 				Accept:
@@ -216,7 +177,7 @@ async function localExtract(url: string, baseUrl?: string): Promise<Extracted | 
 			meta: resMeta(res, length),
 		};
 	}
-	const body = await readBodyCapped(res, DOWNLOAD_CAP);
+	const body = await readCapped(res.body, DOWNLOAD_CAP);
 	if (body.tooLarge) {
 		return {
 			error: `page exceeds the 8 MiB download cap — use bash + curl`,
@@ -259,7 +220,7 @@ async function localExtract(url: string, baseUrl?: string): Promise<Extracted | 
 function extractReadable(
 	url: string,
 	html: string,
-): Omit<Extracted, "meta"> | Omit<Rejected, "meta"> {
+): Omit<Extracted, "meta"> {
 	type ParsedArticle = ReturnType<Readability["parse"]>;
 	let article: ParsedArticle = null;
 	try {
@@ -272,12 +233,6 @@ function extractReadable(
 		article = null;
 	}
 	const text = (article?.textContent ?? "").replace(/\n{3,}/g, "\n\n").trim();
-	if (text.length < MIN_EXTRACT) {
-		return {
-			error: `page rendered almost no extractable text (${text.length} chars) — likely a JavaScript shell; use the browser skill (skills/browser) for this site`,
-			kind: "empty-extraction",
-		};
-	}
 	return { title: article?.title?.trim() ?? "", text };
 }
 
@@ -339,6 +294,7 @@ export async function runFetchChain(
 	url: string,
 ): Promise<FetchChainOutcome> {
 	const failures: FetchFailure[] = [];
+	let thin: { kind: FetchKind; meta: HttpMeta } | null = null;
 	for (const entry of entries) {
 		const kind: FetchKind = entry.kind;
 		const started = Date.now();
@@ -350,6 +306,15 @@ export async function runFetchChain(
 				const authName = "auth" in entry ? entry.auth : undefined;
 				const key = authName ? await auth.resolve(authName) : undefined;
 				extracted = await extractors[kind](url, key);
+			}
+			// Thin text is provider-specific (a JS shell for local, a blocked
+			// crawler for a vendor), so the next provider may still get the page.
+			const chars = thinChars(extracted);
+			if (chars !== null) {
+				failures.push({ kind, error: `${kind}: almost no text (${chars} chars)` });
+				thin = { kind, meta: extracted.meta };
+				log.warn("web fetch thin", { url, kind, chars, ms: Date.now() - started });
+				continue;
 			}
 			return { extracted, servedBy: kind, failures };
 		} catch (err) {
@@ -363,7 +328,26 @@ export async function runFetchChain(
 			});
 		}
 	}
-	throw new Error(`fetch failed — ${failures.map((f) => f.error).join("; ")}`);
+	const summary = failures.map((f) => f.error).join("; ");
+	if (thin !== null) {
+		return {
+			extracted: {
+				error: `no fetch provider got the page text (${summary}) — likely a JavaScript shell or a blocked site; use the browser skill (skills/browser)`,
+				kind: "empty-extraction",
+				meta: thin.meta,
+			},
+			servedBy: thin.kind,
+			failures,
+		};
+	}
+	throw new Error(`fetch failed — ${summary}`);
+}
+
+// Character count when the result is too thin to be the page, else null.
+function thinChars(extracted: Extracted | Rejected): number | null {
+	if ("error" in extracted || extracted.pdf) return null;
+	const chars = extracted.text.trim().length;
+	return chars < MIN_EXTRACT ? chars : null;
 }
 
 // ---------- tool ----------
@@ -371,14 +355,14 @@ export async function runFetchChain(
 export { extractors };
 
 export const fetchTool = (deps: WebToolDeps) =>
-	tool({
+	defineTool({
 		description:
 			"Fetch one URL and return readable text (head+tail window of ~15k chars by default; overflow is saved to disk and the footer names the read_file call to page through). Handles HTML, text-ish payloads, and PDFs — a PDF is saved and answered with its saved-file path. JavaScript-heavy sites that render nothing should go through the browser skill instead.",
-		inputSchema: z.object({
+		input: z.object({
 			url: z.string().regex(/^https?:\/\//, "url must be http(s)"),
 			maxChars: z.number().int().min(2000).max(50_000).optional(),
 		}),
-		toModelOutput: async ({ output }): Promise<LanguageModelV4ToolResultOutput> => {
+		toModelOutput: async ({ output }): Promise<ToolOutput> => {
 			const o = output as FetchOutput | undefined | null;
 			if (typeof o === "string") return { type: "text", value: o };
 			if (o === undefined || o === null || !("pdf" in o) || o.pdf === undefined) {
@@ -432,19 +416,6 @@ export const fetchTool = (deps: WebToolDeps) =>
 					ms: Date.now() - started,
 				});
 				return { pdf: extracted.pdf };
-			}
-			if (extracted.text.trim().length < MIN_EXTRACT) {
-				log.warn("web fetch rejected", {
-					url: input.url,
-					kind,
-					...logMeta(extracted.meta),
-					outcome: "empty-extraction",
-					ms: Date.now() - started,
-				});
-				return {
-					error: `extraction returned almost no text (${extracted.text.trim().length} chars) — likely a JavaScript shell; use the browser skill (skills/browser)`,
-					kind: "empty-extraction",
-				};
 			}
 			const result = shapeResult(input.url, extracted, budget, note);
 			log.info("web fetch", {

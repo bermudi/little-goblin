@@ -1,18 +1,19 @@
-import type { UIMessage, UIMessageChunk } from "ai";
+import type { Message, MessageChunk } from "../message.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { log } from "../log.ts";
+import type { TurnSink } from "./sink.ts";
 
 export interface AdmittedMember {
 	// The durable event seq of this member's appended message — client
 	// message ids are neither unique nor trusted, so every ownership or
 	// exclusion decision names the event by seq.
 	seq: number;
-	message: UIMessage;
-	sink: { onStreamChunk?(chunk: UIMessageChunk): void };
+	message: Message;
+	sink: TurnSink;
 }
 
 export interface LiveWire {
-	chunks: UIMessageChunk[];
+	chunks: MessageChunk[];
 }
 
 export type ClaimQueued<M extends AdmittedMember = AdmittedMember> = (live: LiveWire) => M[];
@@ -30,7 +31,7 @@ export interface AdmissionDeps<M extends AdmittedMember = AdmittedMember> {
 	 * which can add current members.
 	 */
 	ownedInputSeqs(): ReadonlySet<number>;
-	modelEntries(): { seq: number; message: UIMessage }[];
+	modelEntries(): { seq: number; message: Message }[];
 	now(): number;
 }
 
@@ -42,7 +43,7 @@ export interface AdmissionRecovery {
 export interface AdmissionSnapshot {
 	conv: Conversation;
 	epoch: number;
-	entries: { seq: number; message: UIMessage }[];
+	entries: { seq: number; message: Message }[];
 	anchorSeq: number | null;
 	steerMarkSeed: number;
 	// The durable user-input seqs this attempt owns — admitted user

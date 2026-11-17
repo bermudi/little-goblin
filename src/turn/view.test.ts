@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { convertToModelMessages, type ModelMessage, type UIMessage } from "ai";
+import { convertToModelMessages, type ModelMessage } from "ai";
+import type { Message } from "../message.ts";
 import { attachmentPart } from "../agent/attachments.ts";
 import { summaryMessage } from "../conversation-events.ts";
 import { setLogFile } from "../log.ts";
@@ -14,17 +15,17 @@ import {
 	type ViewContext,
 } from "./view.ts";
 
-const user = (id: string, text: string): UIMessage => ({
+const user = (id: string, text: string): Message => ({
 	id,
 	role: "user",
 	parts: [{ type: "text", text }],
 });
-const asst = (id: string, text: string): UIMessage => ({
+const asst = (id: string, text: string): Message => ({
 	id,
 	role: "assistant",
 	parts: [{ type: "text", text }],
 });
-const entries = (msgs: UIMessage[]) => msgs.map((m, i) => ({ seq: i + 1, message: m }));
+const entries = (msgs: Message[]) => msgs.map((m, i) => ({ seq: i + 1, message: m }));
 const recall = (anchorSeq: number, content: string): RecallContext => ({
 	anchorSeq,
 	content,
@@ -49,10 +50,10 @@ const ctx: ViewContext = {
 };
 
 const build = async (
-	entriesList: { seq: number; message: UIMessage }[],
+	entriesList: { seq: number; message: Message }[],
 	prior: RecallContext[] = [],
 	current: RecallContext | null = null,
-	partial: UIMessage | null = null,
+	partial: Message | null = null,
 	summarySeq: number | null = null,
 ): Promise<ModelMessage[]> =>
 	buildModelView(ctx, {
@@ -163,7 +164,7 @@ describe("the model view", () => {
 				{ type: "text", text: "read this" },
 				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
 			],
-		} as unknown as UIMessage;
+		} as unknown as Message;
 		const view = await build(entries([poison, user("u2", "still there?")]));
 		const joined = texts(view).join("\n");
 		expect(joined).toContain("could not be prepared for the model (user role)");
@@ -182,7 +183,7 @@ describe("the model view", () => {
 					data: { id: "note-1", title: "ref", rev: 3, body: "the note body", projectId: null },
 				},
 			],
-		} as unknown as UIMessage;
+		} as unknown as Message;
 		const view = await build(entries([attached]));
 		const joined = texts(view).join("\n");
 		expect(joined).toContain("use this");
@@ -194,7 +195,7 @@ describe("the model view", () => {
 			id: "n2",
 			role: "user",
 			parts: [{ type: "data-note", data: { wrong: true } }],
-		} as unknown as UIMessage;
+		} as unknown as Message;
 		const degraded = await build(entries([malformed]));
 		expect(texts(degraded).join("\n")).toContain("attached note could not be rendered");
 	});
@@ -239,7 +240,7 @@ describe("reasoning origin (#417)", () => {
 			.filter((l) => l !== "")
 			.map((l) => JSON.parse(l) as Record<string, unknown>);
 
-	const asstReasoning = (id: string, model: string | undefined, text: string): UIMessage => ({
+	const asstReasoning = (id: string, model: string | undefined, text: string): Message => ({
 		id,
 		role: "assistant",
 		...(model !== undefined ? { metadata: { model } } : {}),
@@ -291,7 +292,7 @@ describe("reasoning origin (#417)", () => {
 					output: "/workspace",
 				},
 			],
-		} as unknown as UIMessage;
+		} as unknown as Message;
 		const view = await build(entries([foreign]));
 		const wire = JSON.stringify(view);
 		expect(wire).not.toContain("foreign thinking");
@@ -318,7 +319,7 @@ describe("reasoning origin (#417)", () => {
 		expect(texts(view)).toContain("the answer");
 	});
 
-	test("the resume partial keeps its reasoning — a resumed turn never switches models", async () => {
+	test("the recovery partial keeps its reasoning — a continuation never switches models", async () => {
 		const partial = asstReasoning("p", undefined, "partial thinking");
 		const view = await build(entries([user("u1", "q")]), [], null, partial);
 		expect(JSON.stringify(view)).toContain("partial thinking");
@@ -346,7 +347,7 @@ describe("reasoning origin (#417)", () => {
 				},
 				{ type: "text", text: "kept text" },
 			],
-		} as UIMessage;
+		} as Message;
 		const view = await build(entries([foreign]));
 		const wire = JSON.stringify(view);
 		expect(wire).not.toContain("secret-diagram.png");
@@ -383,7 +384,7 @@ describe("the steer variant", () => {
 					data: { id: "note-9", title: "t", rev: 1, body: "steered note", projectId: "p1" },
 				},
 			],
-		} as unknown as UIMessage;
+		} as unknown as Message;
 		const view = await convertSteeredMessage(ctx, message);
 		const joined = texts(view).join("\n");
 		expect(joined).toContain('Attached note "t" (id note-9, rev 1');
@@ -398,7 +399,7 @@ describe("the steer variant", () => {
 				{ type: "text", text: "read this" },
 				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
 			],
-		} as unknown as UIMessage;
+		} as unknown as Message;
 		await expect(convertSteeredMessage(ctx, poison)).rejects.toThrow("Invalid URL");
 	});
 });
@@ -423,7 +424,7 @@ describe("unfinished tool calls", () => {
 			.map((l) => JSON.parse(l) as Record<string, unknown>);
 	const historyDropMsg = "unfinished tool call in durable history — dropped from the model view";
 	const partialDropMsg =
-		"resume partial ends on an unfinished tool call — dropped from the model view";
+		"recovery partial ends on an unfinished tool call — dropped from the model view";
 
 	test("a durable history call without its result is dropped and logged as a warning", async () => {
 		const target = capture();
@@ -442,7 +443,7 @@ describe("unfinished tool calls", () => {
 							input: { command: "pwd" },
 						},
 					],
-				} as unknown as UIMessage,
+				} as unknown as Message,
 				user("u2", "hello?"),
 			]),
 		);
@@ -452,7 +453,7 @@ describe("unfinished tool calls", () => {
 		expect(entry).toMatchObject({ level: "warn", message: "a1", toolCalls: ["t1"] });
 	});
 
-	test("the resume partial's dangling call drops at info — a crash mid-call is legitimate", async () => {
+	test("the recovery partial's dangling call drops at info — a crash mid-call is legitimate", async () => {
 		const target = capture();
 		const partial = {
 			id: "p",
@@ -466,7 +467,7 @@ describe("unfinished tool calls", () => {
 					input: { command: "pwd" },
 				},
 			],
-		} as unknown as UIMessage;
+		} as unknown as Message;
 		const view = await build(
 			entries([user("u1", "q"), asst("a1", "old answer")]),
 			[],
@@ -498,7 +499,7 @@ describe("unfinished tool calls", () => {
 							output: "/workspace",
 						},
 					],
-				} as unknown as UIMessage,
+				} as unknown as Message,
 			]),
 		);
 		const wire = JSON.stringify(view);
@@ -531,7 +532,7 @@ describe("unfinished tool calls", () => {
 						output: "/workspace",
 					},
 				],
-			} as unknown as UIMessage;
+			} as unknown as Message;
 			expect(incompleteToolCallIds(m), s.state).toEqual(["t1"]);
 			const wire = JSON.stringify(
 				await convertToModelMessages([m], { tools: {}, ignoreIncompleteToolCalls: true }),
@@ -555,7 +556,7 @@ describe("unfinished tool calls", () => {
 						output: "/workspace",
 					},
 				],
-			} as unknown as UIMessage;
+			} as unknown as Message;
 			expect(incompleteToolCallIds(m), s.state).toEqual([]);
 			const wire = JSON.stringify(
 				await convertToModelMessages([m], { tools: {}, ignoreIncompleteToolCalls: true }),
@@ -566,7 +567,7 @@ describe("unfinished tool calls", () => {
 });
 
 describe("arrival stamp", () => {
-	const stamped = (id: string, text: string, at: string): UIMessage =>
+	const stamped = (id: string, text: string, at: string): Message =>
 		({
 			id,
 			role: "user",
@@ -574,7 +575,7 @@ describe("arrival stamp", () => {
 				{ type: "text", text },
 				{ type: "data-context", data: { at, surface: "telegram" } },
 			],
-		}) as UIMessage;
+		}) as Message;
 
 	test("renders after the words, in history and when steered, byte-identically", async () => {
 		const m = stamped("u1", "hi", "2026-11-06 14:32 -06:00");

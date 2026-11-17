@@ -2,18 +2,21 @@ import { randomUUID } from "node:crypto";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import {
 	type CallWarning,
-	type FinishReason,
 	isLoopFinished,
 	type LanguageModel,
-	type LanguageModelUsage,
 	type ModelMessage,
 	streamText,
 	type ToolSet,
 	toUIMessageStream,
-	type UIMessage,
-	type UIMessageChunk,
 } from "ai";
+import type {
+	FinishReason,
+	Message,
+	MessageChunk,
+	Usage,
+} from "../message.ts";
 import { quotaFromMetadata } from "../agent/codex/receipts.ts";
+import { toToolSet } from "./ai-sdk-tools.ts";
 import { filterErrorStream, streamSurfaceErrors } from "../agent/filter-stream.ts";
 import {
 	isContentFilter,
@@ -26,6 +29,7 @@ import type { AppLiveContext, AppQuota } from "../http/app-wire.ts";
 import { log } from "../log.ts";
 import { awaitRetryDelay, RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
 import type { EvidenceLimits, ToolCallDigest } from "../reviewer-evidence.ts";
+import type { Tools } from "../tool.ts";
 import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
@@ -76,12 +80,12 @@ export type WireEnd =
 	| { kind: "error"; message: string };
 
 export interface LiveSubscriber {
-	onChunk(chunk: UIMessageChunk): void;
+	onChunk(chunk: MessageChunk): void;
 	onEnd(done: WireEnd): void;
 }
 
 export interface LiveChunks {
-	chunks: UIMessageChunk[];
+	chunks: MessageChunk[];
 	subscribers: Set<LiveSubscriber>;
 	ended: boolean;
 }
@@ -112,10 +116,76 @@ export interface WireMember extends AdmittedMember {
 	streamFailed?: boolean;
 }
 
+// Image-bearing tool results (screenshot frames, issue #606) are heavy:
+// once a newer frame exists, older ones become text stubs so their bytes
+// do not ride every later step request. This rewrites only the outbound
+// request view — stored events keep full fidelity, and the between-turn
+// sweep (frame-stubs.ts) commits the durable marker for old frames.
+// Returns the input array untouched when nothing changes. Exported for tests.
+export function stubSupersededFrames(messages: ModelMessage[]): ModelMessage[] {
+	const spots: { mi: number; pi: number }[] = [];
+	messages.forEach((m, mi) => {
+		if (m.role !== "tool" || typeof m.content === "string") return;
+		m.content.forEach((part, pi) => {
+			const p = part as { type?: unknown; output?: unknown };
+			if (p.type !== "tool-result") return;
+			const out = p.output as { type?: unknown; value?: unknown } | null;
+			if (
+				typeof out !== "object" ||
+				out === null ||
+				out.type !== "content" ||
+				!Array.isArray(out.value)
+			)
+				return;
+			const hasImage = out.value.some((v) => {
+				const vp = v as { type?: unknown; mediaType?: unknown };
+				return (
+					vp.type === "file" &&
+					typeof vp.mediaType === "string" &&
+					vp.mediaType.startsWith("image/")
+				);
+			});
+			if (hasImage) spots.push({ mi, pi });
+		});
+	});
+	if (spots.length < 2) return messages;
+	const drop = new Set(spots.slice(0, -1).map((s) => `${s.mi}:${s.pi}`));
+	let changed = false;
+	const next = messages.map((m, mi) => {
+		if (m.role !== "tool" || typeof m.content === "string") return m;
+		let touched = false;
+		const content = m.content.map((part, pi) => {
+			if (!drop.has(`${mi}:${pi}`)) return part;
+			touched = true;
+			const out = (part as { output?: { value?: unknown } }).output;
+			const texts = Array.isArray(out?.value)
+				? out.value
+						.map((v) => v as { type?: unknown; text?: unknown })
+						.filter((v) => v.type === "text")
+						.map((v) => String(v.text ?? ""))
+				: [];
+			return {
+				...(part as Record<string, unknown>),
+				output: {
+					type: "text",
+					value: [
+						...texts,
+						"[frame omitted — a newer screenshot superseded it; call screenshot for a fresh view]",
+					].join("\n"),
+				},
+			};
+		});
+		if (!touched) return m;
+		changed = true;
+		return { ...m, content } as ModelMessage;
+	});
+	return changed ? next : messages;
+}
+
 export type MemberSettlement = { kind: "fenced" } | { kind: "error"; message: string };
 
 function replayWire(convId: string, turn: WireMember, live: LiveWire): void {
-	if (turn.sink.onStreamChunk === undefined) return;
+	if (turn.sink.delivery !== "stream") return;
 	for (const c of live.chunks) {
 		try {
 			turn.sink.onStreamChunk(c);
@@ -133,12 +203,12 @@ export function emitChunk(
 	convId: string,
 	members: WireMember[],
 	live: LiveChunks,
-	chunk: UIMessageChunk,
+	chunk: MessageChunk,
 ): void {
 	for (const m of members) {
 		if (m.streamFailed === true) continue;
 		try {
-			m.sink.onStreamChunk?.(chunk);
+			if (m.sink.delivery === "stream") m.sink.onStreamChunk(chunk);
 		} catch (err) {
 			m.streamFailed = true;
 			log.warn("sink onStreamChunk failed — stream detached", err, {
@@ -181,6 +251,118 @@ export function joinMember<M extends WireMember>(
 	replayWire(convId, member, live);
 }
 
+// ---------- the steer fold ----------
+
+/** One attempt's steer ledger: the steer mark and its owned input seqs. */
+export interface SteerLedger {
+	mark: number;
+	owned: Set<number>;
+}
+
+export function openSteerLedger(deps: {
+	steerMarkSeed: number;
+	ownedInputSeqs: number[];
+}): SteerLedger {
+	return { mark: deps.steerMarkSeed, owned: new Set(deps.ownedInputSeqs) };
+}
+
+type SteerFoldDeps<M extends WireMember> = Pick<
+	StreamDeps<M>,
+	| "convId"
+	| "live"
+	| "members"
+	| "view"
+	| "holdsAuthority"
+	| "claimSteers"
+	| "unrequeueSteers"
+	| "settle"
+	| "noteRunMembers"
+	| "onOwnedInputs"
+	| "saveStep"
+	| "sourceInputSeq"
+>;
+
+/**
+ * Both engines' model-call boundary: claim the waiting steers, convert
+ * them, join the ones that converted as members, and persist ownership
+ * with the mark. null = authority lost (the claim went back to the
+ * queue); otherwise the converted messages, empty when none joined.
+ */
+export async function foldSteers<M extends WireMember>(
+	deps: SteerFoldDeps<M>,
+	ledger: SteerLedger,
+	step: number,
+	sdkTools: ToolSet = toToolSet(deps.view.tools),
+): Promise<{ injected: ModelMessage[] } | null> {
+	const { convId, live, members } = deps;
+	const steered = deps.claimSteers();
+	if (steered.length === 0) return { injected: [] };
+	if (!deps.holdsAuthority()) {
+		deps.unrequeueSteers(steered);
+		return null;
+	}
+	const injected: ModelMessage[] = [];
+	// Claimed by event seq, never by message id — ids are
+	// client-controlled and may repeat, so an id match could claim a
+	// steer that failed conversion as owned input. The wake link's
+	// identity is the same seq set.
+	const claimedSeqs = new Set<number>();
+	let admittedCount = 0;
+	for (const t of steered) {
+		try {
+			const converted = await convertSteeredMessage(deps.view, t.message, sdkTools);
+			if (!deps.holdsAuthority()) {
+				deps.settle(t, { kind: "fenced" });
+				continue;
+			}
+			injected.push(...converted);
+			joinMember(convId, live, members, t);
+			claimedSeqs.add(t.seq);
+			admittedCount++;
+		} catch (err) {
+			if (!deps.holdsAuthority()) {
+				deps.settle(t, { kind: "fenced" });
+				continue;
+			}
+			log.warn("steer conversion failed — submit errored, message degrades in later views", err, {
+				conversation: convId,
+				message: t.message.id,
+			});
+			deps.settle(t, {
+				kind: "error",
+				message: `that message could not be prepared for the model: ${err instanceof Error ? err.message : String(err)}`,
+			});
+		}
+	}
+	// Joined members are this run's input now — the wake link
+	// lands before the request does, so a completion can't settle
+	// a delivery it never owned.
+	if (claimedSeqs.size > 0) deps.noteRunMembers?.([...claimedSeqs]);
+	if (injected.length === 0) return { injected };
+	// Ownership and the mark persist together — a crash after the
+	// fold must still name these steered inputs the attempt's own.
+	// Each seq came through conversion with its event, so only the
+	// steers this attempt actually folded are recorded as owned.
+	// Ownership is the member's own durable seq, never a rediscovery
+	// through app-controlled message ids.
+	for (const seq of claimedSeqs) {
+		if (seq > ledger.mark) ledger.mark = seq;
+		ledger.owned.add(seq);
+	}
+	deps.onOwnedInputs?.([...claimedSeqs]);
+	deps.saveStep({
+		ownedInputSeqs: [...ledger.owned],
+		steerMark: ledger.mark,
+		sourceInputSeq: deps.sourceInputSeq?.(),
+	});
+	log.info("steered into turn", {
+		conversation: convId,
+		submits: admittedCount,
+		step,
+	});
+	return { injected };
+}
+
 // ---------- the driver ----------
 
 export interface DisplaySink {
@@ -215,7 +397,7 @@ export interface StreamDeps<M extends WireMember> {
 	holdsAuthority(): boolean;
 	step: StreamStep;
 	messages: ModelMessage[];
-	tools: ToolSet;
+	tools: Tools;
 	view: ViewContext;
 	claimSteers(): M[];
 	unrequeueSteers(steered: M[]): void;
@@ -231,7 +413,7 @@ export interface StreamDeps<M extends WireMember> {
 	ownedInputSeqs: number[];
 	onOwnedInputs?(seqs: readonly number[]): void;
 	sourceInputSeq?(): number | null;
-	partial: UIMessage | null;
+	partial: Message | null;
 	seenText: boolean;
 	toolCalls: string[];
 	digest: { id: string; entry: ToolCallDigest }[];
@@ -273,8 +455,8 @@ export interface StreamDeps<M extends WireMember> {
 export type StreamOutcome =
 	| {
 			kind: "ok";
-			responseMessage: UIMessage | null;
-			usage: LanguageModelUsage | null;
+			responseMessage: Message | null;
+			usage: Usage | null;
 			finishReason: FinishReason | null;
 			lastStepInputTokens: number | null;
 			toolCalls: string[];
@@ -302,7 +484,7 @@ export type StreamOutcome =
 			// error: the recovery rail is the same, the compact reason and the
 			// operator-facing story are not.
 			preempt?: { arm: "pressure"; step: number };
-			partial: UIMessage | null;
+			partial: Message | null;
 			seenText: boolean;
 			toolCalls: string[];
 			digestRing: { id: string; entry: ToolCallDigest }[];
@@ -320,6 +502,7 @@ export async function driveStream<M extends WireMember>(
 	deps: StreamDeps<M>,
 ): Promise<StreamOutcome> {
 	const { convId, epoch, head, members, live, state } = deps;
+	const sdkTools = toToolSet(deps.tools);
 	const modelLabel = stepModelRef(deps.step);
 	let lastStepInputTokens: number | null = null;
 	let lastStepCacheRead: number | null = null;
@@ -364,8 +547,7 @@ export async function driveStream<M extends WireMember>(
 	// carry its text.
 	let streamedTail = "";
 	let lastTailCheckpointMs = 0;
-	let steerMark = deps.steerMarkSeed;
-	const ownedInputSeqs = new Set<number>(deps.ownedInputSeqs);
+	const steers = openSteerLedger(deps);
 	// The finish metadata part is written after the final step, so the
 	// last prepareStep capture is that step's outbound prompt — the
 	// window the gauge itemizes.
@@ -412,10 +594,10 @@ export async function driveStream<M extends WireMember>(
 		}
 	};
 	const result = streamText({
+		tools: sdkTools,
 		model: filterErrorStream(deps.step.model, convId),
 		instructions: deps.step.system,
 		messages: deps.messages,
-		tools: deps.tools,
 		// Rule-based repairs only (JSON5 slips, stringified args) — a call
 		// no rule fixes still surfaces as a tool error, never a re-ask.
 		repairToolCall: makeToolCallRepair(convId),
@@ -452,89 +634,26 @@ export async function driveStream<M extends WireMember>(
 				.drainWarnings()
 				.map((content): ModelMessage => ({ role: "user", content }));
 			const nudge: ModelMessage[] = cut !== null ? [{ role: "user", content: CUT_NUDGE[cut] }] : [];
-			const steered = deps.claimSteers();
-			if (steered.length === 0) {
-				if (forced || warnMsgs.length > 0) {
-					const outbound = [...stepMessages, ...warnMsgs, ...nudge];
-					notePrompt(outbound, stepNumber);
-					return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
-				}
-				notePrompt(stepMessages, stepNumber);
-				return undefined;
+			const base = stubSupersededFrames(stepMessages);
+			const folded = await foldSteers(deps, steers, stepNumber, sdkTools);
+			if (folded === null) {
+				if (base === stepMessages) return undefined;
+				const outbound =
+					forced || warnMsgs.length > 0 ? [...base, ...warnMsgs, ...nudge] : base;
+				notePrompt(outbound, stepNumber);
+				return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
 			}
-			if (!deps.holdsAuthority()) {
-				deps.unrequeueSteers(steered);
-				return undefined;
-			}
-			const injected: ModelMessage[] = [];
-			// Claimed by event seq, never by message id — ids are
-			// client-controlled and may repeat, so an id match could claim a
-			// steer that failed conversion as owned input. The wake link's
-			// identity is the same seq set.
-			const claimedSeqs = new Set<number>();
-			let admittedCount = 0;
-			for (const t of steered) {
-				try {
-					const converted = await convertSteeredMessage(deps.view, t.message);
-					if (!deps.holdsAuthority()) {
-						deps.settle(t, { kind: "fenced" });
-						continue;
-					}
-					injected.push(...converted);
-					joinMember(convId, live, members, t);
-					claimedSeqs.add(t.seq);
-					admittedCount++;
-				} catch (err) {
-					if (!deps.holdsAuthority()) {
-						deps.settle(t, { kind: "fenced" });
-						continue;
-					}
-					log.warn(
-						"steer conversion failed — submit errored, message degrades in later views",
-						err,
-						{ conversation: convId, message: t.message.id },
-					);
-					deps.settle(t, {
-						kind: "error",
-						message: `that message could not be prepared for the model: ${err instanceof Error ? err.message : String(err)}`,
-					});
-				}
-			}
-			// Joined members are this run's input now — the wake link
-			// lands before the request does, so a completion can't settle
-			// a delivery it never owned.
-			if (claimedSeqs.size > 0) deps.noteRunMembers?.([...claimedSeqs]);
+			const { injected } = folded;
 			if (injected.length === 0) {
-				if (forced || warnMsgs.length > 0) {
-					const outbound = [...stepMessages, ...warnMsgs, ...nudge];
+				if (forced || warnMsgs.length > 0 || base !== stepMessages) {
+					const outbound = [...base, ...warnMsgs, ...nudge];
 					notePrompt(outbound, stepNumber);
 					return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
 				}
 				notePrompt(stepMessages, stepNumber);
 				return undefined;
 			}
-			// Ownership and the mark persist together — a crash after the
-			// fold must still name these steered inputs the attempt's own.
-			// Each seq came through conversion with its event, so only the
-			// steers this attempt actually folded are recorded as owned.
-			// Ownership is the member's own durable seq, never a rediscovery
-			// through app-controlled message ids.
-			for (const seq of claimedSeqs) {
-				if (seq > steerMark) steerMark = seq;
-				ownedInputSeqs.add(seq);
-			}
-			deps.onOwnedInputs?.([...claimedSeqs]);
-			deps.saveStep({
-				ownedInputSeqs: [...ownedInputSeqs],
-				steerMark,
-				sourceInputSeq: deps.sourceInputSeq?.(),
-			});
-			log.info("steered into turn", {
-				conversation: convId,
-				submits: admittedCount,
-				step: stepNumber,
-			});
-			const outbound = [...stepMessages, ...warnMsgs, ...injected, ...nudge];
+			const outbound = [...base, ...warnMsgs, ...injected, ...nudge];
 			notePrompt(outbound, stepNumber);
 			return {
 				messages: outbound,
@@ -695,8 +814,8 @@ export async function driveStream<M extends WireMember>(
 			});
 		});
 
-	let responseMessage: UIMessage | null = null;
-	let partialResponse: UIMessage | null = null;
+	let responseMessage: Message | null = null;
+	let partialResponse: Message | null = null;
 	const evidence = deps.evidence;
 	const events = openToolEvents({ toolCalls: deps.toolCalls, digest: deps.digest });
 	const eventsDeps = {
@@ -718,7 +837,7 @@ export async function driveStream<M extends WireMember>(
 	// Declared before the factory call — messageMetadata is invoked while
 	// parts flow, so the capture must exist by then.
 	let firstTokenMs: number | null = null;
-	const uiStream = toUIMessageStream<ToolSet, UIMessage>({
+	const uiStream = toUIMessageStream<ToolSet, Message>({
 		stream: result.stream,
 		sendReasoning: true,
 		...(deps.partial ? { originalMessages: [deps.partial] } : {}),
@@ -736,10 +855,15 @@ export async function driveStream<M extends WireMember>(
 			}
 			if (part.type !== "finish") return undefined;
 			const forcedKind = state.forcedCompletion();
+			const durationMs = Date.now() - deps.turnStartMs;
 			return {
 				model: modelLabel,
 				finishReason: part.finishReason,
-				durationMs: Date.now() - deps.turnStartMs,
+				durationMs,
+				// The finish instant, same clock read as durationMs — the
+				// transcript's "how old is this reply" before history
+				// serves the row's own stamp.
+				createdAt: new Date(deps.turnStartMs + durationMs).toISOString(),
 				...(firstTokenMs !== null ? { ttftMs: firstTokenMs } : {}),
 				...(forcedKind !== null ? { forcedCompletion: forcedKind } : {}),
 				usage: {
@@ -948,12 +1072,12 @@ export async function driveStream<M extends WireMember>(
 			holdForRecovery,
 			...(errorHeld ? { errorHeld: true } : {}),
 			...(preemptInfo !== null ? { preempt: preemptInfo } : {}),
-			partial: partialResponse as UIMessage | null,
+			partial: partialResponse as Message | null,
 			seenText,
 			toolCalls,
 			digestRing,
 			loop: state.snapshot(),
-			steerMark,
+			steerMark: steers.mark,
 			filterRetryUsed,
 			window: windowCapture(),
 			model: modelLabel,
@@ -975,13 +1099,13 @@ export async function driveStream<M extends WireMember>(
 	deps.assertAuthority();
 	return {
 		kind: "ok",
-		responseMessage: responseMessage as UIMessage | null,
+		responseMessage: responseMessage as Message | null,
 		usage,
 		finishReason,
 		lastStepInputTokens,
 		toolCalls,
 		digestRing,
-		steerMark,
+		steerMark: steers.mark,
 		window: windowCapture(),
 		model: modelLabel,
 		steps: stepCount,

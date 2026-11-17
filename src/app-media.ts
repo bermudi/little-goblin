@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { copyFile, stat, unlink, writeFile } from "node:fs/promises";
-import type { UIMessage, UIMessageChunk } from "ai";
+import type { Message, MessageChunk } from "./message.ts";
 import {
 	attachmentPart,
 	type AttachmentRef,
@@ -14,32 +14,44 @@ import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { attachmentContentType } from "./stateview.ts";
 
 export interface AppMediaDeps {
-	append(messages: UIMessage[], opts: { anchorSeq?: number | null; exclude?: boolean }): void;
+	append(messages: Message[], opts: { anchorSeq?: number | null; exclude?: boolean }): void;
 }
 
 export function composeTurnSinks(...sinks: TurnSink[]): TurnSink {
-	const sink: TurnSink = {
-		onTextDelta(delta) {
+	const core = {
+		onTextDelta(delta: string) {
 			for (const s of sinks) s.onTextDelta(delta);
 		},
-		onReasoningDelta(delta) {
+		onReasoningDelta(delta: string) {
 			for (const s of sinks) s.onReasoningDelta(delta);
 		},
-		onToolCall(toolName, input) {
+		onToolCall(toolName: string, input: unknown) {
 			for (const s of sinks) s.onToolCall(toolName, input);
 		},
-		setAuthorityCheck(check, anchorSeq, memoryExcluded) {
+		setAuthorityCheck(
+			check: () => boolean,
+			anchorSeq?: number | null,
+			memoryExcluded?: () => boolean,
+		) {
 			for (const s of sinks) s.setAuthorityCheck?.(check, anchorSeq, memoryExcluded);
 		},
-		async onDone(done) {
+		async onDone(done: TurnDone) {
 			for (const s of sinks) await s.onDone(done);
 		},
 	};
-	if (sinks.some((s) => s.onStreamChunk !== undefined)) {
-		sink.onStreamChunk = (chunk) => {
-			for (const s of sinks) s.onStreamChunk?.(chunk);
-		};
-	}
+	const delivery = sinks.some((s) => s.delivery === "stream") ? "stream" : "headless";
+	const sink: TurnSink =
+		delivery === "stream"
+			? {
+					...core,
+					delivery,
+					onStreamChunk(chunk) {
+						for (const s of sinks) {
+							if (s.delivery === "stream") s.onStreamChunk(chunk);
+						}
+					},
+				}
+			: { ...core, delivery };
 	if (sinks.some((s) => s.onVoiceNote !== undefined)) {
 		sink.onVoiceNote = async (audio) => {
 			for (const s of sinks) await s.onVoiceNote?.(audio);
@@ -100,7 +112,7 @@ async function outgoingAttachment(
 export function appMediaSink(
 	convId: string,
 	media: AppMediaDeps,
-	emit?: (chunk: UIMessageChunk) => void,
+	emit?: (chunk: MessageChunk) => void,
 	onDone?: (done: TurnDone) => void | Promise<void>,
 ): TurnSink {
 	let authorized: (() => boolean) | null = null;
@@ -144,7 +156,7 @@ export function appMediaSink(
 			}
 			throw err;
 		}
-		emit?.({ type: "data-attachment", data: ref } as UIMessageChunk);
+		emit?.({ type: "data-attachment", data: ref } as MessageChunk);
 		log.info("app media delivered", {
 			conversation: convId,
 			filename: ref.filename,
@@ -154,6 +166,7 @@ export function appMediaSink(
 		});
 	};
 	return {
+		delivery: "headless",
 		onTextDelta() {},
 		onReasoningDelta() {},
 		onToolCall() {},

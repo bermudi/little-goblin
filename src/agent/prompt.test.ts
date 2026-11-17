@@ -24,6 +24,8 @@ const conv: Conversation = {
 	memoryExcluded: false,
 	memoryExcludedByProject: false,
 	projectId: null,
+	parentId: null,
+	agentType: null,
 	persona: "personal",
 	archivedAt: null,
 	pinnedAt: null,
@@ -444,16 +446,18 @@ describe("project prompts", () => {
 			expect(text).toContain(`in ${paths.workspace()} are your`);
 			expect(text).toContain(`(${join(paths.workspace(), "skills", "mq", "SKILL.md")})`);
 			expect(text).not.toContain("(skills/mq/SKILL.md)");
-			// The self-write invitation is gone — writes only when asked.
-			expect(text).not.toContain(
-				`write ${join(paths.workspace(), "skills", "<name>", "SKILL.md")}`,
+			// Self-authoring (2026-11-16): edits fold into installed skills
+			// absolutely; a new skill drafts into the proposed root, never
+			// straight into the catalog.
+			expect(text).toContain(
+				`edit ${join(paths.workspace(), "skills", "<name>", "SKILL.md")} directly`,
+			);
+			expect(text).toContain("Save what you learn");
+			expect(text).toContain(
+				`drafts under ${join(paths.workspace(), "skills-proposed", "<name>", "SKILL.md")}`,
 			);
 			expect(text).toContain(
-				"or edit skills only when the operator asks — never create or rewrite",
-			);
-			expect(text).toContain("An asked-for write goes to");
-			expect(text).toContain(
-				`${join(paths.workspace(), "skills", "<name>", "SKILL.md")}, then`,
+				`never straight into ${join(paths.workspace(), "skills")}/`,
 			);
 			expect(text).toContain(
 				`skills-ref validate '${join(paths.workspace(), "skills", "<name>")}'`,
@@ -563,28 +567,6 @@ describe("the app fence convention", () => {
 			expect(tg.text).not.toContain("append-to-note");
 		} finally {
 			delete process.env.GOBLIN_HOME;
-		}
-	});
+	}
 });
-
-describe("the herdr tool note", () => {
-	test("rides only when the tool is in the set — never on a guest persona", () => {
-		const home = useHome("goblin-prompt-");
-		process.env.GOBLIN_HOME = home;
-		try {
-			const withTool = buildSystemPrompt(conv, [...tools, "herdr"]);
-			expect(withTool.text).toContain("herdr reaches the operator's session `default`");
-			expect(withTool.text).toContain("never use raw herdr bash commands");
-			const without = buildSystemPrompt(conv, tools);
-			expect(without.text).not.toContain("reaches the operator's session");
-			// The guest path returns before any tool note — even if a bad
-			// filter let the name through, no operator-session guidance
-			// ever renders for it.
-			const guest = { ...conv, id: "guest:-100:9", persona: "guest" as const };
-			const g = buildSystemPrompt(guest, ["search", "herdr"]);
-			expect(g.text).not.toContain("reaches the operator's session");
-		} finally {
-			delete process.env.GOBLIN_HOME;
-		}
-	});
 });

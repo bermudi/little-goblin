@@ -1,10 +1,10 @@
 # Bun runs every test file of one invocation in a single process, and
 # scopes a module-level afterEach to the file whose import first
 # registered it: without this preload, files after the first leak all
-# of their testkit/subagents fixture dirs (2026-10-22 /tmp ENOSPC
-# incident — 86k leaked dirs, ~15GB). Loading both fixture modules
-# before any test file makes their cleanup hooks global to the run.
+# of their testkit fixture dirs (2026-10-22 /tmp ENOSPC
+# incident — 86k leaked dirs, ~15GB). Loading the fixture module
+# before any test file makes its cleanup hooks global to the run.
 [test]
 # test-tmpdir.ts comes first: it points TMPDIR at RAM before anything
 # reads os.tmpdir() (see its header).
-preload = ["./src/test-tmpdir.ts", "./src/testkit.ts", "./src/subagents/testing.ts"]
+preload = ["./src/test-tmpdir.ts", "./src/testkit.ts"]

@@ -681,6 +681,7 @@ export function makeDeliverySink(
 	}
 
 	return {
+		delivery: "headless",
 		setAuthorityCheck(check) {
 			authoritative = check;
 		},

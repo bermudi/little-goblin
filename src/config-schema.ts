@@ -5,6 +5,7 @@ import { z } from "zod";
 import { cachePruningSchema } from "./cache-pruning-policy.ts";
 import { hindsightConnectionSchema, minScoresSchema } from "./memory/hindsight.ts";
 import { MEMORY_DEFAULTS } from "./memory/policy.ts";
+import { curatorBlockSchema } from "./skill-curator.ts";
 
 // The auth.jsonl record a keyed kind uses when the config omits auth —
 // the kind's own record name, materialized into the file on the next
@@ -180,9 +181,10 @@ export const ttsCloudDefaults = {
 	onemin: { model: "tts-1", auth: authDefaults.onemin },
 } as const;
 
-// Delegation to external harnesses via herdr — absent = no delegate
-// tool. Harness names double as herdr agent-name prefixes (hence the
-// charset); the LOCAL session is the implicit default, never a knob.
+// Delegation to external harnesses on T3 Code — absent = no delegate
+// tool. A harness name maps to a T3 provider instance id and model slug,
+// with optional model options; goblin never guesses a model, so both are
+// required (t3's own project default is never consulted through goblin).
 const harnessNameRe = /^[a-z][a-z0-9_-]{0,15}$/;
 const harnessNameSchema = z.string().regex(harnessNameRe);
 export const harnessMapSchema = z
@@ -190,8 +192,18 @@ export const harnessMapSchema = z
 		harnessNameSchema,
 		z
 			.object({
-				kind: z.string().min(1),
-				args: z.array(z.string()).optional(),
+				provider: z.string().min(1),
+				model: z.string().min(1),
+				// T3 model options (ids and values from T3's model catalog,
+				// e.g. claude `effort`, codex `reasoningEffort`, pi `thinking`).
+				// Goblin passes these through without catalog validation; T3
+				// rejects invalid options.
+				options: z
+					.record(
+						z.string().min(1),
+						z.union([z.string().min(1), z.boolean()]),
+					)
+					.optional(),
 				// askFirst rides the delegate tool's description — a prompt
 				// rule (the model asks the operator), not a launch gate.
 				askFirst: z.boolean().optional(),
@@ -202,43 +214,6 @@ export const harnessMapSchema = z
 		message: "delegation.harnesses must name at least one harness",
 	});
 
-// One delegation target — exactly one of machine|session, mirroring the
-// herdr CLI's own mutual exclusion. Session names stay stricter than
-// herdr's own contract because they become socket-dir names.
-const sessionNameSchema = z
-	.string()
-	.regex(
-		/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/,
-		"session name must start alphanumeric and contain only [A-Za-z0-9._-]",
-	);
-
-// root must be `~`, `~/...`, or absolute (server-expanded) — rejected here,
-// not at launch. `~user` is shell user-expansion we do NOT perform
-// (delegate.ts isHomePath): treating it as home-relative would
-// stat/resolve it under the operator's home while the literal path
-// reaches herdr, so it fails loud at this boundary. machine labels
-// are not checked against herdr's registry at parse time: a wrong
-// label fails loud at the first herdr call.
-export const delegationTargetSchema = z
-	.object({
-		machine: harnessNameSchema.optional(),
-		session: sessionNameSchema.optional(),
-		root: z
-			.string()
-			.regex(
-				/^(?:\/|~(?:\/|$))/,
-				"delegation target root must be absolute, ~, or ~/... (bare ~user is not expanded)",
-			)
-			.optional(),
-		harnesses: harnessMapSchema.optional(),
-	})
-	.strict()
-	.refine((t) => (t.machine !== undefined) !== (t.session !== undefined), {
-		message:
-			"a delegation target needs exactly one of machine (saved-machine label) or session (another local session)",
-	});
-export type DelegationTargetConfig = z.infer<typeof delegationTargetSchema>;
-
 // A delegation role names the kind of work a default serves — build,
 // review, or any operator-coined label. `default` is the fallback when
 // a call names no role at all; it is not privileged in the map.
@@ -248,23 +223,16 @@ const roleNameSchema = z
 
 export const delegationConfigSchema = z
 	.object({
-		// No cap by design — volume is goblin's judgment, not a knob.
-		machines: z.record(harnessNameSchema, delegationTargetSchema).optional(),
 		harnesses: harnessMapSchema,
 		// Role → configured harness name. The delegate tool uses this
 		// when the call names no harness; it never invents a harness or
-		// model. Values are checked against every declared harness,
-		// local and machine-side — the target's own map still gates the
-		// launch, so a role default missing there fails loud.
+		// model.
 		defaults: z.record(roleNameSchema, harnessNameSchema).optional(),
 	})
 	.strict()
 	.superRefine((d, ctx) => {
 		if (d.defaults === undefined) return;
-		const known = new Set([
-			...Object.keys(d.harnesses),
-			...Object.values(d.machines ?? {}).flatMap((m) => Object.keys(m.harnesses ?? {})),
-		]);
+		const known = new Set(Object.keys(d.harnesses));
 		for (const [role, name] of Object.entries(d.defaults)) {
 			if (known.has(name)) continue;
 			ctx.addIssue({
@@ -299,21 +267,10 @@ export const sandboxConfigSchema = z
 	.strict();
 export type SandboxConfig = z.infer<typeof sandboxConfigSchema>;
 
-// Subagents & computer use — absent block = no tools, no harness opened;
-// an absent type = that type is off. Models are configured per type,
-// never guessed; api is the one transport pi-ai speaks to z.ai's
-// Coding Plan endpoint.
-const subagentModelSchema = z
-	.object({
-		auth: z.string().min(1),
-		id: z.string().min(1),
-		baseUrl: z.url(),
-		api: z.literal("openai-completions"),
-		thinking: z.enum(thinkingLevels),
-	})
-	.strict();
-
-// The managed desktop pool: idleHours 0 = never reap (like sandboxes).
+// The managed desktop pool (design/agents.md → Computer use) —
+// hand-edited only. Serves the parent's `desktop` tool and the
+// `computer` agent type's children. Absent block = no pool.
+// idleHours 0 = never reap (like sandboxes).
 export const desktopsConfigSchema = z
 	.object({
 		image: imageRefSchema.default("localhost/goblin-desktop:1"),
@@ -326,15 +283,16 @@ export const desktopsConfigSchema = z
 	.strict();
 export type DesktopsConfig = z.infer<typeof desktopsConfigSchema>;
 
-export const subagentsConfigSchema = z
+// Native subagents (design/agents.md → `agent`): the cap is the only
+// knob — a child rides goblin's own providers through the parent's
+// turn, so there is nothing else to configure. Absent block = defaults.
+export const agentsConfigSchema = z
 	.object({
-		maxRuns: z.number().int().min(1).default(3),
-		worker: z.object({ model: subagentModelSchema }).strict().optional(),
-		computer: z.object({ model: subagentModelSchema }).strict().optional(),
-		desktops: desktopsConfigSchema.prefault({}),
+		// Running children across ALL conversations; above it spawn queues.
+		maxRunning: z.number().int().min(1).default(3),
 	})
 	.strict();
-export type SubagentsConfig = z.infer<typeof subagentsConfigSchema>;
+export type AgentsConfig = z.infer<typeof agentsConfigSchema>;
 
 // Gmail — absent = no mail tool or watcher. clientId is a public
 // identifier, not a secret; the client secret and SEND token live in
@@ -800,8 +758,11 @@ export const configSchema = z
 			.union([sandboxConfigSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
-		// Subagents & computer use — hand-edited only, like delegation.
-		subagents: subagentsConfigSchema.optional(),
+		// The managed desktop pool — hand-edited only, like delegation.
+		desktops: desktopsConfigSchema.optional(),
+		// Native subagents — live-read per turn; the agent tool itself
+		// mounts regardless (it needs no provider of its own).
+		agents: agentsConfigSchema.optional(),
 		// Persisted tool-result pruning — hand-edited only, like
 		// delegation. Profiles pin route/settings hashes; docs/operations.md
 		// covers the review loop.
@@ -809,6 +770,10 @@ export const configSchema = z
 		guest: guestConfigSchema.optional(),
 		reviewer: reviewerConfigSchema.optional(),
 		system1: system1ConfigSchema.optional(),
+		// The deterministic skill curator — hand-edited only, live-read
+		// at pass time so day counts apply without a restart (design/
+		// skills.md → Self-authoring, /learn, curator). Absent = off.
+		curator: curatorBlockSchema.optional(),
 		// Live-read per turn like vision; "" clears (hand-edited only — the
 		// mini app round-trips it through the merge untouched).
 		scripting: z
@@ -829,7 +794,6 @@ export const configSchema = z
 				vision: visionConfigSchema.optional(),
 				image: imageConfigSchema.optional(),
 				sandbox: sandboxConfigSchema.optional(),
-				subagents: subagentsConfigSchema.optional(),
 				scripting: scriptingConfigSchema.optional(),
 				delegation: delegationConfigSchema.optional(),
 				guest: guestConfigSchema.optional(),
@@ -920,7 +884,6 @@ export const capabilityNames = [
 	"vision",
 	"image",
 	"sandbox",
-	"subagents",
 	"scripting",
 	"delegation",
 	"guest",

@@ -291,12 +291,19 @@ describe("formatSkillsSection", () => {
 			"",
 			"Skills are directories under `skills/` — each a SKILL.md (frontmatter:",
 			"name, description) with instructions plus any scripts/files it needs.",
-			"When a request matches one, read_file its SKILL.md and follow it. Write",
-			"or edit skills only when the operator asks — never create or rewrite",
-			"one on your own initiative: if the skill reviewer is configured, lessons",
-			"become drafts for review. An asked-for write goes to",
-			"skills/<name>/SKILL.md, then `skills-ref validate ./skills/<name>` via bash.",
-			"Edits load when the next conversation starts.",
+			"When a request matches one, read_file its SKILL.md and follow it, even",
+			"for work you already know how to do — the skill is how it is done",
+			"here. Save what you learn: after a hard or iterative task, when the",
+			"operator corrects you, or when a loaded skill proves wrong or",
+			"missing steps, distill the lesson. Fold into an existing skill",
+			"first — edit skills/<name>/SKILL.md directly (installed means",
+			"the operator approved it) and fix a broken skill before finishing.",
+			"A genuinely new skill drafts under skills-proposed/<name>/SKILL.md —",
+			"never straight into skills/ — then tell the operator a",
+			"proposal waits. Every skill write gets",
+			"`skills-ref validate ./skills/<name>` via bash (a draft the same",
+			"way) and a one-line description. Edits load when the next",
+			"conversation starts.",
 			"",
 			"(none yet)",
 		]);
@@ -318,12 +325,19 @@ describe("formatSkillsSection", () => {
 			"",
 			"Skills are directories under `/global/workspace/skills/` — each a SKILL.md (frontmatter:",
 			"name, description) with instructions plus any scripts/files it needs.",
-			"When a request matches one, read_file its SKILL.md and follow it. Write",
-			"or edit skills only when the operator asks — never create or rewrite",
-			"one on your own initiative: if the skill reviewer is configured, lessons",
-			"become drafts for review. An asked-for write goes to",
-			"/global/workspace/skills/<name>/SKILL.md, then `skills-ref validate '/global/workspace/skills/<name>'` via bash.",
-			"Edits load when the next conversation starts.",
+			"When a request matches one, read_file its SKILL.md and follow it, even",
+			"for work you already know how to do — the skill is how it is done",
+			"here. Save what you learn: after a hard or iterative task, when the",
+			"operator corrects you, or when a loaded skill proves wrong or",
+			"missing steps, distill the lesson. Fold into an existing skill",
+			"first — edit /global/workspace/skills/<name>/SKILL.md directly (installed means",
+			"the operator approved it) and fix a broken skill before finishing.",
+			"A genuinely new skill drafts under /global/workspace/skills-proposed/<name>/SKILL.md —",
+			"never straight into /global/workspace/skills/ — then tell the operator a",
+			"proposal waits. Every skill write gets",
+			"`skills-ref validate '/global/workspace/skills/<name>'` via bash (a draft the same",
+			"way) and a one-line description. Edits load when the next",
+			"conversation starts.",
 			"",
 			"- mq — jq for Markdown (/global/workspace/skills/mq/SKILL.md)",
 		]);
@@ -345,12 +359,19 @@ describe("formatSkillsSection", () => {
 			"",
 			"Skills are directories under `/tmp/operator's workspace/skills/` — each a SKILL.md (frontmatter:",
 			"name, description) with instructions plus any scripts/files it needs.",
-			"When a request matches one, read_file its SKILL.md and follow it. Write",
-			"or edit skills only when the operator asks — never create or rewrite",
-			"one on your own initiative: if the skill reviewer is configured, lessons",
-			"become drafts for review. An asked-for write goes to",
-			"/tmp/operator's workspace/skills/<name>/SKILL.md, then `skills-ref validate '/tmp/operator'\\''s workspace/skills/<name>'` via bash.",
-			"Edits load when the next conversation starts.",
+			"When a request matches one, read_file its SKILL.md and follow it, even",
+			"for work you already know how to do — the skill is how it is done",
+			"here. Save what you learn: after a hard or iterative task, when the",
+			"operator corrects you, or when a loaded skill proves wrong or",
+			"missing steps, distill the lesson. Fold into an existing skill",
+			"first — edit /tmp/operator's workspace/skills/<name>/SKILL.md directly (installed means",
+			"the operator approved it) and fix a broken skill before finishing.",
+			"A genuinely new skill drafts under /tmp/operator's workspace/skills-proposed/<name>/SKILL.md —",
+			"never straight into /tmp/operator's workspace/skills/ — then tell the operator a",
+			"proposal waits. Every skill write gets",
+			"`skills-ref validate '/tmp/operator'\\''s workspace/skills/<name>'` via bash (a draft the same",
+			"way) and a one-line description. Edits load when the next",
+			"conversation starts.",
 			"",
 			"- mq — jq for Markdown (/tmp/operator's workspace/skills/mq/SKILL.md)",
 		]);
@@ -446,10 +467,11 @@ describe("formatSkillsSection", () => {
 		const proposals = loadCatalog(join(dir, "drafts"));
 		const text = formatSkillsSection(catalog, proposals).join("\n");
 		expect(text).toContain("Skills are directories under `my-catalog/`");
-		expect(text).toContain("write goes to\nmy-catalog/<name>/SKILL.md");
+		expect(text).toContain("edit my-catalog/<name>/SKILL.md directly");
+		expect(text).toContain("drafts under drafts/<name>/SKILL.md");
 		expect(text).toContain("`skills-ref validate ./my-catalog/<name>` via bash");
 		expect(text).toContain("- mq — jq for Markdown (my-catalog/mq/SKILL.md)");
-		expect(text).toContain("reviewer drafts under `drafts/`");
+		expect(text).toContain("drafts (the reviewer's or your own) under `drafts/`");
 		expect(text).toContain("- pdf — Extract PDF text (drafts/pdf/SKILL.md)");
 		// Entries and prose share the root's basename — they can't disagree.
 		expect(catalog.entries[0]!.path).toBe("my-catalog/mq/SKILL.md");

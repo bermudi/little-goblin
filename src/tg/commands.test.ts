@@ -10,8 +10,6 @@ import { startMemoryWorker } from "../memory/mod.ts";
 import type { Runtime } from "../runtime.ts";
 
 import { tmpDb, waitUntil } from "../testkit.ts";
-import type { TurnRun, TurnToolCall } from "../turn-journal.ts";
-import type { ResumeOps } from "../turn-resume.ts";
 import { COMMAND_RE, type CommandDeps, handleCommand } from "./commands.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 
@@ -31,7 +29,7 @@ const config: Config = {
 	logLevel: "info",
 };
 
-function setup(overrides?: { compact?: Runtime["compact"]; resumeOps?: () => ResumeOps }) {
+function setup(overrides?: { compact?: Runtime["compact"] }) {
 	const store = openStore(tmpDb("goblin-cmd-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const sent: string[] = [];
@@ -53,7 +51,6 @@ function setup(overrides?: { compact?: Runtime["compact"]; resumeOps?: () => Res
 			...(overrides?.compact ? { compact: overrides.compact } : {}),
 		} as unknown as Runtime,
 		botUsername: "goblin",
-		...(overrides?.resumeOps ? { resumeOps: overrides.resumeOps } : {}),
 	};
 	return { store, conv, sent, stopped, deps };
 }
@@ -1069,396 +1066,14 @@ describe("forget delete against in-flight retention", () => {
 	});
 });
 
-// The ops surface is faked; these pin the command parsing and reply
-// shapes.
-describe("recovery commands", () => {
-	const run: TurnRun = {
-		runId: "abcdef01-2345-6789-0000-000000000000",
-		conversationId: "dm:1",
-		epoch: 0,
-		anchorSeq: 1,
-		steerMark: null,
-		convSnapshot: {},
-		toolNames: ["probe"],
-		startedMs: 1_700_000_000_000,
-		finishedMs: null,
-		status: "interrupted",
-		delivery: "pending",
-		partial: null,
-		loopState: null,
-		ownedInputSeqs: null,
-		admissionExchangeExcluded: false,
-		sourceInputSeq: null,
-		ownedInputSeqsUnreadable: false,
-		resumeRequestSeqs: null,
-		resumeRequestSeqsUnreadable: false,
-		filterRetryUsed: false,
-		replyLanded: false,
-		replySeq: null,
-		createdAt: "2026-10-11T00:00:00.000Z",
-		resumedFrom: null,
-		calls: { planned: 1, dispatched: 1, completed: 2, failed: 0, resolved: 0 },
-	};
-	const call: TurnToolCall = {
-		runId: run.runId,
-		toolCallId: "call-xyz789",
-		name: "probe",
-		args: { q: 1 },
-		argsHash: "h",
-		state: "dispatched",
-		replayed: false,
-		retryConsumed: false,
-		retryFromKnown: false,
-		result: null,
-		error: null,
-		beganMs: 1,
-		settledMs: null,
-		resolutionNote: null,
-		resolvedMs: null,
-	};
-
-	function fakeOps(over: Partial<ResumeOps> = {}): ResumeOps {
-		return {
-			interrupted: () => [],
-			resume: () => ({ kind: "refused", code: "not-found", reason: "no such run" }),
-			decide: () => ({ kind: "ok" }),
-			abandon: () => ({ kind: "ok" }),
-			...over,
-		};
-	}
-
-	test("/resume lists interrupted runs with their ambiguous calls", async () => {
-		const { store, conv, sent, deps } = setup({
-			resumeOps: () =>
-				fakeOps({
-					interrupted: () => [
-						{ run, calls: [call, { ...call, toolCallId: "c2", state: "planned" }] },
-					],
-				}),
-		});
-		expect(handleCommand(deps, conv, "/resume")).toBe(true);
-		await tick();
-		expect(sent[0]).toContain("interrupted run abcdef01");
-		expect(sent[0]).toContain("1 ambiguous");
-		expect(sent[0]).toContain("probe");
-		expect(sent[0]).toContain("/decide abcdef01");
-		expect(sent[0]).toContain("/abandon abcdef01");
-		store.close();
-	});
-
-	test("/resume lists known calls with their call-id retry path — no ordinal", async () => {
-		const calls = [
-			{ ...call, toolCallId: "call-xyz789", state: "completed" as const, result: '{"out":1}' },
-			{ ...call, toolCallId: "amb-one", state: "dispatched" as const },
-		];
-		const { store, conv, sent, deps } = setup({
-			resumeOps: () => fakeOps({ interrupted: () => [{ run, calls }] }),
-		});
-		expect(handleCommand(deps, conv, "/resume")).toBe(true);
-		await tick();
-		expect(sent[0]).toContain('known: probe {"q":1} — completed');
-		expect(sent[0]).toContain("re-run: /decide abcdef01 call-xyz789 authorize-retry");
-		// The known row never occupies a numbered slot — ordinals stay
-		// pinned to the ambiguous list.
-		const numbered = sent[0]!.split("\n").filter((l) => /^\s*\d+\./.test(l));
-		expect(numbered).toEqual([`  1. probe {"q":1}`]);
-		store.close();
-	});
-
-	test("/resume prints full call ids for known calls — shared prefixes stay decidable", async () => {
-		// Script children are "${parentId}/${callNo}" — an 8-char prefix
-		// covers siblings identically, and known calls take no ordinal.
-		const calls = [
-			{ ...call, toolCallId: "call-root/0", state: "completed" as const, result: "{}" },
-			{ ...call, toolCallId: "call-root/1", state: "failed" as const, error: "boom" },
-		];
-		const { store, conv, sent, deps } = setup({
-			resumeOps: () => fakeOps({ interrupted: () => [{ run, calls }] }),
-		});
-		expect(handleCommand(deps, conv, "/resume")).toBe(true);
-		await tick();
-		expect(sent[0]).toContain("re-run: /decide abcdef01 call-root/0 authorize-retry");
-		expect(sent[0]).toContain("re-run: /decide abcdef01 call-root/1 authorize-retry");
-		store.close();
-	});
-
-	test("/resume keeps ordinals on ambiguous calls — a granted known call mints none", async () => {
-		// The granted row precedes the ambiguous ones in journal order;
-		// numberedCalls skips it, so "1" still names the first ambiguous.
-		const calls = [
-			{
-				...call,
-				toolCallId: "known-abc",
-				state: "resolved-retry" as const,
-				retryFromKnown: true,
-			},
-			{ ...call, toolCallId: "amb-one", args: { q: 1 } },
-			{ ...call, toolCallId: "amb-two", args: { q: 2 } },
-		];
-		const { store, conv, sent, deps } = setup({
-			resumeOps: () => fakeOps({ interrupted: () => [{ run, calls }] }),
-		});
-		expect(handleCommand(deps, conv, "/resume")).toBe(true);
-		await tick();
-		const numbered = sent[0]!.split("\n").filter((l) => /^\s*\d+\./.test(l));
-		expect(numbered).toEqual([`  1. probe {"q":1}`, `  2. probe {"q":2}`]);
-		store.close();
-	});
-
-	test("/resume with nothing interrupted says so", async () => {
-		const { store, conv, sent, deps } = setup({ resumeOps: () => fakeOps() });
-		expect(handleCommand(deps, conv, "/resume")).toBe(true);
-		await tick();
-		expect(sent[0]).toBe("no interrupted turns in this conversation");
-		store.close();
-	});
-
-	test("/resume splits oversized listings under Telegram's message cap", async () => {
-		// The joined listing far exceeds 4096 chars — one sendMessage
-		// would be rejected whole, taking every decision number with it.
-		const runs = Array.from({ length: 60 }, (_, i) => {
-			const runId = `${String(i).padStart(8, "0")}-2345-6789-0000-000000000000`;
-			return {
-				run: { ...run, runId },
-				calls: Array.from({ length: 3 }, (_, j) => ({
-					...call,
-					toolCallId: `call-${i}-${j}`,
-					args: { q: `detail-${i}-${j}-${"x".repeat(90)}` },
-				})),
-			};
-		});
-		const { store, conv, sent, deps } = setup({
-			resumeOps: () => fakeOps({ interrupted: () => runs }),
-		});
-		expect(handleCommand(deps, conv, "/resume")).toBe(true);
-		await tick();
-		// Split, not truncated — several messages, each under the cap.
-		expect(sent.length).toBeGreaterThan(1);
-		for (const s of sent) expect(s.length).toBeLessThanOrEqual(4096);
-		const joined = sent.join("\n");
-		expect(joined).toContain("interrupted run 00000000");
-		expect(joined).toContain("/resume 00000000 · /abandon 00000000");
-		expect(joined).toContain("interrupted run 00000059");
-		expect(joined).toContain("/resume 00000059 · /abandon 00000059");
-		// Chunks split on whole lines — decision numbering rides them.
-		for (const s of sent) expect(s.endsWith("\n")).toBe(false);
-		expect(joined).toContain("2. probe");
-		store.close();
-	});
-
-	test("/resume <id> blocked-list splits under the cap too", async () => {
-		const calls = Array.from({ length: 80 }, (_, j) => ({
-			...call,
-			toolCallId: `call-block-${j}`,
-			args: { q: `blocked-${j}-${"y".repeat(100)}` },
-		}));
-		const { store, conv, sent, deps } = setup({
-			resumeOps: () =>
-				fakeOps({
-					resume: () => ({ kind: "needs-decisions", runId: run.runId, calls, numbered: calls }),
-				}),
-		});
-		expect(handleCommand(deps, conv, "/resume abcdef01")).toBe(true);
-		await tick();
-		expect(sent.length).toBeGreaterThan(1);
-		for (const s of sent) expect(s.length).toBeLessThanOrEqual(4096);
-		const joined = sent.join("\n");
-		expect(joined).toContain("undecided tool calls block resume:");
-		expect(joined).toContain("1. probe");
-		expect(joined).toContain("80. probe");
-		expect(joined).toContain("/decide abcdef01");
-		store.close();
-	});
-
-	// The oversized-listing fixture, shared by the chunk-ordering pair
-	// below: 60 runs is several REPLY_CHUNK_LIMIT chunks.
-	const bigRuns = () =>
-		Array.from({ length: 60 }, (_, i) => {
-			const runId = `${String(i).padStart(8, "0")}-2345-6789-0000-000000000000`;
-			return {
-				run: { ...run, runId },
-				calls: Array.from({ length: 3 }, (_, j) => ({
-					...call,
-					toolCallId: `call-${i}-${j}`,
-					args: { q: `detail-${i}-${j}-${"x".repeat(90)}` },
-				})),
-			};
-		});
-
-	test("/resume chunks send strictly in order — a held first send blocks the rest", async () => {
-		const runs = bigRuns();
-		const { store, conv, deps } = setup({
-			resumeOps: () => fakeOps({ interrupted: () => runs }),
-		});
-		const texts: string[] = [];
-		let release!: () => void;
-		const gate = new Promise<void>((r) => {
-			release = r;
-		});
-		deps.api.sendMessage = (async (_chat: number, text: string) => {
-			const n = texts.push(text);
-			if (n === 1) await gate;
-			return { message_id: n };
-		}) as unknown as Api["sendMessage"];
-		expect(handleCommand(deps, conv, "/resume")).toBe(true);
-		await tick();
-		// Only chunk 1's send is in flight — chunk 2 must not start
-		// before it settles.
-		expect(texts).toHaveLength(1);
-		release();
-		await waitUntil(
-			() => texts.join("\n").includes("/resume 00000059 · /abandon 00000059"),
-			"all chunks land",
-		);
-		expect(texts.length).toBeGreaterThan(1);
-		// Every run's listing lands in listing order across the chunks.
-		const joined = texts.join("\n");
-		const positions = runs.map((_, i) =>
-			joined.indexOf(`interrupted run ${String(i).padStart(8, "0")}`),
-		);
-		expect(positions.every((p) => p >= 0)).toBe(true);
-		expect(positions).toEqual([...positions].sort((a, b) => a - b));
-		store.close();
-	});
-
-	test("/resume keeps sending later chunks, in order, after a failed send", async () => {
-		const { store, conv, deps } = setup({
-			resumeOps: () => fakeOps({ interrupted: () => bigRuns() }),
-		});
-		const texts: string[] = [];
-		deps.api.sendMessage = (async (_chat: number, text: string) => {
-			const n = texts.push(text);
-			if (n === 1) throw new Error("bot api wedged");
-			return { message_id: n };
-		}) as unknown as Api["sendMessage"];
-		const warn = spyOn(log, "warn");
-		try {
-			expect(handleCommand(deps, conv, "/resume")).toBe(true);
-			await waitUntil(
-				() => warn.mock.calls.some(([msg]) => msg === "command reply failed"),
-				"failure logged",
-			);
-			await waitUntil(
-				() => texts.join("\n").includes("/resume 00000059 · /abandon 00000059"),
-				"remaining chunks land",
-			);
-			expect(texts.length).toBeGreaterThan(2);
-			const failed = warn.mock.calls.find(([msg]) => msg === "command reply failed");
-			expect(failed?.[2]).toMatchObject({ chunk: 1, of: texts.length });
-		} finally {
-			warn.mockRestore();
-		}
-		store.close();
-	});
-
-	test("/resume <id> admits the fresh turn and reports the blocked list", async () => {
-		const { store, conv, sent, deps } = setup({
-			resumeOps: () =>
-				fakeOps({
-					resume: (_c, ref) =>
-						ref === "abcdef01"
-							? { kind: "resumed", runId: run.runId }
-							: {
-									kind: "needs-decisions",
-									runId: run.runId,
-									calls: [call],
-									numbered: [call],
-								},
-				}),
-		});
-		expect(handleCommand(deps, conv, "/resume abcdef01")).toBe(true);
-		await tick();
-		expect(sent[0]).toContain("resumed abcdef01 — running as a fresh turn");
-
-		expect(handleCommand(deps, conv, "/resume 99999999")).toBe(true);
-		await tick();
-		expect(sent[1]).toContain("undecided tool calls block resume");
-		expect(sent[1]).toContain("call-xyz");
-		expect(sent[1]).toContain("/decide abcdef01");
-		store.close();
-	});
-
-	test("/resume <id> surfaces the refusal reason", async () => {
-		const { store, conv, sent, deps } = setup({
-			resumeOps: () =>
-				fakeOps({
-					resume: () => ({
-						kind: "refused",
-						code: "invalid",
-						reason: "model changed a → b since the interruption — not resumed",
-					}),
-				}),
-		});
-		expect(handleCommand(deps, conv, "/resume abcdef01")).toBe(true);
-		await tick();
-		expect(sent[0]).toContain("model changed a → b");
-		store.close();
-	});
-
-	test("/decide parses run, call, decision, and note", async () => {
-		const got: unknown[][] = [];
-		const { store, conv, sent, deps } = setup({
-			resumeOps: () =>
-				fakeOps({
-					decide: (...a) => {
-						got.push(a);
-						return { kind: "ok" };
-					},
-				}),
-		});
-		expect(handleCommand(deps, conv, "/decide abcdef01 2 record-result it landed fine")).toBe(true);
-		await tick();
-		expect(got[0]).toEqual([conv.id, "abcdef01", "2", "record-result", "it landed fine"]);
-		expect(sent[0]).toBe("call 2 → record-result");
-
-		expect(handleCommand(deps, conv, "/decide abcdef01 call-x skip")).toBe(true);
-		await tick();
-		expect(got[1]).toEqual([conv.id, "abcdef01", "call-x", "skip", undefined]);
-
-		expect(handleCommand(deps, conv, "/decide abcdef01")).toBe(true);
-		await tick();
-		expect(sent[2]).toContain("usage: /decide");
-
-		expect(handleCommand(deps, conv, "/decide abcdef01 1 maybe")).toBe(true);
-		await tick();
-		expect(sent[3]).toContain("usage: /decide");
-		store.close();
-	});
-
-	test("/abandon drops the run and answers plainly", async () => {
-		const { store, conv, sent, deps } = setup({ resumeOps: () => fakeOps() });
-		expect(handleCommand(deps, conv, "/abandon abcdef01")).toBe(true);
-		await tick();
-		expect(sent[0]).toBe("abandoned abcdef01 — it will not resume");
-
-		expect(handleCommand(deps, conv, "/abandon")).toBe(true);
-		await tick();
-		expect(sent[1]).toContain("usage: /abandon");
-		store.close();
-	});
-
-	test("the verbs answer 'not wired' without resume ops", async () => {
-		const { store, conv, sent, deps } = setup();
-		expect(handleCommand(deps, conv, "/resume")).toBe(true);
-		expect(handleCommand(deps, conv, "/decide a b skip")).toBe(true);
-		expect(handleCommand(deps, conv, "/abandon a")).toBe(true);
-		await tick();
-		expect(sent).toEqual([
-			"turn resume is not wired",
-			"turn resume is not wired",
-			"turn resume is not wired",
-		]);
-		store.close();
-	});
-});
-
 // #340 drift guard: every command COMMAND_RE recognizes must be handled
 // exactly once — by handleCommand's switch below, or by the
 // interceptions handleMessage (src/tg/intake.ts) runs before it: /new
-// and /back (dm navigation) and /skill (async door, ruling 2026-10-21;
-// folding it into the switch is #462). A listed command with neither
-// is silently treated as ordinary text; a switch case nothing lists is
-// dead. Both drift directions fail here.
+// and /back (dm navigation), /skill /learn /curator (async doors,
+// rulings 2026-10-21 and 2026-11-16; folding them into the switch is
+// #462). A listed command with neither is silently treated as ordinary
+// text; a switch case nothing lists is dead. Both drift directions fail
+// here.
 describe("command surface drift (#340)", () => {
 	test("recognized commands are exactly the switch cases plus the documented interceptions", () => {
 		const source = readFileSync(join(import.meta.dir, "commands.ts"), "utf8");
@@ -1466,7 +1081,7 @@ describe("command surface drift (#340)", () => {
 		const alternation = COMMAND_RE.source.match(/^\^\\\/\(([^)]+)\)/)?.[1] ?? "";
 		expect(alternation).not.toBe("");
 		const recognized = alternation.split("|").map((name) => `/${name}`);
-		const intercepted = ["/new", "/back", "/skill"];
+		const intercepted = ["/new", "/back", "/skill", "/learn", "/curator"];
 		expect([...switchCases].sort()).toEqual(
 			[...recognized].filter((cmd) => !intercepted.includes(cmd)).sort(),
 		);

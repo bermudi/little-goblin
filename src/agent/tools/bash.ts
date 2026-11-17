@@ -1,5 +1,5 @@
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { boundedRun, spawnProc, type BoundedProc } from "../../proc.ts";
 import { paths } from "../../home-layout.ts";
 import { log } from "../../log.ts";
@@ -13,12 +13,12 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_TIMEOUT_MS = 10 * 60_000;
 
 export const bashTool = (cwd: string) =>
-	tool({
+	defineTool({
 		description:
 			cwd === paths.workspace()
 				? "Run a shell command in the deployment workspace — the fixed working directory shared by every conversation. Use `cd` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run `../doctor --json`; diagnosis does not authorize repairs or restarts."
 				: `Run a shell command in this conversation's working directory — the project directory the environment line names. Use \`cd\` inside the command to work elsewhere. Returns combined stdout/stderr and the exit code. For dependency health checks, run \`${paths.doctorShim()} --json\`; diagnosis does not authorize repairs or restarts.`,
-		inputSchema: z.object({
+		input: z.object({
 			command: z.string(),
 			timeout_ms: z.number().int().positive().optional(),
 		}),

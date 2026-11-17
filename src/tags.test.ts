@@ -4,13 +4,13 @@
 // silently change what reaches memory.
 import { describe, expect, test } from "bun:test";
 import {
+	agentNoticeTag,
 	compactionSummaryId,
 	corruptRowId,
 	delegationNoticeTag,
 	isMachineryText,
 	memoryBlockId,
 	programFireTag,
-	subagentNoticeTag,
 } from "./tags.ts";
 
 describe("message tags", () => {
@@ -64,13 +64,11 @@ describe("message tags", () => {
 	});
 });
 
-describe("subagentNoticeTag", () => {
+describe("agentNoticeTag", () => {
 	test("shares the delegation shape and counts as machinery speech", () => {
-		expect(subagentNoticeTag(3, "worker", "done")).toBe("[subagent: #3 worker · done]");
-		expect(subagentNoticeTag(3, "worker", "needs_input")).toBe(
-			"[subagent: #3 worker · needs input]",
-		);
-		expect(isMachineryText(subagentNoticeTag(3, "worker", "done"))).toBe(true);
+		expect(agentNoticeTag("general", "done")).toBe("[agent: general · done]");
+		expect(agentNoticeTag("computer", "needs_input")).toBe("[agent: computer · needs_input]");
+		expect(isMachineryText(agentNoticeTag("general", "done"))).toBe(true);
 	});
 });
 

@@ -12,5 +12,26 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test
+      - run: bun run lint
       - run: python3 -m unittest discover -s deploy/memory -t deploy/memory
+
+  # Each shard runs its files across the runner's cores (--parallel).
+  # test-timings.json balances shards by measured time; each shard
+  # uploads its fresh timings; scripts/refresh-test-timings.sh merges
+  # them back into the committed file.
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun test --parallel --shard=${{ matrix.shard }}/4 --timings=.github/test-timings.json --update-timings
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-timings-${{ matrix.shard }}
+          path: .github/test-timings.json

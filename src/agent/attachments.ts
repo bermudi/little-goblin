@@ -4,7 +4,7 @@
 import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import { z } from "zod";
 import { paths } from "../home-layout.ts";
 import { log } from "../log.ts";
@@ -36,7 +36,7 @@ export const attachmentRefSchema = z.object({
 
 export type AttachmentRef = z.infer<typeof attachmentRefSchema>;
 
-export function attachmentPart(ref: AttachmentRef): UIMessage["parts"][number] {
+export function attachmentPart(ref: AttachmentRef): Message["parts"][number] {
 	return { type: ATTACHMENT_PART, data: ref };
 }
 
@@ -142,7 +142,7 @@ export function acceptsMedia(modalities: ReadonlySet<string>, mediaType: string)
 // Preserve an intake speech transcript when the model cannot consume the file.
 // A recorded transcription failure rides the same line — the model must be
 // able to tell "engine is broken/misconfigured" from "an audio file exists".
-function fallbackFor(ref: AttachmentRef): UIMessage["parts"][number] {
+function fallbackFor(ref: AttachmentRef): Message["parts"][number] {
 	if (ref.transcript !== undefined) {
 		return {
 			type: "text",
@@ -157,7 +157,7 @@ function fallbackFor(ref: AttachmentRef): UIMessage["parts"][number] {
 	};
 }
 
-function malformedFallback(): UIMessage["parts"][number] {
+function malformedFallback(): Message["parts"][number] {
 	return {
 		type: "text",
 		text: "[attachment: unreadable reference — stored attachment data failed validation. The file, if saved, may still be readable with read_file or bash tools.]",
@@ -194,16 +194,16 @@ function planPart(
 // Missing or over-cap files degrade to a reference. A changed file warns but
 // inlines its current bytes when still within the cap.
 export async function materializeAttachments(
-	messages: UIMessage[],
+	messages: Message[],
 	modalities: Set<string> = new Set(),
 	maxItemBytes: number = INLINE_ITEM_MAX_BYTES,
 	// Conservative default: user-message parts only.
 	carries: (mediaType: string, position: MediaPosition) => boolean = (_mt, position) =>
 		position === "user",
-): Promise<UIMessage[]> {
-	const out: UIMessage[] = [];
+): Promise<Message[]> {
+	const out: Message[] = [];
 	for (const m of messages) {
-		let parts: UIMessage["parts"] | null = null;
+		let parts: Message["parts"] | null = null;
 		for (const [pi, p] of m.parts.entries()) {
 			// Only operator input can inline payloads. Assistant/system
 			// attachment records are delivery references; turning one into a

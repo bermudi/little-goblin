@@ -6,8 +6,8 @@
 // no tools. Nothing durable — a failed call fails the tool result.
 
 import { readFile, stat } from "node:fs/promises";
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { log } from "../../log.ts";
 import { resolvePath, unicodeTwin } from "./paths.ts";
 import { MAX_FILE_BYTES } from "./read.ts";
@@ -110,14 +110,14 @@ function asText(bytes: Buffer): string | null {
 }
 
 export function readLongTool(cwd: string, deps: ReadLongToolDeps) {
-	return tool({
+	return defineTool({
 		description:
 			"Hand one long text file to a helper reader with a question; get its answer back in this turn. " +
 			"Use it for documents too long to read_file into this conversation. " +
 			"Call it several times in one step — one call per file — and the calls run in parallel. " +
 			"A file over the helper's size is split into parts; you get one answer per part. " +
 			"Text only: convert PDF or office files to text with bash first (e.g. pdftotext in.pdf out.txt).",
-		inputSchema: readLongInputSchema,
+		input: readLongInputSchema,
 		execute: async ({ path, question }, options) => {
 			if (!question.trim()) return { error: "question is empty — say what to extract" };
 			const abs = resolvePath(cwd, path);

@@ -5,7 +5,6 @@ import { installation } from "./installation.ts";
 import { snapshots } from "./keys.ts";
 import { memory } from "./memory.ts";
 import { observer } from "./observer.ts";
-import { testRatio } from "./repo.ts";
 import { sandbox } from "./sandbox.ts";
 import {
 	capacity,
@@ -42,19 +41,18 @@ export async function runHealth(options: {
 		...options.probe,
 		...(options.signal ? { signal: options.signal } : {}),
 	};
-	const [db, install, keys, mem, sbx, ratio] = await Promise.all([
+	const [db, install, keys, mem, sbx] = await Promise.all([
 		sqlite(home, options.phase, probe, config.config),
-		installation(checkout, options.phase, probe, config.config?.delegation !== undefined),
+		installation(checkout, options.phase, probe),
 		snapshots(auth.profiles, options.phase, probe),
 		memory(config.config, checkout, options.phase, probe),
 		sandbox(config.config, probe),
-		testRatio(checkout, probe),
 	]);
 	return healthReportSchema.parse({
 		version: 1,
 		checkedAt,
 		phase: options.phase,
 		target: { home, checkout },
-		results: [...local, ...db, ...install, ...keys, ...mem, ...sbx, ratio],
+		results: [...local, ...db, ...install, ...keys, ...mem, ...sbx],
 	});
 }

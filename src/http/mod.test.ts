@@ -338,8 +338,11 @@ describe("http door", () => {
 	test("a save never drops config blocks the page can't express (delegation)", async () => {
 		useHome("goblin-http-");
 		const delegation = {
-			machines: { g7: { machine: "g7", root: "~/build" } },
-			harnesses: { codex: { kind: "codex", args: ["--x"] } },
+			harnesses: {
+				codex: { provider: "t3", model: "glm-5.3" },
+				flash: { provider: "t3", model: "glm-5.3-flash", askFirst: true },
+			},
+			defaults: { default: "codex", review: "flash" },
 		};
 		writeFileSync(
 			join(process.env.GOBLIN_HOME!, "goblin.json5"),
@@ -1229,8 +1232,8 @@ describe("thread forget tails", () => {
 		const home = process.env.GOBLIN_HOME!;
 		const store = openStore(join(home, "goblin.sqlite"));
 		const sources = new SkillSources(store.db);
-		sources.record("app/1", "herdr", "reviewer");
-		sources.record("dm:1", "herdr", "reviewer");
+		sources.record("app/1", "demo", "reviewer");
+		sources.record("dm:1", "demo", "reviewer");
 		const deleted: string[] = [];
 		const client = stubClient();
 		client.listDocuments = (o) =>
@@ -1298,8 +1301,11 @@ describe("thread forget tails", () => {
 			skillSources: {
 				forgetConversation: (conversationId: string) => sources.forgetConversation(conversationId),
 				forConversation: (conversationId: string) => sources.forConversation(conversationId),
+				managedNames: () => sources.managedNames(),
 				skillsDir: join(home, "workspace/skills"),
 				proposedDir: join(home, "workspace/skills-proposed"),
+				usagePath: join(home, "state/skill-usage.json"),
+				archiveDir: join(home, "workspace/skills-archive"),
 			},
 		});
 		const initData = makeInitData({

@@ -708,13 +708,13 @@ describe("app operator surface", () => {
 			const sources = new SkillSources(db);
 			const skillsDir = join(home, "workspace", "skills");
 			const proposedDir = join(home, "workspace", "skills-proposed");
-			mkdirSync(join(skillsDir, "herdr"), { recursive: true });
+			mkdirSync(join(skillsDir, "demo"), { recursive: true });
 			mkdirSync(join(proposedDir, "staged-skill"), { recursive: true });
 			// An update proposal on an installed skill: both dirs exist —
 			// installed still wins the state word, pending carries the
 			// undecided proposal.
-			mkdirSync(join(proposedDir, "herdr"), { recursive: true });
-			sources.record("app/1", "herdr", "reviewer", "2026-10-16T01:00:00.000Z", "r1");
+			mkdirSync(join(proposedDir, "demo"), { recursive: true });
+			sources.record("app/1", "demo", "reviewer", "2026-10-16T01:00:00.000Z", "r1");
 			sources.record("app/1", "gone-skill", "turn", "2026-10-16T02:00:00.000Z");
 			sources.record("app/1", "staged-skill", "reviewer", "2026-10-16T03:00:00.000Z", "r2");
 			const wired = setup({
@@ -723,8 +723,11 @@ describe("app operator surface", () => {
 					skillSources: {
 						forConversation: (id: string) => sources.forConversation(id),
 						forgetConversation: (id: string) => sources.forgetConversation(id),
+						managedNames: () => sources.managedNames(),
 						skillsDir,
 						proposedDir,
+						usagePath: join(home, "state", "skill-usage.json"),
+						archiveDir: join(home, "workspace", "skills-archive"),
 					},
 				},
 			});
@@ -752,7 +755,7 @@ describe("app operator surface", () => {
 						lastAt: "2026-10-16T02:00:00.000Z",
 					},
 					{
-						skill: "herdr",
+						skill: "demo",
 						state: "installed",
 						pending: true,
 						kind: "reviewer",
@@ -803,8 +806,8 @@ describe("app operator surface", () => {
 		} as unknown as MemoryQueue;
 		const db = new Database(":memory:");
 		const sources = new SkillSources(db);
-		sources.record("app/1", "herdr", "reviewer");
-		sources.record("dm:1", "herdr", "reviewer");
+		sources.record("app/1", "demo", "reviewer");
+		sources.record("dm:1", "demo", "reviewer");
 		const operator: NonNullable<AppChannelDeps["operator"]> = {
 			memory: stubMemory({
 				client,
@@ -817,8 +820,11 @@ describe("app operator surface", () => {
 		operator.skillSources = {
 			forgetConversation: (id: string) => sources.forgetConversation(id),
 			forConversation: (id: string) => sources.forConversation(id),
+			managedNames: () => sources.managedNames(),
 			skillsDir: join(home, "workspace", "skills"),
 			proposedDir: join(home, "workspace", "skills-proposed"),
+			usagePath: join(home, "state", "skill-usage.json"),
+			archiveDir: join(home, "workspace", "skills-archive"),
 		};
 		try {
 			const post = (path: string) =>
@@ -906,7 +912,7 @@ describe("app operator surface", () => {
 			address: { chatId: 1, threadId: null },
 		});
 		const stopped: number[] = [];
-		let outcome: "stopped" | "still running" = "stopped";
+		let outcome: "stopped" | "unavailable" = "stopped";
 		const wired = setup({
 			token: APP_TOKEN_NAME,
 			operator: {
@@ -914,7 +920,10 @@ describe("app operator surface", () => {
 				stopDelegation: async (id) => {
 					stopped.push(id);
 					const d = delegations.get(id);
-					return d === null ? { kind: "no row", id } : { kind: outcome, delegation: d, notes: [] };
+					if (d === null) return { kind: "no row" as const, id };
+					return outcome === "stopped"
+						? { kind: "stopped" as const, delegation: d, notes: [] }
+						: { kind: "unavailable" as const, delegation: d };
 				},
 			},
 		});
@@ -922,10 +931,15 @@ describe("app operator surface", () => {
 			const ok = await wired.call(`/api/app/delegations/${row.id}/stop`, { method: "POST" });
 			expect(ok.status).toBe(200);
 			expect(((await ok.json()) as { outcome: string }).outcome).toBe("stopped");
-			outcome = "still running";
-			expect(
-				(await wired.call(`/api/app/delegations/${row.id}/stop`, { method: "POST" })).status,
-			).toBe(409);
+			// t3 has no stop verb for a live thread — reported honestly.
+			outcome = "unavailable";
+			const refused = await wired.call(`/api/app/delegations/${row.id}/stop`, {
+				method: "POST",
+			});
+			expect(refused.status).toBe(409);
+			const body = (await refused.json()) as { outcome: string; notes: string[] };
+			expect(body.outcome).toBe("unavailable");
+			expect(body.notes).toEqual([]);
 			expect((await wired.call("/api/app/delegations/999/stop", { method: "POST" })).status).toBe(
 				404,
 			);
@@ -1084,10 +1098,6 @@ describe("app operator surface — capability parking", () => {
 			// off = a default exists; needs-setup = neither block nor parked copy
 			expect(first.capabilities.sandbox.state).toBe("off");
 			expect(first.capabilities.reviewer.state).toBe("off");
-			expect(first.capabilities.subagents.state).toBe("needs-setup");
-			expect(first.capabilities.subagents.hint).toContain(
-				"pick a model for the worker or computer use",
-			);
 			expect(first.capabilities.delegation.state).toBe("needs-setup");
 			expect(first.capabilities.transcription.hint).toBe("pick an engine/model");
 			expect(first.capabilities.memory.hint).toBeNull();
@@ -1131,10 +1141,10 @@ describe("app operator surface — capability parking", () => {
 			expect(configRef.current.reviewer?.auth).toBe("openrouter");
 
 			// true with nothing parked and no default → 422 + hint.
-			const needsSetup = await post({ capabilities: { subagents: true } });
+			const needsSetup = await post({ capabilities: { delegation: true } });
 			expect(needsSetup.status).toBe(422);
 			expect(((await needsSetup.json()) as { error: string }).error).toContain(
-				"pick a model for the worker or computer use",
+				"add a coding agent",
 			);
 			const noInstaller = await post({ capabilities: { image: true } });
 			expect(noInstaller.status).toBe(422);
@@ -1161,7 +1171,6 @@ describe("app operator surface — capability parking", () => {
 			const bogus = await post({ capabilities: { bogus: true } });
 			expect(bogus.status).toBe(400);
 			expect(((await bogus.json()) as { error: string }).error).toContain("capabilities.bogus");
-			expect(configRef.current.subagents).toBeUndefined();
 		} finally {
 			http.stop();
 		}

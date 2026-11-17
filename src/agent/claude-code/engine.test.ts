@@ -1,16 +1,19 @@
 // The claude engine's integration suite: driveClaude over the fake
 // query (testkit/fake-claude.ts) with the real bridge and a scripted
 // ToolSet, asserting the wire, journal, and outcome contracts it shares
-// with driveStream — plus the engine-specific rulings (steer deferral,
-// no forced cuts, loud rate-limit/auth text, overflow recovery hold).
+// with driveStream — plus the engine-specific rulings (mid-turn
+// steer fold, no forced cuts, loud rate-limit/auth text, overflow
+// recovery hold).
 
 import { describe, expect, test } from "bun:test";
-import { type ModelMessage, type ToolSet, tool, type UIMessageChunk } from "ai";
+import type { ModelMessage } from "ai";
+import type { MessageChunk } from "../../message.ts";
 import { z } from "zod";
+import { defineTool, type Tools } from "../../tool.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { ConfigRef } from "../../config.ts";
 import type { Config } from "../../config-schema.ts";
-import { type FakeStep, fakeClaude } from "../../testkit/fake-claude.ts";
+import { type FakeStep, type FakeUsageInput, fakeClaude } from "../../testkit/fake-claude.ts";
 import { TurnState } from "../../turn/state.ts";
 import {
 	type MemberSettlement,
@@ -54,15 +57,22 @@ const fakeConfigRef = (providers: Config["providers"] = {}): ConfigRef => ({
 });
 
 interface RecMember extends WireMember {
-	chunks: UIMessageChunk[];
+	chunks: MessageChunk[];
 }
 
 function member(): RecMember {
-	const chunks: UIMessageChunk[] = [];
+	const chunks: MessageChunk[] = [];
 	return {
 		seq: 1,
 		message: { id: "u-1", role: "user", parts: [{ type: "text", text: "do the thing" }] },
-		sink: { onStreamChunk: (c) => chunks.push(c) },
+		sink: {
+			delivery: "stream",
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onStreamChunk: (c) => chunks.push(c),
+			onDone() {},
+		},
 		chunks,
 	};
 }
@@ -84,16 +94,16 @@ function headSink() {
 	};
 }
 
-function echoTools(): ToolSet {
+function echoTools(): Tools {
 	return {
-		echo: tool({
+		echo: defineTool({
 			description: "echo the message",
-			inputSchema: z.object({ message: z.string() }),
+			input: z.object({ message: z.string() }),
 			execute: async ({ message }) => `echo:${message}`,
 		}),
-		failing: tool({
+		failing: defineTool({
 			description: "always fails",
-			inputSchema: z.object({}),
+			input: z.object({}),
 			execute: async (): Promise<string> => {
 				throw new Error("boom-from-tool");
 			},
@@ -193,7 +203,7 @@ async function run(
 			configRef: fakeConfigRef({ claude: { kind: "claude-code", auth: "claude-code" } }),
 			configDir: "/tmp",
 			...engine,
-			bridgeFactory: (d: { convId: string; tools: ToolSet }) => {
+			bridgeFactory: (d: { convId: string; tools: Tools }) => {
 				const real = createToolBridge(d);
 				bridgeRef.current = real;
 				return real;
@@ -204,9 +214,42 @@ async function run(
 	return { outcome, fake, bridge: bridgeRef.current, ...r, journal, rec };
 }
 
-const types = (chunks: UIMessageChunk[]): string[] => chunks.map((c) => c.type);
+const types = (chunks: MessageChunk[]): string[] => chunks.map((c) => c.type);
 
 describe("driveClaude — wire and outcome parity", () => {
+	test("uses final message_delta output usage", async () => {
+		const { outcome, members } = await run([
+			{
+				kind: "stream-text",
+				text: "hello",
+				usage: { outputTokens: 8 },
+				deltaUsage: { outputTokens: 36 },
+			},
+		]);
+		if (outcome.kind !== "ok") throw new Error(`expected ok, got ${outcome.kind}`);
+		const finish = members[0]!.chunks.findLast((c) => c.type === "finish");
+		expect(finish?.type).toBe("finish");
+		if (finish?.type === "finish") {
+			const metadata = finish.messageMetadata as { usage?: { output?: number } };
+			expect(metadata.usage?.output).toBe(36);
+		}
+		expect(outcome.usage?.outputTokens).toBe(36);
+	});
+
+	test("result usage mismatch does not replace final per-call usage", async () => {
+		const { outcome } = await run([
+			{
+				kind: "stream-text",
+				text: "hello",
+				usage: { outputTokens: 8 },
+				deltaUsage: { outputTokens: 36 },
+			},
+			{ kind: "result", usage: { outputTokens: 50 } },
+		]);
+		if (outcome.kind !== "ok") throw new Error(`expected ok, got ${outcome.kind}`);
+		expect(outcome.usage?.outputTokens).toBe(36);
+	});
+
 	test("streamed text lands in both sinks with the canonical part lifecycle", async () => {
 		const { outcome, members, live } = await run([
 			{ kind: "stream-text", text: "hello world", usage: { inputTokens: 10, outputTokens: 5 } },
@@ -290,11 +333,166 @@ describe("driveClaude — wire and outcome parity", () => {
 		expect(ctx).toBeDefined();
 	});
 
-	test("steered messages are never claimed — they defer to the next turn", async () => {
-		const { outcome, claimed } = await run([{ kind: "text", text: "ok" }]);
+	test("a turn without tool calls never claims — a late steer leads the successor turn", async () => {
+		const { outcome, claimed, fake } = await run([{ kind: "text", text: "ok" }]);
 		expect(claimed).toEqual([]);
+		expect(fake.steers).toEqual([]);
 		if (outcome.kind !== "ok") throw new Error("expected ok");
 		expect(outcome.steerMark).toBe(0);
+	});
+});
+
+describe("driveClaude — steers fold mid-turn (#582)", () => {
+	function steerMember(): RecMember {
+		const chunks: MessageChunk[] = [];
+		return {
+			seq: 7,
+			message: {
+				id: "u-7",
+				role: "user",
+				parts: [{ type: "text", text: "also mention bananas" }],
+			},
+		sink: {
+			delivery: "stream",
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onStreamChunk: (c) => chunks.push(c),
+			onDone() {},
+		},
+			chunks,
+		};
+	}
+
+	// The lane hands the steer over once, at the first claim after it
+	// arrived; later claims find nothing.
+	function claimOnce(steer: RecMember): () => RecMember[] {
+		let handed = false;
+		return () => {
+			if (handed) return [];
+			handed = true;
+			return [steer];
+		};
+	}
+
+	const toolThen =
+		(rest: FakeStep[], usage?: FakeUsageInput) =>
+		(getBridge: () => ToolBridge | null): FakeStep[] => [
+			{
+				kind: "tool",
+				name: "echo",
+				input: { message: "hi" },
+				...(usage !== undefined ? { usage } : {}),
+				run: () => getBridge()!.invoke("echo", { message: "hi" }),
+			},
+			...rest,
+		];
+
+	test("a steer waiting when a tool settles goes to the CLI and joins the turn", async () => {
+		const steer = steerMember();
+		const { outcome, fake, members, rec } = await run(
+			toolThen([{ kind: "ack" }, { kind: "text", text: "echoed, and bananas" }]),
+			{ tools: echoTools(), claimSteers: claimOnce(steer) },
+		);
+		if (outcome.kind !== "ok") throw new Error(`expected ok, got ${outcome.kind}`);
+		// Sent once, rendered like the transcript, with no trailer.
+		expect(fake.steers).toHaveLength(1);
+		const blocks = fake.steers[0]!.prompt.blocks;
+		expect(blocks).toEqual([{ kind: "text", text: "[operator]\nalso mention bananas" }]);
+		// The steer is a member now: it hears the rest of the reply.
+		expect(members).toContain(steer);
+		expect(steer.chunks.map((c) => c.type)).toContain("finish");
+		// Ownership and the mark persist with the fold, and the outcome
+		// carries the mark forward.
+		expect(rec.checkpoints).toContainEqual(
+			expect.objectContaining({ ownedInputSeqs: [7], steerMark: 7 }),
+		);
+		expect(outcome.steerMark).toBe(7);
+		// The window the gauge itemizes includes the steer.
+		expect(outcome.window?.messages.at(-1)).toMatchObject({ role: "user" });
+	});
+
+	test("a result before the ack reads on through the CLI's follow-up turn", async () => {
+		const steer = steerMember();
+		const { outcome } = await run(
+			toolThen([
+				{
+					kind: "stream-text",
+					text: "echoed",
+					usage: { outputTokens: 30 },
+					deltaUsage: { outputTokens: 45 },
+				},
+				{ kind: "result" },
+				{ kind: "ack" },
+				{
+					kind: "stream-text",
+					text: "and bananas",
+					usage: { outputTokens: 11 },
+					deltaUsage: { outputTokens: 17 },
+				},
+			], { outputTokens: 0 }),
+			{ tools: echoTools(), claimSteers: claimOnce(steer) },
+		);
+		if (outcome.kind !== "ok") throw new Error(`expected ok, got ${outcome.kind}`);
+		const texts = outcome.responseMessage?.parts
+			.filter((p) => p.type === "text")
+			.map((p) => (p as { text: string }).text);
+		expect(texts).toEqual(["echoed", "and bananas"]);
+		expect(outcome.usage?.outputTokens).toBe(62);
+	});
+
+	test("a CLI that never acks cannot hold the turn open", async () => {
+		const steer = steerMember();
+		const { outcome } = await run(
+			toolThen([
+				{ kind: "text", text: "one" },
+				{ kind: "result" },
+				{ kind: "text", text: "two" },
+				{ kind: "result" },
+				{ kind: "text", text: "three" },
+				{ kind: "result" },
+				{ kind: "text", text: "never read" },
+			]),
+			{ tools: echoTools(), claimSteers: claimOnce(steer) },
+		);
+		if (outcome.kind !== "ok") throw new Error(`expected ok, got ${outcome.kind}`);
+		const texts = outcome.responseMessage?.parts
+			.filter((p) => p.type === "text")
+			.map((p) => (p as { text: string }).text);
+		expect(texts).toEqual(["one", "two", "three"]);
+	});
+
+	test("lost authority at the claim sends nothing and requeues the steer", async () => {
+		const steer = steerMember();
+		const requeued: RecMember[][] = [];
+		let authority = true;
+		const { outcome, fake, members } = await run(
+			(getBridge) => [
+				{
+					kind: "tool",
+					name: "echo",
+					input: { message: "hi" },
+					run: async () => {
+						const r = await getBridge()!.invoke("echo", { message: "hi" });
+						return r;
+					},
+				},
+				{ kind: "text", text: "done" },
+			],
+			{
+				tools: echoTools(),
+				claimSteers: () => {
+					authority = false;
+					return claimOnce(steer)();
+				},
+				holdsAuthority: () => authority,
+				unrequeueSteers: (s) => requeued.push(s),
+			},
+		);
+		expect(outcome.kind).toBe("ok");
+		expect(fake.steers).toEqual([]);
+		expect(requeued).toEqual([[steer]]);
+		expect(members).not.toContain(steer);
 	});
 });
 

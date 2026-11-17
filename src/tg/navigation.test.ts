@@ -334,6 +334,7 @@ function heldTurn(deps: ReturnType<typeof fixture>) {
 	const completed = Promise.withResolvers<TurnDone>();
 	let text = "";
 	const sink: TurnSink = {
+		delivery: "headless",
 		onTextDelta(delta) {
 			text += delta;
 		},

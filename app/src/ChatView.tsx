@@ -21,7 +21,6 @@ import { useConfirm } from "./confirm.tsx";
 import { Outline } from "./Outline.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { DocViewerProvider } from "./docview.tsx";
-import { InterruptedTurns } from "./InterruptedTurns.tsx";
 import { MessageParts } from "./chat/MessageParts.tsx";
 import { QuoteFab, type QuoteSpeaker } from "./chat/QuoteFab.tsx";
 import { Composer } from "./chat/Composer.tsx";
@@ -38,6 +37,7 @@ import {
   unlandedMeta,
   UserActions,
 } from "./chat/MetaLine.tsx";
+import { Age, messageCreatedAt } from "./chat/messageAge.tsx";
 import type { AttachmentRef } from "../../src/agent/attachments.ts";
 import type {
   AppCompactionMark,
@@ -939,6 +939,7 @@ function Chat({
                     </details>
                   );
                   if (unlanded.reply !== null) {
+                    const at = messageCreatedAt(m);
                     el = (
                       <div className="msg assistant unlanded">
                         <MessageParts
@@ -949,7 +950,15 @@ function Chat({
                           onOpenNote={onOpenNote}
                           ended
                         />
-                        <div className="msg-meta">{label}</div>
+                        <div className="msg-meta">
+                          {label}
+                          {at !== null && (
+                            <>
+                              {" · "}
+                              <Age at={at} />
+                            </>
+                          )}
+                        </div>
                         {note}
                       </div>
                     );
@@ -1021,16 +1030,6 @@ function Chat({
             {error !== undefined && (
               <div className="error">The turn failed: {error.message}</div>
             )}
-            <InterruptedTurns
-              key={conversationId}
-              token={token}
-              conversationId={conversationId}
-              busy={busy}
-              onResumed={async () => {
-                onTurnDone();
-                await resumeStream();
-              }}
-            />
           </div>
         </div>
         {stopError !== null && (

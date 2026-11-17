@@ -3,38 +3,40 @@
 // closures the MCP registration holds), no child CLI.
 
 import { describe, expect, test } from "bun:test";
-import { jsonSchema, type ToolSet, tool } from "ai";
 import { z } from "zod";
-import { createToolBridge } from "./tools.ts";
+import { defineTool, type Tools } from "../../tool.ts";
+import { callToolResult, createToolBridge } from "./tools.ts";
 
-function tools(): ToolSet {
+function tools(): Tools {
 	return {
-		echo: tool({
+		echo: defineTool({
 			description: "echo",
-			inputSchema: z.object({ message: z.string(), times: z.number().optional() }),
+			input: z.object({ message: z.string(), times: z.number().optional() }),
 			execute: async ({ message, times }) => `echo:${message}:${times ?? 1}`,
 		}),
-		ui: tool({
+		ui: defineTool({
 			description: "wire-schema tool",
-			inputSchema: jsonSchema<{ kind: string }>({
+			input: z.object({ kind: z.string(), opts: z.record(z.string(), z.unknown()).optional() }),
+			jsonSchema: {
 				type: "object",
 				properties: {
 					kind: { type: "string" },
 					opts: { type: "object", additionalProperties: true },
 				},
 				required: ["kind"],
-			}),
+			},
 			execute: async (input) => `ui:${input.kind}`,
 		}),
-		shaper: tool({
+		shaper: defineTool({
 			description: "shapes its model output",
-			inputSchema: z.object({}),
+			input: z.object({}),
 			execute: async () => ({ payload: "raw" }),
 			toModelOutput: () => ({ type: "json", value: { shaped: true } }),
 		}),
-		loose: tool({
+		loose: defineTool({
 			description: "non-object schema",
-			inputSchema: jsonSchema({ type: "string" }),
+			input: z.unknown(),
+			jsonSchema: { type: "string" },
 			execute: async (input) => `loose:${String(input)}`,
 		}),
 	};
@@ -82,10 +84,10 @@ describe("createToolBridge", () => {
 
 	test("parallel same-name calls adopt by their own input, not completion order", async () => {
 		const gates: Array<() => void> = [];
-		const gated: ToolSet = {
-			gated: tool({
+		const gated: Tools = {
+			gated: defineTool({
 				description: "gated",
-				inputSchema: z.object({ alpha: z.string(), beta: z.number() }),
+				input: z.object({ alpha: z.string(), beta: z.number() }),
 				execute: async ({ alpha }) => {
 					await new Promise<void>((resolve) => gates.push(resolve));
 					return `out:${alpha}`;
@@ -113,10 +115,10 @@ describe("createToolBridge", () => {
 	test("identical parallel inputs adopt in dispatch order", async () => {
 		const gates: Array<() => void> = [];
 		let seq = 0;
-		const gated: ToolSet = {
-			gated: tool({
+		const gated: Tools = {
+			gated: defineTool({
 				description: "gated",
-				inputSchema: z.object({ tag: z.string() }),
+				input: z.object({ tag: z.string() }),
 				execute: async () => {
 					const mine = ++seq;
 					await new Promise<void>((resolve) => gates.push(resolve));
@@ -149,10 +151,10 @@ describe("createToolBridge", () => {
 	});
 
 	test("an execution error adopts with its error text", async () => {
-		const failing: ToolSet = {
-			failing: tool({
+		const failing: Tools = {
+			failing: defineTool({
 				description: "f",
-				inputSchema: z.object({}),
+				input: z.object({}),
 				execute: async (): Promise<string> => {
 					throw new Error("boom");
 				},
@@ -167,5 +169,24 @@ describe("createToolBridge", () => {
 		const b = createToolBridge({ convId: "c", tools: {} });
 		const r = await b.invoke("ghost", {});
 		expect(r.error).toContain("no bridged tool named ghost");
+	});
+});
+
+describe("callToolResult", () => {
+	test("content outputs emit an MCP image block beside the text", () => {
+		const png = new Uint8Array([137, 80, 78, 71]);
+		const out = callToolResult({
+			type: "content",
+			value: [
+				{ type: "text", text: "frame caption" },
+				{ type: "image", mediaType: "image/png", data: png },
+			],
+		});
+		expect(out.content).toHaveLength(2);
+		expect(out.content[0]).toEqual({ type: "text", text: "frame caption" });
+		const image = out.content[1] as { type: string; data: string; mimeType: string };
+		expect(image.type).toBe("image");
+		expect(image.mimeType).toBe("image/png");
+		expect(Buffer.from(image.data, "base64")).toEqual(Buffer.from(png));
 	});
 });

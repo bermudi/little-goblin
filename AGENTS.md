@@ -34,6 +34,15 @@ surface conflicts with the direction rather than silently overriding it.
   `telegram-webapp.d.ts` out of the server program — its `Window`
   declaration changes how linkedom's `parseHTML` resolves in
   `agent/tools/fetch.ts`.
+- **`ui-sdk` skill and interaction rules.** `.agents/skills/ui-sdk` is vendored
+  from vercel-labs/ui (`skills-lock.json`; refresh with `bunx skills
+  update ui-sdk`, don't hand-edit). Where it disagrees with this repo:
+  `bun run typecheck`, not `npx tsc`; skip its agent-ready step and
+  agent test until the operator rules on the agent bridge (#621).
+  Interaction behavior (focus, keys, ARIA) follows ui-sdk, not the
+  hand-made rules in `design/app.md`: most were agent-written, not the
+  operator's (operator, 2026-11-16). A migration rewrites the ruling it
+  replaces.
 - **Fail loud.** `ENOENT` means null. Everything else propagates with context.
   Never swallow an exception.
 - **Durable writes.** Whole-file state: tmp + `fsync` + `renameSync`,
@@ -51,11 +60,15 @@ surface conflicts with the direction rather than silently overriding it.
   `foo.test.ts`). `bun test` to run, `bun run typecheck` (both tsc
   programs) before committing.
 - **Each external contract is known by one adapter.** Only `src/tg/`
-  knows grammy; only `src/subagents/` knows pi-durable/pi-ai/chord;
-  the herdr, podman, gws and GitHub wire contracts live in `src/{herdr,podman,
-  mail-gws,github}.ts`. Domain modules see the adapter's types, never the
-  vendor's — `module-boundaries.test.ts` enforces the importable cases.
-  (The Vercel AI SDK is the platform, not a boundary.)
+  knows grammy; the podman, gws, GitHub, T3 Code, cua-driver and
+  Anthropic Agent SDK wire contracts live in
+  `src/{podman,mail-gws,github,t3,desktops,agent/claude-code}`. Domain
+  modules see the adapter's
+  types, never the vendor's — `module-boundaries.test.ts` enforces the
+  importable cases.
+  (The Vercel AI SDK is the platform, but goblin owns its data shapes and tools —
+  `src/message.ts`, `src/tool.ts` — and only an allowlist of files may import it:
+  DESIGN.md → Module map, #581/#595/#597.)
 
 ## Design inspiration
 
@@ -100,16 +113,13 @@ lists on our non-goals list. Cite what you took in the design docs.
   Local embeddings). Tailscale down or ollama down = the memory API
   can't embed or boot. Changing the embedding model with a non-empty
   bank is a re-index, not an env edit.
-- `goblin-herdr.service` owns the `goblin` herdr session where delegated
-  harnesses run. Verifying the herdr wire contract is the code's job,
-  not an agent's: run the gated drift check (`GOBLIN_HERDR_LIVE=1
-  bun test src/herdr.live.test.ts`) after herdr upgrades — red means
-  re-pin fixtures in one throwaway-session probe, then fix the adapter.
-  Any manual probing is authoring-only and goes to a throwaway named
-  session (`herdr --session goblin-probe server`), never `default` or
-  `goblin`. Panes run bermudi's interactive zsh: aliases (codex, devin)
-  already add no-approval flags, and repeating them in harness args is
-  fatal.
+- Delegation and handover run on T3 Code threads (`src/t3.ts`); the
+  operator watches them there. Verifying the t3 wire contract is the
+  code's job, not an agent's: run the gated drift check
+  (`GOBLIN_T3_LIVE=1 bun test src/t3.live.test.ts`) after t3 upgrades —
+  red means re-pin fixtures in one throwaway-project probe, then fix
+  the adapter. The check never starts or sends in the operator's real
+  projects; its safety rules live in the file header.
 
 ## Keys
 
@@ -147,8 +157,7 @@ lists on our non-goals list. Cite what you took in the design docs.
 ## Tests
 
 Tests guard boundaries and invariants, not implementations. Fake the model
-provider and the Telegram API at the edge; don't mock module internals. The
-suite stays smaller than `src/`.
+provider and the Telegram API at the edge; don't mock module internals.
 
 Real model requests in tests use one of these three (operator, 2026-11-06):
 `gpt-6-luna` on the codex provider, `claude-haiku-5-5` on the Claude provider,
@@ -164,8 +173,8 @@ on purpose, and the error prints the command to re-record. Only a person or
 agent re-records; CI never calls a model. Recordings are public: use test
 prompts with nothing private.
 
-Live drift checks for unowned boundaries (herdr, gws, harness-trust,
-podman) are env-gated — `GOBLIN_<NAME>_LIVE=1 bun test
+Live drift checks for unowned boundaries (t3, gws, podman) are
+env-gated — `GOBLIN_<NAME>_LIVE=1 bun test
 src/<module>.live.test.ts` — and run after any upstream upgrade; red
 means the interface moved: re-pin with one probe, fix the adapter.
 Each check's store/probe safety rules live in its header and its
@@ -173,8 +182,8 @@ design-doc ruling (delegation.md, mail.md, sandbox.md).
 
 Fixture hygiene: bun runs all files of one invocation in a single
 process and scopes a module-level `afterEach` to the first-importing
-file — `bunfig.toml`'s `[test]` preload of `src/testkit.ts` and
-`src/subagents/testing.ts` makes their cleanup hooks global (without
+file — `bunfig.toml`'s `[test]` preload of `src/testkit.ts`
+makes its cleanup hooks global (without
 it, full-suite runs leaked ~86k mkdtemp dirs until /tmp hit ENOSPC,
 2026-10-22). Run `bun test` from the repo root so the preload loads;
 new fixture helpers must not rely on their own module-level hooks.

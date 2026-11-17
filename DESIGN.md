@@ -128,8 +128,10 @@ Conversation ─────── (channel address) → durable event history
 **Topics are the UX — in the group.** In the bot DM, quiet gaps draw the
 boundaries (Rolling DM), with explicit `/new` and `/back` overrides
 (operator ruling, 2026-10-05); neither command applies to group topics.
-`/resume` is not DM/topic navigation: it resumes only interrupted turns from
-[the turn journal](design/runtime-turn.md#the-turn-journal). Durable work
+There is no `/resume`: a turn killed by process death is never replayed —
+the operator continues by sending a new message
+([the turn journal](design/runtime-turn.md#the-turn-journal), ruling
+2026-11-16 #594). Durable work
 moves to the app (Spin-off). In the group, a forum topic is a conversation:
 create a topic to start one, post in an old topic to resume it; the bot may
 also create topics itself (`createForumTopic`); a chat without topics is one
@@ -195,7 +197,7 @@ previous journal open — `journal_opens` bounds the dead process's
 lifetime, and a first-ever open counts nothing (#577) — above every
 run's owned floor (anchor/source seqs stand in for legacy NULL
 ownership) and above the conversation's last assistant reply are
-counted per conversation — machinery speech and generated resume
+counted per conversation — machinery speech and legacy resume
 markers are not operator input — and reported once per conversation
 ("N message(s) you sent before the restart weren't answered"), notice
 only, same no-replay rule.
@@ -211,8 +213,26 @@ failed send stays pending for the next boot; a pre-column row has no
 recorded seq and keeps its interrupted notice instead; an app lane
 settles without a send because its history IS the channel. Delivered
 rows drop out of the boot notices.
-Resuming an interrupted turn is a separate explicit decision riding the
-journaled rows, not a boot behavior.
+There is no operator resume of an interrupted turn (#594, pi's behavior):
+the dead run stays `interrupted` forever, its history record and boot
+notice are the whole story, and the next operator message starts an
+ordinary fresh turn.
+
+**Effects and their records (#448).** A step with an external effect (a
+send, a submit) orders it claim → effect → settle: a durable claim commits
+before the effect starts, and the settle record commits after the effect
+returns. A crash can land in either gap. There is no shared helper; each
+workflow states what boot does with the gap, and its crash-point test pins
+that:
+
+- Mail outbox — `src/mail-approval.crash.test.ts`: a send accepted by Gmail
+  remains `sending` and is not re-sent by boot.
+- Responsibility sends — `src/responsibility-service.crash.test.ts`: a
+  crashed claimed send becomes `uncertain` and is not re-sent.
+- Wake dispatch — `src/wake-dispatcher.crash.test.ts`: boot retries submit
+  once, leaves the wake `claimed`, and does not append the trigger again.
+- Boot/turn notices — `src/tg/turn-notice.crash.test.ts`: a notice whose
+  send landed before its delivery mark is sent again at boot (at-least-once).
 
 ## Cache stability
 
@@ -326,6 +346,12 @@ Flat modules, one job each, tests colocated; the tree itself is the map,
 before it may live here. Inside a module, state clusters by lifetime live in
 their own units — never one scope of closures.
 
+Function-scoped resources — temp dirs, stream readers — are owned with
+`await using` and the `src/dispose.ts` helpers, so cancel, throw and early
+return release them; module-lifetime owners keep `stop()`/`close()`.
+`src/dispose.test.ts` fails a bare `mkdtemp` outside its allowlist (ruling
+2026-11-17, #447).
+
 A **feature** whose pieces span channels and stores may instead live as a
 feature folder (ruling 2026-11-08, #201): one directory under `src/`, a
 single public `index.ts` as the only import outside callers ever name,
@@ -337,6 +363,33 @@ grammy). `src/reminders/` is the pilot. Import cycles are frozen by
 `src/import-cycles.test.ts` — a cycle must sit inside one frozen cluster;
 growth or anything new fails the guard, and pruned clusters shrink the
 list by hand.
+
+**Goblin owns its data shapes** (ruling 2026-11-16, #581; reverses "the
+AI SDK is the platform, not a boundary" for data). Persisted messages and
+parts, stream chunks, usage and finish reason are goblin types in
+`src/message.ts`, written as structural copies of the AI SDK's shapes so
+nothing on disk changed. `src/message.test.ts` is the only place the SDK
+shape is compared: an `ai` bump that changes one fails typecheck there,
+and the fix is a deliberate decision (adopt, or convert at the edge), not
+silent drift in saved conversations. `module-boundaries.test.ts` fences
+those type names out of `ai` everywhere else. SDK *functions* still run on
+these types directly.
+
+**Goblin owns its tool definitions** (#595). Tools are `defineTool`s in
+`src/tool.ts`: description, zod input, `execute(input, { toolCallId,
+abortSignal })`, optional text/json `toModelOutput`. A provider-executed
+capability is a `HostedTool` marker (`codex.web_search`), executed by no
+goblin code. Each engine converts at its own edge: `src/turn/ai-sdk-tools.ts`
+builds the `ToolSet` only where an SDK function takes one; the Claude Code
+bridge reads goblin tools directly and skips hosted ones. Readers get the
+model-facing schema from `inputJsonSchema`, and `src/tool.test.ts` holds it
+equal to the SDK's for every mounted tool. `module-boundaries.test.ts`
+fences every `ai`/`@ai-sdk/*` import to an explicit allowlist that only
+shrinks (#597). The neutral engine contract (`src/turn/engine.ts`) is off
+that list: the AI SDK step type lives in `src/turn/ai-sdk-step.ts` (#596),
+and model resolution stays in `src/agent/step.ts`. SDK-specific features stay inside the AI SDK engine; there is
+no lowest-common-denominator layer. The app's `useChat` stream protocol
+stays an SDK wire format until an engine can't meet it.
 
 ## Non-goals (v1 — return only on demand)
 
@@ -367,7 +420,8 @@ where it returned): proactive monitoring, self-waking and memory nudges; a
 native browser tool; a native MCP client; raw in-process OAuth; ACP;
 onboarding wizard; a state-migration framework (additive memory schema
 changes are in scope); in-process embeddings; a third channel; backend
-registries; generic agents, recursion and timeout-revive; a second harness
+registries; agent recursion (agents are depth 1, design/agents.md) and
+timeout-revive; a second harness
 for projects; self-grading skill machinery; conversation-lifecycle commands;
 full multi-user. The named `allowedUsers` slice stands fenced: sandboxed
 turns + standing sandbox DMs, guest persona + `search` only, memory-excluded,
@@ -376,11 +430,8 @@ permissions).
 
 ## Test posture — the real change
 
-v1 died of test-to-code ratio. **Tests guard boundaries and invariants, not
-implementations:** worth a test — authority fencing, durable write semantics,
-intake coalescing, auth command resolution; not worth one — that a function
-calls its collaborator with the right arguments. Fakes at the two external
-edges (model provider, Telegram API); no mock.module pyramids; the suite
-stays smaller than `src/` — bigger is a smell to fix, not a badge.
-`bun scripts/test-ratio.ts` prints the measured ratio and the worst
-directories (report-only, never a gate; test-support modules count as tests).
+**Tests guard boundaries and invariants, not implementations:** worth a test —
+authority fencing, durable write semantics, intake coalescing, auth command
+resolution; not worth one — that a function calls its collaborator with the
+right arguments. Fakes at the two external edges (model provider, Telegram
+API); no mock.module pyramids.

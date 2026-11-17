@@ -8,12 +8,13 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { JSONObject, LanguageModelV4Prompt } from "@ai-sdk/provider";
-import { convertToModelMessages, stepCountIs, streamText, tool, type UIMessage } from "ai";
+import { convertToModelMessages, stepCountIs, streamText, tool } from "ai";
+import type { Message } from "../../message.ts";
 import { z } from "zod";
 import { openStore } from "../../conversation.ts";
 import { tmpDb, tmpDir } from "../../testkit.ts";
 import { readFileSync } from "node:fs";
-import { codexWebSearch } from "../tools/mod.ts";
+import { codexWebSearch } from "../../turn/ai-sdk-tools.ts";
 import { CodexLanguageModel } from "./model.ts";
 
 const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
@@ -179,7 +180,7 @@ describe("CodexLanguageModel — request shape", () => {
 		});
 		// The real history boundary: a UIMessage tool part carries the
 		// parsed input, and convertToModelMessages keeps it an object.
-		const ui: UIMessage[] = [
+		const ui: Message[] = [
 			{ id: "u1", role: "user", parts: [{ type: "text", text: "run ls" }] },
 			{
 				id: "a1",
@@ -344,6 +345,69 @@ describe("CodexLanguageModel — request shape", () => {
 			async () => new Response(new TextEncoder().encode(`data: {"type":"response.compl`)),
 		);
 		await expect(model.doGenerate({ prompt: [] })).rejects.toThrow("before a terminal response");
+	});
+
+	test("sseEvents releases its body reader when [DONE] ends iteration early", async () => {
+		const path = authDir({ access_token: jwt(FUTURE) });
+		let cancellations = 0;
+		const model = new CodexLanguageModel(
+			"gpt-6-astra",
+			path,
+			async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+						},
+						pull() {
+							return new Promise<void>(() => {});
+						},
+						cancel() {
+							cancellations++;
+						},
+					}),
+				),
+		);
+		const result = await model.doStream({ prompt: [] });
+		const reader = result.stream.getReader();
+		for (;;) {
+			const { done } = await reader.read();
+			if (done) break;
+		}
+		reader.releaseLock();
+		expect(cancellations).toBe(1);
+	});
+
+	test("doGenerate releases its stream reader when an error part throws", async () => {
+		const path = authDir({ access_token: jwt(FUTURE) });
+		let cancellations = 0;
+		const model = new CodexLanguageModel(
+			"gpt-6-astra",
+			path,
+			async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.enqueue(
+								new TextEncoder().encode(
+									`data: ${JSON.stringify({
+										type: "response.failed",
+										response: { error: { message: "upstream failed" } },
+									})}\n\n`,
+								),
+							);
+						},
+						pull() {
+							return new Promise<void>(() => {});
+						},
+						cancel() {
+							cancellations++;
+						},
+					}),
+				),
+		);
+		await expect(model.doGenerate({ prompt: [] })).rejects.toThrow("codex stream response.failed");
+		expect(cancellations).toBe(1);
 	});
 });
 
@@ -599,7 +663,7 @@ describe("CodexLanguageModel — reasoning retention", () => {
 		const emitted = await emitter.doGenerate({
 			prompt: [{ role: "user", content: [{ type: "text", text: "x" }] }],
 		});
-		const stored: UIMessage = {
+		const stored: Message = {
 			id: "a1",
 			role: "assistant",
 			parts: emitted.content.map((c) => {
@@ -608,7 +672,7 @@ describe("CodexLanguageModel — reasoning retention", () => {
 					type: part.type,
 					text: part.text,
 					providerMetadata: part.providerMetadata,
-				} as UIMessage["parts"][number];
+				} as Message["parts"][number];
 			}),
 		};
 		const dbPath = tmpDb("goblin-codex-");

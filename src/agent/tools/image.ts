@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { ConfigRef } from "../../config.ts";
 import { imageSizeSchema } from "../../config-schema.ts";
@@ -36,9 +36,9 @@ export const imageInputSchema = z.object({
 });
 
 export function imageTool(deps: ImageToolDeps) {
-	return tool({
+	return defineTool({
 		description: `Generate images with the configured image model. Saves to the workspace's attachment store and delivers inline where the channel supports it — otherwise the saved paths are the result; they work with vision (inspect a result) and send_file where it is mounted (resend it).`,
-		inputSchema: imageInputSchema,
+		input: imageInputSchema,
 		execute: async ({ prompt, size, n }, options) => {
 			let images;
 			try {

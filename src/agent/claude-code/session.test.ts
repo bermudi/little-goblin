@@ -19,7 +19,7 @@ import { createToolBridge } from "./tools.ts";
 import { TurnState } from "../../turn/state.ts";
 import { openLive, type StreamDeps, type WireMember } from "../../turn/stream.ts";
 import type { TurnJournal } from "../../turn-journal.ts";
-import type { UIMessageChunk } from "ai";
+import type { MessageChunk } from "../../message.ts";
 
 const fakeAuth: AuthStore = {
 	resolve: async (name) => `token-for-${name}`,
@@ -37,7 +37,7 @@ const STEP: ClaudeStep = {
 };
 
 interface RecMember extends WireMember {
-	chunks: UIMessageChunk[];
+	chunks: MessageChunk[];
 }
 
 function headSink() {
@@ -56,7 +56,14 @@ function rig() {
 		{
 			seq: 1,
 			message: { id: "u-1", role: "user", parts: [{ type: "text", text: "hi" }] },
-			sink: { onStreamChunk: (c) => members[0]!.chunks.push(c) },
+			sink: {
+				delivery: "stream",
+				onTextDelta() {},
+				onReasoningDelta() {},
+				onToolCall() {},
+				onStreamChunk: (c) => members[0]!.chunks.push(c),
+				onDone() {},
+			},
 			chunks: [],
 		},
 	];

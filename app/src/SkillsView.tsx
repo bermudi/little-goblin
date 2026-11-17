@@ -14,6 +14,7 @@ import type {
 	ProposedSkillItem,
 	SkillDiff,
 	SkillsResponse,
+	SkillUsageRow,
 } from "../../src/http/operator-wire.ts";
 import { decideSkill, getSkillFile, listSkills } from "./api.ts";
 import { DiffView } from "./DiffView.tsx";
@@ -227,14 +228,17 @@ export function ProposalCard({
 }
 
 const SKILL_COLS = {
-	"--dt-cols": "minmax(9rem, 1.2fr) minmax(14rem, 4fr) 4.5rem minmax(8rem, 1fr)",
+	"--dt-cols":
+		"minmax(9rem, 1.2fr) minmax(14rem, 4fr) 4.5rem minmax(6rem, 1fr) minmax(8rem, 1fr)",
 } as CSSProperties;
 
 function SkillTable({
 	skills,
+	usage,
 	onOpen,
 }: {
 	skills: OperatorSkillItem[];
+	usage: Map<string, SkillUsageRow>;
 	onOpen(name: string): void;
 }) {
 	return (
@@ -243,22 +247,37 @@ function SkillTable({
 				<span>Skill</span>
 				<span>What it does</span>
 				<span>Files</span>
+				<span>Usage</span>
 				<span>Updated</span>
 			</div>
-			{skills.map((s) => (
-				<button type="button" className="dt-row" key={s.name} onClick={() => onOpen(s.name)}>
-					<span className="dt-cell dt-main">{s.name}</span>
-					<span className="dt-cell skill-what" data-label="What it does">
-						<Description skill={s} />
-					</span>
-					<span className="dt-cell dt-hide-m">
-						{s.truncated ? `${s.files.length}+` : s.files.length}
-					</span>
-					<span className="dt-cell" data-label="Updated">
-						{ts(s.updatedAt)}
-					</span>
-				</button>
-			))}
+			{skills.map((s) => {
+				const u = usage.get(s.name);
+				return (
+					<button type="button" className="dt-row" key={s.name} onClick={() => onOpen(s.name)}>
+						<span className="dt-cell dt-main">{s.name}</span>
+						<span className="dt-cell skill-what" data-label="What it does">
+							<Description skill={s} />
+						</span>
+						<span className="dt-cell dt-hide-m">
+							{s.truncated ? `${s.files.length}+` : s.files.length}
+						</span>
+						<span className="dt-cell" data-label="Usage">
+							{u === undefined ? (
+								"—"
+							) : (
+								<>
+									{u.pinned && "📌 "}
+									{u.state !== "active" ? `${u.state} · ` : ""}
+									{u.useCount} use{u.useCount === 1 ? "" : "s"}
+								</>
+								)}
+						</span>
+						<span className="dt-cell" data-label="Updated">
+							{ts(s.updatedAt)}
+						</span>
+					</button>
+				);
+			})}
 		</div>
 	);
 }
@@ -332,12 +351,15 @@ export function SkillsView({ token }: { token: string | null }) {
 		);
 	}
 	const updates = d.proposed.filter((p) => p.diff.kind === "update").length;
+	const usage = new Map((d.usage ?? []).map((u) => [u.skill, u]));
+	const stale = (d.usage ?? []).filter((u) => u.state === "stale").length;
 	return (
 		<div className="ops skills-page">
 			<div className="sumstrip">
 				<Tile n={d.proposed.length} label="awaiting decision" warn={d.proposed.length > 0} />
 				<Tile n={updates} label="updates" />
 				<Tile n={d.skills.length} label="installed" />
+				{stale > 0 && <Tile n={stale} label="stale (curator)" warn />}
 			</div>
 			<h2 className="ops-h2">Proposed ({d.proposed.length})</h2>
 			{d.proposed.length === 0 ? (
@@ -353,7 +375,16 @@ export function SkillsView({ token }: { token: string | null }) {
 			{d.skills.length === 0 ? (
 				<p className="empty">No skills installed.</p>
 			) : (
-				<SkillTable skills={d.skills} onOpen={setOpenName} />
+				<SkillTable skills={d.skills} usage={usage} onOpen={setOpenName} />
+			)}
+			{(d.archived ?? []).length > 0 && (
+				<>
+					<h2 className="ops-h2">Archived ({(d.archived ?? []).length})</h2>
+					<p className="empty">
+						{(d.archived ?? []).map((a) => a.skill).join(", ")} — “/curator restore &lt;name&gt;” brings
+						one back.
+					</p>
+				</>
 			)}
 		</div>
 	);

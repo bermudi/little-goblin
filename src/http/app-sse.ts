@@ -1,4 +1,4 @@
-import type { UIMessageChunk } from "ai";
+import type { MessageChunk } from "../message.ts";
 import { appMediaSink, composeTurnSinks, type AppMediaDeps } from "../app-media.ts";
 import { log } from "../log.ts";
 import type { TurnDone, TurnSink } from "../turn/sink.ts";
@@ -10,7 +10,7 @@ export function appSseWriter(
 	heartbeatMs: number = SSE_HEARTBEAT_MS,
 ): {
 	body: ReadableStream<Uint8Array>;
-	write(chunk: UIMessageChunk): void;
+	write(chunk: MessageChunk): void;
 	finish(done: TurnDone): void;
 	wireDied(): boolean;
 	dispose(): void;
@@ -38,6 +38,13 @@ export function appSseWriter(
 				conversation: convId,
 			});
 		}
+	};
+	// `closed` is already true when the client cancelled or an enqueue
+	// failed; the controller is then closed or errored and close() throws.
+	const close = () => {
+		if (closed) return;
+		closed = true;
+		controller.close();
 	};
 	const body = new ReadableStream<Uint8Array>({
 		start(c) {
@@ -76,26 +83,20 @@ export function appSseWriter(
 							done.kind === "error"
 								? done.message
 								: done.shutdown
-									? 'turn stopped: goblin restarted (deploy or service restart). Send "continue" to resume.'
+									? 'turn stopped: goblin restarted (deploy or service restart). Send a new message to continue.'
 									: "turn stopped before finishing",
 					})}\n\n`,
 				);
 			}
 			push("data: [DONE]\n\n");
-			closed = true;
-			try {
-				controller.close();
-			} catch {}
+			close();
 		},
 		wireDied() {
 			return wireDied;
 		},
 		dispose() {
 			stopBeat();
-			closed = true;
-			try {
-				controller.close();
-			} catch {}
+			close();
 		},
 	};
 }
@@ -111,6 +112,7 @@ export function appStreamSink(
 } {
 	const writer = appSseWriter(convId);
 	const stream: TurnSink = {
+		delivery: "stream",
 		onTextDelta() {},
 		onReasoningDelta() {},
 		onToolCall() {},

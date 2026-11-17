@@ -76,58 +76,19 @@ half-run tool calls would be worse than asking again.
 ## Interrupted turns
 
 A crash mid-turn leaves the run `interrupted` in the turn journal. Boot
-sends one notice per interrupted run; `/resume` in the conversation lists
-them (the app's interrupted-turns panel shows the same rows where they
-died). Nothing replays or re-runs on its own — every step below is an
-explicit operator decision.
+sends one notice per interrupted run, and the turn's progress lands in
+history as a system event (the "interrupted rail") — tool calls that ran
+are recorded as evidence, never replayed. That is the whole story: there
+is no `/resume`, no decide/skip workflow, and nothing re-runs on its own.
 
-`/resume` prints each run's **ambiguous** calls numbered — a `dispatched`
-call means the side effect may or may not have landed — then its **known**
-calls (completed/failed/recorded outcomes) under `known:`:
-
-- **Ambiguous calls** decide by ordinal or id:
-  `/decide <run> <n|callId> record-result|authorize-retry|skip [note]`.
-  `record-result` asserts an outcome you already know happened;
-  `authorize-retry` permits one more execution on resume; `skip` declines
-  it — a re-ask reads your refusal, never the effect. Resume stays locked
-  until every dispatched call has a decision.
-- **Known calls** never hold ordinals — the `known:` lines print the
-  ready-made `/decide <run> <callId-prefix> authorize-retry` command that
-  grants one deliberate re-run. The recorded outcome stays visible as
-  evidence; granting a known call cannot shift the ambiguous numbering,
-  while a call that was decided while ambiguous keeps the ordinal it
-  already had.
-- **A grant is one-shot.** The next matching call consumes it durably — a
-  second identical call meets a labeled `[turn-journal conflict]`, and a
-  new execution needs a new `/decide`. If a granted re-execution crashes
-  mid-flight it lands as a fresh ambiguous dispatch on the successor —
-  the new dispatch, not the old grant, owns the next decision.
-- **A labeled conflict is the safe default.** On a resumed or continued
-  turn, any call colliding with a recorded execution is refused with the
-  historical call ids — the old result is evidence, never the answer.
-  Safe reads (`read_file`, `history_search`, `memory_search`) observe
-  fresh state and run again on their own; a `skip` never expires.
-- **Grants are preauthorization, not a retry button.** The fence has no
-  in-band override — to re-run an effect deliberately, decide the
-  historical call id *before* the resume that will consume it
-  (`/decide <run> <id> authorize-retry`, then `/resume <run>`). The
-  alternative is a fresh turn: an ordinary turn carries no recovery
-  guard, so asking for the action again just runs it.
-- **Legacy migrated grants are inert.** Rows that predate the grant
-  tracking columns read consumed and fail closed — they can neither
-  execute nor take a new decision. Decide the call fresh on the
-  interrupted run, or re-ask in a new turn.
-- **`/resume` refuses input the dead run never owned.** A durable user
-  message after the run's trigger that it never consumed — steering it
-  crashed before folding in, or anything sent after it died — blocks
-  the resume with a labeled conflict. Continue from the current
-  conversation as a new request, or `/abandon <run>` the run.
-- **A successful resume appends a new source-linked user event.** It
-  carries a provenance prefix — `[operator resumed interrupted run
-  …]` — plus the original request verbatim when the model view no
-  longer carries it (e.g. after compaction). It shows in history and
-  the app as its own message, re-feeds the model, and anchors the new
-  reply; the original event is never re-appended or duplicated.
+To continue, send a new message in that conversation — it starts an
+ordinary fresh turn. Tool effects from the dead turn may already have
+happened, so check current state before asking for the same action again;
+a repeated effectful call collides with the recorded execution only inside
+a continuation (overflow/fallback), where the recovery guard refuses it
+with a labeled `[turn-journal conflict]` naming the historical call ids.
+Safe reads (`read_file`, `history_search`, `memory_search`) just observe
+fresh state.
 
 ## Diagnostics and first-start acceptance
 
@@ -289,6 +250,29 @@ have all passed — so a deploy-initiated restart is distinguishable from a
 spontaneous one, and a rollout that started but never finished is visible as
 a `restarting` line with no `accepted` after it.
 
+### Post-deploy proof (new surfaces)
+
+After a deploy that changes these surfaces, and before cleaning up the old
+Herdr units, run each check against the live app. Keep the relevant
+`goblin.log` lines as evidence:
+
+1. **Native `agent`:** In the app, ask Goblin to complete a small task that
+   requires a child agent. See the child result in chat and a `tool call`
+   line with `"tool":"agent"` in `goblin.log`.
+2. **Screenshot round trip:** Ask for a screenshot in the app. See the image
+   delivered in chat and an `app media delivered` line in `goblin.log`.
+   Telegram alternative: expect a `file delivered` line (debug level).
+3. **`delegate`:** Ask Goblin to delegate a trivial task to a cheap configured
+   harness. See the T3 thread link in chat, the thread in T3 Code, and the
+   completion notice back in chat. Check the `tool call` line with
+   `"tool":"delegate"` and the related `t3 call` lines in `goblin.log`.
+4. **Handover:** In a project conversation, use the responsibility tool's
+   `accept` action and select at least one T3 thread. This creates the
+   responsibility and binds the selected thread(s); no existing
+   responsibility is needed. See the T3 thread and its report come back in
+   chat. Check the `responsibility tool` line with `"action":"accept"` and
+   the related `t3 call` lines in `goblin.log`.
+
 The gate is `bun run typecheck` inside the release; the full suite gates
 merges via `.github/workflows/ci.yml`, not deploys. After the restart it
 requires 75 s startup acceptance (`scripts/check-startup.ts --watch`, the
@@ -309,8 +293,8 @@ restarted: `--status` reads `/proc/<pid>/cwd` and prints `(restart pending)`.
 
 Skill seeds vs. live skills: `deploy/skills/<name>/SKILL.md` is the
 source of truth for the seeded copy; `ensureHomeLayout` installs it on
-first boot. A skill that *advertises a backend tool* (e.g. herdr v2.2,
-which assumes the `herdr` tool exists) must NOT be synced into the live
+first boot. A skill that *advertises a backend tool* the release does
+not ship must NOT be synced into the live
 workspace ahead of the release that ships the tool. After the approved
 `bun scripts/release.ts` rollout verifies the new backend, explicitly
 sync the changed seed to its installed workspace copy as part of that
@@ -545,8 +529,9 @@ sqlite3 ~/goblin/state/goblin.sqlite \
 
 ## Desktop image
 
-The `desktop`/`computer`-subagent pool (design/subagents.md) runs
-`goblin-desk-*` containers from `localhost/goblin-desktop:1`. Goblin
+The desktop pool (design/agents.md → The desktop pool) runs
+`goblin-desk-*` containers from `localhost/goblin-desktop:1`, enabled by
+a top-level `desktops` config block. Goblin
 never builds or pulls images — a missing image errors with the build
 line. Build from the repo root:
 
@@ -581,35 +566,8 @@ The check resolves the `claude-code` record through the given auth
 file (path only in the environment, never a token) and runs one real
 text-only query plus one tool round-trip through the bridge. Red means
 the pinned interface moved: run one probe session, re-pin the shapes,
-fix the adapter — the same rule as the herdr and gws checks. It spends
+fix the adapter — the same rule as the t3 and gws checks. It spends
 subscription quota; run it after upgrades, not on a schedule.
-
-## Subagent drift checks
-
-Three env-gated checks cover the subagent stack (design/subagents.md):
-
-```sh
-# real harness + local fake model in a real cached-alpine sandbox —
-# local only, no external calls:
-GOBLIN_SUBAGENTS_PODMAN_LIVE=1 bun test src/subagents/podman.test.ts
-
-# real harness + real z.ai (worker glm-5.3, computer glm-5.3-flash):
-GOBLIN_SUBAGENTS_LIVE=1 GOBLIN_SUBAGENTS_AUTH_FILE=<path-to-auth.jsonl> \
-  bun test src/subagents/live.test.ts
-```
-
-The live check resolves the `zai` credential through the auth file —
-the only secret-adjacent environment value is its path; never put a
-key in the environment. Every probe container and network carries a
-per-run token, is preflighted before creation, and only resources it
-created are removed. Logs, screenshots and a REPORT.md are preserved
-under `/tmp/goblin-subdrift-<token>/`; the podman gate writes
-`/tmp/goblin-subenv-evidence-<token>/`. `src/subagents/crash.test.ts`
-needs no gate — it runs in `bun test` and proves the crash-approval
-path: a SIGKILL mid-dispatch of a side-effecting call parks the run
-`needs_input` on reopen, and each `decide` verdict (authorize-retry,
-record-result, abandon) plus the kill-while-parked and
-result-committed windows behave as designed.
 
 ## Backups
 

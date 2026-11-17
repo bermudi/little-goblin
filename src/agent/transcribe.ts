@@ -6,13 +6,13 @@
 // transcribe tool. Engines hand-roll HTTP — no provider SDKs; the
 // orchestrator owns segmentation, silence semantics, and the log line.
 
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
 import type { ConfigRef } from "../config.ts";
 import type { Config, TranscriptionConfig } from "../config-schema.ts";
 import { log } from "../log.ts";
+import { tempDir } from "../dispose.ts";
 import { boundedRun, spawnProc } from "../proc.ts";
 import { oneminEngine } from "./onemin-speech.ts";
 import {
@@ -171,48 +171,43 @@ async function transcribeSegmented(
 	file: SpeechFile,
 	segment: (dir: string) => Promise<string[]>,
 ): Promise<string | null> {
-	const dir = await mkdtemp(join(tmpdir(), "goblin-tr-"));
-	try {
-		const segments = await segment(dir);
-		if (segments.length > MAX_SEGMENTS) {
-			throw new Error(
-				`transcription needs ${segments.length} segments (max ${MAX_SEGMENTS}) — split the file or use a faster engine`,
-			);
-		}
-		log.info("transcription segmented", {
-			file: file.filename,
-			path: file.path,
-			segments: segments.length,
-			engine: engine.id,
-		});
-		const texts: string[] = [];
-		for (const seg of segments) {
-			try {
-				const t = await transcribeOne(engine, {
-					path: seg,
-					// Extension-derived mime — only multipart engines consume it.
-					mediaType: seg.endsWith(".wav") ? "audio/wav" : "audio/ogg",
-					filename: seg,
-				});
-				if (t !== null) texts.push(t);
-			} catch (err) {
-				// A partial transcript beats a bare path.
-				log.warn("transcription segment failed — result is partial", err, {
-					file: file.filename,
-					segment: seg,
-				});
-				// No partial to keep: null would read as "no speech" —
-				// the provider error must name itself.
-				if (texts.length === 0) throw err;
-				break;
-			}
-		}
-		return texts.length === 0 ? null : texts.join(" ");
-	} finally {
-		await rm(dir, { recursive: true, force: true }).catch((err: unknown) => {
-			log.warn("transcription scratch cleanup failed", err, { dir });
-		});
+	await using scratch = await tempDir("goblin-tr-");
+	const dir = scratch.path;
+	const segments = await segment(dir);
+	if (segments.length > MAX_SEGMENTS) {
+		throw new Error(
+			`transcription needs ${segments.length} segments (max ${MAX_SEGMENTS}) — split the file or use a faster engine`,
+		);
 	}
+	log.info("transcription segmented", {
+		file: file.filename,
+		path: file.path,
+		segments: segments.length,
+		engine: engine.id,
+	});
+	const texts: string[] = [];
+	for (const seg of segments) {
+		try {
+			const t = await transcribeOne(engine, {
+				path: seg,
+				// Extension-derived mime — only multipart engines consume it.
+				mediaType: seg.endsWith(".wav") ? "audio/wav" : "audio/ogg",
+				filename: seg,
+			});
+			if (t !== null) texts.push(t);
+		} catch (err) {
+			// A partial transcript beats a bare path.
+			log.warn("transcription segment failed — result is partial", err, {
+				file: file.filename,
+				segment: seg,
+			});
+			// No partial to keep: null would read as "no speech" —
+			// the provider error must name itself.
+			if (texts.length === 0) throw err;
+			break;
+		}
+	}
+	return texts.length === 0 ? null : texts.join(" ");
 }
 
 interface PrepSpec {

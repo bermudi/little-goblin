@@ -1,5 +1,5 @@
-import { tool } from "ai";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import {
 	NOTE_BODY_MAX,
 	NoteConflictError,
@@ -121,10 +121,10 @@ function noteView(n: Note, projects: Pick<ProjectStore, "get">): Record<string, 
 }
 
 export const noteTool = (deps: NoteToolDeps) =>
-	tool({
+	defineTool({
 		description:
 			"Notes are the operator's own writing — persistent pages they can watch you edit. Use read before editing. Prefer append or replace_range over replace: replace_range edits by UTF-16 character offsets into the body exactly as read returned it, each guarded by the text currently there; a mismatch means the note changed — read it again. replace requires the rev read returned. read returns up to 64000 chars of body — page longer notes with offset; replace_range offsets always count into the full body. Bodies cap at 1,000,000 chars — writes past it refuse. Archived notes are read-only. `where`/scope \"here\" means this conversation's project (loose notes when unbound).",
-		inputSchema: noteInputSchema,
+		input: noteInputSchema,
 		execute: async (raw) => {
 			const parsed = actionSchema.safeParse(raw);
 			if (!parsed.success) {
@@ -205,7 +205,7 @@ export const noteTool = (deps: NoteToolDeps) =>
 							"agent",
 							{
 								conversation: deps.conversation,
-								...(input.rev !== undefined ? { expectedRev: input.rev } : {}),
+								expectedRev: input.rev,
 							},
 						);
 						return { note: noteView(note, deps.projects) };

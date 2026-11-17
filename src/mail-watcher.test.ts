@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeliveryApi } from "./tg/delivery.ts";
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
 import { System1Error } from "./system1.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
@@ -122,7 +122,7 @@ function harness(): Harness {
 	} as unknown as DeliveryApi;
 	const runtime = {
 		accepting: () => true,
-		submit: (conv: { id: string }, message: UIMessage, sink: TurnSink) => {
+		submit: (conv: { id: string }, message: Message, sink: TurnSink) => {
 			if (h.failSubmit) throw new Error("queue closed");
 			const part = message.parts[0] as { text?: string } | undefined;
 			h.submitted.push({ conv: conv.id, text: part?.text ?? "", sink });
@@ -144,6 +144,7 @@ function harness(): Harness {
 		roll: { store, runtime, gapMinutes: () => config.telegram.dmGapMinutes },
 		// Fires never take the app path — wired because WakeDeps requires it.
 		bell: () => ({
+			delivery: "headless" as const,
 			onTextDelta: () => {},
 			onReasoningDelta: () => {},
 			onToolCall: () => {},

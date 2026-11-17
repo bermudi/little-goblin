@@ -1,14 +1,13 @@
-import { tool } from "ai";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { z } from "zod";
+import { defineTool } from "../../tool.ts";
 import { exportBytes, readImport } from "../../box-files.ts";
 import { imageRefSchema } from "../../config-schema.ts";
 import { DesktopError, type Desktops } from "../../desktops.ts";
 import { type DesktopRow, type LeaseHolder } from "../../desktops-store.ts";
 import { PodmanError } from "../../podman.ts";
-import { DESKTOP_TOOL_DESCRIPTION } from "../../subagent-prompts.ts";
 
 export interface DesktopToolDeps {
 	conversation: string;
@@ -137,13 +136,16 @@ function view(row: DesktopRow) {
 	};
 }
 
+const DESKTOP_TOOL_DESCRIPTION =
+	"Manage the shared pool of isolated desktops, not the operator's own screen. new allocates a named desktop, network off; list shows desktops and exclusive controller leases. shot returns an audited screenshot path for send_file, not input control. claim, release, and handoff manage this conversation's lease — handoff can pass it to the operator, but you can never act as the operator; an operator-held lease ends only by expiry. You cannot take a live lease from another holder. reserve pins against idle cleanup. network toggles access live; when on, the desktop can reach the internet and the operator's LAN/tailnet. import copies a workspace-contained regular file into the desktop as the desk user — it cannot write where desk cannot; export copies a regular desktop file into the workspace (100 MiB cap). Files outside the workspace must be deliberately copied there first. destroy refuses another holder's live lease. Use a computer agent child to send desktop input; observing is shared but input control is exclusive.";
+
 export const desktopTool = (deps: DesktopToolDeps) => {
 	const selfHolder = (): LeaseHolder => ({ kind: "conversation", id: deps.conversation });
 	const targetHolderOf = (h: "conversation" | "operator"): LeaseHolder =>
 		h === "operator" ? { kind: "operator" } : selfHolder();
-	return tool({
+	return defineTool({
 		description: DESKTOP_TOOL_DESCRIPTION,
-		inputSchema: desktopInputSchema,
+		input: desktopInputSchema,
 		execute: async (raw, { abortSignal }) => {
 			const parsed = actionSchema.safeParse(raw);
 			if (!parsed.success) {

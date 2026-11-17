@@ -1,8 +1,8 @@
-// The bridge: goblin's fenced ToolSet → SDK MCP tool registrations.
+// The bridge: goblin's fenced Tools → SDK MCP tool registrations.
 //
 // Execution topology: createSdkMcpServer handlers run IN THIS PROCESS —
-// the child CLI only orchestrates model calls. The ToolSet the runtime
-// hands the engine is already wrapped by Runtime.fenceTools (authority
+// the child CLI only orchestrates model calls. The Goblin Tools the runtime
+// hands the engine are already wrapped by Runtime.fenceTools (authority
 // re-check, journal dispatch/result/error rows), so the bridge adds no
 // fencing and no journaling of its own; it validates arguments with the
 // tool's own schema, executes, and returns goblin-shaped results.
@@ -15,13 +15,11 @@
 // wire. The two namespaces never mix.
 
 import { randomUUID } from "node:crypto";
-import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import { createSdkMcpServer, tool as sdkTool } from "@anthropic-ai/claude-agent-sdk";
-import type { ToolSet } from "ai";
-import { asSchema } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
 import { stableStringify } from "../../loop-detect.ts";
+import { inputJsonSchema, isHosted, type Tools, type ToolOutput } from "../../tool.ts";
 
 export const MCP_SERVER_NAME = "goblin";
 
@@ -99,10 +97,16 @@ function issueText(err: unknown): string {
 }
 
 // The model-facing result for goblin's toModelOutput contract: text
-// rides as text, json serializes, denial/error carry their marker — the
-// same mapping the AI SDK performs for the API lane.
-function callToolResult(output: ToolResultOutput): {
-	content: Array<{ type: "text"; text: string }>;
+// rides as text; json serializes to text for the MCP response; content
+// maps part-by-part — text stays text, an image becomes an MCP image
+// block (base64 + mimeType) the CLI forwards as an Anthropic image
+// block in the tool_result (issue #606; carriesMedia's tool-result
+// gate is what lets the tool mount at all). Exported for tests.
+export function callToolResult(output: ToolOutput): {
+	content: Array<
+		| { type: "text"; text: string }
+		| { type: "image"; data: string; mimeType: string }
+	>;
 	isError?: boolean;
 } {
 	switch (output.type) {
@@ -110,20 +114,18 @@ function callToolResult(output: ToolResultOutput): {
 			return { content: [{ type: "text", text: output.value }] };
 		case "json":
 			return { content: [{ type: "text", text: JSON.stringify(output.value) }] };
-		case "execution-denied":
+		case "content":
 			return {
-				content: [
-					{
-						type: "text",
-						text: `[execution denied${"reason" in output && output.reason ? `: ${output.reason}` : ""}]`,
-					},
-				],
-				isError: true,
+				content: output.value.map((part) =>
+					part.type === "text"
+						? { type: "text" as const, text: part.text }
+						: {
+								type: "image" as const,
+								data: Buffer.from(part.data).toString("base64"),
+								mimeType: part.mediaType,
+							},
+				),
 			};
-		case "error-text":
-			return { content: [{ type: "text", text: output.value }], isError: true };
-		default:
-			return { content: [{ type: "text", text: JSON.stringify(output) }] };
 	}
 }
 
@@ -137,107 +139,108 @@ function resultText(output: unknown): string {
 
 export interface ToolBridgeDeps {
 	convId: string;
-	tools: ToolSet;
+	tools: Tools;
 	/** The turn's abort signal, forwarded to every tool execute. */
 	signal?: AbortSignal | undefined;
+	/**
+	 * Runs after each call settles, before its result goes back to the
+	 * CLI. The CLI cannot send its next model request until it has the
+	 * result, so a steer pushed here always joins that request — the
+	 * engine's steer fold rides this.
+	 */
+	afterCall?: (() => Promise<void>) | undefined;
 }
 
 export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
-	const { convId, tools, signal } = deps;
+	const { convId, tools, signal, afterCall } = deps;
 	const results: QueuedResult[] = [];
 	type McpResponse = {
-		content: Array<{ type: "text"; text: string }>;
+		content: Array<
+			| { type: "text"; text: string }
+			| { type: "image"; data: string; mimeType: string }
+		>;
 		isError?: boolean;
 	};
-	const handlers = new Map<
-		string,
-		(input: Record<string, unknown>) => Promise<{ response: McpResponse; record: QueuedResult }>
-	>();
+	type Handler = (
+		input: Record<string, unknown>,
+	) => Promise<{ response: McpResponse; record: QueuedResult }>;
+	const handlers = new Map<string, Handler>();
 	const names: string[] = [];
 	const bridgeId = randomUUID().slice(0, 8);
 	let callSeq = 0;
 
 	for (const [name, t] of Object.entries(tools)) {
-		const execute = t.execute;
-		if (execute === undefined) continue;
-		const schema = asSchema(t.inputSchema);
+		if (isHosted(t)) continue;
+		const schema = t.input;
 		names.push(name);
-		handlers.set(
-			name,
-			async (
-				input: Record<string, unknown>,
-			): Promise<{ response: McpResponse; record: QueuedResult }> => {
-				// Monotonic per bridge, plus a random bridge prefix so ids stay
-				// unique across turns (the bridge is rebuilt every turn).
-				const callId = `claude-${bridgeId}-${++callSeq}`;
-				// Reserve this call's queue slot before the first await so
-				// array order is dispatch order, not completion order.
-				const record: QueuedResult = { name, input, output: null, error: null, done: false };
-				results.push(record);
-				// Parsed input or a loud tool error — the model sees the
-				// issues and can re-ask, like the API lane's tool errors.
-				// Schema.validate is safeParse-shaped ({success, value|error}).
-				let args: unknown;
-				if (schema.validate === undefined) {
-					// A schema with no validator (raw jsonSchema pass-
-					// through): the CLI validated the zod properties we
-					// derived; execute's own guards are the backstop.
-					args = input;
-				} else {
-					const parsed = await schema.validate(input);
-					if (!parsed.success) {
-						const errorText = `invalid arguments for ${name}: ${issueText(parsed.error)}`;
-						log.warn("tool call rejected", {
-							conversation: convId,
-							tool: name,
-							arg: JSON.stringify(input ?? null).slice(0, 200),
-							error: errorText.slice(0, 300),
-						});
-						record.error = errorText;
-						record.done = true;
-						return {
-							response: { content: [{ type: "text", text: errorText }], isError: true },
-							record,
-						};
-					}
-					args = parsed.value;
+		const settle: Handler = async (input) => {
+			// Monotonic per bridge, plus a random bridge prefix so ids stay
+			// unique across turns (the bridge is rebuilt every turn).
+			const callId = `claude-${bridgeId}-${++callSeq}`;
+			// Reserve this call's queue slot before the first await so
+			// array order is dispatch order, not completion order.
+			const record: QueuedResult = { name, input, output: null, error: null, done: false };
+			results.push(record);
+			// Parsed input or a loud tool error — the model sees the
+			// issues and can re-ask, like the API lane's tool errors.
+			// Validate against the Goblin Zod input schema.
+			let args: unknown;
+			const parsed = schema.safeParse(input);
+			if (!parsed.success) {
+				const errorText = `invalid arguments for ${name}: ${issueText(parsed.error)}`;
+				log.warn("tool call rejected", {
+					conversation: convId,
+					tool: name,
+					arg: JSON.stringify(input ?? null).slice(0, 200),
+					error: errorText.slice(0, 300),
+				});
+				record.error = errorText;
+				record.done = true;
+				return {
+					response: { content: [{ type: "text", text: errorText }], isError: true },
+					record,
+				};
+			}
+			args = parsed.data;
+			try {
+				const output = await t.execute(args, {
+					toolCallId: callId,
+					...(signal !== undefined ? { abortSignal: signal } : {}),
+				});
+				record.output = output;
+				record.done = true;
+				if (t.toModelOutput === undefined) {
+					return { response: { content: [{ type: "text", text: resultText(output) }] }, record };
 				}
-				try {
-					const output = await execute(args as never, {
-						toolCallId: callId,
-						...(signal !== undefined ? { abortSignal: signal } : {}),
-						messages: [] as never,
-						context: {} as never,
-					});
-					record.output = output;
-					record.done = true;
-					if (t.toModelOutput === undefined) {
-						return { response: { content: [{ type: "text", text: resultText(output) }] }, record };
-					}
-					const shaped = await t.toModelOutput({
-						output,
-						toolCallId: callId,
-						input: args as never,
-					});
-					return { response: callToolResult(shaped), record };
-				} catch (err) {
-					const errorText = err instanceof Error ? err.message : String(err);
-					record.error = errorText;
-					record.done = true;
-					return {
-						response: { content: [{ type: "text", text: errorText }], isError: true },
-						record,
-					};
-				}
-			},
-		);
+				const shaped = await t.toModelOutput({
+					output,
+					toolCallId: callId,
+					input: args,
+				});
+				return { response: callToolResult(shaped), record };
+			} catch (err) {
+				const errorText = err instanceof Error ? err.message : String(err);
+				record.error = errorText;
+				record.done = true;
+				return {
+					response: { content: [{ type: "text", text: errorText }], isError: true },
+					record,
+				};
+			}
+		};
+		handlers.set(name, async (input) => {
+			const settled = await settle(input);
+			await afterCall?.();
+			return settled;
+		});
 	}
 	const definitions: Array<ReturnType<typeof sdkTool>> = [];
 	for (const [name, t] of Object.entries(tools)) {
+		if (isHosted(t)) continue;
 		const handler = handlers.get(name);
 		if (handler === undefined) continue;
-		const description = typeof t.description === "string" ? t.description : name;
-		const shape = rawShapeFor(asSchema(t.inputSchema).jsonSchema);
+		const description = t.description;
+		const shape = rawShapeFor(inputJsonSchema(t));
 		definitions.push(
 			sdkTool(name, description, shape ?? { args: z.unknown().optional() }, async (input) => {
 				const { response } = await handler(input);
@@ -263,9 +266,10 @@ export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 			}
 			const { response, record } = await handler(input as Record<string, unknown>);
 			if (response.isError === true) {
+				const firstText = response.content.find((c) => c.type === "text");
 				return {
 					output: null,
-					error: record.error ?? response.content[0]?.text ?? "tool failed",
+					error: record.error ?? (firstText !== undefined ? firstText.text : "tool failed"),
 				};
 			}
 			return { output: record.output, error: null };

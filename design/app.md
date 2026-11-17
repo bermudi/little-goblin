@@ -196,7 +196,7 @@ of part tiles — Service, Memory, Programs, Delegations — each with a state
 pill, one plain line (what is wrong and what to do) and an "Open …" link to
 the page that fixes it. Programs and Delegations only report counts, so their
 pill says "no signal", never a guessed "ok". A note says model providers,
-Telegram, keys and the herdr host are not in the status API and points to
+Telegram and keys are not in the status API and points to
 `bun run doctor`; no new probes. The old label/value cards live on in a
 collapsed "Raw details" block. Memory "off" is neutral, not a problem.
 
@@ -239,12 +239,15 @@ retrying" / "Save failed" / "Conflict"). Versions is a popover anchored to its
 button (so it opens where the press was on a long note), closing on outside
 press or Escape; under 40rem it spans the toolbar row.
 
-**Note editor controls (ruling 2026-11-07, #173).** The top of the writing
-surface is a formatting row (`.note-fmt`, `NoteToolbar.tsx`): a "Text style"
-select (Paragraph, Heading 1–3 — Paragraph is how a heading, typed or
-chosen, turns back into plain text), then bold, italic, strikethrough,
-inline code, link | bulleted, numbered, task list, quote, code block,
-rule | undo, redo. Buttons never take focus from the editor; the ones that
+**Note editor controls (ruling 2026-11-07, #173; interaction amended
+2026-11-16, #623).** The top of the writing surface is a formatting row
+(`.note-fmt`, `NoteToolbar.tsx`), built with ui-sdk's Toolbar: one Tab stop
+and arrow-key movement across controls. The toolbar follows library focus
+behavior; clicking a control preserves the editor's selection so formatting
+still applies to the selected text. It has a "Text style" select (Paragraph,
+Heading 1–3 — Paragraph is how a heading, typed or chosen, turns back into
+plain text), then bold, italic, strikethrough, inline code, link | bulleted,
+numbered, task list, quote, code block, rule | undo, redo. The controls that
 apply to the selection show `aria-pressed` (accent fill), and the select
 shows the current block. Each tooltip names its shortcut (Ctrl/⌘ per
 platform) — the keys are Milkdown's own, plus Ctrl/⌘+K for Link, which opens
@@ -511,8 +514,10 @@ a finished-looking chat whose next send steered a ghost turn (#43).
   still doesn't live-update; promote when "app open while turns happen"
   becomes a daily pattern — the server machinery is ready. Until then it
   stays Spin-off's "live refresh out of scope".
-- **The composer steers (2026-10-16).** Send never locks mid-turn — it
-  posts beside Stop and the lane steers or queues exactly like Telegram;
+- **The composer steers (2026-10-16; action revised 2026-11-16).** One
+  composer action shows Stop during a turn when the composer is empty,
+  and Send when it contains text or staged items. Send never locks
+  mid-turn and the lane steers or queues exactly like Telegram;
   the client drops its reader first (locally, never `/stop`), so the new
   join replay is the only writer and lands on the same assistant message
   id — a handoff, not a forked transcript. An aborted reader doesn't ring
@@ -541,11 +546,6 @@ The config PATCH response adds `appliesFrom: "next-turn"` whenever a turn is
 running on that conversation, and `thinkingClamped: {from, to}` whenever the
 stored level moved onto the destination ladder; the composer renders each as a
 one-line note — the same fields on the app-defaults PATCH carry the clamp.
-A resume refused on selection drift answers `{error, restore: {model,
-thinking}}` — the pair the run's snapshot was admitted on — and the
-interrupted-turn card offers it as a one-tap restore: PATCH the pair back,
-then retry the resume. A half-pair (`model` or `thinking` null) produces no
-offer, since a partial write can never pass the drift gate.
 
 **The memory toggle follows the same rule (ruling 2026-10-29).** A flag
 write, never `applySettings`: no epoch bump — a running turn finishes and
@@ -666,13 +666,13 @@ as read-only text (System, the memory card).
   A sign-in action returning pending starts status polling immediately;
   completion reloads clean settings so the new provider is visible.
 - **Off parks, never deletes.** Switching off memory, transcription,
-  vision, image, sandbox, subagents, scripting, delegation, guest or
+  vision, image, sandbox, scripting, delegation, guest or
   reviewer moves the block under `parked`; on restores it whole, file-only
   fields included. Runtime consumers and `authReferences` never read
   `parked`. A block with no parked copy and no safe default reports
   `needs-setup` with its hint; a bare switch cannot invent config. A save
   may supply the block together with its enable switch (including a
-  first-time vision, image, transcription or subagents setup). Supplied blocks win
+  first-time vision, image or transcription setup). Supplied blocks win
   over parked copies and defaults; the whole resulting config, including
   provider changes in that save, must validate before anything is written.
   The editor hydrates its restoration stash from parked content on load;
@@ -947,8 +947,8 @@ there is no reconstruction path, so none can drift.
   preparation and write the record only when it still matches — a
   turn in flight across the boundary is fenced, never served back a
   projection of forgotten evidence. An overflow continuation reuses
-  its failed attempt's version, matching the memory it carried; an
-  operator resume reads the current one.
+  its failed attempt's version, matching the memory it carried; a
+  continuation reads the current one.
 
 **Surface.** `GET /api/app/conversations/<id>/window` (read-only, same
 bearer/trust gate as every `/api/app/*` route; the window is
@@ -1041,28 +1041,15 @@ reconciliation doesn't cover loaded pages; copy, branch and rating work
 anywhere. Loading a page shifts scrollTop by the added height so the view
 doesn't jump.
 
-## Interrupted turn recovery (ruling 2026-10-17)
+## Interrupted turns (ruling 2026-11-16, #594)
 
 A crash leaves a turn `interrupted` in the journal (design/runtime-turn.md →
-The turn journal); the app surfaces those runs where they died. Contract,
-mirroring the Telegram `/decide` / `/resume` surface:
-
-- **Decisions are explicit.** Each `dispatched` call shows its tool name, a
-  bounded args preview, and three buttons — Record result (asserts an
-  outcome the operator already knows; it becomes the journaled outcome the
-  resumed attempt sees as evidence), Authorize retry (re-executes; effects
-  may repeat), Skip (never runs; a re-ask reads the refusal) — plus an
-  optional note. Settled calls show their recorded outcome and one more
-  button — Authorize another execution — granting a single deliberate
-  re-run of a known effect by call id; granted or skipped calls render
-  read-only.
-- **Resume is gated server-side.** Disabled while any call is `dispatched`;
-  a refusal names the undecided calls and the client refetches rather than
-  trusting its copy; success admits a FRESH run — the client drops the
-  acknowledged source and reconnects, the attach endpoint's idle path
-  reconciling by message id.
-- **No optimistic mutation.** Nothing is decided before the server's ack;
-  errors show the server's reason verbatim.
+The turn journal). There is no recovery surface: no card, no decide/resume
+routes, no `/resume`. The interrupted run's history record — the rail's
+system event — and the boot notice are the whole story; the operator
+continues by sending a new message, which starts an ordinary fresh turn.
+Legacy `interrupted`/`resumed`/`abandoned` rows still decode and render as
+history; nothing acts on them.
 
 ## Archiving (ruling 2026-10-09)
 
@@ -1071,6 +1058,16 @@ conversation keeps everything (history, FTS hits, settings, pings,
 `/app/c/<id>` links) — the stamp is list visibility, nothing more. Delete
 is offered only on the Archive page (the rail offers archive, the archive
 offers delete) and is undoable for a few seconds — see Undo below.
+
+Conversation rows remain ordinary list items with a thread link and a
+separate action-menu trigger. The links use ui-sdk roving focus: Up/Down
+move between rows, Home/End jump to the first/last, and Tab enters at one
+link and leaves the group; focus movement does not activate a link.
+Links keep native behavior, including modifier-click. Keep the list as a
+list, not a listbox: rows contain both links and actions, not one
+selectable option. The menu trigger groups Pin/Unpin, Rename,
+Archive/Unarchive and (on archived rows) Delete; menu keys open, move
+between actions and close it. Rename stays inline.
 
 Archiving never fences a live turn (unlike DELETE's `runtime.stop`) — the
 turn finishes into history either way. And **any appended event
@@ -1237,7 +1234,7 @@ learned that is worth the operator's eyes), `draft` (a produced artifact
 for review, usually `ready`) or `change` (a meaningful change made in the
 world). Purpose is independent of state, so the stage table never reads
 it. `artifacts` (title and ref) link what the post produced. A finished
-pi-durable run's exported files become its artifacts. Only an
+delegation's exported files become its artifacts. Only an
 `http(s)` ref renders as a link; a path renders as text, so no
 model-supplied ref can become a `javascript:` URL. Findings and drafts
 are reports rather than a second table, which keeps review, revision
@@ -1535,3 +1532,19 @@ renders it as a chip on the user message, like attachments and notes.
 Drafts stay text-only — staged skills are references, not prose
 (Composer drafts, above). The listing endpoint's response gains the
 picker's catalog view; the operator Skills page is unchanged.
+
+**Picker presentation (ruling 2026-11-16).** A picker takes one of two
+shapes, chosen by size and steps, never by taste:
+
+- Small quick pick anchored to its trigger → `.composer-pick`
+  popover floating over the composer (note picker, model quick
+  menu). The thread stays visible and nothing reflows.
+- Big or multi-step task → `.veil > .msheet` bottom sheet over the
+  whole app — dim veil, tap-outside closes, centered card above
+  721px (model sheet, the settings sheets, this skill sheet).
+
+The skill sheet is the second kind. It had mounted bare inside the
+composer `<form>` — the model sheet's chrome without its veil, so the
+form grew by the sheet's height and pushed the layout around; it moved
+onto the veil pattern 2026-11-16. List behavior inside either shape is
+always the command primitive (issues #585, #592).

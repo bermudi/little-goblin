@@ -153,12 +153,13 @@ the model view under a `compact-<boundarySeq>` id — a legibility label, never
 a classification key. Client message ids are neither unique nor trusted (the
 app intake stores them verbatim), and a client message whose chosen id starts
 with `compact-` is an ordinary client message everywhere: memory recall,
-retention eligibility, recall-block anchoring, and the resume visible set.
+retention eligibility, recall-block anchoring, and the continuation visible
+set.
 Every reader recognizes the summary as the entry whose **seq equals the live
 compaction boundary** — a seq the store assigns and the client cannot forge.
 `MemoryEligibility` carries that seq (`summarySeq`) beside the span's
 eligibility stamp, so the memory-bound projection, the exchange-boundary walk,
-and `withMemoryBlocks` all classify by seq; operator resume reads the boundary
+and `withMemoryBlocks` all classify by seq; a continuation reads the boundary
 from the store the same way.
 
 ## Timing: pre-empt at the step boundary
@@ -180,8 +181,7 @@ normal path.
   that cap is absolute.
 - **The end-of-turn fold is retired as the normal path.** The serial-lane
   queue and `/compact` keep their semantics (`Runtime.busy` still counts a
-  queued or in-flight compaction, and a resume offered while the lane holds
-  work still refuses).
+  queued or in-flight compaction).
 
 Implementation rulings (2026-10-25):
 
@@ -237,6 +237,49 @@ system-prompt snapshot clears at a landed boundary — including one landing
 mid-turn, where the rewrite is a sanctioned prefix move (a fold busts the
 prefix regardless).
 
+## Cache reuse: the summary rides the turn's prefix
+
+Ruling (operator, 2026-11-16, #602). This is a deviation from pi, OpenClaw
+and Hermes, which all send the span as plain text under a summarizer system
+prompt. **Measured reason:** prod's `model_cache_calls` showed compaction
+calls at **0%** cache read (5 calls, 258k input tokens) while turns on the
+same route read 58–98% from cache. A fold runs when the conversation is at
+its largest, so it was the most expensive uncached call goblin made.
+
+- **Prefix mode (default).** The summary call sends the request the
+  conversation's next turn would send — same model instance setup (codex
+  session id, no `x-openai-subagent` header), the frozen system prompt
+  snapshot, the turn's tool definitions, the same model view (stored
+  memory blocks, pruning projection, summary entry) over completed
+  history — then **one appended user message** with the compaction
+  instruction. Tool definitions are the exact set the conversation's last turn
+  mounted (the runtime keeps it in memory per conversation and epoch):
+  the set depends on the turn's delivery seams (`send_file`, `speak`), so
+  rebuilding it from config alone changes the cached head (PR #614
+  verifier finding). No record — a restart since the last turn, or a
+  newer epoch — means text mode. The provider sees a prefix it already cached. Tool
+  definitions are sent but never executed; tool choice is left as the turn
+  leaves it, because a changed tool choice voids Anthropic's message cache.
+  A reply with no text is a failed attempt.
+- **The instruction** carries `SUMMARY_SYSTEM`'s rules, the operator focus
+  when given, and where the verbatim tail starts (an excerpt of the first
+  kept message), so the model summarizes the folded part only.
+- **Audit retries** append the rejected summary as an assistant message and
+  the corrective instruction as a user message — still on the cached prefix.
+- **Text mode (the old path) stays** for: overflow recovery (the view just
+  overflowed), conversations with no frozen prompt snapshot (a compaction
+  never mints one), the claude-code lane, fallback candidates other than the
+  conversation's own model, the split turn's prefix call, and any prefix-mode
+  failure (logged, then the text walk runs unchanged).
+- Code-made parts, the identifier index and the audit itself are unchanged:
+  they read the span, not the request.
+- Every fold logs `compaction summary mode` with `mode: "prefix" | "text"`
+  and the reason for text mode; the call's cache read lands in
+  `model_cache_calls` under purpose `compaction`.
+
+Not covered yet: the memory flush (it sends a different tool set) and the
+claude-code lane's summary call.
+
 ## The summary
 
 The conversation's own model writes it (unchanged ruling). It receives the
@@ -261,7 +304,7 @@ never passed through a model:
    newest first, within budget. Cannot be paraphrased.
 2. **Verbatim user messages.** Every real operator message in the folded
    span, quoted exactly, newest first, within budget. Program prompts,
-   system notes and resume requests are not "real". Standing instructions
+   system notes and legacy resume markers are not "real". Standing instructions
    ("don't drop Herbert") are what must never decay.
 3. **Recovery pointer.** The existing marker line: conversation id,
    boundary seq, `history_search action="context"`. The tool already

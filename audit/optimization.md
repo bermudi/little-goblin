@@ -3,7 +3,7 @@
 Read-only review. No tracked source file was modified; `git status --porcelain` is empty at
 the baseline HEAD. Spec: `DESIGN.md` plus the area docs in `design/`. Guardrails: `AGENTS.md`
 (fail loud · durable writes · no `console.log` · one adapter per external contract).
-Prior work built on, not duplicated: `arch-audit.md` (rev `5e7977d`, three findings) and the
+Prior work built on, not duplicated: `arch-audit-2026-10-18.md` (rev `5e7977d`, three findings) and the
 five-finding summary appended to the same file; `audit/telegram.md` (format standard).
 
 "Optimize" is read here as **runtime performance plus maintainability** — the brief's own
@@ -51,7 +51,7 @@ every claim drawn from it is marked with the build it describes.
 
 ## Verdict (short form)
 
-**The `arch-audit.md` verdict still holds at HEAD — and it holds more strongly than it did at
+**The `arch-audit-2026-10-18.md` verdict still holds at HEAD — and it holds more strongly than it did at
 `5e7977d`, because all three of its findings have since been fixed in code.** What replaces
 them is *not* a general refactor but a short list of pattern-level wins: one dormant
 mechanism (proactive compaction, never armed in 149 turns), two per-step recomputations of
@@ -63,14 +63,14 @@ denominator it triggers on is 1 000 000 tokens.
 
 ---
 
-## Part 0 — Re-check of the three `arch-audit.md` findings at HEAD
+## Part 0 — Re-check of the three `arch-audit-2026-10-18.md` findings at HEAD
 
-`arch-audit.md` was written at `5e7977d`. 91 commits have landed since (the audit's own
+`arch-audit-2026-10-18.md` was written at `5e7977d`. 91 commits have landed since (the audit's own
 revision is an ancestor of this HEAD). All three findings were taken up in the same week
 (2026-10-19), each with its own commit and its own design ruling. Re-checked by reading the
 current code, not the commit messages.
 
-| # | `arch-audit.md` finding | Status at `cc3a968c` | Evidence |
+| # | `arch-audit-2026-10-18.md` finding | Status at `cc3a968c` | Evidence |
 | --- | --- | --- | --- |
 | A1 | Tool replay conflates call equivalence with execution identity (`turn-journal.ts`, `runtime.ts`, `turn-resume.ts`) | **FIXED** — the argument-hash replay queue is gone; a *refusal* fence replaced it | `src/turn/retry-guard.ts` (new module, 144 lines); `src/turn-journal.ts:242-248` now documents `replayKey` as *"a call SIGNATURE … never execution identity"*; `src/runtime.ts:568` calls `classifyRetry(name, guard?.get(replayKey(name, input)))`; `src/turn/retry-guard.ts:118-135` **refuses** an unowned effectful repeat and only executes safe reads afresh; `src/turn/retry-guard.ts:93-116` requires an operator grant, consumed atomically with the dispatch (`src/turn-journal.ts:616-639`) |
 | A2 | Resumed turns can inherit the wrong causal anchor | **FIXED** — resumption is now refused when newer unowned input exists | `src/turn-resume.ts:311-361` (`stalenessRefusal`): *"every durable user event after the run's anchor must be one the attempt recorded as its own input"*; a post-anchor user event the run never owned ⇒ `code:"conflict"`, refuse; `src/turn/admission.ts:71-79` records `ownedInputSeqs` and anchors on the run's own `anchorSeq` |
@@ -81,7 +81,7 @@ recovery fence"*; `7fcab874` *"fix(resume): enforce durable input ownership and 
 admission"*; `d43cff8c` *"feat(programs): gate grant-shaped changes behind durable operator
 approvals"*.
 
-### Part 0b — Re-check of the five findings in the `arch-audit.md` trailing summary
+### Part 0b — Re-check of the five findings in the `arch-audit-2026-10-18.md` trailing summary
 
 That summary is the record of an earlier, deeper review of the same tree (it wrote
 `audit/architecture-review-2026-10-19.md`, which is not in the tree). Re-checked:
@@ -1140,7 +1140,7 @@ Kept visible, not acted on.
 
 ## Ruling
 
-**The `arch-audit.md` verdict still holds at HEAD, and it now holds for a stronger reason
+**The `arch-audit-2026-10-18.md` verdict still holds at HEAD, and it now holds for a stronger reason
 than it did at `5e7977d`: all three of its findings have been fixed in code — the
 argument-hash replay queue is gone in favour of an evidence-aware refusal fence, resumption
 refuses to inherit a run whose post-anchor input it never owned, and grant-shaped program
@@ -1223,7 +1223,7 @@ would be the finding that overturns "no general refactor".
 ### Assumptions made
 
 - "Optimize" = runtime performance **plus** maintainability, per the brief's own wording.
-- The `arch-audit.md` trailing five-finding summary describes the same tree (its
+- The `arch-audit-2026-10-18.md` trailing five-finding summary describes the same tree (its
   `audit/architecture-review-2026-10-19.md` is not in the tree, so I re-checked each
   finding against the code rather than against the summary).
 - `turn_journal.ts`'s `replayKey` remains a *signature*; A1's fix is the refusal fence

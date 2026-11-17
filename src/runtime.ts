@@ -2,7 +2,8 @@
 // terminal callbacks so every sink is settled.
 
 import { randomUUID } from "node:crypto";
-import { type ToolSet, type UIMessage, type UIMessageChunk } from "ai";
+import type { Tools } from "./tool.ts";
+import type { Message, MessageChunk } from "./message.ts";
 import type { ClaudeStep } from "./agent/claude-code/mod.ts";
 import type { ClaudeSessionStore } from "./claude-sessions.ts";
 import { type CompactionOutcome, chooseBoundary } from "./agent/compaction.ts";
@@ -33,12 +34,14 @@ import {
 } from "./memory/mod.ts";
 import type { PriorTurnContext } from "./reviewer-evidence.ts";
 import { Reviewer } from "./reviewer.ts";
-import { LaneRegistry, type QueuedTurn, type ResumeSeed } from "./runtime-lanes.ts";
+import { LaneRegistry, type QueuedTurn } from "./runtime-lanes.ts";
 import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { type CompactionSeam, runCompactJob } from "./turn/compact-job.ts";
+import { makePrefixSummarizer } from "./turn/prefix-summary.ts";
 import { sinkDelivery } from "./turn/delivery.ts";
-import { isClaudeStep, type ModelStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
+import { isClaudeStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
+import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
 import { stepModelRef } from "./turn/model-ref.ts";
 import {
@@ -102,7 +105,7 @@ export interface RuntimeDeps {
 	// the turn runs on whichever engine accepts the step (turn/engine.ts).
 	buildStep(
 		conv: Conversation,
-		tools: ToolSet,
+		tools: Tools,
 	): ModelStep | ClaudeStep | Promise<ModelStep | ClaudeStep>;
 	// The turn engines, tried in order (turn/engine.ts pickEngine):
 	// index.ts binds [claude-code, ai-sdk]. A step no engine accepts
@@ -149,6 +152,10 @@ export interface RuntimeDeps {
 	// ref). Absent = every claude turn runs the pre-#418 full-prompt
 	// path and nothing is persisted.
 	claudeSessions?: ClaudeSessionStore | undefined;
+	// After a completed turn, off the reply path — the curator pass
+	// gate (interval, config) lives in the callback. A throw is logged
+	// and swallowed: curation never fails a turn.
+	onTurnSettled?: () => void;
 }
 
 export class FencedError extends Error {
@@ -158,19 +165,16 @@ export class FencedError extends Error {
 	}
 }
 
-// runtime-lanes.ts re-export — the resume seed is turn-resume.ts's contract
-// with the runtime's public surface.
-export type { ResumeSeed } from "./runtime-lanes.ts";
-
-// Terminal outcomes have settled their sinks; resumes carry recovery and
-// membership into the next attempt. Membership is data on the decision,
-// not a closure over a queue that may have changed.
+// Terminal outcomes have settled their sinks; continuations carry
+// recovery and membership into the next attempt. Membership is data on
+// the decision, not a closure over a queue that may have changed.
 type AttemptOutcome =
 	| { kind: "done" }
 	| { kind: "resume"; recovery: TurnRecovery; turns: QueuedTurn[] };
 
 export class Runtime {
 	private lanes = new LaneRegistry();
+	private readonly lastTurnTools = new Map<string, { epoch: number; tools: Tools }>();
 	// Closed runtimes record submits but never run them.
 	private closed = false;
 	// The runtime supplies ordering and the prior-turn chain, not gate
@@ -215,7 +219,7 @@ export class Runtime {
 	// Persist immediately; the return value distinguishes lane admission from
 	// history-only recording after shutdown. The message is durable even when
 	// no turn can be admitted.
-	submit(conv: Conversation, message: UIMessage, sink: TurnSink): boolean {
+	submit(conv: Conversation, message: Message, sink: TurnSink): boolean {
 		const seqs = this.deps.store.append(conv.id, [message]);
 		return this.admit(conv, message, sink, seqs[0]!);
 	}
@@ -224,38 +228,8 @@ export class Runtime {
 	// duplicate a recovered turn. `seq` is that persisted event's seq — the
 	// persisting caller watched the append, so the queue never has to guess
 	// it from a client message id.
-	submitPersisted(conv: Conversation, message: UIMessage, sink: TurnSink, seq: number): boolean {
+	submitPersisted(conv: Conversation, message: Message, sink: TurnSink, seq: number): boolean {
 		return this.admit(conv, message, sink, seq);
-	}
-
-	// Admission for an operator-resumed turn — turn-resume.ts owns the
-	// validation and builds the source-linked resume event. Registering the
-	// event on the source run and appending it to history are one
-	// transaction: a partial write must not leave an unregistered event the
-	// next resume would read as foreign input. The seed restores what the
-	// interrupted attempt produced. Same lane and authority rules as
-	// submitPersisted.
-	resume(conv: Conversation, message: UIMessage, sink: TurnSink, seed: ResumeSeed): boolean {
-		const journal = this.deps.turnJournal;
-		const eligible = this.deps.store.memoryEligibility(conv.id).eligibleSeqs;
-		const exclude =
-			seed.admissionExchangeExcluded === true ||
-			(seed.ownedInputSeqs ?? []).some((seq) => !eligible.has(seq));
-		let seq: number;
-		if (journal !== undefined && seed.resumedFrom !== undefined) {
-			seq = this.deps.store.db.transaction(() => {
-				// The registry names the seq this append actually wrote —
-				// inferring it (e.g. lastUserSeq) would silently register an
-				// unrelated event if the message's shape ever changed.
-				const seqs = this.deps.store.append(conv.id, [message], { exclude });
-				journal.noteResumeRequest(seed.resumedFrom!, seqs[0]!);
-				return seqs[0]!;
-			})();
-		} else {
-			const seqs = this.deps.store.append(conv.id, [message], { exclude });
-			seq = seqs[0]!;
-		}
-		return this.admit(conv, message, sink, seq, seed);
 	}
 
 	// A live admission by client-visible id — loose matching for
@@ -266,18 +240,12 @@ export class Runtime {
 		return this.lanes.isAdmitted(conversationId, messageId, eventSeq);
 	}
 
-	private admit(
-		conv: Conversation,
-		message: UIMessage,
-		sink: TurnSink,
-		seq: number,
-		seed?: ResumeSeed,
-	): boolean {
+	private admit(conv: Conversation, message: Message, sink: TurnSink, seq: number): boolean {
 		if (this.closed) {
 			void this.notifyDone({ seq, message, sink, doneSent: false }, { kind: "fenced" });
 			return false;
 		}
-		this.lanes.enqueue(conv.id, { seq, message, sink, doneSent: false, resumeSeed: seed });
+		this.lanes.enqueue(conv.id, { seq, message, sink, doneSent: false });
 		this.lanes.startDraining(conv.id, () => this.drain(conv.id));
 		return true;
 	}
@@ -291,8 +259,7 @@ export class Runtime {
 	// Busy is the lane holding any work — a claimed or queued turn, or a
 	// queued/in-flight compaction. Compaction counts because it rewrites
 	// the model view between turns: app retries use this to avoid turning
-	// a retry into steering input, and resume admission refuses on it so
-	// the visibility it measured cannot move before the resumed turn runs.
+	// a retry into steering input.
 	busy(convId: string): boolean {
 		return this.lanes.busy(convId);
 	}
@@ -308,9 +275,9 @@ export class Runtime {
 	// member sink. Null means the caller should fall back to history.
 	subscribeLiveChunks(
 		convId: string,
-		onChunk: (chunk: UIMessageChunk) => void,
+		onChunk: (chunk: MessageChunk) => void,
 		onEnd: (done: TurnDone) => void,
-	): UIMessageChunk[] | null {
+	): MessageChunk[] | null {
 		const live = this.lanes.liveOf(convId);
 		if (live === null || live.ended) return null;
 		live.subscribers.add({ onChunk, onEnd });
@@ -410,6 +377,26 @@ export class Runtime {
 			budgets: compactionBudgets,
 			checkAuthority: (convId, epoch) => this.checkAuthority(convId, epoch),
 			foldCeiling: (convId, floor) => this.lanes.pendingFloor(convId, floor),
+			makePrefix: async (target, modelRef, signal) => {
+				const seam = this.deps.compaction;
+				if (seam?.prefixStep === undefined) return null;
+				const lastTurn = this.lastTurnTools.get(target.id);
+				if (lastTurn === undefined || lastTurn.epoch !== target.epoch) return null;
+				const prefixStep = await seam.prefixStep(target, modelRef);
+				if (prefixStep === null) return null;
+				return makePrefixSummarizer({
+					conv: target,
+					step: prefixStep,
+					store: this.deps.store,
+					tools: lastTurn.tools,
+					...(this.deps.memory !== undefined ? { memory: this.deps.memory } : {}),
+					foldCeiling: () => this.lanes.pendingFloor(target.id, activeFloor),
+					assertAuthority: () => {
+						signal.throwIfAborted();
+						this.checkAuthority(target.id, target.epoch);
+					},
+				});
+			},
 			holdController: (controller) => this.lanes.holdCompactController(conv.id, controller),
 			releaseController: (controller) =>
 				this.lanes.releaseCompactController(conv.id, controller),
@@ -452,7 +439,7 @@ export class Runtime {
 	): QueuedTurn[] {
 		return claimMembers(
 			convId,
-			() => this.lanes.claim(convId, sink.onStreamChunk !== undefined, false),
+			() => this.lanes.claim(convId, sink.delivery === "stream", false),
 			live,
 			members,
 		);
@@ -461,7 +448,7 @@ export class Runtime {
 	private async recallMemory(
 		conv: Conversation,
 		anchorSeq: number | null,
-		history: UIMessage[],
+		history: Message[],
 		signal: AbortSignal,
 		epoch: number,
 	): Promise<{ prior: RecallContext[]; current: RecallContext | null }> {
@@ -554,12 +541,11 @@ export class Runtime {
 	// while late subscribers retain one continuous stream.
 	private async runTurn(convId: string, turns: QueuedTurn[]): Promise<void> {
 		const live = openLive();
-		// An operator-resume seed enters the same recovery slot an
-		// overflow decision fills — the attempt loop consumes it
-		// identically. The wire is always the fresh log: the dead turn's
-		// went away with the process.
-		const seed = turns[0]?.resumeSeed;
-		let recovery: TurnRecovery | undefined = seed === undefined ? undefined : { ...seed, live };
+		// An overflow/fallback continuation enters the same recovery slot
+		// its decision fills — the attempt loop consumes it identically.
+		// The wire is always the fresh log: the failed attempt's went away
+		// with its row.
+		let recovery: TurnRecovery | undefined;
 		let members = turns;
 		for (;;) {
 			const outcome = await this.runAttempt(convId, members, recovery, live);
@@ -605,10 +591,7 @@ export class Runtime {
 			{
 				convId,
 				watchdog: this.loopWatchdog,
-				// An operator-resume head is the generated provenance marker —
-				// the seed carries the run's real request for the watchdog;
-				// every other head message is itself the request.
-				request: recovery?.operatorRequest ?? messageText(turns[0]!.message),
+				request: messageText(turns[0]!.message),
 			},
 			recovery?.loop,
 		);
@@ -678,8 +661,9 @@ export class Runtime {
 		}
 		const { snapshot } = admitted;
 		const { conv, epoch, entries, anchorSeq, turnStartMs } = snapshot;
-		// Resume members join `turns` before admission so all paths settle them.
-		// An admission failure must not strand a member claimed during recovery.
+		// Continuation inputs join `turns` before admission so all paths
+		// settle them. An admission failure must not strand a member
+		// claimed during recovery.
 		const ownedInputSeqs = new Set([
 			...snapshot.ownedInputSeqs,
 			...(recovery?.ownedInputSeqs ?? []),
@@ -724,15 +708,9 @@ export class Runtime {
 		// begun row never escapes still 'running' except a deliberate
 		// shutdown leave (#471).
 		const journal = this.deps.turnJournal;
-		// An operator-resume admission carries the interrupted run it
-		// continues — every attempt of this turn links its run row to it
-		// and inherits its calls as evidence: a re-asked effect conflicts
-		// unless an operator grant names it.
-		const sourceRunId = recovery?.resumedFrom;
 		const sourceInputSeq = (): number | null => {
 			let max: number | null = null;
-			for (const [i, t] of turns.entries()) {
-				if (i === 0 && sourceRunId !== undefined) continue;
+			for (const t of turns) {
 				if (max === null || t.seq > max) max = t.seq;
 			}
 			return max ?? recovery?.sourceInputSeq ?? null;
@@ -782,9 +760,9 @@ export class Runtime {
 			const delivery = sinkDelivery(sink, () => this.checkAuthority(convId, epoch));
 			// #477's gate arms only once buildStep names the engine: the
 			// streamText engine folds steers at its prepareStep boundary,
-			// so a parked steer skips unlaunched calls; a claude-code
-			// attempt never claims mid-turn — the steer leads the
-			// successor turn and this stays false.
+			// so a parked steer skips unlaunched calls. A claude-code
+			// attempt folds when a tool call settles (#582) and keeps
+			// the gate off: the CLI, not goblin, dispatches its calls.
 			const steerGate = { armed: false };
 			const auth = openToolAuthority({
 				conv,
@@ -801,7 +779,6 @@ export class Runtime {
 					admissionExchangeExcluded,
 					memberSeqs: turns.map((t) => t.seq),
 					sourceInputSeq,
-					resumedFrom: sourceRunId,
 					predecessorRun: recovery?.predecessorRun,
 					fallbackConfigured: fallback.configured,
 				},
@@ -815,12 +792,13 @@ export class Runtime {
 				// splice; the claim still belongs to the model call.
 				steerWaiting: () =>
 					steerGate.armed &&
-					this.lanes.claimablePending(convId, sink.onStreamChunk !== undefined),
+					this.lanes.claimablePending(convId, sink.delivery === "stream"),
 			});
 			// The const is what closures below capture — the mutable slot
 			// above only bridges the pre-authority failure paths.
 			authority = auth;
 			const tools = auth.tools;
+			this.lastTurnTools.set(convId, { epoch, tools });
 			const step = await this.deps.buildStep(conv, tools);
 			steerGate.armed = !isClaudeStep(step);
 			this.checkAuthority(convId, epoch);
@@ -839,7 +817,7 @@ export class Runtime {
 			// #418: a recorded native session sees only the seq delta —
 			// entries past seen_seq, minus the reply the session itself
 			// produced (it already holds that natively). Entries with no
-			// seq — recall inserts, the resume partial — belong to this
+			// seq — recall inserts, the recovery partial — belong to this
 			// turn and ride along inside the view.
 			const claudeRec =
 				isClaudeStep(step) && this.deps.claudeSessions !== undefined
@@ -851,6 +829,9 @@ export class Runtime {
 					: entries.filter((e) => e.seq > claudeRec.seenSeq && e.seq !== claudeRec.replySeq);
 			const sentSeqMax =
 				viewEntries.length === 0 ? null : Math.max(...viewEntries.map((e) => e.seq));
+			// Steers the attempt folded mid-turn (#582) — the native
+			// session holds them, so the record's watermark may cover them.
+			const foldedSeqs = new Set<number>();
 			const viewOptions = {
 				entries: viewEntries,
 				prior: memory.prior,
@@ -919,13 +900,16 @@ export class Runtime {
 				messages: merged,
 				tools,
 				view: viewCtx,
-				claimSteers: () => this.lanes.claim(convId, sink.onStreamChunk !== undefined, false),
+				claimSteers: () => this.lanes.claim(convId, sink.delivery === "stream", false),
 				unrequeueSteers: (steered) => this.lanes.unrequeue(convId, steered),
 				settle: (m, done) => void this.notifyDone(m, done),
 				steerMarkSeed: snapshot.steerMarkSeed,
 				ownedInputSeqs: [...ownedInputSeqs],
 				onOwnedInputs: (seqs) => {
-					for (const seq of seqs) ownedInputSeqs.add(seq);
+					for (const seq of seqs) {
+						ownedInputSeqs.add(seq);
+						foldedSeqs.add(seq);
+					}
 				},
 				sourceInputSeq,
 				partial: recovery?.partial ?? null,
@@ -1007,7 +991,7 @@ export class Runtime {
 				}
 			}
 			if (outcome.kind === "failed") {
-				// Carry the filter retry budget into a possible resume.
+				// Carry the filter retry budget into a possible continuation.
 				filterRetryUsed = outcome.filterRetryUsed;
 				errorHeld = outcome.errorHeld === true;
 				throw failureFromStream(outcome);
@@ -1079,6 +1063,28 @@ export class Runtime {
 				landedReplySeq !== null
 			) {
 				const headUuid = outcome.claudeSession.headUuid;
+				let seenSeq = sentSeqMax ?? claudeRec?.seenSeq ?? 0;
+				if (foldedSeqs.size > 0) {
+					// Advance past the folded steers only when every entry
+					// up to the last one was sent: a message still queued
+					// between them must reach the next turn's delta. A held
+					// watermark re-sends the steers instead — a duplicate,
+					// never a loss.
+					const top = Math.max(...foldedSeqs);
+					const unsent = store
+						.modelEntries(convId)
+						.filter((e) => e.seq > seenSeq && e.seq <= top && !foldedSeqs.has(e.seq))
+						.map((e) => e.seq);
+					if (unsent.length === 0) seenSeq = top;
+					else {
+						log.info("claude session watermark held below folded steers", {
+							conversation: convId,
+							seenSeq,
+							folded: [...foldedSeqs],
+							unsent,
+						});
+					}
+				}
 				if (headUuid !== "") {
 					try {
 						this.deps.claudeSessions?.put({
@@ -1086,7 +1092,7 @@ export class Runtime {
 							modelRef: step.label,
 							sessionId: outcome.claudeSession.sessionId,
 							headUuid,
-							seenSeq: sentSeqMax ?? claudeRec?.seenSeq ?? 0,
+							seenSeq,
 							replySeq: landedReplySeq,
 						});
 					} catch (err) {
@@ -1162,6 +1168,17 @@ export class Runtime {
 					}
 				}
 			}
+			// Off the reply path, post-compaction: the deterministic
+			// curator pass when its interval elapsed (gated inside the
+			// hook). A throw is logged and swallowed — curation never
+			// fails a turn.
+			try {
+				this.deps.onTurnSettled?.();
+			} catch (err) {
+				log.warn("post-turn curator pass failed — turn already delivered", err, {
+					conversation: convId,
+				});
+			}
 		} catch (err) {
 			// The crash journal is the only record of what the turn's
 			// tools did — when it cannot write, the turn dies as an error
@@ -1194,8 +1211,8 @@ export class Runtime {
 					// #471 — a shutdown fence is a crash for the journal: the row
 					// stays 'running' and nothing is recorded here. The next open
 					// reclassifies it 'interrupted' and records its unlanded
-					// progress in the same transaction, so the boot notice,
-					// /interrupted and /resume all reach it.
+					// progress in the same transaction — the boot notice and
+					// the history record both reach it (#594).
 					leaveRunning();
 				} else {
 					// What already ran stays transcript — the sanctioned post-fence
@@ -1221,9 +1238,7 @@ export class Runtime {
 					startedAt: turnStartMs,
 					live,
 					filterRetryUsed,
-					resumedFrom: sourceRunId,
 					failedRunId: authority?.runId,
-					operatorRequest: recovery?.operatorRequest,
 					recallVersion,
 					sourceInputSeq: sourceInputSeq(),
 					members: turns,
@@ -1361,8 +1376,8 @@ export class Runtime {
 						turns,
 					};
 				}
-				// Only a fresh attempt's failure ends the walk; an overflow
-				// continuation or resume failing reports its own error.
+				// Only a fresh attempt's failure ends the walk; a
+				// continuation failing reports its own error.
 				const misses = fallback.fresh ? [...fallback.misses, miss] : [miss];
 				log.error("turn failed", err, {
 					conversation: convId,
@@ -1407,6 +1422,6 @@ export class Runtime {
 	}
 }
 
-export function userMessage(parts: UIMessage["parts"]): UIMessage {
+export function userMessage(parts: Message["parts"]): Message {
 	return { id: randomUUID(), role: "user", parts };
 }

@@ -15,9 +15,15 @@ import { mkdtempSync, readdirSync, rmdirSync, rmSync, statSync, type Dirent } fr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import type { LanguageModel, UIMessageChunk } from "ai";
+import type { LanguageModel } from "ai";
+import type { MessageChunk } from "./message.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
-import type { TurnDone, TurnSink } from "./turn/sink.ts";
+import type {
+	HeadlessSink as HeadlessSinkContract,
+	StreamingSink,
+	TurnDone,
+	TurnSink,
+} from "./turn/sink.ts";
 
 // ---------- filesystem fixtures ----------
 
@@ -299,13 +305,14 @@ export function recordingModel(
 
 // ---------- turn sinks ----------
 
-// Defining onStreamChunk makes submits through this sink streaming —
-// use HeadlessSink where the headless lane is the subject.
+// RecordingSink declares streaming delivery; use HeadlessSink when testing
+// the headless lane.
 
-export class RecordingSink implements TurnSink {
+export class RecordingSink implements StreamingSink {
+	readonly delivery = "stream";
 	text = "";
 	chunkTypes: string[] = [];
-	chunks: UIMessageChunk[] = [];
+	chunks: MessageChunk[] = [];
 	toolCalls: string[] = [];
 	done: Promise<TurnDone>;
 	admitted: Promise<void>;
@@ -343,7 +350,7 @@ export class RecordingSink implements TurnSink {
 		this.toolCalls.push(toolName);
 		this.markFirstToolCall(toolName);
 	}
-	onStreamChunk(chunk: UIMessageChunk) {
+	onStreamChunk(chunk: MessageChunk) {
 		this.chunkTypes.push(chunk.type);
 		this.chunks.push(chunk);
 	}
@@ -352,10 +359,10 @@ export class RecordingSink implements TurnSink {
 	}
 }
 
-// No onStreamChunk, so the streaming-lane boundary treats it as headless
-// (the spin-off bell's shape).
+// Explicitly headless, like the spin-off bell.
 
-export class HeadlessSink implements TurnSink {
+export class HeadlessSink implements HeadlessSinkContract {
+	readonly delivery = "headless";
 	done: Promise<TurnDone>;
 	private resolveDone: (d: TurnDone) => void;
 	constructor() {
@@ -376,7 +383,8 @@ export class HeadlessSink implements TurnSink {
 // onDone is held on a gate — the drain loop stays "running" while new
 // submits only queue (a slow Telegram send or bell delivery).
 
-export class ParkedDoneSink implements TurnSink {
+export class ParkedDoneSink implements HeadlessSinkContract {
+	readonly delivery = "headless";
 	done: Promise<TurnDone>;
 	private resolveDone: (d: TurnDone) => void = () => {};
 	constructor(private gate: Promise<void>) {

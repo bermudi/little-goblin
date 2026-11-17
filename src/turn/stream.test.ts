@@ -10,7 +10,9 @@ import {
 	type LanguageModelV4CallOptions,
 	type LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
-import { type LanguageModel, tool, type UIMessage, type UIMessageChunk } from "ai";
+import type { LanguageModel } from "ai";
+import { defineTool } from "../tool.ts";
+import type { Message, MessageChunk } from "../message.ts";
 import { z } from "zod";
 import { ATTACHMENT_PART } from "../agent/attachments.ts";
 import { isTransientTurnFailure } from "../agent/provider-errors.ts";
@@ -36,6 +38,7 @@ import {
 	joinMember,
 	type MemberSettlement,
 	openLive,
+	stubSupersededFrames,
 	type StreamDeps,
 	type WireMember,
 } from "./stream.ts";
@@ -57,9 +60,9 @@ test("a failed attach subscriber is logged and detached without losing the share
 			},
 			onEnd() {},
 		});
-		const received: UIMessageChunk[] = [];
+		const received: MessageChunk[] = [];
 		live.subscribers.add({ onChunk: (chunk) => received.push(chunk), onEnd() {} });
-		const chunk: UIMessageChunk = { type: "text-start", id: "synthetic" };
+		const chunk: MessageChunk = { type: "text-start", id: "synthetic" };
 		emitChunk("app/test", [], live, chunk);
 		expect(live.subscribers.size).toBe(1);
 		expect(live.chunks).toEqual([chunk]);
@@ -146,15 +149,30 @@ const filterWarning =
 // by hand so incidental members never collide with crafted entries.
 let memberSeq = 100;
 interface RecMember extends WireMember {
-	chunks: UIMessageChunk[];
+	chunks: MessageChunk[];
 }
 
 function member(text: string, streaming = true, seq = memberSeq++): RecMember {
-	const chunks: UIMessageChunk[] = [];
+	const chunks: MessageChunk[] = [];
 	return {
 		seq,
 		message: { id: `u-${text}`, role: "user", parts: [{ type: "text", text }] },
-		sink: streaming ? { onStreamChunk: (c) => chunks.push(c) } : {},
+		sink: streaming
+			? {
+					delivery: "stream" as const,
+					onTextDelta() {},
+					onReasoningDelta() {},
+					onToolCall() {},
+					onStreamChunk: (c: MessageChunk) => chunks.push(c),
+					onDone() {},
+				}
+			: {
+					delivery: "headless" as const,
+					onTextDelta() {},
+					onReasoningDelta() {},
+					onToolCall() {},
+					onDone() {},
+				},
 		chunks,
 	};
 }
@@ -174,8 +192,9 @@ function headSink() {
 }
 
 function probeTool() {
-	return tool({
-		inputSchema: z.object({}),
+	return defineTool({
+		description: "test tool",
+		input: z.object({}),
 		execute: async () => "probe-result-7f3a",
 	});
 }
@@ -255,7 +274,7 @@ describe("membership seam", () => {
 		// during that recovery window — the resume claim goes through
 		// the seam.
 		const live = openLive();
-		const before: UIMessageChunk[] = [
+		const before: MessageChunk[] = [
 			{ type: "start", messageId: "m1" },
 			{ type: "tool-input-available", toolCallId: "c1", toolName: "probe", input: {} },
 		];
@@ -290,6 +309,7 @@ describe("membership seam", () => {
 			{ type: "text-delta", id: "t1", delta: "a" },
 		);
 		const boom = member("boom");
+		if (boom.sink.delivery !== "stream") throw new Error("expected streaming sink");
 		boom.sink.onStreamChunk = () => {
 			throw new Error("dead client");
 		};
@@ -487,8 +507,9 @@ describe("driveStream — transient reader throws (#488)", () => {
 		const warning = spyOn(log, "warn").mockImplementation(() => {});
 		try {
 			let executions = 0;
-			const probe = tool({
-				inputSchema: z.object({}),
+			const probe = defineTool({
+				description: "test tool",
+				input: z.object({}),
 				execute: async () => {
 					executions++;
 					return "probe-result-7f3a";
@@ -585,7 +606,7 @@ describe("driveStream", () => {
 		const r = rig([textReply("the answer")]);
 		const head = member("head");
 		r.members.push(head);
-		const subChunks: UIMessageChunk[] = [];
+		const subChunks: MessageChunk[] = [];
 		r.live.subscribers.add({ onChunk: (c) => subChunks.push(c), onEnd: () => {} });
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
@@ -606,6 +627,7 @@ describe("driveStream", () => {
 		const r = rig([textReply("the answer")]);
 		const healthy = member("healthy");
 		const dead = member("dead");
+		if (dead.sink.delivery !== "stream") throw new Error("expected streaming sink");
 		dead.sink.onStreamChunk = () => {
 			throw new Error("dead client");
 		};
@@ -665,10 +687,15 @@ describe("driveStream", () => {
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
 		if (outcome.kind !== "ok") return;
-		const md = outcome.responseMessage?.metadata as { ttftMs?: number };
+		const md = outcome.responseMessage?.metadata as { ttftMs?: number; createdAt?: string };
 		expect(typeof md.ttftMs).toBe("number");
 		expect(md.ttftMs!).toBeGreaterThanOrEqual(0);
 		expect(md.ttftMs!).toBeLessThan(10_000);
+		// The finish instant rides as createdAt — the transcript's "how
+		// old is this reply" before history serves the row's own stamp.
+		expect(typeof md.createdAt).toBe("string");
+		expect(Date.parse(md.createdAt!)).toBeGreaterThanOrEqual(r.deps.turnStartMs);
+		expect(Date.parse(md.createdAt!)).toBeLessThanOrEqual(Date.now());
 	});
 
 	test("a step that never streams content leaves ttft unstamped", async () => {
@@ -850,7 +877,7 @@ describe("driveStream", () => {
 				{ type: "text", text: "read this" },
 				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
 			],
-		} as UIMessage;
+		} as Message;
 		r.queue.push(poison);
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
@@ -885,7 +912,7 @@ describe("driveStream", () => {
 				{ type: "text", text: "read this" },
 				{ type: "file", mediaType: "image/png", filename: "x.png", url: "not a url" },
 			],
-		} as UIMessage;
+		} as Message;
 		r.queue.push(ok, poison);
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
@@ -935,7 +962,7 @@ describe("driveStream", () => {
 					data: { path: fifo, mediaType: "image/png", filename: "photo.png", size: 7 },
 				},
 			],
-		} as UIMessage;
+		} as Message;
 		r.queue.push(steer);
 		const driving = driveStream(r.deps);
 		await new Promise((res) => setTimeout(res, 20)); // conversion parked on the FIFO
@@ -1173,8 +1200,9 @@ describe("driveStream", () => {
 			...Array.from({ length: LOOP_DETECT_WARN }, (_, i) => oneRejection(i)),
 			textReply("gave up asking"),
 		];
-		const badProbe = tool({
-			inputSchema: z.object({ want: z.string() }),
+		const badProbe = defineTool({
+			description: "test tool",
+			input: z.object({ want: z.string() }),
 			execute: async () => "unreachable — schema rejects first",
 		});
 		const warnSpy = spyOn(log, "warn").mockImplementation(() => {});
@@ -1212,8 +1240,9 @@ describe("driveStream", () => {
 	});
 
 	test("a script output's call record expands into script.<tool> digest entries and tool calls", async () => {
-		const script = tool({
-			inputSchema: z.object({ code: z.string() }),
+		const script = defineTool({
+			description: "test tool",
+			input: z.object({ code: z.string() }),
 			execute: async () => ({
 				text: "Script completed in 0.1s · 2 tool calls\ndigest",
 				calls: [
@@ -1262,8 +1291,9 @@ describe("driveStream", () => {
 	test("a completed write into the skills catalog records provenance for the turn's conversation", async () => {
 		const ws = mkdtempSync(join(tmpdir(), "goblin-skillwatch-"));
 		const recorded: Array<{ conversationId: string; skill: string }> = [];
-		const writeFile = tool({
-			inputSchema: z.object({ path: z.string(), content: z.string() }),
+		const writeFile = defineTool({
+			description: "test tool",
+			input: z.object({ path: z.string(), content: z.string() }),
 			execute: async () => ({ path: join(ws, "skills", "foo", "SKILL.md"), bytes: 3 }),
 		});
 		const writeStep: LanguageModelV4StreamPart[] = [
@@ -1304,8 +1334,9 @@ describe("driveStream", () => {
 	test("a write outside the catalog records nothing", async () => {
 		const ws = mkdtempSync(join(tmpdir(), "goblin-skillwatch-"));
 		const recorded: unknown[][] = [];
-		const writeFile = tool({
-			inputSchema: z.object({ path: z.string(), content: z.string() }),
+		const writeFile = defineTool({
+			description: "test tool",
+			input: z.object({ path: z.string(), content: z.string() }),
 			execute: async () => ({ path: join(ws, "notes", "x.md"), bytes: 3 }),
 		});
 		const writeStep: LanguageModelV4StreamPart[] = [
@@ -1346,8 +1377,9 @@ describe("driveStream", () => {
 	test("a script's nested write into the catalog records provenance — the seam adc003fd pinned", async () => {
 		const ws = mkdtempSync(join(tmpdir(), "goblin-skillwatch-"));
 		const recorded: Array<{ conversationId: string; skill: string }> = [];
-		const script = tool({
-			inputSchema: z.object({ code: z.string() }),
+		const script = defineTool({
+			description: "test tool",
+			input: z.object({ code: z.string() }),
 			execute: async () => ({
 				text: "done",
 				calls: [
@@ -1510,5 +1542,68 @@ describe("wire-tail checkpoint", () => {
 		} finally {
 			Date.now = realNow;
 		}
+	});
+});
+
+describe("stubSupersededFrames — issue #606 within-turn frame stubbing", () => {
+	const frameResult = (id: string) => ({
+		role: "tool" as const,
+		content: [
+			{
+				type: "tool-result" as const,
+				toolCallId: id,
+				toolName: "screenshot",
+				output: {
+					type: "content" as const,
+					value: [
+						{ type: "text" as const, text: `frame ${id}` },
+						{
+							type: "file" as const,
+							mediaType: "image/png",
+							data: { type: "data" as const, data: new Uint8Array(1000) },
+						},
+					],
+				},
+			},
+		],
+	});
+
+	test("with two frames, the older becomes a text stub; the newest keeps its image", () => {
+		const messages = [
+			{ role: "user" as const, content: "drive" },
+			frameResult("c1"),
+			frameResult("c2"),
+		];
+		const out = stubSupersededFrames(messages);
+		expect(out).not.toBe(messages);
+		const c1 = out[1] as { content: Array<{ output?: { type?: string; value?: unknown } }> };
+		const c2 = out[2] as { content: Array<{ output?: { type?: string; value?: unknown } }> };
+		expect(c1.content[0]!.output!.type).toBe("text");
+		expect(String(c1.content[0]!.output!.value)).toContain("frame c1");
+		expect(String(c1.content[0]!.output!.value)).toContain("superseded");
+		expect(c2.content[0]!.output!.type).toBe("content");
+	});
+
+	test("a single frame, text-only results, and string content stay untouched", () => {
+		const one = [frameResult("c1")];
+		expect(stubSupersededFrames(one)).toBe(one);
+		const textOnly = [
+			{
+				role: "tool" as const,
+				content: [
+					{
+						type: "tool-result" as const,
+						toolCallId: "c1",
+						toolName: "inspect",
+						output: { type: "text" as const, value: "state" },
+					},
+				],
+			},
+			{
+				role: "tool" as const,
+				content: "plain string result",
+			},
+		] as never[];
+		expect(stubSupersededFrames(textOnly as never)).toBe(textOnly);
 	});
 });

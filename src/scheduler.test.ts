@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DeliveryApi } from "./tg/delivery.ts";
-import type { UIMessage } from "ai";
+import type { Message, MessageChunk } from "./message.ts";
 import { openStore } from "./conversation.ts";
 import { appAddress } from "./conversation-address.ts";
 import type { ConversationStore } from "./conversation.ts";
@@ -75,7 +75,7 @@ function inZone<T>(zone: string, fn: () => T): T {
 
 interface Harness {
 	deps: SchedulerDeps;
-	submitted: Array<{ conv: string; parts: UIMessage["parts"]; sink: TurnSink }>;
+	submitted: Array<{ conv: string; parts: Message["parts"]; sink: TurnSink }>;
 	apiCalls: Array<{ method: string; text?: string }>;
 	store: ConversationStore;
 }
@@ -102,7 +102,7 @@ function harness(): Harness {
 	} as unknown as DeliveryApi;
 	const runtime = {
 		accepting: () => true,
-		submit: (conv: { id: string }, message: UIMessage, sink: TurnSink) => {
+		submit: (conv: { id: string }, message: Message, sink: TurnSink) => {
 			submitted.push({ conv: conv.id, parts: message.parts, sink });
 			return true;
 		},
@@ -122,6 +122,7 @@ function harness(): Harness {
 		roll: { store, runtime, gapMinutes: () => config.telegram.dmGapMinutes },
 		// Wired because WakeDeps requires it — fires never take the app path.
 		bell: () => ({
+			delivery: "headless" as const,
 			onTextDelta: () => {},
 			onReasoningDelta: () => {},
 			onToolCall: () => {},
@@ -1168,7 +1169,7 @@ describe("scheduler", () => {
 		let calls = 0;
 		h.deps.runtime = {
 			accepting: () => true,
-			submit: (_c: { id: string }, _m: UIMessage, sink: TurnSink) => {
+			submit: (_c: { id: string }, _m: Message, sink: TurnSink) => {
 				calls++;
 				if (calls === 1) {
 					void sink.onDone({ kind: "completed" });
@@ -1718,6 +1719,37 @@ describe("schedule fire retry ladder", () => {
 		await sink.onDone(transientDone);
 		await Bun.sleep(10); // negative window: 5× the 2ms retry delay — a retry would have landed
 		expect(h.submitted).toHaveLength(1);
+	});
+
+	test("retry wrappers preserve the base delivery declaration", async () => {
+		const headlessHarness = harness();
+		fireScheduled(headlessHarness.deps, ladderProgram(headlessHarness), new Date(), {
+			retryDelaysMs: DELAYS,
+		});
+		const headless = headlessHarness.submitted[0]!.sink;
+		expect(headless.delivery).toBe("headless");
+		expect("onStreamChunk" in headless).toBe(false);
+
+		const streamHarness = harness();
+		const chunks: MessageChunk[] = [];
+		streamHarness.deps.delivery = () => ({
+			delivery: "stream",
+			onTextDelta() {},
+			onReasoningDelta() {},
+			onToolCall() {},
+			onStreamChunk: (chunk) => chunks.push(chunk),
+			onDone() {},
+		});
+		fireScheduled(streamHarness.deps, ladderProgram(streamHarness), new Date(), {
+			retryDelaysMs: DELAYS,
+		});
+		const streaming = streamHarness.submitted[0]!.sink;
+		expect(streaming.delivery).toBe("stream");
+		if (streaming.delivery === "stream") {
+			const chunk = { type: "start", messageId: "m1" } as MessageChunk;
+			streaming.onStreamChunk(chunk);
+			expect(chunks).toEqual([chunk]);
+		}
 	});
 
 	test("two occurrences of one program keep their own pending retries", async () => {

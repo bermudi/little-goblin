@@ -12,7 +12,6 @@ import type { NoteStore } from "../notes.ts";
 import type { ProjectStore } from "../projects.ts";
 import type { Runtime } from "../runtime.ts";
 
-import type { ResumeOps } from "../turn-resume.ts";
 import type { MailApproval } from "../mail-approval.ts";
 import type { ProgramApproval } from "../program-approval.ts";
 import type { ProgramOps } from "../program-ops.ts";
@@ -86,7 +85,6 @@ export interface AppChannelDeps {
 		signal: AbortSignal,
 	) => Promise<string>;
 	operator?: Omit<OperatorDeps, "configRef" | "onConfigWritten">;
-	resumeOps?: () => ResumeOps | undefined;
 	approvals?: {
 		program: Pick<ProgramApproval, "base" | "candidate" | "decide" | "pending">;
 		mail: Pick<MailApproval, "decide" | "pending">;

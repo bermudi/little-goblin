@@ -7,7 +7,7 @@ import type { ConfigRef } from "../config.ts";
 import type { Config } from "../config-schema.ts";
 import type { Runtime } from "../runtime.ts";
 import type { TurnSink } from "../turn/sink.ts";
-import type { UIMessage } from "ai";
+import type { Message as GoblinMessage } from "../message.ts";
 import type { Message, User } from "grammy/types";
 import type { Api } from "grammy";
 import type { AuthStore } from "../auth.ts";
@@ -164,7 +164,6 @@ describe("filterGuestTools — the sandbox invariant", () => {
 		vision: 1,
 		program: 1,
 		delegate: 1,
-		herdr: 1,
 		mail: 1,
 		send_file: 1,
 		memory_search: 1,
@@ -205,7 +204,6 @@ describe("filterGuestTools — the sandbox invariant", () => {
 			"program",
 			"mail",
 			"delegate",
-			"herdr",
 			"memory_search",
 			"memory_reflect",
 			"history_search",
@@ -509,7 +507,7 @@ describe("GuestSink", () => {
 
 interface Submitted {
 	conv: Conversation;
-	message: UIMessage;
+	message: GoblinMessage;
 	sink: TurnSink;
 }
 
@@ -520,7 +518,7 @@ function makeEnv(over: { busy?: boolean; guest?: boolean } = {}) {
 	const submitted: Submitted[] = [];
 	const runtime = {
 		hasActiveTurn: (_id: string) => over.busy === true,
-		submit: (conv: Conversation, message: UIMessage, sink: TurnSink) => {
+		submit: (conv: Conversation, message: GoblinMessage, sink: TurnSink) => {
 			submitted.push({ conv, message, sink });
 			return true;
 		},

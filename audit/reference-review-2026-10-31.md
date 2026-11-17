@@ -12,7 +12,7 @@
 > Tests run: `bun test src/agent/tools/script.test.ts src/turn/retry-guard.test.ts
 > src/turn/overflow.test.ts` → 53 pass / 0 fail.
 >
-> Built past, not over: `arch-audit.md` (A1–A3 fixed, re-verified in
+> Built past, not over: `arch-audit-2026-10-18.md` (A1–A3 fixed, re-verified in
 > `audit/optimization.md` Part 0), `audit/optimization.md` F1–F14,
 > `audit/reports/SUMMARY.md`. Where a finding touches the same code, it says so.
 

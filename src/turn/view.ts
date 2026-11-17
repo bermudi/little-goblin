@@ -1,4 +1,7 @@
-import { convertToModelMessages, type ModelMessage, type ToolSet, type UIMessage } from "ai";
+import { convertToModelMessages, type ModelMessage, type ToolSet } from "ai";
+import { toToolSet } from "./ai-sdk-tools.ts";
+import type { Tools } from "../tool.ts";
+import type { Message } from "../message.ts";
 import {
 	INLINE_ITEM_MAX_BYTES,
 	type MediaPosition,
@@ -26,7 +29,7 @@ export interface ViewContext {
 	 * matches it (#417).
 	 */
 	modelRef: string;
-	tools: ToolSet;
+	tools: Tools;
 	modalities: Set<string> | undefined;
 	carries: (mediaType: string, position: MediaPosition) => boolean;
 	/**
@@ -47,7 +50,7 @@ export interface ViewContext {
 	skillRef: (ref: SkillRef, includeBody: boolean) => { name: string; body: string | null };
 }
 
-function unconvertiblePlaceholder(m: UIMessage): UIMessage {
+function unconvertiblePlaceholder(m: Message): Message {
 	return {
 		id: m.id,
 		role: m.role,
@@ -60,7 +63,7 @@ function unconvertiblePlaceholder(m: UIMessage): UIMessage {
 	};
 }
 
-function systemEventAsUser(m: UIMessage): UIMessage {
+function systemEventAsUser(m: Message): Message {
 	return {
 		id: m.id,
 		role: "user",
@@ -70,7 +73,7 @@ function systemEventAsUser(m: UIMessage): UIMessage {
 
 // A malformed stamp renders nothing: it is a hint, not content, and a
 // placeholder would tell the model less than its absence does.
-function contextPartAsText(ctx: ViewContext, m: UIMessage): UIMessage {
+function contextPartAsText(ctx: ViewContext, m: Message): Message {
 	if (!m.parts.some((p) => p.type === CONTEXT_PART)) return m;
 	return {
 		...m,
@@ -87,7 +90,7 @@ function contextPartAsText(ctx: ViewContext, m: UIMessage): UIMessage {
 	};
 }
 
-function notePartsAsText(ctx: ViewContext, m: UIMessage): UIMessage {
+function notePartsAsText(ctx: ViewContext, m: Message): Message {
 	if (!m.parts.some((p) => p.type === NOTE_PART)) return m;
 	return {
 		...m,
@@ -120,12 +123,12 @@ function notePartsAsText(ctx: ViewContext, m: UIMessage): UIMessage {
 // Malformed data degrades to a placeholder like notes.
 function skillPartsAsText(
 	ctx: ViewContext,
-	m: UIMessage,
+	m: Message,
 	includeBody: boolean,
-): { message: UIMessage; invocations: SkillInvocation[] } {
+): { message: Message; invocations: SkillInvocation[] } {
 	if (!m.parts.some((p) => p.type === SKILL_PART)) return { message: m, invocations: [] };
 	const invocations: SkillInvocation[] = [];
-	const message: UIMessage = {
+	const message: Message = {
 		...m,
 		parts: m.parts.map((p) => {
 			if (p.type !== SKILL_PART) return p;
@@ -158,15 +161,15 @@ const REASONING_PART_TYPES: ReadonlySet<string> = new Set(["reasoning", "reasoni
 // #417: reasoning replays only to the model that wrote it. The landed
 // reply's metadata.model is the producing ref; foreign or unstamped
 // assistant reasoning drops — fail-closed, since an unverifiable origin
-// is the leak this guards. The resume partial is exempt: a resumed or
-// overflow turn never switches models (turn-resume.ts), so its
-// reasoning belongs to this target by construction. Every other part
-// keeps its order.
+// is the leak this guards. The recovery partial is exempt: an overflow
+// or fallback continuation never switches models, so its reasoning
+// belongs to this target by construction. Every other part keeps its
+// order.
 function dropForeignReasoning(
 	ctx: ViewContext,
-	m: UIMessage,
+	m: Message,
 	isPartial: boolean,
-): { message: UIMessage; dropped: number } {
+): { message: Message; dropped: number } {
 	if (isPartial || m.role !== "assistant") return { message: m, dropped: 0 };
 	const metadata = m.metadata as { model?: unknown } | undefined;
 	if (metadata?.model === ctx.modelRef) return { message: m, dropped: 0 };
@@ -183,7 +186,7 @@ interface SkillInvocation {
 }
 
 // Mirrors convertToModelMessages' ignoreIncompleteToolCalls keep-set — if the SDK's set changes, this must follow or the drop log drifts.
-export function incompleteToolCallIds(m: UIMessage): string[] {
+export function incompleteToolCallIds(m: Message): string[] {
 	const ids: string[] = [];
 	for (const p of m.parts) {
 		if (!p.type.startsWith("tool-")) continue;
@@ -201,10 +204,10 @@ export function incompleteToolCallIds(m: UIMessage): string[] {
 export async function buildModelView(
 	ctx: ViewContext,
 	options: {
-		entries: { seq: number; message: UIMessage }[];
+		entries: { seq: number; message: Message }[];
 		prior: RecallContext[];
 		current: RecallContext | null;
-		partial: UIMessage | null;
+		partial: Message | null;
 		/** The compaction boundary the entries were cut at — null when uncompacted. */
 		summarySeq: number | null;
 		/** Seqs this turn injected — only these get skill bodies (ruling 2026-10-21: owning-turn only). */
@@ -212,6 +215,7 @@ export async function buildModelView(
 		assertAuthority(): void;
 	},
 ): Promise<ModelMessage[]> {
+	const sdkTools = toToolSet(ctx.tools);
 	const view = withMemoryBlocks(
 		options.entries,
 		options.prior,
@@ -264,7 +268,7 @@ export async function buildModelView(
 		}
 		const unfinished = incompleteToolCallIds(originScoped);
 		if (unfinished.length > 0 && m.id === partialId) {
-			log.info("resume partial ends on an unfinished tool call — dropped from the model view", {
+			log.info("recovery partial ends on an unfinished tool call — dropped from the model view", {
 				conversation: ctx.convId,
 				message: m.id,
 				toolCalls: unfinished,
@@ -279,7 +283,7 @@ export async function buildModelView(
 		try {
 			messages.push(
 				...(await convertToModelMessages([originScoped], {
-					tools: ctx.tools,
+					tools: sdkTools,
 					ignoreIncompleteToolCalls: true,
 				})),
 			);
@@ -291,7 +295,7 @@ export async function buildModelView(
 			});
 			messages.push(
 				...(await convertToModelMessages([unconvertiblePlaceholder(originScoped)], {
-					tools: ctx.tools,
+					tools: sdkTools,
 					ignoreIncompleteToolCalls: true,
 				})),
 			);
@@ -376,7 +380,8 @@ function injectedBodies(ctx: ViewContext, invocations: SkillInvocation[]): Model
 
 export async function convertSteeredMessage(
 	ctx: ViewContext,
-	message: UIMessage,
+	message: Message,
+	sdkTools: ToolSet = toToolSet(ctx.tools),
 ): Promise<ModelMessage[]> {
 	const materialized = await materializeAttachments(
 		[message],
@@ -391,7 +396,7 @@ export async function convertSteeredMessage(
 			...(await convertToModelMessages(
 				[contextPartAsText(ctx, notePartsAsText(ctx, skillMarked))],
 				{
-					tools: ctx.tools,
+					tools: sdkTools,
 					ignoreIncompleteToolCalls: true,
 				},
 			)),

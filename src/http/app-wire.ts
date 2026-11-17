@@ -2,7 +2,7 @@
 // (lib DOM) typechecks every file they transitively pull — DOM's
 // ReadableStream is not async-iterable, so nothing deeper may enter.
 
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import type { AppConversationSummary } from "../conversation-read.ts";
 import type { AttachmentRef } from "../agent/attachments.ts";
 import type { DiffLine } from "../line-diff.ts";
@@ -95,7 +95,7 @@ export interface AppNoteRewriteResponse {
 export type AppReplyRating = "up" | "down";
 
 export interface AppMessageList {
-	messages: UIMessage[];
+	messages: Message[];
 	/** Absolute causal index of `messages[0]` in the full transcript —
 	 *  mark indexes and the paging cursor are transcript-absolute, so
 	 *  subtract `start` to address this page's array. */
@@ -148,7 +148,7 @@ export interface AppReplyRatingResponse {
 
 export interface AppChatRequest {
 	conversationId: string;
-	message: UIMessage;
+	message: Message;
 }
 
 export interface AppAttachmentResponse {
@@ -169,7 +169,7 @@ export interface UnlandedTurnMetadata {
 		kind: "failed" | "aborted" | "interrupted";
 		runId: string;
 		// The reply as the wire streamed it, for display. Absent when no wire log exists or nothing was streamed.
-		reply?: UIMessage["parts"];
+		reply?: Message["parts"];
 	};
 }
 
@@ -254,13 +254,6 @@ export interface AppConfigPatchResponse extends AppConfigView {
 	thinkingClamped?: { from: string; to: string };
 }
 
-/** The model pair a resume refusal recorded — the pair the run's
- *  snapshot was admitted on, offered back for a one-tap restore. */
-export interface AppResumeRestore {
-	model: string | null;
-	thinking: string | null;
-}
-
 export interface AppConversationMemoryView {
 	memoryExcluded: boolean;
 	projectMemory: "shared" | "off" | null;
@@ -295,6 +288,12 @@ export interface TurnMetadata {
 	model: string;
 	finishReason: string;
 	durationMs: number;
+	/** Turn-finish instant (ISO) — how the transcript answers "how old
+	 *  is this reply" live. History serves the same key on every
+	 *  message from the event row's append stamp, so pre-stamp turns
+	 *  and non-reply events carry it too. Absent on pre-stamp stored
+	 *  metadata. */
+	createdAt?: string;
 	/** Turn start → the model's first streamed content token (text,
 	 * reasoning, or tool input), same base as durationMs. Absent when
 	 * nothing streamed and on pre-stamp history. */
@@ -417,63 +416,6 @@ export interface AppWindowView {
 	calls: AppWindowCall[];
 }
 
-export interface AppRunCall {
-	toolCallId: string;
-	name: string;
-	args: unknown;
-	state:
-		| "planned"
-		| "dispatched"
-		| "completed"
-		| "failed"
-		| "resolved-done"
-		| "resolved-retry"
-		| "resolved-skip";
-	result: string | null;
-	error: string | null;
-	resolutionNote: string | null;
-	resolvedMs: number | null;
-	/** Server-derived: this call may take authorize-retry (a dispatched
-	 *  ambiguity or a known completed/failed/resolved-done execution). */
-	canAuthorizeRetry: boolean;
-}
-
-export interface AppInterruptedRun {
-	runId: string;
-	resumedFrom: string | null;
-	startedMs: number;
-	finishedMs: number | null;
-	calls: {
-		planned: number;
-		dispatched: number;
-		completed: number;
-		failed: number;
-		resolved: number;
-	};
-	toolCalls: AppRunCall[];
-}
-export interface AppInterruptedList {
-	runs: AppInterruptedRun[];
-}
-
-export interface AppDecideRequest {
-	callId: string;
-	decision: "record-result" | "authorize-retry" | "skip";
-	note?: string;
-}
-export interface AppDecideResponse {
-	ok: true;
-}
-
-export interface AppResumeResponse {
-	resumed: true;
-	runId: string;
-}
-export interface AppResumeBlocked {
-	error: string;
-	calls: AppRunCall[];
-}
-
 export interface AppProgramCandidate {
 	name: string;
 	charter: string;
@@ -556,7 +498,6 @@ export interface AppAttentionItem {
 		| "memory-outage"
 		| "memory-recall"
 		| "skill-proposal"
-		| "interrupted-run"
 		| "delegation-input"
 		| "observation-unreachable"
 		| "responsibility";

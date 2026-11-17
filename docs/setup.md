@@ -57,7 +57,7 @@ they do not retain facts in a memory bank.
 | MCP | Frozen dependencies supply Goblin's pinned mcporter; configure its own `mcporter.json` with `imports: []` and placeholders only. Provision `goblin-mcp-dev` and any server executables/OAuth separately. A seed with no servers is intentionally empty. |
 | Browser | Install `agent-browser` and Chromium separately; the browser skill alone does not install them. |
 | Mail / Workspace | Install `gws`, perform its scoped login, and provision configured send/[System One](../design/system1.md) auth refs. See [Mail design](../design/mail.md). |
-| Delegation | Install herdr and the configured harnesses on each target, with their own logins and service PATH. Diagnostics do not create panes or launch agents. |
+| Delegation | Install T3 Code (`t3`) and the configured harness providers on this machine, with their own logins. Diagnostics do not start threads or launch agents. |
 | Long-term memory | Hindsight is a separate service, not Goblin's SQLite store. Choose an existing endpoint or follow the separately approved [memory setup](memory.md). A local stack needs rootless Podman/user units and subuid/subgid; local embeddings additionally need configured Ollama/model/relay access. No automatic memory deployment or embedding-model change. |
 | Remote app / Settings access | Configure a reverse proxy or tailnet HTTPS door and `publicUrl`. Loopback acceptance does not verify the public route. Public exposure requires app bearer auth (`appToken`); trust mode is only appropriate for a trusted private door. |
 

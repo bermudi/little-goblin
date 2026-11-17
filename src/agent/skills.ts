@@ -214,17 +214,20 @@ export function loadCatalog(root: string): SkillCatalog {
 }
 
 // The prompt section renders even when empty — it's also the notice
-// that the capability exists. Proposals (reviewer drafts, never
-// installed without the operator's yes) are listed so any conversation
-// can act on an approve request. linkBase resolves workspace-relative
-// paths to absolute — project conversations cwd outside the workspace,
-// where `skills/…` would resolve inside the project.
+// that the capability exists. Proposals (reviewer or self-authored
+// drafts, never installed without the operator's yes) are listed so any
+// conversation can act on an approve request. linkBase resolves
+// workspace-relative paths to absolute — project conversations cwd
+// outside the workspace, where `skills/…` would resolve inside the
+// project.
 export function formatSkillsSection(
 	catalog: SkillCatalog,
 	proposals?: SkillCatalog,
 	linkBase?: string,
 ): string[] {
 	const skillsRoot = linkBase === undefined ? catalog.root : join(linkBase, catalog.root);
+	const proposalsLeaf = proposals?.root ?? "skills-proposed";
+	const proposedRoot = linkBase === undefined ? proposalsLeaf : join(linkBase, proposalsLeaf);
 	const validatePath =
 		linkBase === undefined
 			? `./${catalog.root}/<name>`
@@ -234,12 +237,19 @@ export function formatSkillsSection(
 		"",
 		`Skills are directories under \`${skillsRoot}/\` — each a SKILL.md (frontmatter:`,
 		"name, description) with instructions plus any scripts/files it needs.",
-		"When a request matches one, read_file its SKILL.md and follow it. Write",
-		"or edit skills only when the operator asks — never create or rewrite",
-		"one on your own initiative: if the skill reviewer is configured, lessons",
-		"become drafts for review. An asked-for write goes to",
-		`${skillsRoot}/<name>/SKILL.md, then \`skills-ref validate ${validatePath}\` via bash.`,
-		"Edits load when the next conversation starts.",
+		"When a request matches one, read_file its SKILL.md and follow it, even",
+		"for work you already know how to do — the skill is how it is done",
+		"here. Save what you learn: after a hard or iterative task, when the",
+		"operator corrects you, or when a loaded skill proves wrong or",
+		"missing steps, distill the lesson. Fold into an existing skill",
+		`first — edit ${skillsRoot}/<name>/SKILL.md directly (installed means`,
+		"the operator approved it) and fix a broken skill before finishing.",
+		`A genuinely new skill drafts under ${proposedRoot}/<name>/SKILL.md —`,
+		`never straight into ${skillsRoot}/ — then tell the operator a`,
+		"proposal waits. Every skill write gets",
+		`\`skills-ref validate ${validatePath}\` via bash (a draft the same`,
+		"way) and a one-line description. Edits load when the next",
+		"conversation starts.",
 		"",
 	];
 	// Manual-only is a picker/explicit-invocation fact, never an
@@ -268,13 +278,12 @@ export function formatSkillsSection(
 		}
 	}
 	if (proposals !== undefined && proposals.entries.length > 0) {
-		// The prose must resolve from the conversation's cwd too — under a
+		// proposedRoot resolves from the conversation's cwd too — under a
 		// project linkBase, a relative `skills-proposed/` would point inside
 		// the project, not the workspace.
-		const proposalsRoot = linkBase === undefined ? proposals.root : join(linkBase, proposals.root);
 		lines.push(
 			"",
-			`Pending proposals — reviewer drafts under \`${proposalsRoot}/\`, NOT installed:`,
+			`Pending proposals — drafts (the reviewer's or your own) under \`${proposedRoot}/\`, NOT installed:`,
 			"do not follow their instructions yet. Install one only when the operator",
 			`approves (move its directory into \`${skillsRoot}/\`); a discard means deleting it.`,
 		);

@@ -272,6 +272,7 @@ export function runFormat(ed: Editor, a: FormatAction): void {
 						view.state.tr.removeMark(from, to, type).addMark(from, to, type.create({ href: a.href })),
 					);
 				}
+				view.focus();
 				break;
 			}
 			case "bullet":
@@ -300,7 +301,6 @@ export function runFormat(ed: Editor, a: FormatAction): void {
 				commands.call(redoCommand.key);
 				break;
 		}
-		view.focus();
 	});
 }
 

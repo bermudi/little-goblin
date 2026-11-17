@@ -20,6 +20,7 @@ import type {
 } from "@ai-sdk/provider";
 import { z } from "zod";
 import { log } from "../../log.ts";
+import { ownedReader } from "../../dispose.ts";
 import {
 	codexCredentials,
 	resolveCodexAuthFile,
@@ -358,8 +359,11 @@ function convertPrompt(
 
 async function* sseEvents(
 	body: ReadableStream<Uint8Array>,
+	onReader: (reader: ReadableStreamDefaultReader<Uint8Array>) => void,
 ): AsyncGenerator<Record<string, unknown>> {
-	const reader = body.getReader();
+	await using owner = ownedReader(body);
+	const { reader } = owner;
+	onReader(reader);
 	const decoder = new TextDecoder();
 	let buf = "";
 	// Dispatch one SSE frame: yields its parsed data payload, returns
@@ -993,6 +997,7 @@ export class CodexLanguageModel implements LanguageModelV4 {
 			secondaryResetsAt: state.quota?.secondary?.resetsAt ?? null,
 		});
 		let cancelled = false;
+		let sseReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 		const stream = new ReadableStream<LanguageModelV4StreamPart>({
 			start: (controller) => {
 				const push = (part: LanguageModelV4StreamPart): void => {
@@ -1008,7 +1013,9 @@ export class CodexLanguageModel implements LanguageModelV4 {
 				}
 				void (async () => {
 					try {
-						for await (const event of sseEvents(res.body!)) {
+						for await (const event of sseEvents(res.body!, (reader) => {
+							sseReader = reader;
+						})) {
 							mapEvent(event, state, push);
 						}
 						if (!state.sawTerminal && !cancelled) {
@@ -1023,7 +1030,11 @@ export class CodexLanguageModel implements LanguageModelV4 {
 			},
 			cancel: () => {
 				cancelled = true;
-				void res.body?.cancel();
+				if (sseReader !== undefined) {
+					void sseReader.cancel().catch((error: unknown) => {
+						log.warn("codex response body cancellation failed", error);
+					});
+				}
 			},
 		});
 		return { stream, request: { body } };
@@ -1057,7 +1068,8 @@ export class CodexLanguageModel implements LanguageModelV4 {
 			},
 			outputTokens: { total: undefined, text: undefined, reasoning: undefined },
 		};
-		const reader = stream.getReader();
+		await using owner = ownedReader(stream);
+		const { reader } = owner;
 		for (;;) {
 			const { done, value } = await reader.read();
 			if (done) break;
@@ -1165,9 +1177,7 @@ export class CodexLanguageModel implements LanguageModelV4 {
 					finishMeta = value.providerMetadata;
 					break;
 				case "error":
-					// Cancel before rethrowing — the reader loop never
-					// returns to the stream, so the body would leak.
-					await reader.cancel();
+					// Throw exits the loop; the reader owner cancels on scope exit.
 					throw value.error;
 			}
 		}

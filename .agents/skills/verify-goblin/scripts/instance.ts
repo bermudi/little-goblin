@@ -104,6 +104,27 @@ function isolatedEnv(home: string, name: string): Record<string, string> {
 		GOBLIN_HOME: home,
 		GOBLIN_VERIFY_INSTANCE: name,
 		TMPDIR: join(home, "tmp"),
+		// Rootless podman keys its store on XDG_DATA_HOME/HOME — the
+		// throwaway HOME would hide the desktop image. Only the
+		// desktops flag needs the real store; containers it creates are
+		// still named goblin-desk-* and cleaned up by hand.
+		...(process.env.GOBLIN_TRY_DESKTOPS === "1" &&
+		process.env.XDG_DATA_HOME === undefined
+			? { XDG_DATA_HOME: join(homedir(), ".local/share") }
+			: {}),
+		// GOBLIN_TRY_MODEL's auth records resolve through pass-keys →
+		// secret-tool, which needs the session bus. These are session
+		// addresses, not secrets.
+		...(process.env.GOBLIN_TRY_MODEL !== undefined
+			? {
+					...(process.env.DBUS_SESSION_BUS_ADDRESS !== undefined
+						? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS }
+						: {}),
+					...(process.env.XDG_RUNTIME_DIR !== undefined
+						? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR }
+						: {}),
+				}
+			: {}),
 	};
 }
 
@@ -111,25 +132,80 @@ function seedHome(home: string, fakePort: number): void {
 	for (const dir of ["user-home", "tmp", "workspace", "state"]) {
 		mkdirSync(join(home, dir), { recursive: true });
 	}
-	const config = {
+	const config: Record<string, unknown> = {
 		providers: {
 			fake: { kind: "openai-compatible", baseUrl: `http://127.0.0.1:${fakePort}/v1`, auth: "fake" },
 		},
 		model: "fake/verify-model",
+		// GOBLIN_VERIFY_DELEGATION=1 mounts the delegate/responsibility
+		// tools against the real t3 CLI (issue #608's verification): the
+		// codex/gpt-6-luna harness is the operator-named test pair.
+		...(process.env.GOBLIN_VERIFY_DELEGATION === "1"
+			? {
+					delegation: {
+						harnesses: { codex: { provider: "codex", model: "gpt-6-luna" } },
+						defaults: { default: "codex" },
+					},
+				}
+			: {}),
 		operators: [],
 		telegram: { enabled: false },
 		tts: "",
 		http: { port: 0 },
 		logLevel: "info",
 	};
+	// GOBLIN_TRY_DESKTOPS=1 seeds the desktop pool (issue #605's
+	// computer-agent verification) — the pool is lazy, nothing boots
+	// until a desktop is claimed.
+	if (process.env.GOBLIN_TRY_DESKTOPS === "1") {
+		config.desktops = {};
+	}
+	// GOBLIN_TRY_MODEL=<provider>/<model> swaps the fake model for a real
+	// one (issue #606's screenshot E2E needs an image-capable sanctioned
+	// model). Only the two provider kinds a real-model check can use are
+	// seeded; auth stays goblin's own mechanism — command refs, never
+	// key values.
+	const tryModel = process.env.GOBLIN_TRY_MODEL;
+	let tryAuthRecord: Record<string, string> | null = null;
+	if (tryModel !== undefined) {
+		const provider = tryModel.split("/")[0] ?? "";
+		if (provider === "openrouter") {
+			(config.providers as Record<string, unknown>).openrouter = {
+				kind: "openrouter",
+				auth: "openrouter",
+			};
+			tryAuthRecord = {
+				name: "openrouter",
+				value: "!pass-keys get goblin-dev OPENROUTER_API_KEY",
+			};
+		} else if (provider === "codex") {
+			(config.providers as Record<string, unknown>).codex = {
+				kind: "codex",
+				authFile: join(homedir(), ".codex", "auth.json"),
+			};
+		} else {
+			fail(`GOBLIN_TRY_MODEL supports openrouter/… and codex/… — got ${tryModel}`);
+		}
+		config.model = tryModel;
+		// pass-keys resolves profiles from ~/.config/pass-keys/config.json
+		// — profile metadata only (snapshots live in the OS store). Seed
+		// it so `!pass-keys get` auth records resolve under the
+		// throwaway HOME.
+		const pkConfig = join(homedir(), ".config", "pass-keys", "config.json");
+		if (existsSync(pkConfig)) {
+			const dest = join(home, "user-home", ".config", "pass-keys");
+			mkdirSync(dest, { recursive: true });
+			writeFileSync(join(dest, "config.json"), readFileSync(pkConfig));
+		}
+	}
 	writeFileSync(join(home, "goblin.json5"), `${JSON.stringify(config, null, 2)}\n`);
-	writeFileSync(
-		join(home, "auth.jsonl"),
-		`${JSON.stringify({ name: "fake", value: "not-a-secret" })}\n`,
-		{
-			mode: 0o600,
-		},
-	);
+	const authLines = [
+		JSON.stringify({ name: "fake", value: "not-a-secret" }),
+		...(tryAuthRecord !== null ? [JSON.stringify(tryAuthRecord)] : []),
+	];
+	writeFileSync(join(home, "auth.jsonl"), `${authLines.join("\n")}\n`, {
+		mode: 0o600,
+	});
 }
 
 const REAL_DB = join(

@@ -493,11 +493,11 @@ exchange; app file/voice events and compaction summaries are not replies and
 never close it. Pending inputs are removed before this check. In addition,
 claimed input seqs remain tainted regardless of boundaries: only successfully
 consumed steers join that set. The admission decision is journaled with the
-run and carried through operator resume and overflow, even if compaction
+run and carried through continuations (overflow, fallback), even if compaction
 hides the original input; owned seqs also survive those continuations. A
-legacy interrupted run without a recorded admission decision fails closed
-on resume. A
-generated resume event inherits that decision and its owned inputs' exclusion,
+legacy interrupted run without a recorded admission decision fails closed —
+nothing resumes it (#594), so the row stays inert. A
+continuation event inherits that decision and its owned inputs' exclusion,
 as do app file and voice events based on the inputs consumed at the instant
 of delivery; queued or failed steers do not taint an earlier media delivery.
 Retention uses the same reply boundary before filtering ineligible events,

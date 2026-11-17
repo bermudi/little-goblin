@@ -1,15 +1,14 @@
-import type { ToolSet } from "ai";
-import { createProviderDefinedToolFactory } from "@ai-sdk/provider-utils";
-import { z } from "zod";
+import type { Tools } from "../../tool.ts";
 import { MEMORY_DEFAULTS } from "../../memory/policy.ts";
 import type { SpeechFile } from "../transcribe.ts";
 import { type ArtifactToolDeps, artifactTool } from "./artifact.ts";
+import { type AskOperatorToolDeps, askOperatorTool } from "./ask-operator.ts";
 import { bashTool } from "./bash.ts";
+import { type ComputerToolDeps, computerTools } from "./computer.ts";
 import { type DelegateToolDeps, delegateTool } from "./delegate.ts";
 import { type DesktopToolDeps, desktopTool } from "./desktop.ts";
 import { editFileTool } from "./edit.ts";
 import { fetchTool } from "./fetch.ts";
-import { type HerdrToolDeps, herdrTool } from "./herdr.ts";
 import { type HistorySearchDeps, historySearchTool } from "./history.ts";
 import { type ImageToolDeps, imageTool } from "./image.ts";
 import type { MailToolDeps } from "./mail.ts";
@@ -26,7 +25,6 @@ import { type SandboxToolDeps, sandboxTool } from "./sandbox.ts";
 import { searchTool } from "./search.ts";
 import { type OutgoingFile, sendFileTool } from "./send.ts";
 import { speakTool } from "./speak.ts";
-import { type SubagentToolDeps, subagentTool } from "./subagent.ts";
 import { transcribeTool } from "./transcribe.ts";
 import { uiTool } from "./ui.ts";
 import { type VisionToolDeps, visionTool } from "./vision.ts";
@@ -60,9 +58,10 @@ export interface TranscribeToolDeps {
 
 export type {
 	ArtifactToolDeps,
+	AskOperatorToolDeps,
+	ComputerToolDeps,
 	DelegateToolDeps,
 	DesktopToolDeps,
-	HerdrToolDeps,
 	HistorySearchDeps,
 	ImageToolDeps,
 	MailToolDeps,
@@ -70,11 +69,10 @@ export type {
 	ReadLongToolDeps,
 	ResponsibilityToolDeps,
 	SandboxToolDeps,
-	SubagentToolDeps,
 	VisionToolDeps,
 };
 
-export function toolNames(tools: ToolSet): string[] {
+export function toolNames(tools: Tools): string[] {
 	return Object.keys(tools);
 }
 
@@ -88,7 +86,6 @@ export interface MakeToolsOptions {
 	web?: WebToolDeps | undefined;
 	transcribe?: TranscribeToolDeps | undefined;
 	delegate?: DelegateToolDeps | undefined;
-	herdr?: HerdrToolDeps | undefined;
 	mail?: MailToolDeps | undefined;
 	history?: HistorySearchDeps | undefined;
 	note?: NoteToolDeps | undefined;
@@ -96,31 +93,29 @@ export interface MakeToolsOptions {
 	readLong?: ReadLongToolDeps | undefined;
 	image?: ImageToolDeps | undefined;
 	sandbox?: SandboxToolDeps | undefined;
-	subagent?: SubagentToolDeps | undefined;
 	desktop?: DesktopToolDeps | undefined;
+	// Agent-type children only (design/agents.md → Computer use): the
+	// desktop tools and ask_operator mount for a child conversation and
+	// reach the model only through its spawn-time allowlist — a parent
+	// turn never carries them.
+	computer?: ComputerToolDeps | undefined;
+	askOperator?: AskOperatorToolDeps | undefined;
 	// Project conversations only — the handover/coordination surface.
 	responsibility?: ResponsibilityToolDeps | undefined;
 	ui?: boolean | undefined;
 	// Codex conversations mount the backend's hosted web_search instead of
 	// the local search tool — the mode only decides external_web_access.
 	hostedSearch?: { externalWebAccess: boolean } | undefined;
+	/** Fires with the resolved absolute path on every successful
+	 *  read_file — the skill-usage watch (read_file of a catalog SKILL.md
+	 *  is a use; design/skills.md → Self-authoring, /learn, curator). */
+	onRead?: (abs: string) => void;
 }
 
 // The codex provider tool — args travel as the wire tool's
 // configuration (external_web_access), never a model-chosen input.
 // Exported for tests/live checks — the adapter's own provider tool id.
-export const codexWebSearch = createProviderDefinedToolFactory<
-	Record<string, unknown>,
-	{ externalWebAccess: boolean }
->({
-	id: "codex.web_search",
-	// Loose, not strict: the input IS the wire action (type/query/url/
-	// sources) and replays verbatim — a stripping schema would store `{}`
-	// and the backend rejects a replayed action without its type.
-	inputSchema: z.looseObject({}),
-});
-
-export function makeTools(options: MakeToolsOptions): ToolSet {
+export function makeTools(options: MakeToolsOptions): Tools {
 	const {
 		cwd,
 		voice,
@@ -132,7 +127,6 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		hostedSearch,
 		transcribe,
 		delegate,
-		herdr,
 		mail,
 		history,
 		note,
@@ -140,13 +134,15 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		readLong,
 		image,
 		sandbox,
-		subagent,
 		desktop,
+		computer,
+		askOperator,
 		responsibility,
 		ui,
+		onRead,
 	} = options;
 	return {
-		read_file: readFileTool(cwd, vision !== undefined),
+		read_file: readFileTool(cwd, vision !== undefined, onRead),
 		write_file: writeFileTool(cwd),
 		edit_file: editFileTool(cwd),
 		bash: bashTool(cwd),
@@ -159,7 +155,6 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		...(image ? { generate_image: imageTool(image) } : {}),
 		...(program ? { program: programTool(program) } : {}),
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),
-		...(herdr ? { herdr: herdrTool(herdr) } : {}),
 		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
 		...(artifact ? { artifact: artifactTool(artifact) } : {}),
@@ -180,9 +175,10 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		...(web ? { fetch: fetchTool(web) } : {}),
 		...(hostedSearch !== undefined
 			? {
-					web_search: codexWebSearch({
-						externalWebAccess: hostedSearch.externalWebAccess,
-					}),
+					web_search: {
+						hosted: "codex.web_search",
+						args: { externalWebAccess: hostedSearch.externalWebAccess },
+					},
 				}
 			: web?.configRef.current.search
 				? { search: searchTool(web) }
@@ -190,8 +186,9 @@ export function makeTools(options: MakeToolsOptions): ToolSet {
 		...(history ? { history_search: historySearchTool(history) } : {}),
 		...(note ? { note: noteTool(note) } : {}),
 		...(sandbox ? { sandbox: sandboxTool(sandbox) } : {}),
-		...(subagent ? { subagent: subagentTool(subagent) } : {}),
 		...(desktop ? { desktop: desktopTool(desktop) } : {}),
+		...(computer ? computerTools(computer) : {}),
+		...(askOperator ? { ask_operator: askOperatorTool(askOperator) } : {}),
 		// The responsibility tool mounts for project-bound turns only —
 		// the caller decides; nothing here reaches for conv state.
 		...(responsibility ? { responsibility: responsibilityTool(responsibility) } : {}),

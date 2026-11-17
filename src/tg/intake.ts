@@ -9,7 +9,7 @@
 import { z } from "zod";
 import type { Api } from "grammy";
 import type { ExternalReplyInfo, Message, MessageOrigin } from "grammy/types";
-import type { UIMessage } from "ai";
+import type { Message as GoblinMessage } from "../message.ts";
 import type { Config } from "../config-schema.ts";
 import { paths } from "../home-layout.ts";
 import type { Conversation } from "../conversation-read.ts";
@@ -25,6 +25,8 @@ import type { BotDeps } from "./deps.ts";
 import { ensurePersonaClass, guestRefusalText, refusalDue } from "./guest.ts";
 import { sendRollMarker } from "./notify.ts";
 import { handleSkillCommand, skillCommandDeps } from "./skill-command.ts";
+import { handleLearnCommand } from "./learn-command.ts";
+import { handleCuratorCommand } from "./curator-command.ts";
 import { pingTypingOnce } from "./delivery.ts";
 import {
 	mediaFromMessage,
@@ -56,10 +58,9 @@ const OPERATOR_ONLY_COMMANDS = new Set([
 	"/memory",
 	"/forget",
 	"/compact",
-	"/resume",
-	"/decide",
-	"/abandon",
 	"/skill",
+	"/learn",
+	"/curator",
 ]);
 
 function externalOriginLabel(origin: MessageOrigin): string {
@@ -141,7 +142,7 @@ export function conversationAddress(msg: {
 export interface BufferedItem {
 	updateId: number;
 	chatId: number;
-	parts: UIMessage["parts"];
+	parts: GoblinMessage["parts"];
 	replyTo: number | undefined;
 	quoted?:
 		| {
@@ -396,12 +397,16 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 					() => deps.store.rollDm(addr.chatId, paths.workspace()),
 				);
 			}
-			if (command.command === "/skill") {
-				// Submitting door (ruling 2026-10-21) — async fetch/scoring
-				// off the sync intake path; it owns its replies.
+			if (command.command === "/skill" || command.command === "/learn") {
+				// Submitting doors (ruling 2026-10-21; /learn 2026-11-16) —
+				// async work off the sync intake path; each owns its replies.
 				const skillDeps = skillCommandDeps(deps, env.api);
-				void handleSkillCommand(skillDeps, target, text).catch((err: unknown) => {
-					log.error("/skill failed", err, { conversation: target?.id ?? lane });
+				const run =
+					command.command === "/skill"
+						? handleSkillCommand(skillDeps, target, text)
+						: handleLearnCommand(skillDeps, target, text);
+				void run.catch((err: unknown) => {
+					log.error(`${command.command} failed`, err, { conversation: target?.id ?? lane });
 					withTimeout(
 						env.api.sendMessage(
 							target?.chatId ?? msg.chat.id,
@@ -410,10 +415,42 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 								? {}
 								: { message_thread_id: target.threadId },
 						),
-						"sendMessage (/skill failure)",
+						`sendMessage (${command.command} failure)`,
 					).catch((e: unknown) => {
-						log.warn("/skill failure reply failed", e);
+						log.warn(`${command.command} failure reply failed`, e);
 					});
+				});
+				handled = true;
+			} else if (command.command === "/curator") {
+				// The curator door — replies only, never submits a turn.
+				// Absent skillSources (slim test deps) answers unavailable.
+				const run =
+					deps.skillSources === undefined
+						? Promise.reject(new Error("curator unavailable — provenance store not wired"))
+						: handleCuratorCommand(
+								{
+									api: env.api,
+									configRef: deps.configRef,
+									skillSources: deps.skillSources,
+									chatId: target?.chatId ?? msg.chat.id,
+									threadId: target?.threadId ?? null,
+								},
+								text,
+							);
+				void run.catch((err: unknown) => {
+					log.error("/curator failed", err, { conversation: target?.id ?? lane });
+					withTimeout(
+						env.api.sendMessage(
+							target?.chatId ?? msg.chat.id,
+							`command failed: ${err instanceof Error ? err.message : String(err)}`,
+							target == null || target.threadId === null
+								? {}
+								: { message_thread_id: target.threadId },
+							),
+							"sendMessage (/curator failure)",
+						).catch((e: unknown) => {
+						log.warn("/curator failure reply failed", e);
+						});
 				});
 				handled = true;
 			} else {
@@ -425,7 +462,6 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 						runtime: deps.runtime,
 						botUsername: env.botUsername,
 						...(deps.memory ? { memory: deps.memory } : {}),
-						...(deps.resumeOps ? { resumeOps: deps.resumeOps } : {}),
 					},
 					target,
 					text,
@@ -557,7 +593,7 @@ function enqueuePersisted(env: IntakeEnv, { updateId, payload }: InboxEntry): Pr
 	const { conversationId: convId, text, media, mediaError, messageId, quoted } = payload;
 	const { deps } = env;
 	return enqueueIntake(env.intake, convId, async () => {
-		const parts: UIMessage["parts"] = [];
+		const parts: GoblinMessage["parts"] = [];
 		if (quoted !== undefined) {
 			parts.push({
 				type: "text",

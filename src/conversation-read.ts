@@ -4,7 +4,7 @@
 // out of read paths. The write side (append, edits, rolling, delete,
 // settings) stays on ConversationStore in conversation.ts.
 
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import type { Compaction, CompactionMark } from "./conversation-events.ts";
 import type {
 	HistoryContextRow,
@@ -43,6 +43,11 @@ export interface Conversation {
 	// Bound once at creation; app conversations only — every other row
 	// stays null forever.
 	projectId: string | null;
+	// Native subagents (design/agents.md → agent): non-null agentType
+	// marks a child conversation spawned by the `agent` tool; parentId
+	// names its origin (null after the parent's delete).
+	parentId: string | null;
+	agentType: string | null;
 	epoch: number;
 	createdAt: string;
 }
@@ -63,6 +68,8 @@ export function toConversation(r: Row): Conversation {
 		archivedAt: r.archived_at,
 		pinnedAt: r.pinned_at,
 		projectId: r.project_id,
+		parentId: r.parent_conversation_id,
+		agentType: r.agent_type,
 		epoch: r.epoch,
 		createdAt: r.created_at,
 	};
@@ -85,6 +92,9 @@ export interface AppConversationSummary {
 	// Null = an unscoped chat on the main rail; set = the row lives under
 	// its project's page.
 	projectId: string | null;
+	// Native subagents: non-null = a child conversation; the app can list
+	// it under its parent. Null after the parent's delete.
+	parentId: string | null;
 }
 
 export interface ConversationReads {
@@ -117,13 +127,13 @@ export interface ConversationReads {
 	// event) as messages; historyEntries adds seqs (recall blocks need
 	// positions); historyDetail adds anchors (compaction's cut rule) and
 	// append stamps (the app's fold-mark placement).
-	history(id: string): UIMessage[];
-	historyEntries(id: string): { seq: number; message: UIMessage }[];
+	history(id: string): Message[];
+	historyEntries(id: string): { seq: number; message: Message }[];
 	historyDetail(id: string): {
 		seq: number;
 		anchorSeq: number | null;
 		createdAt: string;
-		message: UIMessage;
+		message: Message;
 	}[];
 	// The transcript's causal skeleton without payloads — the paged
 	// reader's index: windowing, fold marks and rateable-winner picks
@@ -135,7 +145,7 @@ export interface ConversationReads {
 		seq: number;
 		anchorSeq: number | null;
 		createdAt: string;
-		message: UIMessage;
+		message: Message;
 	}[];
 	// Stored message ids for a seq set — joins rateable winner seqs to
 	// envelope ids without parsing every row's payload.
@@ -143,13 +153,13 @@ export interface ConversationReads {
 	// The causal-last event of one role (same key historyDetail sorts
 	// on), read as a single row — for boolean/last-message callers that
 	// would otherwise materialize the whole history. Null = none.
-	lastEntry(id: string, role: UIMessage["role"]): { seq: number; message: UIMessage } | null;
+	lastEntry(id: string, role: Message["role"]): { seq: number; message: Message } | null;
 	// What a turn sees: the causal view cut at the active boundary, the
 	// summary prepended, and committed event_projections overlaid on
 	// tool results. The cut is on causal position — (anchorSeq ??
 	// seq) > boundarySeq — so a late answer to a folded question rides
 	// into the summary instead of stranding in the tail.
-	modelEntries(id: string): { seq: number; message: UIMessage }[];
+	modelEntries(id: string): { seq: number; message: Message }[];
 	// Committed pruning projections — the overlay input for modelEntries
 	// and the pruning scan's dedupe set. Empty for a never-pruned
 	// conversation.

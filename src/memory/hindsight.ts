@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { log } from "../log.ts";
+import { ownedReader } from "../dispose.ts";
 import { MEMORY_DEFAULTS, REFLECTION_LIMITS } from "./policy.ts";
 import { screenMemoryText } from "./screen.ts";
 
@@ -248,22 +249,18 @@ const MAX_RESPONSE_BYTES = 1_048_576;
 
 async function readJson(response: Response, maxBytes = MAX_RESPONSE_BYTES): Promise<unknown> {
 	if (!response.body) throw new HindsightError("protocol");
-	const reader = response.body.getReader();
+	await using owner = ownedReader(response.body);
+	const { reader } = owner;
 	const chunks: Uint8Array[] = [];
 	let size = 0;
-	try {
-		for (;;) {
-			const chunk = await reader.read();
-			if (chunk.done) break;
-			size += chunk.value.byteLength;
-			if (size > maxBytes) {
-				await reader.cancel();
-				throw new HindsightError("too_large");
-			}
-			chunks.push(chunk.value);
+	for (;;) {
+		const chunk = await reader.read();
+		if (chunk.done) break;
+		size += chunk.value.byteLength;
+		if (size > maxBytes) {
+			throw new HindsightError("too_large");
 		}
-	} finally {
-		reader.releaseLock();
+		chunks.push(chunk.value);
 	}
 	const bytes = new Uint8Array(size);
 	let offset = 0;

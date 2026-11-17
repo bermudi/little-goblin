@@ -34,6 +34,7 @@ import type { MemorySurfaces } from "../memory/mod.ts";
 import type { ProgramsStore } from "../programs.ts";
 import type { ProgramApproval } from "../program-approval.ts";
 import type { Runtime } from "../runtime.ts";
+import type { SkillSources } from "../skill-provenance.ts";
 import type { System1Client } from "../system1.ts";
 import { makeBotCleanup } from "../tg/cleanup.ts";
 import { withTimeout } from "../tg/deadline.ts";
@@ -53,7 +54,6 @@ import {
 } from "../tg/turn-notice.ts";
 import type { WakeApi } from "../tg/wake.ts";
 import type { TurnJournal } from "../turn-journal.ts";
-import type { ResumeOps } from "../turn-resume.ts";
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // Attach retries back off toward the cap — the observed boot miss is a
@@ -81,7 +81,6 @@ export interface TelegramAttachStart {
 	/** Memory command surfaces — absent when the memory block is off. */
 	memory: MemorySurfaces | null;
 	gate: System1Client | null;
-	resumeOps(): ResumeOps | undefined;
 	mailApproval(): MailApproval | undefined;
 	programApproval(): ProgramApproval | undefined;
 	programs: ProgramsStore;
@@ -91,6 +90,9 @@ export interface TelegramAttachStart {
 	rewireWake(api: WakeApi): void;
 	/** scheduler.tick() — catch up occurrences held while unattached. */
 	tick(): void;
+	/** The /curator door's provenance read — managed names for status and
+	 *  pin. Absent = the command answers unavailable. */
+	skillSources?: Pick<SkillSources, "managedNames">;
 }
 
 export interface TelegramAttach {
@@ -265,7 +267,9 @@ export function openTelegramAttach(deps: TelegramAttachDeps): TelegramAttach {
 								mail: () => telegramMailApproval,
 								programApproval: () => telegramProgramApproval,
 								followUpGate: () => startDeps.gate ?? undefined,
-								resumeOps: startDeps.resumeOps,
+								...(startDeps.skillSources !== undefined
+									? { skillSources: startDeps.skillSources }
+									: {}),
 							},
 							canAttachTelegram,
 						);

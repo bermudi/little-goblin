@@ -7,7 +7,8 @@
 // observable results — sink done values, stored history, journal rows.
 
 import { describe, expect, test } from "bun:test";
-import { type ToolSet, tool, type UIMessage } from "ai";
+import { defineTool, type Tools } from "../tool.ts";
+import type { Message } from "../message.ts";
 import { z } from "zod";
 import { type ClaudeEngineConfig, driveClaude } from "../agent/claude-code/engine.ts";
 import type { ClaudeEngine, ClaudeStep } from "../agent/claude-code/mod.ts";
@@ -29,7 +30,7 @@ import {
 	useHome,
 	waitUntil,
 } from "../testkit.ts";
-import type { ModelStep } from "../turn/engine.ts";
+import type { ModelStep } from "./ai-sdk-step.ts";
 import { openTurnJournal, type TurnJournal } from "../turn-journal.ts";
 import { appendInterruptedProgress } from "./unlanded-progress.ts";
 import { aiSdkEngine } from "./ai-sdk-engine.ts";
@@ -72,10 +73,10 @@ interface EngineRig {
 	scriptRecordedReply(text: string): { prompts(): string[] };
 }
 
-const echoTools = (): ToolSet => ({
-	echo: tool({
+const echoTools = (): Tools => ({
+	echo: defineTool({
 		description: "echo the message",
-		inputSchema: z.object({ message: z.string() }),
+		input: z.object({ message: z.string() }),
 		execute: async ({ message }) => `echo:${message}`,
 	}),
 });
@@ -99,7 +100,7 @@ const waitForWireContent = (sink: RecordingSink) =>
 
 const roles = (rig: EngineRig): string[] => rig.store.history(rig.conv.id).map((m) => m.role);
 
-const textOf = (message: UIMessage): string => {
+const textOf = (message: Message): string => {
 	const out: string[] = [];
 	for (const part of message.parts) {
 		if (part.type === "text") out.push(part.text);

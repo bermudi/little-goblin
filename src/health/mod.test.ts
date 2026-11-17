@@ -29,7 +29,6 @@ import { openPings } from "../tg/pings.ts";
 import { openCacheObservation } from "../cache-observation.ts";
 import { openTurnJournal } from "../turn-journal.ts";
 import { checkAppAssets } from "./app-assets.ts";
-import { testRatio } from "./repo.ts";
 import { runHealth } from "./mod.ts";
 import {
 	healthReportSchema,
@@ -128,7 +127,6 @@ describe("diagnostic boundary and phases", () => {
 			"sqlite",
 			"sqlite.subsystems",
 			"service.goblin",
-			"service.goblin-herdr",
 			"sandbox.engine",
 			"app.assets",
 			"workspace.workspace",
@@ -729,28 +727,6 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 			},
 		};
 	}
-	test("a dead delegation host warns unconfigured and fails once delegation is configured", async () => {
-		const f = fixture();
-		f.script(
-			"systemctl",
-			`if [ "$3" = "goblin-herdr.service" ]; then printf 'LoadState=loaded\\nActiveState=failed\\nSubState=failed\\n';
-			else printf 'LoadState=loaded\\nActiveState=active\\nSubState=running\\nWorkingDirectory=${f.checkout}\\n'; fi`,
-		);
-		const plain = await runHealth({ ...f.options, phase: "installed" });
-		expect(finding(plain, "service.goblin").status).toBe("pass");
-		expect(finding(plain, "service.goblin-herdr").status).toBe("warn");
-		expect(finding(plain, "service.goblin-herdr").detail).toContain("no delegation block");
-		writeFileSync(
-			join(f.home, "goblin.json5"),
-			JSON.stringify({
-				...f.config,
-				delegation: { harnesses: { devin: { kind: "devin" } } },
-			}),
-		);
-		const delegated = await runHealth({ ...f.options, phase: "installed" });
-		expect(finding(delegated, "service.goblin-herdr").status).toBe("fail");
-		expect(JSON.stringify(delegated)).not.toContain(secret);
-	});
 	test("missing boot-created subsystem tables warn by name; a full boot schema passes", async () => {
 		const f = fixture();
 		installLayout(f.home);
@@ -782,7 +758,10 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 		// Config-gated tables join the expectation with their config block.
 		writeFileSync(
 			join(f.home, "goblin.json5"),
-			JSON.stringify({ ...f.config, delegation: { harnesses: { devin: { kind: "devin" } } } }),
+			JSON.stringify({
+				...f.config,
+				delegation: { harnesses: { devin: { provider: "devin", model: "d-1" } } },
+			}),
 		);
 		const gated = finding(
 			await runHealth({ ...f.options, phase: "installed" }),
@@ -1417,48 +1396,5 @@ describe("cache contracts", () => {
 		const c = finding(report, "cache.contracts");
 		expect(c.status).toBe("warn");
 		expect(c.detail).toContain("overdue");
-	});
-});
-
-describe("repo.test-ratio", () => {
-	test("skips without git metadata; warns above 1.0 naming excess dirs; passes below", async () => {
-		const f = fixture();
-		expect(finding(await runHealth(f.options), "repo.test-ratio").status).toBe("skip");
-		mkdirSync(join(f.checkout, ".git"));
-		mkdirSync(join(f.checkout, "src/a"), { recursive: true });
-		writeFileSync(join(f.checkout, "src/a/x.ts"), "1\n2\n");
-		writeFileSync(join(f.checkout, "src/a/x.test.ts"), "1\n2\n3\n4\n");
-		f.script("git", "printf 'src/a/x.ts\\nsrc/a/x.test.ts\\n'");
-		const warn = await testRatio(f.checkout);
-		expect(warn.status).toBe("warn");
-		expect(warn.detail).toContain("2.00x");
-		expect(warn.detail).toContain("src/a +2");
-		writeFileSync(join(f.checkout, "src/a/x.test.ts"), "1\n");
-		expect((await testRatio(f.checkout)).status).toBe("pass");
-	});
-	test("unavailable git is a warning, not a silent pass", async () => {
-		const f = fixture();
-		mkdirSync(join(f.checkout, ".git"));
-		expect((await testRatio(f.checkout)).status).toBe("warn");
-	});
-	test("an over-cap tracked file refuses the measurement instead of truncating counts", async () => {
-		const f = fixture();
-		mkdirSync(join(f.checkout, ".git"));
-		mkdirSync(join(f.checkout, "src/a"), { recursive: true });
-		writeFileSync(join(f.checkout, "src/a/big.ts"), "x".repeat(256 * 1024 + 1));
-		f.script("git", "printf 'src/a/big.ts\\n'");
-		const warn = await testRatio(f.checkout);
-		expect(warn.status).toBe("warn");
-		expect(warn.detail).toBe("Ratio unmeasured: oversized-file");
-	});
-	test("a tracked non-regular file (symlinked dir) refuses the read like every probe", async () => {
-		const f = fixture();
-		mkdirSync(join(f.checkout, ".git"));
-		mkdirSync(join(f.checkout, "src/a"), { recursive: true });
-		symlinkSync(f.bin, join(f.checkout, "src/a/link.ts"));
-		f.script("git", "printf 'src/a/link.ts\\n'");
-		const warn = await testRatio(f.checkout);
-		expect(warn.status).toBe("warn");
-		expect(warn.detail).toBe("Ratio unmeasured: not-regular-file");
 	});
 });

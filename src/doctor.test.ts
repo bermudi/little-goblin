@@ -99,7 +99,7 @@ describe("doctor process boundary", () => {
 			const abort = new AbortController();
 			const pending = bashTool(directory).execute!(
 				{ command: `exec "${process.execPath}" "${controllerFile}"`, timeout_ms: 8000 },
-				{ toolCallId: "cancel-doctor", messages: [], context: {}, abortSignal: abort.signal },
+				{ toolCallId: "cancel-doctor", abortSignal: abort.signal },
 			);
 			await waitUntil(() => existsSync(pids), "worker pid file lands", 2_000);
 			expect(existsSync(pids)).toBe(true);

@@ -23,7 +23,7 @@ export type ReportState = (typeof REPORT_STATES)[number];
 export const TERMINAL_REPORTS: ReadonlySet<ReportState> = new Set(["done", "dropped"]);
 
 /** goblin = the coordinating turn's assessment; worker = a run's own
- *  claim (reserved for pi-durable runs); migration = a legacy status. */
+ *  claim (delegations file these); migration = a legacy status. */
 export type ReportReporter = "goblin" | "worker" | "migration";
 
 const text = (max: number) => z.string().trim().min(1).max(max);

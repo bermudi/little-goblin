@@ -187,8 +187,7 @@ const TRANSIENT_PHRASES = [
 // (goblin.log 2026-10-26 — matched through the "monthly" half; the
 // "weekly" half pins the compound's other edge) and Brave search HTTP 402
 // "Usage limit exceeded." z.ai's balance-exhausted body ("429 code 1113
-// Insufficient balance") is recorded in design/subagents.md and
-// design/memory.md. One deliberate exception to the observed-body rule:
+// Insufficient balance") is recorded in design/memory.md. One deliberate exception to the observed-body rule:
 // OpenAI's stable documented error code "insufficient_quota" — the codex
 // and OpenAI-compatible doors flow through the same middleware, and the
 // flattened data JSON reaches the matched text.

@@ -5,6 +5,7 @@ import { isStepCount, streamText } from "ai";
 import { setLogFile } from "../../log.ts";
 import { deferred, tmpDir } from "../../testkit.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "../../testkit/fake-model.ts";
+import { toToolSet } from "../../turn/ai-sdk-tools.ts";
 import { CHUNK_CHARS, readLongTool, splitText } from "./read-long.ts";
 
 const opts = { toolCallId: "t1", messages: [], context: {} };
@@ -45,7 +46,7 @@ describe("read_long", () => {
 		const result = streamText({
 			model: model.model,
 			prompt: "read both",
-			tools: { read_long: tool },
+			tools: toToolSet({ read_long: tool }),
 			stopWhen: isStepCount(2),
 		});
 		const text = await result.text;

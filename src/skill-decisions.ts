@@ -7,7 +7,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import type { UIMessage } from "ai";
+import type { Message } from "./message.ts";
 import { log } from "./log.ts";
 import { stagingRoot } from "./reviewer-staging.ts";
 import type { SkillSourceRow } from "./skill-provenance.ts";
@@ -28,7 +28,7 @@ export interface SkillDecisionDeps {
 	// Both optional: a pre-table proposal has no provenance row, and a
 	// decision still lands when there's no thread to correct.
 	forSkill?(skill: string): SkillSourceRow[];
-	store?: { append(id: string, messages: UIMessage[]): void };
+	store?: { append(id: string, messages: Message[]): void };
 }
 
 // lstat, never stat: a symlink parked on either path is operator state —
@@ -208,7 +208,7 @@ export function skillResolutionText(
 // Append failures never un-decide — the log line already carries the
 // decision.
 export function appendSkillResolution(
-	store: { append(id: string, messages: UIMessage[]): void },
+	store: { append(id: string, messages: Message[]): void },
 	conversationId: string,
 	text: string,
 ): void {

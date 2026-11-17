@@ -236,15 +236,14 @@ export function carriesMedia(
 			);
 		case "claude-code":
 			// The Messages API takes images/PDFs in user content; the engine
-			// maps view FileParts to prompt content blocks there. Tool results
-			// ride the bridge as text — no media through that position.
-			// Images are limited to the four types the Messages API accepts;
-			// others fall back to the attachment text placeholder.
-			return (
-				position === "user" &&
-				(["image/gif", "image/jpeg", "image/png", "image/webp"].includes(mediaType) ||
-					mediaType === "application/pdf")
-			);
+			// maps view FileParts to prompt content blocks there. Tool
+			// results ride the MCP bridge — image-bearing outputs become MCP
+			// image blocks (claude-code/tools.ts), the same four types the
+			// API accepts; PDFs have no MCP image form and stay text.
+			if (["image/gif", "image/jpeg", "image/png", "image/webp"].includes(mediaType)) {
+				return position === "user" || position === "tool-result";
+			}
+			return position === "user" && mediaType === "application/pdf";
 		default:
 			return position === "user" && mediaType.startsWith("image/");
 	}
@@ -459,6 +458,20 @@ export function observedModel(
 			...(error === undefined ? {} : safeErrorFields(error)),
 		});
 	};
+	const cancelProviderAfterStorageFailure = async (
+		call: ReturnType<typeof beginCall>,
+		reader: { cancel(reason?: unknown): Promise<void> },
+		storageError: unknown,
+	): Promise<void> => {
+		try {
+			await reader.cancel(storageError);
+		} catch (cleanupError) {
+			log.warn("provider stream cancellation after storage failure failed", cleanupError, {
+				...baseFields,
+				callId: call.callId,
+			});
+		}
+	};
 	const middleware: LanguageModelMiddleware = {
 		wrapGenerate: async ({ doGenerate, params }) => {
 			const call = beginCall("generate", params);
@@ -493,7 +506,14 @@ export function observedModel(
 							if (cancelled) return;
 							if (done) {
 								if (!settled) {
-									failCall(call, "no-finish");
+									try {
+										failCall(call, "no-finish");
+									} catch (storageError) {
+										await cancelProviderAfterStorageFailure(call, reader, storageError);
+										settled = true;
+										controller.error(storageError);
+										return;
+									}
 									settled = true;
 								}
 								controller.close();
@@ -513,6 +533,7 @@ export function observedModel(
 										});
 									}
 									settled = true;
+									await cancelProviderAfterStorageFailure(call, reader, storageError);
 									controller.error(storageError);
 									return;
 								}
@@ -522,6 +543,7 @@ export function observedModel(
 									failCall(call, "provider-error", value.error);
 								} catch (storageError) {
 									settled = true;
+									await cancelProviderAfterStorageFailure(call, reader, storageError);
 									controller.error(storageError);
 									return;
 								}
@@ -530,11 +552,17 @@ export function observedModel(
 							controller.enqueue(value);
 						} catch (error) {
 							if (cancelled) return;
+							let surfacedError = error;
 							if (!settled) {
-								failCall(call, "read", error);
+								try {
+									failCall(call, "read", error);
+								} catch (storageError) {
+									surfacedError = storageError;
+									await cancelProviderAfterStorageFailure(call, reader, storageError);
+								}
 								settled = true;
 							}
-							controller.error(error);
+							controller.error(surfacedError);
 						}
 					},
 					async cancel(reason) {

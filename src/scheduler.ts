@@ -707,10 +707,8 @@ function sinkDecoratingRuntime(runtime: Runtime, decorate: (base: TurnSink) => T
 // Tracks whether the attempt produced any model output and inspects
 // the terminal status — a transient, zero-call error schedules the
 // next rung. Spread over the base is safe: makeDeliverySink returns an
-// object literal, so the copy carries exactly the members it
-// implements and none it lacks — an unconditional onStreamChunk here
-// would flip these wakes into streaming members (the runtime branches
-// on `sink.onStreamChunk !== undefined`).
+// object literal, and its declared delivery discriminant carries the
+// mode through this wrapper.
 function scheduleRetrySink(
 	deps: SchedulerDeps,
 	program: Program,
@@ -721,21 +719,21 @@ function scheduleRetrySink(
 	const ladder = ladderFor(deps);
 	return (base) => {
 		let sawModelOutput = false;
-		const wrapper: TurnSink = {
+		const wrappedCallbacks = {
 			...base,
-			onTextDelta: (delta) => {
+			onTextDelta: (delta: string) => {
 				sawModelOutput = true;
 				base.onTextDelta(delta);
 			},
-			onReasoningDelta: (delta) => {
+			onReasoningDelta: (delta: string) => {
 				sawModelOutput = true;
 				base.onReasoningDelta(delta);
 			},
-			onToolCall: (toolName, input) => {
+			onToolCall: (toolName: string, input: unknown) => {
 				sawModelOutput = true;
 				base.onToolCall(toolName, input);
 			},
-			onDone: (done) => {
+			onDone: (done: TurnDone) => {
 				const output = sawModelOutput;
 				// The base still receives the terminal status — its ordinary
 				// error notice is what the operator sees whether or not a
@@ -747,14 +745,18 @@ function scheduleRetrySink(
 				}
 			},
 		};
-		const chunks = base.onStreamChunk;
-		if (chunks !== undefined) {
-			wrapper.onStreamChunk = (chunk) => {
-				sawModelOutput = true;
-				chunks.call(base, chunk);
+		if (base.delivery === "stream") {
+			return {
+				...wrappedCallbacks,
+				delivery: "stream",
+				onStreamChunk: (chunk) => {
+					sawModelOutput = true;
+					base.onStreamChunk(chunk);
+				},
 			};
 		}
-		return wrapper;
+		const { onStreamChunk: _onStreamChunk, ...headlessBase } = wrappedCallbacks;
+		return { ...headlessBase, delivery: "headless" };
 	};
 }
 

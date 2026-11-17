@@ -11,7 +11,7 @@
 // prompt, tool schemas, every message part — is verbatim.
 
 import type { Database } from "bun:sqlite";
-import { asSchema, type ToolSet } from "ai";
+import { inputJsonSchema, isHosted, type Tools } from "./tool.ts";
 import { z } from "zod";
 import { log } from "./log.ts";
 import type { PromptSegments } from "./turn/itemize.ts";
@@ -42,11 +42,11 @@ export interface StoredWindow {
 	capture: WindowCapture;
 }
 
-export function serializeToolDefs(tools: ToolSet): WindowTool[] {
+export function serializeToolDefs(tools: Tools): WindowTool[] {
 	const out: WindowTool[] = [];
 	for (const [name, tool] of Object.entries(tools)) {
-		const description = typeof tool.description === "string" ? tool.description : null;
-		const js = asSchema(tool.inputSchema).jsonSchema;
+		const description = isHosted(tool) ? null : tool.description;
+		const js = inputJsonSchema(tool);
 		// An async schema converter can't be read synchronously —
 		// same floor rule the itemizer measures under.
 		const parameters =

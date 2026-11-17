@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import {
 	acceptsMedia,
 	attachmentPart,
@@ -23,7 +23,7 @@ describe("acceptsMedia", () => {
 	});
 });
 
-const msg = (path: string, size = 4): UIMessage => ({
+const msg = (path: string, size = 4): Message => ({
 	id: "u1",
 	role: "user",
 	parts: [attachmentPart({ path, mediaType: "image/png", filename: "x.png", size })],
@@ -86,7 +86,7 @@ describe("materializeAttachments", () => {
 		const b = join(dir, "b.png");
 		writeFileSync(a, "12345678");
 		writeFileSync(b, "12345678");
-		const m: UIMessage = {
+		const m: Message = {
 			id: "u4",
 			role: "user",
 			parts: [
@@ -109,7 +109,7 @@ describe("materializeAttachments", () => {
 		const fresh = join(dir, "fresh.png");
 		writeFileSync(old, "x".repeat(64));
 		writeFileSync(fresh, "12345678");
-		const history: UIMessage[] = [
+		const history: Message[] = [
 			{
 				id: "u-old",
 				role: "user",
@@ -136,8 +136,8 @@ describe("materializeAttachments", () => {
 		const b = join(dir, "b.png");
 		writeFileSync(a, "pngdata");
 		writeFileSync(b, "pngdata");
-		const turn1: UIMessage[] = [msg(a)];
-		const turn2: UIMessage[] = [
+		const turn1: Message[] = [msg(a)];
+		const turn2: Message[] = [
 			...turn1,
 			{
 				id: "u2",
@@ -157,13 +157,13 @@ describe("materializeAttachments", () => {
 	});
 
 	test("non-attachment parts pass through untouched", async () => {
-		const m: UIMessage = { id: "u2", role: "user", parts: [{ type: "text", text: "hi" }] };
+		const m: Message = { id: "u2", role: "user", parts: [{ type: "text", text: "hi" }] };
 		const out = await materializeAttachments([m], new Set(["image"]));
 		expect(out[0]!.parts[0]).toEqual({ type: "text", text: "hi" });
 	});
 
 	test("a malformed attachment part degrades to the fallback reference", async () => {
-		const bad: UIMessage = {
+		const bad: Message = {
 			id: "u3",
 			role: "user",
 			parts: [{ type: ATTACHMENT_PART, data: { path: 123 } }],
@@ -176,7 +176,7 @@ describe("materializeAttachments", () => {
 		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
-		const m: UIMessage = {
+		const m: Message = {
 			id: "u9",
 			role: "user",
 			parts: [
@@ -199,7 +199,7 @@ describe("materializeAttachments", () => {
 		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
-		const m: UIMessage = {
+		const m: Message = {
 			id: "u10",
 			role: "user",
 			parts: [
@@ -221,7 +221,7 @@ describe("materializeAttachments", () => {
 		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "song.mp3");
 		writeFileSync(f, "mp3data");
-		const m: UIMessage = {
+		const m: Message = {
 			id: "u12",
 			role: "user",
 			parts: [
@@ -243,7 +243,7 @@ describe("materializeAttachments", () => {
 		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "x".repeat(64));
-		const m: UIMessage = {
+		const m: Message = {
 			id: "u11",
 			role: "user",
 			parts: [
@@ -268,7 +268,7 @@ describe("materializeAttachments", () => {
 		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
-		const m: UIMessage = {
+		const m: Message = {
 			id: "u14",
 			role: "user",
 			parts: [
@@ -294,7 +294,7 @@ describe("materializeAttachments", () => {
 		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "v.ogg");
 		writeFileSync(f, "oggdata");
-		const m: UIMessage = {
+		const m: Message = {
 			id: "u15",
 			role: "user",
 			parts: [
@@ -320,7 +320,7 @@ describe("materializeAttachments", () => {
 		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "x.png");
 		writeFileSync(f, "pngdata");
-		const stored = JSON.parse(JSON.stringify(msg(f))) as UIMessage;
+		const stored = JSON.parse(JSON.stringify(msg(f))) as Message;
 		const out = await materializeAttachments([stored], new Set(["image"]));
 		expect(out[0]!.parts[0]!.type).toBe("file");
 	});
@@ -329,7 +329,7 @@ describe("materializeAttachments", () => {
 		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "generated.png");
 		writeFileSync(f, "pngdata");
-		const delivered: UIMessage = {
+		const delivered: Message = {
 			id: "a-media",
 			role: "assistant",
 			parts: [
@@ -355,7 +355,7 @@ test("documents stay a path reference even when model and pipe accept them", asy
 	const dir = tmpDir("goblin-att-");
 	const f = join(dir, "doc.pdf");
 	writeFileSync(f, "pdfbytes");
-	const history: UIMessage[] = [
+	const history: Message[] = [
 		{
 			id: "u1",
 			role: "user",

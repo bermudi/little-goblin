@@ -17,7 +17,7 @@ not for settled product preferences.
 | Capability | Current source |
 | --- | --- |
 | Project-owned work, understanding, attachments, generations, prompt operations | `src/responsibility-types.ts`, `src/responsibility-schema.ts`, `src/responsibilities.ts`, `src/responsibility-service.ts` |
-| Deterministic Herdr observation; cursor/event/wake persistence | `src/responsibility-observer.ts` |
+| Deterministic T3 thread observation; cursor/event/wake persistence | `src/responsibility-observer.ts` |
 | Append-once triggers, run ownership, crash/retry reconciliation | `src/wake-store.ts`, `src/wake-dispatcher.ts`, runtime and turn journal |
 | Project-directed Programs and automatic follow-up linking | `src/programs.ts`, `src/scheduler.ts`, responsibility service |
 | Project tools, feed pills, correction and lifecycle controls | `src/agent/tools/responsibility.ts`, `src/http/app-responsibilities.ts`, `app/src/ResponsibilityFeed.tsx` |
@@ -29,7 +29,7 @@ existing adapter boundaries.
 
 Known distinctions at this baseline:
 
-- Herdr observation is code-only every minute, but active responsibilities
+- T3 thread observation is code-only every minute, but active responsibilities
   originally defaulted to a model-waking Program every 15 minutes, up to 96 scheduled
   occurrences per active responsibility per day. That is not yet economical
   judgment about when follow-up is useful; the first stage-1 slice replaces
@@ -41,8 +41,9 @@ Known distinctions at this baseline:
 - Managed sends check identity before and after sending. There is still a
   check/send race, explicitly treated by the implementation as an accepted
   residual risk. A server-side guarded send is not implemented in this path.
-- Production pi-durable worker models remain pinned; alternate-model profiles
-  are a constrained seam, not a free-model delegation product.
+- A subagent (`agent`) runs on the parent's model unless its agent type
+  names one; that `model` field is a constrained seam, not a free-model
+  delegation product.
 - Ratings are record-only, project memory is shared/off, and the context-window
   capture is latest-wins rather than a per-reply incoming-memory history.
 - Coordination conversations are protected from deletion, including for
@@ -295,11 +296,12 @@ remains.
 ## 3. Add Useful Cheap Capacity
 
 Outcome: Goblin can use an explicitly configured free model for a bounded
-lower-stakes assignment through pi-durable, then assess the evidence.
+lower-stakes assignment through an `agent` child, then assess the evidence.
 
 Scope:
 
-- Expose a free-worker capability on the existing durable runtime. Make the
+- Expose a free-worker capability as an agent type that names the model and
+  a narrow `tools` list (design/agents.md → Agent types). Make the
   assignment, model/provider, resource limits, result, and failure visible;
   do not build a throwaway API wrapper or choose providers without the operator.
 - Extend worker tools for the chosen research job, sandboxing less-trusted
@@ -337,17 +339,26 @@ Two independently shippable tracks, not blockers for the earlier pilot:
   retention, migration, and controls. Separate projects must not bleed into
   shared recall. Expose incoming sources at the useful conversation/reply
   boundary without pretending the existing latest-window view is a full trace.
+- Skills as procedural memory (operator decision 2026-11-16, #626): the
+  agent saves what it learns as skills itself — new skills proposed for
+  the operator's yes, extensions to installed skills direct; `/learn`
+  authors a skill from a request or the conversation; a config-gated
+  curator archives unused provenance-backed skills (never deletes).
+  Mechanisms borrowed from hermes-agent; ruling: `design/skills.md` →
+  Self-authoring, /learn, curator.
 
 Acceptance: a corrected interpretation changes subsequent behavior with visible
 provenance; project isolation holds across recall and retention; memory-off
 does not disable explicit work state or follow-through.
 
-## Longer Horizon: Native Work Through Pi-Durable
+## Longer Horizon: Native Work Through Pi-Durable — superseded (#609)
 
-Grow roles, assignments, histories, budgets, and execution workflows from real
-repeated work. Responsibility remains independent of any harness. Move suitable
-heavy execution into Goblin-native workers as capabilities and inference access
-allow; keep the Herdr bridge useful until replacement is actually demonstrated.
+The Pi Durable runtime this section planned around is removed; native
+`agent` children and `delegate` on T3 Code cover the same ground. Grow
+roles, assignments, histories, budgets, and execution workflows from real
+repeated work. Responsibility remains independent of any harness. Keep
+the delegate bridge (T3 Code threads) useful; do not retire capable
+coding harnesses merely to make the architecture look finished.
 
 Do not build the entire managed workforce before proving the next outcome.
 Do not confuse "native" with cheaper subscription economics or retire capable
@@ -355,9 +366,11 @@ coding harnesses merely to make the architecture look finished.
 
 ## Risk And Proof Discipline
 
-The Herdr identity race remains explicit. Verify the current boundary before
+The old Herdr identity race is gone with the transport (#608): T3
+thread ids are stable identities and managed sends fence on them.
+Verify the current boundary before
 claiming stronger guarantees. A capability-advertised server-side identity
-guard would address the race; more client reads do not. This targeted work can
+guard would address any residual race; more client reads do not. This targeted work can
 proceed alongside the product stages, without becoming a blanket permissions
 project or pretending previously accepted risk disappeared.
 

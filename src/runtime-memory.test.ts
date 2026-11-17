@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { tool, type UIMessage } from "ai";
+import { defineTool } from "./tool.ts";
+import type { Message } from "./message.ts";
 import { z } from "zod";
 import { appMediaSink, composeTurnSinks } from "./app-media.ts";
 import { memoryConfigSchema } from "./config-schema.ts";
@@ -160,8 +161,9 @@ describe("memory turn integration", () => {
 				system: "test",
 			}),
 			makeTools: () => ({
-				send: tool({
-					inputSchema: z.object({}),
+				send: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						await media.onFile!({ path, filename: "output.txt", caption: "derived file" });
 						return "ok";
@@ -213,8 +215,9 @@ describe("memory turn integration", () => {
 				system: "test",
 			}),
 			makeTools: () => ({
-				send: tool({
-					inputSchema: z.object({}),
+				send: defineTool({
+					description: "test tool",
+					input: z.object({}),
 					execute: async () => {
 						await media.onFile!({ path, filename: "output.txt" });
 						return "ok";
@@ -295,16 +298,18 @@ describe("memory turn integration", () => {
 			store,
 			buildStep: () => ({ model, system: "test" }),
 			makeTools: () => ({
-				gate: tool({
-					inputSchema: z.object({}),
+				gate: defineTool({
+					description: "test tool",
+			input: z.object({}),
 					execute: async () => {
 						entered.resolve();
 						await release.promise;
 						return "ok";
 					},
 				}),
-				send: tool({
-					inputSchema: z.object({}),
+				send: defineTool({
+					description: "test tool",
+			input: z.object({}),
 					execute: async () => {
 						await media.onFile!({ path, filename: "output.txt", caption: "steer secret" });
 						return "ok";

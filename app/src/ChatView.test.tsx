@@ -4,12 +4,7 @@ import { Window } from "happy-dom";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import type {
-  AppCompactionMark,
-  AppInterruptedList,
-  AppRunCall,
-} from "../../src/http/app-wire.ts";
-import { canAuthorizeRetry } from "../../src/turn/retry-guard.ts";
+import type { AppCompactionMark } from "../../src/http/app-wire.ts";
 import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 import { MessageParts } from "./chat/MessageParts.tsx";
 import { editedParts, FoldMark, unlandedMeta } from "./chat/MetaLine.tsx";
@@ -302,6 +297,9 @@ function mountDom() {
     install("Event", dom.win.Event);
     install("CustomEvent", dom.win.CustomEvent);
     install("getComputedStyle", dom.win.getComputedStyle);
+    // The command primitive's typeahead walks item text through the DOM
+    // global NodeFilter; browsers have it, bare bun:test doesn't.
+    install("NodeFilter", (dom.win as unknown as { NodeFilter: unknown }).NodeFilter);
     Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
   });
 
@@ -476,7 +474,6 @@ describe("unlanded turn records (issue #408)", () => {
             messages,
           });
         if (url.endsWith("/stream")) return new Response(null, { status: 204 });
-        if (url.endsWith("/interrupted")) return json({ runs: [] });
         return json({
           model: "prov/model",
           thinking: "off",
@@ -738,7 +735,6 @@ describe("turn metadata usage", () => {
           ],
         });
       if (url.endsWith("/stream")) return new Response(null, { status: 204 });
-      if (url.endsWith("/interrupted")) return json({ runs: [] });
       return json({
         model: "prov/model",
         thinking: "off",
@@ -812,7 +808,6 @@ describe("turn metadata usage", () => {
           ],
         });
       if (url.endsWith("/stream")) return new Response(null, { status: 204 });
-      if (url.endsWith("/interrupted")) return json({ runs: [] });
       return json({
         model: "prov/model",
         thinking: "off",
@@ -933,7 +928,6 @@ describe("reply ratings", () => {
           : json({ error: "no such assistant reply" }, ratingStatus);
       }
       if (url.endsWith("/stream")) return new Response(null, { status: 204 });
-      if (url.endsWith("/interrupted")) return json({ runs: [] });
       return json({
         model: "prov/model",
         thinking: "off",
@@ -1072,8 +1066,6 @@ describe("ChatView reload window (issue #79)", () => {
         reconnects++;
         return idle;
       }
-      if (url.endsWith("/interrupted"))
-        return Promise.resolve(jsonResponse({ runs: [] }));
       // The Composer's conversation-config load and anything else.
       return Promise.resolve(
         jsonResponse({
@@ -1126,123 +1118,6 @@ describe("ChatView reload window (issue #79)", () => {
     expect(historyFetches).toBe(2);
     expect(reconnects).toBe(1);
   });
-  test("an accepted resume re-attaches via /stream and a 204 merges the final reply", async () => {
-    let stored: UIMessage[] = [userMsg("u1", "run the thing")];
-    let streamGets = 0;
-    let resumePosts = 0;
-    const callState: AppRunCall["state"] = "resolved-skip";
-    const interruptedBody: AppInterruptedList = {
-      runs: [
-        {
-          runId: "run-deadbeef",
-          resumedFrom: null,
-          startedMs: Date.parse("2026-10-17T01:00:00Z"),
-          finishedMs: Date.parse("2026-10-17T01:00:05Z"),
-          calls: {
-            planned: 0,
-            dispatched: 0,
-            completed: 0,
-            failed: 0,
-            resolved: 1,
-          },
-          toolCalls: [
-            {
-              toolCallId: "c1",
-              name: "probe",
-              args: { q: 1 },
-              state: callState,
-              result: null,
-              error: null,
-              resolutionNote: null,
-              resolvedMs: null,
-              canAuthorizeRetry: canAuthorizeRetry({
-                state: callState,
-                replayed: false,
-              }),
-            },
-          ],
-        },
-      ],
-    };
-    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-      const url =
-        typeof input === "string"
-          ? input
-          : input instanceof URL
-            ? input.href
-            : input.url;
-      const method =
-        init?.method ?? (input instanceof Request ? input.method : "GET");
-      if (url.endsWith("/messages"))
-        return Promise.resolve(
-          jsonResponse({
-            messages: stored,
-            ratings: [],
-            rateableMessageIds: [],
-          }),
-        );
-      if (url.endsWith("/interrupted"))
-        return Promise.resolve(jsonResponse(interruptedBody));
-      if (url.endsWith("/stream")) {
-        streamGets++;
-        return Promise.resolve(new Response(null, { status: 204 }));
-      }
-      if (url.endsWith("/resume") && method === "POST") {
-        resumePosts++;
-        stored = [...stored, assistantMsg("a1", "RESUMED ANSWER")];
-        return Promise.resolve(
-          jsonResponse({ resumed: true, runId: "run-deadbeef" }),
-        );
-      }
-      return Promise.resolve(
-        jsonResponse({
-          model: "prov/model",
-          thinking: "off",
-          favorites: [],
-          catalog: [],
-          thinkingLevels: ["off"],
-        }),
-      );
-    }) as typeof fetch;
-
-    dom.root = createRoot(dom.container);
-    await act(async () =>
-      dom.root?.render(
-        <ChatView
-          token={null}
-          conversationId="app/chat-01"
-          title={null}
-          seed={null}
-          staged={[]}
-          setStaged={() => {}}
-          stagedNotes={[]}
-          setStagedNotes={() => {}}
-          stagedSkills={[]}
-          setStagedSkills={() => {}}
-          onSeeded={() => {}}
-          onTurnDone={() => {}}
-        />,
-      ),
-    );
-    await act(async () => {});
-    expect(streamGets).toBe(1);
-    expect(dom.container.textContent).toContain("Interrupted turn");
-    const resumeBtn = [...dom.container.querySelectorAll("button")].find(
-      (b) => b.textContent === "Resume turn",
-    )!;
-    expect(resumeBtn.disabled).toBe(false);
-    await act(async () => {
-      resumeBtn.dispatchEvent(
-        new dom.win.Event("click", { bubbles: true }) as unknown as Event,
-      );
-    });
-    await act(async () => {});
-    await act(async () => {});
-    expect(resumePosts).toBe(1);
-    expect(streamGets).toBe(2);
-    expect(dom.container.textContent).toContain("RESUMED ANSWER");
-  });
-
   test("resuming a live reply keeps historical unclosed note cards actionable", async () => {
     const stored: UIMessage[] = [
       userMsg("u1", "first note"),
@@ -1275,7 +1150,6 @@ describe("ChatView reload window (issue #79)", () => {
             ratings: [],
             rateableMessageIds: [],
           });
-        if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
         if (url.endsWith("/stream"))
           return new Response(stream, {
             headers: {
@@ -1456,11 +1330,9 @@ describe("ChatView mid-turn steer", () => {
         await new Promise((resolve) => setTimeout(resolve, 15));
       });
     }
-    // Stop and Send share the composer — Send waits for content.
+    // The action switches from Stop to Send when a steer is composed.
     expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
-    const sendBtn = dom.container.querySelector<HTMLButtonElement>(".send-btn");
-    expect(sendBtn).not.toBeNull();
-    expect(sendBtn?.disabled).toBe(true);
+    expect(dom.container.querySelector(".send-btn")).toBeNull();
     const ta = dom.container.querySelector("form.composer textarea")!;
     await act(async () => {
       // Focus + keyup too — React's text-input fallback needs it in
@@ -1480,7 +1352,8 @@ describe("ChatView mid-turn steer", () => {
         }) as unknown as Event,
       );
     });
-    expect(sendBtn?.disabled).toBe(false);
+    expect(dom.container.querySelector(".stop-btn")).toBeNull();
+    expect(dom.container.querySelector<HTMLButtonElement>(".send-btn")?.disabled).toBe(false);
     await act(async () => {
       dom.container
         .querySelector("form.composer")!
@@ -1561,7 +1434,6 @@ describe("ChatView send accepted", () => {
             rateableMessageIds: [],
           });
         if (url.endsWith("/stream")) return new Response(null, { status: 204 });
-        if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
         if (url === "/api/app/chat") {
           chatPosts += 1;
           return new Response(liveStream, { headers: sseHeaders });
@@ -1699,7 +1571,6 @@ describe("ChatView seed send (issue #412)", () => {
             rateableMessageIds: [],
           });
         if (url.endsWith("/stream")) return new Response(null, { status: 204 });
-        if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
         if (url === "/api/app/chat") {
           chatPosts.push(JSON.parse(String(init?.body)));
           return new Response(liveStream, { headers: sseHeaders });
@@ -1789,7 +1660,6 @@ describe("ChatView seed send (issue #412)", () => {
           // The black hole: headers never arrive.
           return new Promise<Response>(() => {});
         }
-        if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
         if (url === "/api/app/chat") {
           chatPosts.push(JSON.parse(String(init?.body)));
           return new Response(liveStream, { headers: sseHeaders });
@@ -1861,7 +1731,6 @@ describe("ChatView seed send (issue #412)", () => {
           streamGets += 1;
           return new Response(null, { status: 204 });
         }
-        if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
         if (url === "/api/app/chat") {
           chatPosts += 1;
           return new Response(liveStream, { headers: sseHeaders });
@@ -1925,7 +1794,6 @@ describe("ChatView seed send (issue #412)", () => {
           streamGets += 1;
           return new Response(null, { status: 204 });
         }
-        if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
         return jsonResponse({
           model: "prov/model",
           thinking: "off",
@@ -2698,7 +2566,6 @@ describe("ChatView paged history", () => {
         });
       }
       if (url.endsWith("/stream")) return new Response(null, { status: 204 });
-      if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
       return jsonResponse(configFallback());
     }) as typeof fetch;
 
@@ -2757,7 +2624,6 @@ describe("ChatView paged history", () => {
         });
       }
       if (url.endsWith("/stream")) return new Response(null, { status: 204 });
-      if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
       return jsonResponse(configFallback());
     }) as typeof fetch;
 
@@ -3023,10 +2889,6 @@ describe("FoldMark", () => {
             { headers: { "content-type": "application/json" } },
           );
         if (url.endsWith("/stream")) return new Response(null, { status: 204 });
-        if (url.endsWith("/interrupted"))
-          return new Response(JSON.stringify({ runs: [] }), {
-            headers: { "content-type": "application/json" },
-          });
         return new Response(
           JSON.stringify({
             model: "prov/model",
@@ -3920,7 +3782,6 @@ describe("composer model knob (happy-dom)", () => {
           ratings: [],
           rateableMessageIds: [],
         });
-      if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
       if (url.endsWith("/stream")) return new Response(null, { status: 204 });
       return jsonResponse({ ...cfg, favorites });
     }) as typeof fetch;
@@ -4088,8 +3949,8 @@ describe("composer model knob (happy-dom)", () => {
     expect(groups).toEqual(["Favorites", "Current", "Models"]);
     expect(sheet.textContent).toContain("Other Model");
     expect(sheet.textContent).not.toContain("Fav A");
-    // The typed path still reaches the hidden model: Enter on the full
-    // ref picks it — no row ever lists it.
+    // The hidden model stays reachable by typing: the full ref gets a
+    // Use row — press it and it's picked, though no row lists it.
     const input = sheet.querySelector<HTMLInputElement>(
       'input[aria-label="Search models"]',
     )!;
@@ -4109,14 +3970,11 @@ describe("composer model knob (happy-dom)", () => {
         }) as unknown as Event,
       );
     });
-    await act(async () => {
-      input.dispatchEvent(
-        new dom.win.KeyboardEvent("keydown", {
-          key: "Enter",
-          bubbles: true,
-        }) as unknown as Event,
-      );
-    });
+    const use = [...sheet.querySelectorAll("button.mrow")].find((b) =>
+      b.textContent?.includes("Use “prov/fav-a”"),
+    );
+    expect(use).toBeTruthy();
+    await click(use);
     expect(configPatches).toEqual([{ model: "prov/fav-a" }]);
     expect(dom.container.querySelector(".msheet")).toBeNull();
   });
@@ -4296,7 +4154,6 @@ describe("composer focus stealing", () => {
             rateableMessageIds: [sent ? "a2" : "a1"],
           });
         }
-        if (url.endsWith("/interrupted")) return jsonResponse({ runs: [] });
         if (url.endsWith("/context")) {
           // The gauge's popover only opens over a read that
           // succeeded.
@@ -4596,7 +4453,6 @@ describe("user message runs", () => {
           ],
         });
       if (url.endsWith("/stream")) return new Response(null, { status: 204 });
-      if (url.endsWith("/interrupted")) return json({ runs: [] });
       return json({
         model: "prov/model",
         thinking: "off",

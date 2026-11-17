@@ -1,6 +1,7 @@
 // Prompt names must reflect every combination of optional dependencies.
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
+import { inputJsonSchema, isHosted } from "../../tool.ts";
 import type { AuthStore } from "../../auth.ts";
 import type { Config } from "../../config-schema.ts";
 import { TOOL_NAMES } from "../tool-policy.ts";
@@ -61,9 +62,11 @@ describe("toolNames ↔ makeTools", () => {
 				},
 			});
 			const run = async (name: string) => {
-				const execute = tools[name]?.execute;
-				if (!execute) throw new Error("Expected executable tool");
-				return execute({ query: "x" }, { toolCallId: name, messages: [], context: {} });
+				const definition = tools[name];
+				if (definition === undefined || isHosted(definition)) {
+					throw new Error("Expected executable tool");
+				}
+				return definition.execute({ query: "x" }, { toolCallId: name });
 			};
 			await run("memory_search");
 			expect(outcomes).toEqual([true]);
@@ -137,12 +140,6 @@ describe("toolNames ↔ makeTools", () => {
 			}
 		}
 	}
-	test("herdr mounts on its own dep — no delegation config required", () => {
-		const tools = makeTools({ cwd: "/tmp", herdr: { herdr: {} as never } });
-		expect(toolNames(tools)).toContain("herdr");
-		expect(toolNames(tools)).not.toContain("delegate");
-	});
-
 	test("every tool's wire schema is a root-level object (unions break providers)", () => {
 		// Some providers cannot generate arguments against a root-level
 		// oneOf — every call arrives as `{}` and fails validation.
@@ -182,24 +179,12 @@ describe("toolNames ↔ makeTools", () => {
 				lifecycle: {},
 				pin: () => ({ address: { chatId: 0, threadId: null } }),
 				workspaceDir: "/tmp",
-				mountedSubagents: { worker: false, computer: false },
 			} as unknown as DelegateToolDeps,
 			mail: {} as unknown as MailToolDeps,
-			// Mounted so the wire-schema invariant covers herdr too.
-			herdr: { herdr: {} as never },
 			history: {} as unknown as HistorySearchDeps,
 			// Mounted so the wire-schema invariant covers vision too.
 			vision: {} as unknown as VisionToolDeps,
 			readLong: { conversation: "dm:1", complete: async () => "" },
-			// Same for the subagents pair — the invariant only covers the
-			// tools the call actually mounts.
-			subagent: {
-				conversation: "dm:1",
-				workspace: "/tmp",
-				subagents: {} as never,
-				workerEnabled: true,
-				computerEnabled: true,
-			},
 			desktop: {
 				conversation: "dm:1",
 				workspace: "/tmp",
@@ -240,34 +225,19 @@ describe("toolNames ↔ makeTools", () => {
 			expect(mounted, `${name} must be mounted by this fixture`).toContain(name);
 		}
 		for (const [name, t] of Object.entries(tools)) {
-			const schema = (t as unknown as { inputSchema?: unknown }).inputSchema;
-			expect(schema, `${name} exposes an input schema`).toBeDefined();
-			// ui's input is a jsonSchema() wrapper carrying the wire form
-			// directly (its root stays a zod-converted object); the rest
-			// are zod and convert here.
-			const wire: { type?: unknown } =
-				(schema as { jsonSchema?: { type?: unknown } }).jsonSchema ??
-				z.toJSONSchema(schema as z.ZodType);
+			const wire = inputJsonSchema(t);
 			expect(wire.type, `${name} wire schema must be an object, got ${wire.type}`).toBe("object");
 		}
 	});
 
-	test("subagent/desktop mount only with their deps, ordered before ui", () => {
+	test("desktop mounts only with its deps, ordered before ui", () => {
 		const without = toolNames(makeTools({ cwd: "/tmp", ui: true }));
-		expect(without).not.toContain("subagent");
 		expect(without).not.toContain("desktop");
 		expect(without).toContain("ui");
 
 		const withBoth = toolNames(
 			makeTools({
 				cwd: "/tmp",
-				subagent: {
-					conversation: "dm:1",
-					workspace: "/tmp",
-					subagents: {} as never,
-					workerEnabled: true,
-					computerEnabled: true,
-				},
 				desktop: {
 					conversation: "dm:1",
 					workspace: "/tmp",
@@ -276,7 +246,6 @@ describe("toolNames ↔ makeTools", () => {
 				ui: true,
 			}),
 		);
-		expect(withBoth.indexOf("subagent")).toBeLessThan(withBoth.indexOf("ui"));
 		expect(withBoth.indexOf("desktop")).toBeLessThan(withBoth.indexOf("ui"));
 		expect(withBoth.at(-1)).toBe("ui");
 	});

@@ -8,7 +8,6 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { openStore } from "./conversation.ts";
-import type { OperatorAgent } from "./herdr.ts";
 import { setLogFile } from "./log.ts";
 import { openPrograms } from "./programs.ts";
 import { openProjects } from "./projects.ts";
@@ -22,34 +21,17 @@ import { openWakeStore, type DevelopmentInput } from "./wake-store.ts";
 
 setLogFile(null);
 
-const agent = (over: Partial<OperatorAgent> = {}): OperatorAgent => ({
-	pane_id: "pane-7",
-	workspace_id: "w",
-	tab_id: "t",
-	agent: "pi",
-	agent_status: "working",
-	name: "worker-1",
-	cwd: "/w",
-	terminal_title: null,
-	workspace_label: null,
-	tab_label: null,
-	terminal_id: "term-9",
-	agent_session: "sess-abc",
-	state_change_seq: 4,
-	completion_seq: 1,
-	revision: 2,
-	...over,
-});
+const baseline = { status: "working", messages: 4 };
 
 const target = (over: Partial<AttachmentTarget> = {}): AttachmentTarget => ({
-	server: "local",
-	session: "op",
-	agentName: "worker-1",
-	paneId: "pane-7",
-	terminalId: "term-9",
-	agentSession: "sess-abc",
-	kind: "pi",
-	cwd: "/w",
+	server: "t3",
+	session: "proj-1",
+	agentName: "mcp:t1",
+	paneId: null,
+	terminalId: null,
+	agentSession: "mcp:t1",
+	kind: "codex",
+	cwd: null,
 	...over,
 });
 
@@ -92,7 +74,7 @@ describe("the handover loop, end to end", () => {
 				checkpoints: ["diff reviewed"],
 				completionEvidence: ["ci green"],
 			},
-			attachments: [{ target: target(), baseline: agent() }],
+			attachments: [{ target: target(), baseline }],
 		});
 		expect(created).toBe(true);
 		const id = responsibility.responsibilityId;

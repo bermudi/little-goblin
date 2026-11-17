@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { foldSummary } from "../testkit/fake-summary.ts";
 import { openTestStore } from "../testkit.ts";
@@ -133,7 +133,7 @@ describe("runCompactJob native session compaction (#418)", () => {
 // split part — that re-split must land, not throw "compaction produced no
 // summary" and kill the turn ("context window full and compacting failed").
 describe("runCompactJob overflow after a split row (#403)", () => {
-	const reply = (): UIMessage => ({
+	const reply = (): Message => ({
 		id: "r1",
 		role: "assistant",
 		parts: [

@@ -37,9 +37,17 @@ export const paths = {
 	agents: () => join(goblinHome(), "workspace", "AGENTS.md"),
 	user: () => join(goblinHome(), "workspace", "USER.md"),
 	skills: () => join(goblinHome(), "workspace", "skills"),
+	// Native-subagent agent types (design/agents.md → Agent types): one
+	// markdown file per type, read at turn start. Not the workspace
+	// AGENTS.md — that is paths.agents() above.
+	agentTypes: () => join(goblinHome(), "agents"),
 	// The skill reviewer's parking area: validated auto-saves wait here
 	// for the operator's yes — never in the catalog itself.
 	skillsProposed: () => join(goblinHome(), "workspace", "skills-proposed"),
+	// The curator's archive: pass-archived skills, timestamp suffix on
+	// collision — never deleted (design/skills.md → Self-authoring,
+	// /learn, curator). Lazy like the catalog: not in ensureHomeLayout.
+	skillsArchive: () => join(goblinHome(), "workspace", "skills-archive"),
 	attachments: () => join(goblinHome(), "workspace", "attachments"),
 	state: () => join(goblinHome(), "state"),
 	db: () => join(goblinHome(), "state", "goblin.sqlite"),
@@ -59,6 +67,10 @@ export const paths = {
 	// Digest-pinned fetched temp skills — cache, not state: deletable,
 	// never a catalog entry.
 	skillcache: () => join(goblinHome(), "state", "skillcache"),
+	// The skill catalog's usage sidecar — the curator's clock
+	// (design/skills.md → Self-authoring, /learn, curator). Lazy: created
+	// on the first bump, not by ensureHomeLayout.
+	skillUsage: () => join(goblinHome(), "state", "skill-usage.json"),
 	// Lazy: created on the first project create, not by ensureHomeLayout.
 	projects: () => join(goblinHome(), "projects"),
 	// Digest-pinned auto-fetch artifacts. Cache, not state: deletable.
@@ -138,7 +150,7 @@ export function ensureHomeLayout(): void {
 		].join("\n"),
 	);
 	// Repo-shipped skills: a rebuilt box regains the capability without prompting.
-	for (const skill of ["browser", "pass-cli", "mcp", "gws", "herdr"]) {
+	for (const skill of ["browser", "pass-cli", "mcp", "gws"]) {
 		mkdirSync(join(paths.skills(), skill), { recursive: true });
 		const template = readFileSync(
 			join(import.meta.dir, "..", "deploy", "skills", skill, "SKILL.md"),

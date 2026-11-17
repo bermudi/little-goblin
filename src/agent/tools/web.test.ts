@@ -4,7 +4,15 @@
 // vendor.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { fenceUntrusted, fetchOk, ProviderError, readJson, readTextCapped } from "./web.ts";
+import {
+	fenceUntrusted,
+	fetchOk,
+	postJson,
+	ProviderError,
+	readCapped,
+	readJson,
+	readTextCapped,
+} from "./web.ts";
 
 let servers: ReturnType<typeof Bun.serve>[] = [];
 afterEach(() => {
@@ -64,6 +72,37 @@ describe("readTextCapped", () => {
 	});
 });
 
+describe("readCapped", () => {
+	test("returns all bytes under the cap and reports the byte count", async () => {
+		const bytes = new TextEncoder().encode("small body");
+		const result = await readCapped(new Response(bytes).body, 20);
+		expect(result).toEqual({ tooLarge: false, bytes, seen: bytes.byteLength });
+	});
+
+	test("cancels the source when the cap is exceeded", async () => {
+		let cancelled = false;
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new Uint8Array(6));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const result = await readCapped(body, 5);
+		expect(result).toMatchObject({ tooLarge: true, seen: 6 });
+		expect(cancelled).toBe(true);
+	});
+
+	test("null body is empty", async () => {
+		expect(await readCapped(null, 0)).toEqual({
+			tooLarge: false,
+			bytes: new Uint8Array(),
+			seen: 0,
+		});
+	});
+});
+
 describe("readJson", () => {
 	test("small JSON parses with its byte size", async () => {
 		const { data, bytes } = await readJson("fake", Response.json({ a: 1 }));
@@ -89,6 +128,40 @@ describe("readJson", () => {
 		// The read stopped ~8 chunks in — a full page inside JSON is
 		// never buffered whole.
 		expect(produced).toBeLessThan(20);
+	});
+});
+
+describe("postJson", () => {
+	test("returns parsed data, status, and byte metadata for a successful response", async () => {
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: () =>
+				new Response('{"ok":true}', { headers: { "content-type": "application/json" } }),
+		});
+		servers.push(server);
+		const result = await postJson(
+			"test",
+			`http://127.0.0.1:${server.port}`,
+			{},
+			{ query: "x" },
+			1000,
+		);
+		expect(result.data).toEqual({ ok: true });
+		expect(result.status).toBe(200);
+		expect(result.meta).toEqual({ status: 200, contentType: "application/json", bytes: 11 });
+	});
+
+	test("a client error throws ProviderError with the received status", async () => {
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: () => Response.json({ error: "bad request" }, { status: 400 }),
+		});
+		servers.push(server);
+		const request = postJson("test", `http://127.0.0.1:${server.port}`, {}, {}, 1000);
+		await expect(request).rejects.toBeInstanceOf(ProviderError);
+		await expect(request).rejects.toMatchObject({ httpStatus: 400 });
 	});
 });
 

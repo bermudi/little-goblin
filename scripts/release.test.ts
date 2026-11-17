@@ -12,7 +12,7 @@
 // graph) resolve through untracked symlinks, so the archive stays exactly
 // the fixture's committed tree.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
 	chmodSync,
@@ -28,6 +28,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import * as durable from "../src/durable.ts";
 import { tmpDir } from "../src/testkit.ts";
 import {
 	isCompleteRelease,
@@ -38,7 +39,9 @@ import {
 	readLive,
 	releaseDir,
 	rewriteWorkingDirectory,
+	syncConfigForFlip,
 	waitForIdle,
+	type Context,
 } from "./release.ts";
 
 const REPO = resolve(import.meta.dir, "..");
@@ -422,6 +425,9 @@ describe("rollout", () => {
 			const result = release(box, ["--rev", "HEAD~1"]);
 			expect(result.status).toBe(0);
 			expect(result.stdout).toContain(`deployed ${older}`);
+			expect(result.stdout).toContain(
+				"post-deploy proof: docs/operations.md → Post-deploy proof (new surfaces)",
+			);
 			expect(result.stdout).toContain(`rollback: bun scripts/release.ts --rollback ${first}`);
 			// The fixture home has no goblin.json5, so the wait skips with this
 			// warning; it must be issued before the flip, so an interrupt during
@@ -545,6 +551,97 @@ describe("status", () => {
 		},
 		RELEASE_TEST_TIMEOUT_MS,
 	);
+});
+
+describe("config snapshots", () => {
+	function configBox(goblinHome: string | null = null) {
+		const box = makeBox();
+		const home = join(box.root, "config-home");
+		mkdirSync(home, { recursive: true });
+		mkdirSync(join(home, "state"));
+		writeFileSync(join(home, "state", "goblin.log"), "");
+		const config = join(home, "goblin.json5");
+		writeFileSync(config, '{"shape":"new"}\n', { mode: 0o600 });
+		const ctx: Context = {
+			repo: box.root,
+			layout: layoutFrom({ GOBLIN_RELEASES_ROOT: box.releases }, box.root),
+			bun: BUN,
+			goblinHome: goblinHome === null ? home : goblinHome,
+		};
+		return { box, home, config, ctx };
+	}
+
+	test("saves the outgoing config snapshot", () => {
+		const { config, ctx } = configBox();
+		const live = "a".repeat(40);
+		syncConfigForFlip(ctx, live, "b".repeat(40), "rollout");
+		expect(readFileSync(join(ctx.layout.root, ".configs", `${live}.goblin.json5`), "utf8")).toBe(
+			readFileSync(config, "utf8"),
+		);
+	});
+
+	test("restores a target snapshot, keeps the previous config, and preserves mode", () => {
+		const { config, ctx } = configBox();
+		const live = "a".repeat(40);
+		const target = "b".repeat(40);
+		mkdirSync(join(ctx.layout.root, ".configs"), { recursive: true });
+		writeFileSync(join(ctx.layout.root, ".configs", `${target}.goblin.json5`), '{"shape":"old"}\n');
+		const durableWrite = spyOn(durable, "durableWriteFile");
+		try {
+			syncConfigForFlip(ctx, live, target, "rollback");
+			expect(durableWrite).toHaveBeenCalledWith(
+				config,
+				'{"shape":"old"}\n',
+				0o600,
+			);
+		} finally {
+			durableWrite.mockRestore();
+		}
+		expect(readFileSync(config, "utf8")).toBe('{"shape":"old"}\n');
+		expect(readFileSync(`${config}.rollback-from-${live.slice(0, 7)}`, "utf8")).toBe(
+			'{"shape":"new"}\n',
+		);
+		expect(statSync(config).mode & 0o777).toBe(0o600);
+		expect(statSync(`${config}.rollback-from-${live.slice(0, 7)}`).mode & 0o777).toBe(0o600);
+	});
+
+	test("identical snapshot does not create a rollback-from file", () => {
+		const { config, ctx } = configBox();
+		const live = "a".repeat(40);
+		const target = "b".repeat(40);
+		mkdirSync(join(ctx.layout.root, ".configs"), { recursive: true });
+		writeFileSync(join(ctx.layout.root, ".configs", `${target}.goblin.json5`), readFileSync(config));
+		syncConfigForFlip(ctx, live, target, "rollback");
+		expect(existsSync(`${config}.rollback-from-${live.slice(0, 7)}`)).toBe(false);
+	});
+
+	test("missing rollback snapshot warns and leaves config untouched", () => {
+		const { config, ctx } = configBox();
+		const write = spyOn(process.stderr, "write").mockImplementation(() => true);
+		const before = readFileSync(config, "utf8");
+		try {
+			expect(() => syncConfigForFlip(ctx, "a".repeat(40), "b".repeat(40), "rollback")).not.toThrow();
+			expect(readFileSync(config, "utf8")).toBe(before);
+			expect(write.mock.calls.flat().join("")).toContain("no config snapshot");
+		} finally {
+			write.mockRestore();
+		}
+	});
+
+	test("unknown home warns without throwing; status excludes dot config store", () => {
+		const { box, ctx } = configBox();
+		ctx.goblinHome = null;
+		const write = spyOn(process.stderr, "write").mockImplementation(() => true);
+		try {
+			expect(() => syncConfigForFlip(ctx, null, "a".repeat(40), "rollout")).not.toThrow();
+			expect(write.mock.calls.flat().join("")).toContain("config snapshot skipped");
+		} finally {
+			write.mockRestore();
+		}
+		mkdirSync(join(box.releases, ".configs"), { recursive: true });
+		const status = release(box, ["--status"]);
+		expect(status.stdout).not.toContain(".configs");
+	});
 });
 
 describe("unit parsing", () => {

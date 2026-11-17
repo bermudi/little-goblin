@@ -28,11 +28,16 @@ function configSyntaxError(err: unknown): Error {
 // Retired delegation keys are the one compatibility exception to the
 // unknown-field rule: named here, stripped with a warning on disk load,
 // and gone from the next canonical save. Anything else unknown is a
-// validation error.
+// validation error. The t3 move (issue #607) retired the whole previous
+// harness shape — an old-shape harnesses map drops the entire
+// delegation block rather than failing boot: goblin comes up without
+// the delegate tool and the operator rewrites the block by hand.
 const RETIRED_DELEGATION_KEYS = {
 	machine: "delegation.machines.<label>.machine (and root for remote paths)",
 	session: "delegation.machines.<label>.session; the own local session is fixed by the service",
 	maxRunning: "no replacement — delegation concurrency is not capped by config",
+	machines:
+		"no replacement — delegation runs on T3 Code now; machine targets have no t3 CLI flag (issue #607)",
 } as const;
 
 function stripRetiredDelegationKeys(raw: unknown, warn: boolean): unknown {
@@ -40,6 +45,33 @@ function stripRetiredDelegationKeys(raw: unknown, warn: boolean): unknown {
 	const delegation = (raw as Record<string, unknown>).delegation;
 	if (typeof delegation !== "object" || delegation === null || Array.isArray(delegation)) {
 		return raw;
+	}
+	// The retired harness shape: kind/args instead of provider/model. One
+	// stale entry retires the block — a half-migrated table cannot name
+	// a T3 provider for every harness the operator may select. Entries
+	// that are merely malformed in the new shape stay zod's to fail
+	// loud, not this migration's to hide.
+	const harnesses = (delegation as Record<string, unknown>).harnesses;
+	if (
+		typeof harnesses === "object" &&
+		harnesses !== null &&
+		!Array.isArray(harnesses) &&
+		Object.values(harnesses).some(
+			(h) =>
+				typeof h === "object" && h !== null && !Array.isArray(h) && ("kind" in h || "args" in h),
+		)
+	) {
+		if (warn) {
+			log.warn("retired-shape delegation harnesses ignored — rewrite for T3 Code", {
+				path: paths.config(),
+				key: "delegation",
+				replacement:
+					"harnesses entries are {provider, model, options?} on T3 Code (t3 thread start --provider --model --option); the delegation block was dropped",
+			});
+		}
+		const rest = { ...(raw as Record<string, unknown>) };
+		delete rest.delegation;
+		return rest;
 	}
 	let stripped: Record<string, unknown> | null = null;
 	for (const [key, replacement] of Object.entries(RETIRED_DELEGATION_KEYS)) {
@@ -122,9 +154,35 @@ function unrecognizedKeyLines(sourceText: string, key: string): number[] {
 	return lines;
 }
 
+// The Pi Durable runtime is gone (issue #609): a `subagents` block —
+// top-level or parked — fails loud and names its replacement, so an
+// old config can't boot a goblin with no subagent tools and no hint
+// why. Checked before strict validation because the key is no longer
+// in the schema at all.
+function retiredSubagentsKey(raw: unknown): string | null {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
+	const rec = raw as Record<string, unknown>;
+	if (Object.hasOwn(rec, "subagents")) return "subagents";
+	const parked = rec.parked;
+	if (
+		typeof parked === "object" &&
+		parked !== null &&
+		!Array.isArray(parked) &&
+		Object.hasOwn(parked, "subagents")
+	)
+		return "parked.subagents";
+	return null;
+}
+
 // Unknown keys anywhere in the object are rejected, not stripped: a typo
 // must fail loudly at load rather than disappear on the next save.
 export function parseConfig(raw: unknown, sourceText?: string): Config {
+	const retired = retiredSubagentsKey(raw);
+	if (retired !== null) {
+		throw new ConfigValidationError(
+			`${paths.config()}: ${retired} was removed — native subagents replaced it: use the agent tool and its agent types (the computer type for desktops); delete the block (design/agents.md)`,
+		);
+	}
 	const result = configSchema.safeParse(raw);
 	if (!result.success) {
 		// Nested record keys and issue messages may contain input. Report only
@@ -211,9 +269,6 @@ export function authReferences(config: Config): Set<string> {
 	if (config.mail) {
 		refs.add(config.mail.clientSecretAuth);
 		refs.add(config.mail.sendAuth);
-	}
-	for (const type of [config.subagents?.worker, config.subagents?.computer]) {
-		if (type !== undefined) refs.add(type.model.auth);
 	}
 	return refs;
 }

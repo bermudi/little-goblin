@@ -1,0 +1,40 @@
+import { describe, expect, test } from "bun:test";
+import type { Api } from "grammy";
+import { openStore } from "../conversation.ts";
+import { deferred, tmpDb } from "../testkit.ts";
+import { openTurnJournal } from "../turn-journal.ts";
+import { sendInterruptedTurnNotices } from "./turn-notice.ts";
+
+describe("turn notice crash recovery", () => {
+	test("a notice accepted before its delivery mark is sent again at boot", async () => {
+		const path = tmpDb("goblin-notice-crash-");
+		const first = openStore(path);
+		const conv = first.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const journal = openTurnJournal(first.db);
+		journal.beginRun({ runId: "crash-notice", conversationId: conv.id, epoch: 1, anchorSeq: null, steerMark: null, convSnapshot: {}, toolNames: [], startedAt: "2026-01-01T00:00:00Z" });
+		first.close();
+		const boot = openStore(path);
+		const claims = openTurnJournal(boot.db);
+		const notice = claims.pendingBootNotices().interrupted[0]!;
+		const hang = deferred<unknown>();
+		let calls = 0;
+		const texts: string[] = [];
+		const api = { sendMessage: (_chat: number, text: string) => { calls++; texts.push(text); return hang.promise; } } as unknown as Api;
+		sendInterruptedTurnNotices(api, [notice], [1], () => undefined, claims);
+		await Bun.sleep(0);
+		expect(calls).toBe(1);
+		expect(texts[0]).toContain("interrupted turn crash-n");
+		expect(claims.pendingBootNotices().interrupted).toHaveLength(1);
+		boot.close();
+		const next = openStore(path);
+		const nextJournal = openTurnJournal(next.db);
+		const nextApi = { sendMessage: async (_chat: number, text: string) => { calls++; texts.push(text); return {}; } } as unknown as Api;
+		sendInterruptedTurnNotices(nextApi, nextJournal.pendingBootNotices().interrupted, [1], () => undefined, nextJournal);
+		await Bun.sleep(0);
+		expect(calls).toBe(2);
+		expect(texts[1]).toContain("interrupted turn crash-n");
+		await Bun.sleep(0);
+		expect(nextJournal.pendingBootNotices().interrupted).toHaveLength(0);
+		next.close();
+	});
+});

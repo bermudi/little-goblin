@@ -301,12 +301,14 @@ export function SettingsModels({ ctx }: { ctx: SettingsCtx }) {
 						</button>
 					)}
 				</div>
-				{shown.map((ref) => row(ref, true))}
-				{shownHidden.length > 0 && <div className="mgroup">Hidden from picker</div>}
-				{shownHidden.map((ref) => row(ref, false))}
-				{q !== "" && shown.length === 0 && shownHidden.length === 0 && (
-					<div className="cap ops-cap">No models match.</div>
-				)}
+				<div className="pk-list" role="region" aria-label="Chat picker models" tabIndex={0}>
+					{shown.map((ref) => row(ref, true))}
+					{shownHidden.length > 0 && <div className="mgroup">Hidden from picker</div>}
+					{shownHidden.map((ref) => row(ref, false))}
+					{q !== "" && shown.length === 0 && shownHidden.length === 0 && (
+						<div className="cap ops-cap">No models match.</div>
+					)}
+				</div>
 				<div className="cap">
 					Star a model to pin it to the top. The switch hides a model from the menu; your default
 					models above stay as they are. Models you added by hand stay in this list while hidden.

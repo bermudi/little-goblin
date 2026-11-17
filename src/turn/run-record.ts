@@ -1,6 +1,6 @@
 // The attempt's journal run row — fault box, terminal stamp, unlanded-progress record — plus the model-fallback config the attempt serves; the run id, store, and ownership hooks stay injected.
 
-import type { UIMessage } from "ai";
+import type { Message } from "../message.ts";
 import {
 	candidateRefs,
 	type FallbackMiss,
@@ -22,8 +22,8 @@ import {
 export interface RunRecordFallback {
 	// The trail an overflow continuation keeps; a fresh attempt has none.
 	trail: FallbackTrail | undefined;
-	// The operator's selection when a fallback serves — the resume drift
-	// check compares this; resume runs on `model`.
+	// The operator's selection when a fallback serves — recorded on the
+	// run row's snapshot.
 	configured: string | null;
 	// Only a fresh turn walks the list.
 	fresh: boolean;
@@ -48,14 +48,14 @@ export interface RunRecord {
 	// A shutdown fence leaves the row 'running' on purpose (#471): for
 	// the journal a graceful restart IS process death, so the next open
 	// reclassifies it 'interrupted' and records its unlanded progress
-	// itself — boot notices, /interrupted and /resume all reach it.
+	// itself — the boot notice and the history record reach it (#594).
 	// Seals the record so the attempt's finally guard cannot stamp over
 	// the deliberate 'running'; no ownership end either — there is no
 	// terminal stamp for the dispatcher to settle off.
 	leaveRunning(): void;
 	// `reply` is the wire-streamed partial (replyFromWire) — it donates
 	// the event's id and rides its metadata; null when nothing streamed.
-	recordUnlandedProgress(outcome: UnlandedOutcome, reply: UIMessage | null): void;
+	recordUnlandedProgress(outcome: UnlandedOutcome, reply: Message | null): void;
 	// The reply landed durably — a failure past it must not also record a
 	// progress event (the final reply is the record).
 	markReplyLanded(): void;
@@ -79,17 +79,17 @@ export interface RunRecordDeps {
 }
 
 // The crash journal's per-attempt state: a fresh runId per attempt (an
-// overflow resume opens a second row — the failed attempt keeps its own
-// record), stamped terminal exactly once. The attempt's finally guard is
-// the invariant's backstop: a begun row never escapes the attempt still
-// 'running', whatever the escape path — except a shutdown fence, whose
-// leaveRunning is the deliberate exception (#471).
+// overflow continuation opens a second row — the failed attempt keeps
+// its own record), stamped terminal exactly once. The attempt's finally
+// guard is the invariant's backstop: a begun row never escapes the
+// attempt still 'running', whatever the escape path — except a shutdown
+// fence, whose leaveRunning is the deliberate exception (#471).
 export function openRunRecord(deps: RunRecordDeps): RunRecord {
 	const { journal, store, convId, epoch, convModel, recovery, ownedInputSeqs } = deps;
 	// design/model.md → Model fallback list. Only a fresh turn walks the
-	// list: an operator resume, an overflow continuation, or anything
-	// carrying a partial or prior tool calls stays on its model (never
-	// mid-loop). A fallback attempt's recovery is fresh by construction.
+	// list: an overflow continuation, or anything carrying a partial or
+	// prior tool calls stays on its model (never mid-loop). A fallback
+	// attempt's recovery is fresh by construction.
 	const trail: FallbackTrail | undefined = recovery?.fallback;
 	const configured = trail?.configured ?? convModel;
 	const fresh =
@@ -97,9 +97,7 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 		(trail !== undefined &&
 			recovery.partial === null &&
 			recovery.toolCalls.length === 0 &&
-			recovery.resumedFrom === undefined &&
-			recovery.overflowed !== true &&
-			recovery.operatorRequest === undefined);
+			recovery.overflowed !== true);
 	const misses: FallbackMiss[] = trail?.tried ?? [];
 	const fallback: RunRecordFallback = {
 		trail,
@@ -154,7 +152,7 @@ export function openRunRecord(deps: RunRecordDeps): RunRecord {
 	// write, like the ⏹ superseded display stamp). An append failure
 	// never changes the outcome.
 	let replyLanded = false;
-	const recordUnlandedProgress = (outcome: UnlandedOutcome, reply: UIMessage | null): void => {
+	const recordUnlandedProgress = (outcome: UnlandedOutcome, reply: Message | null): void => {
 		const id = deps.runId();
 		if (journal === undefined || id === null || runStamped || replyLanded) return;
 		if (outcome.kind === "failed" && store.get(convId)?.epoch !== epoch) return;

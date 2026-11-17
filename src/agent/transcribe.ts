@@ -29,9 +29,10 @@ import { whistleArtifactPresence, whistleEngine } from "./transcribe-whistle.ts"
 
 const FFMPEG_TIMEOUT_MS = 180_000;
 
-// ≈1 h 52 m at the whistle profile's 28 s — past it, fail loud instead
-// of grinding CPU for an afternoon.
-const MAX_SEGMENTS = 240;
+// One bound in audio time for every engine, so a paid cloud engine can't
+// bill hours more than local Whistle would grind. Floor: a partial last
+// segment still bills, so the cap errs short.
+const MAX_AUDIO_SECONDS = 240 * 28;
 
 export interface SpeechFile {
 	path: string;
@@ -146,8 +147,9 @@ export async function transcribeAudio(
 	if (engine.prep.container === "wav") {
 		// The wav profile always transcodes — the local engine only eats
 		// 16 kHz mono RIFF.
-		return transcribeSegmented(engine, file, (dir) =>
-			segmentAudio(file.path, dir, segmentSeconds ?? 28, {
+		const seconds = segmentSeconds ?? 28;
+		return transcribeSegmented(engine, file, seconds, (dir) =>
+			segmentAudio(file.path, dir, seconds, {
 				container: "wav",
 				sampleRateHz: engine.prep.sampleRateHz,
 				mono: engine.prep.mono,
@@ -157,8 +159,9 @@ export async function transcribeAudio(
 	if (maxBytes === undefined || (await stat(file.path)).size <= maxBytes) {
 		return transcribeOne(engine, file);
 	}
-	return transcribeSegmented(engine, file, (dir) =>
-		segmentAudio(file.path, dir, segmentSeconds ?? 15 * 60, {
+	const seconds = segmentSeconds ?? 15 * 60;
+	return transcribeSegmented(engine, file, seconds, (dir) =>
+		segmentAudio(file.path, dir, seconds, {
 			container: "keep",
 			sampleRateHz: undefined,
 			mono: undefined,
@@ -166,23 +169,27 @@ export async function transcribeAudio(
 	);
 }
 
-async function transcribeSegmented(
+export async function transcribeSegmented(
 	engine: SpeechEngine,
 	file: SpeechFile,
+	segmentSeconds: number,
 	segment: (dir: string) => Promise<string[]>,
 ): Promise<string | null> {
 	await using scratch = await tempDir("goblin-tr-");
 	const dir = scratch.path;
 	const segments = await segment(dir);
-	if (segments.length > MAX_SEGMENTS) {
+	const maxSegments = Math.floor(MAX_AUDIO_SECONDS / segmentSeconds);
+	if (segments.length > maxSegments) {
 		throw new Error(
-			`transcription needs ${segments.length} segments (max ${MAX_SEGMENTS}) — split the file or use a faster engine`,
+			`audio needs ${segments.length} segments of ${formatDuration(segmentSeconds)}; one transcribe call takes at most ${maxSegments} (${formatDuration(maxSegments * segmentSeconds)}) — cut it first, e.g. ffmpeg -ss <start> -t <seconds> -c copy`,
 		);
 	}
 	log.info("transcription segmented", {
 		file: file.filename,
 		path: file.path,
 		segments: segments.length,
+		segmentSeconds,
+		maxSegments,
 		engine: engine.id,
 	});
 	const texts: string[] = [];
@@ -208,6 +215,16 @@ async function transcribeSegmented(
 		}
 	}
 	return texts.length === 0 ? null : texts.join(" ");
+}
+
+function formatDuration(seconds: number): string {
+	if (seconds >= 3600) {
+		const hours = Math.floor(seconds / 3600);
+		const minutes = Math.floor((seconds % 3600) / 60);
+		return `${hours} h ${minutes} m`;
+	}
+	if (seconds >= 60) return `${Math.floor(seconds / 60)} m`;
+	return `${Math.floor(seconds)} s`;
 }
 
 interface PrepSpec {

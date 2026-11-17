@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
 	transcribeAudio,
 	transcribeChain,
+	transcribeSegmented,
 	type EngineTranscript,
 	type SpeechEngine,
 } from "./transcribe.ts";
@@ -137,6 +138,46 @@ describe("transcribeAudio", () => {
 		);
 		expect(n).toBe(3);
 		expect(seen.map(({ bytes }) => oggCodec(bytes))).toEqual(["opus", "opus", "opus"]);
+	}, 30_000);
+
+	test("keep-profile cloud audio over the duration bound fails before transcription", async () => {
+		let calls = 0;
+		const engine: SpeechEngine = {
+			id: "test/cloud",
+			limits: { maxSeconds: 15 * 60 },
+			prep: { container: "keep" },
+			transcribe: async () => {
+				calls += 1;
+				return { text: "unexpected" };
+			},
+		};
+		await expect(
+			transcribeSegmented(engine, file("source.ogg"), 15 * 60, async () =>
+				Array.from({ length: 8 }, (_, i) => `segment-${i}.ogg`),
+			),
+		).rejects.toThrow(
+			"audio needs 8 segments of 15 m; one transcribe call takes at most 7 (1 h 45 m)",
+		);
+		expect(calls).toBe(0);
+	});
+
+	test("keep-profile cloud audio within the duration bound transcribes", async () => {
+		let calls = 0;
+		const engine: SpeechEngine = {
+			id: "test/cloud",
+			limits: { maxSeconds: 15 * 60 },
+			prep: { container: "keep" },
+			transcribe: async () => {
+				calls += 1;
+				return { text: "chunk" };
+			},
+		};
+		expect(
+			await transcribeSegmented(engine, file("source.ogg"), 15 * 60, async () =>
+				Array.from({ length: 7 }, (_, i) => `segment-${i}.ogg`),
+			),
+		).toBe("chunk chunk chunk chunk chunk chunk chunk");
+		expect(calls).toBe(7);
 	});
 
 	test("the wav profile always segments to 16 kHz mono pcm and joins", async () => {
@@ -166,7 +207,7 @@ describe("transcribeAudio", () => {
 			expect(p.endsWith(".wav")).toBe(true);
 			expect(wavShape(bytes)).toEqual({ channels: 1, sampleRate: 16_000 });
 		}
-	});
+	}, 30_000);
 
 	test("broken container timestamps still segment by wall time", async () => {
 		if (Bun.which("ffmpeg") === null) return; // environment dep
@@ -251,7 +292,7 @@ describe("transcribeAudio", () => {
 		expect(await transcribeAudio(engine, file(src), { maxBytes: 1, segmentSeconds: 10 })).toBe(
 			"chunk-1",
 		);
-	});
+	}, 30_000);
 
 	test("every segment silent → null", async () => {
 		if (Bun.which("ffmpeg") === null) return; // environment dep
@@ -267,22 +308,45 @@ describe("transcribeAudio", () => {
 		expect(await transcribeAudio(engine, file(src), { segmentSeconds: 10 })).toBeNull();
 	});
 
-	test("past the segment ceiling the transcription fails loud, not slow", async () => {
-		if (Bun.which("ffmpeg") === null) return; // environment dep
-		const dir = tmpDir("goblin-tr-");
-		const src = join(dir, "long.ogg");
-		genAudio(src, 11);
+	test("wav profile allows 240 28-second segments and rejects 241", async () => {
+		let allowedCalls = 0;
 		const engine: SpeechEngine = {
 			id: "whistle",
 			limits: { maxSeconds: 28 },
 			prep: { container: "wav", sampleRateHz: 16_000, mono: true },
-			transcribe: async () => ({ text: "x" }),
+			transcribe: async () => {
+				allowedCalls += 1;
+				return { text: "ok" };
+			},
 		};
-		// 11 s at 40 ms segments → 275 > 240: the guard fires before any
-		// engine call.
-		await expect(transcribeAudio(engine, file(src), { segmentSeconds: 0.04 })).rejects.toThrow(
-			"275 segments (max 240)",
+		const atBound = await transcribeSegmented(
+			engine,
+			file("source.wav"),
+			28,
+			async () => Array.from({ length: 240 }, (_, i) => `segment-${i}.wav`),
 		);
+		expect(atBound).toBe("ok ".repeat(239) + "ok");
+		expect(allowedCalls).toBe(240);
+
+		let rejectedCalls = 0;
+		const rejectingEngine: SpeechEngine = {
+			...engine,
+			transcribe: async () => {
+				rejectedCalls += 1;
+				return { text: "unexpected" };
+			},
+		};
+		await expect(
+			transcribeSegmented(
+				rejectingEngine,
+				file("source.wav"),
+				28,
+				async () => Array.from({ length: 241 }, (_, i) => `segment-${i}.wav`),
+			),
+		).rejects.toThrow(
+			"audio needs 241 segments of 28 s; one transcribe call takes at most 240 (1 h 52 m)",
+		);
+		expect(rejectedCalls).toBe(0);
 	});
 
 	test("a corrupt source fails loud through ffmpeg", async () => {

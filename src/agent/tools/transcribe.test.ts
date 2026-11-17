@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { makeTools } from "./mod.ts";
-import { transcribeTool } from "./transcribe.ts";
+import { readFileTool } from "./read.ts";
+import { transcribeTool, wrapTranscript } from "./transcribe.ts";
 import type { SpeechFile } from "../transcribe.ts";
 
 const dirs: string[] = [];
@@ -38,6 +39,58 @@ describe("transcribe", () => {
 		expect(seen[0]!.path).toBe(join(dir, "podcast.mp3"));
 		expect(seen[0]!.filename).toBe("podcast.mp3");
 		expect(out).toEqual({ transcript: "hello world" });
+	});
+
+	test("a long transcript returns head and tail, and names the file holding all of it", async () => {
+		const dir = workdir();
+		writeFileSync(join(dir, "talk.mp3"), "mp3-bytes");
+		const lines = Array.from({ length: 4000 }, (_, i) => `line ${i} of the talk`);
+		const full = lines.join("\n");
+		const t = transcribeTool(dir, async () => full);
+		const out = (await t.execute!({ path: "talk.mp3" }, opts)) as {
+			transcript: string;
+			truncated?: boolean;
+		};
+		expect(out.truncated).toBe(true);
+		expect(out.transcript.length).toBeLessThan(16_000);
+		expect(out.transcript).toContain("line 0 of the talk");
+		expect(out.transcript).toContain("line 3999 of the talk");
+		expect(out.transcript).not.toContain("line 2000 of the talk");
+		const saved = /saved to: (\S+)/.exec(out.transcript)![1]!;
+		expect(readFileSync(saved, "utf-8")).toBe(full);
+	});
+
+	test("a long single-line transcript spills into readable pages", async () => {
+		const dir = workdir();
+		writeFileSync(join(dir, "whistle.mp3"), "mp3-bytes");
+		const full = Array.from({ length: 3584 }, () => "words").join(" ");
+		const t = transcribeTool(dir, async () => full);
+		const out = (await t.execute!({ path: "whistle.mp3" }, opts)) as {
+			transcript: string;
+			truncated?: boolean;
+		};
+		expect(out.truncated).toBe(true);
+		const saved = /saved to: (\S+)/.exec(out.transcript)![1]!;
+		const spilled = readFileSync(saved, "utf-8");
+		const lines = spilled.split("\n");
+		expect(lines.every((line) => line.length <= 500)).toBe(true);
+		expect(lines.join(" ")).toBe(full);
+
+		const read = readFileTool(dirname(saved));
+		const page = (await read.execute!({ path: basename(saved), offset: 2 }, opts)) as {
+			content?: string;
+			error?: string;
+		};
+		expect(page.error).toBeUndefined();
+		expect(page.content).toContain("2\t");
+		expect(page.content).not.toContain("beyond end of file");
+	});
+
+	test("a long no-space transcript wraps by Unicode code point", async () => {
+		const full = "字".repeat(3000);
+		const lines = wrapTranscript(full).split("\n");
+		expect(lines.every((line) => Array.from(line).length <= 500)).toBe(true);
+		expect(lines.join("")).toBe(full);
 	});
 
 	test("a missing file is an error result, not a throw", async () => {

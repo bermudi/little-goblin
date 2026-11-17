@@ -389,6 +389,27 @@ describe("unlanded turn records (issue #408)", () => {
       const history = [asMsg(user), asMsg({ ...a1 })];
       expect(mergeTranscript(current, history)).toBe(current);
     });
+
+    test("same-order durable history replaces stale streamed content only", () => {
+      const partial = asMsg({
+        id: "a1",
+        role: "assistant",
+        parts: [{ type: "text", text: "word0 … word16", state: "streaming" }],
+      });
+      const complete = asMsg({
+        id: "a1",
+        role: "assistant",
+        parts: [{ type: "text", text: "word0 … word39 ", state: "done" }],
+      });
+      const current = [asMsg(user), partial];
+      const history = [asMsg({ ...user }), complete];
+
+      const merged = mergeTranscript(current, history);
+
+      expect(merged).not.toBe(current);
+      expect(merged[0]).toBe(current[0]);
+      expect(merged[1]).toBe(complete);
+    });
   });
 
   describe("unlandedMeta", () => {

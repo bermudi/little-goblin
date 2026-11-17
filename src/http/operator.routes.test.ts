@@ -555,9 +555,9 @@ describe("skills/forget-thread route", () => {
 	test("forgets only the named thread's provenance rows", async () => {
 		const { d, sources, store } = skillsDeps();
 		try {
-			sources.record("app/1", "herdr", "reviewer");
+			sources.record("app/1", "demo", "reviewer");
 			sources.record("app/1", "smoke-test", "turn");
-			sources.record("dm:1", "herdr", "reviewer");
+			sources.record("dm:1", "demo", "reviewer");
 			const res = await postSkillsForget({ conversation: "app/1" }, d);
 			expect(res?.status).toBe(200);
 			expect(await res?.json()).toEqual({ ok: true, removed: 2 });
@@ -1008,11 +1008,11 @@ describe("config save", () => {
 		expect(((await res?.json()) as { error: string }).error).toContain(
 			"delegation: unrecognized_keys",
 		);
-		// A herdr-shaped posted block fails the same way — no silent drop.
-		const herdr = await postConfig(d, {
+		// A retired-shape posted block fails the same way — no silent drop.
+		const legacy = await postConfig(d, {
 			delegation: { harnesses: { pi: { kind: "pi" } } },
 		});
-		expect(herdr?.status).toBe(422);
+		expect(legacy?.status).toBe(422);
 		// Nothing was written by either refusal — the incumbent block
 		// (which lived in configRef, not on disk) is untouched.
 		expect(loadConfig()).toBeNull();

@@ -19,7 +19,7 @@ const doneLine = (over: Record<string, unknown> = {}): string =>
 		msg: "reviewer review done",
 		review_id: "r-1",
 		conversation: "app/1",
-		skills: ["herdr"],
+		skills: ["demo"],
 		...over,
 	});
 
@@ -70,14 +70,14 @@ describe("backfill-skill-sources", () => {
 		);
 		const dry = run(home, log, "--dry");
 		expect(dry.code).toBe(0);
-		expect(dry.out).toContain("[dry] app/1  herdr");
+		expect(dry.out).toContain("[dry] app/1  demo");
 		expect(rowsAt(db)).toEqual([]);
 
 		const real = run(home, log);
 		expect(real.code).toBe(0);
 		expect(real.out).toContain("recorded 3 rows");
 		const rows = rowsAt(db);
-		expect(rows.map((r) => r.skill).sort()).toEqual(["a-skill", "b-skill", "herdr"]);
+		expect(rows.map((r) => r.skill).sort()).toEqual(["a-skill", "b-skill", "demo"]);
 		expect(rows.every((r) => r.kind === "reviewer" && r.reviewId === "r-1")).toBe(true);
 	});
 
@@ -105,7 +105,7 @@ describe("backfill-skill-sources", () => {
 		// A live turn write lands at 05:00 — newer truth than the log.
 		const store = openStore(db);
 		try {
-			new SkillSources(store.db).record("app/1", "herdr", "turn", "2026-10-16T05:00:00.000Z");
+			new SkillSources(store.db).record("app/1", "demo", "turn", "2026-10-16T05:00:00.000Z");
 		} finally {
 			store.close();
 		}

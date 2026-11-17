@@ -142,7 +142,7 @@ export function ensureHomeLayout(): void {
 		].join("\n"),
 	);
 	// Repo-shipped skills: a rebuilt box regains the capability without prompting.
-	for (const skill of ["browser", "pass-cli", "mcp", "gws", "herdr"]) {
+	for (const skill of ["browser", "pass-cli", "mcp", "gws"]) {
 		mkdirSync(join(paths.skills(), skill), { recursive: true });
 		const template = readFileSync(
 			join(import.meta.dir, "..", "deploy", "skills", skill, "SKILL.md"),

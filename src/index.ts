@@ -32,7 +32,6 @@ import { ensureHomeLayout, paths } from "./home-layout.ts";
 import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins.ts";
 import { captureConversationSettings, openStore } from "./conversation.ts";
 import { delegationWake, wireDelegation } from "./delegation-lifecycle.ts";
-import { makeOperatorHerdr } from "./herdr.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import { makeDesktops } from "./desktops.ts";
 import { openDesktops } from "./desktops-store.ts";
@@ -239,11 +238,6 @@ async function boot() {
 		lifecycle: () => wire.late().delegationLifecycle(),
 		pin: (conv, name) => launchPin(launchPinDeps, conv, name),
 	});
-	// The operator's own `default` herdr session — the herdr tool's
-	// adapter now, not a delegation transport (#607 moved that to T3
-	// Code; #608 owns the remaining herdr surface).
-	const operatorHerdr = makeOperatorHerdr();
-
 	// Voice replies and transcription die at runtime without ffmpeg —
 	// the probe, the wav-profile gate, and the ttsDown flag live in
 	// transcribe.ts (checkBootMedia).
@@ -323,7 +317,6 @@ async function boot() {
 				: null,
 		transcribe: transcribeFile,
 		delegateDeps,
-		operatorHerdr,
 		t3,
 		mail: () => mailApproval,
 		programApproval: () => programApproval,
@@ -916,8 +909,8 @@ async function shutdown(signal: string): Promise<void> {
 	// Wake retries stop too — open wakes ride to the next boot's pump.
 	stopWakeTicker();
 	stopObserverTicker();
-	// Join any in-flight scan before closing the store; running agents
-	// belong to herdr and resume on next boot.
+	// Join any in-flight scan before closing the store; running threads
+	// belong to the T3 Code server and resume on next boot.
 	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();
 	// The mail watcher stops polling and joins an in-flight scan — a late
 	// fire must not land in a closed runtime; cursors and drafts persist.

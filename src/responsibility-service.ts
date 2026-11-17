@@ -151,7 +151,7 @@ export function makeManagedSendEdge(t3: Pick<T3, "sendThread">): ManagedSend {
 	return async (brief, target, beforeSend, signal) => {
 		preSend(() => signal?.throwIfAborted());
 		// The edge covers t3 threads only — a target from another
-		// transport (a legacy herdr attachment) misroutes, so it refuses.
+		// transport (a legacy attachment) misroutes, so it refuses.
 		if (target.server !== "t3") {
 			throw new ManagedSendRefusal(
 				"identity-unenforceable",
@@ -451,8 +451,8 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 			const att = resps.getAttachment(op.attachmentId);
 			if (att === null) return { refused: "attachment-detached" };
 			// agent_session carries the thread id — without it the send
-			// edge has no address, and a legacy herdr attachment (no
-			// thread) must never be dispatched through t3.
+			// edge has no address, and a legacy attachment (no thread)
+			// must never be dispatched through t3.
 			if (att.target.agentSession === null || att.target.server !== "t3") {
 				resps.transitionOperation(operationId, "refused", {
 					refusal: "identity-unenforceable",

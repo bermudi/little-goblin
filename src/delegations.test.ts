@@ -69,7 +69,7 @@ describe("delegations store", () => {
 		} finally { second.close(); }
 	});
 
-	test("herdr-era rows with no t3 thread settle failed at open; terminal rows stay", () => {
+	test("pre-T3 rows with no t3 thread settle failed at open; terminal rows stay", () => {
 		const path = join(tmpdirPath(), "goblin.sqlite");
 		const db = new Database(path);
 		db.exec(`CREATE TABLE delegations (
@@ -90,10 +90,10 @@ describe("delegations store", () => {
 			finished_at TEXT,
 			app_conversation TEXT
 		)`);
-		// The t3 columns arrive by ALTER as NULL — those rows are herdr
-		// leftovers the new transport can never observe, so a live one
-		// settles failed at open (the sweep logs the warn that names the
-		// agent); an already-terminal row is untouched.
+		// The t3 columns arrive by ALTER as NULL — those rows are
+		// pre-T3 leftovers the current transport can never observe, so a
+		// live one settles failed at open (the sweep logs the warn that
+		// names the agent); an already-terminal row is untouched.
 		const ins = db.prepare(`INSERT INTO delegations
 			(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, prompted_at, created_at)
 			VALUES (?, 'codex', '/w', 't', 1, NULL, 'g1', 'w1', 'w1:p1', ?, '1970-01-01', '1970-01-01')`);

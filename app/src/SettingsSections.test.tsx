@@ -713,13 +713,13 @@ describe("Voice", () => {
 		await mountSettings();
 		await openSection("Voice");
 		const input = container.querySelector('input[aria-label="add keyword"]')!;
-		await typeInto(input, "herdr");
+		await typeInto(input, "demo");
 		await click(
 			[...input.closest(".card")!.querySelectorAll("button")].find((b) => b.textContent === "Add"),
 		);
 		await waitFor(() => savedBodies.length > 0, "keywords save");
 		const tr = savedBodies.at(-1)?.transcription;
-		expect(typeof tr === "object" ? tr.keywords : null).toEqual(["goblin", "herdr"]);
+		expect(typeof tr === "object" ? tr.keywords : null).toEqual(["goblin", "demo"]);
 	});
 
 	test("no secret-name inputs in transcription or speaking", async () => {

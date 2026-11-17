@@ -148,7 +148,7 @@ export function StatusView({
 				))}
 			</div>
 			<p className="cap status-note">
-				Model providers, Telegram, keys and the herdr host are not reported here. Run{" "}
+				Model providers, Telegram and keys are not reported here. Run{" "}
 				<code>bun run doctor</code> for those.
 			</p>
 			<details className="status-raw">

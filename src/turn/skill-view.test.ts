@@ -86,7 +86,7 @@ describe("skill invocation in the model view", () => {
 				return { name: ref.name, body: `wrapped ${bodyText}` };
 			},
 		};
-		const history = [skillMsg("s1", { name: "herdr" }), user("u2", "later")];
+		const history = [skillMsg("s1", { name: "demo" }), user("u2", "later")];
 
 		const owning = await buildModelView(ctx, {
 			entries: entries(history),
@@ -98,15 +98,15 @@ describe("skill invocation in the model view", () => {
 			assertAuthority: () => {},
 		});
 		const owningTexts = texts(owning);
-		expect(owningTexts).toContain("[skill: herdr]");
+		expect(owningTexts).toContain("[skill: demo]");
 		// The body lands AFTER the invoking message's own content and
 		// before the next message.
 		const bodyIdx = owningTexts.findIndex((t) => t.includes(bodyText));
-		const markerIdx = owningTexts.findIndex((t) => t === "[skill: herdr]");
+		const markerIdx = owningTexts.findIndex((t) => t === "[skill: demo]");
 		const laterIdx = owningTexts.indexOf("later");
 		expect(bodyIdx).toBeGreaterThan(markerIdx);
 		expect(bodyIdx).toBeLessThan(laterIdx);
-		expect(seen).toEqual(["herdr"]);
+		expect(seen).toEqual(["demo"]);
 
 		seen.length = 0;
 		const later = await buildModelView(ctx, {
@@ -119,7 +119,7 @@ describe("skill invocation in the model view", () => {
 			assertAuthority: () => {},
 		});
 		const laterTexts = texts(later);
-		expect(laterTexts).toContain("[skill: herdr]");
+		expect(laterTexts).toContain("[skill: demo]");
 		expect(laterTexts.some((t) => t.includes(bodyText))).toBe(false);
 	});
 

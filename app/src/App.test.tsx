@@ -123,6 +123,9 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		// The command primitive's typeahead walks item text through the DOM
+		// global NodeFilter; browsers have it, bare bun:test doesn't.
+		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -311,6 +314,9 @@ describe("rail row actions and the pinned pool", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		// The command primitive's typeahead walks item text through the DOM
+		// global NodeFilter; browsers have it, bare bun:test doesn't.
+		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -601,6 +607,9 @@ describe("rename editor with the AI button", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		// The command primitive's typeahead walks item text through the DOM
+		// global NodeFilter; browsers have it, bare bun:test doesn't.
+		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -897,6 +906,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		// The command primitive's typeahead walks item text through the DOM
+		// global NodeFilter; browsers have it, bare bun:test doesn't.
+		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
 		// The restore effect parks the cursor via rAF — must ride the
 		// happy-dom realm like the rest of the DOM globals here.
 		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
@@ -1178,6 +1190,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				archivedAt: archived ? "2026-10-10T00:00:00Z" : null,
 				pinnedAt: null,
 				projectId: null,
+				parentId: null,
 			},
 		];
 	};
@@ -1927,6 +1940,9 @@ describe("App telegram door", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		// The command primitive's typeahead walks item text through the DOM
+		// global NodeFilter; browsers have it, bare bun:test doesn't.
+		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -2227,6 +2243,7 @@ describe("app projects surface", () => {
 		archivedAt: null,
 		pinnedAt: null,
 		projectId: null,
+		parentId: null,
 		...over,
 	});
 
@@ -2303,6 +2320,9 @@ describe("app projects surface", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		// The command primitive's typeahead walks item text through the DOM
+		// global NodeFilter; browsers have it, bare bun:test doesn't.
+		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
 		// The note page lazy-mounts Milkdown — its ctx signals readiness
 		// with bare dispatchEvent/addEventListener, which must ride the
 		// happy-dom realm, not Bun's.
@@ -2856,7 +2876,9 @@ describe("app projects surface", () => {
 		await settleSlow();
 		const pick = container.querySelector(".composer-pick");
 		expect(pick).not.toBeNull();
-		await click([...pick!.querySelectorAll("li button")].find((b) => b.textContent === "Shopping"));
+		await click(
+			[...pick!.querySelectorAll("[role=option] button")].find((b) => b.textContent === "Shopping"),
+		);
 		expect(container.querySelector(".note-chip")!.textContent).toContain("Shopping");
 
 		const form = container.querySelector("form.composer")!;
@@ -2891,7 +2913,7 @@ describe("app projects surface", () => {
 		await click(container.querySelector('button[aria-label="Attach a note"]'));
 		await settleSlow();
 		await click(
-			[...container.querySelectorAll(".composer-pick li button")].find(
+			[...container.querySelectorAll(".composer-pick [role=option] button")].find(
 				(b) => b.textContent === "Shopping",
 			),
 		);
@@ -2927,7 +2949,7 @@ describe("app projects surface", () => {
 		await click(container.querySelector('button[aria-label="Attach a note"]'));
 		await settleSlow();
 		await click(
-			[...container.querySelectorAll(".composer-pick li button")].find(
+			[...container.querySelectorAll(".composer-pick [role=option] button")].find(
 				(b) => b.textContent === "Shopping",
 			),
 		);
@@ -3061,7 +3083,9 @@ describe("app projects surface", () => {
 		);
 		await settleSlow();
 		await click(
-			[...card!.querySelectorAll(".note-pick li button")].find((b) => b.textContent === "Shopping"),
+			[...card!.querySelectorAll(".note-pick [role=option] button")].find(
+				(b) => b.textContent === "Shopping",
+			),
 		);
 		await settle();
 		const append = posts.find((p) => p.url === "/api/app/notes/n-shopping/append");
@@ -3093,7 +3117,7 @@ describe("app projects surface", () => {
 		);
 		await settleSlow();
 		await click(
-			[...card!.querySelectorAll(".note-pick li button")].find(
+			[...card!.querySelectorAll(".note-pick [role=option] button")].find(
 				(b) => b.textContent === "New note “Ideas”",
 			),
 		);
@@ -4589,6 +4613,9 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		// The command primitive's typeahead walks item text through the DOM
+		// global NodeFilter; browsers have it, bare bun:test doesn't.
+		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -4703,6 +4730,7 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 							archivedAt: null,
 							pinnedAt: null,
 							projectId: null,
+							parentId: null,
 						},
 					],
 				}),
@@ -4756,6 +4784,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		archivedAt: null,
 		pinnedAt: null,
 		projectId: null,
+		parentId: null,
 	};
 	const noteRow: AppNoteSummary = {
 		id: "n-shopping",
@@ -4795,6 +4824,9 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		// The command primitive's typeahead walks item text through the DOM
+		// global NodeFilter; browsers have it, bare bun:test doesn't.
+		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
@@ -4986,6 +5018,9 @@ describe("chat width selector", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		// The command primitive's typeahead walks item text through the DOM
+		// global NodeFilter; browsers have it, bare bun:test doesn't.
+		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;

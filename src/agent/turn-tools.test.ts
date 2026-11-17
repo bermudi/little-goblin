@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import type { AgentChildren } from "../agent-children.ts";
 import type { Config } from "../config-schema.ts";
 import { isHosted } from "../tool.ts";
 import type { AuthStore } from "../auth.ts";
@@ -169,6 +170,7 @@ describe("turn-tools responsibility composition", () => {
 			subagents: () => null,
 			desktops: () => null,
 			subagentsBoot: () => undefined,
+			agents: () => null,
 			responsibility: () => ({ resps, service }),
 			filterGuests: (_conv, tools) => tools,
 		});
@@ -314,6 +316,7 @@ describe("turn-tools managed send linkage", () => {
 			subagents: () => null,
 			desktops: () => null,
 			subagentsBoot: () => undefined,
+			agents: () => null,
 			responsibility: () => ({ resps, service }),
 			filterGuests: (_conv, tools) => tools,
 		});
@@ -408,6 +411,7 @@ describe("responsibility epoch authority", () => {
 				subagents: () => null,
 				desktops: () => null,
 				subagentsBoot: () => undefined,
+				agents: () => null,
 				responsibility: () => ({ resps, service }),
 				filterGuests: (_conv, tools) => tools,
 			});
@@ -547,6 +551,7 @@ describe("operator correction authority", () => {
 			subagents: () => null,
 			desktops: () => null,
 			subagentsBoot: () => undefined,
+			agents: () => null,
 			responsibility: () => ({ resps, service }),
 			filterGuests: (_conv, tools) => tools,
 		});
@@ -738,6 +743,7 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 		subagents: () => null,
 		desktops: () => null,
 		subagentsBoot: () => undefined,
+		agents: () => null,
 		responsibility: () => ({ resps, service, listFor: async () => [AGENT] }),
 		filterGuests: (_conv, tools) => tools,
 	});
@@ -849,12 +855,13 @@ describe("hosted web_search mount", () => {
 			subagents: () => null,
 			desktops: () => null,
 			subagentsBoot: () => undefined,
+			agents: () => null,
 			responsibility: () => null,
 			filterGuests: (_c, t) => t,
 		});
 
 	const conv = (model: string) =>
-		({ id: "dm:1", model, projectId: null, persona: "operator" }) as unknown as Conversation;
+		({ id: "dm:1", model, projectId: null, persona: "operator", agentType: null }) as unknown as Conversation;
 
 	test("codex+live/cached mounts web_search, search absent; off and non-codex keep local search", () => {
 		for (const mode of ["live", "cached"] as const) {
@@ -882,6 +889,7 @@ describe("delegate description subagent routing", () => {
 		model: null,
 		projectId: null,
 		persona: "operator",
+		agentType: null,
 	} as unknown as Conversation;
 
 	const rigTools = (
@@ -913,6 +921,7 @@ describe("delegate description subagent routing", () => {
 			subagents: () => subagents,
 			desktops: () => null,
 			subagentsBoot: () => subagentsBoot,
+			agents: () => null,
 			responsibility: () => null,
 			filterGuests: (_c, t) => t,
 		});
@@ -940,5 +949,76 @@ describe("delegate description subagent routing", () => {
 		expect(delegateDescription(config, {} as unknown as Subagents, subagentsOn)).toContain(
 			"Standalone long or code-heavy work belongs with a worker subagent, and screen work with a computer subagent.",
 		);
+	});
+});
+
+describe("agent tool mount", () => {
+	const parentConv = {
+		id: "dm:1",
+		model: null,
+		projectId: null,
+		persona: "operator",
+		agentType: null,
+	} as unknown as Conversation;
+	const childConv = {
+		id: "app/agent-1",
+		model: "a/b",
+		projectId: null,
+		persona: "operator",
+		agentType: "general",
+	} as unknown as Conversation;
+
+	const rigTools = (engine: AgentChildren | null) =>
+		makeTurnTools({
+			configRef: { current: {} as Config, ttsDown: false },
+			auth: {} as unknown as AuthStore,
+			store: {} as unknown as ConversationStore,
+			projects: {} as unknown as ProjectStore,
+			notes: {} as unknown as NoteStore,
+			programs: {} as unknown as ProgramsStore,
+			memory: null,
+			transcribe: async () => null,
+			delegateDeps: () => undefined,
+			operatorHerdr: {} as unknown as OperatorHerdr,
+			t3: {} as unknown as T3,
+			mail: () => ({}) as never,
+			programApproval: () => undefined,
+			visionDepsFor: () => undefined,
+			sandboxes: {} as unknown as Sandboxes,
+			subagents: () => null,
+			desktops: () => null,
+			subagentsBoot: () => undefined,
+			agents: () => engine,
+			responsibility: () => null,
+			filterGuests: (_c, t) => t,
+		});
+
+	test("no engine: the agent tool never mounts", () => {
+		expect("agent" in rigTools(null)(parentConv)).toBe(false);
+	});
+
+	test("a parent turn mounts the agent tool listing the types", () => {
+		const tools = rigTools({} as unknown as AgentChildren)(parentConv);
+		expect("agent" in tools).toBe(true);
+		const tool = "agent" in tools ? tools.agent : undefined;
+		expect(tool && "description" in tool && tool.description).toContain("- general:");
+	});
+
+	test("a child turn gets only its spawn-time allowlist — never agent itself", () => {
+		const engine = {
+			allowlistFor: (id: string) => (id === "app/agent-1" ? ["read_file", "bash"] : null),
+		} as unknown as AgentChildren;
+		const tools = rigTools(engine)(childConv);
+		const names = Object.keys(tools);
+		expect(names).toContain("read_file");
+		expect(names).toContain("bash");
+		for (const banned of ["agent", "delegate", "speak", "memory_search", "note", "ui"]) {
+			expect(names).not.toContain(banned);
+		}
+	});
+
+	test("a child with no registry row fails loud", () => {
+		const engine = { allowlistFor: () => null } as unknown as AgentChildren;
+		expect(() => rigTools(engine)(childConv)).toThrow(/no registry row/);
 	});
 });

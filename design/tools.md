@@ -55,9 +55,7 @@ channels exclude it like the other provider-calling tools.
 
 `program` and `delegate` are bound per-turn to the running conversation, so
 what they create is pinned to the chat/topic it was born in; the model never
-handles chat ids. `herdr` reaches the operator's own `default` session by
-pane ID; it mounts for every personal conversation with no config gate, and
-guest surfaces lose it like `delegate`.
+handles chat ids.
 
 **Tool results are text — except where the pipe verifiably carries
 documents.** openai-compatible stringifies tool-result content and the

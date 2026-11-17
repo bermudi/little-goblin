@@ -141,6 +141,44 @@ describe("app conversations", () => {
 		}
 	});
 
+	test("served messages carry the row's append stamp as metadata.createdAt", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "stamp-01" }),
+			});
+			// A pre-stamp row (metadata without the key) and a bare row —
+			// the serve backfills both from the event's created_at.
+			store.append("app/stamp-01", [
+				{ id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] },
+			]);
+			store.append("app/stamp-01", [
+				{
+					id: "a1",
+					role: "assistant",
+					parts: [{ type: "text", text: "done" }],
+					metadata: { model: "zai/m", finishReason: "stop", durationMs: 5, usage: {} },
+				},
+			]);
+			const res = await call("/api/app/conversations/stamp-01/messages");
+			const body = (await res.json()) as {
+				messages: { id: string; metadata?: { createdAt?: string; model?: string } }[];
+			};
+			const slim = store.historySlim("app/stamp-01");
+			expect(body.messages).toHaveLength(2);
+			for (const [i, m] of body.messages.entries()) {
+				expect(m.metadata?.createdAt).toBe(slim[i]!.createdAt);
+				expect(Number.isNaN(Date.parse(m.metadata!.createdAt!))).toBe(false);
+			}
+			// The stamp merges, it doesn't replace the turn metadata.
+			expect(body.messages[1]!.metadata?.model).toBe("zai/m");
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("reply ratings persist against the durable assistant event", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {

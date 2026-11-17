@@ -34,6 +34,15 @@ surface conflicts with the direction rather than silently overriding it.
   `telegram-webapp.d.ts` out of the server program — its `Window`
   declaration changes how linkedom's `parseHTML` resolves in
   `agent/tools/fetch.ts`.
+- **`ui-sdk` skill and interaction rules.** `.agents/skills/ui-sdk` is vendored
+  from vercel-labs/ui (`skills-lock.json`; refresh with `bunx skills
+  update ui-sdk`, don't hand-edit). Where it disagrees with this repo:
+  `bun run typecheck`, not `npx tsc`; skip its agent-ready step and
+  agent test until the operator rules on the agent bridge (#621).
+  Interaction behavior (focus, keys, ARIA) follows ui-sdk, not the
+  hand-made rules in `design/app.md`: most were agent-written, not the
+  operator's (operator, 2026-11-16). A migration rewrites the ruling it
+  replaces.
 - **Fail loud.** `ENOENT` means null. Everything else propagates with context.
   Never swallow an exception.
 - **Durable writes.** Whole-file state: tmp + `fsync` + `renameSync`,

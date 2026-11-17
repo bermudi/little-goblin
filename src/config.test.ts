@@ -1031,11 +1031,11 @@ describe("ensureHomeLayout", () => {
 		expect(passCli).toContain("name: pass-cli");
 		expect(passCli).toContain("compatibility:");
 		// The herdr skill seeds the same way: a rebuilt box must regain
-		// the pane-targeting contract — operator-pointed panes go through
-		// the `herdr` tool, never the raw CLI.
+		// the delegation contract — own delegations go through the
+		// `delegate` tool, never the raw CLI.
 		const herdr = readFileSync(join(dir, "workspace", "skills", "herdr", "SKILL.md"), "utf8");
 		expect(herdr).toContain("name: herdr");
-		expect(herdr).toContain("the `herdr` tool, never the CLI from bash");
+		expect(herdr).toContain("Never run `herdr` from bash for your own delegations");
 	});
 
 	test("existing identity files are never clobbered", () => {

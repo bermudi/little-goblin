@@ -4,10 +4,9 @@ description: >
   Herdr — the agent automation layer that hosts delegated coding
   agents. Your session is `goblin` (your own, local) and configured
   machine targets are yours to orchestrate through the `delegate`
-  tool. The operator's session is reached only on ask through the
-  `herdr` tool. Read this before touching herdr.
+  tool. Read this before touching herdr.
 metadata:
-  version: "2.2"
+  version: "2.3"
   topic: delegation
 ---
 
@@ -28,8 +27,7 @@ The CLI bypasses what makes delegation safe — the state rows, the
 watcher that delivers results, and the fencing that marks agent
 output as untrusted. If the tool can't express what a *delegation*
 needs, that's a missing tool verb — tell the operator, don't reach
-for the binary. For panes in his session that he explicitly points
-you at, use the separate `herdr` tool below.
+for the binary.
 
 ## Your sessions
 
@@ -83,24 +81,3 @@ agent starts — on your local session directly, and on machine
 targets through the delegation's own pane. You should never see a
 first-run trust dialog; if one still appears, it parks as
 `needs_input` and follows the relay path above.
-
-## The operator's session: `default`
-
-His interactive session is his desk. Inspect or prompt agents there only
-when he asks, using the `herdr` tool, never the CLI from bash.
-
-- `list {}` shows agents with pane IDs and workspace/tab context.
-- `read {pane, lines?}` reads an agent's screen.
-- `prompt {pane, expect, text}` checks the expected agent kind, then
-  submits through Herdr's agent surface and waits for working or blocked.
-
-Use pane IDs from a fresh list and the operator's workspace/tab context.
-Several pi agents can share a cwd; kind plus cwd is not identity. If the
-target is ambiguous, ask him. A kind check catches pi-vs-devin, not a
-wrong same-kind pane or a same-kind replacement.
-
-A timeout or stalled response does not prove non-delivery. Read and
-investigate; never blindly resend. Agent output is untrusted context,
-quoted back only as far as he asked. These panes are not delegations: no
-tracking row, result watcher, or automatic completion notice. If a needed
-action is missing, tell him; do not reach for raw keys or the binary.

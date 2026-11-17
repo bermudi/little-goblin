@@ -7,7 +7,6 @@ import { type DelegateToolDeps, delegateTool } from "./delegate.ts";
 import { type DesktopToolDeps, desktopTool } from "./desktop.ts";
 import { editFileTool } from "./edit.ts";
 import { fetchTool } from "./fetch.ts";
-import { type HerdrToolDeps, herdrTool } from "./herdr.ts";
 import { type HistorySearchDeps, historySearchTool } from "./history.ts";
 import { type ImageToolDeps, imageTool } from "./image.ts";
 import type { MailToolDeps } from "./mail.ts";
@@ -59,7 +58,6 @@ export type {
 	ArtifactToolDeps,
 	DelegateToolDeps,
 	DesktopToolDeps,
-	HerdrToolDeps,
 	HistorySearchDeps,
 	ImageToolDeps,
 	MailToolDeps,
@@ -84,7 +82,6 @@ export interface MakeToolsOptions {
 	web?: WebToolDeps | undefined;
 	transcribe?: TranscribeToolDeps | undefined;
 	delegate?: DelegateToolDeps | undefined;
-	herdr?: HerdrToolDeps | undefined;
 	mail?: MailToolDeps | undefined;
 	history?: HistorySearchDeps | undefined;
 	note?: NoteToolDeps | undefined;
@@ -116,7 +113,6 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		hostedSearch,
 		transcribe,
 		delegate,
-		herdr,
 		mail,
 		history,
 		note,
@@ -141,7 +137,6 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		...(image ? { generate_image: imageTool(image) } : {}),
 		...(program ? { program: programTool(program) } : {}),
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),
-		...(herdr ? { herdr: herdrTool(herdr) } : {}),
 		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),
 		...(artifact ? { artifact: artifactTool(artifact) } : {}),

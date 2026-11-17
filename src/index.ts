@@ -51,6 +51,7 @@ import { makePodman } from "./podman.ts";
 import { type ProgramApproval, startProgramApproval } from "./program-approval.ts";
 import { startProgramOps } from "./program-ops.ts";
 import { openPrograms } from "./programs.ts";
+import { startAgentChildren, type AgentChildren } from "./agent-children.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import { makeResponsibilityObserver } from "./responsibility-observer.ts";
@@ -170,6 +171,10 @@ async function boot() {
 		resps: ReturnType<typeof openResponsibilities>;
 		service: ReturnType<typeof import("./responsibility-service.ts").makeResponsibilityService>;
 	} | null = null;
+	// Same seam for the native-subagent engine: it needs the wake
+	// dispatcher, which exists only past the delivery wire — after
+	// makeTurnTools. Until then no turn can run children.
+	let agentChildrenEngine: AgentChildren | null = null;
 	// Inert without a hand-edited cachePruning block.
 	const cachePruning = openCachePruning({
 		store,
@@ -328,6 +333,7 @@ async function boot() {
 		desktops: () => desktops,
 		subagentsBoot: () => subagentsBoot,
 		responsibility: () => responsibilitySvc,
+		agents: () => agentChildrenEngine,
 		filterGuests: filterGuestTools,
 	});
 
@@ -503,6 +509,22 @@ async function boot() {
 		responsibilities,
 		telegramApi: () => attach.api(),
 	});
+
+	// Native subagents (design/agents.md → agent): the child engine
+	// rides the shared runtime and settles through the dispatcher's
+	// record seam — both exist only here, past the wire. Boot recovery
+	// runs before any new traffic: a child cut by the restart settles
+	// failed and its parent's wake is durable.
+	const agentChildren = startAgentChildren({
+		store,
+		runtime,
+		record: (input) => delivery.dispatcher.record(input),
+		bell: (conv) => delivery.wakeDeps.bell(conv),
+		maxRunning: () => configRef.current.agents?.maxRunning ?? 3,
+		now: () => new Date(),
+	});
+	agentChildren.recoverAtBoot();
+	agentChildrenEngine = agentChildren;
 
 	// Project-owned responsibilities — the store the handover service
 	// writes, and the deterministic observer that turns attachment

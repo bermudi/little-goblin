@@ -5,7 +5,9 @@
 // "[slow]" streams one word every 400ms (time to press Stop); "[fail]"
 // streams a few words, then breaks the connection; "[hold]" opens the
 // stream and never sends a chunk — a silent provider, for held-turn UI
-// states (e.g. the first turn's Stop button, issue #412).
+// states (e.g. the first turn's Stop button, issue #412). "[agent <task>]"
+// answers the first call of a turn with an `agent`-tool spawn (issue
+// #604's native-subagent verification).
 
 import { writeFileSync } from "node:fs";
 import { z } from "zod";
@@ -49,6 +51,54 @@ const server = Bun.serve({
 			return Response.json({ error: { message: "bad request" } }, { status: 400 });
 		const last = parsed.data.messages.filter((message) => message.role === "user").at(-1);
 		const reply = `verify-reply: ${textOf(last?.content)}`;
+		// "[agent <task>]" (issue #604's verification): the FIRST call of
+		// a turn — no tool results yet — answers with one `agent` tool
+		// call that spawns a foreground child on the task. The child's
+		// own turn then lands here with the task as its last user
+		// message and gets the plain echo, so the parent receives
+		// "verify-reply: <task>" as the child's claim.
+		const agentMarker = /\[agent ([^\]]+)\]/.exec(reply);
+		const seenToolResult = parsed.data.messages.some((message) => message.role === "tool");
+		if (agentMarker !== null && !seenToolResult) {
+			const arguments_ = JSON.stringify({
+				action: "spawn",
+				task: agentMarker[1]!.trim(),
+				background: false,
+			});
+			const toolCall = {
+				id: "call-verify-agent",
+				type: "function",
+				function: { name: "agent", arguments: arguments_ },
+			};
+			if (parsed.data.stream !== true) {
+				return Response.json({
+					id: "verify",
+					object: "chat.completion",
+					created: 0,
+					model: "verify-model",
+					choices: [
+						{
+							index: 0,
+							message: { role: "assistant", content: null, tool_calls: [toolCall] },
+							finish_reason: "tool_calls",
+						},
+					],
+					usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+				});
+			}
+			const headers = { "content-type": "text/event-stream" };
+			return new Response(
+				[
+					chunk(
+						{ role: "assistant", content: null, tool_calls: [{ ...toolCall, index: 0 }] },
+						null,
+					),
+					chunk({}, "tool_calls"),
+					"data: [DONE]\n\n",
+				].join(""),
+				{ headers },
+			);
+		}
 		if (parsed.data.stream !== true) {
 			return Response.json({
 				id: "verify",

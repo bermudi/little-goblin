@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeTools } from "./mod.ts";
@@ -38,6 +38,25 @@ describe("transcribe", () => {
 		expect(seen[0]!.path).toBe(join(dir, "podcast.mp3"));
 		expect(seen[0]!.filename).toBe("podcast.mp3");
 		expect(out).toEqual({ transcript: "hello world" });
+	});
+
+	test("a long transcript returns head and tail, and names the file holding all of it", async () => {
+		const dir = workdir();
+		writeFileSync(join(dir, "talk.mp3"), "mp3-bytes");
+		const lines = Array.from({ length: 4000 }, (_, i) => `line ${i} of the talk`);
+		const full = lines.join("\n");
+		const t = transcribeTool(dir, async () => full);
+		const out = (await t.execute!({ path: "talk.mp3" }, opts)) as {
+			transcript: string;
+			truncated?: boolean;
+		};
+		expect(out.truncated).toBe(true);
+		expect(out.transcript.length).toBeLessThan(16_000);
+		expect(out.transcript).toContain("line 0 of the talk");
+		expect(out.transcript).toContain("line 3999 of the talk");
+		expect(out.transcript).not.toContain("line 2000 of the talk");
+		const saved = /saved to: (\S+)/.exec(out.transcript)![1]!;
+		expect(readFileSync(saved, "utf-8")).toBe(full);
 	});
 
 	test("a missing file is an error result, not a throw", async () => {

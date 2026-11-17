@@ -12,6 +12,8 @@
 //  6. Escapes and node_modules paths hide what a specifier resolves to.
 //  7. AI SDK packages (`ai`, `ai/*`, `@ai-sdk/*`) are imported only by the
 //     allowlisted files below; the list only shrinks.
+//     Computed specifiers (`import(expr)`) are out of reach of a static scan;
+//     review catches them.
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -37,6 +39,9 @@ const DYNAMIC_SPEC =
 	/\bimport\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*["'`]([^"'`$]+)["'`]\s*\)/g;
 const BARE_SPEC = /\bimport\s*["']([^"']+)["']/g;
 const AI_SDK_IMPORTERS = [
+	"scripts/probe-tool-image.ts",
+	"scripts/replay-v7-history.ts",
+	"scripts/ui-probe.ts",
 	"src/agent/claude-code/engine.ts",
 	"src/agent/claude-code/prompt.ts",
 	"src/agent/codex/model.ts",
@@ -163,6 +168,175 @@ function specifiers(source: string): string[] {
 	);
 }
 
+function aiSdkImports(source: string): string[] {
+	type Token = {
+		kind: "identifier" | "string" | "template" | "punctuation";
+		value: string;
+		statementStart: boolean;
+	};
+	const tokens: Token[] = [];
+	let index = 0;
+	let lineHasCode = false;
+
+	while (index < source.length) {
+		const char = source[index]!;
+		const next = source[index + 1];
+		if (char === "\n") {
+			lineHasCode = false;
+			index += 1;
+			continue;
+		}
+		if (/\s/.test(char)) {
+			index += 1;
+			continue;
+		}
+		if (char === "/" && next === "/") {
+			index += 2;
+			while (index < source.length && source[index] !== "\n") index += 1;
+			continue;
+		}
+		if (char === "/" && next === "*") {
+			index += 2;
+			while (index < source.length && !(source[index] === "*" && source[index + 1] === "/")) {
+				if (source[index] === "\n") lineHasCode = false;
+				index += 1;
+			}
+			index = Math.min(source.length, index + 2);
+			continue;
+		}
+
+		const statementStart =
+			!lineHasCode ||
+			(tokens.at(-1)?.kind === "punctuation" && tokens.at(-1)?.value === ";");
+		if (char === "'" || char === '"') {
+			const quote = char;
+			index += 1;
+			let value = "";
+			while (index < source.length && source[index] !== quote) {
+				const current = source[index]!;
+				if (current === "\\" && index + 1 < source.length) {
+					value += source[index + 1]!;
+					index += 2;
+					continue;
+				}
+				value += current;
+				index += 1;
+			}
+			if (source[index] === quote) index += 1;
+			tokens.push({ kind: "string", value, statementStart });
+			lineHasCode = true;
+			continue;
+		}
+		if (char === "`") {
+			index += 1;
+			while (index < source.length && source[index] !== "`") {
+				if (source[index] === "\\") {
+					index += Math.min(2, source.length - index);
+					continue;
+				}
+				if (source[index] === "\n") lineHasCode = false;
+				index += 1;
+			}
+			if (source[index] === "`") index += 1;
+			tokens.push({ kind: "template", value: "", statementStart });
+			lineHasCode = true;
+			continue;
+		}
+		if (/[A-Za-z_$]/.test(char)) {
+			const start = index++;
+			while (index < source.length && /[\w$]/.test(source[index]!)) index += 1;
+			tokens.push({
+				kind: "identifier",
+				value: source.slice(start, index),
+				statementStart,
+			});
+			lineHasCode = true;
+			continue;
+		}
+		tokens.push({
+			kind: "punctuation",
+			value: char,
+			statementStart,
+		});
+		lineHasCode = true;
+		index += 1;
+	}
+
+	const imports: string[] = [];
+	for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex += 1) {
+		const token = tokens[tokenIndex]!;
+		if (token.kind !== "identifier") continue;
+
+		if (
+			(token.value === "import" || token.value === "require") &&
+			tokens[tokenIndex + 1]?.value === "(" &&
+			tokens[tokenIndex + 2]?.kind === "string" &&
+			tokens[tokenIndex + 3]?.value === ")"
+		) {
+			const specifier = tokens[tokenIndex + 2]!.value;
+			if (AI_SDK_IMPORT.test(specifier)) imports.push(specifier);
+			continue;
+		}
+		if (
+			token.value !== "import" &&
+			token.value !== "export" ||
+			!token.statementStart
+		)
+			continue;
+
+		let braceDepth = 0;
+		let bracketDepth = 0;
+		let parenDepth = 0;
+		for (let scanIndex = tokenIndex + 1; scanIndex < tokens.length; scanIndex += 1) {
+			const scan = tokens[scanIndex]!;
+			if (
+				scan.value === ";" &&
+				braceDepth === 0 &&
+				bracketDepth === 0 &&
+				parenDepth === 0
+			)
+				break;
+			if (
+				scanIndex > tokenIndex + 1 &&
+				scan.statementStart &&
+				braceDepth === 0 &&
+				bracketDepth === 0 &&
+				parenDepth === 0 &&
+				["const", "let", "var", "function", "class", "import", "export"].includes(scan.value)
+			)
+				break;
+			if (
+				scan.kind === "identifier" &&
+				scan.value === "from" &&
+				braceDepth === 0 &&
+				bracketDepth === 0 &&
+				parenDepth === 0
+			) {
+				const specifier = tokens[scanIndex + 1];
+				if (specifier?.kind === "string" && AI_SDK_IMPORT.test(specifier.value)) {
+					imports.push(specifier.value);
+				}
+				break;
+			}
+			if (
+				scanIndex === tokenIndex + 1 &&
+				token.value === "import" &&
+				scan.kind === "string"
+			) {
+				if (AI_SDK_IMPORT.test(scan.value)) imports.push(scan.value);
+				break;
+			}
+			if (scan.value === "{") braceDepth += 1;
+			else if (scan.value === "}") braceDepth = Math.max(0, braceDepth - 1);
+			else if (scan.value === "[") bracketDepth += 1;
+			else if (scan.value === "]") bracketDepth = Math.max(0, bracketDepth - 1);
+			else if (scan.value === "(") parenDepth += 1;
+			else if (scan.value === ")") parenDepth = Math.max(0, parenDepth - 1);
+		}
+	}
+	return imports;
+}
+
 // testkit's fake-api.ts builds the Api stub — not production code.
 const GRAMMY_EXEMPT_DIRS = new Set(["tg", "testkit"]);
 
@@ -215,37 +389,31 @@ const T3_SPAWN = /(?:spawnProc|Bun\.spawn|execSync|exec)\((?:[^)]*["'])t3["']/;
 
 describe("module boundaries", () => {
 	test("AI SDK import matcher recognizes only AI SDK package specifiers", () => {
-		for (const specifier of [
-			"ai",
-			"@ai-sdk/openai",
-			"ai/rsc",
-		]) {
+		for (const specifier of ["ai", "@ai-sdk/openai", "ai/rsc"]) {
 			expect(AI_SDK_IMPORT.test(specifier)).toBe(true);
 		}
 		for (const specifier of ["aim", "./ai.ts", "@ai-sdkx/y"]) {
 			expect(AI_SDK_IMPORT.test(specifier)).toBe(false);
 		}
-		for (const source of [
-			'import { x } from "ai";',
-			'import { x } from "ai/rsc";',
-			'import { x } from "@ai-sdk/openai";',
-			'import type { X } from "ai";',
-			'const x = import("ai");',
-		]) {
-			expect(specifiers(source).some((specifier) => AI_SDK_IMPORT.test(specifier))).toBe(
-				true,
-			);
-		}
+		expect(
+			aiSdkImports('// from "ai"\n/* import("ai") */\nconst s = \'from "ai"\';'),
+		).toEqual([]);
+		expect(aiSdkImports('import {\n a,\n b\n} from "ai"')).toEqual(["ai"]);
+		expect(aiSdkImports('require("@ai-sdk/google")')).toEqual(["@ai-sdk/google"]);
+		expect(aiSdkImports('import type { X } from "ai";')).toEqual(["ai"]);
+		expect(aiSdkImports('export type { X } from "ai/rsc";')).toEqual(["ai/rsc"]);
+		expect(
+			aiSdkImports(
+				'import { X } from "aim";\nimport { X } from "./ai.ts";\nimport { X } from "@ai-sdkx/y";',
+			),
+		).toEqual([]);
 	});
 
 	test("AI SDK packages are imported only by the shrinking allowlist", () => {
-		const imports = walk(SRC)
+		const imports = AI_SDK_SCAN_ROOTS.filter(existsSync)
+			.flatMap((root) => walk(root))
 			.filter((file) => !file.endsWith(".test.ts"))
-			.filter((file) =>
-				specifiers(readFileSync(file, "utf8")).some((specifier) =>
-					AI_SDK_IMPORT.test(specifier),
-				),
-			)
+			.filter((file) => aiSdkImports(readFileSync(file, "utf8")).length > 0)
 			.map(repoPath);
 		const allowlisted: ReadonlySet<string> = new Set(AI_SDK_IMPORTERS);
 		const offenders = imports.filter((file) => !allowlisted.has(file));
@@ -259,7 +427,7 @@ describe("module boundaries", () => {
 	test("every AI_SDK_IMPORTERS entry still imports an AI SDK package", () => {
 		for (const file of AI_SDK_IMPORTERS) {
 			const source = readFileSync(join(ROOT, file), "utf8");
-			if (!specifiers(source).some((specifier) => AI_SDK_IMPORT.test(specifier))) {
+			if (aiSdkImports(source).length === 0) {
 				throw new Error(`${file} no longer imports an AI SDK package; remove it from AI_SDK_IMPORTERS`);
 			}
 		}

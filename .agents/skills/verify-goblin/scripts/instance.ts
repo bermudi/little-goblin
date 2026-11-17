@@ -104,6 +104,14 @@ function isolatedEnv(home: string, name: string): Record<string, string> {
 		GOBLIN_HOME: home,
 		GOBLIN_VERIFY_INSTANCE: name,
 		TMPDIR: join(home, "tmp"),
+		// Rootless podman keys its store on XDG_DATA_HOME/HOME — the
+		// throwaway HOME would hide the desktop image. Only the
+		// desktops flag needs the real store; containers it creates are
+		// still named goblin-desk-* and cleaned up by hand.
+		...(process.env.GOBLIN_TRY_DESKTOPS === "1" &&
+		process.env.XDG_DATA_HOME === undefined
+			? { XDG_DATA_HOME: join(homedir(), ".local/share") }
+			: {}),
 	};
 }
 

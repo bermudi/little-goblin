@@ -123,6 +123,8 @@ const COMPUTER_CHILD_MARKER = "computer-use agent";
 // Set when the parent's [computer ...] marker emits the spawn; the
 // child's requests carry no marker, so the script keys off this.
 let computerDesktop: string | null = null;
+let computerSpawned = false;
+let computerAllocTries = 0;
 let probeCopied = false;
 
 // The spawn claim has already created and started the desktop container
@@ -260,24 +262,47 @@ const server = Bun.serve({
 				parsed.data.stream === true,
 			);
 		}
-		// "[computer <desktop> <task>]" (issue #605): same foreground
-		// spawn, but type computer bound to the named desktop.
+		// "[computer <desktop> <task>]" (issue #605): a desktop must be
+		// allocated before spawn can claim it, so the first call runs the
+		// `desktop` tool's new action; the next call (its result in
+		// history) emits the foreground computer spawn.
 		const computerMarker = /\[computer ([a-z0-9][a-z0-9-]{0,30}) ([^\]]+)\]/.exec(reply);
-		if (computerMarker !== null && !seenToolResult) {
+		if (computerMarker !== null && !computerSpawned) {
 			computerDesktop = computerMarker[1]!;
-			return toolCallResponse(
-				"agent",
-				{
-					action: "spawn",
-					type: "computer",
-					task: computerMarker[2]!.trim(),
-					desktop: computerDesktop,
-					background: false,
-				},
-				parsed.data.stream === true,
-			);
+			if (!seenToolResult) {
+				return toolCallResponse(
+					"desktop",
+					{ action: "new", name: computerDesktop },
+					parsed.data.stream === true,
+				);
+			}
+			const alloc = toolJson(parsed.data.messages.filter((m) => m.role === "tool").at(-1)?.content);
+			if (alloc?.error !== undefined) {
+				computerAllocTries += 1;
+				if (computerAllocTries < 3) {
+					return toolCallResponse(
+						"desktop",
+						{ action: "new", name: computerDesktop },
+						parsed.data.stream === true,
+					);
+				}
+				reply = `verify-reply: desktop new kept failing: ${JSON.stringify(alloc.error).slice(0, 300)}`;
+			} else {
+				computerSpawned = true;
+				return toolCallResponse(
+					"agent",
+					{
+						action: "spawn",
+						type: "computer",
+						task: computerMarker[2]!.trim(),
+						desktop: computerDesktop,
+						background: false,
+					},
+					parsed.data.stream === true,
+				);
+			}
 		}
-		if (computerMarker !== null && seenToolResult) {
+		if (computerSpawned && computerMarker !== null && seenToolResult) {
 			// The spawn settled — surface the child's claim, not the marker.
 			const toolMsg = parsed.data.messages.filter((m) => m.role === "tool").at(-1);
 			const j = toolJson(toolMsg?.content);

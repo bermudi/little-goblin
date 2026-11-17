@@ -12,7 +12,7 @@ import { defineTool, type Tools } from "./tool.ts";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
-import type { ModelStep } from "./turn/engine.ts";
+import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import {
 	finishPart,

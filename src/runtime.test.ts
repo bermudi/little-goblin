@@ -57,7 +57,7 @@ import {
 	waitUntil,
 } from "./testkit.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
-import type { ModelStep } from "./turn/engine.ts";
+import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";

@@ -71,6 +71,7 @@ const AI_SDK_IMPORT = /^(?:ai(?:\/|$)|@ai-sdk\/[^/]+(?:\/|$))/;
 const AI_SDK_MESSAGE_SHAPE_NAMES =
 	"(?:UIMessage|UIMessageChunk|UIMessagePart|ToolUIPart|DynamicToolUIPart|LanguageModelUsage|FinishReason|ProviderMetadata)";
 const AI_SDK_FENCED_SPECIFIER = "(?:ai(?:/[^'\"]*)?|@ai-sdk/[^'\"]+)";
+const AI_SDK_VENDOR_SPECIFIER = /^(?:ai(?:\/|$)|@ai-sdk\/)/;
 const AI_SDK_SEPARATOR = "(?:\\s|/\\*[\\s\\S]*?\\*/)*";
 const AI_SDK_NAMED_SHAPE_IMPORT_EXPORT = new RegExp(
 	"(?:^|;)" +
@@ -317,6 +318,11 @@ describe("module boundaries", () => {
 	test("http/mod.ts stays runtime-free", () => {
 		const source = readFileSync(join(SRC, "http", "mod.ts"), "utf8");
 		expect(RUNTIME_IMPORT.test(source)).toBe(false);
+	});
+
+	test("the neutral turn engine does not import AI SDK packages", () => {
+		const source = readFileSync(join(SRC, "turn", "engine.ts"), "utf8");
+		expect(specifiers(source).filter((specifier) => AI_SDK_VENDOR_SPECIFIER.test(specifier))).toEqual([]);
 	});
 
 	test("message shapes are not imported, re-exported, or referenced from AI SDK packages", () => {

@@ -280,10 +280,10 @@ describe("goblin.json5", () => {
 		}
 	});
 
-	// The t3 move (#607) retired the whole herdr harness shape: one stale
+	// The t3 move (#607) retired the previous harness shape: one stale
 	// kind/args entry drops the entire delegation block at disk load —
 	// boot survives without the delegate tool — and says how to rewrite.
-	test("herdr-shaped delegation harnesses drop the whole block at load with a warn", () => {
+	test("retired-shape delegation harnesses drop the whole block at load with a warn", () => {
 		const dir = useHome("goblin-cfg-");
 		const logPath = join(dir, "config.log");
 		writeFileSync(
@@ -302,7 +302,7 @@ describe("goblin.json5", () => {
 				.map((line) => JSON.parse(line) as { level: string; msg: string; key: string; replacement: string });
 			expect(warnings).toHaveLength(1);
 			expect(warnings[0]).toMatchObject({ level: "warn", key: "delegation" });
-			expect(warnings[0]!.msg).toContain("herdr-shaped");
+			expect(warnings[0]!.msg).toContain("retired-shape");
 			expect(warnings[0]!.replacement).toContain("{provider, model}");
 			// Only disk load retires: the same object through parseConfig
 			// (the POST merge's validator) still fails loud.
@@ -1030,12 +1030,6 @@ describe("ensureHomeLayout", () => {
 		const passCli = readFileSync(join(dir, "workspace", "skills", "pass-cli", "SKILL.md"), "utf8");
 		expect(passCli).toContain("name: pass-cli");
 		expect(passCli).toContain("compatibility:");
-		// The herdr skill seeds the same way: a rebuilt box must regain
-		// the delegation contract — own delegations go through the
-		// `delegate` tool, never the raw CLI.
-		const herdr = readFileSync(join(dir, "workspace", "skills", "herdr", "SKILL.md"), "utf8");
-		expect(herdr).toContain("name: herdr");
-		expect(herdr).toContain("Never run `herdr` from bash for your own delegations");
 	});
 
 	test("existing identity files are never clobbered", () => {
@@ -1484,7 +1478,7 @@ const invalidInputs: unknown[] = [
 	{ ...valid, thinking: sentinel },
 	{ ...valid, publicUrl: `http://${sentinel}:credential@example.org` },
 	// A sentinel record key inside delegation — the retirement paths
-	// (machines, herdr shapes) warn on disk load and so cannot ride here:
+	// (machines, retired harness shapes) warn on disk load and so cannot ride here:
 	// the child-process probe below demands an empty stdout.
 	{ ...valid, delegation: { harnesses: { [sentinel]: { provider: sentinel } } } },
 	{ ...valid, telegram: { model: sentinel } },

@@ -17,7 +17,7 @@ not for settled product preferences.
 | Capability | Current source |
 | --- | --- |
 | Project-owned work, understanding, attachments, generations, prompt operations | `src/responsibility-types.ts`, `src/responsibility-schema.ts`, `src/responsibilities.ts`, `src/responsibility-service.ts` |
-| Deterministic Herdr observation; cursor/event/wake persistence | `src/responsibility-observer.ts` |
+| Deterministic T3 thread observation; cursor/event/wake persistence | `src/responsibility-observer.ts` |
 | Append-once triggers, run ownership, crash/retry reconciliation | `src/wake-store.ts`, `src/wake-dispatcher.ts`, runtime and turn journal |
 | Project-directed Programs and automatic follow-up linking | `src/programs.ts`, `src/scheduler.ts`, responsibility service |
 | Project tools, feed pills, correction and lifecycle controls | `src/agent/tools/responsibility.ts`, `src/http/app-responsibilities.ts`, `app/src/ResponsibilityFeed.tsx` |
@@ -29,7 +29,7 @@ existing adapter boundaries.
 
 Known distinctions at this baseline:
 
-- Herdr observation is code-only every minute, but active responsibilities
+- T3 thread observation is code-only every minute, but active responsibilities
   originally defaulted to a model-waking Program every 15 minutes, up to 96 scheduled
   occurrences per active responsibility per day. That is not yet economical
   judgment about when follow-up is useful; the first stage-1 slice replaces
@@ -347,7 +347,7 @@ does not disable explicit work state or follow-through.
 Grow roles, assignments, histories, budgets, and execution workflows from real
 repeated work. Responsibility remains independent of any harness. Move suitable
 heavy execution into Goblin-native workers as capabilities and inference access
-allow; keep the Herdr bridge useful until replacement is actually demonstrated.
+allow; keep the delegate bridge (T3 Code threads) useful until replacement is actually demonstrated.
 
 Do not build the entire managed workforce before proving the next outcome.
 Do not confuse "native" with cheaper subscription economics or retire capable
@@ -355,9 +355,11 @@ coding harnesses merely to make the architecture look finished.
 
 ## Risk And Proof Discipline
 
-The Herdr identity race remains explicit. Verify the current boundary before
+The old Herdr identity race is gone with the transport (#608): T3
+thread ids are stable identities and managed sends fence on them.
+Verify the current boundary before
 claiming stronger guarantees. A capability-advertised server-side identity
-guard would address the race; more client reads do not. This targeted work can
+guard would address any residual race; more client reads do not. This targeted work can
 proceed alongside the product stages, without becoming a blanket permissions
 project or pretending previously accepted risk disappeared.
 

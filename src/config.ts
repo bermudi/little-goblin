@@ -28,7 +28,7 @@ function configSyntaxError(err: unknown): Error {
 // Retired delegation keys are the one compatibility exception to the
 // unknown-field rule: named here, stripped with a warning on disk load,
 // and gone from the next canonical save. Anything else unknown is a
-// validation error. The t3 move (issue #607) retired the whole herdr
+// validation error. The t3 move (issue #607) retired the whole previous
 // harness shape — an old-shape harnesses map drops the entire
 // delegation block rather than failing boot: goblin comes up without
 // the delegate tool and the operator rewrites the block by hand.
@@ -46,7 +46,7 @@ function stripRetiredDelegationKeys(raw: unknown, warn: boolean): unknown {
 	if (typeof delegation !== "object" || delegation === null || Array.isArray(delegation)) {
 		return raw;
 	}
-	// The herdr harness shape: kind/args instead of provider/model. One
+	// The retired harness shape: kind/args instead of provider/model. One
 	// stale entry retires the block — a half-migrated table cannot name
 	// a T3 provider for every harness the operator may select. Entries
 	// that are merely malformed in the new shape stay zod's to fail
@@ -62,7 +62,7 @@ function stripRetiredDelegationKeys(raw: unknown, warn: boolean): unknown {
 		)
 	) {
 		if (warn) {
-			log.warn("herdr-shaped delegation harnesses ignored — rewrite for T3 Code", {
+			log.warn("retired-shape delegation harnesses ignored — rewrite for T3 Code", {
 				path: paths.config(),
 				key: "delegation",
 				replacement:

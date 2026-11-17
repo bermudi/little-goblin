@@ -36,7 +36,7 @@ export interface Delegation {
 	// background turn; chat_id/thread_id are the 0/NULL fillers then.
 	appConversation: string | null;
 	// The T3 Code thread this delegation runs on — null while starting
-	// and on pre-t3 rows (herdr leftovers; never observed again).
+	// and on pre-t3 rows (legacy leftovers; never observed again).
 	t3Thread: string | null;
 	// The thread's app link, as the start/send/show calls reported it.
 	t3Link: string | null;
@@ -203,10 +203,9 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 	db.exec("PRAGMA journal_mode = WAL");
 	db.exec(`CREATE TABLE IF NOT EXISTS delegations (${DELEGATIONS_COLUMNS})`);
 	// Additive migrations, oldest first. The t3 columns predate nothing
-	// on a fresh table (they are in the CREATE) and join herdr-era
-	// tables here; the herdr launch columns (agent_name, workspace_id,
-	// pane_id) stay NOT NULL DEFAULT '' for those old rows — new rows
-	// never fill them.
+	// on a fresh table (they are in the CREATE); the retired-transport
+	// launch columns (agent_name, workspace_id, pane_id) stay NOT NULL
+	// DEFAULT '' — old rows keep their values, new rows never fill them.
 	const cols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(delegations)")
@@ -236,7 +235,8 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 	}
 	if (!cols.has("readiness_version"))
 		db.exec("ALTER TABLE delegations ADD COLUMN readiness_version INTEGER NOT NULL DEFAULT 0");
-	// The t3 transport (#607): the thread replaces the herdr agent.
+	// The t3 transport (#607): the thread replaced the retired
+	// transport's agent.
 	for (const column of ["t3_thread", "t3_link", "t3_run"]) {
 		if (!cols.has(column)) db.exec(`ALTER TABLE delegations ADD COLUMN ${column} TEXT`);
 	}
@@ -265,9 +265,9 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 			throw err;
 		}
 	}
-	// Herdr-era rows with no t3 thread are never observed again; if any
-	// is still awaiting a verdict, settle it now so the operator hears
-	// once instead of a watcher that can never decide.
+	// Rows with no t3 thread predate the current transport and are never
+	// observed again; if any is still awaiting a verdict, settle it now
+	// so the operator hears once instead of a watcher that can never decide.
 	const qLegacy = db.prepare(
 		"UPDATE delegations SET status = 'failed', finished_at = ? WHERE id = ?",
 	);
@@ -278,11 +278,11 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 		.all()) {
 		const r = z.object({ id: z.number(), name: z.string(), agent_name: z.string() }).parse(row);
 		qLegacy.run(settledAt.toISOString(), r.id);
-		log.warn("legacy herdr delegation settled failed — transport moved to T3 Code", {
+		log.warn("legacy delegation settled failed — transport moved to T3 Code", {
 			delegation: r.id,
 			name: r.name,
 			agent: r.agent_name,
-			note: "the herdr agent may still run host-side; check it in herdr or stop it by hand",
+			note: "an agent from the retired transport may still run host-side; check the host and stop it by hand",
 		});
 	}
 

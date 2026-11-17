@@ -353,36 +353,32 @@ resource caps; disk is not capped (reaping bounds it).
 ### Delegation
 
 Off when unset. With a `delegation` block, the bot gets a `delegate`
-tool: it hands work to another coding harness running in the operator's
-herdr session (Codex, Claude, pi, devin, opencode, …). Settings →
-Delegation edits the harness list and the role defaults; the block is
-boot-pinned, so a change applies after an approved restart.
+tool: it hands work to another coding harness as a T3 Code thread
+(Codex, Claude, pi, devin, opencode, …) that the operator watches in
+T3 Code. Settings → Delegation edits the harness list and the role
+defaults; the block is boot-pinned, so a change applies after an
+approved restart.
 
 ```json5
 delegation: {
   harnesses: {
-    pi: { kind: "pi", args: ["--model", "zai/glm-5.3"] },
-    "pi-review": { kind: "pi", args: ["--model", "gpt-6.1-sol"] },
-    claude: { kind: "claude", askFirst: true },
+    pi: { provider: "pi", model: "<model-slug>" },
+    "pi-review": { provider: "pi", model: "<review-model-slug>" },
+    claude: { provider: "claudeAgent", model: "<model-slug>", askFirst: true },
   },
   // Role → harness name. `default` is what a call with no role uses;
   // a named role with no entry also falls back to `default`.
   defaults: { default: "pi", build: "pi", review: "pi-review" },
-  // machines: other hosts that run their own harnesses.
 },
 ```
 
-Each harness is a herdr agent kind plus native CLI args — full-auto flags
-and model choice live in `args`, and goblin never invents either. A
-default naming an undeclared harness is a config error. An explicit
-harness in a `delegate` call always wins over a role. `askFirst: true`
-on a harness (local or machine-side) makes goblin ask you before each
-use — the delegate tool carries it as a prompt rule, editable in
+Each harness is a T3 provider instance plus model slug — goblin never
+invents either, and the names must match what `t3` offers on this
+machine. A default naming an undeclared harness is a config error. An
+explicit harness in a `delegate` call always wins over a role.
+`askFirst: true` on a harness makes goblin ask you before each use —
+the delegate tool carries it as a prompt rule, editable in
 Settings → Delegation; choosing the harness itself stays goblin's call.
-
-opencode: keep the full TUI (`args: ["--auto"]`). `opencode mini` takes
-`--model` but rejects `--auto`, and herdr never reports it `working` or
-`done`, so a delegation to it would never settle (probe, 2026-11-09).
 
 ### Subagents
 

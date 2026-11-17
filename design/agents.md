@@ -7,11 +7,10 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 "I need real subagents, like the ones you have in `claude`." Goblin hands
 work to other agents through **two tools with two jobs**, in the standard
-shape that Claude Code, hermes and openclaw share. This ruling replaces
-the purpose-typed Pi Durable runtime (`design/subagents.md`), the Herdr
-transport (`design/delegation.md`) and the `herdr` tool. Those docs
-describe code that stays in the tree until it is removed (→ Removal
-order).
+shape that Claude Code, hermes and openclaw share. This ruling replaced
+the purpose-typed Pi Durable runtime (`design/subagents.md` — removal is
+step 7 below) and the Herdr transport and `herdr` tool; `delegate` and
+handover now run on T3 Code (`design/delegation.md`).
 
 | Tool | Job | Who decides | Runs on |
 |---|---|---|---|
@@ -172,8 +171,7 @@ g7 (2026-11-16):
 
 - There is no stop or interrupt verb. Until T3 Code has one, `delegate
   stop` cannot be offered.
-- There is no completion push. The watcher polls `show`, as it polls
-  Herdr today.
+- There is no completion push. The watcher polls `show`.
 - The T3 server is not a service on g7 (`t3 status`: "Service not
   installed"). `goblin.service` needs a server that stays up. Installing
   it (`t3 up`) is an operator action.
@@ -186,7 +184,7 @@ The operator no longer works in Herdr; they work in T3 Code
 - discovery is `t3 thread list`;
 - the responsibility observer polls `t3 thread show`;
 - a managed send is `t3 thread send`. A busy thread queues the message
-  instead of racing it, so the Herdr prompt-delivery race does not apply.
+  as its next turn; nothing is interrupted.
 
 The `herdr` tool (the operator's `default` session) is removed. Nothing
 replaces it: the operator's desk is T3 Code now.
@@ -235,16 +233,18 @@ access before there is a working replacement).
 4. Add image tool results and the `screenshot` tool.
 5. Build the `src/t3.ts` adapter. Move `delegate` and responsibility
    attach/observe onto it, and prove one delegation end to end.
-6. Delete the Herdr code: `src/herdr.ts`, its live check,
-   `harness-trust.ts` and the unit.
+6. Delete the Herdr code — **done (#608)**: `src/herdr.ts`, its live
+   check, `harness-trust.ts`, the `goblin-herdr.service` unit and the
+   seeded herdr skill are gone; `delegate` and handover already ran on
+   T3 Code.
 7. Delete the `subagent` tool, `src/subagents/`, the `subagent_runs`
    table and the pi-durable, pi-ai and chord dependencies. Needs step 3.
 
 ## Machine targets: dropped (2026-11-17)
 
 Delegation runs on this machine only. `delegation.machines` is gone: an
-old herdr-shaped block logs a warning that names the rewrite and boots
-without `delegate`. Reasons:
+old-shape `harnesses` entry (`kind`/`args`) logs a warning that names
+the rewrite and boots without `delegate`. Reasons:
 
 - `t3 thread start` (v0.1.9) has no environment flag. Linked
   environments (`t3 environment`) might reach other hosts, but that is

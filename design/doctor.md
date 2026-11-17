@@ -71,8 +71,8 @@ warmth or expiry; the manual bounded re-check is
 No finding claims more than measured: memory `/health/ready` 2xx is not
 bank or auth access — credentials, bank permissions and running queues stay
 unverified — and unit/asset findings are not proof of successful boot or
-frontend execution; delegation panes and herdr wire stay unverified, and
-the delegation host fails only while delegation is configured.
+frontend execution; delegation threads and the t3 wire stay
+unverified.
 
 Record recognition shares the installer's grammar (`src/auth.ts`): only a
 single direct `!pass-keys get <profile> <KEY>` record counts as a profile
@@ -140,8 +140,8 @@ responsibility observer records consecutive list failures on each
 attachment row and exposes the outage start once the threshold holds
 (design/app.md → Observation unavailability). Doctor reports those
 declared rows as one warning naming agent, target and start; it never
-probes a Herdr target itself, and a recovered poll clears the row on its
-own — the hint points at inspecting the named target, not at resetting
+probes a T3 thread itself, and a recovered poll clears the row on its
+own — the hint points at inspecting the named thread, not at resetting
 anything. A store that predates the columns skips rather than fails.
 
 `repo.test-ratio` is informational repo health, scoped to the diagnostic

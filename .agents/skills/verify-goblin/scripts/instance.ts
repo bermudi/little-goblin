@@ -116,6 +116,17 @@ function seedHome(home: string, fakePort: number): void {
 			fake: { kind: "openai-compatible", baseUrl: `http://127.0.0.1:${fakePort}/v1`, auth: "fake" },
 		},
 		model: "fake/verify-model",
+		// GOBLIN_VERIFY_DELEGATION=1 mounts the delegate/responsibility
+		// tools against the real t3 CLI (issue #608's verification): the
+		// codex/gpt-6-luna harness is the operator-named test pair.
+		...(process.env.GOBLIN_VERIFY_DELEGATION === "1"
+			? {
+					delegation: {
+						harnesses: { codex: { provider: "codex", model: "gpt-6-luna" } },
+						defaults: { default: "codex" },
+					},
+				}
+			: {}),
 		operators: [],
 		telegram: { enabled: false },
 		tts: "",

@@ -278,7 +278,7 @@ Rulings:
   parse to a time, which becomes the next review), evidence
   items `{item, ref, checked}`, the revision it was stated against, and
   the reporter — `goblin` (the coordinating turn's assessment of the
-  Herdr observations), `worker` (reserved for pi-durable runs, which
+  T3 thread observations), `worker` (reserved for pi-durable runs, which
   already end through tools), or `migration`. A worker's claim and
   goblin's assessment stay distinguishable at the data level.
 
@@ -322,7 +322,7 @@ Rulings:
   `done`. A run's reports carry the revision stamped when it was
   linked, so a correction since then overtakes the claim and it becomes
   goblin's move, even after a steer. A report that can never file (row
-  gone, invalid) is logged and the notice still wakes. Herdr panes have no such tool path: goblin reports for them.
+  gone, invalid) is logged and the notice still wakes. T3 threads have no such tool path: goblin reports for them.
 
   Linked lead delegations additionally carry code-observed GitHub evidence
   (design/delegation.md → PR readiness). Their report keeps the worker

@@ -1,8 +1,7 @@
 // The delegation lifecycle's verbs — launch, send, stop, stopByOperator,
-// read — over the T3 Code transport. The herdr-era trust seeding,
-// workspace juggling and dialog parking are gone with the wire: a
-// thread start carries the message, a busy thread queues follow-ups,
-// and there are no startup dialogs to answer.
+// read — over the T3 Code transport: a thread start carries the message,
+// a busy thread queues follow-ups, and there are no startup dialogs to
+// answer.
 
 import { log } from "./log.ts";
 import { T3Error } from "./t3.ts";

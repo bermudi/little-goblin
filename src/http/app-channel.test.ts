@@ -708,13 +708,13 @@ describe("app operator surface", () => {
 			const sources = new SkillSources(db);
 			const skillsDir = join(home, "workspace", "skills");
 			const proposedDir = join(home, "workspace", "skills-proposed");
-			mkdirSync(join(skillsDir, "herdr"), { recursive: true });
+			mkdirSync(join(skillsDir, "demo"), { recursive: true });
 			mkdirSync(join(proposedDir, "staged-skill"), { recursive: true });
 			// An update proposal on an installed skill: both dirs exist —
 			// installed still wins the state word, pending carries the
 			// undecided proposal.
-			mkdirSync(join(proposedDir, "herdr"), { recursive: true });
-			sources.record("app/1", "herdr", "reviewer", "2026-10-16T01:00:00.000Z", "r1");
+			mkdirSync(join(proposedDir, "demo"), { recursive: true });
+			sources.record("app/1", "demo", "reviewer", "2026-10-16T01:00:00.000Z", "r1");
 			sources.record("app/1", "gone-skill", "turn", "2026-10-16T02:00:00.000Z");
 			sources.record("app/1", "staged-skill", "reviewer", "2026-10-16T03:00:00.000Z", "r2");
 			const wired = setup({
@@ -752,7 +752,7 @@ describe("app operator surface", () => {
 						lastAt: "2026-10-16T02:00:00.000Z",
 					},
 					{
-						skill: "herdr",
+						skill: "demo",
 						state: "installed",
 						pending: true,
 						kind: "reviewer",
@@ -803,8 +803,8 @@ describe("app operator surface", () => {
 		} as unknown as MemoryQueue;
 		const db = new Database(":memory:");
 		const sources = new SkillSources(db);
-		sources.record("app/1", "herdr", "reviewer");
-		sources.record("dm:1", "herdr", "reviewer");
+		sources.record("app/1", "demo", "reviewer");
+		sources.record("dm:1", "demo", "reviewer");
 		const operator: NonNullable<AppChannelDeps["operator"]> = {
 			memory: stubMemory({
 				client,

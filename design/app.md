@@ -196,7 +196,7 @@ of part tiles — Service, Memory, Programs, Delegations — each with a state
 pill, one plain line (what is wrong and what to do) and an "Open …" link to
 the page that fixes it. Programs and Delegations only report counts, so their
 pill says "no signal", never a guessed "ok". A note says model providers,
-Telegram, keys and the herdr host are not in the status API and points to
+Telegram and keys are not in the status API and points to
 `bun run doctor`; no new probes. The old label/value cards live on in a
 collapsed "Raw details" block. Memory "off" is neutral, not a problem.
 

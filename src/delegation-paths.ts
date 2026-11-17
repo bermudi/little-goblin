@@ -1,7 +1,6 @@
 // The delegation family's shared predicates: the issue-lead row test
-// and the prompt suffix a lead's message carries. The herdr-era
-// target/report seam is gone with the transport (#607): results ride
-// the T3 thread's messages, watched through `thread show`.
+// and the prompt suffix a lead's message carries. Results ride the
+// T3 thread's messages, watched through `thread show`.
 
 import type { Delegation } from "./delegations.ts";
 import type { GithubIssue } from "./pr-readiness.ts";

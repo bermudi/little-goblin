@@ -772,8 +772,9 @@ describe("managed send edge", () => {
 				return sentResult();
 			},
 		});
-		// A legacy herdr attachment must never be dispatched through t3.
-		await expect(edge("b", target({ server: "herdr" }))).rejects.toMatchObject({
+		// A legacy attachment from another transport must never be
+		// dispatched through t3.
+		await expect(edge("b", target({ server: "local" }))).rejects.toMatchObject({
 			code: "identity-unenforceable",
 		});
 		// An aborted turn never submits.

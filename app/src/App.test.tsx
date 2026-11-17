@@ -4815,6 +4815,11 @@ describe("notes and attention load failures surface (issue #213)", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLElement", win.HTMLElement);
+		installGlobal("Element", win.Element);
+		installGlobal("MutationObserver", win.MutationObserver);
+		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+		installGlobal("cancelAnimationFrame", win.cancelAnimationFrame.bind(win));
 		// The command primitive's typeahead walks item text through the DOM
 		// global NodeFilter; browsers have it, bare bun:test doesn't.
 		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);

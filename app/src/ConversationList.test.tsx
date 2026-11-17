@@ -12,7 +12,7 @@ declare global {
 	var __UI_SDK_STRICT__: boolean | undefined;
 }
 
-const conv: AppConversationList["conversations"][number] = {
+const conv: AppConversationList["conversations"][number] & { parentId: string | null } = {
 	id: "app/example",
 	title: "Example conversation",
 	preview: "A preview",
@@ -21,6 +21,7 @@ const conv: AppConversationList["conversations"][number] = {
 	archivedAt: null,
 	pinnedAt: null,
 	projectId: null,
+	parentId: null,
 };
 
 let win: Window | null = null;

@@ -35,7 +35,12 @@ export interface DelegationLifecycleDeps {
 
 export interface LaunchInput {
 	// The configured harness: its T3 provider instance and model.
-	harness: { name: string; provider: string; model: string };
+	harness: {
+		name: string;
+		provider: string;
+		model: string;
+		options?: Readonly<Record<string, string | boolean>>;
+	};
 	task: string;
 	cwd: string;
 	name: string;

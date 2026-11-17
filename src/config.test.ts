@@ -303,7 +303,7 @@ describe("goblin.json5", () => {
 			expect(warnings).toHaveLength(1);
 			expect(warnings[0]).toMatchObject({ level: "warn", key: "delegation" });
 			expect(warnings[0]!.msg).toContain("retired-shape");
-			expect(warnings[0]!.replacement).toContain("{provider, model}");
+			expect(warnings[0]!.replacement).toContain("{provider, model, options?}");
 			// Only disk load retires: the same object through parseConfig
 			// (the POST merge's validator) still fails loud.
 			expect(() =>
@@ -690,6 +690,12 @@ describe("goblin.json5", () => {
 			(c) => c.delegation?.harnesses["claude"]?.askFirst,
 			true,
 		],
+		[
+			"delegation model options parse string and boolean values",
+			Z(`,delegation:{harnesses:{claude:{provider:"t3",model:"m",options:{effort:"low",fastMode:false}}}}`),
+			(c) => c.delegation?.harnesses.claude?.options,
+			{ effort: "low", fastMode: false },
+		],
 	];
 	for (const [name, content, pick, expected] of singles) {
 		test(name, () => {
@@ -734,6 +740,16 @@ describe("goblin.json5", () => {
 		[
 			"delegation askFirst rejects a non-boolean",
 			Z(`,delegation:{harnesses:{claude:{provider:"t3",model:"m",askFirst:"yes"}}}`),
+			"delegation: invalid_union",
+		],
+		[
+			"delegation model options reject an empty value",
+			Z(`,delegation:{harnesses:{claude:{provider:"t3",model:"m",options:{effort:""}}}}`),
+			"delegation: too_small",
+		],
+		[
+			"delegation model options reject an empty id",
+			Z(`,delegation:{harnesses:{claude:{provider:"t3",model:"m",options:{"":"x"}}}}`),
 			"delegation: invalid_union",
 		],
 	];

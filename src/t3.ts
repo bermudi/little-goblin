@@ -5,7 +5,10 @@
 // `--wait` runs exit 1 (run failed) and 2 (waits for an answer) per
 // `t3 thread start --help`; goblin's delegation paths never wait (the
 // watcher polls `show`), so only the completed exit-0 shape is pinned
-// live. The runner is the fake edge for tests.
+// live. `--option` was added upstream in t3code commit 84d34d40f8
+// (t3code #23932), after v0.1.10. A v0.1.10 CLI rejects it as a usage
+// error, so starts with options fail loudly, never at default effort.
+// The runner is the fake edge for tests.
 
 import { z } from "zod";
 import { log } from "./log.ts";
@@ -220,6 +223,7 @@ export interface T3StartInput {
 	message: string;
 	provider: string;
 	model: string;
+	options?: Readonly<Record<string, string | boolean>>;
 	title?: string;
 	worktree?: string;
 	branch?: string;
@@ -254,8 +258,13 @@ export function makeT3(run: T3Runner = defaultRunner): T3 {
 				input.provider,
 				"--model",
 				input.model,
-				"--json",
 			];
+			for (const [id, value] of Object.entries(input.options ?? {}).sort(([a], [b]) =>
+				a.localeCompare(b),
+			)) {
+				argv.push("--option", `${id}=${String(value)}`);
+			}
+			argv.push("--json");
 			if (input.title !== undefined) argv.push("--title", input.title);
 			if (input.worktree !== undefined) argv.push("--worktree", input.worktree);
 			if (input.branch !== undefined) argv.push("--branch", input.branch);

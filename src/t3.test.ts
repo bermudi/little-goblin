@@ -87,6 +87,22 @@ describe("t3 adapter verbs", () => {
 		]);
 	});
 
+	test("start sends sorted model options after the model", async () => {
+		const f = fakeRunner([ok({ threadId: "t-1", projectId: "p", runId: "r" })]);
+		await makeT3(f.run).startThread({
+			project: "/repo",
+			message: "m",
+			provider: "prov",
+			model: "m-1",
+			options: { fastMode: false, effort: "low" },
+		});
+		expect(f.calls[0]!.args).toEqual([
+			"thread", "start", "/repo", "m", "--provider", "prov",
+			"--model", "m-1", "--option", "effort=low", "--option",
+			"fastMode=false", "--json",
+		]);
+	});
+
 	test("send addresses the thread and parses the delivery record", async () => {
 		const f = fakeRunner([
 			ok({

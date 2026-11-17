@@ -48,8 +48,9 @@ Rulings:
   upgrade; red means the CLI moved: re-pin with one probe, fix the
   adapter, never discover it live.
 - **Harnesses are config, never guessed** — each name maps to a T3
-  provider instance and model (`{provider, model}`); goblin never picks
-  a model for a harness.
+  provider instance and model, with optional T3 model options
+  (`{provider, model, options?}`); goblin never picks a model for a
+  harness.
 - **Staffing defaults are config, not notes (2026-11-09).** The operator
   sets `delegation.defaults` — role → configured harness name — instead
   of the agent carrying the table in `USER.md` / workspace notes.
@@ -211,3 +212,23 @@ entry (`kind`/`args` instead of `provider`/`model`) logs a warning
 that names the rewrite and boots without `delegate`. If remote
 delegation comes back, it goes through T3 Code's own environments, in
 `src/t3.ts` — it does not bring back a goblin-side machine registry.
+
+## Where the old `args` went (2026-11-16)
+
+The retired harness `args` list must be migrated token by token:
+
+- `--model X` → `model` (a T3 model slug, for example
+  `claude-opus-5-5`, not the alias `opus`).
+- `--effort low` (claude-lead) → `options: {effort: "low"}`. The option
+  id is provider-specific: Claude uses `effort`, Codex
+  `reasoningEffort`, pi `thinking`, and opencode `variant`. Values come
+  from T3's model catalog. This requires a `t3` CLI with `--option`
+  (newer than v0.1.10); until g7 upgrades, an entry with options fails
+  loudly at start.
+- `--dangerously-skip-permissions` (Claude) and `--auto` (opencode) →
+  no goblin setting. A T3 thread runs at the runtime mode T3 assigns to
+  the CLI caller (`runtimeMode` on `t3 thread show`); goblin logs it on
+  "delegation started". Changing it is a T3 setting, not goblin config.
+
+A migration maps every old `args` token to one of these, or records
+that it is dropped and why. Never drop one silently.

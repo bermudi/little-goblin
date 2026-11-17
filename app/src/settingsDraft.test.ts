@@ -109,8 +109,8 @@ describe("draftFromConfig", () => {
 		});
 		const { draft: d } = draftFromConfig(c);
 		expect(d.delegation?.harnesses).toEqual([
-			{ name: "pi", provider: "codex", model: "gpt-6-luna", askFirst: false },
-			{ name: "pi-review", provider: "codex", model: "gpt-6.1-terra", askFirst: false },
+			{ name: "pi", provider: "codex", model: "gpt-6-luna", options: "", askFirst: false },
+			{ name: "pi-review", provider: "codex", model: "gpt-6.1-terra", options: "", askFirst: false },
 		]);
 		// The fallback role sorts first.
 		expect(d.delegation?.roles).toEqual([
@@ -140,8 +140,8 @@ describe("draftFromConfig", () => {
 		});
 		const { draft: d, providers } = draftFromConfig(c);
 		expect(d.delegation?.harnesses).toEqual([
-			{ name: "claude", provider: "claude", model: "claude-haiku-5-5", askFirst: true },
-			{ name: "pi", provider: "codex", model: "gpt-6-luna", askFirst: false },
+			{ name: "claude", provider: "claude", model: "claude-haiku-5-5", options: "", askFirst: true },
+			{ name: "pi", provider: "codex", model: "gpt-6-luna", options: "", askFirst: false },
 		]);
 		const del = delegationConfigSchema.parse(bodyFromDraft(d, providers, authDefaults).delegation);
 		expect(del).toEqual({
@@ -154,10 +154,39 @@ describe("draftFromConfig", () => {
 		expect("askFirst" in del.harnesses["pi"]!).toBe(false);
 	});
 
+	test("model options round-trip and empty options are omitted", () => {
+		const c = baseConfig();
+		c.delegation = delegationConfigSchema.parse({
+			harnesses: {
+				pi: { provider: "codex", model: "gpt-6-luna", options: { thinking: "high", fastMode: false } },
+			},
+		});
+		const { draft: d, providers } = draftFromConfig(c);
+		expect(d.delegation?.harnesses[0]?.options).toBe("fastMode=false thinking=high");
+		expect(
+			delegationConfigSchema.parse(bodyFromDraft(d, providers, authDefaults).delegation),
+		).toEqual(c.delegation);
+		d.delegation!.harnesses[0]!.options = "";
+		const empty = delegationConfigSchema.parse(bodyFromDraft(d, providers, authDefaults).delegation);
+		expect("options" in empty.harnesses.pi!).toBe(false);
+	});
+
+	test("model options require unique id=value pairs", () => {
+		const { draft: d } = draftFromConfig(baseConfig());
+		d.delegation = {
+			harnesses: [{ name: "pi", provider: "codex", model: "gpt-6-luna", options: "", askFirst: false }],
+			roles: [],
+		};
+		for (const value of ["effort", "=x", "effort=low effort=high"]) {
+			d.delegation.harnesses[0]!.options = value;
+			expect(validateDraft(d, [prov()])).toBe("Model options must be id=value pairs (agent pi).");
+		}
+	});
+
 	test("delegation validation catches unnamed, duplicate and dangling entries", () => {
 		const { draft: d } = draftFromConfig(baseConfig());
 		d.delegation = {
-			harnesses: [{ name: "pi", provider: "codex", model: "gpt-6-luna", askFirst: false }],
+			harnesses: [{ name: "pi", provider: "codex", model: "gpt-6-luna", options: "", askFirst: false }],
 			roles: [{ role: "default", harness: "pi" }],
 		};
 		expect(validateDraft(d, [prov()])).toBeNull();
@@ -170,7 +199,7 @@ describe("draftFromConfig", () => {
 		expect(validateDraft(d, [prov()])).toContain("Duplicate delegation role");
 		d.delegation.roles = [{ role: "default", harness: "pi" }];
 		d.delegation.harnesses = [
-			{ name: "Pi", provider: "codex", model: "gpt-6-luna", askFirst: false },
+			{ name: "Pi", provider: "codex", model: "gpt-6-luna", options: "", askFirst: false },
 		];
 		expect(validateDraft(d, [prov()])).toContain("lowercase letters");
 	});
@@ -178,7 +207,7 @@ describe("draftFromConfig", () => {
 	test("a role row with no agent is an absent mapping, not an error", () => {
 		const { draft: d, providers } = draftFromConfig(baseConfig());
 		d.delegation = {
-			harnesses: [{ name: "pi", provider: "codex", model: "gpt-6-luna", askFirst: false }],
+			harnesses: [{ name: "pi", provider: "codex", model: "gpt-6-luna", options: "", askFirst: false }],
 			// The always-visible default row, picked at "none".
 			roles: [
 				{ role: "default", harness: "" },

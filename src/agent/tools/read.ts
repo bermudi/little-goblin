@@ -19,6 +19,12 @@ export type ReadFileError =
 	| { error: string; kind: "too-large" }
 	| { error: string; kind: "binary" };
 
+export type ContextFill = () => { used: number; limit: number } | null;
+
+function contextK(tokens: number): string {
+	return `${Math.round(tokens / 1000)}k`;
+}
+
 export function readTextFile(abs: string, display: string): { text: string } | ReadFileError {
 	let raw: Buffer;
 	try {
@@ -163,6 +169,7 @@ export const readFileTool = (
 	 *  curator) keys the curator's clock on read_file of a catalog
 	 *  SKILL.md. Absent everywhere except the wired runtime. */
 	onRead?: (abs: string) => void,
+	contextFill?: ContextFill,
 ) =>
 	defineTool({
 		description:
@@ -204,8 +211,8 @@ export const readFileTool = (
 				}
 				return read;
 			}
-			onRead?.(abs);
 			if (read.text.length === 0) {
+				onRead?.(abs);
 				return { content: "[file is empty — 0 bytes]", lines: 0, shown: 0 };
 			}
 			const lines = read.text.split("\n");
@@ -250,6 +257,24 @@ export const readFileTool = (
 			} else if (limitEnd < total) {
 				notice = `\n[${total - limitEnd} more lines in file. Use offset=${limitEnd + 1} to continue.]`;
 			}
-			return { content: out.join("") + notice, lines: total, shown };
+			const content = out.join("") + notice;
+			const fill = contextFill?.() ?? null;
+			const estimate = Math.ceil(Buffer.byteLength(content, "utf8") / 4);
+			if (fill !== null && estimate >= 2000 && fill.used + estimate > 0.7 * fill.limit) {
+				const pct = Math.round((fill.used / fill.limit) * 100);
+				log.info("read_file refused — context guard", {
+					path: abs,
+					estimate,
+					used: fill.used,
+					limit: fill.limit,
+				});
+				return {
+					error:
+						`read_file refused: this page is ~${contextK(estimate)} tokens and your context is at ${contextK(fill.used)} of ${contextK(fill.limit)} (${pct}%) — reading it would pass 70%. ` +
+						"Hand it to a child instead: agent spawn with background: false, a task naming the path and your question; keep only its answer. Or read a smaller range with offset/limit.",
+				};
+			}
+			onRead?.(abs);
+			return { content, lines: total, shown };
 		},
 	});

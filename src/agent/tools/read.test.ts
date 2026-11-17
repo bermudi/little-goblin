@@ -18,6 +18,34 @@ import { tmpDir } from "../../testkit.ts";
 const opts = { toolCallId: "t1" };
 
 describe("read_file", () => {
+	test("guards large pages against the remaining context", async () => {
+		const dir = tmpDir("goblin-read-context-");
+		writeFileSync(
+			join(dir, "large.txt"),
+			Array.from({ length: 24 }, () => "x".repeat(2_000)).join("\n"),
+		);
+		const fill = { used: 170_000, limit: 256_000 };
+		const guarded = readFileTool(dir, false, undefined, () => fill);
+		const refused = (await guarded.execute!({ path: "large.txt" }, opts)) as { error?: string };
+		expect(refused.error).toBe(
+			"read_file refused: this page is ~12k tokens and your context is at 170k of 256k (66%) — reading it would pass 70%. Hand it to a child instead: agent spawn with background: false, a task naming the path and your question; keep only its answer. Or read a smaller range with offset/limit.",
+		);
+		fill.used = 50_000;
+		const allowed = (await guarded.execute!({ path: "large.txt" }, opts)) as { content?: string };
+		expect(allowed.content).toContain("xxxxxxxx");
+	});
+
+	test("small pages and tools without live context fill remain readable", async () => {
+		const dir = tmpDir("goblin-read-context-");
+		writeFileSync(join(dir, "small.txt"), "x".repeat(4_000));
+		const guarded = readFileTool(dir, false, undefined, () => ({ used: 250_000, limit: 256_000 }));
+		const small = (await guarded.execute!({ path: "small.txt" }, opts)) as { error?: string };
+		expect(small.error).toBeUndefined();
+		const unguarded = (await readFileTool(dir).execute!({ path: "small.txt" }, opts)) as {
+			error?: string;
+		};
+		expect(unguarded.error).toBeUndefined();
+	});
 	test("reads a file with line numbers", async () => {
 		const dir = tmpDir("goblin-read-");
 		writeFileSync(join(dir, "f.txt"), "one\ntwo\n");

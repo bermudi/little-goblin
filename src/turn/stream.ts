@@ -71,6 +71,10 @@ function describeWarning(w: CallWarning): string {
 	}
 }
 
+function contextK(tokens: number): string {
+	return `${Math.round(tokens / 1000)}k`;
+}
+
 // ---------- the wire: what the turn's clients see ----------
 
 export type WireEnd =
@@ -412,6 +416,8 @@ export interface StreamDeps<M extends WireMember> {
 	// steers advance it and persist with the steer mark.
 	ownedInputSeqs: number[];
 	onOwnedInputs?(seqs: readonly number[]): void;
+	onContextFill?(used: number | null, limit: number | undefined): void;
+	priorInputTokens?: number | null;
 	sourceInputSeq?(): number | null;
 	partial: Message | null;
 	seenText: boolean;
@@ -607,7 +613,27 @@ export async function driveStream<M extends WireMember>(
 		...(deps.step.maxRetries !== undefined ? { maxRetries: deps.step.maxRetries } : {}),
 		prepareStep: async ({ messages: stepMessages, steps, stepNumber }) => {
 			const prevInput = steps.at(-1)?.usage.inputTokens;
+			const contextUsed =
+				stepNumber === 0 ? (deps.priorInputTokens ?? null) : (prevInput ?? null);
+			deps.onContextFill?.(contextUsed, deps.step.contextWindow);
 			state.noteContextLanding(prevInput, deps.step.contextWindow);
+			const contextLimit = deps.step.contextWindow;
+			const contextPct =
+				contextUsed !== null && contextLimit !== undefined
+					? Math.round((contextUsed / contextLimit) * 100)
+					: null;
+			const contextNote: ModelMessage[] =
+				contextLimit !== undefined &&
+				(stepNumber === 0 || (contextPct !== null && contextPct >= 50))
+					? contextUsed !== null
+						? [
+							{
+								role: "user",
+								content: `[context: ${contextK(contextUsed)} of ${contextK(contextLimit)} tokens used (${contextPct}%)]`,
+							},
+							]
+						: [{ role: "user", content: `[context: ${contextK(contextLimit)} token window]` }]
+					: [];
 			const issued = state.issueLanding();
 			if (issued !== null) {
 				if (issued === "repeat") {
@@ -637,23 +663,31 @@ export async function driveStream<M extends WireMember>(
 			const base = stubSupersededFrames(stepMessages);
 			const folded = await foldSteers(deps, steers, stepNumber, sdkTools);
 			if (folded === null) {
-				if (base === stepMessages) return undefined;
+				if (
+					base === stepMessages &&
+					warnMsgs.length === 0 &&
+					contextNote.length === 0 &&
+					!forced
+				)
+					return undefined;
 				const outbound =
-					forced || warnMsgs.length > 0 ? [...base, ...warnMsgs, ...nudge] : base;
+					forced || warnMsgs.length > 0 || contextNote.length > 0
+						? [...base, ...warnMsgs, ...contextNote, ...nudge]
+						: base;
 				notePrompt(outbound, stepNumber);
 				return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
 			}
 			const { injected } = folded;
 			if (injected.length === 0) {
-				if (forced || warnMsgs.length > 0 || base !== stepMessages) {
-					const outbound = [...base, ...warnMsgs, ...nudge];
+				if (forced || warnMsgs.length > 0 || contextNote.length > 0 || base !== stepMessages) {
+					const outbound = [...base, ...warnMsgs, ...contextNote, ...nudge];
 					notePrompt(outbound, stepNumber);
 					return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
 				}
 				notePrompt(stepMessages, stepNumber);
 				return undefined;
 			}
-			const outbound = [...base, ...warnMsgs, ...injected, ...nudge];
+			const outbound = [...base, ...warnMsgs, ...injected, ...contextNote, ...nudge];
 			notePrompt(outbound, stepNumber);
 			return {
 				messages: outbound,
@@ -758,6 +792,7 @@ export async function driveStream<M extends WireMember>(
 				});
 			}
 			lastStepInputTokens = step.usage.inputTokens ?? null;
+			deps.onContextFill?.(lastStepInputTokens, deps.step.contextWindow);
 			lastStepCacheRead = step.usage.inputTokenDetails?.cacheReadTokens ?? null;
 			turnQuota = quotaFromMetadata(step.providerMetadata) ?? turnQuota;
 			// Assistant steps only — tool-result messages re-derive from

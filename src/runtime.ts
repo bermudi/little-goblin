@@ -21,7 +21,7 @@ import {
 	quotaExhausted,
 } from "./agent/provider-errors.ts";
 import { resolveSkillRef } from "./agent/skill-inject.ts";
-import type { Conversation } from "./conversation-read.ts";
+import { lastInputTokensOf, type Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
 import {
@@ -715,6 +715,14 @@ export class Runtime {
 			}
 			return max ?? recovery?.sourceInputSeq ?? null;
 		};
+		const lastStoredUsage = [...store.history(convId)]
+			.reverse()
+			.find((message) => message.role === "assistant" && lastInputTokensOf(message) !== null);
+		const priorInputTokens =
+			recovery?.overflowed === true || lastStoredUsage === undefined
+				? null
+				: lastInputTokensOf(lastStoredUsage);
+		let contextFill: { used: number; limit: number } | null = null;
 		const record = openRunRecord({
 			journal,
 			store,
@@ -793,6 +801,7 @@ export class Runtime {
 				steerWaiting: () =>
 					steerGate.armed &&
 					this.lanes.claimablePending(convId, sink.delivery === "stream"),
+				contextFill: () => contextFill,
 			});
 			// The const is what closures below capture — the mutable slot
 			// above only bridges the pre-authority failure paths.
@@ -800,6 +809,10 @@ export class Runtime {
 			const tools = auth.tools;
 			this.lastTurnTools.set(convId, { epoch, tools });
 			const step = await this.deps.buildStep(conv, tools);
+			contextFill =
+				priorInputTokens !== null && step.contextWindow !== undefined
+					? { used: priorInputTokens, limit: step.contextWindow }
+					: null;
 			steerGate.armed = !isClaudeStep(step);
 			this.checkAuthority(convId, epoch);
 			// Steered messages use the same fixed capability gates as the initial
@@ -898,6 +911,7 @@ export class Runtime {
 				},
 				holdsAuthority: () => this.deps.store.get(convId)?.epoch === epoch,
 				messages: merged,
+				priorInputTokens,
 				tools,
 				view: viewCtx,
 				claimSteers: () => this.lanes.claim(convId, sink.delivery === "stream", false),
@@ -910,6 +924,9 @@ export class Runtime {
 						ownedInputSeqs.add(seq);
 						foldedSeqs.add(seq);
 					}
+				},
+				onContextFill: (used, limit) => {
+					contextFill = used !== null && limit !== undefined ? { used, limit } : null;
 				},
 				sourceInputSeq,
 				partial: recovery?.partial ?? null,

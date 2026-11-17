@@ -300,6 +300,12 @@ export function buildSystemPrompt(
 		`  right now, mid-turn, run \`date\` via bash.`,
 		`- Tools: ${tools.join(", ")}. Paths are relative to the working`,
 		`  directory unless absolute.`,
+		...(tools.includes("agent")
+			? [
+					`- Context: your context window is finite and every step re-sends all of it, so what you read stays costly for the rest of the conversation. A [context: …] note tells you the fill at the start of each turn, and on every step once it is past half.`,
+					`  Keep bulk reading out of your own context. Large files, long command or fetch output, transcripts, and questions over many documents go to a child: agent spawn with background: false and a self-contained task (the paths plus your question); keep only its answer. Several spawns in one step run in parallel. A truncated result names its saved file: page it with read_file only for a few specific parts, otherwise hand the path to a child.`,
+				]
+			: []),
 		...(tools.includes("program")
 			? [
 					`- program manages standing orders — charters on a cron, replies`,

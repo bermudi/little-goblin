@@ -37,6 +37,13 @@ const conv: Conversation = {
 const tools = ["read_file", "write_file", "edit_file", "bash", "program", "send_file"];
 
 describe("buildSystemPrompt", () => {
+	test("includes context self-management only when the agent tool is mounted", () => {
+		const withAgent = buildSystemPrompt(conv, ["read_file", "agent"]).text;
+		const withoutAgent = buildSystemPrompt(conv, ["read_file"]).text;
+		expect(withAgent).toContain("Context: your context window is finite");
+		expect(withAgent).toContain("Several spawns in one step run in parallel.");
+		expect(withoutAgent).not.toContain("Context: your context window is finite");
+	});
 	test("memory evidence is framed when the tool is present — and only then", () => {
 		const home = useHome("goblin-prompt-");
 		process.env.GOBLIN_HOME = home;

@@ -439,6 +439,25 @@ describe("skill body ownership across turns", () => {
 		}
 	});
 });
+
+describe("context note across turns", () => {
+	test("the next turn starts with the last persisted input usage", async () => {
+		const edge = scriptedEdge([textParts("first", 60_000), textParts("second", 60_000)]);
+		const r = rig({ model: edge.model, step: { contextWindow: 256_000 } });
+		try {
+			const first = submit(r, "first request");
+			await first.done;
+			const second = submit(r, "second request");
+			await second.done;
+			await drain(r);
+			expect(JSON.stringify(edge.streamCalls[1]?.prompt)).toContain(
+				"[context: 60k of 256k tokens used (23%)]",
+			);
+		} finally {
+			r.store.close();
+		}
+	});
+});
 const roles = (r: Rig) => r.store.history(r.conv.id).map((m) => m.role);
 const stop = (r: Rig) => r.runtime.stop(r.conv.id);
 
@@ -4260,8 +4279,20 @@ describe("prefix compaction request identity", () => {
 			if (!Array.isArray(turnMessages) || !Array.isArray(compactMessages)) {
 				throw new Error("fake provider captured malformed messages");
 			}
-			expect(compactMessages.slice(0, turnMessages.length)).toEqual(turnMessages);
-			const appended = compactMessages.slice(turnMessages.length);
+			// Context notes are outbound-only tails; the compactor reads
+			// persisted conversation history and must not inherit them.
+			const persistedTurnMessages = turnMessages.filter(
+				(message) =>
+					!(
+						typeof message === "object" &&
+						message !== null &&
+						(message as { role?: unknown }).role === "user" &&
+						typeof (message as { content?: unknown }).content === "string" &&
+						/^\[context: .*]$/.test((message as { content: string }).content)
+					),
+			);
+			expect(compactMessages.slice(0, persistedTurnMessages.length)).toEqual(persistedTurnMessages);
+			const appended = compactMessages.slice(persistedTurnMessages.length);
 			expect(appended).toHaveLength(2);
 			expect(appended[0]).toMatchObject({ role: "assistant", content: "turn-two assistant reply" });
 			expect(appended[1]).toMatchObject({

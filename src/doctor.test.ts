@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import {
 	collectDoctorReport,
 	formatDoctorReport,
@@ -20,6 +21,9 @@ import {
 import type { HealthReport } from "./health/shared.ts";
 import { bashTool } from "./agent/tools/bash.ts";
 import { waitUntil } from "./testkit.ts";
+
+// Zero and negative PIDs target groups rather than the fixture process.
+const fixturePids = z.array(z.int32().positive()).nonempty();
 
 const report: HealthReport = {
 	version: 1,
@@ -77,8 +81,10 @@ describe("doctor process boundary", () => {
 		const pids = join(directory, "pids");
 		const controllerFile = join(directory, "controller.ts");
 		const worker = `
-			import { writeFileSync } from "node:fs";
-			writeFileSync(${JSON.stringify(pids)}, JSON.stringify([process.pid]));
+			import { renameSync, writeFileSync } from "node:fs";
+			const pids = ${JSON.stringify(pids)};
+			writeFileSync(pids + ".tmp", JSON.stringify([process.pid]));
+			renameSync(pids + ".tmp", pids);
 			process.on("SIGTERM", () => {});
 			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 		`;
@@ -103,7 +109,7 @@ describe("doctor process boundary", () => {
 			);
 			await waitUntil(() => existsSync(pids), "worker pid file lands", 2_000);
 			expect(existsSync(pids)).toBe(true);
-			ids = JSON.parse(readFileSync(pids, "utf8")) as number[];
+			ids = fixturePids.parse(JSON.parse(readFileSync(pids, "utf8")));
 			abort.abort();
 			await pending;
 			for (let i = 0; i < 100; i++) {
@@ -178,14 +184,19 @@ describe("doctor process boundary", () => {
 		test(`${outcome} cleans inherited descendants even without a responsive worker`, async () => {
 			const directory = mkdtempSync(join(tmpdir(), "doctor-group-"));
 			const pids = join(directory, "pids");
-			const descendants = join(directory, "descendants");
 			const signal = new AbortController();
+			const helper = `
+				trap '' TERM
+				/bin/sleep 60 &
+				printf '[%s,%s,%s]' "$1" "$$" "$!" > "$2.tmp" && mv -- "$2.tmp" "$2"
+				wait
+			`;
 			const worker = `
 				import { spawnProc } from ${JSON.stringify(join(import.meta.dir, "proc.ts"))};
-				import { writeFileSync, readFileSync, existsSync } from "node:fs";
-				const helper = spawnProc(["/bin/sh", "-c", ${JSON.stringify(`trap '' TERM; /bin/sleep 60 & printf '%s %s' "$$" "$!" > '${descendants}'; wait`)}], undefined, undefined, "inherit");
-				while (!existsSync(${JSON.stringify(descendants)})) await Bun.sleep(1);
-				writeFileSync(${JSON.stringify(pids)}, JSON.stringify([process.pid, ...readFileSync(${JSON.stringify(descendants)}, "utf8").split(" ").map(Number)]));
+				import { existsSync } from "node:fs";
+				const pids = ${JSON.stringify(pids)};
+				spawnProc(["/bin/sh", "-c", ${JSON.stringify(helper)}, "doctor-fixture", String(process.pid), pids], undefined, undefined, "inherit");
+				while (!existsSync(pids)) await Bun.sleep(1);
 				${
 					outcome === "complete"
 						? `process.stdout.write(${JSON.stringify(JSON.stringify(report))}); process.exit(0);`
@@ -220,7 +231,8 @@ describe("doctor process boundary", () => {
 				);
 				for (let i = 0; i < 100 && !existsSync(pids); i++) await Bun.sleep(5);
 				expect(existsSync(pids)).toBe(true);
-				ids = JSON.parse(readFileSync(pids, "utf8")) as number[];
+				ids = fixturePids.parse(JSON.parse(readFileSync(pids, "utf8")));
+				expect(ids).toHaveLength(3);
 				if (outcome === "cancel") signal.abort();
 				const returned = await settled;
 				if (outcome === "complete") expect(returned.value).toEqual(report);

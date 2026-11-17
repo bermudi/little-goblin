@@ -2,9 +2,10 @@
 // /learn, curator (ruling 2026-11-16). One pass moves agent-authored
 // skills between active/stale/archived on the sidecar's clock; no
 // model wiring, so values read live rather than restart-pinning.
-// Rules borrowed from hermes-agent's agent/curator.py
-// (apply_automatic_transitions):
-//   anchor lastUsedAt ?? createdAt; stale 14d, archive 30d; a pass at
+// Goblin's inactivity anchor is lastUsedAt ?? createdAt: patches do
+// not reset the clock, unlike Hermes. Transitions borrowed from
+// hermes-agent's agent/curator.py (apply_automatic_transitions):
+//   stale 14d, archive 30d; a pass at
 //   most every 168h; pinned skips; first sight seeds the clock and
 //   defers; useCount === 0 never archives before the stale cutoff.
 // Scope not borrowed: no LLM consolidation fork, no umbrella

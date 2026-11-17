@@ -40,10 +40,9 @@ const fileSchema = z.object({
 });
 export type SkillUsageFile = z.infer<typeof fileSchema>;
 
-/** A record's inactivity anchor — the timestamp the stale/archive
- *  cutoffs measure from. Never-active skills anchor on createdAt so
- *  they don't self-archive (hermes' rule: last_activity excludes
- *  created_at). */
+/** Goblin's inactivity anchor for stale/archive cutoffs: last use,
+ *  or creation if never used. Patches do not reset the clock,
+ *  unlike Hermes, which counts them as activity. */
 export function usageAnchor(r: SkillUsageRecord): string {
 	return r.lastUsedAt ?? r.createdAt;
 }

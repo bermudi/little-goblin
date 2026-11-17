@@ -368,9 +368,11 @@ absent = off (goblin convention; hermes defaults it on). No model wiring,
 so values read live rather than restart-pinning. Eligibility is a
 provenance row: only skills the agent wrote (reviewer or turn) are
 managed — seeded and operator-installed skills carry no row and are never
-touched; pin is the operator's override. Hermes' rules: anchor
-`lastUsedAt ?? createdAt`; stale after 14 days, archive after 30, a pass
-at most every 168 hours (boot and turn completion, gated on the
+touched; pin is the operator's override. Goblin's inactivity rule: anchor
+`lastUsedAt ?? createdAt`; edits (`lastPatchedAt`) do not reset the clock.
+This deliberately differs from Hermes, which counts patches as activity.
+The remaining transitions borrow from Hermes: stale after 14 days, archive
+after 30, a pass at most every 168 hours (boot and turn completion, gated on the
 sidecar's `lastCuratorRun`); pinned skips; first sight seeds the clock
 and defers; `useCount === 0` never archives before the stale cutoff —
 absence of evidence is not staleness. Archive is a rename into

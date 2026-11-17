@@ -10,6 +10,8 @@
 //  5. Message shapes come from goblin, not AI SDK packages; block named
 //     imports/re-exports, namespace imports, star exports, and inline types.
 //  6. Escapes and node_modules paths hide what a specifier resolves to.
+//  7. AI SDK packages (`ai`, `ai/*`, `@ai-sdk/*`) are imported only by the
+//     allowlisted files below; the list only shrinks.
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -34,6 +36,38 @@ const FROM_SPEC = /\bfrom\s*["']([^"']+)["']/g;
 const DYNAMIC_SPEC =
 	/\bimport\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*["'`]([^"'`$]+)["'`]\s*\)/g;
 const BARE_SPEC = /\bimport\s*["']([^"']+)["']/g;
+const AI_SDK_IMPORTERS = [
+	"src/agent/claude-code/engine.ts",
+	"src/agent/claude-code/prompt.ts",
+	"src/agent/codex/model.ts",
+	"src/agent/filter-stream.ts",
+	"src/agent/note-rewrite.ts",
+	"src/agent/provider-errors.ts",
+	"src/agent/providers.ts",
+	"src/agent/step.ts",
+	"src/agent/thinking.ts",
+	"src/agent/title.ts",
+	"src/agent/tool-repair.ts",
+	"src/agent/vision.ts",
+	"src/agent/zai-responses.ts",
+	"src/cache-observation.ts",
+	"src/http/app-chat.ts",
+	"src/http/app-testing.ts",
+	"src/http/app-turns.ts",
+	"src/reviewer.ts",
+	"src/test-helpers/turn-crash-child.ts",
+	"src/testkit/fake-model.ts",
+	"src/testkit/model-replay.ts",
+	"src/testkit.ts",
+	"src/turn/ai-sdk-tools.ts",
+	"src/turn/engine.ts",
+	"src/turn/itemize.ts",
+	"src/turn/prefix-summary.ts",
+	"src/turn/stream.ts",
+	"src/turn/unlanded-progress.ts",
+	"src/turn/view.ts",
+] as const;
+const AI_SDK_IMPORT = /^(?:ai(?:\/|$)|@ai-sdk\/[^/]+(?:\/|$))/;
 const AI_SDK_MESSAGE_SHAPE_NAMES =
 	"(?:UIMessage|UIMessageChunk|UIMessagePart|ToolUIPart|DynamicToolUIPart|LanguageModelUsage|FinishReason|ProviderMetadata)";
 const AI_SDK_FENCED_SPECIFIER = "(?:ai(?:/[^'\"]*)?|@ai-sdk/[^'\"]+)";
@@ -180,6 +214,57 @@ function repoPath(file: string): string {
 const T3_SPAWN = /(?:spawnProc|Bun\.spawn|execSync|exec)\((?:[^)]*["'])t3["']/;
 
 describe("module boundaries", () => {
+	test("AI SDK import matcher recognizes only AI SDK package specifiers", () => {
+		for (const specifier of [
+			"ai",
+			"@ai-sdk/openai",
+			"ai/rsc",
+		]) {
+			expect(AI_SDK_IMPORT.test(specifier)).toBe(true);
+		}
+		for (const specifier of ["aim", "./ai.ts", "@ai-sdkx/y"]) {
+			expect(AI_SDK_IMPORT.test(specifier)).toBe(false);
+		}
+		for (const source of [
+			'import { x } from "ai";',
+			'import { x } from "ai/rsc";',
+			'import { x } from "@ai-sdk/openai";',
+			'import type { X } from "ai";',
+			'const x = import("ai");',
+		]) {
+			expect(specifiers(source).some((specifier) => AI_SDK_IMPORT.test(specifier))).toBe(
+				true,
+			);
+		}
+	});
+
+	test("AI SDK packages are imported only by the shrinking allowlist", () => {
+		const imports = walk(SRC)
+			.filter((file) => !file.endsWith(".test.ts"))
+			.filter((file) =>
+				specifiers(readFileSync(file, "utf8")).some((specifier) =>
+					AI_SDK_IMPORT.test(specifier),
+				),
+			)
+			.map(repoPath);
+		const allowlisted: ReadonlySet<string> = new Set(AI_SDK_IMPORTERS);
+		const offenders = imports.filter((file) => !allowlisted.has(file));
+		if (offenders.length > 0) {
+			throw new Error(
+				`${offenders.join(", ")} imports an AI SDK package; add it only with a design-doc reason — the list shrinks, it does not grow`,
+			);
+		}
+	});
+
+	test("every AI_SDK_IMPORTERS entry still imports an AI SDK package", () => {
+		for (const file of AI_SDK_IMPORTERS) {
+			const source = readFileSync(join(ROOT, file), "utf8");
+			if (!specifiers(source).some((specifier) => AI_SDK_IMPORT.test(specifier))) {
+				throw new Error(`${file} no longer imports an AI SDK package; remove it from AI_SDK_IMPORTERS`);
+			}
+		}
+	});
+
 	test("the t3 CLI is spawned only by src/t3.ts", () => {
 		const offenders = walk(ROOT)
 			// Dependency trees and tool caches are not goblin's code.

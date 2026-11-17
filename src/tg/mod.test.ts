@@ -1158,6 +1158,7 @@ describe("operator-only command gate", () => {
 
 	test("an operator's /skill in a shared topic turns with the audience note and real delivery", async () => {
 		const home = useHome("goblin-skillgate-");
+		mkdirSync(join(home, "state"), { recursive: true });
 		mkdirSync(join(home, "workspace/skills/demo"), { recursive: true });
 		writeFileSync(
 			join(home, "workspace/skills/demo/SKILL.md"),
@@ -1169,7 +1170,7 @@ describe("operator-only command gate", () => {
 			submitted.push({ conv: c.id, sink: s });
 			return true;
 		};
-		handleMessage(
+		await handleMessage(
 			h.env,
 			tgMsg({
 				message_id: 80,

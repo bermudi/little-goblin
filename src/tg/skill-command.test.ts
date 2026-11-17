@@ -1,11 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { describe, expect, test } from "bun:test";
+import { mkdirSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Message } from "../message.ts";
 import { SKILL_PART } from "../skill-part.ts";
 import { fakeApi, type FakeApi } from "../testkit/fake-api.ts";
-import { deferred, openTestStore, useHome } from "../testkit.ts";
+import { deferred, openTestStore, tmpDir, useHome } from "../testkit.ts";
 import type { Config } from "../config-schema.ts";
 import type { TurnSink } from "../turn/sink.ts";
 import { SHARED_CHAT_NOTE, makeConversationDeliverySink } from "./turn-input.ts";
@@ -18,16 +17,8 @@ import {
 } from "./skill-command.ts";
 import type { Conversation } from "../conversation-read.ts";
 
-let homes: string[] = [];
-afterEach(() => {
-	for (const h of homes) rmSync(h, { recursive: true, force: true });
-	homes = [];
-});
-
 const newHome = (): string => {
-	const h = useHome("goblin-skillcmd-");
-	homes.push(h);
-	return h;
+	return useHome("goblin-skillcmd-");
 };
 
 const conv = (id = "tg:1:2", chatId = 1, epoch = 0): Conversation =>
@@ -131,6 +122,7 @@ function baseDeps(h: Harness, gate: boolean): SkillCommandDeps {
 
 function harness(opts?: { gate?: boolean; cfg?: Config }): Harness {
 	const home = newHome();
+	mkdirSync(join(home, "state"), { recursive: true });
 	mkdirSync(join(home, "workspace", "skills", "demo"), { recursive: true });
 	writeFileSync(
 		join(home, "workspace", "skills", "demo", "SKILL.md"),
@@ -409,6 +401,17 @@ describe("/skill <url> (temp)", () => {
 		expect(h.gateDecisions).toHaveLength(1);
 	});
 
+	test("fixture tarball bytes stay identical when source mtimes differ by more than a second", async () => {
+		const first = await fixtureTarball();
+		fixtureMtimeOverride = new Date(Date.now() + 5_000);
+		try {
+			const second = await fixtureTarball();
+			expect(second).toEqual(first);
+		} finally {
+			fixtureMtimeOverride = null;
+		}
+	});
+
 	test("drop submits nothing and stamps the preview", async () => {
 		const h = harness();
 		const fetchImpl = (async () =>
@@ -648,19 +651,36 @@ describe("/skill <url> (temp)", () => {
 
 // A canonical codeload-style tarball: r-main/demo/SKILL.md plus a
 // script dir, so whole-dir staging is observable.
+let fixtureMtimeOverride: Date | null = null;
+
 async function fixtureTarball(): Promise<Uint8Array> {
-	const src = mkdtempSync(join(tmpdir(), "goblin-skillfixture-"));
-	homes.push(src);
+	const src = tmpDir("goblin-skillfixture-");
 	mkdirSync(join(src, "r-main", "demo", "scripts"), { recursive: true });
+	const skillFile = join(src, "r-main", "demo", "SKILL.md");
+	const scriptFile = join(src, "r-main", "demo", "scripts", "run.sh");
 	writeFileSync(
-		join(src, "r-main", "demo", "SKILL.md"),
+		skillFile,
 		"---\nname: demo\ndescription: the demo skill\n---\n" + "pad ".repeat(2500) + "TAIL_SENTINEL",
 	);
-	writeFileSync(join(src, "r-main", "demo", "scripts", "run.sh"), "echo hi\n");
-	const outDir = mkdtempSync(join(tmpdir(), "goblin-skillfixout-"));
-	homes.push(outDir);
+	writeFileSync(scriptFile, "echo hi\n");
+	if (fixtureMtimeOverride !== null) {
+		utimesSync(skillFile, fixtureMtimeOverride, fixtureMtimeOverride);
+		utimesSync(scriptFile, fixtureMtimeOverride, fixtureMtimeOverride);
+	}
+	const outDir = tmpDir("goblin-skillfixout-");
 	const ball = join(outDir, "b.tgz");
-	const proc = Bun.spawn(["tar", "-czf", ball, "r-main"], { cwd: src });
+	const proc = Bun.spawn(
+		[
+			"bash",
+			"-o",
+			"pipefail",
+			"-c",
+			'tar --mtime=@0 --owner=0 --group=0 --numeric-owner --sort=name -cf - r-main | gzip -n > "$1"',
+			"fixture-tarball",
+			ball,
+		],
+		{ cwd: src },
+	);
 	if ((await proc.exited) !== 0) throw new Error("fixture tar failed");
 	return await Bun.file(ball).bytes();
 }

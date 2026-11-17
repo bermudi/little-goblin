@@ -1,3 +1,8 @@
+> **Status (2026-11-17):** historical. Written at `5e7977d`. Re-checked in
+> [`optimization.md`](optimization.md) → Part 0: findings 1–3 are fixed, and so is
+> trailing-summary item 1. Still open: sink capabilities (#133); `titleImplicit` and the
+> intake seam were carried forward there as F11 and F9.
+
 # Little Goblin — architectural evaluation
 
 Repository: [bermudi/little-goblin](https://github.com/bermudi/little-goblin?utm_source=chatgpt.com) Reviewed revision: [`5e7977d`](https://github.com/bermudi/little-goblin/commit/5e7977d047b6f3c54f7de1656c819982812d26dc?utm_source=chatgpt.com) Scope: Static review of the architecture, implementation, and relevant tests against `DESIGN.md` and the design documents. No code changes or runtime tests performed.

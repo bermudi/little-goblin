@@ -97,7 +97,7 @@ What does NOT count:
 
 Prior work — read the summaries first and build past them, not over them:
 
-- `arch-audit.md` — three architectural findings (tool-replay identity
+- `arch-audit-2026-10-18.md` — three architectural findings (tool-replay identity
   conflation; resumed-turn causal anchor; standing authority enforced by
   model instruction) plus five follow-ups.
 - `audit/optimization.md` — runtime + maintainability review, 2026-10-22.

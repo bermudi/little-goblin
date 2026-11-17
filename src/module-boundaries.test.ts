@@ -10,7 +10,12 @@
 //  5. Message shapes come from goblin, not AI SDK packages; block named
 //     imports/re-exports, namespace imports, star exports, and inline types.
 //  6. Escapes and node_modules paths hide what a specifier resolves to.
+//  7. AI SDK packages (`ai`, `ai/*`, `@ai-sdk/*`) are imported only by the
+//     allowlisted files below; the list only shrinks.
+//     Computed specifiers (`import(expr)`) are out of reach of a static scan;
+//     review catches them.
 import { describe, expect, test } from "bun:test";
+import { parse, type ParserPlugin } from "@babel/parser";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
@@ -34,6 +39,41 @@ const FROM_SPEC = /\bfrom\s*["']([^"']+)["']/g;
 const DYNAMIC_SPEC =
 	/\bimport\s*\(\s*(?:\/\*[\s\S]*?\*\/\s*)*["'`]([^"'`$]+)["'`]\s*\)/g;
 const BARE_SPEC = /\bimport\s*["']([^"']+)["']/g;
+const AI_SDK_IMPORTERS = [
+	"scripts/probe-tool-image.ts",
+	"scripts/replay-v7-history.ts",
+	"scripts/ui-probe.ts",
+	"src/agent/claude-code/engine.ts",
+	"src/agent/claude-code/prompt.ts",
+	"src/agent/codex/model.ts",
+	"src/agent/filter-stream.ts",
+	"src/agent/note-rewrite.ts",
+	"src/agent/provider-errors.ts",
+	"src/agent/providers.ts",
+	"src/agent/step.ts",
+	"src/agent/thinking.ts",
+	"src/agent/title.ts",
+	"src/agent/tool-repair.ts",
+	"src/agent/vision.ts",
+	"src/agent/zai-responses.ts",
+	"src/cache-observation.ts",
+	"src/http/app-chat.ts",
+	"src/http/app-testing.ts",
+	"src/http/app-turns.ts",
+	"src/reviewer.ts",
+	"src/test-helpers/turn-crash-child.ts",
+	"src/testkit/fake-model.ts",
+	"src/testkit/model-replay.ts",
+	"src/testkit.ts",
+	"src/turn/ai-sdk-tools.ts",
+	"src/turn/engine.ts",
+	"src/turn/itemize.ts",
+	"src/turn/prefix-summary.ts",
+	"src/turn/stream.ts",
+	"src/turn/unlanded-progress.ts",
+	"src/turn/view.ts",
+] as const;
+const AI_SDK_IMPORT = /^(?:ai(?:\/|$)|@ai-sdk\/[^/]+(?:\/|$))/;
 const AI_SDK_MESSAGE_SHAPE_NAMES =
 	"(?:UIMessage|UIMessageChunk|UIMessagePart|ToolUIPart|DynamicToolUIPart|LanguageModelUsage|FinishReason|ProviderMetadata)";
 const AI_SDK_FENCED_SPECIFIER = "(?:ai(?:/[^'\"]*)?|@ai-sdk/[^'\"]+)";
@@ -129,6 +169,94 @@ function specifiers(source: string): string[] {
 	);
 }
 
+function aiSdkImports(source: string, file = "<self-test>"): string[] {
+	type AstNode = Record<string, unknown> & { type: string };
+	const plugins: ParserPlugin[] = file.endsWith(".tsx")
+		? ["typescript", "jsx"]
+		: ["typescript"];
+	let ast: ReturnType<typeof parse>;
+	try {
+		ast = parse(source, { sourceType: "module", plugins });
+	} catch (error) {
+		throw new Error(
+			`${file}: failed to parse source: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+
+	const imports: string[] = [];
+	const packageSpecifier = (value: unknown): string | undefined => {
+		if (value === null || typeof value !== "object") return undefined;
+		const node = value as Record<string, unknown>;
+		if (node.type === "StringLiteral" && typeof node.value === "string")
+			return node.value;
+		if (node.type !== "TemplateLiteral") return undefined;
+		const expressions = node.expressions;
+		const quasis = node.quasis;
+		if (!Array.isArray(expressions) || expressions.length !== 0) return undefined;
+		if (!Array.isArray(quasis) || quasis.length !== 1) return undefined;
+		const quasi = quasis[0];
+		if (quasi === null || typeof quasi !== "object") return undefined;
+		const quasiValue = (quasi as Record<string, unknown>).value;
+		if (quasiValue === null || typeof quasiValue !== "object") return undefined;
+		const { cooked, raw } = quasiValue as Record<string, unknown>;
+		const specifier =
+			typeof cooked === "string" ? cooked : typeof raw === "string" ? raw : undefined;
+		return specifier;
+	};
+	const appendSpecifier = (value: unknown): void => {
+		const specifier = packageSpecifier(value);
+		if (specifier !== undefined && AI_SDK_IMPORT.test(specifier))
+			imports.push(specifier);
+	};
+	const asNode = (value: unknown): AstNode | undefined => {
+		if (value === null || typeof value !== "object" || !("type" in value))
+			return undefined;
+		const node = value as Record<string, unknown>;
+		return typeof node.type === "string" ? (node as AstNode) : undefined;
+	};
+	const walk = (value: unknown): void => {
+		if (Array.isArray(value)) {
+			for (const item of value) walk(item);
+			return;
+		}
+		const node = asNode(value);
+		if (node === undefined) return;
+
+		switch (node.type) {
+			case "ImportDeclaration":
+			case "ExportNamedDeclaration":
+			case "ExportAllDeclaration":
+				appendSpecifier(node.source);
+				break;
+			case "TSImportEqualsDeclaration": {
+				const reference = asNode(node.moduleReference);
+				if (reference?.type === "TSExternalModuleReference")
+					appendSpecifier(reference.expression);
+				break;
+			}
+			case "TSImportType":
+				appendSpecifier(node.source);
+				break;
+			case "ImportExpression":
+				appendSpecifier(node.source);
+				break;
+			case "CallExpression": {
+				const callee = asNode(node.callee);
+				const args = node.arguments;
+				const firstArgument = Array.isArray(args) ? args[0] : undefined;
+				if (callee?.type === "Import") appendSpecifier(firstArgument);
+				else if (callee?.type === "Identifier" && callee.name === "require")
+					appendSpecifier(firstArgument);
+				break;
+			}
+		}
+
+		for (const child of Object.values(node)) walk(child);
+	};
+	walk(ast);
+	return imports;
+}
+
 // testkit's fake-api.ts builds the Api stub — not production code.
 const GRAMMY_EXEMPT_DIRS = new Set(["tg", "testkit"]);
 
@@ -180,6 +308,80 @@ function repoPath(file: string): string {
 const T3_SPAWN = /(?:spawnProc|Bun\.spawn|execSync|exec)\((?:[^)]*["'])t3["']/;
 
 describe("module boundaries", () => {
+	test("AI SDK import matcher recognizes only AI SDK package specifiers", () => {
+		for (const specifier of ["ai", "@ai-sdk/openai", "ai/rsc"]) {
+			expect(AI_SDK_IMPORT.test(specifier)).toBe(true);
+		}
+		for (const specifier of ["aim", "./ai.ts", "@ai-sdkx/y"]) {
+			expect(AI_SDK_IMPORT.test(specifier)).toBe(false);
+		}
+		expect(
+			aiSdkImports('// from "ai"\n/* import("ai") */\nconst s = \'from "ai"\';'),
+		).toEqual([]);
+		expect(aiSdkImports('import {\n a,\n b\n} from "ai"')).toEqual(["ai"]);
+		expect(aiSdkImports('import { x } from "@ai-sdk/openai"')).toEqual([
+			"@ai-sdk/openai",
+		]);
+		expect(aiSdkImports('import("ai")')).toEqual(["ai"]);
+		expect(aiSdkImports('require("@ai-sdk/google")')).toEqual(["@ai-sdk/google"]);
+		expect(aiSdkImports('import type { X } from "ai";')).toEqual(["ai"]);
+		expect(aiSdkImports('export type { X } from "ai/rsc";')).toEqual(["ai/rsc"]);
+		expect(
+			aiSdkImports(
+				'import { X } from "aim";\nimport { Y } from "./ai.ts";\nimport { Z } from "@ai-sdkx/y";',
+			),
+		).toEqual([]);
+	});
+
+	test("AI SDK AST scan covers legal specifier forms", () => {
+		expect(aiSdkImports("const m = import(`ai`);")).toEqual(["ai"]);
+		expect(
+			aiSdkImports('const m = import("ai", { with: { type: "json" } });'),
+		).toEqual(["ai"]);
+		expect(aiSdkImports('if (false) {} import { x } from "ai";')).toEqual([
+			"ai",
+		]);
+		expect(aiSdkImports('export const s = `${await import("ai")}`;')).toEqual([
+			"ai",
+		]);
+		expect(aiSdkImports('import from from "ai";')).toEqual(["ai"]);
+		expect(aiSdkImports('import * as from from "ai";')).toEqual(["ai"]);
+		expect(aiSdkImports('const r = require(("ai"));')).toEqual(["ai"]);
+		expect(aiSdkImports('type T = typeof import("ai");')).toEqual(["ai"]);
+		expect(aiSdkImports('import x = require("ai");')).toEqual(["ai"]);
+	});
+
+	test("AI SDK AST scan ignores regex literals and member calls", () => {
+		expect(aiSdkImports('const re = /import("ai")/;')).toEqual([]);
+		expect(aiSdkImports('loader.require("ai");')).toEqual([]);
+	});
+
+	test("AI SDK packages are imported only by the shrinking allowlist", () => {
+		const imports = AI_SDK_SCAN_ROOTS.filter(existsSync)
+			.flatMap((root) => walk(root))
+			.filter((file) => !file.endsWith(".test.ts"))
+			.filter(
+				(file) => aiSdkImports(readFileSync(file, "utf8"), repoPath(file)).length > 0,
+			)
+			.map(repoPath);
+		const allowlisted: ReadonlySet<string> = new Set(AI_SDK_IMPORTERS);
+		const offenders = imports.filter((file) => !allowlisted.has(file));
+		if (offenders.length > 0) {
+			throw new Error(
+				`${offenders.join(", ")} imports an AI SDK package; add it only with a design-doc reason — the list shrinks, it does not grow`,
+			);
+		}
+	});
+
+	test("every AI_SDK_IMPORTERS entry still imports an AI SDK package", () => {
+		for (const file of AI_SDK_IMPORTERS) {
+			const source = readFileSync(join(ROOT, file), "utf8");
+			if (aiSdkImports(source, file).length === 0) {
+				throw new Error(`${file} no longer imports an AI SDK package; remove it from AI_SDK_IMPORTERS`);
+			}
+		}
+	});
+
 	test("the t3 CLI is spawned only by src/t3.ts", () => {
 		const offenders = walk(ROOT)
 			// Dependency trees and tool caches are not goblin's code.

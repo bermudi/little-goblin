@@ -66,8 +66,9 @@ surface conflicts with the direction rather than silently overriding it.
   modules see the adapter's
   types, never the vendor's — `module-boundaries.test.ts` enforces the
   importable cases.
-  (The Vercel AI SDK is the platform, but goblin owns its data shapes:
-  `src/message.ts` — DESIGN.md → Module map, #581.)
+  (The Vercel AI SDK is the platform, but goblin owns its data shapes and tools —
+  `src/message.ts`, `src/tool.ts` — and only an allowlist of files may import it:
+  DESIGN.md → Module map, #581/#595/#597.)
 
 ## Design inspiration
 

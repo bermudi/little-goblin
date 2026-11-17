@@ -377,8 +377,9 @@ goblin code. Each engine converts at its own edge: `src/turn/ai-sdk-tools.ts`
 builds the `ToolSet` only where an SDK function takes one; the Claude Code
 bridge reads goblin tools directly and skips hosted ones. Readers get the
 model-facing schema from `inputJsonSchema`, and `src/tool.test.ts` holds it
-equal to the SDK's for every mounted tool. The engine contract's model
-objects (#596) and a full `ai` import fence (#597) follow the same
+equal to the SDK's for every mounted tool. `module-boundaries.test.ts`
+fences every `ai`/`@ai-sdk/*` import to an explicit allowlist that only
+shrinks (#597); the engine contract's model objects (#596) follow the same
 direction. SDK-specific features stay inside the AI SDK engine; there is
 no lowest-common-denominator layer. The app's `useChat` stream protocol
 stays an SDK wire format until an engine can't meet it.

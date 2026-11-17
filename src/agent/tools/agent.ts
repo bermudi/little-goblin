@@ -7,7 +7,7 @@
 
 import { z } from "zod";
 import type { AgentChild, AgentChildren, Settlement } from "../../agent-children.ts";
-import type { AgentType } from "../../agent-types.ts";
+import { COMPUTER_AGENT_TYPE, type AgentType } from "../../agent-types.ts";
 import type { Conversation } from "../../conversation-read.ts";
 import { defineTool, type Tool, type Tools } from "../../tool.ts";
 
@@ -35,11 +35,20 @@ export const CHILD_EXCLUDED_TOOLS: ReadonlySet<string> = new Set([
 
 /** The child's effective tools: the parent turn's mounted set, minus
  * the exclusions, intersected with the type's allowlist when it has
- * one. Captured durably at spawn — later config changes never widen a
- * running child. */
-export function childToolAllowlist(parentTools: readonly string[], typeTools?: string[]): string[] {
-	const allow = parentTools.filter((name) => !CHILD_EXCLUDED_TOOLS.has(name));
-	return typeTools === undefined ? allow : allow.filter((name) => typeTools.includes(name));
+ * one — plus the type-named tools the child mount provides itself
+ * (intrinsicTools: the desktop tools and ask_operator, which no parent
+ * turn carries). Captured durably at spawn — later config changes
+ * never widen a running child. */
+export function childToolAllowlist(
+	parentTools: readonly string[],
+	typeTools?: string[],
+	intrinsicTools: readonly string[] = [],
+): string[] {
+	const inherited = parentTools.filter((name) => !CHILD_EXCLUDED_TOOLS.has(name));
+	if (typeTools === undefined) return inherited;
+	const allow = inherited.filter((name) => typeTools.includes(name));
+	const provided = typeTools.filter((name) => intrinsicTools.includes(name));
+	return [...new Set([...allow, ...provided])];
 }
 
 // ---------- input schema ----------
@@ -47,11 +56,18 @@ export function childToolAllowlist(parentTools: readonly string[], typeTools?: s
 const MAX_TASK_CHARS = 8000;
 const MAX_TEXT_CHARS = 8000;
 
+const desktopNameSchema = z
+	.string()
+	.regex(/^[a-z0-9][a-z0-9-]{0,30}$/, "desktop names are [a-z0-9-], 1-31 chars");
+
 const spawnSchema = z.object({
 	action: z.literal("spawn"),
 	type: z.string().min(1).optional(),
 	task: z.string().min(1).max(MAX_TASK_CHARS),
 	background: z.boolean().optional(),
+	// The named desktop a computer child binds to — required for the
+	// computer type (design/agents.md → Computer use).
+	desktop: desktopNameSchema.optional(),
 });
 const listSchema = z.object({ action: z.literal("list") });
 const readSchema = z.object({ action: z.literal("read"), id: z.string().min(1) });
@@ -77,6 +93,7 @@ const inputFields = z.object({
 	type: spawnSchema.shape.type,
 	task: spawnSchema.shape.task.optional(),
 	background: spawnSchema.shape.background,
+	desktop: spawnSchema.shape.desktop,
 	id: readSchema.shape.id.optional(),
 	text: sendSchema.shape.text.optional(),
 });
@@ -107,7 +124,7 @@ export function agentToolDescription(types: Map<string, AgentType>): string {
 		listed,
 		"",
 		"Verbs:",
-		"- spawn {type?, task, background?}: start a child on the task (the task is its whole assignment — make it self-contained). background true (default): it runs and you are woken with its result; background false: this call waits and returns the result.",
+		"- spawn {type?, task, background?, desktop?}: start a child on the task (the task is its whole assignment — make it self-contained). background true (default): it runs and you are woken with its result; background false: this call waits and returns the result. The computer type also needs desktop: a desktop name from the desktop tool's list — spawn claims it for the child.",
 		"- list {}: your children with status.",
 		"- read {id}: a child's status and latest messages.",
 		"- send {id, text}: steer a running child or continue a settled one.",
@@ -126,6 +143,10 @@ export interface AgentToolDeps {
 	conversation: Conversation;
 	/** The parent turn's mounted tool names, captured at spawn. */
 	parentTools: readonly string[];
+	/** Tool names the child mount provides that the parent never
+	 * carries (design/agents.md → Computer use) — admitted into the
+	 * allowlist when the type names them. */
+	intrinsicTools: readonly string[];
 }
 
 function childSummary(child: AgentChild): Record<string, unknown> {
@@ -134,6 +155,7 @@ function childSummary(child: AgentChild): Record<string, unknown> {
 		type: child.type,
 		status: child.status,
 		task: child.task.length > 200 ? `${child.task.slice(0, 200)}…` : child.task,
+		...(child.desktop !== null ? { desktop: child.desktop } : {}),
 	};
 }
 
@@ -168,18 +190,33 @@ export const agentTool = (deps: AgentToolDeps) =>
 							error: `unknown agent type "${name}" — known: ${[...deps.types.keys()].join(", ")}`,
 						};
 					}
-					const tools = childToolAllowlist(deps.parentTools, type.tools);
+					const tools = childToolAllowlist(
+						deps.parentTools,
+						type.tools,
+						deps.intrinsicTools,
+					);
 					if (tools.length === 0) {
 						return {
 							error: `agent type "${name}" would leave the child no tools (exclusions ate the parent set) — loosen the type's tools allowlist`,
 						};
 					}
-					const { child, queued } = engine.spawn({
+					if (type.name === COMPUTER_AGENT_TYPE.name && input.desktop === undefined) {
+						return {
+							error: `agent type "computer" needs a desktop name (the desktop tool lists them)`,
+						};
+					}
+					const { child, queued, spawnError } = await engine.spawn({
 						parent: deps.conversation,
 						type,
 						task: input.task,
 						tools,
+						...(input.desktop !== undefined ? { desktop: input.desktop } : {}),
 					});
+					// A spawn whose desktop claim failed settles the child
+					// failed before it runs — the error IS the result.
+					if (spawnError !== undefined) {
+						return { ...childSummary(child), error: spawnError };
+					}
 					// background defaults true (design/agents.md → agent):
 					// only an explicit false waits inside this call.
 					if (input.background === false) {

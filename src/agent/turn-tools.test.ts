@@ -7,6 +7,7 @@ import { isHosted } from "../tool.ts";
 import type { AuthStore } from "../auth.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
+import type { Desktops } from "../desktops.ts";
 import type { DelegationLifecycle } from "../delegation-lifecycle.ts";
 import type { OperatorHerdr } from "../herdr.ts";
 import type { T3, T3Thread } from "../t3.ts";
@@ -1007,6 +1008,7 @@ describe("agent tool mount", () => {
 	test("a child turn gets only its spawn-time allowlist — never agent itself", () => {
 		const engine = {
 			allowlistFor: (id: string) => (id === "app/agent-1" ? ["read_file", "bash"] : null),
+			desktopFor: () => null,
 		} as unknown as AgentChildren;
 		const tools = rigTools(engine)(childConv);
 		const names = Object.keys(tools);
@@ -1018,7 +1020,87 @@ describe("agent tool mount", () => {
 	});
 
 	test("a child with no registry row fails loud", () => {
-		const engine = { allowlistFor: () => null } as unknown as AgentChildren;
+		const engine = { allowlistFor: () => null, desktopFor: () => null } as unknown as AgentChildren;
 		expect(() => rigTools(engine)(childConv)).toThrow(/no registry row/);
+	});
+});
+
+describe("computer child mount", () => {
+	const computerConv = {
+		id: "app/agent-2",
+		model: "a/b",
+		projectId: null,
+		persona: "operator",
+		agentType: "computer",
+	} as unknown as Conversation;
+	const parentConv = {
+		id: "dm:1",
+		model: null,
+		projectId: null,
+		persona: "operator",
+		agentType: null,
+	} as unknown as Conversation;
+	const desktopsStub = {} as unknown as Desktops;
+
+	const rigTools = (engine: AgentChildren | null, desktops: Desktops | null) =>
+		makeTurnTools({
+			configRef: { current: {} as Config, ttsDown: false },
+			auth: {} as unknown as AuthStore,
+			store: {} as unknown as ConversationStore,
+			projects: {} as unknown as ProjectStore,
+			notes: {} as unknown as NoteStore,
+			programs: {} as unknown as ProgramsStore,
+			memory: null,
+			transcribe: async () => null,
+			delegateDeps: () => undefined,
+			operatorHerdr: {} as unknown as OperatorHerdr,
+			t3: {} as unknown as T3,
+			mail: () => ({}) as never,
+			programApproval: () => undefined,
+			visionDepsFor: () => undefined,
+			sandboxes: {} as unknown as Sandboxes,
+			subagents: () => null,
+			desktops: () => desktops,
+			subagentsBoot: () => undefined,
+			agents: () => engine,
+			responsibility: () => null,
+			filterGuests: (_c, t) => t,
+		});
+
+	const computerEngine = (desktop: string | null) =>
+		({
+			allowlistFor: (id: string) =>
+				id === "app/agent-2" ? ["inspect", "act", "launch", "ask_operator"] : null,
+			desktopFor: (id: string) => (id === "app/agent-2" ? desktop : null),
+		}) as unknown as AgentChildren;
+
+	test("a computer child mounts the desktop tools and ask_operator — never agent or desktop", () => {
+		const tools = rigTools(computerEngine("desk"), desktopsStub)(computerConv);
+		const names = Object.keys(tools);
+		for (const name of ["inspect", "act", "launch", "ask_operator"]) {
+			expect(names).toContain(name);
+		}
+		for (const banned of ["agent", "delegate", "desktop", "subagent", "speak", "ui"]) {
+			expect(names).not.toContain(banned);
+		}
+	});
+
+	test("a parent turn never mounts the computer tools", () => {
+		const tools = rigTools(computerEngine("desk"), desktopsStub)(parentConv);
+		const names = Object.keys(tools);
+		for (const name of ["inspect", "act", "launch", "ask_operator"]) {
+			expect(names).not.toContain(name);
+		}
+		expect(names).toContain("agent");
+	});
+
+	test("a computer child with no bound desktop mounts none of them", () => {
+		const tools = rigTools(computerEngine(null), desktopsStub)(computerConv);
+		const names = Object.keys(tools);
+		for (const name of ["inspect", "act", "launch"]) {
+			expect(names).not.toContain(name);
+		}
+		// ask_operator is not desktop-bound — it still mounts.
+		expect(names).toContain("ask_operator");
 	});
 });

@@ -26,6 +26,8 @@ function stubEngine(over: Partial<AgentChildren> = {}): AgentChildren {
 		stop: over.stop ?? notExpected("stop"),
 		awaitSettlement: over.awaitSettlement ?? notExpected("awaitSettlement"),
 		allowlistFor: over.allowlistFor ?? notExpected("allowlistFor"),
+		askOperator: over.askOperator ?? notExpected("askOperator"),
+		desktopFor: over.desktopFor ?? (() => null),
 		pump: over.pump ?? notExpected("pump"),
 		recoverAtBoot: over.recoverAtBoot ?? notExpected("recoverAtBoot"),
 	};
@@ -49,6 +51,7 @@ const child = (status: AgentChild["status"]): AgentChild => ({
 	createdAt: new Date().toISOString(),
 	startedAt: null,
 	settledAt: null,
+	desktop: null,
 });
 
 // A stand-in tool for the mount test's base set.
@@ -79,6 +82,18 @@ describe("child tool allowlist", () => {
 		expect(childToolAllowlist(parentTools)).toEqual(["read_file", "bash"]);
 		expect(childToolAllowlist(parentTools, ["bash"])).toEqual(["bash"]);
 	});
+
+	test("intrinsic tools admit only the names the type lists", () => {
+		// A parent turn never mounts the computer tools — the type's
+		// allowlist names them and intrinsicTools is what admits them.
+		const parentTools = ["read_file", "bash"];
+		const typeTools = ["inspect", "act", "launch", "ask_operator"];
+		expect(childToolAllowlist(parentTools, typeTools, typeTools)).toEqual(typeTools);
+		// A name the child mount does not provide stays out.
+		expect(childToolAllowlist(parentTools, typeTools, ["inspect"])).toEqual(["inspect"]);
+		// Without intrinsicTools the same type allowlist loses them all.
+		expect(childToolAllowlist(parentTools, typeTools)).toEqual([]);
+	});
 });
 
 describe("agent tool", () => {
@@ -88,12 +103,13 @@ describe("agent tool", () => {
 		types,
 		conversation: parent,
 		parentTools,
+		intrinsicTools: [] as string[],
 	});
 
 	test("spawn defaults to general, captures the filtered tools, and notes the queue", async () => {
 		const captured: SpawnInput[] = [];
 		const engine = stubEngine({
-			spawn: (input) => {
+			spawn: async (input) => {
 				captured.push(input);
 				return { child: child("queued"), queued: true };
 			},
@@ -119,7 +135,7 @@ describe("agent tool", () => {
 	test("spawn background:false waits for the settlement and returns it", async () => {
 		const settlement: Settlement = { child: child("done"), result: "THE REPLY" };
 		const engine = stubEngine({
-			spawn: () => ({ child: child("running"), queued: false }),
+			spawn: async () => ({ child: child("running"), queued: false }),
 			awaitSettlement: () => Promise.resolve(settlement),
 		});
 		const result = await agentTool(deps(engine)).execute(
@@ -132,7 +148,7 @@ describe("agent tool", () => {
 	test("spawn background:false on an aborted turn stops the child it made", async () => {
 		const stopped: string[] = [];
 		const engine = stubEngine({
-			spawn: () => ({ child: child("running"), queued: false }),
+			spawn: async () => ({ child: child("running"), queued: false }),
 			stop: (id) => {
 				stopped.push(id);
 				return { child: child("stopped") };
@@ -188,7 +204,7 @@ describe("agent tool", () => {
 	test("withAgent mounts the tool and its description lists the types", async () => {
 		const tools = withAgent(
 			{ read_file: stubBaseTool, bash: stubBaseTool },
-			{ engine: stubEngine(), types, conversation: parent },
+			{ engine: stubEngine(), types, conversation: parent, intrinsicTools: [] },
 		);
 		const tool = tools.agent;
 		if (tool === undefined || isHosted(tool)) throw new Error("agent tool not mounted");

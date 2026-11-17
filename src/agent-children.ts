@@ -12,6 +12,8 @@ import type { Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
 import { composeTurnSinks } from "./app-media.ts";
 import { type AgentType } from "./agent-types.ts";
+import type { Desktops } from "./desktops.ts";
+import { leaseHeldBy, type LeaseHolder } from "./desktops-store.ts";
 import { log } from "./log.ts";
 import { messageText } from "./memory/mod.ts";
 import { userMessage, type Runtime } from "./runtime.ts";
@@ -49,12 +51,25 @@ export function ensureAgentChildrenSchema(db: Database): void {
 				settlements INTEGER NOT NULL DEFAULT 0,
 				created_at TEXT NOT NULL,
 				started_at TEXT,
-				settled_at TEXT
+				settled_at TEXT,
+				desktop TEXT
 			)`);
 	db.run(
 		"CREATE INDEX IF NOT EXISTS agent_children_parent ON agent_children (parent_conversation_id, created_at)",
 	);
 	db.run("CREATE INDEX IF NOT EXISTS agent_children_status ON agent_children (status)");
+	// ask_operator's durable question — consumed by the settlement that
+	// ends the turn it was asked in (design/agents.md → agent).
+	const cols = new Set(
+		db
+			.query<{ name: string }, []>("PRAGMA table_info(agent_children)")
+			.all()
+			.map((c) => c.name),
+	);
+	if (!cols.has("pending_ask")) db.run("ALTER TABLE agent_children ADD COLUMN pending_ask TEXT");
+	// A computer child's bound desktop (design/agents.md → Computer
+	// use) — spawn claims it, the child's tools are bound to it.
+	if (!cols.has("desktop")) db.run("ALTER TABLE agent_children ADD COLUMN desktop TEXT");
 }
 
 const rowSchema = z.object({
@@ -68,6 +83,8 @@ const rowSchema = z.object({
 	created_at: z.string(),
 	started_at: z.string().nullable(),
 	settled_at: z.string().nullable(),
+	pending_ask: z.string().nullable(),
+	desktop: z.string().nullable(),
 });
 
 export interface AgentChild {
@@ -82,6 +99,8 @@ export interface AgentChild {
 	createdAt: string;
 	startedAt: string | null;
 	settledAt: string | null;
+	/** The desktop a computer child is bound to — null for other types. */
+	desktop: string | null;
 }
 
 function toChild(row: z.infer<typeof rowSchema>): AgentChild {
@@ -103,6 +122,7 @@ function toChild(row: z.infer<typeof rowSchema>): AgentChild {
 		createdAt: row.created_at,
 		startedAt: row.started_at,
 		settledAt: row.settled_at,
+		desktop: row.desktop,
 	};
 }
 
@@ -120,6 +140,9 @@ export interface AgentChildrenDeps {
 	/** Clock seam (clock-reads.test.ts): the engine reads no wall clock
 	 * itself — index.ts injects real time, tests freeze it. */
 	now(): Date;
+	/** The desktop pool — a computer child's leases release at
+	 * settlement. Late-bound like turn-tools' getter: absent = no pool. */
+	desktops?(): Desktops | null;
 }
 
 export interface SpawnInput {
@@ -129,6 +152,10 @@ export interface SpawnInput {
 	task: string;
 	/** The effective child tool allowlist, computed by the tool layer. */
 	tools: readonly string[];
+	/** The named desktop a computer child binds to — spawn claims it
+	 * with the child conversation as lease holder before the child
+	 * runs (design/agents.md → Computer use). */
+	desktop?: string;
 }
 
 export interface Settlement {
@@ -139,7 +166,10 @@ export interface Settlement {
 }
 
 export interface AgentChildren {
-	spawn(input: SpawnInput): { child: AgentChild; queued: boolean };
+	/** Async: a named desktop's claim is a podman/store round-trip. A
+	 * refused claim settles the child failed before it runs and comes
+	 * back as spawnError — the spawn caller's result is the report. */
+	spawn(input: SpawnInput): Promise<{ child: AgentChild; queued: boolean; spawnError?: string }>;
 	list(parentConversationId: string): AgentChild[];
 	get(conversationId: string): AgentChild | null;
 	/** Status plus the child's latest messages — the read verb. */
@@ -151,6 +181,12 @@ export interface AgentChildren {
 	awaitSettlement(conversationId: string): Promise<Settlement>;
 	/** The persisted tool allowlist for a child conversation — null when not a child. */
 	allowlistFor(conversationId: string): string[] | null;
+	/** ask_operator: record the child's pending question — the turn's
+	 * settlement reads it and parks the child needs-input. */
+	askOperator(conversationId: string, question: string): { ok: true } | { error: string };
+	/** The child's bound desktop name — null for non-computer children
+	 * and non-children. The child mount binds its desktop tools to it. */
+	desktopFor(conversationId: string): string | null;
 	/** Submit queued children while capacity remains. */
 	pump(): void;
 	/** Boot pass: a `running` row is a child cut by the restart — settle
@@ -173,7 +209,7 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 		"SELECT * FROM agent_children WHERE conversation_id = ?",
 	);
 	const qInsert = store.db.prepare(
-		"INSERT INTO agent_children (conversation_id, parent_conversation_id, type, status, task, tools_json, created_at) VALUES (?, ?, ?, 'queued', ?, ?, ?)",
+		"INSERT INTO agent_children (conversation_id, parent_conversation_id, type, status, task, tools_json, created_at, desktop) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
 	);
 	const qByParent = store.db.query<z.infer<typeof rowSchema>, [string]>(
 		"SELECT * FROM agent_children WHERE parent_conversation_id = ? ORDER BY created_at, rowid",
@@ -189,11 +225,24 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 	);
 	// The settlement CAS: only a live 'running' row settles — a stop that
 	// marked the row first wins, and its onDone is just the echo.
+	// pending_ask clears with the settlement: the question it carried is
+	// either the needs-input result or moot.
 	const qSettle = store.db.prepare(
-		"UPDATE agent_children SET status = ?, settled_at = ?, settlements = settlements + 1 WHERE conversation_id = ? AND status = 'running'",
+		"UPDATE agent_children SET status = ?, settled_at = ?, settlements = settlements + 1, pending_ask = NULL WHERE conversation_id = ? AND status = 'running'",
+	);
+	const qPendingAsk = store.db.query<{ pending_ask: string | null }, [string]>(
+		"SELECT pending_ask FROM agent_children WHERE conversation_id = ?",
+	);
+	const qSetAsk = store.db.prepare(
+		"UPDATE agent_children SET pending_ask = ? WHERE conversation_id = ? AND status = 'running'",
 	);
 	const qSettleStoppedQueued = store.db.prepare(
 		"UPDATE agent_children SET status = 'stopped', settled_at = ? WHERE conversation_id = ? AND status = 'queued'",
+	);
+	// A spawn whose desktop claim failed: the row fails before it ever
+	// runs — the spawn caller's tool result is the report, no wake.
+	const qFailQueued = store.db.prepare(
+		"UPDATE agent_children SET status = 'failed', settled_at = ? WHERE conversation_id = ? AND status = 'queued'",
 	);
 
 	function get(conversationId: string): AgentChild | null {
@@ -281,7 +330,31 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 			resultChars: result === null ? 0 : result.length,
 		});
 		resolveWaiters(settled, result);
+		releaseChildLeases(settled);
 		return { child: settled, result };
+	}
+
+	// A computer child holds its desktops as {conversation, id} leases
+	// (agent/tools/computer.ts claims per call) — every settlement hands
+	// them back so the operator or the next child can claim. Fire and
+	// forget like the Pi Durable releaseLeases: the lease TTL is the
+	// backstop, a failed release only logs.
+	function releaseChildLeases(child: AgentChild): void {
+		const desktops = deps.desktops?.();
+		if (desktops == null) return;
+		const holder: LeaseHolder = { kind: "conversation", id: child.conversationId };
+		const now = deps.now().getTime();
+		for (const row of desktops.list()) {
+			if (!leaseHeldBy(row, holder, now)) continue;
+			desktops
+				.release(row.name, holder)
+				.catch((err) =>
+					log.warn("desktop release on agent child settle failed", err, {
+						child: child.conversationId,
+						desktop: row.name,
+					}),
+				);
+		}
 	}
 
 	function settleFromDone(conversationId: string, done: TurnDone): void {
@@ -302,9 +375,17 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 			}
 			pendingTurns.delete(conversationId);
 			if (done.kind === "completed") {
-				const last = store.lastEntry(conversationId, "assistant");
-				const result = last === null ? null : messageText(last.message);
-				settle(conversationId, "done", result);
+				// ask_operator's pending question turns the completion
+				// into needs-input — the question IS the result the
+				// parent must answer (design/agents.md → agent).
+				const ask = qPendingAsk.get(conversationId)?.pending_ask ?? null;
+				if (ask !== null) {
+					settle(conversationId, "needs-input", ask);
+				} else {
+					const last = store.lastEntry(conversationId, "assistant");
+					const result = last === null ? null : messageText(last.message);
+					settle(conversationId, "done", result);
+				}
 			} else if (done.kind === "fenced") {
 				if (done.shutdown === true) {
 					settle(conversationId, "failed", "the child's turn was cut by a restart");
@@ -396,7 +477,7 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 	}
 
 	const engine: AgentChildren = {
-		spawn(input) {
+		async spawn(input) {
 			const model = input.type.model ?? input.parent.model;
 			if (model === null) {
 				throw new Error(
@@ -421,7 +502,47 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 				input.task,
 				JSON.stringify([...input.tools]),
 				nowIso(),
+				input.desktop ?? null,
 			);
+			// A named desktop is claimed at spawn with the child
+			// conversation as lease holder (design/agents.md → Computer
+			// use) — a held or missing desktop fails the child before it
+			// runs, and the spawn result carries the error. The lease is
+			// renewed per tool call and released at settlement.
+			if (input.desktop !== undefined) {
+				const desktops = deps.desktops?.();
+				if (desktops == null) {
+					qFailQueued.run(nowIso(), child.id);
+					const failed = get(child.id)!;
+					log.warn("agent child spawn failed — no desktop pool", {
+						child: child.id,
+						parent: input.parent.id,
+						type: input.type.name,
+						desktop: input.desktop,
+					});
+					resolveWaiters(failed, "no desktop pool is configured");
+					return { child: failed, queued: false, spawnError: "no desktop pool is configured" };
+				}
+				try {
+					await desktops.claim(input.desktop, {
+						kind: "conversation",
+						id: child.id,
+					});
+				} catch (err) {
+					qFailQueued.run(nowIso(), child.id);
+					const failed = get(child.id)!;
+					const message = err instanceof Error ? err.message : String(err);
+					log.warn("agent child spawn failed — desktop claim refused", {
+						child: child.id,
+						parent: input.parent.id,
+						type: input.type.name,
+						desktop: input.desktop,
+						error: message,
+					});
+					resolveWaiters(failed, message);
+					return { child: failed, queued: false, spawnError: message };
+				}
+			}
 			const row = get(child.id)!;
 			const max = deps.maxRunning();
 			const queued = runningCount() >= max;
@@ -494,6 +615,7 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 				const stopped = get(conversationId)!;
 				log.info("agent child stopped (was queued)", { child: conversationId });
 				resolveWaiters(stopped, null);
+				releaseChildLeases(stopped);
 				return { child: stopped };
 			}
 			if (child.status !== "running") return { child };
@@ -508,6 +630,7 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 				log.error("agent child stop settle failed", err, { child: conversationId }),
 			);
 			resolveWaiters(stopped, null);
+			releaseChildLeases(stopped);
 			return { child: stopped };
 		},
 
@@ -526,6 +649,26 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 		allowlistFor(conversationId) {
 			const child = get(conversationId);
 			return child === null ? null : child.tools;
+		},
+
+		askOperator(conversationId, question) {
+			const child = get(conversationId);
+			if (child === null) return { error: `no agent child ${conversationId}` };
+			if (child.status !== "running") {
+				return { error: `agent child ${conversationId} is ${child.status} — ask_operator only works mid-turn` };
+			}
+			qSetAsk.run(question, conversationId);
+			log.info("agent child asked operator", {
+				child: conversationId,
+				parent: child.parentConversationId,
+				type: child.type,
+				questionChars: question.length,
+			});
+			return { ok: true };
+		},
+
+		desktopFor(conversationId) {
+			return get(conversationId)?.desktop ?? null;
 		},
 
 		pump,

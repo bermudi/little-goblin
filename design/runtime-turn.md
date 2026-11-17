@@ -74,12 +74,13 @@ logical-turn scope, and hands it to each attempt.
 ## Engine boundary
 
 The agent loop's engine fork is named, not implicit: `src/turn/engine.ts`
-holds the `TurnEngine` interface (`id`, `accepts`, `run`) and
+holds the neutral `TurnEngine` interface (`id`, `accepts`, `run`) and
 `pickEngine`, which the runtime calls once per attempt — the first
 engine whose `accepts(step)` is true wins; none fails the turn loud.
 Every engine consumes the same deps object minus the step
 (`EngineInput`) plus its own step variant, and returns the same
-`StreamOutcome`. Engines today:
+`StreamOutcome`. The AI SDK engine's `ModelStep` type lives in
+`src/turn/ai-sdk-step.ts`, outside the neutral engine boundary. Engines today:
 
 - `ai-sdk` — `src/turn/ai-sdk-engine.ts`, wrapping `turn/stream.ts`'s
   `driveStream` (streamText). Accepts every non-claude step.

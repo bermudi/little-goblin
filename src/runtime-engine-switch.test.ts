@@ -18,7 +18,7 @@ import type { ConfigRef } from "./config.ts";
 import type { Config } from "./config-schema.ts";
 import { openStore } from "./conversation.ts";
 import { Runtime, userMessage } from "./runtime.ts";
-import type { ModelStep } from "./turn/engine.ts";
+import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { isClaudeStep } from "./turn/engine.ts";
 import { fakeClaude } from "./testkit/fake-claude.ts";

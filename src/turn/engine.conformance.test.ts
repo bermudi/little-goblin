@@ -30,7 +30,7 @@ import {
 	useHome,
 	waitUntil,
 } from "../testkit.ts";
-import type { ModelStep } from "../turn/engine.ts";
+import type { ModelStep } from "./ai-sdk-step.ts";
 import { openTurnJournal, type TurnJournal } from "../turn-journal.ts";
 import { appendInterruptedProgress } from "./unlanded-progress.ts";
 import { aiSdkEngine } from "./ai-sdk-engine.ts";

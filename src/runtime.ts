@@ -40,7 +40,8 @@ import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { type CompactionSeam, runCompactJob } from "./turn/compact-job.ts";
 import { makePrefixSummarizer } from "./turn/prefix-summary.ts";
 import { sinkDelivery } from "./turn/delivery.ts";
-import { isClaudeStep, type ModelStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
+import { isClaudeStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
+import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
 import { stepModelRef } from "./turn/model-ref.ts";
 import {

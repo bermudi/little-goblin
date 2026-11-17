@@ -422,11 +422,8 @@ permissions).
 
 ## Test posture — the real change
 
-v1 died of test-to-code ratio. **Tests guard boundaries and invariants, not
-implementations:** worth a test — authority fencing, durable write semantics,
-intake coalescing, auth command resolution; not worth one — that a function
-calls its collaborator with the right arguments. Fakes at the two external
-edges (model provider, Telegram API); no mock.module pyramids; the suite
-stays smaller than `src/` — bigger is a smell to fix, not a badge.
-`bun scripts/test-ratio.ts` prints the measured ratio and the worst
-directories (report-only, never a gate; test-support modules count as tests).
+**Tests guard boundaries and invariants, not implementations:** worth a test —
+authority fencing, durable write semantics, intake coalescing, auth command
+resolution; not worth one — that a function calls its collaborator with the
+right arguments. Fakes at the two external edges (model provider, Telegram
+API); no mock.module pyramids.

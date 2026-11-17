@@ -71,7 +71,6 @@
     "scripts/install.test.ts": 11468,
     "scripts/release.test.ts": 9909,
     "scripts/replay-v7-history.test.ts": 1046,
-    "scripts/test-ratio.test.ts": 45,
     "src/agent-children.test.ts": 250,
     "src/agent-types.test.ts": 98,
     "src/agent/attachments.test.ts": 51,

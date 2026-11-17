@@ -144,13 +144,6 @@ probes a T3 thread itself, and a recovered poll clears the row on its
 own — the hint points at inspecting the named thread, not at resetting
 anything. A store that predates the columns skips rather than fails.
 
-`repo.test-ratio` is informational repo health, scoped to the diagnostic
-checkout: it reuses `src/test-ratio.ts` (the measurement behind
-`scripts/test-ratio.ts`) over `git ls-files src/`; ratio ≤ 1.0 passes, above
-warns (never fails) with the top excess directories. A checkout without
-`.git` (an immutable release built by `git archive`) skips with that reason;
-a present `.git` whose listing fails warns "unmeasured" — never a silent pass.
-
 ## Reports, failures and execution
 
 The versioned report keeps results deterministically ordered even when

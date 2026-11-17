@@ -2332,6 +2332,7 @@ describe("app projects surface", () => {
 			"Range",
 			"Node",
 			"HTMLElement",
+			"HTMLFieldSetElement",
 			"HTMLUnknownElement",
 			"requestAnimationFrame",
 			"cancelAnimationFrame",

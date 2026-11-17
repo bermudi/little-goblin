@@ -172,6 +172,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			conv.agentType !== null ? (deps.agents()?.desktopFor(conv.id) ?? null) : null;
 		const tools = makeTools({
 			cwd: workdir,
+			...(context !== undefined ? { contextFill: context.contextFill } : {}),
 			...(deps.noteSkillRead !== undefined ? { onRead: deps.noteSkillRead } : {}),
 			voice:
 				tts && !configRef.ttsDown && deliverVoice

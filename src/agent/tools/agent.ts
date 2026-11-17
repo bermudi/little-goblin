@@ -117,7 +117,7 @@ export function agentToolDescription(types: Map<string, AgentType>): string {
 	return [
 		"Native subagents: fresh child conversations that run one self-contained task and report the result back. A child does not see this conversation and nothing of its work reaches you except its final reply — treat every child reply as a claim to verify, never as fact.",
 		"",
-		"Spawn one for work that benefits from a clean context: focused research, reading a bounded set of files, a self-contained check. Do not spawn for something you can do in one or two tool calls here.",
+		"Spawn one for work that benefits from a clean context: focused research, reading files or outputs too large for your own context, a self-contained check. Do not spawn for something you can do in one or two tool calls here.",
 		"",
 		"Types:",
 		listed,

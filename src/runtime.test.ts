@@ -439,6 +439,25 @@ describe("skill body ownership across turns", () => {
 		}
 	});
 });
+
+describe("context note across turns", () => {
+	test("the next turn starts with the last persisted input usage", async () => {
+		const edge = scriptedEdge([textParts("first", 60_000), textParts("second", 60_000)]);
+		const r = rig({ model: edge.model, step: { contextWindow: 256_000 } });
+		try {
+			const first = submit(r, "first request");
+			await first.done;
+			const second = submit(r, "second request");
+			await second.done;
+			await drain(r);
+			expect(JSON.stringify(edge.streamCalls[1]?.prompt)).toContain(
+				"[context: 60k of 256k tokens used (23%)]",
+			);
+		} finally {
+			r.store.close();
+		}
+	});
+});
 const roles = (r: Rig) => r.store.history(r.conv.id).map((m) => m.role);
 const stop = (r: Rig) => r.runtime.stop(r.conv.id);
 
@@ -1557,6 +1576,37 @@ describe("context overflow recovery", () => {
 		const lastText = last.parts.find((p) => p.type === "text") as { text: string } | undefined;
 		expect(lastText?.text).toBe("the answer");
 		r.store.close();
+	});
+
+	test("the resumed call's context note drops the pre-overflow usage figure", async () => {
+		const s = scripted([textParts("first", 400), overflowError(), textParts("the answer")], {
+			extra: textParts("ok"),
+		});
+		const r = rig({
+			model: s.model,
+			step: { contextWindow: 1000 },
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async (_conv, _system, prompt) => foldSummary("the folded era", prompt),
+				},
+			},
+		});
+		try {
+			seedExchanges(r.store, r.conv.id);
+			await submit(r, "first request").done;
+			expect(await submit(r, "live question").done).toEqual({ kind: "completed" });
+			await drain(r);
+			// The overflowed attempt carried the stored figure; the resume
+			// reads a compacted view that figure no longer describes.
+			expect(s.prompts[1]).toContain("tokens used (40%)]");
+			expect(s.prompts[2]).toContain("the folded era");
+			expect(s.prompts[2]).toContain("[context: 1k token window]");
+			expect(s.prompts[2]).not.toContain("tokens used");
+		} finally {
+			r.store.close();
+		}
 	});
 
 	test("a mid-turn overflow resumes without re-running tools — one merged reply", async () => {
@@ -4260,8 +4310,20 @@ describe("prefix compaction request identity", () => {
 			if (!Array.isArray(turnMessages) || !Array.isArray(compactMessages)) {
 				throw new Error("fake provider captured malformed messages");
 			}
-			expect(compactMessages.slice(0, turnMessages.length)).toEqual(turnMessages);
-			const appended = compactMessages.slice(turnMessages.length);
+			// Context notes are outbound-only tails; the compactor reads
+			// persisted conversation history and must not inherit them.
+			const persistedTurnMessages = turnMessages.filter(
+				(message) =>
+					!(
+						typeof message === "object" &&
+						message !== null &&
+						(message as { role?: unknown }).role === "user" &&
+						typeof (message as { content?: unknown }).content === "string" &&
+						/^\[context: .*]$/.test((message as { content: string }).content)
+					),
+			);
+			expect(compactMessages.slice(0, persistedTurnMessages.length)).toEqual(persistedTurnMessages);
+			const appended = compactMessages.slice(persistedTurnMessages.length);
 			expect(appended).toHaveLength(2);
 			expect(appended[0]).toMatchObject({ role: "assistant", content: "turn-two assistant reply" });
 			expect(appended[1]).toMatchObject({

@@ -52,6 +52,19 @@ export interface Conversation {
 	createdAt: string;
 }
 
+/** Last completed request's input-token count in an assistant message's
+ *  persisted usage metadata. Legacy turn metadata stores it as `input`. */
+export function lastInputTokensOf(message: Message): number | null {
+	const metadata = message.metadata;
+	if (typeof metadata !== "object" || metadata === null) return null;
+	const usage = (metadata as { usage?: unknown }).usage;
+	if (typeof usage !== "object" || usage === null) return null;
+	const record = usage as Record<string, unknown>;
+	const hasFinalUsage = "lastInput" in record || "lastCacheRead" in record;
+	const value = hasFinalUsage ? record.lastInput : record.input;
+	return typeof value === "number" ? value : null;
+}
+
 export function toConversation(r: Row): Conversation {
 	return {
 		id: r.id,

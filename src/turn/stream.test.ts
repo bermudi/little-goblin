@@ -602,6 +602,38 @@ describe("driveStream — transient reader throws (#488)", () => {
 });
 
 describe("driveStream", () => {
+	test("adds a live context tail at half fill, but not below half or without a window", async () => {
+		const prior = rig([textReply("done")], { priorInputTokens: 60_000 });
+		prior.deps.step = { ...prior.deps.step, contextWindow: 256_000 };
+		await driveStream(prior.deps);
+		expect(prior.prompts[0]).toContain("[context: 60k of 256k tokens used (23%)]");
+
+		const unknownPrior = rig([textReply("done")]);
+		unknownPrior.deps.step = { ...unknownPrior.deps.step, contextWindow: 256_000 };
+		await driveStream(unknownPrior.deps);
+		expect(unknownPrior.prompts[0]).toContain("[context: 256k token window]");
+
+		const high = rig([toolCallStep("c1", 140_000), textReply("done")]);
+		high.deps.step = { ...high.deps.step, contextWindow: 256_000 };
+		high.deps.tools = { probe: probeTool() };
+		const storedInput = structuredClone(high.deps.messages);
+		const highOutcome = await driveStream(high.deps);
+		expect(highOutcome.kind).toBe("ok");
+		expect(high.prompts[1]).toContain("[context: 140k of 256k tokens used (55%)]");
+		expect(high.deps.messages).toEqual(storedInput);
+
+		const low = rig([toolCallStep("c1", 100_000), textReply("done")]);
+		low.deps.step = { ...low.deps.step, contextWindow: 256_000 };
+		low.deps.tools = { probe: probeTool() };
+		await driveStream(low.deps);
+		expect(low.prompts[1]).toContain("[context: 256k token window]");
+		expect(low.prompts[1]).not.toContain("[context: 100k of 256k tokens used (39%)]");
+
+		const unknown = rig([toolCallStep("c1", 140_000), textReply("done")]);
+		unknown.deps.tools = { probe: probeTool() };
+		await driveStream(unknown.deps);
+		expect(unknown.prompts[1]).not.toContain("[context:");
+	});
 	test("deltas reach the head, chunks fan out to every streaming member, the wire logs them", async () => {
 		const r = rig([textReply("the answer")]);
 		const head = member("head");

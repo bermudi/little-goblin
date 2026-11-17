@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Message } from "../message.ts";
+import { lastInputTokensOf } from "../conversation-read.ts";
 import { z } from "zod";
 import { contextLimitCached } from "../agent/models-dev.ts";
 import { readWorkspaceFile, workspaceReadStatus } from "../box-files.ts";
@@ -98,7 +99,7 @@ function contextUsageOf(m: Message): {
 		output: num(u.output),
 		cacheRead: num(u.cacheRead),
 		cacheWrite: num(u.cacheWrite),
-		lastInput: num(hasFinalUsage ? u.lastInput : u.input),
+		lastInput: lastInputTokensOf(m),
 		lastCacheRead: num(hasFinalUsage ? u.lastCacheRead : u.cacheRead),
 		promptChars: chars,
 		quota: quotaOf((md as Record<string, unknown>).quota),

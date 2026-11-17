@@ -110,6 +110,30 @@ FIFOs, sockets) are refused before any I/O — `read_file` on `/dev/zero` is
 a hang, not a read; `bash` (timeouts + output caps) is the sanctioned
 channel for those.
 
+## Context self-management (#671)
+
+`prepareStep` appends an ephemeral tail user note on step 0 and on every later
+step at or above 50%. Step 0 uses the latest persisted assistant `lastInput`
+(legacy `input`) and the current context window when available, or reports
+only `[context: ${k(limit)} token window]` when usage is unknown. Later steps
+use the previous step's input: `[context: ${k(used)} of ${k(limit)} tokens
+used (${pct}%)]`. The note follows warnings and precedes a forced-cut nudge; it
+is never persisted, so the earlier prompt bytes stay identical for the
+provider prefix cache. A missing context window skips the note. After an
+overflow/compaction resume, prior usage is treated as stale and step 0 reports
+only the window.
+
+`read_file` estimates the built page as UTF-8 bytes / 4, rounded up, and
+refuses pages estimated at 2,000 tokens or more when reading would pass 70% of
+the window. This guard sits below the 85% context landing in
+`turn/state.ts`; without live fill it preserves existing behavior.
+
+Saved-output truncation footers say: “Paging all of it into your context fills
+it — for a large file, spawn an agent with background: false to read it and
+answer.” The agent-enabled system prompt tells Goblin to keep bulk reading in
+children, use bounded `read_file` only for specific parts, and keep only child
+answers.
+
 ## Scripting
 
 On demand (ruling 2026-10-10). A `script` tool: the model writes one

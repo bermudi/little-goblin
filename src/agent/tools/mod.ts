@@ -19,6 +19,7 @@ import { memoryReflectTool } from "./memory-reflect.ts";
 import { type NoteToolDeps, noteTool } from "./note.ts";
 import { type ProgramToolDeps, programTool } from "./program.ts";
 import { readFileTool } from "./read.ts";
+import type { ContextFill } from "./read.ts";
 import { type ResponsibilityToolDeps, responsibilityTool } from "./responsibility.ts";
 import { type SandboxToolDeps, sandboxTool } from "./sandbox.ts";
 import { searchTool } from "./search.ts";
@@ -107,6 +108,7 @@ export interface MakeToolsOptions {
 	 *  read_file — the skill-usage watch (read_file of a catalog SKILL.md
 	 *  is a use; design/skills.md → Self-authoring, /learn, curator). */
 	onRead?: (abs: string) => void;
+	contextFill?: ContextFill;
 }
 
 // The codex provider tool — args travel as the wire tool's
@@ -136,9 +138,10 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		responsibility,
 		ui,
 		onRead,
+		contextFill,
 	} = options;
 	return {
-		read_file: readFileTool(cwd, vision !== undefined, onRead),
+		read_file: readFileTool(cwd, vision !== undefined, onRead, contextFill),
 		write_file: writeFileTool(cwd),
 		edit_file: editFileTool(cwd),
 		bash: bashTool(cwd),

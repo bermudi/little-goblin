@@ -27,6 +27,7 @@ export type TurnToolMaker = (
 		runId: string;
 		sourceMessageId(): string;
 		sourceInputSeq(): number | null;
+		contextFill(): { used: number; limit: number } | null;
 	},
 ) => Tools;
 
@@ -67,6 +68,7 @@ export interface ToolAuthorityDeps {
 	// claimable-pending read here, armed only by an engine whose
 	// model-call boundary claims steers.
 	steerWaiting?: (() => boolean) | undefined;
+	contextFill?(): { used: number; limit: number } | null;
 }
 
 export interface ToolAuthority {
@@ -104,6 +106,7 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 			runId: newRunId,
 			sourceMessageId: deps.sourceMessageId,
 			sourceInputSeq: record.sourceInputSeq,
+			contextFill: deps.contextFill ?? (() => null),
 		},
 	);
 	deps.journaled(() =>

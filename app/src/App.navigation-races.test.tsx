@@ -131,6 +131,7 @@ describe("navigation races: late completions", () => {
 			"Range",
 			"Node",
 			"HTMLElement",
+			"HTMLFieldSetElement",
 			"HTMLUnknownElement",
 			"requestAnimationFrame",
 			"cancelAnimationFrame",

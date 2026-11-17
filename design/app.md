@@ -239,12 +239,15 @@ retrying" / "Save failed" / "Conflict"). Versions is a popover anchored to its
 button (so it opens where the press was on a long note), closing on outside
 press or Escape; under 40rem it spans the toolbar row.
 
-**Note editor controls (ruling 2026-11-07, #173).** The top of the writing
-surface is a formatting row (`.note-fmt`, `NoteToolbar.tsx`): a "Text style"
-select (Paragraph, Heading 1–3 — Paragraph is how a heading, typed or
-chosen, turns back into plain text), then bold, italic, strikethrough,
-inline code, link | bulleted, numbered, task list, quote, code block,
-rule | undo, redo. Buttons never take focus from the editor; the ones that
+**Note editor controls (ruling 2026-11-07, #173; interaction amended
+2026-11-16, #623).** The top of the writing surface is a formatting row
+(`.note-fmt`, `NoteToolbar.tsx`), built with ui-sdk's Toolbar: one Tab stop
+and arrow-key movement across controls. The toolbar follows library focus
+behavior; clicking a control preserves the editor's selection so formatting
+still applies to the selected text. It has a "Text style" select (Paragraph,
+Heading 1–3 — Paragraph is how a heading, typed or chosen, turns back into
+plain text), then bold, italic, strikethrough, inline code, link | bulleted,
+numbered, task list, quote, code block, rule | undo, redo. The controls that
 apply to the selection show `aria-pressed` (accent fill), and the select
 shows the current block. Each tooltip names its shortcut (Ctrl/⌘ per
 platform) — the keys are Milkdown's own, plus Ctrl/⌘+K for Link, which opens

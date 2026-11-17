@@ -52,22 +52,9 @@ export interface StepBuilderDeps {
 	claudeEngine?: ClaudeEngine | undefined;
 }
 
-// One text-in, text-out call on the conversation's own lane, no tools:
-// the compaction summary and the read_long helper share it.
-export type CompleteText = (
-	conv: Conversation,
-	modelRef: string,
-	purpose: SideCallPurpose,
-	system: string,
-	prompt: string,
-	signal: AbortSignal,
-) => Promise<string>;
-
-type SideCallPurpose = "compaction" | "compaction-flush" | "read_long";
-
 export function makeStepBuilder(
 	deps: StepBuilderDeps,
-): Pick<RuntimeDeps, "buildStep" | "compaction"> & { complete: CompleteText } {
+): Pick<RuntimeDeps, "buildStep" | "compaction"> {
 	const { configRef, auth, store, projects, notes, observation } = deps;
 	// Both a turn and a cache-prefix summary use this one API-lane
 	// construction, so model setup cannot drift between their requests.
@@ -92,14 +79,18 @@ export function makeStepBuilder(
 			...(maxRetries !== undefined ? { maxRetries } : {}),
 		};
 	};
-	// The provider side of one side call: model, thinking, and the retry
-	// rule, shared by the summary, the flush, and read_long.
-	const compactCall = async (conv: Conversation, modelRef: string, purpose: SideCallPurpose) => {
+	// The provider side of one compaction-lane call: model, thinking, and
+	// the retry rule, shared by the summary and the flush.
+	const compactCall = async (
+		conv: Conversation,
+		modelRef: string,
+		purpose: "compaction" | "compaction-flush",
+	) => {
 		const cfg = configRef.current;
 		const model = observedModel(
 			await resolveModel(cfg, auth, modelRef, {
 				sessionId: codexSessionId(conv.id),
-				...(purpose === "read_long" ? {} : { subagent: "compact" as const }),
+				subagent: "compact",
 			}),
 			{ conversation: conv.id, purpose, observation, route: cacheRouteFor(cfg, modelRef) },
 		);
@@ -113,7 +104,13 @@ export function makeStepBuilder(
 		};
 	};
 	// One summary call on one ref — the fallback walk below picks refs.
-	const summarizeOn: CompleteText = async (conv, modelRef, purpose, system, prompt, signal) => {
+	const summarizeOn = async (
+		conv: Conversation,
+		modelRef: string,
+		system: string,
+		prompt: string,
+		signal: AbortSignal,
+	): Promise<string> => {
 		const cfg = configRef.current;
 		const { provider, modelId } = splitModelRef(modelRef);
 		const p = cfg.providers[provider];
@@ -123,7 +120,7 @@ export function makeStepBuilder(
 		if (p?.kind === "claude-code") {
 			if (deps.claudeEngine === undefined) {
 				throw new Error(
-					`${purpose} for ${conv.id} uses claude-code model ${modelRef} but no claude engine is bound`,
+					`compaction for ${conv.id} uses claude-code model ${modelRef} but no claude engine is bound`,
 				);
 			}
 			return deps.claudeEngine.compact({
@@ -135,7 +132,7 @@ export function makeStepBuilder(
 			});
 		}
 		const { text } = await generateText({
-			...(await compactCall(conv, modelRef, purpose)),
+			...(await compactCall(conv, modelRef, "compaction")),
 			instructions: system,
 			prompt,
 			abortSignal: signal,
@@ -143,7 +140,6 @@ export function makeStepBuilder(
 		return text;
 	};
 	return {
-		complete: summarizeOn,
 		async buildStep(conv, tools) {
 			const cfg = configRef.current;
 			const modelRef = conv.model!;
@@ -288,7 +284,7 @@ export function makeStepBuilder(
 			// One call on the ref runCompaction's fallback walk hands it
 			// (design/model.md → Model fallback list → Compaction).
 			summarize: (conv, system, prompt, signal, modelRef) =>
-				summarizeOn(conv, modelRef, "compaction", system, prompt, signal),
+				summarizeOn(conv, modelRef, system, prompt, signal),
 			// #418: the recorded native session compacts itself alongside
 			// the goblin fold — same (conversation, model ref) keying as
 			// the turn records. No-op without a claude engine or record.

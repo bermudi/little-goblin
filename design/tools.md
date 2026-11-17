@@ -194,45 +194,6 @@ persistent kernel and remote backends; pi's `store`/`load`, `models`,
 - **The pi-codemode dependency is pinned exactly** — earlier upstream
   point releases each fixed a way a script crashed the host process.
 
-## Long documents
-
-On demand (2026-11-15, #583). `read_long` hands one text file and a
-question to a helper call and returns the helper's answer in the same
-turn. The conversation splits a pile of long documents across helpers
-(one call per file; the SDK runs a step's tool calls in parallel) and
-keeps only the answers in its context. Mechanism taken from Claude
-Code's in-turn subagents, minus the tools: the helper is one text-in,
-text-out call, so it can't act, and nothing about it is durable — a
-failure is a tool error and the operator asks again.
-
-- **Model:** the conversation's own model and thinking (operator,
-  2026-11-15), through the same side-call lane as the compaction
-  summary (`CompleteText` in `step.ts`), so claude-code conversations
-  use their subscription too.
-- **Input:** a path to a text file: strict UTF-8 with no NUL. Anything
-  else is refused before a model call, with a hint to convert first
-  (`pdftotext`, `pandoc`). This is a bytes rule, not a format guess
-  (operator, 2026-11-16, after three verifier rounds found new edges in
-  a PDF-header check): real PDFs and office files carry binary streams
-  and fail it; a rare ASCII-only PDF reaches the helper as its syntax.
-- **Split:** a file over `CHUNK_CHARS` (150k chars, about 40k tokens)
-  is cut at paragraph or line breaks; up to 4 parts of one file are in
-  flight at once, and each part's answer comes back labelled. The first
-  failed part stops dispatch and aborts the parts in flight; the tool
-  returns only after every started part settles, so no helper call
-  outlives the turn.
-- **Spend bound** (#666): one call reads at most `MAX_PARTS` (8) parts,
-  so at most ~1.2M chars (~320k tokens) of input on the active model.
-  A longer file is refused before any model call, with a hint to narrow
-  it first. The 8 MB `MAX_FILE_BYTES` gate still guards the read itself.
-- **No follow-ups** in v1: each call starts clean.
-- Output is fenced untrusted (it is a reading of file content); guest
-  channels lose it like the other provider-calling tools.
-
-This is the shape to reach for first. `agent` and `delegate` are for
-long, side-effecting, crash-surviving work; a question about documents
-is none of those.
-
 ## Vision
 
 On demand (2026-10-06). A `vision` tool: query-driven image Q&A — the

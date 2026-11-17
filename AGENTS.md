@@ -157,7 +157,7 @@ lists on our non-goals list. Cite what you took in the design docs.
 
 Tests guard boundaries and invariants, not implementations. Fake the model
 provider and the Telegram API at the edge; don't mock module internals. The
-suite stays smaller than `src/`.
+suite may not outgrow `src/` further: `src/suite-size.test.ts` holds the test/src line ratio under a ceiling that only moves down (operator, 2026-11-17, #651).
 
 Real model requests in tests use one of these three (operator, 2026-11-06):
 `gpt-6-luna` on the codex provider, `claude-haiku-5-5` on the Claude provider,

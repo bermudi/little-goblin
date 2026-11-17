@@ -184,6 +184,7 @@ describe("toolNames ↔ makeTools", () => {
 			history: {} as unknown as HistorySearchDeps,
 			// Mounted so the wire-schema invariant covers vision too.
 			vision: {} as unknown as VisionToolDeps,
+			readLong: { conversation: "dm:1", complete: async () => "" },
 			desktop: {
 				conversation: "dm:1",
 				workspace: "/tmp",

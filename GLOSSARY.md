@@ -13,6 +13,7 @@
 - **Agent type:** a markdown file in `$GOBLIN_HOME/agents/` that sets a subagent's description, model, tools and system prompt. `general` and `computer` are built in.
 - **Child conversation:** a conversation with a parent. A subagent runs in one; its final reply goes back to the parent as a notice.
 - **Computer:** the built-in agent type whose child does screen work on a named desktop.
+- **Helper:** one tool-less model call that `read_long` makes inside a turn. It reads one file (or one part of it) and answers one question. It is not durable and cannot act.
 - **Settlement:** the point where a delegation or subagent run stops and states a result: done, needs input, or failed.
 - **Worker report:** one settlement filed on a responsibility. It is the agent's claim, and Goblin still checks it.
 - **Notice:** the machine message that gives a settlement to Goblin and wakes the conversation.

@@ -345,6 +345,7 @@ async function boot() {
 		mail: () => mailApproval,
 		programApproval: () => programApproval,
 		visionDepsFor,
+		complete: () => complete,
 		sandboxes,
 		desktops: () => desktops,
 		responsibility: () => responsibilitySvc,
@@ -373,7 +374,7 @@ async function boot() {
 		sessions: claudeSessions,
 	});
 
-	const stepBuilder = makeStepBuilder({
+	const { complete, ...stepBuilder } = makeStepBuilder({
 		configRef,
 		auth,
 		store,

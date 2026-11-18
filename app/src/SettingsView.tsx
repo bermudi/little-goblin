@@ -227,6 +227,7 @@ export function SettingsView({
 					tts: restored.tts,
 					transcription: restored.transcription,
 					vision: restored.vision,
+					image: restored.image,
 					search: restored.search,
 					fetch: restored.fetch,
 					memory: restored.memory,

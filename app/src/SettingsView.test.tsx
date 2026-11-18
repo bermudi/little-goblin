@@ -286,6 +286,27 @@ describe("main branch regressions", () => {
 		expect(savedBodies.at(-1)?.image).toEqual({ model: "main/test", size: "1024x1536" });
 	});
 
+	test("a parked image size survives a reload and the picker's re-enable", async () => {
+		settings = parseConfig({
+			...SETTINGS,
+			parked: { image: { model: "main/test", size: "1024x1536" } },
+		});
+		await mount();
+		await openSection("Models");
+		const imageModel = [...container.querySelectorAll("button.valuebtn")].find(
+			(b) => b.getAttribute("aria-labelledby") === "imageLabel",
+		);
+		await click(imageModel);
+		const picker = container.querySelector('[role="dialog"]')!;
+		await typeInto(picker.querySelector('input[aria-label="Search models"]')!, "main/test");
+		await click(button(picker, "Use “main/test”"));
+		await waitFor(
+			() => savedBodies.some((body) => body.image !== undefined),
+			"image settings save",
+		);
+		expect(savedBodies.at(-1)?.image).toEqual({ model: "main/test", size: "1024x1536" });
+	});
+
 	const button = (scope: Element | DocumentFragment | HTMLElement, text: string) =>
 		[...scope.querySelectorAll("button")].find((b) => b.textContent === text);
 	// KeyStatus's paste box — "Add key"/"Replace" opens the password row.

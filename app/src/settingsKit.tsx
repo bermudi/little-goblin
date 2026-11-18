@@ -15,6 +15,7 @@ import { ApiError, storeSecret } from "./api.ts";
 import type {
 	ChainEntry,
 	DelegationDraft,
+	ImgDraft,
 	MemDraft,
 	ProvDraft,
 	SettingsDraft,

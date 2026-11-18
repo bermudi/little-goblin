@@ -4,6 +4,13 @@ import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import { z } from "zod";
 import { isHosted, type Tool, type ToolOutput, type Tools } from "../tool.ts";
 
+export class ToolExecuteError extends Error {
+	constructor(message: string, cause: unknown) {
+		super(message, { cause });
+		this.name = "ToolExecuteError";
+	}
+}
+
 export const codexWebSearch = createProviderDefinedToolFactory<
 	Record<string, unknown>,
 	{ externalWebAccess: boolean }
@@ -48,11 +55,15 @@ function toSdkTool(definition: Exclude<Tool, { hosted: string }>) {
 	return tool({
 		description: definition.description,
 		inputSchema,
-		execute(input, options) {
-			return definition.execute(input, {
-				toolCallId: options.toolCallId,
-				...(options.abortSignal !== undefined ? { abortSignal: options.abortSignal } : {}),
-			});
+		async execute(input, options) {
+			try {
+				return await definition.execute(input, {
+					toolCallId: options.toolCallId,
+					...(options.abortSignal !== undefined ? { abortSignal: options.abortSignal } : {}),
+				});
+			} catch (err) {
+				throw new ToolExecuteError(err instanceof Error ? err.message : String(err), err);
+			}
 		},
 		...(toModelOutput !== undefined
 			? {

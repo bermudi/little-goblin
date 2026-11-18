@@ -235,10 +235,16 @@ job (tune it, don't duplicate it).
   catalog is byte-identical either way. Each validated skill is proposed
   by a directory swap on the same filesystem into
   `skills-proposed/<name>/` — rollback on failure, never a half-updated
-  proposal. A newer review replaces an undecided same-name proposal
-  (latest distillation wins, logged). A pending draft is
-  reviewer-owned: replacement is wholesale, hand edits inside it never
-  merged or preserved (tweak after approving, or discard first). A later failed swap cannot undo earlier proposals —
+  proposal. Before the model runs, valid pending draft directories are
+  overlaid on the installed staging copy, so the reviewer sees and edits
+  their bytes in place; a draft changed or created during the review skips
+  that proposal rather than replacing operator/turn work (#649). The live
+  installed manifest remains the separate baseline for mid-review drift.
+  The idea is borrowed from hermes-agent's read-before-write rule (there,
+  a create over an existing name is refused and a patch needs a fresh
+  view: `tools/skill_manager_tool.py`, `agent/background_review.py`);
+  goblin enforces it by staging, not by a tool guard. A later
+  failed swap cannot undo earlier proposals —
   those are written to history and announced before the failure
   surfaces. A skill whose live copy changed mid-review (operator hand
   edit, undo, approval) is **skipped, never proposed from a stale
@@ -336,10 +342,10 @@ is fixed before finishing. A genuinely new skill drafts into
 with `skills-ref`, then announced; the existing approve/discard flow
 decides it. Enforcement class is unchanged from #485: a prompt contract,
 not a mechanical guard; provenance attribution records every write, new
-or edit. The reviewer is untouched and becomes one of two authors parking
-in `skills-proposed/`; same-name replacement stays latest-wins and
-wholesale (a newer review may replace an undecided agent draft, as it
-already replaced its own).
+or edit. The reviewer is one of two authors parking in
+`skills-proposed/`; it stages and edits an existing pending draft rather
+than replacing it wholesale. If that draft changes during the review, the
+proposal is skipped (#649).
 
 **/learn — one builder, two doors.** Telegram `/learn [text]` and the
 app composer's leading `/learn ` text part both submit a normal turn

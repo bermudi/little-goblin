@@ -601,6 +601,48 @@ describe("driveStream — transient reader throws (#488)", () => {
 	});
 });
 
+describe("driveStream — tool and model errors keep their source", () => {
+	test("tool execution errors reach the app and log without transport relabelling", async () => {
+		const warning = spyOn(log, "warn").mockImplementation(() => {});
+		try {
+			const message = "fetch failed — parallel: timed out; tavily: timed out";
+			const probe = defineTool({
+				description: "test tool",
+				input: z.object({}),
+				execute: async () => {
+					throw new Error(message);
+				},
+			});
+			const r = rig([toolCallStep("tool-error", 10), textReply("handled")]);
+			r.deps.tools = { probe };
+
+			const outcome = await driveStream(r.deps);
+
+			expect(outcome.kind).toBe("ok");
+			const toolError = r.live.chunks.find((chunk) => chunk.type === "tool-output-error");
+			expect(toolError).toMatchObject({ type: "tool-output-error", errorText: message });
+			expect(warning.mock.calls).toContainEqual([
+				"tool execute failed",
+				expect.objectContaining({ error: message }),
+			]);
+		} finally {
+			warning.mockRestore();
+		}
+	});
+
+	test("model transport errors still use the plain-language message", async () => {
+		const r = rig([new TypeError("fetch failed")]);
+
+		const outcome = await driveStream(r.deps);
+
+		expect(outcome.kind).toBe("failed");
+		if (outcome.kind !== "failed") return;
+		const message = "The model connection dropped (fetch failed). Nothing was lost — send again.";
+		expect(outcome.errorText).toBe(message);
+		expect(r.live.chunks).toContainEqual({ type: "error", errorText: message });
+	});
+});
+
 describe("driveStream", () => {
 	test("adds a live context tail at half fill, but not below half or without a window", async () => {
 		const prior = rig([textReply("done")], { priorInputTokens: 60_000 });

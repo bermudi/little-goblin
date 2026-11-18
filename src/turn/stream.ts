@@ -16,7 +16,7 @@ import type {
 	Usage,
 } from "../message.ts";
 import { quotaFromMetadata } from "../agent/codex/receipts.ts";
-import { toToolSet } from "./ai-sdk-tools.ts";
+import { toToolSet, ToolExecuteError } from "./ai-sdk-tools.ts";
 import { filterErrorStream, streamSurfaceErrors } from "../agent/filter-stream.ts";
 import {
 	isContentFilter,
@@ -927,10 +927,12 @@ export async function driveStream<M extends WireMember>(
 			};
 		},
 		onError: (error) =>
-			isContentFilter(error)
-				? "Provider blocked this request again after one retry."
-				: (transportFailureText(error) ??
-					(error instanceof Error ? error.message : String(error))),
+			error instanceof ToolExecuteError
+				? error.message
+				: isContentFilter(error)
+					? "Provider blocked this request again after one retry."
+					: (transportFailureText(error) ??
+						(error instanceof Error ? error.message : String(error))),
 		onFinish: ({ responseMessage: rm, isAborted, outcome }) => {
 			if (isAborted) return;
 			if (outcome.status === "failed") {

@@ -52,7 +52,7 @@ they do not retain facts in a memory bank.
 
 | Capability | Operator prerequisites / readiness boundary |
 | --- | --- |
-| TTS / ASR | TTS is enabled by default; install `ffmpeg` in service PATH, or explicitly set `tts: ""`. Without ffmpeg, boot disables TTS with a warning. ASR is absent unless `transcription` is configured. Whistle always needs ffmpeg and a supported platform; its pinned engine/weights download on first use with network/cache access, not during diagnosis. Cloud ASR needs its configured auth and ffmpeg over the upload cap. See [Voice](voice.md). |
+| TTS / ASR | TTS is enabled by default; install `ffmpeg` in service PATH, or explicitly set `tts: ""`. Without ffmpeg, boot disables TTS with a warning. ASR is absent unless `transcription` is configured. Whistle always needs ffmpeg and a supported platform; its pinned engine/weights download on first use with network/cache access, not during diagnosis. Keep-profile cloud ASR needs its configured auth and `ffprobe` on every file; `ffmpeg` is needed when a file must be segmented. See [Voice](voice.md). |
 | Pass command refs | `pass-keys` (and its sync dependencies), scoped agent/grants, profiles, explicit initial sync and an available unlocked persistent Secret Service/KWallet. Service PATH must find the commands. See the snapshot steps below. |
 | MCP | Frozen dependencies supply Goblin's pinned mcporter; configure its own `mcporter.json` with `imports: []` and placeholders only. Provision `goblin-mcp-dev` and any server executables/OAuth separately. A seed with no servers is intentionally empty. |
 | Browser | Install `agent-browser` and Chromium separately; the browser skill alone does not install them. |

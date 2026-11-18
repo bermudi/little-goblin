@@ -670,12 +670,14 @@ describe("askVision — provider edge", () => {
 		await expect(
 			askVision(
 				query(),
-				deps({ model: "zai/glm-5.3-flash" }, [], () => [
-					{ type: "stream-start", warnings: [] },
-					{ type: "text-start", id: "t1" },
-					{ type: "text-delta", id: "t1", delta: "half an answ" },
-					{ type: "error", error: new Error("mid-stream 500") },
-				]),
+				deps({ model: "zai/glm-5.3-flash" }, [], () => ({
+					readError: new Error("mid-stream 500"),
+					parts: [
+						{ type: "stream-start", warnings: [] },
+						{ type: "text-start", id: "t1" },
+						{ type: "text-delta", id: "t1", delta: "half an answ" },
+					],
+				})),
 			),
 		).rejects.toThrow("mid-stream 500");
 	});

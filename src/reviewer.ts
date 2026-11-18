@@ -47,10 +47,12 @@ import { proposeSkill } from "./reviewer-propose.ts";
 import {
 	changedPaths,
 	copySkillsTree,
+	overlayPendingDrafts,
 	reviewTools,
 	stagingRoot,
 	StagingBudgetError,
 	validateSkill,
+	type DraftManifest,
 } from "./reviewer-staging.ts";
 import { System1Client, System1Error } from "./system1.ts";
 import { log } from "./log.ts";
@@ -476,9 +478,12 @@ async function runStagedReview(
 	const conv = turn.conversationId;
 	const stagingArea = stagingRoot(deps.workspaceDir);
 	const stagedSkills = join(reviewDir, "skills");
+	let installedManifest: Map<string, string>;
 	let manifest: Map<string, string>;
+	let drafts: DraftManifest;
 	try {
-		manifest = copySkillsTree(deps.skillsDir, stagedSkills);
+		installedManifest = copySkillsTree(deps.skillsDir, stagedSkills);
+		({ manifest, drafts } = overlayPendingDrafts(deps.proposedDir, stagedSkills, installedManifest));
 	} catch (err) {
 		// Policy (the budget) and mechanical failure (permissions, disk)
 		// carry different labels — one message would lie about the other.
@@ -498,7 +503,10 @@ async function runStagedReview(
 	// The catalog the model sees is the staged copy — exactly what its
 	// writes apply to.
 	const catalog = loadCatalog(stagedSkills);
-	const catalogLines = catalog.entries.map((e) => `- ${e.name} — ${e.description}`);
+	const catalogLines = catalog.entries.map(
+		(e) =>
+			`- ${e.name} — ${e.description}${drafts.skills.has(e.name) ? " (pending draft, not installed — edit it in place)" : ""}`,
+	);
 	let ref: string;
 	let model: LanguageModel;
 	let reviewMaxRetries: number | undefined;
@@ -652,7 +660,7 @@ async function runStagedReview(
 		// skill the operator touched mid-review. Nothing installs — the
 		// live catalog changes only when the operator approves.
 		const proposedNames: string[] = [];
-		const skipped: { skill: string; drifted: string[] }[] = [];
+		const skipped: { skill: string; reason: "conflict" | "draft-changed"; drifted: string[] }[] = [];
 		let proposeError: unknown = null;
 		try {
 			for (const skill of skills) {
@@ -661,12 +669,23 @@ async function runStagedReview(
 					deps.proposedDir,
 					stagedSkills,
 					stagingArea,
-					manifest,
+					installedManifest,
+					drafts,
 					skill,
 					reviewId,
 				);
-				if (outcome.proposed) proposedNames.push(skill);
-				else skipped.push({ skill, drifted: outcome.drifted });
+				if (outcome.proposed) {
+					proposedNames.push(skill);
+				} else {
+					switch (outcome.reason) {
+						case "conflict":
+							skipped.push({ skill, reason: outcome.reason, drifted: outcome.drifted });
+							break;
+						case "draft-changed":
+							skipped.push({ skill, reason: outcome.reason, drifted: outcome.drifted });
+							break;
+					}
+				}
 			}
 		} catch (err) {
 			log.error(
@@ -682,11 +701,12 @@ async function runStagedReview(
 			);
 			proposeError = err;
 		}
-		if (skipped.length > 0) {
+		const liveSkipped = skipped.filter((s) => s.reason === "conflict");
+		if (liveSkipped.length > 0) {
 			log.warn("reviewer proposal skipped — live state conflicts", {
 				review_id: reviewId,
 				conversation: conv,
-				skipped,
+				skipped: liveSkipped,
 				proposed: proposedNames,
 			});
 		}

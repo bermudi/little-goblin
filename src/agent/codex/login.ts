@@ -64,13 +64,13 @@ const usercodeSchema = z.object({
 function expiryIso(raw: string | number | undefined, deadlineMs: number): string {
 	if (raw === undefined) return new Date(deadlineMs).toISOString();
 	const text = String(raw).trim();
-	if (/^\d+$/.test(text)) return new Date(Number(text) * 1000).toISOString();
-	const parsed = Date.parse(text);
-	if (Number.isNaN(parsed)) {
+	const ms = /^\d+$/.test(text) ? Number(text) * 1000 : Date.parse(text);
+	// Past ±8.64e15 ms a Date is invalid and toISOString throws.
+	if (!Number.isFinite(ms) || Math.abs(ms) > 8.64e15) {
 		log.warn("chatgpt login expiry unreadable — using goblin's deadline", { expiresAt: text });
 		return new Date(deadlineMs).toISOString();
 	}
-	return new Date(parsed).toISOString();
+	return new Date(ms).toISOString();
 }
 
 const deviceTokenSchema = z.object({

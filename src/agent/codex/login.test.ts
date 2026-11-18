@@ -320,7 +320,7 @@ describe("chatgpt device login", () => {
 	});
 
 	test("epoch-seconds expiry reaches clients as ISO", async () => {
-		for (const raw of [4102444800, "4102444800"]) {
+		for (const raw of [4102444800, "4102444800", "99999999999999999", "not a date"]) {
 			const { login } = rig({
 				respond: (url) =>
 					url.endsWith("/deviceauth/usercode")
@@ -328,7 +328,14 @@ describe("chatgpt device login", () => {
 						: json({}, 403),
 			});
 			const started = await login.start();
-			expect(started.pending?.expiresAt).toBe("2100-01-01T00:00:00.000Z");
+			const iso = started.pending?.expiresAt ?? "";
+			if (raw === "99999999999999999" || raw === "not a date") {
+				// Unreadable: goblin's own deadline, still a valid ISO countdown.
+				expect(Number.isNaN(Date.parse(iso))).toBe(false);
+				expect(iso).not.toBe("2100-01-01T00:00:00.000Z");
+			} else {
+				expect(iso).toBe("2100-01-01T00:00:00.000Z");
+			}
 			login.cancel();
 		}
 	});

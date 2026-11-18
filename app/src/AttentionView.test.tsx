@@ -261,7 +261,7 @@ test("a failed retry status read is shown and clears when polling recovers", asy
 	globalThis.setInterval = ((handler: TimerHandler, delay?: number) => {
 		if (delay === 2_000 && typeof handler === "function") retryTick = handler as () => void;
 		return 1 as unknown as ReturnType<typeof setInterval>;
-	}) as typeof setInterval;
+	}) as unknown as typeof setInterval;
 	globalThis.clearInterval = (() => {}) as typeof clearInterval;
 	const realFetchForStatus = globalThis.fetch;
 	globalThis.fetch = Object.assign(

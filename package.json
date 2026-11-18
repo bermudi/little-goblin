@@ -10,7 +10,7 @@
 		"dev": "bun --watch run src/index.ts",
 		"test": "bun test",
 		"typecheck": "tsc --noEmit && tsc --noEmit -p app/tsconfig.json",
-		"lint": "oxlint --type-aware --deny-warnings src app",
+		"lint": "oxlint --type-aware --deny-warnings",
 		"app:build": "vite build app",
 		"app:dev": "vite app",
 		"doctor": "bun --no-install run src/doctor.ts",

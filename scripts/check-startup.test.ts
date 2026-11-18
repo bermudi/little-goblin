@@ -139,7 +139,7 @@ process.stdout.write(JSON.stringify({_SYSTEMD_INVOCATION_ID:'ddddddddddddddddddd
 		]);
 		return { exit, output: stdout + stderr };
 	} finally {
-		server.stop(true);
+		await server.stop(true);
 		rmSync(dir, { recursive: true, force: true });
 	}
 }

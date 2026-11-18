@@ -291,6 +291,8 @@ export function SettingsView({
 	// Thinking-level capability lookups — kind/base/model from the
 	// form's own provider state, debounced.
 	const provsSig = provs.map((p) => `${p.name.trim()}|${p.kind}|${p.baseUrl.trim()}`).join(",");
+	const latestProvs = useRef(provs);
+	latestProvs.current = provs;
 	useEffect(() => {
 		if (kinds === null) return;
 		const seq = ++thinkSeq.current;
@@ -298,7 +300,7 @@ export function SettingsView({
 			const channel = async (ref: string): Promise<ChannelLevels> => {
 				const slash = ref.indexOf("/");
 				if (slash <= 0) return { values: [...THINKING_ORDER], unavailable: true };
-				const p = provs.find((x) => x.name.trim() === ref.slice(0, slash));
+				const p = latestProvs.current.find((x) => x.name.trim() === ref.slice(0, slash));
 				if (p === undefined) return { values: [...THINKING_ORDER], unavailable: true };
 				const base = "baseUrl" in p && typeof p.baseUrl === "string" ? p.baseUrl : undefined;
 				try {
@@ -318,7 +320,7 @@ export function SettingsView({
 		}, 300);
 		return () => clearTimeout(t);
 		// provsSig is the provs projection this effect actually keys on.
-	}, [draft.model, draft.telegramModel, provsSig, provs, token, kinds]);
+	}, [draft.model, draft.telegramModel, provsSig, token, kinds]);
 
 	const renameProvider = (id: number, v: string): string | null => {
 		if (v === "") return "Every provider needs a name.";

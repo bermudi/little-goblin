@@ -364,6 +364,22 @@ describe("Composer skill staging", () => {
 	const skillParts = (parts: UIMessage["parts"]) =>
 		parts.filter((p) => p.type === "data-skill").map((p) => (p as { data: unknown }).data);
 
+	test("draft restore settles with inline staging setters and duplicate skills", async () => {
+		root = createRoot(container);
+		const payload = [
+			{ type: "data-skill", data: { name: "demo" } },
+		] as unknown as UIMessage["parts"];
+		await act(async () => {
+			root?.render(
+				<ComposerHarness
+					initialSkills={[{ key: "existing", name: "demo", ref: { name: "demo" } }]}
+					draftRestore={{ parts: payload }}
+				/>,
+			);
+		});
+		expect(chipNames()).toEqual(["Skill · demo"]);
+	}, 2_000);
+
 	test("a cleared send's restored parts re-stage catalog and temp skills for resend", async () => {
 		const tempRef = {
 			url: "https://github.com/o/r/tree/main/skills/claude-api",

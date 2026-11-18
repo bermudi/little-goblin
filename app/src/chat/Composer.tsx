@@ -285,8 +285,24 @@ export function Composer({
 	const { notePickerOpen, setNotePickerOpen, skillPickerOpen, setSkillPickerOpen, notePickRef, noteBtnRef, pickNote, stageSkill } =
 		useSkillNoteStaging({ setStagedNotes, setStagedSkills });
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
-	const latestOnDraftRestored = useRef(onDraftRestored);
-	latestOnDraftRestored.current = onDraftRestored;
+	const latestDraftRestoreBindings = useRef({
+		editedAfterSend,
+		setDraft,
+		setStaged,
+		setStagedNotes,
+		setStagedSkills,
+		onDraftRestored,
+		textareaRef,
+	});
+	latestDraftRestoreBindings.current = {
+		editedAfterSend,
+		setDraft,
+		setStaged,
+		setStagedNotes,
+		setStagedSkills,
+		onDraftRestored,
+		textareaRef,
+	};
 	useEffect(() => {
 		if (quote == null || quote.n === 0) return;
 		editedAfterSend.current = true;
@@ -303,6 +319,15 @@ export function Composer({
 	// replace text the operator wrote after the cancelled send.
 	useEffect(() => {
 		if (draftRestore == null) return;
+		const {
+			editedAfterSend,
+			setDraft,
+			setStaged,
+			setStagedNotes,
+			setStagedSkills,
+			onDraftRestored,
+			textareaRef,
+		} = latestDraftRestoreBindings.current;
 		const text = draftRestore.parts
 			.filter((p) => p.type === "text")
 			.map((p) => p.text)
@@ -349,25 +374,21 @@ export function Composer({
 			// one.
 			setStagedSkills((prev) => {
 				const merged = [...prev];
+				let changed = false;
 				for (const s of skills)
-					if (!merged.some((e) => skillRefEquals(e.ref, s.ref))) merged.push(s);
-				return merged;
+					if (!merged.some((e) => skillRefEquals(e.ref, s.ref))) {
+						merged.push(s);
+						changed = true;
+					}
+				return changed ? merged : prev;
 			});
-		latestOnDraftRestored.current?.();
+		onDraftRestored?.();
 		const ta = textareaRef.current;
 		if (ta !== null) {
 			ta.focus();
 			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
 		}
-	}, [
-		draftRestore,
-		editedAfterSend,
-		setDraft,
-		setStaged,
-		setStagedNotes,
-		setStagedSkills,
-		textareaRef,
-	]);
+	}, [draftRestore]);
 	const { fileInput, micError, micSupported, recording, recSec, startRecording, stopRecording, pickFile } =
 		useAttachments({ token, busy, onSend, setStaged });
 	useKeyboard({

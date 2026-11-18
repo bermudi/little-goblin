@@ -124,6 +124,9 @@ Conversation ─────── (channel address) → durable event history
   - `/stop` fences the running turn and drops queued ones; messages still in
     the intake buffer are user input, not queued turns, and flush into a
     fresh turn at the new epoch.
+    Stopping a conversation whose row has already been deleted is a quiet
+    no-op: the runtime logs the missing-row outcome and returns settled
+    promises rather than surfacing a storage error to the channel.
 
 **Topics are the UX — in the group.** In the bot DM, quiet gaps draw the
 boundaries (Rolling DM), with explicit `/new` and `/back` overrides

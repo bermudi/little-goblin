@@ -422,7 +422,16 @@ export class Runtime {
 		reviewsCancelled: number;
 		active: Promise<void>;
 	} {
-		const epoch = this.deps.store.bumpEpoch(convId);
+		const epoch = this.deps.store.bumpEpochIfPresent(convId);
+		if (epoch === null) {
+			log.info("stop — conversation already gone", { conversation: convId });
+			return {
+				stopped: false,
+				settled: Promise.resolve(),
+				reviewsCancelled: 0,
+				active: Promise.resolve(),
+			};
+		}
 		return this.cancelFenced(convId, epoch);
 	}
 

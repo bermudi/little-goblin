@@ -1060,6 +1060,20 @@ describe("turn authority", () => {
 		r.store.close();
 	});
 
+	test("/stop on a deleted conversation is a logged quiet no-op", async () => {
+		const r = rig();
+		try {
+			r.store.deleteConversation(r.conv.id);
+			const result = r.runtime.stop(r.conv.id);
+			expect(result.stopped).toBe(false);
+			expect(result.reviewsCancelled).toBe(0);
+			await result.settled;
+			await result.active;
+		} finally {
+			r.store.close();
+		}
+	});
+
 	test("stop().settled resolves only after the dropped sinks' onDone settles", async () => {
 		const r = rig({ deltas: ["a", "b", "c", "d"], delayMs: 30 });
 		const running = submit(r, "one");

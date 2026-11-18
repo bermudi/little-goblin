@@ -63,7 +63,11 @@ naming it IS the operator's override of `disable-model-invocation`);
 part persists, replays, and copies with history, and renders as a chip
 on the message — the transcript never lies. Validation is zod at the
 wire, mirroring the attachment-ref gate: a name matches the spec name
-rule; a temp path must name the descriptor's own cached SKILL.md —
+rule and must name a usable entry in the loaded catalog at the app
+boundary; a skipped, truncated-from-the-catalog, or unknown name is
+refused with HTTP 400. Injection resolves only names the loaded
+catalog keeps (#316), then reads that skill's whole SKILL.md. A temp
+path must name the descriptor's own cached SKILL.md —
 `<cache>/<digest>/<name>/SKILL.md`, not merely a descendant of the
 cache root (refined 2026-10-22: a support file is unscored, unbounded
 by the body cap, and never an injectable body; the resolver re-checks

@@ -303,7 +303,7 @@ export function formatSkillsSection(
 // operator deleted it mid-flight) is null, not an error: the marker
 // stands alone and the turn lives.
 export function readSkillBody(root: string, name: string): { body: string; bytes: number } | null {
-	if (!NAME_RE.test(name)) return null;
+	if (!hasUsableSkill(root, name)) return null;
 	let body: string;
 	try {
 		body = readFileSync(join(root, name, "SKILL.md"), "utf8");
@@ -312,4 +312,12 @@ export function readSkillBody(root: string, name: string): { body: string; bytes
 		throw err;
 	}
 	return { body, bytes: Buffer.byteLength(body) };
+}
+
+// #316: a name resolves only if the loaded catalog keeps it. A skipped
+// (malformed, mismatched) or capped-out entry never injects, whichever
+// door names it.
+export function hasUsableSkill(root: string, name: string): boolean {
+	if (!NAME_RE.test(name)) return false;
+	return loadCatalog(root).entries.some((entry) => entry.name === name);
 }

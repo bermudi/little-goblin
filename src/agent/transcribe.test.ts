@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -54,6 +54,49 @@ function genAudio(dest: string, seconds: number): void {
 	if (gen.exitCode !== 0) throw new Error(`test audio gen: ${gen.stderr.toString()}`);
 }
 
+function genLongLowBitrateAudio(dest: string, seconds: number): void {
+	// Stretch packet timestamps instead of encoding hours of silence; the
+	// resulting small Opus file has the same long duration ffprobe sees.
+	const gen = Bun.spawnSync([
+		"ffmpeg",
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-f",
+		"lavfi",
+		"-i",
+		"sine=frequency=440:duration=2",
+		"-af",
+		`asetpts=PTS*${Math.ceil(seconds / 2) + 200}`,
+		"-c:a",
+		"libopus",
+		"-b:a",
+		"4k",
+		dest,
+	]);
+	if (gen.exitCode !== 0) throw new Error(`long test audio gen: ${gen.stderr.toString()}`);
+}
+
+function genUnknownDurationAudio(dest: string): void {
+	const gen = Bun.spawnSync([
+		"ffmpeg",
+		"-hide_banner",
+		"-loglevel",
+		"error",
+		"-f",
+		"lavfi",
+		"-i",
+		"sine=frequency=440:duration=5",
+		"-c:a",
+		"libopus",
+		"-f",
+		"webm",
+		"pipe:1",
+	]);
+	if (gen.exitCode !== 0) throw new Error(`unknown-duration audio gen: ${gen.stderr.toString()}`);
+	writeFileSync(dest, gen.stdout);
+}
+
 // MediaRecorder pathology: pts ×400 at encode makes a 9 s note claim
 // ~3600 s of packet time — without the orchestrator's sample-count pts
 // rebuild the muxer cuts per packet (the production 9 s webm made 153).
@@ -98,15 +141,104 @@ describe("transcribeAudio", () => {
 	test("returns the trimmed transcript", async () => {
 		const dir = tmpDir("goblin-tr-");
 		const f = join(dir, "v.ogg");
-		writeFileSync(f, "oggdata");
+		genAudio(f, 1);
 		expect(await transcribeAudio(keepEngine("  call me back  "), file(f))).toBe("call me back");
 	});
 
 	test("silence (empty transcript) → null", async () => {
 		const dir = tmpDir("goblin-tr-");
 		const f = join(dir, "v.ogg");
-		writeFileSync(f, "oggdata");
+		genAudio(f, 1);
 		expect(await transcribeAudio(keepEngine("   "), file(f))).toBeNull();
+	});
+
+	test("small-bytes audio over the time bound rejects before an engine call", async () => {
+		const dir = tmpDir("goblin-tr-");
+		const src = join(dir, "long-low-bitrate.ogg");
+		genLongLowBitrateAudio(src, 240 * 28 + 1);
+		expect(statSync(src).size).toBeLessThan(25 * 1024 * 1024);
+		let calls = 0;
+		const engine: SpeechEngine = {
+			id: "test/cloud",
+			limits: { maxBytes: 25 * 1024 * 1024, maxSeconds: 15 * 60 },
+			prep: { container: "keep" },
+			transcribe: async () => {
+				calls += 1;
+				return { text: "unexpected" };
+			},
+		};
+		await expect(transcribeAudio(engine, file(src))).rejects.toThrow(
+			/audio is .+ \(\d+ s\); one transcribe call takes at most 1 h 52 m \(6720 s\) — cut it first, e.g. ffmpeg -ss <start> -t <seconds> -c copy/,
+		);
+		expect(calls).toBe(0);
+	}, 30_000);
+
+	test("a short keep-profile file under maxBytes uses one engine call", async () => {
+		const src = join(tmpDir("goblin-tr-"), "short.ogg");
+		genAudio(src, 2);
+		let calls = 0;
+		const engine: SpeechEngine = {
+			id: "test/cloud",
+			limits: { maxBytes: 25 * 1024 * 1024, maxSeconds: 15 * 60 },
+			prep: { container: "keep" },
+			transcribe: async () => {
+				calls += 1;
+				return { text: "short transcript" };
+			},
+		};
+		expect(await transcribeAudio(engine, file(src))).toBe("short transcript");
+		expect(calls).toBe(1);
+	});
+
+	test("unknown duration falls back to bounded segmentation", async () => {
+		const src = join(tmpDir("goblin-tr-"), "unbounded.webm");
+		genUnknownDurationAudio(src);
+		let calls = 0;
+		let uploadedPath = "";
+		const engine: SpeechEngine = {
+			id: "test/cloud",
+			limits: { maxBytes: 25 * 1024 * 1024, maxSeconds: 15 * 60 },
+			prep: { container: "keep" },
+			transcribe: async (uploaded) => {
+				calls += 1;
+				uploadedPath = uploaded.path;
+				return { text: "segmented transcript" };
+			},
+		};
+		expect(
+			await transcribeAudio(engine, { ...file(src), mediaType: "audio/webm" }, {
+				segmentSeconds: 10,
+			}),
+		).toBe("segmented transcript");
+		expect(calls).toBe(1);
+		expect(uploadedPath).not.toBe(src);
+		expect(uploadedPath.endsWith(".ogg")).toBe(true);
+	});
+
+	test("missing ffprobe rejects keep-profile audio before an engine call", async () => {
+		const src = join(tmpDir("goblin-tr-"), "short.ogg");
+		genAudio(src, 2);
+		let calls = 0;
+		const engine: SpeechEngine = {
+			id: "test/cloud",
+			limits: { maxBytes: 25 * 1024 * 1024, maxSeconds: 15 * 60 },
+			prep: { container: "keep" },
+			transcribe: async () => {
+				calls += 1;
+				return { text: "unexpected" };
+			},
+		};
+		const oldPath = process.env.PATH;
+		process.env.PATH = tmpDir("goblin-no-tools-");
+		try {
+			await expect(transcribeAudio(engine, file(src))).rejects.toThrow(
+				"ffprobe is required to bound audio time before upload:",
+			);
+			expect(calls).toBe(0);
+		} finally {
+			if (oldPath === undefined) delete process.env.PATH;
+			else process.env.PATH = oldPath;
+		}
 	});
 
 	test("over-cap media is segmented to mono opus and joined", async () => {
@@ -349,13 +481,22 @@ describe("transcribeAudio", () => {
 		expect(rejectedCalls).toBe(0);
 	});
 
-	test("a corrupt source fails loud through ffmpeg", async () => {
+	test("an unparseable source fails loud through ffprobe before engine call", async () => {
 		if (Bun.which("ffmpeg") === null) return;
 		const f = join(tmpDir("goblin-tr-"), "junk.ogg");
 		writeFileSync(f, "definitely not audio");
-		await expect(transcribeAudio(keepEngine("x"), file(f), { maxBytes: 1 })).rejects.toThrow(
-			"ffmpeg",
+		let calls = 0;
+		const engine: SpeechEngine = {
+			...keepEngine("x"),
+			transcribe: async () => {
+				calls += 1;
+				return { text: "unexpected" };
+			},
+		};
+		await expect(transcribeAudio(engine, file(f), { maxBytes: 1 })).rejects.toThrow(
+			"ffprobe is required to bound audio time before upload:",
 		);
+		expect(calls).toBe(0);
 	});
 
 	test("a missing file fails loud", async () => {
@@ -380,7 +521,7 @@ describe("transcribeChain", () => {
 	test("primary success never invokes the fallback", async () => {
 		const dir = tmpDir("goblin-tr-");
 		const f = join(dir, "v.ogg");
-		writeFileSync(f, "oggdata");
+		genAudio(f, 1);
 		let fallbackCalls = 0;
 		const result = await transcribeChain(
 			[
@@ -399,7 +540,7 @@ describe("transcribeChain", () => {
 	test("a thrown primary advances to the fallback's transcript", async () => {
 		const dir = tmpDir("goblin-tr-");
 		const f = join(dir, "v.ogg");
-		writeFileSync(f, "oggdata");
+		genAudio(f, 1);
 		const result = await transcribeChain(
 			[
 				idEngine("groq/x", () => Promise.reject(new Error("HTTP 413"))),
@@ -413,7 +554,7 @@ describe("transcribeChain", () => {
 	test("no-speech null is an answer, not a retry trigger", async () => {
 		const dir = tmpDir("goblin-tr-");
 		const f = join(dir, "v.ogg");
-		writeFileSync(f, "oggdata");
+		genAudio(f, 1);
 		let fallbackCalls = 0;
 		const result = await transcribeChain(
 			[
@@ -434,7 +575,7 @@ describe("transcribeChain", () => {
 	test("a fully failed chain throws one error naming each engine", async () => {
 		const dir = tmpDir("goblin-tr-");
 		const f = join(dir, "v.ogg");
-		writeFileSync(f, "oggdata");
+		genAudio(f, 1);
 		await expect(
 			transcribeChain(
 				[
@@ -449,7 +590,7 @@ describe("transcribeChain", () => {
 	test("a lone engine throws verbatim — no chain decoration", async () => {
 		const dir = tmpDir("goblin-tr-");
 		const f = join(dir, "v.ogg");
-		writeFileSync(f, "oggdata");
+		genAudio(f, 1);
 		await expect(
 			transcribeChain([idEngine("groq/x", () => Promise.reject(new Error("HTTP 413")))], file(f)),
 		).rejects.toThrow("HTTP 413");

@@ -14,6 +14,7 @@ import type { Config, TranscriptionConfig } from "../config-schema.ts";
 import { log } from "../log.ts";
 import { tempDir } from "../dispose.ts";
 import { boundedRun, spawnProc } from "../proc.ts";
+import { probeMedia } from "./recording.ts";
 import { oneminEngine } from "./onemin-speech.ts";
 import {
 	elevenlabsEngine,
@@ -29,9 +30,10 @@ import { whistleArtifactPresence, whistleEngine } from "./transcribe-whistle.ts"
 
 const FFMPEG_TIMEOUT_MS = 180_000;
 
-// One bound in audio time for every engine, so a paid cloud engine can't
-// bill hours more than local Whistle would grind. Floor: a partial last
-// segment still bills, so the cap errs short.
+// One bound in audio time for every engine, on both single-upload and
+// segmented paths, so a paid cloud engine can't bill hours more than
+// local Whistle would grind. Floor: a partial last segment still bills,
+// so the cap errs short.
 const MAX_AUDIO_SECONDS = 240 * 28;
 
 export interface SpeechFile {
@@ -156,7 +158,38 @@ export async function transcribeAudio(
 			}),
 		);
 	}
+	let probed: Awaited<ReturnType<typeof probeMedia>>;
+	try {
+		probed = await probeMedia(file.path);
+	} catch (err) {
+		const cause = err instanceof Error ? err.message : String(err);
+		throw new Error(`ffprobe is required to bound audio time before upload: ${cause}`, {
+			cause: err,
+		});
+	}
+	if (probed.duration === null) {
+		log.warn("transcription duration unknown — segmenting", {
+			file: file.filename,
+			path: file.path,
+			engine: engine.id,
+		});
+	}
 	if (maxBytes === undefined || (await stat(file.path)).size <= maxBytes) {
+		if (probed.duration === null) {
+			const seconds = segmentSeconds ?? 15 * 60;
+			return transcribeSegmented(engine, file, seconds, (dir) =>
+				segmentAudio(file.path, dir, seconds, {
+					container: "keep",
+					sampleRateHz: undefined,
+					mono: undefined,
+				}),
+			);
+		}
+		if (probed.duration > MAX_AUDIO_SECONDS) {
+			throw new Error(
+				`audio is ${formatDuration(probed.duration)} (${Math.round(probed.duration)} s); one transcribe call takes at most ${formatDuration(MAX_AUDIO_SECONDS)} (${MAX_AUDIO_SECONDS} s) — cut it first, e.g. ffmpeg -ss <start> -t <seconds> -c copy`,
+			);
+		}
 		return transcribeOne(engine, file);
 	}
 	const seconds = segmentSeconds ?? 15 * 60;
@@ -366,11 +399,11 @@ export function makeTranscriber(deps: {
 	};
 }
 
-// Voice replies and transcription die at runtime without ffmpeg;
-// transcription needs it only over the upload cap — except wav-profile
-// engines (whistle's ogg→wav decode, mimo's wav-only input, onemin's
-// qwen3 transcode), which need it always. Probe failure on a configured
-// tts block writes configRef.ttsDown.
+// Voice replies need ffmpeg. Keep-profile transcription needs ffprobe on
+// every file and ffmpeg only for segmentation; wav-profile engines
+// (whistle's ogg→wav decode, mimo's wav-only input, onemin's qwen3
+// transcode) always need ffmpeg. Probe failure on a configured tts block
+// writes configRef.ttsDown.
 export async function checkBootMedia(
 	config: Config,
 	configRef: ConfigRef,

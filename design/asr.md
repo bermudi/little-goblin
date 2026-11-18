@@ -124,12 +124,18 @@ audio never leaves the box.
 The size-cap decision generalizes:
 
 - `container:"keep"` engines (all cloud) pass the original bytes under the
-  provider multipart cap (25 MiB, OpenAI/groq/mistral); over it, mono opus
-  segments.
+  provider multipart cap (25 MiB, OpenAI/groq/mistral) only when the probed
+  duration is known and within the shared audio-time bound. Keep-profile
+  transcription requires ffprobe on every file; ffmpeg is needed only for
+  segmentation. Unknown-duration or over-cap inputs take the bounded mono
+  opus segment path.
 - `container:"wav"` engines (whistle, mimo) always take the 16 kHz mono wav
-  pass; fixed segments keep mimo's wav/mp3 input with its 10 MB base64
-  ceiling satisfied (180 s of pcm_s16le ≈ 7.7 MB), so a request's size is
-  deterministic whatever the source container or bitrate.
+  pass in fixed segments; this also keeps mimo's wav/mp3 input under its
+  10 MB base64 ceiling (180 s of pcm_s16le ≈ 7.7 MB), so a request's size
+  is deterministic whatever the source container or bitrate.
+- Both keep-profile single uploads and segmented requests are bounded by
+  `MAX_AUDIO_SECONDS` (240 × 28 s ≈ 1 h 52 m). A missing duration falls
+  back to segmentation, where the segment-count cap applies.
 - Chat-family inline-base64 engines cap lower to clear the provider's
   request budget (gemini `inlineData` ≈ 20 MB total).
 - The segment pass rebuilds timestamps before the muxer sees them (ruling

@@ -197,6 +197,11 @@ const listEnvelope = <T>(item: z.ZodType<T>) =>
 	});
 const docListSchema = listEnvelope(documentSummarySchema);
 const memoryListSchema = listEnvelope(factListItemSchema);
+// Sized to memoryListSchema, like getDocument and reflect to theirs:
+// 200 facts × (64k text + 16k context + 4k entities + small fields) is
+// ~17 MB of ASCII, so the client-wide 1 MiB cap refused legal pages (#263).
+// The document list stays under the default: 100 small summaries.
+const MEMORY_LIST_RESPONSE_BYTES = 24 * 1024 * 1024;
 export interface MemoryDocPage<T> {
 	items: T[];
 	total: number;
@@ -627,7 +632,7 @@ export class HindsightClient {
 			`/memories/list?${query}`,
 			"GET",
 			memoryListSchema,
-			{ signal: options.signal },
+			{ signal: options.signal, responseBytes: MEMORY_LIST_RESPONSE_BYTES },
 		);
 		if (!result) throw new HindsightError("protocol");
 		return { items: result.items, total: result.total, limit: input.limit, offset: input.offset };

@@ -536,6 +536,21 @@ describe("memories browser list endpoints", () => {
 		expect(requests[0]?.searchParams.get("document_id")).toBe("exchange/topic:1:2/7/abc");
 	});
 
+	test("a legal memories page over 1 MiB still reads", async () => {
+		const fact = (i: number) => ({ id: `f${i}`, text: "x".repeat(60_000), context: "c".repeat(10_000) });
+		const baseUrl = fake(() =>
+			Response.json({
+				items: Array.from({ length: 200 }, (_, i) => fact(i)),
+				total: 200,
+				limit: 200,
+				offset: 0,
+			}),
+		);
+		const client = new HindsightClient({ baseUrl, bankId: "goblin" });
+		const page = await client.listMemories({ limit: 200, offset: 0 });
+		expect(page.items).toHaveLength(200);
+	});
+
 	test("browse inputs are bounded and malformed envelopes fail loud", async () => {
 		let served = 0;
 		const baseUrl = fake(() => {

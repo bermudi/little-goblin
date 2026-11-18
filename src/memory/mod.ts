@@ -35,7 +35,6 @@ export function buildMemoryClient(
 	return new HindsightClient({
 		baseUrl: cfg.baseUrl,
 		bankId: cfg.bankId,
-		timeoutMs: cfg.recallTimeoutMs,
 		...(cfg.auth ? { auth: () => auth.resolve(cfg.auth as string) } : {}),
 	});
 }
@@ -244,6 +243,7 @@ export async function recallMemory(options: {
 			budget: mem.config.budget,
 			preferObservations: mem.config.preferObservations,
 			minScores: mem.config.minScores,
+			timeoutMs: mem.config.recallTimeoutMs,
 		});
 		assertAuthority();
 		// Exclusion may have landed while the request was in flight —

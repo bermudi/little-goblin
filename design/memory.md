@@ -414,7 +414,14 @@ screened only when it is at least eight characters or contains a digit
 (#262): "secret: is that…" survives, "password: hunter2" does not.
 Errors lean toward redaction. Quoted values are always screened.
 
-Deliberate search does not inherit the automatic-recall deadline.
+**Timeouts are scoped to the request they bound (ruled 2026-11-18,
+#225).** `recallTimeoutMs` applies only to automatic turn-start recall.
+Deliberate memory search uses `searchTimeoutMs`; reflection uses its
+reflection bound. Retention submits and operation polls, document reads
+and deletes, and Memories-browser lists use the Hindsight client's
+30-second default request bound. This is the same for the current bank
+and every foreign-bank destination: changing the automatic recall
+deadline must not shorten background retention, forgetting, or browsing.
 Score floors are an initial tunable policy, not an empirically
 calibrated quality claim; recall rendering fits whole facts into a
 bounded envelope with explicit omission counts rather than clipping

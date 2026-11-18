@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ import { compactionSummaryId } from "../tags.ts";
 import { HindsightClient } from "./hindsight.ts";
 import {
 	activeExchangeExcluded,
+	buildDestinationClient,
 	buildMemoryClient,
 	buildRecallQuery,
 	buildRetentionDocument,
@@ -632,6 +634,69 @@ describe("client construction", () => {
 			{ resolve: async () => "x", has: () => true, names: () => ["h"] },
 		);
 		expect(client).toBeInstanceOf(HindsightClient);
+	});
+
+	test("recall deadline does not bound other requests for current or foreign banks", async () => {
+		const operationId = randomUUID();
+		const server = Bun.serve({
+			hostname: "127.0.0.1",
+			port: 0,
+			fetch: async (request) => {
+				await Bun.sleep(200);
+				const pathname = new URL(request.url).pathname;
+				const bankId = decodeURIComponent(pathname.split("/banks/")[1]?.split("/")[0] ?? "");
+				if (pathname.endsWith("/memories/recall")) return Response.json({ results: [] });
+				if (pathname.endsWith("/memories")) {
+					return Response.json({
+						success: true,
+						bank_id: bankId,
+						items_count: 1,
+						async: true,
+						operation_id: operationId,
+					});
+				}
+				if (request.method === "DELETE")
+					return Response.json({ success: true, document_id: "exchange/one" });
+				return Response.json({ items: [], total: 0, limit: 10, offset: 0 });
+			},
+		});
+		try {
+			const baseUrl = `http://127.0.0.1:${server.port}`;
+			const auth = { resolve: async () => "x", has: () => true, names: () => ["h"] };
+			const current = buildMemoryClient(
+				memoryConfigSchema.parse({
+					baseUrl,
+					bankId: "g",
+					recallTimeoutMs: 100,
+				}),
+				auth,
+			);
+			if (!current) throw new Error("expected configured client");
+			const foreign = buildDestinationClient({ baseUrl, bankId: "previous", auth: null }, auth);
+
+			for (const client of [current, foreign]) {
+				await expect(client.recall("slow", { timeoutMs: 100 })).rejects.toMatchObject({
+					kind: "timeout",
+				});
+				await client.submit(
+					{
+						id: "exchange/one",
+						content: "Operator: example",
+						conversationId: "topic:1",
+						timestamp: "2026-09-22T10:00:00Z",
+						sourceIds: ["message-1"],
+					},
+					operationId,
+				);
+				await client.deleteDocument("exchange/one");
+				await expect(client.listDocuments({ limit: 10, offset: 0 })).resolves.toMatchObject({
+					total: 0,
+					items: [],
+				});
+			}
+		} finally {
+			await server.stop(true);
+		}
 	});
 });
 

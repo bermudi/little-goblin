@@ -93,12 +93,14 @@ export const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh
 export type ThinkingLevel = (typeof thinkingLevels)[number];
 
 // Optional long-term memory. auth names an auth.jsonl record (loopback
-// needs none); recall bounds are tight — turns must not wait on memory.
+// needs none). The recall deadline bounds automatic turn-start recall only;
+// other Hindsight requests use their own bounds.
 export const memoryConfigSchema = z
 	.object({
 		baseUrl: hindsightConnectionSchema.shape.baseUrl,
 		bankId: hindsightConnectionSchema.shape.bankId,
 		auth: z.string().min(1).optional(),
+		// Turns must not wait on automatic recall; this is not a client-wide timeout.
 		recallTimeoutMs: z.number().int().min(100).max(10_000).default(MEMORY_DEFAULTS.recallTimeoutMs),
 		maxTokens: z.number().int().min(1).max(8192).default(MEMORY_DEFAULTS.maxTokens),
 		budget: z.enum(["low", "mid", "high"]).default(MEMORY_DEFAULTS.budget),

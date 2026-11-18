@@ -167,9 +167,11 @@ export function makeManagedSendEdge(t3: Pick<T3, "sendThread">): ManagedSend {
 			return { threadId: sent.threadId, runId: sent.runId, link: sent.link };
 		} catch (err) {
 			if (err instanceof T3Error) {
-				if (err.code === "exit_-1") throw err; // our kill: delivery uncertain
+				// A CLI kill or an invalid response after exit 0 cannot
+				// prove that T3 did not accept the send.
+				if (err.kind === "transient" || err.code === "malformed_response") throw err;
 				throw new ManagedSendRefusal(
-					err.code === "thread_not_found" ? "thread-gone" : "send-failed",
+					err.kind === "missing" && err.code === "thread_not_found" ? "thread-gone" : "send-failed",
 					err.message,
 				);
 			}

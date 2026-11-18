@@ -15,6 +15,7 @@ import { type AgentType } from "./agent-types.ts";
 import type { Desktops } from "./desktops.ts";
 import { leaseHeldBy, type LeaseHolder } from "./desktops-store.ts";
 import { log } from "./log.ts";
+import { BoundaryError } from "./boundary-error.ts";
 import { messageText } from "./memory/mod.ts";
 import { userMessage, type Runtime } from "./runtime.ts";
 import { agentNoticeTag } from "./tags.ts";
@@ -530,18 +531,30 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 						id: child.id,
 					});
 				} catch (err) {
-					qFailQueued.run(nowIso(), child.id);
-					const failed = get(child.id)!;
 					const message = err instanceof Error ? err.message : String(err);
-					log.warn("agent child spawn failed — desktop claim refused", {
-						child: child.id,
-						parent: input.parent.id,
-						type: input.type.name,
-						desktop: input.desktop,
-						error: message,
-					});
-					resolveWaiters(failed, message);
-					return { child: failed, queued: false, spawnError: message };
+					if (err instanceof BoundaryError && err.kind === "transient") {
+						log.warn("agent child desktop claim transient — starting run; computer tools will retry claim", err, {
+							child: child.id,
+							parent: input.parent.id,
+							type: input.type.name,
+							desktop: input.desktop,
+							boundary: err.boundary,
+							kind: err.kind,
+						});
+					} else {
+						qFailQueued.run(nowIso(), child.id);
+						const failed = get(child.id)!;
+						log.warn("agent child spawn failed — desktop claim refused", err, {
+							child: child.id,
+							parent: input.parent.id,
+							type: input.type.name,
+							desktop: input.desktop,
+							...(err instanceof BoundaryError ? { boundary: err.boundary, kind: err.kind } : {}),
+							error: message,
+						});
+						resolveWaiters(failed, message);
+						return { child: failed, queued: false, spawnError: message };
+					}
 				}
 			}
 			const row = get(child.id)!;

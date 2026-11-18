@@ -15,6 +15,7 @@ import { makePodman, type PodmanExecOpts } from "./podman.ts";
 import type { BoundedProc, BoundedProcBytes } from "./proc.ts";
 import {
 	DesktopError,
+	DesktopLeaseError,
 	containerNameForDesktop,
 	makeDesktops,
 	type Desktops,
@@ -66,6 +67,7 @@ function fakeEngine(opts?: {
 	}>;
 	varyFrames?: boolean;
 	failCua?: boolean;
+	failCuaTimeout?: boolean;
 	/** cua act calls fail with this stdout and empty stderr — driver
 	 *  errors can report on stdout. */
 	failCuaStdout?: string;
@@ -335,13 +337,13 @@ function fakeEngine(opts?: {
 			};
 		}
 		if (opts?.execGate !== undefined) await opts.execGate;
-		if (opts?.failCua === true || opts?.failCuaStdout !== undefined) {
+		if (opts?.failCua === true || opts?.failCuaStdout !== undefined || opts?.failCuaTimeout === true) {
 			return {
 				stdout: opts.failCuaStdout ?? "",
 				stderr: opts.failCuaStdout !== undefined ? "" : "driver exploded",
-				exitCode: 1,
-				timedOut: false,
-				killed: false,
+				exitCode: opts.failCuaTimeout === true ? null : 1,
+				timedOut: opts.failCuaTimeout === true,
+				killed: opts.failCuaTimeout === true,
 				truncated: false,
 			};
 		}
@@ -540,7 +542,7 @@ describe("desktops pool", () => {
 		gate.resolve();
 		const a = await first;
 		expect(a.row.name).toBe("d1");
-		expect(b).toBeInstanceOf(DesktopError);
+		expect(b).toBeInstanceOf(DesktopLeaseError);
 		expect((b as Error).message).toMatch(/pool is full/);
 		expect(engine.containers.has(containerNameForDesktop("d1"))).toBe(true);
 		expect(engine.containers.has(containerNameForDesktop("d2"))).toBe(false);
@@ -1285,6 +1287,16 @@ describe("desktops pool", () => {
 		]) {
 			expect(envPairs).toContain(pair);
 		}
+	});
+
+	test("a cua-driver timeout is a transient desktop boundary error", async () => {
+		const engine = fakeEngine({ failCuaTimeout: true });
+		const { desktops, name } = await fresh(engine);
+		await desktops.claim(name, RUN_A);
+		const shot = await desktops.screenshot(name);
+		const err = await desktops.act(name, RUN_A, shot.id, CLICK).catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(DesktopError);
+		expect(err).toMatchObject({ boundary: "desktop", kind: "transient" });
 	});
 
 	test("a failed dispatch consumes its observation — input is never replayed", async () => {

@@ -13,7 +13,7 @@ import { defineTool, type ToolOutput } from "../../tool.ts";
 import { persistAttachment } from "../attachments.ts";
 import { readWorkspaceFile, WORKSPACE_READ_MAX_BYTES } from "../../box-files.ts";
 import { log } from "../../log.ts";
-import { PodmanError } from "../../podman.ts";
+import { BoundaryError } from "../../boundary-error.ts";
 import { SandboxError, type Sandboxes } from "../../sandboxes.ts";
 import { type Artifact, artifactOf, fileSourceSchema } from "./artifact-schema.ts";
 
@@ -70,7 +70,10 @@ export const artifactTool = (deps: ArtifactToolDeps) =>
 					});
 					data = out.data;
 				} catch (err) {
-					if (err instanceof SandboxError || err instanceof PodmanError) {
+					if (err instanceof BoundaryError) {
+						return { error: `${err.kind} ${err.boundary} error${err.kind === "transient" ? " (retry may succeed)" : ""}: ${err.message}` };
+					}
+					if (err instanceof SandboxError) {
 						return { error: err.message };
 					}
 					throw err;

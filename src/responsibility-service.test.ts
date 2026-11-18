@@ -19,7 +19,7 @@ import {
 	makeManagedSendEdge,
 	makeResponsibilityService,
 } from "./responsibility-service.ts";
-import { T3Error, type T3SendResult } from "./t3.ts";
+import { makeT3, T3Error, type T3SendResult } from "./t3.ts";
 import { openPrograms, type ProgramsStore } from "./programs.ts";
 import { Database } from "bun:sqlite";
 import { deferred, tmpDir, useHome, waitUntil } from "./testkit.ts";
@@ -350,6 +350,33 @@ describe("responsibility service", () => {
 		const again = await r.svc.dispatch(prepared.operation.operationId, edge);
 		expect(again).toEqual({ refused: "delivery-uncertain" });
 		expect(calls).toBe(1);
+		r.store.close();
+	});
+
+	test("an exit-0 malformed send response stays uncertain, not send-failed", async () => {
+		const r = rig();
+		const { responsibility } = r.svc.accept({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "h1",
+			understanding: understanding(),
+			attachments: [{ target: target(), baseline: {} }],
+		});
+		const att = r.resps.attachmentsFor(responsibility.responsibilityId)[0]!;
+		const prepared = r.resps.prepareOperation({
+			responsibilityId: responsibility.responsibilityId,
+			attachmentId: att.attachmentId,
+			brief: "b",
+		});
+		if (!("operation" in prepared)) throw new Error("expected prepared");
+		const edge = makeManagedSendEdge(makeT3(async () => ({
+			code: 0,
+			stdout: "not JSON",
+			stderr: "",
+		})));
+		const out = await r.svc.dispatch(prepared.operation.operationId, edge);
+		expect(out).toEqual({ refused: "delivery-uncertain" });
+		expect(r.resps.getOperation(prepared.operation.operationId)!.state).toBe("uncertain");
 		r.store.close();
 	});
 

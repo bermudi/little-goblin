@@ -6,12 +6,12 @@
 // gone. A thread id is a stable identity — there is no same-pane
 // replacement concept to detect.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import { T3Error, type T3ShowResult, type T3Thread } from "./t3.ts";
-import { setLogFile } from "./log.ts";
+import { log, setLogFile } from "./log.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import type { AttachmentTarget } from "./responsibility-types.ts";
@@ -252,19 +252,54 @@ describe("responsibility observer", () => {
 
 	test("a single unreachable poll stays invisible — no health change, no events", async () => {
 		const r = rig();
-		r.failing = new T3Error("thread show", "exit_1", "t3 thread show failed");
+		r.failing = new T3Error("thread show", "exit_-1", "t3 thread show failed");
 		await r.observe();
 		const att = r.resps.getAttachment(r.attId)!;
 		expect(att.health).toBe("attached");
 		expect(att.unreachableSince).toBeNull();
 		expect(r.eventsFor()).toHaveLength(0);
+		await r.observe();
+		expect(r.showCalls).toBe(2);
+		expect(r.resps.getAttachment(r.attId)!.health).toBe("attached");
 		r.store.close();
+	});
+
+	test("a missing boundary error takes the gone path", async () => {
+		const r = rig();
+		r.failing = new T3Error("thread show", "thread_not_found", "gone");
+		await r.observe();
+		expect(r.resps.getAttachment(r.attId)!.health).toBe("missing");
+		expect(r.eventsFor().map((e) => e.kind)).toEqual(["agent-missing"]);
+		r.store.close();
+	});
+
+	test("a fatal T3 error logs and marks the durable outage without marking the attachment gone", async () => {
+		const at = new Date("2030-01-01T12:00:00.000Z");
+		const r = rig(undefined, () => at);
+		const error = spyOn(log, "error");
+		r.failing = new T3Error("thread show", "exit_1", "invalid query");
+		try {
+			await r.observe();
+			await r.observe();
+			await r.observe();
+			expect(r.resps.getAttachment(r.attId)!.health).toBe("attached");
+			expect(r.resps.getAttachment(r.attId)!.unreachableSince).toBe(at.toISOString());
+			expect(r.eventsFor()).toHaveLength(0);
+			expect(error).toHaveBeenCalledWith(
+				"responsibility observation failed",
+				r.failing,
+				expect.objectContaining({ boundary: "t3", kind: "fatal" }),
+			);
+		} finally {
+			error.mockRestore();
+			r.store.close();
+		}
 	});
 
 	test("three consecutive unreachable polls declare the outage; the next success clears it", async () => {
 		const at = new Date("2030-01-01T12:00:00.000Z");
 		const r = rig(undefined, () => at);
-		r.failing = new T3Error("thread show", "exit_1", "t3 thread show failed");
+		r.failing = new T3Error("thread show", "exit_-1", "t3 thread show failed");
 		await r.observe();
 		expect(r.resps.getAttachment(r.attId)!.unreachableSince).toBeNull();
 		await r.observe();
@@ -292,12 +327,12 @@ describe("responsibility observer", () => {
 
 	test("a successful poll between failures restarts the count", async () => {
 		const r = rig();
-		r.failing = new T3Error("thread show", "exit_1", "down");
+		r.failing = new T3Error("thread show", "exit_-1", "down");
 		await r.observe();
 		await r.observe();
 		r.failing = null;
 		await r.observe();
-		r.failing = new T3Error("thread show", "exit_1", "down");
+		r.failing = new T3Error("thread show", "exit_-1", "down");
 		await r.observe();
 		await r.observe();
 		expect(r.resps.getAttachment(r.attId)!.unreachableSince).toBeNull();

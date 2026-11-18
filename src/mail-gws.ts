@@ -3,10 +3,11 @@
 // snippets.
 
 import { z } from "zod";
+import { BoundaryError, type BoundaryKind } from "./boundary-error.ts";
 import { decodeRfc2047, HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
 import { log } from "./log.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
-import { ProviderError, str } from "./agent/tools/web.ts";
+import { str } from "./agent/tools/web.ts";
 
 // One watcher tick fires once no matter how many matches — the batch
 // cap bounds the per-tick get fan-out, oldest first.
@@ -117,10 +118,8 @@ function parseOrThrow<T>(action: string, schema: z.ZodType<T>, data: unknown): T
 	try {
 		return schema.parse(data);
 	} catch (err) {
-		throw new ProviderError(
-			"gws",
-			`${action} returned an unexpected shape — ${(err as Error).message.slice(0, 200)}`,
-		);
+		log.error("gws mail response shape invalid", err, { action, boundary: "gws", kind: "fatal" });
+		throw new BoundaryError("gws", "fatal", `${action} returned an unexpected shape — ${err instanceof Error ? err.message.slice(0, 200) : String(err)}`, { cause: err });
 	}
 }
 
@@ -162,14 +161,21 @@ function messageIdHeader(
  *  target), never on message substrings: the message embeds stderr for
  *  the log, and an unrelated failure mentioning 404 must not silently
  *  re-baseline or swallow. Empty code = no envelope. */
-export class GwsApiError extends ProviderError {
+export class GwsApiError extends BoundaryError {
 	constructor(
 		message: string,
 		public readonly apiCode: string,
 	) {
-		super("gws", message);
+		super("gws", gwsKind(apiCode), message);
 		this.name = "GwsApiError";
 	}
+}
+
+function gwsKind(code: string): BoundaryKind {
+	const n = Number(code);
+	if (n === 404) return "missing";
+	if (n === 429 || n >= 500) return "transient";
+	return "fatal";
 }
 
 function apiCode(stdout: string): string {
@@ -200,13 +206,16 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		try {
 			r = await run(args);
 		} catch (err) {
-			throw new ProviderError("gws", `${action} could not spawn gws — ${(err as Error).message}`);
+			throw new BoundaryError("gws", "transient", `${action} could not spawn gws`, { cause: err });
 		}
 		const ms = Date.now() - started;
 		if (r.code !== 0) {
 			const code = apiCode(r.stdout);
 			const detail = (r.stderr || "").replace(/\s+/g, " ").trim().slice(0, 300);
-			log.warn("gws mail call failed", { action, ...fields, status: r.code, ms });
+			const kind = gwsKind(code);
+			log[kind === "fatal" ? "error" : "warn"]("gws mail call failed", {
+				action, ...fields, status: r.code, ms, boundary: "gws", kind,
+			});
 			throw new GwsApiError(
 				code !== ""
 					? `${action} failed — HTTP ${code}${detail ? ` — ${detail}` : ""}`
@@ -218,7 +227,8 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		try {
 			data = JSON.parse(r.stdout) as unknown;
 		} catch (err) {
-			throw new ProviderError("gws", `${action} returned non-JSON — ${(err as Error).message}`);
+			log.error("gws mail response was not JSON", err, { action, boundary: "gws", kind: "fatal" });
+			throw new BoundaryError("gws", "fatal", `${action} returned non-JSON`, { cause: err });
 		}
 		log.info("gws mail call", { action, ...fields, status: r.code, ms });
 		return data;
@@ -311,8 +321,9 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 			}
 			pageToken = body.nextPageToken ?? "";
 			if (pageToken !== "" && (seenTokens.has(pageToken) || seenTokens.size >= 100)) {
-				throw new ProviderError(
+				throw new BoundaryError(
 					"gws",
+					"fatal",
 					"history pagination repeated or exceeded 100 pages — cursor unchanged",
 				);
 			}
@@ -392,7 +403,28 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 			lastIncluded = rec.id;
 		}
 		const hits: MailHit[] = [];
-		for (const id of batch) hits.push(await getMetadata(id));
+		for (const id of batch) {
+			try {
+				hits.push(await getMetadata(id));
+			} catch (err) {
+				if (!(err instanceof BoundaryError)) throw err;
+				if (err.kind === "transient") {
+					log.warn("mail poll metadata transient failure — aborting batch", {
+						filter, id, boundary: err.boundary, kind: err.kind,
+					});
+					throw err;
+				}
+				if (err.kind === "missing") {
+					log.warn("mail poll message disappeared before metadata read", {
+						filter, id, boundary: err.boundary, kind: err.kind,
+					});
+					continue;
+				}
+				log.error("mail poll message metadata failed", err, {
+					filter, id, boundary: err.boundary, kind: err.kind,
+				});
+			}
+		}
 		// Truncated → the last fired record's id, so the unfired
 		// remainder is still ahead of the cursor.
 		if (truncated) return { hits, historyId: lastIncluded };

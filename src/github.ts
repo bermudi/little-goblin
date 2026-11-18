@@ -1,6 +1,7 @@
 // gh owns authentication. Only this adapter knows GitHub's wire contract.
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { BoundaryError, type BoundaryKind } from "./boundary-error.ts";
 import { log } from "./log.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
 import {
@@ -13,13 +14,29 @@ import {
 } from "./pr-readiness.ts";
 
 export type GithubRunner = (args: string[]) => Promise<string>;
+function githubKind(message: string): BoundaryKind {
+	if (/HTTP 404\b|Could not resolve/i.test(message)) return "missing";
+	if (/HTTP 5\d\d|rate limit|timed?\s*out|connection|network|temporarily unavailable/i.test(message)) return "transient";
+	return "fatal";
+}
+export class GithubError extends BoundaryError {
+	constructor(message: string, kind = githubKind(message), options?: { cause?: unknown }) {
+		super("github", kind, message, options);
+		this.name = "GithubError";
+	}
+}
 const runGh: GithubRunner = async (args) => {
 	const r = await boundedRun(spawnProc(["gh", ...args]), {
 		timeoutMs: 30_000,
 		maxOutput: 1 << 20,
 	});
-	if (r.timedOut || r.truncated || r.exitCode !== 0)
-		throw new Error(`gh evidence read failed (exit ${r.exitCode}, timeout ${r.timedOut}, truncated ${r.truncated})`);
+	if (r.timedOut || r.truncated || r.exitCode !== 0) {
+		const detail = r.stderr.replace(/\s+/g, " ").trim().slice(0, 300);
+		throw new GithubError(
+			`gh evidence read failed (exit ${r.exitCode}, timeout ${r.timedOut}, truncated ${r.truncated})${detail === "" ? "" : `: ${detail}`}`,
+			r.timedOut ? "transient" : githubKind(r.stderr),
+		);
+	}
 	return r.stdout;
 };
 
@@ -143,7 +160,11 @@ export function makeGithubReadiness(run: GithubRunner = runGh) {
 				"-f", `query=${text}`, "-f", `owner=${owner}`, "-f", `repo=${repo}`, "-F", `number=${number}`,
 			]);
 			log.info("GitHub query received", { repository, number, bytes: Buffer.byteLength(raw) });
-			return JSON.parse(raw) as unknown;
+			try {
+				return JSON.parse(raw) as unknown;
+			} catch (err) {
+				throw new GithubError("GitHub returned malformed JSON", "fatal", { cause: err });
+			}
 		};
 		let result: PrReadiness["result"];
 		log.info("GitHub readiness read", { repository: issue.repository, issue: issue.number });
@@ -151,7 +172,7 @@ export function makeGithubReadiness(run: GithubRunner = runGh) {
 			const linked = linkedSchema.parse(await query(ISSUE_QUERY, issue.repository, issue.number)).data.repository.issue;
 			source = linked.url;
 			const prs = linked.closedByPullRequestsReferences;
-			if (prs.pageInfo.hasNextPage) throw new Error("Closing PR evidence exceeds 100 entries");
+			if (prs.pageInfo.hasNextPage) throw new GithubError("Closing PR evidence exceeds 100 entries");
 			const open = prs.nodes.filter((pr) => pr.state === "OPEN");
 			if (linked.closed || open.length === 0) {
 				result = { kind: "no-pr", issueClosed: linked.closed };
@@ -161,11 +182,11 @@ export function makeGithubReadiness(run: GithubRunner = runGh) {
 				const candidate = open[0]!;
 				const pr = prSchema.parse(await query(PR_QUERY, candidate.repository.nameWithOwner, candidate.number)).data.repository.pullRequest;
 				if (pr.comments.pageInfo.hasPreviousPage || pr.closingIssuesReferences.pageInfo.hasNextPage)
-					throw new Error("PR evidence exceeds the 100-entry observation bound");
+					throw new GithubError("PR evidence exceeds the 100-entry observation bound");
 				if (pr.state !== "OPEN" || !pr.closingIssuesReferences.nodes.some((i) => i.url === source))
-					throw new Error("PR no longer open or no longer closes this issue");
+					throw new GithubError("PR no longer open or no longer closes this issue", "transient");
 				const commit = pr.commits.nodes[0]!.commit;
-				if (commit.oid !== pr.headRefOid) throw new Error("CI commit does not match the PR head");
+				if (commit.oid !== pr.headRefOid) throw new GithubError("CI commit does not match the PR head", "transient");
 				const rollup = commit.statusCheckRollup;
 				if (rollup?.contexts.pageInfo.hasNextPage) throw new Error("CI evidence exceeds 100 entries");
 				const succeeded = rollup?.contexts.nodes.some((c) => c.__typename === "StatusContext"
@@ -184,8 +205,19 @@ export function makeGithubReadiness(run: GithubRunner = runGh) {
 				};
 			}
 		} catch (err) {
-			log.error("GitHub readiness unavailable", err, { repository: issue.repository, issue: issue.number });
-			result = { kind: "unavailable", reason: err instanceof Error ? err.message : String(err) };
+			const boundary = err instanceof BoundaryError
+				? err
+				: new GithubError(
+					err instanceof Error ? err.message : String(err),
+					githubKind(err instanceof Error ? err.message : String(err)),
+					{ cause: err },
+				);
+			if (boundary.kind === "fatal") {
+				log.error("GitHub readiness unavailable", err, { repository: issue.repository, issue: issue.number, boundary: boundary.boundary, kind: boundary.kind });
+			} else {
+				log.warn("GitHub readiness unavailable", err, { repository: issue.repository, issue: issue.number, boundary: boundary.boundary, kind: boundary.kind });
+			}
+			result = { kind: "unavailable", reason: `${boundary.kind === "fatal" ? "fatal: " : boundary.kind === "missing" ? "missing: " : ""}${boundary.message}` };
 		}
 		log.info("GitHub readiness observed", {
 			repository: issue.repository, issue: issue.number, kind: result.kind,

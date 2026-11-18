@@ -3,7 +3,8 @@
 // runner seam — no real podman runs here.
 
 import { describe, expect, test } from "bun:test";
-import { makePodman } from "./podman.ts";
+import { makePodman, PodmanError } from "./podman.ts";
+import { BoundaryError } from "./boundary-error.ts";
 
 const WALL_FLAGS = [
 	"--pull=never",
@@ -32,6 +33,39 @@ function rig() {
 }
 
 describe("podman adapter argv", () => {
+	test("classifies missing, transient, fatal, and runner failures", async () => {
+		const errorFor = async (code: number, stderr: string) => {
+			const podman = makePodman({ runner: async () => ({ code, stdout: "", stderr }) });
+			try {
+				await podman.start("c");
+				throw new Error("expected failure");
+			} catch (err) {
+				if (err instanceof BoundaryError) return err;
+				throw err;
+			}
+		};
+		for (const diagnostic of ["no such container", "no such object", "no such network"]) {
+			expect((await errorFor(125, diagnostic)).kind).toBe("missing");
+		}
+		for (const diagnostic of [
+			"cannot connect to Podman",
+			"connection refused",
+			"resource temporarily unavailable",
+			"database is locked",
+			"timed out",
+		]) {
+			expect((await errorFor(125, diagnostic)).kind).toBe("transient");
+		}
+		expect((await errorFor(125, "permission denied")).kind).toBe("fatal");
+		const podman = makePodman({ runner: async () => { throw new Error("spawn failed"); } });
+		await expect(podman.start("c")).rejects.toMatchObject({ kind: "transient", boundary: "podman" });
+		const exec = makePodman({ execRunner: async () => { throw new Error("spawn failed"); } });
+		await expect(exec.exec("c", ["true"], { timeoutMs: 10, maxOutput: 10 })).rejects.toMatchObject({
+			kind: "transient", boundary: "podman",
+		});
+		expect(new PodmanError("start", 2, "unknown").kind).toBe("fatal");
+		expect(new BoundaryError("podman", "missing", "gone").kind).toBe("missing");
+	});
 	test("a custom command/hostname/shmSize keeps every wall flag", async () => {
 		const { calls, podman } = rig();
 		await podman.create({

@@ -340,6 +340,17 @@ canonicalizes the file.
 
 ## Module map
 
+### Boundary errors (#449)
+
+External adapters throw `BoundaryError` with one of three kinds: `missing`
+(the resource is absent), `transient` (retry may succeed), or `fatal`
+(retrying unchanged input cannot fix it). Adapters classify once; domain code
+branches on `kind`, never on message text. Callers keep their existing
+missing/gone path, preserve state and warn on transient failures so the next
+pass can retry, and log fatal failures at error level before taking their
+existing failure path. Batch callers isolate per item for missing and fatal
+errors; a transient item aborts the pass without advancing its cursor.
+
 Flat modules, one job each, tests colocated; the tree itself is the map,
 `scripts/function-size-audit.ts` lists units past the ~300-line smell line.
 `index.ts` wires and never rules: a rule with no owning module gets one

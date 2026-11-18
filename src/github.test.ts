@@ -1,7 +1,8 @@
 // Synthetic GitHub wire responses test policy; live probing is read-only via scripts/pr-readiness.ts.
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { makeGithubReadiness, type GithubRunner } from "./github.ts";
 import { readinessKey } from "./pr-readiness.ts";
+import { log, setLogWriter } from "./log.ts";
 
 const HEAD = "a".repeat(40);
 const OLD = "b".repeat(40);
@@ -42,6 +43,77 @@ function fixture() {
 }
 
 describe("GitHub PR readiness", () => {
+	test("classifies missing, transient, and fatal gh failures from diagnostics", async () => {
+		const warning = spyOn(log, "warn");
+		const error = spyOn(log, "error");
+		try {
+		for (const [message, kind] of [
+			["gh: HTTP 404 Not Found", "missing"],
+			["gh: API rate limit exceeded", "transient"],
+			["gh: HTTP 503 Service Unavailable", "transient"],
+			["gh: connection timed out", "transient"],
+			["gh: Could not resolve host", "missing"],
+			["gh: cached 404 results are stale", "fatal"],
+		] as const) {
+			const run: GithubRunner = async () => { throw new Error(message); };
+			const out = await makeGithubReadiness(run)(issue);
+			expect(out.result).toMatchObject({ kind: "unavailable" });
+			const sink = kind === "fatal" ? error : warning;
+			expect(sink).toHaveBeenLastCalledWith(
+				"GitHub readiness unavailable",
+				expect.any(Error),
+				expect.objectContaining({ boundary: "github", kind }),
+			);
+			if (kind === "missing") expect((out.result as { reason: string }).reason).toStartWith("missing:");
+		}
+		} finally {
+			warning.mockRestore();
+			error.mockRestore();
+		}
+		const auth: GithubRunner = async () => { throw new Error("gh: authentication failed"); };
+		expect((await makeGithubReadiness(auth)(issue)).result).toMatchObject({
+			kind: "unavailable", reason: expect.stringMatching(/^fatal:/),
+		});
+	});
+	test("PR state and commit-head races are transient observations", async () => {
+		const warning = spyOn(log, "warn");
+		try {
+			const closed = fixture();
+			closed.pr.state = "MERGED";
+			expect((await closed.observe()).result).toMatchObject({ kind: "unavailable" });
+			expect(warning).toHaveBeenLastCalledWith(
+				"GitHub readiness unavailable",
+				expect.any(Error),
+				expect.objectContaining({ boundary: "github", kind: "transient" }),
+			);
+			const changedHead = fixture();
+			changedHead.pr.commits.nodes[0]!.commit.oid = OLD;
+			expect((await changedHead.observe()).result).toMatchObject({ kind: "unavailable" });
+			expect(warning).toHaveBeenLastCalledWith(
+				"GitHub readiness unavailable",
+				expect.any(Error),
+				expect.objectContaining({ boundary: "github", kind: "transient" }),
+			);
+		} finally {
+			warning.mockRestore();
+		}
+	});
+	test("fatal schema and JSON failures have a fatal reason and error log", async () => {
+		const error = spyOn(log, "error");
+		try {
+			const run: GithubRunner = async () => "{";
+			const out = await makeGithubReadiness(run)(issue);
+			expect(out.result).toMatchObject({ kind: "unavailable", reason: expect.stringMatching(/^fatal:/) });
+			expect(error).toHaveBeenCalledWith(
+				"GitHub readiness unavailable",
+				expect.any(Error),
+				expect.objectContaining({ boundary: "github", kind: "fatal" }),
+			);
+		} finally {
+			error.mockRestore();
+			setLogWriter(null);
+		}
+	});
 	test("a passing verifier and green CI share the current SHA, with sources", async () => {
 		const f = fixture();
 		const observed = await f.observe();

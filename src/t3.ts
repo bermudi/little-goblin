@@ -11,6 +11,7 @@
 // The runner is the fake edge for tests.
 
 import { z } from "zod";
+import { BoundaryError, type BoundaryKind } from "./boundary-error.ts";
 import { log } from "./log.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
 
@@ -76,10 +77,12 @@ function abortError(signal: AbortSignal): Error {
 	return signal.reason instanceof Error ? signal.reason : new Error("aborted");
 }
 
-export class T3Error extends Error {
+export class T3Error extends BoundaryError {
 	readonly code: string;
-	constructor(verb: string, code: string, message: string) {
-		super(`t3 ${verb} failed (${code}): ${message}`);
+	constructor(verb: string, code: string, message: string, options?: { cause?: unknown }) {
+		const kind: BoundaryKind = code === "thread_not_found" || code === "project_not_found"
+			? "missing" : code === "exit_-1" ? "transient" : "fatal";
+		super("t3", kind, `t3 ${verb} failed (${code}): ${message}`, options);
 		this.name = "T3Error";
 		this.code = code;
 	}
@@ -174,7 +177,7 @@ function parseJson(verb: string, stdout: string): unknown {
 	} catch {
 		// Parser diagnostics can quote CLI stdout — don't put raw agent
 		// output into a log or error.
-		throw new Error(`t3 ${verb}: stdout is not JSON`);
+		throw new T3Error(verb, "malformed_response", "stdout is not JSON");
 	}
 }
 
@@ -198,7 +201,7 @@ function makeCaller(runner: T3Runner) {
 			r = await runner(args, opts);
 		} catch (err) {
 			log.error("t3 call runner failed", err, { verb, target, ms: performance.now() - t0 });
-			throw err;
+			throw new T3Error(verb, "exit_-1", "runner failed", { cause: err });
 		}
 		if (opts?.signal?.aborted) throw abortError(opts.signal);
 		const ms = performance.now() - t0;
@@ -209,15 +212,19 @@ function makeCaller(runner: T3Runner) {
 				: PROJECT_UNKNOWN_RE.test(text)
 					? "project_not_found"
 					: `exit_${r.code}`;
-			log.info("t3 call", { verb, target, ms, outcome: `error:${code}` });
-			throw new T3Error(verb, code, cliFallbackMessage(r));
+			const error = new T3Error(verb, code, cliFallbackMessage(r));
+			log[error.kind === "fatal" ? "error" : "warn"]("t3 call failed", error, {
+				verb, target, ms, code, boundary: error.boundary, kind: error.kind,
+			});
+			throw error;
 		}
 		let result: T;
 		try {
 			result = parse(r.stdout);
 		} catch (err) {
 			log.error("t3 call returned invalid output", err, { verb, target, ms });
-			throw err;
+			if (err instanceof T3Error) throw err;
+			throw new T3Error(verb, "malformed_response", "stdout did not match the expected response", { cause: err });
 		}
 		log.info("t3 call", { verb, target, ms, outcome: "ok" });
 		return result;

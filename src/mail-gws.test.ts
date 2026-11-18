@@ -6,7 +6,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { log, setLogFile, setLogWriter } from "./log.ts";
 import { HistoryExpiredError, type MailHit } from "./mail.ts";
-import { makeGwsReader, type GwsRunner } from "./mail-gws.ts";
+import { GwsApiError, makeGwsReader, type GwsRunner } from "./mail-gws.ts";
 
 interface Call {
 	args: string[];
@@ -95,6 +95,58 @@ function envelope(c: Call): { resource: string; method: string; params: Record<s
 }
 
 describe("gws mail reader", () => {
+	test("metadata batch skips missing and fatal messages but aborts on transient failures", async () => {
+		const makeRunner = (failure: (id: string) => number | null): GwsRunner => async (args) => {
+			const resource = args[2];
+			const method = args[3];
+			const params = envelope({ args }).params;
+			if (resource === "history" && method === "list") {
+				return {
+					code: 0,
+					stdout: JSON.stringify({ history: [{ id: "110", messagesAdded: [
+						{ message: { id: "m1" } }, { message: { id: "m2" } },
+					] }], historyId: "120" }),
+					stderr: "",
+				};
+			}
+			if (resource === "messages" && method === "list") {
+				return { code: 0, stdout: JSON.stringify({ messages: [{ id: "m2" }, { id: "m1" }] }), stderr: "" };
+			}
+			if (resource === "messages" && method === "get") {
+				const code = failure(String(params.id));
+				if (code !== null) {
+					return { code: 1, stdout: JSON.stringify({ error: { code } }), stderr: "failed" };
+				}
+				return { code: 0, stdout: JSON.stringify(msgGet(String(params.id))), stderr: "" };
+			}
+			throw new Error(`unexpected gws route: ${args.join(" ")}`);
+		};
+		const skipped = makeGwsReader(makeRunner((id) => id === "m1" ? 404 : null));
+		const out = await skipped.poll("from:test", "100");
+		expect(out.hits.map((hit) => hit.id)).toEqual(["m2"]);
+		expect(out.historyId).toBe("120");
+
+		const fatal = makeGwsReader(makeRunner((id) => id === "m1" ? 403 : null));
+		expect((await fatal.poll("from:test", "100")).hits.map((hit) => hit.id)).toEqual(["m2"]);
+
+		const transient = makeGwsReader(makeRunner((id) => id === "m1" ? 503 : null));
+		await expect(transient.poll("from:test", "100")).rejects.toMatchObject({
+			boundary: "gws", kind: "transient",
+		});
+	});
+	test("classifies API status and malformed data errors", async () => {
+		for (const [code, kind] of [[404, "missing"], [429, "transient"], [503, "transient"], [403, "fatal"]] as const) {
+			const run: GwsRunner = async () => ({
+				code: 1, stdout: JSON.stringify({ error: { code } }), stderr: "",
+			});
+			const err = await makeGwsReader(run).profileHistoryId().catch((e: unknown) => e);
+			expect(err).toBeInstanceOf(GwsApiError);
+			expect(err).toMatchObject({ kind, boundary: "gws" });
+		}
+		const malformed: GwsRunner = async () => ({ code: 0, stdout: "{}", stderr: "" });
+		const err = await makeGwsReader(malformed).profileHistoryId().catch((e: unknown) => e);
+		expect(err).toMatchObject({ kind: "fatal", boundary: "gws" });
+	});
 	test("poll intersects arrivals with the filter, oldest first, over raw discovery flags", async () => {
 		const { run, calls } = fakeGws({
 			history: (p) => {
@@ -414,7 +466,7 @@ describe("gws mail reader", () => {
 			},
 		});
 		await expect(makeGwsReader(run).poll("from:bank", "1")).rejects.toThrow(
-			"gws: poll.history failed — HTTP 401",
+			"poll.history failed — HTTP 401",
 		);
 	});
 

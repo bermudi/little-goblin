@@ -242,6 +242,12 @@ export function ensureConversationSchema(db: Database): void {
 				sources TEXT NOT NULL,
 				built_at TEXT NOT NULL
 			)`);
+	db.run(`
+			CREATE TABLE IF NOT EXISTS last_turn_tools (
+				conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+				epoch INTEGER NOT NULL,
+				tools_json TEXT NOT NULL
+			)`);
 	// Committed tool-result projections: one row says "in the
 	// model-facing view, this event's tool result reads as this marker
 	// instead". events is never touched — the overlay replays

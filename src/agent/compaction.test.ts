@@ -1,6 +1,6 @@
 import { foldSummary } from "../testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Message } from "../message.ts";
 import type { CompactionSplit } from "../conversation-events.ts";
@@ -395,7 +395,7 @@ describe("runCompaction prefix summary", () => {
 			expect(outcome.kind).toBe("compacted");
 			if (outcome.kind === "compacted") expect(outcome.summary).toContain("PREFIX-STORED");
 			expect(textCalls).toBe(0);
-			expect(order).toEqual(["flush", "prefix"]);
+			expect(order).toEqual(["prefix", "flush"]);
 			expect(writes).toHaveLength(1);
 			expect(readFileSync(logPath, "utf8")).toContain('"msg":"compaction summary mode","conversation":"dm:1","mode":"prefix","reason":null');
 		} finally {
@@ -1582,6 +1582,63 @@ describe("summary contents (design/compaction.md → The summary)", () => {
 });
 
 describe("runCompaction memory flush", () => {
+	test("without a prefix snapshot, the text flush keeps its note-only mode and logs the reason", async () => {
+		const home = useHome("goblin-flush-text-mode-");
+		const logPath = join(home, "state/goblin.log");
+		mkdirSync(join(home, "state"), { recursive: true });
+		const { store } = fakeStore(sample());
+		setLogFile(logPath);
+		try {
+			await runCompaction(
+				"dm:1",
+				store,
+				["m"],
+				async (_s, prompt) => foldSummary("folded", prompt),
+				{
+					tailTokenBudget: 1,
+					inputTokenBudget: 32_000,
+					flush: async () => ({ noteCalls: 0 }),
+					prefix: async () => null,
+				},
+				signal(),
+			);
+			expect(readFileSync(logPath, "utf8")).toContain('"mode":"text","reason":"no-prefix"');
+		} finally {
+			setLogFile(null);
+		}
+	});
+
+	test("a last-turn tool set without note uses the text flush and logs no-note-tool", async () => {
+		const home = useHome("goblin-flush-no-note-");
+		const logPath = join(home, "state/goblin.log");
+		mkdirSync(join(home, "state"), { recursive: true });
+		const events = sample();
+		events[4]!.message.parts[0] = { type: "text", text: "and now finish the task" };
+		const { store } = fakeStore(events);
+		setLogFile(logPath);
+		try {
+			await runCompaction(
+				"dm:1",
+				store,
+				["m"],
+				async (_s, prompt) => foldSummary("folded", prompt),
+				{
+					tailTokenBudget: 1,
+					inputTokenBudget: 32_000,
+					flush: async () => ({ noteCalls: 0 }),
+					prefix: async () => ({
+						modelRef: "m",
+						call: async () => validPrefixSummary("prefix", "do a thing"),
+					}),
+				},
+				signal(),
+			);
+			expect(readFileSync(logPath, "utf8")).toContain('"mode":"text","reason":"no-note-tool"');
+		} finally {
+			setLogFile(null);
+		}
+	});
+
 	test("flushes the span once, before the first summary call", async () => {
 		const { store, writes } = fakeStore(sample());
 		const order: string[] = [];
@@ -1657,6 +1714,125 @@ describe("runCompaction memory flush", () => {
 		await expect(run).rejects.toThrow("stopped");
 		expect(summarized).toBe(false);
 		expect(writes).toHaveLength(0);
+	});
+});
+
+describe("runCompaction claude-code prefix fallbacks (#617)", () => {
+	for (const reason of ["no-session-record", "session-behind-fold", "split-checkpoint", "fork-failed"]) {
+		test(`${reason} is logged when the native prefix falls back to text`, async () => {
+			const home = useHome(`goblin-claude-fallback-${reason}-`);
+			const logPath = join(home, "state/goblin.log");
+			mkdirSync(join(home, "state"), { recursive: true });
+			const { store } = fakeStore(sample());
+			setLogFile(logPath);
+			try {
+				await runCompaction(
+					"dm:1",
+					store,
+					["m"],
+					async (_system, prompt) => foldSummary("text fallback", prompt),
+					{
+						tailTokenBudget: 1,
+						inputTokenBudget: 32_000,
+						prefix: async () => ({
+							modelRef: "m",
+							mode: "claude-code",
+							call: async () => {
+								const error = new Error(`fallback ${reason}`);
+								error.name = "ClaudeSummaryFallbackError";
+								Object.assign(error, { reason });
+								throw error;
+							},
+						}),
+					},
+					signal(),
+				);
+				expect(readFileSync(logPath, "utf8")).toContain(`"mode":"text","reason":"${reason}"`);
+			} finally {
+				setLogFile(null);
+			}
+		});
+	}
+
+	test("audit retries preserve the rejected answer and corrective user message on the native lane", async () => {
+		const { store } = fakeStore(sample());
+		const turnsSeen: Array<readonly { role: "user" | "assistant"; text: string }[]> = [];
+		let calls = 0;
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async (_system, prompt) => foldSummary("text fallback", prompt),
+			{
+				tailTokenBudget: 1,
+				inputTokenBudget: 32_000,
+				prefix: async () => ({
+					modelRef: "m",
+					mode: "claude-code",
+					call: async (turns, _signal, _cut, context) => {
+						turnsSeen.push(turns);
+						expect(context?.foldedText).toContain("do a thing");
+						expect(context?.previousSummary).toBeNull();
+						calls++;
+						return calls === 1
+							? "not a sufficient summary"
+							: validPrefixSummary("audited", "do a thing");
+					},
+				}),
+			},
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		expect(turnsSeen).toHaveLength(2);
+		expect(turnsSeen[1]).toHaveLength(3);
+		expect(turnsSeen[1]?.[1]).toMatchObject({ role: "assistant", text: "not a sufficient summary" });
+		expect(turnsSeen[1]?.[2]?.role).toBe("user");
+	});
+
+	test("the native prefix call receives the previous goblin summary verbatim", async () => {
+		const prior = "previous summary with exact spacing\n\n## Exact identifiers\n- /srv/a.txt";
+		const first = fakeStore(sample());
+		const folded = await runCompaction(
+			"dm:1",
+			first.store,
+			["m"],
+			async (_system, prompt) => foldSummary("first folded", prompt),
+			{ tailTokenBudget: 1, inputTokenBudget: 32_000 },
+			signal(),
+		);
+		expect(folded.kind).toBe("compacted");
+		const events = [
+			...sample(),
+			ev(7, "user", "follow up".repeat(200)),
+			ev(8, "assistant", "completed".repeat(200), 7),
+			ev(9, "user", "second follow up".repeat(200)),
+			ev(10, "assistant", "completed again".repeat(200), 9),
+		];
+		const second = fakeStore(events, {
+			boundarySeq: first.writes[0]!.boundarySeq,
+			summary: prior,
+		});
+		let seen: string | null = null;
+		await runCompaction(
+			"dm:1",
+			second.store,
+			["m"],
+			async (_system, prompt) => foldSummary("text fallback", prompt),
+			{
+				tailTokenBudget: 1,
+				inputTokenBudget: 32_000,
+				prefix: async () => ({
+					modelRef: "m",
+					mode: "claude-code",
+					call: async (_turns, _signal, _cut, context) => {
+						seen = context?.previousSummary ?? null;
+						return validPrefixSummary("previous carried", "follow up");
+					},
+				}),
+			},
+			signal(),
+		);
+		expect(seen).toBe(prior);
 	});
 });
 

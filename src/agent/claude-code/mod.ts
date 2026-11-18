@@ -12,6 +12,7 @@ import type { CacheObservation } from "../../cache-observation.ts";
 import type { ConfigRef } from "../../config.ts";
 import { splitModelRef } from "../../config-schema.ts";
 import type { ClaudeSessionStore } from "../../claude-sessions.ts";
+import type { Tools } from "../../tool.ts";
 import type { StreamOutcome, WireMember } from "../../turn/stream.ts";
 import type { MediaPosition } from "../attachments.ts";
 import type { ClaudeCodeThinking } from "../thinking.ts";
@@ -26,6 +27,7 @@ import type {
 	PromptContent,
 	SteerChannel,
 } from "./translate.ts";
+import { createToolBridge, refuseToolExecutors } from "./tools.ts";
 
 // ---------- the step the runtime builds for a claude-code model ----------
 
@@ -227,6 +229,7 @@ export function liveQuery(call: ClaudeQueryCall): AsyncIterable<ClaudeEvent> {
 			...(options.effort !== undefined ? { effort: options.effort } : {}),
 			mcpServers: options.mcpServers as never,
 			allowedTools: options.allowedTools,
+			...(options.canUseTool !== undefined ? { canUseTool: options.canUseTool } : {}),
 			// allowedTools only auto-approves; `tools: []` is what actually
 			// removes the CLI's built-in tools (Bash, Read, Edit, ...).
 			tools: [],
@@ -245,6 +248,7 @@ export function liveQuery(call: ClaudeQueryCall): AsyncIterable<ClaudeEvent> {
 			...(options.resumeSessionAt !== undefined
 				? { resumeSessionAt: options.resumeSessionAt }
 				: {}),
+			...(options.forkSession !== undefined ? { forkSession: options.forkSession } : {}),
 			// The prompt is machine-assembled from the conversation view —
 			// no @path expansion, no slash-command dispatch on it. The
 			// native /compact query alone opts out (#418).
@@ -290,6 +294,16 @@ export interface ClaudeEngine extends TurnEngine<ClaudeStep> {
 		modelRef: string;
 		signal: AbortSignal;
 	}): Promise<string | null>;
+	forkSummarize?(input: {
+		conversationId: string;
+		modelRef: string;
+		step: ClaudeStep;
+		tools: Tools;
+		foldedThroughSeq: number;
+		prompt: string;
+		signal: AbortSignal;
+		cut?: { seq: number; part: number };
+	}): Promise<string>;
 }
 
 export function createClaudeEngine(init: {
@@ -299,6 +313,7 @@ export function createClaudeEngine(init: {
 	configDir?: string | undefined;
 	query?: ClaudeQuery | undefined;
 	sessions?: ClaudeSessionStore | undefined;
+	bridgeFactory?: typeof createToolBridge | undefined;
 }): ClaudeEngine {
 	const config: ClaudeEngineConfig = {
 		query: init.query ?? liveQuery,
@@ -307,6 +322,7 @@ export function createClaudeEngine(init: {
 		...(init.observation !== undefined ? { observation: init.observation } : {}),
 		...(init.configDir !== undefined ? { configDir: init.configDir } : {}),
 		...(init.sessions !== undefined ? { sessions: init.sessions } : {}),
+		...(init.bridgeFactory !== undefined ? { bridgeFactory: init.bridgeFactory } : {}),
 	};
 	return {
 		id: "claude-code",
@@ -314,10 +330,122 @@ export function createClaudeEngine(init: {
 		run: (deps) => driveClaude(config, deps),
 		compact: (input) => compactText(config, input),
 		nativeCompact: (input) => nativeCompactSession(config, input),
+		forkSummarize: (input) => forkSummary(config, input),
 	};
 }
 
 // ---------- compaction (text-only, same engine) ----------
+
+async function forkSummary(
+	config: ClaudeEngineConfig,
+	input: {
+		conversationId: string;
+		modelRef: string;
+		step: ClaudeStep;
+		tools: Tools;
+		foldedThroughSeq: number;
+		prompt: string;
+		signal: AbortSignal;
+		cut?: { seq: number; part: number };
+	},
+): Promise<string> {
+	const sessions = config.sessions;
+	if (input.cut !== undefined) throw claudeSummaryFallback("split-checkpoint", "native session cannot be cut at a split checkpoint");
+	if (sessions === undefined) throw claudeSummaryFallback("no-session-record", "native session store is unavailable");
+	const record = sessions.get(input.conversationId, input.modelRef);
+	if (record === null) throw claudeSummaryFallback("no-session-record", "no native session record");
+	if (record.seenSeq < input.foldedThroughSeq) {
+		throw claudeSummaryFallback("session-behind-fold", `native session seen seq ${record.seenSeq} is below folded seq ${input.foldedThroughSeq}`);
+	}
+	input.signal.throwIfAborted();
+	const controller = new AbortController();
+	const onAbort = (): void => controller.abort(input.signal.reason);
+	input.signal.addEventListener("abort", onAbort, { once: true });
+	const callId = randomUUID();
+	const started = Date.now();
+	log.info("model call", {
+		call: "compaction",
+		callId,
+		model: input.modelRef,
+		session: record.sessionId,
+		mode: "fork",
+	});
+	try {
+		const childEnv = await claudeChildEnv(config.auth, input.step.auth, config.configDir);
+		const bridge = (config.bridgeFactory ?? createToolBridge)({
+			convId: input.conversationId,
+			tools: refuseToolExecutors(input.tools),
+			signal: controller.signal,
+		});
+		let text = "";
+		let usage: import("./translate.ts").ClaudeUsage | null = null;
+		for await (const ev of config.query({
+			prompt: { blocks: [{ kind: "text", text: input.prompt }] },
+			options: {
+				model: input.step.modelId,
+				systemPrompt: input.step.system,
+				maxTurns: 1,
+				thinking:
+					input.step.thinking.disabled === true
+						? { type: "disabled" }
+						: { type: "adaptive" },
+				...(input.step.thinking.effort !== undefined ? { effort: input.step.thinking.effort } : {}),
+				mcpServers: { goblin: bridge.server() },
+				allowedTools: bridge.allowedTools(),
+				canUseTool: async (toolName) => {
+					log.info("claude compaction tool denied", {
+						conversation: input.conversationId,
+						tool: toolName,
+					});
+					return {
+						behavior: "deny",
+						message: "Tool execution is disabled during a compaction summary.",
+					};
+				},
+				cwd: childEnv.workdir,
+				env: childEnv.env,
+				abortController: controller,
+				resume: record.sessionId,
+				resumeSessionAt: record.headUuid,
+				forkSession: true,
+				persistSession: false,
+			},
+		})) {
+			if (ev.type === "assistant") {
+				usage = ev.message.usage ?? usage;
+				text += ev.message.content
+					.filter((block) => block.type === "text" && typeof block.text === "string")
+					.map((block) => block.text)
+					.join("");
+			}
+			if (ev.type === "result" && ev.isError) throw new Error(ev.result);
+		}
+		log.info("model call usage", {
+			call: "compaction",
+			callId,
+			model: input.modelRef,
+			ms: Date.now() - started,
+			inputTokens: usage?.input_tokens ?? null,
+			cacheReadTokens: usage?.cache_read_input_tokens ?? null,
+			cacheWriteTokens: usage?.cache_creation_input_tokens ?? null,
+			outputTokens: usage?.output_tokens ?? null,
+			chars: text.length,
+		});
+		return text;
+	} catch (err) {
+		log.error("model call failed", err, { call: "compaction", callId, model: input.modelRef });
+		throw claudeSummaryFallback("fork-failed", err instanceof Error ? err.message : String(err), err);
+	} finally {
+		input.signal.removeEventListener("abort", onAbort);
+	}
+}
+
+function claudeSummaryFallback(reason: string, message: string, cause?: unknown): Error {
+	const error = new Error(message, cause === undefined ? undefined : { cause });
+	error.name = "ClaudeSummaryFallbackError";
+	Object.assign(error, { reason });
+	return error;
+}
 
 async function compactText(
 	config: ClaudeEngineConfig,

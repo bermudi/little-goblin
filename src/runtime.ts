@@ -4,9 +4,9 @@
 import { randomUUID } from "node:crypto";
 import type { Tools } from "./tool.ts";
 import type { Message, MessageChunk } from "./message.ts";
-import type { ClaudeStep } from "./agent/claude-code/mod.ts";
+import type { ClaudeEngine, ClaudeStep } from "./agent/claude-code/mod.ts";
 import type { ClaudeSessionStore } from "./claude-sessions.ts";
-import { type CompactionOutcome, chooseBoundary } from "./agent/compaction.ts";
+import { type CompactionOutcome, chooseBoundary, type PrefixSummarizer } from "./agent/compaction.ts";
 import {
 	exhaustedMessage,
 	type FallbackMiss,
@@ -23,6 +23,7 @@ import {
 import { resolveSkillRef } from "./agent/skill-inject.ts";
 import { lastInputTokensOf, type Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
+import type { OutgoingFile } from "./agent/tools/send.ts";
 import { PendingInputs, type PendingInputMode } from "./pending-input.ts";
 import { log } from "./log.ts";
 import {
@@ -538,30 +539,103 @@ export class Runtime {
 			budgets: compactionBudgets,
 			checkAuthority: (convId, epoch) => this.checkAuthority(convId, epoch),
 			foldCeiling: (convId, floor) => this.lanes.pendingFloor(convId, floor),
-			makePrefix: async (target, modelRef, signal) => {
+			makePrefix: async (target, modelRef, signal, foldedThroughSeq) => {
 				const seam = this.deps.compaction;
-				if (seam?.prefixStep === undefined) return null;
+				if (seam === undefined) return null;
+				const storedTools = this.deps.store.lastTurnTools(target.id);
+				if (storedTools === null || storedTools.epoch !== target.epoch) return null;
 				let lastTurn = this.lastTurnTools.get(target.id);
 				if (lastTurn === undefined) {
-					const stored = this.deps.store.lastTurnTools(target.id);
-					if (stored === null || stored.epoch !== target.epoch) return null;
-					const tools = restoreToolSet(stored.tools);
+					const tools = restoreToolSet(storedTools.tools);
 					lastTurn = {
-						epoch: stored.epoch,
+						epoch: storedTools.epoch,
 						tools,
-						hydratedModelOutputTools: storedModelOutputTools(stored.tools),
+						hydratedModelOutputTools: storedModelOutputTools(storedTools.tools),
 					};
 					this.lastTurnTools.set(target.id, lastTurn);
 					log.info("last-turn tools hydrated", {
 						conversation: target.id,
-						epoch: stored.epoch,
+						epoch: storedTools.epoch,
 						tools: Object.keys(tools).length,
 					});
 				}
 				if (lastTurn.epoch !== target.epoch) return null;
+				const claudeStep = seam.claudePrefixStep?.(target, modelRef) ?? null;
+				const engine = this.deps.engines.find((candidate): candidate is ClaudeEngine =>
+					candidate.id === "claude-code" &&
+					"forkSummarize" in candidate &&
+					typeof candidate.forkSummarize === "function",
+				);
+				if (claudeStep !== null && engine !== undefined) {
+					const noVoice = async (_audio: Uint8Array): Promise<void> => {};
+					const recording = (): (() => void) => () => {};
+					const noFile = async (_file: OutgoingFile): Promise<void> => {};
+					const availableTools = this.deps.makeTools(
+						target,
+						noVoice,
+						recording,
+						noFile,
+						{
+							runId: "compaction-summary",
+							sourceMessageId: () => "",
+							sourceInputSeq: () => null,
+							contextFill: () => null,
+						},
+					);
+					const domainTools: Tools = {};
+					for (const name of Object.keys(lastTurn.tools)) {
+						const definition = availableTools[name];
+						if (definition !== undefined) domainTools[name] = definition;
+					}
+					const exactTools = await persistableToolSet(domainTools);
+					if ("unpersistable" in exactTools || exactTools.json !== storedTools.json) {
+						log.warn("claude compaction tool definitions differ from last turn — using text mode", {
+							conversation: target.id,
+							unpersistable: "unpersistable" in exactTools ? exactTools.unpersistable : null,
+						});
+						return null;
+					}
+					const summarizer: PrefixSummarizer = {
+						modelRef,
+						mode: "claude-code",
+						async call(turns, callSignal, cut, context) {
+							if (context === undefined && cut === undefined) {
+								throw new Error("claude-code prefix summary context is missing");
+							}
+							const callContext = context ?? {
+								foldedText: "",
+								previousSummary: null,
+								foldedThroughSeq,
+							};
+							const prompt = [
+								...(callContext.previousSummary === null
+									? []
+									: [`Previous goblin summary (verbatim):\n${callContext.previousSummary}`]),
+								callContext.foldedText,
+								...turns.map((turn) =>
+									turn.role === "assistant"
+										? `Rejected previous summary attempt:\n${turn.text}`
+										: turn.text,
+								),
+							].join("\n\n");
+							return engine.forkSummarize!({
+								conversationId: target.id,
+								modelRef,
+								step: claudeStep,
+								tools: domainTools,
+								foldedThroughSeq: callContext.foldedThroughSeq,
+								prompt,
+								signal: callSignal,
+								...(cut !== undefined ? { cut } : {}),
+							});
+						},
+					};
+					return summarizer;
+				}
+				if (seam.prefixStep === undefined) return null;
 				const prefixStep = await seam.prefixStep(target, modelRef);
 				if (prefixStep === null) return null;
-				return makePrefixSummarizer({
+				const prefixInput = {
 					conv: target,
 					step: prefixStep,
 					store: this.deps.store,
@@ -575,7 +649,16 @@ export class Runtime {
 						signal.throwIfAborted();
 						this.checkAuthority(target.id, target.epoch);
 					},
+				};
+				const summarizer = makePrefixSummarizer(prefixInput);
+				const prefixFlush = seam.prefixFlush?.({
+					...prefixInput,
+					modelRef,
 				});
+				return {
+					...summarizer,
+					...(prefixFlush !== undefined && prefixFlush !== null ? { flush: prefixFlush } : {}),
+				};
 			},
 			holdController: (controller) => this.lanes.holdCompactController(conv.id, controller),
 			releaseController: (controller) =>

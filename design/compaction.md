@@ -274,22 +274,44 @@ its largest, so it was the most expensive uncached call goblin made.
   the corrective instruction as a user message — still on the cached prefix.
 - **Text mode (the old path) stays** for: overflow recovery (the view just
   overflowed), conversations with no frozen prompt snapshot (a compaction
-  never mints one), the claude-code lane, fallback candidates other than the
-  conversation's own model, a split turn whose history summary did not
-  succeed in prefix mode, and any prefix-mode
-  failure (logged, then the text walk runs unchanged).
+  never mints one), fallback candidates other than the conversation's own
+  model, a split turn whose history summary did not succeed in prefix mode,
+  any prefix-mode failure (logged, then the text walk runs unchanged), and a
+  claude-code fold with no session record, a session watermark behind the
+  fold, a split checkpoint, or a failed fork.
 - Code-made parts, the identifier index and the audit itself are unchanged:
   they read the span, not the request.
 - Every fold logs `compaction summary mode` with `mode: "prefix" | "text"`
   and the reason for text mode; the call's cache read lands in
   `model_cache_calls` under purpose `compaction`.
-- When the history summary succeeds in prefix mode, a split-turn checkpoint
-  also replays that request prefix, cut at the split event part boundary,
-  before appending the checkpoint instruction. A failed checkpoint retries
-  through the existing text path.
+- When an API-lane history summary succeeds in prefix mode, a split-turn
+  checkpoint also replays that request prefix, cut at the split event part
+  boundary, before appending the checkpoint instruction. A failed checkpoint
+  retries through the existing text path. A native Claude session cannot be
+  cut, so its split checkpoint uses text mode.
 
-Not covered yet: the memory flush (it sends a different tool set) and the
-claude-code lane's summary call.
+The memory flush and claude-code summary also ride the cached prefix
+(operator, 2026-11-18, #617). The flush replays the exact last-turn tool
+definitions and model view, while replacing function executors: `note` is
+real, and every other function tool returns
+`refused: only the note tool runs during the memory flush` without executing.
+Provider-defined tools remain provider definitions. Its single appended user
+message carries the existing flush rules and the kept-tail excerpt. If the
+turn has no `note` tool or prefix mode is unavailable, the existing text
+flush runs. A prefix-flush failure warns and the fold continues; it does not
+retry in text mode.
+
+The claude-code summary resumes the recorded native session at its head with
+`forkSession: true` and `persistSession: false`, so the stored session is
+unchanged. It uses the same model, frozen system prompt, thinking settings,
+MCP tool definitions, working directory, and child environment as the turn;
+tools are denied by the SDK permission callback and the bridge executors also
+refuse. One user text contains the folded turns in order; rejected assistant
+summaries are labelled as prior attempts. The previous goblin summary is
+included verbatim because native `/compact` does not store it. No session
+record, a session watermark behind the fold, a split checkpoint, or a fork
+failure falls back to the existing text path with a logged reason. The
+goblin summary still runs before native `/compact`.
 
 ## The summary
 
@@ -367,9 +389,14 @@ flush on with no other change.
   completed assistant event, and a fold only covers completed history
   (`foldCeiling`, `exchangeComplete`). So every folded event that memory
   retains was queued before the fold could read it.
-- **Mechanism (operator, 2026-11-09):** one direct `generateText` call in
-  the fold job with only the `note` tool (at most 8 steps), before the first
-  summary chunk. No runtime turn, no stored reply: a hidden turn would run
+- **Mechanism (operator, 2026-11-09; cache-prefix extension, #617,
+  operator 2026-11-18):** one direct `generateText` call in the fold job,
+  before the first summary chunk. In prefix mode it replays the last turn's
+  exact cached prefix and tool definitions; `note` is the only function
+  executor allowed to act, and every other function executor returns a fixed
+  refusal. Without a usable prefix or a `note` definition, it uses the
+  original text-mode request with only the `note` tool. At most 8 steps. No
+  runtime turn, no stored reply: a hidden turn would run
   in the lane the fold already holds. The call sees the newest slice of the
   span that fits `inputTokenBudget`, shares the summary call's timeout, and
   logs `compaction flush` (events, chars, truncated, noteCalls). `/stop`

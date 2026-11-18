@@ -384,21 +384,34 @@ export type CompactionOutcome =
 // forever.
 export const SUMMARY_CALL_TIMEOUT_MS = 180_000;
 
+export interface PrefixCallContext {
+	foldedText: string;
+	previousSummary: string | null;
+	foldedThroughSeq: number;
+}
+
 export interface PrefixSummarizer {
 	/** The ref whose cached prefix this replays; only that candidate runs prefix mode. */
 	modelRef: string;
+	mode?: "claude-code";
+	/** Preflight replay-only failures before the optional memory flush. */
+	prepare?(): Promise<void>;
 	/** One call: the conversation's next-turn request with `turns` appended in order. Returns the reply text. */
 	call(
 		turns: readonly { role: "user" | "assistant"; text: string }[],
 		signal: AbortSignal,
 		cut?: { seq: number; part: number },
+		context?: PrefixCallContext,
 	): Promise<string>;
+	flush?(
+		keptExcerpt: string | null,
+		hasPreviousSummary: boolean,
+		signal: AbortSignal,
+	): Promise<number>;
 }
 
 export function prefixInstruction(input: { keptExcerpt: string | null; hasPreviousSummary: boolean; focus?: string }): string {
-	const cut = input.keptExcerpt === null
-		? "Summarize the whole conversation above; nothing after it stays verbatim."
-		: `Everything before the message that begins «${input.keptExcerpt}» will be replaced by your summary. That message and everything after it stay verbatim right after your summary, so summarize only what comes before it.`;
+	const cut = keptTailInstruction(input.keptExcerpt);
 	return [
 		"[goblin compaction request — written by goblin, not by the operator]",
 		"Do not call any tools. Reply with the summary text only.",
@@ -408,6 +421,12 @@ export function prefixInstruction(input: { keptExcerpt: string | null; hasPrevio
 		"",
 		SUMMARY_SYSTEM,
 	].join("\n");
+}
+
+export function keptTailInstruction(keptExcerpt: string | null): string {
+	return keptExcerpt === null
+		? "Summarize the whole conversation above; nothing after it stays verbatim."
+		: `Everything before the message that begins «${keptExcerpt}» will be replaced by your summary. That message and everything after it stay verbatim right after your summary, so summarize only what comes before it.`;
 }
 
 // One summary call on one candidate. Its timeout is the attempt's own —
@@ -465,8 +484,21 @@ async function attemptPrefixSummary(
 	callTimeoutMs: number,
 	chunk: number,
 	cut?: { seq: number; part: number },
+	context?: PrefixCallContext,
 ): Promise<string> {
-	return attemptTimedCall((callSignal) => summarizer.call(turns, callSignal, cut), signal, callTimeoutMs, chunk);
+	return attemptTimedCall((callSignal) => summarizer.call(turns, callSignal, cut, context), signal, callTimeoutMs, chunk);
+}
+
+function prefixFailureReason(err: unknown): string | null {
+	if (
+		err instanceof Error &&
+		err.name === "ClaudeSummaryFallbackError" &&
+		"reason" in err &&
+		typeof err.reason === "string"
+	) {
+		return err.reason;
+	}
+	return null;
 }
 
 export type Summarize = (
@@ -485,7 +517,11 @@ export type Flush = (spanText: string, signal: AbortSignal) => Promise<{ noteCal
 async function runFlush(
 	id: string,
 	flush: Flush,
+	prefixFlush: PrefixSummarizer["flush"] | undefined,
+	flushTextReason: string,
 	span: CompactionEvent[],
+	keptExcerpt: string | null,
+	hasPreviousSummary: boolean,
 	inputTokenBudget: number,
 	signal: AbortSignal,
 	callTimeoutMs: number,
@@ -505,19 +541,34 @@ async function runFlush(
 	const onAbort = () => abortRace(callSignal.reason);
 	callSignal.addEventListener("abort", onAbort, { once: true });
 	try {
-		const { noteCalls } = await Promise.race([flush(text, callSignal), aborted]);
+		const result = await Promise.race([
+			prefixFlush === undefined
+				? flush(text, callSignal).then(({ noteCalls }) => ({
+						noteCalls,
+						mode: "text" as const,
+						reason: flushTextReason,
+					}))
+				: prefixFlush(keptExcerpt, hasPreviousSummary, callSignal).then((noteCalls) => ({
+						noteCalls,
+						mode: "prefix" as const,
+						reason: null,
+					})),
+			aborted,
+		]);
 		log.info("compaction flush", {
 			conversation: id,
 			events: span.length,
 			chars: text.length,
 			truncated: text !== full,
-			noteCalls,
+			...result,
 		});
 	} catch (err) {
 		if (signal.aborted) throw err;
 		log.warn("compaction flush failed; folding anyway", {
 			conversation: id,
 			events: span.length,
+			mode: prefixFlush === undefined ? "text" : "prefix",
+			...(prefixFlush === undefined ? { reason: flushTextReason } : {}),
 			error: callSignal.aborted
 				? `flush call timed out after ${callTimeoutMs / 1000}s`
 				: err instanceof Error
@@ -573,7 +624,7 @@ export async function runCompaction(
 		// repeated in every chunk prompt so it outlives the carried
 		// summary's shrinking budget share.
 		focus?: string;
-		prefix?: () => Promise<PrefixSummarizer | null>;
+		prefix?: (foldedThroughSeq: number) => Promise<PrefixSummarizer | null>;
 	},
 	signal: AbortSignal,
 ): Promise<CompactionOutcome> {
@@ -669,41 +720,22 @@ export async function runCompaction(
 	let servedBy: string | null = null;
 	let summary: string | null = null;
 	let prefixSucceeded = false;
-	if (opts.flush !== undefined) {
-		opts.assertAuthority?.();
-		// A split turn's folded prefix rides the flush too — its facts
-		// fold exactly like the whole events' do.
-		await runFlush(
-			id,
-			opts.flush,
-			prefixMessage === null
-				? span
-				: [...span, { seq: split!.seq, anchorSeq: boundarySeq, message: prefixMessage }],
-			opts.inputTokenBudget,
-			signal,
-			callTimeoutMs,
-		);
-	}
 	const modeReason: "overflow" | "no-prefix" | "fallback-candidate" | "empty-span" | "prefix-failed" | null =
 		reason === "overflow" ? "overflow" : opts.prefix === undefined ? "no-prefix" :
 			span.length === 0 ? "empty-span" : null;
 	let prefixSummarizer: PrefixSummarizer | null = null;
-	let selectedModeReason:
-		| "overflow"
-		| "no-prefix"
-		| "fallback-candidate"
-		| "empty-span"
-		| "prefix-failed"
-		| null = modeReason;
+	let selectedModeReason: string | null = modeReason;
 	if (selectedModeReason === null && opts.prefix !== undefined) {
 		try {
-			prefixSummarizer = await opts.prefix();
+			prefixSummarizer = await opts.prefix(split === null ? boundarySeq : split.seq);
+			await prefixSummarizer?.prepare?.();
 		} catch (err) {
 			if (signal.aborted) throw err;
 			opts.assertAuthority?.();
-			selectedModeReason = "prefix-failed";
+			selectedModeReason = prefixFailureReason(err) ?? "prefix-failed";
 			log.warn("compaction prefix summary failed — falling back to text mode", {
 				conversation: id,
+				reason: selectedModeReason,
 				error: err instanceof Error ? err.message : String(err),
 			});
 		}
@@ -714,24 +746,63 @@ export async function runCompaction(
 			else if (models[0] !== prefixSummarizer.modelRef) selectedModeReason = "fallback-candidate";
 		}
 	}
+	const keptEvents = split === null
+		? detail.slice(boundaryIndex + 1)
+		: detail.slice(splitIndex, splitIndex + 1);
+	const keptParts = split === null
+		? keptEvents.flatMap((e) => e.message.parts)
+		: detail[splitIndex]!.message.parts.slice(split.part);
+	const keptText = keptParts.find((p) => p.type === "text");
+	const keptExcerpt = keptText?.type === "text"
+		? keptText.text.replace(/\s+/g, " ").trim().slice(0, 200)
+		: null;
+	const foldedEvents =
+		prefixMessage === null
+			? span
+			: [...span, { seq: split!.seq, anchorSeq: boundarySeq, message: prefixMessage }];
+	const prefixContext: PrefixCallContext = {
+		foldedText: serializeSpan(foldedEvents),
+		previousSummary: previous?.summary ?? null,
+		foldedThroughSeq: split === null ? boundarySeq : split.seq,
+	};
+	if (opts.flush !== undefined) {
+		opts.assertAuthority?.();
+		// A split turn's folded prefix rides the flush too — its facts
+		// fold exactly like the whole events' do.
+		await runFlush(
+			id,
+			opts.flush,
+			selectedModeReason === null && prefixSummarizer !== null && prefixSummarizer.modelRef === models[0]
+				? prefixSummarizer.flush
+				: undefined,
+			prefixSummarizer !== null && prefixSummarizer.modelRef === models[0]
+				? "no-note-tool"
+				: selectedModeReason ?? "no-prefix",
+			prefixMessage === null
+				? span
+				: foldedEvents,
+			keptExcerpt,
+			previous !== null,
+			opts.inputTokenBudget,
+			signal,
+			callTimeoutMs,
+		);
+	}
 	if (selectedModeReason === null && prefixSummarizer !== null) {
 		try {
 			opts.assertAuthority?.();
-			const keptEvents = split === null
-				? detail.slice(boundaryIndex + 1)
-				: detail.slice(splitIndex, splitIndex + 1);
-			const keptParts = split === null
-				? keptEvents.flatMap((e) => e.message.parts)
-				: detail[splitIndex]!.message.parts.slice(split.part);
-			// The first kept event may carry no text, so search the kept parts in order.
-			const keptExcerpt = keptParts.find((p) => p.type === "text");
-			const excerpt = keptExcerpt?.type === "text"
-				? keptExcerpt.text.replace(/\s+/g, " ").trim().slice(0, 200)
-				: null;
 			let prefixTurns: { role: "user" | "assistant"; text: string }[] = [
-				{ role: "user", text: prefixInstruction({ keptExcerpt: excerpt, hasPreviousSummary: previous !== null, ...(opts.focus !== undefined ? { focus: opts.focus } : {}) }) },
+				{ role: "user", text: prefixInstruction({ keptExcerpt, hasPreviousSummary: previous !== null, ...(opts.focus !== undefined ? { focus: opts.focus } : {}) }) },
 			];
-			let out = (await attemptPrefixSummary(prefixSummarizer, prefixTurns, signal, callTimeoutMs, 1)).trim();
+			let out = (await attemptPrefixSummary(
+				prefixSummarizer,
+				prefixTurns,
+				signal,
+				callTimeoutMs,
+				1,
+				undefined,
+				prefixContext,
+			)).trim();
 			signal.throwIfAborted();
 			opts.assertAuthority?.();
 			if (out === "") throw new Error("summarizer returned an empty summary");
@@ -743,7 +814,15 @@ export async function runCompaction(
 				if (attempt >= AUDIT_RETRIES) throw new Error(`compaction summary failed the quality audit after ${AUDIT_RETRIES} retries: ${reasons.join("; ")}`);
 				opts.assertAuthority?.();
 				prefixTurns = [...prefixTurns, { role: "assistant", text: out }, { role: "user", text: correctiveInstruction(reasons, ask) }];
-				out = (await attemptPrefixSummary(prefixSummarizer, prefixTurns, signal, callTimeoutMs, 1)).trim();
+				out = (await attemptPrefixSummary(
+					prefixSummarizer,
+					prefixTurns,
+					signal,
+					callTimeoutMs,
+					1,
+					undefined,
+					prefixContext,
+				)).trim();
 				signal.throwIfAborted();
 				opts.assertAuthority?.();
 				if (out === "") throw new Error("summarizer returned an empty summary");
@@ -757,9 +836,10 @@ export async function runCompaction(
 			// A fence is not a summarizer failure: never spend the text lane
 			// after authority has been revoked.
 			opts.assertAuthority?.();
-			selectedModeReason = "prefix-failed";
+			selectedModeReason = prefixFailureReason(err) ?? "prefix-failed";
 			log.warn("compaction prefix summary failed — falling back to text mode", {
 				conversation: id,
+				reason: selectedModeReason,
 				error: err instanceof Error ? err.message : String(err),
 			});
 		}
@@ -976,6 +1056,7 @@ export async function runCompaction(
 				opts.assertAuthority?.();
 				log.warn("compaction split prefix summary failed — falling back to text mode", {
 					conversation: id,
+					reason: prefixFailureReason(err) ?? "prefix-failed",
 					error: err instanceof Error ? err.message : String(err),
 				});
 				mode = "text";

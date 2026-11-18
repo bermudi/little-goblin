@@ -28,6 +28,7 @@ import { log } from "../log.ts";
 import type { ClaudeEngine } from "./claude-code/mod.ts";
 import type { MediaPosition } from "./attachments.ts";
 import type { PrefixStep } from "../turn/prefix-summary.ts";
+import { makePrefixFlush } from "../turn/prefix-summary.ts";
 
 // A flush reads notes before it edits them: list, read, then a few writes.
 const FLUSH_MAX_STEPS = 8;
@@ -266,6 +267,38 @@ export function makeStepBuilder(
 					...("providerOptions" in lane ? { providerOptions: lane.providerOptions } : {}),
 					...("maxRetries" in lane ? { maxRetries: lane.maxRetries } : {}),
 				};
+			},
+			claudePrefixStep: (conv, modelRef) => {
+				const cfg = configRef.current;
+				const { provider, modelId } = splitModelRef(modelRef);
+				const p = cfg.providers[provider];
+				if (p?.kind !== "claude-code") return null;
+				const snapshot = store.promptSnapshot(conv.id);
+				if (snapshot === null) return null;
+				return {
+					engine: "claude-code",
+					label: modelRef,
+					modelId,
+					auth: p.auth ?? "claude-code",
+					system: snapshot.text,
+					thinking: thinkingOptions(cfg, modelRef, conv.thinking as ThinkingLevel)?.["claude-code"] ?? {},
+				};
+			},
+			prefixFlush: (input) => {
+				const note = toToolSet({
+					note: noteTool({
+						notes,
+						projects,
+						conversation: input.conv.id,
+						projectId: input.conv.projectId,
+					}),
+				}).note;
+				if (note === undefined || !("execute" in note) || typeof note.execute !== "function") return null;
+				return makePrefixFlush({
+					...input,
+					store,
+					noteExecutor: note.execute,
+				});
 			},
 			// Metadata only — a catalog read. Resolving auth or building the
 			// prompt here would let a compaction pass mint a snapshot; the

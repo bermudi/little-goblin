@@ -15,11 +15,13 @@ import { tmpDb, tmpDir } from "../../testkit.ts";
 import { type ClaudeEngineConfig, driveClaude } from "./engine.ts";
 import { createClaudeEngine } from "./mod.ts";
 import type { ClaudeStep } from "./mod.ts";
-import { createToolBridge } from "./tools.ts";
+import { createToolBridge, type ToolBridge } from "./tools.ts";
 import { TurnState } from "../../turn/state.ts";
 import { openLive, type StreamDeps, type WireMember } from "../../turn/stream.ts";
 import type { TurnJournal } from "../../turn-journal.ts";
 import type { MessageChunk } from "../../message.ts";
+import { defineTool } from "../../tool.ts";
+import { z } from "zod";
 
 const fakeAuth: AuthStore = {
 	resolve: async (name) => `token-for-${name}`,
@@ -390,6 +392,166 @@ describe("claude nativeCompact (#418)", () => {
 				}),
 			).rejects.toThrow();
 			expect(sessions.get("c-2", "claude/claude-sonnet-4-5")).toBeNull();
+		} finally {
+			store.close();
+		}
+	});
+});
+
+describe("claude forked compaction summary (#617)", () => {
+	test("forks the turn's session/options without changing its record or executing bridge tools", async () => {
+		const store = openStore(tmpDb("goblin-fork-summary-"));
+		const sessions = openClaudeSessions(store.db);
+		const fake = fakeClaude();
+		fake.scriptSequence([
+			[{ kind: "text", text: "turn reply" }],
+			[
+				{
+					kind: "text",
+					text: "## Decisions\n## Open TODOs\n## Constraints/Rules\n## Pending user asks\nasked\n## Exact identifiers",
+					usage: { cacheRead: 74 },
+				},
+			],
+		]);
+		const effects: string[] = [];
+		const tools = {
+			probe: defineTool({
+				description: "A side-effect probe.",
+				input: z.object({}),
+				execute: () => {
+					effects.push("ran");
+					return "ran";
+				},
+			}),
+		};
+		let summaryBridge: ToolBridge | null = null;
+		let turnBridge: ToolBridge | null = null;
+		const config = engineConfig(fake.query);
+		config.sessions = sessions;
+		config.bridgeFactory = (deps) => {
+			turnBridge = createToolBridge(deps);
+			return turnBridge;
+		};
+		const engine = createClaudeEngine({
+			query: fake.query,
+			auth: fakeAuth,
+			configRef: config.configRef,
+			configDir: config.configDir,
+			sessions,
+			bridgeFactory: (deps) => {
+				summaryBridge = createToolBridge(deps);
+				return summaryBridge;
+			},
+		});
+		try {
+			const turn = await driveClaude(config, {
+				...rig(),
+				tools,
+				journal,
+				claudeSession: { onDrop: () => {} },
+			});
+			expect(turn.kind).toBe("ok");
+			sessions.put({
+				conversationId: "c-session",
+				modelRef: STEP.label,
+				sessionId: "session-before",
+				headUuid: "head-before",
+				seenSeq: 11,
+				replySeq: 10,
+			});
+			const before = sessions.get("c-session", STEP.label);
+			expect(before).not.toBeNull();
+			const summary = await engine.forkSummarize!({
+				conversationId: "c-session",
+				modelRef: STEP.label,
+				step: STEP,
+				tools,
+				foldedThroughSeq: 11,
+				prompt: "previous summary and folded span",
+				signal: new AbortController().signal,
+			});
+			expect(summary).toContain("## Decisions");
+			expect(fake.calls).toHaveLength(2);
+			const turnOptions = fake.calls[0]!.options;
+			const summaryOptions = fake.calls[1]!.options;
+			expect(summaryOptions.model).toBe(turnOptions.model);
+			expect(summaryOptions.systemPrompt).toBe(turnOptions.systemPrompt);
+			expect(summaryOptions.thinking).toEqual(turnOptions.thinking);
+			expect(summaryOptions.effort).toBe(turnOptions.effort);
+			expect(summaryOptions.allowedTools).toEqual(turnOptions.allowedTools);
+			expect(summaryOptions.maxTurns).toBe(1);
+			expect(summaryOptions.resume).toBe("session-before");
+			expect(summaryOptions.resumeSessionAt).toBe("head-before");
+			expect(summaryOptions.forkSession).toBe(true);
+			expect(summaryOptions.persistSession).toBe(false);
+			expect(turnBridge).not.toBeNull();
+			expect(summaryBridge).not.toBeNull();
+			expect(summaryBridge?.toolNames()).toEqual(turnBridge?.toolNames());
+			expect(summaryOptions.canUseTool).toBeDefined();
+			expect(
+				await summaryOptions.canUseTool!("mcp__goblin__probe", {}, { signal: new AbortController().signal }),
+			).toEqual({
+				behavior: "deny",
+				message: "Tool execution is disabled during a compaction summary.",
+			});
+			expect(summaryBridge).not.toBeNull();
+			const refused = await summaryBridge!.invoke("probe", {});
+			expect(refused.output).toBe("refused: tools do not execute during a compaction summary");
+			const beforeJson = JSON.stringify(before);
+			const after = sessions.get("c-session", STEP.label);
+			expect(JSON.stringify(after)).toBe(beforeJson);
+			expect(effects).toEqual([]);
+		} finally {
+			store.close();
+		}
+	});
+
+	test("no session, a behind watermark, and a cut fail with named text-fallback reasons", async () => {
+		const store = openStore(tmpDb("goblin-fork-fallback-"));
+		const sessions = openClaudeSessions(store.db);
+		const fake = fakeClaude();
+		const config = engineConfig(fake.query);
+		config.sessions = sessions;
+		const engine = createClaudeEngine({
+			query: fake.query,
+			auth: fakeAuth,
+			configRef: config.configRef,
+			configDir: config.configDir,
+			sessions,
+		});
+		const input = {
+			conversationId: "c-fallback",
+			modelRef: STEP.label,
+			step: STEP,
+			tools: {},
+			foldedThroughSeq: 12,
+			prompt: "fold",
+			signal: new AbortController().signal,
+		};
+		try {
+			await expect(engine.forkSummarize!(input)).rejects.toMatchObject({
+				name: "ClaudeSummaryFallbackError",
+				reason: "no-session-record",
+			});
+			sessions.put({
+				conversationId: input.conversationId,
+				modelRef: input.modelRef,
+				sessionId: "session-behind",
+				headUuid: "head-behind",
+				seenSeq: 11,
+				replySeq: 10,
+			});
+			await expect(engine.forkSummarize!(input)).rejects.toMatchObject({
+				name: "ClaudeSummaryFallbackError",
+				reason: "session-behind-fold",
+			});
+			await expect(
+				engine.forkSummarize!({ ...input, cut: { seq: 12, part: 1 } }),
+			).rejects.toMatchObject({
+				name: "ClaudeSummaryFallbackError",
+				reason: "split-checkpoint",
+			});
+			expect(fake.calls).toHaveLength(0);
 		} finally {
 			store.close();
 		}

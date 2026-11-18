@@ -151,6 +151,21 @@ export interface ToolBridgeDeps {
 	afterCall?: (() => Promise<void>) | undefined;
 }
 
+export function refuseToolExecutors(tools: Tools): Tools {
+	const refused: Tools = {};
+	for (const [name, definition] of Object.entries(tools)) {
+		refused[name] =
+			"hosted" in definition
+				? definition
+				: {
+						...definition,
+						execute: async () => "refused: tools do not execute during a compaction summary",
+						toModelOutput: undefined,
+					};
+	}
+	return refused;
+}
+
 export function createToolBridge(deps: ToolBridgeDeps): ToolBridge {
 	const { convId, tools, signal, afterCall } = deps;
 	const results: QueuedResult[] = [];

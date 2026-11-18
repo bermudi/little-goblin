@@ -6,7 +6,7 @@ import { resolveSkillRef } from "../agent/skill-inject.ts";
 import { useHome, tmpDb } from "../testkit.ts";
 import { defineTool } from "../tool.ts";
 import { toToolSet } from "./ai-sdk-tools.ts";
-import { makePrefixSummarizer } from "./prefix-summary.ts";
+import { makePrefixFlush, makePrefixSummarizer } from "./prefix-summary.ts";
 import { buildModelView, type ViewContext } from "./view.ts";
 import { z } from "zod";
 
@@ -107,6 +107,24 @@ describe("prefix split request identity", () => {
 				}),
 			};
 			const sdkTools = toToolSet(goblinTools);
+			expect(
+				makePrefixFlush({
+					conv,
+					step: {
+						modelRef: "fake/fake-1",
+						model,
+						system: "Frozen system.",
+						inputModalities: undefined,
+						carries: () => false,
+						keepProviderExecuted: false,
+					},
+					store,
+					tools: sdkTools,
+					noteExecutor: async () => "unused",
+					foldCeiling: () => null,
+					assertAuthority: () => {},
+				}),
+			).toBeNull();
 			const context: ViewContext = {
 				convId: conv.id,
 				modelRef: "fake/fake-1",

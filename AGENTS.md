@@ -45,6 +45,9 @@ surface conflicts with the direction rather than silently overriding it.
   replaces.
 - **Fail loud.** `ENOENT` means null. Everything else propagates with context.
   Never swallow an exception.
+- **Cache-busting bugs are P0, always.** A bug that busts the prompt cache —
+  moves the request prefix hash outside the sanctioned rewrites (DESIGN.md →
+  Cache stability) — is never P1 or P2 (operator, 2026-11-18).
 - **Durable writes.** Whole-file state: tmp + `fsync` + `renameSync`,
   preserving the existing file's mode. Append-only JSONL: one serialized
   record per write, failures propagate.

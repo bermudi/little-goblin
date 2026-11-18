@@ -295,8 +295,7 @@ marker's wording rewrites it once in every compacted conversation; the
 owning turn's injected skill body collapses to its `[skill: name]` marker
 on the next turn's view (owned-seq ruling); a committed pruning marker
 replaces an old textual tool result once, then replays verbatim forever.
-Everything else that moves the hash is a bug — always P0, never P1 or P2
-(operator, 2026-11-18).
+Everything else that moves the hash is a bug.
 
 ## Design areas
 

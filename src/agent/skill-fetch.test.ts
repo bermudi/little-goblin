@@ -303,6 +303,21 @@ describe("fetchSkill", () => {
 		expect(readFileSync(join(dir, "@scope", "tool.txt"), "utf8")).toBe("scoped");
 	});
 
+	test("regular filenames containing link separators are not links", async () => {
+		const cache = useCache();
+		const ball = await makeTarball({
+			"r-main/demo/SKILL.md": demoBody,
+			"r-main/demo/a -> b": "arrow filename",
+			"r-main/demo/x link to y": "hardlink-like filename",
+		});
+		const fetched = await fetchSkill(DEMO_URL, {
+			fetchImpl: tarballFetch(ball),
+			cacheRoot: cache,
+		});
+		expect(readFileSync(join(fetched.dir, "a -> b"), "utf8")).toBe("arrow filename");
+		expect(readFileSync(join(fetched.dir, "x link to y"), "utf8")).toBe("hardlink-like filename");
+	});
+
 	test("missing subtree is an invalid URL error, not a crash", async () => {
 		const cache = useCache();
 		const ball = await makeTarball({ "r-main/other/file.txt": "hi" });
@@ -471,7 +486,7 @@ describe("fetchSkill pre-flight refusals", () => {
 		dirs = dirs.filter((d) => d !== src);
 		const { err, extracted } = await withSpawnSpy(ball);
 		expect(err.status).toBe("invalid");
-		expect(err.message).toContain("link");
+		expect(err.message).toContain("link inside selected skill");
 		expect(extracted).toBe(0);
 	});
 
@@ -498,6 +513,7 @@ describe("fetchSkill pre-flight refusals", () => {
 		dirs = dirs.filter((d) => d !== src);
 		const { err, extracted } = await withSpawnSpy(ball);
 		expect(err.status).toBe("invalid");
+		expect(err.message).toContain("link inside selected skill");
 		expect(extracted).toBe(0);
 	});
 

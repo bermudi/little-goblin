@@ -34,6 +34,7 @@
 - **System One:** Goblin's yes/no check layer. A decision model returns a probability for a question about the current state.
 - **Decision model:** a model that answers typed questions with scores and does not write text.
 - **Curator:** the deterministic pass that marks provenance-backed skills stale and archives unused ones into `workspace/skills-archive/`. It never deletes. `design/skills.md` → Self-authoring, /learn, curator.
+- **Skill reviewer:** the background job (`src/reviewer.ts`) that runs after a turn when System One says it's worth it. It works on a private copy of the skills tree and can only propose skills, never install them. Not the turn itself; a turn can also write a proposed skill (self-authoring, `/learn`).
 - **Proposed skill:** a complete, validated skill draft parked in `workspace/skills-proposed/`. It installs only on the operator's yes.
 - **Temp skill:** a fetched, one-turn skill copy from a GitHub URL. It is injection-scored, never installed, and never a catalog entry.
 - **Cycle guard:** `src/import-cycles.test.ts`. It freezes today's import cycles as clusters and fails on any cycle that grew past or appeared outside them; clusters are pruned by hand as cycles are untangled.

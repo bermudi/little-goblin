@@ -214,6 +214,12 @@ A runaway turn loop in a test eats RAM until the kernel OOMs the box
 crashed g7). To run a suspect test here, cap it:
 `systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0
 timeout 120 bun test <file> -t <name>`. Full-suite runs go to CI.
+Builds, lint and full suites stay on CI, but any agent may run a capped
+typecheck before handing off — `systemd-run --user --scope -q -p
+MemoryMax=4G -p MemorySwapMax=0 timeout 600 bun run typecheck` — and
+must make it pass: skipping it sent four PRs to CI red on type errors
+(operator, 2026-11-18). Never run `app/src/App.test.tsx` locally: it
+needs more than 2 GB, so the cap OOM-kills it; CI covers it.
 
 Test scratch lives in RAM: `src/test-tmpdir.ts`, which preloads first,
 points `TMPDIR` at `/dev/shm` unless `TMPDIR` is already set or tmpfs has

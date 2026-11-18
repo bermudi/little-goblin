@@ -123,7 +123,13 @@ appearance is the sanctioned config-change shift.
   outright — the safe subset ships, the tar path was never built. The
   destination is re-derived at host-write time; a path resolved before
   the container await is stale, and an ancestor swapped mid-read must not
-  aim the write.
+  aim the write. The destination directory is pinned by FD. A leaf
+  symlink is followed only after its current target is resolved and
+  checked inside the workspace, then that target's directory is pinned
+  too; a symlink swapped to an outside target is refused. The durable
+  write itself is directory-relative and never follows an incumbent leaf
+  symlink (a leaf found to be a symlink at the write boundary is refused;
+  create-only links also fail on collision).
 - `artifact` with a `sandbox` source reads the container file through the
   same `catFile` transport (ruling 2026-10-21) — the byte movement of
   `export` without the workspace landing, since an artifact's destination

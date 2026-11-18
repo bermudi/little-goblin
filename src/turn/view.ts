@@ -48,7 +48,10 @@ export interface ViewContext {
 	 * reading the body — historical invocations stay markers. The
 	 * resolver owns refusal logging; the view logs the actual injection.
 	 */
-	skillRef: (ref: SkillRef, includeBody: boolean) => { name: string; body: string | null };
+	skillRef: (
+		ref: SkillRef,
+		includeBody: boolean,
+	) => { name: string; body: string | null; source?: string; skillBytes?: number };
 }
 
 function unconvertiblePlaceholder(m: Message): Message {
@@ -184,6 +187,8 @@ interface SkillInvocation {
 	name: string;
 	body: string | null;
 	ref: SkillRef;
+	source?: string;
+	skillBytes?: number;
 }
 
 // Mirrors convertToModelMessages' ignoreIncompleteToolCalls keep-set — if the SDK's set changes, this must follow or the drop log drifts.
@@ -368,11 +373,11 @@ function injectedBodies(ctx: ViewContext, invocations: SkillInvocation[]): Model
 	const bodies: ModelMessage[] = [];
 	for (const inv of invocations) {
 		if (inv.body === null) continue;
-		log.info("skill body injected", {
+		log.info("skill invoked", {
 			conversation: ctx.convId,
 			skill: inv.name,
-			temp: isTempSkillRef(inv.ref),
-			bytes: inv.body.length,
+			source: inv.source ?? (isTempSkillRef(inv.ref) ? new URL(inv.ref.url).host : "local"),
+			bytes: inv.skillBytes ?? Buffer.byteLength(inv.body, "utf8"),
 		});
 		bodies.push({ role: "user", content: inv.body });
 	}

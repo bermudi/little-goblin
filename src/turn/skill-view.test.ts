@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ModelMessage } from "ai";
 import type { Message } from "../message.ts";
+import { setLogFile } from "../log.ts";
 import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
 import { buildModelView, convertSteeredMessage, type ViewContext } from "./view.ts";
 
 let dirs: string[] = [];
 afterEach(() => {
+	setLogFile(null);
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
 	dirs = [];
 });
@@ -314,6 +316,108 @@ describe("skill invocation in the model view", () => {
 });
 
 describe("resolveSkillRef (real fs)", () => {
+	test("local skill invocation logs only the SKILL.md body byte length", async () => {
+		const home = mkdtempSync(join(tmpdir(), "goblin-skill-log-"));
+		dirs.push(home);
+		process.env.GOBLIN_HOME = home;
+		const skillBody = "café 🐉";
+		const skillFile = `---\nname: local-demo\ndescription: d\n---\n${skillBody}`;
+		mkdirSync(join(home, "workspace", "skills", "local-demo"), { recursive: true });
+		writeFileSync(
+			join(home, "workspace", "skills", "local-demo", "SKILL.md"),
+			skillFile,
+		);
+		const logPath = join(home, "goblin.log");
+		setLogFile(logPath);
+		const { resolveSkillRef } = await import("./../agent/skill-inject.ts");
+		const ctx: ViewContext = {
+			convId: "app:skill-log",
+			modelRef: "test/model-1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: resolveSkillRef,
+		};
+		await buildModelView(ctx, {
+			entries: entries([skillMsg("s1", { name: "local-demo" })]),
+			prior: [],
+			current: null,
+			partial: null,
+			summarySeq: null,
+			ownedSeqs: [1],
+			assertAuthority: () => {},
+		});
+		const logged = readFileSync(logPath, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as Record<string, unknown>)
+			.find((line) => line.msg === "skill invoked");
+		expect(skillBody.length).not.toBe(Buffer.byteLength(skillBody, "utf8"));
+		expect(logged).toMatchObject({
+			conversation: "app:skill-log",
+			skill: "local-demo",
+			source: "local",
+			bytes: Buffer.byteLength(skillFile, "utf8"),
+		});
+	});
+
+	test("fetched skill invocation logs its source host", async () => {
+		const home = mkdtempSync(join(tmpdir(), "goblin-skill-log-temp-"));
+		dirs.push(home);
+		process.env.GOBLIN_HOME = home;
+		const digestDir = join(home, "state", "skillcache", "d".repeat(64));
+		mkdirSync(join(digestDir, "demo"), { recursive: true });
+		const skillBody = "skill 🐉";
+		writeFileSync(join(digestDir, "demo", "SKILL.md"), skillBody);
+		writeFileSync(
+			join(digestDir, "skill.json"),
+			JSON.stringify({
+				name: "demo",
+				description: "d",
+				sourceUrl: "https://skills.example.test/catalog/demo",
+				fetchedAt: "2026-10-21T00:00:00Z",
+				previewed: true,
+				verdict: { status: "clean", injection: 0.1, severity: 0.1 },
+			}),
+		);
+		const logPath = join(home, "goblin.log");
+		setLogFile(logPath);
+		const { resolveSkillRef } = await import("./../agent/skill-inject.ts");
+		const ctx: ViewContext = {
+			convId: "app:temp-skill-log",
+			modelRef: "test/model-1",
+			tools: {},
+			modalities: undefined,
+			carries: () => false,
+			skillRef: resolveSkillRef,
+		};
+		await buildModelView(ctx, {
+			entries: entries([
+				skillMsg("s1", {
+					url: "https://github.com/owner/repo/tree/main/demo",
+					path: join(digestDir, "demo", "SKILL.md"),
+				}),
+			]),
+			prior: [],
+			current: null,
+			partial: null,
+			summarySeq: null,
+			ownedSeqs: [1],
+			assertAuthority: () => {},
+		});
+		const logged = readFileSync(logPath, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((line) => JSON.parse(line) as Record<string, unknown>)
+			.find((line) => line.msg === "skill invoked");
+		expect(logged).toMatchObject({
+			conversation: "app:temp-skill-log",
+			skill: "demo",
+			source: "skills.example.test",
+			bytes: Buffer.byteLength(skillBody, "utf8"),
+		});
+	});
+
 	test("catalog skill reads live; missing degrades to null body", async () => {
 		const home = mkdtempSync(join(tmpdir(), "goblin-skillref-"));
 		dirs.push(home);

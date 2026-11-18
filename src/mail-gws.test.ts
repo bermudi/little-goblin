@@ -3,8 +3,8 @@
 // list|get / getProfile --params JSON --format json`, JSON on stdout,
 // exit code + stderr on failure.
 
-import { describe, expect, test } from "bun:test";
-import { setLogFile, setLogWriter } from "./log.ts";
+import { describe, expect, spyOn, test } from "bun:test";
+import { log, setLogFile, setLogWriter } from "./log.ts";
 import { HistoryExpiredError, type MailHit } from "./mail.ts";
 import { makeGwsReader, type GwsRunner } from "./mail-gws.ts";
 
@@ -489,6 +489,51 @@ describe("gws mail reader", () => {
 			stderr: "",
 		});
 		expect(await makeGwsReader(ghost).threadFor("ghost")).toBeNull();
+	});
+
+	test("Message-ID is not RFC 2047 decoded and invalid values are rejected", async () => {
+		const warning = spyOn(log, "warn").mockImplementation(() => {});
+		try {
+			for (const value of [
+				"=?UTF-8?Q?<a@b>=0D=0ABcc:_x@y>?=",
+				"<a b@c>",
+			]) {
+				const run: GwsRunner = async () => ({
+					code: 0,
+					stdout: JSON.stringify({
+						id: "m1",
+						threadId: "thread-9",
+						payload: { headers: [{ name: "Message-ID", value }] },
+					}),
+					stderr: "",
+				});
+				expect(await makeGwsReader(run).threadFor("m1")).toEqual({
+					threadId: "thread-9",
+					messageId: null,
+				});
+			}
+			const valid: GwsRunner = async () => ({
+				code: 0,
+				stdout: JSON.stringify({
+					id: "m1",
+					threadId: "thread-9",
+					payload: { headers: [{ name: "Message-ID", value: "<a@b>" }] },
+				}),
+				stderr: "",
+			});
+			expect(await makeGwsReader(valid).threadFor("m1")).toEqual({
+				threadId: "thread-9",
+				messageId: "<a@b>",
+			});
+			expect(warning).toHaveBeenCalledTimes(2);
+			expect(warning).toHaveBeenCalledWith("mail message-id rejected", {
+				length: "=?UTF-8?Q?<a@b>=0D=0ABcc:_x@y>?=".length,
+				reason: "invalid_format",
+			});
+			expect(JSON.stringify(warning.mock.calls)).not.toContain("Bcc:");
+		} finally {
+			warning.mockRestore();
+		}
 	});
 
 	test("a spawn failure fails the call without hanging", async () => {

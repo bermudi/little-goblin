@@ -71,6 +71,21 @@ describe("buildRaw", () => {
 		expect(raw).toContain("In-Reply-To: <orig@mail>");
 		expect(raw).toContain("References: <orig@mail>");
 	});
+
+	test("rejects line breaks in every interpolated header value", () => {
+		const cases: Array<[Parameters<typeof buildRaw>[0], string]> = [
+			[{ to: ["a@x.com\r\nBcc: x@y.com"], subject: "hi", body: "x" }, "To"],
+			[{ to: ["a@x.com"], cc: ["b@y.com\nBcc: x@y.com"], subject: "hi", body: "x" }, "Cc"],
+			[{ to: ["a@x.com"], subject: "hi\r\nBcc: x@y.com", body: "x" }, "Subject"],
+			[
+				{ to: ["a@x.com"], subject: "hi", body: "x", inReplyTo: "<a@b>\r\nBcc: x@y.com" },
+				"In-Reply-To",
+			],
+		];
+		for (const [draft, header] of cases) {
+			expect(() => buildRaw(draft)).toThrow(`mail header ${header} contains a line break`);
+		}
+	});
 });
 
 describe("gmail send", () => {

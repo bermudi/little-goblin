@@ -7,10 +7,14 @@ import type { Api } from "grammy";
 import type { Config } from "../config-schema.ts";
 import { log } from "../log.ts";
 import { withTimeout } from "./deadline.ts";
-import { guestRefusalText, refusalDue } from "./guest.ts";
+import { claimRefusalOnce, guestRefusalText, type GuestStore } from "./guest.ts";
 import { refusalDispatcher, sendRefusal } from "./refusals.ts";
 
-export function accessGate(configRef: { current: Config }, opts?: { refusalTimeoutMs?: number }) {
+export function accessGate(
+	configRef: { current: Config },
+	guestStore: GuestStore,
+	opts?: { refusalTimeoutMs?: number },
+) {
 	const dispatch =
 		opts?.refusalTimeoutMs === undefined ? sendRefusal : refusalDispatcher(opts.refusalTimeoutMs);
 	return async (
@@ -53,7 +57,8 @@ export function accessGate(configRef: { current: Config }, opts?: { refusalTimeo
 					userId: id,
 					reason: cfg.guest === undefined ? "guest-disabled" : "not-an-allowed-user",
 				});
-				if (refusalDue(id)) dispatch(ctx.api, id, id, guestRefusalText(id));
+				if (claimRefusalOnce(guestStore, id, id))
+					dispatch(ctx.api, id, id, guestRefusalText(id));
 				return;
 			}
 			await next();

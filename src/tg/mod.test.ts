@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Api } from "grammy";
@@ -6,7 +7,7 @@ import { type Config, memoryConfigSchema } from "../config-schema.ts";
 import { HindsightClient } from "../memory/hindsight.ts";
 import { tmpDb, useHome } from "../testkit.ts";
 import { COMMANDS, type CommandMemoryDeps, DM_COMMANDS } from "./commands.ts";
-import { guestRefusalText, resetRefusalLatchForTests } from "./guest.ts";
+import { guestRefusalText, openGuestStore } from "./guest.ts";
 import { accessGate } from "./access-gate.ts";
 import { applyCommands, applyMenuButton } from "./bot.ts";
 import { conversationAddress } from "./intake.ts";
@@ -28,6 +29,10 @@ const baseConfig: Config = {
 	logLevel: "info",
 };
 
+function testGuestStore() {
+	return openGuestStore(new Database(":memory:"));
+}
+
 describe("accessGate", () => {
 	const api = {
 		sendMessage: (async () => ({ message_id: 1 })) as unknown as Api["sendMessage"],
@@ -39,7 +44,7 @@ describe("accessGate", () => {
 		const configRef: { current: Config } = {
 			current: { ...baseConfig, guest: { outputChars: 3500 } },
 		};
-		const gate = accessGate(configRef);
+		const gate = accessGate(configRef, testGuestStore());
 		let reached = 0;
 		const next = async (): Promise<void> => {
 			reached++;
@@ -57,8 +62,10 @@ describe("accessGate", () => {
 			expect(reached).toBe(2);
 			const send = spyOn(api, "sendMessage");
 			await gate(dm(9), next);
+			await gate(dm(9), next);
 			expect(reached).toBe(2);
 			expect(send).toHaveBeenCalledWith(9, guestRefusalText(9), {}, expect.any(AbortSignal));
+			expect(send).toHaveBeenCalledTimes(1);
 			await gate({ api } as never, next);
 			expect(reached).toBe(2);
 			// Config is re-read per message.
@@ -72,7 +79,7 @@ describe("accessGate", () => {
 
 	test("a non-operator callback tap in an operator group is acked 'operator only'", async () => {
 		const configRef = { current: baseConfig };
-		const gate = accessGate(configRef);
+		const gate = accessGate(configRef, testGuestStore());
 		let reached = 0;
 		const next = async (): Promise<void> => {
 			reached++;
@@ -99,7 +106,7 @@ describe("accessGate", () => {
 		const configRef: { current: Config } = {
 			current: { ...baseConfig, guest: { outputChars: 3500 } },
 		};
-		const gate = accessGate(configRef);
+		const gate = accessGate(configRef, testGuestStore());
 		const dm = (id: number) => ({ from: { id }, chat: { id, type: "private" }, api });
 		let reached = 0;
 		const next = async (): Promise<void> => {
@@ -127,7 +134,7 @@ describe("accessGate", () => {
 	// stall intake or the gate.
 	test("a held refusal send never blocks the gate or an operator's next", async () => {
 		const configRef: { current: Config } = { current: { ...baseConfig } };
-		const gate = accessGate(configRef, { refusalTimeoutMs: 60_000 });
+		const gate = accessGate(configRef, testGuestStore(), { refusalTimeoutMs: 60_000 });
 		const release = Promise.withResolvers<void>();
 		const calls: number[] = [];
 		const heldApi = {
@@ -157,7 +164,7 @@ describe("accessGate", () => {
 
 	test("refusal sends are bounded at 8 pending and deduped per user — overload drops, never queues", async () => {
 		const configRef: { current: Config } = { current: { ...baseConfig } };
-		const gate = accessGate(configRef, { refusalTimeoutMs: 60_000 });
+		const gate = accessGate(configRef, testGuestStore(), { refusalTimeoutMs: 60_000 });
 		const release = Promise.withResolvers<void>();
 		const calls: number[] = [];
 		const heldApi = {
@@ -185,7 +192,7 @@ describe("accessGate", () => {
 
 	test("the refusal timeout aborts a wedged send and the settled slot frees", async () => {
 		const configRef: { current: Config } = { current: { ...baseConfig } };
-		const gate = accessGate(configRef, { refusalTimeoutMs: 30 });
+		const gate = accessGate(configRef, testGuestStore(), { refusalTimeoutMs: 30 });
 		const signals: AbortSignal[] = [];
 		const wedgedApi = {
 			sendMessage: (async (_id: number, _text: string, _other: unknown, signal: AbortSignal) => {
@@ -210,7 +217,7 @@ describe("accessGate", () => {
 
 	test("a failed refusal send releases its slot without rejecting the gate", async () => {
 		const configRef: { current: Config } = { current: { ...baseConfig } };
-		const gate = accessGate(configRef, { refusalTimeoutMs: 60_000 });
+		const gate = accessGate(configRef, testGuestStore(), { refusalTimeoutMs: 60_000 });
 		const calls: number[] = [];
 		const failingApi = {
 			sendMessage: (async (id: number) => {
@@ -377,6 +384,7 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 	const apiCalls: RouterHarness["apiCalls"] = [];
 	const stopped: string[] = [];
 	const pings = openPings(store.db);
+	const guestStore = openGuestStore(store.db);
 	const bellConvs: string[] = [];
 	const api = {
 		getFile: (_id: string) => Promise.reject(new Error("file api down")),
@@ -442,6 +450,7 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 		intake: new Map<string, Promise<void>>(),
 		inbox: openTelegramInbox(store.db),
 		pings,
+		guestStore,
 		bell: (conv) => {
 			bellConvs.push(conv.id);
 			return nullSink;
@@ -2756,5 +2765,3 @@ describe("manual DM navigation", () => {
 		});
 	}
 });
-
-beforeEach(() => resetRefusalLatchForTests());

@@ -22,7 +22,12 @@ import { CoalescingBuffer } from "./buffer.ts";
 import { COMMAND_RE, handleCommand, parseCommand } from "./commands.ts";
 import { TelegramTimeoutError, withTimeout } from "./deadline.ts";
 import type { BotDeps } from "./deps.ts";
-import { ensurePersonaClass, guestRefusalText, refusalDue } from "./guest.ts";
+import {
+	claimRefusalOnce,
+	ensurePersonaClass,
+	guestRefusalText,
+	type GuestStore,
+} from "./guest.ts";
 import { sendRollMarker } from "./notify.ts";
 import { handleSkillCommand, skillCommandDeps } from "./skill-command.ts";
 import { handleLearnCommand } from "./learn-command.ts";
@@ -173,10 +178,14 @@ export interface IntakeEnv {
 	intake: Map<string, Promise<void>>;
 	inbox: ReturnType<typeof openTelegramInbox>;
 	pings: PingStore;
+	guestStore: GuestStore;
 	bell(conv: Conversation): TurnSink;
 }
 
-export type FlushEnv = Pick<IntakeEnv, "deps" | "api" | "titleAttempts" | "inbox" | "bell">;
+export type FlushEnv = Pick<
+	IntakeEnv,
+	"deps" | "api" | "titleAttempts" | "inbox" | "guestStore" | "bell"
+>;
 
 export function rollDepsOf(deps: BotDeps): RollDeps {
 	return {
@@ -380,7 +389,7 @@ export function handleMessage(env: IntakeEnv, msg: Message, updateId: number): v
 						userId: addr.chatId,
 						reason: "stranger",
 					});
-					refuseStranger(env.api, addr.chatId);
+					refuseStranger(env.api, env.guestStore, addr.chatId, addr.chatId);
 					return;
 				}
 				const routed = routeDm(
@@ -816,8 +825,13 @@ export function dmClass(cfg: Config, chatId: number): "personal" | "guest" | nul
 			: null;
 }
 
-export function refuseStranger(api: Api, chatId: number): void {
-	if (!refusalDue(chatId)) return;
+export function refuseStranger(
+	api: Api,
+	guestStore: GuestStore,
+	chatId: number,
+	senderId: number,
+): void {
+	if (!claimRefusalOnce(guestStore, chatId, senderId)) return;
 	// A stranger's DM chat id IS the sender's Telegram user id.
-	sendRefusal(api, chatId, chatId, guestRefusalText(chatId));
+	sendRefusal(api, chatId, chatId, guestRefusalText(senderId));
 }

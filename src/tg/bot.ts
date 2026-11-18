@@ -106,10 +106,10 @@ export async function createBot(
 	const guestStore = openGuestStore(deps.store.db);
 	const buffer = new CoalescingBuffer<BufferedItem>(
 		QUIET_WINDOW_MS,
-		(convId, items) => flushConversation({ ...base, inbox, bell }, convId, items),
+		(convId, items) => flushConversation({ ...base, inbox, guestStore, bell }, convId, items),
 		COALESCE_MAX_WAIT_MS,
 	);
-	const env: IntakeEnv = { ...base, buffer, intake, inbox, pings, bell };
+	const env: IntakeEnv = { ...base, buffer, intake, inbox, pings, guestStore, bell };
 
 	const guestEnv: GuestEnv = {
 		api: bot.api,
@@ -139,7 +139,7 @@ export async function createBot(
 
 	registerGenerationStop(bot);
 
-	bot.use(accessGate(deps.configRef));
+	bot.use(accessGate(deps.configRef, guestStore));
 
 	bot.on("message", (ctx) => handleMessageDurably(env, ctx.message, ctx.update.update_id));
 

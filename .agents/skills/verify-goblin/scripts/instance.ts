@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
+import { startupAction, withNameLock } from "./coordination.ts";
 
 const REPO = resolve(import.meta.dir, "../../../..");
 const SCRATCH = join(tmpdir(), "goblin-verify");
@@ -27,6 +28,7 @@ const stateSchema = z.object({
 	name: z.string(),
 	repo: z.string(),
 	commit: z.string(),
+	dirty: z.boolean().default(false),
 	home: z.string(),
 	port: z.number().int().positive(),
 	url: z.string(),
@@ -50,6 +52,7 @@ function checkName(name: string): string {
 }
 
 const stateFile = (name: string): string => join(SCRATCH, name, "instance.json");
+const lockFile = (name: string): string => join(SCRATCH, `${name}.lock`);
 const evidenceDir = (name: string): string => join(EVIDENCE, name);
 
 function readState(name: string): State | null {
@@ -63,6 +66,14 @@ function run(argv: string[], cwd = REPO): string {
 		fail(`${argv.join(" ")} failed: ${result.stderr.toString().slice(0, 2000)}`);
 	}
 	return result.stdout.toString().trim();
+}
+
+function checkoutIdentity(): { repo: string; commit: string; dirty: boolean } {
+	return {
+		repo: resolve(REPO),
+		commit: run(["git", "rev-parse", "HEAD"]),
+		dirty: run(["git", "status", "--porcelain"]) !== "",
+	};
 }
 
 function newestMtime(dir: string): number {
@@ -286,15 +297,29 @@ function stop(pid: number, marker: string): void {
 	if (ownsPid(pid, marker)) process.kill(pid, "SIGTERM");
 }
 
-async function up(name: string, real: { conversation: string | null } | null): Promise<void> {
+async function upUnlocked(name: string, real: { conversation: string | null } | null): Promise<void> {
+	const current = checkoutIdentity();
 	const existing = readState(name);
 	if (existing !== null) {
 		if (ownsPid(existing.goblinPid, `GOBLIN_VERIFY_INSTANCE=${name}`)) {
-			note(`${name} is already running`);
-			process.stdout.write(`${existing.url}\n`);
-			return;
+			if (startupAction(existing, current) === "reuse") {
+				note(`${name} reused: same checkout, commit, and dirty state`);
+				process.stdout.write(`${existing.url}\n`);
+				return;
+			}
+			note(`${name} restarting: checkout identity changed`);
+			stop(existing.goblinPid, `GOBLIN_VERIFY_INSTANCE=${name}`);
+			stop(existing.fakePid, `GOBLIN_VERIFY_INSTANCE=${name}`);
+			await waitFor(`${name} processes to stop`, () =>
+				ownsPid(existing.goblinPid, `GOBLIN_VERIFY_INSTANCE=${name}`) ||
+				ownsPid(existing.fakePid, `GOBLIN_VERIFY_INSTANCE=${name}`)
+					? null
+					: true,
+			);
+		} else {
+			note(`${name} restarting: previous instance is stopped`);
 		}
-		fail(`${name} has stale state. Run: bun run try down ${name}`);
+		run(["trash", join(SCRATCH, name)], SCRATCH);
 	}
 	prepareCheckout();
 	const home = join(SCRATCH, name);
@@ -341,8 +366,7 @@ async function up(name: string, real: { conversation: string | null } | null): P
 		await waitFor("the app to be usable", async () => ((await usable(url)) ? true : null));
 		const state: State = {
 			name,
-			repo: REPO,
-			commit: run(["git", "rev-parse", "HEAD"]),
+			...current,
 			home,
 			port,
 			url,
@@ -354,7 +378,6 @@ async function up(name: string, real: { conversation: string | null } | null): P
 		note(`evidence goes in: ${evidenceDir(name)}`);
 		const conversation = real?.conversation;
 		process.stdout.write(`${conversation ? `${url}c/${conversation}` : url}\n`);
-		process.exit(0);
 	} catch (error) {
 		stop(goblin.pid, marker);
 		stop(fake.pid, marker);
@@ -363,18 +386,27 @@ async function up(name: string, real: { conversation: string | null } | null): P
 	}
 }
 
+async function up(name: string, real: { conversation: string | null } | null): Promise<void> {
+	mkdirSync(SCRATCH, { recursive: true });
+	let waited = false;
+	await withNameLock(lockFile(name), () => upUnlocked(name, real), () => {
+		if (!waited) {
+			note(`${name} waiting for another startup to finish`);
+			waited = true;
+		}
+	});
+}
+
 async function status(name: string): Promise<void> {
 	const state = readState(name);
 	if (state === null) fail(`no instance named ${name}`);
 	const marker = `GOBLIN_VERIFY_INSTANCE=${name}`;
+	const current = checkoutIdentity();
 	const checks: [string, boolean][] = [
 		["goblin process is ours", ownsPid(state.goblinPid, marker)],
 		["fake model process is ours", ownsPid(state.fakePid, marker)],
 		["home is not the real home", resolve(state.home) !== join(homedir(), "goblin")],
-		[
-			"checkout is at the same commit",
-			run(["git", "rev-parse", "HEAD"], state.repo) === state.commit,
-		],
+		["checkout path, commit, and dirty state match", startupAction(state, current) === "reuse"],
 		["app and API answer", await usable(state.url)],
 	];
 	for (const [label, ok] of checks) process.stdout.write(`${ok ? "ok  " : "FAIL"} ${label}\n`);
@@ -417,4 +449,6 @@ else {
 	const after = realAt === -1 ? undefined : args[realAt + 1];
 	const real = realAt === -1 ? null : { conversation: after ? conversationId(after) : null };
 	await up(checkName(positional[0] ?? "default"), real);
+	// The unref'd children must not hold the CLI open once the lock is released.
+	process.exit(0);
 }

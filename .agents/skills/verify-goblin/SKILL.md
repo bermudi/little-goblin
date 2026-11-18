@@ -17,6 +17,12 @@ bun run try <name>      # defaults to "default"
 
 It installs dependencies and builds the app if needed, boots goblin, waits until the client and API both answer, and prints the URL on stdout. A cold start takes a few seconds. If your tool runner kills the process group when the command returns (the instance dies right after boot), launch it as `setsid bun run try <name>`. Names are lowercase letters, digits and dashes. Use your branch or issue as the name.
 
+An existing instance is reused only when its recorded checkout path, commit,
+and clean/dirty state match the current checkout. Otherwise `try` stops that
+instance and starts it from the current checkout. Starts with the same name are
+serialized; a lock held by a dead process is recovered. The command reports
+whether it reused, restarted, or waited for the instance.
+
 Each instance gets:
 
 - Its own `GOBLIN_HOME` and `HOME` under `/tmp/goblin-verify/<name>`, created empty.
@@ -48,7 +54,7 @@ The copy is private data. Keep its screenshots out of public issues and commits,
 bun run try status <name>
 ```
 
-Read-only. It checks both processes are ours, the home isn't the real one, the checkout is still at the commit it booted from, and the app and API answer. Run it first whenever something looks off. A commit failure means the instance is stale: take it down and launch again.
+Read-only. It checks both processes are ours, the home isn't the real one, the checkout path, commit and clean/dirty state still match, and the app and API answer. Run it first whenever something looks off. A checkout mismatch means the instance is stale; the next `try <name>` automatically restarts it.
 
 ## Drive
 

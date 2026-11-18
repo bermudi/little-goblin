@@ -273,6 +273,15 @@ describe("responsibility observer", () => {
 		r.store.close();
 	});
 
+	test("a missing project is an outage, not a gone agent", async () => {
+		const r = rig();
+		r.failing = new T3Error("thread show", "project_not_found", "no such project");
+		await r.observe();
+		expect(r.resps.getAttachment(r.attId)!.health).toBe("attached");
+		expect(r.eventsFor()).toHaveLength(0);
+		r.store.close();
+	});
+
 	test("a fatal T3 error logs and marks the durable outage without marking the attachment gone", async () => {
 		const at = new Date("2030-01-01T12:00:00.000Z");
 		const r = rig(undefined, () => at);

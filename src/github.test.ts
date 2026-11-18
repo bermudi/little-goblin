@@ -52,7 +52,8 @@ describe("GitHub PR readiness", () => {
 			["gh: API rate limit exceeded", "transient"],
 			["gh: HTTP 503 Service Unavailable", "transient"],
 			["gh: connection timed out", "transient"],
-			["gh: Could not resolve host", "missing"],
+			["gh: Could not resolve host: api.github.com", "transient"],
+			["gh: GraphQL: Could not resolve to a Repository with the name 'o/r'", "missing"],
 			["gh: cached 404 results are stale", "fatal"],
 		] as const) {
 			const run: GithubRunner = async () => { throw new Error(message); };

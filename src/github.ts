@@ -15,8 +15,8 @@ import {
 
 export type GithubRunner = (args: string[]) => Promise<string>;
 function githubKind(message: string): BoundaryKind {
-	if (/HTTP 404\b|Could not resolve/i.test(message)) return "missing";
-	if (/HTTP 5\d\d|rate limit|timed?\s*out|connection|network|temporarily unavailable/i.test(message)) return "transient";
+	if (/HTTP 404\b|Could not resolve to an? /i.test(message)) return "missing";
+	if (/HTTP 5\d\d|rate limit|timed?\s*out|connection|network|Could not resolve host|temporarily unavailable/i.test(message)) return "transient";
 	return "fatal";
 }
 export class GithubError extends BoundaryError {

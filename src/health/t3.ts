@@ -86,7 +86,10 @@ export async function t3Health(
 		const category = timedOut
 			? "timeout"
 			: error instanceof T3Error
-				? error.code
+				? // A runner failure wraps the spawn error: report its errno.
+					error.cause !== undefined
+					? errno(error.cause)
+					: error.code
 				: errno(error);
 		return result(
 			"delegation.t3",

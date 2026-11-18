@@ -348,7 +348,9 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 				} catch (err) {
 					if (err instanceof T3Error) {
 						const kind = boundaryKind(err);
-						if (kind === "missing") {
+						// A missing thread is gone. A missing project is
+						// config drift, not a gone agent: count it as an outage.
+						if (kind === "missing" && err.code === "thread_not_found") {
 							reconcile(snapshot, null);
 							continue;
 						}

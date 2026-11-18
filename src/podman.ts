@@ -189,19 +189,19 @@ export function makePodman(deps?: {
 		args: string[],
 		fields: { container?: string | undefined; conversation?: string | undefined },
 	): Promise<PodmanRunResult> {
-		const t0 = Date.now();
+		const t0 = performance.now();
 		let r: PodmanRunResult;
 		try {
 			r = await runner(args);
 		} catch (err) {
-			log.error("podman call runner failed", err, { op, ...fields, ms: Date.now() - t0 });
+			log.error("podman call runner failed", err, { op, ...fields, ms: performance.now() - t0 });
 			throw new BoundaryError("podman", "transient", `podman ${op} runner failed`, { cause: err });
 		}
 		log.info("podman call", {
 			op,
 			...fields,
 			status: r.code,
-			ms: Date.now() - t0,
+			ms: performance.now() - t0,
 		});
 		return r;
 	}
@@ -382,12 +382,12 @@ export function makePodman(deps?: {
 		},
 
 		async exec(name, argv, opts, conv) {
-			const t0 = Date.now();
+			const t0 = performance.now();
 			let r: BoundedProc;
 			try {
 				r = await execRunner(execArgs(name, argv, opts), opts);
 			} catch (err) {
-				log.error("podman exec runner failed", err, { op: "exec", container: name, conversation: conv, ms: Date.now() - t0 });
+				log.error("podman exec runner failed", err, { op: "exec", container: name, conversation: conv, ms: performance.now() - t0 });
 				throw new BoundaryError("podman", "transient", "podman exec runner failed", { cause: err });
 			}
 			log.info("podman call", {
@@ -398,18 +398,18 @@ export function makePodman(deps?: {
 				...(r.timedOut ? { timedOut: true } : {}),
 				...(r.outputCapped === true ? { outputCapped: true } : {}),
 				...(r.truncated ? { truncated: true } : {}),
-				ms: Date.now() - t0,
+				ms: performance.now() - t0,
 			});
 			return r;
 		},
 
 		async execBytes(name, argv, opts, conv) {
-			const t0 = Date.now();
+			const t0 = performance.now();
 			let r: BoundedProcBytes;
 			try {
 				r = await execBytesRunner(execArgs(name, argv, opts), opts);
 			} catch (err) {
-				log.error("podman execBytes runner failed", err, { op: "execBytes", container: name, conversation: conv, ms: Date.now() - t0 });
+				log.error("podman execBytes runner failed", err, { op: "execBytes", container: name, conversation: conv, ms: performance.now() - t0 });
 				throw new BoundaryError("podman", "transient", "podman execBytes runner failed", { cause: err });
 			}
 			log.info("podman call", {
@@ -420,7 +420,7 @@ export function makePodman(deps?: {
 				...(r.timedOut ? { timedOut: true } : {}),
 				...(r.outputCapped === true ? { outputCapped: true } : {}),
 				...(r.truncated ? { truncated: true } : {}),
-				ms: Date.now() - t0,
+				ms: performance.now() - t0,
 			});
 			return r;
 		},

@@ -149,5 +149,14 @@ export function makeConversationSettings(
 		return row.epoch;
 	}
 
-	return { applyPatch, readSettings, initializeSettings, bump };
+	function bumpIfPresent(id: string): number | null {
+		const row = db
+			.query<{ epoch: number }, [string]>(
+				"UPDATE conversations SET epoch = epoch + 1 WHERE id = ? RETURNING epoch",
+			)
+			.get(id);
+		return row?.epoch ?? null;
+	}
+
+	return { applyPatch, readSettings, initializeSettings, bump, bumpIfPresent };
 }

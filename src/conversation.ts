@@ -161,6 +161,8 @@ export interface ConversationStore extends ConversationReads {
 	// Settings changes and cancellation bump the epoch; in-flight turns
 	// fence on it. A recreated address must advance past its deleted row.
 	bumpEpoch(id: string, previousEpoch?: number): number;
+	// Stop is a quiet no-op when the conversation row has already been deleted.
+	bumpEpochIfPresent(id: string): number | null;
 	savePromptSnapshot(id: string, text: string, sources: string[]): void;
 	saveLastTurnTools(id: string, epoch: number, toolsJson: string | null): void;
 	lastTurnTools(id: string): { epoch: number; tools: unknown[]; json: string } | null;
@@ -268,11 +270,13 @@ export function openStore(dbPath: string): ConversationStore {
 
 	const rolling = makeConversationRolling(db, queries, toConversation);
 
-	const { applyPatch, readSettings, initializeSettings, bump } = makeConversationSettings(
-		db,
-		qGet,
-		qEpoch,
-	);
+	const {
+		applyPatch,
+		readSettings,
+		initializeSettings,
+		bump,
+		bumpIfPresent,
+	} = makeConversationSettings(db, qGet, qEpoch);
 
 	const compaction = makeConversationCompaction(queries);
 
@@ -402,6 +406,10 @@ export function openStore(dbPath: string): ConversationStore {
 
 		bumpEpoch(id, previousEpoch) {
 			return bump(id, previousEpoch);
+		},
+
+		bumpEpochIfPresent(id) {
+			return bumpIfPresent(id);
 		},
 
 		promptSnapshot(id) {

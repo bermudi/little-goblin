@@ -153,7 +153,6 @@ describe("transcribeAudio", () => {
 	});
 
 	test("small-bytes audio over the time bound rejects before an engine call", async () => {
-		if (Bun.which("ffmpeg") === null) return;
 		const dir = tmpDir("goblin-tr-");
 		const src = join(dir, "long-low-bitrate.ogg");
 		genLongLowBitrateAudio(src, 240 * 28 + 1);
@@ -169,13 +168,12 @@ describe("transcribeAudio", () => {
 			},
 		};
 		await expect(transcribeAudio(engine, file(src))).rejects.toThrow(
-			"one transcribe call takes at most 1 h 52 m — cut it first, e.g. ffmpeg -ss <start> -t <seconds> -c copy",
+			/audio is .+ \(\d+ s\); one transcribe call takes at most 1 h 52 m \(6720 s\) — cut it first, e.g. ffmpeg -ss <start> -t <seconds> -c copy/,
 		);
 		expect(calls).toBe(0);
 	}, 30_000);
 
 	test("a short keep-profile file under maxBytes uses one engine call", async () => {
-		if (Bun.which("ffmpeg") === null) return;
 		const src = join(tmpDir("goblin-tr-"), "short.ogg");
 		genAudio(src, 2);
 		let calls = 0;
@@ -193,7 +191,6 @@ describe("transcribeAudio", () => {
 	});
 
 	test("unknown duration falls back to bounded segmentation", async () => {
-		if (Bun.which("ffmpeg") === null || Bun.which("ffprobe") === null) return;
 		const src = join(tmpDir("goblin-tr-"), "unbounded.webm");
 		genUnknownDurationAudio(src);
 		let calls = 0;
@@ -216,6 +213,32 @@ describe("transcribeAudio", () => {
 		expect(calls).toBe(1);
 		expect(uploadedPath).not.toBe(src);
 		expect(uploadedPath.endsWith(".ogg")).toBe(true);
+	});
+
+	test("missing ffprobe rejects keep-profile audio before an engine call", async () => {
+		const src = join(tmpDir("goblin-tr-"), "short.ogg");
+		genAudio(src, 2);
+		let calls = 0;
+		const engine: SpeechEngine = {
+			id: "test/cloud",
+			limits: { maxBytes: 25 * 1024 * 1024, maxSeconds: 15 * 60 },
+			prep: { container: "keep" },
+			transcribe: async () => {
+				calls += 1;
+				return { text: "unexpected" };
+			},
+		};
+		const oldPath = process.env.PATH;
+		process.env.PATH = tmpDir("goblin-no-tools-");
+		try {
+			await expect(transcribeAudio(engine, file(src))).rejects.toThrow(
+				"ffprobe is required to bound audio time before upload:",
+			);
+			expect(calls).toBe(0);
+		} finally {
+			if (oldPath === undefined) delete process.env.PATH;
+			else process.env.PATH = oldPath;
+		}
 	});
 
 	test("over-cap media is segmented to mono opus and joined", async () => {
@@ -458,13 +481,22 @@ describe("transcribeAudio", () => {
 		expect(rejectedCalls).toBe(0);
 	});
 
-	test("a corrupt source fails loud through ffmpeg", async () => {
+	test("an unparseable source fails loud through ffprobe before engine call", async () => {
 		if (Bun.which("ffmpeg") === null) return;
 		const f = join(tmpDir("goblin-tr-"), "junk.ogg");
 		writeFileSync(f, "definitely not audio");
-		await expect(transcribeAudio(keepEngine("x"), file(f), { maxBytes: 1 })).rejects.toThrow(
-			"ffmpeg",
+		let calls = 0;
+		const engine: SpeechEngine = {
+			...keepEngine("x"),
+			transcribe: async () => {
+				calls += 1;
+				return { text: "unexpected" };
+			},
+		};
+		await expect(transcribeAudio(engine, file(f), { maxBytes: 1 })).rejects.toThrow(
+			"ffprobe is required to bound audio time before upload:",
 		);
+		expect(calls).toBe(0);
 	});
 
 	test("a missing file fails loud", async () => {

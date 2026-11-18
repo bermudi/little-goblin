@@ -125,8 +125,10 @@ The size-cap decision generalizes:
 
 - `container:"keep"` engines (all cloud) pass the original bytes under the
   provider multipart cap (25 MiB, OpenAI/groq/mistral) only when the probed
-  duration is known and within the shared audio-time bound; unknown or
-  over-cap inputs take the bounded mono opus segment path.
+  duration is known and within the shared audio-time bound. Keep-profile
+  transcription requires ffprobe on every file; ffmpeg is needed only for
+  segmentation. Unknown-duration or over-cap inputs take the bounded mono
+  opus segment path.
 - `container:"wav"` engines (whistle, mimo) always take the 16 kHz mono wav
   pass in fixed segments; this also keeps mimo's wav/mp3 input under its
   10 MB base64 ceiling (180 s of pcm_s16le ≈ 7.7 MB), so a request's size

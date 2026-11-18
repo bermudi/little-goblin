@@ -719,6 +719,55 @@ describe("config save", () => {
 		},
 	);
 
+	test("image size survives an off save and re-enable without a supplied size", async () => {
+		const d = deps();
+		d.configRef.current = parseConfig({
+			...d.configRef.current,
+			providers: {
+				test: {
+					kind: "openai-compatible",
+					baseUrl: "https://example.com/v1",
+					auth: "test",
+				},
+			},
+			image: { model: "test/m", size: "1024x1536" },
+		});
+		const save = async (body: unknown) => {
+			const view = await handleOperatorRoute(
+				d,
+				ACTOR,
+				new Request("http://x/config"),
+				"config",
+				new URL("http://x/config"),
+			);
+			const etag = view?.headers.get("etag") ?? "";
+			return handleOperatorRoute(
+				d,
+				ACTOR,
+				new Request("http://x/config", {
+					method: "POST",
+					headers: { "content-type": "application/json", "if-match": etag },
+					body: JSON.stringify(body),
+				}),
+				"config",
+				new URL("http://x/config"),
+			);
+		};
+
+		expect((await save({ capabilities: { image: false }, image: "" }))?.status).toBe(200);
+		expect(d.configRef.current.image).toBeUndefined();
+		expect(d.configRef.current.parked?.image).toEqual({
+			model: "test/m",
+			size: "1024x1536",
+		});
+
+		expect(
+			(await save({ capabilities: { image: true }, image: { model: "test/m" } }))?.status,
+		).toBe(200);
+		expect(d.configRef.current.image).toEqual({ model: "test/m", size: "1024x1536" });
+		expect(d.configRef.current.parked?.image).toBeUndefined();
+	});
+
 	test.each([
 		["vision", { model: "missing/m" }, "vision"],
 		["image", { model: "test/m" }, "image"],

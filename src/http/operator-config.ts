@@ -311,6 +311,21 @@ async function saveConfig(
 				candidate.telegram = { ...normalized.telegram, ...v };
 				continue;
 			}
+			// The form omits a blank image size. A save that re-enables image
+			// generation keeps the parked size; an active block still
+			// replaces wholesale (#235).
+			const parkedImage = parked.image;
+			if (
+				k === "image" &&
+				isBlock &&
+				candidate.image === undefined &&
+				typeof parkedImage === "object" &&
+				parkedImage !== null
+			) {
+				candidate.image = { ...parkedImage, ...v };
+				delete parked.image;
+				continue;
+			}
 			// "" on a parkable block keeps its contents — off, not deleted.
 			if (v === "" && isCapability(k)) {
 				if (candidate[k] !== undefined) parked[k] = candidate[k];

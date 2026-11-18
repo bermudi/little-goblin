@@ -148,6 +148,7 @@ export function SettingsView({
 		tts: null,
 		transcription: null,
 		vision: null,
+		image: null,
 		search: null,
 		fetch: null,
 		memory: null,
@@ -226,6 +227,7 @@ export function SettingsView({
 					tts: restored.tts,
 					transcription: restored.transcription,
 					vision: restored.vision,
+					image: restored.image,
 					search: restored.search,
 					fetch: restored.fetch,
 					memory: restored.memory,
@@ -388,6 +390,7 @@ export function SettingsView({
 		} else if (sheet === "image") {
 			setDraft((d) => {
 				if (ref === "") {
+					last.current.image = d.image;
 					return {
 						...d,
 						capabilities: { ...d.capabilities, image: false },
@@ -397,7 +400,7 @@ export function SettingsView({
 				return {
 					...d,
 					capabilities: { ...d.capabilities, image: true },
-					image: { ...(d.image ?? { model: "", size: "" }), model: ref },
+					image: { ...(d.image ?? last.current.image ?? { model: "", size: "" }), model: ref },
 				};
 			});
 		} else if (sheet === "telegram") {

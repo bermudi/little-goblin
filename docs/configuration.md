@@ -318,7 +318,10 @@ provider's crawler) also advances the chain, because the next provider
 may still get the page. When no entry gets the page and at least one
 came back thin, the tool answers `empty-extraction` with the
 browser-skill hint; when every entry failed outright, it fails with each
-provider's error. `parallel`
+provider's error. Local `too-large` and `binary` refusals also advance to
+later fetch providers; if none succeeds, the all-failed result includes
+the local refusal as the most specific reason. With no later entry, the
+local refusal is returned unchanged. `parallel`
 counts an empty full content as a failure: it never hands back its
 excerpts as the page. Search and fetch are chosen independently, so a
 search-only key like Brave's free tier pairs with a full-extraction

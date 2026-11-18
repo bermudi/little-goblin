@@ -295,7 +295,7 @@ export async function runFetchChain(
 ): Promise<FetchChainOutcome> {
 	const failures: FetchFailure[] = [];
 	let thin: { kind: FetchKind; meta: HttpMeta } | null = null;
-	for (const entry of entries) {
+	for (const [index, entry] of entries.entries()) {
 		const kind: FetchKind = entry.kind;
 		const started = Date.now();
 		try {
@@ -306,6 +306,25 @@ export async function runFetchChain(
 				const authName = "auth" in entry ? entry.auth : undefined;
 				const key = authName ? await auth.resolve(authName) : undefined;
 				extracted = await extractors[kind](url, key);
+			}
+			if (
+				kind === "local" &&
+				"error" in extracted &&
+				(extracted.kind === "too-large" || extracted.kind === "binary")
+			) {
+				if (index === entries.length - 1) return { extracted, servedBy: kind, failures };
+				failures.push({ kind, error: `${kind}: ${extracted.error}` });
+				log.warn("web fetch rejected; continuing chain", {
+					url,
+					kind,
+					outcome: extracted.kind,
+					error: extracted.error,
+					status: extracted.meta.status,
+					contentType: extracted.meta.contentType,
+					bytes: extracted.meta.bytes,
+					ms: Date.now() - started,
+				});
+				continue;
 			}
 			// Thin text is provider-specific (a JS shell for local, a blocked
 			// crawler for a vendor), so the next provider may still get the page.

@@ -48,6 +48,11 @@ not a native tool. MCP stays out, with its return conditions on record
   operator didn't write, and deterministic config order for one operator.
   No health checks, no cooldowns, no pinning: try-next-on-error is the
   whole mechanism.
+- On fetch chains, local `too-large` and `binary` refusals are per-entry
+  failures: log them and try later providers, which may extract a large
+  HTML page. A local-only chain (or a local entry with no later fallback)
+  keeps returning the refusal. If later providers all fail, the final
+  failure summary includes the local refusal and each provider failure.
 - **Keyless paths**: jina tolerates keyless reads (rate-limited); `ddg`
   scrapes the unofficial html endpoint — it can rate-limit or break, the
   no-key default, not a promise.

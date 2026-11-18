@@ -360,6 +360,99 @@ describe("fetch tool — providers", () => {
 	});
 });
 
+describe("fetch tool — local rejection failover", () => {
+	function tooLargeHtml(): Response {
+		const chunk = new Uint8Array(1024 * 1024).fill(65);
+		let produced = 0;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				produced += 1;
+				if (produced > 10) controller.close();
+				else controller.enqueue(chunk);
+			},
+		});
+		return new Response(body, { headers: { "content-type": "text/html" } });
+	}
+
+	function routeParallel(handler: (req: Request) => Response): () => void {
+		const fake = serve(handler);
+		const prev = globalThis.fetch;
+		globalThis.fetch = Object.assign(
+			(input: string | URL | Request, init?: RequestInit) => {
+				const u = new URL(input instanceof Request ? input.url : input.toString());
+				if (u.host !== "api.parallel.ai") return prev(input, init);
+				return prev(`${fake}${u.pathname}`, init);
+			},
+			{ preconnect: prev.preconnect },
+		);
+		return () => {
+			globalThis.fetch = prev;
+		};
+	}
+
+	test.each([
+		["too-large", () => tooLargeHtml()],
+		[
+			"binary",
+			() =>
+				new Response(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), {
+					headers: { "content-type": "image/png" },
+				}),
+		],
+	] as const)("local %s rejection advances to the vendor", async (_kind, response) => {
+		const page = serve(response);
+		let vendorCalls = 0;
+		const restore = routeParallel(() => {
+			vendorCalls += 1;
+			return Response.json({
+				results: [{ title: "Recovered", full_content: "Vendor page content. ".repeat(30) }],
+				errors: [],
+			});
+		});
+		try {
+			const out = (await exec(
+				fetchTool(depsWith([{ kind: "local" }, { kind: "parallel", auth: "parallel" }])),
+				{ url: `${page}/page` },
+			)) as string;
+			expect(vendorCalls).toBe(1);
+			expect(out).toContain("# Recovered");
+			expect(out).toContain("Vendor page content.");
+			expect(out).toContain(`local:`);
+		} finally {
+			restore();
+		}
+	});
+
+	test("when the vendor also fails, the all-failed error includes the local rejection", async () => {
+		const page = serve(tooLargeHtml);
+		const restore = routeParallel(() =>
+			Response.json({ results: [], errors: [{ error_type: "blocked" }] }),
+		);
+		try {
+			await expect(
+				exec(fetchTool(depsWith([{ kind: "local" }, { kind: "parallel", auth: "parallel" }])), {
+					url: `${page}/page`,
+				}),
+			).rejects.toThrow(
+				/local: page (?:is .*cap 8 MiB|exceeds the 8 MiB download cap).*parallel: extraction failed — blocked/,
+			);
+		} finally {
+			restore();
+		}
+	});
+
+	test("a chain containing only local preserves its structured rejection", async () => {
+		const page = serve(tooLargeHtml);
+		const out = (await exec(fetchTool(depsWith([{ kind: "local" }])), {
+			url: `${page}/page`,
+		})) as { error: string; kind: string };
+		expect(out).toEqual({
+			error: "page exceeds the 8 MiB download cap — use bash + curl",
+			kind: "too-large",
+		});
+	});
+});
+
 describe("fetch tool — thin results fall through", () => {
 	const SHELL_HTML = `<!doctype html><html><head><title>App</title></head><body><div id="root"></div></body></html>`;
 

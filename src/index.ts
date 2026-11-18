@@ -49,6 +49,7 @@ import { makeMailNoticeRouter, startMailWatcher } from "./mail-watcher.ts";
 import { startMemoryWorker, wireMemory } from "./memory/mod.ts";
 import { OutageTracker } from "./memory/outage.ts";
 import { openNotes } from "./notes.ts";
+import { recoverPendingInputs } from "./pending-input.ts";
 import { makePodman } from "./podman.ts";
 import { type ProgramApproval, startProgramApproval } from "./program-approval.ts";
 import { startProgramOps } from "./program-ops.ts";
@@ -153,6 +154,7 @@ async function boot() {
 		);
 	}
 	const store = openStore(paths.db());
+	recoverPendingInputs(store);
 	// Browser push is an app-owned device registry. Its VAPID pair is an
 	// auth record generated on first enable, not operator config.
 	const appPush = openAppPush(store.db, {

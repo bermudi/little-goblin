@@ -84,7 +84,10 @@ export function Composer({
 	// exclusion (a memory-off project): the toggle reads off, disabled.
 	stagedMemory?: { excluded: boolean; locked: boolean };
 	onStagedMemoryToggle?: (excluded: boolean) => void;
-	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
+	onSend: (
+		parts: UIMessage["parts"],
+		whenBusy?: "steer" | "followUp",
+	) => void | boolean | Promise<boolean>;
 	// Present only where a live turn exists to interrupt (ChatView).
 	onStop?: () => void;
 	// A manual compact landed a pointer — the host re-reads history so
@@ -102,7 +105,7 @@ export function Composer({
 	// whenever a turn settles (operator ask, 2026-11-07). One-way — the
 	// conversation-less composers keep their explicit focusSignal only.
 	stealFocus?: boolean;
-	draftRestore?: { parts: UIMessage["parts"] } | null;
+	draftRestore?: { parts: UIMessage["parts"]; source?: "pending-edit" } | null;
 	onDraftRestored?: () => void;
 }) {
 	// The draft is durable per scope: restored at mount, stored on every
@@ -315,8 +318,9 @@ export function Composer({
 			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
 		}
 	}, [quote, setDraft, editedAfterSend, textareaRef]);
-	// The parent scopes this payload to its originating composer. Never
-	// replace text the operator wrote after the cancelled send.
+	// The parent scopes this payload to its originating composer. Pending
+	// edits always restore, ahead of any newer draft; cancelled-send restores
+	// keep the edit guard so they never replace newer operator text.
 	useEffect(() => {
 		if (draftRestore == null) return;
 		const {
@@ -332,7 +336,11 @@ export function Composer({
 			.filter((p) => p.type === "text")
 			.map((p) => p.text)
 			.join("\n\n");
-		if (!editedAfterSend.current) setDraft(text);
+		if (draftRestore.source === "pending-edit") {
+			setDraft((current) => (current === "" ? text : `${text}\n\n${current}`));
+		} else if (!editedAfterSend.current) {
+			setDraft(text);
+		}
 		const uploads: StagedUpload[] = [];
 		const notes: StagedNote[] = [];
 		const skills: StagedSkill[] = [];
@@ -543,7 +551,7 @@ export function Composer({
 						// not a send.
 						if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
 							e.preventDefault();
-							send();
+							send(e.altKey ? "followUp" : "steer");
 						}
 					}}
 				/>
@@ -836,6 +844,26 @@ export function Composer({
 						</svg>
 					</button>
 				) : (
+				<>
+				{busy && onStop !== undefined && (
+					<button
+						type="button"
+						className="queue-btn"
+						aria-label="Queue as follow-up"
+						title="Queue as follow-up (Alt+Enter)"
+						disabled={
+							configSaving ||
+							recording ||
+							(draft.trim() === "" &&
+								staged.every((e) => e.failed === true || e.uploading === true) &&
+								stagedNotes.length === 0 &&
+								stagedSkills.length === 0)
+						}
+						onClick={() => send("followUp")}
+					>
+						Queue
+					</button>
+				)}
 				<button
 					type="submit"
 					className="send-btn"
@@ -859,6 +887,7 @@ export function Composer({
 						/>
 					</svg>
 				</button>
+				</>
 				)}
 			</div>
 			{sendError !== null && (

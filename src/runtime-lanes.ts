@@ -16,12 +16,12 @@ import type { TurnSink } from "./turn/sink.ts";
 import { endLive, type LiveChunks } from "./turn/stream.ts";
 
 export interface QueuedTurn {
-	// The durable event seq of the appended message — captured from the
-	// append (or the persisting caller) so steering ownership never has to
-	// match client message ids, which are neither unique nor trusted.
-	seq: number;
-	// Already appended to history; a live predecessor may fold it into its
-	// next model call.
+	// A durable event seq when the input already entered history. A pending
+	// app submit has null until claim atomically appends its history event.
+	seq: number | null;
+	// App input stays outside transcript history until a lane claim.
+	pending?: { id: string; mode: "steer" | "followUp" };
+	// The user input; pending app input is durable in its inbox row until claim.
 	message: Message;
 	sink: TurnSink;
 	// Prevents a throwing sink from receiving a second terminal notification.
@@ -33,6 +33,8 @@ export interface QueuedTurn {
 	release?: (() => void) | undefined;
 }
 
+export type ClaimedTurn = Omit<QueuedTurn, "seq" | "pending"> & { seq: number };
+
 // Compaction jobs run between turns so the preceding exchange is whole.
 // A submit arriving during the job waits for the next drain pass.
 export interface QueuedCompact {
@@ -43,7 +45,10 @@ export interface QueuedCompact {
 	reject: (err: unknown) => void;
 }
 
-export type ConversationEvent = { type: "turn-start" } | { type: "turn-end" };
+export type ConversationEvent =
+	| { type: "turn-start" }
+	| { type: "turn-end" }
+	| { type: "pending" };
 
 interface Lane {
 	pending: QueuedTurn[];
@@ -77,8 +82,20 @@ function claimableCount(pending: QueuedTurn[], headStreams: boolean, headLeads: 
 	return first === -1 ? pending.length : Math.min(pending.length, first);
 }
 
-function claimPending(lane: Lane, headStreams: boolean, headLeads = true): QueuedTurn[] {
-	return lane.pending.splice(0, claimableCount(lane.pending, headStreams, headLeads));
+function claimPending(
+	lane: Lane,
+	headStreams: boolean,
+	headLeads = true,
+	stopAtFollowUp = false,
+): QueuedTurn[] {
+	const count = claimableCount(lane.pending, headStreams, headLeads);
+	if (!stopAtFollowUp) return lane.pending.splice(0, count);
+
+	const prefix = lane.pending.splice(0, count);
+	const claimed = prefix.filter((turn) => turn.pending?.mode !== "followUp");
+	const followUps = prefix.filter((turn) => turn.pending?.mode === "followUp");
+	lane.pending.unshift(...followUps);
+	return claimed;
 }
 
 // A read-only `claim` probe — same headStreams source filter, nothing
@@ -86,7 +103,10 @@ function claimPending(lane: Lane, headStreams: boolean, headLeads = true): Queue
 // model call would fold waiting input; consumption still belongs to
 // the model-call boundary alone.
 function hasClaimable(lane: Lane, headStreams: boolean): boolean {
-	return claimableCount(lane.pending, headStreams, false) > 0;
+	const count = claimableCount(lane.pending, headStreams, false);
+	return lane.pending
+		.slice(0, count)
+		.some((turn) => turn.pending?.mode !== "followUp");
 }
 
 export class LaneRegistry {
@@ -107,7 +127,13 @@ export class LaneRegistry {
 	}
 
 	emitConversation(convId: string, event: ConversationEvent): void {
-		for (const listener of this.subscribers.get(convId) ?? []) listener(event);
+		for (const listener of this.subscribers.get(convId) ?? []) {
+			try {
+				listener(event);
+			} catch (err) {
+				log.warn("conversation event listener failed", err, { conversation: convId, event: event.type });
+			}
+		}
 	}
 
 	conversationSubscriberCount(convId: string): number {
@@ -198,8 +224,58 @@ export class LaneRegistry {
 	}
 
 	// Splice the claimable prefix off the pending queue (claimableCount).
-	claim(convId: string, headStreams: boolean, headLeads = true): QueuedTurn[] {
-		return claimPending(this.lane(convId), headStreams, headLeads);
+	claim(
+		convId: string,
+		headStreams: boolean,
+		headLeads: boolean,
+		onClaim: (turns: QueuedTurn[]) => void,
+		stopAtFollowUp?: boolean,
+	): ClaimedTurn[];
+	claim(
+		convId: string,
+		headStreams: boolean,
+		headLeads?: boolean,
+	): QueuedTurn[];
+	claim(
+		convId: string,
+		headStreams: boolean,
+		headLeads = true,
+		onClaim?: (turns: QueuedTurn[]) => void,
+		stopAtFollowUp = false,
+	): ClaimedTurn[] | QueuedTurn[] {
+		const lane = this.lane(convId);
+		const original = lane.pending.slice();
+		const turns = claimPending(lane, headStreams, headLeads, stopAtFollowUp);
+		try {
+			onClaim?.(turns);
+			if (onClaim !== undefined) {
+				for (const turn of turns) {
+					if (turn.seq === null || turn.pending !== undefined) {
+						throw new Error(
+							`lane claim did not materialize pending input ${turn.pending?.id ?? "?"}`,
+						);
+					}
+				}
+			}
+		} catch (err) {
+			lane.pending.splice(0, lane.pending.length, ...original);
+			throw err;
+		}
+		if (onClaim === undefined) return turns;
+		return turns as ClaimedTurn[];
+	}
+
+	removePending(convId: string, id: string): { turn: QueuedTurn; index: number } | null {
+		const lane = this.lanes.get(convId);
+		if (lane === undefined) return null;
+		const index = lane.pending.findIndex((turn) => turn.pending?.id === id);
+		if (index === -1) return null;
+		const turn = lane.pending.splice(index, 1)[0];
+		return turn === undefined ? null : { turn, index };
+	}
+
+	restorePending(convId: string, turn: QueuedTurn, index: number): void {
+		this.lane(convId).pending.splice(index, 0, turn);
 	}
 
 	// Whether the next member claim would take anything — the tool
@@ -252,7 +328,9 @@ export class LaneRegistry {
 	// view receives historical context and admitted inputs, never
 	// still-pending ones.
 	pendingSeqs(convId: string): Set<number> {
-		return new Set(this.lane(convId).pending.map((t) => t.seq));
+		return new Set(
+			this.lane(convId).pending.flatMap((t) => (t.seq === null ? [] : [t.seq])),
+		);
 	}
 
 	// Where completed history ends for a fold: the lowest seq whose reply
@@ -265,7 +343,7 @@ export class LaneRegistry {
 	pendingFloor(convId: string, activeFloor?: number): number | null {
 		let ceiling = activeFloor ?? null;
 		for (const t of this.lanes.get(convId)?.pending ?? []) {
-			if (ceiling === null || t.seq < ceiling) ceiling = t.seq;
+			if (t.seq !== null && (ceiling === null || t.seq < ceiling)) ceiling = t.seq;
 		}
 		return ceiling;
 	}

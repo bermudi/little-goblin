@@ -3203,6 +3203,105 @@ function steeringSetup(model: LanguageModel, gate?: Promise<void>, modalities?: 
 }
 
 describe("steering", () => {
+	test("a steer behind a follow-up folds before the reply; the follow-up runs next", async () => {
+		const gate = deferred<void>();
+		const s = gatedToolModel("adjusted");
+		const r = steeringSetup(s.model, gate.promise);
+		try {
+			const first = submit(r, "start this");
+			await first.firstToolCall;
+			const steer = new RecordingSink();
+			const followUp = new RecordingSink();
+			r.runtime.submitPending(
+				r.conv,
+				userMessage([{ type: "text", text: "run this next" }]),
+				"followUp",
+				followUp,
+			);
+			r.runtime.submitPending(
+				r.conv,
+				userMessage([{ type: "text", text: "fold this steer" }]),
+				"steer",
+				steer,
+			);
+			expect(r.store.history(r.conv.id).map((message) => message.role)).toEqual(["user"]);
+			expect(r.runtime.listPending(r.conv.id).map((item) => item.mode)).toEqual([
+				"followUp",
+				"steer",
+			]);
+			gate.resolve();
+			expect(await first.done).toEqual({ kind: "completed" });
+			expect(await steer.done).toEqual({ kind: "completed" });
+			expect(await followUp.done).toEqual({ kind: "completed" });
+			expect(r.runtime.listPending(r.conv.id)).toEqual([]);
+			expect(s.prompts).toHaveLength(3);
+			expect(s.prompts[1]).toContain("fold this steer");
+			expect(s.prompts[1]).not.toContain("run this next");
+			expect(s.prompts[2]).toContain("run this next");
+			const history = r.store.history(r.conv.id);
+			expect(history.map((message) => message.role)).toEqual([
+				"user",
+				"user",
+				"assistant",
+				"user",
+				"assistant",
+			]);
+			expect(history[1]?.parts).toContainEqual({ type: "text", text: "fold this steer" });
+			expect(history[2]?.parts).toContainEqual(expect.objectContaining({ type: "text" }));
+			expect(history[3]?.parts).toContainEqual({ type: "text", text: "run this next" });
+		} finally {
+			gate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
+	test("a failed middle dequeue restores its original lane position", async () => {
+		const gate = deferred<void>();
+		const s = gatedToolModel("adjusted");
+		const r = steeringSetup(s.model, gate.promise);
+		try {
+			const first = submit(r, "start this");
+			await first.firstToolCall;
+			for (const text of ["pending one", "pending two", "pending three"]) {
+				r.runtime.submitPending(
+					r.conv,
+					userMessage([{ type: "text", text }]),
+					"followUp",
+					new RecordingSink(),
+				);
+			}
+			const [one, two, three] = r.runtime.listPending(r.conv.id);
+			expect([one?.message.parts[0], two?.message.parts[0], three?.message.parts[0]]).toEqual([
+				{ type: "text", text: "pending one" },
+				{ type: "text", text: "pending two" },
+				{ type: "text", text: "pending three" },
+			]);
+			const twoId = two!.id;
+			r.store.db.run(`
+				CREATE TRIGGER fail_pending_dequeue
+				BEFORE DELETE ON app_pending_input
+				WHEN OLD.id = '${twoId}'
+				BEGIN SELECT RAISE(ABORT, 'injected pending delete failure'); END
+			`);
+
+			expect(r.runtime.dequeuePending(r.conv.id, one!.id)?.id).toBe(one!.message.id);
+			expect(() => r.runtime.dequeuePending(r.conv.id, twoId)).toThrow(
+				"injected pending delete failure",
+			);
+			r.store.db.run("DROP TRIGGER fail_pending_dequeue");
+			expect(r.runtime.dequeuePending(r.conv.id, twoId)?.id).toBe(two!.message.id);
+			expect(r.runtime.dequeuePending(r.conv.id, three!.id)?.id).toBe(three!.message.id);
+
+			gate.resolve();
+			expect(await first.done).toEqual({ kind: "completed" });
+		} finally {
+			gate.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
 	test("a submit during a live turn joins the next model call", async () => {
 		const gate = deferred<void>();
 		const s = gatedToolModel("adjusted");

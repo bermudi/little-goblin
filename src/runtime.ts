@@ -23,6 +23,7 @@ import {
 import { resolveSkillRef } from "./agent/skill-inject.ts";
 import { lastInputTokensOf, type Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
+import { PendingInputs, type PendingInputMode } from "./pending-input.ts";
 import { log } from "./log.ts";
 import {
 	activeExchangeExcluded,
@@ -36,6 +37,7 @@ import type { PriorTurnContext } from "./reviewer-evidence.ts";
 import { Reviewer } from "./reviewer.ts";
 import {
 	LaneRegistry,
+	type ClaimedTurn,
 	type ConversationEvent,
 	type QueuedTurn,
 } from "./runtime-lanes.ts";
@@ -97,6 +99,11 @@ const LOOP_CHECK_EVERY = 16;
 // keeps a working tail and chunk instead of a tail that swallows it.
 const COMPACT_TAIL_TOKENS = 20_000;
 const COMPACT_CHUNK_TOKENS = 100_000;
+
+function queuedSeq(turn: QueuedTurn): number {
+	if (turn.seq === null) throw new Error(`pending input ${turn.pending?.id ?? "?"} was not claimed`);
+	return turn.seq;
+}
 
 // The compaction budgets as a pure function (design/compaction.md →
 // Budgets) — exported for the ruling's tests. Small windows keep the
@@ -188,10 +195,11 @@ export class FencedError extends Error {
 // the decision, not a closure over a queue that may have changed.
 type AttemptOutcome =
 	| { kind: "done" }
-	| { kind: "resume"; recovery: TurnRecovery; turns: QueuedTurn[] };
+	| { kind: "resume"; recovery: TurnRecovery; turns: ClaimedTurn[] };
 
 export class Runtime {
 	private lanes = new LaneRegistry();
+	private readonly pendingInputs: PendingInputs;
 	private turnEndWatchers = new Map<string, boolean>();
 	private readonly lastTurnTools = new Map<
 		string,
@@ -213,7 +221,9 @@ export class Runtime {
 	// Off-the-record turns deliberately break this chain.
 	private lastTurns = new Map<string, PriorTurnContext>();
 
-	constructor(private deps: RuntimeDeps) {}
+	constructor(private deps: RuntimeDeps) {
+		this.pendingInputs = new PendingInputs(deps.store.db);
+	}
 
 	setReviewer(reviewer: Reviewer): void {
 		this.reviewer = reviewer;
@@ -252,6 +262,54 @@ export class Runtime {
 	// it from a client message id.
 	submitPersisted(conv: Conversation, message: Message, sink: TurnSink, seq: number): boolean {
 		return this.admit(conv, message, sink, seq);
+	}
+
+	submitPending(
+		conv: Conversation,
+		message: Message,
+		mode: PendingInputMode,
+		sink: TurnSink,
+	): string {
+		if (!this.busy(conv.id)) throw new Error(`cannot queue pending input on idle conversation ${conv.id}`);
+		const row = this.pendingInputs.add(conv.id, message, mode);
+		this.lanes.enqueue(conv.id, {
+			seq: null,
+			pending: { id: row.id, mode },
+			message,
+			sink,
+			doneSent: false,
+		});
+		this.lanes.emitConversation(conv.id, { type: "pending" });
+		this.lanes.startDraining(conv.id, () => this.drain(conv.id));
+		log.info("app pending input added", { conversation: conv.id, pendingId: row.id, mode });
+		return row.id;
+	}
+
+	listPending(convId: string): ReturnType<PendingInputs["list"]> {
+		return this.pendingInputs.list(convId);
+	}
+
+	dequeuePending(convId: string, pendingId: string): Message | null {
+		const removed = this.lanes.removePending(convId, pendingId);
+		if (removed === null) {
+			log.info("app pending input dequeue refused", {
+				conversation: convId,
+				pendingId,
+				reason: "already-taken",
+			});
+			return null;
+		}
+		let input: ReturnType<PendingInputs["take"]>;
+		try {
+			input = this.deps.store.db.transaction(() => this.pendingInputs.take(pendingId))();
+			if (input === null) throw new Error(`pending input row ${pendingId} missing during dequeue`);
+		} catch (err) {
+			this.lanes.restorePending(convId, removed.turn, removed.index);
+			throw err;
+		}
+		this.lanes.emitConversation(convId, { type: "pending" });
+		log.info("app pending input dequeued", { conversation: convId, pendingId });
+		return input.message;
 	}
 
 	// A live admission by client-visible id — loose matching for
@@ -383,6 +441,10 @@ export class Runtime {
 			);
 		}
 		const dropped = this.lanes.dropAll(convId);
+		this.movePendingToHistory(dropped.turns, "stop-move");
+		if (dropped.turns.some((turn) => turn.pending !== undefined)) {
+			this.lanes.emitConversation(convId, { type: "pending" });
+		}
 		const notifies: Promise<void>[] = [];
 		for (const t of dropped.turns) {
 			notifies.push(this.notifyDone(t, { kind: "fenced" }));
@@ -403,6 +465,55 @@ export class Runtime {
 			// Captured here — the turn running at call time, not any submitted later.
 			active: this.lanes.activeTurn(convId) ?? Promise.resolve(),
 		};
+	}
+
+	private materializeClaimed(convId: string, turns: QueuedTurn[]): void {
+		const pending = turns.filter((turn) => turn.pending !== undefined);
+		if (pending.length === 0) return;
+		const claimed = this.deps.store.db.transaction(() =>
+			pending.map((turn) => {
+				const meta = turn.pending!;
+				const row = this.pendingInputs.take(meta.id);
+				if (row === null || row.conversation !== convId) {
+					throw new Error(`pending input ${meta.id} missing from ${convId} during claim`);
+				}
+				const seq = this.deps.store.append(convId, [row.message])[0]!;
+				return { turn, id: meta.id, seq };
+			}),
+		)();
+		for (const { turn, id, seq } of claimed) {
+			turn.seq = seq;
+			delete turn.pending;
+			log.info("app pending input claimed", {
+				conversation: convId,
+				pendingId: id,
+				seq,
+			});
+		}
+		this.lanes.emitConversation(convId, { type: "pending" });
+	}
+
+	private movePendingToHistory(turns: QueuedTurn[], reason: "stop-move"): void {
+		const pending = turns.filter((turn) => turn.pending !== undefined);
+		if (pending.length === 0) return;
+		const moved = this.deps.store.db.transaction(() =>
+			pending.map((turn) => {
+				const meta = turn.pending!;
+				const row = this.pendingInputs.take(meta.id);
+				if (row === null) throw new Error(`pending input row ${meta.id} missing during ${reason}`);
+				const seq = this.deps.store.append(row.conversation, [row.message])[0]!;
+				return { turn, row, seq };
+			}),
+		)();
+		for (const { turn, row, seq } of moved) {
+			turn.seq = seq;
+			delete turn.pending;
+			log.info(`app pending input ${reason}`, {
+				conversation: row.conversation,
+				pendingId: row.id,
+				seq,
+			});
+		}
 	}
 
 	// Queue compaction behind the running turn so its response is not orphaned.
@@ -504,14 +615,21 @@ export class Runtime {
 		convId: string,
 		sink: TurnSink,
 		live: LiveWire,
-		members: QueuedTurn[],
-	): QueuedTurn[] {
-		return claimMembers(
+		members: ClaimedTurn[],
+	): ClaimedTurn[] {
+		return claimMembers<ClaimedTurn>(
 			convId,
-			() => this.lanes.claim(convId, sink.delivery === "stream", false),
+			() =>
+				this.lanes.claim(
+					convId,
+					sink.delivery === "stream",
+					false,
+					(turns) => this.materializeClaimed(convId, turns),
+					true,
+				),
 			live,
 			members,
-		);
+		) as ClaimedTurn[];
 	}
 
 	private async recallMemory(
@@ -539,7 +657,12 @@ export class Runtime {
 				// Coalesce the claimable queue into one conversational beat; a
 				// left-behind streaming item starts the next pass. The head sink's
 				// delivery mode determines the claim boundary.
-				const turns = this.lanes.claim(convId, this.lanes.headStreams(convId));
+				const turns = this.lanes.claim(
+					convId,
+					this.lanes.headStreams(convId),
+					true,
+					(claimed) => this.materializeClaimed(convId, claimed),
+				);
 				if (turns.length > 0) {
 					if (turns.length > 1) {
 						log.info("queued submits coalesced", {
@@ -608,7 +731,7 @@ export class Runtime {
 	// Keep one wire log and membership across attempts; recovery controls the
 	// next attempt without recursion. The live log therefore survives overflow
 	// while late subscribers retain one continuous stream.
-	private async runTurn(convId: string, turns: QueuedTurn[]): Promise<void> {
+	private async runTurn(convId: string, turns: ClaimedTurn[]): Promise<void> {
 		const live = openLive();
 		// An overflow/fallback continuation enters the same recovery slot
 		// its decision fills — the attempt loop consumes it identically.
@@ -629,7 +752,7 @@ export class Runtime {
 	// attach cannot mistake a resumed attempt for a new turn.
 	private async runAttempt(
 		convId: string,
-		turns: QueuedTurn[],
+		turns: ClaimedTurn[],
 		recovery: TurnRecovery | undefined,
 		live: LiveChunks,
 	): Promise<AttemptOutcome> {
@@ -690,7 +813,7 @@ export class Runtime {
 			if (authority?.ownershipBegun === true) return;
 			this.deps.runOwnership?.preRunFailure?.({
 				conversationId: convId,
-				memberSeqs: turns.map((t) => t.seq),
+				memberSeqs: turns.map(queuedSeq),
 				error: err instanceof Error ? err.message : String(err),
 			});
 		};
@@ -709,7 +832,7 @@ export class Runtime {
 					claimQueued: (wire) => this.claimQueuedMembers(convId, sink, wire, turns),
 					pendingSeqs: () => this.lanes.pendingSeqs(convId),
 					// Read after claimQueued — it can add members to `turns`.
-					ownedInputSeqs: () => new Set(turns.map((t) => t.seq)),
+					ownedInputSeqs: () => new Set(turns.map(queuedSeq)),
 					modelEntries: () => store.modelEntries(convId),
 					now: Date.now,
 				},
@@ -769,7 +892,7 @@ export class Runtime {
 		// input queued behind the running request. Compaction — the pre-empt
 		// foldability probe and the fold itself — must see only completed
 		// history strictly before it (foldCeiling).
-		const activeFloor = Math.min(...turns.map((t) => t.seq));
+		const activeFloor = Math.min(...turns.map(queuedSeq));
 
 		// Reuse recall on overflow resume; it belongs to the pre-compaction view.
 		// Reissuing it would spend memory quota twice for one logical turn.
@@ -785,7 +908,8 @@ export class Runtime {
 		const sourceInputSeq = (): number | null => {
 			let max: number | null = null;
 			for (const t of turns) {
-				if (max === null || t.seq > max) max = t.seq;
+				const seq = queuedSeq(t);
+				if (max === null || seq > max) max = seq;
 			}
 			return max ?? recovery?.sourceInputSeq ?? null;
 		};
@@ -859,7 +983,7 @@ export class Runtime {
 					startedAtMs: turnStartMs,
 					ownedInputSeqs,
 					admissionExchangeExcluded,
-					memberSeqs: turns.map((t) => t.seq),
+					memberSeqs: turns.map(queuedSeq),
 					sourceInputSeq,
 					predecessorRun: recovery?.predecessorRun,
 					fallbackConfigured: fallback.configured,
@@ -1006,7 +1130,14 @@ export class Runtime {
 				priorInputTokens,
 				tools,
 				view: viewCtx,
-				claimSteers: () => this.lanes.claim(convId, sink.delivery === "stream", false),
+				claimSteers: () =>
+					this.lanes.claim(
+						convId,
+						sink.delivery === "stream",
+						false,
+						(claimed) => this.materializeClaimed(convId, claimed),
+						true,
+					),
 				unrequeueSteers: (steered) => this.lanes.unrequeue(convId, steered),
 				settle: (m, done) => void this.notifyDone(m, done),
 				steerMarkSeed: snapshot.steerMarkSeed,

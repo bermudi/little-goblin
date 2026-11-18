@@ -26,6 +26,7 @@ const conversationIdSchema = z
 const chatBody = z
 	.object({
 		conversationId: conversationIdSchema,
+		whenBusy: z.enum(["steer", "followUp"]).optional(),
 		retry: z.literal(true).optional(),
 		// Edit-in-place: the durable user event this message replaces. The
 		// store cuts the transcript there; the edited message becomes the
@@ -454,6 +455,19 @@ export async function handleChatRoute(
 		log.info("app intake", { conversation: convId, message: message.id });
 		const sink = appConversationSink(convId, media, notifyUnwatched);
 		try {
+			if (runtime.busy(convId)) {
+				const pendingId = runtime.submitPending(
+					conv,
+					message as Message,
+					parsed.data.whenBusy ?? "steer",
+					sink,
+				);
+				bumpSkillUsage(convId, message.parts);
+				return Response.json(
+					{ submitted: true, pendingId },
+					{ status: 202, headers: NO_STORE },
+				);
+			}
 			runtime.submit(conv, message as Message, sink);
 		} catch (err) {
 			log.error("app submit failed", err, { conversation: convId, message: message.id });

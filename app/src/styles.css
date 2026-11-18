@@ -1285,6 +1285,62 @@ header h1 {
 .msg.assistant.pending {
 	color: var(--app-fg-subtle);
 }
+.pending-inputs {
+	display: grid;
+	gap: 0.35rem;
+	margin: 0.75rem 0;
+}
+.pending-inputs h3 {
+	margin: 0;
+	color: var(--app-fg-muted);
+	font: 600 0.75rem var(--font-sans);
+}
+.pending-input {
+	display: flex;
+	align-items: stretch;
+	gap: 0.35rem;
+	border: 1px solid var(--app-border);
+	border-radius: 8px;
+	overflow: hidden;
+}
+.pending-input-edit {
+	display: flex;
+	align-items: baseline;
+	gap: 0.6rem;
+	min-width: 0;
+	flex: 1;
+	padding: 0.55rem 0.7rem;
+	text-align: left;
+	color: var(--app-fg);
+}
+.pending-input-edit:hover,
+.pending-input-remove:hover {
+	background: var(--app-hover);
+}
+.pending-input-mode {
+	flex: none;
+	color: var(--app-fg-muted);
+	font: 600 0.68rem var(--font-mono);
+	text-transform: uppercase;
+}
+.pending-input-remove {
+	padding: 0 0.75rem;
+	color: var(--app-fg-muted);
+}
+.queue-btn {
+	margin-left: auto;
+	padding: 0.3rem 0.55rem;
+	border-radius: 6px;
+	color: var(--app-fg-muted);
+	font: 500 0.72rem var(--font-sans);
+}
+.queue-btn:hover:not(:disabled) {
+	background: var(--app-hover);
+	color: var(--app-fg);
+}
+.queue-btn:disabled {
+	opacity: 0.35;
+}
 
 /* Fold marks — a pill riding the transcript at each compaction
    boundary; the newest (live) pointer carries the accent edge. The

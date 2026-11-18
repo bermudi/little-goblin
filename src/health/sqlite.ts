@@ -41,6 +41,7 @@ function expectedTables(config: Config | undefined): string[] {
 		"app_push_deliveries",
 		"turn_runs",
 		"turn_tool_calls",
+		"app_pending_input",
 		"context_windows",
 		"context_window_state",
 	];

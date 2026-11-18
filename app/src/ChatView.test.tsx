@@ -297,6 +297,7 @@ function mountDom() {
     install("Event", dom.win.Event);
     install("CustomEvent", dom.win.CustomEvent);
     install("getComputedStyle", dom.win.getComputedStyle);
+    install("requestAnimationFrame", dom.win.requestAnimationFrame.bind(dom.win));
     // The command primitive's typeahead walks item text through the DOM
     // global NodeFilter; browsers have it, bare bun:test doesn't.
     install("NodeFilter", (dom.win as unknown as { NodeFilter: unknown }).NodeFilter);
@@ -1551,7 +1552,18 @@ describe("ChatView mid-turn steer", () => {
       },
     });
     let stopPosts = 0;
-    const chatPosts: { conversationId?: string; message?: UIMessage }[] = [];
+    const chatPosts: {
+      conversationId?: string;
+      message?: UIMessage;
+      whenBusy?: "steer" | "followUp";
+    }[] = [];
+    let pendingRows: {
+      id: string;
+      mode: "steer" | "followUp";
+      message: UIMessage;
+      createdAt: string;
+    }[] = [];
+    let pendingDeletes = 0;
     globalThis.fetch = Object.assign(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url =
@@ -1572,12 +1584,39 @@ describe("ChatView mid-turn steer", () => {
           return new Response(eventsStream, {
             headers: { "content-type": "text/event-stream" },
           });
+        if (url.endsWith("/pending"))
+          return jsonResponse({ items: pendingRows });
+        if (url.includes("/pending/") && init?.method === "DELETE") {
+          pendingDeletes++;
+          const id = decodeURIComponent(url.split("/").at(-1)!);
+          const item = pendingRows.find((row) => row.id === id);
+          pendingRows = pendingRows.filter((row) => row.id !== id);
+          return jsonResponse({ message: item?.message });
+        }
         if (url.endsWith("/stop")) {
           stopPosts++;
           return jsonResponse({ stopped: true, settled: true });
         }
         if (url === "/api/app/chat") {
-          chatPosts.push(JSON.parse(String(init?.body)));
+          const body = JSON.parse(String(init?.body)) as {
+            conversationId?: string;
+            message?: UIMessage;
+            whenBusy?: "steer" | "followUp";
+          };
+          chatPosts.push(body);
+          const pendingId = `pending-${chatPosts.length}`;
+          if (body.whenBusy !== undefined && body.message !== undefined) {
+            pendingRows = [
+              ...pendingRows,
+              {
+                id: pendingId,
+                mode: body.whenBusy,
+                message: body.message,
+                createdAt: "2026-01-01T00:00:00.000Z",
+              },
+            ];
+            return jsonResponse({ submitted: true, pendingId }, 202);
+          }
           return jsonResponse({ submitted: true }, 202);
         }
         return jsonResponse({
@@ -1621,7 +1660,9 @@ describe("ChatView mid-turn steer", () => {
     // The action switches from Stop to Send when a steer is composed.
     expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
     expect(dom.container.querySelector(".send-btn")).toBeNull();
-    const ta = dom.container.querySelector("form.composer textarea")!;
+    const ta = dom.container.querySelector<HTMLTextAreaElement>(
+      "form.composer textarea",
+    )!;
     await act(async () => {
       // Focus + keyup too — React's text-input fallback needs it in
       // this environment.
@@ -1662,7 +1703,26 @@ describe("ChatView mid-turn steer", () => {
     expect(chatPosts[0]?.message?.parts).toEqual([
       { type: "text", text: "steer it" },
     ]);
+    expect(chatPosts[0]?.whenBusy).toBe("steer");
+    expect(dom.container.textContent).toContain("Pending input");
+    expect(dom.container.textContent).toContain("steer it");
+    expect(dom.container.querySelector(".msg.user")?.textContent).not.toContain("steer it");
     expect(stopPosts).toBe(0);
+    for (let i = 0; i < 100 && ta.value !== ""; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(ta.value).toBe("");
+    await act(async () => {
+      dom.container
+        .querySelector<HTMLButtonElement>(".pending-input-edit")!
+        .click();
+    });
+    for (let i = 0; i < 100 && pendingDeletes === 0; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(pendingDeletes).toBe(1);
+    expect(ta.value).toBe("steer it");
+    expect(dom.container.querySelector(".pending-inputs")).toBeNull();
     await act(async () => {
       live.enqueue(
         encoder.encode(
@@ -1684,6 +1744,170 @@ describe("ChatView mid-turn steer", () => {
     ).toHaveLength(1);
     expect(dom.container.textContent).toContain("working — continued");
     expect(stopPosts).toBe(0);
+
+    await act(async () => {
+      (ta as HTMLElement).focus();
+      Object.getOwnPropertyDescriptor(
+        dom.win.HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!.call(ta, "queue this");
+      ta.dispatchEvent(new dom.win.Event("input", { bubbles: true }) as unknown as Event);
+      ta.dispatchEvent(
+        new dom.win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as Event,
+      );
+      ta.dispatchEvent(
+        new dom.win.KeyboardEvent("keydown", {
+          bubbles: true,
+          key: "Enter",
+          altKey: true,
+        }) as unknown as Event,
+      );
+    });
+    for (let i = 0; i < 100 && chatPosts.length < 2; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 15)));
+    }
+    expect(chatPosts[1]?.whenBusy).toBe("followUp");
+    expect(chatPosts[1]?.message?.parts).toEqual([{ type: "text", text: "queue this" }]);
+  });
+
+  test("pending input can be edited back into the composer or removed", async () => {
+    const encoder = new TextEncoder();
+    const item = {
+      id: "pending-1",
+      mode: "followUp" as const,
+      message: userMsg("queued-1", "restore this text"),
+      createdAt: new Date().toISOString(),
+    };
+    let pendingRows = [item];
+    let removed = 0;
+    let deleteStatus = 200;
+    let stored: UIMessage[] = [];
+    let eventsController!: ReadableStreamDefaultController<Uint8Array>;
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        eventsController = controller;
+        controller.enqueue(encoder.encode('data: {"type":"state","live":false}\n\n'));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages"))
+          return jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, { headers: { "content-type": "text/event-stream" } });
+        if (url.includes("/pending/") && init?.method === "DELETE") {
+          removed++;
+          if (deleteStatus === 409) return jsonResponse({ error: "already taken" }, 409);
+          pendingRows = [];
+          return jsonResponse({ message: item.message });
+        }
+        if (url.endsWith("/pending")) return jsonResponse({ items: pendingRows });
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        return jsonResponse({
+          model: "prov/model",
+          thinking: "off",
+          favorites: [],
+          catalog: [],
+          thinkingLevels: ["off"],
+        });
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    dom.root = createRoot(dom.container);
+    await act(async () =>
+      dom.root?.render(
+        <ChatView
+          token={null}
+          conversationId="app/chat-01"
+          title={null}
+          seed={null}
+          staged={[]}
+          setStaged={() => {}}
+          stagedNotes={[]}
+          setStagedNotes={() => {}}
+          stagedSkills={[]}
+          setStagedSkills={() => {}}
+          onSeeded={() => {}}
+          onTurnDone={() => {}}
+        />,
+      ),
+    );
+    for (let i = 0; i < 100 && !dom.container.textContent?.includes("restore this text"); i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    const textarea = dom.container.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      (textarea as HTMLElement).focus();
+      Object.getOwnPropertyDescriptor(
+        dom.win.HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!.call(textarea, "keep this draft");
+      textarea.dispatchEvent(new dom.win.Event("input", { bubbles: true }) as unknown as Event);
+      textarea.dispatchEvent(
+        new dom.win.KeyboardEvent("keyup", { bubbles: true, key: "t" }) as unknown as Event,
+      );
+    });
+    await act(async () => {
+      dom.container.querySelector<HTMLButtonElement>(".pending-input-edit")!.click();
+    });
+    for (let i = 0; i < 100 && removed === 0; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(removed).toBe(1);
+    expect(textarea.value).toBe("restore this text\n\nkeep this draft");
+    expect(dom.container.querySelector(".pending-inputs")).toBeNull();
+
+    const removedItem = {
+      ...item,
+      id: "pending-2",
+      message: userMsg("queued-2", "remove with x"),
+    };
+    pendingRows = [removedItem];
+    await act(async () => {
+      eventsController.enqueue(encoder.encode('data: {"type":"pending"}\n\n'));
+    });
+    for (let i = 0; i < 100 && !dom.container.textContent?.includes("remove with x"); i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    await act(async () => {
+      dom.container.querySelector<HTMLButtonElement>(".pending-input-remove")!.click();
+    });
+    for (let i = 0; i < 100 && removed < 2; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(removed).toBe(2);
+    expect(dom.container.querySelector(".pending-inputs")).toBeNull();
+
+    const claimedItem = {
+      ...item,
+      id: "pending-3",
+      message: userMsg("claimed-3", "already claimed"),
+    };
+    pendingRows = [claimedItem];
+    await act(async () => {
+      eventsController.enqueue(encoder.encode('data: {"type":"pending"}\n\n'));
+    });
+    for (let i = 0; i < 100 && !dom.container.textContent?.includes("already claimed"); i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    const historyBeforeConflict = dom.container.textContent;
+    pendingRows = [];
+    stored = [
+      userMsg("claimed-3", "already claimed"),
+      { id: "reply-3", role: "assistant", parts: [{ type: "text", text: "history refreshed" }] },
+    ];
+    deleteStatus = 409;
+    await act(async () => {
+      dom.container.querySelector<HTMLButtonElement>(".pending-input-remove")!.click();
+    });
+    for (let i = 0; i < 100 && dom.container.querySelector(".pending-inputs") !== null; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(removed).toBe(3);
+    expect(dom.container.querySelector(".pending-inputs")).toBeNull();
+    expect(dom.container.textContent).not.toBe(historyBeforeConflict);
+    expect(dom.container.textContent).toContain("history refreshed");
   });
 });
 

@@ -5,7 +5,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { checkServer, mount } from "@ui-sdk/core/testing";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
-import { ConversationNav, ConversationRow } from "./ConversationList.tsx";
+import {
+	ConversationHierarchy,
+	ConversationNav,
+	ConversationNavLink,
+	ConversationRow,
+} from "./ConversationList.tsx";
 import { conversationNavigationPrimitive } from "./conversationNavigation.ts";
 
 declare global {
@@ -159,4 +164,61 @@ test("the roving-focus primitive keeps one link tabbable and server-renders", as
 	} finally {
 		view.unmount();
 	}
+});
+
+test("conversation hierarchy nests children and grandchildren, and labels an orphan", () => {
+	const parent = { ...conv, id: "app/parent", title: "Parent" };
+	const child = { ...conv, id: "app/child", title: "Child", parentId: parent.id };
+	const grandchild = { ...conv, id: "app/grandchild", title: "Grandchild", parentId: child.id };
+	const orphan = { ...conv, id: "app/orphan", title: "Orphan", parentId: "app/missing" };
+	const html = renderToStaticMarkup(
+		<ConversationNav loop={false}>
+			<ConversationHierarchy
+				conversations={[parent, child, grandchild, orphan]}
+				renderItem={(item, isOrphan) => (
+					<ConversationNavLink id={item.id} href={`/${item.id}`}>
+						{item.title}
+						{isOrphan && <span>subagent</span>}
+					</ConversationNavLink>
+				)}
+			/>
+		</ConversationNav>,
+	);
+	expect(html.indexOf("Parent")).toBeLessThan(html.indexOf("Child"));
+	expect(html.indexOf("Child")).toBeLessThan(html.indexOf("Grandchild"));
+	expect(html).toContain('<ul class="conversation-children"><li><a');
+	expect(html).toContain("Orphan<span>subagent</span>");
+	expect(html.match(/href="\/app\/child"/)).toHaveLength(1);
+	expect(html.match(/href="\/app\/grandchild"/)).toHaveLength(1);
+	expect(html.match(/href="\/app\/orphan"/)).toHaveLength(1);
+});
+
+test("arrow navigation includes links inside nested conversation lists", async () => {
+	const parent = { ...conv, id: "app/parent", title: "Parent" };
+	const child = { ...conv, id: "app/child", title: "Child", parentId: parent.id };
+	renderRow();
+	await act(async () =>
+		root?.render(
+			<ConversationNav loop={false}>
+				<ConversationHierarchy
+					conversations={[parent, child]}
+					renderItem={(item) => (
+						<ConversationNavLink id={item.id} href={`/${item.id}`}>
+							{item.title}
+						</ConversationNavLink>
+					)}
+				/>
+			</ConversationNav>,
+		),
+	);
+	const links = [...container!.querySelectorAll<HTMLAnchorElement>("a")];
+	expect(links.map((link) => link.tabIndex)).toEqual([0, -1]);
+	links[0]!.focus();
+	await act(async () => {
+		links[0]!.dispatchEvent(
+			new win!.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }) as unknown as Event,
+		);
+	});
+	expect(win!.document.activeElement?.getAttribute("href")).toBe("/app/child");
+	expect(links.map((link) => link.tabIndex)).toEqual([-1, 0]);
 });

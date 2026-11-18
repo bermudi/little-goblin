@@ -1255,6 +1255,29 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(container.querySelector('[role="dialog"]')).toBeNull();
 	});
 
+	test("a child is nested in the rail and its header links back to its parent", async () => {
+		seedConversation();
+		conversations.push({
+			...conversations[0]!,
+			id: "app/child",
+			title: "child chat",
+			parentId: "app/fixture",
+		});
+		await mount();
+		const parent = container.querySelector(".conv-main[href='/app/c/fixture']");
+		const child = container.querySelector(".conversation-children .conv-main[href='/app/c/child']");
+		expect(parent).not.toBeNull();
+		expect(child).not.toBeNull();
+		expect(child?.closest(".conversation-children")?.parentElement?.parentElement).toBe(
+			parent?.closest("li"),
+		);
+		await browserGoesTo("/app/c/child");
+		const parentLink = container.querySelector("main > header .header-parent");
+		expect(parentLink?.textContent).toContain("fixture chat");
+		await click(parentLink);
+		expect(win.location.pathname).toBe("/app/c/fixture");
+	});
+
 	test("Back to Settings closes thread sources and Forward does not reopen them", async () => {
 		seedConversation();
 		await mount();

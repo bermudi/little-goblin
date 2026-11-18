@@ -396,6 +396,25 @@ p code,
 	flex-direction: column;
 	gap: 1px;
 }
+.rail ul.conversation-children {
+	padding-left: 0.75rem;
+}
+.conv-subagent-label {
+	flex: none;
+	margin-left: 0.35rem;
+	color: var(--app-fg-muted);
+	font-size: 0.68rem;
+}
+.header-parent {
+	flex: none;
+	color: var(--app-fg-muted);
+	font-size: 0.8rem;
+	text-decoration: none;
+}
+.header-parent:hover {
+	color: var(--app-fg);
+	text-decoration: underline;
+}
 .rail .conv {
 	position: relative;
 	display: flex;

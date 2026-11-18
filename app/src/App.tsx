@@ -32,6 +32,7 @@ import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
 import {
 	ConversationNav,
+	ConversationHierarchy,
 	ConversationRow,
 	flatLine,
 	flatTitle,
@@ -936,6 +937,8 @@ function AppShell() {
 		projectId === null ? undefined : projectList.find((p) => p.id === projectId);
 	// The crumb's name rides the same pool the rail lists.
 	const currentConv = all.find((c) => c.id === current);
+	const parentConv =
+		currentConv?.parentId == null ? undefined : all.find((c) => c.id === currentConv.parentId);
 	const currentConvProject =
 		currentConv?.projectId != null
 			? projectList.find((p) => p.id === currentConv.projectId)
@@ -992,33 +995,35 @@ function AppShell() {
 	] as const;
 	const moreTabActive = (MORE_TAB_KEYS as readonly string[]).includes(page);
 
-	const renderRow = (c: AppConversationList["conversations"][number]) => (
-		<li key={c.id}>
-			<ConversationRow
-				conv={c}
-				current={current}
-				token={token}
-				onOpen={openConversation}
-				onRenamed={() => {
-					setRowError(null);
-					void refresh();
-				}}
-				onToggleArchived={(id, isArchived) => {
-					setRowError(null);
-					if (isArchived) {
-						rowRemoved(id);
-						archivedWithUndo(c);
-					}
-					void refresh();
-				}}
-				onTogglePinned={() => {
-					setRowError(null);
-					void refresh();
-				}}
-				onDelete={deleteConversationHeld}
-				onError={setRowError}
-			/>
-		</li>
+	const renderRow = (
+		c: AppConversationList["conversations"][number],
+		orphaned = false,
+	) => (
+		<ConversationRow
+			conv={c}
+			orphaned={orphaned}
+			current={current}
+			token={token}
+			onOpen={openConversation}
+			onRenamed={() => {
+				setRowError(null);
+				void refresh();
+			}}
+			onToggleArchived={(id, isArchived) => {
+				setRowError(null);
+				if (isArchived) {
+					rowRemoved(id);
+					archivedWithUndo(c);
+				}
+				void refresh();
+			}}
+			onTogglePinned={() => {
+				setRowError(null);
+				void refresh();
+			}}
+			onDelete={deleteConversationHeld}
+			onError={setRowError}
+		/>
 	);
 
 	// The search hits and the archived disclosure serve two hosts — the
@@ -1228,7 +1233,9 @@ function AppShell() {
 								<div className="panes">
 									{pane === "chats" && (
 										<>
-											<ConversationNav loop={false}>{rail.map(renderRow)}</ConversationNav>
+											<ConversationNav loop={false}>
+												<ConversationHierarchy conversations={rail} renderItem={renderRow} />
+											</ConversationNav>
 											{archivedRows}
 											{conversations !== null && rail.length === 0 && archived.length === 0 && (
 												<p className="empty">Nothing here yet — start a conversation.</p>
@@ -1449,6 +1456,26 @@ function AppShell() {
 					{page === "chat" && current !== null && (
 						<span className="header-title">{flatTitle(currentTitle)}</span>
 					)}
+					{page === "chat" && parentConv !== undefined && (
+						<a
+							className="header-parent"
+							href={`/app/c/${parentConv.id.slice("app/".length)}`}
+							onClick={(event) => {
+								if (
+									event.metaKey ||
+									event.ctrlKey ||
+									event.shiftKey ||
+									event.altKey ||
+									event.button !== 0
+								)
+									return;
+								event.preventDefault();
+								openConversation(parentConv.id);
+							}}
+						>
+							↑ {flatTitle(parentConv.title) ?? "parent conversation"}
+						</a>
+					)}
 					{page === "window" && <span className="header-title">Context window</span>}
 					{page === "projects" && <span className="header-title">Projects</span>}
 					{page === "archive" && <span className="header-title">Archive</span>}
@@ -1572,7 +1599,9 @@ function AppShell() {
 						{searchBody}
 						{hits === null && (
 							<>
-								<ConversationNav loop={false}>{rail.map(renderRow)}</ConversationNav>
+								<ConversationNav loop={false}>
+									<ConversationHierarchy conversations={rail} renderItem={renderRow} />
+								</ConversationNav>
 								{archivedRows}
 								{listError !== null && <p className="error">Couldn't refresh the list.</p>}
 								{rowError !== null && (
@@ -1718,7 +1747,7 @@ function AppShell() {
 									token={token}
 									project={currentProject}
 									conversations={all}
-									renderRow={renderRow}
+									renderRow={(conversation) => renderRow(conversation)}
 									onChanged={() => void refresh()}
 									onOpenNote={openNote}
 									onConversation={openConversation}

@@ -1,7 +1,7 @@
 "use client";
 
 import { createParts } from "@ui-sdk/react/primitive";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Menu, MenuContent, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 import { patchConversation, suggestConversationTitle } from "./api.ts";
@@ -11,6 +11,47 @@ import { conversationNavigationPrimitive } from "./conversationNavigation.ts";
 const navigationParts = createParts(conversationNavigationPrimitive, { root: "ul", link: "a" });
 export const ConversationNav = navigationParts.Root;
 export const ConversationNavLink = navigationParts.Link;
+
+type ConversationSummary = AppConversationList["conversations"][number];
+
+export function ConversationHierarchy({
+	conversations,
+	renderItem,
+}: {
+	conversations: ConversationSummary[];
+	renderItem: (conversation: ConversationSummary, orphaned: boolean) => ReactNode;
+}) {
+	const ids = new Set(conversations.map((conversation) => conversation.id));
+	const children = new Map<string, ConversationSummary[]>();
+	for (const conversation of conversations) {
+		if (conversation.parentId === null || !ids.has(conversation.parentId)) continue;
+		const siblings = children.get(conversation.parentId) ?? [];
+		siblings.push(conversation);
+		children.set(conversation.parentId, siblings);
+	}
+	const renderTree = (conversation: ConversationSummary, ancestry: ReadonlySet<string>): ReactNode => {
+		const nextAncestry = new Set(ancestry).add(conversation.id);
+		const nested = (children.get(conversation.id) ?? []).filter(
+			(child) => !nextAncestry.has(child.id),
+		);
+		return (
+			<li key={conversation.id}>
+				{renderItem(
+					conversation,
+					conversation.parentId !== null && !ids.has(conversation.parentId),
+				)}
+				{nested.length > 0 && (
+					<ul className="conversation-children">
+						{nested.map((child) => renderTree(child, nextAncestry))}
+					</ul>
+				)}
+			</li>
+		);
+	};
+	return conversations
+		.filter((conversation) => conversation.parentId === null || !ids.has(conversation.parentId))
+		.map((conversation) => renderTree(conversation, new Set()));
+}
 
 // The Open WebUI chat-list relative-time format.
 export function relTime(iso: string): string {
@@ -65,6 +106,7 @@ export function ConversationRow({
 	onDelete,
 	onError,
 	token,
+	orphaned = false,
 }: {
 	conv: AppConversationList["conversations"][number];
 	current: string | null;
@@ -75,6 +117,7 @@ export function ConversationRow({
 	onDelete: (conv: AppConversationList["conversations"][number]) => void;
 	onError: (message: string) => void;
 	token: string | null;
+	orphaned?: boolean;
 }) {
 	const title = flatTitle(conv.title);
 	const preview = flatLine(conv.preview);
@@ -229,6 +272,7 @@ export function ConversationRow({
 					<span className="conv-title">
 						{title ?? (preview === "" ? "new conversation" : preview)}
 					</span>
+					{orphaned && <span className="conv-subagent-label">subagent</span>}
 					<span className="conv-time">{relTime(conv.updatedAt)}</span>
 				</span>
 				{hasPreviewLine && <span className="conv-preview">{preview}</span>}

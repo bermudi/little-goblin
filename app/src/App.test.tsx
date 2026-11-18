@@ -1482,9 +1482,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		expect(container.querySelector(".archive-table .dt-row")).toBeNull();
 		expect(container.textContent).not.toContain("fixture chat");
 		expect(container.querySelector(".chat")?.textContent).toContain("Pick a conversation");
-		// The rail renders the client's list state. The stale snapshot still
-		// has the other chat archived and the deleted one present; the newer
-		// one has the other chat active and nothing archived.
+		// The rail renders the client's list state. The other chat is active
+		// in both snapshots; the stale one also still holds the deleted chat,
+		// which would come back as the rail's one archived row.
 		expect(container.textContent).toContain("other archived chat");
 		expect(container.querySelector(".rail-archived")).toBeNull();
 	});

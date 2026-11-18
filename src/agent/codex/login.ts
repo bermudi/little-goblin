@@ -57,6 +57,22 @@ const usercodeSchema = z.object({
 	expires_at: z.union([z.string(), z.number()]).optional(),
 });
 
+// The wire is clients' only clock for the countdown, and the app reads it
+// with Date.parse — so it is always ISO. The backend sends u64 epoch
+// seconds, as a number or a digit string (#214); a missing or unreadable
+// value falls back to goblin's own deadline.
+function expiryIso(raw: string | number | undefined, deadlineMs: number): string {
+	if (raw === undefined) return new Date(deadlineMs).toISOString();
+	const text = String(raw).trim();
+	if (/^\d+$/.test(text)) return new Date(Number(text) * 1000).toISOString();
+	const parsed = Date.parse(text);
+	if (Number.isNaN(parsed)) {
+		log.warn("chatgpt login expiry unreadable — using goblin's deadline", { expiresAt: text });
+		return new Date(deadlineMs).toISOString();
+	}
+	return new Date(parsed).toISOString();
+}
+
 const deviceTokenSchema = z.object({
 	authorization_code: z.string().min(1),
 	code_challenge: z.string().optional(),
@@ -460,10 +476,7 @@ export function createChatGptLogin(deps: {
 			id,
 			deviceAuthId: parsed.device_auth_id,
 			userCode,
-			expiresAt:
-				parsed.expires_at !== undefined
-					? String(parsed.expires_at)
-					: new Date(deadlineMs).toISOString(),
+			expiresAt: expiryIso(parsed.expires_at, deadlineMs),
 			intervalMs,
 			deadlineMs,
 			abort,

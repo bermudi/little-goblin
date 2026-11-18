@@ -129,7 +129,7 @@ describe("chatgpt device login", () => {
 		expect(started.state).toBe("pending");
 		expect(started.pending?.userCode).toBe("ABCD-1234");
 		expect(started.pending?.verificationUrl).toBe("https://auth.openai.com/codex/device");
-		expect(started.pending?.expiresAt).toBe("2099-01-01T00:00:00Z");
+		expect(started.pending?.expiresAt).toBe("2099-01-01T00:00:00.000Z");
 
 		// A second start returns the same pending login — one usercode.
 		const again = await login.start();
@@ -317,6 +317,20 @@ describe("chatgpt device login", () => {
 		expect(s.state).toBe("error");
 		expect(s.error).toContain("400");
 		expect(exchanges).toBe(1);
+	});
+
+	test("epoch-seconds expiry reaches clients as ISO", async () => {
+		for (const raw of [4102444800, "4102444800"]) {
+			const { login } = rig({
+				respond: (url) =>
+					url.endsWith("/deviceauth/usercode")
+						? json({ device_auth_id: "dev-1", user_code: "ABCD-1234", expires_at: raw })
+						: json({}, 403),
+			});
+			const started = await login.start();
+			expect(started.pending?.expiresAt).toBe("2100-01-01T00:00:00.000Z");
+			login.cancel();
+		}
 	});
 
 	test("the 15-minute deadline expires a never-approved pairing", async () => {

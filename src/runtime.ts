@@ -43,6 +43,7 @@ import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { type CompactionSeam, runCompactJob } from "./turn/compact-job.ts";
 import { makePrefixSummarizer } from "./turn/prefix-summary.ts";
+import { persistableToolSet, restoreToolSet, type SDKToolSet } from "./turn/ai-sdk-tools.ts";
 import { sinkDelivery } from "./turn/delivery.ts";
 import { isClaudeStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
 import type { ModelStep } from "./turn/ai-sdk-step.ts";
@@ -186,7 +187,7 @@ type AttemptOutcome =
 export class Runtime {
 	private lanes = new LaneRegistry();
 	private turnEndWatchers = new Map<string, boolean>();
-	private readonly lastTurnTools = new Map<string, { epoch: number; tools: Tools }>();
+	private readonly lastTurnTools = new Map<string, { epoch: number; tools: SDKToolSet }>();
 	// Closed runtimes record submits but never run them.
 	private closed = false;
 	// The runtime supplies ordering and the prior-turn chain, not gate
@@ -420,8 +421,20 @@ export class Runtime {
 			makePrefix: async (target, modelRef, signal) => {
 				const seam = this.deps.compaction;
 				if (seam?.prefixStep === undefined) return null;
-				const lastTurn = this.lastTurnTools.get(target.id);
-				if (lastTurn === undefined || lastTurn.epoch !== target.epoch) return null;
+				let lastTurn = this.lastTurnTools.get(target.id);
+				if (lastTurn === undefined) {
+					const stored = this.deps.store.lastTurnTools(target.id);
+					if (stored === null || stored.epoch !== target.epoch) return null;
+					const tools = restoreToolSet(stored.tools);
+					lastTurn = { epoch: stored.epoch, tools };
+					this.lastTurnTools.set(target.id, lastTurn);
+					log.info("last-turn tools hydrated", {
+						conversation: target.id,
+						epoch: stored.epoch,
+						tools: Object.keys(tools).length,
+					});
+				}
+				if (lastTurn.epoch !== target.epoch) return null;
 				const prefixStep = await seam.prefixStep(target, modelRef);
 				if (prefixStep === null) return null;
 				return makePrefixSummarizer({
@@ -852,7 +865,26 @@ export class Runtime {
 			// above only bridges the pre-authority failure paths.
 			authority = auth;
 			const tools = auth.tools;
-			this.lastTurnTools.set(convId, { epoch, tools });
+			const persistedTools = await persistableToolSet(tools);
+			if ("unpersistable" in persistedTools) {
+				this.lastTurnTools.delete(convId);
+				this.deps.store.saveLastTurnTools(convId, epoch, null);
+				log.warn("last-turn tools not persistable", {
+					conversation: convId,
+					tool: persistedTools.unpersistable,
+				});
+			} else {
+				this.lastTurnTools.set(convId, { epoch, tools: persistedTools.tools });
+				const stored = this.deps.store.lastTurnTools(convId);
+				if (stored?.epoch !== epoch || stored.json !== persistedTools.json) {
+					this.deps.store.saveLastTurnTools(convId, epoch, persistedTools.json);
+					log.info("last-turn tools persisted", {
+						conversation: convId,
+						epoch,
+						tools: Object.keys(persistedTools.tools).length,
+					});
+				}
+			}
 			const step = await this.deps.buildStep(conv, tools);
 			contextFill =
 				priorInputTokens !== null && step.contextWindow !== undefined

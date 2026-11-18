@@ -253,11 +253,12 @@ its largest, so it was the most expensive uncached call goblin made.
   memory blocks, pruning projection, summary entry) over completed
   history — then **one appended user message** with the compaction
   instruction. Tool definitions are the exact set the conversation's last turn
-  mounted (the runtime keeps it in memory per conversation and epoch):
+  mounted (the runtime keeps it per conversation and epoch, persisting the
+  serializable tool definitions and hydrating them after restart):
   the set depends on the turn's delivery seams (`send_file`, `speak`), so
   rebuilding it from config alone changes the cached head (PR #614
-  verifier finding). No record — a restart since the last turn, or a
-  newer epoch — means text mode. The provider sees a prefix it already cached. Tool
+  verifier finding). A missing record or newer epoch means text mode. The
+  provider sees a prefix it already cached. Tool
   definitions are sent but never executed; tool choice is left as the turn
   leaves it, because a changed tool choice voids Anthropic's message cache.
   A reply with no text is a failed attempt.
@@ -269,13 +270,18 @@ its largest, so it was the most expensive uncached call goblin made.
 - **Text mode (the old path) stays** for: overflow recovery (the view just
   overflowed), conversations with no frozen prompt snapshot (a compaction
   never mints one), the claude-code lane, fallback candidates other than the
-  conversation's own model, the split turn's prefix call, and any prefix-mode
+  conversation's own model, a split turn whose history summary did not
+  succeed in prefix mode, and any prefix-mode
   failure (logged, then the text walk runs unchanged).
 - Code-made parts, the identifier index and the audit itself are unchanged:
   they read the span, not the request.
 - Every fold logs `compaction summary mode` with `mode: "prefix" | "text"`
   and the reason for text mode; the call's cache read lands in
   `model_cache_calls` under purpose `compaction`.
+- When the history summary succeeds in prefix mode, a split-turn checkpoint
+  also replays that request prefix, cut at the split event part boundary,
+  before appending the checkpoint instruction. A failed checkpoint retries
+  through the existing text path.
 
 Not covered yet: the memory flush (it sends a different tool set) and the
 claude-code lane's summary call.

@@ -5,9 +5,8 @@ import type { PrefixSummarizer } from "../agent/compaction.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
 import type { MemoryTurnDeps } from "../memory/mod.ts";
-import { toToolSet } from "./ai-sdk-tools.ts";
+import type { Message } from "../message.ts";
 import { buildModelView, type ViewContext } from "./view.ts";
-import type { Tools } from "../tool.ts";
 import { resolveSkillRef } from "../agent/skill-inject.ts";
 
 export interface PrefixStep {
@@ -25,7 +24,7 @@ export function makePrefixSummarizer(input: {
 	conv: Conversation;
 	step: PrefixStep;
 	store: ConversationStore;
-	tools: Tools;
+	tools: ToolSet;
 	memory?: MemoryTurnDeps;
 	foldCeiling(): number | null;
 	assertAuthority(): void;
@@ -34,7 +33,8 @@ export function makePrefixSummarizer(input: {
 	const view: ViewContext = {
 		convId: conv.id,
 		modelRef: step.modelRef,
-		tools,
+		tools: {},
+		sdkTools: tools,
 		modalities: step.inputModalities,
 		carries: step.carries,
 		keepProviderExecuted: step.keepProviderExecuted,
@@ -46,27 +46,34 @@ export function makePrefixSummarizer(input: {
 			: input.memory.contexts.load(conv.id);
 	return {
 		modelRef: step.modelRef,
-		async call(turns, signal) {
+		async call(turns, signal, cut) {
 			input.assertAuthority();
 			const ceiling = input.foldCeiling();
-			const entries = store.modelEntries(conv.id).filter(
+			let entries = store.modelEntries(conv.id).filter(
 				(e) => ceiling === null || e.seq < ceiling,
 			);
+			let partial: Message | null = null;
+			if (cut !== undefined) {
+				const cutEntry = entries.find((entry) => entry.seq === cut.seq);
+				if (cutEntry === undefined) {
+					throw new Error(`split prefix event ${cut.seq} is missing from the model view`);
+				}
+				if (!Number.isInteger(cut.part) || cut.part < 0 || cut.part > cutEntry.message.parts.length) {
+					throw new Error(`split prefix part ${cut.part} is outside event ${cut.seq}`);
+				}
+				entries = entries.filter((entry) => entry.seq < cut.seq);
+				partial = { ...cutEntry.message, parts: cutEntry.message.parts.slice(0, cut.part) };
+			}
 			const messages = await buildModelView(view, {
 				entries,
 				prior,
 				current: null,
-				partial: null,
+				partial,
 				summarySeq: store.memoryEligibility(conv.id).summarySeq,
 				ownedSeqs: [],
 				assertAuthority: input.assertAuthority,
 			});
-			const sdkTools: ToolSet = Object.fromEntries(
-				Object.entries(toToolSet(tools)).map(([name, definition]) => {
-					const { execute: _execute, ...toolDefinition } = definition;
-					return [name, toolDefinition];
-				}),
-			);
+			const sdkTools = tools;
 			const requestMessages: ModelMessage[] = [
 				...messages,
 				...turns.map((turn) => ({ role: turn.role, content: turn.text } as ModelMessage)),

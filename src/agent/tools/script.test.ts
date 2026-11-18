@@ -663,3 +663,11 @@ throw new Error("late boom");`,
 		expect(out.presentations).toBeUndefined();
 	});
 });
+
+test("transcribe stays callable but the description holds it to batch use (#287)", () => {
+	const filler = () => defineTool({ description: "test tool", input: z.object({}).loose(), execute: () => "x" });
+	const withTranscribe = descriptionOf(composed({ bash: filler(), transcribe: filler() }));
+	expect(/- Callable: (.+?)\. Arguments/.exec(withTranscribe)?.[1]).toBe("tools.bash, tools.transcribe");
+	expect(withTranscribe).toContain("Call tools.transcribe from a script only to transcribe several files at once");
+	expect(descriptionOf(composed({ bash: filler() }))).not.toContain("tools.transcribe");
+});

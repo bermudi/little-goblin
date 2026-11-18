@@ -91,6 +91,9 @@ function scriptDescription(callable: string[], maxCalls: number): string {
 		`- Callable: ${callable.map((n) => `tools.${n}`).join(", ")}. Arguments are exactly those of the same-named tool.`,
 		"- A call resolves to the tool's raw result and rejects with an Error when the tool fails, returns an error, or gets invalid arguments; use Promise.allSettled to keep partial results. Calls are real and are not undone if the script fails later.",
 		...(shapes !== "" ? [`- ${shapes}`] : []),
+		...(callable.includes("transcribe")
+			? ["- Call tools.transcribe from a script only to transcribe several files at once; it spends paid speech-to-text quota."]
+			: []),
 		`- At most ${maxCalls} tool calls per script and 8 running at once; a call's serialized arguments are capped at 1 MiB. Exceeding any of these fails the whole script immediately — it is not a catchable rejection. timeout_ms defaults to 120000 (max 600000) and stops the whole script. The script's memory is capped at 256 MB.`,
 		"- text(value) and console.log(...) add output; a top-level return value is added last. Output over 15000 characters keeps its head and tail, and the full text is saved to a file the result names.",
 	];

@@ -171,7 +171,9 @@ persistent kernel and remote backends; pi's `store`/`load`, `models`,
 - **Callable set = allowlist ∩ the turn's assembled set**, built after
   guest filtering, so every per-turn gate carries over. Delivery rides the
   sink, `mail` needs per-send human approval, agent-spawning and
-  model-calling tools are out, and prompting the operator's panes is
+  model-calling tools are out (one exception: `transcribe` stays
+  scriptable for batch transcription, held back by a line in the script
+  description, not by code — ruling 2026-11-18, #287), and prompting the operator's panes is
   deliberate per-call work, not scriptable fan-out. Excluding
   writes would be theater — `bash` writes.
 - **Nested calls are real calls** — each runs the tool's live `execute`,

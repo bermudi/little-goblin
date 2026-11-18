@@ -98,18 +98,23 @@ export function lateTimerErrorLines(source: string): number[] {
 	return lines;
 }
 
+// Every tree `bun test` reaches from the repo root (src/, app/, scripts/, …),
+// not just src/: CI shards run them all.
+const SKIP_DIRS = new Set(["node_modules", ".git", "dist"]);
+
 function walkTestFiles(dir: string, out: string[] = []): string[] {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
 		const path = join(dir, entry.name);
-		if (entry.isDirectory()) walkTestFiles(path, out);
-		else if (/\.test\.tsx?$/.test(entry.name)) out.push(path);
+		if (entry.isDirectory()) {
+			if (!SKIP_DIRS.has(entry.name)) walkTestFiles(path, out);
+		} else if (/\.test\.tsx?$/.test(entry.name)) out.push(path);
 	}
 	return out;
 }
 
 function repoHits(): string[] {
 	const hits: string[] = [];
-	for (const file of [...walkTestFiles(join(ROOT, "src")), ...walkTestFiles(join(ROOT, "app", "src"))]) {
+	for (const file of walkTestFiles(ROOT)) {
 		const source = readFileSync(file, "utf8");
 		for (const line of lateTimerErrorLines(source)) {
 			hits.push(`${file.slice(ROOT.length + 1)}:${line}`);

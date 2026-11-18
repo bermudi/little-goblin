@@ -84,8 +84,7 @@ describe("app channel browser-origin gate (trust mode, #75)", () => {
 				},
 				null,
 			);
-			expect(chat.status).toBe(200);
-			await chat.text();
+			expect(chat.status).toBe(202);
 		} finally {
 			http.stop();
 		}

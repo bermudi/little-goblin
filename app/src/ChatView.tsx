@@ -42,6 +42,7 @@ import type { AttachmentRef } from "../../src/agent/attachments.ts";
 import type {
   AppCompactionMark,
   AppConfigView,
+  AppConversationEvent,
   AppConversationMemoryView,
   AppLiveContext,
   AppRatedReply,
@@ -329,6 +330,9 @@ function Chat({
     settled: false,
     waiting: [],
   });
+  const resumeProbeSettled = useRef<() => void>(() => {});
+  const conversationReaderActive = useRef(false);
+  const eventsLiveRef = useRef(false);
   // Same latest-ref shape as idleReconnect: the host's callback is an
   // inline closure, so it must not enter the transport's useMemo deps —
   // a new transport identity would re-seat useChat on every host render.
@@ -452,16 +456,7 @@ function Chat({
       }),
     });
     return {
-      sendMessages: async (options) => {
-        const stream = await base.sendMessages(options);
-        // Response headers mean the POST handler already ran
-        // runtime.submit — the user message is durable and the
-        // conversation's activity stamp has moved. The rail
-        // refreshes on this, not onFinish: a long turn must not
-        // hold the new time hostage until it ends.
-        sendAccepted.current?.();
-        return stream;
-      },
+      sendMessages: (options) => base.sendMessages(options),
       reconnectToStream: async (options) => {
         // The first reconnect of a seeded mount never reaches the
         // network (see seededMount above): it answers the SDK's "nothing
@@ -472,8 +467,8 @@ function Chat({
         const seededProbe = seededMount.current && !resumeProbe.current.probed;
         resumeProbe.current.probed = true;
         try {
-          if (seededProbe) return null;
-          const stream = await base.reconnectToStream(options);
+          const stream = seededProbe ? null : await base.reconnectToStream(options);
+          conversationReaderActive.current = stream !== null;
           // null is the server's 204 — nothing is live, and the runtime
           // persists each reply before it retires the wire, so durable
           // history is already final. The mount-time snapshot may be
@@ -496,6 +491,7 @@ function Chat({
             probe.settled = true;
             for (const release of probe.waiting) release();
             probe.waiting.length = 0;
+            resumeProbeSettled.current();
           }, 0);
         }
       },
@@ -508,8 +504,6 @@ function Chat({
   const [liveCtx, setLiveCtx] = useState<AppLiveContext | null>(null);
   const {
     messages,
-    sendMessage,
-    regenerate,
     status,
     error,
     stop,
@@ -537,22 +531,23 @@ function Chat({
       });
     },
     onFinish: ({ message, isAbort, isError }) => {
+      conversationReaderActive.current = false;
       // The edit's server-side answer is final now — a later
       // onError must not resurrect the pre-edit transcript. The
       // SDK fires this on errored turns too, so the done-bell
       // waits for a real finish and the re-sync covers both.
       editRestore.current = null;
-      // An aborted reader (stop, or the drop before a steer) is not a
-      // finished reply — the bell belongs to the real finish.
+      // An aborted reader is not a finished reply — the bell belongs to the real finish.
       if (!isAbort && !isError) notifyDone(title ?? "", messageText(message));
       onTurnDone();
       // An errored edit was reconciled by onError — its replace
       // must not be re-merged against the optimistic view it
       // discarded.
       if (editFailed.current) editFailed.current = false;
-      else refreshTranscript();
+      // Durable history is reconciled by the independent turn-end event.
     },
     onError: () => {
+      conversationReaderActive.current = false;
       // The durable transcript is the truth in every failure mode: a
       // refused request never reached the store (the tail stands
       // there), and a post-commit failure already deleted it — only
@@ -644,6 +639,68 @@ function Chat({
     };
   }, [token, conversationId, setMessages]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    let retry = 250;
+    let firstState = true;
+    const activeReader = () => conversationReaderActive.current;
+    const run = async () => {
+      while (!controller.signal.aborted) {
+        try {
+          const response = await fetch(
+            `/api/app/conversations/${encodeURIComponent(conversationId.slice(4))}/events`,
+            {
+              headers: token === null ? {} : { authorization: `Bearer ${token}` },
+              signal: controller.signal,
+            },
+          );
+          if (!response.ok || response.body === null) throw new Error(`events failed (${response.status})`);
+          retry = 250;
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (!controller.signal.aborted) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const frames = buffer.split("\n\n");
+            buffer = frames.pop() ?? "";
+            for (const frame of frames) {
+              const data = frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
+              if (data === undefined) continue;
+              const event = JSON.parse(data) as AppConversationEvent;
+              if (event.type === "state") {
+                if (firstState) firstState = false;
+                else refreshTranscript();
+                eventsLiveRef.current = event.live;
+                setEventsLive(event.live);
+                if (event.live) setSubmitPending(false);
+                if (event.live && !activeReader()) resumeFromEvents();
+              } else if (event.type === "turn-start") {
+                eventsLiveRef.current = true;
+                setEventsLive(true);
+                setSubmitPending(false);
+                if (!activeReader()) resumeFromEvents();
+              } else if (event.type === "turn-end") {
+                eventsLiveRef.current = false;
+                setEventsLive(false);
+                setSubmitPending(false);
+                refreshTranscript();
+              }
+            }
+          }
+        } catch (err) {
+          if (controller.signal.aborted) return;
+          console.warn("conversation events disconnected", err);
+        }
+        await new Promise((resolve) => setTimeout(resolve, retry));
+        retry = Math.min(retry * 2, 10_000);
+      }
+    };
+    void run();
+    return () => controller.abort();
+  }, [token, conversationId, resumeStream]);
+
   const scrollRef = useRef<HTMLDivElement>(null);
   // The outline rail is a pointer/keyboard affordance — phones don't
   // hover, so it never mounts there (the stylesheet hides it too).
@@ -664,20 +721,60 @@ function Chat({
   // re-pins. Streaming chunks ride the same effect — the tail follows
   // output only while the operator is already at the tail.
   const pinned = useRef(true);
-  const busy = status === "submitted" || status === "streaming";
+  const [eventsLive, setEventsLive] = useState(false);
+  const [submitPending, setSubmitPending] = useState(false);
+  const busy = eventsLive || submitPending || status === "submitted" || status === "streaming";
+  const [sendFailure, setSendFailure] = useState<string | null>(null);
+  const resumeRequested = useRef(false);
+  const resumeFromEvents = () => {
+    if (
+      conversationReaderActive.current ||
+      resumeRequested.current ||
+      (resumeProbe.current.probed && !resumeProbe.current.settled)
+    ) return;
+    resumeRequested.current = true;
+    resumeStream();
+    setTimeout(() => {
+      resumeRequested.current = false;
+    }, 1000);
+  };
+  resumeProbeSettled.current = () => {
+    if (eventsLiveRef.current && !conversationReaderActive.current) resumeFromEvents();
+  };
 
-  // A mid-turn send steers or queues. Drop this client's reader first:
-  // the new POST's stream replays the wire from sentence one onto the
-  // same assistant message id — a handoff, not a second writer. The
-  // await is load-bearing: the aborted reader's teardown flips status
-  // back to "ready" a tick after stop() returns control, and a send
-  // fired before it lands gets clobbered into a busy:false window —
-  // no stop button, and the next send forks a second writer.
-  const submit = async (message: Parameters<typeof sendMessage>[0]) => {
+  const postChat = async (body: Record<string, unknown>) => {
+    const response = await fetch("/api/app/chat", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(token === null ? {} : { authorization: `Bearer ${token}` }),
+      },
+      body: JSON.stringify({ conversationId, ...body }),
+    });
+    if (response.status !== 202) {
+      const detail = (await response.json().catch(() => null)) as { error?: unknown } | null;
+      throw new Error(typeof detail?.error === "string" ? detail.error : `send failed (${response.status})`);
+    }
+    sendAccepted.current?.();
+  };
+  const submit = async (message: { parts?: UIMessage["parts"]; text?: string }) => {
     pinned.current = true;
     setLiveCtx(null);
-    if (busy) await stop();
-    await sendMessage(message);
+    setSendFailure(null);
+    const optimistic: UIMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      parts: message.parts ?? [{ type: "text", text: message.text ?? "" }],
+    };
+    setMessages((current) => [...current, optimistic]);
+    setSubmitPending(true);
+    try {
+      await postChat({ message: optimistic });
+    } catch (err) {
+      setMessages((current) => current.filter((item) => item.id !== optimistic.id));
+      setSubmitPending(false);
+      setSendFailure(err instanceof Error ? err.message : "send failed");
+    }
   };
 
   useEffect(() => {
@@ -685,24 +782,15 @@ function Chat({
     if (el !== null && pinned.current) el.scrollTop = el.scrollHeight;
   }, [messages, busy]);
 
-  // A seed arrives once (empty-state send → conversation created → this
-  // view mounts with it). The ref guards re-runs; onSeeded clears the
-  // parking slot so a remount can never re-deliver it. The send itself
-  // waits out the mount resume probe — see resumeProbe above — then
-  // rides the same sendMessage path a later send does.
+  // A seed arrives once (empty-state send → conversation created → this view mounts).
   const seeded = useRef(false);
   useEffect(() => {
     if (seeded.current || seed === null || seed.length === 0) return;
     seeded.current = true;
     pinned.current = true;
     onSeeded();
-    const send = () => {
-      void sendMessage({ parts: seed });
-    };
-    const probe = resumeProbe.current;
-    if (probe.settled) send();
-    else probe.waiting.push(send);
-  }, [seed, sendMessage, onSeeded]);
+    void submit({ parts: seed });
+  }, [seed, submit, onSeeded]);
 
   // The retry affordance belongs to the newest answer — anything older
   // gets copy/read only.
@@ -775,7 +863,26 @@ function Chat({
     pinned.current = true;
     setLiveCtx(null);
     setMessages(messages.slice(0, index));
-    void sendMessage({ parts }, { body: { editMessageId: m.id } });
+    const optimistic: UIMessage = {
+      id: crypto.randomUUID(),
+      role: "user",
+      parts,
+    };
+    setMessages([...messages.slice(0, index), optimistic]);
+    setSubmitPending(true);
+    void postChat({ message: optimistic, editMessageId: m.id }).catch((err: unknown) => {
+      editRestore.current = null;
+      void getMessages(token, conversationId).then(
+        (r) => {
+          setMessages(r.messages);
+          applyRatingSnapshot(r.ratings, r.rateableMessageIds);
+          setMarks(r.compactions ?? []);
+        },
+        () => setMessages(messages),
+      );
+      setSubmitPending(false);
+      setSendFailure(err instanceof Error ? err.message : "edit failed");
+    });
   };
   const branch = (m: UIMessage) => {
     if (busy || branchPending !== null) return;
@@ -1006,7 +1113,16 @@ function Chat({
                       busy={busy}
                       onRetry={() => {
                         setLiveCtx(null);
-                        void regenerate();
+                        setSendFailure(null);
+                        const lastUserIndex = messages.map((item) => item.role).lastIndexOf("user");
+                        if (lastUserIndex < 0) return;
+                        setMessages(messages.slice(0, lastUserIndex + 1));
+                        setSubmitPending(true);
+                        void postChat({ retry: true }).catch((err: unknown) => {
+                          refreshTranscript();
+                          setSubmitPending(false);
+                          setSendFailure(err instanceof Error ? err.message : "retry failed");
+                        });
                       }}
                       token={token}
                       rateable={rateableIds.has(m.id)}
@@ -1038,9 +1154,12 @@ function Chat({
               );
             })}
             {busy && <div className="msg assistant pending shimmer">…</div>}
-            {error !== undefined && (
-              <div className="error">The turn failed: {error.message}</div>
-            )}
+          {error !== undefined && (
+            <div className="error">The turn failed: {error.message}</div>
+          )}
+          {sendFailure !== null && (
+            <div className="error" role="alert">{sendFailure}</div>
+          )}
           </div>
         </div>
         {stopError !== null && (

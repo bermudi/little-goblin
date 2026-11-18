@@ -191,6 +191,19 @@ export async function createAndChat(
 			message: { id: "m1", role: "user", parts: [{ type: "text", text }] },
 		}),
 	});
-	const sse = await res.text();
-	return { res, sse };
+	const accepted = (await res.json()) as { submitted: boolean };
+	if (res.status !== 202 || accepted.submitted !== true) {
+		throw new Error(`chat submit refused: ${res.status}`);
+	}
+	let history: { messages?: Array<{ role: string }> } = {};
+	for (let attempt = 0; attempt < 200; attempt++) {
+		const response = await call(`/api/app/conversations/${id}/messages`);
+		history = (await response.json()) as { messages?: Array<{ role: string }> };
+		if (history.messages?.some((message) => message.role === "assistant" || message.role === "system")) break;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	if (!history.messages?.some((message) => message.role === "assistant" || message.role === "system")) {
+		throw new Error(`chat turn did not settle for app/${id}`);
+	}
+	return { res, sse: "" };
 }

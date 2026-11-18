@@ -4,7 +4,7 @@
 // runtime.ts owns the policy around it (intake admission, the drain
 // loop, the attempt loop, cancellation); this module owns the map. No
 // method awaits — same-tick ordering (an idle-lane delete vs a late
-// subscribeLiveChunks) is the contract. `Lane` is module-private: no
+// attachLiveChunks) is the contract. `Lane` is module-private: no
 // turn/ module ever sees it (design/runtime-turn.md → Turn-module
 // boundary).
 
@@ -42,6 +42,8 @@ export interface QueuedCompact {
 	resolve: (outcome: CompactionOutcome) => void;
 	reject: (err: unknown) => void;
 }
+
+export type ConversationEvent = { type: "turn-start" } | { type: "turn-end" };
 
 interface Lane {
 	pending: QueuedTurn[];
@@ -89,6 +91,28 @@ function hasClaimable(lane: Lane, headStreams: boolean): boolean {
 
 export class LaneRegistry {
 	private lanes = new Map<string, Lane>();
+	private subscribers = new Map<string, Set<(event: ConversationEvent) => void>>();
+
+	subscribeConversation(convId: string, listener: (event: ConversationEvent) => void): () => void {
+		let listeners = this.subscribers.get(convId);
+		if (listeners === undefined) {
+			listeners = new Set();
+			this.subscribers.set(convId, listeners);
+		}
+		listeners.add(listener);
+		return () => {
+			listeners!.delete(listener);
+			if (listeners!.size === 0) this.subscribers.delete(convId);
+		};
+	}
+
+	emitConversation(convId: string, event: ConversationEvent): void {
+		for (const listener of this.subscribers.get(convId) ?? []) listener(event);
+	}
+
+	conversationSubscriberCount(convId: string): number {
+		return this.subscribers.get(convId)?.size ?? 0;
+	}
 
 	private lane(convId: string): Lane {
 		let l = this.lanes.get(convId);

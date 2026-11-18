@@ -1,30 +1,29 @@
 import { describe, expect, test } from "bun:test";
-import type { TurnDone } from "../turn/sink.ts";
-import { appStreamSink } from "./app-sse.ts";
+import { appSseWriter } from "./app-sse.ts";
 
-describe("app stream sink", () => {
-	test("a live stream finishing normally does not invoke the disconnected callback", async () => {
-		const called: TurnDone[] = [];
-		const stream = appStreamSink("app/live", undefined, async (done) => {
-			called.push(done);
-		});
-		await stream.sink.onDone({ kind: "completed" });
-		expect(called).toEqual([]);
-		stream.dispose();
+describe("app SSE writer", () => {
+	test("writes chunks and finishes a live response", async () => {
+		const writer = appSseWriter("app/live", 0);
+		const reader = writer.body.getReader();
+		writer.write({ type: "start", messageId: "a1" });
+		writer.finish({ kind: "completed" });
+		const chunks: string[] = [];
+		while (true) {
+			const result = await reader.read();
+			if (result.done) break;
+			chunks.push(new TextDecoder().decode(result.value));
+		}
+		expect(chunks.join("")).toContain('"messageId":"a1"');
+		expect(chunks.join("")).toContain("data: [DONE]");
+		expect(writer.wireDied()).toBe(false);
 	});
 
-	test("a client-cancelled stream marks the terminal callback as disconnected", async () => {
-		const called: TurnDone[] = [];
-		const stream = appStreamSink("app/closed", undefined, async (done) => {
-			called.push(done);
-		});
-		const reader = stream.body.getReader();
+	test("a cancelled response records the wire as dead", async () => {
+		const writer = appSseWriter("app/closed", 0);
+		const reader = writer.body.getReader();
 		await reader.cancel();
 		reader.releaseLock();
-
-		const done: TurnDone = { kind: "completed" };
-		await stream.sink.onDone(done);
-
-		expect(called).toEqual([done]);
+		expect(writer.wireDied()).toBe(true);
+		writer.finish({ kind: "completed" });
 	});
 });

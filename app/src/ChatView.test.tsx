@@ -1230,13 +1230,288 @@ describe("ChatView reload window (issue #79)", () => {
     });
     expect(dom.container.querySelectorAll(".note-card-append")).toHaveLength(2);
   });
+
+  test("an idle turn-start resumes the reader and turn-end reconciles history once", async () => {
+    let stored: UIMessage[] = [];
+    let historyFetches = 0;
+    let streamRequests = 0;
+    let events!: ReadableStreamDefaultController<Uint8Array>;
+    const encoder = new TextEncoder();
+    const eventStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        events = controller;
+        controller.enqueue(encoder.encode('data: {"type":"state","live":false}\n\n'));
+      },
+    });
+    const liveStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of [
+          { type: "start", messageId: "a1" },
+          { type: "text-start", id: "t1" },
+          { type: "text-delta", id: "t1", delta: "live answer" },
+        ]) controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages")) {
+          historyFetches++;
+          return jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] });
+        }
+        if (url.endsWith("/events"))
+          return new Response(eventStream, { headers: { "content-type": "text/event-stream" } });
+        if (url.endsWith("/stream")) {
+          streamRequests++;
+          return streamRequests === 1
+            ? new Response(null, { status: 204 })
+            : new Response(liveStream, {
+                headers: {
+                  "content-type": "text/event-stream",
+                  "x-vercel-ai-ui-message-stream": "v1",
+                },
+              });
+        }
+        return jsonResponse({
+          model: "prov/model",
+          thinking: "off",
+          favorites: [],
+          catalog: [],
+          thinkingLevels: ["off"],
+        });
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    dom.root = createRoot(dom.container);
+    await act(async () =>
+      dom.root?.render(
+        <ChatView
+          token={null}
+          conversationId="app/chat-01"
+          title={null}
+          seed={null}
+          staged={[]}
+          setStaged={() => {}}
+          stagedNotes={[]}
+          setStagedNotes={() => {}}
+          stagedSkills={[]}
+          setStagedSkills={() => {}}
+          onSeeded={() => {}}
+          onTurnDone={() => {}}
+        />,
+      ),
+    );
+    expect(streamRequests).toBe(1);
+    await act(async () => {
+      events.enqueue(encoder.encode('data: {"type":"turn-start"}\n\n'));
+    });
+    for (let i = 0; i < 100 && streamRequests < 2; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(streamRequests).toBe(2);
+    expect(dom.container.textContent).toContain("live answer");
+    await act(async () => {});
+    const historyBeforeTurnEnd = historyFetches;
+    stored = [userMsg("u1", "hello"), assistantMsg("a1", "settled answer")];
+    await act(async () => {
+      events.enqueue(encoder.encode('data: {"type":"turn-end"}\n\n'));
+    });
+    for (let i = 0; i < 100 && historyFetches < historyBeforeTurnEnd + 1; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(historyFetches).toBe(historyBeforeTurnEnd + 1);
+    expect(dom.container.textContent).toContain("settled answer");
+  });
+
+  test("a reconnect state reconciles a turn whose turn-end event was missed", async () => {
+    let stored: UIMessage[] = [];
+    let historyFetches = 0;
+    let eventRequests = 0;
+    let firstEvents!: ReadableStreamDefaultController<Uint8Array>;
+    const encoder = new TextEncoder();
+    const events = (initial: string) =>
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(initial));
+          if (eventRequests === 1) firstEvents = controller;
+        },
+      });
+    const liveStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of [
+          { type: "start", messageId: "a1" },
+          { type: "text-start", id: "t1" },
+          { type: "text-delta", id: "t1", delta: "partial reply" },
+        ])
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+      },
+    });
+    let streamRequests = 0;
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages")) {
+          historyFetches++;
+          return jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] });
+        }
+        if (url.endsWith("/events")) {
+          eventRequests++;
+          return new Response(
+            events('data: {"type":"state","live":false}\n\n'),
+            { headers: { "content-type": "text/event-stream" } },
+          );
+        }
+        if (url.endsWith("/stream")) {
+          streamRequests++;
+          return streamRequests === 1
+            ? new Response(null, { status: 204 })
+            : new Response(liveStream, {
+                headers: {
+                  "content-type": "text/event-stream",
+                  "x-vercel-ai-ui-message-stream": "v1",
+                },
+              });
+        }
+        return jsonResponse({
+          model: "prov/model",
+          thinking: "off",
+          favorites: [],
+          catalog: [],
+          thinkingLevels: ["off"],
+        });
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    dom.root = createRoot(dom.container);
+    await act(async () =>
+      dom.root?.render(
+        <ChatView
+          token={null}
+          conversationId="app/chat-01"
+          title={null}
+          seed={null}
+          staged={[]}
+          setStaged={() => {}}
+          stagedNotes={[]}
+          setStagedNotes={() => {}}
+          stagedSkills={[]}
+          setStagedSkills={() => {}}
+          onSeeded={() => {}}
+          onTurnDone={() => {}}
+        />,
+      ),
+    );
+    const baselineHistoryFetches = historyFetches;
+    await act(async () => {
+      firstEvents.enqueue(encoder.encode('data: {"type":"turn-start"}\n\n'));
+    });
+    for (let i = 0; i < 100 && streamRequests < 2; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(streamRequests).toBe(2);
+    expect(dom.container.textContent).toContain("partial reply");
+
+    // The turn finishes while the events connection is down. A reconnect
+    // only has state:false, so that state must reconcile durable history.
+    stored = [userMsg("u1", "hello"), assistantMsg("a1", "settled after reconnect")];
+    await act(async () => {
+      firstEvents.close();
+    });
+    for (let i = 0; i < 100 && eventRequests < 2; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    for (let i = 0; i < 100 && historyFetches < baselineHistoryFetches + 1; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(eventRequests).toBe(2);
+    expect(historyFetches).toBe(baselineHistoryFetches + 1);
+    expect(dom.container.textContent).toContain("settled after reconnect");
+  });
+
+  test("a seeded turn-start during the mount probe resumes after its idle answer", async () => {
+    const encoder = new TextEncoder();
+    let streamRequests = 0;
+    let postBody: unknown;
+    const events = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"state","live":false}\n\n'));
+        controller.enqueue(encoder.encode('data: {"type":"turn-start"}\n\n'));
+      },
+    });
+    const liveStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of [
+          { type: "start", messageId: "a1" },
+          { type: "text-start", id: "t1" },
+          { type: "text-delta", id: "t1", delta: "seed reply streams" },
+        ])
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/events"))
+          return new Response(events, { headers: { "content-type": "text/event-stream" } });
+        if (url.endsWith("/stream")) {
+          streamRequests++;
+          return new Response(liveStream, {
+            headers: {
+              "content-type": "text/event-stream",
+              "x-vercel-ai-ui-message-stream": "v1",
+            },
+          });
+        }
+        if (url === "/api/app/chat") {
+          postBody = JSON.parse(String(init?.body));
+          return jsonResponse({ submitted: true }, 202);
+        }
+        if (url.endsWith("/messages"))
+          return jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] });
+        return jsonResponse({
+          model: "prov/model",
+          thinking: "off",
+          favorites: [],
+          catalog: [],
+          thinkingLevels: ["off"],
+        });
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    dom.root = createRoot(dom.container);
+    await act(async () =>
+      dom.root?.render(
+        <ChatView
+          token={null}
+          conversationId="app/chat-01"
+          title={null}
+          seed={[{ type: "text", text: "seed input" }]}
+          staged={[]}
+          setStaged={() => {}}
+          stagedNotes={[]}
+          setStagedNotes={() => {}}
+          stagedSkills={[]}
+          setStagedSkills={() => {}}
+          onSeeded={() => {}}
+          onTurnDone={() => {}}
+        />,
+      ),
+    );
+    for (let i = 0; i < 100 && streamRequests < 1; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    for (let i = 0; i < 100 && !dom.container.textContent?.includes("seed reply streams"); i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect((postBody as { message?: UIMessage } | undefined)?.message?.parts).toEqual([
+      { type: "text", text: "seed input" },
+    ]);
+    expect(streamRequests).toBe(1);
+    expect(dom.container.textContent).toContain("seed reply streams");
+  });
 });
 
-// A send while a turn runs steers it — app-channel admits the second
-// POST onto the same lane. The client drops its stream reader first
-// so the new POST's join replay is the only writer — the wire's start
-// chunk carries the same assistant id, so the reply is rebuilt in
-// place, not forked.
+// Sends and the conversation reader are independent.
 describe("ChatView mid-turn steer", () => {
   const dom = mountDom();
 
@@ -1255,10 +1530,9 @@ describe("ChatView mid-turn steer", () => {
     "x-vercel-ai-ui-message-stream": "v1",
   };
 
-  test("send while busy posts the message and the replay lands on the same reply", async () => {
+  test("busy send leaves the reader attached and the existing reply keeps growing", async () => {
     const encoder = new TextEncoder();
-    // The first turn's stream stays open: busy until the steer stream
-    // replaces it (the abort is the handoff under test).
+    // The conversation stream stays open while the second POST is answered.
     let live!: ReadableStreamDefaultController<Uint8Array>;
     const liveStream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -1271,6 +1545,12 @@ describe("ChatView mid-turn steer", () => {
           live.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
       },
     });
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('data: {"type":"state","live":true}\n\n'));
+      },
+    });
+    let stopPosts = 0;
     const chatPosts: { conversationId?: string; message?: UIMessage }[] = [];
     globalThis.fetch = Object.assign(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1288,30 +1568,17 @@ describe("ChatView mid-turn steer", () => {
           });
         if (url.endsWith("/stream"))
           return new Response(liveStream, { headers: sseHeaders });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, {
+            headers: { "content-type": "text/event-stream" },
+          });
+        if (url.endsWith("/stop")) {
+          stopPosts++;
+          return jsonResponse({ stopped: true, settled: true });
+        }
         if (url === "/api/app/chat") {
           chatPosts.push(JSON.parse(String(init?.body)));
-          // The steered submit's answer: the same turn's wire,
-          // replayed — the SAME assistant id, not a new message.
-          return new Response(
-            new ReadableStream<Uint8Array>({
-              start(c) {
-                for (const chunk of [
-                  { type: "start", messageId: "a1" },
-                  { type: "text-start", id: "t1" },
-                  { type: "text-delta", id: "t1", delta: "working" },
-                  { type: "text-delta", id: "t1", delta: " — steered" },
-                  { type: "text-end", id: "t1" },
-                  { type: "finish" },
-                ])
-                  c.enqueue(
-                    encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`),
-                  );
-                c.enqueue(encoder.encode("data: [DONE]\n\n"));
-                c.close();
-              },
-            }),
-            { headers: sseHeaders },
-          );
+          return jsonResponse({ submitted: true }, 202);
         }
         return jsonResponse({
           model: "prov/model",
@@ -1395,10 +1662,17 @@ describe("ChatView mid-turn steer", () => {
     expect(chatPosts[0]?.message?.parts).toEqual([
       { type: "text", text: "steer it" },
     ]);
-    // The replay wrote onto the same assistant message — one reply.
+    expect(stopPosts).toBe(0);
+    await act(async () => {
+      live.enqueue(
+        encoder.encode(
+          `data: ${JSON.stringify({ type: "text-delta", id: "t1", delta: " — continued" })}\n\n`,
+        ),
+      );
+    });
     for (
       let i = 0;
-      i < 100 && !dom.container.textContent?.includes("steered");
+      i < 100 && !dom.container.textContent?.includes("continued");
       i++
     ) {
       await act(async () => {
@@ -1408,7 +1682,8 @@ describe("ChatView mid-turn steer", () => {
     expect(
       dom.container.querySelectorAll(".msg.assistant:not(.pending)"),
     ).toHaveLength(1);
-    expect(dom.container.textContent).toContain("working — steered");
+    expect(dom.container.textContent).toContain("working — continued");
+    expect(stopPosts).toBe(0);
   });
 });
 
@@ -1439,6 +1714,14 @@ describe("ChatView send accepted", () => {
         live = controller;
       },
     });
+    let eventsController!: ReadableStreamDefaultController<Uint8Array>;
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        eventsController = controller;
+        controller.enqueue(encoder.encode('data: {"type":"state","live":false}\n\n'));
+      },
+    });
+    let streamCalls = 0;
     let chatPosts = 0;
     globalThis.fetch = Object.assign(
       async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1454,10 +1737,22 @@ describe("ChatView send accepted", () => {
             ratings: [],
             rateableMessageIds: [],
           });
-        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, {
+            headers: { "content-type": "text/event-stream" },
+          });
+        if (url.endsWith("/stream")) {
+          streamCalls++;
+          return streamCalls === 1
+            ? new Response(null, { status: 204 })
+            : new Response(liveStream, { headers: sseHeaders });
+        }
         if (url === "/api/app/chat") {
           chatPosts += 1;
-          return new Response(liveStream, { headers: sseHeaders });
+          eventsController.enqueue(
+            new TextEncoder().encode('data: {"type":"turn-start"}\n\n'),
+          );
+          return jsonResponse({ submitted: true }, 202);
         }
         return jsonResponse({
           model: "prov/model",
@@ -1980,6 +2275,13 @@ describe("ChatView edit and branch", () => {
       message?: UIMessage;
     }[] = [];
     let afterEdit: unknown = null;
+    let eventsController!: ReadableStreamDefaultController<Uint8Array>;
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        eventsController = controller;
+        controller.enqueue(new TextEncoder().encode('data: {"type":"state","live":false}\n\n'));
+      },
+    });
     globalThis.fetch = Object.assign(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url =
@@ -1997,6 +2299,10 @@ describe("ChatView edit and branch", () => {
           });
         }
         if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, {
+            headers: { "content-type": "text/event-stream" },
+          });
         if (url === "/api/app/chat") {
           const body = JSON.parse(String(init?.body)) as {
             conversationId: string;
@@ -2012,13 +2318,10 @@ describe("ChatView edit and branch", () => {
             ratings: [],
             rateableMessageIds: ["a2"],
           };
-          return streamOf([
-            { type: "start", messageId: "a2" },
-            { type: "text-start", id: "t1" },
-            { type: "text-delta", id: "t1", delta: "new answer" },
-            { type: "text-end", id: "t1" },
-            { type: "finish" },
-          ]);
+          eventsController.enqueue(
+            new TextEncoder().encode('data: {"type":"turn-end"}\n\n'),
+          );
+          return jsonResponse({ submitted: true }, 202);
         }
         return jsonResponse(configFallback());
       },
@@ -2140,7 +2443,7 @@ describe("ChatView edit and branch", () => {
     await editFirstMessage("hello, edited");
     await approveEdit();
     await settle(
-      () => dom.container.textContent?.includes("The turn failed") ?? false,
+      () => dom.container.textContent?.includes("turn could not be started") ?? false,
     );
     // The error path reconciled with durable history, not the backup:
     // the server kept the committed edit, so the pre-edit tail must not

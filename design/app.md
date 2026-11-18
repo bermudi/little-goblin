@@ -119,9 +119,10 @@ subscriptions and sent markers live in SQLite; API state exposes endpoint
 hashes, never endpoints or subscription keys. Payloads are generic
 (title/body + `/app/c/<id>`) and contain no reply text or authority.
 Background app turns notify on terminal success or failure; fenced turns
-stay silent. Work still waiting on the operator also rings, with
-Telegram as the fallback (`design/programs.md` → Reports and stages). An interactive turn notifies only if its SSE wire died before
-the terminal callback — a live app reply never double-rings. `404`/`410`
+stay silent. A foreground app reply notifies at turn end only when no
+conversation `/stream` reader and no `/events` subscriber is attached
+(#678); reply streams never double-ring while someone is watching. Work still waiting on the operator also rings, with
+Telegram as the fallback (`design/programs.md` → Reports and stages). `404`/`410`
 prune an endpoint; transient send failures keep it retryable. Telegram
 stays the bell for its own conversations and still rings app turns as the
 companion channel; Web Push is the app-owned path, not a replacement.
@@ -487,10 +488,14 @@ a finished-looking chat whose next send steered a ghost turn (#43).
 - **Join replay.** A member attaching mid-turn first receives everything
   the wire already saw, from sentence one; the wire log survives overflow
   recovery, so the resumed attempt continues the same wire.
-- **Attach/reconnect.** The endpoint serves the wire log + a live tail, 204
-  when idle (the AI SDK's `reconnectToStream` contract — client falls back
-  to history), so a reload re-watches the in-flight reply; the log is
-  in-memory, live turns only — after a crash, history and no stream.
+- **Attach/reconnect (#678 PR1).** `GET /api/app/conversations/:id/stream`
+  serves the wire log + live tail, 204 when idle. A separate
+  `GET /api/app/conversations/:id/events` remains open per conversation,
+  reports current live state, and emits turn-start/turn-end; the client
+  reconnects with backoff. `POST /api/app/chat` only admits the durable
+  submission and returns 202. The transcript reader is not owned by a send.
+  The wire log is in-memory, live turns only — after a crash, history and
+  no stream.
 - **Idle reconnect reconciles (#79).** An idle 204 promises durability: the
   runtime persists a reply before retiring the wire, so history is final
   for every reply that could have been live at snapshot; the client
@@ -510,18 +515,21 @@ a finished-looking chat whose next send steered a ghost turn (#43).
   with no result reads "no result recorded", never a running shimmer.
   Stop answers after the turn settled (`settled` in the response, false
   only past the 5 s bound) and the client refreshes then.
-- **Parked, with a trigger.** A *passive* screen (no submit, no reload)
-  still doesn't live-update; promote when "app open while turns happen"
-  becomes a daily pattern — the server machinery is ready. Until then it
-  stays Spin-off's "live refresh out of scope".
-- **The composer steers (2026-10-16; action revised 2026-11-16).** One
-  composer action shows Stop during a turn when the composer is empty,
-  and Send when it contains text or staged items. Send never locks
-  mid-turn and the lane steers or queues exactly like Telegram;
-  the client drops its reader first (locally, never `/stop`), so the new
-  join replay is the only writer and lands on the same assistant message
-  id — a handoff, not a forked transcript. An aborted reader doesn't ring
-  the done bell.
+- **Passive live updates (#678 PR1).** The conversation event subscription
+  stays open while the view is idle. A turn-start attaches the transcript
+  reader; turn-end reconciles durable history by message id, preserving
+  #79/#408 merge rules. A dropped event connection reconnects with backoff
+  and its state event resynchronizes the reader.
+- **The composer steers (#678 PR1; PR2 pending).** One composer action
+  shows Stop during a turn when the composer is empty, and Send when it
+  contains text or staged items. Sending mid-turn POSTs the input without
+  stopping or replacing the live transcript reader; the server lane folds
+  or queues it as before. The transcript reads the conversation
+  subscription, independently of sends. An aborted reader doesn't ring
+  the done bell. PR2 will add pending-input rows and steer/queue choice and
+  dequeue; those behaviors are not part of PR1. The mechanism is inspired
+  by Pi's conversation-keyed transcript store subscription in
+  `apps/p2/plugins/chat/web.tsx`, not its outbox feature.
 
 ## Model/thinking scope (ruling 2026-10-06)
 

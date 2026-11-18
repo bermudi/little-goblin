@@ -163,6 +163,11 @@ export interface AppStopResponse {
 	settled: boolean;
 }
 
+export type AppConversationEvent =
+	| { type: "state"; live: boolean }
+	| { type: "turn-start" }
+	| { type: "turn-end" };
+
 // Rides `metadata` of the system unlanded-progress event (design/runtime-turn.md → Unlanded-turn progress).
 export interface UnlandedTurnMetadata {
 	unlanded: {

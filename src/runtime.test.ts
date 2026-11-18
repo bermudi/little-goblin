@@ -1153,20 +1153,20 @@ describe("turn authority", () => {
 		const s1 = submit(r, "one");
 		await s1.firstDelta; // mid-stream
 		const ends: TurnDone[] = [];
-		expect(
-			r.runtime.subscribeLiveChunks(
-				r.conv.id,
-				() => {},
-				(d) => {
-					ends.push(d);
-				},
-			),
-		).not.toBeNull();
+		const attached = r.runtime.attachLiveChunks(
+			r.conv.id,
+			() => {},
+			(d) => {
+				ends.push(d);
+			},
+		);
+		expect(attached).not.toBeNull();
 		await r.runtime.shutdown();
 		expect(await s1.done).toEqual({ kind: "fenced", shutdown: true });
 		// The reattached stream ends with the same stamped fence, not a bare
 		// one — a restart must read as a restart, not "stopped before finishing".
 		expect(ends).toEqual([{ kind: "fenced", shutdown: true }]);
+		attached!.detach();
 		r.store.close();
 	});
 
@@ -3314,24 +3314,21 @@ describe("steering", () => {
 			const s1 = new RecordingSink();
 			// No submit yet — no lane, nothing to attach to.
 			expect(
-				r.runtime.subscribeLiveChunks(
-					r.conv.id,
-					() => {},
-					() => {},
-				),
+				r.runtime.attachLiveChunks(r.conv.id, () => {}, () => {}),
 			).toBeNull();
 			submit(r, "go", s1);
 			await s1.firstToolCall; // step 1 (the tool call) is on the wire, tool gated
 			const seen: MessageChunk[] = [];
 			const endedRef: { done: TurnDone | null } = { done: null };
-			const replay = r.runtime.subscribeLiveChunks(
+			const attached = r.runtime.attachLiveChunks(
 				r.conv.id,
 				(c) => seen.push(c),
 				(d) => {
 					endedRef.done = d;
 				},
 			);
-			expect(replay).not.toBeNull();
+			expect(attached).not.toBeNull();
+			const replay = attached!.replay;
 			// Replay begins at the wire's first chunk — the tool call the
 			// late joiner missed is included, not resumed mid-sentence.
 			expect(replay!.some((c) => c.type === "start")).toBe(true);
@@ -3343,12 +3340,9 @@ describe("steering", () => {
 			expect(seen).toEqual(s1.chunks.slice(replay!.length));
 			// After the turn settles, there is nothing left to attach to.
 			expect(
-				r.runtime.subscribeLiveChunks(
-					r.conv.id,
-					() => {},
-					() => {},
-				),
+				r.runtime.attachLiveChunks(r.conv.id, () => {}, () => {}),
 			).toBeNull();
+			attached!.detach();
 			r.store.close();
 		});
 	});

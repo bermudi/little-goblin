@@ -9,6 +9,9 @@ import {
 	parsedJson,
 } from "./app-shared.ts";
 import type { AppCompactResponse, AppStopResponse } from "./app-wire.ts";
+import type { AppConversationEvent } from "./app-wire.ts";
+
+const EVENT_KEEPALIVE_MS = 25_000;
 
 const compactBody = z
 	.object({
@@ -31,6 +34,63 @@ export async function handleTurnsRoute(
 ): Promise<Response | null> {
 	const path = url.pathname;
 	const { store, runtime } = deps;
+
+	const eventsMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/events$/);
+	if (eventsMatch) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(eventsMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const encoder = new TextEncoder();
+		let controller!: ReadableStreamDefaultController<Uint8Array>;
+		let closed = false;
+		let cancelled = false;
+		let unsubscribe = () => {};
+		let keepalive: ReturnType<typeof setInterval> | undefined;
+		const push = (event: AppConversationEvent | null) => {
+			if (closed) return;
+			try {
+				controller.enqueue(
+					encoder.encode(event === null ? ": keepalive\n\n" : `data: ${JSON.stringify(event)}\n\n`),
+				);
+			} catch {
+				close();
+			}
+		};
+		const close = () => {
+			if (closed) return;
+			closed = true;
+			if (keepalive !== undefined) clearInterval(keepalive);
+			unsubscribe();
+			req.signal.removeEventListener("abort", onAbort);
+			if (!cancelled) controller.close();
+			log.info("app conversation events detach", { conversation: convId.id });
+		};
+		const onAbort = () => close();
+		const body = new ReadableStream<Uint8Array>({
+			start(c) {
+				controller = c;
+				unsubscribe = runtime.subscribeConversation(convId.id, (event) => push(event));
+				push({ type: "state", live: runtime.conversationLive(convId.id) });
+				keepalive = setInterval(() => push(null), EVENT_KEEPALIVE_MS);
+				(keepalive as unknown as { unref?: () => void }).unref?.();
+				req.signal.addEventListener("abort", onAbort, { once: true });
+				log.info("app conversation events attach", { conversation: convId.id });
+				if (req.signal.aborted) close();
+			},
+			cancel() {
+				cancelled = true;
+				close();
+			},
+		});
+		return new Response(body, {
+			headers: { ...NO_STORE, "content-type": "text/event-stream; charset=utf-8" },
+		});
+	}
 
 	const stopMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/stop$/);
 	if (stopMatch) {
@@ -123,12 +183,14 @@ export async function handleTurnsRoute(
 		if (store.get(convId.id) === null) {
 			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
 		}
-		const writer = appSseWriter(convId.id);
-		const replay = runtime.subscribeLiveChunks(
+		let detach = () => {};
+		const writer = appSseWriter(convId.id, undefined, () => detach());
+		const attached = runtime.attachLiveChunks(
 			convId.id,
 			(chunk) => writer.write(chunk),
 			(done) => {
 				writer.finish(done);
+				detach();
 				log.info("app stream finish", {
 					conversation: convId.id,
 					outcome: done.kind,
@@ -136,12 +198,13 @@ export async function handleTurnsRoute(
 				});
 			},
 		);
-		if (replay === null) {
+		if (attached === null) {
 			writer.dispose();
 			return new Response(null, { status: 204, headers: NO_STORE });
 		}
-		for (const chunk of replay) writer.write(chunk);
-		log.info("app stream attach", { conversation: convId.id, replay: replay.length });
+		detach = attached.detach;
+		for (const chunk of attached.replay) writer.write(chunk);
+		log.info("app stream attach", { conversation: convId.id, replay: attached.replay.length });
 		return new Response(writer.body, {
 			headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },
 		});

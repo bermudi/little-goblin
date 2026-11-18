@@ -12,7 +12,7 @@ import type { AppChannelDeps } from "./app-shared.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
 
 describe("app chat", () => {
-	test("chat submits a user message and streams UIMessage chunks as SSE", async () => {
+	test("chat submits a user message with 202 and persists its reply", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {
 			await call("/api/app/conversations", {
@@ -28,22 +28,13 @@ describe("app chat", () => {
 					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
 				}),
 			});
-			expect(res.status).toBe(200);
-			expect(res.headers.get("x-vercel-ai-ui-message-stream")).toBe("v1");
-			expect(res.headers.get("content-type")).toContain("text/event-stream");
-
-			const body = await res.text();
-			const frames = body
-				.split("\n\n")
-				.filter((f) => f.startsWith("data: "))
-				.map((f) => f.slice("data: ".length));
-			expect(frames.at(-1)).toBe("[DONE]");
-			const chunks = frames.slice(0, -1).map((f) => JSON.parse(f) as { type: string });
-			const types = chunks.map((c) => c.type);
-			expect(types).toContain("text-delta");
-			expect(types).toContain("finish");
-
+			expect(res.status).toBe(202);
+			expect(await res.json()).toEqual({ submitted: true });
+			await waitUntil(() => store.history("app/chat-01").length === 2, "reply persists");
 			expect(store.history("app/chat-01").map((m) => m.role)).toEqual(["user", "assistant"]);
+			expect(store.history("app/chat-01")[1]!.parts).toContainEqual(
+				expect.objectContaining({ type: "text", text: "hello app" }),
+			);
 		} finally {
 			http.stop();
 		}
@@ -60,7 +51,7 @@ describe("app chat", () => {
 				finishPart("stop"),
 			],
 		]).model;
-		const { http, call } = setup({ token: APP_TOKEN_NAME, model });
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME, model });
 		try {
 			await call("/api/app/conversations", {
 				method: "POST",
@@ -75,18 +66,13 @@ describe("app chat", () => {
 					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
 				}),
 			});
-			expect(res.status).toBe(200);
-			const chunks = (await res.text())
-				.split("\n\n")
-				.filter((frame) => frame.startsWith("data: ") && !frame.includes("[DONE]"))
-				.map((frame) => JSON.parse(frame.slice("data: ".length)) as Record<string, unknown>);
-			const errorIndex = chunks.findIndex((chunk) => chunk.type === "error");
-			const finishIndex = chunks.findIndex((chunk) => chunk.type === "finish");
-			expect(errorIndex).toBeGreaterThanOrEqual(0);
-			expect(finishIndex).toBeGreaterThan(errorIndex);
-			const finish = chunks[finishIndex]!;
-			expect(finish.finishReason).toBe("error");
-			expect(finish.messageMetadata).toMatchObject({ finishReason: "error" });
+			expect(res.status).toBe(202);
+			expect(await res.json()).toEqual({ submitted: true });
+			await waitUntil(() => store.history("app/failed-stream").length === 2, "failed reply persists");
+			const history = store.history("app/failed-stream");
+			expect(history.map((message) => message.role)).toEqual(["user", "system"]);
+			expect(history[1]!.id).toBeTruthy();
+			expect(JSON.stringify(history[1]!.parts)).toContain("partial");
 		} finally {
 			http.stop();
 		}
@@ -115,7 +101,7 @@ describe("app chat", () => {
 					},
 				}),
 			});
-			expect(res.status).toBe(200);
+			expect(res.status).toBe(202);
 			await res.text();
 			expect(store.history("app/forged-01").map((m) => m.id)).toEqual([
 				"compact-7",
@@ -172,8 +158,9 @@ describe("app chat", () => {
 					message: { id: "m-good", role: "user", parts: [{ type: "text", text: "hi" }] },
 				}),
 			});
-			expect(good.status).toBe(200);
+			expect(good.status).toBe(202);
 			await good.text();
+			await waitUntil(() => store.history("app/poison-01").length === 2, "good turn settles");
 			expect(store.history("app/poison-01").map((m) => m.role)).toEqual(["user", "assistant"]);
 		} finally {
 			http.stop();
@@ -219,26 +206,16 @@ describe("app chat", () => {
 					message: { id: "m1", role: "user", parts: [{ type: "text", text: "send media" }] },
 				}),
 			});
-			expect(res.status).toBe(200);
-			const frames = (await res.text())
-				.split("\n\n")
-				.filter((f) => f.startsWith("data: "))
-				.map((f) => f.slice("data: ".length));
-			const chunks = frames
-				.filter((f) => f !== "[DONE]")
-				.map((f) => JSON.parse(f) as { type: string; data?: unknown });
-			const live = chunks
-				.filter((c) => c.type === "data-attachment")
-				.map(
-					(c) =>
-						c.data as {
-							path: string;
-							mediaType: string;
-							filename: string;
-							size: number;
-						},
-				);
-			expect(live.map((a) => a.filename).sort()).toEqual(["note.txt", "voice-note.ogg"]);
+			expect(res.status).toBe(202);
+			await res.json();
+			await waitUntil(
+				() =>
+					store
+						.history("app/chat-media")
+						.flatMap((message) => message.parts)
+						.filter((part) => part.type === "data-attachment").length === 2,
+				"media parts persist",
+			);
 
 			const detail = store.historyDetail("app/chat-media");
 			expect(detail.map((e) => e.message.role)).toEqual([
@@ -299,8 +276,10 @@ describe("app chat", () => {
 					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
 				}),
 			});
-			expect(res.status).toBe(200);
-			const body = await res.text();
+			expect(res.status).toBe(202);
+			await res.json();
+			const stream = await call("/api/app/conversations/chat-ping/stream");
+			const body = await stream.text();
 			expect(body).toContain(": ping\n\n");
 			const frames = body
 				.split("\n\n")
@@ -346,8 +325,8 @@ describe("app chat", () => {
 			const up = await call("/api/app/attachments", { method: "POST", body: form });
 			const { ref } = (await up.json()) as { ref: Record<string, unknown> };
 			const ok = await chat(ref);
-			expect(ok.status).toBe(200);
-			expect((await ok.text()).trimEnd().endsWith("data: [DONE]")).toBe(true);
+			expect(ok.status).toBe(202);
+			expect(await ok.json()).toEqual({ submitted: true });
 		} finally {
 			http.stop();
 		}
@@ -396,7 +375,8 @@ describe("app chat", () => {
 				url: "https://github.com/o/r/tree/main/demo",
 				path: cached,
 			});
-			expect(ok.status).toBe(200);
+			expect(ok.status).toBe(202);
+			expect(await ok.json()).toEqual({ submitted: true });
 		} finally {
 			http.stop();
 		}
@@ -548,7 +528,7 @@ describe("app chat", () => {
 			.trim()
 			.split("\n")
 			.map((l) => JSON.parse(l) as { msg: string; conversation?: string; outcome?: string });
-		const finish = lines.filter((l) => l.msg === "app stream finish");
+			const finish = lines.filter((l) => l.msg === "app conversation turn finish");
 		expect(finish).toHaveLength(1);
 		expect(finish[0]).toMatchObject({ conversation: "app/chat-01", outcome: "completed" });
 	});
@@ -617,8 +597,8 @@ describe("app chat", () => {
 					},
 				}),
 			});
-			expect(res.status).toBe(200);
-			await res.text();
+			expect(res.status).toBe(202);
+			await res.json();
 			expect(heard).toEqual([{ filename: "note.ogg" }]);
 			const stored = store.history("app/chat-01")[0]!;
 			const part = stored.parts[0] as { type: string; data: { transcript?: string } };
@@ -637,8 +617,9 @@ describe("app chat", () => {
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ conversationId: "app/chat-01", retry: true }),
 			});
-			expect(res.status).toBe(200);
-			expect((await res.text()).trimEnd().endsWith("data: [DONE]")).toBe(true);
+			expect(res.status).toBe(202);
+			expect(await res.json()).toEqual({ submitted: true });
+			await waitUntil(() => store.history("app/chat-01").length === 3, "retry settles");
 			const roles = store.history("app/chat-01").map((m) => m.role);
 			expect(roles).toEqual(["user", "assistant", "assistant"]);
 		} finally {
@@ -680,7 +661,6 @@ describe("app chat", () => {
 			});
 			expect(busy.status).toBe(409);
 			await call("/api/app/conversations/chat-01/stop", { method: "POST" });
-			await chat.text();
 
 			expect(
 				(
@@ -700,7 +680,7 @@ describe("app chat", () => {
 		}
 	});
 
-	test("a client-cancelled chat stream reaches the push owner at turn end", async () => {
+	test("a turn with no attached readers reaches the push owner at turn end", async () => {
 		const pushed: { conversation: string; done: TurnDone }[] = [];
 		const push: NonNullable<AppChannelDeps["push"]> = {
 			status: () => Promise.resolve({ configured: true, subscriptions: [] }),
@@ -727,13 +707,61 @@ describe("app chat", () => {
 					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
 				}),
 			});
-			expect(res.status).toBe(200);
-			await res.body!.cancel();
-			await waitUntil(() => pushed.length === 1, "push on disconnected turn");
+			expect(res.status).toBe(202);
+			await res.json();
+			await waitUntil(() => pushed.length === 1, "push when nobody watches");
 			expect(pushed[0]).toMatchObject({
 				conversation: "app/chat-01",
 				done: { kind: "completed" },
 			});
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("an attached conversation watcher suppresses foreground push", async () => {
+		const pushed: string[] = [];
+		const push: NonNullable<AppChannelDeps["push"]> = {
+			status: () => Promise.resolve({ configured: true, subscriptions: [] }),
+			ensurePublicKey: () => Promise.resolve("public"),
+			register: () => Promise.resolve({ endpointHash: "hash" }),
+			unregister: () => true,
+			notifyDone: (conv) => {
+				pushed.push(conv.id);
+				return Promise.resolve();
+			},
+		};
+		const { http, call, runtime } = setup({
+			token: APP_TOKEN_NAME,
+			deltas: ["a", "b", "c", "d", "e"],
+			delayMs: 50,
+			push,
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "watched" }),
+			});
+			const events = await call("/api/app/conversations/watched/events");
+			const eventReader = events.body!.getReader();
+			await eventReader.read();
+			await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/watched",
+					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
+				}),
+			});
+			await waitUntil(() => runtime.conversationLive("app/watched"), "wire opens");
+			const stream = await call("/api/app/conversations/watched/stream");
+			await waitUntil(() => runtime.hasConversationWatchers("app/watched"), "readers attach");
+			await waitUntil(() => !runtime.busy("app/watched"), "turn finishes");
+			expect(stream.status).toBe(200);
+			expect(pushed).toEqual([]);
+			await eventReader.cancel();
+			await stream.body?.cancel();
 		} finally {
 			http.stop();
 		}
@@ -767,8 +795,9 @@ describe("app chat", () => {
 					},
 				}),
 			});
-			expect(res.status).toBe(200);
-			expect((await res.text()).trimEnd().endsWith("data: [DONE]")).toBe(true);
+			expect(res.status).toBe(202);
+			await res.json();
+			await waitUntil(() => store.history("app/chat-01").length === 2, "turn settles");
 			const stored = store.history("app/chat-01")[0]!;
 			const part = stored.parts[0] as {
 				data: { transcript?: string; transcriptionError?: string; path: string };
@@ -798,8 +827,9 @@ describe("app chat edit (rewind)", () => {
 				conversationId: "app/chat-01",
 				message: { id: "m2", role: "user", parts: [{ type: "text", text: "second" }] },
 			});
-			expect(second.status).toBe(200);
-			await second.text();
+			expect(second.status).toBe(202);
+			await second.json();
+			await waitUntil(() => store.history("app/chat-01").length === 4, "second turn settles");
 			expect(store.history("app/chat-01")).toHaveLength(4);
 
 			const res = await postChat(call, {
@@ -811,10 +841,9 @@ describe("app chat edit (rewind)", () => {
 					parts: [{ type: "text", text: "first, rewritten" }],
 				},
 			});
-			expect(res.status).toBe(200);
-			expect(res.headers.get("x-vercel-ai-ui-message-stream")).toBe("v1");
-			const body = await res.text();
-			expect(body.trimEnd().endsWith("data: [DONE]")).toBe(true);
+			expect(res.status).toBe(202);
+			expect(await res.json()).toEqual({ submitted: true });
+			await waitUntil(() => store.history("app/chat-01").length === 2, "edited reply settles");
 
 			const history = store.historyDetail("app/chat-01");
 			expect(history.map((e) => e.message.role)).toEqual(["user", "assistant"]);
@@ -852,7 +881,8 @@ describe("app chat edit (rewind)", () => {
 				conversationId: "app/chat-01",
 				message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
 			});
-			expect(chat.status).toBe(200);
+			expect(chat.status).toBe(202);
+			await chat.json();
 			await waitUntil(() => runtime.busy("app/chat-01"), "turn running");
 			const edit = await postChat(call, {
 				conversationId: "app/chat-01",
@@ -861,7 +891,6 @@ describe("app chat edit (rewind)", () => {
 			});
 			expect(edit.status).toBe(409);
 			expect(((await edit.json()) as { error: string }).error).toContain("running");
-			await chat.text();
 		} finally {
 			http.stop();
 		}

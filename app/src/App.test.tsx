@@ -166,16 +166,14 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 			if (url.endsWith("/messages"))
 				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
-			if (url.endsWith("/chat"))
+			if (url.endsWith("/events"))
 				return Promise.resolve(
-					new Response("data: [DONE]\n\n", {
-						status: 200,
-						headers: {
-							"content-type": "text/event-stream",
-							"x-vercel-ai-ui-message-stream": "v1",
-						},
+					new Response('data: {"type":"state","live":false}\n\n', {
+						headers: { "content-type": "text/event-stream" },
 					}),
 				);
+			if (url.endsWith("/chat"))
+				return Promise.resolve(jsonResponse({ submitted: true }, 202));
 			// The composers' config loads and anything else.
 			return Promise.resolve(
 				jsonResponse({
@@ -2585,17 +2583,15 @@ describe("app projects surface", () => {
 					jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] }),
 				);
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));
-			if (url.endsWith("/chat")) {
-				posts.push({ url, body });
+			if (url.endsWith("/events"))
 				return Promise.resolve(
-					new Response("data: [DONE]\n\n", {
-						status: 200,
-						headers: {
-							"content-type": "text/event-stream",
-							"x-vercel-ai-ui-message-stream": "v1",
-						},
+					new Response('data: {"type":"state","live":false}\n\n', {
+						headers: { "content-type": "text/event-stream" },
 					}),
 				);
+			if (url.endsWith("/chat")) {
+				posts.push({ url, body });
+				return Promise.resolve(jsonResponse({ submitted: true }, 202));
 			}
 			// The composers' config loads and anything else.
 			return Promise.resolve(

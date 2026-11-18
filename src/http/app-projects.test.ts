@@ -184,7 +184,7 @@ describe("app projects", () => {
 
 	test("a project conversation's tools resolve the project dir; a vanished dir fails the turn", async () => {
 		const workdirs: string[] = [];
-		const { http, call } = setup({ token: APP_TOKEN_NAME, workdirs });
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME, workdirs });
 		try {
 			const project = (await (await postJson(call, "/api/app/projects", { name: "p" })).json()) as {
 				id: string;
@@ -204,20 +204,22 @@ describe("app projects", () => {
 				});
 
 			const bound = await chat("w-1");
-			expect(bound.status).toBe(200);
-			await bound.text();
+			expect(bound.status).toBe(202);
 			expect(workdirs.at(-1)).toBe(project.dir);
 			const loose = await chat("w-2");
-			expect(loose.status).toBe(200);
-			await loose.text();
+			expect(loose.status).toBe(202);
 			expect(workdirs.at(-1)).toBe(join(process.env.GOBLIN_HOME!, "workspace"));
 
 			rmSync(project.dir, { recursive: true, force: true });
+			const events = await call("/api/app/conversations/w-1/events");
+			expect(events.status).toBe(200);
+			const eventReader = events.body!.getReader();
+			const first = await eventReader.read();
+			expect(new TextDecoder().decode(first.value)).toContain('"type":"state"');
 			const gone = await chat("w-1");
-			expect(gone.status).toBe(200);
-			const body = await gone.text();
-			expect(body).toContain('"type":"error"');
-			expect(body).toContain(project.dir.replaceAll("\\", "\\\\"));
+			expect(gone.status).toBe(202);
+			expect(store.history("app/w-1").slice(-1).map((message) => message.role)).toEqual(["user"]);
+			await eventReader.cancel();
 		} finally {
 			http.stop();
 		}

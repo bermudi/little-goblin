@@ -578,7 +578,6 @@ async function boot() {
 		now: () => new Date(),
 		desktops: () => desktops,
 	});
-	agentChildren.recoverAtBoot();
 	agentChildrenEngine = agentChildren;
 
 	// Project-owned responsibilities — the store the handover service
@@ -610,6 +609,7 @@ async function boot() {
 		resps: responsibilities,
 		service: responsibilityService,
 	};
+	agentChildren.recoverAtBoot();
 	// Boot sweep: every open responsibility re-verifies its follow-up
 	// Program — a restart (or a deleted program row) re-links here,
 	// never leaves the check-in silently unarmed.

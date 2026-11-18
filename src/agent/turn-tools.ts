@@ -42,6 +42,7 @@ import { withScript } from "./tools/script.ts";
 import type { T3 } from "../t3.ts";
 import type { ResponsibilityStore } from "../responsibilities.ts";
 import { makeManagedSendEdge, type ResponsibilityService } from "../responsibility-service.ts";
+import { log } from "../log.ts";
 
 // Anything deciding "does this tool slot exist" is a dep here; the
 // decision itself lives in makeTurnTools, not boot().
@@ -145,6 +146,19 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		const mail = deps.mail();
 		const desktops = deps.desktops();
 		const responsibilitySvc = deps.responsibility();
+		const agents = deps.agents();
+		if (conv.agentType === null) {
+			const missing = [
+				...(configRef.current.desktops !== undefined && desktops === null ? ["desktop"] : []),
+				...(agents === null ? ["agent"] : []),
+			];
+			if (missing.length > 0) {
+				log.warn("turn tools built before owner bound", {
+					conversation: conv.id,
+					missing,
+				});
+			}
+		}
 		// One gate for every executor that can link work to what goblin owes.
 		const checkResponsibility =
 			conv.projectId !== null && responsibilitySvc !== null
@@ -169,7 +183,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		// A child conversation's bound desktop (computer type) — the
 		// engine's row is the source; null for parents and other types.
 		const childDesktop =
-			conv.agentType !== null ? (deps.agents()?.desktopFor(conv.id) ?? null) : null;
+			conv.agentType !== null ? (agents?.desktopFor(conv.id) ?? null) : null;
 		const tools = makeTools({
 			cwd: workdir,
 			...(context !== undefined ? { contextFill: context.contextFill } : {}),
@@ -395,7 +409,6 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		// tool — depth is 1. A parent gets the tool with the types read
 		// at this turn's start: a malformed type file fails the turn
 		// here, loud, naming the file.
-		const agents = deps.agents();
 		let surfaced = tools;
 		if (conv.agentType !== null) {
 			if (agents === null) {

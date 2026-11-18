@@ -8,7 +8,7 @@ import type { Conversation } from "../conversation-read.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import type { Desktops } from "../desktops.ts";
 import type { T3, T3Thread } from "../t3.ts";
-import { setLogFile } from "../log.ts";
+import { setLogFile, setLogWriter } from "../log.ts";
 import type { MailApproval } from "../mail-approval.ts";
 import type { NoteStore } from "../notes.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
@@ -143,6 +143,7 @@ describe("turn-tools responsibility composition", () => {
 		const resps = openResponsibilities(store.db);
 		const wakes = openWakeStore(store.db);
 		const programs = openPrograms(join(home, "state", "programs.sqlite"));
+		const configRef = { current: {} as Config, ttsDown: false };
 		const service = makeResponsibilityService({
 			db: store.db,
 			resps,
@@ -152,7 +153,7 @@ describe("turn-tools responsibility composition", () => {
 			pump: () => {},
 		});
 		const toolsFor = makeTurnTools({
-			configRef: { current: {} as Config, ttsDown: false },
+			configRef,
 			auth: {} as unknown as AuthStore,
 			store,
 			projects,
@@ -179,8 +180,32 @@ describe("turn-tools responsibility composition", () => {
 			buildStep: () => ({ model: edge.model, system: "test" }),
 			makeTools: toolsFor,
 		});
-		return { store, conv, project, resps, runtime };
+		return { store, conv, project, resps, runtime, toolsFor, configRef };
 	}
+
+	test("warns when a parent turn builds before configured owners bind", () => {
+		const f = rig([]);
+		f.configRef.current = { desktops: {} } as Config;
+		const records: Record<string, unknown>[] = [];
+		setLogFile("/fixture/goblin.log");
+		setLogWriter((_path, line) => {
+			records.push(JSON.parse(line.trim()) as Record<string, unknown>);
+		});
+		try {
+			f.toolsFor(f.conv);
+			const warnings = records.filter((record) => record.msg === "turn tools built before owner bound");
+			expect(warnings).toEqual([
+				expect.objectContaining({
+					conversation: f.conv.id,
+					missing: ["desktop", "agent"],
+				}),
+			]);
+		} finally {
+			setLogWriter(null);
+			setLogFile(null);
+			f.store.close();
+		}
+	});
 
 	test("accepts dedup on the owned source message; a later message hands over a new responsibility", async () => {
 		const { store, conv, project, resps, runtime } = rig([

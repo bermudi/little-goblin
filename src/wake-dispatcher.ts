@@ -48,6 +48,8 @@ export interface WakeDispatcherDeps {
 	 *  appended (responsibility-authority.ts) — a lapsed stamp is
 	 *  delivered marked superseded, never dropped. */
 	recheck?: AuthorityRecheck;
+	/** Hold every pump, including record-triggered pumps, until start(). */
+	deferStart?: boolean;
 }
 
 export interface WakeDispatcher {
@@ -62,6 +64,8 @@ export interface WakeDispatcher {
 	/** One classify-and-act pass over every open wake. Boot, the
 	 *  ticker, and the run-end hook all run the same pass. */
 	pump(): void;
+	/** Enable a boot-deferred dispatcher, pump durable work, and start retries. */
+	start(): () => void;
 	/** The runtime's runOwnership hooks — total by construction. */
 	hooks: NonNullable<RuntimeDeps["runOwnership"]>;
 	/** The persistent-retry ticker — the only mover for wakes gated on
@@ -77,6 +81,8 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 	const backoff = { ...DEFAULT_BACKOFF, ...(deps.backoff ?? {}) };
 	const now = () => deps.now?.() ?? Date.now();
 	const nowIso = () => new Date(now()).toISOString();
+	let started = deps.deferStart !== true;
+	let stopTicker: (() => void) | undefined;
 
 	// The journal answer reconcile() needs — following the legacy resume
 	// chain (#594 removed the writer; pre-change 'resumed' rows still
@@ -332,6 +338,7 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 		},
 
 		pump() {
+			if (!started) return;
 			let plan: ReconcilePlan;
 			try {
 				plan = wakes.reconcile(nowIso(), runStatus);
@@ -438,6 +445,18 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 			const t = setInterval(() => guard("ticker", () => dispatcher.pump()), intervalMs);
 			t.unref();
 			return () => clearInterval(t);
+		},
+
+		start() {
+			if (!started) {
+				started = true;
+				dispatcher.pump();
+			}
+			stopTicker ??= dispatcher.startTicker();
+			return () => {
+				stopTicker?.();
+				stopTicker = undefined;
+			};
 		},
 	};
 	return dispatcher;

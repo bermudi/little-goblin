@@ -347,8 +347,23 @@ describe("reviewer gate", () => {
 			tools: ["bash", "read_file"],
 		});
 		expect(gates[1]).toMatchObject({ fallback: true, fallbackStreak: 2 });
-		expect(gates[2]).toMatchObject({ fallback: false, fallbackStreak: 0, tools: ["bash", "send"] });
+		expect(gates[2]).toMatchObject({ fallback: false, fallbackStreak: 2, tools: ["bash", "send"] });
 		expect(gates[2]!.thresholds).toEqual({ correction: 0.8, procedure: 0.8 });
+		h.store.close();
+	});
+
+	test("a success with no prior fallback logs a zero fallback streak", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		await new Reviewer(h.depsFor({ nouls: { correction: 0.1, procedure: 0.1 } })).considerTurn(turn());
+		const gates = readFileSync(logFile, "utf8")
+			.trim()
+			.split("\n")
+			.map((l) => JSON.parse(l) as Record<string, unknown>)
+			.filter((e) => e.msg === "reviewer gate");
+		expect(gates).toHaveLength(1);
+		expect(gates[0]).toMatchObject({ fallback: false, fallbackStreak: 0 });
 		h.store.close();
 	});
 });

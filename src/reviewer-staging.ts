@@ -9,6 +9,7 @@
 import {
 	chmodSync,
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	readdirSync,
 	readFileSync,
@@ -27,6 +28,7 @@ import { writeFileTool } from "./agent/tools/write.ts";
 import { resolvePath } from "./agent/tools/paths.ts";
 import { log } from "./log.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
+import { NAME_RE } from "./agent/skills.ts";
 
 // A skills tree bigger than this is already wrong — skip the review
 // (loud) rather than copy it.
@@ -157,6 +159,11 @@ export function sha256(bytes: Uint8Array): string {
 	return createHash("sha256").update(bytes).digest("hex");
 }
 
+export interface DraftManifest {
+	files: Map<string, string>;
+	skills: Set<string>;
+}
+
 // Distinct type so the caller can tell policy from mechanical failure
 // and log the true cause.
 export class StagingBudgetError extends Error {
@@ -217,6 +224,71 @@ export function copySkillsTree(skillsDir: string, stagedDir: string): Map<string
 	};
 	walk(".");
 	return manifest;
+}
+
+// Overlay valid, real pending-draft directories after the installed tree
+// is copied. The returned draft baseline is kept separate from the live
+// manifest used by proposal drift checks.
+export function overlayPendingDrafts(
+	proposedDir: string,
+	stagedDir: string,
+	installedManifest: Map<string, string>,
+): { manifest: Map<string, string>; drafts: DraftManifest } {
+	const manifest = new Map(installedManifest);
+	const drafts: DraftManifest = { files: new Map(), skills: new Set() };
+	let proposedStats: Stats;
+	try {
+		proposedStats = lstatSync(proposedDir);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { manifest, drafts };
+		throw err;
+	}
+	// Invalid roots are rejected by proposeSkill if this review writes a
+	// skill. Do not follow a root symlink just to inventory pending drafts.
+	if (!proposedStats.isDirectory() || proposedStats.isSymbolicLink()) return { manifest, drafts };
+	let names: string[];
+	try {
+		names = readdirSync(proposedDir);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return { manifest, drafts };
+		throw err;
+	}
+	let bytes = [...manifest.keys()].reduce(
+		(total, rel) => total + readFileSync(join(stagedDir, rel)).byteLength,
+		0,
+	);
+	for (const name of names.sort()) {
+		if (name.startsWith(".") || !NAME_RE.test(name)) continue;
+		const source = join(proposedDir, name);
+		let rootStats: Stats;
+		try {
+			rootStats = lstatSync(source);
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;
+			throw err;
+		}
+		if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) continue;
+		const prefix = `${name}/`;
+		for (const rel of [...manifest.keys()]) {
+			if (rel.startsWith(prefix)) {
+				manifest.delete(rel);
+				bytes -= readFileSync(join(stagedDir, rel)).byteLength;
+			}
+		}
+		rmSync(join(stagedDir, name), { recursive: true, force: true });
+		const copy = copySkillsTree(source, join(stagedDir, name));
+		for (const [rel, hash] of copy) {
+			const stagedRel = `${name}/${rel}`;
+			manifest.set(stagedRel, hash);
+			drafts.files.set(stagedRel, hash);
+			bytes += readFileSync(join(stagedDir, name, rel)).byteLength;
+		}
+		drafts.skills.add(name);
+		if (manifest.size > MAX_STAGING_FILES || bytes > MAX_STAGING_BYTES) {
+			throw new StagingBudgetError(manifest.size, bytes);
+		}
+	}
+	return { manifest, drafts };
 }
 
 // Written paths that differ from the copied manifest (or are new), plus

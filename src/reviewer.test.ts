@@ -542,51 +542,188 @@ describe("review run — staging and publication", () => {
 		});
 	}
 
-	test("a newer review replaces an undecided proposal of the same skill, and logs it", async () => {
+	test("a review sees and revises an undecided same-name draft", async () => {
 		const h = harness();
 		const logFile = join(h.workspace, "goblin.log");
 		setLogFile(logFile);
-		await new Reviewer(
-			h.depsFor({
-				nouls: { correction: 0.9, procedure: 0 },
-				script: [
+		mkdirSync(join(h.proposed, "tide"), { recursive: true });
+		writeFileSync(join(h.proposed, "tide", "SKILL.md"), SKILL_MD("tide", "draft-only detail"));
+		const prompts: string[] = [];
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			script: [
+				{
+					calls: [
+						{
+							name: "edit_file",
+							input: {
+								path: "tide/SKILL.md",
+								old_string: "draft-only detail",
+								new_string: "draft-only detail plus review edit",
+							},
+						},
+					],
+				},
+				{ text: "saved" },
+			],
+			prompts,
+		});
+		let stagedContent = "";
+		const originalModel = deps.reviewModel;
+		deps.reviewModel = async (conv) => {
+			const resolved = await originalModel(conv);
+			return {
+				...resolved,
+				model: fakeReviewModel(
+					[
+						{
+							calls: [
+								{
+									name: "edit_file",
+									input: {
+										path: "tide/SKILL.md",
+										old_string: "draft-only detail",
+										new_string: "draft-only detail plus review edit",
+									},
+								},
+							],
+						},
+						{ text: "saved" },
+					],
+					async () => {
+						const id = readdirSync(h.staging)[0]!;
+						stagedContent = readFileSync(join(h.staging, id, "skills/tide/SKILL.md"), "utf8");
+					},
+					prompts,
+				),
+			};
+		};
+		await new Reviewer(deps).considerTurn(turn());
+		expect(stagedContent).toContain("draft-only detail");
+		expect(promptText(prompts[0]!)).toContain(
+			"- tide — test skill (pending draft, not installed — edit it in place)",
+		);
+		expect(readFileSync(join(h.proposed, "tide", "SKILL.md"), "utf8")).toContain(
+			"draft-only detail plus review edit",
+		);
+		expect(existsSync(join(h.skills, "tide"))).toBe(false);
+		expect(readFileSync(logFile, "utf8")).toContain("reviewer proposal revised a pending draft");
+		h.store.close();
+	});
+
+	test("a turn-authored pending draft is the base of a reviewer edit", async () => {
+		const h = harness();
+		mkdirSync(join(h.proposed, "tide"), { recursive: true });
+		writeFileSync(join(h.proposed, "tide", "SKILL.md"), SKILL_MD("tide", "learned on turn"));
+		const deps = h.depsFor({
+			nouls: { correction: 0.9, procedure: 0 },
+			script: [
+				{
+					calls: [
+						{
+							name: "edit_file",
+							input: {
+								path: "tide/SKILL.md",
+								old_string: "learned on turn",
+								new_string: "learned on turn; refined by review",
+							},
+						},
+					],
+				},
+				{ text: "saved" },
+			],
+		});
+		await new Reviewer(deps).considerTurn(turn());
+		const proposal = readFileSync(join(h.proposed, "tide", "SKILL.md"), "utf8");
+		expect(proposal).toContain("learned on turn; refined by review");
+		h.store.close();
+	});
+
+	test("a pending draft edited during review is skipped and left untouched", async () => {
+		const h = harness();
+		const logFile = join(h.workspace, "goblin.log");
+		setLogFile(logFile);
+		mkdirSync(join(h.proposed, "tide"), { recursive: true });
+		writeFileSync(join(h.proposed, "tide", "SKILL.md"), SKILL_MD("tide", "original draft"));
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
+		deps.reviewModel = async () => ({
+			ref: "fake/review",
+			model: fakeReviewModel(
+				[
 					{
 						calls: [
 							{
-								name: "write_file",
-								input: { path: "tide/SKILL.md", content: SKILL_MD("tide", "first take") },
+								name: "edit_file",
+								input: {
+									path: "tide/SKILL.md",
+									old_string: "original draft",
+									new_string: "review edit",
+								},
 							},
 						],
 					},
 					{ text: "saved" },
 				],
+				async () => writeFileSync(
+					join(h.proposed, "tide", "SKILL.md"),
+					SKILL_MD("tide", "operator update"),
+				),
+			),
+		});
+		await new Reviewer(deps).considerTurn(turn());
+		expect(readFileSync(join(h.proposed, "tide", "SKILL.md"), "utf8")).toContain("operator update");
+		const entries = readFileSync(logFile, "utf8").trim().split("\n").map((line) =>
+			JSON.parse(line) as { msg?: string; reason?: string },
+		);
+		expect(
+			entries.some((e) => e.msg === "reviewer proposal skipped — pending draft changed mid-review"),
+		).toBe(true);
+		expect(entries.some((e) => e.reason === "draft-changed")).toBe(true);
+		h.store.close();
+	});
+
+	test("a pending draft that appears during review is skipped and left untouched", async () => {
+		const h = harness();
+		mkdirSync(h.proposed, { recursive: true });
+		const deps = h.depsFor({ nouls: { correction: 0.9, procedure: 0 } });
+		deps.reviewModel = async () => ({
+			ref: "fake/review",
+			model: fakeReviewModel(
+				[
+					{
+						calls: [
+							{
+								name: "write_file",
+								input: { path: "tide/SKILL.md", content: SKILL_MD("tide", "review write") },
+							},
+						],
+					},
+					{ text: "saved" },
+				],
+				async () => {
+					mkdirSync(join(h.proposed, "tide"), { recursive: true });
+					writeFileSync(join(h.proposed, "tide", "SKILL.md"), SKILL_MD("tide", "new turn draft"));
+				},
+			),
+		});
+		await new Reviewer(deps).considerTurn(turn());
+		expect(readFileSync(join(h.proposed, "tide", "SKILL.md"), "utf8")).toContain("new turn draft");
+		h.store.close();
+	});
+
+	test("an untouched overlaid draft is not proposed", async () => {
+		const h = harness();
+		mkdirSync(join(h.proposed, "tide"), { recursive: true });
+		const draft = SKILL_MD("tide", "unchanged");
+		writeFileSync(join(h.proposed, "tide", "SKILL.md"), draft);
+		await new Reviewer(
+			h.depsFor({
+				nouls: { correction: 0.9, procedure: 0 },
+				script: [{ text: "nothing worth changing" }],
 			}),
 		).considerTurn(turn());
-		expect(readFileSync(join(h.proposed, "tide", "SKILL.md"), "utf8")).toContain("first take");
-		// A second review of the same procedure supersedes the undecided
-		// proposal — latest distillation wins, and the live catalog stays
-		// untouched throughout.
-		await new Reviewer(
-			h.depsFor({
-				nouls: { correction: 0.9, procedure: 0 },
-				script: [
-					{
-						calls: [
-							{
-								name: "write_file",
-								input: { path: "tide/SKILL.md", content: SKILL_MD("tide", "second take") },
-							},
-						],
-					},
-					{ text: "saved" },
-				],
-			}),
-		).considerTurn(turn({ turnSeq: 2 }));
-		expect(readFileSync(join(h.proposed, "tide", "SKILL.md"), "utf8")).toContain("second take");
-		expect(existsSync(join(h.skills, "tide"))).toBe(false);
-		expect(readFileSync(logFile, "utf8")).toContain(
-			"reviewer proposal replaced an earlier undecided proposal",
-		);
+		expect(readFileSync(join(h.proposed, "tide", "SKILL.md"), "utf8")).toBe(draft);
+		expect(h.notified).toEqual([]);
 		h.store.close();
 	});
 
@@ -1177,10 +1314,16 @@ describe("review run — staging and publication", () => {
 			.trim()
 			.split("\n")
 			.map(
-				(l) => JSON.parse(l) as { msg: string; skipped?: { skill: string; drifted: string[] }[] },
+				(l) =>
+					JSON.parse(l) as {
+						msg: string;
+						skipped?: { skill: string; reason: string; drifted: string[] }[];
+					},
 			)
 			.find((e) => e.msg === "reviewer proposal skipped — live state conflicts");
-		expect(skipped?.skipped).toEqual([{ skill: "linked", drifted: ["linked"] }]);
+		expect(skipped?.skipped).toEqual([
+			{ skill: "linked", reason: "conflict", drifted: ["linked"] },
+		]);
 		h.store.close();
 	});
 

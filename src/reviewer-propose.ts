@@ -4,14 +4,22 @@
 // staging module's sha256 (shared manifest hashing); reviewer.ts is the
 // only caller.
 
-import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, type Stats } from "node:fs";
+import {
+	lstatSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	type Stats,
+} from "node:fs";
 import { join } from "node:path";
 import { log } from "./log.ts";
-import { sha256 } from "./reviewer-staging.ts";
+import { sha256, type DraftManifest } from "./reviewer-staging.ts";
 
-type ProposeOutcome =
+export type ProposeOutcome =
 	| { proposed: true }
-	| { proposed: false; reason: "conflict"; drifted: string[] };
+	| { proposed: false; reason: "conflict" | "draft-changed"; drifted: string[] };
 
 // A proposal built on a base the operator changed mid-review must never
 // be offered — approving it would clobber those bytes sight-unseen, so
@@ -67,17 +75,70 @@ function liveDrifted(skillsDir: string, manifest: Map<string, string>, skill: st
 	return drifted.sort();
 }
 
+function pendingDraftDrifted(
+	proposedDir: string,
+	drafts: DraftManifest,
+	skill: string,
+): string[] {
+	let proposedStats: Stats;
+	try {
+		proposedStats = lstatSync(proposedDir);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw err;
+	}
+	// proposeSkill owns validation of an invalid root. Do not follow a
+	// root symlink while checking whether a draft changed.
+	if (!proposedStats.isDirectory() || proposedStats.isSymbolicLink()) return [];
+	const prefix = `${skill}/`;
+	const expected = new Map([...drafts.files].filter(([rel]) => rel.startsWith(prefix)));
+	let rootStats: Stats | undefined;
+	try {
+		rootStats = lstatSync(join(proposedDir, skill));
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+	if (rootStats === undefined) return [...expected.keys()].length > 0 || drafts.skills.has(skill) ? [skill] : [];
+	if (rootStats.isSymbolicLink()) return drafts.skills.has(skill) ? [skill] : [];
+	if (!rootStats.isDirectory()) return drafts.skills.has(skill) ? [skill] : [];
+	const drifted: string[] = [];
+	const walk = (rel: string): void => {
+		const abs = rel === "." ? join(proposedDir, skill) : join(proposedDir, skill, rel);
+		for (const entry of readdirSync(abs, { withFileTypes: true })) {
+			const child = rel === "." ? entry.name : `${rel}/${entry.name}`;
+			const childRel = `${prefix}${child}`;
+			const childAbs = join(proposedDir, skill, child);
+			const stats = lstatSync(childAbs);
+			if (stats.isSymbolicLink()) {
+				drifted.push(childRel);
+				expected.delete(childRel);
+			} else if (stats.isDirectory()) {
+				walk(child);
+			} else if (stats.isFile()) {
+				const prev = expected.get(childRel);
+				if (prev === undefined || sha256(readFileSync(childAbs)) !== prev) drifted.push(childRel);
+				expected.delete(childRel);
+			}
+		}
+	};
+	walk(".");
+	drifted.push(...expected.keys());
+	if (!drafts.skills.has(skill)) drifted.unshift(skill);
+	return [...new Set(drifted)].sort();
+}
+
 // Atomic directory swap into the proposals dir: earlier undecided
-// proposal → .replaced-* trash (same filesystem), staged → proposal,
-// trash deleted. A newer review's proposal replaces an undecided older
-// one of the same name. Throws on swap failures (after rollback); drift
-// against the live tree is returned, not thrown.
+// draft → .replaced-* trash (same filesystem), staged → proposal,
+// trash deleted. The reviewer stages and edits an existing draft; drafts
+// changed during the review are left untouched. Throws on swap failures
+// (after rollback); drift against either baseline is returned, not thrown.
 export function proposeSkill(
 	skillsDir: string,
 	proposedDir: string,
 	stagedDir: string,
 	stagingArea: string,
 	manifest: Map<string, string>,
+	drafts: DraftManifest,
 	skill: string,
 	reviewId: string,
 ): ProposeOutcome {
@@ -97,6 +158,16 @@ export function proposeSkill(
 		throw new Error(
 			`reviewer proposals dir ${proposedDir} is ${rootStats.isSymbolicLink() ? "a symlink" : "not a directory"} — refusing to park proposals`,
 		);
+	}
+	const draftDrifted = pendingDraftDrifted(proposedDir, drafts, skill);
+	if (draftDrifted.length > 0) {
+		log.warn("reviewer proposal skipped — pending draft changed mid-review", {
+			skill,
+			review_id: reviewId,
+			reason: "draft-changed",
+			drifted: draftDrifted,
+		});
+		return { proposed: false, reason: "draft-changed", drifted: draftDrifted };
 	}
 	const target = join(proposedDir, skill);
 	// lstat, not existsSync: a symlink parked on the target name is
@@ -120,7 +191,7 @@ export function proposeSkill(
 	rmSync(trash, { recursive: true, force: true });
 	if (existed) {
 		renameSync(target, trash);
-		log.info("reviewer proposal replaced an earlier undecided proposal", {
+		log.info("reviewer proposal revised a pending draft", {
 			skill,
 			review_id: reviewId,
 		});

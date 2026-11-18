@@ -107,13 +107,17 @@ describe("System1Client", () => {
 	});
 
 	test("a failing response stream is a System1 transport error, not a raw exception", async () => {
+		let pulls = 0;
 		const baseUrl = served(
 			() =>
 				new Response(
 					new ReadableStream({
-						start(controller) {
-							controller.enqueue(new TextEncoder().encode('{"answers":'));
-							setTimeout(() => controller.error(new Error("stream broke")), 5);
+						pull(controller) {
+							if (pulls++ === 0) {
+								controller.enqueue(new TextEncoder().encode('{"answers":'));
+							} else {
+								controller.error(new Error("stream broke"));
+							}
 						},
 					}),
 					{ headers: { "content-type": "application/json" } },

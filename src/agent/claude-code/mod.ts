@@ -362,7 +362,7 @@ async function forkSummary(
 	const onAbort = (): void => controller.abort(input.signal.reason);
 	input.signal.addEventListener("abort", onAbort, { once: true });
 	const callId = randomUUID();
-	const started = Date.now();
+	const started = performance.now();
 	log.info("model call", {
 		call: "compaction",
 		callId,
@@ -424,7 +424,7 @@ async function forkSummary(
 			call: "compaction",
 			callId,
 			model: input.modelRef,
-			ms: Date.now() - started,
+			ms: performance.now() - started,
 			inputTokens: usage?.input_tokens ?? null,
 			cacheReadTokens: usage?.cache_read_input_tokens ?? null,
 			cacheWriteTokens: usage?.cache_creation_input_tokens ?? null,

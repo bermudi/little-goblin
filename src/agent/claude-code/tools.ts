@@ -157,11 +157,10 @@ export function refuseToolExecutors(tools: Tools): Tools {
 		refused[name] =
 			"hosted" in definition
 				? definition
-				: {
-						...definition,
+				: (({ toModelOutput: _dropped, ...rest }) => ({
+						...rest,
 						execute: async () => "refused: tools do not execute during a compaction summary",
-						toModelOutput: undefined,
-					};
+					}))(definition);
 	}
 	return refused;
 }

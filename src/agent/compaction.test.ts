@@ -1812,7 +1812,7 @@ describe("runCompaction claude-code prefix fallbacks (#617)", () => {
 			boundarySeq: first.writes[0]!.boundarySeq,
 			summary: prior,
 		});
-		let seen: string | null = null;
+		let seen = null as string | null;
 		await runCompaction(
 			"dm:1",
 			second.store,

@@ -6,9 +6,8 @@ import { candidateRefs } from "../agent/model-fallback.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
-import type { PrefixStep } from "./prefix-summary.ts";
+import type { makePrefixFlush, PrefixStep } from "./prefix-summary.ts";
 import type { ClaudeStep } from "../agent/claude-code/mod.ts";
-import type { ToolSet } from "ai";
 import type { MemoryTurnDeps } from "../memory/mod.ts";
 
 // Optional compaction summarizes on the conversation's model, then walks
@@ -38,7 +37,7 @@ export interface CompactionSeam {
 			conv: Conversation;
 			modelRef: string;
 			step: PrefixStep;
-			tools: ToolSet;
+			tools: Parameters<typeof makePrefixFlush>[0]["tools"];
 			hydratedModelOutputTools?: readonly string[];
 			memory?: MemoryTurnDeps;
 			foldCeiling(): number | null;

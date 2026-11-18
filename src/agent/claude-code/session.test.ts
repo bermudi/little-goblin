@@ -424,8 +424,8 @@ describe("claude forked compaction summary (#617)", () => {
 				},
 			}),
 		};
-		let summaryBridge: ToolBridge | null = null;
-		let turnBridge: ToolBridge | null = null;
+		let summaryBridge = null as ToolBridge | null;
+		let turnBridge = null as ToolBridge | null;
 		const config = engineConfig(fake.query);
 		config.sessions = sessions;
 		config.bridgeFactory = (deps) => {

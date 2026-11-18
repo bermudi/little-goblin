@@ -14,6 +14,7 @@ import type { Config, TranscriptionConfig } from "../config-schema.ts";
 import { log } from "../log.ts";
 import { tempDir } from "../dispose.ts";
 import { boundedRun, spawnProc } from "../proc.ts";
+import { probeMedia } from "./recording.ts";
 import { oneminEngine } from "./onemin-speech.ts";
 import {
 	elevenlabsEngine,
@@ -29,9 +30,10 @@ import { whistleArtifactPresence, whistleEngine } from "./transcribe-whistle.ts"
 
 const FFMPEG_TIMEOUT_MS = 180_000;
 
-// One bound in audio time for every engine, so a paid cloud engine can't
-// bill hours more than local Whistle would grind. Floor: a partial last
-// segment still bills, so the cap errs short.
+// One bound in audio time for every engine, on both single-upload and
+// segmented paths, so a paid cloud engine can't bill hours more than
+// local Whistle would grind. Floor: a partial last segment still bills,
+// so the cap errs short.
 const MAX_AUDIO_SECONDS = 240 * 28;
 
 export interface SpeechFile {
@@ -157,6 +159,27 @@ export async function transcribeAudio(
 		);
 	}
 	if (maxBytes === undefined || (await stat(file.path)).size <= maxBytes) {
+		const probed = await probeMedia(file.path);
+		if (probed.duration === null) {
+			log.warn("transcription duration unknown — segmenting", {
+				file: file.filename,
+				path: file.path,
+				engine: engine.id,
+			});
+			const seconds = segmentSeconds ?? 15 * 60;
+			return transcribeSegmented(engine, file, seconds, (dir) =>
+				segmentAudio(file.path, dir, seconds, {
+					container: "keep",
+					sampleRateHz: undefined,
+					mono: undefined,
+				}),
+			);
+		}
+		if (probed.duration > MAX_AUDIO_SECONDS) {
+			throw new Error(
+				`audio is ${formatDuration(probed.duration)}; one transcribe call takes at most ${formatDuration(MAX_AUDIO_SECONDS)} — cut it first, e.g. ffmpeg -ss <start> -t <seconds> -c copy`,
+			);
+		}
 		return transcribeOne(engine, file);
 	}
 	const seconds = segmentSeconds ?? 15 * 60;

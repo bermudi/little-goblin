@@ -33,7 +33,7 @@ const probeSchema = z.object({
 	streams: z.array(z.object({ codec_type: z.string().optional() })).optional(),
 });
 
-interface Probed {
+export interface ProbedMedia {
 	duration: number | null;
 	formatName: string;
 	audioOnly: boolean;
@@ -42,7 +42,7 @@ interface Probed {
 // One ffprobe pass for the three facts the gate needs. Throws when
 // the file can't be parsed at all — callers decide whether the
 // verbatim bytes are acceptable.
-async function probe(path: string): Promise<Probed> {
+export async function probeMedia(path: string): Promise<ProbedMedia> {
 	const r = await boundedRun(
 		spawnProc([
 			"ffprobe",
@@ -109,7 +109,7 @@ export async function normalizeRecordedAudio(
 ): Promise<NormalizedAudio> {
 	const verbatim = { fixed: false, mediaType };
 	if (!PROBE_CANDIDATE.test(mediaType)) return verbatim;
-	const p = await probe(path);
+	const p = await probeMedia(path);
 	if (!p.audioOnly || p.duration !== null) return verbatim;
 	const out = recorderContainer(p.formatName);
 	if (out === null) return verbatim;

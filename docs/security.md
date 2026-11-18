@@ -67,8 +67,8 @@ The operator's Telegram account is the root of authority. A message from an
 lands in — the gate is per-user, not per-chat
 (`src/tg/access-gate.ts` `accessGate`). Only operators reach ordinary intake; an
 `allowedUsers` id gets the sandbox class (guest persona, search-only
-tools, no memory, no app), and anyone else gets one refusal line per
-summons (`design/telegram.md` → Roles and permissions). This is why
+tools, no memory, no app), and anyone else gets one refusal line, once
+per chat, ever (`design/telegram.md` → Roles and permissions). This is why
 topics are not a security boundary: a group reader who is also an
 operator has full authority, an allowed user gets only their own
 sandbox turns, and a stranger gets nothing.

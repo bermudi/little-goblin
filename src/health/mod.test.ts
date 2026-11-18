@@ -112,7 +112,9 @@ function running(pid: number): boolean {
 	try {
 		return readFileSync(`/proc/${pid}/stat`, "utf8").split(" ")[2] !== "Z";
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+		// ESRCH: the process exited between open and read.
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ENOENT" || code === "ESRCH") return false;
 		throw error;
 	}
 }

@@ -8,6 +8,8 @@ do when something's off.
 One Bun process, managed as a systemd user unit. It restarts on failure
 (5-second delay, never gives up — a phone-only operator can't run
 `reset-failed`), starts on boot, and stops gracefully on `SIGTERM`.
+One process may use a home at a time; the service enforces this with
+`state/goblin.pid`.
 
 ```sh
 systemctl --user status goblin    # is it alive?

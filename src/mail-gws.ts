@@ -136,6 +136,24 @@ function header(
 	return "";
 }
 
+function messageIdHeader(
+	payload: { headers?: Array<{ name?: unknown; value?: unknown }> | undefined } | undefined,
+): string | null {
+	const headers = payload?.headers ?? [];
+	for (const h of headers) {
+		if (str(h.name).toLowerCase() !== "message-id") continue;
+		const value = str(h.value).trim();
+		// Printable ASCII only: no Unicode line break (NEL, U+2028/9) or control byte.
+		if (/^<[\x21-\x3B\x3D\x3F-\x7E]+@[\x21-\x3B\x3D\x3F-\x7E]+>$/.test(value)) return value;
+		log.warn("mail message-id rejected", {
+			length: value.length,
+			reason: /[\r\n\u0085\u2028\u2029]/.test(value) ? "line_break" : "invalid_format",
+		});
+		return null;
+	}
+	return null;
+}
+
 /** The API error code gws carried on stdout, if any (Google error
  *  envelope `{error:{code}}` — the unauthenticated probe showed code
  *  401 there). Empty when stdout isn't that shape. */
@@ -475,8 +493,8 @@ export function makeGwsReader(run: GwsRunner = defaultRunner): GwsMailReader {
 		const body = parseOrThrow("reply.get", messageGetSchema, data);
 		const threadId = str(body.threadId);
 		if (threadId === "") return null;
-		const messageId = header(body.payload, "Message-ID");
-		return { threadId, messageId: messageId === "" ? null : messageId };
+		const messageId = messageIdHeader(body.payload);
+		return { threadId, messageId };
 	}
 
 	return { poll, profileHistoryId, threadFor };

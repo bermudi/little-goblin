@@ -99,6 +99,7 @@ export interface WireStep {
 export function openWireStep(): WireStep {
 	const lateBoot: { current: LateBoot | null } = { current: null };
 	let dispatcher: WakeDispatcher | undefined;
+	let stopWakeTicker = () => {};
 	return {
 		late: (): LateBoot => {
 			if (lateBoot.current === null) throw new Error("late boot not completed — wiring bug");
@@ -116,6 +117,8 @@ export function openWireStep(): WireStep {
 					return worker.withWorkerPaused(fn);
 				},
 			};
+			if (dispatcher === undefined) throw new Error("wake dispatcher not wired — boot-order bug");
+			stopWakeTicker = dispatcher.start();
 		},
 		runOwnership: {
 			begin: (e) => dispatcher?.hooks.begin(e),
@@ -160,10 +163,9 @@ export function openWireStep(): WireStep {
 				runtime: deps.runtime,
 				sinkFor: (conv) => sinkFor(wakeDeps, conv),
 				recheck: makeAuthorityRecheck(deps.responsibilities),
+				deferStart: true,
 			});
 			dispatcher = built;
-			built.pump();
-			const stopWakeTicker = built.startTicker();
 
 			// The scheduler rides the SAME wakeDeps object — a spread here
 			// would snapshot delivery/bell before the telegram attach lands.
@@ -192,7 +194,13 @@ export function openWireStep(): WireStep {
 				...(deps.gate ? { checkMail: deps.gate as Pick<System1Client, "decide"> } : {}),
 			});
 
-			return { wakeDeps, rewireWake, dispatcher: built, stopWakeTicker, firingDeps };
+			return {
+				wakeDeps,
+				rewireWake,
+				dispatcher: built,
+				stopWakeTicker: () => stopWakeTicker(),
+				firingDeps,
+			};
 		},
 	};
 }

@@ -52,13 +52,13 @@ export async function persistableToolSet(
 							? { description: definition.description }
 							: {}),
 					}),
-				...("providerOptions" in definition && definition.providerOptions !== undefined
+			...("providerOptions" in definition && definition.providerOptions !== undefined
 				? { providerOptions: definition.providerOptions as Record<string, unknown> }
 				: {}),
 			...("toModelOutput" in definition && definition.toModelOutput !== undefined
 				? { modelOutput: true }
 				: {}),
-	};
+		};
 		persisted.push(storedToolSchema.parse(JSON.parse(JSON.stringify(record)) as unknown));
 	}
 	const parsed = storedToolsSchema.parse(persisted);

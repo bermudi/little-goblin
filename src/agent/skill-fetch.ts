@@ -436,15 +436,13 @@ function parseListing(text: string): TarEntry[] {
 			throw new SkillFetchError(`tar listing size out of range: ${m[2]}`, "invalid");
 		}
 		let raw = m[3]!;
-		let link = m[1] === "l" || m[1] === "h";
-		const arrow = raw.indexOf(" -> ");
-		const linkTo = raw.indexOf(" link to ");
-		if (arrow !== -1) {
-			raw = raw.slice(0, arrow);
-			link = true;
-		} else if (linkTo !== -1) {
-			raw = raw.slice(0, linkTo);
-			link = true;
+		const link = m[1] === "l" || m[1] === "h";
+		if (m[1] === "l") {
+			const separator = raw.lastIndexOf(" -> ");
+			if (separator !== -1) raw = raw.slice(0, separator);
+		} else if (m[1] === "h") {
+			const separator = raw.lastIndexOf(" link to ");
+			if (separator !== -1) raw = raw.slice(0, separator);
 		}
 		const kind: TarEntry["kind"] = link
 			? "link"

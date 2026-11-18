@@ -382,6 +382,65 @@ describe("app chat", () => {
 		}
 	});
 
+	test("app refuses skipped skills and injects valid catalog skills", async () => {
+		const { http, call, home, store, windowCapture } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-skipped-skill" }),
+			});
+			const { mkdirSync, writeFileSync } = await import("node:fs");
+			const skipped = join(home, "workspace", "skills", "broken", "SKILL.md");
+			mkdirSync(join(home, "workspace", "skills", "broken"), { recursive: true });
+			writeFileSync(skipped, "---\nname: broken\ndescription:\n---\nshould not inject");
+			const res = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-skipped-skill",
+					message: {
+						id: "m1",
+						role: "user",
+						parts: [{ type: "data-skill", data: { name: "broken" } }],
+					},
+				}),
+			});
+			expect(res.status).toBe(400);
+			expect(await res.json()).toEqual({ error: 'no skill named "broken"' });
+			expect(store.history("app/chat-skipped-skill")).toEqual([]);
+
+			const validDir = join(home, "workspace", "skills", "valid");
+			mkdirSync(validDir, { recursive: true });
+			writeFileSync(
+				join(validDir, "SKILL.md"),
+				"---\nname: valid\ndescription: valid skill\n---\napp-injected-body",
+			);
+			const valid = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-skipped-skill",
+					message: {
+						id: "m2",
+						role: "user",
+						parts: [{ type: "data-skill", data: { name: "valid" } }],
+					},
+				}),
+			});
+			expect(valid.status).toBe(202);
+			await waitUntil(
+				() => store.history("app/chat-skipped-skill").length === 2,
+				"valid skill turn settles",
+			);
+			expect(
+				JSON.stringify(windowCapture.read("app/chat-skipped-skill")?.capture.messages),
+			).toContain("app-injected-body");
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("chat refuses a non-app conversation id and an unknown one", async () => {
 		const { http, call } = setup({ token: APP_TOKEN_NAME });
 		try {

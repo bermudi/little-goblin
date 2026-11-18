@@ -433,6 +433,20 @@ describe("resolveSkillRef (real fs)", () => {
 		expect(found.name).toBe("mq");
 		expect(found.body).toContain("body here");
 		expect(resolveSkillRef({ name: "absent" }).body).toBeNull();
+		// #316: a skill the catalog skips (name/dir mismatch) never injects.
+		mkdirSync(join(home, "workspace", "skills", "skipped"), { recursive: true });
+		writeFileSync(
+			join(home, "workspace", "skills", "skipped", "SKILL.md"),
+			"---\nname: other\ndescription: d\n---\nskipped body",
+		);
+		expect(resolveSkillRef({ name: "skipped" }).body).toBeNull();
+		// A long body injects whole: the catalog's 16 KiB head read is for
+		// frontmatter only.
+		writeFileSync(
+			join(home, "workspace", "skills", "mq", "SKILL.md"),
+			`---\nname: mq\ndescription: d\n---\n${"x".repeat(20_000)}\nfull-tail`,
+		);
+		expect(resolveSkillRef({ name: "mq" }).body).toContain("full-tail");
 		// A traversal-shaped name never reads the disk.
 		expect(resolveSkillRef({ name: "../escape" } as never).body).toBeNull();
 	});

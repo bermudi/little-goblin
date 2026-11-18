@@ -8,6 +8,7 @@ import {
 	isStoredAttachmentPath,
 } from "../agent/attachments.ts";
 import { appIdOf } from "../conversation-address.ts";
+import { hasUsableSkill } from "../agent/skills.ts";
 import { speechContent } from "../agent/tts.ts";
 import { log } from "../log.ts";
 import { NOTE_PART, type Note } from "../notes.ts";
@@ -227,6 +228,17 @@ export async function handleChatRoute(
 				{ error: z.prettifyError(parsed.error) },
 				{ status: 422, headers: NO_STORE },
 			);
+		}
+		for (const part of parsed.data.message?.parts ?? []) {
+			if (part.type !== SKILL_PART) continue;
+			const ref = skillPartDataSchema.parse(part.data);
+			if (!("name" in ref) || hasUsableSkill(paths.skills(), ref.name)) continue;
+			const error = `no skill named "${ref.name}"`;
+			log.warn("app skill invocation refused", {
+				skill: ref.name,
+				reason: "not in the usable catalog",
+			});
+			return Response.json({ error }, { status: 400, headers: NO_STORE });
 		}
 		const convId = parsed.data.conversationId;
 		const conv = store.get(convId);

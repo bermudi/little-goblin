@@ -297,7 +297,7 @@ export async function runFetchChain(
 	let thin: { kind: FetchKind; meta: HttpMeta } | null = null;
 	for (const [index, entry] of entries.entries()) {
 		const kind: FetchKind = entry.kind;
-		const started = Date.now();
+		const started = performance.now();
 		try {
 			let extracted: Extracted | Rejected;
 			if (kind === "local") {
@@ -322,7 +322,7 @@ export async function runFetchChain(
 					status: extracted.meta.status,
 					contentType: extracted.meta.contentType,
 					bytes: extracted.meta.bytes,
-					ms: Date.now() - started,
+					ms: Math.round(performance.now() - started),
 				});
 				continue;
 			}
@@ -332,7 +332,7 @@ export async function runFetchChain(
 			if (chars !== null) {
 				failures.push({ kind, error: `${kind}: almost no text (${chars} chars)` });
 				thin = { kind, meta: extracted.meta };
-				log.warn("web fetch thin", { url, kind, chars, ms: Date.now() - started });
+				log.warn("web fetch thin", { url, kind, chars, ms: Math.round(performance.now() - started) });
 				continue;
 			}
 			return { extracted, servedBy: kind, failures };
@@ -343,7 +343,7 @@ export async function runFetchChain(
 			log.warn("web fetch failed", err, {
 				url,
 				kind,
-				ms: Date.now() - started,
+				ms: Math.round(performance.now() - started),
 			});
 		}
 	}

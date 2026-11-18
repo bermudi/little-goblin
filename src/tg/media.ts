@@ -236,6 +236,7 @@ export async function saveAttachment(
 			}
 		},
 		token,
+		media.mimeType,
 	);
 }
 
@@ -251,6 +252,7 @@ export function mediaParts(
 			mediaType: media.mimeType,
 			filename: media.fileName,
 			size: saved.size,
+			...(saved.sha256 !== undefined ? { sha256: saved.sha256 } : {}),
 			...(transcript !== undefined ? { transcript } : {}),
 			...(transcriptionError !== undefined ? { transcriptionError } : {}),
 			...(media.transcribable ? { speech: true } : {}),

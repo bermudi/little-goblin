@@ -97,6 +97,8 @@ async function outgoingAttachment(
 		async (temp) => {
 			await copyFile(file.path, temp);
 		},
+		undefined,
+		attachmentContentType(file.filename),
 	);
 	return {
 		ref: {
@@ -104,6 +106,7 @@ async function outgoingAttachment(
 			mediaType: attachmentContentType(file.filename),
 			filename: file.filename,
 			size: saved.size,
+			...(saved.sha256 !== undefined ? { sha256: saved.sha256 } : {}),
 		},
 		cleanup: saved.path,
 	};
@@ -179,6 +182,8 @@ export function appMediaSink(
 				async (temp) => {
 					await writeFile(temp, audio);
 				},
+				undefined,
+				"audio/ogg",
 			);
 			await record(
 				{
@@ -186,6 +191,7 @@ export function appMediaSink(
 					mediaType: "audio/ogg",
 					filename: "voice-note.ogg",
 					size: saved.size,
+					...(saved.sha256 !== undefined ? { sha256: saved.sha256 } : {}),
 				},
 				undefined,
 				saved.path,

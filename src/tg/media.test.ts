@@ -372,7 +372,7 @@ describe("saveAttachment", () => {
 		const dest = join(paths.attachments(), "u1-clip.mp4");
 		writeFileSync(dest, "previous");
 		const saved = await saveAttachment(media, { file_path: src } as TgFile, undefined, "token");
-		expect(saved).toEqual({ path: dest, size: 11 });
+		expect(saved).toMatchObject({ path: dest, size: 11, sha256: expect.any(String) });
 		expect(readFileSync(dest, "utf8")).toBe("replacement");
 		expect(readdirSync(paths.attachments())).toEqual(["u1-clip.mp4"]);
 	});

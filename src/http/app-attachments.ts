@@ -63,12 +63,15 @@ export async function handleAttachmentsRoute(
 					});
 				}
 			},
+			undefined,
+			() => mediaType,
 		);
 		const ref: AttachmentRef = {
 			path: saved.path,
 			mediaType,
 			filename: file.name || "upload",
 			size: saved.size,
+			...(saved.sha256 !== undefined ? { sha256: saved.sha256 } : {}),
 		};
 		log.info("app attachment uploaded", {
 			filename: ref.filename,

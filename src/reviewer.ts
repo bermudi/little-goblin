@@ -167,6 +167,7 @@ export class Reviewer {
 		const toolNames = [...new Set(turn.toolNames)].slice(0, 16);
 		try {
 			const decision = await this.deps.gate.decide(state, GATE_QUESTIONS);
+			const fallbackStreak = this.fallbackStreak;
 			this.fallbackStreak = 0;
 			const correction = decision.answers["correction"] ?? 0;
 			const procedure = decision.answers["procedure"] ?? 0;
@@ -189,7 +190,7 @@ export class Reviewer {
 				trigger: review ? trigger : null,
 				review_id: reviewId,
 				fallback: false,
-				fallbackStreak: this.fallbackStreak,
+				fallbackStreak,
 				tools: toolNames,
 				toolCalls: turn.toolNames.length,
 				inputTokens: decision.inputTokens,

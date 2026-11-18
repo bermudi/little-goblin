@@ -48,6 +48,10 @@ surface conflicts with the direction rather than silently overriding it.
 - **Cache-busting bugs are P0, always.** A bug that busts the prompt cache —
   moves the request prefix hash outside the sanctioned rewrites (DESIGN.md →
   Cache stability) — is never P1 or P2 (operator, 2026-11-18).
+- **Prod usage counts are never an argument.** Goblin is barely used yet
+  (~16 conversations in 2 months); low counts of folds, calls or any
+  feature prove low use overall, not that the feature doesn't matter.
+  Never cite them to skip, defer or downgrade work (operator, 2026-11-18).
 - **Durable writes.** Whole-file state: tmp + `fsync` + `renameSync`,
   preserving the existing file's mode. Append-only JSONL: one serialized
   record per write, failures propagate.

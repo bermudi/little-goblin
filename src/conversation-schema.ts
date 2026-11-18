@@ -16,7 +16,6 @@ import { ensureRatingsSchema } from "./reply-ratings.ts";
 import { ensureResponsibilitiesSchema } from "./responsibility-schema.ts";
 import { ensureWakeSchema } from "./wake-store.ts";
 import { ensureWindowSchema } from "./window-capture.ts";
-import { ensurePendingInputSchema } from "./pending-input.ts";
 
 // Concatenated text parts of one row, written against a row qualifier so
 // triggers and backfill share it. A corrupt row indexes empty — never fails
@@ -57,7 +56,6 @@ export function ensureConversationSchema(db: Database): void {
 	ensureResponsibilitiesSchema(db);
 	ensureWakeSchema(db);
 	ensureWindowSchema(db);
-	ensurePendingInputSchema(db);
 	const convCols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(conversations)")
@@ -269,6 +267,20 @@ export function ensureConversationSchema(db: Database): void {
 	// #418: the native Claude SDK session table lives with its owner
 	// module (claude-sessions.ts).
 	ensureClaudeSessionsSchema(db);
+	// App inputs stay outside transcript history until a running lane claims
+	// them. Keep their table DDL in this schema module to avoid a cycle through
+	// the conversation store.
+	db.run(`
+			CREATE TABLE IF NOT EXISTS app_pending_input (
+				id TEXT PRIMARY KEY,
+				conversation TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+				mode TEXT NOT NULL CHECK (mode IN ('steer', 'followUp')),
+				message JSON NOT NULL,
+				created_at TEXT NOT NULL
+			)`);
+	db.run(
+		"CREATE INDEX IF NOT EXISTS app_pending_input_conversation_created ON app_pending_input(conversation, created_at, id)",
+	);
 	// Web Push subscriptions are endpoint-scoped operator devices. The
 	// endpoint and its keys are send credentials, so callers/log lines use
 	// endpoint_hash; only the sender boundary reads the raw row.

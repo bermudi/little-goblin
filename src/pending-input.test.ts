@@ -13,12 +13,14 @@ test("pending inputs list in admission order and take removes one row", () => {
 			id: "first",
 			role: "user",
 			parts: [{ type: "text", text: "first" }],
-		}, "steer");
+		}, "steer", 1_700_000_000_000);
 		const second = pending.add("app/pending-test", {
 			id: "second",
 			role: "user",
 			parts: [{ type: "text", text: "second" }],
-		}, "followUp");
+		}, "followUp", 1_700_000_000_001);
+		expect(first.createdAt).toBe("2023-11-14T22:13:20.000Z");
+		expect(second.createdAt).toBe("2023-11-14T22:13:20.001Z");
 		expect(pending.list("app/pending-test").map((row) => row.id)).toEqual([first.id, second.id]);
 		expect(pending.all().map((row) => row.id)).toEqual([first.id, second.id]);
 		expect(pending.take(first.id)).toEqual(first);

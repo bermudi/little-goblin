@@ -28,31 +28,21 @@ export interface PendingInput {
 	createdAt: string;
 }
 
-export function ensurePendingInputSchema(db: Database): void {
-	db.run(`
-		CREATE TABLE IF NOT EXISTS app_pending_input (
-			id TEXT PRIMARY KEY,
-			conversation TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-			mode TEXT NOT NULL CHECK (mode IN ('steer', 'followUp')),
-			message JSON NOT NULL,
-			created_at TEXT NOT NULL
-		)
-	`);
-	db.run(
-		"CREATE INDEX IF NOT EXISTS app_pending_input_conversation_created ON app_pending_input(conversation, created_at, id)",
-	);
-}
-
 export class PendingInputs {
 	constructor(private readonly db: Database) {}
 
-	add(conversation: string, message: Message, mode: PendingInputMode): PendingInput {
+	add(
+		conversation: string,
+		message: Message,
+		mode: PendingInputMode,
+		now = Date.now(),
+	): PendingInput {
 		const row: PendingInput = {
 			id: randomUUID(),
 			conversation,
 			mode,
 			message,
-			createdAt: new Date().toISOString(),
+			createdAt: new Date(now).toISOString(),
 		};
 		this.db
 			.query(

@@ -144,6 +144,7 @@ export function ChatView({
   onSendAccepted,
   onOpenNote,
   onBranched,
+  now = Date.now(),
 }: {
   token: string | null;
   conversationId: string;
@@ -175,6 +176,7 @@ export function ChatView({
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch opened a new conversation — the host refreshes and opens it.
   onBranched?: ((id: string) => void) | undefined;
+  now?: number;
 }) {
   const [initial, setInitial] = useState<{
     messages: UIMessage[];
@@ -236,6 +238,7 @@ export function ChatView({
       onSendAccepted={onSendAccepted}
       onOpenNote={onOpenNote}
       onBranched={onBranched}
+      now={now}
     />
   );
 }
@@ -263,6 +266,7 @@ function Chat({
   onSendAccepted,
   onOpenNote,
   onBranched,
+  now,
 }: {
   token: string | null;
   conversationId: string;
@@ -292,6 +296,7 @@ function Chat({
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch exists now — the host refreshes the rail and opens it.
   onBranched?: ((id: string) => void) | undefined;
+  now: number;
 }) {
   // The transport speaks this channel's contract: one user message per
   // POST, keyed by the app conversation id. A regenerate rides the
@@ -582,7 +587,10 @@ function Chat({
     );
   };
   const [pendingItems, setPendingItems] = useState<AppPendingInput[]>([]);
-  const [draftRestore, setDraftRestore] = useState<{ parts: UIMessage["parts"] } | null>(null);
+  const [draftRestore, setDraftRestore] = useState<{
+    parts: UIMessage["parts"];
+    source?: "pending-edit";
+  } | null>(null);
   const refreshPending = () => {
     void fetch(
       `/api/app/conversations/${encodeURIComponent(conversationId.slice(4))}/pending`,
@@ -803,7 +811,7 @@ function Chat({
           id: optimisticPendingId,
           mode: whenBusy,
           message: optimistic as unknown as AppPendingInput["message"],
-          createdAt: new Date().toISOString(),
+          createdAt: new Date(now).toISOString(),
         },
       ]);
     } else {
@@ -846,7 +854,11 @@ function Chat({
       if (!response.ok) throw new Error(`pending input action failed (${response.status})`);
       const body = (await response.json()) as { message: AppPendingInput["message"] };
       setPendingItems((current) => current.filter((row) => row.id !== item.id));
-      if (edit) setDraftRestore({ parts: body.message.parts as UIMessage["parts"] });
+      if (edit)
+        setDraftRestore({
+          parts: body.message.parts as UIMessage["parts"],
+          source: "pending-edit",
+        });
       refreshPending();
     } catch (err) {
       setSendFailure(err instanceof Error ? err.message : "pending input action failed");

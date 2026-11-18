@@ -1557,6 +1557,13 @@ describe("ChatView mid-turn steer", () => {
       message?: UIMessage;
       whenBusy?: "steer" | "followUp";
     }[] = [];
+    let pendingRows: {
+      id: string;
+      mode: "steer" | "followUp";
+      message: UIMessage;
+      createdAt: string;
+    }[] = [];
+    let pendingDeletes = 0;
     globalThis.fetch = Object.assign(
       async (input: RequestInfo | URL, init?: RequestInit) => {
         const url =
@@ -1577,12 +1584,39 @@ describe("ChatView mid-turn steer", () => {
           return new Response(eventsStream, {
             headers: { "content-type": "text/event-stream" },
           });
+        if (url.endsWith("/pending"))
+          return jsonResponse({ items: pendingRows });
+        if (url.includes("/pending/") && init?.method === "DELETE") {
+          pendingDeletes++;
+          const id = decodeURIComponent(url.split("/").at(-1)!);
+          const item = pendingRows.find((row) => row.id === id);
+          pendingRows = pendingRows.filter((row) => row.id !== id);
+          return jsonResponse({ message: item?.message });
+        }
         if (url.endsWith("/stop")) {
           stopPosts++;
           return jsonResponse({ stopped: true, settled: true });
         }
         if (url === "/api/app/chat") {
-          chatPosts.push(JSON.parse(String(init?.body)));
+          const body = JSON.parse(String(init?.body)) as {
+            conversationId?: string;
+            message?: UIMessage;
+            whenBusy?: "steer" | "followUp";
+          };
+          chatPosts.push(body);
+          const pendingId = `pending-${chatPosts.length}`;
+          if (body.whenBusy !== undefined && body.message !== undefined) {
+            pendingRows = [
+              ...pendingRows,
+              {
+                id: pendingId,
+                mode: body.whenBusy,
+                message: body.message,
+                createdAt: "2026-01-01T00:00:00.000Z",
+              },
+            ];
+            return jsonResponse({ submitted: true, pendingId }, 202);
+          }
           return jsonResponse({ submitted: true }, 202);
         }
         return jsonResponse({
@@ -1626,7 +1660,9 @@ describe("ChatView mid-turn steer", () => {
     // The action switches from Stop to Send when a steer is composed.
     expect(dom.container.querySelector(".stop-btn")).not.toBeNull();
     expect(dom.container.querySelector(".send-btn")).toBeNull();
-    const ta = dom.container.querySelector("form.composer textarea")!;
+    const ta = dom.container.querySelector<HTMLTextAreaElement>(
+      "form.composer textarea",
+    )!;
     await act(async () => {
       // Focus + keyup too — React's text-input fallback needs it in
       // this environment.
@@ -1672,6 +1708,21 @@ describe("ChatView mid-turn steer", () => {
     expect(dom.container.textContent).toContain("steer it");
     expect(dom.container.querySelector(".msg.user")?.textContent).not.toContain("steer it");
     expect(stopPosts).toBe(0);
+    for (let i = 0; i < 100 && ta.value !== ""; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(ta.value).toBe("");
+    await act(async () => {
+      dom.container
+        .querySelector<HTMLButtonElement>(".pending-input-edit")!
+        .click();
+    });
+    for (let i = 0; i < 100 && pendingDeletes === 0; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(pendingDeletes).toBe(1);
+    expect(ta.value).toBe("steer it");
+    expect(dom.container.querySelector(".pending-inputs")).toBeNull();
     await act(async () => {
       live.enqueue(
         encoder.encode(
@@ -1785,6 +1836,18 @@ describe("ChatView mid-turn steer", () => {
     for (let i = 0; i < 100 && !dom.container.textContent?.includes("restore this text"); i++) {
       await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
     }
+    const textarea = dom.container.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      (textarea as HTMLElement).focus();
+      Object.getOwnPropertyDescriptor(
+        dom.win.HTMLTextAreaElement.prototype,
+        "value",
+      )!.set!.call(textarea, "keep this draft");
+      textarea.dispatchEvent(new dom.win.Event("input", { bubbles: true }) as unknown as Event);
+      textarea.dispatchEvent(
+        new dom.win.KeyboardEvent("keyup", { bubbles: true, key: "t" }) as unknown as Event,
+      );
+    });
     await act(async () => {
       dom.container.querySelector<HTMLButtonElement>(".pending-input-edit")!.click();
     });
@@ -1792,7 +1855,7 @@ describe("ChatView mid-turn steer", () => {
       await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
     }
     expect(removed).toBe(1);
-    expect(dom.container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe("restore this text");
+    expect(textarea.value).toBe("restore this text\n\nkeep this draft");
     expect(dom.container.querySelector(".pending-inputs")).toBeNull();
 
     const removedItem = {

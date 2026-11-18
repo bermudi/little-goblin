@@ -105,7 +105,7 @@ export function Composer({
 	// whenever a turn settles (operator ask, 2026-11-07). One-way — the
 	// conversation-less composers keep their explicit focusSignal only.
 	stealFocus?: boolean;
-	draftRestore?: { parts: UIMessage["parts"] } | null;
+	draftRestore?: { parts: UIMessage["parts"]; source?: "pending-edit" } | null;
 	onDraftRestored?: () => void;
 }) {
 	// The draft is durable per scope: restored at mount, stored on every
@@ -300,15 +300,20 @@ export function Composer({
 			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
 		}
 	}, [quote]);
-	// The parent scopes this payload to its originating composer. Never
-	// replace text the operator wrote after the cancelled send.
+	// The parent scopes this payload to its originating composer. Pending
+	// edits always restore, ahead of any newer draft; cancelled-send restores
+	// keep the edit guard so they never replace newer operator text.
 	useEffect(() => {
 		if (draftRestore == null) return;
 		const text = draftRestore.parts
 			.filter((p) => p.type === "text")
 			.map((p) => p.text)
 			.join("\n\n");
-		if (!editedAfterSend.current) setDraft(text);
+		if (draftRestore.source === "pending-edit") {
+			setDraft((current) => (current === "" ? text : `${text}\n\n${current}`));
+		} else if (!editedAfterSend.current) {
+			setDraft(text);
+		}
 		const uploads: StagedUpload[] = [];
 		const notes: StagedNote[] = [];
 		const skills: StagedSkill[] = [];

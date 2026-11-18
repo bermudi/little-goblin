@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 
 export interface CheckoutIdentity {
 	repo: string;
@@ -22,6 +22,15 @@ export function startupAction(
 	current: CheckoutIdentity,
 ): "reuse" | "restart" {
 	return matchesCheckout(recorded, current) ? "reuse" : "restart";
+}
+
+// A crash between create and write leaves a lock with no owner PID; once it
+// is older than any live writer could take, it is as dead as a dead PID.
+const OWNERLESS_GRACE_MS = 5_000;
+
+function lockIsAbandoned(path: string, owner: number): boolean {
+	if (Number.isSafeInteger(owner) && owner > 0) return !pidIsAlive(owner);
+	return Date.now() - statSync(path).mtimeMs > OWNERLESS_GRACE_MS;
 }
 
 function pidIsAlive(pid: number): boolean {
@@ -57,7 +66,7 @@ export async function withNameLock<T>(
 			onWait();
 			if (existsSync(path)) {
 				const owner = Number(readFileSync(path, "utf8").trim());
-				if (Number.isSafeInteger(owner) && owner > 0 && !pidIsAlive(owner)) {
+				if (lockIsAbandoned(path, owner)) {
 					let reaperFd: number;
 					try {
 						reaperFd = openSync(reaperPath, "wx", 0o600);
@@ -75,7 +84,7 @@ export async function withNameLock<T>(
 					closeSync(reaperFd);
 					try {
 						const currentOwner = Number(readFileSync(path, "utf8").trim());
-						if (currentOwner === owner && !pidIsAlive(currentOwner)) unlinkSync(path);
+						if (currentOwner === owner && lockIsAbandoned(path, currentOwner)) unlinkSync(path);
 					} finally {
 						unlinkSync(reaperPath);
 					}

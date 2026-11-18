@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmdirSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -68,6 +68,25 @@ describe("throwaway instance startup coordination", () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-try-stale-lock-"));
 		const lockPath = join(dir, "name.lock");
 		writeFileSync(lockPath, "2147483647\n");
+		let entered = false;
+		await withNameLock(
+			lockPath,
+			async () => {
+				entered = true;
+			},
+			() => {},
+		);
+		expect(entered).toBe(true);
+		expect(() => readFileSync(lockPath)).toThrow();
+		rmdirSync(dir);
+	});
+
+	test("an empty lock left by a crash is recovered after the grace period", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-try-empty-lock-"));
+		const lockPath = join(dir, "name.lock");
+		writeFileSync(lockPath, "");
+		const old = new Date(Date.now() - 60_000);
+		utimesSync(lockPath, old, old);
 		let entered = false;
 		await withNameLock(
 			lockPath,

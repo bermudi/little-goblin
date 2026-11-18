@@ -1,5 +1,4 @@
 import { join } from "node:path";
-import { UI_MESSAGE_STREAM_HEADERS } from "ai";
 import { buildLearnPrompt } from "../learn.ts";
 import type { Message } from "../message.ts";
 import { z } from "zod";
@@ -17,7 +16,7 @@ import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
 import { noteSkillUse } from "../skill-usage.ts";
 import { paths } from "../home-layout.ts";
 import { type AppChannelDeps, jsonBodyRefusal, NO_STORE } from "./app-shared.ts";
-import { appStreamSink } from "./app-sse.ts";
+import { appConversationSink } from "./app-sse.ts";
 import type { AppTtsResponse } from "./app-wire.ts";
 
 const conversationIdSchema = z
@@ -239,12 +238,18 @@ export async function handleChatRoute(
 				{ status: 503, headers: { ...NO_STORE, "retry-after": "30" } },
 			);
 		}
-		const push = deps.push;
-		const notifyDisconnected =
-			push === undefined
+		const notifyUnwatched =
+			deps.push === undefined
 				? undefined
-				: (done: TurnDone) => push.notifyDone(conv, done, "foreground");
-
+				: async (done: TurnDone) => {
+						if (!runtime.turnHadWatchersAtEnd(convId)) {
+							await deps.push!.notifyDone(conv, done, "foreground");
+						}
+					};
+		const media = {
+			append: (messages: Message[], opts?: Parameters<typeof store.append>[2]) =>
+				store.append(convId, messages, opts),
+		};
 		if (parsed.data.retry === true) {
 			if (runtime.busy(convId)) {
 				return Response.json(
@@ -257,28 +262,19 @@ export async function handleChatRoute(
 				return Response.json({ error: "nothing to retry" }, { status: 409, headers: NO_STORE });
 			}
 			log.info("app retry", { conversation: convId, message: lastUser.message.id });
-			const { sink, body, dispose } = appStreamSink(
-				convId,
-				{
-					append: (messages, opts) => store.append(convId, messages, opts),
-				},
-				notifyDisconnected,
-			);
+			const sink = appConversationSink(convId, media, notifyUnwatched);
 			try {
 				runtime.submitPersisted(conv, lastUser.message, sink, lastUser.seq);
 			} catch (err) {
 				log.error("app retry submit failed", err, { conversation: convId });
-				dispose();
 				return Response.json(
 					{ error: "turn could not be started" },
 					{ status: 500, headers: NO_STORE },
 				);
 			}
 			bumpSkillUsage(convId, lastUser.message.parts);
-			log.info("app stream start", { conversation: convId, retry: true });
-			return new Response(body, {
-				headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },
-			});
+			log.info("app retry submitted", { conversation: convId });
+			return Response.json({ submitted: true }, { status: 202, headers: NO_STORE });
 		}
 
 		const message = parsed.data.message!;
@@ -411,28 +407,19 @@ export async function handleChatRoute(
 				projections: edited.projections,
 				ratings: edited.ratings,
 			});
-			const stream = appStreamSink(
-				convId,
-				{
-					append: (messages, opts) => store.append(convId, messages, opts),
-				},
-				notifyDisconnected,
-			);
+			const sink = appConversationSink(convId, media, notifyUnwatched);
 			try {
-				runtime.submitPersisted(conv, message as Message, stream.sink, edited.seq);
+				runtime.submitPersisted(conv, message as Message, sink, edited.seq);
 			} catch (err) {
 				log.error("app edit submit failed", err, { conversation: convId, message: editId });
-				stream.dispose();
 				return Response.json(
 					{ error: "turn could not be started" },
 					{ status: 500, headers: NO_STORE },
 				);
 			}
 			bumpSkillUsage(convId, message.parts);
-			log.info("app stream start", { conversation: convId, edit: true });
-			return new Response(stream.body, {
-				headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },
-			});
+			log.info("app edit submitted", { conversation: convId, message: editId });
+			return Response.json({ submitted: true }, { status: 202, headers: NO_STORE });
 		}
 
 		if (deps.titleFor !== undefined && conv.title === null) {
@@ -465,28 +452,19 @@ export async function handleChatRoute(
 		}
 
 		log.info("app intake", { conversation: convId, message: message.id });
-		const { sink, body, dispose } = appStreamSink(
-			convId,
-			{
-				append: (messages, opts) => store.append(convId, messages, opts),
-			},
-			notifyDisconnected,
-		);
+		const sink = appConversationSink(convId, media, notifyUnwatched);
 		try {
 			runtime.submit(conv, message as Message, sink);
 		} catch (err) {
 			log.error("app submit failed", err, { conversation: convId, message: message.id });
-			dispose();
 			return Response.json(
 				{ error: "turn could not be started" },
 				{ status: 500, headers: NO_STORE },
 			);
 		}
 		bumpSkillUsage(convId, message.parts);
-		log.info("app stream start", { conversation: convId });
-		return new Response(body, {
-			headers: { ...UI_MESSAGE_STREAM_HEADERS, ...NO_STORE },
-		});
+		log.info("app submitted", { conversation: convId, message: message.id });
+		return Response.json({ submitted: true }, { status: 202, headers: NO_STORE });
 	}
 
 	return null;

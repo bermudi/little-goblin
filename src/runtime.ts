@@ -34,7 +34,11 @@ import {
 } from "./memory/mod.ts";
 import type { PriorTurnContext } from "./reviewer-evidence.ts";
 import { Reviewer } from "./reviewer.ts";
-import { LaneRegistry, type QueuedTurn } from "./runtime-lanes.ts";
+import {
+	LaneRegistry,
+	type ConversationEvent,
+	type QueuedTurn,
+} from "./runtime-lanes.ts";
 import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { type CompactionSeam, runCompactJob } from "./turn/compact-job.ts";
@@ -60,7 +64,14 @@ import { openRunRecord } from "./turn/run-record.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
-import { claimMembers, emitChunk, endLive, type LiveChunks, openLive } from "./turn/stream.ts";
+import {
+	claimMembers,
+	emitChunk,
+	endLive,
+	type LiveChunks,
+	type LiveSubscriber,
+	openLive,
+} from "./turn/stream.ts";
 import { replyFromWire } from "./turn/unlanded-progress.ts";
 import {
 	openToolAuthority,
@@ -174,6 +185,7 @@ type AttemptOutcome =
 
 export class Runtime {
 	private lanes = new LaneRegistry();
+	private turnEndWatchers = new Map<string, boolean>();
 	private readonly lastTurnTools = new Map<string, { epoch: number; tools: Tools }>();
 	// Closed runtimes record submits but never run them.
 	private closed = false;
@@ -270,18 +282,46 @@ export class Runtime {
 		return this.lanes.busyConversations();
 	}
 
-	// Replay the existing wire and subscribe atomically; the replay/live union is
-	// gapless. `onEnd` is delivered once with the same terminal outcome as the
-	// member sink. Null means the caller should fall back to history.
-	subscribeLiveChunks(
+	subscribeConversation(
+		convId: string,
+		listener: (event: ConversationEvent) => void,
+	): () => void {
+		return this.lanes.subscribeConversation(convId, listener);
+	}
+
+	conversationLive(convId: string): boolean {
+		const live = this.lanes.liveOf(convId);
+		return live !== null && !live.ended;
+	}
+
+	attachLiveChunks(
 		convId: string,
 		onChunk: (chunk: MessageChunk) => void,
 		onEnd: (done: TurnDone) => void,
-	): MessageChunk[] | null {
+	): { replay: MessageChunk[]; detach: () => void } | null {
 		const live = this.lanes.liveOf(convId);
 		if (live === null || live.ended) return null;
-		live.subscribers.add({ onChunk, onEnd });
-		return [...live.chunks];
+		const subscriber: LiveSubscriber = { onChunk, onEnd };
+		live.subscribers.add(subscriber);
+		return {
+			replay: [...live.chunks],
+			detach: () => live.subscribers.delete(subscriber),
+		};
+	}
+
+	hasConversationWatchers(convId: string): boolean {
+		return (
+			this.lanes.conversationSubscriberCount(convId) > 0 ||
+			(this.lanes.liveOf(convId)?.subscribers.size ?? 0) > 0
+		);
+	}
+
+	turnHadWatchersAtEnd(convId: string): boolean {
+		return this.turnEndWatchers.get(convId) ?? this.hasConversationWatchers(convId);
+	}
+
+	conversationEventSubscriberCount(convId: string): number {
+		return this.lanes.conversationSubscriberCount(convId);
 	}
 
 	// Close intake, fence live lanes, and await their terminal sink flushes.
@@ -603,8 +643,11 @@ export class Runtime {
 			// One stamped value for the live wire and every member sink — a
 			// reattached app stream reads the shutdown cause off endLive too.
 			const final = this.withCause(done);
+			this.turnEndWatchers.set(convId, this.hasConversationWatchers(convId));
 			endLive(live, final, convId);
 			for (const t of turns) await this.notifyDone(t, final);
+			this.lanes.emitConversation(convId, { type: "turn-end" });
+			this.turnEndWatchers.delete(convId);
 		};
 		// The ownership window: from admission until the begin hook, the
 		// attempt's members are unlinked — a terminal failure in that span
@@ -688,7 +731,9 @@ export class Runtime {
 		);
 		const controller = new AbortController();
 		this.lanes.registerController(convId, controller);
+		const hadLiveWire = this.conversationLive(convId);
 		this.lanes.registerLive(convId, live);
+		if (!hadLiveWire) this.lanes.emitConversation(convId, { type: "turn-start" });
 
 		// The active exchange starts at the earliest member seq: this turn's
 		// stored user events (replies still in flight) and, above them, every

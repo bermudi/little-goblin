@@ -57,7 +57,6 @@ const AI_SDK_IMPORTERS = [
 	"src/agent/vision.ts",
 	"src/agent/zai-responses.ts",
 	"src/cache-observation.ts",
-	"src/http/app-chat.ts",
 	"src/http/app-testing.ts",
 	"src/http/app-turns.ts",
 	"src/reviewer.ts",

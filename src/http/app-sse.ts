@@ -8,6 +8,7 @@ const SSE_HEARTBEAT_MS = 5_000;
 export function appSseWriter(
 	convId: string,
 	heartbeatMs: number = SSE_HEARTBEAT_MS,
+	onCancel?: () => void,
 ): {
 	body: ReadableStream<Uint8Array>;
 	write(chunk: MessageChunk): void;
@@ -63,6 +64,7 @@ export function appSseWriter(
 			closed = true;
 			wireDied = true;
 			stopBeat();
+			onCancel?.();
 			log.warn("app stream client gone — wire closed, turn continues", {
 				conversation: convId,
 			});
@@ -101,41 +103,23 @@ export function appSseWriter(
 	};
 }
 
-export function appStreamSink(
+export function appConversationSink(
 	convId: string,
 	media?: AppMediaDeps,
-	onDoneDisconnected?: (done: TurnDone) => Promise<void>,
-): {
-	sink: TurnSink;
-	body: ReadableStream<Uint8Array>;
-	dispose(): void;
-} {
-	const writer = appSseWriter(convId);
+	onDone?: (done: TurnDone) => Promise<void>,
+): TurnSink {
 	const stream: TurnSink = {
 		delivery: "stream",
 		onTextDelta() {},
 		onReasoningDelta() {},
 		onToolCall() {},
-		onStreamChunk(chunk) {
-			writer.write(chunk);
-		},
+		onStreamChunk() {},
 		async onDone(done) {
-			const disconnectedBefore = writer.wireDied();
-			writer.finish(done);
-			const disconnected = disconnectedBefore || writer.wireDied();
-			log.info("app stream finish", { conversation: convId, outcome: done.kind });
-			if (disconnected) await onDoneDisconnected?.(done);
+			log.info("app conversation turn finish", { conversation: convId, outcome: done.kind });
+			await onDone?.(done);
 		},
 	};
-	return {
-		body: writer.body,
-		dispose: writer.dispose,
-		sink:
-			media === undefined
-				? stream
-				: composeTurnSinks(
-						stream,
-						appMediaSink(convId, media, (chunk) => writer.write(chunk)),
-					),
-	};
+	return media === undefined
+		? stream
+		: composeTurnSinks(stream, appMediaSink(convId, media, () => {}));
 }

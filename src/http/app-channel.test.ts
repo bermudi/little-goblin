@@ -86,8 +86,7 @@ describe("app channel http", () => {
 				},
 				null,
 			);
-			expect(chat.status).toBe(200);
-			await chat.text();
+			expect(chat.status).toBe(202);
 		} finally {
 			http.stop();
 		}

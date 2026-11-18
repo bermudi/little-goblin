@@ -533,7 +533,7 @@ describe("app conversations", () => {
 					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
 				}),
 			});
-			expect(chat.status).toBe(200);
+			expect(chat.status).toBe(202);
 			const stop = await call("/api/app/conversations/chat-01/stop", { method: "POST" });
 			expect(stop.status).toBe(200);
 			// `settled` says the stop waited for the turn's record: the
@@ -546,9 +546,7 @@ describe("app conversations", () => {
 				.history("app/chat-01")
 				.find((m) => m.role === "system" && (m.metadata as { unlanded?: unknown }).unlanded);
 			expect(record).toBeDefined();
-			const body = await chat.text();
-			expect(body).toContain('"type":"error"');
-			expect(body.trimEnd().endsWith("data: [DONE]")).toBe(true);
+			expect((record!.metadata as { unlanded: { kind: string } }).unlanded.kind).toBe("aborted");
 		} finally {
 			http.stop();
 		}
@@ -583,7 +581,7 @@ describe("app conversations", () => {
 					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
 				}),
 			});
-			expect(chat.status).toBe(200);
+			expect(chat.status).toBe(202);
 			await entered.promise;
 			// Let the wire's start chunk land before the fence.
 			await sleep(50);
@@ -594,8 +592,6 @@ describe("app conversations", () => {
 				settled: true,
 			});
 			gate.resolve();
-			const body = await chat.text();
-			expect(body).toContain('"type":"error"');
 			// The durable record is in history — and served — before reload.
 			const record = store
 				.history("app/chat-01")
@@ -1209,8 +1205,7 @@ describe("app conversations", () => {
 					message: { id: "m2", role: "user", parts: [{ type: "text", text: "back again" }] },
 				}),
 			});
-			expect(chat.status).toBe(200);
-			await chat.text();
+			expect(chat.status).toBe(202);
 			expect(store.get("app/chat-01")?.archivedAt).toBeNull();
 		} finally {
 			http.stop();
@@ -1299,21 +1294,20 @@ describe("app conversations", () => {
 					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
 				}),
 			});
-			expect(chat.status).toBe(200);
+			expect(chat.status).toBe(202);
 			const del = await call("/api/app/conversations/chat-01", { method: "DELETE" });
 			expect(del.status).toBe(200);
 			expect(store.get("app/chat-01")).toBeNull();
-			const body = await chat.text();
-			expect(body.trimEnd().endsWith("data: [DONE]")).toBe(true);
-			// The fence aborted generation — the tail deltas never stream.
-			expect(streamedText(body)).not.toBe("abcde");
+			// The fence aborted generation — the durable transcript has no
+			// completed assistant reply.
+			expect(store.history("app/chat-01").some((message) => message.role === "assistant")).toBe(false);
 		} finally {
 			http.stop();
 		}
 	});
 
 	test("a refused delete answers 409 with the refusal and never stops the live turn", async () => {
-		const { http, call, store, projects } = setup({
+		const { http, call, store, projects, runtime } = setup({
 			token: APP_TOKEN_NAME,
 			deltas: ["a", "b", "c", "d", "e"],
 			delayMs: 50,
@@ -1346,7 +1340,10 @@ describe("app conversations", () => {
 					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
 				}),
 			});
-			expect(chat.status).toBe(200);
+			expect(chat.status).toBe(202);
+			await waitUntil(() => runtime.busy("app/chat-01"), "turn running");
+			const stream = await call("/api/app/conversations/chat-01/stream");
+			expect(stream.status).toBe(200);
 			const epoch = store.get("app/chat-01")?.epoch;
 
 			const del = await call("/api/app/conversations/chat-01", { method: "DELETE" });
@@ -1358,7 +1355,7 @@ describe("app conversations", () => {
 			// The row, the epoch, and the live turn all survive the refusal.
 			expect(store.get("app/chat-01")).not.toBeNull();
 			expect(store.get("app/chat-01")?.epoch).toBe(epoch);
-			expect(streamedText(await chat.text())).toBe("abcde");
+			expect(streamedText(await stream.text())).toBe("abcde");
 			expect(store.history("app/chat-01").map((m) => m.role)).toEqual(["user", "assistant"]);
 		} finally {
 			http.stop();
@@ -1549,7 +1546,7 @@ test("a config PATCH during a turn says the switch applies from the next turn", 
 				message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
 			}),
 		});
-		expect(chat.status).toBe(200);
+		expect(chat.status).toBe(202);
 		await waitUntil(() => runtime.busy("app/busy-01"), "turn running");
 		const switched = await call("/api/app/conversations/busy-01/config", {
 			method: "PATCH",
@@ -1560,7 +1557,6 @@ test("a config PATCH during a turn says the switch applies from the next turn", 
 		// The running turn keeps the pair it admitted on — the response
 		// carries the acknowledgement, not just the log line.
 		expect(((await switched.json()) as { appliesFrom?: string }).appliesFrom).toBe("next-turn");
-		await chat.text();
 		await waitUntil(() => !runtime.busy("app/busy-01"), "turn settled");
 		const idle = await call("/api/app/conversations/busy-01/config", {
 			method: "PATCH",
@@ -2063,14 +2059,13 @@ describe("app conversation branch", () => {
 				conversationId: "app/chat-01",
 				message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
 			});
-			expect(chat.status).toBe(200);
+			expect(chat.status).toBe(202);
 			await waitUntil(() => runtime.busy("app/chat-01"), "turn running");
 			const res = await postJson(call, "/api/app/conversations/chat-01/branch", {
 				messageId: "m1",
 			});
 			expect(res.status).toBe(409);
 			expect(((await res.json()) as { error: string }).error).toContain("running");
-			await chat.text();
 		} finally {
 			http.stop();
 		}

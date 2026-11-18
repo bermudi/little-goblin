@@ -4,7 +4,7 @@ import type { Api } from "grammy";
 import { fakeApi as fakeTelegramApi } from "../testkit/fake-api.ts";
 import { TelegramTimeoutError } from "./deadline.ts";
 import type { MailPoller, MailSender } from "../mail.ts";
-import { AmbiguousSendError } from "../mail.ts";
+import { AmbiguousSendError, buildRaw } from "../mail.ts";
 import { openOutbox, OUTBOX_TTL_MS, type OutboxStore } from "../mail-outbox.ts";
 import {
 	startMailApproval,
@@ -433,6 +433,30 @@ describe("mail approval taps", () => {
 		await gate.handleTap(tap(row.id, "send"));
 		expect(reader.threaded).toEqual(["m9"]);
 		expect(sender.sent[0]).toMatchObject({ threadId: "thread-1", inReplyTo: "<orig@mail>" });
+		expect(outbox.get(row.id)!.status).toBe("sent");
+		outbox.close();
+	});
+
+	test("an invalid reply Message-ID still sends by threadId without In-Reply-To", async () => {
+		const mime: string[] = [];
+		const sender = fakeSender();
+		const send = sender.send;
+		sender.send = async (draft) => {
+			mime.push(Buffer.from(buildRaw(draft), "base64url").toString("utf8"));
+			return send(draft);
+		};
+		const reader = fakeReader({ threadFor: async () => ({ threadId: "thread-1", messageId: null }) });
+		const { outbox, gate } = setup(sender, reader);
+		const row = outbox.queue(
+			{ to: ["a@x.com"], subject: "re", body: "b", replyToId: "m9", address: ADDRESS },
+			NOW,
+		);
+		await gate.handleTap(tap(row.id, "send"));
+		expect(sender.sent[0]).toMatchObject({ threadId: "thread-1" });
+		expect(sender.sent[0]).toHaveProperty("inReplyTo", null);
+		expect(mime[0]).toContain("To: a@x.com");
+		expect(mime[0]).not.toContain("In-Reply-To:");
+		expect(mime[0]).not.toContain("References:");
 		expect(outbox.get(row.id)!.status).toBe("sent");
 		outbox.close();
 	});

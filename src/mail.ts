@@ -325,6 +325,15 @@ export function decodeRfc2047(value: string): string {
 // Minimal RFC 5322: the authenticated account is the From (Gmail fills
 // it), the body is plain UTF-8, non-ASCII subjects ride RFC 2047.
 export function buildRaw(draft: MailDraft): string {
+	const rejectLineBreak = (header: string, value: string): void => {
+		if (/[\r\n\u0085\u2028\u2029]/.test(value)) {
+			throw new Error(`mail header ${header} contains a line break`);
+		}
+	};
+	for (const to of draft.to) rejectLineBreak("To", to);
+	for (const cc of draft.cc ?? []) rejectLineBreak("Cc", cc);
+	rejectLineBreak("Subject", draft.subject);
+	if (draft.inReplyTo != null) rejectLineBreak("In-Reply-To", draft.inReplyTo);
 	const lines = [
 		`To: ${draft.to.join(", ")}`,
 		...(draft.cc?.length ? [`Cc: ${draft.cc.join(", ")}`] : []),

@@ -346,4 +346,48 @@ describe.skipIf(!LIVE)("claude-code live drift (GOBLIN_CLAUDE_CODE_LIVE=1)", () 
 		expect(secondResult?.type === "result" && !secondResult.isError).toBe(true);
 		expect(replyText(second).toLowerCase()).toContain(codeWord.toLowerCase());
 	}, 360_000);
+
+	test("forked compaction summary reads the warmed turn prefix", async () => {
+		// Padded past the provider's minimum cacheable prefix, so a miss
+		// means the fork changed the prefix, not that it was too short.
+		const systemPrompt = `You are a drift probe. Obey the instruction exactly.\n${Array.from(
+			{ length: 900 },
+			(_, i) => `Reference line ${i}: the probe keeps this text stable across requests.`,
+		).join("\n")}`;
+		const sessionId = crypto.randomUUID();
+		const warm = await collect("Reply with exactly: prefix-warmed", {
+			systemPrompt,
+			persistSession: true,
+			sessionId,
+		});
+		const warmResult = warm.find((e) => e.type === "result");
+		expect(warmResult?.type === "result" && !warmResult.isError).toBe(true);
+		const head = warm
+			.filter((e): e is Extract<ClaudeEvent, { type: "assistant" }> => e.type === "assistant")
+			.at(-1)?.uuid;
+		expect(typeof head).toBe("string");
+		if (typeof head !== "string") return;
+
+		const fork = await collect("Summarize the preceding test exchange in one short sentence.", {
+			systemPrompt,
+			resume: sessionId,
+			resumeSessionAt: head,
+			forkSession: true,
+			persistSession: false,
+			maxTurns: 1,
+		});
+		const result = fork.find((e) => e.type === "result");
+		expect(result?.type === "result" && !result.isError).toBe(true);
+		const usage = result?.type === "result" ? result.usage : null;
+		const counts = (u: unknown) =>
+			typeof u === "object" && u !== null
+				? Object.fromEntries(Object.entries(u).filter(([, v]) => typeof v === "number"))
+				: u;
+		process.stderr.write(
+			`fork usage — result: ${JSON.stringify(counts(usage))}; assistant: ${JSON.stringify(
+				fork.filter((e) => e.type === "assistant").map((e) => counts(e.message.usage)),
+			)}\n`,
+		);
+		expect(usage?.cache_read_input_tokens ?? 0).toBeGreaterThan(0);
+	}, 360_000);
 });

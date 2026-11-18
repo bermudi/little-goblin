@@ -163,10 +163,18 @@ export interface AppStopResponse {
 	settled: boolean;
 }
 
+export interface AppPendingInput {
+	id: string;
+	mode: "steer" | "followUp";
+	message: Message;
+	createdAt: string;
+}
+
 export type AppConversationEvent =
 	| { type: "state"; live: boolean }
 	| { type: "turn-start" }
-	| { type: "turn-end" };
+	| { type: "turn-end" }
+	| { type: "pending" };
 
 // Rides `metadata` of the system unlanded-progress event (design/runtime-turn.md → Unlanded-turn progress).
 export interface UnlandedTurnMetadata {

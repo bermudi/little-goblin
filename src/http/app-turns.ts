@@ -92,6 +92,60 @@ export async function handleTurnsRoute(
 		});
 	}
 
+	const pendingMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/pending$/);
+	if (pendingMatch) {
+		if (req.method !== "GET") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(pendingMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		return Response.json(
+			{
+				items: runtime.listPending(convId.id).map(({ id, mode, message, createdAt }) => ({
+					id,
+					mode,
+					message,
+					createdAt,
+				})),
+			},
+			{ headers: NO_STORE },
+		);
+	}
+
+	const dequeueMatch = path.match(
+		/^\/api\/app\/conversations\/([^/]+)\/pending\/([^/]+)$/,
+	);
+	if (dequeueMatch) {
+		if (req.method !== "DELETE") {
+			return Response.json({ error: "method" }, { status: 405, headers: NO_STORE });
+		}
+		const convId = conversationFromSegment(dequeueMatch[1]!);
+		if (convId instanceof Response) return convId;
+		if (store.get(convId.id) === null) {
+			return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+		}
+		const pendingId = z.string().uuid().safeParse(dequeueMatch[2]!);
+		if (!pendingId.success) {
+			return Response.json({ error: "invalid pending id" }, { status: 400, headers: NO_STORE });
+		}
+		try {
+			const message = runtime.dequeuePending(convId.id, pendingId.data);
+			if (message === null) {
+				return Response.json({ error: "already taken" }, { status: 409, headers: NO_STORE });
+			}
+			return Response.json({ message }, { headers: NO_STORE });
+		} catch (err) {
+			log.error("app pending dequeue failed", err, {
+				conversation: convId.id,
+				pendingId: pendingId.data,
+			});
+			return Response.json({ error: "could not remove pending input" }, { status: 500, headers: NO_STORE });
+		}
+	}
+
 	const stopMatch = path.match(/^\/api\/app\/conversations\/([^/]+)\/stop$/);
 	if (stopMatch) {
 		if (req.method !== "POST") {

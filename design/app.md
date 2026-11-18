@@ -515,21 +515,33 @@ a finished-looking chat whose next send steered a ghost turn (#43).
   with no result reads "no result recorded", never a running shimmer.
   Stop answers after the turn settled (`settled` in the response, false
   only past the 5 s bound) and the client refreshes then.
-- **Passive live updates (#678 PR1).** The conversation event subscription
-  stays open while the view is idle. A turn-start attaches the transcript
-  reader; turn-end reconciles durable history by message id, preserving
-  #79/#408 merge rules. A dropped event connection reconnects with backoff
-  and its state event resynchronizes the reader.
-- **The composer steers (#678 PR1; PR2 pending).** One composer action
-  shows Stop during a turn when the composer is empty, and Send when it
-  contains text or staged items. Sending mid-turn POSTs the input without
-  stopping or replacing the live transcript reader; the server lane folds
-  or queues it as before. The transcript reads the conversation
-  subscription, independently of sends. An aborted reader doesn't ring
-  the done bell. PR2 will add pending-input rows and steer/queue choice and
-  dequeue; those behaviors are not part of PR1. The mechanism is inspired
-  by Pi's conversation-keyed transcript store subscription in
-  `apps/p2/plugins/chat/web.tsx`, not its outbox feature.
+- **Conversation subscription (#678 PR1/PR2).** The `/events` subscription
+  stays open while the view is idle and sends its current live state, then
+  turn-start, turn-end, and pending-input notifications. The transcript
+  reader is separate: it attaches to `/stream` on a live state or
+  turn-start, and turn-end reconciles durable history by message id,
+  preserving #79/#408 merge rules. A dropped event connection reconnects
+  with backoff and its state event resynchronizes the reader. Sending never
+  owns or replaces that reader.
+- **Pending input (#678 PR2).** Every app submit names `whenBusy:
+  "steer" | "followUp"` (default `steer`; ignored on an idle lane). A busy
+  send writes an `app_pending_input` row, not a history event, and appears
+  below the transcript as **Pending input** with a Steer or Queued badge.
+  The operator can edit a row back into the composer or remove it until a
+  lane claim; a delete after claim returns 409. The claim splice and
+  pending-row deletion plus history append run synchronously in one SQLite
+  transaction. A steer may fold into the running turn; follow-up does not
+  fold and runs as the next turn. `/stop` and boot recovery move unclaimed
+  input to history without running it, preserving the existing stranded
+  input recovery behavior. Telegram is unchanged: its message enters
+  history at intake. Mechanism sources: Pi
+  `packages/durable/src/harness/submissions.ts:148-161,253-300` and
+  `inbox.ts:73-96`, with app transcript subscription from
+  `apps/p2/plugins/chat/web.tsx`.
+- **The composer (#678 PR1/PR2).** Send during a turn POSTs as a steer;
+  Queue POSTs as a follow-up (Alt+Enter is the alternate action). Neither
+  action stops or replaces the live transcript reader. The Stop action
+  still stops the turn. An aborted reader doesn't ring the done bell.
 
 ## Model/thinking scope (ruling 2026-10-06)
 

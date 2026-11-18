@@ -273,6 +273,20 @@ export function ensureConversationSchema(db: Database): void {
 	// #418: the native Claude SDK session table lives with its owner
 	// module (claude-sessions.ts).
 	ensureClaudeSessionsSchema(db);
+	// App inputs stay outside transcript history until a running lane claims
+	// them. Keep their table DDL in this schema module to avoid a cycle through
+	// the conversation store.
+	db.run(`
+			CREATE TABLE IF NOT EXISTS app_pending_input (
+				id TEXT PRIMARY KEY,
+				conversation TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+				mode TEXT NOT NULL CHECK (mode IN ('steer', 'followUp')),
+				message JSON NOT NULL,
+				created_at TEXT NOT NULL
+			)`);
+	db.run(
+		"CREATE INDEX IF NOT EXISTS app_pending_input_conversation_created ON app_pending_input(conversation, created_at, id)",
+	);
 	// Web Push subscriptions are endpoint-scoped operator devices. The
 	// endpoint and its keys are send credentials, so callers/log lines use
 	// endpoint_hash; only the sender boundary reads the raw row.

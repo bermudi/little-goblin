@@ -1268,7 +1268,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		const child = container.querySelector(".conversation-children .conv-main[href='/app/c/child']");
 		expect(parent).not.toBeNull();
 		expect(child).not.toBeNull();
-		expect(child?.closest(".conversation-children")?.parentElement?.parentElement).toBe(
+		expect(child?.closest(".conversation-children")?.parentElement).toBe(
 			parent?.closest("li"),
 		);
 		await browserGoesTo("/app/c/child");

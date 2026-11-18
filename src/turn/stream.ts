@@ -321,6 +321,7 @@ export async function foldSteers<M extends WireMember>(
 			}
 			injected.push(...converted);
 			joinMember(convId, live, members, t);
+			if (t.seq === null) throw new Error("unmaterialized pending turn");
 			claimedSeqs.add(t.seq);
 			admittedCount++;
 		} catch (err) {

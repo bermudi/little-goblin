@@ -84,7 +84,10 @@ export function Composer({
 	// exclusion (a memory-off project): the toggle reads off, disabled.
 	stagedMemory?: { excluded: boolean; locked: boolean };
 	onStagedMemoryToggle?: (excluded: boolean) => void;
-	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
+	onSend: (
+		parts: UIMessage["parts"],
+		whenBusy?: "steer" | "followUp",
+	) => void | boolean | Promise<boolean>;
 	// Present only where a live turn exists to interrupt (ChatView).
 	onStop?: () => void;
 	// A manual compact landed a pointer — the host re-reads history so
@@ -512,7 +515,7 @@ export function Composer({
 						// not a send.
 						if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
 							e.preventDefault();
-							send();
+							send(e.altKey ? "followUp" : "steer");
 						}
 					}}
 				/>
@@ -805,6 +808,26 @@ export function Composer({
 						</svg>
 					</button>
 				) : (
+				<>
+				{busy && onStop !== undefined && (
+					<button
+						type="button"
+						className="queue-btn"
+						aria-label="Queue as follow-up"
+						title="Queue as follow-up (Alt+Enter)"
+						disabled={
+							configSaving ||
+							recording ||
+							(draft.trim() === "" &&
+								staged.every((e) => e.failed === true || e.uploading === true) &&
+								stagedNotes.length === 0 &&
+								stagedSkills.length === 0)
+						}
+						onClick={() => send("followUp")}
+					>
+						Queue
+					</button>
+				)}
 				<button
 					type="submit"
 					className="send-btn"
@@ -828,6 +851,7 @@ export function Composer({
 						/>
 					</svg>
 				</button>
+				</>
 				)}
 			</div>
 			{sendError !== null && (

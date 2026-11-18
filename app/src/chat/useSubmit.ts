@@ -37,7 +37,10 @@ export function useSubmit({
 	setStagedNotes: Dispatch<SetStateAction<StagedNote[]>>;
 	stagedSkills: StagedSkill[];
 	setStagedSkills: Dispatch<SetStateAction<StagedSkill[]>>;
-	onSend: (parts: UIMessage["parts"]) => void | boolean | Promise<boolean>;
+	onSend: (
+		parts: UIMessage["parts"],
+		whenBusy?: "steer" | "followUp",
+	) => void | boolean | Promise<boolean>;
 }) {
 	const sendingRef = useRef(false);
 	const [sendError, setSendError] = useState<string | null>(null);
@@ -51,7 +54,7 @@ export function useSubmit({
 		if (e.thumb !== undefined) URL.revokeObjectURL(e.thumb);
 	};
 
-	const send = () => {
+	const send = (whenBusy: "steer" | "followUp" = "steer") => {
 		// A send while a turn runs steers it (onSend drops the stale
 		// reader first) — but without a stop path there is no steer
 		// lane, so a lazy create still refuses mid-flight: a second
@@ -86,7 +89,7 @@ export function useSubmit({
 		sendingRef.current = true;
 		setSendError(null);
 		void Promise.resolve()
-			.then(() => onSend(parts) ?? true)
+			.then(() => onSend(parts, whenBusy) ?? true)
 			.then((accepted) => {
 				if (accepted === false) return;
 				// The accept continuation can outlive this composer — a lazy

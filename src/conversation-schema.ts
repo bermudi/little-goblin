@@ -16,6 +16,7 @@ import { ensureRatingsSchema } from "./reply-ratings.ts";
 import { ensureResponsibilitiesSchema } from "./responsibility-schema.ts";
 import { ensureWakeSchema } from "./wake-store.ts";
 import { ensureWindowSchema } from "./window-capture.ts";
+import { ensurePendingInputSchema } from "./pending-input.ts";
 
 // Concatenated text parts of one row, written against a row qualifier so
 // triggers and backfill share it. A corrupt row indexes empty — never fails
@@ -56,6 +57,7 @@ export function ensureConversationSchema(db: Database): void {
 	ensureResponsibilitiesSchema(db);
 	ensureWakeSchema(db);
 	ensureWindowSchema(db);
+	ensurePendingInputSchema(db);
 	const convCols = new Set(
 		db
 			.query<{ name: string }, []>("PRAGMA table_info(conversations)")

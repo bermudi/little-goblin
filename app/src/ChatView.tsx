@@ -45,6 +45,7 @@ import type {
   AppConversationEvent,
   AppConversationMemoryView,
   AppLiveContext,
+  AppPendingInput,
   AppRatedReply,
   AppReplyRating,
 } from "../../src/http/app-wire.ts";
@@ -580,6 +581,24 @@ function Chat({
       () => {},
     );
   };
+  const [pendingItems, setPendingItems] = useState<AppPendingInput[]>([]);
+  const [draftRestore, setDraftRestore] = useState<{ parts: UIMessage["parts"] } | null>(null);
+  const refreshPending = () => {
+    void fetch(
+      `/api/app/conversations/${encodeURIComponent(conversationId.slice(4))}/pending`,
+      { headers: token === null ? {} : { authorization: `Bearer ${token}` } },
+    )
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`pending input failed (${response.status})`);
+        const value = (await response.json()) as { items?: AppPendingInput[] };
+        if (!Array.isArray(value.items)) throw new Error("invalid pending input response");
+        setPendingItems(value.items);
+      })
+      .catch(() => {});
+  };
+  useEffect(() => {
+    refreshPending();
+  }, [conversationId, token]);
   // A failed /stop means the client dropped its stream but the turn
   // keeps running server-side and will write the reply the operator
   // asked to stop — that has to be visible, not swallowed.
@@ -686,6 +705,10 @@ function Chat({
                 setEventsLive(false);
                 setSubmitPending(false);
                 refreshTranscript();
+                refreshPending();
+              } else if (event.type === "pending") {
+                setSubmitPending(false);
+                refreshPending();
               }
             }
           }
@@ -755,9 +778,14 @@ function Chat({
       const detail = (await response.json().catch(() => null)) as { error?: unknown } | null;
       throw new Error(typeof detail?.error === "string" ? detail.error : `send failed (${response.status})`);
     }
+    const result = (await response.json()) as { pendingId?: unknown };
     sendAccepted.current?.();
+    return result;
   };
-  const submit = async (message: { parts?: UIMessage["parts"]; text?: string }) => {
+  const submit = async (
+    message: { parts?: UIMessage["parts"]; text?: string },
+    whenBusy: "steer" | "followUp" = "steer",
+  ) => {
     pinned.current = true;
     setLiveCtx(null);
     setSendFailure(null);
@@ -766,14 +794,62 @@ function Chat({
       role: "user",
       parts: message.parts ?? [{ type: "text", text: message.text ?? "" }],
     };
-    setMessages((current) => [...current, optimistic]);
+    const wasBusy = busy;
+    const optimisticPendingId = `optimistic-${optimistic.id}`;
+    if (wasBusy) {
+      setPendingItems((current) => [
+        ...current,
+        {
+          id: optimisticPendingId,
+          mode: whenBusy,
+          message: optimistic as unknown as AppPendingInput["message"],
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+    } else {
+      setMessages((current) => [...current, optimistic]);
+    }
     setSubmitPending(true);
     try {
-      await postChat({ message: optimistic });
+      const result = await postChat({ message: optimistic, whenBusy });
+      if (typeof result.pendingId === "string") {
+        setMessages((current) => current.filter((item) => item.id !== optimistic.id));
+        setPendingItems((current) =>
+          current.map((item) =>
+            item.id === optimisticPendingId ? { ...item, id: result.pendingId as string } : item,
+          ),
+        );
+        refreshPending();
+      }
     } catch (err) {
       setMessages((current) => current.filter((item) => item.id !== optimistic.id));
+      setPendingItems((current) => current.filter((item) => item.id !== optimisticPendingId));
       setSubmitPending(false);
       setSendFailure(err instanceof Error ? err.message : "send failed");
+    }
+  };
+
+  const dequeuePending = async (item: AppPendingInput, edit: boolean) => {
+    try {
+      const response = await fetch(
+        `/api/app/conversations/${encodeURIComponent(conversationId.slice(4))}/pending/${encodeURIComponent(item.id)}`,
+        {
+          method: "DELETE",
+          headers: token === null ? {} : { authorization: `Bearer ${token}` },
+        },
+      );
+      if (response.status === 409) {
+        refreshPending();
+        refreshTranscript();
+        return;
+      }
+      if (!response.ok) throw new Error(`pending input action failed (${response.status})`);
+      const body = (await response.json()) as { message: AppPendingInput["message"] };
+      setPendingItems((current) => current.filter((row) => row.id !== item.id));
+      if (edit) setDraftRestore({ parts: body.message.parts as UIMessage["parts"] });
+      refreshPending();
+    } catch (err) {
+      setSendFailure(err instanceof Error ? err.message : "pending input action failed");
     }
   };
 
@@ -1154,6 +1230,34 @@ function Chat({
               );
             })}
             {busy && <div className="msg assistant pending shimmer">…</div>}
+            {pendingItems.length > 0 && (
+              <section className="pending-inputs" aria-label="Pending input">
+                <h3>Pending input</h3>
+                {pendingItems.map((item) => (
+                  <div className="pending-input" key={item.id}>
+                    <button
+                      type="button"
+                      className="pending-input-edit"
+                      aria-label={`Edit ${item.mode === "followUp" ? "queued" : "steer"} input`}
+                      onClick={() => void dequeuePending(item, true)}
+                    >
+                      <span className="pending-input-mode">
+                        {item.mode === "followUp" ? "Queued" : "Steer"}
+                      </span>
+                      <span>{messageText(item.message as unknown as UIMessage)}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="pending-input-remove"
+                      aria-label="Remove pending input"
+                      onClick={() => void dequeuePending(item, false)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </section>
+            )}
           {error !== undefined && (
             <div className="error">The turn failed: {error.message}</div>
           )}
@@ -1181,11 +1285,13 @@ function Chat({
           stagedSkills={stagedSkills}
           setStagedSkills={setStagedSkills}
           quote={quote}
+          draftRestore={draftRestore}
+          onDraftRestored={() => setDraftRestore(null)}
           stealFocus
           onCompacted={refreshTranscript}
-          onSend={(parts) => {
+          onSend={(parts, whenBusy) => {
             askNotifyPermission();
-            void submit({ parts });
+            void submit({ parts }, whenBusy);
           }}
           onStop={() => {
             setStopError(null);

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createOpenAI } from "@ai-sdk/openai";
 import { readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import type { Message } from "../message.ts";
@@ -12,6 +13,97 @@ import type { AppChannelDeps } from "./app-shared.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
 
 describe("app chat", () => {
+	test("a provider rejection before streaming emits one error and an error finish", async () => {
+		let announceRequest!: () => void;
+		const requestReceived = new Promise<void>((resolve) => {
+			announceRequest = resolve;
+		});
+		let releaseResponse!: () => void;
+		const responseReleased = new Promise<void>((resolve) => {
+			releaseResponse = resolve;
+		});
+		const fixture = Bun.serve({
+			port: 0,
+			async fetch() {
+				announceRequest();
+				await responseReleased;
+				return Response.json(
+					{ error: { message: "invalid request shape", type: "invalid_request_error" } },
+					{ status: 400 },
+				);
+			},
+		});
+		const model = createOpenAI({
+			baseURL: `http://127.0.0.1:${fixture.port}/v1`,
+			apiKey: "test",
+		}).chat("test-model");
+		const { http, call, store, runtime } = setup({ token: APP_TOKEN_NAME, model });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "pre-stream-failure" }),
+			});
+			const submitted = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/pre-stream-failure",
+					message: {
+						id: "probe-message",
+						role: "user",
+						parts: [{ type: "text", text: "pre-stream refusal" }],
+					},
+				}),
+			});
+			expect(submitted.status).toBe(202);
+			await requestReceived;
+			const streamPromise = call("/api/app/conversations/pre-stream-failure/stream");
+			await waitUntil(
+				() => runtime.hasConversationWatchers("app/pre-stream-failure"),
+				"stream watcher attaches",
+			);
+			releaseResponse();
+			const streamResponse = await streamPromise;
+			expect(streamResponse.status).toBe(200);
+			const reader = streamResponse.body!.getReader();
+			const decoder = new TextDecoder();
+			let body = "";
+			while (!body.includes("data: [DONE]")) {
+				const part = await reader.read();
+				if (part.done) break;
+				body += decoder.decode(part.value, { stream: true });
+			}
+			await reader.cancel();
+			const records = body
+				.split("\n")
+				.filter((line) => line.startsWith("data: "))
+				.map((line) => line.slice("data: ".length));
+			expect(records.map((record) => record === "[DONE]" ? record : JSON.parse(record))).toEqual([
+				expect.objectContaining({ type: "start", messageId: expect.any(String) }),
+				{ type: "error", errorText: "invalid request shape" },
+				{ type: "finish", finishReason: "error" },
+				"[DONE]",
+			]);
+			await waitUntil(
+				() => store.history("app/pre-stream-failure").length === 2,
+				"failed reply persists",
+			);
+			expect(store.history("app/pre-stream-failure").map((message) => message.role)).toEqual(["user", "system"]);
+			expect(
+				store.db
+					.query<{ status: string; delivery: string }, [string]>(
+						"SELECT status, delivery FROM turn_runs WHERE conversation_id = ?",
+					)
+					.get("app/pre-stream-failure"),
+			).toMatchObject({ status: "error", delivery: "failed" });
+		} finally {
+			releaseResponse();
+			http.stop();
+			await fixture.stop();
+		}
+	});
+
 	test("chat submits a user message with 202 and persists its reply", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {

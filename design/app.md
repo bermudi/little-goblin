@@ -326,7 +326,10 @@ wait:" line, and the actions on the card: Try again, Drop them (inline
 confirm) and a link to the Memory page. Try again and Drop them are scoped to
 that cause (`POST /memory/blocked` takes an optional `error`; the Memory page
 sends none and still means all). After Try again the page polls like the
-Memory page and shows its `RetryCard`. **Your decisions** show program, mail
+Memory page and shows its `RetryCard`. A failed status read is shown on the
+page; polling continues at the retry cadence, and the next successful read
+clears the error, refreshes the blocked cards, and updates retry progress.
+**Your decisions** show program, mail
 and skill proposals as the Programs/Skills page cards (`ProgramApprovalCard`,
 `MailApprovalCard`, `ProposalCard`) with their diff already open and the
 buttons on the card; each has an "If you wait:" line. **Needs you** holds the

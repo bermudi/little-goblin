@@ -5,7 +5,12 @@ import { join } from "node:path";
 import type { AuthStore } from "../auth.ts";
 import { type ConversationStore, openStore } from "../conversation.ts";
 import { type ForgetSource, forgetDocument, type HindsightInstance } from "./forget.ts";
-import { HindsightClient, type MemoryDocument, type MemoryOperation } from "./hindsight.ts";
+import {
+	HindsightClient,
+	HindsightError,
+	type MemoryDocument,
+	type MemoryOperation,
+} from "./hindsight.ts";
 import { buildDestinationClient } from "./mod.ts";
 import { MemoryQueueWorker } from "./queue.ts";
 
@@ -154,6 +159,54 @@ describe("forget reconciles uncertain pending retention", () => {
 		expect(remote.deleted).toEqual([]);
 		expect(store.memoryContexts.isSuppressed(documentId)).toBe(false);
 		expect(store.memoryQueue.get(operationId)?.state).toBe("pending");
+	});
+
+	test("a non-retryable operation poll error fails immediately and keeps tracking", async () => {
+		const store = storeAt();
+		let polls = 0;
+		const failure = new HindsightError("http", 401);
+		const client: HindsightInstance = {
+			target,
+			async operation() {
+				polls++;
+				throw failure;
+			},
+			async deleteDocument() {
+				throw new Error("must not delete after a failed poll");
+			},
+		};
+		const operationId = store.memoryQueue.enqueue(target, doc);
+
+		await expect(
+			forgetDocument(sourceOf(client, store), documentId, { channel: "mini-app" }),
+		).rejects.toBe(failure);
+
+		expect(polls).toBe(1);
+		expect(store.memoryQueue.get(operationId)?.state).toBe("pending");
+		expect(store.memoryContexts.isSuppressed(documentId)).toBe(false);
+	});
+
+	test("a retryable operation poll error retries and can settle", async () => {
+		const store = storeAt();
+		let polls = 0;
+		const client: HindsightInstance = {
+			target,
+			async operation(operationId) {
+				polls++;
+				if (polls === 1) throw new HindsightError("http", 503);
+				return { operation_id: operationId, status: "completed" };
+			},
+			async deleteDocument() {},
+		};
+		const operationId = store.memoryQueue.enqueue(target, doc);
+
+		const result = await forgetDocument(sourceOf(client, store), documentId, {
+			channel: "mini-app",
+		});
+
+		expect(result).toEqual({ outcome: "forgotten", cancelled: 1, redacted: 0, settledOps: 1 });
+		expect(polls).toBe(2);
+		expect(store.memoryQueue.get(operationId)).toBeNull();
 	});
 
 	test("a pending operation absent remotely is reconciled with one poll, then cancelled", async () => {

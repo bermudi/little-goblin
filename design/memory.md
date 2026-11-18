@@ -193,7 +193,11 @@ floors are enforced server-side and re-checked client-side.
    suppress, settle every named destination's in-flight operations,
    park the document's outbox rows, delete the remote document through
    every destination the outbox names plus the current one, and redact
-   affected recall snapshots (global prefix reset, logged). Suppression
+   affected recall snapshots (global prefix reset, logged). During
+   settlement, retryable operation-poll failures keep polling within the
+   30-second budget. A non-retryable Hindsight failure is logged and
+   returned immediately as a failure with its classified kind; it is
+   never reported as remote work still being busy. Suppression
    is bank-agnostic and checked before every enqueue, so restarts and
    future backfills cannot resurrect forgotten sources.
 

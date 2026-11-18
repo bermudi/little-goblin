@@ -73,6 +73,38 @@ describe("memory credential screening", () => {
 		expect(screenMemoryText(ordinary, "test")).toBe(ordinary);
 	});
 
+	test("keeps ordinary speech after secret keys and screens long mixed bare values", () => {
+		for (const ordinary of [
+			"The secret: is that we should wait.",
+			"password: is not the right word here.",
+			"secret: abcdefg is seven letters.",
+		]) {
+			expect(screenMemoryText(ordinary, "test")).toBe(ordinary);
+		}
+
+		const secrets: [string, string][] = [
+			["secret: abcdefgh", "abcdefgh"],
+			["secret: synthetic-opaque-key-material", "synthetic-opaque-key-material"],
+			["password: fake9-credential-value", "fake9-credential-value"],
+			["API_KEY=synthetic_key_9281", "synthetic_key_9281"],
+			["password: fake9", "fake9"],
+			["password=short", "short"],
+			["secret: longletterpassphrase", "longletterpassphrase"],
+		];
+		for (const [input, value] of secrets) {
+			const result = screenMemoryText(input, "test");
+			expect(result).toContain("[REDACTED:secret_assignment]");
+			expect(result).not.toContain(value);
+		}
+	});
+
+	test("long runs of blanks after a key stay linear", () => {
+		const text = `secret:${" ".repeat(100_000)}word`;
+		const started = performance.now();
+		expect(screenMemoryText(text, "test")).toBe(text);
+		expect(performance.now() - started).toBeLessThan(500);
+	});
+
 	test("a redaction marker embedded in a credential is not a bypass", () => {
 		const result = screenMemoryText('password="[REDACTED:test] plus-sensitive-content"', "test");
 		expect(result).not.toContain("plus-sensitive-content");

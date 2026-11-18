@@ -404,6 +404,11 @@ before recall, search, reflection, and legacy queued submissions leave
 the process; pattern screening is not a secrecy guarantee, does not
 rewrite history, and is not retroactive cleanup of old outbox rows or
 remote storage.
+Bare values after a `=` assignment of a secret, password, token or key
+are always screened. After a `:`, which prose also uses, a bare value is
+screened only when it is at least eight characters or contains a digit
+(#262): "secret: is that…" survives, "password: hunter2" does not.
+Errors lean toward redaction. Quoted values are always screened.
 
 Deliberate search does not inherit the automatic-recall deadline.
 Score floors are an initial tunable policy, not an empirically

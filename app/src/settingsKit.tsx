@@ -52,6 +52,7 @@ export interface LastStash {
 	tts: TtsDraft | null;
 	transcription: TrDraft | null;
 	vision: VisDraft | null;
+	image: ImgDraft | null;
 	search: ChainEntry[] | null;
 	fetch: ChainEntry[] | null;
 	memory: MemDraft | null;

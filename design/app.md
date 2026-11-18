@@ -695,6 +695,9 @@ as read-only text (System, the memory card).
   first-time vision, image or transcription setup). Supplied blocks win
   over parked copies and defaults; the whole resulting config, including
   provider changes in that save, must validate before anything is written.
+  For image generation, an omitted `size` on a supplied re-enable block
+  keeps the parked size; an explicit size in the supplied block wins.
+  An already-active image block is still replaced whole.
   The editor hydrates its restoration stash from parked content on load;
   enabling transcription or memory restores that content into the draft,
   so its switch and subsequent saves reflect the requested state.

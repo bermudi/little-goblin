@@ -107,27 +107,33 @@ describe("System1Client", () => {
 	});
 
 	test("a failing response stream is a System1 transport error, not a raw exception", async () => {
+		const originalFetch = globalThis.fetch;
 		let pulls = 0;
-		const baseUrl = served(
-			() =>
-				new Response(
-					new ReadableStream({
-						pull(controller) {
-							if (pulls++ === 0) {
-								controller.enqueue(new TextEncoder().encode('{"answers":'));
-							} else {
-								controller.error(new Error("stream broke"));
-							}
-						},
-					}),
-					{ headers: { "content-type": "application/json" } },
-				),
-		);
-		const err = await new System1Client({ baseUrl, auth: async () => "key" })
-			.decide("s", { correction: question })
-			.catch((e: unknown) => e);
-		expect(err).toBeInstanceOf(System1Error);
-		expect((err as System1Error).kind).toBe("transport");
+		globalThis.fetch = (async () =>
+			new Response(
+				new ReadableStream<Uint8Array>({
+					pull(controller) {
+						if (pulls++ === 0) {
+							controller.enqueue(new TextEncoder().encode('{"answers":'));
+						} else {
+							controller.error(new Error("stream broke"));
+						}
+					},
+				}),
+				{ headers: { "content-type": "application/json" } },
+			)) as unknown as typeof fetch;
+		try {
+			const err = await new System1Client({
+				auth: async () => "key",
+				fallback: false,
+			})
+				.decide("s", { correction: question })
+				.catch((e: unknown) => e);
+			expect(err).toBeInstanceOf(System1Error);
+			expect((err as System1Error).kind).toBe("transport");
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
 	});
 
 	test("an oversized response cancels its source reader", async () => {

@@ -18,6 +18,7 @@ import type { AuthStore } from "./auth.ts";
 import { openCacheObservation } from "./cache-observation.ts";
 import type { Config } from "./config-schema.ts";
 import { openNotes } from "./notes.ts";
+import { noteTool } from "./agent/tools/note.ts";
 import { openProjects } from "./projects.ts";
 import { ATTACHMENT_PART } from "./agent/attachments.ts";
 import { systemPromptFor } from "./agent/prompt.ts";
@@ -4307,16 +4308,32 @@ describe("prefix compaction request identity", () => {
 			const body = parsed as Record<string, unknown>;
 			captured.push(body);
 			providerCalls++;
+			const requestedTool =
+				providerCalls === 3
+					? { id: "flush-probe", name: "probe", arguments: "{}" }
+					: providerCalls === 4
+						? {
+								id: "flush-note",
+								name: "note",
+								arguments: JSON.stringify({
+									action: "create",
+									title: "Flush fact",
+									body: "The note executor ran.",
+								}),
+							}
+						: null;
 			const containsPrefixInstruction = init.body.includes("[goblin compaction request");
 			const content =
 				providerCalls === 1
 					? "first assistant reply ".repeat(6_500)
-					: providerCalls === 9
+					: providerCalls === 11
 						? "epoch mismatch seed reply ".repeat(6_500)
-					: providerCalls === 5
+					: providerCalls === 7
 						? "restart prior assistant reply ".repeat(1_000)
-						: providerCalls === 6
+					: providerCalls === 8
 							? "restart large assistant reply ".repeat(6_500)
+					: providerCalls === 5
+						? "flush completed"
 					: containsPrefixInstruction
 						? validSummary
 						: providerCalls === 2
@@ -4332,8 +4349,24 @@ describe("prefix compaction request identity", () => {
 						choices: [
 							{
 								index: 0,
-								message: { role: "assistant", content },
-								finish_reason: "stop",
+								message:
+									requestedTool === null
+										? { role: "assistant", content }
+										: {
+												role: "assistant",
+												content: null,
+												tool_calls: [
+													{
+														id: requestedTool.id,
+														type: "function",
+														function: {
+															name: requestedTool.name,
+															arguments: requestedTool.arguments,
+														},
+													},
+												],
+											},
+								finish_reason: requestedTool === null ? "stop" : "tool_calls",
 							},
 						],
 						usage: {
@@ -4391,6 +4424,7 @@ describe("prefix compaction request identity", () => {
 			logLevel: "info",
 		};
 		const projects = openProjects(store);
+		const notes = openNotes(store, { projects });
 		const auth: AuthStore = {
 			resolve: async (name) => {
 				if (name !== "test-key") throw new Error(`unexpected auth name: ${name}`);
@@ -4404,7 +4438,7 @@ describe("prefix compaction request identity", () => {
 			auth,
 			store,
 			projects,
-			notes: openNotes(store, { projects }),
+			notes,
 			observation: openCacheObservation(store.db),
 		});
 		const turnSteps: ModelStep[] = [];
@@ -4429,6 +4463,12 @@ describe("prefix compaction request identity", () => {
 			cfg,
 		);
 		const tools = {
+			note: noteTool({
+				notes,
+				projects,
+				conversation: conv.id,
+				projectId: conv.projectId,
+			}),
 			probe: defineTool({
 				description: "A no-op probe used to verify compaction only sends tool definitions.",
 				input: z.object({}),
@@ -4469,22 +4509,28 @@ describe("prefix compaction request identity", () => {
 			expect(providerCalls).toBe(2);
 			const folded = await runtime.compact(conv);
 			expect(folded.kind).toBe("compacted");
-			expect(providerCalls).toBe(4); // flush, then one prefix summary call
+			expect(providerCalls).toBe(6); // flush refusal, note, flush reply, then summary
 			expect(turnSteps).toHaveLength(2);
 			expect(prefixSteps).toHaveLength(1);
 			expect(prefixSteps[0]!.system).toBe(turnSteps[1]!.system);
 			expect(prefixSteps[0]!.providerOptions).toEqual(turnSteps[1]!.providerOptions);
 
 			const turnTwo = captured[1]!;
+			const flushRequest = captured.find((body) =>
+				JSON.stringify(body).includes("about to lose the conversation span below"),
+			);
+			expect(flushRequest).toBeDefined();
 			const compactionRequest = captured.find((body) =>
-				JSON.stringify(body).includes("[goblin compaction request"),
+				JSON.stringify(body).includes("Do not call any tools. Reply with the summary text only."),
 			);
 			expect(compactionRequest).toBeDefined();
 			const turnMessages = turnTwo.messages;
+			const flushMessages = flushRequest!.messages;
 			const compactMessages = compactionRequest!.messages;
 			expect(Array.isArray(turnMessages)).toBe(true);
+			expect(Array.isArray(flushMessages)).toBe(true);
 			expect(Array.isArray(compactMessages)).toBe(true);
-			if (!Array.isArray(turnMessages) || !Array.isArray(compactMessages)) {
+			if (!Array.isArray(turnMessages) || !Array.isArray(flushMessages) || !Array.isArray(compactMessages)) {
 				throw new Error("fake provider captured malformed messages");
 			}
 			// Context notes are outbound-only tails; the compactor reads
@@ -4499,6 +4545,19 @@ describe("prefix compaction request identity", () => {
 						/^\[context: .*]$/.test((message as { content: string }).content)
 					),
 			);
+			expect(flushMessages.slice(0, persistedTurnMessages.length)).toEqual(persistedTurnMessages);
+			const flushAppended = flushMessages.slice(persistedTurnMessages.length);
+			expect(flushAppended).toHaveLength(2);
+			expect(flushAppended[0]).toMatchObject({ role: "assistant", content: "turn-two assistant reply" });
+			expect(flushAppended[1]).toMatchObject({ role: "user" });
+			expect(JSON.stringify(flushAppended[1])).toContain("Save to your notes");
+			expect(JSON.stringify(flushAppended[1])).toContain("Everything before the message");
+			expect(flushRequest!.tools).toEqual(turnTwo.tools);
+			expect(flushRequest!.tools).toEqual(compactionRequest!.tools);
+			expect(JSON.stringify(captured[3]!.messages)).toContain(
+				"refused: only the note tool runs during the memory flush",
+			);
+			expect(notes.list().some((note) => note.title === "Flush fact")).toBe(true);
 			expect(compactMessages.slice(0, persistedTurnMessages.length)).toEqual(persistedTurnMessages);
 			const appended = compactMessages.slice(persistedTurnMessages.length);
 			expect(appended).toHaveLength(2);
@@ -4559,12 +4618,12 @@ describe("prefix compaction request identity", () => {
 			} finally {
 				setLogFile(null);
 			}
-			expect(providerCalls).toBe(8);
+			expect(providerCalls).toBe(10);
 			const hydratedLog = readFileSync(join(home, "state/goblin.log"), "utf8");
 			expect(hydratedLog).toContain('"msg":"last-turn tools hydrated"');
 			expect(hydratedLog).toContain('"mode":"prefix","reason":null');
-			const restartTurn = captured[5]!;
-			const restartSummary = captured[7]!;
+			const restartTurn = captured[7]!;
+			const restartSummary = captured[9]!;
 			expect(restartSummary.tools).toEqual(restartTurn.tools);
 			expect(restartSummary.reasoning_effort).toEqual(restartTurn.reasoning_effort);
 			const restartTurnMessages = restartTurn.messages;

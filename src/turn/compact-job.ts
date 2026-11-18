@@ -6,7 +6,9 @@ import { candidateRefs } from "../agent/model-fallback.ts";
 import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { log } from "../log.ts";
-import type { PrefixStep } from "./prefix-summary.ts";
+import type { makePrefixFlush, PrefixStep } from "./prefix-summary.ts";
+import type { ClaudeStep } from "../agent/claude-code/mod.ts";
+import type { MemoryTurnDeps } from "../memory/mod.ts";
 
 // Optional compaction summarizes on the conversation's model, then walks
 // `modelFallbacks` (runCompaction owns the walk; `summarize` runs one
@@ -30,7 +32,20 @@ export interface CompactionSeam {
 	// design/compaction.md → Memory flush. Null when this conversation must
 	// not flush (memory configured, memory-excluded, no tool-capable engine).
 	flush?(conv: Conversation, modelRef: string): Flush | null;
+	prefixFlush?(
+		input: {
+			conv: Conversation;
+			modelRef: string;
+			step: PrefixStep;
+			tools: Parameters<typeof makePrefixFlush>[0]["tools"];
+			hydratedModelOutputTools?: readonly string[];
+			memory?: MemoryTurnDeps;
+			foldCeiling(): number | null;
+			assertAuthority(): void;
+		},
+	): PrefixSummarizer["flush"] | null;
 	prefixStep?(conv: Conversation, modelRef: string): Promise<PrefixStep | null>;
+	claudePrefixStep?(conv: Conversation, modelRef: string): ClaudeStep | null;
 	// #418: the recorded native Claude session compacts itself alongside
 	// the goblin fold. Runs only when the fold actually compacts; a
 	// failure is logged and never fails the job.
@@ -47,7 +62,12 @@ export interface CompactJobDeps {
 	checkAuthority(convId: string, epoch: number): void;
 	// Where completed history ends for a fold, evaluated at history-read time.
 	foldCeiling(convId: string, activeFloor?: number): number | null;
-	makePrefix?(conv: Conversation, modelRef: string, signal: AbortSignal): Promise<PrefixSummarizer | null>;
+	makePrefix?(
+		conv: Conversation,
+		modelRef: string,
+		signal: AbortSignal,
+		foldedThroughSeq: number,
+	): Promise<PrefixSummarizer | null>;
 	// Lane-owned cancellation: registered before the first await so /stop
 	// can cancel a pending contextWindow lookup; released only while still
 	// the registered controller.
@@ -123,7 +143,12 @@ export async function runCompactJob(
 				inputTokenBudget,
 				reason,
 				...(focus !== undefined ? { focus } : {}),
-				...(deps.makePrefix !== undefined ? { prefix: () => deps.makePrefix!(conv, modelRef, controller.signal) } : {}),
+				...(deps.makePrefix !== undefined
+					? {
+							prefix: (foldedThroughSeq: number) =>
+								deps.makePrefix!(conv, modelRef, controller.signal, foldedThroughSeq),
+						}
+					: {}),
 				// Evaluated at history-read time: work may have queued while
 				// the contextWindow lookup awaited.
 				beforeSeq: () => deps.foldCeiling(conv.id, activeFloor),

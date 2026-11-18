@@ -202,6 +202,11 @@ export interface ClaudeQueryOptions {
 	effort?: ClaudeEffort;
 	mcpServers: unknown;
 	allowedTools: string[];
+	canUseTool?: (
+		toolName: string,
+		input: Record<string, unknown>,
+		options: object,
+	) => Promise<{ behavior: "deny"; message: string }>;
 	cwd: string;
 	env: Record<string, string>;
 	abortController: AbortController;
@@ -211,6 +216,7 @@ export interface ClaudeQueryOptions {
 	// throwaway compaction summary passes neither.
 	resume?: string | undefined;
 	resumeSessionAt?: string | undefined;
+	forkSession?: boolean | undefined;
 	sessionId?: string | undefined;
 	persistSession?: boolean | undefined;
 	// Machine-composed prompts stay verbatim; the native /compact query

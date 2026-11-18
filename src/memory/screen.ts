@@ -29,7 +29,7 @@ const patterns: readonly { label: string; pattern: RegExp; prefix?: boolean }[] 
 	{
 		label: "secret_assignment",
 		pattern:
-			/((?<![\w-])["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|[A-Z][A-Z0-9_]*_(?:KEY|TOKEN|PASSWORD|SECRET))["']?[ \t]*[:=][ \t]*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)/gi,
+			/((?<![\w-])["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd|secret|[A-Z][A-Z0-9_]*_(?:KEY|TOKEN|PASSWORD|SECRET))["']?[ \t]*[:=][ \t]*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?<==[ \t]*)[^\s,;}]+|(?=[^\s,;}]{8,}|[^\s,;}]*\d)[^\s,;}]+)/gi,
 		prefix: true,
 	},
 ];

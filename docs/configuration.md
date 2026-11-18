@@ -447,8 +447,8 @@ http: { port: 8787 },
   the sender's own id, so a wrong entry shows itself in the chat.
 - `allowedUsers` — people you name. Sandboxed: a guest persona with
   search-only tools, no memory, no app. Their DM is a standing chat; in
-  groups they @mention you. Everyone else gets one refusal line per
-  summons and nothing else.
+  groups they @mention you. Everyone else gets one refusal line, once
+  per chat, and nothing else.
 - `telegram.apiRoot` — leave unset for Telegram's cloud API. Point it at a
   self-hosted `telegram-bot-api` in `--local` mode for large files (uploads
   up to 2 GB, files read straight off disk). Needs an `api_id`/`api_hash`

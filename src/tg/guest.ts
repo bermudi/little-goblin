@@ -19,6 +19,7 @@ import { sendRefusal } from "./refusals.ts";
 
 export interface GuestStore {
 	seen(updateId: number): boolean;
+	claimRefusal(chatId: number, senderId: number): boolean;
 }
 
 export function openGuestStore(db: Database): GuestStore {
@@ -28,11 +29,19 @@ export function openGuestStore(db: Database): GuestStore {
 		update_id INTEGER PRIMARY KEY,
 		seen_at TEXT NOT NULL
 	)`);
+	db.run(`CREATE TABLE IF NOT EXISTS guest_refusals (
+		chat_id INTEGER NOT NULL,
+		sender_id INTEGER NOT NULL,
+		PRIMARY KEY (chat_id, sender_id)
+	)`);
 	const q = {
 		qSeen: db.query(
 			"INSERT INTO guest_dedup (update_id, seen_at) VALUES (?, ?) ON CONFLICT(update_id) DO NOTHING",
 		),
 		qPurge: db.query("DELETE FROM guest_dedup WHERE update_id < ?"),
+		qClaimRefusal: db.query(
+			"INSERT INTO guest_refusals (chat_id, sender_id) VALUES (?, ?) ON CONFLICT(chat_id, sender_id) DO NOTHING",
+		),
 	};
 	return {
 		seen(updateId) {
@@ -40,6 +49,9 @@ export function openGuestStore(db: Database): GuestStore {
 			if (res.changes === 0) return false;
 			if (updateId % 500 === 0) q.qPurge.run(updateId - 1_000);
 			return true;
+		},
+		claimRefusal(chatId, senderId) {
+			return q.qClaimRefusal.run(chatId, senderId).changes === 1;
 		},
 	};
 }
@@ -52,22 +64,13 @@ export function guestRefusalText(fromId: number): string {
 	return `${GUEST_REFUSAL} Your Telegram id is ${fromId}.`;
 }
 
-const REFUSAL_LATCH_MS = 10 * 60_000;
-const refusalLatch = new Map<number, number>();
-
-export function refusalDue(chatId: number, now = Date.now()): boolean {
-	const last = refusalLatch.get(chatId);
-	if (last !== undefined && now - last < REFUSAL_LATCH_MS) return false;
-	if (refusalLatch.size >= 4096) refusalLatch.clear();
-	refusalLatch.set(chatId, now);
-	return true;
-}
-
-export function resetRefusalLatchForTests(): void {
-	refusalLatch.clear();
-}
-
 export type SummonVerdict = { kind: "personal" } | { kind: "sandbox" } | { kind: "refused" };
+
+export function claimRefusalOnce(store: GuestStore, chatId: number, senderId: number): boolean {
+	if (store.claimRefusal(chatId, senderId)) return true;
+	log.info("telegram refusal suppressed — already sent once", { chat: chatId, from: senderId });
+	return false;
+}
 
 export function classifySummon(
 	fromId: number,
@@ -448,7 +451,8 @@ export async function handleGuestUpdate(
 			update: updateId,
 			reason: "stranger",
 		});
-		await answerGuestArticle(env.api, guestQueryId, "goblin", guestRefusalText(from.id));
+		if (claimRefusalOnce(env.guestStore, chatId, from.id))
+			await answerGuestArticle(env.api, guestQueryId, "goblin", guestRefusalText(from.id));
 		return;
 	}
 	const sandbox = verdict.kind === "sandbox";
@@ -560,7 +564,7 @@ export async function routeMemberGuestMessage(
 			surface: "member",
 			reason: "stranger",
 		});
-		if (refusalDue(chatId))
+		if (claimRefusalOnce(env.guestStore, chatId, from.id))
 			sendRefusal(env.api, from.id, chatId, guestRefusalText(from.id), msg.message_thread_id);
 		return true;
 	}

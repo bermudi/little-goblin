@@ -84,7 +84,7 @@ function refuseDroppedBatch(
 		chat: chatId,
 		updateIds: batch.map((i) => i.updateId),
 	});
-	refuseStranger(env.api, chatId);
+	refuseStranger(env.api, env.guestStore, chatId, chatId);
 }
 
 async function flushRolling(

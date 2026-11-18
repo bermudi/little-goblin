@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { join } from "node:path";
 import type { Conversation } from "../conversation-read.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
@@ -20,7 +20,6 @@ import {
 	GuestSink,
 	GUEST_REFUSAL,
 	guestRefusalText,
-	resetRefusalLatchForTests,
 	handleGuestUpdate,
 	mentionsBot,
 	openGuestStore,
@@ -270,6 +269,19 @@ describe("openGuestStore", () => {
 		expect(store.seen(500)).toBe(true);
 		expect(store.seen(500)).toBe(false);
 		expect(store.seen(501)).toBe(true);
+	});
+
+	test("a refusal claim survives closing and reopening the SQLite store", () => {
+		const path = tmpDb("goblin-refusals-");
+		const first = openStore(path);
+		const firstGuestStore = openGuestStore(first.db);
+		expect(firstGuestStore.claimRefusal(-100, 9)).toBe(true);
+		first.close();
+
+		const reopened = openStore(path);
+		expect(openGuestStore(reopened.db).claimRefusal(-100, 9)).toBe(false);
+		expect(openGuestStore(reopened.db).claimRefusal(-100, 10)).toBe(true);
+		reopened.close();
 	});
 });
 
@@ -941,22 +953,23 @@ describe("routeMemberGuestMessage", () => {
 		expect(api.sends[0]?.text).toBe(guestRefusalText(9));
 	});
 
-	test("repeat stranger mentions in one window send one refusal", async () => {
+	test("a stranger gets one refusal per chat, while another stranger gets their own", async () => {
 		const { env, submitted, api } = makeEnv();
 		expect(await routeMemberGuestMessage(env, memberMsg({}), 24)).toBe(true);
 		expect(await routeMemberGuestMessage(env, memberMsg({}), 25)).toBe(true);
 		expect(submitted.length).toBe(0);
 		expect(api.sends).toHaveLength(1);
 		expect(api.sends[0]?.text).toBe(guestRefusalText(9));
-		// A different stranger chat is not latched by the first.
+
 		expect(
 			await routeMemberGuestMessage(
 				env,
-				memberMsg({ chat: { id: -200, type: "supergroup" } as never }),
+				memberMsg({ from: { id: 10, is_bot: false, first_name: "Other" } as never }),
 				26,
 			),
 		).toBe(true);
 		expect(api.sends).toHaveLength(2);
+		expect(api.sends[1]?.text).toBe(guestRefusalText(10));
 	});
 	test("a bare operator command is ordinary intake, not guest machinery", async () => {
 		const { env } = makeEnv();
@@ -1014,5 +1027,3 @@ describe("sharedChatPart — the audience note", () => {
 		expect(sharedChatPart("guest:-100:9", -100)).toBeNull();
 	});
 });
-
-beforeEach(() => resetRefusalLatchForTests());

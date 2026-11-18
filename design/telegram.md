@@ -279,8 +279,11 @@ it's on.
 The unit of trust is the person, not the chat. Two config lists: `operators`
 (min 1 while `telegram.enabled`; may be empty when the channel is off) and
 `allowedUsers` (may be empty). Everyone else is a stranger,
-never served: **every summons gets one short refusal line and nothing else**
-— no turn, no conversation, no state, no meter — on every summons surface.
+never served: **their first summons in each chat gets one short refusal
+line and nothing else** — no turn, no conversation, no state, no meter.
+**Once per stranger per chat, ever** (ruling 2026-11-18, #245): the durable
+record is keyed by chat and sender; later summonses are silent, and deleting
+the refusal message does not re-arm it.
 The line names the sender's own numeric Telegram id so a misplaced
 operators/allowedUsers entry is self-diagnosing, and the shipped example
 id `123456789` is flagged by a boot warning and doctor's
@@ -335,8 +338,9 @@ Accepted residual: the window is the coalescing delay.
   messages there are ordinary intake: a standing conversation in that chat,
   full agent, no guest machinery.
 
-Summonses classify by the two lists alone; a stranger's summons gets the
-refusal line, settled into the placeholder where there is one. Group privacy
+Summonses classify by the two lists alone; a stranger's first-ever summons
+per chat gets the refusal line, settled into the placeholder where there is
+one. Group privacy
 mode stays ON deliberately: the bot receives only mentions/replies in member
 chats, mirroring guest mode's no-history property.
 

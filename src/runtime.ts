@@ -43,7 +43,13 @@ import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { type CompactionSeam, runCompactJob } from "./turn/compact-job.ts";
 import { makePrefixSummarizer } from "./turn/prefix-summary.ts";
-import { persistableToolSet, restoreToolSet, type SDKToolSet } from "./turn/ai-sdk-tools.ts";
+import {
+	persistableToolSet,
+	restoreToolSet,
+	storedModelOutputTools,
+	toToolSet,
+	type SDKToolSet,
+} from "./turn/ai-sdk-tools.ts";
 import { sinkDelivery } from "./turn/delivery.ts";
 import { isClaudeStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
 import type { ModelStep } from "./turn/ai-sdk-step.ts";
@@ -187,7 +193,10 @@ type AttemptOutcome =
 export class Runtime {
 	private lanes = new LaneRegistry();
 	private turnEndWatchers = new Map<string, boolean>();
-	private readonly lastTurnTools = new Map<string, { epoch: number; tools: SDKToolSet }>();
+	private readonly lastTurnTools = new Map<
+		string,
+		{ epoch: number; tools: SDKToolSet; hydratedModelOutputTools?: string[] }
+	>();
 	// Closed runtimes record submits but never run them.
 	private closed = false;
 	// The runtime supplies ordering and the prior-turn chain, not gate
@@ -426,7 +435,11 @@ export class Runtime {
 					const stored = this.deps.store.lastTurnTools(target.id);
 					if (stored === null || stored.epoch !== target.epoch) return null;
 					const tools = restoreToolSet(stored.tools);
-					lastTurn = { epoch: stored.epoch, tools };
+					lastTurn = {
+						epoch: stored.epoch,
+						tools,
+						hydratedModelOutputTools: storedModelOutputTools(stored.tools),
+					};
 					this.lastTurnTools.set(target.id, lastTurn);
 					log.info("last-turn tools hydrated", {
 						conversation: target.id,
@@ -442,6 +455,9 @@ export class Runtime {
 					step: prefixStep,
 					store: this.deps.store,
 					tools: lastTurn.tools,
+					...(lastTurn.hydratedModelOutputTools !== undefined
+						? { hydratedModelOutputTools: lastTurn.hydratedModelOutputTools }
+						: {}),
 					...(this.deps.memory !== undefined ? { memory: this.deps.memory } : {}),
 					foldCeiling: () => this.lanes.pendingFloor(target.id, activeFloor),
 					assertAuthority: () => {
@@ -865,16 +881,15 @@ export class Runtime {
 			// above only bridges the pre-authority failure paths.
 			authority = auth;
 			const tools = auth.tools;
+			this.lastTurnTools.set(convId, { epoch, tools: toToolSet(tools) });
 			const persistedTools = await persistableToolSet(tools);
 			if ("unpersistable" in persistedTools) {
-				this.lastTurnTools.delete(convId);
 				this.deps.store.saveLastTurnTools(convId, epoch, null);
 				log.warn("last-turn tools not persistable", {
 					conversation: convId,
 					tool: persistedTools.unpersistable,
 				});
 			} else {
-				this.lastTurnTools.set(convId, { epoch, tools: persistedTools.tools });
 				const stored = this.deps.store.lastTurnTools(convId);
 				if (stored?.epoch !== epoch || stored.json !== persistedTools.json) {
 					this.deps.store.saveLastTurnTools(convId, epoch, persistedTools.json);

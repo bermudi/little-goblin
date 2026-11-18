@@ -14,6 +14,7 @@ const storedToolSchema = z.object({
 	inputSchema: z.record(z.string(), z.unknown()),
 	providerOptions: z.record(z.string(), z.unknown()).optional(),
 	isProviderExecuted: z.boolean().optional(),
+	modelOutput: z.boolean().optional(),
 }).strict();
 const storedToolsSchema = z.array(storedToolSchema);
 
@@ -28,15 +29,11 @@ export async function persistableToolSet(
 		if (definition.type !== "provider" && typeof definition.description === "function") {
 			return { unpersistable: name };
 		}
-		// This callback changes historical tool-result messages, not just execution.
-		if ("toModelOutput" in definition && definition.toModelOutput !== undefined) {
-			return { unpersistable: name };
-		}
 		if (
 			definition.type === "provider" &&
 			(definition.id === undefined || definition.args === undefined)
 		) {
-			return { unpersistable: name };
+			throw new Error(`provider tool ${name} is missing id or args`);
 		}
 		const inputSchema = await asSchema(definition.inputSchema).jsonSchema;
 		const record: Record<string, unknown> = {
@@ -55,14 +52,24 @@ export async function persistableToolSet(
 							? { description: definition.description }
 							: {}),
 					}),
-			...("providerOptions" in definition && definition.providerOptions !== undefined
-				? { providerOptions: definition.providerOptions as Record<string, unknown> }
-				: {}),
+				...("providerOptions" in definition && definition.providerOptions !== undefined
+					? { providerOptions: definition.providerOptions as Record<string, unknown> }
+					: {}),
+				...("toModelOutput" in definition && definition.toModelOutput !== undefined
+					? { modelOutput: true }
+					: {}),
 		};
 		persisted.push(storedToolSchema.parse(JSON.parse(JSON.stringify(record)) as unknown));
 	}
 	const parsed = storedToolsSchema.parse(persisted);
 	return { tools: restoreToolSet(parsed), json: JSON.stringify(parsed) };
+}
+
+export function storedModelOutputTools(value: unknown): string[] {
+	return storedToolsSchema
+		.parse(value)
+		.filter((stored) => stored.modelOutput === true)
+		.map((stored) => stored.name);
 }
 
 export function restoreToolSet(value: unknown): ToolSet {

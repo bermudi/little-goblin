@@ -261,6 +261,11 @@ its largest, so it was the most expensive uncached call goblin made.
   provider sees a prefix it already cached. Tool
   definitions are sent but never executed; tool choice is left as the turn
   leaves it, because a changed tool choice voids Anthropic's message cache.
+  In-memory turns retain the full SDK tool set. Persisted definitions mark
+  tools with `toModelOutput`; restart hydration omits that callback. If the
+  summarized history includes a result from such a tool, prefix mode fails
+  with a named warning and uses the existing text fallback. Otherwise the
+  hydrated tool definitions replay normally.
   A reply with no text is a failed attempt.
 - **The instruction** carries `SUMMARY_SYSTEM`'s rules, the operator focus
   when given, and where the verbatim tail starts (an excerpt of the first

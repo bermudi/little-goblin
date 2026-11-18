@@ -4286,6 +4286,7 @@ describe("prefix compaction request identity", () => {
 					executions++;
 					return "executed";
 				},
+				toModelOutput: ({ output }) => ({ type: "text", value: output }),
 			}),
 		};
 		const runtime = new Runtime({
@@ -4487,20 +4488,17 @@ describe("prefix compaction request identity", () => {
 		}
 	});
 
-	test("unpersistable tool definitions warn and leave a restart without prefix tools", async () => {
+	test("a function description stays in memory but cannot be persisted for restart", async () => {
 		const home = useHome("goblin-prefix-unpersistable-");
 		const logPath = join(home, "state/goblin.log");
 		mkdirSync(join(home, "state"), { recursive: true });
 		const store = openStore(tmpDb("goblin-prefix-unpersistable-"));
-		const conv = store.resolve({ kind: "dm", chatId: 75 }, "/w");
-		seedBigExchanges(store, conv.id, 3, 50_000);
 		const unpersistable: Tools = {
-			probe: defineTool({
-				description: "A no-op probe with a custom model-output converter.",
+			probe: {
+				description: () => "A dynamic description.",
 				input: z.object({}),
 				execute: () => "unused",
-				toModelOutput: () => ({ type: "text", value: "unused" }),
-			}),
+			} as unknown as Tools["probe"],
 		};
 		const turnModel = fakeModel(["ok"], 1);
 		const prefixModel = fakeModel(["checkpoint"], 1);
@@ -4518,13 +4516,27 @@ describe("prefix compaction request identity", () => {
 				keepProviderExecuted: false,
 			}),
 		};
-		const first = rig({ store, model: turnModel, tools: unpersistable, deps: { compaction } });
+		const first = rig({
+			store,
+			addr: { kind: "dm", chatId: 75 },
+			model: turnModel,
+			tools: unpersistable,
+			deps: { compaction },
+		});
+		seedBigExchanges(store, first.conv.id, 3, 50_000);
+		const actualConv = first.conv;
 		setLogFile(logPath);
 		try {
 			const sink = submit(first, "request");
 			expect(await sink.done).toEqual({ kind: "completed" });
-			const second = rig({ store, model: turnModel, tools: unpersistable, deps: { compaction } });
-			const outcome = await second.runtime.compact(conv);
+			const second = rig({
+				store,
+				addr: { kind: "dm", chatId: 75 },
+				model: turnModel,
+				tools: unpersistable,
+				deps: { compaction },
+			});
+			const outcome = await second.runtime.compact(actualConv);
 			expect(outcome.kind).toBe("compacted");
 			await second.runtime.shutdown();
 		} finally {
@@ -4534,8 +4546,75 @@ describe("prefix compaction request identity", () => {
 		expect(logText).toContain('"msg":"last-turn tools not persistable"');
 		expect(logText).toContain('"tool":"probe"');
 		expect(logText).toContain('"mode":"text","reason":"no-prefix"');
+		expect(store.lastTurnTools(actualConv.id)).toBeNull();
 		await first.runtime.shutdown();
 		store.close();
+	});
+
+	test("a hydrated tool with toModelOutput falls back only when its result is in history", async () => {
+		const home = useHome("goblin-prefix-hydrated-output-");
+		const logPath = join(home, "state/goblin.log");
+		mkdirSync(join(home, "state"), { recursive: true });
+		const store = openStore(tmpDb("goblin-prefix-hydrated-output-"));
+		const outputTool: Tools["probe"] = defineTool({
+			description: "A tool whose historical result uses a custom output.",
+			input: z.object({}),
+			execute: () => "tool-result-body",
+			toModelOutput: ({ output }) => ({ type: "text", value: output }),
+		});
+		const tools: Tools = { probe: outputTool };
+		const { model } = scriptedEdge([
+			[toolCallPart("output-tool-call", "probe", "{}"), finishPart("tool-calls")],
+			textParts("turn completed"),
+		]);
+		const prefixModel = fakeModel(["checkpoint"], 1);
+		const compaction = {
+			modelRef: () => "m",
+			contextWindow: () => 100_000,
+			summarize: async (_conv: Conv, _system: string, prompt: string) =>
+				foldSummary("folded", prompt),
+			prefixStep: async () => ({
+				modelRef: "m",
+				model: prefixModel,
+				system: "frozen",
+				inputModalities: undefined,
+				carries: () => false,
+				keepProviderExecuted: false,
+			}),
+		};
+		const first = rig({
+			store,
+			addr: { kind: "dm", chatId: 76 },
+			model,
+			tools,
+			deps: { compaction },
+		});
+		const conv = first.conv;
+		setLogFile(logPath);
+		let second: Rig | null = null;
+		try {
+			expect(await submit(first, "call the tool").done).toEqual({ kind: "completed" });
+			await drain(first);
+			seedBigExchanges(store, conv.id, 3, 50_000);
+			second = rig({
+				store,
+				addr: { kind: "dm", chatId: 76 },
+				model: fakeModel(["unused"], 1),
+				tools,
+				deps: { compaction },
+			});
+			const outcome = await second.runtime.compact(conv);
+			expect(outcome.kind).toBe("compacted");
+			const logText = readFileSync(logPath, "utf8");
+			expect(logText).toContain("hydrated tool probe needs toModelOutput");
+			expect(logText).toContain('"mode":"text","reason":"prefix-failed"');
+			expect(logText).toContain('"msg":"compaction prefix summary failed — falling back to text mode"');
+		} finally {
+			setLogFile(null);
+			if (second !== null) await second.runtime.shutdown();
+			await first.runtime.shutdown();
+			store.close();
+		}
 	});
 });
 

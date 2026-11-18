@@ -25,11 +25,13 @@ export function makePrefixSummarizer(input: {
 	step: PrefixStep;
 	store: ConversationStore;
 	tools: ToolSet;
+	hydratedModelOutputTools?: readonly string[];
 	memory?: MemoryTurnDeps;
 	foldCeiling(): number | null;
 	assertAuthority(): void;
 }): PrefixSummarizer {
 	const { conv, step, store, tools } = input;
+	const hydratedModelOutputTools = new Set(input.hydratedModelOutputTools ?? []);
 	const view: ViewContext = {
 		convId: conv.id,
 		modelRef: step.modelRef,
@@ -63,6 +65,26 @@ export function makePrefixSummarizer(input: {
 				}
 				entries = entries.filter((entry) => entry.seq < cut.seq);
 				partial = { ...cutEntry.message, parts: cutEntry.message.parts.slice(0, cut.part) };
+			}
+			if (hydratedModelOutputTools.size > 0) {
+				for (const entry of [...entries, ...(partial === null ? [] : [{ message: partial }])]) {
+					for (const part of entry.message.parts) {
+						const toolPart = part as { type: string; state?: string; toolName?: string };
+						const toolName =
+							toolPart.type === "dynamic-tool"
+								? toolPart.toolName
+								: toolPart.type.startsWith("tool-")
+									? toolPart.type.slice("tool-".length)
+									: undefined;
+						if (
+							toolPart.state === "output-available" &&
+							toolName !== undefined &&
+							hydratedModelOutputTools.has(toolName)
+						) {
+							throw new Error(`hydrated tool ${toolName} needs toModelOutput`);
+						}
+					}
+				}
 			}
 			const messages = await buildModelView(view, {
 				entries,

@@ -259,7 +259,7 @@ describe("filterGuestTools — the sandbox invariant", () => {
 			}
 			expect(guestFetch).toBeUndefined();
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 		}
 	});
 });

@@ -24,8 +24,8 @@ import type { Config } from "./config-schema.ts";
 
 let dirs: string[] = [];
 let watchers: MailWatcher[] = [];
-afterEach(() => {
-	for (const w of watchers) w.stop();
+afterEach(async () => {
+	for (const w of watchers) await w.stop();
 	watchers = [];
 	for (const d of dirs) rmSync(d, { recursive: true, force: true });
 	dirs = [];

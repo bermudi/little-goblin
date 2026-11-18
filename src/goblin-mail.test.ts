@@ -13,7 +13,7 @@ const SCRIPT = join(import.meta.dir, "..", "scripts", "goblin-mail");
 let dirs: string[] = [];
 let servers: ReturnType<typeof Bun.serve>[] = [];
 afterEach(async () => {
-	for (const s of servers.splice(0)) s.stop(true);
+	for (const s of servers.splice(0)) await s.stop(true);
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 

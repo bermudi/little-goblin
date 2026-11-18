@@ -2261,9 +2261,14 @@ describe("context overflow recovery", () => {
 		const head = submit(r, "first");
 		const joiner = new RecordingSink();
 		let joinerSettled = false;
-		joiner.done.then(() => {
-			joinerSettled = true;
-		});
+		void joiner.done.then(
+			() => {
+				joinerSettled = true;
+			},
+			() => {
+				joinerSettled = true;
+			},
+		);
 		await started.promise;
 		// Queued while the overflow compaction holds the lane; the resumed
 		// admission claims it before reading history.

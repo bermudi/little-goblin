@@ -273,7 +273,7 @@ describe("routeDmMessage", () => {
 			expect(result.probability).toBe(0.92);
 			expect(models).toEqual(["primary", FALLBACK_MODEL]);
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 			store.close();
 		}
 	});

@@ -1,7 +1,7 @@
 // Bits shared across the operator views: error copy, time formatting,
 // the KV row, and the reloadable load hook. Pure presentation — api.ts
 // owns the server conversation.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError } from "./api.ts";
 
 export function describe(err: unknown): string {
@@ -50,9 +50,11 @@ export function useLoad<T>(load: () => Promise<T>) {
 	const [data, setData] = useState<T | null>(null);
 	const [err, setErr] = useState<string | null>(null);
 	const [nonce, setNonce] = useState(0);
+	const latestLoad = useRef(load);
+	latestLoad.current = load;
 	useEffect(() => {
 		let live = true;
-		load().then(
+		latestLoad.current().then(
 			(d) => {
 				if (!live) return;
 				setData(d);

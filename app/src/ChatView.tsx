@@ -339,6 +339,9 @@ function Chat({
   const resumeProbeSettled = useRef<() => void>(() => {});
   const conversationReaderActive = useRef(false);
   const eventsLiveRef = useRef(false);
+  const latestRefreshTranscript = useRef<() => void>(() => {});
+  const latestRefreshPending = useRef<() => void>(() => {});
+  const latestResumeFromEvents = useRef<() => void>(() => {});
   // Same latest-ref shape as idleReconnect: the host's callback is an
   // inline closure, so it must not enter the transport's useMemo deps —
   // a new transport identity would re-seat useChat on every host render.
@@ -586,6 +589,7 @@ function Chat({
       () => {},
     );
   };
+  latestRefreshTranscript.current = refreshTranscript;
   const [pendingItems, setPendingItems] = useState<AppPendingInput[]>([]);
   const [draftRestore, setDraftRestore] = useState<{
     parts: UIMessage["parts"];
@@ -604,8 +608,9 @@ function Chat({
       })
       .catch(() => {});
   };
+  latestRefreshPending.current = refreshPending;
   useEffect(() => {
-    refreshPending();
+    latestRefreshPending.current();
   }, [conversationId, token]);
   // A failed /stop means the client dropped its stream but the turn
   // keeps running server-side and will write the reply the operator
@@ -698,25 +703,25 @@ function Chat({
               const event = JSON.parse(data) as AppConversationEvent;
               if (event.type === "state") {
                 if (firstState) firstState = false;
-                else refreshTranscript();
+                else latestRefreshTranscript.current();
                 eventsLiveRef.current = event.live;
                 setEventsLive(event.live);
                 if (event.live) setSubmitPending(false);
-                if (event.live && !activeReader()) resumeFromEvents();
+                if (event.live && !activeReader()) latestResumeFromEvents.current();
               } else if (event.type === "turn-start") {
                 eventsLiveRef.current = true;
                 setEventsLive(true);
                 setSubmitPending(false);
-                if (!activeReader()) resumeFromEvents();
+                if (!activeReader()) latestResumeFromEvents.current();
               } else if (event.type === "turn-end") {
                 eventsLiveRef.current = false;
                 setEventsLive(false);
                 setSubmitPending(false);
-                refreshTranscript();
-                refreshPending();
+                latestRefreshTranscript.current();
+                latestRefreshPending.current();
               } else if (event.type === "pending") {
                 setSubmitPending(false);
-                refreshPending();
+                latestRefreshPending.current();
               }
             }
           }
@@ -764,11 +769,12 @@ function Chat({
       (resumeProbe.current.probed && !resumeProbe.current.settled)
     ) return;
     resumeRequested.current = true;
-    resumeStream();
+    void resumeStream().catch((err: unknown) => console.error("Couldn't resume stream", err));
     setTimeout(() => {
       resumeRequested.current = false;
     }, 1000);
   };
+  latestResumeFromEvents.current = resumeFromEvents;
   resumeProbeSettled.current = () => {
     if (eventsLiveRef.current && !conversationReaderActive.current) resumeFromEvents();
   };
@@ -872,13 +878,15 @@ function Chat({
 
   // A seed arrives once (empty-state send → conversation created → this view mounts).
   const seeded = useRef(false);
+  const latestSubmit = useRef(submit);
+  latestSubmit.current = submit;
   useEffect(() => {
     if (seeded.current || seed === null || seed.length === 0) return;
     seeded.current = true;
     pinned.current = true;
     onSeeded();
-    void submit({ parts: seed });
-  }, [seed, submit, onSeeded]);
+    void latestSubmit.current({ parts: seed }).catch((err: unknown) => console.error("Couldn't submit seeded message", err));
+  }, [seed, onSeeded]);
 
   // The retry affordance belongs to the newest answer — anything older
   // gets copy/read only.

@@ -90,8 +90,8 @@ async function speak(query: SpeakQuery, deps: SpeakButtonDeps): Promise<void> {
 			withTimeout(
 				deps.api.sendChatAction(message.chat.id, "record_voice", { ...thread }),
 				"sendChatAction",
-			).catch((err: unknown) => log.debug("record voice ping failed", { error: String(err) }));
-		action();
+			).catch((err: unknown) => log.error("record voice ping failed", err, { chat: message.chat.id }));
+		void action();
 		const recording = setInterval(action, 4_000);
 		try {
 			const audio = await deps.synthesize(text, deps.tts);

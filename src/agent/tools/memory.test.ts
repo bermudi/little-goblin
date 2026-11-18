@@ -3,8 +3,8 @@ import { HindsightClient } from "../../memory/hindsight.ts";
 import { memorySearchTool } from "./memory.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
-afterEach(() => {
-	for (const s of servers.splice(0)) s.stop(true);
+afterEach(async () => {
+	for (const s of servers.splice(0)) await s.stop(true);
 });
 
 function served(

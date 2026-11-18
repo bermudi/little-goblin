@@ -1297,7 +1297,7 @@ describe("ping replies (Spin-off)", () => {
 				busy: () => false,
 			} as unknown as Runtime,
 		};
-		flushTest(h.env, app.id, [
+		await flushTest(h.env, app.id, [
 			{ parts: [{ type: "text", text: "looks good" }], replyTo: 7, chatId: 1 },
 		]);
 		await Bun.sleep(10);
@@ -1445,7 +1445,7 @@ describe("flushConversation", () => {
 			...baseConfig,
 			titleModel: "zai/t",
 		});
-		flushTest(h.env, conv.id, [
+		await flushTest(h.env, conv.id, [
 			{
 				parts: [{ type: "text", text: "[attachment failed to download: boom]" }],
 				replyTo: 5,
@@ -1472,11 +1472,11 @@ describe("flushConversation", () => {
 			titleModel: "zai/t",
 		});
 		setTitle(null); // first attempt: provider unusable
-		flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hello" }], replyTo: 1 }]);
+		await flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hello" }], replyTo: 1 }]);
 		expect(titleCalls).toEqual(["hello"]);
 		await Bun.sleep(10);
 		setTitle("Titled");
-		flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "again" }], replyTo: 2 }]);
+		await flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "again" }], replyTo: 2 }]);
 		await Bun.sleep(10);
 		expect(titleCalls).toEqual(["hello"]);
 		expect([...h.env.titleAttempts]).toContain(conv.id);
@@ -1484,7 +1484,7 @@ describe("flushConversation", () => {
 
 	test("no titleModel configured — titling falls back to the conversation's model", async () => {
 		const { h, conv, submitted, titleCalls } = topicHarness(baseConfig);
-		flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hello" }], replyTo: 1 }]);
+		await flushTest(h.env, conv.id, [{ parts: [{ type: "text", text: "hello" }], replyTo: 1 }]);
 		expect(titleCalls).toEqual(["hello"]);
 		expect(submitted).toHaveLength(1);
 		await submitted[0]!.sink.onDone({ kind: "completed" });

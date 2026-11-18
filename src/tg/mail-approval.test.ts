@@ -33,8 +33,8 @@ test("draft chunk boundaries never split an emoji", () => {
 });
 
 let gates: Array<Pick<MailApproval, "stop">> = [];
-afterEach(() => {
-	for (const g of gates) g.stop();
+afterEach(async () => {
+	for (const g of gates) await g.stop();
 	gates = [];
 });
 

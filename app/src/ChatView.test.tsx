@@ -3567,7 +3567,7 @@ describe("NotePicker dismissal", () => {
     expect(pick()).not.toBeNull();
 
     // Inside the panel is not outside.
-    act(() =>
+    await act(() =>
       pick()!
         .querySelector("input")!
         .dispatchEvent(
@@ -3579,14 +3579,14 @@ describe("NotePicker dismissal", () => {
     expect(pick()).not.toBeNull();
 
     // The opener's press is exempt — its click does the toggling.
-    act(() =>
+    await act(() =>
       opener()!.dispatchEvent(
         new dom.win.Event("pointerdown", { bubbles: true }) as unknown as Event,
       ),
     );
     expect(pick()).not.toBeNull();
 
-    act(() =>
+    await act(() =>
       dom.win.document.body.dispatchEvent(
         new dom.win.Event("pointerdown", { bubbles: true }),
       ),
@@ -3598,7 +3598,7 @@ describe("NotePicker dismissal", () => {
       opener()!.click();
     });
     expect(pick()).not.toBeNull();
-    act(() =>
+    await act(() =>
       dom.win.document.dispatchEvent(
         new dom.win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
       ),

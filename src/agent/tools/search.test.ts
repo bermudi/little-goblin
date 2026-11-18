@@ -22,8 +22,8 @@ const fakeAuth: AuthStore = {
 
 let servers: ReturnType<typeof Bun.serve>[] = [];
 let logDir: string | null = null;
-afterEach(() => {
-	for (const s of servers) s.stop(true);
+afterEach(async () => {
+	for (const s of servers) await s.stop(true);
 	servers = [];
 	setLogFile(null);
 	if (logDir !== null) rmSync(logDir, { recursive: true, force: true });

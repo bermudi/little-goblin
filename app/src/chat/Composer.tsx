@@ -288,6 +288,24 @@ export function Composer({
 	const { notePickerOpen, setNotePickerOpen, skillPickerOpen, setSkillPickerOpen, notePickRef, noteBtnRef, pickNote, stageSkill } =
 		useSkillNoteStaging({ setStagedNotes, setStagedSkills });
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const latestDraftRestoreBindings = useRef({
+		editedAfterSend,
+		setDraft,
+		setStaged,
+		setStagedNotes,
+		setStagedSkills,
+		onDraftRestored,
+		textareaRef,
+	});
+	latestDraftRestoreBindings.current = {
+		editedAfterSend,
+		setDraft,
+		setStaged,
+		setStagedNotes,
+		setStagedSkills,
+		onDraftRestored,
+		textareaRef,
+	};
 	useEffect(() => {
 		if (quote == null || quote.n === 0) return;
 		editedAfterSend.current = true;
@@ -299,12 +317,21 @@ export function Composer({
 			// end on the next frame.
 			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
 		}
-	}, [quote]);
+	}, [quote, setDraft, editedAfterSend, textareaRef]);
 	// The parent scopes this payload to its originating composer. Pending
 	// edits always restore, ahead of any newer draft; cancelled-send restores
 	// keep the edit guard so they never replace newer operator text.
 	useEffect(() => {
 		if (draftRestore == null) return;
+		const {
+			editedAfterSend,
+			setDraft,
+			setStaged,
+			setStagedNotes,
+			setStagedSkills,
+			onDraftRestored,
+			textareaRef,
+		} = latestDraftRestoreBindings.current;
 		const text = draftRestore.parts
 			.filter((p) => p.type === "text")
 			.map((p) => p.text)
@@ -355,9 +382,13 @@ export function Composer({
 			// one.
 			setStagedSkills((prev) => {
 				const merged = [...prev];
+				let changed = false;
 				for (const s of skills)
-					if (!merged.some((e) => skillRefEquals(e.ref, s.ref))) merged.push(s);
-				return merged;
+					if (!merged.some((e) => skillRefEquals(e.ref, s.ref))) {
+						merged.push(s);
+						changed = true;
+					}
+				return changed ? merged : prev;
 			});
 		onDraftRestored?.();
 		const ta = textareaRef.current;

@@ -286,14 +286,13 @@ export function SettingsView({
 	}, [token]);
 	useEffect(() => {
 		void refreshStatus();
-		return () => {
-			statusSeq.current++;
-		};
 	}, [refreshStatus, reloadTick]);
 
 	// Thinking-level capability lookups — kind/base/model from the
 	// form's own provider state, debounced.
 	const provsSig = provs.map((p) => `${p.name.trim()}|${p.kind}|${p.baseUrl.trim()}`).join(",");
+	const latestProvs = useRef(provs);
+	latestProvs.current = provs;
 	useEffect(() => {
 		if (kinds === null) return;
 		const seq = ++thinkSeq.current;
@@ -301,7 +300,7 @@ export function SettingsView({
 			const channel = async (ref: string): Promise<ChannelLevels> => {
 				const slash = ref.indexOf("/");
 				if (slash <= 0) return { values: [...THINKING_ORDER], unavailable: true };
-				const p = provs.find((x) => x.name.trim() === ref.slice(0, slash));
+				const p = latestProvs.current.find((x) => x.name.trim() === ref.slice(0, slash));
 				if (p === undefined) return { values: [...THINKING_ORDER], unavailable: true };
 				const base = "baseUrl" in p && typeof p.baseUrl === "string" ? p.baseUrl : undefined;
 				try {
@@ -512,6 +511,8 @@ export function SettingsView({
 	// A failed write isn't retried on the identical state — the next
 	// edit re-arms.
 	const attempted = useRef<string | null>(null);
+	const latestSave = useRef(save);
+	latestSave.current = save;
 	useEffect(() => {
 		if (!dirty || namePending || invalidReason !== null || saving) return;
 		const sig = serialize(draft, provs);
@@ -519,7 +520,7 @@ export function SettingsView({
 			return;
 		const t = setTimeout(() => {
 			attempted.current = sig;
-			void save();
+			void latestSave.current();
 		}, 800);
 		return () => clearTimeout(t);
 	}, [dirty, namePending, invalidReason, saving, draft, provs]);

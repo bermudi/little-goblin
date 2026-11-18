@@ -556,7 +556,7 @@ describe("memory commands", () => {
 			expect(sent[0]).toContain("/forget delete <n> — or the full document id (irreversible)");
 			expect(sent[0]).not.toContain("exchange/");
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 			store.close();
 		}
 	});
@@ -608,7 +608,7 @@ describe("memory commands", () => {
 			expect(store.memoryContexts.isSuppressed("exchange/b")).toBe(true);
 			expect(store.memoryContexts.isSuppressed("exchange/a")).toBe(false);
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 			store.close();
 		}
 	});
@@ -657,7 +657,7 @@ describe("memory commands", () => {
 			expect(deleted).toEqual([]);
 			expect(store.memoryContexts.isSuppressed("exchange/a")).toBe(false);
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 			store.close();
 		}
 	});
@@ -704,7 +704,7 @@ describe("memory commands", () => {
 			expect(deleted).toEqual([]);
 			expect(store.memoryContexts.isSuppressed("exchange/a")).toBe(false);
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 			store.close();
 		}
 	});
@@ -753,7 +753,7 @@ describe("memory commands", () => {
 			expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
 			expect(store.memoryContexts.load(conv.id)).toEqual([]);
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 			store.close();
 		}
 	});
@@ -816,7 +816,7 @@ describe("forget delete against in-flight retention", () => {
 			expect(sent[0]).toContain("forgotten exchange/dm:1/1/a");
 			expect(store.memoryContexts.isSuppressed("exchange/dm:1/1/a")).toBe(true);
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 			store.close();
 		}
 	});
@@ -869,7 +869,7 @@ describe("forget delete against in-flight retention", () => {
 			expect(store.memoryQueue.get(operationId)).toBeNull();
 			expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 			store.close();
 		}
 	});
@@ -916,7 +916,7 @@ describe("forget delete against in-flight retention", () => {
 			// The settled submitted row leaves with the cancel, not behind it.
 			expect(store.memoryQueue.get(operationId)).toBeNull();
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 			store.close();
 		}
 	});
@@ -960,7 +960,7 @@ describe("forget delete against in-flight retention", () => {
 				"memory for that document is still processing remotely — try /forget delete again in a minute",
 			);
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 			store.close();
 		}
 	});
@@ -1060,7 +1060,7 @@ describe("forget delete against in-flight retention", () => {
 			expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
 		} finally {
 			await worker.stop();
-			server.stop(true);
+			await server.stop(true);
 			store.close();
 		}
 	});

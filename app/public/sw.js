@@ -61,18 +61,25 @@ self.addEventListener("fetch", (event) => {
 						.then((cached) => {
 							if (cached !== undefined) resolve(cached);
 							else network.then(resolve, resolve);
+						})
+						.catch((err) => {
+							console.error("cached app shell fallback failed", err);
+							resolve(Response.error());
 						});
 				const timer = setTimeout(fallback, NAV_TIMEOUT_MS);
-				network.then(
+				void network.then(
 					(response) => {
 						clearTimeout(timer);
 						resolve(response);
 					},
 					() => {
 						clearTimeout(timer);
-						fallback();
+						return fallback();
 					},
-				);
+				).catch((err) => {
+					console.error("navigation fallback failed", err);
+					resolve(Response.error());
+				});
 			}),
 		);
 		return;

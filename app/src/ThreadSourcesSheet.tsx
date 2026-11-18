@@ -138,19 +138,17 @@ export function ThreadSourcesSheet({
 			},
 		);
 	};
+	const latestLoadSkills = useRef(loadSkills);
+	latestLoadSkills.current = loadSkills;
+	const latestLoadDocs = useRef(loadDocs);
+	latestLoadDocs.current = loadDocs;
 
 	useEffect(() => {
-		loadSkills();
-		return () => {
-			++skillSeq.current;
-		};
+		latestLoadSkills.current();
 	}, [token, conversationId]);
 
 	useEffect(() => {
-		loadDocs(0, false);
-		return () => {
-			++listSeq.current;
-		};
+		latestLoadDocs.current(0, false);
 	}, [token, conversationId]);
 
 	const sheet = useMemoryDocSheet(token, () => loadDocs(0, false));

@@ -366,7 +366,7 @@ test("a real fetch refusal — the loopback page's hostile content-type is quote
 		expect(out.text.indexOf("fetcher said:")).toBeGreaterThan(out.text.indexOf("<web>"));
 		expect(out.text.indexOf("fetcher said:")).toBeLessThan(out.text.indexOf("</web>"));
 	} finally {
-		server.stop(true);
+		await server.stop(true);
 	}
 });
 

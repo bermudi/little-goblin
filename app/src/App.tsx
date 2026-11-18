@@ -330,7 +330,7 @@ function AppShell() {
 			},
 			"",
 		);
-	}, []);
+	}, [navigation]);
 
 	useEffect(() => {
 		if (gate !== "probing") return;
@@ -533,7 +533,7 @@ function AppShell() {
 		};
 		window.addEventListener("popstate", onPop);
 		return () => window.removeEventListener("popstate", onPop);
-	}, [page, noteId, confirm.ask]);
+	}, [page, noteId, confirm.ask, confirm, navigation, navigation?.currentEntry.key]);
 
 	useEffect(() => {
 		const onUnload = (event: BeforeUnloadEvent) => {

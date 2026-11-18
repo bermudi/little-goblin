@@ -1510,7 +1510,7 @@ describe("post-submit accounting (trigger-owned)", () => {
 		expect(lines.some((l) => l.msg === "mail fired")).toBe(false);
 	});
 
-	test("an empty mail poll consumes the checkpoint without a turn", () => {
+	test("an empty mail poll consumes the checkpoint without a turn", async () => {
 		const h = harness();
 		const program = h.deps.programs.create(
 			{
@@ -1523,14 +1523,14 @@ describe("post-submit accounting (trigger-owned)", () => {
 		);
 		h.deps.programs.setMailHistory(program.id, "100", program.mailRevision);
 		const fresh = h.deps.programs.get(program.id)!;
-		fireMail(h.deps, fresh, [], "110", new Date());
+		await fireMail(h.deps, fresh, [], "110", new Date());
 		expect(h.submitted).toHaveLength(0);
 		const after = h.deps.programs.get(program.id)!;
 		expect(after.mailHistoryId).toBe("110");
 		expect(after.lastRun).toBeNull();
 	});
 
-	test("a disabled program consumes the checkpoint without a turn", () => {
+	test("a disabled program consumes the checkpoint without a turn", async () => {
 		const h = harness();
 		const program = h.deps.programs.create(
 			{
@@ -1544,7 +1544,7 @@ describe("post-submit accounting (trigger-owned)", () => {
 		h.deps.programs.setMailHistory(program.id, "100", program.mailRevision);
 		h.deps.programs.update(program.id, { enabled: false });
 		const fresh = h.deps.programs.get(program.id)!;
-		fireMail(h.deps, fresh, [hit("m1")], "120", new Date());
+		await fireMail(h.deps, fresh, [hit("m1")], "120", new Date());
 		// Mail matched while disabled is skipped, not owed (the cron rule).
 		expect(h.submitted).toHaveLength(0);
 		const after = h.deps.programs.get(program.id)!;
@@ -1552,7 +1552,7 @@ describe("post-submit accounting (trigger-owned)", () => {
 		expect(after.lastRun).toBeNull();
 	});
 
-	test("a mail poll without a checkpoint warns and keeps the cursor", () => {
+	test("a mail poll without a checkpoint warns and keeps the cursor", async () => {
 		const h = harness();
 		const program = h.deps.programs.create(
 			{
@@ -1571,7 +1571,7 @@ describe("post-submit accounting (trigger-owned)", () => {
 			captured.push(line);
 		});
 		try {
-			fireMail(h.deps, fresh, [hit("m1")], "", new Date());
+			await fireMail(h.deps, fresh, [hit("m1")], "", new Date());
 		} finally {
 			setLogFile(null);
 			setLogWriter(null);

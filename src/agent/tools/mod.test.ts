@@ -78,7 +78,7 @@ describe("toolNames ↔ makeTools", () => {
 			expect(await run("memory_reflect")).toMatchObject({ synthesis: "A synthesis." });
 			expect(outcomes).toEqual([true]);
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 		}
 	});
 

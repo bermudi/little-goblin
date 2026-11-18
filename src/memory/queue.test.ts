@@ -11,8 +11,8 @@ import { MemoryQueueWorker } from "./queue.ts";
 const dirs: string[] = [];
 const stores: ConversationStore[] = [];
 const servers: ReturnType<typeof Bun.serve>[] = [];
-afterEach(() => {
-	for (const server of servers.splice(0)) server.stop(true);
+afterEach(async () => {
+	for (const server of servers.splice(0)) await server.stop(true);
 	for (const store of stores.splice(0)) store.close();
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });

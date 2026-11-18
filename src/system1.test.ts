@@ -3,8 +3,8 @@ import { z } from "zod";
 import { DEFAULT_MODEL, FALLBACK_MODEL, System1Client, System1Error } from "./system1.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
-afterEach(() => {
-	for (const s of servers.splice(0)) s.stop(true);
+afterEach(async () => {
+	for (const s of servers.splice(0)) await s.stop(true);
 });
 
 function served(handler: (request: Request) => Response | Promise<Response>): string {

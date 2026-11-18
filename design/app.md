@@ -859,6 +859,12 @@ links its index page, Attention carries a violet dot while items wait,
 and a header toggle collapses the whole rail. The glyph that is lit is
 `pane` or `page` — panel surface and open page may light two at once.
 
+The Chats list nests native child conversations directly below their
+parent, recursively, preserving the rail order among siblings. A child whose
+parent is not in the active rail appears at the top level with a “subagent”
+label. Nested lists keep the same arrow-key navigation across every link.
+When open, a child conversation has a header link back to its parent.
+
 On phone widths (≤720px, the same breakpoint the drawer used) the
 slide-in drawer is retired on the app channel. Navigation is a fixed thumb
 bar — Chats · Projects · Notes · Attention · More — and one surface fills

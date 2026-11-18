@@ -20,6 +20,8 @@ export function appSseWriter(
 	let controller!: ReadableStreamDefaultController<Uint8Array>;
 	let closed = false;
 	let wireDied = false;
+	let errorWritten = false;
+	let finishWritten = false;
 	let lastByte = Date.now();
 	let beat: ReturnType<typeof setInterval> | undefined;
 	const stopBeat = () => {
@@ -73,13 +75,15 @@ export function appSseWriter(
 	return {
 		body,
 		write(chunk) {
+			if (chunk.type === "error") errorWritten = true;
+			if (chunk.type === "finish") finishWritten = true;
 			push(`data: ${JSON.stringify(chunk)}\n\n`);
 		},
 		finish(done) {
 			stopBeat();
 			if (done.kind !== "completed") {
-				push(
-					`data: ${JSON.stringify({
+				if (!errorWritten) {
+					push(`data: ${JSON.stringify({
 						type: "error",
 						errorText:
 							done.kind === "error"
@@ -87,8 +91,11 @@ export function appSseWriter(
 								: done.shutdown
 									? 'turn stopped: goblin restarted (deploy or service restart). Send a new message to continue.'
 									: "turn stopped before finishing",
-					})}\n\n`,
-				);
+					})}\n\n`);
+				}
+				if (done.kind === "error" && !finishWritten) {
+					push(`data: ${JSON.stringify({ type: "finish", finishReason: "error" })}\n\n`);
+				}
 			}
 			push("data: [DONE]\n\n");
 			close();

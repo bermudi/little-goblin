@@ -5,7 +5,7 @@ import { z } from "zod";
 import { defineTool } from "../../tool.ts";
 import { readImport, resolveExport, writeExportBytes } from "../../box-files.ts";
 import { imageRefSchema } from "../../config-schema.ts";
-import { PodmanError } from "../../podman.ts";
+import { BoundaryError } from "../../boundary-error.ts";
 import { SandboxError, type Sandboxes } from "../../sandboxes.ts";
 import { truncateTail } from "./truncate.ts";
 
@@ -161,7 +161,10 @@ export const sandboxTool = (deps: SandboxToolDeps) =>
 					}
 				}
 			} catch (err) {
-				if (err instanceof SandboxError || err instanceof PodmanError) {
+				if (err instanceof BoundaryError) {
+					return { error: `${err.kind} ${err.boundary} error${err.kind === "transient" ? " (retry may succeed)" : ""}: ${err.message}` };
+				}
+				if (err instanceof SandboxError) {
 					return { error: err.message };
 				}
 				const code = (err as NodeJS.ErrnoException).code;

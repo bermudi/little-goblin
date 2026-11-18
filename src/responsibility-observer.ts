@@ -14,6 +14,7 @@ import type { Database } from "bun:sqlite";
 import { z } from "zod";
 import { log } from "./log.ts";
 import { T3Error, t3Waiting, t3Working, type T3ShowResult } from "./t3.ts";
+import { boundaryKind } from "./boundary-error.ts";
 import type { ResponsibilityStore } from "./responsibilities.ts";
 import { UNREACHABLE_POLLS, type Attachment } from "./responsibility-types.ts";
 import { type AuthorityStamp, authorityStamp } from "./responsibility-authority.ts";
@@ -346,12 +347,29 @@ export function makeResponsibilityObserver(deps: ObserverDeps): ResponsibilityOb
 					reconcile(snapshot, shown);
 				} catch (err) {
 					if (err instanceof T3Error) {
-						// Only a CLI/server failure is an unavailable snapshot.
-						log.warn("responsibility observation unreachable", {
-							thread: snapshot.target.agentName,
-							attachments: [snapshot.attachmentId],
-							error: err.message,
-						});
+						const kind = boundaryKind(err);
+						// A missing thread is gone. A missing project is
+						// config drift, not a gone agent: count it as an outage.
+						if (kind === "missing" && err.code === "thread_not_found") {
+							reconcile(snapshot, null);
+							continue;
+						}
+						if (kind === "fatal") {
+							log.error("responsibility observation failed", err, {
+								thread: snapshot.target.agentName,
+								attachments: [snapshot.attachmentId],
+								boundary: err.boundary,
+								kind,
+							});
+						} else {
+							log.warn("responsibility observation unreachable", {
+								thread: snapshot.target.agentName,
+								attachments: [snapshot.attachmentId],
+								boundary: err.boundary,
+								kind,
+								error: err.message,
+							});
+						}
 						// Consecutive failures declare the outage on the
 						// durable row so surfaces can say since when — the
 						// observer instance is not guaranteed to persist.

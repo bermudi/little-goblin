@@ -162,6 +162,7 @@ describe("t3 error mapping", () => {
 		const err = await makeT3(f.run).listThreads("/not-registered").catch((e: unknown) => e);
 		expect(err).toBeInstanceOf(T3Error);
 		expect((err as T3Error).code).toBe("project_not_found");
+		expect((err as T3Error).kind).toBe("missing");
 	});
 
 	test("send's thread-gone sentence maps to thread_not_found", async () => {
@@ -169,6 +170,7 @@ describe("t3 error mapping", () => {
 		const err = await makeT3(f.run).sendThread("t-1", "x").catch((e: unknown) => e);
 		expect(err).toBeInstanceOf(T3Error);
 		expect((err as T3Error).code).toBe("thread_not_found");
+		expect((err as T3Error).kind).toBe("missing");
 		expect((err as T3Error).message).toContain("t3 thread send failed (thread_not_found)");
 	});
 
@@ -184,6 +186,7 @@ describe("t3 error mapping", () => {
 		const f = fakeRunner([{ code: 1, stdout: "", stderr: long }]);
 		const err = await makeT3(f.run).listThreads("/repo").catch((e: unknown) => e);
 		expect((err as T3Error).code).toBe("exit_1");
+		expect((err as T3Error).kind).toBe("fatal");
 		const msg = (err as T3Error).message;
 		expect(msg.length).toBeLessThan(300);
 		expect(msg).not.toContain(long);
@@ -195,8 +198,17 @@ describe("t3 error mapping", () => {
 			.startThread({ project: "/r", message: "m", provider: "p", model: "m" })
 			.catch((e: unknown) => e);
 		expect(err).toBeInstanceOf(Error);
-		expect((err as Error).message).toContain("t3 thread start: stdout is not JSON");
+		expect(err).toBeInstanceOf(T3Error);
+		expect((err as T3Error).kind).toBe("fatal");
 		expect((err as Error).message).not.toContain("not json at all");
+	});
+
+	test("a rejected runner is transient", async () => {
+		const original = new Error("spawn");
+		const err = await makeT3(async () => { throw original; })
+			.listThreads("/repo").catch((e: unknown) => e);
+		expect(err).toMatchObject({ boundary: "t3", kind: "transient" });
+		expect(err).toMatchObject({ cause: original });
 	});
 
 	test("a result missing required fields fails zod, not silence", async () => {
@@ -241,10 +253,13 @@ describe("t3 logging", () => {
 			const t3 = makeT3(f.run);
 			await t3.startThread({ project: "/r", message: "m", provider: "p", model: "m" });
 			await t3.sendThread("t-1", "x").catch(() => {});
-			const calls = lines.filter((l) => l.msg === "t3 call");
-			expect(calls.map((l) => l.outcome)).toEqual(["ok", "error:thread_not_found"]);
-			expect(calls[0]).toMatchObject({ verb: "thread start", target: "/r" });
-			expect(calls[1]).toMatchObject({ verb: "thread send", target: "t-1" });
+			const calls = lines.filter((l) => l.msg === "t3 call" || l.msg === "t3 call failed");
+			expect(calls.map((l) => l.msg)).toEqual(["t3 call", "t3 call failed"]);
+			expect(calls[0]).toMatchObject({ verb: "thread start", target: "/r", outcome: "ok" });
+			expect(calls[1]).toMatchObject({
+				verb: "thread send", target: "t-1", code: "thread_not_found",
+				boundary: "t3", kind: "missing",
+			});
 		} finally {
 			setLogWriter(null);
 			setLogFile(null);

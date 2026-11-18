@@ -14,7 +14,8 @@ const ONE_PIXEL_PNG = Uint8Array.from(
 	),
 	(c) => c.charCodeAt(0),
 );
-import { DesktopError, type Desktops } from "../../desktops.ts";
+import { DesktopError, DesktopLeaseError, type Desktops } from "../../desktops.ts";
+import { BoundaryError } from "../../boundary-error.ts";
 import type { DesktopRow } from "../../desktops-store.ts";
 import type { LeaseHolder } from "../../desktops-store.ts";
 import { computerTools } from "./computer.ts";
@@ -140,7 +141,7 @@ describe("computer tools", () => {
 		const { desktops, calls } = stubDesktops({
 			claim: async () => {
 				seen.push("claim");
-				throw new DesktopError("desktop desk is controlled by operator until later");
+				throw new DesktopLeaseError("desktop desk is controlled by operator until later");
 			},
 		});
 		const tools = computerTools(deps(desktops));
@@ -149,6 +150,21 @@ describe("computer tools", () => {
 		// claim was attempted once; inspect never ran.
 		expect(seen).toEqual(["claim"]);
 		expect(calls).toHaveLength(0);
+	});
+
+	test("boundary claim errors name their kind; lease refusals keep their domain message", async () => {
+		for (const [kind, expected] of [["transient", "transient desktop error"], ["fatal", "fatal desktop error"]] as const) {
+			const { desktops } = stubDesktops({
+				claim: async () => { throw new BoundaryError("desktop", kind, "driver failed"); },
+			});
+			const out = await exec(computerTools(deps(desktops)).inspect, {}) as Record<string, unknown>;
+			expect(out.error).toContain(expected);
+		}
+		const { desktops } = stubDesktops({
+			claim: async () => { throw new DesktopLeaseError("lease held"); },
+		});
+		const out = await exec(computerTools(deps(desktops)).inspect, {}) as Record<string, unknown>;
+		expect(out.error).toBe("lease held");
 	});
 
 	test("a stale observation is reported once — the tool does not retry the act", async () => {

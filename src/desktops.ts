@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { BoundaryError, type BoundaryKind } from "./boundary-error.ts";
 import { join, posix } from "node:path";
 import { desktopsConfigSchema, imageRefSchema, type DesktopsConfig } from "./config-schema.ts";
 import { paths, ensureDir } from "./home-layout.ts";
@@ -31,14 +32,19 @@ import { makeReaper } from "./desktops-reap.ts";
 import { makeReconciler } from "./desktops-reconcile.ts";
 
 // Mapped to {error} tool results — model/operator-actionable failures.
-export class DesktopError extends Error {
-	constructor(message: string, options?: ErrorOptions) {
-		super(message, options);
+export class DesktopError extends BoundaryError {
+	constructor(message: string, options?: ErrorOptions, kind: BoundaryKind = "fatal", boundary = "desktop") {
+		super(boundary, kind, message, options);
 		this.name = "DesktopError";
 	}
 }
 
-export class DesktopLeaseError extends DesktopError {}
+export class DesktopLeaseError extends Error {
+	constructor(message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = "DesktopLeaseError";
+	}
+}
 
 const DEFAULT_CONFIG = desktopsConfigSchema.parse({});
 const NAME_RE = /^[a-z0-9][a-z0-9-]{0,30}$/;
@@ -61,14 +67,14 @@ function refuse(
 	reason: string,
 	holder?: LeaseHolder,
 	cause?: unknown,
-): DesktopError {
+): DesktopLeaseError {
 	log.warn("desktop refused", {
 		desktop,
 		op,
 		reason,
 		...(holder === undefined ? {} : { holder: holderLabel(holder) }),
 	});
-	return new DesktopError(reason, cause === undefined ? undefined : { cause });
+	return new DesktopLeaseError(reason, cause === undefined ? undefined : { cause });
 }
 
 // Key-order-canonical — the identical-action check ignores caller
@@ -215,6 +221,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			const diag = (r.stderr.trim() || r.stdout.trim()).slice(0, 300);
 			throw new DesktopError(
 				`cua-driver ${tool} failed on desktop ${name} (${r.timedOut ? "timeout" : `exit ${r.exitCode}`}): ${diag}`,
+				undefined,
+				r.timedOut ? "transient" : "fatal",
 			);
 		}
 		try {
@@ -485,6 +493,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				if (shot.timedOut || shot.exitCode !== 0) {
 					throw new DesktopError(
 						`scrot failed on desktop ${name} (${shot.timedOut ? "timeout" : `exit ${shot.exitCode}`}): ${shot.stderr.slice(0, 300)}`,
+						undefined,
+						shot.timedOut ? "transient" : "fatal",
 					);
 				}
 				const read = await podman.execBytes(ready.container, ["cat", "--", inContainer], {
@@ -515,7 +525,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					);
 				}
 				if (read.timedOut || read.exitCode !== 0 || read.stdout.byteLength === 0) {
-					throw new DesktopError(`could not read the screenshot back from desktop ${name}`);
+					throw new DesktopError(`could not read the screenshot back from desktop ${name}`, undefined, read.timedOut ? "transient" : "fatal");
 				}
 				const bytes = read.stdout;
 				// The uuid in the basename stops a same-ms generation
@@ -665,6 +675,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 						if (r.timedOut || r.exitCode !== 0) {
 							throw new DesktopError(
 								`launch ${action.app} failed on desktop ${name}: ${r.stderr.slice(0, 300)}`,
+								undefined,
+								r.timedOut ? "transient" : "fatal",
 							);
 						}
 						result = { launched: action.app };
@@ -686,6 +698,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 					throw new DesktopError(
 						`${err instanceof Error ? err.message : String(err)} — the action may have partially run on ${name}; take a fresh screenshot before retrying`,
 						{ cause: err },
+						err instanceof BoundaryError ? err.kind : "fatal",
+						err instanceof BoundaryError ? err.boundary : "desktop",
 					);
 				}
 				const effect =
@@ -877,6 +891,8 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 				if (r.timedOut || r.exitCode !== 0) {
 					throw new DesktopError(
 						`could not read ${path} from desktop ${name} (exit ${r.timedOut ? "timeout" : r.exitCode})`,
+						undefined,
+						r.timedOut ? "transient" : "fatal",
 					);
 				}
 				log.info("desktop export", {

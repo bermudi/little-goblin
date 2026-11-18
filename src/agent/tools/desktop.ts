@@ -5,9 +5,10 @@ import { z } from "zod";
 import { defineTool } from "../../tool.ts";
 import { exportBytes, readImport } from "../../box-files.ts";
 import { imageRefSchema } from "../../config-schema.ts";
-import { DesktopError, type Desktops } from "../../desktops.ts";
+import type { Desktops } from "../../desktops.ts";
 import { type DesktopRow, type LeaseHolder } from "../../desktops-store.ts";
-import { PodmanError } from "../../podman.ts";
+import { BoundaryError } from "../../boundary-error.ts";
+import { DesktopLeaseError } from "../../desktops.ts";
 
 export interface DesktopToolDeps {
 	conversation: string;
@@ -265,8 +266,9 @@ export const desktopTool = (deps: DesktopToolDeps) => {
 					}
 				}
 			} catch (err) {
-				if (err instanceof DesktopError || err instanceof PodmanError) {
-					return { error: err.message };
+				if (err instanceof DesktopLeaseError) return { error: err.message };
+				if (err instanceof BoundaryError) {
+					return { error: `${err.kind} ${err.boundary} error${err.kind === "transient" ? " (retry may succeed)" : ""}: ${err.message}` };
 				}
 				throw err;
 			}

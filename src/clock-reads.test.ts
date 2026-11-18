@@ -173,7 +173,6 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/memory/mod.ts": 3,
 	"src/memory/queue.ts": 3,
 	"src/notes.ts": 1,
-	"src/podman.ts": 6,
 	"src/program-approval.ts": 1,
 	"src/program-ops.ts": 1,
 	"src/program-proposals.ts": 4,

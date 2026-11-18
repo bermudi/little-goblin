@@ -200,6 +200,12 @@ export async function read(
 		};
 	} catch (err) {
 		if (err instanceof T3Error) {
+			log[err.kind === "fatal" ? "error" : "warn"]("delegation read unavailable", err, {
+				delegation: id,
+				thread: d.t3Thread,
+				boundary: err.boundary,
+				kind: err.kind,
+			});
 			return { kind: "unreadable", id, error: err.message };
 		}
 		return { kind: "unreadable", id, error: err instanceof Error ? err.message : String(err) };

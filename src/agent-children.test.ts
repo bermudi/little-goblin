@@ -7,6 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { COMPUTER_AGENT_TYPE, GENERAL_AGENT_TYPE } from "./agent-types.ts";
 import { startAgentChildren, type AgentChildren, type AgentChild } from "./agent-children.ts";
 import { DesktopError, type Desktops } from "./desktops.ts";
+import { BoundaryError } from "./boundary-error.ts";
 import { holderId, type DesktopRow, type LeaseHolder } from "./desktops-store.ts";
 import { openStore } from "./conversation.ts";
 import { Runtime } from "./runtime.ts";
@@ -402,6 +403,29 @@ describe("agent children engine", () => {
 		// and nothing settles again.
 		expect(r.recorded).toHaveLength(0);
 		expect(r.engine.get(child.conversationId)!.status).toBe("failed");
+	});
+
+	test("a transient desktop claim keeps the computer run alive", async () => {
+		const fake = fakeDesktops();
+		fake.desktops.claim = async () => {
+			throw new BoundaryError("podman", "transient", "daemon unavailable");
+		};
+		const r = rig({ desktops: fake.desktops });
+		const gate = gated("waiting for user");
+		r.queue.push(gate.model);
+		const { child, spawnError } = await r.engine.spawn({
+			parent: r.parent,
+			type: COMPUTER_AGENT_TYPE,
+			task: "inspect the desktop",
+			tools: ["inspect", "act"],
+			desktop: "desk",
+		});
+		expect(spawnError).toBeUndefined();
+		expect(child.status).toBe("running");
+		expect(r.engine.get(child.conversationId)!.status).toBe("running");
+		gate.release();
+		await r.engine.awaitSettlement(child.conversationId);
+		await r.runtime.shutdown();
 	});
 
 	test("ask_operator parks the child needs-input, releases the desktop, and send resumes it", async () => {

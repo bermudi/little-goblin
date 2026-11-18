@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +16,7 @@ import {
 } from "./t3.ts";
 import { prReadinessFixture } from "./test-helpers/pr-readiness.ts";
 import type { PrReadiness } from "./pr-readiness.ts";
+import { log } from "./log.ts";
 
 // The t3 adapter is faked at the T3 seam (one interface, no CLI): the
 // rig records start/send/show calls and serves scripted thread
@@ -450,6 +451,34 @@ describe("send and stop", () => {
 });
 
 describe("read", () => {
+	test("transient reads retry, missing reads are gone, and fatal reads log as errors", async () => {
+		const h = harness();
+		const d = runningRow(h);
+		const l = lifecycleOf(h);
+		const warning = spyOn(log, "warn");
+		const error = spyOn(log, "error");
+		try {
+			h.f.showFor["t-1"] = new T3Error("thread show", "exit_-1", "timeout");
+			expect(await l.read(d.id, 10)).toMatchObject({ kind: "unreadable" });
+			h.f.showFor["t-1"] = shown(threadRec({ status: "running" }), []);
+			expect((await l.read(d.id, 10)).kind).toBe("thread");
+			expect(warning).toHaveBeenCalled();
+			h.f.showFor["t-1"] = new T3Error("thread show", "exit_1", "bad query");
+			expect(await l.read(d.id, 10)).toMatchObject({ kind: "unreadable" });
+			expect(error).toHaveBeenCalledWith(
+				"delegation read unavailable",
+				expect.any(T3Error),
+				expect.objectContaining({ boundary: "t3", kind: "fatal" }),
+			);
+			h.f.showFor["t-1"] = new T3Error("thread show", "thread_not_found", "gone");
+			expect(await l.read(d.id, 10)).toMatchObject({ kind: "unreadable" });
+		} finally {
+			warning.mockRestore();
+			error.mockRestore();
+			await l.stopTicker();
+			h.store.close();
+		}
+	});
 	test("read returns the thread's messages; a gone thread is unreadable", async () => {
 		const h = harness();
 		const d = runningRow(h);

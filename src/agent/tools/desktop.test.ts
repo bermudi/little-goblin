@@ -16,7 +16,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DesktopError, type Desktops } from "../../desktops.ts";
+import { DesktopError, DesktopLeaseError, type Desktops } from "../../desktops.ts";
+import { BoundaryError } from "../../boundary-error.ts";
 import { type DesktopRow, type LeaseHolder } from "../../desktops-store.ts";
 import { desktopInputSchema, desktopTool, type DesktopToolDeps } from "./desktop.ts";
 
@@ -312,7 +313,7 @@ describe("desktop tool", () => {
 	test("pool refusals surface as errors, not throws", async () => {
 		const { tool } = rig({
 			release: async () => {
-				throw new DesktopError("desktop d1 is controlled by run #7");
+				throw new DesktopLeaseError("desktop d1 is controlled by run #7");
 			},
 		});
 		const out = (await tool.execute!({ action: "release", name: "d1" }, opts)) as Record<
@@ -320,5 +321,18 @@ describe("desktop tool", () => {
 			unknown
 		>;
 		expect(String(out.error)).toContain("controlled by run #7");
+	});
+
+	test("desktop tool exposes boundary kind and preserves lease refusal text", async () => {
+		const transient = rig({
+			release: async () => { throw new BoundaryError("podman", "transient", "daemon down"); },
+		});
+		const transientOut = await transient.tool.execute!({ action: "release", name: "d1" }, opts) as Record<string, unknown>;
+		expect(transientOut.error).toContain("transient podman error (retry may succeed)");
+		const lease = rig({
+			release: async () => { throw new DesktopLeaseError("lease held"); },
+		});
+		const leaseOut = await lease.tool.execute!({ action: "release", name: "d1" }, opts) as Record<string, unknown>;
+		expect(leaseOut.error).toBe("lease held");
 	});
 });

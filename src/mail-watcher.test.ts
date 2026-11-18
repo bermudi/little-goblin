@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { DeliveryApi } from "./tg/delivery.ts";
 import type { Message } from "./message.ts";
 import { HistoryExpiredError, type MailHit, type MailPoller } from "./mail.ts";
+import { BoundaryError } from "./boundary-error.ts";
 import { System1Error } from "./system1.ts";
 import { setLogFile, setLogWriter } from "./log.ts";
 import { startMailWatcher, makeMailNoticeRouter, type MailWatcher } from "./mail-watcher.ts";
@@ -355,6 +356,20 @@ describe("mail watcher", () => {
 		expect(h.submitted).toHaveLength(0);
 		expect(h.notices).toHaveLength(0);
 		expect(h.programs.get(p.id)!.mailHistoryId).toBe("100");
+	});
+
+	test("a transient metadata poll failure does not advance the history cursor", async () => {
+		const h = harness();
+		const p = mailProgram(h);
+		h.programs.setMailHistory(p.id, "100", 0);
+		h.pollImpl = async () => {
+			throw new BoundaryError("gws", "transient", "metadata request failed");
+		};
+		const w = start(h);
+		await w.tick();
+		expect(h.programs.get(p.id)!.mailHistoryId).toBe("100");
+		expect(h.fired).toHaveLength(0);
+		expect(h.notices).toHaveLength(1);
 	});
 
 	test("a failing check notices once per episode, then recovers silently", async () => {

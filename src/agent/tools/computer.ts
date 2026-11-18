@@ -9,10 +9,11 @@
 
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
-import { DesktopError, type Desktops } from "../../desktops.ts";
+import type { Desktops } from "../../desktops.ts";
 import type { LeaseHolder } from "../../desktops-store.ts";
 import { CUA_TOOLS, type CuaTool } from "../../desktops-cua.ts";
-import { PodmanError } from "../../podman.ts";
+import { BoundaryError } from "../../boundary-error.ts";
+import { DesktopLeaseError } from "../../desktops.ts";
 import { log } from "../../log.ts";
 import { defineTool, type Tool, type ToolOutput, type Tools } from "../../tool.ts";
 
@@ -85,9 +86,8 @@ const TOOL_DESCRIPTIONS = {
 
 // Claim-then-act (the old withLeaseRenew): the child holds its desktop
 // for the call — covering a needs-input release or an expired lease —
-// so the observation binding stays exclusive to it. DesktopError and
-// PodmanError are model/operator-actionable — they become {error}
-// results like every other goblin tool; anything else propagates.
+// so the observation binding stays exclusive to it. Boundary errors
+// become typed {error} results; programming failures still propagate.
 async function withDesktop<T>(
 	deps: ComputerToolDeps,
 	fn: () => Promise<T>,
@@ -96,8 +96,9 @@ async function withDesktop<T>(
 		await deps.desktops.claim(deps.desktop, holderOf(deps.conversation));
 		return await fn();
 	} catch (err) {
-		if (err instanceof DesktopError || err instanceof PodmanError) {
-			return { error: err.message };
+		if (err instanceof DesktopLeaseError) return { error: err.message };
+		if (err instanceof BoundaryError) {
+			return { error: `${err.kind} ${err.boundary} error${err.kind === "transient" ? " (retry may succeed)" : ""}: ${err.message}` };
 		}
 		throw err;
 	}

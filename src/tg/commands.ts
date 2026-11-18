@@ -354,7 +354,11 @@ export function handleCommand(deps: CommandDeps, conv: Conversation, text: strin
 			}
 			void (async () => {
 				try {
-					const facts = await mem.client.recall(arg, { maxTokens: 512, budget: "low" });
+					const facts = await mem.client.recall(arg, {
+						maxTokens: 512,
+						budget: "low",
+						timeoutMs: mem.config.searchTimeoutMs,
+					});
 					if (facts.length === 0) {
 						reply(deps, conv, "no matching memories found");
 						return;

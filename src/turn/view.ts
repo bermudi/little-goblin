@@ -30,6 +30,7 @@ export interface ViewContext {
 	 */
 	modelRef: string;
 	tools: Tools;
+	sdkTools?: ToolSet;
 	modalities: Set<string> | undefined;
 	carries: (mediaType: string, position: MediaPosition) => boolean;
 	/**
@@ -215,7 +216,7 @@ export async function buildModelView(
 		assertAuthority(): void;
 	},
 ): Promise<ModelMessage[]> {
-	const sdkTools = toToolSet(ctx.tools);
+	const sdkTools = ctx.sdkTools ?? toToolSet(ctx.tools);
 	const view = withMemoryBlocks(
 		options.entries,
 		options.prior,
@@ -381,7 +382,7 @@ function injectedBodies(ctx: ViewContext, invocations: SkillInvocation[]): Model
 export async function convertSteeredMessage(
 	ctx: ViewContext,
 	message: Message,
-	sdkTools: ToolSet = toToolSet(ctx.tools),
+	sdkTools: ToolSet = ctx.sdkTools ?? toToolSet(ctx.tools),
 ): Promise<ModelMessage[]> {
 	const materialized = await materializeAttachments(
 		[message],

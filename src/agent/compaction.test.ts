@@ -565,6 +565,57 @@ describe("runCompaction prefix summary", () => {
 			setLogFile(null);
 		}
 	});
+
+	test("F — split checkpoint replays the prefix request and appends the exact checkpoint instruction", async () => {
+		const splitEventParts: Message["parts"] = [
+			{ type: "step-start" },
+			{ type: "text", text: "x".repeat(40_000) },
+			{ type: "step-start" },
+			{ type: "text", text: "y".repeat(10_000) },
+			{ type: "step-start" },
+			{ type: "text", text: "z".repeat(4_000) },
+		];
+		const { store } = fakeStore([
+			ev(1, "user", "research the deploy"),
+			{ seq: 2, anchorSeq: 1, message: { id: "m2", role: "assistant", parts: splitEventParts } },
+		]);
+		const calls: { turns: readonly { role: "user" | "assistant"; text: string }[]; cut?: { seq: number; part: number } }[] = [];
+		const instruction =
+			"The latest user request above and the work after it are the beginning of one long turn that compaction split; the turn's later messages follow this checkpoint verbatim and do not need to be reconstructed. Earlier conversation is summarized separately.\n\n" +
+			"Create a concise checkpoint of that request and the progress shown since it, in the operator's dominant language. This checkpoint will be placed before the later messages so the turn can continue with the necessary context.\n\n" +
+			"## Original Request\n[What did the user ask for?]\n\n" +
+			"## Progress So Far\n- [Key decisions and work completed in these messages]\n\n" +
+			"## Context Needed to Continue\n- [Information from these messages needed to understand the later work]\n\n" +
+			"Only summarize information explicitly present above. Do not infer or recreate later messages.";
+		const outcome = await runCompaction(
+			"dm:1",
+			store,
+			["m"],
+			async (_system, prompt) => foldSummary("history summary", prompt),
+			{
+				tailTokenBudget: 5_000,
+				inputTokenBudget: 32_000,
+				prefix: async () => ({
+					modelRef: "m",
+					call: async (turns, _signal, cut) => {
+						calls.push({ turns, ...(cut !== undefined ? { cut } : {}) });
+						return calls.length === 1
+							? validPrefixSummary("history prefix", "research the deploy")
+							: "split checkpoint";
+					},
+				}),
+			},
+			signal(),
+		);
+		expect(outcome.kind).toBe("compacted");
+		expect(calls).toHaveLength(2);
+		expect(calls[0]!.cut).toBeUndefined();
+		expect(calls[1]!.cut).toEqual({ seq: 2, part: 2 });
+		expect(calls[1]!.turns).toEqual([{ role: "user", text: instruction }]);
+		if (outcome.kind === "compacted") {
+			expect(outcome.summary).toContain("split checkpoint");
+		}
+	});
 });
 
 describe("runCompaction", () => {

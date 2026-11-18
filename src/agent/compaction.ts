@@ -388,7 +388,11 @@ export interface PrefixSummarizer {
 	/** The ref whose cached prefix this replays; only that candidate runs prefix mode. */
 	modelRef: string;
 	/** One call: the conversation's next-turn request with `turns` appended in order. Returns the reply text. */
-	call(turns: readonly { role: "user" | "assistant"; text: string }[], signal: AbortSignal): Promise<string>;
+	call(
+		turns: readonly { role: "user" | "assistant"; text: string }[],
+		signal: AbortSignal,
+		cut?: { seq: number; part: number },
+	): Promise<string>;
 }
 
 export function prefixInstruction(input: { keptExcerpt: string | null; hasPreviousSummary: boolean; focus?: string }): string {
@@ -460,8 +464,9 @@ async function attemptPrefixSummary(
 	signal: AbortSignal,
 	callTimeoutMs: number,
 	chunk: number,
+	cut?: { seq: number; part: number },
 ): Promise<string> {
-	return attemptTimedCall((callSignal) => summarizer.call(turns, callSignal), signal, callTimeoutMs, chunk);
+	return attemptTimedCall((callSignal) => summarizer.call(turns, callSignal, cut), signal, callTimeoutMs, chunk);
 }
 
 export type Summarize = (
@@ -932,23 +937,59 @@ export async function runCompaction(
 	if (split !== null && prefixMessage !== null) {
 		opts.assertAuthority?.();
 		const triggerEvent = detail[boundaryIndex]!;
-		const prefixPrompt =
-			`${serializeSpan([
-				triggerEvent,
-				{ seq: split.seq, anchorSeq: boundarySeq, message: prefixMessage },
-			])}\n\n---\n\n` +
-			"The messages above are the beginning of one long turn that compaction split; the turn's later messages follow this summary verbatim and do not need to be reconstructed.\n\n" +
+		const checkpointBody =
 			"Create a concise checkpoint of the user's request and the progress shown above, in the operator's dominant language. This checkpoint will be placed before the later messages so the turn can continue with the necessary context.\n\n" +
 			"## Original Request\n[What did the user ask for?]\n\n" +
 			"## Progress So Far\n- [Key decisions and work completed in these messages]\n\n" +
 			"## Context Needed to Continue\n- [Information from these messages needed to understand the later work]\n\n" +
 			"Only summarize information explicitly present above. Do not infer or recreate later messages.";
-		const prefixOut = await call(prefixPrompt, chunks + 1);
+		const prefixInstruction =
+			"The latest user request above and the work after it are the beginning of one long turn that compaction split; the turn's later messages follow this checkpoint verbatim and do not need to be reconstructed. Earlier conversation is summarized separately.\n\n" +
+			checkpointBody
+				.replace("the user's request and the progress shown above", "that request and the progress shown since it");
+		const textPrompt =
+			`${serializeSpan([
+				triggerEvent,
+				{ seq: split.seq, anchorSeq: boundarySeq, message: prefixMessage },
+			])}\n\n---\n\n` +
+			"The messages above are the beginning of one long turn that compaction split; the turn's later messages follow this summary verbatim and do not need to be reconstructed.\n\n" +
+			checkpointBody;
+		let prefixOut: string;
+		let mode: "prefix" | "text" = prefixSucceeded ? "prefix" : "text";
+		if (prefixSucceeded && prefixSummarizer !== null) {
+			try {
+				prefixOut = (
+					await attemptPrefixSummary(
+						prefixSummarizer,
+						[{ role: "user", text: prefixInstruction }],
+						signal,
+						callTimeoutMs,
+						chunks + 1,
+						{ seq: split.seq, part: split.part },
+					)
+				).trim();
+				signal.throwIfAborted();
+				opts.assertAuthority?.();
+				if (prefixOut === "") throw new Error("summarizer returned an empty split checkpoint");
+			} catch (err) {
+				if (signal.aborted) throw err;
+				opts.assertAuthority?.();
+				log.warn("compaction split prefix summary failed — falling back to text mode", {
+					conversation: id,
+					error: err instanceof Error ? err.message : String(err),
+				});
+				mode = "text";
+				prefixOut = await call(textPrompt, chunks + 1);
+			}
+		} else {
+			prefixOut = await call(textPrompt, chunks + 1);
+		}
 		log.info("compaction turn-prefix summarized", {
 			conversation: id,
 			seq: split.seq,
 			part: split.part,
 			summaryChars: prefixOut.length,
+			mode,
 		});
 		summary = `${summary}\n\n---\n\n**Turn Context (split turn):**\n\n${prefixOut}`;
 	}

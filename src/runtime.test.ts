@@ -4081,6 +4081,36 @@ describe("loop landings", () => {
 });
 
 describe("prefix compaction request identity", () => {
+	test("identical tool definitions are persisted once across two turns", async () => {
+		const home = useHome("goblin-prefix-tools-write-");
+		const logPath = join(home, "state/goblin.log");
+		mkdirSync(join(home, "state"), { recursive: true });
+		const tools: Tools = {
+			probe: defineTool({
+				description: "A stable no-op probe.",
+				input: z.object({}),
+				execute: async () => "ok",
+			}),
+		};
+		const r = rig({ model: fakeModel(["ok", "ok"], 1), tools });
+		setLogFile(logPath);
+		try {
+			expect(await submit(r, "first").done).toEqual({ kind: "completed" });
+			await drain(r);
+			expect(await submit(r, "second").done).toEqual({ kind: "completed" });
+			await drain(r);
+			const persistedLines = readFileSync(logPath, "utf8")
+				.split("\n")
+				.filter((line) => line.includes('"msg":"last-turn tools persisted"'));
+			expect(persistedLines).toHaveLength(1);
+			expect(r.store.lastTurnTools(r.conv.id)?.epoch).toBe(r.conv.epoch);
+		} finally {
+			setLogFile(null);
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
 	test("F — the real step builder and runtime replay turn two's request prefix without executing tools", async () => {
 		_resetModelsDevForTest();
 		const home = useHome("goblin-prefix-runtime-");
@@ -4136,6 +4166,8 @@ describe("prefix compaction request identity", () => {
 			const content =
 				providerCalls === 1
 					? "first assistant reply ".repeat(6_500)
+					: providerCalls === 9
+						? "epoch mismatch seed reply ".repeat(6_500)
 					: providerCalls === 5
 						? "restart prior assistant reply ".repeat(1_000)
 						: providerCalls === 6
@@ -4259,6 +4291,7 @@ describe("prefix compaction request identity", () => {
 					executions++;
 					return "executed";
 				},
+				toModelOutput: ({ output }) => ({ type: "text", value: output }),
 			}),
 		};
 		const runtime = new Runtime({
@@ -4382,6 +4415,72 @@ describe("prefix compaction request identity", () => {
 				setLogFile(null);
 			}
 			expect(providerCalls).toBe(8);
+			const hydratedLog = readFileSync(join(home, "state/goblin.log"), "utf8");
+			expect(hydratedLog).toContain('"msg":"last-turn tools hydrated"');
+			expect(hydratedLog).toContain('"mode":"prefix","reason":null');
+			const restartTurn = captured[5]!;
+			const restartSummary = captured[7]!;
+			expect(restartSummary.tools).toEqual(restartTurn.tools);
+			expect(restartSummary.reasoning_effort).toEqual(restartTurn.reasoning_effort);
+			const restartTurnMessages = restartTurn.messages;
+			const restartSummaryMessages = restartSummary.messages;
+			expect(Array.isArray(restartTurnMessages)).toBe(true);
+			expect(Array.isArray(restartSummaryMessages)).toBe(true);
+			if (!Array.isArray(restartTurnMessages) || !Array.isArray(restartSummaryMessages)) {
+				throw new Error("fake provider captured malformed restart messages");
+			}
+			const persistedRestartTurnMessages = restartTurnMessages.filter(
+				(message) =>
+					!(
+						typeof message === "object" &&
+						message !== null &&
+						(message as { role?: unknown }).role === "user" &&
+						typeof (message as { content?: unknown }).content === "string" &&
+						/^\[context: .*]$/.test((message as { content: string }).content)
+					),
+			);
+			expect(restartSummaryMessages.slice(0, persistedRestartTurnMessages.length)).toEqual(
+				persistedRestartTurnMessages,
+			);
+
+			const staleConv = captureConversationSettings(
+				store,
+				store.resolve({ kind: "dm", chatId: 3 }, "/w"),
+				cfg,
+			);
+			const staleSeed = new RecordingSink();
+			runtime.submit(staleConv, userMessage([{ type: "text", text: "second request" }]), staleSeed);
+			expect(await staleSeed.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(staleConv.id), "seed epoch mismatch conversation");
+			const staleFollowup = new RecordingSink();
+			runtime.submit(staleConv, userMessage([{ type: "text", text: "restart prior" }]), staleFollowup);
+			expect(await staleFollowup.done).toEqual({ kind: "completed" });
+			await waitUntil(() => !runtime.busy(staleConv.id), "seed epoch mismatch follow-up");
+			const storedTools = store.lastTurnTools(staleConv.id);
+			expect(storedTools).not.toBeNull();
+			const previousEpoch = staleConv.epoch;
+			const currentEpoch = store.bumpEpoch(staleConv.id);
+			expect(currentEpoch).toBe(previousEpoch + 1);
+			const staleCurrent = captureConversationSettings(store, store.get(staleConv.id)!, cfg);
+			const epochRuntime = new Runtime({
+				engines: [aiSdkEngine],
+				store,
+				buildStep,
+				compaction,
+				makeTools: (_target, _voice, _recording, deliverFile) => ({
+					...tools,
+					...(deliverFile !== undefined ? { send_file: sendFileTool("/w", deliverFile) } : {}),
+				}),
+				captureConversation: (target) => captureConversationSettings(store, target, cfg),
+			});
+			setLogFile(join(home, "state/goblin.log"));
+			try {
+				const staleFold = await epochRuntime.compact(staleCurrent);
+				expect(staleFold.kind).toBe("compacted");
+			} finally {
+				setLogFile(null);
+				await epochRuntime.shutdown();
+			}
 			expect(readFileSync(join(home, "state/goblin.log"), "utf8")).toContain(
 				'"mode":"text","reason":"no-prefix"',
 			);
@@ -4391,6 +4490,135 @@ describe("prefix compaction request identity", () => {
 			store.close();
 			globalThis.fetch = originalFetch;
 			_resetModelsDevForTest();
+		}
+	});
+
+	test("a function description stays in memory but cannot be persisted for restart", async () => {
+		const home = useHome("goblin-prefix-unpersistable-");
+		const logPath = join(home, "state/goblin.log");
+		mkdirSync(join(home, "state"), { recursive: true });
+		const store = openStore(tmpDb("goblin-prefix-unpersistable-"));
+		const unpersistable: Tools = {
+			probe: {
+				description: () => "A dynamic description.",
+				input: z.object({}),
+				execute: () => "unused",
+			} as unknown as Tools["probe"],
+		};
+		const turnModel = fakeModel(["ok"], 1);
+		const prefixModel = fakeModel(["checkpoint"], 1);
+		const compaction = {
+			modelRef: () => "m",
+			contextWindow: () => 100_000,
+			summarize: async (_conv: Conv, _system: string, prompt: string) =>
+				foldSummary("folded", prompt),
+			prefixStep: async () => ({
+				modelRef: "m",
+				model: prefixModel,
+				system: "frozen",
+				inputModalities: undefined,
+				carries: () => false,
+				keepProviderExecuted: false,
+			}),
+		};
+		const first = rig({
+			store,
+			addr: { kind: "dm", chatId: 75 },
+			model: turnModel,
+			tools: unpersistable,
+			deps: { compaction },
+		});
+		seedBigExchanges(store, first.conv.id, 3, 50_000);
+		const actualConv = first.conv;
+		setLogFile(logPath);
+		try {
+			const sink = submit(first, "request");
+			expect(await sink.done).toEqual({ kind: "completed" });
+			const second = rig({
+				store,
+				addr: { kind: "dm", chatId: 75 },
+				model: turnModel,
+				tools: unpersistable,
+				deps: { compaction },
+			});
+			const outcome = await second.runtime.compact(actualConv);
+			expect(outcome.kind).toBe("compacted");
+			await second.runtime.shutdown();
+		} finally {
+			setLogFile(null);
+		}
+		const logText = readFileSync(logPath, "utf8");
+		expect(logText).toContain('"msg":"last-turn tools not persistable"');
+		expect(logText).toContain('"tool":"probe"');
+		expect(logText).toContain('"mode":"text","reason":"no-prefix"');
+		expect(store.lastTurnTools(actualConv.id)).toBeNull();
+		await first.runtime.shutdown();
+		store.close();
+	});
+
+	test("a hydrated tool with toModelOutput falls back only when its result is in history", async () => {
+		const home = useHome("goblin-prefix-hydrated-output-");
+		const logPath = join(home, "state/goblin.log");
+		mkdirSync(join(home, "state"), { recursive: true });
+		const store = openStore(tmpDb("goblin-prefix-hydrated-output-"));
+		const outputTool: Tools["probe"] = defineTool({
+			description: "A tool whose historical result uses a custom output.",
+			input: z.object({}),
+			execute: () => "tool-result-body",
+			toModelOutput: ({ output }) => ({ type: "text", value: output }),
+		});
+		const tools: Tools = { probe: outputTool };
+		const { model } = scriptedEdge([
+			[toolCallPart("output-tool-call", "probe", "{}"), finishPart("tool-calls")],
+			textParts("turn completed"),
+		]);
+		const prefixModel = fakeModel(["checkpoint"], 1);
+		const compaction = {
+			modelRef: () => "m",
+			contextWindow: () => 100_000,
+			summarize: async (_conv: Conv, _system: string, prompt: string) =>
+				foldSummary("folded", prompt),
+			prefixStep: async () => ({
+				modelRef: "m",
+				model: prefixModel,
+				system: "frozen",
+				inputModalities: undefined,
+				carries: () => false,
+				keepProviderExecuted: false,
+			}),
+		};
+		const first = rig({
+			store,
+			addr: { kind: "dm", chatId: 76 },
+			model,
+			tools,
+			deps: { compaction },
+		});
+		const conv = first.conv;
+		setLogFile(logPath);
+		let second: Rig | null = null;
+		try {
+			expect(await submit(first, "call the tool").done).toEqual({ kind: "completed" });
+			await drain(first);
+			seedBigExchanges(store, conv.id, 3, 50_000);
+			second = rig({
+				store,
+				addr: { kind: "dm", chatId: 76 },
+				model: fakeModel(["unused"], 1),
+				tools,
+				deps: { compaction },
+			});
+			const outcome = await second.runtime.compact(conv);
+			expect(outcome.kind).toBe("compacted");
+			const logText = readFileSync(logPath, "utf8");
+			expect(logText).toContain("hydrated tool probe needs toModelOutput");
+			expect(logText).toContain('"mode":"text","reason":"prefix-failed"');
+			expect(logText).toContain('"msg":"compaction prefix summary failed — falling back to text mode"');
+		} finally {
+			setLogFile(null);
+			if (second !== null) await second.runtime.shutdown();
+			await first.runtime.shutdown();
+			store.close();
 		}
 	});
 });

@@ -162,6 +162,8 @@ export interface ConversationStore extends ConversationReads {
 	// fence on it. A recreated address must advance past its deleted row.
 	bumpEpoch(id: string, previousEpoch?: number): number;
 	savePromptSnapshot(id: string, text: string, sources: string[]): void;
+	saveLastTurnTools(id: string, epoch: number, toolsJson: string | null): void;
+	lastTurnTools(id: string): { epoch: number; tools: unknown[]; json: string } | null;
 	// Compaction busts the prompt prefix anyway — the snapshot rebuilds
 	// from current files on the next turn.
 	clearPromptSnapshot(id: string): void;
@@ -426,6 +428,38 @@ export function openStore(dbPath: string): ConversationStore {
 				"INSERT INTO prompt_snapshots (conversation_id, text, sources, built_at) VALUES (?, ?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET text = excluded.text, sources = excluded.sources, built_at = excluded.built_at",
 				[id, text, JSON.stringify(sources), new Date().toISOString()],
 			);
+		},
+
+		saveLastTurnTools(id, epoch, toolsJson) {
+			if (toolsJson === null) {
+				db.run("DELETE FROM last_turn_tools WHERE conversation_id = ?", [id]);
+				return;
+			}
+			db.run(
+				"INSERT INTO last_turn_tools (conversation_id, epoch, tools_json) VALUES (?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET epoch = excluded.epoch, tools_json = excluded.tools_json",
+				[id, epoch, toolsJson],
+			);
+		},
+
+		lastTurnTools(id) {
+			const row = db
+				.query<{ epoch: number; tools_json: string }, [string]>(
+					"SELECT epoch, tools_json FROM last_turn_tools WHERE conversation_id = ?",
+				)
+				.get(id);
+			if (row === null) return null;
+			const parsedRow = z.object({ epoch: z.number().int().nonnegative(), tools_json: z.string() }).parse(row);
+			let toolsValue: unknown;
+			try {
+				toolsValue = JSON.parse(parsedRow.tools_json) as unknown;
+			} catch (err) {
+				throw new Error(`corrupt last-turn tools JSON for ${id}: ${String(err)}`);
+			}
+			return {
+				epoch: parsedRow.epoch,
+				tools: z.array(z.record(z.string(), z.unknown())).parse(toolsValue),
+				json: parsedRow.tools_json,
+			};
 		},
 
 		clearPromptSnapshot(id) {

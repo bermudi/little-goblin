@@ -4,8 +4,8 @@ import { REFLECTION_LIMITS } from "../../memory/policy.ts";
 import { type MemoryReflectDeps, memoryReflectTool } from "./memory-reflect.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
-afterEach(() => {
-	for (const server of servers.splice(0)) server.stop(true);
+afterEach(async () => {
+	for (const server of servers.splice(0)) await server.stop(true);
 });
 function served(handler: (request: Request) => Response | Promise<Response>): HindsightClient {
 	const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: handler });

@@ -267,7 +267,10 @@ describe("chatgpt device login", () => {
 						expect(signal?.aborted).toBe(false);
 						expect(login[action]().state).toBe("signed-out");
 						expect(signal?.aborted).toBe(true);
-						login.start();
+						let replacementError: unknown;
+						void login.start().catch((err: unknown) => {
+							replacementError = err;
+						});
 						await waitUntil(() => usercodes === 2, "replacement request");
 						if (boundary === "fetch") {
 							if (outcome === "error") response.reject(new Error("late network failure"));
@@ -280,6 +283,7 @@ describe("chatgpt device login", () => {
 						}
 						await started;
 						await flush();
+						expect(replacementError).toBeUndefined();
 						expect(login.status()).toMatchObject({ state: "pending", pending: null, error: null });
 						expect(existsSync(paths.codexAuth())).toBe(false);
 						expect(signedIn).toBe(0);

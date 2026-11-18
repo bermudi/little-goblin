@@ -341,25 +341,25 @@ describe("ContextGauge", () => {
 		const btn = container.querySelector(".ctx-btn") as HTMLButtonElement;
 		const pop = () => container.querySelector(".ctx-pop");
 
-		act(() => btn.click());
+		await act(() => btn.click());
 		expect(pop()).not.toBeNull();
 
 		// A press on the gauge itself is not an outside press.
-		act(() =>
+		await act(() =>
 			btn.dispatchEvent(new win.Event("pointerdown", { bubbles: true }) as unknown as Event),
 		);
 		expect(pop()).not.toBeNull();
 
-		act(() =>
+		await act(() =>
 			document.body.dispatchEvent(
 				new win.Event("pointerdown", { bubbles: true }) as unknown as Event,
 			),
 		);
 		expect(pop()).toBeNull();
 
-		act(() => btn.click());
+		await act(() => btn.click());
 		expect(pop()).not.toBeNull();
-		act(() =>
+		await act(() =>
 			document.dispatchEvent(
 				new win.KeyboardEvent("keydown", { key: "Escape", bubbles: true }) as unknown as Event,
 			),
@@ -960,4 +960,3 @@ describe("ContextGauge", () => {
 		});
 	}
 });
-

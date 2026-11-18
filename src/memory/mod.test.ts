@@ -755,7 +755,7 @@ describe("worker timer", () => {
 			expect(settled?.state).toBe("submitted");
 			await w.stop();
 		} finally {
-			server.stop();
+			await server.stop();
 		}
 	});
 
@@ -806,7 +806,7 @@ describe("worker timer", () => {
 			expect(submitted[0]).not.toBe(submitted[1]);
 			await w.stop();
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 		}
 	});
 
@@ -857,7 +857,7 @@ describe("worker timer", () => {
 			await w.stop();
 		} finally {
 			(log as { error: unknown }).error = original;
-			server.stop(true);
+			await server.stop(true);
 		}
 	});
 
@@ -901,7 +901,7 @@ describe("worker timer", () => {
 			for (const id of ids) expect(queue.get(id)?.state).toBe("pending");
 			expect(queue.get(ids[0]!)?.attempts).toBe(0);
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 		}
 	});
 
@@ -939,7 +939,7 @@ describe("worker timer", () => {
 			expect(seen).toBeLessThanOrEqual(2);
 			await w.stop();
 		} finally {
-			server.stop(true);
+			await server.stop(true);
 		}
 	});
 });

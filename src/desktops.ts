@@ -163,7 +163,7 @@ export function makeDesktops(deps: DesktopsDeps): Desktops {
 			() => undefined,
 			() => undefined,
 		);
-		tail.finally(() => {
+		void tail.finally(() => {
 			if (lanes.get(name) === tail) lanes.delete(name);
 		});
 		lanes.set(name, tail);

@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import { HindsightClient, HindsightError, type MemoryDocument } from "./hindsight.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
-afterEach(() => {
-	for (const server of servers.splice(0)) server.stop(true);
+afterEach(async () => {
+	for (const server of servers.splice(0)) await server.stop(true);
 });
 
 function fake(handler: (request: Request) => Response | Promise<Response>): string {

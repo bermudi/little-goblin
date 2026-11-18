@@ -21,8 +21,8 @@ beforeEach(() => {
 	home = mkdtempSync(join(tmpdir(), "goblin-web-"));
 	process.env.GOBLIN_HOME = home;
 });
-afterEach(() => {
-	for (const s of servers) s.stop(true);
+afterEach(async () => {
+	for (const s of servers) await s.stop(true);
 	servers = [];
 	setLogFile(null);
 	delete process.env.GOBLIN_HOME;

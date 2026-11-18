@@ -15,8 +15,8 @@ import {
 } from "./web.ts";
 
 let servers: ReturnType<typeof Bun.serve>[] = [];
-afterEach(() => {
-	for (const s of servers) s.stop(true);
+afterEach(async () => {
+	for (const s of servers) await s.stop(true);
 	servers = [];
 });
 

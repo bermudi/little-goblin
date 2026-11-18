@@ -4,6 +4,7 @@
 	"categories": { "correctness": "off" },
 	"rules": {
 		"typescript/no-explicit-any": "error",
+		"typescript/no-floating-promises": "error",
 		"no-console": "error",
 		"no-empty": "error"
 	},
@@ -11,7 +12,10 @@
 		{
 			"files": ["app/src/**"],
 			"plugins": ["typescript", "react"],
-			"rules": { "react/rules-of-hooks": "error" }
+			"rules": {
+				"react/rules-of-hooks": "error",
+				"react/exhaustive-deps": "error"
+			}
 		},
 		{
 			"files": ["app/**", "scripts/**", "**/*.test.ts", "**/*.test.tsx", "src/testkit.ts", "src/test-helpers/**"],

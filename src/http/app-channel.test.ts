@@ -668,8 +668,8 @@ describe("app operator surface", () => {
 						.status,
 				).toBe(503);
 			} finally {
-				http.stop();
-				upstream.stop();
+				await http.stop();
+				await upstream.stop();
 			}
 		});
 	}

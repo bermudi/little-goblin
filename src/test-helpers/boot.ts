@@ -94,7 +94,9 @@ export function fakeTelegram(opts: FakeTelegramOpts): FakeTelegram {
 		stop: () => {
 			getMeGate.resolve();
 			heldGate.resolve();
-			server.stop();
+			void server.stop().catch((err: unknown) =>
+				console.error("fake Telegram server stop failed", err),
+			);
 		},
 	};
 }

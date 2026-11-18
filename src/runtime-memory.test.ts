@@ -22,8 +22,8 @@ import {
 import { deferred, fakeModel, RecordingSink, tmpDb, useHome } from "./testkit.ts";
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
-afterEach(() => {
-	for (const s of servers.splice(0)) s.stop(true);
+afterEach(async () => {
+	for (const s of servers.splice(0)) await s.stop(true);
 });
 
 const memConfig = memoryConfigSchema.parse({

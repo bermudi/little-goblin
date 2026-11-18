@@ -408,7 +408,7 @@ export function makeSandboxes(deps: SandboxesDeps): Sandboxes {
 			() => undefined,
 			() => undefined,
 		);
-		tail.finally(() => {
+		void tail.finally(() => {
 			if (lanes.get(conv) === tail) lanes.delete(conv);
 		});
 		lanes.set(conv, tail);

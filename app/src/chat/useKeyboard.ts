@@ -2,7 +2,7 @@
 // thread view's stealFocus — focus at the moments the next keystroke
 // is a reply, never against a surface typing for itself.
 
-import { useEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useRef, type RefObject } from "react";
 import { usePhoneWidth } from "../usePhoneWidth.ts";
 
 export function useKeyboard({
@@ -26,8 +26,9 @@ export function useKeyboard({
 	pickersOpen: boolean;
 }) {
 	useEffect(() => {
-		if ((focusSignal ?? 0) > 0) textareaRef.current?.focus();
-	}, [focusSignal]);
+		const textarea = textareaRef.current;
+		if ((focusSignal ?? 0) > 0) textarea?.focus();
+	}, [focusSignal, textareaRef]);
 
 	// Focus stealing (`stealFocus`, the thread view): on mount, at every
 	// busy → idle settle, and when the window comes back to the
@@ -47,7 +48,7 @@ export function useKeyboard({
 	const stealGuard = useRef({ pickers: false });
 	stealGuard.current.pickers = pickersOpen;
 	const phone = usePhoneWidth();
-	const claimFocus = () => {
+	const claimFocus = useCallback(() => {
 		// activeElement is an HTMLElement in practice; the cast only
 		// reaches isContentEditable, which Element lacks.
 		const el = document.activeElement as HTMLElement | null;
@@ -57,15 +58,15 @@ export function useKeyboard({
 		if (document.querySelector(".composer-pick") !== null) return;
 		if (document.querySelector('[role="dialog"]') !== null) return;
 		textareaRef.current?.focus();
-	};
+	}, [textareaRef]);
 	useEffect(() => {
 		if (!stealFocus || phone || busy) return;
 		claimFocus();
-	}, [stealFocus, phone, busy]);
+	}, [stealFocus, phone, busy, claimFocus]);
 	useEffect(() => {
 		if (!stealFocus || phone) return;
 		const onWinFocus = () => claimFocus();
 		window.addEventListener("focus", onWinFocus);
 		return () => window.removeEventListener("focus", onWinFocus);
-	}, [stealFocus, phone]);
+	}, [stealFocus, phone, claimFocus]);
 }

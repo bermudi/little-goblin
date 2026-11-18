@@ -285,6 +285,8 @@ export function Composer({
 	const { notePickerOpen, setNotePickerOpen, skillPickerOpen, setSkillPickerOpen, notePickRef, noteBtnRef, pickNote, stageSkill } =
 		useSkillNoteStaging({ setStagedNotes, setStagedSkills });
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const latestOnDraftRestored = useRef(onDraftRestored);
+	latestOnDraftRestored.current = onDraftRestored;
 	useEffect(() => {
 		if (quote == null || quote.n === 0) return;
 		editedAfterSend.current = true;
@@ -296,7 +298,7 @@ export function Composer({
 			// end on the next frame.
 			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
 		}
-	}, [quote]);
+	}, [quote, setDraft, editedAfterSend, textareaRef]);
 	// The parent scopes this payload to its originating composer. Never
 	// replace text the operator wrote after the cancelled send.
 	useEffect(() => {
@@ -351,13 +353,21 @@ export function Composer({
 					if (!merged.some((e) => skillRefEquals(e.ref, s.ref))) merged.push(s);
 				return merged;
 			});
-		onDraftRestored?.();
+		latestOnDraftRestored.current?.();
 		const ta = textareaRef.current;
 		if (ta !== null) {
 			ta.focus();
 			requestAnimationFrame(() => ta.setSelectionRange(ta.value.length, ta.value.length));
 		}
-	}, [draftRestore]);
+	}, [
+		draftRestore,
+		editedAfterSend,
+		setDraft,
+		setStaged,
+		setStagedNotes,
+		setStagedSkills,
+		textareaRef,
+	]);
 	const { fileInput, micError, micSupported, recording, recSec, startRecording, stopRecording, pickFile } =
 		useAttachments({ token, busy, onSend, setStaged });
 	useKeyboard({

@@ -286,9 +286,6 @@ export function SettingsView({
 	}, [token]);
 	useEffect(() => {
 		void refreshStatus();
-		return () => {
-			statusSeq.current++;
-		};
 	}, [refreshStatus, reloadTick]);
 
 	// Thinking-level capability lookups — kind/base/model from the
@@ -321,7 +318,7 @@ export function SettingsView({
 		}, 300);
 		return () => clearTimeout(t);
 		// provsSig is the provs projection this effect actually keys on.
-	}, [draft.model, draft.telegramModel, provsSig, token, kinds]);
+	}, [draft.model, draft.telegramModel, provsSig, provs, token, kinds]);
 
 	const renameProvider = (id: number, v: string): string | null => {
 		if (v === "") return "Every provider needs a name.";
@@ -512,6 +509,8 @@ export function SettingsView({
 	// A failed write isn't retried on the identical state — the next
 	// edit re-arms.
 	const attempted = useRef<string | null>(null);
+	const latestSave = useRef(save);
+	latestSave.current = save;
 	useEffect(() => {
 		if (!dirty || namePending || invalidReason !== null || saving) return;
 		const sig = serialize(draft, provs);
@@ -519,7 +518,7 @@ export function SettingsView({
 			return;
 		const t = setTimeout(() => {
 			attempted.current = sig;
-			void save();
+			void latestSave.current();
 		}, 800);
 		return () => clearTimeout(t);
 	}, [dirty, namePending, invalidReason, saving, draft, provs]);

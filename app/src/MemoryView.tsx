@@ -329,7 +329,6 @@ export function MemoryView({
 		const t = setTimeout(() => loadSaves(0, filter, false, seq), 250);
 		return () => {
 			clearTimeout(t);
-			++listSeq.current;
 		};
 	}, [q, token]);
 	const canAppend =

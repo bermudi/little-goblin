@@ -81,7 +81,11 @@ export class CoalescingBuffer<T> {
 			waitedMs: Date.now() - bucket.firstAt,
 		});
 		clearTimeout(bucket.timer);
-		this.fire(key);
+		const flush = this.fire(key);
+		if (typeof flush !== "boolean")
+			void flush.catch((err: unknown) =>
+				log.error("buffer max-wait flush failed", err, { key }),
+			);
 	}
 
 	private fire(key: string): boolean | Promise<boolean> {
@@ -112,8 +116,14 @@ export class CoalescingBuffer<T> {
 		this.inflight.set(key, p);
 		void p.finally(() => {
 			this.inflight.delete(key);
-			if (this.deferred.delete(key)) this.fire(key);
-		});
+			if (this.deferred.delete(key)) {
+				const next = this.fire(key);
+				if (typeof next !== "boolean")
+					void next.catch((err: unknown) =>
+						log.error("deferred buffer drain failed", err, { key }),
+					);
+			}
+		}).catch((err: unknown) => log.error("buffer drain cleanup failed", err, { key }));
 		return p;
 	}
 

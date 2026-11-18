@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { defineTool } from "../tool.ts";
-import { toToolSet } from "./ai-sdk-tools.ts";
+import { ToolExecuteError, toToolSet } from "./ai-sdk-tools.ts";
 
 describe("toToolSet", () => {
 	test("preserves function tool names, descriptions, order, and execution context", async () => {
@@ -99,5 +99,15 @@ describe("toToolSet", () => {
 			id: "codex.web_search",
 			args: { externalWebAccess: true },
 		});
+	});
+});
+
+describe("ToolExecuteError", () => {
+	test("keeps the tool message and original cause", () => {
+		const cause = new Error("fetch failed — parallel: timed out");
+		const error = new ToolExecuteError(cause.message, cause);
+
+		expect(error.message).toBe("fetch failed — parallel: timed out");
+		expect(error.cause).toBe(cause);
 	});
 });

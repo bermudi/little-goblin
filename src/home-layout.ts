@@ -49,6 +49,7 @@ export const paths = {
 	// /learn, curator). Lazy like the catalog: not in ensureHomeLayout.
 	skillsArchive: () => join(goblinHome(), "workspace", "skills-archive"),
 	attachments: () => join(goblinHome(), "workspace", "attachments"),
+	attachmentBlobs: () => join(goblinHome(), "state", "attachment-blobs"),
 	state: () => join(goblinHome(), "state"),
 	db: () => join(goblinHome(), "state", "goblin.sqlite"),
 	logFile: () => join(goblinHome(), "state", "goblin.log"),

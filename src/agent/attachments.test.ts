@@ -1,14 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import type { Message } from "../message.ts";
 import {
 	acceptsMedia,
 	attachmentPart,
 	ATTACHMENT_PART,
 	materializeAttachments,
+	persistAttachment,
 } from "./attachments.ts";
-import { tmpDir } from "../testkit.ts";
+import { paths } from "../home-layout.ts";
+import { setLogStream } from "../log.ts";
+import { tmpDir, useHome } from "../testkit.ts";
 
 describe("acceptsMedia", () => {
 	test("media types map to their own modality; documents never inline", () => {
@@ -30,6 +34,111 @@ const msg = (path: string, size = 4): Message => ({
 });
 
 describe("materializeAttachments", () => {
+	test("persisted image keeps its original inline bytes after workspace overwrite", async () => {
+		useHome();
+		const original = Buffer.from("original-image");
+		const saved = await persistAttachment("image-1", "x.png", "test", async (temp) => {
+			writeFileSync(temp, original);
+		}, undefined, "image/png");
+		const ref = {
+			path: saved.path, sha256: saved.sha256, mediaType: "image/png", filename: "x.png", size: saved.size,
+		};
+		const first = await materializeAttachments(
+			[{ id: "u1", role: "user", parts: [attachmentPart(ref)] }],
+			new Set(["image"]),
+		);
+		writeFileSync(saved.path, "replacement");
+		const second = await materializeAttachments(
+			[{ id: "u1", role: "user", parts: [attachmentPart(ref)] }],
+			new Set(["image"]),
+		);
+		expect((first[0]!.parts[0] as { url: string }).url).toBe(
+			`data:image/png;base64,${original.toString("base64")}`,
+		);
+		expect((second[0]!.parts[0] as { url: string }).url).toBe(
+			(first[0]!.parts[0] as { url: string }).url,
+		);
+	});
+
+	test("persisted image stays inline after the workspace copy is deleted", async () => {
+		useHome();
+		const original = Buffer.from("original-image");
+		const saved = await persistAttachment("image-2", "x.png", "test", async (temp) => {
+			writeFileSync(temp, original);
+		}, undefined, "image/png");
+		const ref = {
+			path: saved.path, sha256: saved.sha256, mediaType: "image/png", filename: "x.png", size: saved.size,
+		};
+		unlinkSync(saved.path);
+		const out = await materializeAttachments(
+			[{ id: "u2", role: "user", parts: [attachmentPart(ref)] }],
+			new Set(["image"]),
+		);
+		expect((out[0]!.parts[0] as { url: string }).url).toBe(
+			`data:image/png;base64,${original.toString("base64")}`,
+		);
+	});
+
+	test("missing content-addressed blob logs an error and falls back", async () => {
+		useHome();
+		const dir = tmpDir("goblin-att-");
+		const f = join(dir, "x.png");
+		writeFileSync(f, "pngdata");
+		const sha256 = "a".repeat(64);
+		const stream = new PassThrough();
+		let output = "";
+		stream.on("data", (chunk: Buffer) => (output += chunk.toString()));
+		setLogStream(stream as unknown as NodeJS.WriteStream);
+		try {
+			const out = await materializeAttachments(
+				[{ id: "u3", role: "user", parts: [attachmentPart({
+					path: f, sha256, mediaType: "image/png", filename: "x.png", size: 7,
+				})] }],
+				new Set(["image"]),
+			);
+			expect(out[0]!.parts[0]!.type).toBe("text");
+			expect(output).toContain('"level":"error"');
+			expect(output).toContain(sha256);
+			expect(output).toContain(paths.attachmentBlobs());
+		} finally {
+			setLogStream(null);
+			stream.end();
+		}
+	});
+
+	test("legacy refs without sha256 keep reading the workspace file", async () => {
+		const dir = tmpDir("goblin-att-");
+		const f = join(dir, "x.png");
+		writeFileSync(f, "first");
+		const ref = { path: f, mediaType: "image/png", filename: "x.png", size: 5 };
+		const message: Message = { id: "legacy", role: "user", parts: [attachmentPart(ref)] };
+		const first = await materializeAttachments([message], new Set(["image"]));
+		writeFileSync(f, "later");
+		const second = await materializeAttachments([message], new Set(["image"]));
+		expect((first[0]!.parts[0] as { url: string }).url).toContain(Buffer.from("first").toString("base64"));
+		expect((second[0]!.parts[0] as { url: string }).url).toContain(Buffer.from("later").toString("base64"));
+		unlinkSync(f);
+		expect((await materializeAttachments([message], new Set(["image"])))[0]!.parts[0]!.type).toBe("text");
+	});
+
+	test("intake stores one content-addressed blob for inlinable media only", async () => {
+		useHome();
+		const bytes = Buffer.from("same-image");
+		const save = (stem: string, mediaType: string) =>
+			persistAttachment(stem, `${stem}.bin`, "test", async (temp) => {
+				writeFileSync(temp, bytes);
+			}, undefined, mediaType);
+		const first = await save("first", "image/png");
+		const second = await save("second", "image/png");
+		expect(first.sha256).toBe(second.sha256);
+		if (first.sha256 === undefined) throw new Error("image intake did not set sha256");
+		expect(readdirSync(paths.attachmentBlobs())).toEqual([first.sha256]);
+		const doc = await save("doc", "application/pdf");
+		expect(doc.sha256).toBeUndefined();
+		expect(readdirSync(paths.attachmentBlobs())).toEqual([first.sha256]);
+		expect(readFileSync(join(paths.attachmentBlobs(), first.sha256))).toEqual(bytes);
+	});
+
 	test("a capable model gets the file part with the payload inline", async () => {
 		const dir = tmpDir("goblin-att-");
 		const f = join(dir, "x.png");

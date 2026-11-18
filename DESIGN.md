@@ -243,6 +243,9 @@ matching. The invariant: **the request for turn N+1 is the request for turn N
 with new content appended — bytes already sent are never rewritten.**
 Consequences:
 
+- Inlinable attachments are inlined from an immutable content-addressed copy
+  under `state/` taken at intake (#567); the workspace file is the agent's
+  working copy and may change freely.
 - No per-turn re-judgment of history. Attachment representation is the pure
   function above; there is no whole-turn budget and no newest-first eviction
   — an old image never degrades to a path reference because newer ones

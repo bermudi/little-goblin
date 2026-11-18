@@ -3,11 +3,12 @@
 
 import { mkdir, open, readFile, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Message } from "../message.ts";
 import { z } from "zod";
-import { paths } from "../home-layout.ts";
+import { ensureDir, paths } from "../home-layout.ts";
 import { log } from "../log.ts";
+import { durableWriteBytesExclusive } from "../durable.ts";
 
 // Cap each inline item because data URLs inflate payloads. A shared turn budget
 // could rewrite old parts and invalidate the prefix cache; over-cap refs use
@@ -20,6 +21,7 @@ export const ATTACHMENT_PART = "data-attachment";
 // them; parsing alone cannot make a client-chosen path safe.
 export const attachmentRefSchema = z.object({
 	path: z.string(),
+	sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
 	mediaType: z.string(),
 	filename: z.string(),
 	size: z.number(),
@@ -43,6 +45,7 @@ export function attachmentPart(ref: AttachmentRef): Message["parts"][number] {
 export interface SavedAttachment {
 	path: string;
 	size: number;
+	sha256?: string;
 }
 
 // Sync before exposing the path to history. Wrapped sync failures redact the
@@ -53,6 +56,7 @@ export async function persistAttachment(
 	label: string,
 	writeTemp: (temp: string) => Promise<void>,
 	redact?: string,
+	mediaType?: string | (() => string),
 ): Promise<SavedAttachment> {
 	const safeStem = z
 		.string()
@@ -88,6 +92,28 @@ export async function persistAttachment(
 		} catch (err) {
 			throw new Error(`${label} attachment file sync failed for ${dest}: ${scrub(String(err))}`);
 		}
+		// Snapshot inlinable media from the temp file, before the agent can
+		// see (and change) the workspace copy: history inlines this blob.
+		const actualMediaType = typeof mediaType === "function" ? mediaType() : mediaType;
+		let sha256: string | undefined;
+		if (
+			actualMediaType !== undefined &&
+			/^(image|audio|video)\//.test(actualMediaType) &&
+			size <= INLINE_ITEM_MAX_BYTES
+		) {
+			const bytes = await readFile(temp);
+			sha256 = createHash("sha256").update(bytes).digest("hex");
+			const blob = join(paths.attachmentBlobs(), sha256);
+			ensureDir(paths.attachmentBlobs());
+			try {
+				durableWriteBytesExclusive(blob, bytes);
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
+					log.error(`${label} attachment blob write failed`, err, { path: blob, sha256 });
+					throw err;
+				}
+			}
+		}
 		await rename(temp, dest);
 		// Sync the directory so the rename is durable before history commits.
 		try {
@@ -102,7 +128,7 @@ export async function persistAttachment(
 				`${label} attachment directory sync failed for ${dest}: ${scrub(String(err))}`,
 			);
 		}
-		return { path: dest, size };
+		return sha256 === undefined ? { path: dest, size } : { path: dest, size, sha256 };
 	} catch (err) {
 		// Do not delete the destination: history may already reference it.
 		try {
@@ -234,7 +260,17 @@ export async function materializeAttachments(
 				continue;
 			}
 			try {
-				const bytes = await readFile(ref.path);
+				const blobPath =
+					ref.sha256 === undefined
+						? ref.path
+						: join(paths.attachmentBlobs(), ref.sha256);
+				const bytes = await readFile(blobPath);
+				if (
+					ref.sha256 !== undefined &&
+					createHash("sha256").update(bytes).digest("hex") !== ref.sha256
+				) {
+					throw new Error(`attachment blob hash mismatch: ${blobPath}`);
+				}
 				if (bytes.byteLength > maxItemBytes) {
 					log.warn("attachment grew past cap since intake — degrading to reference", {
 						path: ref.path,
@@ -245,7 +281,7 @@ export async function materializeAttachments(
 					parts[pi] = fallbackFor(ref);
 					continue;
 				}
-				if (bytes.byteLength !== ref.size) {
+				if (ref.sha256 === undefined && bytes.byteLength !== ref.size) {
 					log.warn("attachment bytes differ from intake — inlining current bytes", {
 						path: ref.path,
 						intakeSize: ref.size,
@@ -260,9 +296,17 @@ export async function materializeAttachments(
 					url: `data:${ref.mediaType};base64,${bytes.toString("base64")}`,
 				};
 			} catch (err) {
-				log.warn("attachment unreadable — degrading to fallback reference", err, {
-					path: ref.path,
-				});
+				if (ref.sha256 !== undefined) {
+					log.error("attachment blob unavailable or invalid — degrading to fallback reference", err, {
+						path: join(paths.attachmentBlobs(), ref.sha256),
+						sha256: ref.sha256,
+						message: m.id,
+					});
+				} else {
+					log.warn("attachment unreadable — degrading to fallback reference", err, {
+						path: ref.path,
+					});
+				}
 				parts ??= [...m.parts];
 				parts[pi] = fallbackFor(ref);
 			}

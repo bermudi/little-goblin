@@ -40,6 +40,11 @@ Rulings:
   the watcher polls `show`, and live stops are reported unavailable
   (below). The T3 server must stay up for anything to run; installing
   or supervising it is an operator action, not goblin's.
+- `src/t3.ts` maps the v0.1.10 (observed 2026-11-17) unknown-project
+  response from `thread list` (`No T3 Code project matches …`) to
+  `T3Error.code === "project_not_found"`. Other nonzero exits retain
+  their `exit_<code>` shape; the mapping is pinned by the adapter unit
+  test, not a live test.
 - **The adapter's wire contract is pinned against the real CLI, not
   just fakes.** `src/t3.live.test.ts` is the gated check —
   `GOBLIN_T3_LIVE=1 bun test src/t3.live.test.ts` lists the operator's

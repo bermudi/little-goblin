@@ -6,6 +6,7 @@ import { snapshots } from "./keys.ts";
 import { memory } from "./memory.ts";
 import { observer } from "./observer.ts";
 import { sandbox } from "./sandbox.ts";
+import { t3Health } from "./t3.ts";
 import {
 	capacity,
 	healthReportSchema,
@@ -41,18 +42,19 @@ export async function runHealth(options: {
 		...options.probe,
 		...(options.signal ? { signal: options.signal } : {}),
 	};
-	const [db, install, keys, mem, sbx] = await Promise.all([
+	const [db, install, keys, mem, sbx, t3] = await Promise.all([
 		sqlite(home, options.phase, probe, config.config),
 		installation(checkout, options.phase, probe),
 		snapshots(auth.profiles, options.phase, probe),
 		memory(config.config, checkout, options.phase, probe),
 		sandbox(config.config, probe),
+		t3Health(config.config, home, probe),
 	]);
 	return healthReportSchema.parse({
 		version: 1,
 		checkedAt,
 		phase: options.phase,
 		target: { home, checkout },
-		results: [...local, ...db, ...install, ...keys, ...mem, ...sbx],
+		results: [...local, ...db, ...install, ...keys, ...mem, ...sbx, t3],
 	});
 }

@@ -151,6 +151,19 @@ describe("t3 adapter verbs", () => {
 });
 
 describe("t3 error mapping", () => {
+	test("list's unknown project sentence maps to project_not_found", async () => {
+		const f = fakeRunner([
+			{
+				code: 1,
+				stdout: "",
+				stderr: "No T3 Code project matches '/not-registered'. Pass a project id or a path inside a project.",
+			},
+		]);
+		const err = await makeT3(f.run).listThreads("/not-registered").catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(T3Error);
+		expect((err as T3Error).code).toBe("project_not_found");
+	});
+
 	test("send's thread-gone sentence maps to thread_not_found", async () => {
 		const f = fakeRunner([{ code: 1, stdout: "", stderr: "Thread t-1 was not found.\n" }]);
 		const err = await makeT3(f.run).sendThread("t-1", "x").catch((e: unknown) => e);

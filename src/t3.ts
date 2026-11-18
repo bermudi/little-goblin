@@ -39,6 +39,9 @@ const FALLBACK_EXCERPT = 200;
 // drift here degrades to a generic error (the row stays watched), so
 // the live check must stay green after t3 upgrades.
 const THREAD_GONE_RE = /^Thread .+ (?:was not found|is no longer available)\.$/;
+// T3 Code v0.1.10 (observed 2026-11-17) reports an unregistered project
+// path with this sentence; keep it distinct from server/CLI failures.
+const PROJECT_UNKNOWN_RE = /^No T3 Code project matches /;
 
 function cliFallbackMessage(r: T3RunResult): string {
 	const text = (r.stderr || r.stdout).trim();
@@ -201,7 +204,11 @@ function makeCaller(runner: T3Runner) {
 		const ms = performance.now() - t0;
 		if (r.code !== 0) {
 			const text = r.stderr.trim();
-			const code = THREAD_GONE_RE.test(text) ? "thread_not_found" : `exit_${r.code}`;
+			const code = THREAD_GONE_RE.test(text)
+				? "thread_not_found"
+				: PROJECT_UNKNOWN_RE.test(text)
+					? "project_not_found"
+					: `exit_${r.code}`;
 			log.info("t3 call", { verb, target, ms, outcome: `error:${code}` });
 			throw new T3Error(verb, code, cliFallbackMessage(r));
 		}

@@ -98,6 +98,15 @@ a provider no model ref uses skips. No credential is resolved, no
 catalog refreshed, no provider constructed and no call made — the
 finding names what is missing, not whether upstream will answer.
 
+`delegation.t3` (#618) runs only when the delegation block is configured.
+It makes one bounded, read-only `t3 thread list` call for the default
+delegation workspace; it never starts, sends or shows a thread. An absent
+block skips with a reason. A successful list, including an empty one, passes.
+An unregistered workspace fails with the `t3 project add <workspace>` hint;
+other T3 errors, runner failures and timeouts fail as a T3 server/CLI
+unreachable result. The detail contains only the adapter's safe error kind
+or exit code, never raw stderr.
+
 Relay-file presence alone is not association: validate the configured API
 against the running local installation and allowlisted provider/base
 URL/model fields before probing its relay. Unsupported or remote

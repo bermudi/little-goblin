@@ -30,7 +30,8 @@ import {
 } from "./config.ts";
 import type { Config } from "./config-schema.ts";
 import { goblinHome } from "./goblin-home.ts";
-import { ensureHomeLayout, paths } from "./home-layout.ts";
+import { ensureDir, ensureHomeLayout, paths } from "./home-layout.ts";
+import { acquireHomeLock } from "./home-lock.ts";
 import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins.ts";
 import { captureConversationSettings, openStore } from "./conversation.ts";
 import { delegationWake, wireDelegation } from "./delegation-lifecycle.ts";
@@ -105,6 +106,19 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // confirm; short enough that a wedged Telegram API can't hold a deploy.
 // The startup-failure cleanup budgets a wedged close with it too.
 const SHUTDOWN_DRAIN_MS = 10_000;
+
+// Take ownership before layout seeding, databases, or any service starts.
+// Only this real process entry owns the home lock; boot helpers and tools do not.
+ensureDir(paths.state());
+const home = goblinHome();
+let homeLock: ReturnType<typeof acquireHomeLock>;
+try {
+	homeLock = acquireHomeLock(home);
+} catch (err) {
+	log.error("home lock refused", err, { home });
+	process.exit(1);
+}
+log.info("home lock acquired", { pid: process.pid, home });
 
 async function boot() {
 	ensureHomeLayout();
@@ -890,6 +904,7 @@ try {
 	booted = await boot();
 } catch (err) {
 	log.error("boot failed", err);
+	homeLock.release();
 	process.exit(1);
 }
 const {
@@ -984,6 +999,7 @@ async function shutdown(signal: string): Promise<void> {
 	programs.close();
 	outbox.close();
 	delegations?.close();
+	homeLock.release();
 	log.info("bye", { signal });
 	process.exit(0);
 }

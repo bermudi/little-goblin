@@ -246,6 +246,17 @@ async function check(
 		});
 		return;
 	}
+	const current = deps.delegations.get(d.id);
+	if (
+		current === null ||
+		current.status !== d.status ||
+		current.promptedAt !== d.promptedAt ||
+		current.t3Run !== d.t3Run ||
+		current.baselineSeq !== d.baselineSeq
+	) {
+		log.info("delegation observation superseded", { delegation: d.id });
+		return;
+	}
 	if (shown === null) {
 		// The thread vanished from T3 Code — deleted or gone with a server
 		// reset. An outside stop: the operator decides what

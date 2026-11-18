@@ -853,6 +853,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	// held in flight while the operator navigates.
 	let createGate: Promise<void> | null = null;
 	let settingsGate: Promise<void> | null = null;
+	let conversationListGate: Promise<void> | null = null;
+	let releaseConversationList: (() => void) | null = null;
 	let settingsReleases: (() => void)[];
 	let saveStatus = 200;
 	const realFetch = globalThis.fetch;
@@ -883,6 +885,8 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		savedBodies = [];
 		createGate = null;
 		settingsGate = null;
+		conversationListGate = null;
+		releaseConversationList = null;
 		settingsReleases = [];
 		saveStatus = 200;
 		installGlobal("window", win);
@@ -906,20 +910,41 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const body = typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : undefined;
 			if (url === "/api/app/conversations" && init?.method === "POST")
 				return (createGate ?? Promise.resolve()).then(() =>
 					jsonResponse({ id: "app/created", title: null, createdAt: "2026-10-10T00:00:00Z" }),
 				);
-			if (url === "/api/app/conversations") return Promise.resolve(jsonResponse({ conversations }));
+			if (url === "/api/app/conversations") {
+				const snapshot = conversations;
+				const gate = conversationListGate;
+				if (gate !== null) {
+					conversationListGate = null;
+					return gate.then(() => jsonResponse({ conversations: snapshot }));
+				}
+				return Promise.resolve(jsonResponse({ conversations: snapshot }));
+			}
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/notes")
 				return Promise.resolve(jsonResponse({ notes: [], truncated: false }));
 			if (url === "/api/app/attention")
 				return Promise.resolve(jsonResponse({ items: [], unavailable: [] }));
-			if (url === "/api/app/conversations/fixture") {
-				if (init?.method === "DELETE") conversations = [];
-				if (init?.method === "PATCH")
-					conversations = conversations.map((c) => ({ ...c, archivedAt: "2026-10-10T00:00:00Z" }));
+			const conversationMatch = /^\/api\/app\/conversations\/([^/]+)$/.exec(url);
+			if (conversationMatch !== null) {
+				const id = `app/${decodeURIComponent(conversationMatch[1]!)}`;
+				if (init?.method === "DELETE")
+					conversations = conversations.filter((conversation) => conversation.id !== id);
+				if (init?.method === "PATCH") {
+					const patch = body as { archived?: boolean };
+					conversations = conversations.map((conversation) =>
+						conversation.id !== id
+							? conversation
+							: {
+									...conversation,
+									archivedAt: patch.archived ? "2026-10-10T00:00:00Z" : null,
+								},
+					);
+				}
 				return Promise.resolve(jsonResponse({ ok: true }));
 			}
 			if (url.endsWith("/messages"))
@@ -1053,6 +1078,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	});
 
 	afterEach(async () => {
+		releaseConversationList?.();
 		for (const r of settingsReleases) r();
 		settingsReleases = [];
 		settingsGate = null;
@@ -1407,6 +1433,54 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		});
 		await click(container.querySelector(".undo-close"));
 		expect(conversations).toEqual([]);
+		expect(container.querySelector(".chat")?.textContent).toContain("Pick a conversation");
+	});
+
+	test("a stale list refresh cannot restore a deleted row or reopen its chat", async () => {
+		seedConversation(true);
+		conversations.push({
+			id: "app/other",
+			title: "other archived chat",
+			preview: "other",
+			createdAt: "2026-10-10T00:00:00Z",
+			updatedAt: "2026-10-10T00:00:00Z",
+			archivedAt: "2026-10-10T00:00:00Z",
+			pinnedAt: null,
+			projectId: null,
+			parentId: null,
+		});
+		await mount();
+		await click(container.querySelector(".rail-archived"));
+		await clickRowAction("Delete");
+		await answerConfirm(true);
+		let release!: () => void;
+		conversationListGate = new Promise<void>((resolve) => {
+			release = resolve;
+			releaseConversationList = resolve;
+		});
+		const otherRow = [...container.querySelectorAll(".archive-table .dt-row")].find((row) =>
+			row.textContent?.includes("other archived chat"),
+		);
+		expect(otherRow).not.toBeNull();
+		expect(otherRow?.querySelector("button")?.textContent).toBe("Unarchive");
+		await click(otherRow?.querySelector("button"));
+		// Unarchive starts a list refresh with the still-live server snapshot.
+		expect(conversations.find((conversation) => conversation.id === "app/other")?.archivedAt).toBeNull();
+		await waitFor(() => conversationListGate === null, "stale list GET");
+		await act(async () => {
+			win.history.pushState(null, "", "/app/c/fixture");
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await click(container.querySelector(".undo-close"));
+		expect(conversations.map((conversation) => conversation.id)).toEqual(["app/other"]);
+		expect(container.querySelector(".chat")?.textContent).toContain("Pick a conversation");
+		// The old GET resolves last with a snapshot that still contains the
+		// deleted chat. Its request sequence must not restore that row.
+		release();
+		releaseConversationList = null;
+		await settle();
+		expect(container.querySelector(".archive-table .dt-row")).toBeNull();
+		expect(container.textContent).not.toContain("fixture chat");
 		expect(container.querySelector(".chat")?.textContent).toContain("Pick a conversation");
 	});
 

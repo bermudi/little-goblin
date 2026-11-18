@@ -172,6 +172,28 @@ threaded to the dropped user message — "⏹ Stopped before I answered — your
 message is kept in history." — so a `/stop` never silently swallows queued
 input. A lane with no triggering message (a program turn) stays silent.
 
+### Authority at action time (#450)
+
+Code that reads state, awaits, then acts carries one authority stamp — an
+epoch, revision, generation or identity — captured at the read, and re-checks
+it at the moment of the act; when the act is a write, the re-check runs inside
+the write's transaction. A mutable row read before an await is never trusted
+after it. Each such workflow has a test that lands the competing write between
+the read and the act, held at the await, not only a test of the end state
+(operator, 2026-11-18).
+
+| Workflow | Stamp | Test |
+| --- | --- | --- |
+| T1: Responsibility send vs reattach | Attachment generation | `src/responsibility-service.test.ts` — a reattach during the held wire check refuses without dispatching either identity |
+| T2: Wake claim vs rewind | Conversation epoch and trigger history sequence | `src/conversation.test.ts` — a claimed wake held before resubmit fails closed after its trigger is rewound |
+| T3: App delete vs stale refresh | List request sequence and deleted conversation id | `app/src/App.test.tsx` — a stale list refresh cannot restore a deleted row or reopen its chat |
+| T4: Memory notice episode | Outage episode id | `src/memory/mod.test.ts` — a resolved notice cannot mark a successor outage episode notified |
+| T5: Delegation observation vs newer send | Status, prompted time, run id and baseline sequence | `src/delegation-lifecycle.test.ts` — a newer send during observation fences the stale completion baseline |
+| T6: Resend vs older failed delivery | Send/run id and prompted time | `src/delegation-lifecycle.test.ts` — a failed older send cannot overwrite a successful resend |
+| T7: Turn sink delivery | Conversation epoch | `src/runtime.test.ts` — an epoch advance during file delivery fences the turn before later sink actions |
+| T8: Verify instance startup | Checkout commit/repo and startup lock PID | Not yet: tracked in #703 |
+| Queued development commit | Status, revision, attachment generation | `src/responsibility-authority.test.ts` — a pause between record and append marks it superseded, still delivered |
+
 Shutdown rides the same rule. SIGINT/SIGTERM closes the runtime (submits
 still land in history but never run), fences every live lane — each sink
 stamps "⏹ superseded" on its already-visible partial reply (if any), without

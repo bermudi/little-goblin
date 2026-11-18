@@ -694,6 +694,66 @@ describe("worker timer", () => {
 		await w.stop();
 	});
 
+	test("a resolved notice cannot mark a successor outage episode notified", async () => {
+		const client = new HindsightClient({ baseUrl: "http://127.0.0.1:1", bankId: "g" });
+		const db = memdb();
+		const queue = new MemoryQueue(db);
+		for (const id of ["exchange-a", "exchange-b"]) {
+			queue.enqueue(client.target, {
+				id,
+				conversationId: "dm:1",
+				sourceIds: ["u-1", "a-1"],
+				timestamp: "2026-09-22T10:00:00Z",
+				content: "Operator: hi.\nGoblin: hello.",
+			});
+		}
+		let now = 1_000_000;
+		const tracker = new OutageTracker(db, () => now);
+		for (let i = 0; i < 13; i++) {
+			now += 5 * 60 * 1000;
+			tracker.recordFailure("dm:1");
+		}
+		const sentEpisodes: number[] = [];
+		let release!: () => void;
+		let entered!: () => void;
+		const notifying = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const w = startMemoryWorker(queue, client, {
+			intervalMs: 60_000,
+			outage: {
+				tracker,
+				notify: async (_conversationId, sinceMs) => {
+					sentEpisodes.push(sinceMs);
+					if (sentEpisodes.length === 1) {
+						entered();
+						await gate;
+					}
+				},
+			},
+		});
+		try {
+			const firstRound = w.tickNow();
+			await notifying;
+			tracker.recordSuccess();
+			for (let i = 0; i < 13; i++) {
+				now += 5 * 60 * 1000;
+				tracker.recordFailure("dm:1");
+			}
+			release();
+			await firstRound;
+			await w.tickNow();
+			expect(sentEpisodes).toHaveLength(2);
+			expect(tracker.current()?.notified).toBe(true);
+		} finally {
+			release();
+			await w.stop();
+		}
+	});
+
 	test("withWorkerPaused holds the timer gate — a pending row stays unclaimed mid-pause", async () => {
 		const gates = new Map<string, () => void>();
 		const parked = new Map<string, Promise<void>>();

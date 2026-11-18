@@ -1430,6 +1430,53 @@ describe("editUserMessage (rewind)", () => {
 		store.close();
 	});
 
+	test("a claimed wake held before resubmit fails closed after its trigger is rewound", async () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const wakes = openWakeStore(store.db);
+		const c = app(store, "rewind-held-wake");
+		store.append(c.id, [user("q1", "first")]);
+		const recorded = wakes.record({
+			sourceKey: "obs:held-claim",
+			conversationId: c.id,
+			kind: "observation",
+			text: "pane finished",
+			facts: null,
+			origin: "test",
+		});
+		const claimed = wakes.commit(recorded.wakeId, ({ id, text }) => {
+			store.append(c.id, [{ id, role: "user", parts: [{ type: "text", text }] }]);
+		});
+		expect(claimed.historySeq).not.toBeNull();
+		let enter!: () => void;
+		let release!: () => void;
+		const atSubmit = new Promise<void>((resolve) => {
+			enter = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const resubmitAfterPause = async () => {
+			enter();
+			await gate;
+			return wakes.reconcile(new Date().toISOString(), () => null);
+		};
+		try {
+			const resubmitting = resubmitAfterPause();
+			await atSubmit;
+			store.editUserMessage(c.id, "q1", user("q1b", "rewritten"));
+			release();
+			const plan = await resubmitting;
+			expect(plan.toResubmit.map((row) => row.wakeId)).not.toContain(recorded.wakeId);
+			expect(plan.toFail.map((row) => row.wakeId)).toContain(recorded.wakeId);
+			wakes.settle(recorded.wakeId, "failed", { error: "conversation epoch advanced" });
+			expect(wakes.get(recorded.wakeId)?.state).toBe("failed");
+			expect(store.historyEntries(c.id).some((entry) => entry.seq === claimed.historySeq)).toBe(false);
+		} finally {
+			release();
+			store.close();
+		}
+	});
+
 	test("the rewind drops the captured context window — the view never serves pre-edit content", () => {
 		const store = openStore(tmpDb("goblin-test-"));
 		const windows = openWindowCapture(store.db);

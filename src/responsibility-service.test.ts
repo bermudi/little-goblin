@@ -737,6 +737,37 @@ describe("dispatch pre-send revalidation", () => {
 		r.store.close();
 	});
 
+	test("a reattach during the held wire check refuses without dispatching either identity", async () => {
+		const { r, att, op } = prepRig();
+		let entered!: () => void;
+		let release!: () => void;
+		const atWire = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const dispatched: string[] = [];
+		const dispatch = r.svc.dispatch(op.operationId, (async (
+			_b: string,
+			t: ReturnType<typeof target>,
+			beforeSend?: () => void,
+		) => {
+			entered();
+			await gate;
+			r.resps.reattach(att.attachmentId, target({ agentSession: "replacement" }), {});
+			beforeSend?.();
+			dispatched.push(t.agentSession ?? "missing");
+			return {};
+		}) as never);
+		await atWire;
+		release();
+		const out = await dispatch;
+		expect(out).toEqual({ refused: "stale-generation" });
+		expect(dispatched).toEqual([]);
+		r.store.close();
+	});
+
 	test("an edge refusal lands under its own name, not already-terminal", async () => {
 		const { r, op } = prepRig();
 		const out = await r.svc.dispatch(op.operationId, (async () => {

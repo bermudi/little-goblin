@@ -56,6 +56,7 @@ interface FakeT3 {
 	showFor: Record<string, T3ShowResult | null | Error>;
 	setStart(impl: (input: T3StartInput) => Promise<T3StartResult>): void;
 	setSend(impl: (thread: string, message: string) => Promise<T3SendResult>): void;
+	setShow(impl: (thread: string, messages: number) => Promise<T3ShowResult | null>): void;
 }
 
 function fakeT3(): FakeT3 {
@@ -69,6 +70,7 @@ function fakeT3(): FakeT3 {
 		showFor: {} as Record<string, T3ShowResult | null | Error>,
 		startImpl: null as null | ((input: T3StartInput) => Promise<T3StartResult>),
 		sendImpl: null as null | ((thread: string, message: string) => Promise<T3SendResult>),
+		showImpl: null as null | ((thread: string, messages: number) => Promise<T3ShowResult | null>),
 	};
 	const t3: T3 = {
 		async startThread(input) {
@@ -90,6 +92,7 @@ function fakeT3(): FakeT3 {
 		},
 		async showThread(thread, messages) {
 			shownCalls.push({ thread, messages });
+			if (f.showImpl !== null) return f.showImpl(thread, messages);
 			const r = f.showFor[thread];
 			if (r === undefined) throw new Error(`unscripted show for ${thread}`);
 			if (r instanceof Error) throw r;
@@ -110,6 +113,9 @@ function fakeT3(): FakeT3 {
 		},
 		setSend(impl) {
 			f.sendImpl = impl;
+		},
+		setShow(impl) {
+			f.showImpl = impl;
 		},
 	};
 }
@@ -367,6 +373,48 @@ describe("launch", () => {
 });
 
 describe("send and stop", () => {
+	test("a failed older send cannot overwrite a successful resend", async () => {
+		const h = harness();
+		const d = runningRow(h, "resend");
+		h.f.showFor["t-1"] = shown(threadRec());
+		let rejectOld!: (error: Error) => void;
+		let entered!: () => void;
+		const oldEntered = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		let calls = 0;
+		h.f.setSend(async () => {
+			calls++;
+			if (calls === 1) {
+				entered();
+				return new Promise<T3SendResult>((_resolve, reject) => {
+					rejectOld = reject;
+				});
+			}
+			return {
+				threadId: "t-1",
+				link: LINK,
+				messageId: "m-new",
+				runId: "run-2",
+				status: "queued",
+				delivery: "queued",
+			};
+		});
+		const l = lifecycleOf(h);
+		try {
+			const oldSend = l.send(d.id, "first attempt");
+			await oldEntered;
+			const newSend = await l.send(d.id, "successful resend");
+			expect(newSend.kind).toBe("sent");
+			rejectOld(new T3Error("thread send", "exit_1", "old delivery failed"));
+			expect((await oldSend).kind).toBe("send failed");
+			expect(h.store.get(d.id)).toMatchObject({ status: "running", t3Run: "run-2" });
+		} finally {
+			await l.stopTicker();
+			h.store.close();
+		}
+	});
+
 	test("send queues on the bound thread and reattributes the run", async () => {
 		const h = harness();
 		const d = runningRow(h);
@@ -755,6 +803,38 @@ describe("delegation watcher", () => {
 			expect(h.store.get(d.id)!.status).toBe("done");
 			expect(h.wakes).toHaveLength(2);
 		} finally {
+			await l.stopTicker();
+			h.store.close();
+		}
+	});
+
+	test("a newer send during observation fences the stale completion baseline", async () => {
+		const h = harness();
+		const d = runningRow(h, "observed", { promptedAgoMs: 60_000 });
+		let release!: () => void;
+		let entered!: () => void;
+		const observing = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		h.f.setShow(async () => {
+			entered();
+			await gate;
+			return shown(threadRec({ status: "completed", latestRunId: "run-1" }));
+		});
+		const l = lifecycleOf(h);
+		try {
+			await observing;
+			h.store.markRunning(d.id, "run-2", LINK, new Date());
+			release();
+			await l.tick();
+			expect(h.store.get(d.id)).toMatchObject({ status: "running", t3Run: "run-2" });
+			expect(h.wakes).toEqual([]);
+			expect(h.settled).toEqual([]);
+		} finally {
+			release();
 			await l.stopTicker();
 			h.store.close();
 		}

@@ -938,6 +938,52 @@ describe("turn authority", () => {
 		r.store.close();
 	});
 
+	test("an epoch advance during file delivery fences the turn before later sink actions", async () => {
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		const actions: string[] = [];
+		const { model, streamCalls } = scriptedEdge([
+			[toolCallPart("call-file", "send_file", "{}"), finishPart("tool-calls")],
+			textParts("must not continue"),
+		]);
+		const r = rig({
+			model,
+			makeTools: (_conv, _deliverVoice, _recording, deliverFile) => ({
+				send_file: defineTool({
+					description: "send a file to the current conversation",
+					input: z.object({}),
+					execute: async () => {
+						if (deliverFile === undefined) throw new Error("file delivery hook missing");
+						await deliverFile({ path: "/fixture/file", filename: "fixture.txt" });
+						return "sent";
+					},
+				}),
+			}),
+		});
+		const sink = Object.assign(new RecordingSink(), {
+			onFile: async () => {
+				actions.push("started");
+				entered.resolve();
+				await release.promise;
+				actions.push("finished");
+			},
+		});
+		const turn = submit(r, "send this file", sink);
+		try {
+			await entered.promise;
+			r.store.bumpEpoch(r.conv.id);
+			release.resolve();
+			expect(await turn.done).toEqual({ kind: "fenced" });
+			expect(actions).toEqual(["started", "finished"]);
+			expect(streamCalls).toHaveLength(1);
+			expect(roles(r)).toEqual(["user"]);
+		} finally {
+			release.resolve();
+			await r.runtime.shutdown();
+			r.store.close();
+		}
+	});
+
 	test("a settings fence aborts the provider stream, not just the turn loop", async () => {
 		let seen: AbortSignal | undefined;
 		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);

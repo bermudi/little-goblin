@@ -12,7 +12,7 @@ import type {
 	AppAttentionResponse,
 	AppFeedItem,
 } from "../../src/http/app-wire.ts";
-import type { SkillsResponse } from "../../src/http/operator-wire.ts";
+import type { MemoryStatusResponse, SkillsResponse } from "../../src/http/operator-wire.ts";
 
 let win: Window;
 let container: HTMLElement;
@@ -62,7 +62,10 @@ function stubFetch(routes: Record<string, unknown>, seen: Seen[] = []) {
 			});
 			if (method === "POST" && path === "/api/app/memory/blocked")
 				return Response.json({ ok: true, action: "retry", affected: 3 });
-			if (path in routes) return Response.json(routes[path]);
+			if (path in routes) {
+				const route = routes[path];
+				return route instanceof Response ? route : Response.json(route);
+			}
 			if (path === "/api/app/responsibilities") return Response.json({ items: [] });
 			return Response.json({ error: "not stubbed" }, { status: 404 });
 		},
@@ -212,6 +215,82 @@ test("Try again retries only that cause; Drop them asks first", async () => {
 	await act(async () => button("Try again")?.click());
 	const post = seen.find((r) => r.method === "POST");
 	expect(post?.body).toEqual({ action: "retry", error: "HTTP 401" });
+});
+
+test("a failed retry status read is shown and clears when polling recovers", async () => {
+	const recoveringStatus: MemoryStatusResponse = {
+		state: "healthy",
+		detail: "",
+		deleting: 0,
+		completed: 3,
+		blocked: 0,
+		dismissed: 0,
+		queued: 2,
+		lastRecallAt: null,
+		lastRecallOk: true,
+		topicNote: null,
+		blockedDetail: [],
+		lastSaveAt: null,
+		blockedConversations: [],
+		blockedCauses: [],
+		retry: {
+			startedAt: "2026-11-18T00:00:00Z",
+			done: 1,
+			queued: 2,
+			failed: 0,
+			conversations: [
+				{ conversationId: "app/a", name: "Garden notes", done: 1, queued: 2, failed: 0 },
+			],
+		},
+	};
+	const statuses: Response[] = [
+		Response.json({ error: "service unavailable" }, { status: 503 }),
+		Response.json(recoveringStatus),
+	];
+	const seen = stubFetch({
+		"/api/app/attention": {
+			items: [memoryItem("HTTP 401", 3)],
+			unavailable: [],
+		} satisfies AppAttentionResponse,
+		"/api/app/skills": noSkills,
+		"/api/app/approvals": noApprovals,
+	});
+	const realSetInterval = globalThis.setInterval;
+	const realClearInterval = globalThis.clearInterval;
+	let retryTick: (() => void) | null = null;
+	globalThis.setInterval = ((handler: TimerHandler, delay?: number) => {
+		if (delay === 2_000 && typeof handler === "function") retryTick = handler as () => void;
+		return 1 as unknown as ReturnType<typeof setInterval>;
+	}) as typeof setInterval;
+	globalThis.clearInterval = (() => {}) as typeof clearInterval;
+	const realFetchForStatus = globalThis.fetch;
+	globalThis.fetch = Object.assign(
+		async (input: string | URL | Request, init?: RequestInit) => {
+			if (String(input) === "/api/app/memory/status") return statuses.shift()!;
+			return realFetchForStatus(input, init);
+		},
+		{ preconnect: realFetch.preconnect },
+	);
+	try {
+		await mount();
+		await act(async () =>
+			[...container.querySelectorAll("button")]
+				.find((b) => b.textContent === "Try again")
+				?.click(),
+		);
+		expect(container.textContent).toContain("service unavailable");
+		expect(retryTick).not.toBeNull();
+		await act(async () => retryTick?.());
+		expect(container.textContent).toContain("Saving 3 retried exchanges");
+		expect(container.textContent).toContain("Garden notes");
+		expect(container.textContent).not.toContain("service unavailable");
+		expect(seen.some((r) => r.path === "/api/app/attention")).toBe(true);
+	} finally {
+		await act(async () => root?.unmount());
+		root = null;
+		globalThis.setInterval = realSetInterval;
+		globalThis.clearInterval = realClearInterval;
+	}
 });
 
 test("a program approval shows its changes open and approves from the card", async () => {

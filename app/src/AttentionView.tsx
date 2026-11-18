@@ -225,6 +225,7 @@ export function AttentionView({
 	const approvals = useApprovals(token);
 	const [watching, setWatching] = useState(false);
 	const [memoryStatus, setMemoryStatus] = useState<MemoryStatusResponse | null>(null);
+	const [memoryStatusErr, setMemoryStatusErr] = useState<string | null>(null);
 	const [dropped, setDropped] = useState<string[]>([]);
 	// null = no feed snapshot yet (loading or failed); the "Work in
 	// progress" section only disappears once the feed says it's empty.
@@ -248,9 +249,13 @@ export function AttentionView({
 				(s) => {
 					if (!live) return;
 					setMemoryStatus(s);
+					setMemoryStatusErr(null);
 					reloadAttention.current();
 				},
-				() => undefined,
+				(err: unknown) => {
+					if (!live) return;
+					setMemoryStatusErr(describe(err));
+				},
 			);
 		};
 		tick();
@@ -343,6 +348,7 @@ export function AttentionView({
 	return (
 		<div className="ops attn-page">
 			<h1 className="attn-title">Attention</h1>
+			{memoryStatusErr !== null && <p className="error">{memoryStatusErr}</p>}
 			<p className="attn-summary" aria-live="polite">
 				{summaryLine(broken.length, decisions.length, others.length)}
 			</p>

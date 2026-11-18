@@ -77,6 +77,8 @@ describe("buildRaw", () => {
 			[{ to: ["a@x.com\r\nBcc: x@y.com"], subject: "hi", body: "x" }, "To"],
 			[{ to: ["a@x.com"], cc: ["b@y.com\nBcc: x@y.com"], subject: "hi", body: "x" }, "Cc"],
 			[{ to: ["a@x.com"], subject: "hi\r\nBcc: x@y.com", body: "x" }, "Subject"],
+			[{ to: ["a@x.com\u0085Bcc: x@y.com"], subject: "hi", body: "x" }, "To"],
+			[{ to: ["a@x.com"], subject: "hi\u2028Bcc: x@y.com", body: "x" }, "Subject"],
 			[
 				{ to: ["a@x.com"], subject: "hi", body: "x", inReplyTo: "<a@b>\r\nBcc: x@y.com" },
 				"In-Reply-To",

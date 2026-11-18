@@ -326,7 +326,7 @@ export function decodeRfc2047(value: string): string {
 // it), the body is plain UTF-8, non-ASCII subjects ride RFC 2047.
 export function buildRaw(draft: MailDraft): string {
 	const rejectLineBreak = (header: string, value: string): void => {
-		if (/[\r\n]/.test(value)) {
+		if (/[\r\n\u0085\u2028\u2029]/.test(value)) {
 			throw new Error(`mail header ${header} contains a line break`);
 		}
 	};

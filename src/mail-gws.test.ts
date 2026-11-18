@@ -497,6 +497,8 @@ describe("gws mail reader", () => {
 			for (const value of [
 				"=?UTF-8?Q?<a@b>=0D=0ABcc:_x@y>?=",
 				"<a b@c>",
+				"<a\u0085Bcc:_evil@x>",
+				"<a\u0000@b>",
 			]) {
 				const run: GwsRunner = async () => ({
 					code: 0,
@@ -525,7 +527,11 @@ describe("gws mail reader", () => {
 				threadId: "thread-9",
 				messageId: "<a@b>",
 			});
-			expect(warning).toHaveBeenCalledTimes(2);
+			expect(warning).toHaveBeenCalledTimes(4);
+			expect(warning).toHaveBeenCalledWith("mail message-id rejected", {
+				length: "<a\u0085Bcc:_evil@x>".length,
+				reason: "line_break",
+			});
 			expect(warning).toHaveBeenCalledWith("mail message-id rejected", {
 				length: "=?UTF-8?Q?<a@b>=0D=0ABcc:_x@y>?=".length,
 				reason: "invalid_format",

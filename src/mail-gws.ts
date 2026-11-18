@@ -143,10 +143,11 @@ function messageIdHeader(
 	for (const h of headers) {
 		if (str(h.name).toLowerCase() !== "message-id") continue;
 		const value = str(h.value).trim();
-		if (/^<[^<>\s]+@[^<>\s]+>$/.test(value)) return value;
+		// Printable ASCII only: no Unicode line break (NEL, U+2028/9) or control byte.
+		if (/^<[\x21-\x3B\x3D\x3F-\x7E]+@[\x21-\x3B\x3D\x3F-\x7E]+>$/.test(value)) return value;
 		log.warn("mail message-id rejected", {
 			length: value.length,
-			reason: /[\r\n]/.test(value) ? "line_break" : "invalid_format",
+			reason: /[\r\n\u0085\u2028\u2029]/.test(value) ? "line_break" : "invalid_format",
 		});
 		return null;
 	}

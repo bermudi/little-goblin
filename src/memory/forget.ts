@@ -23,6 +23,14 @@ async function settleInflightRetention(
 					outstanding.delete(operationId);
 			} catch (err) {
 				if (!(err instanceof HindsightError)) throw err;
+				log.warn("forget retention operation poll failed", {
+					target: client.target,
+					operation: operationId,
+					kind: err.kind,
+					status: err.status,
+					retryable: err.retryable,
+				});
+				if (!err.retryable) throw err;
 			}
 		}
 		if (outstanding.size > 0) {

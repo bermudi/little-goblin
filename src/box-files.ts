@@ -15,7 +15,7 @@ import {
 	statSync,
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
-import { durableWriteBytes, durableWriteBytesExclusive } from "./durable.ts";
+import { durableWriteBytesInDirectory } from "./durable.ts";
 import { writeThroughTarget } from "./agent/tools/paths.ts";
 
 export const BOX_FILE_MAX_BYTES = 100 * 1024 * 1024;
@@ -238,12 +238,43 @@ export function writeExportBytes(
 				error: `refused: ${rel} resolves into ${realParent}, outside the workspace`,
 			};
 		}
+		const leaf = basename(dest.path);
+		const pinnedLeaf = join(`/proc/self/fd/${fd}`, leaf);
+		let writeFd = fd;
+		let writeLeaf = leaf;
+		let closeWriteFd = false;
 		try {
-			if (opts?.exclusive === true) {
-				durableWriteBytesExclusive(join(`/proc/self/fd/${fd}`, basename(dest.path)), data);
-			} else {
-				durableWriteBytes(join(`/proc/self/fd/${fd}`, basename(dest.path)), data);
+			let leafIsSymlink = false;
+			try {
+				leafIsSymlink = lstatSync(pinnedLeaf).isSymbolicLink();
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
 			}
+			if (leafIsSymlink) {
+				const target = realpathSync(pinnedLeaf);
+				if (!inside(wsReal, target)) {
+					return { error: `refused: ${rel} is a symlink to ${target}, outside the workspace` };
+				}
+				const targetParent = dirname(target);
+				writeFd = openSync(
+					targetParent,
+					constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+				);
+				closeWriteFd = true;
+				const realTargetParent = realpathSync(`/proc/self/fd/${writeFd}`);
+				if (!inside(wsReal, realTargetParent)) {
+					return {
+						error: `refused: ${rel} resolves into ${realTargetParent}, outside the workspace`,
+					};
+				}
+				writeLeaf = basename(target);
+			}
+			durableWriteBytesInDirectory(
+				`/proc/self/fd/${writeFd}`,
+				writeLeaf,
+				data,
+				opts?.exclusive === true ? { exclusive: true } : 0o644,
+			);
 		} catch (err) {
 			// A create-only write losing the race is a verdict, not a
 			// failure — the caller retries on the next numbered name.
@@ -251,6 +282,8 @@ export function writeExportBytes(
 				return { error: `destination exists: ${rel}`, exists: true };
 			}
 			throw err;
+		} finally {
+			if (closeWriteFd) closeSync(writeFd);
 		}
 		return { path: dest.path };
 	} finally {

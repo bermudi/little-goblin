@@ -61,6 +61,24 @@ export function durableWriteBytesExclusive(
 	durableWriteBuffer(path, Buffer.from(data), { modeIfNew, exclusive: true });
 }
 
+/** Durable write to one entry in an already-pinned directory. Unlike the
+ * pathname API, the leaf is never resolved through a symlink: rename
+ * replaces an incumbent symlink, and link fails if one occupies the name. */
+export function durableWriteBytesInDirectory(
+	directory: string,
+	leaf: string,
+	data: Uint8Array,
+	options: number | DurableWriteOptions = 0o644,
+): void {
+	if (leaf === "" || leaf === "." || leaf === ".." || leaf.includes("/")) {
+		throw new Error(`invalid directory-relative leaf: ${leaf}`);
+	}
+	durableWriteBuffer(join(directory, leaf), Buffer.from(data), {
+		...normalize(options),
+		refuseLeafSymlink: true,
+	});
+}
+
 // 1 MiB per readSync/writeSync hop — big enough that a multi-MB copy
 // stays a handful of syscalls, small enough that the copy's heap
 // footprint is the chunk, never the file.
@@ -184,12 +202,24 @@ function resolveLeaf(path: string): string {
 	}
 }
 
+function refuseLeafSymlink(path: string): string {
+	try {
+		if (lstatSync(path).isSymbolicLink()) {
+			throw new Error(`${path} is a symlink at the pinned write boundary`);
+		}
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+	}
+	return path;
+}
+
 function durableWriteBuffer(
 	path: string,
 	buf: Buffer,
-	options: Required<Pick<DurableWriteOptions, "modeIfNew">> & DurableWriteOptions,
+	options: Required<Pick<DurableWriteOptions, "modeIfNew">> &
+		DurableWriteOptions & { refuseLeafSymlink?: boolean },
 ): void {
-	path = resolveLeaf(path);
+	path = options.refuseLeafSymlink === true ? refuseLeafSymlink(path) : resolveLeaf(path);
 	let mode = options.modeIfNew;
 	let existed = false;
 	try {

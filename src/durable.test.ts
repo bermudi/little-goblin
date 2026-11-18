@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
+	closeSync,
 	mkdirSync,
 	lstatSync,
+	openSync,
 	symlinkSync,
 	mkdtempSync,
 	readFileSync,
@@ -13,7 +15,12 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { durableCopyFile, durableWriteBytes, durableWriteFile } from "./durable.ts";
+import {
+	durableCopyFile,
+	durableWriteBytes,
+	durableWriteBytesInDirectory,
+	durableWriteFile,
+} from "./durable.ts";
 
 const dirs: string[] = [];
 
@@ -26,6 +33,25 @@ function useDir(): string {
 afterEach(() => {
 	for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
 	dirs.length = 0;
+});
+
+describe("durableWriteBytesInDirectory", () => {
+	test("refuses a leaf symlink without following it", () => {
+		const dir = useDir();
+		const outside = join(useDir(), "outside");
+		writeFileSync(outside, "untouched");
+		symlinkSync(outside, join(dir, "leaf"));
+		const fd = openSync(dir, 0);
+		try {
+			expect(() =>
+				durableWriteBytesInDirectory(`/proc/self/fd/${fd}`, "leaf", Buffer.from("inside")),
+			).toThrow("symlink at the pinned write boundary");
+		} finally {
+			closeSync(fd);
+		}
+		expect(readFileSync(outside, "utf8")).toBe("untouched");
+		expect(lstatSync(join(dir, "leaf")).isSymbolicLink()).toBe(true);
+	});
 });
 
 describe("durableWriteFile", () => {

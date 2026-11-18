@@ -258,6 +258,31 @@ describe("writeExportBytes", () => {
 		expect(existsSync(join(dir, "sub"))).toBe(false);
 	});
 
+	test("a leaf swapped to an outside symlink after resolution is refused", () => {
+		const { dir, workspace } = ws();
+		const leaf = join(workspace, "out.txt");
+		const outside = join(dir, "outside.txt");
+		writeFileSync(leaf, "inside-old");
+		writeFileSync(outside, "outside-old");
+		const open = fs.openSync;
+		const fault = spyOn(fs, "openSync").mockImplementation(
+			(...args: Parameters<typeof open>) => {
+				if (args[0] === workspace) {
+					fs.unlinkSync(leaf);
+					symlinkSync(outside, leaf);
+				}
+				return open(...args);
+			},
+		);
+		try {
+			const result = writeExportBytes(workspace, "out.txt", new Uint8Array([1]));
+			expect("error" in result && result.error).toContain("outside the workspace");
+			expect(readFileSync(outside, "utf8")).toBe("outside-old");
+		} finally {
+			fault.mockRestore();
+		}
+	});
+
 	test("a dangling leaf symlink is refused, and over-cap data never resolves", () => {
 		const { workspace } = ws();
 		symlinkSync(join(workspace, "gone.txt"), join(workspace, "dangling.txt"));

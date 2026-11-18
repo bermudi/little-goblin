@@ -1091,6 +1091,14 @@ conversation keeps everything (history, FTS hits, settings, pings,
 is offered only on the Archive page (the rail offers archive, the archive
 offers delete) and is undoable for a few seconds — see Undo below.
 
+**Attachment blobs are never collected (ruling 2026-11-18, #704).**
+`state/attachment-blobs/<sha256>` only grows: deleting a conversation or
+the source workspace file leaves its blobs on disk. A blob is written
+before the event that references it, so collection would race intake and
+could strip an image from a message about to land; the operator chose
+keeping every blob over any collector. Reopen this only with a new
+ruling, not as a cleanup.
+
 Conversation rows remain ordinary list items with a thread link and a
 separate action-menu trigger. The links use ui-sdk roving focus: Up/Down
 move between rows, Home/End jump to the first/last, and Tab enters at one

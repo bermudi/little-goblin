@@ -346,7 +346,9 @@ is fixed before finishing. A genuinely new skill drafts into
 with `skills-ref`, then announced; the existing approve/discard flow
 decides it. Enforcement class is unchanged from #485: a prompt contract,
 not a mechanical guard; provenance attribution records every write, new
-or edit. The reviewer is one of two authors parking in
+or edit. Read-before-write stays a prompt rule too (ruling
+2026-11-18, #684): no tool refuses a turn that overwrites a skill or
+draft it has not read in that turn. The reviewer is one of two authors parking in
 `skills-proposed/`; it stages and edits an existing pending draft rather
 than replacing it wholesale. If that draft changes during the review, the
 proposal is skipped (#649).

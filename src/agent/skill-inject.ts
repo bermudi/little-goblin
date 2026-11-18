@@ -24,7 +24,7 @@ import { readDescriptor } from "./skill-fetch.ts";
 export function resolveSkillRef(
 	ref: SkillRef,
 	includeBody = true,
-): { name: string; body: string | null } {
+): { name: string; body: string | null; source?: string; skillBytes?: number } {
 	if (!isTempSkillRef(ref)) {
 		// Historical invocations resolve the marker name only — the body
 		// is never re-read for a non-owning turn.
@@ -34,7 +34,12 @@ export function resolveSkillRef(
 			log.warn("skill body unavailable — not in the catalog", { skill: ref.name });
 			return { name: ref.name, body: null };
 		}
-		return { name: ref.name, body: catalogSkillBodyText(ref.name, found.body) };
+		return {
+			name: ref.name,
+			body: catalogSkillBodyText(ref.name, found.body),
+			source: "local",
+			skillBytes: Buffer.byteLength(found.body, "utf8"),
+		};
 	}
 
 	// <cache>/<digest>/<name>/SKILL.md — descriptor one level up.
@@ -90,5 +95,7 @@ export function resolveSkillRef(
 	return {
 		name: descriptor.name,
 		body: tempSkillBodyText(ref, descriptor, body, skillDir),
+		source: new URL(descriptor.sourceUrl).host,
+		skillBytes: Buffer.byteLength(body, "utf8"),
 	};
 }

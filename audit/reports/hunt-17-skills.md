@@ -67,10 +67,9 @@ does not treat as a boundary.
 - **Trigger/path:** corrupt `skill.json` in a digest dir, then `POST /operator/skills/preview` → 500 instead of a 4xx carrying the reason.
 - **Why P3:** both outcomes refuse and preserve the incumbent; only the status class and message routing drift.
 
-### P3-7. The injected-body log line is not the design's `skill invoked` line — name, source host, and byte-accuracy drift (out-of-scope file — pointer for hunt 3)
-- **Where:** `src/turn/view.ts:243-248` — `log.info("skill body injected", { conversation, skill: inv.name, temp: isTempSkillRef(inv.ref), bytes: inv.body.length })`.
-- **Rule:** design/skills.md → Owning-turn injection: "An injected body is a log line (`skill invoked`: conversation, skill or source host, bytes) plus the durable part — activation stays answerable from the log". The implementation's msg differs, a temp skill's *source host* is absent (only `temp: true`), and `bytes` is the wrapped preamble's UTF-16 length, not the SKILL.md's bytes.
-- **Why P3 / pointer:** the file is hunt 3's territory (prompt assembly around injected skills); the scoped modules (`skill-part.ts`, `skill-inject.ts`) emit no line of their own. Activation *is* answerable from the log as implemented, so this is letter-drift, not capability loss.
+### P3-7. Resolved: injected skill log line follows the design (#322)
+- **Where:** `src/turn/view.ts` logs `skill invoked` with `conversation`, `skill`, `source`, and the UTF-8 byte length of the SKILL.md file contents. `src/agent/skill-inject.ts` supplies the unwrapped size and the fetched descriptor's source host.
+- **Evidence:** `src/turn/skill-view.test.ts` verifies local UTF-8 byte accounting and fetched source-host logging from captured log lines.
 
 ## 2. Checked and clean (later passes can skip)
 

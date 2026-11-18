@@ -128,6 +128,7 @@ describe("diagnostic boundary and phases", () => {
 			"sqlite.subsystems",
 			"service.goblin",
 			"sandbox.engine",
+			"delegation.t3",
 			"app.assets",
 			"workspace.workspace",
 			"workspace.workspace.USER.md",
@@ -148,6 +149,7 @@ describe("diagnostic boundary and phases", () => {
 		expect(finding(report, "service.goblin").status).toBe("pass");
 		expect(finding(report, "config").status).toBe("pass");
 		expect(finding(report, "memory.ready").status).toBe("skip");
+		expect(finding(report, "delegation.t3").detail).toContain("No delegation block configured");
 		expect(existsSync(join(f.home, "state"))).toBe(false);
 	});
 	test("config JSON5/schema and auth failures never retain native messages or sentinels", async () => {

@@ -175,11 +175,16 @@ test("both mode sections render with their switch and panels", () => {
 	expect(html).toContain('id="r-live"');
 	expect(html).toContain('id="sec-default"');
 	expect(html).toContain('id="sec-live"');
+	// the CSS toggle must target the section IDs that actually exist —
+	// a class selector here leaves both sections visible (found live,
+	// 2026-11-19: `.sec-live` matched nothing, `id="sec-live"` did).
+	expect(html).toContain("#r-default:checked ~ main > #sec-live");
+	expect(html).toContain("#r-live:checked ~ main > #sec-default");
 	// latency rows carry sortable data, chain pickers their chips
 	expect(html).toContain('data-med="');
 	expect(html).toContain('class="chain-chip" data-kind="tinyfish"');
-	// raw runs are embedded for the drill-down script, "<" escaped so
-	// page text inside a preview cannot close the data tag early
+	// raw runs are embedded for the drill-down script, "<" escaped
+	// so page text inside a preview cannot close the data tag early
 	expect(html).toContain('id="runs-data"');
 	expect(html).toContain("\\u003c");
 	const blobStart = html.indexOf('id="runs-data">');

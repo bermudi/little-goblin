@@ -544,7 +544,7 @@ code { font-family: var(--mono); font-size: 12px; }
 #r-live:disabled ~ .modebar label[for="r-live"] { opacity: .45; cursor: not-allowed; }
 #r-default:focus-visible ~ .modebar label[for="r-default"],
 #r-live:focus-visible ~ .modebar label[for="r-live"] { outline: 2px solid var(--accent); outline-offset: 2px; }
-#r-default:checked ~ main > .sec-live, #r-live:checked ~ main > .sec-default { display: none; }
+#r-default:checked ~ main > #sec-live, #r-live:checked ~ main > #sec-default { display: none; }
 
 .prow { margin: 4px 0 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
 .plabel { color: var(--muted); font-size: 11.5px; }
@@ -580,6 +580,8 @@ table.matrix { border-collapse: separate; border-spacing: 0; font-size: 12px; }
 .matrix tbody tr:last-child th, .matrix tbody tr:last-child td { border-bottom: none; }
 .matrix td.cell { min-width: 96px; cursor: pointer; }
 .matrix td.cell:hover, .matrix td.cell:focus-visible { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.matrix td.cell.cover { cursor: default; }
+.matrix td.cell.cover:hover, .matrix td.cell.cover:focus-visible { background: transparent; }
 .matrix td.cell.absent { color: var(--muted); text-align: center; cursor: default; }
 .matrix .urlh { cursor: pointer; min-width: 96px; font-weight: 600; font-size: 11.5px; }
 .matrix .urlh:hover, .matrix .urlh:focus-visible { background: color-mix(in srgb, var(--accent) 6%, transparent); }

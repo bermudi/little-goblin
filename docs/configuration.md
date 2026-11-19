@@ -364,18 +364,19 @@ resource caps; disk is not capped (reaping bounds it).
 ### Delegation
 
 Off when unset. With a `delegation` block, the bot gets a `delegate`
-tool: it hands work to another coding harness as a T3 Code thread
-(Codex, Claude, pi, devin, opencode, …) that the operator watches in
-T3 Code. Settings → Delegation edits the harness list and the role
-defaults; the block is boot-pinned, so a change applies after an
-approved restart.
+tool: it hands work to another coding harness (Codex, Claude, pi, devin,
+opencode, …) on Goblin's private hc core. The named terminal and core
+survive Goblin restarts; inspect a run through hc or the app's Delegations
+page. Settings →
+Delegation edits the harness list and the role defaults; the block is
+boot-pinned, so a change applies after an approved restart.
 
 ```json5
 delegation: {
   harnesses: {
-    pi: { provider: "pi", model: "<model-slug>" },
-    "pi-review": { provider: "pi", model: "<review-model-slug>" },
-    claude: { provider: "claudeAgent", model: "<model-slug>", askFirst: true },
+    pi: { kind: "pi" },
+    "pi-review": { kind: "pi", args: ["--model", "<review-model-slug>"] },
+    claude: { kind: "claude", args: ["--dangerously-skip-permissions"], askFirst: true },
   },
   // Role → harness name. `default` is what a call with no role uses;
   // a named role with no entry also falls back to `default`.
@@ -383,13 +384,15 @@ delegation: {
 },
 ```
 
-Each harness is a T3 provider instance plus model slug — goblin never
-invents either, and the names must match what `t3` offers on this
-machine. A default naming an undeclared harness is a config error. An
-explicit harness in a `delegate` call always wins over a role.
-`askFirst: true` on a harness makes goblin ask you before each use —
-the delegate tool carries it as a prompt rule, editable in
-Settings → Delegation; choosing the harness itself stays goblin's call.
+Each harness is a supported harness `kind` plus native CLI `args` — the model
+goes in `args` when the agent needs one; goblin never invents either.
+A default naming an undeclared harness is a config error. An explicit
+harness in a `delegate` call always wins over a role. `askFirst: true`
+on a harness makes goblin ask you before each use — the delegate tool
+carries it as a prompt rule, editable in Settings → Delegation;
+choosing the harness itself stays goblin's call. The old T3 shape
+(`provider`/`model`/`options`) and any `machines` block are rejected at
+boot with a message naming this shape.
 
 ### Desktops
 

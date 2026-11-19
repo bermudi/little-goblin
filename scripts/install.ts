@@ -281,7 +281,7 @@ async function install(): Promise<void> {
 	);
 	const passKeys = selected.keys ? Bun.which("pass-keys") : null;
 	if (selected.keys && !passKeys) fail("pass-keys: configured-but-missing");
-	for (const binary of [passKeys]) if (binary) safePath(binary);
+	if (passKeys) safePath(passKeys);
 	await command([bun, "run", "app:build"], "build app assets", 300_000);
 	await command(
 		[bun, "--no-install", "run", "scripts/check-app-assets.ts", repo],

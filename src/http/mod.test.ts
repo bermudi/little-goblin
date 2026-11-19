@@ -339,8 +339,8 @@ describe("http door", () => {
 		useHome("goblin-http-");
 		const delegation = {
 			harnesses: {
-				codex: { provider: "t3", model: "glm-5.3" },
-				flash: { provider: "t3", model: "glm-5.3-flash", askFirst: true },
+				codex: { kind: "codex" },
+				flash: { kind: "claude", args: ["--model", "glm-5.3-flash"], askFirst: true },
 			},
 			defaults: { default: "codex", review: "flash" },
 		};

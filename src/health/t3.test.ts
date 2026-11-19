@@ -11,7 +11,7 @@ const config = parseConfigValue({
 	model: "fake/model",
 	operators: [1],
 	delegation: {
-		harnesses: { fixture: { provider: "fake", model: "fake/model" } },
+		harnesses: { fixture: { kind: "fake" } },
 	},
 });
 const ok = (stdout: string): T3RunResult => ({ code: 0, stdout, stderr: "" });
@@ -26,7 +26,7 @@ function home() {
 }
 
 describe("delegation.t3 health check", () => {
-	test("delegation absent skips with a reason and never calls the runner", async () => {
+	test("no delegation block still probes — handover runs on t3 regardless", async () => {
 		let calls = 0;
 		const runner: T3Runner = async () => {
 			calls++;
@@ -41,18 +41,37 @@ describe("delegation.t3 health check", () => {
 					operators: [1],
 				}),
 				target.path,
+				"installed",
 				{},
 				runner,
 			);
-			expect(finding.status).toBe("skip");
-			expect(finding.detail).toContain("No delegation block configured");
+			expect(finding.status).toBe("pass");
+			expect(calls).toBe(1);
+		} finally {
+			target.cleanup();
+		}
+	});
+
+	test("preflight and unreadable config skip without calling the runner", async () => {
+		let calls = 0;
+		const runner: T3Runner = async () => {
+			calls++;
+			return ok("[]");
+		};
+		const target = home();
+		try {
+			const pre = await t3Health(config, target.path, "preflight", {}, runner);
+			expect(pre.status).toBe("skip");
+			const blocked = await t3Health(undefined, target.path, "installed", {}, runner);
+			expect(blocked.status).toBe("skip");
+			expect(blocked.detail).toContain("Blocked by config");
 			expect(calls).toBe(0);
 		} finally {
 			target.cleanup();
 		}
 	});
 
-	test("configured delegation accepts an empty thread list and invokes only list", async () => {
+	test("handover reaches t3: an empty thread list passes and invokes only list", async () => {
 		const calls: { args: string[]; opts?: T3CallOpts }[] = [];
 		const runner: T3Runner = async (args, opts) => {
 			calls.push({ args, ...(opts === undefined ? {} : { opts }) });
@@ -60,7 +79,7 @@ describe("delegation.t3 health check", () => {
 		};
 		const target = home();
 		try {
-			const finding = await t3Health(config, target.path, {}, runner);
+			const finding = await t3Health(config, target.path, "installed", {}, runner);
 			expect(finding.status).toBe("pass");
 			expect(calls).toHaveLength(1);
 			expect(calls[0]!.args).toEqual([
@@ -76,12 +95,12 @@ describe("delegation.t3 health check", () => {
 		}
 	});
 
-	test("configured delegation reports safe T3 exit detail without raw stderr", async () => {
+	test("handover reports safe T3 exit detail without raw stderr", async () => {
 		const secret = "raw stderr sentinel";
 		const runner: T3Runner = async () => nonzero(secret);
 		const target = home();
 		try {
-			const finding = await t3Health(config, target.path, {}, runner);
+			const finding = await t3Health(config, target.path, "installed", {}, runner);
 			expect(finding.status).toBe("fail");
 			expect(finding.detail).toContain("t3 server or CLI unreachable: exit_1");
 			expect(finding.detail).not.toContain(secret);
@@ -98,7 +117,7 @@ describe("delegation.t3 health check", () => {
 			);
 		const target = home();
 		try {
-			const finding = await t3Health(config, target.path, {}, runner);
+			const finding = await t3Health(config, target.path, "installed", {}, runner);
 			expect(finding.status).toBe("fail");
 			expect(finding.detail).toContain("not a T3 Code project");
 			expect(finding.detail).not.toContain("No T3 Code project matches");
@@ -114,7 +133,7 @@ describe("delegation.t3 health check", () => {
 		};
 		const target = home();
 		try {
-			const finding = await t3Health(config, target.path, {}, runner);
+			const finding = await t3Health(config, target.path, "installed", {}, runner);
 			expect(finding.status).toBe("fail");
 			expect(finding.detail).toContain("t3 server or CLI unreachable: ENOENT");
 			expect(finding.detail).not.toContain("spawn t3 ENOENT");
@@ -127,7 +146,7 @@ describe("delegation.t3 health check", () => {
 		const runner: T3Runner = () => new Promise<T3RunResult>(() => {});
 		const target = home();
 		try {
-			const finding = await t3Health(config, target.path, {}, runner);
+			const finding = await t3Health(config, target.path, "installed", {}, runner);
 			expect(finding.status).toBe("fail");
 			expect(finding.detail).toContain("t3 server or CLI unreachable: timeout");
 		} finally {

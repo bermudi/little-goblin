@@ -168,6 +168,8 @@ lists on our non-goals list. Cite what you took in the design docs.
 
 Tests guard boundaries and invariants, not implementations. Fake the model
 provider and the Telegram API at the edge; don't mock module internals.
+New turn tests script the model with `src/testkit/turn-script.ts`
+(`sdkScript` / `claudeScript`), not provider stream parts.
 
 Real model requests in tests use one of these three (operator, 2026-11-06):
 `gpt-6-luna` on the codex provider, `claude-haiku-5-5` on the Claude provider,

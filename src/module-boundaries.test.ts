@@ -58,6 +58,7 @@ const AI_SDK_IMPORTERS = [
 	"src/test-helpers/turn-crash-child.ts",
 	"src/testkit/fake-model.ts",
 	"src/testkit/model-replay.ts",
+	"src/testkit/turn-script-sdk.ts",
 	"src/testkit.ts",
 	"src/turn/ai-sdk-step.ts",
 	"src/turn/ai-sdk-tools.ts",

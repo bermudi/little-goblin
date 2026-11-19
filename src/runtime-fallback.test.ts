@@ -6,52 +6,33 @@
 
 import { foldSummary } from "./testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
-import { APICallError } from "@ai-sdk/provider";
-import type { LanguageModel } from "ai";
 import { defineTool, type Tools } from "./tool.ts";
 import { z } from "zod";
 import { openStore } from "./conversation.ts";
 import { Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
-import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
-import {
-	finishPart,
-	type StreamAttempt,
-	scriptedModel,
-	textParts,
-	toolCallPart,
-} from "./testkit/fake-model.ts";
+import { sdkScript } from "./testkit/turn-script-sdk.ts";
+import type { ScriptCall, ScriptedModel } from "./testkit/turn-script.ts";
 import { RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
 
-const quotaWall = (): APICallError =>
-	new APICallError({
-		message: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-28 08:50:34",
-		url: "https://api.z.ai/api/v1/responses",
-		requestBodyValues: {},
-		statusCode: 429,
-		isRetryable: false,
-	});
-
-const overloaded = (): APICallError =>
-	new APICallError({
-		message: "server_is_overloaded",
-		url: "https://chatgpt.com/backend-api/codex/responses",
-		requestBodyValues: {},
-		statusCode: 503,
-		isRetryable: false,
-	});
-
-function lanes(scripts: Record<string, StreamAttempt[]>) {
-	const models: Record<string, ReturnType<typeof scriptedModel>> = {};
-	for (const [ref, attempts] of Object.entries(scripts)) models[ref] = scriptedModel(attempts);
+const quotaWall = (): ScriptCall => ({ kind: "fail", parts: [], error: { message: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-28 08:50:34", status: 429 } });
+const overloaded = (): ScriptCall => ({ kind: "fail", parts: [], error: { message: "server_is_overloaded", status: 503 } });
+const reply = (text: string): ScriptCall => ({ kind: "reply", parts: [{ type: "text", text }] });
+function lanes(scripts: Record<string, ScriptCall[]>) {
+	const models: Record<string, ScriptedModel> = {};
+	for (const [ref, calls] of Object.entries(scripts)) {
+		const model = sdkScript({ label: ref });
+		model.script(...calls);
+		models[ref] = model;
+	}
 	return models;
 }
 
 function rig(opts: {
 	model: string;
 	fallbacks: string[];
-	models: Record<string, ReturnType<typeof scriptedModel>>;
+	models: Record<string, ScriptedModel>;
 	tools?: Tools;
 	wrapJournal?: (journal: TurnJournal) => TurnJournal;
 	compaction?: RuntimeDeps["compaction"];
@@ -64,11 +45,11 @@ function rig(opts: {
 		thinking: "medium",
 	});
 	const built: string[] = [];
-	const buildStep: RuntimeDeps["buildStep"] = (c): ModelStep => {
+	const buildStep: RuntimeDeps["buildStep"] = (c) => {
 		built.push(c.model ?? "(null)");
 		const m = opts.models[c.model ?? ""];
 		if (m === undefined) throw new Error(`no provider for ${c.model}`);
-		return { engine: "ai-sdk", model: m.model as LanguageModel, system: "test", label: c.model ?? "", maxRetries: 0 };
+		return m.step();
 	};
 	const runtime = new Runtime({
 		engines: [aiSdkEngine],
@@ -99,7 +80,7 @@ describe("model fallback list", () => {
 	test("a zero-effect quota wall advances to the next model; the reply names who served", async () => {
 		const models = lanes({
 			"zai/glm-5.3": [quotaWall()],
-			"codex/gpt-6.1-terra": [textParts("from codex")],
+			"codex/gpt-6.1-terra": [reply("from codex")],
 		});
 		const r = rig({ model: "zai/glm-5.3", fallbacks: ["codex/gpt-6.1-terra"], models });
 		try {
@@ -139,8 +120,8 @@ describe("model fallback list", () => {
 
 	test("the next turn starts at the conversation's own model again — no hold", async () => {
 		const models = lanes({
-			"zai/glm-5.3": [quotaWall(), textParts("zai is back")],
-			"codex/gpt-6.1-terra": [textParts("from codex")],
+			"zai/glm-5.3": [quotaWall(), reply("zai is back")],
+			"codex/gpt-6.1-terra": [reply("from codex")],
 		});
 		const r = rig({ model: "zai/glm-5.3", fallbacks: ["codex/gpt-6.1-terra"], models });
 		try {
@@ -168,8 +149,8 @@ describe("model fallback list", () => {
 			}),
 		};
 		const models = lanes({
-			"zai/glm-5.3": [[toolCallPart("c1", "note", "{}"), finishPart("tool-calls")], overloaded()],
-			"codex/gpt-6.1-terra": [textParts("must not serve")],
+			"zai/glm-5.3": [{ kind: "reply", parts: [{ type: "tool-call", toolName: "note", input: {} }] }, overloaded()],
+			"codex/gpt-6.1-terra": [reply("must not serve")],
 		});
 		const r = rig({ model: "zai/glm-5.3", fallbacks: ["codex/gpt-6.1-terra"], models, tools });
 		try {
@@ -177,7 +158,7 @@ describe("model fallback list", () => {
 			expect(done.kind).toBe("error");
 			expect(ran).toEqual(["note"]);
 			expect(r.built).toEqual(["zai/glm-5.3"]);
-			expect(models["codex/gpt-6.1-terra"]!.streamCalls).toHaveLength(0);
+			expect(models["codex/gpt-6.1-terra"]!.calls()).toBe(0);
 			expect(sink.chunkTypes).toContain("error");
 		} finally {
 			await r.runtime.shutdown();
@@ -209,8 +190,11 @@ describe("model fallback list", () => {
 
 	test("a twice content-filtered request never advances — the filter rule ends the turn", async () => {
 		const models = lanes({
-			"zai/glm-5.3": [[finishPart("content-filter", 10)], [finishPart("content-filter", 10)]],
-			"codex/gpt-6.1-terra": [textParts("must not serve")],
+			"zai/glm-5.3": [
+				{ kind: "reply", parts: [], finish: "content-filter" },
+				{ kind: "reply", parts: [], finish: "content-filter" },
+			],
+			"codex/gpt-6.1-terra": [reply("must not serve")],
 		});
 		const r = rig({ model: "zai/glm-5.3", fallbacks: ["codex/gpt-6.1-terra"], models });
 		try {
@@ -220,8 +204,8 @@ describe("model fallback list", () => {
 				message: "Provider blocked this request again after one retry.",
 				modelCalls: 0,
 			});
-			expect(models["zai/glm-5.3"]!.streamCalls).toHaveLength(2);
-			expect(models["codex/gpt-6.1-terra"]!.streamCalls).toHaveLength(0);
+			expect(models["zai/glm-5.3"]!.calls()).toBe(2);
+			expect(models["codex/gpt-6.1-terra"]!.calls()).toBe(0);
 			expect(r.built).toEqual(["zai/glm-5.3"]);
 			expect(sink.chunks.filter((c) => c.type === "error")).toHaveLength(1);
 		} finally {
@@ -231,7 +215,7 @@ describe("model fallback list", () => {
 	});
 
 	test("a setup failure (unresolvable lane) advances too", async () => {
-		const models = lanes({ "codex/gpt-6.1-terra": [textParts("from codex")] });
+		const models = lanes({ "codex/gpt-6.1-terra": [reply("from codex")] });
 		const r = rig({ model: "gone/model", fallbacks: ["codex/gpt-6.1-terra"], models });
 		try {
 			const { done } = await r.turn("hello");
@@ -264,8 +248,8 @@ describe("model fallback list", () => {
 	});
 	test("a journal that cannot open the run row ends the turn as a journal fault — no advance", async () => {
 		const models = lanes({
-			"zai/glm-5.3": [textParts("must not serve")],
-			"codex/gpt-6.1-terra": [textParts("must not serve either")],
+			"zai/glm-5.3": [reply("must not serve")],
+			"codex/gpt-6.1-terra": [reply("must not serve either")],
 		});
 		const r = rig({
 			model: "zai/glm-5.3",
@@ -286,7 +270,7 @@ describe("model fallback list", () => {
 			expect(message).not.toContain("every model failed");
 			// No candidate was built, let alone advanced to.
 			expect(r.built).toEqual([]);
-			expect(models["codex/gpt-6.1-terra"]!.streamCalls).toHaveLength(0);
+			expect(models["codex/gpt-6.1-terra"]!.calls()).toBe(0);
 		} finally {
 			await r.runtime.shutdown();
 			r.store.close();
@@ -296,7 +280,7 @@ describe("model fallback list", () => {
 	test("a journal read failing at the fallback gate ends the turn as a journal fault — no advance", async () => {
 		const models = lanes({
 			"zai/glm-5.3": [quotaWall()],
-			"codex/gpt-6.1-terra": [textParts("must not serve")],
+			"codex/gpt-6.1-terra": [reply("must not serve")],
 		});
 		let reads = 0;
 		const r = rig({
@@ -320,7 +304,7 @@ describe("model fallback list", () => {
 			expect(message).toContain("disk I/O error");
 			expect(message).not.toContain("every model failed");
 			expect(r.built).toEqual(["zai/glm-5.3"]);
-			expect(models["codex/gpt-6.1-terra"]!.streamCalls).toHaveLength(0);
+			expect(models["codex/gpt-6.1-terra"]!.calls()).toBe(0);
 		} finally {
 			await r.runtime.shutdown();
 			r.store.close();
@@ -328,17 +312,13 @@ describe("model fallback list", () => {
 	});
 
 	test("a context overflow never advances, even with compaction unwired", async () => {
-		const overflow = new APICallError({
-			message:
-				"This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
-			url: "https://api.openai.com/v1/chat/completions",
-			requestBodyValues: {},
-			statusCode: 400,
-			isRetryable: false,
-		});
 		const models = lanes({
-			"zai/glm-5.3": [overflow],
-			"codex/gpt-6.1-terra": [textParts("must not serve")],
+			"zai/glm-5.3": [{
+				kind: "fail",
+				parts: [],
+				error: { message: "This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.", status: 400 },
+			}],
+			"codex/gpt-6.1-terra": [reply("must not serve")],
 		});
 		const r = rig({ model: "zai/glm-5.3", fallbacks: ["codex/gpt-6.1-terra"], models });
 		try {
@@ -346,7 +326,7 @@ describe("model fallback list", () => {
 			expect(done).toMatchObject({ kind: "error", modelCalls: 0 });
 			expect((done as { message: string }).message).not.toContain("every model failed");
 			expect(r.built).toEqual(["zai/glm-5.3"]);
-			expect(models["codex/gpt-6.1-terra"]!.streamCalls).toHaveLength(0);
+			expect(models["codex/gpt-6.1-terra"]!.calls()).toBe(0);
 		} finally {
 			await r.runtime.shutdown();
 			r.store.close();

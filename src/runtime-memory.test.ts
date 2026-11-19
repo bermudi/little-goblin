@@ -12,14 +12,21 @@ import { Runtime, userMessage } from "./runtime.ts";
 
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { openTurnJournal } from "./turn-journal.ts";
-import {
-	finishPart,
-	scriptedModel,
-	textModel,
-	textParts,
-	toolCallPart,
-} from "./testkit/fake-model.ts";
-import { deferred, fakeModel, RecordingSink, tmpDb, useHome } from "./testkit.ts";
+import { deferred, RecordingSink, tmpDb, useHome } from "./testkit.ts";
+import { sdkScript } from "./testkit/turn-script-sdk.ts";
+import type { ScriptCall } from "./testkit/turn-script.ts";
+
+const reply = (text: string): ScriptCall => ({ kind: "reply", parts: [{ type: "text", text }] });
+const scripted = (...calls: ScriptCall[]) => {
+	const model = sdkScript();
+	model.script(...calls);
+	return model;
+};
+const delayedReply = (texts: string[], delayMs: number): ScriptCall => ({
+	kind: "hold",
+	parts: texts.map((text) => ({ type: "text", text })),
+	gate: new Promise<void>((resolve) => setTimeout(resolve, delayMs)),
+});
 
 const servers: ReturnType<typeof Bun.serve>[] = [];
 afterEach(async () => {
@@ -104,7 +111,7 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 	const runtime = new Runtime({
 		engines: [aiSdkEngine],
 		store,
-		buildStep: () => ({ engine: "ai-sdk", model: textModel(["ok"]).model, system: "test" }),
+		buildStep: () => scripted(reply("ok")).step(),
 		makeTools: () => ({}),
 		memory: {
 			client,
@@ -154,12 +161,10 @@ describe("memory turn integration", () => {
 			store: h.store,
 			turnJournal: journal,
 			buildStep: () => ({
-				engine: "ai-sdk",
-				model: scriptedModel([
-					[toolCallPart("send-1", "send"), finishPart("tool-calls")],
-					textParts("derived reply"),
-				]).model,
-				system: "test",
+				...scripted(
+					{ kind: "reply", parts: [{ type: "tool-call", toolName: "send", input: {} }] },
+					reply("derived reply"),
+				).step(),
 			}),
 			makeTools: () => ({
 				send: defineTool({
@@ -209,12 +214,10 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store: h.store,
 			buildStep: () => ({
-				engine: "ai-sdk",
-				model: scriptedModel([
-					[toolCallPart("send-1", "send"), finishPart("tool-calls")],
-					textParts("finished"),
-				]).model,
-				system: "test",
+				...scripted(
+					{ kind: "reply", parts: [{ type: "tool-call", toolName: "send", input: {} }] },
+					reply("finished"),
+				).step(),
 			}),
 			makeTools: () => ({
 				send: defineTool({
@@ -252,9 +255,7 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
-				engine: "ai-sdk",
-				model: textModel(["a", "b", "c"], { delayMs: 30 }).model,
-				system: "test",
+				...scripted(delayedReply(["a", "b", "c"], 30)).step(),
 			}),
 			makeTools: () => ({}),
 		});
@@ -291,15 +292,15 @@ describe("memory turn integration", () => {
 		const media = appMediaSink(conv.id, {
 			append: (messages, opts) => store.append(conv.id, messages, opts),
 		});
-		const model = scriptedModel([
-			[toolCallPart("gate-1", "gate"), finishPart("tool-calls")],
-			[toolCallPart("send-1", "send"), finishPart("tool-calls")],
-			textParts("done"),
-		]).model;
+		const model = scripted(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "gate", input: {} }] },
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "send", input: {} }] },
+			reply("done"),
+		).step();
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],
 			store,
-		buildStep: () => ({ engine: "ai-sdk", model, system: "test" }),
+		buildStep: () => model,
 			makeTools: () => ({
 				gate: defineTool({
 					description: "test tool",
@@ -351,9 +352,7 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
-				engine: "ai-sdk",
-				model: textModel(["a", "b", "c"], { delayMs: 30 }).model,
-				system: "test",
+				...scripted(delayedReply(["a", "b", "c"], 30)).step(),
 			}),
 			makeTools: () => ({}),
 		});
@@ -490,9 +489,7 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
-				engine: "ai-sdk",
-				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
-				system: "test",
+				...scripted(delayedReply(["a", "b", "c", "d", "e"], 20)).step(),
 			}),
 			makeTools: () => ({}),
 			memory: {
@@ -542,9 +539,7 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
-				engine: "ai-sdk",
-				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
-				system: "test",
+				...scripted(delayedReply(["a", "b", "c", "d", "e"], 20)).step(),
 			}),
 			makeTools: () => ({}),
 			memory: {
@@ -589,9 +584,7 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
-				engine: "ai-sdk",
-				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
-				system: "test",
+				...scripted(delayedReply(["a", "b", "c", "d", "e"], 20)).step(),
 			}),
 			makeTools: () => ({}),
 			memory: {
@@ -663,7 +656,7 @@ describe("memory turn integration", () => {
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],
 			store,
-		buildStep: () => ({ engine: "ai-sdk", model: textModel(["ok"]).model, system: "test" }),
+		buildStep: () => scripted(reply("ok")).step(),
 			makeTools: () => ({}),
 			memory: {
 				client,
@@ -718,7 +711,7 @@ describe("memory turn integration", () => {
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],
 			store,
-		buildStep: () => ({ engine: "ai-sdk", model: textModel(["ok"]).model, system: "test" }),
+		buildStep: () => scripted(reply("ok")).step(),
 			makeTools: () => ({}),
 			memory: {
 				client,

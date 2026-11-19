@@ -5,13 +5,8 @@
 import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "./log.ts";
-import { agentNameFor, type Delegation, type DelegationStatus } from "./delegations.ts";
+import type { Delegation, DelegationStatus } from "./delegations.ts";
 import type { HcRunInfo } from "./hc-delegation.ts";
-import { ensureHcCore, hcSessionForHome } from "./hc.ts";
-import { goblinHome } from "./goblin-home.ts";
-import { paths } from "./home-layout.ts";
-import { installHcHooks } from "./hc-hooks.ts";
-import { seedHarnessTrust } from "./harness-trust.ts";
 import { READINESS_OBSERVE_MS, readinessKey, type GithubIssue } from "./pr-readiness.ts";
 import type { DelegationLifecycle, DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
 import {
@@ -232,25 +227,19 @@ function transition(
 	return true;
 }
 
-// A starting row has no later scan to retry its notice — close the workspace,
-// attempt the notice, transition in finally (a concurrent stop CAS wins). This
-// deliberately differs from notice-before-transition: waiting on the notice
-// would leave the row invisible to every later scan.
+// A starting row has no later scan to retry its notice — kill its terminal,
+// attempt the notice, transition in finally (a concurrent stop CAS wins).
+// Never restart it: the terminal may have taken the task before goblin died,
+// and a second prompt would run it twice.
 async function recoverStart(deps: DelegationLifecycleDeps, d: Delegation): Promise<void> {
-	const harness = deps.config.harnesses[d.harness];
-	if (!harness || !d.cwd) throw new Error(`cannot recover delegation ${d.id}: harness or cwd missing`);
-	const name = d.agentName || agentNameFor(d.id, d.name);
-	if ((await deps.hc.get(name)) === null) {
-		installHcHooks(`${import.meta.dir}/../deploy/hc-hooks`, paths.hcHooks());
-		seedHarnessTrust(harness.kind, d.cwd, deps.homeDir);
-		await ensureHcCore(paths.hcBinary(), hcSessionForHome(goblinHome()));
-		await deps.hc.start(name, harness.kind, d.cwd, harness.args ?? []);
+	try {
+		if (d.agentName) await killQuietly(deps, d.id, d.agentName);
+		await notify(deps, d, "failed", {
+			extra: "(goblin restarted while starting it; its terminal was killed — start it again if it is still needed)",
+		});
+	} finally {
+		transition(deps, d, "failed");
 	}
-	await deps.hc.prompt(name, d.task + reportNote(deps, d));
-	const seq = (await deps.hc.get(name))?.state_change_seq ?? null;
-	deps.delegations.bindLaunch(d.id, { agentName: name, workspaceId: name, paneId: name });
-	deps.delegations.markRunning(d.id, seq, new Date());
-	log.info("delegation start recovered", { delegation: d.id, terminal: name, cwd: d.cwd });
 }
 
 // Deliver an owed prompt after the dialog advances seq. A rejected prompt
@@ -371,12 +360,9 @@ async function check(
 		// Goblin never ends its own agents without marking the row first, so a
 		// vanished agent was stopped from outside (#414). A crash looks the
 		// same; either way the operator decides what happens next.
-		// A gone agent may leave useful exit text in the surviving pane, so the fallback
-		// read still accompanies the failed notice.
-		const landed = await notify(deps, d, "stopped", {
-			extra: OUTSIDE_STOP_NOTE,
-			agentGone: true,
-		});
+		// The notice still tries the screen: a terminal that hc no longer
+		// lists reads as "(screen unreadable: …)".
+		const landed = await notify(deps, d, "stopped", { extra: OUTSIDE_STOP_NOTE });
 		if (landed) transition(deps, d, "stopped");
 		return;
 	}

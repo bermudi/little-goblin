@@ -1,7 +1,8 @@
 import type { Hc, HcTerminal } from "./hc.ts";
 import { HcError } from "./hc.ts";
 import { makeHarnessInvocation } from "./hc-harness.ts";
-import { hcSessionForHome } from "./hc.ts";
+import { ensureHcCore, hcSessionForHome } from "./hc.ts";
+import { installHcHooks } from "./hc-hooks.ts";
 import { goblinHome } from "./goblin-home.ts";
 import { paths } from "./home-layout.ts";
 
@@ -54,6 +55,8 @@ export function makeHcDelegation(input: {
 	};
 	return {
 		async start(name, kind, cwd, args) {
+			installHcHooks(`${import.meta.dir}/../deploy/hc-hooks`, input.hooksDir);
+			await ensureHcCore(paths.hcBinary(), hcSessionForHome(input.goblinHome));
 			const invocation = makeHarnessInvocation({
 				kind,
 				args,

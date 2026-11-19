@@ -9,10 +9,6 @@ import { log } from "./log.ts";
 import { agentNameFor } from "./delegations.ts";
 import { attachHintFor, HcError } from "./hc-delegation.ts";
 import { seedHarnessTrust } from "./harness-trust.ts";
-import { installHcHooks } from "./hc-hooks.ts";
-import { ensureHcCore, hcSessionForHome } from "./hc.ts";
-import { goblinHome } from "./goblin-home.ts";
-import { paths } from "./home-layout.ts";
 import { delegationNoticeTag } from "./tags.ts";
 import type {
 	AnswerOutcome,
@@ -103,11 +99,11 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 			paneId: terminalName,
 		});
 	} catch (err) {
+		// Nothing to clean up: the terminal starts only after the bind.
 		log.error("delegation workspace bind failed", err, {
 			delegation: d.id,
 			terminal: terminalName,
 		});
-		await killQuietly(deps, d.id, terminalName);
 		throw err;
 	}
 	// A stop may win before binding — re-read so the bound workspace is closed
@@ -126,7 +122,6 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 	// still quiet. Local files fail loudly; existing trust decisions are
 	// preserved.
 	try {
-		installHcHooks(`${import.meta.dir}/../deploy/hc-hooks`, paths.hcHooks());
 		const seeded = seedHarnessTrust(input.harness.kind, input.cwd, deps.homeDir);
 		log.info("delegation trust seed", {
 			delegation: d.id,
@@ -139,7 +134,6 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 	}
 
 	try {
-		await ensureHcCore(paths.hcBinary(), hcSessionForHome(goblinHome()));
 		await hc.start(agentName, input.harness.kind, input.cwd, input.harness.args);
 	} catch (err) {
 		// Keep a startup-blocked terminal alive and return its screen as untrusted data.
@@ -458,7 +452,7 @@ export async function stopByOperator(deps: DelegationLifecycleDeps, id: number):
 	const d = out.delegation;
 	let landed: boolean;
 	try {
-		landed = await notify(deps, d, "stopped", { extra: OPERATOR_STOP_NOTE, agentGone: true });
+		landed = await notify(deps, d, "stopped", { extra: OPERATOR_STOP_NOTE });
 	} catch (err) {
 		log.error("delegation stop notice body unreadable — sending header only", err, {
 			delegation: d.id,

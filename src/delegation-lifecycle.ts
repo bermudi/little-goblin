@@ -23,7 +23,6 @@ import type { GithubIssue, PrReadiness } from "./pr-readiness.ts";
 export interface DelegationLifecycleDeps {
 	delegations: DelegationsStore;
 	hc: HcDelegation;
-	config: DelegationConfig;
 	delegationsDir: string;
 	// True means the notice landed; false is retried by the watcher.
 	wake(address: { chatId: number; threadId: number | null }, text: string): boolean;

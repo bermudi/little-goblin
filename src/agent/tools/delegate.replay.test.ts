@@ -17,7 +17,7 @@ import { openStore } from "../../conversation.ts";
 import { openDelegations, type DelegationsStore } from "../../delegations.ts";
 import { startDelegationLifecycle } from "../../delegation-watcher.ts";
 import type { DelegationLifecycle } from "../../delegation-lifecycle.ts";
-import type { AgentInfo, Herdr } from "../../hc-delegation.ts";
+import type { HcRunInfo, HcDelegation } from "../../hc-delegation.ts";
 import { openProjects } from "../../projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "../../responsibilities.ts";
 import { fileDelegationReport } from "../../responsibility-runs.ts";
@@ -26,6 +26,7 @@ import { recordedModel, StaleRecordingError } from "../../testkit/model-replay.t
 import { tmpDir, useHome } from "../../testkit.ts";
 import { delegateTool } from "./delegate.ts";
 import { toToolSet } from "../../turn/ai-sdk-tools.ts";
+
 
 const RERECORD = "GOBLIN_MODEL_RECORD=1 bun test src/agent/tools/delegate.replay.test.ts";
 const RECORD = process.env.GOBLIN_MODEL_RECORD === "1";
@@ -97,34 +98,27 @@ function rig(): Rig {
 
 	let agentStatus = "working";
 	let seq = 7;
-	const agent = (name: string): AgentInfo => ({
+	const agent = (name: string): HcRunInfo => ({
 		agent: "codex",
 		agent_status: agentStatus,
 		name,
-		pane_id: "w1:p1",
-		workspace_id: "w1",
 		state_change_seq: seq,
 		cwd: "/w",
 	});
-	const herdr: Herdr = {
-		createWorkspace: () => Promise.resolve({ workspaceId: "w1", paneId: "w1:p1", cwd: "/w" }),
-		startAgent: (name) => Promise.resolve(agent(name)),
+	const hc: HcDelegation = {
+		start: (name) => Promise.resolve(agent(name)),
 		get: (name) => Promise.resolve(agent(name)),
 		prompt: () => Promise.resolve(),
 		sendKey: () => Promise.resolve(),
-		readAgent: () => Promise.resolve("patched and tested"),
-		readPane: () => Promise.resolve("pane screen"),
+		read: () => Promise.resolve("patched and tested"),
 		interrupt: () => Promise.resolve(),
-		closeWorkspace: () => Promise.resolve(),
+		kill: () => Promise.resolve(),
 	};
 	const wakes: string[] = [];
 	const lifecycle = startDelegationLifecycle(
 		{
 			delegations: store,
-			herdr,
-			get hc() {
-				return this.herdr!;
-			},
+			hc,
 			delegationsDir: join(dir, "delegations"),
 			homeDir: home,
 			wake: (_address, text) => {

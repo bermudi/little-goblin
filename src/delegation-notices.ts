@@ -15,37 +15,13 @@ const TAIL_LINES = 80;
 // visible window.
 const DEEP_LINES = 300;
 
-// Read the agent first, then the pane, which survives an exited agent.
-// Skip the agent read when its absence is already known; preserve the first error
-// so callers can render the original failure.
+// One hc terminal holds the agent; its read is the screen tail.
 export async function readScreenTail(
 	deps: DelegationLifecycleDeps,
 	d: Delegation,
 	lines: number,
-	opts: { agentGone?: boolean } = {},
 ): Promise<string> {
-	const hc = deps.hc;
-	let firstError: unknown;
-	if (!opts.agentGone && d.agentName) {
-		try {
-			return await hc.read(d.agentName, lines);
-		} catch (err) {
-			firstError = err;
-			log.warn("delegation agent read failed — falling back to pane", err, {
-				delegation: d.id,
-			});
-		}
-	}
-	try {
-			return await hc.read(d.paneId, lines);
-	} catch (err) {
-		// Log the pane failure even when returning the agent's first error.
-		firstError ??= err;
-		log.warn("delegation pane read failed", err, {
-			delegation: d.id,
-		});
-		throw firstError instanceof Error ? firstError : new Error(String(firstError));
-	}
+	return deps.hc.read(d.agentName, lines);
 }
 
 // Prefer the capped report; fall back to the screen tail — deep transcript
@@ -54,13 +30,12 @@ export async function readScreenTail(
 async function reportBody(
 	deps: DelegationLifecycleDeps,
 	d: Delegation,
-	agentGone = false,
 	deep = false,
 ): Promise<string> {
 	const report = readReport(reportPathFor(deps, d), d.id);
 	if (report !== null) return report;
 	try {
-		return await readScreenTail(deps, d, deep ? DEEP_LINES : TAIL_LINES, { agentGone });
+		return await readScreenTail(deps, d, deep ? DEEP_LINES : TAIL_LINES);
 	} catch (err) {
 		return `(screen unreadable: ${err instanceof Error ? err.message : String(err)})`;
 	}
@@ -118,9 +93,9 @@ export async function notify(
 	deps: DelegationLifecycleDeps,
 	d: Delegation,
 	verdict: DelegationVerdict,
-	opts: { extra?: string; agentGone?: boolean; readiness?: PrReadiness } = {},
+	opts: { extra?: string; readiness?: PrReadiness } = {},
 ): Promise<boolean> {
-	const body = await reportBody(deps, d, opts.agentGone ?? false, verdict === "done");
+	const body = await reportBody(deps, d, verdict === "done");
 	const readiness = isIssueLead(d)
 		? opts.readiness ??
 			(d.readinessPendingVerdict === verdict ? d.readiness : null) ??

@@ -24,10 +24,11 @@ import {
 } from "./delegations.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import type { DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
-import { HerdrError, type AgentInfo, type Herdr } from "./hc-delegation.ts";
+import { HcError, type HcRunInfo, type HcDelegation } from "./hc-delegation.ts";
 import { setLogFile } from "./log.ts";
 import { prReadinessFixture } from "./test-helpers/pr-readiness.ts";
 import type { PrReadiness } from "./pr-readiness.ts";
+
 
 let dirs: string[] = [];
 function tmpdirPath(): string {
@@ -40,23 +41,21 @@ afterEach(() => {
 	dirs = [];
 });
 
-function agent(name: string, status: string, seq: number): AgentInfo {
+function agent(name: string, status: string, seq: number): HcRunInfo {
 	return {
 		agent: "codex",
 		agent_status: status,
 		name,
-		pane_id: "w1:p1",
-		workspace_id: "w1",
 		state_change_seq: seq,
 		cwd: "/w",
 	};
 }
 
 interface Harness {
-	deps: DelegationLifecycleDeps & { herdr: Herdr };
+	deps: DelegationLifecycleDeps;
 	store: DelegationsStore;
 	dbPath: string;
-	agents: Map<string, AgentInfo | null>;
+	agents: Map<string, HcRunInfo | null>;
 	screens: Map<string, string>;
 	wakes: string[];
 	appWakes: { conv: string; text: string }[];
@@ -70,20 +69,18 @@ function harness(): Harness {
 	const store = openDelegations(dbPath);
 	const delegationsDir = join(dir, "delegations");
 	const homeDir = join(dir, "home");
-	const agents = new Map<string, AgentInfo | null>();
+	const agents = new Map<string, HcRunInfo | null>();
 	const screens = new Map<string, string>();
 	const wakes: string[] = [];
 	const appWakes: { conv: string; text: string }[] = [];
-	const herdr: Herdr = {
-		createWorkspace: () => Promise.reject(new Error("not used")),
-		startAgent: () => Promise.reject(new Error("not used")),
+	const hc: HcDelegation = {
+		start: () => Promise.reject(new Error("not used")),
 		get: (name) => Promise.resolve(agents.get(name) ?? null),
 		prompt: () => Promise.resolve(),
 		sendKey: () => Promise.resolve(),
-		readAgent: (name) => Promise.resolve(screens.get(`agent:${name}`) ?? `agent screen ${name}`),
-		readPane: (id) => Promise.resolve(screens.get(`pane:${id}`) ?? `pane screen ${id}`),
+		read: (name) => Promise.resolve(screens.get(`agent:${name}`) ?? `agent screen ${name}`),
 		interrupt: () => Promise.resolve(),
-		closeWorkspace: () => Promise.resolve(),
+		kill: () => Promise.resolve(),
 	};
 	return {
 		store,
@@ -96,10 +93,7 @@ function harness(): Harness {
 		homeDir,
 		deps: {
 			delegations: store,
-			herdr,
-			get hc() {
-				return this.herdr!;
-			},
+			hc,
 			delegationsDir,
 			homeDir,
 			wake: (_a, text) => {
@@ -129,8 +123,8 @@ function runningRow(
 	});
 	h.store.bindLaunch(d.id, {
 		agentName: agentNameFor(d.id, name),
-		workspaceId: "w1",
-		paneId: "w1:p1",
+		workspaceId: agentNameFor(d.id, name),
+		paneId: agentNameFor(d.id, name),
 	});
 	h.store.markRunning(d.id, seq, new Date(Date.now() - promptedAgoMs));
 	return h.store.get(d.id)!;
@@ -395,16 +389,16 @@ describe("delegation watcher", () => {
 	test("shutdown joins a late scan without recording a history-only notice as landed", async () => {
 		const h = harness();
 		const d = runningRow(h, "late", 1);
-		let release!: (info: AgentInfo) => void;
-		const pending = new Promise<AgentInfo>((resolve) => {
+		let release!: (info: HcRunInfo) => void;
+		const pending = new Promise<HcRunInfo>((resolve) => {
 			release = resolve;
 		});
 		let entered!: () => void;
 		const inGet = new Promise<void>((resolve) => {
 			entered = resolve;
 		});
-		h.deps.herdr = {
-			...h.deps.herdr,
+		h.deps.hc = {
+			...h.deps.hc,
 			get: () => {
 				entered();
 				return pending;
@@ -467,8 +461,8 @@ describe("delegation watcher", () => {
 
 			// The follow-up's post-send get hiccups.
 			let getFails = true;
-			h.deps.herdr = {
-				...h.deps.herdr,
+			h.deps.hc = {
+				...h.deps.hc,
 				get: (name) =>
 					getFails
 						? Promise.reject(new Error("herdr get hiccup"))
@@ -496,10 +490,9 @@ describe("delegation watcher", () => {
 
 		test("a failed post-launch baseline read never falls back to 0", async () => {
 			const h = harness();
-			h.deps.herdr = {
-				...h.deps.herdr,
-				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
-				startAgent: (name) => Promise.resolve(agent(name, "idle", 1)),
+			h.deps.hc = {
+				...h.deps.hc,
+				start: (name) => Promise.resolve(agent(name, "idle", 1)),
 				get: () => Promise.reject(new Error("herdr get hiccup")),
 			};
 			const owner = startDelegationLifecycle(h.deps, 3_600_000);
@@ -517,8 +510,8 @@ describe("delegation watcher", () => {
 
 			// A brand-new agent already sits at seq 1 — a 0 fallback
 			// would read this idle glance as done.
-			h.deps.herdr = {
-				...h.deps.herdr,
+			h.deps.hc = {
+				...h.deps.hc,
 				get: (name) => Promise.resolve(h.agents.get(name) ?? null),
 			};
 			h.agents.set(agentName, agent(agentName, "idle", 1));
@@ -537,12 +530,11 @@ describe("delegation watcher", () => {
 		test("a failed park baseline read captures while blocked — no wasted prompt attempt", async () => {
 			const h = harness();
 			const prompts: string[] = [];
-			h.deps.herdr = {
-				...h.deps.herdr,
-				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
-				startAgent: () =>
+			h.deps.hc = {
+				...h.deps.hc,
+				start: () =>
 					Promise.reject(
-						new HerdrError("agent start", "agent_not_ready", "blocked during startup"),
+						new HcError("terminal.run", "blocked during startup", "agent_not_ready"),
 					),
 				get: () => Promise.reject(new Error("herdr get hiccup")),
 				prompt: (_name, text) => {
@@ -566,8 +558,8 @@ describe("delegation watcher", () => {
 
 			// Still blocked at seq 7 — the scan captures the park
 			// baseline and burns no prompt attempt on it.
-			h.deps.herdr = {
-				...h.deps.herdr,
+			h.deps.hc = {
+				...h.deps.hc,
 				get: (name) => Promise.resolve(agent(name, "blocked", 7)),
 			};
 			await owner.tick();
@@ -576,8 +568,8 @@ describe("delegation watcher", () => {
 
 			// The dialog clears — the advance past the captured park
 			// delivers the owed task.
-			h.deps.herdr = {
-				...h.deps.herdr,
+			h.deps.hc = {
+				...h.deps.hc,
 				get: (name) => Promise.resolve(agent(name, "idle", 8)),
 			};
 			await owner.tick();
@@ -610,8 +602,8 @@ describe("delegation watcher", () => {
 			// The scan's own get must succeed (it drives the park gate);
 			// only the post-prompt read hiccups.
 			let getCalls = 0;
-			h.deps.herdr = {
-				...h.deps.herdr,
+			h.deps.hc = {
+				...h.deps.hc,
 				get: (name) => {
 					if (++getCalls === 2) return Promise.reject(new Error("herdr get hiccup"));
 					return Promise.resolve(h.agents.get(name) ?? null);
@@ -653,8 +645,8 @@ describe("delegation watcher", () => {
 			const gate = new Promise<void>((r) => {
 				release = r;
 			});
-			h.deps.herdr = {
-				...h.deps.herdr,
+			h.deps.hc = {
+				...h.deps.hc,
 				get: async (name) => {
 					reading = true;
 					await gate;
@@ -799,8 +791,8 @@ describe("delegation watcher", () => {
 			h.store.markParked(row.id, null); // the park-time read failed too
 			const agentName = agentNameFor(row.id, "owed");
 			const prompts: string[] = [];
-			h.deps.herdr = {
-				...h.deps.herdr,
+			h.deps.hc = {
+				...h.deps.hc,
 				prompt: (_name, text) => {
 					prompts.push(text);
 					return Promise.resolve();
@@ -940,8 +932,8 @@ describe("delegation watcher", () => {
 
 		// The agent can finish during the prompt round-trip; its report
 		// should still complete the run even if get already saw its seq.
-		h.deps.herdr = {
-			...h.deps.herdr,
+		h.deps.hc = {
+			...h.deps.hc,
 			prompt: async () => {
 				writeFileSync(reportPath, "# current run");
 			},
@@ -965,8 +957,8 @@ describe("delegation watcher", () => {
 		mkdirSync(dir, { recursive: true });
 		const reportPath = join(dir, "report.md");
 		writeFileSync(reportPath, "# previous result");
-		h.deps.herdr = {
-			...h.deps.herdr,
+		h.deps.hc = {
+			...h.deps.hc,
 			prompt: async () => {
 				throw new Error("herdr rejected prompt");
 			},
@@ -995,8 +987,8 @@ describe("delegation watcher", () => {
 		mkdirSync(dir, { recursive: true });
 		const reportPath = join(dir, "report.md");
 		writeFileSync(reportPath, "# previous result");
-		h.deps.herdr = {
-			...h.deps.herdr,
+		h.deps.hc = {
+			...h.deps.hc,
 			prompt: async () => {
 				throw new Error("late failure");
 			},
@@ -1021,8 +1013,8 @@ describe("delegation watcher", () => {
 		const reportPath = join(dir, "report.md");
 		writeFileSync(reportPath, "# long before this run");
 		utimesSync(reportPath, new Date(0), new Date(0));
-		h.deps.herdr = {
-			...h.deps.herdr,
+		h.deps.hc = {
+			...h.deps.hc,
 			prompt: async () => {
 				throw new Error("rejected");
 			},
@@ -1045,8 +1037,8 @@ describe("delegation watcher", () => {
 		writeFileSync(reportPath, "# previous result");
 		const writer = openSync(reportPath, "r+");
 		try {
-			h.deps.herdr = {
-				...h.deps.herdr,
+			h.deps.hc = {
+				...h.deps.hc,
 				prompt: async () => {
 					throw new Error("rejected");
 				},
@@ -1073,8 +1065,8 @@ describe("delegation watcher", () => {
 		mkdirSync(dir, { recursive: true });
 		const reportPath = join(dir, "report.md");
 		writeFileSync(reportPath, "# previous result");
-		h.deps.herdr = {
-			...h.deps.herdr,
+		h.deps.hc = {
+			...h.deps.hc,
 			prompt: async () => {
 				writeFileSync(reportPath, "# newer result");
 				throw new Error("herdr rejected prompt");
@@ -1095,8 +1087,8 @@ describe("delegation watcher", () => {
 		const d = runningRow(h, "bad report path", 1);
 		writeFileSync(h.delegationsDir, "not a directory");
 		let prompted = false;
-		h.deps.herdr = {
-			...h.deps.herdr,
+		h.deps.hc = {
+			...h.deps.hc,
 			prompt: async () => {
 				prompted = true;
 			},
@@ -1114,7 +1106,7 @@ describe("delegation watcher", () => {
 	test("agent gone → stopped as the operator's stop, notice carries the pane tail", async () => {
 		const h = harness();
 		const d = runningRow(h, "died", 1);
-		h.screens.set(`pane:${d.paneId}`, "codex exited: oom");
+		h.screens.set(`agent:${d.agentName}`, "codex exited: oom");
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
 		w.stopTicker();
@@ -1375,9 +1367,9 @@ describe("delegation watcher", () => {
 		const gate = new Promise<void>((r) => {
 			release = r;
 		});
-		h.deps.herdr = {
-			...h.deps.herdr,
-			readAgent: async (name) => {
+		h.deps.hc = {
+			...h.deps.hc,
+			read: async (name) => {
 				reading = true;
 				await gate;
 				return `agent screen ${name}`;
@@ -1413,13 +1405,13 @@ describe("delegation watcher", () => {
 		});
 		h.store.bindLaunch(d.id, {
 			agentName: "g1-orphan",
-			workspaceId: "w9",
-			paneId: "w9:p1",
+			workspaceId: "g1-orphan",
+			paneId: "g1-orphan",
 		});
 		const closed: string[] = [];
 		const hc = {
 			...h.deps.hc,
-			closeWorkspace: (id: string) => {
+			kill: (id: string) => {
 				closed.push(id);
 				return Promise.resolve();
 			},
@@ -1427,14 +1419,11 @@ describe("delegation watcher", () => {
 		const w = startDelegationLifecycle({
 			...h.deps,
 			hc,
-			herdr: {
-				...hc,
-			},
 		});
 		await w.tick();
 		w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("failed");
-		expect(closed).toEqual(["w9"]);
+		expect(closed).toEqual(["g1-orphan"]);
 		expect(h.wakes).toHaveLength(1);
 		expect(h.wakes[0]).toContain(`[delegation: #${d.id} orphan · failed]`);
 		expect(h.wakes[0]).toContain("restarted while starting");
@@ -1451,8 +1440,8 @@ describe("delegation watcher", () => {
 		});
 		h.store.bindLaunch(d.id, {
 			agentName: "g1-orphan",
-			workspaceId: "w9",
-			paneId: "w9:p1",
+			workspaceId: "g1-orphan",
+			paneId: "g1-orphan",
 		});
 		const w = startDelegationLifecycle({
 			...h.deps,
@@ -1521,10 +1510,9 @@ describe("delegation watcher", () => {
 	describe("owner sequence", () => {
 		test("a launch seeds the harness's trust file before the agent starts", async () => {
 			const h = harness();
-			h.deps.herdr = {
-				...h.deps.herdr,
-				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
-				startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+			h.deps.hc = {
+				...h.deps.hc,
+				start: (name) => Promise.resolve(agent(name, "working", 1)),
 			};
 			const owner = startDelegationLifecycle(h.deps);
 			const out = await owner.launch({
@@ -1541,17 +1529,16 @@ describe("delegation watcher", () => {
 			owner.stopTicker();
 		});
 
-		test("a trust seed failure fails the launch and closes the workspace it opened", async () => {
+		test("a trust seed failure fails the launch before any terminal starts", async () => {
 			const h = harness();
 			mkdirSync(h.homeDir, { recursive: true });
 			writeFileSync(join(h.homeDir, ".claude.json"), "[1,2]");
-			const closed: string[] = [];
-			h.deps.herdr = {
-				...h.deps.herdr,
-				createWorkspace: async () => ({ workspaceId: "w1", paneId: "w1:p1", cwd: "/w" }),
-				closeWorkspace: (id) => {
-					closed.push(id);
-					return Promise.resolve();
+			const started: string[] = [];
+			h.deps.hc = {
+				...h.deps.hc,
+				start: (name) => {
+					started.push(name);
+					return Promise.resolve(agent(name, "idle", 1));
 				},
 			};
 			const owner = startDelegationLifecycle(h.deps);
@@ -1565,98 +1552,73 @@ describe("delegation watcher", () => {
 			expect(out.kind).toBe("failed");
 			if (out.kind === "failed") expect(out.why).toContain("trust seed");
 			expect(h.store.get(1)?.status).toBe("failed");
-			// Seeding sits between workspace bind and agent start now: the opened
-			// workspace must not survive a seed failure unwatched.
-			expect(closed).toEqual(["w1"]);
+			expect(started).toEqual([]);
 			owner.stopTicker();
 		});
 
-		test.each([false, true])(
-			"a bind write failure closes the unbound workspace and rejects (cleanup fails=%s)",
-			async (cleanupFails) => {
-				const h = harness();
-				const db = new Database(h.dbPath);
-				db.exec(`
-					CREATE TRIGGER reject_launch_bind BEFORE UPDATE OF workspace_id ON delegations
-					BEGIN SELECT RAISE(ABORT, 'bind write failed'); END;
-				`);
-				const calls: string[] = [];
-				h.deps.herdr = {
-					...h.deps.herdr,
-					createWorkspace: async () => {
-						calls.push("create");
-						return { workspaceId: "w9", paneId: "w9:p1", cwd: "/w" };
-					},
-					closeWorkspace: async (id) => {
-						calls.push(`close:${id}`);
-						if (cleanupFails) throw new Error("cleanup close failed");
-					},
-					startAgent: async (name) => {
-						calls.push("start");
-						return agent(name, "working", 1);
-					},
-					prompt: async () => {
-						calls.push("prompt");
-					},
-				};
-				const logPath = join(tmpdirPath(), "goblin.log");
-				setLogFile(logPath);
-				const owner = startDelegationLifecycle(h.deps);
-				try {
-					await expect(
-						owner.launch({
-							harness: { name: "codex", kind: "codex", args: [] },
-							task: "do it",
-							cwd: "/w",
-							name: "bind failure",
-							address: { chatId: 1, threadId: null },
-						}),
-					).rejects.toThrow("bind write failed");
-					expect(calls).toEqual(["create", "close:w9"]);
-					expect(h.store.get(1)).toMatchObject({
-						status: "starting",
-						agentName: "",
-						workspaceId: "",
-						paneId: "",
-					});
-					expect(h.wakes).toEqual([]);
-					expect(h.appWakes).toEqual([]);
-					expect(existsSync(join(h.homeDir, ".codex"))).toBe(false);
-					const logs = readFileSync(logPath, "utf8")
-						.trim()
-						.split("\n")
-						.map((line) => JSON.parse(line) as Record<string, unknown>);
-					expect(logs).toContainEqual(
-						expect.objectContaining({
-							level: "error",
-							msg: "delegation workspace bind failed",
-							error: "bind write failed",
-							delegation: 1,
-							workspaceId: "w9",
-						}),
-					);
-					const cleanupLogs = logs.filter(
-						(line) => line.msg === "delegation workspace close failed",
-					);
-					if (cleanupFails) {
-						expect(cleanupLogs).toEqual([
-							expect.objectContaining({
-								level: "warn",
-								error: "cleanup close failed",
-								delegation: 1,
-							}),
-						]);
-					} else {
-						expect(cleanupLogs).toEqual([]);
-					}
-				} finally {
-					await owner.stopTicker();
-					setLogFile(null);
-					db.close();
-					h.store.close();
-				}
-			},
-		);
+		test("a bind write failure rejects before any terminal starts", async () => {
+			const h = harness();
+			const db = new Database(h.dbPath);
+			db.exec(`
+				CREATE TRIGGER reject_launch_bind BEFORE UPDATE OF workspace_id ON delegations
+				BEGIN SELECT RAISE(ABORT, 'bind write failed'); END;
+			`);
+			const calls: string[] = [];
+			h.deps.hc = {
+				...h.deps.hc,
+				kill: async (id) => {
+					calls.push(`kill:${id}`);
+				},
+				start: async (name) => {
+					calls.push("start");
+					return agent(name, "working", 1);
+				},
+				prompt: async () => {
+					calls.push("prompt");
+				},
+			};
+			const logPath = join(tmpdirPath(), "goblin.log");
+			setLogFile(logPath);
+			const owner = startDelegationLifecycle(h.deps);
+			try {
+				await expect(
+					owner.launch({
+						harness: { name: "codex", kind: "codex", args: [] },
+						task: "do it",
+						cwd: "/w",
+						name: "bind failure",
+						address: { chatId: 1, threadId: null },
+					}),
+				).rejects.toThrow("bind write failed");
+				expect(calls).toEqual([]);
+				expect(h.store.get(1)).toMatchObject({
+					status: "starting",
+					agentName: "",
+					workspaceId: "",
+					paneId: "",
+				});
+				expect(h.wakes).toEqual([]);
+				expect(h.appWakes).toEqual([]);
+				expect(existsSync(join(h.homeDir, ".codex"))).toBe(false);
+				const logs = readFileSync(logPath, "utf8")
+					.trim()
+					.split("\n")
+					.map((line) => JSON.parse(line) as Record<string, unknown>);
+				expect(logs).toContainEqual(
+					expect.objectContaining({
+						level: "error",
+						msg: "delegation workspace bind failed",
+						error: "bind write failed",
+						delegation: 1,
+					}),
+				);
+			} finally {
+				await owner.stopTicker();
+				setLogFile(null);
+				db.close();
+				h.store.close();
+			}
+		});
 
 		test("a report directory failure marks the row failed instead of stranding starting", async () => {
 			const h = harness();
@@ -1675,17 +1637,16 @@ describe("delegation watcher", () => {
 			owner.stopTicker();
 		});
 
-		test("stop during a successful startAgent never sends the prompt", async () => {
+		test("stop during a successful start never sends the prompt", async () => {
 			const h = harness();
 			let release!: () => void;
 			const gate = new Promise<void>((resolve) => {
 				release = resolve;
 			});
 			const prompts: string[] = [];
-			h.deps.herdr = {
-				...h.deps.herdr,
-				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
-				startAgent: (name) => gate.then(() => agent(name, "working", 1)),
+			h.deps.hc = {
+				...h.deps.hc,
+				start: (name) => gate.then(() => agent(name, "working", 1)),
 				prompt: async (_name, text) => {
 					prompts.push(text);
 				},
@@ -1708,25 +1669,21 @@ describe("delegation watcher", () => {
 			owner.stopTicker();
 		});
 
-		test("launch → stop while launching → tick: stopped row, workspace closed exactly once", async () => {
+		test("launch → stop while the harness starts → tick: stopped row, terminal killed exactly once", async () => {
 			const h = harness();
-			// A launch-capable herdr with a gated workspace creation — the
-			// stop lands while it is pending.
 			let release!: () => void;
 			const gate = new Promise<void>((r) => {
 				release = r;
 			});
 			const closed: string[] = [];
-			const started: string[] = [];
-			h.deps.herdr = {
-				...h.deps.herdr,
-				createWorkspace: () => gate.then(() => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" })),
-				startAgent: (name) => {
-					started.push(name);
-					return Promise.resolve(agent(name, "working", 1));
+			const prompts: string[] = [];
+			h.deps.hc = {
+				...h.deps.hc,
+				start: (name) => gate.then(() => agent(name, "working", 1)),
+				prompt: async (_name, text) => {
+					prompts.push(text);
 				},
-				prompt: () => Promise.resolve(),
-				closeWorkspace: (id) => {
+				kill: (id) => {
 					closed.push(id);
 					return Promise.resolve();
 				},
@@ -1739,40 +1696,37 @@ describe("delegation watcher", () => {
 				name: "x",
 				address: { chatId: 1, threadId: null },
 			});
-			for (let i = 0; i < 200 && h.store.list().length === 0; i++) {
+			for (let i = 0; i < 200 && (h.store.get(1)?.workspaceId ?? "") === ""; i++) {
 				await new Promise((r) => setTimeout(r, 1));
 			}
-			// The stop lands while createWorkspace is pending: the row reads
-			// starting with nothing bound, so the stop closes nothing and
-			// marks it stopped.
+			const terminal = h.store.get(1)!.workspaceId;
 			const stopOut = await owner.stop(1);
 			expect(stopOut.kind).toBe("stopped");
 
 			release();
 			const out = await launching;
 			// The watcher tick afterwards must neither resurrect the row nor
-			// re-close anything: the launch already settled its obligation.
+			// kill anything again.
 			await owner.tick();
 			owner.stopTicker();
 			expect(out.kind).toBe("stopped");
-			expect(started).toEqual([]); // no agent left started
-			expect(closed).toEqual(["w5"]); // closed exactly once, by the launch
+			expect(prompts).toEqual([]);
+			expect(closed).toEqual([terminal]);
 			expect(h.store.get(1)!.status).toBe("stopped");
-			expect(h.wakes).toEqual([]); // nothing to report
+			expect(h.wakes).toEqual([]);
 		});
 
-		test("stop lands while startAgent fails → stopped stands, workspace closed once", async () => {
+		test("stop lands while start fails → stopped stands, terminal killed once", async () => {
 			const h = harness();
 			let release!: () => void;
 			const gate = new Promise<void>((r) => {
 				release = r;
 			});
 			const closed: string[] = [];
-			h.deps.herdr = {
-				...h.deps.herdr,
-				createWorkspace: () => Promise.resolve({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
-				startAgent: () => gate.then(() => Promise.reject(new Error("harness refused"))),
-				closeWorkspace: (id) => {
+			h.deps.hc = {
+				...h.deps.hc,
+				start: () => gate.then(() => Promise.reject(new Error("harness refused"))),
+				kill: (id) => {
 					closed.push(id);
 					return Promise.resolve();
 				},
@@ -1785,24 +1739,24 @@ describe("delegation watcher", () => {
 				name: "x",
 				address: { chatId: 1, threadId: null },
 			});
-			// Wait for the bind so the stop sees a workspace to close —
+			// Wait for the bind so the stop sees a terminal to kill —
 			// the row is starting with the launch ids bound.
 			for (let i = 0; i < 200 && h.store.get(1)?.workspaceId === ""; i++) {
 				await new Promise((r) => setTimeout(r, 1));
 			}
-			// The stop lands fully while startAgent is pending: it closes
-			// the bound workspace and marks the row stopped.
+			// The stop lands fully while start is pending: it kills the
+			// bound terminal and marks the row stopped.
 			const stopOut = await owner.stop(1);
 			expect(stopOut.kind).toBe("stopped");
-			expect(closed).toEqual(["w5"]);
+			expect(closed).toEqual(["g1-x"]);
 
 			release();
 			const out = await launching;
 			owner.stopTicker();
 			// The failure must not stomp the operator's stop verdict or
-			// close the workspace a second time.
+			// kill the terminal a second time.
 			expect(out.kind).toBe("stopped");
-			expect(closed).toEqual(["w5"]);
+			expect(closed).toEqual(["g1-x"]);
 			expect(h.store.get(1)!.status).toBe("stopped");
 		});
 	});
@@ -1814,10 +1768,9 @@ describe("delegation watcher", () => {
 			const gate = new Promise<void>((r) => {
 				release = r;
 			});
-			h.deps.herdr = {
-				...h.deps.herdr,
-				createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
-				startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
+			h.deps.hc = {
+				...h.deps.hc,
+				start: (name) => Promise.resolve(agent(name, "working", 1)),
 				prompt: () => gate.then(() => {}),
 			};
 			const owner = startDelegationLifecycle(h.deps);
@@ -1854,8 +1807,8 @@ describe("delegation watcher", () => {
 			const gate = new Promise<void>((r) => {
 				release = r;
 			});
-			h.deps.herdr = {
-				...h.deps.herdr,
+			h.deps.hc = {
+				...h.deps.hc,
 				prompt: () => gate.then(() => {}),
 			};
 			const row = runningRow(h, "follow-up", 1);
@@ -1883,8 +1836,8 @@ describe("delegation watcher", () => {
 test("delegation ticker owns its store until shutdown joins, and stopped handles stay stopped", async () => {
 	const h = harness();
 	const d = runningRow(h, "ownership", 1);
-	let release!: (value: AgentInfo) => void;
-	h.deps.herdr.get = () =>
+	let release!: (value: HcRunInfo) => void;
+	h.deps.hc.get = () =>
 		new Promise((resolve) => {
 			release = resolve;
 		});

@@ -665,7 +665,6 @@ async function boot() {
 			? startDelegationLifecycle({
 					delegations,
 					hc,
-					config: delegationBoot!,
 					delegationsDir: paths.delegations(),
 					homeDir: homedir(),
 					...delegationWake(delivery.wakeDeps),

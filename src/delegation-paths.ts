@@ -37,13 +37,14 @@ export function reportNote(deps: DelegationLifecycleDeps, d: Delegation): string
 export async function killQuietly(
 	deps: DelegationLifecycleDeps,
 	id: number,
-	workspaceId: string,
+	terminal: string,
 ): Promise<void> {
 	try {
-		await deps.hc.kill(workspaceId);
+		await deps.hc.kill(terminal);
 	} catch (err) {
-		log.warn("delegation workspace close failed", err, {
+		log.warn("delegation terminal kill failed", err, {
 			delegation: id,
+			terminal,
 		});
 	}
 }

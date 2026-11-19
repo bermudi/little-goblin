@@ -22,6 +22,7 @@ export async function runHealth(options: {
 	phase: "preflight" | "installed";
 	signal?: AbortSignal;
 	probe?: Pick<ProbeContext, "processGroup">;
+	t3Runner?: Parameters<typeof t3Health>[4];
 }): Promise<HealthReport> {
 	const home = resolve(options.home),
 		checkout = resolve(options.checkout);
@@ -44,11 +45,11 @@ export async function runHealth(options: {
 	};
 	const [db, install, keys, mem, sbx, t3] = await Promise.all([
 		sqlite(home, options.phase, probe, config.config),
-		installation(checkout, options.phase, probe),
+		installation(checkout, options.phase, probe, config.config?.delegation !== undefined, home),
 		snapshots(auth.profiles, options.phase, probe),
 		memory(config.config, checkout, options.phase, probe),
 		sandbox(config.config, probe),
-		t3Health(config.config, home, probe),
+		t3Health(config.config, home, options.phase, probe, options.t3Runner),
 	]);
 	return healthReportSchema.parse({
 		version: 1,

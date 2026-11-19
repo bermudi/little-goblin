@@ -98,14 +98,19 @@ a provider no model ref uses skips. No credential is resolved, no
 catalog refreshed, no provider constructed and no call made — the
 finding names what is missing, not whether upstream will answer.
 
-`delegation.t3` (#618) runs only when the delegation block is configured.
-It makes one bounded, read-only `t3 thread list` call for the default
-delegation workspace; it never starts, sends or shows a thread. An absent
-block skips with a reason. A successful list, including an empty one, passes.
-An unregistered workspace fails with the `t3 project add <workspace>` hint;
-other T3 errors, runner failures and timeouts fail as a T3 server/CLI
-unreachable result. The detail contains only the adapter's safe error kind
-or exit code, never raw stderr.
+`delegation.t3` (#618, #740) probes handover's real targets: goblin's
+active projects (the `projects` table, read-only). Handover to T3 Code is
+for work on concrete projects; goblin's own workspace is never a target —
+only goblin, its `agent` children and a delegated harness work there
+(operator, 2026-11-19). So the check never probes the workspace and never
+suggests registering it. It makes bounded, read-only `t3 thread list`
+calls, one project at a time, and never starts, sends or shows a thread.
+The first project T3 lists, even with no threads, passes. A project T3
+doesn't know is skipped for the next; if T3 knows none of them, the check
+warns with a `t3 project add <project dir>` hint. No state database or no
+active project skips. Other T3 errors, runner failures and timeouts fail
+as a T3 server/CLI unreachable result. The detail contains only the
+adapter's safe error kind or exit code, never raw stderr.
 
 Relay-file presence alone is not association: validate the configured API
 against the running local installation and allowlisted provider/base

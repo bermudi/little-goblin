@@ -603,7 +603,7 @@ export async function runCompaction(
 		tailTokenBudget: number;
 		inputTokenBudget: number;
 		callTimeoutMs?: number;
-		reason?: "threshold" | "manual" | "overflow" | "preempt";
+		reason?: "threshold" | "manual" | "idle" | "overflow" | "preempt";
 		// Exclusive fold ceiling over stored history, evaluated when history
 		// is read (the lane may gain queued work while earlier awaits ran):
 		// events at or after it — a running turn's members, inputs queued

@@ -63,6 +63,23 @@ moves the cache boundary. `/compact <focus>` and the app route's `{"focus":
 a bracketed line ahead of the span text — so a manual fold can be steered
 without touching the fixed system prompt.
 
+## Idle fold
+
+Claude's prompt-cache lifetime is rolling: each request restarts it. The
+lifetime comes from the response's `cache_creation` split (1 hour on a
+subscription, 5 minutes with an API key). Expiry is the newest normal call's
+start plus the newest reported lifetime on that route. App conversations
+whose newest call has at least 100k input tokens fold 2 minutes before
+expiry. The fold skips when another fold ran after that call, the lane is
+busy, or the cache already expired. Timers re-arm at startup from
+`model_cache_calls`; other providers report no lifetime (#735).
+
+Provenance: borrowed from t3code's "Before the cache expires" idle
+compaction (`apps/server/src/orchestration-v2/IdleCompaction.ts`): same
+2-minute lead. Goblin uses a 100k floor (operator, 2026-11-19 — goblin
+already folds at ≤256k, so t3code's 200k would almost never fire) and
+re-arms at startup (goblin restarts on every release).
+
 ## Budgets
 
 | quantity | value | source |

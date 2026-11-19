@@ -31,8 +31,16 @@ export interface CacheCallObservation {
 	readonly idleMs: number | null;
 	readonly prefixRelation: CachePrefixRelation;
 	readonly sharedMessages: number;
-	finish(usage: LanguageModelV4Usage | undefined): void;
+	finish(usage: LanguageModelV4Usage | undefined, cacheTtlMs?: number | null): void;
 	fail(): void;
+}
+
+export interface IdleCacheCall {
+	callId: string;
+	routeKey: string;
+	startedMs: number;
+	inputTokens: number | null;
+	ttlMs: number | null;
 }
 
 export interface CacheObservation {
@@ -75,6 +83,8 @@ export interface CacheObservation {
 		settingsHash: string,
 		profileHash: string,
 	): { reason: string; observedMs: number } | null;
+	idleCacheCall(conversationId: string): IdleCacheCall | null;
+	recentConversations(sinceMs: number): string[];
 }
 
 const prevSchema = z.object({
@@ -121,8 +131,18 @@ const MODEL_CACHE_CALLS_DDL = `CREATE TABLE IF NOT EXISTS model_cache_calls (
 	output_tokens INTEGER,
 	idle_ms INTEGER,
 	prefix_relation TEXT NOT NULL,
-	shared_messages INTEGER NOT NULL
+	shared_messages INTEGER NOT NULL,
+	cache_ttl_ms INTEGER
 )`;
+
+function ensureCacheTtlColumn(db: Database): void {
+	const columns = z
+		.array(z.object({ name: z.string() }))
+		.parse(db.query("PRAGMA table_info(model_cache_calls)").all());
+	if (!columns.some((column) => column.name === "cache_ttl_ms")) {
+		db.run("ALTER TABLE model_cache_calls ADD COLUMN cache_ttl_ms INTEGER");
+	}
+}
 
 export function openCacheObservation(
 	db: Database,
@@ -130,6 +150,7 @@ export function openCacheObservation(
 ): CacheObservation {
 	const now = options?.now ?? Date.now;
 	db.run(MODEL_CACHE_CALLS_DDL);
+	ensureCacheTtlColumn(db);
 	db.run(
 		"CREATE INDEX IF NOT EXISTS model_cache_calls_lineage ON model_cache_calls(conversation_id, route_key, purpose, started_ms DESC)",
 	);
@@ -142,8 +163,30 @@ export function openCacheObservation(
 	);
 	const qComplete = db.query(
 		`UPDATE model_cache_calls SET status = 'completed', finished_ms = ?,
-			input_tokens = ?, cache_read = ?, cache_write = ?, output_tokens = ?
+			input_tokens = ?, cache_read = ?, cache_write = ?, output_tokens = ?, cache_ttl_ms = ?
 		WHERE call_id = ?`,
+	);
+	const qIdleCall = db.query(
+		`SELECT calls.call_id, calls.route_key, calls.started_ms, calls.input_tokens,
+			(SELECT ttl.cache_ttl_ms FROM model_cache_calls ttl
+			 WHERE ttl.conversation_id = calls.conversation_id AND ttl.route_key = calls.route_key
+				AND ttl.purpose IS NULL AND ttl.status = 'completed' AND ttl.cache_ttl_ms IS NOT NULL
+			 ORDER BY ttl.started_ms DESC, ttl.rowid DESC LIMIT 1) AS ttl_ms
+		FROM model_cache_calls calls WHERE calls.conversation_id = ?
+			AND calls.purpose IS NULL AND calls.status = 'completed'
+		ORDER BY calls.started_ms DESC, calls.rowid DESC LIMIT 1`,
+	);
+	const idleCallSchema = z.object({
+		call_id: z.string(),
+		route_key: z.string(),
+		started_ms: z.number(),
+		input_tokens: z.number().nullable(),
+		ttl_ms: z.number().nullable(),
+	});
+	const qRecentConversations = db.query(
+		`SELECT DISTINCT conversation_id FROM model_cache_calls
+		WHERE conversation_id IS NOT NULL AND purpose IS NULL
+			AND status = 'completed' AND started_ms > ?`,
 	);
 	const qFailed = db.query(
 		"UPDATE model_cache_calls SET status = 'failed', finished_ms = ? WHERE call_id = ?",
@@ -229,6 +272,25 @@ export function openCacheObservation(
 			const row = z.object({ reason: z.string(), observed_ms: z.number() }).parse(raw);
 			return { reason: row.reason, observedMs: row.observed_ms };
 		},
+		idleCacheCall(conversationId) {
+			const raw = qIdleCall.get(conversationId);
+			if (raw === null) return null;
+			const row = idleCallSchema.parse(raw);
+			return {
+				callId: row.call_id,
+				routeKey: row.route_key,
+				startedMs: row.started_ms,
+				inputTokens: row.input_tokens,
+				ttlMs: row.ttl_ms,
+			};
+		},
+		recentConversations(sinceMs) {
+			const rowSchema = z.object({ conversation_id: z.string().nullable() });
+			return qRecentConversations
+				.all(sinceMs)
+				.map((raw) => rowSchema.parse(raw).conversation_id)
+				.flatMap((id) => (id === null ? [] : [id]));
+		},
 		begin(input) {
 			const raw =
 				input.conversationId === null
@@ -282,7 +344,7 @@ export function openCacheObservation(
 				idleMs,
 				prefixRelation: relation,
 				sharedMessages: shared,
-				finish(usage) {
+				finish(usage, cacheTtlMs = null) {
 					if (settled) return;
 					qComplete.run(
 						now(),
@@ -290,6 +352,7 @@ export function openCacheObservation(
 						usage?.inputTokens.cacheRead ?? null,
 						usage?.inputTokens.cacheWrite ?? null,
 						usage?.outputTokens.total ?? null,
+						cacheTtlMs,
 						input.callId,
 					);
 					settled = true;

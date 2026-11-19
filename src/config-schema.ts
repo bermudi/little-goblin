@@ -183,10 +183,8 @@ export const ttsCloudDefaults = {
 	onemin: { model: "tts-1", auth: authDefaults.onemin },
 } as const;
 
-// Delegation to external harnesses on T3 Code — absent = no delegate
-// tool. A harness name maps to a T3 provider instance id and model slug,
-// with optional model options; goblin never guesses a model, so both are
-// required (t3's own project default is never consulted through goblin).
+// Delegation to external harnesses via Goblin's private hc core — absent
+// = no delegate tool. Harness names also become terminal-name prefixes.
 const harnessNameRe = /^[a-z][a-z0-9_-]{0,15}$/;
 const harnessNameSchema = z.string().regex(harnessNameRe);
 export const harnessMapSchema = z
@@ -194,18 +192,8 @@ export const harnessMapSchema = z
 		harnessNameSchema,
 		z
 			.object({
-				provider: z.string().min(1),
-				model: z.string().min(1),
-				// T3 model options (ids and values from T3's model catalog,
-				// e.g. claude `effort`, codex `reasoningEffort`, pi `thinking`).
-				// Goblin passes these through without catalog validation; T3
-				// rejects invalid options.
-				options: z
-					.record(
-						z.string().min(1),
-						z.union([z.string().min(1), z.boolean()]),
-					)
-					.optional(),
+				kind: z.string().min(1),
+				args: z.array(z.string()).optional(),
 				// askFirst rides the delegate tool's description — a prompt
 				// rule (the model asks the operator), not a launch gate.
 				askFirst: z.boolean().optional(),

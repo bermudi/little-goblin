@@ -3,8 +3,17 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDelegations } from "./delegations.ts";
+import { agentNameFor, openDelegations } from "./delegations.ts";
 import { prReadinessFixture } from "./test-helpers/pr-readiness.ts";
+
+describe("agentNameFor", () => {
+	test("slugifies into herdr's name charset, capped at 32", () => {
+		expect(agentNameFor(3, "Fix the THING!!")).toBe("g3-fix-the-thing");
+		expect(agentNameFor(12, "résumé — unicode ✨")).toMatch(/^g12-[a-z0-9_-]+$/);
+		expect(agentNameFor(9, "x".repeat(60)).length).toBeLessThanOrEqual(32);
+		expect(agentNameFor(4, "!!!")).toBe("g4-delegation");
+	});
+});
 
 let dirs: string[] = [];
 afterEach(() => {
@@ -63,54 +72,12 @@ describe("delegations store", () => {
 				role: "lead", issue: { repository: "owner/repo", number: 7 },
 				readiness: observation, readinessNotifiedKey: null, readinessVersion: 1,
 			});
-			second.markRunning(row.id, "run-2", null, new Date(Date.now() + 1000));
+			second.markRunning(row.id, 5, new Date(Date.now() + 1000));
 			expect(second.recordReadiness(row.id, done, prReadinessFixture("green"), true)).toBe(false);
 			expect(second.get(row.id)).toMatchObject({ readiness: null, readinessNotifiedKey: null });
 		} finally { second.close(); }
 	});
 
-	test("pre-T3 rows with no t3 thread settle failed at open; terminal rows stay", () => {
-		const path = join(tmpdirPath(), "goblin.sqlite");
-		const db = new Database(path);
-		db.exec(`CREATE TABLE delegations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL,
-			harness TEXT NOT NULL,
-			cwd TEXT NOT NULL,
-			task TEXT NOT NULL,
-			chat_id INTEGER NOT NULL,
-			thread_id INTEGER,
-			agent_name TEXT NOT NULL,
-			workspace_id TEXT NOT NULL,
-			pane_id TEXT NOT NULL,
-			status TEXT NOT NULL,
-			baseline_seq INTEGER NOT NULL DEFAULT 0,
-			prompted_at TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			finished_at TEXT,
-			app_conversation TEXT
-		)`);
-		// The t3 columns arrive by ALTER as NULL — those rows are
-		// pre-T3 leftovers the current transport can never observe, so a
-		// live one settles failed at open (the sweep logs the warn that
-		// names the agent); an already-terminal row is untouched.
-		const ins = db.prepare(`INSERT INTO delegations
-			(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, prompted_at, created_at)
-			VALUES (?, 'codex', '/w', 't', 1, NULL, 'g1', 'w1', 'w1:p1', ?, '1970-01-01', '1970-01-01')`);
-		ins.run("remote-live", "running");
-		ins.run("remote-starting", "starting");
-		ins.run("old-done", "done");
-		db.close();
-		const store = openDelegations(path);
-		try {
-			expect(store.get(1)).toMatchObject({ status: "failed", t3Thread: null });
-			expect(store.get(2)).toMatchObject({ status: "failed", t3Thread: null });
-			expect(store.get(3)).toMatchObject({ status: "done", t3Thread: null });
-			expect(store.active()).toEqual([]);
-		} finally {
-			store.close();
-		}
-	});
 
 	// baseline_seq went nullable — NULL is the baseline-pending posture (a
 	// failed post-prompt read never falls back to a pre-prompt value).
@@ -157,19 +124,18 @@ describe("delegations store", () => {
 				task: "t",
 				address: { chatId: 1, threadId: null },
 			});
-			store.markRunning(d.id, "run-1", null, new Date());
+			store.markRunning(d.id, null, new Date());
 			expect(store.get(d.id)!.baselineSeq).toBeNull();
 			const row = store.get(d.id)!;
-			// Verdict transitions CAS against the scanned row — a stale
-			// expect (a send landed mid-scan) refuses to write.
 			expect(
-				store.transitionIf(d.id, { status: row.status, promptedAt: row.promptedAt }, "done"),
+				store.captureBaseline(d.id, { status: row.status, promptedAt: row.promptedAt }, 8),
 			).toBe(true);
-			expect(store.get(d.id)!.status).toBe("done");
+			expect(store.get(d.id)!.baselineSeq).toBe(8);
+			// A stale expect (a send landed mid-scan) refuses to write.
 			expect(
-				store.transitionIf(d.id, { status: "running", promptedAt: "1970-01-01T00:00:00Z" }, "failed"),
+				store.captureBaseline(d.id, { status: row.status, promptedAt: "1970-01-01T00:00:00Z" }, 99),
 			).toBe(false);
-			expect(store.get(d.id)!.status).toBe("done");
+			expect(store.get(d.id)!.baselineSeq).toBe(8);
 		} finally {
 			store.close();
 		}
@@ -177,7 +143,7 @@ describe("delegations store", () => {
 		const again = openDelegations(path);
 		try {
 			expect(again.get(1)!.baselineSeq).toBe(3);
-			expect(again.get(2)!.baselineSeq).toBeNull();
+			expect(again.get(2)!.baselineSeq).toBe(8);
 		} finally {
 			again.close();
 		}

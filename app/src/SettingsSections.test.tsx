@@ -464,13 +464,13 @@ describe("Web", () => {
 });
 
 describe("Delegation", () => {
-	test("role selects and harness models edit the delegation body", async () => {
+	test("role selects and harness args edit the delegation body", async () => {
 		settings = parseConfig({
 			...BASE,
 			delegation: {
 				harnesses: {
-					pi: { provider: "codex", model: "gpt-6-luna" },
-					"pi-review": { provider: "claude", model: "claude-haiku-5-5" },
+					pi: { kind: "pi" },
+					"pi-review": { kind: "pi", args: ["--model", "sol"] },
 				},
 				defaults: { default: "pi", review: "pi-review" },
 			},
@@ -488,10 +488,7 @@ describe("Delegation", () => {
 		});
 		await waitFor(() => savedBodies.length > 0, "delegation save");
 		expect(savedBodies.at(-1)?.delegation).toMatchObject({
-			harnesses: {
-				pi: { provider: "codex", model: "gpt-6-luna" },
-				"pi-review": { provider: "claude", model: "claude-haiku-5-5" },
-			},
+			harnesses: { pi: { kind: "pi" }, "pi-review": { kind: "pi", args: ["--model", "sol"] } },
 			defaults: { default: "pi", review: "pi" },
 		});
 	});
@@ -500,7 +497,7 @@ describe("Delegation", () => {
 		settings = parseConfig({
 			...BASE,
 			delegation: {
-				harnesses: { pi: { provider: "codex", model: "gpt-6-luna" } },
+				harnesses: { pi: { kind: "pi" } },
 				defaults: { default: "pi" },
 			},
 		});
@@ -509,7 +506,7 @@ describe("Delegation", () => {
 		await click(container.querySelector('[aria-label="ask first for pi"]'));
 		await waitFor(() => savedBodies.length > 0, "ask-first save");
 		expect(savedBodies.at(-1)?.delegation).toMatchObject({
-			harnesses: { pi: { provider: "codex", model: "gpt-6-luna", askFirst: true } },
+			harnesses: { pi: { kind: "pi", askFirst: true } },
 		});
 	});
 
@@ -526,7 +523,7 @@ describe("Delegation", () => {
 		settings = parseConfig({
 			...BASE,
 			delegation: {
-				harnesses: { pi: { provider: "codex", model: "gpt-6-luna" } },
+				harnesses: { pi: { kind: "pi" } },
 				defaults: { default: "pi" },
 			},
 		});
@@ -548,12 +545,14 @@ describe("Delegation", () => {
 	for (const off of delegationSwitches) {
 		for (const on of delegationSwitches) {
 			test(`${off.section} off → save → reload → ${on.section} on restores delegation`, async () => {
-				// pi-review rides BASE's `main` provider so the restored
-				// select shows it as picked, not unlisted.
 				const delegation = {
 					harnesses: {
-						pi: { provider: "codex", model: "gpt-6-luna" },
-						"pi-review": { provider: "main", model: "fixture/review", askFirst: true },
+						pi: { kind: "pi" },
+						"pi-review": {
+							kind: "pi",
+							args: ["--model", "fixture/review", "--verbose"],
+							askFirst: true,
+						},
 					},
 					defaults: { default: "pi", review: "pi-review" },
 				};
@@ -624,10 +623,9 @@ describe("Delegation", () => {
 					container.querySelector('[aria-label="delegation"]')?.getAttribute("aria-pressed"),
 				).toBe("true");
 				expect(container.querySelectorAll(".del-harness")).toHaveLength(2);
-				expect(
-					container.querySelector<HTMLSelectElement>('[aria-label="provider for pi-review"]')
-						?.value,
-				).toBe("main");
+				expect(container.querySelector<HTMLTextAreaElement>("#del-args-1")?.value).toBe(
+					"--model\nfixture/review\n--verbose",
+				);
 				expect(
 					container
 						.querySelector('[aria-label="ask first for pi-review"]')
@@ -648,8 +646,8 @@ describe("Delegation", () => {
 			...BASE,
 			delegation: {
 				harnesses: {
-					pi: { provider: "codex", model: "gpt-6-luna" },
-					"pi-review": { provider: "claude", model: "claude-haiku-5-5" },
+					pi: { kind: "pi" },
+					"pi-review": { kind: "pi" },
 				},
 				defaults: { review: "pi" },
 			},
@@ -668,10 +666,7 @@ describe("Delegation", () => {
 		});
 		await waitFor(() => savedBodies.length > 0, "delegation save");
 		expect(savedBodies.at(-1)?.delegation).toEqual({
-			harnesses: {
-				pi: { provider: "codex", model: "gpt-6-luna" },
-				"pi-review": { provider: "claude", model: "claude-haiku-5-5" },
-			},
+			harnesses: { pi: { kind: "pi" }, "pi-review": { kind: "pi" } },
 			defaults: { review: "pi-review" },
 		});
 	});
@@ -680,7 +675,7 @@ describe("Delegation", () => {
 		settings = parseConfig({
 			...BASE,
 			delegation: {
-				harnesses: { pi: { provider: "codex", model: "gpt-6-luna" } },
+				harnesses: { pi: { kind: "pi" } },
 				defaults: { default: "pi" },
 			},
 		});
@@ -698,7 +693,7 @@ describe("Delegation", () => {
 		});
 		await waitFor(() => savedBodies.length > 0, "delegation save");
 		expect(savedBodies.at(-1)?.delegation).toEqual({
-			harnesses: { pi: { provider: "codex", model: "gpt-6-luna" } },
+			harnesses: { pi: { kind: "pi" } },
 		});
 	});
 });

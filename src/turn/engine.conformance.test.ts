@@ -11,7 +11,7 @@ import { defineTool, type Tools } from "../tool.ts";
 import type { Message } from "../message.ts";
 import { z } from "zod";
 import { type ClaudeEngineConfig, driveClaude } from "../agent/claude-code/engine.ts";
-import type { ClaudeEngine, ClaudeStep } from "../agent/claude-code/mod.ts";
+import { isClaudeStep, type ClaudeEngine, type ClaudeStep } from "../agent/claude-code/mod.ts";
 import { createToolBridge, type ToolBridge } from "../agent/claude-code/tools.ts";
 import type { AuthStore } from "../auth.ts";
 import type { ConfigRef } from "../config.ts";
@@ -34,7 +34,7 @@ import type { ModelStep } from "./ai-sdk-step.ts";
 import { openTurnJournal, type TurnJournal } from "../turn-journal.ts";
 import { appendInterruptedProgress } from "./unlanded-progress.ts";
 import { aiSdkEngine } from "./ai-sdk-engine.ts";
-import { isClaudeStep, pickEngine } from "./engine.ts";
+import { pickEngine, type TurnEngine } from "./engine.ts";
 
 type Conv = ReturnType<ConversationStore["resolve"]>;
 
@@ -113,7 +113,7 @@ function sdkRig(): EngineRig {
 	const store = openStore(tmpDb("goblin-engconf-sdk-"));
 	const journal = openTurnJournal(store.db);
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-	let step: ModelStep = { model: scriptedModel([]).model, system: "test", label: "fake/fake-1" };
+	let step: ModelStep = { engine: "ai-sdk", model: scriptedModel([]).model, system: "test", label: "fake/fake-1" };
 	const runtime = new Runtime({
 		engines: [aiSdkEngine],
 		store,
@@ -129,10 +129,11 @@ function sdkRig(): EngineRig {
 		conv,
 		journal,
 		scriptReply: (text) => {
-			step = { model: scriptedModel([textParts(text)]).model, system: "test" };
+			step = { engine: "ai-sdk", model: scriptedModel([textParts(text)]).model, system: "test" };
 		},
 		scriptToolThenReply: (message, text) => {
 			step = {
+				engine: "ai-sdk",
 				model: scriptedModel([
 					[
 						toolCallPart("conf-call-1", "echo", JSON.stringify({ message })),
@@ -146,7 +147,7 @@ function sdkRig(): EngineRig {
 		scriptRecordedReply: (text) => {
 			const rec = recordingModel([text], 1);
 			recorded = rec;
-			step = { model: rec.model, system: "test" };
+			step = { engine: "ai-sdk", model: rec.model, system: "test" };
 			return { prompts: () => recorded?.prompts ?? [] };
 		},
 		scriptTextThenHold: (text) => {
@@ -165,7 +166,7 @@ function sdkRig(): EngineRig {
 					},
 				},
 			]);
-			step = { model: model.model, system: "test" };
+			step = { engine: "ai-sdk", model: model.model, system: "test" };
 			return { entered: entered.promise, release: () => gate.resolve() };
 		},
 		scriptTextThenFail: (text) => {
@@ -185,7 +186,7 @@ function sdkRig(): EngineRig {
 					},
 				},
 			]);
-			step = { model: model.model, system: "test" };
+			step = { engine: "ai-sdk", model: model.model, system: "test" };
 		},
 		scriptPreContentHold: () => {
 			// The provider accepts the request then says nothing — the
@@ -202,11 +203,12 @@ function sdkRig(): EngineRig {
 					},
 				},
 			]);
-			step = { model: model.model, system: "test" };
+			step = { engine: "ai-sdk", model: model.model, system: "test" };
 			return { entered: entered.promise, release: () => gate.resolve() };
 		},
 		scriptPreContentFail: () => {
 			step = {
+				engine: "ai-sdk",
 				model: scriptedModel([new Error("provider exploded before streaming")]).model,
 				system: "test",
 			};
@@ -215,7 +217,7 @@ function sdkRig(): EngineRig {
 			// Delta 0 streams out, delta 1 is held inside the provider
 			// stream — the turn is mid-stream at `entered`.
 			const gated = pauseFakeModelAtDelta(["a", "b"], 1);
-			step = { model: gated.model, system: "test" };
+			step = { engine: "ai-sdk", model: gated.model, system: "test" };
 			return { entered: gated.entered, release: () => gated.release() };
 		},
 		scriptProgressThenHold: () => {
@@ -242,7 +244,7 @@ function sdkRig(): EngineRig {
 					},
 				},
 			]);
-			step = { model: model.model, system: "test" };
+			step = { engine: "ai-sdk", model: model.model, system: "test" };
 			return { entered: entered.promise, release: () => gate.resolve() };
 		},
 	};
@@ -689,11 +691,33 @@ describe("turn engine conformance", () => {
 	}
 
 	test("pickEngine returns the first accepting engine", () => {
-		const step: ModelStep = { model: scriptedModel([]).model, system: "test" };
+		const step: ModelStep = { engine: "ai-sdk", model: scriptedModel([]).model, system: "test" };
 		expect(pickEngine([aiSdkEngine], step, "conv-x")).toBe(aiSdkEngine);
 	});
 
 	test("pickEngine with no matching engine fails loud", () => {
+		const claudeEngine: TurnEngine<ClaudeStep> = {
+			id: "claude-code",
+			accepts: isClaudeStep,
+			run: async () => {
+				throw new Error("not exercised");
+			},
+		};
+		const step = { engine: "deepagents" };
+		expect(() => pickEngine([aiSdkEngine, claudeEngine], step, "conv-x")).toThrow(
+			'conversation conv-x has no engine for step engine "deepagents" (engines: ai-sdk, claude-code)',
+		);
+	});
+
+	test("each engine accepts only its own tag", () => {
+		const claudeEngine: TurnEngine<ClaudeStep> = {
+			id: "claude-code",
+			accepts: isClaudeStep,
+			run: async () => {
+				throw new Error("not exercised");
+			},
+		};
+		const aiStep: ModelStep = { engine: "ai-sdk", model: scriptedModel([]).model, system: "test" };
 		const step: ClaudeStep = {
 			engine: "claude-code",
 			label: "claude/claude-sonnet-4-5",
@@ -702,8 +726,7 @@ describe("turn engine conformance", () => {
 			system: "test",
 			thinking: {},
 		};
-		expect(() => pickEngine([aiSdkEngine], step, "conv-x")).toThrow(
-			"conversation conv-x has no engine for this step (engines: ai-sdk)",
-		);
+		expect(aiSdkEngine.accepts(step)).toBe(false);
+		expect(claudeEngine.accepts(aiStep)).toBe(false);
 	});
 });

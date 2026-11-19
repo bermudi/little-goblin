@@ -857,7 +857,7 @@ describe("transient transport retry (#191)", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: s.model, system: "test", transientRetryDelayMs: 0 }),
+			buildStep: () => ({ engine: "ai-sdk", model: s.model, system: "test", transientRetryDelayMs: 0 }),
 			makeTools: () => ({
 				probe: defineTool({
 					description: "test tool",
@@ -2802,7 +2802,7 @@ describe("cache stability", () => {
 			step: { contextWindow: 1 },
 			buildStep: () => {
 				builds++;
-				return { model: fakeModel(["ok"], 1), system: "test", contextWindow: 1 };
+				return { engine: "ai-sdk", model: fakeModel(["ok"], 1), system: "test", contextWindow: 1 };
 			},
 			deps: {
 				compaction: {
@@ -2847,6 +2847,7 @@ describe("cache stability", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: (c, toolset) => ({
+				engine: "ai-sdk",
 				model: fakeModel(["ok"], 1),
 				system: systemPromptFor(store, c, toolNames(toolset)).text,
 			}),
@@ -2976,7 +2977,7 @@ describe("cache stability", () => {
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],
 			store,
-			buildStep: () => ({ model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model, system: "test" }),
 			makeTools: () => ({}),
 			pruneBetweenTurns: (convId) => {
 				calls.push(convId);
@@ -3013,7 +3014,7 @@ describe("cache stability", () => {
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],
 			store,
-			buildStep: () => ({ model: fakeModel(["ok"], 5), system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: fakeModel(["ok"], 5), system: "test" }),
 			makeTools: () => ({}),
 			pruneBetweenTurns: () => {
 				throw new Error("projection store exploded");
@@ -3519,7 +3520,7 @@ describe("steering", () => {
 		const r = rig({
 			buildStep: async () => {
 				await stepGate.promise;
-				return { model, system: "test" };
+				return { engine: "ai-sdk", model, system: "test" };
 			},
 		});
 		const s1 = submit(r, "one");
@@ -3744,7 +3745,7 @@ describe("app channel", () => {
 			addr: appAddress("chat-01"),
 			buildStep: async () => {
 				await stepGate.promise;
-				return { model, system: "test" };
+				return { engine: "ai-sdk", model, system: "test" };
 			},
 		});
 		const s1 = submit(r, "one");
@@ -4879,6 +4880,7 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		async buildStep(conv) {
 			if (++calls === 1) await held;
 			return {
+				engine: "ai-sdk",
 				model: fakeModel([`${conv.model}:${conv.thinking}`], 1),
 				system: "test",
 				label: conv.model!,
@@ -4956,7 +4958,7 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 		captureConversation: (row) => captureConversationSettings(store, row, cfg),
 		buildStep: (row) => {
 			selections.push(`${row.model}:${row.thinking}`);
-			return { model, system: "test", contextWindow: 1000 };
+			return { engine: "ai-sdk", model, system: "test", contextWindow: 1000 };
 		},
 		makeTools: () => ({}),
 		compaction: {
@@ -5008,7 +5010,7 @@ test("invalid durable app settings report admission error exactly once without s
 		captureConversation: (row) => captureConversationSettings(store, row, cfg),
 		buildStep: () => {
 			modelCalls++;
-			return { model: fakeModel(["unused"]), system: "test" };
+			return { engine: "ai-sdk", model: fakeModel(["unused"]), system: "test" };
 		},
 		makeTools: () => ({}),
 	});
@@ -5045,7 +5047,7 @@ describe("turn journal", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: () => ({
 				probe: defineTool({
 					description: "test tool",
@@ -5086,7 +5088,7 @@ describe("turn journal", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: gated.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: gated.model, system: "test" }),
 			makeTools: () => ({}),
 		});
 		try {
@@ -5140,7 +5142,7 @@ describe("turn journal", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: () => ({
 				probe: defineTool({
 					description: "test tool",
@@ -5225,7 +5227,7 @@ describe("turn journal", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model, system: "test" }),
 			makeTools: () => ({
 				probe: defineTool({
 					description: "test tool",
@@ -5360,7 +5362,7 @@ describe("unlanded-turn progress — error rail", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: () => ({
 				probe: defineTool({
 					description: "test tool",
@@ -5418,7 +5420,7 @@ describe("unlanded-turn progress — error rail", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: () => ({
 				probe: defineTool({
 					description: "test tool",
@@ -5475,7 +5477,7 @@ describe("unlanded-turn progress — error rail", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: () => ({
 				probe: defineTool({
 					description: "test tool",
@@ -5513,7 +5515,7 @@ describe("unlanded-turn progress — error rail", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: () => ({}),
 		});
 		try {
@@ -5597,7 +5599,7 @@ describe("unlanded-turn progress — error rail", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: () => ({}),
 		});
 		try {
@@ -5666,6 +5668,7 @@ describe("unlanded-turn progress — error rail", () => {
 			store,
 			turnJournal: journal,
 			buildStep: (c) => ({
+				engine: "ai-sdk",
 				model: (c.model === "zai/glm-5.3" ? quota : serving).model,
 				system: "test",
 			}),
@@ -5711,7 +5714,7 @@ describe("unlanded-turn progress — error rail", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: () => ({}),
 		});
 		try {
@@ -5982,7 +5985,7 @@ describe("unlanded-turn progress — error rail", () => {
 			engines: [aiSdkEngine],
 			store: reopened,
 			turnJournal: journal2,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: () => ({}),
 		});
 		try {
@@ -6013,7 +6016,7 @@ describe("tool context", () => {
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],
 			store,
-			buildStep: () => ({ model: fakeModel(["ok"]), system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: fakeModel(["ok"]), system: "test" }),
 			makeTools: (_c, _v, _r, _f, context) => {
 				seen.push({ runId: context!.runId, source: context!.sourceMessageId() });
 				return {};
@@ -6045,7 +6048,7 @@ describe("tool context", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: (_c, _v, _r, _f, context) => {
 				contexts.push(context!);
 				return {

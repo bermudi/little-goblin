@@ -1,10 +1,12 @@
-import { relative, resolve } from "node:path";
+import { Database } from "bun:sqlite";
+import { statSync } from "node:fs";
+import { join } from "node:path";
+import { z } from "zod";
 import type { Config } from "../config-schema.ts";
-import { goblinHome } from "../goblin-home.ts";
-import { paths } from "../home-layout.ts";
 import { T3Error, makeT3, type T3Runner } from "../t3.ts";
 import {
 	errno,
+	failure,
 	ProbeError,
 	result,
 	type HealthResult,
@@ -15,12 +17,31 @@ const T3_PROBE_TIMEOUT_MS = 5_000;
 const UNREACHABLE_HINT =
 	"Ensure T3 Code is running and the `t3` CLI is available; inspect `t3 serve`.";
 
-function defaultWorkspace(home: string): string {
-	// projectWorkdir() uses paths.workspace() for a conversation without a
-	// project (src/projects.ts); rebase that home-layout path to doctor's
-	// explicit target home, which may differ in tests.
-	const workspaceFromHome = relative(resolve(goblinHome()), resolve(paths.workspace()));
-	return resolve(home, workspaceFromHome);
+// Handover targets goblin's projects only — never goblin's own workspace
+// (operator, 2026-11-19, #740) — so the probe walks the active project dirs.
+type ProjectDirs = { kind: "dirs"; dirs: string[] } | { kind: "none"; why: string };
+
+function activeProjectDirs(home: string): ProjectDirs {
+	const path = join(home, "state/goblin.sqlite");
+	try {
+		if (!statSync(path).isFile()) throw new ProbeError("not-regular-file");
+	} catch (error) {
+		if (errno(error) === "ENOENT") return { kind: "none", why: "No state database to read projects from" };
+		throw error;
+	}
+	const db = new Database(path, { readonly: true, strict: true });
+	try {
+		db.exec("PRAGMA query_only=ON; PRAGMA busy_timeout=200");
+		const table = db.query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='projects'").get();
+		if (table === null) return { kind: "none", why: "No projects table yet" };
+		const dirs = z
+			.array(z.object({ dir: z.string() }))
+			.parse(db.query("SELECT dir FROM projects WHERE archived_at IS NULL ORDER BY created_at").all())
+			.map((row) => row.dir);
+		return dirs.length === 0 ? { kind: "none", why: "No active project to hand over to" } : { kind: "dirs", dirs };
+	} finally {
+		db.close();
+	}
 }
 
 export async function t3Health(
@@ -44,7 +65,14 @@ export async function t3Health(
 	}
 
 	const start = performance.now();
-	const workspace = defaultWorkspace(home);
+	let projects: ProjectDirs;
+	try {
+		projects = activeProjectDirs(home);
+	} catch (error) {
+		return failure("delegation.t3", scope, error, start, `Inspect ${join(home, "state/goblin.sqlite")}`);
+	}
+	if (projects.kind === "none") return result("delegation.t3", scope, "skip", projects.why, start);
+
 	const controller = new AbortController();
 	const signal = probe.signal
 		? AbortSignal.any([probe.signal, controller.signal])
@@ -59,32 +87,33 @@ export async function t3Health(
 		}, T3_PROBE_TIMEOUT_MS);
 	});
 
+	const t3 = makeT3(runner);
 	try {
-		await Promise.race([
-			makeT3(runner).listThreads(workspace, {
-				signal,
-				timeoutMs: T3_PROBE_TIMEOUT_MS,
-			}),
-			deadline,
-		]);
+		for (const dir of projects.dirs) {
+			try {
+				await Promise.race([t3.listThreads(dir, { signal, timeoutMs: T3_PROBE_TIMEOUT_MS }), deadline]);
+				return result(
+					"delegation.t3",
+					scope,
+					"pass",
+					"T3 Code answered a read-only thread list for a goblin project",
+					start,
+				);
+			} catch (error) {
+				// T3 answered, it just doesn't know this dir: try the next project.
+				if (error instanceof T3Error && error.code === "project_not_found") continue;
+				throw error;
+			}
+		}
 		return result(
 			"delegation.t3",
 			scope,
-			"pass",
-			"T3 Code answered a read-only thread list for the default workspace",
+			"warn",
+			`T3 Code answered but knows none of goblin's ${projects.dirs.length} active projects; handover has nowhere to go`,
 			start,
+			"Register a project you hand work over on with `t3 project add <project dir>`; never goblin's workspace.",
 		);
 	} catch (error) {
-		if (error instanceof T3Error && error.code === "project_not_found") {
-			return result(
-				"delegation.t3",
-				scope,
-				"fail",
-				"The default delegation workspace is not a T3 Code project",
-				start,
-				`t3 project add ${workspace}`,
-			);
-		}
 		const category = timedOut
 			? "timeout"
 			: error instanceof T3Error

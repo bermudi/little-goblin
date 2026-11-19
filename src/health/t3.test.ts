@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfigValue } from "../config.ts";
+import { ensureProjectsSchema } from "../projects.ts";
 import type { T3CallOpts, T3RunResult, T3Runner } from "../t3.ts";
 import { t3Health } from "./t3.ts";
 
@@ -16,23 +18,47 @@ const config = parseConfigValue({
 });
 const ok = (stdout: string): T3RunResult => ({ code: 0, stdout, stderr: "" });
 const nonzero = (stderr: string): T3RunResult => ({ code: 1, stdout: "", stderr });
+const unknownProject = (dir: string) =>
+	nonzero(`No T3 Code project matches '${dir}'. Pass a project id or a path inside a project.`);
 
-function home() {
+interface ProjectRowInput {
+	dir: string;
+	archived?: boolean;
+}
+
+function home(projects?: ProjectRowInput[]) {
 	const path = mkdtempSync(join(tmpdir(), "goblin-health-t3-"));
+	if (projects !== undefined) {
+		mkdirSync(join(path, "state"));
+		const db = new Database(join(path, "state/goblin.sqlite"));
+		ensureProjectsSchema(db);
+		projects.forEach((p, i) => {
+			db.query(
+				"INSERT INTO projects (id, name, slug, home, dir, created_at, archived_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			).run(`p${i}`, `p${i}`, `p${i}`, p.dir, p.dir, `2026-11-19T00:00:0${i}Z`, p.archived ? "2026-11-19T01:00:00Z" : null);
+		});
+		db.close();
+	}
 	return {
 		path,
+		workspace: join(path, "workspace"),
 		cleanup: () => rmSync(path, { recursive: true, force: true }),
 	};
 }
 
+function recorder(answer: (dir: string) => T3RunResult) {
+	const calls: { args: string[]; opts?: T3CallOpts }[] = [];
+	const runner: T3Runner = async (args, opts) => {
+		calls.push({ args, ...(opts === undefined ? {} : { opts }) });
+		return answer(args[3]!);
+	};
+	return { calls, runner, dirs: () => calls.map((c) => c.args[3]) };
+}
+
 describe("delegation.t3 health check", () => {
 	test("no delegation block still probes — handover runs on t3 regardless", async () => {
-		let calls = 0;
-		const runner: T3Runner = async () => {
-			calls++;
-			return ok("[]");
-		};
-		const target = home();
+		const r = recorder(() => ok("[]"));
+		const target = home([{ dir: "/repo/a" }]);
 		try {
 			const finding = await t3Health(
 				parseConfigValue({
@@ -43,53 +69,83 @@ describe("delegation.t3 health check", () => {
 				target.path,
 				"installed",
 				{},
-				runner,
+				r.runner,
 			);
 			expect(finding.status).toBe("pass");
-			expect(calls).toBe(1);
+			expect(r.calls).toHaveLength(1);
 		} finally {
 			target.cleanup();
 		}
 	});
 
 	test("preflight and unreadable config skip without calling the runner", async () => {
-		let calls = 0;
-		const runner: T3Runner = async () => {
-			calls++;
-			return ok("[]");
-		};
-		const target = home();
+		const r = recorder(() => ok("[]"));
+		const target = home([{ dir: "/repo/a" }]);
 		try {
-			const pre = await t3Health(config, target.path, "preflight", {}, runner);
+			const pre = await t3Health(config, target.path, "preflight", {}, r.runner);
 			expect(pre.status).toBe("skip");
-			const blocked = await t3Health(undefined, target.path, "installed", {}, runner);
+			const blocked = await t3Health(undefined, target.path, "installed", {}, r.runner);
 			expect(blocked.status).toBe("skip");
 			expect(blocked.detail).toContain("Blocked by config");
-			expect(calls).toBe(0);
+			expect(r.calls).toHaveLength(0);
 		} finally {
 			target.cleanup();
 		}
 	});
 
-	test("handover reaches t3: an empty thread list passes and invokes only list", async () => {
-		const calls: { args: string[]; opts?: T3CallOpts }[] = [];
-		const runner: T3Runner = async (args, opts) => {
-			calls.push({ args, ...(opts === undefined ? {} : { opts }) });
-			return ok("[]");
-		};
-		const target = home();
+	test("no state database or no active project skips without calling t3", async () => {
+		const r = recorder(() => ok("[]"));
+		const bare = home();
+		const archived = home([{ dir: "/repo/old", archived: true }]);
 		try {
-			const finding = await t3Health(config, target.path, "installed", {}, runner);
+			expect((await t3Health(config, bare.path, "installed", {}, r.runner)).status).toBe("skip");
+			const none = await t3Health(config, archived.path, "installed", {}, r.runner);
+			expect(none.status).toBe("skip");
+			expect(none.detail).toContain("No active project");
+			expect(r.calls).toHaveLength(0);
+		} finally {
+			bare.cleanup();
+			archived.cleanup();
+		}
+	});
+
+	test("an empty thread list for a goblin project passes with one read-only list", async () => {
+		const r = recorder(() => ok("[]"));
+		const target = home([{ dir: "/repo/a" }]);
+		try {
+			const finding = await t3Health(config, target.path, "installed", {}, r.runner);
 			expect(finding.status).toBe("pass");
-			expect(calls).toHaveLength(1);
-			expect(calls[0]!.args).toEqual([
-				"thread",
-				"list",
-				"--project",
-				join(target.path, "workspace"),
-				"--json",
-			]);
-			expect(calls[0]!.opts?.timeoutMs).toBeGreaterThan(0);
+			expect(r.calls).toHaveLength(1);
+			expect(r.calls[0]!.args).toEqual(["thread", "list", "--project", "/repo/a", "--json"]);
+			expect(r.calls[0]!.opts?.timeoutMs).toBeGreaterThan(0);
+		} finally {
+			target.cleanup();
+		}
+	});
+
+	test("goblin's workspace is never probed; an unknown project falls through to the next", async () => {
+		const r = recorder((dir) => (dir === "/repo/b" ? ok("[]") : unknownProject(dir)));
+		const target = home([{ dir: "/repo/a" }, { dir: "/repo/old", archived: true }, { dir: "/repo/b" }]);
+		try {
+			const finding = await t3Health(config, target.path, "installed", {}, r.runner);
+			expect(finding.status).toBe("pass");
+			expect(r.dirs()).toEqual(["/repo/a", "/repo/b"]);
+			expect(r.dirs()).not.toContain(target.workspace);
+		} finally {
+			target.cleanup();
+		}
+	});
+
+	test("t3 knowing none of goblin's projects warns and never suggests registering the workspace", async () => {
+		const r = recorder(unknownProject);
+		const target = home([{ dir: "/repo/a" }, { dir: "/repo/b" }]);
+		try {
+			const finding = await t3Health(config, target.path, "installed", {}, r.runner);
+			expect(finding.status).toBe("warn");
+			expect(finding.detail).toContain("none of goblin's 2 active projects");
+			expect(finding.detail).not.toContain("No T3 Code project matches");
+			expect(finding.next).not.toContain(target.workspace);
+			expect(r.dirs()).toEqual(["/repo/a", "/repo/b"]);
 		} finally {
 			target.cleanup();
 		}
@@ -97,31 +153,29 @@ describe("delegation.t3 health check", () => {
 
 	test("handover reports safe T3 exit detail without raw stderr", async () => {
 		const secret = "raw stderr sentinel";
-		const runner: T3Runner = async () => nonzero(secret);
-		const target = home();
+		const r = recorder(() => nonzero(secret));
+		const target = home([{ dir: "/repo/a" }, { dir: "/repo/b" }]);
 		try {
-			const finding = await t3Health(config, target.path, "installed", {}, runner);
+			const finding = await t3Health(config, target.path, "installed", {}, r.runner);
 			expect(finding.status).toBe("fail");
 			expect(finding.detail).toContain("t3 server or CLI unreachable: exit_1");
 			expect(finding.detail).not.toContain(secret);
 			expect(finding.next).toContain("t3 serve");
+			expect(r.calls).toHaveLength(1);
 		} finally {
 			target.cleanup();
 		}
 	});
 
-	test("an unknown T3 project fails with an actionable registration hint", async () => {
-		const runner: T3Runner = async () =>
-			nonzero(
-				"No T3 Code project matches '/workspace'. Pass a project id or a path inside a project.",
-			);
-		const target = home();
+	test("no running T3 server fails as unreachable, not as an unknown project", async () => {
+		// Real CLI wording with T3CODE_HOME on an empty dir (T3 Code, 2026-11-19).
+		const r = recorder(() => nonzero("No running T3 Code server uses /x. Start T3 Code, then retry."));
+		const target = home([{ dir: "/repo/a" }, { dir: "/repo/b" }]);
 		try {
-			const finding = await t3Health(config, target.path, "installed", {}, runner);
+			const finding = await t3Health(config, target.path, "installed", {}, r.runner);
 			expect(finding.status).toBe("fail");
-			expect(finding.detail).toContain("not a T3 Code project");
-			expect(finding.detail).not.toContain("No T3 Code project matches");
-			expect(finding.next).toBe(`t3 project add ${join(target.path, "workspace")}`);
+			expect(finding.detail).toContain("t3 server or CLI unreachable");
+			expect(r.calls).toHaveLength(1);
 		} finally {
 			target.cleanup();
 		}
@@ -131,7 +185,7 @@ describe("delegation.t3 health check", () => {
 		const runner: T3Runner = async () => {
 			throw Object.assign(new Error("spawn t3 ENOENT"), { code: "ENOENT" });
 		};
-		const target = home();
+		const target = home([{ dir: "/repo/a" }]);
 		try {
 			const finding = await t3Health(config, target.path, "installed", {}, runner);
 			expect(finding.status).toBe("fail");
@@ -144,7 +198,7 @@ describe("delegation.t3 health check", () => {
 
 	test("a hanging runner is bounded and reported as a timeout", async () => {
 		const runner: T3Runner = () => new Promise<T3RunResult>(() => {});
-		const target = home();
+		const target = home([{ dir: "/repo/a" }]);
 		try {
 			const finding = await t3Health(config, target.path, "installed", {}, runner);
 			expect(finding.status).toBe("fail");

@@ -1,6 +1,6 @@
 // Report seam of the delegation family: where a row's report lives and
 // the issue-lead row predicate. Every delegation runs in goblin's own
-// local herdr session — there is no target dimension.
+// private hc session — there is no target dimension.
 
 import { join } from "node:path";
 import { log } from "./log.ts";
@@ -34,13 +34,13 @@ export function reportNote(deps: DelegationLifecycleDeps, d: Delegation): string
 
 // Cleanup has no watcher fallback: close each bound workspace once, best-effort,
 // without replacing the stop/failed result with a cleanup error.
-export async function closeWorkspaceQuietly(
+export async function killQuietly(
 	deps: DelegationLifecycleDeps,
 	id: number,
 	workspaceId: string,
 ): Promise<void> {
 	try {
-		await deps.herdr.closeWorkspace(workspaceId);
+		await deps.hc.kill(workspaceId);
 	} catch (err) {
 		log.warn("delegation workspace close failed", err, {
 			delegation: id,

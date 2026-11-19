@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { openDelegations, type DelegationsStore } from "../../delegations.ts";
 import { startDelegationLifecycle } from "../../delegation-watcher.ts";
 import type { DelegationLifecycle } from "../../delegation-lifecycle.ts";
-import { HerdrError, type AgentInfo, type Herdr } from "../../herdr.ts";
+import { HerdrError, type AgentInfo, type Herdr } from "../../hc-delegation.ts";
 import { z } from "zod";
 import { delegateInputSchema, delegateTool, type DelegateToolDeps } from "./delegate.ts";
 
@@ -83,6 +83,9 @@ function harness(startError?: { code: string; message: string }): Harness {
 		{
 			delegations: store,
 			herdr,
+			get hc() {
+				return this.herdr!;
+			},
 			delegationsDir,
 			homeDir,
 			wake: () => true,
@@ -286,7 +289,7 @@ describe("delegate tool", () => {
 		})) as { id: number; agent_name: string; attach: string };
 		expect(out.id).toBeGreaterThan(0);
 		expect(out.agent_name).toBe("g1-parser-work");
-		expect(out.attach).toBe("herdr session attach goblin");
+		expect(out.attach).toBe("hc attach g1-parser-work");
 		expect(h.prompts).toHaveLength(1);
 		expect(h.prompts[0]).toContain("refactor the parser");
 		expect(h.prompts[0]).toContain("final report");
@@ -529,6 +532,7 @@ describe("delegate tool", () => {
 		await h.lifecycle.stopTicker();
 		const w = startDelegationLifecycle({
 			delegations: h.store,
+			hc: h.herdr,
 			herdr: h.herdr,
 			delegationsDir: h.delegationsDir,
 			homeDir: h.homeDir,
@@ -654,6 +658,7 @@ describe("delegate tool", () => {
 		await h.lifecycle.stopTicker();
 		const w = startDelegationLifecycle({
 			delegations: h.store,
+			hc: h.herdr,
 			herdr: h.herdr,
 			delegationsDir: h.delegationsDir,
 			homeDir: h.homeDir,

@@ -5,8 +5,13 @@
 import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "./log.ts";
-import type { Delegation, DelegationStatus } from "./delegations.ts";
-import type { AgentInfo } from "./herdr.ts";
+import { agentNameFor, type Delegation, type DelegationStatus } from "./delegations.ts";
+import type { HcRunInfo } from "./hc-delegation.ts";
+import { ensureHcCore, hcSessionForHome } from "./hc.ts";
+import { goblinHome } from "./goblin-home.ts";
+import { paths } from "./home-layout.ts";
+import { installHcHooks } from "./hc-hooks.ts";
+import { seedHarnessTrust } from "./harness-trust.ts";
 import { READINESS_OBSERVE_MS, readinessKey, type GithubIssue } from "./pr-readiness.ts";
 import type { DelegationLifecycle, DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
 import {
@@ -20,7 +25,7 @@ import {
 } from "./delegation-actions.ts";
 import { notify, observeReadiness } from "./delegation-notices.ts";
 import {
-	closeWorkspaceQuietly,
+	killQuietly,
 	isIssueLead,
 	reportNote,
 	reportPathFor,
@@ -31,7 +36,7 @@ const TICK_MS = 15_000;
 // its seq before calling it stuck on a startup dialog.
 const STALL_MS = 90_000;
 // Symmetric backstop for a `working` report that never progresses: openclaw
-// finalizes stale subagent runs after 2 h, and herdr exposes no
+// finalizes stale subagent runs after 2 h, and hc exposes no
 // output-activity signal, so a long healthy task is indistinguishable from a
 // frozen one before that (#489).
 const PROGRESS_STALL_MS = 2 * 3_600_000;
@@ -232,17 +237,20 @@ function transition(
 // deliberately differs from notice-before-transition: waiting on the notice
 // would leave the row invisible to every later scan.
 async function recoverStart(deps: DelegationLifecycleDeps, d: Delegation): Promise<void> {
-	if (d.workspaceId) {
-		await closeWorkspaceQuietly(deps, d.id, d.workspaceId);
+	const harness = deps.config.harnesses[d.harness];
+	if (!harness || !d.cwd) throw new Error(`cannot recover delegation ${d.id}: harness or cwd missing`);
+	const name = d.agentName || agentNameFor(d.id, d.name);
+	if ((await deps.hc.get(name)) === null) {
+		installHcHooks(`${import.meta.dir}/../deploy/hc-hooks`, paths.hcHooks());
+		seedHarnessTrust(harness.kind, d.cwd, deps.homeDir);
+		await ensureHcCore(paths.hcBinary(), hcSessionForHome(goblinHome()));
+		await deps.hc.start(name, harness.kind, d.cwd, harness.args ?? []);
 	}
-	try {
-		await notify(deps, d, "failed", {
-			extra: "(goblin restarted while starting it)",
-			agentGone: d.agentName === "",
-		});
-	} finally {
-		transition(deps, d, "failed");
-	}
+	await deps.hc.prompt(name, d.task + reportNote(deps, d));
+	const seq = (await deps.hc.get(name))?.state_change_seq ?? null;
+	deps.delegations.bindLaunch(d.id, { agentName: name, workspaceId: name, paneId: name });
+	deps.delegations.markRunning(d.id, seq, new Date());
+	log.info("delegation start recovered", { delegation: d.id, terminal: name, cwd: d.cwd });
 }
 
 // Deliver an owed prompt after the dialog advances seq. A rejected prompt
@@ -251,11 +259,11 @@ async function recoverStart(deps: DelegationLifecycleDeps, d: Delegation): Promi
 async function deliverPendingPrompt(
 	deps: DelegationLifecycleDeps,
 	d: Delegation,
-	info: AgentInfo,
+	info: HcRunInfo,
 ): Promise<void> {
 	const promptedAt = new Date();
 	try {
-		await deps.herdr.prompt(d.agentName, d.task + reportNote(deps, d));
+		await deps.hc.prompt(d.agentName, d.task + reportNote(deps, d));
 	} catch (err) {
 		log.warn("delegation pending prompt rejected", err, {
 			delegation: d.id,
@@ -268,7 +276,7 @@ async function deliverPendingPrompt(
 	// instead of making the park's first idle glance a false completion.
 	let seq: number | null = null;
 	try {
-		seq = (await deps.herdr.get(d.agentName))?.state_change_seq ?? null;
+		seq = (await deps.hc.get(d.agentName))?.state_change_seq ?? null;
 	} catch (err) {
 		log.warn("delegation post-prompt baseline read failed — watcher will capture", err, {
 			delegation: d.id,
@@ -335,9 +343,9 @@ async function check(
 	d: Delegation,
 	lastProgress: Map<number, { seq: number; sinceMs: number }>,
 ): Promise<void> {
-	let info: AgentInfo | null;
+	let info: HcRunInfo | null;
 	try {
-		info = await deps.herdr.get(d.agentName);
+		info = await deps.hc.get(d.agentName);
 	} catch (err) {
 		// Cannot observe is not agent gone — the session may be down while
 		// the agent runs, so leave its row watched rather than marking failed.

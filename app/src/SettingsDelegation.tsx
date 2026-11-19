@@ -1,6 +1,6 @@
 // Delegation — the coding agents goblin may hand work to and the
 // role → agent defaults the delegate tool uses when a call names no
-// harness. Each agent is a herdr kind plus native CLI args.
+// harness. Each entry is a harness kind plus native CLI args.
 
 import { useState } from "react";
 import type { DelegationRoleDraft, HarnessDraft } from "./settingsDraft.ts";
@@ -92,7 +92,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 				<>
 					<SectionHead
 						title="Coding agents"
-						purpose="Each name is what a delegate call passes as its harness. Kind is the herdr agent kind."
+						purpose="Each name is what a delegate call passes as its harness. Kind selects the installed harness."
 					/>
 					<div className="card">
 						{del.harnesses.length === 0 && (
@@ -127,7 +127,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 										value={h.kind}
 										mono
 										placeholder="pi"
-										cap="The herdr agent kind to launch."
+										cap="The harness kind to launch."
 										onChange={(v) => setHarness(i, { kind: v })}
 									/>
 								</div>

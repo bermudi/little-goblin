@@ -1,5 +1,5 @@
-// Rows survive goblin restarts in the shared WAL file while the herdr
-// unit keeps the panes alive; the watcher lives in delegation-watcher.ts.
+// Rows survive Goblin restarts in the shared WAL file while the private hc
+// core keeps terminals alive; the watcher lives in delegation-watcher.ts.
 
 import { Database } from "bun:sqlite";
 import { z } from "zod";
@@ -78,7 +78,7 @@ export interface DelegationsStore {
 	): Delegation | null;
 	// A null baseline records the pending posture: the post-prompt read
 	// failed and the watcher captures on its next scan. Null return means
-	// a `stop` won the race while herdr was launching.
+	// a `stop` won the race while hc was launching.
 	markRunning(id: number, baselineSeq: number | null, promptedAt: Date): Delegation | null;
 	// needs_input + prompt_pending + the park-time seq baseline,
 	// atomically — the watcher owes the prompt only on an advance past
@@ -175,7 +175,7 @@ function rowToDelegation(row: unknown): Delegation {
 	};
 }
 
-// `g<id>-<slug>` in herdr's agent-name charset ([a-z][a-z0-9_-]{0,31}).
+// `g<id>-<slug>` in hc's terminal-name charset ([a-z][a-z0-9_-]{0,31}).
 export function agentNameFor(id: number, name: string): string {
 	const slug = name
 		.toLowerCase()
@@ -273,7 +273,7 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 		}
 	}
 
-	// Rows with no agent_name predate the Herdr transport (the T3 Code
+	// Rows with no agent_name predate the hc transport (the T3 Code
 	// era) and are never observed again; if any is still awaiting a
 	// verdict, settle it now so the operator hears once instead of a
 	// watcher that can never decide. `starting` rows are left for boot
@@ -288,7 +288,7 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 		.all()) {
 		const r = z.object({ id: z.number(), name: z.string(), agent_name: z.string() }).parse(row);
 		qLegacy.run(settledAt.toISOString(), r.id);
-		log.warn("legacy delegation settled failed — transport moved back to Herdr panes", {
+		log.warn("legacy delegation settled failed — transport moved to hc terminals", {
 			delegation: r.id,
 			name: r.name,
 			agent: r.agent_name,

@@ -220,12 +220,11 @@
   // <provider>/<model> chat ref.
   // system1: { auth: "openrouter" },
 
-  // --- Delegation (other coding harnesses, via Herdr) ---
-  // Unset = no delegate tool. Each harness is a herdr agent kind plus
-  // native CLI args; `delegate start` runs it in a pane on the `goblin`
-  // herdr session (goblin-herdr.service), and the result comes back to
-  // the topic as a `[delegation: …]` message — the operator watches the
-  // pane with `herdr session attach goblin`. Runs on this machine only.
+  // --- Delegation (other coding harnesses, via pinned hc) ---
+  // Unset = no delegate tool. Each harness has a kind plus native CLI
+  // args; `delegate start` runs it as a named terminal on Goblin's private
+  // hc core, and the result comes back as a `[delegation: …]` message.
+  // The core and terminals survive Goblin restarts. Runs on this machine only.
   // `defaults` maps a work role to a harness name; `delegate` uses it
   // when a call names no harness. Role `default` is the fallback when a
   // call names no role. `askFirst: true` on a harness makes goblin ask

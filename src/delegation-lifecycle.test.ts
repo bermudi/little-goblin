@@ -24,7 +24,7 @@ import {
 } from "./delegations.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import type { DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
-import { HerdrError, makeHerdr, type AgentInfo, type Herdr } from "./herdr.ts";
+import { HerdrError, type AgentInfo, type Herdr } from "./hc-delegation.ts";
 import { setLogFile } from "./log.ts";
 import { prReadinessFixture } from "./test-helpers/pr-readiness.ts";
 import type { PrReadiness } from "./pr-readiness.ts";
@@ -53,7 +53,7 @@ function agent(name: string, status: string, seq: number): AgentInfo {
 }
 
 interface Harness {
-	deps: DelegationLifecycleDeps;
+	deps: DelegationLifecycleDeps & { herdr: Herdr };
 	store: DelegationsStore;
 	dbPath: string;
 	agents: Map<string, AgentInfo | null>;
@@ -97,6 +97,9 @@ function harness(): Harness {
 		deps: {
 			delegations: store,
 			herdr,
+			get hc() {
+				return this.herdr!;
+			},
 			delegationsDir,
 			homeDir,
 			wake: (_a, text) => {
@@ -1414,14 +1417,18 @@ describe("delegation watcher", () => {
 			paneId: "w9:p1",
 		});
 		const closed: string[] = [];
+		const hc = {
+			...h.deps.hc,
+			closeWorkspace: (id: string) => {
+				closed.push(id);
+				return Promise.resolve();
+			},
+		};
 		const w = startDelegationLifecycle({
 			...h.deps,
+			hc,
 			herdr: {
-				...h.deps.herdr,
-				closeWorkspace: (id) => {
-					closed.push(id);
-					return Promise.resolve();
-				},
+				...hc,
 			},
 		});
 		await w.tick();
@@ -1647,58 +1654,6 @@ describe("delegation watcher", () => {
 					setLogFile(null);
 					db.close();
 					h.store.close();
-				}
-			},
-		);
-
-		test.each([
-			[{ pane_id: "w9:p1" }, false],
-			[{ pane_id: "w9:p1", cwd: 42 }, false],
-			[{ cwd: "/w" }, false],
-			[{ pane_id: "w9:p1" }, true],
-		] as const)(
-			"unusable workspace pane %j closes before binding (stop=%s)",
-			async (rootPane, stop) => {
-				const h = harness();
-				const calls: string[][] = [];
-				h.deps.herdr = makeHerdr({ session: "probe" }, async (args) => {
-					calls.push(args);
-					if (args[2] === "workspace" && args[3] === "create") {
-						if (stop) expect((await owner.stop(1)).kind).toBe("stopped");
-						return {
-							code: 0,
-							stderr: "",
-							stdout: JSON.stringify({
-								result: { workspace: { workspace_id: "w9" }, root_pane: rootPane },
-							}),
-						};
-					}
-					if (args[2] === "workspace" && args[3] === "close") {
-						return { code: 0, stderr: "", stdout: JSON.stringify({ result: { type: "ok" } }) };
-					}
-					throw new Error(`unexpected CLI call: ${args.join(" ")}`);
-				});
-				const owner = startDelegationLifecycle(h.deps);
-				try {
-					const out = await owner.launch({
-						harness: { name: "codex", kind: "codex", args: [] },
-						task: "do it",
-						cwd: "/requested",
-						name: "bad pane",
-						address: { chatId: 1, threadId: null },
-					});
-					expect(out.kind).toBe(stop ? "stopped" : "failed");
-					if (out.kind === "failed") expect(out.why).toContain("root pane");
-					expect(h.store.get(1)?.workspaceId).toBe("");
-					expect(h.store.get(1)?.status).toBe(stop ? "stopped" : "failed");
-					expect(calls.map((args) => args.slice(2, 4))).toEqual([
-						["workspace", "create"],
-						["workspace", "close"],
-					]);
-					expect(calls[1]?.[4]).toBe("w9");
-					expect(existsSync(join(h.homeDir, ".codex"))).toBe(false);
-				} finally {
-					await owner.stopTicker();
 				}
 			},
 		);

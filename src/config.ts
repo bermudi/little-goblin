@@ -26,8 +26,8 @@ function configSyntaxError(err: unknown): Error {
 }
 
 // The interim T3 Code transport (issue #607/#608) is itself retired:
-// `delegate` runs on Herdr panes again (issue #728). Its config shapes
-// fail loud naming the fix — never silently dropped, so a stale block
+// `delegate` runs on Goblin's private hc core (issue #728). Its config
+// shapes fail loud naming the fix — never silently dropped, so a stale block
 // cannot boot a goblin with no delegate tool and no hint why.
 function retiredDelegationKey(raw: unknown): string | null {
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
@@ -37,7 +37,7 @@ function retiredDelegationKey(raw: unknown): string | null {
 	}
 	const d = delegation as Record<string, unknown>;
 	if (Object.hasOwn(d, "machines")) {
-		return "delegation.machines was removed — delegation runs on goblin's local herdr session only; delete the block (issue #728)";
+		return "delegation.machines was removed — delegation runs in Goblin's private hc session only; delete the block (issue #728)";
 	}
 	const harnesses = d.harnesses;
 	if (typeof harnesses === "object" && harnesses !== null && !Array.isArray(harnesses)) {
@@ -51,7 +51,7 @@ function retiredDelegationKey(raw: unknown): string | null {
 				// The entry name stays out of the message: config keys are
 				// user input and errors must never echo them (the sentinel
 				// probe in config.test.ts demands an empty stdout).
-				return `delegation.harnesses uses the retired T3 Code shape {provider, model, options?} — rewrite entries as {kind, args?, askFirst?} for Herdr (issue #728)`;
+				return `delegation.harnesses uses the retired T3 Code shape {provider, model, options?} — rewrite entries as {kind, args?, askFirst?} for hc (issue #728)`;
 			}
 		}
 	}

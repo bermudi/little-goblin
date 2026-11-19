@@ -104,10 +104,11 @@ export async function ensureHc(
 		const members = runTar(["-tzf", archivePath])
 			.split("\n")
 			.filter((member) => member.length > 0);
-		if (members.length !== 1 || members[0] !== BINARY_NAME) {
-			throw new Error("pinned hc archive must contain only the herdr-core binary");
+		const allowedMembers = new Set([BINARY_NAME, "LICENSE", "THIRD-PARTY-NOTICES"]);
+		if (!members.includes(BINARY_NAME) || members.some((member) => !allowedMembers.has(member))) {
+			throw new Error("pinned hc archive has unexpected members");
 		}
-		runTar(["-xzf", archivePath, "-C", stage, "--no-same-owner", "--no-same-permissions"]);
+		runTar(["-xzf", archivePath, "-C", stage, "--no-same-owner", "--no-same-permissions", "--", BINARY_NAME]);
 		if (!existsSync(extractedPath) || !statSync(extractedPath).isFile()) {
 			throw new Error("pinned hc archive did not contain a regular herdr-core binary");
 		}
@@ -135,6 +136,12 @@ export async function ensureHc(
 	} finally {
 		rmSync(stage, { recursive: true, force: true });
 	}
+}
+
+export function isPinnedHcBinary(binaryPath: string): boolean {
+	if (!existsSync(binaryPath)) return false;
+	const stat = statSync(binaryPath);
+	return stat.isFile() && fileSha256(binaryPath) === productionPin.binarySha256;
 }
 
 export function hcArchiveUrl(pin: HcInstallPin = productionPin): string {

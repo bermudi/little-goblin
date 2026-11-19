@@ -28,6 +28,13 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 > the probe-proven config mechanisms. Core state stays at
 > `~/.local/state/herdr-core/<session>/`; do not set `XDG_STATE_HOME`
 > because it would reach harness processes. Devin's SessionStart probe passed.
+> The core starts with a clean fixed environment: `HOME`, `USER`, `LOGNAME`,
+> `SHELL`, `PATH`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM` (default
+> `xterm-256color`), `XDG_RUNTIME_DIR`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`,
+> `XDG_CACHE_HOME`, and `TMPDIR`, copied only when present in Goblin's
+> environment. No other variables pass through; in particular,
+> `DBUS_SESSION_BUS_ADDRESS` is excluded. Add a variable only when a
+> harness demonstrably needs it, and record why.
 
 ## Delegation transport
 
@@ -40,7 +47,10 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
    The core runs outside the Goblin service cgroup so a Goblin restart does
    not end live runs. The default state path is
    `~/.local/state/herdr-core/<session>/`; no state-dir override is passed to
-   harnesses.
+   harnesses. The core starts through `systemd-run --user --scope -q env
+   -i` with only the fixed environment above. Goblin talks to the core over
+   its Unix socket; health and try cleanup must not call `server status`,
+   which may auto-start a core. `server stop` is allowed for explicit stop.
 4. Goblin installs per-harness OSC 7501 hooks. Session start reports `idle`,
    prompt/tool activity `working`, permission/question `blocked`, and turn
    end `idle`. Hooks act only when `GOBLIN_HC_RUN=1`.

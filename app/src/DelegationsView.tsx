@@ -44,7 +44,7 @@ function waitsFor(d: OperatorDelegationItem): string {
 }
 
 // The operator's stop (#414): goblin records it as theirs and does not
-// relaunch. A 409 means herdr could not close the agent — shown as is.
+// relaunch. A 409 means hc could not close the terminal — shown as is.
 function StopButton({
 	d,
 	token,

@@ -107,7 +107,7 @@ export interface ConfigPostBody {
 	operators: number[];
 	allowedUsers: number[];
 	// The editable face of delegation: harness definitions and the
-	// role → harness defaults. Each harness names the herdr kind it
+	// role → harness defaults. Each harness names the hc harness kind it
 	// launches plus optional argv; goblin never picks a model itself.
 	delegation?:
 		| ""
@@ -358,7 +358,7 @@ export interface OperatorDelegationsResponse {
 	delegations: OperatorDelegationItem[];
 }
 
-/** stopped = the row is stopped; still-running = herdr could not close it. */
+/** stopped = the row is stopped; still-running = hc could not close it. */
 export interface OperatorDelegationStopResponse {
 	outcome: "stopped" | "still running";
 	delegation: OperatorDelegationItem;

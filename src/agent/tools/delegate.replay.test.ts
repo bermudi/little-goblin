@@ -17,7 +17,7 @@ import { openStore } from "../../conversation.ts";
 import { openDelegations, type DelegationsStore } from "../../delegations.ts";
 import { startDelegationLifecycle } from "../../delegation-watcher.ts";
 import type { DelegationLifecycle } from "../../delegation-lifecycle.ts";
-import type { AgentInfo, Herdr } from "../../herdr.ts";
+import type { AgentInfo, Herdr } from "../../hc-delegation.ts";
 import { openProjects } from "../../projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "../../responsibilities.ts";
 import { fileDelegationReport } from "../../responsibility-runs.ts";
@@ -122,6 +122,9 @@ function rig(): Rig {
 		{
 			delegations: store,
 			herdr,
+			get hc() {
+				return this.herdr!;
+			},
 			delegationsDir: join(dir, "delegations"),
 			homeDir: home,
 			wake: (_address, text) => {

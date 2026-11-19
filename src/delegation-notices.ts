@@ -24,11 +24,11 @@ export async function readScreenTail(
 	lines: number,
 	opts: { agentGone?: boolean } = {},
 ): Promise<string> {
-	const herdr = deps.herdr;
+	const hc = deps.hc;
 	let firstError: unknown;
 	if (!opts.agentGone && d.agentName) {
 		try {
-			return await herdr.readAgent(d.agentName, lines);
+			return await hc.read(d.agentName, lines);
 		} catch (err) {
 			firstError = err;
 			log.warn("delegation agent read failed — falling back to pane", err, {
@@ -37,7 +37,7 @@ export async function readScreenTail(
 		}
 	}
 	try {
-		return await herdr.readPane(d.paneId, lines);
+			return await hc.read(d.paneId, lines);
 	} catch (err) {
 		// Log the pane failure even when returning the agent's first error.
 		firstError ??= err;

@@ -249,8 +249,8 @@ describe("goblin.json5", () => {
 	test("disk loads reject retired delegation shapes naming the fix", () => {
 		const dir = useHome("goblin-cfg-");
 		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
-		// The T3 Code interim shape is retired: delegate is back on Herdr
-		// panes (issue #728) and stale blocks fail loud, never warn-drop.
+		// The T3 Code interim shape is retired: delegate runs on private hc
+		// terminals (issue #728), and stale blocks fail loud, never warn-drop.
 		writeFileSync(
 			join(dir, "goblin.json5"),
 			`${base},delegation:{machines:{g7:{machine:"g7",root:"~/build"}},harnesses:{pi:{kind:"pi"}}}}`,
@@ -264,9 +264,9 @@ describe("goblin.json5", () => {
 	});
 
 	// The T3 Code interim shape (#607) is itself retired: delegate runs on
-	// Herdr panes again (issue #728). A stale {provider, model} entry fails
-	// loud naming the Herdr shape; {kind, args?, askFirst?} parses.
-	test("retired-shape delegation harnesses fail loud naming the Herdr shape", () => {
+	// private hc terminals (issue #728). A stale {provider, model} entry fails
+	// loud naming the supported harness shape.
+	test("retired-shape delegation harnesses fail loud naming the supported shape", () => {
 		const dir = useHome("goblin-cfg-");
 		writeFileSync(
 			join(dir, "goblin.json5"),
@@ -275,7 +275,7 @@ describe("goblin.json5", () => {
 			),
 		);
 		expect(() => loadConfig()).toThrow(/delegation\.harnesses uses the retired T3 Code shape/);
-		// The restored Herdr shape parses through the same door.
+		// The current harness shape parses through the same door.
 		expect(() =>
 			parseConfig({
 				...objBase,
@@ -624,11 +624,11 @@ describe("goblin.json5", () => {
 			],
 			["goblin", 5000, 2048, "mid", true, { semantic: 0.3 }, 4096, "high", 30_000, {}, 120_000],
 		],
-		// Issue #728: harnesses are {kind, args?, askFirst?} Herdr entries;
+		// Issue #728: harnesses are {kind, args?, askFirst?} entries;
 		// the T3 Code {provider, model} shape and machines are retired keys
 		// that fail loud (covered above), never silently stripped.
 		[
-			"delegation harnesses are {kind,args,askFirst} entries on Herdr",
+			"delegation harnesses are {kind,args,askFirst} entries",
 			Z(
 				`,delegation:{harnesses:{codex:{kind:"codex"},flash:{kind:"claude",args:["--model","glm-5.3-flash"],askFirst:true}}}`,
 			),

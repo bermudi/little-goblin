@@ -364,10 +364,10 @@ resource caps; disk is not capped (reaping bounds it).
 ### Delegation
 
 Off when unset. With a `delegation` block, the bot gets a `delegate`
-tool: it hands work to another coding harness in a Herdr pane
-(Codex, Claude, pi, devin, opencode, …) on the `goblin` herdr session
-(`goblin-herdr.service`). The operator watches the run with
-`herdr session attach goblin` or the app's Delegations page. Settings →
+tool: it hands work to another coding harness (Codex, Claude, pi, devin,
+opencode, …) on Goblin's private hc core. The named terminal and core
+survive Goblin restarts; inspect a run through hc or the app's Delegations
+page. Settings →
 Delegation edits the harness list and the role defaults; the block is
 boot-pinned, so a change applies after an approved restart.
 
@@ -384,7 +384,7 @@ delegation: {
 },
 ```
 
-Each harness is a herdr agent `kind` plus native CLI `args` — the model
+Each harness is a supported harness `kind` plus native CLI `args` — the model
 goes in `args` when the agent needs one; goblin never invents either.
 A default naming an undeclared harness is a config error. An explicit
 harness in a `delegate` call always wins over a role. `askFirst: true`

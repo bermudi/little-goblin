@@ -1,7 +1,8 @@
 import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import { checkAppAssets } from "./app-assets.ts";
-import { herdrUnit, systemdShow } from "./systemd.ts";
+import { systemdShow } from "./systemd.ts";
+import { hcCore } from "./hc.ts";
 import {
 	failure,
 	ProbeError,
@@ -16,13 +17,14 @@ export async function installation(
 	phase: HealthReport["phase"],
 	probe: ProbeContext = {},
 	delegationConfigured = false,
+	home = "",
 ): Promise<HealthResult[]> {
 	const start = performance.now(),
 		scope = `diagnostic-revision:${checkout}`;
 	if (phase === "preflight")
 		return [
 			result("service.goblin", scope, "skip", "Unit not required before installation", start),
-			result("service.goblin-herdr", scope, "skip", "Unit not required before installation", start),
+			result("delegation.hc", scope, "skip", "Core is not required before installation", start),
 			result(
 				"app.assets",
 				`installed-checkout:${checkout}`,
@@ -33,9 +35,6 @@ export async function installation(
 		];
 	let installed: string | undefined;
 	let finding: HealthResult;
-	// The herdr probe shares the systemctl boundary and the same deadline
-	// budget — run it beside the service probe, not after it.
-	const herdr = herdrUnit(scope, delegationConfigured, probe);
 	try {
 		const properties = await systemdShow(
 			"goblin.service",
@@ -78,7 +77,7 @@ export async function installation(
 	if (!installed) assets.detail += "; installed target unknown, diagnostic checkout inspected only";
 	return [
 		finding,
-		await herdr,
+		await hcCore(home, delegationConfigured),
 		result(
 			"installation.coverage",
 			scope,

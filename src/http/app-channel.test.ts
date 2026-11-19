@@ -930,7 +930,7 @@ describe("app operator surface", () => {
 			const ok = await wired.call(`/api/app/delegations/${row.id}/stop`, { method: "POST" });
 			expect(ok.status).toBe(200);
 			expect(((await ok.json()) as { outcome: string }).outcome).toBe("stopped");
-			// herdr could not close it — reported honestly.
+			// hc could not close it — reported honestly.
 			outcome = "still running";
 			const refused = await wired.call(`/api/app/delegations/${row.id}/stop`, {
 				method: "POST",

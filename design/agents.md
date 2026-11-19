@@ -9,17 +9,16 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 work to other agents through **two tools with two jobs**, in the standard
 shape that Claude Code, hermes and openclaw share. This ruling replaced
 the purpose-typed Pi Durable runtime (removed in #609 — its desktop-pool
-rulings live under "Computer use" below). `delegate` ran on T3 Code
-briefly (#615/#632) and is back on Herdr panes (operator, 2026-11-18,
-issue #728 — "herdr **stays** for driving codex, or opencode"); handover
-and responsibility stay on T3 Code ("to communicate with inner loop.
-that's it."). The Goblin-side `herdr` tool stays removed — "axe herdr
-tool" cut only the tool for the operator's own desk (`design/delegation.md`).
+rulings live under "Computer use" below). `delegate` runs on pinned
+herdr-core (`hc`) per the operator's direction on 2026-11-18 and the
+implementation rulings recorded in `design/delegation.md`. Handover and
+responsibility stay on T3 Code. The removed Goblin-side `herdr` tool does
+not return; it controlled the operator's desk, not delegated runs.
 
 | Tool | Job | Who decides | Runs on |
 |---|---|---|---|
 | `agent` | Give a piece of work to a child agent | Goblin, on its own judgment | Goblin's own runtime, as a child conversation |
-| `delegate` | Run a named external harness (codex, opencode, claude, pi, devin) | The operator only | A Herdr pane in the `goblin` session |
+| `delegate` | Run a named external harness (codex, opencode, claude, pi, devin) | The operator only | A named terminal on Goblin's private hc core |
 
 There is no third tool. The routing rule the model gets is one sentence:
 **the operator named a harness → `delegate`; otherwise → `agent`, or do
@@ -142,44 +141,42 @@ stop  {id}
   replay marks and the crash-approval gate. Children get the same crash
   rule as goblin's own turns.
 
-## `delegate`: external harness runs on Herdr
+## `delegate`: external harness runs on hc
 
 ### Only when the operator asks
 
 `delegate` runs a harness that the operator names: "have codex do X",
-"an opencode run" — "`delegate` stays just for this … only for use when
-the user asks for a `codex` run, or a `opencode` run" (operator,
-2026-11-18). The operator can also ask with a standing
+"an opencode run" — the operator's direction (2026-11-18) says to make
+the required binary available and install the right hooks at execution.
+The operator can also ask with a standing
 instruction, for example the issue-build flow that starts a lead
 (design/delegation.md → An issue build is one lead delegation). Goblin
 never chooses `delegate` on its own judgment. Work goblin decides to
 hand off goes to `agent`.
 
-### Transport: the `herdr` CLI
+### Transport: pinned herdr-core (`hc`)
 
-One adapter, `src/herdr.ts`, knows the Herdr wire; domain modules see
-its types only (the module-boundaries rule — only `herdr.ts` may spawn
-the CLI). Harnesses run interactively in panes on the `goblin` Herdr
-session, hosted by `goblin-herdr.service` — a sibling unit `goblin.service`
-`Wants=`/`After=`s so panes outlive goblin restarts. The wire contract
-is pinned by `src/herdr.live.test.ts`
-(`GOBLIN_HERDR_LIVE=1`, throwaway session — never the operator's).
+`src/hc.ts` owns the JSON-RPC socket contract; domain modules use the
+adapter. Goblin verifies and installs the pinned binary, then starts one
+home-hashed core session outside the service cgroup. Its state remains in
+`~/.local/state/herdr-core/<session>/`; Goblin does not set
+`XDG_STATE_HOME`. The core and its terminals survive Goblin restarts.
+`src/hc.live.test.ts` is the gated wire check and uses only a throwaway
+session.
 
-- **Harnesses stay config** as `{kind, args?, askFirst?}` — the herdr
-  agent kind plus native CLI flags; `delegation.defaults` maps roles to
-  harness names. The T3 shape (`{provider, model, options}`) is
-  rejected at boot naming the fix. Goblin never guesses a model.
-- **Verbs:** `start` (workspace + agent + prompt), `send`, `read`,
-  `answer` (keypress into a blocked pane, preflighted on live status),
-  `stop`. The pane watcher polls `agent get`/screen until the row
-  settles; prompt delivery is confirmed by the agent leaving idle, not
-  by `agent prompt` returning ok.
-- **Trust seeding** (`src/harness-trust.ts`) writes harness trust stores
-  per kind before launch — write-if-absent only; pinned against the
-  installed binaries by `src/harness-trust.live.test.ts`
-  (`GOBLIN_HARNESS_TRUST_LIVE=1`).
-- **The operator watches in Herdr** (`herdr session attach goblin`) or
-  the app's Delegations page; notices name the pane.
+- **Harnesses stay config** as `{kind, args?, askFirst?}` plus
+  `delegation.defaults`. The retired T3 shape is rejected at boot with a
+  fix-naming message. Goblin never guesses a model.
+- **Hooks report lifecycle through OSC 7501.** Shared assets are copied
+  durably to `$GOBLIN_HOME/bin/hc-hooks/`; hooks only report when
+  `GOBLIN_HC_RUN=1`. Codex hooks and trust hashes merge additively into
+  the operator's CODEX_HOME. Claude uses per-run settings; Pi an
+  extension; OpenCode and Devin use their probed config mechanisms.
+- **Verbs:** start waits for the first status before sending the prompt;
+  send waits for `working`; the watcher polls status until settlement;
+  answer sends a key only after a live `blocked` preflight; stop kills
+  the terminal. The operator can inspect the terminal through hc or the
+  app's Delegations page.
 
 ## Handover: T3 Code threads
 
@@ -192,8 +189,9 @@ responsibility to T3 thread ids:
 - a managed send is `t3 thread send`. A busy thread queues the message
   as its next turn; nothing is interrupted.
 
-The `herdr` tool (the operator's `default` session) is removed. Nothing
-replaces it: the operator's desk is T3 Code now.
+The Goblin-side `herdr` tool for the operator's own desk remains removed.
+The operator's desk is T3 Code; Goblin's delegated runs use its private hc
+core.
 
 ## Computer use: a `computer` agent type (operator, 2026-11-16)
 
@@ -356,10 +354,10 @@ access before there is a working replacement).
 4. Add image tool results and the `screenshot` tool — **done (#606)**.
 5. Build the `src/t3.ts` adapter. Move `delegate` and responsibility
    attach/observe onto it, and prove one delegation end to end.
-6. Delete the Herdr code — **done (#608), then restored (#728,
-   2026-11-18)**: `src/herdr.ts`, its live check, `harness-trust.ts`,
-   the `goblin-herdr.service` unit and the seeded herdr skill are back
-   for `delegate`; the Goblin-side `herdr` tool stays removed.
+6. Replace the T3 Code delegation transport with pinned hc — **#728**:
+   `src/hc.ts` owns the wire; the Goblin installer owns the binary and
+   stable hook assets; the private core survives app restarts. The
+   operator-desk `herdr` tool remains removed.
 7. Delete the `subagent` tool, `src/subagents/`, the `subagent_runs`
    table's code paths and the pi-durable, pi-ai and chord dependencies —
    **done (#609)**: the runtime, its tool and tests are gone, the
@@ -370,7 +368,7 @@ access before there is a working replacement).
 
 ## Machine targets: dropped (2026-11-17, kept 2026-11-18)
 
-Delegation runs on this machine only — under Herdr as under T3 Code.
+Delegation runs on this machine only — under hc as under T3 Code.
 `delegation.machines` and per-harness machine fields do not come back:
 a config carrying the T3 shape (`{provider, model, options}`) or a
 `machines` block is rejected at boot with a message naming the

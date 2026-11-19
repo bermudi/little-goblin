@@ -9,7 +9,10 @@ import {
 	type DelegationVerdict,
 	openDelegations,
 } from "./delegations.ts";
-import { makeHerdr, type Herdr } from "./herdr.ts";
+import { makeHcDelegation, type HcDelegation } from "./hc-delegation.ts";
+import { makeHc, hcSessionForHome } from "./hc.ts";
+import { goblinHome } from "./goblin-home.ts";
+import { paths } from "./home-layout.ts";
 import type { ConfigRef } from "./config.ts";
 import type { DelegationConfig } from "./config-schema.ts";
 import type { Conversation } from "./conversation-read.ts";
@@ -19,8 +22,8 @@ import type { GithubIssue, PrReadiness } from "./pr-readiness.ts";
 
 export interface DelegationLifecycleDeps {
 	delegations: DelegationsStore;
-	// Own local herdr session; never selected by config.
-	herdr: Herdr;
+	hc: HcDelegation;
+	config: DelegationConfig;
 	delegationsDir: string;
 	// True means the notice landed; false is retried by the watcher.
 	wake(address: { chatId: number; threadId: number | null }, text: string): boolean;
@@ -105,13 +108,13 @@ export interface DelegationLifecycle {
 	// Run one watcher scan immediately.
 	tick(): Promise<void>;
 	// Joins the in-flight scan and every in-flight lifecycle op before
-	// store shutdown; herdr owns running agents.
+	// store shutdown; hc owns running terminals.
 	stopTicker(): Promise<void>;
 }
 
 // ---------- boot wiring (index.ts binds, this module rules) ----------
 
-// Boot-frozen: the delegations store and the local "goblin" herdr adapter
+// Boot-frozen: the delegations store and the private hc adapter
 // are one snapshot — a live config read can only hide the delegate tool
 // next turn, never retarget a launch into the old adapter's session
 // (spinoff.ts owns the pin).
@@ -127,7 +130,7 @@ export interface DelegationWiringDeps {
 
 export interface DelegationWiring {
 	delegations: DelegationsStore | null;
-	herdr: Herdr | null;
+	hc: HcDelegation | null;
 	delegateDeps(conv: Conversation, workdir: string): DelegateToolDeps | undefined;
 }
 
@@ -135,7 +138,13 @@ export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
 	const { config: delegationBoot, configRef, pin } = deps;
 	const delegations = delegationBoot ? openDelegations(deps.dbPath()) : null;
 	// "goblin" is the local unit's --session — the only target, never a config knob.
-	const herdr = delegationBoot ? makeHerdr({ session: "goblin" }) : null;
+	const hc = delegationBoot
+		? makeHcDelegation({
+				hc: makeHc(hcSessionForHome(goblinHome())),
+				goblinHome: goblinHome(),
+				hooksDir: paths.hcHooks(),
+			})
+		: null;
 	const delegateDeps = (
 		conv: Conversation,
 		workdir: string,
@@ -144,7 +153,7 @@ export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
 			delegationBoot === undefined ||
 			configRef.current.delegation === undefined ||
 			delegations === null ||
-			herdr === null
+			hc === null
 		) {
 			return undefined;
 		}
@@ -157,7 +166,7 @@ export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
 			pin: (name: string) => pin(conv, name),
 		};
 	};
-	return { delegations, herdr, delegateDeps };
+	return { delegations, hc, delegateDeps };
 }
 
 export function delegationWake(deps: WakeDeps): Pick<DelegationLifecycleDeps, "wake" | "wakeApp"> {

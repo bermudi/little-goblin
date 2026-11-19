@@ -586,7 +586,7 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 		if (new Set(names).size !== names.length) return "Duplicate coding agent name.";
 		if (names.length === 0) return "Delegation is on — add at least one coding agent.";
 		if (draft.delegation.harnesses.some((h) => !h.kind.trim()))
-			return "Every coding agent needs a herdr kind.";
+			return "Every coding agent needs a harness kind.";
 		const roleRe = /^[a-z][a-z0-9_-]{0,15}$/;
 		// A row with no agent is an absent mapping — the body builder
 		// drops it, and "none" is how an existing default gets cleared.

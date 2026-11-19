@@ -45,7 +45,7 @@ export async function runHealth(options: {
 	};
 	const [db, install, keys, mem, sbx, t3] = await Promise.all([
 		sqlite(home, options.phase, probe, config.config),
-		installation(checkout, options.phase, probe, config.config?.delegation !== undefined),
+		installation(checkout, options.phase, probe, config.config?.delegation !== undefined, home),
 		snapshots(auth.profiles, options.phase, probe),
 		memory(config.config, checkout, options.phase, probe),
 		sandbox(config.config, probe),

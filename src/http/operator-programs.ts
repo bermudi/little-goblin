@@ -94,7 +94,7 @@ function delegationItem(row: Delegation): OperatorDelegationItem {
 		name: row.name,
 		harness: row.harness,
 		status: row.status,
-		// Local herdr only — machine targets are out (issue #728), so the
+		// Local hc only — machine targets are out (issue #728), so the
 		// field the view renders for remote rows is always null.
 		target: null,
 		task: row.task,

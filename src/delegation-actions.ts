@@ -7,8 +7,12 @@ import { join } from "node:path";
 import { durableCopyFile, fsyncDirectory } from "./durable.ts";
 import { log } from "./log.ts";
 import { agentNameFor } from "./delegations.ts";
-import { attachHintFor, HerdrError, WorkspaceCreateError, type Herdr } from "./herdr.ts";
+import { attachHintFor, HcError } from "./hc-delegation.ts";
 import { seedHarnessTrust } from "./harness-trust.ts";
+import { installHcHooks } from "./hc-hooks.ts";
+import { ensureHcCore, hcSessionForHome } from "./hc.ts";
+import { goblinHome } from "./goblin-home.ts";
+import { paths } from "./home-layout.ts";
 import { delegationNoticeTag } from "./tags.ts";
 import type {
 	AnswerOutcome,
@@ -21,7 +25,7 @@ import type {
 } from "./delegation-lifecycle.ts";
 import { notify, readScreenTail } from "./delegation-notices.ts";
 import {
-	closeWorkspaceQuietly,
+	killQuietly,
 	reportDirFor,
 	reportNote,
 	reportPathFor,
@@ -72,14 +76,14 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 		deps.delegations.setStatus(d.id, "failed");
 		const bound = deps.delegations.get(d.id);
 		if (bound?.workspaceId) {
-			await closeWorkspaceQuietly(deps, d.id, bound.workspaceId);
+			await killQuietly(deps, d.id, bound.workspaceId);
 		}
 		log.info("delegation failed at start", { delegation: d.id, name: d.name, why });
 		return screen === undefined
 			? { kind: "failed", delegation: bound ?? d, why }
 			: { kind: "failed", delegation: bound ?? d, why, screen };
 	};
-	const herdr = deps.herdr;
+	const hc = deps.hc;
 	try {
 		mkdirSync(reportDirFor(deps, d.id), { recursive: true });
 	} catch (err) {
@@ -88,41 +92,29 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 		);
 	}
 
-	let ws: { workspaceId: string; paneId: string; cwd: string };
-	try {
-		ws = await herdr.createWorkspace(input.cwd, input.name);
-	} catch (err) {
-		// Pane validation can leave an unowned workspace on the error; close
-		// the create result even though the row never owned it.
-		if (err instanceof WorkspaceCreateError) {
-			await closeWorkspaceQuietly(deps, d.id, err.workspaceId);
-		}
-		return fail(err instanceof Error ? err.message : String(err));
-	}
+	const agentName = agentNameFor(d.id, input.name);
+	const terminalName = agentName;
 	// No row can own the workspace until bindLaunch; a process death in that
 	// gap leaves an orphan boot recovery cannot identify.
-	const agentName = agentNameFor(d.id, input.name);
 	try {
 		deps.delegations.bindLaunch(d.id, {
 			agentName,
-			workspaceId: ws.workspaceId,
-			paneId: ws.paneId,
+			workspaceId: terminalName,
+			paneId: terminalName,
 		});
 	} catch (err) {
-		// The row may still have empty ids — cleanup uses the create result,
-		// whose failure must not replace the bind error.
 		log.error("delegation workspace bind failed", err, {
 			delegation: d.id,
-			workspaceId: ws.workspaceId,
+			terminal: terminalName,
 		});
-		await closeWorkspaceQuietly(deps, d.id, ws.workspaceId);
+		await killQuietly(deps, d.id, terminalName);
 		throw err;
 	}
 	// A stop may win before binding — re-read so the bound workspace is closed
 	// and the stopped row never starts an agent.
 	let row = deps.delegations.get(d.id);
 	if (row?.status === "stopped") {
-		await closeWorkspaceQuietly(deps, d.id, ws.workspaceId);
+		await killQuietly(deps, d.id, terminalName);
 		log.info("delegation stopped during workspace creation", {
 			delegation: d.id,
 			name: d.name,
@@ -130,15 +122,16 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 		return { kind: "stopped", delegation: row };
 	}
 
-	// Seed first-run trust gates before starting the agent, while the pane is
+	// Seed first-run trust gates before starting the harness, while the terminal is
 	// still quiet. Local files fail loudly; existing trust decisions are
 	// preserved.
 	try {
-		const seeded = seedHarnessTrust(input.harness.kind, ws.cwd, deps.homeDir);
+		installHcHooks(`${import.meta.dir}/../deploy/hc-hooks`, paths.hcHooks());
+		const seeded = seedHarnessTrust(input.harness.kind, input.cwd, deps.homeDir);
 		log.info("delegation trust seed", {
 			delegation: d.id,
 			kind: input.harness.kind,
-			cwd: ws.cwd,
+			cwd: input.cwd,
 			seeded: seeded.length > 0 ? seeded : "no recipe",
 		});
 	} catch (err) {
@@ -146,12 +139,13 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 	}
 
 	try {
-		await herdr.startAgent(agentName, input.harness.kind, ws.paneId, input.harness.args);
+		await ensureHcCore(paths.hcBinary(), hcSessionForHome(goblinHome()));
+		await hc.start(agentName, input.harness.kind, input.cwd, input.harness.args);
 	} catch (err) {
-		// Keep blocked panes alive and return their output as untrusted agent data.
+		// Keep a startup-blocked terminal alive and return its screen as untrusted data.
 		let screen: string | undefined;
 		try {
-			screen = await herdr.readPane(ws.paneId, 40);
+			screen = await hc.read(agentName, 40);
 		} catch (err2) {
 			log.warn("delegation start-failure screen unreadable", err2, {
 				delegation: d.id,
@@ -159,13 +153,13 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 		}
 		// A blocked startup parks the workspace with its task owed; the watcher
 		// delivers it after the dialog advances the seq.
-		if (err instanceof HerdrError && err.code === "agent_not_ready") {
+		if (err instanceof HcError && err.code === "agent_not_ready") {
 			// Baseline the park after the observed seq so the owed prompt waits
 			// for a real advance — a fresh row's startup seq would otherwise
 			// trigger a guaranteed-rejected prompt.
 			let parkedSeq: number | null = null;
 			try {
-				parkedSeq = (await herdr.get(agentName))?.state_change_seq ?? null;
+				parkedSeq = (await hc.get(agentName))?.state_change_seq ?? null;
 			} catch (err2) {
 				// A failed get leaves the park pending; the next poll captures.
 				log.warn("delegation park baseline read failed — watcher will capture", err2, {
@@ -175,7 +169,7 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 			deps.delegations.markParked(d.id, parkedSeq);
 			const parked = deps.delegations.get(d.id) ?? d;
 			if (parked.status === "stopped") {
-				await closeWorkspaceQuietly(deps, d.id, ws.workspaceId);
+				await killQuietly(deps, d.id, terminalName);
 				return { kind: "stopped", delegation: parked };
 			}
 			log.info("delegation parked at startup dialog", {
@@ -183,7 +177,7 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 				name: d.name,
 			});
 			await notify(deps, parked, "needs input", {
-				extra: `(blocked at startup — the task hasn't been sent yet; relay a keypress with action 'answer' or attach with \`${attachHintFor(null)}\`)`,
+				extra: `(blocked at startup — the task hasn't been sent yet; relay a keypress with action 'answer' or attach with \`${attachHintFor(agentName)}\`)`,
 			});
 			return { kind: "parked", delegation: parked };
 		}
@@ -200,7 +194,7 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 	// rather than mistaken for stale work by the report check.
 	const promptedAt = new Date();
 	try {
-		await herdr.prompt(agentName, input.task + reportNote(deps, d));
+		await hc.prompt(agentName, input.task + reportNote(deps, d));
 	} catch (err) {
 		return fail(err instanceof Error ? err.message : String(err));
 	}
@@ -208,7 +202,7 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 	// seq, so 0 would make the first idle glance look like completed work.
 	let baseline: number | null = null;
 	try {
-		baseline = (await herdr.get(agentName))?.state_change_seq ?? null;
+		baseline = (await hc.get(agentName))?.state_change_seq ?? null;
 	} catch (err) {
 		// Leave reconciliation to the next scan's capture.
 		log.warn("delegation baseline read failed — watcher will capture", err, {
@@ -219,7 +213,7 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 	if (applied === null) {
 		// A raced stop owns the verdict, but this launch still closes the
 		// workspace it left behind — no watcher remains.
-		await closeWorkspaceQuietly(deps, d.id, ws.workspaceId);
+		await killQuietly(deps, d.id, terminalName);
 		log.info("delegation stopped while launching", {
 			delegation: d.id,
 			name: d.name,
@@ -287,11 +281,11 @@ export async function send(deps: DelegationLifecycleDeps, id: number, text: stri
 	const promptedAt = new Date();
 	try {
 		// Include the report instruction on every prompt so notices have a result channel.
-		await deps.herdr.prompt(d.agentName, text + reportNote(deps, d));
+		await deps.hc.prompt(d.agentName, text + reportNote(deps, d));
 	} catch (err) {
 		let error = err instanceof Error ? err.message : String(err);
 		// A blocked prompt must direct callers to the answer action.
-		if (err instanceof HerdrError && err.code === "agent_blocked") {
+		if (err instanceof HcError && err.code === "agent_blocked") {
 			error +=
 				" — the agent is blocked on a dialog; relay the operator's keypress with action 'answer'";
 		}
@@ -352,7 +346,7 @@ export async function send(deps: DelegationLifecycleDeps, id: number, text: stri
 	// the watcher captures after the prompt instead of reporting done at idle.
 	let seq: number | null = null;
 	try {
-		seq = (await deps.herdr.get(d.agentName))?.state_change_seq ?? null;
+		seq = (await deps.hc.get(d.agentName))?.state_change_seq ?? null;
 	} catch (err) {
 		log.warn("delegation post-send baseline read failed — watcher will capture", err, {
 			delegation: d.id,
@@ -377,12 +371,12 @@ export async function answer(
 	if (d.status === "stopped") return { kind: "refused", id, why: "stopped" };
 	if (d.status === "starting") return { kind: "refused", id, why: "starting" };
 	if (!d.agentName) return { kind: "refused", id, why: "never launched" };
-	// A keypress only reaches a dialog that owns the pane; typing one into
+	// A keypress only reaches a dialog that owns the terminal; typing one into
 	// a working or idle agent corrupts its draft. Preflight the live
 	// status — only a blocked agent takes keys (#493-L28).
 	let agentStatus: string | null;
 	try {
-		agentStatus = (await deps.herdr.get(d.agentName))?.agent_status ?? null;
+		agentStatus = (await deps.hc.get(d.agentName))?.agent_status ?? null;
 	} catch (err) {
 		log.error("delegation answer preflight failed", err, {
 			delegation: d.id,
@@ -394,7 +388,7 @@ export async function answer(
 		return { kind: "refused", id, why: agentStatus === null ? "agent gone" : "not blocked" };
 	}
 	try {
-		await deps.herdr.sendKey(d.agentName, key);
+		await deps.hc.sendKey(d.agentName, key);
 	} catch (err) {
 		log.error("delegation answer key failed", err, { delegation: d.id, name: d.name, key });
 		return { kind: "key failed", id, error: err instanceof Error ? err.message : String(err) };
@@ -409,7 +403,7 @@ export async function stop(deps: DelegationLifecycleDeps, id: number): Promise<S
 	const notes: string[] = [];
 	if (d.status === "running" || d.status === "needs_input") {
 		try {
-			await deps.herdr.interrupt(d.agentName);
+			await deps.hc.interrupt(d.agentName);
 		} catch (err) {
 			notes.push(`interrupt: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -419,7 +413,7 @@ export async function stop(deps: DelegationLifecycleDeps, id: number): Promise<S
 	let closeFailed = false;
 	if (d.workspaceId) {
 		try {
-			await deps.herdr.closeWorkspace(d.workspaceId);
+			await deps.hc.kill(d.workspaceId);
 		} catch (err) {
 			closeFailed = true;
 			notes.push(`close: ${err instanceof Error ? err.message : String(err)}`);
@@ -429,7 +423,7 @@ export async function stop(deps: DelegationLifecycleDeps, id: number): Promise<S
 		let alive = true;
 		if (d.agentName) {
 			try {
-				alive = (await deps.herdr.get(d.agentName)) !== null;
+				alive = (await deps.hc.get(d.agentName)) !== null;
 			} catch (err) {
 				notes.push(`agent check: ${err instanceof Error ? err.message : String(err)}`);
 			}

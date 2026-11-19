@@ -1,9 +1,9 @@
 # Glossary
 
 - **Responsibility:** what Goblin owes the operator, as a durable record. It is separate from who does the work.
-- **Delegation:** one run of an external coding harness that Goblin starts with the `delegate` tool, only when the operator asks for that harness. It runs as a pane on the `goblin` Herdr session the operator watches there or in the app (design/agents.md).
+- **Delegation:** one run of an external coding harness that Goblin starts with the `delegate` tool, only when the operator asks for that harness. It runs as a named terminal on Goblin's private hc core; the operator can inspect it through hc or the app (design/delegation.md).
 - **Harness:** a coding agent program that a delegation runs, such as codex or pi.
-- **Herdr:** the terminal workspace manager that hosts delegation panes. Goblin talks to it only through `src/herdr.ts` on the `goblin` session (`goblin-herdr.service`); the operator attaches with `herdr session attach goblin`.
+- **hc core:** the pinned herdr-core process that owns Goblin's named delegation terminals and survives Goblin restarts. Its session state is under `~/.local/state/herdr-core/` (design/delegation.md).
 - **Role:** the kind of work a delegation serves (build, review, or any operator-coined label). `default` is the role a call with none uses.
 - **Lead:** the delegation accountable for one issue build, including its implementation, review, and verification.
 - **PR readiness:** code-observed evidence that a lead's issue has a closing PR, a passing verifier comment for its current head SHA, and green CI for that SHA. It is not permission to merge.

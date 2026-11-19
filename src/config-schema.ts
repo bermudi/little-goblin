@@ -183,10 +183,8 @@ export const ttsCloudDefaults = {
 	onemin: { model: "tts-1", auth: authDefaults.onemin },
 } as const;
 
-// Delegation to external harnesses via herdr — absent = no delegate
-// tool. Harness names double as herdr agent-name prefixes (hence the
-// charset); goblin's own local `goblin` session is the only target,
-// never a config knob.
+// Delegation to external harnesses via Goblin's private hc core — absent
+// = no delegate tool. Harness names also become terminal-name prefixes.
 const harnessNameRe = /^[a-z][a-z0-9_-]{0,15}$/;
 const harnessNameSchema = z.string().regex(harnessNameRe);
 export const harnessMapSchema = z

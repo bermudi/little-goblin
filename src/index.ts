@@ -31,7 +31,6 @@ import {
 import type { Config } from "./config-schema.ts";
 import { goblinHome } from "./goblin-home.ts";
 import { ensureDir, ensureHomeLayout, paths } from "./home-layout.ts";
-import { installHcHooks } from "./hc-hooks.ts";
 import { acquireHomeLock } from "./home-lock.ts";
 import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins.ts";
 import { captureConversationSettings, openStore } from "./conversation.ts";
@@ -125,7 +124,6 @@ log.info("home lock acquired", { pid: process.pid, home });
 
 async function boot() {
 	ensureHomeLayout();
-	installHcHooks(`${import.meta.dir}/../deploy/hc-hooks`, paths.hcHooks());
 	// /api/*/status reports from this — uptime and the boot timestamp.
 	const startedAt = new Date().toISOString();
 
@@ -136,7 +134,7 @@ async function boot() {
 	}
 	setLogLevel(config.logLevel);
 	warnOnExampleOperator(config);
-
+	const delegationBoot = config.delegation;
 	// Shared ref: the mini app swaps this in place on save; everything
 	// reads .current at point of use.
 	const configRef: ConfigRef = { current: config, ttsDown: false };
@@ -269,14 +267,13 @@ async function boot() {
 	// completeBoot() fills it once the delegation lifecycle and the
 	// retention worker exist.
 	const wire = openWireStep();
-	// Delegation is boot-fixed like memory — the store, the herdr adapter
+	// Delegation is boot-fixed like memory — the store, the hc adapter
 	// and the config snapshot are one object, so a live config read can
 	// only hide the delegate tool next turn, never launch on a harness
 	// the boot snapshot lacks (spinoff.ts owns the pin). T3 Code is the
 	// responsibility transport — the observer, managed sends and the
 	// health probe — never the delegate one.
-	const delegationBoot = config.delegation;
-	const { delegations, herdr, delegateDeps } = wireDelegation({
+	const { delegations, hc, delegateDeps } = wireDelegation({
 		config: delegationBoot,
 		configRef,
 		dbPath: paths.db,
@@ -664,10 +661,11 @@ async function boot() {
 	// closures read delivery/bell live, so a telegram attach mid-run is
 	// visible without a rewire. The wire step lands before any turn.
 	const delegationLifecycle =
-		delegations !== null && herdr !== null
+		delegations !== null && hc !== null
 			? startDelegationLifecycle({
 					delegations,
-					herdr,
+					hc,
+					config: delegationBoot!,
 					delegationsDir: paths.delegations(),
 					homeDir: homedir(),
 					...delegationWake(delivery.wakeDeps),

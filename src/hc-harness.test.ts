@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -14,7 +14,7 @@ function tempDir(): string {
 }
 
 afterEach(() => {
-	for (const root of roots.splice(0)) Bun.spawnSync(["trash", root]);
+	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
 describe("ensureCodexHooks", () => {

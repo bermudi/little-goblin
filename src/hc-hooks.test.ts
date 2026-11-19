@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -14,7 +14,7 @@ function dir(): string {
 
 afterEach(() => {
 	for (const root of roots.splice(0)) {
-		Bun.spawnSync(["trash", root]);
+		rmSync(root, { recursive: true, force: true });
 	}
 });
 

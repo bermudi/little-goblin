@@ -20,6 +20,10 @@ export interface ClaudeUsage {
 	output_tokens: number | null;
 	cache_read_input_tokens: number | null;
 	cache_creation_input_tokens: number | null;
+	cache_creation?: {
+		ephemeral_5m_input_tokens?: number | null;
+		ephemeral_1h_input_tokens?: number | null;
+	} | null;
 }
 
 /** ModelUsage on the result message — camelCase, per-model totals. */

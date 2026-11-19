@@ -86,15 +86,20 @@ export interface ChainEntry {
 	auth: string;
 }
 
-// The delegation editor's two tables — each harness names the T3
-// provider instance and model its thread runs on, plus optional model
-// options; the row order is the saved order (matters only for legibility —
-// the map is keyed).
+/** One argument per line; blank lines are not arguments. */
+export const argsToList = (text: string): string[] =>
+	text
+		.split("\n")
+		.map((a) => a.trim())
+		.filter((a) => a !== "");
+
+// The delegation editor's two tables. Args stay one-per-line text so an
+// argument with a space survives the round trip; the row order is the
+// saved order (matters only for legibility — the map is keyed).
 export interface HarnessDraft {
 	name: string;
-	provider: string;
-	model: string;
-	options: string;
+	kind: string;
+	args: string;
 	askFirst: boolean;
 }
 export interface DelegationRoleDraft {
@@ -490,12 +495,8 @@ export function draftFromConfig(
 			? {
 					harnesses: Object.entries(c.delegation.harnesses).map(([name, h]) => ({
 						name,
-						provider: h.provider,
-						model: h.model,
-						options: Object.entries(h.options ?? {})
-							.sort(([a], [b]) => a.localeCompare(b))
-							.map(([id, value]) => `${id}=${String(value)}`)
-							.join(" "),
+						kind: h.kind,
+						args: (h.args ?? []).join("\n"),
 						askFirst: h.askFirst === true,
 					})),
 					roles: Object.entries(c.delegation.defaults ?? {})
@@ -584,24 +585,8 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 			return "Coding agent names use lowercase letters, digits, _ or - (16 max).";
 		if (new Set(names).size !== names.length) return "Duplicate coding agent name.";
 		if (names.length === 0) return "Delegation is on — add at least one coding agent.";
-		if (draft.delegation.harnesses.some((h) => !h.provider.trim()))
-			return "Every coding agent needs a provider.";
-		if (draft.delegation.harnesses.some((h) => !h.model.trim()))
-			return "Every coding agent needs a model.";
-		for (const h of draft.delegation.harnesses) {
-			const optionsText = h.options.trim();
-			if (!optionsText) continue;
-			const seen = new Set<string>();
-			for (const token of optionsText.split(/\s+/)) {
-				const equals = token.indexOf("=");
-				const id = equals < 0 ? "" : token.slice(0, equals);
-				const value = equals < 0 ? "" : token.slice(equals + 1);
-				if (!id || !value || seen.has(id)) {
-					return `Model options must be id=value pairs (agent ${h.name}).`;
-				}
-				seen.add(id);
-			}
-		}
+		if (draft.delegation.harnesses.some((h) => !h.kind.trim()))
+			return "Every coding agent needs a harness kind.";
 		const roleRe = /^[a-z][a-z0-9_-]{0,15}$/;
 		// A row with no agent is an absent mapping — the body builder
 		// drops it, and "none" is how an existing default gets cleared.
@@ -777,29 +762,17 @@ export function bodyFromDraft(
 		})) as ConfigPostBody["memory"],
 		delegation: capEmit("delegation", draft.delegation, (d) => ({
 			harnesses: Object.fromEntries(
-				d.harnesses.map((h) => [
-					h.name.trim(),
-					{
-						provider: h.provider.trim(),
-						model: h.model.trim(),
-						...(h.options.trim()
-							? {
-									options: Object.fromEntries(
-										h.options.trim().split(/\s+/).map((token) => {
-											const equals = token.indexOf("=");
-											const id = token.slice(0, equals);
-											const value = token.slice(equals + 1);
-											return [
-												id,
-												value === "true" ? true : value === "false" ? false : value,
-											];
-										}),
-									),
-								}
-							: {}),
-						...(h.askFirst ? { askFirst: true } : {}),
-					},
-				]),
+				d.harnesses.map((h) => {
+					const args = argsToList(h.args);
+					return [
+						h.name.trim(),
+						{
+							kind: h.kind.trim(),
+							...(args.length > 0 ? { args } : {}),
+							...(h.askFirst ? { askFirst: true } : {}),
+						},
+					];
+				}),
 			),
 			...(() => {
 				const defaults = Object.fromEntries(

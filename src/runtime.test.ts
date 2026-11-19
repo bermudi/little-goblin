@@ -81,7 +81,9 @@ function rig(
 		model?: LanguageModel;
 		deltas?: string[];
 		delayMs?: number;
-		step?: Partial<Omit<ModelStep, "model">>;
+		// `engine` stays out of the Partial: TS treats a spread optional
+		// property as present, so an untagged step would typecheck.
+		step?: Partial<Omit<ModelStep, "model" | "engine">>;
 		buildStep?: RuntimeDeps["buildStep"];
 		tools?: Tools;
 		makeTools?: RuntimeDeps["makeTools"];
@@ -110,6 +112,7 @@ function rig(
 			(() => ({
 				model: opts.model ?? fakeModel(opts.deltas ?? ["ok"], opts.delayMs ?? 5),
 				system: "test",
+				engine: "ai-sdk",
 				...opts.step,
 			})),
 		makeTools: opts.makeTools ?? (() => opts.tools ?? {}),
@@ -2573,6 +2576,35 @@ describe("cache stability", () => {
 		r2.store.close();
 	});
 
+	test("idleFold refuses a busy lane and folds with the idle reason when clear", async () => {
+		let summaries = 0;
+		const r = rig({
+			deltas: ["slow ", "reply"],
+			delayMs: 40,
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async (_conv, _system, prompt) => {
+						summaries += 1;
+						return foldSummary("idle folded", prompt);
+					},
+				},
+			},
+		});
+		seedExchanges(r.store, r.conv.id);
+		const sink = submit(r, "live question");
+		await sink.firstDelta;
+		expect(await r.runtime.idleFold(r.conv.id)).toBe("busy");
+		expect(summaries).toBe(0);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		const outcome = await r.runtime.idleFold(r.conv.id);
+		expect(outcome).toBe("compacted");
+		expect(summaries).toBeGreaterThan(0);
+		r.store.close();
+	});
+
 	test("/compact serializes behind a running turn — no orphaned exchange", async () => {
 		const r = rig({
 			deltas: ["slow ", "reply"],
@@ -4472,7 +4504,7 @@ describe("prefix compaction request identity", () => {
 		const prefixSteps: import("./turn/prefix-summary.ts").PrefixStep[] = [];
 		const buildStep: RuntimeDeps["buildStep"] = async (conv, tools) => {
 			const step = await builder.buildStep(conv, tools);
-			if ("engine" in step) throw new Error("fake API provider unexpectedly built a Claude step");
+			if (step.engine !== "ai-sdk") throw new Error("fake API provider unexpectedly built a Claude step");
 			turnSteps.push(step);
 			return step;
 		};

@@ -18,7 +18,7 @@ import type { MediaPosition } from "../attachments.ts";
 import type { ClaudeCodeThinking } from "../thinking.ts";
 import { claudeChildEnv } from "./auth.ts";
 import { type ClaudeEngineConfig, type ClaudeRunDeps, driveClaude } from "./engine.ts";
-import { isClaudeStep, type TurnEngine } from "../../turn/engine.ts";
+import type { EngineStep, TurnEngine } from "../../turn/engine.ts";
 import type {
 	ClaudeEvent,
 	ClaudeQuery,
@@ -48,6 +48,10 @@ export interface ClaudeStep {
 	contextWindow?: number | undefined;
 	/** Optional tool-loop cap; unset = no step budget (design/model.md). */
 	maxTurns?: number | undefined;
+}
+
+export function isClaudeStep(step: EngineStep): step is ClaudeStep {
+	return step.engine === "claude-code";
 }
 
 // ---------- the vendor adapter ----------

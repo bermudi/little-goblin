@@ -2,9 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { LanguageModelV4Usage } from "@ai-sdk/provider";
 import { streamText, tool } from "ai";
-import type { Message } from "./message.ts";
+import type { Message, Usage } from "./message.ts";
 import { z } from "zod";
 import {
 	cacheRouteFor,
@@ -117,15 +116,17 @@ const toolMsg = (toolCallId: string, output: string): Message =>
 const toolOutput = (message: Message | undefined): unknown =>
 	(message?.parts[0] as { output?: unknown } | undefined)?.output;
 
-function usage(input: number, cacheRead: number | undefined): LanguageModelV4Usage {
+function usage(input: number, cacheRead: number | undefined): Usage {
 	return {
-		inputTokens: {
-			total: input,
-			noCache: undefined,
-			cacheRead,
-			cacheWrite: undefined,
+		inputTokens: input,
+		inputTokenDetails: {
+			noCacheTokens: undefined,
+			cacheReadTokens: cacheRead,
+			cacheWriteTokens: undefined,
 		},
-		outputTokens: { total: 5, text: undefined, reasoning: undefined },
+		outputTokens: 5,
+		outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+		totalTokens: undefined,
 	};
 }
 

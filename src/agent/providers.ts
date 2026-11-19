@@ -14,6 +14,7 @@ import {
 	type LanguageModel,
 	type LanguageModelMiddleware,
 } from "ai";
+import type { Usage } from "../message.ts";
 import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import { splitModelRef, type Config, type ThinkingLevel } from "../config-schema.ts";
@@ -24,6 +25,7 @@ import { codexModel, RESPONSES_URL, type CodexModelOptions } from "./codex/model
 import { isOneMinHost, modelCallMaxRetries } from "./onemin.ts";
 import { isTransientTurnFailure, quotaExhausted } from "./provider-errors.ts";
 import { thinkingOptions as thinkingOptionsFor } from "./thinking.ts";
+import { fromV4Usage } from "./v4-usage.ts";
 import { isZaiHost, zaiReasoningFetch, zaiStatelessReplay } from "./zai-responses.ts";
 
 // Every chat-turn, compaction, title and reviewer model comes through
@@ -430,18 +432,19 @@ export function observedModel(
 		});
 		return { callId, obs };
 	};
-	const usageFields = (usage: LanguageModelV4Usage) => ({
-		inputTokens: usage.inputTokens.total ?? null,
-		cacheReadTokens: usage.inputTokens.cacheRead ?? null,
-		cacheWriteTokens: usage.inputTokens.cacheWrite ?? null,
-		outputTokens: usage.outputTokens.total ?? null,
+	const usageFields = (usage: Usage) => ({
+		inputTokens: usage.inputTokens ?? null,
+		cacheReadTokens: usage.inputTokenDetails.cacheReadTokens ?? null,
+		cacheWriteTokens: usage.inputTokenDetails.cacheWriteTokens ?? null,
+		outputTokens: usage.outputTokens ?? null,
 	});
 	const finishCall = (call: ReturnType<typeof beginCall>, usage: LanguageModelV4Usage) => {
-		call.obs?.finish(usage);
+		const normalized = fromV4Usage(usage);
+		call.obs?.finish(normalized);
 		log.info("model call usage", {
 			...baseFields,
 			callId: call.callId,
-			...usageFields(usage),
+			...usageFields(normalized),
 			...(call.obs ? { idleMs: call.obs.idleMs, prefixRelation: call.obs.prefixRelation } : {}),
 		});
 	};

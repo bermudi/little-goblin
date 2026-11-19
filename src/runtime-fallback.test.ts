@@ -68,7 +68,7 @@ function rig(opts: {
 		built.push(c.model ?? "(null)");
 		const m = opts.models[c.model ?? ""];
 		if (m === undefined) throw new Error(`no provider for ${c.model}`);
-		return { model: m.model as LanguageModel, system: "test", label: c.model ?? "", maxRetries: 0 };
+		return { engine: "ai-sdk", model: m.model as LanguageModel, system: "test", label: c.model ?? "", maxRetries: 0 };
 	};
 	const runtime = new Runtime({
 		engines: [aiSdkEngine],

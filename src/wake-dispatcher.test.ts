@@ -68,7 +68,7 @@ function rig(
 		store,
 		turnJournal: journal,
 		buildStep:
-			opts.buildStep ?? (() => ({ model: opts.model ?? fakeModel(["ok"]), system: "test" })),
+			opts.buildStep ?? (() => ({ engine: "ai-sdk", model: opts.model ?? fakeModel(["ok"]), system: "test" })),
 		makeTools: opts.makeTools ?? (() => opts.tools ?? {}),
 		...(opts.compaction === undefined ? {} : { compaction: opts.compaction }),
 		...(opts.captureConversation === undefined
@@ -297,7 +297,7 @@ describe("wake dispatcher", () => {
 				// mid-build so the assertions below see the claimed wake
 				// while the successor's prompt is still forming.
 				if (++builds === 2) await continuation.promise;
-				return { model: script.model, system: "test", contextWindow: 1000 };
+				return { engine: "ai-sdk", model: script.model, system: "test", contextWindow: 1000 };
 			},
 			compaction: {
 				modelRef: () => "m",

@@ -83,7 +83,7 @@ Every engine consumes the same deps object minus the step
 `src/turn/ai-sdk-step.ts`, outside the neutral engine boundary. Engines today:
 
 - `ai-sdk` — `src/turn/ai-sdk-engine.ts`, wrapping `turn/stream.ts`'s
-  `driveStream` (streamText). Accepts every non-claude step.
+  `driveStream` (streamText). Accepts steps tagged `engine: "ai-sdk"`.
 - `claude-code` — `src/agent/claude-code/`; its `ClaudeEngine` handle
   also carries `compact`, the compaction seam's claude lane. Accepts
   `ClaudeStep` (`engine: "claude-code"`).
@@ -102,8 +102,8 @@ real Runtime.
 
 - Implement `TurnEngine` in its own adapter directory (one vendor
   package, one dir — the claude-code layout).
-- Add the engine's step variant to `buildStep`'s union and gate it with
-  `accepts`.
+- Add the engine's step variant, with its own `engine` tag, to `TurnStep`
+  in `src/runtime.ts`; its `accepts` checks that tag.
 - Register it in `src/index.ts`'s `engines` array (first match wins).
 - Add it to `src/turn/engine.conformance.test.ts`'s engine table.
 - Add a `module-boundaries.test.ts` entry for its vendor packages.

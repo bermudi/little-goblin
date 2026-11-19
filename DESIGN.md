@@ -416,6 +416,7 @@ these types directly.
 Model-facing prompt messages are goblin types too (`src/prompt-message.ts`,
 compared to the SDK only in `src/prompt-message.test.ts`); engines receive
 `PromptMessage[]` and convert at their own edge.
+Cache telemetry and provider failures carry goblin `Usage`, converted from provider usage once at the AI SDK edge (`src/agent/v4-usage.ts`).
 
 **Goblin owns its tool definitions** (#595). Tools are `defineTool`s in
 `src/tool.ts`: description, zod input, `execute(input, { toolCallId,
@@ -432,6 +433,11 @@ that list: the AI SDK step type lives in `src/turn/ai-sdk-step.ts` (#596),
 and model resolution stays in `src/agent/step.ts`. SDK-specific features stay inside the AI SDK engine; there is
 no lowest-common-denominator layer. The app's `useChat` stream protocol
 stays an SDK wire format until an engine can't meet it.
+
+Side jobs reach the model through `src/agent/generate.ts` (`generate`), never
+the SDK directly. Two standing exceptions (#759): `agent/vision.ts` streams
+with an idle timeout, and `turn/prefix-summary.ts` must send the turn's exact
+message prefix for cache hits; neither fits a one-shot `generate`.
 
 ## Non-goals (v1 — return only on demand)
 

@@ -1,5 +1,5 @@
-// A delegation linked to a responsibility reports through its own
-// terminal notices — never through prose. Each settlement becomes one
+// A delegation or linked subagent reports through its own
+// settlement notices — never through prose. Each settlement becomes one
 // `worker` report: the worker's claim, kept distinct from goblin's
 // assessment (design/programs.md → Reports and stages). The stage
 // routes a worker's claim to goblin, except a question, which goes
@@ -55,6 +55,11 @@ export function delegationReport(
 			],
 		};
 	}
+	return settlementReport(tag, verdict, body);
+}
+
+/** Shared status report for a settled delegation or linked subagent. */
+export function settlementReport(tag: string, verdict: DelegationVerdict, body: string): ReportInput {
 	switch (verdict) {
 		case "done":
 			return { state: "ready", reason: clip(`${tag} finished: ${body}`) };
@@ -65,6 +70,30 @@ export function delegationReport(
 		case "stopped":
 			return { state: "blocked", reason: clip(`${tag} stopped by the operator: ${body}`) };
 	}
+}
+
+export function fileAgentChildReport(
+	resps: Pick<ResponsibilityStore, "report" | "get">,
+	child: {
+		conversationId: string;
+		type: string;
+		responsibilityId: string | null;
+		responsibilityRevision: number | null;
+		settlements: number;
+	},
+	status: "queued" | "running" | "done" | "needs-input" | "failed" | "stopped",
+	result: string | null,
+): void {
+	if (child.responsibilityId === null) return;
+	if (status === "queued" || status === "running")
+		throw new Error(`agent child ${child.conversationId}: cannot file unsettled status ${status}`);
+	const verdict: DelegationVerdict = status === "needs-input" ? "needs input" : status;
+	const body = result === null || result === "" ? "(no reply text)" : result;
+	fileReport(resps, child.responsibilityId, settlementReport(`agent ${child.type} ${child.conversationId}`, verdict, body), {
+		sourceKey: `agent:${child.conversationId}:${child.settlements + 1}:${status}`,
+		revision: child.responsibilityRevision,
+		logFields: { child: child.conversationId },
+	});
 }
 
 /** One settlement, one report. The key carries the prompt and the seq

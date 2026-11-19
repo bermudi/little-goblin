@@ -22,6 +22,8 @@ import { agentNoticeTag } from "./tags.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import type { DevelopmentInput } from "./wake-store.ts";
 
+type AgentSendRefusal = "responsibility-missing" | "responsibility-inactive" | "outside-project";
+
 export type AgentChildStatus =
 	| "queued"
 	| "running"
@@ -71,6 +73,10 @@ export function ensureAgentChildrenSchema(db: Database): void {
 	// A computer child's bound desktop (design/agents.md → Computer
 	// use) — spawn claims it, the child's tools are bound to it.
 	if (!cols.has("desktop")) db.run("ALTER TABLE agent_children ADD COLUMN desktop TEXT");
+	if (!cols.has("responsibility_id"))
+		db.run("ALTER TABLE agent_children ADD COLUMN responsibility_id TEXT");
+	if (!cols.has("responsibility_revision"))
+		db.run("ALTER TABLE agent_children ADD COLUMN responsibility_revision INTEGER");
 }
 
 const rowSchema = z.object({
@@ -86,6 +92,8 @@ const rowSchema = z.object({
 	settled_at: z.string().nullable(),
 	pending_ask: z.string().nullable(),
 	desktop: z.string().nullable(),
+	responsibility_id: z.string().nullable(),
+	responsibility_revision: z.number().nullable(),
 });
 
 export interface AgentChild {
@@ -102,6 +110,9 @@ export interface AgentChild {
 	settledAt: string | null;
 	/** The desktop a computer child is bound to — null for other types. */
 	desktop: string | null;
+	/** Explicit responsibility assignment and its link-time revision. */
+	responsibilityId: string | null;
+	responsibilityRevision: number | null;
 }
 
 function toChild(row: z.infer<typeof rowSchema>): AgentChild {
@@ -124,6 +135,8 @@ function toChild(row: z.infer<typeof rowSchema>): AgentChild {
 		startedAt: row.started_at,
 		settledAt: row.settled_at,
 		desktop: row.desktop,
+		responsibilityId: row.responsibility_id,
+		responsibilityRevision: row.responsibility_revision,
 	};
 }
 
@@ -144,6 +157,9 @@ export interface AgentChildrenDeps {
 	/** The desktop pool — a computer child's leases release at
 	 * settlement. Late-bound like turn-tools' getter: absent = no pool. */
 	desktops?(): Desktops | null;
+	responsibilityRevision?(id: string): number | null;
+	/** A linked child's settlement lands as a worker report before its wake notice (responsibility-runs.ts). The report is keyed, so a re-run settlement files once. */
+	settled?(child: AgentChild, status: AgentChildStatus, result: string | null): void;
 }
 
 export interface SpawnInput {
@@ -157,6 +173,7 @@ export interface SpawnInput {
 	 * with the child conversation as lease holder before the child
 	 * runs (design/agents.md → Computer use). */
 	desktop?: string;
+	responsibilityId?: string;
 }
 
 export interface Settlement {
@@ -176,7 +193,7 @@ export interface AgentChildren {
 	/** Status plus the child's latest messages — the read verb. */
 	read(conversationId: string): { child: AgentChild; messages: { role: string; text: string }[] } | null;
 	/** Steer a running child, or follow up a settled one (a new turn that settles again). */
-	send(conversationId: string, text: string): { child: AgentChild } | { error: string };
+	send(conversationId: string, text: string, authorize?: (responsibilityId: string) => AgentSendRefusal | null): { child: AgentChild } | { error: string };
 	stop(conversationId: string): { child: AgentChild } | { error: string };
 	/** Resolves at the child's next settlement (spawn background:false). */
 	awaitSettlement(conversationId: string): Promise<Settlement>;
@@ -210,7 +227,7 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 		"SELECT * FROM agent_children WHERE conversation_id = ?",
 	);
 	const qInsert = store.db.prepare(
-		"INSERT INTO agent_children (conversation_id, parent_conversation_id, type, status, task, tools_json, created_at, desktop) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
+		"INSERT INTO agent_children (conversation_id, parent_conversation_id, type, status, task, tools_json, created_at, desktop, responsibility_id, responsibility_revision) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
 	);
 	const qByParent = store.db.query<z.infer<typeof rowSchema>, [string]>(
 		"SELECT * FROM agent_children WHERE parent_conversation_id = ? ORDER BY created_at, rowid",
@@ -317,6 +334,7 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 			return null;
 		}
 		if (child.status !== "running") return { child, result };
+		deps.settled?.(child, status, result);
 		wakeParent(child, status, result);
 		const settledAt = nowIso();
 		const updated = qSettle.run(status, settledAt, conversationId);
@@ -505,6 +523,10 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 				JSON.stringify([...input.tools]),
 				nowIso(),
 				input.desktop ?? null,
+				input.responsibilityId ?? null,
+				input.responsibilityId === undefined
+					? null
+					: (deps.responsibilityRevision?.(input.responsibilityId) ?? null),
 			);
 			// A named desktop is claimed at spawn with the child
 			// conversation as lease holder (design/agents.md → Computer
@@ -598,7 +620,7 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 			return { child, messages: tail };
 		},
 
-		send(conversationId, text) {
+		send(conversationId, text, authorize) {
 			const child = get(conversationId);
 			if (child === null) return { error: `no agent child ${conversationId}` };
 			if (child.status === "queued") {
@@ -606,6 +628,23 @@ export function startAgentChildren(deps: AgentChildrenDeps): AgentChildren {
 			}
 			if (child.status === "stopped") {
 				return { error: `agent child ${conversationId} was stopped — spawn a new one` };
+			}
+			if (child.responsibilityId !== null) {
+				const refusal = authorize === undefined ? "outside-project" : authorize(child.responsibilityId);
+				if (refusal !== null) {
+					log.info("agent child send refused — responsibility authority", {
+						child: conversationId,
+						responsibility: child.responsibilityId,
+						refusal,
+					});
+					const detail =
+						refusal === "responsibility-missing"
+							? "its responsibility is gone"
+							: refusal === "responsibility-inactive"
+								? "its responsibility is paused or closed — resume it before sending"
+								: "it is linked to another project — send from a conversation in that project";
+					return { error: `agent child ${conversationId} ${detail}` };
+				}
 			}
 			// A settled child (done / needs-input / failed) runs a fresh
 			// turn on the follow-up; a running child takes the submit as a

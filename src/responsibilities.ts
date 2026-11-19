@@ -48,7 +48,6 @@ import {
 import { responsibilityStage } from "./responsibility-stage.ts";
 import { makeOperations } from "./responsibility-operations.ts";
 import { makeAttachments } from "./responsibility-attachments.ts";
-import { workerSendRefusal } from "./responsibility-authority.ts";
 import {
 	OPEN_STATUSES,
 	type Attachment,
@@ -61,6 +60,7 @@ import {
 	type SendRefusal,
 	type Understanding,
 	understandingSchema,
+	workerSendRefusal,
 } from "./responsibility-types.ts";
 
 export interface ResponsibilityStore {

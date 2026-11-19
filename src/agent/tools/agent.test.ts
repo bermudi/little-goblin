@@ -4,6 +4,7 @@
 // agent-children.test.ts against a real Runtime — here it is stubbed
 // at its own boundary.
 
+import { z } from "zod";
 import { describe, expect, test } from "bun:test";
 import type { AgentChild, AgentChildren, SpawnInput, Settlement } from "../../agent-children.ts";
 import { GENERAL_AGENT_TYPE } from "../../agent-types.ts";
@@ -40,7 +41,7 @@ const parent = {
 	agentType: null,
 } as unknown as Conversation;
 
-const child = (status: AgentChild["status"]): AgentChild => ({
+const child = (status: AgentChild["status"], over: Partial<AgentChild> = {}): AgentChild => ({
 	conversationId: "app/agent-x",
 	parentConversationId: "dm:1",
 	type: "general",
@@ -52,7 +53,15 @@ const child = (status: AgentChild["status"]): AgentChild => ({
 	startedAt: null,
 	settledAt: null,
 	desktop: null,
+	responsibilityId: null,
+	responsibilityRevision: null,
+	...over,
 });
+
+const executeUnknown = (tool: ReturnType<typeof agentTool>, input: unknown) =>
+	(tool as unknown as {
+		execute: (raw: unknown, options: { toolCallId: string }) => Promise<unknown>;
+	}).execute(input, { toolCallId: "test" });
 
 // A stand-in tool for the mount test's base set.
 const stubBaseTool = {
@@ -97,12 +106,20 @@ describe("child tool allowlist", () => {
 
 describe("agent tool", () => {
 	const types = new Map([[GENERAL_AGENT_TYPE.name, GENERAL_AGENT_TYPE]]);
-	const deps = (engine: AgentChildren, parentTools = ["read_file", "bash", "speak"]) => ({
+	const deps = (
+		engine: AgentChildren,
+		parentTools = ["read_file", "bash", "speak"],
+		extra: {
+			checkResponsibility?: ((id: string) => string | null) | undefined;
+			sendAuthority?: ((id: string) => "responsibility-missing" | "responsibility-inactive" | "outside-project" | null) | undefined;
+		} = {},
+	) => ({
 		engine,
 		types,
 		conversation: parent,
 		parentTools,
 		intrinsicTools: [] as string[],
+		...extra,
 	});
 
 	test("spawn defaults to general, captures the filtered tools, and notes the queue", async () => {
@@ -129,6 +146,30 @@ describe("agent tool", () => {
 			{ toolCallId: "t1" },
 		);
 		expect(result).toMatchObject({ error: expect.stringContaining("known: general") });
+	});
+
+	test("responsibility links are admitted only by the project check", async () => {
+		const captured: SpawnInput[] = [];
+		const engine = stubEngine({
+			spawn: async (input) => {
+				captured.push(input);
+				return { child: child("running", { responsibilityId: "resp-1" }), queued: false };
+			},
+		});
+		const result = await executeUnknown(
+			agentTool(deps(engine, ["read_file"], { checkResponsibility: () => null })),
+			{ action: "spawn", task: "assigned", responsibility: "resp-1" },
+		);
+		expect(result).toMatchObject({ responsibility: "resp-1" });
+		expect(captured[0]?.responsibilityId).toBe("resp-1");
+
+		const refused = await executeUnknown(
+			agentTool(deps(stubEngine(), ["read_file"], {
+				checkResponsibility: () => "responsibility is closed",
+			})),
+			{ action: "spawn", task: "assigned", responsibility: "resp-1" },
+		);
+		expect(refused).toMatchObject({ error: "responsibility is closed" });
 	});
 
 	test("spawn refuses a desktop for a type that cannot drive one, before any claim", async () => {
@@ -209,6 +250,44 @@ describe("agent tool", () => {
 		expect(agentInputSchema.safeParse({ action: "list" }).success).toBe(true);
 	});
 
+	test("responsibility description and schema are exposed only when linkable", () => {
+		const linkable = agentTool(deps(stubEngine(), ["read_file"], { checkResponsibility: () => null }));
+		const plain = agentTool(deps(stubEngine()));
+		expect(linkable.description).toContain("each settlement is then filed as a worker report");
+		expect(plain.description).not.toContain("each settlement is then filed as a worker report");
+		expect(linkable.input.safeParse({ action: "spawn", task: "t", responsibility: "r1" }).success).toBe(true);
+		const props = (t: { input: unknown }) =>
+			Object.keys((z.toJSONSchema(t.input as z.ZodType) as { properties: object }).properties);
+		expect(props(linkable)).toContain("responsibility");
+		expect(props(plain)).not.toContain("responsibility");
+	});
+
+	test("a responsibility link outside a project conversation is refused before spawn", async () => {
+		// stubEngine's spawn throws if reached.
+		const refused = await executeUnknown(agentTool(deps(stubEngine())), {
+			action: "spawn",
+			task: "assigned",
+			responsibility: "resp-1",
+		});
+		expect(refused).toEqual({ error: "responsibility links need a project conversation" });
+	});
+
+	test("send forwards the authority callback to the child engine", async () => {
+		let authorizeReceived: unknown;
+		const authorize = () => "responsibility-inactive" as const;
+		const engine = stubEngine({
+			send: (_id, _text, check) => {
+				authorizeReceived = check;
+				return { child: child("running") };
+			},
+		});
+		await agentTool(deps(engine, ["read_file"], { sendAuthority: authorize })).execute(
+			{ action: "send", id: "app/agent-x", text: "continue" },
+			{ toolCallId: "t3" },
+		);
+		expect(authorizeReceived).toBe(authorize);
+	});
+
 	test("withAgent mounts the tool and its description lists the types", async () => {
 		const tools = withAgent(
 			{ read_file: stubBaseTool, bash: stubBaseTool },
@@ -219,4 +298,3 @@ describe("agent tool", () => {
 		expect(tool.description).toContain("- general:");
 	});
 });
-

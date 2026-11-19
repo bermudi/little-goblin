@@ -445,6 +445,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 				types: loadAgentTypes(paths.agentTypes()),
 				conversation: conv,
 				sendAuthority,
+				checkResponsibility,
 				// The names the child mount provides that no parent turn
 				// carries — the computer type's desktop tools plus
 				// ask_operator (agent.ts childToolAllowlist).

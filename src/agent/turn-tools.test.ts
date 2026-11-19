@@ -15,7 +15,7 @@ import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { openProjects, type ProjectStore } from "../projects.ts";
 import { openResponsibilities } from "../responsibilities.ts";
 import { makeResponsibilityService } from "../responsibility-service.ts";
-import { Runtime, userMessage } from "../runtime.ts";
+import { FencedError, Runtime, userMessage } from "../runtime.ts";
 
 import { aiSdkEngine } from "../turn/ai-sdk-engine.ts";
 import { openTurnJournal } from "../turn-journal.ts";
@@ -25,6 +25,8 @@ import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/f
 import { deferred, HeadlessSink, tmpDir, useHome, waitUntil } from "../testkit.ts";
 import { makeWakeDispatcher, type WakeDispatcher } from "../wake-dispatcher.ts";
 import { makeTurnTools, screenshotCapable } from "./turn-tools.ts";
+import type { DelegateToolDeps } from "./tools/delegate.ts";
+import type { WorkerSendRefusal } from "../responsibility-authority.ts";
 import {
 	_primeModelsDevForTest,
 	_resetModelsDevForTest,
@@ -129,7 +131,11 @@ const ACCEPT2 = JSON.stringify({
 });
 
 describe("turn-tools responsibility composition", () => {
-	function rig(attempts: Parameters<typeof scriptedModel>[0], agents: T3Thread[] = [AGENT]) {
+	function rig(
+		attempts: Parameters<typeof scriptedModel>[0],
+		agents: T3Thread[] = [AGENT],
+		delegateDeps?: (conv: Conversation, workdir: string) => DelegateToolDeps | undefined,
+	) {
 		const home = useHome(`goblin-tt-${tmpDir().slice(-6)}-`);
 		mkdirSync(join(home, "state"), { recursive: true });
 		const store = openStore(join(home, "state", "goblin.sqlite"));
@@ -162,7 +168,7 @@ describe("turn-tools responsibility composition", () => {
 			sendPrivate: async () => {},
 			memory: null,
 			transcribe: async () => null,
-			delegateDeps: () => undefined,
+			delegateDeps: delegateDeps ?? (() => undefined),
 			t3: fakeT3(() => agents).t3,
 			mail: () => ({}) as Pick<MailApproval, "requestDraft">,
 			programApproval: () => undefined,
@@ -180,7 +186,7 @@ describe("turn-tools responsibility composition", () => {
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: toolsFor,
 		});
-		return { store, conv, project, resps, runtime, toolsFor, configRef };
+		return { store, conv, project, projects, resps, runtime, toolsFor, configRef, service };
 	}
 
 	test("warns when a parent turn builds before configured owners bind", () => {
@@ -205,6 +211,74 @@ describe("turn-tools responsibility composition", () => {
 			setLogFile(null);
 			f.store.close();
 		}
+	});
+
+	test("worker send authority checks project, status, and the captured turn epoch", async () => {
+		let responsibilityId = "";
+		const delegateDeps = (_conv: Conversation, workspaceDir: string): DelegateToolDeps => ({
+			lifecycle: {
+				send: (
+					_id: number,
+					_text: string,
+					authorize?: (responsibilityId: string) => WorkerSendRefusal | null,
+				) => {
+					const why = authorize?.(responsibilityId) ?? "outside-project";
+					return Promise.resolve({ kind: "refused", id: 1, why });
+				},
+			} as unknown as DelegateToolDeps["lifecycle"],
+			config: { harnesses: {} },
+			pin: () => ({ address: { chatId: 0, threadId: null } }),
+			workspaceDir,
+		});
+		const f = rig([], [AGENT], delegateDeps);
+		const understanding = {
+			outcome: "test work",
+			situation: "",
+			nextAction: "",
+			checkpoints: [],
+			completionEvidence: [],
+		};
+		const local = f.resps.create({
+			projectId: f.project.id,
+			coordinationConversationId: f.conv.id,
+			handoverKey: "authority-local",
+			understanding,
+		}).responsibility;
+		const otherProject = f.projects.create({ name: "other" });
+		const otherConv = f.store.resolve(
+			{ kind: "app", appId: otherProject.slug, chatId: 0, threadId: 0 },
+			otherProject.dir,
+		);
+		f.store.bindProject(otherConv.id, otherProject.id);
+		const foreign = f.resps.create({
+			projectId: otherProject.id,
+			coordinationConversationId: otherConv.id,
+			handoverKey: "authority-foreign",
+			understanding,
+		}).responsibility;
+		const send = async (id: string) => {
+			responsibilityId = id;
+			const tool = mounted.delegate;
+			if (tool === undefined) throw new Error("delegate tool missing");
+			return (tool as unknown as {
+				execute(input: unknown, options: { toolCallId: string }): Promise<unknown>;
+			}).execute({ action: "send", id: 1, text: "continue" }, { toolCallId: "send" });
+		};
+		const mounted = f.toolsFor(f.store.get(f.conv.id)!);
+
+		expect(await send(foreign.responsibilityId)).toMatchObject({
+			error: expect.stringContaining("another project"),
+		});
+		f.resps.setStatus(local.responsibilityId, "paused");
+		expect(await send(local.responsibilityId)).toMatchObject({
+			error: expect.stringContaining("paused or closed"),
+		});
+
+		const beforeEpoch = f.store.get(f.conv.id)!.epoch;
+		f.store.db.run("UPDATE conversations SET epoch = epoch + 1 WHERE id = ?", [f.conv.id]);
+		expect(f.store.get(f.conv.id)!.epoch).toBe(beforeEpoch + 1);
+		await expect(send(local.responsibilityId)).rejects.toBeInstanceOf(FencedError);
+		f.store.close();
 	});
 
 	test("accepts dedup on the owned source message; a later message hands over a new responsibility", async () => {

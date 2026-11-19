@@ -15,6 +15,7 @@
 - **Child conversation:** a conversation with a parent. A subagent runs in one; its final reply goes back to the parent as a notice.
 - **Computer:** the built-in agent type whose child does screen work on a named desktop.
 - **Settlement:** the point where a delegation or subagent run stops and states a result: done, needs input, or failed.
+- **Linked worker:** a subagent, delegation or adopted T3 thread that is explicitly linked to a responsibility. Its settlements file worker reports, and every send to it passes the responsibility's send check (design/agents.md → Linked workers).
 - **Worker report:** one settlement filed on a responsibility. It is the agent's claim, and Goblin still checks it.
 - **Notice:** the machine message that gives a settlement to Goblin and wakes the conversation.
 - **Hindsight:** the separate memory service. It extracts, stores and searches memories for Goblin.

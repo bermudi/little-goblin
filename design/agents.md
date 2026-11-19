@@ -64,7 +64,8 @@ model catalog**.
   done, needs input (a type with `ask_operator`) or failed. Settlement sends a
   notice that wakes the parent through the existing notice path. The
   result arrives fenced: it is the child's claim, which goblin checks
-  before it reports.
+  before it reports. A child linked to a responsibility also files a
+  worker report (Linked workers, below).
 - **Visibility.** The app lists the child under its parent, and the
   operator can open it and read every step. Telegram does not show
   children.
@@ -190,6 +191,66 @@ session.
   answer sends a key only after a live `blocked` preflight; stop kills
   the terminal. The operator can inspect the terminal through hc or the
   app's Delegations page.
+
+## Linked workers: one contract across transports (2026-11-19, #779)
+
+A subagent, a delegation and an adopted T3 thread are three transports
+for one thing: a worker that executes part of what goblin owes
+(DIRECTION.md → Responsibility Is Not Execution). The transports stay
+separate. What they share is the link to a responsibility, the report a
+settlement files, and the check every send passes.
+
+- **The link is explicit.** `agent spawn` and `delegate start` take
+  `responsibility:<id>` in a project conversation, admitted by the same
+  gate: the id is `active` or `paused` in this conversation's project.
+  No matching by topic or by "the project's only open one". The link
+  lives on the worker's row (`agent_children` or `delegations`), with the
+  responsibility revision stamped when it was linked. An adopted T3
+  thread is linked by `responsibility accept`/`attach`.
+- **One settlement, one worker report.** Each settlement of a linked
+  subagent or delegation files one `worker` report before its notice
+  wakes the conversation (`src/responsibility-runs.ts`), with one
+  mapping: done → `ready`, needs input → `blocked` (no `question`: a
+  subagent's `ask_operator` question goes to its parent, which relays
+  it, the same as a delegation's dialog), failed → `failed`, stopped →
+  `blocked`. The report carries the link-time revision, so a correction
+  since then overtakes the claim (design/programs.md → Worker reports).
+  A subagent's report key is `agent:<child>:<settlement>:<status>`. A
+  subagent that goblin stops itself (`agent stop`) files nothing and
+  wakes nothing, like `delegate stop`: the tool result is goblin's
+  record. T3 threads have no settlement; the observer files their
+  developments.
+- **One check for every send.** A send to a linked worker passes:
+  1. **status**: the responsibility exists and is `active`. Paused and
+     closed responsibilities take no sends ("stopping work means pausing
+     or closing the responsibility" — design/programs.md → Queued
+     authority). `workerSendRefusal` in `src/responsibility-authority.ts`
+     is the one predicate; managed sends use it through `checkSendable`.
+  2. **project**: the send comes from a conversation in the
+     responsibility's project. A linked worker takes no sends from the
+     operator's private chat or another project.
+  3. **revision**: the sending turn's conversation epoch is still
+     current. An operator correction bumps the epoch of every lane in
+     the project in its own commit, so a turn that started before the
+     correction is fenced before it can send. A managed send also stamps
+     its operation with the revision at prepare time and rechecks it at
+     the T3 wire, because that send awaits the wire after preparing.
+     `delegate send` and `agent send` have no await between the check
+     and the wire.
+  A refused send returns its reason, and nothing reaches the worker.
+  `delegate answer` is outside this check: it relays one keypress the
+  operator chose, and the operator is the authority. An unlinked worker
+  is unchanged.
+- **No polling native children.** A subagent reports at settlement. Its
+  progress is never observed by polling the child (that is T3's
+  mechanism, for threads goblin did not start).
+- **One worker, one path.** An adopted T3 attachment and a delegation
+  cannot be the same worker: `accept`/`attach` bind T3 thread ids only
+  (`server: "t3"`), and delegations run in Goblin's private hc terminals.
+  Delegation rows from the T3-era transport (no `agent_name`) are
+  settled `failed` when the store opens and are never observed again,
+  so a thread one of them left in T3 Code has at most one path: the
+  attachment, if the operator adopts it.
 
 ## Handover: T3 Code threads
 

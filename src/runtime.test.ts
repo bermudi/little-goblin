@@ -4475,7 +4475,7 @@ describe("prefix compaction request identity", () => {
 		const prefixSteps: import("./turn/prefix-summary.ts").PrefixStep[] = [];
 		const buildStep: RuntimeDeps["buildStep"] = async (conv, tools) => {
 			const step = await builder.buildStep(conv, tools);
-			if ("engine" in step) throw new Error("fake API provider unexpectedly built a Claude step");
+			if (step.engine !== "ai-sdk") throw new Error("fake API provider unexpectedly built a Claude step");
 			turnSteps.push(step);
 			return step;
 		};

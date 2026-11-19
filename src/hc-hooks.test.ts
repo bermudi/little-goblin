@@ -22,7 +22,7 @@ describe("installHcHooks", () => {
 	test("copies assets with mode 0755 and skips identical content", () => {
 		const source = dir();
 		const target = join(dir(), "installed");
-		Bun.write(join(source, "report.sh"), "#!/bin/sh\nexit 0\n");
+		writeFileSync(join(source, "report.sh"), "#!/bin/sh\nexit 0\n");
 
 		installHcHooks(source, target);
 		const path = join(target, "report.sh");

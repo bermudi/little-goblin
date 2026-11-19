@@ -351,7 +351,7 @@ describe("delegate tool", () => {
 		expect(h.store.get(out.id)!.baselineSeq).toBe(7);
 		await h.lifecycle.tick();
 		expect(h.prompts).toEqual([]);
-		h.lifecycle.stopTicker();
+		await h.lifecycle.stopTicker();
 	});
 
 	test("answer relays a whitelisted keypress; the watcher delivers the owed task once the dialog clears", async () => {
@@ -386,7 +386,7 @@ describe("delegate tool", () => {
 		const row = h.store.get(out.id)!;
 		expect(row.status).toBe("running");
 		expect(row.promptPending).toBe(false);
-		h.lifecycle.stopTicker();
+		await h.lifecycle.stopTicker();
 	});
 
 	test("answer refuses a keypress unless the live agent sits on a dialog (#493-L28)", async () => {
@@ -417,7 +417,7 @@ describe("delegate tool", () => {
 		expect(gone.error).toContain("gone");
 		// Neither call touched the pane.
 		expect(h.keys).toEqual([]);
-		h.lifecycle.stopTicker();
+		await h.lifecycle.stopTicker();
 	});
 
 	test("send re-prompts, resets the baseline, and flips needs_input back to running", async () => {
@@ -550,7 +550,7 @@ describe("delegate tool", () => {
 
 		release();
 		const out = (await starting) as { id: number; status: string };
-		w.stopTicker();
+		await w.stopTicker();
 		expect(out.status).toBe("running");
 		expect(h.store.get(1)!.status).toBe("running");
 	});
@@ -654,7 +654,7 @@ describe("delegate tool", () => {
 			wakeApp: () => true,
 		});
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.store.get(out.id)!.status).toBe("done");
 		expect(wakes[0]).toContain("· done]");
 	});
@@ -712,7 +712,7 @@ describe("delegate tool", () => {
 			link: "https://g.example/app/c/spun-off",
 		});
 		expect(out.note).toContain("app conversation");
-		h.lifecycle.stopTicker();
+		await h.lifecycle.stopTicker();
 	});
 
 	test("a failing discard on a returned outcome surfaces in the result", async () => {

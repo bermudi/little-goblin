@@ -442,7 +442,7 @@ describe("delegation watcher", () => {
 
 		h.agents.set(d.agentName, agent(d.agentName, "idle", 6));
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("done");
 		expect(h.wakes).toHaveLength(1);
 		expect(h.wakes[0]).toContain(`[delegation: #${d.id} fix it · done]`);
@@ -485,7 +485,7 @@ describe("delegation watcher", () => {
 			// The real work still reports exactly once.
 			h.agents.set(d.agentName, agent(d.agentName, "done", 9));
 			await owner.tick();
-			owner.stopTicker();
+			await owner.stopTicker();
 			expect(h.store.get(d.id)!.status).toBe("done");
 			expect(h.wakes).toHaveLength(2);
 			expect(h.wakes[1]).toContain(`[delegation: #${d.id} hiccup · done]`);
@@ -525,7 +525,7 @@ describe("delegation watcher", () => {
 
 			h.agents.set(agentName, agent(agentName, "done", 4));
 			await owner.tick();
-			owner.stopTicker();
+			await owner.stopTicker();
 			expect(h.store.get(1)!.status).toBe("done");
 			expect(h.wakes).toHaveLength(1);
 		});
@@ -576,7 +576,7 @@ describe("delegation watcher", () => {
 				get: (name) => Promise.resolve(agent(name, "idle", 8)),
 			};
 			await owner.tick();
-			owner.stopTicker();
+			await owner.stopTicker();
 			expect(prompts).toHaveLength(1);
 			expect(prompts[0]).toContain("do it");
 			expect(h.store.get(1)!.status).toBe("running");
@@ -631,7 +631,7 @@ describe("delegation watcher", () => {
 			// The owed task's own completion reports exactly once.
 			h.agents.set(agentName, agent(agentName, "done", 6));
 			await owner.tick();
-			owner.stopTicker();
+			await owner.stopTicker();
 			expect(h.store.get(row.id)!.status).toBe("done");
 			expect(h.wakes).toHaveLength(1);
 		});
@@ -665,7 +665,7 @@ describe("delegation watcher", () => {
 			h.store.markRunning(d.id, 10, new Date());
 			release();
 			await tick;
-			w.stopTicker();
+			await w.stopTicker();
 			// The capture CAS refused to clobber the send's row.
 			const row = h.store.get(d.id)!;
 			expect(row.status).toBe("running");
@@ -699,7 +699,7 @@ describe("delegation watcher", () => {
 			h.agents.set(d.agentName, { ...agent(d.agentName, "idle", 9), completion_seq: 9 });
 			const owner = startDelegationLifecycle(h.deps, 3_600_000);
 			await owner.tick();
-			owner.stopTicker();
+			await owner.stopTicker();
 			expect(h.store.get(d.id)!.status).toBe("done");
 			expect(h.wakes).toHaveLength(1);
 			expect(h.wakes[0]).toContain(`[delegation: #${d.id} fast finisher · done]`);
@@ -717,7 +717,7 @@ describe("delegation watcher", () => {
 			h.agents.set(d.agentName, { ...agent(d.agentName, "idle", 9), completion_seq: 9 });
 			const owner = startDelegationLifecycle(h.deps, 3_600_000);
 			await owner.tick();
-			owner.stopTicker();
+			await owner.stopTicker();
 			const row = h.store.get(d.id)!;
 			expect(row.status).toBe("needs_input");
 			expect(row.baselineSeq).toBe(9);
@@ -734,7 +734,7 @@ describe("delegation watcher", () => {
 			h.agents.set(d.agentName, agent(d.agentName, "done", 9));
 			const owner = startDelegationLifecycle(h.deps, 3_600_000);
 			await owner.tick();
-			owner.stopTicker();
+			await owner.stopTicker();
 			expect(h.store.get(d.id)!.status).toBe("needs_input");
 			expect(h.wakes).toHaveLength(1);
 		});
@@ -758,7 +758,7 @@ describe("delegation watcher", () => {
 
 			lands = true;
 			await owner.tick();
-			owner.stopTicker();
+			await owner.stopTicker();
 			expect(h.store.get(d.id)!.status).toBe("needs_input");
 			expect(h.wakes).toHaveLength(1);
 		});
@@ -769,7 +769,7 @@ describe("delegation watcher", () => {
 			h.agents.set(d.agentName, agent(d.agentName, "idle", 9));
 			const owner = startDelegationLifecycle(h.deps, 3_600_000);
 			await owner.tick();
-			owner.stopTicker();
+			await owner.stopTicker();
 			// No verdict from a bare idle — the glance the pending
 			// posture exists for; the stall rule owns it after 90 s.
 			expect(h.store.get(d.id)!.status).toBe("running");
@@ -804,7 +804,7 @@ describe("delegation watcher", () => {
 			h.agents.set(agentName, { ...agent(agentName, "done", 9), completion_seq: 9 });
 			const owner = startDelegationLifecycle(h.deps, 3_600_000);
 			await owner.tick();
-			owner.stopTicker();
+			await owner.stopTicker();
 			// The task never reached the agent, so the done glance is not
 			// this run's completion — delivering the owed prompt is the
 			// verdict, and the fresh prompt restarts the seq clock honestly.
@@ -829,7 +829,7 @@ describe("delegation watcher", () => {
 		expect(h.wakes[0]).toContain(`[delegation: #${d.id} stuck · needs input]`);
 
 		await w.tick(); // still blocked — the row status IS the once
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.wakes).toHaveLength(1);
 	});
 
@@ -841,7 +841,7 @@ describe("delegation watcher", () => {
 		await w.tick();
 		h.agents.set(d.agentName, agent(d.agentName, "working", 3));
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("running");
 		expect(h.wakes).toHaveLength(1); // only the first needs_input notice
 	});
@@ -858,7 +858,7 @@ describe("delegation watcher", () => {
 		// "working", but the seq moved past the park point.
 		h.agents.set(d.agentName, agent(d.agentName, "idle", 5));
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("done");
 		expect(h.wakes).toHaveLength(2);
 		expect(h.wakes[1]).toContain(`[delegation: #${d.id} handed off · done]`);
@@ -874,7 +874,7 @@ describe("delegation watcher", () => {
 		writeFileSync(join(h.delegationsDir, String(d.id), "report.md"), "# done");
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick(); // well inside the 90 s stall window
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("done");
 		expect(h.wakes[0]).toContain(`[delegation: #${d.id} fast finisher · done]`);
 	});
@@ -890,7 +890,7 @@ describe("delegation watcher", () => {
 		);
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		const row = h.store.get(d.id)!;
 		expect(row.status).toBe("needs_input");
 		expect(h.wakes).toHaveLength(1);
@@ -909,7 +909,7 @@ describe("delegation watcher", () => {
 		);
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("done");
 	});
 
@@ -943,7 +943,7 @@ describe("delegation watcher", () => {
 		};
 		expect((await owner.send(d.id, "next task")).kind).toBe("sent");
 		await owner.tick();
-		owner.stopTicker();
+		await owner.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("done");
 		expect(h.wakes).toHaveLength(1);
 		expect(h.wakes[0]).toContain("# current run");
@@ -1098,7 +1098,7 @@ describe("delegation watcher", () => {
 		};
 		const owner = startDelegationLifecycle(h.deps);
 		const out = await owner.send(d.id, "another task");
-		owner.stopTicker();
+		await owner.stopTicker();
 		expect(out.kind).toBe("prompt failed");
 		expect(prompted).toBe(false);
 		expect(h.store.get(d.id)!.status).toBe("running");
@@ -1112,7 +1112,7 @@ describe("delegation watcher", () => {
 		h.screens.set(`agent:${d.agentName}`, "codex exited: oom");
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("stopped");
 		expect(h.wakes).toHaveLength(1);
 		expect(h.wakes[0]).toContain(`[delegation: #${d.id} died · stopped]`);
@@ -1173,7 +1173,7 @@ describe("delegation watcher", () => {
 		writeFileSync(reportPath, "x".repeat(20 * 1024));
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.wakes).toHaveLength(1);
 		expect(h.wakes[0]).toContain(`… full report at ${reportPath}`);
 		expect(h.wakes[0]).not.toContain("agent screen");
@@ -1189,7 +1189,7 @@ describe("delegation watcher", () => {
 		writeFileSync(reportPath, "😀".repeat(5_000));
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		const excerpt = h.wakes[0]!.split(`\n\n… full report at ${reportPath}`)[0]!.split(
 			'<event source="delegation">\n',
 		)[1]!;
@@ -1206,7 +1206,7 @@ describe("delegation watcher", () => {
 		writeFileSync(join(h.delegationsDir, String(d.id), "report.md"), "# Done\nall good");
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.wakes[0]).toContain("# Done\nall good");
 		expect(h.wakes[0]).not.toContain("agent screen");
 	});
@@ -1230,7 +1230,7 @@ describe("delegation watcher", () => {
 		// And it stays settled — a second scan adds no notice, no error.
 		const w2 = startDelegationLifecycle(h.deps);
 		await w2.tick();
-		w2.stopTicker();
+		await w2.stopTicker();
 		expect(h.wakes).toHaveLength(1);
 	});
 
@@ -1245,7 +1245,7 @@ describe("delegation watcher", () => {
 		);
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		const notice = h.wakes[0]!;
 		// Header outside the fence; body wrapped with the standing note.
 		expect(notice).toContain(
@@ -1263,7 +1263,7 @@ describe("delegation watcher", () => {
 		h.agents.set(d.agentName, agent(d.agentName, "idle", 2));
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("needs_input");
 		expect(h.wakes[0]).toContain("startup dialog");
 	});
@@ -1287,7 +1287,7 @@ describe("delegation watcher", () => {
 			expect(h.wakes[0]).toContain("may be frozen");
 
 			await w.tick(); // still frozen — the row's status is the once
-			w.stopTicker();
+			await w.stopTicker();
 			expect(h.wakes).toHaveLength(1);
 		});
 
@@ -1303,7 +1303,7 @@ describe("delegation watcher", () => {
 
 			h.agents.set(d.agentName, agent(d.agentName, "working", 10));
 			await w.tick();
-			w.stopTicker();
+			await w.stopTicker();
 			expect(h.store.get(d.id)!.status).toBe("running");
 			expect(h.wakes).toEqual([]);
 		});
@@ -1318,7 +1318,7 @@ describe("delegation watcher", () => {
 
 			h.agents.set(d.agentName, agent(d.agentName, "working", 6));
 			await w.tick();
-			w.stopTicker();
+			await w.stopTicker();
 			expect(h.store.get(d.id)!.status).toBe("running");
 			expect(h.wakes).toHaveLength(1); // the resume is silent
 		});
@@ -1330,7 +1330,7 @@ describe("delegation watcher", () => {
 			const w = startDelegationLifecycle(h.deps, 3_600_000);
 			await w.tick();
 			await w.tick();
-			w.stopTicker();
+			await w.stopTicker();
 			expect(h.store.get(d.id)!.status).toBe("running");
 			expect(h.wakes).toEqual([]);
 		});
@@ -1353,7 +1353,7 @@ describe("delegation watcher", () => {
 
 		lands = true;
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("done");
 		expect(h.wakes).toHaveLength(1); // exactly one landed notice
 		expect(h.wakes[0]).toContain(`[delegation: #${d.id} flaky wire · done]`);
@@ -1387,7 +1387,7 @@ describe("delegation watcher", () => {
 		h.store.markRunning(d.id, 10, new Date());
 		release();
 		await tick;
-		w.stopTicker();
+		await w.stopTicker();
 		// The notice landed — acceptable — but the CAS refused to
 		// clobber the send's row: still running, send's baseline kept.
 		const row = h.store.get(d.id)!;
@@ -1424,7 +1424,7 @@ describe("delegation watcher", () => {
 			hc,
 		});
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("failed");
 		expect(closed).toEqual(["g1-orphan"]);
 		expect(h.wakes).toHaveLength(1);
@@ -1454,7 +1454,7 @@ describe("delegation watcher", () => {
 			},
 		});
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		// The notice never landed, but a `starting` row has no next tick:
 		// waiting on a landed notice would wedge it invisible to every
 		// later scan while it still holds a live() concurrency slot.
@@ -1481,7 +1481,7 @@ describe("delegation watcher", () => {
 		h.agents.set("g1-app-work", agent("g1-app-work", "done", 9));
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.appWakes.map((a) => a.conv)).toEqual(["app/spun-off"]);
 		expect(h.appWakes[0]!.text).toContain(`[delegation: #${d.id} app work · done]`);
 		expect(h.wakes).toEqual([]);
@@ -1494,7 +1494,7 @@ describe("delegation watcher", () => {
 		h.agents.set(d.agentName, agent(d.agentName, "working", 2));
 		const w1 = startDelegationLifecycle(h.deps);
 		await w1.tick();
-		w1.stopTicker();
+		await w1.stopTicker();
 		h.store.close();
 		expect(h.wakes).toEqual([]);
 
@@ -1505,7 +1505,7 @@ describe("delegation watcher", () => {
 		h2.agents.set(d.agentName, agent(d.agentName, "done", 3));
 		const w2 = startDelegationLifecycle(h2.deps);
 		await w2.tick();
-		w2.stopTicker();
+		await w2.stopTicker();
 		expect(store2.get(d.id)!.status).toBe("done");
 		expect(h2.wakes[0]).toContain(`[delegation: #${d.id} survivor · done]`);
 	});
@@ -1529,7 +1529,7 @@ describe("delegation watcher", () => {
 			expect(readFileSync(join(h.homeDir, ".codex", "config.toml"), "utf8")).toContain(
 				'[projects."/w"]\ntrust_level = "trusted"',
 			);
-			owner.stopTicker();
+			await owner.stopTicker();
 		});
 
 		test("a trust seed failure fails the launch before any terminal starts", async () => {
@@ -1556,7 +1556,7 @@ describe("delegation watcher", () => {
 			if (out.kind === "failed") expect(out.why).toContain("trust seed");
 			expect(h.store.get(1)?.status).toBe("failed");
 			expect(started).toEqual([]);
-			owner.stopTicker();
+			await owner.stopTicker();
 		});
 
 		test("a bind write failure rejects before any terminal starts", async () => {
@@ -1637,7 +1637,7 @@ describe("delegation watcher", () => {
 			});
 			expect(out.kind).toBe("failed");
 			expect(h.store.get(1)?.status).toBe("failed");
-			owner.stopTicker();
+			await owner.stopTicker();
 		});
 
 		test("stop during a successful start never sends the prompt", async () => {
@@ -1669,7 +1669,7 @@ describe("delegation watcher", () => {
 			release();
 			expect((await launching).kind).toBe("stopped");
 			expect(prompts).toEqual([]);
-			owner.stopTicker();
+			await owner.stopTicker();
 		});
 
 		test("launch → stop while the harness starts → tick: stopped row, terminal killed exactly once", async () => {
@@ -1711,7 +1711,7 @@ describe("delegation watcher", () => {
 			// The watcher tick afterwards must neither resurrect the row nor
 			// kill anything again.
 			await owner.tick();
-			owner.stopTicker();
+			await owner.stopTicker();
 			expect(out.kind).toBe("stopped");
 			expect(prompts).toEqual([]);
 			expect(closed).toEqual([terminal]);
@@ -1755,7 +1755,7 @@ describe("delegation watcher", () => {
 
 			release();
 			const out = await launching;
-			owner.stopTicker();
+			await owner.stopTicker();
 			// The failure must not stomp the operator's stop verdict or
 			// kill the terminal a second time.
 			expect(out.kind).toBe("stopped");
@@ -1896,7 +1896,7 @@ describe("delegation settlement hook", () => {
 		expect(h.store.get(d.id)!.status).toBe("running");
 		land = true;
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(order).toEqual(["settled", "wake", "settled", "wake"]);
 		expect(keys[0]).toBe(keys[1]!);
 		expect(h.store.get(d.id)!.status).toBe("done");
@@ -1911,7 +1911,7 @@ describe("delegation settlement hook", () => {
 		};
 		const w = startDelegationLifecycle(h.deps);
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.wakes).toEqual([]);
 		expect(h.store.get(d.id)!.status).toBe("running");
 	});
@@ -1930,7 +1930,7 @@ describe("hc unreachable", () => {
 		});
 		const w = startDelegationLifecycle({ ...h.deps, hc });
 		await w.tick();
-		w.stopTicker();
+		await w.stopTicker();
 		expect(h.store.get(d.id)!.status).toBe("running");
 		expect(h.wakes).toEqual([]);
 		expect(existsSync(paths.hcBinary())).toBe(false);

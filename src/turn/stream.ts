@@ -18,26 +18,21 @@ import type { PromptMessage, ToolContent } from "../prompt-message.ts";
 import { quotaFromMetadata } from "../agent/codex/receipts.ts";
 import { toToolSet, ToolExecuteError } from "./ai-sdk-tools.ts";
 import { filterErrorStream, streamSurfaceErrors } from "../agent/filter-stream.ts";
-import {
-	isContentFilter,
-	isContextOverflow,
-	isTransientTurnFailure,
-	ProviderContentFilterError,
-} from "../agent/provider-errors.ts";
+import { isContentFilter, isContextOverflow } from "../agent/provider-errors.ts";
 import { makeToolCallRepair } from "../agent/tool-repair.ts";
 import type { AppLiveContext, AppQuota } from "../http/app-wire.ts";
 import { log } from "../log.ts";
-import { awaitRetryDelay, RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
 import type { EvidenceLimits, ToolCallDigest } from "../reviewer-evidence.ts";
 import type { Tools } from "../tool.ts";
 import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import { serializeToolDefs, type WindowCapture } from "../window-capture.ts";
 import type { AdmittedMember, LiveWire } from "./admission.ts";
-import { estimateHistoryChars, measurePrompt, type PromptSegments } from "./itemize.ts";
+import { measurePrompt, type PromptSegments } from "./itemize.ts";
 import { stepModelRef } from "./model-ref.ts";
 import { PreemptSignal, transportFailureText } from "./overflow.ts";
 import { replyMetadata } from "./reply-metadata.ts";
 import type { SkillWatch } from "./skill-attribution.ts";
+import type { StepRules } from "./step-rules.ts";
 import { holdsZeroEffectError, type ForcedKind, type LoopTurnState, type TurnState } from "./state.ts";
 import {
 	noteToolError,
@@ -385,12 +380,9 @@ export interface StreamStep {
 	label?: string;
 	contextWindow?: number;
 	// Provider retry rule for the call — 1min carries 0, absent keeps
-	// the SDK default. Gates both the SDK ladder and the transient
-	// step retry below; the content-filter re-ask is the exception.
+	// the SDK default. The transient step retry reads the same rule
+	// through StepRules.
 	maxRetries?: number;
-	// Delay before the transient-transport step retry re-dispatches.
-	// Absent keeps the SDK retry ladder's initial delay; tests zero it.
-	transientRetryDelayMs?: number;
 }
 
 export interface StreamDeps<M extends WireMember> {
@@ -419,27 +411,16 @@ export interface StreamDeps<M extends WireMember> {
 	// steers advance it and persist with the steer mark.
 	ownedInputSeqs: number[];
 	onOwnedInputs?(seqs: readonly number[]): void;
-	onContextFill?(used: number | null, limit: number | undefined): void;
-	priorInputTokens?: number | null;
 	sourceInputSeq?(): number | null;
 	partial: Message | null;
 	seenText: boolean;
 	toolCalls: string[];
 	digest: { id: string; entry: ToolCallDigest }[];
-	filterRetryUsed: boolean;
 	overflowRecoverable: boolean;
-	// design/compaction.md → Timing: the pre-emption decision, evaluated
-	// at the step boundary before every model call including the first
-	// (after tools finish and their results are appended). Supplied by the
-	// runtime, which owns the thresholds and the compaction state; an arm
-	// returned means the next call must not dispatch — the turn folds and
-	// resumes on the compacted view. Absent = pre-emption off. Only
-	// consulted while the overflow rail is recoverable and authority holds
-	// (one fold-resume per logical turn; a fenced turn takes the fence path).
-	preemptCheck?(info: {
-		projectedInputTokens: number | null;
-		stepNumber: number;
-	}): "pressure" | null;
+	// The optional engine rules — context fill, the pre-empt fold, the
+	// content-filter re-ask, the transient retry — owned by the runtime
+	// (turn/step-rules.ts). The engine reports its model-call boundaries.
+	rules: StepRules;
 	evidence: EvidenceLimits | undefined;
 	skillWatch?: SkillWatch | undefined;
 	journal?: TurnJournal | undefined;
@@ -510,7 +491,7 @@ export type StreamOutcome =
 export async function driveStream<M extends WireMember>(
 	deps: StreamDeps<M>,
 ): Promise<StreamOutcome> {
-	const { convId, epoch, head, members, live, state } = deps;
+	const { convId, head, members, live, state } = deps;
 	const sdkTools = toToolSet(deps.tools);
 	const modelLabel = stepModelRef(deps.step);
 	let lastStepInputTokens: number | null = null;
@@ -529,16 +510,7 @@ export async function driveStream<M extends WireMember>(
 	let lastWindow: { messages: PromptMessage[]; segments: PromptSegments } | null = null;
 	let stepCount = 0;
 	let rawError: unknown = null;
-	let filterRetryPending = false;
-	let filterRetryUsed = deps.filterRetryUsed;
-	// The SDK grants one onError-requested retry per model step
-	// (callbackStreamRetryCount), shared by every branch below —
-	// retryGrantedStep mirrors that budget so a granted request is
-	// always a real re-dispatch, never a logged wish. stepCount is the
-	// ended-steps gauge; a retried step ends once, after its retry.
-	let retryGrantedStep: number | null = null;
-	let transientRetries = 0;
-	let transientRetryPending = false;
+	const rules = deps.rules;
 	// Read inside streamText's onStepEnd, so it must be declared before
 	// the factory call — an await inserted between the two leaves every
 	// step end in the TDZ while still compiling.
@@ -563,44 +535,12 @@ export async function driveStream<M extends WireMember>(
 	const notePrompt = (messages: readonly PromptMessage[], stepNumber: number) => {
 		const segments = measurePrompt(deps.step.system, deps.tools, messages);
 		lastPromptChars = segments;
-		stagedWindow = { messages: [...messages], segments };
-		// The pre-emption gate (design/compaction.md → Timing): decide
-		// before the call dispatches. Gated on the overflow rail's budget —
-		// the one-fold-resume-per-logical-turn invariant — and on live
-		// authority: a fenced turn must take the fence path, not start a
-		// fold.
-		if (deps.preemptCheck !== undefined && deps.overflowRecoverable && deps.holdsAuthority()) {
-			// The upcoming request, not the last one: the last completed
-			// step's reported input plus everything appended since its
-			// dispatch (assistant output, tool results, steers), at
-			// chars/4. Null before the first completed step.
-			// Media is charged a fixed cost (estimateHistoryChars), not its
-			// base64 length — see itemize.ts.
-			const historyEstimate = estimateHistoryChars(messages);
-			const projectedInputTokens =
-				lastStepInputTokens !== null && lastWindow !== null
-					? lastStepInputTokens +
-						Math.ceil(Math.max(0, historyEstimate - estimateHistoryChars(lastWindow.messages)) / 4)
-					: null;
-			const arm = deps.preemptCheck({
-				projectedInputTokens,
-				stepNumber,
-			});
-			if (arm !== null) {
-				// A context landing that issued at this same boundary has not
-				// driven its forced step (the throw stops the dispatch) — the
-				// pre-empt supersedes it, and the resume must start unforced.
-				state.retractContextLanding();
-				log.warn("compaction pre-empt — folding at the step boundary", {
-					conversation: convId,
-					arm,
-					step: stepNumber,
-					projectedInputTokens,
-					historyChars: historyEstimate,
-				});
-				throw new PreemptSignal(arm, stepNumber);
-			}
-		}
+		const staged = [...messages];
+		stagedWindow = { messages: staged, segments };
+		// The pre-empt fold (design/compaction.md → Timing): an arm stops
+		// the dispatch — the throw surfaces as the step's error part.
+		const arm = rules.beforeCall(stepNumber, staged);
+		if (arm !== null) throw new PreemptSignal(arm, stepNumber);
 	};
 	const result = streamText({
 		tools: sdkTools,
@@ -616,9 +556,7 @@ export async function driveStream<M extends WireMember>(
 		...(deps.step.maxRetries !== undefined ? { maxRetries: deps.step.maxRetries } : {}),
 		prepareStep: async ({ messages: stepMessages, steps, stepNumber }) => {
 			const prevInput = steps.at(-1)?.usage.inputTokens;
-			const contextUsed =
-				stepNumber === 0 ? (deps.priorInputTokens ?? null) : (prevInput ?? null);
-			deps.onContextFill?.(contextUsed, deps.step.contextWindow);
+			const contextUsed = rules.contextFill()?.used ?? null;
 			state.noteContextLanding(prevInput, deps.step.contextWindow);
 			const contextLimit = deps.step.contextWindow;
 			const contextPct =
@@ -703,73 +641,18 @@ export async function driveStream<M extends WireMember>(
 		// Callback-directed retries only (onError): the SDK buffers tool parts until the attempt ends cleanly, so blanket step retries would redo completed work against the identical prompt.
 		streamRetries: 0,
 		onError: async ({ error }) => {
-			if (isContentFilter(error)) {
-				deps.assertAuthority();
-				if (!filterRetryUsed && retryGrantedStep !== stepCount) {
-					filterRetryUsed = true;
-					filterRetryPending = true;
-					retryGrantedStep = stepCount;
-					log.warn("provider content filter — retrying unchanged model call once", error, {
-						conversation: convId,
-						epoch,
-						model: modelLabel,
-						blockedUsage:
-							error instanceof ProviderContentFilterError ? (error.usage ?? null) : null,
-					});
-					return { retry: true };
-				}
-				log.warn("provider content filter — retry budget exhausted", error, {
-					conversation: convId,
-					epoch,
-					blockedUsage: error instanceof ProviderContentFilterError ? (error.usage ?? null) : null,
-				});
-			} else if (streamSurfaceErrors.has(error as object) && isTransientTurnFailure(error)) {
-				// A transient transport failure (socket reset mid-stream) on one
-				// model step — the failed step re-dispatches, earlier steps and
-				// their tool results are preserved (SDK stream-retry contract).
-				// Only stream-surface errors reach the retry machinery; the
-				// pre-stream surface is the transport middleware's lane
-				// (agent/providers.ts).
-				deps.assertAuthority();
-				const delayMs = deps.step.transientRetryDelayMs ?? RETRY_INITIAL_DELAY_MS;
-				// Sleep only when a retry will actually be granted — the
-				// budget-spent and aborted paths must not pay the delay.
-				// The lane's own retry rule applies here the same as the
-				// pre-stream transport middleware: a 1min step carries
-				// maxRetries 0 (every POST bills), so the transient
-				// re-dispatch is denied.
-				if (!deps.signal.aborted && deps.step.maxRetries !== 0 && retryGrantedStep !== stepCount) {
-					await awaitRetryDelay(delayMs, deps.signal);
-					if (!deps.signal.aborted) {
-						retryGrantedStep = stepCount;
-						transientRetries++;
-						transientRetryPending = true;
-						log.warn("transient model stream error — retrying the failed model step", error, {
-							conversation: convId,
-							epoch,
-							model: modelLabel,
-							attempt: transientRetries,
-							delayMs,
-						});
-						return { retry: true };
-					}
-				}
-				// An aborted turn takes the fence path below — one story, not two.
-				if (!deps.signal.aborted) {
-					log.warn(
-						deps.step.maxRetries === 0
-							? "transient model stream error — lane carries no retry budget (every POST bills)"
-							: "transient model stream error — step retry budget spent",
-						error,
-						{
-							conversation: convId,
-							epoch,
-							model: modelLabel,
-							attempt: transientRetries,
-						},
-					);
-				}
-			}
+			// The SDK grants one onError-requested retry per model step
+			// (callbackStreamRetryCount); StepRules grants at most one per
+			// call, so a granted request is always a real re-dispatch.
+			// stepCount is the ended-steps gauge; a retried step ends once,
+			// after its retry. Only stream-surface errors are mid-stream —
+			// the pre-stream surface is the transport middleware's lane
+			// (agent/providers.ts).
+			const retry = await rules.callFailed(error, {
+				step: stepCount,
+				midStream: streamSurfaceErrors.has(error as object),
+			});
+			if (retry) return { retry: true };
 			rawError = error;
 			log.error("model stream error", error, { conversation: convId });
 		},
@@ -779,23 +662,8 @@ export async function driveStream<M extends WireMember>(
 			// prompt becomes the record ("last completed step"; an errored
 			// dispatch still counts, the model saw the prompt).
 			lastWindow = stagedWindow;
-			if (filterRetryPending && step.finishReason !== "error") {
-				filterRetryPending = false;
-				log.info("provider content filter retry recovered", {
-					conversation: convId,
-					epoch,
-				});
-			}
-			if (transientRetryPending && step.finishReason !== "error") {
-				transientRetryPending = false;
-				log.info("transient stream retry recovered", {
-					conversation: convId,
-					epoch,
-					retries: transientRetries,
-				});
-			}
 			lastStepInputTokens = step.usage.inputTokens ?? null;
-			deps.onContextFill?.(lastStepInputTokens, deps.step.contextWindow);
+			rules.afterCall({ inputTokens: lastStepInputTokens, failed: step.finishReason === "error" });
 			lastStepCacheRead = step.usage.inputTokenDetails?.cacheReadTokens ?? null;
 			turnQuota = quotaFromMetadata(step.providerMetadata) ?? turnQuota;
 			// Assistant steps only — tool-result messages re-derive from
@@ -807,7 +675,7 @@ export async function driveStream<M extends WireMember>(
 			streamedTail = "";
 			deps.saveStep({
 				loopState: state.snapshot(),
-				filterRetryUsed,
+				filterRetryUsed: rules.filterRetryUsed(),
 				...(partialMessages.length > 0 ? { partial: partialMessages } : {}),
 			});
 			// null = provider didn't report the split, 0 = reported-and-cold; inputTokens includes the cached ones. Read-only caches (OpenRouter, openai-compatible) leave cacheWrite null.
@@ -1099,7 +967,7 @@ export async function driveStream<M extends WireMember>(
 			digestRing,
 			loop: state.snapshot(),
 			steerMark: steers.mark,
-			filterRetryUsed,
+			filterRetryUsed: rules.filterRetryUsed(),
 			window: windowCapture(),
 			model: modelLabel,
 			steps: stepCount,

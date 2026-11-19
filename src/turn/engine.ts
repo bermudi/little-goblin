@@ -6,17 +6,23 @@
 
 import type { StreamDeps, StreamOutcome, WireMember } from "./stream.ts";
 
-/** The optional turn rules an engine follows (design/runtime-turn.md → Engine rules). Mandatory rules are not listed: every engine follows them. */
+/**
+ * The optional turn rules an engine follows (design/runtime-turn.md →
+ * Engine rules). Mandatory rules are not listed: every engine follows
+ * them. The runtime owns the behaviour (the last four in step-rules.ts);
+ * an engine claims a rule when its vendor loop reaches the hook, and
+ * engine-rules.test.ts checks every claim against behaviour.
+ */
 export interface EngineRules {
-	/** #477: an unstarted tool call is skipped while a steer waits. */
+	/** #477: an unstarted tool call is skipped while a steer waits — the runtime arms the gate. */
 	readonly toolLaunchGate: boolean;
-	/** design/compaction.md → Timing: `preemptCheck` before every model call. */
+	/** design/compaction.md → Timing: `rules.beforeCall` before every model call. */
 	readonly preemptFold: boolean;
-	/** One same-step re-ask after a provider content filter. */
+	/** One same-step re-ask after a provider content filter: `rules.callFailed`. */
 	readonly contentFilterReask: boolean;
-	/** One delayed re-dispatch after a transient transport failure. */
+	/** One delayed re-dispatch after a transient transport failure: `rules.callFailed`. */
 	readonly transientRetry: boolean;
-	/** `onContextFill` reported at each step. */
+	/** The window fill tracked per completed call: `rules.afterCall`. */
 	readonly contextFill: boolean;
 }
 

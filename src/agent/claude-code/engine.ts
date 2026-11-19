@@ -503,6 +503,10 @@ export async function driveClaude<M extends WireMember>(
 		const cacheTtl = cacheTtlMs(usage);
 		run.lastInput = input;
 		run.lastCacheRead = usage?.cache_read_input_tokens ?? null;
+		// The CLI owns the loop: no pre-call boundary for the pre-empt
+		// fold, no per-call re-dispatch — but every completed call reports
+		// its usage, so the shared context fill tracks the window.
+		deps.rules.afterCall({ inputTokens: input, failed: false });
 		if (input !== null) run.totalInput = (run.totalInput ?? 0) + input;
 		if (usage !== null) {
 			run.totalOutput = (run.totalOutput ?? 0) + (usage.output_tokens ?? 0);
@@ -543,7 +547,7 @@ export async function driveClaude<M extends WireMember>(
 		}
 		deps.saveStep({
 			loopState: state.snapshot(),
-			filterRetryUsed: deps.filterRetryUsed,
+			filterRetryUsed: deps.rules.filterRetryUsed(),
 			...(run.partialMessages.length > 0 ? { partial: run.partialMessages } : {}),
 		});
 	};
@@ -1092,7 +1096,7 @@ export async function driveClaude<M extends WireMember>(
 			digestRing: run.events.digestRing,
 			loop: state.snapshot(),
 			steerMark: steers.mark,
-			filterRetryUsed: deps.filterRetryUsed,
+			filterRetryUsed: deps.rules.filterRetryUsed(),
 			window: windowCapture(),
 			model: label,
 			steps: run.stepCount,

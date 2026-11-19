@@ -335,7 +335,7 @@ export function createClaudeEngine(init: {
 			preemptFold: false,
 			contentFilterReask: false,
 			transientRetry: false,
-			contextFill: false,
+			contextFill: true,
 		},
 		accepts: isClaudeStep,
 		run: (deps) => driveClaude(config, deps),

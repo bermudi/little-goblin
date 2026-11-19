@@ -1,5 +1,5 @@
 import { type ClaudeEngineConfig, driveClaude } from "../agent/claude-code/engine.ts";
-import { isClaudeStep, type ClaudeEngine, type ClaudeStep } from "../agent/claude-code/mod.ts";
+import { createClaudeEngine, isClaudeStep, type ClaudeEngine, type ClaudeStep } from "../agent/claude-code/mod.ts";
 import type { ClaudeQuery } from "../agent/claude-code/translate.ts";
 import { createToolBridge, type ToolBridge } from "../agent/claude-code/tools.ts";
 import type { AuthStore } from "../auth.ts";
@@ -109,6 +109,7 @@ export function claudeScript(opts: { label?: string; system?: string } = {}): Sc
 	};
 	const engine: ClaudeEngine = {
 		id: "claude-code",
+		rules: createClaudeEngine(engineConfig).rules,
 		accepts: isClaudeStep,
 		run: (deps) => driveClaude(engineConfig, deps),
 		compact: async () => {

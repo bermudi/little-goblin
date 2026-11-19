@@ -39,6 +39,7 @@ export type ClaimedTurn = Omit<QueuedTurn, "seq" | "pending"> & { seq: number };
 // A submit arriving during the job waits for the next drain pass.
 export interface QueuedCompact {
 	conv: Conversation;
+	reason: "manual" | "idle";
 	/** Optional operator focus for the summarizer (/compact <focus>, app focus body). */
 	focus?: string | undefined;
 	resolve: (outcome: CompactionOutcome) => void;

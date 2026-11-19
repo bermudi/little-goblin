@@ -10,6 +10,7 @@ import { openStore, type ConversationStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { openProjects, type ProjectStore } from "./projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
+import { responsibilityStage } from "./responsibility-stage.ts";
 import {
 	ReconciliationConflict,
 	StaleAttachmentError,
@@ -120,6 +121,141 @@ describe("responsibility store", () => {
 		r.resps.setStatus(responsibility.responsibilityId, "completed");
 		expect(r.resps.open()).toHaveLength(0);
 		expect(r.resps.get(responsibility.responsibilityId)!.closedAt).not.toBeNull();
+		r.store.close();
+	});
+
+	test("obligations resolve by identity, and terminal status closes only the open set", () => {
+		const r = rig();
+		const first = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "obligation-resolve",
+			understanding: understanding(),
+		}).responsibility;
+		const id = first.responsibilityId;
+		const question = r.resps.report(id, {
+			state: "blocked",
+			reason: "need input",
+			question: "Which environment?",
+		}, "goblin");
+		if ("refused" in question) throw new Error("question refused");
+		const claim = r.resps.report(id, { state: "ready", reason: "worker finished" }, "worker");
+		if ("refused" in claim) throw new Error("claim refused");
+		const another = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "other-obligation",
+			understanding: understanding(),
+		}).responsibility;
+		const foreign = r.resps.report(
+			another.responsibilityId,
+			{ state: "ready", reason: "foreign claim" },
+			"worker",
+		);
+		if ("refused" in foreign) throw new Error("foreign claim refused");
+		const resolved = r.resps.report(id, {
+			state: "progress",
+			reason: "operator answered",
+			resolves: [question.report.reportId],
+		}, "goblin");
+		expect(resolved).not.toHaveProperty("refused");
+		expect(r.resps.stageReports(id).open.map((row) => row.reportId)).toEqual([claim.report.reportId]);
+		const assessed = r.resps.report(id, {
+			state: "progress",
+			reason: "claim checked",
+			resolves: [claim.report.reportId],
+		}, "goblin");
+		if ("refused" in assessed) throw new Error("assessment refused");
+		expect(r.resps.stageReports(id).open).toEqual([]);
+		expect(r.resps.stageReports(id).status?.reportId).toBe(assessed.report.reportId);
+		expect(responsibilityStage(r.resps.get(id)!, r.resps.stageReports(id), []))
+			.toMatchObject({ stage: "working", reason: "claim checked" });
+		expect(r.resps.report(id, {
+			state: "progress",
+			reason: "resolve twice",
+			resolves: [question.report.reportId],
+		}, "goblin")).toEqual({ refused: "unknown-obligation", invalid: [question.report.reportId] });
+		expect(r.resps.report(id, {
+			state: "progress",
+			reason: "foreign resolve",
+			resolves: [foreign.report.reportId],
+		}, "goblin")).toEqual({ refused: "unknown-obligation", invalid: [foreign.report.reportId] });
+		expect(r.resps.report(id, {
+			state: "progress",
+			reason: "worker cannot resolve",
+			resolves: [claim.report.reportId],
+		}, "worker")).toEqual({ refused: "resolves-forbidden" });
+		const paused = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "obligation-pause",
+			understanding: understanding(),
+		}).responsibility;
+		const pausedClaim = r.resps.report(
+			paused.responsibilityId,
+			{ state: "ready", reason: "claim survives pause" },
+			"worker",
+		);
+		if ("refused" in pausedClaim) throw new Error("claim refused");
+		r.resps.setStatus(paused.responsibilityId, "paused");
+		expect(r.resps.stageReports(paused.responsibilityId).open.map((row) => row.reportId))
+			.toEqual([pausedClaim.report.reportId]);
+		r.resps.setStatus(paused.responsibilityId, "cancelled");
+		const closed = r.store.db
+			.query<
+				{ report_id: number; kind: string; by_report_id: number | null },
+				[string]
+			>(
+				`SELECT report_id,kind,by_report_id FROM responsibility_resolutions
+					WHERE responsibility_id=? ORDER BY report_id`,
+			)
+			.all(paused.responsibilityId);
+		expect(closed).toEqual([
+			{ report_id: pausedClaim.report.reportId, kind: "closed", by_report_id: null },
+		]);
+		r.resps.setStatus(paused.responsibilityId, "active");
+		expect(r.resps.stageReports(paused.responsibilityId).open).toEqual([]);
+		r.store.close();
+	});
+
+	test("done closes open questions and claims with the closing report identity", () => {
+		const r = rig();
+		const responsibility = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "obligation-done",
+			understanding: understanding(),
+		}).responsibility;
+		const id = responsibility.responsibilityId;
+		const question = r.resps.report(
+			id,
+			{ state: "blocked", reason: "question", question: "Confirm?" },
+			"goblin",
+		);
+		const claim = r.resps.report(id, { state: "ready", reason: "claim" }, "worker");
+		if ("refused" in question || "refused" in claim) throw new Error("seed report refused");
+		const done = r.resps.report(id, {
+			state: "done",
+			reason: "complete",
+			evidence: [
+				{ item: "ci green", ref: "CI", checked: "green" },
+				{ item: "diff reviewed", ref: "diff", checked: "reviewed" },
+			],
+		}, "goblin");
+		if ("refused" in done) throw new Error("done refused");
+		const rows = r.store.db
+			.query<
+				{ report_id: number; kind: string; by_report_id: number | null },
+				[string]
+			>(
+				`SELECT report_id,kind,by_report_id FROM responsibility_resolutions
+					WHERE responsibility_id=? ORDER BY report_id`,
+			)
+			.all(id);
+		expect(rows).toEqual([
+			{ report_id: question.report.reportId, kind: "closed", by_report_id: done.report.reportId },
+			{ report_id: claim.report.reportId, kind: "closed", by_report_id: done.report.reportId },
+		]);
 		r.store.close();
 	});
 

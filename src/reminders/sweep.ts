@@ -14,7 +14,7 @@ export const REMINDER_RETRY_MS = 15 * 60_000;
 export interface ReminderSweepDeps {
 	remindOperator?: ((reminder: OperatorReminder) => Promise<void>) | undefined;
 	responsibilities?:
-		| Pick<ResponsibilityStore, "get" | "open" | "latestReport" | "operationsFor">
+		| Pick<ResponsibilityStore, "get" | "open" | "stageReports" | "operationsFor">
 		| undefined;
 }
 
@@ -30,7 +30,7 @@ export function sweepOperatorReminders(
 	const due = new Set<string>();
 	for (const resp of resps.open()) {
 		const id = resp.responsibilityId;
-		const reminder = dueReminder(resp, resps.latestReport(id), resps.operationsFor(id), now);
+		const reminder = dueReminder(resp, resps.stageReports(id), resps.operationsFor(id), now);
 		if (reminder === null) continue;
 		due.add(reminder.key);
 		if (inFlight.has(reminder.key)) continue;

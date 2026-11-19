@@ -1290,13 +1290,14 @@ describe("boot sweep: crashed sends read uncertain", () => {
 			const after = resps2.get(resp.responsibilityId)!;
 			const stage = responsibilityStage(
 				after,
-				resps2.latestReport(after.responsibilityId),
+				resps2.stageReports(after.responsibilityId),
 				resps2.operationsFor(after.responsibilityId),
 			);
 			expect(stage).toEqual({
 				waitsFor: "goblin",
 				stage: "delivery-uncertain",
 				reason: `send ${op.operationId} delivery unconfirmed — inspect and reconcile`,
+				since: null,
 			});
 		} finally {
 			store2.close();

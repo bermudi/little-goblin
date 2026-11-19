@@ -95,8 +95,9 @@ function feed(paused: boolean, detached: boolean): AppFeedItem {
 		],
 		operations: [],
 		stage: paused
-			? { waitsFor: "operator", stage: "paused", reason: "paused by the operator" }
-			: { waitsFor: "worker", stage: "working", reason: "no report yet" },
+			? { waitsFor: "operator", stage: "paused", reason: "paused by the operator", since: null }
+			: { waitsFor: "worker", stage: "working", reason: "no report yet", since: null },
+		open: [],
 		latestReport: null,
 		posts: [],
 		postsTruncated: 0,
@@ -190,6 +191,7 @@ test("a stale poll that lands after a mutation's refresh cannot restore obsolete
 			waitsFor: "operator" as const,
 			stage: "paused" as const,
 			reason: "paused by the operator",
+			since: null,
 		},
 	};
 	let latest: AppFeedItem = active;
@@ -410,6 +412,7 @@ function post(
 		},
 		review,
 		current: true,
+		resolution: null,
 	};
 }
 

@@ -268,8 +268,10 @@ Rulings:
   reminder. A report that moves the stage off the
   operator re-arms a fresh silence bound, so the overdue check does not
   fire stale. Separately, the scheduler's sweep reminds the operator with
-  an app push and no model call: 4 hours after the report that made the
-  stage wait on them, then every 24 hours until the stage changes. Paused
+  an app push and no model call: 4 hours after the report the stage
+  derives from (`since` — for a question, the oldest open one, so an
+  unrelated newer report does not restart the clock), then every 24
+  hours until the stage changes. Paused
   work gets none. Downtime rings only the newest step. Payloads stay
   generic. When no subscribed device got it (none exist, or every send failed), it
   goes to the operators on Telegram. With neither path, it is a warn line. Stale disabled/deleted/rescheduled follow-up snapshots
@@ -295,16 +297,50 @@ Rulings:
   filed on settlement), or `migration`. A worker's claim and
   goblin's assessment stay distinguishable at the data level.
 
-  `responsibility-stage.ts` is the one derivation, first match wins:
-  closed → paused (operator) → an `uncertain` send (goblin reconciles) →
-  a question (operator) → `ready` = review at a task checkpoint
-  (operator) → `blocked`/`failed` (operator) → `waiting` (nobody, names
-  the condition) → working (worker). A report stated against an older
-  revision no longer holds: every operator correction bumps revision and
-  makes it goblin's move (`assess`), naming any open question to re-ask
-  or resolve, because an unrelated correction must not erase it. The feed pill, Attention (`responsibility` items,
-  pause excluded — it is the operator's own choice) and the scheduler's
-  silence hold read this function and nothing else.
+  **Snapshots and obligations (2026-11-19, #778).** A report plays one
+  or both of two roles. The newest non-`worker` report is the
+  **status snapshot**: replaceable, the next goblin report supersedes it.
+  A report with a `question`, and every `worker` report (a claim), is an
+  **obligation**: it owes an answer or an assessment, and a newer report
+  never closes it. Its identity is its `reportId`. Before this ruling
+  the stage read only the newest report, so any later report silently
+  dropped an unanswered question from Attention and an unassessed claim
+  from goblin's queue. An obligation stays open until exactly one
+  resolution names it, recorded append-only in `responsibility_resolutions`
+  (primary key = the obligation's report id, so it resolves once):
+  - `resolved` — a goblin report lists it in `resolves` (the operator
+    answered, goblin assessed the claim, or the question was withdrawn;
+    a re-ask is a new question plus resolving the old one). Only goblin
+    resolves; a worker report with `resolves` is refused, and so is any
+    id that is not an open obligation of that responsibility.
+  - `closed` — the responsibility closed (a `done`/`dropped` report, or
+    the operator's cancel): everything still open resolves in the same
+    transaction, so a later resume starts clean.
+  - `migrated` — the one-time backfill when the table was created: every
+    older obligation except the newest report of open work, which
+    reproduces the old single-report reading exactly.
+  An operator correction resolves nothing (the 2026-11-02 rule below
+  stands): it makes an open question goblin's to re-ask or resolve.
+  Pause resolves nothing. Reports stay the history; there is no task
+  table — the resolution row only records the explicit close.
+
+  `responsibility-stage.ts` is the one derivation, over the snapshot and
+  the open set, first match wins: closed → paused (operator) → an
+  `uncertain` send (goblin reconciles) → an open question at the current
+  revision (operator; the oldest, with a count of the rest) → an open
+  question from before a correction (goblin: re-ask or resolve) → an
+  open worker claim (goblin `assess`, oldest first) → a snapshot from an
+  older revision (goblin `assess`) → snapshot `ready` = review at a task
+  checkpoint (operator) → `blocked`/`failed` (operator) → `waiting`
+  (nobody, names the condition) → working (worker). Every operator
+  correction bumps revision, so a stale snapshot is goblin's move,
+  because an unrelated correction must not erase what it said. The
+  stage names the report it derives from (`since`). The feed pill,
+  Attention and the scheduler's silence hold read this function and
+  nothing else; the feed and the agent's `status` also list every open
+  obligation (`open`). Attention shows one item per open question to the
+  operator, plus the stage item when the stage is a review, block or
+  failure (pause excluded — it is the operator's own choice).
 
   Closing is a report, never a status flip from the agent: `done`
   refuses unless evidence covers every `completionEvidence` entry
@@ -330,9 +366,10 @@ Rulings:
   `delegation:<id>:<promptedAt>:<baselineSeq>:<verdict>` dedupes
   retried notices while a follow-up or later dialog is a new report.
   Stage: a question goes to the operator whoever asked; any other
-  current worker report is goblin's move (`assess`) — a worker's
-  `ready` never closes or reaches the
-  operator as review until goblin reports on it. A worker cannot report
+  open worker claim is goblin's move (`assess`) until goblin resolves
+  it by id — a worker's `ready` never closes or reaches the operator as
+  review until goblin reports on it, and a second worker's later claim
+  does not hide the first. A worker cannot report
   `done`. A delegation's reports carry the revision stamped when it was
   linked, so a correction since then overtakes the claim and it becomes
   goblin's move, even after a steer. A report that can never file (row

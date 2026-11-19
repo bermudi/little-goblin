@@ -714,6 +714,7 @@ export interface AppResponsibilityStage {
 		| "waiting"
 		| "working";
 	reason: string;
+	since: { reportId: number; createdAt: string } | null;
 }
 
 export interface AppResponsibilityReport {
@@ -739,6 +740,20 @@ export interface AppFeedPost {
 	review: "assessed" | "unreviewed" | "reviewed" | "migrated";
 	/** False once an operator correction has overtaken it. */
 	current: boolean;
+	resolution: { kind: "resolved" | "closed" | "migrated"; byReportId: number | null; at: string } | null;
+}
+export interface AppOpenObligation {
+	kind: "question";
+	question: string;
+	waitsFor: "operator" | "goblin";
+	stale: boolean;
+	report: AppResponsibilityReport;
+}
+export interface AppOpenClaim {
+	kind: "claim";
+	waitsFor: "goblin";
+	stale: boolean;
+	report: AppResponsibilityReport;
 }
 
 /** One feed row — GET /api/app/responsibilities (open, all projects)
@@ -748,6 +763,7 @@ export interface AppFeedItem {
 	attachments: AppResponsibilityAttachment[];
 	operations: AppPromptOperation[];
 	stage: AppResponsibilityStage;
+	open: (AppOpenObligation | AppOpenClaim)[];
 	latestReport: AppResponsibilityReport | null;
 	/** Outcome posts, newest first — bounded; older ones stay on record. */
 	posts: AppFeedPost[];

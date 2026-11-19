@@ -11,7 +11,7 @@ export async function deliverOperatorReminder(
 	deps: {
 		push(reminder: OperatorReminder): Promise<boolean>;
 		telegram(reminder: OperatorReminder): Promise<void>;
-		resps: Pick<ResponsibilityStore, "get" | "latestReport" | "operationsFor">;
+		resps: Pick<ResponsibilityStore, "get" | "stageReports" | "operationsFor">;
 	},
 ): Promise<void> {
 	if (await deps.push(reminder)) return;
@@ -21,7 +21,7 @@ export async function deliverOperatorReminder(
 	const current =
 		resp === null
 			? null
-			: dueReminder(resp, deps.resps.latestReport(id), deps.resps.operationsFor(id), new Date());
+			: dueReminder(resp, deps.resps.stageReports(id), deps.resps.operationsFor(id), new Date());
 	if (current?.key !== reminder.key) {
 		log.info("operator reminder fallback skipped — no longer due", { key: reminder.key });
 		return;

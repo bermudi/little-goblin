@@ -146,7 +146,7 @@ describe("delegation reports", () => {
 			state: "blocked", reason: expect.stringContaining("operator stopped it"),
 		});
 		expect(report?.evidence).toHaveLength(4);
-		expect(responsibilityStage(resps.get(id)!, report ?? null, []).waitsFor).toBe("goblin");
+		expect(responsibilityStage(resps.get(id)!, resps.stageReports(id), []).waitsFor).toBe("goblin");
 	});
 
 	test("an unlinked delegation states nothing", () => {
@@ -176,8 +176,7 @@ describe("delegation reports", () => {
 		const { resps, id } = rig();
 		fileDelegationReport(resps, delegation({ responsibilityId: id }), "needs input", "dialog");
 		const resp = resps.get(id)!;
-		const [latest] = resps.reportsFor(id);
-		expect(responsibilityStage(resp, latest ?? null, []).waitsFor).toBe("goblin");
+		expect(responsibilityStage(resp, resps.stageReports(id), []).waitsFor).toBe("goblin");
 	});
 
 	test("a closed responsibility refuses without failing the notice", () => {

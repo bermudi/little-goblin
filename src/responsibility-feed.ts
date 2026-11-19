@@ -5,11 +5,17 @@
 // the wake join — never inferred from the event alone.
 
 import type { Database } from "bun:sqlite";
+import { z } from "zod";
 import { armedView, type ResponsibilityStore } from "./responsibilities.ts";
 import type { Attachment, PromptOperation, Responsibility } from "./responsibility-types.ts";
 import { latestFireAtOrBefore, nextFire, type ProgramsStore } from "./programs.ts";
-import { type ResponsibilityReport, toReport } from "./responsibility-reports.ts";
-import { responsibilityStage, type ResponsibilityStage } from "./responsibility-stage.ts";
+import { type ResponsibilityReport, type ResolutionKind, toReport } from "./responsibility-reports.ts";
+import {
+	openObligations,
+	responsibilityStage,
+	type OpenObligation,
+	type ResponsibilityStage,
+} from "./responsibility-stage.ts";
 
 export interface FeedWake {
 	wakeId: number;
@@ -31,9 +37,7 @@ export interface FeedEvent {
 	wake: FeedWake | null;
 }
 
-/** Whose word a post is, and whether goblin has stood behind it. A
- *  worker's claim stays `unreviewed` until goblin files a later report
- *  of its own on the same responsibility. */
+/** Whose word a post is, and whether an obligation resolution exists. */
 export type PostReview = "assessed" | "unreviewed" | "reviewed" | "migrated";
 
 /** An outcome post — a report, the work's stated result or need. Routine
@@ -42,8 +46,9 @@ export interface FeedPost {
 	report: ResponsibilityReport;
 	review: PostReview;
 	/** Stated at the responsibility's current revision; false once an
-	 *  operator correction has answered or overtaken it. */
+	 *  operator correction has overtaken it. */
 	current: boolean;
+	resolution: { kind: ResolutionKind; byReportId: number | null; at: string } | null;
 }
 
 export interface FeedItem {
@@ -52,6 +57,7 @@ export interface FeedItem {
 	operations: PromptOperation[];
 	/** Whom the work waits for — the one derivation (responsibility-stage.ts). */
 	stage: ResponsibilityStage;
+	open: OpenObligation[];
 	latestReport: ResponsibilityReport | null;
 	/** Newest first, bounded by FEED_POST_WINDOW. */
 	posts: FeedPost[];
@@ -97,6 +103,12 @@ interface EventRow {
 export const FEED_EVENT_WINDOW = 50;
 export const FEED_POST_WINDOW = 20;
 
+const resolutionSchema = z.object({
+	kind: z.enum(["resolved", "closed", "migrated"]),
+	by_report_id: z.number().int().nullable(),
+	created_at: z.string(),
+});
+
 function feedPosts(
 	db: Database,
 	resp: Pick<Responsibility, "responsibilityId" | "revision">,
@@ -112,21 +124,45 @@ function feedPosts(
 			"SELECT COUNT(*) AS n FROM responsibility_reports WHERE responsibility_id = ?",
 		)
 		.get(resp.responsibilityId)!.n;
-	// Walking newest → oldest: a worker claim is reviewed once any goblin
-	// report follows it. A goblin report older than the window cannot
+	const qResolution = db.query<unknown, [number]>(
+		"SELECT kind, by_report_id, created_at FROM responsibility_resolutions WHERE report_id = ?",
+	);
+	// Walking newest → oldest: a claim the backfill marked `migrated` keeps
+	// the old rule — reviewed once any goblin report follows it — so old
+	// reports read as they did. A goblin report older than the window cannot
 	// follow a claim inside it, so the window decides nothing wrongly.
 	let goblinAfter = false;
 	const posts = reports.map((report): FeedPost => {
+		const rawResolution = qResolution.get(report.reportId);
+		const resolution = rawResolution === null
+			? null
+			: resolutionSchema.parse(rawResolution);
+		const reviewed = resolution === null
+			? false
+			: resolution.kind === "migrated"
+				? goblinAfter
+				: true;
 		const review: PostReview =
 			report.reporter === "goblin"
 				? "assessed"
 				: report.reporter === "migration"
 					? "migrated"
-					: goblinAfter
+					: reviewed
 						? "reviewed"
 						: "unreviewed";
 		if (report.reporter === "goblin") goblinAfter = true;
-		return { report, review, current: report.revision === resp.revision };
+		return {
+			report,
+			review,
+			current: report.revision === resp.revision,
+			resolution: resolution === null
+				? null
+				: {
+						kind: resolution.kind,
+						byReportId: resolution.by_report_id,
+						at: resolution.created_at,
+					},
+		};
 	});
 	return { posts, truncated: total - posts.length };
 }
@@ -207,6 +243,7 @@ function item(deps: FeedDeps, responsibility: Responsibility): FeedItem {
 	}
 	const operations = deps.resps.operationsFor(responsibility.responsibilityId);
 	const latestReport = deps.resps.latestReport(responsibility.responsibilityId);
+	const reports = deps.resps.stageReports(responsibility.responsibilityId);
 	const { posts, truncated: postsTruncated } = feedPosts(deps.db, responsibility);
 	return {
 		responsibility: {
@@ -216,7 +253,8 @@ function item(deps: FeedDeps, responsibility: Responsibility): FeedItem {
 		},
 		attachments: deps.resps.attachmentsFor(responsibility.responsibilityId),
 		operations,
-		stage: responsibilityStage(responsibility, latestReport, operations),
+		stage: responsibilityStage(responsibility, reports, operations),
+		open: openObligations(responsibility, reports.open),
 		latestReport,
 		posts,
 		postsTruncated,

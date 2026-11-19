@@ -80,7 +80,7 @@ function rig() {
 		if ("refused" in out) throw new Error("refused");
 		return Date.parse(out.report.createdAt);
 	};
-	return { resps, id, sent, failures, sweep, subscribe, ask, deps, pending, push };
+	return { db: store.db, resps, id, sent, failures, sweep, subscribe, ask, deps, pending, push };
 }
 
 describe("operator reminders", () => {
@@ -108,7 +108,40 @@ describe("operator reminders", () => {
 		expect(r.sent).toHaveLength(1);
 	});
 
-	test("stop when the work leaves the operator's stage or is paused", async () => {
+	test("an unrelated newer report does not restart the open question's reminder clock", () => {
+		const r = rig();
+		const t0 = r.ask();
+		const question = r.resps.stageReports(r.id).open[0]!;
+		r.db.query("UPDATE responsibility_reports SET created_at = ? WHERE report_id = ?")
+			.run(new Date(t0).toISOString(), question.reportId);
+		const progress = r.resps.report(r.id, {
+			state: "progress",
+			reason: "unrelated progress",
+		}, "goblin");
+		if ("refused" in progress) throw new Error("progress refused");
+		r.db.query("UPDATE responsibility_reports SET created_at = ? WHERE report_id = ?")
+			.run(new Date(t0 + 3 * 60 * 60_000).toISOString(), progress.report.reportId);
+		const due = dueReminder(
+			r.resps.get(r.id)!,
+			r.resps.stageReports(r.id),
+			[],
+			new Date(t0 + REMINDER_FIRST_MS + 60_000),
+		);
+		expect(due?.key).toBe(`reminder:${r.id}:${question.reportId}:1`);
+		r.resps.report(r.id, {
+			state: "progress",
+			reason: "answered",
+			resolves: [question.reportId],
+		}, "goblin");
+		expect(dueReminder(
+			r.resps.get(r.id)!,
+			r.resps.stageReports(r.id),
+			[],
+			new Date(t0 + REMINDER_FIRST_MS + 60_000),
+		)).toBeNull();
+	});
+
+	test("pause holds reminders; only explicit resolution ends an open question's series", async () => {
 		const r = rig();
 		await r.subscribe();
 		const t = r.ask();
@@ -118,7 +151,15 @@ describe("operator reminders", () => {
 		r.resps.setStatus(r.id, "active");
 		r.resps.report(r.id, { state: "progress", reason: "carrying on" }, "goblin");
 		await r.sweep(t + REMINDER_FIRST_MS);
-		expect(r.sent).toHaveLength(0);
+		expect(r.sent).toHaveLength(1);
+		const question = r.resps.stageReports(r.id).open[0]!;
+		r.resps.report(r.id, {
+			state: "progress",
+			reason: "answered",
+			resolves: [question.reportId],
+		}, "goblin");
+		await r.sweep(t + REMINDER_FIRST_MS + REMINDER_EVERY_MS);
+		expect(r.sent).toHaveLength(1);
 	});
 
 	test("a failed send retries after the back-off, not every tick", async () => {
@@ -165,7 +206,7 @@ describe("operator reminders", () => {
 		const t = r.ask();
 		const due = dueReminder(
 			r.resps.get(r.id)!,
-			r.resps.latestReport(r.id),
+			r.resps.stageReports(r.id),
 			[],
 			new Date(t + REMINDER_FIRST_MS),
 		)!;
@@ -191,7 +232,7 @@ describe("operator reminders", () => {
 		const t = r.ask();
 		const due = dueReminder(
 			r.resps.get(r.id)!,
-			r.resps.latestReport(r.id),
+			r.resps.stageReports(r.id),
 			[],
 			new Date(t + REMINDER_FIRST_MS),
 		)!;

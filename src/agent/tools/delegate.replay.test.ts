@@ -263,9 +263,13 @@ describe("delegate replay", () => {
 		expect(reports).toHaveLength(1);
 		expect(reports[0]).toMatchObject({ reporter: "worker", state: "ready" });
 		expect(reports[0]!.reason).toContain("patched and tested");
-		expect(responsibilityStage(r.resps.get(r.responsibilityId)!, reports[0]!, []).waitsFor).toBe(
-			"goblin",
-		);
+		expect(
+			responsibilityStage(
+				r.resps.get(r.responsibilityId)!,
+				r.resps.stageReports(r.responsibilityId),
+				[],
+			).waitsFor,
+		).toBe("goblin");
 	});
 
 	test("T3 text-only: a plain answer calls no tool and wakes nothing", async () => {

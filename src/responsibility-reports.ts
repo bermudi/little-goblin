@@ -1,12 +1,16 @@
 // Structured reports on a responsibility — the work's state as
 // stated, never inferred from prose (design/programs.md → Reports and
-// stages; borrowed from dsh-superagent's Report). Append-only: the
-// latest report at the current revision feeds the derived stage, and
-// history stays inspectable. Who stated it is recorded — a worker's
+// stages; borrowed from dsh-superagent's Report). Append-only: the status
+// snapshot and open obligations feed the derived stage; history stays
+// inspectable. Who stated it is recorded — a worker's
 // claim and goblin's assessment must stay distinguishable.
 
 import type { Database } from "bun:sqlite";
 import { z } from "zod";
+import { log } from "./log.ts";
+
+export type ResolutionKind = "resolved" | "closed" | "migrated";
+export type ObligationKind = "question" | "claim";
 
 export const REPORT_STATES = [
 	"progress",
@@ -65,8 +69,11 @@ export const reportInputSchema = z
 		evidence: z.array(reportEvidenceSchema).max(32).optional(),
 		purpose: z.enum(REPORT_PURPOSES).optional(),
 		artifacts: z.array(reportArtifactSchema).max(16).optional(),
+		resolves: z.array(z.number().int().positive()).min(1).max(32).optional(),
 	})
 	.superRefine((v, ctx) => {
+		if (v.resolves && new Set(v.resolves).size !== v.resolves.length)
+			ctx.addIssue({ code: "custom", path: ["resolves"], message: "resolves ids must be unique" });
 		if (v.state === "waiting" && v.resumeWhen === undefined)
 			ctx.addIssue({ code: "custom", path: ["resumeWhen"], message: "waiting needs resumeWhen" });
 		if (v.state === "done" && (v.evidence?.length ?? 0) === 0)
@@ -106,6 +113,11 @@ export interface ResponsibilityReport {
 	createdAt: string;
 }
 
+export function obligationKind(report: ResponsibilityReport): ObligationKind | null {
+	if (report.question !== null) return "question";
+	return report.reporter === "worker" ? "claim" : null;
+}
+
 const rowSchema = z.object({
 	report_id: z.number(),
 	responsibility_id: z.string(),
@@ -141,7 +153,7 @@ export function toReport(row: unknown): ResponsibilityReport {
 	};
 }
 
-export function ensureReportsSchema(db: Database): void {
+export function ensureReportsSchema(db: Database, now = Date.now()): void {
 	db.run(`
 		CREATE TABLE IF NOT EXISTS responsibility_reports (
 			report_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,6 +189,41 @@ export function ensureReportsSchema(db: Database): void {
 	db.run(
 		"CREATE INDEX IF NOT EXISTS responsibility_reports_resp ON responsibility_reports (responsibility_id, report_id)",
 	);
+	const exists = db
+		.query<{ name: string }, []>(
+			"SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'responsibility_resolutions'",
+		)
+		.get();
+	if (exists === null) {
+		const migratedAt = new Date(now).toISOString();
+		const count = db.transaction(() => {
+			db.run(`CREATE TABLE responsibility_resolutions (
+				report_id INTEGER PRIMARY KEY REFERENCES responsibility_reports(report_id),
+				responsibility_id TEXT NOT NULL REFERENCES responsibilities(responsibility_id),
+				kind TEXT NOT NULL CHECK (kind IN ('resolved','closed','migrated')),
+				by_report_id INTEGER REFERENCES responsibility_reports(report_id),
+				created_at TEXT NOT NULL
+			)`);
+			return db
+				.query(`
+					INSERT INTO responsibility_resolutions
+						(report_id, responsibility_id, kind, by_report_id, created_at)
+					SELECT r.report_id, r.responsibility_id, 'migrated', NULL, ?
+					FROM responsibility_reports r
+					JOIN responsibilities p USING (responsibility_id)
+					WHERE (r.question IS NOT NULL OR r.reporter = 'worker')
+						AND NOT (
+							p.status NOT IN ('completed', 'cancelled')
+							AND r.report_id = (
+								SELECT MAX(x.report_id) FROM responsibility_reports x
+								WHERE x.responsibility_id = r.responsibility_id
+							)
+						)
+				`)
+				.run(migratedAt).changes;
+		}).immediate();
+		log.info("responsibility obligations migrated", { count });
+	}
 }
 
 /** completionEvidence entries no evidence item covers. Matching is by

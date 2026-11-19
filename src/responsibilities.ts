@@ -45,7 +45,7 @@ import {
 	toOperation,
 	toResponsibility,
 } from "./responsibility-schema.ts";
-import { responsibilityStage } from "./responsibility-stage.ts";
+import { responsibilityStage, type StageReports } from "./responsibility-stage.ts";
 import { makeOperations } from "./responsibility-operations.ts";
 import { makeAttachments } from "./responsibility-attachments.ts";
 import {
@@ -61,6 +61,13 @@ import {
 	type Understanding,
 	understandingSchema,
 } from "./responsibility-types.ts";
+
+export type ReportRefusal =
+	| { refused: "closed" }
+	| { refused: "waiting-time" }
+	| { refused: "resolves-forbidden" }
+	| { refused: "evidence-missing"; missing: string[] }
+	| { refused: "unknown-obligation"; invalid: number[] };
 
 export interface ResponsibilityStore {
 	/** Idempotent on handoverKey: a duplicate handover returns the
@@ -88,8 +95,9 @@ export interface ResponsibilityStore {
 		opts?: { sourceKey?: string; revision?: number | null },
 	):
 		| { report: ResponsibilityReport; responsibility: Responsibility; duplicate: boolean }
-		| { refused: "closed" | "evidence-missing" | "waiting-time"; missing?: string[] };
+		| ReportRefusal;
 	latestReport(id: string): ResponsibilityReport | null;
+	stageReports(id: string): StageReports;
 	reportsFor(id: string): ResponsibilityReport[];
 	/** A correction — the durable operator event that bumps revision. */
 	revise(id: string, understanding: Understanding): Responsibility;
@@ -302,6 +310,39 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 	const qReports = db.query<unknown, [string]>(
 		"SELECT * FROM responsibility_reports WHERE responsibility_id = ? ORDER BY report_id",
 	);
+	const qStageStatus = db.query<unknown, [string]>(
+		"SELECT * FROM responsibility_reports WHERE responsibility_id = ? AND reporter != 'worker' ORDER BY report_id DESC LIMIT 1",
+	);
+	const qStageOpen = db.query<unknown, [string]>(`
+		SELECT r.* FROM responsibility_reports r
+		LEFT JOIN responsibility_resolutions x ON x.report_id = r.report_id
+		WHERE r.responsibility_id = ?
+			AND (r.question IS NOT NULL OR r.reporter = 'worker')
+			AND x.report_id IS NULL
+		ORDER BY r.report_id
+	`);
+	const qResolution = db.prepare(`
+		INSERT INTO responsibility_resolutions
+			(report_id, responsibility_id, kind, by_report_id, created_at)
+		VALUES (?, ?, 'resolved', ?, ?)
+	`);
+	const qCloseOpen = db.prepare(`
+		INSERT INTO responsibility_resolutions
+			(report_id, responsibility_id, kind, by_report_id, created_at)
+		SELECT r.report_id, r.responsibility_id, 'closed', ?, ?
+		FROM responsibility_reports r
+		LEFT JOIN responsibility_resolutions x ON x.report_id = r.report_id
+		WHERE r.responsibility_id = ?
+			AND (r.question IS NOT NULL OR r.reporter = 'worker')
+			AND x.report_id IS NULL
+	`);
+	function stageReports(id: string): StageReports {
+		const status = qStageStatus.get(id);
+		return {
+			status: status === null ? null : toReport(status),
+			open: qStageOpen.all(id).map(toReport),
+		};
+	}
 	function requireResp(id: string): Responsibility {
 		const row = qResp.get(id);
 		if (row === null) throw new Error(`responsibility ${id} not found`);
@@ -373,16 +414,25 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 		open: () => qRespOpen.all().map((r) => toResponsibility(respRowSchema.parse(r))),
 
 		setStatus(id, status, opts) {
+			let resolved = 0;
 			db.transaction(() => {
 				const current = requireResp(id);
 				const ts = now();
 				const closed = OPEN_STATUSES.has(status) ? null : ts;
 				qRespStatus.run(status, ts, closed, id);
+				if (status === "completed" || status === "cancelled") {
+					resolved = qCloseOpen.run(null, ts, id).changes;
+				}
 				if (current.status !== status) {
 					qPlan.run(JSON.stringify(silenceFollowup(new Date(ts))), ts, id);
 				}
 			}).immediate();
-			log.info("responsibility status", { responsibility: id, status, reason: opts?.reason });
+			log.info("responsibility status", {
+				responsibility: id,
+				status,
+				reason: opts?.reason,
+				obligationsClosed: resolved,
+			});
 		},
 
 		report(id, rawInput, reporter, opts) {
@@ -391,7 +441,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			const input = reportInputSchema.parse(rawInput);
 			let result:
 				| { report: ResponsibilityReport; responsibility: Responsibility; duplicate: boolean }
-				| { refused: "closed" | "evidence-missing" | "waiting-time"; missing?: string[] }
+				| ReportRefusal
 				| undefined;
 			db.transaction(() => {
 				const current = requireResp(id);
@@ -404,6 +454,17 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 				}
 				if (!OPEN_STATUSES.has(current.status)) {
 					result = { refused: "closed" };
+					return;
+				}
+				if (reporter !== "goblin" && input.resolves !== undefined) {
+					result = { refused: "resolves-forbidden" };
+					return;
+				}
+				const currentlyOpen = stageReports(id).open;
+				const openIds = new Set(currentlyOpen.map((report) => report.reportId));
+				const invalid = (input.resolves ?? []).filter((reportId) => !openIds.has(reportId));
+				if (invalid.length) {
+					result = { refused: "unknown-obligation", invalid };
 					return;
 				}
 				// resumeWhen schedules the review, so it must state a future
@@ -427,16 +488,12 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					}
 				}
 				const ts = now();
-				const priorLatest = qLatestReport.get(id);
 				const operationsForStage = operations.qOpsFor.all(id).map((r) =>
 					toOperation(opRowSchema.parse(r)),
 				);
 				const heldBefore =
-					responsibilityStage(
-						current,
-						priorLatest === null ? null : toReport(priorLatest),
-						operationsForStage,
-					).waitsFor === "operator";
+					responsibilityStage(current, stageReports(id), operationsForStage).waitsFor ===
+					"operator";
 				const row = qInsertReport.get(
 					id,
 					// A worker states against the revision its run started from:
@@ -454,7 +511,10 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					ts,
 				);
 				const report = toReport(row);
+				for (const reportId of input.resolves ?? [])
+					qResolution.run(reportId, id, report.reportId, ts);
 				if (TERMINAL_REPORTS.has(input.state)) {
+					qCloseOpen.run(report.reportId, ts, id);
 					qRespStatus.run("completed", ts, ts, id);
 					qPlan.run(JSON.stringify(silenceFollowup(new Date(ts))), ts, id);
 				} else if (input.state === "waiting" && input.resumeWhen !== undefined) {
@@ -473,7 +533,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					// backstop that went overdue during the hold.
 					heldBefore &&
 					current.followup.kind === "silence" &&
-					responsibilityStage(current, report, operationsForStage).waitsFor !== "operator"
+					responsibilityStage(current, stageReports(id), operationsForStage).waitsFor !== "operator"
 				) {
 					qPlan.run(JSON.stringify(silenceFollowup(new Date(ts))), ts, id);
 				}
@@ -486,7 +546,8 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					state: input.state,
 					reporter,
 					refused: r.refused,
-					missing: r.missing,
+					missing: r.refused === "evidence-missing" ? r.missing : null,
+					invalid: r.refused === "unknown-obligation" ? r.invalid : null,
 				});
 			} else {
 				log.info("responsibility report", {
@@ -499,6 +560,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 					evidence: r.report.evidence.length,
 					purpose: r.report.purpose,
 					artifacts: r.report.artifacts.length,
+					resolves: input.resolves?.length ?? 0,
 					status: r.responsibility.status,
 					duplicate: r.duplicate,
 					source: r.report.sourceKey,
@@ -510,6 +572,7 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 			const row = qLatestReport.get(id);
 			return row === null ? null : toReport(row);
 		},
+		stageReports,
 		reportsFor: (id) => qReports.all(id).map(toReport),
 
 		revise(id, understanding) {

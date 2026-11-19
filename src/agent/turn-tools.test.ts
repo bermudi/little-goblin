@@ -1076,8 +1076,8 @@ describe("screenshotCapable — issue #606 mount gate", () => {
 			expect(screenshotCapable(conv("cc/seer"), cfg)).toBe(true);
 			// openai-compatible stringifies tool results — never.
 			expect(screenshotCapable(conv("oai/seer"), cfg)).toBe(false);
-			// codex tool results are text-only — never.
-			expect(screenshotCapable(conv("cx/seer"), cfg)).toBe(false);
+			// codex runs the stock Responses model — tool results carry images (#731).
+			expect(screenshotCapable(conv("cx/seer"), cfg)).toBe(true);
 			// Text-only model — never, even on a carrying pipe.
 			expect(screenshotCapable(conv("or/blind"), cfg)).toBe(false);
 			// No model, unknown provider, unknown model — never.

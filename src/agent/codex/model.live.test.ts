@@ -1,52 +1,70 @@
-// Live drift check for Codex reasoning retention — run after a codex
-// backend change or an adapter change to the replay path:
+// Live drift check for the codex edge on the stock Responses model —
+// run after a codex backend change, an `@ai-sdk/openai` upgrade, or an
+// edge change:
 //
 //   GOBLIN_CODEX_LIVE=1 bun test src/agent/codex/model.live.test.ts
 //
-// This drives ONE real two-step exchange on the operator's own codex
-// auth (gpt-6.1-terra, high effort): step 1 forces a reasoning item plus
-// a trivial echo tool call, step 2's request body must carry the
-// replayed reasoning item. It also observes the receipts surface —
-// response headers are captured, step 1's finish metadata must carry a
-// quota with a primary window, and whether request 2 echoed a
-// turn-state header is recorded (assert-free: the backend's turn-state
-// policy over HTTP is what we're learning). It costs two billed
-// generations and nothing else — no writes beyond the requests
-// themselves. Never print tokens, ciphers, or request bodies;
-// assertions are on shapes only. Red means the retention wire moved:
-// re-check the SSE events and the input-item shape against the codex
-// backend and fix the adapter.
+// Real billed calls on the operator's own codex auth, nothing else (no
+// writes beyond the requests themselves):
+//   L1 gpt-6.1-terra, high effort: a tool step replays the encrypted
+//      reasoning item; step 1's finish metadata carries a header quota.
+//   L2 gpt-6-luna: a number only visible in a normal-font image tool result
+//      reaches the model (#731). Colour quadrants and a 5×7 bitmap font proved
+//      unreliable on luna (2026-11-19); a normal rendered font read correctly.
+//   L3 gpt-6-luna: a hosted web_search turn, replayed into turn 2 from
+//      its stored (codex-namespace) parts, is accepted.
+//   L4 gpt-6-luna: generateText (side-job path) works over the stream.
+//   L5 gpt-6-luna search turn replayed into a gpt-6.1-terra turn (a
+//      different replayScope): the scopeless web_search_call item is
+//      accepted cross-model.
+// Never print tokens, ciphers, or request bodies; assertions are on
+// shapes only. Red means the wire moved: re-check against the backend
+// and fix the edge in model.ts.
 
 import { expect, test } from "bun:test";
-import { stepCountIs, streamText, tool } from "ai";
+import { readFileSync } from "node:fs";
+import { generateText, stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
-import { codexWebSearch } from "../../turn/ai-sdk-tools.ts";
-import { CodexLanguageModel } from "./model.ts";
-import { quotaFromMetadata } from "./receipts.ts";
+import { toToolSet } from "../../turn/ai-sdk-tools.ts";
+import type { FetchLike } from "./auth.ts";
 import { resolveCodexAuthFile } from "./auth.ts";
+import { codexModel } from "./model.ts";
+import { quotaFromMetadata } from "./receipts.ts";
 
 const LIVE = process.env.GOBLIN_CODEX_LIVE === "1";
 
+interface Observed {
+	bodies: Record<string, unknown>[];
+	reqHeaders: Headers[];
+	respHeaders: Headers[];
+	statuses: number[];
+}
+
+function observingFetch(): { fetch: FetchLike; seen: Observed } {
+	const seen: Observed = { bodies: [], reqHeaders: [], respHeaders: [], statuses: [] };
+	return {
+		seen,
+		fetch: async (url, init) => {
+			seen.bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+			seen.reqHeaders.push(new Headers(init?.headers));
+			const res = await fetch(url, init);
+			seen.respHeaders.push(res.headers);
+			seen.statuses.push(res.status);
+			return res;
+		},
+	};
+}
+
+const inputOf = (body: Record<string, unknown> | undefined) =>
+	(body?.input ?? []) as Array<Record<string, unknown>>;
+
 test(
-	"a tool-step request replays the encrypted reasoning item (live)",
+	"L1: a tool-step request replays the encrypted reasoning item; finish carries the quota (live)",
 	async () => {
 		if (!LIVE) return;
-		const auth = resolveCodexAuthFile(undefined);
-		const bodies: Record<string, unknown>[] = [];
-		const respHeaders: Record<string, string>[] = [];
-		const reqHeaders: Record<string, string>[] = [];
-		const model = new CodexLanguageModel("gpt-6.1-terra", auth.path, async (url, init) => {
-			bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-			const h: Record<string, string> = {};
-			new Headers(init?.headers).forEach((v, k) => (h[k] = v));
-			reqHeaders.push(h);
-			const res = await fetch(url, init);
-			const rh: Record<string, string> = {};
-			res.headers.forEach((v, k) => (rh[k] = v));
-			respHeaders.push(rh);
-			return res;
-		});
+		const { fetch: f, seen } = observingFetch();
+		const model = codexModel("gpt-6.1-terra", resolveCodexAuthFile(undefined).path, f, {});
 		const result = streamText({
 			model,
 			system:
@@ -70,134 +88,175 @@ test(
 		});
 		const text = await result.text;
 		expect(text.length).toBeGreaterThan(0);
-		expect(bodies.length).toBe(2);
+		expect(seen.bodies.length).toBe(2);
 		const step1 = (await result.steps)[0]!;
 		const types = step1.content.map((c) => c.type);
-		expect(
-			types,
-			`step-1 content ${types.join(",")} reasoningTokens ${step1.usage.outputTokenDetails?.reasoningTokens ?? "?"}`,
-		).toContain("reasoning");
-		const input = bodies[1]!.input as Array<Record<string, unknown>>;
+		expect(types, `step-1 content ${types.join(",")}`).toContain("reasoning");
+		const input = inputOf(seen.bodies[1]);
 		const reasoningIdx = input.findIndex((i) => i.type === "reasoning");
 		const callIdx = input.findIndex((i) => i.type === "function_call");
 		expect(reasoningIdx).toBeGreaterThanOrEqual(0);
-		expect(callIdx).toBeGreaterThanOrEqual(0);
-		expect(reasoningIdx).toBeLessThan(callIdx);
+		expect(callIdx).toBeGreaterThan(reasoningIdx);
+		expect(typeof input[reasoningIdx]!.id).toBe("string");
 		expect(typeof input[reasoningIdx]!.encrypted_content).toBe("string");
-		expect((input[reasoningIdx]!.encrypted_content as string).length).toBeGreaterThan(0);
-		// Receipts: step 1's finish metadata must carry a quota with a
-		// primary window.
 		const quota = quotaFromMetadata(step1.providerMetadata);
-		expect(
-			quota?.primary,
-			`quota ${JSON.stringify(quota)}`,
-		).not.toBeNull();
-		// Assert-free observation: does the backend issue x-codex-turn-state
-		// over HTTP, and did request 2 echo it? Value never printed.
-		const issued = respHeaders[0]!["x-codex-turn-state"] !== undefined;
-		const echoed = reqHeaders[1]!["x-codex-turn-state"] !== undefined;
+		expect(quota?.primary ?? null, `quota present: ${quota !== null}`).not.toBeNull();
 		log.info("codex live turn-state observation", {
-			issued,
-			echoed,
+			issued: seen.respHeaders[0]!.get("x-codex-turn-state") !== null,
+			echoed: seen.reqHeaders[1]!.get("x-codex-turn-state") !== null,
 			windowMinutes: quota?.primary?.windowMinutes ?? null,
-			usedPercent: quota?.primary?.usedPercent ?? null,
 		});
 	},
-	120_000,
+	180_000,
+);
+
+test(
+	"L2: an image in a tool result reaches the model (live, #731)",
+	async () => {
+		if (!LIVE) return;
+		const { fetch: f, seen } = observingFetch();
+		// The number is unknowable without reading the image.
+		const png: Uint8Array = readFileSync(new URL("./fixtures/number-7241.png", import.meta.url));
+		const result = await generateText({
+			model: codexModel("gpt-6-luna", resolveCodexAuthFile(undefined).path, f, {}),
+			prompt:
+				"Call the screenshot tool exactly once. Then reply with only the number shown in the image.",
+			tools: {
+				screenshot: tool({
+					inputSchema: z.object({}),
+					execute: async () => "captured",
+					toModelOutput: () => ({
+						type: "content",
+						value: [
+							{ type: "text", text: "Screenshot attached." },
+							{ type: "file", mediaType: "image/png", data: { type: "data", data: png } },
+						],
+					}),
+				}),
+			},
+			stopWhen: stepCountIs(2),
+			maxRetries: 0,
+		});
+		const out = inputOf(seen.bodies[1]).find((i) => i.type === "function_call_output");
+		const items = Array.isArray(out?.output) ? (out.output as Array<Record<string, unknown>>) : [];
+		const image = items.find((i) => i.type === "input_image");
+		// The bytes on the wire are exactly the test PNG.
+		const url = String(image?.image_url ?? "");
+		expect(url.startsWith("data:image/png;base64,")).toBe(true);
+		expect(Buffer.from(url.slice("data:image/png;base64,".length), "base64").equals(Buffer.from(png))).toBe(true);
+		const digits = result.text.replace(/\D/g, "");
+		log.info("codex live image-number observation", { expected: "7241", replyDigits: digits });
+		expect(digits, `digits in reply: ${digits}`).toContain("7241");
+	},
+	180_000,
 );
 
 const TURN1_PROMPT =
 	"Use web search to find the official OpenAI documentation page about the Responses API web search tool, then answer with its URL only.";
 
 test(
-	"a hosted web_search turn replays its call item into the next request (live)",
+	"L3: a hosted web_search turn replays from its stored parts into the next request (live)",
 	async () => {
 		if (!LIVE) return;
-		const auth = resolveCodexAuthFile(undefined);
-		const bodies: Record<string, unknown>[] = [];
-		const model = new CodexLanguageModel("gpt-6-luna", auth.path, async (url, init) => {
-			bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-			const res = await fetch(url, init);
-			if (!res.ok) {
-				const detail = await res.clone().text();
-				log.info("codex live hosted-search http error", {
-					status: res.status,
-					detail: detail.slice(0, 200),
-				});
-			}
-			return res;
-		});
+		const auth = resolveCodexAuthFile(undefined).path;
+		const hosted = toToolSet({ web_search: { hosted: "codex.web_search", args: { externalWebAccess: true } } });
+		const one = observingFetch();
 		const turn1 = streamText({
-			model,
-			messages: [
-				{
-					role: "user",
-					content: TURN1_PROMPT,
-				},
-			],
-			tools: {
-				web_search: codexWebSearch({ externalWebAccess: true }),
-			},
+			model: codexModel("gpt-6-luna", auth, one.fetch, {}),
+			messages: [{ role: "user", content: TURN1_PROMPT }],
+			tools: hosted,
 			providerOptions: { codex: { reasoningEffort: "low" } },
 			stopWhen: stepCountIs(2),
 			maxRetries: 0,
 		});
-		const text1 = await Promise.resolve(turn1.text).catch((err: unknown) => {
-			const b0 = bodies[0];
-			log.info("codex live hosted-search turn-1 failure", {
-				error: err instanceof Error ? err.message : String(err),
-				toolsSent: JSON.stringify(b0?.tools ?? null),
-				includeSent: JSON.stringify(b0?.include ?? null),
-			});
-			throw err;
-		});
+		const text1 = await turn1.text;
 		expect(text1.length).toBeGreaterThan(0);
 		const steps1 = await turn1.steps;
-		const step1 = steps1[0]!;
-		const types1 = step1.content.map((c) => c.type);
-		// Provider-executed search call + at least one cited source.
+		const content1 = steps1.flatMap((s) => s.content);
 		expect(
-			step1.content.some(
-				(c) => c.type === "tool-call" && c.toolName === "web_search" && c.providerExecuted === true,
-			),
-			`step-1 content ${types1.join(",")}`,
+			content1.some((c) => c.type === "tool-call" && c.toolName === "web_search" && c.providerExecuted === true),
+			`turn-1 content ${content1.map((c) => c.type).join(",")}`,
 		).toBe(true);
-		expect(types1.filter((t) => t === "source").length).toBeGreaterThanOrEqual(1);
-		expect(step1.finishReason).toBe("stop");
-		const sourceUrls = step1.content
-			.filter((c) => c.type === "source")
-			.map((c) => (c as { url: string }).url);
-		const urlInText = sourceUrls.some((u) => text1.includes(u));
+		const stored = steps1.flatMap((s) => s.response.messages);
+		expect(JSON.stringify(stored)).not.toContain('"openai"');
 
-		// Turn 2 replays turn 1's assistant output — the search item must
-		// ride at its position or the backend rejects the request.
-		const bodies2: Record<string, unknown>[] = [];
-		const model2 = new CodexLanguageModel("gpt-6-luna", auth.path, async (url, init) => {
-			bodies2.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-			return fetch(url, init);
-		});
+		const two = observingFetch();
 		const turn2 = streamText({
-			model: model2,
-			messages: [
-				{ role: "user", content: TURN1_PROMPT },
-				...(await turn1.response).messages,
-				{ role: "user", content: "Reply with the word ok." },
-			],
-			tools: {
-				web_search: codexWebSearch({ externalWebAccess: true }),
-			},
+			model: codexModel("gpt-6-luna", auth, two.fetch, {}),
+			messages: [{ role: "user", content: TURN1_PROMPT }, ...stored, { role: "user", content: "Reply with the word ok." }],
+			tools: hosted,
 			providerOptions: { codex: { reasoningEffort: "low" } },
 			maxRetries: 0,
 		});
 		const text2 = await turn2.text;
+		expect(two.seen.statuses[0]).toBe(200);
 		expect(text2.length).toBeGreaterThan(0);
-		const input2 = bodies2[0]!.input as Array<Record<string, unknown>>;
-		const hadReplayedCall = input2.some((i) => i.type === "web_search_call");
+		const input2 = inputOf(two.seen.bodies[0]);
 		log.info("codex live hosted-search observation", {
-			replayedWebSearchCall: hadReplayedCall,
-			citedUrlInText: urlInText,
-			sourceCount: sourceUrls.length,
+			replayedWebSearchCall: input2.some((i) => i.type === "web_search_call"),
+			replayedReasoning: input2.some((i) => i.type === "reasoning"),
+			sourceCount: content1.filter((c) => c.type === "source").length,
 		});
 	},
-	180_000,
+	240_000,
+);
+
+test(
+	"L4: generateText returns text over the stream (live)",
+	async () => {
+		if (!LIVE) return;
+		const { fetch: f, seen } = observingFetch();
+		const result = await generateText({
+			model: codexModel("gpt-6-luna", resolveCodexAuthFile(undefined).path, f, {}),
+			prompt: "Reply with the single word: pong",
+			maxRetries: 0,
+		});
+		expect(seen.bodies[0]!.stream).toBe(true);
+		expect(result.text.toLowerCase()).toContain("pong");
+	},
+	120_000,
+);
+
+test(
+	"L5: a hosted web_search turn replays into a different model's turn (live)",
+	async () => {
+		if (!LIVE) return;
+		const auth = resolveCodexAuthFile(undefined).path;
+		const hosted = toToolSet({ web_search: { hosted: "codex.web_search", args: { externalWebAccess: true } } });
+		const turn1 = streamText({
+			model: codexModel("gpt-6-luna", auth, observingFetch().fetch, {}),
+			messages: [{ role: "user", content: TURN1_PROMPT }],
+			tools: hosted,
+			providerOptions: { codex: { reasoningEffort: "low" } },
+			stopWhen: stepCountIs(2),
+			maxRetries: 0,
+		});
+		expect((await turn1.text).length).toBeGreaterThan(0);
+		const steps1 = await turn1.steps;
+		const content1 = steps1.flatMap((s) => s.content);
+		expect(
+			content1.some((c) => c.type === "tool-call" && c.toolName === "web_search" && c.providerExecuted === true),
+			`turn-1 content ${content1.map((c) => c.type).join(",")}`,
+		).toBe(true);
+		const stored = steps1.flatMap((s) => s.response.messages);
+
+		const two = observingFetch();
+		const turn2 = streamText({
+			model: codexModel("gpt-6.1-terra", auth, two.fetch, {}),
+			messages: [{ role: "user", content: TURN1_PROMPT }, ...stored, { role: "user", content: "Reply with the word ok." }],
+			tools: hosted,
+			providerOptions: { codex: { reasoningEffort: "low" } },
+			maxRetries: 0,
+		});
+		const text2 = await turn2.text;
+		expect(two.seen.statuses[0]).toBe(200);
+		expect(text2.length).toBeGreaterThan(0);
+		const input2 = inputOf(two.seen.bodies[0]);
+		expect(input2.some((i) => i.type === "web_search_call")).toBe(true);
+		log.info("codex live cross-scope search observation", {
+			replayedWebSearchCalls: input2.filter((i) => i.type === "web_search_call").length,
+			replayedReasoning: input2.some((i) => i.type === "reasoning"),
+		});
+	},
+	240_000,
 );

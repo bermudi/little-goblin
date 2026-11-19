@@ -213,7 +213,9 @@ export function carriesMedia(
 	if (isOneMinHost(baseUrl)) return false;
 	switch (kind) {
 		case "responses":
-			// Responses maps file parts in user and function_call_output content.
+		case "codex":
+			// Both run the stock Responses model: file parts map in user and
+			// function_call_output content.
 			return mediaType.startsWith("image/") || mediaType === "application/pdf";
 		case "openai-compatible":
 			// Tool-result content is stringified, so no media survives this position.
@@ -231,11 +233,6 @@ export function carriesMedia(
 		case "openrouter":
 			// OpenRouter maps media in both user and tool-result content.
 			return true;
-		case "codex":
-			// Codex accepts images/PDFs in user messages, text only in results.
-			return (
-				position === "user" && (mediaType.startsWith("image/") || mediaType === "application/pdf")
-			);
 		case "claude-code":
 			// The Messages API takes images/PDFs in user content; the engine
 			// maps view FileParts to prompt content blocks there. Tool

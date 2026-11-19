@@ -91,13 +91,18 @@ describe("carriesMedia — what the pipe can deliver, per position", () => {
 		expect(carriesMedia("openai-compatible", "image/png", "tool-result")).toBe(false);
 	});
 
-	test("openrouter normalizes everything in both positions; codex is user-position only", () => {
+	test("openrouter normalizes everything in both positions", () => {
 		expect(carriesMedia("openrouter", "application/zip")).toBe(true);
 		expect(carriesMedia("openrouter", "application/pdf", "tool-result")).toBe(true);
+	});
+
+	test("codex runs the stock Responses model — images and PDFs in both positions (#731)", () => {
 		expect(carriesMedia("codex", "application/pdf")).toBe(true);
+		expect(carriesMedia("codex", "image/png")).toBe(true);
+		expect(carriesMedia("codex", "image/png", "tool-result")).toBe(true);
+		expect(carriesMedia("codex", "application/pdf", "tool-result")).toBe(true);
 		expect(carriesMedia("codex", "video/mp4")).toBe(false);
-		// toolResultText filters content to text — the payload would drop.
-		expect(carriesMedia("codex", "application/pdf", "tool-result")).toBe(false);
+		expect(carriesMedia("codex", "video/mp4", "tool-result")).toBe(false);
 	});
 
 	test("unknown kinds carry the universal minimum, user messages only", () => {
@@ -900,10 +905,10 @@ describe("transportRetry — raw transport failures retry before the call is los
 		}
 	});
 
-	test("resolveModel wires it in: a codex blip retries the raw throw", async () => {
-		// The codex lane is where raw transport throws actually occur —
-		// SDK-native providers normalize a failed fetch into an
-		// isRetryable APICallError the SDK ladder already retries.
+	test("a codex blip still retries — via the SDK ladder now that codex is SDK-native", async () => {
+		// Since #731 codex runs the stock Responses model: provider-utils
+		// normalizes the failed fetch into an isRetryable APICallError,
+		// which transportRetry leaves to the SDK ladder (maxRetries).
 		const dir = tmpDir();
 		const authFile = join(dir, "auth.json");
 		writeFileSync(authFile, JSON.stringify({ tokens: { access_token: "t" } }));
@@ -935,7 +940,7 @@ describe("transportRetry — raw transport failures retry before the call is los
 		}) as unknown as typeof fetch;
 		try {
 			const model = await resolveModel(c, fixtureAuth("k"), "codex/gpt-6.1-sol");
-			const result = await generateText({ model, prompt: "hi", maxRetries: 0 });
+			const result = await generateText({ model, prompt: "hi", maxRetries: 1 });
 			expect(result.finishReason).toBe("stop");
 			expect(calls).toBe(2);
 		} finally {

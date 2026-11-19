@@ -81,7 +81,9 @@ function rig(
 		model?: LanguageModel;
 		deltas?: string[];
 		delayMs?: number;
-		step?: Partial<Omit<ModelStep, "model">>;
+		// `engine` stays out of the Partial: TS treats a spread optional
+		// property as present, so an untagged step would typecheck.
+		step?: Partial<Omit<ModelStep, "model" | "engine">>;
 		buildStep?: RuntimeDeps["buildStep"];
 		tools?: Tools;
 		makeTools?: RuntimeDeps["makeTools"];
@@ -110,6 +112,7 @@ function rig(
 			(() => ({
 				model: opts.model ?? fakeModel(opts.deltas ?? ["ok"], opts.delayMs ?? 5),
 				system: "test",
+				engine: "ai-sdk",
 				...opts.step,
 			})),
 		makeTools: opts.makeTools ?? (() => opts.tools ?? {}),

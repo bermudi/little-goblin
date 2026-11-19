@@ -24,7 +24,10 @@ import {
 } from "./delegations.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import type { DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
-import { HcError, type HcRunInfo, type HcDelegation } from "./hc-delegation.ts";
+import { HcError, makeHcDelegation, type HcRunInfo, type HcDelegation } from "./hc-delegation.ts";
+import { makeHc } from "./hc.ts";
+import { goblinHome } from "./goblin-home.ts";
+import { paths } from "./home-layout.ts";
 import { setLogFile } from "./log.ts";
 import { prReadinessFixture } from "./test-helpers/pr-readiness.ts";
 import type { PrReadiness } from "./pr-readiness.ts";
@@ -1911,5 +1914,25 @@ describe("delegation settlement hook", () => {
 		w.stopTicker();
 		expect(h.wakes).toEqual([]);
 		expect(h.store.get(d.id)!.status).toBe("running");
+	});
+});
+
+describe("hc unreachable", () => {
+	// Boot never touches hc: the adapter resolves its socket per call, and a
+	// dead core only fails the scan's row checks — no download, no core start.
+	test("a tick on the real adapter with no core keeps the row and downloads nothing", async () => {
+		const h = harness();
+		const d = runningRow(h, "busy", 1);
+		const hc = makeHcDelegation({
+			hc: makeHc("goblin-test", { path: join(h.homeDir, "no-core.sock") }),
+			goblinHome: goblinHome(),
+			hooksDir: paths.hcHooks(),
+		});
+		const w = startDelegationLifecycle({ ...h.deps, hc });
+		await w.tick();
+		w.stopTicker();
+		expect(h.store.get(d.id)!.status).toBe("running");
+		expect(h.wakes).toEqual([]);
+		expect(existsSync(paths.hcBinary())).toBe(false);
 	});
 });

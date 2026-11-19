@@ -4,7 +4,7 @@
 // function of the view: the same events must serialize to the same
 // bytes, and turn N+1's prompt is turn N's prompt with the new exchange
 // appended — the prefix-stability invariant the API lane gets from
-// append-only ModelMessages, preserved here by construction.
+// append-only PromptMessages, preserved here by construction.
 //
 // Media rides as Anthropic content blocks at its transcript position
 // (the view only inlines what this provider's carries() gate admitted);
@@ -105,7 +105,7 @@ function textOf(part: PartLike): string {
 	return typeof part.text === "string" ? part.text : "";
 }
 
-// One ModelMessage → transcript blocks. Role markers are fixed strings;
+// One PromptMessage → transcript blocks. Role markers are fixed strings;
 // every choice here is deterministic so the bytes never move for the
 // same history.
 function messageBlocks(msg: PromptMessage, out: PromptContent["blocks"]): void {

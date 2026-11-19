@@ -6,8 +6,10 @@
 // recovery hold).
 
 import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import type { PromptMessage } from "../../prompt-message.ts";
 import type { MessageChunk } from "../../message.ts";
+import { openCacheObservation } from "../../cache-observation.ts";
 import { z } from "zod";
 import { defineTool, type Tools } from "../../tool.ts";
 import type { AuthStore } from "../../auth.ts";
@@ -217,6 +219,24 @@ async function run(
 const types = (chunks: MessageChunk[]): string[] => chunks.map((c) => c.type);
 
 describe("driveClaude — wire and outcome parity", () => {
+	test("records the cache lifetime split from streamed usage", async () => {
+		for (const [label, usage, expected] of [
+			["one-hour", { ephemeral1h: 12 }, 3_600_000],
+			["five-minute", { ephemeral5m: 12 }, 300_000],
+			["none", {}, null],
+			["zero", { ephemeral1h: 0, ephemeral5m: 0 }, null],
+		] as const) {
+			const db = new Database(":memory:");
+			const observation = openCacheObservation(db);
+			await run([{ kind: "text", text: "hello", usage }], {}, { observation });
+			const row = db.query<{ cache_ttl_ms: number | null }, []>(
+				"SELECT cache_ttl_ms FROM model_cache_calls",
+			).get();
+			expect(row?.cache_ttl_ms, label).toBe(expected);
+			db.close();
+		}
+	});
+
 	test("uses final message_delta output usage", async () => {
 		const { outcome, members } = await run([
 			{

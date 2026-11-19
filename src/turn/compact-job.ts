@@ -83,12 +83,12 @@ export interface CompactJobDeps {
 // strictly below it (and below any still-queued input; foldCeiling).
 export async function runCompactJob(
 	conv: Conversation,
-	reason: "threshold" | "manual" | "overflow" | "preempt",
+	reason: "threshold" | "manual" | "idle" | "overflow" | "preempt",
 	activeFloor: number | undefined,
 	focus: string | undefined,
 	deps: CompactJobDeps,
 ): Promise<CompactionOutcome> {
-	if (reason === "manual") {
+	if (reason === "manual" || reason === "idle") {
 		conv = deps.store.get(conv.id) ?? conv;
 		conv = deps.captureConversation?.(conv) ?? conv;
 	}

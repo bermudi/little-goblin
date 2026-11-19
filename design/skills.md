@@ -78,7 +78,7 @@ way).
 one-line marker (`[skill: name]` / `[temp skill: name (host)]`), so
 later turns know the invocation happened. The **body** is injected only
 into the turn that owns the invoking message — as an appended user
-ModelMessage after it, at admission (whole history) and on the steer
+PromptMessage after it, at admission (whole history) and on the steer
 path (claimed steers), the same append-only tail steering uses, so the
 prefix bytes never rewrite within the turn. The next turn's view carries
 the marker alone — a bounded suffix rewrite at the invocation point,

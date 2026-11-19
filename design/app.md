@@ -942,7 +942,7 @@ re-derivation. Goblin takes the same mechanism one seam deeper:
 `prepareStep` already holds the exact outbound prompt of every model
 call (the gauge's `promptChars` itemization reads the same capture), so
 the final step's prompt — system, tool definitions, every
-`ModelMessage` — is serialized once and stored per conversation
+`PromptMessage` — is serialized once and stored per conversation
 (`context_windows`, latest wins, gzip). The record is the last model
 call's input, verbatim. A parallel assembler in an HTTP handler would
 have drifted from admission's pipeline the first time either changed;

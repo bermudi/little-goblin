@@ -921,8 +921,8 @@ describe("config save", () => {
 					allowedUsers: [],
 					delegation: {
 						harnesses: {
-							pi: { provider: "t3", model: "glm-5.3" },
-							old: { provider: "t3", model: "gone-model" },
+							pi: { kind: "pi" },
+							old: { kind: "gone" },
 						},
 						defaults: { default: "pi" },
 					},
@@ -933,8 +933,8 @@ describe("config save", () => {
 		const res = await postConfig(d, {
 			delegation: {
 				harnesses: {
-					pi: { provider: "t3", model: "glm-5.3-air" },
-					review: { provider: "t3", model: "glm-5.3-flash" },
+					pi: { kind: "pi", args: ["--model", "glm-5.3-air"] },
+					review: { kind: "claude", args: ["--model", "glm-5.3-flash"] },
 				},
 				defaults: { default: "pi", review: "review" },
 			},
@@ -942,8 +942,8 @@ describe("config save", () => {
 		expect(res?.status).toBe(200);
 		expect(loadConfig()?.delegation).toEqual({
 			harnesses: {
-				pi: { provider: "t3", model: "glm-5.3-air" },
-				review: { provider: "t3", model: "glm-5.3-flash" },
+				pi: { kind: "pi", args: ["--model", "glm-5.3-air"] },
+				review: { kind: "claude", args: ["--model", "glm-5.3-flash"] },
 			},
 			defaults: { default: "pi", review: "review" },
 		});
@@ -953,7 +953,7 @@ describe("config save", () => {
 		// A default naming nothing is rejected before any write.
 		const bad = await postConfig(d, {
 			delegation: {
-				harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
+				harnesses: { pi: { kind: "pi" } },
 				defaults: { default: "pi", build: "ghost" },
 			},
 		});
@@ -970,7 +970,7 @@ describe("config save", () => {
 					operators: [7],
 					allowedUsers: [],
 					delegation: {
-						harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
+						harnesses: { pi: { kind: "pi" } },
 						defaults: { default: "pi" },
 					},
 				}),
@@ -981,7 +981,7 @@ describe("config save", () => {
 		expect((await postConfig(d, { capabilities: { delegation: false } }))?.status).toBe(200);
 		expect(loadConfig()?.delegation).toBeUndefined();
 		expect(loadConfig()?.parked?.delegation).toEqual({
-			harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
+			harnesses: { pi: { kind: "pi" } },
 			defaults: { default: "pi" },
 		});
 		// An edited block supersedes it — the stale copy must not come back.
@@ -989,14 +989,14 @@ describe("config save", () => {
 			(
 				await postConfig(d, {
 					delegation: {
-						harnesses: { codex: { provider: "t3", model: "glm-5.3" } },
+						harnesses: { codex: { kind: "pi" } },
 						defaults: { default: "codex" },
 					},
 				})
 			)?.status,
 		).toBe(200);
 		expect(loadConfig()?.delegation).toEqual({
-			harnesses: { codex: { provider: "t3", model: "glm-5.3" } },
+			harnesses: { codex: { kind: "pi" } },
 			defaults: { default: "codex" },
 		});
 		expect(loadConfig()?.parked?.delegation).toBeUndefined();
@@ -1011,7 +1011,7 @@ describe("config save", () => {
 					operators: [7],
 					allowedUsers: [],
 					delegation: {
-						harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
+						harnesses: { pi: { kind: "pi" } },
 						defaults: { default: "pi" },
 					},
 				}),
@@ -1024,7 +1024,7 @@ describe("config save", () => {
 		// A body-less re-enable restores the parked block as-is.
 		expect((await postConfig(d, { capabilities: { delegation: true } }))?.status).toBe(200);
 		expect(loadConfig()?.delegation).toEqual({
-			harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
+			harnesses: { pi: { kind: "pi" } },
 			defaults: { default: "pi" },
 		});
 		expect(loadConfig()?.parked?.delegation).toBeUndefined();
@@ -1042,7 +1042,7 @@ describe("config save", () => {
 					operators: [7],
 					allowedUsers: [],
 					delegation: {
-						harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
+						harnesses: { pi: { kind: "pi" } },
 						defaults: { default: "pi" },
 					},
 				}),
@@ -1051,25 +1051,25 @@ describe("config save", () => {
 		};
 		const res = await postConfig(d, {
 			delegation: {
-				harnesses: { codex: { provider: "t3", model: "glm-5.3" } },
+				harnesses: { codex: { kind: "pi" } },
 				machines: { evil: { machine: "evil", root: "~/evil" } },
 				defaults: { default: "codex" },
 			},
 		});
 		expect(res?.status).toBe(422);
 		expect(((await res?.json()) as { error: string }).error).toContain(
-			"delegation: unrecognized_keys",
+			"delegation.machines was removed",
 		);
 		// A retired-shape posted block fails the same way — no silent drop.
 		const legacy = await postConfig(d, {
-			delegation: { harnesses: { pi: { kind: "pi" } } },
+			delegation: { harnesses: { pi: { provider: "pi", model: "m" } } },
 		});
 		expect(legacy?.status).toBe(422);
 		// Nothing was written by either refusal — the incumbent block
 		// (which lived in configRef, not on disk) is untouched.
 		expect(loadConfig()).toBeNull();
 		expect(d.configRef.current.delegation).toEqual({
-			harnesses: { pi: { provider: "t3", model: "glm-5.3" } },
+			harnesses: { pi: { kind: "pi" } },
 			defaults: { default: "pi" },
 		});
 	});

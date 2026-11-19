@@ -106,13 +106,13 @@ export interface ConfigPostBody {
 	fetch: "" | Array<{ kind: string; auth?: string }>;
 	operators: number[];
 	allowedUsers: number[];
-	// The editable face of delegation: each harness names the T3
-	// provider instance and model its thread runs on, plus the role →
-	// harness defaults. goblin never picks a model itself.
+	// The editable face of delegation: harness definitions and the
+	// role → harness defaults. Each harness names the hc harness kind it
+	// launches plus optional argv; goblin never picks a model itself.
 	delegation?:
 		| ""
 		| {
-				harnesses: Record<string, { provider: string; model: string; askFirst?: boolean }>;
+				harnesses: Record<string, { kind: string; args?: string[]; askFirst?: boolean }>;
 				defaults?: Record<string, string>;
 		  }
 		| undefined;
@@ -343,8 +343,7 @@ export interface OperatorDelegationItem {
 	name: string;
 	harness: string;
 	status: "starting" | "running" | "needs_input" | "done" | "failed" | "stopped";
-	thread: string | null;
-	link: string | null;
+	target: string | null;
 	task: string;
 	cwd: string;
 	appConversation: string | null;
@@ -359,10 +358,9 @@ export interface OperatorDelegationsResponse {
 	delegations: OperatorDelegationItem[];
 }
 
-/** stopped = the row is settled as stopped; unavailable = t3 has no stop
- *  verb for a live thread (the operator ends it in T3 Code). */
+/** stopped = the row is stopped; still-running = hc could not close it. */
 export interface OperatorDelegationStopResponse {
-	outcome: "stopped" | "unavailable";
+	outcome: "stopped" | "still running";
 	delegation: OperatorDelegationItem;
 	notes: string[];
 }

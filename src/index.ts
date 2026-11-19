@@ -31,6 +31,7 @@ import {
 import type { Config } from "./config-schema.ts";
 import { goblinHome } from "./goblin-home.ts";
 import { ensureDir, ensureHomeLayout, paths } from "./home-layout.ts";
+import { installHcHooks } from "./hc-hooks.ts";
 import { acquireHomeLock } from "./home-lock.ts";
 import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins.ts";
 import { captureConversationSettings, openStore } from "./conversation.ts";
@@ -124,6 +125,7 @@ log.info("home lock acquired", { pid: process.pid, home });
 
 async function boot() {
 	ensureHomeLayout();
+	installHcHooks(`${import.meta.dir}/../deploy/hc-hooks`, paths.hcHooks());
 	// /api/*/status reports from this — uptime and the boot timestamp.
 	const startedAt = new Date().toISOString();
 

@@ -26,6 +26,8 @@ export const paths = {
 	auth: authFile,
 	mcporter: () => join(goblinHome(), "mcporter.json"),
 	mcpShim: () => join(goblinHome(), "mcp"),
+	hcBinary: () => join(goblinHome(), "bin", "herdr-core"),
+	hcHooks: () => join(goblinHome(), "bin", "hc-hooks"),
 	goblinMailShim: () => join(goblinHome(), "goblin-mail"),
 	doctorShim: () => join(goblinHome(), "doctor"),
 	workspace: () => join(goblinHome(), "workspace"),

@@ -3,42 +3,33 @@
 Part of the goblin design spec. The core — domain model, authority rule,
 cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
-> **Transport ruling (operator, 2026-11-18, issue #728):** the T3 Code
-> transport lost named harness runs in production — "herdr **stays** for
-> driving codex, or opencode" and "`delegate` stays just for this … only
-> for use when the user asks for a `codex` run, or a `opencode` run".
-> `delegate` is back on Herdr panes, ported onto today's main; handover
-> and responsibility stay on T3 Code ("to communicate with inner loop.
-> that's it."). Machine targets stay out — "axe herdr tool" removed only
-> the Goblin-side tool for the operator's own desk, not the delegation
-> transport.
+> **Transport direction (operator, 2026-11-18, issue #728):** `delegate`
+> runs on herdr-core (`hc`), not Herdr. Goblin must “make sure binary X is
+> where you need it or go get it”; “they just need the right hooks installed
+> and execution call could make sure they are.” Handover and responsibility
+> stay on T3 Code. The operator-named-only rule for `delegate` remains.
 
-> **Transport ruling (operator, 2026-11-19, issue #728):** the planned Herdr
-> pane transport is superseded. `delegate` runs on pinned herdr-core (`hc`)
-> through one JSON-RPC adapter (`src/hc.ts`). Goblin owns and hash-pins the
-> `hc` binary, starts a private core per Goblin home, and installs marked
-> harness hooks that report OSC 7501 lifecycle state. The production session
-> is `goblin-<8 hex sha256(GOBLIN_HOME)>`; its state remains at the default
-> `~/.local/state/herdr-core/<session>/`. There is no `HC_STATE_DIR` override.
-> Although `XDG_STATE_HOME` can relocate state, Goblin does not set it:
-> `terminal.run` passes Goblin's environment to the harness, so this variable
-> would leak into child harness environments. Core state is not moved under
-> `$GOBLIN_HOME`.
->
-> Hooks call the shared `deploy/hc-hooks/report.sh`. It is silent unless
-> `GOBLIN_HC_RUN=1`; it writes OSC to `/dev/tty`, or walks parent processes
-> for a `/dev/pts/N` descriptor. If neither is available, it exits silently
-> unless `GOBLIN_HC_DEBUG=1`, when it writes one diagnostic line to stderr.
-> Codex hooks and their trusted hashes are merged into the per-run
-> `CODEX_HOME` without overwriting other entries; per-run `-c` hook-state
-> overrides did not avoid its review screen. `trusted_hash` is SHA-256 of
-> compact, sorted JSON for the matching hook event object. OpenCode and Pi
-> report `working` and settled (`idle` or `done`) states in live probes;
-> Claude's child hooks require the shared terminal bridge. Devin starts by
-> absolute path but did not report SessionStart status in the no-turn probe.
-> Do not use `XDG_STATE_HOME` as a workaround.
+> **Implementation rulings (lead, 2026-11-19, issue #728):** Goblin pins and
+> owns `hc`, keeps the operator's real harness homes, copies `deploy/hc-hooks/`
+> at run time to stable `$GOBLIN_HOME/bin/hc-hooks/` (durable writes, mode
+> 0755, unchanged content skipped), and points every hook command at that
+> stable path. This keeps Codex `trusted_hash` stable across releases.
+> Codex hook entries and their hashes merge additively and idempotently into
+> `$CODEX_HOME/hooks.json` and `config.toml` (default `~/.codex`), preserving
+> operator entries and file modes. Live probes use a temporary `CODEX_HOME`
+> with `auth.json` symlinked, never the operator's home.
+> Goblin reports status through OSC 7501.
+> The shared bridge checks `GOBLIN_HC_RUN=1`, writes to `/dev/tty` or the
+> first ancestor fd targeting `/dev/pts/N`, and is silent on failure unless
+> `GOBLIN_HC_DEBUG=1`. Codex hooks and trust entries merge additively into
+> the real `$CODEX_HOME`; other harnesses use their proven per-run settings
+> or a safe config merge. Claude gets generated `--settings` under
+> `$GOBLIN_HOME`, Pi gets a per-run extension, and OpenCode and Devin use
+> the probe-proven config mechanisms. Core state stays at
+> `~/.local/state/herdr-core/<session>/`; do not set `XDG_STATE_HOME`
+> because it would reach harness processes. Devin's SessionStart probe passed.
 
-## Delegation transport (current: herdr-core)
+## Delegation transport
 
 1. One adapter, `src/hc.ts`, speaks JSON-RPC 2.0 over the core Unix socket
    and validates every reply with zod. The RPC `terminal.run` is required
@@ -64,17 +55,15 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 8. Machine targets remain out. Polling is used instead of event
    subscriptions to avoid reconnect and missed-event handling.
 
-The historical Herdr transport notes below describe the superseded design.
-
-## Delegation (other harnesses, via herdr)
+## Delegation behavior
 
 On demand (2026-09-26): goblin hands work to other coding harnesses
 (codex, claude, pi, devin, opencode, …) and gets on with the chat; the
 result returns to the topic it was delegated from — or, when launched
 from the bot DM, to the app conversation it spins off (App channel →
-Spin-off, ruling 2026-10-03). Harnesses run **interactively in herdr**,
-the host's agent automation layer; the operator can `herdr session
-attach goblin` at any time to watch or take over. Rejected: the AI SDK
+Spin-off, ruling 2026-10-03). Harnesses run as named terminals on
+Goblin's private hc core; the operator can observe them through that
+session. Rejected: the AI SDK
 harness wrappers (`ai-sdk-provider-codex-cli`, `…-claude-code`) — two
 harnesses, in-process (die on restart), unwatchable. Delegations are
 **goblin's own acts**: goblin decides what the operator hears, and
@@ -83,38 +72,23 @@ routine completions.
 
 Rulings:
 
-- **The herdr session is its own systemd user unit**, not a child of
-  goblin: systemd stops a unit's whole cgroup, so a spawned session
-  would kill every running delegation on a goblin restart. Verified
-  2026-09-26: a named headless session starts and drives agents under
-  the service's stripped env (no `HERDR_ENV`, service PATH). One
-  session, named by the unit; `delegation` has no session knob (dropped
-  2026-09-26 — an override could target a session the unit does not
-  host).
-- **Target: the own local session only (2026-11-18).** Goblin's own
-  local session — the host goblin runs on, never a config knob
-  (2026-09-26 stands) — is the only target. Machine targets
-  (`delegation.machines`, per-harness machine fields) do not come back;
+- **One private hc core per Goblin home.** The core runs outside
+  `goblin.service`'s cgroup, so Goblin restarts do not kill live
+  delegations. Its `HC_SESSION` is derived from the eight-character
+  SHA-256 prefix of `GOBLIN_HOME`; it is not a config knob. Machine
+  targets (`delegation.machines`, per-harness machine fields) do not come back;
   a config carrying them is rejected at boot naming the fix. The whole
   `delegation` block is **boot-frozen**: a new definition feeding a
   boot-built adapter could drive the old adapter's session. Config
   saves warn "restart to apply"; a post-boot label fails its launch
   loud with that hint.
-- **One protocol.** Launch, send, read, answer, stop behave identically.
-  Results come from `agent read` (deep pages
-  alternate-screen transcript history for full-screen agents); the
-  report file demotes to herdr's documented fallback (output a
-  transcript cannot hold) — instructed as ever, attached when readable
-  here, path named when not.
-- **The adapter's wire contract is pinned against the real CLI, not
-  just fakes (2026-10-11).** The fake suite is blind to upstream drift —
-  wire changes break in production, not the suite.
-  `src/herdr.live.test.ts` is the gated check —
-  `GOBLIN_HERDR_LIVE=1 bun test src/herdr.live.test.ts` boots a
-  disposable session (never `default` or `goblin`) and drives every
-  verb end to end. Run it after any herdr upgrade; red means the CLI
-  moved: re-pin with one throwaway-session probe, fix the adapter,
-  never discover it live.
+- **One protocol.** Launch, send, read, answer, and stop use hc terminal
+  methods. Results come from `terminal.read`; report files remain
+  available when terminal output cannot contain them.
+- **The wire contract is pinned against the real core.** The fake suite
+  is blind to upstream drift. `GOBLIN_HC_LIVE=1 bun test
+  src/hc.live.test.ts` boots a disposable session and exercises the
+  JSON-RPC boundary. Run it after changing the pinned core version.
 - **Harnesses are config, never guessed** — the operator's choice of
   kind, native args, full-auto flags and model; goblin never picks a
   model for a harness.
@@ -142,26 +116,17 @@ Rulings:
   boot-frozen, so a removal needs a restart anyway. The same sentence
   rules staffing goblin's call: choosing a harness is never a question
   to the operator. Settings → Delegation edits the flag.
-- **Agents run full-auto; goblin never answers approvals.** Harnesses
+- **Agents run full-auto; Goblin never answers approvals.** Harnesses
   start in their no-approval mode (the configured args); nothing to
   approve, and no new trust level — goblin already has `bash`. If an
   agent still stops (`blocked`, or ends its turn with a question),
   goblin relays it to the topic and types the operator's answer back,
-  never inventing one. Startup dialogs are the trap: a codex
-  trust-directory prompt reported as `idle` (2026-09-26 probe), and
-  `--dangerously-bypass-approvals-and-sandbox` does not skip it (codex
-  0.155.1). Launch pre-seeds the harness trust stores per kind (added
-  2026-10-03, hardened 2026-10-04 — **write-if-absent only**: an
-  explicit `false`/`"untrusted"` the operator recorded stands; seeding
-  never manufactures a "yes" from a remembered "no"). Operator-owned
-  settings files are edited, never reformatted, and a file we can't
-  extend safely fails the launch instead of corrupting; symlinked
-  settings write through, never replace the link. Remote targets get
-  the same markers through the delegation's root pane before `agent
-  start`. Panes run the operator's interactive shell, so aliases apply:
-  args duplicating an alias's flags make the harness refuse to start.
-  Start relies on herdr's ready gate plus the watcher's stall rule, not
-  screen-scraping.
+  never inventing one. Startup dialogs are the trap. Launch seeds trust
+  write-if-absent; it never manufactures consent over a recorded refusal.
+  Codex hook/trust config merges preserve existing operator entries and
+  modes. Hooks are durably copied to the stable Goblin home. Claude gets
+  generated `--settings`; Pi gets a per-run extension; OpenCode and Devin
+  use their verified config-merge path.
 - **The seeded trust keys are pinned against the installed harnesses,
   not just fakes (2026-10-11).** Drift is silent: a renamed key still
   seeds, and the launch shows the consent dialog anyway.
@@ -171,32 +136,24 @@ Rulings:
   (no cost, no auth, no panes). Run after harness upgrades; red means re-pin — probe the new
   bundle for the renamed key, fix `harness-trust.ts`, never discover it
   in a live launch.
-- **A prompt is delivered only once the agent moves (2026-11-06).**
-  `agent prompt` returns ok when the text is typed, not when the TUI
-  took the Enter: pi under parallel startup passed herdr's ready gate
-  early and kept the task as an unsent draft (4/4 reproduced). The
-  adapter's `prompt` on an idle agent polls `agent get` for the status
-  leaving idle or `state_change_seq` moving; if neither within 3 s it
-  sends one recovery Enter, then fails loud (`agent_prompt_unsubmitted`).
-  (The removed Goblin-side `herdr` tool's `--wait` path failed with
-  `agent_prompt_stalled` but left the draft; it has no recovery.)
-- **State is rows.** `delegations` rows survive restarts while the
-  herdr unit keeps the panes alive. Three postures carry rulings: a
+- **A prompt is delivered only once the hook reports `working`.** After
+  `terminal.run`, wait up to 30 seconds for the first status. Then send
+  the task and require a new `working` state to prove delivery.
+- **State is rows.** Delegation rows survive Goblin restarts while the
+  private hc core keeps its terminals alive. Three postures carry rulings: a
   failed post-prompt baseline read leaves the row baseline-pending —
   the watcher captures the seq on a later scan, never standing a
   pre-prompt value in (#95, 2026-10-08); a
-  `starting` row at watcher boot means goblin died mid-start — close
-  its workspace, notify, `failed`; a startup-blocked launch parks
-  `needs_input` with the task owed — herdr rejects `agent start` on a
-  blocked agent (`agent_not_ready`) and `agent prompt` on one too
-  (`agent_blocked`) — and the watcher delivers it on the first seq
-  advance past the park, however the dialog was cleared.
+  `starting` row at watcher boot means Goblin died mid-start — kill its
+  terminal, notify, `failed`; a startup-blocked launch parks `needs_input`
+  with the task owed and the watcher delivers it after status advances
+  past the blocked baseline.
 - **Watcher writes are compare-and-set; the notice lands first.** A
   transition applies only if status and prompt time still match what
   the scan read (a `send` or `stop` mid-poll wins) and only after its
   notice landed — an unsubmitted notice leaves the row as-is for the
-  next tick. `stop` marks `stopped` only when the workspace closed,
-  none was bound, or herdr confirms the agent is gone; otherwise the
+  next tick. `stop` marks `stopped` only when the terminal is finished,
+  none was bound, or hc confirms the terminal is gone; otherwise the
   row stays watched. One exception: a row whose target label left
   config stops by verdict, not observation — the operator's explicit
   stop wins over "can't prove dead", and the note says the agent may
@@ -225,7 +182,7 @@ Rulings:
   settles from a fresh local report or parks `needs_input` —
   attribution is unknowable from outside (#119, 2026-10-08).
 - **A `working` report that never progresses gets one notice after 2 h
-  (#489, 2026-11-13).** herdr exposes no output-activity signal, so the
+  (#489, 2026-11-13).** hc exposes no output-activity signal, so the
   watcher tracks each running row's `state_change_seq` in memory — when
   it last moved, seeded from the prompt time when the seq still equals
   its baseline. A `running` row reporting `working` (or `unknown`) with
@@ -244,11 +201,11 @@ Rulings:
   captured-baseline finish) and parks `needs_input` with a send-the-
   answer note.
 - **`answer` preflights the live status — keys only reach a blocked
-  pane (#523, 2026-11-13).** A keypress typed into a working or idle
-  agent lands in its run or draft, not a dialog. `delegate answer`
-  calls `agent get` first and refuses `not blocked` / `agent gone`
-  rather than typing blind; a failed preflight fails the call without
-  a key.
+  terminal (#523, 2026-11-13).** A keypress typed into a working or idle
+  agent lands in its run or draft, not a dialog. `delegate answer` calls
+  `terminal.get` first and refuses `not blocked` / `terminal gone`
+  rather than typing blind; a failed preflight fails the call without a
+  key.
 - **Delegated output is untrusted data, never instructions.** Reports,
   screen tails and launch failure screens ride fenced like program
   events (`<event source="delegation">`, any `</event` neutralized):
@@ -258,10 +215,10 @@ Rulings:
 - **Management is the `delegate` tool.** Done delegations keep their
   workspace so the operator can inspect it; `stop` on a finished one is
   the cleanup.
-- **The Goblin-side `herdr` tool stays removed (operator, 2026-11-18).**
-  "axe herdr tool" removed only the tool for driving the operator's own
-  desk session — `delegate`'s Herdr transport is the restoration, not
-  that tool. Nothing replaces it: the operator's desk is T3 Code.
+- **The Goblin-side `herdr` tool remains removed (operator, 2026-11-18).**
+  It drove the operator's own desk session. Nothing replaces it: the
+  operator's desk is T3 Code. Delegated terminals belong to Goblin's
+  private hc core; this does not restore the removed operator-desk tool.
 
 - **A delegation can count toward what goblin owes (2026-11-06).**
   `delegate start` takes `responsibility:<id>` in a project conversation,

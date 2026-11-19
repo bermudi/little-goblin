@@ -598,7 +598,21 @@ describe("reports and attention", () => {
 
 			rig.resps.report(
 				id,
-				{ state: "blocked", reason: "CI needs a secret", question: "Add DEPLOY_KEY to the repo?" },
+				{
+					state: "blocked",
+					reason: "CI needs a secret",
+					question: "Add DEPLOY_KEY to the repo?",
+				},
+				"goblin",
+			);
+			rig.resps.report(
+				id,
+				{ state: "blocked", reason: "another question", question: "Can I deploy now?" },
+				"goblin",
+			);
+			rig.resps.report(
+				id,
+				{ state: "progress", reason: "checking the build" },
 				"goblin",
 			);
 			const feed = (await (
@@ -607,17 +621,22 @@ describe("reports and attention", () => {
 			expect(feed.items[0]!.stage).toEqual({
 				waitsFor: "operator",
 				stage: "question",
-				reason: "Add DEPLOY_KEY to the repo?",
+				reason: "Add DEPLOY_KEY to the repo? (+1 more open questions)",
+				since: { reportId: 1, createdAt: feed.items[0]!.posts[2]!.report.createdAt },
 			});
 			expect(feed.items[0]!.latestReport?.reporter).toBe("goblin");
 			const items = await attention();
-			expect(items).toHaveLength(1);
+			expect(items).toHaveLength(2);
 			expect(items[0]).toMatchObject({
-				detail: "Add DEPLOY_KEY to the repo?",
 				target: { kind: "conversation", conversationId: conv.id },
 			});
+			expect(items.map((item) => item.detail)).toEqual([
+				"Add DEPLOY_KEY to the repo?",
+				"Can I deploy now?",
+			]);
 
-			// The operator's correction answers it — the item leaves Attention.
+			// A correction makes old questions goblin's move, not an operator
+			// Attention item.
 			const res = await call(`/api/app/responsibilities/${id}/correct`, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
@@ -625,6 +644,27 @@ describe("reports and attention", () => {
 			});
 			expect(res.status).toBe(200);
 			expect(await attention()).toEqual([]);
+			const currentFeed = (await (
+				await call("/api/app/responsibilities")
+			).json()) as AppResponsibilityFeed;
+			const questionIds = currentFeed.items[0]!.posts
+				.filter((post) => post.report.question !== null)
+				.map((post) => post.report.reportId);
+			rig.resps.report(
+				id,
+				{
+					state: "blocked",
+					reason: "blocked after questions were resolved",
+					resolves: questionIds,
+				},
+				"goblin",
+			);
+			const stageItems = await attention();
+			expect(stageItems).toHaveLength(1);
+			expect(stageItems[0]).toMatchObject({
+				id: `responsibility:${id}:4`,
+				detail: "blocked after questions were resolved",
+			});
 		} finally {
 			rig?.programs.close();
 			http.stop();

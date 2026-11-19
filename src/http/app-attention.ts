@@ -1,7 +1,7 @@
 // Read-only attention projection over the durable owners. Items point at
 // the surface that can resolve them; this module records no second state.
 
-import { responsibilityStage } from "../responsibility-stage.ts";
+import { openObligations, responsibilityStage } from "../responsibility-stage.ts";
 import { listProposedSkills } from "../stateview.ts";
 import { conversationName } from "./operator-memory.ts";
 import { changesSummary, programChanges } from "./app-program-diff.ts";
@@ -227,15 +227,36 @@ export async function handleAttentionRoute(
 					target: { kind: "conversation", conversationId: resp.coordinationConversationId },
 				});
 			}
-			const latest = resps.latestReport(resp.responsibilityId);
-			const stage = responsibilityStage(resp, latest, resps.operationsFor(resp.responsibilityId));
-			if (stage.waitsFor !== "operator" || stage.stage === "paused") continue;
+			if (resp.status === "paused") continue;
+			const reports = resps.stageReports(resp.responsibilityId);
+			for (const obligation of openObligations(resp, reports.open)) {
+				if (obligation.kind === "question" && obligation.waitsFor === "operator") {
+					items.push({
+						id: `responsibility-question:${obligation.report.reportId}`,
+						kind: "responsibility",
+						title: `Question — ${resp.outcome}`,
+						detail: obligation.question,
+						createdAt: obligation.report.createdAt,
+						target: {
+							kind: "conversation",
+							conversationId: resp.coordinationConversationId,
+						},
+					});
+				}
+			}
+			const stage = responsibilityStage(resp, reports, resps.operationsFor(resp.responsibilityId));
+			if (
+				stage.waitsFor !== "operator" ||
+				stage.stage === "paused" ||
+				stage.stage === "question"
+			)
+				continue;
 			items.push({
-				id: `responsibility:${resp.responsibilityId}:${latest?.reportId ?? 0}`,
+				id: `responsibility:${resp.responsibilityId}:${stage.since?.reportId ?? 0}`,
 				kind: "responsibility",
 				title: `${STAGE_TITLE[stage.stage] ?? "Needs you"} — ${resp.outcome}`,
 				detail: stage.reason,
-				createdAt: latest?.createdAt ?? resp.updatedAt,
+				createdAt: stage.since?.createdAt ?? resp.updatedAt,
 				target: { kind: "conversation", conversationId: resp.coordinationConversationId },
 			});
 		}

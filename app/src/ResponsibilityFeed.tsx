@@ -72,6 +72,13 @@ function PostCard({ post }: { post: AppFeedPost }) {
 				<span className="resp-post-state">{p.state}</span>
 				{p.purpose !== "status" && <span className="resp-post-purpose">{p.purpose}</span>}
 				<span className="resp-post-review">{REVIEW[post.review]}</span>
+				{post.resolution !== null && (
+					<span>
+						{post.resolution.kind === "resolved"
+							? `resolved #${post.resolution.byReportId}`
+							: post.resolution.kind}
+					</span>
+				)}
 				<span className="resp-rev">
 					{age(p.createdAt)} · rev {p.revision}
 					{post.current ? "" : " · before a correction"}
@@ -288,6 +295,29 @@ function FeedRow({
 					<p className="resp-stage-line">
 						<strong>{WAITS[item.stage.waitsFor]}:</strong> {item.stage.reason}
 					</p>
+					{item.open.length > 0 && (
+						<div className="resp-section">
+							<h4>Open</h4>
+							{item.open.map((obligation) => {
+								const label =
+									obligation.kind === "claim"
+										? "Worker claim — goblin to assess"
+										: obligation.stale
+											? "Question to re-ask (before a correction)"
+											: "Question for you";
+								const text =
+									obligation.kind === "question"
+										? obligation.question
+										: obligation.report.reason;
+								return (
+									<p key={obligation.report.reportId}>
+										<strong>{label}:</strong> {text} · {age(obligation.report.createdAt)} · #
+										{obligation.report.reportId}
+									</p>
+								);
+							})}
+						</div>
+					)}
 					{item.posts.length > 0 && (
 						<div className="resp-section">
 							<h4>Posts</h4>

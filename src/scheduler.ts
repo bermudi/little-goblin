@@ -36,7 +36,7 @@ export interface SchedulerDeps extends WakeDeps {
 	 *  loud skip, never a misrouted fire. */
 	responsibilities?: Pick<
 		ResponsibilityStore,
-		"get" | "attachmentsFor" | "consumeFollowup" | "latestReport" | "operationsFor" | "open"
+		"get" | "attachmentsFor" | "consumeFollowup" | "stageReports" | "operationsFor" | "open"
 	>;
 	recordDevelopment?: ((input: DevelopmentInput) => void) | undefined;
 	/** Rings the operator about work still waiting on them. Absent = no reminders. */
@@ -608,7 +608,7 @@ function fireResponsibility(
 		if (followup.kind === "silence") {
 			const stage = responsibilityStage(
 				resp,
-				resps.latestReport(resp.responsibilityId),
+				resps.stageReports(resp.responsibilityId),
 				resps.operationsFor(resp.responsibilityId),
 			);
 			if (stage.waitsFor === "operator") {

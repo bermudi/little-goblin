@@ -145,16 +145,25 @@ describe("outcome posts", () => {
 		]);
 		expect(item!.events).toHaveLength(2);
 
-		// Goblin's later report reviews the claim; a correction leaves both
-		// on the record but no longer current.
+		// A later goblin report alone does not review a claim.
 		r.resps.report(id, { state: "blocked", reason: "diff touches the ABI" }, "goblin");
+		[item] = feedForProject({ db: r.store.db, resps: r.resps }, r.projectId);
+		expect(item!.posts[1]!.review).toBe("unreviewed");
+		const workerClaimId = item!.posts[1]!.report.reportId;
+		r.resps.report(id, {
+			state: "progress",
+			reason: "assessed the worker result",
+			resolves: [workerClaimId],
+		}, "goblin");
 		r.resps.revise(id, { ...understanding(), nextAction: "keep the ABI" });
 		[item] = feedForProject({ db: r.store.db, resps: r.resps }, r.projectId);
 		expect(item!.posts.map((p) => [p.review, p.current])).toEqual([
 			["assessed", false],
+			["assessed", false],
 			["reviewed", false],
 			["assessed", false],
 		]);
+		expect(item!.posts[2]!.resolution).toMatchObject({ kind: "resolved", byReportId: expect.any(Number) });
 	});
 
 	test("a report counts as activity, so a post never sits under 'no activity'", () => {

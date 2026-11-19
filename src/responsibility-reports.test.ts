@@ -122,7 +122,7 @@ describe("responsibility reports", () => {
 			state: "blocked",
 			reason: "stored status was waiting_for_operator",
 		});
-		expect(responsibilityStage(resp, latest, [])).toMatchObject({
+		expect(responsibilityStage(resp, reopened.stageReports(r.id), [])).toMatchObject({
 			waitsFor: "operator",
 			stage: "blocked",
 		});
@@ -155,5 +155,101 @@ describe("responsibility reports", () => {
 		r.store.db.run("ALTER TABLE responsibility_reports DROP COLUMN purpose");
 		const reopened = openResponsibilities(r.store.db);
 		expect(reopened.latestReport(r.id)).toMatchObject({ purpose: "status", artifacts: [] });
+	});
+
+	test("T10: first open backfills old data once and leaves only the old latest obligation open", () => {
+		const r = rig();
+		const second = r.resps.create({
+			projectId: r.resps.get(r.id)!.projectId,
+			coordinationConversationId: r.resps.get(r.id)!.coordinationConversationId,
+			handoverKey: "migration-worker",
+			understanding: r.resps.get(r.id)!.understanding,
+		}).responsibility;
+		const completed = r.resps.create({
+			projectId: r.resps.get(r.id)!.projectId,
+			coordinationConversationId: r.resps.get(r.id)!.coordinationConversationId,
+			handoverKey: "migration-completed",
+			understanding: r.resps.get(r.id)!.understanding,
+		}).responsibility;
+		const legacyBlocked = r.resps.create({
+			projectId: r.resps.get(r.id)!.projectId,
+			coordinationConversationId: r.resps.get(r.id)!.coordinationConversationId,
+			handoverKey: "migration-legacy-blocked",
+			understanding: r.resps.get(r.id)!.understanding,
+		}).responsibility;
+		const oldQuestion = r.resps.report(r.id, {
+			state: "blocked", reason: "needs answer", question: "Which one?",
+		}, "goblin");
+		if ("refused" in oldQuestion) throw new Error("question refused");
+		r.resps.report(r.id, { state: "progress", reason: "newer progress" }, "goblin");
+		r.resps.report(second.responsibilityId, { state: "ready", reason: "worker claim" }, "worker");
+		r.resps.report(completed.responsibilityId, {
+			state: "blocked", reason: "closed question", question: "Still needed?",
+		}, "goblin");
+		r.resps.setStatus(completed.responsibilityId, "completed");
+		const legacyQuestion = r.resps.report(legacyBlocked.responsibilityId, {
+			state: "blocked",
+			reason: "legacy blocked report",
+			question: "Keep this question?",
+		}, "goblin");
+		if ("refused" in legacyQuestion) throw new Error("legacy question refused");
+		r.store.db.run(
+			"UPDATE responsibilities SET status = 'blocked' WHERE responsibility_id = ?",
+			[legacyBlocked.responsibilityId],
+		);
+
+		// Simulate the old database: seed the reports/responsibilities first,
+		// then remove the new table before the first open under this schema.
+		r.store.db.run("DROP TABLE responsibility_resolutions");
+		const reopened = openResponsibilities(r.store.db);
+		expect(reopened.stageReports(r.id).open).toEqual([]);
+		expect(reopened.stageReports(second.responsibilityId).open.map((row) => row.reason))
+			.toEqual(["worker claim"]);
+		expect(reopened.stageReports(completed.responsibilityId).open).toEqual([]);
+		expect(reopened.stageReports(legacyBlocked.responsibilityId).open.map((row) => row.reportId))
+			.toEqual([legacyQuestion.report.reportId]);
+		const resolution = r.store.db.query<{ kind: string; created_at: string }, [number]>(
+			"SELECT kind, created_at FROM responsibility_resolutions WHERE report_id=?",
+		).get(oldQuestion.report.reportId);
+		expect(resolution).toMatchObject({ kind: "migrated" });
+		expect(Date.parse(resolution!.created_at)).toBeGreaterThanOrEqual(
+			Date.parse(oldQuestion.report.createdAt),
+		);
+		expect(responsibilityStage(reopened.get(r.id)!, reopened.stageReports(r.id), []))
+			.toMatchObject({ stage: "working", reason: "newer progress" });
+		expect(
+			responsibilityStage(
+				reopened.get(second.responsibilityId)!,
+				reopened.stageReports(second.responsibilityId),
+				[],
+			),
+		)
+			.toMatchObject({ stage: "assess", reason: "worker claim" });
+		expect(
+			responsibilityStage(
+				reopened.get(completed.responsibilityId)!,
+				reopened.stageReports(completed.responsibilityId),
+				[],
+			),
+		)
+			.toMatchObject({ stage: "closed" });
+		expect(
+			responsibilityStage(
+				reopened.get(legacyBlocked.responsibilityId)!,
+				reopened.stageReports(legacyBlocked.responsibilityId),
+				[],
+			),
+		)
+			.toMatchObject({ stage: "question", reason: "Keep this question?" });
+		const countBefore = r.store.db.query<{ count: number }, []>(
+			"SELECT COUNT(*) AS count FROM responsibility_resolutions",
+		).get()!.count;
+		openResponsibilities(r.store.db);
+		const countAfter = r.store.db.query<{ count: number }, []>(
+			"SELECT COUNT(*) AS count FROM responsibility_resolutions",
+		).get()!.count;
+		expect(countAfter).toBe(countBefore);
+		expect(reopened.stageReports(second.responsibilityId).open).toHaveLength(1);
+		r.store.close();
 	});
 });

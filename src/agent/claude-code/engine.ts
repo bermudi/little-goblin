@@ -27,13 +27,12 @@
 // the contract; red drift check means re-pin.
 
 import { randomUUID } from "node:crypto";
-import type { LanguageModelV4Usage } from "@ai-sdk/provider";
-import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import type {
 	AssistantContent,
-	ModelMessage,
+	PromptMessage,
 	ToolContent,
-} from "ai";
+	ToolResultOutput,
+} from "../../prompt-message.ts";
 import type {
 	FinishReason,
 	Message,
@@ -120,7 +119,7 @@ export interface ClaudeRunDeps<M extends WireMember> extends Omit<StreamDeps<M>,
 	claudeSession?:
 		| {
 				resume?: { sessionId: string; headUuid: string } | undefined;
-				fullPrompt?: (() => Promise<ModelMessage[]>) | undefined;
+				fullPrompt?: (() => Promise<PromptMessage[]>) | undefined;
 				onDrop?: (() => void) | undefined;
 		  }
 		| undefined;
@@ -258,20 +257,22 @@ export function cacheTtlMs(usage: ClaudeUsage | null): number | null {
 	return null;
 }
 
-function v4Usage(usage: ClaudeUsage | null): LanguageModelV4Usage | undefined {
+function goblinUsage(usage: ClaudeUsage | null): Usage | undefined {
 	if (usage === null) return undefined;
+	const inputTokens = billedInput(usage);
 	return {
-		inputTokens: {
-			total: billedInput(usage) ?? undefined,
-			noCache: usage.input_tokens ?? undefined,
-			cacheRead: usage.cache_read_input_tokens ?? undefined,
-			cacheWrite: usage.cache_creation_input_tokens ?? undefined,
+		inputTokens: inputTokens ?? undefined,
+		inputTokenDetails: {
+			noCacheTokens: usage.input_tokens ?? undefined,
+			cacheReadTokens: usage.cache_read_input_tokens ?? undefined,
+			cacheWriteTokens: usage.cache_creation_input_tokens ?? undefined,
 		},
-		outputTokens: {
-			total: usage.output_tokens ?? undefined,
-			text: undefined,
-			reasoning: undefined,
-		},
+		outputTokens: usage.output_tokens ?? undefined,
+		outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+		totalTokens:
+			inputTokens !== null && usage.output_tokens !== null
+				? inputTokens + usage.output_tokens
+				: undefined,
 	};
 }
 
@@ -311,7 +312,7 @@ function bareToolName(name: string): string {
 interface RunState {
 	// wire + journal reconstruction
 	parts: Message["parts"];
-	partialMessages: ModelMessage[];
+	partialMessages: PromptMessage[];
 	// ledger
 	events: ToolEventState;
 	sawText: boolean;
@@ -397,7 +398,7 @@ export async function driveClaude<M extends WireMember>(
 	// Recomputed per attempt — the resume-failure retry sends the full
 	// prompt, not the seq delta deps.messages carries.
 	const toolDefs = serializeToolDefs(deps.tools);
-	const hashesFor = (messages: ModelMessage[]) => {
+	const hashesFor = (messages: PromptMessage[]) => {
 		const prompt = serializePrompt(messages);
 		return callHashes(
 			[
@@ -511,7 +512,7 @@ export async function driveClaude<M extends WireMember>(
 		}
 		if (callId !== null) {
 			const finished = callId;
-			obs?.finish(v4Usage(usage), cacheTtl);
+			obs?.finish(goblinUsage(usage), cacheTtl);
 			log.info("model call usage", {
 				...baseFields,
 				callId: finished,
@@ -763,7 +764,7 @@ export async function driveClaude<M extends WireMember>(
 	// --- steers: the open query input and the shared fold ---
 	const steers = openSteerLedger(deps);
 	const sdkTools = toToolSet(deps.tools);
-	const steeredMessages: ModelMessage[] = [];
+	const steeredMessages: PromptMessage[] = [];
 	// Pushed to the CLI, not yet acked by a `folded` event.
 	const unacked = new Set<string>();
 	let channel: SteerChannel | null = null;
@@ -1144,7 +1145,7 @@ export async function driveClaude<M extends WireMember>(
 }
 
 // One content block of a completed assistant message → wire chunks,
-// ledger entries, head notifications, and the reconstructed ModelMessage
+// ledger entries, head notifications, and the reconstructed PromptMessage
 // part. Streaming already covered text/thinking deltas; this is the
 // canonical complete form (and the only form when the CLI does not
 // stream partials for a block).

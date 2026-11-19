@@ -28,7 +28,7 @@ export interface WindowCapture {
 	v: 1;
 	system: string;
 	tools: WindowTool[];
-	// ModelMessage[] as sent, media bytes stubbed — unknown here so the
+	// PromptMessage[] as sent, media bytes stubbed — unknown here so the
 	// wire can carry it without importing server prompt types.
 	messages: unknown[];
 	// Serialized characters per segment (turn/itemize.ts keys).

@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import type { ModelMessage } from "ai";
+import type { PromptMessage } from "../prompt-message.ts";
 import type { Message } from "../message.ts";
 import { estimateHistoryChars, MEDIA_ESTIMATE_CHARS } from "./itemize.ts";
 import { buildModelView, type ViewContext } from "./view.ts";
 
 describe("media cost in pre-emption estimate", () => {
 	test("a large inlined image costs a fixed amount, not its base64 length", () => {
-		const messages: ModelMessage[] = [
+		const messages: PromptMessage[] = [
 			{
 				role: "user",
 				content: [{ type: "image", image: "A".repeat(400_000), mediaType: "image/jpeg" }],

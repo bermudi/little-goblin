@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ModelMessage } from "ai";
+import type { PromptMessage } from "../prompt-message.ts";
 import type { Message } from "../message.ts";
 import { setLogFile } from "../log.ts";
 import { SKILL_PART, skillPartDataSchema } from "../skill-part.ts";
@@ -31,7 +31,7 @@ const skillMsg = (id: string, data: unknown, text = "do it"): Message =>
 		],
 	}) as unknown as Message;
 
-const texts = (view: ModelMessage[]): string[] =>
+const texts = (view: PromptMessage[]): string[] =>
 	view.flatMap((m) =>
 		typeof m.content === "string"
 			? [m.content]

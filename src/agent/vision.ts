@@ -10,7 +10,8 @@
 // Mechanism ported from pi's vision extension
 // (agent-extensions/pi-packages/bermudis-pi-goodies/vision-core.ts).
 
-import { type LanguageModel, type ModelMessage, streamText } from "ai";
+import { type LanguageModel, streamText } from "ai";
+import type { PromptMessage } from "../prompt-message.ts";
 import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import type { ConfigRef } from "../config.ts";
@@ -170,8 +171,8 @@ export function buildVisionMessages(
 	prompt: string,
 	image: { bytes: Buffer; mediaType: string },
 	history: VisionTurn[] = [],
-): ModelMessage[] {
-	const past: ModelMessage[] = history.flatMap((turn) => [
+): PromptMessage[] {
+	const past: PromptMessage[] = history.flatMap((turn) => [
 		{ role: "user" as const, content: turn.question },
 		{ role: "assistant" as const, content: turn.answer },
 	]);

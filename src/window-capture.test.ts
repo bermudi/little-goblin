@@ -311,8 +311,15 @@ describe("listCalls", () => {
 
 	function usageOf(input: number, cacheRead: number, output: number) {
 		return {
-			inputTokens: { total: input, noCache: undefined, cacheRead, cacheWrite: undefined },
-			outputTokens: { total: output, text: undefined, reasoning: undefined },
+			inputTokens: input,
+			inputTokenDetails: {
+				noCacheTokens: undefined,
+				cacheReadTokens: cacheRead,
+				cacheWriteTokens: undefined,
+			},
+			outputTokens: output,
+			outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+			totalTokens: input + output,
 		} as const;
 	}
 });

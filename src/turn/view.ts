@@ -1,4 +1,5 @@
-import { convertToModelMessages, type ModelMessage, type ToolSet } from "ai";
+import { convertToModelMessages, type ToolSet } from "ai";
+import type { PromptMessage } from "../prompt-message.ts";
 import { toToolSet } from "./ai-sdk-tools.ts";
 import type { Tools } from "../tool.ts";
 import type { Message } from "../message.ts";
@@ -220,7 +221,7 @@ export async function buildModelView(
 		ownedSeqs?: readonly number[] | ReadonlySet<number>;
 		assertAuthority(): void;
 	},
-): Promise<ModelMessage[]> {
+): Promise<PromptMessage[]> {
 	const sdkTools = ctx.sdkTools ?? toToolSet(ctx.tools);
 	const view = withMemoryBlocks(
 		options.entries,
@@ -246,7 +247,7 @@ export async function buildModelView(
 	// (identifiable by reference) or an inserted block.
 	const seqByMessage = new Map(options.entries.map((e) => [e.message, e.seq]));
 	const seqByIndex = view.map((m) => seqByMessage.get(m) ?? null);
-	const messages: ModelMessage[] = [];
+	const messages: PromptMessage[] = [];
 	const partialId = options.partial?.id ?? null;
 	let foreignReasoningMessages = 0;
 	let foreignReasoningParts = 0;
@@ -328,8 +329,8 @@ export async function buildModelView(
 	return merged;
 }
 
-function dropProviderExecuted(ctx: ViewContext, messages: ModelMessage[]): ModelMessage[] {
-	const out: ModelMessage[] = [];
+function dropProviderExecuted(ctx: ViewContext, messages: PromptMessage[]): PromptMessage[] {
+	const out: PromptMessage[] = [];
 	let dropped = 0;
 	for (const m of messages) {
 		if (m.role !== "assistant" || !Array.isArray(m.content)) {
@@ -369,8 +370,8 @@ function dropProviderExecuted(ctx: ViewContext, messages: ModelMessage[]): Model
 // invocation, immediately after the invoking message's own content.
 // A null body (refused or unreadable) contributes nothing — the marker
 // in the invoking message stands alone.
-function injectedBodies(ctx: ViewContext, invocations: SkillInvocation[]): ModelMessage[] {
-	const bodies: ModelMessage[] = [];
+function injectedBodies(ctx: ViewContext, invocations: SkillInvocation[]): PromptMessage[] {
+	const bodies: PromptMessage[] = [];
 	for (const inv of invocations) {
 		if (inv.body === null) continue;
 		log.info("skill invoked", {
@@ -388,14 +389,14 @@ export async function convertSteeredMessage(
 	ctx: ViewContext,
 	message: Message,
 	sdkTools: ToolSet = ctx.sdkTools ?? toToolSet(ctx.tools),
-): Promise<ModelMessage[]> {
+): Promise<PromptMessage[]> {
 	const materialized = await materializeAttachments(
 		[message],
 		ctx.modalities,
 		INLINE_ITEM_MAX_BYTES,
 		ctx.carries,
 	);
-	const out: ModelMessage[] = [];
+	const out: PromptMessage[] = [];
 	for (const m of materialized) {
 		const { message: skillMarked, invocations } = skillPartsAsText(ctx, m, true);
 		out.push(
@@ -414,8 +415,8 @@ export async function convertSteeredMessage(
 	return out;
 }
 
-function mergeConsecutiveUserModels(messages: ModelMessage[]): ModelMessage[] {
-	const out: ModelMessage[] = [];
+function mergeConsecutiveUserModels(messages: PromptMessage[]): PromptMessage[] {
+	const out: PromptMessage[] = [];
 	for (const m of messages) {
 		const prev = out[out.length - 1];
 		if (m.role === "user" && prev?.role === "user") {

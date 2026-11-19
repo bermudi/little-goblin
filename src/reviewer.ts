@@ -25,9 +25,7 @@
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { generateText, isStepCount, type LanguageModel } from "ai";
-import { toToolSet } from "./turn/ai-sdk-tools.ts";
-import type { ProviderOptions } from "@ai-sdk/provider-utils";
+import { generate, type Model, type ModelCall } from "./agent/generate.ts";
 import { loadCatalog } from "./agent/skills.ts";
 import type { ConversationStore } from "./conversation.ts";
 import {
@@ -70,15 +68,9 @@ export interface ReviewerDeps {
 	// for the model-call wrapper.
 	reviewModel(conversationId: string): Promise<{
 		ref: string;
-		model: LanguageModel;
-		// Provider retry rule for the review call — 0 on 1min, absent
-		// keeps the SDK default.
-		maxRetries?: number;
-		// Wire options the review call must carry for its provider — the
-		// 1min review route, where tools demand reasoning_effort on the
-		// GPT-5.6/6-Sol/6-Luna ids. Absent sends none (today's behavior
-		// on every other route).
-		providerOptions?: ProviderOptions;
+		model: Model;
+		maxRetries?: ModelCall["maxRetries"];
+		providerOptions?: ModelCall["providerOptions"];
 	}>;
 	store: Pick<ConversationStore, "append">;
 	skillsDir: string;
@@ -509,16 +501,11 @@ async function runStagedReview(
 			`- ${e.name} — ${e.description}${drafts.skills.has(e.name) ? " (pending draft, not installed — edit it in place)" : ""}`,
 	);
 	let ref: string;
-	let model: LanguageModel;
-	let reviewMaxRetries: number | undefined;
-	let reviewProviderOptions: ProviderOptions | undefined;
+	let model: Model;
+	let maxRetries: ModelCall["maxRetries"];
+	let providerOptions: ModelCall["providerOptions"];
 	try {
-		({
-			ref,
-			model,
-			maxRetries: reviewMaxRetries,
-			providerOptions: reviewProviderOptions,
-		} = await deps.reviewModel(conv));
+		({ ref, model, maxRetries, providerOptions } = await deps.reviewModel(conv));
 	} catch (err) {
 		// Model resolve/auth failure gets the same containment as a
 		// model-call failure: a line carrying the review id, staging
@@ -549,17 +536,19 @@ async function runStagedReview(
 	// propose — concurrent edits in the LIVE tree are not its business.
 	const written = new Set<string>();
 	try {
-		let result: Awaited<ReturnType<typeof generateText>>;
+		let result: Awaited<ReturnType<typeof generate>>;
 		try {
-			result = await generateText({
-				model,
+			result = await generate({
+				call: {
+					model,
+					...(maxRetries !== undefined ? { maxRetries } : {}),
+					...(providerOptions !== undefined ? { providerOptions } : {}),
+				},
 				instructions: REVIEW_SYSTEM,
 				prompt: reviewPrompt(turn, prior, catalogLines),
-				tools: toToolSet(reviewTools(stagedSkills, written)),
-				stopWhen: isStepCount(REVIEW_MAX_STEPS),
-				...(reviewMaxRetries !== undefined ? { maxRetries: reviewMaxRetries } : {}),
-				...(reviewProviderOptions !== undefined ? { providerOptions: reviewProviderOptions } : {}),
-				abortSignal: controller.signal,
+				tools: reviewTools(stagedSkills, written),
+				maxSteps: REVIEW_MAX_STEPS,
+				signal: controller.signal,
 			});
 		} catch (err) {
 			// Provider failure, the 5-minute abort, or a /stop abort:
@@ -585,11 +574,11 @@ async function runStagedReview(
 			model: ref,
 			usage: {
 				input: result.usage.inputTokens ?? null,
-				cacheRead: result.usage.inputTokenDetails?.cacheReadTokens ?? null,
-				cacheWrite: result.usage.inputTokenDetails?.cacheWriteTokens ?? null,
+				cacheRead: result.usage.inputTokenDetails.cacheReadTokens ?? null,
+				cacheWrite: result.usage.inputTokenDetails.cacheWriteTokens ?? null,
 				output: result.usage.outputTokens ?? null,
 			},
-			steps: result.steps.length,
+			steps: result.steps,
 		});
 		const { changed, bytes } = changedPaths(stagedSkills, manifest, written);
 		// A /stop can land while validation or proposing would run —

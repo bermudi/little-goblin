@@ -1,7 +1,7 @@
 import { createProviderDefinedToolFactory } from "@ai-sdk/provider-utils";
 import { asSchema, jsonSchema, tool, type ToolSet } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
-import type { ToolResultOutput } from "@ai-sdk/provider-utils";
+import type { ToolResultOutput } from "../prompt-message.ts";
 import { z } from "zod";
 import { isHosted, type Tool, type ToolOutput, type Tools } from "../tool.ts";
 

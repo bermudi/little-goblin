@@ -6,6 +6,7 @@
 import type { LanguageModelV4StreamPart, LanguageModelV4StreamResult } from "@ai-sdk/provider";
 import { wrapLanguageModel, type LanguageModel } from "ai";
 import { log } from "../log.ts";
+import { fromV4Usage } from "./v4-usage.ts";
 import {
 	isContentFilter,
 	isTransientTurnFailure,
@@ -72,7 +73,10 @@ export function filterErrorStream(model: LanguageModel, conversation: string): L
 										const error =
 											value.type === "error"
 												? value.error
-												: new ProviderContentFilterError(value.finishReason, value.usage);
+												: new ProviderContentFilterError(
+														value.finishReason,
+														fromV4Usage(value.usage),
+													);
 										try {
 											await reader.cancel(error);
 										} catch (cleanupError) {

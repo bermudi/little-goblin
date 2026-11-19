@@ -224,7 +224,7 @@ settlement files, and the check every send passes.
   1. **status**: the responsibility exists and is `active`. Paused and
      closed responsibilities take no sends ("stopping work means pausing
      or closing the responsibility" — design/programs.md → Queued
-     authority). `workerSendRefusal` in `src/responsibility-authority.ts`
+     authority). `workerSendRefusal` (`src/responsibility-types.ts`)
      is the one predicate; managed sends use it through `checkSendable`.
   2. **project**: the send comes from a conversation in the
      responsibility's project. A linked worker takes no sends from the

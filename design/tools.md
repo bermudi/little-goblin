@@ -73,7 +73,7 @@ only, AGENTS.md → Tests):
 |---|---|---|
 | openrouter | yes | Live probe: `minimax/minimax-m3.1-flash` — the post-tool request carried `image_url` `data:image/png;base64,…` inside the tool message and the model named the probe PNG's quadrant colors |
 | claude-code | yes — gif/jpeg/png/webp | Live probe: `claude-haiku-5-5` through the MCP bridge — `callToolResult` emits an MCP `image` block and the model named the quadrant colors; PDFs have no MCP image form and stay text |
-| codex | no | Live probe: `gpt-6-luna` — the post-tool request held zero image-bearing spots; the model saw only the text part |
+| codex | yes — images and PDFs | Since #731 codex runs the stock Responses model, which maps file parts to `input_image`/`input_file` inside `function_call_output`. Live probe 2026-11-19 plus `src/agent/codex/model.live.test.ts` (L2): `gpt-6-luna` received `[input_text, input_image]` in the tool output and named the probe PNG's quadrant colors. (Before #731 the hand-written adapter sent text only.) |
 | openai-compatible | no | Tool-result content is stringified before it reaches the wire (converter-level; no sanctioned model exists on this kind) |
 | responses | converter says yes | File parts map to `input_image`/`input_file` inside `function_call_output` — the document exception below; no sanctioned model on this kind, so nothing mounts on converter evidence alone |
 

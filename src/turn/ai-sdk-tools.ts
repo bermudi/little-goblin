@@ -1,3 +1,4 @@
+import { openai } from "@ai-sdk/openai";
 import { createProviderDefinedToolFactory } from "@ai-sdk/provider-utils";
 import { asSchema, jsonSchema, tool, type ToolSet } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
@@ -105,14 +106,6 @@ export class ToolExecuteError extends Error {
 	}
 }
 
-export const codexWebSearch = createProviderDefinedToolFactory<
-	Record<string, unknown>,
-	{ externalWebAccess: boolean }
->({
-	id: "codex.web_search",
-	inputSchema: z.looseObject({}),
-});
-
 // Goblin's content output → the SDK's ToolResultOutput content shape:
 // text passes through, an image becomes a file part whose data payload
 // is the raw bytes. Providers that cannot carry media in a tool result
@@ -172,7 +165,7 @@ export function toToolSet(tools: Tools): ToolSet {
 	const out: ToolSet = {};
 	for (const [name, definition] of Object.entries(tools)) {
 		out[name] = isHosted(definition)
-			? codexWebSearch(definition.args)
+			? openai.tools.webSearch({ externalWebAccess: definition.args.externalWebAccess })
 			: toSdkTool(definition);
 	}
 	return out;

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { defineTool } from "../tool.ts";
-import { ToolExecuteError, toToolSet } from "./ai-sdk-tools.ts";
+import { persistableToolSet, restoreToolSet, ToolExecuteError, toToolSet } from "./ai-sdk-tools.ts";
 
 describe("toToolSet", () => {
 	test("preserves function tool names, descriptions, order, and execution context", async () => {
@@ -87,7 +87,7 @@ describe("toToolSet", () => {
 		).toEqual({ type: "json", value: { a: 1 } });
 	});
 
-	test("maps hosted codex search to the provider-defined tool", () => {
+	test("maps hosted codex search to the stock OpenAI web search tool", () => {
 		const tools = toToolSet({
 			web_search: {
 				hosted: "codex.web_search",
@@ -96,8 +96,20 @@ describe("toToolSet", () => {
 		});
 		expect(tools.web_search).toMatchObject({
 			type: "provider",
-			id: "codex.web_search",
+			id: "openai.web_search",
 			args: { externalWebAccess: true },
+		});
+	});
+
+	test("hosted search survives the persisted tool-set round trip", async () => {
+		const persisted = await persistableToolSet({
+			web_search: { hosted: "codex.web_search", args: { externalWebAccess: false } },
+		});
+		if ("unpersistable" in persisted) throw new Error("hosted search was unpersistable");
+		expect(restoreToolSet(JSON.parse(persisted.json)).web_search).toMatchObject({
+			type: "provider",
+			id: "openai.web_search",
+			args: { externalWebAccess: false },
 		});
 	});
 });

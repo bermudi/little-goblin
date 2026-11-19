@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { quotaFromEvent, quotaFromHeaders, quotaFromMetadata } from "./receipts.ts";
+import { quotaFromHeaders, quotaFromMetadata } from "./receipts.ts";
 
 const heads = (h: Record<string, string>) => new Headers(h);
 
@@ -32,27 +32,6 @@ describe("quotaFromHeaders", () => {
 			primary: null,
 			secondary: { usedPercent: 3, windowMinutes: null, resetsAt: null },
 		});
-	});
-});
-
-describe("quotaFromEvent", () => {
-	test("parses the wire shape; malformed events are not receipts", () => {
-		expect(
-			quotaFromEvent({
-				type: "codex.rate_limits",
-				rate_limits: {
-					primary: { used_percent: 50, window_minutes: 300 },
-					secondary: { used_percent: 1 },
-				},
-				limit_name: "x",
-			}),
-		).toEqual({
-			limitName: "x",
-			primary: { usedPercent: 50, windowMinutes: 300, resetsAt: null },
-			secondary: { usedPercent: 1, windowMinutes: null, resetsAt: null },
-		});
-		expect(quotaFromEvent({ type: "codex.rate_limits" })).toBeNull();
-		expect(quotaFromEvent({ type: "other" })).toBeNull();
 	});
 });
 

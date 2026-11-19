@@ -36,13 +36,13 @@ async function replayModel(name: string, substitute?: Record<string, string>) {
 	if (RECORD) {
 		// Dynamic only: the codex modules (and their auth file) must
 		// never load on a replay run — CI has no credentials.
-		const { CodexLanguageModel } = await import("../codex/model.ts");
+		const { codexModel } = await import("../codex/model.ts");
 		const { resolveCodexAuthFile } = await import("../codex/auth.ts");
 		return recordedModel({
 			path,
 			rerecord: RERECORD,
 			...(substitute === undefined ? {} : { substitute }),
-			record: new CodexLanguageModel("gpt-6-luna", resolveCodexAuthFile(undefined).path),
+			record: codexModel("gpt-6-luna", resolveCodexAuthFile(undefined).path, fetch, {}),
 		});
 	}
 	return recordedModel({

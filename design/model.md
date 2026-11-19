@@ -9,7 +9,12 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   older glm-* ids to them (Thinking). Logfare's docs note requests may be
   PII-scrubbed and logged for eval. The Codex CLI-wrapper can't drive our
   loop (no caller tools); our adapter must write the CLI's rotated refresh
-  tokens back, or it invalidates the CLI's own login.
+  tokens back, or it invalidates the CLI's own login. The codex backend
+  (`chatgpt.com/backend-api/codex/responses`) rejects non-streaming
+  requests — HTTP 400 `{"detail":"Stream must be set to true"}` — and
+  sends rate-limit data only as `x-codex-*` response headers; no
+  `codex.rate_limits` SSE event arrives over HTTP (live probe
+  2026-11-19, stock `@ai-sdk/openai` 4.0.118).
 - **1min.AI relay (2026-10-22).** The `openai-compatible` kind serves
   `https://api.1min.ai/openai/v1`; its pipe truths are pinned in
   `src/agent/onemin.ts` from the operator-supplied docs
@@ -153,21 +158,43 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   window capture is not wire proof; what the SDK emits is the contract.
   Reasoning parts without encrypted content may be omitted by the SDK when
   store is false — prose must remain, cipherless reasoning may not.
+- **Codex = stock Responses model + codex edge (#731).** `codexModel`
+  is `@ai-sdk/openai`'s `.responses()` model on base URL
+  `chatgpt.com/backend-api/codex`, wrapped by two small pieces in
+  `src/agent/codex/model.ts`. A fetch wrapper resolves the auth file
+  per request and sets the bearer, `chatgpt-account-id`, `OpenAI-Beta:
+  responses=experimental`, `originator: codex_cli_rs`, the session
+  headers and `x-openai-subagent`, and echoes `x-codex-turn-state`. One
+  middleware lifts system messages into `instructions` and sets the
+  call defaults (`store:false`, `include: reasoning.encrypted_content`,
+  `promptCacheKey`, effort from `providerOptions.codex.reasoningEffort`
+  with `reasoningSummary: auto`). Because the backend is stream-only,
+  `wrapGenerate` runs `doStream` and collects it. The stock model owns
+  prompt conversion, SSE parsing, tool serialization (tool-result
+  images become `input_image` inside `function_call_output`) and
+  hosted search (`openai.tools.webSearch`).
 - **Codex reasoning persistence.** Codex sends `store:false`, so reasoning
-  continuation is our problem: the adapter stamps each response item's
-  replay state into `providerMetadata.codex` — `itemId` + `replayScope` on
-  every replayable item, `reasoningEncryptedContent` on reasoning,
-  `phase` on message items — and `convertPrompt` rebuilds the wire items
-  (`reasoning` at its own position, `id`/`phase` on messages and function
-  calls) only when the scope proves the same model+account
-  (`sha256([modelId, account_id ?? authFile])`). Anything else drops the
-  metadata with a warning: foreign or malformed namespaces, scope
-  mismatches, cipherless reasoning — a bare summary is never substituted
-  for encrypted state, and the opaque values never enter logs, summaries,
-  or instructions. The `doGenerate` path collects content in streaming
-  order (interleaved reasoning/text/calls, metadata from start and end
-  parts), and an empty-summary reasoning item still emits a part — the
-  cipher is the payload, the summary is optional evidence. Resume
+  continuation is our problem. The stock model reads and writes replay
+  state under the `openai` namespace; goblin stores it under
+  `providerMetadata.codex` — `itemId` + `replayScope` on every part
+  with an item id, `reasoningEncryptedContent` on reasoning, `phase` on
+  message items. The middleware maps the namespaces: on output it
+  renames `openai` → `codex` and stamps `replayScope`; on input it
+  moves a part's `codex` state back to `openai` only when the scope
+  proves the same model+account (`sha256([modelId, account_id ??
+  authFile])`). Anything else drops with one `codex replay state
+  dropped` warning: malformed or out-of-scope `codex` state, any
+  `openai` state another provider left on a part, and reasoning with
+  no in-scope cipher (a part whose sibling of the same item carries
+  the cipher still replays — the stock converter merges them by item
+  id). Hosted-search items replay whatever the scope: they carry no
+  cipher, and the backend accepted a cross-model replay (live L5,
+  2026-11-19). A bare summary is never substituted for encrypted state, and the
+  opaque values never enter logs, summaries, or instructions. The
+  generate path collects content in streaming order (interleaved
+  reasoning/text/calls, metadata from start and end parts), and an
+  empty-summary reasoning item still emits a part — the cipher is the
+  payload, the summary is optional evidence. Resume
   ordering follows the same rule the checkpoint walked: step-ordered
   text/reasoning with their providerOptions, journal-backed tool parts at
   their own positions, `step-start` boundaries so each step's tool
@@ -193,9 +220,9 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   request the instance makes) — one instance is one turn attempt, so
   it never crosses turns. Compaction's text-mode summarizer marks itself
   `x-openai-subagent: compact`; prefix mode sends the turn's own headers
-  ([compaction](compaction.md) → Cache reuse). Rate-limit receipts land on the finish
-  part's `providerMetadata.codex` (the `codex.rate_limits` SSE event
-  overrides the header snapshot) and the `response-metadata` part; the
+  ([compaction](compaction.md) → Cache reuse). Rate-limit receipts are
+  read from the `x-codex-*` response headers only (no SSE event exists
+  over HTTP) and land on the finish part's `providerMetadata.codex.quota`; the
   turn keeps the newest non-null quota into `TurnMetadata` and the
   live `data-context` part, and the gauge's popover shows 5h/weekly
   windows only when issued. Logs carry percentages and booleans —
@@ -415,10 +442,9 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
     transient throws the SDK will not flag, `APICallError` excluded so
     flagged errors keep the SDK's own ladder and nothing compounds.
     Only the single vendor call retries — completed steps and tools
-    are untouched. The raw-throw gap is the codex lane (its own fetch,
-    no provider-utils normalization); SDK-native providers normalize a
-    failed fetch into an `isRetryable` `APICallError` the SDK ladder
-    already retried.
+    are untouched. SDK-native providers — codex included, since it
+    runs the stock Responses model — normalize a failed fetch into an
+    `isRetryable` `APICallError` the SDK ladder already retried.
   Both bounds are per step; exhaustion falls to today's failure rails
   (turn error, transient stamp, failed-turn progress). Mid-loop model
   fallback still never advances (zero effect only) — the walk sees a

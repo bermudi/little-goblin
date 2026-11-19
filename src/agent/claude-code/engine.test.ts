@@ -480,7 +480,8 @@ describe("driveClaude — steers fold mid-turn (#582)", () => {
 
 	test("a CLI that never acks cannot hold the turn open", async () => {
 		const steer = steerMember();
-		const { outcome } = await run(
+		const requeued: RecMember[][] = [];
+		const { outcome, members, rec } = await run(
 			toolThen([
 				{ kind: "text", text: "one" },
 				{ kind: "result" },
@@ -490,13 +491,69 @@ describe("driveClaude — steers fold mid-turn (#582)", () => {
 				{ kind: "result" },
 				{ kind: "text", text: "never read" },
 			]),
-			{ tools: echoTools(), claimSteers: claimOnce(steer) },
+			{
+				tools: echoTools(),
+				claimSteers: claimOnce(steer),
+				unrequeueSteers: (s) => requeued.push(s),
+			},
 		);
 		if (outcome.kind !== "ok") throw new Error(`expected ok, got ${outcome.kind}`);
 		const texts = outcome.responseMessage?.parts
 			.filter((p) => p.type === "text")
 			.map((p) => (p as { text: string }).text);
 		expect(texts).toEqual(["one", "two", "three"]);
+		expect(requeued).toEqual([[steer]]);
+		expect(members).not.toContain(steer);
+		expect(rec.checkpoints).not.toContainEqual(
+			expect.objectContaining({ ownedInputSeqs: expect.arrayContaining([7]) }),
+		);
+		expect(outcome.steerMark).toBe(0);
+	});
+
+	test("an error result before ack returns the steer instead of admitting it", async () => {
+		const steer = steerMember();
+		const requeued: RecMember[][] = [];
+		const { outcome, members } = await run(
+			toolThen([{ kind: "error", resultText: "CLI failed" }]),
+			{
+				tools: echoTools(),
+				claimSteers: claimOnce(steer),
+				unrequeueSteers: (s) => requeued.push(s),
+			},
+		);
+		expect(outcome.kind).toBe("failed");
+		expect(requeued).toEqual([[steer]]);
+		expect(members).not.toContain(steer);
+	});
+
+	test("a never-acked steer is fenced when authority is gone", async () => {
+		const steer = steerMember();
+		const requeued: RecMember[][] = [];
+		const settlements: Array<{ m: RecMember; done: MemberSettlement }> = [];
+		let authority = true;
+		await expect(run(
+			toolThen([
+				{
+					kind: "hold",
+					onEnter: () => {
+						authority = false;
+					},
+					until: Promise.resolve(),
+				},
+			]),
+			{
+				tools: echoTools(),
+				claimSteers: claimOnce(steer),
+				holdsAuthority: () => authority,
+				assertAuthority: () => {
+					if (!authority) throw new Error("fenced");
+				},
+				unrequeueSteers: (s) => requeued.push(s),
+				settle: (m, done) => settlements.push({ m, done }),
+			},
+		)).rejects.toThrow("fenced");
+		expect(requeued).toEqual([]);
+		expect(settlements).toContainEqual({ m: steer, done: { kind: "fenced" } });
 	});
 
 	test("lost authority at the claim sends nothing and requeues the steer", async () => {

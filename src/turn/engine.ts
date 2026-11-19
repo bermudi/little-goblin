@@ -11,7 +11,9 @@ import type { StreamDeps, StreamOutcome, WireMember } from "./stream.ts";
  * Engine rules). Mandatory rules are not listed: every engine follows
  * them. The runtime owns the behaviour (the last four in step-rules.ts);
  * an engine claims a rule when its vendor loop reaches the hook, and
- * engine-rules.test.ts checks every claim against behaviour.
+ * engine-rules.test.ts checks every claim against behaviour. Every engine
+ * must also return any claimed steer the model never received; see
+ * design/runtime-turn.md → Engine rules.
  */
 export interface EngineRules {
 	/** #477: an unstarted tool call is skipped while a steer waits — the runtime arms the gate. */

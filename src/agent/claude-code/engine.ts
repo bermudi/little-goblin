@@ -6,12 +6,11 @@
 // channel sinks, replay/attach, and crash-resume stay engine-neutral.
 //
 // Rulings (design/model.md → claude-code):
-// - Steers fold mid-turn (#582). The query's input stays open; after
-//   each tool call settles — before the CLI has its result, so before
-//   its next model request — the shared fold claims waiting steers and
-//   pushes them with priority "next". The CLI acks each by uuid
-//   (`folded` events). A steer that arrives while the model writes its
-//   final reply waits for the successor turn, as on the API lane.
+// - Steers fold mid-turn (#582). A steer belongs to this run only after
+//   the CLI acks it; a batch never acked returns to pending input and
+//   leads the next turn (the CLI may have read it without acking, so a
+//   duplicate is possible, never a loss). A steer that arrives while the
+//   model writes its final reply waits for the successor turn.
 // - No forced toolChoice cuts and no step budget. The loop
 //   detector still journals its state (context landings, completed
 //   calls) for resume parity, but this engine cannot cut.
@@ -52,10 +51,13 @@ import { replyMetadata } from "../../turn/reply-metadata.ts";
 import { holdsZeroEffectError } from "../../turn/state.ts";
 import {
 	emitChunk,
-	foldSteers,
+	admitSteers,
+	claimSteerBatch,
 	openSteerLedger,
+	returnSteers,
 	type StreamDeps,
 	type StreamOutcome,
+	type SteerBatch,
 	type WireMember,
 } from "../../turn/stream.ts";
 import {
@@ -298,7 +300,7 @@ function modelOutput(output: unknown): ToolResultOutput {
 // CLI will answer it in a follow-up CLI turn (probed live 2026-11-15:
 // a message queued after the final request opens a new turn). The
 // engine reads on through at most this many follow-ups — a CLI that
-// never acks must not hold the turn open.
+// never acks must not hold the turn open; the steer returns to pending input.
 const MAX_STEER_FOLLOW_UPS = 2;
 
 // The CLI names MCP tools mcp__<server>__<tool>; goblin knows bare names.
@@ -765,33 +767,28 @@ export async function driveClaude<M extends WireMember>(
 		abortController.abort();
 	};
 
-	// --- steers: the open query input and the shared fold ---
+	// --- steers: the open query input and pending batches ---
 	const steers = openSteerLedger(deps);
 	const sdkTools = toToolSet(deps.tools);
 	const steeredMessages: PromptMessage[] = [];
-	// Pushed to the CLI, not yet acked by a `folded` event.
-	const unacked = new Set<string>();
+	// Pushed to the CLI, not yet admitted by a `folded` acknowledgement.
+	const unacked = new Map<string, SteerBatch<M>>();
 	let channel: SteerChannel | null = null;
 	const foldIntoQuery = async (): Promise<void> => {
 		if (channel === null) return;
-		const folded = await foldSteers(deps, steers, run.stepCount, sdkTools);
-		if (folded === null || folded.injected.length === 0) return;
-		// The fold awaited conversion; the attempt may have ended since.
+		const batch = await claimSteerBatch(deps, sdkTools);
+		if (batch === null || batch.members.length === 0) return;
 		if (channel === null) {
-			log.warn("claude steer folded after the query input closed — not sent", {
-				conversation: convId,
-				messages: folded.injected.length,
-			});
+			returnSteers(deps, batch, "query input closed");
 			return;
 		}
 		const uuid = randomUUID();
-		unacked.add(uuid);
-		steeredMessages.push(...folded.injected);
-		channel.push({ uuid, prompt: serializeSteer(folded.injected) });
+		unacked.set(uuid, batch);
+		channel.push({ uuid, prompt: serializeSteer(batch.messages) });
 		log.info("claude steer sent", {
 			conversation: convId,
 			steer: uuid,
-			messages: folded.injected.length,
+			messages: batch.messages.length,
 		});
 	};
 
@@ -849,7 +846,6 @@ export async function driveClaude<M extends WireMember>(
 		curParts = [];
 		curBlockOffset = 0;
 		steeredMessages.length = 0;
-		unacked.clear();
 		callId = null;
 		obs = undefined;
 		callOpen = false;
@@ -942,7 +938,11 @@ export async function driveClaude<M extends WireMember>(
 						break;
 					case "folded":
 						for (const uuid of ev.uuids) {
-							if (unacked.delete(uuid)) {
+							const batch = unacked.get(uuid);
+							if (batch !== undefined) {
+								admitSteers(deps, steers, run.stepCount, batch);
+								steeredMessages.push(...batch.messages);
+								unacked.delete(uuid);
 								log.info("claude steer folded", { conversation: convId, steer: uuid });
 							}
 						}
@@ -995,12 +995,8 @@ export async function driveClaude<M extends WireMember>(
 			const input = channel;
 			channel = null;
 			input.close();
-			if (unacked.size > 0) {
-				log.warn("claude steers never acked — answered only if the reply covered them", {
-					conversation: convId,
-					unacked: unacked.size,
-				});
-			}
+			for (const batch of unacked.values()) returnSteers(deps, batch, "never acked");
+			unacked.clear();
 		}
 
 		// The result frame carries terminal truth even when the iterator

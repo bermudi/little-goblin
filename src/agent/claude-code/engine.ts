@@ -27,7 +27,6 @@
 // the contract; red drift check means re-pin.
 
 import { randomUUID } from "node:crypto";
-import type { LanguageModelV4Usage } from "@ai-sdk/provider";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import type {
 	AssistantContent,
@@ -249,20 +248,22 @@ function overlayUsage(
 	return out;
 }
 
-function v4Usage(usage: ClaudeUsage | null): LanguageModelV4Usage | undefined {
+function goblinUsage(usage: ClaudeUsage | null): Usage | undefined {
 	if (usage === null) return undefined;
+	const inputTokens = billedInput(usage);
 	return {
-		inputTokens: {
-			total: billedInput(usage) ?? undefined,
-			noCache: usage.input_tokens ?? undefined,
-			cacheRead: usage.cache_read_input_tokens ?? undefined,
-			cacheWrite: usage.cache_creation_input_tokens ?? undefined,
+		inputTokens: inputTokens ?? undefined,
+		inputTokenDetails: {
+			noCacheTokens: usage.input_tokens ?? undefined,
+			cacheReadTokens: usage.cache_read_input_tokens ?? undefined,
+			cacheWriteTokens: usage.cache_creation_input_tokens ?? undefined,
 		},
-		outputTokens: {
-			total: usage.output_tokens ?? undefined,
-			text: undefined,
-			reasoning: undefined,
-		},
+		outputTokens: usage.output_tokens ?? undefined,
+		outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+		totalTokens:
+			inputTokens !== null && usage.output_tokens !== null
+				? inputTokens + usage.output_tokens
+				: undefined,
 	};
 }
 
@@ -501,7 +502,7 @@ export async function driveClaude<M extends WireMember>(
 		}
 		if (callId !== null) {
 			const finished = callId;
-			obs?.finish(v4Usage(usage));
+			obs?.finish(goblinUsage(usage));
 			log.info("model call usage", {
 				...baseFields,
 				callId: finished,

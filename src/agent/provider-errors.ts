@@ -2,7 +2,7 @@
 // compacts and resumes; a provider content filter gets one
 // unchanged-request retry.
 
-import type { LanguageModelV4Usage } from "@ai-sdk/provider";
+import type { Usage } from "../message.ts";
 
 // Errors arrive deeply wrapped: APICallError carries the status on
 // statusCode and the body on responseBody, RetryError nests the real
@@ -131,7 +131,7 @@ const FILTER_WARNING =
 export class ProviderContentFilterError extends Error {
 	constructor(
 		cause?: unknown,
-		readonly usage?: LanguageModelV4Usage,
+		readonly usage?: Usage,
 	) {
 		super("Provider content filter blocked this request.", { cause });
 		this.name = "ProviderContentFilterError";

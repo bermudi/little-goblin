@@ -42,6 +42,7 @@ import {
 import { clampChars, postJson, str } from "../src/agent/tools/web.ts";
 import { goblinHome } from "../src/goblin-home.ts";
 import { setLogStream } from "../src/log.ts";
+import { boundedRun, spawnProc } from "../src/proc.ts";
 
 // Capture real-home paths BEFORE sandboxing: goblinHome() reads the env
 // lazily, so any paths.* call after the override would point at tmp.
@@ -84,6 +85,8 @@ interface Plan {
 	authName?: string | undefined;
 	skip?: string | undefined;
 	candidate?: true | undefined;
+	// Overrides the header's "(auth …)/(keyless)" tag (e.g. "via mcporter").
+	via?: string | undefined;
 }
 
 interface Cell {
@@ -133,32 +136,93 @@ async function tinyfetchExtract(url: string, key: string): Promise<Fetched> {
 	return { title: str(row.title), text: str(row.text), meta };
 }
 
+// Candidates share runFetchChain's thin rule: under MIN_EXTRACT the
+// page text didn't arrive, whatever the transport said.
+function scored(extracted: Fetched, kind: string): ExecResult {
+	const chars = extracted.text.trim().length;
+	if (chars < MIN_EXTRACT) {
+		const error = `${kind}: almost no text (${chars} chars)`;
+		return {
+			extracted: { error, kind: "empty-extraction", meta: extracted.meta },
+			failures: [{ kind, error }],
+		};
+	}
+	return { extracted, failures: [] };
+}
+
 function tinyfishPlan(): Plan {
 	return {
 		kind: "tinyfish",
 		authName: "tinyfish",
 		candidate: true,
-		exec: async (auth, url) => {
-			const key = await auth.resolve("tinyfish");
-			const extracted = await tinyfetchExtract(url, key);
-			const chars = extracted.text.trim().length;
-			if (chars < MIN_EXTRACT) {
-				const error = `tinyfish: almost no text (${chars} chars)`;
-				return {
-					extracted: { error, kind: "empty-extraction", meta: extracted.meta },
-					failures: [{ kind: "tinyfish", error }],
-				};
+		exec: async (auth, url) =>
+			scored(await tinyfetchExtract(url, await auth.resolve("tinyfish")), "tinyfish"),
+	};
+}
+
+// tinyfish-mcp: the same account through its MCP surface —
+// fetch_content renders pages in a real browser, so it beats the REST
+// endpoint on bot-protected pages (measured 2026-11-19: REST said
+// bot_blocked on reuters.com; fetch_content got the article). Driven
+// through the operator's mcporter wrapper, which injects the key into
+// the child env — no auth.jsonl record and the key never enters this
+// process.
+const MCP_TIMEOUT_MS = 75_000;
+const MCP_OUTPUT_CAP = 8 * 1024 * 1024;
+
+function tinyfishMcpPlan(): Plan {
+	return {
+		kind: "tinyfish-mcp",
+		candidate: true,
+		via: " (via mcporter)",
+		exec: async (_auth, url) => {
+			const proc = spawnProc([
+				"mcporter",
+				"call",
+				"tinyfish.fetch_content",
+				`urls=["${url}"]`,
+				"format=markdown",
+				"--timeout",
+				"60000",
+			]);
+			const out = await boundedRun(proc, {
+				timeoutMs: MCP_TIMEOUT_MS,
+				maxOutput: MCP_OUTPUT_CAP,
+			});
+			if (out.timedOut) throw new Error("tinyfish-mcp: mcporter call timed out");
+			if (out.exitCode !== 0) {
+				throw new Error(
+					`tinyfish-mcp: mcporter exited ${out.exitCode} — ${clampChars(out.stderr.trim(), 120)}`,
+				);
 			}
-			return { extracted, failures: [] };
+			const body = JSON.parse(out.stdout) as { results?: unknown[]; errors?: unknown[] };
+			const row = (body.results ?? [])[0] as Record<string, unknown> | undefined;
+			const failure = (body.errors ?? [])[0] as Record<string, unknown> | undefined;
+			if (!row) {
+				throw new Error(
+					`tinyfish-mcp: extraction failed — ${str(failure?.error) || "no result"}`,
+				);
+			}
+			// The MCP wire carries no HTTP status; status is report-only.
+			return scored(
+				{
+					title: str(row.title),
+					text: str(row.text),
+					meta: { status: 200, contentType: "", bytes: out.stdout.length },
+				},
+				"tinyfish-mcp",
+			);
 		},
 	};
 }
 
 const CANDIDATES = {
 	tinyfish: tinyfishPlan,
+	"tinyfish-mcp": tinyfishMcpPlan,
 } as const;
 
 const BENCH_KINDS: readonly string[] = [...fetchKinds, ...Object.keys(CANDIDATES)];
+const KIND_W = Math.max(...BENCH_KINDS.map((k) => k.length)) + 1;
 
 function parseArgs(argv: string[]): { kinds: BenchKind[]; extraUrls: string[] } {
 	const picked = new Set<string>();
@@ -286,7 +350,7 @@ function printCell(kind: string, cell: Cell): void {
 			: "          ";
 	const ms = cell.ms !== undefined ? `${(cell.ms / 1000).toFixed(1).padStart(6)}s` : "       ";
 	const note = cell.note ? `  ${clampChars(cell.note, 90)}` : "";
-	console.log(`  ${kind.padEnd(10)}${cell.outcome.padEnd(8)} ${status} ${chars} ${ms}${note}`);
+	console.log(`  ${kind.padEnd(KIND_W)}${cell.outcome.padEnd(8)} ${status} ${chars} ${ms}${note}`);
 }
 
 function shortOutcome(cell: Cell): string {
@@ -336,7 +400,9 @@ async function main(): Promise<void> {
 	console.log(`auth: ${AUTH_FILE}`);
 	for (const plan of plans) {
 		const tag = plan.candidate ? " (candidate)" : "";
-		const via = plan.kind === "local" ? "" : plan.authName ? ` (auth "${plan.authName}")` : " (keyless)";
+		const via =
+			plan.via ??
+			(plan.kind === "local" ? "" : plan.authName ? ` (auth "${plan.authName}")` : " (keyless)");
 		console.log(`  ${plan.kind}${via}${tag}${plan.skip ? ` — skipped: ${plan.skip}` : ""}`);
 	}
 
@@ -356,12 +422,12 @@ async function main(): Promise<void> {
 	const labels = urls.map(urlLabel);
 	const colW = Math.max(8, ...labels.map((l) => l.length)) + 2;
 	console.log("\nsummary");
-	console.log(`  ${"".padEnd(10)}${labels.map((l) => l.padEnd(colW)).join("")}score`);
+	console.log(`  ${"".padEnd(KIND_W)}${labels.map((l) => l.padEnd(colW)).join("")}score`);
 	for (const plan of plans) {
 		const cells = grid.get(plan.kind) ?? [];
 		const ok = cells.filter((c) => c.outcome === "ok" || c.outcome === "pdf").length;
 		const line = cells.map((c) => shortOutcome(c).padEnd(colW)).join("");
-		console.log(`  ${plan.kind.padEnd(10)}${line}${ok}/${cells.length}`);
+		console.log(`  ${plan.kind.padEnd(KIND_W)}${line}${ok}/${cells.length}`);
 	}
 	const anyRow = urls
 		.map((_, i) =>
@@ -373,7 +439,7 @@ async function main(): Promise<void> {
 				: "none".padEnd(colW),
 		)
 		.join("");
-	console.log(`  ${"any".padEnd(10)}${anyRow}`);
+	console.log(`  ${"any".padEnd(KIND_W)}${anyRow}`);
 }
 
 try {

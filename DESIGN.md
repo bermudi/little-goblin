@@ -430,6 +430,9 @@ and model resolution stays in `src/agent/step.ts`. SDK-specific features stay in
 no lowest-common-denominator layer. The app's `useChat` stream protocol
 stays an SDK wire format until an engine can't meet it.
 
+Side jobs reach the model through `src/agent/generate.ts` (`generate`), never
+the SDK directly.
+
 ## Non-goals (v1 — return only on demand)
 
 The list below is a record, not a law. The law, applied to any capability:

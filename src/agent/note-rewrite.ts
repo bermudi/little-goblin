@@ -4,13 +4,13 @@
 // server writes nothing — the accepted proposal lands as an ordinary
 // PATCH with source 'rewrite'.
 
-import { generateText } from "ai";
 import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import type { ConfigRef } from "../config.ts";
 import { log } from "../log.ts";
 import { cacheRouteFor, observedModel, resolveModel } from "./providers.ts";
 import { outputTokensFor, thinkingOptions } from "./thinking.ts";
+import { generate } from "./generate.ts";
 
 export const NOTE_REWRITE_INSTRUCTIONS = [
 	"You rewrite a selected passage from the operator's Markdown note.",
@@ -68,20 +68,22 @@ export async function generateNoteRewrite(
 			cfg.thinking,
 			REWRITE_MAX_OUTPUT_TOKENS,
 		);
-		const result = await generateText({
-			model,
+		const result = await generate({
+			call: {
+				model,
+				...(providerOptions ? { providerOptions } : {}),
+				maxRetries: 0,
+				maxOutputTokens,
+			},
 			instructions: NOTE_REWRITE_INSTRUCTIONS,
 			prompt: JSON.stringify({
 				selection: query.selection,
 				instruction: query.instruction,
 			}),
-			...(providerOptions ? { providerOptions } : {}),
-			abortSignal: AbortSignal.any([
+			signal: AbortSignal.any([
 				...(query.signal !== undefined ? [query.signal] : []),
 				AbortSignal.timeout(REWRITE_TIMEOUT_MS),
 			]),
-			maxRetries: 0,
-			maxOutputTokens,
 		});
 		// Output is a boundary: empty or truncated text can't stand in
 		// for the selection — validate before recording "ok" so the

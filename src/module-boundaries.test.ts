@@ -44,7 +44,6 @@ const AI_SDK_IMPORTERS = [
 	"scripts/probe-tool-image.ts",
 	"scripts/replay-v7-history.ts",
 	"scripts/ui-probe.ts",
-	"src/agent/claude-code/engine.ts",
 	"src/agent/codex/model.ts",
 	"src/agent/filter-stream.ts",
 	"src/agent/generate.ts",

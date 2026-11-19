@@ -70,6 +70,7 @@ export function setup(
 		},
 		windowVersion: windowCapture.version,
 		buildStep: (conv) => ({
+			engine: "ai-sdk",
 			model: observedModel(
 				opts.model ??
 					textModel(opts.deltas ?? ["hello", " app"], {

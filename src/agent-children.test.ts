@@ -162,7 +162,7 @@ function rig(opts: { maxRunning?: number; desktops?: Desktops | null } = {}): Ri
 		buildStep: () => {
 			const next = queue.shift();
 			if (next === undefined) throw new Error("test rig: no scripted model left");
-			return { model: next.model, system: "test" };
+			return { engine: "ai-sdk", model: next.model, system: "test" };
 		},
 		makeTools: () => ({}),
 	});

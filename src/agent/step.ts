@@ -226,6 +226,7 @@ export function makeStepBuilder(
 				contextWindowFor(),
 			]);
 			return {
+				engine: "ai-sdk",
 				// Observed at the model boundary — tool-loop continuations included.
 				model: observedModel(lane.model, {
 					conversation: conv.id,

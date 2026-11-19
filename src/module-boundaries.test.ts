@@ -14,6 +14,7 @@
 //     allowlisted files below; the list only shrinks.
 //     Computed specifiers (`import(expr)`) are out of reach of a static scan;
 //     review catches them.
+//  8. The neutral turn engine imports no agent modules or AI SDK step.
 import { describe, expect, test } from "bun:test";
 import { parse, type ParserPlugin } from "@babel/parser";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -308,6 +309,11 @@ const T3_SPAWN = /(?:spawnProc|Bun\.spawn|execSync|exec)\((?:[^)]*["'])t3["']/;
 const HC_SOCKET_IMPORT = /from\s+["']node:net["']/;
 
 describe("module boundaries", () => {
+	test("neutral turn engine imports no agent modules or AI SDK step", () => {
+		const imports = specifiers(readFileSync(join(SRC, "turn/engine.ts"), "utf8"));
+		expect(imports.some((specifier) => specifier.startsWith("../agent/"))).toBe(false);
+		expect(imports).not.toContain("./ai-sdk-step.ts");
+	});
 	test("AI SDK import matcher recognizes only AI SDK package specifiers", () => {
 		for (const specifier of ["ai", "@ai-sdk/openai", "ai/rsc"]) {
 			expect(AI_SDK_IMPORT.test(specifier)).toBe(true);

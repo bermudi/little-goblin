@@ -177,7 +177,7 @@ describe("turn-tools responsibility composition", () => {
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],
 			store,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: toolsFor,
 		});
 		return { store, conv, project, resps, runtime, toolsFor, configRef };
@@ -351,7 +351,7 @@ describe("turn-tools managed send linkage", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: toolsFor,
 		});
 		const first = new HeadlessSink();
@@ -448,7 +448,7 @@ describe("responsibility epoch authority", () => {
 			const runtime = new Runtime({
 				engines: [aiSdkEngine],
 				store,
-				buildStep: () => ({ model: edge.model, system: "test" }),
+				buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 				makeTools: toolsFor,
 			});
 			if (action === "send") {
@@ -604,7 +604,7 @@ describe("operator correction authority", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ model: edge.model, system: "test" }),
+			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 			makeTools: toolsFor,
 			runOwnership: {
 				begin: (e) => dispatcher.hooks.begin(e),
@@ -785,7 +785,7 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 		engines: [aiSdkEngine],
 		store,
 		turnJournal: journal,
-		buildStep: () => ({ model: edge.model, system: "test" }),
+		buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
 		makeTools: toolsFor,
 		runOwnership: {
 			begin: (e) => dispatcher.hooks.begin(e),

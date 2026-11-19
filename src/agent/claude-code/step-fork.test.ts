@@ -11,7 +11,7 @@ import { openNotes } from "../../notes.ts";
 import { openProjects } from "../../projects.ts";
 import { tmpDb, useHome } from "../../testkit.ts";
 import { makeStepBuilder } from "../step.ts";
-import { isClaudeStep } from "../../turn/engine.ts";
+import { isClaudeStep } from "./mod.ts";
 import type { ClaudeEngine } from "./mod.ts";
 
 const fakeEngine: ClaudeEngine = {

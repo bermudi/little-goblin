@@ -36,6 +36,11 @@
 // GOBLIN_HOME is sandboxed to a tmp dir unless the operator set it —
 // PDF/cache writes from the probe stay out of the real state dir, while
 // auth.jsonl and goblin.json5 are still read from the real home.
+//
+// Every run also writes one JSON record (bench-records/, gitignored —
+// names and measurements only, never key values) so history survives:
+// scripts/bench-fetch-view.ts turns the pile of records into one
+// self-contained HTML viewer (matrix, flakiness, drill-downs, coverage).
 
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,6 +70,7 @@ import {
 import { goblinHome } from "../src/goblin-home.ts";
 import { setLogStream } from "../src/log.ts";
 import { boundedRun, spawnProc } from "../src/proc.ts";
+import { type BenchCell, writeRunRecord } from "./bench-fetch-record.ts";
 
 // Capture real-home paths BEFORE sandboxing: goblinHome() reads the env
 // lazily, so any paths.* call after the override would point at tmp.
@@ -119,13 +125,10 @@ interface Plan {
 	via?: string | undefined;
 }
 
-interface Cell {
-	outcome: "ok" | "pdf" | "blocked" | "thin" | "rejected" | "error" | "skipped";
-	chars?: number | undefined;
-	status?: number | undefined;
-	ms?: number | undefined;
-	note?: string | undefined;
-}
+// A run cell IS the record cell — the viewer reads what the bench saw.
+type Cell = BenchCell;
+// Extract preview kept per cell for the viewer's drill-down.
+const TEXT_PREVIEW = 1000;
 
 // A 200 holding a bot-check interstitial is a block, not a fetch — the
 // page text is the challenge, not the content. Title is the strongest
@@ -591,6 +594,8 @@ async function runCell(
 				status: extracted.meta.status,
 				ms,
 				note: extracted.title ? clampChars(extracted.title, 60) : undefined,
+				title: extracted.title || undefined,
+				textPreview: extracted.text.slice(0, TEXT_PREVIEW),
 			};
 		}
 		if (live) {
@@ -598,6 +603,7 @@ async function runCell(
 				? plan.liveNote
 				: "no live knob — may be cached";
 			if (caveat) cell.note = cell.note ? `${caveat} · ${cell.note}` : caveat;
+			if (!plan.execLive) cell.maybeCached = true;
 		}
 		return cell;
 	} catch (err) {
@@ -608,6 +614,18 @@ async function runCell(
 			note,
 		};
 	}
+}
+
+// Shared by the terminal header and the run record.
+function viaTag(plan: Plan): string {
+	return (
+		plan.via ??
+		(plan.kind === "local"
+			? ""
+			: plan.authName
+				? ` (auth "${plan.authName}")`
+				: " (keyless)")
+	);
 }
 
 function urlLabel(url: string): string {
@@ -656,6 +674,7 @@ function shortOutcome(cell: Cell): string {
 }
 
 async function main(): Promise<void> {
+	const startedAt = new Date().toISOString();
 	const { kinds, extraUrls, live } = parseArgs(process.argv.slice(2));
 	const urls = [...DEFAULT_URLS, ...extraUrls];
 	const auth = loadAuthFile(AUTH_FILE);
@@ -691,15 +710,8 @@ async function main(): Promise<void> {
 	console.log(`auth: ${AUTH_FILE}`);
 	for (const plan of plans) {
 		const tag = plan.candidate ? " (candidate)" : "";
-		const via =
-			plan.via ??
-			(plan.kind === "local"
-				? ""
-				: plan.authName
-					? ` (auth "${plan.authName}")`
-					: " (keyless)");
 		console.log(
-			`  ${plan.kind}${via}${tag}${plan.skip ? ` — skipped: ${plan.skip}` : ""}`,
+			`  ${plan.kind}${viaTag(plan)}${tag}${plan.skip ? ` — skipped: ${plan.skip}` : ""}`,
 		);
 	}
 	if (live) {
@@ -758,6 +770,31 @@ async function main(): Promise<void> {
 		)
 		.join("");
 	console.log(`  ${"any".padEnd(KIND_W)}${anyRow}`);
+
+	const recordPath = writeRunRecord({
+		schema: 1,
+		startedAt,
+		mode: live ? "live" : "default",
+		urls,
+		providers: plans.map((plan) => ({
+			kind: plan.kind,
+			candidate: plan.candidate,
+			via: viaTag(plan) || undefined,
+			authName: plan.authName,
+			skipped: plan.skip,
+			hasLiveKnob: plan.execLive !== undefined,
+		})),
+		cells: plans.map((plan) => {
+			const row = grid.get(plan.kind);
+			// runCell always returns one cell per url; the fallback only
+			// guards a future code path that stops early.
+			if (row && row.length === urls.length) return row;
+			return urls.map(
+				(): Cell => ({ outcome: "skipped", note: plan.skip }),
+			);
+		}),
+	});
+	console.log(`\nrecord: ${recordPath}`);
 }
 
 try {

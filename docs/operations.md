@@ -265,9 +265,9 @@ Herdr units, run each check against the live app. Keep the relevant
    delivered in chat and an `app media delivered` line in `goblin.log`.
    Telegram alternative: expect a `file delivered` line (debug level).
 3. **`delegate`:** Ask Goblin to delegate a trivial task to a cheap configured
-   harness. See the T3 thread link in chat, the thread in T3 Code, and the
+   harness. See the Herdr pane (`herdr session attach goblin`) and the
    completion notice back in chat. Check the `tool call` line with
-   `"tool":"delegate"` and the related `t3 call` lines in `goblin.log`.
+   `"tool":"delegate"` and the related herdr call lines in `goblin.log`.
 4. **Handover:** In a project conversation, use the responsibility tool's
    `accept` action and select at least one T3 thread. This creates the
    responsibility and binds the selected thread(s); no existing

@@ -220,23 +220,23 @@
   // <provider>/<model> chat ref.
   // system1: { auth: "openrouter" },
 
-  // --- Delegation (other coding harnesses, via T3 Code) ---
-  // Unset = no delegate tool. Each harness is a T3 provider instance
-  // plus model slug; `delegate start` runs it as a T3 Code thread in
-  // the project cwd, and the result comes back to the topic as a
-  // `[delegation: …]` message carrying the thread link — the operator
-  // watches the run in T3 Code. Runs on this machine only.
+  // --- Delegation (other coding harnesses, via Herdr) ---
+  // Unset = no delegate tool. Each harness is a herdr agent kind plus
+  // native CLI args; `delegate start` runs it in a pane on the `goblin`
+  // herdr session (goblin-herdr.service), and the result comes back to
+  // the topic as a `[delegation: …]` message — the operator watches the
+  // pane with `herdr session attach goblin`. Runs on this machine only.
   // `defaults` maps a work role to a harness name; `delegate` uses it
   // when a call names no harness. Role `default` is the fallback when a
   // call names no role. `askFirst: true` on a harness makes goblin ask
   // you before each use — a prompt rule the delegate description
-  // carries, not a launch gate; choosing the harness stays goblin's
-  // call. Editable in Settings → Delegation (restart to apply).
+  // carries, not a launch gate. Editable in Settings → Delegation
+  // (restart to apply).
   // delegation: {
   //   harnesses: {
-  //     codex: { provider: "codex", model: "<model-slug>" },
-  //     "pi-review": { provider: "pi", model: "<review-model-slug>" },
-  //     claude: { provider: "claudeAgent", model: "<model-slug>", askFirst: true }, // spends a subscription — ask first
+  //     codex: { kind: "codex", args: ["--model", "<model-slug>"] },
+  //     "pi-review": { kind: "pi", args: ["--model", "<review-model-slug>"] },
+  //     claude: { kind: "claude", args: ["--dangerously-skip-permissions"], askFirst: true }, // spends a subscription — ask first
   //   },
   //   defaults: { default: "codex", build: "codex", review: "pi-review" },
   // },

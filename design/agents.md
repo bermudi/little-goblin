@@ -9,14 +9,17 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 work to other agents through **two tools with two jobs**, in the standard
 shape that Claude Code, hermes and openclaw share. This ruling replaced
 the purpose-typed Pi Durable runtime (removed in #609 — its desktop-pool
-rulings live under "Computer use" below) and the Herdr transport and
-`herdr` tool; `delegate` and handover now run on T3 Code
-(`design/delegation.md`).
+rulings live under "Computer use" below). `delegate` ran on T3 Code
+briefly (#615/#632) and is back on Herdr panes (operator, 2026-11-18,
+issue #728 — "herdr **stays** for driving codex, or opencode"); handover
+and responsibility stay on T3 Code ("to communicate with inner loop.
+that's it."). The Goblin-side `herdr` tool stays removed — "axe herdr
+tool" cut only the tool for the operator's own desk (`design/delegation.md`).
 
 | Tool | Job | Who decides | Runs on |
 |---|---|---|---|
 | `agent` | Give a piece of work to a child agent | Goblin, on its own judgment | Goblin's own runtime, as a child conversation |
-| `delegate` | Run a named external harness (codex, opencode, claude, pi, devin) | The operator only | A T3 Code thread |
+| `delegate` | Run a named external harness (codex, opencode, claude, pi, devin) | The operator only | A Herdr pane in the `goblin` session |
 
 There is no third tool. The routing rule the model gets is one sentence:
 **the operator named a harness → `delegate`; otherwise → `agent`, or do
@@ -139,53 +142,50 @@ stop  {id}
   replay marks and the crash-approval gate. Children get the same crash
   rule as goblin's own turns.
 
-## `delegate`: external harness runs on T3 Code
+## `delegate`: external harness runs on Herdr
 
 ### Only when the operator asks
 
 `delegate` runs a harness that the operator names: "have codex do X",
-"an opencode run". The operator can also ask with a standing
+"an opencode run" — "`delegate` stays just for this … only for use when
+the user asks for a `codex` run, or a `opencode` run" (operator,
+2026-11-18). The operator can also ask with a standing
 instruction, for example the issue-build flow that starts a lead
 (design/delegation.md → An issue build is one lead delegation). Goblin
 never chooses `delegate` on its own judgment. Work goblin decides to
 hand off goes to `agent`.
 
-### Transport: the `t3` CLI
+### Transport: the `herdr` CLI
 
-One adapter, `src/t3.ts`, knows the T3 Code wire. Domain modules see its
-types only (the module-boundaries rule). Verified against `t3` v0.1.9 on
-g7 (2026-11-16):
+One adapter, `src/herdr.ts`, knows the Herdr wire; domain modules see
+its types only (the module-boundaries rule — only `herdr.ts` may spawn
+the CLI). Harnesses run interactively in panes on the `goblin` Herdr
+session, hosted by `goblin-herdr.service` — a sibling unit `goblin.service`
+`Wants=`/`After=`s so panes outlive goblin restarts. The wire contract
+is pinned by `src/herdr.live.test.ts`
+(`GOBLIN_HERDR_LIVE=1`, throwaway session — never the operator's).
 
-| Need | `t3` verb |
-|---|---|
-| Start | `t3 thread start <project> <message> --provider <id> --model <slug> [--worktree <base> --branch <name>] --json` |
-| Follow up | `t3 thread send <thread> <message> --json`. A busy thread takes it as its next turn; nothing is interrupted |
-| Status and result | `t3 thread show <thread> --messages N --json` |
-| Discover | `t3 thread list --project <path> --json`, which returns `status`, `settled`, `providerInstanceId`, `model`, `pullRequests`, `parentThreadId` and `link` |
-| Wait | `--wait`: exit 1 means the run failed, exit 2 means it waits for an answer (needs input) |
+- **Harnesses stay config** as `{kind, args?, askFirst?}` — the herdr
+  agent kind plus native CLI flags; `delegation.defaults` maps roles to
+  harness names. The T3 shape (`{provider, model, options}`) is
+  rejected at boot naming the fix. Goblin never guesses a model.
+- **Verbs:** `start` (workspace + agent + prompt), `send`, `read`,
+  `answer` (keypress into a blocked pane, preflighted on live status),
+  `stop`. The pane watcher polls `agent get`/screen until the row
+  settles; prompt delivery is confirmed by the agent leaving idle, not
+  by `agent prompt` returning ok.
+- **Trust seeding** (`src/harness-trust.ts`) writes harness trust stores
+  per kind before launch — write-if-absent only; pinned against the
+  installed binaries by `src/harness-trust.live.test.ts`
+  (`GOBLIN_HARNESS_TRUST_LIVE=1`).
+- **The operator watches in Herdr** (`herdr session attach goblin`) or
+  the app's Delegations page; notices name the pane.
 
-- **Harnesses stay config.** A harness name maps to a T3 provider
-  instance and a model (seen on g7: `codex`, `claudeAgent`, `pi`,
-  `acpRegistry_devin`, `acpRegistry_piz`). Goblin never guesses a model.
-- **Gone with Herdr:** screen scraping, the `answer` keypress verb,
-  trust-dialog seeding (`harness-trust.ts`), prompt-delivery checks and
-  `goblin-herdr.service`. T3 Code owns the harness sessions.
-- **The operator watches in T3 Code.** Each notice carries the thread
-  `link`.
+## Handover: T3 Code threads
 
-**Known gaps** (from `t3 thread --help`, v0.1.9):
-
-- There is no stop or interrupt verb. Until T3 Code has one, `delegate
-  stop` cannot be offered.
-- There is no completion push. The watcher polls `show`.
-- The T3 server is not a service on g7 (`t3 status`: "Service not
-  installed"). `goblin.service` needs a server that stays up. Installing
-  it (`t3 up`) is an operator action.
-
-## Handover: T3 Code threads, not Herdr panes
-
-The operator no longer works in Herdr; they work in T3 Code
-(2026-11-16). "Take over this" binds a responsibility to T3 thread ids:
+Handover and responsibility stay on T3 Code — "to communicate with
+inner loop. that's it." (operator, 2026-11-18). "Take over this" binds a
+responsibility to T3 thread ids:
 
 - discovery is `t3 thread list`;
 - the responsibility observer polls `t3 thread show`;
@@ -356,10 +356,10 @@ access before there is a working replacement).
 4. Add image tool results and the `screenshot` tool — **done (#606)**.
 5. Build the `src/t3.ts` adapter. Move `delegate` and responsibility
    attach/observe onto it, and prove one delegation end to end.
-6. Delete the Herdr code — **done (#608)**: `src/herdr.ts`, its live
-   check, `harness-trust.ts`, the `goblin-herdr.service` unit and the
-   seeded herdr skill are gone; `delegate` and handover already ran on
-   T3 Code.
+6. Delete the Herdr code — **done (#608), then restored (#728,
+   2026-11-18)**: `src/herdr.ts`, its live check, `harness-trust.ts`,
+   the `goblin-herdr.service` unit and the seeded herdr skill are back
+   for `delegate`; the Goblin-side `herdr` tool stays removed.
 7. Delete the `subagent` tool, `src/subagents/`, the `subagent_runs`
    table's code paths and the pi-durable, pi-ai and chord dependencies —
    **done (#609)**: the runtime, its tool and tests are gone, the
@@ -368,17 +368,11 @@ access before there is a working replacement).
    `subagent_runs` table stays in existing databases, unused — dropping
    data needs the operator's OK.
 
-## Machine targets: dropped (2026-11-17)
+## Machine targets: dropped (2026-11-17, kept 2026-11-18)
 
-Delegation runs on this machine only. `delegation.machines` is gone: an
-old-shape `harnesses` entry (`kind`/`args`) logs a warning that names
-the rewrite and boots without `delegate`. Reasons:
-
-- `t3 thread start` (v0.1.9) has no environment flag. Linked
-  environments (`t3 environment`) might reach other hosts, but that is
-  unverified.
-- The live config on g7 has no `machines` block (checked 2026-11-17).
-
-If remote delegation comes back, it goes through T3 Code's own
-environments, in `src/t3.ts`. It does not bring back a goblin-side
-machine registry.
+Delegation runs on this machine only — under Herdr as under T3 Code.
+`delegation.machines` and per-harness machine fields do not come back:
+a config carrying the T3 shape (`{provider, model, options}`) or a
+`machines` block is rejected at boot with a message naming the
+`{kind, args}` fix. The live config on g7 has no `machines` block
+(checked 2026-11-17).

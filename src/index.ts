@@ -20,6 +20,7 @@ import { appendAuthRecord, loadAuth } from "./auth.ts";
 import { openWireStep } from "./boot/delivery.ts";
 import { openTelegramAttach } from "./boot/telegram-attach.ts";
 import { openCacheObservation } from "./cache-observation.ts";
+import { createIdleCompactor } from "./idle-compaction.ts";
 import { openCachePruning } from "./cache-pruning.ts";
 import { sweepScreenshotFrames } from "./frame-stubs.ts";
 import {
@@ -107,6 +108,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // confirm; short enough that a wedged Telegram API can't hold a deploy.
 // The startup-failure cleanup budgets a wedged close with it too.
 const SHUTDOWN_DRAIN_MS = 10_000;
+let idleCompactor: ReturnType<typeof createIdleCompactor> | null = null;
 
 // Take ownership before layout seeding, databases, or any service starts.
 // Only this real process entry owns the home lock; boot helpers and tools do not.
@@ -421,11 +423,32 @@ async function boot() {
 		claudeSessions,
 		// The curator pass gate: boot and every settled turn, off the
 		// reply path. Its own interval check makes it a no-op until due.
-		onTurnSettled: curatorPass,
+		onTurnSettled: (id) => {
+			try {
+				curatorPass();
+			} catch (err) {
+				log.warn("curator pass failed — retried after the next settled turn", err, {});
+			}
+			idleCompactor?.arm(id);
+		},
 		...stepBuilder,
 		makeTools: makeTurnTools,
 		...(memory.turnDeps ? { memory: memory.turnDeps } : {}),
 	});
+	idleCompactor = createIdleCompactor({
+		call: (id) => cacheObservations.idleCacheCall(id),
+		lastFoldMs: (id) => {
+			const createdAt = store.getCompaction(id)?.createdAt;
+			if (createdAt === undefined) return null;
+			const ms = Date.parse(createdAt);
+			if (Number.isNaN(ms)) throw new Error(`compaction createdAt is not a date: ${createdAt} (${id})`);
+			return ms;
+		},
+		recentConversations: (sinceMs) => cacheObservations.recentConversations(sinceMs),
+		fold: (id) => runtime.idleFold(id),
+		now: Date.now,
+	});
+	idleCompactor.armAll();
 
 	// One titler for both channels — implicit topics and app first-turn naming.
 	const titleFor = makeTitleFor({ configRef, auth, observation: cacheObservations });
@@ -932,6 +955,7 @@ const {
 let shuttingDown = false;
 
 async function shutdown(signal: string): Promise<void> {
+	idleCompactor?.stop();
 	if (shuttingDown) {
 		log.warn("second signal — forcing exit", { signal });
 		process.exit(1);

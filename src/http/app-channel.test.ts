@@ -911,7 +911,7 @@ describe("app operator surface", () => {
 			address: { chatId: 1, threadId: null },
 		});
 		const stopped: number[] = [];
-		let outcome: "stopped" | "unavailable" = "stopped";
+		let outcome: "stopped" | "still running" = "stopped";
 		const wired = setup({
 			token: APP_TOKEN_NAME,
 			operator: {
@@ -922,7 +922,7 @@ describe("app operator surface", () => {
 					if (d === null) return { kind: "no row" as const, id };
 					return outcome === "stopped"
 						? { kind: "stopped" as const, delegation: d, notes: [] }
-						: { kind: "unavailable" as const, delegation: d };
+						: { kind: "still running" as const, delegation: d, notes: [] };
 				},
 			},
 		});
@@ -930,14 +930,14 @@ describe("app operator surface", () => {
 			const ok = await wired.call(`/api/app/delegations/${row.id}/stop`, { method: "POST" });
 			expect(ok.status).toBe(200);
 			expect(((await ok.json()) as { outcome: string }).outcome).toBe("stopped");
-			// t3 has no stop verb for a live thread — reported honestly.
-			outcome = "unavailable";
+			// hc could not close it — reported honestly.
+			outcome = "still running";
 			const refused = await wired.call(`/api/app/delegations/${row.id}/stop`, {
 				method: "POST",
 			});
 			expect(refused.status).toBe(409);
 			const body = (await refused.json()) as { outcome: string; notes: string[] };
-			expect(body.outcome).toBe("unavailable");
+			expect(body.outcome).toBe("still running");
 			expect(body.notes).toEqual([]);
 			expect((await wired.call("/api/app/delegations/999/stop", { method: "POST" })).status).toBe(
 				404,

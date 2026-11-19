@@ -2,6 +2,7 @@ import { isAbsolute, resolve } from "node:path";
 import { z } from "zod";
 import { checkAppAssets } from "./app-assets.ts";
 import { systemdShow } from "./systemd.ts";
+import { hcCore } from "./hc.ts";
 import {
 	failure,
 	ProbeError,
@@ -15,12 +16,15 @@ export async function installation(
 	checkout: string,
 	phase: HealthReport["phase"],
 	probe: ProbeContext = {},
+	delegationConfigured = false,
+	home = "",
 ): Promise<HealthResult[]> {
 	const start = performance.now(),
 		scope = `diagnostic-revision:${checkout}`;
 	if (phase === "preflight")
 		return [
 			result("service.goblin", scope, "skip", "Unit not required before installation", start),
+			result("delegation.hc", scope, "skip", "Core is not required before installation", start),
 			result(
 				"app.assets",
 				`installed-checkout:${checkout}`,
@@ -73,6 +77,7 @@ export async function installation(
 	if (!installed) assets.detail += "; installed target unknown, diagnostic checkout inspected only";
 	return [
 		finding,
+		await hcCore(home, delegationConfigured),
 		result(
 			"installation.coverage",
 			scope,

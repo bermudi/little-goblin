@@ -183,7 +183,7 @@ export interface RuntimeDeps {
 	// After a completed turn, off the reply path — the curator pass
 	// gate (interval, config) lives in the callback. A throw is logged
 	// and swallowed: curation never fails a turn.
-	onTurnSettled?: () => void;
+	onTurnSettled?: (convId: string) => void;
 }
 
 export class FencedError extends Error {
@@ -531,14 +531,25 @@ export class Runtime {
 	// Queue compaction behind the running turn so its response is not orphaned.
 	compact(conv: Conversation, focus?: string): Promise<CompactionOutcome> {
 		return new Promise<CompactionOutcome>((resolve, reject) => {
-			this.lanes.enqueueCompact({ conv, focus, resolve, reject });
+			this.lanes.enqueueCompact({ conv, reason: "manual", focus, resolve, reject });
 			this.lanes.startDraining(conv.id, () => this.drain(conv.id));
 		});
 	}
 
+	async idleFold(convId: string): Promise<"compacted" | "noop" | "busy" | "gone"> {
+		const conv = this.deps.store.get(convId);
+		if (conv === null) return "gone";
+		if (this.lanes.busy(convId)) return "busy";
+		const outcome = await new Promise<CompactionOutcome>((resolve, reject) => {
+			this.lanes.enqueueCompact({ conv, reason: "idle", resolve, reject });
+			this.lanes.startDraining(convId, () => this.drain(convId));
+		});
+		return outcome.kind === "compacted" ? "compacted" : "noop";
+	}
+
 	private async doCompact(
 		conv: Conversation,
-		reason: "threshold" | "manual" | "overflow" | "preempt",
+		reason: "threshold" | "manual" | "idle" | "overflow" | "preempt",
 		activeFloor?: number,
 		focus?: string,
 	): Promise<CompactionOutcome> {
@@ -809,7 +820,7 @@ export class Runtime {
 				const job = this.lanes.nextCompact(convId);
 				if (job !== undefined) {
 					try {
-						job.resolve(await this.doCompact(job.conv, "manual", undefined, job.focus));
+						job.resolve(await this.doCompact(job.conv, job.reason, undefined, job.focus));
 					} catch (err) {
 						job.reject(err);
 					}
@@ -1508,7 +1519,7 @@ export class Runtime {
 			// hook). A throw is logged and swallowed — curation never
 			// fails a turn.
 			try {
-				this.deps.onTurnSettled?.();
+				this.deps.onTurnSettled?.(convId);
 			} catch (err) {
 				log.warn("post-turn curator pass failed — turn already delivered", err, {
 					conversation: convId,

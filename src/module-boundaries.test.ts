@@ -307,6 +307,10 @@ function repoPath(file: string): string {
 // pinning its argv) outside src/t3.ts means a second wire owner.
 const T3_SPAWN = /(?:spawnProc|Bun\.spawn|execSync|exec)\((?:[^)]*["'])t3["']/;
 
+// hc's JSON-RPC socket contract has one owner; domain modules use its
+// adapter, never their own socket client.
+const HC_SOCKET_IMPORT = /from\s+["']node:net["']/;
+
 describe("module boundaries", () => {
 	test("neutral turn engine imports no agent modules or AI SDK step", () => {
 		const imports = specifiers(readFileSync(join(SRC, "turn/engine.ts"), "utf8"));
@@ -398,6 +402,15 @@ describe("module boundaries", () => {
 			.filter((name) => !name.endsWith(".test.ts"))
 			.filter((name) => T3_SPAWN.test(readFileSync(join(ROOT, name), "utf8")));
 		expect(offenders).toEqual([]);
+	});
+
+	test("the hc JSON-RPC socket is owned only by src/hc.ts", () => {
+		const offenders = walk(ROOT)
+			.filter((file) => !file.split(sep).includes("node_modules"))
+			.map(repoPath)
+			.filter((name) => !name.endsWith(".test.ts"))
+			.filter((name) => HC_SOCKET_IMPORT.test(readFileSync(join(ROOT, name), "utf8")));
+		expect(offenders).toEqual(["src/hc.ts"]);
 	});
 
 	test("grammy is imported only under src/tg", () => {

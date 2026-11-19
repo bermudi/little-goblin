@@ -254,8 +254,8 @@ a `restarting` line with no `accepted` after it.
 
 ### Post-deploy proof (new surfaces)
 
-After a deploy that changes these surfaces, and before cleaning up the old
-Herdr units, run each check against the live app. Keep the relevant
+After a deploy that changes these surfaces, run each check against the live
+app. Keep the relevant
 `goblin.log` lines as evidence:
 
 1. **Native `agent`:** In the app, ask Goblin to complete a small task that
@@ -264,10 +264,10 @@ Herdr units, run each check against the live app. Keep the relevant
 2. **Screenshot round trip:** Ask for a screenshot in the app. See the image
    delivered in chat and an `app media delivered` line in `goblin.log`.
    Telegram alternative: expect a `file delivered` line (debug level).
-3. **`delegate`:** Ask Goblin to delegate a trivial task to a cheap configured
-   harness. See the T3 thread link in chat, the thread in T3 Code, and the
-   completion notice back in chat. Check the `tool call` line with
-   `"tool":"delegate"` and the related `t3 call` lines in `goblin.log`.
+3. **`delegate`:** Ask Goblin to delegate a trivial task to a configured
+   harness. See the named hc terminal and the completion notice back in
+   chat. Check the `tool call` line with `"tool":"delegate"` and the related
+   `hc rpc` lines in `goblin.log`.
 4. **Handover:** In a project conversation, use the responsibility tool's
    `accept` action and select at least one T3 thread. This creates the
    responsibility and binds the selected thread(s); no existing

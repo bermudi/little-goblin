@@ -3601,8 +3601,20 @@ describe("steering", () => {
 		await writeFile(fifo, "pngdata");
 		expect(await s1.done).toEqual({ kind: "completed" });
 		expect(await s2.done).toEqual({ kind: "completed" });
-		// Swap the FIFO for a regular file: the successor's admission would
-		// otherwise re-read the FIFO with no writer left and park forever.
+		// The successor's admission re-reads the photo's path, and that read
+		// can open the FIFO before the swap below unlinks it — it would park
+		// forever on an inode no writer will ever open (#729). One more
+		// write hands the path over race-free: a read already parked on the
+		// FIFO rendezvouses with it, a read not yet opened finds this writer
+		// instead of a dead inode. The race timeout keeps a future that stops
+		// re-reading paths from hanging this test the same 5 s way.
+		await Promise.race([
+			writeFile(fifo, "pngdata"),
+			sleep(2000).then(() => {
+				throw new Error("successor never re-read the FIFO");
+			}),
+		]);
+		// Safety net for any read past the rendezvous: a regular file.
 		unlinkSync(fifo);
 		writeFileSync(fifo, "pngdata");
 		// The follow-up was never injected — a successor turn answers it.

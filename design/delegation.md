@@ -13,6 +13,59 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 > the Goblin-side tool for the operator's own desk, not the delegation
 > transport.
 
+> **Transport ruling (operator, 2026-11-19, issue #728):** the planned Herdr
+> pane transport is superseded. `delegate` runs on pinned herdr-core (`hc`)
+> through one JSON-RPC adapter (`src/hc.ts`). Goblin owns and hash-pins the
+> `hc` binary, starts a private core per Goblin home, and installs marked
+> harness hooks that report OSC 7501 lifecycle state. The production session
+> is `goblin-<8 hex sha256(GOBLIN_HOME)>`; its state remains at the default
+> `~/.local/state/herdr-core/<session>/`. There is no `HC_STATE_DIR` override.
+> Although `XDG_STATE_HOME` can relocate state, Goblin does not set it:
+> `terminal.run` passes Goblin's environment to the harness, so this variable
+> would leak into child harness environments. Core state is not moved under
+> `$GOBLIN_HOME`.
+>
+> Hooks call the shared `deploy/hc-hooks/report.sh`. It is silent unless
+> `GOBLIN_HC_RUN=1`; it writes OSC to `/dev/tty`, or walks parent processes
+> for a `/dev/pts/N` descriptor. If neither is available, it exits silently
+> unless `GOBLIN_HC_DEBUG=1`, when it writes one diagnostic line to stderr.
+> Codex hooks and their trusted hashes are merged into the per-run
+> `CODEX_HOME` without overwriting other entries; per-run `-c` hook-state
+> overrides did not avoid its review screen. `trusted_hash` is SHA-256 of
+> compact, sorted JSON for the matching hook event object. OpenCode and Pi
+> report `working` and settled (`idle` or `done`) states in live probes;
+> Claude's child hooks require the shared terminal bridge. Devin starts by
+> absolute path but did not report SessionStart status in the no-turn probe.
+> Do not use `XDG_STATE_HOME` as a workaround.
+
+## Delegation transport (current: herdr-core)
+
+1. One adapter, `src/hc.ts`, speaks JSON-RPC 2.0 over the core Unix socket
+   and validates every reply with zod. The RPC `terminal.run` is required
+   because it accepts the per-run environment map.
+2. Goblin owns the pinned `hc` binary and verifies its source-pinned SHA-256
+   before use. Download and mismatch failures fail loud.
+3. Each Goblin home gets a private core session named from its path hash.
+   The core runs outside the Goblin service cgroup so a Goblin restart does
+   not end live runs. The default state path is
+   `~/.local/state/herdr-core/<session>/`; no state-dir override is passed to
+   harnesses.
+4. Goblin installs per-harness OSC 7501 hooks. Session start reports `idle`,
+   prompt/tool activity `working`, permission/question `blocked`, and turn
+   end `idle`. Hooks act only when `GOBLIN_HC_RUN=1`.
+5. Send the first prompt only after the first hook status. If no status
+   arrives within 30 seconds, fail with the terminal screen attached.
+   Delivery is proven when the status becomes `working`.
+6. Poll `terminal.get`. `working` followed by `idle` or `done` settles the
+   turn; read output with `terminal.read`. `answer` is for a blocked run and
+   `stop` uses `terminal.kill`.
+7. When delegation is configured, health requires the pinned binary and a
+   reachable private core.
+8. Machine targets remain out. Polling is used instead of event
+   subscriptions to avoid reconnect and missed-event handling.
+
+The historical Herdr transport notes below describe the superseded design.
+
 ## Delegation (other harnesses, via herdr)
 
 On demand (2026-09-26): goblin hands work to other coding harnesses

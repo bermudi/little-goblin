@@ -56,7 +56,7 @@ export async function programsRoute(r: OperatorRequest): Promise<Response | null
 		const body: OperatorDelegationStopResponse = {
 			outcome: out.kind,
 			delegation: delegationItem(out.delegation),
-			notes: out.kind === "stopped" ? out.notes : [],
+			notes: out.notes,
 		};
 		return Response.json(body, {
 			status: out.kind === "stopped" ? 200 : 409,
@@ -94,8 +94,9 @@ function delegationItem(row: Delegation): OperatorDelegationItem {
 		name: row.name,
 		harness: row.harness,
 		status: row.status,
-		thread: row.t3Thread,
-		link: row.t3Link,
+		// Local herdr only — machine targets are out (issue #728), so the
+		// field the view renders for remote rows is always null.
+		target: null,
 		task: row.task,
 		cwd: row.cwd,
 		appConversation: row.appConversation,

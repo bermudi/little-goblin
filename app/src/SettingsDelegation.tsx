@@ -37,9 +37,6 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 
 	const roles = del === null ? [] : withDefault(del.roles);
 	const names = del === null ? [] : del.harnesses.map((h) => h.name.trim()).filter((n) => n !== "");
-	// Machine-side harnesses are file-only but valid role picks — offer
-	// them marked so they aren't mistaken for editable local agents.
-	const machineNames = del === null ? [] : del.machineHarnesses.filter((n) => !names.includes(n));
 
 	const setRole = (i: number, patch: Partial<DelegationRoleDraft>) =>
 		edit((d) => {
@@ -71,8 +68,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 											last.current.delegation ?? {
 												harnesses: [],
 												roles: [],
-												machineHarnesses: [],
-											},
+												},
 									};
 								}
 								last.current.delegation = d.delegation;
@@ -202,14 +198,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 											{n}
 										</option>
 									))}
-									{machineNames.map((n) => (
-										<option key={n} value={n}>
-											{n} (machine)
-										</option>
-									))}
-									{r.harness !== "" &&
-										!names.includes(r.harness) &&
-										!machineNames.includes(r.harness) && (
+									{r.harness !== "" && !names.includes(r.harness) && (
 											<option value={r.harness}>{r.harness} (unlisted)</option>
 										)}
 								</select>

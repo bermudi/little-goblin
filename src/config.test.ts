@@ -246,75 +246,45 @@ describe("goblin.json5", () => {
 		expect(c.tts).toEqual({ kind: "edge", voice: "en-US-AriaNeural" });
 	});
 
-	test("disk loads warn about retired delegation keys without activating them", () => {
+	test("disk loads reject retired delegation shapes naming the fix", () => {
 		const dir = useHome("goblin-cfg-");
-		const logPath = join(dir, "config.log");
+		const base = `{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7]`;
+		// The T3 Code interim shape is retired: delegate is back on Herdr
+		// panes (issue #728) and stale blocks fail loud, never warn-drop.
 		writeFileSync(
 			join(dir, "goblin.json5"),
-			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"zai/glm-4.6",operators:[7],delegation:{machine:{label:"g7",cwd:"/home/daniel/goblin/delegated"},session:"other",maxRunning:3,machines:{g7:{machine:"g7",root:"~/build"}},harnesses:{pi:{provider:"t3",model:"glm-5.3"}}}}`,
+			`${base},delegation:{machines:{g7:{machine:"g7",root:"~/build"}},harnesses:{pi:{kind:"pi"}}}}`,
 		);
-		setLogFile(logPath);
-		try {
-			const c = loadConfig()!;
-			expect(c.delegation).toEqual({ harnesses: { pi: { provider: "t3", model: "glm-5.3" } } });
-			const warnings = readFileSync(logPath, "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => JSON.parse(line) as { level: string; key: string; replacement: string });
-			expect(warnings.map((w) => w.key)).toEqual([
-				"delegation.machine",
-				"delegation.session",
-				"delegation.maxRunning",
-				"delegation.machines",
-			]);
-			expect(warnings.every((w) => w.level === "warn")).toBe(true);
-			expect(warnings[0]?.replacement).toContain("delegation.machines.<label>.machine");
-			expect(warnings[1]?.replacement).toContain("delegation.machines.<label>.session");
-			expect(warnings[2]?.replacement).toContain("no replacement");
-			expect(warnings[3]?.replacement).toContain("T3 Code");
-			writeConfig(c);
-			loadConfig();
-			expect(readFileSync(logPath, "utf8").trim().split("\n")).toHaveLength(4);
-		} finally {
-			setLogFile(null);
-		}
+		expect(() => loadConfig()).toThrow(/delegation\.machines was removed/);
+		writeFileSync(
+			join(dir, "goblin.json5"),
+			`${base},delegation:{harnesses:{pi:{provider:"t3",model:"glm-5.3"}}}}`,
+		);
+		expect(() => loadConfig()).toThrow(/\{kind, args\?, askFirst\?\}/);
 	});
 
-	// The t3 move (#607) retired the previous harness shape: one stale
-	// kind/args entry drops the entire delegation block at disk load —
-	// boot survives without the delegate tool — and says how to rewrite.
-	test("retired-shape delegation harnesses drop the whole block at load with a warn", () => {
+	// The T3 Code interim shape (#607) is itself retired: delegate runs on
+	// Herdr panes again (issue #728). A stale {provider, model} entry fails
+	// loud naming the Herdr shape; {kind, args?, askFirst?} parses.
+	test("retired-shape delegation harnesses fail loud naming the Herdr shape", () => {
 		const dir = useHome("goblin-cfg-");
-		const logPath = join(dir, "config.log");
 		writeFileSync(
 			join(dir, "goblin.json5"),
 			Z(
 				`,delegation:{harnesses:{pi:{kind:"pi"},codex:{provider:"t3",model:"glm-5.3"}},defaults:{default:"pi"}}`,
 			),
 		);
-		setLogFile(logPath);
-		try {
-			const c = loadConfig()!;
-			expect(c.delegation).toBeUndefined();
-			const warnings = readFileSync(logPath, "utf8")
-				.trim()
-				.split("\n")
-				.map((line) => JSON.parse(line) as { level: string; msg: string; key: string; replacement: string });
-			expect(warnings).toHaveLength(1);
-			expect(warnings[0]).toMatchObject({ level: "warn", key: "delegation" });
-			expect(warnings[0]!.msg).toContain("retired-shape");
-			expect(warnings[0]!.replacement).toContain("{provider, model, options?}");
-			// Only disk load retires: the same object through parseConfig
-			// (the POST merge's validator) still fails loud.
-			expect(() =>
-				parseConfig({
-					...objBase,
-					delegation: { harnesses: { pi: { kind: "pi" } } },
-				}),
-			).toThrow();
-		} finally {
-			setLogFile(null);
-		}
+		expect(() => loadConfig()).toThrow(/delegation\.harnesses uses the retired T3 Code shape/);
+		// The restored Herdr shape parses through the same door.
+		expect(() =>
+			parseConfig({
+				...objBase,
+				delegation: {
+					harnesses: { pi: { kind: "pi", args: ["--fast"] }, codex: { kind: "codex" } },
+					defaults: { default: "pi" },
+				},
+			}),
+		).not.toThrow();
 	});
 
 	// Per-block tables: [case name, extra fragment, expected].
@@ -654,47 +624,39 @@ describe("goblin.json5", () => {
 			],
 			["goblin", 5000, 2048, "mid", true, { semantic: 0.3 }, 4096, "high", 30_000, {}, 120_000],
 		],
-		// The t3 move (#607): harnesses are {provider, model} entries and
-		// delegation.machines is a retired key — stripped on disk load, so
-		// the rest of the block survives.
+		// Issue #728: harnesses are {kind, args?, askFirst?} Herdr entries;
+		// the T3 Code {provider, model} shape and machines are retired keys
+		// that fail loud (covered above), never silently stripped.
 		[
-			"delegation harnesses are provider/model entries on T3 Code",
+			"delegation harnesses are {kind,args,askFirst} entries on Herdr",
 			Z(
-				`,delegation:{harnesses:{codex:{provider:"t3",model:"glm-5.3"},flash:{provider:"t3",model:"glm-5.3-flash",askFirst:true}}}`,
+				`,delegation:{harnesses:{codex:{kind:"codex"},flash:{kind:"claude",args:["--model","glm-5.3-flash"],askFirst:true}}}`,
 			),
 			(c) => c.delegation?.harnesses,
 			{
-				codex: { provider: "t3", model: "glm-5.3" },
-				flash: { provider: "t3", model: "glm-5.3-flash", askFirst: true },
+				codex: { kind: "codex" },
+				flash: { kind: "claude", args: ["--model", "glm-5.3-flash"], askFirst: true },
 			},
-		],
-		[
-			"delegation.machines is retired — stripped on load, the block survives",
-			Z(
-				`,delegation:{machines:{g7:{machine:"g7",root:"~/build"},bench:{session:"bench",harnesses:{devin:{kind:"devin"}}}},harnesses:{pi:{provider:"t3",model:"glm-5.3"}}}`,
-			),
-			(c) => c.delegation,
-			{ harnesses: { pi: { provider: "t3", model: "glm-5.3" } } },
 		],
 		[
 			"delegation defaults map roles to configured harnesses",
 			Z(
-				`,delegation:{harnesses:{pi:{provider:"t3",model:"glm-5.3"},"pi-review":{provider:"t3",model:"glm-5.3-air"}},defaults:{default:"pi",build:"pi",review:"pi-review"}}`,
+				`,delegation:{harnesses:{pi:{kind:"pi"},"pi-review":{kind:"pi",args:["--model","glm-5.3-air"]}},defaults:{default:"pi",build:"pi",review:"pi-review"}}}`,
 			),
 			(c) => c.delegation?.defaults,
 			{ default: "pi", build: "pi", review: "pi-review" },
 		],
 		[
 			"delegation askFirst parses on harness entries",
-			Z(`,delegation:{harnesses:{claude:{provider:"t3",model:"m",askFirst:true}}}`),
+			Z(`,delegation:{harnesses:{claude:{kind:"claude",askFirst:true}}}`),
 			(c) => c.delegation?.harnesses["claude"]?.askFirst,
 			true,
 		],
 		[
-			"delegation model options parse string and boolean values",
-			Z(`,delegation:{harnesses:{claude:{provider:"t3",model:"m",options:{effort:"low",fastMode:false}}}}`),
-			(c) => c.delegation?.harnesses.claude?.options,
-			{ effort: "low", fastMode: false },
+			"delegation harness args parse as a string array",
+			Z(`,delegation:{harnesses:{claude:{kind:"claude",args:["--model","opus","--effort","low"]}}}`),
+			(c) => c.delegation?.harnesses.claude?.args,
+			["--model", "opus", "--effort", "low"],
 		],
 	];
 	for (const [name, content, pick, expected] of singles) {
@@ -720,36 +682,35 @@ describe("goblin.json5", () => {
 			`{providers:{zai:{kind:"openai-compatible",baseUrl:"https://api.z.ai/v4",auth:"zai"}},model:"glm-4.6",operators:[7]}`,
 			"model: custom",
 		],
-		// The t3 move (#607): goblin never guesses a model, so a harness
-		// entry missing its model still fails loud — the union (block | "")
-		// reports the miss as invalid_union.
+		// Issue #728: a harness entry missing its kind still fails loud —
+		// the union (block | "") reports the miss as invalid_union.
 		[
-			"delegation harnesses reject an entry missing its model",
-			Z(`,delegation:{harnesses:{codex:{provider:"t3"}}}`),
+			"delegation harnesses reject an entry missing its kind",
+			Z(`,delegation:{harnesses:{codex:{args:["--x"]}}}`),
 			"delegation: invalid_union",
 		],
-		["delegation harnesses reject a blank provider", Z(`,delegation:{harnesses:{codex:{provider:"",model:"m"}}}`), "delegation: too_small"],
+		["delegation harnesses reject a blank kind", Z(`,delegation:{harnesses:{codex:{kind:""}}}`), "delegation: too_small"],
 		// A default naming nothing is a silent staffing hole — reject at parse.
 		[
 			"delegation.defaults rejects an unknown harness",
-			Z(`,delegation:{harnesses:{pi:{provider:"t3",model:"m"}},defaults:{build:"ghost"}}`),
+			Z(`,delegation:{harnesses:{pi:{kind:"pi"}},defaults:{build:"ghost"}}`),
 			"delegation: custom",
 		],
 		// askFirst is a boolean flag, not a string knob — the delegation
 		// union (block | "") reports the miss as invalid_union.
 		[
 			"delegation askFirst rejects a non-boolean",
-			Z(`,delegation:{harnesses:{claude:{provider:"t3",model:"m",askFirst:"yes"}}}`),
+			Z(`,delegation:{harnesses:{claude:{kind:"claude",askFirst:"yes"}}}`),
 			"delegation: invalid_union",
 		],
 		[
-			"delegation model options reject an empty value",
-			Z(`,delegation:{harnesses:{claude:{provider:"t3",model:"m",options:{effort:""}}}}`),
-			"delegation: too_small",
+			"delegation harnesses reject the retired options field",
+			Z(`,delegation:{harnesses:{claude:{kind:"claude",options:{effort:"low"}}}}`),
+			"delegation: invalid_union",
 		],
 		[
-			"delegation model options reject an empty id",
-			Z(`,delegation:{harnesses:{claude:{provider:"t3",model:"m",options:{"":"x"}}}}`),
+			"delegation harness args reject non-strings",
+			Z(`,delegation:{harnesses:{claude:{kind:"claude",args:[1]}}}`),
 			"delegation: invalid_union",
 		],
 	];

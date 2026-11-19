@@ -41,14 +41,17 @@ function retiredDelegationKey(raw: unknown): string | null {
 	}
 	const harnesses = d.harnesses;
 	if (typeof harnesses === "object" && harnesses !== null && !Array.isArray(harnesses)) {
-		for (const [name, h] of Object.entries(harnesses)) {
+		for (const h of Object.values(harnesses)) {
 			if (
 				typeof h === "object" &&
 				h !== null &&
 				!Array.isArray(h) &&
 				("provider" in h || "model" in h || "options" in h)
 			) {
-				return `delegation.harnesses.${name} uses the retired T3 Code shape {provider, model, options?} — rewrite it as {kind, args?, askFirst?} for Herdr (issue #728)`;
+				// The entry name stays out of the message: config keys are
+				// user input and errors must never echo them (the sentinel
+				// probe in config.test.ts demands an empty stdout).
+				return `delegation.harnesses uses the retired T3 Code shape {provider, model, options?} — rewrite entries as {kind, args?, askFirst?} for Herdr (issue #728)`;
 			}
 		}
 	}

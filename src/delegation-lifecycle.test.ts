@@ -25,7 +25,6 @@ import {
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import type { DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
 import { HerdrError, makeHerdr, type AgentInfo, type Herdr } from "./herdr.ts";
-import type { DelegationTargetDeps } from "./delegation-lifecycle.ts";
 import { setLogFile } from "./log.ts";
 import { prReadinessFixture } from "./test-helpers/pr-readiness.ts";
 import type { PrReadiness } from "./pr-readiness.ts";
@@ -85,8 +84,6 @@ function harness(): Harness {
 		readPane: (id) => Promise.resolve(screens.get(`pane:${id}`) ?? `pane screen ${id}`),
 		interrupt: () => Promise.resolve(),
 		closeWorkspace: () => Promise.resolve(),
-		paneRun: () => Promise.resolve(),
-		paneWaitOutput: () => Promise.resolve(),
 	};
 	return {
 		store,
@@ -100,7 +97,6 @@ function harness(): Harness {
 		deps: {
 			delegations: store,
 			herdr,
-			targets: new Map(),
 			delegationsDir,
 			homeDir,
 			wake: (_a, text) => {
@@ -120,7 +116,6 @@ function runningRow(
 	name = "fix the thing",
 	seq = 1,
 	promptedAgoMs = 0,
-	target: string | null = null,
 ): Delegation {
 	const d = h.store.create({
 		name,
@@ -128,7 +123,6 @@ function runningRow(
 		cwd: "/w",
 		task: "do it",
 		address: { chatId: 1, threadId: null },
-		target,
 	});
 	h.store.bindLaunch(d.id, {
 		agentName: agentNameFor(d.id, name),
@@ -684,8 +678,8 @@ describe("delegation watcher", () => {
 
 	// The first successful capture after a failed post-prompt read may
 	// land on an agent that already finished — the completion is folded
-	// into the captured seq and can never advance past itself, machine
-	// rows have no local report, and the stall rule only fires on idle.
+	// into the captured seq and can never advance past itself, and the
+	// stall rule only fires on idle.
 	describe("already finished at baseline capture (#119)", () => {
 		// The prompt landed, the post-prompt read failed — no verdict may
 		// fire yet.
@@ -693,33 +687,11 @@ describe("delegation watcher", () => {
 			h: Harness,
 			name: string,
 			promptedAgoMs: number,
-			target: string | null = null,
 		): Delegation {
-			const d = runningRow(h, name, 1, promptedAgoMs, target);
+			const d = runningRow(h, name, 1, promptedAgoMs);
 			return h.store.markRunning(d.id, null, new Date(Date.now() - promptedAgoMs)) ?? d;
 		}
 
-		test("a machine row already done at capture settles instead of running forever", async () => {
-			const h = harness();
-			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
-				machine: "g7",
-				root: "/remote/goblin",
-				herdr: h.deps.herdr,
-			});
-			const d = pendingRow(h, "quick remote", 120_000, "g7");
-			h.agents.set(d.agentName, { ...agent(d.agentName, "done", 9), completion_seq: 9 });
-			const owner = startDelegationLifecycle(h.deps, 3_600_000);
-			await owner.tick();
-			await owner.tick();
-			await owner.tick();
-			owner.stopTicker();
-			const row = h.store.get(d.id)!;
-			expect(row.status).not.toBe("running");
-			expect(row.baselineSeq).toBe(9);
-			expect(h.wakes).toHaveLength(1);
-			expect(h.wakes[0]).toContain(`[delegation: #${d.id} quick remote · needs input]`);
-			expect(h.wakes[0]).toContain("can't be attributed");
-		});
 
 		test("a fresh report at capture attributes the completion — done in the same scan", async () => {
 			const h = harness();
@@ -1586,8 +1558,7 @@ describe("delegation watcher", () => {
 			expect(out.kind).toBe("failed");
 			if (out.kind === "failed") expect(out.why).toContain("trust seed");
 			expect(h.store.get(1)?.status).toBe("failed");
-			// Seeding sits between workspace bind and agent start now (the
-			// pane-run path for machine targets needs the pane): the opened
+			// Seeding sits between workspace bind and agent start now: the opened
 			// workspace must not survive a seed failure unwatched.
 			expect(closed).toEqual(["w1"]);
 			owner.stopTicker();
@@ -1655,7 +1626,6 @@ describe("delegation watcher", () => {
 							error: "bind write failed",
 							delegation: 1,
 							workspaceId: "w9",
-							target: null,
 						}),
 					);
 					const cleanupLogs = logs.filter(
@@ -1953,365 +1923,6 @@ describe("delegation watcher", () => {
 		});
 	});
 
-	describe("remote machine mode", () => {
-		test("a machine-target launch preflights the link, targets the remote cwd, keeps nothing local, and seeds through the pane", async () => {
-			const h = harness();
-			const cwds: string[] = [];
-			const paneRuns: string[] = [];
-			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
-				machine: "g7",
-				root: "/remote/goblin",
-				herdr: {
-					...h.deps.herdr,
-					createWorkspace: async (cwd) => {
-						cwds.push(cwd);
-						return { workspaceId: "w5", paneId: "w5:p1", cwd };
-					},
-					startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
-					paneRun: (_pane, command) => {
-						paneRuns.push(command);
-						return Promise.resolve();
-					},
-				},
-			});
-			const owner = startDelegationLifecycle(h.deps);
-			const out = await owner.launch({
-				harness: { name: "codex", kind: "codex", args: [] },
-				task: "do it remotely",
-				cwd: "/remote/goblin/task",
-				name: "remote",
-				target: "g7",
-				address: { chatId: 1, threadId: null },
-			});
-			expect(out.kind).toBe("started");
-			owner.stopTicker();
-			expect(cwds).toEqual(["/remote/goblin/task"]);
-			// The same write-if-absent codex trust marker harness-trust
-			// seeds locally runs through the delegation's own pane.
-			expect(paneRuns.length).toBe(1);
-			expect(paneRuns[0]).toContain('trust_level = "trusted"');
-			expect(paneRuns[0]).toContain("/remote/goblin/task");
-			// The echoed marker is split so the terminal's echo of the typed
-			// command can never satisfy the wait — only executed output can.
-			expect(paneRuns[0]).toContain("echo gob''lin-seed-");
-			expect(paneRuns[0]).not.toContain("goblin-seed-");
-			// No local report dir, no local trust seed: the remote host owns both.
-			expect(
-				existsSync(
-					join(h.delegationsDir, String((out as { delegation: Delegation }).delegation.id)),
-				),
-			).toBe(false);
-			expect(existsSync(join(h.homeDir, ".codex"))).toBe(false);
-		});
-
-		test("a machine seed writes TOML-escaped keys — a cwd with quotes stays a valid remote config", async () => {
-			const h = harness();
-			const paneRuns: string[] = [];
-			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
-				machine: "g7",
-				herdr: {
-					...h.deps.herdr,
-					createWorkspace: async (cwd) => ({ workspaceId: "w5", paneId: "w5:p1", cwd }),
-					startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
-					paneRun: (_pane, command) => {
-						paneRuns.push(command);
-						return Promise.resolve();
-					},
-				},
-			});
-			const owner = startDelegationLifecycle(h.deps);
-			// The pane's real cwd (ws.cwd) keys the marker — a quote in it
-			// must land TOML-escaped, same rule as the local seed.
-			const out = await owner.launch({
-				harness: { name: "codex", kind: "codex", args: [] },
-				task: "quoted",
-				cwd: '/remote/go"bin\\x',
-				name: "quoted",
-				target: "g7",
-				address: { chatId: 1, threadId: null },
-			});
-			owner.stopTicker();
-			expect(out.kind).toBe("started");
-			expect(paneRuns[0]).toContain('[projects."/remote/go\\"bin\\\\x"]');
-		});
-
-		test("a machine seed leaves an existing symlink alone — dangling or not", async () => {
-			const h = harness();
-			const paneRuns: string[] = [];
-			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
-				machine: "g7",
-				herdr: {
-					...h.deps.herdr,
-					createWorkspace: async (cwd) => ({ workspaceId: "w5", paneId: "w5:p1", cwd }),
-					startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
-					paneRun: (_pane, command) => {
-						paneRuns.push(command);
-						return Promise.resolve();
-					},
-				},
-			});
-			const owner = startDelegationLifecycle(h.deps);
-			const out = await owner.launch({
-				harness: { name: "codex", kind: "codex", args: [] },
-				task: "quoted",
-				cwd: "/remote/task",
-				name: "quoted",
-				target: "g7",
-				address: { chatId: 1, threadId: null },
-			});
-			owner.stopTicker();
-			expect(out.kind).toBe("started");
-			// The absent test distinguishes a truly missing file from an
-			// existing path of any kind: `-e` alone follows a
-			// dangling symlink to false, so `-L` must also refuse —
-			// writing then would create the link's target (repairing a
-			// link the local seeder refuses to replace) or clobber a
-			// directory/pipe the operator owns on that host.
-			expect(paneRuns[0]).toContain(
-				"[ -e ~/.codex/config.toml ] || [ -L ~/.codex/config.toml ] || printf",
-			);
-			expect(paneRuns[0]).not.toContain("[ -f ");
-		});
-
-		test("a remote trust wait timeout proceeds — a missed gate parks, never fails", async () => {
-			const h = harness();
-			const closed: string[] = [];
-			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
-				machine: "g7",
-				herdr: {
-					...h.deps.herdr,
-					createWorkspace: async (cwd) => ({ workspaceId: "w5", paneId: "w5:p1", cwd }),
-					startAgent: (name) => Promise.resolve(agent(name, "working", 1)),
-					paneWaitOutput: () =>
-						Promise.reject(new HerdrError("pane wait-output", "timeout", "timed out")),
-					closeWorkspace: (id) => {
-						closed.push(id);
-						return Promise.resolve();
-					},
-				},
-			});
-			const owner = startDelegationLifecycle(h.deps);
-			const out = await owner.launch({
-				harness: { name: "codex", kind: "codex", args: [] },
-				task: "remote",
-				cwd: "/remote/task",
-				name: "remote",
-				target: "g7",
-				address: { chatId: 1, threadId: null },
-			});
-			owner.stopTicker();
-			// The documented timeout is the one tolerated failure: the
-			// seed may have landed without the marker surfacing, so the
-			// launch proceeds and a missed gate parks the row later.
-			expect(out.kind).toBe("started");
-			expect(closed).toEqual([]);
-		});
-
-		test("a remote trust non-timeout failure fails the launch — never a silent start", async () => {
-			const closed: string[] = [];
-			const failures: { failure: unknown; pane: "run" | "wait" }[] = [
-				{
-					failure: new HerdrError("pane wait-output", "pane_not_found", "pane gone"),
-					pane: "wait",
-				},
-				{ failure: new HerdrError("pane run", "exit_1", "transport down"), pane: "run" },
-				{ failure: new Error("runner blew up"), pane: "run" },
-			];
-			for (const { failure, pane } of failures) {
-				const hh = harness();
-				(hh.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
-					machine: "g7",
-					herdr: {
-						...hh.deps.herdr,
-						createWorkspace: async (cwd) => ({ workspaceId: "w5", paneId: "w5:p1", cwd }),
-						...(pane === "wait"
-							? { paneWaitOutput: () => Promise.reject(failure) }
-							: { paneRun: () => Promise.reject(failure) }),
-						closeWorkspace: (id) => {
-							closed.push(id);
-							return Promise.resolve();
-						},
-					},
-				});
-				const owner = startDelegationLifecycle(hh.deps);
-				const out = await owner.launch({
-					harness: { name: "codex", kind: "codex", args: [] },
-					task: "remote",
-					cwd: "/remote/task",
-					name: "remote",
-					target: "g7",
-					address: { chatId: 1, threadId: null },
-				});
-				owner.stopTicker();
-				expect(out.kind).toBe("failed");
-				if (out.kind === "failed") expect(out.why).toContain("remote trust seed failed");
-			}
-			expect(closed).toEqual(["w5", "w5", "w5"]);
-		});
-
-		test("a vanished machine report path is unavailable, never a local substitute", async () => {
-			const h = harness();
-			const targets = h.deps.targets as Map<string, DelegationTargetDeps>;
-			targets.set("remote", { machine: "remote", root: "~/work", herdr: h.deps.herdr });
-			const d = runningRow(h, "remote work", 1, 0, "remote");
-			h.agents.set(d.agentName, agent(d.agentName, "working", 1));
-			const owner = startDelegationLifecycle(h.deps);
-			try {
-				expect(owner.reportPath(d.id)).toBe(`~/work/delegations/${d.id}/report.md`);
-				await owner.tick();
-				targets.delete("remote");
-				const path = owner.reportPath(d.id);
-				expect(path).toContain("unavailable");
-				expect(path).toContain('target "remote"');
-				expect(path).not.toContain(h.delegationsDir);
-				await owner.tick();
-				expect(h.store.get(d.id)?.status).toBe("running");
-				expect(h.wakes).toEqual([]);
-			} finally {
-				await owner.stopTicker();
-			}
-		});
-
-		test("boot recovery of a vanished target does not read a coinciding local report", async () => {
-			const h = harness();
-			const d = h.store.create({
-				name: "remote start",
-				harness: "codex",
-				cwd: "/remote",
-				task: "t",
-				address: { chatId: 1, threadId: null },
-				target: "gone",
-			});
-			const dir = join(h.delegationsDir, String(d.id));
-			mkdirSync(dir, { recursive: true });
-			writeFileSync(join(dir, "report.md"), "UNRELATED LOCAL REPORT");
-			const owner = startDelegationLifecycle(h.deps);
-			try {
-				await owner.tick();
-				expect(h.store.get(d.id)?.status).toBe("failed");
-				expect(h.wakes).toHaveLength(1);
-				expect(h.wakes[0]).toContain('Report: (unavailable — target "gone"');
-				expect(h.wakes[0]).not.toContain(h.delegationsDir);
-				expect(h.wakes[0]).not.toContain("UNRELATED LOCAL REPORT");
-			} finally {
-				await owner.stopTicker();
-			}
-		});
-
-		test("stopping a row whose target left config retires it — the stop is a verdict, not an observation", async () => {
-			const h = harness();
-			const d = h.store.create({
-				name: "orphan",
-				harness: "codex",
-				cwd: "/w",
-				task: "t",
-				address: { chatId: 1, threadId: null },
-				target: "gone",
-			});
-			h.store.setStatus(d.id, "running");
-			const owner = startDelegationLifecycle(h.deps);
-			const out = await owner.stop(d.id);
-			owner.stopTicker();
-			expect(out.kind).toBe("stopped");
-			if (out.kind === "stopped") {
-				expect(out.notes?.join(" ")).toContain("gone from config");
-				expect(out.notes?.join(" ")).toContain("may still be running");
-			}
-			expect(h.store.get(d.id)?.status).toBe("stopped");
-		});
-
-		test("a launch for a target added after boot fails the row instead of stranding it", async () => {
-			const h = harness();
-			const owner = startDelegationLifecycle(h.deps);
-			const out = await owner.launch({
-				harness: { name: "codex", kind: "codex", args: [] },
-				task: "late",
-				cwd: "/w",
-				name: "late",
-				target: "late",
-				address: { chatId: 1, threadId: null },
-			});
-			owner.stopTicker();
-			expect(out.kind).toBe("failed");
-			if (out.kind === "failed") {
-				expect(out.why).toContain("no longer in config");
-				expect(out.why).toContain("restart goblin to apply");
-			}
-			const row = h.store.get(1);
-			expect(row?.status).toBe("failed"); // never a stranded `starting`
-			expect(existsSync(join(h.delegationsDir, "1"))).toBe(false);
-		});
-
-		test("a machine row finishes on seq advance with no local report file — the notice carries the deep agent read", async () => {
-			const h = harness();
-			const prompts: string[] = [];
-			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
-				machine: "g7",
-				root: "/remote/goblin",
-				herdr: {
-					...h.deps.herdr,
-					createWorkspace: async () => ({ workspaceId: "w5", paneId: "w5:p1", cwd: "/w" }),
-					startAgent: (name) => {
-						// Register the agent the way a real server would:
-						// the launch's post-prompt get must see it (seq 1),
-						// not the baseline-pending posture.
-						h.agents.set(name, agent(name, "working", 1));
-						return Promise.resolve(agent(name, "working", 1));
-					},
-					prompt: (_name, text) => {
-						prompts.push(text);
-						return Promise.resolve();
-					},
-				},
-			});
-			const owner = startDelegationLifecycle(h.deps);
-			const out = await owner.launch({
-				harness: { name: "codex", kind: "codex", args: [] },
-				task: "remote work",
-				cwd: "/remote/goblin",
-				name: "screenwork",
-				target: "g7",
-				address: { chatId: 1, threadId: null },
-			});
-			expect(out.kind).toBe("started");
-			const d = (out as { delegation: Delegation }).delegation;
-			// The report instruction names the REMOTE path and the mkdir nudge.
-			expect(prompts[0]).toContain(
-				`/remote/goblin/delegations/${d.id}/report.md (create the directory if needed)`,
-			);
-			// Finished remotely: seq advances past the baseline, agent reads
-			// done — no local report file ever exists.
-			h.agents.set(d.agentName!, agent(d.agentName!, "done", 2));
-			h.screens.set(`agent:${d.agentName}`, "REMOTE RESULT ON SCREEN");
-			await owner.tick();
-			owner.stopTicker();
-			expect(h.store.get(d.id)!.status).toBe("done");
-			expect(h.wakes[0]).toContain("REMOTE RESULT ON SCREEN");
-		});
-
-		test("send on a machine row prompts without the local archive dance", async () => {
-			const h = harness();
-			const prompts: string[] = [];
-			(h.deps.targets as Map<string, DelegationTargetDeps>).set("g7", {
-				machine: "g7",
-				root: "/remote/goblin",
-				herdr: {
-					...h.deps.herdr,
-					prompt: (_name, text) => {
-						prompts.push(text);
-						return Promise.resolve();
-					},
-				},
-			});
-			const owner = startDelegationLifecycle(h.deps, 3_600_000);
-			const d = runningRow(h, "follow-up target", 1, 0, "g7");
-			const out = await owner.send(d.id, "and then this");
-			owner.stopTicker();
-			expect(out.kind).toBe("sent");
-			expect(prompts[0]).toContain("and then this");
-			expect(existsSync(h.delegationsDir)).toBe(false);
-		});
-	});
 });
 
 test("delegation ticker owns its store until shutdown joins, and stopped handles stay stopped", async () => {

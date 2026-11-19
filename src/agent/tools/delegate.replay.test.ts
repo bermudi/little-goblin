@@ -16,7 +16,7 @@ import { stepCountIs, streamText } from "ai";
 import { openStore } from "../../conversation.ts";
 import { openDelegations, type DelegationsStore } from "../../delegations.ts";
 import { startDelegationLifecycle } from "../../delegation-watcher.ts";
-import type { DelegationLifecycle, DelegationTargetDeps } from "../../delegation-lifecycle.ts";
+import type { DelegationLifecycle } from "../../delegation-lifecycle.ts";
 import type { AgentInfo, Herdr } from "../../herdr.ts";
 import { openProjects } from "../../projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "../../responsibilities.ts";
@@ -116,16 +116,12 @@ function rig(): Rig {
 		readPane: () => Promise.resolve("pane screen"),
 		interrupt: () => Promise.resolve(),
 		closeWorkspace: () => Promise.resolve(),
-		paneRun: () => Promise.resolve(),
-		paneWaitOutput: () => Promise.resolve(),
 	};
 	const wakes: string[] = [];
-	const targets = new Map<string, DelegationTargetDeps>();
 	const lifecycle = startDelegationLifecycle(
 		{
 			delegations: store,
 			herdr,
-			targets,
 			delegationsDir: join(dir, "delegations"),
 			homeDir: home,
 			wake: (_address, text) => {
@@ -147,7 +143,6 @@ function rig(): Rig {
 		config: { harnesses: { codex: { kind: "codex" }, pi: { kind: "pi" } } },
 		pin: () => ({ address: { chatId: -100, threadId: 7 } }),
 		workspaceDir,
-		mountedSubagents: { worker: true, computer: true },
 		checkResponsibility: (id) =>
 			resps.get(id) === null ? `responsibility ${id} not found in this project` : null,
 	});

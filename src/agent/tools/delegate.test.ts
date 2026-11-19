@@ -43,13 +43,7 @@ interface Harness {
 	deps: DelegateToolDeps;
 }
 
-function harness(
-	startError?: { code: string; message: string },
-	targets: ReadonlyMap<
-		string,
-		import("../../delegation-lifecycle.ts").DelegationTargetDeps
-	> = new Map(),
-): Harness {
+function harness(startError?: { code: string; message: string }): Harness {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-delegtool-"));
 	dirs.push(dir);
 	const workspaceDir = join(dir, "workspace");
@@ -81,8 +75,6 @@ function harness(
 			closed.push(id);
 			return Promise.resolve();
 		},
-		paneRun: () => Promise.resolve(),
-		paneWaitOutput: () => Promise.resolve(),
 	};
 	const delegationsDir = join(dir, "delegations");
 	const homeDir = join(dir, "home");
@@ -95,7 +87,6 @@ function harness(
 			homeDir,
 			wake: () => true,
 			wakeApp: () => true,
-			targets,
 		},
 		3_600_000,
 	);
@@ -115,7 +106,6 @@ function harness(
 				: h.pinOverride(name);
 		},
 		workspaceDir,
-		mountedSubagents: { worker: false, computer: false },
 	};
 	const h: Harness = {
 		tool: delegateTool(deps),
@@ -184,30 +174,6 @@ describe("delegate tool", () => {
 		expect(
 			delegateInputSchema.safeParse({ action: "answer", id: 1, key: "rm -rf /" }).success,
 		).toBe(false);
-	});
-	test("the wire schema preserves 'on' — a parsed start still resolves its target", async () => {
-		const targets = new Map<string, import("../../delegation-lifecycle.ts").DelegationTargetDeps>();
-		const h = harness(undefined, targets);
-		targets.set("g7", { machine: "g7", root: "/remote/goblin", herdr: h.herdr });
-		const tool = delegateTool({
-			lifecycle: h.lifecycle,
-			config: {
-				harnesses: { codex: { kind: "codex" } },
-				machines: { g7: { machine: "g7", root: "/remote/goblin" } },
-			},
-			pin: () => ({ address: { chatId: 1, threadId: null } }),
-			workspaceDir: h.workspaceDir,
-			mountedSubagents: { worker: false, computer: false },
-		});
-		const parsed = delegateInputSchema.parse({
-			action: "start",
-			harness: "codex",
-			task: "remote thing",
-			on: "g7",
-		});
-		const out = (await exec(tool, parsed)) as { id: number };
-		expect(h.store.get(out.id)!.target).toBe("g7");
-		expect(h.store.get(out.id)!.cwd).toBe("/remote/goblin");
 	});
 
 	test("an unknown harness is rejected listing the configured ones", async () => {
@@ -293,32 +259,8 @@ describe("delegate tool", () => {
 		expect(flagged).toContain("ask-first harnesses (claude)");
 		expect(flagged).toContain("ask the operator before each use");
 
-		// A machine-side askFirst counts too — the name lands in the same list.
-		const machine = harness();
-		machine.deps.config.machines = {
-			g7: { machine: "g7", harnesses: { devin: { kind: "devin", askFirst: true } } },
-		};
-		expect(delegateTool(machine.deps).description).toContain("ask-first harnesses (devin)");
 	});
 
-	test("the description names only the subagent tools this turn mounts", () => {
-		const h = harness();
-		const description = (mountedSubagents: { worker: boolean; computer: boolean }) =>
-			delegateTool({ ...h.deps, mountedSubagents }).description;
-		const neither = description({ worker: false, computer: false });
-		expect(neither).not.toContain("worker subagent");
-		expect(neither).not.toContain("computer subagent");
-		expect(neither).not.toContain("  ");
-		const workerOnly = description({ worker: true, computer: false });
-		expect(workerOnly).toContain("worker subagent");
-		expect(workerOnly).not.toContain("computer subagent");
-		const computerOnly = description({ worker: false, computer: true });
-		expect(computerOnly).toContain("computer subagent");
-		expect(computerOnly).not.toContain("worker subagent");
-		expect(description({ worker: true, computer: true })).toContain(
-			"Standalone long or code-heavy work belongs with a worker subagent, and screen work with a computer subagent.",
-		);
-	});
 
 	test("a bad cwd is rejected before any herdr call", async () => {
 		const h = harness();
@@ -332,86 +274,7 @@ describe("delegate tool", () => {
 		expect(h.prompts).toEqual([]);
 	});
 
-	test("machine mode resolves cwd against the remote root and skips the local stat", async () => {
-		const targets = new Map<string, import("../../delegation-lifecycle.ts").DelegationTargetDeps>();
-		const h = harness(undefined, targets);
-		targets.set("g7", { machine: "g7", root: "/remote/goblin", herdr: h.herdr });
-		const tool = delegateTool({
-			lifecycle: h.lifecycle,
-			config: {
-				harnesses: { codex: { kind: "codex" } },
-				machines: { g7: { machine: "g7", root: "/remote/goblin" } },
-			},
-			pin: () => ({ address: { chatId: 1, threadId: null } }),
-			workspaceDir: h.workspaceDir,
-			mountedSubagents: { worker: false, computer: false },
-		});
-		const out = (await exec(tool, {
-			action: "start",
-			harness: "codex",
-			task: "remote thing",
-			cwd: "sub/dir",
-			on: "g7",
-		})) as { id: number };
-		expect(h.store.get(out.id)!.cwd).toBe("/remote/goblin/sub/dir");
-		const out2 = (await exec(tool, {
-			action: "start",
-			harness: "codex",
-			task: "remote default",
-			on: "g7",
-		})) as { id: number; attach: string };
-		expect(h.store.get(out2.id)!.cwd).toBe("/remote/goblin");
-		expect(out2.attach).toBe("herdr --remote <ssh-target> (see herdr machine list)");
-		const toolTilde = delegateTool({
-			lifecycle: h.lifecycle,
-			config: {
-				harnesses: { codex: { kind: "codex" } },
-				machines: { lth: { machine: "lth", root: "~/build" } },
-			},
-			pin: () => ({ address: { chatId: 1, threadId: null } }),
-			workspaceDir: h.workspaceDir,
-			mountedSubagents: { worker: false, computer: false },
-		});
-		targets.set("lth", { machine: "lth", root: "~/build", herdr: h.herdr });
-		const out3 = (await exec(toolTilde, {
-			action: "start",
-			harness: "codex",
-			task: "tilde root",
-			cwd: "sub/dir",
-			on: "lth",
-		})) as { id: number };
-		expect(h.store.get(out3.id)!.cwd).toBe("~/build/sub/dir");
-		const localErr = (await exec(h.tool, {
-			action: "start",
-			harness: "codex",
-			task: "tilde local",
-			cwd: "~/definitely-not-here-goblin-test",
-		})) as { error: string };
-		expect(localErr.error).toContain(join(homedir(), "definitely-not-here-goblin-test"));
-	});
 
-	test("a session target's attach hint names that session", async () => {
-		const targets = new Map<string, import("../../delegation-lifecycle.ts").DelegationTargetDeps>();
-		const h = harness(undefined, targets);
-		targets.set("bench", { session: "goblin-bench", herdr: h.herdr });
-		const tool = delegateTool({
-			lifecycle: h.lifecycle,
-			config: {
-				harnesses: { codex: { kind: "codex" } },
-				machines: { bench: { session: "goblin-bench" } },
-			},
-			pin: () => ({ address: { chatId: 1, threadId: null } }),
-			workspaceDir: h.workspaceDir,
-			mountedSubagents: { worker: false, computer: false },
-		});
-		const out = (await exec(tool, {
-			action: "start",
-			harness: "codex",
-			task: "bench it",
-			on: "bench",
-		})) as { id: number; attach: string };
-		expect(out.attach).toBe("herdr session attach goblin-bench");
-	});
 
 	test("start launches, prompts with the report instruction, and binds the row", async () => {
 		const h = harness();
@@ -667,7 +530,6 @@ describe("delegate tool", () => {
 		const w = startDelegationLifecycle({
 			delegations: h.store,
 			herdr: h.herdr,
-			targets: new Map(),
 			delegationsDir: h.delegationsDir,
 			homeDir: h.homeDir,
 			wake: (_a, text) => {
@@ -793,7 +655,6 @@ describe("delegate tool", () => {
 		const w = startDelegationLifecycle({
 			delegations: h.store,
 			herdr: h.herdr,
-			targets: new Map(),
 			delegationsDir: h.delegationsDir,
 			homeDir: h.homeDir,
 			wake: (_a, text) => {
@@ -962,7 +823,6 @@ describe("delegate tool", () => {
 				discard: (reason) => discarded.push(reason ?? ""),
 			}),
 			workspaceDir: dir,
-			mountedSubagents: { worker: false, computer: false },
 		});
 		await expect(exec(tool, { action: "start", harness: "codex", task: "do it" })).rejects.toThrow(
 			"launch exploded",
@@ -986,7 +846,6 @@ describe("delegate tool", () => {
 				},
 			}),
 			workspaceDir: dir,
-			mountedSubagents: { worker: false, computer: false },
 		});
 		await expect(exec(tool, { action: "start", harness: "codex", task: "do it" })).rejects.toThrow(
 			"launch exploded",

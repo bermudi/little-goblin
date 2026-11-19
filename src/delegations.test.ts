@@ -78,45 +78,6 @@ describe("delegations store", () => {
 		} finally { second.close(); }
 	});
 
-	test("pre-machines rows keep NULL target — the own-local-session meaning", () => {
-		const path = join(tmpdirPath(), "goblin.sqlite");
-		const db = new Database(path);
-		db.exec(`CREATE TABLE delegations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL,
-			harness TEXT NOT NULL,
-			cwd TEXT NOT NULL,
-			task TEXT NOT NULL,
-			chat_id INTEGER NOT NULL,
-			thread_id INTEGER,
-			agent_name TEXT NOT NULL,
-			workspace_id TEXT NOT NULL,
-			pane_id TEXT NOT NULL,
-			status TEXT NOT NULL,
-			baseline_seq INTEGER NOT NULL DEFAULT 0,
-			prompted_at TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			finished_at TEXT,
-			app_conversation TEXT
-		)`);
-		// NULL target is the own-local-session meaning — local launches
-		// still write it, so nothing may mislabel live local rows as
-		// pre-machines relics.
-		const ins = db.prepare(`INSERT INTO delegations
-			(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, prompted_at, created_at)
-			VALUES (?, 'codex', '/w', 't', 1, NULL, 'g1', 'w1', 'w1:p1', ?, '1970-01-01', '1970-01-01')`);
-		ins.run("remote-live", "running");
-		ins.run("remote-starting", "starting");
-		ins.run("old-done", "done");
-		db.close();
-		const store = openDelegations(path);
-		try {
-			expect(store.get(1)?.target).toBeNull();
-			expect(store.get(3)?.target).toBeNull();
-		} finally {
-			store.close();
-		}
-	});
 
 	// baseline_seq went nullable — NULL is the baseline-pending posture (a
 	// failed post-prompt read never falls back to a pre-prompt value).

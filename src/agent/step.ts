@@ -1,7 +1,6 @@
 // index.ts binds configRef/auth/observation and spreads this into
 // RuntimeDeps — the shape is RuntimeDeps["buildStep"|"compaction"].
 
-import { generateText, isStepCount } from "ai";
 import type { RuntimeDeps } from "../runtime.ts";
 
 import type { ConfigRef } from "../config.ts";
@@ -29,6 +28,7 @@ import type { ClaudeEngine } from "./claude-code/mod.ts";
 import type { MediaPosition } from "./attachments.ts";
 import type { PrefixStep } from "../turn/prefix-summary.ts";
 import { makePrefixFlush } from "../turn/prefix-summary.ts";
+import { generate, type ModelCall } from "./generate.ts";
 
 // A flush reads notes before it edits them: list, read, then a few writes.
 const FLUSH_MAX_STEPS = 8;
@@ -86,7 +86,7 @@ export function makeStepBuilder(
 		conv: Conversation,
 		modelRef: string,
 		purpose: "compaction" | "compaction-flush",
-	) => {
+	): Promise<ModelCall> => {
 		const cfg = configRef.current;
 		const model = observedModel(
 			await resolveModel(cfg, auth, modelRef, {
@@ -132,11 +132,11 @@ export function makeStepBuilder(
 				signal,
 			});
 		}
-		const { text } = await generateText({
-			...(await compactCall(conv, modelRef, "compaction")),
+		const { text } = await generate({
+			call: await compactCall(conv, modelRef, "compaction"),
 			instructions: system,
 			prompt,
-			abortSignal: signal,
+			signal,
 		});
 		return text;
 	};
@@ -226,6 +226,7 @@ export function makeStepBuilder(
 				contextWindowFor(),
 			]);
 			return {
+				engine: "ai-sdk",
 				// Observed at the model boundary — tool-loop continuations included.
 				model: observedModel(lane.model, {
 					conversation: conv.id,
@@ -348,23 +349,23 @@ export function makeStepBuilder(
 					return null;
 				}
 				return async (spanText, signal) => {
-					const result = await generateText({
-						...(await compactCall(conv, modelRef, "compaction-flush")),
+					const result = await generate({
+						call: await compactCall(conv, modelRef, "compaction-flush"),
 						instructions: FLUSH_SYSTEM,
 						prompt: spanText,
-						tools: toToolSet({
+						tools: {
 							note: noteTool({
 								notes,
 								projects,
 								conversation: conv.id,
 								projectId: conv.projectId,
 							}),
-						}),
-						stopWhen: isStepCount(FLUSH_MAX_STEPS),
-						abortSignal: signal,
+						},
+						maxSteps: FLUSH_MAX_STEPS,
+						signal,
 					});
 					return {
-						noteCalls: result.steps.reduce((n, step) => n + step.toolCalls.length, 0),
+						noteCalls: result.toolCalls,
 					};
 				};
 			},

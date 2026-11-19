@@ -4,34 +4,32 @@
 // and telemetry contract — channel sinks, replay/attach, and
 // crash-resume stay engine-neutral.
 
-import type { ClaudeStep } from "../agent/claude-code/mod.ts";
-import type { ModelStep } from "./ai-sdk-step.ts";
 import type { StreamDeps, StreamOutcome, WireMember } from "./stream.ts";
 
 /** The deps object every engine consumes, minus the step it adds back. */
 export type EngineInput<M extends WireMember> = Omit<StreamDeps<M>, "step">;
 
-export interface TurnEngine<S extends ModelStep | ClaudeStep = ModelStep | ClaudeStep> {
-	/** Which engine this is: "ai-sdk" | "claude-code" | future. */
-	readonly id: string;
-	accepts(step: ModelStep | ClaudeStep): step is S;
-	run<M extends WireMember>(input: EngineInput<M> & { step: S }): Promise<StreamOutcome>;
+export interface EngineStep {
+	readonly engine: string;
 }
 
-export function isClaudeStep(step: ModelStep | ClaudeStep): step is ClaudeStep {
-	return "engine" in step && step.engine === "claude-code";
+export interface TurnEngine<S extends EngineStep = EngineStep> {
+	/** Which engine this is: "ai-sdk" | "claude-code" | future. */
+	readonly id: string;
+	accepts(step: EngineStep): step is S;
+	run<M extends WireMember>(input: EngineInput<M> & { step: S }): Promise<StreamOutcome>;
 }
 
 /** First engine whose `accepts` is true; none is a loud turn failure. */
 export function pickEngine(
 	engines: readonly TurnEngine[],
-	step: ModelStep | ClaudeStep,
+	step: EngineStep,
 	convId: string,
 ): TurnEngine {
 	const engine = engines.find((candidate) => candidate.accepts(step));
 	if (engine === undefined) {
 		throw new Error(
-			`conversation ${convId} has no engine for this step (engines: ${engines
+			`conversation ${convId} has no engine for step engine "${step.engine}" (engines: ${engines
 				.map((candidate) => candidate.id)
 				.join(", ")})`,
 		);

@@ -4,7 +4,7 @@
 import { randomUUID } from "node:crypto";
 import type { Tools } from "./tool.ts";
 import type { Message, MessageChunk } from "./message.ts";
-import type { ClaudeEngine, ClaudeStep } from "./agent/claude-code/mod.ts";
+import { isClaudeStep, type ClaudeEngine, type ClaudeStep } from "./agent/claude-code/mod.ts";
 import type { ClaudeSessionStore } from "./claude-sessions.ts";
 import { type CompactionOutcome, chooseBoundary, type PrefixSummarizer } from "./agent/compaction.ts";
 import {
@@ -54,7 +54,7 @@ import {
 	type SDKToolSet,
 } from "./turn/ai-sdk-tools.ts";
 import { sinkDelivery } from "./turn/delivery.ts";
-import { isClaudeStep, pickEngine, type TurnEngine } from "./turn/engine.ts";
+import { pickEngine, type TurnEngine } from "./turn/engine.ts";
 import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { landAttempt, submitTurnReview } from "./turn/finish.ts";
 import { stepModelRef } from "./turn/model-ref.ts";
@@ -91,6 +91,8 @@ import {
 import { buildModelView, type ViewContext } from "./turn/view.ts";
 import type { TurnJournal } from "./turn-journal.ts";
 import type { WindowCapture } from "./window-capture.ts";
+
+export type TurnStep = ModelStep | ClaudeStep;
 
 const LOOP_CHECK_EVERY = 16;
 // design/compaction.md → Budgets: the verbatim tail is 20k tokens —
@@ -132,7 +134,7 @@ export interface RuntimeDeps {
 	buildStep(
 		conv: Conversation,
 		tools: Tools,
-	): ModelStep | ClaudeStep | Promise<ModelStep | ClaudeStep>;
+	): TurnStep | Promise<TurnStep>;
 	// The turn engines, tried in order (turn/engine.ts pickEngine):
 	// index.ts binds [claude-code, ai-sdk]. A step no engine accepts
 	// fails the turn loud, never silently degrades.

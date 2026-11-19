@@ -20,7 +20,7 @@ import { openStore } from "./conversation.ts";
 import { Runtime, userMessage } from "./runtime.ts";
 import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
-import { isClaudeStep } from "./turn/engine.ts";
+import { isClaudeStep } from "./agent/claude-code/mod.ts";
 import { fakeClaude } from "./testkit/fake-claude.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "./testkit/fake-model.ts";
 import { RecordingSink, tmpDb, tmpDir, useHome, waitUntil } from "./testkit.ts";
@@ -115,7 +115,7 @@ describe("one conversation across turn engines", () => {
 			system: "test",
 			thinking: {},
 		};
-		const sdkStep = (): ModelStep => ({ model: sdk.model, system: "test", label: "fake/fake-1" });
+		const sdkStep = (): ModelStep => ({ engine: "ai-sdk", model: sdk.model, system: "test", label: "fake/fake-1" });
 
 		const runtime = new Runtime({
 			store,

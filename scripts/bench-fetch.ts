@@ -11,6 +11,12 @@
 // keyless unless configured. A provider whose record is missing or
 // fails to resolve is "skipped", not failed. Values never print.
 //
+// Candidates (CANDIDATES below) are providers auditioning for a schema
+// kind — the bench runs them through a bench-local extractor against
+// the same targets and the same thin/blocked rules, marked "candidate"
+// in the provider list. A candidate that earns its place gets a real
+// extractor in src/agent/tools/fetch.ts and a schema kind later.
+//
 // Run from the repo root:
 //
 //   bun scripts/bench-fetch.ts [extra-url ...]
@@ -28,8 +34,12 @@ import { authFile } from "../src/auth-parse.ts";
 import { loadAuthFile, type AuthStore } from "../src/auth.ts";
 import { parseConfigFile } from "../src/config.ts";
 import { authDefaults, fetchKinds, type Config, type FetchConfig } from "../src/config-schema.ts";
-import { runFetchChain } from "../src/agent/tools/fetch.ts";
-import { clampChars } from "../src/agent/tools/web.ts";
+import {
+	runFetchChain,
+	type FetchChainOutcome,
+	type FetchFailure,
+} from "../src/agent/tools/fetch.ts";
+import { clampChars, postJson, str } from "../src/agent/tools/web.ts";
 import { goblinHome } from "../src/goblin-home.ts";
 import { setLogStream } from "../src/log.ts";
 
@@ -43,6 +53,13 @@ process.env.GOBLIN_HOME ??= mkdtempSync(join(tmpdir(), "goblin-bench-"));
 setLogStream(process.stderr);
 
 type FetchKind = (typeof fetchKinds)[number];
+type BenchKind = FetchKind | keyof typeof CANDIDATES;
+// runFetchChain's result union: Extracted ({title,text,pdf?,meta}) or
+// Rejected ({error,kind,meta}) — the shape candidate execs reproduce.
+type ExtractedOrRejected = FetchChainOutcome["extracted"];
+type Fetched = Exclude<ExtractedOrRejected, { error: string }>;
+// Mirrors fetch.ts's MIN_EXTRACT — candidates get the same thin rule.
+const MIN_EXTRACT = 200;
 
 // Targets picked for bot-detection hardness, not content. example.com
 // is the control: a provider failing it is broken, not blocked.
@@ -56,11 +73,17 @@ const DEFAULT_URLS = [
 	"https://x.com/",
 ];
 
+interface ExecResult {
+	extracted: ExtractedOrRejected;
+	failures: FetchFailure[];
+}
+
 interface Plan {
-	kind: FetchKind;
-	entry: FetchConfig[number];
+	kind: string;
+	exec: (auth: AuthStore, url: string) => Promise<ExecResult>;
 	authName?: string | undefined;
 	skip?: string | undefined;
+	candidate?: true | undefined;
 }
 
 interface Cell {
@@ -81,17 +104,73 @@ function isBlockPage(title: string, text: string): boolean {
 	return BLOCK_TITLE.test(title) || BLOCK_HEAD.test(text.slice(0, 500));
 }
 
-function parseArgs(argv: string[]): { kinds: FetchKind[]; extraUrls: string[] } {
-	const picked = new Set<FetchKind>();
+// ---------- candidates ----------
+
+// POST api.fetch.tinyfish.ai (docs.tinyfish.ai/tinyfetch): per-URL
+// failures land in errors[] on a 200 — never an HTTP error — so a
+// blocked page must be read out of the body. ttl 0 forces a live
+// fetch: the bench measures the fetcher, not its cache. Free tier is
+// 1,000 urls/day, so a full pass costs 7 of them.
+const TINYFETCH_ENDPOINT = "https://api.fetch.tinyfish.ai";
+const TIMEOUT_MS = 30_000;
+
+async function tinyfetchExtract(url: string, key: string): Promise<Fetched> {
+	const { data, meta } = await postJson(
+		"tinyfish",
+		TINYFETCH_ENDPOINT,
+		{ "X-API-Key": key },
+		{ urls: [url], format: "markdown", ttl: 0 },
+		TIMEOUT_MS,
+	);
+	const body = data as { results?: unknown[]; errors?: unknown[] };
+	const row = (body.results ?? [])[0] as Record<string, unknown> | undefined;
+	const failure = (body.errors ?? [])[0] as Record<string, unknown> | undefined;
+	if (!row) {
+		throw new Error(
+			`tinyfish: extraction failed — ${str(failure?.error) || "no result"}`,
+		);
+	}
+	return { title: str(row.title), text: str(row.text), meta };
+}
+
+function tinyfishPlan(): Plan {
+	return {
+		kind: "tinyfish",
+		authName: "tinyfish",
+		candidate: true,
+		exec: async (auth, url) => {
+			const key = await auth.resolve("tinyfish");
+			const extracted = await tinyfetchExtract(url, key);
+			const chars = extracted.text.trim().length;
+			if (chars < MIN_EXTRACT) {
+				const error = `tinyfish: almost no text (${chars} chars)`;
+				return {
+					extracted: { error, kind: "empty-extraction", meta: extracted.meta },
+					failures: [{ kind: "tinyfish", error }],
+				};
+			}
+			return { extracted, failures: [] };
+		},
+	};
+}
+
+const CANDIDATES = {
+	tinyfish: tinyfishPlan,
+} as const;
+
+const BENCH_KINDS: readonly string[] = [...fetchKinds, ...Object.keys(CANDIDATES)];
+
+function parseArgs(argv: string[]): { kinds: BenchKind[]; extraUrls: string[] } {
+	const picked = new Set<string>();
 	const extraUrls: string[] = [];
 	for (const arg of argv) {
 		if (arg.startsWith("--providers=")) {
 			for (const name of arg.slice("--providers=".length).split(",")) {
 				const k = name.trim();
-				if (!(fetchKinds as readonly string[]).includes(k)) {
-					throw new Error(`unknown provider "${k}" — pick from ${fetchKinds.join(", ")}`);
+				if (!BENCH_KINDS.includes(k)) {
+					throw new Error(`unknown provider "${k}" — pick from ${BENCH_KINDS.join(", ")}`);
 				}
-				picked.add(k as FetchKind);
+				picked.add(k);
 			}
 			continue;
 		}
@@ -99,7 +178,7 @@ function parseArgs(argv: string[]): { kinds: FetchKind[]; extraUrls: string[] } 
 		if (!/^https?:\/\//.test(arg)) throw new Error(`not an http(s) url: ${arg}`);
 		extraUrls.push(arg);
 	}
-	const kinds = fetchKinds.filter((k) => picked.size === 0 || picked.has(k));
+	const kinds = BENCH_KINDS.filter((k) => picked.size === 0 || picked.has(k)) as BenchKind[];
 	return { kinds, extraUrls };
 }
 
@@ -124,20 +203,34 @@ function readConfig(): Config | null {
 }
 
 function planFor(kind: FetchKind, configuredAuth: string | undefined): Plan {
+	const chain =
+		(entry: FetchConfig[number]): Plan["exec"] =>
+		async (auth, url) => {
+			const { extracted, failures } = await runFetchChain([entry], auth, url);
+			return { extracted, failures };
+		};
 	switch (kind) {
 		case "local":
-			return { kind, entry: { kind: "local" } };
+			return { kind, exec: chain({ kind: "local" }) };
 		case "jina":
 			return {
 				kind,
-				entry: configuredAuth ? { kind: "jina", auth: configuredAuth } : { kind: "jina" },
+				exec: chain(
+					configuredAuth ? { kind: "jina", auth: configuredAuth } : { kind: "jina" },
+				),
 				authName: configuredAuth,
 			};
-		case "tavily":
-		case "firecrawl":
+		case "tavily": {
+			const authName = configuredAuth ?? authDefaults.tavily;
+			return { kind, exec: chain({ kind: "tavily", auth: authName }), authName };
+		}
+		case "firecrawl": {
+			const authName = configuredAuth ?? authDefaults.firecrawl;
+			return { kind, exec: chain({ kind: "firecrawl", auth: authName }), authName };
+		}
 		case "parallel": {
-			const authName = configuredAuth ?? authDefaults[kind];
-			return { kind, entry: { kind, auth: authName }, authName };
+			const authName = configuredAuth ?? authDefaults.parallel;
+			return { kind, exec: chain({ kind: "parallel", auth: authName }), authName };
 		}
 	}
 }
@@ -146,7 +239,7 @@ async function runCell(plan: Plan, auth: AuthStore, url: string): Promise<Cell> 
 	if (plan.skip !== undefined) return { outcome: "skipped", note: plan.skip };
 	const started = performance.now();
 	try {
-		const { extracted, failures } = await runFetchChain([plan.entry], auth, url);
+		const { extracted, failures } = await plan.exec(auth, url);
 		const ms = Math.round(performance.now() - started);
 		if ("error" in extracted) {
 			const summary = failures.map((f) => f.error).join("; ");
@@ -184,7 +277,7 @@ function urlLabel(url: string): string {
 	}
 }
 
-function printCell(kind: FetchKind, cell: Cell): void {
+function printCell(kind: string, cell: Cell): void {
 	const status = cell.status !== undefined ? String(cell.status).padStart(4) : "    ";
 	const unit = cell.outcome === "pdf" ? " B" : "ch";
 	const chars =
@@ -219,11 +312,12 @@ async function main(): Promise<void> {
 	const auth = loadAuthFile(AUTH_FILE);
 	const config = readConfig();
 
-	const plans = kinds.map((kind) => {
+	const plans = kinds.map((kind): Plan => {
+		if (kind in CANDIDATES) return CANDIDATES[kind as keyof typeof CANDIDATES]();
 		const configured = config?.fetch?.find((e) => e.kind === kind);
 		const configuredAuth =
 			configured && "auth" in configured ? configured.auth : undefined;
-		return planFor(kind, configuredAuth);
+		return planFor(kind as FetchKind, configuredAuth);
 	});
 	for (const plan of plans) {
 		if (plan.authName === undefined) continue;
@@ -241,11 +335,12 @@ async function main(): Promise<void> {
 	console.log(`fetch provider benchmark — ${urls.length} urls × ${plans.length} providers`);
 	console.log(`auth: ${AUTH_FILE}`);
 	for (const plan of plans) {
+		const tag = plan.candidate ? " (candidate)" : "";
 		const via = plan.kind === "local" ? "" : plan.authName ? ` (auth "${plan.authName}")` : " (keyless)";
-		console.log(`  ${plan.kind}${via}${plan.skip ? ` — skipped: ${plan.skip}` : ""}`);
+		console.log(`  ${plan.kind}${via}${tag}${plan.skip ? ` — skipped: ${plan.skip}` : ""}`);
 	}
 
-	const grid = new Map<FetchKind, Cell[]>();
+	const grid = new Map<string, Cell[]>();
 	for (const url of urls) {
 		console.log(`\n${url}`);
 		const cells = await Promise.all(plans.map((plan) => runCell(plan, auth, url)));

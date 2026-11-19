@@ -1,12 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { ensureHcCore, hcSessionForHome, makeHc, stopHcCore } from "./hc.ts";
 import { useHome } from "./testkit.ts";
 
 const active: { binary: string; session: string }[] = [];
 
+// hc keeps per-session state under ~/.local/state/herdr-core/; the
+// throwaway session's directory goes to the trash with its core.
 afterEach(() => {
-	for (const core of active.splice(0)) stopHcCore(core.binary, core.session);
+	for (const core of active.splice(0)) {
+		stopHcCore(core.binary, core.session);
+		Bun.spawnSync(["trash", join(homedir(), ".local", "state", "herdr-core", core.session)]);
+	}
 });
 
 test("pinned hc core runs, reads, sends to, and kills a terminal", async () => {

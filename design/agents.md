@@ -171,7 +171,12 @@ session.
   durably to `$GOBLIN_HOME/bin/hc-hooks/`; hooks only report when
   `GOBLIN_HC_RUN=1`. Codex hooks and trust hashes merge additively into
   the operator's CODEX_HOME. Claude uses per-run settings; Pi an
-  extension; OpenCode and Devin use their probed config mechanisms.
+  extension; Devin a per-run config. Codex runs with `--no-daemon` and
+  OpenCode with `--standalone`: a shared app server or background service
+  runs outside the hc terminal, so its hooks could not reach it. OpenCode
+  v2 reports from a TUI plugin (`deploy/hc-hooks/tui.js`, loaded through
+  `OPENCODE_CLI_CONFIG_CONTENT`); its server plugin path cannot tell
+  which terminal a session belongs to (herdr's v2 integration, 2026-11-19).
 - **Verbs:** start waits for the first status before sending the prompt;
   send waits for `working`; the watcher polls status until settlement;
   answer sends a key only after a live `blocked` preflight; stop kills

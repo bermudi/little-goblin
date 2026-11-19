@@ -166,13 +166,6 @@ function writeDevinConfig(stateDir: string, hooksDir: string, terminalName: stri
 	return path;
 }
 
-function writeOpenCodeConfig(stateDir: string, hooksDir: string, terminalName: string): string {
-	const path = join(stateDir, "hc-hooks", `${terminalName}-opencode.json`);
-	const pluginPath = join(hooksDir, "opencode-plugin.js");
-	writeJson(path, { plugins: [pluginPath] });
-	return path;
-}
-
 export interface HarnessInvocation {
 	argv: string[];
 	env: Record<string, string>;
@@ -216,7 +209,11 @@ export function makeHarnessInvocation(input: {
 	} else if (input.kind === "pi") {
 		argv.push("--extension", join(input.hooksDir, "pi-extension.mjs"));
 	} else if (input.kind === "opencode") {
-		env.OPENCODE_CONFIG = writeOpenCodeConfig(stateDir, input.hooksDir, input.terminalName);
+		// A shared background service would mix in other sessions' events;
+		// --standalone gives the run a private server. The hooks directory is
+		// the plugin: OpenCode v2 loads its tui.js inside this terminal.
+		if (!input.args.includes("--standalone")) argv.push("--standalone");
+		env.OPENCODE_CLI_CONFIG_CONTENT = JSON.stringify({ plugins: [input.hooksDir] });
 	} else if (input.kind === "devin") {
 		argv.push("--config", writeDevinConfig(stateDir, input.hooksDir, input.terminalName));
 	}

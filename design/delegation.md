@@ -135,8 +135,9 @@ Rulings:
   write-if-absent; it never manufactures consent over a recorded refusal.
   Codex hook/trust config merges preserve existing operator entries and
   modes. Hooks are durably copied to the stable Goblin home. Claude gets
-  generated `--settings`; Pi gets a per-run extension; OpenCode and Devin
-  use their verified config-merge path.
+  generated `--settings`; Pi gets a per-run extension; OpenCode gets the
+  hooks directory as a TUI plugin and `--standalone`; Devin gets a
+  per-run `--config`.
 - **The seeded trust keys are pinned against the installed harnesses,
   not just fakes (2026-10-11).** Drift is silent: a renamed key still
   seeds, and the launch shows the consent dialog anyway.

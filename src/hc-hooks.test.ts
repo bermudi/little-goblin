@@ -101,19 +101,39 @@ function withHookEnv<T>(script: string, fn: () => Promise<T>): Promise<T> {
 	});
 }
 
-describe("opencode plugin", () => {
-	test("permission and question prompts report blocked with their kind", async () => {
+describe("opencode tui plugin", () => {
+	test("reports the run's state, blocked with its kind, and ignores subagent turns", async () => {
 		const rec = recorder();
-		const mod = (await import(join(HOOKS_SOURCE, "opencode-plugin.js"))) as {
-			GoblinStatus: () => Promise<{ event: (input: { event: { type: string } }) => Promise<void> }>;
+		type Event = { type: string; data: Record<string, unknown> };
+		let emit: (event: Event) => void = () => {};
+		const api = {
+			data: {
+				listen: (fn: (input: { details: Event }) => void) => {
+					emit = (event) => fn({ details: event });
+					return () => {};
+				},
+			},
 		};
-		const plugin = await mod.GoblinStatus();
+		const mod = (await import(join(HOOKS_SOURCE, "tui.js"))) as { default: { setup: (api: unknown) => void } };
 		await withHookEnv(rec.script, async () => {
-			await plugin.event({ event: { type: "permission.asked" } });
-			await plugin.event({ event: { type: "question.asked" } });
-			await plugin.event({ event: { type: "permission.replied" } });
+			mod.default.setup(api);
+			emit({ type: "session.execution.started", data: { sessionID: "root" } });
+			emit({ type: "session.created", data: { sessionID: "child", parentID: "root" } });
+			emit({ type: "session.execution.succeeded", data: { sessionID: "child" } });
+			emit({ type: "permission.asked", data: { id: "p1", sessionID: "child" } });
+			emit({ type: "form.created", data: { form: { id: "f1", sessionID: "root" } } });
+			emit({ type: "permission.replied", data: { requestID: "p1", sessionID: "child" } });
+			emit({ type: "form.replied", data: { id: "f1", sessionID: "root" } });
+			emit({ type: "session.execution.succeeded", data: { sessionID: "root" } });
 		});
-		expect(rec.calls()).toEqual([["blocked", "permission"], ["blocked", "question"], ["working"]]);
+		expect(rec.calls()).toEqual([
+			["idle"],
+			["working"],
+			["blocked", "permission"],
+			["blocked", "question"],
+			["working"],
+			["idle"],
+		]);
 	});
 });
 

@@ -209,6 +209,7 @@ const runtime = new Runtime({
 	store,
 	turnJournal,
 	buildStep: () => ({
+		engine: "ai-sdk",
 		model,
 		system: "crash test",
 		// A small window makes the pre-seeded exchanges compactable —

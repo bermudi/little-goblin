@@ -104,7 +104,7 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 	const runtime = new Runtime({
 		engines: [aiSdkEngine],
 		store,
-		buildStep: () => ({ model: textModel(["ok"]).model, system: "test" }),
+		buildStep: () => ({ engine: "ai-sdk", model: textModel(["ok"]).model, system: "test" }),
 		makeTools: () => ({}),
 		memory: {
 			client,
@@ -154,6 +154,7 @@ describe("memory turn integration", () => {
 			store: h.store,
 			turnJournal: journal,
 			buildStep: () => ({
+				engine: "ai-sdk",
 				model: scriptedModel([
 					[toolCallPart("send-1", "send"), finishPart("tool-calls")],
 					textParts("derived reply"),
@@ -208,6 +209,7 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store: h.store,
 			buildStep: () => ({
+				engine: "ai-sdk",
 				model: scriptedModel([
 					[toolCallPart("send-1", "send"), finishPart("tool-calls")],
 					textParts("finished"),
@@ -250,6 +252,7 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
+				engine: "ai-sdk",
 				model: textModel(["a", "b", "c"], { delayMs: 30 }).model,
 				system: "test",
 			}),
@@ -296,7 +299,7 @@ describe("memory turn integration", () => {
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],
 			store,
-			buildStep: () => ({ model, system: "test" }),
+		buildStep: () => ({ engine: "ai-sdk", model, system: "test" }),
 			makeTools: () => ({
 				gate: defineTool({
 					description: "test tool",
@@ -348,6 +351,7 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
+				engine: "ai-sdk",
 				model: textModel(["a", "b", "c"], { delayMs: 30 }).model,
 				system: "test",
 			}),
@@ -486,6 +490,7 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
+				engine: "ai-sdk",
 				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
 				system: "test",
 			}),
@@ -537,6 +542,7 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
+				engine: "ai-sdk",
 				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
 				system: "test",
 			}),
@@ -583,6 +589,7 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({
+				engine: "ai-sdk",
 				model: textModel(["a", "b", "c", "d", "e"], { delayMs: 20 }).model,
 				system: "test",
 			}),
@@ -656,7 +663,7 @@ describe("memory turn integration", () => {
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],
 			store,
-			buildStep: () => ({ model: textModel(["ok"]).model, system: "test" }),
+		buildStep: () => ({ engine: "ai-sdk", model: textModel(["ok"]).model, system: "test" }),
 			makeTools: () => ({}),
 			memory: {
 				client,
@@ -711,7 +718,7 @@ describe("memory turn integration", () => {
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],
 			store,
-			buildStep: () => ({ model: textModel(["ok"]).model, system: "test" }),
+		buildStep: () => ({ engine: "ai-sdk", model: textModel(["ok"]).model, system: "test" }),
 			makeTools: () => ({}),
 			memory: {
 				client,

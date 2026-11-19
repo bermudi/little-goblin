@@ -19,7 +19,7 @@ import type { Config } from "./config-schema.ts";
 import { openStore } from "./conversation.ts";
 import { Runtime, userMessage } from "./runtime.ts";
 import type { ModelStep } from "./turn/ai-sdk-step.ts";
-import { isClaudeStep } from "./turn/engine.ts";
+import { isClaudeStep } from "./agent/claude-code/mod.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import { fakeClaude } from "./testkit/fake-claude.ts";
 import { scriptedModel, textParts } from "./testkit/fake-model.ts";
@@ -278,7 +278,7 @@ describe("claude native sessions (#418)", () => {
 			buildStep: () =>
 				lane === "claude"
 					? claudeStepFor(CLAUDE_REF)
-					: ({ model: sdk.model, system: "test", label: "fake/fake-1" }) satisfies ModelStep,
+					: ({ engine: "ai-sdk", model: sdk.model, system: "test", label: "fake/fake-1" }) satisfies ModelStep,
 			makeTools: () => ({}),
 			turnJournal: journal,
 			claudeSessions: sessions,

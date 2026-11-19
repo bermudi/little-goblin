@@ -250,7 +250,7 @@ test("a background app turn persists generated media without an SSE stream", asy
 	const runtime = new Runtime({
 		engines: [aiSdkEngine],
 		store,
-		buildStep: () => ({ model, system: "test" }),
+		buildStep: () => ({ engine: "ai-sdk", model, system: "test" }),
 		makeTools: (_conv, _deliverVoice, _recording, deliverFile) => ({
 			send_file: sendFileTool(work, deliverFile!),
 		}),

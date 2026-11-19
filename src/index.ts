@@ -35,6 +35,7 @@ import { acquireHomeLock } from "./home-lock.ts";
 import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins.ts";
 import { captureConversationSettings, openStore } from "./conversation.ts";
 import { delegationWake, wireDelegation } from "./delegation-lifecycle.ts";
+import { makeT3 } from "./t3.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import { makeDesktops } from "./desktops.ts";
 import { openDesktops } from "./desktops-store.ts";
@@ -266,18 +267,21 @@ async function boot() {
 	// completeBoot() fills it once the delegation lifecycle and the
 	// retention worker exist.
 	const wire = openWireStep();
-	// Delegation is boot-fixed like memory — the store, the t3 adapter
+	// Delegation is boot-fixed like memory — the store, the herdr adapter
 	// and the config snapshot are one object, so a live config read can
 	// only hide the delegate tool next turn, never launch on a harness
-	// the boot snapshot lacks (spinoff.ts owns the pin).
+	// the boot snapshot lacks (spinoff.ts owns the pin). T3 Code is the
+	// responsibility transport — the observer, managed sends and the
+	// health probe — never the delegate one.
 	const delegationBoot = config.delegation;
-	const { delegations, t3, delegateDeps } = wireDelegation({
+	const { delegations, herdr, delegateDeps } = wireDelegation({
 		config: delegationBoot,
 		configRef,
 		dbPath: paths.db,
 		lifecycle: () => wire.late().delegationLifecycle(),
 		pin: (conv, name) => launchPin(launchPinDeps, conv, name),
 	});
+	const t3 = makeT3();
 	// Voice replies and transcription die at runtime without ffmpeg —
 	// the probe, the wav-profile gate, and the ttsDown flag live in
 	// transcribe.ts (checkBootMedia).
@@ -658,10 +662,12 @@ async function boot() {
 	// closures read delivery/bell live, so a telegram attach mid-run is
 	// visible without a rewire. The wire step lands before any turn.
 	const delegationLifecycle =
-		delegations !== null
+		delegations !== null && herdr !== null
 			? startDelegationLifecycle({
 					delegations,
-					t3,
+					herdr,
+					delegationsDir: paths.delegations(),
+					homeDir: homedir(),
 					...delegationWake(delivery.wakeDeps),
 					settled: (d, verdict, body, readiness) => fileDelegationReport(responsibilities, d, verdict, body, readiness),
 					responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,

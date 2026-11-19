@@ -51,5 +51,3 @@ export async function closeWorkspaceQuietly(
 export function isIssueLead(d: Delegation): d is Delegation & { issue: GithubIssue; responsibilityId: string } {
 	return d.role === "lead" && d.issue !== null && d.responsibilityId !== null;
 }
-</content>
-</invoke>ipl>type="string"<|sep|>/home/daniel/.t3/worktrees/little-goblin/t3-cdafb2a8-b4bf239980be1e0f/src/delegation-paths.ts

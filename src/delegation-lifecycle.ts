@@ -166,5 +166,3 @@ export function delegationWake(deps: WakeDeps): Pick<DelegationLifecycleDeps, "w
 		wakeApp: (conversationId, text) => wakeApp(deps, conversationId, text),
 	};
 }
-</content>
-</invoke>ipl>type="string"<|sep|>/home/daniel/.t3/worktrees/little-goblin/t3-cdafb2a8-b4bf239980be1e0f/src/delegation-lifecycle.ts

@@ -25,69 +25,34 @@ function configSyntaxError(err: unknown): Error {
 	return new Error(`${paths.config()}${location}: invalid JSON5`);
 }
 
-// Retired delegation keys are the one compatibility exception to the
-// unknown-field rule: named here, stripped with a warning on disk load,
-// and gone from the next canonical save. Anything else unknown is a
-// validation error. The t3 move (issue #607) retired the whole previous
-// harness shape — an old-shape harnesses map drops the entire
-// delegation block rather than failing boot: goblin comes up without
-// the delegate tool and the operator rewrites the block by hand.
-const RETIRED_DELEGATION_KEYS = {
-	machine: "delegation.machines.<label>.machine (and root for remote paths)",
-	session: "delegation.machines.<label>.session; the own local session is fixed by the service",
-	maxRunning: "no replacement — delegation concurrency is not capped by config",
-	machines:
-		"no replacement — delegation runs on T3 Code now; machine targets have no t3 CLI flag (issue #607)",
-} as const;
-
-function stripRetiredDelegationKeys(raw: unknown, warn: boolean): unknown {
-	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return raw;
+// The interim T3 Code transport (issue #607/#608) is itself retired:
+// `delegate` runs on Herdr panes again (issue #728). Its config shapes
+// fail loud naming the fix — never silently dropped, so a stale block
+// cannot boot a goblin with no delegate tool and no hint why.
+function retiredDelegationKey(raw: unknown): string | null {
+	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
 	const delegation = (raw as Record<string, unknown>).delegation;
 	if (typeof delegation !== "object" || delegation === null || Array.isArray(delegation)) {
-		return raw;
+		return null;
 	}
-	// The retired harness shape: kind/args instead of provider/model. One
-	// stale entry retires the block — a half-migrated table cannot name
-	// a T3 provider for every harness the operator may select. Entries
-	// that are merely malformed in the new shape stay zod's to fail
-	// loud, not this migration's to hide.
-	const harnesses = (delegation as Record<string, unknown>).harnesses;
-	if (
-		typeof harnesses === "object" &&
-		harnesses !== null &&
-		!Array.isArray(harnesses) &&
-		Object.values(harnesses).some(
-			(h) =>
-				typeof h === "object" && h !== null && !Array.isArray(h) && ("kind" in h || "args" in h),
-		)
-	) {
-		if (warn) {
-			log.warn("retired-shape delegation harnesses ignored — rewrite for T3 Code", {
-				path: paths.config(),
-				key: "delegation",
-				replacement:
-					"harnesses entries are {provider, model, options?} on T3 Code (t3 thread start --provider --model --option); the delegation block was dropped",
-			});
+	const d = delegation as Record<string, unknown>;
+	if (Object.hasOwn(d, "machines")) {
+		return "delegation.machines was removed — delegation runs on goblin's local herdr session only; delete the block (issue #728)";
+	}
+	const harnesses = d.harnesses;
+	if (typeof harnesses === "object" && harnesses !== null && !Array.isArray(harnesses)) {
+		for (const [name, h] of Object.entries(harnesses)) {
+			if (
+				typeof h === "object" &&
+				h !== null &&
+				!Array.isArray(h) &&
+				("provider" in h || "model" in h || "options" in h)
+			) {
+				return `delegation.harnesses.${name} uses the retired T3 Code shape {provider, model, options?} — rewrite it as {kind, args?, askFirst?} for Herdr (issue #728)`;
+			}
 		}
-		const rest = { ...(raw as Record<string, unknown>) };
-		delete rest.delegation;
-		return rest;
 	}
-	let stripped: Record<string, unknown> | null = null;
-	for (const [key, replacement] of Object.entries(RETIRED_DELEGATION_KEYS)) {
-		if (!Object.hasOwn(delegation, key)) continue;
-		if (warn) {
-			log.warn("retired delegation config key ignored", {
-				path: paths.config(),
-				key: `delegation.${key}`,
-				replacement,
-			});
-		}
-		stripped ??= { ...(delegation as Record<string, unknown>) };
-		delete stripped[key];
-	}
-	if (stripped === null) return raw;
-	return { ...(raw as Record<string, unknown>), delegation: stripped };
+	return null;
 }
 
 function parseConfigText(raw: string): unknown {
@@ -98,17 +63,16 @@ function parseConfigText(raw: string): unknown {
 	}
 }
 
-// Disk-facing parses for the one compatibility exception (retired
-// delegation keys): stripped before strict validation. parseConfigFile
-// takes JSON5 text; parseConfigValue takes an already-parsed object for
-// callers that separate syntax errors from schema errors (the doctor
-// probe reports JSON5 location per its own category contract).
-export function parseConfigFile(raw: string, warnRetired = false): Config {
-	return parseConfigValue(parseConfigText(raw), warnRetired, raw);
+// Disk-facing parses: parseConfigFile takes JSON5 text;
+// parseConfigValue takes an already-parsed object for callers that
+// separate syntax errors from schema errors (the doctor probe reports
+// JSON5 location per its own category contract).
+export function parseConfigFile(raw: string): Config {
+	return parseConfigValue(parseConfigText(raw), raw);
 }
 
-export function parseConfigValue(raw: unknown, warnRetired = false, sourceText?: string): Config {
-	return parseConfig(stripRetiredDelegationKeys(raw, warnRetired), sourceText);
+export function parseConfigValue(raw: unknown, sourceText?: string): Config {
+	return parseConfig(raw, sourceText);
 }
 
 // ENOENT → null; every other failure propagates with the path attached.
@@ -121,7 +85,7 @@ export function loadConfig(): Config | null {
 		throw err;
 	}
 	try {
-		return parseConfigFile(raw, true);
+		return parseConfigFile(raw);
 	} catch (error) {
 		// Load failures are broken server state, not caller input: HTTP
 		// callers map ConfigValidationError to 422, so rethrow it plainly.
@@ -182,6 +146,10 @@ export function parseConfig(raw: unknown, sourceText?: string): Config {
 		throw new ConfigValidationError(
 			`${paths.config()}: ${retired} was removed — native subagents replaced it: use the agent tool and its agent types (the computer type for desktops); delete the block (design/agents.md)`,
 		);
+	}
+	const retiredDelegation = retiredDelegationKey(raw);
+	if (retiredDelegation !== null) {
+		throw new ConfigValidationError(`${paths.config()}: ${retiredDelegation}`);
 	}
 	const result = configSchema.safeParse(raw);
 	if (!result.success) {

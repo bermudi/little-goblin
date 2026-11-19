@@ -7,7 +7,7 @@ import type { Delegation, DelegationVerdict } from "./delegations.ts";
 import { delegationNoticeTag } from "./tags.ts";
 import { readinessSummary, type GithubIssue, type PrReadiness } from "./pr-readiness.ts";
 import type { DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
-import { herdrFor, isIssueLead, reportPathFor } from "./delegation-paths.ts";
+import { isIssueLead, reportPathFor } from "./delegation-paths.ts";
 
 const REPORT_CAP = 16 * 1024;
 const TAIL_LINES = 80;
@@ -24,7 +24,7 @@ export async function readScreenTail(
 	lines: number,
 	opts: { agentGone?: boolean } = {},
 ): Promise<string> {
-	const herdr = herdrFor(deps, d.target);
+	const herdr = deps.herdr;
 	let firstError: unknown;
 	if (!opts.agentGone && d.agentName) {
 		try {
@@ -57,8 +57,7 @@ async function reportBody(
 	agentGone = false,
 	deep = false,
 ): Promise<string> {
-	const targetGone = d.target !== null && !deps.targets.has(d.target);
-	const report = targetGone ? null : readReport(reportPathFor(deps, d), d.id);
+	const report = readReport(reportPathFor(deps, d), d.id);
 	if (report !== null) return report;
 	try {
 		return await readScreenTail(deps, d, deep ? DEEP_LINES : TAIL_LINES, { agentGone });

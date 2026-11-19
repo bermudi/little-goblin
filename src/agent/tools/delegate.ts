@@ -30,8 +30,6 @@ export interface DelegateToolDeps {
 	config: DelegationConfig;
 	pin(name: string): DelegationPin;
 	workspaceDir: string;
-	/** Which subagent types this turn mounts — the description routes work only to tools the model has. */
-	mountedSubagents: { worker: boolean; computer: boolean };
 	/** Project-bound turns only: refuses a responsibility outside this
 	 *  project or already closed; null admits the link. */
 	checkResponsibility?: ((id: string) => string | null) | undefined;
@@ -47,7 +45,6 @@ function view(d: Delegation, reportPath: string): Record<string, unknown> {
 		readiness: d.readiness ?? undefined,
 		cwd: d.cwd,
 		status: d.status,
-		target: d.target ?? "local",
 		responsibility: d.responsibilityId ?? undefined,
 		agent_name: d.agentName || undefined,
 		workspace_id: d.workspaceId || undefined,
@@ -216,7 +213,6 @@ const startSchema = z.object({
 	task: z.string().min(1),
 	cwd: z.string().min(1).optional(),
 	name: z.string().min(1).max(40).optional(),
-	on: z.string().min(1).optional(),
 	responsibility: z.string().min(1).optional(),
 	issue: githubIssueSchema.optional(),
 }).superRefine((input, ctx) => {
@@ -278,7 +274,6 @@ const delegateInputFields = z.object({
 	task: startSchema.shape.task.optional(),
 	cwd: startSchema.shape.cwd,
 	name: startSchema.shape.name,
-	on: startSchema.shape.on,
 	responsibility: startSchema.shape.responsibility,
 	issue: startSchema.shape.issue,
 	id: readSchema.shape.id.optional(),
@@ -312,34 +307,18 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 			? "No delegation defaults are configured: name a harness explicitly."
 			: `With no harness named, the call uses its role's default (role omitted = \`default\`, which is ${defaults.default === undefined ? "unset — name a role or a harness" : `\`${defaults.default}\``}). Configured roles: ${roles.map(([role, name]) => `${role} → ${name}`).join(", ")}. An explicit harness always wins over a role.`) +
 		(linkable ? " A responsibility-linked lead requires issue:{repository:'owner/repo',number:N}. Code observes its closing PR, current head, verifier Checked-SHA and CI; do not spend model turns polling GitHub. PASS+NOTES still needs judgment, and readiness never authorizes a merge." : "");
-	const mounted = deps.mountedSubagents;
-	const subagentRoute = mounted.worker
-		? mounted.computer
-			? " Standalone long or code-heavy work belongs with a worker subagent, and screen work with a computer subagent."
-			: " Standalone long or code-heavy work belongs with a worker subagent."
-		: mounted.computer
-			? " Screen work belongs with a computer subagent."
-			: "";
-	// askFirst harnesses — local and machine-side — become a prompt rule
-	// in the description: the model asks, execute stays ungated.
-	const askFirst = [
-		...new Set(
-			[
-				...Object.entries(deps.config.harnesses),
-				...Object.values(deps.config.machines ?? {}).flatMap((m) =>
-					Object.entries(m.harnesses ?? {}),
-				),
-			]
-				.filter(([, h]) => h.askFirst === true)
-				.map(([name]) => name),
-		),
-	].sort();
+	// askFirst harnesses become a prompt rule in the description: the
+	// model asks, execute stays ungated.
+	const askFirst = Object.entries(deps.config.harnesses)
+		.filter(([, h]) => h.askFirst === true)
+		.map(([name]) => name)
+		.sort();
 	const staffingLine =
 		askFirst.length === 0
-			? " Choosing a harness is your call — never ask the operator which one."
-			: ` Choosing a harness is your call — never ask the operator which one — except ask-first harnesses (${askFirst.join(", ")}): ask the operator before each use, and start one only on their explicit yes for that task.`;
+			? ""
+			: ` Ask-first harnesses (${askFirst.join(", ")}): ask the operator before each use, and start one only on their explicit yes for that task.`;
 	return defineTool({
-		description: `Delegate work in the operator's repos to an external coding harness — a separate agent in its own workspace, running full-auto.${subagentRoute} Delegations are your own acts: delegate on your own judgment instead of blocking the chat with bash, and say that you did; you own the result when it arrives and decide what the operator needs to hear. Targets: your own local session (default)${Object.keys(deps.config.machines ?? {}).length > 0 ? ` plus configured machines (${Object.keys(deps.config.machines ?? {}).join(", ")})` : " (no machines configured)"} — pass 'on' to pick one; work tied to another host's repos runs there, and each target runs the harnesses installed on that host. Harnesses (own session): ${Object.keys(deps.config.harnesses).join(", ")}.${staffingLine} ${roleLine} Actions — start {harness?, role?, task, cwd?, name?, on?${linkable ? ", responsibility?" : ""}}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.${linkable ? " In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself." : ""}`,
+		description: `Delegate work to an external coding harness — a separate agent in its own workspace, running full-auto in goblin's herdr session. Use this tool ONLY when the operator names the harness ("have codex do X", "an opencode run"); work you decide to hand off goes to the agent tool or you do it yourself. Harnesses: ${Object.keys(deps.config.harnesses).join(", ")}.${staffingLine} ${roleLine} Actions — start {harness?, role?, task, cwd?, name?${linkable ? ", responsibility?" : ""}}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.${linkable ? " In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself." : ""}`,
 		input: (linkable
 			? delegateInputSchema
 			: unlinkableDelegateInputSchema) as typeof delegateInputSchema,
@@ -355,13 +334,7 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 								: deps.checkResponsibility(input.responsibility);
 						if (refused !== null) return { error: refused };
 					}
-					const on = input.on ?? null;
-					const target = on !== null ? deps.config.machines?.[on] : undefined;
-					if (on !== null && target === undefined) {
-						const known = Object.keys(deps.config.machines ?? {}).join(", ") || "none configured";
-						return { error: `unknown delegation target "${on}" — configured: ${known}` };
-					}
-					const harnesses = (on !== null ? target?.harnesses : undefined) ?? deps.config.harnesses;
+					const harnesses = deps.config.harnesses;
 					const role = input.role ?? "default";
 					// Explicit harness → role default → the `default` role.
 					// A named role with no entry of its own uses the
@@ -377,20 +350,16 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 								? "no delegation defaults are configured"
 								: `no default is configured for ${input.role === undefined ? "delegation" : `role "${role}"`}`;
 						return {
-							error: `${why} — name a harness${roles.length > 0 ? ` or use a configured role (${roles.map(([r]) => r).join(", ")})` : ""}; configured harnesses on ${on ?? "the local session"}: ${Object.keys(harnesses).join(", ") || "none"}`,
+							error: `${why} — name a harness${roles.length > 0 ? ` or use a configured role (${roles.map(([r]) => r).join(", ")})` : ""}; configured harnesses: ${Object.keys(harnesses).join(", ") || "none"}`,
 						};
 					}
 					const h = harnesses[named];
 					if (!h) {
 						return {
-							error: `unknown harness "${named}" on ${on ?? "the local session"} — configured: ${Object.keys(harnesses).join(", ")}`,
+							error: `unknown harness "${named}" — configured: ${Object.keys(harnesses).join(", ")}`,
 						};
 					}
-					const isMachine = target?.machine !== undefined;
-					const cwdRoot =
-						on === null
-							? deps.workspaceDir
-							: (target?.root ?? (isMachine ? "~" : deps.workspaceDir));
+					const cwdRoot = deps.workspaceDir;
 					const cwd = input.cwd
 						? isAbsolute(input.cwd) || isHomePath(input.cwd)
 							? input.cwd
@@ -398,12 +367,13 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 								? `${cwdRoot.replace(/\/+$/, "")}/${input.cwd}`
 								: resolve(cwdRoot, input.cwd)
 						: cwdRoot;
-					const cwdForStat =
-						!isMachine && isHomePath(cwd) ? resolve(homedir(), cwd.replace(/^~\/?/, "")) : cwd;
-					if (!isMachine && (!existsSync(cwdForStat) || !statSync(cwdForStat).isDirectory())) {
+					const cwdForStat = isHomePath(cwd)
+						? resolve(homedir(), cwd.replace(/^~\/?/, ""))
+						: cwd;
+					if (!existsSync(cwdForStat) || !statSync(cwdForStat).isDirectory()) {
 						return { error: `cwd "${cwdForStat}" does not exist or is not a directory` };
 					}
-					const attachHint = attachHintFor(on === null ? null : target);
+					const attachHint = attachHintFor(null);
 					const name =
 						input.name ?? (input.task.split("\n", 1)[0]!.slice(0, 40).trim() || "delegation");
 					const pin = deps.pin(name);
@@ -425,7 +395,6 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 							task: input.task,
 							cwd,
 							name,
-							target: on,
 							address: pin.address,
 							...(pin.appConversation === undefined
 								? {}

@@ -213,7 +213,7 @@ const DELEGATIONS_COLUMNS = `
 		readiness_version INTEGER NOT NULL DEFAULT 0,
 		readiness_pending_verdict TEXT`;
 
-export function openDelegations(dbPath: string): DelegationsStore {
+export function openDelegations(dbPath: string, settledAt = new Date()): DelegationsStore {
 	const db = new Database(dbPath);
 	db.exec(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
 	db.exec("PRAGMA journal_mode = WAL");
@@ -271,6 +271,29 @@ export function openDelegations(dbPath: string): DelegationsStore {
 			db.exec("ROLLBACK");
 			throw err;
 		}
+	}
+
+	// Rows with no agent_name predate the Herdr transport (the T3 Code
+	// era) and are never observed again; if any is still awaiting a
+	// verdict, settle it now so the operator hears once instead of a
+	// watcher that can never decide. `starting` rows are left for boot
+	// recovery, which notifies.
+	const qLegacy = db.prepare(
+		"UPDATE delegations SET status = 'failed', finished_at = ? WHERE id = ?",
+	);
+	for (const row of db
+		.query(
+			"SELECT id, name, agent_name FROM delegations WHERE agent_name = '' AND status IN ('running','needs_input')",
+		)
+		.all()) {
+		const r = z.object({ id: z.number(), name: z.string(), agent_name: z.string() }).parse(row);
+		qLegacy.run(settledAt.toISOString(), r.id);
+		log.warn("legacy delegation settled failed — transport moved back to Herdr panes", {
+			delegation: r.id,
+			name: r.name,
+			agent: r.agent_name,
+			note: "a T3 Code thread from the interim transport may still run; check T3 Code and stop it there",
+		});
 	}
 
 	const qGet = db.query("SELECT * FROM delegations WHERE id = ?");

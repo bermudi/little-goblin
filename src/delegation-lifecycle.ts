@@ -1,5 +1,5 @@
 // Delegation family contracts and boot wiring. The family's modules import
-// these types: delegation-paths.ts (target/report seam), delegation-notices.ts
+// these types: delegation-paths.ts (report seam), delegation-notices.ts
 // (notice bodies + delivery), delegation-actions.ts (the six verbs),
 // delegation-watcher.ts (the scan lifecycle).
 
@@ -9,7 +9,7 @@ import {
 	type DelegationVerdict,
 	openDelegations,
 } from "./delegations.ts";
-import { makeHerdr, makeOperatorHerdr, type Herdr, type OperatorHerdr } from "./herdr.ts";
+import { makeHerdr, type Herdr } from "./herdr.ts";
 import type { ConfigRef } from "./config.ts";
 import type { DelegationConfig } from "./config-schema.ts";
 import type { Conversation } from "./conversation-read.ts";
@@ -21,8 +21,6 @@ export interface DelegationLifecycleDeps {
 	delegations: DelegationsStore;
 	// Own local herdr session; never selected by config.
 	herdr: Herdr;
-	// Target adapters and target-side paths; null uses the local herdr.
-	targets: ReadonlyMap<string, DelegationTargetDeps>;
 	delegationsDir: string;
 	// True means the notice landed; false is retried by the watcher.
 	wake(address: { chatId: number; threadId: number | null }, text: string): boolean;
@@ -37,22 +35,11 @@ export interface DelegationLifecycleDeps {
 	watchResponsibility?: (id: string, revision: number | null) => boolean;
 }
 
-export interface DelegationTargetDeps {
-	// Saved remote-machine label; absent means another local session.
-	machine?: string;
-	session?: string;
-	// Target-side cwd/report root; remote paths are not local files.
-	root?: string;
-	herdr: Herdr;
-}
-
 export interface LaunchInput {
 	harness: { name: string; kind: string; args: string[] };
 	task: string;
 	cwd: string;
 	name: string;
-	// Target label; null means local.
-	target?: string | null;
 	address: { chatId: number; threadId: number | null };
 	appConversation?: string;
 	responsibilityId?: string;
@@ -124,10 +111,10 @@ export interface DelegationLifecycle {
 
 // ---------- boot wiring (index.ts binds, this module rules) ----------
 
-// Boot-frozen: the delegations store, the local "goblin" herdr adapter and
-// every configured target's adapter are one snapshot — a live config read can
-// only hide the delegate tool next turn, never retarget a launch into the old
-// adapter's session (spinoff.ts owns the pin).
+// Boot-frozen: the delegations store and the local "goblin" herdr adapter
+// are one snapshot — a live config read can only hide the delegate tool
+// next turn, never retarget a launch into the old adapter's session
+// (spinoff.ts owns the pin).
 export interface DelegationWiringDeps {
 	config: DelegationConfig | undefined;
 	configRef: ConfigRef;
@@ -141,38 +128,18 @@ export interface DelegationWiringDeps {
 export interface DelegationWiring {
 	delegations: DelegationsStore | null;
 	herdr: Herdr | null;
-	operatorHerdr: OperatorHerdr;
-	targets: Map<string, DelegationTargetDeps>;
-	delegateDeps(
-		conv: Conversation,
-		workdir: string,
-	): Omit<DelegateToolDeps, "mountedSubagents"> | undefined;
+	delegateDeps(conv: Conversation, workdir: string): DelegateToolDeps | undefined;
 }
 
 export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
 	const { config: delegationBoot, configRef, pin } = deps;
 	const delegations = delegationBoot ? openDelegations(deps.dbPath()) : null;
-	// "goblin" is the local unit's --session — the default target, never a config knob.
+	// "goblin" is the local unit's --session — the only target, never a config knob.
 	const herdr = delegationBoot ? makeHerdr({ session: "goblin" }) : null;
-	// The operator's own `default` session needs no delegation config —
-	// the responsibility observer and managed send use it regardless.
-	const operatorHerdr = makeOperatorHerdr();
-	const targets = new Map<string, DelegationTargetDeps>();
-	if (delegationBoot && herdr !== null) {
-		for (const [label, t] of Object.entries(delegationBoot.machines ?? {})) {
-			targets.set(label, {
-				...(t.machine !== undefined ? { machine: t.machine } : { session: t.session! }),
-				...(t.root !== undefined ? { root: t.root } : {}),
-				herdr: makeHerdr(
-					t.machine !== undefined ? { machine: t.machine } : { session: t.session! },
-				),
-			});
-		}
-	}
 	const delegateDeps = (
 		conv: Conversation,
 		workdir: string,
-	): Omit<DelegateToolDeps, "mountedSubagents"> | undefined => {
+	): DelegateToolDeps | undefined => {
 		if (
 			delegationBoot === undefined ||
 			configRef.current.delegation === undefined ||
@@ -190,7 +157,7 @@ export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
 			pin: (name: string) => pin(conv, name),
 		};
 	};
-	return { delegations, herdr, operatorHerdr, targets, delegateDeps };
+	return { delegations, herdr, delegateDeps };
 }
 
 export function delegationWake(deps: WakeDeps): Pick<DelegationLifecycleDeps, "wake" | "wakeApp"> {
@@ -199,3 +166,5 @@ export function delegationWake(deps: WakeDeps): Pick<DelegationLifecycleDeps, "w
 		wakeApp: (conversationId, text) => wakeApp(deps, conversationId, text),
 	};
 }
+</content>
+</invoke>ipl>type="string"<|sep|>/home/daniel/.t3/worktrees/little-goblin/t3-cdafb2a8-b4bf239980be1e0f/src/delegation-lifecycle.ts

@@ -1,5 +1,5 @@
 // The delegation lifecycle's six verbs — launch, send, answer, stop,
-// stopByOperator, read — plus the remote trust seeding launch depends on.
+// stopByOperator, read.
 
 import { randomUUID } from "node:crypto";
 import { linkSync, mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { durableCopyFile, fsyncDirectory } from "./durable.ts";
 import { log } from "./log.ts";
 import { agentNameFor } from "./delegations.ts";
-import { HerdrError, WorkspaceCreateError, type Herdr } from "./herdr.ts";
-import { claudeFreshTrustJson, codexTrustSection, seedHarnessTrust } from "./harness-trust.ts";
+import { attachHintFor, HerdrError, WorkspaceCreateError, type Herdr } from "./herdr.ts";
+import { seedHarnessTrust } from "./harness-trust.ts";
 import { delegationNoticeTag } from "./tags.ts";
 import type {
 	AnswerOutcome,
@@ -21,14 +21,10 @@ import type {
 } from "./delegation-lifecycle.ts";
 import { notify, readScreenTail } from "./delegation-notices.ts";
 import {
-	attachHintForRow,
 	closeWorkspaceQuietly,
-	herdrFor,
-	machineRootFor,
 	reportDirFor,
 	reportNote,
 	reportPathFor,
-	TargetGoneError,
 } from "./delegation-paths.ts";
 
 // Either way the stop is the operator's call, not a fault to repair.
@@ -43,62 +39,6 @@ class NoPreviousReport extends Error {
 	}
 }
 
-// ---------- remote (machine-target) trust seeding ----------
-
-// harness-trust.ts's write-if-absent markers, applied through the delegation's
-// own root pane before `agent start`; an existing path is never touched — a
-// file the operator owns on that host is never rewritten from here. The absent
-// test is `[ -e ] || [ -L ]`, never `[ -f ]`: `-f` follows symlinks, so a
-// dangling link would read as absent and the redirect would repair it by
-// creating its target — the replace-the-link local seeding refuses. `-e` is
-// true for any existing path and `-L` catches the dangling link.
-function remoteSeedCommand(kind: string, cwd: string): string | null {
-	const sh = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-	switch (kind) {
-		case "codex":
-			return [
-				"mkdir -p ~/.codex",
-				`{ [ -e ~/.codex/config.toml ] || [ -L ~/.codex/config.toml ] || printf %s ${sh(codexTrustSection(cwd))} > ~/.codex/config.toml; }`,
-			].join(" && ");
-		case "claude":
-			return `mkdir -p ~ && { [ -e ~/.claude.json ] || [ -L ~/.claude.json ] || printf %s ${sh(claudeFreshTrustJson(cwd))} > ~/.claude.json; }`;
-		default:
-			return null;
-	}
-}
-
-// The echoed marker is split (`gob''lin-seed…`) so the terminal's echo of the
-// typed command can never satisfy the wait — only executed output can. A
-// documented `timeout` from the wait logs and proceeds (a missed gate parks
-// the row and relays); any other failure fails the launch loud.
-async function seedRemoteTrust(
-	herdr: Herdr,
-	paneId: string,
-	kind: string,
-	cwd: string,
-	id: number,
-): Promise<void> {
-	const cmd = remoteSeedCommand(kind, cwd);
-	if (cmd === null) return;
-	const tag = randomUUID().slice(0, 8);
-	const marker = `goblin-seed-${tag}`;
-	await herdr.paneRun(paneId, `{ ${cmd}; } && echo gob''lin-seed-${tag}`);
-	try {
-		await herdr.paneWaitOutput(paneId, marker, 15_000);
-	} catch (err) {
-		// Only the documented wait timeout is tolerated — the seed may have
-		// landed without the marker surfacing. Anything else fails the row
-		// loud instead of starting an agent past an unseeded gate.
-		if (!(err instanceof HerdrError && err.code === "timeout")) throw err;
-		log.warn("delegation remote trust seed unconfirmed", err, {
-			delegation: id,
-			kind,
-		});
-		return;
-	}
-	log.info("delegation remote trust seed", { delegation: id, kind });
-}
-
 export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput): Promise<LaunchOutcome> {
 	const d = deps.delegations.create({
 		name: input.name,
@@ -108,7 +48,6 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 		role: input.role ?? "default",
 		...(input.issue === undefined ? {} : { issue: input.issue }),
 		address: input.address,
-		target: input.target ?? null,
 		...(input.appConversation === undefined ? {} : { appConversation: input.appConversation }),
 		...(input.responsibilityId === undefined
 			? {}
@@ -133,47 +72,20 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 		deps.delegations.setStatus(d.id, "failed");
 		const bound = deps.delegations.get(d.id);
 		if (bound?.workspaceId) {
-			await closeWorkspaceQuietly(deps, d.id, bound.workspaceId, d.target);
+			await closeWorkspaceQuietly(deps, d.id, bound.workspaceId);
 		}
 		log.info("delegation failed at start", { delegation: d.id, name: d.name, why });
 		return screen === undefined
 			? { kind: "failed", delegation: bound ?? d, why }
 			: { kind: "failed", delegation: bound ?? d, why, screen };
 	};
-	// The target map is boot-fixed while the tool may see a newer config; fail a
-	// post-save label rather than strand a `starting` row with no watcher.
-	let herdr: Herdr;
+	const herdr = deps.herdr;
 	try {
-		herdr = herdrFor(deps, d.target);
-	} catch (err) {
-		return fail(
-			err instanceof TargetGoneError
-				? `${err.message} (a config save may have added it after boot — restart goblin to apply)`
-				: err instanceof Error
-					? err.message
-					: String(err),
-		);
-	}
-	try {
-		if (machineRootFor(deps, d.target) === null)
-			mkdirSync(reportDirFor(deps, d.id), { recursive: true });
+		mkdirSync(reportDirFor(deps, d.id), { recursive: true });
 	} catch (err) {
 		return fail(
 			`report directory unavailable: ${err instanceof Error ? err.message : String(err)}`,
 		);
-	}
-	// Probe a machine target once: only `agent_not_found` proves transport, auth,
-	// and the remote session answered; other errors fail without fallback or retry.
-	if (machineRootFor(deps, d.target) !== null) {
-		try {
-			await herdr.get("goblin-link-probe");
-		} catch (err) {
-			if (!(err instanceof HerdrError && err.code === "agent_not_found")) {
-				return fail(
-					`machine target unreachable: ${err instanceof Error ? err.message : String(err)}`,
-				);
-			}
-		}
 	}
 
 	let ws: { workspaceId: string; paneId: string; cwd: string };
@@ -183,7 +95,7 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 		// Pane validation can leave an unowned workspace on the error; close
 		// the create result even though the row never owned it.
 		if (err instanceof WorkspaceCreateError) {
-			await closeWorkspaceQuietly(deps, d.id, err.workspaceId, d.target);
+			await closeWorkspaceQuietly(deps, d.id, err.workspaceId);
 		}
 		return fail(err instanceof Error ? err.message : String(err));
 	}
@@ -202,16 +114,15 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 		log.error("delegation workspace bind failed", err, {
 			delegation: d.id,
 			workspaceId: ws.workspaceId,
-			target: d.target,
 		});
-		await closeWorkspaceQuietly(deps, d.id, ws.workspaceId, d.target);
+		await closeWorkspaceQuietly(deps, d.id, ws.workspaceId);
 		throw err;
 	}
 	// A stop may win before binding — re-read so the bound workspace is closed
 	// and the stopped row never starts an agent.
 	let row = deps.delegations.get(d.id);
 	if (row?.status === "stopped") {
-		await closeWorkspaceQuietly(deps, d.id, ws.workspaceId, d.target);
+		await closeWorkspaceQuietly(deps, d.id, ws.workspaceId);
 		log.info("delegation stopped during workspace creation", {
 			delegation: d.id,
 			name: d.name,
@@ -220,27 +131,18 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 	}
 
 	// Seed first-run trust gates before starting the agent, while the pane is
-	// still quiet. Local files fail loudly; remote markers are write-if-absent
-	// and an unconfirmed seed leaves the pane alive for the watcher to park
-	// and relay. Existing trust decisions are preserved.
-	if (machineRootFor(deps, d.target) === null) {
-		try {
-			const seeded = seedHarnessTrust(input.harness.kind, ws.cwd, deps.homeDir);
-			log.info("delegation trust seed", {
-				delegation: d.id,
-				kind: input.harness.kind,
-				cwd: ws.cwd,
-				seeded: seeded.length > 0 ? seeded : "no recipe",
-			});
-		} catch (err) {
-			return fail(`trust seed failed: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	} else {
-		try {
-			await seedRemoteTrust(herdr, ws.paneId, input.harness.kind, ws.cwd, d.id);
-		} catch (err) {
-			return fail(`remote trust seed failed: ${err instanceof Error ? err.message : String(err)}`);
-		}
+	// still quiet. Local files fail loudly; existing trust decisions are
+	// preserved.
+	try {
+		const seeded = seedHarnessTrust(input.harness.kind, ws.cwd, deps.homeDir);
+		log.info("delegation trust seed", {
+			delegation: d.id,
+			kind: input.harness.kind,
+			cwd: ws.cwd,
+			seeded: seeded.length > 0 ? seeded : "no recipe",
+		});
+	} catch (err) {
+		return fail(`trust seed failed: ${err instanceof Error ? err.message : String(err)}`);
 	}
 
 	try {
@@ -273,7 +175,7 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 			deps.delegations.markParked(d.id, parkedSeq);
 			const parked = deps.delegations.get(d.id) ?? d;
 			if (parked.status === "stopped") {
-				await closeWorkspaceQuietly(deps, d.id, ws.workspaceId, d.target);
+				await closeWorkspaceQuietly(deps, d.id, ws.workspaceId);
 				return { kind: "stopped", delegation: parked };
 			}
 			log.info("delegation parked at startup dialog", {
@@ -281,7 +183,7 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 				name: d.name,
 			});
 			await notify(deps, parked, "needs input", {
-				extra: `(blocked at startup — the task hasn't been sent yet; relay a keypress with action 'answer' or attach with \`${attachHintForRow(deps, d.target)}\`)`,
+				extra: `(blocked at startup — the task hasn't been sent yet; relay a keypress with action 'answer' or attach with \`${attachHintFor(null)}\`)`,
 			});
 			return { kind: "parked", delegation: parked };
 		}
@@ -317,7 +219,7 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 	if (applied === null) {
 		// A raced stop owns the verdict, but this launch still closes the
 		// workspace it left behind — no watcher remains.
-		await closeWorkspaceQuietly(deps, d.id, ws.workspaceId, d.target);
+		await closeWorkspaceQuietly(deps, d.id, ws.workspaceId);
 		log.info("delegation stopped while launching", {
 			delegation: d.id,
 			name: d.name,
@@ -349,8 +251,7 @@ export async function send(deps: DelegationLifecycleDeps, id: number, text: stri
 	// may complete the new run, while the old result remains inspectable. Its mtime
 	// may fall inside the freshness allowance.
 	let archivedPath: string | null = null;
-	// Remote rows have no local report to archive; their target owns the write cycle.
-	if (machineRootFor(deps, d.target) === null) {
+	{
 		const reportPath = reportPathFor(deps, d);
 		try {
 			const destination = join(reportDirFor(deps, d.id), `report-${randomUUID()}.md`);
@@ -386,7 +287,7 @@ export async function send(deps: DelegationLifecycleDeps, id: number, text: stri
 	const promptedAt = new Date();
 	try {
 		// Include the report instruction on every prompt so notices have a result channel.
-		await herdrFor(deps, d.target).prompt(d.agentName, text + reportNote(deps, d));
+		await deps.herdr.prompt(d.agentName, text + reportNote(deps, d));
 	} catch (err) {
 		let error = err instanceof Error ? err.message : String(err);
 		// A blocked prompt must direct callers to the answer action.
@@ -451,7 +352,7 @@ export async function send(deps: DelegationLifecycleDeps, id: number, text: stri
 	// the watcher captures after the prompt instead of reporting done at idle.
 	let seq: number | null = null;
 	try {
-		seq = (await herdrFor(deps, d.target).get(d.agentName))?.state_change_seq ?? null;
+		seq = (await deps.herdr.get(d.agentName))?.state_change_seq ?? null;
 	} catch (err) {
 		log.warn("delegation post-send baseline read failed — watcher will capture", err, {
 			delegation: d.id,
@@ -481,7 +382,7 @@ export async function answer(
 	// status — only a blocked agent takes keys (#493-L28).
 	let agentStatus: string | null;
 	try {
-		agentStatus = (await herdrFor(deps, d.target).get(d.agentName))?.agent_status ?? null;
+		agentStatus = (await deps.herdr.get(d.agentName))?.agent_status ?? null;
 	} catch (err) {
 		log.error("delegation answer preflight failed", err, {
 			delegation: d.id,
@@ -493,7 +394,7 @@ export async function answer(
 		return { kind: "refused", id, why: agentStatus === null ? "agent gone" : "not blocked" };
 	}
 	try {
-		await herdrFor(deps, d.target).sendKey(d.agentName, key);
+		await deps.herdr.sendKey(d.agentName, key);
 	} catch (err) {
 		log.error("delegation answer key failed", err, { delegation: d.id, name: d.name, key });
 		return { kind: "key failed", id, error: err instanceof Error ? err.message : String(err) };
@@ -506,27 +407,9 @@ export async function stop(deps: DelegationLifecycleDeps, id: number): Promise<S
 	const d = deps.delegations.get(id);
 	if (d === null) return { kind: "no row", id };
 	const notes: string[] = [];
-	// An explicit stop is a verdict even when a vanished target cannot be
-	// observed; unsolicited checks keep cannot-observe rows watched. The note
-	// warns that the remote agent may remain unseen.
-	try {
-		herdrFor(deps, d.target);
-	} catch (err) {
-		if (!(err instanceof TargetGoneError)) throw err;
-		notes.push(
-			`target "${err.target}" is gone from config — the agent may still be running on that host; restore the entry to retire it by hand`,
-		);
-		deps.delegations.setStatus(d.id, "stopped");
-		log.warn("delegation stopped with target gone — agent may still run host-side", {
-			delegation: d.id,
-			name: d.name,
-			target: err.target,
-		});
-		return { kind: "stopped", delegation: deps.delegations.get(d.id) ?? d, notes };
-	}
 	if (d.status === "running" || d.status === "needs_input") {
 		try {
-			await herdrFor(deps, d.target).interrupt(d.agentName);
+			await deps.herdr.interrupt(d.agentName);
 		} catch (err) {
 			notes.push(`interrupt: ${err instanceof Error ? err.message : String(err)}`);
 		}
@@ -536,7 +419,7 @@ export async function stop(deps: DelegationLifecycleDeps, id: number): Promise<S
 	let closeFailed = false;
 	if (d.workspaceId) {
 		try {
-			await herdrFor(deps, d.target).closeWorkspace(d.workspaceId);
+			await deps.herdr.closeWorkspace(d.workspaceId);
 		} catch (err) {
 			closeFailed = true;
 			notes.push(`close: ${err instanceof Error ? err.message : String(err)}`);
@@ -546,7 +429,7 @@ export async function stop(deps: DelegationLifecycleDeps, id: number): Promise<S
 		let alive = true;
 		if (d.agentName) {
 			try {
-				alive = (await herdrFor(deps, d.target).get(d.agentName)) !== null;
+				alive = (await deps.herdr.get(d.agentName)) !== null;
 			} catch (err) {
 				notes.push(`agent check: ${err instanceof Error ? err.message : String(err)}`);
 			}

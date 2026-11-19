@@ -21,9 +21,7 @@ import {
 import { notify, observeReadiness } from "./delegation-notices.ts";
 import {
 	closeWorkspaceQuietly,
-	herdrFor,
 	isIssueLead,
-	machineRootFor,
 	reportNote,
 	reportPathFor,
 } from "./delegation-paths.ts";
@@ -235,7 +233,7 @@ function transition(
 // would leave the row invisible to every later scan.
 async function recoverStart(deps: DelegationLifecycleDeps, d: Delegation): Promise<void> {
 	if (d.workspaceId) {
-		await closeWorkspaceQuietly(deps, d.id, d.workspaceId, d.target);
+		await closeWorkspaceQuietly(deps, d.id, d.workspaceId);
 	}
 	try {
 		await notify(deps, d, "failed", {
@@ -257,7 +255,7 @@ async function deliverPendingPrompt(
 ): Promise<void> {
 	const promptedAt = new Date();
 	try {
-		await herdrFor(deps, d.target).prompt(d.agentName, d.task + reportNote(deps, d));
+		await deps.herdr.prompt(d.agentName, d.task + reportNote(deps, d));
 	} catch (err) {
 		log.warn("delegation pending prompt rejected", err, {
 			delegation: d.id,
@@ -270,7 +268,7 @@ async function deliverPendingPrompt(
 	// instead of making the park's first idle glance a false completion.
 	let seq: number | null = null;
 	try {
-		seq = (await herdrFor(deps, d.target).get(d.agentName))?.state_change_seq ?? null;
+		seq = (await deps.herdr.get(d.agentName))?.state_change_seq ?? null;
 	} catch (err) {
 		log.warn("delegation post-prompt baseline read failed — watcher will capture", err, {
 			delegation: d.id,
@@ -292,10 +290,9 @@ async function deliverPendingPrompt(
 // A report whose last words are a question is not a finished answer — the
 // agent stopped to ask, so the run settles needs_input like a dialog block
 // would (#493-L27). Only the file tail is read; a long report costs one
-// bounded read. Machine rows have no local report and keep seq judgment.
+// bounded read.
 const QUESTION_TAIL_BYTES = 8 * 1024;
 function reportEndsInQuestion(deps: DelegationLifecycleDeps, d: Delegation): boolean {
-	if (machineRootFor(deps, d.target) !== null) return false;
 	let fd: number | null = null;
 	try {
 		const path = reportPathFor(deps, d);
@@ -321,10 +318,8 @@ function reportEndsInQuestion(deps: DelegationLifecycleDeps, d: Delegation): boo
 }
 
 // Freshness is attributed by the local report's mtime — send archives the old
-// report first so a previous run cannot complete the new one. Machine rows have
-// no local report and rely on seq.
+// report first so a previous run cannot complete the new one.
 function freshReportFor(deps: DelegationLifecycleDeps, d: Delegation): boolean {
-	if (machineRootFor(deps, d.target) !== null) return false;
 	try {
 		// Filesystem clocks can lag Date.now() — headroom keeps a report written
 		// during the prompt fresh.
@@ -342,15 +337,26 @@ async function check(
 ): Promise<void> {
 	let info: AgentInfo | null;
 	try {
-		info = await herdrFor(deps, d.target).get(d.agentName);
+		info = await deps.herdr.get(d.agentName);
 	} catch (err) {
-		// Cannot observe is not agent gone — an unreachable machine may still
-		// be running, so leave its row watched rather than marking failed.
+		// Cannot observe is not agent gone — the session may be down while
+		// the agent runs, so leave its row watched rather than marking failed.
 		log.error("delegation check unreachable", err, {
 			delegation: d.id,
 			name: d.name,
-			target: d.target ?? "local",
 		});
+		return;
+	}
+	// Authority at observation (#705): a send/stop that landed while the
+	// get was in flight owns the row — this scan's verdict is stale.
+	const current = deps.delegations.get(d.id);
+	if (
+		current === null ||
+		current.status !== d.status ||
+		current.promptedAt !== d.promptedAt ||
+		current.baselineSeq !== d.baselineSeq
+	) {
+		log.info("delegation observation superseded", { delegation: d.id });
 		return;
 	}
 	if (info === null) {
@@ -457,7 +463,6 @@ async function check(
 	if (info.agent_status === "idle" || info.agent_status === "done") {
 		// A fresh local report can complete work folded into the baseline; old
 		// reports are archived on send so reuse never reads stale output.
-		// Machine rows use seq — their remote report cannot be checked here.
 		const freshReport = freshReportFor(deps, d);
 		// completion_seq marks completed work (catching finishes between polls);
 		// servers without it fall back to the state_change_seq comparison. A

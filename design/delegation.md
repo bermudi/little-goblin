@@ -235,7 +235,11 @@ Rulings:
   `delegate start` takes `responsibility:<id>` in a project conversation,
   like a subagent run. Each settlement files one worker report before its
   notice wakes the conversation; a blocked agent carries no `question`, so
-  it waits for goblin to read and relay. `delegate` stays separate from
+  it waits for goblin to read and relay. `delegate send` to a linked
+  delegation passes the same check as every send to a linked worker:
+  the responsibility is `active`, the send comes from its project, and
+  the sending turn predates no correction (design/agents.md → Linked
+  workers). `delegate` stays separate from
   `subagent`: their controls differ, and a merged tool would hide the
   choice inside one schema instead of removing it.
 - **`delegate` is operator-named only (design/agents.md, 2026-11-16;

@@ -19,6 +19,7 @@ import type { Conversation } from "./conversation-read.ts";
 import type { DelegateToolDeps, DelegationPin } from "./agent/tools/delegate.ts";
 import { wake, wakeApp, type WakeDeps } from "./wake.ts";
 import type { GithubIssue, PrReadiness } from "./pr-readiness.ts";
+import type { WorkerSendRefusal } from "./responsibility-authority.ts";
 
 export interface DelegationLifecycleDeps {
 	delegations: DelegationsStore;
@@ -57,7 +58,7 @@ export type LaunchOutcome =
 	// Blocked startup keeps the task owed until its dialog clears.
 	| { kind: "parked"; delegation: Delegation };
 
-export type SendRefusal = "stopped" | "starting" | "never launched" | "task never sent";
+export type SendRefusal = "stopped" | "starting" | "never launched" | "task never sent" | WorkerSendRefusal;
 
 export type SendOutcome =
 	| { kind: "sent"; delegation: Delegation }
@@ -90,7 +91,7 @@ export type ReadOutcome =
 export interface DelegationLifecycle {
 	launch(input: LaunchInput): Promise<LaunchOutcome>;
 	// Follow-up prompts reset the baseline and return the row to running.
-	send(id: number, text: string): Promise<SendOutcome>;
+	send(id: number, text: string, authorize?: (responsibilityId: string) => WorkerSendRefusal | null): Promise<SendOutcome>;
 	// Only the explicitly whitelisted key reaches a blocked agent; the
 	// watcher observes the seq effect and owns every transition.
 	answer(id: number, key: string): Promise<AnswerOutcome>;

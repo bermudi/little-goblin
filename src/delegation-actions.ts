@@ -26,6 +26,7 @@ import {
 	reportNote,
 	reportPathFor,
 } from "./delegation-paths.ts";
+import type { WorkerSendRefusal } from "./responsibility-authority.ts";
 
 // Either way the stop is the operator's call, not a fault to repair.
 const OPERATOR_STOP_NOTE =
@@ -225,7 +226,12 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 	return { kind: "started", delegation: deps.delegations.get(d.id) ?? applied };
 }
 
-export async function send(deps: DelegationLifecycleDeps, id: number, text: string): Promise<SendOutcome> {
+export async function send(
+	deps: DelegationLifecycleDeps,
+	id: number,
+	text: string,
+	authorize?: (responsibilityId: string) => WorkerSendRefusal | null,
+): Promise<SendOutcome> {
 	const d = deps.delegations.get(id);
 	if (d === null) return { kind: "no row", id };
 	// Keep the workspace for follow-up; startup, never-launched, and owed-prompt
@@ -235,6 +241,17 @@ export async function send(deps: DelegationLifecycleDeps, id: number, text: stri
 	if (!d.agentName) return { kind: "refused", id, why: "never launched" };
 	// A parked startup row cannot accept text until its dialog is cleared.
 	if (d.promptPending) return { kind: "refused", id, why: "task never sent" };
+	if (d.responsibilityId !== null) {
+		const refusal = authorize === undefined ? "outside-project" : authorize(d.responsibilityId);
+		if (refusal !== null) {
+			log.info("delegation send refused — responsibility authority", {
+				delegation: d.id,
+				responsibility: d.responsibilityId,
+				refusal,
+			});
+			return { kind: "refused", id, why: refusal };
+		}
+	}
 	// Archive the previous report before prompting; only a post-prompt report
 	// may complete the new run, while the old result remains inspectable. Its mtime
 	// may fall inside the freshness allowance.
@@ -274,6 +291,7 @@ export async function send(deps: DelegationLifecycleDeps, id: number, text: stri
 	}
 	const promptedAt = new Date();
 	try {
+		// No await separates authority check from hc.prompt, so it holds at the wire.
 		// Include the report instruction on every prompt so notices have a result channel.
 		await deps.hc.prompt(d.agentName, text + reportNote(deps, d));
 	} catch (err) {

@@ -8,6 +8,7 @@
 // resumed attempt would actually get.
 
 import { FencedError, type RuntimeDeps } from "../runtime.ts";
+import { workerSendRefusal, type WorkerSendRefusal } from "../responsibility-authority.ts";
 
 import type { ConfigRef } from "../config.ts";
 import { splitModelRef, type Config } from "../config-schema.ts";
@@ -171,6 +172,15 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 						return null;
 					}
 				: undefined;
+		const sendAuthority =
+			conv.projectId !== null && responsibilitySvc !== null
+				? (responsibilityId: string): WorkerSendRefusal | null => {
+						if (store.get(conv.id)?.epoch !== epoch) throw new FencedError(conv.id);
+						const resp = responsibilitySvc.resps.get(responsibilityId);
+						if (resp !== null && resp.projectId !== conv.projectId) return "outside-project";
+						return workerSendRefusal(resp);
+					}
+				: undefined;
 		const tts = configRef.current.tts;
 		// Guests get a reduced set below; app and Telegram turns share the
 		// approval-capable operator tools through canonical targets.
@@ -273,6 +283,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 					: {
 							...delegate,
 							checkResponsibility,
+							sendAuthority,
 						},
 			// Only the approval gate's request closure — the send credential lives behind the taps.
 			mail:
@@ -433,6 +444,8 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 				engine: agents,
 				types: loadAgentTypes(paths.agentTypes()),
 				conversation: conv,
+				sendAuthority,
+				checkResponsibility,
 				// The names the child mount provides that no parent turn
 				// carries — the computer type's desktop tools plus
 				// ask_operator (agent.ts childToolAllowlist).

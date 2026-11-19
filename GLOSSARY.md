@@ -15,6 +15,7 @@
 - **Child conversation:** a conversation with a parent. A subagent runs in one; its final reply goes back to the parent as a notice.
 - **Computer:** the built-in agent type whose child does screen work on a named desktop.
 - **Settlement:** the point where a delegation or subagent run stops and states a result: done, needs input, or failed.
+- **Linked worker:** a subagent, delegation or adopted T3 thread that is explicitly linked to a responsibility. Its settlements file worker reports, and every send to it passes the responsibility's send check (design/agents.md → Linked workers).
 - **Worker report:** one settlement filed on a responsibility. It is the agent's claim, and Goblin still checks it.
 - **Obligation:** a responsibility report that still owes something: a question for the operator, or a worker report Goblin has not assessed. A newer report does not close it; only a named resolution or closing the responsibility does (design/programs.md → Snapshots and obligations).
 - **Status snapshot:** the newest report from Goblin on a responsibility. The next Goblin report replaces it.

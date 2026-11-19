@@ -60,7 +60,7 @@ import { startAgentChildren, type AgentChildren } from "./agent-children.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import { makeResponsibilityObserver } from "./responsibility-observer.ts";
-import { fileDelegationReport } from "./responsibility-runs.ts";
+import { fileAgentChildReport, fileDelegationReport } from "./responsibility-runs.ts";
 import { makeGithubReadiness } from "./github.ts";
 import { makeResponsibilityService } from "./responsibility-service.ts";
 import { wireReviewer } from "./reviewer-wiring.ts";
@@ -619,6 +619,8 @@ async function boot() {
 		maxRunning: () => configRef.current.agents?.maxRunning ?? 3,
 		now: () => new Date(),
 		desktops: () => desktops,
+		responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
+		settled: (child, status, result) => fileAgentChildReport(responsibilities, child, status, result),
 	});
 	agentChildrenEngine = agentChildren;
 

@@ -17,11 +17,21 @@ import {
 	authorityStamp,
 	makeAuthorityRecheck,
 	stillAuthorized,
+	workerSendRefusal,
 } from "./responsibility-authority.ts";
 import { tmpDir, useHome } from "./testkit.ts";
 import { openWakeStore } from "./wake-store.ts";
 
 setLogFile(null);
+
+describe("workerSendRefusal", () => {
+	test("allows only an active responsibility", () => {
+		expect(workerSendRefusal({ status: "active" })).toBeNull();
+		for (const status of ["paused", "completed", "cancelled"] as const)
+			expect(workerSendRefusal({ status })).toBe("responsibility-inactive");
+		expect(workerSendRefusal(null)).toBe("responsibility-missing");
+	});
+});
 
 const target: AttachmentTarget = {
 	server: "local",

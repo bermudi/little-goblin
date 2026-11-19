@@ -10,8 +10,9 @@ import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities } from "./responsibilities.ts";
-import { delegationReport, fileDelegationReport } from "./responsibility-runs.ts";
+import { delegationReport, fileAgentChildReport, fileDelegationReport } from "./responsibility-runs.ts";
 import type { Delegation } from "./delegations.ts";
+import type { AgentChild } from "./agent-children.ts";
 import { responsibilityStage } from "./responsibility-stage.ts";
 import { tmpDir, useHome } from "./testkit.ts";
 import { prReadinessFixture } from "./test-helpers/pr-readiness.ts";
@@ -43,6 +44,22 @@ function rig() {
 	return { resps, id: responsibility.responsibilityId };
 }
 
+const agentChild = (responsibilityId: string | null): AgentChild => ({
+	conversationId: "app/agent-child",
+	parentConversationId: "app/parent",
+	type: "general",
+	status: "running",
+	task: "task",
+	tools: ["read_file"],
+	settlements: 0,
+	createdAt: "2026-11-19T00:00:00.000Z",
+	startedAt: null,
+	settledAt: null,
+	desktop: null,
+	responsibilityId,
+	responsibilityRevision: 1,
+});
+
 test("the store refuses an invalid report before it can poison reads", () => {
 	const r = rig();
 	expect(() =>
@@ -53,6 +70,39 @@ test("the store refuses an invalid report before it can poison reads", () => {
 		),
 	).toThrow();
 	expect(r.resps.reportsFor(r.id)).toEqual([]);
+});
+
+describe("agent child reports", () => {
+	test.each([
+		["done", "ready"],
+		["needs-input", "blocked"],
+		["failed", "failed"],
+		["stopped", "blocked"],
+	] as const)("files %s as %s once at the link revision", (status, state) => {
+		const { resps, id } = rig();
+		const child = agentChild(id);
+		const result = status === "done" ? "finished" : status === "needs-input" ? "question text" : "reason";
+		fileAgentChildReport(resps, child, status, result);
+		fileAgentChildReport(resps, child, status, result);
+		const reports = resps.reportsFor(id);
+		expect(reports).toHaveLength(1);
+		expect(reports[0]).toMatchObject({
+			state,
+			revision: 1,
+			reporter: "worker",
+		});
+		if (status === "needs-input") {
+			expect(reports[0]?.reason).toContain("needs input");
+			expect(reports[0]?.question).toBeNull();
+		}
+	});
+
+	test("unlinked children file nothing and pending statuses are rejected", () => {
+		const { resps, id } = rig();
+		fileAgentChildReport(resps, agentChild(null), "done", "ignored");
+		expect(resps.reportsFor(id)).toEqual([]);
+		expect(() => fileAgentChildReport(resps, agentChild(id), "running", "no")).toThrow(/running/);
+	});
 });
 
 const delegation = (over: Partial<Delegation> = {}): Delegation => ({

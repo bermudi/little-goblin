@@ -60,6 +60,7 @@ import {
 	type SendRefusal,
 	type Understanding,
 	understandingSchema,
+	workerSendRefusal,
 } from "./responsibility-types.ts";
 
 export type ReportRefusal =
@@ -352,12 +353,11 @@ export function openResponsibilities(db: Database): ResponsibilityStore {
 	// The named pre-dispatch check — refuses rather than guessing at a
 	// stale responsibility, a detached agent, or an old generation.
 	function checkSendable(resp: Responsibility | null, att: Attachment | null): SendRefusal | null {
-		if (resp === null) return "responsibility-missing";
-		if (!OPEN_STATUSES.has(resp.status) || resp.status === "paused")
-			return "responsibility-inactive";
+		const refusal = workerSendRefusal(resp);
+		if (refusal !== null) return refusal;
 		if (att === null || att.health === "detached") return "attachment-detached";
 		if (att.health === "missing" || att.health === "identity_changed") return "attachment-detached";
-		if (att.responsibilityId !== resp.responsibilityId) return "attachment-mismatch";
+		if (att.responsibilityId !== resp!.responsibilityId) return "attachment-mismatch";
 		return null;
 	}
 

@@ -170,3 +170,11 @@ export const OP_EDGES: Readonly<Record<OperationState, ReadonlySet<OperationStat
 };
 
 export const OPEN_STATUSES: ReadonlySet<ResponsibilityStatus> = new Set(["active", "paused"]);
+
+/** Status half of the one check every send to a responsibility-linked worker passes. */
+export function workerSendRefusal(
+	resp: Pick<Responsibility, "status"> | null,
+): "responsibility-missing" | "responsibility-inactive" | null {
+	if (resp === null) return "responsibility-missing";
+	return resp.status === "active" ? null : "responsibility-inactive";
+}

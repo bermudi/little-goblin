@@ -11,8 +11,10 @@
 // they are the authority.
 
 import { z } from "zod";
-import type { ResponsibilityStore } from "./responsibilities.ts";
 import type { Attachment, Responsibility } from "./responsibility-types.ts";
+export { workerSendRefusal } from "./responsibility-types.ts";
+
+export type WorkerSendRefusal = "responsibility-missing" | "responsibility-inactive" | "outside-project";
 
 export const authorityStampSchema = z.strictObject({
 	status: z.string(),
@@ -59,7 +61,10 @@ export function stillAuthorized(
  *  unstamped or unlinked event is not checked; a malformed stamp is
  *  corruption and throws — the commit rolls back, nothing is appended. */
 export function makeAuthorityRecheck(
-	resps: Pick<ResponsibilityStore, "get" | "getAttachment">,
+	resps: {
+		get(id: string): Responsibility | null;
+		getAttachment(id: number): Attachment | null;
+	},
 ): (ev: { eventId: number; responsibilityId: string | null; authority: unknown }) => string | null {
 	return (ev) => {
 		if (ev.responsibilityId === null || ev.authority === null || ev.authority === undefined)

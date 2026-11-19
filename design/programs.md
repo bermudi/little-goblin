@@ -293,7 +293,7 @@ Rulings:
   parse to a time, which becomes the next review), evidence
   items `{item, ref, checked}`, the revision it was stated against, and
   the reporter — `goblin` (the coordinating turn's assessment of the
-  T3 thread observations), `worker` (a linked delegation's own claim,
+  T3 thread observations), `worker` (a linked delegation or subagent's own claim,
   filed on settlement), or `migration`. A worker's claim and
   goblin's assessment stay distinguishable at the data level.
 
@@ -352,8 +352,9 @@ Rulings:
   `ready` waits for review only when the task has a checkpoint; verified
   `done` closes on its own.
 
-  **Worker reports:** a delegation is linked to a responsibility only
-  explicitly — `delegate start responsibility:<id>`, admitted when the
+  **Worker reports:** a delegation or a subagent is linked to a
+  responsibility only explicitly — `delegate start responsibility:<id>`
+  or `agent spawn responsibility:<id>`, admitted when the
   id is open in the conversation's own project; no matching by topic
   or by "the project's only open one". The link lives on the delegation
   row. Each settlement of a linked delegation files one `worker`
@@ -365,6 +366,9 @@ Rulings:
   `failed`, `stopped` → `blocked`; the key
   `delegation:<id>:<promptedAt>:<baselineSeq>:<verdict>` dedupes
   retried notices while a follow-up or later dialog is a new report.
+  A linked subagent files by the same mapping (`needs-input` →
+  `blocked`), keyed `agent:<child>:<settlement>:<status>`
+  (design/agents.md → Linked workers).
   Stage: a question goes to the operator whoever asked; any other
   open worker claim is goblin's move (`assess`) until goblin resolves
   it by id — a worker's `ready` never closes or reaches the operator as

@@ -79,6 +79,13 @@ describe("claude native sessions (#418)", () => {
 		};
 		const claudeEngine: ClaudeEngine = {
 			id: "claude-code",
+			rules: {
+				toolLaunchGate: false,
+				preemptFold: false,
+				contentFilterReask: false,
+				transientRetry: false,
+				contextFill: false,
+			},
 			accepts: isClaudeStep,
 			run: (deps) => driveClaude(engineConfig, deps),
 			compact: async () => "unused",
@@ -171,6 +178,13 @@ describe("claude native sessions (#418)", () => {
 		};
 		const claudeEngine: ClaudeEngine = {
 			id: "claude-code",
+			rules: {
+				toolLaunchGate: false,
+				preemptFold: false,
+				contentFilterReask: false,
+				transientRetry: false,
+				contextFill: false,
+			},
 			accepts: isClaudeStep,
 			run: (deps) => driveClaude(engineConfig, deps),
 			compact: async () => "unused",
@@ -265,6 +279,13 @@ describe("claude native sessions (#418)", () => {
 		};
 		const claudeEngine: ClaudeEngine = {
 			id: "claude-code",
+			rules: {
+				toolLaunchGate: false,
+				preemptFold: false,
+				contentFilterReask: false,
+				transientRetry: false,
+				contextFill: false,
+			},
 			accepts: isClaudeStep,
 			run: (deps) => driveClaude(engineConfig, deps),
 			compact: async () => "unused",
@@ -338,6 +359,13 @@ describe("claude native sessions (#418)", () => {
 		};
 		const claudeEngine: ClaudeEngine = {
 			id: "claude-code",
+			rules: {
+				toolLaunchGate: false,
+				preemptFold: false,
+				contentFilterReask: false,
+				transientRetry: false,
+				contextFill: false,
+			},
 			accepts: isClaudeStep,
 			run: (deps) => driveClaude(engineConfig, deps),
 			compact: async () => "unused",
@@ -412,6 +440,13 @@ describe("claude native sessions (#418)", () => {
 		};
 		const claudeEngine: ClaudeEngine = {
 			id: "claude-code",
+			rules: {
+				toolLaunchGate: false,
+				preemptFold: false,
+				contentFilterReask: false,
+				transientRetry: false,
+				contextFill: false,
+			},
 			accepts: isClaudeStep,
 			run: (deps) => driveClaude(engineConfig, deps),
 			compact: async () => "unused",

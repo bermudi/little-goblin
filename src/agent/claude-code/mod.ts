@@ -330,6 +330,13 @@ export function createClaudeEngine(init: {
 	};
 	return {
 		id: "claude-code",
+		rules: {
+			toolLaunchGate: false,
+			preemptFold: false,
+			contentFilterReask: false,
+			transientRetry: false,
+			contextFill: false,
+		},
 		accepts: isClaudeStep,
 		run: (deps) => driveClaude(config, deps),
 		compact: (input) => compactText(config, input),

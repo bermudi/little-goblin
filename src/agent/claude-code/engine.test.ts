@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import type { ModelMessage } from "ai";
+import type { PromptMessage } from "../../prompt-message.ts";
 import type { MessageChunk } from "../../message.ts";
 import { openCacheObservation } from "../../cache-observation.ts";
 import { z } from "zod";
@@ -585,7 +585,7 @@ describe("driveClaude — tool round-trip through the real bridge", () => {
 		// No planned rows: the CLI's ids never match fenceTools' journal ids.
 		expect(rec.inputs).toEqual([]);
 		expect(rec.checkpoints.length).toBeGreaterThanOrEqual(2);
-		const last = rec.checkpoints.at(-1) as { partial?: ModelMessage[] };
+		const last = rec.checkpoints.at(-1) as { partial?: PromptMessage[] };
 		const partial = last.partial ?? [];
 		// assistant(tool-call) → tool(result) → assistant(text), in order.
 		expect(partial.map((m) => m.role)).toEqual(["assistant", "tool", "assistant"]);
@@ -692,7 +692,7 @@ describe("driveClaude — the prompt and request identity", () => {
 	});
 
 	test("media blocks ride the prompt at their transcript position", async () => {
-		const messages: ModelMessage[] = [
+		const messages: PromptMessage[] = [
 			{
 				role: "user",
 				content: [

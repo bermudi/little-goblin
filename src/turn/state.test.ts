@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { System1Client } from "../system1.ts";
 import { LOOP_DETECT_CUT, LOOP_DETECT_WARN } from "../loop-detect.ts";
 import { LOOP_WINDOW } from "../loop-watchdog.ts";
-import { TurnState, type LoopTurnState } from "./state.ts";
+import { holdsZeroEffectError, TurnState, type LoopTurnState } from "./state.ts";
 
 const deps = { convId: "c1", watchdog: null, request: "do the thing" };
 
@@ -227,5 +227,17 @@ describe("watchdog cadence", () => {
 		await tick();
 		expect(dispatched).toBe(2);
 		expect(state.decidedCut()).toBeNull();
+	});
+});
+
+describe("holdsZeroEffectError", () => {
+	test("holds only when the runtime asked, no model call landed, and recovery is not already holding", () => {
+		const fresh = new TurnState(deps, loopOf({ modelCalls: 0 }));
+		const spent = new TurnState(deps, loopOf({ modelCalls: 1 }));
+		expect(holdsZeroEffectError(true, fresh, false)).toBe(true);
+		expect(holdsZeroEffectError(true, spent, false)).toBe(false);
+		expect(holdsZeroEffectError(false, fresh, false)).toBe(false);
+		expect(holdsZeroEffectError(undefined, fresh, false)).toBe(false);
+		expect(holdsZeroEffectError(true, fresh, true)).toBe(false);
 	});
 });

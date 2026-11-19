@@ -91,14 +91,41 @@ Every engine consumes the same deps object minus the step
 Ruling: `UIMessage` / `UIMessageChunk` stay goblin's storage and wire
 format. The app channel is `useChat`; an engine translates at its own
 edge, as the claude engine already does (`agent/claude-code/translate.ts`).
+Model-facing prompts use Goblin's `PromptMessage[]` (`src/prompt-message.ts`);
+the SDK shape is compared only in `src/prompt-message.test.ts`, and engines
+convert at their own edge.
 Both engines emit the identical wire, journal rows, and telemetry;
 `src/turn/engine.conformance.test.ts` pins that per engine through the
 real Runtime.
+
+### Engine rules
+
+Every engine follows these mandatory rules:
+
+- Check authority after every vendor event and before the outcome.
+- Run tools only through `deps.tools`, the fenced set.
+- Join steers only through `foldSteers`.
+- Call `saveStep` at every step end.
+- Apply the fallback error hold through `holdsZeroEffectError`.
+- Abort on `deps.signal`.
+- Build reply metadata through `replyMetadata`.
+- Return a `StreamOutcome`.
+
+`EngineRules` declares the optional rules each engine follows:
+
+| Rule | ai-sdk | claude-code |
+| --- | --- | --- |
+| `toolLaunchGate` | `true` | `false` — the CLI dispatches calls. |
+| `preemptFold` | `true` | `false` — no model-call boundary hook. |
+| `contentFilterReask` | `true` | `false` — no same-step re-ask path. |
+| `transientRetry` | `true` | `false` — `driveClaude` has no transport-retry path. |
+| `contextFill` | `true` | `false` — no model-call boundary hook. |
 
 ### Adding an engine
 
 - Implement `TurnEngine` in its own adapter directory (one vendor
   package, one dir — the claude-code layout).
+- Declare its `rules`.
 - Add the engine's step variant, with its own `engine` tag, to `TurnStep`
   in `src/runtime.ts`; its `accepts` checks that tag.
 - Register it in `src/index.ts`'s `engines` array (first match wins).

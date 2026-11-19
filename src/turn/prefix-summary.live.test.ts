@@ -18,7 +18,7 @@
 // against the warm turn's and fix the replay path.
 
 import { randomUUID } from "node:crypto";
-import type { LanguageModelV4Usage } from "@ai-sdk/provider";
+import type { Usage } from "../message.ts";
 import { expect, test } from "bun:test";
 import { streamText, type ToolSet, toUIMessageStream } from "ai";
 import { z } from "zod";
@@ -59,7 +59,7 @@ const PADDING = Array.from(
 	(_, i) => `reference line ${i + 1}: the quick brown fox jumps over the lazy dog.`,
 ).join("\n");
 
-type CallRecord = { input: CacheCallInput; usage: LanguageModelV4Usage | null };
+type CallRecord = { input: CacheCallInput; usage: Usage | null };
 
 test(
 	"the memory flush replays the turn prefix and reads it from cache (live)",
@@ -231,9 +231,9 @@ test(
 					messages: call.input.promptHashes.length,
 					headHash: call.input.headHash.slice(0, 12),
 					settingsHash: call.input.settingsHash.slice(0, 12),
-					input: call.usage?.inputTokens.total ?? null,
-					cacheRead: call.usage?.inputTokens.cacheRead ?? null,
-					cacheWrite: call.usage?.inputTokens.cacheWrite ?? null,
+					input: call.usage?.inputTokens ?? null,
+					cacheRead: call.usage?.inputTokenDetails.cacheReadTokens ?? null,
+					cacheWrite: call.usage?.inputTokenDetails.cacheWriteTokens ?? null,
 				})),
 			});
 			// The flush's wire head (system + tool definitions) and its
@@ -244,7 +244,7 @@ test(
 			expect(
 				flushCall!.input.promptHashes.slice(0, warm.promptHashes.length),
 			).toEqual(warm.promptHashes);
-			const cacheRead = flushCall!.usage?.inputTokens.cacheRead ?? 0;
+			const cacheRead = flushCall!.usage?.inputTokenDetails.cacheReadTokens ?? 0;
 			expect(
 				cacheRead,
 				`flush read ${cacheRead} cached tokens — the replayed prefix diverged from the turn's`,

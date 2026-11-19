@@ -27,13 +27,12 @@
 // the contract; red drift check means re-pin.
 
 import { randomUUID } from "node:crypto";
-import type { LanguageModelV4Usage } from "@ai-sdk/provider";
-import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import type {
 	AssistantContent,
-	ModelMessage,
+	PromptMessage,
 	ToolContent,
-} from "ai";
+	ToolResultOutput,
+} from "../../prompt-message.ts";
 import type {
 	FinishReason,
 	Message,
@@ -49,6 +48,8 @@ import { log } from "../../log.ts";
 import { measurePrompt } from "../../turn/itemize.ts";
 import { toToolSet } from "../../turn/ai-sdk-tools.ts";
 import { stepModelRef } from "../../turn/model-ref.ts";
+import { replyMetadata } from "../../turn/reply-metadata.ts";
+import { holdsZeroEffectError } from "../../turn/state.ts";
 import {
 	emitChunk,
 	foldSteers,
@@ -118,7 +119,7 @@ export interface ClaudeRunDeps<M extends WireMember> extends Omit<StreamDeps<M>,
 	claudeSession?:
 		| {
 				resume?: { sessionId: string; headUuid: string } | undefined;
-				fullPrompt?: (() => Promise<ModelMessage[]>) | undefined;
+				fullPrompt?: (() => Promise<PromptMessage[]>) | undefined;
 				onDrop?: (() => void) | undefined;
 		  }
 		| undefined;
@@ -256,20 +257,22 @@ export function cacheTtlMs(usage: ClaudeUsage | null): number | null {
 	return null;
 }
 
-function v4Usage(usage: ClaudeUsage | null): LanguageModelV4Usage | undefined {
+function goblinUsage(usage: ClaudeUsage | null): Usage | undefined {
 	if (usage === null) return undefined;
+	const inputTokens = billedInput(usage);
 	return {
-		inputTokens: {
-			total: billedInput(usage) ?? undefined,
-			noCache: usage.input_tokens ?? undefined,
-			cacheRead: usage.cache_read_input_tokens ?? undefined,
-			cacheWrite: usage.cache_creation_input_tokens ?? undefined,
+		inputTokens: inputTokens ?? undefined,
+		inputTokenDetails: {
+			noCacheTokens: usage.input_tokens ?? undefined,
+			cacheReadTokens: usage.cache_read_input_tokens ?? undefined,
+			cacheWriteTokens: usage.cache_creation_input_tokens ?? undefined,
 		},
-		outputTokens: {
-			total: usage.output_tokens ?? undefined,
-			text: undefined,
-			reasoning: undefined,
-		},
+		outputTokens: usage.output_tokens ?? undefined,
+		outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+		totalTokens:
+			inputTokens !== null && usage.output_tokens !== null
+				? inputTokens + usage.output_tokens
+				: undefined,
 	};
 }
 
@@ -309,7 +312,7 @@ function bareToolName(name: string): string {
 interface RunState {
 	// wire + journal reconstruction
 	parts: Message["parts"];
-	partialMessages: ModelMessage[];
+	partialMessages: PromptMessage[];
 	// ledger
 	events: ToolEventState;
 	sawText: boolean;
@@ -395,7 +398,7 @@ export async function driveClaude<M extends WireMember>(
 	// Recomputed per attempt — the resume-failure retry sends the full
 	// prompt, not the seq delta deps.messages carries.
 	const toolDefs = serializeToolDefs(deps.tools);
-	const hashesFor = (messages: ModelMessage[]) => {
+	const hashesFor = (messages: PromptMessage[]) => {
 		const prompt = serializePrompt(messages);
 		return callHashes(
 			[
@@ -509,7 +512,7 @@ export async function driveClaude<M extends WireMember>(
 		}
 		if (callId !== null) {
 			const finished = callId;
-			obs?.finish(v4Usage(usage), cacheTtl);
+			obs?.finish(goblinUsage(usage), cacheTtl);
 			log.info("model call usage", {
 				...baseFields,
 				callId: finished,
@@ -761,7 +764,7 @@ export async function driveClaude<M extends WireMember>(
 	// --- steers: the open query input and the shared fold ---
 	const steers = openSteerLedger(deps);
 	const sdkTools = toToolSet(deps.tools);
-	const steeredMessages: ModelMessage[] = [];
+	const steeredMessages: PromptMessage[] = [];
 	// Pushed to the CLI, not yet acked by a `folded` event.
 	const unacked = new Set<string>();
 	let channel: SteerChannel | null = null;
@@ -1075,8 +1078,7 @@ export async function driveClaude<M extends WireMember>(
 		// A zero-effect error with a fallback candidate waiting is held
 		// too (design/model.md → Model fallback list); the runtime emits
 		// it if the turn ends here.
-		const errorHeld =
-			!holdForRecovery && deps.holdZeroEffectError === true && state.snapshot().modelCalls === 0;
+		const errorHeld = holdsZeroEffectError(deps.holdZeroEffectError, state, holdForRecovery);
 		if (!holdForRecovery && !errorHeld) emit({ type: "error", errorText: streamError });
 		return {
 			kind: "failed",
@@ -1101,29 +1103,25 @@ export async function driveClaude<M extends WireMember>(
 	// shape messageMetadata writes for the API lane.
 	const finishReason = finishReasonOf(run.lastStopReason, run.sawToolUse);
 	const segments = measurePrompt(step.system, deps.tools, [...sentMessages, ...steeredMessages]);
-	const durationMs = Date.now() - deps.turnStartMs;
-	const metadata = {
-		model: label,
+	const metadata = replyMetadata({
+		label,
 		finishReason,
-		durationMs,
-		// Same instant as durationMs — the live reply's age stamp.
-		createdAt: new Date(deps.turnStartMs + durationMs).toISOString(),
-		...(run.firstTokenMs !== null ? { ttftMs: run.firstTokenMs } : {}),
+		turnStartMs: deps.turnStartMs,
+		now: Date.now(),
+		firstTokenMs: run.firstTokenMs,
+		forcedCompletion: null,
 		usage: {
 			input: run.totalInput,
 			output: run.totalOutput,
 			cacheRead: run.totalCacheRead,
 			cacheWrite: run.totalCacheWrite,
-			// input above sums every step's billed prompt across the tool
-			// loop; the window gauge reads the final step.
 			lastInput: run.lastInput,
 			lastCacheRead: run.lastCacheRead,
 		},
-		...(segments !== null ? { promptChars: { ...segments } } : {}),
-		...(deps.fallbackMisses !== undefined && deps.fallbackMisses.length > 0
-			? { fallback: { from: deps.fallbackMisses.map(({ ref, reason }) => ({ ref, reason })) } }
-			: {}),
-	};
+		promptChars: segments,
+		quota: null,
+		fallbackMisses: deps.fallbackMisses,
+	});
 	emit({ type: "finish", finishReason, messageMetadata: metadata });
 	const responseMessage: Message | null =
 		run.parts.length > 0 ? { id: messageId, role: "assistant", parts: run.parts, metadata } : null;
@@ -1147,7 +1145,7 @@ export async function driveClaude<M extends WireMember>(
 }
 
 // One content block of a completed assistant message → wire chunks,
-// ledger entries, head notifications, and the reconstructed ModelMessage
+// ledger entries, head notifications, and the reconstructed PromptMessage
 // part. Streaming already covered text/thinking deltas; this is the
 // canonical complete form (and the only form when the CLI does not
 // stream partials for a block).

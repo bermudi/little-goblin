@@ -4,7 +4,6 @@ import {
 	type CallWarning,
 	isLoopFinished,
 	type LanguageModel,
-	type ModelMessage,
 	streamText,
 	type ToolSet,
 	toUIMessageStream,
@@ -15,6 +14,7 @@ import type {
 	MessageChunk,
 	Usage,
 } from "../message.ts";
+import type { PromptMessage, ToolContent } from "../prompt-message.ts";
 import { quotaFromMetadata } from "../agent/codex/receipts.ts";
 import { toToolSet, ToolExecuteError } from "./ai-sdk-tools.ts";
 import { filterErrorStream, streamSurfaceErrors } from "../agent/filter-stream.ts";
@@ -36,8 +36,9 @@ import type { AdmittedMember, LiveWire } from "./admission.ts";
 import { estimateHistoryChars, measurePrompt, type PromptSegments } from "./itemize.ts";
 import { stepModelRef } from "./model-ref.ts";
 import { PreemptSignal, transportFailureText } from "./overflow.ts";
+import { replyMetadata } from "./reply-metadata.ts";
 import type { SkillWatch } from "./skill-attribution.ts";
-import type { ForcedKind, LoopTurnState, TurnState } from "./state.ts";
+import { holdsZeroEffectError, type ForcedKind, type LoopTurnState, type TurnState } from "./state.ts";
 import {
 	noteToolError,
 	noteToolInput,
@@ -126,7 +127,7 @@ export interface WireMember extends AdmittedMember {
 // request view — stored events keep full fidelity, and the between-turn
 // sweep (frame-stubs.ts) commits the durable marker for old frames.
 // Returns the input array untouched when nothing changes. Exported for tests.
-export function stubSupersededFrames(messages: ModelMessage[]): ModelMessage[] {
+export function stubSupersededFrames(messages: PromptMessage[]): PromptMessage[] {
 	const spots: { mi: number; pi: number }[] = [];
 	messages.forEach((m, mi) => {
 		if (m.role !== "tool" || typeof m.content === "string") return;
@@ -158,8 +159,9 @@ export function stubSupersededFrames(messages: ModelMessage[]): ModelMessage[] {
 	const next = messages.map((m, mi) => {
 		if (m.role !== "tool" || typeof m.content === "string") return m;
 		let touched = false;
-		const content = m.content.map((part, pi) => {
+		const content = m.content.map((part, pi): ToolContent[number] => {
 			if (!drop.has(`${mi}:${pi}`)) return part;
+			if (part.type !== "tool-result") return part;
 			touched = true;
 			const out = (part as { output?: { value?: unknown } }).output;
 			const texts = Array.isArray(out?.value)
@@ -169,7 +171,7 @@ export function stubSupersededFrames(messages: ModelMessage[]): ModelMessage[] {
 						.map((v) => String(v.text ?? ""))
 				: [];
 			return {
-				...(part as Record<string, unknown>),
+				...part,
 				output: {
 					type: "text",
 					value: [
@@ -181,7 +183,7 @@ export function stubSupersededFrames(messages: ModelMessage[]): ModelMessage[] {
 		});
 		if (!touched) return m;
 		changed = true;
-		return { ...m, content } as ModelMessage;
+		return { ...m, content };
 	});
 	return changed ? next : messages;
 }
@@ -297,7 +299,7 @@ export async function foldSteers<M extends WireMember>(
 	ledger: SteerLedger,
 	step: number,
 	sdkTools: ToolSet = toToolSet(deps.view.tools),
-): Promise<{ injected: ModelMessage[] } | null> {
+): Promise<{ injected: PromptMessage[] } | null> {
 	const { convId, live, members } = deps;
 	const steered = deps.claimSteers();
 	if (steered.length === 0) return { injected: [] };
@@ -305,7 +307,7 @@ export async function foldSteers<M extends WireMember>(
 		deps.unrequeueSteers(steered);
 		return null;
 	}
-	const injected: ModelMessage[] = [];
+	const injected: PromptMessage[] = [];
 	// Claimed by event seq, never by message id — ids are
 	// client-controlled and may repeat, so an id match could claim a
 	// steer that failed conversion as owned input. The wake link's
@@ -401,7 +403,7 @@ export interface StreamDeps<M extends WireMember> {
 	assertAuthority(): void;
 	holdsAuthority(): boolean;
 	step: StreamStep;
-	messages: ModelMessage[];
+	messages: PromptMessage[];
 	tools: Tools;
 	view: ViewContext;
 	claimSteers(): M[];
@@ -523,8 +525,8 @@ export async function driveStream<M extends WireMember>(
 	// saw and must never become the record; the promoted one is the last
 	// completed step, on either outcome rail. References only;
 	// serialization happens once, when the runtime records the turn.
-	let stagedWindow: { messages: ModelMessage[]; segments: PromptSegments } | null = null;
-	let lastWindow: { messages: ModelMessage[]; segments: PromptSegments } | null = null;
+	let stagedWindow: { messages: PromptMessage[]; segments: PromptSegments } | null = null;
+	let lastWindow: { messages: PromptMessage[]; segments: PromptSegments } | null = null;
 	let stepCount = 0;
 	let rawError: unknown = null;
 	let filterRetryPending = false;
@@ -545,7 +547,7 @@ export async function driveStream<M extends WireMember>(
 	// failed outcome can name the arm and step. Also read only after the
 	// stream settles — declared here for the same TDZ reason.
 	let preemptInfo: { arm: "pressure"; step: number } | null = null;
-	const partialMessages: ModelMessage[] = [];
+	const partialMessages: PromptMessage[] = [];
 	// #493-L10 — a death mid-step must not lose text already on the
 	// wire: the in-flight step's streamed text rides the checkpoint as
 	// one extra assistant message, throttled to at most one write per
@@ -558,7 +560,7 @@ export async function driveStream<M extends WireMember>(
 	// The finish metadata part is written after the final step, so the
 	// last prepareStep capture is that step's outbound prompt — the
 	// window the gauge itemizes.
-	const notePrompt = (messages: readonly ModelMessage[], stepNumber: number) => {
+	const notePrompt = (messages: readonly PromptMessage[], stepNumber: number) => {
 		const segments = measurePrompt(deps.step.system, deps.tools, messages);
 		lastPromptChars = segments;
 		stagedWindow = { messages: [...messages], segments };
@@ -623,7 +625,7 @@ export async function driveStream<M extends WireMember>(
 				contextUsed !== null && contextLimit !== undefined
 					? Math.round((contextUsed / contextLimit) * 100)
 					: null;
-			const contextNote: ModelMessage[] =
+			const contextNote: PromptMessage[] =
 				contextLimit !== undefined &&
 				(stepNumber === 0 || (contextPct !== null && contextPct >= 50))
 					? contextUsed !== null
@@ -657,10 +659,10 @@ export async function driveStream<M extends WireMember>(
 			}
 			const cut = state.decidedCut();
 			const forced = cut !== null;
-			const warnMsgs: ModelMessage[] = state
+			const warnMsgs: PromptMessage[] = state
 				.drainWarnings()
-				.map((content): ModelMessage => ({ role: "user", content }));
-			const nudge: ModelMessage[] = cut !== null ? [{ role: "user", content: CUT_NUDGE[cut] }] : [];
+				.map((content): PromptMessage => ({ role: "user", content }));
+			const nudge: PromptMessage[] = cut !== null ? [{ role: "user", content: CUT_NUDGE[cut] }] : [];
 			const base = stubSupersededFrames(stepMessages);
 			const folded = await foldSteers(deps, steers, stepNumber, sdkTools);
 			if (folded === null) {
@@ -890,42 +892,25 @@ export async function driveStream<M extends WireMember>(
 				firstTokenMs = Date.now() - deps.turnStartMs;
 			}
 			if (part.type !== "finish") return undefined;
-			const forcedKind = state.forcedCompletion();
-			const durationMs = Date.now() - deps.turnStartMs;
-			return {
-				model: modelLabel,
+			return replyMetadata({
+				label: modelLabel,
 				finishReason: part.finishReason,
-				durationMs,
-				// The finish instant, same clock read as durationMs — the
-				// transcript's "how old is this reply" before history
-				// serves the row's own stamp.
-				createdAt: new Date(deps.turnStartMs + durationMs).toISOString(),
-				...(firstTokenMs !== null ? { ttftMs: firstTokenMs } : {}),
-				...(forcedKind !== null ? { forcedCompletion: forcedKind } : {}),
+				turnStartMs: deps.turnStartMs,
+				now: Date.now(),
+				firstTokenMs,
+				forcedCompletion: state.forcedCompletion(),
 				usage: {
 					input: part.totalUsage.inputTokens ?? null,
 					output: part.totalUsage.outputTokens ?? null,
 					cacheRead: part.totalUsage.inputTokenDetails?.cacheReadTokens ?? null,
 					cacheWrite: part.totalUsage.inputTokenDetails?.cacheWriteTokens ?? null,
-					// input above sums every step's billed prompt across the
-					// tool loop; the window gauge reads the final step — the
-					// current occupancy, the number compaction math uses.
 					lastInput: lastStepInputTokens,
 					lastCacheRead: lastStepCacheRead,
 				},
-				// Itemization of the final step's prompt, in serialized
-				// characters (turn/itemize.ts); scaled to tokens by /context.
-				// Absent when no step ran.
-				...(lastPromptChars !== null ? { promptChars: { ...lastPromptChars } } : {}),
-				...(turnQuota !== null ? { quota: turnQuota } : {}),
-				...(deps.fallbackMisses !== undefined && deps.fallbackMisses.length > 0
-					? {
-							fallback: {
-								from: deps.fallbackMisses.map(({ ref, reason }) => ({ ref, reason })),
-							},
-						}
-					: {}),
-			};
+				promptChars: lastPromptChars,
+				quota: turnQuota,
+				fallbackMisses: deps.fallbackMisses,
+			});
 		},
 		onError: (error) =>
 			error instanceof ToolExecuteError
@@ -974,9 +959,7 @@ export async function driveStream<M extends WireMember>(
 			}
 			if (
 				chunk.type === "error" &&
-				!holdForRecovery &&
-				deps.holdZeroEffectError === true &&
-				state.snapshot().modelCalls === 0
+				holdsZeroEffectError(deps.holdZeroEffectError, state, holdForRecovery)
 			) {
 				errorHeld = true;
 			} else if (!holdForRecovery) {

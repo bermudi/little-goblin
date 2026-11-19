@@ -1,5 +1,5 @@
 import type { Database } from "bun:sqlite";
-import type { LanguageModelV4Usage } from "@ai-sdk/provider";
+import type { Usage } from "./message.ts";
 import { z } from "zod";
 
 export type CachePrefixRelation = "first" | "same" | "append" | "rewrite";
@@ -31,7 +31,7 @@ export interface CacheCallObservation {
 	readonly idleMs: number | null;
 	readonly prefixRelation: CachePrefixRelation;
 	readonly sharedMessages: number;
-	finish(usage: LanguageModelV4Usage | undefined, cacheTtlMs?: number | null): void;
+	finish(usage: Usage | undefined, cacheTtlMs?: number | null): void;
 	fail(): void;
 }
 
@@ -348,10 +348,10 @@ export function openCacheObservation(
 					if (settled) return;
 					qComplete.run(
 						now(),
-						usage?.inputTokens.total ?? null,
-						usage?.inputTokens.cacheRead ?? null,
-						usage?.inputTokens.cacheWrite ?? null,
-						usage?.outputTokens.total ?? null,
+						usage?.inputTokens ?? null,
+						usage?.inputTokenDetails.cacheReadTokens ?? null,
+						usage?.inputTokenDetails.cacheWriteTokens ?? null,
+						usage?.outputTokens ?? null,
 						cacheTtlMs,
 						input.callId,
 					);

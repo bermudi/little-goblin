@@ -5,7 +5,7 @@
 // in aggregate, an estimate per segment (the wire's chat template adds
 // per-message overhead no caller can see).
 
-import type { ModelMessage } from "ai";
+import type { PromptMessage } from "../prompt-message.ts";
 import { inputJsonSchema, isHosted, type Tools } from "../tool.ts";
 import { PROMPT_SECTIONS } from "../agent/prompt.ts";
 
@@ -146,7 +146,7 @@ function partChars(
 }
 
 function messageChars(
-	message: ModelMessage,
+	message: PromptMessage,
 	mediaChars: (part: unknown) => number = dataLen,
 ): { history: number; tool: number } {
 	const content = message.content as unknown;
@@ -188,7 +188,7 @@ function toolDefsChars(tools: Tools): number {
 export function measurePrompt(
 	system: string,
 	tools: Tools,
-	messages: readonly ModelMessage[],
+	messages: readonly PromptMessage[],
 ): PromptSegments {
 	let history = 0;
 	let toolResults = 0;
@@ -208,7 +208,7 @@ export function measurePrompt(
 // History size for the compaction pre-emption trigger, which converts
 // chars to tokens at /4: media is charged a fixed cost, not its base64
 // length, so one inlined photo cannot read as a six-figure token span.
-export function estimateHistoryChars(messages: readonly ModelMessage[]): number {
+export function estimateHistoryChars(messages: readonly PromptMessage[]): number {
 	let total = 0;
 	for (const m of messages) total += messageChars(m, () => MEDIA_ESTIMATE_CHARS).history;
 	return total;

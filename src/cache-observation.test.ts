@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import type { LanguageModelV4Usage } from "@ai-sdk/provider";
 import { openCacheObservation, type CacheCallInput } from "./cache-observation.ts";
+import type { Usage } from "./message.ts";
 import { tmpDb } from "./testkit.ts";
 
 function input(over: Partial<CacheCallInput> = {}): CacheCallInput {
@@ -24,15 +24,17 @@ function usage(over: {
 	cacheRead?: number | undefined;
 	cacheWrite?: number | undefined;
 	output?: number;
-}): LanguageModelV4Usage {
+}): Usage {
 	return {
-		inputTokens: {
-			total: over.input,
-			noCache: undefined,
-			cacheRead: over.cacheRead,
-			cacheWrite: over.cacheWrite,
+		inputTokens: over.input,
+		inputTokenDetails: {
+			noCacheTokens: undefined,
+			cacheReadTokens: over.cacheRead,
+			cacheWriteTokens: over.cacheWrite,
 		},
-		outputTokens: { total: over.output, text: undefined, reasoning: undefined },
+		outputTokens: over.output,
+		outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+		totalTokens: undefined,
 	};
 }
 

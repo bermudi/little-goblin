@@ -44,7 +44,7 @@ function waitsFor(d: OperatorDelegationItem): string {
 }
 
 // The operator's stop (#414): goblin records it as theirs and does not
-// relaunch. A 409 means the stop could not be applied — shown as is.
+// relaunch. A 409 means herdr could not close the agent — shown as is.
 function StopButton({
 	d,
 	token,
@@ -59,8 +59,8 @@ function StopButton({
 	const [err, setErr] = useState<string | null>(null);
 	const run = async () => {
 		const ok = await confirm.ask({
-			message: `Stop watching ${d.name}? t3 has no stop verb — the thread keeps running in T3 Code; goblin only settles its row.`,
-			confirmLabel: "Stop watching",
+			message: `Stop ${d.name}? Its agent is ended and its workspace closed.`,
+			confirmLabel: "Stop",
 			danger: true,
 		});
 		if (!ok) return;
@@ -68,10 +68,6 @@ function StopButton({
 		setErr(null);
 		try {
 			const res = await stopDelegation(token, d.id);
-			if (res.outcome === "unavailable") {
-				setErr("t3 has no stop verb — end the thread in T3 Code itself.");
-				return;
-			}
 			onStopped(d.name, res.notes);
 		} catch (e) {
 			setErr(describe(e));
@@ -171,18 +167,10 @@ function Detail({
 			<dl className="deleg-facts">
 				<dt>Harness</dt>
 				<dd>{d.harness}</dd>
-				{d.thread !== null && (
+				{d.target !== null && (
 					<>
-						<dt>Thread</dt>
-						<dd className="mono">
-							{d.link !== null ? (
-								<a href={d.link} target="_blank" rel="noreferrer">
-									{d.thread}
-								</a>
-							) : (
-								d.thread
-							)}
-						</dd>
+						<dt>Target</dt>
+						<dd className="mono">{d.target}</dd>
 					</>
 				)}
 				<dt>Directory</dt>

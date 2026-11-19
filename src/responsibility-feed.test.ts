@@ -11,6 +11,7 @@ import { openStore, type ConversationStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { openProjects, type ProjectStore } from "./projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
+import { ensureReportsSchema } from "./responsibility-reports.ts";
 import type { Understanding } from "./responsibility-types.ts";
 import {
 	FEED_EVENT_WINDOW,
@@ -164,6 +165,35 @@ describe("outcome posts", () => {
 			["assessed", false],
 		]);
 		expect(item!.posts[2]!.resolution).toMatchObject({ kind: "resolved", byReportId: expect.any(Number) });
+	});
+
+	test("a migrated claim keeps its old review: reviewed only if a goblin report follows it", () => {
+		const r = rig();
+		const { responsibility } = r.resps.create({
+			projectId: r.projectId,
+			coordinationConversationId: r.convId,
+			handoverKey: "migrated-review",
+			understanding: understanding(),
+		});
+		const id = responsibility.responsibilityId;
+		r.resps.report(id, { state: "ready", reason: "claim A" }, "worker", { sourceKey: "w:a" });
+		r.resps.report(id, { state: "progress", reason: "goblin G" }, "goblin");
+		r.resps.report(id, { state: "ready", reason: "claim B" }, "worker", { sourceKey: "w:b" });
+		r.resps.report(id, { state: "ready", reason: "claim C" }, "worker", { sourceKey: "w:c" });
+
+		// The old database had no resolutions table: the first open backfills it.
+		r.store.db.run("DROP TABLE responsibility_resolutions");
+		const migratedAt = Date.parse("2026-11-19T12:00:00.000Z");
+		ensureReportsSchema(r.store.db, migratedAt);
+		const [item] = feedForProject({ db: r.store.db, resps: r.resps }, r.projectId);
+		expect(item!.posts.map((p) => [p.report.reason, p.review, p.resolution?.kind ?? null]))
+			.toEqual([
+				["claim C", "unreviewed", null],
+				["claim B", "unreviewed", "migrated"],
+				["goblin G", "assessed", null],
+				["claim A", "reviewed", "migrated"],
+			]);
+		expect(item!.posts[1]!.resolution!.at).toBe("2026-11-19T12:00:00.000Z");
 	});
 
 	test("a report counts as activity, so a post never sits under 'no activity'", () => {

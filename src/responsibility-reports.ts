@@ -153,7 +153,7 @@ export function toReport(row: unknown): ResponsibilityReport {
 	};
 }
 
-export function ensureReportsSchema(db: Database): void {
+export function ensureReportsSchema(db: Database, now = Date.now()): void {
 	db.run(`
 		CREATE TABLE IF NOT EXISTS responsibility_reports (
 			report_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -195,7 +195,7 @@ export function ensureReportsSchema(db: Database): void {
 		)
 		.get();
 	if (exists === null) {
-		const migratedAt = new Date().toISOString();
+		const migratedAt = new Date(now).toISOString();
 		const count = db.transaction(() => {
 			db.run(`CREATE TABLE responsibility_resolutions (
 				report_id INTEGER PRIMARY KEY REFERENCES responsibility_reports(report_id),

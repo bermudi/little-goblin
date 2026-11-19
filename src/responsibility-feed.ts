@@ -127,19 +127,30 @@ function feedPosts(
 	const qResolution = db.query<unknown, [number]>(
 		"SELECT kind, by_report_id, created_at FROM responsibility_resolutions WHERE report_id = ?",
 	);
+	// Walking newest → oldest: a claim the backfill marked `migrated` keeps
+	// the old rule — reviewed once any goblin report follows it — so old
+	// reports read as they did. A goblin report older than the window cannot
+	// follow a claim inside it, so the window decides nothing wrongly.
+	let goblinAfter = false;
 	const posts = reports.map((report): FeedPost => {
 		const rawResolution = qResolution.get(report.reportId);
 		const resolution = rawResolution === null
 			? null
 			: resolutionSchema.parse(rawResolution);
+		const reviewed = resolution === null
+			? false
+			: resolution.kind === "migrated"
+				? goblinAfter
+				: true;
 		const review: PostReview =
 			report.reporter === "goblin"
 				? "assessed"
 				: report.reporter === "migration"
 					? "migrated"
-					: resolution !== null
+					: reviewed
 						? "reviewed"
 						: "unreviewed";
+		if (report.reporter === "goblin") goblinAfter = true;
 		return {
 			report,
 			review,

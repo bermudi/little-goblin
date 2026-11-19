@@ -37,15 +37,6 @@ survive your restarts. Everything in it is a delegation — one
 workspace per `delegate` call. It is the default target: a `start`
 without `on` runs there.
 
-**Configured machines are also yours.** `delegate start {…, on:
-<label>}` runs the agent in a session on another host (or another
-local session) — work tied to that host's repos belongs there, and
-each target runs only the harnesses installed on it. The machine
-list rides the delegate tool's own description. A machine that is
-off or unreachable fails the launch loudly with the transport's own
-error — say so to the operator; the work does not silently run
-elsewhere.
-
 ## Delegations are your own acts
 
 You delegate as part of doing your work, and the result is yours:
@@ -77,7 +68,6 @@ an agent's consent dialog is his call to make.
 ## First-run gates — handled for you
 
 `delegate` seeds each harness's trust markers itself before the
-agent starts — on your local session directly, and on machine
-targets through the delegation's own pane. You should never see a
+agent starts. You should never see a
 first-run trust dialog; if one still appears, it parks as
 `needs_input` and follows the relay path above.

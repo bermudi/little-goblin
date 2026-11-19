@@ -75,7 +75,12 @@ function fixture() {
 		"systemctl",
 		`printf 'LoadState=loaded\\nActiveState=active\\nSubState=running\\nWorkingDirectory=${checkout}\\n'`,
 	);
-	const options = { home, checkout, phase: "preflight" as const };
+	const options = {
+		home,
+		checkout,
+		phase: "preflight" as const,
+		t3Runner: async () => ({ code: 0, stdout: "[]", stderr: "" }),
+	};
 	return { root, home, checkout, bin, config, script, options };
 }
 function finding(report: HealthReport, id: string) {
@@ -151,7 +156,9 @@ describe("diagnostic boundary and phases", () => {
 		expect(finding(report, "service.goblin").status).toBe("pass");
 		expect(finding(report, "config").status).toBe("pass");
 		expect(finding(report, "memory.ready").status).toBe("skip");
-		expect(finding(report, "delegation.t3").detail).toContain("No delegation block configured");
+		// Handover runs on t3 regardless of delegation config — the probe
+		// runs and the fixture runner answers.
+		expect(finding(report, "delegation.t3").status).toBe("pass");
 		expect(existsSync(join(f.home, "state"))).toBe(false);
 	});
 	test("config JSON5/schema and auth failures never retain native messages or sentinels", async () => {

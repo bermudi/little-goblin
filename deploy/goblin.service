@@ -9,6 +9,11 @@ Description=Goblin v2 — Telegram-native personal agent
 # skipped: the sandbox tool degrades, not the bot.
 Wants=podman-user-wait-network-online.service
 After=podman-user-wait-network-online.service
+# Delegation rides a sibling herdr session (DESIGN.md, "Delegation") —
+# weak dep: goblin still boots when the unit is absent; the delegate
+# tool is what degrades, not the bot.
+Wants=goblin-herdr.service
+After=goblin-herdr.service
 # Start background key sync without waiting for Pass. Auth reads only
 # local snapshots; a missing snapshot or locked wallet fails loud.
 Wants=goblin-keys.service

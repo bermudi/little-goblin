@@ -26,19 +26,21 @@ function defaultWorkspace(home: string): string {
 export async function t3Health(
 	config: Config | undefined,
 	home: string,
+	phase: "preflight" | "installed",
 	probe: ProbeContext = {},
 	runner?: T3Runner,
 ): Promise<HealthResult> {
-	const scope = `caller-home:${home};configured-delegation`;
-	if (config?.delegation === undefined) {
-		return result(
-			"delegation.t3",
-			scope,
-			"skip",
-			config === undefined
-				? "Blocked by config"
-				: "No delegation block configured — the delegate tool is absent",
-		);
+	const scope = `caller-home:${home};handover`;
+	// Handover/responsibility runs on T3 Code threads whenever goblin
+	// boots — the responsibility tool mounts on project turns
+	// unconditionally, so the probe gates on a readable config, not on
+	// delegation being configured (delegate is back on Herdr, issue
+	// #728). Preflight skips external services like the other probes.
+	if (phase === "preflight") {
+		return result("delegation.t3", scope, "skip", "External service not probed before installation");
+	}
+	if (config === undefined) {
+		return result("delegation.t3", scope, "skip", "Blocked by config");
 	}
 
 	const start = performance.now();
@@ -69,7 +71,7 @@ export async function t3Health(
 			"delegation.t3",
 			scope,
 			"pass",
-			"T3 Code answered a read-only thread list for the default delegation workspace",
+			"T3 Code answered a read-only thread list for the default workspace",
 			start,
 		);
 	} catch (error) {

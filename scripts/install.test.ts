@@ -81,6 +81,7 @@ function fixture(
 		}
 		for (const name of [
 			"goblin.service",
+			"goblin-herdr.service",
 			"goblin-keys.service.in",
 			"goblin-keys.timer",
 		])
@@ -110,7 +111,7 @@ function fixture(
 '--no-install ${repo}/scripts/install.ts '*) exec '${realBun}' "$@" ;;
 'install --frozen-lockfile') ${mode.startsWith("cancel-") ? `sleep 120 >/dev/null 2>&1 & child=$!; printf '%s' "$child" > '${join(dir, "child-pid")}'; sleep 0.05; kill -${mode.slice(7)} "$PPID"; wait "$child"` : mode === "dependency" ? "echo FIXTURE_SECRET >&2; exit 8" : `ln -s '${join(root, "node_modules")}' node_modules`} ;;
 '--no-install run src/doctor.ts --phase preflight --json') ${mode.startsWith("real-") ? `printf '%s' "$PPID" > '${join(dir, "installer-pid")}'; exec '${realBun}' --no-install run '${join(repo, "src", "doctor.ts")}' --phase preflight --json > '${join(dir, "doctor-report.json")}'` : mode === "preflight" ? "echo FIXTURE_SECRET >&2; exit 1" : "printf '{\"ok\":true}'"} ;;
-'--no-install run scripts/install-options.ts') printf '${mode === "badoptions" ? "invalid FIXTURE_SECRET" : JSON.stringify({ keys: mode === "optional", port: mode === "port-zero" ? 0 : 8787, profiles: mode === "optional" ? ["goblin-main", "alpha-one"] : [] })}' ;;
+'--no-install run scripts/install-options.ts') printf '${mode === "badoptions" ? "invalid FIXTURE_SECRET" : JSON.stringify({ delegation: mode === "optional", keys: mode === "optional", port: mode === "port-zero" ? 0 : 8787, profiles: mode === "optional" ? ["goblin-main", "alpha-one"] : [] })}' ;;
 'run app:build') ${mode === "build" ? "exit 1" : "mkdir -p app/dist; printf fixture > app/dist/index.html"} ;;
 '--no-install run scripts/check-auth.ts') ${mode.startsWith("real-") ? `exec '${realBun}' --no-install run '${join(repo, "scripts", "check-auth.ts")}'` : mode === "poisoned-auth" ? "printf 'telegram\\n'; exit 2" : ":"} ;;
 '--no-install run scripts/check-app-assets.ts '*) ${mode === "assets" ? "exit 1" : ":"} ;;
@@ -124,13 +125,14 @@ esac`,
 			`case "$*" in
 '--user show goblin.service --property=LoadState --value') ${mode === "manager" ? "echo FIXTURE_SECRET >&2; exit 1" : `printf '${mode === "existing" ? "loaded" : "not-found"}\\n'`} ;;
 '--user show goblin.service --property=InvocationID '*) sleep 120 >/dev/null 2>&1 & child=$!; printf '%s' \"$child\" > '${join(dir, "child-pid")}'; wait \"$child\" ;;
-'--user daemon-reload'|'--user enable goblin.service'|'--user start --no-block goblin.service'|'--user enable goblin-keys.service'|'--user enable --now goblin-keys.timer') : ;;
+'--user daemon-reload'|'--user enable goblin.service'|'--user start --no-block goblin.service'|'--user enable --now goblin-herdr.service'|'--user enable goblin-keys.service'|'--user enable --now goblin-keys.timer') : ;;
 *) echo 'unexpected systemctl boundary' >&2; exit 99 ;;
 esac`,
 		);
 		script("systemd-analyze", mode === "unit" ? "echo FIXTURE_SECRET >&2; exit 1" : ":");
 		script("loginctl", mode === "linger" ? "exit 1" : ":");
 		if (mode === "optional") {
+			script("herdr", ":");
 			script("pass-keys", "echo 'must not execute credential tool' >&2; exit 99");
 		}
 		if (mode === "real-cancel")
@@ -338,6 +340,7 @@ describe("fresh installer", () => {
 	test("optional units are config-aware; pass-keys is never executed by inspection", () => {
 		const result = fixture("optional");
 		expect(result.status, result.stderr).toBe(0);
+		expect(result.calls).toContain("enable --now goblin-herdr.service");
 		expect(result.calls).toContain("enable --now goblin-keys.timer");
 		expect(result.calls).not.toContain("pass-keys ");
 		// Warm targets render from the reported profiles — exactly one

@@ -32,6 +32,7 @@ try {
 	}
 	process.stdout.write(
 		JSON.stringify({
+			delegation: config.delegation !== undefined,
 			keys,
 			port: config.http.port,
 			profiles: [...profiles].sort(),

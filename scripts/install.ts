@@ -156,6 +156,7 @@ function render(template: string, replacements: ReadonlyArray<readonly [string, 
 	return text;
 }
 function options(raw: string): {
+	delegation: boolean;
 	keys: boolean;
 	port: number;
 	profiles: string[];
@@ -168,6 +169,7 @@ function options(raw: string): {
 	}
 	// The helper owns Zod config/auth validation; bootstrap remains stdlib-only.
 	const shape = value as {
+		delegation?: unknown;
 		keys?: unknown;
 		port?: unknown;
 		profiles?: unknown;
@@ -175,6 +177,7 @@ function options(raw: string): {
 	if (
 		typeof value !== "object" ||
 		value === null ||
+		typeof shape.delegation !== "boolean" ||
 		typeof shape.keys !== "boolean" ||
 		typeof shape.port !== "number" ||
 		!Number.isInteger(shape.port) ||
@@ -192,6 +195,7 @@ function options(raw: string): {
 		profiles.push(entry);
 	}
 	return {
+		delegation: shape.delegation,
 		keys: shape.keys,
 		port: shape.port,
 		profiles: [...new Set(profiles)].sort(),
@@ -223,6 +227,7 @@ async function install(): Promise<void> {
 	// Refuse before changing live dependencies as well as before unit/client writes.
 	for (const name of [
 		"goblin.service",
+		"goblin-herdr.service",
 		"goblin-keys.service",
 		"goblin-keys.timer",
 	]) {
@@ -279,9 +284,11 @@ async function install(): Promise<void> {
 			"inspect setup options",
 		),
 	);
+	const herdr = selected.delegation ? Bun.which("herdr") : null;
 	const passKeys = selected.keys ? Bun.which("pass-keys") : null;
+	if (selected.delegation && !herdr) fail("herdr: configured-but-missing");
 	if (selected.keys && !passKeys) fail("pass-keys: configured-but-missing");
-	for (const binary of [passKeys]) if (binary) safePath(binary);
+	for (const binary of [herdr, passKeys]) if (binary) safePath(binary);
 	await command([bun, "run", "app:build"], "build app assets", 300_000);
 	await command(
 		[bun, "--no-install", "run", "scripts/check-app-assets.ts", repo],
@@ -305,6 +312,17 @@ async function install(): Promise<void> {
 				.replace(/^Environment=PATH=.*$/m, `Environment=PATH=${path}`),
 			{ mode: 0o644 },
 		);
+		if (herdr) {
+			names.push("goblin-herdr.service");
+			writeFileSync(
+				join(staging, "goblin-herdr.service"),
+				render("goblin-herdr.service", [
+					["/home/daniel/.local/bin/herdr", herdr],
+					...common,
+				]).replace(/^Environment=PATH=.*$/m, `Environment=PATH=${path}`),
+				{ mode: 0o644 },
+			);
+		}
 		if (passKeys) {
 			names.push("goblin-keys.service", "goblin-keys.timer");
 			// Warm targets are data, not installer constants: one line per
@@ -383,6 +401,11 @@ async function install(): Promise<void> {
 		],
 		"enable linger",
 	);
+	if (herdr)
+		await command(
+			["systemctl", "--user", "enable", "--now", "goblin-herdr.service"],
+			"enable delegation host",
+		);
 	if (passKeys) {
 		await command(
 			["systemctl", "--user", "enable", "goblin-keys.service"],

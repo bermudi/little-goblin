@@ -167,6 +167,20 @@ describe("delegation.t3 health check", () => {
 		}
 	});
 
+	test("no running T3 server fails as unreachable, not as an unknown project", async () => {
+		// Real CLI wording with T3CODE_HOME on an empty dir (T3 Code, 2026-11-19).
+		const r = recorder(() => nonzero("No running T3 Code server uses /x. Start T3 Code, then retry."));
+		const target = home([{ dir: "/repo/a" }, { dir: "/repo/b" }]);
+		try {
+			const finding = await t3Health(config, target.path, "installed", {}, r.runner);
+			expect(finding.status).toBe("fail");
+			expect(finding.detail).toContain("t3 server or CLI unreachable");
+			expect(r.calls).toHaveLength(1);
+		} finally {
+			target.cleanup();
+		}
+	});
+
 	test("runner errors do not expose their message", async () => {
 		const runner: T3Runner = async () => {
 			throw Object.assign(new Error("spawn t3 ENOENT"), { code: "ENOENT" });

@@ -17,6 +17,7 @@ import type { ConfigRef } from "../../config.ts";
 import type { Config } from "../../config-schema.ts";
 import { type FakeStep, type FakeUsageInput, fakeClaude } from "../../testkit/fake-claude.ts";
 import { TurnState } from "../../turn/state.ts";
+import { openStepRules } from "../../turn/step-rules.ts";
 import {
 	type MemberSettlement,
 	openLive,
@@ -132,13 +133,29 @@ function rig(over: RigOver = {}) {
 	const live = openLive();
 	const settlements: Array<{ m: RecMember; done: MemberSettlement }> = [];
 	const claimed: number[][] = [];
+	const state = new TurnState({ convId: "c-claude", watchdog: null, request: "do the thing" });
+	const rules = openStepRules({
+		convId: "c-claude",
+		epoch: 1,
+		model: "claude/claude-sonnet-4-5",
+		state,
+		signal: new AbortController().signal,
+		contextWindow: BASE_STEP.contextWindow,
+		priorInputTokens: null,
+		filterRetryUsed: false,
+		maxRetries: undefined,
+		transientRetryDelayMs: undefined,
+		overflowRecoverable: false,
+		assertAuthority: () => {},
+		holdsAuthority: () => true,
+	});
 	const deps: Omit<StreamDeps<RecMember>, "step"> & { step: ClaudeStep } = {
 		convId: "c-claude",
 		epoch: 1,
 		head,
 		members,
 		live,
-		state: new TurnState({ convId: "c-claude", watchdog: null, request: "do the thing" }),
+		state,
 		assertAuthority: () => {},
 		holdsAuthority: () => true,
 		step: BASE_STEP,
@@ -167,8 +184,8 @@ function rig(over: RigOver = {}) {
 		seenText: false,
 		toolCalls: [],
 		digest: [],
-		filterRetryUsed: false,
 		overflowRecoverable: false,
+		rules,
 		evidence: undefined,
 		runId: "run-claude-1",
 		saveStep: () => {},

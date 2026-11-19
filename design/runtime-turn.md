@@ -116,20 +116,43 @@ Every engine follows these mandatory rules:
 | Rule | ai-sdk | claude-code |
 | --- | --- | --- |
 | `toolLaunchGate` | `true` | `false` — the CLI dispatches calls. |
-| `preemptFold` | `true` | `false` — no model-call boundary hook. |
-| `contentFilterReask` | `true` | `false` — no same-step re-ask path. |
-| `transientRetry` | `true` | `false` — `driveClaude` has no transport-retry path. |
-| `contextFill` | `true` | `false` — no model-call boundary hook. |
+| `preemptFold` | `true` | `false` — no pre-call boundary. |
+| `contentFilterReask` | `true` | `false` — no per-call re-dispatch. |
+| `transientRetry` | `true` | `false` — no per-call re-dispatch. |
+| `contextFill` | `true` | `true` — each completed call reports usage. |
+
+The runtime owns these rules, not the engines (#769):
+
+- `toolLaunchGate`: the runtime arms the tool fence's steer gate from
+  the declaration.
+- The other four live in `src/turn/step-rules.ts`. The runtime opens
+  one `StepRules` per attempt and passes it as `deps.rules`. It holds
+  the policy, the budgets and the log lines.
+- An engine only reports its model-call boundaries:
+  - `beforeCall` — before a call dispatches. An arm returned means
+    stop with a `PreemptSignal`.
+  - `afterCall` — a call ended. Every engine calls it.
+  - `callFailed` — a call failed. `true` means re-dispatch the same
+    call.
+- A rule is `true` exactly when the engine's vendor loop can reach that
+  hook.
+
+`src/turn/engine-rules.test.ts` checks each declaration. It drives each
+rule through the real Runtime for each production engine. It fails when
+an engine claims a rule it does not follow, and when it follows a rule
+it does not claim.
 
 ### Adding an engine
 
 - Implement `TurnEngine` in its own adapter directory (one vendor
   package, one dir — the claude-code layout).
-- Declare its `rules`.
+- Call the `deps.rules` hooks its vendor loop can reach, and declare
+  its `rules` to match.
 - Add the engine's step variant, with its own `engine` tag, to `TurnStep`
   in `src/runtime.ts`; its `accepts` checks that tag.
 - Register it in `src/index.ts`'s `engines` array (first match wins).
-- Add it to `src/turn/engine.conformance.test.ts`'s engine table.
+- Add it to `src/turn/engine.conformance.test.ts`'s engine table and
+  give it a probe in `src/turn/engine-rules.test.ts`.
 - Add a `module-boundaries.test.ts` entry for its vendor packages.
 
 ## The turn journal

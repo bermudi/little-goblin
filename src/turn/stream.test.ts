@@ -30,6 +30,7 @@ import {
 	preemptArm,
 } from "./overflow.ts";
 import { TurnState } from "./state.ts";
+import { openStepRules, type StepRulesInit } from "./step-rules.ts";
 import {
 	claimMembers,
 	driveStream,
@@ -204,6 +205,7 @@ function probeTool() {
 function rig(
 	scripts: Array<LanguageModelV4StreamPart[] | Error>,
 	over: Partial<StreamDeps<RecMember>> = {},
+	rulesOver: Partial<StepRulesInit> = {},
 ) {
 	const { model, prompts, toolChoices } = scriptedModel(scripts);
 	const live = openLive();
@@ -212,13 +214,41 @@ function rig(
 	const queue: RecMember[] = [];
 	const settlements: Array<{ m: RecMember; done: MemberSettlement }> = [];
 	const unrequeued: RecMember[][] = [];
+	const state = new TurnState({ convId: "c1", watchdog: null, request: "run the thing" });
+	// The runtime opens the rules from the step it built; the rig reads
+	// the step and the rail live, so a test may swap them after rig().
+	// Transient retries skip the backoff delay.
+	const rulesInit: StepRulesInit = {
+		convId: "c1",
+		epoch: 1,
+		model: "fake-1",
+		state,
+		get signal() {
+			return deps.signal;
+		},
+		get contextWindow() {
+			return deps.step.contextWindow;
+		},
+		get maxRetries() {
+			return deps.step.maxRetries;
+		},
+		get overflowRecoverable() {
+			return deps.overflowRecoverable;
+		},
+		priorInputTokens: null,
+		filterRetryUsed: false,
+		transientRetryDelayMs: 0,
+		assertAuthority: () => deps.assertAuthority(),
+		holdsAuthority: () => deps.holdsAuthority(),
+		...rulesOver,
+	};
 	const deps: StreamDeps<RecMember> = {
 		convId: "c1",
 		epoch: 1,
 		head,
 		members,
 		live,
-		state: new TurnState({ convId: "c1", watchdog: null, request: "run the thing" }),
+		state,
 		assertAuthority: () => {},
 		holdsAuthority: () => true,
 		step: { model, system: "test" },
@@ -243,8 +273,8 @@ function rig(
 		seenText: false,
 		toolCalls: [],
 		digest: [],
-		filterRetryUsed: false,
 		overflowRecoverable: false,
+		rules: openStepRules(rulesInit),
 		evidence: undefined,
 		runId: "rig-run",
 		saveStep: () => {},
@@ -254,6 +284,7 @@ function rig(
 	};
 	return {
 		deps,
+		rulesInit,
 		head,
 		members,
 		live,
@@ -422,7 +453,7 @@ describe("driveStream — transient transport step retries (#191)", () => {
 				textReply("recovered"),
 			]);
 			const r = rig([], {
-				step: { model: failing.model, system: "test", transientRetryDelayMs: 0 },
+				step: { model: failing.model, system: "test" },
 			});
 			const outcome = await driveStream(r.deps);
 			expect(outcome.kind).toBe("ok");
@@ -445,7 +476,7 @@ describe("driveStream — transient transport step retries (#191)", () => {
 	test("a 1min-budget step (maxRetries 0) is not re-dispatched on a transient error", async () => {
 		const failing = scriptedModel([[reset()], textReply("never")]);
 		const r = rig([], {
-			step: { model: failing.model, system: "test", maxRetries: 0, transientRetryDelayMs: 0 },
+			step: { model: failing.model, system: "test", maxRetries: 0 },
 		});
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("failed");
@@ -457,7 +488,7 @@ describe("driveStream — transient transport step retries (#191)", () => {
 
 	test("the budget is one retry per step — a second transient error ends the stream", async () => {
 		const failing = scriptedModel([[reset()], [reset()], textReply("never")]);
-		const r = rig([], { step: { model: failing.model, system: "test", transientRetryDelayMs: 0 } });
+		const r = rig([], { step: { model: failing.model, system: "test" } });
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("failed");
 		if (outcome.kind !== "failed") return;
@@ -471,7 +502,7 @@ describe("driveStream — transient transport step retries (#191)", () => {
 		const probe = probeTool();
 		const failing = scriptedModel([toolCallStep("c1", 10), [reset()], textReply("done")]);
 		const r = rig([], {
-			step: { model: failing.model, system: "test", transientRetryDelayMs: 0 },
+			step: { model: failing.model, system: "test" },
 		});
 		r.deps.tools = { probe };
 		const outcome = await driveStream(r.deps);
@@ -486,7 +517,7 @@ describe("driveStream — transient transport step retries (#191)", () => {
 			[{ type: "error", error: new Error("bad request shape") }],
 			textReply("never"),
 		]);
-		const r = rig([], { step: { model: failing.model, system: "test", transientRetryDelayMs: 0 } });
+		const r = rig([], { step: { model: failing.model, system: "test" } });
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("failed");
 		expect(failing.prompts).toHaveLength(1);
@@ -532,7 +563,7 @@ describe("driveStream — transient reader throws (#488)", () => {
 				textReply("recovered"),
 			]);
 			const r = rig([], {
-				step: { model: failing.model, system: "test", transientRetryDelayMs: 0 },
+				step: { model: failing.model, system: "test" },
 			});
 			r.deps.tools = { probe };
 			const outcome = await driveStream(r.deps);
@@ -570,7 +601,7 @@ describe("driveStream — transient reader throws (#488)", () => {
 			},
 			textReply("never"),
 		]);
-		const r = rig([], { step: { model: failing.model, system: "test", transientRetryDelayMs: 0 } });
+		const r = rig([], { step: { model: failing.model, system: "test" } });
 		// Not converted: a stream error the classifier doesn't own keeps
 		// the fatal rail — the pipeline error propagates, no re-dispatch.
 		await expect(driveStream(r.deps)).rejects.toThrow("bad request shape");
@@ -590,7 +621,7 @@ describe("driveStream — transient reader throws (#488)", () => {
 			{ readError: resetThrow() },
 			textReply("never"),
 		]);
-		const r = rig([], { step: { model: failing.model, system: "test", transientRetryDelayMs: 0 } });
+		const r = rig([], { step: { model: failing.model, system: "test" } });
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("failed");
 		if (outcome.kind !== "failed") return;
@@ -645,7 +676,7 @@ describe("driveStream — tool and model errors keep their source", () => {
 
 describe("driveStream", () => {
 	test("adds a live context tail at half fill, but not below half or without a window", async () => {
-		const prior = rig([textReply("done")], { priorInputTokens: 60_000 });
+		const prior = rig([textReply("done")], {}, { priorInputTokens: 60_000 });
 		prior.deps.step = { ...prior.deps.step, contextWindow: 256_000 };
 		await driveStream(prior.deps);
 		expect(prior.prompts[0]).toContain("[context: 60k of 256k tokens used (23%)]");
@@ -1079,7 +1110,7 @@ describe("driveStream", () => {
 		r.deps.overflowRecoverable = true;
 		r.deps.tools = { probe: probeTool() };
 		r.deps.step = { ...r.deps.step, contextWindow: 1000 };
-		r.deps.preemptCheck = realArms;
+		r.rulesInit.preemptCheck = realArms;
 		const head = member("head");
 		r.members.push(head);
 		const outcome = await driveStream(r.deps);
@@ -1107,7 +1138,7 @@ describe("driveStream", () => {
 		const r = rig([toolCallStep("c1", 900), textReply("done")]);
 		r.deps.tools = { probe: probeTool() };
 		r.deps.step = { ...r.deps.step, contextWindow: 1000 };
-		r.deps.preemptCheck = (info) => {
+		r.rulesInit.preemptCheck = (info) => {
 			consulted++;
 			return realArms(info);
 		};

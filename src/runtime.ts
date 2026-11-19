@@ -74,6 +74,7 @@ import { openRunRecord } from "./turn/run-record.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import type { SkillWatch } from "./turn/skill-attribution.ts";
 import { type ForcedKind, TurnState } from "./turn/state.ts";
+import { openStepRules, type StepRules } from "./turn/step-rules.ts";
 import {
 	claimMembers,
 	emitChunk,
@@ -1025,7 +1026,9 @@ export class Runtime {
 			recovery?.overflowed === true || lastStoredUsage === undefined
 				? null
 				: lastInputTokensOf(lastStoredUsage);
-		let contextFill: { used: number; limit: number } | null = null;
+		// The attempt's shared engine rules (turn/step-rules.ts) — opened
+		// once buildStep names the step; tools read the fill through it.
+		let stepRules: StepRules | null = null;
 		const record = openRunRecord({
 			journal,
 			store,
@@ -1104,7 +1107,7 @@ export class Runtime {
 				steerWaiting: () =>
 					steerGate.armed &&
 					this.lanes.claimablePending(convId, sink.delivery === "stream"),
-				contextFill: () => contextFill,
+				contextFill: () => stepRules?.contextFill() ?? null,
 			});
 			// The const is what closures below capture — the mutable slot
 			// above only bridges the pre-authority failure paths.
@@ -1130,10 +1133,72 @@ export class Runtime {
 				}
 			}
 			const step = await this.deps.buildStep(conv, tools);
-			contextFill =
-				priorInputTokens !== null && step.contextWindow !== undefined
-					? { used: priorInputTokens, limit: step.contextWindow }
-					: null;
+			const assertAttemptAuthority = (): void => {
+				this.checkAuthority(convId, epoch);
+				if (journalFault.current !== undefined) throw journalFault.current;
+			};
+			const holdsAttemptAuthority = (): boolean => this.deps.store.get(convId)?.epoch === epoch;
+			const overflowRecoverable = overflowHoldable(recovery, this.deps.compaction !== undefined);
+			const rules = openStepRules({
+				convId,
+				epoch,
+				model: stepModelRef(step),
+				state,
+				signal: controller.signal,
+				contextWindow: step.contextWindow,
+				priorInputTokens,
+				filterRetryUsed,
+				maxRetries: isClaudeStep(step) ? undefined : step.maxRetries,
+				transientRetryDelayMs: isClaudeStep(step) ? undefined : step.transientRetryDelayMs,
+				overflowRecoverable,
+				assertAuthority: assertAttemptAuthority,
+				holdsAuthority: holdsAttemptAuthority,
+				// design/compaction.md → Timing: the step-boundary trigger.
+				// Wired only when the fold-resume is possible — the gate and
+				// the budget are the same invariant (one fold-resume per
+				// logical turn), so an already-resumed attempt keeps
+				// dispatching and the 85% context landing stays its backstop.
+				...(this.deps.compaction !== undefined && recovery?.overflowed !== true
+					? {
+							preemptCheck: (info: { projectedInputTokens: number | null; stepNumber: number }) => {
+								const previousFold = store.getCompaction(convId);
+								const arm = preemptArm({
+									projectedInputTokens: info.projectedInputTokens,
+									contextWindow: step.contextWindow,
+								});
+								if (arm === null) return null;
+								// Never interrupt for a fold that cannot happen: a
+								// no-op compact on the recovery rail is a TERMINAL
+								// error, and the live turn's own growth is never
+								// foldable — only stored history is. A trigger with
+								// nothing to fold stands down; a genuinely doomed
+								// turn still fails honestly through the overflow
+								// rail (a real 400, not a projection).
+								const { tailTokenBudget } = compactionBudgets(step.contextWindow ?? null);
+								const foldable =
+									chooseBoundary(store.historyDetail(convId), {
+										tailTokenBudget,
+										previousBoundary: previousFold?.boundarySeq ?? null,
+										previousSplit: previousFold?.split ?? null,
+										// Completed history only — inputs queued behind
+										// this request must not push the boundary onto
+										// the running exchange.
+										beforeSeq: this.lanes.pendingFloor(convId, activeFloor),
+									}) !== null;
+								if (!foldable) {
+									log.info("compaction pre-empt stood down — arm fired but nothing foldable", {
+										conversation: convId,
+										arm,
+										step: info.stepNumber,
+									});
+									return null;
+								}
+								return arm;
+							},
+						}
+					: {}),
+			});
+			stepRules = rules;
 			const engine = pickEngine(this.deps.engines, step, convId);
 			steerGate.armed = engine.rules.toolLaunchGate;
 			this.checkAuthority(convId, epoch);
@@ -1227,13 +1292,9 @@ export class Runtime {
 							noteRunMembers: (seqs: number[]) =>
 								this.deps.runOwnership?.members(auth.runId, convId, seqs),
 						}),
-				assertAuthority: () => {
-					this.checkAuthority(convId, epoch);
-					if (journalFault.current !== undefined) throw journalFault.current;
-				},
-				holdsAuthority: () => this.deps.store.get(convId)?.epoch === epoch,
+				assertAuthority: assertAttemptAuthority,
+				holdsAuthority: holdsAttemptAuthority,
 				messages: merged,
-				priorInputTokens,
 				tools,
 				view: viewCtx,
 				claimSteers: () =>
@@ -1254,60 +1315,13 @@ export class Runtime {
 						foldedSeqs.add(seq);
 					}
 				},
-				onContextFill: (used, limit) => {
-					contextFill = used !== null && limit !== undefined ? { used, limit } : null;
-				},
 				sourceInputSeq,
 				partial: recovery?.partial ?? null,
 				seenText: recovery?.seenText ?? false,
 				toolCalls: recovery ? [...recovery.toolCalls] : [],
 				digest: recovery ? [...recovery.digest] : [],
-				filterRetryUsed,
-				overflowRecoverable: overflowHoldable(recovery, this.deps.compaction !== undefined),
-				// design/compaction.md → Timing: the step-boundary trigger.
-				// Wired only when the fold-resume is possible — the gate and
-				// the budget are the same invariant (one fold-resume per
-				// logical turn), so an already-resumed attempt keeps
-				// dispatching and the 85% context landing stays its backstop.
-				...(this.deps.compaction !== undefined && recovery?.overflowed !== true
-					? {
-							preemptCheck: (info: { projectedInputTokens: number | null; stepNumber: number }) => {
-								const previousFold = store.getCompaction(convId);
-								const arm = preemptArm({
-									projectedInputTokens: info.projectedInputTokens,
-									contextWindow: step.contextWindow,
-								});
-								if (arm === null) return null;
-								// Never interrupt for a fold that cannot happen: a
-								// no-op compact on the recovery rail is a TERMINAL
-								// error, and the live turn's own growth is never
-								// foldable — only stored history is. A trigger with
-								// nothing to fold stands down; a genuinely doomed
-								// turn still fails honestly through the overflow
-								// rail (a real 400, not a projection).
-								const { tailTokenBudget } = compactionBudgets(step.contextWindow ?? null);
-								const foldable =
-									chooseBoundary(store.historyDetail(convId), {
-										tailTokenBudget,
-										previousBoundary: previousFold?.boundarySeq ?? null,
-										previousSplit: previousFold?.split ?? null,
-										// Completed history only — inputs queued behind
-										// this request must not push the boundary onto
-										// the running exchange.
-										beforeSeq: this.lanes.pendingFloor(convId, activeFloor),
-									}) !== null;
-								if (!foldable) {
-									log.info("compaction pre-empt stood down — arm fired but nothing foldable", {
-										conversation: convId,
-										arm,
-										step: info.stepNumber,
-									});
-									return null;
-								}
-								return arm;
-							},
-						}
-					: {}),
+				overflowRecoverable,
+				rules,
 				evidence: this.reviewer?.evidence,
 				skillWatch: this.skillWatch,
 				turnStartMs,

@@ -17,6 +17,7 @@ import { createClaudeEngine } from "./mod.ts";
 import type { ClaudeStep } from "./mod.ts";
 import { createToolBridge, type ToolBridge } from "./tools.ts";
 import { TurnState } from "../../turn/state.ts";
+import { openStepRules } from "../../turn/step-rules.ts";
 import { openLive, type StreamDeps, type WireMember } from "../../turn/stream.ts";
 import type { TurnJournal } from "../../turn-journal.ts";
 import type { MessageChunk } from "../../message.ts";
@@ -69,13 +70,29 @@ function rig() {
 			chunks: [],
 		},
 	];
+	const state = new TurnState({ convId: "c-session", watchdog: null, request: "hi" });
+	const rules = openStepRules({
+		convId: "c-session",
+		epoch: 1,
+		model: "claude/claude-sonnet-4-5",
+		state,
+		signal: new AbortController().signal,
+		contextWindow: STEP.contextWindow,
+		priorInputTokens: null,
+		filterRetryUsed: false,
+		maxRetries: undefined,
+		transientRetryDelayMs: undefined,
+		overflowRecoverable: false,
+		assertAuthority: () => {},
+		holdsAuthority: () => true,
+	});
 	const deps: Omit<StreamDeps<RecMember>, "step"> & { step: ClaudeStep } = {
 		convId: "c-session",
 		epoch: 1,
 		head: headSink(),
 		members,
 		live: openLive(),
-		state: new TurnState({ convId: "c-session", watchdog: null, request: "hi" }),
+		state,
 		assertAuthority: () => {},
 		holdsAuthority: () => true,
 		step: STEP,
@@ -101,8 +118,8 @@ function rig() {
 		seenText: false,
 		toolCalls: [],
 		digest: [],
-		filterRetryUsed: false,
 		overflowRecoverable: false,
+		rules,
 		evidence: undefined,
 		runId: "run-session-1",
 		saveStep: () => {},

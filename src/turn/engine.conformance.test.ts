@@ -286,7 +286,7 @@ function claudeRig(): EngineRig {
 			preemptFold: false,
 			contentFilterReask: false,
 			transientRetry: false,
-			contextFill: false,
+			contextFill: true,
 		},
 		accepts: isClaudeStep,
 		run: (deps) => driveClaude(engineConfig, deps),

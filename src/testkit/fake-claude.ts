@@ -27,6 +27,8 @@ export interface FakeUsageInput {
 	outputTokens?: number;
 	cacheRead?: number;
 	cacheWrite?: number;
+	ephemeral5m?: number | null;
+	ephemeral1h?: number | null;
 }
 
 function usage(u: FakeUsageInput = {}): ClaudeUsage {
@@ -35,6 +37,14 @@ function usage(u: FakeUsageInput = {}): ClaudeUsage {
 		output_tokens: u.outputTokens ?? 10,
 		cache_read_input_tokens: u.cacheRead ?? null,
 		cache_creation_input_tokens: u.cacheWrite ?? null,
+		...(u.ephemeral5m !== undefined || u.ephemeral1h !== undefined
+			? {
+					cache_creation: {
+						...(u.ephemeral5m !== undefined ? { ephemeral_5m_input_tokens: u.ephemeral5m } : {}),
+						...(u.ephemeral1h !== undefined ? { ephemeral_1h_input_tokens: u.ephemeral1h } : {}),
+					},
+				}
+			: {}),
 	};
 }
 
@@ -127,6 +137,18 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 						...(u.outputTokens !== undefined ? { output_tokens: u.outputTokens } : {}),
 						...(u.cacheRead !== undefined ? { cache_read_input_tokens: u.cacheRead } : {}),
 						...(u.cacheWrite !== undefined ? { cache_creation_input_tokens: u.cacheWrite } : {}),
+						...(u.ephemeral5m !== undefined || u.ephemeral1h !== undefined
+							? {
+									cache_creation: {
+										...(u.ephemeral5m !== undefined
+											? { ephemeral_5m_input_tokens: u.ephemeral5m }
+											: {}),
+										...(u.ephemeral1h !== undefined
+											? { ephemeral_1h_input_tokens: u.ephemeral1h }
+											: {}),
+									},
+								}
+							: {}),
 					};
 		for (const step of steps) {
 			turns += 1;

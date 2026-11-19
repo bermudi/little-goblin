@@ -15,6 +15,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { Database } from "bun:sqlite";
+import { openCacheObservation } from "../../cache-observation.ts";
+import { cacheTtlMs } from "./engine.ts";
 import { defineTool } from "../../tool.ts";
 import { loadAuthFile } from "../../auth.ts";
 import { liveQuery } from "./mod.ts";
@@ -350,7 +353,9 @@ describe.skipIf(!LIVE)("claude-code live drift (GOBLIN_CLAUDE_CODE_LIVE=1)", () 
 	test("forked compaction summary reads the warmed turn prefix", async () => {
 		// Padded past the provider's minimum cacheable prefix, so a miss
 		// means the fork changed the prefix, not that it was too short.
-		const systemPrompt = `You are a drift probe. Obey the instruction exactly.\n${Array.from(
+		// The run id keeps an earlier run's cached prefix from turning the
+		// warm call into a pure read (no write, so no lifetime reported).
+		const systemPrompt = `You are a drift probe. Obey the instruction exactly. Run ${crypto.randomUUID()}.\n${Array.from(
 			{ length: 900 },
 			(_, i) => `Reference line ${i}: the probe keeps this text stable across requests.`,
 		).join("\n")}`;
@@ -362,6 +367,37 @@ describe.skipIf(!LIVE)("claude-code live drift (GOBLIN_CLAUDE_CODE_LIVE=1)", () 
 		});
 		const warmResult = warm.find((e) => e.type === "result");
 		expect(warmResult?.type === "result" && !warmResult.isError).toBe(true);
+		// The warm call writes the padded prefix to cache; its assistant
+		// frame (what finishStep reads) names the lifetime — 1h on a
+		// subscription (#734).
+		const firstAssistant = warm.find((e) => e.type === "assistant");
+		if (firstAssistant?.type !== "assistant") {
+			throw new Error("live Claude call emitted no assistant frame");
+		}
+		const oneHour = firstAssistant.message.usage?.cache_creation?.ephemeral_1h_input_tokens ?? 0;
+		expect(oneHour).toBeGreaterThan(0);
+		const ttlMs = cacheTtlMs(firstAssistant.message.usage);
+		const db = new Database(":memory:");
+		const observation = openCacheObservation(db);
+		observation
+			.begin({
+				callId: "live-cache-lifetime",
+				conversationId: "app/live-cache-lifetime",
+				purpose: null,
+				model: MODEL,
+				routeKey: "live-route",
+				headHash: "h",
+				requestHash: "r",
+				settingsHash: "s",
+				promptHashes: ["live"],
+			})
+			.finish(undefined, ttlMs);
+		expect(
+			db.query<{ cache_ttl_ms: number | null }, [string]>(
+				"SELECT cache_ttl_ms FROM model_cache_calls WHERE call_id = ?",
+			).get("live-cache-lifetime")?.cache_ttl_ms,
+		).toBe(3_600_000);
+		db.close();
 		const head = warm
 			.filter((e): e is Extract<ClaudeEvent, { type: "assistant" }> => e.type === "assistant")
 			.at(-1)?.uuid;

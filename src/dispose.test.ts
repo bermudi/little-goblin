@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { ownedReader, tempDir } from "./dispose.ts";
 
 const MKDTEMP_ALLOWLIST = new Map([
+	// The hc install stage must share the binary's filesystem for atomic rename.
+	["hc-install.ts", "stage dir sits beside the binary for same-filesystem rename"],
 	// Cache staging must share cacheRoot's filesystem for atomic publish.
 	["agent/skill-fetch.ts", "staging root is under cacheRoot for same-filesystem rename"],
 	// Prepared audio returns a cleanup callback to its caller.

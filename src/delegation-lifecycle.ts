@@ -1,7 +1,7 @@
 // Delegation family contracts and boot wiring. The family's modules import
-// these types: delegation-paths.ts (the lead predicate and note),
-// delegation-notices.ts (notice bodies + delivery), delegation-actions.ts
-// (the four verbs), delegation-watcher.ts (the scan lifecycle).
+// these types: delegation-paths.ts (report seam), delegation-notices.ts
+// (notice bodies + delivery), delegation-actions.ts (the six verbs),
+// delegation-watcher.ts (the scan lifecycle).
 
 import {
 	type Delegation,
@@ -9,7 +9,10 @@ import {
 	type DelegationVerdict,
 	openDelegations,
 } from "./delegations.ts";
-import { makeT3, type T3 } from "./t3.ts";
+import { makeHcDelegation, type HcDelegation } from "./hc-delegation.ts";
+import { makeHc, hcSessionForHome } from "./hc.ts";
+import { goblinHome } from "./goblin-home.ts";
+import { paths } from "./home-layout.ts";
 import type { ConfigRef } from "./config.ts";
 import type { DelegationConfig } from "./config-schema.ts";
 import type { Conversation } from "./conversation-read.ts";
@@ -19,11 +22,12 @@ import type { GithubIssue, PrReadiness } from "./pr-readiness.ts";
 
 export interface DelegationLifecycleDeps {
 	delegations: DelegationsStore;
-	// The one t3 adapter — boot-frozen with the config snapshot.
-	t3: T3;
+	hc: HcDelegation;
+	delegationsDir: string;
 	// True means the notice landed; false is retried by the watcher.
 	wake(address: { chatId: number; threadId: number | null }, text: string): boolean;
 	wakeApp(conversationId: string, text: string): boolean;
+	homeDir: string;
 	// A linked delegation's settlement lands as a worker report before its
 	// notice wakes the conversation (responsibility-runs.ts). A throw leaves
 	// the row eligible for retry; the report is keyed, so a retry files once.
@@ -34,13 +38,7 @@ export interface DelegationLifecycleDeps {
 }
 
 export interface LaunchInput {
-	// The configured harness: its T3 provider instance and model.
-	harness: {
-		name: string;
-		provider: string;
-		model: string;
-		options?: Readonly<Record<string, string | boolean>>;
-	};
+	harness: { name: string; kind: string; args: string[] };
 	task: string;
 	cwd: string;
 	name: string;
@@ -54,56 +52,71 @@ export interface LaunchInput {
 export type LaunchOutcome =
 	| { kind: "started"; delegation: Delegation }
 	| { kind: "stopped"; delegation: Delegation }
-	// `why` is the CLI's error; no untrusted screen exists on this wire.
-	| { kind: "failed"; delegation: Delegation; why: string };
+	// Failure screen is untrusted agent output; the caller fences it.
+	| { kind: "failed"; delegation: Delegation; why: string; screen?: string }
+	// Blocked startup keeps the task owed until its dialog clears.
+	| { kind: "parked"; delegation: Delegation };
 
-export type SendRefusal = "stopped" | "starting" | "never launched";
+export type SendRefusal = "stopped" | "starting" | "never launched" | "task never sent";
 
 export type SendOutcome =
 	| { kind: "sent"; delegation: Delegation }
 	| { kind: "no row"; id: number }
 	| { kind: "refused"; id: number; why: SendRefusal }
-	| { kind: "send failed"; id: number; error: string };
+	| { kind: "prompt failed"; error: string }
+	| { kind: "stopped mid send"; id: number };
+
+// Answers refuse for the send reasons too, plus two of their own: the
+// live agent must be sitting on a dialog for a keypress to mean anything.
+export type AnswerRefusal = SendRefusal | "not blocked" | "agent gone";
+
+export type AnswerOutcome =
+	| { kind: "sent"; delegation: Delegation }
+	| { kind: "no row"; id: number }
+	| { kind: "refused"; id: number; why: AnswerRefusal }
+	| { kind: "key failed"; id: number; error: string };
 
 export type StopOutcome =
 	| { kind: "stopped"; delegation: Delegation; notes: string[] }
-	// T3 Code has no stop verb (v0.1.9) — a live thread cannot be ended
-	// from goblin. Reported honestly, never faked.
-	| { kind: "unavailable"; delegation: Delegation }
+	| { kind: "still running"; delegation: Delegation; notes: string[] }
 	| { kind: "no row"; id: number };
 
 export type ReadOutcome =
-	| { kind: "thread"; delegation: Delegation; messages: { role: string; text: string }[] }
+	| { kind: "screen"; delegation: Delegation; screen: string }
 	| { kind: "no row"; id: number }
 	| { kind: "never launched"; delegation: Delegation }
 	| { kind: "unreadable"; id: number; error: string };
 
 export interface DelegationLifecycle {
 	launch(input: LaunchInput): Promise<LaunchOutcome>;
-	// Follow-up messages: a busy thread queues the text as its next
-	// turn, a waiting one takes it as the answer.
+	// Follow-up prompts reset the baseline and return the row to running.
 	send(id: number, text: string): Promise<SendOutcome>;
-	// t3 has no stop verb; a finished row's stop is row cleanup only.
+	// Only the explicitly whitelisted key reaches a blocked agent; the
+	// watcher observes the seq effect and owns every transition.
+	answer(id: number, key: string): Promise<AnswerOutcome>;
+	// Gone targets still return stopped with a warning; a failed close
+	// triggers an agent liveness check.
 	stop(id: number): Promise<StopOutcome>;
 	// The operator's stop from the app: same stop, then a notice so the
 	// owning conversation records it as theirs.
 	stopByOperator(id: number): Promise<StopOutcome>;
-	// The thread's latest messages — untrusted; callers fence.
-	read(id: number, messages: number): Promise<ReadOutcome>;
+	// Screen output is raw; callers fence it as untrusted agent data.
+	read(id: number, lines: number): Promise<ReadOutcome>;
+	reportPath(id: number): string;
 	list(): Delegation[];
 	// Run one watcher scan immediately.
 	tick(): Promise<void>;
 	// Joins the in-flight scan and every in-flight lifecycle op before
-	// store shutdown; the t3 server owns running threads.
+	// store shutdown; hc owns running terminals.
 	stopTicker(): Promise<void>;
 }
 
 // ---------- boot wiring (index.ts binds, this module rules) ----------
 
-// Boot-frozen: the delegations store, the t3 adapter and the config
-// snapshot are one object — a live config read can only hide the
-// delegate tool next turn, never launch on a harness the boot snapshot
-// lacks (spinoff.ts owns the pin).
+// Boot-frozen: the delegations store and the private hc adapter
+// are one snapshot — a live config read can only hide the delegate tool
+// next turn, never retarget a launch into the old adapter's session
+// (spinoff.ts owns the pin).
 export interface DelegationWiringDeps {
 	config: DelegationConfig | undefined;
 	configRef: ConfigRef;
@@ -116,39 +129,43 @@ export interface DelegationWiringDeps {
 
 export interface DelegationWiring {
 	delegations: DelegationsStore | null;
-	t3: T3;
-	delegateDeps(
-		conv: Conversation,
-		workdir: string,
-	): DelegateToolDeps | undefined;
+	hc: HcDelegation | null;
+	delegateDeps(conv: Conversation, workdir: string): DelegateToolDeps | undefined;
 }
 
 export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
-	const { config: delegationBoot, pin } = deps;
+	const { config: delegationBoot, configRef, pin } = deps;
 	const delegations = delegationBoot ? openDelegations(deps.dbPath()) : null;
-	const t3 = makeT3();
+	// "goblin" is the local unit's --session — the only target, never a config knob.
+	const hc = delegationBoot
+		? makeHcDelegation({
+				hc: makeHc(hcSessionForHome(goblinHome())),
+				goblinHome: goblinHome(),
+				hooksDir: paths.hcHooks(),
+			})
+		: null;
 	const delegateDeps = (
 		conv: Conversation,
 		workdir: string,
 	): DelegateToolDeps | undefined => {
 		if (
 			delegationBoot === undefined ||
-			deps.configRef.current.delegation === undefined ||
-			delegations === null
+			configRef.current.delegation === undefined ||
+			delegations === null ||
+			hc === null
 		) {
 			return undefined;
 		}
 		return {
 			lifecycle: deps.lifecycle(),
 			config: delegationBoot,
-			// The delegation cwd anchors at the turn's working directory —
-			// under a project that's the project's dir, which names the T3
-			// project the thread starts in.
+			// Relative cwd in delegation harness args anchors at the turn's
+			// working directory — under a project that's the project's dir.
 			workspaceDir: workdir,
 			pin: (name: string) => pin(conv, name),
 		};
 	};
-	return { delegations, t3, delegateDeps };
+	return { delegations, hc, delegateDeps };
 }
 
 export function delegationWake(deps: WakeDeps): Pick<DelegationLifecycleDeps, "wake" | "wakeApp"> {

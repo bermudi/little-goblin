@@ -72,6 +72,57 @@ function rows(db: Database): Row[] {
 }
 
 describe("openCacheObservation", () => {
+	test("idleCacheCall carries the latest same-route lifetime and ignores auxiliary calls", () => {
+		const db = new Database(":memory:");
+		const tick = clock(1_000);
+		const obs = openCacheObservation(db, tick);
+		obs.begin(input({ callId: "first", routeKey: "r1" })).finish(usage({ input: 120_000 }), 3_600_000);
+		tick.set(2_000);
+		obs.begin(input({ callId: "other-route", routeKey: "r2" })).finish(usage({ input: 1 }), 300_000);
+		tick.set(3_000);
+		obs.begin(input({ callId: "purpose", purpose: "summary", routeKey: "r1" }))
+			.finish(usage({ input: 1 }), 300_000);
+		tick.set(4_000);
+		obs.begin(input({ callId: "latest", routeKey: "r1" })).finish(usage({ input: 110_000 }));
+		expect(obs.idleCacheCall("conv-1")).toEqual({
+			callId: "latest",
+			routeKey: "r1",
+			startedMs: 4_000,
+			inputTokens: 110_000,
+			ttlMs: 3_600_000,
+		});
+		expect(obs.recentConversations(3_000)).toEqual(["conv-1"]);
+		db.close();
+	});
+
+	test("a lifetime on a different route is not borrowed", () => {
+		const db = new Database(":memory:");
+		const tick = clock(1_000);
+		const obs = openCacheObservation(db, tick);
+		obs.begin(input({ callId: "one", routeKey: "r1" })).finish(usage({ input: 120_000 }), 300_000);
+		tick.set(2_000);
+		obs.begin(input({ callId: "two", routeKey: "r2" })).finish(usage({ input: 120_000 }));
+		expect(obs.idleCacheCall("conv-1")?.ttlMs).toBeNull();
+		db.close();
+	});
+
+	test("opening an old model_cache_calls schema migrates the nullable lifetime column", () => {
+		const db = new Database(":memory:");
+		db.run(`CREATE TABLE model_cache_calls (
+			call_id TEXT PRIMARY KEY, conversation_id TEXT, purpose TEXT, route_key TEXT NOT NULL,
+			model TEXT NOT NULL, started_ms INTEGER NOT NULL, finished_ms INTEGER, head_hash TEXT NOT NULL,
+			request_hash TEXT NOT NULL, settings_hash TEXT NOT NULL, prompt_hashes TEXT NOT NULL,
+			status TEXT NOT NULL, input_tokens INTEGER, cache_read INTEGER, cache_write INTEGER,
+			output_tokens INTEGER, idle_ms INTEGER, prefix_relation TEXT NOT NULL, shared_messages INTEGER NOT NULL
+		)`);
+		const obs = openCacheObservation(db, clock());
+		obs.begin(input({ callId: "migrated" })).finish(usage({ input: 1 }), 300_000);
+		expect(db.query("PRAGMA table_info(model_cache_calls)").all()).toContainEqual(
+			expect.objectContaining({ name: "cache_ttl_ms" }),
+		);
+		expect(rows(db).find((row) => row.call_id === "migrated")).toBeDefined();
+		db.close();
+	});
 	test("a started row lands at begin with hashes, before any outcome", () => {
 		const db = new Database(":memory:");
 		const obs = openCacheObservation(db, clock());

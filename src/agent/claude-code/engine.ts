@@ -245,7 +245,14 @@ function overlayUsage(
 		const value = patch[key];
 		if (value !== null && value !== undefined) out[key] = value;
 	}
+	if (patch.cache_creation !== undefined) out.cache_creation = patch.cache_creation;
 	return out;
+}
+
+export function cacheTtlMs(usage: ClaudeUsage | null): number | null {
+	if ((usage?.cache_creation?.ephemeral_1h_input_tokens ?? 0) > 0) return 3_600_000;
+	if ((usage?.cache_creation?.ephemeral_5m_input_tokens ?? 0) > 0) return 300_000;
+	return null;
 }
 
 function goblinUsage(usage: ClaudeUsage | null): Usage | undefined {
@@ -491,6 +498,7 @@ export async function driveClaude<M extends WireMember>(
 					};
 		run.deltaUsage = null;
 		const input = billedInput(usage);
+		const cacheTtl = cacheTtlMs(usage);
 		run.lastInput = input;
 		run.lastCacheRead = usage?.cache_read_input_tokens ?? null;
 		if (input !== null) run.totalInput = (run.totalInput ?? 0) + input;
@@ -502,13 +510,14 @@ export async function driveClaude<M extends WireMember>(
 		}
 		if (callId !== null) {
 			const finished = callId;
-			obs?.finish(goblinUsage(usage));
+			obs?.finish(goblinUsage(usage), cacheTtl);
 			log.info("model call usage", {
 				...baseFields,
 				callId: finished,
 				inputTokens: input,
 				cacheReadTokens: usage?.cache_read_input_tokens ?? null,
 				cacheWriteTokens: usage?.cache_creation_input_tokens ?? null,
+				cacheTtlMs: cacheTtl,
 				outputTokens: usage?.output_tokens ?? null,
 			});
 			callId = null;

@@ -116,6 +116,30 @@ describe("engine-neutral model scripts", () => {
 				}
 			} finally { await r.runtime.shutdown(); r.store.close(); }
 		});
+		test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: usage on a tool-only call is counted once`, async () => {
+			const model = make();
+			model.script(
+				{ kind: "reply", parts: [{ type: "tool-call", toolName: "echo", input: { message: "x" } }], usage: { input: 11, output: 7 } },
+				{ kind: "reply", parts: [{ type: "reasoning", text: "r" }, { type: "text", text: "after" }], usage: { input: 5, output: 3 } },
+			);
+			const r = rig(model);
+			try {
+				const sink = run(r); await sink.done;
+				expect(sink.chunks.find((chunk) => chunk.type === "finish")).toMatchObject({ messageMetadata: { usage: { input: 16, output: 10 } } });
+			} finally { await r.runtime.shutdown(); r.store.close(); }
+		});
+		test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: a tool loop continues across script() calls`, async () => {
+			const model = make();
+			model.script({ kind: "reply", parts: [{ type: "tool-call", toolName: "echo", input: { message: "split" } }] });
+			model.script({ kind: "reply", parts: [{ type: "text", text: "later" }] });
+			const r = rig(model);
+			try {
+				expect(await run(r).done).toMatchObject({ kind: "completed" });
+				const reply = r.store.history(r.conv.id)[1]!;
+				expect(reply.parts.some((part) => part.type === "tool-echo")).toBe(true);
+				expect(textOf(reply)).toBe("later");
+			} finally { await r.runtime.shutdown(); r.store.close(); }
+		});
 		test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: exhaustion names adapter`, async () => {
 			const r = rig(make());
 			try {
@@ -181,5 +205,7 @@ describe("engine-neutral model scripts", () => {
 		expect(() => claudeScript().script({ kind: "reply", parts: [], finish: "content-filter" })).toThrow("claude-code");
 		expect(() => claudeScript().script({ kind: "fail", parts: [], error: { message: "quota", status: 429 } }))
 			.toThrow("claude-code");
+		expect(() => claudeScript().script({ kind: "reply", parts: [], usage: { input: 1, output: 1 } }))
+			.toThrow("claude-code cannot render usage");
 	});
 });

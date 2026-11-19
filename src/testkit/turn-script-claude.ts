@@ -23,29 +23,35 @@ const usageInput = (usage: ScriptUsage): FakeUsageInput => ({
 });
 
 function scriptCall(call: ScriptCall, bridgeRef: { current: ToolBridge | null }): FakeStep[] {
+	const scripted = call.kind === "fail" ? undefined : call.usage;
+	if (scripted !== undefined && call.parts.length === 0) {
+		throw new Error("claude-code cannot render usage on a call with no parts");
+	}
+	// The fake CLI bills every step (100/10 when unset), so the call's usage
+	// goes on its first step and the rest bill zero: the call counts it once.
+	let pending = scripted === undefined ? undefined : usageInput(scripted);
+	const billed = (): { usage?: FakeUsageInput } => {
+		if (scripted === undefined) return {};
+		const usage = pending ?? { inputTokens: 0, outputTokens: 0 };
+		pending = undefined;
+		return { usage };
+	};
 	const steps: FakeStep[] = [];
 	for (const part of call.parts) {
 		if (part.type === "text") {
-			steps.push({
-				kind: "stream-text",
-				text: part.text,
-				...(call.kind !== "fail" && call.usage !== undefined ? { usage: usageInput(call.usage) } : {}),
-			});
+			steps.push({ kind: "stream-text", text: part.text, ...billed() });
 		} else if (part.type === "reasoning") {
 			if (call.kind === "fail") {
 				throw new Error("claude-code cannot script reasoning followed by failure");
 			}
-			steps.push({
-				kind: "reasoning",
-				text: part.text,
-				...(call.usage !== undefined ? { usage: usageInput(call.usage) } : {}),
-			});
+			steps.push({ kind: "reasoning", text: part.text, ...billed() });
 		} else {
 			steps.push({
 				kind: "tool",
 				name: part.toolName,
 				input: part.input,
 				run: () => bridgeRef.current!.invoke(part.toolName, part.input),
+				...billed(),
 			});
 		}
 	}
@@ -62,27 +68,20 @@ function scriptCall(call: ScriptCall, bridgeRef: { current: ToolBridge | null })
 	return steps;
 }
 
-function queryScripts(calls: ScriptCall[], bridgeRef: { current: ToolBridge | null }): FakeStep[][] {
-	const scripts: FakeStep[][] = [];
-	let current: FakeStep[] = [];
-	for (const call of calls) {
-		const steps = scriptCall(call, bridgeRef);
-		current.push(...steps);
-		if (call.kind === "fail" || !call.parts.some((part) => part.type === "tool-call")) {
-			scripts.push(current);
-			current = [];
-		}
-	}
-	if (current.length > 0) scripts.push(current);
-	return scripts;
-}
-
 export function claudeScript(opts: { label?: string; system?: string } = {}): ScriptedModel {
 	const fake = fakeClaude();
+	// One fake CLI query per entry. A query runs until a call without a tool
+	// call (or a fail) ends it; `open` holds a query whose tool loop has not
+	// ended yet, so a later script() call can continue it.
 	const scripts: FakeStep[][] = [];
+	let open: FakeStep[] = [];
 	const bridgeRef: { current: ToolBridge | null } = { current: null };
 	const query: ClaudeQuery = (call) => {
-		const steps = scripts.shift();
+		let steps = scripts.shift();
+		if (steps === undefined && open.length > 0) {
+			steps = open;
+			open = [];
+		}
 		if (steps === undefined) {
 			throw new Error("claude-code script exhausted: unexpected CLI query");
 		}
@@ -138,7 +137,13 @@ export function claudeScript(opts: { label?: string; system?: string } = {}): Sc
 					throw new Error("claude-code cannot render fail.error.status");
 				}
 			}
-			scripts.push(...queryScripts(calls, bridgeRef));
+			for (const call of calls) {
+				open.push(...scriptCall(call, bridgeRef));
+				if (call.kind === "fail" || !call.parts.some((part) => part.type === "tool-call")) {
+					scripts.push(open);
+					open = [];
+				}
+			}
 		},
 		calls: () => fake.calls.length,
 		requests: () => null,

@@ -188,7 +188,7 @@ export function makeHarnessInvocation(input: {
 	};
 	const command = commands[input.kind];
 	if (!command) throw new Error(`unsupported delegation harness kind: ${input.kind}`);
-	const executable = Bun.which(command);
+	const executable = Bun.which(command, { PATH: process.env.PATH ?? "" });
 	if (!executable) throw new Error(`cannot resolve ${command} on Goblin's PATH`);
 
 	const argv = [executable, ...input.args];
@@ -201,6 +201,9 @@ export function makeHarnessInvocation(input: {
 	const stateDir = join(input.goblinHome, "state");
 	if (input.kind === "codex") {
 		if (!input.args.includes("--no-daemon")) argv.push("--no-daemon");
+		// The update prompt draws before any hook fires, so start would time
+		// out on it; a per-run override leaves the operator's config alone.
+		argv.push("-c", "check_for_update_on_startup=false");
 		const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
 		env.CODEX_HOME = codexHome;
 		ensureCodexHooks(input.hooksDir, codexHome);

@@ -173,7 +173,11 @@ session.
   the operator's CODEX_HOME. Claude uses per-run settings; Pi an
   extension; Devin a per-run config. Codex runs with `--no-daemon` and
   OpenCode with `--standalone`: a shared app server or background service
-  runs outside the hc terminal, so its hooks could not reach it. OpenCode
+  runs outside the hc terminal, so its hooks could not reach it. Codex
+  also gets `-c check_for_update_on_startup=false`: its update prompt
+  draws before any hook, so start timed out on it (verify r1,
+  2026-11-19); the override is per run, never written to CODEX_HOME.
+  OpenCode
   v2 reports from a TUI plugin (`deploy/hc-hooks/tui.js`, loaded through
   `OPENCODE_CLI_CONFIG_CONTENT`); its server plugin path cannot tell
   which terminal a session belongs to (herdr's v2 integration, 2026-11-19).

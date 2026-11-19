@@ -3,7 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, wri
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
-import { ensureCodexHooks } from "./hc-harness.ts";
+import { ensureCodexHooks, makeHarnessInvocation } from "./hc-harness.ts";
 
 const roots: string[] = [];
 
@@ -81,5 +81,42 @@ describe("ensureCodexHooks", () => {
 		expect(readFileSync(configPath)).toEqual(before);
 		expect(statSync(configPath).mtimeMs).toBe(timestamp.getTime());
 		expect((JSON.parse(readFileSync(hooksPath, "utf8")) as { SessionStart: unknown[] }).SessionStart).toHaveLength(2);
+	});
+});
+
+describe("makeHarnessInvocation", () => {
+	test("codex runs in the terminal without its update prompt, operator config untouched", () => {
+		const bin = tempDir();
+		const codexHome = tempDir();
+		writeFileSync(join(bin, "codex"), "#!/bin/sh\n");
+		chmodSync(join(bin, "codex"), 0o755);
+		const saved = { PATH: process.env.PATH, CODEX_HOME: process.env.CODEX_HOME };
+		process.env.PATH = bin;
+		process.env.CODEX_HOME = codexHome;
+		try {
+			const { argv, env } = makeHarnessInvocation({
+				kind: "codex",
+				args: ["--model", "gpt-6-luna"],
+				cwd: bin,
+				terminalName: "g1-x",
+				goblinHome: tempDir(),
+				hooksDir: "/var/lib/goblin/bin/hc-hooks",
+			});
+			expect(argv).toEqual([
+				join(bin, "codex"),
+				"--model",
+				"gpt-6-luna",
+				"--no-daemon",
+				"-c",
+				"check_for_update_on_startup=false",
+			]);
+			expect(env.CODEX_HOME).toBe(codexHome);
+			expect(readFileSync(join(codexHome, "config.toml"), "utf8")).not.toContain("check_for_update");
+		} finally {
+			for (const [key, value] of Object.entries(saved)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		}
 	});
 });

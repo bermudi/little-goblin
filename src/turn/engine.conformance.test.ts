@@ -281,6 +281,13 @@ function claudeRig(): EngineRig {
 	};
 	const claudeEngine: ClaudeEngine = {
 		id: "claude-code",
+		rules: {
+			toolLaunchGate: false,
+			preemptFold: false,
+			contentFilterReask: false,
+			transientRetry: false,
+			contextFill: false,
+		},
 		accepts: isClaudeStep,
 		run: (deps) => driveClaude(engineConfig, deps),
 		compact: async () => {
@@ -698,6 +705,13 @@ describe("turn engine conformance", () => {
 	test("pickEngine with no matching engine fails loud", () => {
 		const claudeEngine: TurnEngine<ClaudeStep> = {
 			id: "claude-code",
+			rules: {
+				toolLaunchGate: false,
+				preemptFold: false,
+				contentFilterReask: false,
+				transientRetry: false,
+				contextFill: false,
+			},
 			accepts: isClaudeStep,
 			run: async () => {
 				throw new Error("not exercised");
@@ -712,6 +726,13 @@ describe("turn engine conformance", () => {
 	test("each engine accepts only its own tag", () => {
 		const claudeEngine: TurnEngine<ClaudeStep> = {
 			id: "claude-code",
+			rules: {
+				toolLaunchGate: false,
+				preemptFold: false,
+				contentFilterReask: false,
+				transientRetry: false,
+				contextFill: false,
+			},
 			accepts: isClaudeStep,
 			run: async () => {
 				throw new Error("not exercised");

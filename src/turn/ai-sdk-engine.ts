@@ -7,6 +7,13 @@ import { type StreamOutcome, driveStream, type WireMember } from "./stream.ts";
 
 export const aiSdkEngine: TurnEngine<ModelStep> = {
 	id: "ai-sdk",
+	rules: {
+		toolLaunchGate: true,
+		preemptFold: true,
+		contentFilterReask: true,
+		transientRetry: true,
+		contextFill: true,
+	},
 	accepts(step): step is ModelStep {
 		return step.engine === "ai-sdk";
 	},

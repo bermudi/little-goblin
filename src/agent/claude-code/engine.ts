@@ -49,6 +49,8 @@ import { log } from "../../log.ts";
 import { measurePrompt } from "../../turn/itemize.ts";
 import { toToolSet } from "../../turn/ai-sdk-tools.ts";
 import { stepModelRef } from "../../turn/model-ref.ts";
+import { replyMetadata } from "../../turn/reply-metadata.ts";
+import { holdsZeroEffectError } from "../../turn/state.ts";
 import {
 	emitChunk,
 	foldSteers,
@@ -1066,8 +1068,7 @@ export async function driveClaude<M extends WireMember>(
 		// A zero-effect error with a fallback candidate waiting is held
 		// too (design/model.md → Model fallback list); the runtime emits
 		// it if the turn ends here.
-		const errorHeld =
-			!holdForRecovery && deps.holdZeroEffectError === true && state.snapshot().modelCalls === 0;
+		const errorHeld = holdsZeroEffectError(deps.holdZeroEffectError, state, holdForRecovery);
 		if (!holdForRecovery && !errorHeld) emit({ type: "error", errorText: streamError });
 		return {
 			kind: "failed",
@@ -1092,29 +1093,25 @@ export async function driveClaude<M extends WireMember>(
 	// shape messageMetadata writes for the API lane.
 	const finishReason = finishReasonOf(run.lastStopReason, run.sawToolUse);
 	const segments = measurePrompt(step.system, deps.tools, [...sentMessages, ...steeredMessages]);
-	const durationMs = Date.now() - deps.turnStartMs;
-	const metadata = {
-		model: label,
+	const metadata = replyMetadata({
+		label,
 		finishReason,
-		durationMs,
-		// Same instant as durationMs — the live reply's age stamp.
-		createdAt: new Date(deps.turnStartMs + durationMs).toISOString(),
-		...(run.firstTokenMs !== null ? { ttftMs: run.firstTokenMs } : {}),
+		turnStartMs: deps.turnStartMs,
+		now: Date.now(),
+		firstTokenMs: run.firstTokenMs,
+		forcedCompletion: null,
 		usage: {
 			input: run.totalInput,
 			output: run.totalOutput,
 			cacheRead: run.totalCacheRead,
 			cacheWrite: run.totalCacheWrite,
-			// input above sums every step's billed prompt across the tool
-			// loop; the window gauge reads the final step.
 			lastInput: run.lastInput,
 			lastCacheRead: run.lastCacheRead,
 		},
-		...(segments !== null ? { promptChars: { ...segments } } : {}),
-		...(deps.fallbackMisses !== undefined && deps.fallbackMisses.length > 0
-			? { fallback: { from: deps.fallbackMisses.map(({ ref, reason }) => ({ ref, reason })) } }
-			: {}),
-	};
+		promptChars: segments,
+		quota: null,
+		fallbackMisses: deps.fallbackMisses,
+	});
 	emit({ type: "finish", finishReason, messageMetadata: metadata });
 	const responseMessage: Message | null =
 		run.parts.length > 0 ? { id: messageId, role: "assistant", parts: run.parts, metadata } : null;

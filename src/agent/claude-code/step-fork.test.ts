@@ -16,6 +16,13 @@ import type { ClaudeEngine } from "./mod.ts";
 
 const fakeEngine: ClaudeEngine = {
 	id: "claude-code",
+	rules: {
+		toolLaunchGate: false,
+		preemptFold: false,
+		contentFilterReask: false,
+		transientRetry: false,
+		contextFill: false,
+	},
 	accepts: isClaudeStep,
 	run: (() => {
 		throw new Error("not driven in this suite");

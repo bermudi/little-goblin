@@ -91,6 +91,9 @@ Every engine consumes the same deps object minus the step
 Ruling: `UIMessage` / `UIMessageChunk` stay goblin's storage and wire
 format. The app channel is `useChat`; an engine translates at its own
 edge, as the claude engine already does (`agent/claude-code/translate.ts`).
+Model-facing prompts use Goblin's `PromptMessage[]` (`src/prompt-message.ts`);
+the SDK shape is compared only in `src/prompt-message.test.ts`, and engines
+convert at their own edge.
 Both engines emit the identical wire, journal rows, and telemetry;
 `src/turn/engine.conformance.test.ts` pins that per engine through the
 real Runtime.

@@ -44,7 +44,6 @@ const AI_SDK_IMPORTERS = [
 	"scripts/replay-v7-history.ts",
 	"scripts/ui-probe.ts",
 	"src/agent/claude-code/engine.ts",
-	"src/agent/claude-code/prompt.ts",
 	"src/agent/codex/model.ts",
 	"src/agent/filter-stream.ts",
 	"src/agent/note-rewrite.ts",
@@ -66,7 +65,6 @@ const AI_SDK_IMPORTERS = [
 	"src/testkit.ts",
 	"src/turn/ai-sdk-step.ts",
 	"src/turn/ai-sdk-tools.ts",
-	"src/turn/itemize.ts",
 	"src/turn/prefix-summary.ts",
 	"src/turn/stream.ts",
 	"src/turn/unlanded-progress.ts",
@@ -74,7 +72,7 @@ const AI_SDK_IMPORTERS = [
 ] as const;
 const AI_SDK_IMPORT = /^(?:ai(?:\/|$)|@ai-sdk\/[^/]+(?:\/|$))/;
 const AI_SDK_MESSAGE_SHAPE_NAMES =
-	"(?:UIMessage|UIMessageChunk|UIMessagePart|ToolUIPart|DynamicToolUIPart|LanguageModelUsage|FinishReason|ProviderMetadata)";
+	"(?:UIMessage|UIMessageChunk|UIMessagePart|ToolUIPart|DynamicToolUIPart|LanguageModelUsage|FinishReason|ProviderMetadata|ModelMessage|SystemModelMessage|UserModelMessage|AssistantModelMessage|ToolModelMessage|UserContent|AssistantContent|ToolContent|ToolResultOutput|TextPart|ImagePart|FilePart|ReasoningPart|CustomPart|ReasoningFilePart|ToolCallPart|ToolResultPart|ToolApprovalRequest|ToolApprovalResponse)";
 const AI_SDK_FENCED_SPECIFIER = "(?:ai(?:/[^'\"]*)?|@ai-sdk/[^'\"]+)";
 const AI_SDK_SEPARATOR = "(?:\\s|/\\*[\\s\\S]*?\\*/)*";
 const AI_SDK_NAMED_SHAPE_IMPORT_EXPORT = new RegExp(
@@ -155,7 +153,10 @@ const AI_SDK_INLINE_MESSAGE_TYPE = new RegExp(
 		AI_SDK_SEPARATOR +
 		"\\])",
 );
-const AI_SDK_MESSAGE_SHAPE_ALLOWLIST = new Set(["src/message.test.ts"]);
+const AI_SDK_MESSAGE_SHAPE_ALLOWLIST = new Set([
+	"src/message.test.ts",
+	"src/prompt-message.test.ts",
+]);
 const AI_SDK_SCAN_ROOTS = [
 	SRC,
 	join(ROOT, "scripts"),
@@ -325,6 +326,11 @@ describe("module boundaries", () => {
 		expect(aiSdkImports('require("@ai-sdk/google")')).toEqual(["@ai-sdk/google"]);
 		expect(aiSdkImports('import type { X } from "ai";')).toEqual(["ai"]);
 		expect(aiSdkImports('export type { X } from "ai/rsc";')).toEqual(["ai/rsc"]);
+		expect(
+			AI_SDK_NAMED_SHAPE_IMPORT_EXPORT.test(
+				'import type { ModelMessage } from "ai";',
+			),
+		).toBe(true);
 		expect(
 			aiSdkImports(
 				'import { X } from "aim";\nimport { Y } from "./ai.ts";\nimport { Z } from "@ai-sdkx/y";',

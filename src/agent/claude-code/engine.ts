@@ -28,12 +28,12 @@
 
 import { randomUUID } from "node:crypto";
 import type { LanguageModelV4Usage } from "@ai-sdk/provider";
-import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import type {
 	AssistantContent,
-	ModelMessage,
+	PromptMessage,
 	ToolContent,
-} from "ai";
+	ToolResultOutput,
+} from "../../prompt-message.ts";
 import type {
 	FinishReason,
 	Message,
@@ -118,7 +118,7 @@ export interface ClaudeRunDeps<M extends WireMember> extends Omit<StreamDeps<M>,
 	claudeSession?:
 		| {
 				resume?: { sessionId: string; headUuid: string } | undefined;
-				fullPrompt?: (() => Promise<ModelMessage[]>) | undefined;
+				fullPrompt?: (() => Promise<PromptMessage[]>) | undefined;
 				onDrop?: (() => void) | undefined;
 		  }
 		| undefined;
@@ -302,7 +302,7 @@ function bareToolName(name: string): string {
 interface RunState {
 	// wire + journal reconstruction
 	parts: Message["parts"];
-	partialMessages: ModelMessage[];
+	partialMessages: PromptMessage[];
 	// ledger
 	events: ToolEventState;
 	sawText: boolean;
@@ -388,7 +388,7 @@ export async function driveClaude<M extends WireMember>(
 	// Recomputed per attempt — the resume-failure retry sends the full
 	// prompt, not the seq delta deps.messages carries.
 	const toolDefs = serializeToolDefs(deps.tools);
-	const hashesFor = (messages: ModelMessage[]) => {
+	const hashesFor = (messages: PromptMessage[]) => {
 		const prompt = serializePrompt(messages);
 		return callHashes(
 			[
@@ -752,7 +752,7 @@ export async function driveClaude<M extends WireMember>(
 	// --- steers: the open query input and the shared fold ---
 	const steers = openSteerLedger(deps);
 	const sdkTools = toToolSet(deps.tools);
-	const steeredMessages: ModelMessage[] = [];
+	const steeredMessages: PromptMessage[] = [];
 	// Pushed to the CLI, not yet acked by a `folded` event.
 	const unacked = new Set<string>();
 	let channel: SteerChannel | null = null;

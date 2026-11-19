@@ -1058,11 +1058,11 @@ describe("config save", () => {
 		});
 		expect(res?.status).toBe(422);
 		expect(((await res?.json()) as { error: string }).error).toContain(
-			"delegation: unrecognized_keys",
+			"delegation.machines was removed",
 		);
 		// A retired-shape posted block fails the same way — no silent drop.
 		const legacy = await postConfig(d, {
-			delegation: { harnesses: { pi: { kind: "pi" } } },
+			delegation: { harnesses: { pi: { provider: "pi", model: "m" } } },
 		});
 		expect(legacy?.status).toBe(422);
 		// Nothing was written by either refusal — the incumbent block

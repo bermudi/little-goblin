@@ -16,6 +16,8 @@
 - **Computer:** the built-in agent type whose child does screen work on a named desktop.
 - **Settlement:** the point where a delegation or subagent run stops and states a result: done, needs input, or failed.
 - **Worker report:** one settlement filed on a responsibility. It is the agent's claim, and Goblin still checks it.
+- **Obligation:** a responsibility report that still owes something: a question for the operator, or a worker report Goblin has not assessed. A newer report does not close it; only a named resolution or closing the responsibility does (design/programs.md → Snapshots and obligations).
+- **Status snapshot:** the newest report from Goblin on a responsibility. The next Goblin report replaces it.
 - **Notice:** the machine message that gives a settlement to Goblin and wakes the conversation.
 - **Hindsight:** the separate memory service. It extracts, stores and searches memories for Goblin.
 - **Bank:** the store of memories in Hindsight. Goblin uses the bank named `goblin`.

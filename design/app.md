@@ -1262,11 +1262,16 @@ over them. `feedPosts` serves the newest `FEED_POST_WINDOW` (20), newest
 first, plus `postsTruncated`.
 
 Each post says whose word it is. `assessed` is goblin's own report.
-`unreviewed` is a worker's claim with no later goblin report, and turns
-`reviewed` once goblin reports after it. `migrated` is a legacy status.
-`current` is false once an operator correction has overtaken the post. A
-stale post stays visible and dimmed, never hidden. Review status is
-derived, never stored, so nothing can drift.
+`unreviewed` is a worker's claim that is still an open obligation, and
+turns `reviewed` once it has a resolution (design/programs.md →
+Snapshots and obligations) — a later goblin report that does not name
+it leaves it `unreviewed`. A resolved post shows how (`resolved #id`,
+`closed`, `migrated`). `migrated` is a legacy status. `current` is false
+once an operator correction has overtaken the post. A stale post stays
+visible and dimmed, never hidden. Review status is derived from the
+append-only resolution rows, never a flag on the post, so nothing can
+drift. Above the posts, an **Open** list shows every open question and
+unassessed claim, oldest first, with whom it waits for.
 
 **Typed posts.** A report's `purpose` says what the post carries:
 `status` (the default: the state report itself), `finding` (something

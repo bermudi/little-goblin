@@ -1134,7 +1134,8 @@ export class Runtime {
 				priorInputTokens !== null && step.contextWindow !== undefined
 					? { used: priorInputTokens, limit: step.contextWindow }
 					: null;
-			steerGate.armed = !isClaudeStep(step);
+			const engine = pickEngine(this.deps.engines, step, convId);
+			steerGate.armed = engine.rules.toolLaunchGate;
 			this.checkAuthority(convId, epoch);
 			// Steered messages use the same fixed capability gates as the initial
 			// view, preserving the stable prompt prefix. Only the appended tail
@@ -1204,7 +1205,7 @@ export class Runtime {
 					}
 				: undefined;
 
-			const outcome = await pickEngine(this.deps.engines, step, convId).run({
+			const outcome = await engine.run({
 				convId,
 				epoch,
 				head: sink,

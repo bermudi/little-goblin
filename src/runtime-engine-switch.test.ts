@@ -98,6 +98,13 @@ describe("one conversation across turn engines", () => {
 		};
 		const claudeEngine: ClaudeEngine = {
 			id: "claude-code",
+			rules: {
+				toolLaunchGate: false,
+				preemptFold: false,
+				contentFilterReask: false,
+				transientRetry: false,
+				contextFill: false,
+			},
 			accepts: isClaudeStep,
 			run: (deps) => driveClaude(engineConfig, deps),
 			compact: async () => {

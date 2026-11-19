@@ -189,3 +189,11 @@ export class TurnState {
 		};
 	}
 }
+
+export function holdsZeroEffectError(
+	holdZeroEffectError: boolean | undefined,
+	state: TurnState,
+	holdForRecovery: boolean,
+): boolean {
+	return !holdForRecovery && holdZeroEffectError === true && state.snapshot().modelCalls === 0;
+}

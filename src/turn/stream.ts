@@ -36,8 +36,9 @@ import type { AdmittedMember, LiveWire } from "./admission.ts";
 import { estimateHistoryChars, measurePrompt, type PromptSegments } from "./itemize.ts";
 import { stepModelRef } from "./model-ref.ts";
 import { PreemptSignal, transportFailureText } from "./overflow.ts";
+import { replyMetadata } from "./reply-metadata.ts";
 import type { SkillWatch } from "./skill-attribution.ts";
-import type { ForcedKind, LoopTurnState, TurnState } from "./state.ts";
+import { holdsZeroEffectError, type ForcedKind, type LoopTurnState, type TurnState } from "./state.ts";
 import {
 	noteToolError,
 	noteToolInput,
@@ -891,42 +892,25 @@ export async function driveStream<M extends WireMember>(
 				firstTokenMs = Date.now() - deps.turnStartMs;
 			}
 			if (part.type !== "finish") return undefined;
-			const forcedKind = state.forcedCompletion();
-			const durationMs = Date.now() - deps.turnStartMs;
-			return {
-				model: modelLabel,
+			return replyMetadata({
+				label: modelLabel,
 				finishReason: part.finishReason,
-				durationMs,
-				// The finish instant, same clock read as durationMs — the
-				// transcript's "how old is this reply" before history
-				// serves the row's own stamp.
-				createdAt: new Date(deps.turnStartMs + durationMs).toISOString(),
-				...(firstTokenMs !== null ? { ttftMs: firstTokenMs } : {}),
-				...(forcedKind !== null ? { forcedCompletion: forcedKind } : {}),
+				turnStartMs: deps.turnStartMs,
+				now: Date.now(),
+				firstTokenMs,
+				forcedCompletion: state.forcedCompletion(),
 				usage: {
 					input: part.totalUsage.inputTokens ?? null,
 					output: part.totalUsage.outputTokens ?? null,
 					cacheRead: part.totalUsage.inputTokenDetails?.cacheReadTokens ?? null,
 					cacheWrite: part.totalUsage.inputTokenDetails?.cacheWriteTokens ?? null,
-					// input above sums every step's billed prompt across the
-					// tool loop; the window gauge reads the final step — the
-					// current occupancy, the number compaction math uses.
 					lastInput: lastStepInputTokens,
 					lastCacheRead: lastStepCacheRead,
 				},
-				// Itemization of the final step's prompt, in serialized
-				// characters (turn/itemize.ts); scaled to tokens by /context.
-				// Absent when no step ran.
-				...(lastPromptChars !== null ? { promptChars: { ...lastPromptChars } } : {}),
-				...(turnQuota !== null ? { quota: turnQuota } : {}),
-				...(deps.fallbackMisses !== undefined && deps.fallbackMisses.length > 0
-					? {
-							fallback: {
-								from: deps.fallbackMisses.map(({ ref, reason }) => ({ ref, reason })),
-							},
-						}
-					: {}),
-			};
+				promptChars: lastPromptChars,
+				quota: turnQuota,
+				fallbackMisses: deps.fallbackMisses,
+			});
 		},
 		onError: (error) =>
 			error instanceof ToolExecuteError
@@ -975,9 +959,7 @@ export async function driveStream<M extends WireMember>(
 			}
 			if (
 				chunk.type === "error" &&
-				!holdForRecovery &&
-				deps.holdZeroEffectError === true &&
-				state.snapshot().modelCalls === 0
+				holdsZeroEffectError(deps.holdZeroEffectError, state, holdForRecovery)
 			) {
 				errorHeld = true;
 			} else if (!holdForRecovery) {

@@ -46,7 +46,7 @@ function retiredDelegationKey(raw: unknown): string | null {
 				typeof h === "object" &&
 				h !== null &&
 				!Array.isArray(h) &&
-				("provider" in h || "model" in h || "options" in h)
+				("provider" in h || "model" in h)
 			) {
 				// The entry name stays out of the message: config keys are
 				// user input and errors must never echo them (the sentinel
@@ -152,7 +152,7 @@ export function parseConfig(raw: unknown, sourceText?: string): Config {
 	}
 	const retiredDelegation = retiredDelegationKey(raw);
 	if (retiredDelegation !== null) {
-		throw new ConfigValidationError(`${paths.config()}: ${retiredDelegation}`);
+		throw new ConfigValidationError(`${paths.config()}: invalid config — ${retiredDelegation}`);
 	}
 	const result = configSchema.safeParse(raw);
 	if (!result.success) {

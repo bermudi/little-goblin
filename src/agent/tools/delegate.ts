@@ -314,9 +314,10 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 		.map(([name]) => name)
 		.sort();
 	const staffingLine =
-		askFirst.length === 0
+		` Staffing is your call — never ask the operator which one;` +
+		(askFirst.length === 0
 			? ""
-			: ` Ask-first harnesses (${askFirst.join(", ")}): ask the operator before each use, and start one only on their explicit yes for that task.`;
+			: ` ask-first harnesses (${askFirst.join(", ")}) ask the operator before each use — start one only on their explicit yes for that task.`);
 	return defineTool({
 		description: `Delegate work to an external coding harness — a separate agent in its own workspace, running full-auto in goblin's herdr session. Use this tool ONLY when the operator names the harness ("have codex do X", "an opencode run"); work you decide to hand off goes to the agent tool or you do it yourself. Harnesses: ${Object.keys(deps.config.harnesses).join(", ")}.${staffingLine} ${roleLine} Actions — start {harness?, role?, task, cwd?, name?${linkable ? ", responsibility?" : ""}}; list {}; read {id, lines?}; send {id, text} (operator answers, follow-ups to finished work); answer {id, key: enter|esc|arrows|space|tab|y|n|1-9} (a single keypress for a blocked agent's dialog — only ever relay the operator's explicit choice); stop {id}. Results arrive later as a [delegation: #id …] message in the conversation the delegation was born in — the task does not answer immediately. If a delegation ends at 'needs input' (an approval, a question, a startup dialog), relay it to the operator and send back their answer — 'send' for text, 'answer' for a dialog keypress — never answer an agent's question on the operator's behalf. Started from the operator's private chat, a delegation moves into its own app conversation (results land there) — tell the operator where it went.${linkable ? " In a project conversation, pass responsibility:<id> when the delegation does work for that responsibility: each settlement (done, needs input, failed) is then filed as a worker report on it — the agent's claim, which you still check before reporting yourself." : ""}`,
 		input: (linkable

@@ -641,7 +641,7 @@ describe("goblin.json5", () => {
 		[
 			"delegation defaults map roles to configured harnesses",
 			Z(
-				`,delegation:{harnesses:{pi:{kind:"pi"},"pi-review":{kind:"pi",args:["--model","glm-5.3-air"]}},defaults:{default:"pi",build:"pi",review:"pi-review"}}}`,
+				`,delegation:{harnesses:{pi:{kind:"pi"},"pi-review":{kind:"pi",args:["--model","glm-5.3-air"]}},defaults:{default:"pi",build:"pi",review:"pi-review"}}`,
 			),
 			(c) => c.delegation?.defaults,
 			{ default: "pi", build: "pi", review: "pi-review" },
@@ -704,9 +704,12 @@ describe("goblin.json5", () => {
 			"delegation: invalid_union",
 		],
 		[
+			// {kind, options} is not the retired T3 shape (no provider/model)
+			// — it is a new-shape entry with a stray key: strict objects
+			// report unrecognized_keys at the file line, never the key.
 			"delegation harnesses reject the retired options field",
 			Z(`,delegation:{harnesses:{claude:{kind:"claude",options:{effort:"low"}}}}`),
-			"delegation: invalid_union",
+			"delegation: unrecognized_keys",
 		],
 		[
 			"delegation harness args reject non-strings",

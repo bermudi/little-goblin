@@ -45,6 +45,7 @@ export interface ProgramDraft {
 	maxLatenessMinutes: number | null;
 	hook: boolean;
 	mailFilter: string | null;
+	responsibilityId: string | null;
 }
 
 /** An update proposal's requested patch — only the fields the requester
@@ -224,6 +225,7 @@ const draftSchema = z
 		maxLatenessMinutes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
 		hook: z.boolean(),
 		mailFilter: z.string().min(1).max(500).nullable(),
+		responsibilityId: z.string().min(1).nullable().default(null),
 	})
 	.strict();
 
@@ -444,18 +446,18 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 				if (draft.hook && hookHash === undefined) {
 					return { kind: "refused", proposal, refusal: "hook-unsatisfied" };
 				}
-				const program = deps.core.create(
-					{
-						name: draft.name,
-						charter: draft.charter,
-						cron: draft.cron,
-						maxLatenessMinutes: draft.maxLatenessMinutes,
-						hookHash: draft.hook ? hookHash! : null,
-						mailFilter: draft.mailFilter,
-						address: { target: proposal.target },
-					},
-					now,
-				);
+				const createInput = {
+					name: draft.name,
+					charter: draft.charter,
+					cron: draft.cron,
+					maxLatenessMinutes: draft.maxLatenessMinutes,
+					hookHash: draft.hook ? hookHash! : null,
+					mailFilter: draft.mailFilter,
+					...(draft.responsibilityId !== null
+						? { responsibilityId: draft.responsibilityId }
+						: { address: { target: proposal.target } }),
+				};
+				const program = deps.core.create(createInput, now);
 				qDecide.run("approved", now.toISOString(), decidedBy, program.id, id);
 				return { kind: "activated", proposal: rowToProposal(qGet.get(id)), program };
 			}
@@ -530,6 +532,9 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 				cron: proposal.draft!.cron,
 				hook: proposal.draft!.hook,
 				mail: proposal.draft!.mailFilter !== null,
+				...(proposal.draft!.responsibilityId !== null
+					? { responsibility: proposal.draft!.responsibilityId }
+					: {}),
 				target: proposal.target,
 			});
 			return proposal;

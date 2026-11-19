@@ -178,14 +178,27 @@ Rulings:
   address on responsibility rows. That pseudo-address is not a
   conversation: `telegramAddressOf`/`appConversationOf` project it to
   null, and every delivery path branches on `responsibilityId` before
-  reading `target`. The program tool on project turns keeps the direct
-  lane inside the handed-over project (responsibility-destination
-  creates, scoped verbs, no hook minting — no operator DM exists there);
-  every other surface stages through the durable proposal gate above.
+  reading `target`. The program tool on project turns scopes its verbs
+  to the handed-over project and mints no hooks (no operator DM exists
+  there), but it has no direct grant lane.
+
+  **What a handover authorizes (operator ruling 2026-11-19, #775):** a
+  project handover grants Goblin only the responsibility's
+  service-owned follow-up clock (`ensureFollowup`, below) — never new
+  standing authority. A project-turn `create` bound to a responsibility
+  (`responsibilityId`) stages a create proposal like any other: the
+  draft carries the responsibility, the proposal's `target` pins the
+  staging conversation (where the approval card or app marker posts),
+  and only the operator's decision creates the program on the
+  `resp:<id>` destination. Widening an existing project program (a cron
+  where none existed, a new or changed mail filter, charter text) stages
+  through the same gate. Earlier, responsibility-destination creates
+  were written directly from the project turn, so a handover could set
+  up a cron or mail watch the operator never saw.
   Only staging needs a destination: on an addressless project turn the
   direct verbs still apply (rename, lateness, reschedule, hook disable),
-  while a grant-shaped update refuses — its staged row would have no
-  lane to pin. The app channel's presentation target is likewise not
+  while a create or a grant-shaped update refuses — its staged row would
+  have no lane to pin. The app channel's presentation target is likewise not
   the program's `target` column: a responsibility-destination program's
   approvals post into the responsibility's coordination conversation —
   the route resolves `responsibility_id` → row →

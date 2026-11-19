@@ -25,6 +25,7 @@ const draft = (overrides: Partial<ProgramDraft> = {}): ProgramDraft => ({
 	maxLatenessMinutes: 60,
 	hook: false,
 	mailFilter: null,
+	responsibilityId: null,
 	...overrides,
 });
 

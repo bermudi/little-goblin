@@ -25,6 +25,7 @@ const proposal: ProgramProposal = {
 		maxLatenessMinutes: null,
 		hook: false,
 		mailFilter: null,
+		responsibilityId: null,
 	},
 	patch: null,
 	base: null,

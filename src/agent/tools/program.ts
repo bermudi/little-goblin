@@ -4,7 +4,7 @@ import { log } from "../../log.ts";
 import type { ProgramProposal } from "../../program-proposals.ts";
 import { PROPOSAL_CHARTER_MAX } from "../../program-proposals.ts";
 import { startProgramOps, type ProgramOpResult, type ProgramStaged } from "../../program-ops.ts";
-import { ProgramRuleError, type Program, type ProgramsStore } from "../../programs.ts";
+import type { Program, ProgramsStore } from "../../programs.ts";
 
 function programView(program: Program): Record<string, unknown> {
 	return {
@@ -37,17 +37,16 @@ function proposalView(proposal: ProgramProposal): Record<string, unknown> {
 export type ProgramToolDeps = {
 	programs: ProgramsStore;
 	/** The conversation address this tool call runs in — pinned onto
-	 *  staged proposals. The project arm may run without one:
-	 *  responsibility-destination creates bind the project's
-	 *  coordination lane instead. */
+	 *  staged proposals. Responsibility-destination creates bind the
+	 *  approved program to the project's coordination lane instead. */
 	target?: string;
 	chatId?: number;
 	threadId?: number | null;
 	/** The app/project arm — scopes every verb to programs bound to a
 	 *  responsibility in this project (create validates the binding;
 	 *  the by-id actions enforce it against the row's responsibility).
-	 *  Absent = the conversation arm: creates and grant-shaped updates
-	 *  stage proposals the operator approves. */
+	 *  Creates and grant-shaped updates stage on every arm; the project
+	 *  arm scopes verbs and can bind a create to a responsibility. */
 	project?: {
 		projectId: string;
 		resps: { get(id: string): { projectId: string } | null };
@@ -60,8 +59,7 @@ export type ProgramToolDeps = {
 	/** Posts a staged proposal for the operator's decision — throws when the
 	 *  approval could not be delivered. The staging turn's abort signal
 	 *  fences the posting chunk by chunk; the proposal stays pending either
-	 *  way. Absent only on arms that never stage: the project arm's direct
-	 *  lane and bare listings. */
+	 *  way. Absent only on bare listings. */
 	requestApproval?(proposal: ProgramProposal, signal?: AbortSignal): Promise<void>;
 };
 
@@ -99,8 +97,8 @@ const createSchema = z.object({
 	maxLatenessMinutes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
 	hook: z.boolean().optional(),
 	mailFilter: z.string().min(1).max(500).optional(),
-	/** Project turns only: bind the program to a responsibility's
-	 *  coordination lane instead of a conversation address. */
+	/** Project turns only: bind the approved program to a responsibility's
+	 *  coordination lane instead of the proposal's conversation address. */
 	responsibilityId: z.string().min(1).optional(),
 });
 const updateSchema = z.object({
@@ -186,9 +184,13 @@ export const programTool = (deps: ProgramToolDeps) => {
 		const program = deps.programs.get(id);
 		return program !== null && inScope(program) ? program : null;
 	};
+	const inLane = (proposal: ProgramProposal): boolean =>
+		proposal.targetId !== null
+			? scopedGet(proposal.targetId) !== null
+			: deps.target !== undefined && proposal.target === deps.target;
 	return defineTool({
 		description:
-			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears in you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Grant-shaped changes are proposals, never self-grants: 'create', any charter text change, adding a trigger kind (a cron where none existed, a new or changed mail filter, a hook on a program that lacks one) all stage a pending proposal the operator approves on the originating approval surface — the request activates only on their decision. Rescheduling an existing cron, renaming, lateness edits, toggling, deleting, removing a trigger and rotating an existing hook apply directly. 'review' re-posts a pending proposal's approval after a delivery failure. On project turns the tool reaches the programs bound to this project's responsibilities plus the ones pinned to this conversation itself.",
+			"Manage programs — a program is standing authority for one concern. Its charter says what it owns: scope, what needs the operator's OK, when to escalate, what not to do, and the steps — write that, not a one-line instruction. A cron is 5 fields (minute hour day month weekday) in server local time; translate the operator's wording into cron yourself (e.g. \"weekdays 8:30\" → \"30 8 * * 1-5\") and confirm the cron with them if ambiguous. Optional maxLatenessMinutes limits how late a scheduled fire may run; omitted means unlimited (fire once on wake). On update, null clears the limit. A late catch-up coalesces missed occurrences into at most one fire based on the latest missed occurrence. The 'hook' action gives a program a secret URL that external services POST to wake it — the URL is sent to the operator privately and never appears in you. A mail filter (Gmail query syntax, e.g. from:bank is:important) wakes the program when new matching mail arrives. Grant-shaped changes are proposals, never self-grants: 'create', any charter text change, adding a trigger kind (a cron where none existed, a new or changed mail filter, a hook on a program that lacks one) all stage a pending proposal the operator approves on the originating approval surface — the request activates only on their decision. On project turns this holds too: a create bound to a responsibility (responsibilityId) stages the same proposal in this conversation and binds to the responsibility only once approved — a handover grants only the service-owned follow-up clock, never new cron or mail programs. Rescheduling an existing cron, renaming, lateness edits, toggling, deleting, removing a trigger and rotating an existing hook apply directly. 'review' re-posts a pending proposal's approval after a delivery failure. On project turns the tool reaches the programs bound to this project's responsibilities plus the ones pinned to this conversation itself.",
 		input: programInputSchema,
 		execute: async (raw, options) => {
 			const parsed = actionSchema.safeParse(raw);
@@ -213,7 +215,10 @@ export const programTool = (deps: ProgramToolDeps) => {
 			switch (input.action) {
 				case "list":
 					if (deps.project !== undefined) {
-						return { programs: deps.programs.list().filter(inScope).map(programView) };
+						return {
+							programs: deps.programs.list().filter(inScope).map(programView),
+							proposals: deps.programs.proposals.pending().filter(inLane).map(proposalView),
+						};
 					}
 					return {
 						programs: deps.programs.list().map(programView),
@@ -221,11 +226,8 @@ export const programTool = (deps: ProgramToolDeps) => {
 					};
 				case "create": {
 					if (input.responsibilityId !== undefined) {
-						// The project arm's direct lane: a responsibility
-						// destination binds the project's coordination lane —
-						// validated to belong to this project. The hook URL
-						// rides the operator DM, which project turns don't
-						// have — refuse minting there.
+						// Validate the destination before staging; hooks still
+						// require a private operator delivery lane.
 						if (deps.project === undefined) {
 							return { error: "responsibility destinations exist only on project turns" };
 						}
@@ -238,27 +240,26 @@ export const programTool = (deps: ProgramToolDeps) => {
 								error: "hook URLs deliver to the operator DM — not available on project turns",
 							};
 						}
-						try {
-							const program = deps.programs.create({
-								name: input.name,
-								charter: input.charter,
-								cron: input.cron ?? null,
-								maxLatenessMinutes: input.maxLatenessMinutes ?? null,
-								mailFilter: input.mailFilter ?? null,
-								responsibilityId: input.responsibilityId,
-							});
-							log.info("program created", {
-								program: program.id,
-								name: program.name,
-								cron: program.cron,
-								responsibility: input.responsibilityId,
-								mail: program.mailFilter !== null,
-							});
-							return { program: programView(program) };
-						} catch (err) {
-							if (err instanceof ProgramRuleError) return { error: err.message };
-							throw err;
+						if (address === undefined) {
+							return {
+								error: "no destination — this turn has no conversation address to post the approval to",
+							};
 						}
+						return opResult(
+							await ops.create(
+								{
+									name: input.name,
+									charter: input.charter,
+									cron: input.cron ?? null,
+									maxLatenessMinutes: input.maxLatenessMinutes ?? null,
+									hook: false,
+									mailFilter: input.mailFilter ?? null,
+									responsibilityId: input.responsibilityId,
+								},
+								address,
+								signal,
+							),
+						);
 					}
 					if (address === undefined) {
 						return {
@@ -275,6 +276,7 @@ export const programTool = (deps: ProgramToolDeps) => {
 								maxLatenessMinutes: input.maxLatenessMinutes ?? null,
 								hook: input.hook === true,
 								mailFilter: input.mailFilter ?? null,
+								responsibilityId: null,
 							},
 							address,
 							signal,
@@ -365,12 +367,7 @@ export const programTool = (deps: ProgramToolDeps) => {
 						// real conversation (validTarget rejects resp:), so
 						// plain address equality is the whole match.
 						const proposal = deps.programs.proposals.get(input.id);
-						const inLane =
-							proposal !== null &&
-							(proposal.targetId !== null
-								? scopedGet(proposal.targetId) !== null
-								: deps.target !== undefined && proposal.target === deps.target);
-						if (!inLane) {
+						if (proposal === null || !inLane(proposal)) {
 							return { error: `no proposal ${input.id}` };
 						}
 					}

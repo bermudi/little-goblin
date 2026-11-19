@@ -178,7 +178,19 @@ export function proposalCandidate(
 	programs: Pick<ProgramsStore, "get">,
 	proposal: ProgramProposal,
 ): ProgramCandidate | null {
-	if (proposal.kind === "create") return proposal.draft;
+	if (proposal.kind === "create") {
+		const draft = proposal.draft;
+		return draft === null
+			? null
+			: {
+					name: draft.name,
+					charter: draft.charter,
+					cron: draft.cron,
+					maxLatenessMinutes: draft.maxLatenessMinutes,
+					hook: draft.hook,
+					mailFilter: draft.mailFilter,
+				};
+	}
 	const base = proposalBase(programs, proposal);
 	if (base === null) return null;
 	const patch = proposal.patch!;

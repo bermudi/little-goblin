@@ -78,7 +78,10 @@ only after an explicit handover. The intended interaction is to open/create
 a Goblin project, identify the existing work, and say "take over this."
 Goblin reconstructs a correctable understanding instead of presenting a
 workflow form. After handover, do not require approval for every management
-step.
+step. A handover is not standing authority, though: it grants only the
+responsibility's own follow-up clock. A new cron or mail-watching Program from
+a project turn still needs the operator's yes, like any Program (operator,
+2026-11-19).
 
 Adopting work does not grant ownership of its execution resources. Detaching,
 cancelling, or completing a responsibility must not close an adopted workspace.

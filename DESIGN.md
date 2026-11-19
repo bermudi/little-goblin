@@ -431,7 +431,9 @@ no lowest-common-denominator layer. The app's `useChat` stream protocol
 stays an SDK wire format until an engine can't meet it.
 
 Side jobs reach the model through `src/agent/generate.ts` (`generate`), never
-the SDK directly.
+the SDK directly. Two standing exceptions (#759): `agent/vision.ts` streams
+with an idle timeout, and `turn/prefix-summary.ts` must send the turn's exact
+message prefix for cache hits; neither fits a one-shot `generate`.
 
 ## Non-goals (v1 — return only on demand)
 

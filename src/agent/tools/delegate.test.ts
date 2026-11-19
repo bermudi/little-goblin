@@ -148,6 +148,23 @@ describe("delegate tool", () => {
 		} finally { await h.lifecycle.stopTicker(); h.store.close(); }
 	});
 
+	test("a refused linked send names the delegation", async () => {
+		const h = harness();
+		try {
+			h.deps.checkResponsibility = () => null;
+			h.deps.sendAuthority = () => "responsibility-inactive";
+			const tool = delegateTool(h.deps);
+			const started = await exec(tool, {
+				action: "start", harness: "codex", task: "work", responsibility: "r1",
+			}) as { id: number };
+			const out = await exec(tool, { action: "send", id: started.id, text: "continue" });
+			expect(out).toMatchObject({
+				error: `delegation ${started.id}'s responsibility is paused or closed — resume it before sending`,
+			});
+			expect(h.prompts).toHaveLength(1);
+		} finally { await h.lifecycle.stopTicker(); h.store.close(); }
+	});
+
 	test("provider sees an object schema; missing action arguments still fail validation", () => {
 		const wire = z.toJSONSchema(delegateInputSchema);
 		expect(wire.type).toBe("object");

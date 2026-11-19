@@ -25,6 +25,7 @@ import {
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import type { DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
 import { HcError, makeHcDelegation, type HcRunInfo, type HcDelegation } from "./hc-delegation.ts";
+import { FencedError } from "./runtime.ts";
 import { makeHc } from "./hc.ts";
 import { goblinHome } from "./goblin-home.ts";
 import { paths } from "./home-layout.ts";
@@ -948,6 +949,48 @@ describe("delegation watcher", () => {
 		expect(h.wakes).toHaveLength(1);
 		expect(h.wakes[0]).toContain("# current run");
 		expect(h.wakes[0]).not.toContain("# previous run");
+	});
+
+	test("responsibility-linked sends refuse before archiving or prompting", async () => {
+		const h = harness();
+		const d = issueLead(h);
+		const dir = join(h.delegationsDir, String(d.id));
+		mkdirSync(dir, { recursive: true });
+		const reportPath = join(dir, "report.md");
+		writeFileSync(reportPath, "# previous report");
+		let prompts = 0;
+		h.deps.hc = { ...h.deps.hc, prompt: async () => { prompts += 1; } };
+		const owner = startDelegationLifecycle(h.deps);
+		const out = await owner.send(d.id, "continue", () => "responsibility-inactive");
+		expect(out).toEqual({ kind: "refused", id: d.id, why: "responsibility-inactive" });
+		expect(prompts).toBe(0);
+		expect(readFileSync(reportPath, "utf8")).toBe("# previous report");
+		expect(readdirSync(dir).filter((name) => name.startsWith("report-"))).toHaveLength(0);
+		await owner.stopTicker();
+	});
+
+	test("responsibility-linked sends without authority refuse, while unlinked sends remain allowed", async () => {
+		const h = harness();
+		const linked = issueLead(h);
+		let prompts = 0;
+		h.deps.hc = { ...h.deps.hc, prompt: async () => { prompts += 1; } };
+		const owner = startDelegationLifecycle(h.deps);
+		expect(await owner.send(linked.id, "continue")).toEqual({
+			kind: "refused", id: linked.id, why: "outside-project",
+		});
+		const unlinked = runningRow(h, "unlinked");
+		expect((await owner.send(unlinked.id, "continue")).kind).toBe("sent");
+		expect(prompts).toBe(1);
+		await owner.stopTicker();
+	});
+
+	test("a fenced send authority aborts before the prompt", async () => {
+		const h = harness();
+		const d = issueLead(h);
+		const owner = startDelegationLifecycle(h.deps);
+		await expect(owner.send(d.id, "continue", () => { throw new FencedError("fixture"); }))
+			.rejects.toBeInstanceOf(FencedError);
+		await owner.stopTicker();
 	});
 
 	test("failed follow-up restores the previous report for the watcher", async () => {

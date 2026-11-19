@@ -9,6 +9,7 @@ import { z } from "zod";
 import type { AgentChild, AgentChildren, Settlement } from "../../agent-children.ts";
 import { COMPUTER_AGENT_TYPE, type AgentType } from "../../agent-types.ts";
 import type { Conversation } from "../../conversation-read.ts";
+import type { WorkerSendRefusal } from "../../responsibility-authority.ts";
 import { defineTool, type Tool, type Tools } from "../../tool.ts";
 
 // What a child never gets, whatever its type file says or the parent
@@ -146,6 +147,7 @@ export interface AgentToolDeps {
 	 * carries (design/agents.md → Computer use) — admitted into the
 	 * allowlist when the type names them. */
 	intrinsicTools: readonly string[];
+	sendAuthority?: ((responsibilityId: string) => WorkerSendRefusal | null) | undefined;
 }
 
 function childSummary(child: AgentChild): Record<string, unknown> {

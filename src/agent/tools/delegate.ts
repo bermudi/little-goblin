@@ -17,6 +17,7 @@ import { attachHintFor } from "../../hc-delegation.ts";
 import { log } from "../../log.ts";
 import { fenceUntrusted } from "./web.ts";
 import { githubIssueSchema } from "../../pr-readiness.ts";
+import type { WorkerSendRefusal } from "../../responsibility-authority.ts";
 
 export interface DelegationPin {
 	address: { chatId: number; threadId: number | null };
@@ -33,6 +34,7 @@ export interface DelegateToolDeps {
 	/** Project-bound turns only: refuses a responsibility outside this
 	 *  project or already closed; null admits the link. */
 	checkResponsibility?: ((id: string) => string | null) | undefined;
+	sendAuthority?: ((responsibilityId: string) => WorkerSendRefusal | null) | undefined;
 }
 
 function view(d: Delegation, reportPath: string): Record<string, unknown> {
@@ -119,6 +121,12 @@ function renderSend(out: SendOutcome): Record<string, unknown> {
 		case "no row":
 			return { error: `no delegation ${out.id}` };
 		case "refused":
+			if (out.why === "responsibility-missing")
+				return { error: `delegation ${out.id}'s responsibility is gone` };
+			if (out.why === "responsibility-inactive")
+				return { error: `delegation ${out.id}'s responsibility is paused or closed — resume it before sending` };
+			if (out.why === "outside-project")
+				return { error: `delegation ${out.id} is linked to another project — send from a conversation in that project` };
 			return {
 				error:
 					out.why === "stopped"
@@ -431,7 +439,7 @@ export const delegateTool = (deps: DelegateToolDeps) => {
 				case "read":
 					return renderRead(await deps.lifecycle.read(input.id, input.lines ?? 60));
 				case "send":
-					return renderSend(await deps.lifecycle.send(input.id, input.text));
+					return renderSend(await deps.lifecycle.send(input.id, input.text, deps.sendAuthority));
 				case "answer":
 					return renderAnswer(await deps.lifecycle.answer(input.id, input.key));
 				case "stop":

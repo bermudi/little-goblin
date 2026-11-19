@@ -13,6 +13,19 @@
 import { z } from "zod";
 import type { ResponsibilityStore } from "./responsibilities.ts";
 import type { Attachment, Responsibility } from "./responsibility-types.ts";
+import { OPEN_STATUSES } from "./responsibility-types.ts";
+
+export type WorkerSendRefusal = "responsibility-missing" | "responsibility-inactive" | "outside-project";
+
+/** Status half of the one check every send to a responsibility-linked worker passes. */
+export function workerSendRefusal(
+	resp: Pick<Responsibility, "status"> | null,
+): "responsibility-missing" | "responsibility-inactive" | null {
+	if (resp === null) return "responsibility-missing";
+	return OPEN_STATUSES.has(resp.status) && resp.status === "active"
+		? null
+		: "responsibility-inactive";
+}
 
 export const authorityStampSchema = z.strictObject({
 	status: z.string(),

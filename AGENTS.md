@@ -121,8 +121,9 @@ lists on our non-goals list. Cite what you took in the design docs.
   can't embed or boot. Changing the embedding model with a non-empty
   bank is a re-index, not an env edit.
 - `delegate` runs named external harnesses on pinned herdr-core
-  (`src/hc.ts`) in a private home-hashed session; the operator can inspect
-  them through hc or in the app. Handover/responsibility stays on T3 Code
+  (`src/hc.ts`) in Goblin's private hc terminals (design/agents.md →
+  `delegate`: external harness runs on hc); the operator can inspect them
+  through hc or in the app. Handover and responsibility stay on T3 Code
   threads (`src/t3.ts`). Verifying each wire contract is the code's job,
   not an agent's: run the gated drift check
   (`GOBLIN_HC_LIVE=1 bun test src/hc.live.test.ts` after core upgrades —

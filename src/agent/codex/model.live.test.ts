@@ -8,7 +8,9 @@
 // writes beyond the requests themselves):
 //   L1 gpt-6.1-terra, high effort: a tool step replays the encrypted
 //      reasoning item; step 1's finish metadata carries a header quota.
-//   L2 gpt-6-luna: an image in a tool result reaches the model (#731).
+//   L2 gpt-6-luna: a number only visible in a normal-font image tool result
+//      reaches the model (#731). Colour quadrants and a 5×7 bitmap font proved
+//      unreliable on luna (2026-11-19); a normal rendered font read correctly.
 //   L3 gpt-6-luna: a hosted web_search turn, replayed into turn 2 from
 //      its stored (codex-namespace) parts, is accepted.
 //   L4 gpt-6-luna: generateText (side-job path) works over the stream.
@@ -20,7 +22,7 @@
 // and fix the edge in model.ts.
 
 import { expect, test } from "bun:test";
-import { deflateSync } from "node:zlib";
+import { readFileSync } from "node:fs";
 import { generateText, stepCountIs, streamText, tool } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
@@ -56,60 +58,6 @@ function observingFetch(): { fetch: FetchLike; seen: Observed } {
 
 const inputOf = (body: Record<string, unknown> | undefined) =>
 	(body?.input ?? []) as Array<Record<string, unknown>>;
-
-// 256×256 RGB PNG, quadrants red / green / blue / yellow (TL, TR, BL,
-// BR) split by a black cross. A 64×64 version without the cross read as
-// "yellow ×4" to gpt-6-luna (2026-11-19) although the bytes arrived intact.
-function quadrantPng(): Uint8Array {
-	const size = 256;
-	const bar = 8;
-	const colours: Array<[number, number, number]> = [
-		[255, 0, 0],
-		[0, 255, 0],
-		[0, 0, 255],
-		[255, 255, 0],
-	];
-	const raw = Buffer.alloc(size * (1 + size * 3));
-	for (let y = 0; y < size; y++) {
-		const row = y * (1 + size * 3);
-		raw[row] = 0;
-		for (let x = 0; x < size; x++) {
-			const onCross = Math.abs(x - size / 2) < bar || Math.abs(y - size / 2) < bar;
-			const [r, g, b] = onCross ? [0, 0, 0] : colours[(y < size / 2 ? 0 : 2) + (x < size / 2 ? 0 : 1)]!;
-			raw.set([r, g, b], row + 1 + x * 3);
-		}
-	}
-	const crcTable = Array.from({ length: 256 }, (_, n) => {
-		let c = n;
-		for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-		return c >>> 0;
-	});
-	const crc = (buf: Buffer) => {
-		let c = 0xffffffff;
-		for (const byte of buf) c = crcTable[(c ^ byte) & 0xff]! ^ (c >>> 8);
-		return (c ^ 0xffffffff) >>> 0;
-	};
-	const chunk = (type: string, data: Buffer) => {
-		const len = Buffer.alloc(4);
-		len.writeUInt32BE(data.length);
-		const body = Buffer.concat([Buffer.from(type, "ascii"), data]);
-		const sum = Buffer.alloc(4);
-		sum.writeUInt32BE(crc(body));
-		return Buffer.concat([len, body, sum]);
-	};
-	const ihdr = Buffer.alloc(13);
-	ihdr.writeUInt32BE(size, 0);
-	ihdr.writeUInt32BE(size, 4);
-	ihdr.set([8, 2, 0, 0, 0], 8);
-	return new Uint8Array(
-		Buffer.concat([
-			Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-			chunk("IHDR", ihdr),
-			chunk("IDAT", deflateSync(raw)),
-			chunk("IEND", Buffer.alloc(0)),
-		]),
-	);
-}
 
 test(
 	"L1: a tool-step request replays the encrypted reasoning item; finish carries the quota (live)",
@@ -167,11 +115,12 @@ test(
 	async () => {
 		if (!LIVE) return;
 		const { fetch: f, seen } = observingFetch();
-		const png = quadrantPng();
+		// The number is unknowable without reading the image.
+		const png: Uint8Array = readFileSync(new URL("./fixtures/number-7241.png", import.meta.url));
 		const result = await generateText({
 			model: codexModel("gpt-6-luna", resolveCodexAuthFile(undefined).path, f, {}),
 			prompt:
-				"Call the screenshot tool exactly once. Then name the colour of each quadrant of the image it returns, as: top-left, top-right, bottom-left, bottom-right. Use plain colour words.",
+				"Call the screenshot tool exactly once. Then reply with only the number shown in the image.",
 			tools: {
 				screenshot: tool({
 					inputSchema: z.object({}),
@@ -195,9 +144,9 @@ test(
 		const url = String(image?.image_url ?? "");
 		expect(url.startsWith("data:image/png;base64,")).toBe(true);
 		expect(Buffer.from(url.slice("data:image/png;base64,".length), "base64").equals(Buffer.from(png))).toBe(true);
-		const answer = result.text.toLowerCase();
-		const named = ["red", "green", "blue", "yellow"].filter((c) => answer.includes(c));
-		expect(named, `colours named: ${named.join(",")}`).toEqual(["red", "green", "blue", "yellow"]);
+		const digits = result.text.replace(/\D/g, "");
+		log.info("codex live image-number observation", { expected: "7241", replyDigits: digits });
+		expect(digits, `digits in reply: ${digits}`).toContain("7241");
 	},
 	180_000,
 );

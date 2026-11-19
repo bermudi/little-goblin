@@ -108,8 +108,8 @@ export interface TurnToolsDeps {
 // catalog answers null and the tool stays absent until the next turn
 // warms it) and the provider pipe carries image tool results
 // (carriesMedia's tool-result position — openai-compatible stringifies
-// them away, codex is text-only there). Either failing means the tool
-// simply does not exist for this child. Exported for tests.
+// them away; codex carries images and PDFs in tool results). Either failing
+// means the tool simply does not exist for this child. Exported for tests.
 export function screenshotCapable(conv: Conversation, cfg: Config): boolean {
 	if (conv.model === null) return false;
 	const { provider, modelId } = splitModelRef(conv.model);

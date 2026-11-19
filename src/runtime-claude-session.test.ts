@@ -257,6 +257,104 @@ describe("claude native sessions (#418)", () => {
 		}
 	});
 
+	test("an unacked steer returns to pending input and leads the successor turn (#777)", async () => {
+		useHome("goblin-claude-unacked-");
+		const store = openStore(tmpDb("goblin-claude-unacked-"));
+		const journal = openTurnJournal(store.db);
+		const sessions = openClaudeSessions(store.db);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const fake = fakeClaude();
+		const bridgeRef: { current: ToolBridge | null } = { current: null };
+		const engineConfig: ClaudeEngineConfig = {
+			query: fake.query,
+			auth: fakeAuth,
+			configRef: {
+				current: {
+					providers: { claude: { kind: "claude-code", auth: "claude-code" } },
+				} as unknown as Config,
+				ttsDown: false,
+			} satisfies ConfigRef,
+			configDir: tmpDir("goblin-claude-unacked-cc-"),
+			bridgeFactory: (d) => {
+				const real = createToolBridge(d);
+				bridgeRef.current = real;
+				return real;
+			},
+		};
+		const claudeEngine: ClaudeEngine = {
+			id: "claude-code",
+			rules: {
+				toolLaunchGate: false,
+				preemptFold: false,
+				contentFilterReask: false,
+				transientRetry: false,
+				contextFill: false,
+			},
+			accepts: isClaudeStep,
+			run: (deps) => driveClaude(engineConfig, deps),
+			compact: async () => "unused",
+			nativeCompact: async () => null,
+		};
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const entered2 = Promise.withResolvers<void>();
+		const gate = Promise.withResolvers<void>();
+		const tools: Tools = {
+			wait: defineTool({
+				description: "waits until released",
+				input: z.object({}),
+				execute: async () => {
+					entered.resolve();
+					await release.promise;
+					return "waited";
+				},
+			}),
+		};
+		const runtime = new Runtime({
+			store,
+			engines: [claudeEngine],
+			buildStep: () => claudeStepFor(CLAUDE_REF),
+			makeTools: () => tools,
+			turnJournal: journal,
+			claudeSessions: sessions,
+		});
+		try {
+			fake.scriptSequence([
+				[
+					{ kind: "tool", name: "wait", input: {}, run: () => bridgeRef.current!.invoke("wait", {}) },
+					{ kind: "stream-text", text: "CLAUDE-ONE" },
+				],
+				[
+					{ kind: "hold", until: gate.promise, onEnter: () => entered2.resolve() },
+					{ kind: "text", text: "CLAUDE-TWO" },
+				],
+			]);
+			const head = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "first ask" }]), head);
+			await entered.promise;
+			const steer = new RecordingSink();
+			runtime.submit(conv, userMessage([{ type: "text", text: "mid-turn steer" }]), steer);
+			const steerSeq = store.lastUserSeq(conv.id)!;
+			release.resolve();
+			expect(await head.done).toEqual({ kind: "completed" });
+			await entered2.promise;
+			const second = fake.calls[1]!;
+			const rec = sessions.get(conv.id, CLAUDE_REF)!;
+			expect(second.options.resume).toBe(rec.sessionId);
+			expect(rec.seenSeq).toBeLessThan(steerSeq);
+			expect(promptTextOf(second)).toContain("mid-turn steer");
+			expect(fake.steers).toHaveLength(1);
+			gate.resolve();
+			expect(await steer.done).toEqual({ kind: "completed" });
+			expect(steer.text).toBe("CLAUDE-TWO");
+			expect(fake.calls).toHaveLength(2);
+			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
+		} finally {
+			await runtime.shutdown();
+			store.close();
+		}
+	});
+
 	test("an AI-SDK turn between two claude turns lands in the delta; the session's own reply does not", async () => {
 		useHome("goblin-claude-session-x-");
 		const store = openStore(tmpDb("goblin-claude-session-x-"));

@@ -548,7 +548,9 @@ decisions and their why:
   at most 2 such follow-ups. A turn with no tool call never claims:
   its steers lead the successor turn as before. The session watermark
   (#418) moves past a folded steer only when no unsent entry sits
-  below it. The #477 steer gate stays off for this engine. No forced
+  below it. A steer is owned from its ack; one never acked returns to
+  pending input and leads the next turn (a duplicate is possible, never
+  a loss). The #477 steer gate stays off for this engine. No forced
   toolChoice cuts: the loop detector and watchdog still journal their
   state but cannot cut this engine; there is no `maxTurns` cap either — the
   no-step-budget ruling below applies to this engine too. Rate-limit and

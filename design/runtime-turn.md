@@ -104,7 +104,11 @@ Every engine follows these mandatory rules:
 
 - Check authority after every vendor event and before the outcome.
 - Run tools only through `deps.tools`, the fenced set.
-- Join steers only through `foldSteers`.
+- Never drop a claimed steer. Claim through `claimSteerBatch`; admit the batch
+  (`admitSteers`) only once the model has it — the request itself on ai-sdk,
+  the CLI's ack on claude-code. A batch the model never received goes back
+  through `returnSteers` before the outcome: to the head of pending input while
+  authority holds, settled `fenced` once it is lost. (#777)
 - Call `saveStep` at every step end.
 - Apply the fallback error hold through `holdsZeroEffectError`.
 - Abort on `deps.signal`.
@@ -249,7 +253,8 @@ tolerance — raw text kept, readable refusal.
 message ids, which are app-controlled and carry no uniqueness
 guarantee: `owned_input_seqs` records the admitted user seqs plus
 every successfully folded steer (one checkpoint write with the steer
-mark, after conversion and the post-await authority check). Each
+mark, after conversion and the post-await authority check). On claude-code,
+that write happens at the CLI's ack (#777). Each
 steer carries its own event seq on the queued member from the append
 that persisted it — the fold records exactly that seq, never a scan
 of the view matching message ids (two steers may share one id; only

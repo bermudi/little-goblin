@@ -267,7 +267,7 @@ export function openSteerLedger(deps: {
 	return { mark: deps.steerMarkSeed, owned: new Set(deps.ownedInputSeqs) };
 }
 
-type SteerFoldDeps<M extends WireMember> = Pick<
+type SteerDeps<M extends WireMember> = Pick<
 	StreamDeps<M>,
 	| "convId"
 	| "live"
@@ -277,38 +277,31 @@ type SteerFoldDeps<M extends WireMember> = Pick<
 	| "claimSteers"
 	| "unrequeueSteers"
 	| "settle"
-	| "noteRunMembers"
-	| "onOwnedInputs"
-	| "saveStep"
-	| "sourceInputSeq"
 >;
 
+/** Steers claimed and converted at a model-call boundary — not yet this run's input. */
+export interface SteerBatch<M extends WireMember> {
+	members: M[];
+	messages: PromptMessage[];
+}
+
 /**
- * Both engines' model-call boundary: claim the waiting steers, convert
- * them, join the ones that converted as members, and persist ownership
- * with the mark. null = authority lost (the claim went back to the
- * queue); otherwise the converted messages, empty when none joined.
+ * Claim and convert waiting steers without admitting them to this run.
+ * null means authority was lost and the claimed members were unrequeued.
  */
-export async function foldSteers<M extends WireMember>(
-	deps: SteerFoldDeps<M>,
-	ledger: SteerLedger,
-	step: number,
+export async function claimSteerBatch<M extends WireMember>(
+	deps: SteerDeps<M>,
 	sdkTools: ToolSet = toToolSet(deps.view.tools),
-): Promise<{ injected: PromptMessage[] } | null> {
-	const { convId, live, members } = deps;
+): Promise<SteerBatch<M> | null> {
+	const { convId } = deps;
 	const steered = deps.claimSteers();
-	if (steered.length === 0) return { injected: [] };
+	if (steered.length === 0) return { members: [], messages: [] };
 	if (!deps.holdsAuthority()) {
 		deps.unrequeueSteers(steered);
 		return null;
 	}
-	const injected: PromptMessage[] = [];
-	// Claimed by event seq, never by message id — ids are
-	// client-controlled and may repeat, so an id match could claim a
-	// steer that failed conversion as owned input. The wake link's
-	// identity is the same seq set.
-	const claimedSeqs = new Set<number>();
-	let admittedCount = 0;
+	const members: M[] = [];
+	const messages: PromptMessage[] = [];
 	for (const t of steered) {
 		try {
 			const converted = await convertSteeredMessage(deps.view, t.message, sdkTools);
@@ -316,11 +309,9 @@ export async function foldSteers<M extends WireMember>(
 				deps.settle(t, { kind: "fenced" });
 				continue;
 			}
-			injected.push(...converted);
-			joinMember(convId, live, members, t);
 			if (t.seq === null) throw new Error("unmaterialized pending turn");
-			claimedSeqs.add(t.seq);
-			admittedCount++;
+			messages.push(...converted);
+			members.push(t);
 		} catch (err) {
 			if (!deps.holdsAuthority()) {
 				deps.settle(t, { kind: "fenced" });
@@ -336,11 +327,29 @@ export async function foldSteers<M extends WireMember>(
 			});
 		}
 	}
-	// Joined members are this run's input now — the wake link
-	// lands before the request does, so a completion can't settle
-	// a delivery it never owned.
+	return { members, messages };
+}
+
+/** Admit a delivered batch as this run's members and persist its owned-input watermark. */
+export function admitSteers<M extends WireMember>(
+	deps: SteerDeps<M> & Pick<StreamDeps<M>, "noteRunMembers" | "onOwnedInputs" | "saveStep" | "sourceInputSeq">,
+	ledger: SteerLedger,
+	step: number,
+	batch: SteerBatch<M>,
+): void {
+	if (batch.members.length === 0) return;
+	// Claimed by event seq, never by message id — ids are client-controlled
+	// and may repeat, so an id match could claim a steer that failed
+	// conversion as owned input. The wake link's identity is the same seq set.
+	const claimedSeqs = new Set<number>();
+	for (const member of batch.members) {
+		joinMember(deps.convId, deps.live, deps.members, member);
+		if (member.seq === null) throw new Error("unmaterialized pending turn");
+		claimedSeqs.add(member.seq);
+	}
+	// The wake link lands on admission — before the request on ai-sdk,
+	// at the CLI's ack on claude-code — and always before the run can complete.
 	if (claimedSeqs.size > 0) deps.noteRunMembers?.([...claimedSeqs]);
-	if (injected.length === 0) return { injected };
 	// Ownership and the mark persist together — a crash after the
 	// fold must still name these steered inputs the attempt's own.
 	// Each seq came through conversion with its event, so only the
@@ -358,11 +367,28 @@ export async function foldSteers<M extends WireMember>(
 		sourceInputSeq: deps.sourceInputSeq?.(),
 	});
 	log.info("steered into turn", {
-		conversation: convId,
-		submits: admittedCount,
+		conversation: deps.convId,
+		submits: batch.members.length,
 		step,
 	});
-	return { injected };
+}
+
+/** Return a batch the model never received to pending input, or fence it if authority is gone. */
+export function returnSteers<M extends WireMember>(
+	deps: Pick<SteerDeps<M>, "convId" | "holdsAuthority" | "unrequeueSteers" | "settle">,
+	batch: SteerBatch<M>,
+	reason: string,
+): void {
+	if (batch.members.length === 0) return;
+	const requeued = deps.holdsAuthority();
+	if (requeued) deps.unrequeueSteers(batch.members);
+	else for (const member of batch.members) deps.settle(member, { kind: "fenced" });
+	log.warn("steers returned unsent", {
+		conversation: deps.convId,
+		steers: batch.members.length,
+		reason,
+		requeued,
+	});
 }
 
 // ---------- the driver ----------
@@ -602,8 +628,8 @@ export async function driveStream<M extends WireMember>(
 				.map((content): PromptMessage => ({ role: "user", content }));
 			const nudge: PromptMessage[] = cut !== null ? [{ role: "user", content: CUT_NUDGE[cut] }] : [];
 			const base = stubSupersededFrames(stepMessages);
-			const folded = await foldSteers(deps, steers, stepNumber, sdkTools);
-			if (folded === null) {
+			const batch = await claimSteerBatch(deps, sdkTools);
+			if (batch === null) {
 				if (
 					base === stepMessages &&
 					warnMsgs.length === 0 &&
@@ -618,7 +644,8 @@ export async function driveStream<M extends WireMember>(
 				notePrompt(outbound, stepNumber);
 				return { messages: outbound, ...(forced ? { toolChoice: "none" as const } : {}) };
 			}
-			const { injected } = folded;
+			admitSteers(deps, steers, stepNumber, batch);
+			const { messages: injected } = batch;
 			if (injected.length === 0) {
 				if (forced || warnMsgs.length > 0 || contextNote.length > 0 || base !== stepMessages) {
 					const outbound = [...base, ...warnMsgs, ...contextNote, ...nudge];

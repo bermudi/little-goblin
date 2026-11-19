@@ -1,7 +1,6 @@
 // Delegation — the coding agents goblin may hand work to and the
 // role → agent defaults the delegate tool uses when a call names no
-// harness. Machine targets stay file-only: their herdr profiles are
-// host-bound, and the server merge preserves them.
+// harness. Each agent is a herdr kind plus native CLI args.
 
 import { useState } from "react";
 import type { DelegationRoleDraft, HarnessDraft } from "./settingsDraft.ts";
@@ -53,7 +52,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 			<div className="card">
 				<Row
 					label="Delegate to coding agents"
-					cap="Off turns the delegate tool off. Machine targets stay in goblin.json5."
+					cap="Off turns the delegate tool off."
 				>
 					<Switch
 						on={del !== null}

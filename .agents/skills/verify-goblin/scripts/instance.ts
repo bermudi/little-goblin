@@ -13,7 +13,7 @@
 //   bun run try list            show every instance from this machine
 
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { z } from "zod";
@@ -34,6 +34,7 @@ const stateSchema = z.object({
 	url: z.string(),
 	goblinPid: z.number().int().positive(),
 	fakePid: z.number().int().positive(),
+	herdrPid: z.number().int().positive().optional(),
 });
 type State = z.infer<typeof stateSchema>;
 
@@ -148,13 +149,15 @@ function seedHome(home: string, fakePort: number): void {
 			fake: { kind: "openai-compatible", baseUrl: `http://127.0.0.1:${fakePort}/v1`, auth: "fake" },
 		},
 		model: "fake/verify-model",
-		// GOBLIN_VERIFY_DELEGATION=1 mounts the delegate/responsibility
-		// tools against the real t3 CLI (issue #608's verification): the
-		// codex/gpt-6-luna harness is the operator-named test pair.
+		// GOBLIN_VERIFY_DELEGATION=1 mounts delegate on a throwaway Herdr
+		// server (issue #728's verification): the codex/gpt-6-luna pair is
+		// the operator-named test harness. responsibility stays on T3 —
+		// the fake model's [handover] marker needs a real T3 project, so
+		// only the delegate leg is exercised here.
 		...(process.env.GOBLIN_VERIFY_DELEGATION === "1"
 			? {
 					delegation: {
-						harnesses: { codex: { provider: "codex", model: "gpt-6-luna" } },
+						harnesses: { codex: { kind: "codex", args: ["--model", "gpt-6-luna"] } },
 						defaults: { default: "codex" },
 					},
 				}
@@ -217,6 +220,18 @@ function seedHome(home: string, fakePort: number): void {
 	writeFileSync(join(home, "auth.jsonl"), `${authLines.join("\n")}\n`, {
 		mode: 0o600,
 	});
+	// A delegated codex pane runs under the throwaway HOME — it needs the
+	// operator's codex sign-in to reach gpt-6-luna. Copy only auth.json;
+	// trust seeding owns config.toml.
+	if (process.env.GOBLIN_VERIFY_DELEGATION === "1") {
+		const codexAuth = join(homedir(), ".codex", "auth.json");
+		if (existsSync(codexAuth)) {
+			const dest = join(home, "user-home", ".codex");
+			mkdirSync(dest, { recursive: true });
+			copyFileSync(codexAuth, join(dest, "auth.json"));
+			chmodSync(join(dest, "auth.json"), 0o600);
+		}
+	}
 }
 
 const REAL_DB = join(
@@ -297,6 +312,35 @@ function stop(pid: number, marker: string): void {
 	if (ownsPid(pid, marker)) process.kill(pid, "SIGTERM");
 }
 
+// GOBLIN_VERIFY_DELEGATION=1 gives delegate its own Herdr server: a
+// scratch XDG_CONFIG_HOME keeps every socket and pane inside the
+// instance home, and HERDR_SOCKET_PATH on the goblin child routes the
+// CLI there — the operator's sessions are never touched.
+function startHerdr(home: string, name: string): { pid: number; apiSock: string; clientSock: string } {
+	const xdg = join(home, "herdr-xdg");
+	const session = `verify-${name}`.slice(0, 48);
+	mkdirSync(xdg, { recursive: true });
+	const proc = Bun.spawn(["herdr", "--session", session, "server"], {
+		cwd: home,
+		env: {
+			PATH: process.env.PATH ?? "/usr/bin",
+			HOME: join(home, "user-home"),
+			XDG_CONFIG_HOME: xdg,
+			GOBLIN_VERIFY_INSTANCE: name,
+		},
+		stdin: "ignore",
+		stdout: Bun.file(join(home, "herdr-server.log")),
+		stderr: Bun.file(join(home, "herdr-server.err")),
+	});
+	proc.unref();
+	const dir = join(xdg, "herdr", "sessions", session);
+	return {
+		pid: proc.pid,
+		apiSock: join(dir, "herdr.sock"),
+		clientSock: join(dir, "herdr-client.sock"),
+	};
+}
+
 async function upUnlocked(name: string, real: { conversation: string | null } | null): Promise<void> {
 	const current = checkoutIdentity();
 	const existing = readState(name);
@@ -310,9 +354,13 @@ async function upUnlocked(name: string, real: { conversation: string | null } | 
 			note(`${name} restarting: checkout identity changed`);
 			stop(existing.goblinPid, `GOBLIN_VERIFY_INSTANCE=${name}`);
 			stop(existing.fakePid, `GOBLIN_VERIFY_INSTANCE=${name}`);
+			if (existing.herdrPid !== undefined)
+				stop(existing.herdrPid, `GOBLIN_VERIFY_INSTANCE=${name}`);
 			await waitFor(`${name} processes to stop`, () =>
 				ownsPid(existing.goblinPid, `GOBLIN_VERIFY_INSTANCE=${name}`) ||
-				ownsPid(existing.fakePid, `GOBLIN_VERIFY_INSTANCE=${name}`)
+				ownsPid(existing.fakePid, `GOBLIN_VERIFY_INSTANCE=${name}`) ||
+				(existing.herdrPid !== undefined &&
+					ownsPid(existing.herdrPid, `GOBLIN_VERIFY_INSTANCE=${name}`))
 					? null
 					: true,
 			);
@@ -347,6 +395,15 @@ async function upUnlocked(name: string, real: { conversation: string | null } | 
 
 	seedHome(home, fakePort);
 	if (real !== null) copyRealDb(home);
+	let herdr: { pid: number; apiSock: string; clientSock: string } | null = null;
+	if (process.env.GOBLIN_VERIFY_DELEGATION === "1") {
+		herdr = startHerdr(home, name);
+		await waitFor("herdr server socket", () =>
+			existsSync(herdr!.apiSock) ? true : null,
+		);
+		env.HERDR_SOCKET_PATH = herdr.apiSock;
+		env.HERDR_CLIENT_SOCKET_PATH = herdr.clientSock;
+	}
 	const logPath = join(home, "goblin.stdout");
 	const goblin = Bun.spawn(["bun", "--no-env-file", join(REPO, "src/index.ts")], {
 		cwd: home,
@@ -372,6 +429,7 @@ async function upUnlocked(name: string, real: { conversation: string | null } | 
 			url,
 			goblinPid: goblin.pid,
 			fakePid: fake.pid,
+			...(herdr !== null ? { herdrPid: herdr.pid } : {}),
 		};
 		writeFileSync(stateFile(name), `${JSON.stringify(state, null, 2)}\n`);
 		note(`stop it with: bun run try down ${name}`);
@@ -381,6 +439,7 @@ async function upUnlocked(name: string, real: { conversation: string | null } | 
 	} catch (error) {
 		stop(goblin.pid, marker);
 		stop(fake.pid, marker);
+		if (herdr !== null) stop(herdr.pid, marker);
 		const stderr = readFileSync(join(home, "goblin.stderr"), "utf8").slice(-2000);
 		fail(`${String(error)}\nscratch kept at ${home}\n${stderr}`);
 	}
@@ -405,6 +464,10 @@ async function status(name: string): Promise<void> {
 	const checks: [string, boolean][] = [
 		["goblin process is ours", ownsPid(state.goblinPid, marker)],
 		["fake model process is ours", ownsPid(state.fakePid, marker)],
+		[
+			"herdr server is ours",
+			state.herdrPid === undefined || ownsPid(state.herdrPid, marker),
+		],
 		["home is not the real home", resolve(state.home) !== join(homedir(), "goblin")],
 		["checkout path, commit, and dirty state match", startupAction(state, current) === "reuse"],
 		["app and API answer", await usable(state.url)],
@@ -422,6 +485,7 @@ function down(name: string): void {
 	if (state !== null) {
 		stop(state.goblinPid, marker);
 		stop(state.fakePid, marker);
+		if (state.herdrPid !== undefined) stop(state.herdrPid, marker);
 	}
 	run(["trash", home], SCRATCH);
 	note(`stopped ${name}; evidence kept in ${evidenceDir(name)}`);

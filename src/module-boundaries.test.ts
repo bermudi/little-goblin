@@ -306,6 +306,10 @@ function repoPath(file: string): string {
 // pinning its argv) outside src/t3.ts means a second wire owner.
 const T3_SPAWN = /(?:spawnProc|Bun\.spawn|execSync|exec)\((?:[^)]*["'])t3["']/;
 
+// Same rule for the herdr CLI: src/herdr.ts owns the wire; domain
+// modules see its types, never its argv.
+const HERDR_SPAWN = /(?:spawnProc|Bun\.spawn|execSync|exec)\(\s*\[?\s*["']herdr["']/;
+
 describe("module boundaries", () => {
 	test("AI SDK import matcher recognizes only AI SDK package specifiers", () => {
 		for (const specifier of ["ai", "@ai-sdk/openai", "ai/rsc"]) {
@@ -391,6 +395,16 @@ describe("module boundaries", () => {
 			.filter((name) => name !== "src/t3.ts" && name !== "src/t3.live.test.ts")
 			.filter((name) => !name.endsWith(".test.ts"))
 			.filter((name) => T3_SPAWN.test(readFileSync(join(ROOT, name), "utf8")));
+		expect(offenders).toEqual([]);
+	});
+
+	test("the herdr CLI is spawned only by src/herdr.ts", () => {
+		const offenders = walk(ROOT)
+			.filter((file) => !file.split(sep).includes("node_modules"))
+			.map(repoPath)
+			.filter((name) => name !== "src/herdr.ts" && name !== "src/herdr.live.test.ts")
+			.filter((name) => !name.endsWith(".test.ts"))
+			.filter((name) => HERDR_SPAWN.test(readFileSync(join(ROOT, name), "utf8")));
 		expect(offenders).toEqual([]);
 	});
 

@@ -111,9 +111,11 @@ function isBlockPage(title: string, text: string): boolean {
 
 // POST api.fetch.tinyfish.ai (docs.tinyfish.ai/tinyfetch): per-URL
 // failures land in errors[] on a 200 — never an HTTP error — so a
-// blocked page must be read out of the body. ttl 0 forces a live
-// fetch: the bench measures the fetcher, not its cache. Free tier is
-// 1,000 urls/day, so a full pass costs 7 of them.
+// blocked page must be read out of the body. No ttl: production would
+// accept TinyFish's cache too, and the bench scores what the tool
+// would get — a cache hit IS a fetch that worked. Measured 2026-11-19:
+// ttl:0 (live only) turns the reuters ok into bot_blocked, and the
+// MCP surface behaves identically — one backend, one cache.
 const TINYFETCH_ENDPOINT = "https://api.fetch.tinyfish.ai";
 const TIMEOUT_MS = 30_000;
 
@@ -122,7 +124,7 @@ async function tinyfetchExtract(url: string, key: string): Promise<Fetched> {
 		"tinyfish",
 		TINYFETCH_ENDPOINT,
 		{ "X-API-Key": key },
-		{ urls: [url], format: "markdown", ttl: 0 },
+		{ urls: [url], format: "markdown" },
 		TIMEOUT_MS,
 	);
 	const body = data as { results?: unknown[]; errors?: unknown[] };
@@ -160,13 +162,12 @@ function tinyfishPlan(): Plan {
 	};
 }
 
-// tinyfish-mcp: the same account through its MCP surface —
-// fetch_content renders pages in a real browser, so it beats the REST
-// endpoint on bot-protected pages (measured 2026-11-19: REST said
-// bot_blocked on reuters.com; fetch_content got the article). Driven
-// through the operator's mcporter wrapper, which injects the key into
-// the child env — no auth.jsonl record and the key never enters this
-// process.
+// tinyfish-mcp: the same account through its MCP surface. Same backend
+// as the REST endpoint — measured 2026-11-19: ttl=0 returns bot_blocked
+// on reuters identically, and default calls return byte-identical
+// cached pages. Kept as its own row because the wire differs (mcporter
+// wrapper injects the key into the child env — no auth.jsonl record
+// and the key never enters this process) and to catch any divergence.
 const MCP_TIMEOUT_MS = 75_000;
 const MCP_OUTPUT_CAP = 8 * 1024 * 1024;
 
@@ -176,49 +177,86 @@ function tinyfishMcpPlan(): Plan {
 		candidate: true,
 		via: " (via mcporter)",
 		exec: async (_auth, url) => {
-			const proc = spawnProc([
-				"mcporter",
-				"call",
-				"tinyfish.fetch_content",
-				`urls=["${url}"]`,
-				"format=markdown",
-				"--timeout",
-				"60000",
-			]);
-			const out = await boundedRun(proc, {
-				timeoutMs: MCP_TIMEOUT_MS,
-				maxOutput: MCP_OUTPUT_CAP,
-			});
-			if (out.timedOut) throw new Error("tinyfish-mcp: mcporter call timed out");
-			if (out.exitCode !== 0) {
-				throw new Error(
-					`tinyfish-mcp: mcporter exited ${out.exitCode} — ${clampChars(out.stderr.trim(), 120)}`,
-				);
-			}
-			const body = JSON.parse(out.stdout) as { results?: unknown[]; errors?: unknown[] };
-			const row = (body.results ?? [])[0] as Record<string, unknown> | undefined;
-			const failure = (body.errors ?? [])[0] as Record<string, unknown> | undefined;
-			if (!row) {
-				throw new Error(
-					`tinyfish-mcp: extraction failed — ${str(failure?.error) || "no result"}`,
-				);
-			}
-			// The MCP wire carries no HTTP status; status is report-only.
-			return scored(
-				{
-					title: str(row.title),
-					text: str(row.text),
-					meta: { status: 200, contentType: "", bytes: out.stdout.length },
-				},
+			const extracted = await fetchViaSpawn(
+				[
+					"mcporter",
+					"call",
+					"tinyfish.fetch_content",
+					`urls=["${url}"]`,
+					"format=markdown",
+					"--timeout",
+					"60000",
+				],
 				"tinyfish-mcp",
 			);
+			return scored(extracted, "tinyfish-mcp");
 		},
+	};
+}
+
+// tinyfish-cli: @tiny-fish/cli `fetch content get` — the SDK calls the
+// same api.fetch.tinyfish.ai endpoint with default caching (no ttl
+// flag exists on the CLI). Its score should match `tinyfish` exactly;
+// any gap is CLI-only behavior worth knowing about. The key rides
+// pass-keys' mcporter profile into the CLI's env.
+function tinyfishCliPlan(): Plan {
+	return {
+		kind: "tinyfish-cli",
+		candidate: true,
+		via: " (via pass-keys+bunx)",
+		exec: async (_auth, url) => {
+			const extracted = await fetchViaSpawn(
+				[
+					"pass-keys",
+					"run",
+					"mcporter",
+					"--",
+					"bunx",
+					"@tiny-fish/cli@0.59.0",
+					"fetch",
+					"content",
+					"get",
+					url,
+				],
+				"tinyfish-cli",
+			);
+			return scored(extracted, "tinyfish-cli");
+		},
+	};
+}
+
+// Spawn-and-parse for the CLI/MCP candidates: both answer the same
+// {results, errors} envelope on stdout. The wire carries no HTTP
+// status — meta.status is report-only.
+async function fetchViaSpawn(argv: string[], kind: string): Promise<Fetched> {
+	const proc = spawnProc(argv);
+	const out = await boundedRun(proc, {
+		timeoutMs: MCP_TIMEOUT_MS,
+		maxOutput: MCP_OUTPUT_CAP,
+	});
+	if (out.timedOut) throw new Error(`${kind}: call timed out`);
+	if (out.exitCode !== 0) {
+		throw new Error(
+			`${kind}: exited ${out.exitCode} — ${clampChars(out.stderr.trim(), 120)}`,
+		);
+	}
+	const body = JSON.parse(out.stdout) as { results?: unknown[]; errors?: unknown[] };
+	const row = (body.results ?? [])[0] as Record<string, unknown> | undefined;
+	const failure = (body.errors ?? [])[0] as Record<string, unknown> | undefined;
+	if (!row) {
+		throw new Error(`${kind}: extraction failed — ${str(failure?.error) || "no result"}`);
+	}
+	return {
+		title: str(row.title),
+		text: str(row.text),
+		meta: { status: 200, contentType: "", bytes: out.stdout.length },
 	};
 }
 
 const CANDIDATES = {
 	tinyfish: tinyfishPlan,
 	"tinyfish-mcp": tinyfishMcpPlan,
+	"tinyfish-cli": tinyfishCliPlan,
 } as const;
 
 const BENCH_KINDS: readonly string[] = [...fetchKinds, ...Object.keys(CANDIDATES)];

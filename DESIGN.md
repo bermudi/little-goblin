@@ -413,6 +413,9 @@ and the fix is a deliberate decision (adopt, or convert at the edge), not
 silent drift in saved conversations. `module-boundaries.test.ts` fences
 those type names out of `ai` everywhere else. SDK *functions* still run on
 these types directly.
+Model-facing prompt messages are goblin types too (`src/prompt-message.ts`,
+compared to the SDK only in `src/prompt-message.test.ts`); engines receive
+`PromptMessage[]` and convert at their own edge.
 Cache telemetry and provider failures carry goblin `Usage`, converted from provider usage once at the AI SDK edge (`src/agent/v4-usage.ts`).
 
 **Goblin owns its tool definitions** (#595). Tools are `defineTool`s in

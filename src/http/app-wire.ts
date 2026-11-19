@@ -422,7 +422,7 @@ export interface AppWindowView {
 	} | null;
 	system: string | null;
 	tools: AppWindowTool[] | null;
-	/** The captured prompt as sent — ModelMessage-shaped with media bytes
+	/** The captured prompt as sent — PromptMessage-shaped with media bytes
 	 *  stubbed to `{omitted: "bytes", count}` (window-capture.ts), so
 	 *  typed loose: a stub is deliberately not a DataContent. */
 	messages: unknown[] | null;

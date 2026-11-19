@@ -449,7 +449,7 @@ export function WindowView({
 
 	const stale = view.capturedModel !== null && view.capturedModel !== view.model;
 	const q = query.trim().toLowerCase();
-	// The payload is ModelMessage-shaped with media stubbed (see the wire
+	// The payload is PromptMessage-shaped with media stubbed (see the wire
 	// type); every field below is read defensively.
 	const isMessage = (m: unknown): m is { role: string; content: unknown } =>
 		typeof m === "object" && m !== null && typeof (m as { role?: unknown }).role === "string";

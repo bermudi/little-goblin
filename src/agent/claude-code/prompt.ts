@@ -4,7 +4,7 @@
 // function of the view: the same events must serialize to the same
 // bytes, and turn N+1's prompt is turn N's prompt with the new exchange
 // appended — the prefix-stability invariant the API lane gets from
-// append-only ModelMessages, preserved here by construction.
+// append-only PromptMessages, preserved here by construction.
 //
 // Media rides as Anthropic content blocks at its transcript position
 // (the view only inlines what this provider's carries() gate admitted);
@@ -12,7 +12,7 @@
 // without their signatures); old tool calls render as compact records
 // with a stable truncation marker.
 
-import type { ModelMessage } from "ai";
+import type { PromptMessage } from "../../prompt-message.ts";
 import type { PromptContent } from "./translate.ts";
 
 const TOOL_RESULT_CAP = 4000;
@@ -105,10 +105,10 @@ function textOf(part: PartLike): string {
 	return typeof part.text === "string" ? part.text : "";
 }
 
-// One ModelMessage → transcript blocks. Role markers are fixed strings;
+// One PromptMessage → transcript blocks. Role markers are fixed strings;
 // every choice here is deterministic so the bytes never move for the
 // same history.
-function messageBlocks(msg: ModelMessage, out: PromptContent["blocks"]): void {
+function messageBlocks(msg: PromptMessage, out: PromptContent["blocks"]): void {
 	const content = typeof msg.content === "string" ? [msg.content] : (msg.content as PartLike[]);
 	switch (msg.role) {
 		case "system":
@@ -196,7 +196,7 @@ export function safeJson(value: unknown): string {
 const TRAILER =
 	"The transcript above is this conversation's history so far, newest last. You are goblin; answer the operator's latest message(s) as the next goblin reply.";
 
-export function serializePrompt(messages: readonly ModelMessage[]): PromptContent {
+export function serializePrompt(messages: readonly PromptMessage[]): PromptContent {
 	const blocks: PromptContent["blocks"] = [];
 	for (const msg of messages) messageBlocks(msg, blocks);
 	blocks.push({ kind: "text", text: TRAILER });
@@ -213,7 +213,7 @@ export function promptText(prompt: PromptContent): string {
 
 // A steer folded mid-turn: the same transcript rendering, no trailer —
 // the CLI's own session already holds everything before it.
-export function serializeSteer(messages: readonly ModelMessage[]): PromptContent {
+export function serializeSteer(messages: readonly PromptMessage[]): PromptContent {
 	const blocks: PromptContent["blocks"] = [];
 	for (const msg of messages) messageBlocks(msg, blocks);
 	return { blocks };

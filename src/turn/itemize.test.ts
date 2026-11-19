@@ -5,7 +5,7 @@ import { defineTool } from "../tool.ts";
 import { z } from "zod";
 import { buildSystemPrompt, PROMPT_SECTIONS } from "../agent/prompt.ts";
 import { paths } from "../home-layout.ts";
-import type { ModelMessage } from "ai";
+import type { PromptMessage } from "../prompt-message.ts";
 import { useHome } from "../testkit.ts";
 import { estimateHistoryChars, measurePrompt, splitSystemPrompt } from "./itemize.ts";
 
@@ -123,7 +123,7 @@ describe("measurePrompt", () => {
 	});
 
 	test("tool definitions cost more than their descriptions alone", () => {
-		const messages: ModelMessage[] = [{ role: "user", content: "hi" }];
+		const messages: PromptMessage[] = [{ role: "user", content: "hi" }];
 		const bare = measurePrompt("sys", {}, messages);
 		const withTool = measurePrompt("sys", { probe }, messages);
 		expect(bare.toolDefs).toBe(0);
@@ -131,7 +131,7 @@ describe("measurePrompt", () => {
 	});
 
 	test("tool-call inputs and tool results land in the history subset", () => {
-		const messages: ModelMessage[] = [
+		const messages: PromptMessage[] = [
 			{ role: "user", content: "hello" },
 			{
 				role: "assistant",
@@ -161,7 +161,7 @@ describe("measurePrompt", () => {
 	});
 
 	test("binary media is charged at its base64 size, not JSON-of-bytes", () => {
-		const messages: ModelMessage[] = [
+		const messages: PromptMessage[] = [
 			{
 				role: "user",
 				content: [
@@ -225,7 +225,7 @@ describe("measurePrompt", () => {
 	});
 
 	test("segments compose: system split + tools + history", () => {
-		const messages: ModelMessage[] = [{ role: "user", content: "hi" }];
+		const messages: PromptMessage[] = [{ role: "user", content: "hi" }];
 		const s = measurePrompt(fullSystem, { probe }, messages);
 		expect(s.identity + s.environment + s.project + s.agentsMd + s.userMd + s.skills).toBe(
 			fullSystem.length,
@@ -238,7 +238,7 @@ describe("measurePrompt", () => {
 describe("content tool outputs", () => {
 	test("file parts charge media cost, never jsonLen of the bytes", () => {
 		const png = new Uint8Array(900_000);
-		const messages: ModelMessage[] = [
+		const messages: PromptMessage[] = [
 			{
 				role: "tool",
 				content: [

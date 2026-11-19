@@ -2,7 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { convertToModelMessages, type ModelMessage } from "ai";
+import { convertToModelMessages } from "ai";
+import type { PromptMessage } from "../prompt-message.ts";
 import type { Message } from "../message.ts";
 import { attachmentPart } from "../agent/attachments.ts";
 import { summaryMessage } from "../conversation-events.ts";
@@ -31,7 +32,7 @@ const recall = (anchorSeq: number, content: string): RecallContext => ({
 	content,
 	sourceIds: [`e${anchorSeq}`],
 });
-const texts = (view: ModelMessage[]): string[] =>
+const texts = (view: PromptMessage[]): string[] =>
 	view.flatMap((m) =>
 		typeof m.content === "string"
 			? [m.content]
@@ -55,7 +56,7 @@ const build = async (
 	current: RecallContext | null = null,
 	partial: Message | null = null,
 	summarySeq: number | null = null,
-): Promise<ModelMessage[]> =>
+): Promise<PromptMessage[]> =>
 	buildModelView(ctx, {
 		entries: entriesList,
 		prior,

@@ -1,4 +1,4 @@
-import { generateText, isStepCount, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
+import { generateText, isStepCount, type LanguageModel, type ToolSet } from "ai";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import type { MediaPosition } from "../agent/attachments.ts";
 import { keptTailInstruction, type PrefixSummarizer } from "../agent/compaction.ts";
@@ -6,6 +6,7 @@ import type { Conversation } from "../conversation-read.ts";
 import type { ConversationStore } from "../conversation.ts";
 import type { MemoryTurnDeps } from "../memory/mod.ts";
 import type { Message } from "../message.ts";
+import type { PromptMessage } from "../prompt-message.ts";
 import { buildModelView, type ViewContext } from "./view.ts";
 import { resolveSkillRef } from "../agent/skill-inject.ts";
 
@@ -208,9 +209,9 @@ function makePrefixRequest(
 				ownedSeqs: [],
 				assertAuthority: input.assertAuthority,
 			});
-			const requestMessages: ModelMessage[] = [
+			const requestMessages: PromptMessage[] = [
 				...messages,
-				...turns.map((turn) => ({ role: turn.role, content: turn.text } as ModelMessage)),
+				...turns.map((turn): PromptMessage => ({ role: turn.role, content: turn.text })),
 			];
 			const result = await generateText({
 				model: step.model,

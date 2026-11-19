@@ -181,6 +181,10 @@ session.
   v2 reports from a TUI plugin (`deploy/hc-hooks/tui.js`, loaded through
   `OPENCODE_CLI_CONFIG_CONTENT`); its server plugin path cannot tell
   which terminal a session belongs to (herdr's v2 integration, 2026-11-19).
+  The TUI has no model flag and `opencode mini` loads no plugins, so it
+  never reports a status (probe, 2026-11-19, #742). A harness's
+  `--model`/`-m` in `args` therefore moves into that same per-run config
+  as `model`; goblin still never picks one.
 - **Verbs:** start waits for the first status before sending the prompt;
   send waits for `working`; the watcher polls status until settlement;
   answer sends a key only after a live `blocked` preflight; stop kills

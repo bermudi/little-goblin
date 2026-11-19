@@ -386,6 +386,9 @@ delegation: {
 
 Each harness is a supported harness `kind` plus native CLI `args` — the model
 goes in `args` when the agent needs one; goblin never invents either.
+OpenCode's TUI has no model flag: write `--model <provider/model>` in its
+`args` anyway, and goblin passes it to OpenCode through the run's config.
+Don't use `opencode mini`, which can't report status to goblin.
 A default naming an undeclared harness is a config error. An explicit
 harness in a `delegate` call always wins over a role. `askFirst: true`
 on a harness makes goblin ask you before each use — the delegate tool

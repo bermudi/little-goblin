@@ -215,8 +215,24 @@ export function makeHarnessInvocation(input: {
 		// A shared background service would mix in other sessions' events;
 		// --standalone gives the run a private server. The hooks directory is
 		// the plugin: OpenCode v2 loads its tui.js inside this terminal.
-		if (!input.args.includes("--standalone")) argv.push("--standalone");
-		env.OPENCODE_CLI_CONFIG_CONTENT = JSON.stringify({ plugins: [input.hooksDir] });
+		// The TUI rejects --model and `mini` loads no plugins (#742), so a
+		// configured --model/-m moves into the per-run config instead.
+		let model: string | undefined;
+		const args: string[] = [];
+		for (let i = 0; i < input.args.length; i++) {
+			const arg = input.args[i]!;
+			if (arg.startsWith("--model=")) model = arg.slice("--model=".length);
+			else if (arg === "--model" || arg === "-m") {
+				model = input.args[++i];
+				if (model === undefined) throw new Error(`opencode harness: ${arg} needs a model`);
+			} else args.push(arg);
+		}
+		argv.splice(1, input.args.length, ...args);
+		if (!args.includes("--standalone")) argv.push("--standalone");
+		env.OPENCODE_CLI_CONFIG_CONTENT = JSON.stringify({
+			plugins: [input.hooksDir],
+			...(model === undefined ? {} : { model }),
+		});
 	} else if (input.kind === "devin") {
 		argv.push("--config", writeDevinConfig(stateDir, input.hooksDir, input.terminalName));
 	}

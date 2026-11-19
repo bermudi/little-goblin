@@ -119,4 +119,43 @@ describe("makeHarnessInvocation", () => {
 			}
 		}
 	});
+
+	test("opencode's --model moves into its per-run config: the TUI has no model flag (#742)", () => {
+		const bin = tempDir();
+		writeFileSync(join(bin, "opencode"), "#!/bin/sh\n");
+		chmodSync(join(bin, "opencode"), 0o755);
+		const saved = process.env.PATH;
+		process.env.PATH = bin;
+		try {
+			const run = (args: string[]) =>
+				makeHarnessInvocation({
+					kind: "opencode",
+					args,
+					cwd: bin,
+					terminalName: "g1-x",
+					goblinHome: tempDir(),
+					hooksDir: "/var/lib/goblin/bin/hc-hooks",
+				});
+			for (const args of [
+				["--auto", "--model", "opencode/deepseek-v4.1-flash-free"],
+				["--auto", "-m", "opencode/deepseek-v4.1-flash-free"],
+				["--auto", "--model=opencode/deepseek-v4.1-flash-free"],
+			]) {
+				const { argv, env } = run(args);
+				expect(argv).toEqual([join(bin, "opencode"), "--auto", "--standalone"]);
+				expect(JSON.parse(env.OPENCODE_CLI_CONFIG_CONTENT!)).toEqual({
+					plugins: ["/var/lib/goblin/bin/hc-hooks"],
+					model: "opencode/deepseek-v4.1-flash-free",
+				});
+			}
+			const bare = run(["--auto"]);
+			expect(JSON.parse(bare.env.OPENCODE_CLI_CONFIG_CONTENT!)).toEqual({
+				plugins: ["/var/lib/goblin/bin/hc-hooks"],
+			});
+			expect(() => run(["--model"])).toThrow("--model needs a model");
+		} finally {
+			if (saved === undefined) delete process.env.PATH;
+			else process.env.PATH = saved;
+		}
+	});
 });

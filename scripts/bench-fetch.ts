@@ -32,6 +32,14 @@
 // wire and a "may be cached" note. local needs no flag — it never
 // caches.
 //
+// JS_PROBES are URLs whose text is mostly injected client-side
+// (example.com's /s.js adds five translations; quotes.toscrape.com/js
+// renders every quote via fetch). The bench baselines each probe's raw
+// HTML text and marks cells +js when a provider's extraction clearly
+// exceeds it — proof it ran JS — or −js when it only saw the shell.
+// The control (example.com) is scored with MIN_EXTRACT off; probes keep
+// the thin rule. This resolves #773.
+//
 // One vendor extraction call per keyed provider per URL (billed).
 // GOBLIN_HOME is sandboxed to a tmp dir unless the operator set it —
 // PDF/cache writes from the probe stay out of the real state dir, while
@@ -70,7 +78,12 @@ import {
 import { goblinHome } from "../src/goblin-home.ts";
 import { setLogStream } from "../src/log.ts";
 import { boundedRun, spawnProc } from "../src/proc.ts";
-import { type BenchCell, writeRunRecord } from "./bench-fetch-record.ts";
+import {
+	applyProbeRules,
+	type BenchCell,
+	JS_PROBES,
+	writeRunRecord,
+} from "./bench-fetch-record.ts";
 
 // Capture real-home paths BEFORE sandboxing: goblinHome() reads the env
 // lazily, so any paths.* call after the override would point at tmp.
@@ -91,9 +104,10 @@ type Fetched = Exclude<ExtractedOrRejected, { error: string }>;
 const MIN_EXTRACT = 200;
 
 // Targets picked for bot-detection hardness, not content. example.com
-// is the control: a provider failing it is broken, not blocked.
+// is the control (MIN_EXTRACT off there); probe URLs keep the thin rule.
 const DEFAULT_URLS = [
 	"https://example.com/",
+	"https://quotes.toscrape.com/js/",
 	"https://www.reuters.com/",
 	"https://archive.ph/",
 	"https://www.wsj.com/",
@@ -153,6 +167,18 @@ function isBlockPage(title: string, text: string): boolean {
 // MCP surface behaves identically — one backend, one cache.
 const TINYFETCH_ENDPOINT = "https://api.fetch.tinyfish.ai";
 const TIMEOUT_MS = 30_000;
+
+// Raw-HTML text length of a probe URL — the no-JS baseline.
+async function rawTextChars(url: string): Promise<number> {
+	const res = await fetchOk("probe", url, {}, TIMEOUT_MS);
+	const html = await res.text();
+	return html
+		.replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
+		.replace(/<!--[\s\S]*?-->/g, " ")
+		.replace(/<[^>]*>/g, " ")
+		.replace(/\s+/g, " ")
+		.trim().length;
+}
 
 async function tinyfetchExtract(
 	url: string,
@@ -563,6 +589,7 @@ async function runCell(
 	auth: AuthStore,
 	url: string,
 	live: boolean,
+	jsBaseline: number | undefined,
 ): Promise<Cell> {
 	if (plan.skip !== undefined) return { outcome: "skipped", note: plan.skip };
 	const started = performance.now();
@@ -598,6 +625,7 @@ async function runCell(
 				textPreview: extracted.text.slice(0, TEXT_PREVIEW),
 			};
 		}
+		cell = applyProbeRules(cell, url, jsBaseline);
 		if (live) {
 			const caveat = plan.execLive
 				? plan.liveNote
@@ -650,9 +678,11 @@ function printCell(kind: string, cell: Cell): void {
 		cell.ms !== undefined
 			? `${(cell.ms / 1000).toFixed(1).padStart(6)}s`
 			: "       ";
+	const jsMark =
+		cell.jsExec === undefined ? "    " : cell.jsExec ? " +js" : " -js";
 	const note = cell.note ? `  ${clampChars(cell.note, 90)}` : "";
 	console.log(
-		`  ${kind.padEnd(KIND_W)}${cell.outcome.padEnd(8)} ${status} ${chars} ${ms}${note}`,
+		`  ${kind.padEnd(KIND_W)}${cell.outcome.padEnd(8)} ${status} ${chars} ${ms}${jsMark}${note}`,
 	);
 }
 
@@ -723,11 +753,31 @@ async function main(): Promise<void> {
 		}
 	}
 
+	const jsBaselines = new Map<string, number>();
+	await Promise.all(
+		urls
+			.filter((u) => JS_PROBES.has(u))
+			.map((u) =>
+				rawTextChars(u)
+					.then((n) => jsBaselines.set(u, n))
+					.catch((err: unknown) =>
+						process.stderr.write(
+							`bench: JS-probe baseline failed for ${u}: ${(err as Error).message}\n`,
+						),
+					),
+			),
+	);
+	if (jsBaselines.size > 0) {
+		console.log(
+			`  JS probes: ${[...jsBaselines.keys()].map(urlLabel).join(", ")} — +js ran JS / -js saw the raw shell only`,
+		);
+	}
+
 	const grid = new Map<string, Cell[]>();
 	for (const url of urls) {
 		console.log(`\n${url}`);
 		const cells = await Promise.all(
-			plans.map((plan) => runCell(plan, auth, url, live)),
+			plans.map((plan) => runCell(plan, auth, url, live, jsBaselines.get(url))),
 		);
 		for (const [i, plan] of plans.entries()) {
 			const cell = cells[i];
@@ -750,12 +800,12 @@ async function main(): Promise<void> {
 		const ok = cells.filter(
 			(c) => c.outcome === "ok" || c.outcome === "pdf",
 		).length;
-		// In --live, a no-knob provider's result may be a cache hit —
-		// mark it so the row can't be read as a live score.
-		const mark =
-			live && !plan.execLive
-				? (c: Cell) => `${shortOutcome(c)}~`
-				: shortOutcome;
+		// "+" / "-" = ran JS vs raw shell only on probe URLs; "~" = no
+		// live knob, so a --live cell may be a cache hit.
+		const mark = (c: Cell) =>
+			`${shortOutcome(c)}${c.jsExec === true ? "+" : c.jsExec === false ? "-" : ""}${
+				live && !plan.execLive ? "~" : ""
+			}`;
 		const line = cells.map((c) => mark(c).padEnd(colW)).join("");
 		console.log(`  ${plan.kind.padEnd(KIND_W)}${line}${ok}/${cells.length}`);
 	}
@@ -776,6 +826,10 @@ async function main(): Promise<void> {
 		startedAt,
 		mode: live ? "live" : "default",
 		urls,
+		jsProbes:
+			jsBaselines.size > 0
+				? [...jsBaselines.keys()].filter((u) => JS_PROBES.has(u))
+				: undefined,
 		providers: plans.map((plan) => ({
 			kind: plan.kind,
 			candidate: plan.candidate,
@@ -789,9 +843,7 @@ async function main(): Promise<void> {
 			// runCell always returns one cell per url; the fallback only
 			// guards a future code path that stops early.
 			if (row && row.length === urls.length) return row;
-			return urls.map(
-				(): Cell => ({ outcome: "skipped", note: plan.skip }),
-			);
+			return urls.map((): Cell => ({ outcome: "skipped", note: plan.skip }));
 		}),
 	});
 	console.log(`\nrecord: ${recordPath}`);

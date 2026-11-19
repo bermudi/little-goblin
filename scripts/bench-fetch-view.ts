@@ -23,6 +23,7 @@ import { durableWriteFile } from "../src/durable.ts";
 import {
 	type BenchCell,
 	type BenchRun,
+	CONTROL_URL,
 	readRunRecords,
 	recordsDir,
 } from "./bench-fetch-record.ts";
@@ -184,11 +185,12 @@ function outcomeClass(outcome: BenchCell["outcome"]): string {
 
 function chipHtml(cell: BenchCell, opts?: { tilde?: boolean }): string {
 	const label = cell.outcome === "pdf" ? "pdf" : cell.outcome;
+	const js = cell.jsExec === true ? "+js" : cell.jsExec === false ? "−js" : "";
 	const tilde =
 		(opts?.tilde ?? true) && cell.maybeCached
 			? `<span class="tilde" title="no live knob on this provider — may be a cache hit">~</span>`
 			: "";
-	return `<span class="chip ${outcomeClass(cell.outcome)}" data-outcome="${cell.outcome}">${label}${tilde}</span>`;
+	return `<span class="chip ${outcomeClass(cell.outcome)}" data-outcome="${cell.outcome}">${label}${js}${tilde}</span>`;
 }
 
 function stripHtml(entries: CellEntry[]): string {
@@ -199,6 +201,7 @@ function stripHtml(entries: CellEntry[]): string {
 				e.cell.outcome,
 				e.cell.chars !== undefined ? ` ${fmtChars(e.cell.chars)}` : "",
 				e.cell.maybeCached ? " ~" : "",
+				e.cell.jsExec === true ? " +js" : e.cell.jsExec === false ? " −js" : "",
 			].join("");
 			return `<i class="${outcomeClass(e.cell.outcome)}${e.cell.maybeCached ? " mc" : ""}" title="${esc(meta)}"></i>`;
 		})
@@ -212,6 +215,11 @@ function matrixHtml(model: ModeModel): string {
 	const kRuns = model.runs.length;
 	const head = model.urls
 		.map((url) => {
+			const control =
+				url === CONTROL_URL ? `<span class="ptag">control</span>` : "";
+			const jsProbe = model.runs.some((run) => run.jsProbes?.includes(url))
+				? `<span class="ptag">JS probe</span>`
+				: "";
 			const winners = model.providers.filter((p) =>
 				entriesFor(model, p.kind, url).some((e) => isSuccess(e.cell)),
 			);
@@ -219,7 +227,7 @@ function matrixHtml(model: ModeModel): string {
 				winners.length === 1
 					? `<span class="solo" title="exactly one provider ever succeeded on this url in this mode">solo: ${esc(winners[0]!.kind)}</span>`
 					: "";
-			return `<th class="urlh" scope="col" role="button" tabindex="0" aria-haspopup="dialog" data-url="${esc(url)}" data-mode="${model.mode}" title="${esc(url)}"><span class="ulabel">${esc(shortUrl(url))}</span>${solo}</th>`;
+			return `<th class="urlh" scope="col" role="button" tabindex="0" aria-haspopup="dialog" data-url="${esc(url)}" data-mode="${model.mode}" title="${esc(url)}"><span class="ulabel">${esc(shortUrl(url))}</span>${control}${jsProbe}${solo}</th>`;
 		})
 		.join("");
 
@@ -292,7 +300,9 @@ function matrixHtml(model: ModeModel): string {
 								const idxByUrl = new Map(r.urls.map((u, j) => [u, j] as const));
 								const j = idxByUrl.get(url);
 								if (j === undefined) return false;
-								return r.cells.some((row) => isSuccess(row[j] ?? { outcome: "skipped" }));
+								return r.cells.some((row) =>
+									isSuccess(row[j] ?? { outcome: "skipped" }),
+								);
 							}).length;
 							return ` <span class="sub">${covered}/${kRuns} runs</span>`;
 						})()
@@ -347,7 +357,9 @@ function latencyHtml(model: ModeModel): string {
 		.sort((a, b) => (a.med ?? 0) - (b.med ?? 0));
 	const body = rows
 		.map(
-			(r) => `<tr data-kind="${esc(r.p.kind)}" data-n="${r.n}" data-med="${r.med ?? 0}" data-p95="${r.hi ?? 0}">
+			(
+				r,
+			) => `<tr data-kind="${esc(r.p.kind)}" data-n="${r.n}" data-med="${r.med ?? 0}" data-p95="${r.hi ?? 0}">
 <td class="pname">${esc(r.p.kind)}${r.p.candidate ? `<span class="ptag">candidate</span>` : ""}</td>
 <td class="num">${r.n}</td>
 <td class="num">${fmtMs(r.med)}</td>
@@ -403,7 +415,10 @@ ${chainHtml(model)}
 function headerHtml(runs: BenchRun[], models: Record<Mode, ModeModel>): string {
 	const total = runs.length;
 	const last = runs[runs.length - 1];
-	const kinds = new Map<string, { candidate: boolean; via: string; skip: string }>();
+	const kinds = new Map<
+		string,
+		{ candidate: boolean; via: string; skip: string }
+	>();
 	for (const run of runs)
 		for (const p of run.providers) {
 			const prev = kinds.get(p.kind);
@@ -430,10 +445,11 @@ function headerHtml(runs: BenchRun[], models: Record<Mode, ModeModel>): string {
 	return `<header>
 <h1>fetch-provider benchmark</h1>
 <p class="meta">${meta.join(" · ")}</p>
-<div class="prow"><span class="plabel">keyed / skipped:</span> ${chips || "<span class=\"plabel\">no providers</span>"}</div>
+<div class="prow"><span class="plabel">keyed / skipped:</span> ${chips || '<span class="plabel">no providers</span>'}</div>
 <p class="legend">
 <span class="chip c-ok">ok</span><span class="chip c-pdf">pdf</span><span class="chip c-blocked">blocked</span><span class="chip c-thin">thin</span><span class="chip c-rejected">rejected</span><span class="chip c-error">error</span><span class="chip c-skipped">skipped</span>
 <span class="legnote"><span class="tilde">~</span> may be cached (no live knob)</span>
+<span class="legnote">+js / −js = JS ran / raw HTML only; control is scored with MIN_EXTRACT off</span>
 <span class="legnote">squares under a cell = older→newer runs</span>
 <span class="legnote">⁕ candidate</span>
 </p>
@@ -725,13 +741,15 @@ const pageJs = `"use strict";
 	function chipHtml(c) {
 		var tilde = c.maybeCached
 			? '<span class="tilde" title="no live knob — may be a cache hit">~</span>' : "";
-		return '<span class="chip c-' + c.outcome + '">' + c.outcome + tilde + "</span>";
+		var js = c.jsExec === true ? "+js" : c.jsExec === false ? "−js" : "";
+		return '<span class="chip c-' + c.outcome + '">' + c.outcome + js + tilde + "</span>";
 	}
 	function stripHtml(entries) {
 		return entries.map(function (e) {
 			var t = fmtDate(e.run.startedAt) + " " + e.cell.outcome +
 				(e.cell.chars !== undefined ? " " + fmtChars(e.cell.chars) : "") +
-				(e.cell.maybeCached ? " ~" : "");
+				(e.cell.maybeCached ? " ~" : "") +
+				(e.cell.jsExec === true ? " +js" : e.cell.jsExec === false ? " −js" : "");
 			return '<i class="c-' + e.cell.outcome + (e.cell.maybeCached ? " mc" : "") + '" title="' + esc(t) + '"></i>';
 		}).join("");
 	}
@@ -753,6 +771,7 @@ const pageJs = `"use strict";
 
 	function cellFacts(c) {
 		var parts = [];
+		if (c.jsExec !== undefined) parts.push(c.jsExec ? "JS: ran JS (+js)" : "JS: raw HTML only (−js)");
 		if (c.status !== undefined) parts.push("status " + c.status);
 		if (c.ms !== undefined) parts.push(fmtMs(c.ms));
 		if (c.chars !== undefined) parts.push((c.outcome === "pdf" ? fmtChars(c.chars) + " bytes" : fmtChars(c.chars) + " chars"));
@@ -979,7 +998,9 @@ if (import.meta.main) {
 	try {
 		main();
 	} catch (err) {
-		process.stderr.write(`bench-view failed: ${err instanceof Error ? err.message : err}\n`);
+		process.stderr.write(
+			`bench-view failed: ${err instanceof Error ? err.message : err}\n`,
+		);
 		process.exit(1);
 	}
 }

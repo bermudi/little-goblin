@@ -36,6 +36,10 @@ export const benchCellSchema = z.object({
 	// --live cell from a provider with no freshness knob ("~" — may be
 	// a cache hit, not a live score).
 	maybeCached: z.boolean().optional(),
+	// On a JS-probe URL only: the extraction clearly exceeded the
+	// raw-HTML text baseline, so the provider ran JS. Absent means
+	// undeterminable (error/pdf/skip) or the URL is not a probe.
+	jsExec: z.boolean().optional(),
 });
 
 export const benchProviderSchema = z.object({
@@ -58,6 +62,9 @@ export const benchRunSchema = z
 		startedAt: z.string().min(1),
 		mode: z.enum(["default", "live"]),
 		urls: z.array(z.string().min(1)).min(1),
+		// URLs whose text is mostly JS-injected (subset of urls); cells
+		// in those columns carry jsExec. Absent on pre-probe records.
+		jsProbes: z.array(z.string().min(1)).optional(),
 		providers: z.array(benchProviderSchema).min(1),
 		// providers[i] × urls[j] → cells[i][j].
 		cells: z.array(z.array(benchCellSchema)),
@@ -73,8 +80,55 @@ export type BenchCell = z.infer<typeof benchCellSchema>;
 export type BenchProvider = z.infer<typeof benchProviderSchema>;
 export type BenchRun = z.infer<typeof benchRunSchema>;
 
+export const CONTROL_URL = "https://example.com/";
+export const JS_PROBES = new Set([
+	CONTROL_URL,
+	"https://quotes.toscrape.com/js/",
+]);
+export const JS_PROBE_RATIO = 1.5;
+
+function noteChars(note: string | undefined): number | undefined {
+	const match = note?.match(/\((\d+) chars\)/);
+	return match ? Number(match[1]) : undefined;
+}
+
+export function applyProbeRules(
+	cell: BenchCell,
+	url: string,
+	rawChars: number | undefined,
+): BenchCell {
+	const result = { ...cell };
+
+	if (result.outcome === "thin" && result.chars === undefined) {
+		result.chars = noteChars(result.note);
+	}
+
+	if (url === CONTROL_URL && result.outcome === "thin") {
+		if (result.chars !== undefined && result.chars > 0) {
+			result.outcome = "ok";
+			result.note = `control — MIN_EXTRACT off (${result.chars}ch)`;
+		}
+	}
+
+	if (
+		JS_PROBES.has(url) &&
+		rawChars !== undefined &&
+		(result.outcome === "ok" ||
+			result.outcome === "thin" ||
+			result.outcome === "blocked") &&
+		result.chars !== undefined
+	) {
+		result.jsExec = result.chars > rawChars * JS_PROBE_RATIO;
+	}
+
+	return result;
+}
+
 export function recordsDir(): string {
-	return process.env.GOBLIN_BENCH_RECORD_DIR ?? join(import.meta.dir, "..", "bench-records");
+	return (
+		process.env.GOBLIN_BENCH_RECORD_DIR ??
+		join(import.meta.dir, "..", "bench-records")
+	);
 }
 
 // File name sorts chronologically: run-<startedAt, fs-safe>-<mode>.json.
@@ -105,7 +159,9 @@ export function readRunRecords(dir = recordsDir()): BenchRun[] {
 		try {
 			raw = JSON.parse(readFileSync(path, "utf8"));
 		} catch (err) {
-			throw new Error(`bench record ${path}: malformed JSON — ${(err as Error).message}`);
+			throw new Error(
+				`bench record ${path}: malformed JSON — ${(err as Error).message}`,
+			);
 		}
 		const parsed = benchRunSchema.safeParse(raw);
 		if (!parsed.success) {

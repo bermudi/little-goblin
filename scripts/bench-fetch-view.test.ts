@@ -12,9 +12,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-	benchRunSchema,
 	type BenchCell,
 	type BenchRun,
+	benchRunSchema,
 	readRunRecords,
 	writeRunRecord,
 } from "./bench-fetch-record.ts";
@@ -31,7 +31,10 @@ function row(...cells: BenchCell[]): BenchCell[] {
 	return cells;
 }
 
-function c(outcome: BenchCell["outcome"], extra: Partial<BenchCell> = {}): BenchCell {
+function c(
+	outcome: BenchCell["outcome"],
+	extra: Partial<BenchCell> = {},
+): BenchCell {
 	return { outcome, ...extra };
 }
 
@@ -57,19 +60,58 @@ const defaultRun1: BenchRun = benchRunSchema.parse({
 	providers: PROVIDERS_DEFAULT,
 	cells: [
 		row(
-			c("ok", { chars: 1250, status: 200, ms: 800, title: "Example Domain", textPreview: "Example Domain. This domain is for use in illustrative examples…" }),
+			c("ok", {
+				chars: 1250,
+				status: 200,
+				ms: 800,
+				title: "Example Domain",
+				textPreview:
+					"Example Domain. This domain is for use in illustrative examples…",
+			}),
 			c("error", { ms: 300, note: "local: HTTP 401" }),
-			c("blocked", { chars: 5600, status: 200, ms: 5100, title: "Just a moment...", textPreview: "Verifying you are human..." }),
+			c("blocked", {
+				chars: 5600,
+				status: 200,
+				ms: 5100,
+				title: "Just a moment...",
+				textPreview: "Verifying you are human...",
+			}),
 		),
 		row(
-			c("ok", { chars: 900, status: 200, ms: 2400, title: "Example Domain", textPreview: "Example Domain…" }),
-			c("ok", { chars: 41000, status: 200, ms: 6100, title: "Reuters", textPreview: "Reuters news article body… <div>markets</div>" }),
+			c("ok", {
+				chars: 900,
+				status: 200,
+				ms: 2400,
+				title: "Example Domain",
+				textPreview: "Example Domain…",
+			}),
+			c("ok", {
+				chars: 41000,
+				status: 200,
+				ms: 6100,
+				title: "Reuters",
+				textPreview: "Reuters news article body… <div>markets</div>",
+			}),
 			c("thin", { ms: 1900, note: "jina: almost no text (140 chars)" }),
 		),
 		row(
-			c("ok", { chars: 1100, status: 200, ms: 3200, title: "Example Domain", textPreview: "Example Domain…" }),
-			c("blocked", { chars: 3200, status: 200, ms: 4400, note: "Just a moment..." }),
-			c("error", { ms: 800, note: "tinyfish: extraction failed — bot_blocked" }),
+			c("ok", {
+				chars: 1100,
+				status: 200,
+				ms: 3200,
+				title: "Example Domain",
+				textPreview: "Example Domain…",
+			}),
+			c("blocked", {
+				chars: 3200,
+				status: 200,
+				ms: 4400,
+				note: "Just a moment...",
+			}),
+			c("error", {
+				ms: 800,
+				note: "tinyfish: extraction failed — bot_blocked",
+			}),
 		),
 		row(
 			c("skipped", { note: 'no auth.jsonl record "tavily"' }),
@@ -84,18 +126,47 @@ const defaultRun2: BenchRun = benchRunSchema.parse({
 	startedAt: "2026-11-19T11:00:00.000Z",
 	cells: [
 		row(
-			c("ok", { chars: 1250, status: 200, ms: 780, title: "Example Domain", textPreview: "Example Domain…" }),
+			c("ok", {
+				chars: 1250,
+				status: 200,
+				ms: 780,
+				title: "Example Domain",
+				textPreview: "Example Domain…",
+			}),
 			c("error", { ms: 290, note: "local: HTTP 401" }),
-			c("blocked", { chars: 5600, status: 200, ms: 5300, title: "Just a moment...", textPreview: "Verifying you are human..." }),
+			c("blocked", {
+				chars: 5600,
+				status: 200,
+				ms: 5300,
+				title: "Just a moment...",
+				textPreview: "Verifying you are human...",
+			}),
 		),
 		row(
-			c("ok", { chars: 900, status: 200, ms: 2300, title: "Example Domain", textPreview: "Example Domain…" }),
-			c("ok", { chars: 42000, status: 200, ms: 5900, title: "Reuters", textPreview: "Reuters news article body…" }),
+			c("ok", {
+				chars: 900,
+				status: 200,
+				ms: 2300,
+				title: "Example Domain",
+				textPreview: "Example Domain…",
+			}),
+			c("ok", {
+				chars: 42000,
+				status: 200,
+				ms: 5900,
+				title: "Reuters",
+				textPreview: "Reuters news article body…",
+			}),
 			c("thin", { ms: 2100, note: "jina: almost no text (140 chars)" }),
 		),
 		row(
 			c("error", { ms: 1500, note: "tinyfish: extraction failed — timeout" }),
-			c("blocked", { chars: 3100, status: 200, ms: 4500, note: "Just a moment..." }),
+			c("blocked", {
+				chars: 3100,
+				status: 200,
+				ms: 4500,
+				note: "Just a moment...",
+			}),
 			c("rejected", { ms: 900, note: "tinyfish: no result" }),
 		),
 		row(
@@ -115,24 +186,83 @@ const liveRun: BenchRun = benchRunSchema.parse({
 	providers: PROVIDERS_DEFAULT,
 	cells: [
 		row(
-			c("ok", { chars: 1250, status: 200, ms: 900, title: "Example Domain", textPreview: "Example Domain…" }),
-			c("blocked", { chars: 5600, status: 200, ms: 5200, title: "Just a moment...", textPreview: "Verifying you are human..." }),
+			c("ok", {
+				chars: 1250,
+				status: 200,
+				ms: 900,
+				title: "Example Domain",
+				textPreview: "Example Domain…",
+			}),
+			c("blocked", {
+				chars: 5600,
+				status: 200,
+				ms: 5200,
+				title: "Just a moment...",
+				textPreview: "Verifying you are human...",
+			}),
 			c("pdf", { chars: 200000, status: 200, ms: 7300 }),
 		),
 		row(
-			c("ok", { chars: 900, status: 200, ms: 2500, title: "Example Domain", textPreview: "Example Domain…" }),
-			c("blocked", { chars: 3000, status: 200, ms: 6600, note: "no live knob — may be cached · Just a moment..." }),
+			c("ok", {
+				chars: 900,
+				status: 200,
+				ms: 2500,
+				title: "Example Domain",
+				textPreview: "Example Domain…",
+			}),
+			c("blocked", {
+				chars: 3000,
+				status: 200,
+				ms: 6600,
+				note: "no live knob — may be cached · Just a moment...",
+			}),
 			c("error", { ms: 1200, note: "jina: HTTP 429" }),
 		),
 		row(
-			c("ok", { chars: 1100, status: 200, ms: 3400, title: "Example Domain", textPreview: "Example Domain…" }),
-			c("ok", { chars: 41500, status: 200, ms: 5800, title: "Reuters", textPreview: "Reuters news article body…" }),
-			c("blocked", { chars: 2900, status: 200, ms: 6100, note: "Just a moment..." }),
+			c("ok", {
+				chars: 1100,
+				status: 200,
+				ms: 3400,
+				title: "Example Domain",
+				textPreview: "Example Domain…",
+			}),
+			c("ok", {
+				chars: 41500,
+				status: 200,
+				ms: 5800,
+				title: "Reuters",
+				textPreview: "Reuters news article body…",
+			}),
+			c("blocked", {
+				chars: 2900,
+				status: 200,
+				ms: 6100,
+				note: "Just a moment...",
+			}),
 		),
 		row(
-			c("ok", { chars: 980, status: 200, ms: 2100, maybeCached: true, title: "Example Domain", textPreview: "Example Domain…" }),
-			c("blocked", { chars: 4100, status: 200, ms: 4300, maybeCached: true, note: "no live knob — may be cached · Just a moment..." }),
-			c("ok", { chars: 8800, status: 200, ms: 4900, maybeCached: true, note: "no live knob — may be cached · WSJ headline digest" }),
+			c("ok", {
+				chars: 980,
+				status: 200,
+				ms: 2100,
+				maybeCached: true,
+				title: "Example Domain",
+				textPreview: "Example Domain…",
+			}),
+			c("blocked", {
+				chars: 4100,
+				status: 200,
+				ms: 4300,
+				maybeCached: true,
+				note: "no live knob — may be cached · Just a moment...",
+			}),
+			c("ok", {
+				chars: 8800,
+				status: 200,
+				ms: 4900,
+				maybeCached: true,
+				note: "no live knob — may be cached · WSJ headline digest",
+			}),
 		),
 	],
 });
@@ -149,7 +279,15 @@ test("the page names every provider, URL and outcome in its static markup", () =
 		expect(html).toContain(shortLabel(url));
 	}
 	// Every outcome label rides on a matrix cell, not just the legend.
-	for (const outcome of ["ok", "pdf", "blocked", "thin", "rejected", "error", "skipped"]) {
+	for (const outcome of [
+		"ok",
+		"pdf",
+		"blocked",
+		"thin",
+		"rejected",
+		"error",
+		"skipped",
+	]) {
 		expect(html).toContain(`data-outcome="${outcome}"`);
 		expect(html).toContain(`<span class="chip c-${outcome}">${outcome}</span>`);
 	}
@@ -192,6 +330,35 @@ test("both mode sections render with their switch and panels", () => {
 	expect(html.slice(blobStart, blobEnd)).not.toContain("</");
 });
 
+test("JS probe results and URL tags render in the static page", () => {
+	const run: BenchRun = benchRunSchema.parse({
+		schema: 1,
+		startedAt: "2026-11-19T13:00:00.000Z",
+		mode: "default",
+		urls: [URLS[0], "https://quotes.toscrape.com/js/"],
+		jsProbes: [URLS[0], "https://quotes.toscrape.com/js/"],
+		providers: [
+			{ kind: "local", hasLiveKnob: true },
+			{ kind: "tavily", hasLiveKnob: false },
+		],
+		cells: [
+			[
+				c("ok", { chars: 156, jsExec: false }),
+				c("thin", { chars: 100, jsExec: false }),
+			],
+			[
+				c("ok", { chars: 958, jsExec: true }),
+				c("ok", { chars: 1700, jsExec: true }),
+			],
+		],
+	});
+	const jsHtml = buildHtml([run]);
+	expect(jsHtml).toContain("+js");
+	expect(jsHtml).toContain("−js");
+	expect(jsHtml).toContain(">control</span>");
+	expect(jsHtml).toContain(">JS probe</span>");
+});
+
 test("a run record round-trips through disk", () => {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-bench-view-"));
 	try {
@@ -207,8 +374,13 @@ test("malformed records fail loud with their path", () => {
 	const dir = mkdtempSync(join(tmpdir(), "goblin-bench-view-"));
 	try {
 		writeFileSync(join(dir, "run-bad-json.json"), "{not json");
-		expect(() => readRunRecords(dir)).toThrow(/run-bad-json\.json.*malformed JSON/s);
-		writeFileSync(join(dir, "run-bad-shape.json"), JSON.stringify({ schema: 1 }));
+		expect(() => readRunRecords(dir)).toThrow(
+			/run-bad-json\.json.*malformed JSON/s,
+		);
+		writeFileSync(
+			join(dir, "run-bad-shape.json"),
+			JSON.stringify({ schema: 1 }),
+		);
 		expect(() => readRunRecords(dir)).toThrow(/run-bad-shape\.json/s);
 		// unrelated files are ignored, missing dir is empty history
 		writeFileSync(join(dir, "notes.txt"), "x");

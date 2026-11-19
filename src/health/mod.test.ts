@@ -156,9 +156,9 @@ describe("diagnostic boundary and phases", () => {
 		expect(finding(report, "service.goblin").status).toBe("pass");
 		expect(finding(report, "config").status).toBe("pass");
 		expect(finding(report, "memory.ready").status).toBe("skip");
-		// Handover runs on t3 regardless of delegation config — the probe
-		// runs and the fixture runner answers.
-		expect(finding(report, "delegation.t3").status).toBe("pass");
+		// Handover probes goblin's projects (#740); with no state DB there
+		// are none, so it skips rather than probing the workspace.
+		expect(finding(report, "delegation.t3").status).toBe("skip");
 		expect(existsSync(join(f.home, "state"))).toBe(false);
 	});
 	test("config JSON5/schema and auth failures never retain native messages or sentinels", async () => {

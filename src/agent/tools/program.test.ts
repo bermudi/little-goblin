@@ -828,16 +828,21 @@ describe("program tool", () => {
 });
 
 describe("responsibility destinations", () => {
-	test("create binds a project responsibility; foreign and telegram creates keep their pins", async () => {
+	test("responsibility creates stage for approval and bind only after approval", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
 		dirs.push(dir);
 		const programs = openPrograms(join(dir, "goblin.sqlite"));
 		const resp = { projectId: "p1" };
+		const posted: ProgramProposal[] = [];
 		const tool = programTool({
 			programs,
+			target: "app/a1",
 			project: { projectId: "p1", resps: { get: (id: string) => (id === "r1" ? resp : null) } },
 			publicUrl: () => undefined,
 			sendPrivate: async () => {},
+			requestApproval: async (proposal) => {
+				posted.push(proposal);
+			},
 		});
 		const out = (await exec(tool, {
 			action: "create",
@@ -845,11 +850,21 @@ describe("responsibility destinations", () => {
 			charter: "check in",
 			cron: "*/20 * * * *",
 			responsibilityId: "r1",
-		})) as { program?: { id: number; responsibility_id?: string }; error?: string };
+		})) as { proposal?: { id: number }; status?: string; error?: string };
 		expect(out.error).toBeUndefined();
-		const created = programs.get(out.program!.id)!;
-		expect(created.responsibilityId).toBe("r1");
-		expect(created.chatId).toBe(0);
+		expect(out.status).toContain("pending operator approval");
+		expect(programs.list()).toEqual([]);
+		expect(posted).toHaveLength(1);
+		expect(posted[0]!.target).toBe("app/a1");
+		expect(posted[0]!.draft!.responsibilityId).toBe("r1");
+		const approved = programs.proposals.approve(out.proposal!.id, 42);
+		expect(approved.kind).toBe("activated");
+		if (approved.kind === "activated") {
+			expect(approved.program.responsibilityId).toBe("r1");
+			expect(approved.program.target).toBe("resp:r1");
+			expect(approved.program.chatId).toBe(0);
+			expect(approved.program.cron).toBe("*/20 * * * *");
+		}
 		// A foreign-project responsibility refuses.
 		const foreign = (await exec(tool, {
 			action: "create",
@@ -871,6 +886,154 @@ describe("responsibility destinations", () => {
 		expect(hooked.error).toBe(
 			"hook URLs deliver to the operator DM — not available on project turns",
 		);
+		expect(programs.proposals.pending()).toEqual([]);
+	});
+
+	test("mail responsibility create stages and approval binds it", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		const posted: ProgramProposal[] = [];
+		const tool = programTool({
+			programs,
+			target: "app/a1",
+			project: {
+				projectId: "p1",
+				resps: { get: (id) => (id === "r1" ? { projectId: "p1" } : null) },
+			},
+			publicUrl: () => undefined,
+			requestApproval: async (proposal) => {
+				posted.push(proposal);
+			},
+		});
+		const staged = await exec(tool, {
+			action: "create",
+			name: "mail",
+			charter: "Review mail",
+			mailFilter: "from:bank",
+			responsibilityId: "r1",
+		}) as { proposal: { id: number } };
+		expect(programs.list()).toEqual([]);
+		expect(posted).toHaveLength(1);
+		const result = programs.proposals.approve(staged.proposal.id, 42);
+		expect(result.kind).toBe("activated");
+		if (result.kind === "activated") {
+			expect(result.program.responsibilityId).toBe("r1");
+			expect(result.program.mailFilter).toBe("from:bank");
+		}
+	});
+
+	test("addressless responsibility create refuses without staging", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		const tool = programTool({
+			programs,
+			project: {
+				projectId: "p1",
+				resps: { get: (id) => (id === "r1" ? { projectId: "p1" } : null) },
+			},
+			publicUrl: () => undefined,
+			requestApproval: async () => {},
+		});
+		const result = await exec(tool, {
+			action: "create",
+			name: "mail",
+			charter: "Review",
+			cron: "*/20 * * * *",
+			responsibilityId: "r1",
+		}) as { error?: string };
+		expect(result.error).toBe(
+			"no destination — this turn has no conversation address to post the approval to",
+		);
+		expect(programs.proposals.pending()).toEqual([]);
+		expect(programs.list()).toEqual([]);
+	});
+
+	test("project updates that widen cron or mail authority stay staged", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		const cronProgram = programs.create({
+			name: "cron",
+			charter: "c",
+			cron: "*/20 * * * *",
+			responsibilityId: "r1",
+		});
+		const mailProgram = programs.create({
+			name: "mail",
+			charter: "c",
+			mailFilter: "from:old",
+			responsibilityId: "r1",
+		});
+		const posted: ProgramProposal[] = [];
+		const tool = programTool({
+			programs,
+			target: "app/a1",
+			project: {
+				projectId: "p1",
+				resps: { get: (id) => (id === "r1" ? { projectId: "p1" } : null) },
+			},
+			publicUrl: () => undefined,
+			requestApproval: async (proposal) => {
+				posted.push(proposal);
+			},
+		});
+		const beforeCron = programs.get(cronProgram.id)!;
+		const beforeMail = programs.get(mailProgram.id)!;
+		const mailChange = await exec(tool, {
+			action: "update",
+			id: cronProgram.id,
+			mailFilter: "from:new",
+		});
+		const cronChange = await exec(tool, {
+			action: "update",
+			id: mailProgram.id,
+			cron: "*/30 * * * *",
+		});
+		expect((mailChange as { proposal?: unknown }).proposal).toBeDefined();
+		expect((cronChange as { proposal?: unknown }).proposal).toBeDefined();
+		expect(programs.get(cronProgram.id)).toEqual(beforeCron);
+		expect(programs.get(mailProgram.id)).toEqual(beforeMail);
+		expect(posted).toHaveLength(2);
+		const approved = programs.proposals.approve(posted[0]!.id, 42);
+		expect(approved.kind).toBe("activated");
+		if (approved.kind === "activated") {
+			expect(approved.program.mailFilter).toBe("from:new");
+		}
+	});
+
+	test("project list exposes only create proposals pinned to its conversation", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "goblin-programtool-"));
+		dirs.push(dir);
+		const programs = openPrograms(join(dir, "goblin.sqlite"));
+		for (const target of ["app/a1", "app/b2"]) {
+			const tool = programTool({
+				programs,
+				target,
+				project: { projectId: "p1", resps: { get: () => null } },
+				publicUrl: () => undefined,
+				requestApproval: async () => {},
+			});
+			await exec(tool, {
+				action: "create",
+				name: target,
+				charter: "c",
+				cron: "*/20 * * * *",
+			});
+		}
+		const tool = programTool({
+			programs,
+			target: "app/a1",
+			project: { projectId: "p1", resps: { get: () => null } },
+			publicUrl: () => undefined,
+			requestApproval: async () => {},
+		});
+		const list = (await exec(tool, { action: "list" })) as {
+			proposals: { request: { name: string } }[];
+		};
+		expect(list.proposals).toHaveLength(1);
+		expect(list.proposals[0]!.request.name).toBe("app/a1");
 	});
 
 	test("project turns refuse hook enable/rotate; disable stays open", async () => {

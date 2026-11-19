@@ -866,6 +866,8 @@ describe("ensureFollowup enable semantics", () => {
 		const r = rig();
 		const resp = acceptRig(r);
 		const program = r.svc.ensureFollowup(resp.responsibilityId)!;
+		expect(program.kind).toBe("followup");
+		expect(r.programs.proposals.pending()).toEqual([]);
 		r.programs.update(program.id, { enabled: false });
 		const again = r.svc.ensureFollowup(resp.responsibilityId)!;
 		expect(again.id).toBe(program.id);

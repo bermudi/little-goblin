@@ -33,11 +33,39 @@ function draft(overrides: Partial<ProgramDraft> = {}): ProgramDraft {
 		maxLatenessMinutes: 60,
 		hook: false,
 		mailFilter: null,
+		responsibilityId: null,
 		...overrides,
 	};
 }
 
 describe("program proposals — create", () => {
+	test("legacy create payloads default responsibilityId to null and approve on the conversation", () => {
+		const path = tmpDb("goblin-proposals-");
+		const programs = store(path);
+		const proposal = programs.proposals.proposeCreate(draft(), ADDRESS, NOW);
+		const db = new Database(path);
+		db.query("UPDATE program_proposals SET payload = ? WHERE id = ?").run(
+			JSON.stringify({
+				name: "reports",
+				charter: "Own the report",
+				cron: "0 9 * * 1",
+				maxLatenessMinutes: 60,
+				hook: false,
+				mailFilter: null,
+			}),
+			proposal.id,
+		);
+		db.close();
+		expect(programs.proposals.get(proposal.id)!.draft!.responsibilityId).toBeNull();
+		const approved = programs.proposals.approve(proposal.id, 42);
+		expect(approved.kind).toBe("activated");
+		if (approved.kind === "activated") {
+			expect(approved.program.target).toBe(`topic:${ADDRESS.chatId}:${ADDRESS.threadId}`);
+			expect(approved.program.responsibilityId).toBeNull();
+		}
+		programs.close();
+	});
+
 	test("a proposed create writes no programs row and is invisible to every trigger path", () => {
 		const programs = store();
 		const proposal = programs.proposals.proposeCreate(

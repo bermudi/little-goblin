@@ -130,9 +130,11 @@ Goblin has real subagents, like Claude Code's (operator, 2026-11-16): one
 `agent` tool whose children run on Goblin's own runtime and model layer, so
 every inference lane (including the Claude subscription) is available to
 them. External harnesses (codex, opencode, …) run only when the operator asks
-for one, through `delegate`. The operator works in T3 Code, not Herdr; T3 Code
-replaces Herdr as the harness transport and the handover surface
-(design/agents.md).
+for one, through `delegate`. The operator works in T3 Code, not the old
+operator-desk Herdr tool. Per the operator's 2026-11-18 direction,
+`delegate` runs named harnesses on pinned herdr-core (`hc`), with Goblin
+making the binary and lifecycle hooks available at execution. Handover and
+responsibility stay on T3 Code (design/agents.md, design/delegation.md).
 
 Long term, Goblin is where work lives: roles, assignments, responsibilities,
 histories, evidence, and follow-through. Native agents grow into the standard

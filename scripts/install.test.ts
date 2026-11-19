@@ -338,6 +338,7 @@ describe("fresh installer", () => {
 	test("optional units are config-aware; pass-keys is never executed by inspection", () => {
 		const result = fixture("optional");
 		expect(result.status, result.stderr).toBe(0);
+		expect(result.calls).not.toContain("goblin-herdr.service");
 		expect(result.calls).toContain("enable --now goblin-keys.timer");
 		expect(result.calls).not.toContain("pass-keys ");
 		// Warm targets render from the reported profiles — exactly one

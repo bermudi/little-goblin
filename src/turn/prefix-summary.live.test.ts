@@ -89,6 +89,8 @@ test(
 				completedReceipts: () => [],
 				suspendPruning: () => {},
 				pruningSuspension: () => null,
+				idleCacheCall: () => null,
+				recentConversations: () => [],
 			};
 			const cfg = configSchema.parse({
 				providers: { codex: { kind: "codex" } },

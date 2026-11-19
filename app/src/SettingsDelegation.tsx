@@ -1,7 +1,6 @@
 // Delegation — the coding agents goblin may hand work to and the
 // role → agent defaults the delegate tool uses when a call names no
-// harness. Each agent names the T3 provider instance, model and optional
-// model options its thread runs on; goblin never picks a model itself.
+// harness. Each entry is a harness kind plus native CLI args.
 
 import { useState } from "react";
 import type { DelegationRoleDraft, HarnessDraft } from "./settingsDraft.ts";
@@ -37,7 +36,6 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 
 	const roles = del === null ? [] : withDefault(del.roles);
 	const names = del === null ? [] : del.harnesses.map((h) => h.name.trim()).filter((n) => n !== "");
-	const providerNames = ctx.provs.map((p) => p.name);
 
 	const setRole = (i: number, patch: Partial<DelegationRoleDraft>) =>
 		edit((d) => {
@@ -54,7 +52,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 			<div className="card">
 				<Row
 					label="Delegate to coding agents"
-					cap="Off turns the delegate tool off. Machine targets stay in goblin.json5."
+					cap="Off turns the delegate tool off."
 				>
 					<Switch
 						on={del !== null}
@@ -69,7 +67,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 											last.current.delegation ?? {
 												harnesses: [],
 												roles: [],
-											},
+												},
 									};
 								}
 								last.current.delegation = d.delegation;
@@ -94,7 +92,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 				<>
 					<SectionHead
 						title="Coding agents"
-						purpose="Each name is what a delegate call passes as its harness — a T3 Code thread on the provider and model you set."
+						purpose="Each name is what a delegate call passes as its harness. Kind selects the installed harness."
 					/>
 					<div className="card">
 						{del.harnesses.length === 0 && (
@@ -120,50 +118,37 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 										label="Name"
 										value={h.name}
 										mono
-										placeholder="codex"
+										placeholder="pi"
 										cap="Lowercase letters, digits, _ or - — 16 max."
 										onChange={(v) => setHarness(i, { name: v })}
 									/>
-									<div className="frow">
-										<label className="flabel" htmlFor={`del-provider-${i}`}>
-											Provider
-										</label>
-										{/* Free text with suggestions: the t3 provider
-										 * instance id need not match any goblin provider
-										 * name, so a select would lock fresh installs
-										 * out of ids this goblin doesn't know. */}
-										<input
-											id={`del-provider-${i}`}
-											className="mono"
-											aria-label={`provider for ${h.name || "new agent"}`}
-											list="del-provider-names"
-											value={h.provider}
-											placeholder="codex"
-											onChange={(e) => setHarness(i, { provider: e.target.value })}
-										/>
-										<datalist id="del-provider-names">
-											{providerNames.map((n) => (
-												<option key={n} value={n} />
-											))}
-										</datalist>
-										<div className="cap">A configured T3 provider instance.</div>
+									<Field
+										label="Kind"
+										value={h.kind}
+										mono
+										placeholder="pi"
+										cap="The harness kind to launch."
+										onChange={(v) => setHarness(i, { kind: v })}
+									/>
+								</div>
+								<div className="frow">
+									<label className="flabel" htmlFor={`del-args-${i}`}>
+										Args — native CLI flags, one per line
+									</label>
+									<textarea
+										id={`del-args-${i}`}
+										className="mono"
+										rows={2}
+										value={h.args}
+										spellCheck={false}
+										autoCapitalize="off"
+										placeholder={"--model\nzai/glm-5.3"}
+										onChange={(e) => setHarness(i, { args: e.target.value })}
+									/>
+									<div className="cap">
+										The model goes here when the agent needs one. Do not repeat full-auto flags the
+										operator's shell alias already adds.
 									</div>
-									<Field
-										label="Model"
-										value={h.model}
-										mono
-										placeholder="gpt-6-luna"
-										cap="The model slug exactly as T3 names it."
-										onChange={(v) => setHarness(i, { model: v })}
-									/>
-									<Field
-										label="Model options"
-										value={h.options}
-										mono
-										placeholder="effort=low"
-										cap="T3 model options, such as effort=low. Space-separated."
-										onChange={(v) => setHarness(i, { options: v })}
-									/>
 								</div>
 								<Row
 									label="Ask me first"
@@ -184,10 +169,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 								onClick={() =>
 									edit((d) => ({
 										...d,
-										harnesses: [
-										...d.harnesses,
-										{ name: "", provider: "", model: "", options: "", askFirst: false },
-									],
+										harnesses: [...d.harnesses, { name: "", kind: "", args: "", askFirst: false }],
 									}))
 								}
 							>
@@ -216,8 +198,8 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 										</option>
 									))}
 									{r.harness !== "" && !names.includes(r.harness) && (
-										<option value={r.harness}>{r.harness} (unlisted)</option>
-									)}
+											<option value={r.harness}>{r.harness} (unlisted)</option>
+										)}
 								</select>
 								{r.role !== "default" && (
 									<button

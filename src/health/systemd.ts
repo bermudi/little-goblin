@@ -1,20 +1,4 @@
-import { z } from "zod";
-import { command, errno, ProbeError, result, type HealthResult, type ProbeContext } from "./shared.ts";
-
-const unitStateSchema = z.object({
-	LoadState: z.enum(["loaded", "not-found", "error", "masked", "bad-setting"]),
-	ActiveState: z.enum([
-		"active",
-		"inactive",
-		"failed",
-		"activating",
-		"deactivating",
-		"reloading",
-		"refreshing",
-		"maintenance",
-	]),
-	SubState: z.string().max(64),
-});
+import { command, ProbeError, type ProbeContext } from "./shared.ts";
 
 export async function systemdShow(
 	unit: string,
@@ -35,5 +19,3 @@ export async function systemdShow(
 	}
 	return out;
 }
-
-

@@ -2576,6 +2576,35 @@ describe("cache stability", () => {
 		r2.store.close();
 	});
 
+	test("idleFold refuses a busy lane and folds with the idle reason when clear", async () => {
+		let summaries = 0;
+		const r = rig({
+			deltas: ["slow ", "reply"],
+			delayMs: 40,
+			deps: {
+				compaction: {
+					modelRef: () => "m",
+					contextWindow: () => 1000,
+					summarize: async (_conv, _system, prompt) => {
+						summaries += 1;
+						return foldSummary("idle folded", prompt);
+					},
+				},
+			},
+		});
+		seedExchanges(r.store, r.conv.id);
+		const sink = submit(r, "live question");
+		await sink.firstDelta;
+		expect(await r.runtime.idleFold(r.conv.id)).toBe("busy");
+		expect(summaries).toBe(0);
+		expect(await sink.done).toEqual({ kind: "completed" });
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		const outcome = await r.runtime.idleFold(r.conv.id);
+		expect(outcome).toBe("compacted");
+		expect(summaries).toBeGreaterThan(0);
+		r.store.close();
+	});
+
 	test("/compact serializes behind a running turn — no orphaned exchange", async () => {
 		const r = rig({
 			deltas: ["slow ", "reply"],

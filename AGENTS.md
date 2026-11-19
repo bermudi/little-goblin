@@ -120,13 +120,16 @@ lists on our non-goals list. Cite what you took in the design docs.
   Local embeddings). Tailscale down or ollama down = the memory API
   can't embed or boot. Changing the embedding model with a non-empty
   bank is a re-index, not an env edit.
-- Delegation and handover run on T3 Code threads (`src/t3.ts`); the
-  operator watches them there. Verifying the t3 wire contract is the
-  code's job, not an agent's: run the gated drift check
-  (`GOBLIN_T3_LIVE=1 bun test src/t3.live.test.ts`) after t3 upgrades —
+- `delegate` runs named external harnesses on pinned herdr-core
+  (`src/hc.ts`) in a private home-hashed session; the operator can inspect
+  them through hc or in the app. Handover/responsibility stays on T3 Code
+  threads (`src/t3.ts`). Verifying each wire contract is the code's job,
+  not an agent's: run the gated drift check
+  (`GOBLIN_HC_LIVE=1 bun test src/hc.live.test.ts` after core upgrades —
+  it uses a throwaway session, never the operator's;
+  `GOBLIN_T3_LIVE=1 bun test src/t3.live.test.ts` after t3 upgrades —
   red means re-pin fixtures in one throwaway-project probe, then fix
-  the adapter. The check never starts or sends in the operator's real
-  projects; its safety rules live in the file header.
+  the adapter; its safety rules live in the file header).
 
 ## Keys
 

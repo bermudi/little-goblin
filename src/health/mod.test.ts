@@ -75,7 +75,12 @@ function fixture() {
 		"systemctl",
 		`printf 'LoadState=loaded\\nActiveState=active\\nSubState=running\\nWorkingDirectory=${checkout}\\n'`,
 	);
-	const options = { home, checkout, phase: "preflight" as const };
+	const options = {
+		home,
+		checkout,
+		phase: "preflight" as const,
+		t3Runner: async () => ({ code: 0, stdout: "[]", stderr: "" }),
+	};
 	return { root, home, checkout, bin, config, script, options };
 }
 function finding(report: HealthReport, id: string) {
@@ -151,7 +156,9 @@ describe("diagnostic boundary and phases", () => {
 		expect(finding(report, "service.goblin").status).toBe("pass");
 		expect(finding(report, "config").status).toBe("pass");
 		expect(finding(report, "memory.ready").status).toBe("skip");
-		expect(finding(report, "delegation.t3").detail).toContain("No delegation block configured");
+		// Handover probes goblin's projects (#740); with no state DB there
+		// are none, so it skips rather than probing the workspace.
+		expect(finding(report, "delegation.t3").status).toBe("skip");
 		expect(existsSync(join(f.home, "state"))).toBe(false);
 	});
 	test("config JSON5/schema and auth failures never retain native messages or sentinels", async () => {
@@ -190,17 +197,19 @@ describe("diagnostic boundary and phases", () => {
 		report = await runHealth(f.options);
 		expect(finding(report, "config.operators").status).toBe("skip");
 	});
-	test("retired delegation keys don't fail the config check — the disk load strips them", async () => {
+	test("retired delegation shapes fail the config check naming the fix", async () => {
 		const f = fixture();
-		writeFileSync(
-			join(f.home, "goblin.json5"),
-			JSON.stringify({
-				...f.config,
-				delegation: { harnesses: { fixture: { kind: "fixture" } }, maxRunning: 2 },
-			}),
-		);
-		const report = await runHealth(f.options);
-		expect(finding(report, "config").status).toBe("pass");
+		for (const delegation of [
+			{ machines: { vps: {} } },
+			{ harnesses: { codex: { provider: "codex", model: "gpt-6-luna" } } },
+		]) {
+			writeFileSync(
+				join(f.home, "goblin.json5"),
+				JSON.stringify({ ...f.config, delegation }),
+			);
+			const report = await runHealth(f.options);
+			expect(finding(report, "config").status).toBe("fail");
+		}
 	});
 });
 
@@ -764,7 +773,7 @@ describe("delegation host, subsystem tables and configured sandbox", () => {
 			join(f.home, "goblin.json5"),
 			JSON.stringify({
 				...f.config,
-				delegation: { harnesses: { devin: { provider: "devin", model: "d-1" } } },
+				delegation: { harnesses: { devin: { kind: "devin" } } },
 			}),
 		);
 		const gated = finding(

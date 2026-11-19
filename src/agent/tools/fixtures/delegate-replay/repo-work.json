@@ -1,7 +1,7 @@
 {
   "version": 1,
   "model": "gpt-6-luna",
-  "requestHash": "0152d7f66ca8813bb5610004d963e9eddc7caa8df8e724ef240e6ae87e59accc",
+  "requestHash": "8e97c71d41a46cddf0b592861fd7e27159d91e6e68cf60a3b733b4df31d7f139",
   "parts": [
     {
       "type": "stream-start",
@@ -9,9 +9,9 @@
     },
     {
       "type": "tool-call",
-      "toolCallId": "call_b0ab6d3a41554553b2cca643e9110516",
+      "toolCallId": "call_3dc36075eeab45a99a224f55f7565a6a",
       "toolName": "delegate",
-      "input": "{\"action\":\"start\",\"harness\":\"codex\",\"task\":\"Fix the flaky login test in the repository at relative path app. Investigate the failure and implement a robust fix, then run relevant tests and report the changes and verification.\",\"cwd\":\"app\",\"name\":\"Fix flaky login test\"}"
+      "input": "{\"action\":\"start\",\"harness\":\"codex\",\"task\":\"Fix the flaky login test in this repository. Inspect the code and tests, identify the cause of flakiness, make an appropriate targeted fix, and run relevant tests. Report changes and validation.\",\"cwd\":\"app\",\"name\":\"Fix flaky login test\"}"
     },
     {
       "type": "finish",

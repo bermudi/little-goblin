@@ -35,7 +35,7 @@ const STALL_MS = 90_000;
 // output-activity signal, so a long healthy task is indistinguishable from a
 // frozen one before that (#489).
 const PROGRESS_STALL_MS = 2 * 3_600_000;
-// A report mtime can lag Date.now(); headroom prevents a same-tick report
+// A report mtime can lag the wall clock; headroom prevents a same-tick report
 // from being mistaken for the previous run.
 const REPORT_SKEW_MS = 200;
 
@@ -249,8 +249,9 @@ async function deliverPendingPrompt(
 	deps: DelegationLifecycleDeps,
 	d: Delegation,
 	info: HcRunInfo,
+	now: number,
 ): Promise<void> {
-	const promptedAt = new Date();
+	const promptedAt = new Date(now);
 	try {
 		await deps.hc.prompt(d.agentName, d.task + reportNote(deps, d));
 	} catch (err) {
@@ -318,7 +319,7 @@ function reportEndsInQuestion(deps: DelegationLifecycleDeps, d: Delegation): boo
 // report first so a previous run cannot complete the new one.
 function freshReportFor(deps: DelegationLifecycleDeps, d: Delegation): boolean {
 	try {
-		// Filesystem clocks can lag Date.now() — headroom keeps a report written
+		// Filesystem clocks can lag the wall clock — headroom keeps a report written
 		// during the prompt fresh.
 		return statSync(reportPathFor(deps, d)).mtimeMs >= Date.parse(d.promptedAt) - REPORT_SKEW_MS;
 	} catch (err) {
@@ -344,6 +345,8 @@ async function check(
 		});
 		return;
 	}
+	// One clock read per check, taken after the observation it judges.
+	const now = Date.now();
 	// Authority at observation (#705): a send/stop that landed while the
 	// get was in flight owns the row — this scan's verdict is stale.
 	const current = deps.delegations.get(d.id);
@@ -397,7 +400,7 @@ async function check(
 		};
 		if (d.status === "needs_input" && d.promptPending && info.agent_status !== "blocked") {
 			// Capture must win before attempting the owed prompt; a later stop can still race delivery.
-			if (capture()) await deliverPendingPrompt(deps, d, info);
+			if (capture()) await deliverPendingPrompt(deps, d, info, now);
 			return;
 		}
 		// A done/completion_seq folded into the capture cannot beat its baseline:
@@ -440,7 +443,7 @@ async function check(
 		// prompt so navigation does not resend every tick; only this path sends
 		// owed prompts.
 		if (d.promptPending) {
-			await deliverPendingPrompt(deps, d, info);
+			await deliverPendingPrompt(deps, d, info, now);
 			return;
 		}
 		// Apply running rules in this tick; a failed CAS means a tool write won.
@@ -478,7 +481,7 @@ async function check(
 			}
 			return;
 		}
-		if (info.agent_status === "idle" && Date.now() - Date.parse(d.promptedAt) > STALL_MS) {
+		if (info.agent_status === "idle" && now - Date.parse(d.promptedAt) > STALL_MS) {
 			const landed = await notify(deps, d, "needs input", {
 				extra: "(agent never started working — likely stuck on a startup dialog)",
 			});
@@ -489,7 +492,6 @@ async function check(
 
 	// Still running past every verdict. A frozen worker reports `working`
 	// forever — seq stagnation is the only observable (#489).
-	const now = Date.now();
 	let progress = lastProgress.get(d.id);
 	if (progress === undefined || progress.seq !== info.state_change_seq) {
 		progress = {

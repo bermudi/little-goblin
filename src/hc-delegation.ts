@@ -72,8 +72,8 @@ export function makeHcDelegation(input: {
 				env: invocation.env,
 			});
 			let info = asRun(terminal);
-			const deadline = Date.now() + 30_000;
-			while (info.agent_status === "unknown" && Date.now() < deadline) {
+			const deadline = performance.now() + 30_000;
+			while (info.agent_status === "unknown" && performance.now() < deadline) {
 				await new Promise((resolve) => setTimeout(resolve, 200));
 				const current = await get(name);
 				if (current === null) throw new HcError("terminal.get", `terminal disappeared during startup: ${name}`);
@@ -95,8 +95,8 @@ export function makeHcDelegation(input: {
 			}
 			await input.hc.send(name, text);
 			if (before === null || before === undefined || before.agent_status !== "idle") return;
-			const end = Date.now() + 30_000;
-			while (Date.now() < end) {
+			const end = performance.now() + 30_000;
+			while (performance.now() < end) {
 				await new Promise((resolve) => setTimeout(resolve, 200));
 				const current = await get(name);
 				if (current === null) throw new HcError("terminal.get", `terminal disappeared after send: ${name}`);

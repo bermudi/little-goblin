@@ -81,7 +81,7 @@ export async function ensureHc(
 	const stage = mkdtempSync(join(parent, `.hc-install-${process.pid}-`));
 	const archivePath = join(stage, "herdr-core.tar.gz");
 	const extractedPath = join(stage, BINARY_NAME);
-	const started = Date.now();
+	const started = performance.now();
 	try {
 		log.info("hc binary download started", { version: pin.version, url: archiveUrl });
 		let archive: Uint8Array;
@@ -122,7 +122,7 @@ export async function ensureHc(
 		log.info("hc binary installed", {
 			path: binaryPath,
 			version: pin.version,
-			ms: Date.now() - started,
+			ms: Math.round(performance.now() - started),
 			outcome: "ok",
 		});
 		return binaryPath;
@@ -130,7 +130,7 @@ export async function ensureHc(
 		log.error("hc binary install failed", err, {
 			version: pin.version,
 			path: binaryPath,
-			ms: Date.now() - started,
+			ms: Math.round(performance.now() - started),
 		});
 		throw err;
 	} finally {

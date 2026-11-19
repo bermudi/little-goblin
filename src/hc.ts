@@ -111,7 +111,7 @@ function hcCoreEnvironment(): string[] {
 
 export async function ensureHcCore(binaryPath: string, session: string): Promise<void> {
 	await ensureHc(binaryPath);
-	const started = Date.now();
+	const started = performance.now();
 	const result = Bun.spawnSync(
 		[
 			"systemd-run",
@@ -131,10 +131,10 @@ export async function ensureHcCore(binaryPath: string, session: string): Promise
 	if (result.exitCode !== 0) {
 		const stderr = result.stderr.toString("utf8").trim().slice(0, 300);
 		const error = new Error(`systemd-run could not start hc (${result.exitCode}): ${stderr}`);
-		log.error("hc core start failed", error, { session, ms: Date.now() - started });
+		log.error("hc core start failed", error, { session, ms: Math.round(performance.now() - started) });
 		throw error;
 	}
-	log.info("hc core start requested", { session, ms: Date.now() - started });
+	log.info("hc core start requested", { session, ms: Math.round(performance.now() - started) });
 }
 
 export function stopHcCore(binaryPath: string, session: string): void {
@@ -173,7 +173,7 @@ export function makeHc(
 
 	async function call(method: string, params: Record<string, unknown>): Promise<unknown> {
 		const id = `goblin-${++requestId}`;
-		const started = Date.now();
+		const started = performance.now();
 		try {
 			const socketPath = socket?.path ?? defaultSocketPath(session).path;
 			const response = await new Promise<unknown>((resolve, reject) => {
@@ -220,13 +220,13 @@ export function makeHc(
 					finish(resolve, envelope.data.result);
 				});
 			});
-			log.info("hc rpc", { method, ms: Date.now() - started, outcome: "ok" });
+			log.info("hc rpc", { method, ms: Math.round(performance.now() - started), outcome: "ok" });
 			return response;
 		} catch (err) {
 			const error = err instanceof HcError
 				? err
 				: new HcError(method, err instanceof Error ? err.message : String(err), "transport_error");
-			log.error("hc rpc failed", error, { method, ms: Date.now() - started });
+			log.error("hc rpc failed", error, { method, ms: Math.round(performance.now() - started) });
 			throw error;
 		}
 	}

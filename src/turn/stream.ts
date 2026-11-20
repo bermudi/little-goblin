@@ -17,6 +17,7 @@ import { quotaFromMetadata } from "../agent/codex/receipts.ts";
 import { toToolSet, ToolExecuteError } from "./ai-sdk-tools.ts";
 import { filterErrorStream, streamSurfaceErrors } from "../agent/filter-stream.ts";
 import { isContentFilter, isContextOverflow } from "../agent/provider-errors.ts";
+import { fromSdkError } from "../agent/sdk-errors.ts";
 import { makeToolCallRepair } from "../agent/tool-repair.ts";
 import { log } from "../log.ts";
 import type { EvidenceLimits, ToolCallDigest } from "../reviewer-evidence.ts";
@@ -595,12 +596,14 @@ export async function driveStream<M extends WireMember>(
 			// after its retry. Only stream-surface errors are mid-stream —
 			// the pre-stream surface is the transport middleware's lane
 			// (agent/providers.ts).
-			const retry = await rules.callFailed(error, {
+			// The engine edge: rules and the outcome see goblin's shape.
+			const failure = fromSdkError(error);
+			const retry = await rules.callFailed(failure, {
 				step: recorder.stepCount,
 				midStream: streamSurfaceErrors.has(error as object),
 			});
 			if (retry) return { retry: true };
-			attempt.rawError = error;
+			attempt.rawError = failure;
 			log.error("model stream error", error, { conversation: convId });
 		},
 		onStepEnd: (step) => {
@@ -674,7 +677,7 @@ export async function driveStream<M extends WireMember>(
 		onError: (error) =>
 			error instanceof ToolExecuteError
 				? error.message
-				: isContentFilter(error)
+				: isContentFilter(fromSdkError(error))
 					? "Provider blocked this request again after one retry."
 					: (transportFailureText(error) ??
 						(error instanceof Error ? error.message : String(error))),
@@ -781,7 +784,7 @@ export async function driveStream<M extends WireMember>(
 			attempt.preemptInfo = { arm: err.arm, step: err.stepNumber };
 			attempt.streamError = err.message;
 		} else {
-			throw err;
+			throw fromSdkError(err);
 		}
 	}
 

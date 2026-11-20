@@ -5,6 +5,7 @@ import type { AgentChildren } from "../agent-children.ts";
 import type { Config } from "../config-schema.ts";
 import type { AuthStore } from "../auth.ts";
 import type { Conversation } from "../conversation-read.ts";
+import type { JSONObject } from "../message.ts";
 import { openStore, type ConversationStore } from "../conversation.ts";
 import type { Desktops } from "../desktops.ts";
 import type { T3, T3Thread } from "../t3.ts";
@@ -18,11 +19,12 @@ import { openResponsibilities } from "../responsibilities.ts";
 import { makeResponsibilityService } from "../responsibility-service.ts";
 import { FencedError, Runtime, userMessage } from "../runtime.ts";
 
-import { aiSdkEngine } from "../turn/ai-sdk-engine.ts";
 import { openTurnJournal } from "../turn-journal.ts";
 import type { Sandboxes } from "../sandboxes.ts";
 import { openWakeStore } from "../wake-store.ts";
-import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
+import { sdkScript } from "../testkit/turn-script-sdk.ts";
+import { claudeScript } from "../testkit/turn-script-claude.ts";
+import type { ScriptCall } from "../testkit/turn-script.ts";
 import { deferred, HeadlessSink, tmpDir, useHome, waitUntil } from "../testkit.ts";
 import { makeWakeDispatcher, type WakeDispatcher } from "../wake-dispatcher.ts";
 import { makeTurnTools, screenshotCapable } from "./turn-tools.ts";
@@ -35,6 +37,21 @@ import {
 import { policyOf } from "./tool-policy.ts";
 
 setLogFile(null);
+
+const toolCall = (toolCallId: string, toolName: string, input: JSONObject) => ({
+	type: "tool-call" as const,
+	toolCallId,
+	toolName,
+	input,
+});
+const reply = (text: string): ScriptCall => ({ kind: "reply", parts: [{ type: "text", text }] });
+const toolReply = (...parts: ReturnType<typeof toolCall>[]): ScriptCall => ({
+	kind: "reply",
+	parts,
+});
+const adapters = [sdkScript, claudeScript] as const;
+const engineName = (make: (typeof adapters)[number]) =>
+	make === sdkScript ? "ai-sdk" : "claude-code";
 
 /** The rig's t3 adapter: lists `agents`, succeeds sends, records them. */
 function fakeT3(agents: () => T3Thread[]) {
@@ -101,7 +118,7 @@ const AGENT: T3Thread = {
 	updatedAt: T0,
 };
 
-const ACCEPT = JSON.stringify({
+const ACCEPT: JSONObject = {
 	action: "accept",
 	understanding: {
 		outcome: "land the fix",
@@ -111,7 +128,7 @@ const ACCEPT = JSON.stringify({
 		completionEvidence: ["ci green"],
 	},
 	attachments: [{ thread: AGENT.threadId }],
-});
+};
 
 const AGENT2: T3Thread = {
 	...AGENT,
@@ -119,7 +136,7 @@ const AGENT2: T3Thread = {
 	title: "worker-2",
 };
 
-const ACCEPT2 = JSON.stringify({
+const ACCEPT2: JSONObject = {
 	action: "accept",
 	understanding: {
 		outcome: "land the second fix",
@@ -129,11 +146,12 @@ const ACCEPT2 = JSON.stringify({
 		completionEvidence: ["its ci green"],
 	},
 	attachments: [{ thread: AGENT2.threadId }],
-});
+};
 
-describe("turn-tools responsibility composition", () => {
+for (const make of adapters) {
+describe(`${engineName(make)}: turn-tools responsibility composition`, () => {
 	function rig(
-		attempts: Parameters<typeof scriptedModel>[0],
+		calls: ScriptCall[],
 		agents: T3Thread[] = [AGENT],
 		delegateDeps?: (conv: Conversation, workdir: string) => DelegateToolDeps | undefined,
 	) {
@@ -180,11 +198,12 @@ describe("turn-tools responsibility composition", () => {
 			responsibility: { resps, service },
 			filterGuests: (_conv, tools) => tools,
 		});
-		const edge = scriptedModel(attempts);
+		const edge = make();
+		edge.script(...calls);
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: edge.engines,
 			store,
-			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+			buildStep: () => edge.step(),
 		});
 		runtime.mount({ makeTools: toolsFor });
 		return { store, conv, project, projects, resps, runtime, toolsFor, configRef, service };
@@ -260,14 +279,10 @@ describe("turn-tools responsibility composition", () => {
 
 	test("accepts dedup on the owned source message; a later message hands over a new responsibility", async () => {
 		const { store, conv, project, resps, runtime } = rig([
-			[
-				toolCallPart("a1", "responsibility", ACCEPT),
-				toolCallPart("a2", "responsibility", ACCEPT),
-				finishPart("tool-calls"),
-			],
-			[...textParts("taken"), finishPart("stop", 10)],
-			[toolCallPart("b1", "responsibility", ACCEPT), finishPart("tool-calls")],
-			[...textParts("also taken"), finishPart("stop", 10)],
+			toolReply(toolCall("a1", "responsibility", ACCEPT), toolCall("a2", "responsibility", ACCEPT)),
+			reply("taken"),
+			toolReply(toolCall("b1", "responsibility", ACCEPT)),
+			reply("also taken"),
 		]);
 		const msg1 = userMessage([{ type: "text", text: "handle this one" }]);
 		const first = new HeadlessSink();
@@ -300,10 +315,10 @@ describe("turn-tools responsibility composition", () => {
 	test("two events with one client message id still get distinct handover keys", async () => {
 		const { store, conv, project, resps, runtime } = rig(
 			[
-				[toolCallPart("a1", "responsibility", ACCEPT), finishPart("tool-calls")],
-				[...textParts("taken"), finishPart("stop", 10)],
-				[toolCallPart("b1", "responsibility", ACCEPT2), finishPart("tool-calls")],
-				[...textParts("also taken"), finishPart("stop", 10)],
+				toolReply(toolCall("a1", "responsibility", ACCEPT)),
+				reply("taken"),
+				toolReply(toolCall("b1", "responsibility", ACCEPT2)),
+				reply("also taken"),
 			],
 			[AGENT, AGENT2],
 		);
@@ -344,9 +359,12 @@ describe("turn-tools responsibility composition", () => {
 		store.close();
 	});
 });
+}
 
-describe("turn-tools managed send linkage", () => {
-	test("a send stamps the journal run and tool-call identity on its operation", async () => {
+for (const make of adapters) {
+describe(`${engineName(make)}: turn-tools managed send linkage`, () => {
+	// The assertion pins the SDK tool-call id; Claude assigns its own id.
+	if (make === sdkScript) test("a send stamps the journal run and tool-call identity on its operation", async () => {
 		const home = useHome(`goblin-tt2-${tmpDir().slice(-6)}-`);
 		mkdirSync(join(home, "state"), { recursive: true });
 		const store = openStore(join(home, "state", "goblin.sqlite"));
@@ -391,18 +409,19 @@ describe("turn-tools managed send linkage", () => {
 			responsibility: { resps, service },
 			filterGuests: (_conv, tools) => tools,
 		});
-		const SEND = JSON.stringify({ action: "send", attachment: 1, brief: "follow up" });
-		const edge = scriptedModel([
-			[toolCallPart("a1", "responsibility", ACCEPT), finishPart("tool-calls")],
-			[...textParts("taken"), finishPart("stop", 10)],
-			[toolCallPart("b1", "responsibility", SEND), finishPart("tool-calls")],
-			[...textParts("sent"), finishPart("stop", 10)],
-		]);
+		const SEND: JSONObject = { action: "send", attachment: 1, brief: "follow up" };
+		const edge = make();
+		edge.script(
+			toolReply(toolCall("a1", "responsibility", ACCEPT)),
+			reply("taken"),
+			toolReply(toolCall("b1", "responsibility", SEND)),
+			reply("sent"),
+		);
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: edge.engines,
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+			buildStep: () => edge.step(),
 		});
 		runtime.mount({ makeTools: toolsFor });
 		const first = new HeadlessSink();
@@ -426,6 +445,7 @@ describe("turn-tools managed send linkage", () => {
 		store.close();
 	});
 });
+}
 
 describe("responsibility epoch authority", () => {
 	test.each(["accept", "send"] as const)(
@@ -483,23 +503,17 @@ describe("responsibility epoch authority", () => {
 				responsibility: { resps, service },
 				filterGuests: (_conv, tools) => tools,
 			});
-			const edge = scriptedModel([
-				[toolCallPart("accept", "responsibility", ACCEPT), finishPart("tool-calls")],
-				[...textParts("taken"), finishPart("stop", 10)],
-				[
-					toolCallPart(
-						"send",
-						"responsibility",
-						JSON.stringify({ action: "send", attachment: 1, brief: "follow up" }),
-					),
-					finishPart("tool-calls"),
-				],
-				[...textParts("sent"), finishPart("stop", 10)],
-			]);
+			const edge = sdkScript();
+			edge.script(
+				toolReply(toolCall("accept", "responsibility", ACCEPT)),
+				reply("taken"),
+				toolReply(toolCall("send", "responsibility", { action: "send", attachment: 1, brief: "follow up" })),
+				reply("sent"),
+			);
 			const runtime = new Runtime({
-				engines: [aiSdkEngine],
+				engines: edge.engines,
 				store,
-				buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+				buildStep: () => edge.step(),
 			});
 			runtime.mount({ makeTools: toolsFor });
 			if (action === "send") {
@@ -620,42 +634,38 @@ describe("operator correction authority", () => {
 			responsibility: { resps, service },
 			filterGuests: (_conv, tools) => tools,
 		});
-		const STALE_SEND = JSON.stringify({
+		const STALE_SEND: JSONObject = {
 			action: "send",
 			responsibility: responsibility.responsibilityId,
 			attachment: att.attachmentId,
 			brief: "OLD-ACTION",
-		});
-		const FRESH_SEND = JSON.stringify({
+		};
+		const FRESH_SEND: JSONObject = {
 			action: "send",
 			responsibility: responsibility.responsibilityId,
 			attachment: att.attachmentId,
 			brief: "NEW-ACTION",
-		});
+		};
 		const started = deferred<void>();
 		const release = deferred<void>();
-		const edge = scriptedModel(
-			[
-				{
-					drive: async (ctx) => {
-						started.resolve();
-						await release.promise;
-						ctx.enqueue(toolCallPart("stale-send", "responsibility", STALE_SEND));
-						ctx.enqueue(finishPart("tool-calls"));
-						ctx.close();
-					},
-				},
-				textParts("corrected course"),
-				[toolCallPart("s1", "responsibility", FRESH_SEND), finishPart("tool-calls")],
-				textParts("sent it"),
-			],
-			{ extra: textParts("done") },
+		const edge = sdkScript();
+		edge.script(
+			{
+				kind: "hold",
+				parts: [toolCall("stale-send", "responsibility", STALE_SEND)],
+				gate: release.promise,
+				entered: () => started.resolve(),
+			},
+			reply("corrected course"),
+			toolReply(toolCall("s1", "responsibility", FRESH_SEND)),
+			reply("sent it"),
+			reply("done"),
 		);
 		runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: edge.engines,
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+			buildStep: () => edge.step(),
 		});
 		runtime.mount({ makeTools: toolsFor, runOwnership: {
 				begin: (e) => dispatcher.hooks.begin(e),
@@ -704,7 +714,7 @@ describe("operator correction authority", () => {
 			.get()!;
 		expect(journal.get(wake.run_id!)?.status).toBe("completed");
 		expect(
-			edge.streamCalls.some((c) => JSON.stringify(c.prompt).includes("Do not perform OLD-ACTION")),
+			edge.requests().some((request) => request.includes("Do not perform OLD-ACTION")),
 		).toBe(true);
 
 		// A genuinely new send under the corrected revision still works.
@@ -808,34 +818,30 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 		responsibility: { resps, service },
 		filterGuests: (_conv, tools) => tools,
 	});
-	const STALE_SEND = JSON.stringify({
+	const STALE_SEND: JSONObject = {
 		action: "send",
 		responsibility: responsibility.responsibilityId,
 		attachment: att.attachmentId,
 		brief: "OLD-ACTION",
-	});
+	};
 	const started = deferred<void>();
 	const release = deferred<void>();
-	const edge = scriptedModel(
-		[
-			{
-				drive: async (ctx) => {
-					started.resolve();
-					await release.promise;
-					ctx.enqueue(toolCallPart("stale-send", "responsibility", STALE_SEND));
-					ctx.enqueue(finishPart("tool-calls"));
-					ctx.close();
-				},
-			},
-			textParts("corrected course"),
-		],
-		{ extra: textParts("done") },
+	const edge = sdkScript();
+	edge.script(
+		{
+			kind: "hold",
+			parts: [toolCall("stale-send", "responsibility", STALE_SEND)],
+			gate: release.promise,
+			entered: () => started.resolve(),
+		},
+		reply("corrected course"),
+		reply("done"),
 	);
 	runtime = new Runtime({
-		engines: [aiSdkEngine],
+		engines: edge.engines,
 		store,
 		turnJournal: journal,
-		buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+		buildStep: () => edge.step(),
 	});
 	runtime.mount({ makeTools: toolsFor, runOwnership: {
 			begin: (e) => dispatcher.hooks.begin(e),
@@ -877,7 +883,7 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 		"correction wake settled",
 	);
 	expect(
-		edge.streamCalls.some((c) => JSON.stringify(c.prompt).includes("Do not perform OLD-ACTION")),
+		edge.requests().some((request) => request.includes("Do not perform OLD-ACTION")),
 	).toBe(true);
 	await waitUntil(() => !runtime.busy(conv.id) && !runtime.busy(conv2.id), "lanes drain");
 	await runtime.shutdown();

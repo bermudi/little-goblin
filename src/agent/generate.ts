@@ -5,6 +5,7 @@ import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import type { FinishReason, Usage } from "../message.ts";
 import type { Tools } from "../tool.ts";
 import { toToolSet } from "../turn/ai-sdk-tools.ts";
+import { fromSdkError } from "./sdk-errors.ts";
 
 export type Model = LanguageModel;
 
@@ -40,6 +41,9 @@ export async function generate(req: GenerateRequest): Promise<Generated> {
 		...(req.tools !== undefined ? { tools: toToolSet(req.tools) } : {}),
 		...(req.maxSteps !== undefined ? { stopWhen: isStepCount(req.maxSteps) } : {}),
 		...(req.signal !== undefined ? { abortSignal: req.signal } : {}),
+	}).catch((err: unknown) => {
+		// Side jobs' callers (the compaction walk) sort goblin's shape.
+		throw fromSdkError(err);
 	});
 	return {
 		text: result.text,

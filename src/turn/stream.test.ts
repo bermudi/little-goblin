@@ -1,3 +1,4 @@
+// These fixtures pin AI SDK v4 stream-part framing, retries, and provider abort behavior.
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { execSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";

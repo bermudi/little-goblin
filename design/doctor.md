@@ -48,6 +48,11 @@ Delegation checks target active projects, not Goblin's own workspace
 (operator, 2026-11-19). Observer outage findings report durable declarations
 without resetting them or probing the named thread.
 
+The herdr-core check must not call its CLI: `server status` can start a
+core (#739). Before first use or after a reboot, not installed or not
+running is expected. A setup failure for the current binary pin matters;
+a failure for a retired pin does not.
+
 ## Reports, failures and execution
 
 Reports must not expose auth values or records, arbitrary command output,

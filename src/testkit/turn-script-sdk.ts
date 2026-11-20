@@ -4,6 +4,11 @@ import type { ModelStep } from "../turn/ai-sdk-step.ts";
 import { finishPart, scriptedModel, type StreamAttempt } from "./fake-model.ts";
 import type { ScriptCall, ScriptPart, ScriptedModel, ScriptUsage } from "./turn-script.ts";
 
+export interface SdkScriptedModel extends ScriptedModel {
+	/** Full serialized AI SDK call options, for tests that pin provider request identity. */
+	callOptions(): string[];
+}
+
 function streamParts(parts: ScriptPart[], usage?: ScriptUsage, finish?: "length" | "content-filter"): LanguageModelV4StreamPart[] {
 	const out: LanguageModelV4StreamPart[] = [{ type: "stream-start", warnings: [] }];
 	let id = 0;
@@ -60,16 +65,21 @@ const errorFor = (error: { message: string; status?: number }): Error =>
 				isRetryable: false,
 			});
 
-export function sdkScript(opts: { label?: string; system?: string } = {}): ScriptedModel {
+export function sdkScript(opts: { label?: string; system?: string } = {}): SdkScriptedModel {
 	const queue: ScriptCall[] = [];
 	const requests: string[] = [];
+	const callOptions: string[] = [];
 	let callCount = 0;
 	const active = scriptedModel([], {
 		onStream(options, index) {
 			callCount = index + 1;
 			requests.push(JSON.stringify(options.prompt));
+			callOptions.push(JSON.stringify(options));
 			const call = queue.shift();
 			if (call === undefined) throw new Error("ai-sdk script exhausted: unexpected model call");
+			if (call.kind === "fail" && call.error.quota) {
+				throw new Error("sdkScript cannot render a typed quota verdict; use status 402");
+			}
 			if (call.kind === "fail" && call.parts.length === 0) throw errorFor(call.error);
 			const parts = streamParts(
 				call.parts,
@@ -78,12 +88,15 @@ export function sdkScript(opts: { label?: string; system?: string } = {}): Scrip
 			);
 			if (call.kind === "fail") return { readError: errorFor(call.error), parts: parts.slice(0, -1) };
 			if (call.kind === "hold") {
+				// Hold mid-step: before the finish and, when the call ends in
+				// text, before that part's end.
+				const tail = call.parts.at(-1)?.type === "text" ? 2 : 1;
 				return {
 					drive: async ({ enqueue, close }) => {
-						for (const part of parts.slice(0, -1)) enqueue(part);
+						for (const part of parts.slice(0, -tail)) enqueue(part);
 						call.entered?.();
 						await call.gate;
-						enqueue(parts.at(-1)!);
+						for (const part of parts.slice(-tail)) enqueue(part);
 						close();
 					},
 				};
@@ -100,5 +113,6 @@ export function sdkScript(opts: { label?: string; system?: string } = {}): Scrip
 		},
 		calls: () => callCount,
 		requests: () => [...requests],
+		callOptions: () => [...callOptions],
 	};
 }

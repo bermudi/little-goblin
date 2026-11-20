@@ -195,6 +195,14 @@ means the interface moved: re-pin with one probe, fix the adapter.
 Each check's store/probe safety rules live in its header and its
 design-doc ruling (delegation.md, mail.md, sandbox.md).
 
+A failed matcher on a happy-dom node used to print every object the
+node reaches and OOM the run instead of failing (#798).
+`app/src/test-dom-print.ts`, a preload that must load before
+`src/testkit.ts`, prints nodes as one line of markup. The diff matchers
+(`toEqual` & co.) refuse a node: compare identity with `toBe()` or a
+property such as `textContent`. A diff matcher on an `expect()` the guard
+did not record fails loudly instead of printing.
+
 Fixture hygiene: bun runs all files of one invocation in a single
 process and scopes a module-level `afterEach` to the first-importing
 file — `bunfig.toml`'s `[test]` preload of `src/testkit.ts`
@@ -217,17 +225,37 @@ Subprocess fixtures publish PID files with temp + rename and validate
 positive signed 32-bit PIDs before signalling. Reading a PID file
 mid-write led to `kill(0, SIGKILL)`, which killed the test worker (#650).
 
-A runaway turn loop in a test eats RAM until the kernel OOMs the box
-(2026-11-15: an `ai` bump silenced the loop detector; two full runs
-crashed g7). To run a suspect test here, cap it:
+A [memory runaway](GLOSSARY.md) — a test stuck in synchronous code that
+keeps allocating — used to run until the kernel OOM-killed it: exit 137,
+no test output, a desktop alert (2026-11-15: an `ai` bump silenced the
+loop detector and two full runs crashed g7; 2026-11-20: nine kills in 30
+minutes, #798). `afterEach`, timers and test timeouts never run then: the
+main thread never yields. The [memory net](GLOSSARY.md)
+(`src/test-memory-net.ts`, the first preload, #818) catches it from a
+worker thread that reads the process RSS every 100 ms. Past the limit it
+writes a `memory runaway:` report to stderr — RSS, limit, the running
+test's full name and where it was registered — and SIGKILLs its own
+process, seconds before the kernel would. The limit is 75% of the
+tightest cgroup `memory.max` (1.5 GiB under the 2 GB cap), at most
+3 GiB; `GOBLIN_TEST_RSS_LIMIT_MB` overrides it. A memory runaway is a red
+result naming the test running when RSS crossed the limit: start there
+(memory kept by earlier tests in the file also counts), don't re-run it. The net learns
+test names by wrapping bun:test's `test`/`it`/`describe`, so it stays
+first in `bunfig.toml`; a test that bypasses the wrapper fails in
+`afterEach`. Design: DESIGN.md → Test posture → Memory net.
+
+Still cap local runs, so a miss can't take the box down:
 `systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0
 timeout 120 bun test <file> -t <name>`. Full-suite runs go to CI.
 Builds, lint and full suites stay on CI, but any agent may run a capped
 typecheck before handing off — `systemd-run --user --scope -q -p
 MemoryMax=4G -p MemorySwapMax=0 timeout 600 bun run typecheck` — and
 must make it pass: skipping it sent four PRs to CI red on type errors
-(operator, 2026-11-18). Never run `app/src/App.test.tsx` locally: it
-needs more than 2 GB, so the cap OOM-kills it; CI covers it.
+(operator, 2026-11-18). `app/src/App.test.tsx` fits the cap: a passing
+run peaks at about 260 MB and takes about 50 s on CI (probe, 2026-11-20).
+The earlier "needs more than 2 GB" note was never measured; a failed
+assertion printing a mounted DOM (#798) fits that symptom. The heaviest
+file is `app/src/tools/parse.test.ts` (1.2 GB on CI, #819).
 
 Test scratch lives in RAM: `src/test-tmpdir.ts`, which preloads first,
 points `TMPDIR` at `/dev/shm` unless `TMPDIR` is already set or tmpfs has

@@ -9,6 +9,7 @@ import type { Message } from "../message.ts";
 import type { PromptMessage } from "../prompt-message.ts";
 import { buildModelView, type ViewContext } from "./view.ts";
 import { resolveSkillRef } from "../agent/skill-inject.ts";
+import { fromSdkError } from "../agent/sdk-errors.ts";
 
 const FLUSH_SYSTEM = [
 	"You are goblin, about to lose the conversation span below from your context: it is being folded into a summary.",
@@ -222,6 +223,9 @@ function makePrefixRequest(
 				...(step.maxRetries !== undefined ? { maxRetries: step.maxRetries } : {}),
 				...(maxSteps !== undefined ? { stopWhen: isStepCount(maxSteps) } : {}),
 				abortSignal: signal,
+			}).catch((err: unknown) => {
+				// The compaction walk sorts goblin's shape, not the SDK's.
+				throw fromSdkError(err);
 			});
 			onResult?.(result);
 			return result.text;

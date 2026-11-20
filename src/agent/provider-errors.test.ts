@@ -1,13 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { RetryError } from "ai";
 import { APICallError } from "@ai-sdk/provider";
+import { fromSdkError } from "./sdk-errors.ts";
 import {
-	isContentFilter,
-	isContextOverflow,
-	isTransientTurnFailure,
-	quotaExhausted,
+	isContentFilter as sortContentFilter,
+	isContextOverflow as sortContextOverflow,
+	isTransientTurnFailure as sortTransientTurnFailure,
+	quotaExhausted as sortQuotaExhausted,
 	ProviderContentFilterError,
+	ProviderError,
 } from "./provider-errors.ts";
+
+// Existing SDK-shaped cases exercise the SDK edge before the sorter.
+const isContextOverflow = (error: unknown) => sortContextOverflow(fromSdkError(error));
+const isContentFilter = (error: unknown) => sortContentFilter(fromSdkError(error));
+const isTransientTurnFailure = (error: unknown) => sortTransientTurnFailure(fromSdkError(error));
+const quotaExhausted = (error: unknown) => sortQuotaExhausted(fromSdkError(error));
 
 // Every positive pins a real provider string to its source. None were
 // observed by goblin itself — the z.ai code is documented at
@@ -145,6 +153,56 @@ describe("isContextOverflow — negatives", () => {
 	test("null and undefined are not overflow", () => {
 		expect(isContextOverflow(undefined)).toBe(false);
 		expect(isContextOverflow(null)).toBe(false);
+	});
+});
+
+describe("goblin provider failure shape", () => {
+	test("HTTP 402 is a quota wall with bland text", () => {
+		const error = new ProviderError("request refused", { status: 402 });
+		expect(quotaExhausted(error)).not.toBeNull();
+		expect(isTransientTurnFailure(error)).toBe(false);
+		expect(isContextOverflow(error)).toBe(false);
+	});
+
+	test("typed quota outranks 429", () => {
+		const error = new ProviderError("request refused", { status: 429, verdict: "quota" });
+		expect(quotaExhausted(error)).not.toBeNull();
+		expect(isTransientTurnFailure(error)).toBe(false);
+	});
+
+	test("typed transient verdict classifies bland text", () => {
+		expect(isTransientTurnFailure(new ProviderError("upstream said no", { verdict: "transient" }))).toBe(true);
+	});
+
+	test("the sorter does not inspect raw AI SDK status fields", () => {
+		const raw = new APICallError({
+			message: "upstream said no",
+			url: "https://api.example.com",
+			requestBodyValues: {},
+			statusCode: 503,
+		});
+		expect(sortTransientTurnFailure(raw)).toBe(false);
+	});
+});
+
+describe("fromSdkError cause conversion", () => {
+	test("a plain Error cause carries SDK status into transient and quota sorting", () => {
+		const at = (status: number) =>
+			new APICallError({
+				message: "upstream said no",
+				url: "https://api.example.com",
+				requestBodyValues: {},
+				statusCode: status,
+			});
+		expect(isTransientTurnFailure(new Error("request failed", { cause: at(503) }))).toBe(true);
+		expect(quotaExhausted(new Error("request failed", { cause: at(402) }))).not.toBeNull();
+	});
+
+	test("goblin errors and unconverted errors are returned unchanged", () => {
+		const filter = new ProviderContentFilterError();
+		const signal = new Error("preempt signal");
+		expect(fromSdkError(filter)).toBe(filter);
+		expect(fromSdkError(signal)).toBe(signal);
 	});
 });
 

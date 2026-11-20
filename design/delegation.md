@@ -98,16 +98,23 @@ Rulings:
   never inventing one. Startup dialogs are the trap. Launch seeds trust
   write-if-absent; it never manufactures consent over a recorded refusal.
   Codex hook/trust config merges preserve existing operator entries and
-  modes. Hooks are durably copied to the stable Goblin home. Claude gets
-  generated `--settings`; Pi gets a per-run extension; OpenCode gets the
-  hooks directory as a TUI plugin and `--standalone`; Devin gets a
-  per-run `--config`.
+  modes. Devin's folder-trust prompt draws before any hook (#743), so
+  launch appends the cwd's realpath to devin's own store,
+  `$XDG_DATA_HOME/devin/cli/trusted_workspaces.json` (`trusted_paths`;
+  default `~/.local/share`), unless an entry already covers it — only
+  that folder's trust, nothing else of the operator's. Devin's "No"
+  records nothing, so there is no refusal to preserve. Not
+  `--respect-workspace-trust false`: it skips the check silently and
+  leaves no record the operator can see or revoke. Hooks are durably
+  copied to the stable Goblin home. Claude gets generated `--settings`;
+  Pi gets a per-run extension; OpenCode gets the hooks directory as a
+  TUI plugin and `--standalone`; Devin gets a per-run `--config`.
 - **The seeded trust keys are pinned against the installed harnesses,
   not just fakes (2026-10-11).** Drift is silent: a renamed key still
   seeds, and the launch shows the consent dialog anyway.
   `src/harness-trust.live.test.ts` (`GOBLIN_HARNESS_TRUST_LIVE=1`) seeds
   a temp HOME through the real entry and greps the installed
-  codex/claude binaries for the pinned literals — nothing real touched
+  codex/claude/devin binaries for the pinned literals — nothing real touched
   (no cost, no auth, no panes). Run after harness upgrades; red means re-pin — probe the new
   bundle for the renamed key, fix `harness-trust.ts`, never discover it
   in a live launch.

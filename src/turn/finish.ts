@@ -21,7 +21,8 @@ import type {
 } from "../reviewer-evidence.ts";
 import { Reviewer } from "../reviewer.ts";
 import type { ForcedKind } from "./state.ts";
-import { type DisplaySink, emitChunk, type LiveChunks, type WireMember } from "./stream.ts";
+import type { DisplaySink } from "./attempt-recorder.ts";
+import { emitChunk, type LiveChunks, type WireMember } from "./stream.ts";
 
 const DEFIANCE_NOTE: Record<ForcedKind, string> = {
 	repeat:

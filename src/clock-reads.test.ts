@@ -106,7 +106,6 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"app/src/MemoryView.tsx": 1,
 	"app/src/ResponsibilityFeed.tsx": 1,
 	"src/agent/catalog-fetch.ts": 5,
-	"src/agent/claude-code/engine.ts": 3,
 	"src/agent/claude-code/mod.ts": 4,
 	"src/agent/codex/auth.ts": 2,
 	"src/agent/codex/login.ts": 1,
@@ -207,7 +206,6 @@ const FROZEN: Readonly<Record<string, number>> = {
 	"src/tg/skill-command.ts": 3,
 	"src/turn-journal.ts": 5,
 	"src/turn/finish.ts": 1,
-	"src/turn/stream.ts": 3,
 	"src/wake-dispatcher.ts": 1,
 	"src/wake-store.ts": 5,
 };

@@ -3,7 +3,8 @@
 
 import type { ModelStep } from "./ai-sdk-step.ts";
 import { type EngineInput, type TurnEngine } from "./engine.ts";
-import { type StreamOutcome, driveStream, type WireMember } from "./stream.ts";
+import { type StreamOutcome } from "./attempt-recorder.ts";
+import { driveStream, type WireMember } from "./stream.ts";
 
 export const aiSdkEngine: TurnEngine<ModelStep> = {
 	id: "ai-sdk",

@@ -116,11 +116,11 @@ Every engine follows these mandatory rules:
   the CLI's ack on claude-code. A batch the model never received goes back
   through `returnSteers` before the outcome: to the head of pending input while
   authority holds, settled `fenced` once it is lost. (#777)
-- Call `saveStep` at every step end.
-- Apply the fallback error hold through `holdsZeroEffectError`.
+- Keep attempt bookkeeping in the attempt recorder
+  (`src/turn/attempt-recorder.ts`). It saves the checkpoint at every step end
+  (`saveStep`), applies the fallback error hold (`holdsZeroEffectError`),
+  builds reply metadata (`replyMetadata`), and builds the `StreamOutcome`.
 - Abort on `deps.signal`.
-- Build reply metadata through `replyMetadata`.
-- Return a `StreamOutcome`.
 
 `EngineRules` declares the optional rules each engine follows:
 
@@ -157,6 +157,7 @@ it does not claim.
 
 - Implement `TurnEngine` in its own adapter directory (one vendor
   package, one dir — the claude-code layout).
+- Feed the attempt recorder.
 - Call the `deps.rules` hooks its vendor loop can reach, and declare
   its `rules` to match.
 - Add the engine's step variant, with its own `engine` tag, to `TurnStep`

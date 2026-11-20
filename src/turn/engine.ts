@@ -4,7 +4,8 @@
 // and telemetry contract — channel sinks, replay/attach, and
 // crash-resume stay engine-neutral.
 
-import type { StreamDeps, StreamOutcome, WireMember } from "./stream.ts";
+import type { StreamDeps, WireMember } from "./stream.ts";
+import type { StreamOutcome } from "./attempt-recorder.ts";
 
 /**
  * The optional turn rules an engine follows (design/runtime-turn.md →

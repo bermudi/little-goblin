@@ -9,10 +9,8 @@ import {
 	toUIMessageStream,
 } from "ai";
 import type {
-	FinishReason,
 	Message,
 	MessageChunk,
-	Usage,
 } from "../message.ts";
 import type { PromptMessage, ToolContent } from "../prompt-message.ts";
 import { quotaFromMetadata } from "../agent/codex/receipts.ts";
@@ -20,7 +18,6 @@ import { toToolSet, ToolExecuteError } from "./ai-sdk-tools.ts";
 import { filterErrorStream, streamSurfaceErrors } from "../agent/filter-stream.ts";
 import { isContentFilter, isContextOverflow } from "../agent/provider-errors.ts";
 import { makeToolCallRepair } from "../agent/tool-repair.ts";
-import type { AppLiveContext, AppQuota } from "../http/app-wire.ts";
 import { log } from "../log.ts";
 import type { EvidenceLimits, ToolCallDigest } from "../reviewer-evidence.ts";
 import type { Tools } from "../tool.ts";
@@ -30,18 +27,16 @@ import type { AdmittedMember, LiveWire } from "./admission.ts";
 import { measurePrompt, type PromptSegments } from "./itemize.ts";
 import { stepModelRef } from "./model-ref.ts";
 import { PreemptSignal, transportFailureText } from "./overflow.ts";
-import { replyMetadata } from "./reply-metadata.ts";
 import type { SkillWatch } from "./skill-attribution.ts";
 import type { StepRules } from "./step-rules.ts";
-import { holdsZeroEffectError, type ForcedKind, type LoopTurnState, type TurnState } from "./state.ts";
-import {
-	noteToolError,
-	noteToolInput,
-	noteToolInputRejected,
-	noteToolOutput,
-	openToolEvents,
-} from "./tool-events.ts";
+import { type ForcedKind, type TurnState } from "./state.ts";
 import { convertSteeredMessage, type ViewContext } from "./view.ts";
+import {
+	openAttemptRecorder,
+	type DisplaySink,
+	type SteerLedger,
+	type StreamOutcome,
+} from "./attempt-recorder.ts";
 
 const REPEAT_CUT =
 	"Loop check: the same tool call kept returning the same result. Tools are disabled for this final step. Write your answer to the operator now from what you have, and say plainly what is unverified and what was blocking you.";
@@ -254,19 +249,6 @@ export function joinMember<M extends WireMember>(
 
 // ---------- the steer fold ----------
 
-/** One attempt's steer ledger: the steer mark and its owned input seqs. */
-export interface SteerLedger {
-	mark: number;
-	owned: Set<number>;
-}
-
-export function openSteerLedger(deps: {
-	steerMarkSeed: number;
-	ownedInputSeqs: number[];
-}): SteerLedger {
-	return { mark: deps.steerMarkSeed, owned: new Set(deps.ownedInputSeqs) };
-}
-
 type SteerDeps<M extends WireMember> = Pick<
 	StreamDeps<M>,
 	| "convId"
@@ -393,12 +375,6 @@ export function returnSteers<M extends WireMember>(
 
 // ---------- the driver ----------
 
-export interface DisplaySink {
-	onTextDelta(delta: string): void;
-	onReasoningDelta(delta: string): void;
-	onToolCall(toolName: string, input: unknown): void;
-}
-
 export interface StreamStep {
 	model: LanguageModel;
 	system: string;
@@ -468,101 +444,45 @@ export interface StreamDeps<M extends WireMember> {
 	fallbackMisses?: ReadonlyArray<{ ref: string; reason: string }> | undefined;
 }
 
-export type StreamOutcome =
-	| {
-			kind: "ok";
-			responseMessage: Message | null;
-			usage: Usage | null;
-			finishReason: FinishReason | null;
-			lastStepInputTokens: number | null;
-			toolCalls: string[];
-			digestRing: { id: string; entry: ToolCallDigest }[];
-			steerMark: number;
-			// The final step's outbound prompt — null when no step ran.
-			window: WindowCapture | null;
-			// Window-row metadata: which model ran, how many steps.
-			model: string;
-			steps: number;
-			// #418: the native Claude session this attempt ran — the
-			// runtime persists the claude_sessions record only after the
-			// reply lands durably. Absent on non-Claude engines.
-			claudeSession?: { sessionId: string; headUuid: string } | undefined;
-	  }
-	| {
-			kind: "failed";
-			errorText: string;
-			rawError: unknown;
-			holdForRecovery: boolean;
-			// The error chunk was withheld (holdZeroEffectError) — nothing
-			// about this failure reached the wire.
-			errorHeld?: boolean;
-			// Set when the failure is a step-boundary pre-empt, not a provider
-			// error: the recovery rail is the same, the compact reason and the
-			// operator-facing story are not.
-			preempt?: { arm: "pressure"; step: number };
-			partial: Message | null;
-			seenText: boolean;
-			toolCalls: string[];
-			digestRing: { id: string; entry: ToolCallDigest }[];
-			loop: LoopTurnState;
-			steerMark: number;
-			filterRetryUsed: boolean;
-			// The last completed step's prompt — the call went out even
-			// when the turn failed on a later one.
-			window: WindowCapture | null;
-			model: string;
-			steps: number;
-	  };
-
 export async function driveStream<M extends WireMember>(
 	deps: StreamDeps<M>,
 ): Promise<StreamOutcome> {
 	const { convId, head, members, live, state } = deps;
 	const sdkTools = toToolSet(deps.tools);
 	const modelLabel = stepModelRef(deps.step);
-	let lastStepInputTokens: number | null = null;
-	let lastStepCacheRead: number | null = null;
-	// Latest codex quota receipt — the stream's rate_limits event can be
-	// fresher than the header read; keep the newest non-null snapshot.
-	let turnQuota: AppQuota | null = null;
-	let lastPromptChars: PromptSegments | null = null;
-	// The window record, captured in two stages — prepareStep stages the
-	// step's outbound prompt, onStepEnd promotes it. A staged prompt whose
-	// call never dispatched (abort, a doStream throw) is a prompt nothing
-	// saw and must never become the record; the promoted one is the last
-	// completed step, on either outcome rail. References only;
-	// serialization happens once, when the runtime records the turn.
-	let stagedWindow: { messages: PromptMessage[]; segments: PromptSegments } | null = null;
-	let lastWindow: { messages: PromptMessage[]; segments: PromptSegments } | null = null;
-	let stepCount = 0;
-	let rawError: unknown = null;
+	const recorder = openAttemptRecorder(deps, modelLabel, (chunk) =>
+		emitChunk(convId, members, live, chunk),
+	);
+	const attempt = {
+		lastPromptChars: null as PromptSegments | null,
+		// The window record, captured in two stages — prepareStep stages the
+		// step's outbound prompt, onStepEnd promotes it. A staged prompt whose
+		// call never dispatched (abort, a doStream throw) is a prompt nothing
+		// saw and must never become the record; the promoted one is the last
+		// completed step, on either outcome rail. References only;
+		// serialization happens once, when the runtime records the turn.
+		stagedWindow: null as { messages: PromptMessage[]; segments: PromptSegments } | null,
+		lastWindow: null as { messages: PromptMessage[]; segments: PromptSegments } | null,
+		rawError: null as unknown,
+		// The pre-empt decision, captured when the signal surfaces so the
+		// failed outcome can name the arm and step.
+		preemptInfo: null as { arm: "pressure"; step: number } | null,
+		streamError: null as string | null,
+		sawErrorPart: false,
+		errorHeld: false,
+		partialResponse: null as Message | null,
+		responseMessage: null as Message | null,
+	};
 	const rules = deps.rules;
-	// Read inside streamText's onStepEnd, so it must be declared before
-	// the factory call — an await inserted between the two leaves every
-	// step end in the TDZ while still compiling.
-	let holdForRecovery = false;
-	// The pre-empt decision, captured when the signal surfaces so the
-	// failed outcome can name the arm and step. Also read only after the
-	// stream settles — declared here for the same TDZ reason.
-	let preemptInfo: { arm: "pressure"; step: number } | null = null;
-	const partialMessages: PromptMessage[] = [];
-	// #493-L10 — a death mid-step must not lose text already on the
-	// wire: the in-flight step's streamed text rides the checkpoint as
-	// one extra assistant message, throttled to at most one write per
-	// second so a long stream costs a write per second, not per token.
-	// Reset at each step end — the completed step's messages already
-	// carry its text.
-	let streamedTail = "";
-	let lastTailCheckpointMs = 0;
-	const steers = openSteerLedger(deps);
+	const steers = recorder.steers;
 	// The finish metadata part is written after the final step, so the
 	// last prepareStep capture is that step's outbound prompt — the
 	// window the gauge itemizes.
 	const notePrompt = (messages: readonly PromptMessage[], stepNumber: number) => {
 		const segments = measurePrompt(deps.step.system, deps.tools, messages);
-		lastPromptChars = segments;
+		attempt.lastPromptChars = segments;
 		const staged = [...messages];
-		stagedWindow = { messages: staged, segments };
+		attempt.stagedWindow = { messages: staged, segments };
 		// The pre-empt fold (design/compaction.md → Timing): an arm stops
 		// the dispatch — the throw surfaces as the step's error part.
 		const arm = rules.beforeCall(stepNumber, staged);
@@ -676,58 +596,34 @@ export async function driveStream<M extends WireMember>(
 			// the pre-stream surface is the transport middleware's lane
 			// (agent/providers.ts).
 			const retry = await rules.callFailed(error, {
-				step: stepCount,
+				step: recorder.stepCount,
 				midStream: streamSurfaceErrors.has(error as object),
 			});
 			if (retry) return { retry: true };
-			rawError = error;
+			attempt.rawError = error;
 			log.error("model stream error", error, { conversation: convId });
 		},
 		onStepEnd: (step) => {
-			stepCount++;
 			// The step's request was dispatched and consumed — its staged
 			// prompt becomes the record ("last completed step"; an errored
 			// dispatch still counts, the model saw the prompt).
-			lastWindow = stagedWindow;
-			lastStepInputTokens = step.usage.inputTokens ?? null;
-			rules.afterCall({ inputTokens: lastStepInputTokens, failed: step.finishReason === "error" });
-			lastStepCacheRead = step.usage.inputTokenDetails?.cacheReadTokens ?? null;
-			turnQuota = quotaFromMetadata(step.providerMetadata) ?? turnQuota;
+			attempt.lastWindow = attempt.stagedWindow;
 			// Assistant steps only — tool-result messages re-derive from
 			// the journal at resume, and carrying them doubles checkpoint
 			// bulk for nothing.
 			for (const m of step.response.messages) {
-				if (m.role === "assistant") partialMessages.push(m);
+				if (m.role === "assistant") recorder.appendPartial(m);
 			}
-			streamedTail = "";
-			deps.saveStep({
-				loopState: state.snapshot(),
-				filterRetryUsed: rules.filterRetryUsed(),
-				...(partialMessages.length > 0 ? { partial: partialMessages } : {}),
+			recorder.stepEnded({
+				usage: {
+					input: step.usage.inputTokens ?? null,
+					cacheRead: step.usage.inputTokenDetails?.cacheReadTokens ?? null,
+					cacheWrite: step.usage.inputTokenDetails?.cacheWriteTokens ?? null,
+					output: step.usage.outputTokens ?? null,
+				},
+				failed: step.finishReason === "error",
+				quota: quotaFromMetadata(step.providerMetadata),
 			});
-			// null = provider didn't report the split, 0 = reported-and-cold; inputTokens includes the cached ones. Read-only caches (OpenRouter, openai-compatible) leave cacheWrite null.
-			log.info("model step usage", {
-				conversation: convId,
-				inputTokens: step.usage.inputTokens ?? null,
-				cacheReadTokens: step.usage.inputTokenDetails?.cacheReadTokens ?? null,
-				cacheWriteTokens: step.usage.inputTokenDetails?.cacheWriteTokens ?? null,
-				outputTokens: step.usage.outputTokens ?? null,
-			});
-			// The composer's context gauge reads settled turns only — the
-			// wire carries this step's window occupancy as a transient data
-			// part so a streaming client can show it while the turn runs.
-			if (deps.holdsAuthority() && !holdForRecovery) {
-				const liveContext: AppLiveContext = {
-					input: lastStepInputTokens,
-					cacheRead: lastStepCacheRead,
-					...(turnQuota !== null ? { quota: turnQuota } : {}),
-				};
-				emitChunk(convId, members, live, {
-					type: "data-context",
-					transient: true,
-					data: liveContext,
-				});
-			}
 		},
 	});
 
@@ -747,29 +643,6 @@ export async function driveStream<M extends WireMember>(
 			});
 		});
 
-	let responseMessage: Message | null = null;
-	let partialResponse: Message | null = null;
-	const evidence = deps.evidence;
-	const events = openToolEvents({ toolCalls: deps.toolCalls, digest: deps.digest });
-	const eventsDeps = {
-		convId,
-		evidence,
-		skillWatch: deps.skillWatch,
-		onCompleted: (tool: string, input: unknown, result: unknown, failed: boolean) =>
-			state.noteCompletedCall(tool, input, result, failed),
-	};
-	let lastTextPartId: string | null = null;
-	let seenText = deps.seenText;
-	let pendingStep = false;
-	let streamError: string | null = null;
-	let sawErrorPart = false;
-	let errorHeld = false;
-	// First model-produced content this turn — the finish stamp reads it
-	// for the TTFT field. Text/reasoning deltas and tool input count;
-	// structural parts (start, start-step, finish-step) never do.
-	// Declared before the factory call — messageMetadata is invoked while
-	// parts flow, so the capture must exist by then.
-	let firstTokenMs: number | null = null;
 	const uiStream = toUIMessageStream<ToolSet, Message>({
 		stream: result.stream,
 		sendReasoning: true,
@@ -777,34 +650,25 @@ export async function driveStream<M extends WireMember>(
 		generateMessageId: randomUUID,
 		messageMetadata: ({ part }) => {
 			if (
-				firstTokenMs === null &&
 				(part.type === "text-delta" ||
 					part.type === "reasoning-delta" ||
 					part.type === "tool-input-start" ||
 					part.type === "tool-input-delta" ||
 					part.type === "tool-call")
 			) {
-				firstTokenMs = Date.now() - deps.turnStartMs;
+				recorder.noteFirstToken();
 			}
 			if (part.type !== "finish") return undefined;
-			return replyMetadata({
-				label: modelLabel,
+			return recorder.metadata({
 				finishReason: part.finishReason,
-				turnStartMs: deps.turnStartMs,
-				now: Date.now(),
-				firstTokenMs,
 				forcedCompletion: state.forcedCompletion(),
 				usage: {
 					input: part.totalUsage.inputTokens ?? null,
 					output: part.totalUsage.outputTokens ?? null,
 					cacheRead: part.totalUsage.inputTokenDetails?.cacheReadTokens ?? null,
 					cacheWrite: part.totalUsage.inputTokenDetails?.cacheWriteTokens ?? null,
-					lastInput: lastStepInputTokens,
-					lastCacheRead: lastStepCacheRead,
 				},
-				promptChars: lastPromptChars,
-				quota: turnQuota,
-				fallbackMisses: deps.fallbackMisses,
+				promptChars: attempt.lastPromptChars,
 			});
 		},
 		onError: (error) =>
@@ -817,8 +681,8 @@ export async function driveStream<M extends WireMember>(
 		onFinish: ({ responseMessage: rm, isAborted, outcome }) => {
 			if (isAborted) return;
 			if (outcome.status === "failed") {
-				partialResponse = rm;
-				streamError ??=
+				attempt.partialResponse = rm;
+				attempt.streamError ??=
 					outcome.error instanceof Error
 						? outcome.error.message
 						: outcome.error != null
@@ -826,12 +690,10 @@ export async function driveStream<M extends WireMember>(
 							: "model stream failed";
 				return;
 			}
-			responseMessage = rm;
+			attempt.responseMessage = rm;
 		},
 	});
 
-	const toolCalls = events.toolCalls;
-	const digestRing = events.digestRing;
 	// Provider-executed calls (hosted web_search) ride the same wire
 	// chunks but are not local actions — no journal rows, no retry
 	// grants, no loop-detector evidence.
@@ -840,27 +702,27 @@ export async function driveStream<M extends WireMember>(
 		for await (const chunk of uiStream) {
 			deps.assertAuthority();
 			if (chunk.type === "error") {
-				sawErrorPart = true;
-				const overflow = isContextOverflow(chunk.errorText) || isContextOverflow(rawError);
+				attempt.sawErrorPart = true;
+				const overflow = isContextOverflow(chunk.errorText) || isContextOverflow(attempt.rawError);
 				if (overflow && deps.overflowRecoverable) {
-					holdForRecovery = true;
+					recorder.holdForRecovery();
 				}
 				// A pre-empt signal surfacing as an error part: the next call
 				// was stopped before dispatch — hold the rail for the fold-resume.
-				if (rawError instanceof PreemptSignal && deps.overflowRecoverable) {
-					holdForRecovery = true;
-					preemptInfo = { arm: rawError.arm, step: rawError.stepNumber };
+				if (attempt.rawError instanceof PreemptSignal && deps.overflowRecoverable) {
+					recorder.holdForRecovery();
+					attempt.preemptInfo = { arm: attempt.rawError.arm, step: attempt.rawError.stepNumber };
 				}
 			}
 			if (
 				chunk.type === "error" &&
-				holdsZeroEffectError(deps.holdZeroEffectError, state, holdForRecovery)
+				recorder.holdsError()
 			) {
-				errorHeld = true;
-			} else if (!holdForRecovery) {
-				if (chunk.type === "finish" && sawErrorPart) {
+				attempt.errorHeld = true;
+			} else if (!recorder.holding) {
+				if (chunk.type === "finish" && attempt.sawErrorPart) {
 					const metadata = chunk.messageMetadata;
-					emitChunk(convId, members, live, {
+					recorder.emit({
 						...chunk,
 						finishReason: "error",
 						...(typeof metadata === "object" && metadata !== null
@@ -868,46 +730,21 @@ export async function driveStream<M extends WireMember>(
 							: {}),
 					});
 				} else {
-					emitChunk(convId, members, live, chunk);
+					recorder.emit(chunk);
 				}
 			}
 			// The SDK emits start-step before an error part, so an error-only step must leave modelCalls at 0. Fail closed on anything else — modelCalls gates the retry ladder, so an unrecognized chunk type spends the call, never permits a retry.
-			if (pendingStep && chunk.type !== "error") {
-				state.noteModelCall();
-				pendingStep = false;
-			}
+			if (chunk.type !== "error") recorder.spendCall();
 			switch (chunk.type) {
 				case "start-step":
 					// openai-compatible providers synthesize part ids per request, so step 2 can reuse step 1's id verbatim — reset instead of trusting ids.
-					lastTextPartId = null;
-					pendingStep = true;
+					recorder.callStarted();
 					break;
 				case "text-delta":
-					if (seenText && (lastTextPartId === null || chunk.id !== lastTextPartId)) {
-						head.onTextDelta("\n\n");
-					}
-					lastTextPartId = chunk.id;
-					seenText = true;
-					head.onTextDelta(chunk.delta);
-					streamedTail += chunk.delta;
-					{
-						const nowMs = Date.now();
-						if (nowMs - lastTailCheckpointMs >= 1_000) {
-							lastTailCheckpointMs = nowMs;
-							deps.saveStep({
-								partial: [
-									...partialMessages,
-									{
-										role: "assistant",
-										content: [{ type: "text", text: streamedTail }],
-									},
-								],
-							});
-						}
-					}
+					recorder.textDelta(chunk.id, chunk.delta);
 					break;
 				case "reasoning-delta":
-					head.onReasoningDelta(chunk.delta);
+					recorder.reasoningDelta(chunk.delta);
 					break;
 				case "tool-input-available":
 					head.onToolCall(chunk.toolName, chunk.input);
@@ -915,39 +752,23 @@ export async function driveStream<M extends WireMember>(
 						providerExecutedIds.add(chunk.toolCallId);
 						break;
 					}
-					noteToolInput(
-						events,
-						{
-							convId,
-							evidence,
-							noteJournal: (callId, name, input) =>
-								deps.journal?.noteToolInput(deps.runId, callId, name, input),
-						},
-						chunk.toolCallId,
-						chunk.toolName,
-						chunk.input,
-					);
+					recorder.toolInput(chunk.toolCallId, chunk.toolName, chunk.input, { journal: true });
 					break;
 				case "tool-input-error":
 					if (providerExecutedIds.has(chunk.toolCallId)) break;
-					noteToolInputRejected(
-						eventsDeps,
-						chunk.toolName,
-						chunk.input,
-						chunk.errorText,
-					);
+					recorder.toolInputRejected(chunk.toolName, chunk.input, chunk.errorText);
 					break;
 				case "tool-output-available":
 					if (providerExecutedIds.has(chunk.toolCallId)) break;
-					noteToolOutput(events, eventsDeps, chunk.toolCallId, chunk.output);
+					recorder.toolOutput(chunk.toolCallId, chunk.output);
 					break;
 				case "tool-output-error":
 					if (providerExecutedIds.has(chunk.toolCallId)) break;
-					noteToolError(events, eventsDeps, chunk.toolCallId, chunk.errorText);
+					recorder.toolError(chunk.toolCallId, chunk.errorText);
 					break;
 				case "error":
-					pendingStep = false;
-					streamError = chunk.errorText;
+					recorder.dropCall();
+					attempt.streamError = chunk.errorText;
 					break;
 			}
 		}
@@ -956,9 +777,9 @@ export async function driveStream<M extends WireMember>(
 		// surfacing as an error part, depending on where the SDK catches the
 		// prepareStep throw. Either surface lands on the same rail.
 		if (err instanceof PreemptSignal && deps.overflowRecoverable) {
-			holdForRecovery = true;
-			preemptInfo = { arm: err.arm, step: err.stepNumber };
-			streamError = err.message;
+			recorder.holdForRecovery();
+			attempt.preemptInfo = { arm: err.arm, step: err.stepNumber };
+			attempt.streamError = err.message;
 		} else {
 			throw err;
 		}
@@ -969,36 +790,26 @@ export async function driveStream<M extends WireMember>(
 	// stepCount: a prompt built for a call that never completed a step
 	// is not a window anything saw — steps: 0 must read null.
 	const windowCapture = (): WindowCapture | null => {
-		if (lastWindow === null || stepCount === 0) return null;
+		if (attempt.lastWindow === null || recorder.stepCount === 0) return null;
 		return {
 			v: 1,
 			system: deps.step.system,
 			tools: serializeToolDefs(deps.tools),
-			messages: lastWindow.messages,
-			segments: lastWindow.segments,
+			messages: attempt.lastWindow.messages,
+			segments: attempt.lastWindow.segments,
 		};
 	};
 
 	deps.assertAuthority();
-	if (streamError !== null) {
-		return {
-			kind: "failed",
-			errorText: streamError,
-			rawError,
-			holdForRecovery,
-			...(errorHeld ? { errorHeld: true } : {}),
-			...(preemptInfo !== null ? { preempt: preemptInfo } : {}),
-			partial: partialResponse as Message | null,
-			seenText,
-			toolCalls,
-			digestRing,
-			loop: state.snapshot(),
-			steerMark: steers.mark,
-			filterRetryUsed: rules.filterRetryUsed(),
+	if (attempt.streamError !== null) {
+		return recorder.failed({
+			errorText: attempt.streamError,
+			rawError: attempt.rawError,
+			partial: attempt.partialResponse,
+			errorHeld: attempt.errorHeld,
+			...(attempt.preemptInfo !== null ? { preempt: attempt.preemptInfo } : {}),
 			window: windowCapture(),
-			model: modelLabel,
-			steps: stepCount,
-		};
+		});
 	}
 	const usage = await Promise.resolve(result.usage).catch((err) => {
 		log.warn("turn usage unavailable — totals skipped", err, {
@@ -1013,17 +824,10 @@ export async function driveStream<M extends WireMember>(
 		return null;
 	});
 	deps.assertAuthority();
-	return {
-		kind: "ok",
-		responseMessage: responseMessage as Message | null,
+	return recorder.ok({
+		responseMessage: attempt.responseMessage,
 		usage,
 		finishReason,
-		lastStepInputTokens,
-		toolCalls,
-		digestRing,
-		steerMark: steers.mark,
 		window: windowCapture(),
-		model: modelLabel,
-		steps: stepCount,
-	};
+	});
 }

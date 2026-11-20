@@ -382,7 +382,7 @@ describe(`agent children engine — ${engineName(make)}`, () => {
 		const r = rig();
 		const gate = gated("STEER TARGET");
 		r.queue.push(gate.calls);
-		// Claude does not ack the steer, so the sent message is queried in a follow-up turn.
+		// No tool boundary sends this late input into Claude's query; it needs a follow-up reply.
 		if (make === claudeScript) r.queue.push(reply("STEER TARGET"));
 		const { child } = await spawn(r, "slow");
 		expect(childOf(r.engine.send(child.conversationId, "and also this")).status).toBe("running");

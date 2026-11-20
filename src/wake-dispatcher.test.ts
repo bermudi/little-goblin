@@ -399,7 +399,7 @@ describe(`wake dispatcher — ${engineName(make)}`, () => {
 		r.store.close();
 	});
 
-	// Claude starts a separate run for the later wake; logs show two turn starts and distinct run IDs.
+	// Claude gives a later wake its own run: with no tool boundary it cannot fold the steer (preemptFold is ai-sdk only).
 	if (make === sdkScript) test("a development recorded against an already-claimed wake gets its own wake", async () => {
 		// Coalescing is the pending window only — once the trigger is
 		// committed history it can't change, so a later development is a
@@ -439,13 +439,12 @@ describe(`wake dispatcher — ${engineName(make)}`, () => {
 		r.store.close();
 	});
 
-	// Claude's adapter is bound to the rig model, not this separate buildStep ScriptedModel.
-	if (make === sdkScript) test("a fenced run fails the wake's delivery", async () => {
+	test("a fenced run fails the wake's delivery", async () => {
 		let release!: () => void;
 		const gate = new Promise<void>((resolve) => { release = resolve; });
 		const slow = make();
 		slow.script({ kind: "hold", parts: [{ type: "text", text: "slow" }], gate });
-		const r = rig({ buildStep: () => slow.step() });
+		const r = rig({ model: slow });
 		const rec = dev(r, "poll:1");
 		await waitUntil(() => wake(r, rec.wakeId).runId !== null, "wake linked");
 		r.runtime.stop(r.conv.id);
@@ -454,8 +453,7 @@ describe(`wake dispatcher — ${engineName(make)}`, () => {
 		r.store.close();
 	});
 
-	// Claude ScriptedModel does not ack the steer, so it is requeued to a follow-up turn.
-	if (make === sdkScript) test("a wake submitted mid-turn steers into the live run — real ownership", async () => {
+	test("a wake submitted mid-turn steers into the live run — real ownership", async () => {
 		const gate = deferred<void>();
 		const edge = make();
 		edge.script(
@@ -489,15 +487,20 @@ describe(`wake dispatcher — ${engineName(make)}`, () => {
 		expect(runs).toBe(0);
 		expect(done.runId).not.toBeNull();
 		expect(r.journal.get(done.runId!)?.status).toBe("completed");
-		// One trigger in history, folded into the second model call.
+		// One trigger in history, folded into the live turn.
 		const prompts = edge.requests();
-		expect(prompts).toHaveLength(2);
-		expect(prompts[1]).toContain("mid-turn development");
+		expect(prompts).toHaveLength(make === sdkScript ? 2 : 1);
+		if (make === sdkScript) expect(prompts[1]).toContain("mid-turn development");
+		const trigger = r.store.historyEntries(r.conv.id).find((entry) => entry.message.id === done.messageId);
+		expect(trigger).toBeDefined();
+		expect(trigger!.message.parts.some((part) =>
+			part.type === "text" && part.text.includes("mid-turn development"),
+		)).toBe(true);
+		expect(r.journal.get(done.runId!)?.ownedInputSeqs).toContain(trigger!.seq);
 		r.store.close();
 	});
 
-	// Claude ScriptedModel does not ack the steer, so it is requeued to a follow-up turn.
-	if (make === sdkScript) test("pump resubmits of a queued wake deduplicate — the trigger is processed once", async () => {
+	test("pump resubmits of a queued wake deduplicate — the trigger is processed once", async () => {
 		const gate = deferred<void>();
 		const edge = make();
 		edge.script(
@@ -530,8 +533,14 @@ describe(`wake dispatcher — ${engineName(make)}`, () => {
 		expect(done.runId).not.toBeNull();
 		expect(r.journal.get(done.runId!)?.status).toBe("completed");
 		const prompts = edge.requests();
-		expect(prompts).toHaveLength(2);
-		expect(prompts[1]!.split("dedupe marker").length - 1).toBe(1);
+		expect(prompts).toHaveLength(make === sdkScript ? 2 : 1);
+		if (make === sdkScript) expect(prompts[1]!.split("dedupe marker").length - 1).toBe(1);
+		const trigger = r.store.historyEntries(r.conv.id).find((entry) => entry.message.id === done.messageId);
+		expect(trigger).toBeDefined();
+		expect(trigger!.message.parts.some((part) =>
+			part.type === "text" && part.text.includes("dedupe marker"),
+		)).toBe(true);
+		expect(r.journal.get(done.runId!)?.ownedInputSeqs?.filter((seq) => seq === trigger!.seq)).toHaveLength(1);
 		expect(texts(r).filter((m) => m.id === done.messageId)).toHaveLength(1);
 		r.store.close();
 	});

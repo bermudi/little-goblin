@@ -163,7 +163,11 @@ home-hashed core session outside the service cgroup. Its state remains in
 `~/.local/state/herdr-core/<session>/`; Goblin does not set
 `XDG_STATE_HOME`. The core and its terminals survive Goblin restarts.
 `src/hc.live.test.ts` is the gated wire check and uses only a throwaway
-session.
+session. A failed install or core start writes
+`$GOBLIN_HOME/state/hc-setup-failure.json` (stage, pinned version, time)
+before the error returns, and the next successful setup removes it: the
+failure leaves no other trace, and doctor's `delegation.hc` needs one to
+tell "never ran" from "broken" (design/doctor.md, #739).
 
 - **Harnesses stay config** as `{kind, args?, askFirst?}` plus
   `delegation.defaults`. The retired T3 shape is rejected at boot with a

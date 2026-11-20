@@ -1,0 +1,82 @@
+# CircleCI mirror of .github/workflows/ci.yml — same jobs, same commands.
+#
+# Speed picture vs GitHub Actions (ubuntu-latest = 4 vCPU / 16 GB, free;
+# observed ~2-4 min wall-clock per run):
+#   - resource_class is the only real lever. medium (free plan) is
+#     2 vCPU / 4 GB: each shard gets half the cores GHA gives it, and
+#     4 GB is tight for `bun test --parallel` — app/src/App.test.tsx
+#     alone peaks over 2 GB, so two workers can OOM a medium container.
+#     large (4 vCPU / 8 GB) roughly matches GHA. xlarge (8 vCPU / 16 GB)
+#     is where CircleCI starts beating it. Bigger classes need a paid
+#     plan and burn credits.
+#   - parallelism: N — the committed .github/test-timings.json already
+#     balances shards by measured time, so N scales cleanly.
+#     Total CPU = N x resource_class.
+version: 2.1
+
+jobs:
+  check:
+    docker:
+      - image: oven/bun:1.4-debian
+        user: root # image's default user is `bun`; apt below needs root
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-bun-deps-{{ checksum "bun.lock" }}
+            - v1-bun-deps-
+      - run: bun install --frozen-lockfile
+      - save_cache:
+          key: v1-bun-deps-{{ checksum "bun.lock" }}
+          paths:
+            - ~/.bun/install/cache
+      - run: bun run typecheck
+      - run: bun run lint
+      - run:
+          name: memory deploy tests
+          command: |
+            apt-get update
+            apt-get install -y --no-install-recommends python3
+            python3 -m unittest discover -s deploy/memory -t deploy/memory
+
+  test:
+    docker:
+      - image: oven/bun:1.4-debian
+        user: root
+    resource_class: large
+    parallelism: 4
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-bun-deps-{{ checksum "bun.lock" }}
+            - v1-bun-deps-
+      - run: apt-get update && apt-get install -y --no-install-recommends ffmpeg
+      - run: bun install --frozen-lockfile
+      - save_cache:
+          key: v1-bun-deps-{{ checksum "bun.lock" }}
+          paths:
+            - ~/.bun/install/cache
+      - run:
+          name: bun test shard $((CIRCLE_NODE_INDEX + 1))/$CIRCLE_NODE_TOTAL
+          command: >-
+            bun test --parallel
+            --shard=$((CIRCLE_NODE_INDEX + 1))/$CIRCLE_NODE_TOTAL
+            --timings=.github/test-timings.json
+            --update-timings
+      - run:
+          name: collect shard timings
+          command: >-
+            mkdir -p /tmp/artifacts &&
+            cp .github/test-timings.json
+            "/tmp/artifacts/test-timings-$CIRCLE_NODE_INDEX.json"
+          when: always
+      - store_artifacts:
+          path: /tmp/artifacts
+          destination: timings
+
+workflows:
+  ci:
+    jobs:
+      - check
+      - test

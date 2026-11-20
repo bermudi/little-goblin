@@ -132,8 +132,20 @@ Rulings:
   2026-11-20. Goblin's hooks no longer depend on that detector. The copy can hold the
   operator's settings, so it is written 0600.
   `src/hc-devin.live.test.ts` (`GOBLIN_DEVIN_LIVE=1`) pins it on the
-  installed devin after devin or hc upgrades: throwaway HOME, hc
-  session and cwd; one trivial prompt on the operator's own model.
+  installed devin after devin or hc upgrades; red means the contract
+  moved. It drives `makeHcDelegation` end to end. Its safety rules:
+  HOME, `XDG_*`, `GOBLIN_HOME` and the cwd are throwaway, and the hc
+  session derives from the throwaway `GOBLIN_HOME`. The operator's
+  devin credentials and config are copied into the temp HOME, never
+  read into output: value checks are booleans, so a failure prints no
+  setting. In the copy, probe hooks replace the operator's hooks, so
+  none of theirs runs; the probes prove an operator entry still fires.
+  Goblin's OSC reports carry no `app`, while herdr-core's detector
+  stamps `app=devin`, so only `app`-less statuses count as Goblin's.
+  One trivial prompt costs one model turn on the operator's own model.
+  CI skips it. `makeHarnessInvocation` reads `HOME` per call: Bun
+  caches `homedir()` at startup, so a test could not move it and read
+  the operator's real devin config (2026-11-20).
 - **The seeded trust keys are pinned against the installed harnesses,
   not just fakes (2026-10-11).** Drift is silent: a renamed key still
   seeds, and the launch shows the consent dialog anyway.

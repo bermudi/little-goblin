@@ -1,19 +1,3 @@
-// GOBLIN_DEVIN_LIVE=1 bun test src/hc-devin.live.test.ts
-//
-// Drives the installed devin through Goblin's real delegation path
-// (makeHcDelegation → per-run --config → hc terminal) and proves the
-// #810 contract: the operator's devin settings reach the run, their
-// hooks still fire, and Goblin's own hooks report working → idle.
-// Run after devin or hc upgrades; red means the contract moved.
-//
-// Safety: HOME, XDG_*, GOBLIN_HOME and the cwd are throwaway; the hc
-// session is derived from the throwaway GOBLIN_HOME, never the
-// operator's. The operator's devin credentials and config are COPIED
-// into the temp HOME, never read into output: assertions compare
-// values as booleans only, so a failure prints no setting. The
-// operator's own hooks are replaced in the copy by probe hooks, so
-// none of theirs runs. One trivial prompt costs one model turn on the
-// operator's account, on the operator's own model. CI skips it.
 import { afterEach, describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -93,8 +77,6 @@ describe.skipIf(!LIVE)("devin live delegation (GOBLIN_DEVIN_LIVE=1)", () => {
 		);
 		expect(perRun.agent?.model === operator.agent?.model).toBe(true);
 
-		// Goblin's OSC 7501 reports carry no `app`; herdr-core's own devin
-		// detector stamps app=devin. Only the former proves Goblin's hooks.
 		const ownStates: string[] = [];
 		const watch = (async () => {
 			const deadline = performance.now() + 120_000;
@@ -108,11 +90,8 @@ describe.skipIf(!LIVE)("devin live delegation (GOBLIN_DEVIN_LIVE=1)", () => {
 		await delegation.prompt(name, "Read the file hello.txt in this folder and reply with its first line only.");
 		await watch;
 		expect(ownStates.slice(ownStates.indexOf("working"))).toEqual(["working", "idle"]);
-		// Tool events repeat per tool call; each must have fired at least once.
 		expect([...new Set(readFileSync(events, "utf8").trim().split("\n"))].sort()).toEqual([...EVENTS].sort());
 
-		// Devin logs the model it resolved; with the operator's agent.model it
-		// must be theirs. Compared as a boolean so no value is printed.
 		if (operator.agent?.model !== undefined) {
 			const logDir = join(home, ".local", "share", "devin", "cli", "logs");
 			const logs = existsSync(logDir)

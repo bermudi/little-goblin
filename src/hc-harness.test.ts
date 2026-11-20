@@ -192,7 +192,6 @@ describe("devin per-run config", () => {
 	}
 
 	function launch(goblinHome: string): { argv: string[]; config: Record<string, unknown> } {
-		// Never let a test reach the operator's real devin config.
 		if (!process.env.HOME?.startsWith(tmpdir())) throw new Error("HOME must be a temp dir here");
 		const { argv } = makeHarnessInvocation({
 			kind: "devin",
@@ -237,7 +236,6 @@ describe("devin per-run config", () => {
 				const own = event === "Stop" ? ["/operator/stop"] : event === "PreToolUse" ? ["/operator/pre"] : [];
 				expect(commands(config, event)).toEqual([...own, `${hooksDir}/report.sh ${state}`]);
 			}
-			// Re-launching rebuilds from the operator file: no duplicate entries.
 			expect(launch(goblinHome).config).toEqual(config);
 			expect(readFileSync(join(home, ".config", "devin", "config.json"), "utf8")).toContain("// devin reads JSONC");
 		});

@@ -154,9 +154,6 @@ function writeClaudeSettings(stateDir: string, hooksDir: string, terminalName: s
 	return path;
 }
 
-// Devin reads $XDG_CONFIG_HOME/devin/config.json (absolute values only,
-// like its data home) else ~/.config/devin/config.json, as JSONC; --config
-// replaces that file, so the per-run file must carry the operator's settings.
 function devinOperatorConfigPath(home: string): string {
 	const xdg = process.env.XDG_CONFIG_HOME;
 	const base = xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".config");
@@ -252,7 +249,6 @@ export function makeHarnessInvocation(input: {
 	if (!executable) throw new Error(`cannot resolve ${command} on Goblin's PATH`);
 
 	const argv = [executable, ...input.args];
-	// Bun caches homedir() at startup; HOME is read per call so tests can move it.
 	const home = process.env.HOME ?? homedir();
 	const env: Record<string, string> = {
 		GOBLIN_HC_RUN: "1",

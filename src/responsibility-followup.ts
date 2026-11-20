@@ -25,5 +25,5 @@ export function silenceFollowup(at: Date): ResponsibilityFollowup {
 }
 
 export function isFollowupProgram(program: Program): boolean {
-	return program.kind === "followup" || program.name === `followup:${program.responsibilityId}`;
+	return program.kind === "followup";
 }

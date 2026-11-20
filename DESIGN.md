@@ -77,6 +77,10 @@ Goblin owns persisted messages and tool definitions so a vendor change cannot
 silently change stored data. See [`message.test.ts`](src/message.test.ts) and
 [`tool.test.ts`](src/tool.test.ts).
 
+Each engine translates vendor failures to Goblin's
+[`ProviderError`](src/agent/provider-errors.ts) at its edge (#770). The
+runtime makes one retry and fallback policy from that shared vocabulary.
+
 Auxiliary model calls use [`generate.ts`](src/agent/generate.ts). Two cases
 need a different path: vision needs an idle timeout on a stream, and
 summary generation sometimes needs the exact existing prompt prefix for
@@ -90,3 +94,15 @@ wizard, third channel, plugin SDK, native browser or MCP client, or Kubernetes
 deployment. New background work does not acquire standing authority on its
 own. Judge additions against [operator direction](DIRECTION.md), not an old
 rollout plan.
+
+## Test posture
+
+### Memory net
+
+A test stuck in synchronous code can keep allocating without yielding to
+timeouts or cleanup on the main thread. The [test preload](src/test-memory-net.ts)
+uses an independent [worker](src/test-memory-net.worker.ts) to report which
+test or hook was running and stop the test process before the kernel kills
+it. This is a backstop, not a reason to allow runaway tests. The
+[subprocess tests](src/test-memory-net.test.ts) cover synchronous allocation,
+printing a mounted DOM on failure, and parallel runs (#818).

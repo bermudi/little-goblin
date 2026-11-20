@@ -28,6 +28,7 @@ export const paths = {
 	mcpShim: () => join(goblinHome(), "mcp"),
 	hcBinary: () => join(goblinHome(), "bin", "herdr-core"),
 	hcHooks: () => join(goblinHome(), "bin", "hc-hooks"),
+	hcSetupFailure: () => join(goblinHome(), "state", "hc-setup-failure.json"),
 	goblinMailShim: () => join(goblinHome(), "goblin-mail"),
 	doctorShim: () => join(goblinHome(), "doctor"),
 	workspace: () => join(goblinHome(), "workspace"),

@@ -18,11 +18,9 @@ import type { ConfigRef } from "./config.ts";
 import type { Config } from "./config-schema.ts";
 import { openStore } from "./conversation.ts";
 import { Runtime, userMessage } from "./runtime.ts";
-import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { isClaudeStep } from "./agent/claude-code/mod.ts";
-import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
+import { sdkScript } from "./testkit/turn-script-sdk.ts";
 import { fakeClaude } from "./testkit/fake-claude.ts";
-import { scriptedModel, textParts } from "./testkit/fake-model.ts";
 import { RecordingSink, tmpDb, tmpDir, useHome, waitUntil } from "./testkit.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 
@@ -52,6 +50,7 @@ function claudeStepFor(label: string): ClaudeStep {
 }
 
 describe("claude native sessions (#418)", () => {
+	// This reads Claude CLI session options that claudeScript.requests() does not expose.
 	test("first turn persists a fresh session; second resumes at its head with a delta", async () => {
 		useHome("goblin-claude-session-");
 		const store = openStore(tmpDb("goblin-claude-session-"));
@@ -151,6 +150,7 @@ describe("claude native sessions (#418)", () => {
 		}
 	});
 
+	// This asserts Claude's pushed steer UUID and prompt wire, beyond the Runtime's landed result.
 	test("a steer folded mid-turn joins it and stays in the session — the next delta never resends it (#582)", async () => {
 		useHome("goblin-claude-steer-");
 		const store = openStore(tmpDb("goblin-claude-steer-"));
@@ -257,6 +257,7 @@ describe("claude native sessions (#418)", () => {
 		}
 	});
 
+	// The test requires a missing ack; claudeScript now acks tool-step steers automatically.
 	test("an unacked steer returns to pending input and leads the successor turn (#777)", async () => {
 		useHome("goblin-claude-unacked-");
 		const store = openStore(tmpDb("goblin-claude-unacked-"));
@@ -355,6 +356,7 @@ describe("claude native sessions (#418)", () => {
 		}
 	});
 
+	// The Claude half inspects session query prompts; its CLI metadata is absent from the DSL.
 	test("an AI-SDK turn between two claude turns lands in the delta; the session's own reply does not", async () => {
 		useHome("goblin-claude-session-x-");
 		const store = openStore(tmpDb("goblin-claude-session-x-"));
@@ -362,7 +364,8 @@ describe("claude native sessions (#418)", () => {
 		const sessions = openClaudeSessions(store.db);
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 
-		const sdk = scriptedModel([textParts("SDK-MIDDLE")]);
+		const sdk = sdkScript();
+		sdk.script({ kind: "reply", parts: [{ type: "text", text: "SDK-MIDDLE" }] });
 		const fake = fakeClaude();
 		const engineConfig: ClaudeEngineConfig = {
 			query: fake.query,
@@ -393,11 +396,11 @@ describe("claude native sessions (#418)", () => {
 		let lane: "claude" | "sdk" = "claude";
 		const runtime = new Runtime({
 			store,
-			engines: [claudeEngine, aiSdkEngine],
+			engines: [claudeEngine, ...sdk.engines],
 			buildStep: () =>
 				lane === "claude"
 					? claudeStepFor(CLAUDE_REF)
-					: ({ engine: "ai-sdk", model: sdk.model, system: "test", label: "fake/fake-1" }) satisfies ModelStep,
+					: sdk.step(),
 			turnJournal: journal,
 			claudeSessions: sessions,
 		});
@@ -436,6 +439,7 @@ describe("claude native sessions (#418)", () => {
 		}
 	});
 
+	// This checks the resumed Claude CLI option and error-result behavior on the native wire.
 	test("a failed turn leaves the record at the last finish; the next turn resumes the old head", async () => {
 		useHome("goblin-claude-session-f-");
 		const store = openStore(tmpDb("goblin-claude-session-f-"));
@@ -517,6 +521,7 @@ describe("claude native sessions (#418)", () => {
 		}
 	});
 
+	// This verifies per-ref Claude CLI options and prompts, which the ScriptedModel API omits.
 	test("two claude model refs keep separate session records", async () => {
 		useHome("goblin-claude-session-g-");
 		const store = openStore(tmpDb("goblin-claude-session-g-"));

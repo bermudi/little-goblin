@@ -1,8 +1,5 @@
 # Agents — goblin design
 
-Part of the goblin design spec. The core — domain model, authority rule,
-cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
-
 ## Ruling (operator, 2026-11-16)
 
 "I need real subagents, like the ones you have in `claude`." Goblin hands
@@ -99,24 +96,11 @@ System prompt for this agent type.
 
 ### Verbs
 
-```
-spawn {type?, task, background?, desktop?}   type defaults to general; background defaults to true; desktop is required for the computer type — spawn claims it for the child
-list  {}
-read  {id}                         status plus the child's latest messages
-send  {id, text}                   steer a running child, or follow up a settled one
-stop  {id}
-```
-
-- `background: true` returns the child id at once. The parent's turn
-  continues or ends, and the notice wakes it later.
-- `background: false` makes the tool call wait for the result. Parallel
-  `spawn` calls in one step fan out. Stopping the parent's turn stops
-  its waiting children.
-- This is the in-turn reader for documents too long for the parent's
-  context. `read_long` (#583, a tool-less helper call per 150k-char
-  part) was removed in #666: it was written against the old async-only
-  subagents, duplicated this verb once #638 landed, and added an
-  unbounded spend path. Don't add a second in-turn reader.
+See [`src/agent/tools/agent.ts`](../src/agent/tools/agent.ts) for the
+tool contract. A waiting child can read documents too long for the
+parent's context. The old `read_long` duplicated this capability and made
+model calls without a spending cap. It was removed in #666. Don't add a
+second in-turn reader.
 
 ### Limits
 
@@ -128,19 +112,6 @@ stop  {id}
   an unlanded turn (design/runtime-turn.md → Unlanded-turn progress); the
   parent gets a `failed` notice that names it. No mid-tool resume and no
   timeout-and-revive.
-
-### Why goblin's runtime, not Pi Durable
-
-- Pi Durable drove models through pi-ai, which has its own provider
-  layer. It supported only z.ai GLM. The claude-code engine is an Agent
-  SDK step, not an HTTP model, so pi-ai cannot drive it. A bridge would
-  mean a pi-ai provider for every goblin provider, maintained for ever.
-- A child conversation reuses everything the runtime already has. The
-  new code is the tool, the agent-type loader, the parent link and the
-  settlement hook.
-- What went with the runtime (removed in #609): mid-run crash resume,
-  replay marks and the crash-approval gate. Children get the same crash
-  rule as goblin's own turns.
 
 ## `delegate`: external harness runs on hc
 
@@ -430,29 +401,6 @@ what the driver claimed happened.
 (a separate design: portal RemoteDesktop/libei, per-session consent), a
 live view in the app, logged-in tasks before login handoff exists, Cua
 Spaces/SDK, E2B's runtime, Agent Zero's platform, Open Interface and LCU.
-
-## Removal order
-
-Each step keeps a working path (DIRECTION.md: do not retire useful
-access before there is a working replacement).
-
-1. Remove the `herdr` tool. The operator does not use the desk any more.
-2. Build `agent`: child conversations, agent types and the parent link.
-3. Build the `computer` agent type, text first.
-4. Add image tool results and the `screenshot` tool — **done (#606)**.
-5. Build the `src/t3.ts` adapter. Move `delegate` and responsibility
-   attach/observe onto it, and prove one delegation end to end.
-6. Replace the T3 Code delegation transport with pinned hc — **#728**:
-   `src/hc.ts` owns the wire; the Goblin installer owns the binary and
-   stable hook assets; the private core survives app restarts. The
-   operator-desk `herdr` tool remains removed.
-7. Delete the `subagent` tool, `src/subagents/`, the `subagent_runs`
-   table's code paths and the pi-durable, pi-ai and chord dependencies —
-   **done (#609)**: the runtime, its tool and tests are gone, the
-   `subagents` config block is a loud boot error naming `agent` + the
-   `computer` type, and `desktops` moved to a top-level block. The
-   `subagent_runs` table stays in existing databases, unused — dropping
-   data needs the operator's OK.
 
 ## Machine targets: dropped (2026-11-17, kept 2026-11-18)
 

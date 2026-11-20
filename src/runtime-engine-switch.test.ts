@@ -1,11 +1,3 @@
-// One conversation crossing turn engines mid-history: an AI-SDK turn
-// with a tool call, then a claude-code turn with a tool call, then an
-// AI-SDK turn again. Guards design/model.md → Model fallback list
-// ("Crossing engines is allowed" gate): each engine must read the
-// other's transcript — tool calls paired with their results by id on
-// the AI-SDK side, rendered as text on the claude side — and the turn
-// after a switch must complete.
-
 import { describe, expect, test } from "bun:test";
 import { type LanguageModelV4CallOptions } from "@ai-sdk/provider";
 import { defineTool, type Tools } from "./tool.ts";
@@ -54,15 +46,12 @@ describe("one conversation across turn engines", () => {
 			}),
 		};
 
-		// This inspection asserts AI SDK v4 prompt-part framing and tool-result IDs.
 		const sdk = scriptedModel([
-			// Turn 1: a tool loop, then prose.
 			[
 				toolCallPart("sdk-call-1", "echo", JSON.stringify({ message: "from-sdk" })),
 				finishPart("tool-calls"),
 			],
 			textParts("SDK-TURN-ONE"),
-			// Turn 3: prose after reading the claude turn.
 			textParts("SDK-TURN-THREE"),
 		]);
 
@@ -102,8 +91,6 @@ describe("one conversation across turn engines", () => {
 			expect(two.done).toEqual({ kind: "completed" });
 			expect(two.sink.text).toContain("CLAUDE-TURN-TWO");
 
-			// The claude turn saw turn 1 in full: the ask, the tool call,
-			// its goblin output, and the reply.
 			expect(claude.calls()).toBe(1);
 			const claudeSaw = claude.requests()[0]!;
 			for (const needle of [
@@ -122,9 +109,6 @@ describe("one conversation across turn engines", () => {
 			expect(three.done).toEqual({ kind: "completed" });
 			expect(three.sink.text).toContain("SDK-TURN-THREE");
 
-			// The AI-SDK turn after the switch replays the claude turn as
-			// structured parts: each tool call paired with a result of the
-			// same id (an unpaired id is a provider 400), and the prose.
 			const third = sdk.streamCalls[sdk.streamCalls.length - 1]!;
 			const seen = parts(third);
 			const calls = seen.filter((p) => p.type === "tool-call");

@@ -10,7 +10,7 @@ files, handles photos and voice notes, and can speak replies back as voice notes
 Built on the Vercel AI SDK. [DIRECTION.md](DIRECTION.md) records the product
 aspiration: Goblin as Chief of Staff, carrying work while the operator stays
 in the outer loop. [ROADMAP.md](ROADMAP.md) charts the next acceptance targets;
-`DESIGN.md` records implementation contracts and non-goals.
+[DESIGN.md](DESIGN.md) points to the code and explains design choices.
 
 It runs in one place: g7; `bun scripts/release.ts` builds a commit into an
 immutable release, flips the live symlink, and restarts locally, and
@@ -103,11 +103,9 @@ systemctl --user restart goblin  # restart
 - `bun test` runs the suite, `bun run typecheck` typechecks (both tsc
   programs). Both should pass
   before committing.
-- Read `DESIGN.md` (the core: domain model, authority rule, cache
-  stability, non-goals) plus the `design/` file for the area you're
-  touching before any structural work. `docs/` is operator documentation,
-  not spec. Read `AGENTS.md` for the working rules (strict TypeScript, zod
-  at boundaries, fail loud, log everything).
+- Read `AGENTS.md` for the working rules. Use `DESIGN.md` to find the owning
+  source and tests, and `design/` to understand the choices behind them.
+  `docs/` is for operators.
 - Only `src/tg/` knows about Telegram internals; everything else is plain
   domain code. Tests live next to the files they cover.
 
@@ -123,5 +121,4 @@ systemctl --user restart goblin  # restart
 - [`docs/operations.md`](docs/operations.md) — service, logs, backups, troubleshooting
 - [`docs/security.md`](docs/security.md) — trust model: who is trusted, what crosses each boundary, fail-open vs fail-closed
 - [`docs/memory.md`](docs/memory.md) — optional Hindsight memory; opt-in
-- [`DESIGN.md`](DESIGN.md) + [`design/`](design/) — the design spec (why it's built this way)
-- [`V1-V2-MAP.md`](V1-V2-MAP.md) — what changed from little-goblin, feature by feature
+- [`DESIGN.md`](DESIGN.md) + [`design/`](design/) — source map and design rationale

@@ -10,16 +10,9 @@ import type { LoopTurnState } from "./state.ts";
 import type { StreamOutcome } from "./attempt-recorder.ts";
 import type { LiveChunks } from "./stream.ts";
 
-// design/compaction.md → Triggers: the one fold trigger — the lower of
-// 50% of the catalog window and an absolute 256k cap (Hermes's cap, operator ruling #547). Every call
-// re-sends the whole context, so the cap bounds the per-call input bill
-// on a 1M window. The same threshold drives the step-boundary pre-empt,
-// the end-of-turn backstop, and the app's compaction gauge.
 export const COMPACT_TRIGGER_RATIO = 0.5;
 export const COMPACT_TRIGGER_CAP_TOKENS = 256_000;
 
-// The trigger in tokens for a catalog window; an unknown window fires
-// at the cap alone.
 export function compactTriggerTokens(contextWindow: number | undefined | null): number {
 	if (contextWindow === undefined || contextWindow === null) {
 		return COMPACT_TRIGGER_CAP_TOKENS;
@@ -42,14 +35,8 @@ export interface TurnRecovery {
 	overflowed?: boolean | undefined;
 	recallVersion?: number | null | undefined;
 	sourceInputSeq?: number | null | undefined;
-	// Inputs consumed by earlier attempts, including those hidden by a fold.
 	ownedInputSeqs?: number[] | undefined;
-	// Taint from visible, potentially unowned inputs in the original admission.
 	admissionExchangeExcluded?: boolean | undefined;
-	// Set once the turn has a fallback history (design/model.md → Model
-	// fallback list): `conversation.model` is then the serving candidate,
-	// `configured` the operator's selection, `tried` the candidates that
-	// failed before it. Carried through overflow recovery.
 	fallback?: FallbackTrail | undefined;
 }
 
@@ -66,13 +53,6 @@ export class ContextOverflowError extends Error {
 	}
 }
 
-// ---------- step-boundary pre-emption (design/compaction.md → Timing) ----------
-
-// Thrown from the step boundary (prepareStep) when a pre-empt arm fires:
-// the next model call must not dispatch. The turn folds and resumes on
-// the compacted view through the same rail as an overflow. Carries only
-// the decision — the recovery payload is assembled by the driver, where
-// the partial lives.
 export class PreemptSignal extends Error {
 	constructor(
 		readonly arm: "pressure",
@@ -83,10 +63,6 @@ export class PreemptSignal extends Error {
 	}
 }
 
-// The failed outcome's preempt payload becomes this at the runtime
-// boundary: same recovery rail as a provider 400, different compact
-// reason (full tail, "preempt") and a different operator-facing story.
-// The arm and step number ride along so the recovery log names what fired.
 export class PreemptCompactError extends ContextOverflowError {
 	constructor(
 		partial: Message | null,
@@ -102,15 +78,7 @@ export class PreemptCompactError extends ContextOverflowError {
 	}
 }
 
-// The one arm (design/compaction.md → Triggers). It budgets the UPCOMING
-// request — the last completed step's reported input plus the growth
-// since its dispatch (assistant output, tool results, steers), estimated
-// at chars/4 — because a tool result can blow the window in one step
-// while the previous request read small. The runtime gate-checks
-// foldability before any interruption — a trigger with nothing stored
-// to fold stands down.
 export interface PreemptInfo {
-	/** Null before the first completed step — no reported input to project from. */
 	projectedInputTokens: number | null;
 	contextWindow: number | undefined;
 }
@@ -161,10 +129,6 @@ export function overflowHoldable(
 const STILL_FULL =
 	"context window still full after compacting — the latest message or tool output is too big for this model";
 
-// #493-L25 — transport-shaped failures read as the wire's own jargon
-// ("Failed to process successful response") while the real cause hides
-// in logs. Name the drop, name the code when one exists, and keep the
-// recovery one plain sentence — the raw error still logs upstream.
 const TRANSPORT_MARKERS = /econnreset|econnrefused|etimedout|epipe|eai_again|enotfound|fetch failed|socket|failed to process successful response|network|connection (?:reset|closed|dropped|terminated)/i;
 const TRANSPORT_CODES =
 	/^(ECONNRESET|ECONNREFUSED|ECONNABORTED|ETIMEDOUT|EPIPE|EAI_AGAIN|ENOTFOUND|EHOSTUNREACH|EHOSTDOWN|ENETUNREACH|ENETRESET|UND_ERR_)/;
@@ -176,10 +140,6 @@ function transportCodeIn(err: unknown, depth: number): string | null {
 	return transportCodeIn((err as { cause?: unknown }).cause, depth + 1);
 }
 
-// The transport code to show, or null when the error doesn't look like
-// a connection drop. A transport errno wins; a transport-shaped message
-// on the error or its causes is the fallback so the line never invents
-// a code. Non-transport codes (API error bodies) never classify.
 export function transportFailureCode(err: unknown): string | null {
 	const code = transportCodeIn(err, 0);
 	if (code !== null) return code;
@@ -233,8 +193,6 @@ export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<Ove
 	const { convId, epoch, failure } = deps;
 	const preempt = failure instanceof PreemptCompactError ? failure : null;
 	if (preempt !== null) {
-		// Not a failure — a scheduled fold. The step that would have
-		// dispatched never did, so no provider call was wasted.
 		log.info("compaction pre-empt — folding at the step boundary, resuming turn", {
 			conversation: convId,
 			epoch,
@@ -267,11 +225,6 @@ export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<Ove
 				message: `context window full and compacting failed: ${msg.slice(0, 120)}`,
 			};
 		}
-		// The arm fired before the window was full — a failed fold must
-		// not end a turn that never overflowed. Resume on the unfolded
-		// view with the same spent budget: the arm cannot re-fire (no
-		// loop), and a still-growing turn meets the context landing or a
-		// real 400, which fail honestly as themselves.
 		log.warn("compaction pre-empt fold failed — resuming on the unfolded view", compactErr, {
 			conversation: convId,
 			epoch,
@@ -292,10 +245,6 @@ export async function recoverFromOverflow<M>(deps: OverflowDeps<M>): Promise<Ove
 					"context window full and there's nothing left to compact — the latest message or tool output may be too big for this model",
 			};
 		}
-		// The foldability gate fired the arm but the fold's own read
-		// found nothing (history moved mid-compaction). Same resume:
-		// nothing was interrupted for a fold that could not happen, so
-		// the turn continues unfolded.
 		log.warn("compaction pre-empt fold found nothing to fold — resuming on the unfolded view", {
 			conversation: convId,
 			epoch,

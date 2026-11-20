@@ -275,8 +275,14 @@ Telegram. The mode resolves once at boot (`src/http/app-auth.ts`
   `none` refuses too. Non-browser clients send neither header and pass —
   reachability stays their whole check, the model unchanged. Bearer mode
   skips the gate (the token is the check); JSON-body routes require
-  `content-type: application/json` in both modes. Ruling in
-  `design/app.md` → App channel → Auth.
+  `content-type: application/json` in both modes.
+
+  Accepting the request's Host preserves proxy and direct access; it does
+  not independently authenticate the browser's origin. Trust mode accepts
+  the remaining DNS rebinding risk. Do not rely on private-network
+  preflights across browsers. Use bearer mode when a separate authentication
+  boundary is required; pinning origins only to `publicUrl` would be a
+  different access policy.
 
 ### The sandbox tool's egress
 

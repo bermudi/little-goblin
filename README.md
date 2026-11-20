@@ -122,4 +122,3 @@ systemctl --user restart goblin  # restart
 - [`docs/security.md`](docs/security.md) — trust model: who is trusted, what crosses each boundary, fail-open vs fail-closed
 - [`docs/memory.md`](docs/memory.md) — optional Hindsight memory; opt-in
 - [`DESIGN.md`](DESIGN.md) + [`design/`](design/) — source map and design rationale
-- [`V1-V2-MAP.md`](V1-V2-MAP.md) — what changed from little-goblin, feature by feature

@@ -76,6 +76,11 @@ Goblin owns persisted messages and tool definitions so a vendor change cannot
 silently change stored data. See [`message.test.ts`](src/message.test.ts) and
 [`tool.test.ts`](src/tool.test.ts).
 
+Auxiliary model calls use [`generate.ts`](src/agent/generate.ts). Two cases
+need a different path: vision needs an idle timeout on a stream, and
+summary generation sometimes needs the exact existing prompt prefix for
+cache reuse (#759).
+
 ## Non-goals
 
 One operator, one process, one app client and an optional Telegram channel.

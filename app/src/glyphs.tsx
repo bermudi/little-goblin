@@ -81,11 +81,6 @@ export const TrashGlyph = () => (
 	</ActionGlyph>
 );
 
-// The C gutter (design/app.md → mobile-nav ruling — the desktop half of
-// the prototypes at design/prototypes/sidebar/c-gutter.html): a 52px
-// glyph spine where every surface is one click away, and a 216px panel
-// that lists exactly one surface at a time — chats by default, search
-// as a mode. Glyph names live on the buttons' aria-labels, not in text.
 export function G({ children, size = 17 }: { children: ReactNode; size?: number }) {
 	return (
 		<svg
@@ -106,7 +101,6 @@ export function G({ children, size = 17 }: { children: ReactNode; size?: number 
 
 export type ListPane = "chats" | "projects" | "notes";
 
-// The three panes that own a list — order and icons from the prototype.
 export const LIST_GLYPHS: { key: ListPane; label: string; svg: ReactNode }[] = [
 	{
 		key: "chats",
@@ -138,8 +132,6 @@ export const LIST_GLYPHS: { key: ListPane; label: string; svg: ReactNode }[] = [
 	},
 ];
 
-// The system surfaces — spine order from the prototype, Settings docked
-// at the foot (rendered separately, after the spacer).
 export const OPS_GLYPHS: {
 	key: Exclude<Page, "chat" | "notes" | "note" | "projects" | "project" | "window">;
 	label: string;

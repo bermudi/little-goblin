@@ -1,219 +1,73 @@
 # Doctor
 
+For commands and interpretation, see
+[Operations](../docs/operations.md#diagnostics-and-first-start-acceptance).
+
 ## Purpose and authority
 
-One bounded diagnostic pass that catches decay before a task encounters it:
-onboarding asks what is missing before first boot, doctor what has broken
-since; the two share detection, not actions. See `design/setup.md` for
-installation and startup acceptance.
+Doctor is diagnosis, not repair. It does not provision credentials, resolve
+arbitrary auth commands, modify application data, download, warm or unlock
+wallets, start services, or call paid providers or MCP.
 
-Diagnosis does not initialize application state, resolve arbitrary auth
-commands, repair configuration, migrate/checkpoint databases, download,
-warm/unlock wallets, start/restart services or retain memory; it calls no
-paid model providers or MCP. A synthetic request to the associated,
-operator-configured local embedding model is allowed: like any embedding
-request it may load or refresh model caches, but makes no embedding
-`keep_alive` override or durable fact write.
+One exception is a bounded synthetic request to the associated,
+operator-configured local embedding model. It may load or refresh model
+caches, but does not retain a memory fact or override embedding keep-alive.
+SQLite inspection can update shared-memory coordination sidecars; the
+guarantee is no application-data mutation, not zero filesystem writes.
 
-The source implementation is approved; deployment, unit installation,
-client publication and service restarts require separate approval; a
-successful diagnosis grants no repair or deployment authority.
-
-## Consumers and structure
-
-- Operator: text or machine-readable JSON.
-- Resident: existing bash tool through `$GOBLIN_HOME/doctor`, reached as
-  `../doctor` from its workspace. Its static tool description advertises
-  the command and diagnosis-only authority. Bootstrap refreshes this
-  symlink with the same collision policy as the MCP/mail launchers; doctor
-  never creates it.
-- Installer: explicit preflight/installed phases and shared asset checks.
-  It never parses human doctor output.
-
-There is no check registry, plugin framework, health daemon, wizard or
-repair mode. Shared helper changes have one integration owner;
-setup-specific scripts belong to onboarding.
+A successful diagnosis grants no installation, deployment or restart
+authority.
 
 ## Target and phase policy
 
-The target home is explicitly the caller's `GOBLIN_HOME`, otherwise
-`~/goblin`; the diagnostic checkout is the one executing doctor. Never
-silently substitute production's home; every finding labels its scope.
+Doctor inspects the caller's selected home and executing checkout, not an
+implicitly substituted production home. Installed and diagnostic checkout
+identity may differ; that alone is a warning, not proof of breakage. The
+running process's loaded settings and revision remain unverified.
 
-Systemd `WorkingDirectory` supplies a separate installed-checkout scope:
-check client assets there when known. A differing or missing checkout
-identity is a warning, not proof that the installation is broken. Do not
-dump service `Environment` to guess its home. Git revision identity and
-running-process readiness remain explicitly unverified.
-
-`preflight` runs after frozen dependencies and operator provisioning; it
-skips expected first-boot layout/database, not-yet-installed units and
-not-yet-built assets, not a pristine checkout's all-green mode. Fresh
-setup refuses existing installations and updates use the separately
-approved deploy path.
-
-Schema inspection requires structures for the diagnostic code revision, not
-exact schema equality: missing structures fail that compatibility check,
-not an inferred claim of installed corruption, and differing revisions
-leave installed compatibility unverified. Preflight does not demand a
-migration before boot has performed existing initialization.
+Preflight is after dependency installation and operator provisioning, not a
+claim that a pristine checkout is healthy. Expected first-boot absences
+must not appear as successful checks. Inspection against the diagnostic
+revision is not proof of installed schema compatibility or corruption.
 
 ## Checks and coverage
 
-Optional subsystem checks run only when configured; every check is
-read-only: no provider construction, catalog refresh or generation, no
-credential resolution, no state write; sandbox inspection never creates,
-pulls or executes; the sole synthetic action is one bounded embedding
-request against an associated host-local relay, vectors omitted. Cache
-contracts verify published mode/lifetime metadata only and never claim
-warmth or expiry; the manual bounded re-check is
-`scripts/check-cache-contracts.ts` (`design/model.md` → Cache contracts).
-No finding claims more than measured: memory `/health/ready` 2xx is not
-bank or auth access — credentials, bank permissions and running queues stay
-unverified — and unit/asset findings are not proof of successful boot or
-frontend execution; delegation threads and the t3 wire stay
-unverified.
+Unknown coverage must stay explicit, not green. In particular, metadata or
+local readiness does not prove credential validity, bank permissions,
+provider responses, frontend execution, running queues or end-to-end
+delivery. A usable old key snapshot warns rather than expiring; a missing
+or locked snapshot does not prove a running process lost its memoized key.
 
-Record recognition shares the installer's grammar (`src/auth.ts`): only a
-single direct `!pass-keys get <profile> <KEY>` record counts as a profile
-reference, and a strict prohibited-command lint scans all records; every
-other command form stays a general, unverified command. Status parsing is
-pinned to the local pass-keys Go source, including vault keys beginning
-with digits and signed durations. No `get`, `warm`, owner-session command
-or arbitrary auth thunk is executed. Only verified status metadata supplies
-profile labels; malformed outputs/errors are not forwarded.
-Locked/missing/broken snapshots fail fresh-resolution readiness, without
-claiming the running bot already lost memoized credentials. Old usable
-snapshots warn rather than expire; future timestamps warn for clock skew.
-OAuth, generic auth commands and upstream validity are not verified by
-metadata availability.
+Embedding probes require an established association with the configured
+local installation; do not probe an unrelated local model. Installed memory
+unit drift is a warning, not proof of breakage or permission to replace
+operator-edited units. Measured capacity is not a guarantee of future
+durable writes.
 
-Provider readiness is presence and cached-catalog resolution only: per
-configured provider, `provider.<name>` reports whether its credential
-record exists (an auth.jsonl name, or the codex auth file the provider
-would read — existence, never contents) and whether each configured
-model ref resolves in a cached catalog (models.dev, openrouter, or the
-codex account list). A cold catalog is "unverified", never a refresh;
-a provider no model ref uses skips. No credential is resolved, no
-catalog refreshed, no provider constructed and no call made — the
-finding names what is missing, not whether upstream will answer.
-
-`delegation.t3` (#618, #740) probes handover's real targets: goblin's
-active projects (the `projects` table, read-only). Handover to T3 Code is
-for work on concrete projects; goblin's own workspace is never a target —
-only goblin, its `agent` children and a delegated harness work there
-(operator, 2026-11-19). So the check never probes the workspace and never
-suggests registering it. It makes bounded, read-only `t3 thread list`
-calls, one project at a time, and never starts, sends or shows a thread.
-The first project T3 lists, even with no threads, passes. A project T3
-doesn't know is skipped for the next; if T3 knows none of them, the check
-warns with a `t3 project add <project dir>` hint. No state database or no
-active project skips. Other T3 errors, runner failures and timeouts fail
-as a T3 server/CLI unreachable result. The detail contains only the
-adapter's safe error kind or exit code, never raw stderr.
-
-Relay-file presence alone is not association: validate the configured API
-against the running local installation and allowlisted provider/base
-URL/model fields before probing its relay. Unsupported or remote
-associations warn/skip instead of testing unrelated local Ollama. Installed
-settings do not establish the running process's loaded settings; readiness,
-embedding and application authorization are separate results.
-
-Memory-stack unit drift is file comparison, not runtime inspection: every
-installed unit file (quadlets under `~/.config/containers/systemd`, user
-units under `~/.config/systemd/user`) is compared with its `deploy/memory/`
-source in the diagnostic checkout, and differing, missing or unreadable
-files are named in one warning that points at the manual runbook — never
-copied, reloaded or restarted. No env file is opened and no value read; the
-API quadlet's installer-managed `# goblin:secrets-begin/end` `Secret=`
-region is excluded on both sides, so a correctly reconfigured install is
-not drift, and opt-in `goblin-embed-*` units are compared only while the
-relay switch file exists (existence only). Installed Quadlets are
-operator-editable and the stack is never auto-deployed, so drift warns
-about source/installation divergence — not proof of breakage — and
-preflight skips the check: the runbook owns first placement.
-
-Keep measured capacity evidence when later mount-identity inspection fails.
-Missing inode accounting warns rather than inventing a healthy percentage;
-capacity findings are not a write/fsync guarantee.
-
-SQLite may create/update shared-memory coordination sidecars: the accepted
-contract is no application-data mutation, not literally zero filesystem
-writes. Do not use `immutable` to ignore WAL or copy a bare main database.
-Subsystem-table presence is checked against the diagnostic revision's
-boot-created set (config-gated tables only while their block exists; lazy
-tables unchecked); columns, row contents and concurrent snapshot copying
-are not claimed verified. Absent tables warn as revision-scoped expectation
-drift — never a corruption or store-loss claim without evidence. The
-expected-table list is a validated argv contract of its own: a
-present-but-malformed list fails the worker rather than silently checking
-nothing, and only an absent list skips the check.
-
-`observer.unreachable` (#491) reads only the durable declaration: the
-responsibility observer records consecutive list failures on each
-attachment row and exposes the outage start once the threshold holds
-(design/app.md → Observation unavailability). Doctor reports those
-declared rows as one warning naming agent, target and start; it never
-probes a T3 thread itself, and a recovered poll clears the row on its
-own — the hint points at inspecting the named thread, not at resetting
-anything. A store that predates the columns skips rather than fails.
+Delegation checks target active projects, not Goblin's own workspace
+(operator, 2026-11-19). Observer outage findings report durable declarations
+without resetting them or probing the named thread.
 
 ## Reports, failures and execution
 
-The versioned report keeps results deterministically ordered even when
-probes run concurrently.
+Reports must not expose auth values or records, arbitrary command output,
+config or environment dumps, credential-bearing URLs, raw external bodies
+or unsafe error payloads. Diagnostics are safe summaries, not a channel for
+secrets into agent context. JSON output and operational diagnostics remain
+separate.
 
-- Disabled checks skip with reasons; blocked dependents name their blocker.
-- Configured, observed outages fail. Unknown coverage is explicit, not green.
-- `0`: no failures. `1`: failures, or warnings with `--strict`.
-- `2`: invalid invocation or inability to produce a report.
-
-Text and JSON share exit semantics: coverage warnings mean strict mode can
-fail even when every measured dependency is available, and exit zero is not
-an end-to-end guarantee that Goblin can answer.
-
-JSON stdout is exactly one report; operational diagnostics belong on
-stderr — a scoped exception to ordinary runtime stdout logging. Do not
-import startup or attach runtime file sinks. Safe config-validation errors
-retain their typed HTTP 422 contract; disk/I/O errors remain 500.
-
-Never emit auth records/values, command strings, config/environment dumps,
-credential-bearing URLs, raw external bodies, arbitrary subprocess output,
-unsafe parser messages/causes or original validation payloads. Construct
-errors from operation, errno/HTTP status and safe category; remedies contain
-no secrets. Internal parsing is not permission to expose credential values
-in agent context.
-
-Subprocesses use argv with bounded output and per-boundary deadlines; HTTP
-reads are bounded and cancelled. Cancellation immediately kills the worker
-process group before an enclosing bash caller's kill grace expires, and
-cleanup is owned by the outer collector even after leader exit — never by a
-stalled worker's signal handler.
+External work is bounded and cancellable. Cancellation must reclaim the
+worker process group even if its leader has exited.
 
 ## Verification and deferred work
 
-Tests, typecheck and a touched-file comment audit are required; fresh
-reviewers reproduce group cleanup independently and protect caller/foreign
-groups. Source-pinned or synthetic interfaces do not prove real installation
-readiness; keep unverified coverage explicit.
-
-A nightly authorized program may invoke doctor but cannot be the only alarm
-when bot/model credentials themselves can fail; independent scheduling and
-notification delivery are deferred, with no standing timer/program created.
-Doctor complements deployment gates; it does not prove updates always work.
-Deployment integration must supply target identity and startup-aware
-acceptance explicitly.
+Source-pinned or synthetic checks do not prove a real installation ready.
+Doctor complements deployment acceptance; neither proves future provider
+access or delivery. Independent scheduling and notification are deferred:
+the bot's own credentials can fail, so it cannot be the only alarm.
 
 ## Precedents
 
-- Issue #52 in `bermudi/little-goblin` was implemented in v1, not declined;
-  its old state/memory assumptions do not define current requirements.
-- OpenClaw's read-only lint result/exit contract:
-  `~/build/testing/openclaw/docs/cli/doctor/health-contract.md` and `lint.md`.
-  Ordinary doctor may migrate without `--fix`; do not copy that behavior.
-- Hermes's independent ordered checks and dedicated read-only SQLite path:
-  `~/build/testing/hermes-agent/hermes_cli/doctor.py` and `doctor_state.py`.
-  Do not copy paid default probes or exception-swallowing reports.
-- Existing health/refresh owners remain: memory readiness healthcheck,
-  embedding pin timer, memory-watch and key-refresh timer. Doctor observes
-  their boundaries; it does not replace their actions.
+OpenClaw's read-only lint and Hermes's read-only SQLite inspection informed
+the design. Their migration behavior and paid default probes were not
+adopted.

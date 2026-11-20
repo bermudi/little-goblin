@@ -1,8 +1,7 @@
 # Compaction — architecture ruling
 
-Core law is [`DESIGN.md`](../DESIGN.md); the summary's live contract is
-`design/model.md` → "Compaction". This file rules what a fold keeps, when it
-fires, what the summary must contain, and where the app shows it.
+See [`compaction.ts`](../src/agent/compaction.ts) and its
+[tests](../src/agent/compaction.test.ts) for the current behavior.
 
 Provenance: operator session 2026-11-09. Goblin's compaction was compared
 against pi (`~/build/pi-mono`), OpenClaw (`~/build/testing/openclaw`) and
@@ -24,14 +23,8 @@ earlier deviations from pi were reasoning without measurement. The ruling:
 default. A goblin difference must name a goblin-only constraint or a measured
 result, in this file. "It seemed better" is not a reason.
 
-**Status:** Staging 1 is built: trigger and 20k tail (#399), split-turn
- cut (#403). Stage 3's fold marks are built (#401);
-stage 2's headings, audit, identifier index and verbatim user messages are
-built (#400, `src/agent/compaction-summary.ts`); its memory flush is not
-(#405). Superseded and removed
-from this file: the ledger/atlas/narrative method, the understudy, and the
-known-missing manifest — the audit and lean parts below cover the same
-ground with evidence behind them. Git history has the old text.
+Implementation and tests live in `src/agent/compaction*.ts` and
+`src/turn/overflow*.ts`.
 
 ## Triggers
 
@@ -445,25 +438,6 @@ happened, and the cut-position pill read as wrong (operator, 2026-11-09).
   kept message) and how many messages were kept.
 - Count wording stays "messages"; a scheduled run is several messages
   (program prompt, reply, notes), and the expanded view lists them.
-
-## Schema
-
-No new table. `compactions` keeps its columns; the summary text now carries
-the headings and code-made parts. No migration: old rows render as before
-(their pill moves to fold time, per above).
-
-## Staging
-
-1. **Triggers, tail, cut.** 50%/256k trigger, 20k tail,
-   pi's cut over causal order with split turns (built: #399 triggers and
-   tail, #403 the split pointer), overflow contract.
-2. **Summary contents.** Required headings, quality audit, identifier
-   index, verbatim user messages, gated memory flush.
-3. **Fold marks.** Pill at fold time.
-
-Each stage is its own issue and branch. Tool-result pruning is not a stage:
-`src/cache-pruning.ts` already does cache-aware pruning (OpenClaw's
-`cache-ttl` mode), and pruning every request would break the prompt cache.
 
 ## Non-goals
 

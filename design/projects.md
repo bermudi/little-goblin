@@ -1,8 +1,5 @@
 # Projects & Notes — goblin design
 
-Part of the goblin design spec. The core — domain model, authority rule,
-cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
-
 ## Projects & Notes (ruling 2026-10-10)
 
 Operator ask: projects — a named home for related app chats, with their own
@@ -42,21 +39,9 @@ destructive step, and `trash` > `rm` is a red line.
 projects — it would rewrite a live conversation's cwd and prompt; the only
 sanctioned prefix rewrites are listed in Cache stability.
 
-**What a project changes for its conversations.** One seam each, all
-existing parameters:
-
-- **cwd.** `dir` feeds the existing cwd parameter; paths are not confined
-  today — absolute paths reach anywhere — so `dir` is a default, not a
-  wall. A vanished `dir` fails the turn at admission with the path in the
-  error and the log; it never falls back to the workspace.
-- **Prompt.** The environment line names `dir`; a `## project` section
-  carries name, instructions, the notes index, and — for a linked `dir` —
-  that directory's own `AGENTS.md`. SOUL.md, USER.md, goblin's own
-  AGENTS.md, and the skill catalog stay global.
-- **Cache.** No new rule. The prompt is frozen per conversation
-  (`prompt_snapshots`): instruction, notes-index, and project-AGENTS.md
-  edits load at the next boundary (new conversation, compaction), same as
-  SOUL.md.
+**Working directory and cache.** Paths are not confined — `dir` is a
+default, not a wall. Project prompt changes load at the next snapshot
+boundary, like global instructions.
 
 **Memory** (operator ruling): `shared` by default — project conversations
 retain to and recall from the one Hindsight bank like every other

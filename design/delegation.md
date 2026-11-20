@@ -1,8 +1,5 @@
 # Delegation — goblin design
 
-Part of the goblin design spec. The core — domain model, authority rule,
-cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
-
 > **Transport direction (operator, 2026-11-18, issue #728):** `delegate`
 > runs on herdr-core (`hc`), not Herdr. Goblin must “make sure binary X is
 > where you need it or go get it”; “they just need the right hooks installed
@@ -38,32 +35,11 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Delegation transport
 
-1. One adapter, `src/hc.ts`, speaks JSON-RPC 2.0 over the core Unix socket
-   and validates every reply with zod. The RPC `terminal.run` is required
-   because it accepts the per-run environment map.
-2. Goblin owns the pinned `hc` binary and verifies its source-pinned SHA-256
-   before use. Download and mismatch failures fail loud.
-3. Each Goblin home gets a private core session named from its path hash.
-   The core runs outside the Goblin service cgroup so a Goblin restart does
-   not end live runs. The default state path is
-   `~/.local/state/herdr-core/<session>/`; no state-dir override is passed to
-   harnesses. The core starts through `systemd-run --user --scope -q env
-   -i` with only the fixed environment above. Goblin talks to the core over
-   its Unix socket; health and try cleanup must not call `server status`,
-   which may auto-start a core. `server stop` is allowed for explicit stop.
-4. Goblin installs per-harness OSC 7501 hooks. Session start reports `idle`,
-   prompt/tool activity `working`, permission/question `blocked`, and turn
-   end `idle`. Hooks act only when `GOBLIN_HC_RUN=1`.
-5. Send the first prompt only after the first hook status. If no status
-   arrives within 30 seconds, fail with the terminal screen attached.
-   Delivery is proven when the status becomes `working`.
-6. Poll `terminal.get`. `working` followed by `idle` or `done` settles the
-   turn; read output with `terminal.read`. `answer` is for a blocked run and
-   `stop` uses `terminal.kill`.
-7. When delegation is configured, health requires the pinned binary and a
-   reachable private core.
-8. Machine targets remain out. Polling is used instead of event
-   subscriptions to avoid reconnect and missed-event handling.
+`src/hc.ts` owns the pinned core's wire contract. The private core
+survives Goblin restarts; machine targets remain out. Delivery is proven
+only when the hook reports `working`. Health and try cleanup must not
+call `server status`, which may start a core. Polling avoids reconnect
+and missed-event handling. The live contract check is below.
 
 ## Delegation behavior
 
@@ -102,21 +78,9 @@ Rulings:
 - **Harnesses are config, never guessed** — the operator's choice of
   kind, native args, full-auto flags and model; goblin never picks a
   model for a harness.
-- **Staffing defaults are config, not notes (2026-11-09).** The operator
-  sets `delegation.defaults` — role → configured harness name — instead
-  of the agent carrying the table in `USER.md` / workspace notes, where
-  two prose copies could drift and nothing enforced them.
-  `delegate start` takes an optional `role` (omitted = `default`); with
-  no `harness`, the role's entry decides, and a named role with no entry
-  falls back to `default`. An explicit harness always wins. No default
-  and no harness fails loud listing the configured agents and roles —
-  never a silent arbitrary pick. A default must name a declared harness
-  at config parse time.
-  Model choice stays in each harness's `args`: a defaults entry selects
-  a whole configured agent, never a bare model. Settings → Delegation
-  edits the harness table and defaults. An edited block also supersedes a parked copy — the off/on flip
-  is a stash, and a stale stash would resurrect an old table. The block
-  remains boot-frozen — the page shows the restart hint.
+- **Staffing defaults are config, not notes.** The operator configures
+  roles and harnesses; Goblin never guesses a model. The block remains
+  boot-frozen.
 - **Ask-first is a description rule, not a gate (2026-11-09).** A harness
   with `askFirst: true` adds a
   line to the `delegate` description: goblin asks the operator before

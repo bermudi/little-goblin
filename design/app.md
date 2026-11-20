@@ -1,8 +1,5 @@
 # App channel — goblin design
 
-Part of the goblin design spec. The core — domain model, authority rule,
-cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
-
 ## App channel (PWA → APK)
 
 Ruling 2026-09-30, operator ask: a second, disjoint channel beside
@@ -20,69 +17,19 @@ channels share the turn loop, tools, config, memories, skills and nothing
 else. No aliasing: once "where does this answer appear" has any answer
 longer than "where you asked", the thinking is the bug.
 
-**Protocol.** Store format = wire format — no translation layer to design,
-drift, or test twice. Stop ends the turn server-side, not just its stream.
-Compact (ruling 2026-10-16) puts the manual lever in the context gauge's
-popover, not a composer command grammar — the app parses no slash commands —
-and awaits the lane job (a finishing turn reads as a slow response). The
-gauge reads the final step's prompt (`usage.lastInput`), never the turn's
-billed sum across the tool loop (ruling 2026-10-19: the two differ by the
-step count, and the sum once read as a 223k window on a 37k one); its
-itemization scales `promptChars` to that number — per-segment figures are
-estimates, exact in aggregate only.
-Final-step counts fall back to billed totals only on legacy metadata with
-neither final-step field. Explicit nulls (or a missing companion field) stay
-unavailable, including cache-hit ratios and segment estimates.
-The gauge's denominator never stalls
-on the network: a cold models.dev memory falls back to a one-time
-disk-cache parse (`contextLimitCached`), memory wins once a turn warms it.
-While a turn streams the settled view is a turn behind (ruling 2026-10-21:
-a visibly streaming first turn must never read "no turns yet"; amended
-2026-10-24 — a stale number beats a placeholder, so the settled read
-stands in until a metered step lands): each model step pushes its
-window occupancy to the chat wire as a transient `data-context` part —
-`useChat`'s `onData` sees it, message parts and durable history never
-do, and the live-stream replay hands the last figure to a late joiner.
-The label names the turn in flight only when no settled read exists at
-all — a fresh conversation or a mid-turn switch.
+**Protocol.** Keep a shared storage and stream shape so a parallel
+translation layer cannot drift. Stop means stop server-side work, not just
+disconnect the browser. Manual compaction belongs in the gauge rather than
+a chat command grammar (2026-10-16).
 
-**Auth.** No `initData` exists outside Telegram; the lock is a bearer token,
-optional since 2026-09-30 by operator ruling, on the collie precedent:
-device-level trust (tailscale proves the device), no person-level auth —
-and unset means trust mode, the tailnet the only lock. The token is an
-auth.jsonl record (config stays secret-free). Boot-pinned: a mid-run flip or
-a rotation applies only after restart. Guardrail warn: **funnel is a
-misconfiguration** — a funnel-address `publicUrl` (public HTTPS) makes a
-token MANDATORY.
+**The context gauge measures occupancy, not cost.** Counting all billed
+steps once showed 223k tokens in a 37k window. Only the last call measures
+occupancy; itemized shares are estimates. Show the last settled measure
+rather than flashing an empty state while the next call is in progress.
+See the [gauge tests](../app/src/chat/ContextGauge.test.tsx).
 
-**Trust mode's browser-origin line (ruling 2026-10-08, #75).** Reachability
-proves the device, not the page: any site the browser visits could fire
-no-cors POSTs (`text/plain` bodies, no CORS preflight, response never read)
-at `/api/app/*`, creating conversations and submitting turns. Trust mode
-therefore refuses *mutations* speaking a foreign browser origin: `Origin`
-must match the request's own Host (either scheme — TLS ends at the front)
-or the configured `publicUrl`'s origin — `tailscale serve` rewrites Host,
-so only the public origin survives it. `Sec-Fetch-Site: same-site` refuses
-too (tailscale fronts share the ts.net suffix). Non-browser clients send
-neither header and pass; bearer mode never runs the gate — a token-holding
-non-browser client (a future APK webview) must not depend on browser
-headers. JSON-body routes require `content-type: application/json` in both
-modes — a claim a cross-origin page cannot make without a preflight this
-server never grants.
-
-**Intentional origin trade-off.** The request's own Host is accepted for
-proxy compatibility, not as independent proof of a trusted browser origin;
-pinning origins solely to `publicUrl` would be a different access policy,
-not a free tightening.
-
-Trust mode leaves a **DNS rebinding risk**: an attacker-controlled hostname
-resolving to a reachable goblin endpoint looks same-origin to both `Origin`
-and Host, so neither gate nor JSON preflight blocks it. Tailnet
-reachability is the intended outer boundary, but a browser inside it can be
-the bridge — Safari must not be assumed to enforce Chromium-style Private
-Network Access preflights. The residual is accepted for proxy/direct-access
-compatibility; an operator needing an authentication boundary uses bearer
-mode, and a stricter pinned-origin policy needs its own ruling.
+**Auth (#75).** See [Security](../docs/security.md#the-app-channels-auth) for
+the trust-mode choice, browser-origin limits and when to require a token.
 
 **Client.** A missing build is a fail-loud 500 plus log line, never a
 silent empty page; the transcript's single "Worked" fold is openclaw's
@@ -150,15 +97,7 @@ token — a held or rejected `getMe`, or a poll that dies mid-run, leaves
 the PWA fully usable. The mini-app door (`/t/`, initData validation)
 fails closed with 503 until a live `botToken` attaches.
 
-**Page scroll (ruling 2026-11-07, #161).** On every `.ops` page the full-width
-pane is the scroll container; the content column is inset by side padding
-computed from `--page-col` (default `46rem`; Settings sets `68rem`). So the
-wheel works over the margins beside the column and the scrollbar sits at the
-pane edge, as in chat. Change a page's column width only through `--page-col`;
-never give the scroll container a `max-width`.
-
-**Non-chat page layout (ruling 2026-11-07, #168, operator pick: option B of
-`design/prototypes/page-layout/`).** The narrow reading column is the
+**Non-chat page layout (ruling 2026-11-07, #168, operator pick).** The narrow reading column is the
 chat's, not every page's. Non-chat pages use the full pane width, in one
 column:
 - Lists of like things are tables with columns (e.g. program | schedule |
@@ -174,179 +113,8 @@ column:
   helps, e.g. Programs, Memory, Status.
 - Chat stays as it is.
 
-*Building blocks (landed with #168; classes in `app/src/styles.css`).*
-`.ops` pages fill the pane; side padding is `--page-pad`
-(`clamp(1rem, 3%, 2.5rem)`) and `--page-col` only caps very wide screens
-(110rem; Settings keeps 68rem; sheets keep 46rem and a 1rem gutter).
-`.dtable` is the list table: columns come from `--dt-cols` on the table,
-rows are `button.dt-row` (row click = open), `.dt-status` is the status-pill
-column, a chevron column is added by the CSS. Under 40rem of *table* width
-(a container query, not the viewport) a row stacks: first cell, status and
-chevron on top, other cells as muted lines named by `data-label`;
-`.dt-hide-m` drops a cell. `.prose` caps a block at `--prose-col` (70ch);
-code-like text (diffs, file contents, dumps) uses `--code-col` (78ch). The
-existing long-text classes get these caps by selector until their page is
-redone. `.sumstrip` / `.sumtile` is the optional count strip. The Projects
-index is the reference table.
-
-*Status page (#175).* Leads with one verdict line computed from the status
-API only: "Goblin is OK", "N thing(s) need attention" (memory needs review,
-a restart waits) or "Something is broken" (memory recall failing; also shown
-when the status request itself fails). Under it a `.sumstrip` (`.status-strip`)
-of part tiles — Service, Memory, Programs, Delegations — each with a state
-pill, one plain line (what is wrong and what to do) and an "Open …" link to
-the page that fixes it. Programs and Delegations only report counts, so their
-pill says "no signal", never a guessed "ok". A note says model providers,
-Telegram and keys are not in the status API and points to
-`bun run doctor`; no new probes. The old label/value cards live on in a
-collapsed "Raw details" block. Memory "off" is neutral, not a problem.
-
-*Log page (#166).* A `.dtable` (`.logtable`) of lines, newest first: time
-(clock today, day + clock older), level pill, message, key fields (scalar
-fields, the error first). The level filter is visible chips and means *at
-least* that severity (Info+, Warnings+, Errors; the server `level` param
-too); the text filter searches itself after a short pause. Warnings and
-errors carry a colored edge. Consecutive debug/info lines with the same
-message fold into one `×N` row; warnings and errors never fold. A row opens
-*in place* (not a replacing detail view) because the neighbouring lines are
-the context of an event; the opened line lists its fields as key/value, with
-stacks and nested values in `pre` blocks. The tail stays a bounded
-server-side window; the page says how many older matching lines it did not
-show (`matched` on the wire) and offers the next limit.
-
-*Delegations page (#169).* Current work (starting, running, needs input)
-leads as panels (`.deleg-now`): name, status pill, harness and start time,
-what it waits for, a one-line brief summary, and a direct action — "Answer in
-conversation" / "Open conversation" for a delegation pinned to an app
-conversation, always "Details". Needs-input panels carry a warning edge. A
-`.sumstrip` counts need input / running / done / failed or stopped. Finished
-delegations are a `.dtable` (name + brief summary | harness | status pill |
-started | ended), newest first, 15 rows at a time with "Show more". A brief is
-never printed in a list; opening a row replaces the list with the detail
-(back link, facts, full brief in `.prose`). The wire carries no outcome or
-result link, so none is shown; Telegram-pinned delegations have no app
-conversation to link.
-
-**Note page is an editor (ruling 2026-11-07, #172).** The note page must read
-as a place to write: the title is a bordered field (placeholder "Note title";
-a fresh "Untitled note" selects on focus), the text sits on a visible surface
-(control border and background) that shows "Start writing…" while empty, and
-the toolbar is one row of same-height controls — labelled "Project" select,
-Pin, Archive, Versions — with "Chat with this note" at the right edge (the row
-wraps under 40rem). Title, toolbar and surface share one 41rem column (about
-70ch of the 15px note text, `--note-col`). The footer of the surface holds
-Rewrite selection and the save state (dot + "Saved" / "Saving…" / "Offline —
-retrying" / "Save failed" / "Conflict"). Versions is a popover anchored to its
-button (so it opens where the press was on a long note), closing on outside
-press or Escape; under 40rem it spans the toolbar row.
-
-**Note editor controls (ruling 2026-11-07, #173; interaction amended
-2026-11-16, #623).** The top of the writing surface is a formatting row
-(`.note-fmt`, `NoteToolbar.tsx`), built with ui-sdk's Toolbar: one Tab stop
-and arrow-key movement across controls. The toolbar follows library focus
-behavior; clicking a control preserves the editor's selection so formatting
-still applies to the selected text. It has a "Text style" select (Paragraph,
-Heading 1–3 — Paragraph is how a heading, typed or chosen, turns back into
-plain text), then bold, italic, strikethrough, inline code, link | bulleted,
-numbered, task list, quote, code block, rule | undo, redo. The controls that
-apply to the selection show `aria-pressed` (accent fill), and the select
-shows the current block. Each tooltip names its shortcut (Ctrl/⌘ per
-platform) — the keys are Milkdown's own, plus Ctrl/⌘+K for Link, which opens
-a one-line address row (Apply/Update, Remove link, Cancel). The row wraps
-onto more lines on a phone; the page never scrolls sideways. Commands are
-Milkdown's (`noteFormat.ts`); lists, links and the rule use ProseMirror
-directly because Milkdown has no toggle for them. A task item is a bullet
-item with `checked`, saved as `* [ ] x`; its checkbox (CSS `::before`) is
-clickable. The rule goes after the current block, not through Milkdown's
-`insertHr` (which leaves a `<br />` paragraph). The row is disabled while a
-rewrite is open; saved text stays plain markdown.
-
-*Project page (#171).* Title and Rename share a line; Directory, its kind
-pill and the archived pill sit under it. Each section (Instructions,
-Memory, Notes, Chats) puts its heading and its action on one line
-(`.proj-sec-head`): Save, New note. Notes and chats are `.dtable`s (name |
-preview | updated | pinned); a chat row opens the chat. Memory is a two-way
-radio group (Shared / Off), not a dropdown; the long sentences are a
-caption. Archive is a destructive action, so it sits in a footer panel at
-the very end (`.proj-foot.danger-zone`) and asks to confirm; Unarchive is
-a plain button in the same footer. Archived chats stay in a collapsed
-shelf with their row actions, because rename/unarchive/delete live there.
-
-*Notes index (#177).* The heading row is `.proj-sec-head`: "Notes" at the
-left, "New note" at the right edge. Under it one filter row (search field and
-a project select: "All projects", "No project", then each project); the row
-wraps and the search field has `min-width: 0`, so it never outgrows the pane
-(it did by ~27px at 390px). Notes are a `.dtable` (`.notes-table`): note |
-project | preview | updated | pinned, pinned notes first and the newest edit
-first inside each group. A note with no project shows "No project". No
-internal words on the page: no "loose", no "rev N". The archived shelf uses
-the same table. The project page's notes table has the same shape without
-the project column. Who edited last is not on the wire summary, so it is not
-shown yet.
-
-*Skills page (#176).* `SkillsView.tsx`. Proposals come first, under a count
-strip (awaiting decision / updates / installed). Each proposal is an
-`.approval-card` (`.skill-proposal`): name, new/update pill, what the skill
-does (its SKILL.md `description`), then the evidence already open — for an
-update the per-file diff (`DiffView`), for a new skill its SKILL.md — and real
-buttons: Install / Discard for a new skill, Install update / Discard update for
-an update (a bare "Discard" could read as removing the installed copy).
-Installed skills are a `.dtable` (`.skills-table`): skill | what it does
-(two-line clamp, from `description`; "No description in SKILL.md" in italics
-when the frontmatter is missing or bad) | files | updated. A row opens the
-skill *in place of* the list with a back link: description in `.prose`,
-updated/size/files, the file list, and SKILL.md already open. The wire items
-carry `description` (`stateview.ts`, parsed with the catalog's own
-frontmatter reader; `null` when absent). Not shown: when a skill was last
-*used* (no such record exists yet), search and grouping.
-
-*Memory page (#163).* It answers three questions in order. **Is memory
-working?** A health line first ("Memory is working", last save, last
-recall; "can't save" or "can't recall" when not). Last recall is stored in
-the state db, so a restart does not reset it to "never". **What did it
-keep?** A "Recent saves" `.dtable`: the conversation NAME, "Kept N facts",
-and age; a row expands to the facts, the exchange text and Forget. Exchanges
-that kept nothing fold into a collapsed "Nothing kept (N exchanges)" section
-grouped by conversation. A "processed so far" line sits in the footer.
-Blocked exchanges get a problem card (cause, conversations, Try again,
-Drop them with a confirm). After Try again, a progress card shows saved /
-still queued / failed again, in total and per conversation, and the page
-polls fast while any are queued. The wire shapes (`blockedConversations`,
-`blockedCauses`, `retry`) are reusable by the Attention blocked card (#150).
-Restoring dropped exchanges ("Save them now") is design only; it waits for
-memory tuning and is not built.
-
-*Attention page (#150; mockup `design/prototypes/attention/`, operator: "love it").*
-`AttentionView.tsx`. One summary line on top ("1 thing is broken. 4 decisions
-wait for you." / "Nothing needs you."). **Broken** comes first: memory is ONE
-card per *cause* (the stored error text), not one per exchange — real error,
-how many exchanges, which conversations by name, a fix hint
-(`memoryFix` in `app-attention.ts`, chosen from the error text), an "If you
-wait:" line, and the actions on the card: Try again, Drop them (inline
-confirm) and a link to the Memory page. Try again and Drop them are scoped to
-that cause (`POST /memory/blocked` takes an optional `error`; the Memory page
-sends none and still means all). After Try again the page polls like the
-Memory page and shows its `RetryCard`. A failed status read is shown on the
-page; polling continues at the retry cadence, and the next successful read
-clears the error, refreshes the blocked cards, and updates retry progress.
-**Your decisions** show program, mail
-and skill proposals as the Programs/Skills page cards (`ProgramApprovalCard`,
-`MailApprovalCard`, `ProposalCard`) with their diff already open and the
-buttons on the card; each has an "If you wait:" line. **Needs you** holds the
-rest (interrupted runs, delegations, responsibilities) with a plain Open,
-plus two read-only memory projections (#483): an open outage row is
-"Memory can't reach its service" (queued count mirrors the Telegram
-outage notice's "queued locally, nothing lost") and a failed last recall
-is "Memory can't recall". Both are the same durable states the Telegram
-notices ride (the `memory_outage` row, the `memory_recall_state` flag)
-and clear on their own when the service is healthy — projections, not
-notices, so memory.md's two-notice rule still bounds pushes.
-A declared observation outage is a card of its own
-(`observation-unreachable`, #491): "Can't observe \<agent\>" names the
-target and the outage start, and disappears on the next successful poll —
-there is nothing to decide, only something to notice.
-**Work in progress** is the responsibility feed; notifications are one line at
-the foot. "Drop them" still cannot be undone ("Save them now" is design only).
+Restoring dropped memory exchanges ("Save them now") is design only; it
+waits for memory tuning and is not built. Dropping them cannot be undone.
 
 **State viewer (ruling 2026-10-11, operator ask).** Read-only view of
 `$GOBLIN_HOME` beyond the console — reads, never writes; `auth.jsonl` is out
@@ -454,29 +222,9 @@ Render-side only; history text is never rewritten.
 
 ## Conversation outline (ruling 2026-10-24, operator ask; feel replaced 2026-11-07)
 
-Operator ask: conversation navigation should be a joy — copy the mechanism,
-not the screenshots. The chat has a right-edge outline (`app/src/Outline.tsx`):
-one dash per operator message (the section list — assistant turns belong to
-the section above them), evenly spaced on a short vertical rail. The first
-cut borrowed DeepSeek's expanding title list; on 2026-11-07 the operator asked
-for t3code's timeline minimap feel instead (`TimelineMinimap.tsx`), kept on the
-right. What was taken: dashes rest short and fan out around the hovered one
-(widths 1 / .667 / .417 / .333 by distance, 150ms) animating **transform and
-opacity only**; each dash's hit slot is the band nearest to it, so the pointer
-never crosses a dead gap; one floating card follows the hovered dash and shows
-the operator's message plus the first three lines of the reply (flat card —
-hairline border, no shadow, unlike t3code's glass); wheel over the rail
-scrolls the transcript; arrows/Home/End move focus (one tab stop). A click
-jumps the transcript to the message; a scroll spy lights the section in view.
-Jumping scrolls the transcript and follow-mode unpins exactly the way any
-upward scroll does. Collapsed the rail is a narrow edge zone — never a wide
-invisible click strip over the transcript text. It is a pointer/keyboard
-affordance, so it is JSX-gated off phone widths through the shared
-`usePhoneWidth` module (ruling 2026-10-24 → Mobile navigation — width-gated
-chrome must not exist as hidden DOM duplicates), and the style sheet's phone
-`display:none` is its own guarantee. Not taken: t3code's prev/next chevrons
-and its rAF wheel glide (the transcript's native smooth scroll covers it).
-Client-render only: history is already on the wire, no store or API change.
+Operator ask: conversation navigation should be a joy. The outline
+borrows t3code's timeline minimap feel, not its screenshots; see
+[`Outline.tsx`](../app/src/Outline.tsx).
 
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
@@ -649,84 +397,23 @@ whole catalog: curation governs the chat picker, not job picks.
 ## Visible controls (ruling 2026-11-07, #170)
 
 A field, select or button must read as usable at rest, in both themes,
-before it is touched. Controls draw their edge with `--app-control-border`
-(30% of the foreground; 48% on hover), fields and secondary buttons carry
-`--app-control-bg`, and focus is `--app-focus` (accent) plus a 2px ring.
-`--app-border` is the card/separator hairline (10%) and must not be used
-for a control. Native selects get a drawn chevron. A zero-specificity net
-under `.ops`, `.msheet` and dialogs styles any field a page forgot, so a
-new field is never a bare native control.
+before it is touched.
 
 ## Settings shape (ruling 2026-10-23)
 
-Supersedes the form-mirrors-the-file layout. Operator rule: **anything
-changed in normal use gets a form; everything else is goblin-managed** —
-not shown as an input, round-tripped untouched by every save, and edited
-in `goblin.json5` only by advanced operators. Managed values may appear
-as read-only text (System, the memory card).
+Operator choice: put routine settings in the form without exposing or
+discarding advanced fields. Show credential status, not credential record
+names or command text, and never replace a Pass-backed command from the UI.
+Use presets for known providers. ChatGPT is an account, not a provider type;
+its in-app login must not take ownership of the CLI's credentials. See
+[Auth](auth.md#chatgpt-device-code-ownership) and the
+[login contract check](../src/agent/codex/login.live.test.ts).
 
-- **No credential plumbing in the UI.** Record names (`auth` fields) never
-  render as inputs; each service shows key status instead — no key
-  needed / from pass-keys (command records, never replaced from the UI) /
-  key saved / key missing, with paste-to-store. Kind ids render through
-  the server-served `serviceNames`. The naming discipline in
-  `design/auth.md` still decides what a blank derives to; it just stops
-  being visible.
-- **Model services come from presets** (`providerPresets`, base URLs the
-  docs already carry, plus the Claude subscription lane, whose card names
-  `claude setup-token` until a key exists); "custom endpoint" is the only place protocol and
-  base URL appear. ChatGPT is an account, not a provider type.
-- **ChatGPT sign-in is in-app** — the Codex CLI's device-code flow
-  (`src/agent/codex/login.ts`, wire pinned from codex-rs
-  `device_code_auth.rs`/`server.rs`; `login.live.test.ts` is its drift
-  check). Tokens land in goblin's own `state/codex-auth.json` (0600);
-  `~/.codex/auth.json` stays the CLI's. Resolution: explicit `authFile`
-  (pinned — in-app sign-in refused) > goblin's file > the CLI's file (the
-  legacy path keeps an existing install working until its first in-app
-  sign-in). Sign-out removes only goblin's file. A first sign-in adds
-  a codex provider under the first unused name (`codex`, `codex-2`, …)
-  when none exists; an existing service named `codex` is never replaced.
-  A sign-in action returning pending starts status polling immediately;
-  completion reloads clean settings so the new provider is visible.
-- **Off parks, never deletes.** Switching off memory, transcription,
-  vision, image, sandbox, scripting, delegation, guest or
-  reviewer moves the block under `parked`; on restores it whole, file-only
-  fields included. Runtime consumers and `authReferences` never read
-  `parked`. A block with no parked copy and no safe default reports
-  `needs-setup` with its hint; a bare switch cannot invent config. A save
-  may supply the block together with its enable switch (including a
-  first-time vision, image or transcription setup). Supplied blocks win
-  over parked copies and defaults; the whole resulting config, including
-  provider changes in that save, must validate before anything is written.
-  For image generation, an omitted `size` on a supplied re-enable block
-  keeps the parked size; an explicit size in the supplied block wins.
-  An already-active image block is still replaced whole.
-  The editor hydrates its restoration stash from parked content on load;
-  enabling transcription or memory restores that content into the draft,
-  so its switch and subsequent saves reflect the requested state.
-- Sections: Models · Accounts & keys · Web · Voice · Memory · Telegram ·
-  Access · Capabilities · System. Boot-pinned changes surface as one
-  restart banner from the config-pins restart hints, not per-field
-  captions. This includes all reviewer changes: its switch persists and
-  parks/restores config, but the reviewer itself is wired only at boot;
-  enabling or disabling it takes an approved restart (design/skills.md →
-  Skill reviewer). Failed status checks preserve last-known restart hints
-  and show explicit uncertainty; unavailable status never confirms that
-  a saved change needs no restart.
-
-*Settings readability (#179).* Presentation only; the shape ruling, save
-rules and dirty-state prompts above are unchanged. Every group has a
-sentence-case heading (`SectionHead`) with a one-line purpose. Every
-setting is a row: label, a short plain help line, the control aligned on
-the right; under 640px the control stacks under its label (the switch stays
-beside it). `Row` takes a `tag`: `restart` (boot-pinned: Telegram channel,
-skill reviewer) or `careful` (sandbox, coding-agent delegation) shows a
-small badge by the label. Help text avoids internal words; a message
-belongs on the row it explains (e.g. "Telegram is off" is a Telegram row in
-Default models). Filter, Disable all, Add custom model and Add fallback are
-bordered buttons/inputs. The rules are all scoped under `.settings`; the
-shared `.ops-h2`, `.card` and `.row` base rules are untouched. The page
-renders the same in the `/t/settings` mini app door.
+Switching a capability off does not mean deleting its setup. Restore it,
+including fields the form does not edit, and do not invent missing setup.
+Keep restart requirements visible; unavailable status is not confirmation
+that a saved change is live. See the
+[config save tests](../src/http/app-config.test.ts).
 
 ## Spin-off (ruling 2026-10-03)
 
@@ -855,49 +542,8 @@ channel addresses.
 
 ## Mobile navigation (ruling 2026-10-24, operator ask; desktop landed 2026-10-30)
 
-Operator ask: the sidebar prototypes (`design/prototypes/sidebar/`) picked
-direction C — a glyph gutter — for desktop and direction M for phones. The
-phone half shipped first; the desktop C rail landed in `f9f7f78e` — a 52px
-glyph spine (New · Search · Chats/Projects/Notes · ops pages · Settings
-docked low) beside a 216px panel that lists one surface at a time. Search
-is a pane mode (focused input, Esc returns to Chats), each panel head
-links its index page, Attention carries a violet dot while items wait,
-and a header toggle collapses the whole rail. The glyph that is lit is
-`pane` or `page` — panel surface and open page may light two at once.
-
-The Chats list nests native child conversations directly below their
-parent, recursively, preserving the rail order among siblings. A child whose
-parent is not in the active rail appears at the top level with a “subagent”
-label. Nested lists keep the same arrow-key navigation across every link.
-When open, a child conversation has a header link back to its parent.
-
-On phone widths (≤720px, the same breakpoint the drawer used) the
-slide-in drawer is retired on the app channel. Navigation is a fixed thumb
-bar — Chats · Projects · Notes · Attention · More — and one surface fills
-the screen.
-
-- The bar stands down inside a thread, the staged composer, a project
-  page, and the context-window view: a full-bleed surface with its own
-  bottom edge owns the screen there. The header carries a phone-only
-  back door to the chats list for the chat states and to the projects
-  index for a project page. The context-window view needs no door — its
-  own in-page back returns to the thread on every width.
-- `/app` on a phone is the chats list — the rail's list, not the
-  empty-state composer. "New conversation" stages the composer as its own
-  screen (`composeStaged`); on desktop `select(null)` still is the
-  composer, so the bit is inert there. A staged send creates the
-  conversation as usual and the thread takes over.
-- More is a bottom sheet (`.veil`/`.msheet`, like the model picker)
-  carrying every system surface except Attention, grouped Reads · Operate ·
-  Inspect plus Settings — the rail-ops keep their grouping through the
-  move.
-- The M chrome is gated in JSX on `matchMedia` (`usePhoneWidth`), not CSS
-  alone: navigation must not exist as hidden duplicates in a desktop DOM,
-  where it would double every accessible name. `.chatlist-screen`,
-  `.tabbar`, and `.mobile-back` carry `display: none` at desktop widths as
-  the style sheet's own guarantee, not the mechanism.
-- The Telegram door keeps its drawer untouched: `/t/` is phone-only and
-  its two pages don't warrant a bar.
+The operator chose a glyph gutter on desktop and a thumb bar on phones.
+The Telegram door keeps its drawer: its two pages don't warrant a bar.
 
 ## The app wire must never idle — SSE heartbeat
 
@@ -930,95 +576,20 @@ fail-loud broken.
 
 ## Context window view (ruling 2026-10-22, operator ask)
 
-Operator ask, after pi-mono's `/share` session viewer: a per-conversation
-view of everything that hits the context window — system prompt, tool
-schemas, every message — with toggles and filters, one button away from
-the chat.
+Show what the model actually received, not what a second assembler would
+build now. This borrows pi's `/share` evidence-first viewer, not public
+sharing: the view is private, read-only and a full page. Keep the latest
+completed call's text, not a second copy of media; historical call metadata
+is not historical prompt content. Show missing or stale data honestly.
 
-**Captured at the source, never reconstructed.** The shareable artifact
-in pi is the session log plus a trailing entry carrying the system
-prompt and tool schemas; the viewer renders what *was*, never a
-re-derivation. Goblin takes the same mechanism one seam deeper:
-`prepareStep` already holds the exact outbound prompt of every model
-call (the gauge's `promptChars` itemization reads the same capture), so
-the final step's prompt — system, tool definitions, every
-`PromptMessage` — is serialized once and stored per conversation
-(`context_windows`, latest wins, gzip). The record is the last model
-call's input, verbatim. A parallel assembler in an HTTP handler would
-have drifted from admission's pipeline the first time either changed;
-there is no reconstruction path, so none can drift.
+Lead with what decides the next request, and keep raw parts closed by
+default (#178). Capture failure must not fail a reply.
 
-- **Media bytes are stubbed to counts at capture** (`{omitted: bytes,
-  count}`); the transcript already shows the media, and a second
-  megabyte store per turn buys nothing. Everything textual is verbatim.
-- **The record rides both outcome rails** — an ok turn stores its final
-  step, a failed one its last completed step; gated on completed steps,
-  so a call that never finished a step records nothing (`steps: 0`
-  reads as no window, never as a prompt nothing saw). A failed record
-  write is logged and the turn proceeds — observability, never turn
-  state; the journal owns what must be honest.
-- **The window is the model's input, not the transcript.** It ends
-  where the final call's prompt ended — a single-step turn's window
-  holds the operator message only; steers, warnings and landing nudges
-  appear exactly when they rode the captured step. The reply is never
-  in its own prompt.
-- **Staleness is stated, not hidden.** The view carries the captured
-  model beside the conversation's current one; a mismatch reads "the
-  next turn rebuilds the window" — true by the frozen-snapshot and
-  model-edit rulings, not an error.
-- **The call lineage is the historical half.** `model_cache_calls`
-  already records every call (usage, cache split, prefix relation); the
-  window route serves that lineage per conversation, bounded, newest
-  first. Together they answer "what hit the window" for every call,
-  not just the newest.
-- **A forget purges every capture, globally.** Stored windows embed
-  recall bytes with no reliable source attribution, so the forget
-  boundary clears `context_windows` and bumps a singleton
-  `recall_version` in the same transaction as the recall-context
-  redaction. Attempts read the version before their memory/view/model
-  preparation and write the record only when it still matches — a
-  turn in flight across the boundary is fenced, never served back a
-  projection of forgotten evidence. An overflow continuation reuses
-  its failed attempt's version, matching the memory it carried; a
-  continuation reads the current one.
-
-**Surface.** `GET /api/app/conversations/<id>/window` (read-only, same
-bearer/trust gate as every `/api/app/*` route; the window is
-operator-private like the transcript and never leaves the process). In
-the PWA, the chat header's context-window action opens
-`/app/c/<id>/window` — a full page, linkable like pi's share URL, not a
-sheet. Filters are client-side: role chips, a substring filter,
-thinking/tool-body expansion, a raw-JSON mode. App conversations only;
-the mini app door has no chat and gets no pages. A conversation with no
-captured window says so — the view never fabricates one.
-
-**Page layout (ruling 2026-11-07, #178).** The page leads with what decides
-the next turn, then folds the raw parts away.
-- Top: a `.sumstrip` (tokens used of the limit, share of the window, message
-  count, tool count, cache-read share) and a fill bar with a mark at the
-  compaction threshold. One sentence says what happens next: room left before
-  compaction, or that the history compacts, or that a model change rebuilds
-  the window.
-- Tokens, limit, share and cache come from the gauge's `/context` read, not
-  from the window route. `compactAtPct` rides that read (the runtime's
-  `compactTriggerTokens`, in `src/turn/overflow.ts`) so the client never
-  copies the trigger. When the read has no input or limit (e.g. the provider reported no
-  usage) the tiles show "—" and the page says why; it never estimates tokens.
-- "What takes the space": a table of the itemized parts, biggest first, with
-  chars, tokens (only where the context read has that part), share and a
-  bar. The backend splits identity, environment, project, AGENTS.md, USER.md,
-  skills, tool schemas and history. It has no separate memory-recall or
-  attachment split, so none is shown.
-- Raw parts (system prompt, tools, messages with their filters, model
-  calls) sit in closed `details.win-fold` blocks, code-width (`--code-col`),
-  with no inner scroll box. Filters are chips, not checkboxes.
-- Checked at 390px: no sideways scroll; the table drops its bar column.
-
-The row dies with the conversation: `context_windows` carries no FK, so
-it rides `deleteConversation`'s sweep — a re-minted id starts empty and
-never inherits the last generation's prompt (operator-chosen app ids
-re-mint freely; an inherited row would claim a capture that predates
-the conversation, the fabrication the view refuses).
+Forgetting purges every capture because recalled text cannot be attributed
+reliably here, and an in-flight capture must not restore it. A newly minted
+conversation must not inherit the deleted one's capture. See
+[`window-capture.test.ts`](../src/window-capture.test.ts) and
+[`WindowView.test.tsx`](../app/src/WindowView.test.tsx).
 
 ## Reply ratings (ruling 2026-10-22)
 
@@ -1098,16 +669,6 @@ before the event that references it, so collection would race intake and
 could strip an image from a message about to land; the operator chose
 keeping every blob over any collector. Reopen this only with a new
 ruling, not as a cleanup.
-
-Conversation rows remain ordinary list items with a thread link and a
-separate action-menu trigger. The links use ui-sdk roving focus: Up/Down
-move between rows, Home/End jump to the first/last, and Tab enters at one
-link and leaves the group; focus movement does not activate a link.
-Links keep native behavior, including modifier-click. Keep the list as a
-list, not a listbox: rows contain both links and actions, not one
-selectable option. The menu trigger groups Pin/Unpin, Rename,
-Archive/Unarchive and (on archived rows) Delete; menu keys open, move
-between actions and close it. Rename stays inline.
 
 Archiving never fences a live turn (unlike DELETE's `runtime.stop`) — the
 turn finishes into history either way. And **any appended event
@@ -1193,62 +754,14 @@ is the index the window walks.
 
 ## Delivery and arm truth (ruling 2026-10-20)
 
-Three fences close the gaps review found in the handover loop's
-delivery edges:
+Missing delivery evidence is not permission to try again. See the
+[scheduled delivery](../src/wake-dispatcher.ts) and
+[worker send](../src/responsibility-operations.ts) owners.
 
-- **Wake ownership is gate-or-fail-closed, never optimistic.** The
-  runtime's ownership hooks observe turns and never gate them, so a
-  `begin` hook that cannot persist the wake→run link cannot abort the
-  run — but an unlinked claim is indistinguishable from a
-  never-admitted one, and reconcile would resubmit a trigger the live
-  or finished run already processed. A failed link therefore fails the
-  *wake* closed (`failUnlinked`: CAS on claimed AND run_id IS NULL) and
-  the dispatcher fences that wake's submit for the process lifetime,
-  retrying the durable closure every pump. The turn always completes;
-  only the resubmission is impossible. The same closure+fence covers
-  every terminal failure *before* `begin` (refused admission,
-  makeTools, the journal row itself): the runtime announces it through
-  `preRunFailure`, because no run row exists for reconcile to read —
-  and while even the closure write refuses, the process-local fence
-  holds the resubmission and each pump retries the write.
-- **The unresolved-delivery fence binds to dispatch identity, not row
-  identity.** Prepare, claim, and fresh `attach` all fence per dispatch
-  identity — server, session, terminal, harness session, kind, within
-  one responsibility — never per (attachment, generation) alone, which
-  a duplicate binding of the same agent could have walked around:
-  after A's send went `uncertain`, a prepare or claim via B would have
-  reached the same agent without reconciliation. `attach` additionally
-  refuses a second live binding of one identity outright (plain error;
-  detach it or reattach), so the duplicate state stops being minted;
-  the prepare/claim fence still covers rows that predate the refusal.
-  The identity an operation answers for is persisted **on the
-  operation** at prepare: reattach rewrites the attachment row's
-  copies, so joining it would re-key an unresolved send onto whatever
-  destination the row holds now — fencing the replacement that never
-  received it and freeing the agent that did. A genuinely changed
-  identity remains a deliberate adoption, same as reattach's ruling;
-  the fence never reaches across responsibilities.
-- **Arm truth is the linked program.** The persisted `armed` flags are
-  a cache `ensureFollowup` writes; the `program` tool can disable or
-  delete the follow-up behind the responsibility's back. Every armed
-  reader — the app feed and the agent-facing `status` action alike —
-  recomputes from the linked program row (armed = exists ∧ enabled ∧
-  scheduled ∧ active), sharing one `armedView`. A responsibility's next
-  check-in is the scheduled evaluation at/after its persisted review
-  due time, not the Program's next ordinary tick. The feed exposes that
-  time and purpose; the responsibility carries the exact due threshold
-  and plan token. Disabled, missing, or non-active follow-ups show no
-  next check-in. Existing/operator-edited Program cadence remains
-  authoritative and can delay the evaluation past that due threshold.
-  The app feed additionally keeps its polls honest (2026-10-20): a
-  refresh failure alongside loaded rows renders a stale-state banner
-  instead of standing mute, and each response carries the refresh's
-  sequence — an older poll resolving after a mutation's refresh is
-  dropped, never restored to obsolete state. Ordinary polls also
-  serialize (2026-10-22): the interval skips while a fetch is in
-  flight, so sustained latency above the interval degrades the cadence
-  instead of stacking requests whose every response arrives stale by
-  sequence and gets discarded — the feed would never have rendered.
+The app reports whether the linked schedule is active, not whether an
+earlier setup reported success. Show the next check-in that can actually
+run, not the next scheduler tick. Keep an older view visible when refresh
+fails, but mark it stale. See [`ResponsibilityFeed.tsx`](../app/src/ResponsibilityFeed.tsx).
 
 ## Outcome posts (ruling 2026-11-02)
 

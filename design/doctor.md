@@ -58,8 +58,9 @@ a failure for a retired pin does not.
 Reports must not expose auth values or records, arbitrary command output,
 config or environment dumps, credential-bearing URLs, raw external bodies
 or unsafe error payloads. Diagnostics are safe summaries, not a channel for
-secrets into agent context. JSON output and operational diagnostics remain
-separate.
+secrets into agent context. JSON stdout is exactly one report. Operational
+diagnostics belong on stderr, a scoped exception to ordinary runtime stdout
+logging: a log line on stdout would break consumers of the report.
 
 External work is bounded and cancellable. Cancellation must reclaim the
 worker process group even if its leader has exited.
@@ -67,9 +68,10 @@ worker process group even if its leader has exited.
 ## Verification and deferred work
 
 Source-pinned or synthetic checks do not prove a real installation ready.
-Doctor complements deployment acceptance; neither proves future provider
-access or delivery. Independent scheduling and notification are deferred:
-the bot's own credentials can fail, so it cannot be the only alarm.
+Doctor complements [startup-aware acceptance](setup.md#startup-acceptance);
+neither proves future provider access or delivery. Independent scheduling
+and notification are deferred: the bot's own credentials can fail, so it
+cannot be the only alarm.
 
 ## Precedents
 

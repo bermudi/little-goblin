@@ -30,9 +30,10 @@ must expose that condition. Release retention is an operator decision.
 
 Config belongs to the home, not the release. The rollout snapshots and
 restores release-specific config because older strict schemas can reject
-newer settings (#645). Differing current settings are preserved before
-restoration. An older release without a snapshot requires manual recovery
-from the operator's backups.
+newer settings (#645). Before restoring a different snapshot, the rollout
+keeps `goblin.json5.rollback-from-<rev>` beside `goblin.json5` in the service
+home (normally `~/goblin/`). If the target has no snapshot, the rollout does
+not create that backup; restore the older config from an existing backup.
 
 ## What the gate still buys
 

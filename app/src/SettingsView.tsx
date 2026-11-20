@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import type { ThinkingLevel } from "../../src/config-schema.ts";
 import type {
 	ConfigResponse,
@@ -24,6 +24,7 @@ import { SettingsSystem } from "./SettingsSystem.tsx";
 import { SettingsTelegram } from "./SettingsTelegram.tsx";
 import { SettingsVoice } from "./SettingsVoice.tsx";
 import { SettingsWeb } from "./SettingsWeb.tsx";
+import type { LeaveAnswer } from "./leaveAsk.ts";
 import { saveFailure, shouldAutosave } from "./settingsSave.ts";
 import {
 	bodyFromDraft,
@@ -103,9 +104,11 @@ const FIELD_LABELS: Record<keyof SettingsDraft, string> = {
 export function SettingsView({
 	token,
 	onDirtyChange,
+	leaveRef,
 }: {
 	token: string | null;
 	onDirtyChange?: (dirty: boolean) => void;
+	leaveRef?: RefObject<((answer: LeaveAnswer) => void) | null>;
 }) {
 	const [kinds, setKinds] = useState<SettingsCtx["kinds"] | null>(null);
 	const [authNames, setAuthNames] = useState<string[]>([]);
@@ -190,6 +193,17 @@ export function SettingsView({
 	const dirty = baseline !== null && serialize(draft, provs) !== baseline;
 	const departureDirty = dirty || namePending;
 	useEffect(() => onDirtyChange?.(departureDirty), [departureDirty, onDirtyChange]);
+	// The host's leave ask (leaveAsk.ts): "asking" holds autosave,
+	// "discard" stops it for good, "stay" lets it resume.
+	const [leave, setLeave] = useState<"asking" | "discarded" | null>(null);
+	useEffect(() => {
+		if (leaveRef === undefined) return;
+		leaveRef.current = (answer) =>
+			setLeave(answer === "stay" ? null : answer === "asking" ? "asking" : "discarded");
+		return () => {
+			leaveRef.current = null;
+		};
+	}, [leaveRef]);
 
 	const { dirtyFields } = (() => {
 		const none = { dirtyFields: [] as string[] };
@@ -517,7 +531,7 @@ export function SettingsView({
 	const latestSave = useRef(save);
 	latestSave.current = save;
 	useEffect(() => {
-		if (!dirty || namePending || invalidReason !== null || saving) return;
+		if (!dirty || namePending || invalidReason !== null || saving || leave !== null) return;
 		const sig = serialize(draft, provs);
 		if (!shouldAutosave({ dirty, invalidReason, saving, sig, attempted: attempted.current }))
 			return;
@@ -526,7 +540,7 @@ export function SettingsView({
 			void latestSave.current();
 		}, 800);
 		return () => clearTimeout(t);
-	}, [dirty, namePending, invalidReason, saving, draft, provs]);
+	}, [dirty, namePending, invalidReason, saving, leave, draft, provs]);
 
 	if (loadErr !== null) {
 		return (

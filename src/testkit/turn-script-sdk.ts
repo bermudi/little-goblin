@@ -77,6 +77,9 @@ export function sdkScript(opts: { label?: string; system?: string } = {}): SdkSc
 			callOptions.push(JSON.stringify(options));
 			const call = queue.shift();
 			if (call === undefined) throw new Error("ai-sdk script exhausted: unexpected model call");
+			if (call.kind === "fail" && call.error.quota) {
+				throw new Error("sdkScript cannot render a typed quota verdict; use status 402");
+			}
 			if (call.kind === "fail" && call.parts.length === 0) throw errorFor(call.error);
 			const parts = streamParts(
 				call.parts,

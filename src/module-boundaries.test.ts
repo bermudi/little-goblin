@@ -48,6 +48,7 @@ const AI_SDK_IMPORTERS = [
 	"src/agent/filter-stream.ts",
 	"src/agent/generate.ts",
 	"src/agent/providers.ts",
+	"src/agent/sdk-errors.ts",
 	"src/agent/thinking.ts",
 	"src/agent/tool-repair.ts",
 	"src/agent/vision.ts",

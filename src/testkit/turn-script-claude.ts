@@ -69,7 +69,12 @@ function scriptCall(call: ScriptCall, bridgeRef: { current: ToolBridge | null })
 		}
 	}
 	if (call.kind === "fail") {
-		steps.push({ kind: "error", resultText: call.error.message });
+		steps.push({
+			kind: "error",
+			resultText: call.error.message,
+			...(call.error.status !== undefined ? { retryStatus: call.error.status } : {}),
+			...(call.error.quota ? { assistantError: "rate_limit" } : {}),
+		});
 	}
 	return steps;
 }
@@ -139,9 +144,6 @@ export function claudeScript(opts: { label?: string; system?: string } = {}): Sc
 			for (const call of calls) {
 				if (call.kind === "reply" && call.finish !== undefined) {
 					throw new Error(`claude-code cannot render finish: ${call.finish}`);
-				}
-				if (call.kind === "fail" && call.error.status !== undefined) {
-					throw new Error("claude-code cannot render fail.error.status");
 				}
 			}
 			for (const call of calls) {

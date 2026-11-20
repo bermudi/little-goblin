@@ -1,9 +1,8 @@
 import { createConnection } from "node:net";
 import { existsSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { ensureHc } from "./hc-install.ts";
 import { log } from "./log.ts";
 
 const statusSchema = z.object({
@@ -52,8 +51,9 @@ export class HcError extends Error {
 		readonly method: string,
 		message: string,
 		readonly code = "hc_error",
+		cause?: unknown,
 	) {
-		super(`hc ${method}: ${message}`);
+		super(`hc ${method}: ${message}`, cause === undefined ? undefined : { cause });
 		this.name = "HcError";
 	}
 }
@@ -109,8 +109,7 @@ function hcCoreEnvironment(): string[] {
 	return values;
 }
 
-export async function ensureHcCore(binaryPath: string, session: string): Promise<void> {
-	await ensureHc(binaryPath);
+export function startHcCore(binaryPath: string, session: string): void {
 	const started = performance.now();
 	const result = Bun.spawnSync(
 		[
@@ -153,16 +152,20 @@ export function stopHcCore(binaryPath: string, session: string): void {
 
 type SocketPath = { path: string };
 
-function defaultSocketPath(session: string): SocketPath {
+export function hcSocketPath(session: string): string {
 	const runtime = process.env.XDG_RUNTIME_DIR;
 	if (!runtime) {
 		throw new HcError("connect", "XDG_RUNTIME_DIR is not set", "runtime_dir_missing");
 	}
-	const runtimeSocket = join(runtime, "herdr-core", `${session}.sock`);
-	if (!existsSync(join(runtime, "herdr-core"))) {
-		throw new HcError("connect", `runtime socket directory is missing: ${join(runtime, "herdr-core")}`);
+	return join(runtime, "herdr-core", `${session}.sock`);
+}
+
+function defaultSocketPath(session: string): SocketPath {
+	const path = hcSocketPath(session);
+	if (!existsSync(dirname(path))) {
+		throw new HcError("connect", `runtime socket directory is missing: ${dirname(path)}`);
 	}
-	return { path: runtimeSocket };
+	return { path };
 }
 
 export function makeHc(
@@ -225,7 +228,7 @@ export function makeHc(
 		} catch (err) {
 			const error = err instanceof HcError
 				? err
-				: new HcError(method, err instanceof Error ? err.message : String(err), "transport_error");
+				: new HcError(method, err instanceof Error ? err.message : String(err), "transport_error", err);
 			log.error("hc rpc failed", error, { method, ms: Math.round(performance.now() - started) });
 			throw error;
 		}

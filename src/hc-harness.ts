@@ -238,8 +238,6 @@ export function makeHarnessInvocation(input: {
 	terminalName: string;
 	goblinHome: string;
 	hooksDir: string;
-	/** Defaults to the process home; tests pass a temp one (Bun caches homedir()). */
-	homeDir?: string;
 }): HarnessInvocation {
 	const commands: Record<string, string> = {
 		codex: "codex",
@@ -254,10 +252,12 @@ export function makeHarnessInvocation(input: {
 	if (!executable) throw new Error(`cannot resolve ${command} on Goblin's PATH`);
 
 	const argv = [executable, ...input.args];
+	// Bun caches homedir() at startup; HOME is read per call so tests can move it.
+	const home = process.env.HOME ?? homedir();
 	const env: Record<string, string> = {
 		GOBLIN_HC_RUN: "1",
 		GOBLIN_HC_REPORT: join(input.hooksDir, "report.sh"),
-		HOME: input.homeDir ?? homedir(),
+		HOME: home,
 		PATH: process.env.PATH ?? "/usr/bin:/bin",
 	};
 	const stateDir = join(input.goblinHome, "state");
@@ -296,7 +296,7 @@ export function makeHarnessInvocation(input: {
 			...(model === undefined ? {} : { model }),
 		});
 	} else if (input.kind === "devin") {
-		argv.push("--config", writeDevinConfig(stateDir, input.hooksDir, input.terminalName, env.HOME));
+		argv.push("--config", writeDevinConfig(stateDir, input.hooksDir, input.terminalName, home));
 	}
 	log.info("delegation harness invocation prepared", {
 		kind: input.kind,

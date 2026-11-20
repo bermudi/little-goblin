@@ -167,6 +167,9 @@ Rulings:
   Goblin's OSC reports carry no `app`): live on devin 3000.14,
   2026-11-20. Goblin's hooks no longer depend on that detector. The copy can hold the
   operator's settings, so it is written 0600.
+  `src/hc-devin.live.test.ts` (`GOBLIN_DEVIN_LIVE=1`) pins it on the
+  installed devin after devin or hc upgrades: throwaway HOME, hc
+  session and cwd; one trivial prompt on the operator's own model.
 - **The seeded trust keys are pinned against the installed harnesses,
   not just fakes (2026-10-11).** Drift is silent: a renamed key still
   seeds, and the launch shows the consent dialog anyway.

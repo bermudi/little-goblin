@@ -176,8 +176,9 @@ describe("devin per-run config", () => {
 		const home = tempDir();
 		writeFileSync(join(bin, "devin"), "#!/bin/sh\n");
 		chmodSync(join(bin, "devin"), 0o755);
-		const saved = { PATH: process.env.PATH, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+		const saved = { PATH: process.env.PATH, HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
 		process.env.PATH = bin;
+		process.env.HOME = home;
 		if (xdg === undefined) delete process.env.XDG_CONFIG_HOME;
 		else process.env.XDG_CONFIG_HOME = xdg;
 		try {
@@ -190,7 +191,9 @@ describe("devin per-run config", () => {
 		}
 	}
 
-	function launch(home: string, goblinHome: string): { argv: string[]; config: Record<string, unknown> } {
+	function launch(goblinHome: string): { argv: string[]; config: Record<string, unknown> } {
+		// Never let a test reach the operator's real devin config.
+		if (!process.env.HOME?.startsWith(tmpdir())) throw new Error("HOME must be a temp dir here");
 		const { argv } = makeHarnessInvocation({
 			kind: "devin",
 			args: ["--permission-mode", "dangerous"],
@@ -198,7 +201,6 @@ describe("devin per-run config", () => {
 			terminalName: "g1-x",
 			goblinHome,
 			hooksDir,
-			homeDir: home,
 		});
 		const path = argv[argv.indexOf("--config") + 1]!;
 		return { argv, config: JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown> };
@@ -227,7 +229,7 @@ describe("devin per-run config", () => {
 				},
 			}`);
 			const goblinHome = tempDir();
-			const { config } = launch(home, goblinHome);
+			const { config } = launch(goblinHome);
 			expect(config.agent).toEqual({ model: "operator-model" });
 			expect(config.permissions).toEqual({ allow: ["Read(**)"] });
 			expect(config.version).toBe(1);
@@ -236,7 +238,7 @@ describe("devin per-run config", () => {
 				expect(commands(config, event)).toEqual([...own, `${hooksDir}/report.sh ${state}`]);
 			}
 			// Re-launching rebuilds from the operator file: no duplicate entries.
-			expect(launch(home, goblinHome).config).toEqual(config);
+			expect(launch(goblinHome).config).toEqual(config);
 			expect(readFileSync(join(home, ".config", "devin", "config.json"), "utf8")).toContain("// devin reads JSONC");
 		});
 	});
@@ -247,13 +249,13 @@ describe("devin per-run config", () => {
 				version: 1,
 				hooks: { Stop: [{ hooks: [{ type: "command", command: `${hooksDir}/report.sh idle` }] }] },
 			}));
-			expect(commands(launch(home, tempDir()).config, "Stop")).toEqual([`${hooksDir}/report.sh idle`]);
+			expect(commands(launch(tempDir()).config, "Stop")).toEqual([`${hooksDir}/report.sh idle`]);
 		});
 	});
 
 	test("no operator config means version 1 plus goblin's hooks", () => {
 		withDevinEnv(undefined, (home) => {
-			const { config } = launch(home, tempDir());
+			const { config } = launch(tempDir());
 			expect(Object.keys(config).sort()).toEqual(["hooks", "version"]);
 			expect(config.version).toBe(1);
 			for (const [event, state] of Object.entries(events)) {
@@ -267,11 +269,11 @@ describe("devin per-run config", () => {
 		withDevinEnv(xdg, (home) => {
 			writeOperator(xdg, JSON.stringify({ version: 1, theme_mode: "xdg" }));
 			writeOperator(join(home, ".config"), JSON.stringify({ version: 1, theme_mode: "home" }));
-			expect(launch(home, tempDir()).config.theme_mode).toBe("xdg");
+			expect(launch(tempDir()).config.theme_mode).toBe("xdg");
 		});
 		withDevinEnv("relative/xdg", (home) => {
 			writeOperator(join(home, ".config"), JSON.stringify({ version: 1, theme_mode: "home" }));
-			expect(launch(home, tempDir()).config.theme_mode).toBe("home");
+			expect(launch(tempDir()).config.theme_mode).toBe("home");
 		});
 	});
 
@@ -283,7 +285,7 @@ describe("devin per-run config", () => {
 		] as const) {
 			withDevinEnv(undefined, (home) => {
 				writeOperator(join(home, ".config"), text);
-				expect(() => launch(home, tempDir())).toThrow(message);
+				expect(() => launch(tempDir())).toThrow(message);
 			});
 		}
 	});
@@ -291,7 +293,7 @@ describe("devin per-run config", () => {
 	test("an unreadable operator config fails loud, not as missing", () => {
 		withDevinEnv(undefined, (home) => {
 			mkdirSync(join(home, ".config", "devin", "config.json"), { recursive: true });
-			expect(() => launch(home, tempDir())).toThrow("cannot read devin config");
+			expect(() => launch(tempDir())).toThrow("cannot read devin config");
 		});
 	});
 });

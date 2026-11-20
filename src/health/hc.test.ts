@@ -116,6 +116,15 @@ test("a failed download stays red until a run succeeds", async () => {
 	expect((await check()).status).toBe("pass");
 });
 
+test("a setup failure recorded for an older pin does not keep the check red", async () => {
+	mkdirSync(join(home, "state"), { recursive: true });
+	writeFileSync(
+		join(home, "state", "hc-setup-failure.json"),
+		`${JSON.stringify({ stage: "install", version: "0.0.1-old", at: "2026-11-01T00:00:00.000Z" })}\n`,
+	);
+	expect((await check()).status).toBe("pass");
+});
+
 test("a core that would not start stays red, even with a verified binary", async () => {
 	installBinary();
 	const cause = new Error("systemd-run could not start hc (1)");

@@ -119,7 +119,9 @@ a box's first delegate run, and after every reboot, "not installed" and
 "not running" are the ready state, not a fault. Read-only, in order:
 a failure record from the last delegate run's setup
 (`state/hc-setup-failure.json`, stage `install` or `start`, written by
-the run path and cleared by its next successful setup) fails; no binary
+the run path and cleared by its next successful setup) fails when it
+names the current pin — a record for another pin is history, ignored
+(HeyDeer on #811); no binary
 passes as "installs on first run, download unverified"; a binary that is
 not a file, misses the pinned hash, or is not executable fails; a pinned
 binary with no runtime socket passes as "starts on first run, start

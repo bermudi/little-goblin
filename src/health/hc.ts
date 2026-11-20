@@ -39,8 +39,10 @@ export async function hcCore(
 	if (!configured) return result(id, scope, "skip", "Delegation is not configured");
 	const started = performance.now();
 	try {
+		// A record for another pin is history: the release changed the pin
+		// after that failure, and the current pin has not been tried yet.
 		const failed = lastSetupFailure(join(home, "state", "hc-setup-failure.json"));
-		if (failed !== null) {
+		if (failed !== null && failed.version === HC_VERSION) {
 			return result(
 				id,
 				scope,

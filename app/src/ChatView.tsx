@@ -1,6 +1,7 @@
 import {
   Fragment,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -14,7 +15,6 @@ import { DefaultChatTransport, type ChatTransport, type UIMessage } from "ai";
 import {
   branchConversation,
   getMessages,
-  rateReply,
   stopConversation,
 } from "./api.ts";
 import { useConfirm } from "./confirm.tsx";
@@ -47,8 +47,9 @@ import type {
   AppLiveContext,
   AppPendingInput,
   AppRatedReply,
-  AppReplyRating,
 } from "../../src/http/app-wire.ts";
+import { ResumeGate } from "./chat/resumeGate.ts";
+import { useReplyRatings } from "./chat/useReplyRatings.ts";
 
 // ---------- the chat ----------
 
@@ -298,63 +299,24 @@ function Chat({
   onBranched?: ((id: string) => void) | undefined;
   now: number;
 }) {
-  // The transport speaks this channel's contract: one user message per
-  // POST, keyed by the app conversation id. A regenerate rides the
-  // same endpoint as `retry` — no append, the stored user event
-  // anchors the new answer. token null = trust mode — the server
-  // wants no credential.
-  //
-  // A wrapper, not a bare DefaultChatTransport: the SDK exposes no
-  // callback for "the resume found no live turn" (on 204 the status
-  // never moves and the messages stand), so the transport is the one
-  // seam that can see the idle answer. The ref is wired by the effect
-  // below useChat — the reconnect's answer resolves after a network
-  // round-trip, so it can never beat that effect's assignment.
-  const idleReconnect = useRef<() => void>(() => {});
-  // The mount-time resume probe (`resume: true` above) answers "nothing
-  // live" with a status writeback: the SDK's Chat sets status back to
-  // "ready" with no notion that a submit may have started while the GET
-  // was in flight. The seed send is the one send that can race that
-  // probe — its "submitted" gets clobbered and a wire that never
-  // produces a chunk never re-raises it: no Stop, no pending shimmer,
-  // for the whole first turn. The latch orders the seed after the
-  // probe's round-trip, so both sends ride the same status mechanism.
-  //
-  // A seeded mount skips the network probe entirely — a conversation
-  // created moments ago cannot have a live turn, and a probe that
-  // depends on the network can park the seed forever (a black-holed
-  // stream GET → no POST, nothing stored; a reload loses the text).
-  // Captured at mount because the seed prop is cleared by onSeeded
-  // long before the transport ever reads this.
-  const seededMount = useRef(seed !== null && seed.length > 0);
-  const resumeProbe = useRef<{
-    probed: boolean;
-    settled: boolean;
-    waiting: (() => void)[];
-  }>({
-    probed: false,
-    settled: false,
-    waiting: [],
-  });
-  const resumeProbeSettled = useRef<() => void>(() => {});
-  const conversationReaderActive = useRef(false);
-  const eventsLiveRef = useRef(false);
-  const latestRefreshTranscript = useRef<() => void>(() => {});
-  const latestRefreshPending = useRef<() => void>(() => {});
-  const latestResumeFromEvents = useRef<() => void>(() => {});
-  // Same latest-ref shape as idleReconnect: the host's callback is an
-  // inline closure, so it must not enter the transport's useMemo deps —
-  // a new transport identity would re-seat useChat on every host render.
-  const sendAccepted = useRef<(() => void) | undefined>(undefined);
-  sendAccepted.current = onSendAccepted;
-  const [ratings, setRatings] = useState<Record<string, AppRatedReply>>(() =>
-    Object.fromEntries(initialRatings.map((r) => [r.messageId, r])),
+  // The transport only reconnects; sends go through postChat. token
+  // null = trust mode — the server wants no credential.
+  // The SDK has no callback for "the resume found no live turn" (on
+  // 204 the status never moves), so this wrapper is the seam that sees
+  // the reconnect answer and feeds the gate.
+  // A fresh conversation's seed skips only its first reconnect GET.
+  // Captured at mount because the seed prop is cleared by onSeeded.
+  const [gate] = useState(
+    () => new ResumeGate(seed !== null && seed.length > 0),
   );
-  const [ratingPending, setRatingPending] = useState<string | null>(null);
-  const [ratingErrors, setRatingErrors] = useState<Record<string, string>>({});
-  const [rateableIds, setRateableIds] = useState<ReadonlySet<string>>(
-    () => new Set(initialRateableIds),
-  );
+  const {
+    ratings,
+    ratingPending,
+    ratingErrors,
+    rateableIds,
+    rate,
+    applyRatingSnapshot,
+  } = useReplyRatings(token, conversationId, initialRatings, initialRateableIds);
   // Fold pointers as transcript marks — a pill rides where each fold
   // ran, after the last message that existed then. Replaced wholesale
   // on every history read; a rewind's deleted marks must not linger.
@@ -413,24 +375,12 @@ function Chat({
   const [editing, setEditing] = useState<{ id: string; draft: string } | null>(
     null,
   );
-  const editRestore = useRef<UIMessage[] | null>(null);
-  // Set when an edit's error path takes over reconciliation. The SDK
-  // calls onError before onFinish on an errored turn (onError in its
-  // catch, onFinish in the finally), and onFinish's merge-based
-  // re-sync would otherwise run after the error path's replace —
-  // re-admitting the failed optimistic message the replace removed.
-  const editFailed = useRef(false);
+  const editBackup = useRef<UIMessage[] | null>(null);
   const confirm = useConfirm();
   // A branch is a copy in a new chat; the click opens it via the host's
   // navigation. Errors stay on the reply's action row.
   const [branchPending, setBranchPending] = useState<string | null>(null);
   const [branchErrors, setBranchErrors] = useState<Record<string, string>>({});
-  const applyRatingSnapshot = (next: AppRatedReply[], nextIds: string[]) => {
-    setRatings(
-      Object.fromEntries(next.map((rating) => [rating.messageId, rating])),
-    );
-    setRateableIds(new Set(nextIds));
-  };
   const transport = useMemo<ChatTransport<UIMessage>>(() => {
     const base = new DefaultChatTransport({
       api: "/api/app/chat",
@@ -444,68 +394,29 @@ function Chat({
       prepareReconnectToStreamRequest: ({ id }) => ({
         api: `/api/app/conversations/${encodeURIComponent(id.slice(4))}/stream`,
       }),
-      prepareSendMessagesRequest: ({ trigger, messageId, messages, body }) => ({
-        body:
-          trigger === "regenerate-message"
-            ? { conversationId, retry: true }
-            : {
-                conversationId,
-                message:
-                  trigger === "submit-message"
-                    ? (messages.find((m) => m.id === messageId) ??
-                      messages[messages.length - 1])
-                    : messages[messages.length - 1],
-                // An edit rides the normal send: the message is the
-                // replacement text, the id names the durable event
-                // the server cuts at. Anything else is ignored.
-                ...(typeof body?.editMessageId === "string"
-                  ? { editMessageId: body.editMessageId }
-                  : {}),
-              },
-      }),
     });
     return {
       sendMessages: (options) => base.sendMessages(options),
       reconnectToStream: async (options) => {
-        // The first reconnect of a seeded mount never reaches the
-        // network (see seededMount above): it answers the SDK's "nothing
-        // live" (null) on the spot — no base call, and no idle
-        // reconcile either, because a conversation created moments ago
-        // has nothing to reconcile. Every later reconnect (visibility
-        // resumes) probes the server as today.
-        const seededProbe = seededMount.current && !resumeProbe.current.probed;
-        resumeProbe.current.probed = true;
+        const { skipNetwork } = gate.beginReconnect();
         try {
-          const stream = seededProbe ? null : await base.reconnectToStream(options);
-          conversationReaderActive.current = stream !== null;
+          // The seeded first reconnect answers "nothing live" without a
+          // GET or reconcile: a just-created conversation has neither.
+          const stream = skipNetwork
+            ? null
+            : await base.reconnectToStream(options);
+          if (!skipNetwork) gate.reconnectAnswered(stream !== null);
           // null is the server's 204 — nothing is live, and the runtime
           // persists each reply before it retires the wire, so durable
           // history is already final. The mount-time snapshot may be
           // older than that; the view reconciles.
-          if (stream === null) idleReconnect.current();
           return stream;
         } finally {
-          // Probe round-trip over (network answer, or the seeded skip —
-          // the SDK still runs its ready writeback on a null answer).
-          // Release a waiting seed on the next MACROTASK: the SDK's
-          // continuation after `await reconnectToStream` — the
-          // unconditional setStatus("ready"/"error") writeback — runs
-          // in the microtask cascade before any macrotask, so the
-          // seed's "submitted" lands strictly after it. First settle
-          // wins; later reconnects (visibility resumes) have nothing
-          // waiting.
-          setTimeout(() => {
-            const probe = resumeProbe.current;
-            if (probe.settled) return;
-            probe.settled = true;
-            for (const release of probe.waiting) release();
-            probe.waiting.length = 0;
-            resumeProbeSettled.current();
-          }, 0);
+          gate.probeSettled();
         }
       },
     };
-  }, [token, conversationId]);
+  }, [token, gate]);
   // The running turn's window occupancy — each model step pushes it over
   // the wire as a transient data-context part (never persisted). The
   // gauge shows it while busy; cleared when a new turn starts so a fresh
@@ -540,23 +451,19 @@ function Chat({
       });
     },
     onFinish: ({ message, isAbort, isError }) => {
-      conversationReaderActive.current = false;
+      gate.readerEnded();
       // The edit's server-side answer is final now — a later
       // onError must not resurrect the pre-edit transcript. The
       // SDK fires this on errored turns too, so the done-bell
       // waits for a real finish and the re-sync covers both.
-      editRestore.current = null;
+      editBackup.current = null;
       // An aborted reader is not a finished reply — the bell belongs to the real finish.
       if (!isAbort && !isError) notifyDone(title ?? "", messageText(message));
       onTurnDone();
-      // An errored edit was reconciled by onError — its replace
-      // must not be re-merged against the optimistic view it
-      // discarded.
-      if (editFailed.current) editFailed.current = false;
       // Durable history is reconciled by the independent turn-end event.
     },
     onError: () => {
-      conversationReaderActive.current = false;
+      gate.readerEnded();
       // The durable transcript is the truth in every failure mode: a
       // refused request never reached the store (the tail stands
       // there), and a post-commit failure already deleted it — only
@@ -565,31 +472,27 @@ function Chat({
       // the store never saw, and a merge would keep it beside the
       // original exchange the server still holds. The pre-edit
       // backup covers a refresh that cannot get there.
-      const backup = editRestore.current;
-      editRestore.current = null;
+      const backup = editBackup.current;
+      editBackup.current = null;
       if (backup === null) return;
-      editFailed.current = true;
-      void getMessages(token, conversationId).then(
-        (r) => {
-          setMessages(r.messages);
-          applyRatingSnapshot(r.ratings, r.rateableMessageIds);
-          setMarks(r.compactions ?? []);
-        },
-        () => setMessages(backup),
-      );
+      reloadTranscript("replace", backup);
     },
   });
-  const refreshTranscript = () => {
+  const reloadTranscript = (mode: "merge" | "replace", fallback?: UIMessage[]) => {
     void getMessages(token, conversationId).then(
       (r) => {
-        setMessages((current) => mergeTranscript(current, r.messages));
+        setMessages((current) =>
+          mode === "merge" ? mergeTranscript(current, r.messages) : r.messages,
+        );
         applyRatingSnapshot(r.ratings, r.rateableMessageIds);
         setMarks(r.compactions ?? []);
       },
-      () => {},
+      () => {
+        if (fallback !== undefined) setMessages(fallback);
+      },
     );
   };
-  latestRefreshTranscript.current = refreshTranscript;
+  const refreshTranscript = () => reloadTranscript("merge");
   const [pendingItems, setPendingItems] = useState<AppPendingInput[]>([]);
   const [draftRestore, setDraftRestore] = useState<{
     parts: UIMessage["parts"];
@@ -608,74 +511,22 @@ function Chat({
       })
       .catch(() => {});
   };
-  latestRefreshPending.current = refreshPending;
+  const refreshPendingOnMount = useEffectEvent(() => refreshPending());
   useEffect(() => {
-    latestRefreshPending.current();
+    refreshPendingOnMount();
   }, [conversationId, token]);
   // A failed /stop means the client dropped its stream but the turn
   // keeps running server-side and will write the reply the operator
   // asked to stop — that has to be visible, not swallowed.
   const [stopError, setStopError] = useState<string | null>(null);
   useEffect(() => {
-    setRatings(Object.fromEntries(initialRatings.map((r) => [r.messageId, r])));
-    setRatingPending(null);
-    setRatingErrors({});
-    setRateableIds(new Set(initialRateableIds));
     setMarks(initialCompactions);
-  }, [initialRatings, initialRateableIds, initialCompactions]);
-  const rate = (messageId: string, rating: AppReplyRating) => {
-    if (ratingPending !== null) return;
-    setRatingPending(messageId);
-    setRatingErrors((errors) => {
-      const next = { ...errors };
-      delete next[messageId];
-      return next;
-    });
-    void rateReply(token, conversationId, messageId, rating)
-      .then(
-        (res) =>
-          setRatings((current) => ({ ...current, [messageId]: res.rating })),
-        (err: unknown) =>
-          setRatingErrors((errors) => ({
-            ...errors,
-            [messageId]: err instanceof Error ? err.message : "rating failed",
-          })),
-      )
-      .finally(() => setRatingPending(null));
-  };
-
-  // Reload-window reconciliation: a turn that completed between the
-  // history snapshot and the idle reconnect is durably stored but
-  // missing from the snapshot — re-read history once and merge. A new
-  // turn that started meanwhile is accounted for by the merge (its
-  // persisted user message arrives; a live local tail is never
-  // dropped). A failed re-read leaves the snapshot standing.
-  useEffect(() => {
-    idleReconnect.current = () => {
-      void getMessages(token, conversationId).then(
-        (r) => {
-          setMessages((current) => mergeTranscript(current, r.messages));
-          setRatings(
-            Object.fromEntries(
-              r.ratings.map((rating) => [rating.messageId, rating]),
-            ),
-          );
-          setRateableIds(new Set(r.rateableMessageIds));
-          setMarks(r.compactions ?? []);
-        },
-        () => {},
-      );
-    };
-    return () => {
-      idleReconnect.current = () => {};
-    };
-  }, [token, conversationId, setMessages]);
+  }, [initialCompactions]);
 
   useEffect(() => {
     const controller = new AbortController();
     let retry = 250;
     let firstState = true;
-    const activeReader = () => conversationReaderActive.current;
     const run = async () => {
       while (!controller.signal.aborted) {
         try {
@@ -701,28 +552,8 @@ function Chat({
               const data = frame.split("\n").find((line) => line.startsWith("data: "))?.slice(6);
               if (data === undefined) continue;
               const event = JSON.parse(data) as AppConversationEvent;
-              if (event.type === "state") {
-                if (firstState) firstState = false;
-                else latestRefreshTranscript.current();
-                eventsLiveRef.current = event.live;
-                setEventsLive(event.live);
-                if (event.live) setSubmitPending(false);
-                if (event.live && !activeReader()) latestResumeFromEvents.current();
-              } else if (event.type === "turn-start") {
-                eventsLiveRef.current = true;
-                setEventsLive(true);
-                setSubmitPending(false);
-                if (!activeReader()) latestResumeFromEvents.current();
-              } else if (event.type === "turn-end") {
-                eventsLiveRef.current = false;
-                setEventsLive(false);
-                setSubmitPending(false);
-                latestRefreshTranscript.current();
-                latestRefreshPending.current();
-              } else if (event.type === "pending") {
-                setSubmitPending(false);
-                latestRefreshPending.current();
-              }
+              onConversationEvent(event, firstState);
+              if (event.type === "state" && firstState) firstState = false;
             }
           }
         } catch (err) {
@@ -735,7 +566,7 @@ function Chat({
     };
     void run();
     return () => controller.abort();
-  }, [token, conversationId, resumeStream]);
+  }, [token, conversationId]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // The outline rail is a pointer/keyboard affordance — phones don't
@@ -761,23 +592,52 @@ function Chat({
   const [submitPending, setSubmitPending] = useState(false);
   const busy = eventsLive || submitPending || status === "submitted" || status === "streaming";
   const [sendFailure, setSendFailure] = useState<string | null>(null);
-  const resumeRequested = useRef(false);
   const resumeFromEvents = () => {
-    if (
-      conversationReaderActive.current ||
-      resumeRequested.current ||
-      (resumeProbe.current.probed && !resumeProbe.current.settled)
-    ) return;
-    resumeRequested.current = true;
-    void resumeStream().catch((err: unknown) => console.error("Couldn't resume stream", err));
-    setTimeout(() => {
-      resumeRequested.current = false;
-    }, 1000);
+    if (gate.requestResume())
+      void resumeStream().catch((err: unknown) =>
+        console.error("Couldn't resume stream", err),
+      );
   };
-  latestResumeFromEvents.current = resumeFromEvents;
-  resumeProbeSettled.current = () => {
-    if (eventsLiveRef.current && !conversationReaderActive.current) resumeFromEvents();
-  };
+  const onConversationEvent = useEffectEvent(
+    (event: AppConversationEvent, firstState: boolean) => {
+      const activeReader = gate.readerAttached;
+      if (event.type === "state") {
+        if (!firstState) refreshTranscript();
+        gate.serverLive = event.live;
+        setEventsLive(event.live);
+        if (event.live) setSubmitPending(false);
+        if (event.live && !activeReader) resumeFromEvents();
+      } else if (event.type === "turn-start") {
+        gate.serverLive = true;
+        setEventsLive(true);
+        setSubmitPending(false);
+        if (!activeReader) resumeFromEvents();
+      } else if (event.type === "turn-end") {
+        gate.serverLive = false;
+        setEventsLive(false);
+        setSubmitPending(false);
+        refreshTranscript();
+        refreshPending();
+      } else if (event.type === "pending") {
+        setSubmitPending(false);
+        refreshPending();
+      }
+    },
+  );
+  // Reload-window reconciliation: a turn that completed between the
+  // history snapshot and the idle reconnect is durably stored but
+  // missing from the snapshot — re-read history once and merge. A new
+  // turn that started meanwhile is accounted for by the merge (its
+  // persisted user message arrives; a live local tail is never
+  // dropped). A failed re-read leaves the snapshot standing.
+  const onIdle = useEffectEvent(() => reloadTranscript("merge"));
+  const onSettled = useEffectEvent(() => {
+    if (gate.serverLive && !gate.readerAttached) resumeFromEvents();
+  });
+  useEffect(
+    () => gate.subscribe({ idle: onIdle, settled: onSettled }),
+    [gate],
+  );
 
   const postChat = async (body: Record<string, unknown>) => {
     const response = await fetch("/api/app/chat", {
@@ -793,7 +653,7 @@ function Chat({
       throw new Error(typeof detail?.error === "string" ? detail.error : `send failed (${response.status})`);
     }
     const result = (await response.json()) as { pendingId?: unknown };
-    sendAccepted.current?.();
+    onSendAccepted?.();
     return result;
   };
   const submit = async (
@@ -878,14 +738,13 @@ function Chat({
 
   // A seed arrives once (empty-state send → conversation created → this view mounts).
   const seeded = useRef(false);
-  const latestSubmit = useRef(submit);
-  latestSubmit.current = submit;
+  const submitSeed = useEffectEvent((parts: UIMessage["parts"]) => submit({ parts }));
   useEffect(() => {
     if (seeded.current || seed === null || seed.length === 0) return;
     seeded.current = true;
     pinned.current = true;
     onSeeded();
-    void latestSubmit.current({ parts: seed }).catch((err: unknown) => console.error("Couldn't submit seeded message", err));
+    void submitSeed(seed).catch((err: unknown) => console.error("Couldn't submit seeded message", err));
   }, [seed, onSeeded]);
 
   // The retry affordance belongs to the newest answer — anything older
@@ -954,7 +813,7 @@ function Chat({
     ) {
       return;
     }
-    editRestore.current = messages;
+    editBackup.current = messages;
     setEditing(null);
     pinned.current = true;
     setLiveCtx(null);
@@ -967,15 +826,8 @@ function Chat({
     setMessages([...messages.slice(0, index), optimistic]);
     setSubmitPending(true);
     void postChat({ message: optimistic, editMessageId: m.id }).catch((err: unknown) => {
-      editRestore.current = null;
-      void getMessages(token, conversationId).then(
-        (r) => {
-          setMessages(r.messages);
-          applyRatingSnapshot(r.ratings, r.rateableMessageIds);
-          setMarks(r.compactions ?? []);
-        },
-        () => setMessages(messages),
-      );
+      editBackup.current = null;
+      reloadTranscript("replace", messages);
       setSubmitPending(false);
       setSendFailure(err instanceof Error ? err.message : "edit failed");
     });

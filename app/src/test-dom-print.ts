@@ -15,14 +15,13 @@
 // Preloaded for every test run by bunfig.toml: the app tests build their
 // own happy-dom Window per file, but all windows share these prototypes.
 
-import { expect } from "bun:test";
+import type { expect } from "bun:test";
 import { Element, EventTarget, Node } from "happy-dom";
+import { types } from "node:util";
 
 const TEXT_CHARS = 60;
 const ATTR_CHARS = 40;
 const MAX_ATTRS = 6;
-/** Objects the guard visits per assertion before it gives up looking. */
-const MAX_OBJECTS = 10_000;
 /** Text, CDATA, processing instruction and comment: nodes whose content is their text. */
 const TEXT_NODE_TYPES = new Set([3, 4, 7, 8]);
 
@@ -77,14 +76,16 @@ function findTarget(root: unknown, rootPath: string): Found | null {
 	for (let next = stack.pop(); next !== undefined; next = stack.pop()) {
 		const [value, path] = next;
 		if (value === null || (typeof value !== "object" && typeof value !== "function")) continue;
+		if (types.isProxy(value)) continue;
 		if (value instanceof EventTarget) return { path, target: value };
 		if (seen.has(value) || ArrayBuffer.isView(value) || value instanceof ArrayBuffer) continue;
-		if (seen.size >= MAX_OBJECTS) return null;
 		seen.add(value);
 		if (value instanceof Map) {
-			for (const [k, v] of value) stack.push([k, `${path}.keys()`], [v, `${path}.get(…)`]);
+			for (const [k, v] of Map.prototype.entries.call(value)) {
+				stack.push([k, `${path}.keys()`], [v, `${path}.get(…)`]);
+			}
 		} else if (value instanceof Set) {
-			for (const v of value) stack.push([v, `${path}.values()`]);
+			for (const v of Set.prototype.values.call(value)) stack.push([v, `${path}.values()`]);
 		}
 		for (const key of Reflect.ownKeys(value)) {
 			const desc = Object.getOwnPropertyDescriptor(value, key);
@@ -137,25 +138,39 @@ const DIFF_MATCHERS: Record<string, Roots> = {
 	],
 };
 
-// bun never shows a matcher the received value, so a helper matcher
-// collects it. A refusal's code frame shows the throw below; the test's
-// own line is the next `at` line (bun 1.4.4 ignores captureStackTrace).
-const RECEIVED = "__domPrintReceived";
-let received: unknown;
-
-expect.extend({
-	[RECEIVED](this: { isNot: boolean }, value: unknown) {
-		received = value;
-		return { pass: !this.isNot };
+// bun never shows a matcher its received value, so `expect` itself is
+// wrapped to record it per Expect object. Test files see the wrapper only
+// if nothing imported "bun:test" as a module before the swap (unverified
+// cause of the swap failing behind testkit.ts): hence no value import
+// here, the slot before testkit.ts in bunfig.toml, and the module-side
+// check below, which fails the whole run loudly instead of letting a node
+// reach bun's printer.
+//
+// bun 1.4.4's .resolves / .rejects getters are non-configurable and return
+// the same Expect object, so the guard cannot tell the mode. A Promise
+// received by a diff matcher goes straight to bun; nodes inside its result
+// are not guarded.
+const bunTest = require("bun:test") as { expect: typeof expect };
+const nativeExpect = bunTest.expect;
+const receivedOf = new WeakMap<object, unknown>();
+const wrappedExpect = new Proxy(nativeExpect, {
+	apply(target, thisArg, args: unknown[]) {
+		const expectation = Reflect.apply(target, thisArg, args) as ReturnType<typeof expect>;
+		receivedOf.set(expectation, args[0]);
+		return expectation;
 	},
 });
+bunTest.expect = wrappedExpect;
+const esm = await import("bun:test");
+if (esm.expect !== wrappedExpect) {
+	throw new Error(
+		"happy-dom assertion guard not installed: test files would get bun's own expect (#798). " +
+			"Something imported bun:test before app/src/test-dom-print.ts; keep it before testkit.ts in bunfig.toml.",
+	);
+}
 
 type Matcher = (this: object, ...args: unknown[]) => unknown;
-const matchers = Object.getPrototypeOf(expect(null)) as Record<string, Matcher>;
-
-function call(target: object, name: string, args: unknown[]): unknown {
-	return Reflect.apply(Reflect.get(target, name) as Matcher, target, args);
-}
+const matchers = Object.getPrototypeOf(nativeExpect(null)) as Record<string, Matcher>;
 
 function refusal(name: string, found: Found): Error {
 	return new Error(
@@ -170,18 +185,14 @@ for (const [name, roots] of Object.entries(DIFF_MATCHERS)) {
 	const native = matchers[name];
 	if (native === undefined) throw new Error(`bun:test has no ${name} matcher to guard`);
 	matchers[name] = function (this: object, ...args: unknown[]): unknown {
-		const check = (): unknown => {
-			for (const [label, root] of roots(received, args)) {
-				const found = findTarget(root, label);
-				if (found !== null) throw refusal(name, found);
-			}
+		const received = receivedOf.get(this);
+		if (!receivedOf.has(this) || received instanceof Promise) {
 			return Reflect.apply(native, this, args);
-		};
-		const captured = call(this, RECEIVED, []);
-		// .resolves / .rejects: the value arrives later. A rejected capture
-		// leaves the native matcher to report what went wrong.
-		return captured instanceof Promise
-			? captured.then(check, () => Reflect.apply(native, this, args))
-			: check();
+		}
+		for (const [label, root] of roots(received, args)) {
+			const found = findTarget(root, label);
+			if (found !== null) throw refusal(name, found);
+		}
+		return Reflect.apply(native, this, args);
 	};
 }

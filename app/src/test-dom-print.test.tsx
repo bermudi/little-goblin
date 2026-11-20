@@ -100,8 +100,6 @@ test("diff matchers refuse a node with a readable message", async () => {
 		["toStrictEqual", () => expect(node).toStrictEqual(null)],
 		["toMatchObject", () => expect({ el: node }).toMatchObject({ el: null })],
 		["toHaveProperty", () => expect({ el: node }).toHaveProperty("el", 1)],
-		["toEqual", () =>
-			expect(Promise.resolve<unknown>(new Map([["k", node]]))).resolves.toEqual(null)],
 	];
 	for (const [matcher, assertion] of cases) {
 		const message = await failure(assertion);
@@ -112,6 +110,32 @@ test("diff matchers refuse a node with a readable message", async () => {
 	expect(await failure(() => expect({ rows: [node] }).toEqual({ rows: [] }))).toContain(
 		"at received.rows[0]",
 	);
+});
+
+test("a node deep behind many objects is still refused", async () => {
+	const message = await failure(() =>
+		equal([row(), ...Array.from({ length: 10_010 }, () => ({}))], []),
+	);
+	expect(message.length).toBeLessThan(BOUNDED);
+	expect(message).toContain("got a happy-dom node at received[0]");
+});
+
+test("the guard adds no assertions", () => {
+	expect.assertions(2);
+	expect({ a: 1 }).toEqual({ a: 1 });
+	expect([1]).toStrictEqual([1]);
+});
+
+test("proxies are compared, not walked", () => {
+	const proxy = new Proxy(
+		{ a: 1 },
+		{
+			ownKeys() {
+				throw new Error("unexpected ownKeys");
+			},
+		},
+	);
+	expect(proxy).toEqual(proxy);
 });
 
 test("mock-call matchers refuse a node passed to the mock", async () => {

@@ -195,7 +195,7 @@ design-doc ruling (delegation.md, mail.md, sandbox.md).
 
 A failed matcher on a happy-dom node used to print every object the
 node reaches and OOM the run instead of failing (#798).
-`app/src/test-dom-print.ts`, the third preload, prints nodes as one line
+`app/src/test-dom-print.ts`, the second preload, prints nodes as one line
 of markup. The diff matchers (`toEqual` & co.) refuse a node: compare
 identity with `toBe()` or a property such as `textContent`.
 

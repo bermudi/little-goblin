@@ -7,5 +7,6 @@
 [test]
 # test-tmpdir.ts comes first: it points TMPDIR at RAM before anything
 # reads os.tmpdir() (see its header). test-dom-print.ts keeps failed
-# assertions on happy-dom nodes from printing the whole app (#798).
-preload = ["./src/test-tmpdir.ts", "./src/testkit.ts", "./app/src/test-dom-print.ts"]
+# assertions on happy-dom nodes from printing the whole app (#798); it
+# must load before anything imports bun:test (see its header).
+preload = ["./src/test-tmpdir.ts", "./app/src/test-dom-print.ts", "./src/testkit.ts"]

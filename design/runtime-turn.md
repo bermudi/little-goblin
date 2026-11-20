@@ -15,7 +15,9 @@ first.
 One **logical turn** = one enqueue-to-onDone unit of work; one
 **attempt** = one pass of the model loop, and a logical turn has at most
 two (overflow resume). The fenced and error rails are terminal — the
-attempt loop's machinery, not phase modules.
+attempt loop's machinery, not phase modules. They live in
+`src/runtime-rails.ts` (#791); `runAttempt` keeps the order that picks
+one.
 
 Seam rulings that bind the phases:
 
@@ -47,7 +49,12 @@ Seam rulings that bind the phases:
    and riding the `ContextOverflowError` is correct.
 3. **Attempt-scoped** — everything else: one `TurnState` object per
    attempt, mutated only through narrow methods — callbacks call
-   methods, they never rebind locals.
+   methods, they never rebind locals. The facts the attempt reaches
+   before it can throw — recall's result, the tool authority seam, the
+   failed outcome's filter budget and held error — are one
+   `AttemptProgress` on the attempt's scope (`runtime-rails.ts`), each
+   field written by the phase where it becomes true. The rails read it;
+   they capture no locals.
 4. **Not state** — the admission snapshot is immutable input to the
    attempt; everything derived from it per attempt is a value. Inputs
    and values get no setters and no methods.
@@ -502,6 +509,17 @@ turn-structure change.
   `Lane` or touch queue policy; steering still rides a
   runtime-injected queue function, persistence a runtime-injected
   append.
+- **The terminal rails are their own module** (2026-11-20, #791):
+  `src/runtime-rails.ts` holds the four rails a throwing attempt takes —
+  journal fault, fence, overflow recovery, error with the model
+  fallback walk. `runAttempt` picks one in that order; the order is
+  load-bearing. A rail reads only the named `AttemptScope` (members,
+  admission snapshot, run record, progress, and injected `notifyAll`,
+  `compact`, authority and shutdown reads). It sees no Runtime and no
+  lane, and must not import `runtime.ts`. The rest of the attempt stays
+  in `runtime.ts` as phases with named inputs: `openAttempt`
+  (admission and the scope), `runAdmitted` (the phase order),
+  `openSeams`, `buildView`, `runEngine`, `landReply`, `afterLanding`.
 
 ## The two text projections (#84 / #111)
 

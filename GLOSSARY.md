@@ -47,6 +47,8 @@
 - **Turn:** one model run from an admitted trigger, including its tool calls and reply.
 - **Epoch:** the monotonic counter on a conversation. A settings change or cancellation bumps it; an action prepared under an older epoch is refused.
 - **Fence:** a re-check of authority at the moment of a side effect. A fenced action stops without acting.
+- **Attempt:** one try at a turn on one model. A context overflow or a model fallback ends the attempt and starts a new one; the turn goes on.
+- **Rail:** one way an attempt can end in failure: a journal fault, a fence, a context overflow, or a model error. Each rail decides whether the turn ends or resumes as a new attempt (`src/runtime-rails.ts`).
 - **Wake:** a durable queued trigger that asks a conversation to start a turn. `wake-store.ts` and `wake-dispatcher.ts` own it.
 - **Attachment:** the durable row that binds a conversation to one delegated agent session, keyed by terminal and agent session.
 - **Binding:** the link between a conversation and a delegated agent session. The attachment row is its durable record.

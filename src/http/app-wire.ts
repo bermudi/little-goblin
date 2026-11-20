@@ -436,12 +436,15 @@ export interface AppProgramCandidate {
 	maxLatenessMinutes: number | null;
 	hook: boolean;
 	mailFilter: string | null;
+	/** Present only on a responsibility-bound create — the stable draft
+	 *  id, never patchable, so update diffs exclude it. */
+	responsibilityId?: string;
 }
 
 /** One field an update proposal changes. `lines` is a line diff (unchanged
  *  runs collapsed to gaps) for long text; null for single-line fields. */
 export interface AppProgramChange {
-	field: keyof AppProgramCandidate;
+	field: Exclude<keyof AppProgramCandidate, "responsibilityId">;
 	label: string;
 	before: string;
 	after: string;

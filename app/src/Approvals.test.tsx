@@ -10,7 +10,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { tzAbbrev } from "../../src/cron-words.ts";
 import type { AppProgramProposal } from "../../src/http/app-wire.ts";
-import { ApprovalsPanel, useApprovals } from "./Approvals.tsx";
+import { ApprovalCard, ApprovalsPanel, useApprovals } from "./Approvals.tsx";
 
 let win: Window;
 let container: HTMLElement;
@@ -232,4 +232,50 @@ test("an update card shows old → new per changed field and a line diff for ins
 	);
 	expect(container.querySelector(".diff .diff-line.add")?.textContent).toBe("+c");
 	expect(container.querySelector(".approval-full")).not.toBeNull();
+});
+
+test("a responsibility-bound create names the responsibility on both card layouts", async () => {
+	const bound: AppProgramProposal = {
+		...PROPOSAL,
+		id: 8,
+		target: "app/chat-01",
+		candidate: {
+			name: "bound-job",
+			charter: "check in on the project",
+			cron: null,
+			maxLatenessMinutes: null,
+			hook: false,
+			mailFilter: null,
+			responsibilityId: "resp-42",
+		},
+	};
+	globalThis.fetch = Object.assign(
+		async () => Response.json({ programs: [bound, PROPOSAL], mail: [] }),
+		{ preconnect: realFetch.preconnect },
+	);
+	root = createRoot(container);
+	await act(async () =>
+		root?.render(
+			<>
+				<Page />
+				<ApprovalCard token={null} kind="program" id={bound.id} />
+			</>,
+		),
+	);
+	// The bound create renders the fact on the page card and on the
+	// standalone card — both read the shared CandidateFacts.
+	const withFact = [...container.querySelectorAll(".approval-card")].filter((card) =>
+		card.textContent?.includes("Responsibility:"),
+	);
+	expect(withFact).toHaveLength(2);
+	for (const card of withFact) {
+		expect(card.textContent).toContain("Responsibility: resp-42");
+		expect(card.textContent).toContain("bound-job");
+	}
+	// A normal create carries no such fact.
+	const plain = [...container.querySelectorAll(".approval-card")].find((card) =>
+		card.textContent?.includes("nightly"),
+	);
+	expect(plain).toBeDefined();
+	expect(plain?.textContent).not.toContain("Responsibility:");
 });

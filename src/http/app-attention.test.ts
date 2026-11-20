@@ -98,7 +98,12 @@ describe("app attention", () => {
 			approvals: {
 				program: {
 					pending: () => [proposal],
-					candidate: () => proposal.draft,
+					candidate: () => {
+						// The draft's responsibilityId is string | null; the
+						// candidate carries it only as an optional string.
+						const { responsibilityId: _bound, ...candidate } = proposal.draft!;
+						return candidate;
+					},
 					base: () => null,
 					decide: async () => ({ kind: "refused", proposal, refusal: "gone" }),
 				},

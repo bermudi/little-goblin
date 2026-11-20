@@ -150,6 +150,9 @@ export interface ProgramCandidate {
 	maxLatenessMinutes: number | null;
 	hook: boolean;
 	mailFilter: string | null;
+	/** Set only on a create bound to a project responsibility — the
+	 *  stable draft id the approval card names. */
+	responsibilityId?: string;
 }
 
 // The complete candidate: a create's draft, or the patch merged onto the
@@ -189,6 +192,9 @@ export function proposalCandidate(
 					maxLatenessMinutes: draft.maxLatenessMinutes,
 					hook: draft.hook,
 					mailFilter: draft.mailFilter,
+					...(draft.responsibilityId !== null
+						? { responsibilityId: draft.responsibilityId }
+						: {}),
 				};
 	}
 	const base = proposalBase(programs, proposal);
@@ -224,6 +230,9 @@ export function proposalText(
 			lead,
 			"",
 			`name: ${candidate.name}`,
+			...(candidate.responsibilityId !== undefined
+				? [`Responsibility: ${candidate.responsibilityId}`]
+				: []),
 			"charter:",
 			candidate.charter,
 			"",

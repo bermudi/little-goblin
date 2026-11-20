@@ -217,6 +217,26 @@ describe("app approval routes", () => {
 		}
 	});
 
+	test("a responsibility-bound create carries the draft's responsibility id — the target stays the presentation lane", async () => {
+		const h = harness();
+		try {
+			const bound = h.programs.proposals.proposeCreate(
+				draft({ responsibilityId: "resp-1" }),
+				{ target: "app/chat-01" },
+				NOW,
+			);
+			const plain = h.programs.proposals.proposeCreate(draft(), { target: "app/chat-01" }, NOW);
+			const body = (await (await h.call("/api/app/approvals")).json()) as AppApprovalsResponse;
+			const boundRow = body.programs.find((p) => p.id === bound.id)!;
+			expect(boundRow.target).toBe("app/chat-01");
+			expect(boundRow.candidate?.responsibilityId).toBe("resp-1");
+			const plainRow = body.programs.find((p) => p.id === plain.id)!;
+			expect(plainRow.candidate?.responsibilityId).toBeUndefined();
+		} finally {
+			await cleanup(h);
+		}
+	});
+
 	test("an update proposal lists what changes versus the running program", async () => {
 		const h = harness();
 		try {

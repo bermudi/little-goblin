@@ -484,3 +484,58 @@ authority fencing, durable write semantics, intake coalescing, auth command
 resolution; not worth one — that a function calls its collaborator with the
 right arguments. Fakes at the two external edges (model provider, Telegram
 API); no mock.module pyramids.
+
+### Memory net
+
+A test stuck in synchronous work that keeps allocating (a runaway turn
+loop; bun printing a whole happy-dom tree for a failed assertion, #798)
+never yields its thread, so nothing on the main thread can stop it:
+`afterEach`, timers and bun's own test timeout never run. Left alone, the
+kernel OOM-kills the process with no output. The **memory net**
+(`src/test-memory-net.ts`, #818) turns that into a red result that names
+the test:
+
+- **First preload** in `bunfig.toml`, for every `bun test` run, server and
+  app alike, and in each `--parallel` worker process (each runs the
+  preloads).
+- **Watchdog off the main thread.** A `Worker`
+  (`src/test-memory-net.worker.ts`) reads `process.memoryUsage.rss()`
+  — whole-process RSS — every 100 ms. At the limit it writes one
+  `memory runaway:` report with `fs.writeSync(2, …)` (an async stderr
+  write would wait for the stuck main thread) and sends its own process
+  SIGKILL: from a worker, `process.exit` ends only the worker.
+- **Limit.** `GOBLIN_TEST_RSS_LIMIT_MB` (a positive integer) if set;
+  otherwise 75% of the smallest `memory.max` on the process's cgroup v2
+  path, capped at 3 GiB. So 1.5 GiB under the agents' 2 GB
+  `systemd-run` scope, 3 GiB on CI. Passing files peak at 85–264 MB per
+  process on CI (one outlier, #819).
+- **Naming the test.** bun 1.4.4 has no current-test API, so the net
+  replaces `test`/`it`/`describe` on `require("bun:test")` before anything
+  imports it as ESM (a later ESM import would freeze the bindings it sees).
+  Registration records the full `describe > test` name and its
+  `file:line`. The describe prefix is captured when a describe registers,
+  because bun runs nested describe callbacks after the outer one returns;
+  `test.each` rows get their own name per row (`%` formats, `$key`
+  fields). Each test callback is wrapped (keeping its `length`, which
+  bun reads to detect `done` callbacks) to write `running` / `after` into a
+  `SharedArrayBuffer` slot the worker reads. `beforeEach` / `afterEach` /
+  `beforeAll` / `afterAll` callbacks are wrapped too: a runaway hook
+  reports `running: <hook> hook registered at <file:line>` and the last
+  test. A registration in a concise arrow (`() => test(…)`) is a tail
+  call, and JavaScriptCore drops its caller's frame: then the report
+  gives the enclosing describe's file with `line not in the stack`.
+  Top-level code shows as `loading <file>`; code before the first
+  registration in a file shows as `no test registered yet` (bun's own
+  output still prints the file heading).
+- **Fail loud.** A worker that fails to start fails the run before any
+  test; a later worker error is an uncaught error. A test that ran without
+  passing through the wrapper fails in a global `afterEach`.
+- **Proof.** `src/test-memory-net.test.ts` runs bounded runaway fixtures
+  (`*.fixture.ts[x]`, outside bun's test globs) in child `bun test`
+  processes with a 256 MB limit — plain allocation, a mounted React tree
+  printed by a failed `.resolves.toEqual` (#816), and `--parallel` — and
+  watches each child's RSS itself, so a broken net fails the test instead
+  of the box.
+
+The net is a backstop, not a fix: the happy-dom assertion guard (#798)
+still keeps those failures short and readable.

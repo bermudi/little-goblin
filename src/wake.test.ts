@@ -15,7 +15,8 @@ import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import type { RollDeps } from "./rolling.ts";
 import { delegationWake } from "./delegation-lifecycle.ts";
-import { finishPart, scriptedModel, textParts, toolCallPart } from "./testkit/fake-model.ts";
+import { sdkScript } from "./testkit/turn-script-sdk.ts";
+import { claudeScript } from "./testkit/turn-script-claude.ts";
 import { useHome, waitUntil } from "./testkit.ts";
 import { sinkFor, wake, wakeApp, wakeTarget, type WakeDeps } from "./wake.ts";
 
@@ -232,25 +233,24 @@ test("no Telegram delivery refuses Telegram targets while app targets keep the b
 	store.close();
 });
 
-test("a background app turn persists generated media without an SSE stream", async () => {
+const scriptAdapters = [sdkScript, claudeScript] as const;
+for (const make of scriptAdapters) {
+test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: background app turn persists generated media without an SSE stream`, async () => {
 	const home = useHome("goblin-wake-media-");
 	const work = join(home, "work");
 	mkdirSync(work, { recursive: true });
 	writeFileSync(join(work, "report.txt"), "report-bytes");
 	const store = openStore(join(home, "goblin.sqlite"));
 	const conv = store.resolve(appAddress("background"), join(home, "workspace"));
-	const model = scriptedModel([
-		[
-			{ type: "stream-start", warnings: [] },
-			toolCallPart("file-1", "send_file", JSON.stringify({ path: "report.txt" })),
-			finishPart("tool-calls"),
-		],
-		textParts("report sent"),
-	]).model;
+	const model = make();
+	model.script(
+		{ kind: "reply", parts: [{ type: "tool-call", toolName: "send_file", input: { path: "report.txt" }, toolCallId: "file-1" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "report sent" }] },
+	);
 	const runtime = new Runtime({
-		engines: [aiSdkEngine],
+		engines: model.engines,
 		store,
-		buildStep: () => ({ engine: "ai-sdk", model, system: "test" }),
+		buildStep: () => model.step(),
 	});
 	runtime.mount({ makeTools: (_conv, _deliverVoice, _recording, deliverFile) => ({
 			send_file: sendFileTool(work, deliverFile!),
@@ -302,6 +302,7 @@ test("a background app turn persists generated media without an SSE stream", asy
 	await runtime.shutdown();
 	store.close();
 });
+}
 
 // ---------- sinkFor ----------
 

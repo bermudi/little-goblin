@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { format } from "node:util";
 import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 
@@ -78,11 +79,13 @@ const slotLength = new Int32Array(slotBuffer, 0, 1);
 const slotBytes = new Uint8Array(slotBuffer, Int32Array.BYTES_PER_ELEMENT, SLOT_BYTES);
 const encoder = new TextEncoder();
 const describeNames: string[] = [];
+let slotText = "";
 let entered = false;
 let currentTestName = "";
 let currentTestLocation = "";
 
 function writeSlot(text: string): void {
+	slotText = text;
 	const { written } = encoder.encodeInto(text, slotBytes);
 	Atomics.store(slotLength, 0, written);
 }
@@ -115,18 +118,19 @@ function sourceLocation(): string {
 }
 
 type RegistrationKind = "test" | "describe";
+type RegistrationMode = "normal" | "each-selector" | "each-registration";
 type Callable = (...args: unknown[]) => unknown;
 
 function wrapCallback(
 	callback: Callable,
-	fullName: string,
+	fullName: string | ((args: unknown[]) => string),
 	location: string,
 ): Callable {
 	const wrapped: Callable = function (this: unknown, ...args: unknown[]): unknown {
 		entered = true;
-		currentTestName = fullName;
+		currentTestName = typeof fullName === "string" ? fullName : fullName(args);
 		currentTestLocation = location;
-		writeSlot(`running: ${fullName}\n  registered at ${location}`);
+		writeSlot(`running: ${currentTestName}\n  registered at ${location}`);
 
 		let waitForCompletion = wrapped.length > 0;
 		try {
@@ -148,14 +152,37 @@ function wrapCallback(
 	return wrapped;
 }
 
+function eachName(template: string, rowArgs: unknown[]): string {
+	if (template.includes("%")) return format(template, ...rowArgs);
+	const row = rowArgs[0];
+	if (
+		typeof row !== "object" ||
+		row === null ||
+		Array.isArray(row) ||
+		!/\$[A-Za-z_$][\w$]*/.test(template)
+	) {
+		return template;
+	}
+	return template.replace(/\$([A-Za-z_$][\w$]*)/g, (_match, key: string) =>
+		String(Reflect.get(row, key)),
+	);
+}
+
 function wrapRegistration(
 	kind: RegistrationKind,
 	original: Callable,
 	boundThis?: unknown,
+	mode: RegistrationMode = "normal",
 ): Callable {
 	return new Proxy(original, {
 		apply(target, thisArg: unknown, args: unknown[]): unknown {
 			const receiver = boundThis ?? thisArg;
+			if (mode === "each-selector") {
+				const result: unknown = Reflect.apply(target, receiver, args);
+				return typeof result === "function"
+					? wrapRegistration(kind, result as Callable, result, "each-registration")
+					: result;
+			}
 			const name = args[0];
 			const callback = args[1];
 			if (typeof name !== "string" || typeof callback !== "function") {
@@ -166,7 +193,8 @@ function wrapRegistration(
 			}
 
 			const location = sourceLocation();
-			const fullName = [...describeNames, name].join(" > ");
+			const namePrefix = [...describeNames];
+			const fullName = [...namePrefix, name].join(" > ");
 			const filePath = location.slice(0, location.lastIndexOf(":"));
 			writeSlot(`running: no test yet, loading ${filePath}`);
 
@@ -175,11 +203,14 @@ function wrapRegistration(
 					this: unknown,
 					...describeArgs: unknown[]
 				): unknown {
-					describeNames.push(name);
+					const previousNames = [...describeNames];
+					const describeName =
+						mode === "each-registration" ? eachName(name, describeArgs) : name;
+					describeNames.splice(0, describeNames.length, ...namePrefix, describeName);
 					try {
 						return Reflect.apply(callback as Callable, this, describeArgs);
 					} finally {
-						describeNames.pop();
+						describeNames.splice(0, describeNames.length, ...previousNames);
 					}
 				};
 				Object.defineProperty(wrappedDescribe, "length", { value: callback.length });
@@ -189,7 +220,12 @@ function wrapRegistration(
 			}
 
 			const wrappedArgs = [...args];
-			wrappedArgs[1] = wrapCallback(callback as Callable, fullName, location);
+			const nameForRun =
+				mode === "each-registration"
+					? (rowArgs: unknown[]) =>
+							[...namePrefix, eachName(name, rowArgs)].join(" > ")
+					: fullName;
+			wrappedArgs[1] = wrapCallback(callback as Callable, nameForRun, location);
 			const result: unknown = Reflect.apply(target, receiver, wrappedArgs);
 			return typeof result === "function"
 				? wrapRegistration(kind, result as Callable, result)
@@ -198,10 +234,68 @@ function wrapRegistration(
 		get(target, property: string | symbol): unknown {
 			const value: unknown = Reflect.get(target, property, target);
 			return typeof value === "function"
-				? wrapRegistration(kind, value as Callable, target)
+				? wrapRegistration(
+						kind,
+						value as Callable,
+						target,
+						property === "each" ? "each-selector" : "normal",
+					)
 				: value;
 		},
 	});
+}
+
+function wrapHookCallback(callback: Callable, hookName: string, location: string): Callable {
+	const wrapped: Callable = function (this: unknown, ...args: unknown[]): unknown {
+		const previousSlotText = slotText;
+		const lastTest = currentTestName === "" ? "" : `\n  last test: ${JSON.stringify(currentTestName)}`;
+		writeSlot(`running: ${hookName} hook registered at ${location}${lastTest}`);
+		let restored = false;
+		const restore = (): void => {
+			if (restored) return;
+			restored = true;
+			writeSlot(previousSlotText);
+		};
+
+		const wrappedArgs = [...args];
+		const usesDone = callback.length > 0 && typeof wrappedArgs[0] === "function";
+		if (usesDone) {
+			const done = wrappedArgs[0] as Callable;
+			wrappedArgs[0] = function (this: unknown, ...doneArgs: unknown[]): unknown {
+				try {
+					return Reflect.apply(done, this, doneArgs);
+				} finally {
+					restore();
+				}
+			};
+		}
+
+		let waitForCompletion = usesDone;
+		try {
+			const result: unknown = Reflect.apply(callback, this, wrappedArgs);
+			if (isThenable(result)) {
+				waitForCompletion = true;
+				void Promise.resolve(result).then(restore, restore);
+			}
+			return result;
+		} finally {
+			if (!waitForCompletion) restore();
+		}
+	};
+	Object.defineProperty(wrapped, "length", { value: callback.length });
+	return wrapped;
+}
+
+function wrapHookRegistration(hookName: string, original: Callable): Callable {
+	const wrapped: Callable = function (this: unknown, ...args: unknown[]): unknown {
+		const callback = args[0];
+		if (typeof callback !== "function") return Reflect.apply(original, this, args);
+		const wrappedArgs = [...args];
+		wrappedArgs[0] = wrapHookCallback(callback as Callable, hookName, sourceLocation());
+		return Reflect.apply(original, this, wrappedArgs);
+	};
+	Object.defineProperty(wrapped, "length", { value: original.length });
+	return wrapped;
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {
@@ -227,18 +321,26 @@ const bunTest = require("bun:test") as {
 	test: Callable;
 	it: Callable;
 	describe: Callable;
-	beforeEach: (fn: () => void) => void;
-	afterEach: (fn: () => void) => void;
+	beforeEach: Callable;
+	afterEach: Callable;
+	beforeAll: Callable;
+	afterAll: Callable;
 };
+const nativeBeforeEach = bunTest.beforeEach;
+const nativeAfterEach = bunTest.afterEach;
 
 bunTest.test = wrapRegistration("test", bunTest.test);
 bunTest.it = wrapRegistration("test", bunTest.it);
 bunTest.describe = wrapRegistration("describe", bunTest.describe);
+bunTest.beforeEach = wrapHookRegistration("beforeEach", nativeBeforeEach);
+bunTest.afterEach = wrapHookRegistration("afterEach", nativeAfterEach);
+bunTest.beforeAll = wrapHookRegistration("beforeAll", bunTest.beforeAll);
+bunTest.afterAll = wrapHookRegistration("afterAll", bunTest.afterAll);
 
-bunTest.beforeEach(() => {
+nativeBeforeEach(() => {
 	entered = false;
 });
-bunTest.afterEach(() => {
+nativeAfterEach(() => {
 	if (!entered) {
 		throw new Error(
 			"memory net: this test did not run through the net's test wrapper, so a memory runaway could not name it. Something imported bun:test before src/test-memory-net.ts; keep it first in bunfig.toml (#818).",

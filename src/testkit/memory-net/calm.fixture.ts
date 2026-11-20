@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
+
+beforeEach((done) => done());
 
 test("a calm test passes", () => {
 	expect("calm").toBe("calm");

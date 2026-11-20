@@ -7,15 +7,12 @@ describe("runaway", () => {
 
 	test("allocates forever in synchronous code", () => {
 		const buffers: Uint8Array[] = [];
-		const deadline = Date.now() + 30_000;
-		while (process.memoryUsage.rss() < 1024 ** 3 && Date.now() < deadline) {
+		while (process.memoryUsage.rss() < 1024 ** 3) {
 			const buffer = new Uint8Array(1024 ** 2);
 			buffer.fill(1);
 			buffers.push(buffer);
 		}
-		while (Date.now() < deadline) {
-			// Keep the JS thread busy until the external watchdog has time to trip.
-		}
+		Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 30_000);
 		throw new Error("memory net did not fire");
 	});
 });

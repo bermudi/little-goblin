@@ -1,3 +1,4 @@
+// These fixtures pin AI SDK generateText provider results used by the vision tool.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

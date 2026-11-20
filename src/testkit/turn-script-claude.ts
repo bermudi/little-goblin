@@ -53,6 +53,8 @@ function scriptCall(call: ScriptCall, bridgeRef: { current: ToolBridge | null })
 				run: () => bridgeRef.current!.invoke(part.toolName, part.input),
 				...billed(),
 			});
+			// The CLI acks steers drained during tool execution before its next request.
+			steps.push({ kind: "ack" });
 		}
 	}
 	if (call.kind === "hold") {

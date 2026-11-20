@@ -90,7 +90,26 @@ function writeSlot(text: string): void {
 	Atomics.store(slotLength, 0, written);
 }
 
-function sourceLocation(): string {
+interface RegistrationLocation {
+	file: string | null;
+	text: string;
+}
+
+// The file whose describe callback is running. A registration in a concise
+// arrow (`() => test(...)`) is a tail call, and JavaScriptCore drops the
+// caller's frame, so the stack can hold no test-file frame at all.
+let describeFile: string | null = null;
+
+function registrationLocation(): RegistrationLocation {
+	const found = sourceLocation();
+	if (found !== null) return found;
+	if (describeFile !== null) {
+		return { file: describeFile, text: `${describeFile} (line not in the stack: a tail call)` };
+	}
+	return { file: null, text: "an unknown place (no test-file frame in the stack)" };
+}
+
+function sourceLocation(): RegistrationLocation | null {
 	const stack = new Error().stack ?? "";
 	for (const line of stack.split("\n").slice(1)) {
 		const frame = line.trim();
@@ -111,10 +130,9 @@ function sourceLocation(): string {
 		}
 		const pathFromRoot = relative(process.cwd(), filePath).replaceAll("\\", "/");
 		if (pathFromRoot === "" || pathFromRoot.startsWith("../")) continue;
-		return `${pathFromRoot}:${match[2]}`;
+		return { file: pathFromRoot, text: `${pathFromRoot}:${match[2]}` };
 	}
-	const preloadPath = relative(process.cwd(), import.meta.path).replaceAll("\\", "/");
-	return `${preloadPath}:1`;
+	return null;
 }
 
 type RegistrationKind = "test" | "describe";
@@ -192,11 +210,10 @@ function wrapRegistration(
 					: result;
 			}
 
-			const location = sourceLocation();
+			const { file, text: location } = registrationLocation();
 			const namePrefix = [...describeNames];
 			const fullName = [...namePrefix, name].join(" > ");
-			const filePath = location.slice(0, location.lastIndexOf(":"));
-			writeSlot(`running: no test yet, loading ${filePath}`);
+			writeSlot(`running: no test yet, loading ${file ?? "an unknown file"}`);
 
 			if (kind === "describe") {
 				const wrappedDescribe: Callable = function (
@@ -204,6 +221,8 @@ function wrapRegistration(
 					...describeArgs: unknown[]
 				): unknown {
 					const previousNames = [...describeNames];
+					const previousFile = describeFile;
+					describeFile = file ?? previousFile;
 					const describeName =
 						mode === "each-registration" ? eachName(name, describeArgs) : name;
 					describeNames.splice(0, describeNames.length, ...namePrefix, describeName);
@@ -211,6 +230,7 @@ function wrapRegistration(
 						return Reflect.apply(callback as Callable, this, describeArgs);
 					} finally {
 						describeNames.splice(0, describeNames.length, ...previousNames);
+						describeFile = previousFile;
 					}
 				};
 				Object.defineProperty(wrappedDescribe, "length", { value: callback.length });
@@ -291,7 +311,7 @@ function wrapHookRegistration(hookName: string, original: Callable): Callable {
 		const callback = args[0];
 		if (typeof callback !== "function") return Reflect.apply(original, this, args);
 		const wrappedArgs = [...args];
-		wrappedArgs[0] = wrapHookCallback(callback as Callable, hookName, sourceLocation());
+		wrappedArgs[0] = wrapHookCallback(callback as Callable, hookName, registrationLocation().text);
 		return Reflect.apply(original, this, wrappedArgs);
 	};
 	Object.defineProperty(wrapped, "length", { value: original.length });

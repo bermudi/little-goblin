@@ -15,6 +15,7 @@ import { textModel } from "../testkit/fake-model.ts";
 import { useHome } from "../testkit.ts";
 import { openTurnJournal } from "../turn-journal.ts";
 import { openWindowCapture } from "../window-capture.ts";
+import type { ScriptedModel } from "../testkit/turn-script.ts";
 import type { LanguageModel } from "ai";
 import { type AppChannelDeps, handleAppApi, resolveAppAuth } from "./app-channel.ts";
 import { startHttp } from "./mod.ts";
@@ -38,6 +39,7 @@ export function setup(
 		programOps?: AppChannelDeps["programOps"];
 		push?: AppChannelDeps["push"];
 		model?: LanguageModel;
+		scriptedModel?: ScriptedModel;
 		makeTools?: TurnToolMaker;
 		// The responsibility bag needs this setup's own stores — a
 		// factory form receives them after construction.
@@ -63,24 +65,29 @@ export function setup(
 	// lineage-reading surfaces see rows in tests.
 	const cacheObservations = openCacheObservation(store.db);
 	const runtime = new Runtime({
-		engines: [aiSdkEngine],
+		engines: opts.scriptedModel?.engines ?? [aiSdkEngine],
 		store,
 		turnJournal,
 		recordWindow: (conversationId, input) => {
 			windowCapture.record(conversationId, input);
 		},
 		windowVersion: windowCapture.version,
-		buildStep: (conv) => ({
-			engine: "ai-sdk",
-			model: observedModel(
-				opts.model ??
-					textModel(opts.deltas ?? ["hello", " app"], {
-						...(opts.delayMs !== undefined ? { delayMs: opts.delayMs } : {}),
-					}).model,
-				{ conversation: conv.id, observation: cacheObservations },
-			),
-			system: "test",
-		}),
+		buildStep: (conv) => {
+			if (opts.scriptedModel !== undefined) return opts.scriptedModel.step();
+			// The default stays an observed AI SDK model: cache-lineage
+			// surfaces read what observedModel records at the SDK seam.
+			return {
+				engine: "ai-sdk",
+				model: observedModel(
+					opts.model ??
+						textModel(opts.deltas ?? ["hello", " app"], {
+							...(opts.delayMs !== undefined ? { delayMs: opts.delayMs } : {}),
+						}).model,
+					{ conversation: conv.id, observation: cacheObservations },
+				),
+				system: "test",
+			};
+		},
 		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
 	});
 	runtime.mount({ makeTools: (conv, deliverVoice, recording, deliverFile) => {

@@ -1,17 +1,4 @@
-# goblin v2 — design
-
-Rewrite of little-goblin — same product, ruthless scope. v1 retired at the
-2026-10-09 cutover; no code, no state, no specs carry over — only this
-document and the lessons it encodes.
-
-## Why
-
-pi-coding-agent is the ceiling: pi-ai supports only text and images, thinking
-levels are half-broken, and the codebase grew a ~10x stabilization apparatus
-(test code to product code) to compensate for seams pi forced on it. Vercel AI
-SDK gives provider-agnostic model access, native document/audio parts, and
-thinking levels that actually work — the agent core is rewritten around it,
-and everything else is rebuilt only if it earns its place.
+# goblin — design
 
 ## Product boundary
 
@@ -19,7 +6,7 @@ and everything else is rebuilt only if it earns its place.
   `goblin.service` (systemd user unit, linger) running one immutable release
   from `~/goblin-releases/`, plus the memory stack directly. Install is
   `scripts/install.sh` — fresh-only, path-substituting, first-boot
-  scaffolding; there is no onboarding wizard, ever. `scripts/release.ts` is
+  scaffolding; there is no onboarding wizard. `scripts/release.ts` is
   the update path (build a release from a commit, gate on typecheck, flip,
   restart, verify; design/deploy.md); tests gate merges in CI, not deploys,
   and it never pushes (docs/operations.md → Deploying).

@@ -230,11 +230,63 @@ export function outputSummary(output: unknown): string | null {
 	return null;
 }
 
+// The value JSON.stringify serializes in place of v: its toJSON result.
+function jsonView(key: string, v: unknown): unknown {
+	if (typeof v !== "object" || v === null) return v;
+	const toJSON: unknown = (v as { toJSON?: unknown }).toJSON;
+	return typeof toJSON === "function" ? (toJSON.call(v, key) as unknown) : v;
+}
+
+// JSON.stringify throws on a cycle, but under bun 1.4.4 only after RSS
+// climbs by 0.6–1.8 GB (#819). So look first, along the edges stringify
+// follows: toJSON, then array indices or own enumerable keys. A cycle is
+// an edge back to an object on the current path; the same object twice
+// as siblings is not one. Iterative, and each object is expanded once.
+function hasCycle(root: unknown): boolean {
+	interface Frame {
+		obj: object;
+		keys: readonly string[] | null; // null: an array, walked by index
+		size: number;
+		next: number;
+	}
+	const onPath = new Set<object>();
+	const done = new Set<object>();
+	const stack: Frame[] = [];
+	// True when following this edge closes a cycle.
+	const enter = (key: string, raw: unknown): boolean => {
+		const v = jsonView(key, raw);
+		if (typeof v !== "object" || v === null || done.has(v)) return false;
+		if (onPath.has(v)) return true;
+		onPath.add(v);
+		const keys = Array.isArray(v) ? null : Object.keys(v);
+		stack.push({ obj: v, keys, size: keys === null ? (v as unknown[]).length : keys.length, next: 0 });
+		return false;
+	};
+	if (enter("", root)) return true;
+	for (let top = stack.at(-1); top !== undefined; top = stack.at(-1)) {
+		if (top.next === top.size) {
+			stack.pop();
+			onPath.delete(top.obj);
+			done.add(top.obj);
+			continue;
+		}
+		const key = top.keys === null ? String(top.next) : top.keys[top.next]!;
+		top.next++;
+		if (enter(key, (top.obj as Record<string, unknown>)[key])) return true;
+	}
+	return false;
+}
+
 /** Compact JSON for the generic detail panes — capped, never throwing. */
 export function shortJson(value: unknown, max = 4000): string {
 	let s: string;
 	try {
-		s = typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? "");
+		s =
+			typeof value === "string"
+				? value
+				: hasCycle(value)
+					? "(unprintable)"
+					: (JSON.stringify(value, null, 2) ?? "");
 	} catch {
 		s = "(unprintable)";
 	}

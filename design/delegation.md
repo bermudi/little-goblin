@@ -25,7 +25,8 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 > the real `$CODEX_HOME`; other harnesses use their proven per-run settings
 > or a safe config merge. Claude gets generated `--settings` under
 > `$GOBLIN_HOME`, Pi gets a per-run extension, and OpenCode and Devin use
-> the probe-proven config mechanisms. Core state stays at
+> the probe-proven config mechanisms (Devin's: operator config plus
+> Goblin's hooks, below). Core state stays at
 > `~/.local/state/herdr-core/<session>/`; do not set `XDG_STATE_HOME`
 > because it would reach harness processes. Devin's SessionStart probe passed.
 > The core starts with a clean fixed environment: `HOME`, `USER`, `LOGNAME`,
@@ -144,7 +145,28 @@ Rulings:
   leaves no record the operator can see or revoke. Hooks are durably
   copied to the stable Goblin home. Claude gets generated `--settings`;
   Pi gets a per-run extension; OpenCode gets the hooks directory as a
-  TUI plugin and `--standalone`; Devin gets a per-run `--config`.
+  TUI plugin and `--standalone`; Devin gets a per-run `--config` built
+  as the next ruling says.
+- **Devin runs with the operator's config plus Goblin's hooks
+  (operator, 2026-11-20, #810).** Devin's `--config` replaces its user
+  config, so the per-run file under `$GOBLIN_HOME/state/hc-hooks/`
+  starts as a copy of `$XDG_CONFIG_HOME/devin/config.json` (absolute
+  values only, as devin resolves it) or `~/.config/devin/config.json`,
+  parsed as JSONC like devin does. Missing file: start from
+  `{version: 1}`. Any other read, parse or shape error fails the launch
+  with the path; it never drops the operator's settings silently. Goblin
+  then appends one `report.sh` entry to each of the six events, after
+  the operator's own entries and never in their place: `SessionStart` →
+  idle, `UserPromptSubmit`/`PreToolUse`/`PostToolUse` → working, `Stop`
+  → idle, `PermissionRequest` → `blocked permission`. An event that
+  already runs Goblin's exact command gets no second entry. Before
+  this, only `SessionStart` was registered: the operator's model,
+  permissions and shell were lost, and Goblin's own hooks never reported
+  `working`. Delivery still passed, because herdr-core's built-in devin
+  detector reports `working`/`done` itself (`status.app = "devin"`;
+  Goblin's OSC reports carry no `app`): live on devin 3000.14,
+  2026-11-20. Goblin's hooks no longer depend on that detector. The copy can hold the
+  operator's settings, so it is written 0600.
 - **The seeded trust keys are pinned against the installed harnesses,
   not just fakes (2026-10-11).** Drift is silent: a renamed key still
   seeds, and the launch shows the consent dialog anyway.

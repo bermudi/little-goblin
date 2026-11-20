@@ -1,0 +1,27 @@
+# Throwaway probe for #818 / #798: peak RSS of test processes on CI. Never merge.
+name: rss-probe
+on: push
+jobs:
+  per-file:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: sudo apt-get install -y time
+      - run: bun install --frozen-lockfile
+      - name: App test files, one process each
+        shell: bash
+        run: |
+          for f in app/src/*.test.ts app/src/*.test.tsx app/src/**/*.test.ts*; do
+            [[ -f "$f" ]] || continue
+            /usr/bin/time -f "RSS_KB %M EXIT %x SECS %e FILE $f" timeout 600 bun test "$f" >"/tmp/out.txt" 2>&1 || true
+            tail -n 1 /tmp/out.txt
+            grep -E "^ *[0-9]+ (pass|fail)" /tmp/out.txt | tr '\n' ' '; echo
+          done
+      - name: Whole suite, one process (no --parallel)
+        shell: bash
+        run: |
+          /usr/bin/time -f "RSS_KB %M EXIT %x SECS %e WHOLE_SUITE_SERIAL" timeout 1800 bun test >/tmp/all.txt 2>&1 || true
+          tail -n 1 /tmp/all.txt
+          grep -E "^ *[0-9]+ (pass|fail)|^Ran " /tmp/all.txt

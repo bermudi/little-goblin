@@ -33,15 +33,22 @@ function apiCallBody(err: APICallError): string | undefined {
 	return parts.length === 0 ? undefined : parts.join("\n");
 }
 
+// The converted error keeps the original's stack, whose first line names
+// the SDK class: the log must still show where and what failed.
+function keepStack(original: Error, converted: ProviderError): ProviderError {
+	if (original.stack !== undefined) converted.stack = original.stack;
+	return converted;
+}
+
 export function fromSdkError(err: unknown, depth = 0): unknown {
 	if (depth > MAX_DEPTH) return err;
 	if (err instanceof ProviderError || err instanceof ProviderContentFilterError) return err;
 	if (APICallError.isInstance(err)) {
-		return new ProviderError(
+		return keepStack(err, new ProviderError(
 			err.message,
 			{ status: err.statusCode, body: apiCallBody(err) },
 			{ cause: fromSdkError(err.cause, depth + 1) },
-		);
+		));
 	}
 	if (RetryError.isInstance(err)) {
 		return new AggregateError(
@@ -52,12 +59,12 @@ export function fromSdkError(err: unknown, depth = 0): unknown {
 	if (AISDKError.isInstance(err)) {
 		return err.cause === undefined
 			? err
-			: new ProviderError(err.message, {}, { cause: fromSdkError(err.cause, depth + 1) });
+			: keepStack(err, new ProviderError(err.message, {}, { cause: fromSdkError(err.cause, depth + 1) }));
 	}
 	if (err instanceof Error) {
 		if (err.cause instanceof Error) {
 			const cause = fromSdkError(err.cause, depth + 1);
-			if (cause !== err.cause) return new ProviderError(err.message, {}, { cause });
+			if (cause !== err.cause) return keepStack(err, new ProviderError(err.message, {}, { cause }));
 		}
 		return err;
 	}

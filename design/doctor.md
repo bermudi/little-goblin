@@ -112,6 +112,21 @@ active project skips. Other T3 errors, runner failures and timeouts fail
 as a T3 server/CLI unreachable result. The detail contains only the
 adapter's safe error kind or exit code, never raw stderr.
 
+`delegation.hc` (#739) never installs, downloads, starts or stops hc,
+and never runs the `hc` CLI: `server status` starts a core when none
+runs (probe, 2026-11-20). Boot never touches hc either (#733), so before
+a box's first delegate run, and after every reboot, "not installed" and
+"not running" are the ready state, not a fault. Read-only, in order:
+a failure record from the last delegate run's setup
+(`state/hc-setup-failure.json`, stage `install` or `start`, written by
+the run path and cleared by its next successful setup) fails; no binary
+passes as "installs on first run, download unverified"; a binary that is
+not a file or misses the pinned hash fails; a pinned binary with no
+runtime socket passes as "starts on first run, start unverified"; a
+socket answering `terminal.list` passes; a socket refusing connections
+warns (the core died without stopping and its terminals are gone; the
+next run starts a fresh one); any other socket error fails.
+
 Relay-file presence alone is not association: validate the configured API
 against the running local installation and allowlisted provider/base
 URL/model fields before probing its relay. Unsupported or remote

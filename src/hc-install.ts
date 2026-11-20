@@ -138,10 +138,15 @@ export async function ensureHc(
 	}
 }
 
-export function isPinnedHcBinary(binaryPath: string): boolean {
-	if (!existsSync(binaryPath)) return false;
-	const stat = statSync(binaryPath);
-	return stat.isFile() && fileSha256(binaryPath) === productionPin.binarySha256;
+export type HcBinaryState = "missing" | "pinned" | "wrong-hash" | "not-a-file";
+
+export function hcBinaryState(
+	binaryPath: string,
+	binarySha256: string = productionPin.binarySha256,
+): HcBinaryState {
+	if (!existsSync(binaryPath)) return "missing";
+	if (!statSync(binaryPath).isFile()) return "not-a-file";
+	return fileSha256(binaryPath) === binarySha256 ? "pinned" : "wrong-hash";
 }
 
 export function hcArchiveUrl(pin: HcInstallPin = productionPin): string {

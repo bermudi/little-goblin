@@ -98,7 +98,9 @@ System prompt for this agent type.
 
 See [`src/agent/tools/agent.ts`](../src/agent/tools/agent.ts) for the
 tool contract. A waiting child can read documents too long for the
-parent's context; don't add a second in-turn reader.
+parent's context. The old `read_long` duplicated this capability and made
+model calls without a spending cap. It was removed in #666. Don't add a
+second in-turn reader.
 
 ### Limits
 

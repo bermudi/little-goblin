@@ -1,9 +1,3 @@
-// The unlanded-turn progress event's body (design/runtime-turn.md →
-// Unlanded-turn progress): one system event that records what a turn
-// whose reply never landed completed — terminal error, fence, or process
-// death — so the next turn does not lose the work. Rendering plus the
-// process-death append helper; the runtime owns when a live turn's event
-// is appended, the journal's open when an interrupted run's is.
 
 import { randomUUID } from "node:crypto";
 import { readUIMessageStream } from "ai";
@@ -14,32 +8,19 @@ import type { UnlandedTurnMetadata } from "../http/app-wire.ts";
 import { log } from "../log.ts";
 import type { TurnRun, TurnToolCall } from "../turn-journal.ts";
 
-// The assistant-text bounds.
 const TEXT_TAIL_CHARS = 2000;
-// Per-call preview bounds.
 const ARGS_PREVIEW_CHARS = 160;
 const PREVIEW_CHARS = 240;
-// Non-unknown calls kept (newest); unknowns are all kept.
 const KEPT_CALLS = 30;
 
 const UNKNOWN_LINE =
 	"OUTCOME UNKNOWN: dispatched with no recorded result; the effect may or may not have happened.";
 
-// How the turn ended without a reply. `aborted` is an operator/epoch
-// fence — /stop, a settings change — recorded at fence time even
-// though the attempt has lost authority (the sanctioned post-fence
-// state write). `interrupted` is process death, recorded at the next
-// journal open — a shutdown fence rides it too, its row left 'running'
-// on purpose (#471).
 export type UnlandedOutcome =
 	| { kind: "failed"; failure: string }
 	| { kind: "aborted"; cause: string }
 	| { kind: "interrupted" };
 
-// The checkpoint's partial is untrusted JSON (a decode failure in the row
-// even degrades to the raw string). Accept an array of assistant messages
-// whose content is a string or parts; anything malformed contributes no
-// text and does not throw.
 const partialSchema = z.array(z.object({ content: z.union([z.string(), z.array(z.unknown())]) }));
 const textPartSchema = z.object({ type: z.literal("text"), text: z.string() });
 
@@ -52,7 +33,6 @@ function partialText(partial: unknown): string {
 			chunks.push(message.content);
 			continue;
 		}
-		// Parts of one step are delta fragments of the same text — no separator.
 		let step = "";
 		for (const part of message.content) {
 			const text = textPartSchema.safeParse(part);
@@ -75,8 +55,6 @@ interface RenderedCall {
 }
 
 function renderCall(call: TurnToolCall): RenderedCall | null {
-	// A fence-refused re-ask's synthetic replayed result is proof of what
-	// the model saw, not an execution — never render it as one.
 	if (call.replayed) return null;
 	switch (call.state) {
 		case "completed":
@@ -90,10 +68,6 @@ function renderCall(call: TurnToolCall): RenderedCall | null {
 		case "dispatched":
 			return { line: UNKNOWN_LINE, unknown: true };
 		case "resolved-retry":
-			// Spent or not, a retry grant over a known outcome keeps that
-			// outcome (the recorded error, else the result). Without
-			// retryFromKnown the original dispatch was ambiguous and may
-			// have run, so it stays unknown.
 			if (!call.retryFromKnown) return { line: UNKNOWN_LINE, unknown: true };
 			return call.error != null
 				? { line: `failed: ${clip(call.error, PREVIEW_CHARS)}`, unknown: false }
@@ -109,11 +83,6 @@ export interface UnlandedTurnProgressInput {
 	outcome: UnlandedOutcome;
 	calls: readonly TurnToolCall[];
 	partial: unknown;
-	// The reply as the wire streamed it — the display record and the body's
-	// assistant text when it has any. Null when no wire log exists (process
-	// death) or the log never opened an assistant message — a start-only
-	// reply still counts: its id is what lets the client retire the empty
-	// card it showed.
 	reply: Message | null;
 }
 
@@ -135,19 +104,12 @@ function leadLine(runId: string, outcome: UnlandedOutcome): string {
 	}
 }
 
-// The reply's text parts when at least one is non-empty, else "" — the
-// journal partial then supplies the body text as before.
 function replyText(reply: Message | null): string {
 	if (reply === null) return "";
 	const parts = reply.parts.flatMap((p) => (p.type === "text" ? [p.text] : []));
 	return parts.some((t) => t.trim() !== "") ? parts.join("\n") : "";
 }
 
-// The event body. Null only for a process-death record with nothing to
-// say — an interrupted run that produced no call, no text, and no wire
-// reply stays silent, as before. A live turn's aborted or failed outcome
-// always lands: the outcome itself is the evidence the next turn needs,
-// even when nothing else survived.
 export function renderUnlandedTurnProgress(
 	input: UnlandedTurnProgressInput,
 ): UnlandedTurnProgress | null {
@@ -158,7 +120,6 @@ export function renderUnlandedTurnProgress(
 		const line = renderCall(call);
 		if (line !== null) rendered.push({ index, call: line });
 	}
-	// Every unknown call survives; the newest 30 others join them.
 	const others = rendered.filter((r) => !r.call.unknown);
 	const keptOthers = new Set(others.slice(-KEPT_CALLS).map((r) => r.index));
 	const kept = rendered.filter((r) => r.call.unknown || keptOthers.has(r.index));
@@ -205,8 +166,6 @@ export interface UnlandedProgressEventMeta {
 	reply: Message | null;
 }
 
-/** The system event that carries a rendered unlanded-turn record. The
- *  streamed reply donates its id and rides `metadata` for display. */
 export function unlandedProgressEvent(text: string, meta: UnlandedProgressEventMeta): Message {
 	const metadata = {
 		unlanded: {
@@ -223,14 +182,6 @@ export function unlandedProgressEvent(text: string, meta: UnlandedProgressEventM
 	};
 }
 
-// The wire log replayed into the reply the operator watched: chunks
-// through the SDK's own state machine, error parts dropped. The wire's
-// start chunk is the reply's identity — a turn that ended before its
-// first content part still opened an assistant message, and keeping its
-// id (with whatever parts arrived, possibly none) is what lets the
-// client replace the empty optimistic card it showed. Null when the log
-// is empty, never opened a message, or the opened message has no id —
-// never a throw; this record must not change the turn's outcome.
 export async function replyFromWire(chunks: readonly MessageChunk[]): Promise<Message | null> {
 	try {
 		if (chunks.length === 0) return null;
@@ -256,19 +207,11 @@ export async function replyFromWire(chunks: readonly MessageChunk[]): Promise<Me
 	}
 }
 
-// The process-death rail: at journal open, a row still 'running' is
-// reclassified 'interrupted' and its progress lands in history in the
-// same transaction (turn-journal.ts calls this inside it). Only rows
-// newly reclassified at this open — historical interrupted rows stay
-// inert history (#594: nothing resumes them).
 export function appendInterruptedProgress(
 	store: ConversationStore,
 	run: TurnRun,
 	calls: readonly TurnToolCall[],
 ): void {
-	// The reply is the record: a run whose reply committed with its
-	// landed fact has nothing to report — the process died inside
-	// terminal delivery, between the commit and the terminal stamp.
 	if (run.replyLanded) {
 		log.info("interrupted run's reply already landed — no progress event", {
 			conversation: run.conversationId,
@@ -284,9 +227,6 @@ export function appendInterruptedProgress(
 		reply: null,
 	});
 	if (rendered === null) return;
-	// Anchored to the newest input the attempt owned — the same value the
-	// failed rail derives — falling back to the admission anchor on
-	// legacy rows with no ownership column.
 	let anchor: number | null = null;
 	for (const seq of run.ownedInputSeqs ?? []) {
 		if (anchor === null || seq > anchor) anchor = seq;

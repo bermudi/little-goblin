@@ -1,10 +1,3 @@
-// design/runtime-turn.md → Engine rules: every production engine's
-// declared `rules` must match what it does. Each optional rule has one
-// probe per engine, driven through the real Runtime with the shared
-// StepRules (turn/step-rules.ts) behind it; the probe reports whether
-// the behaviour happened and the test compares that with the claim —
-// a claim the engine doesn't follow fails, and so does a rule it
-// follows without claiming.
 
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
@@ -22,7 +15,6 @@ import { aiSdkEngine } from "./ai-sdk-engine.ts";
 import type { ModelStep } from "./ai-sdk-step.ts";
 import type { EngineRules, TurnEngine } from "./engine.ts";
 
-/** toolLaunchGate is the runtime's to enforce — its own test below. */
 type ProbedRule = Exclude<keyof EngineRules, "toolLaunchGate">;
 const probedRules: readonly ProbedRule[] = [
 	"contextFill",
@@ -33,16 +25,13 @@ const probedRules: readonly ProbedRule[] = [
 
 const FINAL = "FINAL-REPLY-9c1e";
 const FILL_TOKENS = 4321;
-// Verbatim provider warning the filter classifier matches.
 const filterWarning =
 	"[System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content.]";
 
 interface RunResult {
 	done: unknown;
 	reply: string;
-	/** What the probe tool's last call read from its contextFill getter. */
 	fill: { used: number; limit: number } | null;
-	/** A fold ran before the final reply landed — mid-turn, not post-turn. */
 	foldedMidTurn: boolean;
 }
 
@@ -61,7 +50,6 @@ function seedExchanges(store: ConversationStore, convId: string): void {
 	}
 }
 
-/** One turn through the real Runtime; `foldable` seeds history and wires compaction. */
 async function runTurn(
 	engine: TurnEngine,
 	step: TurnStep,
@@ -134,7 +122,6 @@ function sdkStep(calls: ScriptCall[], contextWindow: number): ModelStep {
 
 interface EngineProbe {
 	name: string;
-	/** A fresh production engine for one run, plus its vendor script hooks. */
 	engine(): TurnEngine;
 	probe: Record<ProbedRule, () => Promise<boolean>>;
 }
@@ -145,8 +132,6 @@ function aiSdkProbe(): EngineProbe {
 		engine: () => aiSdkEngine,
 		probe: {
 			contextFill: async () => {
-				// A call's usage lands when the call ends — after its own tools
-				// ran — so the second call's tool reads the first call's fill.
 				const r = await runTurn(
 					aiSdkEngine,
 					sdkStep([
@@ -165,7 +150,6 @@ function aiSdkProbe(): EngineProbe {
 				);
 				return r.fill?.used === FILL_TOKENS;
 			},
-			// Requires stream-start then an SDK error stream part, which ScriptCall.fail cannot render.
 			transientRetry: async () =>
 				recovered(
 					await runTurn(
@@ -187,7 +171,6 @@ function aiSdkProbe(): EngineProbe {
 						},
 					),
 				),
-			// The SDK filter classifier consumes this exact provider error stream part.
 			contentFilterReask: async () =>
 				recovered(
 					await runTurn(
@@ -299,7 +282,6 @@ describe("engine rules", () => {
 		}
 	}
 
-	// This needs stream-start to arrive before the tool-call part; ScriptCall.hold cannot pause before its parts.
 	test("the Runtime tool-launch gate follows the selected engine's declaration", async () => {
 		const results = await Promise.all([runGate(true), runGate(false)]);
 		expect(results.map((result) => result.ran)).toEqual([false, true]);

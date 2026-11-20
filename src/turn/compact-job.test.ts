@@ -104,7 +104,6 @@ describe("runCompactJob native session compaction (#418)", () => {
 			expect(outcome.kind).toBe("compacted");
 			expect(calls).toEqual([`${conv.id}:claude/claude-sonnet-4-5`]);
 
-			// Nothing to fold → the native session is left alone too.
 			const empty = store.resolve({ kind: "dm", chatId: 2 }, "/w");
 			calls.length = 0;
 			const noop = await runCompactJob(empty, "manual", undefined, undefined, deps);
@@ -129,9 +128,6 @@ describe("runCompactJob native session compaction (#418)", () => {
 	});
 });
 
-// PR #555 F1: after a split row, the overflow rail's halved tail moves the
-// split part — that re-split must land, not throw "compaction produced no
-// summary" and kill the turn ("context window full and compacting failed").
 describe("runCompactJob overflow after a split row (#403)", () => {
 	const reply = (): Message => ({
 		id: "r1",
@@ -170,8 +166,6 @@ describe("runCompactJob overflow after a split row (#403)", () => {
 			const first = await runCompactJob(conv, "threshold", undefined, undefined, deps(20_000));
 			expect(first.kind).toBe("compacted");
 			expect(store.getCompaction(conv.id)?.split).toEqual({ seq: 2, part: 2 });
-			// Overflow halves the tail to 10k: the fold re-splits the same
-			// event one step further instead of erroring the recovery.
 			const overflow = await runCompactJob(conv, "overflow", undefined, undefined, deps(20_000));
 			expect(overflow.kind).toBe("compacted");
 			expect(store.getCompaction(conv.id)?.split).toEqual({ seq: 2, part: 4 });

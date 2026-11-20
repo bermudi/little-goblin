@@ -1,6 +1,3 @@
-// The recovery guard's pure policy: which invocations in a continued
-// attempt (overflow/fallback — #594 removed operator resume) execute
-// and which refuse, decided from journaled history alone.
 
 import { describe, expect, test } from "bun:test";
 import type { TurnToolCall } from "../turn-journal.ts";
@@ -88,7 +85,6 @@ describe("classifyRetry", () => {
 		for (const name of ["read_file", "history_search", "memory_search"]) {
 			expect(classifyRetry(name, [entry("completed")])).toEqual({ kind: "execute" });
 		}
-		// bash/script/fetch/unknown stay conservative.
 		for (const name of ["bash", "script", "fetch", "web_fetch", "unknown_tool"]) {
 			expect(classifyRetry(name, [entry("completed")]).kind).toBe("refuse");
 		}

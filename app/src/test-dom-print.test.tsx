@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { Window } from "happy-dom";
 import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { matchers } from "./test-dom-print";
 
 // The preload (test-dom-print.ts) keeps failed assertions on happy-dom
 // nodes bounded. Each test fails an assertion on purpose and checks the
@@ -109,6 +110,29 @@ test("diff matchers refuse a node with a readable message", async () => {
 	}
 	expect(await failure(() => expect({ rows: [node] }).toEqual({ rows: [] }))).toContain(
 		"at received.rows[0]",
+	);
+});
+
+test("expected nodes are refused when the received value is a Proxy", async () => {
+	const node = row();
+	const message = await failure(() => expect(new Proxy({}, {})).toEqual({ el: node }));
+	expect(message.length).toBeLessThan(BOUNDED);
+	expect(message).toContain("toEqual() got a happy-dom node at expected[0].el");
+});
+
+test("expected nodes are refused when the received value is a Promise", async () => {
+	const node = row();
+	const message = await failure(() =>
+		expect(Promise.resolve(1) as Promise<unknown>).resolves.toEqual({ el: node }),
+	);
+	expect(message.length).toBeLessThan(BOUNDED);
+	expect(message).toContain("toEqual() got a happy-dom node at expected[0].el");
+});
+
+test("a diff matcher without a recorded expect value fails loudly", async () => {
+	const message = await failure(() => Reflect.apply(matchers.toEqual!, {}, [1]));
+	expect(message).toContain(
+		"toEqual() ran on an expect() the happy-dom guard did not record",
 	);
 });
 

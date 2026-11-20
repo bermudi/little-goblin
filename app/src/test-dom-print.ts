@@ -111,15 +111,16 @@ function propertyAt(received: unknown, path: unknown): unknown {
 	return value;
 }
 
-/** What each diff-printing matcher prints, as [label, value] roots. */
-type Roots = (received: unknown, args: unknown[]) => [string, unknown][];
+/** What each diff-printing matcher prints, split by received and expected values. */
+type Root = { side: "received" | "expected"; label: string; value: () => unknown };
+type Roots = (received: unknown, args: unknown[]) => Root[];
 const wholeValues: Roots = (received, args) => [
-	["received", received],
-	["expected", args],
+	{ side: "received", label: "received", value: () => received },
+	{ side: "expected", label: "expected", value: () => args },
 ];
 const callsAndArgs: Roots = (received, args) => [
-	["received.mock.calls", mockCalls(received)],
-	["expected", args],
+	{ side: "received", label: "received.mock.calls", value: () => mockCalls(received) },
+	{ side: "expected", label: "expected", value: () => args },
 ];
 const DIFF_MATCHERS: Record<string, Roots> = {
 	toEqual: wholeValues,
@@ -133,23 +134,30 @@ const DIFF_MATCHERS: Record<string, Roots> = {
 	nthCalledWith: callsAndArgs,
 	// Prints only the value at the path and the expected value.
 	toHaveProperty: (received, [path, ...value]) => [
-		[`received${keyPath(String(path))}`, propertyAt(received, path)],
-		["expected", value],
+		{
+			side: "received",
+			label: `received${keyPath(String(path))}`,
+			value: () => propertyAt(received, path),
+		},
+		{ side: "expected", label: "expected", value: () => value },
 	],
 };
 
 // bun never shows a matcher its received value, so `expect` itself is
 // wrapped to record it per Expect object. Test files see the wrapper only
-// if nothing imported "bun:test" as a module before the swap (unverified
-// cause of the swap failing behind testkit.ts): hence no value import
-// here, the slot before testkit.ts in bunfig.toml, and the module-side
-// check below, which fails the whole run loudly instead of letting a node
-// reach bun's printer.
+// if nothing imported "bun:test" as an ESM module before the swap. Probed
+// on bun 1.4.4 (2026-11-20, no DOM): a require() swap reaches test files
+// when it runs first, and is missed after any earlier static or awaited
+// ESM import of bun:test. Several require() swaps in a row (another
+// preload's test/it/describe, then this expect), followed by ESM imports,
+// all reach test files. Hence no value import here, the slot before
+// testkit.ts in bunfig.toml, and the module-side check below, which fails
+// the whole run loudly instead of letting a node reach bun's printer.
 //
 // bun 1.4.4's .resolves / .rejects getters are non-configurable and return
-// the same Expect object, so the guard cannot tell the mode. A Promise
-// received by a diff matcher goes straight to bun; nodes inside its result
-// are not guarded. So does a Proxy received: the guard never runs traps.
+// the same Expect object, so the guard cannot tell the mode. A Promise or
+// Proxy received by a diff matcher is not traversed: only its expected
+// arguments are checked, without resolving the Promise or running Proxy traps.
 const bunTest = require("bun:test") as { expect: typeof expect };
 const nativeExpect = bunTest.expect;
 const receivedOf = new WeakMap<object, unknown>();
@@ -170,7 +178,7 @@ if (esm.expect !== wrappedExpect) {
 }
 
 type Matcher = (this: object, ...args: unknown[]) => unknown;
-const matchers = Object.getPrototypeOf(nativeExpect(null)) as Record<string, Matcher>;
+export const matchers = Object.getPrototypeOf(nativeExpect(null)) as Record<string, Matcher>;
 
 function refusal(name: string, found: Found): Error {
 	return new Error(
@@ -185,13 +193,17 @@ for (const [name, roots] of Object.entries(DIFF_MATCHERS)) {
 	const native = matchers[name];
 	if (native === undefined) throw new Error(`bun:test has no ${name} matcher to guard`);
 	matchers[name] = function (this: object, ...args: unknown[]): unknown {
+		if (!receivedOf.has(this)) {
+			throw new Error(
+				`${name}() ran on an expect() the happy-dom guard did not record, so it cannot keep bun's diff printer off a happy-dom node (#798). Was expect taken from somewhere other than "bun:test"?`,
+			);
+		}
 		const received = receivedOf.get(this);
 		// util.types reads internal slots, so a Proxy's traps never run here.
-		if (!receivedOf.has(this) || types.isProxy(received) || types.isPromise(received)) {
-			return Reflect.apply(native, this, args);
-		}
-		for (const [label, root] of roots(received, args)) {
-			const found = findTarget(root, label);
+		const skipReceived = types.isProxy(received) || types.isPromise(received);
+		for (const root of roots(received, args)) {
+			if (root.side === "received" && skipReceived) continue;
+			const found = findTarget(root.value(), root.label);
 			if (found !== null) throw refusal(name, found);
 		}
 		return Reflect.apply(native, this, args);

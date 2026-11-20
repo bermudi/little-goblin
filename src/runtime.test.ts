@@ -67,6 +67,9 @@ import { openWindowCapture } from "./window-capture.ts";
 import { makeStepBuilder } from "./agent/step.ts";
 import { _resetModelsDevForTest } from "./agent/models-dev.ts";
 import { prefixInstruction } from "./agent/compaction.ts";
+import { sdkScript } from "./testkit/turn-script-sdk.ts";
+import { claudeScript } from "./testkit/turn-script-claude.ts";
+import type { ScriptedModel } from "./testkit/turn-script.ts";
 
 type Store = ReturnType<typeof openStore>;
 type Conv = ReturnType<Store["resolve"]>;
@@ -80,6 +83,7 @@ interface Rig {
 function rig(
 	opts: {
 		model?: LanguageModel;
+		script?: ScriptedModel;
 		deltas?: string[];
 		delayMs?: number;
 		// `engine` stays out of the Partial: TS treats a spread optional
@@ -105,21 +109,38 @@ function rig(
 ): Rig {
 	const store = opts.store ?? openStore(tmpDb("goblin-rt-"));
 	const conv = store.resolve(opts.addr ?? { kind: "dm", chatId: 1 }, "/w");
+	const scripted = opts.script ?? sdkScript();
+	if (opts.script === undefined && opts.model === undefined && opts.deltas === undefined) {
+		scripted.script({
+			kind: "reply",
+			parts: [{ type: "text", text: "ok" }],
+		});
+	}
 	const runtime = new Runtime({
-		engines: [aiSdkEngine],
+		engines: opts.script?.engines ?? [aiSdkEngine],
 		store,
 		buildStep:
 			opts.buildStep ??
 			(() => ({
-				model: opts.model ?? fakeModel(opts.deltas ?? ["ok"], opts.delayMs ?? 5),
-				system: "test",
-				engine: "ai-sdk",
+				...(opts.script !== undefined
+					? opts.script.step()
+					: {
+							model: opts.model ?? (opts.deltas === undefined ? sdkModel(scripted) : fakeModel(opts.deltas, opts.delayMs ?? 5)),
+							system: "test",
+							engine: "ai-sdk" as const,
+						}),
 				...opts.step,
 			})),
 		...opts.deps,
 	});
 	runtime.mount({ makeTools: opts.makeTools ?? (() => opts.tools ?? {}) });
 	return { store, conv, runtime };
+}
+
+function sdkModel(script: ScriptedModel): LanguageModel {
+	const step = script.step();
+	if (!("model" in step)) throw new Error("expected an ai-sdk script");
+	return step.model;
 }
 
 function submit(r: Rig, text: string): RecordingSink;
@@ -931,47 +952,73 @@ describe("transient transport retry (#191)", () => {
 });
 
 describe("busy conversations", () => {
-	test("busyConversations is empty when idle, holds the conv mid-turn, empties after", async () => {
-		const gated = pauseFakeModelAtDelta(["a", "b", "c"], 1);
-		const r = rig({ model: gated.model });
-		expect(r.runtime.busyConversations()).toEqual([]);
-		const sink = submit(r, "hi");
-		await sink.firstDelta; // first delta observed — turn is mid-stream
-		await gated.entered; // the next delta is held inside the provider stream
-		expect(r.runtime.busyConversations()).toEqual([r.conv.id]);
-		gated.release();
-		expect(await sink.done).toEqual({ kind: "completed" });
-		await drain(r);
-		expect(r.runtime.busyConversations()).toEqual([]);
-		r.store.close();
-	});
+	for (const make of [sdkScript, claudeScript] as const) {
+		test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: busyConversations holds the conv mid-turn`, async () => {
+			const entered = deferred<void>();
+			const gate = deferred<void>();
+			const script = make();
+			script.script({ kind: "hold", parts: [{ type: "text", text: "a" }], gate: gate.promise, entered: () => entered.resolve() });
+			const r = rig({ script });
+			try {
+				expect(r.runtime.busyConversations()).toEqual([]);
+				const sink = submit(r, "hi");
+				await entered.promise;
+				expect(r.runtime.busyConversations()).toEqual([r.conv.id]);
+				gate.resolve();
+				expect(await sink.done).toEqual({ kind: "completed" });
+				await drain(r);
+				expect(r.runtime.busyConversations()).toEqual([]);
+			} finally {
+				gate.resolve();
+				await r.runtime.shutdown();
+				r.store.close();
+			}
+		});
+	}
 });
 
 describe("turn authority", () => {
-	test("clean turn completes and persists the assistant message", async () => {
-		const r = rig({ deltas: ["hello", " world"], delayMs: 5 });
-		const sink = submit(r, "hi");
-		expect(await sink.done).toEqual({ kind: "completed" });
-		expect(sink.text).toBe("hello world");
-		expect(roles(r)).toEqual(["user", "assistant"]);
-		r.store.close();
-	});
+	for (const make of [sdkScript, claudeScript] as const) {
+		test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: clean turn completes and persists the assistant message`, async () => {
+			const script = make();
+			script.script({ kind: "reply", parts: [{ type: "text", text: "hello world" }] });
+			const r = rig({ script });
+			try {
+				const sink = submit(r, "hi");
+				expect(await sink.done).toEqual({ kind: "completed" });
+				expect(sink.text).toBe("hello world");
+				expect(roles(r)).toEqual(["user", "assistant"]);
+			} finally {
+				await r.runtime.shutdown();
+				r.store.close();
+			}
+		});
+	}
 
-	test("epoch advance mid-turn fences it — quietly, no assistant append", async () => {
-		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);
-		const r = rig({ model: gated.model });
-		const sink = submit(r, "hi");
-		await sink.firstDelta; // first delta observed — turn is mid-stream
-		await gated.entered; // the next delta is held inside the provider stream
-		r.store.bumpEpoch(r.conv.id); // settings change, e.g. /think
-		gated.release();
-		expect(await sink.done).toEqual({ kind: "fenced" });
-		expect(sink.text.length).toBeGreaterThan(0);
-		expect(sink.text.length).toBeLessThan(5);
-		// the fenced turn must not write assistant output into history
-		expect(roles(r)).toEqual(["user"]);
-		r.store.close();
-	});
+	for (const make of [sdkScript, claudeScript] as const) {
+		test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: epoch advance mid-turn fences it quietly`, async () => {
+			const entered = deferred<void>();
+			const gate = deferred<void>();
+			const script = make();
+			script.script({ kind: "hold", parts: [{ type: "text", text: "a" }], gate: gate.promise, entered: () => entered.resolve() });
+			const r = rig({ script });
+			try {
+				const sink = submit(r, "hi");
+				await entered.promise;
+				await waitUntil(() => sink.text.includes("a"), "held text streamed");
+				r.store.bumpEpoch(r.conv.id);
+				gate.resolve();
+				expect(await sink.done).toEqual({ kind: "fenced" });
+				expect(sink.text.length).toBeGreaterThan(0);
+				expect(sink.text.length).toBeLessThan(5);
+				expect(roles(r)).toEqual(["user"]);
+			} finally {
+				gate.resolve();
+				await r.runtime.shutdown();
+				r.store.close();
+			}
+		});
+	}
 
 	test("an epoch advance during file delivery fences the turn before later sink actions", async () => {
 		const entered = deferred<void>();

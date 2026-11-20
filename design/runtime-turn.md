@@ -28,6 +28,10 @@ after admission: a failure in that gap used to leave a claimed client hanging
 with no way to settle it (#114). See [`runtime-lanes.ts`](../src/runtime-lanes.ts)
 and [`stream.ts`](../src/turn/stream.ts).
 
+Keep lane operations synchronous: late stream attachment must not race idle
+lane removal. `/stop` captures the current turn's completion, so its caller
+can wait for the final history record without waiting for a later turn.
+
 ## The authority rule
 
 An action must still be authorized after a successful wait, not only after an
@@ -46,6 +50,10 @@ record consistent across engines. See the
 [engine contract](../src/turn/engine.ts), [rule tests](../src/turn/engine-rules.test.ts)
 and [conformance tests](../src/turn/engine.conformance.test.ts).
 
+Historical system events stay system events on disk, but reach the model as
+bracketed user-role notes. This keeps history out of the system instructions
+and avoids passing a system-role message where the SDK rejects it.
+
 ## The turn journal
 
 **A killed request is history, not a work item.** Shutdown and process death
@@ -58,11 +66,17 @@ missing-tool-result repair, not automatic continuation.
 
 Overflow and model fallback within the running process are different:
 recorded effects must travel with the continuation so it cannot repeat them.
+Reuse memory recall as well, so a continuation does not spend the quota twice.
 Identify the input that actually reached the model by the store's event
 sequence, not a client-chosen message id. This also keeps an unrelated queued
 message from owning a reply or acknowledging scheduled work. See the
 [journal](../src/turn-journal.ts), [crash tests](../src/turn-journal.crash.test.ts)
 and [scheduled delivery tests](../src/wake-dispatcher.crash.test.ts).
+
+Announce a scheduled turn's failure before it has a run record. Without a
+record or a failure notice, the dispatcher can re-admit the same trigger.
+Store the reply and its landed flag atomically, so a crash cannot leave a
+durable reply that recovery treats as unlanded.
 
 ## Unlanded-turn progress
 
@@ -72,6 +86,9 @@ After cancellation, recording what already happened is allowed; continuing
 the cancelled work is not. The app replaces the streamed partial with the
 history record rather than showing it twice or losing it on reload. The
 display copy is not a successful assistant message in the next model request.
+If recording it fails, log that failure without replacing the error or fence
+that ended the turn. At boot, record progress in the same transaction that
+reclassifies the interrupted run, so an append failure leaves it recoverable.
 See [`unlanded-progress.test.ts`](../src/turn/unlanded-progress.test.ts) and
 [`turn-journal.test.ts`](../src/turn-journal.test.ts).
 

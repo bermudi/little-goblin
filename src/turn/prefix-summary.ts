@@ -224,7 +224,6 @@ function makePrefixRequest(
 				...(maxSteps !== undefined ? { stopWhen: isStepCount(maxSteps) } : {}),
 				abortSignal: signal,
 			}).catch((err: unknown) => {
-				// The compaction walk sorts goblin's shape, not the SDK's.
 				throw fromSdkError(err);
 			});
 			onResult?.(result);

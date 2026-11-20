@@ -43,6 +43,11 @@ rather than silently overriding it. `docs/` is for operating Goblin.
   interaction rules (operator, 2026-11-16).
 - **Fail loud.** `ENOENT` means null. Everything else propagates with context.
   Never swallow an exception.
+- **No new prose comments in TypeScript or TSX.** Use names and tests for
+  what the code does. Record non-obvious decisions in one design note or
+  [ADR](design/decisions/README.md). Keep required directives and legal
+  notices. Use the [`delete-comment` skill](.agents/skills/delete-comment/SKILL.md)
+  to audit a slice; the CI baseline may only shrink.
 - **Cache-busting bugs are P0, always.** A bug that busts the prompt cache —
   moves the request prefix hash outside the sanctioned rewrites (DESIGN.md →
   Cache stability) — is never P1 or P2 (operator, 2026-11-18).
@@ -278,7 +283,8 @@ prints a URL, `bun run try down <name>` stops it.
 authority. Release verification failures do not authorize an automatic
 rollback. See [Operations](docs/operations.md) for the operator procedures.
 
-No specs tree, no separate decision records. Use small commits on main or
-short-lived branches. Keep non-obvious choices, rejected alternatives and
-accepted risks in brief design notes. Do not duplicate schemas, control flow,
-or test cases there.
+No specs tree. Use small commits on main or short-lived branches. Keep
+non-obvious choices, rejected alternatives and accepted risks in brief
+[architecture decision records](design/decisions/README.md) or an existing
+design note that already explains the choice. Do not duplicate schemas,
+control flow, or test cases there.

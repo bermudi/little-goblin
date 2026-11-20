@@ -210,7 +210,7 @@ describe("generic summaries", () => {
 		expect(shortJson(cyclic)).toBe("(unprintable)");
 	});
 
-	test("shortJson finds deep and array cycles without the memory spike", () => {
+	test("shortJson stops at deep and array cycles without the RSS spike of a failing stringify (#819)", () => {
 		const before = process.memoryUsage().rss;
 		const deep: Record<string, unknown> = { a: { b: { c: {} } } };
 		((deep.a as Record<string, unknown>).b as Record<string, unknown>).c = { back: deep };
@@ -219,7 +219,6 @@ describe("generic summaries", () => {
 		list.push({ items: list });
 		expect(shortJson(list)).toBe("(unprintable)");
 		expect(shortJson({ wrapped: list })).toBe("(unprintable)");
-		// #819: one failing stringify on a cycle cost 0.6–1.8 GB of RSS.
 		expect(process.memoryUsage().rss - before).toBeLessThan(64 * 1024 * 1024);
 	});
 
@@ -231,14 +230,24 @@ describe("generic summaries", () => {
 	});
 
 	test("shortJson follows toJSON like JSON.stringify does", () => {
-		// A cycle hidden behind toJSON never reaches stringify; it prints.
 		const inner: Record<string, unknown> = {};
 		inner.self = inner;
 		const value = { when: new Date(0), hidden: { inner, toJSON: () => "ok" } };
 		expect(shortJson(value)).toBe(JSON.stringify(value, null, 2));
-		// A toJSON that returns its own holder is a cycle.
 		const loop: Record<string, unknown> = {};
 		loop.child = { toJSON: () => loop };
 		expect(shortJson(loop)).toBe("(unprintable)");
+	});
+
+	test("shortJson reads each property once", () => {
+		let reads = 0;
+		const value = {
+			get n() {
+				reads++;
+				return reads;
+			},
+		};
+		expect(shortJson(value)).toBe('{\n  "n": 1\n}');
+		expect(reads).toBe(1);
 	});
 });

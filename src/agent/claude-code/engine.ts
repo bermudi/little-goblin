@@ -42,32 +42,21 @@ import type { AuthStore } from "../../auth.ts";
 import type { CacheObservation } from "../../cache-observation.ts";
 import type { ClaudeSessionStore } from "../../claude-sessions.ts";
 import type { ConfigRef } from "../../config.ts";
-import type { AppLiveContext } from "../../http/app-wire.ts";
 import { log } from "../../log.ts";
 import { measurePrompt } from "../../turn/itemize.ts";
 import { toToolSet } from "../../turn/ai-sdk-tools.ts";
 import { stepModelRef } from "../../turn/model-ref.ts";
-import { replyMetadata } from "../../turn/reply-metadata.ts";
-import { holdsZeroEffectError } from "../../turn/state.ts";
+import { openAttemptRecorder, type AttemptRecorder } from "../../turn/attempt-recorder.ts";
 import {
-	emitChunk,
 	admitSteers,
 	claimSteerBatch,
-	openSteerLedger,
+	emitChunk,
 	returnSteers,
 	type StreamDeps,
 	type StreamOutcome,
 	type SteerBatch,
 	type WireMember,
 } from "../../turn/stream.ts";
-import {
-	noteToolError,
-	noteToolInput,
-	noteToolOutput,
-	openToolEvents,
-	type ToolEventState,
-} from "../../turn/tool-events.ts";
-import type { TurnJournal } from "../../turn-journal.ts";
 import { serializeToolDefs, type WindowCapture } from "../../window-capture.ts";
 import { isContextOverflow } from "../provider-errors.ts";
 import {
@@ -314,29 +303,16 @@ function bareToolName(name: string): string {
 interface RunState {
 	// wire + journal reconstruction
 	parts: Message["parts"];
-	partialMessages: PromptMessage[];
-	// ledger
-	events: ToolEventState;
-	sawText: boolean;
-	lastTextPartId: string | null;
 	// usage accumulation
 	totalInput: number | null;
 	totalOutput: number | null;
 	totalCacheRead: number | null;
 	totalCacheWrite: number | null;
-	lastInput: number | null;
-	lastCacheRead: number | null;
 	deltaUsage: Partial<ClaudeUsage> | null;
-	// First model-produced content this turn — the finish stamp reads it
-	// for the TTFT field. Streamed deltas, a tool_use block opening, and
-	// an unstreamed complete message all count; null until one lands.
-	firstTokenMs: number | null;
 	// call tracking
-	stepCount: number;
 	sawToolUse: boolean;
 	lastStopReason: string | null;
 	lastAssistantError: string | undefined;
-	pendingCall: boolean;
 	// stream block bookkeeping
 	streamedBlocks: Set<number>;
 	blockIds: Map<number, string>;
@@ -353,26 +329,20 @@ export async function driveClaude<M extends WireMember>(
 	const { convId, head, members, live, state } = deps;
 	const step = deps.step;
 	const label = stepModelRef(step);
+	const recorder = openAttemptRecorder(deps, label, (chunk) =>
+		emitChunk(convId, members, live, chunk),
+	);
 
 	const run: RunState = {
 		parts: [],
-		partialMessages: [],
-		events: openToolEvents({ toolCalls: deps.toolCalls, digest: deps.digest }),
-		sawText: deps.seenText,
-		lastTextPartId: null,
 		totalInput: null,
 		totalOutput: null,
 		totalCacheRead: null,
 		totalCacheWrite: null,
-		lastInput: null,
-		lastCacheRead: null,
 		deltaUsage: null,
-		firstTokenMs: null,
-		stepCount: 0,
 		sawToolUse: false,
 		lastStopReason: null,
 		lastAssistantError: undefined,
-		pendingCall: false,
 		streamedBlocks: new Set(),
 		blockIds: new Map(),
 		openTextBlocks: new Set(),
@@ -380,21 +350,9 @@ export async function driveClaude<M extends WireMember>(
 		toolNameById: new Map(),
 		pendingToolUse: new Map(),
 	};
-	const eventsDeps = {
-		convId,
-		evidence: deps.evidence,
-		skillWatch: deps.skillWatch,
-		onCompleted: (tool: string, input: unknown, result: unknown, failed: boolean) =>
-			state.noteCompletedCall(tool, input, result, failed),
-	};
-
-	let holdForRecovery = false;
-	const emit = (chunk: MessageChunk): void => {
-		// Overflow recovery withholds its error chunk and successors, not
-		// prior partial output — the same rule the API lane applies.
-		if (holdForRecovery) return;
-		emitChunk(convId, members, live, chunk);
-	};
+	// Overflow recovery withholds its error chunk and successors, not
+	// prior partial output — the same rule the API lane applies.
+	const emit = recorder.emit;
 
 	// --- request identity: hash + observation parity with the API lane ---
 	// Recomputed per attempt — the resume-failure retry sends the full
@@ -410,8 +368,26 @@ export async function driveClaude<M extends WireMember>(
 			toolDefs,
 		);
 	};
-	let sentMessages = deps.messages;
-	let hashes = hashesFor(sentMessages);
+	const engineState = {
+		sentMessages: deps.messages,
+		hashes: hashesFor(deps.messages),
+		callId: null as string | null,
+		obs: undefined as ReturnType<CacheObservation["begin"]> | undefined,
+		callOpen: false,
+		segmentOutput: 0,
+		curMessage: null as ClaudeMessage | null,
+		curBlockOffset: 0,
+		curParts: [] as AssistantPart[],
+		channel: null as SteerChannel | null,
+		// #418: the turn's head anchor — the last top-level assistant uuid
+		// the query emitted (subagent sidechains never pin one).
+		lastAssistantUuid: null as string | null,
+		retriedFresh: false,
+		landedSessionId: "",
+		resultFrame: null as ClaudeResultEvent | null,
+		streamError: null as string | null,
+		rawError: null as unknown,
+	};
 	const settingsHash = hashCacheSettings({
 		providerOptions: { "claude-code": step.thinking },
 		toolChoice: { type: "auto" },
@@ -428,68 +404,62 @@ export async function driveClaude<M extends WireMember>(
 	};
 	const observation = engine.observation;
 
-	let callId: string | null = null;
-	let obs: ReturnType<CacheObservation["begin"]> | undefined;
-	let callOpen = false;
-	let segmentOutput = 0;
-
 	const beginCall = (): void => {
 		// Context landing feeds the detector state even though this engine
 		// cannot cut — parity with prepareStep's recording.
-		state.noteContextLanding(run.lastInput ?? undefined, step.contextWindow);
-		callOpen = true;
-		callId = randomUUID();
-		obs = observation?.begin({
-			callId,
+		state.noteContextLanding(recorder.lastInput ?? undefined, step.contextWindow);
+		engineState.callOpen = true;
+		engineState.callId = randomUUID();
+		engineState.obs = observation?.begin({
+			callId: engineState.callId,
 			conversationId: convId,
 			purpose: null,
 			model: label,
 			routeKey,
-			headHash: hashes.headHash,
-			requestHash: hashes.requestHash,
+			headHash: engineState.hashes.headHash,
+			requestHash: engineState.hashes.requestHash,
 			settingsHash,
-			promptHashes: hashes.promptHashes,
+			promptHashes: engineState.hashes.promptHashes,
 		});
 		log.info("model call", {
 			...baseFields,
-			callId,
+			callId: engineState.callId,
 			call: "stream",
-			messages: sentMessages.length,
-			headHash: hashes.headHash.slice(0, 16),
-			requestHash: hashes.requestHash.slice(0, 16),
+			messages: engineState.sentMessages.length,
+			headHash: engineState.hashes.headHash.slice(0, 16),
+			requestHash: engineState.hashes.requestHash.slice(0, 16),
 			settingsHash: settingsHash.slice(0, 16),
-			...(obs
+			...(engineState.obs
 				? {
-						idleMs: obs.idleMs,
-						prefixRelation: obs.prefixRelation,
-						sharedMessages: obs.sharedMessages,
+						idleMs: engineState.obs.idleMs,
+						prefixRelation: engineState.obs.prefixRelation,
+						sharedMessages: engineState.obs.sharedMessages,
 					}
 				: {}),
 		});
-		run.pendingCall = true;
+		recorder.callStarted();
 		emit({ type: "start-step" });
 	};
 
 	const failCall = (stage: "read" | "provider-error" | "no-finish", error?: unknown): void => {
-		if (callId === null) return;
-		callOpen = false;
-		obs?.fail();
+		if (engineState.callId === null) return;
+		engineState.callOpen = false;
+		engineState.obs?.fail();
 		log.error("model call failed", undefined, {
 			...baseFields,
-			callId,
+			callId: engineState.callId,
 			stage,
 			...(error === undefined
 				? {}
 				: { errorName: error instanceof Error ? error.name : "provider-error" }),
 		});
-		callId = null;
-		obs = undefined;
+		engineState.callId = null;
+		engineState.obs = undefined;
 	};
 
 	const finishStep = (message: ClaudeMessage): void => {
-		run.stepCount += 1;
-		run.pendingCall = false;
-		callOpen = false;
+		recorder.dropCall();
+		engineState.callOpen = false;
 		const usage: ClaudeUsage | null =
 			run.deltaUsage === null
 				? message.usage
@@ -503,22 +473,16 @@ export async function driveClaude<M extends WireMember>(
 		run.deltaUsage = null;
 		const input = billedInput(usage);
 		const cacheTtl = cacheTtlMs(usage);
-		run.lastInput = input;
-		run.lastCacheRead = usage?.cache_read_input_tokens ?? null;
-		// The CLI owns the loop: no pre-call boundary for the pre-empt
-		// fold, no per-call re-dispatch — but every completed call reports
-		// its usage, so the shared context fill tracks the window.
-		deps.rules.afterCall({ inputTokens: input, failed: false });
 		if (input !== null) run.totalInput = (run.totalInput ?? 0) + input;
 		if (usage !== null) {
 			run.totalOutput = (run.totalOutput ?? 0) + (usage.output_tokens ?? 0);
-			if (usage.output_tokens !== null) segmentOutput += usage.output_tokens;
+			if (usage.output_tokens !== null) engineState.segmentOutput += usage.output_tokens;
 			run.totalCacheRead = (run.totalCacheRead ?? 0) + (usage.cache_read_input_tokens ?? 0);
 			run.totalCacheWrite = (run.totalCacheWrite ?? 0) + (usage.cache_creation_input_tokens ?? 0);
 		}
-		if (callId !== null) {
-			const finished = callId;
-			obs?.finish(goblinUsage(usage), cacheTtl);
+		if (engineState.callId !== null) {
+			const finished = engineState.callId;
+			engineState.obs?.finish(goblinUsage(usage), cacheTtl);
 			log.info("model call usage", {
 				...baseFields,
 				callId: finished,
@@ -528,36 +492,28 @@ export async function driveClaude<M extends WireMember>(
 				cacheTtlMs: cacheTtl,
 				outputTokens: usage?.output_tokens ?? null,
 			});
-			callId = null;
-			obs = undefined;
+			engineState.callId = null;
+			engineState.obs = undefined;
 		}
-		// null = provider didn't report the split, 0 = reported-and-cold;
-		// inputTokens includes the cached ones.
-		log.info("model step usage", {
-			conversation: convId,
-			inputTokens: input,
-			cacheReadTokens: usage?.cache_read_input_tokens ?? null,
-			cacheWriteTokens: usage?.cache_creation_input_tokens ?? null,
-			outputTokens: usage?.output_tokens ?? null,
-		});
 		emit({ type: "finish-step" });
-		// The composer's context gauge reads settled turns only — the wire
-		// carries this step's window occupancy as a transient data part.
-		if (deps.holdsAuthority()) {
-			const liveContext: AppLiveContext = { input: run.lastInput, cacheRead: run.lastCacheRead };
-			emit({ type: "data-context", transient: true, data: liveContext });
-		}
-		deps.saveStep({
-			loopState: state.snapshot(),
-			filterRetryUsed: deps.rules.filterRetryUsed(),
-			...(run.partialMessages.length > 0 ? { partial: run.partialMessages } : {}),
+		// The CLI owns the loop: no pre-call boundary for the pre-empt
+		// fold, no per-call re-dispatch — but every completed call reports
+		// its usage, so the shared context fill tracks the window.
+		recorder.stepEnded({
+			usage: {
+				input,
+				cacheRead: usage?.cache_read_input_tokens ?? null,
+				cacheWrite: usage?.cache_creation_input_tokens ?? null,
+				output: usage?.output_tokens ?? null,
+			},
+			failed: false,
 		});
 	};
 
 	const blockId = (index: number, kind: "text" | "reasoning"): string => {
 		const existing = run.blockIds.get(index);
 		if (existing !== undefined && existing.startsWith(kind)) return existing;
-		const id = `${kind}-${run.stepCount + 1}-${index}-${randomUUID().slice(0, 8)}`;
+		const id = `${kind}-${recorder.stepCount + 1}-${index}-${randomUUID().slice(0, 8)}`;
 		run.blockIds.set(index, id);
 		return id;
 	};
@@ -565,15 +521,12 @@ export async function driveClaude<M extends WireMember>(
 	const spendPendingCall = (): void => {
 		// Fail closed like the API lane: a call that produced nothing but
 		// an error must leave modelCalls at 0 (it gates the retry ladder).
-		if (run.pendingCall) {
-			state.noteModelCall();
-			run.pendingCall = false;
-		}
+		recorder.spendCall();
 	};
 
 	const handleStreamEvent = (ev: ClaudeStreamEvent): void => {
 		const noteFirstToken = (): void => {
-			if (run.firstTokenMs === null) run.firstTokenMs = Date.now() - deps.turnStartMs;
+			recorder.noteFirstToken();
 		};
 		switch (ev.type) {
 			case "message_start":
@@ -602,10 +555,7 @@ export async function driveClaude<M extends WireMember>(
 					noteFirstToken();
 					run.streamedBlocks.add(ev.index);
 					const id = blockId(ev.index, "text");
-					if (run.sawText && run.lastTextPartId !== id) head.onTextDelta("\n\n");
-					run.lastTextPartId = id;
-					run.sawText = true;
-					head.onTextDelta(d.text);
+					recorder.textDelta(id, d.text);
 					emit({ type: "text-delta", id, delta: d.text });
 				} else if (
 					(d.type === "thinking_delta" || d.type === "signature_delta") &&
@@ -615,7 +565,7 @@ export async function driveClaude<M extends WireMember>(
 					spendPendingCall();
 					noteFirstToken();
 					run.streamedBlocks.add(ev.index);
-					head.onReasoningDelta(d.thinking);
+					recorder.reasoningDelta(d.thinking);
 					emit({
 						type: "reasoning-delta",
 						id: blockId(ev.index, "reasoning"),
@@ -646,16 +596,13 @@ export async function driveClaude<M extends WireMember>(
 	// model reply share a message.id and usage. Group them: the step
 	// closes (flushAssistant) when a new message starts, the id changes,
 	// a tool-result echo arrives, or the stream ends — never per frame.
-	let curMessage: ClaudeMessage | null = null;
-	let curBlockOffset = 0;
-	let curParts: AssistantPart[] = [];
-
 	const flushAssistant = (): void => {
-		if (curMessage === null) return;
-		const message = curMessage;
-		curMessage = null;
-		curBlockOffset = 0;
-		curParts = [];
+		if (engineState.curMessage === null) return;
+		const message = engineState.curMessage;
+		const completedParts = engineState.curParts;
+		engineState.curMessage = null;
+		engineState.curBlockOffset = 0;
+		engineState.curParts = [];
 		// Close any blocks the stream never stopped (defensive; the CLI
 		// emits content_block_stop for each).
 		for (const index of [...run.openTextBlocks]) {
@@ -669,41 +616,39 @@ export async function driveClaude<M extends WireMember>(
 		run.blockIds.clear();
 		run.streamedBlocks.clear();
 		run.lastStopReason = message.stop_reason ?? run.lastStopReason;
+		recorder.appendPartial({ role: "assistant", content: completedParts });
 		finishStep(message);
 	};
 
 	const handleAssistant = (message: ClaudeMessage, error: string | undefined): void => {
 		run.lastAssistantError = error;
-		if (curMessage !== null && curMessage.id !== message.id) flushAssistant();
-		if (curMessage === null) {
+		if (engineState.curMessage !== null && engineState.curMessage.id !== message.id) flushAssistant();
+		if (engineState.curMessage === null) {
 			// A complete assistant message without preceding stream frames
 			// (a call the CLI chose not to stream) still opens its model call.
-			if (!callOpen) beginCall();
-			curParts = [];
-			run.partialMessages.push({ role: "assistant", content: curParts });
+			if (!engineState.callOpen) beginCall();
+			engineState.curParts = [];
 		}
-		curMessage = message;
+		engineState.curMessage = message;
 		if (message.content.length > 0) {
 			spendPendingCall();
 			// A call the CLI never streamed lands whole here — its first
 			// content arrived at this moment; a streamed call already noted
 			// its own first token, so this stays a no-op there.
-			if (run.firstTokenMs === null) run.firstTokenMs = Date.now() - deps.turnStartMs;
+			recorder.noteFirstToken();
 		}
 		for (const [i, block] of message.content.entries()) {
 			const part = wireFromBlock(
 				run,
-				eventsDeps,
+				recorder,
 				emit,
 				head,
 				block,
-				run.streamedBlocks.has(curBlockOffset + i),
-				deps.journal,
-				deps.runId,
+				run.streamedBlocks.has(engineState.curBlockOffset + i),
 			);
-			if (part !== null) curParts.push(part);
+			if (part !== null) engineState.curParts.push(part);
 		}
-		curBlockOffset += message.content.length;
+		engineState.curBlockOffset += message.content.length;
 		if (message.content.some((b) => b.type === "tool_use")) run.sawToolUse = true;
 		run.lastStopReason = message.stop_reason ?? run.lastStopReason;
 	};
@@ -726,7 +671,7 @@ export async function driveClaude<M extends WireMember>(
 				adopted?.error ?? (block.is_error === true ? echoContentText(block.content) : null);
 			if (errorText !== null) {
 				emit({ type: "tool-output-error", toolCallId: block.tool_use_id, errorText });
-				noteToolError(run.events, eventsDeps, block.tool_use_id, errorText);
+				recorder.toolError(block.tool_use_id, errorText);
 				evolveToolPart(run, block.tool_use_id, {
 					type: `tool-${name}` as never,
 					toolCallId: block.tool_use_id,
@@ -742,7 +687,7 @@ export async function driveClaude<M extends WireMember>(
 				});
 			} else {
 				emit({ type: "tool-output-available", toolCallId: block.tool_use_id, output });
-				noteToolOutput(run.events, eventsDeps, block.tool_use_id, output);
+				recorder.toolOutput(block.tool_use_id, output);
 				evolveToolPart(run, block.tool_use_id, {
 					type: `tool-${name}` as never,
 					toolCallId: block.tool_use_id,
@@ -758,7 +703,7 @@ export async function driveClaude<M extends WireMember>(
 				});
 			}
 		}
-		if (toolParts.length > 0) run.partialMessages.push({ role: "tool", content: toolParts });
+		if (toolParts.length > 0) recorder.appendPartial({ role: "tool", content: toolParts });
 	};
 
 	// --- the run ---
@@ -768,23 +713,22 @@ export async function driveClaude<M extends WireMember>(
 	};
 
 	// --- steers: the open query input and pending batches ---
-	const steers = openSteerLedger(deps);
+	const steers = recorder.steers;
 	const sdkTools = toToolSet(deps.tools);
 	const steeredMessages: PromptMessage[] = [];
 	// Pushed to the CLI, not yet admitted by a `folded` acknowledgement.
 	const unacked = new Map<string, SteerBatch<M>>();
-	let channel: SteerChannel | null = null;
 	const foldIntoQuery = async (): Promise<void> => {
-		if (channel === null) return;
+		if (engineState.channel === null) return;
 		const batch = await claimSteerBatch(deps, sdkTools);
 		if (batch === null || batch.members.length === 0) return;
-		if (channel === null) {
+		if (engineState.channel === null) {
 			returnSteers(deps, batch, "query input closed");
 			return;
 		}
 		const uuid = randomUUID();
 		unacked.set(uuid, batch);
-		channel.push({ uuid, prompt: serializeSteer(batch.messages) });
+		engineState.channel.push({ uuid, prompt: serializeSteer(batch.messages) });
 		log.info("claude steer sent", {
 			conversation: convId,
 			steer: uuid,
@@ -804,76 +748,60 @@ export async function driveClaude<M extends WireMember>(
 	const messageId = randomUUID();
 	emit({ type: "start", messageId });
 
-	// #418: the turn's head anchor — the last top-level assistant uuid
-	// the query emitted (subagent sidechains never pin one).
-	let lastAssistantUuid: string | null = null;
-
 	const sessionPlan = deps.claudeSession;
 	const resumeSession = sessionPlan?.resume ?? null;
-	let retriedFresh = false;
-	let landedSessionId = "";
 
 	// The retry only runs at zero effect, so every content accumulator is
 	// already empty — this is belt-and-braces for the bookkeeping fields
-	// (call identity, stream block maps, uuid anchors). run.events is
-	// deliberately untouched: it carries the inherited tool-call ledger.
+	// (call identity, stream block maps, uuid anchors). The recorder
+	// deliberately keeps its tool-event and steer ledgers.
 	const resetForRetry = (): void => {
 		run.parts.length = 0;
-		run.partialMessages.length = 0;
-		run.sawText = deps.seenText;
-		run.lastTextPartId = null;
 		run.totalInput = null;
 		run.totalOutput = null;
 		run.totalCacheRead = null;
 		run.totalCacheWrite = null;
-		run.lastInput = null;
-		run.lastCacheRead = null;
 		run.deltaUsage = null;
-		segmentOutput = 0;
-		run.firstTokenMs = null;
-		run.stepCount = 0;
+		engineState.segmentOutput = 0;
+		recorder.resetForRetry();
 		run.sawToolUse = false;
 		run.lastStopReason = null;
 		run.lastAssistantError = undefined;
-		run.pendingCall = false;
 		run.streamedBlocks.clear();
 		run.blockIds.clear();
 		run.openTextBlocks.clear();
 		run.openReasoningBlocks.clear();
 		run.toolNameById.clear();
 		run.pendingToolUse.clear();
-		curMessage = null;
-		curParts = [];
-		curBlockOffset = 0;
 		steeredMessages.length = 0;
-		callId = null;
-		obs = undefined;
-		callOpen = false;
-		lastAssistantUuid = null;
+		engineState.curMessage = null;
+		engineState.curParts = [];
+		engineState.curBlockOffset = 0;
+		engineState.callId = null;
+		engineState.obs = undefined;
+		engineState.callOpen = false;
+		engineState.lastAssistantUuid = null;
 	};
-
-	let resultFrame: ClaudeResultEvent | null = null;
-	let streamError: string | null = null;
-	let rawError: unknown = null;
 
 	// A resume that fails before any content reached the wire retries
 	// once, fresh, in this same attempt — the record is already dropped
 	// by onDrop so nothing resumes a dead session again.
 	for (;;) {
-		const useResume = resumeSession !== null && !retriedFresh;
+		const useResume = resumeSession !== null && !engineState.retriedFresh;
 		const sessionId = useResume ? resumeSession.sessionId : randomUUID();
-		landedSessionId = sessionId;
-		resultFrame = null;
-		streamError = null;
-		rawError = null;
+		engineState.landedSessionId = sessionId;
+		engineState.resultFrame = null;
+		engineState.streamError = null;
+		engineState.rawError = null;
 		let followUps = 0;
-		channel = steerChannel();
+		const callChannel = steerChannel();
+		engineState.channel = callChannel;
 
 		deps.signal.addEventListener("abort", onAbort, { once: true });
 		try {
 			outer: for await (const ev of engine.query({
-				prompt: serializePrompt(sentMessages),
-				steers: channel,
+				prompt: serializePrompt(engineState.sentMessages),
+				steers: callChannel,
 				options: {
 					model: step.modelId,
 					systemPrompt: step.system,
@@ -905,7 +833,7 @@ export async function driveClaude<M extends WireMember>(
 			})) {
 				deps.assertAuthority();
 				if (ev.type === "assistant" && typeof ev.uuid === "string") {
-					lastAssistantUuid = ev.uuid;
+					engineState.lastAssistantUuid = ev.uuid;
 				}
 				if (ev.type === "compact_boundary") {
 					log.info("claude native compaction boundary", {
@@ -940,7 +868,7 @@ export async function driveClaude<M extends WireMember>(
 						for (const uuid of ev.uuids) {
 							const batch = unacked.get(uuid);
 							if (batch !== undefined) {
-								admitSteers(deps, steers, run.stepCount, batch);
+								admitSteers(deps, steers, recorder.stepCount, batch);
 								steeredMessages.push(...batch.messages);
 								unacked.delete(uuid);
 								log.info("claude steer folded", { conversation: convId, steer: uuid });
@@ -954,15 +882,15 @@ export async function driveClaude<M extends WireMember>(
 						// unacked steer is the one exception: the CLI answers it
 						// in a follow-up turn of this same query.
 						flushAssistant();
-						if (ev.usage?.output_tokens != null && ev.usage.output_tokens !== segmentOutput) {
+						if (ev.usage?.output_tokens != null && ev.usage.output_tokens !== engineState.segmentOutput) {
 							log.warn("claude usage mismatch", {
 								conversation: convId,
 								resultOutput: ev.usage.output_tokens,
-								stepOutput: segmentOutput,
+								stepOutput: engineState.segmentOutput,
 							});
 						}
-						segmentOutput = 0;
-						resultFrame = ev;
+						engineState.segmentOutput = 0;
+						engineState.resultFrame = ev;
 						if (unacked.size > 0 && !ev.isError && followUps < MAX_STEER_FOLLOW_UPS) {
 							followUps += 1;
 							log.warn("claude result before steer fold — reading the follow-up turn", {
@@ -980,32 +908,38 @@ export async function driveClaude<M extends WireMember>(
 			// A fenced/stopped turn must surface as the authority error, not a
 			// provider failure — /stop and shutdown ride this path.
 			deps.assertAuthority();
-			rawError = err;
+			engineState.rawError = err;
 			if (deps.signal.aborted) throw err;
 			failCall("read", err);
 			log.error("model stream error", err, { conversation: convId, model: label });
-			streamError =
-				resultFrame !== null && resultFrame.isError
-					? resultErrorText(resultFrame.result, run.lastAssistantError)
+			engineState.streamError =
+				engineState.resultFrame !== null && engineState.resultFrame.isError
+					? resultErrorText(engineState.resultFrame.result, run.lastAssistantError)
 					: err instanceof Error
 						? err.message
 						: String(err);
 		} finally {
 			deps.signal.removeEventListener("abort", onAbort);
-			const input = channel;
-			channel = null;
-			input.close();
+			engineState.channel = null;
+			callChannel.close();
 			for (const batch of unacked.values()) returnSteers(deps, batch, "never acked");
 			unacked.clear();
 		}
 
 		// The result frame carries terminal truth even when the iterator
 		// completed cleanly — an error result without a throw still fails.
-		if (streamError === null && resultFrame !== null && resultFrame.isError) {
-			streamError = resultErrorText(resultFrame.result, run.lastAssistantError);
-			rawError = rawError ?? new Error(streamError);
-			failCall("provider-error", rawError);
-			log.error("model stream error", rawError, { conversation: convId, model: label });
+		if (
+			engineState.streamError === null &&
+			engineState.resultFrame !== null &&
+			engineState.resultFrame.isError
+		) {
+			engineState.streamError = resultErrorText(
+				engineState.resultFrame.result,
+				run.lastAssistantError,
+			);
+			engineState.rawError = engineState.rawError ?? new Error(engineState.streamError);
+			failCall("provider-error", engineState.rawError);
+			log.error("model stream error", engineState.rawError, { conversation: convId, model: label });
 		}
 
 		// Zero effect means nothing content-bearing reached the wire —
@@ -1013,33 +947,37 @@ export async function driveClaude<M extends WireMember>(
 		// then is a fresh-session retry safe (and honest: the fallback
 		// zero-effect gate still sees modelCalls === 0).
 		const zeroEffect =
-			run.stepCount === 0 && run.firstTokenMs === null && run.parts.length === 0;
+			recorder.stepCount === 0 && recorder.firstTokenMs === null && run.parts.length === 0;
 		if (
 			useResume &&
-			!retriedFresh &&
-			streamError !== null &&
+			!engineState.retriedFresh &&
+			engineState.streamError !== null &&
 			zeroEffect &&
 			sessionPlan?.fullPrompt !== undefined &&
-			isResumeFailure(resultFrame, streamError, rawError)
+			isResumeFailure(engineState.resultFrame, engineState.streamError, engineState.rawError)
 		) {
-			retriedFresh = true;
+			engineState.retriedFresh = true;
 			log.warn("claude session resume failed — starting fresh", {
 				conversation: convId,
 				model: label,
 				session: resumeSession.sessionId,
-				error: streamError,
+				error: engineState.streamError,
 			});
 			sessionPlan.onDrop?.();
-			sentMessages = await sessionPlan.fullPrompt();
-			hashes = hashesFor(sentMessages);
+			engineState.sentMessages = await sessionPlan.fullPrompt();
+			engineState.hashes = hashesFor(engineState.sentMessages);
 			resetForRetry();
 			continue;
 		}
 		break;
 	}
 
-	if (streamError !== null && isContextOverflow(streamError) && deps.overflowRecoverable) {
-		holdForRecovery = true;
+	if (
+		engineState.streamError !== null &&
+		isContextOverflow(engineState.streamError) &&
+		deps.overflowRecoverable
+	) {
+		recorder.holdForRecovery();
 	}
 
 	const usageTotals: Usage | null =
@@ -1060,8 +998,8 @@ export async function driveClaude<M extends WireMember>(
 	// The window record rides both outcome rails, gated on stepCount —
 	// a prompt a call never completed is not a window anything saw.
 	const windowCapture = (): WindowCapture | null => {
-		if (run.stepCount === 0) return null;
-		const messages = [...sentMessages, ...steeredMessages];
+		if (recorder.stepCount === 0) return null;
+		const messages = [...engineState.sentMessages, ...steeredMessages];
 		return {
 			v: 1,
 			system: step.system,
@@ -1072,76 +1010,58 @@ export async function driveClaude<M extends WireMember>(
 	};
 
 	deps.assertAuthority();
-	if (streamError !== null) {
+	if (engineState.streamError !== null) {
 		// Failed turns surface an error chunk on the wire, like the API
 		// lane's error part — overflow recovery is the one holdback.
 		// A zero-effect error with a fallback candidate waiting is held
 		// too (design/model.md → Model fallback list); the runtime emits
 		// it if the turn ends here.
-		const errorHeld = holdsZeroEffectError(deps.holdZeroEffectError, state, holdForRecovery);
-		if (!holdForRecovery && !errorHeld) emit({ type: "error", errorText: streamError });
-		return {
-			kind: "failed",
-			errorText: streamError,
-			rawError,
-			holdForRecovery,
-			...(errorHeld ? { errorHeld: true } : {}),
+		const errorHeld = recorder.holdsError();
+		if (!recorder.holding && !errorHeld) emit({ type: "error", errorText: engineState.streamError });
+		return recorder.failed({
+			errorText: engineState.streamError,
+			rawError: engineState.rawError,
 			partial: run.parts.length > 0 ? { id: messageId, role: "assistant", parts: run.parts } : null,
-			seenText: run.sawText,
-			toolCalls: run.events.toolCalls,
-			digestRing: run.events.digestRing,
-			loop: state.snapshot(),
-			steerMark: steers.mark,
-			filterRetryUsed: deps.rules.filterRetryUsed(),
 			window: windowCapture(),
-			model: label,
-			steps: run.stepCount,
-		};
+			errorHeld,
+		});
 	}
 
 	// The reply message the durable lane lands: metadata in the same
 	// shape messageMetadata writes for the API lane.
 	const finishReason = finishReasonOf(run.lastStopReason, run.sawToolUse);
-	const segments = measurePrompt(step.system, deps.tools, [...sentMessages, ...steeredMessages]);
-	const metadata = replyMetadata({
-		label,
+	const segments = measurePrompt(
+		step.system,
+		deps.tools,
+		[...engineState.sentMessages, ...steeredMessages],
+	);
+	const metadata = recorder.metadata({
 		finishReason,
-		turnStartMs: deps.turnStartMs,
-		now: Date.now(),
-		firstTokenMs: run.firstTokenMs,
 		forcedCompletion: null,
 		usage: {
 			input: run.totalInput,
 			output: run.totalOutput,
 			cacheRead: run.totalCacheRead,
 			cacheWrite: run.totalCacheWrite,
-			lastInput: run.lastInput,
-			lastCacheRead: run.lastCacheRead,
 		},
 		promptChars: segments,
-		quota: null,
-		fallbackMisses: deps.fallbackMisses,
 	});
 	emit({ type: "finish", finishReason, messageMetadata: metadata });
 	const responseMessage: Message | null =
 		run.parts.length > 0 ? { id: messageId, role: "assistant", parts: run.parts, metadata } : null;
 
-	return {
-		kind: "ok",
+	return recorder.ok({
 		responseMessage,
 		usage: usageTotals,
 		finishReason,
-		lastStepInputTokens: run.lastInput,
-		toolCalls: run.events.toolCalls,
-		digestRing: run.events.digestRing,
-		steerMark: steers.mark,
 		window: windowCapture(),
-		model: label,
-		steps: run.stepCount,
 		// #418: the session this attempt ran — the runtime persists the
 		// record only after the reply lands durably.
-		claudeSession: { sessionId: landedSessionId, headUuid: lastAssistantUuid ?? "" },
-	};
+		claudeSession: {
+			sessionId: engineState.landedSessionId,
+			headUuid: engineState.lastAssistantUuid ?? "",
+		},
+	});
 }
 
 // One content block of a completed assistant message → wire chunks,
@@ -1151,7 +1071,7 @@ export async function driveClaude<M extends WireMember>(
 // stream partials for a block).
 function wireFromBlock(
 	run: RunState,
-	eventsDeps: Parameters<typeof noteToolOutput>[1],
+	recorder: AttemptRecorder,
 	emit: (chunk: MessageChunk) => void,
 	head: {
 		onTextDelta(delta: string): void;
@@ -1160,8 +1080,6 @@ function wireFromBlock(
 	},
 	block: ClaudeContentBlock,
 	streamed: boolean,
-	journal: TurnJournal | undefined,
-	runId: string,
 ): AssistantPart | null {
 	switch (block.type) {
 		case "text": {
@@ -1186,19 +1104,10 @@ function wireFromBlock(
 			run.toolNameById.set(id, name);
 			run.pendingToolUse.set(id, { name, input });
 			head.onToolCall(name, input);
-			noteToolInput(
-				run.events,
-				{
-					convId: eventsDeps.convId,
-					evidence: eventsDeps.evidence,
-					// No noteJournal: the CLI's toolu_ ids never match the
-					// bridge ids fenceTools journals under, so a planned row
-					// here would stay stale beside the completed one.
-				},
-				id,
-				name,
-				input,
-			);
+			// No journal: the CLI's toolu_ ids never match the bridge ids
+			// fenceTools journals under, so a planned row here would stay
+			// stale beside the completed one.
+			recorder.toolInput(id, name, input, { journal: false });
 			run.parts.push({
 				type: `tool-${name}` as never,
 				toolCallId: id,

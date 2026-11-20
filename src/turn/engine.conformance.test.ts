@@ -62,6 +62,7 @@ interface EngineRig {
 	/** Script the next turn to stream `text` then block mid-run — the
 	 *  stop lands after the wire streamed the words, before the step ends. */
 	scriptTextThenHold(text: string): HeldRun;
+	scriptTailHold(text: string): HeldRun;
 	/** Script the next turn to stream `text` then fail the stream. */
 	scriptTextThenFail(text: string): void;
 	/** Script the next turn to open the provider call then hold before
@@ -161,6 +162,23 @@ function sdkRig(): EngineRig {
 						enqueue({ type: "stream-start", warnings: [] });
 						enqueue({ type: "text-start", id: "t1" });
 						enqueue({ type: "text-delta", id: "t1", delta: text });
+						entered.resolve();
+						await gate.promise;
+					},
+				},
+			]);
+			step = { engine: "ai-sdk", model: model.model, system: "test" };
+			return { entered: entered.promise, release: () => gate.resolve() };
+		},
+		scriptTailHold: (text) => {
+			const entered = deferred<void>();
+			const gate = deferred<void>();
+			const model = scriptedModel([
+				{
+					drive: async ({ enqueue }) => {
+						enqueue({ type: "stream-start", warnings: [] });
+						enqueue({ type: "text-start", id: "tail" });
+						enqueue({ type: "text-delta", id: "tail", delta: text });
 						entered.resolve();
 						await gate.promise;
 					},
@@ -351,6 +369,36 @@ function claudeRig(): EngineRig {
 						return bridgeRef.current!.invoke("echo", { message: "hold" });
 					},
 				},
+			]);
+			return { entered: entered.promise, release: () => gate.resolve() };
+		},
+		scriptTailHold: (text) => {
+			const entered = deferred<void>();
+			const gate = deferred<void>();
+			fake.script([
+				{
+					kind: "raw",
+					events: [
+						{
+							type: "stream",
+							event: {
+								type: "message_start",
+								message: {
+									model: "fake",
+									usage: {
+										input_tokens: 10,
+										output_tokens: null,
+										cache_read_input_tokens: null,
+										cache_creation_input_tokens: null,
+									},
+								},
+							},
+						},
+						{ type: "stream", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } },
+						{ type: "stream", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } } },
+					],
+				},
+				{ kind: "hold", onEnter: () => entered.resolve(), until: gate.promise },
 			]);
 			return { entered: entered.promise, release: () => gate.resolve() };
 		},
@@ -694,6 +742,35 @@ describe("turn engine conformance", () => {
 					}
 				});
 			}
+
+			test("a mid-step text stream checkpoints its tail", async () => {
+				const rig = engine.make();
+				const held = rig.scriptTailHold("CHECKPOINT-TAIL");
+				try {
+					submit(rig, "checkpoint streamed text");
+					await held.entered;
+					await waitUntil(
+						() => {
+							const rows = rig.store.db
+								.query<{ partial: string | null }, []>(
+									"SELECT partial FROM turn_runs WHERE partial IS NOT NULL",
+								)
+								.all();
+							const partial = rows.at(-1)?.partial;
+							if (partial?.includes("CHECKPOINT-TAIL") !== true) return false;
+							expect(partial).toContain("CHECKPOINT-TAIL");
+							return true;
+						},
+						"mid-step partial checkpoint",
+					);
+				} finally {
+					rig.runtime.stop(rig.conv.id);
+					held.release();
+					await drain(rig);
+					await rig.runtime.shutdown();
+					rig.store.close();
+				}
+			});
 		});
 	}
 

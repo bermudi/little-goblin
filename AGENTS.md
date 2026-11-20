@@ -193,6 +193,14 @@ means the interface moved: re-pin with one probe, fix the adapter.
 Each check's store/probe safety rules live in its header and its
 design-doc ruling (delegation.md, mail.md, sandbox.md).
 
+A failed matcher on a happy-dom node used to print every object the
+node reaches and OOM the run instead of failing (#798).
+`app/src/test-dom-print.ts`, a preload that must load before
+`src/testkit.ts`, prints nodes as one line of markup. The diff matchers
+(`toEqual` & co.) refuse a node: compare identity with `toBe()` or a
+property such as `textContent`. A diff matcher on an `expect()` the guard
+did not record fails loudly instead of printing.
+
 Fixture hygiene: bun runs all files of one invocation in a single
 process and scopes a module-level `afterEach` to the first-importing
 file — `bunfig.toml`'s `[test]` preload of `src/testkit.ts`

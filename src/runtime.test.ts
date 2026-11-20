@@ -627,7 +627,11 @@ describe("provider-filter retry", () => {
 		const script = sdkScript();
 		script.script(
 			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {} }] },
-			{ kind: "fail", parts: [{ type: "tool-call", toolName: "probe", input: {} }], error: { message: warning } },
+			{
+				kind: "fail",
+				parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "blocked-call" }],
+				error: { message: warning },
+			},
 			{ kind: "reply", parts: [{ type: "text", text: "Recovered answer" }] },
 		);
 		let executions = 0;

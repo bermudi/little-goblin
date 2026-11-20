@@ -75,8 +75,8 @@ import {
 	type LiveChunks,
 	type LiveSubscriber,
 	openLive,
-	type StreamOutcome,
 } from "./turn/stream.ts";
+import type { StreamOutcome } from "./turn/attempt-recorder.ts";
 import {
 	openToolAuthority,
 	type ToolAuthority,

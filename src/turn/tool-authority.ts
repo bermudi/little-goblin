@@ -1,6 +1,6 @@
 // Tool authority: the run row lands before any tool side effect can
 // execute, ownership links at begin, and every dispatch is fenced and
-// journaled (tool-fence.ts). One seam, so runAttempt assembles tools
+// journaled (tool-fence.ts). One seam, so the runtime's openSeams assembles tools
 // without owning the journal's ordering invariants — and #195's
 // step-end persistence (saveStep) lives here too, the one home both
 // engines' step checkpoints pass through.

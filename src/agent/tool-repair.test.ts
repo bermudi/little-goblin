@@ -1,3 +1,4 @@
+// The fake model pins the AI SDK tool-call wire shape consumed by streamText repair.
 // Rule-based tool-call repair: which broken inputs get rewritten and
 // which stay broken. The streamText integration pins the boundary —
 // a repaired call executes with the parsed input, an unrepairable one

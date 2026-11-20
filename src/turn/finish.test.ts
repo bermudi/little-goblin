@@ -903,6 +903,7 @@ describe("submitTurnReview", () => {
 		const skills = join(workspace, "skills");
 		mkdirSync(skills, { recursive: true });
 		const prompts: string[] = [];
+		// This fake exercises the AI SDK generateText/doGenerate review boundary.
 		const reviewModel = scriptedModel([], {
 			modelId: "fake-review",
 			onGenerate: async (options) => {

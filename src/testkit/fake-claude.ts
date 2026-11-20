@@ -107,6 +107,20 @@ export interface FakeClaudeHandle {
 	scriptSequence(scripts: FakeStep[][]): void;
 }
 
+async function waitForReleaseOrAbort(until: Promise<void>, signal: AbortSignal): Promise<boolean> {
+	if (signal.aborted) return false;
+	let onAbort: () => void = () => {};
+	const aborted = new Promise<false>((resolve) => {
+		onAbort = () => resolve(false);
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+	try {
+		return (await Promise.race([until.then(() => true as const), aborted])) && !signal.aborted;
+	} finally {
+		signal.removeEventListener("abort", onAbort);
+	}
+}
+
 let blockSeq = 0;
 const nextId = (p: string): string => `${p}-fake-${(blockSeq += 1)}`;
 
@@ -195,7 +209,9 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 					}
 					if (step.hold !== undefined) {
 						step.hold.onEnter?.();
-						await step.hold.until;
+						if (!(await waitForReleaseOrAbort(step.hold.until, call.options.abortController.signal))) {
+							return;
+						}
 					}
 					yield {
 						type: "stream",
@@ -330,7 +346,7 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 				}
 				case "hold": {
 					step.onEnter?.();
-					await step.until;
+					if (!(await waitForReleaseOrAbort(step.until, call.options.abortController.signal))) return;
 					break;
 				}
 				case "raw": {

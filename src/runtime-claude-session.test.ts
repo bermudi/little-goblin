@@ -1,11 +1,3 @@
-// #418: one native Claude SDK session per (conversation, model ref) —
-// resumed each turn at its recorded head with only the seq delta the
-// session has not seen, the record advanced only on a landed reply.
-// Covers: fresh persist+sessionId, resume+resumeSessionAt+delta,
-// cross-engine deltas, failed turns leaving the record untouched,
-// separate records per Claude model ref, and steers folded mid-turn
-// (#582) staying out of the next delta.
-
 import { describe, expect, test } from "bun:test";
 import { defineTool, type Tools } from "./tool.ts";
 import { z } from "zod";
@@ -50,7 +42,6 @@ function claudeStepFor(label: string): ClaudeStep {
 }
 
 describe("claude native sessions (#418)", () => {
-	// This reads Claude CLI session options that claudeScript.requests() does not expose.
 	test("first turn persists a fresh session; second resumes at its head with a delta", async () => {
 		useHome("goblin-claude-session-");
 		const store = openStore(tmpDb("goblin-claude-session-"));
@@ -108,7 +99,6 @@ describe("claude native sessions (#418)", () => {
 		};
 
 		try {
-			// (a) first turn: fresh session, full prompt, record written.
 			fake.script([{ kind: "text", text: "CLAUDE-ONE" }]);
 			const one = await turn("first ask");
 			expect(one.done).toEqual({ kind: "completed" });
@@ -125,7 +115,6 @@ describe("claude native sessions (#418)", () => {
 			expect(rec1!.headUuid).toBe(fake.assistantUuids.at(-1)!);
 			expect(rec1!.replySeq).not.toBeNull();
 
-			// (b) second turn: resume + resumeSessionAt, delta only.
 			fake.script([{ kind: "text", text: "CLAUDE-TWO" }]);
 			const two = await turn("second ask");
 			expect(two.done).toEqual({ kind: "completed" });
@@ -150,7 +139,6 @@ describe("claude native sessions (#418)", () => {
 		}
 	});
 
-	// This asserts Claude's pushed steer UUID and prompt wire, beyond the Runtime's landed result.
 	test("a steer folded mid-turn joins it and stays in the session — the next delta never resends it (#582)", async () => {
 		useHome("goblin-claude-steer-");
 		const store = openStore(tmpDb("goblin-claude-steer-"));
@@ -229,12 +217,9 @@ describe("claude native sessions (#418)", () => {
 			expect(await steer.done).toEqual({ kind: "completed" });
 			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 
-			// One query answered both: the steer went in mid-turn, no
-			// successor turn ran for it.
 			expect(fake.calls).toHaveLength(1);
 			expect(fake.steers).toHaveLength(1);
 			expect(promptTextOf(fake.steers[0]!)).toContain("mid-turn steer");
-			// The joined steer hears the rest of the reply on its own wire.
 			const steerText = steer.chunks
 				.map((c) => (c.type === "text-delta" ? c.delta : ""))
 				.join("");
@@ -257,7 +242,6 @@ describe("claude native sessions (#418)", () => {
 		}
 	});
 
-	// The test requires a missing ack; claudeScript now acks tool-step steers automatically.
 	test("an unacked steer returns to pending input and leads the successor turn (#777)", async () => {
 		useHome("goblin-claude-unacked-");
 		const store = openStore(tmpDb("goblin-claude-unacked-"));
@@ -356,7 +340,6 @@ describe("claude native sessions (#418)", () => {
 		}
 	});
 
-	// The Claude half inspects session query prompts; its CLI metadata is absent from the DSL.
 	test("an AI-SDK turn between two claude turns lands in the delta; the session's own reply does not", async () => {
 		useHome("goblin-claude-session-x-");
 		const store = openStore(tmpDb("goblin-claude-session-x-"));
@@ -427,8 +410,6 @@ describe("claude native sessions (#418)", () => {
 			expect(fake.calls).toHaveLength(2);
 			const third = fake.calls[1]!;
 			const prompt = promptTextOf(third);
-			// The other engine's reply is new to this session — it rides
-			// the delta. Claude's own earlier reply does not.
 			expect(prompt).toContain("SDK-MIDDLE");
 			expect(prompt).toContain("claude ask two");
 			expect(prompt).not.toContain("CLAUDE-FIRST");
@@ -439,7 +420,6 @@ describe("claude native sessions (#418)", () => {
 		}
 	});
 
-	// This checks the resumed Claude CLI option and error-result behavior on the native wire.
 	test("a failed turn leaves the record at the last finish; the next turn resumes the old head", async () => {
 		useHome("goblin-claude-session-f-");
 		const store = openStore(tmpDb("goblin-claude-session-f-"));
@@ -494,16 +474,12 @@ describe("claude native sessions (#418)", () => {
 			expect((await turn("first ask")).done).toEqual({ kind: "completed" });
 			const rec1 = sessions.get(conv.id, CLAUDE_REF)!;
 
-			// The next turn dies on the provider — no landing, no record move.
 			fake.script([{ kind: "error", resultText: "provider exploded" }]);
 			const failed = await turn("doomed ask");
 			expect(failed.done.kind).not.toBe("completed");
 			const recAfterFail = sessions.get(conv.id, CLAUDE_REF)!;
 			expect(recAfterFail).toEqual(rec1);
 
-			// The retry turn resumes at the OLD head; the delta carries the
-			// unlanded ask plus the new one — nothing the session produced
-			// is re-sent, and the dead attempt's partial never landed.
 			fake.script([{ kind: "text", text: "CLAUDE-RECOVERED" }]);
 			const three = await turn("retry ask");
 			expect(three.done).toEqual({ kind: "completed" });
@@ -521,7 +497,6 @@ describe("claude native sessions (#418)", () => {
 		}
 	});
 
-	// This verifies per-ref Claude CLI options and prompts, which the ScriptedModel API omits.
 	test("two claude model refs keep separate session records", async () => {
 		useHome("goblin-claude-session-g-");
 		const store = openStore(tmpDb("goblin-claude-session-g-"));
@@ -587,15 +562,11 @@ describe("claude native sessions (#418)", () => {
 			expect(recB).not.toBeNull();
 			expect(recA.sessionId).not.toBe(recB.sessionId);
 
-			// The opus turn was a FIRST session for its ref — full prompt,
-			// including the sonnet exchange it has never seen.
 			expect(fake.calls).toHaveLength(2);
 			expect(fake.calls[1]!.options.resume).toBeUndefined();
 			expect(promptTextOf(fake.calls[1]!)).toContain("SONNET-ONE");
 			expect(promptTextOf(fake.calls[1]!)).toContain("sonnet ask");
 
-			// Back on sonnet: its own session resumes; the opus exchange is
-			// new content for it and rides the delta.
 			ref = CLAUDE_REF;
 			fake.script([{ kind: "text", text: "SONNET-TWO" }]);
 			expect((await turn("sonnet ask two")).done).toEqual({ kind: "completed" });

@@ -11,7 +11,7 @@ import { appAddress } from "../conversation-address.ts";
 import { openResponsibilities } from "../responsibilities.ts";
 
 import { deferred, sleep, waitUntil } from "../testkit.ts";
-import { scriptedModel } from "../testkit/fake-model.ts";
+import { sdkScript } from "../testkit/turn-script-sdk.ts";
 import { handleAppApi } from "./app-channel.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
 
@@ -552,21 +552,19 @@ describe("app conversations", () => {
 		}
 	});
 
-	test("stop before the first content still leaves one durable record (#408 F1)", async () => {
+	// ClaudeScript's hold does not unblock on abort, so Runtime.stop cannot settle this fixture.
+	test("ai-sdk: stop before the first content still leaves one durable record (#408 F1)", async () => {
 		// Provider silence: the request is accepted, then nothing streams.
 		const entered = deferred<void>();
 		const gate = deferred<void>();
-		const model = scriptedModel([
-			{
-				drive: async ({ enqueue, close }) => {
-					enqueue({ type: "stream-start", warnings: [] });
-					entered.resolve();
-					await gate.promise;
-					close();
-				},
-			},
-		]).model;
-		const { http, call, store } = setup({ token: APP_TOKEN_NAME, model });
+		const model = sdkScript();
+		model.script({
+			kind: "hold",
+			parts: [],
+			gate: gate.promise,
+			entered: () => entered.resolve(),
+		});
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME, scriptedModel: model });
 		try {
 			await call("/api/app/conversations", {
 				method: "POST",

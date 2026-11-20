@@ -7,12 +7,18 @@ import { sendFileTool } from "../agent/tools/send.ts";
 import { speakTool } from "../agent/tools/speak.ts";
 import { setLogFile } from "../log.ts";
 import type { TurnDone } from "../turn/sink.ts";
-import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
+import { sdkScript } from "../testkit/turn-script-sdk.ts";
+import { claudeScript } from "../testkit/turn-script-claude.ts";
 import { sleep, tmpDir, waitUntil } from "../testkit.ts";
 import type { AppChannelDeps } from "./app-shared.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
 
+const adapters = [sdkScript, claudeScript] as const;
+const engineName = (make: (typeof adapters)[number]) =>
+	make === sdkScript ? "ai-sdk" : "claude-code";
+
 describe("app chat", () => {
+	// This uses a real OpenAI-compatible HTTP provider to verify request rejection and error framing.
 	test("a provider rejection before streaming emits one error and an error finish", async () => {
 		let announceRequest!: () => void;
 		const requestReceived = new Promise<void>((resolve) => {
@@ -132,18 +138,17 @@ describe("app chat", () => {
 		}
 	});
 
-	test("a failed mid-stream turn reports an error finish reason", async () => {
-		const model = scriptedModel([
-			[
-				{ type: "stream-start", warnings: [] },
-				{ type: "text-start", id: "t1" },
-				{ type: "text-delta", id: "t1", delta: "partial" },
-				{ type: "text-end", id: "t1" },
-				{ type: "error", error: new Error("invalid response chunk") },
-				finishPart("stop"),
-			],
-		]).model;
-		const { http, call, store } = setup({ token: APP_TOKEN_NAME, model });
+	for (const make of adapters) test(`${engineName(make)}: a failed mid-stream turn reports an error finish reason`, async () => {
+		const model = make();
+		model.script({
+			kind: "fail",
+			parts: [{ type: "text", text: "partial" }],
+			error: { message: "invalid response chunk" },
+		});
+		const { http, call, store } = setup({
+			token: APP_TOKEN_NAME,
+			scriptedModel: model,
+		});
 		try {
 			await call("/api/app/conversations", {
 				method: "POST",
@@ -259,26 +264,24 @@ describe("app chat", () => {
 		}
 	});
 
-	test("generated files and voice notes persist durably and stream live", async () => {
+	for (const make of adapters) test(`${engineName(make)}: generated files and voice notes persist durably and stream live`, async () => {
 		const work = tmpDir("goblin-app-media-");
 		writeFileSync(join(work, "note.txt"), "file-bytes");
 		const audio = new Uint8Array([9, 8, 7]);
-		const model = scriptedModel([
-			[
-				{ type: "stream-start", warnings: [] },
-				toolCallPart(
-					"file-1",
-					"send_file",
-					JSON.stringify({ path: "note.txt", caption: "keepsake" }),
-				),
-				toolCallPart("voice-1", "speak", JSON.stringify({ text: "hello" })),
-				finishPart("tool-calls"),
-			],
-			textParts("sent"),
-		]).model;
+		const model = make();
+		model.script(
+			{
+				kind: "reply",
+				parts: [
+					{ type: "tool-call", toolName: "send_file", input: { path: "note.txt", caption: "keepsake" } },
+					{ type: "tool-call", toolName: "speak", input: { text: "hello" } },
+				],
+			},
+			{ kind: "reply", parts: [{ type: "text", text: "sent" }] },
+		);
 		const { http, call, store } = setup({
 			token: APP_TOKEN_NAME,
-			model,
+			scriptedModel: model,
 			makeTools: (_conv, deliverVoice, _recording, deliverFile) => ({
 				send_file: sendFileTool(work, deliverFile!),
 				speak: speakTool(work, async () => [audio], deliverVoice!),

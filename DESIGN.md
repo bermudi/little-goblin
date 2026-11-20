@@ -14,7 +14,8 @@ Goblin.
 | Scheduled work and division of work between agents | [`programs.ts`](src/programs.ts), [`responsibility-service.ts`](src/responsibility-service.ts), [`agent-children.ts`](src/agent-children.ts) |
 | Memory and conversation summarization | [`src/memory`](src/memory/), [`compaction.ts`](src/agent/compaction.ts) |
 
-Area notes live in [`design/`](design/).
+Area notes live in [`design/`](design/). Non-obvious decisions with no
+existing home get a short [architecture decision record](design/decisions/).
 
 ## Domain model
 

@@ -311,6 +311,20 @@ turn has no `note` tool or prefix mode is unavailable, the existing text
 flush runs. A prefix-flush failure warns and the fold continues; it does not
 retry in text mode.
 
+After changing the model view or Codex adapter, the
+[live prefix probe](../src/turn/prefix-summary.live.test.ts) can check the
+actual wire prefix. It uses the configured Codex credentials without
+printing them and sends public filler to `gpt-6-luna`, not operator history.
+The filler clears the provider's measured cache minimum. Enable it only
+for a real provider check; expect about four billed generations:
+
+```sh
+GOBLIN_CODEX_LIVE=1 bun test src/turn/prefix-summary.live.test.ts
+```
+
+Zero cached input on the replay is a failure. Compare the replay and warm
+call's logged prompt hashes.
+
 The claude-code summary resumes the recorded native session at its head with
 `forkSession: true` and `persistSession: false`, so the stored session is
 unchanged. It uses the same model, frozen system prompt, thinking settings,

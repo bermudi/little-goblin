@@ -5,21 +5,9 @@ import { randomUUID } from "node:crypto";
 import type { Tools } from "./tool.ts";
 import type { Message, MessageChunk } from "./message.ts";
 import { isClaudeStep, type ClaudeEngine, type ClaudeStep } from "./agent/claude-code/mod.ts";
-import type { ClaudeSessionStore } from "./claude-sessions.ts";
+import type { ClaudeSessionRecord, ClaudeSessionStore } from "./claude-sessions.ts";
 import { type CompactionOutcome, chooseBoundary, type PrefixSummarizer } from "./agent/compaction.ts";
-import {
-	exhaustedMessage,
-	type FallbackMiss,
-	type FallbackNote,
-	failureClass,
-	missReason,
-} from "./agent/model-fallback.ts";
-import {
-	isContentFilter,
-	isContextOverflow,
-	isTransientTurnFailure,
-	quotaExhausted,
-} from "./agent/provider-errors.ts";
+import type { FallbackNote } from "./agent/model-fallback.ts";
 import { resolveSkillRef } from "./agent/skill-inject.ts";
 import { lastInputTokensOf, type Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
@@ -42,6 +30,15 @@ import {
 	type ConversationEvent,
 	type QueuedTurn,
 } from "./runtime-lanes.ts";
+import {
+	type AttemptOutcome,
+	type AttemptProgress,
+	type AttemptScope,
+	errorRail,
+	fencedRail,
+	journalFaultRail,
+	overflowRail,
+} from "./runtime-rails.ts";
 import type { System1Client } from "./system1.ts";
 import { admitTurn, type LiveWire } from "./turn/admission.ts";
 import { type CompactionSeam, runCompactJob } from "./turn/compact-job.ts";
@@ -56,34 +53,30 @@ import {
 import { sinkDelivery } from "./turn/delivery.ts";
 import { pickEngine, type TurnEngine } from "./turn/engine.ts";
 import type { ModelStep } from "./turn/ai-sdk-step.ts";
-import { landAttempt, submitTurnReview } from "./turn/finish.ts";
+import { type LandedAttempt, landAttempt, submitTurnReview } from "./turn/finish.ts";
 import { stepModelRef } from "./turn/model-ref.ts";
 import {
 	ContextOverflowError,
 	compactTriggerTokens,
 	failureFromStream,
 	overflowHoldable,
-	PreemptCompactError,
 	preemptArm,
-	recoverFromOverflow,
 	type TurnRecovery,
-	terminalFailureMessage,
 } from "./turn/overflow.ts";
 import type { RunOwnershipHooks } from "./turn/run-ownership.ts";
 import { openRunRecord } from "./turn/run-record.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 import type { SkillWatch } from "./turn/skill-attribution.ts";
-import { type ForcedKind, TurnState } from "./turn/state.ts";
-import { openStepRules, type StepRules } from "./turn/step-rules.ts";
+import { TurnState } from "./turn/state.ts";
+import { openStepRules, type PreemptArm, type StepRules } from "./turn/step-rules.ts";
 import {
 	claimMembers,
-	emitChunk,
 	endLive,
 	type LiveChunks,
 	type LiveSubscriber,
 	openLive,
+	type StreamOutcome,
 } from "./turn/stream.ts";
-import { replyFromWire } from "./turn/unlanded-progress.ts";
 import {
 	openToolAuthority,
 	type ToolAuthority,
@@ -193,12 +186,43 @@ export class FencedError extends Error {
 	}
 }
 
-// Terminal outcomes have settled their sinks; continuations carry
-// recovery and membership into the next attempt. Membership is data on
-// the decision, not a closure over a queue that may have changed.
-type AttemptOutcome =
-	| { kind: "done" }
-	| { kind: "resume"; recovery: TurnRecovery; turns: ClaimedTurn[] };
+// The runtime's side of one attempt: the rails' scope plus what only
+// the phases before a landing read.
+interface Attempt extends AttemptScope {
+	// The first member's sink owns delivery hooks.
+	sink: TurnSink;
+	activeFloor: number;
+	priorInputTokens: number | null;
+	// checkAuthority plus the journal's fault box — the engine's and the
+	// step rules' check.
+	assertAuthority(): void;
+}
+
+// What openSeams hands the later phases.
+interface AttemptSeams {
+	auth: ToolAuthority;
+	tools: Tools;
+	step: TurnStep;
+	rules: StepRules;
+	engine: TurnEngine;
+	overflowRecoverable: boolean;
+}
+
+type ViewOptions = Parameters<typeof buildModelView>[1];
+
+interface AttemptView {
+	ctx: ViewContext;
+	options: ViewOptions;
+	messages: Awaited<ReturnType<typeof buildModelView>>;
+	// #418: the recorded native session the step resumes, if any.
+	claudeRec: ClaudeSessionRecord | null;
+	sentSeqMax: number | null;
+	// Steers the attempt folded mid-turn (#582) — the native
+	// session holds them, so the record's watermark may cover them.
+	foldedSeqs: Set<number>;
+}
+
+type CompletedStream = Extract<StreamOutcome, { kind: "ok" }>;
 
 export class Runtime {
 	private lanes = new LaneRegistry();
@@ -877,25 +901,43 @@ export class Runtime {
 		recovery: TurnRecovery | undefined,
 		live: LiveChunks,
 	): Promise<AttemptOutcome> {
-		const { store } = this.deps;
-		let recallVersion: number | null;
-		if (recovery !== undefined && recovery.recallVersion !== undefined) {
-			recallVersion = recovery.recallVersion;
-		} else {
-			try {
-				recallVersion = this.deps.windowVersion?.() ?? 0;
-			} catch (err) {
-				log.warn("recall version unreadable — window capture disabled for this attempt", {
-					conversation: convId,
-					error: String(err),
-				});
-				recallVersion = null;
-			}
+		const a = await this.openAttempt(convId, turns, recovery, live);
+		if (a === null) return { kind: "done" };
+		try {
+			await this.runAdmitted(a);
+		} catch (err) {
+			// The rail order is load-bearing (runtime-rails.ts): a journal
+			// fault outranks every other cause, then a fence, then the one
+			// overflow recovery; anything else is the error rail.
+			const fault = a.record.journalFault.current;
+			if (fault !== undefined) return await journalFaultRail(a, fault);
+			if (err instanceof FencedError || a.controller.signal.aborted) return await fencedRail(a, err);
+			if (err instanceof ContextOverflowError) return await overflowRail(a, err);
+			return await errorRail(a, err);
+		} finally {
+			// Whatever escaped the catch above — a throw inside recovery
+			// or notifyAll — must not leave a begun row 'running': rows
+			// left 'running' mean process death (a graceful shutdown
+			// included, #471), and only the journal gets to say that. The
+			// shutdown fence's leaveRunning seals the record first, so
+			// this guard stays a no-op on the one deliberate escape.
+			a.record.stampRun("error", "failed");
 		}
-		let filterRetryUsed = recovery?.filterRetryUsed ?? false;
-		// Set when the engine withheld a zero-effect error off the wire for
-		// a possible fallback; the terminal path emits it if none follows.
-		let errorHeld = false;
+		return { kind: "done" };
+	}
+
+	// Admission fixes the attempt's ownership and model input; the rest
+	// is the attempt's fixed scope. Null when admission refused — the
+	// members are settled. Nothing here is inside the rails: a throw
+	// escapes to the drain's last-ditch settle.
+	private async openAttempt(
+		convId: string,
+		turns: ClaimedTurn[],
+		recovery: TurnRecovery | undefined,
+		live: LiveChunks,
+	): Promise<Attempt | null> {
+		const { store } = this.deps;
+		const recallVersion = this.attemptRecallVersion(convId, recovery);
 		// Preserve loop history across overflow, while attempt-scoped state resets.
 		// Completed tool calls stay in the recovery package as evidence —
 		// they are never re-entered from this list; the journal's recovery
@@ -922,6 +964,12 @@ export class Runtime {
 			this.lanes.emitConversation(convId, { type: "turn-end" });
 			this.turnEndWatchers.delete(convId);
 		};
+		const progress: AttemptProgress = {
+			memory: { prior: [], current: null },
+			authority: undefined,
+			filterRetryUsed: recovery?.filterRetryUsed ?? false,
+			errorHeld: false,
+		};
 		// The ownership window: from admission until the begin hook, the
 		// attempt's members are unlinked — a terminal failure in that span
 		// (a refused admission included) is invisible to the dispatcher's
@@ -929,19 +977,16 @@ export class Runtime {
 		// of re-admitting the trigger forever. The authority seam owns the
 		// begun fact; before it exists there is no row to link, so
 		// announcing is always right there.
-		let authority: ToolAuthority | undefined;
 		const announcePreRunFailure = (err: unknown) => {
-			if (authority?.ownershipBegun === true) return;
+			if (progress.authority?.ownershipBegun === true) return;
 			this.getMount().runOwnership?.preRunFailure?.({
 				conversationId: convId,
 				memberSeqs: turns.map(queuedSeq),
 				error: err instanceof Error ? err.message : String(err),
 			});
 		};
-		// Admission fixes this attempt's ownership and model input. A
-		// throw escapes to the drain's last-ditch settle — still a
-		// terminal death inside the ownership window, so it announces
-		// the same as a refused admission before propagating.
+		// A throw is still a terminal death inside the ownership window, so
+		// it announces the same as a refused admission before propagating.
 		let admitted: ReturnType<typeof admitTurn>;
 		try {
 			admitted = admitTurn(
@@ -973,10 +1018,10 @@ export class Runtime {
 				kind: "error",
 				message: admitted.kind === "missing" ? "conversation missing" : admitted.message,
 			});
-			return { kind: "done" };
+			return null;
 		}
 		const { snapshot } = admitted;
-		const { conv, epoch, entries, anchorSeq, turnStartMs } = snapshot;
+		const { conv, epoch, entries } = snapshot;
 		// Continuation inputs join `turns` before admission so all paths
 		// settle them. An admission failure must not strand a member
 		// claimed during recovery.
@@ -997,11 +1042,8 @@ export class Runtime {
 			const eligible = store.memoryEligibility(convId).eligibleSeqs;
 			return admissionExchangeExcluded || [...ownedInputSeqs].some((seq) => !eligible.has(seq));
 		};
-		sink.setAuthorityCheck?.(
-			() => this.deps.store.get(convId)?.epoch === epoch,
-			anchorSeq,
-			ownedInputExcluded,
-		);
+		const holdsAuthority = (): boolean => store.get(convId)?.epoch === epoch;
+		sink.setAuthorityCheck?.(holdsAuthority, snapshot.anchorSeq, ownedInputExcluded);
 		const controller = new AbortController();
 		this.lanes.registerController(convId, controller);
 		const hadLiveWire = this.conversationLive(convId);
@@ -1014,18 +1056,6 @@ export class Runtime {
 		// foldability probe and the fold itself — must see only completed
 		// history strictly before it (foldCeiling).
 		const activeFloor = Math.min(...turns.map(queuedSeq));
-
-		// Reuse recall on overflow resume; it belongs to the pre-compaction view.
-		// Reissuing it would spend memory quota twice for one logical turn.
-		let memory: { prior: RecallContext[]; current: RecallContext | null } = {
-			prior: [],
-			current: null,
-		};
-		// The crash journal's per-attempt row — turn/run-record.ts owns its
-		// lifecycle; the attempt's finally guard is the backstop that a
-		// begun row never escapes still 'running' except a deliberate
-		// shutdown leave (#471).
-		const journal = this.deps.turnJournal;
 		const sourceInputSeq = (): number | null => {
 			let max: number | null = null;
 			for (const t of turns) {
@@ -1041,9 +1071,12 @@ export class Runtime {
 			recovery?.overflowed === true || lastStoredUsage === undefined
 				? null
 				: lastInputTokensOf(lastStoredUsage);
-		// The attempt's shared engine rules (turn/step-rules.ts) — opened
-		// once buildStep names the step; tools read the fill through it.
-		let stepRules: StepRules | null = null;
+		const checkAuthority = (): void => this.checkAuthority(convId, epoch);
+		// The crash journal's per-attempt row — turn/run-record.ts owns its
+		// lifecycle; runAttempt's finally guard is the backstop that a
+		// begun row never escapes still 'running' except a deliberate
+		// shutdown leave (#471).
+		const journal = this.deps.turnJournal;
 		const record = openRunRecord({
 			journal,
 			store,
@@ -1056,744 +1089,613 @@ export class Runtime {
 			ownedInputSeqs,
 			// The authority seam mints the id and holds it; the record
 			// reads it through this getter — never a write-back callback.
-			runId: () => authority?.runId ?? null,
+			runId: () => progress.authority?.runId ?? null,
 		});
-		const { journalFault, journaled, stampRun, leaveRunning, recordUnlandedProgress, fallback } =
-			record;
-		// The aborted outcome's cause: a shutdown fence must read as a
-		// restart, not an operator stop. Other fences have several sources
-		// (stop, settings change, correction, navigation roll) — the wording
-		// stays neutral rather than naming one that may not apply.
-		const fencedCause = (): string =>
-			this.closed
-				? "the process was shutting down"
-				: "stopped by /stop, superseded by a settings change, or fenced by an operator action";
+		return {
+			convId,
+			turns,
+			recovery,
+			live,
+			snapshot,
+			recallVersion,
+			ownedInputSeqs,
+			admissionExchangeExcluded,
+			state,
+			controller,
+			record,
+			journal,
+			progress,
+			sink,
+			activeFloor,
+			priorInputTokens,
+			sourceInputSeq,
+			notifyAll,
+			announcePreRunFailure,
+			shuttingDown: () => this.closed,
+			compact: (reason) => this.doCompact(conv, reason, activeFloor),
+			checkAuthority,
+			holdsAuthority,
+			assertAuthority: () => {
+				checkAuthority();
+				if (record.journalFault.current !== undefined) throw record.journalFault.current;
+			},
+		};
+	}
+
+	// An overflow resume keeps the window version its recall belongs to.
+	private attemptRecallVersion(convId: string, recovery: TurnRecovery | undefined): number | null {
+		if (recovery !== undefined && recovery.recallVersion !== undefined) return recovery.recallVersion;
 		try {
-			this.checkAuthority(convId, epoch);
-			// Recall uses admission-time eligibility; the model view still sees the
-			// full conversation.
-			memory =
-				recovery?.memory ??
-				(await this.recallMemory(
-					conv,
-					anchorSeq,
-					memoryBoundEntries(entries, store.memoryEligibility(convId)).map((e) => e.message),
-					controller.signal,
-					epoch,
-				));
-			this.checkAuthority(convId, epoch);
-			// Delivery and tool authority are turn-owned seams: the fenced
-			// sink hooks (turn/delivery.ts), then the run row + ownership
-			// link + the tool fence + step-end persistence's one home,
-			// saveStep (turn/tool-authority.ts).
-			const delivery = sinkDelivery(sink, () => this.checkAuthority(convId, epoch));
-			// #477's gate arms only once buildStep names the engine: the
-			// streamText engine folds steers at its prepareStep boundary,
-			// so a parked steer skips unlaunched calls. A claude-code
-			// attempt folds when a tool call settles (#582) and keeps
-			// the gate off: the CLI, not goblin, dispatches its calls.
-			const steerGate = { armed: false };
-			const auth = openToolAuthority({
-				conv,
-				convId,
-				epoch,
-				makeTools: this.getMount().makeTools,
-				delivery,
-				sourceMessageId: () => turns[turns.length - 1]!.message.id,
-				record: {
-					anchorSeq,
-					steerMarkSeed: snapshot.steerMarkSeed,
-					startedAtMs: turnStartMs,
-					ownedInputSeqs,
-					admissionExchangeExcluded,
-					memberSeqs: turns.map(queuedSeq),
-					sourceInputSeq,
-					predecessorRun: recovery?.predecessorRun,
-					fallbackConfigured: fallback.configured,
-				},
-				journal,
-				journaled,
-				journalFault,
-				onJournalFault: () => controller.abort(),
-				runOwnership: this.getMount().runOwnership,
-				checkAuthority: () => this.checkAuthority(convId, epoch),
-				// Same source prepareStep's claim reads — a peek, never a
-				// splice; the claim still belongs to the model call.
-				steerWaiting: () =>
-					steerGate.armed &&
-					this.lanes.claimablePending(convId, sink.delivery === "stream"),
-				contextFill: () => stepRules?.contextFill() ?? null,
+			return this.deps.windowVersion?.() ?? 0;
+		} catch (err) {
+			log.warn("recall version unreadable — window capture disabled for this attempt", {
+				conversation: convId,
+				error: String(err),
 			});
-			// The const is what closures below capture — the mutable slot
-			// above only bridges the pre-authority failure paths.
-			authority = auth;
-			const tools = auth.tools;
-			this.lastTurnTools.set(convId, { epoch, tools: toToolSet(tools) });
-			const persistedTools = await persistableToolSet(tools);
-			if ("unpersistable" in persistedTools) {
-				this.deps.store.saveLastTurnTools(convId, epoch, null);
-				log.warn("last-turn tools not persistable", {
-					conversation: convId,
-					tool: persistedTools.unpersistable,
-				});
-			} else {
-				const stored = this.deps.store.lastTurnTools(convId);
-				if (stored?.epoch !== epoch || stored.json !== persistedTools.json) {
-					this.deps.store.saveLastTurnTools(convId, epoch, persistedTools.json);
-					log.info("last-turn tools persisted", {
+			return null;
+		}
+	}
+
+	// Recall through the post-landing work, in order. Every throw lands on
+	// runAttempt's rails.
+	private async runAdmitted(a: Attempt): Promise<void> {
+		const { snapshot } = a;
+		a.checkAuthority();
+		// Recall uses admission-time eligibility; the model view still sees the
+		// full conversation.
+		a.progress.memory =
+			a.recovery?.memory ??
+			(await this.recallMemory(
+				snapshot.conv,
+				snapshot.anchorSeq,
+				memoryBoundEntries(snapshot.entries, this.deps.store.memoryEligibility(a.convId)).map(
+					(e) => e.message,
+				),
+				a.controller.signal,
+				snapshot.epoch,
+			));
+		a.checkAuthority();
+		const seams = await this.openSeams(a);
+		a.checkAuthority();
+		const view = await this.buildView(a, seams);
+		const outcome = await this.runEngine(a, seams, view);
+		if (outcome.kind === "failed") {
+			a.progress.filterRetryUsed = outcome.filterRetryUsed;
+			a.progress.errorHeld = outcome.errorHeld === true;
+			throw failureFromStream(outcome);
+		}
+		// A stream that reached its finish while a journal write
+		// faulted must not land a reply the journal can't describe.
+		if (a.record.journalFault.current !== undefined) throw a.record.journalFault.current;
+		const landed = await this.landReply(a, seams, view, outcome);
+		await this.afterLanding(a, seams, outcome, landed);
+	}
+
+	// Delivery and tool authority are turn-owned seams: the fenced
+	// sink hooks (turn/delivery.ts), then the run row + ownership
+	// link + the tool fence + step-end persistence's one home,
+	// saveStep (turn/tool-authority.ts). Then the step, its rules, and
+	// the engine that runs it.
+	private async openSeams(a: Attempt): Promise<AttemptSeams> {
+		const { convId, turns, sink, snapshot, recovery } = a;
+		const { conv, epoch } = snapshot;
+		const delivery = sinkDelivery(sink, a.checkAuthority);
+		// #477's gate arms only once buildStep names the engine: the
+		// streamText engine folds steers at its prepareStep boundary,
+		// so a parked steer skips unlaunched calls. A claude-code
+		// attempt folds when a tool call settles (#582) and keeps
+		// the gate off: the CLI, not goblin, dispatches its calls.
+		const steerGate = { armed: false };
+		// The attempt's shared engine rules (turn/step-rules.ts) — opened
+		// once buildStep names the step; tools read the fill through it.
+		let stepRules: StepRules | null = null;
+		const auth = openToolAuthority({
+			conv,
+			convId,
+			epoch,
+			makeTools: this.getMount().makeTools,
+			delivery,
+			sourceMessageId: () => turns[turns.length - 1]!.message.id,
+			record: {
+				anchorSeq: snapshot.anchorSeq,
+				steerMarkSeed: snapshot.steerMarkSeed,
+				startedAtMs: snapshot.turnStartMs,
+				ownedInputSeqs: a.ownedInputSeqs,
+				admissionExchangeExcluded: a.admissionExchangeExcluded,
+				memberSeqs: turns.map(queuedSeq),
+				sourceInputSeq: a.sourceInputSeq,
+				predecessorRun: recovery?.predecessorRun,
+				fallbackConfigured: a.record.fallback.configured,
+			},
+			journal: a.journal,
+			journaled: a.record.journaled,
+			journalFault: a.record.journalFault,
+			onJournalFault: () => a.controller.abort(),
+			runOwnership: this.getMount().runOwnership,
+			checkAuthority: a.checkAuthority,
+			// Same source prepareStep's claim reads — a peek, never a
+			// splice; the claim still belongs to the model call.
+			steerWaiting: () =>
+				steerGate.armed && this.lanes.claimablePending(convId, sink.delivery === "stream"),
+			contextFill: () => stepRules?.contextFill() ?? null,
+		});
+		a.progress.authority = auth;
+		const tools = auth.tools;
+		await this.rememberTurnTools(convId, epoch, tools);
+		const step = await this.deps.buildStep(conv, tools);
+		const overflowRecoverable = overflowHoldable(recovery, this.deps.compaction !== undefined);
+		const rules = openStepRules({
+			convId,
+			epoch,
+			model: stepModelRef(step),
+			state: a.state,
+			signal: a.controller.signal,
+			contextWindow: step.contextWindow,
+			priorInputTokens: a.priorInputTokens,
+			filterRetryUsed: a.progress.filterRetryUsed,
+			maxRetries: isClaudeStep(step) ? undefined : step.maxRetries,
+			transientRetryDelayMs: isClaudeStep(step) ? undefined : step.transientRetryDelayMs,
+			overflowRecoverable,
+			assertAuthority: a.assertAuthority,
+			holdsAuthority: a.holdsAuthority,
+			// design/compaction.md → Timing: the step-boundary trigger.
+			// Wired only when the fold-resume is possible — the gate and
+			// the budget are the same invariant (one fold-resume per
+			// logical turn), so an already-resumed attempt keeps
+			// dispatching and the 85% context landing stays its backstop.
+			...(this.deps.compaction !== undefined && recovery?.overflowed !== true
+				? {
+						preemptCheck: (info: { projectedInputTokens: number | null; stepNumber: number }) =>
+							this.preemptCheck(a, step, info),
+					}
+				: {}),
+		});
+		stepRules = rules;
+		const engine = pickEngine(this.deps.engines, step, convId);
+		steerGate.armed = engine.rules.toolLaunchGate;
+		return { auth, tools, step, rules, engine, overflowRecoverable };
+	}
+
+	private async rememberTurnTools(convId: string, epoch: number, tools: Tools): Promise<void> {
+		this.lastTurnTools.set(convId, { epoch, tools: toToolSet(tools) });
+		const persistedTools = await persistableToolSet(tools);
+		if ("unpersistable" in persistedTools) {
+			this.deps.store.saveLastTurnTools(convId, epoch, null);
+			log.warn("last-turn tools not persistable", {
+				conversation: convId,
+				tool: persistedTools.unpersistable,
+			});
+			return;
+		}
+		const stored = this.deps.store.lastTurnTools(convId);
+		if (stored?.epoch !== epoch || stored.json !== persistedTools.json) {
+			this.deps.store.saveLastTurnTools(convId, epoch, persistedTools.json);
+			log.info("last-turn tools persisted", {
+				conversation: convId,
+				epoch,
+				tools: Object.keys(persistedTools.tools).length,
+			});
+		}
+	}
+
+	private preemptCheck(
+		a: Attempt,
+		step: TurnStep,
+		info: { projectedInputTokens: number | null; stepNumber: number },
+	): PreemptArm | null {
+		const { convId } = a;
+		const { store } = this.deps;
+		const previousFold = store.getCompaction(convId);
+		const arm = preemptArm({
+			projectedInputTokens: info.projectedInputTokens,
+			contextWindow: step.contextWindow,
+		});
+		if (arm === null) return null;
+		// Never interrupt for a fold that cannot happen: a
+		// no-op compact on the recovery rail is a TERMINAL
+		// error, and the live turn's own growth is never
+		// foldable — only stored history is. A trigger with
+		// nothing to fold stands down; a genuinely doomed
+		// turn still fails honestly through the overflow
+		// rail (a real 400, not a projection).
+		const { tailTokenBudget } = compactionBudgets(step.contextWindow ?? null);
+		const foldable =
+			chooseBoundary(store.historyDetail(convId), {
+				tailTokenBudget,
+				previousBoundary: previousFold?.boundarySeq ?? null,
+				previousSplit: previousFold?.split ?? null,
+				// Completed history only — inputs queued behind
+				// this request must not push the boundary onto
+				// the running exchange.
+				beforeSeq: this.lanes.pendingFloor(convId, a.activeFloor),
+			}) !== null;
+		if (!foldable) {
+			log.info("compaction pre-empt stood down — arm fired but nothing foldable", {
+				conversation: convId,
+				arm,
+				step: info.stepNumber,
+			});
+			return null;
+		}
+		return arm;
+	}
+
+	// Steered messages use the same fixed capability gates as the initial
+	// view, preserving the stable prompt prefix. Only the appended tail
+	// changes when a steer is folded in.
+	private async buildView(a: Attempt, seams: AttemptSeams): Promise<AttemptView> {
+		const { convId, snapshot } = a;
+		const { step, tools } = seams;
+		const { entries } = snapshot;
+		const ctx: ViewContext = {
+			convId,
+			modelRef: stepModelRef(step),
+			tools,
+			modalities: step.inputModalities,
+			carries: step.carries ?? (() => true),
+			keepProviderExecuted: !isClaudeStep(step) && step.keepProviderExecuted === true,
+			skillRef: resolveSkillRef,
+		};
+		// #418: a recorded native session sees only the seq delta —
+		// entries past seen_seq, minus the reply the session itself
+		// produced (it already holds that natively). Entries with no
+		// seq — recall inserts, the recovery partial — belong to this
+		// turn and ride along inside the view.
+		const claudeRec =
+			isClaudeStep(step) && this.deps.claudeSessions !== undefined
+				? this.deps.claudeSessions.get(convId, step.label)
+				: null;
+		const viewEntries =
+			claudeRec === null
+				? entries
+				: entries.filter((e) => e.seq > claudeRec.seenSeq && e.seq !== claudeRec.replySeq);
+		const sentSeqMax =
+			viewEntries.length === 0 ? null : Math.max(...viewEntries.map((e) => e.seq));
+		const options: ViewOptions = {
+			entries: viewEntries,
+			prior: a.progress.memory.prior,
+			current: a.progress.memory.current,
+			partial: a.recovery?.partial ?? null,
+			// The summary entry rides `entries` by its boundary seq —
+			// the same store fact eligibility classifies by (#206).
+			summarySeq: this.deps.store.memoryEligibility(convId).summarySeq,
+			ownedSeqs: snapshot.ownedInputSeqs,
+			assertAuthority: a.checkAuthority,
+		};
+		const messages = await buildModelView(ctx, options);
+		return { ctx, options, messages, claudeRec, sentSeqMax, foldedSeqs: new Set<number>() };
+	}
+
+	// The engine resumes the recorded session at its head; the
+	// fullPrompt thunk stays lazy — only a dead-session retry pays
+	// for the second view build.
+	private claudeSessionPlan(a: Attempt, step: TurnStep, view: AttemptView) {
+		if (!isClaudeStep(step)) return undefined;
+		const { convId } = a;
+		const { claudeRec } = view;
+		return {
+			...(claudeRec !== null
+				? {
+						resume: {
+							sessionId: claudeRec.sessionId,
+							headUuid: claudeRec.headUuid,
+						},
+						fullPrompt: () =>
+							buildModelView(view.ctx, { ...view.options, entries: a.snapshot.entries }),
+					}
+				: {}),
+			onDrop: () => {
+				try {
+					this.deps.claudeSessions?.drop(convId, step.label, "session resume failed");
+				} catch (err) {
+					log.warn("claude session drop failed — turn continues", err, {
 						conversation: convId,
-						epoch,
-						tools: Object.keys(persistedTools.tools).length,
 					});
 				}
+			},
+		};
+	}
+
+	private async runEngine(a: Attempt, seams: AttemptSeams, view: AttemptView): Promise<StreamOutcome> {
+		const { convId, turns, sink, live, snapshot, recovery, journal } = a;
+		const { auth, tools, step, rules, engine } = seams;
+		const { fallback } = a.record;
+		const claudeSession = this.claudeSessionPlan(a, step, view);
+		const outcome = await engine.run({
+			convId,
+			epoch: snapshot.epoch,
+			head: sink,
+			members: turns,
+			live,
+			state: a.state,
+			journal,
+			// The authority seam minted the run id and owns it.
+			runId: auth.runId,
+			// #195: step-end persistence's one home — the engines'
+			// checkpoints ride the seam, never the journal directly.
+			saveStep: auth.saveStep,
+			// A steer that joins mid-run is processed by this run — the
+			// wake hook hears only the joined seqs (converts that failed
+			// were settled, never joined). Journaled turns only.
+			...(journal === undefined
+				? {}
+				: {
+						noteRunMembers: (seqs: number[]) =>
+							this.getMount().runOwnership?.members(auth.runId, convId, seqs),
+					}),
+			assertAuthority: a.assertAuthority,
+			holdsAuthority: a.holdsAuthority,
+			messages: view.messages,
+			tools,
+			view: view.ctx,
+			claimSteers: () =>
+				this.lanes.claim(
+					convId,
+					sink.delivery === "stream",
+					false,
+					(claimed) => this.materializeClaimed(convId, claimed),
+					true,
+				),
+			unrequeueSteers: (steered) => this.lanes.unrequeue(convId, steered),
+			settle: (m, done) => void this.notifyDone(m, done),
+			steerMarkSeed: snapshot.steerMarkSeed,
+			ownedInputSeqs: [...a.ownedInputSeqs],
+			onOwnedInputs: (seqs) => {
+				for (const seq of seqs) {
+					a.ownedInputSeqs.add(seq);
+					view.foldedSeqs.add(seq);
+				}
+			},
+			sourceInputSeq: a.sourceInputSeq,
+			partial: recovery?.partial ?? null,
+			seenText: recovery?.seenText ?? false,
+			toolCalls: recovery ? [...recovery.toolCalls] : [],
+			digest: recovery ? [...recovery.digest] : [],
+			overflowRecoverable: seams.overflowRecoverable,
+			rules,
+			evidence: this.reviewer?.evidence,
+			skillWatch: this.skillWatch,
+			turnStartMs: snapshot.turnStartMs,
+			signal: a.controller.signal,
+			// Held when a fallback could follow, or when earlier candidates
+			// already failed — the terminal error then lists every miss.
+			holdZeroEffectError:
+				fallback.fresh && (fallback.next() !== undefined || fallback.misses.length > 0),
+			...(fallback.misses.length > 0 ? { fallbackMisses: fallback.misses } : {}),
+			step,
+			...(claudeSession !== undefined ? { claudeSession } : {}),
+		});
+		// Record the window on both rails — the failed rail throws its
+		// recovery/error, and the request went out either way.
+		if (outcome.window !== null && a.recallVersion !== null) {
+			try {
+				this.deps.recordWindow?.(convId, {
+					model: outcome.model,
+					step: outcome.steps,
+					capture: outcome.window,
+					recallVersion: a.recallVersion,
+				});
+			} catch (err) {
+				log.error("context window record failed — turn continues", err, {
+					conversation: convId,
+				});
 			}
-			const step = await this.deps.buildStep(conv, tools);
-			const assertAttemptAuthority = (): void => {
-				this.checkAuthority(convId, epoch);
-				if (journalFault.current !== undefined) throw journalFault.current;
-			};
-			const holdsAttemptAuthority = (): boolean => this.deps.store.get(convId)?.epoch === epoch;
-			const overflowRecoverable = overflowHoldable(recovery, this.deps.compaction !== undefined);
-			const rules = openStepRules({
-				convId,
-				epoch,
-				model: stepModelRef(step),
-				state,
-				signal: controller.signal,
-				contextWindow: step.contextWindow,
-				priorInputTokens,
-				filterRetryUsed,
-				maxRetries: isClaudeStep(step) ? undefined : step.maxRetries,
-				transientRetryDelayMs: isClaudeStep(step) ? undefined : step.transientRetryDelayMs,
-				overflowRecoverable,
-				assertAuthority: assertAttemptAuthority,
-				holdsAuthority: holdsAttemptAuthority,
-				// design/compaction.md → Timing: the step-boundary trigger.
-				// Wired only when the fold-resume is possible — the gate and
-				// the budget are the same invariant (one fold-resume per
-				// logical turn), so an already-resumed attempt keeps
-				// dispatching and the 85% context landing stays its backstop.
-				...(this.deps.compaction !== undefined && recovery?.overflowed !== true
-					? {
-							preemptCheck: (info: { projectedInputTokens: number | null; stepNumber: number }) => {
-								const previousFold = store.getCompaction(convId);
-								const arm = preemptArm({
-									projectedInputTokens: info.projectedInputTokens,
-									contextWindow: step.contextWindow,
-								});
-								if (arm === null) return null;
-								// Never interrupt for a fold that cannot happen: a
-								// no-op compact on the recovery rail is a TERMINAL
-								// error, and the live turn's own growth is never
-								// foldable — only stored history is. A trigger with
-								// nothing to fold stands down; a genuinely doomed
-								// turn still fails honestly through the overflow
-								// rail (a real 400, not a projection).
-								const { tailTokenBudget } = compactionBudgets(step.contextWindow ?? null);
-								const foldable =
-									chooseBoundary(store.historyDetail(convId), {
-										tailTokenBudget,
-										previousBoundary: previousFold?.boundarySeq ?? null,
-										previousSplit: previousFold?.split ?? null,
-										// Completed history only — inputs queued behind
-										// this request must not push the boundary onto
-										// the running exchange.
-										beforeSeq: this.lanes.pendingFloor(convId, activeFloor),
-									}) !== null;
-								if (!foldable) {
-									log.info("compaction pre-empt stood down — arm fired but nothing foldable", {
-										conversation: convId,
-										arm,
-										step: info.stepNumber,
-									});
-									return null;
-								}
-								return arm;
-							},
-						}
-					: {}),
-			});
-			stepRules = rules;
-			const engine = pickEngine(this.deps.engines, step, convId);
-			steerGate.armed = engine.rules.toolLaunchGate;
-			this.checkAuthority(convId, epoch);
-			// Steered messages use the same fixed capability gates as the initial
-			// view, preserving the stable prompt prefix. Only the appended tail
-			// changes when a steer is folded in.
-			const viewCtx: ViewContext = {
-				convId,
-				modelRef: stepModelRef(step),
-				tools,
-				modalities: step.inputModalities,
-				carries: step.carries ?? (() => true),
-				keepProviderExecuted: !isClaudeStep(step) && step.keepProviderExecuted === true,
-				skillRef: resolveSkillRef,
-			};
-			// #418: a recorded native session sees only the seq delta —
-			// entries past seen_seq, minus the reply the session itself
-			// produced (it already holds that natively). Entries with no
-			// seq — recall inserts, the recovery partial — belong to this
-			// turn and ride along inside the view.
-			const claudeRec =
-				isClaudeStep(step) && this.deps.claudeSessions !== undefined
-					? this.deps.claudeSessions.get(convId, step.label)
-					: null;
-			const viewEntries =
-				claudeRec === null
-					? entries
-					: entries.filter((e) => e.seq > claudeRec.seenSeq && e.seq !== claudeRec.replySeq);
-			const sentSeqMax =
-				viewEntries.length === 0 ? null : Math.max(...viewEntries.map((e) => e.seq));
-			// Steers the attempt folded mid-turn (#582) — the native
-			// session holds them, so the record's watermark may cover them.
-			const foldedSeqs = new Set<number>();
-			const viewOptions = {
-				entries: viewEntries,
-				prior: memory.prior,
-				current: memory.current,
-				partial: recovery?.partial ?? null,
-				// The summary entry rides `entries` by its boundary seq —
-				// the same store fact eligibility classifies by (#206).
-				summarySeq: store.memoryEligibility(convId).summarySeq,
-				ownedSeqs: snapshot.ownedInputSeqs,
-				assertAuthority: () => this.checkAuthority(convId, epoch),
-			};
-			const merged = await buildModelView(viewCtx, viewOptions);
-			// The engine resumes the recorded session at its head; the
-			// fullPrompt thunk stays lazy — only a dead-session retry pays
-			// for the second view build.
-			const claudeSessionPlan = isClaudeStep(step)
+		}
+		return outcome;
+	}
+
+	// Land the durable reply, then keep the post-delivery authority check:
+	// a stop during sink flushing must fence follow-up work. Persistence and
+	// delivery are both on the same authority-checked finish path.
+	private async landReply(
+		a: Attempt,
+		seams: AttemptSeams,
+		view: AttemptView,
+		outcome: CompletedStream,
+	): Promise<LandedAttempt> {
+		const { convId, turns, sink, live, snapshot, record, journal } = a;
+		const { conv, epoch, entries } = snapshot;
+		const { store } = this.deps;
+		// A pending or failed steer can have a seq below the final mark.
+		// Only admission-visible or successfully consumed users were read.
+		const visibleUserSeqs = new Set(
+			entries.filter((e) => e.message.role === "user").map((e) => e.seq),
+		);
+		let landedReplySeq: number | null = null;
+		const landed = landAttempt({
+			convId,
+			epoch,
+			conv,
+			// Live flag, like the reviewer's — a mid-turn exclusion
+			// lands the reply but ships no memory.
+			memoryExcluded: () => store.get(convId)?.memoryExcluded ?? conv.memoryExcluded,
+			modelEntries: () =>
+				store
+					.modelEntries(convId)
+					.filter(
+						(e) =>
+							e.message.role !== "user" ||
+							visibleUserSeqs.has(e.seq) ||
+							a.ownedInputSeqs.has(e.seq),
+					),
+			memoryEligibility: () => store.memoryEligibility(convId),
+			steerMark: outcome.steerMark,
+			ownedInputSeqs: a.ownedInputSeqs,
+			admissionExchangeExcluded: a.admissionExchangeExcluded,
+			responseMessage: outcome.responseMessage,
+			finishReason: outcome.finishReason,
+			usage: outcome.usage,
+			lastStepInputTokens: outcome.lastStepInputTokens,
+			contextWindow: seams.step.contextWindow,
+			forcedKind: a.state.forcedCompletion(),
+			sink,
+			members: turns,
+			live,
+			// The reply and the fact it landed are one commit: a kill
+			// inside terminal delivery must never leave a durable
+			// reply behind a run row that still claims none — boot
+			// recovery's interrupted rail reads the flag.
+			append: (messages, opts) =>
+				store.db.transaction(() => {
+					const seqs = store.append(convId, messages, opts);
+					landedReplySeq = seqs[0] ?? null;
+					record.journaled(() => journal?.noteReplyLanded(seams.auth.runId, landedReplySeq));
+					return seqs;
+				})(),
+			memory: this.deps.memory,
+		});
+		// The reply landed durably — a failure past this point must not
+		// also record a progress event (the final reply is the record).
+		record.markReplyLanded();
+		this.advanceClaudeSession(a, seams.step, view, outcome, landedReplySeq);
+		const { fallback } = record;
+		const fallbackNote: FallbackNote | undefined =
+			fallback.misses.length > 0 && conv.model !== null
 				? {
-						...(claudeRec !== null
-							? {
-									resume: {
-										sessionId: claudeRec.sessionId,
-										headUuid: claudeRec.headUuid,
-									},
-									fullPrompt: () => buildModelView(viewCtx, { ...viewOptions, entries }),
-								}
-							: {}),
-						onDrop: () => {
-							try {
-								this.deps.claudeSessions?.drop(convId, step.label, "session resume failed");
-							} catch (err) {
-								log.warn("claude session drop failed — turn continues", err, {
-									conversation: convId,
-								});
-							}
-						},
+						servedBy: conv.model,
+						misses: fallback.misses.map(({ ref, reason }) => ({ ref, reason })),
 					}
 				: undefined;
+		await a.notifyAll(
+			fallbackNote !== undefined && landed.done.kind === "completed"
+				? { ...landed.done, fallback: fallbackNote }
+				: landed.done,
+		);
+		record.stampRun("completed", "delivered");
+		// A stop during terminal delivery must prevent follow-up work.
+		a.checkAuthority();
+		// Clear the turn controller before retention/review/compaction so /stop
+		// reports no generating turn; compaction has its own controller.
+		this.lanes.releaseController(convId, a.controller);
+		return landed;
+	}
 
-			const outcome = await engine.run({
-				convId,
-				epoch,
-				head: sink,
-				members: turns,
-				live,
-				state,
-				journal,
-				// The authority seam minted the run id and owns it.
-				runId: auth.runId,
-				// #195: step-end persistence's one home — the engines'
-				// checkpoints ride the seam, never the journal directly.
-				saveStep: auth.saveStep,
-				// A steer that joins mid-run is processed by this run — the
-				// wake hook hears only the joined seqs (converts that failed
-				// were settled, never joined). Journaled turns only.
-				...(journal === undefined
-					? {}
-					: {
-							noteRunMembers: (seqs: number[]) =>
-								this.getMount().runOwnership?.members(auth.runId, convId, seqs),
-						}),
-				assertAuthority: assertAttemptAuthority,
-				holdsAuthority: holdsAttemptAuthority,
-				messages: merged,
-				tools,
-				view: viewCtx,
-				claimSteers: () =>
-					this.lanes.claim(
-						convId,
-						sink.delivery === "stream",
-						false,
-						(claimed) => this.materializeClaimed(convId, claimed),
-						true,
-					),
-				unrequeueSteers: (steered) => this.lanes.unrequeue(convId, steered),
-				settle: (m, done) => void this.notifyDone(m, done),
-				steerMarkSeed: snapshot.steerMarkSeed,
-				ownedInputSeqs: [...ownedInputSeqs],
-				onOwnedInputs: (seqs) => {
-					for (const seq of seqs) {
-						ownedInputSeqs.add(seq);
-						foldedSeqs.add(seq);
-					}
-				},
-				sourceInputSeq,
-				partial: recovery?.partial ?? null,
-				seenText: recovery?.seenText ?? false,
-				toolCalls: recovery ? [...recovery.toolCalls] : [],
-				digest: recovery ? [...recovery.digest] : [],
-				overflowRecoverable,
-				rules,
-				evidence: this.reviewer?.evidence,
-				skillWatch: this.skillWatch,
-				turnStartMs,
-				signal: controller.signal,
-				// Held when a fallback could follow, or when earlier candidates
-				// already failed — the terminal error then lists every miss.
-				holdZeroEffectError:
-					fallback.fresh && (fallback.next() !== undefined || fallback.misses.length > 0),
-				...(fallback.misses.length > 0 ? { fallbackMisses: fallback.misses } : {}),
-				step,
-				...(claudeSessionPlan !== undefined ? { claudeSession: claudeSessionPlan } : {}),
-			});
-			// Record the window on both rails — the failed rail throws its
-			// recovery/error below, and the request went out either way.
-			if (outcome.window !== null && recallVersion !== null) {
-				try {
-					this.deps.recordWindow?.(convId, {
-						model: outcome.model,
-						step: outcome.steps,
-						capture: outcome.window,
-						recallVersion,
-					});
-				} catch (err) {
-					log.error("context window record failed — turn continues", err, {
-						conversation: convId,
-					});
-				}
-			}
-			if (outcome.kind === "failed") {
-				// Carry the filter retry budget into a possible continuation.
-				filterRetryUsed = outcome.filterRetryUsed;
-				errorHeld = outcome.errorHeld === true;
-				throw failureFromStream(outcome);
-			}
-			// A stream that reached its finish while a journal write
-			// faulted must not land a reply the journal can't describe.
-			if (journalFault.current !== undefined) throw journalFault.current;
-			// Land the durable reply, then keep the post-delivery authority check:
-			// a stop during sink flushing must fence follow-up work. Persistence and
-			// delivery are both on the same authority-checked finish path.
-			// A pending or failed steer can have a seq below the final mark.
-			// Only admission-visible or successfully consumed users were read.
-			const visibleUserSeqs = new Set(
-				entries.filter((e) => e.message.role === "user").map((e) => e.seq),
-			);
-			let landedReplySeq: number | null = null;
-			const landed = landAttempt({
-				convId,
-				epoch,
-				conv,
-				// Live flag, like the reviewer's — a mid-turn exclusion
-				// lands the reply but ships no memory.
-				memoryExcluded: () => store.get(convId)?.memoryExcluded ?? conv.memoryExcluded,
-				modelEntries: () =>
-					store
-						.modelEntries(convId)
-						.filter(
-							(e) =>
-								e.message.role !== "user" ||
-								visibleUserSeqs.has(e.seq) ||
-								ownedInputSeqs.has(e.seq),
-						),
-				memoryEligibility: () => store.memoryEligibility(convId),
-				steerMark: outcome.steerMark,
-				ownedInputSeqs,
-				admissionExchangeExcluded,
-				responseMessage: outcome.responseMessage,
-				finishReason: outcome.finishReason,
-				usage: outcome.usage,
-				lastStepInputTokens: outcome.lastStepInputTokens,
-				contextWindow: step.contextWindow,
-				forcedKind: state.forcedCompletion(),
-				sink,
-				members: turns,
-				live,
-				// The reply and the fact it landed are one commit: a kill
-				// inside terminal delivery must never leave a durable
-				// reply behind a run row that still claims none — boot
-				// recovery's interrupted rail reads the flag.
-				append: (messages, opts) =>
-					store.db.transaction(() => {
-						const seqs = store.append(convId, messages, opts);
-						landedReplySeq = seqs[0] ?? null;
-						journaled(() => journal?.noteReplyLanded(auth.runId, landedReplySeq));
-						return seqs;
-					})(),
-				memory: this.deps.memory,
-			});
-			// The reply landed durably — a failure past this point must not
-			// also record a progress event (the final reply is the record).
-			record.markReplyLanded();
-			// #418: advance the native session record only now — the reply
-			// is durable, so the next turn resumes at this head with a
-			// delta cut at these seqs. Interrupted and failed turns never
-			// reach this line and leave the record at the last finish.
-			if (
-				isClaudeStep(step) &&
-				outcome.claudeSession !== undefined &&
-				landedReplySeq !== null
-			) {
-				const headUuid = outcome.claudeSession.headUuid;
-				let seenSeq = sentSeqMax ?? claudeRec?.seenSeq ?? 0;
-				if (foldedSeqs.size > 0) {
-					// Advance past the folded steers only when every entry
-					// up to the last one was sent: a message still queued
-					// between them must reach the next turn's delta. A held
-					// watermark re-sends the steers instead — a duplicate,
-					// never a loss.
-					const top = Math.max(...foldedSeqs);
-					const unsent = store
-						.modelEntries(convId)
-						.filter((e) => e.seq > seenSeq && e.seq <= top && !foldedSeqs.has(e.seq))
-						.map((e) => e.seq);
-					if (unsent.length === 0) seenSeq = top;
-					else {
-						log.info("claude session watermark held below folded steers", {
-							conversation: convId,
-							seenSeq,
-							folded: [...foldedSeqs],
-							unsent,
-						});
-					}
-				}
-				if (headUuid !== "") {
-					try {
-						this.deps.claudeSessions?.put({
-							conversationId: convId,
-							modelRef: step.label,
-							sessionId: outcome.claudeSession.sessionId,
-							headUuid,
-							seenSeq,
-							replySeq: landedReplySeq,
-						});
-					} catch (err) {
-						log.warn("claude session record write failed — turn continues", err, {
-							conversation: convId,
-						});
-					}
-				} else {
-					log.warn("claude session head missing — record not advanced", {
-						conversation: convId,
-					});
-				}
-			}
-			const fallbackNote: FallbackNote | undefined =
-				fallback.misses.length > 0 && conv.model !== null
-					? {
-							servedBy: conv.model,
-							misses: fallback.misses.map(({ ref, reason }) => ({ ref, reason })),
-						}
-					: undefined;
-			await notifyAll(
-				fallbackNote !== undefined && landed.done.kind === "completed"
-					? { ...landed.done, fallback: fallbackNote }
-					: landed.done,
-			);
-			stampRun("completed", "delivered");
-			// A stop during terminal delivery must prevent follow-up work.
-			this.checkAuthority(convId, epoch);
-			// Clear the turn controller before retention/review/compaction so /stop
-			// reports no generating turn; compaction has its own controller.
-			this.lanes.releaseController(convId, controller);
-			// Review receives the completed exchange and prior-turn chain off-lane.
-			submitTurnReview({
-				convId,
-				reviewer: this.reviewer,
-				memoryExcluded: () => store.get(convId)?.memoryExcluded ?? conv.memoryExcluded,
-				// The landed exchange's own taint — a flag flipped back
-				// since admission can't cleanse what the turn consumed.
-				exchangeExcluded: landed.exchangeExcluded,
-				nextTurnSeq: () => ++this.turnCounter,
-				priorTurn: () => this.lastTurns.get(convId),
-				rememberTurn: (prior) => this.lastTurns.set(convId, prior),
-				forgetTurn: () => this.lastTurns.delete(convId),
-				source: landed.source,
-				reply: landed.reply,
-				toolCalls: outcome.toolCalls,
-				digestRing: outcome.digestRing,
-				// Same "only when configured" convention as the digest —
-				// the reviewer's already-covered check reads this set.
-				...(this.reviewer === undefined ? {} : { tools }),
-			});
-			// Keep the lane busy through auto-compaction so successors see a whole
-			// compacted view; failure writes no boundary and retries later.
-			// design/compaction.md → Triggers: the landed input against the
-			// same trigger the step boundary checks.
-			if (landed.window && landed.window.input >= compactTriggerTokens(landed.window.limit)) {
-				try {
-					await this.doCompact(conv, "threshold");
-				} catch (err) {
-					if (err instanceof FencedError) {
-						log.info("threshold compaction fenced — view unchanged", {
-							conversation: convId,
-							epoch,
-						});
-					} else {
-						log.warn(
-							"compaction failed — view unchanged, will retry on next threshold crossing",
-							err,
-							{
-								conversation: convId,
-							},
-						);
-					}
-				}
-			}
-			// Off the reply path, post-compaction: the deterministic
-			// curator pass when its interval elapsed (gated inside the
-			// hook). A throw is logged and swallowed — curation never
-			// fails a turn.
-			try {
-				this.deps.onTurnSettled?.(convId);
-			} catch (err) {
-				log.warn("post-turn curator pass failed — turn already delivered", err, {
-					conversation: convId,
-				});
-			}
-		} catch (err) {
-			// The crash journal is the only record of what the turn's
-			// tools did — when it cannot write, the turn dies as an error
-			// (never 'fenced', never completed, never a fallback advance)
-			// so no reported failure can invite a repeat of an unjournaled
-			// effect.
-			const failOnJournalFault = async (fault: unknown): Promise<void> => {
-				controller.abort();
-				log.error("turn aborted — the turn journal cannot write", fault, {
-					conversation: convId,
-					epoch,
-				});
-				announcePreRunFailure(fault);
-				stampRun("error", "failed");
-				await notifyAll({
-					kind: "error",
-					message: terminalFailureMessage(fault, recovery !== undefined),
-					modelCalls: state.snapshot().modelCalls,
-				});
-			};
-			if (journalFault.current !== undefined) {
-				await failOnJournalFault(journalFault.current);
-			} else if (err instanceof FencedError || controller.signal.aborted) {
-				// Abort even an epoch-fenced provider call; otherwise it may keep
-				// generating into an abandoned stream and consume provider capacity.
-				controller.abort();
-				log.info("turn fenced", { conversation: convId, epoch, error: String(err) });
-				announcePreRunFailure(err);
-				if (this.closed) {
-					// #471 — a shutdown fence is a crash for the journal: the row
-					// stays 'running' and nothing is recorded here. The next open
-					// reclassifies it 'interrupted' and records its unlanded
-					// progress in the same transaction — the boot notice and
-					// the history record both reach it (#594).
-					leaveRunning();
-				} else {
-					// What already ran stays transcript — the sanctioned post-fence
-					// state write, before the stamp wake settling reads.
-					recordUnlandedProgress(
-						{ kind: "aborted", cause: fencedCause() },
-						await replyFromWire(live.chunks),
-					);
-					stampRun("fenced", "undelivered");
-				}
-				await notifyAll({ kind: "fenced" });
-			} else if (err instanceof ContextOverflowError) {
-				// Recover once: compact the failed attempt and resume with its partial
-				// so completed tools are not repeated. A second overflow follows the
-				// terminal error path. The failed attempt's run id rides the
-				// recovery: the continuation's row inherits its settled calls.
-				const outcome = await recoverFromOverflow({
-					convId,
-					epoch,
-					failure: err,
-					conversation: conv,
-					memory,
-					startedAt: turnStartMs,
-					live,
-					filterRetryUsed,
-					failedRunId: authority?.runId,
-					recallVersion,
-					sourceInputSeq: sourceInputSeq(),
-					members: turns,
-					compact: () =>
-						this.doCompact(
-							conv,
-							err instanceof PreemptCompactError ? "preempt" : "overflow",
-							activeFloor,
-						),
-					assertAuthority: () => this.checkAuthority(convId, epoch),
-					holdsAuthority: () => this.deps.store.get(convId)?.epoch === epoch,
-					signal: controller.signal,
-				});
-				if (outcome.kind === "resume") {
-					// This attempt's row is done — the stream failed and its
-					// output was withheld for recovery; the resume opens a
-					// fresh row that inherits this row's settled calls, so a
-					// crash of the continuation still resumes with them.
-					// No pre-run announcement: the fresh run links its members
-					// through its own begin.
-					stampRun("error", "undelivered");
-					outcome.recovery.ownedInputSeqs = [...ownedInputSeqs];
-					outcome.recovery.admissionExchangeExcluded = admissionExchangeExcluded;
-					// The continuation stays on the serving candidate and keeps
-					// its fallback story (run-row configured ref, finish note).
-					outcome.recovery.fallback = fallback.trail;
-					return { kind: "resume", recovery: outcome.recovery, turns: outcome.members };
-				}
-				if (outcome.kind === "error") {
-					recordUnlandedProgress(
-						{ kind: "failed", failure: outcome.message },
-						await replyFromWire(live.chunks),
-					);
-				} else if (outcome.kind === "fenced" && !this.closed) {
-					// A fence landing during recovery is still a fence: the
-					// attempt's completed work stays transcript. A shutdown
-					// fence skips the record — the next open's interrupted
-					// rail owns it (#471).
-					recordUnlandedProgress(
-						{ kind: "aborted", cause: fencedCause() },
-						await replyFromWire(live.chunks),
-					);
-				}
-				announcePreRunFailure(err);
-				if (outcome.kind === "fenced" && this.closed) {
-					leaveRunning();
-				} else {
-					stampRun(
-						outcome.kind === "fenced" ? "fenced" : "error",
-						outcome.kind === "fenced" ? "undelivered" : "failed",
-					);
-				}
-				await notifyAll(
-					outcome.kind === "fenced"
-						? { kind: "fenced" }
-						: { kind: "error", message: outcome.message },
-				);
-			} else {
-				// Abort provider work on any escaping error, not only on fencing; the
-				// stream may still be producing after the chunk loop unwinds.
-				controller.abort();
-				// Zero effect: no model call completed and no tool was
-				// dispatched under this run (design/model.md → Model fallback
-				// list — openclaw's canFallbackAfterError gate). The probe is
-				// a journal read: if it throws, the turn ends as a journal
-				// fault before any fallback is considered.
-				let journaledCalls = 0;
-				try {
-					if (journal !== undefined && authority !== undefined) {
-						const id = authority.runId;
-						journaledCalls = journaled(() => journal.callsFor(id)).length;
-					}
-				} catch (probeErr) {
-					log.error("fallback gate could not read the turn journal", probeErr, {
-						conversation: convId,
-						cause: err instanceof Error ? err.message : String(err),
-					});
-					await failOnJournalFault(probeErr);
-					return { kind: "done" };
-				}
-				const zeroEffect = state.snapshot().modelCalls === 0 && journaledCalls === 0;
-				// Quota is logged as its own class so a missing retry explains
-				// itself: the scheduler ladder only re-fires transient failures.
-				const quota = quotaExhausted(err);
-				const errClass = failureClass(err);
-				const miss: FallbackMiss = {
-					ref: conv.model ?? "(no model)",
-					reason: missReason(err),
-					transient: isTransientTurnFailure(err),
-				};
-				// A content-filtered request already spent its one same-model
-				// retry; the filter rule ends the turn, it never moves the
-				// blocked request to another lane. Context overflow is never
-				// a trigger either — it reaches here only when compaction is
-				// not wired (no recovery to hand it to), and another lane
-				// would face the same history (design/model.md).
-				const next =
-					zeroEffect && !isContentFilter(err) && !isContextOverflow(err)
-						? fallback.next()
-						: undefined;
-				if (next !== undefined && fallback.configured !== null) {
-					log.warn("model fallback", {
-						conversation: convId,
-						from: miss.ref,
-						to: next,
-						failureClass: errClass,
-						...(quota?.resetAt !== undefined ? { quotaResetAt: quota.resetAt } : {}),
-						attempt: fallback.misses.length + 1,
-						error: err instanceof Error ? err.message : String(err),
-					});
-					// Same hand-off as an overflow resume: this row ends
-					// undelivered and the successor inherits it (it holds no
-					// calls — zero effect — but owns the members' wakes).
-					stampRun("error", "undelivered");
-					return {
-						kind: "resume",
-						recovery: {
-							conversation: { ...conv, model: next },
-							partial: null,
-							memory,
-							seenText: false,
-							toolCalls: [],
-							digest: [],
-							loop: state.snapshot(),
-							startedAt: turnStartMs,
-							live,
-							filterRetryUsed,
-							predecessorRun: authority?.runId,
-							recallVersion,
-							sourceInputSeq: sourceInputSeq(),
-							ownedInputSeqs: [...ownedInputSeqs],
-							admissionExchangeExcluded,
-							fallback: { configured: fallback.configured, tried: [...fallback.misses, miss] },
-						},
-						turns,
-					};
-				}
-				// Only a fresh attempt's failure ends the walk; a
-				// continuation failing reports its own error.
-				const misses = fallback.fresh ? [...fallback.misses, miss] : [miss];
-				log.error("turn failed", err, {
-					conversation: convId,
-					failureClass: errClass,
-					...(quota?.resetAt !== undefined ? { quotaResetAt: quota.resetAt } : {}),
-					...(misses.length > 1 ? { fallbacksTried: misses.map((m) => m.ref) } : {}),
-				});
-				// The stamps are what lets a trigger owner (a schedule fire) tell
-				// a zero-call transport blip from a failure the provider already
-				// spent work on; other error paths stay unstamped. After a
-				// fallback walk, transient means every candidate's was.
-				const done: TurnDone = {
-					kind: "error",
-					message:
-						misses.length > 1
-							? exhaustedMessage(misses)
-							: terminalFailureMessage(err, recovery !== undefined),
-					modelCalls: state.snapshot().modelCalls,
-					transient: misses.every((m) => m.transient),
-				};
-				// A withheld error never reached the wire — the terminal
-				// story goes out now, before the sinks settle.
-				if (errorHeld) emitChunk(convId, turns, live, { type: "error", errorText: done.message });
-				recordUnlandedProgress(
-					{ kind: "failed", failure: done.message },
-					await replyFromWire(live.chunks),
-				);
-				announcePreRunFailure(err);
-				stampRun("error", "failed");
-				await notifyAll(done);
-			}
-		} finally {
-			// Whatever escaped the catch above — a throw inside recovery
-			// or notifyAll — must not leave a begun row 'running': rows
-			// left 'running' mean process death (a graceful shutdown
-			// included, #471), and only the journal gets to say that. The
-			// shutdown fence's leaveRunning seals the record first, so
-			// this guard stays a no-op on the one deliberate escape.
-			stampRun("error", "failed");
+	// #418: advance the native session record only now — the reply
+	// is durable, so the next turn resumes at this head with a
+	// delta cut at these seqs. Interrupted and failed turns never
+	// reach this and leave the record at the last finish.
+	private advanceClaudeSession(
+		a: Attempt,
+		step: TurnStep,
+		view: AttemptView,
+		outcome: CompletedStream,
+		landedReplySeq: number | null,
+	): void {
+		if (!isClaudeStep(step) || outcome.claudeSession === undefined || landedReplySeq === null) {
+			return;
 		}
-		return { kind: "done" };
+		const { convId } = a;
+		const { foldedSeqs } = view;
+		const headUuid = outcome.claudeSession.headUuid;
+		let seenSeq = view.sentSeqMax ?? view.claudeRec?.seenSeq ?? 0;
+		if (foldedSeqs.size > 0) {
+			// Advance past the folded steers only when every entry
+			// up to the last one was sent: a message still queued
+			// between them must reach the next turn's delta. A held
+			// watermark re-sends the steers instead — a duplicate,
+			// never a loss.
+			const top = Math.max(...foldedSeqs);
+			const unsent = this.deps.store
+				.modelEntries(convId)
+				.filter((e) => e.seq > seenSeq && e.seq <= top && !foldedSeqs.has(e.seq))
+				.map((e) => e.seq);
+			if (unsent.length === 0) seenSeq = top;
+			else {
+				log.info("claude session watermark held below folded steers", {
+					conversation: convId,
+					seenSeq,
+					folded: [...foldedSeqs],
+					unsent,
+				});
+			}
+		}
+		if (headUuid === "") {
+			log.warn("claude session head missing — record not advanced", {
+				conversation: convId,
+			});
+			return;
+		}
+		try {
+			this.deps.claudeSessions?.put({
+				conversationId: convId,
+				modelRef: step.label,
+				sessionId: outcome.claudeSession.sessionId,
+				headUuid,
+				seenSeq,
+				replySeq: landedReplySeq,
+			});
+		} catch (err) {
+			log.warn("claude session record write failed — turn continues", err, {
+				conversation: convId,
+			});
+		}
+	}
+
+	// Off the reply path: review, threshold compaction, the curator pass.
+	private async afterLanding(
+		a: Attempt,
+		seams: AttemptSeams,
+		outcome: CompletedStream,
+		landed: LandedAttempt,
+	): Promise<void> {
+		const { convId } = a;
+		const { conv, epoch } = a.snapshot;
+		const { store } = this.deps;
+		// Review receives the completed exchange and prior-turn chain off-lane.
+		submitTurnReview({
+			convId,
+			reviewer: this.reviewer,
+			memoryExcluded: () => store.get(convId)?.memoryExcluded ?? conv.memoryExcluded,
+			// The landed exchange's own taint — a flag flipped back
+			// since admission can't cleanse what the turn consumed.
+			exchangeExcluded: landed.exchangeExcluded,
+			nextTurnSeq: () => ++this.turnCounter,
+			priorTurn: () => this.lastTurns.get(convId),
+			rememberTurn: (prior) => this.lastTurns.set(convId, prior),
+			forgetTurn: () => this.lastTurns.delete(convId),
+			source: landed.source,
+			reply: landed.reply,
+			toolCalls: outcome.toolCalls,
+			digestRing: outcome.digestRing,
+			// Same "only when configured" convention as the digest —
+			// the reviewer's already-covered check reads this set.
+			...(this.reviewer === undefined ? {} : { tools: seams.tools }),
+		});
+		// Keep the lane busy through auto-compaction so successors see a whole
+		// compacted view; failure writes no boundary and retries later.
+		// design/compaction.md → Triggers: the landed input against the
+		// same trigger the step boundary checks.
+		if (landed.window && landed.window.input >= compactTriggerTokens(landed.window.limit)) {
+			try {
+				await this.doCompact(conv, "threshold");
+			} catch (err) {
+				if (err instanceof FencedError) {
+					log.info("threshold compaction fenced — view unchanged", {
+						conversation: convId,
+						epoch,
+					});
+				} else {
+					log.warn(
+						"compaction failed — view unchanged, will retry on next threshold crossing",
+						err,
+						{
+							conversation: convId,
+						},
+					);
+				}
+			}
+		}
+		// Off the reply path, post-compaction: the deterministic
+		// curator pass when its interval elapsed (gated inside the
+		// hook). A throw is logged and swallowed — curation never
+		// fails a turn.
+		try {
+			this.deps.onTurnSettled?.(convId);
+		} catch (err) {
+			log.warn("post-turn curator pass failed — turn already delivered", err, {
+				conversation: convId,
+			});
+		}
 	}
 }
 

@@ -44,8 +44,6 @@ const memConfig = memoryConfigSchema.parse({
 
 interface Harness {
 	recallCount(): number;
-	// The recall query text of every /memories/recall request — exclusion
-	// assertions read exactly what left the process.
 	recallQueries(): string[];
 	retains: unknown[];
 	conversation: string;
@@ -143,7 +141,6 @@ describe("memory turn integration", () => {
 		writeFileSync(path, "output");
 		h.store.setMeta(conv.id, { memoryExcluded: true });
 		h.store.append(conv.id, [userMessage([{ type: "text", text: "failed private request" }])]);
-		// This intermediate media from the failed turn is not a completed reply.
 		h.store.append(conv.id, [
 			{
 				id: "media-old",
@@ -412,7 +409,6 @@ describe("memory turn integration", () => {
 		expect(blocks).toHaveLength(1);
 		expect(blocks[0]?.content).toContain("unavailable");
 		expect(blocks[0]?.content).not.toContain("no relevant memories");
-		// Retention still queued — the outage was on recall, not retain.
 		expect(h.store.memoryQueue.next(h.client.target, Date.now())).not.toBeNull();
 		h.store.close();
 	});
@@ -434,8 +430,6 @@ describe("memory turn integration", () => {
 
 	test("re-enabling memory never ships excluded-era messages (#85)", async () => {
 		const h = harness({ factText: "an unrelated stored fact" });
-		// The excluded era: a completed exchange carrying a private
-		// canary. No memory requests may occur.
 		h.store.applySettings(h.conversation, { memoryExcluded: true });
 		const excluded = new RecordingSink();
 		h.runtime.submit(
@@ -453,15 +447,11 @@ describe("memory turn integration", () => {
 			fresh,
 		);
 		expect(await fresh.done).toEqual({ kind: "completed" });
-		// Eligibility is stamped at append time — the excluded era is
-		// historical for memory even after re-enabling, so neither the
-		// recall query nor the new retention document may carry it.
 		expect(h.recallCount()).toBe(1);
 		expect(h.recallQueries().join("\n")).not.toContain("secret canary ALPHA");
 		const item = h.store.memoryQueue.next(h.client.target, Date.now());
 		expect(item).not.toBeNull();
 		expect(item?.document.content).not.toContain("secret canary ALPHA");
-		// The fresh turn itself is eligible and does ship.
 		expect(item?.document.content).toContain("hello again");
 		h.store.close();
 	});
@@ -501,17 +491,11 @@ describe("memory turn integration", () => {
 		runtime.mount({ makeTools: () => ({}) });
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		// The first delta proves the turn was admitted (epoch captured)
-		// and is mid-stream — bumping before that can race admission and
-		// let the turn adopt the new epoch instead of fencing.
 		await sink.firstDelta;
 		store.bumpEpoch(conv.id);
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		expect(store.history(conv.id).map((m) => m.role)).toEqual(["user"]);
 		expect(store.memoryQueue.next(client.target, Date.now())).toBeNull();
-		// The recall ran before the fence, so its working-state block
-		// persists — but no completed-turn memory was committed. A
-		// same-anchor retry replaces the orphan under the fenced boundary.
 		expect(store.memoryContexts.load(conv.id)).toHaveLength(1);
 		store.close();
 	});
@@ -551,8 +535,6 @@ describe("memory turn integration", () => {
 		runtime.mount({ makeTools: () => ({}) });
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-		// Mid-stream, not mid-admission: the flag write must not fence the
-		// turn — exclusion lives at the retention gate, not the epoch.
 		await sink.firstDelta;
 		store.setMeta(conv.id, { memoryExcluded: true });
 		expect(await sink.done).toEqual({ kind: "completed" });
@@ -594,10 +576,6 @@ describe("memory turn integration", () => {
 			},
 		});
 		runtime.mount({ makeTools: () => ({}) });
-		// Excluded before the first message lands — the trigger stamps
-		// ineligible. Re-enabling mid-turn cannot cleanse the reply: it
-		// derived from an excluded input, so retention is refused and the
-		// reply carries the stamp forward.
 		store.setMeta(conv.id, { memoryExcluded: true });
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
@@ -668,8 +646,6 @@ describe("memory turn integration", () => {
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await started;
-		// The flag write no longer fences — the returned recall must be
-		// dropped at the live gate, not stored and not shown.
 		store.setMeta(conv.id, { memoryExcluded: true });
 		release();
 		expect(await sink.done).toEqual({ kind: "completed" });
@@ -741,18 +717,13 @@ describe("memory turn integration", () => {
 			sink,
 		);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		// Recall ran (evidence for the program)…
 		expect(h.store.memoryContexts.load(h.conversation)).toHaveLength(1);
-		// …but housekeeping is never retained.
 		expect(h.store.memoryQueue.next(h.client.target, Date.now())).toBeNull();
 		h.store.close();
 	});
 
 	test("a compaction summary is carried context, never retained as operator speech", async () => {
 		const h = harness();
-		// A compaction whose tail has no assistant reply yet: the synthetic
-		// summary is the newest "user" text in the model view until the
-		// next response lands.
 		h.store.append(h.conversation, [
 			userMessage([{ type: "text", text: "old stuff" }]),
 			{ id: "a0", role: "assistant", parts: [{ type: "text", text: "old reply" }] },
@@ -781,9 +752,6 @@ describe("memory turn integration", () => {
 
 	test("an operator message in a housekeeping burst is still retained", async () => {
 		const h = harness({ factText: "Quiet mornings." });
-		// The scheduler and the delegation watcher both fire while the
-		// operator's message still waits for its turn — one mixed burst.
-		// Housekeeping must not fence the operator's memory out of it.
 		h.store.append(h.conversation, [
 			userMessage([{ type: "text", text: "remember: i take my coffee black" }]),
 			userMessage([{ type: "text", text: "[delegation: deploy · done] all green" }]),
@@ -805,10 +773,6 @@ describe("memory turn integration", () => {
 
 	test("a mid-turn user message is operator speech in retention, not context", async () => {
 		const h = harness();
-		// Turn A in flight: the operator's follow-up arrives (seq 2)
-		// before turn A's response does (seq 3, anchored to seq 1). The
-		// causal view places the reply before the follow-up — classifying
-		// the burst by arrival seq would demote the follow-up to context.
 		h.store.append(h.conversation, [
 			userMessage([{ type: "text", text: "what about the coffee order" }]),
 		]);
@@ -829,10 +793,6 @@ describe("memory turn integration", () => {
 		expect(await sink.done).toEqual({ kind: "completed" });
 		const item = h.store.memoryQueue.next(h.client.target, Date.now());
 		expect(item).not.toBeNull();
-		// The mid-turn message and this turn's trigger are the burst;
-		// only the pre-response exchange is prior context. Two operator
-		// messages span lines, so the speech goes under the Operator
-		// label (#182's layout), not glued inline after it.
 		expect(item?.document.content).toBe(
 			"[Context — not fresh evidence]: what about the coffee order\n" +
 				"got it\n" +
@@ -864,11 +824,9 @@ describe("memory turn integration", () => {
 			sink,
 		);
 		expect(await sink.done).toEqual({ kind: "completed" });
-		// The spoken words reach the retained document…
 		const item = h.store.memoryQueue.next(h.client.target, Date.now());
 		expect(item).not.toBeNull();
 		expect(item?.document.content).toContain("water the fern before friday");
-		// …and the recall query that left the process carried them too.
 		expect(h.recallQueries()[0]).toContain("water the fern before friday");
 		h.store.close();
 	});

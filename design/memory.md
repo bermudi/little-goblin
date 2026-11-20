@@ -1,8 +1,5 @@
 # Long-term memory — goblin design
 
-Part of the goblin design spec. The core — domain model, authority rule,
-cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
-
 ## Long-term memory
 
 **Implemented and live-verified** — first traffic 2026-09-24 against the
@@ -17,105 +14,9 @@ service, not an agent runtime — Goblin owns history, tools, reasoning,
 and Telegram delivery — no MCP, replacement turn loop, or generic
 multi-backend framework.
 
-### Integration and logic flows (mermaid)
+### Integration and logic flows
 
-Drawn from the code 2026-11-07. Terms per the root `GLOSSARY.md`.
-
-**Integration and logic flows** — read path (recall, turn start),
-write path (retention, turn end), tools, forget, and the pod:
-
-```mermaid
-flowchart TB
-    subgraph GOB["goblin.service — host process, this repo"]
-        OP["operator<br/>Telegram · app"]
-        LANE["turn lane<br/>runtime.ts"]
-        REC["recallMemory<br/>memory/mod.ts"]
-        VIEW["withMemoryBlocks<br/>dated-evidence block<br/>ahead of the anchored user msg"]
-        MODEL["model turn<br/>Vercel AI SDK"]
-        LAND["landAttempt<br/>turn/finish.ts"]
-        RET["retentionOpt gates:<br/>memory off · excluded event ·<br/>program · no text ·<br/>over 1M chars · suppressed"]
-        OBX[("outbox<br/>SQLite — same txn<br/>as the reply")]
-        WORK["queue worker<br/>1 op in flight · 5 s tick<br/>backoff 1s x 2^n, max 5 min"]
-        HC["HindsightClient<br/>memory/hindsight.ts<br/>zod on every response"]
-        TOOL["tools<br/>memory_search · memory_reflect"]
-        SURF["operator surfaces<br/>/memory status·retry·dismiss<br/>/forget · app memories browser"]
-        FORG["forgetDocument<br/>memory/forget.ts"]
-        CTX[("memory contexts<br/>+ suppressions<br/>SQLite")]
-    end
-
-    subgraph POD["goblin-memory.pod — podman quadlets"]
-        API["hindsight-api :8888<br/>/v1/default/banks/goblin"]
-        EXT["extraction<br/>LLM gpt-6-luna · retain_mission"]
-        CONS["auto-consolidation<br/>observations_mission"]
-        RETR["recall fusion<br/>semantic + bm25 + graph legs<br/>merged by RRF"]
-        REFL["reflect — synthesis<br/>+ mental models · directives"]
-        PG[("pgvector · Postgres 17<br/>facts · episodes · entities<br/>observations · graph")]
-    end
-
-    LLM["OpenRouter<br/>openai/gpt-6-luna"]
-    EMB["ollama embeddinggemma<br/>via goblin-embed-relay"]
-
-    OP -->|"user msg"| LANE
-    LANE -->|"1 turn start"| REC
-    REC -->|"2 query from memory-bound history<br/>max 2000 chars · screened"| HC
-    HC -->|"3 POST /memories/recall"| RETR
-    RETR -->|"4 embed query"| EMB
-    RETR --> PG
-    RETR -->|"5 scored facts"| HC
-    REC -->|"6 save block at anchor"| CTX
-    REC -->|"7 block + prior blocks"| VIEW
-    VIEW --> MODEL
-    REC -.->|"outage: proceed-without-it block<br/>memory status shows degraded"| VIEW
-
-    MODEL -->|"8 reply lands"| LAND
-    LAND --> RET
-    RET -->|"9 enqueue pending"| OBX
-    WORK -->|"10 POST /memories<br/>async + operation id"| API
-    WORK <-->|"11 GET /operations/id<br/>poll until completed"| API
-    API --> EXT
-    EXT --> PG
-    EXT -->|"embed facts"| EMB
-    EXT --> LLM
-    API -->|"after retain/delete/update"| CONS
-    CONS --> LLM
-    CONS --> PG
-
-    MODEL -->|"tool call"| TOOL
-    TOOL -->|"memory_search → recall"| HC
-    TOOL -->|"memory_reflect → POST /reflect"| REFL
-    REFL --> PG
-    REFL --> LLM
-
-    SURF -->|"browse, read-only<br/>GET /documents · GET /memories/list"| HC
-    SURF -->|"/forget delete"| FORG
-    FORG -->|"worker paused · settle in-flight ops<br/>DELETE /documents/id on every bank"| HC
-    FORG -->|"park rows, then confirm deleted"| OBX
-    FORG -->|"suppress + redact blocks<br/>invalidate window captures"| CTX
-```
-
-**Outbox state machine** (`memory_outbox`, src/memory/queue.ts):
-
-```mermaid
-stateDiagram-v2
-    direction TB
-    [*] --> pending: exchange lands — durable txn with the reply
-    pending --> submitted: POST /memories accepted, op id kept
-    submitted --> submitted: op still processing — backoff poll
-    submitted --> completed: op completed
-    pending --> pending: retryable error — backoff 1s x 2^n, max 5 min
-    pending --> blocked: non-retryable error
-    submitted --> blocked: op failed / cancelled / missing
-    blocked --> pending: /memory retry — fresh op id
-    blocked --> dismissed: /memory dismiss
-    pending --> deleting: /forget delete parks the row
-    submitted --> deleting: in-flight op settled first, max 30 s
-    deleting --> [*]: DELETE confirmed + contexts redacted
-    pending --> [*]: edit purge / cancel
-    completed --> [*]
-    dismissed --> [*]
-```
-
-Invariants the diagrams encode: recall is the read path and
+Implementation and tests live in `src/memory/`. Recall is the read path and
 synchronous at turn start; retention is the write path and fully
 async behind the durable outbox (the reply and its outbox row land in
 one SQLite transaction); every LLM call — extraction, consolidation,
@@ -134,8 +35,7 @@ floors are enforced server-side and re-checked client-side.
    leg is gone with local embeddings (2026-10-09); the timeout stays as
    a bound.
 
-2. **Exclusions: per-topic, command-first** (an epoch-bumped settings
-   command; the mini-app toggle follows). Excluded topics send nothing
+2. **Exclusions: per-topic, command-first.** Excluded topics send nothing
    and recall nothing — enforced in Goblin before any external request,
    for both automatic recall and the memory-search tool. No automatic
    ingestion until this control exists.
@@ -481,53 +381,17 @@ mechanically before any external request — never through model
 instructions — and enabling memory does not silently backfill excluded
 or historical messages.
 
-**Exclusion is per-event and stamped at append time (amendment
-2026-10-08, issue #85).** The live topic flag is a hard gate while set;
-eligibility for the future is decided once, at admission — every event
-row carries whether its conversation was excluded then, and
-memory-bound builders read that stamp through a separate projection of
-history, never the live flag, so lifting the gate cannot retroactively
-ship what was written under it. Ordinary history, the model view, and
-chat search are untouched: exclusion governs what leaves for the memory
-service, not what the conversation holds. Edges: steered-in messages
-carry their own append-time stamps (a steer after a mid-turn `/memory
-off` is stamped excluded); **the flag write is no longer an epoch bump
-(amendment 2026-10-29)** — a running turn finishes rather than fencing,
-and exclusion still cannot leak: retention re-reads the live flag at
-land and inside the append transaction, `memory_search`/`memory_reflect`/
-`history_search` read it per call, an in-flight recall is dropped at the
-live flag after it returns, and a reply that derived from an
-excluded-era input (a steer or trigger stamped while the flag was off)
-is refused retention and stamped ineligible itself — re-enabling cannot
-cleanse it. The reviewer's gate reads both the live flag and the landed
-exchange's own exclusion decision — a turn that consumed an excluded-era
-input never gates even when the flag lifted before review ran. Admission
-also checks every visible user input in the active exchange, even an unowned
-input left by a failed earlier turn: those inputs are still in the model
-view. The last completed assistant reply in causal order closes the prior
-exchange; app file/voice events and compaction summaries are not replies and
-never close it. Pending inputs are removed before this check. In addition,
-claimed input seqs remain tainted regardless of boundaries: only successfully
-consumed steers join that set. The admission decision is journaled with the
-run and carried through continuations (overflow, fallback), even if compaction
-hides the original input; owned seqs also survive those continuations. A
-legacy interrupted run without a recorded admission decision fails closed —
-nothing resumes it (#594), so the row stays inert. A
-continuation event inherits that decision and its owned inputs' exclusion,
-as do app file and voice events based on the inputs consumed at the instant
-of delivery; queued or failed steers do not taint an earlier media delivery.
-Retention uses the same reply boundary before filtering ineligible events,
-so same-turn media cannot demote the trigger from fresh user evidence and
-source IDs. The live flag still
-applies at each append. Fenced and failed turns commit no memory regardless of stamps;
-a compaction summary inherits its folded span's eligibility — eligible
-only when every event below the boundary was eligible, recomputed per
-pointer so repeated compactions stay consistent; the summary is the entry
-at the store-assigned boundary seq (`MemoryEligibility.summarySeq`), never
-an id prefix — client ids are untrusted (#206, compaction.md → "The
-summary's identity"); spin-off forks copy
-stamps verbatim. Events predating the stamp are ineligible; eligibility
-accrues only from new exchanges.
+**Exclusion is per-event and stamped at append time.** The live topic flag
+is a hard gate while set; lifting it cannot retroactively send excluded
+events. Ordinary history, the model view and chat search are untouched.
+Changing the flag does not fence a running turn, so live gates also apply
+to in-flight recall, tools, review and retention. A reply derived from an
+excluded input remains ineligible after re-enabling, including across
+continuations and compaction. Summaries inherit the eligibility of their
+folded span; forks retain event stamps. Legacy events without stamps are
+ineligible, and an interrupted run without its admission decision fails
+closed. See `src/memory/` and the turn and compaction tests for the
+enforcement details.
 
 New dated corrections are retained beside historical facts (verify
 recall distinguishes past from current); suppression survives restarts

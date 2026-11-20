@@ -1,5 +1,3 @@
-// The default turn engine: turn/stream.ts's driveStream behind the
-// TurnEngine boundary (turn/engine.ts).
 
 import type { ModelStep } from "./ai-sdk-step.ts";
 import { type EngineInput, type TurnEngine } from "./engine.ts";

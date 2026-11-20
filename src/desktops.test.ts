@@ -1648,8 +1648,6 @@ describe("fail-closed desktop network", () => {
 		await expect(desktops.setNetwork(name, false)).rejects.toThrow(
 			/could not be inspected.*could not be removed.*rm wedged/s,
 		);
-		// rm failed — both survive for the retry, the row already
-		// saying off: the retry must disconnect, never re-apply on.
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(true);
 		expect(store.get(name)?.network).toBe(false);
 		engine.flags.failInspectFrom = undefined;
@@ -1658,8 +1656,6 @@ describe("fail-closed desktop network", () => {
 		expect(engine.containers.get(containerNameForDesktop(name))!.networks.has(NETWORK)).toBe(false);
 	});
 
-	// #292: the drop takes the container, never the row — the next
-	// call recreates offline from it, like a sandbox.
 	test("a dropped desktop keeps its row and the next call recreates it offline", async () => {
 		const name = "d1";
 		const engine = fakeEngine();
@@ -1682,9 +1678,11 @@ describe("fail-closed desktop network", () => {
 			shotSeq: before.shotSeq,
 			lastObsId: null,
 			lastObsHash: null,
+			leaseKind: null,
+			leaseId: null,
+			leaseExpiresAt: null,
 		});
 		expect(engine.containers.has(containerNameForDesktop(name))).toBe(false);
-		// The next call recreates: the lease died with the container.
 		engine.flags.failDisconnect = false;
 		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/no live lease/);
 		const after = store.get(name)!;
@@ -1700,7 +1698,6 @@ describe("fail-closed desktop network", () => {
 			leaseExpiresAt: null,
 			lastObsId: null,
 		});
-		// The pre-drop frame stays dead under a fresh lease.
 		await desktops.claim(name, RUN_A);
 		await expect(desktops.act(name, RUN_A, shot.id, CLICK)).rejects.toThrow(/fresh screenshot/);
 		const next = await desktops.screenshot(name);
@@ -1715,8 +1712,6 @@ describe("fail-closed desktop network", () => {
 		const before = store.get(name)!;
 		engine.flags.failDisconnect = true;
 		await expect(desktops.setNetwork(name, false)).rejects.toThrow(/container was removed/);
-		// Recreate lands the container on the network, then its
-		// disconnect fails — dropped again, row still there.
 		await expect(desktops.claim(name, RUN_A)).rejects.toThrow(
 			/disconnect failed.*container was removed/s,
 		);
@@ -1735,11 +1730,23 @@ describe("fail-closed desktop network", () => {
 		expect(engine.containers.get(containerNameForDesktop(name))!.networks.has(NETWORK)).toBe(false);
 	});
 
+	test("a dropped desktop under a lease can be destroyed by anyone", async () => {
+		const name = "d1";
+		const engine = fakeEngine();
+		const { store, desktops } = await attached(name, engine);
+		await desktops.claim(name, RUN_A);
+		engine.flags.failDisconnect = true;
+		await expect(desktops.setNetwork(name, false)).rejects.toThrow(/container was removed/);
+		await desktops.destroy(name, { kind: "operator" });
+		expect(store.get(name)).toBeNull();
+	});
+
 	test("a drop during allocate leaves no row — there was none to keep", async () => {
 		const engine = fakeEngine();
 		const { store, desktops } = rig(engine);
 		engine.flags.failDisconnect = true;
-		await expect(desktops.allocate("d1")).rejects.toThrow(/container was removed/);
+		const err = await desktops.allocate("d1").catch((e: unknown) => e);
+		expect((err as Error).message).toMatch(/container was removed$/);
 		expect(store.get("d1")).toBeNull();
 		expect(engine.containers.has(containerNameForDesktop("d1"))).toBe(false);
 	});

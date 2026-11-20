@@ -14,8 +14,6 @@ import { afterEach, beforeEach } from "bun:test";
 import { mkdtempSync, readdirSync, rmdirSync, rmSync, statSync, type Dirent } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import type { LanguageModel } from "ai";
 import type { MessageChunk } from "./message.ts";
 import { openStore, type ConversationStore } from "./conversation.ts";
 import type {
@@ -186,121 +184,6 @@ export function deferred<T = void>(): {
 		reject = rej;
 	});
 	return { promise, resolve, reject };
-}
-
-// ---------- model provider fakes (the edge) ----------
-
-// Respects the abort signal between deltas — a fence must be able to
-// kill the stream mid-flight. beforeDelta replaces the delay with an
-// event-controlled pause point.
-
-export interface FakeModelOptions {
-	/** Optional pause before each emitted delta. Prefer beforeDelta for gated tests. */
-	delayMs?: number;
-	/** Event-controlled pause point for deterministic stream/race tests. */
-	beforeDelta?: (
-		delta: string,
-		index: number,
-		signal: AbortSignal | undefined,
-	) => void | Promise<void>;
-	modelId?: string;
-}
-
-export function fakeModel(
-	deltas: string[],
-	options: FakeModelOptions | number = {},
-): LanguageModel {
-	const opts = typeof options === "number" ? { delayMs: options } : options;
-	return {
-		specificationVersion: "v4",
-		provider: "fake",
-		modelId: opts.modelId ?? "fake-1",
-		supportedUrls: {},
-		doGenerate() {
-			throw new Error("unimplemented");
-		},
-		doStream(options: { abortSignal?: AbortSignal }) {
-			const signal = options.abortSignal;
-			const stream = new ReadableStream<LanguageModelV4StreamPart>({
-				async start(controller) {
-					const push = (p: LanguageModelV4StreamPart) => {
-						try {
-							controller.enqueue(p);
-						} catch {
-							/* closed by abort */
-						}
-					};
-					push({ type: "stream-start", warnings: [] });
-					push({ type: "text-start", id: "t1" });
-					for (const [index, d] of deltas.entries()) {
-						if (signal?.aborted) break;
-						await opts.beforeDelta?.(d, index, signal);
-						if (signal?.aborted) break;
-						if (opts.delayMs !== undefined && opts.delayMs > 0) await sleep(opts.delayMs);
-						if (signal?.aborted) break;
-						push({ type: "text-delta", id: "t1", delta: d });
-					}
-					push({ type: "text-end", id: "t1" });
-					push({
-						type: "finish",
-						finishReason: { unified: "stop", raw: undefined },
-						usage: {
-							inputTokens: {
-								total: 1,
-								noCache: undefined,
-								cacheRead: undefined,
-								cacheWrite: undefined,
-							},
-							outputTokens: { total: deltas.length, text: undefined, reasoning: undefined },
-						},
-					});
-					try {
-						controller.close();
-					} catch {
-						/* already closed */
-					}
-				},
-			});
-			return { stream };
-		},
-	} as unknown as LanguageModel;
-}
-
-/** Hold a provider stream at one delta until a test releases it. */
-export function pauseFakeModelAtDelta(
-	deltas: string[],
-	index = 0,
-): { model: LanguageModel; entered: Promise<void>; release(): void } {
-	const entered = deferred<void>();
-	const gate = deferred<void>();
-	const model = fakeModel(deltas, {
-		beforeDelta: async (_delta, current) => {
-			if (current === index) {
-				entered.resolve();
-				await gate.promise;
-			}
-		},
-	});
-	return { model, entered: entered.promise, release: () => gate.resolve() };
-}
-
-/** fakeModel that also records each request's prompt, JSON-stringified. */
-export function recordingModel(
-	deltas: string[],
-	delayMs = 5,
-): { model: LanguageModel; prompts: string[] } {
-	const prompts: string[] = [];
-	const base = fakeModel(deltas, delayMs) as unknown as {
-		doStream(o: { prompt: unknown }): { stream: ReadableStream<LanguageModelV4StreamPart> };
-	};
-	const model = {
-		...base,
-		doStream(o: { prompt: unknown }) {
-			prompts.push(JSON.stringify(o.prompt));
-			return base.doStream(o);
-		},
-	} as unknown as LanguageModel;
-	return { model, prompts };
 }
 
 // ---------- turn sinks ----------

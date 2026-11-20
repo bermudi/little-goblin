@@ -1,3 +1,4 @@
+// These cases pin AI SDK v4 usage fields and their mapping into Goblin's usage shape.
 import { describe, expect, test } from "bun:test";
 import type { LanguageModelV4Usage } from "@ai-sdk/provider";
 import { generateText } from "ai";

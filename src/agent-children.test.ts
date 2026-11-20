@@ -12,16 +12,15 @@ import { holderId, type DesktopRow, type LeaseHolder } from "./desktops-store.ts
 import { openStore } from "./conversation.ts";
 import { Runtime } from "./runtime.ts";
 import { tmpDb, useHome, waitUntil } from "./testkit.ts";
-import {
-	finishPart,
-	scriptedModel,
-	textParts,
-	type ScriptedModel,
-} from "./testkit/fake-model.ts";
-import type { LanguageModelV4StreamPart } from "@ai-sdk/provider";
-import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
+import { sdkScript } from "./testkit/turn-script-sdk.ts";
+import { claudeScript } from "./testkit/turn-script-claude.ts";
+import type { ScriptCall, ScriptedModel } from "./testkit/turn-script.ts";
 import type { TurnSink } from "./turn/sink.ts";
 import type { DevelopmentInput } from "./wake-store.ts";
+
+const adapters = [sdkScript, claudeScript] as const;
+const engineName = (make: (typeof adapters)[number]) =>
+	make === sdkScript ? "ai-sdk" : "claude-code";
 
 // Unwrap an engine result union — the test wanted the child, not the error.
 const childOf = (res: { child: AgentChild } | { error: string }): AgentChild => {
@@ -29,30 +28,18 @@ const childOf = (res: { child: AgentChild } | { error: string }): AgentChild => 
 	return res.child;
 };
 
-// One scripted reply attempt: the text then the finish.
-function reply(text: string): LanguageModelV4StreamPart[] {
-	return [...textParts(text), finishPart("stop")];
+function createReply(text: string): ScriptCall[] {
+	return [{ kind: "reply", parts: [{ type: "text", text }] }];
 }
 
 // A model whose single call hangs until the test releases it — a child
 // mid-task.
-function gated(text: string): { model: ScriptedModel; release: () => void } {
+function createGate(text: string): { calls: ScriptCall[]; release: () => void } {
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => {
 		release = resolve;
 	});
-	return {
-		model: scriptedModel([
-			{
-				drive: async (ctx) => {
-					await gate;
-					for (const part of reply(text)) ctx.enqueue(part);
-					ctx.close();
-				},
-			},
-		]),
-		release,
-	};
+	return { calls: [{ kind: "hold", parts: [{ type: "text", text }], gate }], release };
 }
 
 // A stateful Desktops stub: claim/release/list over an in-memory row
@@ -142,16 +129,16 @@ interface Rig {
 	engine: AgentChildren;
 	recorded: DevelopmentInput[];
 	events: string[];
-	queue: ScriptedModel[];
+	queue: ScriptCall[][];
 }
 
-function rig(opts: {
+function createRig(opts: {
 	maxRunning?: number;
 	desktops?: Desktops | null;
 	responsibilityRevision?: (id: string) => number | null;
 	settled?: (child: AgentChild, status: AgentChild["status"], result: string | null) => void;
 	events?: string[];
-} = {}): Rig {
+}, make: (typeof adapters)[number]): Rig {
 	useHome("goblin-agent-children-");
 	const store = openStore(tmpDb("goblin-agent-children-"));
 	// An app conversation — the one kind whose resolve persists settings,
@@ -160,16 +147,18 @@ function rig(opts: {
 		model: "fake/parent",
 		thinking: "low",
 	});
-	// One model per model-call, popped in call order — the test scripts
-	// each turn and a call past the script fails loud.
-	const queue: ScriptedModel[] = [];
+	// One adapter instance drives the Runtime; each queued script is added
+	// when that Runtime asks to build the next child turn's step.
+	const queue: ScriptCall[][] = [];
+	const model = make();
 	const runtime = new Runtime({
-		engines: [aiSdkEngine],
+		engines: model.engines,
 		store,
 		buildStep: () => {
 			const next = queue.shift();
 			if (next === undefined) throw new Error("test rig: no scripted model left");
-			return { engine: "ai-sdk", model: next.model, system: "test" };
+			model.script(...next);
+			return model.step();
 		},
 	});
 	runtime.mount({ makeTools: () => ({}) });
@@ -205,10 +194,14 @@ function rig(opts: {
 const spawn = (r: Rig, task: string) =>
 	r.engine.spawn({ parent: r.parent, type: GENERAL_AGENT_TYPE, task, tools: ["read_file"] });
 
-describe("agent children engine", () => {
+for (const make of adapters) {
+describe(`agent children engine — ${engineName(make)}`, () => {
+	const rig = (opts: Parameters<typeof createRig>[0] = {}) => createRig(opts, make);
+	const reply = (text: string) => createReply(text);
+	const gated = (text: string) => createGate(text);
 	test("spawn runs the child, settles done, wakes the parent with the fenced result", async () => {
 		const r = rig();
-		r.queue.push(scriptedModel([reply("CHILD RESULT")]));
+		r.queue.push(reply("CHILD RESULT"));
 		const { child, queued } = await spawn(r, "do it");
 		expect(queued).toBe(false);
 		expect(child.status).toBe("running");
@@ -243,7 +236,7 @@ describe("agent children engine", () => {
 
 	test("spawn persists an explicit responsibility and its link-time revision", async () => {
 		const r = rig({ responsibilityRevision: (id) => (id === "resp-1" ? 7 : null) });
-		r.queue.push(scriptedModel([reply("linked")]), scriptedModel([reply("unlinked")]));
+		r.queue.push(reply("linked"), reply("unlinked"));
 		const linked = (await r.engine.spawn({
 			parent: r.parent, type: GENERAL_AGENT_TYPE, task: "linked", tools: ["read_file"],
 			responsibilityId: "resp-1",
@@ -267,7 +260,7 @@ describe("agent children engine", () => {
 			},
 			events,
 		});
-		r.queue.push(scriptedModel([reply("REPORT ME")]), scriptedModel([reply("unused")]));
+		r.queue.push(reply("REPORT ME"), reply("unused"));
 		const child = (await r.engine.spawn({
 			parent: r.parent, type: GENERAL_AGENT_TYPE, task: "report", tools: ["read_file"],
 		})).child;
@@ -301,10 +294,10 @@ describe("agent children engine", () => {
 	test("linked child sends require authority; authorized and unlinked sends still submit", async () => {
 		const r = rig();
 		r.queue.push(
-			scriptedModel([reply("first")]),
-			scriptedModel([reply("authorized follow-up")]),
-			scriptedModel([reply("unlinked spawn")]),
-			scriptedModel([reply("unlinked follow-up")]),
+			reply("first"),
+			reply("authorized follow-up"),
+			reply("unlinked spawn"),
+			reply("unlinked follow-up"),
 		);
 		const linked = (await r.engine.spawn({
 			parent: r.parent, type: GENERAL_AGENT_TYPE, task: "linked", tools: ["read_file"],
@@ -331,7 +324,7 @@ describe("agent children engine", () => {
 		const r = rig({ maxRunning: 1 });
 		const first = gated("A DONE");
 		const second = gated("B DONE");
-		r.queue.push(first.model, second.model);
+		r.queue.push(first.calls, second.calls);
 		const a = await spawn(r, "a");
 		expect(a.child.status).toBe("running");
 		const b = await spawn(r, "b");
@@ -353,8 +346,8 @@ describe("agent children engine", () => {
 	test("stop closes a running child and a queued one, with no parent wake", async () => {
 		const r = rig({ maxRunning: 1 });
 		const gate = gated("NEVER SEEN");
-		const queuedModel = scriptedModel([reply("QUEUED RUNS")]);
-		r.queue.push(gate.model, queuedModel);
+		const queuedModel = reply("QUEUED RUNS");
+		r.queue.push(gate.calls, queuedModel);
 		const a = await spawn(r, "a");
 		const b = await spawn(r, "b");
 		expect(childOf(r.engine.stop(b.child.conversationId)).status).toBe("stopped");
@@ -373,10 +366,10 @@ describe("agent children engine", () => {
 
 	test("send to a done child runs a follow-up that settles and wakes again", async () => {
 		const r = rig();
-		r.queue.push(scriptedModel([reply("FIRST")]));
+		r.queue.push(reply("FIRST"));
 		const { child } = await spawn(r, "one");
 		await r.engine.awaitSettlement(child.conversationId);
-		r.queue.push(scriptedModel([reply("SECOND")]));
+		r.queue.push(reply("SECOND"));
 		expect(childOf(r.engine.send(child.conversationId, "go again")).status).toBe("running");
 		const second = await r.engine.awaitSettlement(child.conversationId);
 		expect(second.child.status).toBe("done");
@@ -388,7 +381,9 @@ describe("agent children engine", () => {
 	test("send while the child runs rides that turn; the row settles once at its end", async () => {
 		const r = rig();
 		const gate = gated("STEER TARGET");
-		r.queue.push(gate.model);
+		r.queue.push(gate.calls);
+		// No tool boundary sends this late input into Claude's query; it needs a follow-up reply.
+		if (make === claudeScript) r.queue.push(reply("STEER TARGET"));
 		const { child } = await spawn(r, "slow");
 		expect(childOf(r.engine.send(child.conversationId, "and also this")).status).toBe("running");
 		gate.release();
@@ -402,7 +397,7 @@ describe("agent children engine", () => {
 
 	test("a failed turn settles failed and names the error", async () => {
 		const r = rig();
-		r.queue.push(scriptedModel([new Error("model exploded")]));
+		r.queue.push([{ kind: "fail", parts: [], error: { message: "model exploded" } }]);
 		const { child } = await spawn(r, "doomed");
 		const settlement = await r.engine.awaitSettlement(child.conversationId);
 		expect(settlement.child.status).toBe("failed");
@@ -416,8 +411,8 @@ describe("agent children engine", () => {
 	test("boot recovery settles a cut child failed and pumps the queue", async () => {
 		const r = rig({ maxRunning: 1 });
 		const gate = gated("CUT SHORT");
-		const queuedModel = scriptedModel([reply("QUEUED AFTER BOOT")]);
-		r.queue.push(gate.model, queuedModel);
+		const queuedModel = reply("QUEUED AFTER BOOT");
+		r.queue.push(gate.calls, queuedModel);
 		const cut = await spawn(r, "was running");
 		const waiting = await spawn(r, "was queued");
 		expect(waiting.queued).toBe(true);
@@ -458,7 +453,7 @@ describe("agent children engine", () => {
 	test("a computer spawn claims its desktop for the child conversation; settlement releases it", async () => {
 		const fake = fakeDesktops();
 		const r = rig({ desktops: fake.desktops });
-		r.queue.push(scriptedModel([reply("CLICKED IT")]));
+		r.queue.push(reply("CLICKED IT"));
 		const { child, spawnError } = await r.engine.spawn({
 			parent: r.parent,
 			type: COMPUTER_AGENT_TYPE,
@@ -511,7 +506,7 @@ describe("agent children engine", () => {
 		};
 		const r = rig({ desktops: fake.desktops });
 		const gate = gated("waiting for user");
-		r.queue.push(gate.model);
+		r.queue.push(gate.calls);
 		const { child, spawnError } = await r.engine.spawn({
 			parent: r.parent,
 			type: COMPUTER_AGENT_TYPE,
@@ -535,7 +530,7 @@ describe("agent children engine", () => {
 			settled: (_child, status, result) => reports.push({ status, result }),
 		});
 		const gate = gated("never reached");
-		r.queue.push(gate.model, scriptedModel([reply("DONE AFTER ANSWER")]));
+		r.queue.push(gate.calls, reply("DONE AFTER ANSWER"));
 		const { child } = await r.engine.spawn({
 			parent: r.parent,
 			type: COMPUTER_AGENT_TYPE,
@@ -570,7 +565,7 @@ describe("agent children engine", () => {
 		const fake = fakeDesktops();
 		const r = rig({ desktops: fake.desktops });
 		const gate = gated("NEVER");
-		r.queue.push(gate.model);
+		r.queue.push(gate.calls);
 		const { child } = await r.engine.spawn({
 			parent: r.parent,
 			type: COMPUTER_AGENT_TYPE,
@@ -585,3 +580,4 @@ describe("agent children engine", () => {
 		await r.runtime.shutdown();
 	});
 });
+}

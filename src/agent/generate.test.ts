@@ -1,3 +1,4 @@
+// These fakes pin AI SDK generateText/doGenerate result and tool-call wire behavior.
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { APICallError } from "@ai-sdk/provider";

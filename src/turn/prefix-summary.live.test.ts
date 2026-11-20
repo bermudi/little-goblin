@@ -152,8 +152,7 @@ test(
 						reply = responseMessage;
 					},
 				});
-				for await (const _chunk of uiStream) {
-				}
+				await uiStream.pipeTo(new WritableStream());
 				expect(reply).toBeDefined();
 				store.append(conv.id, [reply!], { anchorSeq: seqs[0] ?? null });
 				return reply!;

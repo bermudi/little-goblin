@@ -27,8 +27,10 @@ an implementation problem in the same pass.
    and tool directives, meaningful metadata, and required legal notices.
    Add no new prose comments.
 4. Compare syntax before and after, excluding comments and locations. Pay
-   attention to line breaks that affect parsing and to JSX whitespace. Run
-   the focused tests and the capped typecheck in `AGENTS.md`.
+   attention to line breaks that affect parsing and to JSX whitespace.
+   A comment can keep lint from rejecting an otherwise empty block; make
+   the intent explicit in code, not with a new comment. Run the focused
+   tests and the capped typecheck in `AGENTS.md`.
 5. Stage new source files so they are in scope. Run
    `bun scripts/comment-audit.ts --prune`, then
    `bun scripts/comment-audit.ts --check` and `git diff --check`. Pruning

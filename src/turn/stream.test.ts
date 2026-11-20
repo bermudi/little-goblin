@@ -1124,21 +1124,17 @@ describe("driveStream", () => {
 				throw new Error("unimplemented");
 			},
 			doStream() {
+				let cancelled = false;
 				return {
 					stream: new ReadableStream<LanguageModelV4StreamPart>({
 						async start(controller) {
-							const push = (p: LanguageModelV4StreamPart) => {
-								try {
-									controller.enqueue(p);
-								} catch {
-								}
-							};
-							push({ type: "stream-start", warnings: [] });
-							push({ type: "text-start", id: "t1" });
-							push({ type: "text-delta", id: "t1", delta: "partial" });
+							controller.enqueue({ type: "stream-start", warnings: [] });
+							controller.enqueue({ type: "text-start", id: "t1" });
+							controller.enqueue({ type: "text-delta", id: "t1", delta: "partial" });
 							await gate;
-							push({ type: "text-end", id: "t1" });
-							push({
+							if (cancelled) return;
+							controller.enqueue({ type: "text-end", id: "t1" });
+							controller.enqueue({
 								type: "finish",
 								finishReason: { unified: "stop", raw: undefined },
 								usage: {
@@ -1151,10 +1147,10 @@ describe("driveStream", () => {
 									outputTokens: { total: 1, text: undefined, reasoning: undefined },
 								},
 							});
-							try {
-								controller.close();
-							} catch {
-							}
+							controller.close();
+						},
+						cancel() {
+							cancelled = true;
 						},
 					}),
 				};

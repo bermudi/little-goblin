@@ -207,17 +207,6 @@ describe("conversation store", () => {
 		reopened.close();
 	});
 
-	test("applySettings patches meta and bumps epoch atomically", () => {
-		const store = openStore(tmpDb("goblin-test-"));
-		const c = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-		expect(store.applySettings(c.id, { model: "zai/glm-4.5", voice: true })).toBe(1);
-		const after = store.get(c.id)!;
-		expect(after.model).toBe("zai/glm-4.5");
-		expect(after.voice).toBe(true);
-		expect(after.epoch).toBe(1);
-		store.close();
-	});
-
 	test("history degrades a corrupt row to a placeholder instead of failing", () => {
 		const path = tmpDb("goblin-test-");
 		const store = openStore(path);
@@ -2021,12 +2010,13 @@ describe("manual rolling DM navigation", () => {
 			],
 			{ anchorSeq: 1 },
 		);
-		store.applySettings(first.id, {
+		store.setMeta(first.id, {
 			voice: true,
 			memoryExcluded: true,
 			model: "old/model",
 			thinking: "high",
 		});
+		store.bumpEpoch(first.id); // a non-default epoch the navigation must keep
 		store.memoryContexts.save(first.id, 1, "recall evidence", ["doc-1"]);
 		for (const summary of ["initial summary", "revised summary"]) {
 			store.setCompaction(first.id, {

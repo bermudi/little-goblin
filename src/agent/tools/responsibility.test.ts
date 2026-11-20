@@ -18,6 +18,7 @@ import { FencedError } from "../../runtime.ts";
 import { deferred, tmpDir, useHome, waitUntil } from "../../testkit.ts";
 import { openWakeStore } from "../../wake-store.ts";
 import { responsibilityTool } from "./responsibility.ts";
+import { storeFence } from "../../testkit/store-fence.ts";
 
 setLogFile(null);
 
@@ -84,6 +85,7 @@ function rig(
 		resps,
 		wakes,
 		conversations: store,
+		fence: storeFence(store),
 		pump: () => {},
 	});
 	const t = responsibilityTool({

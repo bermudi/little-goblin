@@ -158,8 +158,10 @@ export interface ConversationStore extends ConversationReads {
 		createdAt: string,
 	): Conversation;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
-	// Settings changes and cancellation bump the epoch; in-flight turns
-	// fence on it. A recreated address must advance past its deleted row.
+	// Cancellation bumps the epoch; in-flight turns fence on it. Production
+	// code bumps only through Runtime.fence / Runtime.stop, which cancel the
+	// fenced lane in the same call (#820). A recreated address must advance
+	// past its deleted row.
 	bumpEpoch(id: string, previousEpoch?: number): number;
 	// Stop is a quiet no-op when the conversation row has already been deleted.
 	bumpEpochIfPresent(id: string): number | null;
@@ -169,8 +171,6 @@ export interface ConversationStore extends ConversationReads {
 	// Compaction busts the prompt prefix anyway — the snapshot rebuilds
 	// from current files on the next turn.
 	clearPromptSnapshot(id: string): void;
-	// Settings patch + epoch bump in one transaction — never half-applied.
-	applySettings(id: string, patch: ConversationMetaPatch): number;
 	// One transaction; seq assigned here and returned (one per message,
 	// in order) — callers that journal the event need the real seq, not
 	// a lastUserSeq inference. anchorSeq ties a response to the user
@@ -472,13 +472,6 @@ export function openStore(dbPath: string): ConversationStore {
 
 		clearPromptSnapshot(id) {
 			db.run("DELETE FROM prompt_snapshots WHERE conversation_id = ?", [id]);
-		},
-
-		applySettings(id, patch) {
-			return db.transaction(() => {
-				applyPatch(id, patch);
-				return bump(id);
-			})();
 		},
 
 		lastUserSeq(id) {

@@ -1168,20 +1168,34 @@ describe("turn authority", () => {
 		}
 	});
 
-	test("post-commit cancellation requires the committed fence and does not advance it again", async () => {
+	test("fence bumps inside the caller's transaction and cancels the lane after commit, once", async () => {
 		const script = sdkScript();
 		const held = heldText(script, "a");
 		const r = rig({ script });
 		const sink = submit(r, "hi");
 		await held.entered;
 		await sink.firstDelta;
-		expect(() => r.runtime.cancelFenced(r.conv.id, 0)).toThrow("committed epoch");
-		expect(() => r.runtime.cancelFenced(r.conv.id, 1)).toThrow("committed epoch");
-		const epoch = r.store.bumpEpoch(r.conv.id);
-		expect(r.runtime.cancelFenced(r.conv.id, epoch).stopped).toBe(true);
+		const before = r.store.get(r.conv.id)!.epoch;
+		// A rollback bumps nothing and cancels nothing: the turn keeps going.
+		expect(() =>
+			r.runtime.fence((bump) => {
+				bump(r.conv.id);
+				throw new Error("caller write failed");
+			}),
+		).toThrow("caller write failed");
+		expect(r.store.get(r.conv.id)?.epoch).toBe(before);
+		// Inside an outer transaction the commit is only a savepoint — refused.
+		expect(() => r.store.db.transaction(() => r.runtime.fence((bump) => bump(r.conv.id)))()).toThrow(
+			"must not run inside a transaction",
+		);
+		expect(r.store.get(r.conv.id)?.epoch).toBe(before);
+		const { result: epoch, cancelled } = r.runtime.fence((bump) => bump(r.conv.id));
+		expect(epoch).toBe(before + 1);
+		expect(cancelled.get(r.conv.id)?.stopped).toBe(true);
+		// The cancel does not advance the epoch again.
 		expect(r.store.get(r.conv.id)?.epoch).toBe(epoch);
-		held.release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
+		held.release();
 		await r.runtime.shutdown();
 		expect(roles(r)).toEqual(["user"]);
 		r.store.close();
@@ -1462,7 +1476,7 @@ describe("turn authority", () => {
 		});
 		const sink = submit(r, "hi");
 		await sink.admitted; // turn holds its epoch — bump cannot race admission
-		r.store.bumpEpoch(r.conv.id); // settings change mid-turn
+		r.store.bumpEpoch(r.conv.id); // bare epoch advance mid-turn
 		bumpLanded.resolve(); // only now may the stale-epoch tool call flow
 		expect(await sink.done).toEqual({ kind: "fenced" });
 		expect(executed).toBe(false); // the fenced tool's side effect never ran
@@ -2925,15 +2939,15 @@ describe("cache stability", () => {
 		});
 		const compacted = r.runtime.compact(r.conv);
 		await lookupStarted.promise;
-		r.store.bumpEpoch(r.conv.id); // settings change — no abort, only the epoch
+		r.store.bumpEpoch(r.conv.id); // bare epoch advance — no abort, only the epoch
 		windowGate.resolve();
 		await expect(compacted).rejects.toThrow("turn fenced");
 		expect(r.store.getCompaction(r.conv.id)).toBeNull();
 		r.store.close();
 	});
 
-	test("a settings epoch change fences an in-flight compaction — no pointer, snapshot kept", async () => {
-		// Gate the summary call so the settings change lands mid-compaction.
+	test("an epoch advance fences an in-flight compaction — no pointer, snapshot kept", async () => {
+		// Gate the summary call so the epoch advance lands mid-compaction.
 		// /memory bumps the epoch without touching the abort signal — unlike
 		// /stop there is no abort to carry the fence, only the commit check.
 		const started = deferred<void>();
@@ -2974,10 +2988,10 @@ describe("cache stability", () => {
 		// A queued successor settles only after the in-lane compaction —
 		// its done is the barrier proving the fenced commit attempt ran.
 		const barrier = submit(r, "follow-up");
-		// The epoch-changing mutation applySettings models — no /stop, no
-		// abort. (memoryExcluded itself moved to setMeta: a flag write
-		// that never fences.)
-		r.store.applySettings(r.conv.id, { memoryExcluded: true });
+		// A bare epoch advance — no /stop, no abort: the compaction's own
+		// authority check must catch it. (Production bumps only through
+		// Runtime.fence/stop, which also cancel — #820.)
+		r.store.bumpEpoch(r.conv.id);
 		expect(r.store.get(r.conv.id)?.epoch).toBe(1);
 		gate.resolve("the folded era");
 		expect(await barrier.done).toEqual({ kind: "completed" });
@@ -2996,7 +3010,7 @@ describe("cache stability", () => {
 		r.store.close();
 	});
 
-	test("a settings epoch change fences a manual /compact mid-summary — it rejects, no pointer", async () => {
+	test("an epoch advance fences a manual /compact mid-summary — it rejects, no pointer", async () => {
 		const started = deferred<void>();
 		const gate = deferred<string>();
 		const r = rig({
@@ -3016,7 +3030,7 @@ describe("cache stability", () => {
 		seedExchanges(r.store, r.conv.id);
 		const compacted = r.runtime.compact(r.conv);
 		await started.promise; // the manual job's summary is now in flight
-		r.store.applySettings(r.conv.id, { memoryExcluded: true }); // epoch bump, no abort
+		r.store.bumpEpoch(r.conv.id); // bare epoch advance, no abort
 		gate.resolve("the folded era");
 		// The job rejects with the fence — the /compact reply reports it and
 		// nothing was written.
@@ -3346,12 +3360,11 @@ describe("skill reviewer hook", () => {
 		);
 		const sink = submit(r, "hi");
 		await held.entered;
-		r.store.bumpEpoch(r.conv.id);
-		// ai-sdk settles the fence while the model is still held; claude-code
-		// waits for the CLI query to end first (#820).
-		if (make === claudeScript) held.release();
+		// The production fence bumps and cancels in one call (#820), so both
+		// engines settle while the model is still held.
+		r.runtime.fence((bump) => bump(r.conv.id));
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		if (make === sdkScript) held.release();
+		held.release();
 		await sleep(50); // the fire-and-forget gate would have fired by now
 		expect(gated).toBe(false);
 		r.store.close();

@@ -10,6 +10,7 @@ import { aiSdkEngine } from "../turn/ai-sdk-engine.ts";
 import { openTelegramInbox } from "./inbox.ts";
 import { navigateDm } from "./navigation.ts";
 import { waitUntil } from "../testkit.ts";
+import { runFence } from "../fence.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -25,9 +26,9 @@ function fixture() {
 	const runtime = runtimeEdge(store, stopped);
 	return { file, store, runtime, stopped, inbox: openTelegramInbox(store.db) };
 }
-function runtimeEdge(store: ConversationStore, stopped: string[]): Pick<Runtime, "cancelFenced"> {
+function runtimeEdge(store: ConversationStore, stopped: string[]): Pick<Runtime, "fence"> {
 	return {
-		cancelFenced(id: string, epoch: number) {
+		fence: (work) => runFence(store, work, (id, epoch) => {
 			expect(store.get(id)?.epoch).toBe(epoch);
 			expect(store.currentDm(42)?.id).not.toBe(id);
 			// Both the fence and receipt must already be visible to another
@@ -49,7 +50,7 @@ function runtimeEdge(store: ConversationStore, stopped: string[]): Pick<Runtime,
 				settled: Promise.resolve(),
 				active: Promise.resolve(),
 			};
-		},
+		}),
 	};
 }
 function command(updateId: number, kind: "new" | "back" = "new") {

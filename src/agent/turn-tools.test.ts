@@ -35,6 +35,7 @@ import {
 	_resetModelsDevForTest,
 } from "./models-dev.ts";
 import { policyOf } from "./tool-policy.ts";
+import { storeFence } from "../testkit/store-fence.ts";
 
 setLogFile(null);
 
@@ -175,6 +176,7 @@ describe(`${engineName(make)}: turn-tools responsibility composition`, () => {
 			wakes,
 			programs,
 			conversations: store,
+			fence: storeFence(store),
 			pump: () => {},
 		});
 		const toolsFor = makeTurnTools({
@@ -385,6 +387,7 @@ describe(`${engineName(make)}: turn-tools managed send linkage`, () => {
 			wakes,
 			programs,
 			conversations: store,
+			fence: storeFence(store),
 			pump: () => {},
 		});
 		const t3edge = fakeT3(() => [AGENT]);
@@ -469,6 +472,7 @@ describe("responsibility epoch authority", () => {
 				wakes: openWakeStore(store.db),
 				programs,
 				conversations: store,
+				fence: storeFence(store),
 				pump: () => {},
 			});
 			let entered = false;
@@ -609,8 +613,10 @@ describe("operator correction authority", () => {
 			programs,
 			conversations: store,
 			pump: () => dispatcher.pump(),
-			onCorrectionCommitted: (convId, epoch) => {
-				settlements.push(runtime.cancelFenced(convId, epoch).settled);
+			fence: (work) => {
+				const { result, cancelled } = runtime.fence(work);
+				for (const c of cancelled.values()) settlements.push(c.settled);
+				return result;
 			},
 		});
 		const toolsFor = makeTurnTools({
@@ -793,8 +799,10 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 		programs,
 		conversations: store,
 		pump: () => dispatcher.pump(),
-		onCorrectionCommitted: (convId, epoch) => {
-			settlements.push(runtime.cancelFenced(convId, epoch).settled);
+		fence: (work) => {
+			const { result, cancelled } = runtime.fence(work);
+			for (const c of cancelled.values()) settlements.push(c.settled);
+			return result;
 		},
 	});
 	const toolsFor = makeTurnTools({

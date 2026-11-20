@@ -419,7 +419,7 @@ describe("memory turn integration", () => {
 
 	test("excluded topics touch no memory at all", async () => {
 		const h = harness({ factText: "Quiet mornings." });
-		h.store.applySettings(h.conversation, { memoryExcluded: true });
+		h.store.setMeta(h.conversation, { memoryExcluded: true });
 		const sink = new RecordingSink();
 		h.runtime.submit(
 			h.store.get(h.conversation)!,
@@ -436,7 +436,7 @@ describe("memory turn integration", () => {
 		const h = harness({ factText: "an unrelated stored fact" });
 		// The excluded era: a completed exchange carrying a private
 		// canary. No memory requests may occur.
-		h.store.applySettings(h.conversation, { memoryExcluded: true });
+		h.store.setMeta(h.conversation, { memoryExcluded: true });
 		const excluded = new RecordingSink();
 		h.runtime.submit(
 			h.store.get(h.conversation)!,
@@ -445,7 +445,7 @@ describe("memory turn integration", () => {
 		);
 		expect(await excluded.done).toEqual({ kind: "completed" });
 		expect(h.recallCount()).toBe(0);
-		h.store.applySettings(h.conversation, { memoryExcluded: false });
+		h.store.setMeta(h.conversation, { memoryExcluded: false });
 		const fresh = new RecordingSink();
 		h.runtime.submit(
 			h.store.get(h.conversation)!,

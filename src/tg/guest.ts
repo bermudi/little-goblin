@@ -360,9 +360,10 @@ export function ensurePersonaClass(
 	}
 	if (conv.persona === "personal" && want === "guest") {
 		const hasHistory = store.lastSeq(conv.id) !== null || store.getCompaction(conv.id) !== null;
-		const fencedEpoch = store.bumpEpoch(conv.id);
+		// One fence ends whatever the personal lane still runs or queues.
+		const demoted = conv.id;
+		const fencedEpoch = env.runtime.fence((bump) => bump(demoted)).result;
 		if (hasHistory) {
-			if (env.runtime.hasActiveTurn(conv.id)) env.runtime.stop(conv.id);
 			const addr = parseAddress(conv.id);
 			if (addr === null) throw new Error(`unparseable conversation id: ${conv.id}`);
 			store.deleteConversation(conv.id);
@@ -370,7 +371,9 @@ export function ensurePersonaClass(
 				addr.kind === "rolling"
 					? (resetLane?.() ?? throwReset(conv.id))
 					: store.resolve(addr, paths.workspace());
-			store.bumpEpoch(conv.id, fencedEpoch);
+			// The recreated row starts past the deleted one's epoch.
+			const recreated = conv.id;
+			env.runtime.fence((bump) => bump(recreated, fencedEpoch));
 			log.info("conversation reset on demotion — personal history cleared", {
 				conversation: conv.id,
 			});

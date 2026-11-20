@@ -13,6 +13,7 @@ import { lastInputTokensOf, type Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
 import type { OutgoingFile } from "./agent/tools/send.ts";
 import { PendingInputs, type PendingInputMode } from "./pending-input.ts";
+import { type Bump, runFence } from "./fence.ts";
 import { log } from "./log.ts";
 import {
 	activeExchangeExcluded,
@@ -177,6 +178,14 @@ export interface RuntimeMount {
 	makeTools: TurnToolMaker;
 	// Durable wake ownership (wake-dispatcher.ts): contract at turn/run-ownership.ts. Absent in test rigs.
 	runOwnership?: RunOwnershipHooks;
+}
+
+/** What cancelling one fenced lane reports (`Runtime.stop`, `Runtime.fence`). */
+export interface Cancellation {
+	stopped: boolean;
+	settled: Promise<void>;
+	reviewsCancelled: number;
+	active: Promise<void>;
 }
 
 export class FencedError extends Error {
@@ -456,12 +465,7 @@ export class Runtime {
 	// for the turn that was running at call time to leave runTurn — the
 	// record (the unlanded progress event) is in history by then. A queued
 	// compact resolves as a noop so the command waiting on it still completes.
-	stop(convId: string): {
-		stopped: boolean;
-		settled: Promise<void>;
-		reviewsCancelled: number;
-		active: Promise<void>;
-	} {
+	stop(convId: string): Cancellation {
 		const epoch = this.deps.store.bumpEpochIfPresent(convId);
 		if (epoch === null) {
 			log.info("stop — conversation already gone", { conversation: convId });
@@ -475,12 +479,24 @@ export class Runtime {
 		return this.cancelFenced(convId, epoch);
 	}
 
+	// The one way a caller outside the runtime moves an epoch (#820, see
+	// fence.ts): `work` bumps lanes inside one transaction (with any of the
+	// caller's own writes), and every bumped lane is cancelled as /stop
+	// cancels it, right after the commit. A settle failure is logged here —
+	// callers that need the drain await `settled` themselves.
+	fence<T>(work: (bump: Bump) => T): { result: T; cancelled: Map<string, Cancellation> } {
+		return runFence(this.deps.store, work, (convId, epoch) => {
+			const cancellation = this.cancelFenced(convId, epoch);
+			cancellation.settled.catch((err: unknown) =>
+				log.error("fence settle failed", err, { conversation: convId, epoch }),
+			);
+			return cancellation;
+		});
+	}
+
 	// The caller commits the epoch transaction first. Fence and cancellation stay
 	// outside that transaction with no await or intervening submission.
-	cancelFenced(
-		convId: string,
-		epoch: number,
-	): { stopped: boolean; settled: Promise<void>; reviewsCancelled: number; active: Promise<void> } {
+	private cancelFenced(convId: string, epoch: number): Cancellation {
 		if (
 			!Number.isSafeInteger(epoch) ||
 			epoch <= 0 ||

@@ -18,6 +18,7 @@ import { makeResponsibilityService } from "./responsibility-service.ts";
 import { fireScheduled, type SchedulerDeps } from "./scheduler.ts";
 import { tmpDir, useHome } from "./testkit.ts";
 import { openWakeStore, type DevelopmentInput } from "./wake-store.ts";
+import { storeFence } from "./testkit/store-fence.ts";
 
 setLogFile(null);
 
@@ -57,6 +58,7 @@ describe("the handover loop, end to end", () => {
 			wakes,
 			programs,
 			conversations: store,
+			fence: storeFence(store),
 			pump: () => {
 				pumps += 1;
 			},

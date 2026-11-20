@@ -215,10 +215,12 @@ Rulings:
   re-post another conversation's approval card.
 
   A follow-up program is create-once per responsibility. Its durable
-  identity is its `kind` ("followup", service-minted and unpatchable),
-  with the exact `followup:<responsibility_id>` name convention as the
-  fallback for rows created before kinds existed — NOT the
-  `responsibility_id` binding alone: independent programs (a mail
+  identity is its `kind` ("followup", service-minted and unpatchable)
+  alone. Not its name: a custom program may be named
+  `followup:<responsibility_id>`, and the operator approved a custom
+  program, not a clock (#776; no store held a pre-kind follow-up, so
+  the old name fallback was dropped). NOT the
+  `responsibility_id` binding either: independent programs (a mail
   watch, a webhook) legally share a responsibility destination, and
   recovery that matched on the binding adopted the oldest row whatever
   it was, losing the scheduled check-in to a mail-only program. A

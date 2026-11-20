@@ -1001,6 +1001,7 @@ describe("ensureFollowup without a link", () => {
 			charter: "c",
 			cron: "* * * * *",
 			responsibilityId: resp.responsibilityId,
+			kind: "followup",
 		});
 		const program = r.svc.ensureFollowup(resp.responsibilityId)!;
 		expect(program.id).toBe(orphan.id);

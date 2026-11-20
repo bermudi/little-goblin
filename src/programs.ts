@@ -464,9 +464,8 @@ export function openPrograms(dbPath: string): ProgramsStore {
 			db.exec("ALTER TABLE programs ADD COLUMN responsibility_id TEXT");
 		}
 		if (!progCols.has("kind")) {
-			// The follow-up's durable identity postdates the rows it was
-			// minting: existing rows read custom, and recovery also matches
-			// the exact legacy name convention.
+			// Pre-kind rows read custom. No store held a pre-kind follow-up
+			// (prod inventory, 2026-11-19), so none needs reclassifying.
 			db.exec("ALTER TABLE programs ADD COLUMN kind TEXT NOT NULL DEFAULT 'custom'");
 		}
 		if (!progCols.has("last_skipped_at")) {

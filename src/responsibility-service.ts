@@ -306,9 +306,9 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 			// a crash or failed link write leaves an enabled, unlinked
 			// program that a plain recreate would twin (both eligible to
 			// fire; disabling the linked one leaves the orphan running).
-			// The follow-up's durable identity is its kind (plus the exact
-			// name convention rows created before kinds existed carry), NOT
-			// the responsibility binding: independent programs — a mail
+			// The follow-up's durable identity is its kind — not its name,
+			// which any custom program may share, and NOT the
+			// responsibility binding: independent programs — a mail
 			// watch, a webhook — may legally share the destination and must
 			// never be adopted or silenced as crashed twins.
 			const orphans = programs.forResponsibility(resp.responsibilityId).filter(isFollowupProgram);

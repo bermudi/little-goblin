@@ -427,16 +427,15 @@ describe("deliberate responsibility follow-up", () => {
 		expect(r.events()).toHaveLength(1);
 	});
 
-	test("legacy name-only follow-ups keep their cron while gaining the due-review gate", () => {
+	test("a custom program named like the follow-up is never adopted as the clock", () => {
 		const r = rig();
+		r.resps.setFollowup(r.id, null);
 		r.store.db.run("UPDATE programs SET kind = 'custom' WHERE id = ?", [r.program.id]);
-		const legacy = r.programs.update(r.program.id, { cron: "*/15 * * * *" })!;
-		r.tick(legacy.nextRun!);
-		expect(r.events()).toHaveLength(0);
-		expect(r.svc.ensureFollowup(r.id)!.cron).toBe("*/15 * * * *");
-		const plan = r.plan(r.programs.get(r.program.id)!.nextRun!);
-		r.tick(plan.dueAt);
-		expect(r.events()).toHaveLength(1);
+		const clock = r.svc.ensureFollowup(r.id)!;
+		expect(clock.id).not.toBe(r.program.id);
+		expect(clock.kind).toBe("followup");
+		expect(r.programs.get(r.program.id)!.enabled).toBe(true);
+		expect(r.resps.get(r.id)!.followupProgramId).toBe(String(clock.id));
 	});
 
 	test("feed shows cadence-constrained time, not an ordinary next tick", () => {

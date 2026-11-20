@@ -66,7 +66,7 @@ function scriptCall(call: ScriptCall, bridgeRef: { current: ToolBridge | null })
 		steps.push({
 			kind: "error",
 			resultText: call.error.message,
-			...(call.error.status !== undefined ? { apiErrorStatus: call.error.status } : {}),
+			...(call.error.status !== undefined ? { retryStatus: call.error.status } : {}),
 			...(call.error.quota ? { assistantError: "rate_limit" } : {}),
 		});
 	}

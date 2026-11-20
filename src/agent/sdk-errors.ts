@@ -5,7 +5,10 @@
 // own (goblin errors, platform errors like a fetch TypeError) pass through.
 
 import { AISDKError, APICallError, RetryError } from "ai";
-import { ProviderError } from "./provider-errors.ts";
+import {
+	ProviderContentFilterError,
+	ProviderError,
+} from "./provider-errors.ts";
 
 const MAX_DEPTH = 4;
 
@@ -32,6 +35,7 @@ function apiCallBody(err: APICallError): string | undefined {
 
 export function fromSdkError(err: unknown, depth = 0): unknown {
 	if (depth > MAX_DEPTH) return err;
+	if (err instanceof ProviderError || err instanceof ProviderContentFilterError) return err;
 	if (APICallError.isInstance(err)) {
 		return new ProviderError(
 			err.message,
@@ -50,7 +54,14 @@ export function fromSdkError(err: unknown, depth = 0): unknown {
 			? err
 			: new ProviderError(err.message, {}, { cause: fromSdkError(err.cause, depth + 1) });
 	}
-	if (err instanceof Error || typeof err !== "object" || err === null) return err;
+	if (err instanceof Error) {
+		if (err.cause instanceof Error) {
+			const cause = fromSdkError(err.cause, depth + 1);
+			if (cause !== err.cause) return new ProviderError(err.message, {}, { cause });
+		}
+		return err;
+	}
+	if (typeof err !== "object" || err === null) return err;
 	// A provider stream error part carries the provider's own JSON (an
 	// SSE error chunk, an `error`/`response` envelope): its text is the
 	// evidence, whatever its fields are called.

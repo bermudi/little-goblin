@@ -213,10 +213,10 @@ describe("pinEvent", () => {
 		});
 	});
 
-	test("an error result preserves the API status for provider sorting", () => {
+	test("a success-subtype result preserves the API status for provider sorting", () => {
 		const msg = {
 			type: "result",
-			subtype: "error_during_execution",
+			subtype: "success",
 			duration_ms: 1,
 			duration_api_ms: 1,
 			is_error: true,
@@ -228,6 +228,20 @@ describe("pinEvent", () => {
 			api_error_status: 503,
 		} as unknown as SDKMessage;
 		expect(pinEvent(msg)).toMatchObject({ type: "result", apiErrorStatus: 503 });
+	});
+
+	test("an api_retry system frame preserves its HTTP status", () => {
+		const msg = {
+			type: "system",
+			subtype: "api_retry",
+			error_status: 503,
+			attempt: 1,
+			max_retries: 3,
+			retry_delay_ms: 100,
+			error: "server_error",
+			uuid: "retry-1",
+		} as unknown as SDKMessage;
+		expect(pinEvent(msg)).toEqual({ type: "api_retry", status: 503 });
 	});
 
 	test("unconsumed frame types drop to null", () => {

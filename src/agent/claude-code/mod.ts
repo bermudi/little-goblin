@@ -154,6 +154,9 @@ export function pinEvent(msg: SDKMessage): ClaudeEvent | null {
 					mcpServers: msg.mcp_servers,
 				};
 			}
+			if (msg.subtype === "api_retry") {
+				return { type: "api_retry", status: msg.error_status };
+			}
 			if (msg.subtype === "compact_boundary") {
 				const meta = msg.compact_metadata;
 				return {
@@ -400,6 +403,7 @@ async function forkSummary(
 		let text = "";
 		let usage: import("./translate.ts").ClaudeUsage | null = null;
 		let assistantError: string | undefined;
+		let retryStatus: number | null = null;
 		for await (const ev of config.query({
 			prompt: { blocks: [{ kind: "text", text: input.prompt }] },
 			options: {
@@ -434,14 +438,16 @@ async function forkSummary(
 		})) {
 			if (ev.type === "assistant") {
 				assistantError = ev.error;
+				if (ev.error === undefined) retryStatus = null;
 				usage = ev.message.usage ?? usage;
 				text += ev.message.content
 					.filter((block) => block.type === "text" && typeof block.text === "string")
 					.map((block) => block.text)
 					.join("");
 			}
+			if (ev.type === "api_retry") retryStatus = ev.status;
 			if (ev.type === "result" && ev.isError) {
-				throw claudeProviderError(ev.result, ev, assistantError);
+				throw claudeProviderError(ev.result, ev, assistantError, retryStatus);
 			}
 		}
 		log.info("model call usage", {
@@ -493,6 +499,7 @@ async function compactText(
 		const childEnv = await claudeChildEnv(config.auth, input.auth, config.configDir);
 		let text = "";
 		let assistantError: string | undefined;
+		let retryStatus: number | null = null;
 		for await (const ev of config.query({
 			prompt: { blocks: [{ kind: "text", text: input.prompt }] },
 			options: {
@@ -509,13 +516,15 @@ async function compactText(
 		})) {
 			if (ev.type === "assistant") {
 				assistantError = ev.error;
+				if (ev.error === undefined) retryStatus = null;
 				text += ev.message.content
 					.filter((b) => b.type === "text" && typeof b.text === "string")
 					.map((b) => b.text)
 					.join("");
 			}
+			if (ev.type === "api_retry") retryStatus = ev.status;
 			if (ev.type === "result" && ev.isError) {
-				throw claudeProviderError(ev.result, ev, assistantError);
+				throw claudeProviderError(ev.result, ev, assistantError, retryStatus);
 			}
 		}
 		log.info("model call usage", {
@@ -574,6 +583,7 @@ async function nativeCompactSession(
 		const childEnv = await claudeChildEnv(config.auth, p.auth ?? "claude-code", config.configDir);
 		let headUuid: string | null = null;
 		let assistantError: string | undefined;
+		let retryStatus: number | null = null;
 		for await (const ev of config.query({
 			prompt: { blocks: [{ kind: "text", text: "/compact" }] },
 			options: {
@@ -592,7 +602,11 @@ async function nativeCompactSession(
 				verbatimPrompts: false,
 			},
 		})) {
-			if (ev.type === "assistant") assistantError = ev.error;
+			if (ev.type === "assistant") {
+				assistantError = ev.error;
+				if (ev.error === undefined) retryStatus = null;
+			}
+			if (ev.type === "api_retry") retryStatus = ev.status;
 			if ("uuid" in ev && typeof ev.uuid === "string") headUuid = ev.uuid;
 			if (ev.type === "compact_boundary") {
 				log.info("claude native compaction boundary", {
@@ -604,7 +618,7 @@ async function nativeCompactSession(
 				});
 			}
 			if (ev.type === "result" && ev.isError) {
-				throw claudeProviderError(ev.result, ev, assistantError);
+				throw claudeProviderError(ev.result, ev, assistantError, retryStatus);
 			}
 		}
 		if (headUuid !== null) {

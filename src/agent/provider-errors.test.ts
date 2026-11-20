@@ -185,6 +185,27 @@ describe("goblin provider failure shape", () => {
 	});
 });
 
+describe("fromSdkError cause conversion", () => {
+	test("a plain Error cause carries SDK status into transient and quota sorting", () => {
+		const at = (status: number) =>
+			new APICallError({
+				message: "upstream said no",
+				url: "https://api.example.com",
+				requestBodyValues: {},
+				statusCode: status,
+			});
+		expect(isTransientTurnFailure(new Error("request failed", { cause: at(503) }))).toBe(true);
+		expect(quotaExhausted(new Error("request failed", { cause: at(402) }))).not.toBeNull();
+	});
+
+	test("goblin errors and unconverted errors are returned unchanged", () => {
+		const filter = new ProviderContentFilterError();
+		const signal = new Error("preempt signal");
+		expect(fromSdkError(filter)).toBe(filter);
+		expect(fromSdkError(signal)).toBe(signal);
+	});
+});
+
 describe("isContentFilter", () => {
 	// Operator's pasted Telegram warning; the HTTP/SSE envelope is unverified.
 	const warning =
@@ -252,9 +273,7 @@ describe("isTransientTurnFailure", () => {
 					statusCode: code,
 				});
 			expect(isTransientTurnFailure(at(status))).toBe(true);
-			expect(
-				isTransientTurnFailure(new Error("request failed", { cause: fromSdkError(at(status)) })),
-			).toBe(true);
+			expect(isTransientTurnFailure(new Error("request failed", { cause: at(status) }))).toBe(true);
 		},
 	);
 

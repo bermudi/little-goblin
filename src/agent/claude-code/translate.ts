@@ -134,6 +134,11 @@ export interface ClaudeCompactBoundaryEvent {
 	uuid?: string;
 }
 
+export interface ClaudeApiRetryEvent {
+	type: "api_retry";
+	status: number | null;
+}
+
 export interface ClaudeResultEvent {
 	type: "result";
 	subtype: string;
@@ -169,6 +174,7 @@ export type ClaudeEvent =
 	| ClaudeAssistantEvent
 	| ClaudeUserEvent
 	| ClaudeCompactBoundaryEvent
+	| ClaudeApiRetryEvent
 	| ClaudeResultEvent
 	| ClaudeFoldedEvent;
 

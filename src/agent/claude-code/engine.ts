@@ -99,11 +99,12 @@ export function claudeProviderError(
 	message: string,
 	result: ClaudeResultEvent | null,
 	assistantError: string | undefined,
+	retryStatus: number | null,
 	cause?: unknown,
 ): ProviderError {
 	// The CLI retries throttles and overloads itself; a surfaced rate_limit is the subscription window.
 	return new ProviderError(message, {
-		status: result?.apiErrorStatus,
+		status: result?.apiErrorStatus ?? retryStatus ?? undefined,
 		verdict: assistantError === undefined ? undefined : CLAUDE_VERDICTS.get(assistantError),
 	}, { cause });
 }
@@ -339,6 +340,7 @@ interface RunState {
 	sawToolUse: boolean;
 	lastStopReason: string | null;
 	lastAssistantError: string | undefined;
+	lastRetryStatus: number | null;
 	// stream block bookkeeping
 	streamedBlocks: Set<number>;
 	blockIds: Map<number, string>;
@@ -369,6 +371,7 @@ export async function driveClaude<M extends WireMember>(
 		sawToolUse: false,
 		lastStopReason: null,
 		lastAssistantError: undefined,
+		lastRetryStatus: null,
 		streamedBlocks: new Set(),
 		blockIds: new Map(),
 		openTextBlocks: new Set(),
@@ -793,6 +796,7 @@ export async function driveClaude<M extends WireMember>(
 		run.sawToolUse = false;
 		run.lastStopReason = null;
 		run.lastAssistantError = undefined;
+		run.lastRetryStatus = null;
 		run.streamedBlocks.clear();
 		run.blockIds.clear();
 		run.openTextBlocks.clear();
@@ -819,6 +823,7 @@ export async function driveClaude<M extends WireMember>(
 		engineState.resultFrame = null;
 		engineState.streamError = null;
 		engineState.rawError = null;
+		run.lastRetryStatus = null;
 		let followUps = 0;
 		const callChannel = steerChannel();
 		engineState.channel = callChannel;
@@ -858,6 +863,11 @@ export async function driveClaude<M extends WireMember>(
 				},
 			})) {
 				deps.assertAuthority();
+				if (ev.type === "api_retry") {
+					run.lastRetryStatus = ev.status;
+				} else if (ev.type === "assistant" && ev.error === undefined) {
+					run.lastRetryStatus = null;
+				}
 				if (ev.type === "assistant" && typeof ev.uuid === "string") {
 					engineState.lastAssistantUuid = ev.uuid;
 				}
@@ -900,6 +910,8 @@ export async function driveClaude<M extends WireMember>(
 								log.info("claude steer folded", { conversation: convId, steer: uuid });
 							}
 						}
+						break;
+					case "api_retry":
 						break;
 					case "result":
 						// The result frame is the turn-complete signal — stop
@@ -1005,6 +1017,7 @@ export async function driveClaude<M extends WireMember>(
 					engineState.streamError,
 					engineState.resultFrame,
 					run.lastAssistantError,
+					run.lastRetryStatus,
 					engineState.rawError ?? undefined,
 				);
 	if (

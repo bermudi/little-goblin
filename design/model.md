@@ -307,8 +307,10 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   at its edge. A typed `quota` verdict or HTTP 402 is a structural quota wall:
   it outranks a 429 and blocks both overflow and transient classification.
   Brave search's 402 was observed; OpenRouter's insufficient-credits 402 is
-  documented, not observed by goblin. Claude Code maps `api_error_status` to
-  status, `rate_limit` to quota, and `overloaded`/`server_error` to transient.
+  documented, not observed by goblin. Claude Code takes status from
+  `api_error_status`, else the failed request's last `api_retry.error_status`
+  (cleared by a later successful assistant frame); it maps `rate_limit` to
+  quota and `overloaded`/`server_error` to transient.
   The CLI retries throttles and overloads itself, so a surfaced `rate_limit`
   is its subscription window, matching `resultErrorText`'s no-retry text.
   This is classification only; request bytes are unchanged.

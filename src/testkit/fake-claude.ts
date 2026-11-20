@@ -71,6 +71,7 @@ export type FakeStep =
 			resultText?: string;
 			assistantError?: string;
 			apiErrorStatus?: number;
+			retryStatus?: number;
 	  }
 	| {
 			/** Provider silence: yields nothing until `until` resolves. */
@@ -280,6 +281,9 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 				}
 				case "error": {
 					if (step.throw !== undefined) throw step.throw;
+					if (step.retryStatus !== undefined) {
+						yield { type: "api_retry", status: step.retryStatus };
+					}
 					if (step.assistantError !== undefined) {
 						yield {
 							type: "assistant",

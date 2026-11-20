@@ -1,35 +1,20 @@
-// Window itemization: what occupies the context window of a step. The
-// provider reports only a total input figure per call, so segments are
-// measured in serialized characters at prepareStep time and the /context
-// endpoint scales them to the last step's reported input tokens. Exact
-// in aggregate, an estimate per segment (the wire's chat template adds
-// per-message overhead no caller can see).
 
 import type { PromptMessage } from "../prompt-message.ts";
 import { inputJsonSchema, isHosted, type Tools } from "../tool.ts";
 import { PROMPT_SECTIONS } from "../agent/prompt.ts";
 
 export interface PromptSegments {
-	/** SOUL.md / persona head — everything before the first section heading. */
 	identity: number;
-	/** The ## environment block (fixed scaffolding, tool bullets). */
 	environment: number;
-	/** The ## project — block (instructions, notes index, project AGENTS.md). */
 	project: number;
 	agentsMd: number;
 	userMd: number;
 	skills: number;
-	/** Tool definitions — name, description, JSON schema per tool. */
 	toolDefs: number;
-	/** All messages in the step's prompt. */
 	history: number;
-	/** Subset of history: tool-call inputs plus tool-result outputs. */
 	toolResults: number;
 }
 
-// Split order = builder order in prompt.ts. Each heading search starts
-// after the previous match, so operator content that happens to repeat
-// a heading inside SOUL.md shifts attribution, never the total.
 const SYSTEM_ORDER = [
 	{ segment: "environment", heading: "environment" },
 	{ segment: "project", heading: "project" },
@@ -56,9 +41,6 @@ export function splitSystemPrompt(
 		if (m.at === -1) continue;
 		cursor = m.at + m.needle.length;
 	}
-	// Everything before the first found heading is identity; each gap
-	// between headings belongs to the heading that opened it; the tail
-	// after the last heading belongs to that last section.
 	let prevKey: keyof PromptSegments | null = null;
 	let prevAt = 0;
 	for (const m of markers) {
@@ -75,15 +57,11 @@ export function splitSystemPrompt(
 	return segments;
 }
 
-// The SDK contract promises JSON-serializable values. Violations are
-// programming errors and must reach the turn's error boundary.
 function jsonLen(value: unknown): number {
 	if (value === undefined) return 0;
 	return JSON.stringify(value).length;
 }
 
-// Media rides the wire base64'd (~4/3 of raw bytes); a URL only sends
-// its own text.
 function dataLen(value: unknown): number {
 	if (typeof value === "string") return value.length;
 	if (value instanceof URL) return String(value).length;
@@ -99,9 +77,6 @@ function dataLen(value: unknown): number {
 	return jsonLen(value);
 }
 
-// Fixed cost for one image/file part in the pre-emption estimate, in
-// chars (chars/4 ≈ 2k tokens). Base64 length is the right gauge for the
-// wire but a wild overestimate of what a provider bills for media.
 export const MEDIA_ESTIMATE_CHARS = 8000;
 
 function partChars(
@@ -117,9 +92,6 @@ function partChars(
 	if (p.type === "tool-call") return { history: jsonLen(p.input), tool: jsonLen(p.input) };
 	if (p.type === "tool-result") {
 		const out = p.output as { type?: string; value?: unknown } | undefined;
-		// A content output carries file parts (screenshot frames) — charge
-		// them the media cost, never jsonLen: a Uint8Array serializes ~6x
-		// and would read as a six-figure token span.
 		if (
 			out !== null &&
 			typeof out === "object" &&
@@ -162,9 +134,6 @@ function messageChars(
 	return { history, tool };
 }
 
-// zod → JSON-Schema conversion is ~0.45 ms/tool and the tool set is
-// constant across a turn's steps, while measurePrompt runs per step:
-// convert once per tool object, reuse thereafter.
 const jsonSchemaByTool = new WeakMap<object, unknown>();
 
 function toolDefsChars(tools: Tools): number {
@@ -177,10 +146,8 @@ function toolDefsChars(tools: Tools): number {
 			js = inputJsonSchema(t);
 			jsonSchemaByTool.set(t, js);
 		}
-		// An async schema converter can't be measured synchronously —
-		// the name+description floor still counts.
 		if (typeof (js as { then?: unknown }).then !== "function") size += jsonLen(js);
-		total += size + 16; // envelope: role markers, name field, nesting
+		total += size + 16;
 	}
 	return total;
 }
@@ -205,9 +172,6 @@ export function measurePrompt(
 	};
 }
 
-// History size for the compaction pre-emption trigger, which converts
-// chars to tokens at /4: media is charged a fixed cost, not its base64
-// length, so one inlined photo cannot read as a six-figure token span.
 export function estimateHistoryChars(messages: readonly PromptMessage[]): number {
 	let total = 0;
 	for (const m of messages) total += messageChars(m, () => MEDIA_ESTIMATE_CHARS).history;

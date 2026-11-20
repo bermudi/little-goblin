@@ -158,10 +158,6 @@ export interface ConversationStore extends ConversationReads {
 		createdAt: string,
 	): Conversation;
 	setMeta(id: string, patch: ConversationMetaPatch): void;
-	// Cancellation bumps the epoch; in-flight turns fence on it. Production
-	// code bumps only through Runtime.fence / Runtime.stop, which cancel the
-	// fenced lane in the same call (#820). A recreated address must advance
-	// past its deleted row.
 	bumpEpoch(id: string, previousEpoch?: number): number;
 	// Stop is a quiet no-op when the conversation row has already been deleted.
 	bumpEpochIfPresent(id: string): number | null;

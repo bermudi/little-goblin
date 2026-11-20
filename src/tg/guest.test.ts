@@ -782,8 +782,6 @@ describe("handleGuestUpdate", () => {
 				expect(demoted.epoch).toBeGreaterThan(epoch);
 				expect(demoted.persona).toBe("guest");
 				expect(store.history(conv.id)).toEqual([]);
-				// The personal lane is fenced and cancelled; the recreated row
-				// (same topic address) is floored past it by a second fence.
 				expect(stopped).toEqual([conv.id, conv.id]);
 			} finally {
 				release.resolve();

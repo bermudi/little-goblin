@@ -32,14 +32,7 @@ export interface ServiceDeps {
 	db: Database;
 	resps: ResponsibilityStore;
 	wakes: WakeStore;
-	/** The same db handle's conversation store — the lanes bound to a
-	 *  project. */
 	conversations: Pick<ConversationStore, "listProjectConversationIds">;
-	/** Runtime.fence on the same db handle: correct() bumps every bound
-	 *  lane inside the fence's transaction, so a rollback undoes revision
-	 *  + fences + event together, and each fenced lane's live turn is
-	 *  cancelled right after the commit — before pump, so a stale turn
-	 *  cannot act once the correction wake is admitted (#820). */
 	fence<T>(work: (bump: Bump) => T): T;
 	/** Called after every commit so the durable wake reaches its lane. */
 	pump(): void;
@@ -227,8 +220,6 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 					});
 				});
 			} catch (err) {
-				// The commit stands: the wake still pumps, then the failure
-				// surfaces as the cancel threw it.
 				if (!(err instanceof FenceCancelError)) throw err;
 				pump();
 				throw err.cause;

@@ -2016,7 +2016,7 @@ describe("manual rolling DM navigation", () => {
 			model: "old/model",
 			thinking: "high",
 		});
-		store.bumpEpoch(first.id); // a non-default epoch the navigation must keep
+		store.bumpEpoch(first.id);
 		store.memoryContexts.save(first.id, 1, "recall evidence", ["doc-1"]);
 		for (const summary of ["initial summary", "revised summary"]) {
 			store.setCompaction(first.id, {

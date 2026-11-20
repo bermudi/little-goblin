@@ -1,551 +1,120 @@
-# goblin v2 — design
+# Goblin design notes
 
-Rewrite of little-goblin — same product, ruthless scope. v1 retired at the
-2026-10-09 cutover; no code, no state, no specs carry over — only this
-document and the lessons it encodes.
+**Code defines shipped behavior.** Tests pin what must not change.
+[DIRECTION.md](DIRECTION.md) records operator intent;
+[ROADMAP.md](ROADMAP.md) tracks unbuilt work and acceptance evidence.
+These notes explain choices and trade-offs. [Docs](docs/) are for operating
+Goblin.
 
-## Why
+| Looking for | Start with |
+| --- | --- |
+| Conversation identity, history, settings | [`conversation-address.ts`](src/conversation-address.ts), [`conversation.ts`](src/conversation.ts), [`config-schema.ts`](src/config-schema.ts) |
+| Request lifecycle, persistence, recovery | [`runtime.ts`](src/runtime.ts), [`turn-journal.ts`](src/turn-journal.ts), [runtime rationale](design/runtime-turn.md) |
+| Client and Telegram | [`app/src`](app/src/), [`src/http`](src/http/), [`src/tg`](src/tg/) |
+| Scheduled work and division of work between agents | [`programs.ts`](src/programs.ts), [`responsibility-service.ts`](src/responsibility-service.ts), [`agent-children.ts`](src/agent-children.ts) |
+| Memory and conversation summarization | [`src/memory`](src/memory/), [`compaction.ts`](src/agent/compaction.ts) |
 
-pi-coding-agent is the ceiling: pi-ai supports only text and images, thinking
-levels are half-broken, and the codebase grew a ~10x stabilization apparatus
-(test code to product code) to compensate for seams pi forced on it. Vercel AI
-SDK gives provider-agnostic model access, native document/audio parts, and
-thinking levels that actually work — the agent core is rewritten around it,
-and everything else is rebuilt only if it earns its place.
-
-## Product boundary
-
-- One human operator (bermudi), one Bun process, homelab. Prod is g7: a
-  `goblin.service` (systemd user unit, linger) running one immutable release
-  from `~/goblin-releases/`, plus the memory stack directly. Install is
-  `scripts/install.sh` — fresh-only, path-substituting, first-boot
-  scaffolding; there is no onboarding wizard, ever. `scripts/release.ts` is
-  the update path (build a release from a commit, gate on typecheck, flip,
-  restart, verify; design/deploy.md); tests gate merges in CI, not deploys,
-  and it never pushes (docs/operations.md → Deploying).
-- Two channels. Telegram: long polling, topics, reactions, files, voice —
-  **and Mini Apps, designed in from the start** (the process serves them over
-  HTTP; see Telegram intake & delivery). The app: a React client, PWA while
-  testing, Capacitor APK when stable, speaking the AI SDK UIMessage protocol
-  over the process's own HTTP surface (see App channel). The channels are
-  disjoint — a conversation is born on the surface where it starts and stays.
-  One sanctioned crossing (ruling 2026-10-03): a delegation launched from the
-  Telegram DM spins off a named app conversation, and Telegram rings for it
-  (see Spin-off).
-- Goblin's machine state lives in SQLite (`bun:sqlite`, WAL); files stay
-  where humans edit them — config, auth, workspace. Notes are the ruled
-  exception (2026-10-10): their editing surface is the app, so they are rows
-  (design/projects.md → Notes). Optional long-term memory is a separate
-  Hindsight service backed by PostgreSQL (see Long-term memory); it does not
-  migrate Goblin's conversation store.
-- No third channel — two exist (Telegram and the app, `App channel`, ruling
-  2026-09-30; another needs a ruling here) — no plugin SDK, no k8s.
-
-## Setup and diagnosis
-
-Setup (installer + first boot) is ruled in [Setup](design/setup.md): no
-wizard ever; fresh setup never quietly updates an existing installation.
-Doctor ([Doctor](design/doctor.md)) is one bounded diagnostic pass that
-reports — it never repairs, initializes state, or changes services. A
-scheduled invocation requires explicit standing authority; no timer or
-resident self-waking behavior is introduced by this capability.
+Area notes live in [`design/`](design/). Non-obvious decisions with no
+existing home get a short [architecture decision record](design/decisions/).
 
 ## Domain model
 
-Two concepts. Conversation identity **is** its channel address — a Telegram
-address (chat + optional topic thread) or an app address (`app/<id>`), ruling
-2026-09-30. The two pools are disjoint; see App channel. One exception
-(ruling 2026-10-03): the bot DM is a *rolling* address — it resolves to its
-current conversation, and a quiet gap can start the next one (see Rolling
-DM).
+An address determines where an answer belongs; do not add aliases or mirror
+conversations between channels. A Telegram DM may roll to a new conversation.
+The deliberate crossing is a [spin-off](design/app.md#spin-off-ruling-2026-10-03):
+copy work to an app conversation and ring in Telegram, not synchronize two
+histories.
 
-```text
-Telegram update
-      │
-      ▼
-Conversation ─────── (channel address) → durable event history
-      │ while a turn is running
-      ▼
-    Turn ──────────── ephemeral: one agent loop + serialized queue
-```
+## The authority rule
 
-- **Conversation** — keyed by its channel address. A Telegram address is a
-  forum topic in the operator's group, or the bare chat itself — for the bot
-  DM, a sequence of conversations with one current (Rolling DM; DM topics
-  retired 2026-10-03); an app address is a client-minted id that exists only
-  in the app channel. Owns `events` (user msgs, assistant msgs, tool calls,
-  system events) and `meta` (created, app model/thinking snapshots; Telegram
-  selection is shared).
-- **Turn** — a unit of work enqueued on a conversation: per-conversation
-  serial queue, one active turn. A message submitted while a turn runs
-  **steers** (2026-09-28, replacing queue-behind): folded into the next model
-  call at the SDK's `prepareStep` boundary, which runs before every model
-  call including the first, so submits landing during turn startup (recall,
-  attachments) steer too. Injection is an appended tail: prefix bytes
-  untouched, the conversation's prompt cache stays warm (Cache stability).
-  Recall stays admission-time — steered input is not re-recalled. Engine
-  scope: `prepareStep` folding is the streamText engine's seam; a
-  claude-code engine turn (design/model.md → The claude-code engine) has no
-  mid-run injection seam, so steers queue into the immediate successor
-  turn — the v1 ruling, not a regression. The reply's
-  anchor, retention source, and reviewer evidence read the exchange as it
-  ended **bounded by an ownership high-water mark** advancing only over
-  entries the turn actually injected (claimed by durable event seq, never
-  the app-controlled message id): input the turn
-  never read — a mid-conversion arrival still queued, an uncarryable steer —
-  never anchors its reply. The admission-time model view is bounded the same
-  way (2026-10-08, #82): durability is not ownership — a submit still queued
-  at turn start (the streaming client a non-streaming head must leave
-  behind) stays out of that turn's view and anchor; the turn that claims it
-  reads it. The inverse is deliberate (2026-10-04, app.md → Streaming
-  members): a streaming turn fans chunks out to every streaming member, so a
-  merged or steered second client watches the whole reply. Exceptions:
-  - A turn led by a sink that doesn't stream (the background-turn bell)
-    never absorbs a submit from a streaming sink (2026-10-03, Spin-off):
-    that submit waits and leads its own turn, or the client would never
-    see the reply.
-  - Input arriving after the final model call has no boundary left to
-    steer into — it queues into an immediate successor turn.
-  - A steer parked mid-step also gates tool launches (#477): each fenced
-    tool's launch re-reads the lane's claimable input, and a waiting
-    steer skips the unstarted call with the fixed synthetic result
-    `skipped: the user sent new input; re-issue if still needed`
-    (journaled replayed — the model's record, never an execution), so a
-    side effect cannot land ahead of input the model has not seen.
-    Calls already running finish normally, and the claim itself still
-    belongs to the next model call. streamText engine only — a
-    claude-code turn never claims mid-turn, so its launches run and the
-    steer leads the successor turn.
-  - A submit that cannot be prepared for the model errors its own delivery
-    and is never re-queued (requeue would fail every successor turn's
-    admission conversion identically — a poison pill); its message stays in
-    history and degrades to a readable placeholder in later model views, the
-    corrupt-row precedent one step later at the conversion boundary.
-  - `/stop` fences the running turn and drops queued ones; messages still in
-    the intake buffer are user input, not queued turns, and flush into a
-    fresh turn at the new epoch.
-    Stopping a conversation whose row has already been deleted is a quiet
-    no-op: the runtime logs the missing-row outcome and returns settled
-    promises rather than surfacing a storage error to the channel.
+### Epochs move only by cancellation
 
-**Topics are the UX — in the group.** In the bot DM, quiet gaps draw the
-boundaries (Rolling DM), with explicit `/new` and `/back` overrides
-(operator ruling, 2026-10-05); neither command applies to group topics.
-There is no `/resume`: a turn killed by process death is never replayed —
-the operator continues by sending a new message
-([the turn journal](design/runtime-turn.md#the-turn-journal), ruling
-2026-11-16 #594). Durable work
-moves to the app (Spin-off). In the group, a forum topic is a conversation:
-create a topic to start one, post in an old topic to resume it; the bot may
-also create topics itself (`createForumTopic`); a chat without topics is one
-standing conversation; management is Telegram's job in the group, not a
-command set's. A topic created without an explicit name (`is_name_implicit`)
-carries a placeholder; the first text burst triggers a one-shot rename via
-the optional `titleModel` config ref — an explicit operator rename always
-wins.
+A turn captures its conversation's epoch at admission; a later epoch fences
+it. Only a cancellation bumps the epoch — `/stop`, `/new` and navigation, a
+guest persona change, a responsibility correction — and it ends the live
+turn in the same call ([`Runtime.fence`](src/runtime.ts),
+[`Runtime.stop`](src/runtime.ts)), on both engines. Settings such as
+`/voice` and `/memory on|off` are flag writes: they apply to the next reply,
+and a streaming reply finishes in the mode it started in (operator,
+2026-11-20, #820). [`module-boundaries.test.ts`](src/module-boundaries.test.ts)
+keeps bare store bumps out of every other production file.
 
-### The authority rule
+### Authority at action time
 
-The one lesson from v1's RuntimeMachine worth keeping, minus the machinery:
-**before any side effect (Telegram send, state write, tool call), the turn
-re-checks that it still holds authority** — its conversation epoch hasn't
-advanced since enqueue.
+State read before an asynchronous operation may no longer authorize an action.
+Re-check at the effect, inside the transaction for writes. Test the race by
+making the competing change while the first action is waiting, not just by
+checking the end state. See the
+[delivery](src/runtime.test.ts) and [queued work](src/responsibility-authority.test.ts)
+regression tests.
 
-Each conversation carries a monotonic `epoch`, bumped only by explicit
-cancellation: `/stop`, `/new`/`/back`, guest demotion, an operator correction
-on a responsibility. **Bump and cancel are one call** (ruling 2026-11-20,
-#820): callers move an epoch only through `Runtime.fence` or `Runtime.stop`
-(`src/fence.ts`). The bump commits inside the caller's transaction, and the
-fenced lane is cancelled right after the commit, before other work can enter
-it. So no path can fence a turn without ending it, and both engines settle a
-fence at once. `module-boundaries.test.ts` keeps bare store bumps out of
-production code.
-Conversation settings do **not** bump the epoch. `/voice` and `/memory on|off`
-are flag writes that apply to the next reply (`/voice` ruling 2026-11-20;
-`/memory` ruling 2026-10-29): a reply already streaming finishes in the mode
-it started in. Model/thinking edits do **not** bump the epoch either: Telegram has one shared
-selection, app conversations own durable snapshots, and root config holds app
-defaults for future conversations (ruling 2026-10-06). A turn captures its
-selection at admission; edits apply to its next turn without interrupting
-this one, including overflow recovery and automatic compaction. `/model` and
-`/think` stay retired. A turn captures `(conversationId, epoch)` at admission
-and re-checks authority around every await. Fenced turns abort quietly
-and log it. No machines, no drain sets — one counter and one function.
-Delivery checks authority when each queued Telegram action executes, not only
-when it is queued. The sole post-fence exception is a cancellation edit: an
-already-visible partial reply may be stamped `⏹ superseded`. Before the
-stamp, pending deltas still land — shown text is never edited back: a window
-boundary that already sent is frozen (a later seam may not pull it back),
-the unsent tail goes out as its own window(s), and the stamp marks the last
-bubble. A rich-mode draft — the only visible surface a rich reply has —
-takes the same stamp. Nothing new is sent when no bubble ever landed, and
-fenced chunks are not retried. A fenced lane that never produced a visible
-bubble is the other post-fence exception: the sink sends one acknowledgement
-threaded to the dropped user message — "⏹ Stopped before I answered — your
-message is kept in history." — so a `/stop` never silently swallows queued
-input. A lane with no triggering message (a program turn) stays silent.
-
-### Authority at action time (#450)
-
-Code that reads state, awaits, then acts carries one authority stamp — an
-epoch, revision, generation or identity — captured at the read, and re-checks
-it at the moment of the act; when the act is a write, the re-check runs inside
-the write's transaction. A mutable row read before an await is never trusted
-after it. Each such workflow has a test that lands the competing write between
-the read and the act, held at the await, not only a test of the end state
-(operator, 2026-11-18).
-
-| Workflow | Stamp | Test |
-| --- | --- | --- |
-| T1: Responsibility send vs reattach | Attachment generation | `src/responsibility-service.test.ts` — a reattach during the held wire check refuses without dispatching either identity |
-| T2: Wake claim vs rewind | Conversation epoch and trigger history sequence | `src/conversation.test.ts` — a claimed wake held before resubmit fails closed after its trigger is rewound |
-| T3: App delete vs stale refresh | List request sequence and deleted conversation id | `app/src/App.test.tsx` — a stale list refresh cannot restore a deleted row or reopen its chat |
-| T4: Memory notice episode | Outage episode id | `src/memory/mod.test.ts` — a resolved notice cannot mark a successor outage episode notified |
-| T5: Delegation observation vs newer send | Status, prompted time, run id and baseline sequence | `src/delegation-lifecycle.test.ts` — a newer send during observation fences the stale completion baseline |
-| T6: Resend vs older failed delivery | Send/run id and prompted time | `src/delegation-lifecycle.test.ts` — a failed older send cannot overwrite a successful resend |
-| T7: Turn sink delivery | Conversation epoch | `src/runtime.test.ts` — an epoch advance during file delivery fences the turn before later sink actions |
-| T8: Verify instance startup | Checkout commit/repo and startup lock PID | Not yet: tracked in #703 |
-| Queued development commit | Status, revision, attachment generation | `src/responsibility-authority.test.ts` — a pause between record and append marks it superseded, still delivered |
-
-Shutdown rides the same rule. SIGINT/SIGTERM closes the runtime (submits
-still land in history but never run), fences every live lane — each sink
-stamps "⏹ superseded" on its already-visible partial reply (if any), without
-flushing unsent content — and drains the intake buffer into history, all
-under a bounded budget. A crash mid-turn leaves the same shape minus the
-flush: the user message is in history, the next turn answers it. The turn
-journal (design/runtime-turn.md → The turn journal) makes the distinction
-durable: for the journal a graceful shutdown IS a crash (#471) — a
-shutdown-fenced run keeps its `running` row and records nothing itself,
-so the next open reclassifies it `interrupted` like any process death.
-`fenced` now means operator/epoch fences only (`/stop`, `/new`/`/back`,
-guest demotion, a responsibility correction). A row reclassified `interrupted` is
-surfaced to the operator as a boot notice — counts and facts, never a
-replay. Whatever the rail — fenced, failed, or killed — the turn's
-completed steps (assistant text, tool calls + results) reach history as
-one ended-aborted system event (design/runtime-turn.md → Unlanded-turn
-progress); the work that happened is transcript. Boot never
-auto-retries a half-run turn — tool calls aren't
-idempotent, and an unanswered tail can't be told apart from `/stop`.
-Accepted input the dead process fenced before admission rides the same
-boot notice (#481): at journal open, user events created since the
-previous journal open — `journal_opens` bounds the dead process's
-lifetime, and a first-ever open counts nothing (#577) — above every
-run's owned floor (anchor/source seqs stand in for legacy NULL
-ownership) and above the conversation's last assistant reply are
-counted per conversation — machinery speech and legacy resume
-markers are not operator input — and reported once per conversation
-("N message(s) you sent before the restart weren't answered"), notice
-only, same no-replay rule.
-One exception: a crash inside the delivery window leaves a run
-`interrupted` + `reply_landed=1` + delivery `pending` — its reply is
-already durable history, so boot owes the channel that text, not a
-notice (#482). The journal records the reply's event seq in the same
-stamp; at Telegram attach the reply re-sends to the conversation's own
-chat chunked like the delivery sink, then a conditional
-`delivery='delivered'` claim settles it (send-first, claim-second —
-at-least-once, so a mid-boot crash may duplicate, never lose). A
-failed send stays pending for the next boot; a pre-column row has no
-recorded seq and keeps its interrupted notice instead; an app lane
-settles without a send because its history IS the channel. Delivered
-rows drop out of the boot notices.
-There is no operator resume of an interrupted turn (#594, pi's behavior):
-the dead run stays `interrupted` forever, its history record and boot
-notice are the whole story, and the next operator message starts an
-ordinary fresh turn.
-
-**Effects and their records (#448).** A step with an external effect (a
-send, a submit) orders it claim → effect → settle: a durable claim commits
-before the effect starts, and the settle record commits after the effect
-returns. A crash can land in either gap. There is no shared helper; each
-workflow states what boot does with the gap, and its crash-point test pins
-that:
-
-- Mail outbox — `src/mail-approval.crash.test.ts`: a send accepted by Gmail
-  remains `sending` and is not re-sent by boot.
-- Responsibility sends — `src/responsibility-service.crash.test.ts`: a
-  crashed claimed send becomes `uncertain` and is not re-sent.
-- Wake dispatch — `src/wake-dispatcher.crash.test.ts`: boot retries submit
-  once, leaves the wake `claimed`, and does not append the trigger again.
-- Boot/turn notices — `src/tg/turn-notice.crash.test.ts`: a notice whose
-  send landed before its delivery mark is sent again at boot (at-least-once).
+A crashed call may already have acted. Preserve evidence, not permission to
+retry. For an external effect, record intent before acting and outcome after.
+The recovery policy depends on which failure is acceptable: an uncertain
+[mail send](src/mail-approval.crash.test.ts) or
+[send to a worker](src/responsibility-service.crash.test.ts) is not retried
+automatically; a [restart notice](src/tg/turn-notice.crash.test.ts) may repeat
+rather than disappear. See [the journal](design/runtime-turn.md#the-turn-journal).
 
 ## Cache stability
 
-Provider prompt caching is a pricing and latency feature goblin is designed
-around, not an afterthought: z.ai caches repeated prefixes implicitly (no
-breakpoints; `cached_tokens` in usage), other providers do the same by prefix
-matching. The invariant: **the request for turn N+1 is the request for turn N
-with new content appended — bytes already sent are never rewritten.**
-Consequences:
+Reusing the prompt prefix saves money and time. Append new input; do not
+re-render material already sent just because time passed, a workspace file
+changed, or a new attachment arrived. The materialization and replay checks
+live in [`attachments.test.ts`](src/agent/attachments.test.ts),
+[`prompt.test.ts`](src/agent/prompt.test.ts) and [`runtime.test.ts`](src/runtime.test.ts).
 
-- Inlinable attachments are inlined from an immutable content-addressed copy
-  under `state/` taken at intake (#567); the workspace file is the agent's
-  working copy and may change freely.
-- No per-turn re-judgment of history. Attachment representation is the pure
-  function above; there is no whole-turn budget and no newest-first eviction
-  — an old image never degrades to a path reference because newer ones
-  arrived.
-- The system prompt carries no automatic per-turn variability — no clock.
-  Time reaches the model as a `data-context` part on each user message
-  (`src/message-context.ts`): arrival time with the box's offset and the
-  surface, stamped once at append and rendered only in the model view, so
-  replay is byte-stable. Rows from before the part stay unstamped, never
-  backfilled. `date` via bash answers "now" mid-turn. Operator edits
-  (SOUL.md, AGENTS.md, USER.md, skills) load at conversation boundaries, not
-  mid-run: the system prompt is frozen per conversation (built at the
-  first turn), so a live conversation's prefix cache is never rewritten under
-  it. Boundaries are a DM roll, a persona/memory-exclusion switch
-  (which clears the snapshot — the prompt differs across personas), a
-  compaction (which clears
-  the snapshot — the history rewrite busts the prefix anyway, so the refresh
-  is free), and a spin-off/new conversation. Mid-conversation edits are
-  visible to the agent via the read tools immediately; injection waits for
-  the boundary.
-- Every model call logs usage with the cached split and a request prefix
-  hash — cache behavior and drift are observable in goblin.log; window
-  utilization warns as input approaches the catalog limit. Compaction is an
-  explicit logged boundary starting a fresh stable prefix — never silent
-  eviction (see Compaction).
-- Pruning old textual tool results is opt-in through the bootstrap-only
-  `cachePruning` config block (profiles of route key + settings hash). A
-  committed projection is a sanctioned rewrite of the model-facing view
-  only — the `events` row is never modified, and the marker replays
-  byte-identically on every later read and restart. New batches commit only
-  between turns, when the profile is unexpired and the observed receipts
-  don't contradict its presumed expiry; a contradiction suspends new batches
-  — never committed rows (an unchanged-prefix zero-cache-read call inside
-  the window, an expired profile, or a documented expiry the contract
-  registry can't support). Prefix relations (`first`/`same`/`append`/
-  `rewrite`) are structural facts about consecutive requests, never proof of
-  cache warmth, expiry or a provider bug. Cache-call evidence has no
-  automatic age-based deletion or prompt-hash stripping; retention changes
-  require a separate explicit decision.
-
-Sanctioned one-time rewrites, each visible as a request-hash move in the log:
-a model switch — or a catalog refresh that changes a model's listed
-modalities — recomputes attachment representations once; a fenced or
-failed turn leaves its user message unanswered, and the successor turn's
-burst-merge (Causal view) rewrites that boundary (a fenced, failed, or
-process-interrupted turn with recorded progress also leaves a system
-event there); a corrupt row's placeholder
-is a repair, not drift; a deploy that changes the read-time compaction
-marker's wording rewrites it once in every compacted conversation; the
-owning turn's injected skill body collapses to its `[skill: name]` marker
-on the next turn's view (owned-seq ruling); a committed pruning marker
-replaces an old textual tool result once, then replays verbatim forever.
-Everything else that moves the hash is a bug.
-
-## Design areas
-
-The core above holds what every change must respect. Each area's rulings
-live in its own file under `design/`; comments cite sections by name
-(`design/telegram.md → Roles and permissions`). A new ruling goes in its
-area's file; a change to the domain model, the authority rule, cache
-stability, or the non-goals goes here. A superseded ruling is rewritten in
-place, not amended: state the surviving rule with its provenance anchor;
-narration of retired behavior belongs in git, not the spec.
-
-## State layout
-
-`$GOBLIN_HOME`: config (`goblin.json5`, `auth.jsonl`), `workspace/` (the
-agent's home — every tool runs there), `projects/<slug>/`, and `state/`
-(SQLite, tool-owned dirs). SQLite durability = WAL + transactions
-(`synchronous=NORMAL` minimum), not tmp/fsync/rename — that ritual is for
-whole-file state only. Inspectability is an export/query command, not a
-format property. Pass-keys state lives outside the tree (OS store,
-agent-lane snapshots) — see [Auth](design/auth.md#proton-pass-2026-09-26).
+Intentional rewrites are limited to context resets (such as compaction,
+forgetting or a persona change), changes to model or attachment modality,
+rebuilding an unanswered exchange, a corrupt-row repair, collapsing one-use
+skill text, and the opt-in projection of old tool results. Changing how a
+compaction marker renders is also a one-time rewrite. Do not extend this set
+as a side effect of unrelated work. A prefix hash change measures a request
+change, not what the provider actually cached; see
+[`cache-observation.test.ts`](src/cache-observation.test.ts) and
+[`cache-pruning.test.ts`](src/cache-pruning.test.ts).
 
 ## Config
 
-`goblin.json5`: provider registry + per-capability blocks (absent =
-capability off; each block's policy lives in its area doc). No secrets —
-`auth.jsonl` holds those.
-
-**One canonical object.** A save parses settings through the schema and
-rewrites the file whole (tmp+fsync+rename, existing mode preserved) — text is
-never patched in place. Comments and key order are not configuration and are
-dropped by a save; unknown keys are rejected at load, not stripped, so a typo
-fails loud. Malformed JSON5 or a schema-invalid incumbent also fails loud — a
-save never resets it silently. Save freshness rides the mini app's `If-Match`
-version, so competing saves cannot silently overwrite each other.
-
-**Settings owns routine configuration.** The app and Telegram mini app share
-the supported settings editor; `goblin.json5` is its persisted state, not a
-parallel editing interface. Direct file edits are reserved for bootstrap and
-recovery, including advanced blocks not yet exposed in Settings. Validate
-those edits with Doctor before an approved restart; the next Settings save
-canonicalizes the file.
+Settings is the routine editing surface; direct edits are for bootstrap and
+recovery. Do not build a second settings workflow around the file. See the
+[operator guide](docs/configuration.md) and [write path](src/config.ts).
 
 ## Module map
 
-### Boundary errors (#449)
+Prefer the owning code to a module inventory. The
+[import-boundary tests](src/module-boundaries.test.ts) and
+[cycle test](src/import-cycles.test.ts) enforce the executable constraints.
+Goblin owns persisted messages and tool definitions so a vendor change cannot
+silently change stored data. See [`message.test.ts`](src/message.test.ts) and
+[`tool.test.ts`](src/tool.test.ts).
 
-External adapters throw `BoundaryError` with one of three kinds: `missing`
-(the resource is absent), `transient` (retry may succeed), or `fatal`
-(retrying unchanged input cannot fix it). Adapters classify once; domain code
-branches on `kind`, never on message text. Callers keep their existing
-missing/gone path, preserve state and warn on transient failures so the next
-pass can retry, and log fatal failures at error level before taking their
-existing failure path. Batch callers isolate per item for missing and fatal
-errors; a transient item aborts the pass without advancing its cursor.
+Each engine translates vendor failures to Goblin's
+[`ProviderError`](src/agent/provider-errors.ts) at its edge (#770). The
+runtime makes one retry and fallback policy from that shared vocabulary.
 
-Flat modules, one job each, tests colocated; the tree itself is the map,
-`scripts/function-size-audit.ts` lists units past the ~300-line smell line.
-`index.ts` wires and never rules: a rule with no owning module gets one
-before it may live here. Inside a module, state clusters by lifetime live in
-their own units — never one scope of closures.
+Auxiliary model calls use [`generate.ts`](src/agent/generate.ts). Two cases
+need a different path: vision needs an idle timeout on a stream, and
+summary generation sometimes needs the exact existing prompt prefix for
+cache reuse (#759).
 
-Function-scoped resources — temp dirs, stream readers — are owned with
-`await using` and the `src/dispose.ts` helpers, so cancel, throw and early
-return release them; module-lifetime owners keep `stop()`/`close()`.
-`src/dispose.test.ts` fails a bare `mkdtemp` outside its allowlist (ruling
-2026-11-17, #447).
+## Non-goals
 
-A **feature** whose pieces span channels and stores may instead live as a
-feature folder (ruling 2026-11-08, #201): one directory under `src/`, a
-single public `index.ts` as the only import outside callers ever name,
-private modules for its policy and delivery paths, and its own tables —
-DDL the feature creates at open, never central schema. Channels and
-stores reach it through the seams it exports; it never owns a channel
-adapter (reminders sends through tg's `DeliveryApi`, it does not know
-grammy). `src/reminders/` is the pilot. Import cycles are frozen by
-`src/import-cycles.test.ts` — a cycle must sit inside one frozen cluster;
-growth or anything new fails the guard, and pruned clusters shrink the
-list by hand.
+One operator, one process, one app client and an optional Telegram channel.
+Sandboxed Telegram guests do not make this a multi-user product. No onboarding
+wizard, third channel, plugin SDK, native browser or MCP client, or Kubernetes
+deployment. New background work does not acquire standing authority on its
+own. Judge additions against [operator direction](DIRECTION.md), not an old
+rollout plan.
 
-**Goblin owns its data shapes** (ruling 2026-11-16, #581; reverses "the
-AI SDK is the platform, not a boundary" for data). Persisted messages and
-parts, stream chunks, usage and finish reason are goblin types in
-`src/message.ts`, written as structural copies of the AI SDK's shapes so
-nothing on disk changed. `src/message.test.ts` is the only place the SDK
-shape is compared: an `ai` bump that changes one fails typecheck there,
-and the fix is a deliberate decision (adopt, or convert at the edge), not
-silent drift in saved conversations. `module-boundaries.test.ts` fences
-those type names out of `ai` everywhere else. SDK *functions* still run on
-these types directly.
-Model-facing prompt messages are goblin types too (`src/prompt-message.ts`,
-compared to the SDK only in `src/prompt-message.test.ts`); engines receive
-`PromptMessage[]` and convert at their own edge.
-Cache telemetry and provider failures carry goblin `Usage`, converted from provider usage once at the AI SDK edge (`src/agent/v4-usage.ts`).
-Provider failures use goblin's `ProviderError` (status, body, typed verdict) in `src/agent/provider-errors.ts`; each engine builds it at its edge (`src/agent/sdk-errors.ts` for the AI SDK, `src/agent/claude-code/engine.ts` for CLI result frames), and sorting reads nothing else (#770).
-
-**Goblin owns its tool definitions** (#595). Tools are `defineTool`s in
-`src/tool.ts`: description, zod input, `execute(input, { toolCallId,
-abortSignal })`, optional text/json `toModelOutput`. A provider-executed
-capability is a `HostedTool` marker (`codex.web_search`), executed by no
-goblin code. Each engine converts at its own edge: `src/turn/ai-sdk-tools.ts`
-builds the `ToolSet` only where an SDK function takes one; the Claude Code
-bridge reads goblin tools directly and skips hosted ones. Readers get the
-model-facing schema from `inputJsonSchema`, and `src/tool.test.ts` holds it
-equal to the SDK's for every mounted tool. `module-boundaries.test.ts`
-fences every `ai`/`@ai-sdk/*` import to an explicit allowlist that only
-shrinks (#597). The neutral engine contract (`src/turn/engine.ts`) is off
-that list: the AI SDK step type lives in `src/turn/ai-sdk-step.ts` (#596),
-and model resolution stays in `src/agent/step.ts`. SDK-specific features stay inside the AI SDK engine; there is
-no lowest-common-denominator layer. The app's `useChat` stream protocol
-stays an SDK wire format until an engine can't meet it.
-
-Side jobs reach the model through `src/agent/generate.ts` (`generate`), never
-the SDK directly. Two standing exceptions (#759): `agent/vision.ts` streams
-with an idle timeout, and `turn/prefix-summary.ts` must send the turn's exact
-message prefix for cache hits; neither fits a one-shot `generate`.
-
-## Non-goals (v1 — return only on demand)
-
-The list below is a record, not a law. The law, applied to any capability:
-
-1. **Core** — what the turn loop's honesty depends on (ordering, authority,
-   durability, delivery). Always in; defects here jump the queue.
-2. **Chat-native** — a natural property of one operator talking to one agent
-   in Telegram: text/voice/media intake, topics, settings commands, the soul.
-   The operator is one person (possibly several accounts); anyone else appears
-   only as a fenced sandbox lane (`design/telegram.md` → Roles and
-   permissions). In scope by default; a missing piece here is a gap *against
-   this doc*, not a deferral. (Voice notes are chat-native — the rewrite
-   exists because pi couldn't do audio; if transcription is missing, that's a
-   bug in the roadmap, not a choice.)
-3. **Machinery** — a second system the loop must keep honest: memory stores,
-   schedulers, subagent fleets, MCP brokers, skill catalogs, projects, inner
-   life. Out until explicitly demanded; when demanded, designed here first.
-
-If a capability can't be classified in one sentence, the classification is
-the design conversation — have it before building.
-
-Read-only diagnosis returned on demand as Doctor; it does not return
-proactive monitoring or authorize repair.
-
-Still out (previously "returned on demand," each designed in its own area
-where it returned): proactive monitoring, self-waking and memory nudges; a
-native browser tool; a native MCP client; raw in-process OAuth; ACP;
-onboarding wizard; a state-migration framework (additive memory schema
-changes are in scope); in-process embeddings; a third channel; backend
-registries; agent recursion (agents are depth 1, design/agents.md) and
-timeout-revive; a second harness
-for projects; self-grading skill machinery; conversation-lifecycle commands;
-full multi-user. The named `allowedUsers` slice stands fenced: sandboxed
-turns + standing sandbox DMs, guest persona + `search` only, memory-excluded,
-no app doors, no sandbox `fetch` (`design/telegram.md` → Roles and
-permissions).
-
-## Test posture — the real change
-
-**Tests guard boundaries and invariants, not implementations:** worth a test —
-authority fencing, durable write semantics, intake coalescing, auth command
-resolution; not worth one — that a function calls its collaborator with the
-right arguments. Fakes at the two external edges (model provider, Telegram
-API); no mock.module pyramids.
+## Test posture
 
 ### Memory net
 
-A test stuck in synchronous work that keeps allocating (a runaway turn
-loop; bun printing a whole happy-dom tree for a failed assertion, #798)
-never yields its thread, so nothing on the main thread can stop it:
-`afterEach`, timers and bun's own test timeout never run. Left alone, the
-kernel OOM-kills the process with no output. The **memory net**
-(`src/test-memory-net.ts`, #818) turns that into a red result that names
-the test:
-
-- **First preload** in `bunfig.toml`, for every `bun test` run, server and
-  app alike, and in each `--parallel` worker process (each runs the
-  preloads).
-- **Watchdog off the main thread.** A `Worker`
-  (`src/test-memory-net.worker.ts`) reads `process.memoryUsage.rss()`
-  — whole-process RSS — every 100 ms. At the limit it writes one
-  `memory runaway:` report with `fs.writeSync(2, …)` (an async stderr
-  write would wait for the stuck main thread) and sends its own process
-  SIGKILL: from a worker, `process.exit` ends only the worker.
-- **Limit.** `GOBLIN_TEST_RSS_LIMIT_MB` (a positive integer) if set;
-  otherwise 75% of the smallest `memory.max` on the process's cgroup v2
-  path, capped at 3 GiB. So 1.5 GiB under the agents' 2 GB
-  `systemd-run` scope, 3 GiB on CI. Passing files peak at 85–264 MB per
-  process on CI (one outlier, #819).
-- **Naming the test.** bun 1.4.4 has no current-test API, so the net
-  replaces `test`/`it`/`describe` on `require("bun:test")` before anything
-  imports it as ESM (a later ESM import would freeze the bindings it sees).
-  Registration records the full `describe > test` name and its
-  `file:line`. The describe prefix is captured when a describe registers,
-  because bun runs nested describe callbacks after the outer one returns;
-  `test.each` rows get their own name per row (`%` formats, `$key`
-  fields). Each test callback is wrapped (keeping its `length`, which
-  bun reads to detect `done` callbacks) to write `running` / `after` into a
-  `SharedArrayBuffer` slot the worker reads. `beforeEach` / `afterEach` /
-  `beforeAll` / `afterAll` callbacks are wrapped too: a runaway hook
-  reports `running: <hook> hook registered at <file:line>` and the last
-  test. A registration in a concise arrow (`() => test(…)`) is a tail
-  call, and JavaScriptCore drops its caller's frame: then the report
-  gives the enclosing describe's file with `line not in the stack`.
-  Top-level code shows as `loading <file>`; code before the first
-  registration in a file shows as `no test registered yet` (bun's own
-  output still prints the file heading).
-- **Fail loud.** A worker that fails to start fails the run before any
-  test; a later worker error is an uncaught error. A test that ran without
-  passing through the wrapper fails in a global `afterEach`.
-- **Proof.** `src/test-memory-net.test.ts` runs bounded runaway fixtures
-  (`*.fixture.ts[x]`, outside bun's test globs) in child `bun test`
-  processes with a 256 MB limit — plain allocation, a mounted React tree
-  printed by a failed `.resolves.toEqual` (#816), and `--parallel` — and
-  watches each child's RSS itself, so a broken net fails the test instead
-  of the box.
-
-The net is a backstop, not a fix: the happy-dom assertion guard (#798)
-still keeps those failures short and readable.
+A test stuck in synchronous code can keep allocating without yielding to
+timeouts or cleanup on the main thread. The [test preload](src/test-memory-net.ts)
+uses an independent [worker](src/test-memory-net.worker.ts) to report which
+test or hook was running and stop the test process before the kernel kills
+it. This is a backstop, not a reason to allow runaway tests. The
+[subprocess tests](src/test-memory-net.test.ts) cover synchronous allocation,
+printing a mounted DOM on failure, and parallel runs (#818).

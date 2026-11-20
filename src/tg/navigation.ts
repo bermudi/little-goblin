@@ -69,9 +69,6 @@ export function navigateDm(
 		const valid = inputSchema.parse(input);
 		const { store, runtime, inbox } = deps;
 		const db = store.db;
-		// Cancellation is irreversible. The fence commits durably with the
-		// pin/receipt, and Runtime.fence cancels the outgoing lane right after
-		// the commit, before any other work can enter it.
 		const fenced = runtime.fence((bump): CommittedNavigation => {
 			phase = "receipt_lookup";
 			db.run(`CREATE TABLE IF NOT EXISTS tg_dm_navigation (

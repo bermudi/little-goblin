@@ -30,7 +30,6 @@ const conv = {
 	createdAt: new Date().toISOString(),
 };
 
-// Marker text in builder order — every section present, exactly once.
 const fullSystem = [
 	"soul text here",
 	"",
@@ -65,9 +64,7 @@ describe("splitSystemPrompt", () => {
 
 	test("each chunk lands on the section that opened it", () => {
 		const s = splitSystemPrompt(fullSystem);
-		// identity is everything before the environment heading
 		expect(fullSystem.slice(0, s.identity)).toBe("soul text here\n");
-		// skills owns the tail from its heading to EOF
 		expect(fullSystem.slice(fullSystem.length - s.skills)).toBe(
 			`\n${PROMPT_SECTIONS.skills}\n\nskills catalog`,
 		);
@@ -261,7 +258,6 @@ describe("content tool outputs", () => {
 				],
 			},
 		];
-		// estimateHistoryChars: media is a fixed 8000-char cost + caption.
 		expect(estimateHistoryChars(messages)).toBe(8000 + "caption".length);
 	});
 });

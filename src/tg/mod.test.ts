@@ -679,7 +679,6 @@ describe("handleMessage", () => {
 		const conv = h.store.get(h.store.currentDm(1)!.id)!;
 		expect(conv.id).toBe("dm:1:1");
 		expect(conv.voice).toBe(true);
-		// A flag write, not a fence (#820).
 		expect(conv.epoch).toBe(0);
 	});
 

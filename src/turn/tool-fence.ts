@@ -1,4 +1,3 @@
-// Tool authority fencing and the crash journal's dispatch/result/error writes — one pipeline for every tool execute.
 
 import { isHosted, type ToolCallContext, type Tools } from "../tool.ts";
 import { bindScriptDispatch, type ToolDispatch } from "../agent/tools/script.ts";
@@ -6,21 +5,6 @@ import { log } from "../log.ts";
 import { classifyRetry, type RetryGuard } from "./retry-guard.ts";
 import { replayKey, type TurnJournal } from "../turn-journal.ts";
 
-// Tools execute inside the SDK stream, so each tool needs its own authority
-// check; tools are fresh per turn. A tool cannot rely on the outer chunk
-// loop's check to fence its side effects. The same seam writes the crash
-// journal's dispatch/result/error transitions — dispatch only after the
-// authority check passes, so a fenced call never reads as entered.
-//
-// A journal write that throws is fatal to the turn, not a tool error:
-// the row is the only record of what ran — letting the SDK surface an
-// ordinary tool failure invites the model to repeat a side effect the
-// journal can no longer describe. The first fault aborts the attempt
-// and fences every later dispatch; the attempt's catch reports it as
-// a turn error, never 'fenced'.
-//
-// #477's steer skip: the exact result text an unlaunched call answers
-// with — fixed wording the model can key on.
 const STEER_SKIPPED = "skipped: the user sent new input; re-issue if still needed";
 
 export function fenceTools(opts: {
@@ -33,8 +17,6 @@ export function fenceTools(opts: {
 	guard?: RetryGuard | undefined;
 	journalFault?: { current: unknown };
 	onJournalFault?: () => void;
-	// #477: a parked steer skips launches it precedes — the runtime arms
-	// this only for an engine whose model-call boundary claims steers.
 	steerWaiting?: (() => boolean) | undefined;
 }): Tools {
 	const { tools, convId, journal, checkAuthority, runId, guard, journalFault, onJournalFault } =
@@ -50,21 +32,12 @@ export function fenceTools(opts: {
 			throw err;
 		}
 	};
-	// One pipeline for every execute: a model-issued call and a call
-	// nested in `script` both enter by tool name. The input tools are
-	// never mutated — the returned set holds copies routed through here.
 	const dispatch: ToolDispatch = (name, input, options) => {
 		const raw = tools[name];
 		const execute = raw === undefined || isHosted(raw) ? undefined : raw.execute.bind(raw);
 		if (execute === undefined) throw new Error(`tool ${name} has no execute`);
 		checkAuthority();
 		if (journalFault?.current !== undefined) throw journalFault.current;
-		// #477: a steer parked on the lane claims into the next model
-		// call — skipping an unstarted call keeps its effects from
-		// landing ahead of input the model has not seen. A call already
-		// past this line finishes normally; the claim itself stays at
-		// the model-call boundary. Journaled replayed like the recovery
-		// fence's refusal: the model's record, never an execution.
 		if (opts.steerWaiting?.() === true) {
 			const value = { error: STEER_SKIPPED };
 			if (journal !== undefined && runId !== undefined) {
@@ -78,10 +51,6 @@ export function fenceTools(opts: {
 			return value;
 		}
 		if (journal !== undefined && runId !== undefined) {
-			// Recovery fence: a signature that collides with the earlier
-			// attempt's own history is evidence, never an answer. A
-			// refusal journals as a synthetic replayed result — it never
-			// reads as execution.
 			const verdict = classifyRetry(name, guard?.get(replayKey(name, input)));
 			if (verdict.kind === "refuse") {
 				const value = { error: verdict.error };
@@ -116,8 +85,6 @@ export function fenceTools(opts: {
 			"then" in result &&
 			typeof (result as { then: unknown }).then === "function"
 		) {
-			// A settled promise is the earliest the result is known —
-			// the wrapper resolves only after the journal row lands.
 			return (result as PromiseLike<unknown>).then(
 				(value) => {
 					note(() => journal.noteToolResult(runId, options.toolCallId, value));

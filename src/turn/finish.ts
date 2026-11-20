@@ -45,9 +45,6 @@ export interface LandDeps {
 	convId: string;
 	epoch: number;
 	conv: Conversation;
-	// The live exclusion flag, re-read at land — the admission snapshot
-	// in `conv` is stale when the operator toggles mid-turn. Exclusion
-	// gates retention here, never by fencing the running turn.
 	memoryExcluded(): boolean;
 	modelEntries(): { seq: number; message: Message }[];
 	memoryEligibility(): MemoryEligibility;
@@ -61,9 +58,7 @@ export interface LandDeps {
 	): void;
 	memory: MemoryTurnDeps | undefined;
 	steerMark: number;
-	// Durable seqs of inputs actually claimed by this attempt, including steers.
 	ownedInputSeqs: ReadonlySet<number>;
-	// Frozen admission view, carried across compaction and resume.
 	admissionExchangeExcluded?: boolean;
 	responseMessage: Message | null;
 	finishReason: FinishReason | null;
@@ -81,9 +76,6 @@ export interface LandedAttempt {
 	done: CompletedDone;
 	window: WindowSignal | null;
 	source: RetentionSource;
-	// This owned exchange consumed at least one append-time-ineligible
-	// user event — independent of the live flag, which may have flipped
-	// back by review time.
 	exchangeExcluded: boolean;
 }
 
@@ -98,9 +90,6 @@ export function landAttempt(deps: LandDeps): LandedAttempt {
 	}
 	const elig = deps.memoryEligibility();
 	const finalSource = retentionSourceFrom(finalEntries, elig);
-	// Ownership, not an assistant boundary in the causal view, identifies
-	// consumed inputs. Media can land inside a turn, and compaction can hide
-	// an owned input entirely. Missing eligibility fails closed.
 	const exchangeExcluded =
 		deps.admissionExchangeExcluded === true ||
 		[...deps.ownedInputSeqs].some((seq) => !elig.eligibleSeqs.has(seq));
@@ -255,8 +244,6 @@ export interface ReviewDeps {
 	convId: string;
 	reviewer: Reviewer | undefined;
 	memoryExcluded(): boolean;
-	// The landed exchange's own taint — off the record even when the
-	// live flag flipped back before this submission.
 	exchangeExcluded: boolean;
 	nextTurnSeq(): number;
 	priorTurn(): PriorTurnContext | undefined;

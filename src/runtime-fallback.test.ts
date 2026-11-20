@@ -1,9 +1,3 @@
-// The model fallback list at the runtime boundary (design/model.md →
-// Model fallback list): advance only on a zero-effect failure, never
-// mid-loop; the serving candidate stands in for conv.model; the wire
-// never shows a withheld error; the run row keeps the operator's
-// selection; the terminal error lists every miss.
-
 import { foldSummary } from "./testkit/fake-summary.ts";
 import { describe, expect, test } from "bun:test";
 import { defineTool, type Tools } from "./tool.ts";
@@ -93,11 +87,8 @@ describe("model fallback list", () => {
 				},
 			});
 			expect(sink.text).toBe("from codex");
-			// The candidate stood in for conv.model at buildStep.
 			expect(r.built).toEqual(["zai/glm-5.3", "codex/gpt-6.1-terra"]);
-			// The withheld error never reached the wire.
 			expect(sink.chunkTypes).not.toContain("error");
-			// Finish metadata names the miss; the label names who served.
 			const finish = sink.chunks.find((c) => c.type === "finish") as {
 				messageMetadata?: { model?: string; fallback?: unknown };
 			};
@@ -105,12 +96,10 @@ describe("model fallback list", () => {
 			expect(finish.messageMetadata?.fallback).toEqual({
 				from: [{ ref: "zai/glm-5.3", reason: "quota exhausted" }],
 			});
-			// The run row keeps the operator's selection for the resume drift check.
 			expect(r.lastRun().convSnapshot).toMatchObject({
 				model: "codex/gpt-6.1-terra",
 				configuredModel: "zai/glm-5.3",
 			});
-			// The stored selection is never written.
 			expect(r.store.get(r.conv.id)!.model).toBe("zai/glm-5.3");
 		} finally {
 			await r.runtime.shutdown();
@@ -178,7 +167,6 @@ describe("model fallback list", () => {
 				modelCalls: 0,
 				transient: false,
 			});
-			// The held error goes out exactly once, with the full story.
 			const errors = sink.chunks.filter((c) => c.type === "error");
 			expect(errors).toHaveLength(1);
 			expect((errors[0] as { errorText: string }).errorText).toContain("every model failed");
@@ -268,7 +256,6 @@ describe("model fallback list", () => {
 			const message = (done as { message: string }).message;
 			expect(message).toContain("database is locked");
 			expect(message).not.toContain("every model failed");
-			// No candidate was built, let alone advanced to.
 			expect(r.built).toEqual([]);
 			expect(models["codex/gpt-6.1-terra"]!.calls()).toBe(0);
 		} finally {
@@ -287,7 +274,6 @@ describe("model fallback list", () => {
 			model: "zai/glm-5.3",
 			fallbacks: ["codex/gpt-6.1-terra"],
 			models,
-			// The recovery guard's read succeeds; the gate's probe throws.
 			wrapJournal: (j) => ({
 				...j,
 				callsFor: (runId) => {

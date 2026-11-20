@@ -304,10 +304,6 @@ function repoPath(file: string): string {
 // pinning its argv) outside src/t3.ts means a second wire owner.
 const T3_SPAWN = /(?:spawnProc|Bun\.spawn|execSync|exec)\((?:[^)]*["'])t3["']/;
 
-// #820: bump and cancel are one call. Production code moves an epoch only
-// through Runtime.fence / Runtime.stop (src/fence.ts), which cancel the
-// fenced lane in the same call — a bare store bump would fence a live turn
-// without ending it. Matches calls and `Pick<…, "bumpEpoch">` deps alike.
 const BARE_EPOCH_BUMP = /\.bumpEpoch(?:IfPresent)?\b|["']bumpEpoch(?:IfPresent)?["']/;
 const EPOCH_BUMPERS = new Set(["fence.ts", "runtime.ts"]);
 const TEST_SUPPORT = /^(?:testkit|test-helpers)\//;

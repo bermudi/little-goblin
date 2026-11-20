@@ -143,10 +143,6 @@ describe("commands", () => {
 		store.close();
 	});
 
-	// #820: /voice applies to the next reply, like model/thinking edits. A
-	// reply already streaming finishes in the mode it started in — on the
-	// claude-code engine a bare epoch bump used to leave the held turn open
-	// until the CLI query ended, then fence it.
 	for (const make of [claudeScript, sdkScript]) {
 		test(`${make === claudeScript ? "claude-code" : "ai-sdk"}: /voice mid-turn neither fences nor holds the turn; the next reply speaks`, async () => {
 			const store = openStore(tmpDb("goblin-cmd-voice-"));
@@ -195,13 +191,11 @@ describe("commands", () => {
 				await entered.promise;
 				expect(handleCommand(deps, store.get(conv.id)!, "/voice")).toBe(true);
 				gate.resolve();
-				// The running reply completes as text: no fence, no stall.
 				expect(await first).toEqual({ kind: "completed" });
 				expect(store.get(conv.id)).toMatchObject({ voice: true, epoch: 0 });
 				expect(texts.some((t) => t.includes("first reply"))).toBe(true);
 				expect(spoken).toEqual([]);
 				expect(store.history(conv.id).map((m) => m.role)).toEqual(["user", "assistant"]);
-				// The next reply is spoken.
 				expect(await turn(store.get(conv.id)!, "again")).toEqual({ kind: "completed" });
 				expect(spoken).toEqual(["second reply"]);
 				expect(calls.filter((c) => c.method === "sendVoice")).toHaveLength(1);

@@ -147,7 +147,8 @@ Corrections, changed status, and deliberate reattachment invalidate old
 reviews. Timed inference is suppressed outside active status. The feed shows
 the next effective check-in and purpose, derived from the plan plus the linked
 Program, and reports missing/disabled/unscheduled follow-ups honestly.
-Implementation contracts: `design/programs.md`, `design/app.md`.
+Owning code: `src/responsibility-service.ts`, `src/scheduler.ts` and
+`app/src/ResponsibilityFeed.tsx`.
 
 Verification: 546 tests passed across 23 focused files (2,321 assertions),
 covering responsibilities, observation, follow-up/recovery, wakes (including

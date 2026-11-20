@@ -8,6 +8,7 @@ import { openNotes } from "../notes.ts";
 import { observedModel } from "../agent/providers.ts";
 import { openProjects, projectWorkdir, type ProjectStore } from "../projects.ts";
 import { Runtime } from "../runtime.ts";
+import type { TurnToolMaker } from "../turn/tool-authority.ts";
 
 import { aiSdkEngine } from "../turn/ai-sdk-engine.ts";
 import { textModel } from "../testkit/fake-model.ts";
@@ -37,7 +38,7 @@ export function setup(
 		programOps?: AppChannelDeps["programOps"];
 		push?: AppChannelDeps["push"];
 		model?: LanguageModel;
-		makeTools?: ConstructorParameters<typeof Runtime>[0]["makeTools"];
+		makeTools?: TurnToolMaker;
 		// The responsibility bag needs this setup's own stores — a
 		// factory form receives them after construction.
 		responsibilities?:
@@ -81,11 +82,11 @@ export function setup(
 			system: "test",
 		}),
 		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
-		makeTools: (conv, deliverVoice, recording, deliverFile) => {
+	});
+	runtime.mount({ makeTools: (conv, deliverVoice, recording, deliverFile) => {
 			opts.workdirs?.push(projectWorkdir(projects, conv));
 			return opts.makeTools?.(conv, deliverVoice, recording, deliverFile) ?? {};
-		},
-	});
+		} });
 	const auth: Pick<AuthStore, "resolve"> = {
 		resolve: (name) =>
 			name === APP_TOKEN_NAME

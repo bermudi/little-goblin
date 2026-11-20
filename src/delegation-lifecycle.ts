@@ -120,22 +120,14 @@ export interface DelegationLifecycle {
 // (spinoff.ts owns the pin).
 export interface DelegationWiringDeps {
 	config: DelegationConfig | undefined;
-	configRef: ConfigRef;
 	dbPath(): string;
-	// Late-bound: the lifecycle is built after the runtime; the delegate
-	// tool resolves it per call, never at wire time.
-	lifecycle(): DelegationLifecycle;
-	pin(conv: Conversation, name: string): DelegationPin;
 }
 
-export interface DelegationWiring {
+export function wireDelegation(deps: DelegationWiringDeps): {
 	delegations: DelegationsStore | null;
 	hc: HcDelegation | null;
-	delegateDeps(conv: Conversation, workdir: string): DelegateToolDeps | undefined;
-}
-
-export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
-	const { config: delegationBoot, configRef, pin } = deps;
+} {
+	const { config: delegationBoot } = deps;
 	const delegations = delegationBoot ? openDelegations(deps.dbPath()) : null;
 	// "goblin" is the local unit's --session — the only target, never a config knob.
 	const hc = delegationBoot
@@ -145,28 +137,32 @@ export function wireDelegation(deps: DelegationWiringDeps): DelegationWiring {
 				hooksDir: paths.hcHooks(),
 			})
 		: null;
-	const delegateDeps = (
-		conv: Conversation,
-		workdir: string,
-	): DelegateToolDeps | undefined => {
+	return { delegations, hc };
+}
+
+export function makeDelegateDeps(deps: {
+	config: DelegationConfig | undefined;
+	configRef: ConfigRef;
+	lifecycle: DelegationLifecycle | null;
+	pin(conv: Conversation, name: string): DelegationPin;
+}): (conv: Conversation, workdir: string) => DelegateToolDeps | undefined {
+	return (conv, workdir) => {
 		if (
-			delegationBoot === undefined ||
-			configRef.current.delegation === undefined ||
-			delegations === null ||
-			hc === null
+			deps.lifecycle === null ||
+			deps.config === undefined ||
+			deps.configRef.current.delegation === undefined
 		) {
 			return undefined;
 		}
 		return {
-			lifecycle: deps.lifecycle(),
-			config: delegationBoot,
+			lifecycle: deps.lifecycle,
+			config: deps.config,
 			// Relative cwd in delegation harness args anchors at the turn's
 			// working directory — under a project that's the project's dir.
 			workspaceDir: workdir,
-			pin: (name: string) => pin(conv, name),
+			pin: (name: string) => deps.pin(conv, name),
 		};
 	};
-	return { delegations, hc, delegateDeps };
 }
 
 export function delegationWake(deps: WakeDeps): Pick<DelegationLifecycleDeps, "wake" | "wakeApp"> {

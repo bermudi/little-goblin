@@ -55,11 +55,11 @@ function rig(opts: {
 		engines: [aiSdkEngine],
 		store,
 		buildStep,
-		makeTools: () => opts.tools ?? {},
 		turnJournal: journal,
 		modelFallbacks: () => opts.fallbacks,
 		...(opts.compaction !== undefined ? { compaction: opts.compaction } : {}),
 	});
+	runtime.mount({ makeTools: () => opts.tools ?? {} });
 	const turn = async (text: string) => {
 		const sink = new RecordingSink();
 		runtime.submit(store.get(conv.id)!, userMessage([{ type: "text", text }]), sink);

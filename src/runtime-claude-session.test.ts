@@ -96,10 +96,10 @@ describe("claude native sessions (#418)", () => {
 			store,
 			engines: [claudeEngine],
 			buildStep: () => claudeStepFor(CLAUDE_REF),
-			makeTools: () => ({}),
 			turnJournal: journal,
 			claudeSessions: sessions,
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		const turn = async (text: string) => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
@@ -207,10 +207,10 @@ describe("claude native sessions (#418)", () => {
 			store,
 			engines: [claudeEngine],
 			buildStep: () => claudeStepFor(CLAUDE_REF),
-			makeTools: () => tools,
 			turnJournal: journal,
 			claudeSessions: sessions,
 		});
+		runtime.mount({ makeTools: () => tools });
 
 		try {
 			fake.script([
@@ -314,10 +314,10 @@ describe("claude native sessions (#418)", () => {
 			store,
 			engines: [claudeEngine],
 			buildStep: () => claudeStepFor(CLAUDE_REF),
-			makeTools: () => tools,
 			turnJournal: journal,
 			claudeSessions: sessions,
 		});
+		runtime.mount({ makeTools: () => tools });
 		try {
 			fake.scriptSequence([
 				[
@@ -398,10 +398,10 @@ describe("claude native sessions (#418)", () => {
 				lane === "claude"
 					? claudeStepFor(CLAUDE_REF)
 					: ({ engine: "ai-sdk", model: sdk.model, system: "test", label: "fake/fake-1" }) satisfies ModelStep,
-			makeTools: () => ({}),
 			turnJournal: journal,
 			claudeSessions: sessions,
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		const turn = async (text: string) => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
@@ -473,10 +473,10 @@ describe("claude native sessions (#418)", () => {
 			store,
 			engines: [claudeEngine],
 			buildStep: () => claudeStepFor(CLAUDE_REF),
-			makeTools: () => ({}),
 			turnJournal: journal,
 			claudeSessions: sessions,
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		const turn = async (text: string) => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text }]), sink);
@@ -556,10 +556,10 @@ describe("claude native sessions (#418)", () => {
 			store,
 			engines: [claudeEngine],
 			buildStep: () => claudeStepFor(ref),
-			makeTools: () => ({}),
 			turnJournal: journal,
 			claudeSessions: sessions,
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		const turn = async (text: string) => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text }]), sink);

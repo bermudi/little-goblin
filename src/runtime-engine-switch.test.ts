@@ -128,9 +128,9 @@ describe("one conversation across turn engines", () => {
 			store,
 			engines: [claudeEngine, aiSdkEngine],
 			buildStep: () => (lane === "sdk" ? sdkStep() : claudeStep),
-			makeTools: () => tools,
 			turnJournal: journal,
 		});
+		runtime.mount({ makeTools: () => tools });
 		const turn = async (text: string) => {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text }]), sink);

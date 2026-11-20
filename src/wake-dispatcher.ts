@@ -21,7 +21,8 @@ import type { Message } from "./message.ts";
 import type { Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
 import { log } from "./log.ts";
-import type { Runtime, RuntimeDeps } from "./runtime.ts";
+import type { Runtime } from "./runtime.ts";
+import type { RunOwnershipHooks } from "./turn/run-ownership.ts";
 import type { TurnSink } from "./turn/sink.ts";
 import type { JournalStatus, TurnJournal } from "./turn-journal.ts";
 import type {
@@ -67,7 +68,7 @@ export interface WakeDispatcher {
 	/** Enable a boot-deferred dispatcher, pump durable work, and start retries. */
 	start(): () => void;
 	/** The runtime's runOwnership hooks — total by construction. */
-	hooks: NonNullable<RuntimeDeps["runOwnership"]>;
+	hooks: RunOwnershipHooks;
 	/** The persistent-retry ticker — the only mover for wakes gated on
 	 *  a backoff clock. Returns the stopper. */
 	startTicker(intervalMs?: number): () => void;

@@ -171,8 +171,8 @@ function rig(opts: {
 			if (next === undefined) throw new Error("test rig: no scripted model left");
 			return { engine: "ai-sdk", model: next.model, system: "test" };
 		},
-		makeTools: () => ({}),
 	});
+	runtime.mount({ makeTools: () => ({}) });
 	const recorded: DevelopmentInput[] = [];
 	const events = opts.events ?? [];
 	const quiet: TurnSink = {

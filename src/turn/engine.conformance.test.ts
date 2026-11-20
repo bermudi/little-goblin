@@ -118,9 +118,9 @@ function sdkRig(): EngineRig {
 		engines: [aiSdkEngine],
 		store,
 		buildStep: () => step,
-		makeTools: () => echoTools(),
 		turnJournal: journal,
 	});
+	runtime.mount({ makeTools: () => echoTools() });
 	let recorded: { prompts: string[] } | null = null;
 	return {
 		name: "ai-sdk",
@@ -307,9 +307,9 @@ function claudeRig(): EngineRig {
 		engines: [claudeEngine, aiSdkEngine],
 		store,
 		buildStep: () => step,
-		makeTools: () => echoTools(),
 		turnJournal: journal,
 	});
+	runtime.mount({ makeTools: () => echoTools() });
 	return {
 		name: "claude-code",
 		runtime,

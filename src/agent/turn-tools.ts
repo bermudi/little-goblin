@@ -7,7 +7,8 @@
 // through this same function so the drift comparison reads the set the
 // resumed attempt would actually get.
 
-import { FencedError, type RuntimeDeps } from "../runtime.ts";
+import { FencedError } from "../runtime.ts";
+import type { TurnToolMaker } from "../turn/tool-authority.ts";
 import { workerSendRefusal, type WorkerSendRefusal } from "../responsibility-authority.ts";
 
 import type { ConfigRef } from "../config.ts";
@@ -43,7 +44,6 @@ import { withScript } from "./tools/script.ts";
 import type { T3 } from "../t3.ts";
 import type { ResponsibilityStore } from "../responsibilities.ts";
 import { makeManagedSendEdge, type ResponsibilityService } from "../responsibility-service.ts";
-import { log } from "../log.ts";
 
 // Anything deciding "does this tool slot exist" is a dep here; the
 // decision itself lives in makeTurnTools, not boot().
@@ -71,30 +71,19 @@ export interface TurnToolsDeps {
 	): DelegateToolDeps | undefined;
 	// Only the approval gate's request closure — the send credential
 	// lives behind the taps.
-	mail(): Pick<MailApproval, "requestDraft"> | undefined;
-	// Same late binding as mail — the adapter starts after the bot, so
-	// the getter may be absent for a turn that somehow runs first; the
-	// request closure then throws and the tool reports the pending
-	// proposal rather than losing it.
-	programApproval(): Pick<ProgramApproval, "requestApproval"> | undefined;
+	mail: Pick<MailApproval, "requestDraft">;
+	programApproval: Pick<ProgramApproval, "requestApproval">;
 	visionDepsFor(conv: Conversation): VisionToolDeps | undefined;
 	sandboxes: Sandboxes;
-	// Late-bound: the desktop pool binds past Runtime's construction —
-	// the getter preserves the closure's call-time read.
-	desktops(): Desktops | null;
+	desktops: Desktops | null;
 	// The t3 adapter — one boot-frozen instance for the handover seams
 	// (thread discovery and managed sends).
 	t3: T3;
-	// Late-bound — the responsibility service is built
-	// after Runtime's construction. null = the tool never mounts.
-	responsibility(): {
+	responsibility: {
 		resps: ResponsibilityStore;
 		service: ResponsibilityService;
 	} | null;
-	// Late-bound — the agent-children engine needs the
-	// wake dispatcher, which is built after Runtime. null = the agent
-	// tool never mounts and child conversations cannot run.
-	agents(): AgentChildren | null;
+	agents: AgentChildren | null;
 	// tg/guest.ts owns the exclusion policy — injected so tools never
 	// imports back into tg/.
 	filterGuests<T extends Record<string, unknown>>(conv: Conversation, tools: T): T;
@@ -122,7 +111,7 @@ export function screenshotCapable(conv: Conversation, cfg: Config): boolean {
 	return modalities !== null && modalities.has("image");
 }
 
-export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
+export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 	const {
 		configRef,
 		auth,
@@ -143,28 +132,12 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 		// Narrowed once so the handover closures below type-check as
 		// project-bound.
 		const projectId = conv.projectId;
-		// Late-bound seams — resolved per call, never at factory time.
-		const mail = deps.mail();
-		const desktops = deps.desktops();
-		const responsibilitySvc = deps.responsibility();
-		const agents = deps.agents();
-		if (conv.agentType === null) {
-			const missing = [
-				...(configRef.current.desktops !== undefined && desktops === null ? ["desktop"] : []),
-				...(agents === null ? ["agent"] : []),
-			];
-			if (missing.length > 0) {
-				log.warn("turn tools built before owner bound", {
-					conversation: conv.id,
-					missing,
-				});
-			}
-		}
+		const { mail, desktops, responsibility: responsibilityOwner, agents } = deps;
 		// One gate for every executor that can link work to what goblin owes.
 		const checkResponsibility =
-			conv.projectId !== null && responsibilitySvc !== null
+			conv.projectId !== null && responsibilityOwner !== null
 				? (id: string) => {
-						const resp = responsibilitySvc.resps.get(id);
+						const resp = responsibilityOwner.resps.get(id);
 						if (resp === null || resp.projectId !== conv.projectId)
 							return `responsibility ${id} not found in this project`;
 						if (resp.status !== "active" && resp.status !== "paused")
@@ -173,10 +146,10 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 					}
 				: undefined;
 		const sendAuthority =
-			conv.projectId !== null && responsibilitySvc !== null
+			conv.projectId !== null && responsibilityOwner !== null
 				? (responsibilityId: string): WorkerSendRefusal | null => {
 						if (store.get(conv.id)?.epoch !== epoch) throw new FencedError(conv.id);
-						const resp = responsibilitySvc.resps.get(responsibilityId);
+						const resp = responsibilityOwner.resps.get(responsibilityId);
 						if (resp !== null && resp.projectId !== conv.projectId) return "outside-project";
 						return workerSendRefusal(resp);
 					}
@@ -227,20 +200,18 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 					? {
 							programs,
 							target: targetOf(conv),
-							...(conv.projectId !== null && responsibilitySvc !== null
+							...(conv.projectId !== null && responsibilityOwner !== null
 								? {
 										project: {
 											projectId: conv.projectId,
-											resps: responsibilitySvc.resps,
+											resps: responsibilityOwner.resps,
 										},
 									}
 								: {}),
 							publicUrl: () => configRef.current.publicUrl,
 							...(sendPrivate === undefined ? {} : { sendPrivate }),
 							requestApproval: async (proposal, signal) => {
-								const gate = deps.programApproval();
-								if (gate === undefined) throw new Error("program approvals are not wired yet");
-								await gate.requestApproval(proposal, signal);
+								await deps.programApproval.requestApproval(proposal, signal);
 							},
 						}
 					: undefined,
@@ -290,7 +261,6 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 				(channel === "app" || channel === "telegram") && configRef.current.mail !== undefined
 					? {
 							requestDraft: (input) => {
-								if (mail === undefined) throw new Error("mail approvals are not wired yet");
 								return mail.requestDraft(input, { target: targetOf(conv) });
 							},
 						}
@@ -349,7 +319,7 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 				conv.agentType !== null
 					? {
 							recordAsk: (question: string) => {
-								const engine = deps.agents();
+								const engine = deps.agents;
 								if (engine === null) {
 									return { error: "no agent-children engine is wired" };
 								}
@@ -371,10 +341,10 @@ export function makeTurnTools(deps: TurnToolsDeps): RuntimeDeps["makeTools"] {
 			// handover loop lives on. The handover key is the project
 			// conversation — one acceptance per coordination conversation.
 			responsibility:
-				projectId !== null && responsibilitySvc !== null
+				projectId !== null && responsibilityOwner !== null
 					? {
-							resps: responsibilitySvc.resps,
-							service: responsibilitySvc.service,
+							resps: responsibilityOwner.resps,
+							service: responsibilityOwner.service,
 							projectId,
 							coordinationConversationId: conv.id,
 							journalRunId: context?.runId,

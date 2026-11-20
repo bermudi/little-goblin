@@ -697,4 +697,42 @@ describe("navigation races: late completions", () => {
 		await waitFor(() => win.location.pathname === "/app/c/minted", "the chat opens");
 		expect(posts.filter((p) => p.url === "/api/app/conversations")).toHaveLength(2);
 	});
+
+	test("opening the Projects index twice does not add a duplicate history entry", async () => {
+		await mount();
+		await openPane("Projects");
+		await click(container.querySelector(".panel-index"));
+		await waitFor(() => win.location.pathname === "/app/projects", "Projects index");
+		const length = win.history.length;
+		await click(container.querySelector(".panel-index"));
+		expect(win.history.length).toBe(length);
+	});
+
+	test("a conversation highlight is cleared on Settings and restored by Back", async () => {
+		convs = [{
+			id: "app/X",
+			title: "Conversation X",
+			createdAt: "2026-10-10T00:00:00Z",
+			updatedAt: "2026-10-10T00:00:00Z",
+			projectId: null,
+			parentId: null,
+			pinnedAt: null,
+			archivedAt: null,
+			preview: "",
+		}];
+		await mount();
+		await waitFor(() => container.querySelector(".conv-main") !== null, "conversation row");
+		await click(container.querySelector(".conv-main"));
+		await waitFor(() => win.location.pathname === "/app/c/X", "conversation X");
+		expect(container.querySelector(".conv.current")).not.toBeNull();
+		await openPage("Settings");
+		await waitFor(() => container.querySelector(".settings") !== null, "Settings");
+		expect(container.querySelector(".rail .conv.current")).toBeNull();
+		win.history.back();
+		await act(async () => {
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await waitFor(() => win.location.pathname === "/app/c/X", "Back to conversation X");
+		await waitFor(() => container.querySelector(".rail .conv.current") !== null, "highlight restored");
+	});
 });

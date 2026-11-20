@@ -49,7 +49,14 @@ function usage(u: FakeUsageInput = {}): ClaudeUsage {
 }
 
 export type FakeStep =
-	| { kind: "stream-text"; text: string; usage?: FakeUsageInput; deltaUsage?: FakeUsageInput }
+	| {
+			kind: "stream-text";
+			text: string;
+			usage?: FakeUsageInput;
+			deltaUsage?: FakeUsageInput;
+			/** Stall after the text streams, before the block closes: the step is mid-stream. */
+			hold?: { onEnter?: () => void; until: Promise<void> };
+	  }
 	| { kind: "text"; text: string; usage?: FakeUsageInput }
 	| { kind: "reasoning"; text: string; usage?: FakeUsageInput }
 	| {
@@ -70,6 +77,8 @@ export type FakeStep =
 			/** A clean result frame with is_error — the CLI's error result. */
 			resultText?: string;
 			assistantError?: string;
+			apiErrorStatus?: number;
+			retryStatus?: number;
 	  }
 	| {
 			/** Provider silence: yields nothing until `until` resolves. */
@@ -169,8 +178,10 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 							content_block: { type: "text" },
 						},
 					};
-					// Two deltas so part-id continuity is exercised.
-					const mid = Math.ceil(step.text.length / 2);
+					// Two deltas so part-id continuity is exercised; one when
+					// held, so the whole text is on the wire (and in the first
+					// throttled tail checkpoint) at onEnter.
+					const mid = step.hold === undefined ? Math.ceil(step.text.length / 2) : step.text.length;
 					for (const piece of [step.text.slice(0, mid), step.text.slice(mid)]) {
 						if (piece === "") continue;
 						yield {
@@ -181,6 +192,10 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 								delta: { type: "text_delta", text: piece },
 							},
 						};
+					}
+					if (step.hold !== undefined) {
+						step.hold.onEnter?.();
+						await step.hold.until;
 					}
 					yield {
 						type: "stream",
@@ -279,11 +294,31 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 				}
 				case "error": {
 					if (step.throw !== undefined) throw step.throw;
+					if (step.retryStatus !== undefined) {
+						yield { type: "api_retry", status: step.retryStatus };
+					}
+					if (step.assistantError !== undefined) {
+						yield {
+							type: "assistant",
+							error: step.assistantError,
+							message: {
+								id: nextId("msg"),
+								model: "fake",
+								role: "assistant",
+								content: [],
+								stop_reason: null,
+								usage: null,
+							},
+						};
+					}
 					const result: ClaudeResultEvent = {
 						type: "result",
 						subtype: "error_during_execution",
 						isError: true,
 						result: step.resultText ?? "claude code returned an error result",
+						...(step.apiErrorStatus !== undefined
+							? { apiErrorStatus: step.apiErrorStatus }
+							: {}),
 						numTurns: turns,
 						durationMs: 5,
 						totalCostUsd: 0,

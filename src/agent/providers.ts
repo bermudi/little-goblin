@@ -24,6 +24,7 @@ import type { MediaPosition } from "./attachments.ts";
 import { codexModel, RESPONSES_URL, type CodexModelOptions } from "./codex/model.ts";
 import { isOneMinHost, modelCallMaxRetries } from "./onemin.ts";
 import { isTransientTurnFailure, quotaExhausted } from "./provider-errors.ts";
+import { fromSdkError } from "./sdk-errors.ts";
 import { thinkingOptions as thinkingOptionsFor } from "./thinking.ts";
 import { fromV4Usage } from "./v4-usage.ts";
 import { isZaiHost, zaiReasoningFetch, zaiStatelessReplay } from "./zai-responses.ts";
@@ -77,7 +78,7 @@ export function transportRetry(
 						retry >= maxRetries ||
 						signal?.aborted ||
 						APICallError.isInstance(error) ||
-						!isTransientTurnFailure(error)
+						!isTransientTurnFailure(fromSdkError(error))
 					) {
 						throw error;
 					}
@@ -101,7 +102,7 @@ export function transportRetry(
 function quotaNoRetry(modelRef: string): LanguageModelMiddleware {
 	const filter = (error: unknown): unknown => {
 		if (!APICallError.isInstance(error) || error.isRetryable !== true) return error;
-		const quota = quotaExhausted(error);
+		const quota = quotaExhausted(fromSdkError(error));
 		if (quota === null) return error;
 		log.warn("provider quota exhausted; SDK retries skipped", {
 			model: modelRef,

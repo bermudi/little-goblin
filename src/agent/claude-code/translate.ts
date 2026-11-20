@@ -134,11 +134,18 @@ export interface ClaudeCompactBoundaryEvent {
 	uuid?: string;
 }
 
+export interface ClaudeApiRetryEvent {
+	type: "api_retry";
+	status: number | null;
+}
+
 export interface ClaudeResultEvent {
 	type: "result";
 	subtype: string;
 	isError: boolean;
 	result: string;
+	/** HTTP status of the API error the CLI gave up on, when present. */
+	apiErrorStatus?: number;
 	numTurns: number;
 	durationMs: number;
 	totalCostUsd: number;
@@ -167,6 +174,7 @@ export type ClaudeEvent =
 	| ClaudeAssistantEvent
 	| ClaudeUserEvent
 	| ClaudeCompactBoundaryEvent
+	| ClaudeApiRetryEvent
 	| ClaudeResultEvent
 	| ClaudeFoldedEvent;
 

@@ -70,6 +70,9 @@ export function sdkScript(opts: { label?: string; system?: string } = {}): Scrip
 			requests.push(JSON.stringify(options.prompt));
 			const call = queue.shift();
 			if (call === undefined) throw new Error("ai-sdk script exhausted: unexpected model call");
+			if (call.kind === "fail" && call.error.quota) {
+				throw new Error("sdkScript cannot render a typed quota verdict; use status 402");
+			}
 			if (call.kind === "fail" && call.parts.length === 0) throw errorFor(call.error);
 			const parts = streamParts(
 				call.parts,
@@ -78,12 +81,15 @@ export function sdkScript(opts: { label?: string; system?: string } = {}): Scrip
 			);
 			if (call.kind === "fail") return { readError: errorFor(call.error), parts: parts.slice(0, -1) };
 			if (call.kind === "hold") {
+				// Hold mid-step: before the finish and, when the call ends in
+				// text, before that part's end.
+				const tail = call.parts.at(-1)?.type === "text" ? 2 : 1;
 				return {
 					drive: async ({ enqueue, close }) => {
-						for (const part of parts.slice(0, -1)) enqueue(part);
+						for (const part of parts.slice(0, -tail)) enqueue(part);
 						call.entered?.();
 						await call.gate;
-						enqueue(parts.at(-1)!);
+						for (const part of parts.slice(-tail)) enqueue(part);
 						close();
 					},
 				};

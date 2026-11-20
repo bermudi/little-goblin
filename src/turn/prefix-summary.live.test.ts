@@ -1,21 +1,3 @@
-// Live check — the compaction memory flush reuses the turn's cached
-// prompt prefix on the codex backend (design/compaction.md → Memory
-// flush; #617). Run once after a model-view or codex-adapter change:
-//
-//   GOBLIN_CODEX_LIVE=1 bun test src/turn/prefix-summary.live.test.ts
-//
-// Reproduces the production seam end to end on gpt-6-luna: two real
-// streamText turns land replies in a real ConversationStore the way
-// runtime persists them, then the step builder's prefixStep +
-// prefixFlush replay the stored model view with the flush instruction
-// appended — the same request shape makePrefix builds. The flush's
-// usage must report cached input: a zero means the replayed prefix
-// diverged from the turn's and the flush pays full prompt cost.
-// Auth resolves from the configured codex file and is never printed;
-// the asks are public filler. ~4 billed generations; assertions are
-// on token counts and prompt-hash prefixes, never on content. Red
-// means the flush's wire prefix moved — diff the logged call hashes
-// against the warm turn's and fix the replay path.
 
 import { randomUUID } from "node:crypto";
 import type { Usage } from "../message.ts";
@@ -52,8 +34,6 @@ const SYSTEM = [
 	"You are goblin, a personal agent for one operator.",
 	"Answer briefly and only from what the conversation shows.",
 ].join("\n");
-// The provider's cache floor needs a shared prefix past ~1k tokens;
-// this padding keeps the warm prefix comfortably above it.
 const PADDING = Array.from(
 	{ length: 200 },
 	(_, i) => `reference line ${i + 1}: the quick brown fox jumps over the lazy dog.`,
@@ -139,8 +119,6 @@ test(
 				await resolveModel(cfg, auth, MODEL_REF, { sessionId: codexSessionId(conv.id) }),
 				{ conversation: conv.id, observation, route: cacheRouteFor(cfg, MODEL_REF) },
 			);
-			// One warm turn: user event in, streamText on the view, reply
-			// persisted as the runtime lands it.
 			const turn = async (askText: string): Promise<Message> => {
 				const seqs = store.append(conv.id, [
 					{ id: randomUUID(), role: "user", parts: [{ type: "text", text: askText }] },
@@ -175,7 +153,6 @@ test(
 					},
 				});
 				for await (const _chunk of uiStream) {
-					// Drain the wire; the reply lands in onFinish.
 				}
 				expect(reply).toBeDefined();
 				store.append(conv.id, [reply!], { anchorSeq: seqs[0] ?? null });
@@ -236,9 +213,6 @@ test(
 					cacheWrite: call.usage?.inputTokenDetails.cacheWriteTokens ?? null,
 				})),
 			});
-			// The flush's wire head (system + tool definitions) and its
-			// view-derived message prefix must be byte-identical to the
-			// warm turn's.
 			expect(flushCall!.input.headHash).toBe(warm.headHash);
 			expect(flushCall!.input.settingsHash).toBe(warm.settingsHash);
 			expect(

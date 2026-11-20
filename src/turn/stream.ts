@@ -67,11 +67,9 @@ function contextK(tokens: number): string {
 	return `${Math.round(tokens / 1000)}k`;
 }
 
-// ---------- the wire: what the turn's clients see ----------
 
 export type WireEnd =
 	| { kind: "completed" }
-	// shutdown: the process is going down (deploy/restart), not a /stop.
 	| { kind: "fenced"; shutdown?: true }
 	| { kind: "error"; message: string };
 
@@ -106,18 +104,11 @@ export function endLive(live: LiveChunks, done: WireEnd, convId: string): void {
 	live.subscribers.clear();
 }
 
-// ---------- the membership seam ----------
 
 export interface WireMember extends AdmittedMember {
 	streamFailed?: boolean;
 }
 
-// Image-bearing tool results (screenshot frames, issue #606) are heavy:
-// once a newer frame exists, older ones become text stubs so their bytes
-// do not ride every later step request. This rewrites only the outbound
-// request view — stored events keep full fidelity, and the between-turn
-// sweep (frame-stubs.ts) commits the durable marker for old frames.
-// Returns the input array untouched when nothing changes. Exported for tests.
 export function stubSupersededFrames(messages: PromptMessage[]): PromptMessage[] {
 	const spots: { mi: number; pi: number }[] = [];
 	messages.forEach((m, mi) => {
@@ -248,7 +239,6 @@ export function joinMember<M extends WireMember>(
 	replayWire(convId, member, live);
 }
 
-// ---------- the steer fold ----------
 
 type SteerDeps<M extends WireMember> = Pick<
 	StreamDeps<M>,
@@ -262,16 +252,11 @@ type SteerDeps<M extends WireMember> = Pick<
 	| "settle"
 >;
 
-/** Steers claimed and converted at a model-call boundary — not yet this run's input. */
 export interface SteerBatch<M extends WireMember> {
 	members: M[];
 	messages: PromptMessage[];
 }
 
-/**
- * Claim and convert waiting steers without admitting them to this run.
- * null means authority was lost and the claimed members were unrequeued.
- */
 export async function claimSteerBatch<M extends WireMember>(
 	deps: SteerDeps<M>,
 	sdkTools: ToolSet = toToolSet(deps.view.tools),
@@ -313,7 +298,6 @@ export async function claimSteerBatch<M extends WireMember>(
 	return { members, messages };
 }
 
-/** Admit a delivered batch as this run's members and persist its owned-input watermark. */
 export function admitSteers<M extends WireMember>(
 	deps: SteerDeps<M> & Pick<StreamDeps<M>, "noteRunMembers" | "onOwnedInputs" | "saveStep" | "sourceInputSeq">,
 	ledger: SteerLedger,
@@ -321,24 +305,13 @@ export function admitSteers<M extends WireMember>(
 	batch: SteerBatch<M>,
 ): void {
 	if (batch.members.length === 0) return;
-	// Claimed by event seq, never by message id — ids are client-controlled
-	// and may repeat, so an id match could claim a steer that failed
-	// conversion as owned input. The wake link's identity is the same seq set.
 	const claimedSeqs = new Set<number>();
 	for (const member of batch.members) {
 		joinMember(deps.convId, deps.live, deps.members, member);
 		if (member.seq === null) throw new Error("unmaterialized pending turn");
 		claimedSeqs.add(member.seq);
 	}
-	// The wake link lands on admission — before the request on ai-sdk,
-	// at the CLI's ack on claude-code — and always before the run can complete.
 	if (claimedSeqs.size > 0) deps.noteRunMembers?.([...claimedSeqs]);
-	// Ownership and the mark persist together — a crash after the
-	// fold must still name these steered inputs the attempt's own.
-	// Each seq came through conversion with its event, so only the
-	// steers this attempt actually folded are recorded as owned.
-	// Ownership is the member's own durable seq, never a rediscovery
-	// through app-controlled message ids.
 	for (const seq of claimedSeqs) {
 		if (seq > ledger.mark) ledger.mark = seq;
 		ledger.owned.add(seq);
@@ -356,7 +329,6 @@ export function admitSteers<M extends WireMember>(
 	});
 }
 
-/** Return a batch the model never received to pending input, or fence it if authority is gone. */
 export function returnSteers<M extends WireMember>(
 	deps: Pick<SteerDeps<M>, "convId" | "holdsAuthority" | "unrequeueSteers" | "settle">,
 	batch: SteerBatch<M>,
@@ -374,7 +346,6 @@ export function returnSteers<M extends WireMember>(
 	});
 }
 
-// ---------- the driver ----------
 
 export interface StreamStep {
 	model: LanguageModel;
@@ -382,9 +353,6 @@ export interface StreamStep {
 	providerOptions?: ProviderOptions;
 	label?: string;
 	contextWindow?: number;
-	// Provider retry rule for the call — 1min carries 0, absent keeps
-	// the SDK default. The transient step retry reads the same rule
-	// through StepRules.
 	maxRetries?: number;
 }
 
@@ -404,14 +372,8 @@ export interface StreamDeps<M extends WireMember> {
 	claimSteers(): M[];
 	unrequeueSteers(steered: M[]): void;
 	settle(m: M, done: MemberSettlement): void;
-	// The durable-wake seam: after a steer fold, the durable event seqs
-	// that actually joined the membership (converted + replayed, not
-	// merely claimed). The runtime wires it to the wake dispatcher's
-	// run link; absent = no wake tracking.
 	noteRunMembers?(memberSeqs: number[]): void;
 	steerMarkSeed: number;
-	// The durable user-input seqs owned at admission; successfully folded
-	// steers advance it and persist with the steer mark.
 	ownedInputSeqs: number[];
 	onOwnedInputs?(seqs: readonly number[]): void;
 	sourceInputSeq?(): number | null;
@@ -420,28 +382,15 @@ export interface StreamDeps<M extends WireMember> {
 	toolCalls: string[];
 	digest: { id: string; entry: ToolCallDigest }[];
 	overflowRecoverable: boolean;
-	// The optional engine rules — context fill, the pre-empt fold, the
-	// content-filter re-ask, the transient retry — owned by the runtime
-	// (turn/step-rules.ts). The engine reports its model-call boundaries.
 	rules: StepRules;
 	evidence: EvidenceLimits | undefined;
 	skillWatch?: SkillWatch | undefined;
 	journal?: TurnJournal | undefined;
 	runId: string;
-	// #195 — the run row's step checkpoint through its one home (the
-	// tool-authority seam's saveStep): both the step-end checkpoint and
-	// the steer fold's ownership write ride this, never the journal
-	// directly, so a throw classifies as a journal fault.
 	saveStep(patch: TurnCheckpointPatch): void;
 	turnStartMs: number;
 	signal: AbortSignal;
-	// design/model.md → Model fallback list. When the runtime has a next
-	// candidate, an error that arrives before any model call completed
-	// is held off the wire: the fallback attempt continues the same
-	// stream, and the runtime emits the error itself if it ends the turn.
 	holdZeroEffectError?: boolean | undefined;
-	// Candidates that already failed this turn; non-empty stamps the
-	// finish metadata (`fallback.from`) — the label names who served.
 	fallbackMisses?: ReadonlyArray<{ ref: string; reason: string }> | undefined;
 }
 
@@ -456,17 +405,9 @@ export async function driveStream<M extends WireMember>(
 	);
 	const attempt = {
 		lastPromptChars: null as PromptSegments | null,
-		// The window record, captured in two stages — prepareStep stages the
-		// step's outbound prompt, onStepEnd promotes it. A staged prompt whose
-		// call never dispatched (abort, a doStream throw) is a prompt nothing
-		// saw and must never become the record; the promoted one is the last
-		// completed step, on either outcome rail. References only;
-		// serialization happens once, when the runtime records the turn.
 		stagedWindow: null as { messages: PromptMessage[]; segments: PromptSegments } | null,
 		lastWindow: null as { messages: PromptMessage[]; segments: PromptSegments } | null,
 		rawError: null as unknown,
-		// The pre-empt decision, captured when the signal surfaces so the
-		// failed outcome can name the arm and step.
 		preemptInfo: null as { arm: "pressure"; step: number } | null,
 		streamError: null as string | null,
 		sawErrorPart: false,
@@ -476,16 +417,11 @@ export async function driveStream<M extends WireMember>(
 	};
 	const rules = deps.rules;
 	const steers = recorder.steers;
-	// The finish metadata part is written after the final step, so the
-	// last prepareStep capture is that step's outbound prompt — the
-	// window the gauge itemizes.
 	const notePrompt = (messages: readonly PromptMessage[], stepNumber: number) => {
 		const segments = measurePrompt(deps.step.system, deps.tools, messages);
 		attempt.lastPromptChars = segments;
 		const staged = [...messages];
 		attempt.stagedWindow = { messages: staged, segments };
-		// The pre-empt fold (design/compaction.md → Timing): an arm stops
-		// the dispatch — the throw surfaces as the step's error part.
 		const arm = rules.beforeCall(stepNumber, staged);
 		if (arm !== null) throw new PreemptSignal(arm, stepNumber);
 	};
@@ -494,12 +430,7 @@ export async function driveStream<M extends WireMember>(
 		model: filterErrorStream(deps.step.model, convId),
 		instructions: deps.step.system,
 		messages: deps.messages,
-		// Rule-based repairs only (JSON5 slips, stringified args) — a call
-		// no rule fixes still surfaces as a tool error, never a re-ask.
 		repairToolCall: makeToolCallRepair(convId),
-		// Provider retry rules ride the step — 1min sends no SDK
-		// retries (its one-shot content-filter re-ask is separate and
-		// deliberate; model.md → Provider-filter recovery).
 		...(deps.step.maxRetries !== undefined ? { maxRetries: deps.step.maxRetries } : {}),
 		prepareStep: async ({ messages: stepMessages, steps, stepNumber }) => {
 			const prevInput = steps.at(-1)?.usage.inputTokens;
@@ -586,17 +517,8 @@ export async function driveStream<M extends WireMember>(
 		...(deps.step.providerOptions ? { providerOptions: deps.step.providerOptions } : {}),
 		stopWhen: [isLoopFinished(), () => state.isLandingIssued()],
 		abortSignal: deps.signal,
-		// Callback-directed retries only (onError): the SDK buffers tool parts until the attempt ends cleanly, so blanket step retries would redo completed work against the identical prompt.
 		streamRetries: 0,
 		onError: async ({ error }) => {
-			// The SDK grants one onError-requested retry per model step
-			// (callbackStreamRetryCount); StepRules grants at most one per
-			// call, so a granted request is always a real re-dispatch.
-			// stepCount is the ended-steps gauge; a retried step ends once,
-			// after its retry. Only stream-surface errors are mid-stream —
-			// the pre-stream surface is the transport middleware's lane
-			// (agent/providers.ts).
-			// The engine edge: rules and the outcome see goblin's shape.
 			const failure = fromSdkError(error);
 			const retry = await rules.callFailed(failure, {
 				step: recorder.stepCount,
@@ -607,13 +529,7 @@ export async function driveStream<M extends WireMember>(
 			log.error("model stream error", error, { conversation: convId });
 		},
 		onStepEnd: (step) => {
-			// The step's request was dispatched and consumed — its staged
-			// prompt becomes the record ("last completed step"; an errored
-			// dispatch still counts, the model saw the prompt).
 			attempt.lastWindow = attempt.stagedWindow;
-			// Assistant steps only — tool-result messages re-derive from
-			// the journal at resume, and carrying them doubles checkpoint
-			// bulk for nothing.
 			for (const m of step.response.messages) {
 				if (m.role === "assistant") recorder.appendPartial(m);
 			}
@@ -697,9 +613,6 @@ export async function driveStream<M extends WireMember>(
 		},
 	});
 
-	// Provider-executed calls (hosted web_search) ride the same wire
-	// chunks but are not local actions — no journal rows, no retry
-	// grants, no loop-detector evidence.
 	const providerExecutedIds = new Set<string>();
 	try {
 		for await (const chunk of uiStream) {
@@ -710,8 +623,6 @@ export async function driveStream<M extends WireMember>(
 				if (overflow && deps.overflowRecoverable) {
 					recorder.holdForRecovery();
 				}
-				// A pre-empt signal surfacing as an error part: the next call
-				// was stopped before dispatch — hold the rail for the fold-resume.
 				if (attempt.rawError instanceof PreemptSignal && deps.overflowRecoverable) {
 					recorder.holdForRecovery();
 					attempt.preemptInfo = { arm: attempt.rawError.arm, step: attempt.rawError.stepNumber };
@@ -736,11 +647,9 @@ export async function driveStream<M extends WireMember>(
 					recorder.emit(chunk);
 				}
 			}
-			// The SDK emits start-step before an error part, so an error-only step must leave modelCalls at 0. Fail closed on anything else — modelCalls gates the retry ladder, so an unrecognized chunk type spends the call, never permits a retry.
 			if (chunk.type !== "error") recorder.spendCall();
 			switch (chunk.type) {
 				case "start-step":
-					// openai-compatible providers synthesize part ids per request, so step 2 can reuse step 1's id verbatim — reset instead of trusting ids.
 					recorder.callStarted();
 					break;
 				case "text-delta":
@@ -776,9 +685,6 @@ export async function driveStream<M extends WireMember>(
 			}
 		}
 	} catch (err) {
-		// A pre-empt signal may reject the iterator outright instead of
-		// surfacing as an error part, depending on where the SDK catches the
-		// prepareStep throw. Either surface lands on the same rail.
 		if (err instanceof PreemptSignal && deps.overflowRecoverable) {
 			recorder.holdForRecovery();
 			attempt.preemptInfo = { arm: err.arm, step: err.stepNumber };
@@ -788,10 +694,6 @@ export async function driveStream<M extends WireMember>(
 		}
 	}
 
-	// The window record rides both outcome rails: an ok turn stores its
-	// final step, a failed one its last completed step. Gated on
-	// stepCount: a prompt built for a call that never completed a step
-	// is not a window anything saw — steps: 0 must read null.
 	const windowCapture = (): WindowCapture | null => {
 		if (attempt.lastWindow === null || recorder.stepCount === 0) return null;
 		return {

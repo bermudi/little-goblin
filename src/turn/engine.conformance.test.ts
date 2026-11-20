@@ -1,10 +1,3 @@
-// The TurnEngine contract (turn/engine.ts), pinned once per engine
-// through the real Runtime: one scenario table, every registered
-// engine. Each scenario scripts its model calls once, engine-neutral
-// (testkit/turn-script.ts); the adapter renders them for its engine —
-// the AI SDK fake model, or the claude engine's query seam with the
-// real bridge. Scenarios assert only observable results — sink done
-// values, stored history, journal rows.
 
 import { describe, expect, test } from "bun:test";
 import { defineTool, type Tools } from "../tool.ts";
@@ -27,7 +20,6 @@ type Conv = ReturnType<ConversationStore["resolve"]>;
 interface EngineRig {
 	name: string;
 	model: ScriptedModel;
-	/** The hold the `wait` tool blocks on while it executes. */
 	toolHold: { current: Held | null };
 	runtime: Runtime;
 	store: ConversationStore;
@@ -36,9 +28,7 @@ interface EngineRig {
 }
 
 interface Held {
-	/** The hold call to script; it blocks mid-step until released. */
 	call(parts: Extract<ScriptCall, { kind: "hold" }>["parts"]): ScriptCall;
-	/** Fires once the turn is inside the held section. */
 	entered: Promise<void>;
 	enter(): void;
 	gate: Promise<void>;
@@ -81,8 +71,6 @@ const echoCall = (message: string, toolCallId: string): ScriptCall => ({
 	parts: [{ type: "tool-call", toolName: "echo", input: { message }, toolCallId }],
 });
 
-/** Step 1 completes — assistant text + an echo call that settles — then
- *  step 2 holds before any content: a checkpointed step sits behind it. */
 const progressThenHold = (hold: Held): ScriptCall[] => [
 	{
 		kind: "reply",
@@ -102,9 +90,6 @@ function submit(rig: EngineRig, text: string): RecordingSink {
 
 const drain = (rig: EngineRig) => waitUntil(() => !rig.runtime.busy(rig.conv.id), "lane drains");
 
-// `entered` means the provider produced the held part; the engine's
-// chunk loop may still be a tick behind. The fence must land only
-// after content reached the wire — the state the record pins.
 const waitForWireContent = (sink: RecordingSink) =>
 	waitUntil(
 		() => sink.chunks.some((c) => c.type === "text-delta" || c.type === "tool-input-available"),
@@ -174,8 +159,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 	{
 		name: "/stop mid-run fences and records without storing an assistant message",
 		async run(rig) {
-			// The hold is a tool mid-execution; "/stop mid-stream" below
-			// holds inside the provider stream instead.
 			const hold = held();
 			rig.toolHold.current = hold;
 			rig.model.script({ kind: "reply", parts: [{ type: "tool-call", toolName: "wait", input: {} }] });
@@ -186,9 +169,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			hold.release();
 			expect(await sink.done).toEqual({ kind: "fenced" });
 			await drain(rig);
-			// No assistant reply lands — the one record is a system event
-			// carrying whatever the wire had streamed so far (the wait
-			// tool's input).
 			const history = rig.store.history(rig.conv.id);
 			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
 			const meta = history[1]!.metadata as { unlanded?: { kind?: string } };
@@ -206,8 +186,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			hold.release();
 			expect(await sink.done).toEqual({ kind: "fenced" });
 			await drain(rig);
-			// No assistant reply landed — the record is one system event
-			// carrying the completed call and the streamed text.
 			const history = rig.store.history(rig.conv.id);
 			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
 			const event = textOf(history[1]!);
@@ -220,7 +198,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 				.all();
 			expect(rows).toHaveLength(1);
 			expect(rows[0]!.status).toBe("fenced");
-			// The completed steps ran once; the hold's call never executed.
 			const calls = rig.journal.callsFor(rows[0]!.run_id);
 			expect(calls.filter((c) => c.name === "echo" && c.state === "completed")).toHaveLength(1);
 		},
@@ -232,13 +209,10 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			rig.model.script(...progressThenHold(hold));
 			const sink = submit(rig, "work then hold");
 			await hold.entered;
-			// Not awaited yet — the turn must be released first.
 			const shutdown = rig.runtime.shutdown();
 			hold.release();
 			expect(await sink.done).toEqual({ kind: "fenced", shutdown: true });
 			await shutdown;
-			// For the journal a graceful shutdown IS a crash: the fence
-			// stamps nothing and records nothing — the row stays 'running'.
 			expect(roles(rig)).toEqual(["user"]);
 			const rows = rig.store.db
 				.query<{ run_id: string; status: string }, []>(
@@ -247,8 +221,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 				.all();
 			expect(rows).toHaveLength(1);
 			expect(rows[0]!.status).toBe("running");
-			// The next open's reclassify owns both the 'interrupted' stamp
-			// and the progress record — one system event, exactly once.
 			const reopened = openTurnJournal(rig.store.db, {
 				onInterrupted: (run, calls) => appendInterruptedProgress(rig.store, run, calls),
 			});
@@ -274,8 +246,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 	{
 		name: "/stop mid-stream stores one system record with the wire's id and reply",
 		async run(rig) {
-			// The words stream whole, then the step stalls open — the stop
-			// lands before the step ends.
 			const hold = held();
 			rig.model.script(hold.call([{ type: "text", text: "partial words" }]));
 			const sink = submit(rig, "talk then stop");
@@ -288,8 +258,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			hold.release();
 			expect(await sink.done).toEqual({ kind: "fenced" });
 			await drain(rig);
-			// Exactly one event, role system, id from the wire's start chunk,
-			// carrying the streamed words — never an assistant-role event.
 			const history = rig.store.history(rig.conv.id);
 			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
 			const record = history[1]!;
@@ -301,8 +269,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			expect(
 				meta.unlanded?.reply?.some((p) => p.type === "text" && p.text === "partial words"),
 			).toBe(true);
-			// The next turn's model view: the record rides as one system-event
-			// block — the text appears exactly once.
 			rig.model.script(text("moving on"));
 			const next = submit(rig, "next turn");
 			expect(await next.done).toEqual({ kind: "completed" });
@@ -314,8 +280,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 	{
 		name: "a failed stream stores the same record with kind failed",
 		async run(rig) {
-			// Text out, then a non-transient provider failure — the turn
-			// fails with the words already on the wire.
 			rig.model.script({
 				kind: "fail",
 				parts: [{ type: "text", text: "half" }],
@@ -340,14 +304,10 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 	{
 		name: "/stop before the first content records one stopped event with the wire's id (#408 F1)",
 		async run(rig) {
-			// The provider accepts the request then says nothing — the
-			// wire carries only the message start when the fence lands.
 			const hold = held();
 			rig.model.script(hold.call([]));
 			const sink = submit(rig, "hold before content");
 			await hold.entered;
-			// The wire opened the assistant message; no content part ever
-			// arrived — the exact state that used to leave no record.
 			await waitUntil(() => sink.chunks.some((c) => c.type === "start"), "wire start");
 			const wireStart = sink.chunks.find((c) => c.type === "start");
 			const wireId = (wireStart as { messageId: string }).messageId;
@@ -355,9 +315,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			hold.release();
 			expect(await sink.done).toEqual({ kind: "fenced" });
 			await drain(rig);
-			// Exactly one record, role system, id from the wire's start
-			// chunk — it replaces the empty optimistic assistant the
-			// client showed; its reply carries no content parts.
 			const history = rig.store.history(rig.conv.id);
 			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
 			const record = history[1]!;
@@ -368,7 +325,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			expect(meta.unlanded?.kind).toBe("aborted");
 			expect(Array.isArray(meta.unlanded?.reply)).toBe(true);
 			expect(meta.unlanded!.reply!.every((p) => p.type === "step-start")).toBe(true);
-			// The next turn's model view carries the record once.
 			rig.model.script(text("moving on"));
 			const next = submit(rig, "next turn");
 			expect(await next.done).toEqual({ kind: "completed" });
@@ -386,8 +342,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 				error: { message: "invalid_request_error: provider exploded before streaming" },
 			});
 			const sink = submit(rig, "fail before content");
-			// The wire still opened the assistant message before the
-			// provider's error arrived.
 			await waitUntil(() => sink.chunks.some((c) => c.type === "start"), "wire start");
 			const wireStart = sink.chunks.find((c) => c.type === "start");
 			const wireId = (wireStart as { messageId: string }).messageId;
@@ -403,7 +357,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			expect(meta.unlanded?.kind).toBe("failed");
 			expect(Array.isArray(meta.unlanded?.reply)).toBe(true);
 			expect(meta.unlanded!.reply!.every((p) => p.type === "step-start")).toBe(true);
-			// The next turn's model view carries the record once.
 			rig.model.script(text("moving on"));
 			const next = submit(rig, "next turn");
 			expect(await next.done).toEqual({ kind: "completed" });

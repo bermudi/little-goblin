@@ -23,32 +23,12 @@ import {
 
 export interface ViewContext {
 	convId: string;
-	/**
-	 * The serving model ref of this attempt — the same value the landed
-	 * reply's metadata.model carries (turn/engine.ts stepModelRef).
-	 * Assistant reasoning replays only when its author's metadata.model
-	 * matches it (#417).
-	 */
 	modelRef: string;
 	tools: Tools;
 	sdkTools?: ToolSet;
 	modalities: Set<string> | undefined;
 	carries: (mediaType: string, position: MediaPosition) => boolean;
-	/**
-	 * True when the current provider replays provider-executed tool parts
-	 * (Codex hosted web_search). Anywhere else they are dropped from the
-	 * view: other converters emit a tool_calls entry with no tool reply,
-	 * which the endpoint rejects on every later turn.
-	 */
 	keepProviderExecuted?: boolean;
-	/**
-	 * Resolves an invocation: the display name (the descriptor's, for a
-	 * temp skill) and the injected body — preamble plus SKILL.md — or
-	 * null when the body cannot ride (skill deleted, temp verdict
-	 * unstamped). includeBody=false resolves the marker name only, never
-	 * reading the body — historical invocations stay markers. The
-	 * resolver owns refusal logging; the view logs the actual injection.
-	 */
 	skillRef: (
 		ref: SkillRef,
 		includeBody: boolean,
@@ -76,8 +56,6 @@ function systemEventAsUser(m: Message): Message {
 	};
 }
 
-// A malformed stamp renders nothing: it is a hint, not content, and a
-// placeholder would tell the model less than its absence does.
 function contextPartAsText(ctx: ViewContext, m: Message): Message {
 	if (!m.parts.some((p) => p.type === CONTEXT_PART)) return m;
 	return {
@@ -122,10 +100,6 @@ function notePartsAsText(ctx: ViewContext, m: Message): Message {
 	};
 }
 
-// Skill invocation parts render as markers in every model view
-// (ruling 2026-10-21); the body rides only the owning turn's output —
-// the caller appends what resolveBodies returns for owned refs.
-// Malformed data degrades to a placeholder like notes.
 function skillPartsAsText(
 	ctx: ViewContext,
 	m: Message,
@@ -163,13 +137,6 @@ function skillPartsAsText(
 
 const REASONING_PART_TYPES: ReadonlySet<string> = new Set(["reasoning", "reasoning-file"]);
 
-// #417: reasoning replays only to the model that wrote it. The landed
-// reply's metadata.model is the producing ref; foreign or unstamped
-// assistant reasoning drops — fail-closed, since an unverifiable origin
-// is the leak this guards. The recovery partial is exempt: an overflow
-// or fallback continuation never switches models, so its reasoning
-// belongs to this target by construction. Every other part keeps its
-// order.
 function dropForeignReasoning(
 	ctx: ViewContext,
 	m: Message,
@@ -192,7 +159,6 @@ interface SkillInvocation {
 	skillBytes?: number;
 }
 
-// Mirrors convertToModelMessages' ignoreIncompleteToolCalls keep-set — if the SDK's set changes, this must follow or the drop log drifts.
 export function incompleteToolCallIds(m: Message): string[] {
 	const ids: string[] = [];
 	for (const p of m.parts) {
@@ -215,9 +181,7 @@ export async function buildModelView(
 		prior: RecallContext[];
 		current: RecallContext | null;
 		partial: Message | null;
-		/** The compaction boundary the entries were cut at — null when uncompacted. */
 		summarySeq: number | null;
-		/** Seqs this turn injected — only these get skill bodies (ruling 2026-10-21: owning-turn only). */
 		ownedSeqs?: readonly number[] | ReadonlySet<number>;
 		assertAuthority(): void;
 	},
@@ -238,13 +202,6 @@ export async function buildModelView(
 	);
 	options.assertAuthority();
 	const owned = new Set(options.ownedSeqs ?? []);
-	// Seq maps by object identity + view index, never by UIMessage.id —
-	// ids are app-controlled and can duplicate. withMemoryBlocks returns
-	// the same message objects it was given (inserted recall blocks are
-	// new objects with no seq), and materializeAttachments preserves
-	// order/cardinality even where it clones — so index i in prepared is
-	// index i in view, and view[i] is either an original entry message
-	// (identifiable by reference) or an inserted block.
 	const seqByMessage = new Map(options.entries.map((e) => [e.message, e.seq]));
 	const seqByIndex = view.map((m) => seqByMessage.get(m) ?? null);
 	const messages: PromptMessage[] = [];
@@ -253,8 +210,6 @@ export async function buildModelView(
 	let foreignReasoningParts = 0;
 	for (const [i, m] of prepared.entries()) {
 		const entrySeq = seqByIndex[i] ?? null;
-		// Bodies are a user-input privilege as well as an owned one — a
-		// non-user entry carrying a data-skill part never injects.
 		const includeBody = entrySeq !== null && m.role === "user" && owned.has(entrySeq);
 		const { message: skillMarked, invocations } = skillPartsAsText(
 			ctx,
@@ -265,8 +220,6 @@ export async function buildModelView(
 		const { message: originScoped, dropped: foreignReasoning } = dropForeignReasoning(
 			ctx,
 			rendered,
-			// By position, not id: ids are app-controlled and can collide with
-			// history; the partial is always the appended last view item.
 			options.partial !== null && i === prepared.length - 1,
 		);
 		if (foreignReasoning > 0) {
@@ -337,7 +290,6 @@ function dropProviderExecuted(ctx: ViewContext, messages: PromptMessage[]): Prom
 			out.push(m);
 			continue;
 		}
-		// The SDK flags only the call; the result is matched by id.
 		const hostedIds = new Set<string>();
 		for (const p of m.content) {
 			const part = p as { type: string; toolCallId?: string; providerExecuted?: boolean };
@@ -366,10 +318,6 @@ function dropProviderExecuted(ctx: ViewContext, messages: PromptMessage[]): Prom
 	return out;
 }
 
-// The owning turn's tail: one appended user message per resolved
-// invocation, immediately after the invoking message's own content.
-// A null body (refused or unreadable) contributes nothing — the marker
-// in the invoking message stands alone.
 function injectedBodies(ctx: ViewContext, invocations: SkillInvocation[]): PromptMessage[] {
 	const bodies: PromptMessage[] = [];
 	for (const inv of invocations) {
@@ -408,8 +356,6 @@ export async function convertSteeredMessage(
 				},
 			)),
 		);
-		// A claimed steer is owned by construction — the claiming turn
-		// is the only one that folds it in.
 		out.push(...injectedBodies(ctx, invocations));
 	}
 	return out;

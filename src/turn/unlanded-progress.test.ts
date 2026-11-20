@@ -85,8 +85,6 @@ describe("unlanded-turn progress rendering", () => {
 			call("planned", { toolCallId: "p" }),
 			call("resolved-skip", { toolCallId: "rs" }),
 			call("completed", { toolCallId: "rp", replayed: true, result: "synthetic" }),
-			// 40 completed "others" — the newest 30 survive, 11 drop
-			// (these plus the resolved-done row).
 			...Array.from({ length: 40 }, (_, i) =>
 				call("completed", { toolCallId: `bulk-${i}`, name: `bulk-${i}`, result: "bulk" }),
 			),
@@ -100,8 +98,6 @@ describe("unlanded-turn progress rendering", () => {
 		});
 		expect(rendered).not.toBeNull();
 		const lines = rendered!.text.split("\n");
-		// Every unknown survives; a resolved-retry without retryFromKnown
-		// renders unknown; planned, skip, and replayed rows are gone.
 		expect(lines.filter((l) => l.includes("OUTCOME UNKNOWN"))).toHaveLength(1);
 		expect(rendered!.unknown).toBe(1);
 		expect(rendered!.calls).toBe(31);
@@ -112,7 +108,6 @@ describe("unlanded-turn progress rendering", () => {
 		expect(rendered!.text).not.toContain("dropped-oldest");
 		expect(rendered!.text).not.toContain("bulk-9 ");
 
-		// Args and result previews are bounded.
 		const bounded = renderUnlandedTurnProgress({
 			runId: "r",
 			outcome: { kind: "failed", failure: "f" },
@@ -127,7 +122,6 @@ describe("unlanded-turn progress rendering", () => {
 		expect(boundedLine!.length).toBe("1. big ".length + 160 + " — completed: ".length + 240);
 		expect(bounded!.text).toContain(`completed: ${"r".repeat(240)}`);
 		expect(bounded!.text).not.toContain("r".repeat(241));
-		// Assistant text keeps the LAST 2000 chars (the 2500-char fixture above).
 		expect(rendered!.text).toContain(`Assistant text before the failure:\n${"x".repeat(2000)}`);
 		expect(rendered!.text).not.toContain(
 			`Assistant text before the failure:\nx${"x".repeat(2000)}`,
@@ -168,11 +162,8 @@ describe("unlanded-turn progress rendering", () => {
 				partial,
 				reply: null,
 			});
-			// A live turn's outcome alone is the record — no assistant
-			// section appears for a partial that carried no text.
 			expect(failed).not.toBeNull();
 			expect(failed!.text).not.toContain("Assistant text");
-			// The process-death rail still stays silent on nothing.
 			expect(
 				renderUnlandedTurnProgress({
 					runId: "r",
@@ -254,8 +245,6 @@ describe("replyFromWire", () => {
 		expect(reply).not.toBeNull();
 		expect(reply!.id).toBe("m1");
 		expect(reply!.role).toBe("assistant");
-		// No finish chunk: the text part keeps its streaming state — the
-		// unfinished shape the record is allowed to carry.
 		expect(reply!.parts.some((p) => p.type === "text" && p.text === "Hello")).toBe(true);
 	});
 
@@ -347,7 +336,6 @@ describe("unlanded reply in the body and the event", () => {
 			expect(withoutReply!.text).not.toContain("Assistant text");
 			expect(withoutReply!.text).not.toContain("Tool calls:");
 		}
-		// Process death with nothing to say still records nothing.
 		expect(
 			renderUnlandedTurnProgress({
 				runId: "r",

@@ -173,7 +173,6 @@ describe("the model view", () => {
 	});
 
 	test("a stored data-note part reaches the model as the fenced text — malformed degrades in place", async () => {
-		// convertToModelMessages drops unknown data parts silently — map them to text first.
 		const attached = {
 			id: "n1",
 			role: "user",

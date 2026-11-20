@@ -248,9 +248,6 @@ describe("admitTurn", () => {
 	});
 
 	test("a pending submit reusing an older event's message id hides only its own event", () => {
-		// Client message ids are neither unique nor trusted: the queued
-		// steer at seq 2 shares id "dup" with the owned event at seq 1 —
-		// seq-based exclusion keeps the older event in the snapshot.
 		const h = baseDeps({
 			pendingSeqs: new Set([2]),
 			ownedSeqs: new Set([1, 3]),

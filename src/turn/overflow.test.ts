@@ -173,7 +173,6 @@ describe("preemptArm", () => {
 			"pressure",
 		);
 		expect(preemptArm({ projectedInputTokens: 255_999, contextWindow: 1_000_000 })).toBeNull();
-		// An unknown window fires at the cap alone.
 		expect(preemptArm({ projectedInputTokens: 256_000, contextWindow: undefined })).toBe(
 			"pressure",
 		);
@@ -354,10 +353,6 @@ describe("recoverFromOverflow", () => {
 	});
 
 	test("a failed pre-empt fold resumes the turn unfolded — it never overflowed", async () => {
-		// The arm fired before the window was full; a summarizer outage
-		// must not end the turn with a "window full" story. The recovery
-		// is the same package on the uncompacted view, budget spent so
-		// the arm cannot re-fire.
 		const failure = preemptOf(partialWith({ type: "text", text: "half an answer" }));
 		const h = harness({
 			failure,
@@ -375,8 +370,6 @@ describe("recoverFromOverflow", () => {
 	});
 
 	test("a pre-empt fold that finds nothing resumes unfolded", async () => {
-		// The foldability gate raced the fold's own read — the boundary
-		// vanished between them. Same resume, same spent budget.
 		const h = harness({
 			failure: preemptOf(null),
 			compact: async () => ({ kind: "noop", reason: "boundary vanished — history changed" }),
@@ -424,14 +417,12 @@ describe("transport failure classification", () => {
 		).toBe(
 			"The model connection dropped (Failed to process successful response). Nothing was lost — send again.",
 		);
-		// A transport-shaped message on the cause classifies the wrapper.
 		expect(
 			terminalFailureMessage(
 				new Error("model stream failed", { cause: new Error("socket hang up") }),
 				false,
 			),
 		).toContain("socket");
-		// Undici transport codes classify; arbitrary codes never do.
 		expect(
 			terminalFailureMessage(
 				Object.assign(new Error("died"), { code: "UND_ERR_SOCKET" }),

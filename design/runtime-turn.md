@@ -72,6 +72,9 @@ After cancellation, recording what already happened is allowed; continuing
 the cancelled work is not. The app replaces the streamed partial with the
 history record rather than showing it twice or losing it on reload. The
 display copy is not a successful assistant message in the next model request.
+If recording it fails, log that failure without replacing the error or fence
+that ended the turn. At boot, record progress in the same transaction that
+reclassifies the interrupted run, so an append failure leaves it recoverable.
 See [`unlanded-progress.test.ts`](../src/turn/unlanded-progress.test.ts) and
 [`turn-journal.test.ts`](../src/turn-journal.test.ts).
 

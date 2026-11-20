@@ -24,7 +24,6 @@ export interface DisplaySink {
 	onToolCall(toolName: string, input: unknown): void;
 }
 
-/** One attempt's steer ledger: the steer mark and its owned input seqs. */
 export interface SteerLedger {
 	mark: number;
 	owned: Set<number>;
@@ -47,14 +46,9 @@ export type StreamOutcome =
 			toolCalls: string[];
 			digestRing: { id: string; entry: ToolCallDigest }[];
 			steerMark: number;
-			// The final step's outbound prompt — null when no step ran.
 			window: WindowCapture | null;
-			// Window-row metadata: which model ran, how many steps.
 			model: string;
 			steps: number;
-			// #418: the native Claude session this attempt ran — the
-			// runtime persists the claude_sessions record only after the
-			// reply lands durably. Absent on non-Claude engines.
 			claudeSession?: { sessionId: string; headUuid: string } | undefined;
 	  }
 	| {
@@ -62,12 +56,7 @@ export type StreamOutcome =
 			errorText: string;
 			rawError: unknown;
 			holdForRecovery: boolean;
-			// The error chunk was withheld (holdZeroEffectError) — nothing
-			// about this failure reached the wire.
 			errorHeld?: boolean;
-			// Set when the failure is a step-boundary pre-empt, not a provider
-			// error: the recovery rail is the same, the compact reason and the
-			// operator-facing story are not.
 			preempt?: { arm: "pressure"; step: number };
 			partial: Message | null;
 			seenText: boolean;
@@ -76,8 +65,6 @@ export type StreamOutcome =
 			loop: LoopTurnState;
 			steerMark: number;
 			filterRetryUsed: boolean;
-			// The last completed step's prompt — the call went out even
-			// when the turn failed on a later one.
 			window: WindowCapture | null;
 			model: string;
 			steps: number;
@@ -163,9 +150,6 @@ export function openAttemptRecorder(
 ): AttemptRecorder {
 	let holding = false;
 	let pendingCall = false;
-	// First model-produced content this turn — the finish stamp reads it
-	// for the TTFT field. Text/reasoning deltas and tool input count;
-	// structural parts (start, start-step, finish-step) never do.
 	let firstTokenMs: number | null = null;
 	let seenText = deps.seenText;
 	let lastTextPartId: string | null = null;
@@ -174,8 +158,6 @@ export function openAttemptRecorder(
 	let stepCount = 0;
 	let lastInput: number | null = null;
 	let lastCacheRead: number | null = null;
-	// Latest codex quota receipt — the stream's rate_limits event can be
-	// fresher than the header read; keep the newest non-null snapshot.
 	let quota: AppQuota | null = null;
 	const partial: PromptMessage[] = [];
 	const steers = openSteerLedger(deps);
@@ -187,12 +169,6 @@ export function openAttemptRecorder(
 		onCompleted: (tool: string, input: unknown, result: unknown, failed: boolean) =>
 			deps.state.noteCompletedCall(tool, input, result, failed),
 	};
-	// #493-L10 — a death mid-step must not lose text already on the
-	// wire: the in-flight step's streamed text rides the checkpoint as
-	// one extra assistant message, throttled to at most one write per
-	// second so a long stream costs a write per second, not per token.
-	// Reset at each step end — the completed step's messages already
-	// carry its text.
 	const appendTail = (): void => {
 		deps.saveStep({
 			partial: [
@@ -301,9 +277,6 @@ export function openAttemptRecorder(
 				filterRetryUsed: deps.rules.filterRetryUsed(),
 				...(partial.length > 0 ? { partial } : {}),
 			});
-			// null = provider didn't report the split, 0 = reported-and-cold;
-			// inputTokens includes the cached ones. Read-only caches (OpenRouter,
-			// openai-compatible) leave cacheWrite null.
 			log.info("model step usage", {
 				conversation: deps.convId,
 				inputTokens: input.usage.input,
@@ -312,9 +285,6 @@ export function openAttemptRecorder(
 				outputTokens: input.usage.output,
 			});
 			if (deps.holdsAuthority() && !holding) {
-				// The composer's context gauge reads settled turns only — the
-				// wire carries this step's window occupancy as a transient data
-				// part so a streaming client can show it while the turn runs.
 				const liveContext: AppLiveContext = {
 					input: lastInput,
 					cacheRead: lastCacheRead,

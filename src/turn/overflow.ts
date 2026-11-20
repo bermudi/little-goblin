@@ -7,7 +7,8 @@ import { log } from "../log.ts";
 import type { RecallContext } from "../memory/mod.ts";
 import type { ToolCallDigest } from "../reviewer-evidence.ts";
 import type { LoopTurnState } from "./state.ts";
-import type { LiveChunks, StreamOutcome } from "./stream.ts";
+import type { StreamOutcome } from "./attempt-recorder.ts";
+import type { LiveChunks } from "./stream.ts";
 
 // design/compaction.md → Triggers: the one fold trigger — the lower of
 // 50% of the catalog window and an absolute 256k cap (Hermes's cap, operator ruling #547). Every call

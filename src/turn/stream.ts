@@ -9,10 +9,8 @@ import {
 	toUIMessageStream,
 } from "ai";
 import type {
-	FinishReason,
 	Message,
 	MessageChunk,
-	Usage,
 } from "../message.ts";
 import type { PromptMessage, ToolContent } from "../prompt-message.ts";
 import { quotaFromMetadata } from "../agent/codex/receipts.ts";
@@ -31,9 +29,14 @@ import { stepModelRef } from "./model-ref.ts";
 import { PreemptSignal, transportFailureText } from "./overflow.ts";
 import type { SkillWatch } from "./skill-attribution.ts";
 import type { StepRules } from "./step-rules.ts";
-import { type ForcedKind, type LoopTurnState, type TurnState } from "./state.ts";
+import { type ForcedKind, type TurnState } from "./state.ts";
 import { convertSteeredMessage, type ViewContext } from "./view.ts";
-import { openAttemptRecorder } from "./attempt-recorder.ts";
+import {
+	openAttemptRecorder,
+	type DisplaySink,
+	type SteerLedger,
+	type StreamOutcome,
+} from "./attempt-recorder.ts";
 
 const REPEAT_CUT =
 	"Loop check: the same tool call kept returning the same result. Tools are disabled for this final step. Write your answer to the operator now from what you have, and say plainly what is unverified and what was blocking you.";
@@ -246,19 +249,6 @@ export function joinMember<M extends WireMember>(
 
 // ---------- the steer fold ----------
 
-/** One attempt's steer ledger: the steer mark and its owned input seqs. */
-export interface SteerLedger {
-	mark: number;
-	owned: Set<number>;
-}
-
-export function openSteerLedger(deps: {
-	steerMarkSeed: number;
-	ownedInputSeqs: number[];
-}): SteerLedger {
-	return { mark: deps.steerMarkSeed, owned: new Set(deps.ownedInputSeqs) };
-}
-
 type SteerDeps<M extends WireMember> = Pick<
 	StreamDeps<M>,
 	| "convId"
@@ -385,12 +375,6 @@ export function returnSteers<M extends WireMember>(
 
 // ---------- the driver ----------
 
-export interface DisplaySink {
-	onTextDelta(delta: string): void;
-	onReasoningDelta(delta: string): void;
-	onToolCall(toolName: string, input: unknown): void;
-}
-
 export interface StreamStep {
 	model: LanguageModel;
 	system: string;
@@ -459,52 +443,6 @@ export interface StreamDeps<M extends WireMember> {
 	// finish metadata (`fallback.from`) — the label names who served.
 	fallbackMisses?: ReadonlyArray<{ ref: string; reason: string }> | undefined;
 }
-
-export type StreamOutcome =
-	| {
-			kind: "ok";
-			responseMessage: Message | null;
-			usage: Usage | null;
-			finishReason: FinishReason | null;
-			lastStepInputTokens: number | null;
-			toolCalls: string[];
-			digestRing: { id: string; entry: ToolCallDigest }[];
-			steerMark: number;
-			// The final step's outbound prompt — null when no step ran.
-			window: WindowCapture | null;
-			// Window-row metadata: which model ran, how many steps.
-			model: string;
-			steps: number;
-			// #418: the native Claude session this attempt ran — the
-			// runtime persists the claude_sessions record only after the
-			// reply lands durably. Absent on non-Claude engines.
-			claudeSession?: { sessionId: string; headUuid: string } | undefined;
-	  }
-	| {
-			kind: "failed";
-			errorText: string;
-			rawError: unknown;
-			holdForRecovery: boolean;
-			// The error chunk was withheld (holdZeroEffectError) — nothing
-			// about this failure reached the wire.
-			errorHeld?: boolean;
-			// Set when the failure is a step-boundary pre-empt, not a provider
-			// error: the recovery rail is the same, the compact reason and the
-			// operator-facing story are not.
-			preempt?: { arm: "pressure"; step: number };
-			partial: Message | null;
-			seenText: boolean;
-			toolCalls: string[];
-			digestRing: { id: string; entry: ToolCallDigest }[];
-			loop: LoopTurnState;
-			steerMark: number;
-			filterRetryUsed: boolean;
-			// The last completed step's prompt — the call went out even
-			// when the turn failed on a later one.
-			window: WindowCapture | null;
-			model: string;
-			steps: number;
-	  };
 
 export async function driveStream<M extends WireMember>(
 	deps: StreamDeps<M>,

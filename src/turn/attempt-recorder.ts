@@ -2,11 +2,14 @@ import type { FinishReason, Message, MessageChunk, Usage } from "../message.ts";
 import type { PromptMessage } from "../prompt-message.ts";
 import type { AppLiveContext, AppQuota } from "../http/app-wire.ts";
 import { log } from "../log.ts";
+import type { EvidenceLimits, ToolCallDigest } from "../reviewer-evidence.ts";
+import type { TurnCheckpointPatch, TurnJournal } from "../turn-journal.ts";
 import type { WindowCapture } from "../window-capture.ts";
-import { openSteerLedger, type SteerLedger, type StreamDeps, type StreamOutcome, type WireMember } from "./stream.ts";
+import type { SkillWatch } from "./skill-attribution.ts";
 import { replyMetadata } from "./reply-metadata.ts";
-import { holdsZeroEffectError, type ForcedKind } from "./state.ts";
+import { holdsZeroEffectError, type ForcedKind, type LoopTurnState, type TurnState } from "./state.ts";
 import type { PromptSegments } from "./itemize.ts";
+import type { StepRules } from "./step-rules.ts";
 import {
 	noteToolError,
 	noteToolInput,
@@ -15,27 +18,91 @@ import {
 	openToolEvents,
 } from "./tool-events.ts";
 
-type RecorderDeps<M extends WireMember> = Pick<
-	StreamDeps<M>,
-	| "convId"
-	| "head"
-	| "state"
-	| "toolCalls"
-	| "digest"
-	| "seenText"
-	| "steerMarkSeed"
-	| "ownedInputSeqs"
-	| "evidence"
-	| "skillWatch"
-	| "journal"
-	| "runId"
-	| "saveStep"
-	| "turnStartMs"
-	| "holdZeroEffectError"
-	| "fallbackMisses"
-	| "rules"
-	| "holdsAuthority"
->;
+export interface DisplaySink {
+	onTextDelta(delta: string): void;
+	onReasoningDelta(delta: string): void;
+	onToolCall(toolName: string, input: unknown): void;
+}
+
+/** One attempt's steer ledger: the steer mark and its owned input seqs. */
+export interface SteerLedger {
+	mark: number;
+	owned: Set<number>;
+}
+
+export function openSteerLedger(deps: {
+	steerMarkSeed: number;
+	ownedInputSeqs: number[];
+}): SteerLedger {
+	return { mark: deps.steerMarkSeed, owned: new Set(deps.ownedInputSeqs) };
+}
+
+export type StreamOutcome =
+	| {
+			kind: "ok";
+			responseMessage: Message | null;
+			usage: Usage | null;
+			finishReason: FinishReason | null;
+			lastStepInputTokens: number | null;
+			toolCalls: string[];
+			digestRing: { id: string; entry: ToolCallDigest }[];
+			steerMark: number;
+			// The final step's outbound prompt — null when no step ran.
+			window: WindowCapture | null;
+			// Window-row metadata: which model ran, how many steps.
+			model: string;
+			steps: number;
+			// #418: the native Claude session this attempt ran — the
+			// runtime persists the claude_sessions record only after the
+			// reply lands durably. Absent on non-Claude engines.
+			claudeSession?: { sessionId: string; headUuid: string } | undefined;
+	  }
+	| {
+			kind: "failed";
+			errorText: string;
+			rawError: unknown;
+			holdForRecovery: boolean;
+			// The error chunk was withheld (holdZeroEffectError) — nothing
+			// about this failure reached the wire.
+			errorHeld?: boolean;
+			// Set when the failure is a step-boundary pre-empt, not a provider
+			// error: the recovery rail is the same, the compact reason and the
+			// operator-facing story are not.
+			preempt?: { arm: "pressure"; step: number };
+			partial: Message | null;
+			seenText: boolean;
+			toolCalls: string[];
+			digestRing: { id: string; entry: ToolCallDigest }[];
+			loop: LoopTurnState;
+			steerMark: number;
+			filterRetryUsed: boolean;
+			// The last completed step's prompt — the call went out even
+			// when the turn failed on a later one.
+			window: WindowCapture | null;
+			model: string;
+			steps: number;
+	  };
+
+export interface RecorderDeps {
+	convId: string;
+	head: DisplaySink;
+	state: TurnState;
+	toolCalls: string[];
+	digest: { id: string; entry: ToolCallDigest }[];
+	seenText: boolean;
+	steerMarkSeed: number;
+	ownedInputSeqs: number[];
+	evidence: EvidenceLimits | undefined;
+	skillWatch?: SkillWatch | undefined;
+	journal?: TurnJournal | undefined;
+	runId: string;
+	saveStep(patch: TurnCheckpointPatch): void;
+	turnStartMs: number;
+	holdZeroEffectError?: boolean | undefined;
+	fallbackMisses?: ReadonlyArray<{ ref: string; reason: string }> | undefined;
+	rules: StepRules;
+	holdsAuthority(): boolean;
+}
 
 export interface AttemptRecorder {
 	readonly steers: SteerLedger;
@@ -88,10 +155,11 @@ export interface AttemptRecorder {
 	resetForRetry(): void;
 }
 
-export function openAttemptRecorder<M extends WireMember>(
-	deps: RecorderDeps<M>,
+export function openAttemptRecorder(
+	deps: RecorderDeps,
 	label: string,
 	emit: (chunk: MessageChunk) => void,
+	now: () => number = Date.now,
 ): AttemptRecorder {
 	let holding = false;
 	let pendingCall = false;
@@ -172,7 +240,7 @@ export function openAttemptRecorder<M extends WireMember>(
 			pendingCall = false;
 		},
 		noteFirstToken() {
-			firstTokenMs ??= Date.now() - deps.turnStartMs;
+			firstTokenMs ??= now() - deps.turnStartMs;
 		},
 		textDelta(partId, delta) {
 			if (seenText && (lastTextPartId === null || partId !== lastTextPartId)) {
@@ -182,9 +250,9 @@ export function openAttemptRecorder<M extends WireMember>(
 			seenText = true;
 			deps.head.onTextDelta(delta);
 			streamedTail += delta;
-			const now = Date.now();
-			if (now - lastTailCheckpointMs >= 1_000) {
-				lastTailCheckpointMs = now;
+			const at = now();
+			if (at - lastTailCheckpointMs >= 1_000) {
+				lastTailCheckpointMs = at;
 				appendTail();
 			}
 		},
@@ -263,7 +331,7 @@ export function openAttemptRecorder<M extends WireMember>(
 				label,
 				finishReason: input.finishReason,
 				turnStartMs: deps.turnStartMs,
-				now: Date.now(),
+				now: now(),
 				firstTokenMs,
 				forcedCompletion: input.forcedCompletion,
 				usage: { ...input.usage, lastInput, lastCacheRead },

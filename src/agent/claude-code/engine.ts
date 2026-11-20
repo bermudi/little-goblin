@@ -46,14 +46,17 @@ import { log } from "../../log.ts";
 import { measurePrompt } from "../../turn/itemize.ts";
 import { toToolSet } from "../../turn/ai-sdk-tools.ts";
 import { stepModelRef } from "../../turn/model-ref.ts";
-import { openAttemptRecorder, type AttemptRecorder } from "../../turn/attempt-recorder.ts";
+import {
+	openAttemptRecorder,
+	type AttemptRecorder,
+	type StreamOutcome,
+} from "../../turn/attempt-recorder.ts";
 import {
 	admitSteers,
 	claimSteerBatch,
 	emitChunk,
 	returnSteers,
 	type StreamDeps,
-	type StreamOutcome,
 	type SteerBatch,
 	type WireMember,
 } from "../../turn/stream.ts";

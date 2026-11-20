@@ -250,7 +250,7 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   move is the sanctioned boundary (Cache stability). Failure is loud and
   lossless: a failed call writes no boundary and warns, and the next
   crossing retries — as does an abort by `/stop` or shutdown. An
-  epoch-bumping settings change (the authority rule) fences the same
+  epoch fence (the authority rule) fences the same
   commit: the re-check runs before each chunk and before the pointer lands,
   so a fence spends no further calls and clears no frozen prompt snapshot —
   the crossing retries under the new settings. Ruling 2026-10-25
@@ -278,7 +278,7 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   snapshot clears only at a boundary that rewrites what the prompt
   must say: a landed compaction, or a persona/memory-exclusion
   switch. A `/compact` fenced mid-lookup — a `/stop` or
-  epoch-bumping settings change landing during the read — rejects
+  other epoch fence landing during the read — rejects
   fenced rather than reporting "nothing to compact": the pass
   genuinely lost authority. The utilization warn stays as the alarm
   that compaction didn't happen or didn't keep up.

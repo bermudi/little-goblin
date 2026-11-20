@@ -578,7 +578,7 @@ stored level moved onto the destination ladder; the composer renders each as a
 one-line note — the same fields on the app-defaults PATCH carry the clamp.
 
 **The memory toggle follows the same rule (ruling 2026-10-29).** A flag
-write, never `applySettings`: no epoch bump — a running turn finishes and
+write, never an epoch bump — a running turn finishes and
 its retention is refused at the live gates (design/memory.md → exclusion).
 The composer's toggle also shows before the conversation exists — the
 new-chat and project composers stage the choice locally and it rides into

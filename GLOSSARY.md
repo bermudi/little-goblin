@@ -46,7 +46,7 @@
 - **Feature folder:** a feature that lives as one directory under `src/` with a single public `index.ts` and its own tables. `src/reminders/` is the first.
 - **Parked block:** a capability's config kept under `config.parked` while the capability is off. Re-enabling restores it.
 - **Turn:** one model run from an admitted trigger, including its tool calls and reply.
-- **Epoch:** the monotonic counter on a conversation. A settings change or cancellation bumps it; an action prepared under an older epoch is refused.
+- **Epoch:** the monotonic counter on a conversation. A cancellation bumps it (`/stop`, `/new`, a responsibility correction) and ends the running turn in the same call; an action prepared under an older epoch is refused. Settings changes such as `/voice` do not bump it: they apply to the next reply.
 - **Fence:** a re-check of authority at the moment of a side effect. A fenced action stops without acting.
 - **Attempt:** one try at a turn on one model. A context overflow or a model fallback ends the attempt and starts a new one; the turn goes on.
 - **Rail:** one way an attempt can end in failure: a journal fault, a fence, a context overflow, or a model error. Each rail decides whether the turn ends or resumes as a new attempt (`src/runtime-rails.ts`).

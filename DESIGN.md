@@ -151,9 +151,19 @@ The one lesson from v1's RuntimeMachine worth keeping, minus the machinery:
 re-checks that it still holds authority** — its conversation epoch hasn't
 advanced since enqueue.
 
-Each conversation carries a monotonic `epoch`, bumped on conversation-scoped
-settings changes (`/voice`, `/memory on|off`) and explicit cancellation.
-Model/thinking edits do **not** bump the epoch: Telegram has one shared
+Each conversation carries a monotonic `epoch`, bumped only by explicit
+cancellation: `/stop`, `/new`/`/back`, guest demotion, an operator correction
+on a responsibility. **Bump and cancel are one call** (ruling 2026-11-20,
+#820): callers move an epoch only through `Runtime.fence` or `Runtime.stop`
+(`src/fence.ts`). The bump commits inside the caller's transaction, and the
+fenced lane is cancelled right after the commit, before other work can enter
+it. So no path can fence a turn without ending it, and both engines settle a
+fence at once. `module-boundaries.test.ts` keeps bare store bumps out of
+production code.
+Conversation settings do **not** bump the epoch. `/voice` and `/memory on|off`
+are flag writes that apply to the next reply (`/voice` ruling 2026-11-20;
+`/memory` ruling 2026-10-29): a reply already streaming finishes in the mode
+it started in. Model/thinking edits do **not** bump the epoch either: Telegram has one shared
 selection, app conversations own durable snapshots, and root config holds app
 defaults for future conversations (ruling 2026-10-06). A turn captures its
 selection at admission; edits apply to its next turn without interrupting
@@ -207,8 +217,8 @@ journal (design/runtime-turn.md → The turn journal) makes the distinction
 durable: for the journal a graceful shutdown IS a crash (#471) — a
 shutdown-fenced run keeps its `running` row and records nothing itself,
 so the next open reclassifies it `interrupted` like any process death.
-`fenced` now means operator/epoch fences only (`/stop`, a settings
-change). A row reclassified `interrupted` is
+`fenced` now means operator/epoch fences only (`/stop`, `/new`/`/back`,
+guest demotion, a responsibility correction). A row reclassified `interrupted` is
 surfaced to the operator as a boot notice — counts and facts, never a
 replay. Whatever the rail — fenced, failed, or killed — the turn's
 completed steps (assistant text, tool calls + results) reach history as

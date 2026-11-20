@@ -121,6 +121,15 @@ Every engine follows these mandatory rules:
   (`saveStep`), applies the fallback error hold (`holdsZeroEffectError`),
   builds reply metadata (`replyMetadata`), and builds the `StreamOutcome`.
 - Abort on `deps.signal`.
+- Settle a fence through that abort. Epochs move only through
+  `Runtime.fence` / `Runtime.stop`, which bump and abort in one call
+  (DESIGN.md → The authority rule; ruling 2026-11-20, #820). So a fence
+  settles a turn at once on both engines, even while the vendor is
+  silent: the ai-sdk stream and the claude-code CLI query both end on
+  abort. An epoch bump with no abort would leave a silent claude-code
+  query open until it ended by itself — no path does that, and this is
+  not an engine difference to declare. `/voice` and `/memory on|off` are
+  flag writes, not fences: they apply to the next turn.
 
 `EngineRules` declares the optional rules each engine follows:
 
@@ -180,7 +189,8 @@ drains active turns and re-dispatches them,
 `resume_pending` and auto-continues, `gateway-session-lifecycle.md` —
 borrowed as mechanism only: a restart must not silently strand an
 unanswered request). `fenced` is now
-operator/epoch fences only — `/stop`, settings changes, deploy-era
+operator/epoch fences only — `/stop`, `/new`/`/back`, guest demotion,
+responsibility corrections, deploy-era
 authority loss outside shutdown. Boot sends one terse notice per run
 (counts by state,
 never the partial itself). The notice is a durable debt, not an
@@ -302,8 +312,8 @@ the view. The operator sees it too.
 - **The error rail** (2026-11-05): a terminal failure appends the event
   before the run's terminal stamp, with the failure message.
 - **The fenced rail** (2026-11-08, #195; narrowed 2026-11-13, #471): an
-  operator/epoch fence — `/stop`, a
-  settings change, a fence landing during
+  operator/epoch fence — `/stop`, `/new`/`/back`,
+  a responsibility correction, a fence landing during
   overflow recovery — appends the same event labeled ended-aborted,
   before the `fenced` stamp. The write happens DESPITE the lost epoch:
   it is the sanctioned post-fence state write (the ⏹ superseded display

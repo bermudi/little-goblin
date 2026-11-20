@@ -557,10 +557,10 @@ commands, provision credentials, warm snapshots or unlock wallets. See
 ## Per-topic settings
 
 Voice mode and memory inclusion are the per-topic settings, toggled from
-chat (`/voice`, `/memory on`·`off`). `/voice` interrupts whatever the
-topic is currently doing, so a reply never comes from a half-applied
-setting; `/memory on`·`off` lands without interrupting — a running turn
-finishes, its retention refused at the gate. `/model` and `/think` remain
+chat (`/voice`, `/memory on`·`off`). Both land without interrupting and
+apply to the next reply: a reply already in progress finishes in the mode
+it started in, so it never comes from a half-applied setting; after
+`/memory off` its retention is refused at the gate. `/model` and `/think` remain
 retired: Telegram model/thinking are shared channel settings, while each
 app conversation remembers its own.
 Model/thinking changes take effect on the next turn without interruption.

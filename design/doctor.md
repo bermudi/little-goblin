@@ -121,11 +121,11 @@ a failure record from the last delegate run's setup
 (`state/hc-setup-failure.json`, stage `install` or `start`, written by
 the run path and cleared by its next successful setup) fails; no binary
 passes as "installs on first run, download unverified"; a binary that is
-not a file or misses the pinned hash fails; a pinned binary with no
-runtime socket passes as "starts on first run, start unverified"; a
-socket answering `terminal.list` passes; a socket refusing connections
-warns (the core died without stopping and its terminals are gone; the
-next run starts a fresh one); any other socket error fails.
+not a file, misses the pinned hash, or is not executable fails; a pinned
+binary with no runtime socket passes as "starts on first run, start
+unverified"; a socket answering `terminal.list` passes; a socket refusing
+connections warns (the core died without stopping and its terminals are
+gone; the next run starts a fresh one); any other socket error fails.
 
 Relay-file presence alone is not association: validate the configured API
 against the running local installation and allowlisted provider/base

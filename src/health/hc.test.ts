@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { hcSessionForHome, hcSocketPath } from "../hc.ts";
@@ -73,6 +73,14 @@ test("ready after a reboot: pinned binary with no core running passes", async ()
 	const result = await check();
 	expect(result).toMatchObject({ status: "pass" });
 	expect(result.detail).toContain("is not running and starts on the first delegate run");
+});
+
+test("a pinned binary that cannot execute stays red", async () => {
+	installBinary();
+	chmodSync(join(home, "bin", "herdr-core"), 0o644);
+	const result = await check();
+	expect(result).toMatchObject({ status: "fail" });
+	expect(result.detail).toContain("is not executable");
 });
 
 test("a reachable core passes with its terminal count", async () => {

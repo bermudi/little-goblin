@@ -60,16 +60,29 @@ export async function hcCore(
 				started,
 			);
 		}
+		const binaryFailure: Record<Exclude<typeof binary, "missing" | "pinned">, { detail: string; next: string }> = {
+			"wrong-hash": {
+				detail: `herdr-core binary does not match the pinned ${HC_VERSION} hash`,
+				next: "Inspect $GOBLIN_HOME/bin/herdr-core; doctor does not replace it",
+			},
+			"not-a-file": {
+				detail: "herdr-core path is not a regular file",
+				next: "Inspect $GOBLIN_HOME/bin/herdr-core; doctor does not replace it",
+			},
+			"not-executable": {
+				detail: `Pinned herdr-core ${HC_VERSION} is not executable`,
+				next: "Inspect $GOBLIN_HOME/bin/herdr-core permissions and its mount; doctor does not change them",
+			},
+		};
 		if (binary !== "pinned") {
+			const failure = binaryFailure[binary];
 			return result(
 				id,
 				scope,
 				"fail",
-				binary === "wrong-hash"
-					? `herdr-core binary does not match the pinned ${HC_VERSION} hash`
-					: "herdr-core path is not a regular file",
+				failure.detail,
 				started,
-				"Inspect $GOBLIN_HOME/bin/herdr-core; doctor does not replace it",
+				failure.next,
 			);
 		}
 		const session = hcSessionForHome(home);

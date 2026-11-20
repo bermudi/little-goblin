@@ -15,8 +15,13 @@ export const hcSetupFailureSchema = z.object({
 });
 export type HcSetupFailure = z.infer<typeof hcSetupFailureSchema>;
 
-export function failHcSetup(path: string, stage: HcSetupFailure["stage"], cause: unknown): never {
-	const record: HcSetupFailure = { stage, version: HC_VERSION, at: new Date().toISOString() };
+export function failHcSetup(
+	path: string,
+	stage: HcSetupFailure["stage"],
+	cause: unknown,
+	now = Date.now(),
+): never {
+	const record: HcSetupFailure = { stage, version: HC_VERSION, at: new Date(now).toISOString() };
 	try {
 		mkdirSync(dirname(path), { recursive: true });
 		durableWriteFile(path, `${JSON.stringify(record)}\n`, 0o600);

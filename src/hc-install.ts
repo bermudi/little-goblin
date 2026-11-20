@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import {
+	accessSync,
 	chmodSync,
+	constants,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -138,7 +140,7 @@ export async function ensureHc(
 	}
 }
 
-export type HcBinaryState = "missing" | "pinned" | "wrong-hash" | "not-a-file";
+export type HcBinaryState = "missing" | "pinned" | "wrong-hash" | "not-a-file" | "not-executable";
 
 export function hcBinaryState(
 	binaryPath: string,
@@ -146,7 +148,14 @@ export function hcBinaryState(
 ): HcBinaryState {
 	if (!existsSync(binaryPath)) return "missing";
 	if (!statSync(binaryPath).isFile()) return "not-a-file";
-	return fileSha256(binaryPath) === binarySha256 ? "pinned" : "wrong-hash";
+	if (fileSha256(binaryPath) !== binarySha256) return "wrong-hash";
+	try {
+		accessSync(binaryPath, constants.X_OK);
+	} catch (error) {
+		if (error instanceof Error && "code" in error && error.code === "EACCES") return "not-executable";
+		throw error;
+	}
+	return "pinned";
 }
 
 export function hcArchiveUrl(pin: HcInstallPin = productionPin): string {

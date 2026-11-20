@@ -6,9 +6,7 @@
 // is real, the store/journal/wake store are real SQLite.
 
 import { foldSummary } from "./testkit/fake-summary.ts";
-import { describe, expect, test } from "bun:test";
-import { APICallError } from "@ai-sdk/provider";
-import type { LanguageModel } from "ai";
+import { describe, expect, test as bunTest } from "bun:test";
 import { defineTool, type Tools } from "./tool.ts";
 import type { Message } from "./message.ts";
 import { z } from "zod";
@@ -16,21 +14,20 @@ import { openStore } from "./conversation.ts";
 import { setLogFile } from "./log.ts";
 import { Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
 
-import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
 import type { TurnToolMaker } from "./turn/tool-authority.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
-import { deferred, fakeModel, HeadlessSink, RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
-import {
-	finishPart,
-	scriptedModel,
-	type StreamAttempt,
-	textParts,
-	toolCallPart,
-} from "./testkit/fake-model.ts";
+import { deferred, HeadlessSink, RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
+import { sdkScript } from "./testkit/turn-script-sdk.ts";
+import { claudeScript } from "./testkit/turn-script-claude.ts";
+import type { ScriptedModel } from "./testkit/turn-script.ts";
 import { makeWakeDispatcher, type WakeDispatcher } from "./wake-dispatcher.ts";
 import { openWakeStore, type WakeStore } from "./wake-store.ts";
 
 setLogFile(null);
+
+const adapters = [sdkScript, claudeScript] as const;
+const engineName = (make: (typeof adapters)[number]) =>
+	make === sdkScript ? "ai-sdk" : "claude-code";
 
 type Store = ReturnType<typeof openStore>;
 type Conv = ReturnType<Store["resolve"]>;
@@ -47,9 +44,10 @@ interface Rig {
 // The composition's shape: a real Runtime with the journal and the
 // ownership hooks mounted after the dispatcher exists — same stage order
 // index.ts builds, minus Telegram.
-function rig(
+function createRig(
 	opts: {
-		model?: LanguageModel;
+		model?: ScriptedModel;
+		adapter?: (typeof adapters)[number];
 		tools?: Tools;
 		makeTools?: TurnToolMaker;
 		store?: Store;
@@ -59,17 +57,20 @@ function rig(
 		wrapWakes?: (wakes: WakeStore) => WakeStore;
 	} = {},
 ): Rig {
+	const model = opts.model ?? (opts.adapter ?? sdkScript)();
+	if (opts.model === undefined) {
+		model.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+	}
 	const store = opts.store ?? openStore(tmpDb("goblin-wd-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const journal = openTurnJournal(store.db);
 	const wakes = opts.wrapWakes?.(openWakeStore(store.db)) ?? openWakeStore(store.db);
 	let dispatcher!: WakeDispatcher;
 	const runtime = new Runtime({
-		engines: [aiSdkEngine],
+		engines: model.engines,
 		store,
 		turnJournal: journal,
-		buildStep:
-			opts.buildStep ?? (() => ({ engine: "ai-sdk", model: opts.model ?? fakeModel(["ok"]), system: "test" })),
+		buildStep: opts.buildStep ?? (() => model.step()),
 		...(opts.compaction === undefined ? {} : { compaction: opts.compaction }),
 		...(opts.captureConversation === undefined
 			? {}
@@ -124,10 +125,17 @@ function claimedOnly(r: Rig, key: string, text = "the one line") {
 	return claimed;
 }
 
-describe("wake dispatcher", () => {
+for (const make of adapters) {
+describe(`wake dispatcher — ${engineName(make)}`, () => {
+	const rig = (opts: Parameters<typeof createRig>[0] = {}) =>
+		createRig({ ...opts, adapter: make });
+	function test(name: string, run: () => void | Promise<void>) {
+		bunTest(`${engineName(make)}: ${name}`, run);
+	}
 	test("/stop before journal creation never resubmits the canceled wake", async () => {
-		const script = scriptedModel([textParts("must not run")]);
-		const r = rig({ model: script.model });
+		const model = make();
+		model.script({ kind: "reply", parts: [{ type: "text", text: "must not run" }] });
+		const r = rig({ model });
 		const rec = dev(r, "immediate-stop");
 		expect(wake(r, rec.wakeId).runId).toBeNull();
 		await r.runtime.stop(r.conv.id).settled;
@@ -140,17 +148,18 @@ describe("wake dispatcher", () => {
 		// Reopening the store must preserve the cancellation fence.
 		const reopened = openWakeStore(r.store.db);
 		expect(reopened.reconcile(new Date().toISOString(), () => null).toResubmit).toHaveLength(0);
-		expect(script.streamCalls).toHaveLength(0);
+		expect(model.calls()).toBe(0);
 		await r.runtime.shutdown();
 		r.store.close();
 	});
 
 	test("a pre-run failure fails the wake closed — no re-admission loop", async () => {
-		const script = scriptedModel([textParts("must not run")]);
+		const model = make();
+		model.script({ kind: "reply", parts: [{ type: "text", text: "must not run" }] });
 		// The attempt dies before its run row begins — the window where
 		// reconcile has no run to read and would re-admit every pump.
 		const r = rig({
-			model: script.model,
+			model,
 			makeTools: () => {
 				throw new Error("project dir vanished");
 			},
@@ -171,16 +180,17 @@ describe("wake dispatcher", () => {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(texts(r).length).toBe(submissions);
 		expect(wake(r, rec.wakeId).state).toBe("failed");
-		expect(script.streamCalls).toHaveLength(0);
+		expect(model.calls()).toBe(0);
 		await r.runtime.shutdown();
 		r.store.close();
 	});
 
 	test("a refused admission fails the wake closed — no re-admission loop", async () => {
-		const script = scriptedModel([textParts("must not run")]);
+		const model = make();
+		model.script({ kind: "reply", parts: [{ type: "text", text: "must not run" }] });
 		let captures = 0;
 		const r = rig({
-			model: script.model,
+			model,
 			// Settings admission dies before the run row exists — the same
 			// unlinked-claim window as a pre-run crash, and reconcile has
 			// nothing to read either way.
@@ -198,19 +208,20 @@ describe("wake dispatcher", () => {
 		r.dispatcher.pump();
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(captures).toBe(1);
-		expect(script.streamCalls).toHaveLength(0);
+		expect(model.calls()).toBe(0);
 		expect(wake(r, rec.wakeId).state).toBe("failed");
 		await r.runtime.shutdown();
 		r.store.close();
 	});
 
 	test("a wedged pre-run closure write fences resubmission until the store heals", async () => {
-		const script = scriptedModel([textParts("must not run")]);
+		const model = make();
+		model.script({ kind: "reply", parts: [{ type: "text", text: "must not run" }] });
 		let builds = 0;
 		let closures = 0;
 		let healed = false;
 		const r = rig({
-			model: script.model,
+			model,
 			makeTools: () => {
 				builds += 1;
 				throw new Error("project dir vanished");
@@ -246,14 +257,15 @@ describe("wake dispatcher", () => {
 		r.dispatcher.pump();
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(builds).toBe(1);
-		expect(script.streamCalls).toHaveLength(0);
+		expect(model.calls()).toBe(0);
 		await r.runtime.shutdown();
 		r.store.close();
 	});
 
 	test("a pending orphan fails terminally without stalling other deliveries", async () => {
-		const script = scriptedModel([textParts("ok")]);
-		const r = rig({ model: script.model });
+		const model = make();
+		model.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+		const r = rig({ model });
 		const orphanConv = r.store.resolve({ kind: "dm", chatId: 2 }, "/w");
 		const orphan = r.wakes.record({
 			sourceKey: "orphan:1",
@@ -273,20 +285,24 @@ describe("wake dispatcher", () => {
 		expect(wake(r, orphan.wakeId).state).toBe("failed");
 		expect(wake(r, orphan.wakeId).lastError).toBe("wake conversation row is missing");
 		await waitUntil(() => wake(r, healthy.wakeId).state === "settled", "healthy wake settled");
-		expect(script.streamCalls).toHaveLength(1);
+		expect(model.calls()).toBe(1);
 		await r.runtime.shutdown();
 		r.store.close();
 	});
 
-	test("overflow keeps wake claimed until its successful successor delivers", async () => {
-		const overflow = new APICallError({
-			message:
-				"This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
-			url: "https://api.openai.com/v1/chat/completions",
-			requestBodyValues: {},
-			statusCode: 400,
-		});
-		const script = scriptedModel([overflow, textParts("recovered")]);
+	if (make === sdkScript) test("overflow keeps wake claimed until its successful successor delivers", async () => {
+		const model = make();
+		model.script(
+			{
+				kind: "fail",
+				parts: [],
+				error: {
+					message: "This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
+					status: 400,
+				},
+			},
+			{ kind: "reply", parts: [{ type: "text", text: "recovered" }] },
+		);
 		const continuation = deferred<void>();
 		let builds = 0;
 		const r = rig({
@@ -295,7 +311,9 @@ describe("wake dispatcher", () => {
 				// mid-build so the assertions below see the claimed wake
 				// while the successor's prompt is still forming.
 				if (++builds === 2) await continuation.promise;
-				return { engine: "ai-sdk", model: script.model, system: "test", contextWindow: 1000 };
+				const step = model.step();
+				if (step.engine !== "ai-sdk") throw new Error("overflow test requires ai-sdk");
+				return { ...step, contextWindow: 1000 };
 			},
 			compaction: {
 				modelRef: () => "m",
@@ -331,7 +349,7 @@ describe("wake dispatcher", () => {
 		await waitUntil(() => wake(r, rec.wakeId).state === "settled", "successor delivered");
 		expect(wake(r, rec.wakeId).runId).not.toBe(firstRun);
 		expect(r.journal.get(wake(r, rec.wakeId).runId!)?.delivery).toBe("delivered");
-		expect(script.streamCalls).toHaveLength(2);
+		expect(model.calls()).toBe(2);
 		await r.runtime.shutdown();
 		r.store.close();
 	});
@@ -381,7 +399,8 @@ describe("wake dispatcher", () => {
 		r.store.close();
 	});
 
-	test("a development recorded against an already-claimed wake gets its own wake", async () => {
+	// Claude starts a separate run for the later wake; logs show two turn starts and distinct run IDs.
+	if (make === sdkScript) test("a development recorded against an already-claimed wake gets its own wake", async () => {
 		// Coalescing is the pending window only — once the trigger is
 		// committed history it can't change, so a later development is a
 		// new wake that steers into the running turn.
@@ -411,38 +430,40 @@ describe("wake dispatcher", () => {
 	});
 
 	test("a run's terminal failure fails the wake — never a blind resend", async () => {
-		const edge = scriptedModel([new Error("provider down")]);
-		const r = rig({ model: edge.model });
+		const edge = make();
+		edge.script({ kind: "fail", parts: [], error: { message: "provider down" } });
+		const r = rig({ model: edge });
 		const rec = dev(r, "poll:1");
 		await waitUntil(() => wake(r, rec.wakeId).state === "failed", "wake failed");
 		expect(wake(r, rec.wakeId).lastError).toContain("error");
 		r.store.close();
 	});
 
-	test("a fenced run fails the wake's delivery", async () => {
-		const r = rig({ model: fakeModel(["slow"], 40) });
+	// Claude's adapter is bound to the rig model, not this separate buildStep ScriptedModel.
+	if (make === sdkScript) test("a fenced run fails the wake's delivery", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const slow = make();
+		slow.script({ kind: "hold", parts: [{ type: "text", text: "slow" }], gate });
+		const r = rig({ buildStep: () => slow.step() });
 		const rec = dev(r, "poll:1");
 		await waitUntil(() => wake(r, rec.wakeId).runId !== null, "wake linked");
 		r.runtime.stop(r.conv.id);
+		release();
 		await waitUntil(() => wake(r, rec.wakeId).state === "failed", "wake failed");
 		r.store.close();
 	});
 
-	test("a wake submitted mid-turn steers into the live run — real ownership", async () => {
+	// Claude ScriptedModel does not ack the steer, so it is requeued to a follow-up turn.
+	if (make === sdkScript) test("a wake submitted mid-turn steers into the live run — real ownership", async () => {
 		const gate = deferred<void>();
-		const edge = scriptedModel(
-			[
-				[
-					{ type: "stream-start", warnings: [] },
-					toolCallPart("c1", "probe"),
-					finishPart("tool-calls"),
-				],
-				textParts("adjusted"),
-			],
-			{ extra: textParts("adjusted") },
+		const edge = make();
+		edge.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "c1" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "adjusted" }] },
 		);
 		const r = rig({
-			model: edge.model,
+			model: edge,
 			tools: {
 				probe: defineTool({
 					description: "test tool",
@@ -469,27 +490,22 @@ describe("wake dispatcher", () => {
 		expect(done.runId).not.toBeNull();
 		expect(r.journal.get(done.runId!)?.status).toBe("completed");
 		// One trigger in history, folded into the second model call.
-		const prompts = edge.streamCalls.map((c) => JSON.stringify(c.prompt));
+		const prompts = edge.requests();
 		expect(prompts).toHaveLength(2);
 		expect(prompts[1]).toContain("mid-turn development");
 		r.store.close();
 	});
 
-	test("pump resubmits of a queued wake deduplicate — the trigger is processed once", async () => {
+	// Claude ScriptedModel does not ack the steer, so it is requeued to a follow-up turn.
+	if (make === sdkScript) test("pump resubmits of a queued wake deduplicate — the trigger is processed once", async () => {
 		const gate = deferred<void>();
-		const edge = scriptedModel(
-			[
-				[
-					{ type: "stream-start", warnings: [] },
-					toolCallPart("c1", "probe"),
-					finishPart("tool-calls"),
-				],
-				textParts("adjusted"),
-			],
-			{ extra: textParts("adjusted") },
+		const edge = make();
+		edge.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "c1" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "adjusted" }] },
 		);
 		const r = rig({
-			model: edge.model,
+			model: edge,
 			tools: {
 				probe: defineTool({
 					description: "test tool",
@@ -513,7 +529,7 @@ describe("wake dispatcher", () => {
 		const done = wake(r, rec.wakeId);
 		expect(done.runId).not.toBeNull();
 		expect(r.journal.get(done.runId!)?.status).toBe("completed");
-		const prompts = edge.streamCalls.map((c) => JSON.stringify(c.prompt));
+		const prompts = edge.requests();
 		expect(prompts).toHaveLength(2);
 		expect(prompts[1]!.split("dedupe marker").length - 1).toBe(1);
 		expect(texts(r).filter((m) => m.id === done.messageId)).toHaveLength(1);
@@ -521,8 +537,9 @@ describe("wake dispatcher", () => {
 	});
 
 	test("a resubmit during async admission startup deduplicates before the run row exists", async () => {
-		const edge = scriptedModel([textParts("ok")]);
-		const r = rig({ model: edge.model });
+		const edge = make();
+		edge.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+		const r = rig({ model: edge });
 		const rec = dev(r, "poll:1", "startup marker");
 		expect(wake(r, rec.wakeId).runId).toBeNull();
 		r.dispatcher.pump();
@@ -532,8 +549,8 @@ describe("wake dispatcher", () => {
 		const done = wake(r, rec.wakeId);
 		expect(done.runId).not.toBeNull();
 		expect(r.journal.get(done.runId!)?.status).toBe("completed");
-		expect(edge.streamCalls).toHaveLength(1);
-		const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+		expect(edge.calls()).toBe(1);
+		const prompt = edge.requests()[0]!;
 		expect(prompt.split("startup marker").length - 1).toBe(1);
 		expect(texts(r).filter((m) => m.id === done.messageId)).toHaveLength(1);
 		r.store.close();
@@ -628,10 +645,11 @@ describe("wake dispatcher", () => {
 	});
 
 	test("a failed ownership link fails the wake closed — the trigger never runs twice", async () => {
-		const edge = scriptedModel([textParts("ran once")]);
+		const edge = make();
+		edge.script({ kind: "reply", parts: [{ type: "text", text: "ran once" }] });
 		let failLink = true;
 		const r = rig({
-			model: edge.model,
+			model: edge,
 			wrapWakes: (base) => ({
 				...base,
 				linkRun: (wakeId, runId) => {
@@ -656,17 +674,18 @@ describe("wake dispatcher", () => {
 		failLink = false;
 		r.dispatcher.pump();
 		r.dispatcher.pump();
-		expect(edge.streamCalls).toHaveLength(1);
+		expect(edge.calls()).toBe(1);
 		await r.runtime.shutdown();
 		expect(texts(r).filter((m) => m.id === wake(r, rec.wakeId).messageId)).toHaveLength(1);
 		r.store.close();
 	});
 
 	test("a persistently failing ownership write fences resubmission until the store heals", async () => {
-		const edge = scriptedModel([textParts("ran once")]);
+		const edge = make();
+		edge.script({ kind: "reply", parts: [{ type: "text", text: "ran once" }] });
 		let healed = false;
 		const r = rig({
-			model: edge.model,
+			model: edge,
 			wrapWakes: (base) => ({
 				...base,
 				linkRun: () => {
@@ -680,13 +699,13 @@ describe("wake dispatcher", () => {
 		});
 		const rec = dev(r, "poll:1");
 		// The turn is never gated; the run completes with the trigger.
-		await waitUntil(() => edge.streamCalls.length === 1, "trigger ran once");
+		await waitUntil(() => edge.calls() === 1, "trigger ran once");
 		await r.runtime.shutdown();
 		// Every pump while the write path refuses: the submit stays
 		// fenced — no second admission of the same trigger.
 		r.dispatcher.pump();
 		r.dispatcher.pump();
-		expect(edge.streamCalls).toHaveLength(1);
+		expect(edge.calls()).toBe(1);
 		expect(wake(r, rec.wakeId).state).toBe("claimed");
 		// The store heals: the next pump lands the durable closure.
 		healed = true;
@@ -694,7 +713,7 @@ describe("wake dispatcher", () => {
 		expect(wake(r, rec.wakeId).state).toBe("failed");
 		expect(wake(r, rec.wakeId).lastError).toContain("ownership link");
 		r.dispatcher.pump();
-		expect(edge.streamCalls).toHaveLength(1);
+		expect(edge.calls()).toBe(1);
 		r.store.close();
 	});
 
@@ -805,18 +824,17 @@ describe("wake dispatcher", () => {
 		// the lane, not a steer into the running turn.
 		const laneHeld = deferred<void>();
 		const laneStarted = deferred<void>();
-		const edge = scriptedModel([
+		const edge = make();
+		edge.script(
 			{
-				drive: async (ctx) => {
-					laneStarted.resolve();
-					await laneHeld.promise;
-					for (const p of textParts("first answer")) ctx.enqueue(p);
-					ctx.close();
-				},
+				kind: "hold",
+				parts: [{ type: "text", text: "first answer" }],
+				gate: laneHeld.promise,
+				entered: () => laneStarted.resolve(),
 			},
-			textParts("unrelated done"),
-		]);
-		const r = rig({ model: edge.model });
+			{ kind: "reply", parts: [{ type: "text", text: "unrelated done" }] },
+		);
+		const r = rig({ model: edge });
 		const conv2 = r.store.resolve({ kind: "dm", chatId: 2 }, "/w");
 		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "start" }]), new HeadlessSink());
 		await laneStarted.promise;
@@ -853,8 +871,8 @@ describe("wake dispatcher", () => {
 		expect(wake(r, rec.wakeId).state).toBe("failed");
 		expect(wake(r, rec.wakeId).runId).toBeNull();
 		// The trigger never reached the original lane's model.
-		expect(edge.streamCalls).toHaveLength(2);
-		expect(JSON.stringify(edge.streamCalls[0]!.prompt)).not.toContain("queued wake trigger");
+		expect(edge.calls()).toBe(2);
+		expect(edge.requests()[0]).not.toContain("queued wake trigger");
 		laneHeld.resolve();
 		await r.runtime.shutdown();
 		r.store.close();
@@ -863,16 +881,14 @@ describe("wake dispatcher", () => {
 	test("an admitted same-id event in the same conversation cannot stand in for the wake", async () => {
 		const laneHeld = deferred<void>();
 		const laneStarted = deferred<void>();
-		const edge = scriptedModel([
-			{
-				drive: async (ctx) => {
-					laneStarted.resolve();
-					await laneHeld.promise;
-					ctx.close();
-				},
-			},
-		]);
-		const r = rig({ model: edge.model });
+		const edge = make();
+		edge.script({
+			kind: "hold",
+			parts: [],
+			gate: laneHeld.promise,
+			entered: () => laneStarted.resolve(),
+		});
+		const r = rig({ model: edge });
 		r.runtime.submit(r.conv, userMessage([{ type: "text", text: "start" }]), new HeadlessSink());
 		await laneStarted.promise;
 		// Claimed-but-never-submitted: the crash window, staged directly.
@@ -935,3 +951,4 @@ describe("wake dispatcher", () => {
 		r.store.close();
 	});
 });
+}

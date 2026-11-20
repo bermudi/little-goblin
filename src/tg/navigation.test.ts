@@ -280,6 +280,8 @@ test("malformed or cross-chat persisted command outcomes fail loudly rather than
 	deps.store.close();
 });
 
+// This provider fake checks that Runtime's AbortSignal reaches the AI SDK
+// provider and stays un-aborted after the navigation transaction rolls back.
 // Hold the external model call, not the runtime: a rolled-back command must
 // leave the actual provider signal and the running turn entirely untouched.
 function heldTurn(deps: ReturnType<typeof fixture>) {

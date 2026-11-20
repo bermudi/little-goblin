@@ -35,9 +35,8 @@ In rough order of blast radius.
 
 **Same-uid is not a boundary.** Goblin runs as `daniel` (uid 1000), the same
 uid as this shell. File modes on `auth.jsonl` (0600) stop *other* local users
-and services, not the agent: a same-uid reader ignores them. `DESIGN.md` says
-this outright ("Honest boundary: same uid, full bash — the token's grants are
-the real limit"). The real limits are the three below, in this order:
+and services, not the agent: a same-uid reader ignores them. The real limits
+are the three below, in this order:
 
 1. **Which secrets are accessible** — auth records, granted items and unlocked
    OS-store snapshots all count; absence from `auth.jsonl` is not isolation.
@@ -138,9 +137,8 @@ same server as the mini app, which is bound to `127.0.0.1` and fronted by
 whatever `publicUrl` points at. If that front is a reverse proxy that forwards
 `/hook/*` **verbatim**, then anyone who can reach the front (the whole tailnet
 under `tailscale serve`; the public internet under `funnel`) can POST to a hook
-URL they were given, and the token is the only thing protecting it. `DESIGN.md`
-says this explicitly ("reachable only through whatever door `publicUrl`
-fronts"). Operationally:
+URL they were given, and the token is the only thing protecting it.
+Operationally:
 
 - `tailscale serve` keeps it tailnet-only — every device on *your* tailnet can
   reach it. That is not the same set as "you".
@@ -395,6 +393,6 @@ A change is a security decision — worth writing down here — if it does any o
 - puts a secret somewhere `bash` can read it (env, a file in `workspace/`, a
   log line).
 
-When a boundary is genuinely argued about and the argument is settled, the
-ruling goes in `DESIGN.md` and the *model* goes here. `DESIGN.md` owns why;
-this owns who and what.
+Check code and tests for what the boundary enforces. Record the operator-facing
+consequences here, and keep the reason for a non-obvious choice once, in the
+relevant design note.

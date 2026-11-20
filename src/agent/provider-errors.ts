@@ -4,17 +4,50 @@
 
 import type { Usage } from "../message.ts";
 
-// Errors arrive deeply wrapped: APICallError carries the status on
-// statusCode and the body on responseBody, RetryError nests the real
-// failure under lastError/errors, anything can ride a cause chain.
-// Judge the union of every reachable string — guessing which field the
-// truth lives in per provider is how classifiers drift false.
+// The one failure shape sorting reads (design/model.md → Provider
+// failure shape, #770). Each engine builds it at its own edge — the AI
+// SDK's errors in sdk-errors.ts, the Claude Code CLI's result frames in
+// claude-code/engine.ts — so no vendor field name reaches this file.
+export type ProviderVerdict = "quota" | "transient";
+
+export interface ProviderFacts {
+	/** The HTTP status the provider answered with. */
+	readonly status?: number | undefined;
+	/** The provider's error body or payload, as text. */
+	readonly body?: string | undefined;
+	/** A verdict the vendor typed as an error code, not prose. */
+	readonly verdict?: ProviderVerdict | undefined;
+}
+
+export class ProviderError extends Error {
+	readonly status: number | undefined;
+	readonly body: string | undefined;
+	readonly verdict: ProviderVerdict | undefined;
+	constructor(message: string, facts: ProviderFacts, options?: { cause?: unknown }) {
+		super(message, options);
+		this.name = "ProviderError";
+		this.status = facts.status;
+		this.body = facts.body;
+		this.verdict = facts.verdict;
+	}
+}
+
+// Errors arrive wrapped: goblin rails nest the engine's ProviderError
+// under a cause, a retry ladder aggregates its attempts. Judge the union
+// of every reachable string — guessing which field the truth lives in
+// per provider is how classifiers drift false. The walk reads goblin's
+// shape and standard JS errors (message, cause, AggregateError) only.
 const MAX_DEPTH = 4;
 
 interface Collected {
 	texts: string[];
 	rateLimited: boolean;
 	contentFiltered: boolean;
+	// A quota wall the provider stated in structure, not prose: a typed
+	// verdict, or HTTP 402 Payment Required (OpenRouter's insufficient
+	// credits; Brave search's observed 402 "Usage limit exceeded.").
+	quotaWall: boolean;
+	transientVerdict: boolean;
 	statuses: number[];
 }
 
@@ -24,33 +57,21 @@ function collect(value: unknown, depth: number, seen: Set<object>, out: Collecte
 		out.texts.push(value);
 		return;
 	}
-	if (typeof value !== "object") return;
+	if (!(value instanceof Error)) return;
 	if (seen.has(value)) return;
 	seen.add(value);
-	const o = value as Record<string, unknown>;
 	if (value instanceof ProviderContentFilterError) out.contentFiltered = true;
-	if (typeof o.message === "string") out.texts.push(o.message);
-	if (typeof o.statusCode === "number") out.statuses.push(o.statusCode);
-	if (o.statusCode === 429) out.rateLimited = true;
-	if (typeof o.responseBody === "string") out.texts.push(o.responseBody);
-	if (o.data !== undefined) {
-		// The SDK attaches the parsed body on `data` for some providers —
-		// a JSON.stringify is the only shape-agnostic read of it.
-		try {
-			const s = JSON.stringify(o.data);
-			if (s !== undefined) out.texts.push(s);
-		} catch {
-			// Unstringifiable data contributes nothing — keep walking.
-		}
+	out.texts.push(value.message);
+	if (value instanceof ProviderError) {
+		if (value.status !== undefined) out.statuses.push(value.status);
+		if (value.status === 429) out.rateLimited = true;
+		if (value.status === 402 || value.verdict === "quota") out.quotaWall = true;
+		if (value.verdict === "transient") out.transientVerdict = true;
+		if (value.body !== undefined) out.texts.push(value.body);
 	}
-	collect(o.cause, depth + 1, seen, out);
-	collect(o.lastError, depth + 1, seen, out);
-	// error/response are the envelopes the SDK's stream-error normalizer
-	// accepts — this walk sees them pre-normalization.
-	collect(o.error, depth + 1, seen, out);
-	collect(o.response, depth + 1, seen, out);
-	if (Array.isArray(o.errors)) {
-		for (const e of o.errors) collect(e, depth + 1, seen, out);
+	collect(value.cause, depth + 1, seen, out);
+	if (value instanceof AggregateError) {
+		for (const e of value.errors) collect(e, depth + 1, seen, out);
 	}
 }
 
@@ -59,6 +80,8 @@ function collectAll(err: unknown): Collected {
 		texts: [],
 		rateLimited: false,
 		contentFiltered: false,
+		quotaWall: false,
+		transientVerdict: false,
 		statuses: [],
 	};
 	collect(err, 0, new Set(), collected);
@@ -112,12 +135,13 @@ function overflowByPhrases(text: string): boolean {
 }
 
 // The one failure a compaction can actually fix. Explicitly NOT a rate
-// limit — TPM rejections mention "tokens" generously; a 429 statusCode
-// is decisive — and not a reasoning-mode rejection.
+// limit — TPM rejections mention "tokens" generously; a 429 status
+// is decisive — not a structural quota wall, and not a reasoning-mode
+// rejection.
 export function isContextOverflow(err: unknown): boolean {
 	const collected = collectAll(err);
 	const text = collected.texts.join("\n").toLowerCase();
-	if (collected.rateLimited) return false;
+	if (collected.rateLimited || collected.quotaWall) return false;
 	if (RATE_LIMIT_TEXT.test(text)) return false;
 	return overflowByPhrases(text);
 }
@@ -211,8 +235,9 @@ export interface QuotaExhausted {
 
 // Quota wins over the 429 status that usually carries it.
 export function quotaExhausted(err: unknown): QuotaExhausted | null {
-	const text = collectAll(err).texts.join("\n").toLowerCase();
-	if (!quotaByPhrases(text)) return null;
+	const collected = collectAll(err);
+	const text = collected.texts.join("\n").toLowerCase();
+	if (!collected.quotaWall && !quotaByPhrases(text)) return null;
 	const resetAt = QUOTA_RESET.exec(text)?.[1];
 	return resetAt === undefined ? {} : { resetAt };
 }
@@ -225,7 +250,7 @@ export function isTransientTurnFailure(err: unknown): boolean {
 	const collected = collectAll(err);
 	if (contentFilterDetected(collected)) return false;
 	const text = collected.texts.join("\n").toLowerCase();
-	if (quotaByPhrases(text)) return false;
+	if (collected.quotaWall || quotaByPhrases(text)) return false;
 	// Rate-limit evidence decides first — isContextOverflow's order in
 	// mirror, so a throttled rejection carrying overflow-ish body prose
 	// can't read as neither transient nor compactable.
@@ -235,6 +260,7 @@ export function isTransientTurnFailure(err: unknown): boolean {
 	for (const status of collected.statuses) {
 		if (status === 408 || status === 425 || status === 429 || status >= 500) return true;
 	}
+	if (collected.transientVerdict) return true;
 	for (const phrase of TRANSIENT_PHRASES) {
 		if (text.includes(phrase)) return true;
 	}

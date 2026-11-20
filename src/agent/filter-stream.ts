@@ -12,6 +12,7 @@ import {
 	isTransientTurnFailure,
 	ProviderContentFilterError,
 } from "./provider-errors.ts";
+import { fromSdkError } from "./sdk-errors.ts";
 
 // Errors that reached the wire as provider stream error parts — the one
 // surface streamText's onError-retry machinery can re-dispatch (a
@@ -30,7 +31,7 @@ export function filterErrorStream(model: LanguageModel, conversation: string): L
 				try {
 					result = await doStream();
 				} catch (error) {
-					if (!isContentFilter(error)) throw error;
+					if (!isContentFilter(fromSdkError(error))) throw error;
 					return {
 						stream: new ReadableStream<LanguageModelV4StreamPart>({
 							start(controller) {
@@ -66,7 +67,7 @@ export function filterErrorStream(model: LanguageModel, conversation: string): L
 										flush();
 										controller.close();
 									} else if (
-										(value.type === "error" && isContentFilter(value.error)) ||
+										(value.type === "error" && isContentFilter(fromSdkError(value.error))) ||
 										(value.type === "finish" && value.finishReason.unified === "content-filter")
 									) {
 										buffered.length = 0;
@@ -110,13 +111,13 @@ export function filterErrorStream(model: LanguageModel, conversation: string): L
 								}
 							} catch (error) {
 								if (cancelled) return;
-								if (!isContentFilter(error)) {
+								if (!isContentFilter(fromSdkError(error))) {
 									// A mid-stream drop the lane reports as a reader
 									// throw (openai-compatible, #488) joins the
 									// error-part path so streamText's step retry sees
 									// it; a throw the transient classifier doesn't own
 									// stays fatal.
-									if (!isTransientTurnFailure(error)) {
+									if (!isTransientTurnFailure(fromSdkError(error))) {
 										controller.error(error);
 										return;
 									}

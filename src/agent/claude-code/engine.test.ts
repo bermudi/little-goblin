@@ -17,6 +17,7 @@ import type { ConfigRef } from "../../config.ts";
 import type { Config } from "../../config-schema.ts";
 import { type FakeStep, type FakeUsageInput, fakeClaude } from "../../testkit/fake-claude.ts";
 import { TurnState } from "../../turn/state.ts";
+import { isTransientTurnFailure } from "../provider-errors.ts";
 import { openStepRules } from "../../turn/step-rules.ts";
 import {
 	type MemberSettlement,
@@ -667,6 +668,22 @@ describe("driveClaude — tool round-trip through the real bridge", () => {
 });
 
 describe("driveClaude — failures and recovery", () => {
+	test("an api_retry 503 carries transient status to a bland error result", async () => {
+		const { outcome } = await run([
+			{ kind: "error", resultText: "upstream said no", retryStatus: 503 },
+		]);
+		if (outcome.kind !== "failed") throw new Error("expected failed");
+		expect(isTransientTurnFailure(outcome.rawError)).toBe(true);
+	});
+
+	test("a result apiErrorStatus classifies transient without an api_retry frame", async () => {
+		const { outcome } = await run([
+			{ kind: "error", resultText: "upstream said no", apiErrorStatus: 503 },
+		]);
+		if (outcome.kind !== "failed") throw new Error("expected failed");
+		expect(isTransientTurnFailure(outcome.rawError)).toBe(true);
+	});
+
 	test("a rate-limit result fails loud with distinct text and no retry", async () => {
 		const { outcome, members } = await run([
 			{

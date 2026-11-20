@@ -15,7 +15,7 @@ import type {
 	AppProject,
 } from "../../src/http/app-wire.ts";
 import { App } from "./App.tsx";
-import { confirmSheet } from "./testkit.ts";
+import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 
 // Late completions must not drive navigation: a held create dialog's
 // onCreated, a held note mint's onOpenNote, and a second note→chat
@@ -243,8 +243,10 @@ describe("navigation races: late completions", () => {
 					}),
 				);
 			}
-			if (url === "/api/app/settings" && method === "POST")
+			if (url === "/api/app/settings" && method === "POST") {
+				posts.push({ url, body });
 				return Promise.resolve(jsonResponse({ ok: true }));
+			}
 			if (url === "/api/app/settings")
 				return Promise.resolve(
 					new Response(
@@ -734,5 +736,93 @@ describe("navigation races: late completions", () => {
 		});
 		await waitFor(() => win.location.pathname === "/app/c/X", "Back to conversation X");
 		await waitFor(() => container.querySelector(".rail .conv.current") !== null, "highlight restored");
+	});
+	// #802: the leave ask is a sheet, so Settings' 800 ms autosave kept
+	// running under it — a valid edit saved while the operator was being
+	// asked whether to throw it away.
+	const settingsPosts = () => posts.filter((p) => p.url === "/api/app/settings");
+	const editSettingsValidly = async () => {
+		await openPage("Settings");
+		await waitFor(() => container.querySelector(".settings") !== null, "settings page");
+		await click(
+			[...container.querySelectorAll("button.idx")].find((b) => b.textContent?.includes("Access")),
+		);
+		const input = container.querySelector('input[aria-label="add allowed user"]')!;
+		expect(input).not.toBeNull();
+		await typeInto(input, "222", win.HTMLInputElement.prototype);
+		await click(input.closest(".addrow")?.querySelector(".addbtn"));
+		expect(container.querySelector('[aria-label="remove 222"]')).not.toBeNull();
+		expect(container.textContent).toContain("unsaved");
+	};
+	const outlastAutosave = async () => {
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 1200));
+		});
+	};
+	const convX = (): AppConversationList["conversations"][number] => ({
+		id: "app/X",
+		title: "Conversation X",
+		createdAt: "2026-10-10T00:00:00Z",
+		updatedAt: "2026-10-10T00:00:00Z",
+		projectId: null,
+		parentId: null,
+		pinnedAt: null,
+		archivedAt: null,
+		preview: "",
+	});
+
+	test("Discard from a conversation row's ask discards: autosave never writes the edit", async () => {
+		convs = [convX()];
+		await mount();
+		await waitFor(() => container.querySelector(".rail .conv-main") !== null, "conversation row");
+		await editSettingsValidly();
+		await click(container.querySelector(".rail .conv-main"));
+		expect(confirmText(container)).toBe("Discard unsaved settings changes?");
+		// The operator reads the sheet longer than the autosave debounce.
+		await outlastAutosave();
+		expect(settingsPosts()).toHaveLength(0);
+		await act(async () => clickConfirm(container, true));
+		await waitFor(() => win.location.pathname === "/app/c/X", "conversation X");
+		await outlastAutosave();
+		expect(settingsPosts()).toHaveLength(0);
+	});
+
+	test("a declined ask keeps the unsaved pill while it is open; autosave resumes after", async () => {
+		await mount();
+		await editSettingsValidly();
+		await openPage("Memories");
+		expect(confirmText(container)).toBe("Discard unsaved settings changes?");
+		await outlastAutosave();
+		expect(settingsPosts()).toHaveLength(0);
+		expect(container.textContent).toContain("unsaved");
+		await act(async () => clickConfirm(container, false));
+		await settle();
+		expect(win.location.pathname).toBe("/app/settings");
+		expect(container.textContent).toContain("unsaved");
+		// Staying keeps the edit, so the held autosave now writes it.
+		await waitFor(() => settingsPosts().length === 1, "the resumed autosave");
+		await waitFor(() => !(container.textContent?.includes("unsaved") ?? true), "the pill clears on save");
+	});
+
+	test("Back then Forward under the leave sheet: a late Discard can't hold autosave", async () => {
+		await mount();
+		await editSettingsValidly();
+		// Forward returns to the still-mounted editor while its leave sheet remains open.
+		win.history.back();
+		await act(async () => {
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await settle();
+		expect(confirmText(container)).toBe("Discard unsaved settings changes?");
+		win.history.forward();
+		await act(async () => {
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await settle();
+		expect(win.location.pathname).toBe("/app/settings");
+		await act(async () => clickConfirm(container, true));
+		await settle();
+		expect(container.querySelector(".settings")).not.toBeNull();
+		await waitFor(() => settingsPosts().length === 1, "autosave resumes for the still-mounted editor");
 	});
 });

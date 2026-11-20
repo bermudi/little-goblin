@@ -417,6 +417,7 @@ Model-facing prompt messages are goblin types too (`src/prompt-message.ts`,
 compared to the SDK only in `src/prompt-message.test.ts`); engines receive
 `PromptMessage[]` and convert at their own edge.
 Cache telemetry and provider failures carry goblin `Usage`, converted from provider usage once at the AI SDK edge (`src/agent/v4-usage.ts`).
+Provider failures use goblin's `ProviderError` (status, body, typed verdict) in `src/agent/provider-errors.ts`; each engine builds it at its edge (`src/agent/sdk-errors.ts` for the AI SDK, `src/agent/claude-code/engine.ts` for CLI result frames), and sorting reads nothing else (#770).
 
 **Goblin owns its tool definitions** (#595). Tools are `defineTool`s in
 `src/tool.ts`: description, zod input, `execute(input, { toolCallId,

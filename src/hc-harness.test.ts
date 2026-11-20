@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
@@ -157,5 +157,141 @@ describe("makeHarnessInvocation", () => {
 			if (saved === undefined) delete process.env.PATH;
 			else process.env.PATH = saved;
 		}
+	});
+});
+
+describe("devin per-run config", () => {
+	const hooksDir = "/var/lib/goblin/bin/hc-hooks";
+	const events = {
+		SessionStart: "idle",
+		UserPromptSubmit: "working",
+		PreToolUse: "working",
+		PostToolUse: "working",
+		Stop: "idle",
+		PermissionRequest: "blocked permission",
+	} as const;
+
+	function withDevinEnv(xdg: string | undefined, body: (home: string, bin: string) => void): void {
+		const bin = tempDir();
+		const home = tempDir();
+		writeFileSync(join(bin, "devin"), "#!/bin/sh\n");
+		chmodSync(join(bin, "devin"), 0o755);
+		const saved = { PATH: process.env.PATH, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+		process.env.PATH = bin;
+		if (xdg === undefined) delete process.env.XDG_CONFIG_HOME;
+		else process.env.XDG_CONFIG_HOME = xdg;
+		try {
+			body(home, bin);
+		} finally {
+			for (const [key, value] of Object.entries(saved)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		}
+	}
+
+	function launch(home: string, goblinHome: string): { argv: string[]; config: Record<string, unknown> } {
+		const { argv } = makeHarnessInvocation({
+			kind: "devin",
+			args: ["--permission-mode", "dangerous"],
+			cwd: goblinHome,
+			terminalName: "g1-x",
+			goblinHome,
+			hooksDir,
+			homeDir: home,
+		});
+		const path = argv[argv.indexOf("--config") + 1]!;
+		return { argv, config: JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown> };
+	}
+
+	function commands(config: Record<string, unknown>, event: string): string[] {
+		const entries = (config.hooks as Record<string, Array<{ hooks: Array<{ command: string }> }>>)[event] ?? [];
+		return entries.flatMap((entry) => entry.hooks.map((hook) => hook.command));
+	}
+
+	function writeOperator(dir: string, text: string): void {
+		mkdirSync(join(dir, "devin"), { recursive: true });
+		writeFileSync(join(dir, "devin", "config.json"), text);
+	}
+
+	test("starts from the operator's config and appends goblin's six hooks after theirs (#810)", () => {
+		withDevinEnv(undefined, (home) => {
+			writeOperator(join(home, ".config"), `{
+				// devin reads JSONC
+				"version": 1,
+				"agent": { "model": "operator-model" },
+				"permissions": { "allow": ["Read(**)"] },
+				"hooks": {
+					"Stop": [{ "hooks": [{ "type": "command", "command": "/operator/stop" }] }],
+					"PreToolUse": [{ "matcher": "exec", "hooks": [{ "type": "command", "command": "/operator/pre" }] }],
+				},
+			}`);
+			const goblinHome = tempDir();
+			const { config } = launch(home, goblinHome);
+			expect(config.agent).toEqual({ model: "operator-model" });
+			expect(config.permissions).toEqual({ allow: ["Read(**)"] });
+			expect(config.version).toBe(1);
+			for (const [event, state] of Object.entries(events)) {
+				const own = event === "Stop" ? ["/operator/stop"] : event === "PreToolUse" ? ["/operator/pre"] : [];
+				expect(commands(config, event)).toEqual([...own, `${hooksDir}/report.sh ${state}`]);
+			}
+			// Re-launching rebuilds from the operator file: no duplicate entries.
+			expect(launch(home, goblinHome).config).toEqual(config);
+			expect(readFileSync(join(home, ".config", "devin", "config.json"), "utf8")).toContain("// devin reads JSONC");
+		});
+	});
+
+	test("an operator entry that already runs goblin's command is not doubled", () => {
+		withDevinEnv(undefined, (home) => {
+			writeOperator(join(home, ".config"), JSON.stringify({
+				version: 1,
+				hooks: { Stop: [{ hooks: [{ type: "command", command: `${hooksDir}/report.sh idle` }] }] },
+			}));
+			expect(commands(launch(home, tempDir()).config, "Stop")).toEqual([`${hooksDir}/report.sh idle`]);
+		});
+	});
+
+	test("no operator config means version 1 plus goblin's hooks", () => {
+		withDevinEnv(undefined, (home) => {
+			const { config } = launch(home, tempDir());
+			expect(Object.keys(config).sort()).toEqual(["hooks", "version"]);
+			expect(config.version).toBe(1);
+			for (const [event, state] of Object.entries(events)) {
+				expect(commands(config, event)).toEqual([`${hooksDir}/report.sh ${state}`]);
+			}
+		});
+	});
+
+	test("an absolute XDG_CONFIG_HOME is where devin's config lives; a relative one is ignored", () => {
+		const xdg = tempDir();
+		withDevinEnv(xdg, (home) => {
+			writeOperator(xdg, JSON.stringify({ version: 1, theme_mode: "xdg" }));
+			writeOperator(join(home, ".config"), JSON.stringify({ version: 1, theme_mode: "home" }));
+			expect(launch(home, tempDir()).config.theme_mode).toBe("xdg");
+		});
+		withDevinEnv("relative/xdg", (home) => {
+			writeOperator(join(home, ".config"), JSON.stringify({ version: 1, theme_mode: "home" }));
+			expect(launch(home, tempDir()).config.theme_mode).toBe("home");
+		});
+	});
+
+	test("a broken operator config fails loud instead of dropping their settings", () => {
+		for (const [text, message] of [
+			["{ not json", "invalid JSONC"],
+			["[1, 2]", "expected an object"],
+			[JSON.stringify({ version: 1, hooks: { Stop: { hooks: [] } } }), "expected an object"],
+		] as const) {
+			withDevinEnv(undefined, (home) => {
+				writeOperator(join(home, ".config"), text);
+				expect(() => launch(home, tempDir())).toThrow(message);
+			});
+		}
+	});
+
+	test("an unreadable operator config fails loud, not as missing", () => {
+		withDevinEnv(undefined, (home) => {
+			mkdirSync(join(home, ".config", "devin", "config.json"), { recursive: true });
+			expect(() => launch(home, tempDir())).toThrow("cannot read devin config");
+		});
 	});
 });

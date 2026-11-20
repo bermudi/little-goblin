@@ -98,6 +98,9 @@ describe("engine-neutral model scripts", () => {
 				const sink = run(r);
 				await waitUntil(() => entered, "script entered");
 				expect(r.runtime.busy(r.conv.id)).toBe(true);
+				// The hold is mid-step: the held text is on the wire, still open.
+				await waitUntil(() => sink.text.includes("held"), "held text streamed");
+				expect(sink.chunkTypes).not.toContain("text-end");
 				release();
 				expect(await sink.done).toMatchObject({ kind: "completed" });
 			} finally { release(); await r.runtime.shutdown(); r.store.close(); }
@@ -157,11 +160,10 @@ describe("engine-neutral model scripts", () => {
 			const r = rig(model);
 			try {
 				await run(r).done;
-				if (make === sdkScript) {
-					expect(model.requests()).toHaveLength(2);
-				} else {
-					expect(model.requests()).toBeNull();
-				}
+				// ai-sdk sends one request per model call; claude-code one CLI
+				// query per tool loop, its prompt carrying the user's words.
+				expect(model.requests()).toHaveLength(make === sdkScript ? 2 : 1);
+				expect(model.requests()[0]).toContain("hello");
 			} finally { await r.runtime.shutdown(); r.store.close(); }
 		});
 		test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: queued scripts span turns and later script calls append`, async () => {

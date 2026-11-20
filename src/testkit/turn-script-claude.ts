@@ -56,11 +56,15 @@ function scriptCall(call: ScriptCall, bridgeRef: { current: ToolBridge | null })
 		}
 	}
 	if (call.kind === "hold") {
-		steps.push({
-			kind: "hold",
-			...(call.entered !== undefined ? { onEnter: call.entered } : {}),
-			until: call.gate,
-		});
+		const hold = { ...(call.entered !== undefined ? { onEnter: call.entered } : {}), until: call.gate };
+		// A trailing text part stays open across the hold, so the step is
+		// mid-stream at `entered`, as on the ai-sdk side.
+		const last = steps.at(-1);
+		if (call.parts.at(-1)?.type === "text" && last?.kind === "stream-text") {
+			steps[steps.length - 1] = { ...last, hold };
+		} else {
+			steps.push({ kind: "hold", ...hold });
+		}
 	}
 	if (call.kind === "fail") {
 		steps.push({ kind: "error", resultText: call.error.message });
@@ -147,6 +151,6 @@ export function claudeScript(opts: { label?: string; system?: string } = {}): Sc
 			}
 		},
 		calls: () => fake.calls.length,
-		requests: () => null,
+		requests: () => fake.calls.map((call) => JSON.stringify(call.prompt.blocks)),
 	};
 }

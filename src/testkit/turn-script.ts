@@ -14,7 +14,8 @@ export type ScriptFinish = "length" | "content-filter";
 /** One model call. Unless `finish` says otherwise, it ends "tool-calls" when it has a tool-call part, else "stop". */
 export type ScriptCall =
 	| { kind: "reply"; parts: ScriptPart[]; usage?: ScriptUsage; finish?: ScriptFinish }
-	/** Streams `parts`, calls `entered`, blocks until `gate` resolves, then finishes like "reply". */
+	/** Streams `parts`, calls `entered`, blocks until `gate` resolves, then finishes like "reply".
+	 *  The hold is mid-step: a trailing text part is still open while it blocks. */
 	| { kind: "hold"; parts: ScriptPart[]; gate: Promise<void>; entered?: () => void; usage?: ScriptUsage }
 	/** Streams `parts`, then fails. Empty `parts` = failure before any content reaches the wire. */
 	| { kind: "fail"; parts: ScriptPart[]; error: ScriptError };
@@ -29,6 +30,6 @@ export interface ScriptedModel {
 	script(...calls: ScriptCall[]): void;
 	/** Model calls made so far (ai-sdk); CLI queries started (claude-code, whose CLI owns the tool loop). */
 	calls(): number;
-	/** Each full model request, serialized, in order; null when the engine owns its request (claude-code). */
-	requests(): string[] | null;
+	/** Each request, serialized, in order: the model prompt (ai-sdk); each CLI query's prompt blocks (claude-code). */
+	requests(): string[];
 }

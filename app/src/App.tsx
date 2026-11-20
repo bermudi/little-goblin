@@ -304,10 +304,11 @@ function AppShell() {
 		if (sameRoute(routeRef.current, next)) return;
 		if (opts?.skipDirtyGuard !== true && !(await leaveDirty())) return;
 		clearStartFailure();
+		const path = pathOfRoute(next);
+		const mountedPath = pathOfRoute(routeRef.current);
 		routeRef.current = next;
 		setRoute(next);
-		const path = pathOfRoute(next);
-		if (path !== window.location.pathname) pushRoute(path);
+		if (path !== mountedPath) pushRoute(path);
 	};
 
 	useEffect(() => {

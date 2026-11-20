@@ -521,7 +521,10 @@ the test:
   `SharedArrayBuffer` slot the worker reads. `beforeEach` / `afterEach` /
   `beforeAll` / `afterAll` callbacks are wrapped too: a runaway hook
   reports `running: <hook> hook registered at <file:line>` and the last
-  test. Top-level code shows as `loading <file>`; code before the first
+  test. A registration in a concise arrow (`() => test(…)`) is a tail
+  call, and JavaScriptCore drops its caller's frame: then the report
+  gives the enclosing describe's file with `line not in the stack`.
+  Top-level code shows as `loading <file>`; code before the first
   registration in a file shows as `no test registered yet` (bun's own
   output still prints the file heading).
 - **Fail loud.** A worker that fails to start fails the run before any

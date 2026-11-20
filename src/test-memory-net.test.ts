@@ -12,6 +12,7 @@ const ALLOC_FIXTURE = "./src/testkit/memory-net/alloc.fixture.ts";
 const CALM_FIXTURE = "./src/testkit/memory-net/calm.fixture.ts";
 const HOOK_FIXTURE = "./src/testkit/memory-net/hook.fixture.ts";
 const EACH_FIXTURE = "./src/testkit/memory-net/each.fixture.ts";
+const TAIL_FIXTURE = "./src/testkit/memory-net/tail.fixture.ts";
 const APP_FIXTURE = "./app/src/memory-net-dom.fixture.tsx";
 
 type ChildRun = {
@@ -238,10 +239,35 @@ describe("memory net child probes", () => {
 			run,
 		);
 		requireCondition(
+			output.includes("registered at src/testkit/memory-net/each.fixture.ts:5"),
+			"missing each-row registration location",
+			run,
+		);
+		requireCondition(
 			output.includes("(pass) outer > inner > case 1"),
 			"first each row did not pass before the runaway row",
 			run,
 		);
+	});
+
+	test("T9 names the file, not the net, when a tail call hides the line", async () => {
+		const run = await runFixture(TAIL_FIXTURE);
+		const output = run.stdout + run.stderr;
+		requireCondition(run.guardFailure === null, "parent safety guard fired", run);
+		requireCondition(hasSigkill(run), "runaway tail-call child was not SIGKILLed", run);
+		requireCondition(
+			output.includes("running: outer > inner > case 2"),
+			"missing formatted nested test name",
+			run,
+		);
+		requireCondition(
+			output.includes(
+				"registered at src/testkit/memory-net/tail.fixture.ts (line not in the stack: a tail call)",
+			),
+			"missing tail-call file fallback",
+			run,
+		);
+		requireCondition(!output.includes("test-memory-net.ts"), "report names the net itself", run);
 	});
 });
 

@@ -203,8 +203,9 @@ describe("engine-neutral model scripts", () => {
 			finally { await r.runtime.shutdown(); r.store.close(); }
 		}
 		expect(() => claudeScript().script({ kind: "reply", parts: [], finish: "content-filter" })).toThrow("claude-code");
-		expect(() => claudeScript().script({ kind: "fail", parts: [], error: { message: "quota", status: 429 } }))
-			.toThrow("claude-code");
+		expect(() =>
+			claudeScript().script({ kind: "fail", parts: [], error: { message: "quota", status: 429 } }),
+		).not.toThrow();
 		expect(() => claudeScript().script({ kind: "reply", parts: [], usage: { input: 1, output: 1 } }))
 			.toThrow("claude-code cannot render usage");
 	});

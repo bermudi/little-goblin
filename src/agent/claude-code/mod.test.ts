@@ -213,6 +213,23 @@ describe("pinEvent", () => {
 		});
 	});
 
+	test("an error result preserves the API status for provider sorting", () => {
+		const msg = {
+			type: "result",
+			subtype: "error_during_execution",
+			duration_ms: 1,
+			duration_api_ms: 1,
+			is_error: true,
+			num_turns: 1,
+			total_cost_usd: 0,
+			usage: { input_tokens: 0, output_tokens: 0 },
+			modelUsage: {},
+			result: "upstream said no",
+			api_error_status: 503,
+		} as unknown as SDKMessage;
+		expect(pinEvent(msg)).toMatchObject({ type: "result", apiErrorStatus: 503 });
+	});
+
 	test("unconsumed frame types drop to null", () => {
 		for (const msg of [
 			{ type: "task_notification" },

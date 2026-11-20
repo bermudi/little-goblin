@@ -70,6 +70,7 @@ export type FakeStep =
 			/** A clean result frame with is_error — the CLI's error result. */
 			resultText?: string;
 			assistantError?: string;
+			apiErrorStatus?: number;
 	  }
 	| {
 			/** Provider silence: yields nothing until `until` resolves. */
@@ -279,11 +280,28 @@ export function fakeClaude(initial: FakeStep[] = []): FakeClaudeHandle {
 				}
 				case "error": {
 					if (step.throw !== undefined) throw step.throw;
+					if (step.assistantError !== undefined) {
+						yield {
+							type: "assistant",
+							error: step.assistantError,
+							message: {
+								id: nextId("msg"),
+								model: "fake",
+								role: "assistant",
+								content: [],
+								stop_reason: null,
+								usage: null,
+							},
+						};
+					}
 					const result: ClaudeResultEvent = {
 						type: "result",
 						subtype: "error_during_execution",
 						isError: true,
 						result: step.resultText ?? "claude code returned an error result",
+						...(step.apiErrorStatus !== undefined
+							? { apiErrorStatus: step.apiErrorStatus }
+							: {}),
 						numTurns: turns,
 						durationMs: 5,
 						totalCostUsd: 0,

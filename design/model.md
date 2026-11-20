@@ -301,6 +301,17 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   match as the same `APICallError` (all fields kept) with `isRetryable:
   false`, logging one `warn` (model, statusCode, resetAt). Throttles, 5xx
   and overloads keep the SDK ladder; `maxRetries` is unchanged.
+- **Provider failure shape** (2026-11-20, #770): sorting reads only goblin's
+  `ProviderError` (status, body, typed verdict) plus standard `Error.message`,
+  `cause`, `AggregateError.errors`, and strings; each engine builds the shape
+  at its edge. A typed `quota` verdict or HTTP 402 is a structural quota wall:
+  it outranks a 429 and blocks both overflow and transient classification.
+  Brave search's 402 was observed; OpenRouter's insufficient-credits 402 is
+  documented, not observed by goblin. Claude Code maps `api_error_status` to
+  status, `rate_limit` to quota, and `overloaded`/`server_error` to transient.
+  The CLI retries throttles and overloads itself, so a surfaced `rate_limit`
+  is its subscription window, matching `resultErrorText`'s no-retry text.
+  This is classification only; request bytes are unchanged.
 - **Model fallback list** (ruling 2026-11-02, operator). The turn is the
   one call that had no fallback, and 2026-10-26 cost ~50 minutes of
   hand-failover (codex `server_is_overloaded`, then a z.ai quota wall).

@@ -139,6 +139,8 @@ export interface ClaudeResultEvent {
 	subtype: string;
 	isError: boolean;
 	result: string;
+	/** HTTP status of the API error the CLI gave up on, when present. */
+	apiErrorStatus?: number;
 	numTurns: number;
 	durationMs: number;
 	totalCostUsd: number;

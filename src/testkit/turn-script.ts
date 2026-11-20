@@ -8,7 +8,12 @@ export type ScriptPart =
 	| { type: "tool-call"; toolName: string; input: JSONObject; toolCallId?: string };
 export interface ScriptUsage { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 /** A provider failure in engine-neutral terms; each adapter renders its engine's native form. */
-export interface ScriptError { message: string; status?: number }
+export interface ScriptError {
+	message: string;
+	status?: number;
+	/** The vendor's typed quota verdict. claude-code renders it as rate_limit; the AI SDK has no typed code, so sdkScript refuses it (script status 402 instead). */
+	quota?: boolean;
+}
 /** How a successful call ends when not the implied default. */
 export type ScriptFinish = "length" | "content-filter";
 /** One model call. Unless `finish` says otherwise, it ends "tool-calls" when it has a tool-call part, else "stop". */

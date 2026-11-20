@@ -61,7 +61,11 @@ import {
 	type WireMember,
 } from "../../turn/stream.ts";
 import { serializeToolDefs, type WindowCapture } from "../../window-capture.ts";
-import { isContextOverflow } from "../provider-errors.ts";
+import {
+	isContextOverflow,
+	ProviderError,
+	type ProviderVerdict,
+} from "../provider-errors.ts";
 import {
 	type CacheRoute,
 	cacheRouteFor,
@@ -84,6 +88,25 @@ import type {
 	ClaudeUsage,
 	SteerChannel,
 } from "./translate.ts";
+
+const CLAUDE_VERDICTS = new Map<string, ProviderVerdict>([
+	["rate_limit", "quota"],
+	["overloaded", "transient"],
+	["server_error", "transient"],
+]);
+
+export function claudeProviderError(
+	message: string,
+	result: ClaudeResultEvent | null,
+	assistantError: string | undefined,
+	cause?: unknown,
+): ProviderError {
+	// The CLI retries throttles and overloads itself; a surfaced rate_limit is the subscription window.
+	return new ProviderError(message, {
+		status: result?.apiErrorStatus,
+		verdict: assistantError === undefined ? undefined : CLAUDE_VERDICTS.get(assistantError),
+	}, { cause });
+}
 
 // The array arm of AssistantContent (the union also allows a bare
 // string message, which we never build).
@@ -975,9 +998,18 @@ export async function driveClaude<M extends WireMember>(
 		break;
 	}
 
+	const failure =
+		engineState.streamError === null
+			? null
+			: claudeProviderError(
+					engineState.streamError,
+					engineState.resultFrame,
+					run.lastAssistantError,
+					engineState.rawError ?? undefined,
+				);
 	if (
-		engineState.streamError !== null &&
-		isContextOverflow(engineState.streamError) &&
+		failure !== null &&
+		isContextOverflow(failure) &&
 		deps.overflowRecoverable
 	) {
 		recorder.holdForRecovery();
@@ -1023,7 +1055,7 @@ export async function driveClaude<M extends WireMember>(
 		if (!recorder.holding && !errorHeld) emit({ type: "error", errorText: engineState.streamError });
 		return recorder.failed({
 			errorText: engineState.streamError,
-			rawError: engineState.rawError,
+			rawError: failure,
 			partial: run.parts.length > 0 ? { id: messageId, role: "assistant", parts: run.parts } : null,
 			window: windowCapture(),
 			errorHeld,

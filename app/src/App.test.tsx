@@ -22,7 +22,6 @@ import type {
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import { App } from "./App.tsx";
 import { flatLine } from "./ConversationList.tsx";
-import { deepLinkConv } from "./routing.ts";
 import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 
 // Stored titles predate store-side flattening — the sidebar row must
@@ -47,20 +46,6 @@ describe("flatLine", () => {
 
 	test("a title reduced to markdown furniture empties out", () => {
 		expect(flatLine("``` ```")).toBe("");
-	});
-});
-
-// The spin-off deep link — /app/c/<appId> claims the conversation id.
-describe("deepLinkConv", () => {
-	test("a valid path yields the app/ conversation id", () => {
-		expect(deepLinkConv("/app/c/spun-1_valid")).toBe("app/spun-1_valid");
-	});
-	test("the root, other paths, and malformed ids claim nothing", () => {
-		expect(deepLinkConv("/app/")).toBeNull();
-		expect(deepLinkConv("/app/c/")).toBeNull();
-		expect(deepLinkConv("/app/c/-bad")).toBeNull();
-		expect(deepLinkConv("/app/c/valid/extra")).toBeNull();
-		expect(deepLinkConv("/settings")).toBeNull();
 	});
 });
 

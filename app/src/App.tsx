@@ -7,7 +7,6 @@ import type {
 	AppNote,
 	AppNoteSummary,
 	AppProject,
-	AppSearchHit,
 } from "../../src/http/app-wire.ts";
 import { ArchiveView } from "./ArchiveView.tsx";
 import { AttentionView } from "./AttentionView.tsx";
@@ -23,7 +22,6 @@ import {
 	listProjects,
 	loadToken,
 	patchConversation,
-	searchConversations,
 	telegramDoor,
 } from "./api.ts";
 import { ChatView } from "./ChatView.tsx";
@@ -49,13 +47,12 @@ import {
 	type Page,
 	PAGES,
 	browserNavigation,
-	deepLinkConv,
 	historyPosition,
 	newHistorySegment,
-	noteFromPath,
-	pageFromPath,
-	projectFromPath,
-	windowFromPath,
+	pathOfRoute,
+	routeFromPath,
+	sameRoute,
+	type Route,
 } from "./routing.ts";
 import { SettingsView } from "./SettingsView.tsx";
 import { SkillsView } from "./SkillsView.tsx";
@@ -67,6 +64,7 @@ import { TokenGate } from "./TokenGate.tsx";
 import { useUndoToast } from "./undoToast.tsx";
 import { useConfirm } from "./confirm.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
+import { useConversationSearch } from "./useConversationSearch.ts";
 import { WindowView } from "./WindowView.tsx";
 
 type Pane = ListPane | "search";
@@ -103,7 +101,6 @@ function AppShell() {
 	// Every project, archived included — the rail shows only the active
 	// ones.
 	const [projects, setProjects] = useState<AppProject[] | null>(null);
-	const [current, setCurrent] = useState<string | null>(null);
 	const [sourcesOpen, setSourcesOpen] = useState(false);
 	// Chat column width — a header selector on the chat page, persisted
 	// per device (chatWidth.ts).
@@ -116,11 +113,6 @@ function AppShell() {
 	// Per-action failures — cleared by the next successful action or
 	// refresh.
 	const [rowError, setRowError] = useState<string | null>(null);
-	// Mobile (M): "+" on the chats list stages the empty-state composer.
-	// Desktop reaches that same surface by selecting null — /app is the
-	// composer there — but on phone widths /app is the list, so the staged
-	// composer is its own bit. Irrelevant off phone widths (CSS decides).
-	const [composeStaged, setComposeStaged] = useState(false);
 	// Desktop (C): the panel lists exactly one surface at a time — chats
 	// by default; search is a mode the spine's glyph opens, not a standing
 	// box. The header's sidebar toggle collapses the whole rail.
@@ -155,12 +147,7 @@ function AppShell() {
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
 	}, [systemSheetOpen]);
-	// A failed search must surface as an error, never read as "no
-	// matches".
-	const [query, setQuery] = useState("");
-	const [hits, setHits] = useState<AppSearchHit[] | null>(null);
-	const [searchError, setSearchError] = useState<string | null>(null);
-	const searchSeq = useRef(0);
+	const { query, setQuery, hits, searchError } = useConversationSearch(token);
 	// The empty state has the composer too — its send creates the
 	// conversation, then ChatView delivers the parked message as `seed`.
 	const [seed, setSeed] = useState<{
@@ -219,45 +206,39 @@ function AppShell() {
 	// The deep link applies once — after the first list load — so an
 	// operator's own navigation is never overridden later.
 	const deepApplied = useRef(false);
-	const [page, setPage] = useState<Page>(
-		() =>
-			pageFromPath(window.location.pathname) ??
-			(projectFromPath(window.location.pathname) !== null
-				? "project"
-				: noteFromPath(window.location.pathname) !== null
-					? "note"
-					: windowFromPath(window.location.pathname) !== null
-						? "window"
-						: "chat"),
-	);
-	useEffect(() => setSourcesOpen(false), [current, page]);
-	const [projectId, setProjectId] = useState<string | null>(() =>
-		projectFromPath(window.location.pathname),
-	);
-	const [noteId, setNoteId] = useState<string | null>(() => noteFromPath(window.location.pathname));
-	const [windowConv, setWindowConv] = useState<string | null>(() =>
-		windowFromPath(window.location.pathname),
-	);
+	const [route, setRoute] = useState<Route>(() => {
+		const initialRoute = routeFromPath(window.location.pathname);
+		return initialRoute.kind === "conversation"
+			? { kind: "home", composing: false }
+			: initialRoute;
+	});
+	// Async completions and dirty guards must read the mounted route, not
+	// the route where their callback was created.
+	const routeRef = useRef(route);
+	routeRef.current = route;
+	const current = route.kind === "conversation" ? route.id : null;
+	const projectId = route.kind === "project" ? route.id : null;
+	const noteId = route.kind === "note" ? route.id : null;
+	const windowConv = route.kind === "window" ? route.id : null;
+	const composeStaged = route.kind === "home" && route.composing;
+	const railCurrent = route.kind === "conversation" || route.kind === "window" ? route.id : null;
+	const page: Page = route.kind === "home" || route.kind === "conversation"
+		? "chat"
+		: route.kind === "page" ? route.page : route.kind;
+	useEffect(() => setSourcesOpen(false), [route]);
 	const [createProjectOpen, setCreateProjectOpen] = useState(false);
 	// The settings editor's dirty bit — navigation asks before
 	// discarding unsaved edits.
 	const settingsDirty = useRef(false);
-	// Stale async completions (a held create's onCreated/onOpen firing
-	// after the operator navigated) run guards against the page mounted
-	// now — a declined traversal deliberately leaves the old editor
-	// mounted — not the page that rendered the callback.
-	const pageRef = useRef(page);
-	pageRef.current = page;
-	// Same for the note editor — unsaved body/title edits or a standing
-	// 409 conflict bar. Its draft lives only in that component; an
-	// unguarded navigation destroys it silently.
+	// The note editor's unsaved body/title edits or standing 409 conflict
+	// are also guarded; its draft lives only in that component.
 	const noteDirty = useRef(false);
 	// Confirmed discards must reach the editor before its unmount drain.
 	const noteDiscard = useRef<(() => void) | null>(null);
 	const [navigationError, setNavigationError] = useState<string | null>(null);
 	const navigation = browserNavigation();
 	const position = historyPosition(window.history.state);
-	const route = useRef({
+	const historyRoute = useRef({
 		index: position?.index ?? 0,
 		segment: position?.segment ?? newHistorySegment(),
 		key: navigation?.currentEntry.key ?? null,
@@ -266,7 +247,7 @@ function AppShell() {
 	// ask is open — its answer replays or reverts this entry. A second
 	// pop re-parks: the newest target is the only one that can land.
 	const pendingPop = useRef<{
-		p: Page | null;
+		p: Route;
 		position: { index: number; segment: string } | null;
 	} | null>(null);
 	const popAskOpen = useRef(false);
@@ -276,14 +257,14 @@ function AppShell() {
 	// popstate uses the same pair — a traversal can't be vetoed, so it
 	// restores-or-applies around the answer instead.
 	const dirtyGuard = (): { message: string; disarm: () => void } | null => {
-		if (pageRef.current === "settings" && settingsDirty.current)
+		if (routeRef.current.kind === "page" && routeRef.current.page === "settings" && settingsDirty.current)
 			return {
 				message: "Discard unsaved settings changes?",
 				disarm: () => {
 					settingsDirty.current = false;
 				},
 			};
-		if (pageRef.current === "note" && noteDirty.current)
+		if (routeRef.current.kind === "note" && noteDirty.current)
 			return {
 				message: "Discard unsaved note edits and any conflict?",
 				disarm: () => noteDiscard.current?.(),
@@ -304,7 +285,7 @@ function AppShell() {
 		// A declined legacy traversal can leave the browser at a different
 		// entry while the editor stays open. Never extend its saved indices.
 		const base =
-			actual?.segment === route.current.segment && actual.index === route.current.index
+			actual?.segment === historyRoute.current.segment && actual.index === historyRoute.current.index
 				? actual
 				: { index: 0, segment: newHistorySegment() };
 		window.history.pushState(
@@ -312,12 +293,22 @@ function AppShell() {
 			"",
 			path,
 		);
-		route.current = {
+		historyRoute.current = {
 			index: base.index + 1,
 			segment: base.segment,
 			key: navigation?.currentEntry.key ?? null,
 		};
 		setNavigationError(null);
+	};
+	const navigate = async (next: Route, opts?: { skipDirtyGuard?: boolean }) => {
+		if (sameRoute(routeRef.current, next)) return;
+		if (opts?.skipDirtyGuard !== true && !(await leaveDirty())) return;
+		clearStartFailure();
+		const path = pathOfRoute(next);
+		const mountedPath = pathOfRoute(routeRef.current);
+		routeRef.current = next;
+		setRoute(next);
+		if (path !== mountedPath) pushRoute(path);
 	};
 
 	useEffect(() => {
@@ -326,8 +317,8 @@ function AppShell() {
 		window.history.replaceState(
 			{
 				...(typeof state === "object" && state !== null ? state : {}),
-				goblinIndex: route.current.index,
-				goblinSegment: route.current.segment,
+				goblinIndex: historyRoute.current.index,
+				goblinSegment: historyRoute.current.segment,
 			},
 			"",
 		);
@@ -405,10 +396,11 @@ function AppShell() {
 	useEffect(() => {
 		if (conversations === null || deepApplied.current) return;
 		deepApplied.current = true;
-		const id = deepLinkConv(window.location.pathname);
-		if (id === null) return;
-		if (conversations.some((c) => c.id === id)) {
-			setCurrent(id);
+		const initial = routeFromPath(window.location.pathname);
+		if (initial.kind !== "conversation") return;
+		if (conversations.some((c) => c.id === initial.id)) {
+			routeRef.current = initial;
+			setRoute(initial);
 		} else {
 			// A dead link must not masquerade — normalize to the root.
 			window.history.replaceState(window.history.state, "", "/app/");
@@ -416,9 +408,9 @@ function AppShell() {
 	}, [conversations]);
 
 	useEffect(() => {
-		const applyPop = (p: Page | null, nextPosition: { index: number; segment: string } | null) => {
+		const applyPop = (next: Route, nextPosition: { index: number; segment: string } | null) => {
 			navigationSeq.current += 1;
-			route.current = {
+			historyRoute.current = {
 				// A legacy gap breaks index continuity. New entries get a new
 				// segment so we never compute a distance across that gap.
 				index: nextPosition?.index ?? 0,
@@ -427,65 +419,29 @@ function AppShell() {
 			};
 			setNavigationError(null);
 			clearStartFailure();
-			if (p !== null) {
-				setPage(p);
-				setProjectId(null);
-				setNoteId(null);
-				setWindowConv(null);
-				return;
-			}
-			const pid = projectFromPath(window.location.pathname);
-			if (pid !== null) {
-				setPage("project");
-				setProjectId(pid);
-				setNoteId(null);
-				setWindowConv(null);
-				return;
-			}
-			const nid = noteFromPath(window.location.pathname);
-			if (nid !== null) {
-				setPage("note");
-				setProjectId(null);
-				setNoteId(nid);
-				setWindowConv(null);
-				return;
-			}
-			const wid = windowFromPath(window.location.pathname);
-			if (wid !== null) {
-				setPage("window");
-				setProjectId(null);
-				setNoteId(null);
-				setWindowConv(wid);
-				return;
-			}
-			const id = deepLinkConv(window.location.pathname);
-			setPage("chat");
-			setProjectId(null);
-			setNoteId(null);
-			setWindowConv(null);
-			setComposeStaged(false);
-			setCurrent(id);
+			routeRef.current = next;
+			setRoute(next);
 		};
 		// popstate arrives after traversal. Undo it rather than push a
 		// replacement entry, which would erase the forward history.
 		const restoreEntry = (nextPosition: { index: number; segment: string } | null) => {
-			if (navigation !== null && route.current.key !== null) {
+			if (navigation !== null && historyRoute.current.key !== null) {
 				const failed = (err: unknown) =>
 					setNavigationError(
 						`Couldn't restore history: ${err instanceof Error ? err.message : String(err)}`,
 					);
 				try {
-					const { committed, finished } = navigation.traverseTo(route.current.key);
+					const { committed, finished } = navigation.traverseTo(historyRoute.current.key);
 					void Promise.all([committed, finished]).catch(failed);
 				} catch (err) {
 					failed(err);
 				}
 			} else if (
 				nextPosition !== null &&
-				nextPosition.segment === route.current.segment &&
-				nextPosition.index !== route.current.index
+				nextPosition.segment === historyRoute.current.segment &&
+				nextPosition.index !== historyRoute.current.index
 			) {
-				window.history.go(route.current.index - nextPosition.index);
+				window.history.go(historyRoute.current.index - nextPosition.index);
 			} else {
 				setNavigationError(
 					"Your unsaved edits are still here. This browser cannot restore an older history entry; save or discard your changes before navigating again.",
@@ -493,28 +449,28 @@ function AppShell() {
 			}
 		};
 		const onPop = () => {
-			const p = pageFromPath(window.location.pathname);
+			const next = routeFromPath(window.location.pathname);
 			const nextPosition = historyPosition(window.history.state);
 			// Only a pop that actually leaves the dirty page asks — the
 			// restore lands right back on it, and an ask there would double
 			// every decline.
 			const stillHome =
-				(page === "settings" && p === "settings") ||
-				(page === "note" && noteFromPath(window.location.pathname) === noteId);
+				(route.kind === "page" && route.page === "settings" && next.kind === "page" && next.page === "settings") ||
+				(route.kind === "note" && next.kind === "note" && next.id === route.id);
 			const guard = stillHome ? null : dirtyGuard();
 			if (guard === null) {
 				// A pending ask's target dies here: this pop applied under
 				// the open sheet, so the page it guarded no longer stands —
 				// the late answer must neither restore nor replay.
 				pendingPop.current = null;
-				applyPop(p, nextPosition);
+				applyPop(next, nextPosition);
 				return;
 			}
 			// The traversal already happened and can't be vetoed — park it
 			// and ask. A decline undoes the traversal; an approval applies
 			// it as if the guard had passed. A second pop re-parks: the
 			// newest target is the only one that can land.
-			pendingPop.current = { p, position: nextPosition };
+			pendingPop.current = { p: next, position: nextPosition };
 			if (popAskOpen.current) return;
 			popAskOpen.current = true;
 			void confirm
@@ -534,49 +490,20 @@ function AppShell() {
 		};
 		window.addEventListener("popstate", onPop);
 		return () => window.removeEventListener("popstate", onPop);
-	}, [page, noteId, confirm.ask, confirm, navigation, navigation?.currentEntry.key]);
+	}, [route, confirm.ask, confirm, navigation, navigation?.currentEntry.key]);
 
 	useEffect(() => {
 		const onUnload = (event: BeforeUnloadEvent) => {
 			const dirty =
-				page === "settings" ? settingsDirty.current : page === "note" && noteDirty.current;
+				(route.kind === "page" && route.page === "settings" && settingsDirty.current) ||
+				(route.kind === "note" && noteDirty.current);
 			if (!dirty) return;
 			event.preventDefault();
 			event.returnValue = "Unsaved edits";
 		};
 		window.addEventListener("beforeunload", onUnload);
 		return () => window.removeEventListener("beforeunload", onUnload);
-	}, [page]);
-
-	// Debounced app-pool search. The sequence bumps on every invocation
-	// including the clear, so a reply dispatched before the box emptied
-	// can never reappear. A stale error clears on empty and the next
-	// settled reply, never on a fresh query — clearing there would
-	// flash "No matches.".
-	useEffect(() => {
-		const seq = ++searchSeq.current;
-		const q = query.trim();
-		if (q === "") {
-			setHits(null);
-			setSearchError(null);
-			return;
-		}
-		const t = setTimeout(() => {
-			void searchConversations(token, q).then(
-				(r) => {
-					if (seq !== searchSeq.current) return;
-					setHits(r.hits);
-					setSearchError(null);
-				},
-				(err) => {
-					if (seq !== searchSeq.current) return;
-					setHits([]);
-					setSearchError(err instanceof Error ? err.message : "search failed");
-				},
-			);
-		}, 250);
-		return () => clearTimeout(t);
-	}, [query, token]);
+	}, [route]);
 
 	// A dead token means 401s forever — offer a way back to the gate.
 	if (listError === "unauthorized") {
@@ -624,76 +551,18 @@ function AppShell() {
 	// Selection owns the URL — /app/c/<id> for a conversation, /app/
 	// for the list/empty state, matching the deep link the pings carry.
 	const select = async (id: string | null, opts?: { skipDirtyGuard?: boolean }) => {
-		if (opts?.skipDirtyGuard !== true && !(await leaveDirty())) return;
-		clearStartFailure();
-		setPage("chat");
-		setProjectId(null);
-		setNoteId(null);
-		setWindowConv(null);
-		setCurrent(id);
-		// Landing in a thread always leaves the staged composer behind;
-		// landing on null keeps it — that is the composer on desktop.
-		if (id !== null) setComposeStaged(false);
-		const path = id === null ? "/app/" : `/app/c/${id.slice("app/".length)}`;
-		if (path !== window.location.pathname) pushRoute(path);
+		await navigate(
+			id === null ? { kind: "home", composing: false }
+				: { kind: "conversation", id },
+			opts,
+		);
 	};
 
-	const openProject = async (id: string) => {
-		if (!(await leaveDirty())) return;
-		clearStartFailure();
-		setPage("project");
-		setProjectId(id);
-		setNoteId(null);
-		setWindowConv(null);
-		setComposeStaged(false);
-		pushRoute(`/app/p/${id}`);
-	};
-
-	const openProjectsIndex = async () => {
-		if (!(await leaveDirty())) return;
-		clearStartFailure();
-		setPage("projects");
-		setProjectId(null);
-		setNoteId(null);
-		setWindowConv(null);
-		setComposeStaged(false);
-		pushRoute("/app/projects");
-	};
-
-	const openArchive = async () => {
-		if (page === "archive") return;
-		if (!(await leaveDirty())) return;
-		clearStartFailure();
-		setPage("archive");
-		setProjectId(null);
-		setNoteId(null);
-		setWindowConv(null);
-		setComposeStaged(false);
-		pushRoute("/app/archive");
-	};
-
-	const openNotesIndex = async () => {
-		if (!(await leaveDirty())) return;
-		clearStartFailure();
-		setPage("notes");
-		setProjectId(null);
-		setNoteId(null);
-		setWindowConv(null);
-		setComposeStaged(false);
-		pushRoute("/app/notes");
-	};
-
-	const openNote = async (id: string) => {
-		if (page === "note" && noteId === id) return;
-		if (!(await leaveDirty())) return;
-		clearStartFailure();
-		setPage("note");
-		setProjectId(null);
-		setNoteId(id);
-		setWindowConv(null);
-		setComposeStaged(false);
-		pushRoute(`/app/n/${id}`);
-	};
+	const openProject = (id: string) => navigate({ kind: "project", id });
+	const openProjectsIndex = () => navigate({ kind: "page", page: "projects" });
+	const openArchive = () => navigate({ kind: "page", page: "archive" });
+	const openNotesIndex = () => navigate({ kind: "page", page: "notes" });
+	const openNote = (id: string) => navigate({ kind: "note", id });
 
 	// The notes pane's "New note" mirrors NotesIndex.newNote — create
 	// untitled, then open it.
@@ -722,24 +591,12 @@ function AppShell() {
 	// The context-window view of one conversation — read-only, so the
 	// dirty guard has nothing to protect here.
 	const openWindow = (id: string) => {
-		if (page === "window" && windowConv === id) return;
-		clearStartFailure();
-		setPage("window");
-		setProjectId(null);
-		setNoteId(null);
-		setWindowConv(id);
-		setComposeStaged(false);
-		pushRoute(`/app/c/${id.slice("app/".length)}/window`);
+		void navigate({ kind: "window", id }, { skipDirtyGuard: true });
 	};
 
 	const rowRemoved = (id: string) => {
-		if (id !== current) return;
-		if (page === "chat") {
-			setComposeStaged(false);
-			void select(null);
-		} else {
-			setCurrent(null);
-		}
+		if (routeRef.current.kind === "conversation" && routeRef.current.id === id)
+			void navigate({ kind: "home", composing: false });
 	};
 
 	const rowLabel = (c: AppConversationList["conversations"][number]) => {
@@ -817,24 +674,15 @@ function AppShell() {
 		});
 	};
 
-	const openPage = async (p: AppPageKey) => {
-		if (page === p) return;
-		if (!(await leaveDirty())) return;
-		clearStartFailure();
-		setPage(p);
-		setWindowConv(null);
-		setComposeStaged(false);
-		pushRoute(`/app/${p}`);
-	};
+	const openPage = (p: AppPageKey) => navigate({ kind: "page", page: p });
 
 	// "New conversation" opens the empty state; the conversation itself is
 	// created lazily, on the first send — an untouched composer never
 	// leaves an empty row in the store. On phone widths "+" is tapped from
 	// the chats list, so staging the composer is the mobile bit.
 	const newConversation = () => {
-		setComposeStaged(true);
 		setComposerFocus((t) => t + 1);
-		void select(null);
+		void navigate({ kind: "home", composing: true });
 	};
 
 	const openConversation = (id: string) => {
@@ -1002,7 +850,7 @@ function AppShell() {
 		<ConversationRow
 			conv={c}
 			orphaned={orphaned}
-			current={current}
+			current={railCurrent}
 			token={token}
 			onOpen={openConversation}
 			onRenamed={() => {
@@ -1362,15 +1210,7 @@ function AppShell() {
 							className="mobile-back"
 							aria-label="Back to chats"
 							title="Chats"
-							onClick={() => {
-								void leaveDirty().then((ok) => {
-									if (!ok) return;
-									setComposeStaged(false);
-									// The guard above settled the question — select's
-									// own guard must not ask it again.
-									void select(null, { skipDirtyGuard: true });
-								});
-							}}
+							onClick={() => void navigate({ kind: "home", composing: false })}
 						>
 							<svg
 								viewBox="0 0 24 24"
@@ -1392,7 +1232,7 @@ function AppShell() {
 							className="mobile-back"
 							aria-label="Back to chats"
 							title="Chats"
-							onClick={() => setComposeStaged(false)}
+							onClick={() => void navigate({ kind: "home", composing: false })}
 						>
 							<svg
 								viewBox="0 0 24 24"
@@ -1414,7 +1254,7 @@ function AppShell() {
 							className="mobile-back"
 							aria-label="Back to chats"
 							title="Chats"
-							onClick={() => select(null)}
+							onClick={() => navigate({ kind: "home", composing: false })}
 						>
 							<svg
 								viewBox="0 0 24 24"
@@ -1655,8 +1495,6 @@ function AppShell() {
 						onBack={() => {
 							void leaveDirty().then((ok) => {
 								if (!ok) return;
-								setPage("chat");
-								setWindowConv(null);
 								void select(windowConv);
 							});
 						}}
@@ -1881,15 +1719,8 @@ function AppShell() {
 						className={page === "chat" ? "tab on" : "tab"}
 						aria-current={page === "chat" ? "page" : undefined}
 						onClick={() => {
-							if (page === "chat") return;
-							void leaveDirty().then((ok) => {
-								if (!ok) return;
-								setComposeStaged(false);
-								// The guard above settled the question — select's own
-								// guard must not ask again (a decline there would
-								// silently cancel an approved navigation).
-								void select(null, { skipDirtyGuard: true });
-							});
+							if (route.kind === "home" || route.kind === "conversation") return;
+							void navigate({ kind: "home", composing: false });
 						}}
 					>
 						<svg

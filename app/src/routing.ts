@@ -4,6 +4,65 @@ import { type AppPageKey, parseAppPath } from "../../src/http/app-routes.ts";
 // /app/n/<id>) — the union holds the page key only.
 // Every page key is also a server shell path (src/http/app-routes.ts).
 export type Page = "chat" | "project" | "note" | "window" | AppPageKey;
+export type Route =
+	| {
+			kind: "home";
+			// On phones, "+" stages the empty-state composer from the chats
+			// list. Desktop /app is always the composer and ignores this flag.
+			composing: boolean;
+		}
+	| { kind: "conversation"; id: string }
+	| { kind: "window"; id: string }
+	| { kind: "project"; id: string }
+	| { kind: "note"; id: string }
+	| { kind: "page"; page: AppPageKey };
+
+export function routeFromPath(pathname: string): Route {
+	const parsed = parseAppPath(pathname) ?? parseAppPath(pathname, "t");
+	if (parsed === null) return { kind: "home", composing: false };
+	switch (parsed.kind) {
+		case "conversation":
+		case "window":
+			return { kind: parsed.kind, id: `app/${parsed.id}` };
+		case "project":
+		case "note":
+			return parsed;
+		case "page":
+			return { kind: "page", page: parsed.page };
+	}
+}
+
+export function pathOfRoute(route: Route): string {
+	switch (route.kind) {
+		case "home":
+			return "/app/";
+		case "conversation":
+			return `/app/c/${route.id.slice("app/".length)}`;
+		case "window":
+			return `/app/c/${route.id.slice("app/".length)}/window`;
+		case "project":
+			return `/app/p/${route.id}`;
+		case "note":
+			return `/app/n/${route.id}`;
+		case "page":
+			return `/app/${route.page}`;
+	}
+}
+
+export function sameRoute(a: Route, b: Route): boolean {
+	if (a.kind !== b.kind) return false;
+	switch (a.kind) {
+		case "home":
+			return b.kind === "home" && a.composing === b.composing;
+		case "page":
+			return b.kind === "page" && a.page === b.page;
+		case "conversation":
+		case "window":
+		case "project":
+		case "note":
+			return b.kind === a.kind && a.id === b.id;
+	}
+}
 
 export const PAGES: { key: Exclude<AppPageKey, "notes">; label: string }[] = [
 	{ key: "attention", label: "Attention" },
@@ -28,30 +87,6 @@ export function pageFromPath(pathname: string): Page | null {
 
 // /app/p/<projectId> — project ids are server-minted randomUUIDs, the
 // same url-safe shape the /app/c/ link checks.
-export function projectFromPath(pathname: string): string | null {
-	const route = parseAppPath(pathname);
-	return route?.kind === "project" ? route.id : null;
-}
-
-// /app/n/<noteId> — same id shape as projects.
-export function noteFromPath(pathname: string): string | null {
-	const route = parseAppPath(pathname);
-	return route?.kind === "note" ? route.id : null;
-}
-
-// /app/c/<appId>/window — the context-window view of one conversation.
-export function windowFromPath(pathname: string): string | null {
-	const route = parseAppPath(pathname);
-	return route?.kind === "window" ? `app/${route.id}` : null;
-}
-
-// /app/c/<appId> opens one conversation — the id matches the server's
-// appIdSchema; the conversation id is "app/<appId>".
-export function deepLinkConv(pathname: string): string | null {
-	const route = parseAppPath(pathname);
-	return route?.kind === "conversation" ? `app/${route.id}` : null;
-}
-
 export function historyPosition(state: unknown): { index: number; segment: string } | null {
 	if (
 		typeof state !== "object" ||

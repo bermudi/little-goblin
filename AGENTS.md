@@ -236,7 +236,8 @@ test's full name and where it was registered — and SIGKILLs its own
 process, seconds before the kernel would. The limit is 75% of the
 tightest cgroup `memory.max` (1.5 GiB under the 2 GB cap), at most
 3 GiB; `GOBLIN_TEST_RSS_LIMIT_MB` overrides it. A memory runaway is a red
-result naming its test: read that test, don't re-run it. The net learns
+result naming the test running when RSS crossed the limit: start there
+(memory kept by earlier tests in the file also counts), don't re-run it. The net learns
 test names by wrapping bun:test's `test`/`it`/`describe`, so it stays
 first in `bunfig.toml`; a test that bypasses the wrapper fails in
 `afterEach`. Design: DESIGN.md → Test posture → Memory net.

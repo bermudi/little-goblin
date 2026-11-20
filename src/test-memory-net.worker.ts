@@ -61,8 +61,8 @@ const poll = setInterval(() => {
 	const message = [
 		`memory runaway: bun test process ${process.pid} reached ${formatBytes(rss)} RSS, over its ${formatBytes(config.limitBytes)} limit (${config.why}).`,
 		runningTest(),
-		"The process is stuck in synchronous work that keeps allocating, so bun cannot fail the test itself.",
-		"A common cause is bun printing a huge object graph for a failed assertion (#798). Killing it (SIGKILL) before the kernel does.",
+		"RSS counts memory kept by earlier tests too, so the test named above is where the limit was crossed, not proof it allocated all of it.",
+		"A common cause is synchronous work that keeps allocating, such as bun printing a huge object graph for a failed assertion (#798). Killing the process (SIGKILL) before the kernel does.",
 		"",
 	].join("\n");
 	writeSync(2, message);

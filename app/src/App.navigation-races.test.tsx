@@ -803,4 +803,26 @@ describe("navigation races: late completions", () => {
 		await waitFor(() => settingsPosts().length === 1, "the resumed autosave");
 		await waitFor(() => !(container.textContent?.includes("unsaved") ?? true), "the pill clears on save");
 	});
+
+	test("Back then Forward under the leave sheet: a late Discard can't hold autosave", async () => {
+		await mount();
+		await editSettingsValidly();
+		// Forward returns to the still-mounted editor while its leave sheet remains open.
+		win.history.back();
+		await act(async () => {
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await settle();
+		expect(confirmText(container)).toBe("Discard unsaved settings changes?");
+		win.history.forward();
+		await act(async () => {
+			win.dispatchEvent(new win.PopStateEvent("popstate"));
+		});
+		await settle();
+		expect(win.location.pathname).toBe("/app/settings");
+		await act(async () => clickConfirm(container, true));
+		await settle();
+		expect(container.querySelector(".settings")).not.toBeNull();
+		await waitFor(() => settingsPosts().length === 1, "autosave resumes for the still-mounted editor");
+	});
 });

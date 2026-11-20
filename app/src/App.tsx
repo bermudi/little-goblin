@@ -479,7 +479,7 @@ function AppShell() {
 			pendingPop.current = { p: next, position: nextPosition };
 			if (popAskOpen.current) return;
 			popAskOpen.current = true;
-			void askLeave(guard.message, guard.answer).then((ok) => {
+			void askLeave(guard.message, guard.answer, () => pendingPop.current !== null).then((ok) => {
 				popAskOpen.current = false;
 				const target = pendingPop.current;
 				pendingPop.current = null;

@@ -373,7 +373,9 @@ page keeps running under it (ruling 2026-11-20, #802): the host tells the
 editor "asking", then the answer (`app/src/leaveAsk.ts`, both doors).
 Autosave holds while the sheet is open, never writes after Discard, and
 resumes after Cancel — a write under the sheet made Discard a lie and
-cleared the "unsaved" pill under a declined ask. Async creation retains no navigation authority after dismissal;
+cleared the "unsaved" pill under a declined ask; a late answer whose target
+is gone (Back then Forward under the sheet) releases the hold and is dropped.
+Async creation retains no navigation authority after dismissal;
 composer restores go only into their originating composer, never over
 newer text; memory pagination belongs to the loaded filter.
 

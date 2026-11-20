@@ -149,7 +149,7 @@ const DIFF_MATCHERS: Record<string, Roots> = {
 // bun 1.4.4's .resolves / .rejects getters are non-configurable and return
 // the same Expect object, so the guard cannot tell the mode. A Promise
 // received by a diff matcher goes straight to bun; nodes inside its result
-// are not guarded.
+// are not guarded. So does a Proxy received: the guard never runs traps.
 const bunTest = require("bun:test") as { expect: typeof expect };
 const nativeExpect = bunTest.expect;
 const receivedOf = new WeakMap<object, unknown>();
@@ -186,7 +186,8 @@ for (const [name, roots] of Object.entries(DIFF_MATCHERS)) {
 	if (native === undefined) throw new Error(`bun:test has no ${name} matcher to guard`);
 	matchers[name] = function (this: object, ...args: unknown[]): unknown {
 		const received = receivedOf.get(this);
-		if (!receivedOf.has(this) || received instanceof Promise) {
+		// util.types reads internal slots, so a Proxy's traps never run here.
+		if (!receivedOf.has(this) || types.isProxy(received) || types.isPromise(received)) {
 			return Reflect.apply(native, this, args);
 		}
 		for (const [label, root] of roots(received, args)) {

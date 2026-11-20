@@ -136,6 +136,15 @@ test("proxies are compared, not walked", () => {
 		},
 	);
 	expect(proxy).toEqual(proxy);
+	const opaque = new Proxy(
+		{},
+		{
+			getPrototypeOf() {
+				throw new Error("unexpected getPrototypeOf");
+			},
+		},
+	);
+	expect(opaque).toEqual(opaque);
 });
 
 test("mock-call matchers refuse a node passed to the mock", async () => {

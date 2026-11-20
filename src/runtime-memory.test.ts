@@ -112,7 +112,6 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 		engines: [aiSdkEngine],
 		store,
 		buildStep: () => scripted(reply("ok")).step(),
-		makeTools: () => ({}),
 		memory: {
 			client,
 			config: { ...memConfig, baseUrl: `http://127.0.0.1:${server.port}` },
@@ -122,6 +121,7 @@ function harness(opts: { recallStatus?: number; factText?: string } = {}): Harne
 			},
 		},
 	});
+	runtime.mount({ makeTools: () => ({}) });
 	return {
 		recallCount: () => recalls.length,
 		recallQueries: () => recalls,
@@ -166,16 +166,6 @@ describe("memory turn integration", () => {
 					reply("derived reply"),
 				).step(),
 			}),
-			makeTools: () => ({
-				send: defineTool({
-					description: "test tool",
-					input: z.object({}),
-					execute: async () => {
-						await media.onFile!({ path, filename: "output.txt", caption: "derived file" });
-						return "ok";
-					},
-				}),
-			}),
 			memory: {
 				client: h.client,
 				config: memConfig,
@@ -183,6 +173,16 @@ describe("memory turn integration", () => {
 				noteRecall: () => {},
 			},
 		});
+		runtime.mount({ makeTools: () => ({
+			send: defineTool({
+				description: "test tool",
+				input: z.object({}),
+				execute: async () => {
+					await media.onFile!({ path, filename: "output.txt", caption: "derived file" });
+					return "ok";
+				},
+			}),
+		}) });
 		const sink = new RecordingSink();
 		runtime.submit(
 			conv,
@@ -219,16 +219,6 @@ describe("memory turn integration", () => {
 					reply("finished"),
 				).step(),
 			}),
-			makeTools: () => ({
-				send: defineTool({
-					description: "test tool",
-					input: z.object({}),
-					execute: async () => {
-						await media.onFile!({ path, filename: "output.txt" });
-						return "ok";
-					},
-				}),
-			}),
 			memory: {
 				client: h.client,
 				config: memConfig,
@@ -236,6 +226,16 @@ describe("memory turn integration", () => {
 				noteRecall: () => {},
 			},
 		});
+		runtime.mount({ makeTools: () => ({
+			send: defineTool({
+				description: "test tool",
+				input: z.object({}),
+				execute: async () => {
+					await media.onFile!({ path, filename: "output.txt" });
+					return "ok";
+				},
+			}),
+		}) });
 		const trigger = userMessage([{ type: "text", text: "remember this instruction" }]);
 		const sink = new RecordingSink();
 		runtime.submit(conv, trigger, composeTurnSinks(sink, media));
@@ -257,8 +257,8 @@ describe("memory turn integration", () => {
 			buildStep: () => ({
 				...scripted(delayedReply(["a", "b", "c"], 30)).step(),
 			}),
-			makeTools: () => ({}),
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		store.setMeta(conv.id, { memoryExcluded: true });
 		const recording = new RecordingSink();
 		const media = appMediaSink(conv.id, {
@@ -300,8 +300,9 @@ describe("memory turn integration", () => {
 		const runtime = new Runtime({
 			engines: [aiSdkEngine],
 			store,
-		buildStep: () => model,
-			makeTools: () => ({
+			buildStep: () => model,
+		});
+		runtime.mount({ makeTools: () => ({
 				gate: defineTool({
 					description: "test tool",
 			input: z.object({}),
@@ -319,8 +320,7 @@ describe("memory turn integration", () => {
 						return "ok";
 					},
 				}),
-			}),
-		});
+			}) });
 		const head = new RecordingSink();
 		runtime.submit(
 			conv,
@@ -354,8 +354,8 @@ describe("memory turn integration", () => {
 			buildStep: () => ({
 				...scripted(delayedReply(["a", "b", "c"], 30)).step(),
 			}),
-			makeTools: () => ({}),
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		const recording = new RecordingSink();
 		const media = appMediaSink(conv.id, {
 			append: (messages, opts) => store.append(conv.id, messages, opts),
@@ -491,7 +491,6 @@ describe("memory turn integration", () => {
 			buildStep: () => ({
 				...scripted(delayedReply(["a", "b", "c", "d", "e"], 20)).step(),
 			}),
-			makeTools: () => ({}),
 			memory: {
 				client,
 				config: { ...memConfig, baseUrl: `http://127.0.0.1:${server.port}` },
@@ -499,6 +498,7 @@ describe("memory turn integration", () => {
 				noteRecall: () => {},
 			},
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		// The first delta proves the turn was admitted (epoch captured)
@@ -541,7 +541,6 @@ describe("memory turn integration", () => {
 			buildStep: () => ({
 				...scripted(delayedReply(["a", "b", "c", "d", "e"], 20)).step(),
 			}),
-			makeTools: () => ({}),
 			memory: {
 				client,
 				config: { ...memConfig, baseUrl: `http://127.0.0.1:${server.port}` },
@@ -549,6 +548,7 @@ describe("memory turn integration", () => {
 				noteRecall: () => {},
 			},
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		// Mid-stream, not mid-admission: the flag write must not fence the
@@ -586,7 +586,6 @@ describe("memory turn integration", () => {
 			buildStep: () => ({
 				...scripted(delayedReply(["a", "b", "c", "d", "e"], 20)).step(),
 			}),
-			makeTools: () => ({}),
 			memory: {
 				client,
 				config: { ...memConfig, baseUrl: `http://127.0.0.1:${server.port}` },
@@ -594,6 +593,7 @@ describe("memory turn integration", () => {
 				noteRecall: () => {},
 			},
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		// Excluded before the first message lands — the trigger stamps
 		// ineligible. Re-enabling mid-turn cannot cleanse the reply: it
 		// derived from an excluded input, so retention is refused and the
@@ -657,7 +657,6 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store,
 		buildStep: () => scripted(reply("ok")).step(),
-			makeTools: () => ({}),
 			memory: {
 				client,
 				config: { ...memConfig, baseUrl: `http://127.0.0.1:${server.port}` },
@@ -665,6 +664,7 @@ describe("memory turn integration", () => {
 				noteRecall: () => {},
 			},
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await started;
@@ -712,7 +712,6 @@ describe("memory turn integration", () => {
 			engines: [aiSdkEngine],
 			store,
 		buildStep: () => scripted(reply("ok")).step(),
-			makeTools: () => ({}),
 			memory: {
 				client,
 				config: { ...memConfig, baseUrl: `http://127.0.0.1:${server.port}` },
@@ -720,6 +719,7 @@ describe("memory turn integration", () => {
 				noteRecall: () => {},
 			},
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
 		await started;

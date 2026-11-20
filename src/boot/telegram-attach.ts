@@ -81,8 +81,8 @@ export interface TelegramAttachStart {
 	/** Memory command surfaces — absent when the memory block is off. */
 	memory: MemorySurfaces | null;
 	gate: System1Client | null;
-	mailApproval(): MailApproval | undefined;
-	programApproval(): ProgramApproval | undefined;
+	mailApproval: MailApproval;
+	programApproval: ProgramApproval;
 	programs: ProgramsStore;
 	/** The shared mail lanes — attach swaps the telegram lane in, detach
 	 *  restores the unavailable lane. */
@@ -204,15 +204,13 @@ export function openTelegramAttach(deps: TelegramAttachDeps): TelegramAttach {
 		start(startDeps: TelegramAttachStart): void {
 			const attachTelegram = (running: RunningBot): void => {
 				startDeps.mailLanes.telegram = makeTelegramMailLane(running.bot.api);
-				const mail = startDeps.mailApproval();
-				if (mail !== undefined) {
-					telegramMailApproval = startTelegramMailApproval({
-						api: running.bot.api,
-						approval: mail,
-					});
-				}
-				const program = startDeps.programApproval();
-				if (program !== undefined && sendPrivate !== undefined) {
+				const mail = startDeps.mailApproval;
+				telegramMailApproval = startTelegramMailApproval({
+					api: running.bot.api,
+					approval: mail,
+				});
+				const program = startDeps.programApproval;
+				if (sendPrivate !== undefined) {
 					telegramProgramApproval = startTelegramProgramApproval({
 						api: running.bot.api,
 						approval: program,

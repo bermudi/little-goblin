@@ -216,7 +216,6 @@ const runtime = new Runtime({
 		// the overflow recovery needs a span to fold.
 		...(MODE === "overflow-stall" ? { contextWindow: 1000 } : {}),
 	}),
-	makeTools: () => tools,
 	...(MODE === "overflow-stall"
 		? {
 				compaction: {
@@ -227,6 +226,7 @@ const runtime = new Runtime({
 			}
 		: {}),
 });
+runtime.mount({ makeTools: () => tools });
 const sink: TurnSink = {
 	delivery: "headless",
 	onTextDelta() {},

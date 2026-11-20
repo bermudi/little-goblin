@@ -329,8 +329,8 @@ function heldTurn(deps: ReturnType<typeof fixture>) {
 		engines: [aiSdkEngine],
 		store: deps.store,
 		buildStep: () => ({ engine: "ai-sdk", model, system: "test" }),
-		makeTools: () => ({}),
 	});
+	runtime.mount({ makeTools: () => ({}) });
 	const completed = Promise.withResolvers<TurnDone>();
 	let text = "";
 	const sink: TurnSink = {

@@ -830,8 +830,11 @@ export function startMemoryWorker(
 export interface MemoryWiringDeps {
 	config: MemoryConfig | undefined;
 	auth: AuthStore;
-	store: Pick<ConversationStore, "memoryDestinations" | "memoryContexts" | "memoryQueue">;
-	retention(): MemoryWorker["withWorkerPaused"];
+	store: Pick<ConversationStore, "db" | "memoryDestinations" | "memoryContexts" | "memoryQueue">;
+	notices: {
+		outage(conversationId: string, sinceMs: number, queued: number): Promise<void>;
+		blocked(conversationId: string, error: string | null, attempts: number): Promise<void>;
+	};
 }
 
 export interface MemorySurfaces {
@@ -850,11 +853,21 @@ export interface MemoryWiring {
 	noteRecall(ok: boolean): void;
 	turnDeps: MemoryTurnDeps | undefined;
 	surfaces: MemorySurfaces | null;
+	worker: MemoryWorker | null;
+	outageTracker: OutageTracker | null;
 }
 
 export function wireMemory(deps: MemoryWiringDeps): MemoryWiring {
 	const { config, auth, store } = deps;
 	const client = buildMemoryClient(config, auth);
+	const outageTracker = client === null ? null : new OutageTracker(store.db);
+	const worker =
+		client === null || outageTracker === null
+			? null
+			: startMemoryWorker(store.memoryQueue, client, {
+					outage: { tracker: outageTracker, notify: deps.notices.outage },
+					blocked: { notify: deps.notices.blocked },
+				});
 	// The last recall outlives restarts: it is read back from the state db,
 	// so "last recall" never resets to "never" just because goblin restarted.
 	const saved = store.memoryQueue.lastRecall();
@@ -883,7 +896,7 @@ export function wireMemory(deps: MemoryWiringDeps): MemoryWiring {
 	const turnDeps =
 		client && config ? { client, config, contexts: store.memoryContexts, noteRecall } : undefined;
 	const surfaces =
-		client === null
+		client === null || worker === null
 			? null
 			: {
 					client,
@@ -895,7 +908,7 @@ export function wireMemory(deps: MemoryWiringDeps): MemoryWiring {
 					queue: store.memoryQueue,
 					lastRecallOk: () => state.lastRecallOk,
 					lastRecallAt: () => state.lastRecallAt,
-					withWorkerPaused: <T>(fn: () => Promise<T>): Promise<T> => deps.retention()(fn),
+					withWorkerPaused: <T>(fn: () => Promise<T>) => worker.withWorkerPaused(fn),
 				};
-	return { client, config, noteRecall, turnDeps, surfaces };
+	return { client, config, noteRecall, turnDeps, surfaces, worker, outageTracker };
 }

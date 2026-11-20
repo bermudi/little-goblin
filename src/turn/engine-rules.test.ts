@@ -79,16 +79,6 @@ async function runTurn(
 		engines: [engine],
 		store,
 		buildStep: () => step,
-		makeTools: (_conv, _voice, _recording, _file, context): Tools => ({
-			probe: defineTool({
-				description: "test tool",
-				input: z.object({}),
-				execute: () => {
-					fill = context?.contextFill() ?? null;
-					return "probe-ok";
-				},
-			}),
-		}),
 		...(opts.foldable === true
 			? {
 					compaction: {
@@ -101,6 +91,18 @@ async function runTurn(
 					},
 				}
 			: {}),
+	});
+	runtime.mount({
+		makeTools: (_conv, _voice, _recording, _file, context): Tools => ({
+			probe: defineTool({
+				description: "test tool",
+				input: z.object({}),
+				execute: () => {
+					fill = context?.contextFill() ?? null;
+					return "probe-ok";
+				},
+			}),
+		}),
 	});
 	try {
 		if (opts.foldable === true) seedExchanges(store, conv.id);
@@ -324,7 +326,8 @@ async function runGate(toolLaunchGate: boolean): Promise<{ ran: boolean; nextPro
 		engines: [engine],
 		store,
 		buildStep: () => ({ engine: "ai-sdk", model: scripted.model, system: "test" }),
-		makeTools: () => ({
+	});
+	runtime.mount({ makeTools: () => ({
 			probe: defineTool({
 				description: "test tool",
 				input: z.object({}),
@@ -333,8 +336,7 @@ async function runGate(toolLaunchGate: boolean): Promise<{ ran: boolean; nextPro
 					return { ok: true };
 				},
 			}),
-		}),
-	});
+		}) });
 	try {
 		const first = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "start this" }]), first);

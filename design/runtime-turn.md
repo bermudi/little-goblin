@@ -405,7 +405,8 @@ matching unlinked claims closed (the same `failUnlinked` CAS a lost
 ownership link uses). An overflow that WILL resume stays silent: its
 successor links normally through its own begin.
 
-The wake pump starts only after every late-bound tool owner is bound (#635).
+The wake pump starts only after `runtime.mount()` installs the completed tool
+factory and wake-ownership hooks.
 
 Invariants a refactor can still break silently — the audit list for any
 turn-structure change.

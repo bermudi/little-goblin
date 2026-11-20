@@ -17,7 +17,7 @@ import { makeVisionDepsFor } from "./agent/vision.ts";
 import { makeAppMailLane, presentProgramApproval } from "./app-approvals.ts";
 import { openAppPush } from "./app-push.ts";
 import { appendAuthRecord, loadAuth } from "./auth.ts";
-import { openWireStep } from "./boot/delivery.ts";
+import { wireDelivery } from "./boot/delivery.ts";
 import { openTelegramAttach } from "./boot/telegram-attach.ts";
 import { openCacheObservation } from "./cache-observation.ts";
 import { createIdleCompactor } from "./idle-compaction.ts";
@@ -35,7 +35,7 @@ import { ensureDir, ensureHomeLayout, paths } from "./home-layout.ts";
 import { acquireHomeLock } from "./home-lock.ts";
 import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins.ts";
 import { captureConversationSettings, openStore } from "./conversation.ts";
-import { delegationWake, wireDelegation } from "./delegation-lifecycle.ts";
+import { delegationWake, makeDelegateDeps, wireDelegation } from "./delegation-lifecycle.ts";
 import { makeT3 } from "./t3.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import { makeDesktops } from "./desktops.ts";
@@ -45,18 +45,17 @@ import { startHttp } from "./http/mod.ts";
 import { makeOperatorSeams } from "./http/operator.ts";
 import { log, setLogFile, setLogLevel } from "./log.ts";
 import { wireMailAuthority } from "./mail.ts";
-import { type MailApproval, startMailApproval, unavailableMailLane } from "./mail-approval.ts";
+import { startMailApproval, unavailableMailLane } from "./mail-approval.ts";
 import { openOutbox } from "./mail-outbox.ts";
 import { makeMailNoticeRouter, startMailWatcher } from "./mail-watcher.ts";
-import { startMemoryWorker, wireMemory } from "./memory/mod.ts";
-import { OutageTracker } from "./memory/outage.ts";
+import { wireMemory } from "./memory/mod.ts";
 import { openNotes } from "./notes.ts";
 import { recoverPendingInputs } from "./pending-input.ts";
 import { makePodman } from "./podman.ts";
-import { type ProgramApproval, startProgramApproval } from "./program-approval.ts";
+import { startProgramApproval } from "./program-approval.ts";
 import { startProgramOps } from "./program-ops.ts";
 import { openPrograms } from "./programs.ts";
-import { startAgentChildren, type AgentChildren } from "./agent-children.ts";
+import { startAgentChildren } from "./agent-children.ts";
 import { openProjects } from "./projects.ts";
 import { openResponsibilities, type ResponsibilityStore } from "./responsibilities.ts";
 import { makeResponsibilityObserver } from "./responsibility-observer.ts";
@@ -185,21 +184,8 @@ async function boot() {
 	});
 	// Durable wakes share the store handle — the trigger append, its
 	// history reference, and the delivery state commit together. The
-	// dispatcher binds after the runtime exists (src/boot/delivery.ts owns
-	// that slot); it is what the responsibility service's developments
-	// ride.
+	// dispatcher is what responsibility-service developments ride.
 	const wakeStore = openWakeStore(store.db);
-	// Late-bound like the dispatcher — the responsibility service is
-	// built once the store and observer exist (after makeTurnTools is
-	// assembled). The getter below reads this slot per turn.
-	let responsibilitySvc: {
-		resps: ReturnType<typeof openResponsibilities>;
-		service: ReturnType<typeof import("./responsibility-service.ts").makeResponsibilityService>;
-	} | null = null;
-	// Same seam for the native-subagent engine: it needs the wake
-	// dispatcher, which exists only past the delivery wire — after
-	// makeTurnTools. Until then no turn can run children.
-	let agentChildrenEngine: AgentChildren | null = null;
 	// Inert without a hand-edited cachePruning block.
 	const cachePruning = openCachePruning({
 		store,
@@ -262,25 +248,22 @@ async function boot() {
 	// Split mail authority: gws polling serves the watcher, the send client
 	// only approval taps — mail.ts owns the gate; both are live-read getters.
 	const { poller: mailPoller, sender: mailSender } = wireMailAuthority({ configRef, auth });
-	// The wire step — two construction cycles force late binding (see
-	// src/boot/delivery.ts): its late() getters are planted below in
-	// wireDelegation and wireMemory as call-time getters, its
-	// runOwnership seam goes into the Runtime constructor, and
-	// completeBoot() fills it once the delegation lifecycle and the
-	// retention worker exist.
-	const wire = openWireStep();
+	const telegramEnabled = config.telegram.enabled;
+	// The Telegram attach state machine — src/boot/telegram-attach.ts owns
+	// the channel's slots, the operator-DM lane (sendPrivate), and the
+	// fail-closed seams everything below binds to (api, botToken); its
+	// init task starts only after every core service stands.
+	const attach = openTelegramAttach({ telegramEnabled, configRef });
+	const sendPrivate = attach.sendPrivate;
 	// Delegation is boot-fixed like memory — the store, the hc adapter
 	// and the config snapshot are one object, so a live config read can
 	// only hide the delegate tool next turn, never launch on a harness
 	// the boot snapshot lacks (spinoff.ts owns the pin). T3 Code is the
 	// responsibility transport — the observer, managed sends and the
 	// health probe — never the delegate one.
-	const { delegations, hc, delegateDeps } = wireDelegation({
+	const { delegations, hc } = wireDelegation({
 		config: delegationBoot,
-		configRef,
 		dbPath: paths.db,
-		lifecycle: () => wire.late().delegationLifecycle(),
-		pin: (conv, name) => launchPin(launchPinDeps, conv, name),
 	});
 	const t3 = makeT3();
 	// Voice replies and transcription die at runtime without ffmpeg —
@@ -301,19 +284,26 @@ async function boot() {
 
 	// Long-term memory is a boot-time snapshot — queue rows bind to the
 	// endpoint+bank hash, so mini-app edits apply on restart, never mid-run.
-	// memory/mod.ts owns the client, recall telemetry and door surfaces;
-	// the retention pause seam is late-bound past the bot.
+	// memory/mod.ts owns the client, worker, outage tracker, recall telemetry
+	// and door surfaces. The worker starts before the channel attaches;
+	// outage and blocked notices use the live bot.api, and the tracker feeds
+	// the app Attention projection.
 	const memory = wireMemory({
 		config: config.memory,
 		auth,
 		store,
-		retention: () => wire.late().retention,
+		notices: {
+			outage: (c, s, q) => sendMemoryOutageNotice(attach.api(), c, s, q),
+			blocked: (c, e, a) => sendMemoryBlockedNotice(attach.api(), c, e, a),
+		},
 	});
 	const {
 		client: memoryClient,
 		config: memoryBootConfig,
 		noteRecall,
 		surfaces: memorySurfaces,
+		worker: memoryWorker,
+		outageTracker,
 	} = memory;
 
 	// The retention outbox rides along whether or not a memory client
@@ -328,58 +318,6 @@ async function boot() {
 	const transcribeFile = makeTranscriber({ configRef, auth });
 	const visionDepsFor = makeVisionDepsFor({ configRef, auth, observation: cacheObservations });
 	const speak = makeSpeaker({ configRef, auth });
-
-	// The one tool factory — the runtime builds the live set per turn
-	// through it. The mount policy (which slots exist per
-	// channel/config/boot pin) lives in turn-tools.ts; boot binds the
-	// seams and the late-bound getters (mail/desktop/agents bind past
-	// Runtime construction).
-	const telegramEnabled = config.telegram.enabled;
-	// The Telegram attach state machine — src/boot/telegram-attach.ts owns
-	// the channel's slots, the operator-DM lane (sendPrivate), and the
-	// fail-closed seams everything below binds to (api, botToken); its
-	// init task starts only after every core service stands.
-	const attach = openTelegramAttach({ telegramEnabled, configRef });
-	const sendPrivate = attach.sendPrivate;
-	// Late-bound like mailApproval: shared owners and their Telegram
-	// adapters start on channel attach, so getters answer undefined to
-	// anything earlier rather than a half-wired gate.
-	let programApproval: ProgramApproval | undefined;
-	let mailApproval: MailApproval | undefined;
-	const makeTurnTools = makeTurnToolsFactory({
-		configRef,
-		auth,
-		store,
-		projects,
-		notes,
-		programs,
-		// The one send composed outside tg/ — same deadline as every tg/
-		// sender, or a wedged API stalls the program turn's tool call.
-		...(sendPrivate === undefined ? {} : { sendPrivate }),
-		memory:
-			memoryClient && memoryBootConfig
-				? { client: memoryClient, config: memoryBootConfig, noteRecall }
-				: null,
-		transcribe: transcribeFile,
-		delegateDeps,
-		t3,
-		mail: () => mailApproval,
-		programApproval: () => programApproval,
-		visionDepsFor,
-		sandboxes,
-		desktops: () => desktops,
-		responsibility: () => responsibilitySvc,
-		agents: () => agentChildrenEngine,
-		filterGuests: filterGuestTools,
-		// read_file of a catalog SKILL.md is a use — the curator's clock
-		// (design/skills.md → Self-authoring, /learn, curator). Only the
-		// SKILL.md itself counts: support files ride the body's use.
-		noteSkillRead: (abs) => {
-			const name = skillUnderPath([paths.skills()], abs);
-			if (name === null || abs !== join(paths.skills(), name, "SKILL.md")) return;
-			noteSkillUse(paths.skillUsage(), name, new Date());
-		},
-	});
 
 	// The claude-code engine: bound whenever a claude-code provider is
 	// configured; harmless (never spawned) otherwise. Auth resolution and
@@ -410,9 +348,6 @@ async function boot() {
 		// First match wins: the claude engine accepts ClaudeSteps, the
 		// ai-sdk engine everything else (turn/engine.ts pickEngine).
 		engines: [claudeEngine, aiSdkEngine],
-		// The dispatcher lands behind this seam after the runtime exists
-		// (src/boot/delivery.ts); hooks no-op until then.
-		runOwnership: wire.runOwnership,
 		captureConversation: (conv) => captureConversationSettings(store, conv, configRef.current),
 		modelFallbacks: () => configRef.current.modelFallbacks,
 		pruneBetweenTurns: (convId) => {
@@ -435,7 +370,6 @@ async function boot() {
 			idleCompactor?.arm(id);
 		},
 		...stepBuilder,
-		makeTools: makeTurnTools,
 		...(memory.turnDeps ? { memory: memory.turnDeps } : {}),
 	});
 	idleCompactor = createIdleCompactor({
@@ -492,7 +426,7 @@ async function boot() {
 			telegramEnabled ? "telegram channel unavailable" : "telegram channel is disabled",
 		),
 	};
-	mailApproval = startMailApproval({
+	const mailApproval = startMailApproval({
 		outbox,
 		sender: mailSender,
 		reader: mailPoller,
@@ -502,7 +436,7 @@ async function boot() {
 	// The shared program grant owner — the durable decision path is one
 	// for both doors. Presentation routes by target: Telegram posts its
 	// chunked buttons; app turns get a durable approval marker.
-	programApproval = startProgramApproval({
+	const programApproval = startProgramApproval({
 		programs,
 		publicUrl: () => configRef.current.publicUrl || undefined,
 		present: async (proposal, signal) => {
@@ -520,27 +454,8 @@ async function boot() {
 	const programOps = startProgramOps({
 		programs,
 		publicUrl: () => configRef.current.publicUrl || undefined,
-		requestApproval: (proposal, signal) => programApproval!.requestApproval(proposal, signal),
+		requestApproval: (proposal, signal) => programApproval.requestApproval(proposal, signal),
 	});
-
-	// The retention worker boots before the channel — outage and blocked
-	// notices deliver through bot.api (one per episode / per document).
-	// The one tracker also feeds the app Attention projection.
-	const outageTracker = memoryClient === null ? null : new OutageTracker(store.db);
-	const memoryWorker =
-		memoryClient !== null && outageTracker !== null
-			? startMemoryWorker(store.memoryQueue, memoryClient, {
-					outage: {
-						tracker: outageTracker,
-						notify: (conversationId, sinceMs, queued) =>
-							sendMemoryOutageNotice(attach.api(), conversationId, sinceMs, queued),
-					},
-					blocked: {
-						notify: (conversationId, error, attempts) =>
-							sendMemoryBlockedNotice(attach.api(), conversationId, error, attempts),
-					},
-				})
-			: null;
 
 	// Save notices read the live api at call time — absent while detached.
 	const { gate: system1Gate, reviewer: skillReviewer } = wireReviewer({
@@ -577,7 +492,7 @@ async function boot() {
 	// boot pump's commits re-check queued developments' authority against
 	// them, so the store exists before the dispatcher does.
 	const responsibilities: ResponsibilityStore = openResponsibilities(store.db);
-	const delivery = wire.wire({
+	const delivery = wireDelivery({
 		store,
 		runtime,
 		journal: turnJournal,
@@ -622,7 +537,6 @@ async function boot() {
 		responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
 		settled: (child, status, result) => fileAgentChildReport(responsibilities, child, status, result),
 	});
-	agentChildrenEngine = agentChildren;
 
 	// Project-owned responsibilities — the store the handover service
 	// writes, and the deterministic observer that turns attachment
@@ -649,10 +563,72 @@ async function boot() {
 			);
 		},
 	});
-	responsibilitySvc = {
-		resps: responsibilities,
-		service: responsibilityService,
-	};
+	// The delegation lifecycle wakes through the shared wakeDeps — its
+	// closures read delivery/bell live, so a telegram attach mid-run is
+	// visible without a rewire.
+	const delegationLifecycle =
+		delegations !== null && hc !== null
+			? startDelegationLifecycle({
+					delegations,
+					hc,
+					delegationsDir: paths.delegations(),
+					homeDir: homedir(),
+					...delegationWake(delivery.wakeDeps),
+					settled: (d, verdict, body, readiness) => fileDelegationReport(responsibilities, d, verdict, body, readiness),
+					responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
+					readiness: makeGithubReadiness(),
+					watchResponsibility: (id, revision) => {
+						const r = responsibilities.get(id);
+						return r !== null && r.status === "active" && r.revision === revision;
+					},
+				})
+			: null;
+	const delegateDeps = makeDelegateDeps({
+		config: delegationBoot,
+		configRef,
+		lifecycle: delegationLifecycle,
+		pin: (conv, name) => launchPin(launchPinDeps, conv, name),
+	});
+	// The one tool factory — the runtime builds the live set per turn
+	// through it. The mount policy (which slots exist per
+	// channel/config/boot pin) lives in turn-tools.ts; boot binds the
+	// seams.
+	const makeTurnTools = makeTurnToolsFactory({
+		configRef,
+		auth,
+		store,
+		projects,
+		notes,
+		programs,
+		// The one send composed outside tg/ — same deadline as every tg/
+		// sender, or a wedged API stalls the program turn's tool call.
+		...(sendPrivate === undefined ? {} : { sendPrivate }),
+		memory:
+			memoryClient && memoryBootConfig
+				? { client: memoryClient, config: memoryBootConfig, noteRecall }
+				: null,
+		transcribe: transcribeFile,
+		delegateDeps,
+		t3,
+		mail: mailApproval,
+		programApproval,
+		visionDepsFor,
+		sandboxes,
+		desktops,
+		responsibility: { resps: responsibilities, service: responsibilityService },
+		agents: agentChildren,
+		filterGuests: filterGuestTools,
+		// read_file of a catalog SKILL.md is a use — the curator's clock
+		// (design/skills.md → Self-authoring, /learn, curator). Only the
+		// SKILL.md itself counts: support files ride the body's use.
+		noteSkillRead: (abs) => {
+			const name = skillUnderPath([paths.skills()], abs);
+			if (name === null || abs !== join(paths.skills(), name, "SKILL.md")) return;
+			noteSkillUse(paths.skillUsage(), name, new Date());
+		},
+	});
+	// Every tool owner exists past here; the runtime refuses turns before this.
+	runtime.mount({ makeTools: makeTurnTools, runOwnership: delivery.dispatcher.hooks });
 	agentChildren.recoverAtBoot();
 	// Boot sweep: every open responsibility re-verifies its follow-up
 	// Program — a restart (or a deleted program row) re-links here,
@@ -681,28 +657,7 @@ async function boot() {
 	}, OBSERVE_MS);
 	observerTicker.unref();
 	const stopObserverTicker = () => clearInterval(observerTicker);
-
-	// The delegation lifecycle wakes through the shared wakeDeps — its
-	// closures read delivery/bell live, so a telegram attach mid-run is
-	// visible without a rewire. The wire step lands before any turn.
-	const delegationLifecycle =
-		delegations !== null && hc !== null
-			? startDelegationLifecycle({
-					delegations,
-					hc,
-					delegationsDir: paths.delegations(),
-					homeDir: homedir(),
-					...delegationWake(delivery.wakeDeps),
-					settled: (d, verdict, body, readiness) => fileDelegationReport(responsibilities, d, verdict, body, readiness),
-					responsibilityRevision: (id) => responsibilities.get(id)?.revision ?? null,
-					readiness: makeGithubReadiness(),
-					watchResponsibility: (id, revision) => {
-						const r = responsibilities.get(id);
-						return r !== null && r.status === "active" && r.revision === revision;
-					},
-				})
-			: null;
-	wire.completeBoot(delegationLifecycle, memoryWorker);
+	const stopWakeTicker = delivery.dispatcher.start();
 
 	// App auth mode resolves once at boot: appToken set → bearer, unset →
 	// trust (the tailnet is the lock); a mid-run flip needs a restart.
@@ -809,9 +764,7 @@ async function boot() {
 				operator: operatorSeams,
 				// Both doors reach the same durable CAS owners; this route
 				// supplies the authenticated app actor, never transport authority.
-				...(programApproval !== undefined && mailApproval !== undefined
-					? { approvals: { program: programApproval, mail: mailApproval } }
-					: {}),
+				approvals: { program: programApproval, mail: mailApproval },
 				programOps,
 				push: appPush,
 				// The project feed + controls — the same stores the
@@ -892,8 +845,8 @@ async function boot() {
 			transcribe: transcribeFile,
 			memory: memorySurfaces,
 			gate: system1Gate,
-			mailApproval: () => mailApproval,
-			programApproval: () => programApproval,
+			mailApproval,
+			programApproval,
 			programs,
 			mailLanes,
 			rewireWake: delivery.rewireWake,
@@ -911,7 +864,7 @@ async function boot() {
 		delegations,
 		runtime,
 		wakeDispatcher: delivery.dispatcher,
-		stopWakeTicker: delivery.stopWakeTicker,
+		stopWakeTicker,
 		responsibilities,
 		responsibilityObserver,
 		stopObserverTicker,

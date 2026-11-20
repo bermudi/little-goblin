@@ -101,8 +101,8 @@ test("wake after runtime close neither records history nor reports delivery", as
 		buildStep: () => {
 			throw new Error("closed runtime must not run a turn");
 		},
-		makeTools: () => ({}),
 	});
+	runtime.mount({ makeTools: () => ({}) });
 	await runtime.shutdown();
 	const api = {
 		sendMessage: () => {
@@ -251,10 +251,10 @@ test("a background app turn persists generated media without an SSE stream", asy
 		engines: [aiSdkEngine],
 		store,
 		buildStep: () => ({ engine: "ai-sdk", model, system: "test" }),
-		makeTools: (_conv, _deliverVoice, _recording, deliverFile) => ({
-			send_file: sendFileTool(work, deliverFile!),
-		}),
 	});
+	runtime.mount({ makeTools: (_conv, _deliverVoice, _recording, deliverFile) => ({
+			send_file: sendFileTool(work, deliverFile!),
+		}) });
 	const sends: string[] = [];
 	const pushed: { conversation: string; done: TurnDone }[] = [];
 	const api = {

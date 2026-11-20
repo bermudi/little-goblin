@@ -139,10 +139,6 @@ export interface RuntimeDeps {
 	// The operator's global model fallback list, read live per turn
 	// (design/model.md → Model fallback list). Absent or [] = no fallback.
 	modelFallbacks?(): readonly string[];
-	// Tool authority's tool builder (turn/tool-authority.ts): builds the
-	// deployment workspace's tools; delivery hooks connect speak and file
-	// tools to the running sink.
-	makeTools: TurnToolMaker;
 	// Optional memory recall is bounded, fail-open, and cache-stable; retention
 	// is enqueued only while the turn retains authority. Memory input is kept
 	// separate from the model's complete conversation view.
@@ -157,9 +153,6 @@ export interface RuntimeDeps {
 	// Each admitted attempt opens a run row before any tool side effect
 	// can run. Optional — test rigs journal nothing.
 	turnJournal?: TurnJournal;
-	// Durable wake ownership (wake-dispatcher.ts): the hooks contract
-	// lives at turn/run-ownership.ts.
-	runOwnership?: RunOwnershipHooks;
 	// The context-window view's store (window-capture.ts): the attempt's
 	// final outbound prompt, recorded per conversation, latest wins.
 	// Observability, never turn state — a throw is logged, the turn
@@ -178,6 +171,12 @@ export interface RuntimeDeps {
 	// gate (interval, config) lives in the callback. A throw is logged
 	// and swallowed: curation never fails a turn.
 	onTurnSettled?: (convId: string) => void;
+}
+
+export interface RuntimeMount {
+	makeTools: TurnToolMaker;
+	// Durable wake ownership (wake-dispatcher.ts): contract at turn/run-ownership.ts. Absent in test rigs.
+	runOwnership?: RunOwnershipHooks;
 }
 
 export class FencedError extends Error {
@@ -235,6 +234,7 @@ export class Runtime {
 	>();
 	// Closed runtimes record submits but never run them.
 	private closed = false;
+	private mounted: RuntimeMount | null = null;
 	// The runtime supplies ordering and the prior-turn chain, not gate
 	// logic — Reviewer owns the rest.
 	private reviewer: Reviewer | undefined;
@@ -251,6 +251,16 @@ export class Runtime {
 
 	constructor(private deps: RuntimeDeps) {
 		this.pendingInputs = new PendingInputs(deps.store.db);
+	}
+
+	mount(mount: RuntimeMount): void {
+		if (this.mounted !== null) throw new Error("runtime mounted twice — boot-order bug");
+		this.mounted = mount;
+	}
+
+	private getMount(): RuntimeMount {
+		if (this.mounted === null) throw new Error("runtime not mounted — boot-order bug");
+		return this.mounted;
 	}
 
 	setReviewer(reviewer: Reviewer): void {
@@ -280,6 +290,7 @@ export class Runtime {
 	// history-only recording after shutdown. The message is durable even when
 	// no turn can be admitted.
 	submit(conv: Conversation, message: Message, sink: TurnSink): boolean {
+		this.getMount();
 		const seqs = this.deps.store.append(conv.id, [message]);
 		return this.admit(conv, message, sink, seqs[0]!);
 	}
@@ -289,6 +300,7 @@ export class Runtime {
 	// persisting caller watched the append, so the queue never has to guess
 	// it from a client message id.
 	submitPersisted(conv: Conversation, message: Message, sink: TurnSink, seq: number): boolean {
+		this.getMount();
 		return this.admit(conv, message, sink, seq);
 	}
 
@@ -298,6 +310,7 @@ export class Runtime {
 		mode: PendingInputMode,
 		sink: TurnSink,
 	): string {
+		this.getMount();
 		if (!this.busy(conv.id)) throw new Error(`cannot queue pending input on idle conversation ${conv.id}`);
 		const row = this.pendingInputs.add(conv.id, message, mode);
 		this.lanes.enqueue(conv.id, {
@@ -555,6 +568,7 @@ export class Runtime {
 
 	// Queue compaction behind the running turn so its response is not orphaned.
 	compact(conv: Conversation, focus?: string): Promise<CompactionOutcome> {
+		this.getMount();
 		return new Promise<CompactionOutcome>((resolve, reject) => {
 			this.lanes.enqueueCompact({ conv, reason: "manual", focus, resolve, reject });
 			this.lanes.startDraining(conv.id, () => this.drain(conv.id));
@@ -562,6 +576,7 @@ export class Runtime {
 	}
 
 	async idleFold(convId: string): Promise<"compacted" | "noop" | "busy" | "gone"> {
+		this.getMount();
 		const conv = this.deps.store.get(convId);
 		if (conv === null) return "gone";
 		if (this.lanes.busy(convId)) return "busy";
@@ -617,7 +632,7 @@ export class Runtime {
 					const noVoice = async (_audio: Uint8Array): Promise<void> => {};
 					const recording = (): (() => void) => () => {};
 					const noFile = async (_file: OutgoingFile): Promise<void> => {};
-					const availableTools = this.deps.makeTools(
+					const availableTools = this.getMount().makeTools(
 						target,
 						noVoice,
 						recording,
@@ -964,7 +979,7 @@ export class Runtime {
 		// announcing is always right there.
 		const announcePreRunFailure = (err: unknown) => {
 			if (progress.authority?.ownershipBegun === true) return;
-			this.deps.runOwnership?.preRunFailure?.({
+			this.getMount().runOwnership?.preRunFailure?.({
 				conversationId: convId,
 				memberSeqs: turns.map(queuedSeq),
 				error: err instanceof Error ? err.message : String(err),
@@ -1065,7 +1080,7 @@ export class Runtime {
 		const record = openRunRecord({
 			journal,
 			store,
-			runOwnership: this.deps.runOwnership,
+			runOwnership: this.getMount().runOwnership,
 			modelFallbacks: this.deps.modelFallbacks,
 			convId,
 			epoch,
@@ -1178,7 +1193,7 @@ export class Runtime {
 			conv,
 			convId,
 			epoch,
-			makeTools: this.deps.makeTools,
+			makeTools: this.getMount().makeTools,
 			delivery,
 			sourceMessageId: () => turns[turns.length - 1]!.message.id,
 			record: {
@@ -1196,7 +1211,7 @@ export class Runtime {
 			journaled: a.record.journaled,
 			journalFault: a.record.journalFault,
 			onJournalFault: () => a.controller.abort(),
-			runOwnership: this.deps.runOwnership,
+			runOwnership: this.getMount().runOwnership,
 			checkAuthority: a.checkAuthority,
 			// Same source prepareStep's claim reads — a peek, never a
 			// splice; the claim still belongs to the model call.
@@ -1406,7 +1421,7 @@ export class Runtime {
 				? {}
 				: {
 						noteRunMembers: (seqs: number[]) =>
-							this.deps.runOwnership?.members(auth.runId, convId, seqs),
+							this.getMount().runOwnership?.members(auth.runId, convId, seqs),
 					}),
 			assertAuthority: a.assertAuthority,
 			holdsAuthority: a.holdsAuthority,

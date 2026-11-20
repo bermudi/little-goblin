@@ -22,8 +22,8 @@ function rig(model: ScriptedModel) {
 		engines: model.engines,
 		store,
 		buildStep: () => model.step(),
-		makeTools: () => ({ echo }),
 	});
+	runtime.mount({ makeTools: () => ({ echo }) });
 	return { store, conv, runtime, model };
 }
 function run(r: Rig, text = "hello") {

@@ -10,6 +10,7 @@ import type { Desktops } from "../desktops.ts";
 import type { T3, T3Thread } from "../t3.ts";
 import { setLogFile, setLogWriter } from "../log.ts";
 import type { MailApproval } from "../mail-approval.ts";
+import type { ProgramApproval } from "../program-approval.ts";
 import type { NoteStore } from "../notes.ts";
 import { openPrograms, type ProgramsStore } from "../programs.ts";
 import { openProjects, type ProjectStore } from "../projects.ts";
@@ -170,13 +171,13 @@ describe("turn-tools responsibility composition", () => {
 			transcribe: async () => null,
 			delegateDeps: delegateDeps ?? (() => undefined),
 			t3: fakeT3(() => agents).t3,
-			mail: () => ({}) as Pick<MailApproval, "requestDraft">,
-			programApproval: () => undefined,
+			mail: ({}) as Pick<MailApproval, "requestDraft">,
+			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
-			desktops: () => null,
-			agents: () => null,
-			responsibility: () => ({ resps, service }),
+			desktops: null,
+			agents: null,
+			responsibility: { resps, service },
 			filterGuests: (_conv, tools) => tools,
 		});
 		const edge = scriptedModel(attempts);
@@ -184,34 +185,10 @@ describe("turn-tools responsibility composition", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: toolsFor,
 		});
+		runtime.mount({ makeTools: toolsFor });
 		return { store, conv, project, projects, resps, runtime, toolsFor, configRef, service };
 	}
-
-	test("warns when a parent turn builds before configured owners bind", () => {
-		const f = rig([]);
-		f.configRef.current = { desktops: {} } as Config;
-		const records: Record<string, unknown>[] = [];
-		setLogFile("/fixture/goblin.log");
-		setLogWriter((_path, line) => {
-			records.push(JSON.parse(line.trim()) as Record<string, unknown>);
-		});
-		try {
-			f.toolsFor(f.conv);
-			const warnings = records.filter((record) => record.msg === "turn tools built before owner bound");
-			expect(warnings).toEqual([
-				expect.objectContaining({
-					conversation: f.conv.id,
-					missing: ["desktop", "agent"],
-				}),
-			]);
-		} finally {
-			setLogWriter(null);
-			setLogFile(null);
-			f.store.close();
-		}
-	});
 
 	test("worker send authority checks project, status, and the captured turn epoch", async () => {
 		let responsibilityId = "";
@@ -405,13 +382,13 @@ describe("turn-tools managed send linkage", () => {
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
 			t3: t3edge.t3,
-			mail: () => ({}) as Pick<MailApproval, "requestDraft">,
-			programApproval: () => undefined,
+			mail: ({}) as Pick<MailApproval, "requestDraft">,
+			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
-			desktops: () => null,
-			agents: () => null,
-			responsibility: () => ({ resps, service }),
+			desktops: null,
+			agents: null,
+			responsibility: { resps, service },
 			filterGuests: (_conv, tools) => tools,
 		});
 		const SEND = JSON.stringify({ action: "send", attachment: 1, brief: "follow up" });
@@ -426,8 +403,8 @@ describe("turn-tools managed send linkage", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: toolsFor,
 		});
+		runtime.mount({ makeTools: toolsFor });
 		const first = new HeadlessSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "take this" }]), first);
 		expect(await first.done).toEqual({ kind: "completed" });
@@ -497,13 +474,13 @@ describe("responsibility epoch authority", () => {
 				transcribe: async () => null,
 				delegateDeps: () => undefined,
 				t3: edge3.t3,
-				mail: () => ({}) as Pick<MailApproval, "requestDraft">,
-				programApproval: () => undefined,
+				mail: ({}) as Pick<MailApproval, "requestDraft">,
+				programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
 				visionDepsFor: () => undefined,
 				sandboxes: {} as unknown as Sandboxes,
-				desktops: () => null,
-				agents: () => null,
-				responsibility: () => ({ resps, service }),
+				desktops: null,
+				agents: null,
+				responsibility: { resps, service },
 				filterGuests: (_conv, tools) => tools,
 			});
 			const edge = scriptedModel([
@@ -523,8 +500,8 @@ describe("responsibility epoch authority", () => {
 				engines: [aiSdkEngine],
 				store,
 				buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-				makeTools: toolsFor,
 			});
+			runtime.mount({ makeTools: toolsFor });
 			if (action === "send") {
 				const first = new HeadlessSink();
 				runtime.submit(conv, userMessage([{ type: "text", text: "take over" }]), first);
@@ -634,13 +611,13 @@ describe("operator correction authority", () => {
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
 			t3: t3fake.t3,
-			mail: () => ({}) as Pick<MailApproval, "requestDraft">,
-			programApproval: () => undefined,
+			mail: ({}) as Pick<MailApproval, "requestDraft">,
+			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
-			desktops: () => null,
-			agents: () => null,
-			responsibility: () => ({ resps, service }),
+			desktops: null,
+			agents: null,
+			responsibility: { resps, service },
 			filterGuests: (_conv, tools) => tools,
 		});
 		const STALE_SEND = JSON.stringify({
@@ -679,13 +656,12 @@ describe("operator correction authority", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: toolsFor,
-			runOwnership: {
+		});
+		runtime.mount({ makeTools: toolsFor, runOwnership: {
 				begin: (e) => dispatcher.hooks.begin(e),
 				members: (r, c, s) => dispatcher.hooks.members(r, c, s),
 				end: (r, s, d) => dispatcher.hooks.end(r, s, d),
-			},
-		});
+			} });
 		dispatcher = makeWakeDispatcher({
 			store,
 			wakes,
@@ -823,13 +799,13 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 		transcribe: async () => null,
 		delegateDeps: () => undefined,
 		t3: t3fake.t3,
-		mail: () => ({}) as Pick<MailApproval, "requestDraft">,
-		programApproval: () => undefined,
+		mail: ({}) as Pick<MailApproval, "requestDraft">,
+		programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
 		visionDepsFor: () => undefined,
 		sandboxes: {} as unknown as Sandboxes,
-		desktops: () => null,
-		agents: () => null,
-		responsibility: () => ({ resps, service, listFor: async () => [AGENT] }),
+		desktops: null,
+		agents: null,
+		responsibility: { resps, service },
 		filterGuests: (_conv, tools) => tools,
 	});
 	const STALE_SEND = JSON.stringify({
@@ -860,13 +836,12 @@ test("a correction fences a stale send gated in ANOTHER bound conversation", asy
 		store,
 		turnJournal: journal,
 		buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-		makeTools: toolsFor,
-		runOwnership: {
+	});
+	runtime.mount({ makeTools: toolsFor, runOwnership: {
 			begin: (e) => dispatcher.hooks.begin(e),
 			members: (r, c, s) => dispatcher.hooks.members(r, c, s),
 			end: (r, s, d) => dispatcher.hooks.end(r, s, d),
-		},
-	});
+	} });
 	dispatcher = makeWakeDispatcher({
 		store,
 		wakes,
@@ -932,13 +907,13 @@ describe("hosted web_search mount", () => {
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
 			t3: fakeT3(() => []).t3,
-			mail: () => ({}) as never,
-			programApproval: () => undefined,
+			mail: ({}) as never,
+			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
-			desktops: () => null,
-			agents: () => null,
-			responsibility: () => null,
+			desktops: null,
+			agents: null,
+			responsibility: null,
 			filterGuests: (_c, t) => t,
 		});
 
@@ -993,13 +968,13 @@ describe("agent tool mount", () => {
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
 			t3: {} as unknown as T3,
-			mail: () => ({}) as never,
-			programApproval: () => undefined,
+			mail: ({}) as never,
+			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
-			desktops: () => null,
-			agents: () => engine,
-			responsibility: () => null,
+			desktops: null,
+			agents: engine,
+			responsibility: null,
 			filterGuests: (_c, t) => t,
 		});
 
@@ -1065,13 +1040,13 @@ describe("computer child mount", () => {
 			transcribe: async () => null,
 			delegateDeps: () => undefined,
 			t3: {} as unknown as T3,
-			mail: () => ({}) as never,
-			programApproval: () => undefined,
+			mail: ({}) as never,
+			programApproval: ({}) as Pick<ProgramApproval, "requestApproval">,
 			visionDepsFor: () => undefined,
 			sandboxes: {} as unknown as Sandboxes,
-			desktops: () => desktops,
-			agents: () => engine,
-			responsibility: () => null,
+			desktops,
+			agents: engine,
+			responsibility: null,
 			filterGuests: (_c, t) => t,
 		});
 

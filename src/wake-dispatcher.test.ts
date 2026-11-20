@@ -17,6 +17,7 @@ import { setLogFile } from "./log.ts";
 import { Runtime, type RuntimeDeps, userMessage } from "./runtime.ts";
 
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
+import type { TurnToolMaker } from "./turn/tool-authority.ts";
 import { openTurnJournal, type TurnJournal } from "./turn-journal.ts";
 import { deferred, fakeModel, HeadlessSink, RecordingSink, tmpDb, waitUntil } from "./testkit.ts";
 import {
@@ -44,13 +45,13 @@ interface Rig {
 }
 
 // The composition's shape: a real Runtime with the journal and the
-// ownership hooks late-bound to the dispatcher — same wiring index.ts
-// builds, minus Telegram.
+// ownership hooks mounted after the dispatcher exists — same stage order
+// index.ts builds, minus Telegram.
 function rig(
 	opts: {
 		model?: LanguageModel;
 		tools?: Tools;
-		makeTools?: RuntimeDeps["makeTools"];
+		makeTools?: TurnToolMaker;
 		store?: Store;
 		buildStep?: RuntimeDeps["buildStep"];
 		compaction?: NonNullable<RuntimeDeps["compaction"]>;
@@ -69,17 +70,10 @@ function rig(
 		turnJournal: journal,
 		buildStep:
 			opts.buildStep ?? (() => ({ engine: "ai-sdk", model: opts.model ?? fakeModel(["ok"]), system: "test" })),
-		makeTools: opts.makeTools ?? (() => opts.tools ?? {}),
 		...(opts.compaction === undefined ? {} : { compaction: opts.compaction }),
 		...(opts.captureConversation === undefined
 			? {}
 			: { captureConversation: opts.captureConversation }),
-		runOwnership: {
-			begin: (e) => dispatcher.hooks.begin(e),
-			members: (r, c, s) => dispatcher.hooks.members(r, c, s),
-			end: (r, s, d) => dispatcher.hooks.end(r, s, d),
-			preRunFailure: (e) => dispatcher.hooks.preRunFailure?.(e),
-		},
 	});
 	dispatcher = makeWakeDispatcher({
 		store,
@@ -87,6 +81,10 @@ function rig(
 		journal,
 		runtime,
 		sinkFor: () => new HeadlessSink(),
+	});
+	runtime.mount({
+		makeTools: opts.makeTools ?? (() => opts.tools ?? {}),
+		runOwnership: dispatcher.hooks,
 	});
 	return { store, conv, journal, wakes, runtime, dispatcher };
 }

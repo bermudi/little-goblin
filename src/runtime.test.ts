@@ -58,6 +58,7 @@ import {
 	waitUntil,
 } from "./testkit.ts";
 import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
+import type { TurnToolMaker } from "./turn/tool-authority.ts";
 import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { appendInterruptedProgress } from "./turn/unlanded-progress.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
@@ -86,7 +87,7 @@ function rig(
 		step?: Partial<Omit<ModelStep, "model" | "engine">>;
 		buildStep?: RuntimeDeps["buildStep"];
 		tools?: Tools;
-		makeTools?: RuntimeDeps["makeTools"];
+		makeTools?: TurnToolMaker;
 		deps?: Partial<
 			Pick<
 				RuntimeDeps,
@@ -115,9 +116,9 @@ function rig(
 				engine: "ai-sdk",
 				...opts.step,
 			})),
-		makeTools: opts.makeTools ?? (() => opts.tools ?? {}),
 		...opts.deps,
 	});
+	runtime.mount({ makeTools: opts.makeTools ?? (() => opts.tools ?? {}) });
 	return { store, conv, runtime };
 }
 
@@ -130,6 +131,36 @@ function submit(r: Rig, text: string, sink?: TurnSink): TurnSink {
 }
 
 const drain = (r: Rig) => waitUntil(() => !r.runtime.busy(r.conv.id), "lane drains");
+
+describe("runtime mount", () => {
+	test("submit before mount throws and writes nothing", () => {
+		const store = openStore(tmpDb("goblin-runtime-unmounted-"));
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		const runtime = new Runtime({
+			engines: [aiSdkEngine],
+			store,
+			buildStep: () => ({ engine: "ai-sdk", model: fakeModel(["unused"]), system: "test" }),
+		});
+		const before = store.history(conv.id);
+		expect(() =>
+			runtime.submit(conv, userMessage([{ type: "text", text: "must not persist" }]), new HeadlessSink()),
+		).toThrow(/runtime not mounted/);
+		expect(store.history(conv.id)).toEqual(before);
+		store.close();
+	});
+
+	test("mount twice throws", () => {
+		const store = openStore(tmpDb("goblin-runtime-mounted-twice-"));
+		const runtime = new Runtime({
+			engines: [aiSdkEngine],
+			store,
+			buildStep: () => ({ engine: "ai-sdk", model: fakeModel(["unused"]), system: "test" }),
+		});
+		runtime.mount({ makeTools: () => ({}) });
+		expect(() => runtime.mount({ makeTools: () => ({}) })).toThrow(/mounted twice/);
+		store.close();
+	});
+});
 
 describe("skill body ownership across turns", () => {
 	test("the owning turn injects the body; a later turn sees only the marker", async () => {
@@ -861,14 +892,14 @@ describe("transient transport retry (#191)", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: s.model, system: "test", transientRetryDelayMs: 0 }),
-			makeTools: () => ({
+		});
+		runtime.mount({ makeTools: () => ({
 				probe: defineTool({
 					description: "test tool",
 					input: z.object({}),
 					execute: async () => "done",
 				}),
-			}),
-		});
+			}) });
 		try {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
@@ -2883,13 +2914,6 @@ describe("cache stability", () => {
 				model: fakeModel(["ok"], 1),
 				system: systemPromptFor(store, c, toolNames(toolset)).text,
 			}),
-			makeTools: () => ({
-				memory_search: defineTool({
-					description: "test tool",
-					input: z.object({ q: z.string() }),
-					execute: async () => "no memory",
-				}),
-			}),
 			compaction: {
 				modelRef: () => "m",
 				contextWindow: () => 1000,
@@ -2899,6 +2923,13 @@ describe("cache stability", () => {
 				},
 			},
 		});
+		runtime.mount({ makeTools: () => ({
+			memory_search: defineTool({
+				description: "test tool",
+				input: z.object({ q: z.string() }),
+				execute: async () => "no memory",
+			}),
+		}) });
 		try {
 			// Fresh conversation — nothing to fold. The metadata pass must
 			// not have built a prompt for it.
@@ -3010,7 +3041,6 @@ describe("cache stability", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ engine: "ai-sdk", model, system: "test" }),
-			makeTools: () => ({}),
 			pruneBetweenTurns: (convId) => {
 				calls.push(convId);
 				store.applyEventProjections(convId, [
@@ -3024,6 +3054,7 @@ describe("cache stability", () => {
 				]);
 			},
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		const sink = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "next" }]), sink);
 		expect(await sink.done).toEqual({ kind: "completed" });
@@ -3047,11 +3078,11 @@ describe("cache stability", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ engine: "ai-sdk", model: fakeModel(["ok"], 5), system: "test" }),
-			makeTools: () => ({}),
 			pruneBetweenTurns: () => {
 				throw new Error("projection store exploded");
 			},
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		setLogFile(logFile);
 		try {
 			const sink = new RecordingSink();
@@ -4543,12 +4574,12 @@ describe("prefix compaction request identity", () => {
 			store,
 			buildStep,
 			compaction,
-			makeTools: (_target, _voice, _recording, deliverFile) => ({
-				...tools,
-				...(deliverFile !== undefined ? { send_file: sendFileTool("/w", deliverFile) } : {}),
-			}),
 			captureConversation: (target) => captureConversationSettings(store, target, cfg),
 		});
+		runtime.mount({ makeTools: (_target, _voice, _recording, deliverFile) => ({
+			...tools,
+			...(deliverFile !== undefined ? { send_file: sendFileTool("/w", deliverFile) } : {}),
+		}) });
 		const r = { store, conv, runtime };
 		let restartedRuntime: Runtime | null = null;
 		const submitWithFileDelivery = (text: string) => {
@@ -4664,12 +4695,12 @@ describe("prefix compaction request identity", () => {
 				store,
 				buildStep,
 				compaction,
-				makeTools: (_target, _voice, _recording, deliverFile) => ({
-					...tools,
-					...(deliverFile !== undefined ? { send_file: sendFileTool("/w", deliverFile) } : {}),
-				}),
 				captureConversation: (target) => captureConversationSettings(store, target, cfg),
 			});
+			restartedRuntime.mount({ makeTools: (_target, _voice, _recording, deliverFile) => ({
+				...tools,
+				...(deliverFile !== undefined ? { send_file: sendFileTool("/w", deliverFile) } : {}),
+			}) });
 			setLogFile(join(home, "state/goblin.log"));
 			try {
 				const afterRestart = await restartedRuntime.compact(restartConv);
@@ -4730,12 +4761,12 @@ describe("prefix compaction request identity", () => {
 				store,
 				buildStep,
 				compaction,
-				makeTools: (_target, _voice, _recording, deliverFile) => ({
-					...tools,
-					...(deliverFile !== undefined ? { send_file: sendFileTool("/w", deliverFile) } : {}),
-				}),
 				captureConversation: (target) => captureConversationSettings(store, target, cfg),
 			});
+			epochRuntime.mount({ makeTools: (_target, _voice, _recording, deliverFile) => ({
+				...tools,
+				...(deliverFile !== undefined ? { send_file: sendFileTool("/w", deliverFile) } : {}),
+			}) });
 			setLogFile(join(home, "state/goblin.log"));
 			try {
 				const staleFold = await epochRuntime.compact(staleCurrent);
@@ -4918,7 +4949,6 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 				label: conv.model!,
 			};
 		},
-		makeTools: () => ({}),
 		compaction: {
 			modelRef: (conv) => conv.model!,
 			contextWindow: () => null,
@@ -4928,6 +4958,7 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 			},
 		},
 	});
+	runtime.mount({ makeTools: () => ({}) });
 	try {
 		const first = new RecordingSink();
 		runtime.submit(app, userMessage([{ type: "text", text: "first" }]), first);
@@ -4992,7 +5023,6 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 			selections.push(`${row.model}:${row.thinking}`);
 			return { engine: "ai-sdk", model, system: "test", contextWindow: 1000 };
 		},
-		makeTools: () => ({}),
 		compaction: {
 			modelRef: (row) => row.model!,
 			contextWindow: () => 1000,
@@ -5003,6 +5033,7 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 			},
 		},
 	});
+	runtime.mount({ makeTools: () => ({}) });
 	try {
 		const first = new RecordingSink();
 		runtime.submit(conv, userMessage([{ type: "text", text: "recover" }]), first);
@@ -5044,8 +5075,8 @@ test("invalid durable app settings report admission error exactly once without s
 			modelCalls++;
 			return { engine: "ai-sdk", model: fakeModel(["unused"]), system: "test" };
 		},
-		makeTools: () => ({}),
 	});
+	runtime.mount({ makeTools: () => ({}) });
 	try {
 		runtime.submit(conv, userMessage([{ type: "text", text: "test" }]), {
 			delivery: "headless",
@@ -5080,14 +5111,14 @@ describe("turn journal", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: () => ({
-				probe: defineTool({
-					description: "test tool",
-					input: z.object({}),
-					execute: async () => ({ ok: true, out: "done" }),
-				}),
-			}),
 		});
+		runtime.mount({ makeTools: () => ({
+			probe: defineTool({
+				description: "test tool",
+				input: z.object({}),
+				execute: async () => ({ ok: true, out: "done" }),
+			}),
+		}) });
 		try {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
@@ -5121,8 +5152,8 @@ describe("turn journal", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: gated.model, system: "test" }),
-			makeTools: () => ({}),
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		try {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
@@ -5175,17 +5206,17 @@ describe("turn journal", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: () => ({
-				probe: defineTool({
-					description: "test tool",
-					input: z.object({}),
-					execute: async () => {
-						executions++;
-						return { ok: true };
-					},
-				}),
-			}),
 		});
+		runtime.mount({ makeTools: () => ({
+			probe: defineTool({
+				description: "test tool",
+				input: z.object({}),
+				execute: async () => {
+					executions++;
+					return { ok: true };
+				},
+			}),
+		}) });
 		try {
 			const sink = new RecordingSink();
 			let dones = 0;
@@ -5260,17 +5291,17 @@ describe("turn journal", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model, system: "test" }),
-			makeTools: () => ({
-				probe: defineTool({
-					description: "test tool",
-					input: z.object({}),
-					execute: async () => {
-						executions++;
-						return { ok: true };
-					},
-				}),
-			}),
 		});
+		runtime.mount({ makeTools: () => ({
+			probe: defineTool({
+				description: "test tool",
+				input: z.object({}),
+				execute: async () => {
+					executions++;
+					return { ok: true };
+				},
+			}),
+		}) });
 		setLogFile(logFile);
 		try {
 			const sink = new RecordingSink();
@@ -5322,6 +5353,12 @@ describe("turn journal", () => {
 			engines: [aiSdkEngine],
 			store,
 			turnJournal: journal,
+			buildStep: () => {
+				throw new Error("unreachable — tool-authority init died first");
+			},
+		});
+		runtime.mount({
+			makeTools: () => ({}),
 			runOwnership: {
 				begin() {},
 				members() {},
@@ -5329,10 +5366,6 @@ describe("turn journal", () => {
 					ended.push({ runId, status, delivery });
 				},
 			},
-			buildStep: () => {
-				throw new Error("unreachable — tool-authority init died first");
-			},
-			makeTools: () => ({}),
 		});
 		try {
 			const sink = new RecordingSink();
@@ -5395,14 +5428,14 @@ describe("unlanded-turn progress — error rail", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: () => ({
-				probe: defineTool({
-					description: "test tool",
-					input: z.object({}),
-					execute: async () => ({ ok: true }),
-				}),
-			}),
 		});
+		runtime.mount({ makeTools: () => ({
+			probe: defineTool({
+				description: "test tool",
+				input: z.object({}),
+				execute: async () => ({ ok: true }),
+			}),
+		}) });
 		try {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
@@ -5453,14 +5486,14 @@ describe("unlanded-turn progress — error rail", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: () => ({
-				probe: defineTool({
-					description: "test tool",
-					input: z.object({}),
-					execute: async () => ({ ok: true }),
-				}),
-			}),
 		});
+		runtime.mount({ makeTools: () => ({
+			probe: defineTool({
+				description: "test tool",
+				input: z.object({}),
+				execute: async () => ({ ok: true }),
+			}),
+		}) });
 		try {
 			const sinkA = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "A" }]), sinkA);
@@ -5510,14 +5543,14 @@ describe("unlanded-turn progress — error rail", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: () => ({
-				probe: defineTool({
-					description: "test tool",
-					input: z.object({}),
-					execute: async () => ({ ok: true }),
-				}),
-			}),
 		});
+		runtime.mount({ makeTools: () => ({
+			probe: defineTool({
+				description: "test tool",
+				input: z.object({}),
+				execute: async () => ({ ok: true }),
+			}),
+		}) });
 		try {
 			const failed = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), failed);
@@ -5548,8 +5581,8 @@ describe("unlanded-turn progress — error rail", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: () => ({}),
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		try {
 			const failed = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), failed);
@@ -5584,8 +5617,8 @@ describe("unlanded-turn progress — error rail", () => {
 			buildStep: () => {
 				throw new Error("step assembly exploded");
 			},
-			makeTools: () => ({}),
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		try {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
@@ -5632,8 +5665,8 @@ describe("unlanded-turn progress — error rail", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: () => ({}),
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		try {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
@@ -5662,8 +5695,8 @@ describe("unlanded-turn progress — error rail", () => {
 				store.bumpEpoch(c.id);
 				throw new Error("setup boom after the epoch moved");
 			},
-			makeTools: () => ({}),
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		try {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
@@ -5704,9 +5737,9 @@ describe("unlanded-turn progress — error rail", () => {
 				model: (c.model === "zai/glm-5.3" ? quota : serving).model,
 				system: "test",
 			}),
-			makeTools: () => ({}),
 			modelFallbacks: () => ["codex/gpt-6.1-terra"],
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		try {
 			const sink = new RecordingSink();
 			runtime.submit(store.get(conv.id)!, userMessage([{ type: "text", text: "hi" }]), sink);
@@ -5747,8 +5780,8 @@ describe("unlanded-turn progress — error rail", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: () => ({}),
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		try {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
@@ -6018,8 +6051,8 @@ describe("unlanded-turn progress — error rail", () => {
 			store: reopened,
 			turnJournal: journal2,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: () => ({}),
 		});
+		runtime.mount({ makeTools: () => ({}) });
 		try {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "carry on" }]), sink);
@@ -6049,11 +6082,11 @@ describe("tool context", () => {
 			engines: [aiSdkEngine],
 			store,
 			buildStep: () => ({ engine: "ai-sdk", model: fakeModel(["ok"]), system: "test" }),
-			makeTools: (_c, _v, _r, _f, context) => {
+		});
+		runtime.mount({ makeTools: (_c, _v, _r, _f, context) => {
 				seen.push({ runId: context!.runId, source: context!.sourceMessageId() });
 				return {};
-			},
-		});
+			} });
 		const s = new RecordingSink();
 		const msg = userMessage([{ type: "text", text: "hi" }]);
 		runtime.submit(conv, msg, s);
@@ -6081,7 +6114,8 @@ describe("tool context", () => {
 			store,
 			turnJournal: journal,
 			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
-			makeTools: (_c, _v, _r, _f, context) => {
+		});
+		runtime.mount({ makeTools: (_c, _v, _r, _f, context) => {
 				contexts.push(context!);
 				return {
 					probe: defineTool({
@@ -6094,8 +6128,7 @@ describe("tool context", () => {
 						},
 					}),
 				};
-			},
-		});
+			} });
 		const msg1 = userMessage([{ type: "text", text: "one" }]);
 		const head = new HeadlessSink();
 		runtime.submit(conv, msg1, head);

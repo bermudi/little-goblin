@@ -11,6 +11,7 @@ import { appAddress } from "../conversation-address.ts";
 import { openResponsibilities } from "../responsibilities.ts";
 
 import { deferred, sleep, waitUntil } from "../testkit.ts";
+import { claudeScript } from "../testkit/turn-script-claude.ts";
 import { sdkScript } from "../testkit/turn-script-sdk.ts";
 import { handleAppApi } from "./app-channel.ts";
 import { APP_TOKEN_NAME, createAndChat, setup } from "./app-testing.ts";
@@ -30,6 +31,8 @@ function streamedText(body: string): string {
 }
 
 describe("app conversations", () => {
+	const engines = [sdkScript, claudeScript] as const;
+	const engineName = (make: (typeof engines)[number]) => make === sdkScript ? "ai-sdk" : "claude-code";
 	test("create, list, and history ride the app pool only", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {
@@ -552,12 +555,12 @@ describe("app conversations", () => {
 		}
 	});
 
-	// ClaudeScript's hold does not unblock on abort, so Runtime.stop cannot settle this fixture.
-	test("ai-sdk: stop before the first content still leaves one durable record (#408 F1)", async () => {
+	for (const make of engines) {
+	test(`${engineName(make)}: stop before the first content still leaves one durable record (#408 F1)`, async () => {
 		// Provider silence: the request is accepted, then nothing streams.
 		const entered = deferred<void>();
 		const gate = deferred<void>();
-		const model = sdkScript();
+		const model = make();
 		model.script({
 			kind: "hold",
 			parts: [],
@@ -610,6 +613,7 @@ describe("app conversations", () => {
 			http.stop();
 		}
 	});
+	}
 
 	test("compact with a focus body feeds the summarizer prompt", async () => {
 		const prompts: string[] = [];

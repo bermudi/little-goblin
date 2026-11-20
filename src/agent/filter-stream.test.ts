@@ -1,3 +1,4 @@
+// These fixtures pin AI SDK v4 tool-input and finish/error stream-part framing.
 import { describe, expect, test } from "bun:test";
 import type { LanguageModelV4, LanguageModelV4StreamPart } from "@ai-sdk/provider";
 import { filterErrorStream } from "./filter-stream.ts";

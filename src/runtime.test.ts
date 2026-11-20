@@ -3316,10 +3316,9 @@ describe("skill reviewer hook", () => {
 	});
 	}
 
-	// The Claude CLI query cannot be fenced while the scripted held query is
-	// outstanding; its Claude probe timed out at five seconds.
-	test("ai-sdk: a fenced turn never gates", async () => {
-		const script = sdkScript();
+	for (const make of engines) {
+	test(`${engineName(make)}: a fenced turn never gates`, async () => {
+		const script = make();
 		const held = heldText(script, "abcde");
 		const r = rig({ script });
 		let gated = false;
@@ -3347,12 +3346,16 @@ describe("skill reviewer hook", () => {
 		const sink = submit(r, "hi");
 		await held.entered;
 		r.store.bumpEpoch(r.conv.id);
+		// ai-sdk settles the fence while the model is still held; claude-code
+		// waits for the CLI query to end first (#820).
+		if (make === claudeScript) held.release();
 		expect(await sink.done).toEqual({ kind: "fenced" });
-		held.release();
+		if (make === sdkScript) held.release();
 		await sleep(50); // the fire-and-forget gate would have fired by now
 		expect(gated).toBe(false);
 		r.store.close();
 	});
+	}
 
 	// A counting gate on a real Reviewer over the runtime's own tool
 	// plumbing — the skip must come from the landed exchange's stamp,
@@ -5364,12 +5367,12 @@ describe("turn journal", () => {
 		}
 	});
 
-	// Claude Code cannot settle a held CLI query after an epoch fence.
-	test("a fenced turn stamps 'fenced' — reopen must not read it as interrupted", async () => {
+	for (const make of engines) {
+	test(`${engineName(make)}: a fenced turn stamps 'fenced' — reopen must not read it as interrupted`, async () => {
 		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
-		const script = sdkScript();
+		const script = make();
 		const gated = heldText(script, "abcde");
 		const runtime = new Runtime({
 			engines: script.engines,
@@ -5398,6 +5401,7 @@ describe("turn journal", () => {
 			store.close();
 		}
 	});
+	}
 
 	test("a journal dispatch write that throws fails the turn — later calls never execute", async () => {
 		// Checks SDK stream-call count and abort propagation after a journal write fault.

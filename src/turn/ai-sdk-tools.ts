@@ -106,10 +106,6 @@ export class ToolExecuteError extends Error {
 	}
 }
 
-// Goblin's content output → the SDK's ToolResultOutput content shape:
-// text passes through, an image becomes a file part whose data payload
-// is the raw bytes. Providers that cannot carry media in a tool result
-// stringify or drop the file part themselves (design/tools.md).
 function toSdkToolOutput(output: ToolOutput): ToolResultOutput {
 	if (output.type !== "content") return output;
 	return {

@@ -17,13 +17,6 @@ const scriptCallsSchema = z.object({
 	),
 });
 
-/** The skill directory name an absolute path sits under (first path
- *  segment, spec-shaped) for any of the given roots — null when the
- *  path is inside none. A first matching root with an unschemad name
- *  stops the scan: the path names no skill. Exported for the
- *  skill-usage read watch, which matches read_file's resolved path
- *  against the catalog root (design/skills.md → Self-authoring, /learn,
- *  curator). */
 export function skillUnderPath(dirs: string[], absPath: string): string | null {
 	for (const dir of dirs) {
 		const rel = relative(dir, absPath);

@@ -1,8 +1,5 @@
 # Telegram — goblin design
 
-Part of the goblin design spec; the core — domain model, authority rule,
-cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md), read first.
-
 ## Channel availability (ruling 2026-10-22)
 
 `telegram.enabled` is an explicit boot-pinned channel switch; absent stays
@@ -83,20 +80,7 @@ apply next turn without interrupting the current answer.
   likewise stops voice, no text fallback. Flood control: a 429's
   `retry_after` is waited out (bounded retries, 20s cumulative cap) with
   +0–250ms jitter per wait so simultaneous callers don't re-collide in
-  lockstep, then the 429 propagates. Plain-path chunking packs at
-  3,800 chars under the 4,096 cap — the seam is the last paragraph
-  break (else newline) in the window's back half, an early break
-  never trades a full bubble for a stub; a seam inside a fenced code
-  block closes the fence at the chunk's end and reopens it with the
-  same info string on the next chunk (bounded: past 64 chars the
-  reopen is the bare marker), so a split block stays monospaced on
-  both sides. A sent window's boundary is frozen — a seam that
-  surfaces only once the body crosses the cap never retracts shown
-  text; the pending tail becomes the next window instead. The
-  opener rule is CommonMark's (shared with the HTML renderer): a
-  backtick fence whose info string contains a backtick is an
-  inline code span, not an opener, and a closer is a bare marker
-  run, never one with trailing text.
+  lockstep, then the 429 propagates.
 - **Reply ratings**: 👍/👎 and the 🔊 ride a clean-completed reply's last
   bubble; errors, fenced, voice-mode, and guest replies get none. The
   callback is only the Telegram adapter over the shared record-only
@@ -259,20 +243,9 @@ rolling address. Programs pinned to DM topics were re-pinned at cutover
 the DM to render as a plain chat, and whether a threadless send behaves while
 it's on.
 
-**Landing rulings (stage 1, 2026-10-03).**
-- *Which chats roll:* private chats only, `chatId > 0` (users positive,
-  groups negative).
-- *Lanes:* the pre-ruling `dm:<chat>` conversation stays history, never
-  current.
-- *A live turn always absorbs input* (it steers), whatever the gap.
-- *The check has a 3 s interactive deadline* (shared client's usual 30 s,
-  raced externally; losing is a fallback); a roll during the check (a fire)
-  joins the burst to the new current — never two rolls.
-- *Delegation notices join, never roll* (they continue operator-started
-  work); program fires roll past the gap.
-- *Topic-root replies are not replies:* Telegram marks topic messages as
-  replies to the root, so `reply_to_message` is ignored — else every burst
-  skips the check.
+Topic-root replies do not bypass the gap check: Telegram marks topic
+messages as replies to the root. Delegation notices join without rolling
+because they continue operator-started work.
 
 ## Roles and permissions (ruling 2026-10-11)
 
@@ -311,11 +284,6 @@ are memory-excluded by construction, capped per reply by `guest.outputChars`,
 **uncapped in turn count** (ruling 2026-10-11 — the named list is small and
 vouched for), and reactive only: no bell, pings, program hooks, or mail
 authority.
-
-**Config.** Migration from the legacy single `allowedUsers` key (which meant
-operator class) is a hand-edit at deploy (`allowedUsers: [x]` →
-`operators: [x]`, `allowedUsers: []`) — no code migrates it, and an
-unmigrated file fails boot loud naming the key.
 
 **The mid-flight recheck is DM-scoped.** The gate's verdict is intake-time
 truth; a save during coalescing is re-adjudicated at flush only where the

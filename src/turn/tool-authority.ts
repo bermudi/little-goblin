@@ -1,9 +1,3 @@
-// Tool authority: the run row lands before any tool side effect can
-// execute, ownership links at begin, and every dispatch is fenced and
-// journaled (tool-fence.ts). One seam, so the runtime's openSeams assembles tools
-// without owning the journal's ordering invariants — and #195's
-// step-end persistence (saveStep) lives here too, the one home both
-// engines' step checkpoints pass through.
 
 import { randomUUID } from "node:crypto";
 import type { Tools } from "../tool.ts";
@@ -16,8 +10,6 @@ import { buildRetryGuard } from "./retry-guard.ts";
 import type { RunOwnershipHooks } from "./run-ownership.ts";
 import { fenceTools } from "./tool-fence.ts";
 
-// Build tools for the deployment workspace and conversation; delivery
-// hooks connect speak and file tools to the running sink.
 export type TurnToolMaker = (
 	conv: Conversation,
 	deliverVoice?: (audio: Uint8Array) => Promise<void>,
@@ -31,7 +23,6 @@ export type TurnToolMaker = (
 	},
 ) => Tools;
 
-// Everything the run row's creation records about the attempt.
 export interface ToolAuthorityRecord {
 	anchorSeq: number | null;
 	steerMarkSeed: number;
@@ -39,11 +30,8 @@ export interface ToolAuthorityRecord {
 	ownedInputSeqs: Set<number>;
 	admissionExchangeExcluded: boolean;
 	memberSeqs: number[];
-	/** The newest owned input's event seq, read at begin time. */
 	sourceInputSeq(): number | null;
-	/** An overflow/fallback predecessor whose calls this row inherits. */
 	predecessorRun?: string | undefined;
-	/** The operator's configured selection when a fallback serves. */
 	fallbackConfigured: string | null;
 }
 
@@ -56,17 +44,11 @@ export interface ToolAuthorityDeps {
 	sourceMessageId(): string;
 	record: ToolAuthorityRecord;
 	journal: TurnJournal | undefined;
-	// The run record's fault-classifying wrapper and fault box — beginRun
-	// and the recovery-guard read classify a throw as a journal fault,
-	// never a model failure.
 	journaled<T>(op: () => T): T;
 	journalFault: { current: unknown };
 	onJournalFault(): void;
 	runOwnership?: RunOwnershipHooks | undefined;
 	checkAuthority(): void;
-	// #477: the tool-launch steer gate — the runtime wires the lane's
-	// claimable-pending read here, armed only by an engine whose
-	// model-call boundary claims steers.
 	steerWaiting?: (() => boolean) | undefined;
 	contextFill?(): { used: number; limit: number } | null;
 }
@@ -74,28 +56,12 @@ export interface ToolAuthorityDeps {
 export interface ToolAuthority {
 	tools: Tools;
 	runId: string;
-	/** True once the ownership begin hook has linked the members — the
-	 *  pre-run failure announcement stops announcing past this point. The
-	 *  begin runs inside open with no await after it, so the fact is
-	 *  final at return; false means no journal, so no row to link. */
 	ownershipBegun: boolean;
-	/** #195 — step-end persistence's one home. Both engines route their
-	 *  step-end checkpoints and steer-fold ownership writes through here,
-	 *  never the journal directly, so a checkpoint throw classifies as a
-	 *  journal fault exactly like a fenced tool's write — and aborts the
-	 *  attempt at once (#207): the SDK swallows a step-end callback's
-	 *  throw, so the seam fires onJournalFault itself. The turn dies as
-	 *  an error and never advances the fallback walk. */
 	saveStep(patch: TurnCheckpointPatch): void;
 }
 
 export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 	const { conv, convId, epoch, journal, record } = deps;
-	// The run row lands before the SDK's loop can reach a tool: after this
-	// line every dispatch is journaled under runId. Creation and evidence
-	// inheritance (any overflow-failed predecessor) are one journal
-	// transaction — a crash between them must never leave a successor that
-	// re-executes recorded side effects.
 	const newRunId = randomUUID();
 	const rawTools = deps.makeTools(
 		conv,
@@ -119,7 +85,6 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 			convSnapshot: {
 				model: conv.model,
 				thinking: conv.thinking,
-				// The operator's selection when a fallback serves.
 				...(record.fallbackConfigured !== conv.model
 					? { configuredModel: record.fallbackConfigured }
 					: {}),
@@ -132,14 +97,7 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 			inheritFrom: record.predecessorRun === undefined ? undefined : [record.predecessorRun],
 		}),
 	);
-	// Set only once the row exists — a failed beginRun leaves no row to
-	// stamp and no run for ownership to end. The runtime reads the id off
-	// the returned authority; the run record reads it through the
-	// runtime-injected getter, never a write-back callback.
 	try {
-		// Every member claimed into this attempt becomes this run's owned
-		// input here, before the stream can reach a tool. A wake linked to
-		// a predecessor the row continues or inherits moves with it.
 		if (journal !== undefined) {
 			deps.runOwnership?.begin({
 				runId: newRunId,
@@ -151,10 +109,6 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 			});
 		}
 		const begunOwnership = journal !== undefined;
-		// The recovery guard reads the fresh row once, after inheritance: it
-		// already carries every predecessor attempt's recorded executions.
-		// Calls this attempt then makes never join the set — same-run
-		// intentional repetition is a live-turn matter, not recovery's.
 		const recoveryGuard =
 			journal === undefined
 				? undefined
@@ -175,11 +129,6 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 			try {
 				deps.journaled(() => journal?.checkpoint(newRunId, patch));
 			} catch (err) {
-				// Step-end callers are SDK callbacks whose throws get
-				// swallowed — the rethrow alone cannot stop the turn. The
-				// fault aborts the attempt here, same as a fenced tool's
-				// journal write, instead of letting the loop run more
-				// model steps on a stale recovery checkpoint.
 				log.error("journal checkpoint failed", err, { conversation: convId, run: newRunId });
 				deps.onJournalFault();
 				throw err;
@@ -187,11 +136,6 @@ export function openToolAuthority(deps: ToolAuthorityDeps): ToolAuthority {
 		};
 		return { tools, runId: newRunId, ownershipBegun: begunOwnership, saveStep };
 	} catch (err) {
-		// A begun row must not escape init still 'running': every stamp
-		// path in the runtime keys off the returned authority, which this
-		// throw never reaches. Terminate the row here so wakes linked by
-		// begin settle off the stamp like any other run end — then let
-		// the turn's catch report the original error.
 		if (journal !== undefined) {
 			try {
 				deps.journaled(() => journal.finishRun(newRunId, "error", "failed"));

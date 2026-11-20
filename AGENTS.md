@@ -12,10 +12,10 @@ particular chat session. Do not restart settled discovery or mistake proposed
 steps for already implemented behavior or blanket execution authorization.
 
 Keep those files current as the operator changes direction or work lands.
-Product intent is distinct from implementation contracts: read `DESIGN.md`
-plus the `design/` file for the area you're touching before structural work;
-surface conflicts with the direction rather than silently overriding it.
-`docs/` is operator documentation, not spec.
+Code defines shipped behavior; regression tests pin what must not change.
+Use [DESIGN.md](DESIGN.md) as a map to the source and `design/` for rationale,
+not as a parallel specification. Surface conflicts with operator intent
+rather than silently overriding it. `docs/` is for operating Goblin.
 
 ## Guardrails
 
@@ -24,7 +24,7 @@ surface conflicts with the direction rather than silently overriding it.
   disk state).
 - **The app client is the one client, two doors.** `app/` is Vite + React
   + strict TS — `@ai-sdk/react` `useChat` over the UIMessage stream
-  endpoints (DESIGN.md → App channel), its tsconfig program joining
+  endpoints (`src/http/app-chat.ts`), its tsconfig program joining
   `bun run typecheck` with wire types imported from server sources, so
   config schema changes break typecheck, not the page. It gets the
   tree's only build step; `src/http` serves `app/dist` under `/app/`
@@ -39,15 +39,22 @@ surface conflicts with the direction rather than silently overriding it.
   update ui-sdk`, don't hand-edit). Where it disagrees with this repo:
   `bun run typecheck`, not `npx tsc`; skip its agent-ready step and
   agent test until the operator rules on the agent bridge (#621).
-  Interaction behavior (focus, keys, ARIA) follows ui-sdk, not the
-  hand-made rules in `design/app.md`: most were agent-written, not the
-  operator's (operator, 2026-11-16). A migration rewrites the ruling it
-  replaces.
+  Interaction behavior (focus, keys, ARIA) follows ui-sdk, not hand-made
+  interaction rules (operator, 2026-11-16).
 - **Fail loud.** `ENOENT` means null. Everything else propagates with context.
   Never swallow an exception.
+- **No new prose comments in TypeScript or TSX.** Use names and tests for
+  what the code does. Record non-obvious decisions in one design note or
+  [ADR](design/decisions/README.md). Keep required directives and legal
+  notices. Use the [`delete-comment` skill](.agents/skills/delete-comment/SKILL.md)
+  to audit a slice; the CI baseline may only shrink.
 - **Cache-busting bugs are P0, always.** A bug that busts the prompt cache —
   moves the request prefix hash outside the sanctioned rewrites (DESIGN.md →
   Cache stability) — is never P1 or P2 (operator, 2026-11-18).
+- **Re-check authority at the action.** A read before an asynchronous
+  operation does not authorize a later effect. For race regression tests,
+  hold the first action while the competing change lands, then prove what
+  the first action can still do (operator, 2026-11-18).
 - **Prod usage counts are never an argument.** Goblin is barely used yet
   (~16 conversations in 2 months); low counts of folds, calls or any
   feature prove low use overall, not that the feature doesn't matter.
@@ -273,10 +280,11 @@ To run a branch on a throwaway instance and prove a change, use the
 prints a URL, `bun run try down <name>` stops it.
 
 `bun run doctor` is read-only diagnosis — no repair, no restart
-authority. Its contract (stdout/stderr split, shared-check rules,
-422/500 boundaries) lives in `design/doctor.md`.
+authority. Release verification failures do not authorize an automatic
+rollback. See [Operations](docs/operations.md) for the operator procedures.
 
-No specs tree, no decision records. Small commits, often, on main or 
-short-lived branches. If a design tension is real enough to argue about,
-write the ruling into the design docs (`DESIGN.md` or
-`design/<area>.md`) — the docs are the spec.
+No specs tree. Use small commits on main or short-lived branches. Keep
+non-obvious choices, rejected alternatives and accepted risks in brief
+[architecture decision records](design/decisions/README.md) or an existing
+design note that already explains the choice. Do not duplicate schemas,
+control flow, or test cases there.

@@ -1,11 +1,3 @@
-// Tool-call bookkeeping shared by the two turn engines' chunk loops:
-// the call-by-id map feeding the loop detector, the reviewer's evidence
-// digest ring, script.* expansion (a `script` call reports its nested
-// calls), and skill-write attribution. Extracted from turn/stream.ts so
-// the claude engine (agent/claude-code/) produces identical records and
-// log lines — the two loops differ in where events come from, never in
-// what they mean.
-
 import { z } from "zod";
 import { policyOf } from "../agent/tool-policy.ts";
 import { log } from "../log.ts";
@@ -23,14 +15,9 @@ const scriptOutputSchema = z.object({
 	),
 });
 
-// The mutable per-turn state every helper below operates on — one
-// instance per engine run, mirroring the locals driveStream kept.
 export interface ToolEventState {
-	/** Resolves a completed call's tool name/input at output time. */
 	callById: Map<string, { tool: string; input: unknown }>;
-	/** Flat tool-call names for the reply's usage record (script.* expanded). */
 	toolCalls: string[];
-	/** Bounded evidence ring the reviewer cites. */
 	digestRing: { id: string; entry: ToolCallDigest }[];
 }
 
@@ -45,9 +32,6 @@ export function openToolEvents(seed: {
 	};
 }
 
-// A tool call's arguments became fully available — record it everywhere
-// the turn's honesty depends on: the by-id map, the flat name list, the
-// evidence ring, the journal's planned row, and the log.
 export function noteToolInput(
 	state: ToolEventState,
 	deps: {
@@ -81,11 +65,6 @@ export function noteToolInput(
 	});
 }
 
-// A tool call's arguments were rejected before execution (schema
-// repair found nothing). This is the call's terminal event: since ai
-// 7.0.173 the SDK drops the tool-output-error that used to follow it,
-// so the detector is fed here or a model retrying the same invalid args
-// loops forever.
 export function noteToolInputRejected(
 	deps: Pick<ToolOutputDeps, "convId" | "onCompleted">,
 	toolName: string,
@@ -105,12 +84,9 @@ export interface ToolOutputDeps {
 	convId: string;
 	evidence: EvidenceLimits | undefined;
 	skillWatch: SkillWatch | undefined;
-	// Feeds the loop detector and watchdog (TurnState.noteCompletedCall).
 	onCompleted(tool: string, input: unknown, result: unknown, failed: boolean): void;
 }
 
-// A tool call completed — settle the evidence ring, expand a script
-// call's nested calls, attribute skill writes, feed the detector.
 export function noteToolOutput(
 	state: ToolEventState,
 	deps: ToolOutputDeps,
@@ -169,8 +145,6 @@ export function noteToolOutput(
 	deps.onCompleted(call?.tool ?? toolCallId, call?.input, output, false);
 }
 
-// A tool call's execution failed — settle the ring as failed, feed the
-// detector with the failure.
 export function noteToolError(
 	state: ToolEventState,
 	deps: ToolOutputDeps,

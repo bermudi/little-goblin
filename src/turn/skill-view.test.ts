@@ -101,8 +101,6 @@ describe("skill invocation in the model view", () => {
 		});
 		const owningTexts = texts(owning);
 		expect(owningTexts).toContain("[skill: demo]");
-		// The body lands AFTER the invoking message's own content and
-		// before the next message.
 		const bodyIdx = owningTexts.findIndex((t) => t.includes(bodyText));
 		const markerIdx = owningTexts.findIndex((t) => t === "[skill: demo]");
 		const laterIdx = owningTexts.indexOf("later");
@@ -170,8 +168,6 @@ describe("skill invocation in the model view", () => {
 	});
 
 	test("temp marker carries the descriptor's name and host", async () => {
-		// The wire schema pins temp paths to the real cache root — stage
-		// an actual copy for the part to reference.
 		const home = mkdtempSync(join(tmpdir(), "goblin-skillmark-"));
 		dirs.push(home);
 		process.env.GOBLIN_HOME = home;
@@ -235,8 +231,6 @@ describe("skill invocation in the model view", () => {
 				return { name: "dup", body: includeBody ? "DUP BODY" : null };
 			},
 		};
-		// Old skill and the current ordinary input share one app-chosen id —
-		// only the latest durable seq is owned; the old one stays a marker.
 		const history = [skillMsg("dup-id", { name: "dup" }), user("dup-id", "current input")];
 		const view = await buildModelView(ctx, {
 			entries: entries(history),
@@ -296,8 +290,6 @@ describe("skill invocation in the model view", () => {
 			skillRef: () => ({ name: "mq", body: "shifted body" }),
 		};
 		const invoking = skillMsg("u0", { name: "mq" });
-		// Malformed attachment data forces materialization to clone the
-		// message. The duplicate id must still not transfer ownership.
 		invoking.parts.push({ type: "data-attachment", data: {} });
 		const history = [user("u0", "first"), invoking];
 		const withBlock = await buildModelView(ctx, {
@@ -433,21 +425,17 @@ describe("resolveSkillRef (real fs)", () => {
 		expect(found.name).toBe("mq");
 		expect(found.body).toContain("body here");
 		expect(resolveSkillRef({ name: "absent" }).body).toBeNull();
-		// #316: a skill the catalog skips (name/dir mismatch) never injects.
 		mkdirSync(join(home, "workspace", "skills", "skipped"), { recursive: true });
 		writeFileSync(
 			join(home, "workspace", "skills", "skipped", "SKILL.md"),
 			"---\nname: other\ndescription: d\n---\nskipped body",
 		);
 		expect(resolveSkillRef({ name: "skipped" }).body).toBeNull();
-		// A long body injects whole: the catalog's 16 KiB head read is for
-		// frontmatter only.
 		writeFileSync(
 			join(home, "workspace", "skills", "mq", "SKILL.md"),
 			`---\nname: mq\ndescription: d\n---\n${"x".repeat(20_000)}\nfull-tail`,
 		);
 		expect(resolveSkillRef({ name: "mq" }).body).toContain("full-tail");
-		// A traversal-shaped name never reads the disk.
 		expect(resolveSkillRef({ name: "../escape" } as never).body).toBeNull();
 	});
 
@@ -465,9 +453,7 @@ describe("resolveSkillRef (real fs)", () => {
 			url: "https://github.com/o/r/tree/main/demo",
 			path: join(digestDir, "demo", "SKILL.md"),
 		};
-		// No descriptor at all.
 		expect(resolveSkillRef(ref).body).toBeNull();
-		// Descriptor present, verdict unstamped.
 		wf(
 			join(digestDir, "skill.json"),
 			JSON.stringify({
@@ -481,7 +467,6 @@ describe("resolveSkillRef (real fs)", () => {
 		const unstamped = resolveSkillRef(ref);
 		expect(unstamped.name).toBe("demo");
 		expect(unstamped.body).toBeNull();
-		// Stamped — the preamble names source, verdict, and the staged dir.
 		wf(
 			join(digestDir, "skill.json"),
 			JSON.stringify({
@@ -499,8 +484,6 @@ describe("resolveSkillRef (real fs)", () => {
 		expect(stamped.body).toContain("injection check: clean");
 		expect(stamped.body).toContain(join(digestDir, "demo"));
 		expect(stamped.body).toContain("T");
-		// Stamped even when the gate was unavailable — the advisory
-		// preamble rides the injected body, not a refusal.
 		wf(
 			join(digestDir, "skill.json"),
 			JSON.stringify({
@@ -540,11 +523,8 @@ describe("resolveSkillRef (real fs)", () => {
 		);
 		const { resolveSkillRef } = await import("./../agent/skill-inject.ts");
 		const url = "https://github.com/o/r/tree/main/demo";
-		// A support file under the digest dir is not the scored body.
 		expect(resolveSkillRef({ url, path: join(digestDir, "demo", "payload.txt") }).body).toBeNull();
-		// A same-named file in a sibling dir is not the descriptor's skill.
 		expect(resolveSkillRef({ url, path: join(digestDir, "sibling", "SKILL.md") }).body).toBeNull();
-		// The descriptor's own SKILL.md still injects.
 		expect(resolveSkillRef({ url, path: join(digestDir, "demo", "SKILL.md") }).body).toContain(
 			"SCORED",
 		);
@@ -562,11 +542,6 @@ describe("resolveSkillRef (real fs)", () => {
 			url: "https://github.com/o/r/tree/main/demo",
 			path: join(digestDir, "demo", "SKILL.md"),
 		};
-		// Both corrupt shapes throw inside readDescriptor — malformed JSON
-		// and a schema violation. The view path degrades either way, for
-		// owning (body) and historical (marker-only) builds alike; the
-		// part replays with history, so a throw here would brick the
-		// conversation's every later turn.
 		writeFileSync(join(digestDir, "skill.json"), "{not json");
 		expect(resolveSkillRef(ref)).toEqual({ name: "unknown", body: null });
 		expect(resolveSkillRef(ref, false)).toEqual({ name: "unknown", body: null });

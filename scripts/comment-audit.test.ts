@@ -53,9 +53,10 @@ test("init is exclusive and check catches replacements and stale allowances", ()
 
 test("base comparison permits adoption but prevents committed and uncommitted growth", () => {
 	const dir = repo();
-	put(dir, "// original\nconst x = 1;\n");
+	put(dir, "// original\n// removed before adoption\nconst x = 1;\n");
 	commit(dir);
 	const before = git(dir, "rev-parse", "HEAD");
+	put(dir, "// original\nconst x = 1;\n");
 	expect(audit(dir, "--init").status).toBe(0);
 	commit(dir);
 	expect(audit(dir, "--check", "--base", before).status).toBe(0);
@@ -67,6 +68,21 @@ test("base comparison permits adoption but prevents committed and uncommitted gr
 	git(dir, "commit", "-qm", "unapproved baseline growth", ".github/comment-baseline.json", "sample.tsx");
 	expect(audit(dir, "--base", base).stderr).toContain("sample.tsx: comment baseline grew");
 	expect(audit(dir, "--base", "invalid-ref").status).not.toBe(0);
+});
+
+test.each([
+	["added", "// original\n// added during adoption\nconst x = 1;\n"],
+	["rewritten", "// rewritten during adoption\nconst x = 1;\n"],
+])("first adoption rejects %s prose even with a matching baseline", (_change, source) => {
+	const dir = repo();
+	put(dir, "// original\nconst x = 1;\n");
+	commit(dir);
+	const base = git(dir, "rev-parse", "HEAD");
+	put(dir, source);
+	expect(audit(dir, "--init").status).toBe(0);
+	commit(dir);
+	expect(audit(dir).status).toBe(0);
+	expect(audit(dir, "--base", base).stderr).toContain("sample.tsx: comment baseline grew");
 });
 
 test("moving a comment to a new file does not transfer its allowance", () => {

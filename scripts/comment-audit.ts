@@ -52,12 +52,15 @@ function functional(text: string, source: string, start: number): boolean {
 	return false;
 }
 
-function scan() {
-	const files = git("ls-files", "-z", "--cached", "--", "*.ts", "*.tsx").split("\0").filter(Boolean).sort();
+function scan(commit?: string) {
+	const paths = commit
+		? git("ls-tree", "-r", "--name-only", "-z", "--full-tree", commit)
+		: git("ls-files", "-z", "--cached", "--", "*.ts", "*.tsx");
+	const files = paths.split("\0").filter((file) => /\.(?:ts|tsx)$/.test(file)).sort();
 	const baseline: Baseline = [];
 	const locations = new Map<string, number[]>();
 	const rows = files.map((file) => {
-		const source = readFileSync(file, "utf8");
+		const source = commit ? git("cat-file", "blob", `${commit}:${file}`) : readFileSync(file, "utf8");
 		const plugins: ParserPlugin[] = file.endsWith(".tsx") ? ["typescript", "jsx"] : ["typescript"];
 		let ast;
 		try { ast = parse(source, { sourceType: "unambiguous", plugins }); }
@@ -167,11 +170,9 @@ function main(): void {
 				git("merge-base", "--is-ancestor", commit, "HEAD");
 				const head = validate(git("show", `HEAD:${baselinePath}`));
 				const exists = git("ls-tree", "--name-only", commit, "--", baselinePath).trim();
-				const prior = exists ? validate(git("show", `${commit}:${baselinePath}`)) : [];
-				if (exists) {
-					compare(head, prior);
-					compare(current, prior);
-				}
+				const prior = exists ? validate(git("show", `${commit}:${baselinePath}`)) : scan(commit).baseline;
+				compare(head, prior);
+				compare(current, prior);
 			}
 		}
 	}

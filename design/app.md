@@ -368,7 +368,12 @@ direction/distance retains the draft with a warning — never overwrite
 history or guess. "Dirty" is the departure flag, not the serialized diff
 (ruling 2026-10-13, #15): a blur-commit provider name is draft state no
 serialized field sees; a pending name holds autosave and refuses explicit
-Save. Async creation retains no navigation authority after dismissal;
+Save. The ask is an in-app sheet, not a blocking `window.confirm`, so the
+page keeps running under it (ruling 2026-11-20, #802): the host tells the
+editor "asking", then the answer (`app/src/leaveAsk.ts`, both doors).
+Autosave holds while the sheet is open, never writes after Discard, and
+resumes after Cancel — a write under the sheet made Discard a lie and
+cleared the "unsaved" pill under a declined ask. Async creation retains no navigation authority after dismissal;
 composer restores go only into their originating composer, never over
 newer text; memory pagination belongs to the loaded filter.
 

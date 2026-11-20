@@ -63,6 +63,7 @@ import { ThreadSourcesSheet } from "./ThreadSourcesSheet.tsx";
 import { TokenGate } from "./TokenGate.tsx";
 import { useUndoToast } from "./undoToast.tsx";
 import { useConfirm } from "./confirm.tsx";
+import { type LeaveAnswer, useLeaveAsk } from "./leaveAsk.ts";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { useConversationSearch } from "./useConversationSearch.ts";
 import { WindowView } from "./WindowView.tsx";
@@ -230,6 +231,9 @@ function AppShell() {
 	// The settings editor's dirty bit — navigation asks before
 	// discarding unsaved edits.
 	const settingsDirty = useRef(false);
+	// Tells the settings editor a leave ask is open and how it was
+	// answered, so its autosave can't write under the sheet.
+	const settingsLeave = useRef<((answer: LeaveAnswer) => void) | null>(null);
 	// The note editor's unsaved body/title edits or standing 409 conflict
 	// are also guarded; its draft lives only in that component.
 	const noteDirty = useRef(false);
@@ -251,33 +255,35 @@ function AppShell() {
 		position: { index: number; segment: string } | null;
 	} | null>(null);
 	const popAskOpen = useRef(false);
+	const askLeave = useLeaveAsk(confirm.ask);
 	// Leaving a dirty page asks once, with the page's own wording. The
 	// ask is a sheet now, not a blocking window.confirm, so the guard
 	// splits in two: what to ask (dirtyGuard) and the answer's await.
-	// popstate uses the same pair — a traversal can't be vetoed, so it
-	// restores-or-applies around the answer instead.
-	const dirtyGuard = (): { message: string; disarm: () => void } | null => {
+	// The page hears "asking" when the sheet opens and the answer when
+	// it closes. popstate uses the same pair — a traversal can't be
+	// vetoed, so it restores-or-applies around the answer instead.
+	const dirtyGuard = (): { message: string; answer: (a: LeaveAnswer) => void } | null => {
 		if (routeRef.current.kind === "page" && routeRef.current.page === "settings" && settingsDirty.current)
 			return {
 				message: "Discard unsaved settings changes?",
-				disarm: () => {
-					settingsDirty.current = false;
+				answer: (a) => {
+					if (a === "discard") settingsDirty.current = false;
+					settingsLeave.current?.(a);
 				},
 			};
 		if (routeRef.current.kind === "note" && noteDirty.current)
 			return {
 				message: "Discard unsaved note edits and any conflict?",
-				disarm: () => noteDiscard.current?.(),
+				answer: (a) => {
+					if (a === "discard") noteDiscard.current?.();
+				},
 			};
 		return null;
 	};
 	const leaveDirty = async (): Promise<boolean> => {
 		const guard = dirtyGuard();
 		if (guard === null) return true;
-		if (!(await confirm.ask({ message: guard.message, confirmLabel: "Discard", danger: true })))
-			return false;
-		guard.disarm();
-		return true;
+		return (await askLeave(guard.message, guard.answer)) === true;
 	};
 	const pushRoute = (path: string) => {
 		navigationSeq.current += 1;
@@ -473,24 +479,21 @@ function AppShell() {
 			pendingPop.current = { p: next, position: nextPosition };
 			if (popAskOpen.current) return;
 			popAskOpen.current = true;
-			void confirm
-				.ask({ message: guard.message, confirmLabel: "Discard", danger: true })
-				.then((ok) => {
-					popAskOpen.current = false;
-					const target = pendingPop.current;
-					pendingPop.current = null;
-					if (target === null) return;
-					if (ok) {
-						guard.disarm();
-						applyPop(target.p, target.position);
-					} else {
-						restoreEntry(target.position);
-					}
-				});
+			void askLeave(guard.message, guard.answer).then((ok) => {
+				popAskOpen.current = false;
+				const target = pendingPop.current;
+				pendingPop.current = null;
+				if (target === null) return;
+				if (ok === true) {
+					applyPop(target.p, target.position);
+				} else {
+					restoreEntry(target.position);
+				}
+			});
 		};
 		window.addEventListener("popstate", onPop);
 		return () => window.removeEventListener("popstate", onPop);
-	}, [route, confirm.ask, confirm, navigation, navigation?.currentEntry.key]);
+	}, [route, askLeave, confirm, navigation, navigation?.currentEntry.key]);
 
 	useEffect(() => {
 		const onUnload = (event: BeforeUnloadEvent) => {
@@ -1475,6 +1478,7 @@ function AppShell() {
 						onDirtyChange={(d) => {
 							settingsDirty.current = d;
 						}}
+						leaveRef={settingsLeave}
 					/>
 				)}
 				{page === "memory" && <MemoryView token={token} onConversation={openConversation} />}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type ChatWidth, loadChatWidth } from "./chatWidth.ts";
 import { useConfirm } from "./confirm.tsx";
+import { type LeaveAnswer, useLeaveAsk } from "./leaveAsk.ts";
 import { MemoryView } from "./MemoryView.tsx";
 import { type Page, PAGES, pageFromPath } from "./routing.ts";
 import { SettingsView } from "./SettingsView.tsx";
@@ -47,16 +48,14 @@ export function TelegramDoor() {
 		window.Telegram?.WebApp.disableClosingConfirmation?.();
 		return () => window.Telegram?.WebApp.disableClosingConfirmation?.();
 	}, []);
+	const settingsLeave = useRef<((answer: LeaveAnswer) => void) | null>(null);
+	const askLeave = useLeaveAsk(confirm.ask);
 	const openPage = async (p: Exclude<Page, "chat">) => {
 		if (p === page) return;
 		if (
 			page === "settings" &&
 			settingsDirty.current &&
-			!(await confirm.ask({
-				message: "Discard unsaved settings changes?",
-				confirmLabel: "Discard",
-				danger: true,
-			}))
+			(await askLeave("Discard unsaved settings changes?", (a) => settingsLeave.current?.(a))) !== true
 		)
 			return;
 		// Approved navigation throws the draft away — disarm the guard.
@@ -114,7 +113,7 @@ export function TelegramDoor() {
 					</p>
 				)}
 				{authed && page === "settings" && (
-					<SettingsView token={null} onDirtyChange={setSettingsDirty} />
+					<SettingsView token={null} onDirtyChange={setSettingsDirty} leaveRef={settingsLeave} />
 				)}
 				{authed && page === "memory" && <MemoryView token={null} />}
 			</main>

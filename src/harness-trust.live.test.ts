@@ -2,7 +2,7 @@
 // and drift is silent — upstream renaming a key means the seed still
 // succeeds and the launch shows the consent dialog anyway. Seeds a
 // temp HOME through the real entry, then greps the INSTALLED binaries
-// for the literals (property/string literals in both bundles — visible
+// for the literals (property/string literals in every bundle — visible
 // without launching anything).
 //     GOBLIN_HARNESS_TRUST_LIVE=1 bun test src/harness-trust.live.test.ts
 // Nothing real is touched: temp HOME only, no harness is ever started.
@@ -15,6 +15,9 @@ import { seedHarnessTrust } from "./harness-trust.ts";
 import { boundedRun, spawnProc } from "./proc.ts";
 
 const LIVE = process.env.GOBLIN_HARNESS_TRUST_LIVE === "1";
+
+// Must mirror the literals the module writes.
+const DEVIN_LITERALS = ["trusted_workspaces.json", "trusted_paths"];
 
 // Must mirror the keys the module writes.
 const CLAUDE_KEYS = [
@@ -72,6 +75,13 @@ function claudeBinary(): string {
 	return realpathSync(shim);
 }
 
+// The launcher's `devin` is a symlink into a versioned install.
+function devinBinary(): string {
+	const shim = Bun.which("devin");
+	if (shim === null) fail("devin not on PATH — is the devin delegation lane still real?");
+	return realpathSync(shim);
+}
+
 describe.skipIf(!LIVE)("harness-trust live drift (GOBLIN_HARNESS_TRUST_LIVE=1)", () => {
 	test("codex: the seed still writes trust_level and the installed binary still knows it", async () => {
 		const home = freshHome();
@@ -105,6 +115,27 @@ describe.skipIf(!LIVE)("harness-trust live drift (GOBLIN_HARNESS_TRUST_LIVE=1)",
 			}
 		}
 	}, 30_000);
+
+	test("devin: the seed still writes trusted_paths and the installed binary still knows the store", async () => {
+		const home = freshHome();
+		const saved = process.env.XDG_DATA_HOME;
+		delete process.env.XDG_DATA_HOME;
+		try {
+			expect(seedHarnessTrust("devin", home, home).length).toBe(1);
+		} finally {
+			if (saved !== undefined) process.env.XDG_DATA_HOME = saved;
+		}
+		const store = JSON.parse(
+			readFileSync(join(home, ".local", "share", "devin", "cli", "trusted_workspaces.json"), "utf8"),
+		) as { trusted_paths?: unknown };
+		expect(store.trusted_paths).toEqual([realpathSync(home)]);
+		const bin = devinBinary();
+		for (const literal of DEVIN_LITERALS) {
+			if (!(await binaryContains(literal, bin))) {
+				fail(`devin binary ${bin} no longer mentions ${literal} — re-pin harness-trust`);
+			}
+		}
+	}, 60_000);
 
 	afterAll(() => {
 		const failures: string[] = [];

@@ -1,18 +1,20 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
 	chmodSync,
 	existsSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { seedHarnessTrust } from "./harness-trust.ts";
 
 let dirs: string[] = [];
@@ -263,9 +265,141 @@ describe("codex", () => {
 	});
 });
 
+describe("devin", () => {
+	// Pinned against devin 3000.14 on a throwaway HOME (2026-11-20).
+	const STORE = join(".local", "share", "devin", "cli", "trusted_workspaces.json");
+	let savedXdg: string | undefined;
+	beforeEach(() => {
+		savedXdg = process.env.XDG_DATA_HOME;
+		delete process.env.XDG_DATA_HOME;
+	});
+	afterEach(() => {
+		if (savedXdg === undefined) delete process.env.XDG_DATA_HOME;
+		else process.env.XDG_DATA_HOME = savedXdg;
+	});
+
+	function filesUnder(root: string): string[] {
+		return readdirSync(root, { recursive: true, withFileTypes: true })
+			.filter((e) => !e.isDirectory())
+			.map((e) => relative(root, join(e.parentPath, e.name)))
+			.sort();
+	}
+
+	test("a fresh HOME gets one store file trusting exactly this folder", () => {
+		const h = home();
+		const cwd = home();
+		expect(seedHarnessTrust("devin", cwd, h)).toEqual([`dir trust ${realpathSync(cwd)}`]);
+		expect(filesUnder(h)).toEqual([STORE]);
+		expect(JSON.parse(readFileSync(join(h, STORE), "utf8"))).toEqual({
+			trusted_paths: [realpathSync(cwd)],
+		});
+		expect(statSync(join(h, STORE)).mode & 0o777).toBe(0o644);
+	});
+
+	test("appends to existing trust, keeping other entries, unknown keys and the file mode", () => {
+		const h = home();
+		const cwd = home();
+		const path = join(h, STORE);
+		mkdirSync(join(path, ".."), { recursive: true });
+		writeFileSync(path, JSON.stringify({ trusted_paths: ["/home/op/proj"], future: { a: 1 } }));
+		chmodSync(path, 0o600);
+		seedHarnessTrust("devin", cwd, h);
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+			trusted_paths: ["/home/op/proj", realpathSync(cwd)],
+			future: { a: 1 },
+		});
+		expect(statSync(path).mode & 0o777).toBe(0o600);
+	});
+
+	test("a folder already trusted, or under a trusted folder, is left alone", () => {
+		const h = home();
+		const parent = realpathSync(home());
+		mkdirSync(join(parent, "child"));
+		const path = join(h, STORE);
+		mkdirSync(join(path, ".."), { recursive: true });
+		const before = JSON.stringify({ trusted_paths: [parent] });
+		writeFileSync(path, before);
+		expect(seedHarnessTrust("devin", parent, h)).toEqual([]);
+		expect(seedHarnessTrust("devin", join(parent, "child"), h)).toEqual([]);
+		expect(readFileSync(path, "utf8")).toBe(before);
+	});
+
+	test("a sibling that shares a name prefix is not covered", () => {
+		const h = home();
+		const base = realpathSync(home());
+		mkdirSync(join(base, "work"));
+		mkdirSync(join(base, "workshop"));
+		const path = join(h, STORE);
+		mkdirSync(join(path, ".."), { recursive: true });
+		writeFileSync(path, JSON.stringify({ trusted_paths: [join(base, "work")] }));
+		seedHarnessTrust("devin", join(base, "workshop"), h);
+		expect(JSON.parse(readFileSync(path, "utf8")).trusted_paths).toEqual([
+			join(base, "work"),
+			join(base, "workshop"),
+		]);
+	});
+
+	test("a symlinked cwd is trusted by its real path, which is what devin checks", () => {
+		const h = home();
+		const real = home();
+		const link = join(home(), "link");
+		symlinkSync(real, link);
+		seedHarnessTrust("devin", link, h);
+		expect(JSON.parse(readFileSync(join(h, STORE), "utf8")).trusted_paths).toEqual([
+			realpathSync(real),
+		]);
+	});
+
+	test("an absolute XDG_DATA_HOME moves the store; a relative one is ignored", () => {
+		const h = home();
+		const xdg = home();
+		const cwd = home();
+		process.env.XDG_DATA_HOME = xdg;
+		seedHarnessTrust("devin", cwd, h);
+		expect(filesUnder(h)).toEqual([]);
+		expect(filesUnder(xdg)).toEqual([join("devin", "cli", "trusted_workspaces.json")]);
+
+		process.env.XDG_DATA_HOME = "relative/data";
+		seedHarnessTrust("devin", cwd, h);
+		expect(filesUnder(h)).toEqual([STORE]);
+	});
+
+	test("a store we can't read as a path list fails loudly and stays untouched", () => {
+		const h = home();
+		const cwd = home();
+		const path = join(h, STORE);
+		mkdirSync(join(path, ".."), { recursive: true });
+		for (const [body, message] of [
+			['{"trusted_paths": "/x"}', "not a list of paths"],
+			['{"trusted_paths": [1]}', "not a list of paths"],
+			['["/x"]', "not a JSON object"],
+			["{not json", "invalid JSON"],
+		] as const) {
+			writeFileSync(path, body);
+			expect(() => seedHarnessTrust("devin", cwd, h)).toThrow(message);
+			expect(readFileSync(path, "utf8")).toBe(body);
+		}
+	});
+
+	test("a symlinked store is written through, never replaced", () => {
+		const h = home();
+		const cwd = home();
+		const target = join(h, "dots", "trusted.json");
+		mkdirSync(join(target, ".."), { recursive: true });
+		writeFileSync(target, JSON.stringify({ trusted_paths: [] }));
+		const link = join(h, STORE);
+		mkdirSync(join(link, ".."), { recursive: true });
+		symlinkSync(target, link);
+		seedHarnessTrust("devin", cwd, h);
+		expect(lstatSync(link).isSymbolicLink()).toBe(true);
+		expect(JSON.parse(readFileSync(target, "utf8")).trusted_paths).toEqual([realpathSync(cwd)]);
+	});
+});
+
 test("unknown kinds seed nothing and write nothing", () => {
 	const h = home();
 	expect(seedHarnessTrust("pi", "/w", h)).toEqual([]);
 	expect(existsSync(join(h, ".claude.json"))).toBe(false);
 	expect(existsSync(join(h, ".codex"))).toBe(false);
+	expect(existsSync(join(h, ".local"))).toBe(false);
 });

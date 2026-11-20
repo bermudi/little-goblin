@@ -4164,6 +4164,8 @@ describe("streaming lane boundary", () => {
 });
 
 describe("loop landings", () => {
+	// AI SDK-only: these cases inspect per-call toolChoice and use a
+	// request-aware model that changes its reply when the runtime forces tools off.
 	// A turn has no step cap — loops are caught, not capped: the repeat
 	// detector (10 identical call+result pairs warn, 20 cut), the system1
 	// loop watchdog (two consecutive stuck verdicts cut), and the context
@@ -4527,7 +4529,8 @@ describe("loop landings", () => {
 });
 
 describe("prefix compaction request identity", () => {
-	test("identical tool definitions are persisted once across two turns", async () => {
+	for (const make of engines) {
+	test(`${engineName(make)}: identical tool definitions are persisted once across two turns`, async () => {
 		const home = useHome("goblin-prefix-tools-write-");
 		const logPath = join(home, "state/goblin.log");
 		mkdirSync(join(home, "state"), { recursive: true });
@@ -4538,7 +4541,12 @@ describe("prefix compaction request identity", () => {
 				execute: async () => "ok",
 			}),
 		};
-		const r = rig({ model: fakeModel(["ok", "ok"], 1), tools });
+		const script = make();
+		script.script(
+			{ kind: "reply", parts: [{ type: "text", text: "ok" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "ok" }] },
+		);
+		const r = rig({ script, tools });
 		setLogFile(logPath);
 		try {
 			expect(await submit(r, "first").done).toEqual({ kind: "completed" });
@@ -4556,7 +4564,10 @@ describe("prefix compaction request identity", () => {
 			r.store.close();
 		}
 	});
+	}
 
+	// This test captures complete HTTP provider bodies from a real step builder,
+	// including options outside ScriptedModel's runtime request seam.
 	test("F — the real step builder and runtime replay turn two's request prefix without executing tools", async () => {
 		_resetModelsDevForTest();
 		const home = useHome("goblin-prefix-runtime-");
@@ -5009,7 +5020,9 @@ describe("prefix compaction request identity", () => {
 				execute: () => "unused",
 			} as unknown as Tools["probe"],
 		};
-		const turnModel = fakeModel(["ok"], 1);
+		const turnScript = sdkScript();
+		turnScript.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
+		// Prefix compaction consumes a direct LanguageModel, not a Runtime script.
 		const prefixModel = fakeModel(["checkpoint"], 1);
 		const compaction = {
 			modelRef: () => "m",
@@ -5028,7 +5041,7 @@ describe("prefix compaction request identity", () => {
 		const first = rig({
 			store,
 			addr: { kind: "dm", chatId: 75 },
-			model: turnModel,
+			script: turnScript,
 			tools: unpersistable,
 			deps: { compaction },
 		});
@@ -5041,7 +5054,7 @@ describe("prefix compaction request identity", () => {
 			const second = rig({
 				store,
 				addr: { kind: "dm", chatId: 75 },
-				model: turnModel,
+				script: sdkScript(),
 				tools: unpersistable,
 				deps: { compaction },
 			});
@@ -5072,10 +5085,15 @@ describe("prefix compaction request identity", () => {
 			toModelOutput: ({ output }) => ({ type: "text", value: output }),
 		});
 		const tools: Tools = { probe: outputTool };
-		const { model } = scriptedEdge([
-			[toolCallPart("output-tool-call", "probe", "{}"), finishPart("tool-calls")],
-			textParts("turn completed"),
-		]);
+		const turnScript = sdkScript();
+		turnScript.script(
+			{
+				kind: "reply",
+				parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "output-tool-call" }],
+			},
+			{ kind: "reply", parts: [{ type: "text", text: "turn completed" }] },
+		);
+		// Prefix compaction consumes a direct LanguageModel, not a Runtime script.
 		const prefixModel = fakeModel(["checkpoint"], 1);
 		const compaction = {
 			modelRef: () => "m",
@@ -5094,7 +5112,7 @@ describe("prefix compaction request identity", () => {
 		const first = rig({
 			store,
 			addr: { kind: "dm", chatId: 76 },
-			model,
+			script: turnScript,
 			tools,
 			deps: { compaction },
 		});
@@ -5108,7 +5126,7 @@ describe("prefix compaction request identity", () => {
 			second = rig({
 				store,
 				addr: { kind: "dm", chatId: 76 },
-				model: fakeModel(["unused"], 1),
+				script: sdkScript(),
 				tools,
 				deps: { compaction },
 			});
@@ -5127,8 +5145,15 @@ describe("prefix compaction request identity", () => {
 	});
 });
 
+// App-address admission currently registers only the AI SDK engine.
 test("model/thinking changes do not interrupt admitted turns; next turn and manual compaction resolve latest channel settings", async () => {
 	const store = openStore(tmpDb("goblin-rt-"));
+	const script = sdkScript();
+	script.script(
+		{ kind: "reply", parts: [{ type: "text", text: "test/app:high" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "test/personal:xhigh" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "test/telegram-new:medium" }] },
+	);
 	let cfg = parseConfig({
 		providers: { test: { kind: "codex" } },
 		model: "test/app",
@@ -5152,12 +5177,7 @@ test("model/thinking changes do not interrupt admitted turns; next turn and manu
 		captureConversation: (conv) => captureConversationSettings(store, conv, cfg),
 		async buildStep(conv) {
 			if (++calls === 1) await held;
-			return {
-				engine: "ai-sdk",
-				model: fakeModel([`${conv.model}:${conv.thinking}`], 1),
-				system: "test",
-				label: conv.model!,
-			};
+			return script.step();
 		},
 		compaction: {
 			modelRef: (conv) => conv.model!,
@@ -5220,18 +5240,22 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 		operators: [7],
 		allowedUsers: [7],
 	});
-	const { model } = scripted([overflowError(), textParts("recovered"), textParts("next")], {
-		extra: textParts("ok"),
-	});
+	// The engine's preempt-fold/overflow recovery rule is AI SDK-only.
+	const script = sdkScript();
+	script.script(
+		overflowCall(),
+		{ kind: "reply", parts: [{ type: "text", text: "recovered" }] },
+		{ kind: "reply", parts: [{ type: "text", text: "next" }] },
+	);
 	const selections: string[] = [];
 	const summarySelections: string[] = [];
 	const runtime = new Runtime({
-		engines: [aiSdkEngine],
+		engines: script.engines,
 		store,
 		captureConversation: (row) => captureConversationSettings(store, row, cfg),
 		buildStep: (row) => {
 			selections.push(`${row.model}:${row.thinking}`);
-			return { engine: "ai-sdk", model, system: "test", contextWindow: 1000 };
+			return { ...script.step(), contextWindow: 1000 };
 		},
 		compaction: {
 			modelRef: (row) => row.model!,
@@ -5264,6 +5288,7 @@ test("overflow compaction and resumed model call keep the admitted selection acr
 	}
 });
 
+// App-address admission currently registers only the AI SDK engine.
 test("invalid durable app settings report admission error exactly once without starting a model call", async () => {
 	const store = openStore(tmpDb("goblin-rt-"));
 	const conv = store.resolve(appAddress("bad-settings"), "/work");
@@ -5274,16 +5299,17 @@ test("invalid durable app settings report admission error exactly once without s
 		operators: [7],
 		allowedUsers: [7],
 	});
+	const script = sdkScript();
 	let modelCalls = 0;
 	let completions = 0;
 	const sink = new RecordingSink();
 	const runtime = new Runtime({
-		engines: [aiSdkEngine],
+		engines: script.engines,
 		store,
 		captureConversation: (row) => captureConversationSettings(store, row, cfg),
 		buildStep: () => {
 			modelCalls++;
-			return { engine: "ai-sdk", model: fakeModel(["unused"]), system: "test" };
+			return script.step();
 		},
 	});
 	runtime.mount({ makeTools: () => ({}) });

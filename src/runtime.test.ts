@@ -45,12 +45,9 @@ import {
 } from "./testkit/fake-model.ts";
 import {
 	deferred,
-	fakeModel,
 	HeadlessSink,
 	ParkedDoneSink,
-	pauseFakeModelAtDelta,
 	RecordingSink,
-	recordingModel,
 	sleep,
 	tmpDb,
 	tmpDir,
@@ -85,10 +82,7 @@ interface Rig {
 
 function rig(
 	opts: {
-		model?: LanguageModel;
 		script?: ScriptedModel;
-		deltas?: string[];
-		delayMs?: number;
 		// `engine` stays out of the Partial: TS treats a spread optional
 		// property as present, so an untagged step would typecheck.
 		step?: Partial<Omit<ModelStep, "model" | "engine">>;
@@ -113,7 +107,7 @@ function rig(
 	const store = opts.store ?? openStore(tmpDb("goblin-rt-"));
 	const conv = store.resolve(opts.addr ?? { kind: "dm", chatId: 1 }, "/w");
 	const scripted = opts.script ?? sdkScript();
-	if (opts.script === undefined && opts.model === undefined && opts.deltas === undefined) {
+	if (opts.script === undefined) {
 		scripted.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
 	}
 	const runtime = new Runtime({
@@ -122,21 +116,20 @@ function rig(
 		buildStep:
 			opts.buildStep ??
 			(() => ({
-				...(opts.script !== undefined
-					? opts.script.step()
-					: opts.model === undefined && opts.deltas === undefined
-						? scripted.step()
-					: {
-							model: opts.model ?? fakeModel(opts.deltas!, opts.delayMs ?? 5),
-							system: "test",
-							engine: "ai-sdk" as const,
-						}),
+				...scripted.step(),
 				...opts.step,
 			})),
 		...opts.deps,
 	});
 	runtime.mount({ makeTools: opts.makeTools ?? (() => opts.tools ?? {}) });
 	return { store, conv, runtime };
+}
+
+function sdkBuildStep(
+	model: LanguageModel,
+	options: Partial<Omit<ModelStep, "engine" | "model">> = {},
+): RuntimeDeps["buildStep"] {
+	return () => ({ engine: "ai-sdk", model, system: "test", ...options });
 }
 
 function submit(r: Rig, text: string): RecordingSink;
@@ -602,7 +595,7 @@ describe("provider-filter retry", () => {
 	] satisfies [string, StreamAttempt][]) {
 		test(`${name}: retries identical request, hides first error from both delivery hooks and history`, async () => {
 			const s = scripted([failure, answer()]);
-			const r = rig({ model: s.model });
+			const r = rig({ buildStep: sdkBuildStep(s.model) });
 			const sink = submit(r, "Discuss German politics");
 			await completed(r, sink);
 			expect(s.requests).toHaveLength(2);
@@ -681,7 +674,7 @@ describe("provider-filter retry", () => {
 		]);
 		let executions = 0;
 		const r = rig({
-			model: s.model,
+			buildStep: sdkBuildStep(s.model),
 			tools: {
 				probe: defineTool({
 					description: "test tool",
@@ -755,7 +748,7 @@ describe("provider-filter retry", () => {
 			]);
 			let executions = 0;
 			const r = rig({
-				model: s.model,
+				buildStep: sdkBuildStep(s.model),
 				tools: {
 					probe: defineTool({
 						description: "test tool",
@@ -779,7 +772,7 @@ describe("provider-filter retry", () => {
 
 	test("cancellation cleanup failure is logged without replacing the filter retry", async () => {
 		const s = scripted([{ cancelError: new Error("cancel failed"), parts: [blocked] }, answer()]);
-		const r = rig({ model: s.model });
+		const r = rig({ buildStep: sdkBuildStep(s.model) });
 		const sink = submit(r, "test");
 		await completed(r, sink);
 		expect(s.requests).toHaveLength(2);
@@ -799,7 +792,7 @@ describe("provider-filter retry", () => {
 			}),
 			answer(),
 		]);
-		const r = rig({ model: s.model });
+		const r = rig({ buildStep: sdkBuildStep(s.model) });
 		const sink = submit(r, "test");
 		await completed(r, sink);
 		expect(s.requests).toHaveLength(2);
@@ -819,7 +812,7 @@ describe("provider-filter retry", () => {
 				},
 			},
 		]);
-		const r = rig({ model: edge.model, addr: appAddress("filter-cleanup") });
+		const r = rig({ buildStep: sdkBuildStep(edge.model), addr: appAddress("filter-cleanup") });
 		const sink = submit(r, "test");
 		await cleaning.promise;
 		r.runtime.stop(r.conv.id);
@@ -867,7 +860,7 @@ describe("provider-filter retry", () => {
 				return inner.doStream(o);
 			},
 		} as unknown as LanguageModel;
-		const r = rig({ model: slowModel });
+		const r = rig({ buildStep: sdkBuildStep(slowModel) });
 		const sink = submit(r, "test");
 		await started.promise;
 		r.runtime.stop(r.conv.id);
@@ -902,7 +895,7 @@ describe("transient transport retry (#191)", () => {
 
 	test("a mid-stream socket reset retries the failed step — the turn completes", async () => {
 		const s = scripted([[reset()], answer()]);
-		const r = rig({ model: s.model, step: { transientRetryDelayMs: 0 } });
+		const r = rig({ buildStep: sdkBuildStep(s.model, { transientRetryDelayMs: 0 }) });
 		const sink = submit(r, "test");
 		expect(await sink.done).toEqual({ kind: "completed" });
 		await drain(r);
@@ -923,8 +916,7 @@ describe("transient transport retry (#191)", () => {
 		]);
 		let executions = 0;
 		const r = rig({
-			model: s.model,
-			step: { transientRetryDelayMs: 0 },
+			buildStep: sdkBuildStep(s.model, { transientRetryDelayMs: 0 }),
 			tools: {
 				probe: defineTool({
 					description: "test tool",
@@ -1141,7 +1133,7 @@ describe("turn authority", () => {
 				return base.doStream(o);
 			},
 		} as unknown as LanguageModel;
-		const r = rig({ model });
+		const r = rig({ buildStep: sdkBuildStep(model) });
 		try {
 			const sink = submit(r, "hi");
 			await entered.promise;
@@ -1455,7 +1447,7 @@ describe("turn authority", () => {
 			},
 		]);
 		const r = rig({
-			model: edge.model,
+			buildStep: sdkBuildStep(edge.model),
 			tools: {
 				probe: defineTool({
 					description: "test tool",
@@ -1658,7 +1650,7 @@ describe("turn authority", () => {
 		]);
 		let executed = false;
 		const r = rig({
-			model: edge.model,
+			buildStep: sdkBuildStep(edge.model),
 			tools: {
 				probe: defineTool({
 					description: "test tool",
@@ -1771,18 +1763,6 @@ describe("turn authority", () => {
 		r.store.close();
 	});
 });
-
-// A provider-side context overflow: the OpenAI wording over a 400
-// APICallError — the shape a provider actually throws out of doStream.
-function overflowError(): APICallError {
-	return new APICallError({
-		message:
-			"This model's maximum context length is 128000 tokens. However, your messages resulted in 130000 tokens.",
-		url: "https://api.openai.com/v1/chat/completions",
-		requestBodyValues: {},
-		statusCode: 400,
-	});
-}
 
 // Enough completed exchanges that chooseBoundary has a span to fold.
 function seedExchanges(store: Store, convId: string): void {
@@ -2421,7 +2401,9 @@ describe("context overflow recovery", () => {
 		// The pair is an HTTP-200 SSE error part; ScriptCall.fail rejects
 		// before streaming and cannot represent that transport boundary.
 		const s = scripted([[throttled()], [throttled()]]);
-		const r = rig({ model: s.model, step: { contextWindow: 1000, transientRetryDelayMs: 0 } });
+		const r = rig({
+			buildStep: sdkBuildStep(s.model, { contextWindow: 1000, transientRetryDelayMs: 0 }),
+		});
 		seedExchanges(r.store, r.conv.id);
 		const sink = submit(r, "hi");
 		expect(await sink.done).toEqual({
@@ -3192,7 +3174,7 @@ describe("cache stability", () => {
 				finishPart("stop"),
 			],
 		]);
-		const r = rig({ model: edge.model });
+		const r = rig({ buildStep: sdkBuildStep(edge.model) });
 		// The warn rides the same turn's log trail — a warning that never
 		// lands was the fail-quiet seam this guards against.
 		const lines = await capturedLog(async (logFile) => {
@@ -4208,9 +4190,11 @@ describe("loop landings", () => {
 	) {
 		let executions = 0;
 		const r = rig({
-			model,
+			buildStep: sdkBuildStep(
+				model,
+				opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {},
+			),
 			addr: appAddress("loop"),
-			step: opts.contextWindow !== undefined ? { contextWindow: opts.contextWindow } : {},
 			tools: {
 				probe: defineTool({
 					description: "test tool",
@@ -4288,7 +4272,7 @@ describe("loop landings", () => {
 		const { model, requests } = loopModel({ input: () => ({}) });
 		let executions = 0;
 		const r = rig({
-			model,
+			buildStep: sdkBuildStep(model),
 			addr: appAddress("loop"),
 			tools: {
 				probe: defineTool({
@@ -5023,7 +5007,7 @@ describe("prefix compaction request identity", () => {
 		const turnScript = sdkScript();
 		turnScript.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
 		// Prefix compaction consumes a direct LanguageModel, not a Runtime script.
-		const prefixModel = fakeModel(["checkpoint"], 1);
+		const { model: prefixModel } = scriptedEdge([textParts("checkpoint")]);
 		const compaction = {
 			modelRef: () => "m",
 			contextWindow: () => 100_000,
@@ -5094,7 +5078,7 @@ describe("prefix compaction request identity", () => {
 			{ kind: "reply", parts: [{ type: "text", text: "turn completed" }] },
 		);
 		// Prefix compaction consumes a direct LanguageModel, not a Runtime script.
-		const prefixModel = fakeModel(["checkpoint"], 1);
+		const { model: prefixModel } = scriptedEdge([textParts("checkpoint")]);
 		const compaction = {
 			modelRef: () => "m",
 			contextWindow: () => 100_000,
@@ -5334,19 +5318,21 @@ test("invalid durable app settings report admission error exactly once without s
 });
 
 describe("turn journal", () => {
+	// This asserts the AI SDK tool-call ID; Claude Code synthesizes its own IDs.
 	test("a completed tool loop leaves a completed run with settled call rows", async () => {
 		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
-		const edge = scriptedEdge([
-			[toolCallPart("call-1", "probe", "{}"), finishPart("tool-calls")],
-			textParts("done"),
-		]);
+		const script = sdkScript();
+		script.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "call-1" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+		);
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: script.engines,
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+			buildStep: () => script.step(),
 		});
 		runtime.mount({ makeTools: () => ({
 			probe: defineTool({
@@ -5378,22 +5364,23 @@ describe("turn journal", () => {
 		}
 	});
 
+	// Claude Code cannot settle a held CLI query after an epoch fence.
 	test("a fenced turn stamps 'fenced' — reopen must not read it as interrupted", async () => {
 		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
-		const gated = pauseFakeModelAtDelta(["a", "b", "c", "d", "e"], 1);
+		const script = sdkScript();
+		const gated = heldText(script, "abcde");
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: script.engines,
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ engine: "ai-sdk", model: gated.model, system: "test" }),
+			buildStep: () => script.step(),
 		});
 		runtime.mount({ makeTools: () => ({}) });
 		try {
 			const sink = new RecordingSink();
 			runtime.submit(conv, userMessage([{ type: "text", text: "hi" }]), sink);
-			await sink.firstDelta;
 			await gated.entered;
 			store.bumpEpoch(conv.id);
 			gated.release();
@@ -5413,6 +5400,7 @@ describe("turn journal", () => {
 	});
 
 	test("a journal dispatch write that throws fails the turn — later calls never execute", async () => {
+		// Checks SDK stream-call count and abort propagation after a journal write fault.
 		const store = openStore(tmpDb("goblin-rt-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const real = openTurnJournal(store.db);
@@ -5490,6 +5478,7 @@ describe("turn journal", () => {
 	});
 
 	test("a journal checkpoint write that throws aborts the turn — the next model step is born dead", async () => {
+		// Checks the AI SDK abortSignal at the provider doStream boundary.
 		const dir = tmpDir("goblin-rt-log-");
 		const logFile = join(dir, "goblin.log");
 		const store = openStore(tmpDb("goblin-rt-"));
@@ -5655,15 +5644,16 @@ describe("unlanded-turn progress — error rail", () => {
 				return real.finishRun(runId, status, delivery);
 			},
 		};
-		const edge = scriptedEdge([
-			[toolCallPart("call-1", "probe", "{}"), finishPart("tool-calls")],
-			new Error("terminal boom"),
-		]);
+		const script = sdkScript();
+		script.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "call-1" }] },
+			{ kind: "fail", parts: [], error: { message: "terminal boom" } },
+		);
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: script.engines,
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+			buildStep: () => script.step(),
 		});
 		runtime.mount({ makeTools: () => ({
 			probe: defineTool({
@@ -5699,6 +5689,7 @@ describe("unlanded-turn progress — error rail", () => {
 	});
 
 	test("T1: the event is anchored to the failed attempt's input — editing a later input keeps it", async () => {
+		// The SDK edge holds one in-flight provider request, then emits its exact SSE error part.
 		const store = openStore(tmpDb("goblin-rt-fp-anchor-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
@@ -5769,16 +5760,17 @@ describe("unlanded-turn progress — error rail", () => {
 		const store = openStore(tmpDb("goblin-rt-fp2-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
-		const edge = scriptedEdge([
-			[toolCallPart("call-1", "probe", "{}"), finishPart("tool-calls")],
-			new Error("terminal boom"),
-			textParts("recovered"),
-		]);
+		const script = sdkScript();
+		script.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "call-1" }] },
+			{ kind: "fail", parts: [], error: { message: "terminal boom" } },
+			{ kind: "reply", parts: [{ type: "text", text: "recovered" }] },
+		);
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: script.engines,
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+			buildStep: () => script.step(),
 		});
 		runtime.mount({ makeTools: () => ({
 			probe: defineTool({
@@ -5797,7 +5789,7 @@ describe("unlanded-turn progress — error rail", () => {
 			runtime.submit(conv, userMessage([{ type: "text", text: "again" }]), next);
 			expect(await next.done).toEqual({ kind: "completed" });
 			expect(next.text).toBe("recovered");
-			const prompt = JSON.stringify(edge.streamCalls[2]!.prompt);
+			const prompt = scriptedPrompt(script, 2);
 			expect(prompt).toContain(`The previous turn did not finish (run ${runId}): terminal boom`);
 			// The JSON string escapes the tool line's result quotes.
 			expect(prompt).toContain('1. probe {} — completed: {\\"ok\\":true}');
@@ -5811,12 +5803,16 @@ describe("unlanded-turn progress — error rail", () => {
 		const store = openStore(tmpDb("goblin-rt-fp3-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
-		const edge = scriptedEdge([new Error("boom straight away"), textParts("all good")]);
+		const script = sdkScript();
+		script.script(
+			{ kind: "fail", parts: [], error: { message: "boom straight away" } },
+			{ kind: "reply", parts: [{ type: "text", text: "all good" }] },
+		);
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: script.engines,
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+			buildStep: () => script.step(),
 		});
 		runtime.mount({ makeTools: () => ({}) });
 		try {
@@ -5895,12 +5891,13 @@ describe("unlanded-turn progress — error rail", () => {
 				return real.finishRun(runId, status, delivery);
 			},
 		};
-		const edge = scriptedEdge([textParts("the answer")]);
+		const script = sdkScript();
+		script.script({ kind: "reply", parts: [{ type: "text", text: "the answer" }] });
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: script.engines,
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+			buildStep: () => script.step(),
 		});
 		runtime.mount({ makeTools: () => ({}) });
 		try {
@@ -5954,25 +5951,24 @@ describe("unlanded-turn progress — error rail", () => {
 			thinking: "medium",
 		});
 		const journal = openTurnJournal(store.db);
-		const quota = scriptedEdge([
-			new APICallError({
-				message: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-28 08:50:34",
-				url: "https://api.z.ai/api/v1/responses",
-				requestBodyValues: {},
-				statusCode: 429,
-				isRetryable: false,
-			}),
-		]);
-		const serving = scriptedEdge([textParts("from codex")]);
+		// The fallback/quota provider status is an AI SDK engine boundary.
+		const script = sdkScript();
+		script.script(
+			{
+				kind: "fail",
+				parts: [],
+				error: {
+					status: 429,
+					message: "Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-28 08:50:34",
+				},
+			},
+			{ kind: "reply", parts: [{ type: "text", text: "from codex" }] },
+		);
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: script.engines,
 			store,
 			turnJournal: journal,
-			buildStep: (c) => ({
-				engine: "ai-sdk",
-				model: (c.model === "zai/glm-5.3" ? quota : serving).model,
-				system: "test",
-			}),
+			buildStep: () => script.step(),
 			modelFallbacks: () => ["codex/gpt-6.1-terra"],
 		});
 		runtime.mount({ makeTools: () => ({}) });
@@ -6010,12 +6006,13 @@ describe("unlanded-turn progress — error rail", () => {
 				return real.callsFor(runId);
 			},
 		};
-		const edge = scriptedEdge([new Error("original boom")]);
+		const script = sdkScript();
+		script.script({ kind: "fail", parts: [], error: { message: "original boom" } });
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: script.engines,
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+			buildStep: () => script.step(),
 		});
 		runtime.mount({ makeTools: () => ({}) });
 		try {
@@ -6044,21 +6041,16 @@ describe("unlanded-turn progress — error rail", () => {
 		// itself fails — nothing foldable, so recoverFromOverflow returns
 		// outcome.kind === "error" (the overflow branch's terminal outcome).
 		// No seeded exchanges: the fold has nothing to compact.
-		const s = scripted(
-			[
-				[
-					{ type: "stream-start", warnings: [] },
-					toolCallPart("c1", "probe", "{}"),
-					finishPart("tool-calls"),
-				],
-				overflowError(),
-				textParts("unreached"),
-			],
-			{ extra: textParts("ok") },
+		// Overflow/preempt-fold recovery is an AI SDK engine rule.
+		const s = sdkScript();
+		s.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "c1" }] },
+			overflowCall(),
+			{ kind: "reply", parts: [{ type: "text", text: "unreached" }] },
 		);
 		const r = rig({
 			store,
-			model: s.model,
+			script: s,
 			step: { contextWindow: 1000 },
 			tools: {
 				probe: defineTool({
@@ -6120,22 +6112,17 @@ describe("unlanded-turn progress — error rail", () => {
 		// second overflow is terminal through the terminal error rail (the
 		// one-recovery rule), where the event still records the progress —
 		// under the continuation's run id, the one wake settling reads.
-		const s = scripted(
-			[
-				[
-					{ type: "stream-start", warnings: [] },
-					toolCallPart("c1", "probe", "{}"),
-					finishPart("tool-calls"),
-				],
-				overflowError(),
-				overflowError(),
-				textParts("unreached"),
-			],
-			{ extra: textParts("ok") },
+		// Overflow/preempt-fold recovery is an AI SDK engine rule.
+		const s = sdkScript();
+		s.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "c1" }] },
+			overflowCall(),
+			overflowCall(),
+			{ kind: "reply", parts: [{ type: "text", text: "unreached" }] },
 		);
 		const r = rig({
 			store,
-			model: s.model,
+			script: s,
 			step: { contextWindow: 1000 },
 			tools: {
 				probe: defineTool({
@@ -6195,21 +6182,16 @@ describe("unlanded-turn progress — error rail", () => {
 		const store = openStore(tmpDb("goblin-rt-fp-ov2-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
-		const s = scripted(
-			[
-				[
-					{ type: "stream-start", warnings: [] },
-					toolCallPart("c1", "probe", "{}"),
-					finishPart("tool-calls"),
-				],
-				overflowError(),
-				textParts("the final answer"),
-			],
-			{ extra: textParts("ok") },
+		// Overflow/preempt-fold recovery is an AI SDK engine rule.
+		const s = sdkScript();
+		s.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "c1" }] },
+			overflowCall(),
+			{ kind: "reply", parts: [{ type: "text", text: "the final answer" }] },
 		);
 		const r = rig({
 			store,
-			model: s.model,
+			script: s,
 			step: { contextWindow: 1000 },
 			tools: {
 				probe: defineTool({
@@ -6250,7 +6232,8 @@ describe("unlanded-turn progress — error rail", () => {
 		}
 	});
 
-	test("process death leaves only the interrupted rail — a new message runs a normal turn carrying it (#594)", async () => {
+	for (const make of engines) {
+	test(`${engineName(make)}: process death leaves only the interrupted rail — a new message runs a normal turn carrying it (#594)`, async () => {
 		const dbPath = tmpDb("goblin-rt-fp-crash-");
 		const store = openStore(dbPath);
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
@@ -6281,12 +6264,13 @@ describe("unlanded-turn progress — error rail", () => {
 		expect(journal2.get("run-dead")!.status).toBe("interrupted");
 		expect(systemEvents(reopened, conv.id)).toHaveLength(1);
 
-		const edge = scriptedEdge([textParts("back alive")]);
+		const script = make();
+		script.script({ kind: "reply", parts: [{ type: "text", text: "back alive" }] });
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: script.engines,
 			store: reopened,
 			turnJournal: journal2,
-			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+			buildStep: () => script.step(),
 		});
 		runtime.mount({ makeTools: () => ({}) });
 		try {
@@ -6297,7 +6281,7 @@ describe("unlanded-turn progress — error rail", () => {
 			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 			// The new turn is an ordinary run: its model request carries the
 			// interrupted record as history, and nothing resumed the dead one.
-			const prompt = JSON.stringify(edge.streamCalls[0]!.prompt);
+			const prompt = script.requests()[0]!;
 			expect(prompt).toContain("was interrupted");
 			expect(prompt).toContain("carry on");
 			expect(journal2.get("run-dead")!.status).toBe("interrupted");
@@ -6307,17 +6291,21 @@ describe("unlanded-turn progress — error rail", () => {
 			reopened.close();
 		}
 	});
+	}
 });
 
 describe("tool context", () => {
-	test("makeTools receives runId and a sourceMessageId bound to owned membership", async () => {
+	for (const make of engines) {
+	test(`${engineName(make)}: makeTools receives runId and a sourceMessageId bound to owned membership`, async () => {
 		const store = openStore(tmpDb("goblin-rt-ctx-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const seen: { runId: string; source: string }[] = [];
+		const script = make();
+		script.script({ kind: "reply", parts: [{ type: "text", text: "ok" }] });
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: script.engines,
 			store,
-			buildStep: () => ({ engine: "ai-sdk", model: fakeModel(["ok"]), system: "test" }),
+			buildStep: () => script.step(),
 		});
 		runtime.mount({ makeTools: (_c, _v, _r, _f, context) => {
 				seen.push({ runId: context!.runId, source: context!.sourceMessageId() });
@@ -6332,24 +6320,27 @@ describe("tool context", () => {
 		expect(seen[0]!.source).toBe(msg.id);
 		store.close();
 	});
+	}
 
-	test("sourceMessageId follows a joined steer, never a queued stream; runId is the journal run", async () => {
+	for (const make of engines) {
+	test(`${engineName(make)}: sourceMessageId follows a joined steer, never a queued stream; runId is the journal run`, async () => {
 		const store = openStore(tmpDb("goblin-rt-ctx2-"));
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 		const journal = openTurnJournal(store.db);
 		const gate = deferred<void>();
 		const entered = deferred<void>();
 		const contexts: { runId: string; sourceMessageId(): string }[] = [];
-		const edge = scriptedEdge([
-			[toolCallPart("c1", "probe"), finishPart("tool-calls")],
-			[...textParts("done"), finishPart("stop", 10)],
-			[...textParts("again"), finishPart("stop", 10)],
-		]);
+		const script = make();
+		script.script(
+			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {}, toolCallId: "c1" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "done" }] },
+			{ kind: "reply", parts: [{ type: "text", text: "again" }] },
+		);
 		const runtime = new Runtime({
-			engines: [aiSdkEngine],
+			engines: script.engines,
 			store,
 			turnJournal: journal,
-			buildStep: () => ({ engine: "ai-sdk", model: edge.model, system: "test" }),
+			buildStep: () => script.step(),
 		});
 		runtime.mount({ makeTools: (_c, _v, _r, _f, context) => {
 				contexts.push(context!);
@@ -6388,4 +6379,5 @@ describe("tool context", () => {
 		expect(contexts[1]!.runId).not.toBe(contexts[0]!.runId);
 		store.close();
 	});
+	}
 });

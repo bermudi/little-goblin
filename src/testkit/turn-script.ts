@@ -30,6 +30,6 @@ export interface ScriptedModel {
 	script(...calls: ScriptCall[]): void;
 	/** Model calls made so far (ai-sdk); CLI queries started (claude-code, whose CLI owns the tool loop). */
 	calls(): number;
-	/** Serialized in order: ai-sdk full call options; claude-code each CLI query's prompt blocks. */
+	/** ai-sdk: each model call's prompt; claude-code: each CLI query's prompt blocks. */
 	requests(): string[];
 }

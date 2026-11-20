@@ -334,7 +334,8 @@ describe("skill body ownership across turns", () => {
 			r.store.close();
 		}
 	});
-	test("a folded steer becomes the durable source; a still-queued input never does", async () => {
+	for (const make of engines) {
+	test(`${engineName(make)}: a folded steer becomes the durable source; a still-queued input never does`, async () => {
 		const entered = deferred<void>();
 		const release = deferred<void>();
 		const gate = defineTool({
@@ -346,8 +347,7 @@ describe("skill body ownership across turns", () => {
 				return "done";
 			},
 		});
-		// claudeScript does not emit the fake CLI steer ack needed to fold this input.
-		const script = sdkScript();
+		const script = make();
 		script.script(
 			{ kind: "reply", parts: [{ type: "tool-call", toolName: "probe", input: {} }] },
 			{ kind: "reply", parts: [{ type: "text", text: "done" }] },
@@ -388,6 +388,7 @@ describe("skill body ownership across turns", () => {
 			r.store.close();
 		}
 	});
+	}
 
 	for (const make of engines) {
 	test(`${engineName(make)}: forget landing mid-call fences the late window record`, async () => {
@@ -544,11 +545,7 @@ const overflowCall = (): ScriptCall => ({
 });
 
 function scriptedPrompt(script: ScriptedModel, index: number): string {
-	const request: unknown = JSON.parse(script.requests()[index]!);
-	if (typeof request !== "object" || request === null || !("prompt" in request)) {
-		throw new Error("ai-sdk script request has no prompt");
-	}
-	return JSON.stringify(request.prompt);
+	return script.requests()[index]!;
 }
 
 async function capturedLog(
@@ -618,7 +615,7 @@ describe("provider-filter retry", () => {
 		const sink = submit(r, "Discuss German politics");
 		await completed(r, sink);
 		expect(script.requests()).toHaveLength(2);
-		expect(script.requests()[0]).toBe(script.requests()[1]);
+		expect(script.callOptions()[0]).toBe(script.callOptions()[1]);
 		expect(sink.text).toBe("Recovered answer");
 		expect(sink.chunkTypes).not.toContain("error");
 		expect(JSON.stringify(r.store.history(r.conv.id))).not.toContain(warning);
@@ -652,7 +649,7 @@ describe("provider-filter retry", () => {
 		await completed(r, sink);
 		expect(executions).toBe(1);
 		expect(script.requests()).toHaveLength(3);
-		expect(script.requests()[1]).toBe(script.requests()[2]);
+		expect(script.callOptions()[1]).toBe(script.callOptions()[2]);
 		expect(script.requests()[2]).toContain("already completed");
 		expect(sink.chunkTypes).not.toContain("error");
 		expect(JSON.stringify(r.store.history(r.conv.id))).not.toContain("blocked-call");
@@ -836,7 +833,7 @@ describe("provider-filter retry", () => {
 		const sink = submit(r, "test");
 		await completed(r, sink);
 		expect(script.requests()).toHaveLength(2);
-		expect(script.requests()[0]).toBe(script.requests()[1]);
+		expect(script.callOptions()[0]).toBe(script.callOptions()[1]);
 		expect(sink.text.replace(/\s+/g, " ").trim()).toBe("Partial answer. Recovered answer");
 		expect(sink.chunkTypes).not.toContain("error");
 		// UI history is what the operator actually saw, including the partial.
@@ -2550,8 +2547,8 @@ describe("cache stability", () => {
 		try {
 			expect(await submit(r, "hi").done).toEqual({ kind: "completed" });
 			expect(await submit(r, "again").done).toEqual({ kind: "completed" });
-			expect(script.requests().length).toBe(2);
-			expect(prefixOf(script.requests()[1]!, messageCount(script.requests()[0]!))).toBe(script.requests()[0]!);
+			expect(script.callOptions().length).toBe(2);
+			expect(prefixOf(script.callOptions()[1]!, messageCount(script.callOptions()[0]!))).toBe(script.callOptions()[0]!);
 		} finally {
 			await r.runtime.shutdown();
 			r.store.close();
@@ -2588,10 +2585,10 @@ describe("cache stability", () => {
 			s2,
 		);
 		expect(await s2.done).toEqual({ kind: "completed" });
-		expect(script.requests().length).toBe(2);
+		expect(script.callOptions().length).toBe(2);
 		// The first photo's inlined bytes ride the head of the second
 		// request unchanged — a new photo never re-decides an old one.
-		expect(prefixOf(script.requests()[1]!, messageCount(script.requests()[0]!))).toBe(script.requests()[0]!);
+		expect(prefixOf(script.callOptions()[1]!, messageCount(script.callOptions()[0]!))).toBe(script.callOptions()[0]!);
 		expect(script.requests()[0]!).toContain("image/png");
 		expect(script.requests()[1]!).toContain("image/png");
 		await r.runtime.shutdown();
@@ -3643,10 +3640,10 @@ describe("steering", () => {
 		// One turn, two model calls; the second call's wire prompt
 		// carries the steered message as an appended user message.
 		expect(s.requests()).toHaveLength(2);
-		const wire = (JSON.parse(s.requests()[1]!) as { prompt: {
+		const wire = JSON.parse(s.requests()[1]!) as {
 			role: string;
 			content: { type: string; text?: string }[];
-		}[] }).prompt;
+		}[];
 		const texts = wire
 			.filter((m) => m.role === "user")
 			.flatMap((m) =>

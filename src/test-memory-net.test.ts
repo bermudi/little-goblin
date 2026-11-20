@@ -10,6 +10,8 @@ const CHILD_RSS_LIMIT = 768 * MiB;
 const CHILD_TIMEOUT_MS = 30_000;
 const ALLOC_FIXTURE = "./src/testkit/memory-net/alloc.fixture.ts";
 const CALM_FIXTURE = "./src/testkit/memory-net/calm.fixture.ts";
+const HOOK_FIXTURE = "./src/testkit/memory-net/hook.fixture.ts";
+const EACH_FIXTURE = "./src/testkit/memory-net/each.fixture.ts";
 const APP_FIXTURE = "./app/src/memory-net-dom.fixture.tsx";
 
 type ChildRun = {
@@ -206,6 +208,37 @@ describe("memory net child probes", () => {
 		requireCondition(!output.includes("memory runaway:"), "calm fixture hit the memory limit", run);
 		requireCondition((output.match(/\(pass\)/g) ?? []).length >= 3, "fewer than 3 tests passed", run);
 		requireCondition(output.includes("(pass) done style"), "done callback test did not pass", run);
+	});
+
+	test("T7 names a runaway beforeEach hook and its previous test", async () => {
+		const run = await runFixture(HOOK_FIXTURE);
+		const output = run.stdout + run.stderr;
+		requireCondition(run.guardFailure === null, "parent safety guard fired", run);
+		requireCondition(hasSigkill(run), "runaway hook child was not SIGKILLed", run);
+		requireCondition(
+			output.includes("running: beforeEach hook registered at src/testkit/memory-net/hook.fixture.ts:"),
+			"missing hook registration location",
+			run,
+		);
+		requireCondition(output.includes('last test: "first"'), "missing previous test name", run);
+		requireCondition(output.includes("(pass) first"), "first test did not pass before the hook", run);
+	});
+
+	test("T8 formats each-row names inside nested describes", async () => {
+		const run = await runFixture(EACH_FIXTURE);
+		const output = run.stdout + run.stderr;
+		requireCondition(run.guardFailure === null, "parent safety guard fired", run);
+		requireCondition(hasSigkill(run), "runaway each-row child was not SIGKILLed", run);
+		requireCondition(
+			output.includes("running: outer > inner > case 2"),
+			"missing formatted nested test name",
+			run,
+		);
+		requireCondition(
+			output.includes("(pass) outer > inner > case 1"),
+			"first each row did not pass before the runaway row",
+			run,
+		);
 	});
 });
 

@@ -54,9 +54,12 @@ async function runFixture(file: string, parallel = false): Promise<ChildRun> {
 	const args = parallel
 		? [process.execPath, "test", "--parallel", CALM_FIXTURE, ALLOC_FIXTURE]
 		: [process.execPath, "test", file];
+	// bun hides "(pass)" lines when it detects an AI agent (CLAUDECODE set),
+	// and the probes read those lines: give the child plain reporter output.
+	const { CLAUDECODE: _agent, ...env } = process.env;
 	const child = Bun.spawn(args, {
 		cwd: repoRoot,
-		env: { ...process.env, GOBLIN_TEST_RSS_LIMIT_MB: "256" },
+		env: { ...env, GOBLIN_TEST_RSS_LIMIT_MB: "256" },
 		stdout: "pipe",
 		stderr: "pipe",
 	});

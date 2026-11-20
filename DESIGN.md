@@ -513,10 +513,17 @@ the test:
   replaces `test`/`it`/`describe` on `require("bun:test")` before anything
   imports it as ESM (a later ESM import would freeze the bindings it sees).
   Registration records the full `describe > test` name and its
-  `file:line`; each test callback is wrapped (keeping its `length`, which
+  `file:line`. The describe prefix is captured when a describe registers,
+  because bun runs nested describe callbacks after the outer one returns;
+  `test.each` rows get their own name per row (`%` formats, `$key`
+  fields). Each test callback is wrapped (keeping its `length`, which
   bun reads to detect `done` callbacks) to write `running` / `after` into a
-  `SharedArrayBuffer` slot the worker reads. Top-level code shows as
-  `loading <file>`.
+  `SharedArrayBuffer` slot the worker reads. `beforeEach` / `afterEach` /
+  `beforeAll` / `afterAll` callbacks are wrapped too: a runaway hook
+  reports `running: <hook> hook registered at <file:line>` and the last
+  test. Top-level code shows as `loading <file>`; code before the first
+  registration in a file shows as `no test registered yet` (bun's own
+  output still prints the file heading).
 - **Fail loud.** A worker that fails to start fails the run before any
   test; a later worker error is an uncaught error. A test that ran without
   passing through the wrapper fails in a global `afterEach`.

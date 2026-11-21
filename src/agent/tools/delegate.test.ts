@@ -126,37 +126,6 @@ const exec = (t: ReturnType<typeof delegateTool>, input: unknown) =>
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("delegate tool", () => {
-	test("lead is no special role: a linked start carries no issue identity or verifier contract", async () => {
-		const h = harness();
-		try {
-			h.deps.checkResponsibility = () => null;
-			const tool = delegateTool(h.deps);
-			await exec(tool, { action: "start", harness: "codex", role: "lead", task: "build issue",
-				responsibility: "r1", issue: { repository: "owner/repo", number: 7 } });
-			const row = h.store.list()[0]!;
-			expect(row).toMatchObject({ role: "lead", responsibilityId: "r1" });
-			expect(row).not.toHaveProperty("issue");
-			expect(h.prompts[0]).not.toContain("Checked-SHA:");
-		} finally { await h.lifecycle.stopTicker(); h.store.close(); }
-	});
-
-	test("a refused linked send names the delegation", async () => {
-		const h = harness();
-		try {
-			h.deps.checkResponsibility = () => null;
-			h.deps.sendAuthority = () => "responsibility-inactive";
-			const tool = delegateTool(h.deps);
-			const started = await exec(tool, {
-				action: "start", harness: "codex", task: "work", responsibility: "r1",
-			}) as { id: number };
-			const out = await exec(tool, { action: "send", id: started.id, text: "continue" });
-			expect(out).toMatchObject({
-				error: `delegation ${started.id}'s responsibility is paused or closed — resume it before sending`,
-			});
-			expect(h.prompts).toHaveLength(1);
-		} finally { await h.lifecycle.stopTicker(); h.store.close(); }
-	});
-
 	test("provider sees an object schema; missing action arguments still fail validation", () => {
 		const wire = z.toJSONSchema(delegateInputSchema);
 		expect(wire.type).toBe("object");
@@ -167,6 +136,17 @@ describe("delegate tool", () => {
 		expect(wire.required).toContain("action");
 		expect(delegateInputSchema.safeParse({}).success).toBe(false);
 		expect(delegateInputSchema.safeParse({ action: "start" }).success).toBe(false);
+		const role = delegateInputSchema.safeParse({
+			action: "start",
+			role: "review",
+			harness: "codex",
+			task: "do it",
+		});
+		expect(role.success).toBe(false);
+		if (!role.success)
+			expect(role.error.issues.some((issue) => "keys" in issue && issue.keys.includes("role"))).toBe(
+				true,
+			);
 		expect(
 			delegateInputSchema.safeParse({ action: "start", harness: "codex", task: "do it" }).success,
 		).toBe(true);
@@ -193,76 +173,16 @@ describe("delegate tool", () => {
 		expect(out.error).toContain("pi");
 	});
 
-	test("no harness uses the operator's default; the result names it", async () => {
-		const h = harness();
-		h.deps.config.defaults = { default: "pi" };
-		const out = (await exec(h.tool, {
-			action: "start",
-			task: "do it",
-		})) as { id: number; harness: string };
-		expect(out.harness).toBe("pi");
-		expect(h.store.get(out.id)!.harness).toBe("pi");
-	});
-
-	test("a named role picks its agent; an unlisted role falls back to the default", async () => {
-		const h = harness();
-		h.deps.config.harnesses["pi-review"] = { kind: "pi", args: ["--model", "sol"] };
-		h.deps.config.defaults = { default: "pi", review: "pi-review" };
-		const review = (await exec(h.tool, {
-			action: "start",
-			role: "review",
-			task: "review it",
-		})) as { id: number; harness: string };
-		expect(review.harness).toBe("pi-review");
-		const other = (await exec(h.tool, {
-			action: "start",
-			role: "docs",
-			task: "write it",
-		})) as { id: number; harness: string };
-		expect(other.harness).toBe("pi");
-	});
-
-	test("an explicit harness wins over a role", async () => {
-		const h = harness();
-		h.deps.config.defaults = { default: "pi", review: "pi" };
-		const out = (await exec(h.tool, {
-			action: "start",
-			harness: "codex",
-			role: "review",
-			task: "do it",
-		})) as { harness: string };
-		expect(out.harness).toBe("codex");
-	});
-
-	test("no harness and no defaults fails loud, naming the configured agents", async () => {
-		const h = harness();
-		const out = (await exec(h.tool, {
-			action: "start",
-			task: "do it",
-		})) as { error: string };
-		expect(out.error).toContain("no delegation defaults are configured");
-		expect(out.error).toContain("codex");
-		expect(out.error).toContain("pi");
-	});
-
-	test("the description carries the operator's role table, not notes", () => {
-		const h = harness();
-		h.deps.config.defaults = { default: "pi", review: "codex" };
-		const tool = delegateTool(h.deps);
-		expect(tool.description).toContain("review → codex");
-		expect(tool.description).toContain("`pi`");
-	});
-
-	test("the description rules staffing goblin's call and names ask-first harnesses", () => {
+	test("the description requires a named harness and names ask-first harnesses", () => {
 		const h = harness();
 		const plain = delegateTool(h.deps).description;
-		expect(plain).toContain("never ask the operator which one");
+		expect(plain).toContain("ONLY when the operator names the harness");
 		expect(plain).not.toContain("ask-first");
 
 		h.deps.config.harnesses["claude"] = { kind: "claude", askFirst: true };
 		const flagged = delegateTool(h.deps).description;
-		expect(flagged).toContain("ask-first harnesses (claude)");
-		expect(flagged).toContain("ask the operator before each use");
+		expect(flagged).toContain("Ask-first harnesses (claude)");
+		expect(flagged).toContain("explicit yes for each task");
 
 	});
 
@@ -851,52 +771,13 @@ describe("delegate tool", () => {
 	});
 });
 
-describe("delegate responsibility link", () => {
-	const start = { action: "start", harness: "codex", task: "do it", responsibility: "r1" };
-
-	test("outside a project the link is refused before anything launches or spins off", async () => {
+describe("delegate without responsibilities", () => {
+	test("start offers no responsibility link", () => {
 		const h = harness();
-		const out = (await exec(h.tool, start)) as { error: string };
-		expect(out.error).toContain("project conversation");
-		expect(h.pinned).toEqual([]);
-		expect(h.store.list()).toEqual([]);
-	});
-
-	test("the option is offered only where a link can succeed", () => {
-		const h = harness();
-		const project = delegateTool({ ...h.deps, checkResponsibility: () => null });
-		const elsewhere = delegateTool({ ...h.deps, checkResponsibility: undefined });
-		const props = (t: typeof project) =>
-			Object.keys(
-				(z.toJSONSchema(t.input as z.ZodType) as { properties: object }).properties,
-			);
-		expect(props(project)).toContain("responsibility");
-		expect(project.description).toContain("responsibility:<id>");
-		expect(project.description).toContain("responsibility?");
-		expect(props(elsewhere)).not.toContain("responsibility");
-		expect(elsewhere.description).not.toContain("responsibility");
-	});
-
-	test("a refused responsibility launches nothing", async () => {
-		const h = harness();
-		const tool = delegateTool({
-			...h.deps,
-			checkResponsibility: () => "responsibility r1 is done",
-		});
-		const out = (await exec(tool, start)) as { error: string };
-		expect(out.error).toBe("responsibility r1 is done");
-		expect(h.pinned).toEqual([]);
-		expect(h.store.list()).toEqual([]);
-	});
-
-	test("an admitted link rides the row and shows in list", async () => {
-		const h = harness();
-		const tool = delegateTool({ ...h.deps, checkResponsibility: () => null });
-		const out = (await exec(tool, start)) as { id: number };
-		expect(h.store.get(out.id)?.responsibilityId).toBe("r1");
-		const listed = (await exec(tool, { action: "list" })) as {
-			delegations: { responsibility?: string }[];
-		};
-		expect(listed.delegations[0]?.responsibility).toBe("r1");
+		const props = Object.keys(
+			(z.toJSONSchema(h.tool.input as z.ZodType) as { properties: object }).properties,
+		);
+		expect(props).not.toContain("responsibility");
+		expect(h.tool.description).not.toContain("responsibility");
 	});
 });

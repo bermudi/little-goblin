@@ -122,7 +122,7 @@ describe("app projects", () => {
 			});
 			expect(mismatch.status).toBe(409);
 			expect(((await mismatch.json()) as { error: string }).error).toContain(
-				"binding is fixed at creation",
+				`is already in project ${project.id}`,
 			);
 			expect((await postJson(call, "/api/app/conversations", { id: "bound-01" })).status).toBe(409);
 

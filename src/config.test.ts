@@ -24,6 +24,7 @@ import {
 } from "./config.ts";
 import {
 	type Config,
+	delegationConfigSchema,
 	fetchEntrySchema,
 	fetchKinds,
 	providerKinds,
@@ -271,7 +272,7 @@ describe("goblin.json5", () => {
 		writeFileSync(
 			join(dir, "goblin.json5"),
 			Z(
-				`,delegation:{harnesses:{pi:{kind:"pi"},codex:{provider:"t3",model:"glm-5.3"}},defaults:{default:"pi"}}`,
+				`,delegation:{harnesses:{pi:{kind:"pi"},codex:{provider:"t3",model:"glm-5.3"}}}`,
 			),
 		);
 		expect(() => loadConfig()).toThrow(/delegation\.harnesses uses the retired T3 Code shape/);
@@ -281,7 +282,6 @@ describe("goblin.json5", () => {
 				...objBase,
 				delegation: {
 					harnesses: { pi: { kind: "pi", args: ["--fast"] }, codex: { kind: "codex" } },
-					defaults: { default: "pi" },
 				},
 			}),
 		).not.toThrow();
@@ -639,14 +639,6 @@ describe("goblin.json5", () => {
 			},
 		],
 		[
-			"delegation defaults map roles to configured harnesses",
-			Z(
-				`,delegation:{harnesses:{pi:{kind:"pi"},"pi-review":{kind:"pi",args:["--model","glm-5.3-air"]}},defaults:{default:"pi",build:"pi",review:"pi-review"}}`,
-			),
-			(c) => c.delegation?.defaults,
-			{ default: "pi", build: "pi", review: "pi-review" },
-		],
-		[
 			"delegation askFirst parses on harness entries",
 			Z(`,delegation:{harnesses:{claude:{kind:"claude",askFirst:true}}}`),
 			(c) => c.delegation?.harnesses["claude"]?.askFirst,
@@ -690,12 +682,6 @@ describe("goblin.json5", () => {
 			"delegation: invalid_union",
 		],
 		["delegation harnesses reject a blank kind", Z(`,delegation:{harnesses:{codex:{kind:""}}}`), "delegation: too_small"],
-		// A default naming nothing is a silent staffing hole — reject at parse.
-		[
-			"delegation.defaults rejects an unknown harness",
-			Z(`,delegation:{harnesses:{pi:{kind:"pi"}},defaults:{build:"ghost"}}`),
-			"delegation: custom",
-		],
 		// askFirst is a boolean flag, not a string knob — the delegation
 		// union (block | "") reports the miss as invalid_union.
 		[
@@ -930,6 +916,23 @@ describe("goblin.json5", () => {
 			pids: 1024,
 		});
 	});
+});
+
+test("removed delegation defaults and innerLoop config fail at their config boundaries", () => {
+	const delegation = delegationConfigSchema.safeParse({
+		harnesses: { pi: { kind: "pi" } },
+		defaults: { default: "pi" },
+	});
+	expect(delegation.success).toBe(false);
+	if (!delegation.success)
+		expect(delegation.error.issues[0]).toMatchObject({ code: "unrecognized_keys", keys: ["defaults"] });
+	expect(() =>
+		parseConfig({
+			...objBase,
+			delegation: { harnesses: { pi: { kind: "pi" } }, defaults: { default: "pi" } },
+		}),
+	).toThrow();
+	expect(() => parseConfig({ ...objBase, innerLoop: { provider: "p", model: "m" } })).toThrow();
 });
 
 describe("ensureHomeLayout", () => {

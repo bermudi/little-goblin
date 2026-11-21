@@ -29,6 +29,7 @@ describe("message tags", () => {
 		);
 		expect(delegationNoticeTag(0, "orphan", "failed")).toBe("[delegation: #0 orphan · failed]");
 		expect(isMachineryText(delegationNoticeTag(7, "fix it", "done"))).toBe(true);
+		expect(isMachineryText("[project: moved into X] context")).toBe(true);
 	});
 
 	test("the pre-cutover scheduled prefix is operator speech again (W2.2 purge)", () => {

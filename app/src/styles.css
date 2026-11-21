@@ -485,6 +485,27 @@ p code,
 .conv-actions svg {
 	display: block;
 }
+.move-menu {
+	z-index: 80;
+	min-width: 9rem;
+	padding: 0.25rem;
+	border: 1px solid var(--app-control-border);
+	border-radius: 8px;
+	background: var(--app-gray-100);
+	color: var(--app-fg);
+	box-shadow: 0 6px 24px rgb(0 0 0 / 0.25);
+}
+.move-menu [role="menuitem"] {
+	padding: 0.4rem 0.55rem;
+	border-radius: 5px;
+	font-size: 12.5px;
+	cursor: default;
+}
+.move-menu [role="menuitem"]:focus,
+.move-menu [role="menuitem"][data-highlighted] {
+	background: var(--app-hover);
+	outline: none;
+}
 @media (hover: none) {
 	.conv-main {
 		-webkit-touch-callout: none;
@@ -7072,214 +7093,6 @@ button.link:hover {
 .script-calls code {
 	font-family: var(--font-mono);
 	color: var(--app-fg);
-}
-
-/* Responsibility feed — project + home surfaces */
-.resp-feed {
-	margin: 14px 0;
-}
-.resp-feed-h {
-	margin: 0 0 8px;
-	font-size: 1rem;
-}
-.resp-row {
-	border: 1px solid var(--app-divider);
-	border-radius: 8px;
-	margin-bottom: 8px;
-}
-/* The newest outcome post, readable without expanding the row. */
-.resp-glance {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: flex-start;
-	gap: 8px;
-	padding: 0 10px 10px;
-}
-.resp-glance .resp-post {
-	flex: 1 1 16rem;
-	min-width: 0;
-}
-.resp-post {
-	border-left: 3px solid var(--app-divider);
-	padding: 2px 0 2px 8px;
-	margin: 6px 0;
-	overflow-wrap: anywhere;
-}
-.resp-post p {
-	margin: 2px 0;
-}
-.resp-post-head {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
-	align-items: baseline;
-	font-size: 0.8rem;
-}
-.resp-post-state {
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
-	font-weight: 600;
-}
-.resp-post-ready,
-.resp-post-done {
-	border-left-color: var(--app-success);
-}
-.resp-post-blocked,
-.resp-post-failed {
-	border-left-color: var(--app-danger);
-}
-.resp-post-waiting {
-	border-left-color: var(--app-warning);
-}
-.resp-review-unreviewed .resp-post-review {
-	color: var(--app-warning);
-}
-.resp-post-purpose {
-	font-size: 0.75rem;
-	padding: 0 6px;
-	border-radius: 4px;
-	background: var(--app-active);
-}
-.resp-artifacts {
-	margin: 0.25rem 0 0;
-	padding-left: 1.25rem;
-}
-.resp-artifacts code {
-	font-size: 0.8rem;
-	overflow-wrap: anywhere;
-}
-.resp-post-question {
-	color: var(--app-accent);
-}
-.resp-post-stale {
-	opacity: 0.6;
-}
-.resp-pill {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
-	align-items: baseline;
-	padding: 8px 10px;
-	cursor: pointer;
-	list-style: none;
-}
-.resp-pill::-webkit-details-marker {
-	display: none;
-}
-.resp-status {
-	font-size: 0.75rem;
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
-	padding: 1px 6px;
-	border-radius: 4px;
-	background: #2a4;
-	color: #042;
-}
-.resp-waits-operator {
-	background: #c44;
-	color: #200;
-}
-.resp-waits-goblin {
-	background: #c84;
-	color: #210;
-}
-.resp-waits-nobody {
-	background: #555;
-	color: #ddd;
-}
-.resp-stage-paused {
-	background: #a83;
-	color: #210;
-}
-.resp-stage-closed {
-	background: #333;
-	color: #999;
-}
-.resp-evidence {
-	margin: 0.25rem 0 0;
-	padding-left: 1.25rem;
-}
-.resp-outcome {
-	font-weight: 600;
-}
-.resp-agents,
-.resp-fresh,
-.resp-next {
-	font-size: 0.8rem;
-	opacity: 0.75;
-}
-.resp-detail {
-	padding: 0 10px 10px;
-	border-top: 1px solid var(--app-divider);
-}
-.resp-warn {
-	color: #ca4;
-	font-size: 0.85rem;
-}
-.resp-events-older {
-	margin: 2px 0;
-	font-size: 0.75rem;
-	opacity: 0.5;
-}
-.resp-understanding p {
-	margin: 4px 0;
-	font-size: 0.85rem;
-}
-.resp-rev {
-	opacity: 0.5;
-	font-size: 0.75rem;
-}
-.resp-section h4 {
-	margin: 10px 0 4px;
-	font-size: 0.8rem;
-	text-transform: uppercase;
-	letter-spacing: 0.05em;
-	opacity: 0.6;
-}
-.resp-att,
-.resp-op,
-.resp-event {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
-	align-items: baseline;
-	font-size: 0.85rem;
-	padding: 3px 0;
-}
-.resp-att-health,
-.resp-op-state,
-.resp-event-kind {
-	font-size: 0.75rem;
-	opacity: 0.8;
-}
-.resp-att-meta,
-.resp-op-meta,
-.resp-event-meta,
-.resp-event-origin {
-	font-size: 0.75rem;
-	opacity: 0.6;
-}
-.resp-op-brief,
-.resp-event-text {
-	flex: 1 1 100%;
-}
-.resp-controls {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
-	margin-top: 10px;
-}
-.resp-open-conv {
-	white-space: nowrap;
-}
-.resp-correct {
-	margin-top: 8px;
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-}
-.resp-correct textarea {
-	width: 100%;
 }
 
 /* Skill picker sheet (ruling 2026-10-21): catalog rows + the

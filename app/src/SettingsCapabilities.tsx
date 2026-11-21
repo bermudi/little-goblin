@@ -74,7 +74,6 @@ export function SettingsCapabilities({ ctx }: { ctx: SettingsCtx }) {
 												delegation: d.delegation ??
 													last.current.delegation ?? {
 														harnesses: [],
-														roles: [],
 													},
 											};
 										}

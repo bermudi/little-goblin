@@ -9,7 +9,6 @@ import { z } from "zod";
 import type { AgentChild, AgentChildren, Settlement } from "../../agent-children.ts";
 import { COMPUTER_AGENT_TYPE, type AgentType } from "../../agent-types.ts";
 import type { Conversation } from "../../conversation-read.ts";
-import type { WorkerSendRefusal } from "../../responsibility-authority.ts";
 import { defineTool, type Tool, type Tools } from "../../tool.ts";
 
 // What a child never gets, whatever its type file says or the parent
@@ -64,7 +63,6 @@ const spawnSchema = z.object({
 	action: z.literal("spawn"),
 	type: z.string().min(1).optional(),
 	task: z.string().min(1).max(MAX_TASK_CHARS),
-	responsibility: z.string().min(1).optional(),
 	background: z.boolean().optional(),
 	// The named desktop a computer child binds to — required for the
 	// computer type (design/agents.md → Computer use).
@@ -95,7 +93,6 @@ const inputFields = z.object({
 	task: spawnSchema.shape.task.optional(),
 	background: spawnSchema.shape.background,
 	desktop: spawnSchema.shape.desktop,
-	responsibility: spawnSchema.shape.responsibility,
 	id: readSchema.shape.id.optional(),
 	text: sendSchema.shape.text.optional(),
 });
@@ -109,18 +106,13 @@ function checkedAgainstAction(value: unknown, ctx: z.core.$RefinementCtx<unknown
 	}
 }
 
-export function agentInputSchemaFor(linkable: boolean) {
-	const fields = linkable ? inputFields : inputFields.omit({ responsibility: true });
-	return fields.superRefine((value, ctx) => {
-		checkedAgainstAction(value, ctx);
-	});
-}
-
-export const agentInputSchema = agentInputSchemaFor(false);
+export const agentInputSchema = inputFields.superRefine((value, ctx) => {
+	checkedAgainstAction(value, ctx);
+});
 
 // ---------- description ----------
 
-export function agentToolDescription(types: Map<string, AgentType>, linkable: boolean): string {
+function agentToolDescription(types: Map<string, AgentType>): string {
 	const listed = [...types.values()]
 		.map((t) => `- ${t.name}: ${t.description}`)
 		.join("\n");
@@ -133,8 +125,7 @@ export function agentToolDescription(types: Map<string, AgentType>, linkable: bo
 		listed,
 		"",
 		"Verbs:",
-		`- spawn {type?, task, background?, desktop?${linkable ? ", responsibility?" : ""}}: start a child on the task (the task is its whole assignment — make it self-contained). background true (default): it runs and you are woken with its result; background false: this call waits and returns the result. The computer type also needs desktop: a desktop name from the desktop tool's list — spawn claims it for the child.`,
-		...(linkable ? ["In a project conversation, pass responsibility:<id> when the child does work for that responsibility: each settlement is then filed as a worker report on it — the child's claim, which you still check before reporting yourself."] : []),
+		`- spawn {type?, task, background?, desktop?}: start a child on the task (the task is its whole assignment — make it self-contained). background true (default): it runs and you are woken with its result; background false: this call waits and returns the result. The computer type also needs desktop: a desktop name from the desktop tool's list — spawn claims it for the child.`,
 		"- list {}: your children with status.",
 		"- read {id}: a child's status and latest messages.",
 		"- send {id, text}: steer a running child or continue a settled one.",
@@ -157,9 +148,6 @@ export interface AgentToolDeps {
 	 * carries (design/agents.md → Computer use) — admitted into the
 	 * allowlist when the type names them. */
 	intrinsicTools: readonly string[];
-	sendAuthority?: ((responsibilityId: string) => WorkerSendRefusal | null) | undefined;
-	/** Project-bound turns only: admits a responsibility link while active or paused. */
-	checkResponsibility?: ((id: string) => string | null) | undefined;
 }
 
 function childSummary(child: AgentChild): Record<string, unknown> {
@@ -169,7 +157,6 @@ function childSummary(child: AgentChild): Record<string, unknown> {
 		status: child.status,
 		task: child.task.length > 200 ? `${child.task.slice(0, 200)}…` : child.task,
 		...(child.desktop !== null ? { desktop: child.desktop } : {}),
-		...(child.responsibilityId !== null ? { responsibility: child.responsibilityId } : {}),
 	};
 }
 
@@ -184,8 +171,8 @@ function settlementBody(settlement: Settlement): Record<string, unknown> {
 
 export const agentTool = (deps: AgentToolDeps) =>
 	defineTool({
-		description: agentToolDescription(deps.types, deps.checkResponsibility !== undefined),
-		input: agentInputSchemaFor(deps.checkResponsibility !== undefined),
+		description: agentToolDescription(deps.types),
+		input: agentInputSchema,
 		execute: async (raw, { abortSignal }) => {
 			const parsed = actionSchema.safeParse(raw);
 			if (!parsed.success) {
@@ -197,12 +184,6 @@ export const agentTool = (deps: AgentToolDeps) =>
 			const engine = deps.engine;
 			switch (input.action) {
 				case "spawn": {
-					if (input.responsibility !== undefined) {
-						if (deps.checkResponsibility === undefined)
-							return { error: "responsibility links need a project conversation" };
-						const refusal = deps.checkResponsibility(input.responsibility);
-						if (refusal !== null) return { error: refusal };
-					}
 					const name = input.type ?? "general";
 					const type = deps.types.get(name);
 					if (type === undefined) {
@@ -238,7 +219,6 @@ export const agentTool = (deps: AgentToolDeps) =>
 						task: input.task,
 						tools,
 						...(input.desktop !== undefined ? { desktop: input.desktop } : {}),
-						...(input.responsibility !== undefined ? { responsibilityId: input.responsibility } : {}),
 					});
 					// A spawn whose desktop claim failed settles the child
 					// failed before it runs — the error IS the result.
@@ -285,7 +265,7 @@ export const agentTool = (deps: AgentToolDeps) =>
 					};
 				}
 				case "send": {
-					const res = engine.send(input.id, input.text, deps.sendAuthority);
+					const res = engine.send(input.id, input.text);
 					return "error" in res ? { error: res.error } : childSummary(res.child);
 				}
 				case "stop": {

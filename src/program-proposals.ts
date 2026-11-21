@@ -45,7 +45,6 @@ export interface ProgramDraft {
 	maxLatenessMinutes: number | null;
 	hook: boolean;
 	mailFilter: string | null;
-	responsibilityId: string | null;
 }
 
 /** An update proposal's requested patch — only the fields the requester
@@ -225,9 +224,13 @@ const draftSchema = z
 		maxLatenessMinutes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
 		hook: z.boolean(),
 		mailFilter: z.string().min(1).max(500).nullable(),
-		responsibilityId: z.string().min(1).nullable().default(null),
 	})
 	.strict();
+
+const storedDraftSchema = draftSchema
+	.extend({ responsibilityId: z.null().optional() })
+	.strict()
+	.transform(({ responsibilityId: _legacy, ...draft }) => draft);
 
 const patchSchema = z
 	.object({
@@ -301,7 +304,7 @@ function rowToProposal(row: unknown): ProgramProposal {
 	let patch: ProgramPatchRequest | null = null;
 	try {
 		const payload: unknown = JSON.parse(r.payload);
-		if (r.kind === "create") draft = draftSchema.parse(payload);
+		if (r.kind === "create") draft = storedDraftSchema.parse(payload);
 		else patch = patchSchema.parse(payload);
 	} catch (err) {
 		throw new Error(
@@ -453,9 +456,7 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 					maxLatenessMinutes: draft.maxLatenessMinutes,
 					hookHash: draft.hook ? hookHash! : null,
 					mailFilter: draft.mailFilter,
-					...(draft.responsibilityId !== null
-						? { responsibilityId: draft.responsibilityId }
-						: { address: { target: proposal.target } }),
+					address: { target: proposal.target },
 				};
 				const program = deps.core.create(createInput, now);
 				qDecide.run("approved", now.toISOString(), decidedBy, program.id, id);
@@ -532,9 +533,6 @@ export function openProgramProposals(db: Database, deps: ProgramProposalsDeps): 
 				cron: proposal.draft!.cron,
 				hook: proposal.draft!.hook,
 				mail: proposal.draft!.mailFilter !== null,
-				...(proposal.draft!.responsibilityId !== null
-					? { responsibility: proposal.draft!.responsibilityId }
-					: {}),
 				target: proposal.target,
 			});
 			return proposal;

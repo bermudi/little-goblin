@@ -911,7 +911,7 @@ describe("config save", () => {
 		});
 	});
 
-	test("a delegation save replaces the whole block — harnesses and defaults alike", async () => {
+	test("a delegation save replaces the whole harness block", async () => {
 		const d: OperatorDeps = {
 			configRef: {
 				current: parseConfig({
@@ -924,7 +924,6 @@ describe("config save", () => {
 							pi: { kind: "pi" },
 							old: { kind: "gone" },
 						},
-						defaults: { default: "pi" },
 					},
 				}),
 			},
@@ -936,7 +935,6 @@ describe("config save", () => {
 					pi: { kind: "pi", args: ["--model", "glm-5.3-air"] },
 					review: { kind: "claude", args: ["--model", "glm-5.3-flash"] },
 				},
-				defaults: { default: "pi", review: "review" },
 			},
 		});
 		expect(res?.status).toBe(200);
@@ -945,20 +943,10 @@ describe("config save", () => {
 				pi: { kind: "pi", args: ["--model", "glm-5.3-air"] },
 				review: { kind: "claude", args: ["--model", "glm-5.3-flash"] },
 			},
-			defaults: { default: "pi", review: "review" },
 		});
 		// The merge no longer special-cases delegation: a harness the
 		// editor dropped is gone, nothing merges back from the file.
 		expect(loadConfig()?.delegation?.harnesses["old"]).toBeUndefined();
-		// A default naming nothing is rejected before any write.
-		const bad = await postConfig(d, {
-			delegation: {
-				harnesses: { pi: { kind: "pi" } },
-				defaults: { default: "pi", build: "ghost" },
-			},
-		});
-		expect(bad?.status).toBe(422);
-		expect(loadConfig()?.delegation?.defaults).toEqual({ default: "pi", review: "review" });
 	});
 
 	test("turning delegation off then saving a block drops the parked copy", async () => {
@@ -971,7 +959,6 @@ describe("config save", () => {
 					allowedUsers: [],
 					delegation: {
 						harnesses: { pi: { kind: "pi" } },
-						defaults: { default: "pi" },
 					},
 				}),
 			},
@@ -982,7 +969,6 @@ describe("config save", () => {
 		expect(loadConfig()?.delegation).toBeUndefined();
 		expect(loadConfig()?.parked?.delegation).toEqual({
 			harnesses: { pi: { kind: "pi" } },
-			defaults: { default: "pi" },
 		});
 		// An edited block supersedes it — the stale copy must not come back.
 		expect(
@@ -990,14 +976,12 @@ describe("config save", () => {
 				await postConfig(d, {
 					delegation: {
 						harnesses: { codex: { kind: "pi" } },
-						defaults: { default: "codex" },
 					},
 				})
 			)?.status,
 		).toBe(200);
 		expect(loadConfig()?.delegation).toEqual({
 			harnesses: { codex: { kind: "pi" } },
-			defaults: { default: "codex" },
 		});
 		expect(loadConfig()?.parked?.delegation).toBeUndefined();
 	});
@@ -1012,7 +996,6 @@ describe("config save", () => {
 					allowedUsers: [],
 					delegation: {
 						harnesses: { pi: { kind: "pi" } },
-						defaults: { default: "pi" },
 					},
 				}),
 			},
@@ -1025,7 +1008,6 @@ describe("config save", () => {
 		expect((await postConfig(d, { capabilities: { delegation: true } }))?.status).toBe(200);
 		expect(loadConfig()?.delegation).toEqual({
 			harnesses: { pi: { kind: "pi" } },
-			defaults: { default: "pi" },
 		});
 		expect(loadConfig()?.parked?.delegation).toBeUndefined();
 	});
@@ -1043,7 +1025,6 @@ describe("config save", () => {
 					allowedUsers: [],
 					delegation: {
 						harnesses: { pi: { kind: "pi" } },
-						defaults: { default: "pi" },
 					},
 				}),
 			},
@@ -1053,7 +1034,6 @@ describe("config save", () => {
 			delegation: {
 				harnesses: { codex: { kind: "pi" } },
 				machines: { evil: { machine: "evil", root: "~/evil" } },
-				defaults: { default: "codex" },
 			},
 		});
 		expect(res?.status).toBe(422);
@@ -1070,7 +1050,6 @@ describe("config save", () => {
 		expect(loadConfig()).toBeNull();
 		expect(d.configRef.current.delegation).toEqual({
 			harnesses: { pi: { kind: "pi" } },
-			defaults: { default: "pi" },
 		});
 	});
 

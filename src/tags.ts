@@ -35,6 +35,10 @@ export function agentNoticeTag(type: string, status: string): string {
 	return `[agent: ${type} · ${status}]`;
 }
 
+export function projectMoveTag(name: string): string {
+	return `[project: moved into ${name}]`;
+}
+
 // Whether a user-role text is machinery speech, not operator memory.
 // "[subagent: " stays for history: rows written by the removed Pi
 // Durable runtime still sit in old conversations.
@@ -43,7 +47,8 @@ export function isMachineryText(text: string): boolean {
 		text.startsWith("[program: ") ||
 		text.startsWith("[delegation: ") ||
 		text.startsWith("[subagent: ") ||
-		text.startsWith("[agent: ")
+		text.startsWith("[agent: ") ||
+		text.startsWith("[project: ")
 	);
 }
 

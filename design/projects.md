@@ -35,9 +35,20 @@ hides the project and its conversations from the Chats pane, and leaves both
 directories untouched. No project delete in v1 — a managed `home` needs a
 destructive step, and `trash` > `rm` is a red line.
 
-**Binding is fixed at creation** (operator ruling). No move between
-projects — it would rewrite a live conversation's cwd and prompt; the only
-sanctioned prefix rewrites are listed in Cache stability.
+**A loose chat can move into a project** (ruling 2026-11-21, #839,
+amends "binding is fixed at creation"). The move is in place: same
+conversation, same link, and nothing already sent changes. The frozen
+system prompt, the tool definitions and every stored message stay
+byte-identical; the move appends one notice message
+(`[project: moved into …]`) that names the new working directory and
+carries the project section. The working directory and note scope switch
+at once. Tool surfaces that depend on the project (responsibilities, the
+program tool's project arm, delegate's responsibility link) follow the
+binding the frozen prompt was built with, so they arrive together with the
+project section at the next snapshot rebuild (compaction). A move is
+refused while a turn runs, for a chat already in a project, for child
+conversations and outside the app channel. Moving between projects or
+out of one is still not offered.
 
 **Working directory and cache.** Paths are not confined — `dir` is a
 default, not a wall. Project prompt changes load at the next snapshot

@@ -139,6 +139,15 @@ export function mergeTranscript(
   return [...history, ...current.filter((m) => !historyIds.has(m.id))];
 }
 
+export function rewindTranscript(
+  messages: UIMessage[],
+  event: { messageId: string; replacedBy: string },
+): UIMessage[] {
+  const index = messages.findIndex((message) => message.id === event.messageId);
+  if (index === -1) return messages;
+  return messages.slice(0, index + (event.replacedBy === event.messageId ? 1 : 0));
+}
+
 export function ChatView({
   token,
   conversationId,
@@ -631,6 +640,9 @@ function Chat({
         setSubmitPending(false);
         refreshTranscript();
         refreshPending();
+      } else if (event.type === "rewound") {
+        setMessages((current) => rewindTranscript(current, event));
+        refreshTranscript();
       } else if (event.type === "pending") {
         setSubmitPending(false);
         refreshPending();

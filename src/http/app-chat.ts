@@ -278,9 +278,11 @@ export async function handleChatRoute(
 			if (rewound === null) {
 				return Response.json({ error: "nothing to retry" }, { status: 409, headers: NO_STORE });
 			}
+			runtime.emitConversationRewound(convId, lastUser.message.id, lastUser.message.id);
 			log.info("app retry rewound", {
 				conversation: convId,
-				message: lastUser.message.id,
+				messageId: lastUser.message.id,
+				replacedBy: lastUser.message.id,
 				cutSeq: rewound.cutSeq,
 				seq: rewound.seq,
 				events: rewound.events,
@@ -423,9 +425,11 @@ export async function handleChatRoute(
 			if (edited === null) {
 				return Response.json({ error: "no such user message" }, { status: 404, headers: NO_STORE });
 			}
+			runtime.emitConversationRewound(convId, editId, (message as Message).id);
 			log.info("app message edited", {
 				conversation: convId,
-				message: editId,
+				messageId: editId,
+				replacedBy: (message as Message).id,
 				cutSeq: edited.cutSeq,
 				seq: edited.seq,
 				events: edited.events,

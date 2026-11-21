@@ -11,7 +11,7 @@ import { editedParts, FoldMark, unlandedMeta } from "./chat/MetaLine.tsx";
 import { appendQuote, quoteSpeaker } from "./chat/QuoteFab.tsx";
 import { ContextGauge, contextCount } from "./chat/ContextGauge.tsx";
 import { Composer } from "./chat/Composer.tsx";
-import { ChatView, mergeTranscript, replyStarted } from "./ChatView.tsx";
+import { ChatView, mergeTranscript, replyStarted, rewindTranscript } from "./ChatView.tsx";
 
 // Static markup — guards the render contract, not React behavior.
 
@@ -1095,6 +1095,85 @@ describe("ChatView reload window (issue #79)", () => {
     role: "assistant",
     parts: [{ type: "text", text }],
     metadata: { model: "prov/model", durationMs: 10 },
+  });
+
+  test("a rewind event removes the old reply and reloads durable history", async () => {
+    let stored: UIMessage[] = [
+      userMsg("u1", "first"),
+      assistantMsg("a1", "first answer"),
+      userMsg("u2", "second"),
+      assistantMsg("a2", "old answer"),
+    ];
+    let historyFetches = 0;
+    let events!: ReadableStreamDefaultController<Uint8Array>;
+    const encoder = new TextEncoder();
+    const eventStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        events = controller;
+        controller.enqueue(encoder.encode('data: {"type":"state","live":false}\n\n'));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith("/messages")) {
+          historyFetches++;
+          return jsonResponse({ messages: stored, ratings: [], rateableMessageIds: [] });
+        }
+        if (url.endsWith("/events"))
+          return new Response(eventStream, { headers: { "content-type": "text/event-stream" } });
+        return jsonResponse({ model: "prov/model", thinking: "off", favorites: [], catalog: [], thinkingLevels: ["off"] });
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    dom.root = createRoot(dom.container);
+    await act(async () =>
+      dom.root?.render(
+        <ChatView
+          token={null}
+          conversationId="app/chat-01"
+          title={null}
+          seed={null}
+          staged={[]}
+          setStaged={() => {}}
+          stagedNotes={[]}
+          setStagedNotes={() => {}}
+          stagedSkills={[]}
+          setStagedSkills={() => {}}
+          onSeeded={() => {}}
+          onTurnDone={() => {}}
+        />,
+      ),
+    );
+    expect(dom.container.textContent).toContain("old answer");
+    const fetchesBefore = historyFetches;
+    stored = [userMsg("u1", "first"), assistantMsg("a1", "first answer"), userMsg("u2", "second")];
+    await act(async () => {
+      events.enqueue(encoder.encode('data: {"type":"rewound","messageId":"u2","replacedBy":"u2"}\n\n'));
+    });
+    for (let i = 0; i < 100 && historyFetches === fetchesBefore; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(historyFetches).toBeGreaterThan(fetchesBefore);
+    expect(dom.container.textContent).not.toContain("old answer");
+    expect(dom.container.textContent).toContain("second");
+    const editFetchesBefore = historyFetches;
+    stored = [
+      userMsg("u1", "first"),
+      assistantMsg("a1", "first answer"),
+      userMsg("u2b", "second edited"),
+    ];
+    await act(async () => {
+      events.enqueue(encoder.encode('data: {"type":"rewound","messageId":"u2","replacedBy":"u2b"}\n\n'));
+    });
+    for (let i = 0; i < 100 && historyFetches === editFetchesBefore; i++) {
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
+    }
+    expect(historyFetches).toBeGreaterThan(editFetchesBefore);
+    expect(dom.container.textContent).not.toContain("old answer");
+    expect(dom.container.querySelectorAll(".msg.user")).toHaveLength(2);
+    expect(dom.container.querySelectorAll(".msg.assistant")).toHaveLength(1);
+    expect(dom.container.textContent).toContain("second edited");
   });
 
   test("a reply that completes between history fetch and reconnect becomes visible", async () => {
@@ -3810,6 +3889,29 @@ describe("mergeTranscript", () => {
       msg("a1", "assistant"),
     ];
     expect(mergeTranscript(current, history)).toEqual(history);
+  });
+});
+
+describe("rewindTranscript", () => {
+  const msg = (id: string, role: "user" | "assistant"): UIMessage => ({
+    id,
+    role,
+    parts: [{ type: "text", text: id }],
+  });
+
+  test("retry keeps the user message and drops everything after it", () => {
+    const current = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user"), msg("a2", "assistant")];
+    expect(rewindTranscript(current, { messageId: "u2", replacedBy: "u2" }).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
+  });
+
+  test("edit drops the old prompt and everything after it", () => {
+    const current = [msg("u1", "user"), msg("a1", "assistant"), msg("u2", "user"), msg("a2", "assistant")];
+    expect(rewindTranscript(current, { messageId: "u2", replacedBy: "u2b" }).map((m) => m.id)).toEqual(["u1", "a1"]);
+  });
+
+  test("an unknown message leaves the same array untouched", () => {
+    const current = [msg("u1", "user"), msg("a1", "assistant")];
+    expect(rewindTranscript(current, { messageId: "missing", replacedBy: "other" })).toBe(current);
   });
 });
 

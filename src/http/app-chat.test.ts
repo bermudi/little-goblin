@@ -774,6 +774,8 @@ describe("app chat", () => {
 		});
 		try {
 			await createAndChat(call);
+			const events: { type: string; messageId?: string; replacedBy?: string }[] = [];
+			const unsubscribe = runtime.subscribeConversation("app/chat-01", (event) => events.push(event));
 			const originalAssistantId = store.history("app/chat-01")[1]!.id;
 			const res = await call("/api/app/chat", {
 				method: "POST",
@@ -782,6 +784,7 @@ describe("app chat", () => {
 			});
 			expect(res.status).toBe(202);
 			expect(await res.json()).toEqual({ submitted: true });
+			expect(events[0]).toEqual({ type: "rewound", messageId: "m1", replacedBy: "m1" });
 			await waitUntil(
 				() => model.calls() === 2 && !runtime.busy("app/chat-01"),
 				"retry settles",
@@ -793,6 +796,7 @@ describe("app chat", () => {
 				expect.objectContaining({ type: "text", text: "retried reply" }),
 			);
 			expect(history[1]!.id).not.toBe(originalAssistantId);
+			unsubscribe();
 		} finally {
 			http.stop();
 		}
@@ -951,11 +955,13 @@ describe("app chat", () => {
 	});
 
 	test("retry refuses an empty history and a live lane", async () => {
-		const { http, call } = setup({
+		const { http, call, runtime } = setup({
 			token: APP_TOKEN_NAME,
 			deltas: ["a", "b", "c"],
 			delayMs: 50,
 		});
+		const events: { type: string }[] = [];
+		const unsubscribe = runtime.subscribeConversation("app/chat-01", (event) => events.push(event));
 		try {
 			await call("/api/app/conversations", {
 				method: "POST",
@@ -983,6 +989,7 @@ describe("app chat", () => {
 				body: JSON.stringify({ conversationId: "app/chat-01", retry: true }),
 			});
 			expect(busy.status).toBe(409);
+			expect(events.some((event) => event.type === "rewound")).toBe(false);
 			await call("/api/app/conversations/chat-01/stop", { method: "POST" });
 
 			expect(
@@ -999,6 +1006,7 @@ describe("app chat", () => {
 				).status,
 			).toBe(422);
 		} finally {
+			unsubscribe();
 			http.stop();
 		}
 	});
@@ -1143,7 +1151,7 @@ describe("app chat edit (rewind)", () => {
 		});
 
 	test("an edit drops the tail, streams the replacement, and never reuses a seq", async () => {
-		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		const { http, call, store, runtime } = setup({ token: APP_TOKEN_NAME });
 		try {
 			await createAndChat(call, "first question");
 			const second = await postChat(call, {
@@ -1154,6 +1162,8 @@ describe("app chat edit (rewind)", () => {
 			await second.json();
 			await waitUntil(() => store.history("app/chat-01").length === 4, "second turn settles");
 			expect(store.history("app/chat-01")).toHaveLength(4);
+			const events: { type: string; messageId?: string; replacedBy?: string }[] = [];
+			const unsubscribe = runtime.subscribeConversation("app/chat-01", (event) => events.push(event));
 
 			const res = await postChat(call, {
 				conversationId: "app/chat-01",
@@ -1166,6 +1176,7 @@ describe("app chat edit (rewind)", () => {
 			});
 			expect(res.status).toBe(202);
 			expect(await res.json()).toEqual({ submitted: true });
+			expect(events[0]).toEqual({ type: "rewound", messageId: "m1", replacedBy: "m1b" });
 			await waitUntil(() => store.history("app/chat-01").length === 2, "edited reply settles");
 
 			const history = store.historyDetail("app/chat-01");
@@ -1183,6 +1194,7 @@ describe("app chat edit (rewind)", () => {
 			expect(history[1]!.anchorSeq).toBe(5);
 			expect(store.messageEvent("app/chat-01", "m1")).toBeNull();
 			expect(store.messageEvent("app/chat-01", "m2")).toBeNull();
+			unsubscribe();
 		} finally {
 			http.stop();
 		}
@@ -1220,9 +1232,11 @@ describe("app chat edit (rewind)", () => {
 	});
 
 	test("unknown and non-user targets refuse without touching the transcript", async () => {
-		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		const { http, call, store, runtime } = setup({ token: APP_TOKEN_NAME });
 		try {
 			await createAndChat(call, "hello");
+			const events: { type: string }[] = [];
+			const unsubscribe = runtime.subscribeConversation("app/chat-01", (event) => events.push(event));
 			const before = store.history("app/chat-01");
 			const assistantId = store
 				.historyDetail("app/chat-01")
@@ -1241,6 +1255,7 @@ describe("app chat edit (rewind)", () => {
 			});
 			expect(unknown.status).toBe(404);
 			await unknown.text();
+			expect(events.some((event) => event.type === "rewound")).toBe(false);
 			// The refusal happens before the store write — no half-rewind.
 			expect(store.history("app/chat-01")).toEqual(before);
 			// Retry and edit are different repairs and cannot combine.
@@ -1251,6 +1266,7 @@ describe("app chat edit (rewind)", () => {
 			});
 			expect(both.status).toBe(422);
 			await both.text();
+			unsubscribe();
 		} finally {
 			http.stop();
 		}

@@ -174,7 +174,8 @@ export type AppConversationEvent =
 	| { type: "state"; live: boolean }
 	| { type: "turn-start" }
 	| { type: "turn-end" }
-	| { type: "pending" };
+	| { type: "pending" }
+	| { type: "rewound"; messageId: string; replacedBy: string };
 
 // Rides `metadata` of the system unlanded-progress event (design/runtime-turn.md → Unlanded-turn progress).
 export interface UnlandedTurnMetadata {

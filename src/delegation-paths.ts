@@ -1,12 +1,7 @@
-// Report seam of the delegation family: where a row's report lives and
-// the issue-lead row predicate. Every delegation runs in goblin's own
-// private hc session — there is no target dimension.
-
 import { join } from "node:path";
 import { log } from "./log.ts";
 import type { Delegation } from "./delegations.ts";
 import type { DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
-import type { GithubIssue } from "./pr-readiness.ts";
 
 // The report file is the durable result channel; screen output is the fallback.
 const REPORT_NOTE =
@@ -25,10 +20,7 @@ export function reportPathFor(deps: DelegationLifecycleDeps, d: Delegation): str
 export function reportNote(deps: DelegationLifecycleDeps, d: Delegation): string {
 	return (
 		REPORT_NOTE +
-		reportPathFor(deps, d) +
-		(isIssueLead(d)
-			? `\nPR readiness is observed by code for ${d.issue.repository}#${d.issue.number}. The verifier's PR comment must open with PASS, PASS+NOTES, or FAIL and have exactly one standalone line "Checked-SHA: <full 40-character lowercase commit SHA>". Post a new verdict for each checked head. PASS+NOTES does not waive the notes or authorize a merge.`
-			: "")
+		reportPathFor(deps, d)
 	);
 }
 
@@ -49,6 +41,3 @@ export async function killQuietly(
 	}
 }
 
-export function isIssueLead(d: Delegation): d is Delegation & { issue: GithubIssue; responsibilityId: string } {
-	return d.role === "lead" && d.issue !== null && d.responsibilityId !== null;
-}

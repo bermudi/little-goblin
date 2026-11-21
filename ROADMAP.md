@@ -70,16 +70,17 @@ The first two stages below serve this same target. A representative pilot is
 the proving ground throughout, not a ceremony after building everything.
 Re-use actual pilot evidence if it already exists.
 
-Issue builds now run through one lead delegation per issue (2026-11-09,
-design/delegation.md → An issue build is one lead delegation). The pilot:
-the operator hands over one real issue; goblin briefs a lead, and the
-issue ends merged with a verifier verdict on the PR, without the operator
-relaying between agents. Code now observes the closing PR, SHA-bound
-verifier verdict and CI for responsibility-linked leads with explicit issue
-identity (#406, design/delegation.md → PR readiness). Unchanged CI polls
-do not wake a model; notes and operator-facing judgment still do. Existing
-leads without that identity are not retroactively adopted. The full issue
-pilot remains unverified.
+Issue builds run as one inner loop per issue on T3 Code (operator,
+2026-11-20, #745; design/delegation.md → An issue build is one inner loop
+on T3 Code): goblin starts a Claude Opus 5.5 thread in a new worktree from
+the default branch as soon as the operator hands an issue over. The pilot:
+the operator hands over one real issue, and it ends merged with a verifier
+verdict on the PR, without the operator relaying between agents. Code
+observes the closing PR, SHA-bound verifier verdict and CI on the
+responsibility itself, for any worker, once the issue is linked at accept
+(#406, design/delegation.md → PR readiness). Unchanged CI polls do not wake
+a model; notes and operator-facing judgment still do. The `lead` delegate
+role is gone. The full issue pilot remains unverified.
 
 ## 1. Make Follow-Through Deliberate
 

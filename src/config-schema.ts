@@ -234,6 +234,14 @@ export const delegationConfigSchema = z
 	});
 export type DelegationConfig = z.infer<typeof delegationConfigSchema>;
 
+export const innerLoopConfigSchema = z
+	.object({
+		provider: z.string().min(1),
+		model: z.string().min(1),
+		options: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
+	})
+	.strict();
+
 // A container image ref: no leading '-' and a conservative charset —
 // the tool's podman argv boundary means a ref can never become a flag.
 export const imageRefSchema = z
@@ -740,6 +748,7 @@ export const configSchema = z
 			.union([delegationConfigSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
+		innerLoop: innerLoopConfigSchema.optional(),
 		// Hand-edited only, like delegation.
 		mail: mailConfigSchema.optional(),
 		// Sandboxed execution — hand-edited only; live-read per turn so a

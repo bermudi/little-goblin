@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { log } from "./log.ts";
 import type { Delegation, DelegationStatus } from "./delegations.ts";
 import type { HcRunInfo } from "./hc-delegation.ts";
-import { READINESS_OBSERVE_MS, readinessKey, type GithubIssue } from "./pr-readiness.ts";
 import type { DelegationLifecycle, DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
 import {
 	answer,
@@ -18,10 +17,9 @@ import {
 	stop,
 	stopByOperator,
 } from "./delegation-actions.ts";
-import { notify, observeReadiness } from "./delegation-notices.ts";
+import { notify } from "./delegation-notices.ts";
 import {
 	killQuietly,
-	isIssueLead,
 	reportNote,
 	reportPathFor,
 } from "./delegation-paths.ts";
@@ -112,14 +110,6 @@ export function startDelegationLifecycle(
 			for (const id of lastProgress.keys()) {
 				if (!watched.has(id)) lastProgress.delete(id);
 			}
-			for (const d of deps.delegations.list()) {
-				if (d.status !== "done" || !isIssueLead(d)) continue;
-				try {
-					await checkReadiness(deps, d);
-				} catch (err) {
-					log.error("delegation readiness check failed", err, { delegation: d.id });
-				}
-			}
 		})();
 		current = work.finally(() => {
 			current = null;
@@ -163,34 +153,6 @@ export function startDelegationLifecycle(
 			return stopping;
 		},
 	};
-}
-
-async function checkReadiness(
-	deps: DelegationLifecycleDeps,
-	d: Delegation & { issue: GithubIssue; responsibilityId: string },
-): Promise<void> {
-	if (deps.watchResponsibility?.(d.responsibilityId, d.responsibilityRevision) === false) return;
-	// A failed delivery remains due even across restart, without another GitHub request.
-	if (d.readiness !== null && d.readinessNotifiedKey !== readinessKey(d.readiness)) {
-		await notify(deps, d, "done", { readiness: d.readiness });
-		return;
-	}
-	if (d.readiness?.result.kind === "no-pr" && d.readiness.result.issueClosed) return;
-	if (
-		d.readiness !== null &&
-		Date.now() - Date.parse(d.readiness.observedAt) < READINESS_OBSERVE_MS
-	)
-		return;
-	const readiness = await observeReadiness(deps, d.issue);
-	// Corrections, pause/cancel, send and stop may land during the remote read.
-	if (deps.watchResponsibility?.(d.responsibilityId, d.responsibilityRevision) === false) return;
-	if (!deps.delegations.recordReadiness(d.id, d, readiness)) {
-		log.info("delegation readiness superseded", { delegation: d.id });
-		return;
-	}
-	if (d.readinessNotifiedKey === readinessKey(readiness)) return;
-	log.info("delegation readiness changed", { delegation: d.id, key: readinessKey(readiness) });
-	await notify(deps, d, "done", { readiness });
 }
 
 // Watcher writes CAS against the scanned row; a concurrent send/stop wins and

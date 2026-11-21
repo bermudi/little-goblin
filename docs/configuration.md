@@ -397,6 +397,21 @@ choosing the harness itself stays goblin's call. The old T3 shape
 (`provider`/`model`/`options`) and any `machines` block are rejected at
 boot with a message naming this shape.
 
+### Inner loop
+
+The T3 Code provider and model for an issue build's [inner
+loop](../GLOSSARY.md) thread (design/delegation.md → An issue build is
+one inner loop on T3 Code). Unset means Claude on Opus 5.5 — the
+operator's 2026-11-20 ruling. Live-read: the next `responsibility
+accept` with `start` uses a change. Hand-edited only.
+
+```json5
+innerLoop: { provider: "claudeAgent", model: "claude-opus-5-5", options: { effort: "high" } },
+```
+
+`provider` is a T3 provider instance id and `model` its model slug;
+`options` become `--option id=value` flags.
+
 ### Desktops
 
 Off when unset. A `desktops` block enables the desktop pool: the

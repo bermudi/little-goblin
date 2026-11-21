@@ -93,22 +93,14 @@ export const argsToList = (text: string): string[] =>
 		.map((a) => a.trim())
 		.filter((a) => a !== "");
 
-// The delegation editor's two tables. Args stay one-per-line text so an
-// argument with a space survives the round trip; the row order is the
-// saved order (matters only for legibility — the map is keyed).
 export interface HarnessDraft {
 	name: string;
 	kind: string;
 	args: string;
 	askFirst: boolean;
 }
-export interface DelegationRoleDraft {
-	role: string;
-	harness: string;
-}
 export interface DelegationDraft {
 	harnesses: HarnessDraft[];
-	roles: DelegationRoleDraft[];
 }
 
 /** Numeric-ish fields stay strings while editing. */
@@ -499,11 +491,6 @@ export function draftFromConfig(
 						args: (h.args ?? []).join("\n"),
 						askFirst: h.askFirst === true,
 					})),
-					roles: Object.entries(c.delegation.defaults ?? {})
-						.map(([role, harness]) => ({ role, harness }))
-						.sort((a, b) =>
-							a.role === "default" ? -1 : b.role === "default" ? 1 : a.role.localeCompare(b.role),
-						),
 				}
 			: null,
 	};
@@ -587,18 +574,6 @@ export function validateDraft(draft: SettingsDraft, provs: ProvDraft[]): string 
 		if (names.length === 0) return "Delegation is on — add at least one coding agent.";
 		if (draft.delegation.harnesses.some((h) => !h.kind.trim()))
 			return "Every coding agent needs a harness kind.";
-		const roleRe = /^[a-z][a-z0-9_-]{0,15}$/;
-		// A row with no agent is an absent mapping — the body builder
-		// drops it, and "none" is how an existing default gets cleared.
-		const named = draft.delegation.roles.filter((r) => r.harness.trim() !== "");
-		const roles = named.map((r) => r.role.trim());
-		if (roles.some((r) => !roleRe.test(r)))
-			return "Role names use lowercase letters, digits, _ or - (16 max).";
-		if (new Set(roles).size !== roles.length) return "Duplicate delegation role.";
-		for (const r of named) {
-			if (!names.includes(r.harness.trim()))
-				return `Role "${r.role}" names an unlisted coding agent.`;
-		}
 	}
 	const port = Number(draft.port);
 	if (!Number.isInteger(port) || port < 0 || port > 65535)
@@ -774,14 +749,6 @@ export function bodyFromDraft(
 					];
 				}),
 			),
-			...(() => {
-				const defaults = Object.fromEntries(
-					d.roles
-						.filter((r) => r.role.trim() !== "" && r.harness.trim() !== "")
-						.map((r) => [r.role.trim(), r.harness.trim()]),
-				);
-				return Object.keys(defaults).length > 0 ? { defaults } : {};
-			})(),
 		})) as ConfigPostBody["delegation"],
 		logLevel: draft.logLevel,
 		...(capabilities !== undefined && Object.keys(capabilities).length > 0 ? { capabilities } : {}),

@@ -219,6 +219,7 @@ export interface AppConversationPatch {
 	title?: string;
 	archived?: boolean;
 	pinned?: boolean;
+	projectId?: string;
 }
 
 export interface AppSearchHit {
@@ -451,15 +452,12 @@ export interface AppProgramCandidate {
 	maxLatenessMinutes: number | null;
 	hook: boolean;
 	mailFilter: string | null;
-	/** Present only on a responsibility-bound create — the stable draft
-	 *  id, never patchable, so update diffs exclude it. */
-	responsibilityId?: string;
 }
 
 /** One field an update proposal changes. `lines` is a line diff (unchanged
  *  runs collapsed to gaps) for long text; null for single-line fields. */
 export interface AppProgramChange {
-	field: Exclude<keyof AppProgramCandidate, "responsibilityId">;
+	field: keyof AppProgramCandidate;
 	label: string;
 	before: string;
 	after: string;
@@ -529,9 +527,7 @@ export interface AppAttentionItem {
 		| "memory-outage"
 		| "memory-recall"
 		| "skill-proposal"
-		| "delegation-input"
-		| "observation-unreachable"
-		| "responsibility";
+		| "delegation-input";
 	title: string;
 	detail: string;
 	createdAt: string | null;
@@ -623,184 +619,4 @@ export interface AppPushRegisterResponse {
 
 export interface AppPushUnregisterResponse {
 	removed: boolean;
-}
-
-// ---------- responsibilities (design/work.md — the project feed) ----------
-
-export interface AppResponsibilityUnderstanding {
-	outcome: string;
-	situation: string;
-	nextAction: string;
-	checkpoints: string[];
-	completionEvidence: string[];
-}
-
-export interface AppResponsibility {
-	responsibilityId: string;
-	projectId: string;
-	status: "active" | "paused" | "completed" | "cancelled";
-	revision: number;
-	understanding: AppResponsibilityUnderstanding;
-	outcome: string;
-	coordinationConversationId: string;
-	handoverKey: string | null;
-	followupProgramId: string | null;
-	followup: {
-		token: string;
-		kind: "commitment" | "silence";
-		dueAt: string;
-		reason: string;
-	};
-	armed: boolean;
-	notArmedReason: string | null;
-	createdAt: string;
-	updatedAt: string;
-	closedAt: string | null;
-}
-
-export interface AppAttachmentTarget {
-	server: string;
-	session: string;
-	agentName: string;
-	paneId: string | null;
-	terminalId: string | null;
-	agentSession: string | null;
-	kind: string | null;
-	cwd: string | null;
-}
-
-export interface AppResponsibilityAttachment {
-	attachmentId: number;
-	responsibilityId: string;
-	generation: number;
-	target: AppAttachmentTarget;
-	baseline: unknown;
-	health: "attached" | "missing" | "identity_changed" | "detached";
-	/** Outage start once observation polling has failed UNREACHABLE_POLLS
-	 *  times in a row, else null. */
-	unreachableSince: string | null;
-	cursor: unknown;
-	createdAt: string;
-	detachedAt: string | null;
-}
-
-export interface AppPromptOperation {
-	operationId: string;
-	responsibilityId: string;
-	attachmentId: number;
-	attachmentGeneration: number;
-	responsibilityRevision: number;
-	brief: string;
-	state: string;
-	refusal: string | null;
-	journalRunId: string | null;
-	toolCallId: string | null;
-	sentAt: string | null;
-	outcome: unknown;
-	createdAt: string;
-}
-
-export interface AppFeedEvent {
-	eventId: number;
-	sourceKey: string;
-	kind: string;
-	text: string;
-	facts: unknown;
-	origin: string;
-	createdAt: string;
-	conversationId: string;
-	wake: {
-		wakeId: number;
-		state: string;
-		lastError: string | null;
-		settledAt: string | null;
-		runId: string | null;
-	} | null;
-}
-
-export interface AppResponsibilityStage {
-	waitsFor: "operator" | "goblin" | "worker" | "nobody";
-	stage:
-		| "closed"
-		| "paused"
-		| "delivery-uncertain"
-		| "question"
-		| "assess"
-		| "review"
-		| "blocked"
-		| "failed"
-		| "waiting"
-		| "working";
-	reason: string;
-	since: { reportId: number; createdAt: string } | null;
-}
-
-export interface AppResponsibilityReport {
-	reportId: number;
-	responsibilityId: string;
-	revision: number;
-	reporter: "goblin" | "worker" | "migration";
-	state: "progress" | "waiting" | "ready" | "blocked" | "failed" | "done" | "dropped";
-	reason: string;
-	question: string | null;
-	resumeWhen: string | null;
-	evidence: { item: string; ref: string; checked: string }[];
-	purpose: "status" | "finding" | "draft" | "change";
-	artifacts: { title: string; ref: string }[];
-	sourceKey: string | null;
-	createdAt: string;
-}
-
-/** An outcome post on a feed row — one report, with whose word it is.
- * `unreviewed` is a worker's claim goblin has not yet reported on. */
-export interface AppFeedPost {
-	report: AppResponsibilityReport;
-	review: "assessed" | "unreviewed" | "reviewed" | "migrated";
-	/** False once an operator correction has overtaken it. */
-	current: boolean;
-	resolution: { kind: "resolved" | "closed" | "migrated"; byReportId: number | null; at: string } | null;
-}
-export interface AppOpenObligation {
-	kind: "question";
-	question: string;
-	waitsFor: "operator" | "goblin";
-	stale: boolean;
-	report: AppResponsibilityReport;
-}
-export interface AppOpenClaim {
-	kind: "claim";
-	waitsFor: "goblin";
-	stale: boolean;
-	report: AppResponsibilityReport;
-}
-
-/** One feed row — GET /api/app/responsibilities (open, all projects)
- * and GET /api/app/projects/<id>/responsibilities (the project feed). */
-export interface AppFeedItem {
-	responsibility: AppResponsibility;
-	attachments: AppResponsibilityAttachment[];
-	operations: AppPromptOperation[];
-	stage: AppResponsibilityStage;
-	open: (AppOpenObligation | AppOpenClaim)[];
-	latestReport: AppResponsibilityReport | null;
-	/** Outcome posts, newest first — bounded; older ones stay on record. */
-	posts: AppFeedPost[];
-	postsTruncated: number;
-	events: AppFeedEvent[];
-	/** Older durable events the feed window omitted — the rows remain. */
-	eventsTruncated: number;
-	nextCheckinAt: string | null;
-	nextCheckinReason: string | null;
-	lastActivityAt: string | null;
-}
-
-export interface AppResponsibilityFeed {
-	items: AppFeedItem[];
-}
-
-/** POST /api/app/responsibilities/<id>/correct — a comment becomes a
- * durable operator event; an understanding patch bumps revision. */
-export interface AppCorrectRequest {
-	text?: string;
-	understanding?: AppResponsibilityUnderstanding;
 }

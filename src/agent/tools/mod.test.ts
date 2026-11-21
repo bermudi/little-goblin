@@ -17,11 +17,11 @@ import {
 	type MailToolDeps,
 	makeTools,
 	type NoteToolDeps,
-	type ResponsibilityToolDeps,
 	type SandboxToolDeps,
 	toolNames,
 	type VisionToolDeps,
 } from "./mod.ts";
+import type { WatchToolDeps } from "./watch.ts";
 
 const programs = {} as unknown as ProgramsStore;
 const memoryClient = {} as unknown as HindsightClient;
@@ -196,7 +196,7 @@ describe("toolNames ↔ makeTools", () => {
 			artifact: {} as unknown as ArtifactToolDeps,
 			note: {} as unknown as NoteToolDeps,
 			sandbox: {} as unknown as SandboxToolDeps,
-			responsibility: {} as unknown as ResponsibilityToolDeps,
+			watch: {} as unknown as WatchToolDeps,
 			ui: true,
 		});
 		// Policy exhaustiveness, both ways: a mounted tool without a

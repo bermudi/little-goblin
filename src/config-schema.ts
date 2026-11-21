@@ -204,43 +204,12 @@ export const harnessMapSchema = z
 		message: "delegation.harnesses must name at least one harness",
 	});
 
-// A delegation role names the kind of work a default serves — build,
-// review, or any operator-coined label. `default` is the fallback when
-// a call names no role at all; it is not privileged in the map.
-const roleNameSchema = z
-	.string()
-	.regex(/^[a-z][a-z0-9_-]{0,15}$/, "role must be lowercase letters, digits, _ or -");
-
 export const delegationConfigSchema = z
 	.object({
 		harnesses: harnessMapSchema,
-		// Role → configured harness name. The delegate tool uses this
-		// when the call names no harness; it never invents a harness or
-		// model.
-		defaults: z.record(roleNameSchema, harnessNameSchema).optional(),
-	})
-	.strict()
-	.superRefine((d, ctx) => {
-		if (d.defaults === undefined) return;
-		const known = new Set(Object.keys(d.harnesses));
-		for (const [role, name] of Object.entries(d.defaults)) {
-			if (known.has(name)) continue;
-			ctx.addIssue({
-				code: "custom",
-				path: ["defaults", role],
-				message: `delegation.defaults.${role} names unknown harness "${name}"`,
-			});
-		}
-	});
-export type DelegationConfig = z.infer<typeof delegationConfigSchema>;
-
-export const innerLoopConfigSchema = z
-	.object({
-		provider: z.string().min(1),
-		model: z.string().min(1),
-		options: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
 	})
 	.strict();
+export type DelegationConfig = z.infer<typeof delegationConfigSchema>;
 
 // A container image ref: no leading '-' and a conservative charset —
 // the tool's podman argv boundary means a ref can never become a flag.
@@ -748,7 +717,6 @@ export const configSchema = z
 			.union([delegationConfigSchema, z.literal("")])
 			.transform((v) => (v === "" ? undefined : v))
 			.optional(),
-		innerLoop: innerLoopConfigSchema.optional(),
 		// Hand-edited only, like delegation.
 		mail: mailConfigSchema.optional(),
 		// Sandboxed execution — hand-edited only; live-read per turn so a

@@ -59,7 +59,7 @@ const SECTIONS: { key: Section; label: string; sub: string }[] = [
 	{ key: "telegram", label: "Telegram", sub: "Bot channel and replies" },
 	{ key: "access", label: "Access", sub: "Who can talk to goblin" },
 	{ key: "capabilities", label: "Capabilities", sub: "Tools goblin can use" },
-	{ key: "delegation", label: "Delegation", sub: "Coding agents and defaults" },
+	{ key: "delegation", label: "Delegation", sub: "Coding harnesses" },
 	{ key: "system", label: "System", sub: "Version, restarts, log level" },
 ];
 

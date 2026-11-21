@@ -43,7 +43,6 @@ function draft(overrides: Partial<ProgramDraft> = {}): ProgramDraft {
 		maxLatenessMinutes: 60,
 		hook: false,
 		mailFilter: null,
-		responsibilityId: null,
 		...overrides,
 	};
 }
@@ -181,31 +180,6 @@ describe("program approval posts", () => {
 				expect(send.chatId).toBe(ADDRESS.chatId);
 				expect(send.other.message_thread_id).toBe(ADDRESS.threadId);
 			}
-		} finally {
-			h.cleanup();
-		}
-	});
-
-	test("a responsibility-bound create names the responsibility on the card — a plain create does not", async () => {
-		const h = harness();
-		try {
-			const bound = h.programs.proposals.proposeCreate(
-				draft({ responsibilityId: "resp-42" }),
-				ADDRESS,
-				NOW,
-			);
-			await h.approval.requestApproval(bound);
-			const boundText = h.sends.map((s) => s.text).join("");
-			expect(boundText).toContain("Responsibility: resp-42");
-			// The card still posts to the proposal's presentation lane.
-			for (const send of h.sends) {
-				expect(send.chatId).toBe(ADDRESS.chatId);
-				expect(send.other.message_thread_id).toBe(ADDRESS.threadId);
-			}
-			h.sends.length = 0;
-			const plain = h.programs.proposals.proposeCreate(draft(), ADDRESS, NOW);
-			await h.approval.requestApproval(plain);
-			expect(h.sends.map((s) => s.text).join("")).not.toContain("Responsibility:");
 		} finally {
 			h.cleanup();
 		}

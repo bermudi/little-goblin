@@ -242,7 +242,7 @@ describe("ToolRun", () => {
     expect(html).toContain("https://a.dev");
   });
 
-  test("input-streaming renders the skeleton and stays open", () => {
+  test("input-streaming renders the skeleton inside a folded row", () => {
     const html = renderToStaticMarkup(
       <ToolRun
         part={part({
@@ -254,7 +254,7 @@ describe("ToolRun", () => {
     );
     expect(html).toContain("skel");
     expect(html).toContain("running");
-    expect(html).toContain('<details class="tool-run" open=""');
+    expect(html).toContain('<details class="tool-run">');
     expect(html).toContain("npm i");
   });
 
@@ -286,7 +286,7 @@ describe("ToolRun", () => {
     expect(html).not.toContain("tool-clip");
   });
 
-  test("output-error renders the error text and opens the row", () => {
+  test("output-error renders the error text in a folded row", () => {
     const html = renderToStaticMarkup(
       <ToolRun
         part={part({
@@ -299,7 +299,7 @@ describe("ToolRun", () => {
     );
     expect(html).toContain("boom");
     expect(html).toContain("tool-clip err");
-    expect(html).toContain('open=""');
+    expect(html).toContain('<details class="tool-run">');
   });
 
   test("a finished row is closed by default", () => {

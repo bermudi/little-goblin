@@ -44,7 +44,7 @@ bun run try <name> --real app/c/<conversation-id>   # prints that conversation's
 bun run try <name> --real                           # whole copy, app root
 ```
 
-The real `~/goblin/state/goblin.sqlite` is opened read-only and copied (`VACUUM INTO`). The copy is then scrubbed so it can't reach anyone: push subscriptions, queued mail and memory writes are deleted, programs are disabled, responsibilities disarmed. The seeded config still applies: fake model, no keys, Telegram, mail and memory off. `GOBLIN_REAL_HOME` points it at another home.
+The real `~/goblin/state/goblin.sqlite` is opened read-only and copied (`VACUUM INTO`). The copy is then scrubbed so it can't reach anyone: push subscriptions, queued mail and memory writes are deleted, programs are disabled. The seeded config still applies: fake model, no keys, Telegram, mail and memory off. `GOBLIN_REAL_HOME` points it at another home.
 
 The copy is private data. Keep its screenshots out of public issues and commits, and `down` the instance when done.
 

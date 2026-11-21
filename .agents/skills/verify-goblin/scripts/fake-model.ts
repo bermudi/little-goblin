@@ -1,19 +1,4 @@
 #!/usr/bin/env bun
-// A scripted OpenAI-style Chat Completions endpoint, so a verification turn
-// exercises goblin's real provider path without a paid model or a real key.
-// It replies "verify-reply: <the last user message>". A message containing
-// "[slow]" streams one word every 400ms (time to press Stop); "[fail]"
-// streams a few words, then breaks the connection; "[hold]" opens the
-// stream and never sends a chunk — a silent provider, for held-turn UI
-// states (e.g. the first turn's Stop button, issue #412). "[agent <task>]"
-// answers the first call of a turn with an `agent`-tool spawn (issue
-// #604's native-subagent verification). "[computer <desktop> <task>]"
-// spawns a foreground `computer` child bound to <desktop> (issue #605):
-// the child's own turn is recognized by its system prompt and driven
-// through inspect → launch → inspect-until-button → act click → inspect,
-// against a probe page podman-cp'd into the desktop container.
-// "[delegate <harness> <cwd> <task>]" and "[handover]" script the `delegate` start and `responsibility`
-// accept calls (issue #608's T3 Code verification).
 
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,9 +62,9 @@ function toolJson(content: unknown): Json | null {
 	}
 }
 
-function toolCallResponse(name: string, args: Json, stream: boolean): Response {
+function toolCallResponse(name: string, args: Json, stream: boolean, id = `call-verify-${name}`): Response {
 	const toolCall = {
-		id: `call-verify-${name}`,
+		id,
 		type: "function",
 		function: { name, arguments: JSON.stringify(args) },
 	};
@@ -234,6 +219,40 @@ function computerChildNext(messages: Message[]): ChildStep {
 	);
 }
 
+function longReplyLines(): string[] {
+	const lines = ["# verify-long: the head of the answer", ""];
+	for (let section = 1; section <= 6; section += 1) {
+		lines.push(`## Section ${section}`, "");
+		for (let p = 1; p <= 3; p += 1) {
+			lines.push(
+				`Paragraph ${section}.${p}: a line long enough to wrap on a phone screen, so the reply grows the way a real answer does while it streams in.`,
+				"",
+			);
+		}
+		lines.push("- first point", "- second point", "- third point", "");
+		if (section % 2 === 0) lines.push("```ts", `const section = ${section};`, "console.log(section);", "```", "");
+	}
+	lines.push("verify-long: the tail of the answer");
+	return lines;
+}
+
+function longReply(): Response {
+	const enc = new TextEncoder();
+	const body = new ReadableStream<Uint8Array>({
+		async start(controller) {
+			controller.enqueue(enc.encode(chunk({ role: "assistant", content: "" }, null)));
+			for (const line of longReplyLines()) {
+				controller.enqueue(enc.encode(chunk({ content: `${line}\n` }, null)));
+				await Bun.sleep(60);
+			}
+			controller.enqueue(enc.encode(chunk({}, "stop")));
+			controller.enqueue(enc.encode("data: [DONE]\n\n"));
+			controller.close();
+		},
+	});
+	return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
 const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: 0,
@@ -346,17 +365,26 @@ const server = Bun.serve({
 			}
 			reply = step.text;
 		}
-		// "[delegate <harness> <cwd> <task>]" and "[handover]" (issue #608's
-		// verification): fire on the first call after their user message —
-		// once a tool result follows it the marker is spent and the call
-		// echoes. "[handover]" runs `responsibility accept` binding the
-		// thread id found in the newest tool result (the delegate start's
-		// `thread` field).
 		const lastUserIndex = parsed.data.messages.findLastIndex((message) => message.role === "user");
 		const toolAfterLastUser = parsed.data.messages
 			.slice(lastUserIndex + 1)
 			.some((message) => message.role === "tool");
 		const lastUserText = textOf(parsed.data.messages[lastUserIndex]?.content);
+		if (lastUserText.includes("[long]") && parsed.data.stream === true) {
+			const toolsSinceUser = parsed.data.messages
+				.slice(lastUserIndex + 1)
+				.filter((message) => message.role === "tool").length;
+			if (toolsSinceUser < 2) {
+				await Bun.sleep(1000);
+				return toolCallResponse(
+					"read_file",
+					{ path: "../state/goblin.log", offset: -(toolsSinceUser + 2) },
+					true,
+					`call-verify-long-${toolsSinceUser}`,
+				);
+			}
+			return longReply();
+		}
 		if (!toolAfterLastUser) {
 			const delegateMatch = /\[delegate (\S+) (\S+) ([^\]]+)\]/.exec(lastUserText);
 			if (delegateMatch !== null) {
@@ -370,33 +398,6 @@ const server = Bun.serve({
 					},
 					parsed.data.stream === true,
 				);
-			}
-			if (lastUserText.includes("[handover]")) {
-				let thread: string | undefined;
-				for (const message of parsed.data.messages) {
-					if (message.role !== "tool") continue;
-					for (const match of textOf(message.content).matchAll(/"thread"\s*:\s*"([^"]+)"/g)) {
-						const id = match[1];
-						if (id !== undefined) thread = id;
-					}
-				}
-				if (thread !== undefined) {
-					return toolCallResponse(
-						"responsibility",
-						{
-							action: "accept",
-							understanding: {
-								outcome: "verify handover",
-								situation: "throwaway verification instance",
-								nextAction: "observe the bound thread",
-								checkpoints: [],
-								completionEvidence: [],
-							},
-							attachments: [{ thread }],
-						},
-						parsed.data.stream === true,
-					);
-				}
 			}
 		}
 		if (parsed.data.stream !== true) {

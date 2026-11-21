@@ -1,15 +1,9 @@
-// The Attention page (design/app.md → Attention page, #150): a one-line
-// summary, what is broken, the decisions that wait with their evidence
-// open and their buttons on the card, then everything else. Work in
-// progress and notifications sit below because they are not decisions.
-
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type {
 	AppAttentionItem,
 	AppAttentionMemoryCause,
 	AppAttentionPage,
 	AppAttentionTarget,
-	AppFeedItem,
 } from "../../src/http/app-wire.ts";
 import type { MemoryStatusResponse } from "../../src/http/operator-wire.ts";
 import { MailApprovalCard, ProgramApprovalCard, useApprovals } from "./Approvals.tsx";
@@ -17,7 +11,6 @@ import { decideBlockedMemory, getAttention, getMemoryStatus, listSkills } from "
 import { RetryCard } from "./MemoryView.tsx";
 import { describe, useLoad } from "./opsShared.tsx";
 import { PushControls } from "./PushControls.tsx";
-import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
 import { ProposalCard } from "./SkillsView.tsx";
 
 const KIND_LABEL = {
@@ -28,8 +21,6 @@ const KIND_LABEL = {
 	"memory-recall": "memory",
 	"skill-proposal": "skill",
 	"delegation-input": "delegation",
-	"observation-unreachable": "work",
-	responsibility: "work",
 } as const satisfies Record<AppAttentionItem["kind"], string>;
 
 const DECISION_KINDS: ReadonlySet<AppAttentionItem["kind"]> = new Set([
@@ -227,10 +218,6 @@ export function AttentionView({
 	const [memoryStatus, setMemoryStatus] = useState<MemoryStatusResponse | null>(null);
 	const [memoryStatusErr, setMemoryStatusErr] = useState<string | null>(null);
 	const [dropped, setDropped] = useState<string[]>([]);
-	// null = no feed snapshot yet (loading or failed); the "Work in
-	// progress" section only disappears once the feed says it's empty.
-	const [feedItems, setFeedItems] = useState<AppFeedItem[] | null>(null);
-	const onFeedItems = useCallback((items: AppFeedItem[] | null) => setFeedItems(items), []);
 
 	// After Try again the exchanges leave the blocked list; the page follows
 	// them (saved / queued / failed again) until the batch has settled, and
@@ -422,22 +409,6 @@ export function AttentionView({
 				</p>
 			)}
 
-			{/* One place to watch: what needs the operator above, the work in
-			    flight across projects below (design/app.md → Outcome posts). */}
-			{/* The feed stays mounted when empty so its poll keeps running —
-			    only the section is hidden. */}
-			<section
-				aria-label="Work in progress"
-				hidden={feedItems !== null && feedItems.length === 0}
-			>
-				<h2 className="ops-h2">Work in progress</h2>
-				<ResponsibilityFeed
-					token={token}
-					projectId={null}
-					onConversation={onConversation}
-					onItems={onFeedItems}
-				/>
-			</section>
 			<PushControls token={token} />
 		</div>
 	);

@@ -1,14 +1,9 @@
 # Glossary
 
-- **Responsibility:** what Goblin owes the operator, as a durable record. It is separate from who does the work.
 - **Attempt recorder:** the per-attempt object both turn engines report to. It keeps the step, text and tool records and builds the turn result (design/runtime-turn.md → Engine rules).
 - **Delegation:** one run of an external coding harness that Goblin starts with the `delegate` tool, only when the operator asks for that harness. It runs as a named terminal on Goblin's private hc core; the operator can inspect it through hc or the app (design/delegation.md).
 - **Harness:** a coding agent program that a delegation runs, such as codex or pi.
 - **hc core:** the pinned herdr-core process that owns Goblin's named delegation terminals and survives Goblin restarts. Its session state is under `~/.local/state/herdr-core/` (design/delegation.md).
-- **Role:** the kind of work a delegation serves (build, review, or any operator-coined label). `default` is the role a call with none uses.
-- **Inner loop:** the one T3 Code thread that builds one handed-over issue: design, implementation, review, verification and the draft PR. Goblin starts it with `responsibility accept` and `start`, in a new worktree from the repo's default branch, led by Claude on Opus 5.5. It exists so one worker stays accountable per issue while Goblin coordinates across issues. Example: issue #745 handed over → thread on branch `issue/745` (design/delegation.md → An issue build is one inner loop on T3 Code).
-- **PR readiness:** code-observed evidence that a responsibility's linked issue has a closing PR, a passing verifier comment for its current head SHA, and green CI for that SHA. Code watches it once a minute and wakes Goblin only when it changes. It is not permission to merge.
-- **Delegation default:** the role → harness tie in `delegation.defaults`. The `delegate` tool uses it when a call names no harness. Settings → Delegation edits it.
 - **Ask-first harness:** a delegation harness with `askFirst: true`. The `delegate` tool tells goblin to ask the operator before each use. Settings → Delegation edits it.
 - **Delegation family:** the five modules that implement delegations: `delegation-lifecycle.ts` (contracts + boot wiring), `delegation-paths.ts` (shared predicates), `delegation-notices.ts` (notice bodies + delivery), `delegation-actions.ts` (the five verbs), and `delegation-watcher.ts` (the scan lifecycle). Imports flow one way: watcher → actions → notices → paths.
 - **Subagent:** a child conversation that Goblin starts with the `agent` tool. It runs on Goblin's own runtime, with an agent type's prompt, model and tools (design/agents.md).
@@ -16,10 +11,6 @@
 - **Child conversation:** a conversation with a parent. A subagent runs in one; its final reply goes back to the parent as a notice.
 - **Computer:** the built-in agent type whose child does screen work on a named desktop.
 - **Settlement:** the point where a delegation or subagent run stops and states a result: done, needs input, or failed.
-- **Linked worker:** a subagent, delegation or adopted T3 thread that is explicitly linked to a responsibility. Its settlements file worker reports, and every send to it passes the responsibility's send check (design/agents.md → Linked workers).
-- **Worker report:** one settlement filed on a responsibility. It is the agent's claim, and Goblin still checks it.
-- **Obligation:** a responsibility report that still owes something: a question for the operator, or a worker report Goblin has not assessed. A newer report does not close it; only a named resolution or closing the responsibility does (design/programs.md → Snapshots and obligations).
-- **Status snapshot:** the newest report from Goblin on a responsibility. The next Goblin report replaces it.
 - **Notice:** the machine message that gives a settlement to Goblin and wakes the conversation.
 - **Hindsight:** the separate memory service. It extracts, stores and searches memories for Goblin.
 - **Bank:** the store of memories in Hindsight. Goblin uses the bank named `goblin`.
@@ -43,10 +34,10 @@
 - **Proposed skill:** a complete, validated skill draft parked in `workspace/skills-proposed/`. It installs only on the operator's yes.
 - **Temp skill:** a fetched, one-turn skill copy from a GitHub URL. It is injection-scored, never installed, and never a catalog entry.
 - **Cycle guard:** `src/import-cycles.test.ts`. It freezes today's import cycles as clusters and fails on any cycle that grew past or appeared outside them; clusters are pruned by hand as cycles are untangled.
-- **Feature folder:** a feature that lives as one directory under `src/` with a single public `index.ts` and its own tables. `src/reminders/` is the first.
+- **Feature folder:** a feature that lives as one directory under `src/` with a single public `index.ts` and its own tables. No folder uses it today; `module-boundaries.test.ts` still enforces the rule for the next one.
 - **Parked block:** a capability's config kept under `config.parked` while the capability is off. Re-enabling restores it.
 - **Turn:** one model run from an admitted trigger, including its tool calls and reply.
-- **Epoch:** the monotonic counter on a conversation. A cancellation bumps it (`/stop`, `/new`, a responsibility correction) and ends the running turn in the same call; an action prepared under an older epoch is refused. Settings changes such as `/voice` do not bump it: they apply to the next reply.
+- **Epoch:** the monotonic counter on a conversation. A cancellation bumps it (`/stop`, `/new`) and ends the running turn in the same call; an action prepared under an older epoch is refused. Settings changes such as `/voice` do not bump it: they apply to the next reply.
 - **Fence:** a re-check of authority at the moment of a side effect. A fenced action stops without acting.
 - **Attempt:** one try at a turn on one model. A context overflow or a model fallback ends the attempt and starts a new one; the turn goes on.
 - **Rail:** one way an attempt can end in failure: a journal fault, a fence, a context overflow, or a model error. Each rail decides whether the turn ends or resumes as a new attempt (`src/runtime-rails.ts`).
@@ -59,9 +50,7 @@
   to. For example, the second message inside the gap stays in the same
   conversation.
 - **Wake:** a durable queued trigger that asks a conversation to start a turn. `wake-store.ts` and `wake-dispatcher.ts` own it.
-- **Attachment:** the durable row that binds a conversation to one delegated agent session, keyed by terminal and agent session.
-- **Binding:** the link between a conversation and a delegated agent session. The attachment row is its durable record.
-- **Development:** a durable event recorded on a responsibility, such as a program occurrence, an observation, or an operator correction.
+- **Watch:** a one-shot request, made with the `watch` tool, to wake a conversation when a T3 Code thread, a GitHub PR or a set time changes. Example: after asking a T3 thread for a fix, Goblin watches that thread and gets one turn when it stops.
 - **Fold:** one compaction: older messages become a summary, a recent tail stays verbatim. The full history stays on disk.
 - **Fold mark:** the pill in the app transcript that shows where a fold ran and expands to its summary.
 - **Idle fold:** a fold that runs on its own shortly before an idle app conversation's prompt cache expires, so the summary reads warm cache.

@@ -16,6 +16,7 @@ import type { ConversationStore } from "../conversation.ts";
 import { channelOf } from "../conversation-address.ts";
 import { flatLine } from "../conversation-events.ts";
 import type { Project } from "../projects.ts";
+import { projectMoveTag } from "../tags.ts";
 import { formatSkillsSection, loadCatalog } from "./skills.ts";
 
 // "prompt source changed" separates an operator's edit (a sanctioned
@@ -41,6 +42,50 @@ function noteSource(source: string, content: string | null): void {
 	lastSeen.set(source, digest);
 	if (prev === undefined || prev === digest) return;
 	log.info("prompt source changed", { source, from: prev, to: digest });
+}
+
+export function projectSection(
+	project: Project,
+	notesIndex: { id: string; title: string }[] | undefined,
+): { lines: string[]; agents: string | null } {
+	const agents = !project.managed
+		? readCapped("project AGENTS.md", join(project.dir, "AGENTS.md"), MAX_PROMPT_FILE_CHARS)
+		: null;
+	const projectInstructions = capPromptText(
+		`project:${project.id}`,
+		project.instructions.trim(),
+		MAX_PROMPT_FILE_CHARS,
+	);
+	const lines: string[] = ["", `${PROMPT_SECTIONS.project}${project.name}`];
+	const parts: string[] = [];
+	if (projectInstructions !== "") parts.push(projectInstructions);
+	if (notesIndex !== undefined && notesIndex.length > 0) {
+		parts.push(
+			`### notes\n\n${notesIndex.map((n) => `- ${flatLine(n.title).slice(0, 200)} (id ${n.id})`).join("\n")}`,
+		);
+	}
+	if (agents !== null) {
+		parts.push(`### AGENTS.md in ${project.dir}\n\n${agents.trim()}`);
+	}
+	if (parts.length > 0) lines.push("", parts.join("\n\n"));
+	return { lines, agents };
+}
+
+export function promptHasProject(snapshot: { sources: readonly string[] }): boolean {
+	return snapshot.sources.includes("project");
+}
+
+export function projectMoveNotice(
+	project: Project,
+	notesIndex: { id: string; title: string }[] | undefined,
+	workspace: string,
+): string {
+	return [
+		`${projectMoveTag(project.name)} The operator moved this conversation into the project "${project.name}".`,
+		`- Working directory: ${project.dir} — this project's directory, the same for every chat in it. It replaces the working directory named in the system prompt.`,
+		`- SOUL.md, AGENTS.md, USER.md and the skills listed in the system prompt stay in ${workspace}: reach them by absolute path from here.`,
+		projectSection(project, notesIndex).lines.join("\n"),
+	].join("\n");
 }
 
 // Test hook — module state persists across tests; production never resets.
@@ -232,17 +277,11 @@ export function buildSystemPrompt(
 		proposals,
 		project === null || project === undefined ? undefined : paths.workspace(),
 	);
-	// Managed homes never carry a project AGENTS.md — goblin's own
-	// section below is the managed project's too.
-	const projectAgents =
-		project !== null && project !== undefined && !project.managed
-			? readCapped("project AGENTS.md", join(project.dir, "AGENTS.md"), MAX_PROMPT_FILE_CHARS)
-			: null;
-	const projectInstructions = capPromptText(
-		`project:${project?.id ?? ""}`,
-		(project?.instructions ?? "").trim(),
-		MAX_PROMPT_FILE_CHARS,
-	);
+	const projectContent =
+		project === null || project === undefined
+			? null
+			: projectSection(project, notesIndex);
+	const projectAgents = projectContent?.agents ?? null;
 	noteSource("SOUL.md", soul);
 	noteSource("AGENTS.md", agents);
 	noteSource("USER.md", user);
@@ -259,24 +298,6 @@ export function buildSystemPrompt(
 
 	// The notes index stays a pointer, never the body — current text is
 	// a `note read` away.
-	const projectSection: string[] = [];
-	if (project !== null && project !== undefined) {
-		projectSection.push("", `${PROMPT_SECTIONS.project}${project.name}`);
-		const parts: string[] = [];
-		if (projectInstructions !== "") parts.push(projectInstructions);
-		if (notesIndex !== undefined && notesIndex.length > 0) {
-			// Model-authored titles are arbitrary text — a newline would
-			// restructure the section; flat-lining mirrors the app's list titles.
-			parts.push(
-				`### notes\n\n${notesIndex.map((n) => `- ${flatLine(n.title).slice(0, 200)} (id ${n.id})`).join("\n")}`,
-			);
-		}
-		if (projectAgents !== null) {
-			parts.push(`### AGENTS.md in ${project.dir}\n\n${projectAgents.trim()}`);
-		}
-		if (parts.length > 0) projectSection.push("", parts.join("\n\n"));
-	}
-
 	const onApp = channelOf(conv.id) === "app";
 	const channel = onApp ? "the goblin app" : "Telegram";
 	// A personal turn on a guest channel keeps the full persona — the
@@ -423,7 +444,7 @@ export function buildSystemPrompt(
 		`  anything leaves it or can't be undone.`,
 		`- Irreversible or destructive actions (deleting data, force-anything)`,
 		`  need an explicit go-ahead first.`,
-		...projectSection,
+		...(projectContent?.lines ?? []),
 		...(agents ? ["", PROMPT_SECTIONS.agents, "", agents.trim()] : []),
 		...(user ? ["", PROMPT_SECTIONS.user, "", user.trim()] : []),
 		"",

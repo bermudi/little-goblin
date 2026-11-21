@@ -1,19 +1,11 @@
 // Read-only attention projection over the durable owners. Items point at
 // the surface that can resolve them; this module records no second state.
 
-import { openObligations, responsibilityStage } from "../responsibility-stage.ts";
 import { listProposedSkills } from "../stateview.ts";
 import { conversationName } from "./operator-memory.ts";
 import { changesSummary, programChanges } from "./app-program-diff.ts";
 import { type AppChannelDeps, NO_STORE } from "./app-shared.ts";
 import type { AppAttentionItem, AppAttentionPage, AppAttentionResponse } from "./app-wire.ts";
-
-const STAGE_TITLE: Partial<Record<string, string>> = {
-	question: "Question",
-	review: "Ready for review",
-	blocked: "Blocked",
-	failed: "Failed",
-};
 
 // What to do about a failed memory save, from the error text the queue
 // stored (a Hindsight status code or a transport failure). Unknown text
@@ -204,60 +196,6 @@ export async function handleAttentionRoute(
 					delegation.appConversation === null
 						? { kind: "page", page: "delegations" }
 						: { kind: "conversation", conversationId: delegation.appConversation },
-			});
-		}
-	}
-
-	// Open work whose derived stage waits on the operator, or whose
-	// observation is down. A pause is the operator's own choice, not a
-	// request for attention.
-	const resps = deps.responsibilities?.resps;
-	if (resps === undefined) {
-		unavailable.push("responsibilities");
-	} else {
-		for (const resp of resps.open()) {
-			for (const att of resps.attachmentsFor(resp.responsibilityId)) {
-				if (att.unreachableSince === null) continue;
-				items.push({
-					id: `observation-unreachable:${att.attachmentId}`,
-					kind: "observation-unreachable",
-					title: `Can't observe ${att.target.agentName}`,
-					detail: `Polling ${att.target.server}/${att.target.session} has failed since ${att.unreachableSince} — last seen ${att.health}; the agent may still be running`,
-					createdAt: att.unreachableSince,
-					target: { kind: "conversation", conversationId: resp.coordinationConversationId },
-				});
-			}
-			if (resp.status === "paused") continue;
-			const reports = resps.stageReports(resp.responsibilityId);
-			for (const obligation of openObligations(resp, reports.open)) {
-				if (obligation.kind === "question" && obligation.waitsFor === "operator") {
-					items.push({
-						id: `responsibility-question:${obligation.report.reportId}`,
-						kind: "responsibility",
-						title: `Question — ${resp.outcome}`,
-						detail: obligation.question,
-						createdAt: obligation.report.createdAt,
-						target: {
-							kind: "conversation",
-							conversationId: resp.coordinationConversationId,
-						},
-					});
-				}
-			}
-			const stage = responsibilityStage(resp, reports, resps.operationsFor(resp.responsibilityId));
-			if (
-				stage.waitsFor !== "operator" ||
-				stage.stage === "paused" ||
-				stage.stage === "question"
-			)
-				continue;
-			items.push({
-				id: `responsibility:${resp.responsibilityId}:${stage.since?.reportId ?? 0}`,
-				kind: "responsibility",
-				title: `${STAGE_TITLE[stage.stage] ?? "Needs you"} — ${resp.outcome}`,
-				detail: stage.reason,
-				createdAt: stage.since?.createdAt ?? resp.updatedAt,
-				target: { kind: "conversation", conversationId: resp.coordinationConversationId },
 			});
 		}
 	}

@@ -30,7 +30,6 @@ import {
 	makeConversationSettings,
 	type ModelSettings,
 } from "./conversation-settings.ts";
-import { coordinationAnchors } from "./responsibilities.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import {
 	type AppConversationSummary,
@@ -110,13 +109,6 @@ export interface ConversationStore extends ConversationReads {
 	// null = no state change. No history replays; the caller owns logs
 	// and pending input.
 	backDm(chatId: number): Conversation | null;
-	// Spin-off/branch: copy model state into a fresh app conversation, one
-	// transaction — every event verbatim, the latest compaction pointer,
-	// every memory_contexts row. The memory queue is NOT replayed (copies
-	// are already retained); the caller owns the `spin-off`/`branched` log
-	// line. throughSeq cuts a branch at a causal position (a branch never
-	// rewrites the source); projectId is the binding branch copies from
-	// the source, fixed at creation like every other app conversation.
 	forkToApp(
 		fromId: string,
 		appId: string,
@@ -200,21 +192,12 @@ export interface ConversationStore extends ConversationReads {
 			settingsHash: string;
 		}[],
 	): number;
-	// The one write to project_id — creation only. A row already bound
-	// to a different project refuses; rebinding the same id is a no-op.
 	bindProject(id: string, projectId: string): void;
 	// Bind a landed Telegram message id to the reply event it carries —
 	// the 🔊 button's durable handle. Recorded at turn finalize, one row
 	// per delivered chunk, all pointing at the same reply seq.
 	recordDelivery(id: string, messageId: number, seq: number): void;
-	// The refusal deleteConversation would raise right now, as the message
-	// the caller should show — null when the delete would proceed.
-	// Advisory, not a fence: an anchor minted after this answer (a live
-	// turn taking a responsibility) still refuses inside deleteConversation.
 	deleteRefusal(id: string): string | null;
-	// Drop a conversation and everything it owns (events fire the FTS
-	// delete trigger). A live turn must be fenced first (runtime.stop) —
-	// this only touches the store. The anchor refusal is DeleteRefused.
 	deleteConversation(id: string): void;
 	close(): void;
 }
@@ -306,7 +289,7 @@ export function openStore(dbPath: string): ConversationStore {
 		messageEvent: historyView.messageEvent,
 	});
 
-	const deletion = makeConversationDelete(db, queries, memoryQueue, coordinationAnchors);
+	const deletion = makeConversationDelete(db, queries, memoryQueue);
 
 	function resolveConversation(
 		addr: ConversationAddress,

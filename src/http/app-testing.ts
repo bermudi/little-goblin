@@ -42,15 +42,6 @@ export function setup(
 		model?: LanguageModel;
 		scriptedModel?: ScriptedModel;
 		makeTools?: TurnToolMaker;
-		// The responsibility bag needs this setup's own stores — a
-		// factory form receives them after construction.
-		responsibilities?:
-			| AppChannelDeps["responsibilities"]
-			| ((ctx: {
-					store: ConversationStore;
-					projects: ProjectStore;
-					home: string;
-			  }) => AppChannelDeps["responsibilities"]);
 		compaction?: ConstructorParameters<typeof Runtime>[0]["compaction"];
 	} = {},
 ) {
@@ -142,14 +133,6 @@ export function setup(
 		...(opts.approvals !== undefined ? { approvals: opts.approvals } : {}),
 		...(opts.programOps !== undefined ? { programOps: opts.programOps } : {}),
 		...(opts.push !== undefined ? { push: opts.push } : {}),
-		...((): { responsibilities?: import("./app-responsibilities.ts").AppResponsibilityDeps } => {
-			if (opts.responsibilities === undefined) return {};
-			const resolved =
-				typeof opts.responsibilities === "function"
-					? opts.responsibilities({ store, projects, home })
-					: opts.responsibilities;
-			return resolved === undefined ? {} : { responsibilities: resolved };
-		})(),
 	};
 	const http = startHttp({
 		configRef,

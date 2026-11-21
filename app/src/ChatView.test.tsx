@@ -11,7 +11,7 @@ import { editedParts, FoldMark, unlandedMeta } from "./chat/MetaLine.tsx";
 import { appendQuote, quoteSpeaker } from "./chat/QuoteFab.tsx";
 import { ContextGauge, contextCount } from "./chat/ContextGauge.tsx";
 import { Composer } from "./chat/Composer.tsx";
-import { ChatView, mergeTranscript } from "./ChatView.tsx";
+import { ChatView, mergeTranscript, replyStarted } from "./ChatView.tsx";
 
 // Static markup — guards the render contract, not React behavior.
 
@@ -319,6 +319,46 @@ function mountDom() {
   });
   return dom;
 }
+
+describe("replyStarted (issue #415)", () => {
+  const msg = (role: UIMessage["role"], parts: unknown[]) =>
+    ({ id: role, role, parts }) as unknown as UIMessage;
+
+  test("the waiting row stays until the reply has something to show", () => {
+    expect(replyStarted([])).toBe(false);
+    expect(replyStarted([msg("user", [{ type: "text", text: "hi" }])])).toBe(false);
+    expect(replyStarted([msg("user", []), msg("assistant", [])])).toBe(false);
+    expect(
+      replyStarted([msg("user", []), msg("assistant", [{ type: "step-start" }])]),
+    ).toBe(false);
+  });
+
+  test("a reply with content is the one card — no waiting row under it", () => {
+    expect(
+      replyStarted([
+        msg("user", []),
+        msg("assistant", [{ type: "step-start" }, { type: "text", text: "on it" }]),
+      ]),
+    ).toBe(true);
+  });
+
+  test("a previous settled assistant does not count as the remote turn reply", () => {
+    const settled = msg("assistant", [{ type: "text", text: "finished" }]);
+    const user = msg("user", []);
+    expect(replyStarted([user, settled])).toBe(true);
+    expect(replyStarted([user, settled], settled.id)).toBe(false);
+    expect(
+      replyStarted([user, settled, { ...settled, id: "a2", parts: [] }], settled.id),
+    ).toBe(false);
+    expect(
+      replyStarted([
+        user,
+        settled,
+        { ...settled, id: "a2", parts: [{ type: "text", text: "new" }] },
+      ], settled.id),
+    ).toBe(true);
+  });
+});
 
 describe("unlanded turn records (issue #408)", () => {
   const asMsg = (m: unknown) => m as UIMessage;
@@ -1233,7 +1273,10 @@ describe("ChatView reload window (issue #79)", () => {
   });
 
   test("an idle turn-start resumes the reader and turn-end reconciles history once", async () => {
-    let stored: UIMessage[] = [];
+    let stored: UIMessage[] = [
+      userMsg("u0", "previous question"),
+      assistantMsg("a0", "finished answer"),
+    ];
     let historyFetches = 0;
     let streamRequests = 0;
     let events!: ReadableStreamDefaultController<Uint8Array>;
@@ -1244,13 +1287,10 @@ describe("ChatView reload window (issue #79)", () => {
         controller.enqueue(encoder.encode('data: {"type":"state","live":false}\n\n'));
       },
     });
+    let live!: ReadableStreamDefaultController<Uint8Array>;
     const liveStream = new ReadableStream<Uint8Array>({
       start(controller) {
-        for (const chunk of [
-          { type: "start", messageId: "a1" },
-          { type: "text-start", id: "t1" },
-          { type: "text-delta", id: "t1", delta: "live answer" },
-        ]) controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+        live = controller;
       },
     });
     globalThis.fetch = Object.assign(
@@ -1306,10 +1346,20 @@ describe("ChatView reload window (issue #79)", () => {
     await act(async () => {
       events.enqueue(encoder.encode('data: {"type":"turn-start"}\n\n'));
     });
+    expect(dom.container.querySelector(".msg.pending.shimmer")).not.toBeNull();
     for (let i = 0; i < 100 && streamRequests < 2; i++) {
       await act(async () => new Promise((resolve) => setTimeout(resolve, 10)));
     }
     expect(streamRequests).toBe(2);
+    await act(async () => {
+      for (const chunk of [
+        { type: "start", messageId: "a1" },
+        { type: "text-start", id: "t1" },
+        { type: "text-delta", id: "t1", delta: "live answer" },
+      ]) live.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+    });
+    expect(dom.container.querySelector(".msg.pending.shimmer")).toBeNull();
+    expect(dom.container.querySelectorAll(".msg.assistant.streaming")).toHaveLength(1);
     expect(dom.container.textContent).toContain("live answer");
     await act(async () => {});
     const historyBeforeTurnEnd = historyFetches;
@@ -2614,6 +2664,75 @@ describe("ChatView edit and branch", () => {
     expect(
       dom.container.querySelectorAll(".msg.assistant:not(.pending)"),
     ).toHaveLength(1);
+  });
+
+  test("Retry turn-end reconciliation keeps only the rewound reply", async () => {
+    let stored: UIMessage[] = [
+      userMsg("u1", "hello"),
+      assistantMsg("a1", "old reply"),
+    ];
+    let eventsController!: ReadableStreamDefaultController<Uint8Array>;
+    let retryPosts = 0;
+    const eventsStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        eventsController = controller;
+        controller.enqueue(new TextEncoder().encode('data: {"type":"state","live":false}\n\n'));
+      },
+    });
+    globalThis.fetch = Object.assign(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        if (url.endsWith("/messages")) {
+          return jsonResponse({
+            messages: stored,
+            ratings: [],
+            rateableMessageIds: stored.filter((message) => message.role === "assistant").map((message) => message.id),
+          });
+        }
+        if (url.endsWith("/stream")) return new Response(null, { status: 204 });
+        if (url.endsWith("/events"))
+          return new Response(eventsStream, {
+            headers: { "content-type": "text/event-stream" },
+          });
+        if (url === "/api/app/chat") {
+          const body = JSON.parse(String(init?.body)) as {
+            conversationId: string;
+            retry?: boolean;
+          };
+          expect(body).toEqual({ conversationId: "app/meta-01", retry: true });
+          retryPosts++;
+          stored = [userMsg("u1", "hello"), assistantMsg("a2", "new reply")];
+          return jsonResponse({ submitted: true }, 202);
+        }
+        return jsonResponse(configFallback());
+      },
+      { preconnect: dom.realFetch.preconnect },
+    );
+    await mountChat();
+    await settle(() => dom.container.textContent?.includes("old reply") ?? false);
+
+    const retry = dom.container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Retry"]',
+    );
+    expect(retry).not.toBeNull();
+    await act(async () => {
+      retry!.dispatchEvent(new dom.win.Event("click", { bubbles: true }) as unknown as Event);
+    });
+    await settle(() => retryPosts === 1);
+    await act(async () => {
+      eventsController.enqueue(new TextEncoder().encode('data: {"type":"turn-end"}\n\n'));
+    });
+    await settle(() => dom.container.textContent?.includes("new reply") ?? false);
+
+    expect(dom.container.textContent).toContain("new reply");
+    expect(dom.container.textContent).not.toContain("old reply");
+    expect(dom.container.querySelectorAll(".msg.user")).toHaveLength(1);
+    expect(dom.container.querySelectorAll(".msg.assistant:not(.pending)")).toHaveLength(1);
   });
 
   test("an edit that fails after the server committed keeps the committed transcript — the dropped tail stays dropped", async () => {
@@ -4063,10 +4182,6 @@ describe("MessageParts activity folding (happy-dom)", () => {
   });
 });
 
-// The fold's open state: auto until the operator steers it. Activity
-// opens it, the lull between calls holds (collapsing for the gap
-// flashes on every new call), sealing settles — clean closes,
-// failures stay open — and a manual toggle outranks all of it.
 describe("MessageParts Worked fold state (happy-dom)", () => {
   const dom = mountDom();
 
@@ -4090,79 +4205,69 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
     act(async () => {
       dom.root?.render(<MessageParts parts={parts} streaming={streaming} />);
     });
-  // A summary click is the operator's toggle — the fold owns it
-  // through state, the DOM's own flip is prevented.
-  const click = () =>
+  const toggle = () =>
     act(() => {
-      fold().querySelector("summary")!.click();
+      fold().open = !fold().open;
     });
 
-  test("the lull between calls holds the fold open; sealing settles a clean run", async () => {
+  test("a running, failing or settled run never opens its fold by itself", async () => {
     dom.root = createRoot(dom.container);
     await render([part("b1", "input-available")], true);
-    expect(fold().open).toBe(true);
-    // First call done, the message still arriving — a lull, not a
-    // settle: collapsing for the gap flashes on the next call.
-    await render([part("b1", "output-available")], true);
-    expect(fold().open).toBe(true);
-    // The next call joins the same run — still open, no flash.
-    await render(
-      [part("b1", "output-available"), part("b2", "input-available")],
-      true,
-    );
-    expect(fold().open).toBe(true);
-    // The message ends clean — the run seals and the fold closes.
-    await render(
-      [part("b1", "output-available"), part("b2", "output-available")],
-      false,
-    );
     expect(fold().open).toBe(false);
-  });
-
-  test("a manual collapse holds through the lull, new calls, and failures", async () => {
-    dom.root = createRoot(dom.container);
-    await render([part("b1", "input-available")], true);
-    expect(fold().open).toBe(true);
-    click();
-    expect(fold().open).toBe(false);
-    // New calls landing must not pop the fold back open.
+    expect(fold().textContent).toContain("Working for");
+    expect(dom.container.querySelector(".tool-run")!.hasAttribute("open")).toBe(false);
     await render(
       [part("b1", "output-available"), part("b2", "input-available")],
       true,
     );
     expect(fold().open).toBe(false);
-    // A failure doesn't override a deliberate close either — the
-    // summary's fail chip carries the signal.
     await render(
       [part("b1", "output-available"), part("b2", "output-error")],
       false,
     );
     expect(fold().open).toBe(false);
     expect(fold().querySelector(".worked-fail")).not.toBeNull();
+    expect(dom.container.querySelectorAll(".tool-run[open]").length).toBe(0);
   });
 
-  test("a failure keeps the fold open at seal; a manual open survives a clean one", async () => {
+  test("a fold the operator opens stays open while calls land and the run seals", async () => {
     dom.root = createRoot(dom.container);
     await render([part("b1", "input-available")], true);
-    await render([part("b1", "output-error")], false);
+    await toggle();
     expect(fold().open).toBe(true);
-    click();
-    expect(fold().open).toBe(false);
-  });
-
-  test("prose behind a run seals it mid-stream — the fold settles while the turn goes on", async () => {
-    dom.root = createRoot(dom.container);
-    await render([part("b1", "input-available")], true);
+    await render(
+      [part("b1", "output-available"), part("b2", "input-available")],
+      true,
+    );
     expect(fold().open).toBe(true);
-    // A text part lands behind the batch: the run can't grow even
-    // though the message is still arriving — settle now, not at
-    // the end of the turn.
     await render(
       [part("b1", "output-available"), { type: "text", text: "confirmed" }],
       true,
     );
+    expect(fold().open).toBe(true);
+    await render(
+      [part("b1", "output-available"), { type: "text", text: "confirmed" }],
+      false,
+    );
+    expect(fold().open).toBe(true);
+    await toggle();
     expect(fold().open).toBe(false);
-    // The next batch gets its own fold, open while it works.
+  });
+
+  test("a run that owns the tail of a streaming reply reads as working between calls", async () => {
+    dom.root = createRoot(dom.container);
+    await render([part("b1", "output-available")], true);
+    expect(fold().querySelector("summary")!.textContent).toContain("Working for");
+    await render(
+      [part("b1", "output-available"), { type: "text", text: "done" }],
+      true,
+    );
+    expect(fold().querySelector("summary")!.textContent).toContain("Worked");
+    expect(fold().querySelector("summary")!.textContent).not.toContain("Working for");
+  });
+
+  test("a new batch behind prose gets its own closed fold", async () => {
+    dom.root = createRoot(dom.container);
     await render(
       [
         part("b1", "output-available"),
@@ -4174,34 +4279,7 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
     const folds = dom.container.querySelectorAll<HTMLDetailsElement>(".worked");
     expect(folds.length).toBe(2);
     expect(folds[0]!.open).toBe(false);
-    expect(folds[1]!.open).toBe(true);
-  });
-
-  test("a failed batch stays open when prose seals it mid-stream", async () => {
-    dom.root = createRoot(dom.container);
-    await render([part("b1", "input-available")], true);
-    await render(
-      [part("b1", "output-error"), { type: "text", text: "that failed" }],
-      true,
-    );
-    expect(fold().open).toBe(true);
-  });
-
-  test("a settled clean fold mounts closed — the operator can open it", async () => {
-    dom.root = createRoot(dom.container);
-    await render(
-      [part("b1", "output-available"), part("b2", "output-available")],
-      false,
-    );
-    expect(fold().open).toBe(false);
-    click();
-    expect(fold().open).toBe(true);
-    // And it stays open across rerenders — nothing re-asserts auto.
-    await render(
-      [part("b1", "output-available"), part("b2", "output-available")],
-      false,
-    );
-    expect(fold().open).toBe(true);
+    expect(folds[1]!.open).toBe(false);
   });
 });
 

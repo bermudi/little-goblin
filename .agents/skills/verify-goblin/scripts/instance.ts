@@ -164,12 +164,10 @@ function seedHome(home: string, fakePort: number): void {
 		system1: { auth: "fake-system1", baseUrl: `http://127.0.0.1:${fakePort}` },
 		// GOBLIN_VERIFY_DELEGATION=1 enables a throwaway hc-backed delegate
 		// run. The codex/gpt-6-luna pair is the operator-named test harness.
-		// Responsibility stays on T3 and is not exercised here.
 		...(process.env.GOBLIN_VERIFY_DELEGATION === "1"
 			? {
 					delegation: {
 						harnesses: { codex: { kind: "codex", args: ["--model", "gpt-6-luna"] } },
-						defaults: { default: "codex" },
 					},
 				}
 			: {}),
@@ -249,16 +247,12 @@ const REAL_DB = join(
 	"state/goblin.sqlite",
 );
 
-// The copy must never reach anyone: no push targets, no queued mail or memory
-// writes, no scheduled programs or armed responsibilities. Telegram, mail and
-// memory are already off in the seeded config.
 const SCRUB = [
 	"DELETE FROM app_push_deliveries",
 	"DELETE FROM app_push_subscriptions",
 	"DELETE FROM mail_outbox",
 	"DELETE FROM memory_outbox",
 	"UPDATE programs SET enabled = 0",
-	"UPDATE responsibilities SET armed = 0",
 ];
 
 function copyRealDb(home: string): void {

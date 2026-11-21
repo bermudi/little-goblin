@@ -11,7 +11,7 @@ How to reach and prove each feature from the user's point of view. Every entry h
 | Projects: create one | [projects.md](projects.md) |
 | Rolling chat: continue and start a new conversation | [rolling.md](rolling.md) |
 | Settings: model services | [settings-accounts.md](settings-accounts.md) |
-| Settings: delegation agents and defaults | [settings-delegation.md](settings-delegation.md) |
+| Settings: delegation agents | [settings-delegation.md](settings-delegation.md) |
 | Skills: browse and invoke an installed skill | [skills.md](skills.md) |
 | Status: service and memory state | [status.md](status.md) |
 | Voice notes: upload audio and prove transcription | [voice.md](voice.md) |

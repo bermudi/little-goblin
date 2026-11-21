@@ -9,7 +9,14 @@ import { paths } from "../home-layout.ts";
 import { setLogFile } from "../log.ts";
 import type { Conversation } from "../conversation-read.ts";
 import { openStore } from "../conversation.ts";
-import { _resetPromptSourcesForTest, buildSystemPrompt, systemPromptFor } from "./prompt.ts";
+import {
+	_resetPromptSourcesForTest,
+	buildSystemPrompt,
+	projectMoveNotice,
+	projectSection,
+	systemPromptFor,
+} from "./prompt.ts";
+import type { Project } from "../projects.ts";
 import { useHome } from "../testkit.ts";
 
 const conv: Conversation = {
@@ -35,6 +42,19 @@ const conv: Conversation = {
 
 // The deployment's always-on set — as index.ts builds it without TTS.
 const tools = ["read_file", "write_file", "edit_file", "bash", "program", "send_file"];
+
+const promptProject: Project = {
+	id: "p-test",
+	name: "Test Project",
+	slug: "test-project",
+	home: "/managed/test-project",
+	dir: "/workspace/test-project",
+	managed: true,
+	instructions: "Ship the thing.",
+	memory: "shared",
+	createdAt: "2026-11-21T00:00:00.000Z",
+	archivedAt: null,
+};
 
 describe("buildSystemPrompt", () => {
 	test("includes context self-management only when the agent tool is mounted", () => {
@@ -108,6 +128,26 @@ describe("buildSystemPrompt", () => {
 		} finally {
 			delete process.env.GOBLIN_HOME;
 		}
+	});
+
+	test("project section is the exact section in the bound system prompt", () => {
+		const notesIndex = [{ id: "n-1", title: "Roadmap" }];
+		const section = projectSection(promptProject, notesIndex);
+		const bound = buildSystemPrompt(
+			{ ...conv, id: "app/project-section", projectId: promptProject.id },
+			tools,
+			promptProject,
+			notesIndex,
+		);
+		expect(bound.text).toContain(section.lines.join("\n"));
+	});
+
+	test("project move notice uses the fixed message text", () => {
+		const notesIndex = [{ id: "n-1", title: "Roadmap" }];
+		const section = projectSection(promptProject, notesIndex).lines.join("\n");
+		expect(projectMoveNotice(promptProject, notesIndex, "/goblin/workspace")).toBe(
+			`[project: moved into Test Project] The operator moved this conversation into the project "Test Project".\n- Working directory: /workspace/test-project — this project's directory, the same for every chat in it. It replaces the working directory named in the system prompt.\n- SOUL.md, AGENTS.md, USER.md and the skills listed in the system prompt stay in /goblin/workspace: reach them by absolute path from here.\n${section}`,
+		);
 	});
 
 	test("missing SOUL.md falls back to the default identity — loudly", () => {

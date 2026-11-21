@@ -33,11 +33,13 @@ the trust-mode choice, browser-origin limits and when to require a token.
 
 **Client.** A missing build is a fail-loud 500 plus log line, never a
 silent empty page; the transcript's single "Worked" fold is openclaw's
-mechanism, zero code. Its open state is automatic until the operator
-toggles it (2026-10-24): activity opens it, the lull between calls
-holds — collapsing for the gap flashes on every new call — and the
-message's seal settles it, clean closed and failures open. A manual
-toggle outranks all of it for that fold's life.
+mechanism, zero code. Folds never open or close by themselves (operator,
+2026-11-21, #837; replaces the 2026-10-24 auto-open ruling): the
+"Worked" fold and each tool row start closed, and only the operator
+toggles them. An automatic open and close moved the text under the
+reader on every call. The closed summary carries the live state instead:
+"Working for Ns" while the run owns the tail of a streaming reply, the
+failure count when a call fails.
 
 **Packaging ladder.** PWA first, on the tailnet URL through `tailscale serve`
 (installable, ~1s open; zero APK churn — the operator evaluated twenty-APK
@@ -232,6 +234,34 @@ Render-side only; history text is never rewritten.
 Operator ask: conversation navigation should be a joy. The outline
 borrows t3code's timeline minimap feel, not its screenshots; see
 [`Outline.tsx`](../app/src/Outline.tsx).
+
+## Following a streaming reply (ruling 2026-11-21, #837)
+
+Operator ask: when a reply is longer than the screen, show its head,
+not its tail. On send, the view follows the reply only until the reply's
+first line reaches the top of the transcript, then holds there; the
+rest arrives below, and a "↓" button jumps to the end. Scrolling to the
+end by hand follows the tail again; any upward scroll lets go.
+
+The follow mode changes only on the operator's input, a mechanism
+borrowed from t3code's chat scroll: wheel, touch and page keys release it
+at once, and any upward scroll the app did not make is the backstop
+(scrollbar drags, keys outside the transcript). A scroll event that
+ends at the end is not a reason to switch from following the reply to
+the tail: the browser clamps the scroll position when content above
+shrinks (the "…" row unmounting), and that is not the operator's input.
+Content growth re-sticks in the same frame through a ResizeObserver, not
+an effect a frame late. Replies already below the asked message when the
+follow starts are never its head.
+Turn-end is remembered in reply-follow state, so the follow resolves when
+the reply head appears even if it mounts later.
+The transcript turns the browser's scroll anchoring off
+(`overflow-anchor: none`, as t3code's timeline does): the follow and the
+older-page restore own the scroll position, and anchoring kept the view
+at the end while a retried reply grew, so its head never held.
+See [`useTranscriptFollow.ts`](../app/src/chat/useTranscriptFollow.ts).
+One assistant card per reply: the "…" waiting row shows only until the
+reply has a part to draw (#415).
 
 ## Chat rail rows and project folders (ruling 2026-11-21, #838)
 
@@ -547,6 +577,9 @@ that is the point, and it is why the write is one transaction. Rendering is
 the bubble's own inline textarea; non-text parts (attachments, note and
 skill chips) ride into the replacement, only text is rewritten.
 
+Retry is an edit with the same text: the same rewind, so the reply it
+replaces is deleted, not kept above the new one (operator, 2026-11-21).
+
 **The cut is causal, not positional.** Events are cut at
 `COALESCE(anchor_seq, seq)`: a late answer to an earlier question belongs to
 that question's span and survives an edit below it, exactly like the
@@ -572,8 +605,8 @@ and silently re-bind stale rating and journal rows to new events.
 /api/app/conversations/:id/branch` with `{messageId}` creates a new app
 conversation holding the source's causal prefix through the selected event,
 then returns 201 and the client opens it. The source is never modified. A
-branch copies the source's project binding (fixed at creation, like every
-app conversation), its memory exclusion, its settings, its contexts
+branch copies the source's project binding when the branch is created and
+also copies its memory exclusion, its settings, its contexts
 anchored at or below the cut, and the projections of the events it copies,
 and its compaction only when
 `boundary_seq < throughSeq` — a summary reaching past the cut describes
@@ -767,101 +800,22 @@ not covered yet.
 
 `deleteConversation` must sweep every FK child or the row delete throws a
 bare constraint error — the app rail's delete was unreachable for any
-conversation that had ever carried a wake. Two shapes, two rulings:
+conversation that had ever carried a wake.
 
 - **Wake rows ride the delete** (same transaction): deliveries, work
   events, and their joins are the conversation's delivery bookkeeping;
-  they mean nothing without it. `openStore` ensures the wake and
-  responsibilities schemas alongside projects/notes so the sweep and the
-  anchor check always find their tables.
-- **A coordination surface outlives its responsibility, never the reverse.**
-  While any responsibility (open or closed) anchors the conversation,
-  delete refuses, naming them — the handover loop and wake delivery stand
-  on that surface, and closed records keep their history. The refusal is
-  the operator's to resolve, not the delete's to cascade.
-
-The refusal's wire contract (ruling 2026-11-08, #205): a DELETE the store
-refuses answers `409` with the refusal text — never an opaque 500 — and
-**must not fence the live turn**: the route asks the store
-(`deleteRefusal`, advisory) before `runtime.stop`, so the operator keeps
-both the turn and the reason. A delete that will proceed still stops the
-turn first, as always. The ask is advisory, not a fence: an anchor minted
-after it (the still-live turn taking a responsibility) refuses inside
-`deleteConversation` — a typed `DeleteRefused` — and that answer is a 409
-with the message too, after the fence; only it can lose the turn, and it
-never hides the reason.
+  they mean nothing without it. `openStore` ensures the wake schema
+  alongside projects/notes so the sweep always finds its tables.
 
 Reconcile treats a wake whose conversation row is gone (out-of-band
 surgery only — the FK chain and the sweep keep them together) exactly
 like a ghost run link: that wake fails loudly and terminally;
 classification continues for every other wake.
 
-The feed consequence (2026-10-19): unprunable history means the wire,
-not the table, carries the bound. `feedEvents` serves each
-responsibility's newest `FEED_EVENT_WINDOW` (50) developments ascending
-plus `eventsTruncated` — the count of older durable rows omitted —
-while the app polls the read model every 15s. Durable rows are never
-pruned by the feed; `work_events (responsibility_id, event_id DESC)`
-is the index the window walks.
-
 ## Delivery and arm truth (ruling 2026-10-20)
 
 Missing delivery evidence is not permission to try again. See the
-[scheduled delivery](../src/wake-dispatcher.ts) and
-[worker send](../src/responsibility-operations.ts) owners.
-
-The app reports whether the linked schedule is active, not whether an
-earlier setup reported success. Show the next check-in that can actually
-run, not the next scheduler tick. Keep an older view visible when refresh
-fails, but mark it stale. See [`ResponsibilityFeed.tsx`](../app/src/ResponsibilityFeed.tsx).
-
-## Outcome posts (ruling 2026-11-02)
-
-The feed separates outcomes from activity. A **post** is a responsibility
-report: a stated result, need or change, with reporter, evidence and
-revision (design/programs.md → Reports and stages). Activity means
-check-ins, observations and deliveries. It stays in the expanded row's
-History. There is no separate post table: reports are already durable,
-append-only and linked to the responsibility, so the feed is a read model
-over them. `feedPosts` serves the newest `FEED_POST_WINDOW` (20), newest
-first, plus `postsTruncated`.
-
-Each post says whose word it is. `assessed` is goblin's own report.
-`unreviewed` is a worker's claim that is still an open obligation, and
-turns `reviewed` once it has a resolution (design/programs.md →
-Snapshots and obligations) — a later goblin report that does not name
-it leaves it `unreviewed`. A resolved post shows how (`resolved #id`,
-`closed`, `migrated`). `migrated` is a legacy status. `current` is false
-once an operator correction has overtaken the post. A stale post stays
-visible and dimmed, never hidden. Review status is derived from the
-append-only resolution rows, never a flag on the post, so nothing can
-drift. Above the posts, an **Open** list shows every open question and
-unassessed claim, oldest first, with whom it waits for.
-
-**Typed posts.** A report's `purpose` says what the post carries:
-`status` (the default: the state report itself), `finding` (something
-learned that is worth the operator's eyes), `draft` (a produced artifact
-for review, usually `ready`) or `change` (a meaningful change made in the
-world). Purpose is independent of state, so the stage table never reads
-it. `artifacts` (title and ref) link what the post produced. A finished
-delegation's exported files become its artifacts. Only an
-`http(s)` ref renders as a link; a path renders as text, so no
-model-supplied ref can become a `javascript:` URL. Findings and drafts
-are reports rather than a second table, which keeps review, revision
-and evidence semantics in one place. Routine check-ins with nothing new
-file no report.
-
-The newest post sits under the collapsed pill. The operator can read the
-result, question or blocker without opening each item. **Open
-conversation** goes to the coordination conversation, where comments and
-corrections already keep the item's context. That conversation is the
-item's discussion; there is no separate comment thread.
-
-**One place to watch.** The cross-project feed lives on Attention, under
-the operator's open decisions. It no longer sits on the Projects index, so
-Attention and a home feed don't compete as two inboxes. A project page
-keeps its own feed. Attention's `responsibility` items and the feed rows
-open the same coordination conversation.
+[scheduled delivery](../src/wake-dispatcher.ts) owner.
 
 ## Pinning (ruling 2026-10-10)
 
@@ -1069,63 +1023,6 @@ this same idea (`@json-render/core`, `@json-render/react`), layered on the AI
 SDK. Not adopted — see the pin and the reviewer criteria at the bottom of
 `docs/generative-ui.md`. Operator-facing plain-language walkthrough of this
 section: same file.
-
-## Coordination fences & delivery evidence (ruling 2026-10-20)
-
-- **Corrections fence the whole project, not one lane.** Every
-  conversation bound to the project can reach the coordination tools,
-  so `service.correct()` bumps the epoch of every bound lane plus the
-  coordination conversation inside the same commit as the revision and
-  the durable event — one commit, one rollback unit. The commit hook
-  (`onCorrectionCommitted`, wired to `runtime.cancelFenced`) then
-  cancels each fenced lane before the correction wake is pumped; a hook
-  failure on one lane never skips the rest and never undoes the commit.
-- **Unresolved delivery fences the attachment generation.** While any
-  operation on an attachment generation is `sent`/`uncertain`, no new
-  operation prepares (check+insert atomic) and no sibling prepared op
-  can claim — regardless of brief, revision, tool-call id, or restart.
-  The only way out is `reconcile {operation, delivery, evidence}`:
-  inspected evidence closes the op `acknowledged`/`refused`, records
-  verdict+evidence+prior outcome, is idempotent on identical replay,
-  and conflicts by name. A live in-process dispatch refuses reconcile;
-  a crashed `sent` row reconciles freely. Settlements CAS from `sent`
-  so a reconciled row is never overwritten.
-- **Same-identity reattach skips reconciliation — refused.** A reattach
-  whose target equals the bound dispatch identity (server, session,
-  terminal, agent_session, kind) while a delivery is unresolved throws
-  `ReconciliationConflict` naming the op (tool: `delivery-uncertain`;
-  HTTP: 409). A genuinely changed identity is a deliberate adoption and
-  bumps generation normally.
-- **Reattach is conditional on the caller's snapshot.** The app route
-  and the coordination tool both snapshot the attachment before
-  awaiting the live-agent listing; `resps.reattach` compares that
-  snapshot's binding fields — generation, health, `detachedAt` —
-  against the current row inside the same immediate transaction as the
-  write. Any drift throws `StaleAttachmentError` (HTTP: 409; tool:
-  `refused:"stale-attachment"`) and writes nothing — a detach, a
-  competing reattach's generation bump, or a health write that landed
-  mid-listing wins whole instead of being overwritten. An observer
-  cursor refresh alone is not a binding change and never conflicts;
-  callers without a snapshot keep the unconditional behavior.
-- **Observation unavailability is declared, not inferred (ruling
-  2026-11-13, #491).** A target whose list call fails keeps every
-  attachment's health (outage ≠ disappearance); the poll records a
-  durable consecutive count plus the first failure's time on each row.
-  The third consecutive failure declares the outage — `unreachableSince`
-  projects from the row only at the threshold — and the feed pill reads
-  `<name> (unreachable since HH:MM)`, an `observation-unreachable`
-  Attention item opens the responsibility's conversation, and doctor's
-  `observer.unreachable` warns while declared. The next successful
-  reconcile clears count and declaration before its ordinary cursor
-  commit; a success between failures restarts the count. Detach and
-  reattach both reset the bookkeeping — deliberate binding changes are
-  not outages.
-- **Responsibility-destination programs are durable enqueues.** If the
-  `recordDevelopment` write throws, `fireScheduled` does not `markRan` —
-  the occurrence stays due and the next scan retries the same source
-  key onto the same work event. Generic Telegram fires keep
-  attempt-once.
-
 
 ## Skill picker & temp skills (ruling 2026-10-21)
 

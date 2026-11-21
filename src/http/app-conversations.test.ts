@@ -8,7 +8,6 @@ import {
 } from "../agent/models-dev.ts";
 import { openStore } from "../conversation.ts";
 import { appAddress } from "../conversation-address.ts";
-import { openResponsibilities } from "../responsibilities.ts";
 
 import { deferred, sleep, waitUntil } from "../testkit.ts";
 import { claudeScript } from "../testkit/turn-script-claude.ts";
@@ -497,6 +496,18 @@ describe("app conversations", () => {
 				body: JSON.stringify({ id: "chat-01", memoryExcluded: false }),
 			});
 			expect(same.status).toBe(201);
+
+			const moveTarget = projects.create({ name: "move-target" });
+			const binding = await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01", projectId: moveTarget.id }),
+			});
+			expect(binding.status).toBe(409);
+			expect(await binding.json()).toEqual({
+				error: "conversation app/chat-01 has no project; use PATCH to move it into one",
+			});
+			expect(store.get("app/chat-01")?.projectId).toBeNull();
 
 			// Project-off counts as excluded: an include assertion on a
 			// bound row conflicts even when its own flag was never set.
@@ -1192,6 +1203,110 @@ describe("app conversations", () => {
 		}
 	});
 
+	test("PATCH moves a loose chat in place and returns mapped move refusals", async () => {
+		const { http, call, store, projects } = setup({ token: APP_TOKEN_NAME });
+		const patch = (id: string, body: unknown) =>
+			call(`/api/app/conversations/${id}`, {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body),
+			});
+		try {
+			await createAndChat(call);
+			const project = projects.create({ name: "Move Target", instructions: "Ship the thing." });
+			const moved = await patch("chat-01", { projectId: project.id });
+			expect(moved.status).toBe(200);
+			expect(await moved.json()).toEqual({});
+			expect(store.get("app/chat-01")?.projectId).toBe(project.id);
+			expect(store.history("app/chat-01").at(-1)?.parts[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("[project: moved into Move Target]"),
+			});
+			expect((await patch("chat-01", { projectId: project.id })).status).toBe(200);
+			expect(store.history("app/chat-01")).toHaveLength(3);
+
+			expect((await patch("chat-01", { projectId: project.id, title: "not allowed" })).status).toBe(
+				422,
+			);
+			expect((await patch("chat-01", { projectId: "no-such-project" })).status).toBe(404);
+			const archived = projects.create({ name: "Archived Target" });
+			projects.patch(archived.id, { archived: true });
+			expect((await patch("chat-01", { projectId: archived.id })).status).toBe(409);
+			const other = projects.create({ name: "Other Target" });
+			expect((await patch("chat-01", { projectId: other.id })).status).toBe(409);
+			expect(
+				(
+					await call("/api/app/conversations/missing", {
+						method: "PATCH",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ projectId: project.id }),
+					})
+				).status,
+			).toBe(404);
+			const child = store.resolve(appAddress("move-child"), "/w");
+			store.db.run("UPDATE conversations SET parent_conversation_id = ? WHERE id = ?", [
+				"app/chat-01",
+				child.id,
+			]);
+			expect((await patch("move-child", { projectId: project.id })).status).toBe(422);
+		} finally {
+			http.stop();
+		}
+	});
+
+	test("PATCH refuses a move while the app turn is running", async () => {
+		const entered = deferred<void>();
+		const gate = deferred<void>();
+		const model = sdkScript();
+		model.script({
+			kind: "hold",
+			parts: [],
+			gate: gate.promise,
+			entered: () => entered.resolve(),
+		});
+		const { http, call, store, projects, runtime } = setup({
+			token: APP_TOKEN_NAME,
+			scriptedModel: model,
+		});
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			const project = projects.create({ name: "Busy Target" });
+			const chat = await call("/api/app/chat", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					conversationId: "app/chat-01",
+					message: { id: "busy-message", role: "user", parts: [{ type: "text", text: "hold" }] },
+				}),
+			});
+			expect(chat.status).toBe(202);
+			await entered.promise;
+			const refused = await call("/api/app/conversations/chat-01", {
+				method: "PATCH",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ projectId: project.id }),
+			});
+			expect(refused.status).toBe(409);
+			expect(store.get("app/chat-01")?.projectId).toBeNull();
+			expect(
+				store.history("app/chat-01").some((message) =>
+					message.parts.some(
+						(part) => part.type === "text" && part.text.startsWith("[project: moved into"),
+					),
+				),
+			).toBe(false);
+			gate.resolve();
+			await waitUntil(() => !runtime.busy("app/chat-01"), "held turn drains");
+		} finally {
+			gate.resolve();
+			http.stop();
+		}
+	});
+
 	test("archive toggles the flag, keeps history, and a new turn resurrects the row", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		const patch = (body: unknown) =>
@@ -1335,57 +1450,29 @@ describe("app conversations", () => {
 		}
 	});
 
-	test("a refused delete answers 409 with the refusal and never stops the live turn", async () => {
-		const { http, call, store, projects, runtime } = setup({
-			token: APP_TOKEN_NAME,
-			deltas: ["a", "b", "c", "d", "e"],
-			delayMs: 50,
-		});
-		const resps = openResponsibilities(store.db);
+	test("deleting a conversation that anchors a legacy responsibility answers 409 and keeps it", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {
 			await call("/api/app/conversations", {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({ id: "chat-01" }),
 			});
-			const project = projects.create({ name: "anchored" });
-			const { responsibilityId } = resps.create({
-				projectId: project.id,
-				coordinationConversationId: "app/chat-01",
-				handoverKey: "kl",
-				understanding: {
-					outcome: "land the fix",
-					situation: "agent is mid-task",
-					nextAction: "check the diff",
-					checkpoints: ["before the publish step"],
-					completionEvidence: ["ci green"],
-				},
-			}).responsibility;
-			const chat = await call("/api/app/chat", {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify({
-					conversationId: "app/chat-01",
-					message: { id: "m1", role: "user", parts: [{ type: "text", text: "hi" }] },
-				}),
-			});
-			expect(chat.status).toBe(202);
-			await waitUntil(() => runtime.busy("app/chat-01"), "turn running");
-			const stream = await call("/api/app/conversations/chat-01/stream");
-			expect(stream.status).toBe(200);
-			const epoch = store.get("app/chat-01")?.epoch;
-
+			store.db.exec(
+				`CREATE TABLE responsibilities (
+					responsibility_id TEXT PRIMARY KEY,
+					status TEXT NOT NULL,
+					created_at INTEGER NOT NULL DEFAULT 0,
+					coordination_conversation_id TEXT NOT NULL REFERENCES conversations(id)
+				)`,
+			);
+			store.db
+				.query("INSERT INTO responsibilities (responsibility_id, status, coordination_conversation_id) VALUES (?, ?, ?)")
+				.run("resp-1", "completed", "app/chat-01");
 			const del = await call("/api/app/conversations/chat-01", { method: "DELETE" });
 			expect(del.status).toBe(409);
-			const refusal = ((await del.json()) as { error: string }).error;
-			expect(refusal).toContain(responsibilityId);
-			expect(refusal).toContain("resolve them before deleting");
-
-			// The row, the epoch, and the live turn all survive the refusal.
+			expect(((await del.json()) as { error: string }).error).toContain("resp-1 (completed)");
 			expect(store.get("app/chat-01")).not.toBeNull();
-			expect(store.get("app/chat-01")?.epoch).toBe(epoch);
-			expect(streamedText(await stream.text())).toBe("abcde");
-			expect(store.history("app/chat-01").map((m) => m.role)).toEqual(["user", "assistant"]);
 		} finally {
 			http.stop();
 		}

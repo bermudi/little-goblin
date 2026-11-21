@@ -20,10 +20,10 @@ Sidebar → Settings → Delegation → switch "delegate to coding agents" on.
 
 ```sh
 ab click 'button[aria-label="Settings"]'
-ab find role button click --name 'Delegation Coding agents'
+ab find role button click --name 'Delegation Coding harnesses'
 ab click 'button[aria-label="delegation"]'
 ab find role button click --name '+ Add a coding agent'
-ab fill '[aria-label="Name"]' 'codex'
+ab find label 'Name' fill 'codex'
 ab fill '.del-harness .del-grid .frow:nth-of-type(2) input' 'codex'
 ab fill 'textarea[id^="del-args-"]' '--model\ngpt-6-luna'
 ab click 'button[aria-label="ask first for codex"]'
@@ -42,9 +42,6 @@ lands as `askFirst: true` on that harness — and the page shows
 
 - Turn the master switch on first. With it off the section is a single
   switch and the tables are absent.
-- A role left on `— none —` is absent, not invalid — the editor never
-  blocks a save on an empty role, and `— none —` clears an existing
-  default.
 - Turning delegation off parks the block under `parked.delegation`;
   turning it back on writes it to the top level again. An edited block
   must leave no `parked.delegation` behind.

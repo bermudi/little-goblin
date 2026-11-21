@@ -4770,6 +4770,22 @@ describe("app projects surface", () => {
 		expect((container.querySelector(".transcript") as HTMLElement).scrollTop).toBe(2200);
 	});
 
+	test("the rolling starter transfers reply-head follow into its new conversation", async () => {
+		rollingRows = [];
+		rollingReply = { conversationId: "app/roll-first", rolled: true };
+		rollingHistoryTiming = "complete";
+		rollingScrollHeight = 3000;
+		win.history.replaceState(null, "", "/app/rolling");
+		installChatLayout();
+		await mount();
+		expect(container.textContent).toContain("your rolling chat starts here");
+		await sendComposer("[long] first rolling reply");
+		expect(container.querySelector(".transcript")).not.toBeNull();
+		expect((container.querySelector(".transcript") as HTMLElement).scrollTop).toBe(
+			1500 - 24,
+		);
+	});
+
 	test("a failed rail search reports the error instead of reading as no matches", async () => {
 		convs = [convRow("fixture chat")];
 		searchScript = new Map([["missing", { fail: true }]]);

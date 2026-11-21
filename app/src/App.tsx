@@ -1968,6 +1968,10 @@ function AppShell() {
 											throw new Error("rolling send returned no conversation id");
 										setRollingViewing(null);
 										setRollingRouted(result.conversationId);
+										setRollingFollow({
+											conversationId: result.conversationId,
+											messageId: message.id,
+										});
 										await refresh();
 										return true;
 									} catch {

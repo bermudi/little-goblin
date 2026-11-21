@@ -42,6 +42,8 @@ import { inputModalitiesCached } from "./models-dev.ts";
 import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
 import type { T3 } from "../t3.ts";
+import type { Watches } from "../watches.ts";
+import type { GitHub } from "../github.ts";
 import type { ResponsibilityStore } from "../responsibilities.ts";
 import { makeManagedSendEdge, type ResponsibilityService } from "../responsibility-service.ts";
 
@@ -79,6 +81,8 @@ export interface TurnToolsDeps {
 	// The t3 adapter — one boot-frozen instance for the handover seams
 	// (thread discovery and managed sends).
 	t3: T3;
+	watches?: Watches;
+	github?: GitHub;
 	responsibility: {
 		resps: ResponsibilityStore;
 		service: ResponsibilityService;
@@ -168,6 +172,13 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		const childDesktop =
 			conv.agentType !== null ? (agents?.desktopFor(conv.id) ?? null) : null;
 		const tools = makeTools({
+			watch: deps.watches !== undefined && deps.github !== undefined ? {
+				watches: deps.watches,
+				conversationId: conv.id,
+				showThread: (thread, messages) => deps.t3.showThread(thread, messages),
+				readPr: (repository, number) => deps.github!.readPr(repository, number),
+				now: () => new Date(),
+			} : undefined,
 			cwd: workdir,
 			...(context !== undefined ? { contextFill: context.contextFill } : {}),
 			...(deps.noteSkillRead !== undefined ? { onRead: deps.noteSkillRead } : {}),

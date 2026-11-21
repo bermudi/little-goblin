@@ -37,6 +37,9 @@ import { type BootPins, sandboxConfigured, wireConfigWrite } from "./config-pins
 import { captureConversationSettings, openStore } from "./conversation.ts";
 import { delegationWake, makeDelegateDeps, wireDelegation } from "./delegation-lifecycle.ts";
 import { makeT3 } from "./t3.ts";
+import { makeGitHub } from "./github.ts";
+import { makeWatches } from "./watches.ts";
+import { makeWatchObserver } from "./watch-observer.ts";
 import { startDelegationLifecycle } from "./delegation-watcher.ts";
 import { makeDesktops } from "./desktops.ts";
 import { openDesktops } from "./desktops-store.ts";
@@ -155,6 +158,7 @@ async function boot() {
 		);
 	}
 	const store = openStore(paths.db());
+	const watches = makeWatches(store.db);
 	recoverPendingInputs(store);
 	// Browser push is an app-owned device registry. Its VAPID pair is an
 	// auth record generated on first enable, not operator config.
@@ -265,6 +269,7 @@ async function boot() {
 		dbPath: paths.db,
 	});
 	const t3 = makeT3();
+	const github = makeGitHub();
 	// Voice replies and transcription die at runtime without ffmpeg —
 	// the probe, the wav-profile gate, and the ttsDown flag live in
 	// transcribe.ts (checkBootMedia).
@@ -597,6 +602,8 @@ async function boot() {
 		transcribe: transcribeFile,
 		delegateDeps,
 		t3,
+		watches,
+		github,
 		mail: mailApproval,
 		programApproval,
 		visionDepsFor,
@@ -636,6 +643,14 @@ async function boot() {
 		pump: () => delivery.dispatcher.pump(),
 		show: (threadId) => t3.showThread(threadId, 1),
 	});
+	const watchObserver = makeWatchObserver({
+		watches,
+		wakes: wakeStore,
+		pump: () => delivery.dispatcher.pump(),
+		showThread: (thread, messages) => t3.showThread(thread, messages),
+		readPr: (repository, number) => github.readPr(repository, number),
+		now: () => new Date(),
+	});
 	const OBSERVE_MS = 60_000;
 	const observerTicker = setInterval(() => {
 		responsibilityObserver
@@ -643,7 +658,12 @@ async function boot() {
 			.catch((err) => log.error("responsibility observe tick failed", err));
 	}, OBSERVE_MS);
 	observerTicker.unref();
+	const watchTicker = setInterval(() => {
+		watchObserver.observe().catch((err) => log.error("watch observe tick failed", err));
+	}, OBSERVE_MS);
+	watchTicker.unref();
 	const stopObserverTicker = () => clearInterval(observerTicker);
+	const stopWatchTicker = () => clearInterval(watchTicker);
 	const stopWakeTicker = delivery.dispatcher.start();
 
 	// App auth mode resolves once at boot: appToken set → bearer, unset →
@@ -855,6 +875,7 @@ async function boot() {
 		responsibilities,
 		responsibilityObserver,
 		stopObserverTicker,
+		stopWatchTicker,
 		// Live over the attach/detach-rebound Telegram adapter — shutdown
 		// joins in-flight taps through it without racing a detach that
 		// happened after boot returned.
@@ -888,6 +909,7 @@ const {
 	wakeDispatcher,
 	stopWakeTicker,
 	stopObserverTicker,
+	stopWatchTicker,
 	stopTelegram,
 	http,
 	scheduler,
@@ -914,6 +936,7 @@ async function shutdown(signal: string): Promise<void> {
 	// Wake retries stop too — open wakes ride to the next boot's pump.
 	stopWakeTicker();
 	stopObserverTicker();
+	stopWatchTicker();
 	// Join any in-flight scan before closing the store; running threads
 	// belong to the T3 Code server and resume on next boot.
 	const delegationScan = delegationLifecycle?.stopTicker() ?? Promise.resolve();

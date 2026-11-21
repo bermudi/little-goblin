@@ -18,7 +18,7 @@ The operator can think out loud, hand over a finite outcome, or entrust Goblin
 with an ongoing concern. Goblin remembers what it owes, takes useful next
 steps, checks results, follows up, and asks for judgment when it matters.
 Replacing a worker, ending a conversation, or restarting a service does not
-erase the responsibility.
+erase what it owes.
 
 Goblin is a thinking partner, not a comfort bot. It should disagree, challenge
 weak assumptions, connect ideas, and exercise initiative. Mentioning an idea
@@ -62,41 +62,42 @@ Inspection should lead to correction without a debugging expedition. Logs are
 supporting evidence, not the only way to understand one's own assistant.
 Inspection does not require flooding the feed with every tool call.
 
-## Responsibility Is Not Execution
+## A Loop With Tools And Connectors
 
-Goblin owns the outcome or continuing concern; workers and sessions execute
-parts of it. Durable work outlives an individual agent run.
+Goblin is a loop with tools and connectors; that's it (operator,
+2026-11-21, #842, #844). Code observes outside facts, delivers them and
+runs tools. Code does not decide how work gets done: no work states,
+evidence rules, handover keys, follow-up clocks, build recipes or PR
+watchers. Goblin still owns the outcome or continuing concern, and
+remembers what it owes in its own notes, the way its skills say.
 
-These are the two concepts: what Goblin owes, and who executes a piece of it
-(operator, 2026-11-06). What the model sees should follow them, not the
-plumbing underneath. The operator suspects overlapping tools hurt the model's
-performance; this is not measured yet. Judge the tools by what makes sense for
-a capable agent, not by usage, because much of this code is new.
+The general mechanism code offers is a wake: "wake me when this changes",
+for a T3 Code thread, a GitHub PR or a time. Goblin decides what a wake
+means and what to do next. Schedules, webhooks and mail watches
+(Programs) also wake the loop; a new Program still needs the operator's
+yes (operator, 2026-11-19).
 
-For existing harness work (T3 Code threads): discover and summarize read-only, then coordinate
-only after an explicit handover. The intended interaction is to open/create
-a Goblin project, identify the existing work, and say "take over this."
-Goblin reconstructs a correctable understanding instead of presenting a
-workflow form. After handover, do not require approval for every management
-step. A handover is not standing authority, though: it grants only the
-responsibility's own follow-up clock. A new cron or mail-watching Program from
-a project turn still needs the operator's yes, like any Program (operator,
-2026-11-19).
+The operator suspects overlapping tools hurt the model's performance;
+this is not measured yet. Judge the tools by what makes sense for a
+capable agent, not by usage. A tool that only wraps a CLI Goblin can
+already run through `bash` is overlap: Goblin drives T3 Code with the
+`t3` CLI (operator, 2026-11-21).
 
-Adopting work does not grant ownership of its execution resources. Detaching,
-cancelling, or completing a responsibility must not close an adopted workspace.
-Uncertain prompt delivery is not permission to blindly resend.
+Goblin's features stay separate from the operator's own workflow with AI
+agents (operator, 2026-11-19). How the operator builds, reviews and
+verifies work, which agent runs which job, and when to take over an
+existing thread live in skills; Goblin's code names no particular
+workflow, skill, agent or verdict format. Every `delegate` call names its
+harness.
 
-An agent finishing its turn does not mean the responsibility is fulfilled.
-Understand the outcome, task-specific judgment checkpoints, and evidence of
-completion. Preparing an email batch may finish at a pre-send review checkpoint;
-upgrading a machine's kernel must achieve and verify the operational outcome,
-not stop at "ready for review." There is no universal human acceptance gate.
+These stay judgment, written in skills, not rules in code: an agent
+finishing its turn does not mean the work is done; taking over someone's
+T3 Code thread waits for the operator's handover; uncertain prompt
+delivery is not permission to blindly resend.
 
-Repo work stays in that repo's GitHub Issues; Goblin's responsibilities record
-what it owes the operator and can point at them (operator, 2026-11-06). Code
-reaches main only after Goblin delivers evidence it works and a way to try it,
-and the operator gives the green light.
+Repo work stays in that repo's GitHub Issues (operator, 2026-11-06). Code
+reaches main only after Goblin delivers evidence it works and a way to try
+it, and the operator gives the green light.
 
 ## Inference Is A Core Constraint
 
@@ -136,11 +137,11 @@ them. External harnesses (codex, opencode, …) run only when the operator asks
 for one, through `delegate`. The operator works in T3 Code, not the old
 operator-desk Herdr tool. Per the operator's 2026-11-18 direction,
 `delegate` runs named harnesses on pinned herdr-core (`hc`), with Goblin
-making the binary and lifecycle hooks available at execution. Handover and
-responsibility stay on T3 Code (design/agents.md, design/delegation.md).
+making the binary and lifecycle hooks available at execution. Handover
+stays on T3 Code, through its CLI (design/agents.md, design/delegation.md).
 
-Long term, Goblin is where work lives: roles, assignments, responsibilities,
-histories, evidence, and follow-through. Native agents grow into the standard
+Long term, Goblin is where work lives: histories, evidence, and
+follow-through, carried by the loop, its notes and its skills. Native agents grow into the standard
 execution foundation, including heavy work. Do not retire useful access
 before there is a working replacement.
 
@@ -156,9 +157,9 @@ shared, separate, or off memory. Separate is desired, not assumed implemented.
 Do not invent another layer of conversation-level product controls to solve
 this.
 
-Responsibility state is explicit work state, not permission to leak project
-content into global memory. Memory-off must not erase assignments or disable
-follow-through. Explain what each boundary admits, retains, and excludes.
+Watches and notes are explicit work state, not permission to leak project
+content into global memory. Memory-off must not erase what Goblin owes or
+disable follow-through. Explain what each boundary admits, retains, and excludes.
 
 ## Keep This Usable Across Sessions
 

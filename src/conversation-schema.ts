@@ -13,8 +13,8 @@ import { log } from "./log.ts";
 import { ensureNotesSchema } from "./notes.ts";
 import { ensureProjectsSchema } from "./projects.ts";
 import { ensureRatingsSchema } from "./reply-ratings.ts";
-import { ensureResponsibilitiesSchema } from "./responsibility-schema.ts";
 import { ensureWakeSchema } from "./wake-store.ts";
+import { ensureWatchesSchema } from "./watches.ts";
 import { ensureWindowSchema } from "./window-capture.ts";
 
 // Concatenated text parts of one row, written against a row qualifier so
@@ -53,8 +53,8 @@ export function ensureConversationSchema(db: Database): void {
 	// their tables on this handle, and the FK chain is complete from the
 	// first open. context_windows carries no FK — the ensure keeps the
 	// sweep's delete unconditional on every handle.
-	ensureResponsibilitiesSchema(db);
 	ensureWakeSchema(db);
+	ensureWatchesSchema(db);
 	ensureWindowSchema(db);
 	const convCols = new Set(
 		db

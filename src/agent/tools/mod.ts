@@ -18,6 +18,7 @@ import { memorySearchTool } from "./memory.ts";
 import { memoryReflectTool } from "./memory-reflect.ts";
 import { type NoteToolDeps, noteTool } from "./note.ts";
 import { type ProgramToolDeps, programTool } from "./program.ts";
+import { type WatchToolDeps, watchTool } from "./watch.ts";
 import { readFileTool } from "./read.ts";
 import type { ContextFill } from "./read.ts";
 import { type ResponsibilityToolDeps, responsibilityTool } from "./responsibility.ts";
@@ -79,6 +80,7 @@ export interface MakeToolsOptions {
 	cwd: string;
 	voice?: VoiceToolDeps | undefined;
 	program?: ProgramToolDeps | undefined;
+	watch?: WatchToolDeps | undefined;
 	file?: FileToolDeps | undefined;
 	artifact?: ArtifactToolDeps | undefined;
 	memory?: MemoryToolDeps | undefined;
@@ -119,6 +121,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		cwd,
 		voice,
 		program,
+		watch,
 		file,
 		artifact,
 		memory,
@@ -152,6 +155,7 @@ export function makeTools(options: MakeToolsOptions): Tools {
 		...(vision ? { vision: visionTool(cwd, vision) } : {}),
 		...(image ? { generate_image: imageTool(image) } : {}),
 		...(program ? { program: programTool(program) } : {}),
+		...(watch ? { watch: watchTool(watch) } : {}),
 		...(delegate ? { delegate: delegateTool(delegate) } : {}),
 		...(mail ? { mail: mailTool(mail) } : {}),
 		...(file ? { send_file: sendFileTool(cwd, file.deliver) } : {}),

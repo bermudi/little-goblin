@@ -29,7 +29,6 @@ import {
 	makeConversationSettings,
 	type ModelSettings,
 } from "./conversation-settings.ts";
-import { coordinationAnchors } from "./responsibilities.ts";
 import { SQLITE_BUSY_TIMEOUT_MS } from "./sqlite.ts";
 import {
 	type AppConversationSummary,
@@ -203,14 +202,9 @@ export interface ConversationStore extends ConversationReads {
 	// the 🔊 button's durable handle. Recorded at turn finalize, one row
 	// per delivered chunk, all pointing at the same reply seq.
 	recordDelivery(id: string, messageId: number, seq: number): void;
-	// The refusal deleteConversation would raise right now, as the message
-	// the caller should show — null when the delete would proceed.
-	// Advisory, not a fence: an anchor minted after this answer (a live
-	// turn taking a responsibility) still refuses inside deleteConversation.
-	deleteRefusal(id: string): string | null;
 	// Drop a conversation and everything it owns (events fire the FTS
 	// delete trigger). A live turn must be fenced first (runtime.stop) —
-	// this only touches the store. The anchor refusal is DeleteRefused.
+	// this only touches the store.
 	deleteConversation(id: string): void;
 	close(): void;
 }
@@ -302,7 +296,7 @@ export function openStore(dbPath: string): ConversationStore {
 		messageEvent: historyView.messageEvent,
 	});
 
-	const deletion = makeConversationDelete(db, queries, memoryQueue, coordinationAnchors);
+	const deletion = makeConversationDelete(db, queries, memoryQueue);
 
 	return {
 		db,

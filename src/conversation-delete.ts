@@ -9,29 +9,6 @@ import type { MemoryQueue } from "./memory/queue.ts";
 import type { ConversationQueries } from "./conversation-queries.ts";
 import { sweepConversationWakes } from "./wake-store.ts";
 
-// coordinationAnchors arrives as a dep, not an import: responsibilities
-// sits inside the frozen import-cycle cluster, and importing it would
-// pull this module in (import-cycles.test.ts).
-type CoordinationAnchors = (
-	db: Database,
-	id: string,
-) => { responsibilityId: string; status: string }[];
-
-// deleteConversation's designed refusal (coordination anchors), typed so
-// a boundary can tell it from a real failure — the app's DELETE route
-// must answer it, not 500 it.
-export class DeleteRefused extends Error {}
-
-// One text for both surfaces: deleteRefusal's advisory answer and
-// deleteConversation's throw must never drift apart.
-const deleteRefusalText = (
-	id: string,
-	anchors: { responsibilityId: string; status: string }[],
-): string =>
-	`conversation ${id} coordinates ${anchors
-		.map((a) => `${a.responsibilityId} (${a.status})`)
-		.join(", ")} — resolve them before deleting`;
-
 export function makeConversationDelete(
 	db: Database,
 	queries: Pick<
@@ -45,7 +22,6 @@ export function makeConversationDelete(
 		| "qDeleteConv"
 	>,
 	memoryQueue: MemoryQueue,
-	coordinationAnchors: CoordinationAnchors,
 ) {
 	const {
 		qGet,
@@ -57,26 +33,8 @@ export function makeConversationDelete(
 		qDeleteConv,
 	} = queries;
 
-	// The refusal deleteConversation would raise right now, as the message
-	// the caller should show — null when the delete would proceed.
-	// Advisory, not a fence: an anchor minted after this answer (a live
-	// turn taking a responsibility) still refuses inside deleteConversation.
-	function deleteRefusal(id: string): string | null {
-		const anchors = coordinationAnchors(db, id);
-		return anchors.length > 0 ? deleteRefusalText(id, anchors) : null;
-	}
-
 	function deleteConversation(id: string): void {
-		const swept = db.transaction((): { wakes: number; workEvents: number } => {
-			// A coordination surface must not outlive the responsibility
-			// that stands on it: the handover loop and wake delivery
-			// would both dangle. Terminal responsibilities keep their
-			// records — the conversation stays too. Refuse with names,
-			// not the bare FK error the row delete would raise.
-			const anchors = coordinationAnchors(db, id);
-			if (anchors.length > 0) {
-				throw new DeleteRefused(deleteRefusalText(id, anchors));
-			}
+		const swept = db.transaction((): { wakes: number; workEvents: number; watches: number } => {
 			// Sever the rolling navigation chain first — successors'
 			// previous_dm_id would FK-fail the row delete (a demoted
 			// lane's persona reset is the one caller that deletes a
@@ -111,6 +69,7 @@ export function makeConversationDelete(
 			// Wake rows are this conversation's delivery bookkeeping —
 			// they ride the delete, in the same transaction.
 			const counts = sweepConversationWakes(db, id);
+			const watches = db.query("DELETE FROM watches WHERE conversation_id = ?").run(id).changes;
 			qDeleteEvents.run(id);
 			qDeleteCompactions.run(id);
 			qDeleteContexts.run(id);
@@ -120,7 +79,7 @@ export function makeConversationDelete(
 			qDeleteWindows.run(id);
 			qDeleteClaudeSessions.run(id);
 			qDeleteConv.run(id);
-			return counts;
+			return { ...counts, watches };
 		})();
 		if (swept.wakes > 0) {
 			log.info("wake rows swept with conversation", {
@@ -128,6 +87,9 @@ export function makeConversationDelete(
 				wakes: swept.wakes,
 				workEvents: swept.workEvents,
 			});
+		}
+		if (swept.watches > 0) {
+			log.info("watch rows swept with conversation", { conversation: id, watches: swept.watches });
 		}
 		// The purge waits for the commit: queued retention rides the
 		// append transaction only, so cancelling before the delete and
@@ -143,5 +105,5 @@ export function makeConversationDelete(
 		}
 	}
 
-	return { deleteRefusal, deleteConversation };
+	return { deleteConversation };
 }

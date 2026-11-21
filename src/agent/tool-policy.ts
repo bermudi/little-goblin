@@ -60,6 +60,7 @@ export const TOOL_NAMES = [
 	"vision",
 	"generate_image",
 	"program",
+	"watch",
 	"delegate",
 	"mail",
 	"send_file",
@@ -73,7 +74,6 @@ export const TOOL_NAMES = [
 	"note",
 	"sandbox",
 	"desktop",
-	"responsibility",
 	"ui",
 	"script",
 ] as const;
@@ -90,6 +90,7 @@ export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
 	vision: P({}),
 	generate_image: P({ guestChannel: false }),
 	program: P({ guestChannel: false }),
+	watch: P({}),
 	delegate: P({ guestChannel: false }),
 	mail: P({ guestChannel: false }),
 	send_file: P({ guestChannel: false }),
@@ -105,7 +106,6 @@ export const TOOL_POLICY: Record<ToolName, ToolPolicy> = {
 	note: P({ guestChannel: false }),
 	sandbox: P({ scriptable: true }),
 	desktop: P({ guestChannel: false }),
-	responsibility: P({}),
 	ui: P({}),
 	script: P({ writesFiles: true, composes: true }),
 };

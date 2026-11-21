@@ -39,13 +39,11 @@ import type {
 	AppReplyRating,
 	AppReplyRatingResponse,
 	AppProjectList,
-	AppCorrectRequest,
 	AppPushPublicKeyResponse,
 	AppPushRegisterResponse,
 	AppPushStatus,
 	AppPushSubscriptionRequest,
 	AppPushUnregisterResponse,
-	AppResponsibilityFeed,
 	AppSearchResponse,
 	AppStopResponse,
 	AppTtsResponse,
@@ -979,48 +977,3 @@ export async function fetchAttachment(token: string | null, name: string): Promi
 	return res.blob();
 }
 
-export function listResponsibilities(token: string | null): Promise<AppResponsibilityFeed> {
-	return request(token, "/api/app/responsibilities");
-}
-
-export function listProjectResponsibilities(
-	token: string | null,
-	projectId: string,
-): Promise<AppResponsibilityFeed> {
-	return request(token, `/api/app/projects/${encodeURIComponent(projectId)}/responsibilities`);
-}
-
-export function correctResponsibility(
-	token: string | null,
-	id: string,
-	body: AppCorrectRequest,
-): Promise<{ ok: true }> {
-	return request(token, `/api/app/responsibilities/${encodeURIComponent(id)}/correct`, {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify(body),
-	});
-}
-
-export function responsibilityAction(
-	token: string | null,
-	id: string,
-	action: "pause" | "resume" | "cancel",
-): Promise<{ ok: true }> {
-	return request(token, `/api/app/responsibilities/${encodeURIComponent(id)}/${action}`, {
-		method: "POST",
-	});
-}
-
-export function attachmentAction(
-	token: string | null,
-	responsibilityId: string,
-	attachmentId: number,
-	action: "detach" | "reattach",
-): Promise<{ ok?: true; generation?: number }> {
-	return request(
-		token,
-		`/api/app/responsibilities/${encodeURIComponent(responsibilityId)}/attachments/${attachmentId}/${action}`,
-		{ method: "POST" },
-	);
-}

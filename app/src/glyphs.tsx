@@ -21,6 +21,25 @@ export function PinGlyph() {
 	);
 }
 
+export function MoveToProjectGlyph() {
+	return (
+		<svg
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="1.75"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			width="18"
+			height="18"
+			aria-hidden="true"
+		>
+			<path d="M3 7.5h7l2 2H21v9H3z" />
+			<path d="M3 7.5V5h7l2 2.5" />
+		</svg>
+	);
+}
+
 // Icon-only buttons carry aria-label + title — the tests assert on the
 // accessible name, not visible text.
 function ActionGlyph({ children }: { children: ReactNode }) {
@@ -99,9 +118,46 @@ export function G({ children, size = 17 }: { children: ReactNode; size?: number 
 	);
 }
 
-export type ListPane = "chats" | "projects" | "notes";
+export function NewProjectGlyph() {
+	return (
+		<svg
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="1.75"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			width="15"
+			height="15"
+			aria-hidden="true"
+		>
+			<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+			<path d="M12 10v6M9 13h6" />
+		</svg>
+	);
+}
 
-export const LIST_GLYPHS: { key: ListPane; label: string; svg: ReactNode }[] = [
+export function ChevronDownGlyph() {
+	return (
+		<svg
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="1.75"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			width="14"
+			height="14"
+			aria-hidden="true"
+		>
+			<path d="m6 9 6 6 6-6" />
+		</svg>
+	);
+}
+
+export type ListPane = "chats" | "notes";
+
+export const LIST_GLYPHS: { key: ListPane | "projects"; label: string; svg: ReactNode }[] = [
 	{
 		key: "chats",
 		label: "Chats",

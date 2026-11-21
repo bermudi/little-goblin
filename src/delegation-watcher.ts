@@ -122,7 +122,7 @@ export function startDelegationLifecycle(
 	void scan();
 	return {
 		launch: (input) => tracked(launch(deps, input)),
-		send: (id, text, authorize) => tracked(send(deps, id, text, authorize)),
+		send: (id, text) => tracked(send(deps, id, text)),
 		answer: (id, key) => tracked(answer(deps, id, key)),
 		stop: (id) => tracked(stop(deps, id)),
 		stopByOperator: (id) => tracked(stopByOperator(deps, id)),

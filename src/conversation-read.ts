@@ -40,8 +40,6 @@ export interface Conversation {
 	// Floats above the app rail's activity order; survives activity,
 	// cleared by archive.
 	pinnedAt: string | null;
-	// Bound once at creation; app conversations only — every other row
-	// stays null forever.
 	projectId: string | null;
 	// Native subagents (design/agents.md → agent): non-null agentType
 	// marks a child conversation spawned by the `agent` tool; parentId

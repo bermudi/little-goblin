@@ -33,13 +33,12 @@ function draft(overrides: Partial<ProgramDraft> = {}): ProgramDraft {
 		maxLatenessMinutes: 60,
 		hook: false,
 		mailFilter: null,
-		responsibilityId: null,
 		...overrides,
 	};
 }
 
 describe("program proposals — create", () => {
-	test("legacy create payloads default responsibilityId to null and approve on the conversation", () => {
+	test("a stored create payload with the old null responsibilityId reads and approves on the conversation", () => {
 		const path = tmpDb("goblin-proposals-");
 		const programs = store(path);
 		const proposal = programs.proposals.proposeCreate(draft(), ADDRESS, NOW);
@@ -52,16 +51,16 @@ describe("program proposals — create", () => {
 				maxLatenessMinutes: 60,
 				hook: false,
 				mailFilter: null,
+				responsibilityId: null,
 			}),
 			proposal.id,
 		);
 		db.close();
-		expect(programs.proposals.get(proposal.id)!.draft!.responsibilityId).toBeNull();
+		expect(programs.proposals.get(proposal.id)!.draft).not.toHaveProperty("responsibilityId");
 		const approved = programs.proposals.approve(proposal.id, 42);
 		expect(approved.kind).toBe("activated");
 		if (approved.kind === "activated") {
 			expect(approved.program.target).toBe(`topic:${ADDRESS.chatId}:${ADDRESS.threadId}`);
-			expect(approved.program.responsibilityId).toBeNull();
 		}
 		programs.close();
 	});
@@ -483,7 +482,6 @@ describe("program proposals — update", () => {
 			id: 7,
 			name: "p",
 			charter: "c",
-			kind: "custom",
 			cron: "0 9 * * *",
 			maxLatenessMinutes: null,
 			hookHash: null,
@@ -493,7 +491,6 @@ describe("program proposals — update", () => {
 			target: `topic:${ADDRESS.chatId}:${ADDRESS.threadId}`,
 			chatId: ADDRESS.chatId,
 			threadId: ADDRESS.threadId,
-			responsibilityId: null,
 			enabled: true,
 			createdAt: NOW.toISOString(),
 			lastRun: null,

@@ -26,7 +26,6 @@ import {
 	reportNote,
 	reportPathFor,
 } from "./delegation-paths.ts";
-import type { WorkerSendRefusal } from "./responsibility-authority.ts";
 
 // Either way the stop is the operator's call, not a fault to repair.
 const OPERATOR_STOP_NOTE =
@@ -46,15 +45,8 @@ export async function launch(deps: DelegationLifecycleDeps, input: LaunchInput):
 		harness: input.harness.name,
 		cwd: input.cwd,
 		task: input.task,
-		role: input.role ?? "default",
 		address: input.address,
 		...(input.appConversation === undefined ? {} : { appConversation: input.appConversation }),
-		...(input.responsibilityId === undefined
-			? {}
-			: {
-					responsibilityId: input.responsibilityId,
-					responsibilityRevision: deps.responsibilityRevision?.(input.responsibilityId) ?? null,
-				}),
 	});
 	// A failed launch must close any bound workspace — no watcher owns
 	// cleanup after the failure.
@@ -229,7 +221,6 @@ export async function send(
 	deps: DelegationLifecycleDeps,
 	id: number,
 	text: string,
-	authorize?: (responsibilityId: string) => WorkerSendRefusal | null,
 ): Promise<SendOutcome> {
 	const d = deps.delegations.get(id);
 	if (d === null) return { kind: "no row", id };
@@ -240,17 +231,6 @@ export async function send(
 	if (!d.agentName) return { kind: "refused", id, why: "never launched" };
 	// A parked startup row cannot accept text until its dialog is cleared.
 	if (d.promptPending) return { kind: "refused", id, why: "task never sent" };
-	if (d.responsibilityId !== null) {
-		const refusal = authorize === undefined ? "outside-project" : authorize(d.responsibilityId);
-		if (refusal !== null) {
-			log.info("delegation send refused — responsibility authority", {
-				delegation: d.id,
-				responsibility: d.responsibilityId,
-				refusal,
-			});
-			return { kind: "refused", id, why: refusal };
-		}
-	}
 	// Archive the previous report before prompting; only a post-prompt report
 	// may complete the new run, while the old result remains inspectable. Its mtime
 	// may fall inside the freshness allowance.
@@ -290,7 +270,6 @@ export async function send(
 	}
 	const promptedAt = new Date();
 	try {
-		// No await separates authority check from hc.prompt, so it holds at the wire.
 		// Include the report instruction on every prompt so notices have a result channel.
 		await deps.hc.prompt(d.agentName, text + reportNote(deps, d));
 	} catch (err) {
@@ -475,7 +454,6 @@ export async function stopByOperator(deps: DelegationLifecycleDeps, id: number):
 			delegation: d.id,
 		});
 		const body = `(report unreadable: ${err instanceof Error ? err.message : String(err)})`;
-		deps.settled?.(d, "stopped", body);
 		const text = `${delegationNoticeTag(d.id, d.name, "stopped", OPERATOR_STOP_NOTE)}\n\n${body}`;
 		landed =
 			d.appConversation !== null

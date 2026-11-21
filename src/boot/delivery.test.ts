@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { wireDelivery } from "./delivery.ts";
 import { openStore } from "../conversation.ts";
-import { openResponsibilities } from "../responsibilities.ts";
 import { openTurnJournal } from "../turn-journal.ts";
 import { openWakeStore } from "../wake-store.ts";
 import type { Runtime } from "../runtime.ts";
@@ -22,7 +21,6 @@ describe("boot delivery", () => {
 			facts: {},
 			origin: "test",
 		});
-		const responsibilities = openResponsibilities(store.db);
 		const journal = openTurnJournal(store.db);
 		const submitted: string[] = [];
 		const runtime = {
@@ -43,8 +41,6 @@ describe("boot delivery", () => {
 			push: { notifyDone: async () => false } as never,
 			gate: null,
 			programs: {} as never,
-			responsibilities,
-			telegramApi: () => null,
 		});
 		let stop = () => {};
 

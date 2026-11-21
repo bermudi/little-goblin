@@ -342,7 +342,6 @@ describe("http door", () => {
 				codex: { kind: "codex" },
 				flash: { kind: "claude", args: ["--model", "glm-5.3-flash"], askFirst: true },
 			},
-			defaults: { default: "codex", review: "flash" },
 		};
 		writeFileSync(
 			join(process.env.GOBLIN_HOME!, "goblin.json5"),

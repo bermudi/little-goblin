@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Menu, MenuContent, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
 import type { AppPageKey } from "../../src/http/app-routes.ts";
 import type {
 	AppAttentionItem,
@@ -26,18 +27,30 @@ import {
 } from "./api.ts";
 import { ChatView } from "./ChatView.tsx";
 import { Composer } from "./chat/Composer.tsx";
+import { ConversationTitleEditor } from "./ConversationTitleEditor.tsx";
+import { conversationActions } from "./conversationActions.ts";
 import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
+import { ProjectFolder } from "./ProjectFolder.tsx";
+import { loadOpenFolders, saveOpenFolders } from "./railFolders.ts";
 import {
 	ConversationNav,
 	ConversationHierarchy,
 	ConversationRow,
-	flatLine,
-	flatTitle,
 	relTime,
 } from "./ConversationList.tsx";
+import { flatLine, flatTitle } from "./flatText.ts";
 import { DelegationsView } from "./DelegationsView.tsx";
-import { G, LIST_GLYPHS, OPS_GLYPHS, PinGlyph, type ListPane } from "./glyphs.tsx";
+import {
+	ChevronDownGlyph,
+	G,
+	LIST_GLYPHS,
+	MoveToProjectGlyph,
+	NewProjectGlyph,
+	OPS_GLYPHS,
+	PinGlyph,
+	type ListPane,
+} from "./glyphs.tsx";
 import { LogView } from "./LogView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { NotesIndex, NoteView } from "./NoteView.tsx";
@@ -106,6 +119,7 @@ function AppShell() {
 	// Chat column width — a header selector on the chat page, persisted
 	// per device (chatWidth.ts).
 	const [chatWidth, setChatWidthState] = useState<ChatWidth>(loadChatWidth);
+	const [openFolders, setOpenFolders] = useState(loadOpenFolders);
 	const setChatWidth = (width: ChatWidth) => {
 		setChatWidthState(width);
 		saveChatWidth(width);
@@ -114,6 +128,7 @@ function AppShell() {
 	// Per-action failures — cleared by the next successful action or
 	// refresh.
 	const [rowError, setRowError] = useState<string | null>(null);
+	const [headerRenaming, setHeaderRenaming] = useState(false);
 	// Desktop (C): the panel lists exactly one surface at a time — chats
 	// by default; search is a mode the spine's glyph opens, not a standing
 	// box. The header's sidebar toggle collapses the whole rail.
@@ -218,7 +233,21 @@ function AppShell() {
 	const routeRef = useRef(route);
 	routeRef.current = route;
 	const current = route.kind === "conversation" ? route.id : null;
+	useEffect(() => setHeaderRenaming(false), [current]);
 	const projectId = route.kind === "project" ? route.id : null;
+	const currentFolderId =
+		(route.kind === "conversation"
+			? conversations?.find((conversation) => conversation.id === route.id)?.projectId
+			: null) ?? (route.kind === "project" ? route.id : null);
+	useEffect(() => {
+		if (currentFolderId === null) return;
+		setOpenFolders((previous) => {
+			if (previous.has(currentFolderId)) return previous;
+			const next = new Set(previous).add(currentFolderId);
+			saveOpenFolders(next);
+			return next;
+		});
+	}, [currentFolderId]);
 	const noteId = route.kind === "note" ? route.id : null;
 	const windowConv = route.kind === "window" ? route.id : null;
 	const composeStaged = route.kind === "home" && route.composing;
@@ -228,6 +257,9 @@ function AppShell() {
 		: route.kind === "page" ? route.page : route.kind;
 	useEffect(() => setSourcesOpen(false), [route]);
 	const [createProjectOpen, setCreateProjectOpen] = useState(false);
+	const [createProjectMoveFor, setCreateProjectMoveFor] = useState<string | null>(null);
+	const [moveError, setMoveError] = useState<string | null>(null);
+	useEffect(() => setMoveError(null), [current]);
 	// The settings editor's dirty bit — navigation asks before
 	// discarding unsaved edits.
 	const settingsDirty = useRef(false);
@@ -692,8 +724,6 @@ function AppShell() {
 		void select(id);
 	};
 
-	// One start path for every composer — the empty state passes null,
-	// a project page its id; project binding is fixed at creation.
 	const startChat = async (
 		projectId: string | null,
 		parts: UIMessage["parts"],
@@ -764,11 +794,6 @@ function AppShell() {
 
 	const currentTitle = conversations?.find((c) => c.id === current)?.title ?? null;
 
-	// The server sorts within each group; the client only partitions —
-	// pinned float above the activity order, archived wait behind the
-	// section toggle. Project-bound chats leave the rail for their
-	// project page; `?? null` keeps pre-projects fixtures (field
-	// absent) on the rail.
 	const all = (conversations ?? []).filter((c) => !heldDeletes.has(c.id));
 	const unbound = all.filter((c) => (c.projectId ?? null) === null);
 	const active = unbound.filter((c) => c.archivedAt === null);
@@ -784,16 +809,64 @@ function AppShell() {
 	const activeProjects = projectList
 		.filter((p) => p.archivedAt === null)
 		.sort((a, b) => a.name.localeCompare(b.name));
+	const projectChats = (id: string) => {
+		const chats = all.filter((c) => c.projectId === id && c.archivedAt === null);
+		return [
+			...chats.filter((c) => c.pinnedAt !== null),
+			...chats.filter((c) => c.pinnedAt === null),
+		];
+	};
 	const currentProject =
 		projectId === null ? undefined : projectList.find((p) => p.id === projectId);
 	// The crumb's name rides the same pool the rail lists.
 	const currentConv = all.find((c) => c.id === current);
+	const rowActionCallbacks = (c: AppConversationList["conversations"][number]) => ({
+		onToggleArchived: (id: string, isArchived: boolean) => {
+			setRowError(null);
+			if (isArchived) {
+				rowRemoved(id);
+				archivedWithUndo(c);
+			}
+			void refresh();
+		},
+		onTogglePinned: () => {
+			setRowError(null);
+			void refresh();
+		},
+		onDelete: deleteConversationHeld,
+		onError: setRowError,
+	});
+	const headerActions =
+		currentConv === undefined
+			? null
+			: conversationActions(currentConv, {
+					token,
+					...rowActionCallbacks(currentConv),
+				});
 	const parentConv =
 		currentConv?.parentId == null ? undefined : all.find((c) => c.id === currentConv.parentId);
 	const currentConvProject =
 		currentConv?.projectId != null
 			? projectList.find((p) => p.id === currentConv.projectId)
 			: undefined;
+	const setFolderOpen = (id: string, open: boolean) => {
+		setOpenFolders((previous) => {
+			const next = new Set(previous);
+			if (open) next.add(id);
+			else next.delete(id);
+			saveOpenFolders(next);
+			return next;
+		});
+	};
+	const moveChatToProject = async (conversationId: string, targetProjectId: string) => {
+		setMoveError(null);
+		try {
+			await patchConversation(token, conversationId, { projectId: targetProjectId });
+			await refresh();
+		} catch (err) {
+			setMoveError(err instanceof Error ? err.message : String(err));
+		}
+	};
 
 	// Mobile (M): /app is the chats list, a thread or the staged composer
 	// is full-bleed, and the thumb bar stands down while either is open.
@@ -807,7 +880,7 @@ function AppShell() {
 	// A glyph is on when its surface is live: its pane is showing, or its
 	// page family is open in the frame. The panel's surface and the open
 	// page can light two glyphs at once — the spine names both honestly.
-	const pagePane: ListPane | null =
+	const pagePane: ListPane | "projects" | null =
 		page === "chat" || page === "window" || page === "archive"
 			? "chats"
 			: page === "projects" || page === "project"
@@ -815,7 +888,10 @@ function AppShell() {
 				: page === "notes" || page === "note"
 					? "notes"
 					: null;
-	const surfaceOn = (key: ListPane) => pane === key || pagePane === key;
+	const surfaceOn = (key: ListPane | "projects") =>
+		key === "projects"
+			? page === "projects" || page === "project"
+			: pane === key || pagePane === key;
 	// The notes pane orders like the chats list: pinned float above the
 	// server's own updated order.
 	const paneNotes =
@@ -824,10 +900,8 @@ function AppShell() {
 			: [...notes.filter((n) => n.pinnedAt !== null), ...notes.filter((n) => n.pinnedAt === null)];
 	const paneCount =
 		pane === "chats"
-			? String(rail.length)
-			: pane === "projects"
-				? String(activeProjects.length)
-				: pane === "notes"
+			? String(rail.length + activeProjects.reduce((count, p) => count + projectChats(p.id).length, 0))
+			: pane === "notes"
 					? notes === null
 						? ""
 						: `${paneNotes.length}${notesTruncated ? "+" : ""}`
@@ -849,32 +923,43 @@ function AppShell() {
 	const renderRow = (
 		c: AppConversationList["conversations"][number],
 		orphaned = false,
-	) => (
-		<ConversationRow
-			conv={c}
-			orphaned={orphaned}
-			current={railCurrent}
-			token={token}
-			onOpen={openConversation}
-			onRenamed={() => {
-				setRowError(null);
-				void refresh();
-			}}
-			onToggleArchived={(id, isArchived) => {
-				setRowError(null);
-				if (isArchived) {
-					rowRemoved(id);
-					archivedWithUndo(c);
-				}
-				void refresh();
-			}}
-			onTogglePinned={() => {
-				setRowError(null);
-				void refresh();
-			}}
-			onDelete={deleteConversationHeld}
-			onError={setRowError}
-		/>
+	) => {
+		const callbacks = rowActionCallbacks(c);
+		return (
+			<ConversationRow
+				conv={c}
+				orphaned={orphaned}
+				current={railCurrent}
+				token={token}
+				onOpen={openConversation}
+				onRenamed={() => {
+					setRowError(null);
+					void refresh();
+				}}
+				{...callbacks}
+			/>
+		);
+	};
+	const chatFolders = (
+		<>
+			{activeProjects.map((project) => {
+				const chats = projectChats(project.id);
+				return (
+					<ProjectFolder
+						key={project.id}
+						project={project}
+						open={openFolders.has(project.id)}
+						onOpenChange={(open) => setFolderOpen(project.id, open)}
+						current={page === "project" && projectId === project.id}
+						onNewChat={() => openProject(project.id)}
+						empty={chats.length === 0}
+					>
+						<ConversationHierarchy conversations={chats} renderItem={renderRow} />
+					</ProjectFolder>
+				);
+			})}
+			<ConversationHierarchy conversations={rail} renderItem={renderRow} />
+		</>
 	);
 
 	// The search hits and the archived disclosure serve two hosts — the
@@ -1004,7 +1089,7 @@ function AppShell() {
 								title={g.label}
 								aria-label={g.label}
 								aria-current={pagePane === g.key ? "page" : undefined}
-								onClick={() => setPane(g.key)}
+								onClick={() => (g.key === "projects" ? openProjectsIndex() : setPane(g.key))}
 							>
 								{g.svg}
 							</button>
@@ -1073,52 +1158,36 @@ function AppShell() {
 										<button
 											type="button"
 											className="panel-label panel-index"
-											title={pane === "projects" ? "All projects" : "All notes"}
-											onClick={pane === "projects" ? openProjectsIndex : openNotesIndex}
+											title="All notes"
+											onClick={openNotesIndex}
 										>
-											{pane === "projects" ? "Projects" : "Notes"}
+											Notes
 										</button>
 									)}
 									{paneCount !== "" && <span className="panel-count">{paneCount}</span>}
+									{pane === "chats" && (
+										<button
+											type="button"
+											className="panel-action"
+											title="New project"
+											aria-label="New project"
+											onClick={() => setCreateProjectOpen(true)}
+										>
+											<NewProjectGlyph />
+										</button>
+									)}
 								</div>
 								<div className="panes">
 									{pane === "chats" && (
 										<>
 											<ConversationNav loop={false}>
-												<ConversationHierarchy conversations={rail} renderItem={renderRow} />
+												{chatFolders}
 											</ConversationNav>
 											{archivedRows}
-											{conversations !== null && rail.length === 0 && archived.length === 0 && (
+											{conversations !== null && rail.length === 0 && archived.length === 0 && activeProjects.length === 0 && (
 												<p className="empty">Nothing here yet — start a conversation.</p>
 											)}
 										</>
-									)}
-									{pane === "projects" && projects !== null && (
-										<div className="rail-projects">
-											<ul>
-												{activeProjects.map((p) => (
-													<li key={p.id}>
-														<button
-															type="button"
-															className={
-																page === "project" && projectId === p.id ? "proj on" : "proj"
-															}
-															onClick={() => openProject(p.id)}
-														>
-															{p.name}
-														</button>
-													</li>
-												))}
-											</ul>
-											{activeProjects.length === 0 && <p className="empty">No projects yet.</p>}
-											<button
-												type="button"
-												className="new"
-												onClick={() => setCreateProjectOpen(true)}
-											>
-												{plusGlyph} New project
-											</button>
-										</div>
 									)}
 									{pane === "notes" && notesError && (
 										<p className="error">Couldn't load notes.</p>
@@ -1297,7 +1366,54 @@ function AppShell() {
 					)}
 					<h1>goblin</h1>
 					{page === "chat" && current !== null && (
-						<span className="header-title">{flatTitle(currentTitle)}</span>
+						headerRenaming && currentConv !== undefined ? (
+							<div className="header-title-editor">
+								<ConversationTitleEditor
+									conv={currentConv}
+									token={token}
+									onRenamed={() => {
+										setRowError(null);
+										void refresh();
+									}}
+									onError={setRowError}
+									onClose={() => setHeaderRenaming(false)}
+								/>
+							</div>
+						) : currentConv === undefined || headerActions === null ? (
+							<span className="header-title">{flatTitle(currentTitle)}</span>
+						) : (
+							<Menu
+								onAction={(value) => {
+									if (value === "pin") void headerActions.togglePinned();
+									else if (value === "rename") setHeaderRenaming(true);
+									else if (value === "archive" || value === "unarchive")
+										void headerActions.toggleArchived();
+									else if (value === "delete") headerActions.remove();
+								}}
+							>
+								<MenuTrigger className="header-title title-trigger">
+									{rowLabel(currentConv)}
+									<ChevronDownGlyph />
+								</MenuTrigger>
+								<MenuContent className="title-menu">
+									{currentConv.archivedAt === null ? (
+										<>
+											<MenuItem value="pin">
+												{currentConv.pinnedAt === null ? "Pin" : "Unpin"}
+											</MenuItem>
+											<MenuItem value="rename">Rename</MenuItem>
+											<MenuItem value="archive">Archive</MenuItem>
+										</>
+									) : (
+										<>
+											<MenuItem value="rename">Rename</MenuItem>
+											<MenuItem value="unarchive">Unarchive</MenuItem>
+											<MenuItem value="delete">Delete</MenuItem>
+										</>
+									)}
+								</MenuContent>
+							</Menu>
+						)
 					)}
 					{page === "chat" && parentConv !== undefined && (
 						<a
@@ -1412,6 +1528,15 @@ function AppShell() {
 							<button
 								type="button"
 								className="header-action"
+								title="New project"
+								aria-label="New project"
+								onClick={() => setCreateProjectOpen(true)}
+							>
+								<NewProjectGlyph />
+							</button>
+							<button
+								type="button"
+								className="header-action"
 								title="New conversation"
 								aria-label="New conversation"
 								onClick={newConversation}
@@ -1443,7 +1568,7 @@ function AppShell() {
 						{hits === null && (
 							<>
 								<ConversationNav loop={false}>
-									<ConversationHierarchy conversations={rail} renderItem={renderRow} />
+									{chatFolders}
 								</ConversationNav>
 								{archivedRows}
 								{listError !== null && <p className="error">Couldn't refresh the list.</p>}
@@ -1452,7 +1577,7 @@ function AppShell() {
 										{rowError}
 									</p>
 								)}
-								{conversations !== null && unbound.length === 0 && activeProjects.length === 0 && (
+								{conversations !== null && rail.length === 0 && archived.length === 0 && activeProjects.length === 0 && (
 									<p className="empty">Nothing here yet — start a conversation.</p>
 								)}
 							</>
@@ -1676,8 +1801,6 @@ function AppShell() {
 						</div>
 					) : (
 						<>
-							{/* A bound chat names its project — the link lands on the
-								project page. */}
 							{currentConvProject !== undefined && (
 								<button
 									type="button"
@@ -1686,6 +1809,47 @@ function AppShell() {
 								>
 									{currentConvProject.name}
 								</button>
+							)}
+							{currentConv !== undefined &&
+								currentConv.projectId === null &&
+								currentConv.parentId === null && (
+									<Menu
+										onAction={(action) => {
+											if (action === "new-project") {
+												setMoveError(null);
+												setCreateProjectMoveFor(currentConv.id);
+												setCreateProjectOpen(true);
+												return;
+											}
+											if (action.startsWith("project:")) {
+												return moveChatToProject(
+													currentConv.id,
+													action.slice("project:".length),
+												);
+											}
+										}}
+									>
+										<MenuTrigger
+											className="header-action"
+											title="Move to project"
+											aria-label="Move to project"
+										>
+											<MoveToProjectGlyph />
+										</MenuTrigger>
+										<MenuContent className="move-menu">
+											{activeProjects.map((project) => (
+												<MenuItem key={project.id} value={`project:${project.id}`}>
+													{project.name}
+												</MenuItem>
+											))}
+											<MenuItem value="new-project">New project…</MenuItem>
+										</MenuContent>
+									</Menu>
+								)}
+							{moveError !== null && (
+								<p className="error" role="alert">
+									{moveError}
+								</p>
 							)}
 							<ChatView
 								key={current}
@@ -1903,11 +2067,20 @@ function AppShell() {
 			{createProjectOpen && (
 				<NewProjectDialog
 					token={token}
-					onClose={() => setCreateProjectOpen(false)}
+					onClose={() => {
+						setCreateProjectOpen(false);
+						setCreateProjectMoveFor(null);
+					}}
 					onCreated={(p) => {
 						setCreateProjectOpen(false);
-						void refresh();
-						void openProject(p.id);
+						const moveFor = createProjectMoveFor;
+						setCreateProjectMoveFor(null);
+						if (moveFor !== null) {
+							void moveChatToProject(moveFor, p.id);
+						} else {
+							void refresh();
+							void openProject(p.id);
+						}
 					}}
 				/>
 			)}

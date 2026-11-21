@@ -429,45 +429,63 @@ p code,
 .rail .conv.current {
 	background: var(--app-active);
 }
-/* The link owns navigation and modifier-click behavior. */
+.conv {
+	position: relative;
+	--conv-fade: linear-gradient(to right, black calc(100% - 5.6rem), transparent calc(100% - 4.6rem));
+}
 .conv-main {
 	flex: 1;
 	min-width: 0;
 	text-align: left;
-	padding: 0.4rem 2.8rem 0.4rem 0.6rem;
+	padding: 0.4rem 0.6rem;
 	color: inherit;
 	text-decoration: none;
 }
-.conv-menu-trigger {
+.conv-actions {
 	position: absolute;
-	right: 0.35rem;
-	bottom: 0.3rem;
-	width: 1.4rem;
-	height: 1.4rem;
-	padding: 0;
-	border-radius: 6px;
-	color: var(--app-fg-muted);
-	font-size: 1.2rem;
-	line-height: 1;
-	justify-content: center;
+	right: 0.3rem;
+	bottom: 0.25rem;
+	display: inline-flex;
 	align-items: center;
+	gap: 0.1rem;
+	padding: 0 0.3rem;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 160ms ease;
 }
-.conv:hover .conv-menu-trigger,
-.conv-menu-trigger:focus-visible,
-.conv-menu-trigger[data-open] {
+.conv:hover .conv-actions,
+.conv-actions:focus-within {
 	opacity: 1;
 	pointer-events: auto;
 }
-.conv-menu-trigger:hover {
+.conv:hover .conv-preview,
+.conv:has(.conv-actions:focus-within) .conv-preview {
+	-webkit-mask-image: var(--conv-fade);
+	mask-image: var(--conv-fade);
+}
+.conv.bare:hover .conv-head,
+.conv.bare:has(.conv-actions:focus-within) .conv-head {
+	-webkit-mask-image: var(--conv-fade);
+	mask-image: var(--conv-fade);
+}
+.conv-actions button {
+	width: 1.4rem;
+	height: 1.4rem;
+	padding: 0;
+	justify-content: center;
+	border-radius: 6px;
+	color: var(--app-fg-muted);
+	display: inline-flex;
+	align-items: center;
+}
+.conv-actions button:hover {
 	background: var(--app-active);
 	color: var(--app-fg);
 }
-.conv-menu-trigger {
-	opacity: 0;
-	pointer-events: none;
-	display: inline-flex;
+.conv-actions svg {
+	display: block;
 }
-.conv-menu {
+.move-menu {
 	z-index: 80;
 	min-width: 9rem;
 	padding: 0.25rem;
@@ -477,22 +495,141 @@ p code,
 	color: var(--app-fg);
 	box-shadow: 0 6px 24px rgb(0 0 0 / 0.25);
 }
-.conv-menu [role="menuitem"] {
+.move-menu [role="menuitem"] {
 	padding: 0.4rem 0.55rem;
 	border-radius: 5px;
 	font-size: 12.5px;
 	cursor: default;
 }
-.conv-menu [role="menuitem"]:focus,
-.conv-menu [role="menuitem"][data-highlighted] {
+.move-menu [role="menuitem"]:focus,
+.move-menu [role="menuitem"][data-highlighted] {
 	background: var(--app-hover);
 	outline: none;
 }
 @media (hover: none) {
-	.conv-menu-trigger {
+	.conv-main {
+		-webkit-touch-callout: none;
+		-webkit-user-select: none;
+		user-select: none;
+	}
+	.folder-head .folder-actions {
 		opacity: 1;
 		pointer-events: auto;
 	}
+}
+.conv-main[data-holding],
+.conv-main[data-held] {
+	background: var(--app-active);
+	box-shadow: 0 2px 8px rgb(0 0 0 / 18%);
+	transition:
+		background-color 90ms ease,
+		box-shadow 90ms ease,
+		transform 90ms ease;
+	transform: translateY(-1px);
+}
+@media (prefers-reduced-motion: reduce) {
+	.conv-main[data-holding],
+	.conv-main[data-held] {
+		transform: none;
+	}
+}
+.row-sheet-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 29;
+	background: rgb(0 0 0 / 42%);
+}
+.row-sheet {
+	z-index: 31;
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	padding: 0.55rem 1rem max(0.75rem, env(safe-area-inset-bottom));
+	border: 1px solid var(--app-divider);
+	border-bottom: 0;
+	border-radius: 18px 18px 0 0;
+	background: var(--app-bg);
+	color: var(--app-fg);
+	box-shadow: 0 -8px 32px rgb(0 0 0 / 22%);
+}
+.row-sheet-grip {
+	align-self: center;
+	width: 2.25rem;
+	height: 4px;
+	margin: 0.1rem 0 0.35rem;
+	border-radius: 99px;
+	background: var(--app-fg-subtle);
+	opacity: 0.6;
+}
+.row-sheet-title {
+	padding: 0 0.5rem 0.35rem;
+	color: var(--app-fg-muted);
+	font-size: 0.75rem;
+	font-weight: 500;
+	overflow-wrap: anywhere;
+}
+.row-sheet-action {
+	display: flex;
+	align-items: center;
+	gap: 0.75rem;
+	min-height: 44px;
+	padding: 0 0.65rem;
+	border-radius: 8px;
+	color: var(--app-fg);
+	text-align: left;
+	font: inherit;
+}
+.row-sheet-action:hover {
+	background: var(--app-hover);
+}
+.row-sheet-action svg {
+	flex: none;
+	color: var(--app-fg-muted);
+}
+.title-trigger {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3rem;
+	min-width: 0;
+	padding: 0;
+	border: 0;
+	background: none;
+	font: inherit;
+	text-align: left;
+	cursor: pointer;
+}
+.title-trigger:focus-visible {
+	outline: 2px solid var(--app-accent);
+	outline-offset: 3px;
+	border-radius: 3px;
+}
+.title-trigger svg {
+	flex: none;
+	color: var(--app-fg-subtle);
+}
+.title-menu {
+	z-index: 80;
+	min-width: 10rem;
+	padding: 0.3rem;
+	border: 1px solid var(--app-divider);
+	border-radius: 8px;
+	background: var(--app-bg);
+	color: var(--app-fg);
+	box-shadow: 0 8px 28px rgb(0 0 0 / 22%);
+}
+.title-menu [role="menuitem"] {
+	padding: 0.45rem 0.6rem;
+	border-radius: 5px;
+	font-size: 13px;
+	cursor: pointer;
+	outline: none;
+}
+.title-menu [role="menuitem"][data-highlighted] {
+	background: var(--app-hover);
+}
+.header-title-editor {
+	min-width: 0;
+	flex: 1;
 }
 .conv-pin {
 	flex: none;
@@ -749,8 +886,6 @@ p code,
 	letter-spacing: 0.04em;
 	color: var(--app-fg-subtle);
 }
-/* Projects and Notes open their index page from the head — the pane
-   lists, the index manages. */
 button.panel-index {
 	border-radius: 6px;
 	transition: color 75ms;
@@ -764,6 +899,20 @@ button.panel-index:hover {
 	font-size: 10px;
 	color: var(--app-fg-subtle);
 	font-variant-numeric: tabular-nums;
+}
+.panel-action {
+	width: 1.65rem;
+	height: 1.65rem;
+	margin-left: 0.4rem;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 6px;
+	color: var(--app-fg-muted);
+}
+.panel-action:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
 }
 .panes {
 	flex: 1;
@@ -5389,7 +5538,7 @@ select.ui-input option {
 		min-width: 2.25rem;
 		min-height: 2.25rem;
 	}
-	.conv-menu-trigger {
+	.conv-actions button {
 		min-width: 1.85rem;
 		min-height: 1.85rem;
 	}
@@ -5399,7 +5548,6 @@ select.ui-input option {
 	.rail .new,
 	.rail-op,
 	.rail-archived,
-	.rail .proj,
 	.sheet-row {
 		min-height: 2.25rem;
 		display: flex;
@@ -5529,42 +5677,63 @@ select.ui-input option {
 	}
 }
 
-/* ---------- projects (design/projects.md) ---------- */
-
-/* The projects pane: single-line project rows, then New project. The
-   index page itself opens from the panel head's label. */
-.rail-projects {
-	display: flex;
-	flex-direction: column;
-	gap: 1px;
+.proj-folder {
+	position: relative;
 }
-.rail-projects ul {
-	list-style: none;
-	margin: 0;
-	padding: 0;
+.folder-head {
+	position: relative;
 	display: flex;
-	flex-direction: column;
-	gap: 1px;
-}
-.rail .proj {
+	align-items: center;
 	width: 100%;
-	text-align: left;
 	border-radius: 8px;
+	transition: background-color 75ms;
+}
+.folder-head:hover {
+	background: var(--app-hover);
+}
+.folder-head.current {
+	background: var(--app-active);
+}
+.folder-toggle {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	width: 100%;
+	min-width: 0;
 	padding: 0.4rem 0.6rem;
+	text-align: left;
 	font-size: 12.5px;
 	color: var(--app-fg-muted);
+}
+.folder-toggle:hover {
+	color: var(--app-fg);
+}
+.folder-toggle[aria-expanded="true"] .chev {
+	transform: rotate(90deg);
+}
+.folder-toggle .chev {
+	flex: none;
+	transition: transform 120ms ease;
+}
+.folder-name {
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	transition: background-color 75ms;
 }
-.rail .proj:hover {
-	background: var(--app-hover);
-	color: var(--app-fg);
+.folder-actions {
+	bottom: 0.2rem;
 }
-.rail .proj.on {
-	background: var(--app-active);
-	color: var(--app-fg);
+.folder-head:hover .conv-actions,
+.folder-actions:focus-within {
+	opacity: 1;
+	pointer-events: auto;
+}
+.folder-empty {
+	padding-left: 1.5rem;
+}
+.folder-chats {
+	padding-left: 0.75rem !important;
 }
 
 /* Chat rows outside the rail (a project page's chat list) — the rail
@@ -6963,214 +7132,6 @@ button.link:hover {
 .script-calls code {
 	font-family: var(--font-mono);
 	color: var(--app-fg);
-}
-
-/* Responsibility feed — project + home surfaces */
-.resp-feed {
-	margin: 14px 0;
-}
-.resp-feed-h {
-	margin: 0 0 8px;
-	font-size: 1rem;
-}
-.resp-row {
-	border: 1px solid var(--app-divider);
-	border-radius: 8px;
-	margin-bottom: 8px;
-}
-/* The newest outcome post, readable without expanding the row. */
-.resp-glance {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: flex-start;
-	gap: 8px;
-	padding: 0 10px 10px;
-}
-.resp-glance .resp-post {
-	flex: 1 1 16rem;
-	min-width: 0;
-}
-.resp-post {
-	border-left: 3px solid var(--app-divider);
-	padding: 2px 0 2px 8px;
-	margin: 6px 0;
-	overflow-wrap: anywhere;
-}
-.resp-post p {
-	margin: 2px 0;
-}
-.resp-post-head {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
-	align-items: baseline;
-	font-size: 0.8rem;
-}
-.resp-post-state {
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
-	font-weight: 600;
-}
-.resp-post-ready,
-.resp-post-done {
-	border-left-color: var(--app-success);
-}
-.resp-post-blocked,
-.resp-post-failed {
-	border-left-color: var(--app-danger);
-}
-.resp-post-waiting {
-	border-left-color: var(--app-warning);
-}
-.resp-review-unreviewed .resp-post-review {
-	color: var(--app-warning);
-}
-.resp-post-purpose {
-	font-size: 0.75rem;
-	padding: 0 6px;
-	border-radius: 4px;
-	background: var(--app-active);
-}
-.resp-artifacts {
-	margin: 0.25rem 0 0;
-	padding-left: 1.25rem;
-}
-.resp-artifacts code {
-	font-size: 0.8rem;
-	overflow-wrap: anywhere;
-}
-.resp-post-question {
-	color: var(--app-accent);
-}
-.resp-post-stale {
-	opacity: 0.6;
-}
-.resp-pill {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
-	align-items: baseline;
-	padding: 8px 10px;
-	cursor: pointer;
-	list-style: none;
-}
-.resp-pill::-webkit-details-marker {
-	display: none;
-}
-.resp-status {
-	font-size: 0.75rem;
-	text-transform: uppercase;
-	letter-spacing: 0.04em;
-	padding: 1px 6px;
-	border-radius: 4px;
-	background: #2a4;
-	color: #042;
-}
-.resp-waits-operator {
-	background: #c44;
-	color: #200;
-}
-.resp-waits-goblin {
-	background: #c84;
-	color: #210;
-}
-.resp-waits-nobody {
-	background: #555;
-	color: #ddd;
-}
-.resp-stage-paused {
-	background: #a83;
-	color: #210;
-}
-.resp-stage-closed {
-	background: #333;
-	color: #999;
-}
-.resp-evidence {
-	margin: 0.25rem 0 0;
-	padding-left: 1.25rem;
-}
-.resp-outcome {
-	font-weight: 600;
-}
-.resp-agents,
-.resp-fresh,
-.resp-next {
-	font-size: 0.8rem;
-	opacity: 0.75;
-}
-.resp-detail {
-	padding: 0 10px 10px;
-	border-top: 1px solid var(--app-divider);
-}
-.resp-warn {
-	color: #ca4;
-	font-size: 0.85rem;
-}
-.resp-events-older {
-	margin: 2px 0;
-	font-size: 0.75rem;
-	opacity: 0.5;
-}
-.resp-understanding p {
-	margin: 4px 0;
-	font-size: 0.85rem;
-}
-.resp-rev {
-	opacity: 0.5;
-	font-size: 0.75rem;
-}
-.resp-section h4 {
-	margin: 10px 0 4px;
-	font-size: 0.8rem;
-	text-transform: uppercase;
-	letter-spacing: 0.05em;
-	opacity: 0.6;
-}
-.resp-att,
-.resp-op,
-.resp-event {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
-	align-items: baseline;
-	font-size: 0.85rem;
-	padding: 3px 0;
-}
-.resp-att-health,
-.resp-op-state,
-.resp-event-kind {
-	font-size: 0.75rem;
-	opacity: 0.8;
-}
-.resp-att-meta,
-.resp-op-meta,
-.resp-event-meta,
-.resp-event-origin {
-	font-size: 0.75rem;
-	opacity: 0.6;
-}
-.resp-op-brief,
-.resp-event-text {
-	flex: 1 1 100%;
-}
-.resp-controls {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px;
-	margin-top: 10px;
-}
-.resp-open-conv {
-	white-space: nowrap;
-}
-.resp-correct {
-	margin-top: 8px;
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-}
-.resp-correct textarea {
-	width: 100%;
 }
 
 /* Skill picker sheet (ruling 2026-10-21): catalog rows + the

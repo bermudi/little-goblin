@@ -4,7 +4,6 @@ import { ApiError, createNote, createProject, listNotes, patchProject } from "./
 import { ConversationNav } from "./ConversationList.tsx";
 import { useConfirm } from "./confirm.tsx";
 import { relTime } from "./memoryShared.tsx";
-import { ResponsibilityFeed } from "./ResponsibilityFeed.tsx";
 
 type Summary = AppConversationList["conversations"][number];
 
@@ -629,8 +628,6 @@ export function ProjectView({
 			</ProjectSection>
 
 			<ProjectNotes token={token} project={project} onOpenNote={onOpenNote} onChanged={onChanged} />
-
-			<ResponsibilityFeed token={token} projectId={project.id} onConversation={onConversation} />
 
 			<ProjectSection title="Chats" count={activeChats.length}>
 				{activeChats.length === 0 ? (

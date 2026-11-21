@@ -1,19 +1,4 @@
 #!/usr/bin/env bun
-// A scripted OpenAI-style Chat Completions endpoint, so a verification turn
-// exercises goblin's real provider path without a paid model or a real key.
-// It replies "verify-reply: <the last user message>". A message containing
-// "[slow]" streams one word every 400ms (time to press Stop); "[fail]"
-// streams a few words, then breaks the connection; "[hold]" opens the
-// stream and never sends a chunk — a silent provider, for held-turn UI
-// states (e.g. the first turn's Stop button, issue #412). "[agent <task>]"
-// answers the first call of a turn with an `agent`-tool spawn (issue
-// #604's native-subagent verification). "[computer <desktop> <task>]"
-// spawns a foreground `computer` child bound to <desktop> (issue #605):
-// the child's own turn is recognized by its system prompt and driven
-// through inspect → launch → inspect-until-button → act click → inspect,
-// against a probe page podman-cp'd into the desktop container.
-// "[delegate <harness> <cwd> <task>]" and "[handover]" script the `delegate` start and `responsibility`
-// accept calls (issue #608's T3 Code verification).
 
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -352,12 +337,6 @@ const server = Bun.serve({
 			}
 			reply = step.text;
 		}
-		// "[delegate <harness> <cwd> <task>]" and "[handover]" (issue #608's
-		// verification): fire on the first call after their user message —
-		// once a tool result follows it the marker is spent and the call
-		// echoes. "[handover]" runs `responsibility accept` binding the
-		// thread id found in the newest tool result (the delegate start's
-		// `thread` field).
 		const lastUserIndex = parsed.data.messages.findLastIndex((message) => message.role === "user");
 		const toolAfterLastUser = parsed.data.messages
 			.slice(lastUserIndex + 1)
@@ -391,33 +370,6 @@ const server = Bun.serve({
 					},
 					parsed.data.stream === true,
 				);
-			}
-			if (lastUserText.includes("[handover]")) {
-				let thread: string | undefined;
-				for (const message of parsed.data.messages) {
-					if (message.role !== "tool") continue;
-					for (const match of textOf(message.content).matchAll(/"thread"\s*:\s*"([^"]+)"/g)) {
-						const id = match[1];
-						if (id !== undefined) thread = id;
-					}
-				}
-				if (thread !== undefined) {
-					return toolCallResponse(
-						"responsibility",
-						{
-							action: "accept",
-							understanding: {
-								outcome: "verify handover",
-								situation: "throwaway verification instance",
-								nextAction: "observe the bound thread",
-								checkpoints: [],
-								completionEvidence: [],
-							},
-							attachments: [{ thread }],
-						},
-						parsed.data.stream === true,
-					);
-				}
 			}
 		}
 		if (parsed.data.stream !== true) {

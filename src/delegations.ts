@@ -19,7 +19,6 @@ export interface Delegation {
 	id: number;
 	name: string;
 	harness: string;
-	role: string;
 	cwd: string;
 	task: string;
 	// Pinned Telegram address — notices land where it was delegated.
@@ -40,11 +39,6 @@ export interface Delegation {
 	// The task text was never delivered — the launch parked on a startup
 	// dialog; the watcher delivers it on the first seq advance past the park.
 	promptPending: boolean;
-	// Linked responsibility: each settlement files a worker report on it.
-	responsibilityId: string | null;
-	// The revision the delegation started from; a later correction
-	// overtakes its claim.
-	responsibilityRevision: number | null;
 	createdAt: string;
 	finishedAt: string | null;
 }
@@ -52,13 +46,10 @@ export interface Delegation {
 export interface CreateDelegation {
 	name: string;
 	harness: string;
-	role?: string;
 	cwd: string;
 	task: string;
 	address: { chatId: number; threadId: number | null };
 	appConversation?: string;
-	responsibilityId?: string | null;
-	responsibilityRevision?: number | null;
 }
 
 export interface DelegationsStore {
@@ -110,7 +101,6 @@ const delegationSchema = z.object({
 	id: z.number(),
 	name: z.string(),
 	harness: z.string(),
-	role: z.string(),
 	cwd: z.string(),
 	task: z.string(),
 	chat_id: z.number(),
@@ -123,8 +113,6 @@ const delegationSchema = z.object({
 	baseline_seq: z.number().nullable(),
 	prompted_at: z.string(),
 	prompt_pending: z.number(),
-	responsibility_id: z.string().nullable(),
-	responsibility_revision: z.number().nullable(),
 	created_at: z.string(),
 	finished_at: z.string().nullable(),
 });
@@ -137,7 +125,6 @@ function rowToDelegation(row: unknown): Delegation {
 		id: r.id,
 		name: r.name,
 		harness: r.harness,
-		role: r.role,
 		cwd: r.cwd,
 		task: r.task,
 		chatId: r.chat_id,
@@ -150,8 +137,6 @@ function rowToDelegation(row: unknown): Delegation {
 		baselineSeq: r.baseline_seq,
 		promptedAt: r.prompted_at,
 		promptPending: r.prompt_pending === 1,
-		responsibilityId: r.responsibility_id,
-		responsibilityRevision: r.responsibility_revision,
 		createdAt: r.created_at,
 		finishedAt: r.finished_at,
 	};
@@ -185,15 +170,7 @@ const DELEGATIONS_COLUMNS = `
 		created_at TEXT NOT NULL,
 		finished_at TEXT,
 		app_conversation TEXT,
-		prompt_pending INTEGER NOT NULL DEFAULT 0,
-		responsibility_id TEXT,
-		responsibility_revision INTEGER,
-		role TEXT NOT NULL DEFAULT 'default',
-		issue_json TEXT,
-		readiness_json TEXT,
-		readiness_notified_key TEXT,
-		readiness_version INTEGER NOT NULL DEFAULT 0,
-		readiness_pending_verdict TEXT`;
+		prompt_pending INTEGER NOT NULL DEFAULT 0`;
 
 export function openDelegations(dbPath: string, settledAt = new Date()): DelegationsStore {
 	const db = new Database(dbPath);
@@ -216,36 +193,32 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 	if (!cols.has("prompt_pending")) {
 		db.exec("ALTER TABLE delegations ADD COLUMN prompt_pending INTEGER NOT NULL DEFAULT 0");
 	}
-	// Predates responsibility links: NULL = not linked.
-	if (!cols.has("responsibility_id")) {
-		db.exec("ALTER TABLE delegations ADD COLUMN responsibility_id TEXT");
-	}
-	if (!cols.has("responsibility_revision")) {
-		db.exec("ALTER TABLE delegations ADD COLUMN responsibility_revision INTEGER");
-	}
-	if (!cols.has("role")) db.exec("ALTER TABLE delegations ADD COLUMN role TEXT NOT NULL DEFAULT 'default'");
-	for (const column of ["issue_json", "readiness_json", "readiness_notified_key", "readiness_pending_verdict"]) {
-		if (!cols.has(column)) db.exec(`ALTER TABLE delegations ADD COLUMN ${column} TEXT`);
-	}
-	if (!cols.has("readiness_version"))
-		db.exec("ALTER TABLE delegations ADD COLUMN readiness_version INTEGER NOT NULL DEFAULT 0");
 	// Predates the baseline-pending posture: baseline_seq was NOT NULL, so
 	// a failed post-prompt read had to record some pre-prompt number — a
 	// stale comparison the next poll could turn into a spurious done. NULL
 	// now means pending; ALTER TABLE cannot drop a NOT NULL, so this is
 	// the one rebuild migration.
-	const baselineCol = db
-		.query<{ name: string; notnull: number }, []>("PRAGMA table_info(delegations)")
-		.all()
-		.find((c) => c.name === "baseline_seq");
+	const tableInfo = db
+		.query<{ name: string; type: string; notnull: number }, []>("PRAGMA table_info(delegations)")
+		.all();
+	const baselineCol = tableInfo.find((c) => c.name === "baseline_seq");
 	if (baselineCol !== undefined && baselineCol.notnull === 1) {
 		db.exec("BEGIN IMMEDIATE");
 		try {
 			db.exec(`CREATE TABLE delegations_migrated (${DELEGATIONS_COLUMNS})`);
-			db.exec(`INSERT INTO delegations_migrated
-				(id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict)
-				SELECT id, name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation, prompt_pending, responsibility_id, responsibility_revision, role, issue_json, readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict
-				FROM delegations`);
+			const fresh = new Set(
+				db
+					.query<{ name: string }, []>("PRAGMA table_info(delegations_migrated)")
+					.all()
+					.map((c) => c.name),
+			);
+			for (const col of tableInfo) {
+				if (!fresh.has(col.name)) {
+					db.exec(`ALTER TABLE delegations_migrated ADD COLUMN "${col.name}" ${col.type}`);
+				}
+			}
+			const copied = tableInfo.map((c) => `"${c.name}"`).join(", ");
+			db.exec(`INSERT INTO delegations_migrated (${copied}) SELECT ${copied} FROM delegations`);
 			db.exec("DROP TABLE delegations");
 			db.exec("ALTER TABLE delegations_migrated RENAME TO delegations");
 			db.exec("COMMIT");
@@ -285,8 +258,8 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 	);
 	const qStarting = db.query("SELECT * FROM delegations WHERE status = 'starting' ORDER BY id");
 	const qInsert = db.query(`INSERT INTO delegations
-		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation, responsibility_id, responsibility_revision, role)
-		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', 0, ?, ?, NULL, ?, ?, ?, ?)`);
+		(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id, status, baseline_seq, prompted_at, created_at, finished_at, app_conversation)
+		VALUES (?, ?, ?, ?, ?, ?, '', '', '', 'starting', 0, ?, ?, NULL, ?)`);
 	const qBind = db.query(
 		"UPDATE delegations SET agent_name = ?, workspace_id = ?, pane_id = ? WHERE id = ?",
 	);
@@ -314,13 +287,10 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 			{
 				name,
 				harness,
-				role,
 				cwd,
 				task,
 				address,
 				appConversation,
-				responsibilityId,
-				responsibilityRevision,
 			},
 			now = new Date(),
 		) {
@@ -335,9 +305,6 @@ export function openDelegations(dbPath: string, settledAt = new Date()): Delegat
 				ts,
 				ts,
 				appConversation ?? null,
-				responsibilityId ?? null,
-				responsibilityRevision ?? null,
-				role ?? "default",
 			);
 			return rowToDelegation(qGet.get(Number(res.lastInsertRowid)));
 		},

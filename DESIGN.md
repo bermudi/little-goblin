@@ -2,16 +2,20 @@
 
 **Code defines shipped behavior.** Tests pin what must not change.
 [DIRECTION.md](DIRECTION.md) records operator intent;
-[ROADMAP.md](ROADMAP.md) tracks unbuilt work and acceptance evidence.
-These notes explain choices and trade-offs. [Docs](docs/) are for operating
-Goblin.
+[ROADMAP.md](ROADMAP.md) distinguishes shipped behavior, open scope conflicts,
+and what still needs proof. These notes explain choices and trade-offs within
+[the scope set in AGENTS.md](AGENTS.md#goblin-is-a-loop-with-tools-and-connectors-thats-it).
+[Docs](docs/) are for operating Goblin.
 
 | Looking for | Start with |
 | --- | --- |
 | Conversation identity, history, settings | [`conversation-address.ts`](src/conversation-address.ts), [`conversation.ts`](src/conversation.ts), [`config-schema.ts`](src/config-schema.ts) |
 | Request lifecycle, persistence, recovery | [`runtime.ts`](src/runtime.ts), [`turn-journal.ts`](src/turn-journal.ts), [runtime rationale](design/runtime-turn.md) |
 | Client and Telegram | [`app/src`](app/src/), [`src/http`](src/http/), [`src/tg`](src/tg/) |
-| Scheduled work and division of work between agents | [`programs.ts`](src/programs.ts), [`responsibility-service.ts`](src/responsibility-service.ts), [`agent-children.ts`](src/agent-children.ts) |
+| Scheduled triggers and saved assignments | [`programs.ts`](src/programs.ts), [`responsibility-service.ts`](src/responsibility-service.ts), [scheduling and state](design/programs.md) |
+| Child agents and external workers | [`agent-children.ts`](src/agent-children.ts), [agent tools and worker links](design/agents.md) |
+| T3 thread access and GitHub observations | [`t3.ts`](src/t3.ts), [`github.ts`](src/github.ts), [current issue handover behavior](design/delegation.md) |
+| Loading, proposing, and updating skills | [`skills.ts`](src/agent/skills.ts), [skill design](design/skills.md) |
 | Memory and conversation summarization | [`src/memory`](src/memory/), [`compaction.ts`](src/agent/compaction.ts) |
 
 Area notes live in [`design/`](design/). Non-obvious decisions with no
@@ -108,8 +112,7 @@ One operator, one process, one app client and an optional Telegram channel.
 Sandboxed Telegram guests do not make this a multi-user product. No onboarding
 wizard, third channel, plugin SDK, native browser or MCP client, or Kubernetes
 deployment. New background work does not acquire standing authority on its
-own. Judge additions against [operator direction](DIRECTION.md), not an old
-rollout plan.
+own.
 
 ## Test posture
 

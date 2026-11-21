@@ -1,63 +1,12 @@
 # The Way Forward
 
-Recommended sequence grounded in [DIRECTION.md](DIRECTION.md), not blanket
-implementation or deployment authorization. Reorder in response to actual use;
-do not treat this as a dependency graph requiring every feature before Goblin
-can be useful.
+This is the sequence for proving the experience in [DIRECTION.md](DIRECTION.md)
+within [the scope set in AGENTS.md](AGENTS.md#goblin-is-a-loop-with-tools-and-connectors-thats-it).
+It does not authorize implementation, live work, or deployment.
 
-Baseline inspected: `3181e943` on `main`, after the first handover milestone.
-Follow-up policy implementation starts from `241178ee`; progress is recorded
-under stage 1 rather than presenting the entire stage as complete.
-The source inspection did not establish the live deployment's version or
-whether an operator pilot has already happened. Ask for missing usage evidence,
-not for settled product preferences.
-
-## What We Can Build On
-
-| Capability | Current source |
-| --- | --- |
-| Project-owned work, understanding, attachments, generations, prompt operations | `src/responsibility-types.ts`, `src/responsibility-schema.ts`, `src/responsibilities.ts`, `src/responsibility-service.ts` |
-| Deterministic T3 thread observation; cursor/event/wake persistence | `src/responsibility-observer.ts` |
-| Append-once triggers, run ownership, crash/retry reconciliation | `src/wake-store.ts`, `src/wake-dispatcher.ts`, runtime and turn journal |
-| Project-directed Programs and automatic follow-up linking | `src/programs.ts`, `src/scheduler.ts`, responsibility service |
-| Project tools, feed pills, correction and lifecycle controls | `src/agent/tools/responsibility.ts`, `src/http/app-responsibilities.ts`, `app/src/ResponsibilityFeed.tsx` |
-| Primary app, shared approvals, Attention, push, settings and account management | App, HTTP, and channel-neutral domain owners |
-| Latest outbound context window and call lineage | `src/window-capture.ts`, `app/src/WindowView.tsx` |
-
-Do not rebuild these under new names. Extend their owners and preserve the
-existing adapter boundaries.
-
-Known distinctions at this baseline:
-
-- T3 thread observation is code-only every minute, but active responsibilities
-  originally defaulted to a model-waking Program every 15 minutes, up to 96 scheduled
-  occurrences per active responsibility per day. That is not yet economical
-  judgment about when follow-up is useful; the first stage-1 slice replaces
-  that unconditional wake policy.
-- The feed is responsibility-centered inspection inside Projects, not yet
-  the outcome-led front door. Attention is a separate operational projection.
-- Completion expectations exist, but `complete` itself is a status change:
-  it does not require a completion report or verification evidence.
-- Managed sends check identity before and after sending. There is still a
-  check/send race, explicitly treated by the implementation as an accepted
-  residual risk. A server-side guarded send is not implemented in this path.
-- A subagent (`agent`) runs on the parent's model unless its agent type
-  names one; that `model` field is a constrained seam, not a free-model
-  delegation product.
-- Ratings are record-only, project memory is shared/off, and the context-window
-  capture is latest-wins rather than a per-reply incoming-memory history.
-- Coordination conversations are protected from deletion, including for
-  terminal responsibilities. Session replacement support does not imply free
-  migration between coordination conversations.
-
-At inspection, 432 selected tests across 21 files and both TypeScript programs
-passed. This is bounded evidence, not a full-suite result or live acceptance.
-
-While recording this roadmap, the full non-live suite ran: 4,840 passed,
-86 skipped, and one experimental retry test failed because its transcript did
-not yet contain "All done." (`experimental/pi-approval/crash.test.ts:294`).
-That test passed on an isolated rerun; the full run is still not green.
-Typechecking and the direction/roadmap links passed. No runtime source changed.
+Source baseline: `5cb2c489` on `main`, after the T3 Code issue handover
+landed. This is a checkout inspection, not a check of the live release.
+For source owners, start at [DESIGN.md](DESIGN.md).
 
 ## Next Acceptance Target: Carry One Project Without Babysitting
 
@@ -66,331 +15,151 @@ returns to understand what moved, what needs judgment, and what is evidenced.
 Goblin does not spend the allowance saying "still working," manufacture
 completion, or leave the operator to reconstruct progress from machinery.
 
-The first two stages below serve this same target. A representative pilot is
-the proving ground throughout, not a ceremony after building everything.
-Re-use actual pilot evidence if it already exists.
+Use one real handover with the tools that already exist. Look for a useful
+development or blocker, a correction that reaches the right work, and a
+result with evidence. Check recovery in isolation. Reuse any recorded pilot
+evidence before asking to run one. No full live pilot is evidenced here.
 
-Issue builds run as one inner loop per issue on T3 Code (operator,
-2026-11-20, #745; design/delegation.md → An issue build is one inner loop
-on T3 Code): goblin starts a Claude Opus 5.5 thread in a new worktree from
-the default branch as soon as the operator hands an issue over. The pilot:
-the operator hands over one real issue, and it ends merged with a verifier
-verdict on the PR, without the operator relaying between agents. Code
-observes the closing PR, SHA-bound verifier verdict and CI on the
-responsibility itself, for any worker, once the issue is linked at accept
-(#406, design/delegation.md → PR readiness). Unchanged CI polls do not wake
-a model; notes and operator-facing judgment still do. The `lead` delegate
-role is gone. The full issue pilot remains unverified.
+A GitHub issue is one candidate, not a workflow Goblin must implement.
+The linked issue can supply the closing PR, its head commit, verifier
+comment, and CI status. What those facts mean for the work comes from the
+operator and their skills. If the example includes merging, that still
+requires the operator's green light.
 
 ## 1. Make Follow-Through Deliberate
 
-Outcome: Goblin remembers why and when to check, without a blanket inference
-heartbeat becoming the default cost of every responsibility.
+**Shipped:** The `responsibility` tool stores a next check with a due time
+and reason. The scheduler checks without calling a model on every tick.
+Due checks use a stable identity so retries do not queue the same check
+twice. T3 Code observations and GitHub polling can report changes without
+model polling. Linked workers can return claims separately from Goblin's
+assessment. See [scheduling and reports](design/programs.md) and
+[linked workers](design/agents.md#linked-workers-one-contract-across-transports-2026-11-19-779).
 
-Scope:
+**Prove next:** A changed fact or a due check reaches the conversation once
+without a model call for every unchanged poll. The operator can see why a
+check is due, what is waiting, and what changed. Pausing, cancelling, and
+correcting take effect even if an action was queued: old observations remain
+visible as history, not permission. Archiving stays a visibility control.
+An adopted workspace stays open, and an uncertain send is not replayed.
 
-- Represent the next commitment: what is owed, why another check is needed,
-  and when to assess it. Extend the existing responsibility/Program owners;
-  do not introduce a second scheduler.
-- Wake for meaningful developments, due commitments, and task-appropriate
-  silence/progress limits. An unchanged status is not automatically "nothing
-  to do": stalled work and missing events still need a backstop.
-- Give coordination tools a usable way to express active, blocked, and
-  waiting-for-operator states, with the reason and resumption condition.
-  The store has these states; the tool currently cannot directly select the
-  latter two.
-- Avoid repeated model calls while waiting for the operator unless an agreed
-  reminder or consequential change warrants one. Coalesce covered obligations
-  without discarding distinct developments.
-- Make pause, cancellation, project archive, corrections, and resumption
-  consistent across scheduling, observation, and dispatch. Preserve in-flight
-  effect honesty and never close adopted workspaces.
-- Record a concise completion assessment with evidence references and what
-  was actually verified. A failed check keeps the work open or blocked;
-  a task-specific checkpoint waits without redefining every finish as review.
+### Existing Policy To Separate From The Tools
 
-Acceptance:
+These are conflicts or limits in current code, not work this pass implements.
+Do not extend them as defaults for new kinds of work.
 
-- A quiet active agent causes ordinary observations, not a model turn every
-  15 minutes merely because the default cron elapsed.
-- A completion candidate, question/blocker, due promise, or exceeded silence
-  bound still gets timely assessment. Suppressing calls must not lose work.
-- Waiting, pausing, archiving, correcting, and resuming have observable effects;
-  queued/stale actions cannot regain authority.
-- Commitments and their dedupe identity survive restart and recover without
-  duplicate sends. Existing wake/journal invariants stay intact.
-- "Done" with failing evidence does not close the responsibility. A verified
-  operational outcome can close without a universal human approval.
-- The operator can inspect why the next wake is scheduled, why one was skipped,
-  and what inference was spent, without inspecting raw logs.
-
-First-slice boundary: follow-up policy on the existing linked Program,
-with deterministic-clock tests and visible reason/due time. No full feed
-redesign or model router bundled into it.
-
-### First Slice: Implemented, Not Yet Piloted
-
-The durable review plan now lives on the existing responsibility: purpose,
-due time, kind, and stable dedupe token. `responsibility action=followup`
-with `followup:{dueAt,reason}` sets a task-specific review. New follow-up
-Programs check the plan every minute in code; existing/operator-edited cron
-cadences are preserved. Ordinary ticks do not wake a model.
-
-Absent a task-specific plan, a one-hour silence bound is an engineering
-backstop, not a settled operator budget or a claim of task-specific judgment.
-Meaningful observations still wake immediately and postpone only that silence
-check; stable polling cannot postpone it, and explicit promises survive
-developments. Due reviews enqueue before plan/cursor advancement. A stable
-review token deduplicates retries across missed cron occurrences and restart;
-compare-and-set prevents stale accounting from replacing a newer plan.
-
-Corrections, changed status, and deliberate reattachment invalidate old
-reviews. Timed inference is suppressed outside active status. The feed shows
-the next effective check-in and purpose, derived from the plan plus the linked
-Program, and reports missing/disabled/unscheduled follow-ups honestly.
-Owning code: `src/responsibility-service.ts`, `src/scheduler.ts` and
-`app/src/ResponsibilityFeed.tsx`.
-
-Verification: 546 tests passed across 23 focused files (2,321 assertions),
-covering responsibilities, observation, follow-up/recovery, wakes (including
-the existing killed-process tests), Programs, scheduler, Herdr fixtures, tool
-and HTTP boundaries, app feed, Attention, and module boundaries.
-`bun run typecheck`, formatting of changed source/test files, and
-`git diff --check` passed. Tests use real SQLite, explicit clock values,
-fake edges, and restart/reconcile seams; this is not a killed-process proof
-of the new plan write or a live project handover. The full suite was not
-rerun for this slice; its previously recorded experimental failure remains
-unresolved. No live prompts, deployment, service restart, or push.
-
-### Second Slice: Reports And Derived Stages — Implemented, Not Yet Piloted
-
-`responsibility action=report` states the work's state
-(`progress|waiting|ready|blocked|failed|done|dropped`) with a reason, an
-optional operator question, a `resumeWhen` for external waits, and evidence
-items. Stored status is lifecycle only; whom the work waits for is derived
-by one first-match stage function that the feed pill, Attention and the
-scheduler share. `done` closes only when evidence covers every
-completionEvidence entry; `dropped` closes "nothing to do". While the stage
-waits on the operator the silence backstop is held (an explicit commitment
-still fires); an operator correction answers the report. An app push, or Telegram when no device
-gets it, reminds the operator without a model call, 4 hours after the report
-and then daily. Ruling:
-`design/programs.md` → Reports and stages (mechanisms borrowed from
-dsh-superagent, cited there).
-
-Verification: typecheck (both programs) passed. Full non-live suite on the
-worktree: 5,313 pass, 91 skip, 2 fail — `boot.test.ts` "disabling after
-polling starts" gets the by-design 500 because that fresh worktree had no
-`app/dist` build; `subagents/mod.test.ts` "request recovery survives a
-concurrent steer" timed out under full-suite load and passed alone. No live
-prompts, deployment or restart.
-
-### Third Slice: Pi-Durable Runs As Responsibility Workers — Implemented, Not Yet Piloted
-
-`subagent start` takes an explicit `responsibility`; each settlement of a
-linked run (`finish`, `ask_operator`, crash hold, failure) files one deduped
-`worker` report before the notice wakes the conversation. A worker's claim
-is goblin's to assess; its question goes to the operator unchanged. Ruling:
-`design/programs.md` → Worker reports. The worker's own tools are
-unchanged — no new evidence or `dropped` outcome on `finish` yet; add them
-only if piloting shows goblin cannot assess from the result text.
-
-### Fourth Slice: Queued Authority — Implemented, Not Yet Piloted
-
-Scheduler, observer and mail-watcher developments stamp the
-responsibility status, revision and (for observations) attachment
-generation they acted on. The wake commit re-checks each stamp. A
-development whose stamp lapsed since it was recorded (pause, close,
-correction, detach, re-bind) is still delivered, framed as superseded
-history, never as authority to act. Archive stays visibility-only:
-pausing the responsibility is what stops work. Ruling:
-`design/programs.md` → Queued authority. The responsibility store now
-opens before the wake dispatcher, so the boot pump re-checks too.
-
-Verification: typecheck passed on both programs. Focused suites (wakes,
-scheduler, responsibilities, mail watcher, module boundaries, app
-responsibilities, boot): 345 passed, 1 failed. The failure is the
-by-design `app/dist` 500 in `boot.test.ts` on this unbuilt worktree.
-
-Still open in stage 1: a useful real-world pilot. Already enqueued
-developments remain historical facts. This does not introduce generic wake
-revocation or strengthen the accepted Herdr send race.
+- **Issue handover.** The [tool](src/agent/tools/responsibility.ts) tells
+  Goblin to launch immediately. [`inner-loop.ts`](src/inner-loop.ts) supplies
+  a default model and branch name and adds draft PR and verifier instructions.
+  The [watcher](src/responsibility-readiness.ts) uses that verdict format to
+  classify PR evidence. Keep authorized T3 Code operations and GitHub
+  observation. Leave when to start, model and branch choice, and required
+  review to the operator or their skill. A matching verdict and green CI
+  are evidence, not merge approval.
+- **Completion.** [`report done`](src/responsibilities.ts) requires evidence
+  entries matching the saved `completionEvidence` list, which can be empty.
+  `dropped` requires an evidence item. The store checks the fields, not
+  whether the outcome happened. Keep the ability to record an outcome and
+  its evidence. Leave finish criteria and verification to the operator or
+  skill. The roadmap does not require a universal completion report.
+- **Follow-up timing.** The [scheduler](src/scheduler.ts) holds its
+  [one-hour fallback](src/responsibility-followup.ts) when work waits for the
+  operator; [reminders](src/reminders/policy.ts) separately nudge after four
+  hours and then daily. Keep reliable timers, deduplication, delivery, and
+  authority checks. A stall backstop is not a task review plan. Leave task
+  checkpoints and when to nudge to the operator or skill. The fixed reminder
+  cadence is shipped policy, not a reason to add more timing rules.
 
 ## 2. Bring Back Outcomes, Not Just Activity
 
-Outcome: the feed becomes the useful front door; chat deepens or steers an item.
+**Shipped:** Project pages and the app's Attention view show
+[outcome posts](design/app.md#outcome-posts-ruling-2026-11-02) based on
+existing reports. Posts preserve evidence, artifacts, and who made or
+assessed a claim. Routine observations stay in history. A post opens its
+coordination conversation rather than creating a second comment thread.
 
-Scope:
+**Prove next:** On desktop and mobile, the operator can find what changed
+and what needs a decision without opening every conversation. Reload keeps
+the result and its evidence. A correction reaches the right work and does
+not erase the prior claim. Check empty, stale, and failed states against
+the real backend; the earlier browser check used a stub.
 
-- Add durable outcome items for findings, drafts, meaningful changes, questions,
-  and completed work, linked to their project/responsibility, evidence, and
-  originating conversation. Extend existing durable work; avoid a duplicate
-  task database or a separate chat history.
-- Keep routine activity in expandable pills. Repeated check-ins are not posts
-  unless they produce something worth seeing.
-- Distinguish worker-produced, unreviewed, and Goblin-assessed content.
-  Review policy depends on the work, not a universal publish gate.
-- Bring the cross-project feed to the app's home experience. Integrate or
-  clearly connect Attention rather than creating two competing places to watch.
-- An item opens its project/conversation; comments and corrections retain
-  item context. Existing inspection, approvals, and recovery stay reachable.
-- Use existing UI rendering primitives where they help express a comparison,
-  decision, or artifact. No new generative-UI framework is needed.
-
-Acceptance:
-
-- The operator can return after time away and see the result, what changed,
-  and the actual decision needed without opening every conversation.
-- Agent activity is visible but does not bury useful outcomes.
-- Reload preserves posts, evidence, review state, and corrections.
-- A comment reaches the right ongoing work; it is not an unanchored global
-  chat message. Inspection can explain the item's sources and actions.
-- Empty, stale, failed, desktop, and mobile states are intentional.
-
-Briefly deployed to g7 as release 7a0f8a6 (2026-11-06, 00:48-03:04 CST), then
-replaced by a release from main. The schema migrations stayed on the live store
-(work_events authority/superseded, report purpose/artifacts). Prod stays on main:
-pilot after this merges and is released. No real handover has run yet.
-
-First combined pilot: explicit handover, a real development or blocker, an
-operator correction, a controlled restart, and evidenced completion. Separately
-exercise failure paths in isolation. Live prompts, service restarts, and other
-consequential operations retain their normal authorization requirements.
-
-### First Slice: Outcome Posts — Implemented, Not Yet Piloted
-
-The feed separates outcomes from activity. Responsibility reports are
-served as posts, newest first and bounded. Each post says whose word it
-is: goblin-assessed, a worker claim not yet reviewed, a reviewed worker
-claim, or a migrated status. A post an operator correction has overtaken
-is dimmed. The newest post shows under the collapsed pill with **Open
-conversation**, so the result or the decision needed reads without
-opening every item. Check-ins and observations stay in History. Ruling:
-`design/app.md` → Outcome posts.
-
-Verification: typecheck (both programs) passed. Full suite: 5,331 passed,
-91 skipped, 1 failed. The failure is the by-design `app/dist` 500 in
-`boot.test.ts` on this unbuilt worktree. Client behaviour is pinned in
-happy-dom tests. It has not been seen in a real browser yet: builds belong
-on CI, and the mobile layout still needs a look.
-
-The cross-project feed moved from the Projects index to Attention, under
-the open decisions: one place to watch, with the badge the rail and tab
-bar already show. Project pages keep their own feed.
-
-Typed posts: a report's `purpose` (status, finding, draft or change)
-labels what it carries, and `artifacts` link what it produced. A finished
-run's exported files become artifacts. The `responsibility` tool
-describes both. Ruling: `design/app.md` → Outcome posts → Typed posts.
-
-Browser check (2026-11-04): the Vite dev server (no production build)
-against a stub backend serving the real feed read model over seeded
-stores, headless at 1280px and 390px. Seeded: a worker claim, a question,
-a draft with a link and a path, a finding with an unbroken 150-character
-ref, a post overtaken by a correction, a paused item, and an empty
-feed. Nothing overflowed at 390px. Two fixes came out of it: a row said
-"no activity" while carrying a post filed seconds earlier (freshness now
-counts reports), and "Open conversation" wrapped onto two lines on a
-phone. The stub's non-feed endpoints were canned, so this is a layout and
-state check, not proof against the live backend. The combined pilot
-remains.
+**Possible gap:** If Attention is not a useful front door in the pilot,
+improve how the app presents the same saved results. Do not create another
+inbox or task database. Give Goblin a way to surface a result without making
+the app decide which findings are important or impose a review before posting.
 
 ## 3. Add Useful Cheap Capacity
 
-Outcome: Goblin can use an explicitly configured free model for a bounded
-lower-stakes assignment through an `agent` child, then assess the evidence.
+**Shipped:** An [agent type](GLOSSARY.md#glossary) can name a configured
+model and a restricted tool list for an `agent` child. The existing runtime
+caps and queues children. A child interrupted by restart reports failure;
+it does not resume a half-finished tool call. See
+[agent execution and limits](design/agents.md#limits).
 
-Scope:
+**Prove next:** Use a model the operator explicitly configured for a small
+assignment, such as a sourced comparison. The operator can see the worker's
+result, its source, and what was checked. If capacity runs out or a run breaks,
+the assignment stays visible and the failure is clear, without silent paid
+substitution or unbounded retries.
 
-- Expose a free-worker capability as an agent type that names the model and
-  a narrow `tools` list (design/agents.md → Agent types). Make the
-  assignment, model/provider, resource limits, result, and failure visible;
-  do not build a throwaway API wrapper or choose providers without the operator.
-- Extend worker tools for the chosen research job, sandboxing less-trusted
-  tool use and limiting supplied context to what the assignment needs.
-- Queue work, bound retries/fan-out, report unavailable/exhausted capacity,
-  and never silently substitute paid inference.
-- Check evidence with methods appropriate to the assignment. Main-model or
-  capable-harness review is selective, not mandatory duplication of every call.
-- Publish useful findings into the same feed and link them to the work.
-
-Acceptance:
-
-- A bounded sourced comparison, supplied-material summary, or lead-research
-  assignment survives interruption and returns inspectable evidence.
-- A bogus or unsupported claim is rejected or visibly unverified, not promoted
-  because several workers agree.
-- Capacity exhaustion produces a clear deferred/blocked result without a
-  retry storm, paid fallback, or lost assignment.
-
-Business prospecting remains a delegation use case, not a mandate to turn this
-roadmap into choosing the operator's offer or building a sales product.
+**Possible gap:** Fix missing limits, tool access, or failure reporting if the
+trial exposes them. Choosing the assignment and assessing its evidence stay
+in the conversation or skill. No research pipeline or model router is planned
+for this trial.
 
 ## 4. Close The Steering And Memory Loops
 
-Outcome: Goblin learns correctable lessons from feedback and respects project
-memory boundaries in a way the operator can inspect.
+These tracks do not block the first pilot.
 
-Two independently shippable tracks, not blockers for the earlier pilot:
-
-- Feedback: attach reactions/comments to the item and its context; form a
-  tentative interpretation; occasionally ask a targeted clarification.
-  Show and allow correction of an interpretation before treating an ambiguous
-  dislike as a permanent preference. Do not force homework after every vote.
-- Memory: implement project shared/separate/off consistently across recall,
-  retention, migration, and controls. Separate projects must not bleed into
-  shared recall. Expose incoming sources at the useful conversation/reply
-  boundary without pretending the existing latest-window view is a full trace.
-- Skills as procedural memory (operator decision 2026-11-16, #626): the
-  agent saves what it learns as skills itself — new skills proposed for
-  the operator's yes, extensions to installed skills direct; `/learn`
-  authors a skill from a request or the conversation; a config-gated
-  curator archives unused provenance-backed skills (never deletes).
-  Mechanisms borrowed from hermes-agent; ruling: `design/skills.md` →
-  Self-authoring, /learn, curator.
-
-Acceptance: a corrected interpretation changes subsequent behavior with visible
-provenance; project isolation holds across recall and retention; memory-off
-does not disable explicit work state or follow-through.
-
-## Longer Horizon: Native Work Through Pi-Durable — superseded (#609)
-
-The Pi Durable runtime this section planned around is removed; native
-`agent` children and `delegate` on T3 Code cover the same ground. Grow
-roles, assignments, histories, budgets, and execution workflows from real
-repeated work. Responsibility remains independent of any harness. Keep
-the delegate bridge (T3 Code threads) useful; do not retire capable
-coding harnesses merely to make the architecture look finished.
-
-Do not build the entire managed workforce before proving the next outcome.
-Do not confuse "native" with cheaper subscription economics or retire capable
-coding harnesses merely to make the architecture look finished.
+- **Feedback:** [Reply ratings](src/reply-ratings.ts) are record-only.
+  Make feedback available with the item it refers to and keep corrections
+  visible. The agent interprets the feedback in context; a downvote is not
+  code-level permission to set a lasting preference. Prove that an explicit
+  correction changes a later answer and that the operator can see why.
+- **Memory:** Projects currently support [shared/off](src/projects.ts)
+  memory, not separate memory. When adding the separate boundary, prove
+  that saving and retrieving memories stay isolated and that turning
+  memory off does not erase assignments. Expose what memory reached a
+  reply; the [latest request view](src/window-capture.ts) is not a history
+  of what reached every reply.
+- **Skills:** Use the existing [`/learn` and proposal flow](design/skills.md#self-authoring-learn-curator-ruling-2026-11-16-operator-decisions)
+  for lessons about how to do a task. Prove that an approved change reaches
+  the next relevant run and that the operator can inspect what changed.
 
 ## Risk And Proof Discipline
 
-The old Herdr identity race is gone with the transport (#608): T3
-thread ids are stable identities and managed sends fence on them.
-Verify the current boundary before
-claiming stronger guarantees. A capability-advertised server-side identity
-guard would address any residual race; more client reads do not. This targeted work can
-proceed alongside the product stages, without becoming a blanket permissions
-project or pretending previously accepted risk disappeared.
+T3 Code uses stable thread IDs, rather than the old Herdr terminal identity
+path. [Managed sends](src/responsibility-service.ts) re-check permission
+before dispatch. Do not treat a client-side check as an atomic server-side
+guarantee, and do not retry if delivery is uncertain.
 
-For each slice: inspect current source, name the protected invariants, implement
-in small working commits, and run relevant tests plus the repository gates.
-Use real SQLite and killed-process tests for recovery; fake providers and
-adapter runners at the edge; separately verify unowned interfaces in isolated
-live contract checks. Never infer contract proof from invented fixtures.
+Keep three claims separate: shipped in source, tested in isolation, and
+demonstrated on useful live work. Use isolated contract checks for external
+interfaces; a fixture does not prove the upstream interface. Live model runs,
+service restarts, and deployment keep their normal authorization requirements.
 
-Keep three claims separate: implemented, tested in isolation, and demonstrated
-on useful live work. Record which evidence exists before moving a stage to done.
+### Recorded Checks
+
+These are historical checks, not fresh results on the baseline above:
+
+- Follow-up scheduling and recovery passed 546 focused tests and typecheck.
+  The suite used real SQLite and controlled clocks; it did not prove recovery
+  from process death during the new plan write itself.
+- Reports, queued authority, and the feed passed typecheck. Their historical
+  runs were not all green: `boot.test.ts` got the expected missing-app-build
+  500 in an unbuilt checkout, and the now-retired Pi Durable recovery test
+  timed out in a full run but passed alone. An earlier full run also failed
+  an experimental Pi approval retry test that passed alone.
+- The feed layout was checked at 1280px and 390px on 2026-11-04 using
+  the real feed data projection with a stub backend. A feed slice was
+  briefly live as release `7a0f8a6` on 2026-11-06 and then replaced.
+  Neither proves a real handover or the current live version.
 
 ## Resume And Maintain
 
-A new session should read `AGENTS.md`, `DIRECTION.md`, and this file, then inspect
-the changes since the baseline. Start with the next unmet acceptance target,
-not the old transcript or a fresh round of product discovery.
-
-Update the baseline and mark accepted outcomes with source/test/pilot evidence
-as work lands. Keep open limitations explicit. Change direction only with the
-operator; adjust sequencing when code or actual use supplies better evidence.
+Start with the next unproven target. Inspect the source since the baseline
+and use any existing pilot evidence. If work falls short, identify the
+missing tool, connector, or runtime behavior before proposing code. If the
+tools already do the job, improve the skill or leave the choice to the
+operator. Record what was actually verified.

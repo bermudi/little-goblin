@@ -50,6 +50,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 	let phone: boolean;
 	let conversations: AppConversationList["conversations"];
 	let projects: AppProject[];
+	let patches: { id: string; body: Record<string, unknown> }[];
 	let threadMessages: AppMessageList["messages"];
 	let settings: typeof SETTINGS;
 	const realFetch = globalThis.fetch;
@@ -67,6 +68,7 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		installed = [];
 		phone = true;
 		projects = [];
+		patches = [];
 		threadMessages = [];
 		settings = SETTINGS;
 		conversations = [
@@ -101,10 +103,17 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		installGlobal("Event", win.Event);
 		installGlobal("CustomEvent", win.CustomEvent);
 		installGlobal("getComputedStyle", win.getComputedStyle);
+		installGlobal("HTMLElement", win.HTMLElement);
 		installGlobal("HTMLFieldSetElement", win.HTMLFieldSetElement);
 		installGlobal("HTMLInputElement", win.HTMLInputElement);
 		installGlobal("HTMLTextAreaElement", win.HTMLTextAreaElement);
+		installGlobal("Element", win.Element);
+		installGlobal("ShadowRoot", win.ShadowRoot);
+		installGlobal("MutationObserver", win.MutationObserver);
+		installGlobal("ResizeObserver", win.ResizeObserver);
+		installGlobal("NodeFilter", (win as unknown as { NodeFilter: unknown }).NodeFilter);
 		installGlobal("requestAnimationFrame", win.requestAnimationFrame.bind(win));
+		installGlobal("cancelAnimationFrame", win.cancelAnimationFrame.bind(win));
 		Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 		// The realm's width: the stub is what puts the realm on a phone.
 		Reflect.set(win, "matchMedia", (query: string) => ({
@@ -115,6 +124,21 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		}));
 		globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
 			const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+			const patchMatch = /^\/api\/app\/conversations\/([^/]+)$/.exec(url);
+			if (patchMatch !== null && method === "PATCH") {
+				const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+				patches.push({ id: patchMatch[1]!, body });
+				const conversation = conversations.find((item) => item.id === `app/${patchMatch[1]}`);
+				if (conversation !== undefined) {
+					if (body.archived === true) conversation.archivedAt = "2026-10-24T00:00:00Z";
+					if (body.archived === false) conversation.archivedAt = null;
+					if (body.pinned === true) conversation.pinnedAt = "2026-10-24T00:00:00Z";
+					if (body.pinned === false) conversation.pinnedAt = null;
+					if (typeof body.title === "string") conversation.title = body.title;
+				}
+				return Promise.resolve(json(body));
+			}
 			if (url === "/api/app/conversations" && init?.method === "POST")
 				return Promise.resolve(
 					json({ id: "app/created", title: null, createdAt: "2026-10-10T00:00:00Z" }),
@@ -232,6 +256,44 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		});
 		await settle();
 	};
+	const pointer = async (
+		el: Element,
+		type: "pointerdown" | "pointerup",
+		pointerType: "touch" | "mouse",
+	) => {
+		const event = new win.Event(type, { bubbles: true, cancelable: true });
+		for (const [key, value] of Object.entries({
+			pointerId: 1,
+			pointerType,
+			button: 0,
+			isPrimary: true,
+			clientX: 10,
+			clientY: 10,
+		}))
+			Object.defineProperty(event, key, { value });
+		await act(async () => {
+			el.dispatchEvent(event as unknown as globalThis.Event);
+		});
+	};
+	const hold = async (el: Element, pointerType: "touch" | "mouse") => {
+		await pointer(el, "pointerdown", pointerType);
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 600));
+		});
+		await pointer(win.document as unknown as Element, "pointerup", pointerType);
+		await settle();
+	};
+	const typeInto = async (el: HTMLInputElement, value: string) => {
+		await act(async () => {
+			el.focus();
+			Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype, "value")!.set!.call(el, value);
+			el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as globalThis.Event);
+			el.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as globalThis.Event,
+			);
+		});
+		await settle();
+	};
 	// The leave ask is a sheet in the app chrome — answering is a click
 	// on its buttons, like the operator.
 	const answerConfirm = async (ok: boolean) => {
@@ -264,6 +326,135 @@ describe("mobile (M): thumb bar, chats screen, staged composer", () => {
 		// The list screen replaces the composer as the chat surface — the
 		// empty-state composer is not in this screen.
 		expect(container.querySelector(".chatlist-screen .composer")).toBeNull();
+	});
+
+	test("touch hold opens row actions without opening the chat; mouse hold does not", async () => {
+		await mount();
+		const link = container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]');
+		expect(link).toBeTruthy();
+		await hold(link!, "touch");
+		const dialog = container.querySelector('[role="dialog"]');
+		const titleId = dialog?.getAttribute("aria-labelledby");
+		expect(titleId).toBeTruthy();
+		expect(win.document.getElementById(titleId!)?.textContent).toBe("fixture chat");
+		expect(dialog?.textContent).toContain("fixture chat");
+		expect(dialog?.textContent).toContain("Unpin");
+		expect(dialog?.textContent).toContain("Rename");
+		expect(dialog?.textContent).toContain("Archive");
+		expect(win.location.pathname).toBe("/app/");
+		await click(dialog?.querySelector(".row-sheet-action"));
+		expect(win.location.pathname).toBe("/app/");
+
+		await hold(
+			container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')!,
+			"mouse",
+		);
+		expect(container.querySelector(".row-sheet")).toBeNull();
+	});
+
+	test("a row can open its action sheet again after Rename remounts its link", async () => {
+		await mount();
+		const link = container.querySelector('.chatlist-screen .conv-main[href="/app/c/second"]')!;
+		await hold(link, "touch");
+		await click(
+			[...container.querySelectorAll(".row-sheet-action")].find((button) =>
+				button.textContent?.includes("Rename"),
+			),
+		);
+		const editor = container.querySelector<HTMLInputElement>(".conv.editing input");
+		await typeInto(editor!, "renamed twice");
+		await act(async () => {
+			editor?.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as globalThis.Event,
+			);
+		});
+		await waitFor(
+			() => patches.some((patch) => patch.body.title === "renamed twice"),
+			"rename PATCH",
+		);
+		await waitFor(
+			() =>
+				container.querySelector('.chatlist-screen .conv-main[href="/app/c/second"] .conv-title')
+					?.textContent === "renamed twice",
+			"renamed row link",
+		);
+		const renamedLink = container.querySelector('.chatlist-screen .conv-main[href="/app/c/second"]');
+		expect(renamedLink).toBeTruthy();
+		await hold(renamedLink!, "touch");
+		expect(container.querySelector('[role="dialog"]')).toBeTruthy();
+	}, 15_000);
+
+	test("the row sheet archives, pins, renames, and offers archived actions", async () => {
+		projects = [projRow("Goblin Work")];
+		await mount();
+		await hold(
+			container.querySelector('.chatlist-screen .conv-main[href="/app/c/second"]')!,
+			"touch",
+		);
+		await click(
+			[...container.querySelectorAll(".row-sheet-action")].find((button) =>
+				button.textContent?.includes("Pin"),
+			),
+		);
+		expect(patches).toContainEqual({ id: "second", body: { pinned: true } });
+		await hold(
+			container.querySelector('.chatlist-screen .conv-main[href="/app/c/second"]')!,
+			"touch",
+		);
+		await click(
+			[...container.querySelectorAll(".row-sheet-action")].find((button) =>
+				button.textContent?.includes("Rename"),
+			),
+		);
+		const rename = container.querySelector<HTMLInputElement>(".conv.editing input");
+		expect(rename?.value).toBe("second chat");
+		await typeInto(rename!, "renamed second");
+		expect(rename?.value).toBe("renamed second");
+		await act(async () => {
+			rename?.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as globalThis.Event,
+			);
+		});
+		expect(patches).toContainEqual({ id: "second", body: { title: "renamed second" } });
+
+		const link = container.querySelector('.chatlist-screen .conv-main[href="/app/c/fixture"]')!;
+		await hold(link, "touch");
+		await click(
+			[...container.querySelectorAll(".row-sheet-action")].find((button) =>
+				button.textContent?.includes("Archive"),
+			),
+		);
+		await waitFor(() => patches.some((patch) => patch.body.archived === true), "archive PATCH");
+		expect(patches).toContainEqual({ id: "fixture", body: { archived: true } });
+		expect(container.querySelector(".undo-toast")?.textContent).toContain('Archived "fixture chat"');
+
+	}, 15_000);
+
+	test("an archived project chat offers rename, unarchive, and delete on hold", async () => {
+		projects = [projRow("Goblin Work")];
+		conversations[0]!.archivedAt = "2026-10-24T00:00:00Z";
+		conversations[0]!.projectId = "p-goblin";
+		await mount();
+		await click(tab("Projects"));
+		await waitFor(
+			() => container.querySelector(".ops .ops-h2")?.textContent === "Projects",
+			"projects index",
+		);
+		await click(
+			[...container.querySelectorAll("button.dt-row")].find((button) =>
+				button.textContent?.includes("Goblin Work"),
+			),
+		);
+		await waitFor(() => container.querySelector(".ops.projfields") !== null, "project page");
+		await click(container.querySelector(".ops.projfields details summary"));
+		const archived = container.querySelector(".ops.projfields details .conv-main");
+		expect(archived).toBeTruthy();
+		await hold(archived!, "touch");
+		expect([...container.querySelectorAll(".row-sheet-action")].map((item) => item.textContent)).toEqual([
+			"Rename",
+			"Unarchive",
+			"Delete",
+		]);
 	});
 
 	test("phone: New project uses the folder-plus glyph, not the new-chat plus", async () => {

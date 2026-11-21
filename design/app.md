@@ -235,13 +235,15 @@ borrows t3code's timeline minimap feel, not its screenshots; see
 
 ## Chat rail rows and project folders (ruling 2026-11-21, #838)
 
-This reverses #622's one-menu rows. Conversation rows are thread links plus
-icon buttons that show on hover or keyboard focus, over the faded end of
-the preview line: Pin or Unpin, Rename, Archive; archived rows show Rename,
-Unarchive, Delete. The buttons are a ui-sdk Toolbar, so each row adds one
-Tab stop and Left/Right move between its buttons. Touch screens never
-hover, so the current row keeps its buttons showing. The list stays a list,
-not a listbox, and Rename stays inline.
+Conversation rows are thread links with icon buttons on hover or keyboard
+focus: Pin or Unpin, Rename, Archive; archived rows show Rename, Unarchive,
+Delete. The buttons are a ui-sdk Toolbar, so each row adds one Tab stop and
+Left/Right move between its buttons. Touch screens show no row buttons.
+Pressing and holding a row opens a sheet with those actions through ui-sdk
+`bindHold`, touch only; a held press never opens the chat. The open chat's
+title is a menu with the same actions, which is also the path without
+gestures. Swipe actions were considered and not taken. The list stays a
+list, not a listbox, and Rename stays inline.
 
 The chats pane lists each active project as a folder above the loose chats,
 a mechanism borrowed from t3code's sidebar. A folder holds that project's

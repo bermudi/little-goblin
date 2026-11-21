@@ -8,6 +8,7 @@ import type {
 	AppNoteSummary,
 	AppProject,
 } from "../../src/http/app-wire.ts";
+import { Menu, MenuContent, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
 import { ArchiveView } from "./ArchiveView.tsx";
 import { AttentionView } from "./AttentionView.tsx";
 import {
@@ -26,6 +27,8 @@ import {
 } from "./api.ts";
 import { ChatView } from "./ChatView.tsx";
 import { Composer } from "./chat/Composer.tsx";
+import { ConversationTitleEditor } from "./ConversationTitleEditor.tsx";
+import { conversationActions } from "./conversationActions.ts";
 import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
 import { type ChatWidth, loadChatWidth, saveChatWidth } from "./chatWidth.ts";
 import { ProjectFolder } from "./ProjectFolder.tsx";
@@ -34,12 +37,19 @@ import {
 	ConversationNav,
 	ConversationHierarchy,
 	ConversationRow,
-	flatLine,
-	flatTitle,
 	relTime,
 } from "./ConversationList.tsx";
+import { flatLine, flatTitle } from "./flatText.ts";
 import { DelegationsView } from "./DelegationsView.tsx";
-import { G, LIST_GLYPHS, NewProjectGlyph, OPS_GLYPHS, PinGlyph, type ListPane } from "./glyphs.tsx";
+import {
+	ChevronDownGlyph,
+	G,
+	LIST_GLYPHS,
+	NewProjectGlyph,
+	OPS_GLYPHS,
+	PinGlyph,
+	type ListPane,
+} from "./glyphs.tsx";
 import { LogView } from "./LogView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { NotesIndex, NoteView } from "./NoteView.tsx";
@@ -117,6 +127,7 @@ function AppShell() {
 	// Per-action failures — cleared by the next successful action or
 	// refresh.
 	const [rowError, setRowError] = useState<string | null>(null);
+	const [headerRenaming, setHeaderRenaming] = useState(false);
 	// Desktop (C): the panel lists exactly one surface at a time — chats
 	// by default; search is a mode the spine's glyph opens, not a standing
 	// box. The header's sidebar toggle collapses the whole rail.
@@ -221,6 +232,7 @@ function AppShell() {
 	const routeRef = useRef(route);
 	routeRef.current = route;
 	const current = route.kind === "conversation" ? route.id : null;
+	useEffect(() => setHeaderRenaming(false), [current]);
 	const projectId = route.kind === "project" ? route.id : null;
 	const currentFolderId =
 		(route.kind === "conversation"
@@ -806,6 +818,29 @@ function AppShell() {
 		projectId === null ? undefined : projectList.find((p) => p.id === projectId);
 	// The crumb's name rides the same pool the rail lists.
 	const currentConv = all.find((c) => c.id === current);
+	const rowActionCallbacks = (c: AppConversationList["conversations"][number]) => ({
+		onToggleArchived: (id: string, isArchived: boolean) => {
+			setRowError(null);
+			if (isArchived) {
+				rowRemoved(id);
+				archivedWithUndo(c);
+			}
+			void refresh();
+		},
+		onTogglePinned: () => {
+			setRowError(null);
+			void refresh();
+		},
+		onDelete: deleteConversationHeld,
+		onError: setRowError,
+	});
+	const headerActions =
+		currentConv === undefined
+			? null
+			: conversationActions(currentConv, {
+					token,
+					...rowActionCallbacks(currentConv),
+				});
 	const parentConv =
 		currentConv?.parentId == null ? undefined : all.find((c) => c.id === currentConv.parentId);
 	const currentConvProject =
@@ -877,33 +912,23 @@ function AppShell() {
 	const renderRow = (
 		c: AppConversationList["conversations"][number],
 		orphaned = false,
-	) => (
-		<ConversationRow
-			conv={c}
-			orphaned={orphaned}
-			current={railCurrent}
-			token={token}
-			onOpen={openConversation}
-			onRenamed={() => {
-				setRowError(null);
-				void refresh();
-			}}
-			onToggleArchived={(id, isArchived) => {
-				setRowError(null);
-				if (isArchived) {
-					rowRemoved(id);
-					archivedWithUndo(c);
-				}
-				void refresh();
-			}}
-			onTogglePinned={() => {
-				setRowError(null);
-				void refresh();
-			}}
-			onDelete={deleteConversationHeld}
-			onError={setRowError}
-		/>
-	);
+	) => {
+		const callbacks = rowActionCallbacks(c);
+		return (
+			<ConversationRow
+				conv={c}
+				orphaned={orphaned}
+				current={railCurrent}
+				token={token}
+				onOpen={openConversation}
+				onRenamed={() => {
+					setRowError(null);
+					void refresh();
+				}}
+				{...callbacks}
+			/>
+		);
+	};
 	const chatFolders = (
 		<>
 			{activeProjects.map((project) => {
@@ -1330,7 +1355,54 @@ function AppShell() {
 					)}
 					<h1>goblin</h1>
 					{page === "chat" && current !== null && (
-						<span className="header-title">{flatTitle(currentTitle)}</span>
+						headerRenaming && currentConv !== undefined ? (
+							<div className="header-title-editor">
+								<ConversationTitleEditor
+									conv={currentConv}
+									token={token}
+									onRenamed={() => {
+										setRowError(null);
+										void refresh();
+									}}
+									onError={setRowError}
+									onClose={() => setHeaderRenaming(false)}
+								/>
+							</div>
+						) : currentConv === undefined || headerActions === null ? (
+							<span className="header-title">{flatTitle(currentTitle)}</span>
+						) : (
+							<Menu
+								onAction={(value) => {
+									if (value === "pin") void headerActions.togglePinned();
+									else if (value === "rename") setHeaderRenaming(true);
+									else if (value === "archive" || value === "unarchive")
+										void headerActions.toggleArchived();
+									else if (value === "delete") headerActions.remove();
+								}}
+							>
+								<MenuTrigger className="header-title title-trigger">
+									{rowLabel(currentConv)}
+									<ChevronDownGlyph />
+								</MenuTrigger>
+								<MenuContent className="title-menu">
+									{currentConv.archivedAt === null ? (
+										<>
+											<MenuItem value="pin">
+												{currentConv.pinnedAt === null ? "Pin" : "Unpin"}
+											</MenuItem>
+											<MenuItem value="rename">Rename</MenuItem>
+											<MenuItem value="archive">Archive</MenuItem>
+										</>
+									) : (
+										<>
+											<MenuItem value="rename">Rename</MenuItem>
+											<MenuItem value="unarchive">Unarchive</MenuItem>
+											<MenuItem value="delete">Delete</MenuItem>
+										</>
+									)}
+								</MenuContent>
+							</Menu>
+						)
 					)}
 					{page === "chat" && parentConv !== undefined && (
 						<a

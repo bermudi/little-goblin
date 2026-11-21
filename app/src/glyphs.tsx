@@ -118,6 +118,24 @@ export function NewProjectGlyph() {
 	);
 }
 
+export function ChevronDownGlyph() {
+	return (
+		<svg
+			viewBox="0 0 24 24"
+			fill="none"
+			stroke="currentColor"
+			strokeWidth="1.75"
+			strokeLinecap="round"
+			strokeLinejoin="round"
+			width="14"
+			height="14"
+			aria-hidden="true"
+		>
+			<path d="m6 9 6 6 6-6" />
+		</svg>
+	);
+}
+
 export type ListPane = "chats" | "notes";
 
 export const LIST_GLYPHS: { key: ListPane | "projects"; label: string; svg: ReactNode }[] = [

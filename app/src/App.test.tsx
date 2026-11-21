@@ -21,7 +21,7 @@ import type {
 } from "../../src/http/app-wire.ts";
 import type { ConfigPostBody } from "../../src/http/operator-wire.ts";
 import { App } from "./App.tsx";
-import { flatLine } from "./ConversationList.tsx";
+import { flatLine } from "./flatText.ts";
 import { clickConfirm, confirmSheet, confirmText } from "./testkit.ts";
 
 // Stored titles predate store-side flattening — the sidebar row must
@@ -261,6 +261,7 @@ describe("rail row actions and the pinned pool", () => {
 	let installed: string[] = [];
 	let pinnedStamp: string | null;
 	let freshStamp: string | null;
+	let freshTitle: string;
 	let archived: Record<"pinned" | "fresh", string | null>;
 	let patches: { id: string; body: unknown }[];
 	let failPatch: boolean;
@@ -271,8 +272,8 @@ describe("rail row actions and the pinned pool", () => {
 		installed.push(name);
 	};
 
-	const row = (title: string) => ({
-		id: `app/${title.split(" ")[0]}`,
+	const row = (title: string, id = title.split(" ")[0]!) => ({
+		id: `app/${id}`,
 		title,
 		preview: `${title} preview`,
 		createdAt: "2026-10-08T00:00:00.000Z",
@@ -289,6 +290,7 @@ describe("rail row actions and the pinned pool", () => {
 		installed = [];
 		pinnedStamp = "2026-10-08T12:00:00.000Z";
 		freshStamp = null;
+		freshTitle = "fresh chat";
 		archived = { pinned: null, fresh: null };
 		patches = [];
 		failPatch = false;
@@ -326,7 +328,7 @@ describe("rail row actions and the pinned pool", () => {
 				return Promise.resolve(
 					jsonResponse({
 						conversations: [
-							{ ...row("fresh chat"), pinnedAt: freshStamp, archivedAt: archived.fresh },
+							{ ...row(freshTitle, "fresh"), pinnedAt: freshStamp, archivedAt: archived.fresh },
 							{ ...row("pinned chat"), pinnedAt: pinnedStamp, archivedAt: archived.pinned },
 						],
 					}),
@@ -336,7 +338,11 @@ describe("rail row actions and the pinned pool", () => {
 			if (patchMatch !== null && method === "PATCH") {
 				if (failPatch) return Promise.resolve(jsonResponse({ error: "db is locked" }, 500));
 				const id = patchMatch[1] as "pinned" | "fresh";
-				const body = JSON.parse(String(init?.body)) as { pinned?: boolean; archived?: boolean };
+				const body = JSON.parse(String(init?.body)) as {
+					pinned?: boolean;
+					archived?: boolean;
+					title?: string;
+				};
 				patches.push({ id, body });
 				if (body.pinned !== undefined) {
 					if (id === "pinned") pinnedStamp = body.pinned ? "2026-10-09T12:00:00.000Z" : null;
@@ -345,6 +351,7 @@ describe("rail row actions and the pinned pool", () => {
 				if (body.archived !== undefined) {
 					archived[id] = body.archived ? "2026-10-09T13:00:00.000Z" : null;
 				}
+				if (body.title !== undefined && id === "fresh") freshTitle = body.title;
 				return Promise.resolve(jsonResponse(body));
 			}
 			if (url.endsWith("/messages"))
@@ -381,10 +388,30 @@ describe("rail row actions and the pinned pool", () => {
 			await new Promise((r) => setTimeout(r, 30));
 		});
 	};
+	const waitFor = async (predicate: () => boolean, label: string) => {
+		for (let i = 0; i < 40; i++) {
+			if (predicate()) return;
+			await settle();
+		}
+		throw new Error(`timed out waiting for ${label}`);
+	};
 
 	const click = async (el: Element | null | undefined) => {
 		await act(async () => {
 			el?.dispatchEvent(new win.MouseEvent("click", { bubbles: true, cancelable: true }) as unknown as Event);
+		});
+		await settle();
+	};
+	const typeInto = async (el: Element, value: string, proto: object) => {
+		await act(async () => {
+			(el as HTMLElement).focus();
+			Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
+			el.dispatchEvent(
+				new win.Event("input", { bubbles: true }) as unknown as globalThis.Event,
+			);
+			el.dispatchEvent(
+				new win.KeyboardEvent("keyup", { bubbles: true, key: "e" }) as unknown as globalThis.Event,
+			);
 		});
 		await settle();
 	};
@@ -437,6 +464,46 @@ describe("rail row actions and the pinned pool", () => {
 		]);
 		expect(domOrder()).toEqual(["pinned chat", "fresh chat"]);
 		expect(await rowActions("fresh chat")).toEqual(["Pin", "Rename", "Archive"]);
+	});
+
+	test("the open chat title menu archives and renames through the shared editor", async () => {
+		root = createRoot(container);
+		await act(async () => {
+			root?.render(<App />);
+		});
+		await settle();
+		await click(
+			[...container.querySelectorAll(".conv-main")].find((link) =>
+				link.textContent?.includes("fresh chat"),
+			),
+		);
+		await settle();
+
+		const trigger = container.querySelector<HTMLButtonElement>("button.title-trigger");
+		expect(trigger?.getAttribute("aria-haspopup")).toBe("menu");
+		expect(trigger?.textContent).toContain("fresh chat");
+		await click(trigger);
+		expect([...container.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)).toEqual([
+			"Pin",
+			"Rename",
+			"Archive",
+		]);
+		await click([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === "Rename"));
+		const input = container.querySelector<HTMLInputElement>(".header-title-editor input");
+		expect(input?.value).toBe("fresh chat");
+		await typeInto(input!, "renamed from title", win.HTMLInputElement.prototype);
+		await act(async () => {
+			input?.dispatchEvent(
+				new win.KeyboardEvent("keydown", { key: "Enter", bubbles: true }) as unknown as globalThis.Event,
+			);
+		});
+		await settle();
+		expect(patches).toContainEqual({ id: "fresh", body: { title: "renamed from title" } });
+		expect(container.querySelector(".header-title-editor")).toBeNull();
+
+		await click(container.querySelector("button.title-trigger"));
+		await click([...container.querySelectorAll('[role="menuitem"]')].find((item) => item.textContent === "Archive"));
+		expect(patches).toContainEqual({ id: "fresh", body: { archived: true } });
 	});
 
 	test("archive shelves the row; the rail links to the Archive page, which offers unarchive and delete", async () => {

@@ -3,8 +3,7 @@
 > **Transport direction (operator, 2026-11-18, issue #728):** `delegate`
 > runs on herdr-core (`hc`), not Herdr. Goblin must “make sure binary X is
 > where you need it or go get it”; “they just need the right hooks installed
-> and execution call could make sure they are.” Handover and responsibility
-> stay on T3 Code. The operator-named-only rule for `delegate` remains.
+> and execution call could make sure they are.” The operator-named-only rule for `delegate` remains.
 
 > **Implementation rulings (lead, 2026-11-19, issue #728):** Goblin pins and
 > owns `hc`, keeps the operator's real harness homes, copies `deploy/hc-hooks/`
@@ -183,8 +182,7 @@ Rulings:
   never ends its agents without marking the row first, so a gone agent
   is an outside stop, settled `stopped` with the same don't-revive
   note, not `failed`. A crash looks identical from outside; either way
-  the operator decides what happens next. A responsibility gets a
-  worker `blocked` report, not `failed` — goblin assesses it next (operator, 2026-11-12: goblin looks first, no direct question). The
+  the operator decides what happens next. The
   app stop's notice is its only one (a retried stop sends nothing), so
   an unreadable report sends the header alone, and stop notes (e.g. a
   target gone from config) stay on screen after the row moves.
@@ -235,17 +233,10 @@ Rulings:
   operator's desk is T3 Code. Delegated terminals belong to Goblin's
   private hc core; this does not restore the removed operator-desk tool.
 
-- **A delegation can count toward what goblin owes (2026-11-06).**
-  `delegate start` takes `responsibility:<id>` in a project conversation,
-  like a subagent run. Each settlement files one worker report before its
-  notice wakes the conversation; a blocked agent carries no `question`, so
-  it waits for goblin to read and relay. `delegate send` to a linked
-  delegation passes the same check as every send to a linked worker:
-  the responsibility is `active`, the send comes from its project, and
-  the sending turn predates no correction (design/agents.md → Linked
-  workers). `delegate` stays separate from
-  `subagent`: their controls differ, and a merged tool would hide the
-  choice inside one schema instead of removing it.
+- **`delegate` stays separate from `subagent`:** their controls differ,
+  and a merged tool would hide the choice inside one schema instead of
+  removing it. A delegation links to no tracked work: responsibilities
+  were removed (operator, 2026-11-21, #844).
 - **`delegate` is operator-named only (design/agents.md, 2026-11-16;
   restated 2026-11-18).** "`delegate` stays just for this … only for
   use when the user asks for a `codex` run, or a `opencode` run" — or a

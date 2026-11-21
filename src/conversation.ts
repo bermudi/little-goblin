@@ -202,9 +202,6 @@ export interface ConversationStore extends ConversationReads {
 	// the 🔊 button's durable handle. Recorded at turn finalize, one row
 	// per delivered chunk, all pointing at the same reply seq.
 	recordDelivery(id: string, messageId: number, seq: number): void;
-	// Drop a conversation and everything it owns (events fire the FTS
-	// delete trigger). A live turn must be fenced first (runtime.stop) —
-	// this only touches the store.
 	deleteConversation(id: string): void;
 	close(): void;
 }

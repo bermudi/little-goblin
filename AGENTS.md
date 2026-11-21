@@ -74,9 +74,9 @@ rather than silently overriding it. `docs/` is for operating Goblin.
   `foo.test.ts`). `bun test` to run, `bun run typecheck` (both tsc
   programs) before committing.
 - **Each external contract is known by one adapter.** Only `src/tg/`
-  knows grammy; the podman, gws, T3 Code, cua-driver and
+  knows grammy; the podman, gws, GitHub, T3 Code, cua-driver and
   Anthropic Agent SDK wire contracts live in
-  `src/{podman,mail-gws,t3,desktops,agent/claude-code}`. Domain
+  `src/{podman,mail-gws,github,t3,desktops,agent/claude-code}`. Domain
   modules see the adapter's
   types, never the vendor's — `module-boundaries.test.ts` enforces the
   importable cases.
@@ -130,8 +130,8 @@ lists on our non-goals list. Cite what you took in the design docs.
 - `delegate` runs named external harnesses on pinned herdr-core
   (`src/hc.ts`) in Goblin's private hc terminals (design/agents.md →
   `delegate`: external harness runs on hc); the operator can inspect them
-  through hc or in the app. Handover and responsibility stay on T3 Code
-  threads (`src/t3.ts`). Verifying each wire contract is the code's job,
+  through hc or in the app. The `watch` tool observes T3 Code threads
+  through `src/t3.ts`. Verifying each wire contract is the code's job,
   not an agent's: run the gated drift check
   (`GOBLIN_HC_LIVE=1 bun test src/hc.live.test.ts` after core upgrades —
   it uses a throwaway session, never the operator's;

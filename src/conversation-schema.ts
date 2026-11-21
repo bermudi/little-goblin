@@ -1,10 +1,3 @@
-// The conversation store's schema: every table, column migration,
-// FTS trigger and one-time data migration the shared SQLite file
-// needs, run once at open before any read this boot. Companion
-// schemas (projects, notes, responsibilities, wake, windows) are
-// ensured here so deleteConversation's sweeps always find their
-// tables on this handle.
-
 import type { Database } from "bun:sqlite";
 import { isPrivateChatId, rollingDmOrdinal } from "./conversation-address.ts";
 import { CAUSAL_KEY_SQL, type Row } from "./conversation-queries.ts";

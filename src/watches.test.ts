@@ -68,7 +68,7 @@ describe("watches store", () => {
 		const store = openStore(":memory:");
 		try {
 			const conv = store.resolve({ kind: "dm", chatId: 14 }, "/tmp");
-			const watches = makeWatches(store.db);
+			const watches = makeWatches(store.db, () => new Date("2026-11-21T00:00:00.000Z"));
 			const watch = watches.add({
 				conversationId: conv.id,
 				target: { kind: "time", at: "2026-11-22T00:00:00.000Z" },

@@ -8,13 +8,6 @@ import type { ConfigRef } from "../config.ts";
 import type { TtsConfig } from "../config-schema.ts";
 import type { ConversationStore } from "../conversation.ts";
 import type { ProgramsStore } from "../programs.ts";
-import {
-	deliverOperatorReminder,
-	type OperatorReminder,
-	openTelegramReminders,
-} from "../reminders/index.ts";
-import type { ResponsibilityStore } from "../responsibilities.ts";
-import { makeAuthorityRecheck } from "../responsibility-authority.ts";
 import type { Runtime } from "../runtime.ts";
 import type { SchedulerDeps } from "../scheduler.ts";
 import type { System1Client } from "../system1.ts";
@@ -23,7 +16,7 @@ import { makeWakeDeps, type WakeApi } from "../tg/wake.ts";
 import type { TurnJournal } from "../turn-journal.ts";
 import { sinkFor, type WakeDeps } from "../wake.ts";
 import { makeWakeDispatcher, type WakeDispatcher } from "../wake-dispatcher.ts";
-import type { DevelopmentInput, WakeStore } from "../wake-store.ts";
+import type { WakeStore } from "../wake-store.ts";
 
 export interface DeliveryDeps {
 	store: ConversationStore;
@@ -32,19 +25,11 @@ export interface DeliveryDeps {
 	wakes: WakeStore;
 	configRef: ConfigRef;
 	auth: AuthStore;
-	/** The app-owned browser notification owner — bell sink and reminders. */
 	push: AppPush;
 	/** The System One gate: the wake follow-up gate, and (fail-open,
 	 *  unscored absent) the watcher-event scorer on the firing deps. */
 	gate: System1Client | null;
 	programs: ProgramsStore;
-	/** Opened by the caller before wire() — the boot pump's commits
-	 *  re-check queued developments' authority against this store, so it
-	 *  must exist before the dispatcher does. */
-	responsibilities: ResponsibilityStore;
-	/** The live Telegram api for the reminder lane — null while the
-	 *  channel is detached or disabled. */
-	telegramApi(): WakeApi;
 }
 
 /** The wake path once its dispatcher is built. */
@@ -98,31 +83,12 @@ export function wireDelivery(deps: DeliveryDeps): Delivery {
 		journal: deps.journal,
 		runtime: deps.runtime,
 		sinkFor: (conv) => sinkFor(wakeDeps, conv),
-		recheck: makeAuthorityRecheck(deps.responsibilities),
 		deferStart: true,
 	});
 	// The scheduler rides the SAME wakeDeps object — a spread here
 	// would snapshot delivery/bell before the telegram attach lands.
-	const remindOnTelegram = openTelegramReminders({
-		db: deps.store.db,
-		pings,
-		api: () => deps.telegramApi(),
-		operators: () => deps.configRef.current.operators,
-		publicUrl: () => deps.configRef.current.publicUrl || undefined,
-	});
 	const firingDeps: SchedulerDeps = Object.assign(wakeDeps, {
 		programs: deps.programs,
-		// Responsibility-destination programs fire as durable
-		// developments on the coordination conversation — the
-		// dispatcher owns their wake from the record on.
-		responsibilities: deps.responsibilities,
-		recordDevelopment: (input: DevelopmentInput) => built.record(input),
-		remindOperator: (reminder: OperatorReminder) =>
-			deliverOperatorReminder(reminder, {
-				push: deps.push.notifyReminder,
-				telegram: remindOnTelegram,
-				resps: deps.responsibilities,
-			}),
 		// The System One gate doubles as the watcher-event scorer
 		// (fail-open) — unscored absent.
 		...(deps.gate ? { checkMail: deps.gate as Pick<System1Client, "decide"> } : {}),

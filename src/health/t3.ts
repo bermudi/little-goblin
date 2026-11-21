@@ -52,11 +52,6 @@ export async function t3Health(
 	runner?: T3Runner,
 ): Promise<HealthResult> {
 	const scope = `caller-home:${home};handover`;
-	// Handover/responsibility runs on T3 Code threads whenever goblin
-	// boots — the responsibility tool mounts on project turns
-	// unconditionally, so the probe gates on a readable config, not on
-	// delegation being configured (delegate uses its private hc core, issue
-	// #728). Preflight skips external services like the other probes.
 	if (phase === "preflight") {
 		return result("delegation.t3", scope, "skip", "External service not probed before installation");
 	}

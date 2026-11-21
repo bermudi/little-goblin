@@ -268,12 +268,10 @@ app. Keep the relevant
    harness. See the named hc terminal and the completion notice back in
    chat. Check the `tool call` line with `"tool":"delegate"` and the related
    `hc rpc` lines in `goblin.log`.
-4. **Handover:** In a project conversation, use the responsibility tool's
-   `accept` action and select at least one T3 thread. This creates the
-   responsibility and binds the selected thread(s); no existing
-   responsibility is needed. See the T3 thread and its report come back in
-   chat. Check the `responsibility tool` line with `"action":"accept"` and
-   the related `t3 call` lines in `goblin.log`.
+4. **`watch`:** Ask Goblin to watch a T3 Code thread, or a time two
+   minutes away. Within about a minute of the change, see a
+   `[watch #<id> fired]` turn in chat. Check the `watch added` and
+   `watch fired` lines in `goblin.log`.
 
 The gate is `bun run typecheck` inside the release; the full suite gates
 merges via `.github/workflows/ci.yml`, not deploys. After the restart it

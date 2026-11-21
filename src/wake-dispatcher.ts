@@ -25,13 +25,7 @@ import type { Runtime } from "./runtime.ts";
 import type { RunOwnershipHooks } from "./turn/run-ownership.ts";
 import type { TurnSink } from "./turn/sink.ts";
 import type { JournalStatus, TurnJournal } from "./turn-journal.ts";
-import type {
-	AuthorityRecheck,
-	DevelopmentInput,
-	ReconcilePlan,
-	WakeRecord,
-	WakeStore,
-} from "./wake-store.ts";
+import type { DevelopmentInput, ReconcilePlan, WakeRecord, WakeStore } from "./wake-store.ts";
 
 export interface WakeDispatcherDeps {
 	store: ConversationStore;
@@ -45,10 +39,6 @@ export interface WakeDispatcherDeps {
 	// backoff; the defaults are production-sized, tests inject smaller.
 	backoff?: { baseMs: number; capMs: number };
 	now?(): number;
-	/** Re-checks each stamped development's authority as its trigger is
-	 *  appended (responsibility-authority.ts) — a lapsed stamp is
-	 *  delivered marked superseded, never dropped. */
-	recheck?: AuthorityRecheck;
 	/** Hold every pump, including record-triggered pumps, until start(). */
 	deferStart?: boolean;
 }
@@ -266,7 +256,6 @@ export function makeWakeDispatcher(deps: WakeDispatcherDeps): WakeDispatcher {
 			rec.wakeId,
 			({ id, text }) =>
 				store.append(conv.id, [{ id, role: "user", parts: [{ type: "text", text }] }]),
-			deps.recheck,
 		);
 		submitGuarded(claimed);
 	}

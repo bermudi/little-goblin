@@ -107,7 +107,7 @@ export interface Watches {
 	}): boolean;
 }
 
-export function makeWatches(db: Database, now: () => Date = () => new Date()): Watches {
+export function makeWatches(db: Database, now: () => Date): Watches {
 	const select = db.query<Row, [number]>("SELECT * FROM watches WHERE id = ?");
 	function add(input: { conversationId: string; target: WatchTarget; reason: string; baseline: unknown }): Watch {
 		const result = db.transaction(() => {

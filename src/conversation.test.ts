@@ -2580,3 +2580,20 @@ describe("telegram_deliveries", () => {
 		store.close();
 	});
 });
+
+describe("retired tables", () => {
+	test("a database that still has a responsibilities table opens and keeps the table and its rows", () => {
+		const path = tmpDb("goblin-test-");
+		const seed = new Database(path);
+		seed.exec("CREATE TABLE responsibilities (id TEXT PRIMARY KEY, title TEXT NOT NULL)");
+		seed.query("INSERT INTO responsibilities (id, title) VALUES (?, ?)").run("r-1", "old work");
+		seed.close();
+
+		const store = openStore(path);
+		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
+		expect(store.get(conv.id)?.id).toBe(conv.id);
+		const rows = store.db.query<{ id: string; title: string }, []>("SELECT id, title FROM responsibilities").all();
+		expect(rows).toEqual([{ id: "r-1", title: "old work" }]);
+		store.close();
+	});
+});

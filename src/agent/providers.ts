@@ -19,7 +19,8 @@ import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import { splitModelRef, type Config, type ThinkingLevel } from "../config-schema.ts";
 import { log } from "../log.ts";
-import { awaitRetryDelay, RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
+import { RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
+import { sleep } from "../timing.ts";
 import type { MediaPosition } from "./attachments.ts";
 import { codexModel, RESPONSES_URL, type CodexModelOptions } from "./codex/model.ts";
 import { isOneMinHost, modelCallMaxRetries } from "./onemin.ts";
@@ -89,7 +90,7 @@ export function transportRetry(
 						attempt: retry + 1,
 						delayMs,
 					});
-					await awaitRetryDelay(delayMs, signal);
+					await sleep(delayMs, signal);
 				}
 			}
 		})();

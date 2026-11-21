@@ -6,7 +6,8 @@ import {
 } from "../agent/provider-errors.ts";
 import { log } from "../log.ts";
 import type { PromptMessage } from "../prompt-message.ts";
-import { awaitRetryDelay, RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
+import { RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
+import { sleep } from "../timing.ts";
 import { estimateHistoryChars } from "./itemize.ts";
 import type { TurnState } from "./state.ts";
 
@@ -122,7 +123,7 @@ export function openStepRules(init: StepRulesInit): StepRules {
 			init.assertAuthority();
 			const delayMs = init.transientRetryDelayMs ?? RETRY_INITIAL_DELAY_MS;
 			if (!init.signal.aborted && init.maxRetries !== 0 && retryGrantedStep !== call.step) {
-				await awaitRetryDelay(delayMs, init.signal);
+				await sleep(delayMs, init.signal);
 				if (!init.signal.aborted) {
 					retryGrantedStep = call.step;
 					transientRetries++;

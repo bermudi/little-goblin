@@ -1,0 +1,32 @@
+# One owner for timers, deadlines and bounded waits
+
+**Context.** Each module built its own `setTimeout` + `AbortSignal` + flag.
+The copies kept the same weak points: a timer that outlives an aborted turn,
+cleanup skipped on the error path, and a race between "wake up" and "give
+up" (#738; #50, #393/#394, #447, #729). Effect-TS was turned down for this:
+it changes the style of the whole tree and moves prompt assembly, which
+risks cache stability.
+
+**Decision.** [`src/timing.ts`](../../src/timing.ts) owns the plumbing:
+
+- `sleep(ms, signal)` waits and returns early on abort. It resolves, never
+  rejects: the caller re-checks its own signal. That is the retry-delay
+  behaviour it replaced. `node:timers/promises` rejects with an `AbortError`,
+  which would move the policy into every catch block.
+- `deadline(ms, parent)` gives one signal that aborts on the timer or the
+  parent. `expired()` tells the two apart, and disposal clears both.
+- `within(work, ms, signal)` is the bounded handoff: wait for another party,
+  then report `settled`, `timeout` or `aborted`. A failed work still rejects,
+  so a crash never reads as a slow stop.
+- `after(ms, label, fn)` schedules a callback. A throw or rejection becomes an
+  error line with the label. A raw timer callback that throws reaches the
+  process's uncaught-exception handler, which exits.
+
+Policy stays in its module: retry counts and backoff, the buffer's
+one-flush-per-key rule, model fallback after a zero-effect failure.
+
+**Consequences.** [`timers.test.ts`](../../src/timers.test.ts) freezes the raw
+`setTimeout`/`setInterval` count of every file not yet moved. A file may lose
+calls, never gain them, and a file that loses calls must update its entry.
+Modules move one at a time (#830). `setInterval` users get a helper
+with their first move, not before.

@@ -1123,6 +1123,44 @@ header h1 {
 	cursor: default;
 }
 
+/* Jump to latest: shown while the end of the transcript is out of view —
+   the reply holds at its head (#837), so the rest arrives below. The slot
+   is sticky and zero-height: showing it never moves the content. */
+.jump-latest-slot {
+	position: sticky;
+	bottom: 0;
+	height: 0;
+	display: flex;
+	justify-content: center;
+	pointer-events: none;
+}
+.jump-latest {
+	pointer-events: auto;
+	transform: translateY(calc(-100% - 0.5rem));
+	width: 2.25rem;
+	height: 2.25rem;
+	border-radius: 999px;
+	border: 1px solid var(--app-control-border);
+	background: var(--app-gray-100);
+	color: var(--app-fg);
+	font-size: 1rem;
+	line-height: 1;
+	display: grid;
+	place-items: center;
+	cursor: pointer;
+}
+.jump-latest:hover {
+	border-color: var(--app-control-border-hover);
+	background: var(--app-gray-200);
+}
+.jump-latest:focus-visible {
+	outline: 2px solid var(--app-focus);
+	outline-offset: 2px;
+}
+.jump-latest.live {
+	border-color: color-mix(in oklab, var(--app-accent) 55%, transparent);
+}
+
 /* ---------- conversation outline ---------- */
 
 /* t3code's timeline minimap, on the right edge: evenly spaced dashes that

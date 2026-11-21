@@ -13,9 +13,7 @@
 // through inspect → launch → inspect-until-button → act click → inspect,
 // against a probe page podman-cp'd into the desktop container.
 // "[delegate <harness> <cwd> <task>]" and "[handover]" script the `delegate` start and `responsibility`
-// accept calls (issue #608's T3 Code verification). "[long]" makes two
-// read_file calls a second apart, then streams a reply several screens
-// long, a line every 60ms — the streaming-scroll and fold checks (#837).
+// accept calls (issue #608's T3 Code verification).
 
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

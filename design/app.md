@@ -33,11 +33,13 @@ the trust-mode choice, browser-origin limits and when to require a token.
 
 **Client.** A missing build is a fail-loud 500 plus log line, never a
 silent empty page; the transcript's single "Worked" fold is openclaw's
-mechanism, zero code. Its open state is automatic until the operator
-toggles it (2026-10-24): activity opens it, the lull between calls
-holds — collapsing for the gap flashes on every new call — and the
-message's seal settles it, clean closed and failures open. A manual
-toggle outranks all of it for that fold's life.
+mechanism, zero code. Folds never open or close by themselves (operator,
+2026-11-21, #837; replaces the 2026-10-24 auto-open ruling): the
+"Worked" fold and each tool row start closed, and only the operator
+toggles them. An automatic open and close moved the text under the
+reader on every call. The closed summary carries the live state instead:
+"Working for Ns" while the run owns the tail of a streaming reply, the
+failure count when a call fails.
 
 **Packaging ladder.** PWA first, on the tailnet URL through `tailscale serve`
 (installable, ~1s open; zero APK churn — the operator evaluated twenty-APK
@@ -232,6 +234,23 @@ Render-side only; history text is never rewritten.
 Operator ask: conversation navigation should be a joy. The outline
 borrows t3code's timeline minimap feel, not its screenshots; see
 [`Outline.tsx`](../app/src/Outline.tsx).
+
+## Following a streaming reply (ruling 2026-11-21, #837)
+
+Operator ask: when a reply is longer than the screen, show its head,
+not its tail. On send, the view follows the reply only until the reply's
+first line reaches the top of the transcript, then holds there; the
+rest arrives below, and a "↓" button jumps to the end. Scrolling to the
+end by hand follows the tail again; any upward scroll lets go.
+
+The follow mode changes only on the operator's input, a mechanism
+borrowed from t3code's chat scroll: wheel, touch and page keys release it
+at once, and any upward scroll the app did not make is the backstop
+(scrollbar drags, keys outside the transcript). Content growth re-sticks
+in the same frame through a ResizeObserver, not an effect a frame late.
+See [`useTranscriptFollow.ts`](../app/src/chat/useTranscriptFollow.ts).
+One assistant card per reply: the "…" waiting row shows only until the
+reply has a part to draw (#415).
 
 ## Streaming members & resumable streams (ruling 2026-10-04)
 

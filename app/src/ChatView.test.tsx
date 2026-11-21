@@ -11,7 +11,7 @@ import { editedParts, FoldMark, unlandedMeta } from "./chat/MetaLine.tsx";
 import { appendQuote, quoteSpeaker } from "./chat/QuoteFab.tsx";
 import { ContextGauge, contextCount } from "./chat/ContextGauge.tsx";
 import { Composer } from "./chat/Composer.tsx";
-import { ChatView, mergeTranscript } from "./ChatView.tsx";
+import { ChatView, mergeTranscript, replyStarted } from "./ChatView.tsx";
 
 // Static markup — guards the render contract, not React behavior.
 
@@ -319,6 +319,29 @@ function mountDom() {
   });
   return dom;
 }
+
+describe("replyStarted (issue #415)", () => {
+  const msg = (role: UIMessage["role"], parts: unknown[]) =>
+    ({ id: role, role, parts }) as unknown as UIMessage;
+
+  test("the waiting row stays until the reply has something to show", () => {
+    expect(replyStarted([])).toBe(false);
+    expect(replyStarted([msg("user", [{ type: "text", text: "hi" }])])).toBe(false);
+    expect(replyStarted([msg("user", []), msg("assistant", [])])).toBe(false);
+    expect(
+      replyStarted([msg("user", []), msg("assistant", [{ type: "step-start" }])]),
+    ).toBe(false);
+  });
+
+  test("a reply with content is the one card — no waiting row under it", () => {
+    expect(
+      replyStarted([
+        msg("user", []),
+        msg("assistant", [{ type: "step-start" }, { type: "text", text: "on it" }]),
+      ]),
+    ).toBe(true);
+  });
+});
 
 describe("unlanded turn records (issue #408)", () => {
   const asMsg = (m: unknown) => m as UIMessage;
@@ -4063,10 +4086,6 @@ describe("MessageParts activity folding (happy-dom)", () => {
   });
 });
 
-// The fold's open state: auto until the operator steers it. Activity
-// opens it, the lull between calls holds (collapsing for the gap
-// flashes on every new call), sealing settles — clean closes,
-// failures stay open — and a manual toggle outranks all of it.
 describe("MessageParts Worked fold state (happy-dom)", () => {
   const dom = mountDom();
 
@@ -4090,79 +4109,69 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
     act(async () => {
       dom.root?.render(<MessageParts parts={parts} streaming={streaming} />);
     });
-  // A summary click is the operator's toggle — the fold owns it
-  // through state, the DOM's own flip is prevented.
-  const click = () =>
+  const toggle = () =>
     act(() => {
-      fold().querySelector("summary")!.click();
+      fold().open = !fold().open;
     });
 
-  test("the lull between calls holds the fold open; sealing settles a clean run", async () => {
+  test("a running, failing or settled run never opens its fold by itself", async () => {
     dom.root = createRoot(dom.container);
     await render([part("b1", "input-available")], true);
-    expect(fold().open).toBe(true);
-    // First call done, the message still arriving — a lull, not a
-    // settle: collapsing for the gap flashes on the next call.
-    await render([part("b1", "output-available")], true);
-    expect(fold().open).toBe(true);
-    // The next call joins the same run — still open, no flash.
-    await render(
-      [part("b1", "output-available"), part("b2", "input-available")],
-      true,
-    );
-    expect(fold().open).toBe(true);
-    // The message ends clean — the run seals and the fold closes.
-    await render(
-      [part("b1", "output-available"), part("b2", "output-available")],
-      false,
-    );
     expect(fold().open).toBe(false);
-  });
-
-  test("a manual collapse holds through the lull, new calls, and failures", async () => {
-    dom.root = createRoot(dom.container);
-    await render([part("b1", "input-available")], true);
-    expect(fold().open).toBe(true);
-    click();
-    expect(fold().open).toBe(false);
-    // New calls landing must not pop the fold back open.
+    expect(fold().textContent).toContain("Working for");
+    expect(dom.container.querySelector(".tool-run")!.hasAttribute("open")).toBe(false);
     await render(
       [part("b1", "output-available"), part("b2", "input-available")],
       true,
     );
     expect(fold().open).toBe(false);
-    // A failure doesn't override a deliberate close either — the
-    // summary's fail chip carries the signal.
     await render(
       [part("b1", "output-available"), part("b2", "output-error")],
       false,
     );
     expect(fold().open).toBe(false);
     expect(fold().querySelector(".worked-fail")).not.toBeNull();
+    expect(dom.container.querySelectorAll(".tool-run[open]").length).toBe(0);
   });
 
-  test("a failure keeps the fold open at seal; a manual open survives a clean one", async () => {
+  test("a fold the operator opens stays open while calls land and the run seals", async () => {
     dom.root = createRoot(dom.container);
     await render([part("b1", "input-available")], true);
-    await render([part("b1", "output-error")], false);
+    await toggle();
     expect(fold().open).toBe(true);
-    click();
-    expect(fold().open).toBe(false);
-  });
-
-  test("prose behind a run seals it mid-stream — the fold settles while the turn goes on", async () => {
-    dom.root = createRoot(dom.container);
-    await render([part("b1", "input-available")], true);
+    await render(
+      [part("b1", "output-available"), part("b2", "input-available")],
+      true,
+    );
     expect(fold().open).toBe(true);
-    // A text part lands behind the batch: the run can't grow even
-    // though the message is still arriving — settle now, not at
-    // the end of the turn.
     await render(
       [part("b1", "output-available"), { type: "text", text: "confirmed" }],
       true,
     );
+    expect(fold().open).toBe(true);
+    await render(
+      [part("b1", "output-available"), { type: "text", text: "confirmed" }],
+      false,
+    );
+    expect(fold().open).toBe(true);
+    await toggle();
     expect(fold().open).toBe(false);
-    // The next batch gets its own fold, open while it works.
+  });
+
+  test("a run that owns the tail of a streaming reply reads as working between calls", async () => {
+    dom.root = createRoot(dom.container);
+    await render([part("b1", "output-available")], true);
+    expect(fold().querySelector("summary")!.textContent).toContain("Working for");
+    await render(
+      [part("b1", "output-available"), { type: "text", text: "done" }],
+      true,
+    );
+    expect(fold().querySelector("summary")!.textContent).toContain("Worked");
+    expect(fold().querySelector("summary")!.textContent).not.toContain("Working for");
+  });
+
+  test("a new batch behind prose gets its own closed fold", async () => {
+    dom.root = createRoot(dom.container);
     await render(
       [
         part("b1", "output-available"),
@@ -4174,34 +4183,7 @@ describe("MessageParts Worked fold state (happy-dom)", () => {
     const folds = dom.container.querySelectorAll<HTMLDetailsElement>(".worked");
     expect(folds.length).toBe(2);
     expect(folds[0]!.open).toBe(false);
-    expect(folds[1]!.open).toBe(true);
-  });
-
-  test("a failed batch stays open when prose seals it mid-stream", async () => {
-    dom.root = createRoot(dom.container);
-    await render([part("b1", "input-available")], true);
-    await render(
-      [part("b1", "output-error"), { type: "text", text: "that failed" }],
-      true,
-    );
-    expect(fold().open).toBe(true);
-  });
-
-  test("a settled clean fold mounts closed — the operator can open it", async () => {
-    dom.root = createRoot(dom.container);
-    await render(
-      [part("b1", "output-available"), part("b2", "output-available")],
-      false,
-    );
-    expect(fold().open).toBe(false);
-    click();
-    expect(fold().open).toBe(true);
-    // And it stays open across rerenders — nothing re-asserts auto.
-    await render(
-      [part("b1", "output-available"), part("b2", "output-available")],
-      false,
-    );
-    expect(fold().open).toBe(true);
+    expect(folds[1]!.open).toBe(false);
   });
 });
 

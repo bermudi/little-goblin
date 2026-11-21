@@ -230,11 +230,25 @@ export function outputSummary(output: unknown): string | null {
 	return null;
 }
 
+function cycleGuard(): (this: unknown, key: string, value: unknown) => unknown {
+	const path: unknown[] = [];
+	const onPath = new Set<unknown>();
+	return function (this: unknown, _key: string, value: unknown): unknown {
+		while (path.length > 0 && path.at(-1) !== this) onPath.delete(path.pop());
+		if (typeof value === "object" && value !== null) {
+			if (onPath.has(value)) throw new TypeError("cyclic value");
+			path.push(value);
+			onPath.add(value);
+		}
+		return value;
+	};
+}
+
 /** Compact JSON for the generic detail panes — capped, never throwing. */
 export function shortJson(value: unknown, max = 4000): string {
 	let s: string;
 	try {
-		s = typeof value === "string" ? value : (JSON.stringify(value, null, 2) ?? "");
+		s = typeof value === "string" ? value : (JSON.stringify(value, cycleGuard(), 2) ?? "");
 	} catch {
 		s = "(unprintable)";
 	}

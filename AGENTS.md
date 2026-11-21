@@ -3,6 +3,22 @@
 App-first personal AI agent with an optional Telegram channel, for one operator
 on the Vercel AI SDK; `goblin.service` runs from this tree.
 
+## Goblin Is A Loop With Tools And Connectors. That's It.
+
+This rule outranks every other doc in this repo (operator, 2026-11-21).
+How Goblin solves a problem is up to the operator and skills, not the code.
+
+- **Code owns:** the loop, the tools, the connectors, and what they need to
+  run reliably (state, delivery, logging, limits, authority checks).
+- **Skills and the operator own:** how a kind of task gets done: the steps,
+  the judgment, the workflow, the "when X, do Y".
+- **Before you add code, ask:** does it make the loop, a tool, or a
+  connector better? Or does it encode how to solve one kind of problem? If
+  it is the second, write a skill or leave it to the operator.
+
+Read DIRECTION.md and ROADMAP.md through this rule. When they seem to need
+task logic in code, surface the conflict; don't build it.
+
 ## Product Direction
 
 Before product or roadmap work, read [DIRECTION.md](DIRECTION.md) (settled

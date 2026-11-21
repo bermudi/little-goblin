@@ -12,26 +12,6 @@ implemented behavior. [DESIGN.md](DESIGN.md) points to the code and explains
 design choices. Surface conflicts rather than silently treating current code
 or an old non-goal as a veto on this direction.
 
-## Goblin Is A Loop With Tools And Connectors
-
-Goblin is an AI loop with tools and connectors. That is the product
-(operator, 2026-11-21). How it ends up solving a problem is up to the
-operator and skills, not the code.
-
-This rule outranks everything below it. Use it to stop scope creep:
-
-- **Code owns:** the loop, the tools, the connectors, and what they need to
-  run reliably (state, delivery, logging, limits, authority checks).
-- **Skills and the operator own:** how a kind of task gets done — the steps,
-  the judgment, the workflow, the "when X, do Y".
-- **Before you add code, ask:** does this make the loop, a tool, or a
-  connector better? Or does it encode how to solve one kind of problem? If it
-  is the second, write a skill or leave it to the operator.
-
-Later sections describe experiences the operator wants. Read them through this
-rule: build the generic capability the loop needs, not task-specific machinery.
-When a section seems to need task logic in code, surface the conflict.
-
 ## The Experience We Want
 
 The operator can think out loud, hand over a finite outcome, or entrust Goblin

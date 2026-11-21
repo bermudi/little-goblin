@@ -582,6 +582,11 @@ skill chips) ride into the replacement, only text is rewritten.
 Retry is an edit with the same text: the same rewind, so the reply it
 replaces is deleted, not kept above the new one (operator, 2026-11-21).
 
+After a Retry or Edit commits its rewind, the conversation event stream
+sends `rewound` with the cut message id and its replacement id. Other open
+views drop the deleted tail and reload history, so the old reply does not
+remain visible until a full reload.
+
 **The cut is causal, not positional.** Events are cut at
 `COALESCE(anchor_seq, seq)`: a late answer to an earlier question belongs to
 that question's span and survives an edit below it, exactly like the

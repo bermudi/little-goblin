@@ -321,6 +321,10 @@ export class Runtime {
 		return this.lanes.subscribeConversation(convId, listener);
 	}
 
+	emitConversationRewound(convId: string, messageId: string, replacedBy: string): void {
+		this.lanes.emitConversation(convId, { type: "rewound", messageId, replacedBy });
+	}
+
 	conversationLive(convId: string): boolean {
 		const live = this.lanes.liveOf(convId);
 		return live !== null && !live.ended;

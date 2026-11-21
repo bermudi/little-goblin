@@ -81,31 +81,33 @@ it rides on media — the attachment wins.
 Files up to 2 GB work if you're running the self-hosted Telegram bot API
 (`telegram.apiRoot`); on the cloud API the usual Telegram limits apply.
 
-## Issue builds and PR readiness
+## PR readiness
 
-For an issue build, Goblin links the lead to the responsibility and the
-explicit issue (`issue:{repository:"owner/repo",number:N}`). When the lead
-settles, code checks the closing PR, its current head SHA, the verifier
-comment, and CI on that SHA. The notice and worker report carry the sources,
-not just the lead's claim. No passing evidence means **not ready**.
+When Goblin starts a delegation for a responsibility, it can name the
+issue (`issue:{repository:"owner/repo",number:N}`) and the commit checks
+that must pass (`checks:["build","my-verifier"]`). A check is a GitHub
+commit status (its `context`) or a check run (its `name`). When the
+delegation settles, code checks the open PR that closes the issue, its
+current head, CI on that head, and each required check on that same head.
+The notice and worker report carry the sources, not just the worker's
+claim. No passing evidence means **not ready**.
 
-The verifier's comment must open with `PASS`, `PASS+NOTES`, or `FAIL`, and
-include exactly one standalone line:
+A check belongs to one commit, so after a push nothing counts until the
+checks run again. A missing, pending, skipped or failed required check is
+not ready. A check's description and link are passed on as untrusted
+notes; if the link is a comment on the PR, that comment is included.
+Readiness is never permission to merge. Code checks for changes once a
+minute after settlement, with no model turns spent on unchanged CI.
+Paused, closed, corrected or stopped work is not monitored. Delegations
+without an explicit issue are not watched.
 
-```text
-Checked-SHA: <full 40-character lowercase commit SHA>
-```
-
-After a push, the old verdict cannot make the new head ready. `PASS+NOTES`
-still needs judgment on its notes. Readiness is never permission to merge.
-Code checks for changes once a minute after settlement, with no model turns
-spent on unchanged CI. Paused, closed, corrected or stopped work is not
-monitored. Existing delegations without an explicit issue are not adopted.
+Which checks an issue build requires is your workflow's choice, set in
+Goblin's `proxy-operator` workspace skill, not in Goblin's code.
 
 To inspect the same GitHub evidence without starting Goblin or a model:
 
 ```sh
-bun --no-env-file scripts/pr-readiness.ts bermudi/little-goblin 406
+bun --no-env-file scripts/pr-readiness.ts bermudi/little-goblin 406 build my-verifier
 ```
 
 This uses your existing `gh` login, reads GitHub only, and writes JSON to

@@ -245,59 +245,50 @@ Rulings:
 - **`delegate` is operator-named only (design/agents.md, 2026-11-16;
   restated 2026-11-18).** "`delegate` stays just for this … only for
   use when the user asks for a `codex` run, or a `opencode` run" — or a
-  standing instruction the operator set, like the issue-build flow
-  below. Goblin never picks `delegate` on its own judgment; work it
+  standing instruction the operator set, like the issue-build
+  skill below. Goblin never picks `delegate` on its own judgment; work it
   decides to hand off goes to `agent`. `/stop` fences goblin's turn,
   not delegations: they aren't turns. `delegate stop` ends one.
 
-- **An issue build is one lead delegation (operator, 2026-11-09).**
-  Goblin coordinates across issues; inside one issue a `lead`-role
-  delegation runs the operator's fusion skill: it designs, has its own
-  sidekick implement, reviews the diff, has a clean-session verifier drive
-  the change, and opens a draft PR carrying the verdict (`PASS`,
-  `PASS+NOTES`, `FAIL`). The lead's agents are its own acts, not
-  goblin's: they run in the lead's workspace, the goblin-session adapter
-  never lists or addresses them (it has no list call), and goblin's view
-  of them is the lead's report. Ready = a PR closing the issue, a
-  `PASS`/`PASS+NOTES` verdict on its head SHA, and CI green on that SHA;
-  code checks those facts (PR readiness below), the report being a claim. Rework and the
-  post-green-light merge go to the same lead (`send`), so one agent stays
-  accountable per issue. At most two leads run at once (each fans out to
-  several agents on one box) — the procedure's limit, not a tool refusal;
-  the 2026-10-06 no-cap ruling for the tool stands. Handover is explicit;
-  goblin does not pick issues up on its own. The procedure lives in the
-  workspace `proxy-operator` skill; the lead harness in
-  `delegation.defaults.lead`.
+- **Goblin watches PR work; the workflow around it is the operator's
+  (operator, 2026-11-19/20; #748).** How the operator builds an issue
+  (which agents, how many, who verifies, what a verdict looks like) lives
+  in skills: the operator's agent skills and Goblin's workspace
+  `proxy-operator` skill, which is operator data, not source. Goblin's
+  code never names those skills, never gives a role name special meaning,
+  and never parses verdict words; `module-boundaries.test.ts` refuses
+  `Checked-SHA`, `PASS+NOTES` and `verify-pr` in non-test source. The
+  skill tells Goblin what to watch through the tool, the same way any
+  task would. A delegated agent's own agents are its acts, not
+  goblin's: goblin never lists or addresses them (the hc adapter has no
+  list call), and its view of them is the delegation's report. Handover
+  is explicit; goblin does not pick issues up on its own.
 
-- **PR readiness is observed, not inferred (operator, 2026-11-12; #406).**
-  A responsibility-linked `role:"lead"` start requires
-  `issue:{repository:"owner/repo",number:N}`. Role and issue are durable;
-  neither is reconstructed from a report, task, cwd, or harness name.
-  Older delegations keep role `default` and no issue; no implicit adoption.
-  The lead's prompt carries the verifier comment contract:
+- **PR readiness is observed, not inferred (operator, 2026-11-12, #406;
+  revised 2026-11-20, #748).** Any responsibility-linked start may name
+  `issue:{repository:"owner/repo",number:N}` and `checks:[name…]`: the
+  commit checks (status `context` or check run `name`) that must pass.
+  Issue and checks are durable on the delegation; neither is
+  reconstructed from a report, task, cwd, role or harness name. Ready =
+  the one open PR closing the issue, CI green on its current head, and
+  every required check passed on that same head. A check is bound to its
+  commit, so a push resets readiness until the checks run again; no SHA
+  line in any comment is needed. Several entries with one name: the
+  worst state wins (failed, then pending). Skipped or neutral is not a
+  pass. A missing name is not ready. Ready never authorizes a merge.
 
-  ```text
-  PASS
-
-  Checked-SHA: <full 40-character lowercase commit SHA>
-  ```
-
-  `PASS+NOTES` and `FAIL` are the other opening verdicts. Exactly one
-  standalone `Checked-SHA` line is required. The latest non-minimized
-  verdict comment by update time wins; no fallback to an older passing
-  comment. A missing, short, contradictory or stale SHA is not ready.
-  Comment author and URL are evidence, not proof of verifier independence.
-  Notes remain untrusted text for Goblin to assess; `PASS+NOTES` passes
-  the fact check but does not settle its notes or grant merge authority.
-  Notices include at most 6,000 characters of notes with an explicit
-  truncation flag; the comment URL is the source for the rest. A digest
-  of the complete comment detects edits beyond that excerpt.
+  A required check's description and link are untrusted text for Goblin
+  to judge. When the link is a non-minimized comment on this PR (exact
+  URL match, never by its wording), notices include at most 6,000
+  characters of that comment with a truncation flag and a digest of the
+  whole body, so an edit beyond the excerpt still wakes Goblin. Comment
+  author and URL are evidence, not proof of who ran the check.
 
   `github.ts` alone owns the GitHub contract: read-only `gh api` GraphQL
   against github.com, using gh's existing authentication. It observes
   the issue's closing PR reference, rechecks the PR's closing issue
   reference, and reads the PR head, comments and that exact commit's
-  check/status rollup. Closing PRs can live in another repository; historical
+  check/status rollup with each entry's name. Closing PRs can live in another repository; historical
   closed PRs do not compete with an open one. A `SUCCESS` rollup must contain
   an actually successful completed check or status to be green; no checks
   or skipped-only checks is missing, running/expected is pending,
@@ -307,11 +298,13 @@ Rulings:
   30 seconds per command) fail closed if evidence is partial, inaccessible,
   malformed, or changes inconsistently during the read.
 
-  Each lead settlement carries a timestamped structured observation,
+  Each watched settlement carries a timestamped structured observation,
   source URLs, and a readiness summary outside the worker's claim.
-  The worker report's evidence names the closing PR, head, verdict/SHA
-  and CI/SHA; pending CI reports `waiting`, other missing/negative
+  The worker report's evidence names the closing PR, head, each required
+  check with its state and SHA, and CI/SHA; pending CI reports `waiting`, other missing/negative
   evidence `blocked`, passing facts `ready`. None closes the responsibility.
+  Observations stored under the 2026-11-12 comment contract are cleared
+  once on upgrade; the watcher re-observes them.
   The observation is persisted on the delegation before notice delivery.
   Readiness versions make a regression a new report even if the same
   facts occurred earlier; retries of one version file once.
@@ -320,7 +313,7 @@ Rulings:
   the saved facts rather than polling again. A delivered settlement or
   new prompt cannot lend that snapshot to a later settlement.
 
-  The existing delegation ticker observes settled leads at most once a
+  The existing delegation ticker observes settled watched delegations at most once a
   minute, with no model or second scheduler. An unchanged observation
   updates its timestamp but sends no notice. Changes (including changed
   notes, errors, head or CI) wake Goblin for judgment; a failed notice
@@ -333,5 +326,5 @@ Rulings:
   `bun --no-env-file scripts/pr-readiness.ts owner/repo N`.
 
 Still out: subagent fleets inside goblin (a delegation is one external
-agent per task, not an orchestrator), goblin-managed nesting (a lead's own
-agents are the lead's), fan-out tooling, ACP, the AI SDK harness wrappers.
+agent per task, not an orchestrator), goblin-managed nesting (a delegation's own
+agents are its own), fan-out tooling, ACP, the AI SDK harness wrappers.

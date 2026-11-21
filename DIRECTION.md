@@ -93,6 +93,12 @@ completion. Preparing an email batch may finish at a pre-send review checkpoint;
 upgrading a machine's kernel must achieve and verify the operational outcome,
 not stop at "ready for review." There is no universal human acceptance gate.
 
+Goblin's features stay separate from the operator's own workflow with AI
+agents (operator, 2026-11-19). How the operator builds, reviews and verifies
+work lives in skills; Goblin offers general mechanisms (responsibilities,
+completion evidence, code that observes outside facts) that any workflow can
+use, and its code names no particular workflow, skill or verdict format.
+
 Repo work stays in that repo's GitHub Issues; Goblin's responsibilities record
 what it owes the operator and can point at them (operator, 2026-11-06). Code
 reaches main only after Goblin delivers evidence it works and a way to try it,

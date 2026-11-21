@@ -150,8 +150,8 @@ stop  {id}
 "an opencode run" — the operator's direction (2026-11-18) says to make
 the required binary available and install the right hooks at execution.
 The operator can also ask with a standing
-instruction, for example the issue-build flow that starts a lead
-(design/delegation.md → An issue build is one lead delegation). Goblin
+instruction, for example the operator's issue-build skill
+(design/delegation.md → Goblin watches PR work). Goblin
 never chooses `delegate` on its own judgment. Work goblin decides to
 hand off goes to `agent`.
 

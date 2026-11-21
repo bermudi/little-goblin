@@ -4,7 +4,6 @@ import { providerReadiness } from "./providers.ts";
 import { installation } from "./installation.ts";
 import { snapshots } from "./keys.ts";
 import { memory } from "./memory.ts";
-import { observer } from "./observer.ts";
 import { sandbox } from "./sandbox.ts";
 import { t3Health } from "./t3.ts";
 import {
@@ -36,7 +35,6 @@ export async function runHealth(options: {
 		...auth.findings,
 		...providerReadiness(config.config, auth.names),
 		...workspace(home, options.phase),
-		...observer(home, options.phase),
 		capacity(home, "storage.home", `caller-home:${home}`),
 	];
 	const probe: ProbeContext = {

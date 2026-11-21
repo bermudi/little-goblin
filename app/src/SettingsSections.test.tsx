@@ -464,7 +464,7 @@ describe("Web", () => {
 });
 
 describe("Delegation", () => {
-	test("role selects and harness args edit the delegation body", async () => {
+	test("delegation harnesses are editable", async () => {
 		settings = parseConfig({
 			...BASE,
 			delegation: {
@@ -472,25 +472,11 @@ describe("Delegation", () => {
 					pi: { kind: "pi" },
 					"pi-review": { kind: "pi", args: ["--model", "sol"] },
 				},
-				defaults: { default: "pi", review: "pi-review" },
 			},
 		});
 		await mountSettings();
 		await openSection("Delegation");
-		const select = container.querySelector('select[aria-label="agent for role review"]');
-		expect(select).toBeTruthy();
-		await act(async () => {
-			Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, "value")!.set!.call(
-				select,
-				"pi",
-			);
-			select!.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
-		});
-		await waitFor(() => savedBodies.length > 0, "delegation save");
-		expect(savedBodies.at(-1)?.delegation).toMatchObject({
-			harnesses: { pi: { kind: "pi" }, "pi-review": { kind: "pi", args: ["--model", "sol"] } },
-			defaults: { default: "pi", review: "pi" },
-		});
+		expect(container.querySelector('select[aria-label^="agent for role"]')).toBeNull();
 	});
 
 	test("ask first tick puts askFirst on the saved harness", async () => {
@@ -498,7 +484,6 @@ describe("Delegation", () => {
 			...BASE,
 			delegation: {
 				harnesses: { pi: { kind: "pi" } },
-				defaults: { default: "pi" },
 			},
 		});
 		await mountSettings();
@@ -524,7 +509,6 @@ describe("Delegation", () => {
 			...BASE,
 			delegation: {
 				harnesses: { pi: { kind: "pi" } },
-				defaults: { default: "pi" },
 			},
 		});
 		caps = CAPS({ delegation: { state: "on", hint: null } });
@@ -554,7 +538,6 @@ describe("Delegation", () => {
 							askFirst: true,
 						},
 					},
-					defaults: { default: "pi", review: "pi-review" },
 				};
 				settings = parseConfig({ ...BASE, delegation });
 				caps = CAPS({ delegation: { state: "on", hint: null } });
@@ -631,71 +614,10 @@ describe("Delegation", () => {
 						.querySelector('[aria-label="ask first for pi-review"]')
 						?.getAttribute("aria-pressed"),
 				).toBe("true");
-				for (const [role, harness] of Object.entries(delegation.defaults)) {
-					expect(
-						container.querySelector<HTMLSelectElement>(`[aria-label="agent for role ${role}"]`)
-							?.value,
-					).toBe(harness);
-				}
 			});
 		}
 	}
 
-	test("editing a lone non-default role does not invent a broken default row", async () => {
-		settings = parseConfig({
-			...BASE,
-			delegation: {
-				harnesses: {
-					pi: { kind: "pi" },
-					"pi-review": { kind: "pi" },
-				},
-				defaults: { review: "pi" },
-			},
-		});
-		caps = CAPS({ delegation: { state: "on", hint: null } });
-		await mountSettings();
-		await openSection("Delegation");
-		const select = container.querySelector('select[aria-label="agent for role review"]');
-		expect(select).toBeTruthy();
-		await act(async () => {
-			Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, "value")!.set!.call(
-				select,
-				"pi-review",
-			);
-			select!.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
-		});
-		await waitFor(() => savedBodies.length > 0, "delegation save");
-		expect(savedBodies.at(-1)?.delegation).toEqual({
-			harnesses: { pi: { kind: "pi" }, "pi-review": { kind: "pi" } },
-			defaults: { review: "pi-review" },
-		});
-	});
-
-	test('choosing "none" clears the fallback default', async () => {
-		settings = parseConfig({
-			...BASE,
-			delegation: {
-				harnesses: { pi: { kind: "pi" } },
-				defaults: { default: "pi" },
-			},
-		});
-		caps = CAPS({ delegation: { state: "on", hint: null } });
-		await mountSettings();
-		await openSection("Delegation");
-		const select = container.querySelector('select[aria-label="agent for role default"]');
-		expect(select).toBeTruthy();
-		await act(async () => {
-			Object.getOwnPropertyDescriptor(win.HTMLSelectElement.prototype, "value")!.set!.call(
-				select,
-				"",
-			);
-			select!.dispatchEvent(new win.Event("change", { bubbles: true }) as unknown as Event);
-		});
-		await waitFor(() => savedBodies.length > 0, "delegation save");
-		expect(savedBodies.at(-1)?.delegation).toEqual({
-			harnesses: { pi: { kind: "pi" } },
-		});
-	});
 });
 
 describe("Voice", () => {

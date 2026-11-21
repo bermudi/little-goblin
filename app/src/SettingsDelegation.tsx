@@ -1,25 +1,5 @@
-// Delegation — the coding agents goblin may hand work to and the
-// role → agent defaults the delegate tool uses when a call names no
-// harness. Each entry is a harness kind plus native CLI args.
-
-import { useState } from "react";
-import type { DelegationRoleDraft, HarnessDraft } from "./settingsDraft.ts";
+import type { HarnessDraft } from "./settingsDraft.ts";
 import { Field, Row, SectionHead, type SettingsCtx, Switch } from "./settingsKit.tsx";
-
-const NAME_RE = /^[a-z][a-z0-9_-]{0,15}$/;
-const ROLE_SUGGESTIONS = ["default", "build", "review", "overflow"];
-
-// The fallback role is always visible — it is what an unroled call uses.
-function withDefault(roles: DelegationRoleDraft[]): DelegationRoleDraft[] {
-	if (roles.some((r) => r.role === "default")) return roles;
-	return [{ role: "default", harness: "" }, ...roles];
-}
-
-// The injected default row stays display-only until it names an agent —
-// an unset default is absent, never a saved empty row.
-function savedRoles(list: DelegationRoleDraft[]): DelegationRoleDraft[] {
-	return list.filter((r) => !(r.role === "default" && r.harness === ""));
-}
 
 export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 	const { draft, setDraft, last } = ctx;
@@ -34,20 +14,11 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 			harnesses: d.harnesses.map((h, j) => (j === i ? { ...h, ...patch } : h)),
 		}));
 
-	const roles = del === null ? [] : withDefault(del.roles);
-	const names = del === null ? [] : del.harnesses.map((h) => h.name.trim()).filter((n) => n !== "");
-
-	const setRole = (i: number, patch: Partial<DelegationRoleDraft>) =>
-		edit((d) => {
-			const list = withDefault(d.roles);
-			return { ...d, roles: savedRoles(list.map((r, j) => (j === i ? { ...r, ...patch } : r))) };
-		});
-
 	return (
 		<>
 			<SectionHead
 				title="Delegation"
-				purpose="Coding agents goblin can hand work to, and which one it picks when a request names no agent."
+				purpose="Coding agents Goblin can use when the operator names one."
 			/>
 			<div className="card">
 				<Row
@@ -66,7 +37,6 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 										delegation: d.delegation ??
 											last.current.delegation ?? {
 												harnesses: [],
-												roles: [],
 												},
 									};
 								}
@@ -82,8 +52,7 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 				</Row>
 				{del !== null && (
 					<div className="cap ops-cap">
-						Changes apply after a restart. An explicit harness in a delegate call always wins over
-						these defaults.
+						Changes apply after a restart.
 					</div>
 				)}
 			</div>
@@ -178,98 +147,8 @@ export function SettingsDelegation({ ctx }: { ctx: SettingsCtx }) {
 						</div>
 					</div>
 
-					<SectionHead
-						title="Defaults"
-						purpose="Which agent each role uses. The role named default is the fallback when a call names no role."
-					/>
-					<div className="card">
-						{roles.map((r, i) => (
-							<div className="del-role" key={`${i}:${r.role}`}>
-								<div className="del-role-name mono">{r.role}</div>
-								<select
-									aria-label={`agent for role ${r.role}`}
-									value={r.harness}
-									onChange={(e) => setRole(i, { harness: e.target.value })}
-								>
-									<option value="">— none —</option>
-									{names.map((n) => (
-										<option key={n} value={n}>
-											{n}
-										</option>
-									))}
-									{r.harness !== "" && !names.includes(r.harness) && (
-											<option value={r.harness}>{r.harness} (unlisted)</option>
-										)}
-								</select>
-								{r.role !== "default" && (
-									<button
-										type="button"
-										className="ghost-inline"
-										aria-label={`remove role ${r.role}`}
-										onClick={() =>
-											edit((d) => ({
-												...d,
-												roles: savedRoles(withDefault(d.roles).filter((_, j) => j !== i)),
-											}))
-										}
-									>
-										Remove
-									</button>
-								)}
-							</div>
-						))}
-						<RoleAdder
-							taken={roles.map((r) => r.role)}
-							onAdd={(role) =>
-								edit((d) => ({
-									...d,
-									roles: savedRoles([...withDefault(d.roles), { role, harness: "" }]),
-								}))
-							}
-						/>
-						<div className="cap ops-cap">A named role with no entry uses the default agent.</div>
-					</div>
 				</>
 			)}
 		</>
-	);
-}
-
-function RoleAdder({ taken, onAdd }: { taken: string[]; onAdd: (role: string) => void }) {
-	const [value, setValue] = useState("");
-	const role = value.trim();
-	const ok = NAME_RE.test(role) && !taken.includes(role);
-	const add = () => {
-		if (!ok) return;
-		onAdd(role);
-		setValue("");
-	};
-	return (
-		<div className="addrow">
-			<input
-				className="mono"
-				value={value}
-				onChange={(e) => setValue(e.target.value)}
-				onKeyDown={(e) => {
-					if (e.key === "Enter") {
-						e.preventDefault();
-						add();
-					}
-				}}
-				placeholder="new role"
-				aria-label="new delegation role"
-				autoComplete="off"
-				spellCheck={false}
-				list="del-role-suggestions"
-			/>
-			<datalist id="del-role-suggestions">
-				{ROLE_SUGGESTIONS.filter((r) => !taken.includes(r)).map((r) => (
-					<option key={r} value={r} />
-				))}
-			</datalist>
-			<button className="addbtn" type="button" onClick={add} disabled={!ok}>
-				Add role
-			</button>
-		</div>
 	);
 }

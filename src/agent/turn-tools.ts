@@ -7,9 +7,7 @@
 // through this same function so the drift comparison reads the set the
 // resumed attempt would actually get.
 
-import { FencedError } from "../runtime.ts";
 import type { TurnToolMaker } from "../turn/tool-authority.ts";
-import { workerSendRefusal, type WorkerSendRefusal } from "../responsibility-authority.ts";
 
 import type { ConfigRef } from "../config.ts";
 import { splitModelRef, type Config } from "../config-schema.ts";
@@ -42,19 +40,13 @@ import { inputModalitiesCached } from "./models-dev.ts";
 import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
 import type { T3 } from "../t3.ts";
-import type { ResponsibilityStore } from "../responsibilities.ts";
-import {
-	INNER_LOOP_DEFAULT,
-	innerLoopBranch,
-	makeInnerLoopStarts,
-	runGit,
-	startInnerLoop,
-} from "../inner-loop.ts";
-import { makeManagedSendEdge, type ResponsibilityService } from "../responsibility-service.ts";
+import type { Watches } from "../watches.ts";
+import type { GitHub } from "../github.ts";
 
 // Anything deciding "does this tool slot exist" is a dep here; the
 // decision itself lives in makeTurnTools, not boot().
 export interface TurnToolsDeps {
+	now: () => Date;
 	configRef: ConfigRef;
 	auth: AuthStore;
 	store: ConversationStore;
@@ -83,13 +75,9 @@ export interface TurnToolsDeps {
 	visionDepsFor(conv: Conversation): VisionToolDeps | undefined;
 	sandboxes: Sandboxes;
 	desktops: Desktops | null;
-	// The t3 adapter — one boot-frozen instance for the handover seams
-	// (thread discovery and managed sends).
 	t3: T3;
-	responsibility: {
-		resps: ResponsibilityStore;
-		service: ResponsibilityService;
-	} | null;
+	watches: Watches;
+	github: GitHub;
 	agents: AgentChildren | null;
 	// tg/guest.ts owns the exclusion policy — injected so tools never
 	// imports back into tg/.
@@ -135,32 +123,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		filterGuests,
 	} = deps;
 	return (conv, deliverVoice, recording, deliverFile, context) => {
-		const epoch = conv.epoch;
-		// Narrowed once so the handover closures below type-check as
-		// project-bound.
-		const projectId = conv.projectId;
-		const { mail, desktops, responsibility: responsibilityOwner, agents } = deps;
-		// One gate for every executor that can link work to what goblin owes.
-		const checkResponsibility =
-			conv.projectId !== null && responsibilityOwner !== null
-				? (id: string) => {
-						const resp = responsibilityOwner.resps.get(id);
-						if (resp === null || resp.projectId !== conv.projectId)
-							return `responsibility ${id} not found in this project`;
-						if (resp.status !== "active" && resp.status !== "paused")
-							return `responsibility ${id} is ${resp.status} — resume it before linking a run`;
-						return null;
-					}
-				: undefined;
-		const sendAuthority =
-			conv.projectId !== null && responsibilityOwner !== null
-				? (responsibilityId: string): WorkerSendRefusal | null => {
-						if (store.get(conv.id)?.epoch !== epoch) throw new FencedError(conv.id);
-						const resp = responsibilityOwner.resps.get(responsibilityId);
-						if (resp !== null && resp.projectId !== conv.projectId) return "outside-project";
-						return workerSendRefusal(resp);
-					}
-				: undefined;
+		const { mail, desktops, agents } = deps;
 		const tts = configRef.current.tts;
 		// Guests get a reduced set below; app and Telegram turns share the
 		// approval-capable operator tools through canonical targets.
@@ -175,6 +138,13 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		const childDesktop =
 			conv.agentType !== null ? (agents?.desktopFor(conv.id) ?? null) : null;
 		const tools = makeTools({
+			watch: {
+				watches: deps.watches,
+				conversationId: conv.id,
+				showThread: (thread, messages) => deps.t3.showThread(thread, messages),
+				readPr: (repository, number) => deps.github.readPr(repository, number),
+				now: deps.now,
+			},
 			cwd: workdir,
 			...(context !== undefined ? { contextFill: context.contextFill } : {}),
 			...(deps.noteSkillRead !== undefined ? { onRead: deps.noteSkillRead } : {}),
@@ -198,23 +168,11 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 								: {}),
 						}
 					: undefined,
-			// sendPrivate keeps hook URLs out of model context — a DM per
-			// operator, never in history. publicUrl reads live. App
-			// project turns get the responsibility-destination arm —
-			// programs bound to this project's handed-over work.
 			program:
 				channel === "app" || channel === "telegram"
 					? {
 							programs,
 							target: targetOf(conv),
-							...(conv.projectId !== null && responsibilityOwner !== null
-								? {
-										project: {
-											projectId: conv.projectId,
-											resps: responsibilityOwner.resps,
-										},
-									}
-								: {}),
 							publicUrl: () => configRef.current.publicUrl,
 							...(sendPrivate === undefined ? {} : { sendPrivate }),
 							requestApproval: async (proposal, signal) => {
@@ -255,14 +213,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 			})(),
 			transcribe: configRef.current.transcription !== undefined ? { transcribe } : undefined,
 			// Boot fixtures under a live gate.
-			delegate:
-				delegate === undefined
-					? undefined
-					: {
-							...delegate,
-							checkResponsibility,
-							sendAuthority,
-						},
+			delegate,
 			// Only the approval gate's request closure — the send credential lives behind the taps.
 			mail:
 				(channel === "app" || channel === "telegram") && configRef.current.mail !== undefined
@@ -344,69 +295,6 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 							...(configRef.current.sandbox !== undefined ? { sandboxes } : {}),
 						}
 					: undefined,
-			// Project-bound turns only: the coordination surface the
-			// handover loop lives on. The handover key is the project
-			// conversation — one acceptance per coordination conversation.
-			responsibility:
-				projectId !== null && responsibilityOwner !== null
-					? {
-							resps: responsibilityOwner.resps,
-							service: responsibilityOwner.service,
-							projectId,
-							coordinationConversationId: conv.id,
-							journalRunId: context?.runId,
-							assertAuthority: () => {
-								if (store.get(conv.id)?.epoch !== epoch) throw new FencedError(conv.id);
-							},
-							handoverKey: () => {
-								if (context === undefined) {
-									throw new Error("responsibility accept needs a turn run context");
-								}
-								const seq = context.sourceInputSeq();
-								if (seq === null) {
-									throw new Error(
-										"responsibility accept has no durable source input — a client message id never keys a handover",
-									);
-								}
-								return `handover:${conv.id}:seq:${seq}`;
-							},
-							// The project's own dir names the T3 project the
-							// handover threads live in; the thread list is
-							// read-only discovery, resolved live per call.
-							listFor: () => {
-								const dir = projects.get(projectId)?.dir;
-								if (dir === undefined) {
-									throw new Error(
-										`project ${projectId} has no dir — cannot list its T3 threads`,
-									);
-								}
-								return deps.t3.listThreads(dir);
-							},
-							// The managed send edge (responsibility-service):
-							// the bound thread id is the identity — CLI
-							// failures refuse (nothing was sent), only the
-							// tool's own kill lands uncertain.
-							guardedSend: makeManagedSendEdge(deps.t3),
-							startInnerLoop: (start) => {
-								const dir = projects.get(projectId)?.dir;
-								if (dir === undefined) {
-									throw new Error(`project ${projectId} has no dir — cannot start its inner loop`);
-								}
-								return startInnerLoop(
-									{ t3: deps.t3, git: runGit, starts: makeInnerLoopStarts(deps.store.db) },
-									{
-										handoverKey: start.handoverKey,
-										authorize: start.authorize,
-										projectDir: dir,
-										brief: start.brief,
-										branch: innerLoopBranch(start.issue, start.branch),
-										issue: start.issue,
-										model: configRef.current.innerLoop ?? INNER_LOOP_DEFAULT,
-									},
-								);
-							},
-						}
-					: undefined,
 			// App turns only — Telegram and guests render plain text.
 			ui: channel === "app",
 		});
@@ -439,8 +327,6 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				engine: agents,
 				types: loadAgentTypes(paths.agentTypes()),
 				conversation: conv,
-				sendAuthority,
-				checkResponsibility,
 				// The names the child mount provides that no parent turn
 				// carries — the computer type's desktop tools plus
 				// ask_operator (agent.ts childToolAllowlist).

@@ -263,7 +263,7 @@ const CLAUDE_SDK_DIR = "agent/claude-code";
 
 // The feature folders (DESIGN.md → Module map, ruling 2026-11-08,
 // #201): each folder's index.ts is its only public import.
-const FEATURE_FOLDERS = new Set(["reminders"]);
+const FEATURE_FOLDERS = new Set<string>();
 
 // The trees the feature-folder rule scans: the server, the app client,
 // and the repo scripts — the roots import-cycles walks, plus scripts/.

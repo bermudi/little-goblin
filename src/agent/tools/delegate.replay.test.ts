@@ -13,15 +13,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { stepCountIs, streamText } from "ai";
-import { openStore } from "../../conversation.ts";
 import { openDelegations, type DelegationsStore } from "../../delegations.ts";
 import { startDelegationLifecycle } from "../../delegation-watcher.ts";
 import type { DelegationLifecycle } from "../../delegation-lifecycle.ts";
 import type { HcRunInfo, HcDelegation } from "../../hc-delegation.ts";
-import { openProjects } from "../../projects.ts";
-import { openResponsibilities, type ResponsibilityStore } from "../../responsibilities.ts";
-import { fileDelegationReport } from "../../responsibility-runs.ts";
-import { responsibilityStage } from "../../responsibility-stage.ts";
 import { recordedModel, StaleRecordingError } from "../../testkit/model-replay.ts";
 import { tmpDir, useHome } from "../../testkit.ts";
 import { delegateTool } from "./delegate.ts";
@@ -32,7 +27,7 @@ const RERECORD = "GOBLIN_MODEL_RECORD=1 bun test src/agent/tools/delegate.replay
 const RECORD = process.env.GOBLIN_MODEL_RECORD === "1";
 const CASSETTES = join(import.meta.dir, "fixtures", "delegate-replay");
 
-async function replayModel(name: string, substitute?: Record<string, string>) {
+async function replayModel(name: string) {
 	const path = join(CASSETTES, `${name}.json`);
 	if (RECORD) {
 		// Dynamic only: the codex modules (and their auth file) must
@@ -42,14 +37,12 @@ async function replayModel(name: string, substitute?: Record<string, string>) {
 		return recordedModel({
 			path,
 			rerecord: RERECORD,
-			...(substitute === undefined ? {} : { substitute }),
 			record: codexModel("gpt-6-luna", resolveCodexAuthFile(undefined).path, fetch, {}),
 		});
 	}
 	return recordedModel({
 		path,
 		rerecord: RERECORD,
-		...(substitute === undefined ? {} : { substitute }),
 	});
 }
 
@@ -57,8 +50,6 @@ interface Rig {
 	tool: ReturnType<typeof delegateTool>;
 	lifecycle: DelegationLifecycle;
 	store: DelegationsStore;
-	resps: ResponsibilityStore;
-	responsibilityId: string;
 	wakes: string[];
 	setAgent(agentStatus: string, seq: number): void;
 }
@@ -70,27 +61,6 @@ afterEach(async () => {
 
 function rig(): Rig {
 	const home = useHome("goblin-delegrep-");
-	mkdirSync(join(home, "state"), { recursive: true });
-	const convStore = openStore(join(home, "state", "goblin.sqlite"));
-	const project = openProjects(convStore).create({ name: "rig" });
-	const conv = convStore.resolve(
-		{ kind: "app", appId: project.slug, chatId: 0, threadId: 0 },
-		project.dir,
-	);
-	const resps = openResponsibilities(convStore.db);
-	const { responsibility } = resps.create({
-		projectId: project.id,
-		coordinationConversationId: conv.id,
-		handoverKey: "k1",
-		understanding: {
-			outcome: "o",
-			situation: "",
-			nextAction: "",
-			checkpoints: [],
-			completionEvidence: [],
-		},
-	});
-
 	const dir = tmpDir("goblin-delegrep-");
 	const store = openDelegations(join(dir, "goblin.sqlite"));
 	const workspaceDir = join(dir, "workspace");
@@ -129,8 +99,6 @@ function rig(): Rig {
 				wakes.push(text);
 				return true;
 			},
-			settled: (d, verdict, body) => fileDelegationReport(resps, d, verdict, body),
-			responsibilityRevision: (id) => resps.get(id)?.revision ?? null,
 		},
 		3_600_000,
 	);
@@ -140,15 +108,11 @@ function rig(): Rig {
 		config: { harnesses: { codex: { kind: "codex" }, pi: { kind: "pi" } } },
 		pin: () => ({ address: { chatId: -100, threadId: 7 } }),
 		workspaceDir,
-		checkResponsibility: (id) =>
-			resps.get(id) === null ? `responsibility ${id} not found in this project` : null,
 	});
 	return {
 		tool,
 		lifecycle,
 		store,
-		resps,
-		responsibilityId: responsibility.responsibilityId,
 		wakes,
 		setAgent(status, s) {
 			agentStatus = status;
@@ -162,13 +126,12 @@ async function turn(
 	cassette: string,
 	system: string,
 	prompt: string,
-	substitute?: Record<string, string>,
 ) {
 	// maxRetries 0 + first-error capture: a stale cassette must surface
 	// as StaleRecordingError, not the SDK's NoOutputGenerated wrapper.
 	let firstError: unknown;
 	const result = streamText({
-		model: await replayModel(cassette, substitute),
+		model: await replayModel(cassette),
 		system,
 		prompt,
 		tools: toToolSet({ delegate: r.tool }),
@@ -218,7 +181,6 @@ describe("delegate replay", () => {
 		expect(rows).toHaveLength(1);
 		const row = rows[0]!;
 		expect(row.cwd.endsWith("/app")).toBe(true);
-		expect(row.responsibilityId).toBeNull();
 
 		r.setAgent("idle", 8);
 		await r.lifecycle.tick();
@@ -230,46 +192,6 @@ describe("delegate replay", () => {
 		expect(firstLine.endsWith("· done]")).toBe(true);
 		expect(wake).toContain('<event source="delegation">');
 		expect(wake).toContain("patched and tested");
-		for (const resp of r.resps.open()) {
-			expect(r.resps.reportsFor(resp.responsibilityId)).toEqual([]);
-		}
-	});
-
-	test("T2 linked: a responsibility-linked delegation files one worker report", async () => {
-		const r = rig();
-		const revision = r.resps.get(r.responsibilityId)!.revision;
-		const { steps } = await turn(
-			r,
-			"linked",
-			`${BASE} This is a project conversation. Active responsibility: r-12 (fix the failing build in the repo at relative path app).`,
-			"Start fixing the failing build for r-12 in the repo at relative path app. Use the codex harness.",
-			{ "r-12": r.responsibilityId },
-		);
-		const results = delegateResults(steps);
-		expect(results).toHaveLength(1);
-		expect("error" in (results[0]!.output as Record<string, unknown>)).toBe(false);
-
-		const rows = r.store.list();
-		expect(rows).toHaveLength(1);
-		const row = rows[0]!;
-		expect(row.responsibilityId).toBe(r.responsibilityId);
-		expect(row.responsibilityRevision).toBe(revision);
-
-		r.setAgent("idle", 8);
-		await r.lifecycle.tick();
-		expect(r.store.get(row.id)!.status).toBe("done");
-		expect(r.wakes).toHaveLength(1);
-		const reports = r.resps.reportsFor(r.responsibilityId);
-		expect(reports).toHaveLength(1);
-		expect(reports[0]).toMatchObject({ reporter: "worker", state: "ready" });
-		expect(reports[0]!.reason).toContain("patched and tested");
-		expect(
-			responsibilityStage(
-				r.resps.get(r.responsibilityId)!,
-				r.resps.stageReports(r.responsibilityId),
-				[],
-			).waitsFor,
-		).toBe("goblin");
 	});
 
 	test("T3 text-only: a plain answer calls no tool and wakes nothing", async () => {

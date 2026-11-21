@@ -21,7 +21,7 @@ histories.
 
 A turn captures its conversation's epoch at admission; a later epoch fences
 it. Only a cancellation bumps the epoch — `/stop`, `/new` and navigation, a
-guest persona change, a responsibility correction — and it ends the live
+guest persona change — and it ends the live
 turn in the same call ([`Runtime.fence`](src/runtime.ts),
 [`Runtime.stop`](src/runtime.ts)), on both engines. Settings such as
 `/voice` and `/memory on|off` are flag writes: they apply to the next reply,
@@ -35,14 +35,12 @@ State read before an asynchronous operation may no longer authorize an action.
 Re-check at the effect, inside the transaction for writes. Test the race by
 making the competing change while the first action is waiting, not just by
 checking the end state. See the
-[delivery](src/runtime.test.ts) and [queued work](src/responsibility-authority.test.ts)
-regression tests.
+[delivery](src/runtime.test.ts) regression tests.
 
 A crashed call may already have acted. Preserve evidence, not permission to
 retry. For an external effect, record intent before acting and outcome after.
 The recovery policy depends on which failure is acceptable: an uncertain
-[mail send](src/mail-approval.crash.test.ts) or
-[send to a worker](src/responsibility-service.crash.test.ts) is not retried
+[mail send](src/mail-approval.crash.test.ts) is not retried
 automatically; a [restart notice](src/tg/turn-notice.crash.test.ts) may repeat
 rather than disappear. See [the journal](design/runtime-turn.md#the-turn-journal).
 

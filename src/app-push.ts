@@ -17,7 +17,6 @@ import type { Conversation } from "./conversation-read.ts";
 import type { ConversationStore } from "./conversation.ts";
 import { appIdOf } from "./conversation-address.ts";
 import { log } from "./log.ts";
-import { type OperatorReminder, REMINDER_EVERY_MS, reminderText } from "./reminders/index.ts";
 import type { TurnDone, TurnSink } from "./turn/sink.ts";
 
 export const APP_PUSH_VAPID = "app-push-vapid";
@@ -100,8 +99,6 @@ export interface AppPush {
 		done: TurnDone,
 		origin?: "foreground" | "background",
 	): Promise<void>;
-	/** True when at least one subscribed device has this reminder. */
-	notifyReminder(reminder: OperatorReminder): Promise<boolean>;
 }
 
 function endpointHash(endpoint: string): string {
@@ -232,33 +229,10 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 		);
 	}
 
-	async function notifyReminder(reminder: OperatorReminder): Promise<boolean> {
-		const appId = appIdOf(reminder.conversationId);
-		await ring(
-			reminder.key,
-			{
-				title: "goblin",
-				body: reminderText(reminder.stage),
-				url: appId === null ? "/app/" : `/app/c/${appId}`,
-			},
-			{
-				// A phone off overnight should still get it; the next step replaces it anyway.
-				replaces: reminder.series,
-				ttl: REMINDER_EVERY_MS / 1000,
-				fields: {
-					conversation: reminder.conversationId,
-					responsibility: reminder.responsibilityId,
-					outcome: `reminder:${reminder.stage}`,
-				},
-			},
-		);
-		return qList.all().some((row) => (qDelivered.get(reminder.key, row.endpoint_hash)?.n ?? 0) > 0);
-	}
-
 	async function ring(
 		key: string,
 		message: { title: string; body: string; url: string },
-		opts: { ttl: number; fields: Record<string, string>; replaces?: string },
+		opts: { ttl: number; fields: Record<string, string> },
 	): Promise<void> {
 		const subscriptions = qList.all();
 		if (subscriptions.length === 0) {
@@ -278,12 +252,7 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 				log.error("app push send skipped — VAPID unavailable", err, opts.fields);
 				return;
 			}
-			const replaces = opts.replaces ?? key;
-			const payload = JSON.stringify({
-				...message,
-				tag: replaces,
-				...(opts.replaces === undefined ? {} : { renotify: true }),
-			});
+			const payload = JSON.stringify({ ...message, tag: key });
 			for (const row of pending) {
 				try {
 					await send(subscriptionFor(row), payload, {
@@ -295,7 +264,7 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 						TTL: opts.ttl,
 						timeout: 10_000,
 						urgency: "normal",
-						topic: createHash("sha256").update(replaces).digest("base64url").slice(0, 32),
+						topic: createHash("sha256").update(key).digest("base64url").slice(0, 32),
 					});
 					qMarkDelivered.run(key, row.endpoint_hash, new Date().toISOString());
 					log.info("app push sent", { ...opts.fields, endpointHash: row.endpoint_hash });
@@ -366,7 +335,6 @@ export function openAppPush(db: Database, deps: AppPushDeps): AppPush {
 			return removed;
 		},
 		notifyDone,
-		notifyReminder,
 	};
 }
 

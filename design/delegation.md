@@ -3,8 +3,7 @@
 > **Transport direction (operator, 2026-11-18, issue #728):** `delegate`
 > runs on herdr-core (`hc`), not Herdr. Goblin must “make sure binary X is
 > where you need it or go get it”; “they just need the right hooks installed
-> and execution call could make sure they are.” Handover and responsibility
-> stay on T3 Code. The operator-named-only rule for `delegate` remains.
+> and execution call could make sure they are.” The operator-named-only rule for `delegate` remains.
 
 > **Implementation rulings (lead, 2026-11-19, issue #728):** Goblin pins and
 > owns `hc`, keeps the operator's real harness homes, copies `deploy/hc-hooks/`
@@ -79,18 +78,14 @@ Rulings:
 - **Harnesses are config, never guessed** — the operator's choice of
   kind, native args, full-auto flags and model; goblin never picks a
   model for a harness.
-- **Staffing defaults are config, not notes.** The operator configures
-  roles and harnesses; Goblin never guesses a model. The block remains
-  boot-frozen.
 - **Ask-first is a description rule, not a gate (2026-11-09).** A harness
   with `askFirst: true` adds a
   line to the `delegate` description: goblin asks the operator before
   each use and starts only on their explicit yes. The model asks;
   `execute` never refuses. The operator wants occasional use *with*
   permission, which removing the harness cannot give — the block is
-  boot-frozen, so a removal needs a restart anyway. The same sentence
-  rules staffing goblin's call: choosing a harness is never a question
-  to the operator. Settings → Delegation edits the flag.
+  boot-frozen, so a removal needs a restart anyway. Settings → Delegation
+  edits the flag.
 - **Agents run full-auto; Goblin never answers approvals.** Harnesses
   start in their no-approval mode (the configured args); nothing to
   approve, and no new trust level — goblin already has `bash`. If an
@@ -187,8 +182,7 @@ Rulings:
   never ends its agents without marking the row first, so a gone agent
   is an outside stop, settled `stopped` with the same don't-revive
   note, not `failed`. A crash looks identical from outside; either way
-  the operator decides what happens next. A responsibility gets a
-  worker `blocked` report, not `failed` — goblin assesses it next (operator, 2026-11-12: goblin looks first, no direct question). The
+  the operator decides what happens next. The
   app stop's notice is its only one (a retried stop sends nothing), so
   an unreadable report sends the header alone, and stop notes (e.g. a
   target gone from config) stay on screen after the row moves.
@@ -239,117 +233,18 @@ Rulings:
   operator's desk is T3 Code. Delegated terminals belong to Goblin's
   private hc core; this does not restore the removed operator-desk tool.
 
-- **A delegation can count toward what goblin owes (2026-11-06).**
-  `delegate start` takes `responsibility:<id>` in a project conversation,
-  like a subagent run. Each settlement files one worker report before its
-  notice wakes the conversation; a blocked agent carries no `question`, so
-  it waits for goblin to read and relay. `delegate send` to a linked
-  delegation passes the same check as every send to a linked worker:
-  the responsibility is `active`, the send comes from its project, and
-  the sending turn predates no correction (design/agents.md → Linked
-  workers). `delegate` stays separate from
-  `subagent`: their controls differ, and a merged tool would hide the
-  choice inside one schema instead of removing it.
+- **`delegate` stays separate from `subagent`:** their controls differ,
+  and a merged tool would hide the choice inside one schema instead of
+  removing it.
 - **`delegate` is operator-named only (design/agents.md, 2026-11-16;
   restated 2026-11-18).** "`delegate` stays just for this … only for
   use when the user asks for a `codex` run, or a `opencode` run" — or a
-  standing instruction the operator set. Issue builds are not one: they
-  run as the inner loop (below). Goblin never picks `delegate` on its own judgment; work it
+  standing instruction the operator set. Goblin drives T3 Code with the
+  `t3` CLI through `bash`; the workflow lives in the operator's skill.
+  Goblin never picks `delegate` on its own judgment; work it
   decides to hand off goes to `agent`. `/stop` fences goblin's turn,
   not delegations: they aren't turns. `delegate stop` ends one.
 
-- **An issue build is one inner loop on T3 Code (operator, 2026-11-20;
-  #745; replaces the 2026-11-09 lead-delegation ruling).** Goblin
-  coordinates across issues; inside one issue the [inner
-  loop](../GLOSSARY.md) does the work: one T3 Code thread, led by Claude
-  on Opus 5.5 (T3 provider `claudeAgent`, model `claude-opus-5-5`), in a
-  new git worktree from the repo's default branch
-  (`t3 thread start --worktree origin/<default> --branch issue/<N>`).
-  When the operator hands over an issue, goblin starts it at once,
-  without asking first: `responsibility accept` with `issue` and
-  `start:{brief, branch?}` resolves `origin/HEAD`, fetches it, starts
-  the thread and binds it as the responsibility's attachment in the same
-  call. Authority is re-checked after the git work, right before the
-  start. The start is recorded under the handover key
-  (`inner_loop_starts`) as soon as T3 Code returns it, so a retried
-  accept reuses that thread even when binding failed; once the
-  responsibility exists, a retry starts nothing. The thread's own agents are its
-  acts, not goblin's; goblin's view of them is the thread and its PR.
-  Rework and the post-green-light merge go to the same thread
-  (`responsibility send`), so one worker stays accountable per issue.
-  The 2026-11-09 limits carry over: at most two issue builds at once
-  (the procedure's limit, not a tool refusal), and handover is explicit
-  — goblin does not pick issues up on its own. `innerLoop:
-  {provider, model, options?}` in config overrides the default model.
-  `delegate` no longer has a `lead` role: it runs only harnesses the
-  operator names, with `delegation.defaults.default` (pi on prod) as
-  the default. Accepted risk: a crash between T3 Code's start and its
-  record leaves an unbound thread in T3 Code.
-
-- **PR readiness is observed on the responsibility, not inferred
-  (operator, 2026-11-12, #406; moved off the lead 2026-11-20, #745).**
-  The check lives on the responsibility, so it works for any worker. A
-  responsibility accepted with `issue:{repository:"owner/repo",number:N}`
-  links that issue once (`responsibility_issues`); nothing reconstructs
-  it from a report, task, cwd or thread title. The inner loop's start
-  message carries the verifier comment contract:
-
-  ```text
-  PASS
-
-  Checked-SHA: <full 40-character lowercase commit SHA>
-  ```
-
-  `PASS+NOTES` and `FAIL` are the other opening verdicts. Exactly one
-  standalone `Checked-SHA` line is required. The latest non-minimized
-  verdict comment by update time wins; no fallback to an older passing
-  comment. A missing, short, contradictory or stale SHA is not ready.
-  Comment author and URL are evidence, not proof of verifier independence.
-  Notes remain untrusted text for Goblin to assess; `PASS+NOTES` passes
-  the fact check but does not settle its notes or grant merge authority.
-  Notices include at most 6,000 characters of notes with an explicit
-  truncation flag; the comment URL is the source for the rest. A digest
-  of the complete comment detects edits beyond that excerpt.
-
-  `github.ts` alone owns the GitHub contract: read-only `gh api` GraphQL
-  against github.com, using gh's existing authentication. It observes
-  the issue's closing PR reference, rechecks the PR's closing issue
-  reference, and reads the PR head, comments and that exact commit's
-  check/status rollup. Closing PRs can live in another repository; historical
-  closed PRs do not compete with an open one. A `SUCCESS` rollup must contain
-  an actually successful completed check or status to be green; no checks
-  or skipped-only checks is missing, running/expected is pending,
-  failure/error is red.
-  Multiple closing PRs are ambiguous, not an invitation to choose one.
-  Bounded reads (100 PR/issue links, check contexts and the last 100 comments, 1 MiB,
-  30 seconds per command) fail closed if evidence is partial, inaccessible,
-  malformed, or changes inconsistently during the read.
-
-  `src/responsibility-readiness.ts` observes each active responsibility
-  with a linked issue once per tick of the responsibility observer's
-  60 s ticker — no model and no second scheduler; the ticker alone sets
-  the cadence, so a slow read never skips the next tick. After the GitHub
-  read it re-checks the responsibility in the same transaction as every
-  write: a pause, cancel or close during the read wins. The first
-  observation of an open issue with no PR yet is a silent baseline.
-  Unchanged facts update the timestamp and wake nothing. A change
-  (including changed notes, errors, head or CI) files one `worker`
-  report and one `pr-readiness` wake in one transaction: the report's
-  evidence names the closing PR, head, verdict/SHA and CI/SHA; pending CI
-  reports `waiting`, other missing or negative evidence `blocked`,
-  passing facts `ready`. None closes the responsibility. A version
-  counter makes a regression a new report even if the same facts
-  occurred earlier. An `unavailable` read records nothing and retries on
-  the next tick. Watching stops when the issue closes with no PR or the
-  responsibility leaves `active`; an operator correction keeps the link.
-  No model polls GitHub while CI runs. The one-shot read-only probe is
-  `bun --no-env-file scripts/pr-readiness.ts owner/repo N`. On store
-  open, a lead delegation's issue and last notified readiness are copied
-  onto its responsibility once, so an issue build started before #745
-  keeps its watch without replaying unchanged facts. Delegation rows
-  keep their old `issue_json`/`readiness_*` columns; dropping them
-  would drop data.
-
 Still out: subagent fleets inside goblin (a delegation is one external
-agent per task, not an orchestrator), goblin-managed nesting (an inner loop's own
-agents are the inner loop's), fan-out tooling, ACP, the AI SDK harness wrappers.
+agent per task, not an orchestrator), goblin-managed nesting, fan-out
+tooling, ACP, the AI SDK harness wrappers.

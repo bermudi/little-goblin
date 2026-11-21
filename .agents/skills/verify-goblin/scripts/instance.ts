@@ -168,7 +168,6 @@ function seedHome(home: string, fakePort: number): void {
 			? {
 					delegation: {
 						harnesses: { codex: { kind: "codex", args: ["--model", "gpt-6-luna"] } },
-						defaults: { default: "codex" },
 					},
 				}
 			: {}),

@@ -202,6 +202,7 @@ export interface ConversationStore extends ConversationReads {
 	// the 🔊 button's durable handle. Recorded at turn finalize, one row
 	// per delivered chunk, all pointing at the same reply seq.
 	recordDelivery(id: string, messageId: number, seq: number): void;
+	deleteRefusal(id: string): string | null;
 	deleteConversation(id: string): void;
 	close(): void;
 }

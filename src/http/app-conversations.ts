@@ -9,6 +9,7 @@ import { listCalls } from "../cache-observation.ts";
 import { ConfigValidationError, parseConfig } from "../config.ts";
 import { splitModelRef } from "../config-schema.ts";
 import { paths } from "../home-layout.ts";
+import { DeleteRefused } from "../conversation-delete.ts";
 import type { ConversationStore } from "../conversation.ts";
 import { appAddress, appIdSchema } from "../conversation-address.ts";
 import { flatLine } from "../conversation-events.ts";
@@ -1058,8 +1059,23 @@ export async function handleConversationsRoute(
 			return Response.json(body, { headers: NO_STORE });
 		}
 		if (req.method === "DELETE") {
+			const refusal = store.deleteRefusal(convId.id);
+			if (refusal !== null) {
+				log.warn("app conversation delete refused", { conversation: convId.id, refusal });
+				return Response.json({ error: refusal }, { status: 409, headers: NO_STORE });
+			}
 			const { stopped } = runtime.stop(convId.id);
-			store.deleteConversation(convId.id);
+			try {
+				store.deleteConversation(convId.id);
+			} catch (err) {
+				if (!(err instanceof DeleteRefused)) throw err;
+				log.warn("app conversation delete refused after fence", {
+					conversation: convId.id,
+					turnFenced: stopped,
+					refusal: err.message,
+				});
+				return Response.json({ error: err.message }, { status: 409, headers: NO_STORE });
+			}
 			log.info("app conversation deleted", {
 				conversation: convId.id,
 				turnFenced: stopped,

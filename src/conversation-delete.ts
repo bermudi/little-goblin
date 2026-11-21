@@ -9,6 +9,26 @@ import type { MemoryQueue } from "./memory/queue.ts";
 import type { ConversationQueries } from "./conversation-queries.ts";
 import { sweepConversationWakes } from "./wake-store.ts";
 
+export class DeleteRefused extends Error {}
+
+const deleteRefusalText = (id: string, anchors: { responsibilityId: string; status: string }[]): string =>
+	`conversation ${id} anchors retired responsibilities ${anchors
+		.map((a) => `${a.responsibilityId} (${a.status})`)
+		.join(", ")} — their rows stay on disk; drop them before deleting`;
+
+function legacyAnchors(db: Database, id: string): { responsibilityId: string; status: string }[] {
+	const table = db
+		.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'responsibilities'")
+		.get();
+	if (table === null) return [];
+	return db
+		.query<{ responsibility_id: string; status: string }, [string]>(
+			"SELECT responsibility_id, status FROM responsibilities WHERE coordination_conversation_id = ? ORDER BY created_at",
+		)
+		.all(id)
+		.map((r) => ({ responsibilityId: r.responsibility_id, status: r.status }));
+}
+
 export function makeConversationDelete(
 	db: Database,
 	queries: Pick<
@@ -33,8 +53,15 @@ export function makeConversationDelete(
 		qDeleteConv,
 	} = queries;
 
+	function deleteRefusal(id: string): string | null {
+		const anchors = legacyAnchors(db, id);
+		return anchors.length > 0 ? deleteRefusalText(id, anchors) : null;
+	}
+
 	function deleteConversation(id: string): void {
 		const swept = db.transaction((): { wakes: number; workEvents: number; watches: number } => {
+			const anchors = legacyAnchors(db, id);
+			if (anchors.length > 0) throw new DeleteRefused(deleteRefusalText(id, anchors));
 			// Sever the rolling navigation chain first — successors'
 			// previous_dm_id would FK-fail the row delete (a demoted
 			// lane's persona reset is the one caller that deletes a
@@ -105,5 +132,5 @@ export function makeConversationDelete(
 		}
 	}
 
-	return { deleteConversation };
+	return { deleteRefusal, deleteConversation };
 }

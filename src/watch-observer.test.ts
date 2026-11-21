@@ -89,6 +89,29 @@ describe("watch observer", () => {
 		} finally { f.store.close(); }
 	});
 
+	test("a new head with no checks registered yet does not fire", async () => {
+		const f = setup();
+		try {
+			const row = f.watches.add({
+				conversationId: f.conv.id,
+				target: { kind: "pr", repository: "owner/repo", number: 1 },
+				reason: "checks",
+				baseline: {
+					state: "OPEN", headSha: "old",
+					checks: [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }],
+				},
+			});
+			const observer = makeWatchObserver({
+				watches: f.watches, wakes: f.wakes, pump() {},
+				showThread: async () => null,
+				readPr: async () => ({ state: "OPEN", headSha: "new", checks: [] }),
+				now: () => new Date("2026-11-21T00:00:00.000Z"),
+			});
+			await observer.observe();
+			expect(f.watches.get(row.id)?.state).toBe("active");
+		} finally { f.store.close(); }
+	});
+
 	test("completed check result changes fire; state transition fires with pending checks", async () => {
 		for (const after of [
 			{

@@ -28,6 +28,7 @@ function observation(watch: Watch, after: unknown): string {
 function prChanged(before: PrSnapshot, after: PrSnapshot): boolean {
 	return before.state !== after.state ||
 		(JSON.stringify(before) !== JSON.stringify(after) &&
+			after.checks.length > 0 &&
 			!after.checks.some((c) => c.status !== "COMPLETED"));
 }
 

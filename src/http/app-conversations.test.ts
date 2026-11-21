@@ -1307,6 +1307,34 @@ describe("app conversations", () => {
 		}
 	});
 
+	test("deleting a conversation that anchors a legacy responsibility answers 409 and keeps it", async () => {
+		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
+		try {
+			await call("/api/app/conversations", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ id: "chat-01" }),
+			});
+			store.db.exec(
+				`CREATE TABLE responsibilities (
+					responsibility_id TEXT PRIMARY KEY,
+					status TEXT NOT NULL,
+					created_at INTEGER NOT NULL DEFAULT 0,
+					coordination_conversation_id TEXT NOT NULL REFERENCES conversations(id)
+				)`,
+			);
+			store.db
+				.query("INSERT INTO responsibilities (responsibility_id, status, coordination_conversation_id) VALUES (?, ?, ?)")
+				.run("resp-1", "completed", "app/chat-01");
+			const del = await call("/api/app/conversations/chat-01", { method: "DELETE" });
+			expect(del.status).toBe(409);
+			expect(((await del.json()) as { error: string }).error).toContain("resp-1 (completed)");
+			expect(store.get("app/chat-01")).not.toBeNull();
+		} finally {
+			http.stop();
+		}
+	});
+
 	test("search scopes to the app pool — telegram hits never leak", async () => {
 		const { http, call, store } = setup({ token: APP_TOKEN_NAME });
 		try {

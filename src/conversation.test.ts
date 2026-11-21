@@ -9,6 +9,7 @@ import { pruningReplacement } from "./cache-pruning.ts";
 import { appAddress, appIdOf, channelOf, formatAddress, parseAddress } from "./conversation-address.ts";
 import type { ParsedAddress } from "./conversation-address.ts";
 import type { ConversationStore } from "./conversation.ts";
+import { DeleteRefused } from "./conversation-delete.ts";
 import { openStore } from "./conversation.ts";
 import {
 	EVENTS_THROUGH_SQL,
@@ -2594,6 +2595,32 @@ describe("retired tables", () => {
 		expect(store.get(conv.id)?.id).toBe(conv.id);
 		const rows = store.db.query<{ id: string; title: string }, []>("SELECT id, title FROM responsibilities").all();
 		expect(rows).toEqual([{ id: "r-1", title: "old work" }]);
+		store.close();
+	});
+
+	test("a conversation that anchors a legacy responsibility refuses the delete and keeps its row", () => {
+		const store = openStore(tmpDb("goblin-test-"));
+		const conv = store.resolve({ kind: "dm", chatId: 2 }, "/w");
+		const other = store.resolve({ kind: "dm", chatId: 3 }, "/w");
+		store.db.exec(
+			`CREATE TABLE responsibilities (
+				responsibility_id TEXT PRIMARY KEY,
+				status TEXT NOT NULL,
+				created_at INTEGER NOT NULL DEFAULT 0,
+				coordination_conversation_id TEXT NOT NULL REFERENCES conversations(id)
+			)`,
+		);
+		store.db
+			.query("INSERT INTO responsibilities (responsibility_id, status, coordination_conversation_id) VALUES (?, ?, ?)")
+			.run("resp-1", "completed", conv.id);
+
+		expect(store.deleteRefusal(other.id)).toBeNull();
+		expect(store.deleteRefusal(conv.id)).toContain("resp-1 (completed)");
+		expect(() => store.deleteConversation(conv.id)).toThrow(DeleteRefused);
+		expect(store.get(conv.id)).not.toBeNull();
+
+		store.deleteConversation(other.id);
+		expect(store.get(other.id)).toBeNull();
 		store.close();
 	});
 });

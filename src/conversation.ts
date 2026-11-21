@@ -105,13 +105,6 @@ export interface ConversationStore extends ConversationReads {
 	// null = no state change. No history replays; the caller owns logs
 	// and pending input.
 	backDm(chatId: number): Conversation | null;
-	// Spin-off/branch: copy model state into a fresh app conversation, one
-	// transaction — every event verbatim, the latest compaction pointer,
-	// every memory_contexts row. The memory queue is NOT replayed (copies
-	// are already retained); the caller owns the `spin-off`/`branched` log
-	// line. throughSeq cuts a branch at a causal position (a branch never
-	// rewrites the source); projectId is the binding branch copies from
-	// the source, fixed at creation like every other app conversation.
 	forkToApp(
 		fromId: string,
 		appId: string,
@@ -195,8 +188,6 @@ export interface ConversationStore extends ConversationReads {
 			settingsHash: string;
 		}[],
 	): number;
-	// The one write to project_id — creation only. A row already bound
-	// to a different project refuses; rebinding the same id is a no-op.
 	bindProject(id: string, projectId: string): void;
 	// Bind a landed Telegram message id to the reply event it carries —
 	// the 🔊 button's durable handle. Recorded at turn finalize, one row

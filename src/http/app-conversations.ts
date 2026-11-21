@@ -16,6 +16,7 @@ import { flatLine } from "../conversation-events.ts";
 import { log } from "../log.ts";
 import { projectRollText } from "../rolling.ts";
 import { type Project, projectWorkdir } from "../projects.ts";
+import { moveIntoProject } from "../conversation-move.ts";
 import { openRatings } from "../reply-ratings.ts";
 import { COMPACT_TRIGGER_RATIO, compactTriggerTokens } from "../turn/overflow.ts";
 import {
@@ -62,10 +63,18 @@ const convPatchBody = z
 		title: z.string().min(1).max(200).optional(),
 		archived: z.boolean().optional(),
 		pinned: z.boolean().optional(),
+		projectId: z.string().min(1).optional(),
 	})
-	.refine((p) => p.title !== undefined || p.archived !== undefined || p.pinned !== undefined, {
+	.strict()
+	.refine(
+		(p) =>
+			p.projectId !== undefined
+				? p.title === undefined && p.archived === undefined && p.pinned === undefined
+				: p.title !== undefined || p.archived !== undefined || p.pinned !== undefined,
+		{
 		message: "nothing to write",
-	});
+		},
+	);
 
 function contextUsageOf(m: Message): {
 	input: number | null;
@@ -338,7 +347,10 @@ export async function handleConversationsRoute(
 			if (outcome.kind === "conflict") {
 				return Response.json(
 					{
-						error: `conversation ${convId} is bound to ${outcome.bound ?? "no project"}; project binding is fixed at creation`,
+						error:
+							outcome.bound === null
+								? `conversation ${convId} has no project; use PATCH to move it into one`
+								: `conversation ${convId} is already in project ${outcome.bound}`,
 					},
 					{ status: 409, headers: NO_STORE },
 				);
@@ -1017,6 +1029,53 @@ export async function handleConversationsRoute(
 					{ error: z.prettifyError(parsed.error) },
 					{ status: 422, headers: NO_STORE },
 				);
+			}
+			if (parsed.data.projectId !== undefined) {
+				const outcome = moveIntoProject(
+					{
+						store,
+						projects: deps.projects,
+						runtime: deps.runtime,
+						notes: deps.notes,
+						workspace: paths.workspace(),
+					},
+					convId.id,
+					parsed.data.projectId,
+				);
+				switch (outcome.kind) {
+					case "moved":
+					case "unchanged":
+						return Response.json({}, { headers: NO_STORE });
+					case "notFound":
+						return Response.json({ error: "no such conversation" }, { status: 404, headers: NO_STORE });
+					case "noProject":
+						return Response.json({ error: "no such project" }, { status: 404, headers: NO_STORE });
+					case "projectArchived":
+						return Response.json(
+							{ error: "cannot move a conversation into an archived project" },
+							{ status: 409, headers: NO_STORE },
+						);
+					case "alreadyBound":
+						return Response.json(
+							{ error: `conversation is already in project ${outcome.projectId}` },
+							{ status: 409, headers: NO_STORE },
+						);
+					case "busy":
+						return Response.json(
+							{ error: "cannot move a conversation while its turn is running" },
+							{ status: 409, headers: NO_STORE },
+						);
+					case "notApp":
+						return Response.json(
+							{ error: "only app conversations can move into a project" },
+							{ status: 422, headers: NO_STORE },
+						);
+					case "child":
+						return Response.json(
+							{ error: "child conversations cannot move into a project" },
+							{ status: 422, headers: NO_STORE },
+						);
+				}
 			}
 			if (parsed.data.pinned === true) {
 				const row = store.get(convId.id);

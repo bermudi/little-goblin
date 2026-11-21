@@ -204,6 +204,7 @@ export interface AppConversationPatch {
 	title?: string;
 	archived?: boolean;
 	pinned?: boolean;
+	projectId?: string;
 }
 
 export interface AppSearchHit {

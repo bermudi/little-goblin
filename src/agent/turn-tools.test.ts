@@ -89,7 +89,7 @@ describe("hosted web_search mount", () => {
 		makeTurnTools({
 			configRef: { current: config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
-			store: {} as unknown as ConversationStore,
+			store: { promptSnapshot: () => null } as unknown as ConversationStore,
 			projects: { get: () => ({ dir: tmpDir("goblin-turn-tools-project-") }) } as unknown as ProjectStore,
 			notes: {} as unknown as NoteStore,
 			programs: {} as unknown as ProgramsStore,
@@ -166,7 +166,7 @@ describe("agent tool mount", () => {
 		makeTurnTools({
 			configRef: { current: {} as Config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
-			store: {} as unknown as ConversationStore,
+			store: { promptSnapshot: () => null } as unknown as ConversationStore,
 			projects: {} as unknown as ProjectStore,
 			notes: {} as unknown as NoteStore,
 			programs: {} as unknown as ProgramsStore,
@@ -240,7 +240,7 @@ describe("computer child mount", () => {
 			// screenshot capability gate fails closed (issue #606).
 			configRef: { current: { providers: {} } as Config, ttsDown: false },
 			auth: {} as unknown as AuthStore,
-			store: {} as unknown as ConversationStore,
+			store: { promptSnapshot: () => null } as unknown as ConversationStore,
 			projects: {} as unknown as ProjectStore,
 			notes: {} as unknown as NoteStore,
 			programs: {} as unknown as ProgramsStore,

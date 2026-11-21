@@ -39,6 +39,7 @@ import { agentChildToolNames } from "./tools/computer.ts";
 import { inputModalitiesCached } from "./models-dev.ts";
 import { carriesMedia } from "./providers.ts";
 import { withScript } from "./tools/script.ts";
+import { promptHasProject } from "./prompt.ts";
 import type { T3 } from "../t3.ts";
 import type { Watches } from "../watches.ts";
 import type { GitHub } from "../github.ts";
@@ -123,6 +124,9 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		filterGuests,
 	} = deps;
 	return (conv, deliverVoice, recording, deliverFile, context) => {
+		const snapshot = store.promptSnapshot(conv.id);
+		const toolProjectId =
+			snapshot === null || promptHasProject(snapshot) ? conv.projectId : null;
 		const { mail, desktops, agents } = deps;
 		const tts = configRef.current.tts;
 		// Guests get a reduced set below; app and Telegram turns share the
@@ -132,6 +136,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 		// relative-path anchor, and delegation's workspaceDir — a
 		// vanished dir throws here and the turn fails at admission.
 		const workdir = projectWorkdir(projects, conv);
+		const bashDescriptionCwd = toolProjectId === null ? paths.workspace() : workdir;
 		const delegate = delegateDeps(conv, workdir);
 		// A child conversation's bound desktop (computer type) — the
 		// engine's row is the source; null for parents and other types.
@@ -146,6 +151,7 @@ export function makeTurnTools(deps: TurnToolsDeps): TurnToolMaker {
 				now: deps.now,
 			},
 			cwd: workdir,
+			bashDescriptionCwd,
 			...(context !== undefined ? { contextFill: context.contextFill } : {}),
 			...(deps.noteSkillRead !== undefined ? { onRead: deps.noteSkillRead } : {}),
 			voice:

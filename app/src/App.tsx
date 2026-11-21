@@ -1,5 +1,6 @@
 import type { UIMessage } from "ai";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Menu, MenuContent, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
 import type { AppPageKey } from "../../src/http/app-routes.ts";
 import type {
 	AppAttentionItem,
@@ -37,7 +38,14 @@ import {
 	relTime,
 } from "./ConversationList.tsx";
 import { DelegationsView } from "./DelegationsView.tsx";
-import { G, LIST_GLYPHS, OPS_GLYPHS, PinGlyph, type ListPane } from "./glyphs.tsx";
+import {
+	G,
+	LIST_GLYPHS,
+	MoveToProjectGlyph,
+	OPS_GLYPHS,
+	PinGlyph,
+	type ListPane,
+} from "./glyphs.tsx";
 import { LogView } from "./LogView.tsx";
 import { MemoryView } from "./MemoryView.tsx";
 import { NotesIndex, NoteView } from "./NoteView.tsx";
@@ -228,6 +236,9 @@ function AppShell() {
 		: route.kind === "page" ? route.page : route.kind;
 	useEffect(() => setSourcesOpen(false), [route]);
 	const [createProjectOpen, setCreateProjectOpen] = useState(false);
+	const [createProjectMoveFor, setCreateProjectMoveFor] = useState<string | null>(null);
+	const [moveError, setMoveError] = useState<string | null>(null);
+	useEffect(() => setMoveError(null), [current]);
 	// The settings editor's dirty bit — navigation asks before
 	// discarding unsaved edits.
 	const settingsDirty = useRef(false);
@@ -692,8 +703,6 @@ function AppShell() {
 		void select(id);
 	};
 
-	// One start path for every composer — the empty state passes null,
-	// a project page its id; project binding is fixed at creation.
 	const startChat = async (
 		projectId: string | null,
 		parts: UIMessage["parts"],
@@ -794,6 +803,15 @@ function AppShell() {
 		currentConv?.projectId != null
 			? projectList.find((p) => p.id === currentConv.projectId)
 			: undefined;
+	const moveChatToProject = async (conversationId: string, targetProjectId: string) => {
+		setMoveError(null);
+		try {
+			await patchConversation(token, conversationId, { projectId: targetProjectId });
+			await refresh();
+		} catch (err) {
+			setMoveError(err instanceof Error ? err.message : String(err));
+		}
+	};
 
 	// Mobile (M): /app is the chats list, a thread or the staged composer
 	// is full-bleed, and the thumb bar stands down while either is open.
@@ -1676,8 +1694,6 @@ function AppShell() {
 						</div>
 					) : (
 						<>
-							{/* A bound chat names its project — the link lands on the
-								project page. */}
 							{currentConvProject !== undefined && (
 								<button
 									type="button"
@@ -1686,6 +1702,47 @@ function AppShell() {
 								>
 									{currentConvProject.name}
 								</button>
+							)}
+							{currentConv !== undefined &&
+								currentConv.projectId === null &&
+								currentConv.parentId === null && (
+									<Menu
+										onAction={(action) => {
+											if (action === "new-project") {
+												setMoveError(null);
+												setCreateProjectMoveFor(currentConv.id);
+												setCreateProjectOpen(true);
+												return;
+											}
+											if (action.startsWith("project:")) {
+												return moveChatToProject(
+													currentConv.id,
+													action.slice("project:".length),
+												);
+											}
+										}}
+									>
+										<MenuTrigger
+											className="header-action"
+											title="Move to project"
+											aria-label="Move to project"
+										>
+											<MoveToProjectGlyph />
+										</MenuTrigger>
+										<MenuContent className="move-menu">
+											{activeProjects.map((project) => (
+												<MenuItem key={project.id} value={`project:${project.id}`}>
+													{project.name}
+												</MenuItem>
+											))}
+											<MenuItem value="new-project">New project…</MenuItem>
+										</MenuContent>
+									</Menu>
+								)}
+							{moveError !== null && (
+								<p className="error" role="alert">
+									{moveError}
+								</p>
 							)}
 							<ChatView
 								key={current}
@@ -1903,11 +1960,20 @@ function AppShell() {
 			{createProjectOpen && (
 				<NewProjectDialog
 					token={token}
-					onClose={() => setCreateProjectOpen(false)}
+					onClose={() => {
+						setCreateProjectOpen(false);
+						setCreateProjectMoveFor(null);
+					}}
 					onCreated={(p) => {
 						setCreateProjectOpen(false);
-						void refresh();
-						void openProject(p.id);
+						const moveFor = createProjectMoveFor;
+						setCreateProjectMoveFor(null);
+						if (moveFor !== null) {
+							void moveChatToProject(moveFor, p.id);
+						} else {
+							void refresh();
+							void openProject(p.id);
+						}
 					}}
 				/>
 			)}

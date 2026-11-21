@@ -528,8 +528,8 @@ and silently re-bind stale rating and journal rows to new events.
 /api/app/conversations/:id/branch` with `{messageId}` creates a new app
 conversation holding the source's causal prefix through the selected event,
 then returns 201 and the client opens it. The source is never modified. A
-branch copies the source's project binding (fixed at creation, like every
-app conversation), its memory exclusion, its settings, its contexts
+branch copies the source's project binding when the branch is created and
+also copies its memory exclusion, its settings, its contexts
 anchored at or below the cut, and the projections of the events it copies,
 and its compaction only when
 `boundary_seq < throughSeq` — a summary reaching past the cut describes

@@ -49,8 +49,7 @@ model catalog**.
   description tells goblin to write a self-contained task.
 - **Model.** The agent type's `model` (a configured model reference),
   else the parent's model. All of goblin's providers work, including the
-  claude-code subscription engine (DIRECTION.md → Inference Is A Core
-  Constraint).
+  [Claude Code subscription engine](model.md#the-claude-code-engine--a-second-turn-engine).
 - **Tools.** The agent type's allowlist, limited to the tools the parent
   turn has. A child never gets `agent` (depth 1), `delegate` (only the
   operator starts a harness run, and a child does not hear the operator),
@@ -89,10 +88,9 @@ System prompt for this agent type.
   replaces a built-in type.
 - Types are read at turn start, like skills. A changed file applies on
   the next turn and needs no restart.
-- Less-trusted models get bounded tools (DIRECTION.md → cheap/free
-  workers): a type that names such a model also names a narrow `tools`
-  list, for example the sandbox only. The type file is the control, not a
-  runtime gate.
+- Less-trusted models get bounded tools: a type that names such a model
+  also names a narrow `tools` list, for example the sandbox only.
+  The type file is the control, not a runtime gate.
 
 ### Verbs
 
@@ -172,10 +170,10 @@ tell "never ran" from "broken" (design/doctor.md, #739).
 ## Linked workers: one contract across transports (2026-11-19, #779)
 
 A subagent, a delegation and an adopted T3 thread are three transports
-for one thing: a worker that executes part of what goblin owes
-(DIRECTION.md → Responsibility Is Not Execution). The transports stay
-separate. What they share is the link to a responsibility, the report a
-settlement files, and the check every send passes.
+for one thing: a worker that executes part of what goblin owes. The
+transports stay separate. What they share is the link to a
+[responsibility](../GLOSSARY.md), the report a settlement files, and the
+check every send passes.
 
 - **The link is explicit.** `agent spawn` and `delegate start` take
   `responsibility:<id>` in a project conversation, admitted by the same

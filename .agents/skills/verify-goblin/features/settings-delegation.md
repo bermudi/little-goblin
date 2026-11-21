@@ -18,6 +18,11 @@ Sidebar → Settings → Delegation → switch "delegate to coding agents" on.
 
 ## Driving it with agent-browser
 
+Launch a plain instance (`bun run try <name>`), not
+`GOBLIN_VERIFY_DELEGATION=1`: that seed already switches delegation on
+and adds a `codex` row, so the steps below would switch it off and fill
+the seeded row.
+
 ```sh
 ab click 'button[aria-label="Settings"]'
 ab find role button click --name 'Delegation Coding harnesses'
@@ -25,7 +30,7 @@ ab click 'button[aria-label="delegation"]'
 ab find role button click --name '+ Add a coding agent'
 ab find label 'Name' fill 'codex'
 ab fill '.del-harness .del-grid .frow:nth-of-type(2) input' 'codex'
-ab fill 'textarea[id^="del-args-"]' '--model\ngpt-6-luna'
+ab fill 'textarea[id^="del-args-"]' $'--model\ngpt-6-luna'
 ab click 'button[aria-label="ask first for codex"]'
 ```
 

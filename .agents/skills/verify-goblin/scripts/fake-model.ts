@@ -13,7 +13,9 @@
 // through inspect → launch → inspect-until-button → act click → inspect,
 // against a probe page podman-cp'd into the desktop container.
 // "[delegate <harness> <cwd> <task>]" and "[handover]" script the `delegate` start and `responsibility`
-// accept calls (issue #608's T3 Code verification).
+// accept calls (issue #608's T3 Code verification). "[long]" makes two
+// read_file calls a second apart, then streams a reply several screens
+// long, a line every 60ms — the streaming-scroll and fold checks (#837).
 
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,9 +79,9 @@ function toolJson(content: unknown): Json | null {
 	}
 }
 
-function toolCallResponse(name: string, args: Json, stream: boolean): Response {
+function toolCallResponse(name: string, args: Json, stream: boolean, id = `call-verify-${name}`): Response {
 	const toolCall = {
-		id: `call-verify-${name}`,
+		id,
 		type: "function",
 		function: { name, arguments: JSON.stringify(args) },
 	};
@@ -234,6 +236,40 @@ function computerChildNext(messages: Message[]): ChildStep {
 	);
 }
 
+function longReplyLines(): string[] {
+	const lines = ["# verify-long: the head of the answer", ""];
+	for (let section = 1; section <= 6; section += 1) {
+		lines.push(`## Section ${section}`, "");
+		for (let p = 1; p <= 3; p += 1) {
+			lines.push(
+				`Paragraph ${section}.${p}: a line long enough to wrap on a phone screen, so the reply grows the way a real answer does while it streams in.`,
+				"",
+			);
+		}
+		lines.push("- first point", "- second point", "- third point", "");
+		if (section % 2 === 0) lines.push("```ts", `const section = ${section};`, "console.log(section);", "```", "");
+	}
+	lines.push("verify-long: the tail of the answer");
+	return lines;
+}
+
+function longReply(): Response {
+	const enc = new TextEncoder();
+	const body = new ReadableStream<Uint8Array>({
+		async start(controller) {
+			controller.enqueue(enc.encode(chunk({ role: "assistant", content: "" }, null)));
+			for (const line of longReplyLines()) {
+				controller.enqueue(enc.encode(chunk({ content: `${line}\n` }, null)));
+				await Bun.sleep(60);
+			}
+			controller.enqueue(enc.encode(chunk({}, "stop")));
+			controller.enqueue(enc.encode("data: [DONE]\n\n"));
+			controller.close();
+		},
+	});
+	return new Response(body, { headers: { "content-type": "text/event-stream" } });
+}
+
 const server = Bun.serve({
 	hostname: "127.0.0.1",
 	port: 0,
@@ -329,6 +365,21 @@ const server = Bun.serve({
 			.slice(lastUserIndex + 1)
 			.some((message) => message.role === "tool");
 		const lastUserText = textOf(parsed.data.messages[lastUserIndex]?.content);
+		if (lastUserText.includes("[long]") && parsed.data.stream === true) {
+			const toolsSinceUser = parsed.data.messages
+				.slice(lastUserIndex + 1)
+				.filter((message) => message.role === "tool").length;
+			if (toolsSinceUser < 2) {
+				await Bun.sleep(1000);
+				return toolCallResponse(
+					"read_file",
+					{ path: "../state/goblin.log", offset: -(toolsSinceUser + 2) },
+					true,
+					`call-verify-long-${toolsSinceUser}`,
+				);
+			}
+			return longReply();
+		}
 		if (!toolAfterLastUser) {
 			const delegateMatch = /\[delegate (\S+) (\S+) ([^\]]+)\]/.exec(lastUserText);
 			if (delegateMatch !== null) {

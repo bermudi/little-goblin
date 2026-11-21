@@ -31,7 +31,7 @@ chat under it; new project, new binding instead.
 
 The slug derives from the name once and is frozen — renaming never moves
 `home`, so delegation, sandbox, and tool-output paths stay valid. Archiving
-hides the project and its conversations from the rail, and leaves both
+hides the project and its conversations from the Chats pane, and leaves both
 directories untouched. No project delete in v1 — a managed `home` needs a
 destructive step, and `trash` > `rm` is a red line.
 

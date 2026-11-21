@@ -2,10 +2,18 @@
 
 import { createParts } from "@ui-sdk/react/primitive";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Menu, MenuContent, MenuItem, MenuTrigger } from "@ui-sdk/react/menu";
+import { Toolbar, ToolbarButton } from "@ui-sdk/react/toolbar";
 import type { AppConversationList } from "../../src/http/app-wire.ts";
 import { patchConversation, suggestConversationTitle } from "./api.ts";
-import { PinGlyph } from "./glyphs.tsx";
+import {
+	ArchiveGlyph,
+	PencilGlyph,
+	PinActionGlyph,
+	PinGlyph,
+	TrashGlyph,
+	UnarchiveGlyph,
+	UnpinGlyph,
+} from "./glyphs.tsx";
 import { conversationNavigationPrimitive } from "./conversationNavigation.ts";
 
 const navigationParts = createParts(conversationNavigationPrimitive, { root: "ul", link: "a" });
@@ -199,6 +207,7 @@ export function ConversationRow({
 		setEditing(true);
 	};
 	const remove = () => onDelete(conv);
+	const name = title ?? (preview || "new conversation");
 
 	if (editing) {
 		return (
@@ -277,46 +286,37 @@ export function ConversationRow({
 				</span>
 				{hasPreviewLine && <span className="conv-preview">{preview}</span>}
 			</ConversationNavLink>
-			<Menu
-				onAction={(action) => {
-					switch (action) {
-						case "pin":
-							return togglePinned();
-						case "rename":
-							startRename();
-							return;
-						case "archive":
-							return toggleArchived();
-						case "delete":
-							remove();
-							return;
-					}
-				}}
-			>
-				<MenuTrigger
-					className="conv-menu-trigger"
-					aria-label={`Actions for ${title ?? (preview || "new conversation")}`}
-					title="Conversation actions"
-				>
-					<span aria-hidden="true">⋯</span>
-				</MenuTrigger>
-				<MenuContent className="conv-menu">
-					{!archived && (
-						<MenuItem value="pin">{pinned ? "Unpin" : "Pin"}</MenuItem>
-					)}
-					<MenuItem value="rename">Rename</MenuItem>
-					{archived ? (
-						<>
-							<MenuItem value="archive">Unarchive</MenuItem>
-							<MenuItem value="delete" destructive>
-								Delete
-							</MenuItem>
-						</>
-					) : (
-						<MenuItem value="archive">Archive</MenuItem>
-					)}
-				</MenuContent>
-			</Menu>
+			<Toolbar className="conv-actions" aria-label={`Actions for ${name}`}>
+				{archived ? (
+					<>
+						<ToolbarButton title="Rename" aria-label="Rename" onClick={startRename}>
+							<PencilGlyph />
+						</ToolbarButton>
+						<ToolbarButton title="Unarchive" aria-label="Unarchive" onClick={() => void toggleArchived()}>
+							<UnarchiveGlyph />
+						</ToolbarButton>
+						<ToolbarButton title="Delete" aria-label="Delete" onClick={remove}>
+							<TrashGlyph />
+						</ToolbarButton>
+					</>
+				) : (
+					<>
+						<ToolbarButton
+							title={pinned ? "Unpin" : "Pin"}
+							aria-label={pinned ? "Unpin" : "Pin"}
+							onClick={() => void togglePinned()}
+						>
+							{pinned ? <UnpinGlyph /> : <PinActionGlyph />}
+						</ToolbarButton>
+						<ToolbarButton title="Rename" aria-label="Rename" onClick={startRename}>
+							<PencilGlyph />
+						</ToolbarButton>
+						<ToolbarButton title="Archive" aria-label="Archive" onClick={() => void toggleArchived()}>
+							<ArchiveGlyph />
+						</ToolbarButton>
+					</>
+				)}
+			</Toolbar>
 		</div>
 	);
 }

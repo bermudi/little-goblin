@@ -233,6 +233,25 @@ Operator ask: conversation navigation should be a joy. The outline
 borrows t3code's timeline minimap feel, not its screenshots; see
 [`Outline.tsx`](../app/src/Outline.tsx).
 
+## Chat rail rows and project folders (ruling 2026-11-21, #838)
+
+This reverses #622's one-menu rows. Conversation rows are thread links plus
+icon buttons that show on hover or keyboard focus, over the faded end of
+the preview line: Pin or Unpin, Rename, Archive; archived rows show Rename,
+Unarchive, Delete. The buttons are a ui-sdk Toolbar, so each row adds one
+Tab stop and Left/Right move between its buttons. Touch screens never
+hover, so the current row keeps its buttons showing. The list stays a list,
+not a listbox, and Rename stays inline.
+
+The chats pane lists each active project as a folder above the loose chats,
+a mechanism borrowed from t3code's sidebar. A folder holds that project's
+active chats, pinned first. Folders start closed; opening a project chat or
+project page opens its folder, and which folders are open is kept per device
+in localStorage. A folder's + opens the project page, whose composer starts
+a chat in it. There is no Projects pane: the Projects glyph opens the
+all-projects page, and New project sits in the chats pane head. New project
+uses a folder-plus glyph so it never reads as New conversation.
+
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
 The reply belongs to the conversation, not the connection that submitted
@@ -693,8 +712,9 @@ archived unbound chat, newest-archived first, grouped by archive month,
 with a client-side filter over title and preview and 100 rows per slice
 ("Show more"). Each row: title (the open link) · archived · last active ·
 Unarchive · Delete. Rename is not offered there — open the chat to rename.
-Project-bound chats stay on their project page, as on the rail. The
-rail's archived list, its disclosure state and the chevron are gone.
+Project-bound archived chats stay off the Chats pane; active project chats
+appear inside their project folders. The rail's archived list, its disclosure
+state and the chevron are gone.
 Options not taken: a capped rail list with "Show all", and search-only
 (no browse).
 

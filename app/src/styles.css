@@ -429,67 +429,73 @@ p code,
 .rail .conv.current {
 	background: var(--app-active);
 }
-/* The link owns navigation and modifier-click behavior. */
+.conv {
+	position: relative;
+	--conv-fade: linear-gradient(to right, black calc(100% - 5.6rem), transparent calc(100% - 4.6rem));
+}
 .conv-main {
 	flex: 1;
 	min-width: 0;
 	text-align: left;
-	padding: 0.4rem 2.8rem 0.4rem 0.6rem;
+	padding: 0.4rem 0.6rem;
 	color: inherit;
 	text-decoration: none;
 }
-.conv-menu-trigger {
+.conv-actions {
 	position: absolute;
-	right: 0.35rem;
-	bottom: 0.3rem;
-	width: 1.4rem;
-	height: 1.4rem;
-	padding: 0;
-	border-radius: 6px;
-	color: var(--app-fg-muted);
-	font-size: 1.2rem;
-	line-height: 1;
-	justify-content: center;
+	right: 0.3rem;
+	bottom: 0.25rem;
+	display: inline-flex;
 	align-items: center;
+	gap: 0.1rem;
+	padding: 0 0.3rem;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 160ms ease;
 }
-.conv:hover .conv-menu-trigger,
-.conv-menu-trigger:focus-visible,
-.conv-menu-trigger[data-open] {
+.conv:hover .conv-actions,
+.conv-actions:focus-within {
 	opacity: 1;
 	pointer-events: auto;
 }
-.conv-menu-trigger:hover {
+.conv:hover .conv-preview,
+.conv:has(.conv-actions:focus-within) .conv-preview {
+	-webkit-mask-image: var(--conv-fade);
+	mask-image: var(--conv-fade);
+}
+.conv.bare:hover .conv-head,
+.conv.bare:has(.conv-actions:focus-within) .conv-head {
+	-webkit-mask-image: var(--conv-fade);
+	mask-image: var(--conv-fade);
+}
+.conv-actions button {
+	width: 1.4rem;
+	height: 1.4rem;
+	padding: 0;
+	justify-content: center;
+	border-radius: 6px;
+	color: var(--app-fg-muted);
+	display: inline-flex;
+	align-items: center;
+}
+.conv-actions button:hover {
 	background: var(--app-active);
 	color: var(--app-fg);
 }
-.conv-menu-trigger {
-	opacity: 0;
-	pointer-events: none;
-	display: inline-flex;
-}
-.conv-menu {
-	z-index: 80;
-	min-width: 9rem;
-	padding: 0.25rem;
-	border: 1px solid var(--app-control-border);
-	border-radius: 8px;
-	background: var(--app-gray-100);
-	color: var(--app-fg);
-	box-shadow: 0 6px 24px rgb(0 0 0 / 0.25);
-}
-.conv-menu [role="menuitem"] {
-	padding: 0.4rem 0.55rem;
-	border-radius: 5px;
-	font-size: 12.5px;
-	cursor: default;
-}
-.conv-menu [role="menuitem"]:focus,
-.conv-menu [role="menuitem"][data-highlighted] {
-	background: var(--app-hover);
-	outline: none;
+.conv-actions svg {
+	display: block;
 }
 @media (hover: none) {
-	.conv-menu-trigger {
+	.conv.current .conv-actions {
+		opacity: 1;
+		pointer-events: auto;
+	}
+	.conv.current .conv-preview,
+	.conv.bare.current .conv-head {
+		-webkit-mask-image: var(--conv-fade);
+		mask-image: var(--conv-fade);
+	}
+	.folder-head .folder-actions {
 		opacity: 1;
 		pointer-events: auto;
 	}
@@ -749,8 +755,6 @@ p code,
 	letter-spacing: 0.04em;
 	color: var(--app-fg-subtle);
 }
-/* Projects and Notes open their index page from the head — the pane
-   lists, the index manages. */
 button.panel-index {
 	border-radius: 6px;
 	transition: color 75ms;
@@ -764,6 +768,20 @@ button.panel-index:hover {
 	font-size: 10px;
 	color: var(--app-fg-subtle);
 	font-variant-numeric: tabular-nums;
+}
+.panel-action {
+	width: 1.65rem;
+	height: 1.65rem;
+	margin-left: 0.4rem;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 6px;
+	color: var(--app-fg-muted);
+}
+.panel-action:hover {
+	background: var(--app-hover);
+	color: var(--app-fg);
 }
 .panes {
 	flex: 1;
@@ -5350,7 +5368,7 @@ select.ui-input option {
 		min-width: 2.25rem;
 		min-height: 2.25rem;
 	}
-	.conv-menu-trigger {
+	.conv-actions button {
 		min-width: 1.85rem;
 		min-height: 1.85rem;
 	}
@@ -5360,7 +5378,6 @@ select.ui-input option {
 	.rail .new,
 	.rail-op,
 	.rail-archived,
-	.rail .proj,
 	.sheet-row {
 		min-height: 2.25rem;
 		display: flex;
@@ -5490,42 +5507,63 @@ select.ui-input option {
 	}
 }
 
-/* ---------- projects (design/projects.md) ---------- */
-
-/* The projects pane: single-line project rows, then New project. The
-   index page itself opens from the panel head's label. */
-.rail-projects {
-	display: flex;
-	flex-direction: column;
-	gap: 1px;
+.proj-folder {
+	position: relative;
 }
-.rail-projects ul {
-	list-style: none;
-	margin: 0;
-	padding: 0;
+.folder-head {
+	position: relative;
 	display: flex;
-	flex-direction: column;
-	gap: 1px;
-}
-.rail .proj {
+	align-items: center;
 	width: 100%;
-	text-align: left;
 	border-radius: 8px;
+	transition: background-color 75ms;
+}
+.folder-head:hover {
+	background: var(--app-hover);
+}
+.folder-head.current {
+	background: var(--app-active);
+}
+.folder-toggle {
+	display: flex;
+	align-items: center;
+	gap: 0.35rem;
+	width: 100%;
+	min-width: 0;
 	padding: 0.4rem 0.6rem;
+	text-align: left;
 	font-size: 12.5px;
 	color: var(--app-fg-muted);
+}
+.folder-toggle:hover {
+	color: var(--app-fg);
+}
+.folder-toggle[aria-expanded="true"] .chev {
+	transform: rotate(90deg);
+}
+.folder-toggle .chev {
+	flex: none;
+	transition: transform 120ms ease;
+}
+.folder-name {
+	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	transition: background-color 75ms;
 }
-.rail .proj:hover {
-	background: var(--app-hover);
-	color: var(--app-fg);
+.folder-actions {
+	bottom: 0.2rem;
 }
-.rail .proj.on {
-	background: var(--app-active);
-	color: var(--app-fg);
+.folder-head:hover .conv-actions,
+.folder-actions:focus-within {
+	opacity: 1;
+	pointer-events: auto;
+}
+.folder-empty {
+	padding-left: 1.5rem;
+}
+.folder-chats {
+	padding-left: 0.75rem !important;
 }
 
 /* Chat rows outside the rail (a project page's chat list) — the rail

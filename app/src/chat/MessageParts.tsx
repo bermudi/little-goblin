@@ -1,6 +1,6 @@
 // Transcript rendering: one message's parts → transcript elements.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   getToolName,
   isToolUIPart,
@@ -29,10 +29,6 @@ import {
   presentationsOf,
 } from "../../../src/agent/tools/artifact-schema.ts";
 
-// Tool calls and thoughts collapse into one expandable fold per
-// contiguous run — prose (or a ui part, which renders inline) ends a
-// run. The fold opens while a call is live or failed; the collapsed
-// summary carries the one-line outcomes.
 type ActivityPart = ToolUIPart | DynamicToolUIPart | ReasoningUIPart;
 // A part that folds into an Activity run: a tool call (ui parts render
 // inline as the interface and never join) or thought text with
@@ -101,7 +97,7 @@ function Activity({
   ended,
 }: {
   parts: ActivityPart[];
-  live?: boolean | undefined;
+  live: boolean;
   // The owning message's turn is over (unlanded record) — a stuck
   // streaming state can never progress, so it draws ended, not running.
   ended?: boolean | undefined;
@@ -109,26 +105,9 @@ function Activity({
   const tools = parts.filter((p): p is ToolUIPart | DynamicToolUIPart =>
     isToolUIPart(p),
   );
-  const running = !ended && tools.some(partRunning);
+  const running = !ended && (live || tools.some(partRunning));
   const failures = tools.filter(partFailed).length;
-  const active = running || failures > 0;
   const lines = tools.map(partSummaryLine);
-  // The fold drives itself until the operator steers it: activity
-  // opens it, the lull between calls holds whatever it had (folding
-  // for the gap flashes on every new call), and sealing — a part
-  // lands behind the run, or the message stops arriving — settles
-  // it: clean closes, failures stay open. A summary click outranks auto
-  // for the rest of this fold's life: preventDefault keeps the DOM
-  // from flipping on its own so React's `open` stays the one writer.
-  const [auto, setAuto] = useState(active);
-  const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const growing = live === true;
-  const seen = useRef({ active, growing });
-  if (seen.current.active !== active || seen.current.growing !== growing) {
-    seen.current = { active, growing };
-    setAuto((cur) => (active ? true : growing ? cur : failures > 0));
-  }
-  const open = userOpen ?? auto;
   // A thought-only run keeps the plain Thought fold — "Worked" over
   // zero calls would read as a bug.
   if (tools.length === 0) {
@@ -143,13 +122,8 @@ function Activity({
     );
   }
   return (
-    <details className="worked" open={open}>
-      <summary
-        onClick={(e) => {
-          e.preventDefault();
-          setUserOpen(!open);
-        }}
-      >
+    <details className="worked">
+      <summary>
         {running ? <WorkingFor /> : "Worked"} ·{" "}
         <span className="worked-sum" title={lines.join("; ")}>
           {activitySummary(tools)}
@@ -479,7 +453,11 @@ function NoteChip({
   );
 }
 
-export function MessageParts({
+export function hasUiPart(parts: UIMessage["parts"]): boolean {
+  return parts.some((p) => isToolUIPart(p) && getToolName(p) === "ui");
+}
+
+function MessagePartsView({
   parts,
   token,
   noteProjectId,
@@ -585,9 +563,6 @@ export function MessageParts({
         // nothing — they never split a run.
         j++;
       }
-      // A run can still grow only while it owns the tail of a
-      // streaming message — a run-ender behind it seals it even
-      // while the message streams on.
       out.push(
         <Activity
           key={`w${i}`}
@@ -687,3 +662,5 @@ function hostnameOf(url: string): string {
     return url;
   }
 }
+
+export const MessageParts = memo(MessagePartsView);

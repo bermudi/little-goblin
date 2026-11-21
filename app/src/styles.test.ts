@@ -61,6 +61,15 @@ describe("composer box separation", () => {
 	});
 });
 
+describe("transcript scroll anchoring", () => {
+	const rule = /(?:^|\n)\.transcript \{([^}]*)\}/.exec(css)?.[1] ?? "";
+
+	test("the transcript turns browser scroll anchoring off", () => {
+		expect(rule).not.toBe("");
+		expect(rule).toMatch(/overflow-anchor:\s*none/);
+	});
+});
+
 describe("touch conversation actions", () => {
 	test("touch styles suppress row buttons and link previews", () => {
 		const touch = /@media\s*\(hover:\s*none\)\s*\{([^{}]|\{[^{}]*\})*\}/g;

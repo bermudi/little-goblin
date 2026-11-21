@@ -4,6 +4,7 @@
 // the history view and the epoch bump arrive as deps.
 
 import type { Database } from "bun:sqlite";
+import { parseEvent } from "./conversation-events.ts";
 import type { Message } from "./message.ts";
 import { log } from "./log.ts";
 import { stampArrival } from "./message-context.ts";
@@ -29,6 +30,7 @@ export function makeConversationTranscript(
 	queries: Pick<
 		ConversationQueries,
 		| "qGet"
+		| "qEventBySeq"
 		| "qNextSeq"
 		| "qInsertEvent"
 		| "qRaiseSeqHighwater"
@@ -50,6 +52,7 @@ export function makeConversationTranscript(
 ) {
 	const {
 		qGet,
+		qEventBySeq,
 		qNextSeq,
 		qInsertEvent,
 		qRaiseSeqHighwater,
@@ -68,6 +71,11 @@ export function makeConversationTranscript(
 		const edit = db.transaction((): MessageEdit | null => {
 			const found = messageEvent(id, messageId);
 			if (found === null || found.role !== "user") return null;
+			const originalRow = qEventBySeq.get(id, found.seq);
+			const original =
+				originalRow === null
+					? null
+					: parseEvent(id, found.seq, originalRow.role, originalRow.data);
 			const conv = qGet.get(id);
 			if (!conv) throw new Error(`conversation ${id} not found`);
 			const cut = found.seq;
@@ -83,7 +91,9 @@ export function makeConversationTranscript(
 			const contexts = Number(qRewindContexts.run(id, cut).changes);
 			const ratings = Number(qRewindRatings.run(id, cut).changes);
 			const seq = (qNextSeq.get(id)?.n ?? 0) + 1;
-			stampArrival(id, message, new Date());
+			if (original === null || JSON.stringify(original) !== JSON.stringify(message)) {
+				stampArrival(id, message, new Date());
+			}
 			qInsertEvent.run(
 				id,
 				seq,

@@ -54,11 +54,12 @@ live in [`attachments.test.ts`](src/agent/attachments.test.ts),
 
 Intentional rewrites are limited to context resets (such as compaction,
 forgetting or a persona change), changes to model or attachment modality,
-rebuilding an unanswered exchange, a corrupt-row repair, collapsing one-use
-skill text, and the opt-in projection of old tool results. Changing how a
-compaction marker renders is also a one-time rewrite. Do not extend this set
-as a side effect of unrelated work. A prefix hash change measures a request
-change, not what the provider actually cached; see
+rebuilding an unanswered exchange, editing or retrying an exchange from its
+user message, a corrupt-row repair, collapsing one-use skill text, and the
+opt-in projection of old tool results. Changing how a compaction marker
+renders is also a one-time rewrite. Do not extend this set as a side effect
+of unrelated work. A prefix hash change measures a request change, not what
+the provider actually cached; see
 [`cache-observation.test.ts`](src/cache-observation.test.ts) and
 [`cache-pruning.test.ts`](src/cache-pruning.test.ts).
 

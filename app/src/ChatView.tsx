@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useCallback,
   useEffect,
   useEffectEvent,
   useLayoutEffect,
@@ -21,7 +22,8 @@ import { useConfirm } from "./confirm.tsx";
 import { Outline } from "./Outline.tsx";
 import { usePhoneWidth } from "./usePhoneWidth.ts";
 import { DocViewerProvider } from "./docview.tsx";
-import { MessageParts } from "./chat/MessageParts.tsx";
+import { hasUiPart, MessageParts } from "./chat/MessageParts.tsx";
+import { useTranscriptFollow } from "./chat/useTranscriptFollow.ts";
 import { QuoteFab, type QuoteSpeaker } from "./chat/QuoteFab.tsx";
 import { Composer } from "./chat/Composer.tsx";
 import type { StagedNote, StagedSkill, StagedUpload } from "./chat/staged.ts";
@@ -77,6 +79,15 @@ function askNotifyPermission() {
   )
     return;
   void Notification.requestPermission().catch(() => {});
+}
+
+export function replyStarted(
+  messages: readonly UIMessage[],
+  settledTailId?: string,
+): boolean {
+  const last = messages.at(-1);
+  return last?.role === "assistant" && last.id !== settledTailId &&
+    last.parts.some((p) => p.type !== "step-start");
 }
 
 // Union of the view and durable history by message id — the reconcile
@@ -583,13 +594,11 @@ function Chat({
     speaker: null,
     n: 0,
   });
-  // Follow-mode: the transcript auto-scrolls to the tail while the view
-  // is pinned there; scrolling up unpins it, scrolling back (or sending)
-  // re-pins. Streaming chunks ride the same effect — the tail follows
-  // output only while the operator is already at the tail.
-  const pinned = useRef(true);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const follow = useTranscriptFollow(scrollRef, contentRef);
   const [eventsLive, setEventsLive] = useState(false);
   const [submitPending, setSubmitPending] = useState(false);
+  const [settledTailId, setSettledTailId] = useState<string | null>(null);
   const busy = eventsLive || submitPending || status === "submitted" || status === "streaming";
   const [sendFailure, setSendFailure] = useState<string | null>(null);
   const resumeFromEvents = () => {
@@ -608,11 +617,15 @@ function Chat({
         if (event.live) setSubmitPending(false);
         if (event.live && !activeReader) resumeFromEvents();
       } else if (event.type === "turn-start") {
+        const tail = displayed.at(-1);
+        if (tail?.role === "assistant") setSettledTailId(tail.id);
         gate.serverLive = true;
         setEventsLive(true);
         setSubmitPending(false);
         if (!activeReader) resumeFromEvents();
       } else if (event.type === "turn-end") {
+        setSettledTailId(null);
+        follow.endTurn();
         gate.serverLive = false;
         setEventsLive(false);
         setSubmitPending(false);
@@ -660,7 +673,7 @@ function Chat({
     message: { parts?: UIMessage["parts"]; text?: string },
     whenBusy: "steer" | "followUp" = "steer",
   ) => {
-    pinned.current = true;
+    setSettledTailId(null);
     setLiveCtx(null);
     setSendFailure(null);
     const optimistic: UIMessage = {
@@ -669,6 +682,8 @@ function Chat({
       parts: message.parts ?? [{ type: "text", text: message.text ?? "" }],
     };
     const wasBusy = busy;
+    if (wasBusy) follow.jumpToEnd();
+    else follow.followReply(optimistic.id);
     const optimisticPendingId = `optimistic-${optimistic.id}`;
     if (wasBusy) {
       setPendingItems((current) => [
@@ -702,6 +717,11 @@ function Chat({
       setSendFailure(err instanceof Error ? err.message : "send failed");
     }
   };
+  const submitLatest = useRef(submit);
+  useLayoutEffect(() => {
+    submitLatest.current = submit;
+  });
+  const onUiAction = useCallback((text: string) => void submitLatest.current({ text }), []);
 
   const dequeuePending = async (item: AppPendingInput, edit: boolean) => {
     try {
@@ -731,10 +751,8 @@ function Chat({
     }
   };
 
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el !== null && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [messages, busy]);
+  const { stick } = follow;
+  useLayoutEffect(stick, [stick, messages, busy]);
 
   // A seed arrives once (empty-state send → conversation created → this view mounts).
   const seeded = useRef(false);
@@ -742,7 +760,6 @@ function Chat({
   useEffect(() => {
     if (seeded.current || seed === null || seed.length === 0) return;
     seeded.current = true;
-    pinned.current = true;
     onSeeded();
     void submitSeed(seed).catch((err: unknown) => console.error("Couldn't submit seeded message", err));
   }, [seed, onSeeded]);
@@ -815,7 +832,7 @@ function Chat({
     }
     editBackup.current = messages;
     setEditing(null);
-    pinned.current = true;
+    setSettledTailId(null);
     setLiveCtx(null);
     setMessages(messages.slice(0, index));
     const optimistic: UIMessage = {
@@ -823,6 +840,7 @@ function Chat({
       role: "user",
       parts,
     };
+    follow.followReply(optimistic.id);
     setMessages([...messages.slice(0, index), optimistic]);
     setSubmitPending(true);
     void postChat({ message: optimistic, editMessageId: m.id }).catch((err: unknown) => {
@@ -863,17 +881,11 @@ function Chat({
         />
         {/* The outline is a hover rail — a pointer affordance, so it does
 				    not exist in a phone DOM at all. */}
-        {phone ? null : <Outline messages={displayed} scrollRef={scrollRef} />}
-        <div
-          className="transcript"
-          ref={scrollRef}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            pinned.current =
-              el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-          }}
-        >
-          <div className="transcript-inner">
+        {phone ? null : (
+          <Outline messages={displayed} scrollRef={scrollRef} onGesture={follow.gesture} />
+        )}
+        <div className="transcript" ref={scrollRef}>
+          <div className="transcript-inner" ref={contentRef}>
             {displayed.length === 0 && <p className="empty">Say something.</p>}
             {olderCursor !== null && (
               <button
@@ -972,7 +984,7 @@ function Chat({
                         parts={m.parts}
                         token={token}
                         noteProjectId={noteProjectId}
-                        messages={displayed}
+                        messages={hasUiPart(m.parts) ? displayed : undefined}
                         onOpenNote={onOpenNote}
                       />
                     </div>
@@ -999,7 +1011,7 @@ function Chat({
                         parts={m.parts}
                         token={token}
                         noteProjectId={noteProjectId}
-                        messages={displayed}
+                        messages={hasUiPart(m.parts) ? displayed : undefined}
                         onOpenNote={onOpenNote}
                       />
                     </details>
@@ -1012,7 +1024,7 @@ function Chat({
                           parts={unlanded.reply}
                           token={token}
                           noteProjectId={noteProjectId}
-                          messages={displayed}
+                          messages={hasUiPart(unlanded.reply) ? displayed : undefined}
                           onOpenNote={onOpenNote}
                           ended
                         />
@@ -1050,20 +1062,22 @@ function Chat({
                       streaming={
                         status === "streaming" && m.id === lastAssistantId
                       }
-                      messages={displayed}
+                      messages={hasUiPart(m.parts) ? displayed : undefined}
                       onOpenNote={onOpenNote}
                       onNotesChanged={onTurnDone}
-                      onAction={(text) => void submit({ text })}
+                      onAction={onUiAction}
                     />
                     <ActionBar
                       message={m}
                       isLastAssistant={m.id === lastAssistantId}
                       busy={busy}
                       onRetry={() => {
+                        setSettledTailId(null);
                         setLiveCtx(null);
                         setSendFailure(null);
                         const lastUserIndex = messages.map((item) => item.role).lastIndexOf("user");
                         if (lastUserIndex < 0) return;
+                        follow.followReply(messages[lastUserIndex]!.id);
                         setMessages(messages.slice(0, lastUserIndex + 1));
                         setSubmitPending(true);
                         void postChat({ retry: true }).catch((err: unknown) => {
@@ -1101,7 +1115,9 @@ function Chat({
                 </Fragment>
               );
             })}
-            {busy && <div className="msg assistant pending shimmer">…</div>}
+            {busy && !replyStarted(displayed, settledTailId ?? undefined) && (
+              <div className="msg assistant pending shimmer">…</div>
+            )}
             {pendingItems.length > 0 && (
               <section className="pending-inputs" aria-label="Pending input">
                 <h3>Pending input</h3>
@@ -1137,6 +1153,18 @@ function Chat({
             <div className="error" role="alert">{sendFailure}</div>
           )}
           </div>
+          {follow.below && (
+            <div className="jump-latest-slot">
+              <button
+                type="button"
+                className={busy ? "jump-latest live" : "jump-latest"}
+                aria-label="Jump to latest"
+                onClick={follow.jumpToEnd}
+              >
+                ↓
+              </button>
+            </div>
+          )}
         </div>
         {stopError !== null && (
           <div className="error" role="alert">

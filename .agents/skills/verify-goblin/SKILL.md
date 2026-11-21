@@ -74,6 +74,8 @@ ab wait --text 'verify-reply: hello'
 Use `aria-label`s and accessible names, not coordinates. `ab snapshot -i` lists what's on the page. Dialogs put a veil over the app, so close them before clicking anything behind them.
 
 [features/README.md](features/README.md) lists how to reach and drive each feature.
+The [Rolling chat journey](features/rolling.md) shows how to continue a roll
+or start a new subject with `[new topic]`.
 
 The database is at `/tmp/goblin-verify/<name>/state/goblin.sqlite`. Open it with `sqlite3 -readonly`. Logs are `state/goblin.log` and `goblin.stderr` in the same home, and `fake-model.log` lists every request the model got.
 

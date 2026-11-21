@@ -161,7 +161,7 @@ describe("navigation races: late completions", () => {
 						);
 					return convCreateHold === null ? reply() : convCreateHold.then(reply);
 				}
-				return Promise.resolve(jsonResponse({ conversations: convs }));
+				return Promise.resolve(jsonResponse({ conversations: convs, rolling: { chain: [] } }));
 			}
 			if (url === "/api/app/projects") {
 				if (method === "POST") {
@@ -708,8 +708,8 @@ describe("navigation races: late completions", () => {
 			preview: "",
 		}];
 		await mount();
-		await waitFor(() => container.querySelector(".conv-main") !== null, "conversation row");
-		await click(container.querySelector(".conv-main"));
+		await waitFor(() => container.querySelector('.conv-main[href="/app/c/X"]') !== null, "conversation row");
+		await click(container.querySelector('.conv-main[href="/app/c/X"]'));
 		await waitFor(() => win.location.pathname === "/app/c/X", "conversation X");
 		expect(container.querySelector(".conv.current")).not.toBeNull();
 		await openPage("Settings");
@@ -759,9 +759,9 @@ describe("navigation races: late completions", () => {
 	test("Discard from a conversation row's ask discards: autosave never writes the edit", async () => {
 		convs = [convX()];
 		await mount();
-		await waitFor(() => container.querySelector(".rail .conv-main") !== null, "conversation row");
+		await waitFor(() => container.querySelector('.rail .conv-main[href="/app/c/X"]') !== null, "conversation row");
 		await editSettingsValidly();
-		await click(container.querySelector(".rail .conv-main"));
+		await click(container.querySelector('.rail .conv-main[href="/app/c/X"]'));
 		expect(confirmText(container)).toBe("Discard unsaved settings changes?");
 		// The operator reads the sheet longer than the autosave debounce.
 		await outlastAutosave();

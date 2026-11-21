@@ -148,6 +148,7 @@ describe("App empty-state send keeps unfinished uploads (issue #118)", () => {
 									},
 								]
 							: [],
+						rolling: { chain: [] },
 					}),
 				);
 			}
@@ -331,6 +332,7 @@ describe("rail row actions and the pinned pool", () => {
 							{ ...row(freshTitle, "fresh"), pinnedAt: freshStamp, archivedAt: archived.fresh },
 							{ ...row("pinned chat"), pinnedAt: pinnedStamp, archivedAt: archived.pinned },
 						],
+						rolling: { chain: [] },
 					}),
 				);
 			}
@@ -417,7 +419,9 @@ describe("rail row actions and the pinned pool", () => {
 	};
 
 	const domOrder = (): (string | null)[] =>
-		[...container.querySelectorAll(".conv-title")].map((t) => t.textContent);
+		[...container.querySelectorAll(".conv-title")]
+			.filter((t) => t.textContent !== "Rolling chat")
+			.map((t) => t.textContent);
 
 	const rowActions = async (title: string): Promise<string[]> => {
 		const found = [...container.querySelectorAll(".conv")].find(
@@ -679,6 +683,7 @@ describe("rename editor with the AI button", () => {
 								pinnedAt: null,
 							},
 						],
+						rolling: { chain: [] },
 					}),
 				);
 			}
@@ -977,9 +982,9 @@ describe("browser back/forward and the unsaved settings editor", () => {
 				const gate = conversationListGate;
 				if (gate !== null) {
 					conversationListGate = null;
-					return gate.then(() => jsonResponse({ conversations: snapshot }));
+					return gate.then(() => jsonResponse({ conversations: snapshot, rolling: { chain: [] } }));
 				}
-				return Promise.resolve(jsonResponse({ conversations: snapshot }));
+				return Promise.resolve(jsonResponse({ conversations: snapshot, rolling: { chain: [] } }));
 			}
 			if (url === "/api/app/projects") return Promise.resolve(jsonResponse({ projects: [] }));
 			if (url === "/api/app/notes")
@@ -1272,7 +1277,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		if (archived) {
 			await click(container.querySelector(".rail-archived"));
 			await click(container.querySelector(".archive-table a.dt-main"));
-		} else await click(container.querySelector(".conv-main"));
+		} else await click(container.querySelector('.conv-main[href="/app/c/fixture"]'));
 		expect(win.location.pathname).toBe("/app/c/fixture");
 	};
 	// Archive is a rail row action; Delete lives on the Archive page.
@@ -1398,7 +1403,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 	test("the conversation row is a real link: plain clicks stay in-app, modified clicks fall through", async () => {
 		seedConversation();
 		await mount();
-		const main = container.querySelector(".conv-main");
+		const main = container.querySelector('.conv-main[href="/app/c/fixture"]');
 		// A declared href is what gives the browser its new-tab, middle-click,
 		// context-menu, and URL-preview affordances; no target, or a plain
 		// click would open a new tab too.
@@ -1417,7 +1422,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 		// A modifier click must not be intercepted — the browser owns it.
 		const ctrl = new win.MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true });
 		await act(async () => {
-			container.querySelector(".conv-main")?.dispatchEvent(ctrl as unknown as Event);
+			container.querySelector('.conv-main[href="/app/c/fixture"]')?.dispatchEvent(ctrl as unknown as Event);
 		});
 		await settle();
 		expect(ctrl.defaultPrevented).toBe(false);
@@ -1457,7 +1462,7 @@ describe("browser back/forward and the unsaved settings editor", () => {
 			}
 			expect(conversations[0]?.archivedAt).not.toBeNull();
 			expect(container.querySelector(".rail-archived")?.textContent).toBe("Archived 1");
-			expect(container.querySelector(".conv")).toBeNull();
+			expect(container.querySelector(".conv:not(.rolling-row)")).toBeNull();
 		});
 	}
 	test("Archive of the open conversation still goes to empty chat", async () => {
@@ -2520,7 +2525,7 @@ describe("app projects surface", () => {
 								);
 					return createHold === null ? reply() : createHold.then(reply);
 				}
-				return Promise.resolve(jsonResponse({ conversations: convs }));
+				return Promise.resolve(jsonResponse({ conversations: convs, rolling: { chain: [] } }));
 			}
 			if (url.startsWith("/api/app/search")) {
 				const q = new URL(url, "http://localhost").searchParams.get("q") ?? "";
@@ -4859,7 +4864,9 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 		// Probe queued. Answer it (trust mode — gate passes); refresh #1
 		// queues behind the flip.
 		expect(gets.length).toBe(1);
-		await act(async () => gets[0]!.resolve(jsonResponse({ conversations: [] })));
+		await act(async () =>
+			gets[0]!.resolve(jsonResponse({ conversations: [], rolling: { chain: [] } })),
+		);
 		await settle();
 		expect(gets.length).toBe(2);
 		// Send from the empty state: the create resolves, selects the new
@@ -4904,6 +4911,7 @@ describe("a stale refresh failure does not clobber a newer refresh", () => {
 							parentId: null,
 						},
 					],
+					rolling: { chain: [] },
 				}),
 			),
 		);
@@ -5025,7 +5033,7 @@ describe("notes and attention load failures surface (issue #213)", () => {
 			if (url === "/api/app/push")
 				return Promise.resolve(jsonResponse({ configured: false, subscriptions: [] }));
 			if (url === "/api/app/conversations" && method === "GET") {
-				return Promise.resolve(jsonResponse({ conversations: [convRow] }));
+				return Promise.resolve(jsonResponse({ conversations: [convRow], rolling: { chain: [] } }));
 			}
 			if (url === "/api/app/conversations/fixture" && method === "PATCH") {
 				return Promise.resolve(jsonResponse({ pinned: true }));
@@ -5208,7 +5216,7 @@ describe("chat width selector", () => {
 			if (url === "/api/app/attention")
 				return Promise.resolve(jsonResponse({ items: [], unavailable: [] }));
 			if (url === "/api/app/conversations")
-				return Promise.resolve(jsonResponse({ conversations: [] }));
+				return Promise.resolve(jsonResponse({ conversations: [], rolling: { chain: [] } }));
 			if (url.endsWith("/messages"))
 				return Promise.resolve(jsonResponse({ messages: [], ratings: [], rateableMessageIds: [] }));
 			if (url.endsWith("/stream")) return Promise.resolve(new Response(null, { status: 204 }));

@@ -268,6 +268,15 @@ one roll at a time with a link to the previous one. Stitched scrolling across
 rolls is a follow-up, not part of this work. The Telegram DM and the app
 Rolling chat never share a current-conversation pointer.
 
+**Client.** The PWA keeps all ordinary chat and folder rows and adds a
+Rolling chat row at the top of the Chats rail. `/app/rolling` shows one roll
+at a time; when a newer roll begins, its transcript starts with
+"— new conversation —" and a link to the previous conversation. Older rolls
+show an "Earlier conversation" bar with "Back to latest". A `/app/c/<id>` link
+to a roll opens it in Rolling chat and normalizes the URL to `/app/rolling`.
+Plain sends on this page always go through the rolling lane, even while an
+older roll is open; retry and edit act on the roll on screen.
+
 ## Streaming members & resumable streams (ruling 2026-10-04)
 
 The reply belongs to the conversation, not the connection that submitted

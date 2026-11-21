@@ -14,7 +14,7 @@ import { SkillSources } from "../skill-provenance.ts";
 import { tmpDir, useHome } from "../testkit.ts";
 import { type HttpDeps, isLoopback, redactHookPath, startHttp } from "./mod.ts";
 import type { MemoryStatusResponse } from "./operator-wire.ts";
-import { APP_PAGES } from "./app-routes.ts";
+import { APP_PAGES, parseAppPath } from "./app-routes.ts";
 
 const TOKEN = "test-bot-token";
 
@@ -611,7 +611,9 @@ describe("client serving", () => {
 	test("the door's page scope is deliberate — other pages and conversation links are 404", async () => {
 		const { http } = setup();
 		try {
-			for (const path of ["/t/programs", "/t/delegations", "/t/status", "/t/c/abc", "/t/nope"]) {
+			expect(parseAppPath("/app/rolling")).toEqual({ kind: "page", page: "rolling" });
+			expect(parseAppPath("/t/rolling", "t")).toBeNull();
+			for (const path of ["/t/programs", "/t/delegations", "/t/status", "/t/rolling", "/t/c/abc", "/t/nope"]) {
 				expect((await fetch(`http://127.0.0.1:${http.port}${path}`)).status).toBe(404);
 			}
 		} finally {

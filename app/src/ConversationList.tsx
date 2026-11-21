@@ -70,6 +70,43 @@ export function ConversationHierarchy({
 		.map((conversation) => renderTree(conversation, new Set()));
 }
 
+export function RollingRow({
+	current,
+	preview,
+	updatedAt,
+	onOpen,
+}: {
+	current: boolean;
+	preview: string | null;
+	updatedAt: string | null;
+	onOpen: () => void;
+}) {
+	const line = flatLine(preview ?? "");
+	return (
+		<li className="rolling-row-item">
+			<div className={`conv rolling-row${current ? " current" : ""}${line ? "" : " bare"}`}>
+				<a
+					className="conv-main"
+					href="/app/rolling"
+					aria-current={current ? "page" : undefined}
+					onClick={(event) => {
+						if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0)
+							return;
+						event.preventDefault();
+						onOpen();
+					}}
+				>
+					<span className="conv-head">
+						<span className="conv-title">Rolling chat</span>
+						{updatedAt !== null && <span className="conv-time">{relTime(updatedAt)}</span>}
+					</span>
+					<span className="conv-preview">{line || "Always here"}</span>
+				</a>
+			</div>
+		</li>
+	);
+}
+
 // The Open WebUI chat-list relative-time format.
 export function relTime(iso: string): string {
 	const ts = Date.parse(iso);

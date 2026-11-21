@@ -27,102 +27,25 @@ function tmpdirPath(): string {
 }
 
 describe("delegations store", () => {
-	test("readiness observations reopen without losing sources", () => {
-		const path = join(tmpdirPath(), "goblin.sqlite");
-		const first = openDelegations(path);
-		const d = first.create({
-			name: "old observation", harness: "codex", role: "lead",
-			pr: { issue: { repository: "owner/repo", number: 7 }, checks: [] }, cwd: "/w", task: "build",
-			address: { chatId: 0, threadId: null }, responsibilityId: "r1",
-		});
-		first.setStatus(d.id, "done");
-		const observation = prReadinessFixture("green");
-		first.recordReadiness(d.id, first.get(d.id)!, observation, true);
-		first.close();
-		const second = openDelegations(path);
-		try {
-			const saved = second.list()[0]!;
-			expect(saved.readiness).toEqual(observation);
-			expect(saved.readinessVersion).toBe(1);
-			second.recordReadiness(saved.id, saved, prReadinessFixture("green"));
-			expect(second.get(saved.id)?.readinessVersion).toBe(1);
-			expect(second.get(saved.id)?.readiness?.result).toMatchObject({
-				kind: "checked",
-			});
-		} finally { second.close(); }
-	});
-
-	test("legacy verifier observations are cleared and issue watches migrate with no required checks", () => {
-		const path = join(tmpdirPath(), "legacy-readiness.sqlite");
-		const db = new Database(path);
-		db.exec(`CREATE TABLE delegations (
-			id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, harness TEXT NOT NULL,
-			cwd TEXT NOT NULL, task TEXT NOT NULL, chat_id INTEGER NOT NULL, thread_id INTEGER,
-			agent_name TEXT NOT NULL, workspace_id TEXT NOT NULL, pane_id TEXT NOT NULL,
-			status TEXT NOT NULL, baseline_seq INTEGER, prompted_at TEXT NOT NULL,
-			created_at TEXT NOT NULL, finished_at TEXT, app_conversation TEXT,
-			prompt_pending INTEGER NOT NULL DEFAULT 0, responsibility_id TEXT,
-			responsibility_revision INTEGER, role TEXT NOT NULL DEFAULT 'default',
-			issue_json TEXT, readiness_json TEXT, readiness_notified_key TEXT,
-			readiness_version INTEGER NOT NULL DEFAULT 0, readiness_pending_verdict TEXT
-		)`);
-		const oldObservation = {
-			observedAt: "2026-11-20T00:00:00.000Z",
-			issue: { repository: "owner/repo", number: 7 },
-			source: "https://github.com/owner/repo/issues/7",
-			result: { kind: "checked", pr: "https://github.com/owner/repo/pull/8",
-				head: { sha: "a".repeat(40), source: "https://github.com/owner/repo/pull/8/commits/abc" },
-				verifier: { verdict: "PASS", sha: "a".repeat(40), source: "https://github.com/owner/repo/pull/8#issuecomment-1",
-					author: "worker", notes: "PASS", notesTruncated: false },
-				ci: { state: "green", sha: "a".repeat(40), source: "https://github.com/owner/repo/pull/8/checks" },
-				ready: true, reasons: [] },
-		};
-		db.query(`INSERT INTO delegations
-			(name, harness, cwd, task, chat_id, thread_id, agent_name, workspace_id, pane_id,
-			 status, baseline_seq, prompted_at, created_at, responsibility_id, role, issue_json,
-			 readiness_json, readiness_notified_key, readiness_version, readiness_pending_verdict)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-			"legacy", "codex", "/w", "task", 0, null, "g1-legacy", "w", "p",
-			"done", 2, "2026-11-20T00:00:00.000Z", "2026-11-20T00:00:00.000Z",
-			"r1", "default", JSON.stringify({ repository: "owner/repo", number: 7 }),
-			JSON.stringify(oldObservation), "old-notified", 4, "done",
-		);
-		db.close();
-		const store = openDelegations(path);
-		try {
-			expect(store.get(1)).toMatchObject({
-				pr: { issue: { repository: "owner/repo", number: 7 }, checks: [] },
-				readiness: null, readinessNotifiedKey: null,
-				readinessPendingVerdict: "done", readinessVersion: 4,
-			});
-		} finally { store.close(); }
-	});
-
-	test("lead identity and observations survive reopen; a new prompt fences old readiness", () => {
+	test("a lead-era row with issue and readiness columns still opens", () => {
 		const path = join(tmpdirPath(), "goblin.sqlite");
 		const first = openDelegations(path);
 		const row = first.create({
-			name: "lead", harness: "codex", role: "lead",
-			pr: { issue: { repository: "owner/repo", number: 7 }, checks: ["verify"] }, cwd: "/w", task: "build",
-			address: { chatId: 0, threadId: null }, responsibilityId: "r1", responsibilityRevision: 1,
+			name: "lead", harness: "codex", role: "lead", cwd: "/w", task: "build",
+			address: { chatId: 0, threadId: null }, responsibilityId: "r1",
 		});
-		first.setStatus(row.id, "done");
-		const done = first.get(row.id)!;
-		const observation = prReadinessFixture();
-		expect(first.recordReadiness(row.id, done, observation)).toBe(true);
 		first.close();
+		const db = new Database(path);
+		db.run(
+			"UPDATE delegations SET issue_json = ?, readiness_json = ?, readiness_version = 3 WHERE id = ?",
+			[JSON.stringify({ repository: "owner/repo", number: 7 }), JSON.stringify(prReadinessFixture("green")), row.id],
+		);
+		db.close();
 		const second = openDelegations(path);
 		try {
-			expect(second.get(row.id)).toMatchObject({
-				role: "lead", pr: { issue: { repository: "owner/repo", number: 7 }, checks: ["verify"] },
-				readiness: observation, readinessNotifiedKey: null, readinessVersion: 1,
-			});
-			second.markRunning(row.id, 5, new Date(Date.now() + 1000));
-			expect(second.recordReadiness(row.id, done, prReadinessFixture("green"), true)).toBe(false);
-			expect(second.get(row.id)).toMatchObject({ readiness: null, readinessNotifiedKey: null });
+			expect(second.get(row.id)).toMatchObject({ role: "lead", name: "lead", responsibilityId: "r1" });
 		} finally { second.close(); }
 	});
-
 
 	// baseline_seq went nullable — NULL is the baseline-pending posture (a
 	// failed post-prompt read never falls back to a pre-prompt value).
@@ -159,7 +82,7 @@ describe("delegations store", () => {
 		try {
 			expect(store.get(1)!.baselineSeq).toBe(3);
 			expect(store.get(1)).toMatchObject({
-				role: "default", pr: null, readiness: null,
+				role: "default",
 				responsibilityId: "r-old", responsibilityRevision: 2,
 			});
 			const d = store.create({

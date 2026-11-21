@@ -81,7 +81,6 @@ const logLines = (root: string): Record<string, unknown>[] =>
 		.split("\n")
 		.map((l) => JSON.parse(l) as Record<string, unknown>);
 
-// ---------- landAttempt ----------
 
 interface LandHarness {
 	landed: ReturnType<typeof landAttempt>;
@@ -381,8 +380,6 @@ describe("landAttempt", () => {
 				{ seq: 4, message: msg("steer", "user", text("secret steer")) },
 			],
 			steerMark: 4,
-			// The steer landed while memory was off — stamped ineligible
-			// even though the flag is back on at land time.
 			memoryEligibility: () => ({
 				eligibleSeqs: new Set([1, 2, 3]),
 				summarySeq: null,
@@ -390,8 +387,6 @@ describe("landAttempt", () => {
 			}),
 		});
 		expect(h.appended).toHaveLength(1);
-		// No memory document, and the reply carries the exclusion stamp
-		// forward — later memory work keeps it out too.
 		expect(h.appended[0]!.opts).toEqual({ anchorSeq: 4, exclude: true });
 		expect(h.landed.exchangeExcluded).toBe(true);
 	});
@@ -459,10 +454,6 @@ describe("landAttempt", () => {
 		expect(h.landed.exchangeExcluded).toBe(false);
 	});
 
-	// Causal order, not seq, draws the exchange boundary: a steer (seq 2)
-	// sits causally after the prior exchange's late reply (seq 3, anchored
-	// to seq 1), so a seq comparison sees it as old history and lets the
-	// taint slip past.
 	test("an excluded steer behind a late-anchored reply still taints the exchange", () => {
 		const h = land({
 			memory: memDeps(),
@@ -484,8 +475,6 @@ describe("landAttempt", () => {
 		expect(h.landed.exchangeExcluded).toBe(true);
 	});
 
-	// The same causal shape, all eligible: the steered user event and the
-	// newest trigger are this exchange's inputs, in causal order.
 	test("the same causal shape all eligible retains and reports no taint", () => {
 		const h = land({
 			memory: memDeps(),
@@ -511,9 +500,6 @@ describe("landAttempt", () => {
 		expect(h.landed.source.userTexts).toEqual(["steer it", "run it"]);
 	});
 
-	// An exclusion in the prior exchange is history, not this turn's
-	// taint: the causal boundary sits at the last real assistant, so a
-	// steer excluded before it cannot reach the current exchange.
 	test("an excluded event in the prior exchange is history, not taint", () => {
 		const h = land({
 			memory: memDeps(),
@@ -562,9 +548,6 @@ describe("landAttempt", () => {
 		expect(h.landed.exchangeExcluded).toBe(false);
 	});
 
-	// The synthetic summary is carried context, never a real assistant:
-	// it cannot draw a boundary that launders the excluded trigger
-	// behind it into "prior history".
 	test("a compaction summary is no boundary — the excluded trigger still taints", () => {
 		const h = land({
 			memory: memDeps(),
@@ -585,9 +568,6 @@ describe("landAttempt", () => {
 		expect(h.landed.exchangeExcluded).toBe(true);
 	});
 
-	// No reply, still tainted: a tool-only landing appends nothing but
-	// the tool digest it hands the reviewer derived from the excluded
-	// input — the flag must surface outside the append path.
 	test("a replyless landing over an excluded input still reports the taint", () => {
 		const h = land({
 			responseMessage: null,
@@ -608,7 +588,6 @@ describe("landAttempt", () => {
 	});
 });
 
-// ---------- retentionOpt ----------
 
 const memDeps = (over: { suppressed?: boolean; unreadable?: boolean } = {}): MemoryTurnDeps =>
 	({
@@ -635,8 +614,6 @@ describe("retentionOpt", () => {
 	test("no memory deps, no anchor, or an excluded conversation → history alone", () => {
 		expect(retentionOpt(conv(), false, undefined, 3, src, reply)).toBeNull();
 		expect(retentionOpt(conv(), false, memDeps(), null, src, reply)).toBeNull();
-		// The flag arrives live, not through the conv snapshot — a stale
-		// snapshot can't revive retention the live flag refuses.
 		expect(retentionOpt(conv(), true, memDeps(), 3, src, reply)).toBeNull();
 	});
 
@@ -676,7 +653,6 @@ describe("retentionOpt", () => {
 	});
 });
 
-// ---------- submitTurnReview ----------
 
 const digest = { tool: "bash", args: "{}", result: "listed", ok: true };
 
@@ -710,8 +686,6 @@ interface ReviewHarness {
 	submitWithReviewer(reviewer: Reviewer | undefined): void;
 	state: {
 		excluded: boolean;
-		// The landed exchange's own taint — set from a real landAttempt
-		// result, independent of the live flag.
 		exchangeExcluded: boolean;
 		seq: number;
 		prior: PriorTurnContext | undefined;
@@ -821,12 +795,10 @@ describe("submitTurnReview", () => {
 				return { answers: {}, inputTokens: null, cost: null };
 			}),
 		});
-		// A clean turn first: remembered, the correction chain's head.
 		h.submit();
 		await tick();
 		expect(gated).toBe(1);
 		expect(h.state.prior).toBeDefined();
-		// The real landing reports its taint; the live flag stayed off.
 		const { landed } = land({
 			memory: memDeps(),
 			modelEntries: () => [
@@ -893,10 +865,6 @@ describe("submitTurnReview", () => {
 		expect(failed).toMatchObject({ conversation: "dm:1" });
 	});
 
-	// The full review path, faked only at the model provider: a fired
-	// gate runs a real review over the staging workspace, so the
-	// snapshot's digest and the prior-turn chain are asserted where
-	// they land — the review model's prompt.
 	function reviewCaptureHarness() {
 		const root = tmpdirPath();
 		const workspace = join(root, "ws");
@@ -971,11 +939,9 @@ describe("submitTurnReview", () => {
 			skillsRefBin: join(cap.root, "nonexistent-skills-ref"),
 		});
 		const h = reviewHarness({ reviewer });
-		// Turn 1: quiet answer, remembered as the chain's head.
 		h.submit();
 		await tick();
 		expect(cap.prompts).toHaveLength(0);
-		// Turn 2: a correction — the remembered turn is the evidence.
 		decide = async () => ({ answers: { correction: 0.9, procedure: 0 }, inputTokens: 1, cost: 0 });
 		h.submit();
 		await awaitPrompt(cap.prompts);

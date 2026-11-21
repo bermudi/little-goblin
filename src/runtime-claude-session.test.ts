@@ -1,11 +1,3 @@
-// #418: one native Claude SDK session per (conversation, model ref) —
-// resumed each turn at its recorded head with only the seq delta the
-// session has not seen, the record advanced only on a landed reply.
-// Covers: fresh persist+sessionId, resume+resumeSessionAt+delta,
-// cross-engine deltas, failed turns leaving the record untouched,
-// separate records per Claude model ref, and steers folded mid-turn
-// (#582) staying out of the next delta.
-
 import { describe, expect, test } from "bun:test";
 import { defineTool, type Tools } from "./tool.ts";
 import { z } from "zod";
@@ -18,11 +10,9 @@ import type { ConfigRef } from "./config.ts";
 import type { Config } from "./config-schema.ts";
 import { openStore } from "./conversation.ts";
 import { Runtime, userMessage } from "./runtime.ts";
-import type { ModelStep } from "./turn/ai-sdk-step.ts";
 import { isClaudeStep } from "./agent/claude-code/mod.ts";
-import { aiSdkEngine } from "./turn/ai-sdk-engine.ts";
+import { sdkScript } from "./testkit/turn-script-sdk.ts";
 import { fakeClaude } from "./testkit/fake-claude.ts";
-import { scriptedModel, textParts } from "./testkit/fake-model.ts";
 import { RecordingSink, tmpDb, tmpDir, useHome, waitUntil } from "./testkit.ts";
 import { openTurnJournal } from "./turn-journal.ts";
 
@@ -109,7 +99,6 @@ describe("claude native sessions (#418)", () => {
 		};
 
 		try {
-			// (a) first turn: fresh session, full prompt, record written.
 			fake.script([{ kind: "text", text: "CLAUDE-ONE" }]);
 			const one = await turn("first ask");
 			expect(one.done).toEqual({ kind: "completed" });
@@ -126,7 +115,6 @@ describe("claude native sessions (#418)", () => {
 			expect(rec1!.headUuid).toBe(fake.assistantUuids.at(-1)!);
 			expect(rec1!.replySeq).not.toBeNull();
 
-			// (b) second turn: resume + resumeSessionAt, delta only.
 			fake.script([{ kind: "text", text: "CLAUDE-TWO" }]);
 			const two = await turn("second ask");
 			expect(two.done).toEqual({ kind: "completed" });
@@ -229,12 +217,9 @@ describe("claude native sessions (#418)", () => {
 			expect(await steer.done).toEqual({ kind: "completed" });
 			await waitUntil(() => !runtime.busy(conv.id), "lane drains");
 
-			// One query answered both: the steer went in mid-turn, no
-			// successor turn ran for it.
 			expect(fake.calls).toHaveLength(1);
 			expect(fake.steers).toHaveLength(1);
 			expect(promptTextOf(fake.steers[0]!)).toContain("mid-turn steer");
-			// The joined steer hears the rest of the reply on its own wire.
 			const steerText = steer.chunks
 				.map((c) => (c.type === "text-delta" ? c.delta : ""))
 				.join("");
@@ -362,7 +347,8 @@ describe("claude native sessions (#418)", () => {
 		const sessions = openClaudeSessions(store.db);
 		const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 
-		const sdk = scriptedModel([textParts("SDK-MIDDLE")]);
+		const sdk = sdkScript();
+		sdk.script({ kind: "reply", parts: [{ type: "text", text: "SDK-MIDDLE" }] });
 		const fake = fakeClaude();
 		const engineConfig: ClaudeEngineConfig = {
 			query: fake.query,
@@ -393,11 +379,11 @@ describe("claude native sessions (#418)", () => {
 		let lane: "claude" | "sdk" = "claude";
 		const runtime = new Runtime({
 			store,
-			engines: [claudeEngine, aiSdkEngine],
+			engines: [claudeEngine, ...sdk.engines],
 			buildStep: () =>
 				lane === "claude"
 					? claudeStepFor(CLAUDE_REF)
-					: ({ engine: "ai-sdk", model: sdk.model, system: "test", label: "fake/fake-1" }) satisfies ModelStep,
+					: sdk.step(),
 			turnJournal: journal,
 			claudeSessions: sessions,
 		});
@@ -424,8 +410,6 @@ describe("claude native sessions (#418)", () => {
 			expect(fake.calls).toHaveLength(2);
 			const third = fake.calls[1]!;
 			const prompt = promptTextOf(third);
-			// The other engine's reply is new to this session — it rides
-			// the delta. Claude's own earlier reply does not.
 			expect(prompt).toContain("SDK-MIDDLE");
 			expect(prompt).toContain("claude ask two");
 			expect(prompt).not.toContain("CLAUDE-FIRST");
@@ -490,16 +474,12 @@ describe("claude native sessions (#418)", () => {
 			expect((await turn("first ask")).done).toEqual({ kind: "completed" });
 			const rec1 = sessions.get(conv.id, CLAUDE_REF)!;
 
-			// The next turn dies on the provider — no landing, no record move.
 			fake.script([{ kind: "error", resultText: "provider exploded" }]);
 			const failed = await turn("doomed ask");
 			expect(failed.done.kind).not.toBe("completed");
 			const recAfterFail = sessions.get(conv.id, CLAUDE_REF)!;
 			expect(recAfterFail).toEqual(rec1);
 
-			// The retry turn resumes at the OLD head; the delta carries the
-			// unlanded ask plus the new one — nothing the session produced
-			// is re-sent, and the dead attempt's partial never landed.
 			fake.script([{ kind: "text", text: "CLAUDE-RECOVERED" }]);
 			const three = await turn("retry ask");
 			expect(three.done).toEqual({ kind: "completed" });
@@ -582,15 +562,11 @@ describe("claude native sessions (#418)", () => {
 			expect(recB).not.toBeNull();
 			expect(recA.sessionId).not.toBe(recB.sessionId);
 
-			// The opus turn was a FIRST session for its ref — full prompt,
-			// including the sonnet exchange it has never seen.
 			expect(fake.calls).toHaveLength(2);
 			expect(fake.calls[1]!.options.resume).toBeUndefined();
 			expect(promptTextOf(fake.calls[1]!)).toContain("SONNET-ONE");
 			expect(promptTextOf(fake.calls[1]!)).toContain("sonnet ask");
 
-			// Back on sonnet: its own session resumes; the opus exchange is
-			// new content for it and rides the delta.
 			ref = CLAUDE_REF;
 			fake.script([{ kind: "text", text: "SONNET-TWO" }]);
 			expect((await turn("sonnet ask two")).done).toEqual({ kind: "completed" });

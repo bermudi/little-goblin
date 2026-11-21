@@ -1,19 +1,10 @@
 # Programs — goblin design
 
-Part of the goblin design spec. The core — domain model, authority rule,
-cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
-
 ## Programs (standing orders)
 
-Scheduled jobs arrived on demand (2026-09-20); programs generalize them
-(2026-09-26, operator ask: "more proactive"). A program is **standing
-authority for one concern**, borrowing openclaw's standing-orders shape
-(`docs/automation/standing-orders.md`): a charter plus the triggers that
-wake it. The `jobs` table and `schedule` tool are superseded, not kept
-alongside; the one-off legacy purge leaves no general migration
-framework behind: beside an existing programs table it never reactivates
-legacy rows (programs is the operator's truth, deletions included), and
-unparsable rows are preserved verbatim for recovery.
+A program is **standing authority for one concern**, borrowing
+openclaw's standing-orders shape (`docs/automation/standing-orders.md`):
+a charter plus the triggers that wake it.
 
 Its storage, though, is not openclaw's: there standing orders ride the
 always-injected AGENTS.md, the shared-file scope its HEARTBEAT.md
@@ -23,54 +14,14 @@ construction.
 
 Rulings:
 
-- **Authority is granted, never self-issued.** Creating or widening a
-  program needs the operator's explicit ask — the agent may *propose*
-  one ("want me to own this?"), never grant itself standing authority.
-  What a firing turn does is bounded by its charter and the same
-  ask-first rule as any operator message. **The ask is now a durable
-  approval, not a conversational one** (2026-10-20): a grant-shaped
-  change — `create`, any nonidentical charter text, a new trigger kind
-  (a cron where none existed, a hook on a program that lacks one), a
-  new or changed non-null mail filter — is staged as a
-  `program_proposals` row, and only the operator's Telegram tap
-  activates it. Deliberate conservative tightening of the earlier
-  "reword within intent" rule: the model never classifies whether its
-  own authority is widening — identical text is the only free charter
-  write. What stays direct inside granted authority: rescheduling an
-  existing cron, name and lateness edits, toggling, deleting,
-  removing a trigger (the last one still refuses), rotating an
-  existing hook. Any approval-required component stages the *entire*
-  requested patch — no partial application. Approval binds an
-  immutable base fingerprint (id, pinned address, charter, triggers,
-  enabled — run/checkpoint/cursor accounting deliberately excluded),
-  so a landed fire or mail checkpoint never stales a proposal, but any
-  real configuration change does; a newer pending update for the same
-  target supersedes older ones, and the decision — activation through
-  the store's own create/update plus the stamp — is one immediate
-  SQLite transaction, so a repeated tap or a crash can never grant
-  twice. The update row also stores the renderable snapshot of its
-  base (`base_snapshot`, NULL on pre-column legacy rows): approval
-  cards always render that immutable candidate — a re-post after the
-  live program moved shows what the original card showed plus a stale
-  warning, never a merge onto today's row, and a drifted legacy row
-  with nothing immutable left names the coming refusal instead of
-  guessing a candidate. The snapshot's bounds are the trusted
-  store's, never proposal-input limits — a grandfathered or pre-limit
-  charter beyond the input cap still stages and reads, and the stored
-  payload is validated inside the staging transaction so no committed
-  row can fail its own reader. A corrupt stored proposal fails list and
-  pending reads with its row identity instead of silently vanishing from
-  the operator's approvals or attention view. Posting is fenced by the staging turn's abort
-  signal chunk by chunk — a stopped turn sends no further chunks and
-  never the buttons; the durable row stays pending for
-  `program/review`. A hook the proposal requests is minted only at
-  approval and travels only to operator DMs — no credential exists to
-  leak before the grant, and without `publicUrl` the tap refuses
-  pending; the token's plaintext exists only inside the tap handler,
-  so in-flight posts and taps are tracked and shutdown joins them
-  under the drain budget before the store closes. Existing
-  programs were never proposals: grandfathered rows activate nothing,
-  ask nothing, migrate nothing.
+- **Authority is granted, never self-issued.** The agent can propose new or
+  wider standing instructions, but only the operator's recorded approval
+  grants them. The model cannot decide that its own charter edit is "only
+  rewording." An approval covers the entire proposed change against the
+  config the operator saw, never a subset or a stale base. Keep hook
+  credentials out of model history and logs. See the
+  [program proposal store](../src/program-proposals.ts) and
+  [app approval tests](../src/http/app-approvals.test.ts).
 - **Firing is one path for every trigger.** Cron tick, webhook hit, or
   anything later: the charter is submitted as an ordinary user message
   into the program's pinned conversation — one shared core, per-trigger
@@ -381,13 +332,14 @@ Rulings:
   goblin's move, even after a steer. A report that can never file (row
   gone, invalid) is logged and the notice still wakes.
 
-  Linked lead delegations additionally carry code-observed GitHub evidence
-  (design/delegation.md → PR readiness). Their report keeps the worker
-  claim separate from observed readiness; pending CI is `waiting`, missing
-  or negative evidence is `blocked`, passing facts are `ready`. All remain
-  worker reports for Goblin to assess, never permission to merge. Repeated
-  observations do not wake a model; a changed readiness version files one
-  new report and notice, including a regression to earlier facts.
+  A responsibility with a linked issue also gets code-observed GitHub
+  evidence (design/delegation.md → PR readiness), whatever its worker.
+  Each change is its own worker report, apart from any worker's claim;
+  pending CI is `waiting`, missing or negative evidence is `blocked`,
+  passing facts are `ready`. All remain worker reports for Goblin to
+  assess, never permission to merge. Repeated observations do not wake a
+  model; a changed readiness version files one new report and wake,
+  including a regression to earlier facts.
 
   Borrowed from dsh-superagent (deepseek-ai/dsh-superagent-prototype,
   docs/001 and 003): the Report vocabulary incl. `dropped`, the
@@ -426,19 +378,9 @@ Rulings:
   dsh-superagent: re-checking the original permission before a held
   action resumes.
 
-**Programs page (ruling 2026-11-07, #183, layout per design/app.md →
-Non-chat page layout).** A summary strip (awaiting approval, enabled, late),
-pending approvals with the reason left and the evidence open right (program
-diff, or the mail body; stacked on a narrow pane), then the programs as a
-table: program | schedule in words (`src/cron-words.ts`, raw cron when the
-shape is not covered; "Webhook" / "On new mail" / "Manual" without a cron) |
-max lateness | last run | next run | status. Opening a row replaces the list
-with the detail (facts, instructions in a prose block, actions) and a back
-link. Status is only what the row can say: disabled, *late* (an enabled
-scheduled program whose `next_run` is more than 90 s past — three scheduler
-scans — shown as `late N min`), or enabled. A "failed" status and a recent
-runs list are not shown: no run outcome is stored (see below), and
-inventing one would be fiction.
+**Programs page:** show only statuses the stored facts support. Run
+outcomes are not stored, so a failed status or recent-runs list would
+be fiction. Layout lives in design/app.md.
 
 Still out (machinery): proactive monitoring/heartbeat (programs are
 authority the operator granted, woken by a clock or an event — not an

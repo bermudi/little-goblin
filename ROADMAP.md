@@ -70,17 +70,19 @@ The first two stages below serve this same target. A representative pilot is
 the proving ground throughout, not a ceremony after building everything.
 Re-use actual pilot evidence if it already exists.
 
-The pilot: the operator hands over one real issue; goblin starts the
-build the way the operator's workflow skill says, and the issue ends
-merged with evidence on the PR, without the operator relaying between
-agents. The workflow (who builds, who verifies) is the operator's and
-lives in skills (design/delegation.md → Goblin watches PR work, #748).
-Goblin's code observes the closing PR, CI and the required commit checks
-on its current head for responsibility-linked delegations with explicit
-issue identity (#406, #748; design/delegation.md → PR readiness).
-Unchanged CI polls do not wake a model; notes and operator-facing
-judgment still do. Delegations without that identity are not
-retroactively adopted. The full issue pilot remains unverified.
+Issue builds run as one inner loop per issue on T3 Code (operator,
+2026-11-20, #745; design/delegation.md → An issue build is one inner loop
+on T3 Code): goblin starts a Claude Opus 5.5 thread in a new worktree from
+the default branch as soon as the operator hands an issue over. The pilot:
+the operator hands over one real issue, and it ends merged with evidence on
+the PR, without the operator relaying between agents. The workflow (who
+builds, who verifies) is the operator's and lives in skills
+(design/delegation.md → Goblin watches PR work, #748). Code observes the
+closing PR, CI and the required commit checks on its current head on the
+responsibility itself, for any worker, once the issue is linked at accept
+(#406, #748; design/delegation.md → PR readiness). Unchanged CI polls do
+not wake a model; notes and operator-facing judgment still do. The `lead`
+delegate role is gone. The full issue pilot remains unverified.
 
 ## 1. Make Follow-Through Deliberate
 
@@ -148,7 +150,8 @@ Corrections, changed status, and deliberate reattachment invalidate old
 reviews. Timed inference is suppressed outside active status. The feed shows
 the next effective check-in and purpose, derived from the plan plus the linked
 Program, and reports missing/disabled/unscheduled follow-ups honestly.
-Implementation contracts: `design/programs.md`, `design/app.md`.
+Owning code: `src/responsibility-service.ts`, `src/scheduler.ts` and
+`app/src/ResponsibilityFeed.tsx`.
 
 Verification: 546 tests passed across 23 focused files (2,321 assertions),
 covering responsibilities, observation, follow-up/recovery, wakes (including

@@ -19,11 +19,13 @@ import type { AuthStore } from "../auth.ts";
 import type { CacheObservation } from "../cache-observation.ts";
 import { splitModelRef, type Config, type ThinkingLevel } from "../config-schema.ts";
 import { log } from "../log.ts";
-import { awaitRetryDelay, RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
+import { RETRY_INITIAL_DELAY_MS } from "../retry-delay.ts";
+import { sleep } from "../timing.ts";
 import type { MediaPosition } from "./attachments.ts";
 import { codexModel, RESPONSES_URL, type CodexModelOptions } from "./codex/model.ts";
 import { isOneMinHost, modelCallMaxRetries } from "./onemin.ts";
 import { isTransientTurnFailure, quotaExhausted } from "./provider-errors.ts";
+import { fromSdkError } from "./sdk-errors.ts";
 import { thinkingOptions as thinkingOptionsFor } from "./thinking.ts";
 import { fromV4Usage } from "./v4-usage.ts";
 import { isZaiHost, zaiReasoningFetch, zaiStatelessReplay } from "./zai-responses.ts";
@@ -77,7 +79,7 @@ export function transportRetry(
 						retry >= maxRetries ||
 						signal?.aborted ||
 						APICallError.isInstance(error) ||
-						!isTransientTurnFailure(error)
+						!isTransientTurnFailure(fromSdkError(error))
 					) {
 						throw error;
 					}
@@ -88,7 +90,7 @@ export function transportRetry(
 						attempt: retry + 1,
 						delayMs,
 					});
-					await awaitRetryDelay(delayMs, signal);
+					await sleep(delayMs, signal);
 				}
 			}
 		})();
@@ -101,7 +103,7 @@ export function transportRetry(
 function quotaNoRetry(modelRef: string): LanguageModelMiddleware {
 	const filter = (error: unknown): unknown => {
 		if (!APICallError.isInstance(error) || error.isRetryable !== true) return error;
-		const quota = quotaExhausted(error);
+		const quota = quotaExhausted(fromSdkError(error));
 		if (quota === null) return error;
 		log.warn("provider quota exhausted; SDK retries skipped", {
 			model: modelRef,

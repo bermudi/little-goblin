@@ -10,6 +10,7 @@ import type { Understanding } from "../responsibility-types.ts";
 import { makeResponsibilityService } from "../responsibility-service.ts";
 import { openWakeStore } from "../wake-store.ts";
 import { setup } from "./app-testing.ts";
+import { storeFence } from "../testkit/store-fence.ts";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -70,6 +71,7 @@ function wiredResp() {
 					wakes,
 					programs,
 					conversations: ctx.store,
+					fence: storeFence(ctx.store),
 					pump: () => {},
 				}),
 				listThreads: async () => [],

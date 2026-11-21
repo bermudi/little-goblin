@@ -15,7 +15,8 @@ import {
 	readlinkSync,
 	realpathSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, sep } from "node:path";
+import { z } from "zod";
 import { durableWriteFile } from "./durable.ts";
 
 // [] means nothing to do or kind has no known gates; a corrupt or
@@ -26,6 +27,8 @@ export function seedHarnessTrust(kind: string, cwd: string, homeDir: string): st
 			return seedClaude(cwd, join(homeDir, ".claude.json"));
 		case "codex":
 			return seedCodex(cwd, join(homeDir, ".codex", "config.toml"));
+		case "devin":
+			return seedDevin(cwd, join(devinDataHome(homeDir), "devin", "cli", "trusted_workspaces.json"));
 		default:
 			return [];
 	}
@@ -207,6 +210,39 @@ function appendProjectTable(
 	while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
 	lines.push(`[projects.${basic}]`, 'trust_level = "trusted"', "");
 	return lines.join("\n");
+}
+
+// ---------- devin: $XDG_DATA_HOME/devin/cli/trusted_workspaces.json ----------
+
+// The hc core hands devin goblin's XDG_DATA_HOME, and devin honours it
+// over ~/.local/share; a relative value is invalid per the XDG spec
+// and ignored, as devin's own lookup does.
+function devinDataHome(homeDir: string): string {
+	const xdg = process.env.XDG_DATA_HOME;
+	return xdg !== undefined && isAbsolute(xdg) ? xdg : join(homeDir, ".local", "share");
+}
+
+const devinTrustSchema = z.looseObject({ trusted_paths: z.array(z.string()).optional() });
+
+// Devin's "Yes, trust" appends the realpath of the cwd to
+// trusted_paths, and an entry also trusts everything below it (probed
+// on devin 3000.14, 2026-11-20). "No, exit" records nothing, so there
+// is no refusal to respect: a path already covered is left alone,
+// otherwise this folder — and only this folder — is appended.
+function seedDevin(cwd: string, file: string): string[] {
+	const path = managedPath(file);
+	const doc = readJsonObject(path, "trusted_workspaces.json");
+	const parsed = devinTrustSchema.safeParse(doc);
+	if (!parsed.success) {
+		throw new Error(`${path}: 'trusted_paths' is not a list of paths — refusing to overwrite`);
+	}
+	const dir = realpathSync(cwd);
+	const trusted = parsed.data.trusted_paths ?? [];
+	if (trusted.some((p) => p === dir || dir.startsWith(p.endsWith(sep) ? p : p + sep))) return [];
+	doc.trusted_paths = [...trusted, dir];
+	mkdirSync(dirname(path), { recursive: true });
+	durableWriteFile(path, `${JSON.stringify(doc, null, 2)}\n`);
+	return [`dir trust ${dir}`];
 }
 
 const TOML_ESCAPES: Record<string, string> = {

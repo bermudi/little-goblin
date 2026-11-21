@@ -1,8 +1,5 @@
 # Skills — goblin design
 
-Part of the goblin design spec. The core — domain model, authority rule,
-cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
-
 ## Skills
 
 Skills are the Agent Skills format (agentskills.io): one directory per
@@ -40,12 +37,6 @@ in the tool-call log. Explicit invocation (ruling 2026-10-21, below)
 rides a message part, not a tool. Still out: a skill tool, per-skill
 tool scoping, fingerprints, immutable skill snapshots, additional
 catalog roots (host, project), per-conversation selection.
-
-The catalog is capped at 128 entries — a self-authored catalog bigger
-than that is already a bug. The prompt section renders the truncation
-like the malformed count (`(catalog capped at 128 of N entries — see
-goblin.log)`) so the model knows its list is partial, not silently
-short.
 
 ## Skill invocation (ruling 2026-10-21, operator ask)
 
@@ -88,23 +79,6 @@ marker stands alone; the turn never dies for a missing body. For a
 non-owning turn the resolver excludes the body outright: historical
 invocations resolve the marker name only, never re-reading SKILL.md.
 A temp marker still reads its descriptor for the display name.
-Operator resume copies a still-visible invocation's reference into the
-generated resume event — the body was never persisted, so only the new
-owning turn can inject it (design/runtime-turn.md → Operator resume).
-An injected body is a
-log line (`skill invoked`: conversation, skill or source host, bytes)
-plus the durable part — activation stays answerable from the log,
-though no tool call marks it.
-
-**Picker (app).** The composer gains a skill button opening the
-catalog: every valid entry, advertised and manual-only, with
-description and body size (no silent truncation — an explicit
-invocation is an explicit context-cost decision; the 105KB claude-api
-body is real). Picking stages a chip beside the upload chips; send
-appends the part. The `## skills` prompt section is untouched —
-manual-only stays unadvertised to the model; injection is server
-behavior, not a prompt contract, so conversations with prompts frozen
-before this ruling invoke identically.
 
 **Temp skills (ruling 2026-10-21, operator ask: "temp skill, not
 install"; hardened 2026-10-22).** A GitHub skill URL (tree/blob/raw
@@ -308,11 +282,6 @@ job (tune it, don't duplicate it).
   drops the updated/size rows, which do not inform the decision.
   `src/line-diff.ts` is the pure differ; `src/skill-diff.ts` the
   per-skill shape.
-- **Instrumentation.** Every line carries the review id; outcomes are
-  where the skill dir sits, so `scripts/reviewer-stats.ts` reads the log
-  back by review id and reports proposals against disk (still proposed /
-  installed / gone). No UI. Good/bad turn labels don't exist yet — the
-  field ships empty until they do.
 - **Config.** Optional `reviewer` block; absent at boot = feature off.
   Settings can park/restore the block; detailed tuning remains a bootstrap
   or recovery file edit. Reviewer wiring is boot-bound: enabling,

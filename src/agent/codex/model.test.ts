@@ -16,6 +16,7 @@ import { generateText, stepCountIs, tool } from "ai";
 import { z } from "zod";
 import { log } from "../../log.ts";
 import { isTransientTurnFailure, quotaExhausted } from "../provider-errors.ts";
+import { fromSdkError } from "../sdk-errors.ts";
 import type { FetchLike } from "./auth.ts";
 import { codexModel, RESPONSES_URL } from "./model.ts";
 import { quotaFromMetadata } from "./receipts.ts";
@@ -409,8 +410,8 @@ describe("codexModel — failures classify as before", () => {
 			(e: unknown) => e,
 		);
 		expect(err).not.toBeNull();
-		expect(quotaExhausted(err)).not.toBeNull();
-		expect(isTransientTurnFailure(err)).toBe(false);
+		expect(quotaExhausted(fromSdkError(err))).not.toBeNull();
+		expect(isTransientTurnFailure(fromSdkError(err))).toBe(false);
 	});
 
 	test("an in-stream response.failed overload is transient", async () => {
@@ -439,8 +440,8 @@ describe("codexModel — failures classify as before", () => {
 			(e: unknown) => e,
 		);
 		expect(err).not.toBeNull();
-		expect(isTransientTurnFailure(err)).toBe(true);
-		expect(quotaExhausted(err)).toBeNull();
+		expect(isTransientTurnFailure(fromSdkError(err))).toBe(true);
+		expect(quotaExhausted(fromSdkError(err))).toBeNull();
 	});
 });
 

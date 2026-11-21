@@ -12,6 +12,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 import type { ConversationStore } from "./conversation.ts";
+import { type Bump, FenceCancelError } from "./fence.ts";
 import { T3Error, type T3 } from "./t3.ts";
 import { log } from "./log.ts";
 import { armedView, type ResponsibilityStore } from "./responsibilities.ts";
@@ -26,25 +27,20 @@ import {
 import type { WakeStore } from "./wake-store.ts";
 import type { Program, ProgramsStore } from "./programs.ts";
 import { isFollowupProgram } from "./responsibility-followup.ts";
+import type { PrWatch } from "./pr-readiness.ts";
+import { makeIssueStore } from "./responsibility-readiness.ts";
 
 export interface ServiceDeps {
 	db: Database;
 	resps: ResponsibilityStore;
 	wakes: WakeStore;
-	/** The same db handle's conversation store — correct() bumps the
-	 *  epoch of every conversation bound to the project inside the
-	 *  commit so a rollback undoes revision + fences + event together. */
-	conversations: Pick<ConversationStore, "bumpEpoch" | "listProjectConversationIds">;
+	conversations: Pick<ConversationStore, "listProjectConversationIds">;
+	fence<T>(work: (bump: Bump) => T): T;
 	/** Called after every commit so the durable wake reaches its lane. */
 	pump(): void;
 	/** Programs owns the check-in's time; the service owns its purpose.
 	 *  Absent = the responsibility stays honestly unarmed. */
 	programs?: Pick<ProgramsStore, "create" | "get" | "update" | "forResponsibility"> | undefined;
-	/** Invoked after the correction commits — the committed epoch in
-	 *  hand — and before pump, so the composition fences the live turn
-	 *  before the correction wake is admitted. The commit stands either
-	 *  way; a hook error surfaces and the wake still pumps. */
-	onCorrectionCommitted?: ((conversationId: string, epoch: number) => void) | undefined;
 }
 
 export interface HandoverInput {
@@ -60,6 +56,7 @@ export interface HandoverInput {
 		baseline: unknown;
 		cursor?: unknown;
 	}[];
+	pr?: PrWatch | undefined;
 }
 
 export type ManagedSend = (
@@ -182,6 +179,7 @@ export function makeManagedSendEdge(t3: Pick<T3, "sendThread">): ManagedSend {
 
 export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityService {
 	const { db, resps, wakes, pump } = deps;
+	const issues = makeIssueStore(db);
 	// Operations with a live in-process dispatch — reconcile refuses
 	// them while their settlement is still owed.
 	const inflight = new Set<string>();
@@ -192,58 +190,45 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 				throw new Error("nothing to correct");
 			}
 			let revised!: Responsibility;
-			const epochs = new Map<string, number>();
-			db.transaction(() => {
-				const current = resps.get(responsibilityId);
-				if (current === null) throw new Error(`responsibility ${responsibilityId} not found`);
-				revised = resps.revise(responsibilityId, input.understanding ?? current.understanding);
-				// The operator's word outranks anything in flight — in ANY
-				// lane of this project, since every bound conversation can
-				// reach the coordination tools. Bump them all in the same
-				// commit: a rollback undoes revision + fences + event.
-				const lanes = new Set(deps.conversations.listProjectConversationIds(current.projectId));
-				lanes.add(current.coordinationConversationId);
-				for (const id of lanes) {
-					epochs.set(id, deps.conversations.bumpEpoch(id));
-				}
-				wakes.record({
-					sourceKey: `correction:${responsibilityId}:${randomUUID()}`,
-					conversationId: current.coordinationConversationId,
-					kind: "operator-correction",
-					// The trigger text is all the model sees: it must name the
-					// responsibility and revision it applies to — two
-					// responsibilities share one coordination conversation, and
-					// an unattributed correction text is ambiguous to it.
-					text:
-						input.text === undefined
-							? `Operator correction on responsibility ${responsibilityId} — it is now revision ${revised.revision}.\nUpdated understanding:\n${JSON.stringify(revised.understanding)}`
-							: `Operator correction on responsibility ${responsibilityId} — it is now revision ${revised.revision}.\n${input.text}`,
-					facts: {
+			try {
+				deps.fence((bump) => {
+					const current = resps.get(responsibilityId);
+					if (current === null) throw new Error(`responsibility ${responsibilityId} not found`);
+					revised = resps.revise(responsibilityId, input.understanding ?? current.understanding);
+					// The operator's word outranks anything in flight — in ANY
+					// lane of this project, since every bound conversation can
+					// reach the coordination tools. Bump them all in the same
+					// commit: a rollback undoes revision + fences + event.
+					const lanes = new Set(deps.conversations.listProjectConversationIds(current.projectId));
+					lanes.add(current.coordinationConversationId);
+					for (const id of lanes) bump(id);
+					wakes.record({
+						sourceKey: `correction:${responsibilityId}:${randomUUID()}`,
+						conversationId: current.coordinationConversationId,
+						kind: "operator-correction",
+						// The trigger text is all the model sees: it must name the
+						// responsibility and revision it applies to — two
+						// responsibilities share one coordination conversation, and
+						// an unattributed correction text is ambiguous to it.
+						text:
+							input.text === undefined
+								? `Operator correction on responsibility ${responsibilityId} — it is now revision ${revised.revision}.\nUpdated understanding:\n${JSON.stringify(revised.understanding)}`
+								: `Operator correction on responsibility ${responsibilityId} — it is now revision ${revised.revision}.\n${input.text}`,
+						facts: {
+							responsibilityId,
+							revision: revised.revision,
+							understanding: revised.understanding,
+						},
+						origin: "operator",
 						responsibilityId,
-						revision: revised.revision,
-						understanding: revised.understanding,
-					},
-					origin: "operator",
-					responsibilityId,
-				});
-			})();
-			// Every fenced lane gets its cancellation before the wake
-			// pumps — a hook failure on one lane never skips the rest.
-			let firstHookError: { error: unknown } | null = null;
-			for (const [convId, epoch] of epochs) {
-				try {
-					deps.onCorrectionCommitted?.(convId, epoch);
-				} catch (err) {
-					firstHookError ??= { error: err };
-					log.error("correction commit hook failed", err, {
-						responsibility: responsibilityId,
-						conversation: convId,
-						epoch,
 					});
-				}
+				});
+			} catch (err) {
+				if (!(err instanceof FenceCancelError)) throw err;
+				pump();
+				throw err.cause;
 			}
 			pump();
-			if (firstHookError !== null) throw firstHookError.error;
 			log.info("responsibility correction", {
 				responsibility: responsibilityId,
 				revised: input.understanding !== undefined,
@@ -393,6 +378,7 @@ export function makeResponsibilityService(deps: ServiceDeps): ResponsibilityServ
 						origin: "operator",
 						responsibilityId: responsibility.responsibilityId,
 					});
+					if (input.pr !== undefined) issues.link(responsibility.responsibilityId, input.pr);
 					// The unarmed baseline — durable inside the commit so a
 					// post-commit link failure (or a crash between them)
 					// still names why follow-through is off. ensureFollowup

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { defineTool } from "../tool.ts";
+import { defineTool, type Tools } from "../tool.ts";
 import type { Message } from "../message.ts";
 import { openStore } from "../conversation.ts";
 import { Runtime, userMessage } from "../runtime.ts";
@@ -15,7 +15,7 @@ const echo = defineTool({
 	execute: async ({ message }) => `echo:${message}`,
 });
 type Rig = ReturnType<typeof rig>;
-function rig(model: ScriptedModel) {
+function rig(model: ScriptedModel, tools: Tools = { echo }) {
 	const store = openStore(tmpDb("goblin-turn-script-"));
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
 	const runtime = new Runtime({
@@ -23,7 +23,7 @@ function rig(model: ScriptedModel) {
 		store,
 		buildStep: () => model.step(),
 	});
-	runtime.mount({ makeTools: () => ({ echo }) });
+	runtime.mount({ makeTools: () => tools });
 	return { store, conv, runtime, model };
 }
 function run(r: Rig, text = "hello") {
@@ -33,6 +33,9 @@ function run(r: Rig, text = "hello") {
 }
 const textOf = (message: Message) => message.parts.flatMap((part) => part.type === "text" || part.type === "reasoning" ? [part.text] : []).join("");
 const adapters = [sdkScript, claudeScript] as const;
+function isSdkScript(model: ScriptedModel): model is ReturnType<typeof sdkScript> {
+	return model.engineId === "ai-sdk";
+}
 
 describe("engine-neutral model scripts", () => {
 	for (const make of adapters) {
@@ -98,9 +101,53 @@ describe("engine-neutral model scripts", () => {
 				const sink = run(r);
 				await waitUntil(() => entered, "script entered");
 				expect(r.runtime.busy(r.conv.id)).toBe(true);
+				// The hold is mid-step: the held text is on the wire, still open.
+				await waitUntil(() => sink.text.includes("held"), "held text streamed");
+				expect(sink.chunkTypes).not.toContain("text-end");
 				release();
 				expect(await sink.done).toMatchObject({ kind: "completed" });
 			} finally { release(); await r.runtime.shutdown(); r.store.close(); }
+		});
+		test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: a mid-turn steer folds into the live run`, async () => {
+			let entered!: () => void;
+			let release!: () => void;
+			const toolEntered = new Promise<void>((resolve) => { entered = resolve; });
+			const gate = new Promise<void>((resolve) => { release = resolve; });
+			const wait = defineTool({
+				description: "wait for the test",
+				input: z.object({}),
+				execute: async () => {
+					entered();
+					await gate;
+					return "released";
+				},
+			});
+			const model = make();
+			model.script(
+				{ kind: "reply", parts: [{ type: "tool-call", toolName: "wait", input: {} }] },
+				{ kind: "reply", parts: [{ type: "text", text: "steered answer" }] },
+			);
+			const r = rig(model, { echo, wait });
+			try {
+				const first = run(r, "start");
+				await toolEntered;
+				const steer = run(r, "also do this");
+				release();
+				expect(await first.done).toMatchObject({ kind: "completed" });
+				expect(await steer.done).toMatchObject({ kind: "completed" });
+				expect(r.store.history(r.conv.id).map((message) => message.role)).toEqual([
+					"user",
+					"user",
+					"assistant",
+				]);
+				expect(textOf(r.store.history(r.conv.id)[2]!)).toContain("steered answer");
+				// Claude must ack before its single query ends; SDK uses one model call per step.
+				expect(model.calls()).toBe(make === sdkScript ? 2 : 1);
+			} finally {
+				release();
+				await r.runtime.shutdown();
+				r.store.close();
+			}
 		});
 		test(`${make === sdkScript ? "ai-sdk" : "claude-code"}: usage is carried in finish metadata`, async () => {
 			const model = make(); model.script({ kind: "reply", parts: [{ type: "text", text: "usage" }], usage: { input: 11, output: 7, cacheRead: 3, cacheWrite: 2 } });
@@ -108,7 +155,7 @@ describe("engine-neutral model scripts", () => {
 			try {
 				const sink = run(r); await sink.done;
 				const finish = sink.chunks.find((chunk) => chunk.type === "finish");
-				if (model.engineId === "ai-sdk") {
+				if (isSdkScript(model)) {
 					expect(finish).toMatchObject({ messageMetadata: { usage: { input: 11, output: 7, cacheRead: 3, cacheWrite: 2 } } });
 				} else {
 					// Claude reports billed input: input + cacheRead + cacheWrite.
@@ -157,10 +204,16 @@ describe("engine-neutral model scripts", () => {
 			const r = rig(model);
 			try {
 				await run(r).done;
-				if (make === sdkScript) {
-					expect(model.requests()).toHaveLength(2);
-				} else {
-					expect(model.requests()).toBeNull();
+				// ai-sdk sends one request per model call; claude-code one CLI
+				// query per tool loop, its prompt carrying the user's words.
+				expect(model.requests()).toHaveLength(make === sdkScript ? 2 : 1);
+				expect(model.requests()[0]).toContain("hello");
+				if (isSdkScript(model)) {
+					const prompt: unknown = JSON.parse(model.requests()[0]!);
+					const request: unknown = JSON.parse(model.callOptions()[0]!);
+					expect(Array.isArray(prompt)).toBe(true);
+					expect(request).toHaveProperty("prompt");
+					expect(request).toHaveProperty("tools");
 				}
 			} finally { await r.runtime.shutdown(); r.store.close(); }
 		});
@@ -203,8 +256,9 @@ describe("engine-neutral model scripts", () => {
 			finally { await r.runtime.shutdown(); r.store.close(); }
 		}
 		expect(() => claudeScript().script({ kind: "reply", parts: [], finish: "content-filter" })).toThrow("claude-code");
-		expect(() => claudeScript().script({ kind: "fail", parts: [], error: { message: "quota", status: 429 } }))
-			.toThrow("claude-code");
+		expect(() =>
+			claudeScript().script({ kind: "fail", parts: [], error: { message: "quota", status: 429 } }),
+		).not.toThrow();
 		expect(() => claudeScript().script({ kind: "reply", parts: [], usage: { input: 1, output: 1 } }))
 			.toThrow("claude-code cannot render usage");
 	});

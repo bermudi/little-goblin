@@ -27,6 +27,7 @@ import { feedForProject } from "./responsibility-feed.ts";
 import { responsibilityStage } from "./responsibility-stage.ts";
 import { openWakeStore, type WakeStore } from "./wake-store.ts";
 import { responsibilityTool } from "./agent/tools/responsibility.ts";
+import { storeFence } from "./testkit/store-fence.ts";
 
 
 setLogFile(null);
@@ -71,6 +72,7 @@ function rig(): Rig {
 			wakes,
 			programs,
 			conversations: store,
+			fence: storeFence(store),
 			pump: () => {
 				r.pumps += 1;
 			},
@@ -156,6 +158,7 @@ describe("responsibility service", () => {
 				wakes: openWakeStore(r.store.db),
 				programs: sameFile,
 				conversations: r.store,
+				fence: storeFence(r.store),
 				pump: () => {},
 			});
 			const { responsibility, created } = svc.accept({
@@ -601,11 +604,11 @@ describe("correct", () => {
 			wakes: openWakeStore(r.store.db),
 			conversations: r.store,
 			pump: () => order.push("pump"),
-			onCorrectionCommitted: (convId, epoch) => {
+			fence: storeFence(r.store, (convId, epoch) => {
 				order.push(`hook:${convId}`);
 				seen.set(convId, epoch);
 				epochsInHook.set(convId, r.store.get(convId)!.epoch);
-			},
+			}),
 		});
 		const before1 = r.store.get(r.convId)!.epoch;
 		const before2 = r.store.get(conv2.id)!.epoch;
@@ -639,9 +642,9 @@ describe("correct", () => {
 			pump: () => {
 				pumps += 1;
 			},
-			onCorrectionCommitted: () => {
+			fence: storeFence(r.store, () => {
 				throw new Error("runtime gone");
-			},
+			}),
 		});
 		const before = r.store.get(r.convId)!.epoch;
 		expect(() => svc.correct(resp.responsibilityId, { text: "x" })).toThrow(/runtime gone/);
@@ -661,10 +664,10 @@ describe("correct", () => {
 			pump: () => {
 				pumps += 1;
 			},
-			onCorrectionCommitted: (convId) => {
+			fence: storeFence(r.store, (convId) => {
 				hooked.push(convId);
 				throw new Error(`lane ${convId} dead`);
-			},
+			}),
 		});
 		expect(() => svc2.correct(resp.responsibilityId, { text: "y" })).toThrow(/lane .* dead/);
 		expect(hooked.sort()).toEqual([conv2.id, r.convId].sort());
@@ -696,10 +699,10 @@ describe("correct", () => {
 				pump: () => {
 					pumps += 1;
 				},
-				onCorrectionCommitted: (convId) => {
+				fence: storeFence(r.store, (convId) => {
 					hooked.push(convId);
 					throw thrown;
-				},
+				}),
 			});
 			try {
 				svc.correct(resp.responsibilityId, { text: "x" });
@@ -1197,6 +1200,7 @@ describe("atomic dispatch claim", () => {
 			resps: resps2,
 			wakes: openWakeStore(store2.db),
 			conversations: store2,
+			fence: storeFence(store2),
 			pump: () => {},
 		});
 		const reopened = resps2.getOperation(op.operationId)!;
@@ -1275,6 +1279,7 @@ describe("boot sweep: crashed sends read uncertain", () => {
 			resps: resps2,
 			wakes: openWakeStore(store2.db),
 			conversations: store2,
+			fence: storeFence(store2),
 			pump: () => {},
 		});
 		return { store2, resps2, svc2 };

@@ -8,9 +8,9 @@ into the inner loop, coordinates execution, and brings back useful work.
 This records settled product intent from the operator's discussions. It is
 not a claim that everything here ships today. [ROADMAP.md](ROADMAP.md) records
 the current baseline and recommended next steps; source and tests establish
-implemented behavior. Implementation contracts live in `DESIGN.md` and
-`design/`. Surface conflicts rather than silently treating current code or an
-old non-goal as a veto on this direction.
+implemented behavior. [DESIGN.md](DESIGN.md) points to the code and explains
+design choices. Surface conflicts rather than silently treating current code
+or an old non-goal as a veto on this direction.
 
 ## The Experience We Want
 

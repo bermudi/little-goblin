@@ -397,6 +397,21 @@ choosing the harness itself stays goblin's call. The old T3 shape
 (`provider`/`model`/`options`) and any `machines` block are rejected at
 boot with a message naming this shape.
 
+### Inner loop
+
+The T3 Code provider and model for an issue build's [inner
+loop](../GLOSSARY.md) thread (design/delegation.md → An issue build is
+one inner loop on T3 Code). Unset means Claude on Opus 5.5 — the
+operator's 2026-11-20 ruling. Live-read: the next `responsibility
+accept` with `start` uses a change. Hand-edited only.
+
+```json5
+innerLoop: { provider: "claudeAgent", model: "claude-opus-5-5", options: { effort: "high" } },
+```
+
+`provider` is a T3 provider instance id and `model` its model slug;
+`options` become `--option id=value` flags.
+
 ### Desktops
 
 Off when unset. A `desktops` block enables the desktop pool: the
@@ -557,10 +572,10 @@ commands, provision credentials, warm snapshots or unlock wallets. See
 ## Per-topic settings
 
 Voice mode and memory inclusion are the per-topic settings, toggled from
-chat (`/voice`, `/memory on`·`off`). `/voice` interrupts whatever the
-topic is currently doing, so a reply never comes from a half-applied
-setting; `/memory on`·`off` lands without interrupting — a running turn
-finishes, its retention refused at the gate. `/model` and `/think` remain
+chat (`/voice`, `/memory on`·`off`). Both land without interrupting and
+apply to the next reply: a reply already in progress finishes in the mode
+it started in, so it never comes from a half-applied setting; after
+`/memory off` its retention is refused at the gate. `/model` and `/think` remain
 retired: Telegram model/thinking are shared channel settings, while each
 app conversation remembers its own.
 Model/thinking changes take effect on the next turn without interruption.

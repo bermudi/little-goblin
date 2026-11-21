@@ -1,12 +1,7 @@
-// Report seam of the delegation family: where a row's report lives and
-// the issue-lead row predicate. Every delegation runs in goblin's own
-// private hc session — there is no target dimension.
-
 import { join } from "node:path";
 import { log } from "./log.ts";
 import type { Delegation } from "./delegations.ts";
 import type { DelegationLifecycleDeps } from "./delegation-lifecycle.ts";
-import type { PrWatch } from "./pr-readiness.ts";
 
 // The report file is the durable result channel; screen output is the fallback.
 const REPORT_NOTE =
@@ -25,10 +20,7 @@ export function reportPathFor(deps: DelegationLifecycleDeps, d: Delegation): str
 export function reportNote(deps: DelegationLifecycleDeps, d: Delegation): string {
 	return (
 		REPORT_NOTE +
-		reportPathFor(deps, d) +
-		(isPrWatched(d)
-			? `\nCode watches ${d.pr.issue.repository}#${d.pr.issue.number}: the open PR that closes it, its current head commit, and the commit checks on that head${d.pr.checks.length === 0 ? "" : ` (required: ${d.pr.checks.join(", ")})`}. A check counts only for the commit it is on; every new push needs its checks again. Readiness never authorizes a merge.`
-			: "")
+		reportPathFor(deps, d)
 	);
 }
 
@@ -49,6 +41,3 @@ export async function killQuietly(
 	}
 }
 
-export function isPrWatched(d: Delegation): d is Delegation & { pr: PrWatch; responsibilityId: string } {
-	return d.pr !== null && d.responsibilityId !== null;
-}

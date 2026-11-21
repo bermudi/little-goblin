@@ -18,7 +18,6 @@ import type { DelegationConfig } from "./config-schema.ts";
 import type { Conversation } from "./conversation-read.ts";
 import type { DelegateToolDeps, DelegationPin } from "./agent/tools/delegate.ts";
 import { wake, wakeApp, type WakeDeps } from "./wake.ts";
-import type { PrWatch, PrReadiness } from "./pr-readiness.ts";
 import type { WorkerSendRefusal } from "./responsibility-authority.ts";
 
 export interface DelegationLifecycleDeps {
@@ -32,10 +31,8 @@ export interface DelegationLifecycleDeps {
 	// A linked delegation's settlement lands as a worker report before its
 	// notice wakes the conversation (responsibility-runs.ts). A throw leaves
 	// the row eligible for retry; the report is keyed, so a retry files once.
-	settled?: (d: Delegation, verdict: DelegationVerdict, body: string, readiness?: PrReadiness) => void;
+	settled?: (d: Delegation, verdict: DelegationVerdict, body: string) => void;
 	responsibilityRevision?: (id: string) => number | null;
-	readiness?: (watch: PrWatch) => Promise<PrReadiness>;
-	watchResponsibility?: (id: string, revision: number | null) => boolean;
 }
 
 export interface LaunchInput {
@@ -47,7 +44,6 @@ export interface LaunchInput {
 	appConversation?: string;
 	responsibilityId?: string;
 	role?: string;
-	pr?: PrWatch;
 }
 
 export type LaunchOutcome =

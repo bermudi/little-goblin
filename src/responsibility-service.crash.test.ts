@@ -6,6 +6,7 @@ import { makeResponsibilityService } from "./responsibility-service.ts";
 import { openPrograms } from "./programs.ts";
 import { deferred, tmpDb } from "./testkit.ts";
 import { openWakeStore } from "./wake-store.ts";
+import { storeFence } from "./testkit/store-fence.ts";
 
 describe("responsibility send crash recovery", () => {
 	test("a claimed send accepted before acknowledgement becomes uncertain and is not re-sent", async () => {
@@ -18,7 +19,7 @@ describe("responsibility send crash recovery", () => {
 		const resps = openResponsibilities(store.db);
 		const programsPath = path.replace(/goblin\.sqlite$/, "programs.sqlite");
 		const programs = openPrograms(programsPath);
-		const svc = makeResponsibilityService({ db: store.db, resps, wakes: openWakeStore(store.db), programs, conversations: store, pump: () => {} });
+		const svc = makeResponsibilityService({ db: store.db, resps, wakes: openWakeStore(store.db), programs, conversations: store, fence: storeFence(store), pump: () => {} });
 		const { responsibility } = svc.accept({
 			projectId: project.id, coordinationConversationId: conv.id, handoverKey: "crash",
 			understanding: { outcome: "done", situation: "working", nextAction: "continue", checkpoints: [], completionEvidence: ["test"] },
@@ -38,7 +39,7 @@ describe("responsibility send crash recovery", () => {
 		const reboot = openStore(path);
 		const recovered = openResponsibilities(reboot.db);
 		const nextPrograms = openPrograms(programsPath);
-		const next = makeResponsibilityService({ db: reboot.db, resps: recovered, wakes: openWakeStore(reboot.db), programs: nextPrograms, conversations: reboot, pump: () => {} });
+		const next = makeResponsibilityService({ db: reboot.db, resps: recovered, wakes: openWakeStore(reboot.db), programs: nextPrograms, conversations: reboot, fence: storeFence(reboot), pump: () => {} });
 		await next.dispatch(prepared.operation.operationId, async () => { sends++; return {}; });
 		expect(sends).toBe(1);
 		expect(recovered.getOperation(prepared.operation.operationId)?.state).toBe("uncertain");

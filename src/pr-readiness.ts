@@ -8,8 +8,6 @@ export const githubIssueSchema = z.strictObject({
 export type GithubIssue = z.infer<typeof githubIssueSchema>;
 export const commitShaSchema = z.string().regex(/^[a-f0-9]{40}$/);
 export const checkNameSchema = z.string().trim().min(1).max(100);
-/** What code watches for one delegation: the issue whose closing PR it observes, and
- *  the commit checks (status context or check run name) that must pass on that PR's head. */
 export const prWatchSchema = z.strictObject({
 	issue: githubIssueSchema,
 	checks: z.array(checkNameSchema).max(20)
@@ -20,17 +18,13 @@ export type PrWatch = z.infer<typeof prWatchSchema>;
 export const requiredCheckSchema = z.object({
 	name: checkNameSchema,
 	state: z.enum(["passed", "pending", "failed", "missing"]),
-	/** GitHub's raw state/conclusion per entry with this name (e.g. "SUCCESS", "FAILURE", "SKIPPED"); [] when missing. */
 	detail: z.array(z.string()),
-	/** Untrusted: status description / check run title of the entry that set `state`. */
 	description: z.string().nullable(),
-	/** Untrusted: status targetUrl / check run detailsUrl of the entry that set `state`. */
 	url: z.string().nullable(),
-	/** The non-minimized PR comment whose URL equals `url` exactly; untrusted text. */
 	notes: z.object({
 		source: z.string().url(),
 		author: z.string().nullable(),
-		text: z.string(), // first 6000 chars
+		text: z.string(),
 		truncated: z.boolean(),
 		digest: z.string().regex(/^[a-f0-9]{64}$/),
 	}).nullable(),

@@ -23,9 +23,9 @@ an explicit rename.
 ## The six commands
 
 Commands are settings and controls, not conversations. The settings ones are
-per-topic (the topic you're in), and every settings change interrupts
-whatever that topic is currently doing, so a reply always reflects the
-current settings — never a mix.
+per-topic (the topic you're in), and a settings change applies to the next
+reply. A reply already in progress finishes the way it started, so a reply
+never mixes settings.
 
 | Command | What it does |
 |---|---|
@@ -83,23 +83,26 @@ Files up to 2 GB work if you're running the self-hosted Telegram bot API
 
 ## PR readiness
 
-When Goblin starts a delegation for a responsibility, it can name the
-issue (`issue:{repository:"owner/repo",number:N}`) and the commit checks
+Hand Goblin an issue in a project conversation and it starts the inner loop
+at once: one T3 Code thread (Claude on Opus 5.5 unless `innerLoop` says
+otherwise) in a new worktree from the repo's default branch, on branch
+`issue/<N>`. The responsibility links the explicit issue
+(`issue:{repository:"owner/repo",number:N}`) and can name the commit checks
 that must pass (`checks:["build","my-verifier"]`). A check is a GitHub
-commit status (its `context`) or a check run (its `name`). When the
-delegation settles, code checks the open PR that closes the issue, its
-current head, CI on that head, and each required check on that same head.
-The notice and worker report carry the sources, not just the worker's
-claim. No passing evidence means **not ready**.
+commit status (its `context`) or a check run (its `name`). Code then checks
+the open PR that closes the issue, its current head, CI on that head, and
+each required check on that same head. Each change files a worker report
+with the sources and wakes Goblin; it is not the worker's claim. No passing
+evidence means **not ready**.
 
 A check belongs to one commit, so after a push nothing counts until the
 checks run again. A missing, pending, skipped or failed required check is
 not ready. A check's description and link are passed on as untrusted
 notes; if the link is a comment on the PR, that comment is included.
 Readiness is never permission to merge. Code checks for changes once a
-minute after settlement, with no model turns spent on unchanged CI.
-Paused, closed, corrected or stopped work is not monitored. Delegations
-without an explicit issue are not watched.
+minute, with no model turns spent on unchanged CI. Paused or closed work is
+not monitored. Responsibilities accepted without an explicit issue are not
+watched.
 
 Which checks an issue build requires is your workflow's choice, set in
 Goblin's `proxy-operator` workspace skill, not in Goblin's code.

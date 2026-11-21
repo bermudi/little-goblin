@@ -1,8 +1,5 @@
 # System One — goblin design
 
-Part of the goblin design spec. The core — domain model, authority rule,
-cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
-
 ## What this is
 
 System One is the working name for a *discriminative model*: one that
@@ -24,35 +21,16 @@ One `System1Client` is built at boot and shared by every consumer.
 - **Logging.** Never state text, credentials, response bodies, or endpoint
   URLs.
 
-## Wire protocol
-
-A `noul` question must carry both true and false criteria — the transport
-rejects a one-sided question.
-
 ## Consumers
 
-Four consumers ride the one client; each keeps its own call site, budget
-and failure semantics — this list is the single source of truth for who
-they are:
-
-- **Skill-review gate** — runs on every completed turn; fail-open: a gate
-  outage falls back to the deterministic tool-count trigger (streak
-  logged). `design/skills.md` → Skill reviewer.
-- **Injection checker** — fail-open on `System1Error` only: an outage
-  yields an "unavailable" verdict and the mail read proceeds; anything
-  else propagates loud. `design/mail.md`.
-- **Rolling DM follow-up check** — no client, `System1Error` or deadline
-  → follow-up (continue), warn-logged. `design/telegram.md` → Rolling DM.
-- **Loop watchdog** — unavailable → warn and skip; the deterministic
-  detector still stands. `design/model.md` → No step budget.
+Each consumer owns its failure semantics: see `design/skills.md`,
+`design/mail.md`, `design/telegram.md` and `design/model.md`.
 
 ## The loopback endpoint
 
-`POST /api/check-injection` serves the checker to same-box callers (the
-`goblin-mail` wrapper): a loopback Host allowlist **is** the auth — the
-server binds loopback, and only loopback names may reach the check. Absent
-client → 503; only unexpected bugs reach the 500 — the text is never
-logged.
+The checker serves same-box callers (the `goblin-mail` wrapper). The
+server binds loopback, and a loopback Host allowlist **is** the auth;
+the text is never logged.
 
 ## Config
 

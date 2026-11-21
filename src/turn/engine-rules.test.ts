@@ -1,30 +1,20 @@
-// design/runtime-turn.md → Engine rules: every production engine's
-// declared `rules` must match what it does. Each optional rule has one
-// probe per engine, driven through the real Runtime with the shared
-// StepRules (turn/step-rules.ts) behind it; the probe reports whether
-// the behaviour happened and the test compares that with the claim —
-// a claim the engine doesn't follow fails, and so does a rule it
-// follows without claiming.
 
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { type ConversationStore, openStore } from "../conversation.ts";
-import { parseConfig, type ConfigRef } from "../config.ts";
 import { Runtime, type TurnStep, userMessage } from "../runtime.ts";
-import type { AuthStore } from "../auth.ts";
 import type { Message } from "../message.ts";
 import { defineTool, type Tools } from "../tool.ts";
-import { deferred, RecordingSink, tmpDb, tmpDir, useHome, waitUntil } from "../testkit.ts";
+import { deferred, RecordingSink, tmpDb, useHome, waitUntil } from "../testkit.ts";
 import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
-import { fakeClaude, type FakeStep } from "../testkit/fake-claude.ts";
 import { foldSummary } from "../testkit/fake-summary.ts";
+import { sdkScript } from "../testkit/turn-script-sdk.ts";
+import { claudeScript } from "../testkit/turn-script-claude.ts";
+import type { ScriptCall } from "../testkit/turn-script.ts";
 import { aiSdkEngine } from "./ai-sdk-engine.ts";
 import type { ModelStep } from "./ai-sdk-step.ts";
 import type { EngineRules, TurnEngine } from "./engine.ts";
-import { createClaudeEngine, type ClaudeStep } from "../agent/claude-code/mod.ts";
-import { createToolBridge, type ToolBridge } from "../agent/claude-code/tools.ts";
 
-/** toolLaunchGate is the runtime's to enforce — its own test below. */
 type ProbedRule = Exclude<keyof EngineRules, "toolLaunchGate">;
 const probedRules: readonly ProbedRule[] = [
 	"contextFill",
@@ -35,16 +25,13 @@ const probedRules: readonly ProbedRule[] = [
 
 const FINAL = "FINAL-REPLY-9c1e";
 const FILL_TOKENS = 4321;
-// Verbatim provider warning the filter classifier matches.
 const filterWarning =
 	"[System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content.]";
 
 interface RunResult {
 	done: unknown;
 	reply: string;
-	/** What the probe tool's last call read from its contextFill getter. */
 	fill: { used: number; limit: number } | null;
-	/** A fold ran before the final reply landed — mid-turn, not post-turn. */
 	foldedMidTurn: boolean;
 }
 
@@ -63,7 +50,6 @@ function seedExchanges(store: ConversationStore, convId: string): void {
 	}
 }
 
-/** One turn through the real Runtime; `foldable` seeds history and wires compaction. */
 async function runTurn(
 	engine: TurnEngine,
 	step: TurnStep,
@@ -126,39 +112,41 @@ async function runTurn(
 const recovered = (r: RunResult): boolean =>
 	(r.done as { kind: string }).kind === "completed" && r.reply.includes(FINAL);
 
+function sdkStep(calls: ScriptCall[], contextWindow: number): ModelStep {
+	const model = sdkScript();
+	model.script(...calls);
+	const step = model.step();
+	if (step.engine !== "ai-sdk") throw new Error("expected an AI SDK script step");
+	return { ...step, contextWindow };
+}
+
 interface EngineProbe {
 	name: string;
-	/** A fresh production engine for one run, plus its vendor script hooks. */
 	engine(): TurnEngine;
 	probe: Record<ProbedRule, () => Promise<boolean>>;
 }
 
 function aiSdkProbe(): EngineProbe {
-	const step = (
-		attempts: Parameters<typeof scriptedModel>[0],
-		contextWindow: number,
-	): ModelStep => ({
-		engine: "ai-sdk",
-		model: scriptedModel(attempts, { extra: textParts("ok") }).model,
-		system: "test",
-		contextWindow,
-		transientRetryDelayMs: 0,
-	});
-	const toolStep = (id: string, inputTokens: number) => [
-		{ type: "stream-start" as const, warnings: [] },
-		toolCallPart(id, "probe"),
-		finishPart("tool-calls", inputTokens),
-	];
 	return {
 		name: "ai-sdk",
 		engine: () => aiSdkEngine,
 		probe: {
 			contextFill: async () => {
-				// A call's usage lands when the call ends — after its own tools
-				// ran — so the second call's tool reads the first call's fill.
 				const r = await runTurn(
 					aiSdkEngine,
-					step([toolStep("c1", FILL_TOKENS), toolStep("c2", 50), textParts(FINAL)], 10_000),
+					sdkStep([
+						{
+							kind: "reply",
+							parts: [{ type: "tool-call", toolName: "probe", input: {} }],
+							usage: { input: FILL_TOKENS, output: 1 },
+						},
+						{
+							kind: "reply",
+							parts: [{ type: "tool-call", toolName: "probe", input: {} }],
+							usage: { input: 50, output: 1 },
+						},
+						{ kind: "reply", parts: [{ type: "text", text: FINAL }] },
+					], 10_000),
 				);
 				return r.fill?.used === FILL_TOKENS;
 			},
@@ -166,7 +154,9 @@ function aiSdkProbe(): EngineProbe {
 				recovered(
 					await runTurn(
 						aiSdkEngine,
-						step(
+						{
+							engine: "ai-sdk",
+							model: scriptedModel(
 							[
 								[
 									{ type: "stream-start", warnings: [] },
@@ -174,21 +164,41 @@ function aiSdkProbe(): EngineProbe {
 								],
 								textParts(FINAL),
 							],
-							10_000,
-						),
+							).model,
+							system: "test",
+							contextWindow: 10_000,
+							transientRetryDelayMs: 0,
+						},
 					),
 				),
 			contentFilterReask: async () =>
 				recovered(
 					await runTurn(
 						aiSdkEngine,
-						step([[{ type: "error", error: new Error(filterWarning) }], textParts(FINAL)], 10_000),
+						{
+							engine: "ai-sdk",
+							model: scriptedModel(
+								[[{ type: "error", error: new Error(filterWarning) }], textParts(FINAL)],
+							).model,
+							system: "test",
+							contextWindow: 10_000,
+							transientRetryDelayMs: 0,
+						},
 					),
 				),
 			preemptFold: async () => {
-				const r = await runTurn(aiSdkEngine, step([toolStep("c1", 900), textParts(FINAL)], 1000), {
-					foldable: true,
-				});
+				const r = await runTurn(
+					aiSdkEngine,
+					sdkStep([
+						{
+							kind: "reply",
+							parts: [{ type: "tool-call", toolName: "probe", input: {} }],
+							usage: { input: 900, output: 1 },
+						},
+						{ kind: "reply", parts: [{ type: "text", text: FINAL }] },
+					], 1000),
+					{ foldable: true },
+				);
 				return recovered(r) && r.foldedMidTurn;
 			},
 		},
@@ -196,83 +206,65 @@ function aiSdkProbe(): EngineProbe {
 }
 
 function claudeProbe(): EngineProbe {
-	const auth: AuthStore = {
-		resolve: async (name) => `token-for-${name}`,
-		has: () => true,
-		names: () => ["claude-code"],
-	};
-	const configRef: ConfigRef = {
-		current: parseConfig({
-			providers: { claude: { kind: "claude-code", auth: "claude-code" } },
-			model: "claude/claude-sonnet-4-5",
-			operators: [7],
-			allowedUsers: [7],
-		}),
-		ttsDown: false,
-	};
-	const open = (scripts: (bridge: () => ToolBridge) => FakeStep[][]) => {
-		const fake = fakeClaude();
-		const bridgeRef: { current: ToolBridge | null } = { current: null };
-		fake.scriptSequence(scripts(() => bridgeRef.current!));
-		return createClaudeEngine({
-			auth,
-			configRef,
-			query: fake.query,
-			configDir: tmpDir("goblin-engine-rules-cc-"),
-			bridgeFactory: (d) => {
-				const real = createToolBridge(d);
-				bridgeRef.current = real;
-				return real;
-			},
-		});
-	};
-	const step = (contextWindow: number): ClaudeStep => ({
-		engine: "claude-code",
-		label: "claude/claude-sonnet-4-5",
-		modelId: "claude-sonnet-4-5",
-		auth: "claude-code",
-		system: "test",
-		thinking: {},
+	const fresh = () => claudeScript();
+	const withWindow = (model: ReturnType<typeof claudeScript>, contextWindow: number): TurnStep => ({
+		...model.step(),
 		contextWindow,
-	});
-	const toolStep = (bridge: () => ToolBridge, inputTokens: number): FakeStep => ({
-		kind: "tool",
-		name: "probe",
-		input: {},
-		usage: { inputTokens },
-		run: () => bridge().invoke("probe", {}),
 	});
 	return {
 		name: "claude-code",
-		engine: () => open(() => []),
+		engine: () => fresh().engines[0]!,
 		probe: {
 			contextFill: async () => {
-				const engine = open((bridge) => [
-					[toolStep(bridge, FILL_TOKENS), toolStep(bridge, 50), { kind: "stream-text", text: FINAL }],
-				]);
-				const r = await runTurn(engine, step(10_000));
+				const model = fresh();
+				model.script(
+					{
+						kind: "reply",
+						parts: [{ type: "tool-call", toolName: "probe", input: {} }],
+						usage: { input: FILL_TOKENS, output: 1 },
+					},
+				);
+				model.script(
+					{
+						kind: "reply",
+						parts: [{ type: "tool-call", toolName: "probe", input: {} }],
+						usage: { input: 50, output: 1 },
+					},
+				);
+				model.script(
+					{ kind: "reply", parts: [{ type: "text", text: FINAL }] },
+				);
+				const r = await runTurn(model.engines[0]!, withWindow(model, 10_000));
 				return r.fill?.used === FILL_TOKENS;
 			},
 			transientRetry: async () => {
-				const engine = open(() => [
-					[{ kind: "error", resultText: "API Error: socket hang up" }],
-					[{ kind: "stream-text", text: FINAL }],
-				]);
-				return recovered(await runTurn(engine, step(10_000)));
+				const model = fresh();
+				model.script(
+					{ kind: "fail", parts: [], error: { message: "API Error: socket hang up" } },
+					{ kind: "reply", parts: [{ type: "text", text: FINAL }] },
+				);
+				return recovered(await runTurn(model.engines[0]!, withWindow(model, 10_000)));
 			},
 			contentFilterReask: async () => {
-				const engine = open(() => [
-					[{ kind: "error", resultText: filterWarning }],
-					[{ kind: "stream-text", text: FINAL }],
-				]);
-				return recovered(await runTurn(engine, step(10_000)));
+				const model = fresh();
+				model.script(
+					{ kind: "fail", parts: [], error: { message: filterWarning } },
+					{ kind: "reply", parts: [{ type: "text", text: FINAL }] },
+				);
+				return recovered(await runTurn(model.engines[0]!, withWindow(model, 10_000)));
 			},
 			preemptFold: async () => {
-				const engine = open((bridge) => [
-					[toolStep(bridge, 900), { kind: "stream-text", text: FINAL }],
-					[{ kind: "stream-text", text: FINAL }],
-				]);
-				const r = await runTurn(engine, step(1000), { foldable: true });
+				const model = fresh();
+				model.script(
+					{
+						kind: "reply",
+						parts: [{ type: "tool-call", toolName: "probe", input: {} }],
+						usage: { input: 900, output: 1 },
+					},
+					{ kind: "reply", parts: [{ type: "text", text: FINAL }] },
+					{ kind: "reply", parts: [{ type: "text", text: FINAL }] },
+				);
+				const r = await runTurn(model.engines[0]!, withWindow(model, 1000), { foldable: true });
 				return recovered(r) && r.foldedMidTurn;
 			},
 		},

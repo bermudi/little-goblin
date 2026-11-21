@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { ensureHcCore, hcSessionForHome, makeHc, stopHcCore } from "./hc.ts";
+import { hcSessionForHome, makeHc, startHcCore, stopHcCore } from "./hc.ts";
+import { ensureHc } from "./hc-install.ts";
 import { useHome } from "./testkit.ts";
 
 const active: { binary: string; session: string }[] = [];
@@ -27,7 +28,8 @@ describe.skipIf(!LIVE)("hc live wire", () => {
 		const inheritedSentinel = process.env.GOBLIN_HC_SENTINEL;
 		process.env.GOBLIN_HC_SENTINEL = "leak";
 		try {
-			await ensureHcCore(binary, session);
+			await ensureHc(binary);
+			startHcCore(binary, session);
 		} finally {
 			if (inheritedSentinel === undefined) delete process.env.GOBLIN_HC_SENTINEL;
 			else process.env.GOBLIN_HC_SENTINEL = inheritedSentinel;

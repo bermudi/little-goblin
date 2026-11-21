@@ -17,7 +17,9 @@ import { FencedError } from "../../runtime.ts";
 
 import { deferred, tmpDir, useHome, waitUntil } from "../../testkit.ts";
 import { openWakeStore } from "../../wake-store.ts";
+import { makeIssueStore } from "../../responsibility-readiness.ts";
 import { responsibilityTool } from "./responsibility.ts";
+import { storeFence } from "../../testkit/store-fence.ts";
 
 setLogFile(null);
 
@@ -55,6 +57,7 @@ function rig(
 		guardedSend?: boolean | ManagedSend;
 		listFor?: () => Promise<T3Thread[]>;
 		assertAuthority?: () => void;
+		startInnerLoop?: Parameters<typeof responsibilityTool>[0]["startInnerLoop"];
 	} = {},
 ): Rig {
 	const home = useHome(`goblin-rtool-${tmpDir().slice(-6)}-`);
@@ -84,6 +87,7 @@ function rig(
 		resps,
 		wakes,
 		conversations: store,
+		fence: storeFence(store),
 		pump: () => {},
 	});
 	const t = responsibilityTool({
@@ -97,6 +101,7 @@ function rig(
 			r.listCalls += 1;
 			return over.listFor !== undefined ? over.listFor() : r.threads;
 		},
+		startInnerLoop: over.startInnerLoop,
 		...(typeof over.guardedSend === "function"
 			? { guardedSend: over.guardedSend }
 			: over.guardedSend === true
@@ -151,6 +156,74 @@ describe("responsibility tool", () => {
 		expect(again.created).toBe(false);
 		expect(r.resps.attachmentsFor(resp.responsibilityId)).toHaveLength(1);
 		r.store.close();
+	});
+
+	test("accept with start opens the inner loop once, binds its thread and links the issue", async () => {
+		const starts: unknown[] = [];
+		const r = rig({
+			startInnerLoop: async (input) => {
+				starts.push(input);
+				r.threads.push(thread({ threadId: "mcp:inner" }));
+				return { threadId: "mcp:inner" };
+			},
+		});
+		const input = {
+			action: "accept",
+			understanding,
+			issue: { repository: "owner/repo", number: 7 },
+			start: { brief: "fix issue 7" },
+		};
+		const out = await r.execute(input);
+		expect(out.created).toBe(true);
+		expect(starts).toMatchObject([
+			{ handoverKey: "handover:test", brief: "fix issue 7", branch: undefined, pr: { issue: input.issue, checks: [] } },
+		]);
+		const id = (out.responsibility as { responsibilityId: string }).responsibilityId;
+		expect(r.resps.attachmentsFor(id).map((a) => a.target.agentName)).toEqual(["mcp:inner"]);
+		expect(makeIssueStore(r.store.db).get(id)).toMatchObject({ issue: input.issue, checks: [] });
+		expect((await r.execute(input)).created).toBe(false);
+		expect(starts).toHaveLength(1);
+	});
+
+	test("accept names the commit checks code requires on the PR head", async () => {
+		const starts: unknown[] = [];
+		const r = rig({
+			startInnerLoop: async (input) => {
+				starts.push(input);
+				r.threads.push(thread({ threadId: "mcp:inner" }));
+				return { threadId: "mcp:inner" };
+			},
+		});
+		const issue = { repository: "owner/repo", number: 7 };
+		const out = await r.execute({ action: "accept", understanding, issue, checks: ["verify-pr", "build"], start: { brief: "go" } });
+		const id = (out.responsibility as { responsibilityId: string }).responsibilityId;
+		expect(starts).toMatchObject([{ pr: { issue, checks: ["verify-pr", "build"] } }]);
+		expect(makeIssueStore(r.store.db).get(id)).toMatchObject({ issue, checks: ["verify-pr", "build"] });
+	});
+
+	test("checks need an issue, unique names, and only ride on accept", async () => {
+		const r = rig();
+		const issue = { repository: "o/r", number: 1 };
+		expect(await r.execute({ action: "accept", understanding, checks: ["verify"], start: { brief: "go", branch: "b" } }))
+			.toMatchObject({ error: expect.stringContaining("checks requires issue") });
+		expect(await r.execute({ action: "accept", understanding, issue, checks: ["verify", "verify"], start: { brief: "go" } }))
+			.toMatchObject({ error: expect.stringContaining("check names must be unique") });
+		expect(await r.execute({ action: "accept", understanding, issue, checks: [], start: { brief: "go" } }))
+			.toMatchObject({ error: expect.stringContaining("checks") });
+		expect(await r.execute({ action: "status", checks: ["verify"] }))
+			.toMatchObject({ error: expect.stringContaining("checks is set only on accept") });
+	});
+
+	test("accept with start refuses when no start edge is wired, and needs a branch without an issue", async () => {
+		const r = rig();
+		expect(await r.execute({ action: "accept", understanding, start: { brief: "go" }, issue: { repository: "o/r", number: 1 } }))
+			.toMatchObject({ error: expect.stringContaining("not wired") });
+		expect(await r.execute({ action: "accept", understanding, start: { brief: "go" } }))
+			.toMatchObject({ error: expect.stringContaining("start needs a branch") });
+		expect(await r.execute({ action: "accept", understanding }))
+			.toMatchObject({ error: expect.stringContaining("at least one selected thread") });
+		expect(await r.execute({ action: "status", issue: { repository: "o/r", number: 1 } }))
+			.toMatchObject({ error: expect.stringContaining("only on accept") });
 	});
 
 	test("accept refuses a thread id the project list does not carry", async () => {

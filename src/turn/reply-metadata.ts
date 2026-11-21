@@ -15,15 +15,9 @@ export interface ReplyMetadata {
 		output: number | null;
 		cacheRead: number | null;
 		cacheWrite: number | null;
-		// input above sums every step's billed prompt across the tool
-		// loop; the window gauge reads the final step — the current
-		// occupancy, the number compaction math uses.
 		lastInput: number | null;
 		lastCacheRead: number | null;
 	};
-	// Itemization of the final step's prompt, in serialized characters
-	// (turn/itemize.ts); scaled to tokens by /context. Absent when no
-	// step ran.
 	promptChars?: PromptSegments;
 	quota?: AppQuota;
 	fallback?: { from: { ref: string; reason: string }[] };
@@ -53,7 +47,6 @@ export function replyMetadata(input: {
 		model: input.label,
 		finishReason: input.finishReason,
 		durationMs,
-		// The finish instant, same clock read as durationMs — the reply's age stamp.
 		createdAt: new Date(input.turnStartMs + durationMs).toISOString(),
 		...(input.firstTokenMs !== null ? { ttftMs: input.firstTokenMs } : {}),
 		...(input.forcedCompletion !== null ? { forcedCompletion: input.forcedCompletion } : {}),

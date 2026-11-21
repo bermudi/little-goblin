@@ -12,6 +12,7 @@ import { accessGate } from "./access-gate.ts";
 import { applyCommands, applyMenuButton } from "./bot.ts";
 import { conversationAddress } from "./intake.ts";
 import { SHARED_CHAT_NOTE } from "./turn-input.ts";
+import { type Bump, runFence } from "../fence.ts";
 
 const baseConfig: Config = {
 	providers: {
@@ -432,10 +433,11 @@ function routerHarness(config: Config = baseConfig): RouterHarness {
 					stopped.push(id);
 					return { stopped: true, settled: Promise.resolve(), reviewsCancelled: 0 };
 				},
-				cancelFenced: (id: string) => {
-					stopped.push(id);
-					return { stopped: true, settled: Promise.resolve(), reviewsCancelled: 0 };
-				},
+				fence: <T>(work: (bump: Bump) => T) =>
+					runFence(store, work, (id) => {
+						stopped.push(id);
+						return { stopped: true, settled: Promise.resolve(), reviewsCancelled: 0 };
+					}),
 			} as unknown as Runtime,
 			titleFor: () => Promise.resolve(null),
 			transcribe: () => Promise.resolve(null),
@@ -677,7 +679,7 @@ describe("handleMessage", () => {
 		const conv = h.store.get(h.store.currentDm(1)!.id)!;
 		expect(conv.id).toBe("dm:1:1");
 		expect(conv.voice).toBe(true);
-		expect(conv.epoch).toBe(1);
+		expect(conv.epoch).toBe(0);
 	});
 
 	test("a caption that looks like a command must not eat its media", async () => {

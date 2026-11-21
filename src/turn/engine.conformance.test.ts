@@ -1,36 +1,15 @@
-// The TurnEngine contract (turn/engine.ts), pinned once per engine
-// through the real Runtime: one scenario table, every registered
-// engine. The AI SDK side rides the testkit fake model
-// (testkit/fake-model.ts); the claude side rides the engine's injected
-// query seam (testkit/fake-claude.ts + the real bridge) exactly as
-// runtime-engine-switch.test.ts drives it. Scenarios assert only
-// observable results — sink done values, stored history, journal rows.
 
 import { describe, expect, test } from "bun:test";
 import { defineTool, type Tools } from "../tool.ts";
 import type { Message } from "../message.ts";
 import { z } from "zod";
-import { type ClaudeEngineConfig, driveClaude } from "../agent/claude-code/engine.ts";
-import { isClaudeStep, type ClaudeEngine, type ClaudeStep } from "../agent/claude-code/mod.ts";
-import { createToolBridge, type ToolBridge } from "../agent/claude-code/tools.ts";
-import type { AuthStore } from "../auth.ts";
-import type { ConfigRef } from "../config.ts";
-import type { Config } from "../config-schema.ts";
+import { isClaudeStep, type ClaudeStep } from "../agent/claude-code/mod.ts";
 import { type ConversationStore, openStore } from "../conversation.ts";
 import { Runtime, userMessage } from "../runtime.ts";
-import { fakeClaude } from "../testkit/fake-claude.ts";
-import { finishPart, scriptedModel, textParts, toolCallPart } from "../testkit/fake-model.ts";
-import {
-	deferred,
-	pauseFakeModelAtDelta,
-	recordingModel,
-	RecordingSink,
-	tmpDb,
-	tmpDir,
-	useHome,
-	waitUntil,
-} from "../testkit.ts";
-import type { ModelStep } from "./ai-sdk-step.ts";
+import { claudeScript } from "../testkit/turn-script-claude.ts";
+import { sdkScript } from "../testkit/turn-script-sdk.ts";
+import type { ScriptCall, ScriptedModel } from "../testkit/turn-script.ts";
+import { deferred, RecordingSink, tmpDb, useHome, waitUntil } from "../testkit.ts";
 import { openTurnJournal, type TurnJournal } from "../turn-journal.ts";
 import { appendInterruptedProgress } from "./unlanded-progress.ts";
 import { aiSdkEngine } from "./ai-sdk-engine.ts";
@@ -38,49 +17,70 @@ import { pickEngine, type TurnEngine } from "./engine.ts";
 
 type Conv = ReturnType<ConversationStore["resolve"]>;
 
-interface HeldRun {
-	/** Fires once the turn is inside the held section. */
-	entered: Promise<void>;
-	release(): void;
-}
-
 interface EngineRig {
 	name: string;
+	model: ScriptedModel;
+	toolHold: { current: Held | null };
 	runtime: Runtime;
 	store: ConversationStore;
 	conv: Conv;
 	journal: TurnJournal;
-	/** Script the next turn as one plain text reply. */
-	scriptReply(text: string): void;
-	/** Script the next turn as one echo tool call followed by a text reply. */
-	scriptToolThenReply(message: string, text: string): void;
-	/** Script the next turn to block mid-run; `entered` fires once it has. */
-	scriptHeldRun(): HeldRun;
-	/** Script one COMPLETED step (assistant text + echo tool call), then
-	 *  hold mid-run — the fence lands with real progress to record. */
-	scriptProgressThenHold(): HeldRun;
-	/** Script the next turn to stream `text` then block mid-run — the
-	 *  stop lands after the wire streamed the words, before the step ends. */
-	scriptTextThenHold(text: string): HeldRun;
-	scriptTailHold(text: string): HeldRun;
-	/** Script the next turn to stream `text` then fail the stream. */
-	scriptTextThenFail(text: string): void;
-	/** Script the next turn to open the provider call then hold before
-	 *  any content — the wire carries only the message start (#408 F1). */
-	scriptPreContentHold(): HeldRun;
-	/** Script the next turn to fail before any content reaches the wire. */
-	scriptPreContentFail(): void;
-	/** Script the next turn as a plain reply whose prompts are captured. */
-	scriptRecordedReply(text: string): { prompts(): string[] };
 }
 
-const echoTools = (): Tools => ({
+interface Held {
+	call(parts: Extract<ScriptCall, { kind: "hold" }>["parts"]): ScriptCall;
+	entered: Promise<void>;
+	enter(): void;
+	gate: Promise<void>;
+	release(): void;
+}
+
+function held(): Held {
+	const entered = deferred<void>();
+	const gate = deferred<void>();
+	return {
+		call: (parts) => ({ kind: "hold", parts, gate: gate.promise, entered: () => entered.resolve() }),
+		entered: entered.promise,
+		enter: () => entered.resolve(),
+		gate: gate.promise,
+		release: () => gate.resolve(),
+	};
+}
+
+const rigTools = (toolHold: EngineRig["toolHold"]): Tools => ({
 	echo: defineTool({
 		description: "echo the message",
 		input: z.object({ message: z.string() }),
 		execute: async ({ message }) => `echo:${message}`,
 	}),
+	wait: defineTool({
+		description: "wait until released",
+		input: z.object({}),
+		execute: async () => {
+			const hold = toolHold.current!;
+			hold.enter();
+			await hold.gate;
+			return "waited";
+		},
+	}),
 });
+
+const text = (t: string): ScriptCall => ({ kind: "reply", parts: [{ type: "text", text: t }] });
+const echoCall = (message: string, toolCallId: string): ScriptCall => ({
+	kind: "reply",
+	parts: [{ type: "tool-call", toolName: "echo", input: { message }, toolCallId }],
+});
+
+const progressThenHold = (hold: Held): ScriptCall[] => [
+	{
+		kind: "reply",
+		parts: [
+			{ type: "text", text: "FENCED-STEP1-TEXT" },
+			{ type: "tool-call", toolName: "echo", input: { message: "first" }, toolCallId: "conf-fence-1" },
+		],
+	},
+	hold.call([]),
+];
 
 function submit(rig: EngineRig, text: string): RecordingSink {
 	const sink = new RecordingSink();
@@ -90,9 +90,6 @@ function submit(rig: EngineRig, text: string): RecordingSink {
 
 const drain = (rig: EngineRig) => waitUntil(() => !rig.runtime.busy(rig.conv.id), "lane drains");
 
-// `entered` means the provider produced the held part; the engine's
-// chunk loop may still be a tick behind. The fence must land only
-// after content reached the wire — the state the record pins.
 const waitForWireContent = (sink: RecordingSink) =>
 	waitUntil(
 		() => sink.chunks.some((c) => c.type === "text-delta" || c.type === "tool-input-available"),
@@ -109,370 +106,27 @@ const textOf = (message: Message): string => {
 	return out.join("");
 };
 
-function sdkRig(): EngineRig {
-	useHome("goblin-engconf-sdk-");
-	const store = openStore(tmpDb("goblin-engconf-sdk-"));
+function engineRig(model: ScriptedModel): EngineRig {
+	useHome(`goblin-engconf-${model.engineId}-`);
+	const store = openStore(tmpDb(`goblin-engconf-${model.engineId}-`));
 	const journal = openTurnJournal(store.db);
 	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-	let step: ModelStep = { engine: "ai-sdk", model: scriptedModel([]).model, system: "test", label: "fake/fake-1" };
 	const runtime = new Runtime({
-		engines: [aiSdkEngine],
+		engines: model.engines,
 		store,
-		buildStep: () => step,
+		buildStep: () => model.step(),
 		turnJournal: journal,
 	});
-	runtime.mount({ makeTools: () => echoTools() });
-	let recorded: { prompts: string[] } | null = null;
-	return {
-		name: "ai-sdk",
-		runtime,
-		store,
-		conv,
-		journal,
-		scriptReply: (text) => {
-			step = { engine: "ai-sdk", model: scriptedModel([textParts(text)]).model, system: "test" };
-		},
-		scriptToolThenReply: (message, text) => {
-			step = {
-				engine: "ai-sdk",
-				model: scriptedModel([
-					[
-						toolCallPart("conf-call-1", "echo", JSON.stringify({ message })),
-						finishPart("tool-calls"),
-					],
-					textParts(text),
-				]).model,
-				system: "test",
-			};
-		},
-		scriptRecordedReply: (text) => {
-			const rec = recordingModel([text], 1);
-			recorded = rec;
-			step = { engine: "ai-sdk", model: rec.model, system: "test" };
-			return { prompts: () => recorded?.prompts ?? [] };
-		},
-		scriptTextThenHold: (text) => {
-			// The text streams whole, then the provider stream stalls open —
-			// the stop lands before the step ends (no text-end, no finish).
-			const entered = deferred<void>();
-			const gate = deferred<void>();
-			const model = scriptedModel([
-				{
-					drive: async ({ enqueue }) => {
-						enqueue({ type: "stream-start", warnings: [] });
-						enqueue({ type: "text-start", id: "t1" });
-						enqueue({ type: "text-delta", id: "t1", delta: text });
-						entered.resolve();
-						await gate.promise;
-					},
-				},
-			]);
-			step = { engine: "ai-sdk", model: model.model, system: "test" };
-			return { entered: entered.promise, release: () => gate.resolve() };
-		},
-		scriptTailHold: (text) => {
-			const entered = deferred<void>();
-			const gate = deferred<void>();
-			const model = scriptedModel([
-				{
-					drive: async ({ enqueue }) => {
-						enqueue({ type: "stream-start", warnings: [] });
-						enqueue({ type: "text-start", id: "tail" });
-						enqueue({ type: "text-delta", id: "tail", delta: text });
-						entered.resolve();
-						await gate.promise;
-					},
-				},
-			]);
-			step = { engine: "ai-sdk", model: model.model, system: "test" };
-			return { entered: entered.promise, release: () => gate.resolve() };
-		},
-		scriptTextThenFail: (text) => {
-			// Text out, then a non-transient provider error part — the turn
-			// fails with the words already on the wire.
-			const model = scriptedModel([
-				{
-					drive: ({ enqueue, close }) => {
-						enqueue({ type: "stream-start", warnings: [] });
-						enqueue({ type: "text-start", id: "t1" });
-						enqueue({ type: "text-delta", id: "t1", delta: text });
-						enqueue({
-							type: "error",
-							error: new Error("invalid_request_error: the model was retired"),
-						});
-						close();
-					},
-				},
-			]);
-			step = { engine: "ai-sdk", model: model.model, system: "test" };
-		},
-		scriptPreContentHold: () => {
-			// The provider accepts the request then says nothing — the
-			// wire carries only the message start when the fence lands.
-			const entered = deferred<void>();
-			const gate = deferred<void>();
-			const model = scriptedModel([
-				{
-					drive: async ({ enqueue, close }) => {
-						enqueue({ type: "stream-start", warnings: [] });
-						entered.resolve();
-						await gate.promise;
-						close();
-					},
-				},
-			]);
-			step = { engine: "ai-sdk", model: model.model, system: "test" };
-			return { entered: entered.promise, release: () => gate.resolve() };
-		},
-		scriptPreContentFail: () => {
-			step = {
-				engine: "ai-sdk",
-				model: scriptedModel([new Error("provider exploded before streaming")]).model,
-				system: "test",
-			};
-		},
-		scriptHeldRun: () => {
-			// Delta 0 streams out, delta 1 is held inside the provider
-			// stream — the turn is mid-stream at `entered`.
-			const gated = pauseFakeModelAtDelta(["a", "b"], 1);
-			step = { engine: "ai-sdk", model: gated.model, system: "test" };
-			return { entered: gated.entered, release: () => gated.release() };
-		},
-		scriptProgressThenHold: () => {
-			// Step 1 completes: assistant text + an echo call that settles.
-			// Step 2's call never answers — the turn holds mid-run with a
-			// checkpointed step behind it (the #195 fence fixture).
-			const entered = deferred<void>();
-			const gate = deferred<void>();
-			const model = scriptedModel([
-				[
-					{ type: "stream-start", warnings: [] },
-					{ type: "text-start", id: "t1" },
-					{ type: "text-delta", id: "t1", delta: "FENCED-STEP1-TEXT" },
-					{ type: "text-end", id: "t1" },
-					toolCallPart("conf-fence-1", "echo", JSON.stringify({ message: "first" })),
-					finishPart("tool-calls"),
-				],
-				{
-					drive: async ({ enqueue, close }) => {
-						enqueue({ type: "stream-start", warnings: [] });
-						entered.resolve();
-						await gate.promise;
-						close();
-					},
-				},
-			]);
-			step = { engine: "ai-sdk", model: model.model, system: "test" };
-			return { entered: entered.promise, release: () => gate.resolve() };
-		},
-	};
-}
-
-const fakeAuth: AuthStore = {
-	resolve: async (name) => `token-for-${name}`,
-	has: () => true,
-	names: () => ["claude-code"],
-};
-
-function claudeRig(): EngineRig {
-	useHome("goblin-engconf-cc-");
-	const store = openStore(tmpDb("goblin-engconf-cc-"));
-	const journal = openTurnJournal(store.db);
-	const conv = store.resolve({ kind: "dm", chatId: 1 }, "/w");
-	const fake = fakeClaude();
-	const bridgeRef: { current: ToolBridge | null } = { current: null };
-	const engineConfig: ClaudeEngineConfig = {
-		query: fake.query,
-		auth: fakeAuth,
-		configRef: {
-			current: {
-				providers: { claude: { kind: "claude-code", auth: "claude-code" } },
-			} as unknown as Config,
-			ttsDown: false,
-		} satisfies ConfigRef,
-		configDir: tmpDir("goblin-engconf-cc-"),
-		bridgeFactory: (d) => {
-			const real = createToolBridge(d);
-			bridgeRef.current = real;
-			return real;
-		},
-	};
-	const claudeEngine: ClaudeEngine = {
-		id: "claude-code",
-		rules: {
-			toolLaunchGate: false,
-			preemptFold: false,
-			contentFilterReask: false,
-			transientRetry: false,
-			contextFill: true,
-		},
-		accepts: isClaudeStep,
-		run: (deps) => driveClaude(engineConfig, deps),
-		compact: async () => {
-			throw new Error("compaction not exercised here");
-		},
-		nativeCompact: async () => null,
-	};
-	const step: ClaudeStep = {
-		engine: "claude-code",
-		label: "claude/claude-sonnet-4-5",
-		modelId: "claude-sonnet-4-5",
-		auth: "claude-code",
-		system: "test",
-		thinking: {},
-	};
-	const runtime = new Runtime({
-		engines: [claudeEngine, aiSdkEngine],
-		store,
-		buildStep: () => step,
-		turnJournal: journal,
-	});
-	runtime.mount({ makeTools: () => echoTools() });
-	return {
-		name: "claude-code",
-		runtime,
-		store,
-		conv,
-		journal,
-		scriptReply: (text) => fake.script([{ kind: "stream-text", text }]),
-		scriptToolThenReply: (message, text) =>
-			fake.script([
-				{
-					kind: "tool",
-					name: "echo",
-					input: { message },
-					run: () => bridgeRef.current!.invoke("echo", { message }),
-				},
-				{ kind: "stream-text", text },
-			]),
-		scriptRecordedReply: (text) => {
-			fake.script([{ kind: "stream-text", text }]);
-			// Each query call serializes the whole assembled view — the
-			// prompts() mirror records those serializations.
-			return { prompts: () => fake.calls.map((c) => JSON.stringify(c.prompt.blocks)) };
-		},
-		scriptTextThenHold: (text) => {
-			// The text streams whole, then a gated tool call holds mid-run —
-			// the fake has no mid-text stall, so the stop lands after the
-			// words reached the wire, before the turn ends.
-			const entered = deferred<void>();
-			const gate = deferred<void>();
-			fake.script([
-				{ kind: "stream-text", text },
-				{
-					kind: "tool",
-					name: "echo",
-					input: { message: "hold" },
-					run: async () => {
-						entered.resolve();
-						await gate.promise;
-						return bridgeRef.current!.invoke("echo", { message: "hold" });
-					},
-				},
-			]);
-			return { entered: entered.promise, release: () => gate.resolve() };
-		},
-		scriptTailHold: (text) => {
-			const entered = deferred<void>();
-			const gate = deferred<void>();
-			fake.script([
-				{
-					kind: "raw",
-					events: [
-						{
-							type: "stream",
-							event: {
-								type: "message_start",
-								message: {
-									model: "fake",
-									usage: {
-										input_tokens: 10,
-										output_tokens: null,
-										cache_read_input_tokens: null,
-										cache_creation_input_tokens: null,
-									},
-								},
-							},
-						},
-						{ type: "stream", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } },
-						{ type: "stream", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } } },
-					],
-				},
-				{ kind: "hold", onEnter: () => entered.resolve(), until: gate.promise },
-			]);
-			return { entered: entered.promise, release: () => gate.resolve() };
-		},
-		scriptTextThenFail: (text) => {
-			fake.script([
-				{ kind: "stream-text", text },
-				{ kind: "error", resultText: "invalid_request_error: the model was retired" },
-			]);
-		},
-		scriptPreContentHold: () => {
-			// Provider silence: the query yields nothing until released —
-			// the wire carries only the engine's start chunk.
-			const entered = deferred<void>();
-			const gate = deferred<void>();
-			fake.script([{ kind: "hold", onEnter: () => entered.resolve(), until: gate.promise }]);
-			return { entered: entered.promise, release: () => gate.resolve() };
-		},
-		scriptPreContentFail: () => {
-			fake.script([{ kind: "error", resultText: "invalid_request_error: provider exploded" }]);
-		},
-		scriptHeldRun: () => {
-			// The tool execution is the hold: `run` gates before invoking
-			// the bridge, so the turn sits mid-run at `entered`.
-			const entered = deferred<void>();
-			const gate = deferred<void>();
-			fake.script([
-				{
-					kind: "tool",
-					name: "echo",
-					input: { message: "hold" },
-					run: async () => {
-						entered.resolve();
-						await gate.promise;
-						return bridgeRef.current!.invoke("echo", { message: "hold" });
-					},
-				},
-			]);
-			return { entered: entered.promise, release: () => gate.resolve() };
-		},
-		scriptProgressThenHold: () => {
-			// Step 1 completes: streamed assistant text + an echo call that
-			// settles and journals. Step 2's tool gates before the bridge —
-			// the turn holds mid-run with a checkpointed step behind it.
-			const entered = deferred<void>();
-			const gate = deferred<void>();
-			fake.script([
-				{ kind: "stream-text", text: "FENCED-STEP1-TEXT" },
-				{
-					kind: "tool",
-					name: "echo",
-					input: { message: "first" },
-					run: () => bridgeRef.current!.invoke("echo", { message: "first" }),
-				},
-				{
-					kind: "tool",
-					name: "echo",
-					input: { message: "hold" },
-					run: async () => {
-						entered.resolve();
-						await gate.promise;
-						return bridgeRef.current!.invoke("echo", { message: "hold" });
-					},
-				},
-			]);
-			return { entered: entered.promise, release: () => gate.resolve() };
-		},
-	};
+	const toolHold: EngineRig["toolHold"] = { current: null };
+	runtime.mount({ makeTools: () => rigTools(toolHold) });
+	return { name: model.engineId, model, toolHold, runtime, store, conv, journal };
 }
 
 const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 	{
 		name: "plain text reply completes and stores [user, assistant]",
 		async run(rig) {
-			rig.scriptReply("CONF-REPLY");
+			rig.model.script(text("CONF-REPLY"));
 			const sink = submit(rig, "just talk");
 			expect(await sink.done).toEqual({ kind: "completed" });
 			await drain(rig);
@@ -484,7 +138,7 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 	{
 		name: "one tool call then text journals dispatch+result and stores both parts",
 		async run(rig) {
-			rig.scriptToolThenReply("hi", "CONF-AFTER-TOOL");
+			rig.model.script(echoCall("hi", "conf-call-1"), text("CONF-AFTER-TOOL"));
 			const sink = submit(rig, "use the tool");
 			expect(await sink.done).toEqual({ kind: "completed" });
 			await drain(rig);
@@ -505,17 +159,16 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 	{
 		name: "/stop mid-run fences and records without storing an assistant message",
 		async run(rig) {
-			const held = rig.scriptHeldRun();
+			const hold = held();
+			rig.toolHold.current = hold;
+			rig.model.script({ kind: "reply", parts: [{ type: "tool-call", toolName: "wait", input: {} }] });
 			const sink = submit(rig, "hold still");
-			await held.entered;
+			await hold.entered;
 			await waitForWireContent(sink);
 			rig.runtime.stop(rig.conv.id);
-			held.release();
+			hold.release();
 			expect(await sink.done).toEqual({ kind: "fenced" });
 			await drain(rig);
-			// No assistant reply lands — the one record is a system event
-			// carrying whatever the wire had streamed so far (the ai-sdk
-			// rig streamed one delta; the claude rig a tool-input part).
 			const history = rig.store.history(rig.conv.id);
 			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
 			const meta = history[1]!.metadata as { unlanded?: { kind?: string } };
@@ -525,15 +178,14 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 	{
 		name: "/stop after completed steps leaves them in history as ended-aborted (#195)",
 		async run(rig) {
-			const held = rig.scriptProgressThenHold();
+			const hold = held();
+			rig.model.script(...progressThenHold(hold));
 			const sink = submit(rig, "work then hold");
-			await held.entered;
+			await hold.entered;
 			rig.runtime.stop(rig.conv.id);
-			held.release();
+			hold.release();
 			expect(await sink.done).toEqual({ kind: "fenced" });
 			await drain(rig);
-			// No assistant reply landed — the record is one system event
-			// carrying the completed call and the streamed text.
 			const history = rig.store.history(rig.conv.id);
 			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
 			const event = textOf(history[1]!);
@@ -546,7 +198,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 				.all();
 			expect(rows).toHaveLength(1);
 			expect(rows[0]!.status).toBe("fenced");
-			// The completed steps ran once; the hold's call never executed.
 			const calls = rig.journal.callsFor(rows[0]!.run_id);
 			expect(calls.filter((c) => c.name === "echo" && c.state === "completed")).toHaveLength(1);
 		},
@@ -554,16 +205,14 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 	{
 		name: "shutdown mid-run leaves the row 'running' — the next open interrupts it (#471)",
 		async run(rig) {
-			const held = rig.scriptProgressThenHold();
+			const hold = held();
+			rig.model.script(...progressThenHold(hold));
 			const sink = submit(rig, "work then hold");
-			await held.entered;
-			// Not awaited yet — the turn must be released first.
+			await hold.entered;
 			const shutdown = rig.runtime.shutdown();
-			held.release();
+			hold.release();
 			expect(await sink.done).toEqual({ kind: "fenced", shutdown: true });
 			await shutdown;
-			// For the journal a graceful shutdown IS a crash: the fence
-			// stamps nothing and records nothing — the row stays 'running'.
 			expect(roles(rig)).toEqual(["user"]);
 			const rows = rig.store.db
 				.query<{ run_id: string; status: string }, []>(
@@ -572,8 +221,6 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 				.all();
 			expect(rows).toHaveLength(1);
 			expect(rows[0]!.status).toBe("running");
-			// The next open's reclassify owns both the 'interrupted' stamp
-			// and the progress record — one system event, exactly once.
 			const reopened = openTurnJournal(rig.store.db, {
 				onInterrupted: (run, calls) => appendInterruptedProgress(rig.store, run, calls),
 			});
@@ -599,19 +246,18 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 	{
 		name: "/stop mid-stream stores one system record with the wire's id and reply",
 		async run(rig) {
-			const held = rig.scriptTextThenHold("partial words");
+			const hold = held();
+			rig.model.script(hold.call([{ type: "text", text: "partial words" }]));
 			const sink = submit(rig, "talk then stop");
-			await held.entered;
+			await hold.entered;
 			await waitForWireContent(sink);
 			const wireStart = sink.chunks.find((c) => c.type === "start");
 			expect(wireStart).toBeDefined();
 			const wireId = (wireStart as { messageId: string }).messageId;
 			rig.runtime.stop(rig.conv.id);
-			held.release();
+			hold.release();
 			expect(await sink.done).toEqual({ kind: "fenced" });
 			await drain(rig);
-			// Exactly one event, role system, id from the wire's start chunk,
-			// carrying the streamed words — never an assistant-role event.
 			const history = rig.store.history(rig.conv.id);
 			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
 			const record = history[1]!;
@@ -623,20 +269,22 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			expect(
 				meta.unlanded?.reply?.some((p) => p.type === "text" && p.text === "partial words"),
 			).toBe(true);
-			// The next turn's model view: the record rides as one system-event
-			// block — the text appears exactly once.
-			const recorded = rig.scriptRecordedReply("moving on");
+			rig.model.script(text("moving on"));
 			const next = submit(rig, "next turn");
 			expect(await next.done).toEqual({ kind: "completed" });
 			await drain(rig);
-			const prompt = recorded.prompts().at(-1)!;
+			const prompt = rig.model.requests().at(-1)!;
 			expect(prompt.split("[system event: The previous turn was stopped").length - 1).toBe(1);
 		},
 	},
 	{
 		name: "a failed stream stores the same record with kind failed",
 		async run(rig) {
-			rig.scriptTextThenFail("half");
+			rig.model.script({
+				kind: "fail",
+				parts: [{ type: "text", text: "half" }],
+				error: { message: "invalid_request_error: the model was retired" },
+			});
 			const sink = submit(rig, "talk then fail");
 			expect((await sink.done).kind).toBe("error");
 			await drain(rig);
@@ -656,21 +304,17 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 	{
 		name: "/stop before the first content records one stopped event with the wire's id (#408 F1)",
 		async run(rig) {
-			const held = rig.scriptPreContentHold();
+			const hold = held();
+			rig.model.script(hold.call([]));
 			const sink = submit(rig, "hold before content");
-			await held.entered;
-			// The wire opened the assistant message; no content part ever
-			// arrived — the exact state that used to leave no record.
+			await hold.entered;
 			await waitUntil(() => sink.chunks.some((c) => c.type === "start"), "wire start");
 			const wireStart = sink.chunks.find((c) => c.type === "start");
 			const wireId = (wireStart as { messageId: string }).messageId;
 			rig.runtime.stop(rig.conv.id);
-			held.release();
+			hold.release();
 			expect(await sink.done).toEqual({ kind: "fenced" });
 			await drain(rig);
-			// Exactly one record, role system, id from the wire's start
-			// chunk — it replaces the empty optimistic assistant the
-			// client showed; its reply carries no content parts.
 			const history = rig.store.history(rig.conv.id);
 			expect(history.map((m) => m.role)).toEqual(["user", "system"]);
 			const record = history[1]!;
@@ -681,22 +325,23 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			expect(meta.unlanded?.kind).toBe("aborted");
 			expect(Array.isArray(meta.unlanded?.reply)).toBe(true);
 			expect(meta.unlanded!.reply!.every((p) => p.type === "step-start")).toBe(true);
-			// The next turn's model view carries the record once.
-			const recorded = rig.scriptRecordedReply("moving on");
+			rig.model.script(text("moving on"));
 			const next = submit(rig, "next turn");
 			expect(await next.done).toEqual({ kind: "completed" });
 			await drain(rig);
-			const prompt = recorded.prompts().at(-1)!;
+			const prompt = rig.model.requests().at(-1)!;
 			expect(prompt.split("[system event: The previous turn was stopped").length - 1).toBe(1);
 		},
 	},
 	{
 		name: "a failure before the first content records one failed event (#408 F1)",
 		async run(rig) {
-			rig.scriptPreContentFail();
+			rig.model.script({
+				kind: "fail",
+				parts: [],
+				error: { message: "invalid_request_error: provider exploded before streaming" },
+			});
 			const sink = submit(rig, "fail before content");
-			// The wire still opened the assistant message before the
-			// provider's error arrived.
 			await waitUntil(() => sink.chunks.some((c) => c.type === "start"), "wire start");
 			const wireStart = sink.chunks.find((c) => c.type === "start");
 			const wireId = (wireStart as { messageId: string }).messageId;
@@ -712,12 +357,11 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 			expect(meta.unlanded?.kind).toBe("failed");
 			expect(Array.isArray(meta.unlanded?.reply)).toBe(true);
 			expect(meta.unlanded!.reply!.every((p) => p.type === "step-start")).toBe(true);
-			// The next turn's model view carries the record once.
-			const recorded = rig.scriptRecordedReply("moving on");
+			rig.model.script(text("moving on"));
 			const next = submit(rig, "next turn");
 			expect(await next.done).toEqual({ kind: "completed" });
 			await drain(rig);
-			const prompt = recorded.prompts().at(-1)!;
+			const prompt = rig.model.requests().at(-1)!;
 			expect(prompt.split("[system event: The previous turn did not finish").length - 1).toBe(1);
 		},
 	},
@@ -725,8 +369,8 @@ const scenarios: Array<{ name: string; run(rig: EngineRig): Promise<void> }> = [
 
 describe("turn engine conformance", () => {
 	const engines: Array<{ name: string; make(): EngineRig }> = [
-		{ name: "ai-sdk", make: sdkRig },
-		{ name: "claude-code", make: claudeRig },
+		{ name: "ai-sdk", make: () => engineRig(sdkScript()) },
+		{ name: "claude-code", make: () => engineRig(claudeScript()) },
 	];
 
 	for (const engine of engines) {
@@ -745,10 +389,11 @@ describe("turn engine conformance", () => {
 
 			test("a mid-step text stream checkpoints its tail", async () => {
 				const rig = engine.make();
-				const held = rig.scriptTailHold("CHECKPOINT-TAIL");
+				const hold = held();
+				rig.model.script(hold.call([{ type: "text", text: "CHECKPOINT-TAIL" }]));
 				try {
 					submit(rig, "checkpoint streamed text");
-					await held.entered;
+					await hold.entered;
 					await waitUntil(
 						() => {
 							const rows = rig.store.db
@@ -765,7 +410,7 @@ describe("turn engine conformance", () => {
 					);
 				} finally {
 					rig.runtime.stop(rig.conv.id);
-					held.release();
+					hold.release();
 					await drain(rig);
 					await rig.runtime.shutdown();
 					rig.store.close();
@@ -775,7 +420,7 @@ describe("turn engine conformance", () => {
 	}
 
 	test("pickEngine returns the first accepting engine", () => {
-		const step: ModelStep = { engine: "ai-sdk", model: scriptedModel([]).model, system: "test" };
+		const step = sdkScript().step();
 		expect(pickEngine([aiSdkEngine], step, "conv-x")).toBe(aiSdkEngine);
 	});
 
@@ -815,7 +460,7 @@ describe("turn engine conformance", () => {
 				throw new Error("not exercised");
 			},
 		};
-		const aiStep: ModelStep = { engine: "ai-sdk", model: scriptedModel([]).model, system: "test" };
+		const aiStep = sdkScript().step();
 		const step: ClaudeStep = {
 			engine: "claude-code",
 			label: "claude/claude-sonnet-4-5",

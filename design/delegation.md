@@ -1,8 +1,5 @@
 # Delegation — goblin design
 
-Part of the goblin design spec. The core — domain model, authority rule,
-cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
-
 > **Transport direction (operator, 2026-11-18, issue #728):** `delegate`
 > runs on herdr-core (`hc`), not Herdr. Goblin must “make sure binary X is
 > where you need it or go get it”; “they just need the right hooks installed
@@ -25,7 +22,8 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 > the real `$CODEX_HOME`; other harnesses use their proven per-run settings
 > or a safe config merge. Claude gets generated `--settings` under
 > `$GOBLIN_HOME`, Pi gets a per-run extension, and OpenCode and Devin use
-> the probe-proven config mechanisms. Core state stays at
+> the probe-proven config mechanisms (Devin's: operator config plus
+> Goblin's hooks, below). Core state stays at
 > `~/.local/state/herdr-core/<session>/`; do not set `XDG_STATE_HOME`
 > because it would reach harness processes. Devin's SessionStart probe passed.
 > The core starts with a clean fixed environment: `HOME`, `USER`, `LOGNAME`,
@@ -38,32 +36,11 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
 
 ## Delegation transport
 
-1. One adapter, `src/hc.ts`, speaks JSON-RPC 2.0 over the core Unix socket
-   and validates every reply with zod. The RPC `terminal.run` is required
-   because it accepts the per-run environment map.
-2. Goblin owns the pinned `hc` binary and verifies its source-pinned SHA-256
-   before use. Download and mismatch failures fail loud.
-3. Each Goblin home gets a private core session named from its path hash.
-   The core runs outside the Goblin service cgroup so a Goblin restart does
-   not end live runs. The default state path is
-   `~/.local/state/herdr-core/<session>/`; no state-dir override is passed to
-   harnesses. The core starts through `systemd-run --user --scope -q env
-   -i` with only the fixed environment above. Goblin talks to the core over
-   its Unix socket; health and try cleanup must not call `server status`,
-   which may auto-start a core. `server stop` is allowed for explicit stop.
-4. Goblin installs per-harness OSC 7501 hooks. Session start reports `idle`,
-   prompt/tool activity `working`, permission/question `blocked`, and turn
-   end `idle`. Hooks act only when `GOBLIN_HC_RUN=1`.
-5. Send the first prompt only after the first hook status. If no status
-   arrives within 30 seconds, fail with the terminal screen attached.
-   Delivery is proven when the status becomes `working`.
-6. Poll `terminal.get`. `working` followed by `idle` or `done` settles the
-   turn; read output with `terminal.read`. `answer` is for a blocked run and
-   `stop` uses `terminal.kill`.
-7. When delegation is configured, health requires the pinned binary and a
-   reachable private core.
-8. Machine targets remain out. Polling is used instead of event
-   subscriptions to avoid reconnect and missed-event handling.
+`src/hc.ts` owns the pinned core's wire contract. The private core
+survives Goblin restarts; machine targets remain out. Delivery is proven
+only when the hook reports `working`. Health and try cleanup must not
+call `server status`, which may start a core. Polling avoids reconnect
+and missed-event handling. The live contract check is below.
 
 ## Delegation behavior
 
@@ -102,21 +79,9 @@ Rulings:
 - **Harnesses are config, never guessed** — the operator's choice of
   kind, native args, full-auto flags and model; goblin never picks a
   model for a harness.
-- **Staffing defaults are config, not notes (2026-11-09).** The operator
-  sets `delegation.defaults` — role → configured harness name — instead
-  of the agent carrying the table in `USER.md` / workspace notes, where
-  two prose copies could drift and nothing enforced them.
-  `delegate start` takes an optional `role` (omitted = `default`); with
-  no `harness`, the role's entry decides, and a named role with no entry
-  falls back to `default`. An explicit harness always wins. No default
-  and no harness fails loud listing the configured agents and roles —
-  never a silent arbitrary pick. A default must name a declared harness
-  at config parse time.
-  Model choice stays in each harness's `args`: a defaults entry selects
-  a whole configured agent, never a bare model. Settings → Delegation
-  edits the harness table and defaults. An edited block also supersedes a parked copy — the off/on flip
-  is a stash, and a stale stash would resurrect an old table. The block
-  remains boot-frozen — the page shows the restart hint.
+- **Staffing defaults are config, not notes.** The operator configures
+  roles and harnesses; Goblin never guesses a model. The block remains
+  boot-frozen.
 - **Ask-first is a description rule, not a gate (2026-11-09).** A harness
   with `askFirst: true` adds a
   line to the `delegate` description: goblin asks the operator before
@@ -134,16 +99,59 @@ Rulings:
   never inventing one. Startup dialogs are the trap. Launch seeds trust
   write-if-absent; it never manufactures consent over a recorded refusal.
   Codex hook/trust config merges preserve existing operator entries and
-  modes. Hooks are durably copied to the stable Goblin home. Claude gets
-  generated `--settings`; Pi gets a per-run extension; OpenCode gets the
-  hooks directory as a TUI plugin and `--standalone`; Devin gets a
-  per-run `--config`.
+  modes. Devin's folder-trust prompt draws before any hook (#743), so
+  launch appends the cwd's realpath to devin's own store,
+  `$XDG_DATA_HOME/devin/cli/trusted_workspaces.json` (`trusted_paths`;
+  default `~/.local/share`), unless an entry already covers it — only
+  that folder's trust, nothing else of the operator's. Devin's "No"
+  records nothing, so there is no refusal to preserve. Not
+  `--respect-workspace-trust false`: it skips the check silently and
+  leaves no record the operator can see or revoke. Hooks are durably
+  copied to the stable Goblin home. Claude gets generated `--settings`;
+  Pi gets a per-run extension; OpenCode gets the hooks directory as a
+  TUI plugin and `--standalone`; Devin gets a per-run `--config` built
+  as the next ruling says.
+- **Devin runs with the operator's config plus Goblin's hooks
+  (operator, 2026-11-20, #810).** Devin's `--config` replaces its user
+  config, so the per-run file under `$GOBLIN_HOME/state/hc-hooks/`
+  starts as a copy of `$XDG_CONFIG_HOME/devin/config.json` (absolute
+  values only, as devin resolves it) or `~/.config/devin/config.json`,
+  parsed as JSONC like devin does. Missing file: start from
+  `{version: 1}`. Any other read, parse or shape error fails the launch
+  with the path; it never drops the operator's settings silently. Goblin
+  then appends one `report.sh` entry to each of the six events, after
+  the operator's own entries and never in their place: `SessionStart` →
+  idle, `UserPromptSubmit`/`PreToolUse`/`PostToolUse` → working, `Stop`
+  → idle, `PermissionRequest` → `blocked permission`. An event that
+  already runs Goblin's exact command gets no second entry. Before
+  this, only `SessionStart` was registered: the operator's model,
+  permissions and shell were lost, and Goblin's own hooks never reported
+  `working`. Delivery still passed, because herdr-core's built-in devin
+  detector reports `working`/`done` itself (`status.app = "devin"`;
+  Goblin's OSC reports carry no `app`): live on devin 3000.14,
+  2026-11-20. Goblin's hooks no longer depend on that detector. The copy can hold the
+  operator's settings, so it is written 0600.
+  `src/hc-devin.live.test.ts` (`GOBLIN_DEVIN_LIVE=1`) pins it on the
+  installed devin after devin or hc upgrades; red means the contract
+  moved. It drives `makeHcDelegation` end to end. Its safety rules:
+  HOME, `XDG_*`, `GOBLIN_HOME` and the cwd are throwaway, and the hc
+  session derives from the throwaway `GOBLIN_HOME`. The operator's
+  devin credentials and config are copied into the temp HOME, never
+  read into output: value checks are booleans, so a failure prints no
+  setting. In the copy, probe hooks replace the operator's hooks, so
+  none of theirs runs; the probes prove an operator entry still fires.
+  Goblin's OSC reports carry no `app`, while herdr-core's detector
+  stamps `app=devin`, so only `app`-less statuses count as Goblin's.
+  One trivial prompt costs one model turn on the operator's own model.
+  CI skips it. `makeHarnessInvocation` reads `HOME` per call: Bun
+  caches `homedir()` at startup, so a test could not move it and read
+  the operator's real devin config (2026-11-20).
 - **The seeded trust keys are pinned against the installed harnesses,
   not just fakes (2026-10-11).** Drift is silent: a renamed key still
   seeds, and the launch shows the consent dialog anyway.
   `src/harness-trust.live.test.ts` (`GOBLIN_HARNESS_TRUST_LIVE=1`) seeds
   a temp HOME through the real entry and greps the installed
-  codex/claude binaries for the pinned literals — nothing real touched
+  codex/claude/devin binaries for the pinned literals — nothing real touched
   (no cost, no auth, no panes). Run after harness upgrades; red means re-pin — probe the new
   bundle for the renamed key, fix `harness-trust.ts`, never discover it
   in a live launch.
@@ -245,8 +253,8 @@ Rulings:
 - **`delegate` is operator-named only (design/agents.md, 2026-11-16;
   restated 2026-11-18).** "`delegate` stays just for this … only for
   use when the user asks for a `codex` run, or a `opencode` run" — or a
-  standing instruction the operator set, like the issue-build
-  skill below. Goblin never picks `delegate` on its own judgment; work it
+  standing instruction the operator set. Issue builds are not one: they
+  run as the inner loop (below). Goblin never picks `delegate` on its own judgment; work it
   decides to hand off goes to `agent`. `/stop` fences goblin's turn,
   not delegations: they aren't turns. `delegate stop` ends one.
 
@@ -258,24 +266,53 @@ Rulings:
   code never names those skills, never gives a role name special meaning,
   and never parses verdict words; `module-boundaries.test.ts` refuses
   `Checked-SHA`, `PASS+NOTES` and `verify-pr` in non-test source. The
-  skill tells Goblin what to watch through the tool, the same way any
-  task would. A delegated agent's own agents are its acts, not
-  goblin's: goblin never lists or addresses them (the hc adapter has no
-  list call), and its view of them is the delegation's report. Handover
-  is explicit; goblin does not pick issues up on its own.
+  skill tells Goblin what to watch through `responsibility accept`
+  (`issue`, `checks`), the same way any task would.
+- **An issue build is one inner loop on T3 Code (operator, 2026-11-20;
+  #745; replaces the 2026-11-09 lead-delegation ruling).** Goblin
+  coordinates across issues; inside one issue the [inner
+  loop](../GLOSSARY.md) does the work: one T3 Code thread, led by Claude
+  on Opus 5.5 (T3 provider `claudeAgent`, model `claude-opus-5-5`), in a
+  new git worktree from the repo's default branch
+  (`t3 thread start --worktree origin/<default> --branch issue/<N>`).
+  When the operator hands over an issue, goblin starts it at once,
+  without asking first: `responsibility accept` with `issue` and
+  `start:{brief, branch?}` resolves `origin/HEAD`, fetches it, starts
+  the thread and binds it as the responsibility's attachment in the same
+  call. Authority is re-checked after the git work, right before the
+  start. The start is recorded under the handover key
+  (`inner_loop_starts`) as soon as T3 Code returns it, so a retried
+  accept reuses that thread even when binding failed; once the
+  responsibility exists, a retry starts nothing. The thread's own agents are its
+  acts, not goblin's; goblin's view of them is the thread and its PR.
+  Rework and the post-green-light merge go to the same thread
+  (`responsibility send`), so one worker stays accountable per issue.
+  The 2026-11-09 limits carry over: at most two issue builds at once
+  (the procedure's limit, not a tool refusal), and handover is explicit
+  — goblin does not pick issues up on its own. `innerLoop:
+  {provider, model, options?}` in config overrides the default model.
+  `delegate` no longer has a `lead` role: it runs only harnesses the
+  operator names, with `delegation.defaults.default` (pi on prod) as
+  the default. Accepted risk: a crash between T3 Code's start and its
+  record leaves an unbound thread in T3 Code.
 
-- **PR readiness is observed, not inferred (operator, 2026-11-12, #406;
-  revised 2026-11-20, #748).** Any responsibility-linked start may name
-  `issue:{repository:"owner/repo",number:N}` and `checks:[name…]`: the
-  commit checks (status `context` or check run `name`) that must pass.
-  Issue and checks are durable on the delegation; neither is
-  reconstructed from a report, task, cwd, role or harness name. Ready =
-  the one open PR closing the issue, CI green on its current head, and
-  every required check passed on that same head. A check is bound to its
-  commit, so a push resets readiness until the checks run again; no SHA
-  line in any comment is needed. Several entries with one name: the
-  worst state wins (failed, then pending). Skipped or neutral is not a
-  pass. A missing name is not ready. Ready never authorizes a merge.
+- **PR readiness is observed on the responsibility, not inferred
+  (operator, 2026-11-12, #406; moved off the lead 2026-11-20, #745;
+  commit checks instead of verdict comments 2026-11-20, #748).**
+  The check lives on the responsibility, so it works for any worker. A
+  responsibility accepted with `issue:{repository:"owner/repo",number:N}`
+  and optional `checks:[name…]` (the commit checks, by status `context`
+  or check run `name`, that must pass) links that watch once
+  (`responsibility_issues`); nothing reconstructs it from a report, task,
+  cwd, role or thread title. Ready = the one open PR closing the issue,
+  CI green on its current head, and every required check passed on that
+  same head. A check is bound to its commit, so a push resets readiness
+  until the checks run again; no SHA line in any comment is needed.
+  Several entries with one name: the worst state wins (failed, then
+  pending). Skipped or neutral is not a pass. A missing name is not
+  ready. Ready never authorizes a merge. The inner loop's start message
+  names the issue, the draft PR that closes it and the required checks;
+  it teaches no verdict format.
 
   A required check's description and link are untrusted text for Goblin
   to judge. When the link is a non-minimized comment on this PR (exact
@@ -298,33 +335,34 @@ Rulings:
   30 seconds per command) fail closed if evidence is partial, inaccessible,
   malformed, or changes inconsistently during the read.
 
-  Each watched settlement carries a timestamped structured observation,
-  source URLs, and a readiness summary outside the worker's claim.
-  The worker report's evidence names the closing PR, head, each required
-  check with its state and SHA, and CI/SHA; pending CI reports `waiting`, other missing/negative
-  evidence `blocked`, passing facts `ready`. None closes the responsibility.
-  Observations stored under the 2026-11-12 comment contract are cleared
-  once on upgrade; the watcher re-observes them.
-  The observation is persisted on the delegation before notice delivery.
-  Readiness versions make a regression a new report even if the same
-  facts occurred earlier; retries of one version file once.
-  The pending settlement verdict is persisted with its observation, so
-  even a failed initial notice (before the row becomes `done`) retries
-  the saved facts rather than polling again. A delivered settlement or
-  new prompt cannot lend that snapshot to a later settlement.
-
-  The existing delegation ticker observes settled watched delegations at most once a
-  minute, with no model or second scheduler. An unchanged observation
-  updates its timestamp but sends no notice. Changes (including changed
-  notes, errors, head or CI) wake Goblin for judgment; a failed notice
-  remains due across restart without re-fetching GitHub. Watch through
-  pending/missing evidence and readiness regressions until the issue
-  closes, the delegation resumes/stops, or the responsibility is paused,
-  closed, removed or corrected to a new revision. Async observations
-  cannot overwrite a newer prompt or stopped row. No model polls GitHub
-  while CI runs. The one-shot read-only probe is
-  `bun --no-env-file scripts/pr-readiness.ts owner/repo N`.
+  `src/responsibility-readiness.ts` observes each active responsibility
+  with a linked issue once per tick of the responsibility observer's
+  60 s ticker — no model and no second scheduler; the ticker alone sets
+  the cadence, so a slow read never skips the next tick. After the GitHub
+  read it re-checks the responsibility in the same transaction as every
+  write: a pause, cancel or close during the read wins. The first
+  observation of an open issue with no PR yet is a silent baseline.
+  Unchanged facts update the timestamp and wake nothing. A change
+  (including changed notes, errors, head or CI) files one `worker`
+  report and one `pr-readiness` wake in one transaction: the report's
+  evidence names the closing PR, head, each required check with its
+  state and SHA, and CI/SHA; pending CI reports `waiting`, other missing
+  or negative evidence `blocked`, passing facts `ready`. None closes the
+  responsibility. A version counter makes a regression a new report even
+  if the same facts occurred earlier. An `unavailable` read records
+  nothing and retries on the next tick. Watching stops when the issue
+  closes with no PR or the responsibility leaves `active`; an operator
+  correction keeps the link. No model polls GitHub while CI runs. The
+  one-shot read-only probe is
+  `bun --no-env-file scripts/pr-readiness.ts owner/repo N [CHECK…]`. On
+  store open, a lead delegation's issue is copied onto its responsibility
+  once, with no required checks, so an issue build started before #745
+  keeps its watch; its verdict-era observation is not copied and the
+  next tick re-observes. A watch stored before #748 drops its
+  verdict-era observation once on upgrade and keeps its version.
+  Delegation rows keep their old `issue_json`/`readiness_*` columns;
+  dropping them would drop data.
 
 Still out: subagent fleets inside goblin (a delegation is one external
-agent per task, not an orchestrator), goblin-managed nesting (a delegation's own
-agents are its own), fan-out tooling, ACP, the AI SDK harness wrappers.
+agent per task, not an orchestrator), goblin-managed nesting (an inner loop's own
+agents are the inner loop's), fan-out tooling, ACP, the AI SDK harness wrappers.

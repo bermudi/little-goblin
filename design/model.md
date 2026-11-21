@@ -1,8 +1,5 @@
 # Model layer — goblin design
 
-Part of the goblin design spec. The core — domain model, authority rule,
-cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
-
 ## Model layer
 
 - **Provider facts.** z.ai's coding plan serves only 5.3-gen models, aliasing
@@ -158,21 +155,9 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   window capture is not wire proof; what the SDK emits is the contract.
   Reasoning parts without encrypted content may be omitted by the SDK when
   store is false — prose must remain, cipherless reasoning may not.
-- **Codex = stock Responses model + codex edge (#731).** `codexModel`
-  is `@ai-sdk/openai`'s `.responses()` model on base URL
-  `chatgpt.com/backend-api/codex`, wrapped by two small pieces in
-  `src/agent/codex/model.ts`. A fetch wrapper resolves the auth file
-  per request and sets the bearer, `chatgpt-account-id`, `OpenAI-Beta:
-  responses=experimental`, `originator: codex_cli_rs`, the session
-  headers and `x-openai-subagent`, and echoes `x-codex-turn-state`. One
-  middleware lifts system messages into `instructions` and sets the
-  call defaults (`store:false`, `include: reasoning.encrypted_content`,
-  `promptCacheKey`, effort from `providerOptions.codex.reasoningEffort`
-  with `reasoningSummary: auto`). Because the backend is stream-only,
-  `wrapGenerate` runs `doStream` and collects it. The stock model owns
-  prompt conversion, SSE parsing, tool serialization (tool-result
-  images become `input_image` inside `function_call_output`) and
-  hosted search (`openai.tools.webSearch`).
+- **Codex adapter.** The stock Responses model owns prompt conversion,
+  streaming and tool serialization; `src/agent/codex/model.ts` adapts
+  authentication and the stream-only backend.
 - **Codex reasoning persistence.** Codex sends `store:false`, so reasoning
   continuation is our problem. The stock model reads and writes replay
   state under the `openai` namespace; goblin stores it under
@@ -191,18 +176,7 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   cipher, and the backend accepted a cross-model replay (live L5,
   2026-11-19). A bare summary is never substituted for encrypted state, and the
   opaque values never enter logs, summaries, or instructions. The
-  generate path collects content in streaming order (interleaved
-  reasoning/text/calls, metadata from start and end parts), and an
-  empty-summary reasoning item still emits a part — the cipher is the
-  payload, the summary is optional evidence. Resume
-  ordering follows the same rule the checkpoint walked: step-ordered
-  text/reasoning with their providerOptions, journal-backed tool parts at
-  their own positions, `step-start` boundaries so each step's tool
-  results land before the next step's reasoning and text, and
-  uncheckpointed journal calls appended once at the tail. Because the
-  cipher counts as bytes in `JSON.stringify`, the compaction estimate
-  exempts exactly `providerMetadata.codex.reasoningEncryptedContent`
-  (call/result metadata included) — everything else counts as before.
+  cipher is the payload; the summary is optional evidence.
 - **Reasoning replays only to its author (ruling 2026-11-10, #417).**
   The model view drops assistant `reasoning`/`reasoning-file` parts
   unless the message's `metadata.model` equals the attempt's serving
@@ -211,88 +185,14 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   (a continuation never switches models). Codex `replayScope` still
   applies on top, narrower still (model+account). Prior art: pi-ai
   `transformMessages` (pi-mono/packages/ai/src/api/transform-messages.ts).
-- **Codex session affinity & receipts.** Cache affinity rides a derived
-  session id — `sha256("goblin-codex-session:<convId>")` rendered as a
-  UUID, never the raw conversation id — sent as `session-id` +
-  `thread-id` headers and body `prompt_cache_key`; absent when no
-  session was given. `x-codex-turn-state` is captured once per model
-  instance (first non-empty response header wins, echoed on every later
-  request the instance makes) — one instance is one turn attempt, so
-  it never crosses turns. Compaction's text-mode summarizer marks itself
-  `x-openai-subagent: compact`; prefix mode sends the turn's own headers
-  ([compaction](compaction.md) → Cache reuse). Rate-limit receipts are
-  read from the `x-codex-*` response headers only (no SSE event exists
-  over HTTP) and land on the finish part's `providerMetadata.codex.quota`; the
-  turn keeps the newest non-null quota into `TurnMetadata` and the
-  live `data-context` part, and the gauge's popover shows 5h/weekly
-  windows only when issued. Logs carry percentages and booleans —
-  never the turn-state value, tokens, or account id.
-- **Compaction.** History is unbounded on disk, bounded in the window by
-  pointer relocation, never deletion. A completed turn crossing most of its
-  model's catalog window — or `/compact` — compacts: the conversation's own
-  model summarizes (a sloppy summary silently degrades every future turn,
-  and it runs rarely) from the previous boundary to a completed-exchange cut
-  — the causal-view rule, so a response is never orphaned from its user
-  message — keeping a recent tail in budget. An interleaved burst is atomic,
-  so the cut coarsens to whole bursts. Summarizer input is the delta since
-  the previous boundary plus the previous summary, never the whole past, so
-  each call is bounded by one compaction interval; within it, chunks run
-  sequentially carrying the running summary, an oversized event truncated
-  rather than stalling the fold, each call racing a timeout — a wedged
-  request must settle, a timeout is ordinary. The summary lands as a row and
-  the event stream stays untouched and queryable forever. Recovery is named,
-  not implied (ruling 2026-10-14): the summary marker carries the
-  conversation id and boundary seq and points at `history_search`
-  action=context, so the folded span stays pageable; no folded-span dump
-  file — the event stream already is the record, and a copy would drift.
-  The model view is the summary plus events at their causal position, so a
-  late answer to a folded question rides into the summary; the requestHash
-  move is the sanctioned boundary (Cache stability). Failure is loud and
-  lossless: a failed call writes no boundary and warns, and the next
-  crossing retries — as does an abort by `/stop` or shutdown. An
-  epoch-bumping settings change (the authority rule) fences the same
-  commit: the re-check runs before each chunk and before the pointer lands,
-  so a fence spends no further calls and clears no frozen prompt snapshot —
-  the crossing retries under the new settings. Ruling 2026-10-25
-  ([compaction](compaction.md) → Timing): the normal fold is now a
-  **step-boundary pre-emption** — the trigger (the projected upcoming
-  request ≥ the lower of 50% of the window and 256k) is checked at the
-  `prepareStep` seam before every model call, gate-checked for foldable
-  stored history, and when it fires it
-  stops the next dispatch, folds mid-turn, and resumes the
-  turn on the compacted view through the overflow rail (full tail,
-  reason `preempt`; it consumes the turn's one fold-resume; a context
-  landing at the same boundary retracts in its favor). The serial-lane
-  end-of-turn fold stays as the backstop when pre-emption could not or
-  did not fire, and `/compact` serializes through it and still compacts
-  with the window unknown (a forced scrub). Ruling 2026-11-09 ([compaction](compaction.md)):
-  the two arms became one trigger and the tail 20k (built, #399); cuts
-  that split a turn (#403) and the summary's required headings, audit
-  and code-made parts are not yet built. Ruling 2026-10-19: the window
-  lookup is
-  metadata, not a model step — `compaction.contextWindow` reads the
-  catalog only, resolving no auth and building no model step, so the
-  lookup can never mint or rewrite a frozen prompt snapshot (the
-  summary call itself still resolves auth and runs the
-  conversation's model; `buildStep` alone builds prompts). The
-  snapshot clears only at a boundary that rewrites what the prompt
-  must say: a landed compaction, or a persona/memory-exclusion
-  switch. A `/compact` fenced mid-lookup — a `/stop` or
-  epoch-bumping settings change landing during the read — rejects
-  fenced rather than reporting "nothing to compact": the pass
-  genuinely lost authority. The utilization warn stays as the alarm
-  that compaction didn't happen or didn't keep up.
-  A mid-turn **context-overflow error** is a recovery, not a failure
-  (mechanism from pi): the partial reply is held off the wire, one
-  compaction runs with a smaller tail (the overflow proved the estimate
-  optimistic), and the turn resumes on the compacted view, continuing the
-  partial as the same message while the journaled calls ride the recovery
-  guard — a colliding effectful re-ask refuses, safe reads re-observe,
-  operator grants spend once; one attempt per turn,
-  else a plain operator message. Ruling 2026-10-04: no deterministic
-  fallback summary — the summarizer is the conversation's own model, so
-  when it can't summarize the turn can't answer either, and a degraded
-  summary silently harms every later turn.
+- **Codex session affinity & receipts.** Cache affinity uses a derived
+  session id, never the raw conversation id. Turn state never crosses
+  turns. Logs exclude turn-state values, tokens and account ids. The
+  adapter and its tests own the wire details (`src/agent/codex/`).
+- **Compaction.** See [compaction](compaction.md) for its rationale and owning
+  code. Looking up the context limit is a metadata read: it must not resolve
+  auth, build a model request or change the frozen prompt. Losing authority
+  during that read is not the same as finding nothing to compact.
 - **Quota walls skip the SDK's retries** (2026-11-01): the AI SDK retries
   only an `APICallError` with `isRetryable === true` and has no skip hook,
   so a z.ai 429 "Limit Exhausted" burned its whole `maxRetries` ladder
@@ -301,6 +201,19 @@ cache stability, non-goals — is [`DESIGN.md`](../DESIGN.md); read it first.
   match as the same `APICallError` (all fields kept) with `isRetryable:
   false`, logging one `warn` (model, statusCode, resetAt). Throttles, 5xx
   and overloads keep the SDK ladder; `maxRetries` is unchanged.
+- **Provider failure shape** (2026-11-20, #770): sorting reads only goblin's
+  `ProviderError` (status, body, typed verdict) plus standard `Error.message`,
+  `cause`, `AggregateError.errors`, and strings; each engine builds the shape
+  at its edge. A typed `quota` verdict or HTTP 402 is a structural quota wall:
+  it outranks a 429 and blocks both overflow and transient classification.
+  Brave search's 402 was observed; OpenRouter's insufficient-credits 402 is
+  documented, not observed by goblin. Claude Code takes status from
+  `api_error_status`, else the failed request's last `api_retry.error_status`
+  (cleared by a later successful assistant frame); it maps `rate_limit` to
+  quota and `overloaded`/`server_error` to transient.
+  The CLI retries throttles and overloads itself, so a surfaced `rate_limit`
+  is its subscription window, matching `resultErrorText`'s no-retry text.
+  This is classification only; request bytes are unchanged.
 - **Model fallback list** (ruling 2026-11-02, operator). The turn is the
   one call that had no fallback, and 2026-10-26 cost ~50 minutes of
   hand-failover (codex `server_is_overloaded`, then a z.ai quota wall).

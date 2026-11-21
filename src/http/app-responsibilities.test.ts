@@ -19,6 +19,7 @@ import type { AppResponsibilityDeps } from "./app-responsibilities.ts";
 import type { AppAttentionResponse, AppResponsibilityFeed } from "./app-wire.ts";
 import type { ConversationStore } from "../conversation.ts";
 import type { ProjectStore } from "../projects.ts";
+import { storeFence } from "../testkit/store-fence.ts";
 
 interface Rig {
 	resps: ResponsibilityStore;
@@ -43,6 +44,7 @@ function depsFor(
 			wakes,
 			programs,
 			conversations: ctx.store,
+			fence: storeFence(ctx.store),
 			pump: () => {},
 		}),
 		listThreads: opts.listThreads ?? (() => Promise.resolve(opts.threads ?? [])),

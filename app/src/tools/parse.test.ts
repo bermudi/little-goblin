@@ -209,4 +209,45 @@ describe("generic summaries", () => {
 		cyclic.self = cyclic;
 		expect(shortJson(cyclic)).toBe("(unprintable)");
 	});
+
+	test("shortJson stops at deep and array cycles without the RSS spike of a failing stringify (#819)", () => {
+		const before = process.memoryUsage().rss;
+		const deep: Record<string, unknown> = { a: { b: { c: {} } } };
+		((deep.a as Record<string, unknown>).b as Record<string, unknown>).c = { back: deep };
+		expect(shortJson(deep)).toBe("(unprintable)");
+		const list: unknown[] = [1, { x: 2 }];
+		list.push({ items: list });
+		expect(shortJson(list)).toBe("(unprintable)");
+		expect(shortJson({ wrapped: list })).toBe("(unprintable)");
+		expect(process.memoryUsage().rss - before).toBeLessThan(64 * 1024 * 1024);
+	});
+
+	test("shortJson prints a shared reference that is not a cycle", () => {
+		const shared = { n: 1 };
+		const value = { a: shared, b: [shared, shared] };
+		expect(shortJson(value)).toBe(JSON.stringify(value, null, 2));
+		expect(shortJson(value)).toContain('"b": [\n    {\n      "n": 1');
+	});
+
+	test("shortJson follows toJSON like JSON.stringify does", () => {
+		const inner: Record<string, unknown> = {};
+		inner.self = inner;
+		const value = { when: new Date(0), hidden: { inner, toJSON: () => "ok" } };
+		expect(shortJson(value)).toBe(JSON.stringify(value, null, 2));
+		const loop: Record<string, unknown> = {};
+		loop.child = { toJSON: () => loop };
+		expect(shortJson(loop)).toBe("(unprintable)");
+	});
+
+	test("shortJson reads each property once", () => {
+		let reads = 0;
+		const value = {
+			get n() {
+				reads++;
+				return reads;
+			},
+		};
+		expect(shortJson(value)).toBe('{\n  "n": 1\n}');
+		expect(reads).toBe(1);
+	});
 });

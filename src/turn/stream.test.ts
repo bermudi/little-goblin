@@ -129,8 +129,6 @@ function toolCallStep(id: string, inputTokens: number): LanguageModelV4StreamPar
 	];
 }
 
-// A provider-side context overflow: the OpenAI wording over a 400
-// APICallError — the shape a provider actually throws out of doStream.
 function overflowError(): APICallError {
 	return new APICallError({
 		message:
@@ -141,13 +139,9 @@ function overflowError(): APICallError {
 	});
 }
 
-// Verbatim Telegram warning the filter classifier matches.
 const filterWarning =
 	"[System detected potentially unsafe or sensitive content in input or generation. Please avoid using prompts that may generate sensitive content. Thank you for your cooperation.][20261005061517b57fc824";
 
-// A turn member with the wire's view of a sink: records every chunk it
-// receives (replay or live). `seq` defaults past the range tests assign
-// by hand so incidental members never collide with crafted entries.
 let memberSeq = 100;
 interface RecMember extends WireMember {
 	chunks: MessageChunk[];
@@ -200,8 +194,6 @@ function probeTool() {
 	});
 }
 
-// The driver's dependency rig: everything attempt-shaped is fake and
-// inspectable — no store, no lanes, no runtime.
 function rig(
 	scripts: Array<LanguageModelV4StreamPart[] | Error>,
 	over: Partial<StreamDeps<RecMember>> = {},
@@ -215,9 +207,6 @@ function rig(
 	const settlements: Array<{ m: RecMember; done: MemberSettlement }> = [];
 	const unrequeued: RecMember[][] = [];
 	const state = new TurnState({ convId: "c1", watchdog: null, request: "run the thing" });
-	// The runtime opens the rules from the step it built; the rig reads
-	// the step and the rail live, so a test may swap them after rig().
-	// Transient retries skip the backoff delay.
 	const rulesInit: StepRulesInit = {
 		convId: "c1",
 		epoch: 1,
@@ -296,14 +285,9 @@ function rig(
 	};
 }
 
-// ---------- the membership seam ----------
 
 describe("membership seam", () => {
 	test("a streaming member claimed by the resume sees the pre-overflow wire replayed (#96)", () => {
-		// Attempt 1 streamed a tool call onto the wire, then overflowed;
-		// the compaction now holds the lane. A second client submitted
-		// during that recovery window — the resume claim goes through
-		// the seam.
 		const live = openLive();
 		const before: MessageChunk[] = [
 			{ type: "start", messageId: "m1" },
@@ -314,12 +298,7 @@ describe("membership seam", () => {
 		const members: RecMember[] = [];
 		const claimed = claimMembers("c1", () => [joiner], live, members);
 		expect(claimed).toEqual([joiner]);
-		// Registration rides the claim: the joiner is on the attempt's
-		// settlement surface from the splice, before admission reads on.
 		expect(members).toEqual([joiner]);
-		// Gapless: the joiner saw the same wire the head saw — the tool
-		// call the failed attempt emitted was REPLAYED to it, not
-		// mid-sentence.
 		expect(joiner.chunks).toEqual(before);
 	});
 
@@ -393,23 +372,14 @@ describe("membership seam", () => {
 	});
 });
 
-// ---------- the driver ----------
 
 describe("driveStream — the provider retry budget (1min)", () => {
-	// docs.1min.ai/docs/api/openai-compatible: "Automatic retries are
-	// disabled upstream. Set maxRetries: 0 in your client too: retrying a
-	// POST is a new generation and may incur another charge." The step
-	// carries the provider's rule; without it the SDK's default of 2
-	// retries applies (3 attempts total on a retryable 5xx).
 	const retryable = () =>
 		new APICallError({
 			message: "upstream had a hiccup",
 			url: "https://api.1min.ai/openai/v1/chat/completions",
 			requestBodyValues: {},
 			statusCode: 503,
-			// Zero the SDK's backoff waits (retry-after-ms is the honored
-			// short-delay header) so the default-budget case settles inside
-			// the test timeout.
 			responseHeaders: { "retry-after-ms": "0" },
 		});
 
@@ -430,9 +400,6 @@ describe("driveStream — the provider retry budget (1min)", () => {
 });
 
 describe("driveStream — transient transport step retries (#191)", () => {
-	// The prod shape (goblin.log 2026-11-08): a raw fetch TypeError rides a
-	// stream error part after output had already started — not SDK-flagged
-	// retryable, so nothing retried it and the turn died.
 	const reset = (): LanguageModelV4StreamPart => ({
 		type: "error",
 		error: new TypeError("fetch failed", {
@@ -459,9 +426,7 @@ describe("driveStream — transient transport step retries (#191)", () => {
 			expect(outcome.kind).toBe("ok");
 			expect(failing.prompts).toHaveLength(2);
 			expect(failing.prompts[0]).toBe(failing.prompts[1]);
-			// Already-streamed partial text stays; the recovered answer lands.
 			expect(r.head.text.replace(/\s+/g, "").trim()).toBe("partialrecovered");
-			// The retry line names attempt and delay; the error never hit the wire.
 			const retryLine = warning.mock.calls.find(([msg]) =>
 				msg.includes("retrying the failed model step"),
 			);
@@ -480,9 +445,6 @@ describe("driveStream — transient transport step retries (#191)", () => {
 		});
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("failed");
-		// The lane denies retries because every POST bills — the
-		// transient path must not spend the request the step budget
-		// already refused.
 		expect(failing.prompts).toHaveLength(1);
 	});
 
@@ -494,7 +456,6 @@ describe("driveStream — transient transport step retries (#191)", () => {
 		if (outcome.kind !== "failed") return;
 		expect(failing.prompts).toHaveLength(2);
 		expect(outcome.errorText).toContain("fetch failed");
-		// The scheduler stamp survives: the failure is still transient-class.
 		expect(isTransientTurnFailure(outcome.rawError)).toBe(true);
 	});
 
@@ -507,7 +468,6 @@ describe("driveStream — transient transport step retries (#191)", () => {
 		r.deps.tools = { probe };
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
-		// Tool step, failed step, retry — the tool ran exactly once.
 		expect(failing.prompts).toHaveLength(3);
 		expect(r.head.calls).toEqual([{ tool: "probe", input: {} }]);
 	});
@@ -525,10 +485,6 @@ describe("driveStream — transient transport step retries (#191)", () => {
 });
 
 describe("driveStream — transient reader throws (#488)", () => {
-	// The openai-compatible lane surfaces a mid-SSE socket reset as a
-	// stream read failure, not an error part — filterErrorStream must
-	// convert a transient-classified throw to the error-part surface or
-	// the onError grantor never fires: one POST and the turn dies.
 	const resetThrow = () =>
 		new TypeError("fetch failed", {
 			cause: new Error("read ECONNRESET: The socket connection was closed unexpectedly"),
@@ -546,9 +502,6 @@ describe("driveStream — transient reader throws (#488)", () => {
 					return "probe-result-7f3a";
 				},
 			});
-			// The dying attempt streamed text and a tool call before the
-			// reset — the filter's buffered tool part must drop with the
-			// attempt so no tool runs twice.
 			const failing = scriptedModel([
 				toolCallStep("c1", 10),
 				{
@@ -568,16 +521,12 @@ describe("driveStream — transient reader throws (#488)", () => {
 			r.deps.tools = { probe };
 			const outcome = await driveStream(r.deps);
 			expect(outcome.kind).toBe("ok");
-			// Tool step, the failed attempt, its one retry — the retried
-			// step POSTed exactly twice with the identical request.
 			expect(failing.prompts).toHaveLength(3);
 			expect(failing.prompts[1]).toBe(failing.prompts[2]);
-			// The re-dispatch carried the earlier step's tool result forward.
 			expect(failing.prompts[2]).toContain("probe-result-7f3a");
 			expect(executions).toBe(1);
 			expect(r.head.calls).toEqual([{ tool: "probe", input: {} }]);
 			expect(r.head.text.replace(/\s+/g, "").trim()).toBe("partialrecovered");
-			// The conversion logged one line; the error never hit the wire.
 			expect(
 				warning.mock.calls.some(([msg]) =>
 					msg.includes("surfacing as a stream error part"),
@@ -602,8 +551,6 @@ describe("driveStream — transient reader throws (#488)", () => {
 			textReply("never"),
 		]);
 		const r = rig([], { step: { model: failing.model, system: "test" } });
-		// Not converted: a stream error the classifier doesn't own keeps
-		// the fatal rail — the pipeline error propagates, no re-dispatch.
 		await expect(driveStream(r.deps)).rejects.toThrow("bad request shape");
 		expect(failing.prompts).toHaveLength(1);
 	});
@@ -627,7 +574,6 @@ describe("driveStream — transient reader throws (#488)", () => {
 		if (outcome.kind !== "failed") return;
 		expect(failing.prompts).toHaveLength(2);
 		expect(outcome.errorText).toContain("fetch failed");
-		// The scheduler stamp survives: the failure is still transient-class.
 		expect(isTransientTurnFailure(outcome.rawError)).toBe(true);
 	});
 });
@@ -717,8 +663,6 @@ describe("driveStream", () => {
 		expect(outcome.kind).toBe("ok");
 		if (outcome.kind !== "ok") return;
 		expect(r.head.text).toBe("the answer");
-		// One emission point: the member, the wire log, and the attached
-		// subscriber all saw the same chunks in order.
 		expect(head.chunks.length).toBeGreaterThan(0);
 		expect(r.live.chunks).toEqual(head.chunks);
 		expect(subChunks).toEqual(head.chunks);
@@ -775,12 +719,9 @@ describe("driveStream", () => {
 			};
 			promptChars: Record<string, number> | undefined;
 		};
-		// input bills every re-sent prompt across the loop; lastInput is
-		// the final step — the window occupancy the gauge reads.
 		expect(md.usage.input).toBe(60);
 		expect(md.usage.lastInput).toBe(50);
 		expect(md.usage.lastCacheRead).toBe(40);
-		// The itemization measured the final step's outbound prompt.
 		expect(md.promptChars).toBeDefined();
 		expect(md.promptChars!["history"]).toBeGreaterThan(0);
 		expect(md.promptChars!["toolDefs"]).toBeGreaterThan(0);
@@ -796,8 +737,6 @@ describe("driveStream", () => {
 		expect(typeof md.ttftMs).toBe("number");
 		expect(md.ttftMs!).toBeGreaterThanOrEqual(0);
 		expect(md.ttftMs!).toBeLessThan(10_000);
-		// The finish instant rides as createdAt — the transcript's "how
-		// old is this reply" before history serves the row's own stamp.
 		expect(typeof md.createdAt).toBe("string");
 		expect(Date.parse(md.createdAt!)).toBeGreaterThanOrEqual(r.deps.turnStartMs);
 		expect(Date.parse(md.createdAt!)).toBeLessThanOrEqual(Date.now());
@@ -914,15 +853,12 @@ describe("driveStream", () => {
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
 		if (outcome.kind !== "ok") return;
-		// One data-context per step, carrying that step's prompt tokens —
-		// the gauge's live numbers while the turn runs.
 		const ctx = r.live.chunks.filter((c) => c.type === "data-context");
 		expect(ctx).toEqual([
 			{ type: "data-context", transient: true, data: { input: 10, cacheRead: null } },
 			{ type: "data-context", transient: true, data: { input: 50, cacheRead: 40 } },
 		]);
 		expect(watcher.chunks.filter((c) => c.type === "data-context")).toEqual(ctx);
-		// Transient: it never lands in the response message's parts.
 		expect(outcome.responseMessage?.parts.some((p) => p.type === "data-context")).toBe(false);
 	});
 
@@ -943,8 +879,6 @@ describe("driveStream", () => {
 		r.deps.tools = { probe };
 		const steered = member("steered mid-turn", true, 7);
 		r.queue.push(steered);
-		// The member carries its own durable seq — ownership advances by
-		// that seq, never by rediscovering ids in history.
 		expect(steered.seq).toBe(7);
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
@@ -952,8 +886,6 @@ describe("driveStream", () => {
 		expect(r.prompts[1]).toContain("steered mid-turn");
 		expect(r.members).toContain(steered);
 		expect(r.settlements).toEqual([]);
-		// The joiner saw step 1's wire (the tool call) replayed, then the
-		// live answer — the seam's promise end to end.
 		expect(steered.chunks.some((c) => c.type === "tool-input-available")).toBe(true);
 		expect(steered.chunks.some((c) => c.type === "text-delta")).toBe(true);
 		expect(outcome.steerMark).toBe(7);
@@ -973,8 +905,6 @@ describe("driveStream", () => {
 	test("a steer that cannot convert is settled with an error — it never joins the wire", async () => {
 		const r = rig([textReply("answer")]);
 		const poison = member("poison");
-		// A file part with an invalid URL — materializeAttachments
-		// passes it through untouched, convertToModelMessages throws.
 		poison.message = {
 			id: "poison",
 			role: "user",
@@ -997,10 +927,6 @@ describe("driveStream", () => {
 	});
 
 	test("steering ownership names the converted event's seq — a duplicate id never owns a failed conversion", async () => {
-		// Two steers share one client message id; only the first converts.
-		// The ownership checkpoint must name seq 2 alone — an id-based scan
-		// sweeps the failed seq 3 in with it, and a crash-resume would then
-		// accept input this turn never folded.
 		const checkpoints: Array<{ ownedInputSeqs?: number[]; steerMark?: number }> = [];
 		const consumed: number[][] = [];
 		const r = rig([textReply("answer")], {
@@ -1022,11 +948,9 @@ describe("driveStream", () => {
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
 		if (outcome.kind !== "ok") return;
-		// The failed steer settled with an error and never joined the wire.
 		expect(r.settlements.length).toBe(1);
 		expect(r.settlements[0]!.m).toBe(poison);
 		expect(r.settlements[0]!.done.kind).toBe("error");
-		// The ownership checkpoint names only the converted event.
 		const ownership = checkpoints.find((c) => c.ownedInputSeqs !== undefined);
 		expect(ownership?.ownedInputSeqs).toEqual([2]);
 		expect(consumed).toEqual([[2]]);
@@ -1035,10 +959,6 @@ describe("driveStream", () => {
 	});
 
 	test("a fence landing mid-conversion settles the successful steer — no join, no fold (#115)", async () => {
-		// The steer is a photo whose conversion parks reading a FIFO — the
-		// deterministic window for the epoch to die mid-await. The
-		// conversion then SUCCEEDS; the success path must re-check before
-		// the join, the replay, and the fold.
 		const dir = mkdtempSync(join(tmpdir(), "goblin-st-fifo-"));
 		fifoDirs.push(dir);
 		const fifo = join(dir, "photo.png");
@@ -1070,13 +990,11 @@ describe("driveStream", () => {
 		} as Message;
 		r.queue.push(steer);
 		const driving = driveStream(r.deps);
-		await new Promise((res) => setTimeout(res, 20)); // conversion parked on the FIFO
-		holds = false; // the epoch dies while the conversion waits
+		await new Promise((res) => setTimeout(res, 20));
+		holds = false;
 		await writeFile(fifo, "pngdata");
 		const outcome = await driving;
 		expect(outcome.kind).toBe("ok");
-		// Settled fenced like the failure branch — NOT requeued: the splice
-		// already took this submit out of stop()'s reach.
 		expect(r.settlements).toEqual([{ m: steer, done: { kind: "fenced" } }]);
 		expect(r.unrequeued).toEqual([]);
 		expect(r.members).toEqual([]);
@@ -1094,14 +1012,10 @@ describe("driveStream", () => {
 		expect(outcome.holdForRecovery).toBe(true);
 		expect(outcome.errorText).toBeTruthy();
 		expect(outcome.loop.detector).toBeDefined();
-		// The error chunk — and everything after — stayed off the wire.
 		expect(r.live.chunks.some((c) => c.type === "error")).toBe(false);
 		expect(head.chunks).toEqual(r.live.chunks);
 	});
 
-	// The runtime's real closure: the projected upcoming request against
-	// the trigger. Reused so the stream tests exercise the same decision
-	// the runtime installs.
 	const realArms = (info: { projectedInputTokens: number | null; stepNumber: number }) =>
 		preemptArm({ projectedInputTokens: info.projectedInputTokens, contextWindow: 1000 });
 
@@ -1114,15 +1028,11 @@ describe("driveStream", () => {
 		const head = member("head");
 		r.members.push(head);
 		const outcome = await driveStream(r.deps);
-		// Step 0 (input 900/1000) completed the tool; the pressure arm
-		// fired at the next boundary (stepNumber 1, 0-based) — that call
-		// never dispatched.
 		expect(outcome.kind).toBe("failed");
 		if (outcome.kind !== "failed") return;
 		expect(outcome.holdForRecovery).toBe(true);
 		expect(outcome.preempt).toEqual({ arm: "pressure", step: 1 });
 		expect(r.prompts).toHaveLength(1);
-		// Nothing error-shaped reached the wire — the fold-resume owns the story.
 		expect(r.live.chunks.some((c) => c.type === "error")).toBe(false);
 		expect(head.chunks).toEqual(r.live.chunks);
 		const err = failureFromStream(outcome);
@@ -1179,7 +1089,6 @@ describe("driveStream", () => {
 	});
 
 	test("a decided cut issues the tools-off landing: nudge tail, toolChoice none, exactly one step", async () => {
-		// Step 1 at 900/1000 of the window decides the cut; step 2 obeys.
 		const r = rig([toolCallStep("c1", 900), textReply("wrapped up")]);
 		r.deps.step = { ...r.deps.step, contextWindow: 1000 };
 		r.deps.tools = { probe: probeTool() };
@@ -1191,8 +1100,6 @@ describe("driveStream", () => {
 	});
 
 	test("a model that calls a tool on the tools-off landing fails the turn loudly", async () => {
-		// ai >= 7.0.149 enforces toolChoice none (vercel/ai #23843): a
-		// defiant provider is an error, not a silent success.
 		const r = rig([toolCallStep("c1", 900), toolCallStep("c2", 900)]);
 		r.deps.step = { ...r.deps.step, contextWindow: 1000 };
 		r.deps.tools = { probe: probeTool() };
@@ -1217,22 +1124,17 @@ describe("driveStream", () => {
 				throw new Error("unimplemented");
 			},
 			doStream() {
+				let cancelled = false;
 				return {
 					stream: new ReadableStream<LanguageModelV4StreamPart>({
 						async start(controller) {
-							const push = (p: LanguageModelV4StreamPart) => {
-								try {
-									controller.enqueue(p);
-								} catch {
-									/* reader gone — the drive threw */
-								}
-							};
-							push({ type: "stream-start", warnings: [] });
-							push({ type: "text-start", id: "t1" });
-							push({ type: "text-delta", id: "t1", delta: "partial" });
+							controller.enqueue({ type: "stream-start", warnings: [] });
+							controller.enqueue({ type: "text-start", id: "t1" });
+							controller.enqueue({ type: "text-delta", id: "t1", delta: "partial" });
 							await gate;
-							push({ type: "text-end", id: "t1" });
-							push({
+							if (cancelled) return;
+							controller.enqueue({ type: "text-end", id: "t1" });
+							controller.enqueue({
 								type: "finish",
 								finishReason: { unified: "stop", raw: undefined },
 								usage: {
@@ -1245,11 +1147,10 @@ describe("driveStream", () => {
 									outputTokens: { total: 1, text: undefined, reasoning: undefined },
 								},
 							});
-							try {
-								controller.close();
-							} catch {
-								/* already closed */
-							}
+							controller.close();
+						},
+						cancel() {
+							cancelled = true;
 						},
 					}),
 				};
@@ -1264,17 +1165,13 @@ describe("driveStream", () => {
 		});
 		r.deps.step = { model: parked, system: "test" };
 		const driving = driveStream(r.deps);
-		await new Promise((res) => setTimeout(res, 20)); // first delta consumed, loop parked
+		await new Promise((res) => setTimeout(res, 20));
 		holds = false;
 		release();
 		await expect(driving).rejects.toThrow("epoch advanced");
 	});
 
 	test("a rejected tool call still feeds the repeat detector — warning at threshold", async () => {
-		// A provider emitting invalid input gets tool-input-error, then the
-		// SDK's tool-error carrying only the id (mapped to tool-output-error).
-		// Without the callById record the detector hashes each rejection under
-		// a random id and never trips; with it, ten identical rejections warn.
 		const input = JSON.stringify({ q: "same" });
 		const oneRejection = (n: number): LanguageModelV4StreamPart[] => [
 			{ type: "stream-start", warnings: [] },
@@ -1316,12 +1213,9 @@ describe("driveStream", () => {
 			r.deps.tools = { probe: badProbe };
 			const outcome = await driveStream(r.deps);
 			expect(outcome.kind).toBe("ok");
-			// Ten identical rejected calls hit the detector's warn threshold;
-			// the detector's warn line fires (plus the ten rejection lines).
 			const detectorWarns = warnSpy.mock.calls.filter((c) => c[0] === "loop detector");
 			expect(detectorWarns).toHaveLength(1);
 			expect(detectorWarns[0]![1]).toMatchObject({ tool: "probe", count: LOOP_DETECT_WARN });
-			// The warning rides the next request as a Loop check tail.
 			expect(r.prompts.at(-1)).toContain("Loop check:");
 		} finally {
 			warnSpy.mockRestore();
@@ -1380,8 +1274,6 @@ describe("driveStream", () => {
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
 		if (outcome.kind !== "ok") return;
-		// The script itself is one call to the loop machinery; its nested
-		// calls surface only in the reviewer's view.
 		expect(outcome.toolCalls).toEqual(["script", "script.bash", "script.fetch"]);
 		const tools = outcome.digestRing.map((d) => d.entry.tool);
 		expect(tools).toEqual(["script", "script.bash", "script.fetch"]);
@@ -1527,8 +1419,6 @@ describe("driveStream", () => {
 		expect(recorded).toEqual([{ conversationId: "c1", skill: "nested" }]);
 	});
 
-	// The window record: the final prepareStep capture, carried on both
-	// outcome rails for the runtime to store (window-capture.ts).
 	test("the outcome carries the final step's outbound prompt as the window record", async () => {
 		const probe = probeTool();
 		const r = rig([toolCallStep("c1", 10), textReply("done")], {
@@ -1544,15 +1434,11 @@ describe("driveStream", () => {
 		expect(w!.v).toBe(1);
 		expect(w!.system).toBe("test");
 		expect(w!.tools.map((t) => t.name)).toEqual(["probe"]);
-		// The prompt as sent — the outbound of the FINAL step, so it ends
-		// with the tool result the model was answering; the reply itself
-		// is history, not its own input.
 		expect(w!.messages.map((m) => (m as { role: string }).role)).toEqual([
 			"user",
 			"assistant",
 			"tool",
 		]);
-		// The itemization of that same prompt rides along.
 		expect(w!.segments.history).toBeGreaterThan(0);
 		expect(w!.segments.toolResults).toBeGreaterThan(0);
 	});
@@ -1565,9 +1451,6 @@ describe("driveStream", () => {
 		expect(outcome.kind).toBe("failed");
 		if (outcome.kind === "ok") return;
 		expect(outcome.steps).toBe(1);
-		// Step 2's prompt was staged in prepareStep but its doStream threw
-		// — nothing saw it. The window is step 1's: the user message only,
-		// not the tool-call history step 2 would have carried.
 		expect(outcome.window).not.toBeNull();
 		expect(outcome.window!.messages).toHaveLength(1);
 		expect((outcome.window!.messages[0] as { role: string }).role).toBe("user");
@@ -1620,8 +1503,6 @@ describe("wire-tail checkpoint", () => {
 		});
 		const outcome = await driveStream(r.deps);
 		expect(outcome.kind).toBe("ok");
-		// Three deltas inside the one-second window coalesce to a single
-		// tail write — the checkpoint carries what was on the wire then.
 		const tails = checkpoints.filter(
 			(c) => c.partial !== undefined && c.loopState === undefined,
 		);

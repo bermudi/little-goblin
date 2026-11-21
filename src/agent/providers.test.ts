@@ -1,3 +1,4 @@
+// Fake models here pin AI SDK v4 call options, stream parts, and provider retry wire behavior.
 // The model, the media it carries, and the receipts a call leaves.
 // The thinking vocabulary and the ladder each model may be offered
 // live in thinking.test.ts.

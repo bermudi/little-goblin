@@ -126,26 +126,17 @@ const exec = (t: ReturnType<typeof delegateTool>, input: unknown) =>
 	(t as unknown as { execute: (i: unknown) => Promise<unknown> }).execute(input);
 
 describe("delegate tool", () => {
-	test("responsibility-linked PR checks are independent of role", async () => {
+	test("lead is no special role: a linked start carries no issue identity or verifier contract", async () => {
 		const h = harness();
 		try {
 			h.deps.checkResponsibility = () => null;
 			const tool = delegateTool(h.deps);
-			const input = { action: "start", harness: "codex", role: "default", task: "build issue",
-				responsibility: "r1", issue: { repository: "owner/repo", number: 7 }, checks: ["verify", "build"] };
-			const leadWithoutIssue = { ...input, role: "lead", issue: undefined, checks: undefined };
-			expect(delegateInputSchema.safeParse(leadWithoutIssue).success).toBe(true);
-			expect(delegateInputSchema.safeParse({ ...input, issue: undefined }).success).toBe(false);
-			expect(delegateInputSchema.safeParse({ ...input, responsibility: undefined }).error?.issues[0]?.message).toBe("PR readiness requires a responsibility");
-			expect(delegateInputSchema.safeParse({ ...input, issue: undefined }).success).toBe(false);
-			expect(delegateInputSchema.safeParse({ ...input, checks: ["verify", "verify"] }).success).toBe(false);
-			await exec(tool, input);
-			expect(h.store.list()[0]).toMatchObject({
-				role: "default", pr: { issue: input.issue, checks: input.checks }, responsibilityId: "r1",
-			});
-			expect(h.prompts[0]).toContain("required: verify, build");
-			const listed = await exec(tool, { action: "list" });
-			expect(listed).toMatchObject({ delegations: [expect.objectContaining({ role: "default", pr: { issue: input.issue, checks: input.checks } })] });
+			await exec(tool, { action: "start", harness: "codex", role: "lead", task: "build issue",
+				responsibility: "r1", issue: { repository: "owner/repo", number: 7 } });
+			const row = h.store.list()[0]!;
+			expect(row).toMatchObject({ role: "lead", responsibilityId: "r1" });
+			expect(row).not.toHaveProperty("issue");
+			expect(h.prompts[0]).not.toContain("Checked-SHA:");
 		} finally { await h.lifecycle.stopTicker(); h.store.close(); }
 	});
 

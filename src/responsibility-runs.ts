@@ -9,7 +9,6 @@ import { log } from "./log.ts";
 import type { ResponsibilityStore } from "./responsibilities.ts";
 import { reportInputSchema, type ReportInput } from "./responsibility-reports.ts";
 import type { Delegation, DelegationVerdict } from "./delegations.ts";
-import { READINESS_OBSERVE_MS, readinessSummary, type PrReadiness } from "./pr-readiness.ts";
 
 const MAX_REASON = 4000;
 const clipTo = (s: string, max: number): string =>
@@ -19,46 +18,8 @@ const clip = (s: string): string => clipTo(s, MAX_REASON);
 /** The report a delegation's settlement states. A delegation has no
  *  structured question, only a screen or report, so a blocked agent is
  *  goblin's to read and relay: no `question` means it waits for goblin. */
-export function delegationReport(
-	d: Delegation,
-	verdict: DelegationVerdict,
-	body: string,
-	readiness?: PrReadiness,
-): ReportInput {
-	const tag = `delegation #${d.id} ${d.name}`;
-	if (readiness !== undefined) {
-		const r = readiness.result;
-		const pending = r.kind === "checked" && r.ci.state === "pending";
-		return {
-			state: verdict === "failed" ? "failed" : verdict !== "done" ? "blocked"
-				: r.kind === "checked" && r.ready ? "ready" : pending ? "waiting" : "blocked",
-			reason: clip(`${readinessSummary(readiness)}\n${tag} ${verdict}: ${body}`),
-			// Pending readiness resumes at the next observation window: the
-			// code poller re-reads GitHub, not the model, and a resumeWhen
-			// must be a future time — a stale observedAt is clamped to now.
-			...(verdict === "done" && pending
-				? {
-						resumeWhen: new Date(
-							Math.max(Date.now(), Date.parse(readiness.observedAt)) +
-								2 * READINESS_OBSERVE_MS,
-						).toISOString(),
-					}
-				: {}),
-			evidence: [
-				{ item: "Closing PR", ref: readiness.source, checked: r.kind === "checked" ? r.pr : readinessSummary(readiness) },
-				...(r.kind !== "checked" ? [] : [
-					{ item: "PR head", ref: r.head.source, checked: r.head.sha },
-					...r.checks.map((c) => ({
-						item: `Required check ${c.name}`,
-						ref: c.url ?? r.ci.source,
-						checked: `${c.state}${c.detail.length === 0 ? "" : ` (${c.detail.join(", ")})`}; SHA: ${r.head.sha}`,
-					})),
-					{ item: "CI on PR head", ref: r.ci.source, checked: `${r.ci.state}; SHA: ${r.ci.sha}` },
-				]),
-			],
-		};
-	}
-	return settlementReport(tag, verdict, body);
+export function delegationReport(d: Delegation, verdict: DelegationVerdict, body: string): ReportInput {
+	return settlementReport(`delegation #${d.id} ${d.name}`, verdict, body);
 }
 
 /** Shared status report for a settled delegation or linked subagent. */
@@ -107,11 +68,10 @@ export function fileDelegationReport(
 	d: Delegation,
 	verdict: DelegationVerdict,
 	body: string,
-	readiness?: PrReadiness,
 ): void {
 	if (d.responsibilityId === null) return;
-	fileReport(resps, d.responsibilityId, delegationReport(d, verdict, body, readiness), {
-		sourceKey: `delegation:${d.id}:${d.promptedAt}:${d.baselineSeq ?? "pending"}:${verdict}${readiness === undefined ? "" : `:readiness:${d.readinessVersion}`}`,
+	fileReport(resps, d.responsibilityId, delegationReport(d, verdict, body), {
+		sourceKey: `delegation:${d.id}:${d.promptedAt}:${d.baselineSeq ?? "pending"}:${verdict}`,
 		revision: d.responsibilityRevision,
 		logFields: { delegation: d.id },
 	});

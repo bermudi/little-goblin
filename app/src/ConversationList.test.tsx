@@ -10,6 +10,7 @@ import {
 	ConversationNav,
 	ConversationNavLink,
 	ConversationRow,
+	RollingRow,
 } from "./ConversationList.tsx";
 import { conversationNavigationPrimitive } from "./conversationNavigation.ts";
 
@@ -132,6 +133,20 @@ test("conversation row keeps link navigation and exposes the row actions in a to
 	expect(html).not.toContain('role="listbox"');
 	expect(html).toContain("<ul");
 	expect(html).toContain("<li>");
+});
+
+test("rolling row is a plain PWA link with no conversation actions", () => {
+	const html = renderToStaticMarkup(
+		<ConversationNav loop={false}>
+			<RollingRow current preview="latest message" updatedAt={conv.updatedAt} onOpen={() => {}} />
+		</ConversationNav>,
+	);
+	expect(html).toContain('href="/app/rolling"');
+	expect(html).toContain('aria-current="page"');
+	expect(html).toContain("Rolling chat");
+	expect(html).toContain("latest message");
+	expect(html).not.toContain("toolbar");
+	expect(html).not.toContain("button");
 });
 
 test("the row toolbar has one tab stop and arrow keys move between its buttons", async () => {

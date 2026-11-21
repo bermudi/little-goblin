@@ -161,6 +161,7 @@ function seedHome(home: string, fakePort: number): void {
 			fake: { kind: "openai-compatible", baseUrl: `http://127.0.0.1:${fakePort}/v1`, auth: "fake" },
 		},
 		model: "fake/verify-model",
+		system1: { auth: "fake-system1", baseUrl: `http://127.0.0.1:${fakePort}` },
 		// GOBLIN_VERIFY_DELEGATION=1 enables a throwaway hc-backed delegate
 		// run. The codex/gpt-6-luna pair is the operator-named test harness.
 		...(process.env.GOBLIN_VERIFY_DELEGATION === "1"
@@ -171,7 +172,7 @@ function seedHome(home: string, fakePort: number): void {
 				}
 			: {}),
 		operators: [],
-		telegram: { enabled: false },
+		telegram: { enabled: false, dmGapMinutes: 1 },
 		tts: "",
 		http: { port: 0 },
 		logLevel: "info",
@@ -223,6 +224,7 @@ function seedHome(home: string, fakePort: number): void {
 	writeFileSync(join(home, "goblin.json5"), `${JSON.stringify(config, null, 2)}\n`);
 	const authLines = [
 		JSON.stringify({ name: "fake", value: "not-a-secret" }),
+		JSON.stringify({ name: "fake-system1", value: "not-a-secret" }),
 		...(tryAuthRecord !== null ? [JSON.stringify(tryAuthRecord)] : []),
 	];
 	writeFileSync(join(home, "auth.jsonl"), `${authLines.join("\n")}\n`, {

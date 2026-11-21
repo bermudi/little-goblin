@@ -9,6 +9,7 @@ How to reach and prove each feature from the user's point of view. Every entry h
 | Document viewer: copy published or live text | [doc-viewer.md](doc-viewer.md) |
 | Notes: create and rename | [notes.md](notes.md) |
 | Projects: create one | [projects.md](projects.md) |
+| Rolling chat: continue and start a new conversation | [rolling.md](rolling.md) |
 | Settings: model services | [settings-accounts.md](settings-accounts.md) |
 | Settings: delegation agents | [settings-delegation.md](settings-delegation.md) |
 | Skills: browse and invoke an installed skill | [skills.md](skills.md) |

@@ -47,8 +47,12 @@ describe("app conversations", () => {
 			expect(createdBody.title).toBe("First");
 
 			const list = await call("/api/app/conversations");
-			const listBody = (await list.json()) as { conversations: { id: string }[] };
+			const listBody = (await list.json()) as {
+				conversations: { id: string }[];
+				rolling: { chain: { id: string }[] };
+			};
 			expect(listBody.conversations.map((c) => c.id)).toEqual(["app/chat-01"]);
+			expect(listBody.rolling.chain).toEqual([]);
 
 			expect((await call("/api/app/conversations/dm-1/messages")).status).toBe(404);
 			expect((await call("/api/app/conversations/../x/messages")).status).toBe(404);
@@ -74,6 +78,29 @@ describe("app conversations", () => {
 			});
 		} finally {
 			http.stop();
+		}
+	});
+
+	test("list keeps ordinary chats separate from the newest-first rolling chain", async () => {
+		const { http, call, store, configRef } = setup({ token: APP_TOKEN_NAME });
+		try {
+			const ordinary = store.resolve(appAddress("ordinary-chat"), "/w", configRef.current);
+			const oldRoll = store.rollApp(configRef.current);
+			const newRoll = store.rollApp(configRef.current);
+			const response = await call("/api/app/conversations");
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({
+				conversations: [expect.objectContaining({ id: ordinary.id })],
+				rolling: {
+					chain: [
+						expect.objectContaining({ id: newRoll.id }),
+						expect.objectContaining({ id: oldRoll.id }),
+					],
+				},
+			});
+		} finally {
+			http.stop();
+			store.close();
 		}
 	});
 

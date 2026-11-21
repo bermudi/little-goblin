@@ -225,6 +225,34 @@ const server = Bun.serve({
 	async fetch(req) {
 		const { pathname } = new URL(req.url);
 		process.stdout.write(`${req.method} ${pathname}\n`);
+		if (req.method === "POST" && pathname === "/api/alpha/decisions") {
+			const body = z
+				.object({
+					model: z.string(),
+					state: z.string(),
+					questions: z.record(
+						z.string(),
+						z.object({
+							type: z.literal("noul"),
+							instructions: z.string(),
+							criteria: z.object({ true: z.string(), false: z.string() }),
+						}),
+					),
+				})
+				.safeParse(await req.json().catch(() => null));
+			if (!body.success) return Response.json({ error: "bad request" }, { status: 400 });
+			let next: string;
+			try {
+				const state = z.object({ next: z.string() }).parse(JSON.parse(body.data.state));
+				next = state.next;
+			} catch {
+				return Response.json({ error: "bad request" }, { status: 400 });
+			}
+			const fresh = next.includes("[new topic]");
+			return Response.json({
+				answers: { follow_up: { type: "noul", noul: fresh ? 0.05 : 0.9 } },
+			});
+		}
 		if (pathname.endsWith("/models")) {
 			return Response.json({ object: "list", data: [{ id: "verify-model", object: "model" }] });
 		}

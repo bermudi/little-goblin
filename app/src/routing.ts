@@ -64,7 +64,7 @@ export function sameRoute(a: Route, b: Route): boolean {
 	}
 }
 
-export const PAGES: { key: Exclude<AppPageKey, "notes">; label: string }[] = [
+export const PAGES: { key: Exclude<AppPageKey, "notes" | "rolling">; label: string }[] = [
 	{ key: "attention", label: "Attention" },
 	{ key: "settings", label: "Settings" },
 	{ key: "memory", label: "Memories" },

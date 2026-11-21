@@ -162,6 +162,7 @@ forever-conversation drags stale, expensive context into unrelated questions,
 so the DM is a **rolling address**: one current conversation, split by quiet
 gaps. Every admitted class rolls (operators personal, `allowedUsers`
 standing sandbox); the gap check is routing machinery, the same for both.
+The routing rule is shared with the app's [Rolling chat](app.md#rolling-chat).
 
 **Why gaps, and why not just a timer.** Caching moots it — z.ai's prefix
 cache is mostly gone by ~8 minutes, fully cold past ~13 (measured

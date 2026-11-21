@@ -14,7 +14,7 @@ import { SkillSources } from "../skill-provenance.ts";
 import { tmpDir, useHome } from "../testkit.ts";
 import { type HttpDeps, isLoopback, redactHookPath, startHttp } from "./mod.ts";
 import type { MemoryStatusResponse } from "./operator-wire.ts";
-import { APP_PAGES } from "./app-routes.ts";
+import { APP_PAGES, parseAppPath } from "./app-routes.ts";
 
 const TOKEN = "test-bot-token";
 
@@ -610,7 +610,9 @@ describe("client serving", () => {
 	test("the door's page scope is deliberate — other pages and conversation links are 404", async () => {
 		const { http } = setup();
 		try {
-			for (const path of ["/t/programs", "/t/delegations", "/t/status", "/t/c/abc", "/t/nope"]) {
+			expect(parseAppPath("/app/rolling")).toEqual({ kind: "page", page: "rolling" });
+			expect(parseAppPath("/t/rolling", "t")).toBeNull();
+			for (const path of ["/t/programs", "/t/delegations", "/t/status", "/t/rolling", "/t/c/abc", "/t/nope"]) {
 				expect((await fetch(`http://127.0.0.1:${http.port}${path}`)).status).toBe(404);
 			}
 		} finally {
@@ -1513,7 +1515,7 @@ test("settings saves freeze untouched legacy app settings before updating defaul
 	const store = openStore(":memory:");
 	const legacy = store.resolve(appAddress("untouched"), "/work");
 	const { http, post, configRef } = setup(undefined, (previous) => {
-		for (const conv of store.listAppConversations()) store.initializeAppSettings(conv.id, previous);
+		for (const id of store.listAppConversationIds()) store.initializeAppSettings(id, previous);
 	});
 	try {
 		expect((await post({ model: "zai/future", thinking: "low", publicUrl: "" })).status).toBe(200);

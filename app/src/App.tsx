@@ -5,6 +5,7 @@ import type { AppPageKey } from "../../src/http/app-routes.ts";
 import type {
 	AppAttentionItem,
 	AppConversationList,
+	AppChatResponse,
 	AppNote,
 	AppNoteSummary,
 	AppProject,
@@ -37,6 +38,7 @@ import {
 	ConversationNav,
 	ConversationHierarchy,
 	ConversationRow,
+	RollingRow,
 	relTime,
 } from "./ConversationList.tsx";
 import { flatLine, flatTitle } from "./flatText.ts";
@@ -112,6 +114,9 @@ function AppShell() {
 	const [conversations, setConversations] = useState<AppConversationList["conversations"] | null>(
 		null,
 	);
+	const [rollingChain, setRollingChain] = useState<AppConversationList["rolling"]["chain"]>([]);
+	const [rollingViewing, setRollingViewing] = useState<string | null>(null);
+	const [rollingRouted, setRollingRouted] = useState<string | null>(null);
 	// Every project, archived included — the rail shows only the active
 	// ones.
 	const [projects, setProjects] = useState<AppProject[] | null>(null);
@@ -233,6 +238,14 @@ function AppShell() {
 	const routeRef = useRef(route);
 	routeRef.current = route;
 	const current = route.kind === "conversation" ? route.id : null;
+	const rollingCurrent = rollingChain[0] ?? null;
+	const rollingId = rollingViewing ?? rollingRouted ?? rollingCurrent?.id ?? null;
+	useEffect(() => {
+		if (!(route.kind === "page" && route.page === "rolling")) {
+			setRollingViewing(null);
+			setRollingRouted(null);
+		}
+	}, [route]);
 	useEffect(() => setHeaderRenaming(false), [current]);
 	const projectId = route.kind === "project" ? route.id : null;
 	const currentFolderId =
@@ -399,6 +412,10 @@ function AppShell() {
 			if (listR.status === "rejected") throw listR.reason;
 			if (plistR.status === "rejected") throw plistR.reason;
 			setConversations(listR.value.conversations);
+			setRollingChain(listR.value.rolling.chain);
+			setRollingRouted((id) =>
+				id !== null && listR.value.rolling.chain[0]?.id === id ? null : id,
+			);
 			setProjects(plistR.value.projects);
 			setNotesError(nlistR.status === "rejected");
 			if (nlistR.status === "fulfilled") {
@@ -439,11 +456,17 @@ function AppShell() {
 		if (conversations.some((c) => c.id === initial.id)) {
 			routeRef.current = initial;
 			setRoute(initial);
+		} else if (rollingChain.some((c) => c.id === initial.id)) {
+			const next: Route = { kind: "page", page: "rolling" };
+			routeRef.current = next;
+			setRoute(next);
+			setRollingViewing(rollingChain[0]?.id === initial.id ? null : initial.id);
+			window.history.replaceState(window.history.state, "", "/app/rolling");
 		} else {
 			// A dead link must not masquerade — normalize to the root.
 			window.history.replaceState(window.history.state, "", "/app/");
 		}
-	}, [conversations]);
+	}, [conversations, rollingChain]);
 
 	useEffect(() => {
 		const applyPop = (next: Route, nextPosition: { index: number; segment: string } | null) => {
@@ -875,13 +898,14 @@ function AppShell() {
 	const chatListMode = phone && page === "chat" && current === null && !composeStaged;
 	const chatSurfaceOpen =
 		(page === "chat" && (current !== null || composeStaged)) ||
+		page === "rolling" ||
 		page === "window" ||
 		page === "project";
 	// A glyph is on when its surface is live: its pane is showing, or its
 	// page family is open in the frame. The panel's surface and the open
 	// page can light two glyphs at once — the spine names both honestly.
 	const pagePane: ListPane | "projects" | null =
-		page === "chat" || page === "window" || page === "archive"
+		page === "chat" || page === "window" || page === "archive" || page === "rolling"
 			? "chats"
 			: page === "projects" || page === "project"
 				? "projects"
@@ -942,6 +966,16 @@ function AppShell() {
 	};
 	const chatFolders = (
 		<>
+			<RollingRow
+				current={page === "rolling"}
+				preview={rollingCurrent?.preview ?? null}
+				updatedAt={rollingCurrent?.updatedAt ?? null}
+				onOpen={() => {
+					setRollingViewing(null);
+					setRollingRouted(null);
+					void openPage("rolling");
+				}}
+			/>
 			{activeProjects.map((project) => {
 				const chats = projectChats(project.id);
 				return (
@@ -1342,6 +1376,19 @@ function AppShell() {
 							</svg>
 						</button>
 					)}
+					{phone && page === "rolling" && (
+						<button
+							type="button"
+							className="mobile-back"
+							aria-label="Back to chats"
+							title="Chats"
+							onClick={() => void navigate({ kind: "home", composing: false })}
+						>
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" width="19" height="19">
+								<path d="M14.5 5 7.5 12l7 7" />
+							</svg>
+						</button>
+					)}
 					{phone && page === "project" && (
 						<button
 							type="button"
@@ -1438,6 +1485,7 @@ function AppShell() {
 					{page === "window" && <span className="header-title">Context window</span>}
 					{page === "projects" && <span className="header-title">Projects</span>}
 					{page === "archive" && <span className="header-title">Archive</span>}
+					{page === "rolling" && <span className="header-title">Rolling chat</span>}
 					{page === "chat" && current !== null && (
 						<button
 							type="button"
@@ -1571,14 +1619,14 @@ function AppShell() {
 									{chatFolders}
 								</ConversationNav>
 								{archivedRows}
+								{conversations !== null && rail.length === 0 && archived.length === 0 && activeProjects.length === 0 && (
+									<p className="empty">Nothing here yet — start a conversation.</p>
+								)}
 								{listError !== null && <p className="error">Couldn't refresh the list.</p>}
 								{rowError !== null && (
 									<p className="error" role="alert">
 										{rowError}
 									</p>
-								)}
-								{conversations !== null && rail.length === 0 && archived.length === 0 && activeProjects.length === 0 && (
-									<p className="empty">Nothing here yet — start a conversation.</p>
 								)}
 							</>
 						)}
@@ -1874,6 +1922,119 @@ function AppShell() {
 								}}
 							/>
 						</>
+					))}
+				{page === "rolling" &&
+					(rollingId === null ? (
+						<div className="chat">
+							<div className="transcript">
+								<div className="transcript-inner">
+									<p className="empty">Send a message — your rolling chat starts here.</p>
+									{startFailed && <p className="error">Couldn't send — check the tailnet, then resend.</p>}
+								</div>
+							</div>
+							<Composer
+								token={token}
+								draftScope="rolling"
+								busy={starting}
+								staged={staged}
+								setStaged={setStaged}
+								stagedNotes={stagedNotes}
+								setStagedNotes={setStagedNotes}
+								stagedSkills={stagedSkills}
+								setStagedSkills={setStagedSkills}
+								stagedMemory={{ excluded: false, locked: true }}
+								onStagedMemoryToggle={() => {}}
+								onSend={async (parts) => {
+									setStarting(true);
+									setStartFailed(false);
+									try {
+										const message = { id: crypto.randomUUID(), role: "user", parts };
+										const response = await fetch("/api/app/chat", {
+											method: "POST",
+											headers: {
+												"content-type": "application/json",
+												...(token === null ? {} : { authorization: `Bearer ${token}` }),
+											},
+											body: JSON.stringify({ rolling: true, message }),
+										});
+										if (response.status !== 202) throw new Error(`send failed (${response.status})`);
+										const result = (await response.json()) as AppChatResponse;
+										if (!("conversationId" in result))
+											throw new Error("rolling send returned no conversation id");
+										setRollingViewing(null);
+										setRollingRouted(result.conversationId);
+										await refresh();
+										return true;
+									} catch {
+										setStartFailed(true);
+										return false;
+									} finally {
+										setStarting(false);
+									}
+								}}
+							/>
+						</div>
+					) : (
+						<ChatView
+							key={`rolling:${rollingId}`}
+							token={token}
+							conversationId={rollingId}
+							title="Rolling chat"
+							seed={null}
+							staged={staged}
+							setStaged={setStaged}
+							stagedNotes={stagedNotes}
+							setStagedNotes={setStagedNotes}
+							stagedSkills={stagedSkills}
+							setStagedSkills={setStagedSkills}
+							noteProjectId={null}
+							rolling
+							onSeeded={() => {}}
+							onTurnDone={() => void refresh()}
+							onSendAccepted={() => void refresh()}
+							onRollingAccepted={(id) => {
+								if (id === rollingId) return;
+								setRollingViewing(null);
+								setRollingRouted(id);
+								void refresh();
+							}}
+							header={
+								<div className="rolling-history-bar">
+									{rollingViewing !== null && (
+										<>
+											<span>Earlier conversation</span>
+											<button
+												type="button"
+												onClick={() => {
+													setRollingViewing(null);
+													setRollingRouted(null);
+												}}
+											>
+												Back to latest
+											</button>
+										</>
+									)}
+									{(() => {
+										const index = rollingChain.findIndex((roll) => roll.id === rollingId);
+										const previous = index >= 0 ? rollingChain[index + 1] : undefined;
+										return previous ? (
+											<>
+												<span>— new conversation —</span>
+												<button
+													type="button"
+													onClick={() => {
+														setRollingRouted(null);
+														setRollingViewing(previous.id);
+													}}
+												>
+													↑ Previous conversation
+												</button>
+											</>
+										) : null;
+									})()}
+								</div>
+							}
+						/>
 					))}
 			</main>
 			{/* Mobile (M): the thumb bar — every surface one tap away. It

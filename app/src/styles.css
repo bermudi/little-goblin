@@ -441,6 +441,25 @@ p code,
 	color: inherit;
 	text-decoration: none;
 }
+.rolling-row .conv-main {
+	display: block;
+}
+.rolling-history-bar {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 0.75rem;
+	padding: 0.45rem 0.75rem;
+	color: var(--app-fg-muted);
+	font-size: 0.82rem;
+}
+.rolling-history-bar button {
+	border: 1px solid var(--app-control-border);
+	border-radius: 6px;
+	padding: 0.25rem 0.5rem;
+	color: var(--app-fg);
+	background: var(--app-control-bg);
+}
 .conv-actions {
 	position: absolute;
 	right: 0.3rem;

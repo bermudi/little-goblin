@@ -145,6 +145,9 @@ export function ChatView({
   onSendAccepted,
   onOpenNote,
   onBranched,
+  rolling = false,
+  onRollingAccepted,
+  header,
   now = Date.now(),
 }: {
   token: string | null;
@@ -177,6 +180,9 @@ export function ChatView({
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch opened a new conversation — the host refreshes and opens it.
   onBranched?: ((id: string) => void) | undefined;
+  rolling?: boolean;
+  onRollingAccepted?: ((id: string, rolled: boolean) => void) | undefined;
+  header?: ReactNode;
   now?: number;
 }) {
   const [initial, setInitial] = useState<{
@@ -239,6 +245,9 @@ export function ChatView({
       onSendAccepted={onSendAccepted}
       onOpenNote={onOpenNote}
       onBranched={onBranched}
+      rolling={rolling}
+      onRollingAccepted={onRollingAccepted}
+      header={header}
       now={now}
     />
   );
@@ -267,6 +276,9 @@ function Chat({
   onSendAccepted,
   onOpenNote,
   onBranched,
+  rolling = false,
+  onRollingAccepted,
+  header,
   now,
 }: {
   token: string | null;
@@ -297,6 +309,9 @@ function Chat({
   onOpenNote?: ((id: string) => void) | undefined;
   // A branch exists now — the host refreshes the rail and opens it.
   onBranched?: ((id: string) => void) | undefined;
+  rolling?: boolean;
+  onRollingAccepted?: ((id: string, rolled: boolean) => void) | undefined;
+  header?: ReactNode;
   now: number;
 }) {
   // The transport only reconnects; sends go through postChat. token
@@ -639,27 +654,33 @@ function Chat({
     [gate],
   );
 
-  const postChat = async (body: Record<string, unknown>) => {
+  const postChat = async (body: Record<string, unknown>, routeRolling = false) => {
     const response = await fetch("/api/app/chat", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         ...(token === null ? {} : { authorization: `Bearer ${token}` }),
       },
-      body: JSON.stringify({ conversationId, ...body }),
+      body: JSON.stringify(routeRolling ? { rolling: true, ...body } : { conversationId, ...body }),
     });
     if (response.status !== 202) {
       const detail = (await response.json().catch(() => null)) as { error?: unknown } | null;
       throw new Error(typeof detail?.error === "string" ? detail.error : `send failed (${response.status})`);
     }
-    const result = (await response.json()) as { pendingId?: unknown };
+    const result = (await response.json()) as {
+      pendingId?: unknown;
+      conversationId?: unknown;
+      rolled?: unknown;
+    };
     onSendAccepted?.();
+    if (rolling && typeof result.conversationId === "string")
+      onRollingAccepted?.(result.conversationId, result.rolled === true);
     return result;
   };
   const submit = async (
     message: { parts?: UIMessage["parts"]; text?: string },
     whenBusy: "steer" | "followUp" = "steer",
-  ) => {
+  ): Promise<boolean> => {
     pinned.current = true;
     setLiveCtx(null);
     setSendFailure(null);
@@ -685,7 +706,7 @@ function Chat({
     }
     setSubmitPending(true);
     try {
-      const result = await postChat({ message: optimistic, whenBusy });
+      const result = await postChat({ message: optimistic, whenBusy }, rolling);
       if (typeof result.pendingId === "string") {
         setMessages((current) => current.filter((item) => item.id !== optimistic.id));
         setPendingItems((current) =>
@@ -695,11 +716,13 @@ function Chat({
         );
         refreshPending();
       }
+      return true;
     } catch (err) {
       setMessages((current) => current.filter((item) => item.id !== optimistic.id));
       setPendingItems((current) => current.filter((item) => item.id !== optimisticPendingId));
       setSubmitPending(false);
       setSendFailure(err instanceof Error ? err.message : "send failed");
+      return false;
     }
   };
 
@@ -855,6 +878,7 @@ function Chat({
   return (
     <DocViewerProvider token={token} conversationId={conversationId}>
       <div className="chat">
+        {header}
         <QuoteFab
           root={scrollRef}
           onQuote={(text, speaker) =>
@@ -1163,7 +1187,7 @@ function Chat({
           onCompacted={refreshTranscript}
           onSend={(parts, whenBusy) => {
             askNotifyPermission();
-            void submit({ parts }, whenBusy);
+            return submit({ parts }, whenBusy);
           }}
           onStop={() => {
             setStopError(null);

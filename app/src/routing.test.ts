@@ -10,6 +10,7 @@ describe("route conversion", () => {
 		"/app/n/abc",
 		"/app/settings",
 		"/app/archive",
+		"/app/rolling",
 	])("round trips %s", (path) => {
 		expect(pathOfRoute(routeFromPath(path))).toBe(path);
 	});
@@ -20,6 +21,11 @@ describe("route conversion", () => {
 
 	test("accepts page paths through the Telegram door", () => {
 		expect(routeFromPath("/t/settings")).toEqual({ kind: "page", page: "settings" });
+	});
+
+	test("rolling chat is a PWA-only page", () => {
+		expect(routeFromPath("/app/rolling")).toEqual({ kind: "page", page: "rolling" });
+		expect(routeFromPath("/t/rolling")).toEqual({ kind: "home", composing: false });
 	});
 
 	test("conversation and window ids include their channel prefix", () => {

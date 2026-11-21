@@ -17,6 +17,7 @@ export const APP_PAGES = [
 	"projects",
 	"notes",
 	"archive",
+	"rolling",
 ] as const;
 export type AppPageKey = (typeof APP_PAGES)[number];
 
@@ -36,7 +37,10 @@ export type AppPath =
 /** Parses a client URL path; null when it is not a page of the client. */
 export function parseAppPath(pathname: string, door: "app" | "t" = "app"): AppPath | null {
 	const page = PAGE_RE.exec(pathname);
-	if (page !== null) return page[1] === door ? { kind: "page", page: page[2] as AppPageKey } : null;
+	if (page !== null) {
+		if (page[1] !== door || (door === "t" && page[2] === "rolling")) return null;
+		return { kind: "page", page: page[2] as AppPageKey };
+	}
 	if (door !== "app") return null;
 	const m = ID_ROUTE_RE.exec(pathname);
 	if (m === null) return null;

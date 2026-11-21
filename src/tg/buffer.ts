@@ -1,9 +1,10 @@
 import { log } from "../log.ts";
+import { after, type Timer } from "../timing.ts";
 
 interface Bucket<T> {
 	items: T[];
-	timer: ReturnType<typeof setTimeout>;
-	maxTimer: ReturnType<typeof setTimeout>;
+	timer: Timer;
+	maxTimer: Timer;
 	firstAt: number;
 	attempts: number;
 }
@@ -24,15 +25,15 @@ export class CoalescingBuffer<T> {
 	push(key: string, item: T): boolean {
 		const existing = this.buckets.get(key);
 		if (existing) {
-			clearTimeout(existing.timer);
+			existing.timer.cancel();
 			existing.items.push(item);
-			existing.timer = setTimeout(() => this.fire(key), this.windowMs);
+			existing.timer = this.quiet(key, this.windowMs);
 			return false;
 		}
 		this.buckets.set(key, {
 			items: [item],
-			timer: setTimeout(() => this.fire(key), this.windowMs),
-			maxTimer: setTimeout(() => this.fireMax(key), this.maxWaitMs),
+			timer: this.quiet(key, this.windowMs),
+			maxTimer: this.cap(key, this.maxWaitMs),
 			firstAt: Date.now(),
 			attempts: 0,
 		});
@@ -52,8 +53,8 @@ export class CoalescingBuffer<T> {
 		let failed = 0;
 		const started = new Set<Promise<boolean>>();
 		for (const [key, bucket] of [...this.buckets]) {
-			clearTimeout(bucket.timer);
-			clearTimeout(bucket.maxTimer);
+			bucket.timer.cancel();
+			bucket.maxTimer.cancel();
 			const r = this.fire(key);
 			if (r === false) failed += 1;
 			else if (r instanceof Promise) started.add(r);
@@ -72,6 +73,14 @@ export class CoalescingBuffer<T> {
 		}
 	}
 
+	private quiet(key: string, ms: number): Timer {
+		return after(ms, "buffer quiet window", () => this.fire(key));
+	}
+
+	private cap(key: string, ms: number): Timer {
+		return after(ms, "buffer max wait", () => this.fireMax(key));
+	}
+
 	private fireMax(key: string): void {
 		const bucket = this.buckets.get(key);
 		if (!bucket) return;
@@ -80,7 +89,7 @@ export class CoalescingBuffer<T> {
 			items: bucket.items.length,
 			waitedMs: Date.now() - bucket.firstAt,
 		});
-		clearTimeout(bucket.timer);
+		bucket.timer.cancel();
 		const flush = this.fire(key);
 		if (typeof flush !== "boolean")
 			void flush.catch((err: unknown) =>
@@ -95,8 +104,8 @@ export class CoalescingBuffer<T> {
 			this.deferred.add(key);
 			return true;
 		}
-		clearTimeout(bucket.timer);
-		clearTimeout(bucket.maxTimer);
+		bucket.timer.cancel();
+		bucket.maxTimer.cancel();
 		this.buckets.delete(key);
 		let result: void | Promise<void>;
 		try {
@@ -130,16 +139,16 @@ export class CoalescingBuffer<T> {
 	private retain(key: string, bucket: Bucket<T>, err: unknown): void {
 		const newer = this.buckets.get(key);
 		if (newer) {
-			clearTimeout(newer.timer);
-			clearTimeout(newer.maxTimer);
+			newer.timer.cancel();
+			newer.maxTimer.cancel();
 		}
 		this.deferred.delete(key);
 		const attempts = bucket.attempts + 1;
 		const retryMs = Math.min(Math.max(this.windowMs, 1_000) * 2 ** (attempts - 1), 300_000);
 		this.buckets.set(key, {
 			items: [...bucket.items, ...(newer?.items ?? [])],
-			timer: setTimeout(() => this.fire(key), retryMs),
-			maxTimer: setTimeout(() => this.fireMax(key), Math.max(retryMs, this.maxWaitMs)),
+			timer: this.quiet(key, retryMs),
+			maxTimer: this.cap(key, Math.max(retryMs, this.maxWaitMs)),
 			firstAt: bucket.firstAt,
 			attempts,
 		});
